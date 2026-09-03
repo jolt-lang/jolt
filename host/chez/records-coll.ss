@@ -394,8 +394,32 @@
   (lambda (x) (jrec-charseq->seq x (jrec-charseq-length-method x) (jrec-cl x "charAt"))))
 (register-seq-arm! jrec-record?
   (lambda (x) (list->cseq (jrec-entry-list x))))
+;; A deftype that IS a seq (clojure.lang.ISeq: its seq method answers itself)
+;; walks through its own first and next into a lazy cseq — nil from next ends
+;; it, and a `more` without a `next` ends on an empty rest. Re-asking the
+;; answer for its seq, as the general arm below does, would ask forever; and
+;; only the cseq shape gives count/nth/reduce and the printer their walk.
+(define (jrec-iseq->cseq x)
+  (let ((first-m (jrec-cl x "first"))
+        (next-m (jrec-cl x "next"))
+        (more-m (jrec-cl x "more")))
+    (define (step s)
+      (jolt-make-lazy-seq
+        (lambda ()
+          (let ((tail (cond (next-m (jolt-invoke next-m s))
+                            (more-m (let ((r (jolt-invoke more-m s)))
+                                      (if (jolt-nil? (jolt-seq r)) jolt-nil r)))
+                            (else jolt-nil))))
+            (jolt-cons (jolt-invoke first-m s)
+                       (if (jolt-nil? tail) jolt-nil
+                           (if (and (jrec? tail) (eq? (jrec-tag tail) (jrec-tag x)))
+                               (step tail)
+                               (jolt-seq tail))))))))
+    (if first-m (jolt-seq (step x)) (jrec-abstract-method-error x "first"))))
 (register-seq-arm! (lambda (x) (jrec-cl x "seq"))
-  (lambda (x) (jolt-seq (jolt-invoke (jrec-cl x "seq") x))))
+  (lambda (x)
+    (let ((r (jolt-invoke (jrec-cl x "seq") x)))
+      (if (eq? r x) (jrec-iseq->cseq x) (jolt-seq r)))))
 (register-conj-arm! (lambda (coll) (jrec-cl coll "cons"))
   (lambda (coll x) (jolt-invoke (jrec-cl coll "cons") coll x)))
 ;; A plain defrecord (no IPersistentCollection.cons of its own) conjs a [k v] pair

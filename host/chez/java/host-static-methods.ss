@@ -888,6 +888,18 @@
 ;; clojure.lang.RT's own class lookups (the analyzer's resolve path): the same
 ;; answer as Class/forName. Non-loading is a distinction without a difference
 ;; here — nothing is initialized on lookup.
+;; clojure.lang.Util's comparison statics and the empty list, as clojure.core's
+;; gvec (vector-of) calls them; SeqIterator over a seq is the iterator arm.
+(define util-extra-statics
+  (list (cons "compare" (lambda (a b) (jolt-compare a b)))
+        (cons "isInteger" (lambda (x) (if (and (number? x) (exact? x) (integer? x)) #t #f)))
+        (cons "equals" (lambda (a b) (if (jolt= a b) #t #f)))))
+(register-class-statics! "Util" util-extra-statics)
+(register-class-statics! "clojure.lang.Util" util-extra-statics)
+(register-class-statics! "PersistentList" (list (cons "EMPTY" jolt-empty-list)))
+(register-class-statics! "clojure.lang.PersistentList" (list (cons "EMPTY" jolt-empty-list)))
+(register-class-ctor! "SeqIterator" (lambda (s) (make-jiterator (jolt-seq s))))
+(register-class-ctor! "clojure.lang.SeqIterator" (lambda (s) (make-jiterator (jolt-seq s))))
 (register-class-statics! "RT"
   (list (cons "classForName" class-for-name) (cons "classForNameNonLoading" class-for-name)))
 (register-class-statics! "clojure.lang.RT"

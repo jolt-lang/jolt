@@ -195,8 +195,12 @@
 
 (register-class-ctor! "StringBuilder"
   (lambda args (make-jhost "string-builder"
-    ;; a numeric first arg is a CAPACITY hint, not content.
-    (vector (if (and (pair? args) (not (number? (car args)))) (render-piece (car args)) "")
+    ;; a numeric first arg is a CAPACITY hint, not content; nil is the
+    ;; NullPointerException the JVM's String ctor raises.
+    (vector (cond ((null? args) "")
+                  ((jolt-nil? (car args)) (throw-jvm 'NullPointerException "str"))
+                  ((number? (car args)) "")
+                  (else (render-piece (car args))))
             '() 0))))
 (register-host-methods! "string-builder"
   (list (cons "append" (lambda (self x . rest) (sb-append! self (append-text x rest)) self))
@@ -1281,6 +1285,19 @@
 (register-class-ctor! "BigInteger" bigint-ctor)
 (register-class-ctor! "java.math.BigInteger" bigint-ctor)
 (register-class-ctor! "MapEntry" (lambda (k v) (make-map-entry k v)))
+;; clojure.lang.APersistentVector$RSeq: the reverse seq of an Indexed value from
+;; index i down to 0, as an IPersistentVector deftype's rseq builds it
+;; (clojure.core.Vec). The same lazy cells a native vector's rseq uses, so the
+;; class answer and the walk match.
+(define lz-indexed-rseq
+  (register-lazy-src! 'indexed-rseq (lambda (v i) (indexed->rseq v i))))
+(define (indexed->rseq v i)
+  (if (fx<? i 0)
+      jolt-nil
+      (cseq-lazy/k (jolt-nth v i) (make-lazy-src lz-indexed-rseq v (fx- i 1)) sk-rseq)))
+(let ((rseq-ctor (lambda (v i) (indexed->rseq v (jnum->exact i)))))
+  (register-class-ctor! "APersistentVector$RSeq" rseq-ctor)
+  (register-class-ctor! "clojure.lang.APersistentVector$RSeq" rseq-ctor))
 ;; clojure.lang.MapEntry/create — the static factory clojure.walk and kin use
 ;; when rebuilding map entries.
 (register-class-statics! "MapEntry" (list (cons "create" (lambda (k v) (make-map-entry k v)))))

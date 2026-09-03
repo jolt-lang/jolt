@@ -1158,6 +1158,18 @@ else
   fails=$((fails + 1))
 fi
 
+# The default zone is the machine's, as TimeZone.getDefault finds it (TZ,
+# /etc/localtime, /etc/timezone): under a TZ the deprecated Date getters,
+# SimpleDateFormat and Calendar read that zone's clock, its short name and
+# offset render, and a zone-less parse lands on the instant it names there.
+tzdef_out="$(TZ=America/New_York $jolt -e '[(.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm zzz Z") (java.util.Date. 1393632000000)) (.getHours (java.util.Date. 1393632000000)) (.getID (java.util.TimeZone/getDefault)) (.get (doto (java.util.Calendar/getInstance) (.setTime (java.util.Date. 1393632000000))) java.util.Calendar/HOUR_OF_DAY) (.getTime (.parse (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm") "2014-02-28 19:00")) (.getDate (java.util.Date. 114 2 1))]' 2>&1 | tail -1)"
+if [ "$tzdef_out" = '["2014-02-28 19:00 EST -0500" 19 "America/New_York" 19 1393632000000 1]' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: default zone under TZ=America/New_York: $tzdef_out"
+  fails=$((fails + 1))
+fi
+
 # The same file's OTHER libc probe: LC_TIME is process global just like TZ, and
 # both the boot capability check and locale-name itself write it. An unrestored
 # write left every jolt process in en_US.UTF-8 and moved to "C" on the first

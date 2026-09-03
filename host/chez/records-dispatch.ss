@@ -452,7 +452,12 @@
 (define arm-priority-nio-path 42)     ; java.nio.file.Path methods (above jfile)
 (define arm-priority-htable 43)       ; tagged htable method registry
 (define arm-priority-host-type 44)    ; jhost/number/string per-type dispatch
+;; A nil receiver is a NullPointerException before any arm looks: the JVM
+;; cannot invoke anything on null. (.toString nil) used to answer "" and
+;; (.equals nil 1) false through the universal Object arm.
 (define (record-method-dispatch obj method-name rest-args)
+  (when (jolt-nil? obj)
+    (no-method-throw method-name obj (if (jolt-nil? rest-args) 0 (jolt-count rest-args))))
   (let loop ((as method-dispatch-arms))
     (if (null? as)
         (record-method-dispatch-base obj method-name rest-args)

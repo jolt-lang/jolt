@@ -149,7 +149,7 @@
    ;; uses fall back to the clojure.core overlay var (the multi-dim walker).
    "aget"    {:call "jolt-nth"    :arity #(= % 2) :inline-only? true}
    "aset"    {:call "jolt-aset3"  :arity #(= % 3) :inline-only? true}
-   "alength" {:call "jolt-count"  :arity #(= % 1) :num-result? true}
+   "alength" {:call "jolt-alength" :arity #(= % 1) :num-result? true}
    ;; seq
    "first"   {:call "jolt-first"   :arity #(= % 1)}
    "rest"    {:call "jolt-rest"    :arity #(= % 1)}

@@ -162,6 +162,27 @@
 (define (tzp-tz-offset zone epoch)
   (and tzp-tz-usable? (tzp-offset-raw zone epoch)))
 
+;; The zone's abbreviation at an instant ("EST", "BST", "JST"): strftime %Z
+;; under the same TZ switch as the offset probe. #f when libc cannot say.
+(define (tzp-abbrev-probe zone epoch)   ; caller holds tzp-mutex
+  (let ((saved (tzp-getenv "TZ")))
+    (dynamic-wind
+      (lambda () (tzp-setenv "TZ" zone 1) (tzp-tzset))
+      (lambda ()
+        (let ((tp (sa-foreign-alloc 8)) (buf (make-bytevector 32 0)))
+          (sa-foreign-set! 'long tp 0 epoch)
+          (let ((tm (tzp-localtime tp)))
+            (sa-foreign-free tp)
+            (and tm (not (eq? tm 0)) tzp-strftime
+                 (let ((n (tzp-strftime buf 32 "%Z" tm)))
+                   (and (> n 0)
+                        (let ((bv (make-bytevector n)))
+                          (do ((i 0 (+ i 1))) ((= i n) (utf8->string bv))
+                            (bytevector-u8-set! bv i (bytevector-u8-ref buf i))))))))))
+      (lambda () (tzp-restore-tz! saved)))))
+(define (tzp-tz-abbrev zone epoch)
+  (and tzp-tz-usable? (jolt-with-mutex tzp-mutex (tzp-abbrev-probe zone epoch))))
+
 ;; locale-id -> libc locale string.
 (define tzp-locale-table
   '(("de" . "de_DE.UTF-8") ("fr" . "fr_FR.UTF-8") ("it" . "it_IT.UTF-8")

@@ -48,7 +48,18 @@
 ;; O(log n) RRB concat / slice over pvec (collections.ss). The stdlib
 ;; clojure.core.rrb-vector ns is a thin Clojure layer over these two.
 (def-var! "jolt.host" "catvec" pvec-catvec)
-(def-var! "jolt.host" "slice" pvec-slice)
+;; subvec's slice: the O(log n) structural slice of a native vector; any other
+;; IPersistentVector (a deftype such as clojure.core.Vec) copies the range by
+;; index into a native vector, the value RT.subvec's SubVector view has.
+(def-var! "jolt.host" "slice"
+  (lambda (v start end)
+    (if (pvec? v)
+        (pvec-slice v start end)
+        (let ((s (->idx start)) (e (->idx end)))
+          (let loop ((i (fx- e 1)) (acc jolt-empty-list))
+            (if (fx<? i s)
+                (jolt-vec acc)
+                (loop (fx- i 1) (jolt-cons (jolt-nth v i) acc))))))))
 ;; the class stamp clojure.core/subvec applies to a slice result (issue #629):
 ;; a non-empty subvec is clojure.lang.APersistentVector$SubVector, an empty one
 ;; is RT.subvec's PersistentVector.EMPTY. slice itself stays unstamped — pop

@@ -59,6 +59,10 @@
 ;; either backing. Chez has flvector? / make-flvector / flvector-ref / -set! / -length.
 (define (na-fl-kind? k) (or (eq? k 'double) (eq? k 'float)))
 (define (ja-len v)     (if (flvector? v) (flvector-length v) (vector-length v)))
+;; alength in call position (op registry): the count of any array-like, but nil
+;; is the NullPointerException the JVM raises rather than 0.
+(define (jolt-alength a)
+  (if (jolt-nil? a) (throw-jvm 'NullPointerException "") (jolt-count a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM
 ;; exception with the JVM message. The proven ^doubles fast path (jolt-flaget/
 ;; jolt-flaset below) skips this pre-check — it relies on flvector-ref's own

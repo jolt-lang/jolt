@@ -326,7 +326,7 @@
 ;; mutable backing.
 (defn aget [arr & idxs]
   (reduce (fn [v i] (nth v i)) arr idxs))
-(defn alength [arr] (count arr))
+(defn alength [arr] (if (nil? arr) (throw (NullPointerException. "")) (count arr)))
 (defn aset [arr & idxs+val]
   (let [n (count idxs+val)
         val (nth idxs+val (dec n))

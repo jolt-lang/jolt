@@ -125,13 +125,18 @@
             ((char-by-char-match? s i needle nlen) i)
             (else (loop (fx- i 1) found))))))
 
+;; A string argument to a String method: nil is a NullPointerException, as
+;; String's own methods raise on null (they used to read as the empty string,
+;; so (.indexOf "abc" nil) answered 0 and (.contains "a" nil) true).
+(define (str-arg x)
+  (if (jolt-nil? x) (throw-jvm 'NullPointerException "str") x))
 ;; A needle arg: a char value -> its 1-char string; a number -> the char at that
 ;; code point (JVM treats an int arg to indexOf as a char code); else a string.
 (define (str-needle x)
   (cond ((char? x) (string x))
         ((number? x) (string (integer->char (exact (truncate x)))))
         ((string? x) x)
-        (else (jolt-str x))))
+        (else (jolt-str (str-arg x)))))
 
 ;; literal replace-all (JVM String.replace(CharSequence,CharSequence)).
 (define (str-replace-literal s a b)
@@ -296,10 +301,10 @@
     ((string=? method "charAt") (string-ref s (jolt->idx (arg 0))))
     ((string=? method "toString") s)
     ((string=? method "indexOf")
-     (str-index-of-any s (arg 0)
+     (str-index-of-any s (str-arg (arg 0))
                    (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0)))
     ((string=? method "startsWith")
-     (let ((p (arg 0))) (and (fx>=? (string-length s) (string-length p))
+     (let ((p (str-arg (arg 0)))) (and (fx>=? (string-length s) (string-length p))
                              (string=? (substring s 0 (string-length p)) p))))
     ((string=? method "hashCode") (java-string-hash s))
     ((string=? method "toLowerCase") (string-downcase s))
@@ -323,12 +328,12 @@
     ((string=? method "lastIndexOf")
      (str-last-index-of s (str-needle (arg 0))))
     ((string=? method "endsWith")
-     (let ((p (arg 0)) (slen (string-length s)))
+     (let ((p (str-arg (arg 0))) (slen (string-length s)))
        (and (fx>=? slen (string-length p))
             (string=? (substring s (fx- slen (string-length p)) slen) p))))
     ((string=? method "contains")
      (fx>=? (str-index-of s (str-needle (arg 0)) 0) 0))
-    ((string=? method "concat") (string-append s (arg 0)))
+    ((string=? method "concat") (string-append s (str-arg (arg 0))))
     ((string=? method "replace") (str-replace-literal s (str-needle (arg 0)) (str-needle (arg 1))))
     ((string=? method "equalsIgnoreCase")
      (string=? (ascii-string-down s) (ascii-string-down (arg 0))))

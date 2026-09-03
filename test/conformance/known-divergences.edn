@@ -84,19 +84,6 @@
    :check :prose
    :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
    :note "Core has no default locale. Explicit locale ids resolve through the :date-names extension point (:fallback :default): an unregistered id falls back to ROOT rather than throwing."}
-  ;; java.text.SimpleDateFormat formats in UTC on jolt; the JVM's formats in the
-  ;; machine's DEFAULT time zone. So a fixed epoch renders "2014-03-01 00:00" here
-  ;; and "2014-02-28 19:00" on a JVM in EST. Pre-existing — format-ms has always
-  ;; been UTC (inst-time.ss says so) — and surfaced by the :date-names guard row,
-  ;; which now lives in unit.edn because the JVM side is machine-dependent and so
-  ;; cannot be certified.
-  {:category :host-model
-   :behavior "(.format (java.text.SimpleDateFormat. \"yyyy-MM-dd HH:mm\") (java.util.Date. 1393632000000))"
-   :jvm "the default zone's rendering, e.g. \"2014-02-28 19:00\" under EST"
-   :jolt "\"2014-03-01 00:00\" — UTC"
-   :check :prose
-   :why "the JVM's answer is the machine's default time zone"
-   :note "format-ms is UTC by design; .setTimeZone is accepted but not honored."}
   ;; (str lazy-seq) renders the realized seq "(2 3)" rather than the JVM's opaque
   ;; "clojure.lang.LazySeq@<hash>". Deliberately friendlier; left as is.
   {:category :seq-type-model
@@ -1053,9 +1040,6 @@
    {:suite "host-interop / UUID + Long + shiftLeft", :label "(UUID. msb lsb), .shiftLeft, (Long. n)", :category :host-model}
    {:suite "host-interop / migratus class shims", :label "Timestamp is millis", :category :host-model}
    {:suite "interop / String methods", :label "String/valueOf nil", :category :host-model}
-   {:suite "time / sdf locale names", :label "explicit ROOT locale id renders ROOT names", :category :host-model}
-   {:suite "time / sdf locale names", :label "numeric pattern ignores the locale id", :category :host-model}
-   {:suite "time / sdf locale names", :label "unregistered locale id falls back to ROOT", :category :host-model}
 
    ;; A jolt chunk IS a vector, so vec accepts one; the JVM's ArrayChunk is not
    ;; convertible to Object[]. Representation, not granularity.
@@ -1091,4 +1075,10 @@
    ;; where its JVM branch asks instance?; jolt answers instance? there. The JVM
    ;; raises on the class form (satisfies? wants a protocol map), so certify
    ;; buckets the row :jvm-raises.
+   ;; The two-argument SimpleDateFormat takes a LOCALE ID STRING on jolt (the
+   ;; :date-names extension point's key); the JVM's second argument is a Locale,
+   ;; so it has no matching constructor and raises.
+   {:suite "time / sdf locale names", :label "explicit ROOT locale id renders ROOT names", :category :host-model}
+   {:suite "time / sdf locale names", :label "numeric pattern ignores the locale id", :category :host-model}
+   {:suite "time / sdf locale names", :label "unregistered locale id falls back to ROOT", :category :host-model}
    {:suite "protocols / satisfies?", :label "satisfies? on a class or interface answers instance?", :category :host-model}]}
