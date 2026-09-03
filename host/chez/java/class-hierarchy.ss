@@ -439,7 +439,7 @@
 ;; dispatch order. The JVM's other two direct interfaces, IObj and Serializable,
 ;; are NOT here: IObj puts every fn under IMeta for protocol dispatch, a
 ;; fleet-wide change that needs the library gate first (jolt-tnt7).
-(jch-register-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.Fn" "java.util.Comparator"))
+(jch-register-supers! "clojure.lang.AFunction" '("clojure.lang.AFn" "clojure.lang.IObj" "java.util.Comparator" "clojure.lang.Fn" "java.io.Serializable"))
 ;; java.util collection interfaces. JDK 21 put SequencedCollection between
 ;; Collection and List / Deque, and the reference oracle runs on it, so List's
 ;; ONE direct super is SequencedCollection and Collection arrives transitively.

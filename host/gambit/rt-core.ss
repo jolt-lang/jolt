@@ -817,6 +817,10 @@
 ;; value-host-tags (records-gambit.ss, from host/chez/protocols.ss) leaves it a
 ;; plain Object — the same outcomes the guarded call used to reach by raising.
 (define (jolt-class-name x) #f)
+;; alength in call position (the op registry's native, natives-array.ss on
+;; Chez): the count of any array-like, nil refused — post-prelude names it.
+(define (jolt-alength a)
+  (if (jolt-nil? a) (error 'alength "null") (jolt-count a)))
 (define (jolt-object-repr x readable?)
   (let ((cls (guard (e (#t #f)) (jolt-class-name x)))
         (content (guard (e (#t #f)) (jolt-object-content x))))

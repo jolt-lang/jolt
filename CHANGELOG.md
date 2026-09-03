@@ -47,6 +47,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The default time zone is the machine's.** `TimeZone/getDefault`,
+  `Calendar/getInstance`, a `SimpleDateFormat` with no zone set, the deprecated
+  `Date` constructor and getters, `java.sql.Date.valueOf` and `toLocalDate` all
+  answered UTC where the JVM answers the machine's zone (`TZ`, then
+  `/etc/localtime`, then `/etc/timezone`). They read that zone's clock now, the
+  same zone jolt.time's `ZoneId/systemDefault` names, so a date formatted by
+  core and one formatted through java.time agree. `.setTimeZone` on a
+  `SimpleDateFormat` is honored: `z` renders the zone's short name (`EST`),
+  `Z` its RFC 822 offset, `X`/`XX`/`XXX` its ISO offset, and a zone-less
+  `parse` lands on the instant the reading names in that zone. Selmer's date
+  filter and data.json's date writer, which go through java.time, disagreed
+  with `SimpleDateFormat` by the machine's UTC offset.
+- **Two `TimeZone`s with one id are equal.** `=`, `hash`, `.equals` and
+  `.hashCode` compare by id; `.equals` was "No matching method" and two
+  `getTimeZone` results for one id were distinct set members.
+- **String shims refuse nil where the JVM throws.** `(.indexOf "abc" nil)`
+  answered 0, `(.contains "a" nil)` true, `(.replace "a" nil "b")` "bab",
+  `(.startsWith "a" nil)` false: a nil argument read as the empty string. It is
+  a `NullPointerException` now, as are `(StringBuilder. nil)`,
+  `(clojure.string/trim-newline nil)`, `(clojure.string/re-quote-replacement
+  nil)`, a nil replacement, `(alength nil)` (answered 0) and any method on a
+  nil receiver (`(.toString nil)` answered "", `(.equals nil 1)` false).
+  `clojure.string/replace` and `replace-first` refuse a nil match with the
+  reference's `IllegalArgumentException` "Invalid match arg: " and a
+  non-string replacement for a string match with a `ClassCastException`.
+- **`vector-of`.** clojure.core's primitive-typed vectors (`clojure.core.Vec`,
+  `VecSeq`, `ArrayChunk`) are a core tier, the reference's gvec.clj over jolt's
+  typed arrays: `(vector-of :int 1 2 3)` is a vector by every question —
+  `count`, `nth`, `conj`, `assoc`, `pop`, `rseq`, `subvec`, `reduce`, `seq`,
+  `=` and `hash` against a plain vector, printing — that coerces its elements
+  and grows through the same 32-way trie. The symbol was unresolved before.
+  Along the way: a deftype that is its own seq (a `clojure.lang.ISeq` whose
+  `seq` answers itself, as gvec's `VecSeq` does) walks through its own `first`
+  and `next`; `seq` used to re-ask the answer for its seq forever.
+  `clojure.lang.Util/compare`, `isInteger` and `equals`,
+  `PersistentList/EMPTY` and a `SeqIterator` over a seq are host statics now.
+- **`deftype` and `defrecord` skip leading option pairs.** `(deftype T [x]
+  :no-print true …)` — the reference consumes any keyword/value pairs before
+  the specs (`:load-ns` is its own) — raised "Can't pop empty vector" from the
+  body grouping. clojure.core's gvec, the `vector-of` implementation, opens its
+  `VecSeq` that way.
+- **`clojure.lang.AFunction`'s supers include `IObj`, `IMeta` and
+  `Serializable`.** `bases`, `supers` and `.getInterfaces` on a fn's class
+  answered `AFn`, `Fn` and `Comparator` only, and a protocol extended to
+  `IMeta` or `IObj` did not dispatch on a fn; the row carries the JVM's five
+  direct supers in declaration order now.
+
 - **A host fault a catch binds is a typed throwable.** A primitive handed the
   wrong value — `(.concat "a" nil)`, `(subs "abc" 5)`, `(clojure.string/trim
   nil)` — raised a raw Chez condition, and a catch bound it as it was:

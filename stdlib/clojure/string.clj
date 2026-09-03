@@ -44,12 +44,27 @@
   ([coll] (str-join coll))
   ([separator coll] (str-join coll separator)))
 
+;; The reference dispatches on the match's type: a char, a CharSequence or a
+;; Pattern, anything else "Invalid match arg"; a string match casts its
+;; replacement to CharSequence (nil is a NullPointerException, a number a
+;; ClassCastException), a regex match with a nil replacement dies applying it.
+(defn- check-match [match replacement]
+  (cond
+    (nil? match) (throw (IllegalArgumentException. (str "Invalid match arg: " match)))
+    (or (char? match) (string? match))
+    (cond (nil? replacement) (throw (NullPointerException. "replacement"))
+          (not (or (string? replacement) (char? replacement)))
+          (throw (ClassCastException. (str "class " (.getName (class replacement)) " cannot be cast to class java.lang.CharSequence"))))
+    (and (instance? java.util.regex.Pattern match) (nil? replacement)) (throw (NullPointerException. "replacement"))))
+
 (defn replace
   [s match replacement]
+  (check-match match replacement)
   (str-replace-all match replacement (to-str s)))
 
 (defn replace-first
   [s match replacement]
+  (check-match match replacement)
   (str-replace match replacement (to-str s)))
 
 (defn reverse
@@ -144,6 +159,7 @@
   "Escape special characters (backslash and dollar) in a regex replacement
   string so it is used literally rather than interpreted."
   [replacement]
+  (when (nil? replacement) (throw (NullPointerException. "replacement")))
   ;; str first: the JVM takes any CharSequence-able value — a regex passed as
   ;; the replacement quotes its pattern source (yamlscript's re templates).
   (apply str
@@ -158,6 +174,7 @@
   "Removes all trailing newline \\n or return \\r characters from
   string.  Similar to Perl's chomp."
   [s]
+  (when (nil? s) (throw (NullPointerException. "s")))
   (loop [index (count s)]
     (if (zero? index)
       ""

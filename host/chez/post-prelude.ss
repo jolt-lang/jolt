@@ -377,6 +377,9 @@
 ;; forgets is caught rather than discovered by an image that will not write.
 (for-each (lambda (p) (register-proc-name! (cdr p) "clojure.core" (car p)))
           (list (cons "seq" jolt-seq)
+                  ;; the op registry's alength (natives-array.ss): value-position
+                  ;; alength compiles to it, so an image needs its name
+                  (cons "alength" jolt-alength)
                   (cons "get" jolt-get)
                   (cons "nth" jolt-nth)
                   (cons "sequential?" jolt-sequential?)

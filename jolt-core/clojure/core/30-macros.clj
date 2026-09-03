@@ -380,6 +380,13 @@
 ;; group, every other form appends to the current one. (extend-protocol uses
 ;; parse-extend-impls instead — it must treat a COMPUTED class type like
 ;; (Class/forName "[B"), a seq, as a head, which this would misread as a method.)
+;; deftype/defrecord options: leading keyword/value pairs before the specs
+;; (:load-ns, and any other the reference's parse-opts+specs consumes without
+;; reading, such as gvec's :no-print). Skipped, as the reference skips them.
+(defn- drop-type-opts [body]
+  (loop [b (seq body)]
+    (if (and b (keyword? (first b))) (recur (nnext b)) b)))
+
 (defn- group-by-head [items]
   ;; nil is a valid extension head (extend-protocol P ... nil (m [x] ...)).
   (reduce (fn [acc x]
@@ -558,7 +565,7 @@
                           mbody (map (fn [bf] (rewrite-body inst shadowed bf)) (drop 2 spec))
                           mbody (if (seq dlets) (list (list* 'let dlets mbody)) mbody)]
                       (list argv (list* 'let binds mbody))))
-        groups (group-by-head body)
+        groups (group-by-head (drop-type-opts body))
         ;; merge clauses by method NAME across ALL protocols into one multi-arity
         ;; fn, so a name appearing in two interfaces with different arities
         ;; (data.priority-map's seq is in Seqable [this] AND Sorted [this asc])
@@ -837,7 +844,7 @@
                           mbody (drop 2 spec)
                           mbody (if (seq dlets) (list (list* 'let dlets mbody)) mbody)]
                       (list hinted (list* 'let binds mbody))))
-        groups (group-by-head body)
+        groups (group-by-head (drop-type-opts body))
         ;; merge clauses by name across protocols into one multi-arity fn (see
         ;; deftype's by-name).
         by-name (reduce (fn [m spec]
