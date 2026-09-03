@@ -1158,8 +1158,18 @@ else
   fails=$((fails + 1))
 fi
 
-# The default zone is the machine's, as TimeZone.getDefault finds it (TZ,
-# /etc/localtime, /etc/timezone): under a TZ the deprecated Date getters,
+# Core reads no system file for its default zone: with TZ unset and no provider
+# registered it is UTC on every machine; a provider (jolt.time registers its
+# machine-zone lookup) is consulted before that; TZ wins over both.
+tzdefault_out="$(unset TZ; $jolt -e '[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0)) (do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault))) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))]' 2>&1 | tail -1)"
+if [ "$tzdefault_out" = '["UTC" "00:00 UTC" "Asia/Tokyo" "09:00 JST"]' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: default zone without TZ is UTC, then the provider's: $tzdefault_out"
+  fails=$((fails + 1))
+fi
+
+# TZ names the default zone (the process's own setting): under it the deprecated Date getters,
 # SimpleDateFormat and Calendar read that zone's clock, its short name and
 # offset render, and a zone-less parse lands on the instant it names there.
 tzdef_out="$(TZ=America/New_York $jolt -e '[(.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm zzz Z") (java.util.Date. 1393632000000)) (.getHours (java.util.Date. 1393632000000)) (.getID (java.util.TimeZone/getDefault)) (.get (doto (java.util.Calendar/getInstance) (.setTime (java.util.Date. 1393632000000))) java.util.Calendar/HOUR_OF_DAY) (.getTime (.parse (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm") "2014-02-28 19:00")) (.getDate (java.util.Date. 114 2 1))]' 2>&1 | tail -1)"

@@ -583,35 +583,35 @@
                 (> (tz-offset-ms self (ms-of d))
                    (* 1000 (tz-raw-offset-seconds (tz-id self))))))))
 
-;; The machine's zone, the way TimeZone.getDefault finds it: TZ in the
-;; environment (a leading colon is the POSIX file form, a path is read for its
-;; zoneinfo suffix), else the zone /etc/localtime links to, else /etc/timezone,
-;; else UTC. jolt.time's ZoneId/systemDefault reads the same sources, so core
-;; and the library name one zone. Not cached: a dumped image must not bake a
-;; build machine's zone in, and this is asked on the way into a format, not in
-;; a loop.
-(define (system-tz-id)
+;; The default zone: TZ from the process's own environment (a leading colon is
+;; the POSIX file form; a zoneinfo path is read for the zone name it ends in),
+;; else what a registered provider answers, else UTC. Core reads no system file
+;; for this. Which zone a machine is in lives in /etc/localtime or
+;; /etc/timezone, and looking there is I/O the program never asked for and a
+;; layout assumption core does not make; jolt.time knows how to find it (its
+;; ZoneId/systemDefault) and registers that lookup as the provider when it
+;; loads, so with the library present core and java.time name one zone, and
+;; without it a zone-less format is UTC. Not cached: a dumped image must not
+;; bake a build machine's zone in, and this is asked on the way into a format,
+;; not in a loop.
+(define default-zone-provider #f)
+(def-var! "jolt.host" "set-default-zone-provider!"
+  (lambda (f) (set! default-zone-provider (if (jolt-nil? f) #f f)) jolt-nil))
+(define (tz-env-zone)
   (define (after-zoneinfo p)
     (let ((i (substring-index "zoneinfo/" p)))
       (and i (let ((z (substring p (+ i 9) (string-length p))))
                (and (> (string-length z) 0) z)))))
-  (define (trim s)
-    (let loop ((a 0) (b (string-length s)))
-      (cond ((and (< a b) (char-whitespace? (string-ref s a))) (loop (+ a 1) b))
-            ((and (< a b) (char-whitespace? (string-ref s (- b 1)))) (loop a (- b 1)))
-            (else (substring s a b)))))
-  (or (let ((tz (getenv "TZ")))
-        (and tz (> (string-length tz) 0)
-             (let ((tz (if (char=? (string-ref tz 0) #\:) (substring tz 1 (string-length tz)) tz)))
-               (and (> (string-length tz) 0)
-                    (if (char=? (string-ref tz 0) #\/) (after-zoneinfo tz) tz)))))
-      (guard (e (#t #f))
-        (let ((target (nio-readlink "/etc/localtime")))
-          (and (string? target) (after-zoneinfo target))))
-      (guard (e (#t #f))
-        (and (file-exists? "/etc/timezone")
-             (let ((s (trim (read-file-string "/etc/timezone"))))
-               (and (> (string-length s) 0) s))))
+  (let ((tz (getenv "TZ")))
+    (and tz (> (string-length tz) 0)
+         (let ((tz (if (char=? (string-ref tz 0) #\:) (substring tz 1 (string-length tz)) tz)))
+           (and (> (string-length tz) 0)
+                (if (char=? (string-ref tz 0) #\/) (after-zoneinfo tz) tz))))))
+(define (system-tz-id)
+  (or (tz-env-zone)
+      (and default-zone-provider
+           (let ((z (guard (e (#t #f)) (jolt-invoke default-zone-provider))))
+             (and (string? z) (> (string-length z) 0) z)))
       "UTC"))
 (define (default-timezone) (timezone-of (system-tz-id)))
 ;; The zone's short name at an instant, as SimpleDateFormat's z renders it:

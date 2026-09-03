@@ -50,9 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The default time zone is the machine's.** `TimeZone/getDefault`,
   `Calendar/getInstance`, a `SimpleDateFormat` with no zone set, the deprecated
   `Date` constructor and getters, `java.sql.Date.valueOf` and `toLocalDate` all
-  answered UTC where the JVM answers the machine's zone (`TZ`, then
-  `/etc/localtime`, then `/etc/timezone`). They read that zone's clock now, the
-  same zone jolt.time's `ZoneId/systemDefault` names, so a date formatted by
+  answered UTC where the JVM answers the machine's zone. They read one default
+  zone now: `TZ` from the process's environment, else what a provider
+  registered through `jolt.host/set-default-zone-provider!` answers, else UTC.
+  Core reads no system file for this — which zone a machine is in lives in
+  `/etc/localtime` or `/etc/timezone`, and looking there is I/O the program
+  never asked for; jolt.time knows how, and registers its `ZoneId/systemDefault`
+  lookup as the provider when it loads, so with the library a date formatted by
   core and one formatted through java.time agree. `.setTimeZone` on a
   `SimpleDateFormat` is honored: `z` renders the zone's short name (`EST`),
   `Z` its RFC 822 offset, `X`/`XX`/`XXX` its ISO offset, and a zone-less

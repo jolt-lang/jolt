@@ -191,6 +191,7 @@ scheme-eval-string
 scheme-proc
 scheme-version
 seed-callable?
+set-default-zone-provider!
 set-dispatch-macro!
 set-field!
 set-instant-ctor!

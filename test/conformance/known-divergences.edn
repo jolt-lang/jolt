@@ -84,6 +84,19 @@
    :check :prose
    :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
    :note "Core has no default locale. Explicit locale ids resolve through the :date-names extension point (:fallback :default): an unregistered id falls back to ROOT rather than throwing."}
+  ;; The default time zone: the JVM's is the machine's (its own tzdata plus the
+  ;; OS's zone setting). Core reads TZ from its environment and otherwise answers
+  ;; UTC — it reads no system file (/etc/localtime, /etc/timezone) on its own;
+  ;; jolt.time knows how to find the machine's zone and registers it through
+  ;; jolt.host/set-default-zone-provider! when it loads, so with the library the
+  ;; two agree. A corpus row cannot pin it: the JVM side is machine-dependent.
+  {:category :host-model
+   :behavior "(.getID (java.util.TimeZone/getDefault))"
+   :jvm "the machine's zone, e.g. \"America/Toronto\""
+   :jolt "TZ when set, else the registered provider's answer (jolt.time: the machine's zone), else \"UTC\""
+   :check :prose
+   :why "the JVM's answer is the machine's default time zone"
+   :note "Core reads no system file for this by design; a library brings the machine's zone."}
   ;; (str lazy-seq) renders the realized seq "(2 3)" rather than the JVM's opaque
   ;; "clojure.lang.LazySeq@<hash>". Deliberately friendlier; left as is.
   {:category :seq-type-model
