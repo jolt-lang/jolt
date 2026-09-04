@@ -124,6 +124,30 @@ cat > "$work/src/app/deep.clj" <<'EOF'
   (let [r (down 90)]
     (println "sum" r)))
 EOF
+# A try with no catch and no finally emits as its body verbatim (emit-try), so a
+# tail call inside one is still a real tail call and still needs its site stored
+# or TCO erases the frame unnamed. :try was not tail-transparent, so `wrapped`
+# vanished from the trace while the identical fn without the try was named.
+cat > "$work/src/app/baretry.clj" <<'EOF'
+(ns app.baretry)
+
+(defn boom [x]
+  (/ x 0))
+
+(defn wrapped [x]
+  (try (boom x)))
+
+(defn -main [& _]
+  (println "before")
+  (wrapped 1))
+EOF
+
+echo "trace smoke: a tail call inside a bare try keeps its frame"
+out_bt="$(run_app app.baretry)"
+expect_match "bare try: innermost frame is boom at the dividing line" "$out_bt" 'app\.baretry/boom (.*src/app/baretry\.clj:4)'
+expect_match "bare try: the wrapping fn is named at its call site" "$out_bt" 'app\.baretry/wrapped (.*src/app/baretry\.clj:7)'
+expect_match "bare try: and its caller" "$out_bt" 'app\.baretry/-main (.*src/app/baretry\.clj:11)'
+
 echo "trace smoke: 90-deep non-tail recursion reports the true depth"
 out_deep="$(run_app app.deep)"
 expect_match "deep: outermost caller -main present" "$out_deep" 'app\.deep/-main (.*src/app/deep\.clj:7)'
