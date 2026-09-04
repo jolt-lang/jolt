@@ -735,6 +735,28 @@
   {:suite "exceptions / recur across try" :label "loop inside locking recurs to itself" :expected "3" :actual "(let [o (Object.)] (locking o (loop [i 0] (if (< i 3) (recur (inc i)) i))))" :portability :common}
   {:suite "exceptions / recur across try" :label "with-out-str still captures" :expected "\"hi\"" :actual "(with-out-str (print \"hi\"))" :portability :common}
   {:suite "exceptions / recur across try" :label "loop inside with-out-str recurs to itself" :expected "\"3\"" :actual "(with-out-str (print (loop [i 0] (if (< i 3) (recur (inc i)) i))))" :portability :common}
+  ;; recur may only sit where its value IS the enclosing target's value. Anywhere
+  ;; else the surrounding expression is silently discarded, so these are refused.
+  {:suite "control / recur tail position" :label "recur as an argument" :expected :throws :actual "(loop [i 0] (+ 1 (recur (inc i))))" :portability :common}
+  {:suite "control / recur tail position" :label "recur inside a vector literal" :expected :throws :actual "(loop [i 0] [(recur (inc i))])" :portability :common}
+  {:suite "control / recur tail position" :label "recur as a non-last do statement" :expected :throws :actual "(loop [i 0] (do (recur (inc i)) :x))" :portability :common}
+  {:suite "control / recur tail position" :label "recur in a let binding init" :expected :throws :actual "(loop [i 0] (let [x (recur (inc i))] x))" :portability :common}
+  {:suite "control / recur tail position" :label "recur in an if test" :expected :throws :actual "(loop [i 0] (if (recur (inc i)) 1 2))" :portability :common}
+  {:suite "control / recur tail position" :label "recur in a fn arg inside a loop" :expected :throws :actual "(loop [i 0] (identity (recur (inc i))))" :portability :common}
+  ;; The positives are the point of this rule: every construct that legitimately
+  ;; carries tail position through must keep compiling. case/cond/when/or/and are
+  ;; macros over if/do/let, so they exercise the same three rules by other names.
+  {:suite "control / recur tail position" :label "tail recur in a fn body" :expected ":done" :actual "((fn f [n] (if (zero? n) :done (recur (dec n)))) 3)" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a loop body" :expected "3" :actual "(loop [i 0] (if (< i 3) (recur (inc i)) i))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in an if else-branch" :expected "3" :actual "(loop [i 0] (if (>= i 3) i (recur (inc i))))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur as a do's last form" :expected "3" :actual "(loop [i 0] (do :x (if (< i 3) (recur (inc i)) i)))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a let body" :expected "3" :actual "(loop [i 0] (let [j (inc i)] (if (< i 3) (recur j) i)))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur through nested lets" :expected "3" :actual "(loop [i 0] (let [a i] (let [b a] (if (< b 3) (recur (inc b)) b))))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a multi-arity fn" :expected "10" :actual "((fn f ([n] (f n 0)) ([n acc] (if (zero? n) acc (recur (dec n) (+ acc n))))) 4)" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a when body" :expected "3" :actual "(loop [i 0] (when true (if (< i 3) (recur (inc i)) i)))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a cond arm" :expected "3" :actual "(loop [i 0] (cond (< i 3) (recur (inc i)) :else i))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a case result" :expected "3" :actual "(loop [i 0] (case (int i) 3 i (recur (inc i))))" :portability :common}
+  {:suite "control / recur tail position" :label "loop inside a fn recurs to itself" :expected "[3 :fn]" :actual "((fn f [x] [(loop [i 0] (if (< i 3) (recur (inc i)) i)) x]) :fn)" :portability :common}
   {:suite "exceptions / assert" :label "assert true -> ok" :expected ":ok" :actual "(do (assert true) :ok)" :portability :common}
   {:suite "exceptions / assert" :label "assert expr -> ok" :expected ":ok" :actual "(do (assert (= 1 1)) :ok)" :portability :common}
   {:suite "exceptions / assert" :label "assert false throws" :expected :throws :actual "(assert false)" :portability :common}

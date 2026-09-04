@@ -211,6 +211,63 @@
                                (:arities node)))
     node))
 
+;; `recur` rebinds and jumps, so it may only appear where its value IS the value
+;; of the enclosing target. Anywhere else the surrounding expression is silently
+;; discarded: (loop [i 0] (+ 1 (recur (inc i)))) looped forever here and never
+;; applied the (+ 1 ...), where the reference refuses to compile it.
+;;
+;; Checked as a pass over the ANALYZED tree rather than threaded through the
+;; analyze-* arms, because tail position is a property of the tree and threading
+;; it would put a separate rule in every arm — where one wrong rule REJECTS VALID
+;; CODE, which is worse than the permissiveness it replaces. Here the default is
+;; "children are not tail", so an op this does not name can only be restrictive
+;; about a recur nested inside it, never wrong about one in tail position.
+;;
+;; Only three ops pass tail position down, and they are the same three the back
+;; end's tail-transparent-ops names for the same reason (backend_scheme.clj):
+;; an `if` to its branches, a `do` to its last form, a `let` to its body. Every
+;; other construct that admits a recur in tail position — case, cond, when, or,
+;; and, letfn — is a macro over exactly these, so it needs no rule of its own.
+;;
+;; :fn and :loop are their OWN recur targets: their bodies are checked when those
+;; bodies are analyzed, so descending into them here would check them twice
+;; against the wrong target. A loop's binding INITS still belong to the enclosing
+;; target, though, and are checked as non-tail.
+(defn- check-recur-tails!
+  ([node] (check-recur-tails! node true))
+  ([node tail?]
+   (when (some? node)
+     (let [op (:op node)]
+       (cond
+         (= op :recur)
+           (do (when-not tail?
+                 ;; The recur's OWN position, carried on the node, because this
+                 ;; pass runs after the body is analyzed — the position box has
+                 ;; been restored by then and names the enclosing loop/fn instead.
+                 ;; The reference points at the recur (pos.clj:6:12, not the loop
+                 ;; on 4:3) and so should this.
+                 (let [p (:pos node)]
+                   (if p
+                     (throw (ex-info "Can only recur from tail position"
+                                     {:jolt/error (merge {:type :analysis-error} p)}))
+                     (throw "Can only recur from tail position"))))
+               (doseq [a (:args node)] (check-recur-tails! a false)))
+         (= op :fn) nil
+         (= op :loop)
+           (doseq [b (:bindings node)] (check-recur-tails! (nth b 1) false))
+         (= op :if)
+           (do (check-recur-tails! (:test node) false)
+               (check-recur-tails! (:then node) tail?)
+               (check-recur-tails! (:else node) tail?))
+         (= op :do)
+           (do (doseq [s (:statements node)] (check-recur-tails! s false))
+               (check-recur-tails! (:ret node) tail?))
+         (= op :let)
+           (do (doseq [b (:bindings node)] (check-recur-tails! (nth b 1) false))
+               (check-recur-tails! (:body node) tail?))
+         :else
+           (reduce-ir-children (fn [_ c] (check-recur-tails! c false)) nil node))))))
+
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
         n (count v)]
@@ -369,8 +426,13 @@
         ;; seq as one positional slot). fn-name is the self-ref, not a param.
         env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
+        ;; One of the two recur-target roots (the other is loop*): the body is
+        ;; where a recur against THIS arity may legally sit, so it is where the
+        ;; tail-position check starts.
+        body-node (analyze-seq ctx body env*)
+        _ (check-recur-tails! body-node)
         arity {:params fixed
-               :body (analyze-seq ctx body env*)}
+               :body body-node}
         ;; carry record param hints (name -> ctor-key) for the inference to seed
         ;; the param type; only when present so a hintless arity stays a struct.
         arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)
@@ -843,9 +905,12 @@
     "loop*" (let [bvec (vec (form-vec-items (nth items 1)))
                   rname (gen-name "loop")
                   r (analyze-bindings ctx bvec env)
-                  env** (with-recur (second r) rname (quot (count bvec) 2))]
-              {:op :loop :bindings (first r)
-               :body (analyze-seq ctx (drop 2 items) env**)})
+                  env** (with-recur (second r) rname (quot (count bvec) 2))
+                  ;; The other recur-target root (see analyze-arity): a recur
+                  ;; against THIS loop may only sit in tail position of its body.
+                  body-node (analyze-seq ctx (drop 2 items) env**)
+                  _ (check-recur-tails! body-node)]
+              {:op :loop :bindings (first r) :body body-node})
     "recur" (let [rt (:recur env)
                   arity (:recur-arity env)
                   n (dec (count items))]
@@ -862,8 +927,15 @@
               (when (and arity (not= n arity))
                 (throw (str "Mismatched argument count to recur, expected: " arity
                             " args, got: " n)))
-              {:op :recur
-               :args (mapv #(analyze ctx % env) (rest items))})
+              ;; Carry the recur's own source position: the tail-position check is
+              ;; a pass over the finished tree, long after the position box has
+              ;; moved on, so the node is the only thing that still knows where
+              ;; this recur was written. nil for a macro-built recur with no
+              ;; reader metadata, which falls back to the enclosing form.
+              (let [node {:op :recur
+                          :args (mapv #(analyze ctx % env) (rest items))}
+                    p (form-position form)]
+                (if p (assoc node :pos p) node)))
     "try" (analyze-try ctx items env)
     ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
     ;; is a macro over the same jolt.host per-object monitor. Libraries that
