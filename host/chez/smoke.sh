@@ -243,10 +243,10 @@ check_loc '(zzzptqx 1)' 'Unable to resolve symbol: zzzptqx'
 nested_unresolved='(defn nestedf []
   (let [a 1]
     (bogusxyz a)))'
-check_loc "$nested_unresolved" '  at 3:'
+check_loc "$nested_unresolved" '  --> 3:'
 # The position must reach the machine-readable diagnostic too, not just the text.
 diag_nested="$(JOLT_DIAG=edn $jolt -e "$nested_unresolved" 2>&1 >/dev/null)"
-if printf '%s' "$diag_nested" | grep -q ':line 3'; then
+if printf '%s' "$diag_nested" | grep -q ':jolt.error/line 3'; then
   pass=$((pass + 1))
 else
   echo "  FAIL: JOLT_DIAG=edn carries the nested line"
@@ -264,12 +264,15 @@ check_no '(prinltn 1)' '  trace:'
 check_trace '(do (defn keepstrace [x] (inc (/ x 0))) (keepstrace 1))' 'keepstrace'
 
 # JOLT_DIAG=edn emits one machine-readable EDN diagnostic line (valid EDN with
-# quoted strings) carrying the structured :type/:suggestions plus source position.
+# quoted strings) carrying the structured kind/suggestions plus source position.
+# The keys are namespaced (:jolt.error/...) so a diagnostic's own metadata cannot
+# collide with a thrower's ex-data; :kind is the specific handle on the error and
+# :type is the phase that raised it.
 diag_out="$(JOLT_DIAG=edn $jolt -e '(prinltn 1)' 2>&1 >/dev/null)"
-if printf '%s' "$diag_out" | grep -q ':type :unresolved-symbol' \
-   && printf '%s' "$diag_out" | grep -q ':suggestions \[' \
+if printf '%s' "$diag_out" | grep -q ':jolt.error/kind :analyze/unresolved-symbol' \
+   && printf '%s' "$diag_out" | grep -q ':jolt.error/suggestions \[' \
    && printf '%s' "$diag_out" | grep -q '"println"' \
-   && printf '%s' "$diag_out" | grep -q ':line 1'; then
+   && printf '%s' "$diag_out" | grep -q ':jolt.error/line 1'; then
   pass=$((pass + 1))
 else
   echo "  FAIL: JOLT_DIAG=edn structured diagnostic"
