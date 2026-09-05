@@ -802,6 +802,20 @@
        (let ((ns (keyword-t-ns k)))
          (and (string? ns) (string=? ns "jolt.error")))))
 
+;; The thrower's own ex-data, with jolt's diagnostic keys taken out; jolt-nil
+;; when there was none. Both report shapes go through this — the plain one below
+;; and the framed one in cli-core.ss — so a macro that raises
+;; (ex-info "bad schema" {:schema …}) while a form is being analyzed shows that
+;; map exactly as an uncaught runtime ex-info does.
+(define (jolt-user-ex-data v)
+  (let ((data (jolt-ex-info-record-data v)))
+    (if (pmap? data)
+        (jolt-reduce-kv
+         (lambda (acc k _)
+           (if (srcreg-jolt-error-key? k) (jolt-dissoc acc k) acc))
+         data data)
+        data)))
+
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is
 ;; pr-str'd. Shared by the cli (cli.ss) and a built binary's launcher (build.ss).
@@ -820,29 +834,22 @@
           (display ": " port)
           (display (jolt-str-render-one (jolt-ex-info-record-message v)) port)
           (newline port)
-          ;; The USER's ex-data, never the compiler's. A diagnostic carries its
-          ;; position and kind under :jolt/error, which is machinery: printing it
-          ;; put ":jolt/error {:type :analysis-error, :line 6, :column 12 ...}" in
-          ;; front of a reader who is being told the same line and column on the
-          ;; next line anyway, and BURIED the ex-data a throwing macro actually
-          ;; attached — (ex-info "m" {:orig true}) reported {:jolt/error ...} and
-          ;; no :orig. Dropping the key leaves the user's own map; when nothing
-          ;; else was attached the line goes away entirely. JOLT_DIAG=edn is where
-          ;; the structured form belongs, and it still emits it (cli-core.ss).
-          (let* ((data (jolt-ex-info-record-data v))
-                 ;; The USER's ex-data, never jolt's. A diagnostic's position and
-                 ;; kind are machinery: printing them put the position in front of
-                 ;; a reader who is told it again on the next line, and BURIED the
-                 ;; data a throwing macro actually attached — (ex-info "m" {:orig
-                 ;; true}) reported jolt's map and no :orig. JOLT_DIAG=edn is where
-                 ;; the structured form belongs, and it still emits it.
-                 (data (if (pmap? data)
-                           (jolt-reduce-kv
-                            (lambda (acc k _) 
-                              (if (srcreg-jolt-error-key? k) (jolt-dissoc acc k) acc))
-                            data data)
-                           data)))
-            (unless (or (jolt-nil? data) (and (pmap? data) (= 0 (jolt-count data))))
+          ;; The USER's ex-data, never jolt's. A diagnostic's position and kind
+          ;; live in the :jolt.error namespace and are machinery: printing them
+          ;; put the position in front of a reader who is told it again on the
+          ;; next line, and BURIED the data a throwing macro actually attached —
+          ;; (ex-info "m" {:orig true}) reported jolt's keys and no :orig.
+          ;; JOLT_DIAG=edn is where the structured form belongs, and it still
+          ;; emits it (cli-core.ss).
+          (let* ((data0 (jolt-ex-info-record-data v))
+                 (data (jolt-user-ex-data v)))
+            (unless (or (jolt-nil? data)
+                        ;; A map left empty only because jolt's own keys came out
+                        ;; says nothing, so the line goes away. A thrower's own
+                        ;; empty map still prints, which is what the reference
+                        ;; shows for (ex-info "m" {}).
+                        (and (pmap? data) (= 0 (jolt-count data))
+                             (> (jolt-count data0) 0)))
               (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
           (let ((cause (jolt-ex-info-record-cause v)))
             (when (condition? cause)

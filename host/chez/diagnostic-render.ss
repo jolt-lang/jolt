@@ -44,16 +44,35 @@
     (if (fx>=? i n) acc (loop (fx+ i 1) (string-append acc s)))))
 
 ;; Split a source string into a vector of lines, without a trailing empty line
-;; for a file ending in a newline.
+;; for a file ending in a newline. A CR before the LF is dropped: the file is
+;; read verbatim (no newline translation — java/io.ss read-file-string), so a
+;; CRLF source would otherwise put a carriage return at the end of every quoted
+;; line and inside the token the caret measures.
 (define (diag-source-lines src)
+  (define (line-of start i)
+    (if (and (fx>? i start) (char=? (string-ref src (fx- i 1)) #\return))
+        (substring src start (fx- i 1))
+        (substring src start i)))
   (let ((n (string-length src)))
     (let loop ((i 0) (start 0) (acc '()))
       (cond
         ((fx>=? i n)
-         (list->vector (reverse (if (fx>? i start) (cons (substring src start i) acc) acc))))
+         (list->vector (reverse (if (fx>? i start) (cons (line-of start i) acc) acc))))
         ((char=? (string-ref src i) #\newline)
-         (loop (fx+ i 1) (fx+ i 1) (cons (substring src start i) acc)))
+         (loop (fx+ i 1) (fx+ i 1) (cons (line-of start i) acc)))
         (else (loop (fx+ i 1) start acc))))))
+
+;; Index just past the string literal starting at I (I is its opening quote), or
+;; #f when it does not close on this line. Escapes are skipped, so a \" inside
+;; does not end it. Both walks below use this: a bracket inside a string is TEXT,
+;; and counting it as a delimiter made (parse "[1 2") look unbalanced, which
+;; collapsed the caret under the whole form to a single ^ on its paren.
+(define (diag-skip-string line i n)
+  (let loop ((j (fx+ i 1)))
+    (cond ((fx>=? j n) #f)
+          ((char=? (string-ref line j) #\\) (loop (fx+ j 2)))
+          ((char=? (string-ref line j) #\") (fx+ j 1))
+          (else (loop (fx+ j 1))))))
 
 ;; The extent of the token starting at COL (1-based) in LINE, as a character
 ;; count. Whole-token carets are what make a snippet readable — a single ^ under
@@ -76,14 +95,13 @@
       ((or (fx<? start 0) (fx>=? start n)) 1)
       ;; a string literal spans to its closing quote, escapes included
       ((char=? (string-ref line start) #\")
-       (let loop ((j (fx+ start 1)))
-         (cond ((fx>=? j n) 1)
-               ((char=? (string-ref line j) #\\) (loop (fx+ j 2)))
-               ((char=? (string-ref line j) #\") (fx- (fx+ j 1) start))
-               (else (loop (fx+ j 1))))))
+       (let ((e (diag-skip-string line start n)))
+         (if e (fx- e start) 1)))
       ((open? (string-ref line start))
        (let loop ((j (fx+ start 1)) (depth 1))
          (cond ((fx>=? j n) 1)
+               ((char=? (string-ref line j) #\")
+                (let ((e (diag-skip-string line j n))) (if e (loop e depth) 1)))
                ((open? (string-ref line j)) (loop (fx+ j 1) (fx+ depth 1)))
                ((close? (string-ref line j))
                 (if (fx=? depth 1) (fx- (fx+ j 1) start) (loop (fx+ j 1) (fx- depth 1))))
@@ -112,15 +130,12 @@
     (define (skip-element i)
       (cond
         ((fx>=? i len) #f)
-        ((char=? (string-ref line i) #\")
-         (let loop ((j (fx+ i 1)))
-           (cond ((fx>=? j len) #f)
-                 ((char=? (string-ref line j) #\\) (loop (fx+ j 2)))
-                 ((char=? (string-ref line j) #\") (fx+ j 1))
-                 (else (loop (fx+ j 1))))))
+        ((char=? (string-ref line i) #\") (diag-skip-string line i len))
         ((open? (string-ref line i))
          (let loop ((j (fx+ i 1)) (depth 1))
            (cond ((fx>=? j len) #f)
+                 ((char=? (string-ref line j) #\")
+                  (let ((e (diag-skip-string line j len))) (and e (loop e depth))))
                  ((open? (string-ref line j)) (loop (fx+ j 1) (fx+ depth 1)))
                  ((close? (string-ref line j))
                   (if (fx=? depth 1) (fx+ j 1) (loop (fx+ j 1) (fx- depth 1))))

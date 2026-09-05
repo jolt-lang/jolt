@@ -1,0 +1,5 @@
+error[read/invalid-syntax]: EOF while reading
+  --> ./test/errors/runtime/read-string-at-runtime/input.clj:5:1
+  trace:
+    input/parse (./test/errors/runtime/read-string-at-runtime/input.clj:3)
+exit: 1

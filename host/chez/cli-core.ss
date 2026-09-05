@@ -23,16 +23,27 @@
 ;; --- machine-readable diagnostics (JOLT_DIAG=edn) ---------------------------
 ;; When JOLT_DIAG=edn, an uncaught error is emitted as a single-line EDN map to
 ;; stderr instead of the human report, so editors/tooling get structured data.
-;; An analyzer diagnostic (e.g. unresolved symbol) attaches a :jolt/error map
-;; {:type :symbol :suggestions :ns}; those fields are lifted to the top of the
-;; diagnostic, alongside the human :message and the current form's :line/:column/
-;; :file. A plain error still yields {:message ... :line ... :column ...}.
-(define diag-kw-message (keyword #f "message"))
+;; A diagnostic (an unresolved symbol, a read error, a refused recur) carries its
+;; own flat :jolt.error/* keys — kind, position, and whatever else that error
+;; knows — and they pass straight through, beside the human :message and, when the
+;; diagnostic did not carry one, the current form's position. A plain error still
+;; yields {:jolt.error/message ... :jolt.error/line ... :jolt.error/column ...}.
+;;
+;; The message key is namespaced like every other key jolt adds. A bare :message
+;; is the single most likely one for a thrower to have used itself — (ex-info
+;; "boom" {:message "…"}) is ordinary Clojure — and jolt writes into the thrower's
+;; own ex-data here, so an unqualified one silently replaced their value with the
+;; compiler's.
+(define diag-kw-message (keyword "jolt.error" "message"))
 (define diag-kw-err-arg (keyword "jolt.error" "arg"))
 (define diag-kw-err-note (keyword "jolt.error" "note"))
 (define diag-kw-err-macro (keyword "jolt.error" "macro"))
 (define diag-kw-err-token (keyword "jolt.error" "token"))
 (define diag-kw-err-source (keyword "jolt.error" "source"))
+;; The PHASE that raised the diagnostic, and the one value of it that means the
+;; frames below are the analyzer's own rather than a running program's.
+(define diag-kw-err-type (keyword "jolt.error" "type"))
+(define diag-kw-analysis-error (keyword #f "analysis-error"))
 (define diag-kw-line (keyword #f "line"))
 (define diag-kw-column (keyword #f "column"))
 (define diag-kw-file (keyword #f "file"))
@@ -78,11 +89,11 @@
 ;; Build the EDN diagnostic map for an unwrapped throw value.
 ;;
 ;; The diagnostic's own keys are already flat and namespaced, so they pass
-;; straight through and only :message and a fallback position are added. The
-;; loader's per-top-level-form position FILLS IN only what the diagnostic did not
-;; carry: a diagnostic knows the innermost form it failed in, and letting the
-;; coarser position overwrite it is what reported a defn's opening line for a
-;; symbol hundreds of lines inside it.
+;; straight through and only the message and a fallback position are added. The
+;; loader's per-top-level-form position FILLS IN only for a diagnostic that
+;; carried no position at all: a diagnostic knows the innermost form it failed
+;; in, and letting the coarser position overwrite it is what reported a defn's
+;; opening line for a symbol hundreds of lines inside it.
 (define (jolt-diagnostic-map raw v)
   (let* ((msg (cond ((jolt-ex-info-record? v)
                      (jolt-str-render-one (jolt-ex-info-record-message v)))
@@ -93,18 +104,26 @@
          (base (if (pmap? data) data (jolt-hash-map)))
          (pos (or (jolt-throw-source-position raw) (jolt-current-source)))
          (m (jolt-assoc base diag-kw-message msg)))
-    (if (pmap? pos)
-        (let ((fill (lambda (m src-k dst-k)
-                      (let ((v (jolt-get pos src-k jolt-nil)))
-                        (if (or (jolt-nil? v)
-                                (not (jolt-nil? (jolt-get m dst-k jolt-nil))))
-                            m
-                            (jolt-assoc m dst-k v))))))
-          (jolt-diagnostic-enrich
-           (fill (fill (fill m diag-kw-line diag-kw-err-line)
+    (jolt-diagnostic-enrich
+     ;; A position is taken WHOLE from one source or the other, never merged. The
+     ;; enclosing (loader) position is used when the diagnostic carried none, and
+     ;; when the diagnostic names no file while the enclosing one does — the same
+     ;; test jolt-throwable-source-string makes for the human report, so the two
+     ;; agree. Merging key by key paired a foreign :file with the diagnostic's own
+     ;; :line: a (read-string "[1 2") a running program makes reports line 1
+     ;; column 5 OF THAT STRING, and the loader's file beside it named a source
+     ;; line that had nothing to do with the error.
+     (if (and (pmap? pos)
+              (or (jolt-nil? (jolt-get m diag-kw-err-line jolt-nil))
+                  (and (jolt-nil? (jolt-get m diag-kw-err-file jolt-nil))
+                       (not (jolt-nil? (jolt-get pos diag-kw-file jolt-nil))))))
+         (let ((copy (lambda (m src-k dst-k)
+                       (let ((v (jolt-get pos src-k jolt-nil)))
+                         (if (jolt-nil? v) (jolt-dissoc m dst-k) (jolt-assoc m dst-k v))))))
+           (copy (copy (copy m diag-kw-line diag-kw-err-line)
                        diag-kw-column diag-kw-err-column)
-                 diag-kw-file diag-kw-err-file)))
-        (jolt-diagnostic-enrich m))))
+                 diag-kw-file diag-kw-err-file))
+         m))))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
 ;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
@@ -165,16 +184,38 @@
                   (display "   = note: raised while expanding the `" port)
                   (display (jolt-str-render-one dmacro) port)
                   (display "` macro" port)
-                  (newline port)))
+                  (newline port))
+                ;; The THROWER's own ex-data, if it attached any. A macro that
+                ;; raises (ex-info "bad schema" {:schema …}) while a form is
+                ;; being analyzed had that map preserved on the throwable and
+                ;; then never shown, so the reader saw the message and nothing
+                ;; else. jolt's own :jolt.error/* keys come out — the position
+                ;; and kind are already on the two lines above.
+                (let ((ud (jolt-user-ex-data v)))
+                  (when (and (pmap? ud) (> (jolt-count ud) 0))
+                    (display "   = ex-data: " port)
+                    (display (jolt-pr-str ud) port)
+                    (newline port))))
               (begin
                 (jolt-render-throwable v port)
                 (when loc (display "  at " port) (display loc port) (newline port))))
-          ;; No trace for a compile-time diagnostic. It is raised while ANALYZING,
-          ;; so the frames are jolt's own analyzer recursing into the form
+          ;; No trace for an ANALYSIS diagnostic. It is raised while analyzing, so
+          ;; the frames are jolt's own analyzer recursing into the form
           ;; (analyze-list, analyze-seq, map-seq, …) — thirty lines of internals
           ;; that bury the message and the location, and name nothing the reader
-          ;; can act on. A runtime error's trace is unchanged.
-          (unless diag
+          ;; can act on.
+          ;;
+          ;; A READ diagnostic keeps its trace, because the reader is not a
+          ;; compile-time-only thing: a program calls read-string, clojure.edn or
+          ;; a java.io.Reader while it RUNS, and there the frames are the
+          ;; program's own and the only record of where the read was asked for.
+          ;; Suppressing them left (defn parse [s] (read-string s)) reporting a
+          ;; position inside the string and nothing about the caller. The filter
+          ;; (source-registry.ss) already drops the reader's own descent and the
+          ;; CLI's entry frames, so a read error raised by the LOADER filters down
+          ;; to nothing and still prints nothing.
+          (unless (and diag (eq? (jolt-get diag diag-kw-err-type jolt-nil)
+                                 diag-kw-analysis-error))
             (let ((bt (jolt-backtrace-string v)))
               (when bt (display "  trace:\n" port) (display bt port))))))
     (exit 1)))
