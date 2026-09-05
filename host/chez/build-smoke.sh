@@ -893,7 +893,7 @@ printf '{}\n' > "$badsrc/deps.edn"
 printf '(ns app.core (:require [app.broke]))\n(defn -main [& _] (println :x))\n' > "$badsrc/src/app/core.clj"
 printf '(ns app.broke)\n(defn f [] (+ 1 2)\n' > "$badsrc/src/app/broke.clj"
 read_err="$(JOLT_PWD="$badsrc" "$joltabs" build -m app.core -o "$(dirname "$out")/badread-bin" 2>&1 || true)"
-if ! printf '%s' "$read_err" | grep -q '^  at .*app/broke\.clj'; then
+if ! printf '%s' "$read_err" | grep -qE '^  (at|-->) .*app/broke\.clj'; then
   echo "  FAIL: build failure did not name src/app/broke.clj"
   echo "--- got ---"; echo "$read_err"; exit 1
 fi
@@ -921,7 +921,7 @@ printf '{}\n' > "$badpos/deps.edn"
   echo '    (println a b)))'
 } > "$badpos/src/app/core.clj"
 pos_err="$(JOLT_PWD="$badpos" "$joltabs" build -m app.core -o "$(dirname "$out")/badpos-bin" 2>&1 || true)"
-if ! printf '%s' "$pos_err" | grep -q '^  at .*app/core\.clj:7:'; then
+if ! printf '%s' "$pos_err" | grep -qE '^  (at|-->) .*app/core\.clj:7:'; then
   echo "  FAIL: compile error did not name app/core.clj line 7 (the let it is in)"
   echo "--- got ---"; echo "$pos_err"; exit 1
 fi

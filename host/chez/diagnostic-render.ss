@@ -165,7 +165,13 @@
 ;; without counting columns: the fact is written down rather than encoded in the
 ;; position of a ^. That serves a person and a model equally, and it is what jank
 ;; does — its carets are labelled, not bare.
-(define (diag-render-snippet port file line col loc arg note)
+(define (diag-render-snippet port file line col arg note)
+  ;; The CALLER prints the --> location row; this prints only the code beneath
+  ;; it. That split is not cosmetic: this whole function is best-effort and does
+  ;; nothing when the file cannot be read, and a build runs from a different
+  ;; directory than the one a relative source path resolves against. With the
+  ;; location printed here, an unreadable file silently took the FILENAME down
+  ;; with it and the report named nothing at all.
   (guard (e (#t (void)))
     (let* ((src (read-file-string file))
            (lines (diag-source-lines src))
@@ -179,8 +185,6 @@
                (c (if (and (integer? arg) (fx>? arg 0))
                       (diag-element-col text c0 arg)
                       c0)))
-          (display " " port) (display pad port) (display "--> " port)
-          (display (if (string? loc) loc file) port) (newline port)
           (display " " port) (display pad port) (display " |" port) (newline port)
           (let loop ((i first-line))
             (when (fx<=? i line)

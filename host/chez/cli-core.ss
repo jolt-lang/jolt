@@ -142,16 +142,21 @@
                 (display "]: " port)
                 (display (jolt-diagnostic-message v) port)
                 (newline port)
-                (if snippet?
-                    (diag-render-snippet port
-                                         (jolt-str-render-one dfile)
-                                         (jnum->exact dline)
-                                         (if (jolt-nil? dcol) 1 (jnum->exact dcol))
-                                         loc
-                                         (if (jolt-nil? darg) 0 (jnum->exact darg))
-                                         (and (not (jolt-nil? dnote))
-                                              (jolt-str-render-one dnote)))
-                    (when loc (display "  --> " port) (display loc port) (newline port)))
+                ;; The location ALWAYS prints; the snippet is what may not. The
+                ;; renderer is best-effort by design (a report must not fail while
+                ;; reporting), so letting it own the --> row meant an unreadable
+                ;; file — a build running from another directory, a path relative
+                ;; to a cwd that has moved — produced a report naming no file at
+                ;; all. buildsmoke caught exactly that.
+                (when loc (display "  --> " port) (display loc port) (newline port))
+                (when snippet?
+                  (diag-render-snippet port
+                                       (jolt-str-render-one dfile)
+                                       (jnum->exact dline)
+                                       (if (jolt-nil? dcol) 1 (jnum->exact dcol))
+                                       (if (jolt-nil? darg) 0 (jnum->exact darg))
+                                       (and (not (jolt-nil? dnote))
+                                            (jolt-str-render-one dnote))))
                 ;; The code at that position is a macro CALL, not the code that
                 ;; failed — the expansion has no position of its own. Say so,
                 ;; rather than leaving the reader staring at a form that is

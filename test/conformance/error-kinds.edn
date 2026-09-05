@@ -98,6 +98,34 @@
  "A form the analyzer cannot classify at all — neither literal, symbol,
   collection, nor list."
 
+ ;; jolt.ffi descriptor and signature validation. These are compile-time like
+ ;; every analyze/ kind — the FFI forms are checked while the form is analyzed —
+ ;; but they are their own vocabulary, about a foreign type description rather
+ ;; than about Clojure.
+
+ :ffi/invalid-layout
+ "A jolt.ffi layout that is not [:struct [[field type] ...]] or the :union
+  equivalent, or one declaring no fields at all."
+
+ :ffi/invalid-field
+ "A struct or union field that is not [keyword type], whose name is not an
+  unqualified keyword, or that repeats a name already used."
+
+ :ffi/invalid-array
+ "A fixed array descriptor that is not [:array element-type positive-count]."
+
+ :ffi/invalid-type
+ "A field or parameter type that is not a fixed-size scalar, a nested struct or
+  union, or a fixed array."
+
+ :ffi/invalid-option
+ "An unknown option key, an option key that is not an unqualified keyword, or an
+  option combination the backend cannot honour — :capture-native-error on a
+  :void or by-value return."
+
+ :ffi/invalid-signature
+ "A foreign-fn or foreign-callable form whose shape does not parse."
+
  :analyze/internal-failure
  "Anything else raised while analyzing a form, carrying the position of the
   innermost form under analysis. A diagnostic that reaches a user with this kind

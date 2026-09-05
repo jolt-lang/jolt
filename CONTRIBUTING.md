@@ -13,6 +13,7 @@ the second Scheme backend, and the test gates. For using jolt, see
 - [Scheme backends](#scheme-backends)
 - [Build profiles](#build-profiles)
 - [Test](#test)
+- [Error messages](#error-messages)
 - [Documentation](#documentation)
 
 ## Build from source
@@ -273,6 +274,69 @@ differs and the deliberate behavioural divergences that are not corpus rows.
 `make certify` fails on a *new* (unlisted) divergence and on a stale entry, so a
 behaviour change either matches the JVM or gets an entry explaining why it
 doesn't.
+
+## Error messages
+
+An error message is read by someone who is stuck. It should let them answer three
+questions without opening the compiler: what is wrong, what was expected, and
+where. The rules below are what jolt's own error-reporting work settled on; each
+one exists because breaking it produced a real bug.
+
+**Match Clojure's wording where Clojure has one.** `First argument to def must be
+a Symbol`, not a jolt paraphrase. People arrive here from Clojure and recognise
+these strings; a better-written message they have never seen is worse than the
+one they have. Where jolt has no counterpart, write a clear sentence.
+
+*(This is where jolt departs from jank's error style guide, which mandates
+complete sentences ending in a period. jank is the reference for its own errors
+and can spell them however it likes; jolt is not, and parity wins.)*
+
+**Never let a host fault reach the user.** `java.lang.IndexOutOfBoundsException:
+index out of bounds` as the compile error for `(let [a 1 b] a)` means a check is
+missing upstream, not that the message needs rewording. If a message names a
+Scheme primitive's failure, fix the check.
+
+**Say what was required, not only that something failed.** An empty message —
+`Unhandled exception (NullPointerException):` and nothing — leaves out the one
+fact the reader needs. `nil where a java.lang.String is required` is the fix.
+
+**But an empty message is sometimes correct.** The JVM's `NoSuchElementException`
+and its `UnsupportedOperationException` on a persistent collection both carry a
+null message. Parity beats a blanket rule: check the reference before populating
+one.
+
+**Raise a real throwable with a registered kind.** A thrown string is not
+catchable by class and answers `nil` to `ex-message`, so a program cannot handle
+its own errors. Use `analysis-error` (analyzer) or `rdr-error-kind` /
+`rdr-error-here*` (reader), and add the kind to
+`test/conformance/error-kinds.edn` — `make errorkinds` fails on a kind that is
+raised but unregistered, and on one registered but never raised.
+
+**Never render an arbitrary value into a message.** It may be an infinite seq or
+a collection of any size. Name the type, or extract the offending text from the
+SOURCE line the way the caret does — that is bounded by the line.
+
+**State the fact in words, not geometry.** A bare `^^^^` encodes *which* thing is
+wrong as a column offset; recovering it means counting characters. Give the
+diagnostic a `:jolt.error/note` so the caret is labelled. Reports are read by
+tools and language models as often as by people, and neither counts columns well.
+
+**Describe the state of the world, not the compiler's attempt.** `foo is not
+defined`, not `Failed to resolve foo`. And state the constraint rather than
+blaming: `Taking a C++ namespace by value is not permitted`, not `You can't ...`.
+The tone should be the same whether the cause was a typo or a misunderstanding.
+
+**One fact per sentence.** Densely packed messages get skimmed and misread.
+
+### Checklist
+
+- [ ] Matches Clojure's wording, if Clojure has one for this.
+- [ ] Names what was expected, not just that something was wrong.
+- [ ] Not a raw host fault leaking through a missing check.
+- [ ] A real throwable, with a kind registered in `error-kinds.edn`.
+- [ ] No arbitrary value rendered into the text.
+- [ ] A `:jolt.error/note` where a caret needs labelling.
+- [ ] A case in `test/errors/` if the shape of the report is new.
 
 ## Documentation
 

@@ -44,9 +44,9 @@ grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/
 # Scheme spells a kind (keyword "read" "duplicate-key"), Clojure spells it
 # :read/duplicate-key; both are normalized to the Clojure form here.
 {
-  grep -ohE ':(analyze|read|runtime|codegen|aot)/[a-z-]+' \
+  grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' \
        jolt-core/jolt/*.clj jolt-core/jolt/passes/*.clj jolt-core/clojure/core/*.clj 2>/dev/null
-  grep -ohE '\(keyword "(analyze|read|runtime|codegen|aot)" "[a-z-]+"\)' \
+  grep -ohE '\(keyword "(analyze|read|runtime|ffi|codegen|aot)" "[a-z-]+"\)' \
        host/chez/*.ss host/chez/java/*.ss 2>/dev/null \
     | sed -E 's/\(keyword "([a-z]+)" "([a-z-]+)"\)/:\1\/\2/'
 } | LC_ALL=C sort -u > "$tmp/raised"
