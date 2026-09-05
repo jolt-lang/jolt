@@ -29,6 +29,11 @@
 #                    covered by the jolt-side stateimage gate.)
 #   todomvc-uikit    darwin-only, build-only: AppKit.
 #   hiccup/malli/markdown-app, ray-tracer*  no test task at all.
+#   reactive-dashboard  its metrics come out of /proc and its pipeline tests assert
+#                    on sample counts, so the suite is Linux-only; the app's own
+#                    repo CI runs it. The BUILD is the valuable half here anyway —
+#                    ebb + domino + glimmer-datastar + ring-chez-adapter is the
+#                    deepest dependency tree of any example.
 #   ffi-examples     its three programs call libffi and PortAudio, both declared
 #                    `:optional true` because neither is on every runner, and it
 #                    has no `test` task — `check` only reports what is present.
@@ -64,11 +69,11 @@ commonmark-app   app.core       test
 nrepl-example    app.core       test
 ring-app         app.core       test
 glimmer-datastar app.core       test
-reactive-dashboard app.core     test
 hiccup-app       app.core       -
 malli-app        app.core       -
 markdown-app     app.core       -
 http-client-app  app.core       -
+reactive-dashboard app.core     -
 ray-tracer       ray-baseline   -
 ray-tracer-multi rt.render      -
 fps-demo         fps-demo.core  -
