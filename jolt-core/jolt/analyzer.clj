@@ -285,11 +285,18 @@
 ;; "children are not tail", so an op this does not name can only be restrictive
 ;; about a recur nested inside it, never wrong about one in tail position.
 ;;
-;; Only three ops pass tail position down, and they are the same three the back
-;; end's tail-transparent-ops names for the same reason (backend_scheme.clj):
-;; an `if` to its branches, a `do` to its last form, a `let` to its body. Every
-;; other construct that admits a recur in tail position — case, cond, when, or,
-;; and, letfn — is a macro over exactly these, so it needs no rule of its own.
+;; Only three ops pass tail position down: an `if` to its branches, a `do` to its
+;; last form, a `let` to its body. Every other construct that admits a recur in
+;; tail position — case, cond, when, or, and, letfn — is a macro over exactly
+;; these, so it needs no rule of its own.
+;;
+;; NOT the back end's tail-transparent-ops (backend_scheme.clj), which is a
+;; larger set answering a different question. That one asks "may a tail call sit
+;; under this node", so it also names :invoke, :throw and :host-call — the ops
+;; that read *tail?* themselves to decide whether to store a frame site — and
+;; :loop, whose own body is where its self-call is tail. Widening this set to
+;; match it would put a recur back in an argument position: (loop [] (f (recur)))
+;; is exactly what an :invoke entry here would re-admit.
 ;;
 ;; :fn and :loop are their OWN recur targets: their bodies are checked when those
 ;; bodies are analyzed, so descending into them here would check them twice
@@ -1436,8 +1443,12 @@
 ;; member name verbatim (the leading "-" survives so the runtime dispatcher reads
 ;; it as a field). The Chez back end dispatches it through record-method-dispatch.
 (defn- analyze-dot [ctx items env]
+  ;; The missing-member form names the shape it wanted, as the reference does;
+  ;; the two-element (. 1 5), which HAS a member that is just not one, is the one
+  ;; that says only "Malformed member expression".
   (when (< (count items) 3)
-    (analysis-error :analyze/invalid-member-access "Malformed member expression"))
+    (analysis-error :analyze/invalid-member-access
+                    "Malformed member expression, expecting (. target member ...)"))
   (let [member0 (nth items 2)
         ;; (. target (member arg*)) is sugar for (. target member arg*) —
         ;; flatten the list-member form so the rest of the dispatch is uniform.

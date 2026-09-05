@@ -50,12 +50,19 @@ grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/
 # Scheme spells a kind (keyword "read" "duplicate-key"), Clojure spells it
 # :read/duplicate-key; both are normalized to the Clojure form here.
 #
+# Comment lines are dropped before the scan: a kind named in prose (a "raises
+# :analyze/foo" note beside a call, this gate's own rationale) is documentation,
+# not a raise, and counting it would let a registry entry nothing raises survive
+# on the strength of a comment mentioning it — which is the second direction the
+# gate exists for.
+#
 # -exec … {} + rather than a pipe into xargs: GNU xargs runs the command once
 # with no arguments when its input is empty, and a bare `grep PATTERN` then reads
 # stdin and hangs the gate.
 {
   find jolt-core stdlib tools \( -name '*.clj' -o -name '*.cljc' \) \
-    -exec grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' {} + 2>/dev/null
+    -exec sed 's/;;.*//' {} + 2>/dev/null \
+    | grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' 
   find host -name '*.ss' -not -path '*/seed/*' \
     -exec grep -ohE '\(keyword "(analyze|read|runtime|ffi|codegen|aot)" "[a-z-]+"\)' {} + 2>/dev/null \
     | sed -E 's/\(keyword "([a-z]+)" "([a-z-]+)"\)/:\1\/\2/'

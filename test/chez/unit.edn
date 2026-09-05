@@ -710,6 +710,16 @@
   ;; a compile error — (class e) was String and (ex-message e) nil.
   {:suite "reader" :expr "(try (load-string \"#zz 1\") (catch Throwable e (.getSimpleName (class e))))" :expected "\"ExceptionInfo\""}
   {:suite "reader" :expr "(try (load-string \"#zz 1\") (catch Throwable e (str (:jolt.error/kind (ex-data e)))))" :expected "\":read/invalid-data-reader\""}
+  ;; The jolt.ffi descriptor family carries kinds of its own. Without them every
+  ;; layout and signature error reported as :analyze/internal-failure, which the
+  ;; registry defines as "a gap in the list above" — twenty-odd diagnostics
+  ;; claiming to be a bug in the compiler rather than a mistake in the caller's
+  ;; descriptor.
+  {:suite "reader" :expr "(try (load-string \"(jolt.ffi/__layout [:struct [[1 :int]]])\") (catch Throwable e (str (:jolt.error/kind (ex-data e)))))" :expected "\":ffi/invalid-field\""}
+  {:suite "reader" :expr "(try (load-string \"(jolt.ffi/__cfn \\\"strlen\\\" [[:bogus 1]] :size_t)\") (catch Throwable e (str (:jolt.error/kind (ex-data e)))))" :expected "\":ffi/invalid-type\""}
+  ;; (. target member ...) with no member names the shape it wanted, as the
+  ;; reference does; the two-element (. 1 5) is the one that says only this much.
+  {:suite "reader" :expr "[(try (load-string \"(. 1)\") (catch Throwable e (ex-message e))) (try (load-string \"(. 1 5)\") (catch Throwable e (ex-message e)))]" :expected "[\"Malformed member expression, expecting (. target member ...)\" \"Malformed member expression\"]"}
   {:suite "reader" :expr "[(try (load-string \"#inst \\\"2020-01-01\\\"\") :ok (catch Throwable e (str e))) (try (load-string \"#uuid \\\"00000000-0000-0000-0000-000000000000\\\"\") :ok (catch Throwable e (str e))) (try (load-string \"1.5M\") :ok (catch Throwable e (str e)))]" :expected "[:ok :ok :ok]"}
   {:suite "reader" :expr "(let [t (first (quote [#foo bar]))] (and (tagged-literal? t) (= (quote foo) (:tag t)) (= \"#foo bar\" (pr-str t))))" :expected "true"}
   {:suite "reader" :expr "(= \\a (read-string \"\\\\a\"))" :expected "true"}
