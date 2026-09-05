@@ -29,6 +29,9 @@
 ;; :file. A plain error still yields {:message ... :line ... :column ...}.
 (define diag-kw-message (keyword #f "message"))
 (define diag-kw-err-arg (keyword "jolt.error" "arg"))
+(define diag-kw-err-note (keyword "jolt.error" "note"))
+(define diag-kw-err-token (keyword "jolt.error" "token"))
+(define diag-kw-err-source (keyword "jolt.error" "source"))
 (define diag-kw-line (keyword #f "line"))
 (define diag-kw-column (keyword #f "column"))
 (define diag-kw-file (keyword #f "file"))
@@ -50,6 +53,26 @@
 (define (jolt-diag-machine?)
   (let ((e (getenv "JOLT_DIAG")))
     (and e (string? e) (string-ci=? e "edn"))))
+
+;; The machine mode is SELF-SUFFICIENT: it carries the offending token's text and
+;; the source lines around it, so a tool never has to map a caret's column back to
+;; a token or read the file a second time. Both are derived from what the human
+;; renderer already computes, so the two modes cannot disagree about them.
+(define (jolt-diagnostic-enrich m)
+  (let ((file (jolt-get m diag-kw-err-file jolt-nil))
+        (line (jolt-get m diag-kw-err-line jolt-nil))
+        (col (jolt-get m diag-kw-err-column jolt-nil))
+        (arg (jolt-get m diag-kw-err-arg jolt-nil)))
+    (if (or (jolt-nil? file) (jolt-nil? line))
+        m
+        (let* ((f (jolt-str-render-one file))
+               (l (jnum->exact line))
+               (c (if (jolt-nil? col) 1 (jnum->exact col)))
+               (a (if (jolt-nil? arg) 0 (jnum->exact arg)))
+               (tok (diag-token-at f l c a))
+               (win (diag-source-window f l))
+               (m (if tok (jolt-assoc m diag-kw-err-token tok) m)))
+          (if win (jolt-assoc m diag-kw-err-source (list->cseq win)) m)))))
 
 ;; Build the EDN diagnostic map for an unwrapped throw value.
 ;;
@@ -76,10 +99,11 @@
                                 (not (jolt-nil? (jolt-get m dst-k jolt-nil))))
                             m
                             (jolt-assoc m dst-k v))))))
-          (fill (fill (fill m diag-kw-line diag-kw-err-line)
-                      diag-kw-column diag-kw-err-column)
-                diag-kw-file diag-kw-err-file))
-        m)))
+          (jolt-diagnostic-enrich
+           (fill (fill (fill m diag-kw-line diag-kw-err-line)
+                       diag-kw-column diag-kw-err-column)
+                 diag-kw-file diag-kw-err-file)))
+        (jolt-diagnostic-enrich m))))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr
 ;; and exit non-zero, instead of Chez's opaque "non-condition value" dump. The
@@ -99,6 +123,7 @@
                (dline (and diag (jolt-get diag diag-kw-err-line jolt-nil)))
                (dcol (and diag (jolt-get diag diag-kw-err-column jolt-nil)))
                (darg (and diag (jolt-get diag diag-kw-err-arg jolt-nil)))
+               (dnote (if diag (jolt-get diag diag-kw-err-note jolt-nil) jolt-nil))
                (loc (jolt-throwable-source-string raw))
                ;; A snippet is shown only when there is a real file position to
                ;; frame. Everything else — a -e form, an unreadable path, a
@@ -106,14 +131,14 @@
                (snippet? (and dfile dline
                               (not (jolt-nil? dfile)) (not (jolt-nil? dline)))))
           (if (and kind (not (jolt-nil? kind)))
-              ;; The framed form: the kind names the error, "error:" carries the
-              ;; message, and the position rides on the snippet's header row
-              ;; rather than on a separate "at" line that would say it twice.
+              ;; error[kind]: message — the kind rides on the error line where it
+              ;; stays greppable, and the --> row carries the position, so there
+              ;; is no separate "at" line saying it a second time.
               (begin
-                (diag-render-header port (jolt-kind->string kind))
-                (display "error: " port)
+                (display "error[" port)
+                (display (jolt-kind->string kind) port)
+                (display "]: " port)
                 (display (jolt-diagnostic-message v) port)
-                (newline port)
                 (newline port)
                 (if snippet?
                     (diag-render-snippet port
@@ -121,8 +146,10 @@
                                          (jnum->exact dline)
                                          (if (jolt-nil? dcol) 1 (jnum->exact dcol))
                                          loc
-                                         (if (jolt-nil? darg) 0 (jnum->exact darg)))
-                    (when loc (display "  at " port) (display loc port) (newline port))))
+                                         (if (jolt-nil? darg) 0 (jnum->exact darg))
+                                         (and (not (jolt-nil? dnote))
+                                              (jolt-str-render-one dnote)))
+                    (when loc (display "  --> " port) (display loc port) (newline port))))
               (begin
                 (jolt-render-throwable v port)
                 (when loc (display "  at " port) (display loc port) (newline port))))

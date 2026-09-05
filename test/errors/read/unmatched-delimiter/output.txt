@@ -1,12 +1,8 @@
-─ read/invalid-syntax ──────────────────────────────────────────────────────────
-error: Unmatched delimiter: )
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/read/unmatched-delimiter/input.clj:3:20
-───┼────────────────────────────────────────────────────────────────────────────
- 1 │ (ns input)
- 2 │ 
- 3 │ (defn f [] (+ 1 2)))
-   │                    ^
-───┴────────────────────────────────────────────────────────────────────────────
+error[read/invalid-syntax]: Unmatched delimiter: )
+  --> ./test/errors/read/unmatched-delimiter/input.clj:3:20
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (defn f [] (+ 1 2)))
+   |                    ^
 exit: 1

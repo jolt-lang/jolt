@@ -1,12 +1,8 @@
-─ analyze/invalid-binding ──────────────────────────────────────────────────────
-error: Bad binding form, expected matched symbol expression pairs
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/analyze/invalid-let-odd-bindings/input.clj:4:3
-───┼────────────────────────────────────────────────────────────────────────────
- 2 │ 
- 3 │ (defn f []
- 4 │   (let [a 1
-   │   ^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/invalid-binding]: Bad binding form, expected matched symbol expression pairs
+  --> ./test/errors/analyze/invalid-let-odd-bindings/input.clj:4:3
+   |
+ 2 | 
+ 3 | (defn f []
+ 4 |   (let [a 1
+   |   ^
 exit: 1

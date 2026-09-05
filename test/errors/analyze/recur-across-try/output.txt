@@ -1,12 +1,8 @@
-─ analyze/invalid-recur ────────────────────────────────────────────────────────
-error: Cannot recur across try
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/analyze/recur-across-try/input.clj:5:5
-───┼────────────────────────────────────────────────────────────────────────────
- 3 │ (defn f [x]
- 4 │   (try
- 5 │     (recur x)
-   │     ^^^^^^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/invalid-recur]: Cannot recur across try
+  --> ./test/errors/analyze/recur-across-try/input.clj:5:5
+   |
+ 3 | (defn f [x]
+ 4 |   (try
+ 5 |     (recur x)
+   |     ^^^^^^^^^
 exit: 1

@@ -1,12 +1,8 @@
-─ read/invalid-syntax ──────────────────────────────────────────────────────────
-error: Unsupported escape character: \p
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/read/invalid-string-escape/input.clj:3:18
-───┼────────────────────────────────────────────────────────────────────────────
- 1 │ (ns input)
- 2 │ 
- 3 │ (def m {:foo "foo\pbar" :bar "bar"})
-   │                  ^^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[read/invalid-syntax]: Unsupported escape character: \p
+  --> ./test/errors/read/invalid-string-escape/input.clj:3:18
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def m {:foo "foo\pbar" :bar "bar"})
+   |                  ^^^^^
 exit: 1

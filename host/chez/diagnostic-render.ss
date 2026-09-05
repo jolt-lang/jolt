@@ -6,19 +6,24 @@
 ;;   Unhandled exception: First argument to def must be a Symbol
 ;;     at ./src/app.clj:3:1
 ;;
-;; It now frames the code, in the shape jank uses:
+;; It now shows the code:
 ;;
-;;   ─ analyze/invalid-def ──────────────────────────────────────
-;;   error: First argument to def must be a Symbol
+;;   error[analyze/invalid-def]: First argument to def must be a Symbol
+;;     --> ./src/app.clj:3:1
+;;      |
+;;    1 | (ns app)
+;;    2 |
+;;    3 | (def :foo 2)
+;;      |      ^^^^ the name must be a symbol
 ;;
-;;   ─────┬──────────────────────────────────────────────────────
-;;        │ ./src/app.clj
-;;   ─────┼──────────────────────────────────────────────────────
-;;     1  │ (ns app)
-;;     2  │
-;;     3  │ (def :foo 2)
-;;        │      ^^^^
-;;   ─────┴──────────────────────────────────────────────────────
+;; No box drawing: the rules and their ┬┼┴ joints cost roughly 250 characters a
+;; report and carry no information. This shape says the same thing, and a reader
+;; that is a language model — which is most of them, for a compiler — pays for
+;; every one of those characters in its context.
+;;
+;; The caret's NOTE is what keeps it readable without counting columns: the fact
+;; is written down rather than encoded in the position of a ^. jank labels its
+;; carets for the same reason.
 ;;
 ;; No documentation URL row: jolt has no per-error pages yet, and a link to a
 ;; page that does not exist is worse than no link. It goes in when they do.
@@ -33,10 +38,6 @@
 ;; the reader's eye stops at the caret, and trailing context pushes the message
 ;; off a short terminal.
 (define diag-context-lines 2)
-
-;; The rule that fills the header out to the terminal's width, capped so a very
-;; wide terminal does not produce a 300-character line nobody reads across.
-(define diag-max-width 80)
 
 (define (diag-repeat-string s n)
   (let loop ((i 0) (acc ""))
@@ -149,68 +150,80 @@
   (let ((pad (fx- width (string-length s))))
     (string-append (diag-repeat-string " " (fxmax 0 pad)) s)))
 
-;; Render the framed snippet for FILE at LINE/COL to PORT, or do nothing at all
-;; if anything is missing or unreadable.
-(define (diag-render-snippet port file line col loc arg)
+;; Render the snippet for FILE at LINE/COL to PORT, or nothing at all if anything
+;; is missing or unreadable.
+;;
+;;   error[analyze/invalid-def]: First argument to def must be a Symbol
+;;     --> ./src/app.clj:3:1
+;;      |
+;;    1 | (ns app)
+;;    2 |
+;;    3 | (def :foo 2)
+;;      |      ^^^^ the name must be a symbol
+;;
+;; NOTE, when the diagnostic carries one, is what makes the caret readable
+;; without counting columns: the fact is written down rather than encoded in the
+;; position of a ^. That serves a person and a model equally, and it is what jank
+;; does — its carets are labelled, not bare.
+(define (diag-render-snippet port file line col loc arg note)
   (guard (e (#t (void)))
     (let* ((src (read-file-string file))
            (lines (diag-source-lines src))
            (count (vector-length lines)))
       (when (and (fx>=? line 1) (fx<=? line count))
         (let* ((first-line (fxmax 1 (fx- line diag-context-lines)))
-               ;; The gutter is sized to the widest number it will hold, so the
-               ;; │ column does not jog when a snippet spans 9 → 10.
                (gutter (string-length (number->string line)))
-               ;; total width = gutter + 2, the │ column, "──", then the rule,
-               ;; so the box lines up with the header rule exactly.
-               (rule-w (fxmax 20 (fx- diag-max-width (fx+ gutter 5))))
-               (rule (diag-repeat-string "─" rule-w))
-               (bar (lambda (mid)
-                      (string-append (diag-repeat-string "─" (fx+ gutter 2)) mid "──" rule))))
-          (display (bar "┬") port) (newline port)
-          (display (diag-repeat-string " " (fx+ gutter 2)) port)
-          ;; file:line:col on the header row, which is why the report drops its
-          ;; separate "at" line when a snippet is shown.
-          (display "│ " port)
-          (display (if (string? loc) loc file) port)
-          (newline port)
-          (display (bar "┼") port) (newline port)
+               (pad (diag-repeat-string " " gutter))
+               (text (vector-ref lines (fx- line 1)))
+               (c0 (if (and (integer? col) (fx>=? col 1)) col 1))
+               (c (if (and (integer? arg) (fx>? arg 0))
+                      (diag-element-col text c0 arg)
+                      c0)))
+          (display " " port) (display pad port) (display "--> " port)
+          (display (if (string? loc) loc file) port) (newline port)
+          (display " " port) (display pad port) (display " |" port) (newline port)
           (let loop ((i first-line))
             (when (fx<=? i line)
               (display " " port)
               (display (diag-gutter (number->string i) gutter) port)
-              (display " │ " port)
+              (display " | " port)
               (display (vector-ref lines (fx- i 1)) port)
               (newline port)
               (loop (fx+ i 1))))
-          ;; The caret row: a blank gutter, then the token underlined where it
-          ;; starts. A column past the end of the line (an EOF-while-reading
-          ;; points there) draws nothing rather than a caret in empty space.
-          ;;
-          ;; ARG is the index of the element within the form at COL that the
-          ;; diagnostic is really about — (def :foo 2) reports the def form's own
-          ;; position, but the thing to point at is the second element. Keywords
-          ;; and numbers carry no metadata, so their position cannot come from the
-          ;; reader; it is recovered here by scanning the source forward from the
-          ;; form's start, which is jank's reparsing trick in miniature.
-          (let* ((text (vector-ref lines (fx- line 1)))
-                 (c0 (if (and (integer? col) (fx>=? col 1)) col 1))
-                 (c (if (and (integer? arg) (fx>? arg 0))
-                        (diag-element-col text c0 arg)
-                        c0)))
-            (when (fx<=? c (fx+ (string-length text) 1))
-              (display " " port)
-              (display (diag-gutter "" gutter) port)
-              (display " │ " port)
-              (display (diag-repeat-string " " (fx- c 1)) port)
-              (display (diag-repeat-string "^" (diag-token-width text c)) port)
-              (newline port)))
-          (display (bar "┴") port) (newline port))))))
+          (when (fx<=? c (fx+ (string-length text) 1))
+            (display " " port) (display pad port) (display " | " port)
+            (display (diag-repeat-string " " (fx- c 1)) port)
+            (display (diag-repeat-string "^" (diag-token-width text c)) port)
+            (when (and note (string? note) (fx>? (string-length note) 0))
+              (display " " port) (display note port))
+            (newline port)))))))
 
-;; The header rule naming the kind, e.g. "─ analyze/invalid-def ──────────".
-(define (diag-render-header port kind)
-  (let* ((label (string-append "─ " kind " "))
-         (pad (fx- diag-max-width (string-length label))))
-    (display label port)
-    (display (diag-repeat-string "─" (fxmax 0 pad)) port)
-    (newline port)))
+;; The token under the caret, for JOLT_DIAG=edn: the same text the caret spans,
+;; so a tool never has to do the column arithmetic the caret encodes. Extracted
+;; from the SOURCE LINE rather than by printing the offending value, which could
+;; be an enormous collection or an infinite seq.
+(define (diag-token-at file line col arg)
+  (guard (e (#t #f))
+    (let* ((lines (diag-source-lines (read-file-string file)))
+           (n (vector-length lines)))
+      (and (fx>=? line 1) (fx<=? line n)
+           (let* ((text (vector-ref lines (fx- line 1)))
+                  (c0 (if (and (integer? col) (fx>=? col 1)) col 1))
+                  (c (if (and (integer? arg) (fx>? arg 0))
+                         (diag-element-col text c0 arg)
+                         c0))
+                  (w (diag-token-width text c)))
+             (and (fx<=? (fx+ (fx- c 1) w) (string-length text))
+                  (substring text (fx- c 1) (fx+ (fx- c 1) w))))))))
+
+;; The snippet lines themselves, for JOLT_DIAG=edn, so a tool never needs a
+;; second read of the file to see the code the report is about.
+(define (diag-source-window file line)
+  (guard (e (#t #f))
+    (let* ((lines (diag-source-lines (read-file-string file)))
+           (n (vector-length lines)))
+      (and (fx>=? line 1) (fx<=? line n)
+           (let loop ((i (fxmax 1 (fx- line diag-context-lines))) (acc '()))
+             (if (fx>? i line)
+                 (reverse acc)
+                 (loop (fx+ i 1) (cons (vector-ref lines (fx- i 1)) acc))))))))

@@ -1,12 +1,8 @@
-─ analyze/invalid-recur ────────────────────────────────────────────────────────
-error: Can only recur from tail position
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/analyze/recur-in-catch/input.clj:8:9
-───┼────────────────────────────────────────────────────────────────────────────
- 6 │       (/ x i)
- 7 │       (catch Exception e
- 8 │         (recur (inc i))))))
-   │         ^^^^^^^^^^^^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/invalid-recur]: Can only recur from tail position
+  --> ./test/errors/analyze/recur-in-catch/input.clj:8:9
+   |
+ 6 |       (/ x i)
+ 7 |       (catch Exception e
+ 8 |         (recur (inc i))))))
+   |         ^^^^^^^^^^^^^^^
 exit: 1

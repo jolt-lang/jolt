@@ -1,4 +1,2 @@
-─ read/invalid-syntax ──────────────────────────────────────────────────────────
-error: EOF while reading
-
+error[read/invalid-syntax]: EOF while reading
 exit: 1

@@ -1,12 +1,8 @@
-─ analyze/invalid-fn-parameters ────────────────────────────────────────────────
-error: Parameter declaration 5 should be a vector
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/analyze/invalid-fn-params/input.clj:3:1
-───┼────────────────────────────────────────────────────────────────────────────
- 1 │ (ns input)
- 2 │ 
- 3 │ (defn f 5 6)
-   │ ^^^^^^^^^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/invalid-fn-parameters]: Parameter declaration 5 should be a vector
+  --> ./test/errors/analyze/invalid-fn-params/input.clj:3:1
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (defn f 5 6)
+   | ^^^^^^^^^^^^
 exit: 1

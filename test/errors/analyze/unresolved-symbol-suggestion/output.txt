@@ -1,12 +1,8 @@
-─ analyze/unresolved-symbol ────────────────────────────────────────────────────
-error: Unable to resolve symbol: prinltn in this context (did you mean print, printf, println?)
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/analyze/unresolved-symbol-suggestion/input.clj:4:3
-───┼────────────────────────────────────────────────────────────────────────────
- 2 │ 
- 3 │ (defn f []
- 4 │   (prinltn "hi"))
-   │   ^^^^^^^^^^^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/unresolved-symbol]: Unable to resolve symbol: prinltn in this context (did you mean print, printf, println?)
+  --> ./test/errors/analyze/unresolved-symbol-suggestion/input.clj:4:3
+   |
+ 2 | 
+ 3 | (defn f []
+ 4 |   (prinltn "hi"))
+   |   ^^^^^^^^^^^^^^
 exit: 1

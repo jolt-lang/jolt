@@ -1,12 +1,8 @@
-─ analyze/invalid-if ───────────────────────────────────────────────────────────
-error: Too few arguments to if
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ./test/errors/macro/synthetic-expansion/input.clj:9:5
-───┼────────────────────────────────────────────────────────────────────────────
- 7 │ (defn bar []
- 8 │   (let []
- 9 │     (my-if)))
-   │     ^^^^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/invalid-if]: Too few arguments to if
+  --> ./test/errors/macro/synthetic-expansion/input.clj:9:5
+   |
+ 7 | (defn bar []
+ 8 |   (let []
+ 9 |     (my-if)))
+   |     ^^^^^^^
 exit: 1

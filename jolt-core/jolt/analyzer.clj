@@ -837,7 +837,8 @@
       ;; says which element to scan to.
       (analysis-error :analyze/invalid-def
                       "First argument to def must be a Symbol"
-                      {:jolt.error/arg 1}))
+                      {:jolt.error/arg 1
+                       :jolt.error/note "the name must be a symbol"}))
     (if (< (count items) 3)
       ;; (def name) with no init (declare): intern + reserve the cell so a forward
       ;; reference resolves; the back end keys on :no-init.

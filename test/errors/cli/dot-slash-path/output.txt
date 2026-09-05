@@ -1,12 +1,8 @@
-─ analyze/invalid-def ──────────────────────────────────────────────────────────
-error: First argument to def must be a Symbol
-
-───┬────────────────────────────────────────────────────────────────────────────
-   │ ././test/errors/cli/dot-slash-path/program.clj:3:1
-───┼────────────────────────────────────────────────────────────────────────────
- 1 │ (ns input)
- 2 │ 
- 3 │ (def :foo 2)
-   │      ^^^^
-───┴────────────────────────────────────────────────────────────────────────────
+error[analyze/invalid-def]: First argument to def must be a Symbol
+  --> ././test/errors/cli/dot-slash-path/program.clj:3:1
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def :foo 2)
+   |      ^^^^ the name must be a symbol
 exit: 1
