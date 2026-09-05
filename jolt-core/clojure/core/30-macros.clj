@@ -14,8 +14,12 @@
 
 ;; with-out-str: capture everything the body prints to *out* and return it as a
 ;; string. __with-out-str (clojure.core) runs the thunk with the output captured.
+;; The bare try is the same guard locking carries: the reference's with-out-str
+;; expands through `binding`, which is a try/finally, so a recur may not cross it.
+;; Without it jolt's capture thunk became the recur target and
+;; (loop [] (with-out-str (recur))) spun forever.
 (defmacro with-out-str [& body]
-  `(__with-out-str (fn* [] ~@body)))
+  `(__with-out-str (fn* [] (try ~@body))))
 
 ;; defmulti/defmethod are sugar over defmulti-setup/defmethod-setup (ctx-capturing
 ;; clojure.core fns) so they compile as plain invokes. name/mm are passed quoted;
@@ -114,8 +118,16 @@
 
 ;; Take x's monitor for the duration of body (futures/agents/threads share one
 ;; heap, so this is a real per-object lock), releasing on any exit.
+;;
+;; The bare try costs nothing — with no catch and no finally, emit-try emits the
+;; body and nothing else — and it is what keeps `recur` honest. The reference's
+;; locking IS a try/finally, so a recur may not cross it; jolt's thunk is a
+;; fiber-scheduling requirement (an OS mutex has thread granularity and a fiber
+;; is not a thread — java/concurrency.ss), and without the try that thunk quietly
+;; became the recur TARGET: (loop [] (locking o (recur))) spun forever instead of
+;; being refused.
 (defmacro locking [x & body]
-  `(jolt.host/with-monitor ~x (fn* [] ~@body)))
+  `(jolt.host/with-monitor ~x (fn* [] (try ~@body))))
 
 ;; STM macros over the host transaction seams (refs.ss). sync keeps the
 ;; reference's (sync flags & body) shape — flags are ignored, like the JVM.

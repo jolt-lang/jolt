@@ -724,6 +724,17 @@
   ;; reference does.
   {:suite "exceptions / recur across try" :label "recur across binding" :expected :throws :actual "(do (def ^:dynamic *rx* 0) (loop [i 0] (binding [*rx* i] (if (< i 3) (recur (inc i)) i))))" :portability :common}
   {:suite "exceptions / recur across try" :label "recur across with-open" :expected :throws :actual "(loop [i 0] (with-open [r (java.io.StringReader. \"a\")] (if (< i 3) (recur (inc i)) i)))" :portability :jvm}
+  ;; locking and with-out-str are try/finally on the reference (locking directly,
+  ;; with-out-str through binding). jolt runs both bodies in a thunk because an OS
+  ;; mutex has thread granularity and a fiber is not a thread — so without a marker
+  ;; the THUNK became the recur target and a zero-arg recur spun forever.
+  {:suite "exceptions / recur across try" :label "recur across locking" :expected :throws :actual "(let [o (Object.)] (loop [i 0] (locking o (if (< i 3) (recur (inc i)) i))))" :portability :common}
+  {:suite "exceptions / recur across try" :label "recur across with-out-str" :expected :throws :actual "(loop [i 0] (with-out-str (if (< i 3) (recur (inc i)) i)))" :portability :common}
+  {:suite "exceptions / recur across try" :label "locking still returns its body" :expected "3" :actual "(let [o (Object.)] (locking o (+ 1 2)))" :portability :common}
+  {:suite "exceptions / recur across try" :label "locking is still reentrant" :expected ":nested" :actual "(let [o (Object.)] (locking o (locking o :nested)))" :portability :common}
+  {:suite "exceptions / recur across try" :label "loop inside locking recurs to itself" :expected "3" :actual "(let [o (Object.)] (locking o (loop [i 0] (if (< i 3) (recur (inc i)) i))))" :portability :common}
+  {:suite "exceptions / recur across try" :label "with-out-str still captures" :expected "\"hi\"" :actual "(with-out-str (print \"hi\"))" :portability :common}
+  {:suite "exceptions / recur across try" :label "loop inside with-out-str recurs to itself" :expected "\"3\"" :actual "(with-out-str (print (loop [i 0] (if (< i 3) (recur (inc i)) i))))" :portability :common}
   {:suite "exceptions / assert" :label "assert true -> ok" :expected ":ok" :actual "(do (assert true) :ok)" :portability :common}
   {:suite "exceptions / assert" :label "assert expr -> ok" :expected ":ok" :actual "(do (assert (= 1 1)) :ok)" :portability :common}
   {:suite "exceptions / assert" :label "assert false throws" :expected :throws :actual "(assert false)" :portability :common}

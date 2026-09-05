@@ -878,8 +878,20 @@
 ;; host, and without the site the fn it sat in is the one frame the report
 ;; cannot recover.
 (def ^:private tail-transparent-ops #{:if :do :let :loop :invoke :throw :host-call})
+;; A try with neither a catch nor a finally is tail-transparent too, because
+;; emit-try emits it as its body and nothing else: there is no guard and no
+;; dynamic-wind between the caller and that body, so a tail call inside one is a
+;; real tail call and needs its site stored like any other. Treating it as opaque
+;; stored nothing, TCO erased the frames anyway, and the trace lost every frame
+;; from the try outwards — (defn wrapped [x] (try (boom x))) reported `boom` and
+;; then stopped, where the same fn without the try named itself and its caller.
+;; A try that HAS a catch or a finally is genuinely not tail-transparent and stays
+;; opaque; this reads the same two keys emit-try branches on.
+(defn- tail-transparent? [node]
+  (or (contains? tail-transparent-ops (:op node))
+      (and (= :try (:op node)) (nil? (:catch-sym node)) (nil? (:finally node)))))
 (defn emit [node]
-  (let [s (if (and *tail?* (not (tail-transparent-ops (:op node))))
+  (let [s (if (and *tail?* (not (tail-transparent? node)))
             (binding [*tail?* false] (emit* node))
             (emit* node))]
     ;; a :long operand of a :double-specialized op is tagged :fl-coerce by
