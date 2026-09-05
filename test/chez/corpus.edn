@@ -6047,7 +6047,14 @@
   ;; One worker, so the ordering is decided rather than raced: the winner runs
   ;; first, loser1's second-long sleep then holds the only worker, and loser2 is
   ;; provably still QUEUED when invokeAny cancels it — so it must never run.
-  {:suite "concurrency / invokeAll deadlines" :label "invokeAny cancels the tasks that lost" :expected "[:won true nil]" :actual "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) ran (atom nil) r (.invokeAny ex [(fn [] :won) (fn [] (Thread/sleep 1000) :loser1) (fn [] (reset! ran :loser2-ran) :loser2)])] (.shutdown ex) [r (.awaitTermination ex 5 java.util.concurrent.TimeUnit/SECONDS) (deref ran)])" :portability :jvm}
+  ;; Every loser SLEEPS. A loser whose body completes instantly leaves no window
+  ;; for the cancellation to land in, so whether its side effect runs is a race
+  ;; the machine decides: this row passed on a fast idle box and failed on CI,
+  ;; where the pool picked the task up before invokeAny's cancel arrived
+  ;; (jolt-expected [:won true nil], JVM-result [:won true :loser2-ran]). The
+  ;; sleep is what the assertion has always meant — cancel reaches the task
+  ;; before it finishes — rather than a hope about scheduling.
+  {:suite "concurrency / invokeAll deadlines" :label "invokeAny cancels the tasks that lost" :expected "[:won true nil]" :actual "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) ran (atom nil) r (.invokeAny ex [(fn [] :won) (fn [] (Thread/sleep 1000) :loser1) (fn [] (Thread/sleep 1000) (reset! ran :loser2-ran) :loser2)])] (.shutdown ex) [r (.awaitTermination ex 5 java.util.concurrent.TimeUnit/SECONDS) (deref ran)])" :portability :jvm}
   ;; A one-worker pool runs invokeAll's tasks in LIST order. jolt submitted them
   ;; with Scheme's `map`, whose element order is unspecified — the compiled
   ;; runtime evaluated it right-to-left, so these reached the queue as (c a b)
