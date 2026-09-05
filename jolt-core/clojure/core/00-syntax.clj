@@ -467,19 +467,35 @@
                    (nth x 1)
                    x))
         ;; a :pre/:post conditions map (a leading map when the body has more forms
-        ;; after it) becomes assertions: pre before the body, then bind % to the
-        ;; result, post after, return %. (map? is a native, so this is tier-safe;
-        ;; the assert/map calls only run when a conditions map is actually present.)
+        ;; after it) becomes assertions: pre before the body, then — ONLY when
+        ;; there are :post conditions — bind % to the result, assert them, return
+        ;; %. (map? is a native, so this is tier-safe; the assert/map calls only
+        ;; run when a conditions map is actually present.)
+        ;;
+        ;; The % binding is what :post needs and what a :pre-only fn must not pay:
+        ;; wrapping the body in (let [% (do body)] %) puts the body in a binding
+        ;; INIT, which is not tail position, so a tail `recur` inside a :pre-only
+        ;; fn was rejected — malli's validate-times is one, and eight of its test
+        ;; namespaces stopped loading. The reference emits the wrapper only for
+        ;; :post, and this now matches it.
+        ;;
+        ;; Tail CALLS were never affected, measured rather than assumed: 3e6 deep
+        ;; self-calls through the var run at baseline RSS with the wrapper and
+        ;; without it, because the back end collapses (let [% X] %) to X. Only
+        ;; `recur`, which the analyzer checks on the pre-collapse tree, saw it.
         wrap-conds
           (fn* [body]
             (if (if (map? (first body)) (next body) false)
               (let [conds (first body)
                     real (next body)
-                    mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))]
-                `(~@(mka (get conds :pre))
-                  (let [~'% (do ~@real)]
-                    ~@(mka (get conds :post))
-                    ~'%)))
+                    mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))
+                    posts (get conds :post)]
+                (if (seq posts)
+                  `(~@(mka (get conds :pre))
+                    (let [~'% (do ~@real)]
+                      ~@(mka posts)
+                      ~'%))
+                  `(~@(mka (get conds :pre)) ~@real)))
               body))
         md (fn* go [ps nps lets]
              (if (seq ps)
