@@ -301,7 +301,7 @@
 (defn abs [x] (if (neg? x) (- 0 x) x))
 
 (defn NaN? [x]
-  (if (number? x) (not (= x x)) (throw (str "NaN? requires a number"))))
+  (if (number? x) (not (= x x)) (throw (ClassCastException. "NaN? requires a number"))))
 
 ;; No distinct host object / undefined types on Jolt.
 (defn object? [x] false)
@@ -340,7 +340,10 @@
 ;; NullPointerException and anything else a ClassCastException.
 (defn- entry-cast-throw [e]
   (throw (if (nil? e)
-           (NullPointerException. "")
+           ;; Named, not empty: an empty message reports as
+           ;; "Unhandled exception (NullPointerException): " and stops, leaving
+           ;; out the one fact the reader needs.
+           (NullPointerException. "nil where a java.util.Map$Entry is required")
            (ClassCastException. (str "class " (.getName (class e)) " cannot be cast to class java.util.Map$Entry")))))
 (defn key [e] (if (map-entry? e) (nth e 0) (entry-cast-throw e)))
 (defn val [e] (if (map-entry? e) (nth e 1) (entry-cast-throw e)))
@@ -517,7 +520,7 @@
     (atom? x) true
     ;; name the class, never the value — an error message must not render an
     ;; arbitrary (possibly infinite) argument.
-    :else (throw (str "realized? not supported on: " (class x)))))
+    :else (throw (ClassCastException. (str "realized? not supported on: " (class x))))))
 
 (defn force [x] (if (delay? x) (deref x) x))
 
@@ -526,15 +529,15 @@
   (cond
     (nil? coll) nil
     (vector? coll)
-      (if (zero? (count coll)) (throw "Can't pop empty vector")
+      (if (zero? (count coll)) (throw (IllegalStateException. "Can't pop empty vector"))
         ;; the pop primitive, NOT subvec: subvec stamps its result as a
         ;; SubVector (issue #629), and popping a plain vector must answer a
         ;; plain vector — jolt.host/pop preserves the input's class and meta.
         (jolt.host/pop coll))
     (seq? coll)
-      (if (nil? (seq coll)) (throw "Can't pop empty list")
+      (if (nil? (seq coll)) (throw (IllegalStateException. "Can't pop empty list"))
         (rest coll))
-    :else (throw (str "pop not supported on: " coll))))
+    :else (throw (ClassCastException. (str "pop not supported on: " coll)))))
 
 ;; doall/dorun: realization boundaries. dorun walks (optionally at most n
 ;; steps); doall walks then returns coll.

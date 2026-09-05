@@ -22,7 +22,7 @@
   (fn* zero? [x]
     (if (number? x)
       (= x 0)
-      (throw (str "zero? requires a number, got: " x)))))
+      (throw (ClassCastException. (str "zero? requires a number, got: " x))))))
 
 ;; pos? checks number? explicitly: this tier is recompiled by the staged pass,
 ;; where a bare (> x 0) emits the native op that happily orders strings
@@ -31,7 +31,7 @@
   (fn* pos? [x]
     (if (number? x)
       (> x 0)
-      (throw (str "pos? requires a number, got: " x)))))
+      (throw (ClassCastException. (str "pos? requires a number, got: " x))))))
 
 ;; Canonical every?: short-circuits on the first falsey result, so infinite
 ;; seqs with an early counterexample terminate. Expressed over reduce+reduced so a
@@ -408,7 +408,7 @@
                    (if defaults-as
                      (conj (conj acc-sel defaults-as) `(hash-map ~@dm-pairs))
                      acc-sel))
-               :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
+               :else (throw (IllegalArgumentException. (str "unsupported destructuring pattern: " (pr-str pat))))))
          ploop
            (fn* ploop [i acc]
              (if (< i (count bindings))
@@ -737,7 +737,7 @@
                     (first cls)
                     `(if ~(mk-test (first cls)) ~(nth cls 1) ~(build (drop 2 cls))))))]
     (if dup
-      (throw (str "Duplicate case test constant: " (first dup)))
+      (throw (IllegalArgumentException. (str "Duplicate case test constant: " (first dup))))
       `(let* [~g ~expr] ~(build clauses)))))
 
 ;; for/doseq share these. for-parse-groups turns a binding vector into groups

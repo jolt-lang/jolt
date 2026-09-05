@@ -1198,7 +1198,7 @@
 (defn- helper-binding [macro-name binding]
   (when-not (and (vector? binding) (= 2 (count binding))
                  (symbol? (first binding)))
-    (throw (str "jolt.ffi/" macro-name " requires [pointer value] binding")))
+    (throw (IllegalArgumentException. (str "jolt.ffi/" macro-name " requires [pointer value] binding"))))
   binding)
 
 (defmacro with-arena
@@ -1207,7 +1207,7 @@
   when the body ends, however it ends."
   [binding & body]
   (when-not (and (vector? binding) (= 1 (count binding)) (symbol? (first binding)))
-    (throw "jolt.ffi/with-arena requires a single-symbol binding, [arena]"))
+    (throw (IllegalArgumentException. "jolt.ffi/with-arena requires a single-symbol binding, [arena]")))
   (let [arena (first binding)]
     `(let [~arena (jolt.ffi/confined-arena)]
        (try ~@body (finally (jolt.ffi/close-arena ~arena))))))

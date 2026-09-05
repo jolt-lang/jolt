@@ -61,8 +61,15 @@
 (define (ja-len v)     (if (flvector? v) (flvector-length v) (vector-length v)))
 ;; alength in call position (op registry): the count of any array-like, but nil
 ;; is the NullPointerException the JVM raises rather than 0.
+;; The message names what was read, as the reference's helpful NPE does
+;; ("Cannot read the array length because \"xs\" is null"). An empty one reported
+;; as "Unhandled exception (NullPointerException): " and stopped. Note that an
+;; empty message is CORRECT for the NoSuchElementException sites elsewhere — the
+;; JVM's is genuinely null there — so this is not a blanket rule.
 (define (jolt-alength a)
-  (if (jolt-nil? a) (throw-jvm 'NullPointerException "") (jolt-count a)))
+  (if (jolt-nil? a)
+      (throw-jvm 'NullPointerException "Cannot read the array length because the array is null")
+      (jolt-count a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM
 ;; exception with the JVM message. The proven ^doubles fast path (jolt-flaget/
 ;; jolt-flaset below) skips this pre-check — it relies on flvector-ref's own

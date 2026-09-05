@@ -1,4 +1,4 @@
-Unhandled exception (NullPointerException): 
+Unhandled exception (NullPointerException): nil where a java.lang.String is required
   at ./test/errors/runtime/nil-cast-npe/input.clj:5:1
   trace:
     input/f (./test/errors/runtime/nil-cast-npe/input.clj:3)
