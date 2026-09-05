@@ -93,6 +93,17 @@
 ;; compiler pays to bind LINE/COLUMN in analyzeSeq.
 (def ^:dynamic *positioned-form-box* nil)
 
+;; The innermost macro expansion currently being analyzed, as [macro-name form],
+;; or nil. A diagnostic raised inside expanded code names the MACRO CALL — the
+;; expansion has no position of its own — which leaves the reader looking at a
+;; form that is correct as written, with no hint that the error came from code
+;; the macro generated. Recording which macro was expanding turns that into a
+;; note: "expanded from (my-def ...)".
+;;
+;; Stored like the position box, and for the same reason: written per expansion,
+;; read only when something throws.
+(def ^:dynamic *expansion-box* nil)
+
 ;; The position a diagnostic should carry: the innermost positioned form's, or nil
 ;; when nothing under analysis had reader metadata (a macro-built form, or a form
 ;; handed straight to eval). nil box means nothing is under analysis on this thread.
@@ -120,12 +131,34 @@
 ;; jolt's metadata from colliding with the thrower's own ex-data, which this
 ;; preserves; nesting would have been solving a problem the namespace already
 ;; solves. The reference spells its own the same way (:clojure.error/line).
+(defn- current-expansion []
+  (when *expansion-box* @*expansion-box*))
+
 (defn- diagnostic-data [kind pos extra]
-  (cond-> (or extra {})
-    true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
-    (:line pos) (assoc :jolt.error/line (:line pos))
-    (:column pos) (assoc :jolt.error/column (:column pos))
-    (:file pos) (assoc :jolt.error/file (:file pos))))
+  (let [exp (current-expansion)]
+    (cond-> (or extra {})
+      true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
+      ;; Name the macro ONLY when the position being reported is the macro call
+      ;; itself. That is exactly the case where the failing form was GENERATED —
+      ;; it has no position of its own, so the innermost positioned form is the
+      ;; call — and exactly the case where the reader is otherwise left staring
+      ;; at a line that is correct as written.
+      ;;
+      ;; When the user's own form is what failed, it has its own position and is
+      ;; not the call, so no note: (if) inside a defn body is the user's `if`,
+      ;; not something defn generated, even though it is analyzed inside defn's
+      ;; expansion. Without this test every diagnostic in ordinary code was
+      ;; labelled "expanding the `defn` macro", which is noise.
+      ;; Compared by POSITION, not object identity: a macro that builds its
+      ;; expansion with syntax-quote propagates the call site's line onto the
+      ;; generated form, so the form being reported is a different object that
+      ;; nonetheless sits exactly where the call does. Identity said "not the
+      ;; call" and dropped the note on the very case it exists for.
+      (and exp (= pos (form-position (second exp))))
+      (assoc :jolt.error/macro (first exp))
+      (:line pos) (assoc :jolt.error/line (:line pos))
+      (:column pos) (assoc :jolt.error/column (:column pos))
+      (:file pos) (assoc :jolt.error/file (:file pos)))))
 
 (defn- analysis-error
   ([kind msg] (analysis-error kind msg nil))
@@ -1694,8 +1727,18 @@
             ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
             ;; source offset onto the resulting def, since the macro builds a fresh
             ;; (def …) with no metadata. So the back end can register fn defs.
-            (let [node (analyze ctx (form-expand-1 ctx form (amp-env-map env)) env)
-                  p (form-position form)]
+            ;; The box covers ANALYSIS of the expansion, not the macro function's
+            ;; own run: an error the macro itself raises (destructure rejecting a
+            ;; binding vector, defn rejecting a clause) is about code the user
+            ;; WROTE, and naming the macro there would tell them their own `let`
+            ;; is the problem.
+            (let* [expanded (form-expand-1 ctx form (amp-env-map env))
+                   ebox *expansion-box*
+                   prev (when ebox @ebox)
+                   _ (when ebox (reset! ebox [(form-sym-name head) form]))
+                   node (analyze ctx expanded env)
+                   _ (when ebox (reset! ebox prev))
+                   p (form-position form)]
               (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
           ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
           ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).
@@ -1863,7 +1906,8 @@
    ;; reads it. `or` rather than a fresh box every time: an analyze that re-enters
    ;; this arity (a macro analyzing a form it built) keeps the chain it is nested
    ;; inside, which is what the single shared atom used to give it on one thread.
-   (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))]
+   (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))
+             *expansion-box* (or *expansion-box* (atom nil))]
      (try
        ;; ` is a reader macro in Clojure, so a form is already past its backticks
        ;; by the time anything looks at it. jolt reads one to a marker and lowers

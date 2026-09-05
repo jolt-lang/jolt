@@ -30,6 +30,7 @@
 (define diag-kw-message (keyword #f "message"))
 (define diag-kw-err-arg (keyword "jolt.error" "arg"))
 (define diag-kw-err-note (keyword "jolt.error" "note"))
+(define diag-kw-err-macro (keyword "jolt.error" "macro"))
 (define diag-kw-err-token (keyword "jolt.error" "token"))
 (define diag-kw-err-source (keyword "jolt.error" "source"))
 (define diag-kw-line (keyword #f "line"))
@@ -124,6 +125,7 @@
                (dcol (and diag (jolt-get diag diag-kw-err-column jolt-nil)))
                (darg (and diag (jolt-get diag diag-kw-err-arg jolt-nil)))
                (dnote (if diag (jolt-get diag diag-kw-err-note jolt-nil) jolt-nil))
+               (dmacro (if diag (jolt-get diag diag-kw-err-macro jolt-nil) jolt-nil))
                (loc (jolt-throwable-source-string raw))
                ;; A snippet is shown only when there is a real file position to
                ;; frame. Everything else — a -e form, an unreadable path, a
@@ -149,7 +151,16 @@
                                          (if (jolt-nil? darg) 0 (jnum->exact darg))
                                          (and (not (jolt-nil? dnote))
                                               (jolt-str-render-one dnote)))
-                    (when loc (display "  --> " port) (display loc port) (newline port))))
+                    (when loc (display "  --> " port) (display loc port) (newline port)))
+                ;; The code at that position is a macro CALL, not the code that
+                ;; failed — the expansion has no position of its own. Say so,
+                ;; rather than leaving the reader staring at a form that is
+                ;; correct as written.
+                (unless (jolt-nil? dmacro)
+                  (display "   = note: raised while expanding the `" port)
+                  (display (jolt-str-render-one dmacro) port)
+                  (display "` macro" port)
+                  (newline port)))
               (begin
                 (jolt-render-throwable v port)
                 (when loc (display "  at " port) (display loc port) (newline port))))
