@@ -37,6 +37,13 @@
     (and e (string? e) (string-ci=? e "edn"))))
 
 ;; Build the EDN diagnostic map for an unwrapped throw value.
+;;
+;; The diagnostic's own keys are already flat and namespaced, so they pass
+;; straight through and only :message and a fallback position are added. The
+;; loader's per-top-level-form position FILLS IN only what the diagnostic did not
+;; carry: a diagnostic knows the innermost form it failed in, and letting the
+;; coarser position overwrite it is what reported a defn's opening line for a
+;; symbol hundreds of lines inside it.
 (define (jolt-diagnostic-map raw v)
   (let* ((msg (cond ((jolt-ex-info-record? v)
                      (jolt-str-render-one (jolt-ex-info-record-message v)))
@@ -44,26 +51,19 @@
                      (with-output-to-string (lambda () (display-condition v))))
                     (else (jolt-pr-str v))))
          (data (and (jolt-ex-info-record? v) (jolt-ex-info-record-data v)))
-         (err (and data (pmap? data) (jolt-get data diag-kw-jolt-error jolt-nil)))
-         (base (if (and err (pmap? err)) err (jolt-hash-map)))
+         (base (if (pmap? data) data (jolt-hash-map)))
          (pos (or (jolt-throw-source-position raw) (jolt-current-source)))
          (m (jolt-assoc base diag-kw-message msg)))
     (if (pmap? pos)
-        ;; The loader's per-top-level-form position FILLS IN only what the
-        ;; diagnostic did not already carry. An analyzer diagnostic knows the
-        ;; innermost enclosing form it failed in, which is more precise; letting
-        ;; the coarser position overwrite it is what reported a defn's opening
-        ;; line for a symbol hundreds of lines inside it.
-        (let ((line (jolt-get pos diag-kw-line jolt-nil))
-              (col (jolt-get pos diag-kw-column jolt-nil))
-              (file (jolt-get pos diag-kw-file jolt-nil)))
-          (let* ((m (if (or (jolt-nil? line) (not (jolt-nil? (jolt-get m diag-kw-line jolt-nil))))
-                        m (jolt-assoc m diag-kw-line line)))
-                 (m (if (or (jolt-nil? col) (not (jolt-nil? (jolt-get m diag-kw-column jolt-nil))))
-                        m (jolt-assoc m diag-kw-column col)))
-                 (m (if (or (jolt-nil? file) (not (jolt-nil? (jolt-get m diag-kw-file jolt-nil))))
-                        m (jolt-assoc m diag-kw-file file))))
-            m))
+        (let ((fill (lambda (m src-k dst-k)
+                      (let ((v (jolt-get pos src-k jolt-nil)))
+                        (if (or (jolt-nil? v)
+                                (not (jolt-nil? (jolt-get m dst-k jolt-nil))))
+                            m
+                            (jolt-assoc m dst-k v))))))
+          (fill (fill (fill m diag-kw-line diag-kw-err-line)
+                      diag-kw-column diag-kw-err-column)
+                diag-kw-file diag-kw-err-file))
         m)))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to stderr

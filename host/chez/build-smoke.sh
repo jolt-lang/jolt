@@ -900,7 +900,7 @@ fi
 
 # A compile error names the line of the OFFENDING form, and prints no trace.
 #
-# The reporter can only do either when the throw carries a :jolt/error map, and
+# The reporter can only do either when the throw carries a :jolt.error/kind, and
 # only the unresolved-symbol diagnostic built one. Everything else raised while
 # analyzing — an uncompilable form, a destructuring pattern the desugarer rejects,
 # a macro that threw expanding — arrived bare, so the report was the LOADER's

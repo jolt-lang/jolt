@@ -793,14 +793,14 @@
     (let ((bt (jolt-history-backtrace)))
       (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
-;; :jolt/error, the key a compile diagnostic hangs its kind and position on.
-;; Defined here rather than shared with compile-eval.ss's diag-kw-jolt-error
-;; because THIS file loads first (rt.ss), and compile-eval.ss is not loaded at
-;; all in some embeddings. Keywords intern, so both names are the same object.
-(define srcreg-kw-jolt-error (keyword "jolt" "error"))
-(define srcreg-kw-line (keyword #f "line"))
-(define srcreg-kw-column (keyword #f "column"))
-(define srcreg-kw-file (keyword #f "file"))
+;; A diagnostic's own keys all live in the "jolt.error" namespace, so the report
+;; hides them by NAMESPACE rather than by naming each one. The list this replaces
+;; had to be edited every time a diagnostic gained a field, and would silently
+;; start leaking machinery into the user's ex-data the first time someone forgot.
+(define (srcreg-jolt-error-key? k)
+  (and (keyword-t? k)
+       (let ((ns (keyword-t-ns k)))
+         (and (string? ns) (string=? ns "jolt.error")))))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is
@@ -830,17 +830,17 @@
           ;; else was attached the line goes away entirely. JOLT_DIAG=edn is where
           ;; the structured form belongs, and it still emits it (cli-core.ss).
           (let* ((data (jolt-ex-info-record-data v))
-                 ;; When :jolt/error is present the throwable is one of jolt's own
-                 ;; diagnostics, which means the top-level :line/:column/:file are
-                 ;; jolt's too — the reader keeps them there for consumers that
-                 ;; read (:line (ex-data e)) — and repeating them here would print
-                 ;; the position twice, once in ex-data and again on the `at` line
-                 ;; directly below. Dropped only in that case: on any other
-                 ;; throwable a :line key is the user's own data and is shown.
-                 (data (if (and (pmap? data)
-                                (not (jolt-nil? (jolt-get data srcreg-kw-jolt-error jolt-nil))))
-                           (jolt-dissoc data srcreg-kw-jolt-error
-                                        srcreg-kw-line srcreg-kw-column srcreg-kw-file)
+                 ;; The USER's ex-data, never jolt's. A diagnostic's position and
+                 ;; kind are machinery: printing them put the position in front of
+                 ;; a reader who is told it again on the next line, and BURIED the
+                 ;; data a throwing macro actually attached — (ex-info "m" {:orig
+                 ;; true}) reported jolt's map and no :orig. JOLT_DIAG=edn is where
+                 ;; the structured form belongs, and it still emits it.
+                 (data (if (pmap? data)
+                           (jolt-reduce-kv
+                            (lambda (acc k _) 
+                              (if (srcreg-jolt-error-key? k) (jolt-dissoc acc k) acc))
+                            data data)
                            data)))
             (unless (or (jolt-nil? data) (and (pmap? data) (= 0 (jolt-count data))))
               (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))

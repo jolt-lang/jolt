@@ -7,7 +7,7 @@
   bootstrap can compile this namespace via its plain :var path. ctx is an opaque
   host handle threaded to the contract fns; the analyzer never inspects it.
 
-  Unsupported forms throw an ex-info carrying :jolt/error {:kind ...}
+  Unsupported forms throw an ex-info carrying :jolt.error/kind and a position
   so the caller falls back to the interpreter (the hybrid contract).
 
   `env` carries lexical state: {:locals #{names} :recur recur-target-name|nil}.
@@ -115,12 +115,22 @@
 ;;
 ;; :type stays :analysis-error for the reporter, which already keys on it to drop
 ;; the analyzer's own recursion from the trace.
+;; The diagnostic keys are namespaced and FLAT — :jolt.error/kind beside
+;; :jolt.error/line, not a nested map under one key. Namespacing is what keeps
+;; jolt's metadata from colliding with the thrower's own ex-data, which this
+;; preserves; nesting would have been solving a problem the namespace already
+;; solves. The reference spells its own the same way (:clojure.error/line).
+(defn- diagnostic-data [kind pos extra]
+  (cond-> (or extra {})
+    true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
+    (:line pos) (assoc :jolt.error/line (:line pos))
+    (:column pos) (assoc :jolt.error/column (:column pos))
+    (:file pos) (assoc :jolt.error/file (:file pos))))
+
 (defn- analysis-error
   ([kind msg] (analysis-error kind msg nil))
   ([kind msg extra]
-   (let [pos (current-form-position)
-         err (merge (or extra {}) pos {:kind kind :type :analysis-error})]
-     (throw (ex-info msg {:jolt/error err})))))
+   (throw (ex-info msg (diagnostic-data kind (current-form-position) extra)))))
 
 (defn- empty-env [] {:locals #{} :hints {}})
 (defn- local? [env nm] (contains? (:locals env) nm))
@@ -266,9 +276,8 @@
                  ;; The reference points at the recur (pos.clj:6:12, not the loop
                  ;; on 4:3) and so should this.
                  (throw (ex-info "Can only recur from tail position"
-                                 {:jolt/error (merge (:pos node)
-                                                     {:kind :analyze/invalid-recur
-                                                      :type :analysis-error})})))
+                                 (diagnostic-data :analyze/invalid-recur
+                                                  (:pos node) nil))))
                (doseq [a (:args node)] (check-recur-tails! a false)))
          (= op :fn) nil
          (= op :loop)
@@ -1528,7 +1537,7 @@
 
 ;; Throw the structured "unable to resolve symbol" diagnostic. The human message
 ;; keeps the JVM wording (with any suggestions appended); the ex-data carries a
-;; machine-readable :jolt/error map the CLI reporter emits as EDN under
+;; machine-readable :jolt.error/* keys the CLI reporter emits as EDN under
 ;; JOLT_DIAG=edn, so editors/tools get the symbol, suggestions, and ns as data.
 ;; :line/:column/:file come from the innermost enclosing positioned form, so the
 ;; report names where the unknown name is WRITTEN. The reporter otherwise falls
@@ -1540,13 +1549,11 @@
         msg (if (seq sugg)
               (str base " (did you mean " (apply str (interpose ", " sugg)) "?)")
               base)
-        err {:kind :analyze/unresolved-symbol
-             :type :unresolved-symbol
-             :symbol nm
-             :suggestions (vec sugg)
-             :ns (compile-ns ctx)}
-        pos (current-form-position)]
-    (throw (ex-info msg {:jolt/error (if pos (merge err pos) err)}))))
+        extra {:jolt.error/symbol nm
+               :jolt.error/suggestions (vec sugg)
+               :jolt.error/ns (compile-ns ctx)}]
+    (throw (ex-info msg (diagnostic-data :analyze/unresolved-symbol
+                                         (current-form-position) extra)))))
 
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
@@ -1795,7 +1802,7 @@
 
 ;; Anything raised while analyzing a form is a COMPILE-time failure, and the
 ;; reporter can only tell — and only knows where to point — when the throw carries
-;; a :jolt/error map. With one it names the innermost positioned form and drops the
+;; a :jolt.error/kind. With one it names the innermost positioned form and drops the
 ;; analyzer's own recursion from the trace; without one it falls back to the
 ;; LOADER's per-top-level-form position and prints thirty lines of jolt internals.
 ;; resolve-error was the only thing that built one, so every other compile failure
@@ -1805,7 +1812,7 @@
 ;;
 ;; Attaching it here, at the one entry every top-level analysis goes through, costs
 ;; a single try per top-level form and covers all of them. A throw that already
-;; carries :jolt/error passes through untouched: it knows its own position better.
+;; carries a POSITIONED kind passes through untouched: it knows where it failed.
 (defn- throw-message [e]
   (cond (string? e) e
         ;; an ex-info reports as its message alone; anything else keeps the
@@ -1816,7 +1823,7 @@
 ;; No position to add (a macro-built form, or a form handed straight to eval) means
 ;; nothing to improve on, so leave the throw exactly as it was rather than trading
 ;; its trace for a diagnostic that says no more than the fallback already does.
-;; The rebuilt ex-info keeps the ORIGINAL ex-data and adds :jolt/error beside it.
+;; The rebuilt ex-info keeps the ORIGINAL ex-data and adds the :jolt.error/* keys.
 ;; Replacing it outright discarded whatever the thrower attached: a macro that
 ;; raised (ex-info "m" {:orig true}) reported no :orig at all, and any library
 ;; that hangs explain-data or a error code off its compile-time throw lost it the
@@ -1825,11 +1832,11 @@
 (defn- as-analysis-diagnostic [e]
   (let [pos (current-form-position)
         orig (ex-data e)
-        err (when (map? orig) (:jolt/error orig))]
+        kind (when (map? orig) (:jolt.error/kind orig))]
     (cond
       (nil? pos) e
       ;; Already positioned: it knows where it happened better than the box does.
-      (and err (:line err)) e
+      (and kind (:jolt.error/line orig)) e
       ;; A diagnostic with a KIND but no position. Raised from a macro — the
       ;; `let`/`loop` destructurer and `defn`'s clause check are clojure.core code
       ;; and cannot reach the analyzer's position box — so it names the error but
@@ -1837,14 +1844,12 @@
       ;; earlier "already a diagnostic, leave it alone" test skipped these
       ;; entirely, and (defn f [] (let [a 1 b] a)) reported the DEFN's line 3
       ;; where the reference names the let on line 4. Its own kind is kept.
-      err (ex-info (throw-message e)
-                   (assoc orig :jolt/error (merge pos err)))
+      kind (ex-info (throw-message e) (diagnostic-data kind pos orig))
       ;; No diagnostic at all: anything else raised while analyzing. Keep the
-      ;; thrower's ex-data and add position beside it.
+      ;; thrower's ex-data and add the position beside it.
       :else (ex-info (throw-message e)
-                     (assoc (if (map? orig) orig {})
-                            :jolt/error (merge pos {:kind :analyze/internal-failure
-                                                    :type :analysis-error}))))))
+                     (diagnostic-data :analyze/internal-failure pos
+                                      (when (map? orig) orig))))))
 
 (defn analyze
   ([ctx form]

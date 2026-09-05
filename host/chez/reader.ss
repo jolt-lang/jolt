@@ -683,35 +683,38 @@
         (jolt-hash-map rdr-kw-line line rdr-kw-column col))))
 
 ;; A read diagnostic, shaped like the analyzer's: the message alone, and the KIND
-;; plus position under :jolt/error. Three things follow from that shape.
+;; plus position, as flat :jolt.error/* keys. Three things follow from that.
 ;;
 ;; The position is no longer glued onto the message text. It used to read
 ;; "msg (file:line:col)" while the reporter printed its own "at file:line:col"
 ;; line underneath, and the two disagreed — an unmatched delimiter said 2:20 in
 ;; the message and 2:1 on the at line, because only one of them was the token's.
 ;;
-;; The reporter suppresses the backtrace for anything carrying :jolt/error, so
+;; The reporter suppresses the backtrace for anything carrying a kind, so
 ;; read errors stop printing ten frames of rdr-read-form / rdr-read-seq internals
 ;; that name nothing a reader can act on.
 ;;
 ;; And the kind is registered in test/conformance/error-kinds.edn like every
 ;; other, so `make errorkinds` covers the reader too.
-(define rdr-kw-jolt-error (keyword "jolt" "error"))
-(define rdr-kw-kind (keyword #f "kind"))
-(define rdr-kw-type (keyword #f "type"))
+(define rdr-kw-err-kind (keyword "jolt.error" "kind"))
+(define rdr-kw-err-type (keyword "jolt.error" "type"))
+(define rdr-kw-err-line (keyword "jolt.error" "line"))
+(define rdr-kw-err-column (keyword "jolt.error" "column"))
+(define rdr-kw-err-file (keyword "jolt.error" "file"))
 (define rdr-kw-read-error (keyword #f "read-error"))
 
-;; :line/:column/:file stay at the TOP of ex-data, where they have always been,
-;; and :jolt/error carries the same position plus the kind. Moving them under the
-;; new key would have been a silent API break for anything reading a reader
-;; error's position — (:line (ex-data e)) is jolt's existing contract and the unit
-;; suite pins it. The duplication is deliberate: one shape for consumers that
-;; already exist, one for the diagnostic machinery.
+;; One FLAT namespaced shape. Namespacing, not nesting, is what keeps these from
+;; colliding with the thrower's own ex-data (which the analyzer preserves), so
+;; there is no wrapper map and no second copy of the position to drift out of
+;; step with the first. The reference spells its own the same way
+;; (:clojure.error/line).
 (define (rdr-diagnostic-data kind line col)
-  (let ((pos (rdr-pos-meta line col)))
-    (jolt-assoc pos rdr-kw-jolt-error
-                (jolt-assoc (jolt-assoc pos rdr-kw-kind kind)
-                            rdr-kw-type rdr-kw-read-error))))
+  (let* ((f (rdr-source-file))
+         (m (jolt-hash-map rdr-kw-err-kind kind
+                           rdr-kw-err-type rdr-kw-read-error
+                           rdr-kw-err-line line
+                           rdr-kw-err-column col)))
+    (if f (jolt-assoc m rdr-kw-err-file f) m)))
 
 (define (rdr-error-kind s i kind msg)
   (let-values (((line col) (rdr-line-col-at s i)))
@@ -739,9 +742,8 @@
   ;; to the top-level position with no kind at all.
   (jolt-throw (make-jolt-ex-info-record
                class msg jolt-nil
-               (jolt-hash-map rdr-kw-jolt-error
-                              (jolt-hash-map rdr-kw-kind kind
-                                             rdr-kw-type rdr-kw-read-error))
+               (jolt-hash-map rdr-kw-err-kind kind
+                              rdr-kw-err-type rdr-kw-read-error)
                0)))
 
 (define (rdr-error-here kind msg)
@@ -773,18 +775,16 @@
     (and (jolt-ex-info-record? v)
          (let ((d (jolt-ex-info-record-data v)))
            (and (pmap? d)
-                (let ((err (jolt-get d rdr-kw-jolt-error jolt-nil)))
-                  (and (pmap? err)
-                       (eq? (jolt-get err rdr-kw-type jolt-nil) rdr-kw-read-error)
-                       err)))))))
+                (eq? (jolt-get d rdr-kw-err-type jolt-nil) rdr-kw-read-error)
+                d)))))
 
 (define (rdr-positionless-read-error? e)
-  (let ((err (rdr-read-error-of e)))
-    (and err (jolt-nil? (jolt-get err rdr-kw-line jolt-nil)))))
+  (let ((d (rdr-read-error-of e)))
+    (and d (jolt-nil? (jolt-get d rdr-kw-err-line jolt-nil)))))
 
 (define (rdr-read-error-kind e)
-  (let ((err (rdr-read-error-of e)))
-    (if err (jolt-get err rdr-kw-kind jolt-nil) jolt-nil)))
+  (let ((d (rdr-read-error-of e)))
+    (if d (jolt-get d rdr-kw-err-kind jolt-nil) jolt-nil)))
 
 (define (rdr-attach-pos lst line col)
   (if (empty-list-t? lst)            ; () is interned, can't carry meta (= Clojure)

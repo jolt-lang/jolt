@@ -1,7 +1,7 @@
 ;; error-kinds.edn — every diagnostic kind jolt can raise.
 ;;
-;; A kind is a namespaced keyword on the :jolt/error map an ex-info carries
-;; ({:kind :analyze/invalid-def :type :analysis-error :line .. :column .. :file ..}).
+;; A kind is a namespaced keyword an ex-info carries under :jolt.error/kind,
+;; flat alongside :jolt.error/type and :jolt.error/line/column/file.
 ;; It is the STABLE handle on an error: tooling keys on it, `JOLT_DIAG=edn` emits
 ;; it, and the wording beside it can be improved without breaking either.
 ;;

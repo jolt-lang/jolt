@@ -423,8 +423,8 @@
     ;; form. Same wording as the special form, which is the reference's.
     (if (odd? (count bindings))
       (throw (ex-info "Bad binding form, expected matched symbol expression pairs"
-                      {:jolt/error {:kind :analyze/invalid-binding
-                                    :type :analysis-error}}))
+                      {:jolt.error/kind :analyze/invalid-binding
+                       :jolt.error/type :analysis-error}))
       (ploop 0 [])))))
 
 ;; let desugars destructuring patterns to plain bindings (via destructure) so the
@@ -613,8 +613,8 @@
                     (recur (rest cs))
                     (throw (ex-info (str "Parameter declaration " (pr-str c)
                                          " should be a vector")
-                                    {:jolt/error {:kind :analyze/invalid-fn-parameters
-                                                  :type :analysis-error}}))))
+                                    {:jolt.error/kind :analyze/invalid-fn-parameters
+                                     :jolt.error/type :analysis-error}))))
                 nil)))
         arglists (if (vector? (first body))
                    (list (declared-params (first body)))

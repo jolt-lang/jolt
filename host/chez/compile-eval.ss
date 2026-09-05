@@ -190,23 +190,29 @@
   (let ((cur (jolt-throw-source)))
     (and cur (eq? (car cur) raw) (cdr cur))))
 
-;; The ":jolt/error" map an analyzer diagnostic carries, or #f. Its presence marks
+;; The diagnostic keys an analyzer error carries, or #f. Their presence marks
 ;; a COMPILE-time diagnostic: raised while analyzing a form, so the live Chez stack
 ;; is the analyzer recursing into it, never the user's program.
-(define diag-kw-jolt-error (keyword "jolt" "error"))
+(define diag-kw-err-kind (keyword "jolt.error" "kind"))
+(define diag-kw-err-line (keyword "jolt.error" "line"))
+(define diag-kw-err-column (keyword "jolt.error" "column"))
+(define diag-kw-err-file (keyword "jolt.error" "file"))
+;; A diagnostic is identified by CARRYING A KIND, not by having a wrapper map:
+;; the keys are flat and namespaced, so the test asks about the thing itself.
 (define (jolt-analyzer-diagnostic v)
-  (let* ((data (and (jolt-ex-info-record? v) (jolt-ex-info-record-data v)))
-         (err (and data (pmap? data) (jolt-get data diag-kw-jolt-error jolt-nil))))
-    (and (pmap? err) err)))
+  (let ((data (and (jolt-ex-info-record? v) (jolt-ex-info-record-data v))))
+    (and (pmap? data)
+         (not (jolt-nil? (jolt-get data diag-kw-err-kind jolt-nil)))
+         data)))
 
 ;; "file:line:col" for a diagnostic that carries its own position, else #f — so a
 ;; report can name the offending expression rather than the enclosing top-level
 ;; form. Same shape jolt-source-position-string renders, so the two are
 ;; indistinguishable in the report.
 (define (jolt-diagnostic-location-string err)
-  (let ((line (jolt-get err hc-kw-line jolt-nil))
-        (col (jolt-get err hc-kw-column jolt-nil))
-        (file (jolt-get err hc-kw-file jolt-nil)))
+  (let ((line (jolt-get err diag-kw-err-line jolt-nil))
+        (col (jolt-get err diag-kw-err-column jolt-nil))
+        (file (jolt-get err diag-kw-err-file jolt-nil)))
     (and (not (jolt-nil? line))
          (string-append
            (if (jolt-nil? file) "" (string-append (jolt-str-render-one file) ":"))
