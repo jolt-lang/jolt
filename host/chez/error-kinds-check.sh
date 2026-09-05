@@ -35,12 +35,21 @@ fi
 # broken analyzer is exactly when it matters.
 grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/registered"
 
-# Kinds the sources actually raise. Scanned out of the analyzer's diagnostic
-# calls and the literal :kind maps, not out of prose: a kind named only in a
-# comment is not raised.
-grep -ohE ':(analyze|read|codegen|aot)/[a-z-]+' \
-     jolt-core/jolt/*.clj jolt-core/jolt/passes/*.clj 2>/dev/null \
-  | LC_ALL=C sort -u > "$tmp/raised"
+# Kinds the sources actually raise. Two languages, because diagnostics come from
+# both: the analyzer and core macros are Clojure, the reader and runtime are
+# Scheme. Scanning only the Clojure half is not a smaller check, it is a broken
+# one — six read/* kinds were added and this gate reported "registry and sources
+# agree" because it could not see the file they were in.
+#
+# Scheme spells a kind (keyword "read" "duplicate-key"), Clojure spells it
+# :read/duplicate-key; both are normalized to the Clojure form here.
+{
+  grep -ohE ':(analyze|read|runtime|codegen|aot)/[a-z-]+' \
+       jolt-core/jolt/*.clj jolt-core/jolt/passes/*.clj jolt-core/clojure/core/*.clj 2>/dev/null
+  grep -ohE '\(keyword "(analyze|read|runtime|codegen|aot)" "[a-z-]+"\)' \
+       host/chez/*.ss host/chez/java/*.ss 2>/dev/null \
+    | sed -E 's/\(keyword "([a-z]+)" "([a-z-]+)"\)/:\1\/\2/'
+} | LC_ALL=C sort -u > "$tmp/raised"
 
 # The registry is documentation, so it names each kind in prose too; exclude the
 # registry itself from the "raised" scan by never reading it above.

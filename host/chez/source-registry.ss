@@ -96,7 +96,17 @@
                 ;; host dispatch/coercion helpers (not `jolt-` prefixed) that carry
                 ;; no Clojure meaning in a trace
                 "record-method-dispatch" "protocol-resolve" "devirt-resolve"
-                "list->cseq" "host-static-call" "host-call"))
+                "list->cseq" "host-static-call" "host-call"
+                ;; the reader's own recursive descent. A read error used to print
+                ;; ten of these — rdr-read-form, rdr-read-seq, rdr-read-form … —
+                ;; above the one line that said what was wrong. They name the
+                ;; parser's shape, never anything in the program being read.
+                "rdr-read-form" "rdr-read-seq" "rdr-read-top" "rdr-make-map"
+                "rdr-make-set" "rdr-read-string" "rdr-read-keyword"
+                "rdr-read-token" "rdr-read-dispatch" "rdr-read-anon-fn"
+                ;; the CLI's own entry frames: every trace ended with these, and
+                ;; they say only that jolt was started, which the reader knows.
+                "cmd-run" "load-jolt-file*" "jolt-cli-run"))
     h))
 ;; The `jolt-` prefix rule is also what BOUNDS A FIBER BACKTRACE, which is not
 ;; obvious from here. A throw inside a go body has the whole scheduler below it
@@ -788,6 +798,9 @@
 ;; because THIS file loads first (rt.ss), and compile-eval.ss is not loaded at
 ;; all in some embeddings. Keywords intern, so both names are the same object.
 (define srcreg-kw-jolt-error (keyword "jolt" "error"))
+(define srcreg-kw-line (keyword #f "line"))
+(define srcreg-kw-column (keyword #f "column"))
+(define srcreg-kw-file (keyword #f "file"))
 
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is
@@ -817,7 +830,18 @@
           ;; else was attached the line goes away entirely. JOLT_DIAG=edn is where
           ;; the structured form belongs, and it still emits it (cli-core.ss).
           (let* ((data (jolt-ex-info-record-data v))
-                 (data (if (pmap? data) (jolt-dissoc data srcreg-kw-jolt-error) data)))
+                 ;; When :jolt/error is present the throwable is one of jolt's own
+                 ;; diagnostics, which means the top-level :line/:column/:file are
+                 ;; jolt's too — the reader keeps them there for consumers that
+                 ;; read (:line (ex-data e)) — and repeating them here would print
+                 ;; the position twice, once in ex-data and again on the `at` line
+                 ;; directly below. Dropped only in that case: on any other
+                 ;; throwable a :line key is the user's own data and is shown.
+                 (data (if (and (pmap? data)
+                                (not (jolt-nil? (jolt-get data srcreg-kw-jolt-error jolt-nil))))
+                           (jolt-dissoc data srcreg-kw-jolt-error
+                                        srcreg-kw-line srcreg-kw-column srcreg-kw-file)
+                           data)))
             (unless (or (jolt-nil? data) (and (pmap? data) (= 0 (jolt-count data))))
               (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
           (let ((cause (jolt-ex-info-record-cause v)))

@@ -2,5 +2,4 @@ Unhandled exception (ClassCastException): class nil cannot be cast to class cloj
   at ./test/errors/runtime/nil-not-a-function/input.clj:5:1
   trace:
     input/f (./test/errors/runtime/nil-not-a-function/input.clj:3)
-    cmd-run
 exit: 1

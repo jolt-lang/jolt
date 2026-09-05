@@ -17,6 +17,30 @@
 {:read/invalid-data-reader
  "A #tag literal whose reader function is not registered in *data-readers*."
 
+ :read/invalid-syntax
+ "A read error with no more specific kind yet — the default for the reader's
+  positioned raise. Narrowing one of these to its own kind is always an
+  improvement; nothing depends on it staying general."
+
+ :read/invalid-token
+ "A token that is not a valid symbol or keyword: a leading or trailing slash, a
+  bare `:` or `::`, or a keyword name beginning with a colon (`:::c`)."
+
+ :read/invalid-character
+ "A character literal that names nothing — an unknown \\name, or an octal escape
+  outside [0, 377]."
+
+ :read/invalid-unicode
+ "A \\uXXXX escape that is not four hex digits, is not a valid code point, or is
+  an unpaired surrogate."
+
+ :read/duplicate-key
+ "The same key twice in a map literal, or the same element twice in a set
+  literal. An IllegalArgumentException on both runtimes."
+
+ :read/odd-entries-in-map
+ "A map literal with an odd number of forms, so some key has no value."
+
  :analyze/invalid-def
  "A `def` whose first argument is not a symbol."
 
