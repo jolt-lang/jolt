@@ -18,17 +18,21 @@
 (def ^:private phase-titles
   {"read"    "Reader"
    "analyze" "Analysis"
-   "runtime" "Runtime"})
+   "runtime" "Runtime"
+   "ffi"     "Foreign interface"})
 
 (def ^:private phase-blurbs
   {"read"    "Raised while reading source text into forms, before anything is compiled."
    "analyze" "Raised while analyzing a form — the compile-time errors."
-   "runtime" "Raised while a program runs."})
+   "runtime" "Raised while a program runs."
+   "ffi"     "Raised while checking a jolt.ffi layout, type or signature. These are
+compile-time like the analysis errors, but concern a foreign type description
+rather than Clojure itself."})
 
 (defn- anchor [k]
   (str/replace (str (namespace k) "-" (name k)) #"[^a-z0-9-]" ""))
 
-(defn -main [& _]
+(defn render []
   (let [kinds (read-string (slurp registry-path))
         by-phase (group-by (comp phase-of key) kinds)]
     (println "Every error Jolt raises carries a **kind** — a namespaced keyword")
@@ -52,7 +56,14 @@
     (println "[`test/conformance/error-kinds.edn`](https://github.com/jolt-lang/jolt/blob/main/test/conformance/error-kinds.edn),")
     (println "which the build gates against the compiler's actual raise sites.")
     (println)
-    (doseq [phase ["read" "analyze" "runtime"]
+    ;; Phases come from the REGISTRY, not from a list here. A hardcoded list is
+    ;; how six ffi/ kinds were silently dropped from this page — the same way a
+    ;; hardcoded namespace list once made `make errorkinds` blind to them. Known
+    ;; phases lead, in pipeline order; anything else follows rather than vanishes.
+    (doseq [phase (let [known ["read" "analyze" "ffi" "runtime"]
+                        present (set (keys by-phase))]
+                    (concat (filter present known)
+                            (sort (remove (set known) present))))
             :let [entries (sort-by key (get by-phase phase))]
             :when (seq entries)]
       (println (str "## " (get phase-titles phase phase)))
@@ -63,3 +74,7 @@
         (println)
         (println (str/replace (str/trim doc) #"\n\s+" "\n"))
         (println)))))
+
+;; Run as a script: `jolt tools/gen-error-docs.clj`. A top-level call, not a
+;; -main, because running a file does not invoke -main.
+(render)

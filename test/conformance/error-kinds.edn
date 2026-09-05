@@ -5,6 +5,10 @@
 ;; It is the STABLE handle on an error: tooling keys on it, `JOLT_DIAG=edn` emits
 ;; it, and the wording beside it can be improved without breaking either.
 ;;
+;; The descriptions are rendered as MARKDOWN by tools/gen-error-docs.clj into the
+;; site's error reference, so keep identifiers in backticks — a bare *data-readers*
+;; becomes italics and a bare backslash escape disappears.
+;;
 ;; `make errorkinds` holds this file and the sources to each other in both
 ;; directions: a kind raised but not listed fails (an unregistered error has no
 ;; documented meaning), and a kind listed but never raised fails too (a registry
@@ -15,7 +19,7 @@
 ;; does not yet report through — codegen, aot — get theirs when they do.
 
 {:read/invalid-data-reader
- "A #tag literal whose reader function is not registered in *data-readers*."
+ "A `#tag` literal whose reader function is not registered in `*data-readers*`."
 
  :read/invalid-syntax
  "A read error with no more specific kind yet — the default for the reader's
@@ -27,8 +31,8 @@
   bare `:` or `::`, or a keyword name beginning with a colon (`:::c`)."
 
  :read/invalid-character
- "A character literal that names nothing — an unknown \\name, or an octal escape
-  outside [0, 377]."
+ "A character literal that names nothing — an unknown `\\name`, or an octal escape
+  outside `[0, 377]`."
 
  :read/invalid-unicode
  "A \\uXXXX escape that is not four hex digits, is not a valid code point, or is
@@ -104,15 +108,15 @@
  ;; than about Clojure.
 
  :ffi/invalid-layout
- "A jolt.ffi layout that is not [:struct [[field type] ...]] or the :union
+ "A jolt.ffi layout that is not `[:struct [[field type] ...]]` or the `:union`
   equivalent, or one declaring no fields at all."
 
  :ffi/invalid-field
- "A struct or union field that is not [keyword type], whose name is not an
+ "A struct or union field that is not `[keyword type]`, whose name is not an
   unqualified keyword, or that repeats a name already used."
 
  :ffi/invalid-array
- "A fixed array descriptor that is not [:array element-type positive-count]."
+ "A fixed array descriptor that is not `[:array element-type positive-count]`."
 
  :ffi/invalid-type
  "A field or parameter type that is not a fixed-size scalar, a nested struct or

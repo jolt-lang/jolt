@@ -67,6 +67,24 @@ if [ -n "$unraised" ]; then
   fail=1
 fi
 
+# The site's error reference is GENERATED from this registry
+# (tools/gen-error-docs.clj). Check that the generator still emits every kind:
+# it once grouped by a hardcoded list of phases and silently dropped the six
+# ffi/ ones, which is the same failure this gate itself had. Skipped when no
+# jolt binary is around to run it — the registry check above is the point, and
+# this is a rider on it.
+if [ -x "${JOLT_BIN:-target/release/jolt}" ] && [ -f tools/gen-error-docs.clj ]; then
+  "${JOLT_BIN:-target/release/jolt}" tools/gen-error-docs.clj 2>/dev/null \
+    | grep -oE '^### `[a-z]+/[a-z-]+`' | tr -d '#` ' | sed 's/^/:/' \
+    | LC_ALL=C sort -u > "$tmp/documented"
+  undocumented="$(comm -23 "$tmp/registered" "$tmp/documented")"
+  if [ -n "$undocumented" ]; then
+    echo "  FAIL: registered but missing from the generated error page:"
+    printf '%s\n' "$undocumented" | sed 's/^/    /'
+    fail=1
+  fi
+fi
+
 n="$(wc -l < "$tmp/registered" | tr -d ' ')"
 if [ "$n" = 0 ]; then
   echo "  FAIL: no kinds found in $reg — the scan pattern no longer matches the file"
