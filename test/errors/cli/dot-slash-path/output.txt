@@ -1,4 +1,8 @@
-Unhandled exception: jolt/uncompilable: def name with map metadata
-  ex-data: {:jolt/error {:type :analysis-error, :line 3, :column 1, :file ././test/errors/cli/dot-slash-path/program.clj}}
-  at ././test/errors/cli/dot-slash-path/program.clj:3:1
+error[analyze/invalid-def]: First argument to def must be a Symbol
+  --> ././test/errors/cli/dot-slash-path/program.clj:3:1
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def :foo 2)
+   |      ^^^^ the name must be a symbol
 exit: 1

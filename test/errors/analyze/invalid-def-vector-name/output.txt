@@ -1,4 +1,8 @@
-Unhandled exception: jolt/uncompilable: def name with map metadata
-  ex-data: {:jolt/error {:type :analysis-error, :line 3, :column 1, :file ./test/errors/analyze/invalid-def-vector-name/input.clj}}
-  at ./test/errors/analyze/invalid-def-vector-name/input.clj:3:1
+error[analyze/invalid-def]: First argument to def must be a Symbol
+  --> ./test/errors/analyze/invalid-def-vector-name/input.clj:3:1
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def [1 2 3] 123)
+   |      ^^^^^^^ the name must be a symbol
 exit: 1

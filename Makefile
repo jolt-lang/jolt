@@ -159,7 +159,7 @@ install: build
 # answers "is this working tree gated?" — which is not something to remember.
 
 CI-GATES := submodules values corpus unit documented grenadine mvnhttp readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling depssmoke taskssmoke depscpcache depsunit \
-  smoke tracesmoke errorreport buildsmoke buildlibsmoke staticnativesmoke sci scifunctional cts ffi ffidupsym continuations stdlibfasl \
+  smoke tracesmoke errorreport errorkinds buildsmoke buildlibsmoke staticnativesmoke sci scifunctional cts ffi ffidupsym continuations stdlibfasl \
   transient rrbprop rrbscaling stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
   protoret pic narrow directlink directcall arraymap unitcontext numeric oparity mathfl flarr \
@@ -408,6 +408,13 @@ tracesmoke: testbin
 #   sh host/chez/error-report-check.sh generate
 errorreport: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/error-report-check.sh
+
+# Every diagnostic kind the sources raise is registered in
+# test/conformance/error-kinds.edn, and every registered kind is still raised.
+# Both directions: an unregistered kind is an error with no documented meaning,
+# and a registry entry nothing raises is a doc rotting into decoration.
+errorkinds:
+	@sh host/chez/error-kinds-check.sh
 
 # The IR schema validator (JOLT_IR_VALIDATE) reports no problems on real code.
 irvalidate:

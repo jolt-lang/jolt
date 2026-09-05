@@ -195,6 +195,15 @@
    ;; trace. jolt does tail calls, so the calling frame is gone before anything can
    ;; look — the conform failure still throws with the same explain-data, it just
    ;; carries no ::caller. See known-divergences.edn.
+   ;;
+   ;; Tolerance because this suite GENERATES: map-spec-generators draws 200 samples
+   ;; through test.check and asserts that all seven key-combinations of an (or ...)
+   ;; :req appear. Usually they do; occasionally one does not, and the tally moves
+   ;; by one. Observed as a spurious REGRESSED (pass 170 -> 169, fail 4 -> 5) that
+   ;; four consecutive re-runs did not reproduce. Its test.check dependency already
+   ;; carries a tolerance for the same reason; this one was pinned exactly and
+   ;; should not have been.
+   :tolerance 2
    :expect {:tests 13 :pass 170 :fail 4 :error 0}}
 
   {:name "test.check"

@@ -724,6 +724,39 @@
   ;; reference does.
   {:suite "exceptions / recur across try" :label "recur across binding" :expected :throws :actual "(do (def ^:dynamic *rx* 0) (loop [i 0] (binding [*rx* i] (if (< i 3) (recur (inc i)) i))))" :portability :common}
   {:suite "exceptions / recur across try" :label "recur across with-open" :expected :throws :actual "(loop [i 0] (with-open [r (java.io.StringReader. \"a\")] (if (< i 3) (recur (inc i)) i)))" :portability :jvm}
+  ;; locking and with-out-str are try/finally on the reference (locking directly,
+  ;; with-out-str through binding). jolt runs both bodies in a thunk because an OS
+  ;; mutex has thread granularity and a fiber is not a thread — so without a marker
+  ;; the THUNK became the recur target and a zero-arg recur spun forever.
+  {:suite "exceptions / recur across try" :label "recur across locking" :expected :throws :actual "(let [o (Object.)] (loop [i 0] (locking o (if (< i 3) (recur (inc i)) i))))" :portability :common}
+  {:suite "exceptions / recur across try" :label "recur across with-out-str" :expected :throws :actual "(loop [i 0] (with-out-str (if (< i 3) (recur (inc i)) i)))" :portability :common}
+  {:suite "exceptions / recur across try" :label "locking still returns its body" :expected "3" :actual "(let [o (Object.)] (locking o (+ 1 2)))" :portability :common}
+  {:suite "exceptions / recur across try" :label "locking is still reentrant" :expected ":nested" :actual "(let [o (Object.)] (locking o (locking o :nested)))" :portability :common}
+  {:suite "exceptions / recur across try" :label "loop inside locking recurs to itself" :expected "3" :actual "(let [o (Object.)] (locking o (loop [i 0] (if (< i 3) (recur (inc i)) i))))" :portability :common}
+  {:suite "exceptions / recur across try" :label "with-out-str still captures" :expected "\"hi\"" :actual "(with-out-str (print \"hi\"))" :portability :common}
+  {:suite "exceptions / recur across try" :label "loop inside with-out-str recurs to itself" :expected "\"3\"" :actual "(with-out-str (print (loop [i 0] (if (< i 3) (recur (inc i)) i))))" :portability :common}
+  ;; recur may only sit where its value IS the enclosing target's value. Anywhere
+  ;; else the surrounding expression is silently discarded, so these are refused.
+  {:suite "control / recur tail position" :label "recur as an argument" :expected :throws :actual "(loop [i 0] (+ 1 (recur (inc i))))" :portability :common}
+  {:suite "control / recur tail position" :label "recur inside a vector literal" :expected :throws :actual "(loop [i 0] [(recur (inc i))])" :portability :common}
+  {:suite "control / recur tail position" :label "recur as a non-last do statement" :expected :throws :actual "(loop [i 0] (do (recur (inc i)) :x))" :portability :common}
+  {:suite "control / recur tail position" :label "recur in a let binding init" :expected :throws :actual "(loop [i 0] (let [x (recur (inc i))] x))" :portability :common}
+  {:suite "control / recur tail position" :label "recur in an if test" :expected :throws :actual "(loop [i 0] (if (recur (inc i)) 1 2))" :portability :common}
+  {:suite "control / recur tail position" :label "recur in a fn arg inside a loop" :expected :throws :actual "(loop [i 0] (identity (recur (inc i))))" :portability :common}
+  ;; The positives are the point of this rule: every construct that legitimately
+  ;; carries tail position through must keep compiling. case/cond/when/or/and are
+  ;; macros over if/do/let, so they exercise the same three rules by other names.
+  {:suite "control / recur tail position" :label "tail recur in a fn body" :expected ":done" :actual "((fn f [n] (if (zero? n) :done (recur (dec n)))) 3)" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a loop body" :expected "3" :actual "(loop [i 0] (if (< i 3) (recur (inc i)) i))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in an if else-branch" :expected "3" :actual "(loop [i 0] (if (>= i 3) i (recur (inc i))))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur as a do's last form" :expected "3" :actual "(loop [i 0] (do :x (if (< i 3) (recur (inc i)) i)))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a let body" :expected "3" :actual "(loop [i 0] (let [j (inc i)] (if (< i 3) (recur j) i)))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur through nested lets" :expected "3" :actual "(loop [i 0] (let [a i] (let [b a] (if (< b 3) (recur (inc b)) b))))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a multi-arity fn" :expected "10" :actual "((fn f ([n] (f n 0)) ([n acc] (if (zero? n) acc (recur (dec n) (+ acc n))))) 4)" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a when body" :expected "3" :actual "(loop [i 0] (when true (if (< i 3) (recur (inc i)) i)))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a cond arm" :expected "3" :actual "(loop [i 0] (cond (< i 3) (recur (inc i)) :else i))" :portability :common}
+  {:suite "control / recur tail position" :label "tail recur in a case result" :expected "3" :actual "(loop [i 0] (case (int i) 3 i (recur (inc i))))" :portability :common}
+  {:suite "control / recur tail position" :label "loop inside a fn recurs to itself" :expected "[3 :fn]" :actual "((fn f [x] [(loop [i 0] (if (< i 3) (recur (inc i)) i)) x]) :fn)" :portability :common}
   {:suite "exceptions / assert" :label "assert true -> ok" :expected ":ok" :actual "(do (assert true) :ok)" :portability :common}
   {:suite "exceptions / assert" :label "assert expr -> ok" :expected ":ok" :actual "(do (assert (= 1 1)) :ok)" :portability :common}
   {:suite "exceptions / assert" :label "assert false throws" :expected :throws :actual "(assert false)" :portability :common}
@@ -6022,7 +6055,14 @@
   ;; One worker, so the ordering is decided rather than raced: the winner runs
   ;; first, loser1's second-long sleep then holds the only worker, and loser2 is
   ;; provably still QUEUED when invokeAny cancels it — so it must never run.
-  {:suite "concurrency / invokeAll deadlines" :label "invokeAny cancels the tasks that lost" :expected "[:won true nil]" :actual "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) ran (atom nil) r (.invokeAny ex [(fn [] :won) (fn [] (Thread/sleep 1000) :loser1) (fn [] (reset! ran :loser2-ran) :loser2)])] (.shutdown ex) [r (.awaitTermination ex 5 java.util.concurrent.TimeUnit/SECONDS) (deref ran)])" :portability :jvm}
+  ;; Every loser SLEEPS. A loser whose body completes instantly leaves no window
+  ;; for the cancellation to land in, so whether its side effect runs is a race
+  ;; the machine decides: this row passed on a fast idle box and failed on CI,
+  ;; where the pool picked the task up before invokeAny's cancel arrived
+  ;; (jolt-expected [:won true nil], JVM-result [:won true :loser2-ran]). The
+  ;; sleep is what the assertion has always meant — cancel reaches the task
+  ;; before it finishes — rather than a hope about scheduling.
+  {:suite "concurrency / invokeAll deadlines" :label "invokeAny cancels the tasks that lost" :expected "[:won true nil]" :actual "(let [ex (java.util.concurrent.Executors/newFixedThreadPool 1) ran (atom nil) r (.invokeAny ex [(fn [] :won) (fn [] (Thread/sleep 1000) :loser1) (fn [] (Thread/sleep 1000) (reset! ran :loser2-ran) :loser2)])] (.shutdown ex) [r (.awaitTermination ex 5 java.util.concurrent.TimeUnit/SECONDS) (deref ran)])" :portability :jvm}
   ;; A one-worker pool runs invokeAll's tasks in LIST order. jolt submitted them
   ;; with Scheme's `map`, whose element order is unspecified — the compiled
   ;; runtime evaluated it right-to-left, so these reached the queue as (c a b)

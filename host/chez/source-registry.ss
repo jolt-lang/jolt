@@ -96,7 +96,17 @@
                 ;; host dispatch/coercion helpers (not `jolt-` prefixed) that carry
                 ;; no Clojure meaning in a trace
                 "record-method-dispatch" "protocol-resolve" "devirt-resolve"
-                "list->cseq" "host-static-call" "host-call"))
+                "list->cseq" "host-static-call" "host-call"
+                ;; the reader's own recursive descent. A read error used to print
+                ;; ten of these — rdr-read-form, rdr-read-seq, rdr-read-form … —
+                ;; above the one line that said what was wrong. They name the
+                ;; parser's shape, never anything in the program being read.
+                "rdr-read-form" "rdr-read-seq" "rdr-read-top" "rdr-make-map"
+                "rdr-make-set" "rdr-read-string" "rdr-read-keyword"
+                "rdr-read-token" "rdr-read-dispatch" "rdr-read-anon-fn"
+                ;; the CLI's own entry frames: every trace ended with these, and
+                ;; they say only that jolt was started, which the reader knows.
+                "cmd-run" "load-jolt-file*" "jolt-cli-run"))
     h))
 ;; The `jolt-` prefix rule is also what BOUNDS A FIBER BACKTRACE, which is not
 ;; obvious from here. A throw inside a go body has the whole scheduler below it
@@ -783,6 +793,29 @@
     (let ((bt (jolt-history-backtrace)))
       (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
+;; A diagnostic's own keys all live in the "jolt.error" namespace, so the report
+;; hides them by NAMESPACE rather than by naming each one. The list this replaces
+;; had to be edited every time a diagnostic gained a field, and would silently
+;; start leaking machinery into the user's ex-data the first time someone forgot.
+(define (srcreg-jolt-error-key? k)
+  (and (keyword-t? k)
+       (let ((ns (keyword-t-ns k)))
+         (and (string? ns) (string=? ns "jolt.error")))))
+
+;; The thrower's own ex-data, with jolt's diagnostic keys taken out; jolt-nil
+;; when there was none. Both report shapes go through this — the plain one below
+;; and the framed one in cli-core.ss — so a macro that raises
+;; (ex-info "bad schema" {:schema …}) while a form is being analyzed shows that
+;; map exactly as an uncaught runtime ex-info does.
+(define (jolt-user-ex-data v)
+  (let ((data (jolt-ex-info-record-data v)))
+    (if (pmap? data)
+        (jolt-reduce-kv
+         (lambda (acc k _)
+           (if (srcreg-jolt-error-key? k) (jolt-dissoc acc k) acc))
+         data data)
+        data)))
+
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is
 ;; pr-str'd. Shared by the cli (cli.ss) and a built binary's launcher (build.ss).
@@ -801,8 +834,22 @@
           (display ": " port)
           (display (jolt-str-render-one (jolt-ex-info-record-message v)) port)
           (newline port)
-          (let ((data (jolt-ex-info-record-data v)))
-            (unless (jolt-nil? data)
+          ;; The USER's ex-data, never jolt's. A diagnostic's position and kind
+          ;; live in the :jolt.error namespace and are machinery: printing them
+          ;; put the position in front of a reader who is told it again on the
+          ;; next line, and BURIED the data a throwing macro actually attached —
+          ;; (ex-info "m" {:orig true}) reported jolt's keys and no :orig.
+          ;; JOLT_DIAG=edn is where the structured form belongs, and it still
+          ;; emits it (cli-core.ss).
+          (let* ((data0 (jolt-ex-info-record-data v))
+                 (data (jolt-user-ex-data v)))
+            (unless (or (jolt-nil? data)
+                        ;; A map left empty only because jolt's own keys came out
+                        ;; says nothing, so the line goes away. A thrower's own
+                        ;; empty map still prints, which is what the reference
+                        ;; shows for (ex-info "m" {}).
+                        (and (pmap? data) (= 0 (jolt-count data))
+                             (> (jolt-count data0) 0)))
               (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
           (let ((cause (jolt-ex-info-record-cause v)))
             (when (condition? cause)

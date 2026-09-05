@@ -1,14 +1,8 @@
-Unhandled exception (IllegalArgumentException): odd number of map literal entries
-  at ./test/errors/read/odd-entries-in-map/input.clj:1:1
-  trace:
-    rdr-make-map
-    rdr-read-form
-    rdr-read-seq
-    rdr-read-form
-    rdr-read-seq
-    rdr-read-form
-    rdr-read-seq
-    rdr-read-form
-    rdr-read-top
-    cmd-run
+error[read/odd-entries-in-map]: Map literal must contain an even number of forms
+  --> ./test/errors/read/odd-entries-in-map/input.clj:5:11
+   |
+ 3 | (defn f [a b]
+ 4 |   (let [c (+ a b)
+ 5 |         m {a b c}]
+   |           ^^^^^^^
 exit: 1

@@ -417,11 +417,11 @@ replcheck "data-reader load warning says where it failed" "rb/rdr.clj:3:" "$(war
 replcheck "data-reader load warning names the tags it takes down" "#rb/up" "$out"
 replcheck "the CLI's own error still reports after the warning" "No function to execute" "$out"
 check "a caught data-reader load leaves no stale 'at' location" "0" \
-      "$(after_report "$out" | grep -c '^  at ')"
+      "$(after_report "$out" | grep -cE '^  (at|--> )')"
 # same leak through a require caught in user code
 out="$(runrb run -m rb.app)"
 replcheck "an error after a caught require is reported" "after a caught load" "$out"
-check "a caught require leaves no stale 'at' location" "0" "$(after_report "$out" | grep -c '^  at ')"
+check "a caught require leaves no stale 'at' location" "0" "$(after_report "$out" | grep -cE '^  (at|--> )')"
 # …while a load error that PROPAGATES still names the form that failed
 out="$(runrb run -m rb.boom)"
 replcheck "a propagating load error names its form" "rb/boom.clj:3:1" "$(after_report "$out")"

@@ -581,7 +581,10 @@
 ;; A non-numeric operand is a ClassCastException, like the JVM.
 (define (jolt-num-cast-throw x)
   (if (jolt-nil? x)
-      (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" ""))
+      ;; Same empty-message defect as jolt-cast-throw below, same fix.
+      (jolt-throw (jolt-host-throwable
+                   "java.lang.NullPointerException"
+                   "nil where a java.lang.Number is required"))
       (jolt-throw (jolt-host-throwable
                    "java.lang.ClassCastException"
                    (string-append "class " (jolt-class-name x)
@@ -593,9 +596,17 @@
 ;; value straight to a Chez primitive. The condition Chez raises carries no class,
 ;; so it escapes as #object[:object] and no catch clause can select it; these name
 ;; the class the JVM names instead. nil is the JVM's NullPointerException.
+;; The nil arm names the type that was required. It threw an EMPTY message, so
+;; the report read "Unhandled exception (NullPointerException): " and stopped —
+;; the one thing the reader needed, what was expected here, was the one thing not
+;; said. The reference says "Cannot invoke \"String.substring(int, int)\" because
+;; \"s\" is null"; jolt cannot name the method, since these coercions are shared
+;; by every operation that needs a string, but it can name the requirement.
 (define (jolt-cast-throw x target)
   (if (jolt-nil? x)
-      (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" ""))
+      (jolt-throw (jolt-host-throwable
+                   "java.lang.NullPointerException"
+                   (string-append "nil where a " target " is required")))
       (jolt-throw (jolt-host-throwable
                    "java.lang.ClassCastException"
                    (string-append "class " (jolt-class-name x)

@@ -261,7 +261,7 @@
 
 ;; num: Clojure coerces to java.lang.Number; jolt just checks.
 (defn num [x]
-  (if (number? x) x (throw (str "num requires a number, got: " x))))
+  (if (number? x) x (throw (ClassCastException. (str "num requires a number, got: " x)))))
 
 ;; == numeric equality: 1-arity is trivially true without inspecting the value
 ;; (Clojure's shape); 2+ args must be numbers, as Numbers.equiv throws.
@@ -270,7 +270,7 @@
   ([x y]
    (if (and (number? x) (number? y))
      (= x y)
-     (throw (str "Cannot cast to number: " (if (number? x) y x)))))
+     (throw (ClassCastException. (str "Cannot cast to number: " (if (number? x) y x))))))
   ([x y & more]
    (if (== x y)
      (apply == y more)
@@ -301,7 +301,7 @@
 (defn parse-boolean [s]
   (if (string? s)
     (cond (= s "true") true (= s "false") false :else nil)
-    (throw (str "parse-boolean requires a string, got: " s))))
+    (throw (IllegalArgumentException. (str "parse-boolean requires a string, got: " s)))))
 
 (defn newline [] (print "\n") nil)
 
@@ -410,8 +410,8 @@
 ;; the base's own implementation rather than the override now running.
 (defmacro proxy-super [meth & args]
   `(jolt.host/proxy-super-call ~'this ~(name meth) ~@args))
-(defn construct-proxy [c & args] (throw "construct-proxy: not supported in Jolt"))
-(defn get-proxy-class [& interfaces] (throw "get-proxy-class: not supported in Jolt"))
+(defn construct-proxy [c & args] (throw (UnsupportedOperationException. "construct-proxy: not supported in Jolt")))
+(defn get-proxy-class [& interfaces] (throw (UnsupportedOperationException. "get-proxy-class: not supported in Jolt")))
 
 ;; Clojure's serialized-require: require while holding
 ;; clojure.lang.RT/REQUIRE_LOCK. Private there and here, and here it exists ONLY

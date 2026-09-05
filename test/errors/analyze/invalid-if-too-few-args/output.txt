@@ -1,4 +1,8 @@
-Unhandled exception: Wrong number of args (0) passed to: if
-  ex-data: {:jolt/error {:type :analysis-error, :line 4, :column 3, :file ./test/errors/analyze/invalid-if-too-few-args/input.clj}}
-  at ./test/errors/analyze/invalid-if-too-few-args/input.clj:4:3
+error[analyze/invalid-if]: Too few arguments to if
+  --> ./test/errors/analyze/invalid-if-too-few-args/input.clj:4:3
+   |
+ 2 | 
+ 3 | (defn f []
+ 4 |   (if))
+   |   ^^^^
 exit: 1

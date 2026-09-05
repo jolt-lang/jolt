@@ -47,7 +47,7 @@
   [loc]
   (if (branch? loc)
     ((:zip/children (meta loc)) (node loc))
-    (throw "called children on a leaf node")))
+    (throw (Exception. "called children on a leaf node"))))
 
 (defn make-node "Returns a new branch node, given an existing node and new children."
   [loc node children] ((:zip/make-node (meta loc)) node children))
@@ -116,14 +116,14 @@
   [loc item]
   (let [[node {l :l :as path}] loc]
     (if (nil? path)
-      (throw "Insert at top")
+      (throw (Exception. "Insert at top"))
       (with-meta [node (assoc path :l (conj l item) :changed? true)] (meta loc)))))
 
 (defn insert-right "Inserts the item as the right sibling of the node at this loc, without moving"
   [loc item]
   (let [[node {r :r :as path}] loc]
     (if (nil? path)
-      (throw "Insert at top")
+      (throw (Exception. "Insert at top"))
       (with-meta [node (assoc path :r (cons item r) :changed? true)] (meta loc)))))
 
 (defn replace "Replaces the node at this loc, without moving"
@@ -176,7 +176,7 @@
   [loc]
   (let [[node {l :l, ppath :ppath, pnodes :pnodes, rs :r, :as path}] loc]
     (if (nil? path)
-      (throw "Remove at top")
+      (throw (Exception. "Remove at top"))
       (if (pos? (count l))
         (loop [loc (with-meta [(peek l) (assoc path :l (pop l) :changed? true)] (meta loc))]
           (if-let [child (and (branch? loc) (down loc))]

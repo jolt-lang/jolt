@@ -1,4 +1,8 @@
-Unhandled exception: Unable to resolve symbol: unknown-thing in this context
-  ex-data: {:jolt/error {:type :unresolved-symbol, :symbol unknown-thing, :suggestions [], :ns input, :line 4, :column 3, :file ./test/errors/analyze/unresolved-symbol/input.clj}}
-  at ./test/errors/analyze/unresolved-symbol/input.clj:4:3
+error[analyze/unresolved-symbol]: Unable to resolve symbol: unknown-thing in this context
+  --> ./test/errors/analyze/unresolved-symbol/input.clj:4:3
+   |
+ 2 | 
+ 3 | (defn f []
+ 4 |   (+ 1 unknown-thing))
+   |   ^^^^^^^^^^^^^^^^^^^
 exit: 1

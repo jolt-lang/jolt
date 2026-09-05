@@ -22,7 +22,7 @@
   (fn* zero? [x]
     (if (number? x)
       (= x 0)
-      (throw (str "zero? requires a number, got: " x)))))
+      (throw (ClassCastException. (str "zero? requires a number, got: " x))))))
 
 ;; pos? checks number? explicitly: this tier is recompiled by the staged pass,
 ;; where a bare (> x 0) emits the native op that happily orders strings
@@ -31,7 +31,7 @@
   (fn* pos? [x]
     (if (number? x)
       (> x 0)
-      (throw (str "pos? requires a number, got: " x)))))
+      (throw (ClassCastException. (str "pos? requires a number, got: " x))))))
 
 ;; Canonical every?: short-circuits on the first falsey result, so infinite
 ;; seqs with an early counterexample terminate. Expressed over reduce+reduced so a
@@ -408,13 +408,24 @@
                    (if defaults-as
                      (conj (conj acc-sel defaults-as) `(hash-map ~@dm-pairs))
                      acc-sel))
-               :else (throw (str "unsupported destructuring pattern: " (pr-str pat)))))
+               :else (throw (IllegalArgumentException. (str "unsupported destructuring pattern: " (pr-str pat))))))
          ploop
            (fn* ploop [i acc]
              (if (< i (count bindings))
                (ploop (+ i 2) (proc (nth bindings i) (nth bindings (inc i)) acc))
                acc))]
-    (ploop 0 []))))
+    ;; Checked before the walk, which steps in twos and reads (nth bindings
+    ;; (inc i)): an odd vector ran off the end and the user got the raw fault
+    ;; back — "java.lang.IndexOutOfBoundsException: index out of bounds" as the
+    ;; compile error for (let [a 1 b] a). analyze-bindings makes the same check
+    ;; for let*, but destructuring runs FIRST, so every `let`, `loop`, `for`,
+    ;; `doseq` and `if-let` reached the fault before the analyzer ever saw the
+    ;; form. Same wording as the special form, which is the reference's.
+    (if (odd? (count bindings))
+      (throw (ex-info "Bad binding form, expected matched symbol expression pairs"
+                      {:jolt.error/kind :analyze/invalid-binding
+                       :jolt.error/type :analysis-error}))
+      (ploop 0 [])))))
 
 ;; let desugars destructuring patterns to plain bindings (via destructure) so the
 ;; COMPILER sees only plain symbols — analyze-bindings rejects patterns as
@@ -467,19 +478,35 @@
                    (nth x 1)
                    x))
         ;; a :pre/:post conditions map (a leading map when the body has more forms
-        ;; after it) becomes assertions: pre before the body, then bind % to the
-        ;; result, post after, return %. (map? is a native, so this is tier-safe;
-        ;; the assert/map calls only run when a conditions map is actually present.)
+        ;; after it) becomes assertions: pre before the body, then — ONLY when
+        ;; there are :post conditions — bind % to the result, assert them, return
+        ;; %. (map? is a native, so this is tier-safe; the assert/map calls only
+        ;; run when a conditions map is actually present.)
+        ;;
+        ;; The % binding is what :post needs and what a :pre-only fn must not pay:
+        ;; wrapping the body in (let [% (do body)] %) puts the body in a binding
+        ;; INIT, which is not tail position, so a tail `recur` inside a :pre-only
+        ;; fn was rejected — malli's validate-times is one, and eight of its test
+        ;; namespaces stopped loading. The reference emits the wrapper only for
+        ;; :post, and this now matches it.
+        ;;
+        ;; Tail CALLS were never affected, measured rather than assumed: 3e6 deep
+        ;; self-calls through the var run at baseline RSS with the wrapper and
+        ;; without it, because the back end collapses (let [% X] %) to X. Only
+        ;; `recur`, which the analyzer checks on the pre-collapse tree, saw it.
         wrap-conds
           (fn* [body]
             (if (if (map? (first body)) (next body) false)
               (let [conds (first body)
                     real (next body)
-                    mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))]
-                `(~@(mka (get conds :pre))
-                  (let [~'% (do ~@real)]
-                    ~@(mka (get conds :post))
-                    ~'%)))
+                    mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))
+                    posts (get conds :post)]
+                (if (seq posts)
+                  `(~@(mka (get conds :pre))
+                    (let [~'% (do ~@real)]
+                      ~@(mka posts)
+                      ~'%))
+                  `(~@(mka (get conds :pre)) ~@real)))
               body))
         md (fn* go [ps nps lets]
              (if (seq ps)
@@ -570,6 +597,25 @@
                           (if (and (vector? pv) (> (count pv) 1) (= (first pv) '&form))
                             (subvec pv 2)
                             pv))
+        ;; Past the single-arity `[params] body*` shape, every remaining form must
+        ;; be a `([params] body*)` clause. Checked here because the arglists walk
+        ;; below reaches straight into each one with (first (first cs)): given
+        ;; (defn f 5 6) that is (first 5), and the user got the raw cast back —
+        ;; "Don't know how to create ISeq from: java.lang.Long" as the compile
+        ;; error for their defn. The reference reports this through
+        ;; clojure.core.specs.alpha; jolt has no core specs, so it says so itself.
+        ;; Only `assert`-tier primitives are available this early in the prelude.
+        _ (when (not (vector? (first body)))
+            (loop [cs body]
+              (if (seq cs)
+                (let [c (first cs)]
+                  (if (if (seq? c) (vector? (first c)) false)
+                    (recur (rest cs))
+                    (throw (ex-info (str "Parameter declaration " (pr-str c)
+                                         " should be a vector")
+                                    {:jolt.error/kind :analyze/invalid-fn-parameters
+                                     :jolt.error/type :analysis-error}))))
+                nil)))
         arglists (if (vector? (first body))
                    (list (declared-params (first body)))
                    (loop [cs body acc []]
@@ -691,7 +737,7 @@
                     (first cls)
                     `(if ~(mk-test (first cls)) ~(nth cls 1) ~(build (drop 2 cls))))))]
     (if dup
-      (throw (str "Duplicate case test constant: " (first dup)))
+      (throw (IllegalArgumentException. (str "Duplicate case test constant: " (first dup))))
       `(let* [~g ~expr] ~(build clauses)))))
 
 ;; for/doseq share these. for-parse-groups turns a binding vector into groups

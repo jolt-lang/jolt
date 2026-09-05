@@ -1,4 +1,8 @@
-Unhandled exception: Can only recur from tail position
-  ex-data: {:jolt/error {:type :analysis-error, :line 8, :column 9, :file ./test/errors/analyze/recur-in-catch/input.clj}}
-  at ./test/errors/analyze/recur-in-catch/input.clj:8:9
+error[analyze/invalid-recur]: Can only recur from tail position
+  --> ./test/errors/analyze/recur-in-catch/input.clj:8:9
+   |
+ 6 |       (/ x i)
+ 7 |       (catch Exception e
+ 8 |         (recur (inc i))))))
+   |         ^^^^^^^^^^^^^^^
 exit: 1

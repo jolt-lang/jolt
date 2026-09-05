@@ -1,9 +1,8 @@
-Unhandled exception (RuntimeException): Invalid token: :::c
-  at ./test/errors/read/invalid-keyword/input.clj:1:1
-  trace:
-    rdr-read-keyword
-    rdr-read-seq
-    rdr-read-form
-    rdr-read-top
-    cmd-run
+error[read/invalid-token]: Invalid token: :::c
+  --> ./test/errors/read/invalid-keyword/input.clj:3:8
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def x :::c)
+   |        ^^^^
 exit: 1

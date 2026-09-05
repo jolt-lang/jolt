@@ -400,7 +400,7 @@
         (else (loop (+ i 1) (cons c acc)))))))
 
 ;; backslash already consumed; read a Clojure character literal.
-(define (rdr-read-char s i end)
+(define (rdr-read-char s i end start)
   (when (>= i end) (rdr-error s i "EOF while reading char"))
   (let ((c0 (string-ref s i)))
     (if (char-alphabetic? c0)
@@ -413,11 +413,15 @@
               (let ((name (substring s i j)))
                 (if (= (string-length name) 1)
                     (values c0 j)
-                    (values (rdr-named-char name) j)))))
+                    (values (rdr-named-char name s start) j)))))
         ;; any other single char (\(  \\  \;  \space-as-symbol handled above)
         (values c0 (+ i 1)))))
 
-(define (rdr-named-char name)
+;; START is the backslash's own index, threaded from the dispatch so every
+;; raise below names the literal that was written. A character name is parsed out
+;; of the source and then judged, so without it these are the reader's only errors
+;; that know what is wrong and not where.
+(define (rdr-named-char name s start)
   (cond
     ((string=? name "newline") #\newline)
     ((string=? name "space") #\space)
@@ -432,21 +436,24 @@
           ;; \uXXXX takes exactly 4 hex digits; a bad digit or wrong length is a
           ;; reader error (ex-info), not a raw integer->char crash on #f.
           ((not (= (string-length hex) 4))
-           (jolt-throw (jolt-ex-info (string-append "Invalid unicode character escape length: "
-                                                    (number->string (string-length hex)) ", should be: 4")
-                                     empty-pmap)))
+           (rdr-error-kind s start (keyword "read" "invalid-unicode")
+                           (string-append "Invalid unicode character escape length: "
+                                          (number->string (string-length hex)) ", should be: 4")))
           ((not cp)
-           (jolt-throw (jolt-ex-info (string-append "Invalid unicode character: \\u" hex) empty-pmap)))
+           (rdr-error-kind s start (keyword "read" "invalid-unicode")
+                           (string-append "Invalid unicode character: \\u" hex)))
           ((and (>= cp #xD800) (<= cp #xDFFF))
-           (jolt-throw (jolt-ex-info "Invalid character constant: lone surrogate \\u escape" empty-pmap)))
+           (rdr-error-kind s start (keyword "read" "invalid-unicode")
+                           "Invalid character constant: lone surrogate \\u escape"))
           (else (integer->char cp)))))
     ((char=? (string-ref name 0) #\o)
      (let ((v (string->number (substring name 1 (string-length name)) 8)))
        (when (or (not v) (> v 255))
-         (jolt-throw (jolt-ex-info "Octal escape sequence must be in range [0, 377]" empty-pmap)))
+         (rdr-error-kind s start (keyword "read" "invalid-character")
+                         "Octal escape sequence must be in range [0, 377]"))
        (integer->char v)))
-    (else (jolt-throw (jolt-ex-info (string-append "Unsupported character: \\" name)
-                                    empty-pmap)))))
+    (else (rdr-error-kind s start (keyword "read" "invalid-character")
+                          (string-append "Unsupported character: \\" name)))))
 
 ;; --- token (symbol / keyword / number / nil|true|false) ---------------------
 (define (rdr-read-token s i end)
@@ -469,10 +476,14 @@
            (or (rdr-digit? c0)
                (and (or (char=? c0 #\+) (char=? c0 #\-)) (> len 1)
                     (rdr-digit? (string-ref tok 1))))))))
-(define (rdr-invalid-token tok)
-  (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
-                                   (string-append "Invalid token: " tok))))
-(define (rdr-token->value tok)
+;; I is the token's own start. A token is scanned whole and then judged, so the
+;; judgement happens with the source still in hand — which is why these take it
+;; rather than escaping bare for something further out to label.
+(define (rdr-invalid-token s i tok)
+  (rdr-error-class s i "java.lang.RuntimeException"
+                   (keyword "read" "invalid-token")
+                   (string-append "Invalid token: " tok)))
+(define (rdr-token->value tok s i)
   (let ((n (rdr-try-number tok)))
     (cond
       (n n)
@@ -483,8 +494,9 @@
       ;; and putting it anywhere earlier taxes tokens that can never benefit.
       ((rdr-numeric-lead? tok)
        (or (rdr-try-separated-number tok)
-           (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
-                                            (string-append "Invalid number: " tok)))))
+           (rdr-error-class s i "java.lang.NumberFormatException"
+                            (keyword "read" "invalid-number")
+                            (string-append "Invalid number: " tok))))
       ((string=? tok "nil") jolt-nil)
       ((string=? tok "true") #t)
       ((string=? tok "false") #f)
@@ -497,7 +509,7 @@
                     (or (char=? (string-ref tok 0) #\/)
                         (and (char=? (string-ref tok (- len 1)) #\/)
                              (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/))))))
-           (rdr-invalid-token tok))
+           (rdr-invalid-token s i tok))
          (let-values (((ns name) (rdr-sym-parts tok))) (jolt-symbol ns name)))))))
 
 ;; --- collections ------------------------------------------------------------
@@ -546,15 +558,24 @@
 (define (rdr-map-order-ref m) (jolt-with-mutex rdr-side-mu (hashtable-ref rdr-map-order m #f)))
 (define (rdr-map-order-set! m es) (jolt-with-mutex rdr-side-mu (hashtable-set! rdr-map-order m es)))
 (define (rdr-make-map es)
-  ;; the JVM reader rejects duplicate literal keys before building the map. Guard
-  ;; the (cddr kvs) step so an odd-length literal ({:a}) stops here instead of
-  ;; crashing in cddr; the collections.ss ctor then raises IllegalArgumentException.
+  ;; An odd literal is the READER's error, reported here rather than left to the
+  ;; map constructor. Deferring to it gave "odd number of map literal entries"
+  ;; from collections.ss — a message about a constructor argument, carrying no
+  ;; kind and no position, so the report pointed at the top of the file. The
+  ;; reference names the literal: "Map literal must contain an even number of
+  ;; forms". rdr-at at the call site turns the position in.
+  (when (and (not (rdr-scan-mode)) (odd? (length es)))
+    (rdr-error-here* "java.lang.RuntimeException"
+                     (keyword "read" "odd-entries-in-map")
+                     "Map literal must contain an even number of forms"))
+  ;; the JVM reader rejects duplicate literal keys before building the map.
   (let dupchk ((kvs (and (not (rdr-scan-mode)) es)) (seen empty-pset))
     (when (and (pair? kvs) (pair? (cdr kvs)))
       (let ((k (car kvs)))
         (when (jolt-truthy? (jolt-contains? seen k))
-          (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
-                                           (string-append "Duplicate key: " (jolt-pr-str k)))))
+          (rdr-error-here* "java.lang.IllegalArgumentException"
+                           (keyword "read" "duplicate-key")
+                           (string-append "Duplicate key: " (jolt-pr-str k))))
         (dupchk (cddr kvs) (pset-conj seen k)))))
   (let ((m (apply jolt-hash-map es)))
     (when (pair? es) (rdr-map-order-set! m es))
@@ -579,8 +600,9 @@
   (let dupchk ((xs (and (not (rdr-scan-mode)) elems)) (seen empty-pset))
     (when (pair? xs)
       (when (jolt-truthy? (jolt-contains? seen (car xs)))
-        (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
-                                         (string-append "Duplicate key: " (jolt-pr-str (car xs))))))
+        (rdr-error-here* "java.lang.IllegalArgumentException"
+                         (keyword "read" "duplicate-key")
+                         (string-append "Duplicate key: " (jolt-pr-str (car xs)))))
       (dupchk (cdr xs) (pset-conj seen (car xs)))))
   (jolt-hash-map rdr-kw-jolt-type rdr-kw-jolt-set
                  rdr-kw-value (apply jolt-vector elems)))
@@ -668,14 +690,123 @@
         (jolt-hash-map rdr-kw-line line rdr-kw-column col rdr-kw-file f)
         (jolt-hash-map rdr-kw-line line rdr-kw-column col))))
 
-;; rdr-error: format an error with the current source position, throw ex-info.
-;; The message is "msg (file:line:col)" when rdr-source-file is bound,
-;; just "msg" for bare -e strings. ex-data carries :line :column and :file.
-(define (rdr-error s i msg)
+;; A read diagnostic, shaped like the analyzer's: the message alone, and the KIND
+;; plus position, as flat :jolt.error/* keys. Three things follow from that.
+;;
+;; The position is no longer glued onto the message text. It used to read
+;; "msg (file:line:col)" while the reporter printed its own "at file:line:col"
+;; line underneath, and the two disagreed — an unmatched delimiter said 2:20 in
+;; the message and 2:1 on the at line, because only one of them was the token's.
+;;
+;; The reporter suppresses the backtrace for anything carrying a kind, so
+;; read errors stop printing ten frames of rdr-read-form / rdr-read-seq internals
+;; that name nothing a reader can act on.
+;;
+;; And the kind is registered in test/conformance/error-kinds.edn like every
+;; other, so `make errorkinds` covers the reader too.
+(define rdr-kw-err-kind (keyword "jolt.error" "kind"))
+(define rdr-kw-err-type (keyword "jolt.error" "type"))
+(define rdr-kw-err-line (keyword "jolt.error" "line"))
+(define rdr-kw-err-column (keyword "jolt.error" "column"))
+(define rdr-kw-err-file (keyword "jolt.error" "file"))
+(define rdr-kw-read-error (keyword #f "read-error"))
+
+;; One FLAT namespaced shape. Namespacing, not nesting, is what keeps these from
+;; colliding with the thrower's own ex-data (which the analyzer preserves), so
+;; there is no wrapper map and no second copy of the position to drift out of
+;; step with the first. The reference spells its own the same way
+;; (:clojure.error/line).
+(define (rdr-diagnostic-data kind line col)
+  (let* ((f (rdr-source-file))
+         (m (jolt-hash-map rdr-kw-err-kind kind
+                           rdr-kw-err-type rdr-kw-read-error
+                           rdr-kw-err-line line
+                           rdr-kw-err-column col)))
+    (if f (jolt-assoc m rdr-kw-err-file f) m)))
+
+(define (rdr-error-kind s i kind msg)
   (let-values (((line col) (rdr-line-col-at s i)))
-    (let* ((file (rdr-source-file))
-           (loc (if file (string-append " (" file ":" (number->string line) ":" (number->string col) ")") "")))
-      (jolt-throw (jolt-ex-info (string-append msg loc) (rdr-pos-meta line col))))))
+    (jolt-throw (jolt-ex-info msg (rdr-diagnostic-data kind line col)))))
+
+;; The same diagnostic, keeping a JVM throwable CLASS. Several read errors match a
+;; class a program can catch — an invalid number is a NumberFormatException on
+;; both runtimes, an invalid token a RuntimeException — and turning one into an
+;; ExceptionInfo to carry a kind would break every (catch NumberFormatException …)
+;; around a read.
+;;
+;; make-jolt-ex-info-record directly, NOT jolt-host-throwable: that helper's
+;; optional third argument is the CAUSE, not the data (the record's fields are
+;; class-name message cause data error-offset), so passing the diagnostic there
+;; files it as a cause and leaves data nil.
+(define (rdr-error-class s i class kind msg)
+  (let-values (((line col) (rdr-line-col-at s i)))
+    (jolt-throw (make-jolt-ex-info-record
+                 class msg jolt-nil (rdr-diagnostic-data kind line col) 0))))
+
+;; The kindless spelling, kept so the 37 existing call sites read unchanged while
+;; they are given kinds one at a time.
+(define (rdr-error s i msg)
+  (rdr-error-kind s i (keyword "read" "invalid-syntax") msg))
+
+;; Raise a read diagnostic that has NO position. Only rdr-make-map and
+;; rdr-make-set need this: they take an element LIST, and are also called by the
+;; #(…) rewriter and the namespaced-map reader, which have no index into the
+;; source to hand them. Everything else that judges a token does so with the
+;; source still in hand and raises positioned (rdr-error-kind / rdr-error-class).
+;; rdr-at, at the two collection-literal call sites, gives these one as it
+;; escapes.
+;;
+;; CLASS is the throwable class, kept because a duplicate map key is an
+;; IllegalArgumentException on both runtimes, and turning it into an ExceptionInfo
+;; to carry a kind would break every (catch IllegalArgumentException ...) around a
+;; read.
+(define (rdr-error-here* class kind msg)
+  ;; make-jolt-ex-info-record directly, NOT jolt-host-throwable: that helper's
+  ;; optional third argument is the CAUSE, not the data (the record's fields are
+  ;; class-name message cause data error-offset), so passing the diagnostic there
+  ;; silently filed it as a cause and left data nil — the report kept falling back
+  ;; to the top-level position with no kind at all.
+  (jolt-throw (make-jolt-ex-info-record
+               class msg jolt-nil
+               (jolt-hash-map rdr-kw-err-kind kind
+                              rdr-kw-err-type rdr-kw-read-error)
+               0)))
+
+;; Run THUNK, and if it raises a read diagnostic with no position, fill in the one
+;; at index I. Used at the two collection-literal sites only — a `guard` captures
+;; a continuation on every call, so paying it per map and per set is a different
+;; proposition from paying it per keyword, and the token readers thread the index
+;; instead.
+(define (rdr-at s i thunk)
+  (guard (e ((rdr-positionless-read-error? e)
+             (let-values (((line col) (rdr-line-col-at s i)))
+               (let ((v (jolt-unwrap-throw e)))
+                 ;; The CLASS is carried over, not rebuilt as an ExceptionInfo:
+                 ;; adding a position must not change what a catch clause matches.
+                 (jolt-throw
+                  (make-jolt-ex-info-record
+                   (jolt-ex-info-record-class-name v)
+                   (jolt-ex-info-record-message v)
+                   (jolt-ex-info-record-cause v)
+                   (rdr-diagnostic-data (rdr-read-error-kind e) line col)
+                   0))))))
+    (thunk)))
+
+(define (rdr-read-error-of e)
+  (let ((v (jolt-unwrap-throw e)))
+    (and (jolt-ex-info-record? v)
+         (let ((d (jolt-ex-info-record-data v)))
+           (and (pmap? d)
+                (eq? (jolt-get d rdr-kw-err-type jolt-nil) rdr-kw-read-error)
+                d)))))
+
+(define (rdr-positionless-read-error? e)
+  (let ((d (rdr-read-error-of e)))
+    (and d (jolt-nil? (jolt-get d rdr-kw-err-line jolt-nil)))))
+
+(define (rdr-read-error-kind e)
+  (let ((d (rdr-read-error-of e)))
+    (if d (jolt-get d rdr-kw-err-kind jolt-nil) jolt-nil)))
 
 (define (rdr-attach-pos lst line col)
   (if (empty-list-t? lst)            ; () is interned, can't carry meta (= Clojure)
@@ -905,9 +1036,9 @@
         ((null? (cdr es)) es)
         (else (cons (rdr-nsmap-key mapns (car es))
                     (cons (cadr es) (rdr-nsmap-kvs mapns (cddr es)))))))
-(define (rdr-simple-symbol-token? tok)
+(define (rdr-simple-symbol-token? tok s i)
   (guard (e (#t #f))
-    (let ((v (rdr-token->value tok)))
+    (let ((v (rdr-token->value tok s i)))
       (and (symbol-t? v) (not (symbol-t-ns v))))))
 (define (rdr-read-ns-map s i end)        ; i points just past "#:"
   (let* ((auto? (and (< i end) (char=? (string-ref s i) #\:)))
@@ -947,7 +1078,7 @@
            ;; value jolt actually has rather than imitate Java's printer.
            (when (if (string=? nstok "")
                      (not auto?)
-                     (not (rdr-simple-symbol-token? nstok)))
+                     (not (rdr-simple-symbol-token? nstok s i2)))
              (rdr-error s i2 (string-append "Namespaced map must specify a valid namespace: "
                                             (if (string=? nstok "") "nil" nstok))))
            (let ((mapns (if auto?
@@ -1148,7 +1279,10 @@
     (cond
       ((char=? c #\{)                    ; #{...} set
        (let-values (((elems j) (rdr-read-seq s (+ i 1) end #\})))
-         (values (rdr-make-set elems) j)))
+         ;; i is the literal's own start, which is the only place that knows it:
+         ;; rdr-make-set takes elements, not source, and is shared with the #(…)
+         ;; rewriter, which has none. See rdr-at.
+         (values (rdr-at s i (lambda () (rdr-make-set elems))) j)))
       ((char=? c #\()                    ; #(...) anonymous fn shorthand
        (rdr-read-anon-fn s i end))
       ((char=? c #\")                    ; #"..." -> a regex VALUE (Clojure parity:
@@ -1234,7 +1368,8 @@
         (else (loop (+ i 1) (cons c acc)))))))
 
 ;; --- keyword ----------------------------------------------------------------
-(define (rdr-read-keyword s i end)       ; i points just past the leading ':'
+(define (rdr-read-keyword s i end start) ; i points just past the leading ':',
+                                         ; start at the ':' itself
   ;; ::kw is auto-resolved against the current ns: ::name -> current-ns/name,
   ;; ::alias/name -> the alias's target ns / name (Clojure's reader semantics).
   (let ((auto? (and (< i end) (char=? (string-ref s i) #\:))))
@@ -1251,9 +1386,9 @@
                     (and (> len 1) (char=? (string-ref tok 0) #\/))
                     (and (> len 1) (char=? (string-ref tok (- len 1)) #\/)
                          (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/)))))
-            (rdr-invalid-token (string-append (if auto? "::" ":") tok)))
+            (rdr-invalid-token s start (string-append (if auto? "::" ":") tok)))
           (when (and auto? (rdr-edn-mode))
-            (rdr-invalid-token (string-append "::" tok))))
+            (rdr-invalid-token s start (string-append "::" tok))))
         (let-values (((ns name) (rdr-sym-parts tok)))
           (if auto?
               (let* ((cur (chez-current-ns))
@@ -1261,7 +1396,7 @@
                               (let ((a (chez-resolve-alias cur ns)))
                                 (cond (a a)
                                       ((rdr-scan-mode) ns)
-                                      (else (rdr-invalid-token (string-append "::" tok)))))
+                                      (else (rdr-invalid-token s start (string-append "::" tok)))))
                               cur)))
                 (values (keyword rns name) j))
               (values (keyword ns name) j)))))))
@@ -1286,12 +1421,18 @@
             ((char=? c #\[) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\])))
                               (values (apply jolt-vector es) j)))
             ((char=? c #\{) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\})))
-                              (values (rdr-make-map es) j)))
+                              (values (rdr-at s i (lambda () (rdr-make-map es))) j)))
             ((or (char=? c #\)) (char=? c #\]) (char=? c #\}))
              (values rdr-eof i))         ; unconsumed close — read-seq handles it
+            ;; No guard around these: each raises positioned from the inside.
+            ;; A string literal already reports at the offending escape, and the
+            ;; character and keyword readers take i — the sigil's own index — so
+            ;; theirs report at the literal. Catching a positionless raise on its
+            ;; way out instead would cost a continuation capture per keyword,
+            ;; string and character literal read, to serve the one that fails.
             ((char=? c #\") (rdr-read-string-lit s (+ i 1) end))
-            ((char=? c #\\) (rdr-read-char s (+ i 1) end))
-            ((char=? c #\:) (rdr-read-keyword s (+ i 1) end))
+            ((char=? c #\\) (rdr-read-char s (+ i 1) end i))
+            ((char=? c #\:) (rdr-read-keyword s (+ i 1) end i))
             ((char=? c #\#) (rdr-read-dispatch s (+ i 1) end))
             ((char=? c #\') (rdr-wrap s (+ i 1) end (jolt-symbol #f "quote")))
             ;; syntax-quote of a self-evaluating literal collapses to the literal at
@@ -1327,7 +1468,7 @@
                  (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
             (else
              (let-values (((tok j) (rdr-read-token s i end)))
-               (values (rdr-token->value tok) j))))))))
+               (values (rdr-token->value tok s i) j))))))))
 
 ;; wrap the next form in a 2-element list (READER-MACRO form)
 ;; self-evaluating literals (NOT symbols/collections) — syntax-quote passes these
@@ -1765,8 +1906,16 @@
 ;; (parse-string wart, matched deliberately). jolt-read-form-raw keeps set FORMS
 ;; for the compiler spine (compile-eval); the data seam converts them to sets.
 (define (jolt-read-form-raw s)
-  (let-values (((form j) (rdr-read-top s 0 (string-length s))))
-    (if (rdr-eof? form) jolt-nil form)))
+  ;; rdr-source-file OFF, because the string is not that file. It is a
+  ;; thread parameter the loader binds around a whole file load, so a
+  ;; (read-string "…") the file's own code runs at RUNTIME inherited it: the
+  ;; forms came back tagged :file "app.clj", and a read error carried a position
+  ;; into the string rendered against app.clj — "app.clj:1:5" with a framed
+  ;; snippet of a line that had nothing to do with it. The file paths read
+  ;; through rdr-read-top (loader.ss, emit-image.ss ei-read-all) and keep it.
+  (parameterize ((rdr-source-file #f))
+    (let-values (((form j) (rdr-read-top s 0 (string-length s))))
+      (if (rdr-eof? form) jolt-nil form))))
 
 ;; the edn seam: strict mode (no auto-resolved keywords), each #_ discard handed
 ;; to the callback for tag validation, and a distinct EOF sentinel so the edn
@@ -1775,6 +1924,7 @@
   (if (jolt-nil? s)
       (keyword "jolt" "reader-eof")
       (parameterize ((rdr-edn-mode #t)
+                     (rdr-source-file #f)   ; a string, not the file being loaded
                      (rdr-discard-cb (if (jolt-nil? cb) #f cb)))
         (let-values (((form j) (rdr-read-top s 0 (string-length s))))
           (if (rdr-eof? form) (keyword "jolt" "reader-eof") form)))))
@@ -1799,11 +1949,12 @@
 
 ;; __parse-next: [form rest-of-string] or nil when only whitespace/comments left.
 (define (jolt-parse-next s)
-  (let ((end (string-length s)))
+  (parameterize ((rdr-source-file #f))    ; a string, not the file being loaded
+   (let ((end (string-length s)))
     (let-values (((form j) (rdr-read-top s 0 end)))
       (if (rdr-eof? form)
           jolt-nil
-          (jolt-vector (rdr-form->data form) (substring s j end))))))
+          (jolt-vector (rdr-form->data form) (substring s j end)))))))
 
 ;; The same read, at an INDEX into s rather than off the front: (form . next-index),
 ;; or #f when only whitespace/comments remain. Handing back an index instead of the
@@ -1812,9 +1963,10 @@
 ;; host reader read that way (java/io.ss host-reader-read-form) was quadratic.
 ;; Scheme-level, for that one caller: the jolt-visible __parse-next is unchanged.
 (define (rdr-parse-at s i)
-  (let ((end (string-length s)))
-    (let-values (((form j) (rdr-read-top s i end)))
-      (and (not (rdr-eof? form)) (cons (rdr-form->data form) j)))))
+  (parameterize ((rdr-source-file #f))    ; a Reader's text, not the loaded file
+    (let ((end (string-length s)))
+      (let-values (((form j) (rdr-read-top s i end)))
+        (and (not (rdr-eof? form)) (cons (rdr-form->data form) j))))))
 
 ;; __read-tagged: apply a built-in data reader to an already-read form. The tag
 ;; is the :#name keyword the reader produced; #uuid/#inst reuse the inst-time ctors.

@@ -175,7 +175,7 @@
       (if xs
         (if (next xs)
           (recur (assoc m (first xs) (second xs)) (nnext xs))
-          (throw (str "No value supplied for key: " (first xs))))
+          (throw (IllegalArgumentException. (str "No value supplied for key: " (first xs)))))
         m))
     (if (seq s) (first s) {})))
 
@@ -228,7 +228,7 @@
 ;; inst-ms: epoch milliseconds of an instant; throws on a non-inst (Clojure
 ;; protocol behavior).
 (defn inst-ms [x]
-  (if (inst? x) (get x :ms) (throw (str "inst-ms requires an inst, got: " x))))
+  (if (inst? x) (get x :ms) (throw (IllegalArgumentException. (str "inst-ms requires an inst, got: " x)))))
 
 ;; Clojure 1.11 map transformers. An empty-map base keeps insertion order;
 ;; transformed keys canonicalize via assoc (collisions: last entry in seq order
@@ -311,7 +311,7 @@
 ;; future? stays native (deref/future-cancel/realized? call it); future-call and
 ;; future-cancel stay native too (OS threads).
 (defn future-done? [x]
-  (if (future? x) (boolean (get x :cached)) (throw "future-done? requires a future")))
+  (if (future? x) (boolean (get x :cached)) (throw (IllegalArgumentException. "future-done? requires a future"))))
 (defn future-cancelled? [x]
   (and (future? x) (boolean (get x :cancelled))))
 
@@ -326,7 +326,10 @@
 ;; mutable backing.
 (defn aget [arr & idxs]
   (reduce (fn [v i] (nth v i)) arr idxs))
-(defn alength [arr] (if (nil? arr) (throw (NullPointerException. "")) (count arr)))
+(defn alength [arr]
+  (if (nil? arr)
+    (throw (NullPointerException. "Cannot read the array length because the array is null"))
+    (count arr)))
 (defn aset [arr & idxs+val]
   (let [n (count idxs+val)
         val (nth idxs+val (dec n))

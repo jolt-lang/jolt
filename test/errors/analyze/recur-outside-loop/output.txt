@@ -1,4 +1,8 @@
-Unhandled exception: jolt/uncompilable: recur outside loop/fn
-  ex-data: {:jolt/error {:type :analysis-error, :line 3, :column 8, :file ./test/errors/analyze/recur-outside-loop/input.clj}}
-  at ./test/errors/analyze/recur-outside-loop/input.clj:3:8
+error[analyze/invalid-recur]: Cannot recur here: no enclosing loop or fn
+  --> ./test/errors/analyze/recur-outside-loop/input.clj:3:8
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def x (recur 1))
+   |        ^^^^^^^^^
 exit: 1

@@ -243,10 +243,19 @@ check_loc '(zzzptqx 1)' 'Unable to resolve symbol: zzzptqx'
 nested_unresolved='(defn nestedf []
   (let [a 1]
     (bogusxyz a)))'
-check_loc "$nested_unresolved" '  at 3:'
+check_loc "$nested_unresolved" '  --> 3:'
 # The position must reach the machine-readable diagnostic too, not just the text.
-diag_nested="$(JOLT_DIAG=edn $jolt -e "$nested_unresolved" 2>&1 >/dev/null)"
-if printf '%s' "$diag_nested" | grep -q ':line 3'; then
+#
+# READ the line rather than grep it. Every key in the map is :jolt.error/-
+# namespaced, so the printer emits the namespaced-map form #:jolt.error{:line 3}
+# — the same data a reader gives back either way, and the shape flips to the flat
+# spelling the moment a thrower's own ex-data key joins it. A gate that matches
+# text is asserting the printer's choice; a tool consuming this reads it.
+diag_dir="$(mktemp -d)"
+JOLT_DIAG=edn $jolt -e "$nested_unresolved" 2>"$diag_dir/nested.edn" >/dev/null
+diag_nested="$(cat "$diag_dir/nested.edn")"
+diag_nested_line="$($jolt -e "(:jolt.error/line (read-string (slurp \"$diag_dir/nested.edn\")))" 2>/dev/null)"
+if [ "$diag_nested_line" = "3" ]; then
   pass=$((pass + 1))
 else
   echo "  FAIL: JOLT_DIAG=edn carries the nested line"
@@ -264,18 +273,21 @@ check_no '(prinltn 1)' '  trace:'
 check_trace '(do (defn keepstrace [x] (inc (/ x 0))) (keepstrace 1))' 'keepstrace'
 
 # JOLT_DIAG=edn emits one machine-readable EDN diagnostic line (valid EDN with
-# quoted strings) carrying the structured :type/:suggestions plus source position.
-diag_out="$(JOLT_DIAG=edn $jolt -e '(prinltn 1)' 2>&1 >/dev/null)"
-if printf '%s' "$diag_out" | grep -q ':type :unresolved-symbol' \
-   && printf '%s' "$diag_out" | grep -q ':suggestions \[' \
-   && printf '%s' "$diag_out" | grep -q '"println"' \
-   && printf '%s' "$diag_out" | grep -q ':line 1'; then
+# quoted strings) carrying the structured kind/suggestions plus source position.
+# The keys are namespaced (:jolt.error/...) so a diagnostic's own metadata cannot
+# collide with a thrower's ex-data; :kind is the specific handle on the error and
+# :type is the phase that raised it. Read back as data, for the reason above.
+JOLT_DIAG=edn $jolt -e '(prinltn 1)' 2>"$diag_dir/sugg.edn" >/dev/null
+diag_out="$(cat "$diag_dir/sugg.edn")"
+diag_fields="$($jolt -e "(let [d (read-string (slurp \"$diag_dir/sugg.edn\"))] (pr [(:jolt.error/kind d) (vec (:jolt.error/suggestions d)) (:jolt.error/line d)]))" 2>/dev/null)"
+if [ "$diag_fields" = '[:analyze/unresolved-symbol ["print" "printf" "println"] 1]' ]; then
   pass=$((pass + 1))
 else
   echo "  FAIL: JOLT_DIAG=edn structured diagnostic"
-  echo "    got \`$diag_out\`"
+  echo "    got \`$diag_out\` -> \`$diag_fields\`"
   fails=$((fails + 1))
 fi
+rm -rf "$diag_dir"
 
 # JOLT_CHECK surfaces the success-type checker as located warnings; off by
 # default it must stay silent.
@@ -458,6 +470,20 @@ cla_check "$jolt -e '(println *command-line-args*)'"                 'nil'
 rc_dir="$(mktemp -d)"; rc="$rc_dir/rc.clj"; printf '(prn *command-line-args*)\n' > "$rc"
 cla_check "$jolt run \"$rc\" -- -e x" '("-e" "x")'
 rm -rf "$rc_dir"
+# read-string does not inherit the file being loaded. rdr-source-file is bound
+# around a WHOLE file load, so a (read-string s) the file's own code runs at
+# runtime used to come back with forms tagged :file "<that file>", and a read
+# error then carried a position into the STRING rendered against that file — a
+# framed snippet of a line that had nothing to do with it. Only reachable from
+# inside a real load, which is the one place the parameter is set; :line stays,
+# and describes the string that was read (known-divergences: the JVM records no
+# position for read-string at all).
+rs_dir="$(mktemp -d)"
+printf '%s\n' '(ns p)' \
+  '(prn [(:file (meta (read-string "(foo)"))) (:line (meta (read-string "(foo)")))])' \
+  > "$rs_dir/p.clj"
+cla_check "$jolt run \"$rs_dir/p.clj\"" '[nil 1]'
+rm -rf "$rs_dir"
 # -m NS -- ... : same end-of-options rule for a namespace -main.
 mp="$(mktemp -d)"; mkdir -p "$mp/src"
 printf '{:paths ["src"]}\n' > "$mp/deps.edn"

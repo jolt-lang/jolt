@@ -42,6 +42,10 @@
 (load "host/chez/cli-core.ss")
 (load "host/chez/png.ss")          ; jolt.png — a baked namespace before the snapshot
 (load "host/chez/loader.ss")
+;; The diagnostic snippet renderer. AFTER the loader, whose read-file-string it
+;; uses to pull the offending lines back off disk; cli-core.ss calls into it from
+;; inside the report path, which runs long after every load has finished.
+(load "host/chez/diagnostic-render.ss")
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
 ;; baked-ns snapshot, so a library's (require '[jolt.ffi]) still loads jolt.ffi's
 ;; Clojure side (the foreign-fn / defcfn macros, stdlib/jolt/ffi.clj).

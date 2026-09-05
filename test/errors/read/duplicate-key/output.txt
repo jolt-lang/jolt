@@ -1,10 +1,8 @@
-Unhandled exception (IllegalArgumentException): Duplicate key: :a
-  at ./test/errors/read/duplicate-key/input.clj:1:1
-  trace:
-    rdr-make-map
-    rdr-read-form
-    rdr-read-seq
-    rdr-read-form
-    rdr-read-top
-    cmd-run
+error[read/duplicate-key]: Duplicate key: :a
+  --> ./test/errors/read/duplicate-key/input.clj:3:8
+   |
+ 1 | (ns input)
+ 2 | 
+ 3 | (def m {:a 1
+   |        ^
 exit: 1

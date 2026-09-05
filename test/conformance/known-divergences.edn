@@ -54,6 +54,28 @@
   ;; arrive unverified. Rendering is pr-str for a value, "throws <SimpleName>" for
   ;; a raise (the ROOT cause's simple name). :jvm/:jolt outside :check are prose
   ;; for a reader; the :check pair is what the gate holds to.
+  ;; The JVM's read-string reads through a plain PushbackReader, not a
+  ;; LineNumberingPushbackReader, so nothing it returns carries source metadata at
+  ;; all — that only happens for forms the compiler reads out of a file. jolt's
+  ;; reader counts line and column unconditionally, so a form read out of a string
+  ;; knows where in THAT STRING it sat. A superset: :line/:column describe the
+  ;; string that was read, and code that reads meta off the JVM's read-string gets
+  ;; nil there and so cannot depend on either answer.
+  ;;
+  ;; What the two DO agree on is :file, which is absent on both. jolt binds the
+  ;; source file around a whole file load, and read-string reads a string rather
+  ;; than that file, so it reads with the binding off — otherwise a
+  ;; (read-string s) a loaded file's own code runs at runtime came back tagged
+  ;; with that file, and a read error carried a position into the string rendered
+  ;; against it.
+  {:category :reader-model
+   :behavior "(meta (read-string \"(foo)\"))"
+   :jvm "nil — read-string does not record positions"
+   :jolt "{:line 1, :column 1} — the position within the string that was read"
+   :check {:expr "(pr-str (meta (read-string \"(foo)\")))"
+           :jvm "\"nil\""
+           :jolt "\"{:line 1, :column 1}\""}
+   :note "Positions only; :file is absent on both, and stays absent inside a file load."}
   ;; (NumberFormat/getCurrencyInstance) with no argument resolves the JVM's DEFAULT
   ;; locale, which is a property of the machine — en_CA gives "$123.45", en_US
   ;; "$123.45", de_DE "123,45 €". jolt core has no notion of a default locale (it does

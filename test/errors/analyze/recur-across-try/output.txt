@@ -1,4 +1,8 @@
-Unhandled exception: Cannot recur across try
-  ex-data: {:jolt/error {:type :analysis-error, :line 5, :column 5, :file ./test/errors/analyze/recur-across-try/input.clj}}
-  at ./test/errors/analyze/recur-across-try/input.clj:5:5
+error[analyze/invalid-recur]: Cannot recur across try
+  --> ./test/errors/analyze/recur-across-try/input.clj:5:5
+   |
+ 3 | (defn f [x]
+ 4 |   (try
+ 5 |     (recur x)
+   |     ^^^^^^^^^
 exit: 1

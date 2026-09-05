@@ -1,4 +1,9 @@
-Unhandled exception: Wrong number of args (0) passed to: if
-  ex-data: {:jolt/error {:type :analysis-error, :line 9, :column 5, :file ./test/errors/macro/synthetic-expansion/input.clj}}
-  at ./test/errors/macro/synthetic-expansion/input.clj:9:5
+error[analyze/invalid-if]: Too few arguments to if
+  --> ./test/errors/macro/synthetic-expansion/input.clj:9:5
+   |
+ 7 | (defn bar []
+ 8 |   (let []
+ 9 |     (my-if)))
+   |     ^^^^^^^
+   = note: raised while expanding the `my-if` macro
 exit: 1

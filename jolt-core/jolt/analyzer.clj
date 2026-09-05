@@ -7,7 +7,7 @@
   bootstrap can compile this namespace via its plain :var path. ctx is an opaque
   host handle threaded to the contract fns; the analyzer never inspects it.
 
-  Unsupported forms throw :jolt/uncompilable
+  Unsupported forms throw an ex-info carrying :jolt.error/kind and a position
   so the caller falls back to the interpreter (the hybrid contract).
 
   `env` carries lexical state: {:locals #{names} :recur recur-target-name|nil}.
@@ -59,9 +59,6 @@
 ;; practice, and matches how the reader spells ~ and ~@.
 (def ^:private qualified-only #{"syntax-quote"})
 
-(defn- uncompilable [why]
-  (throw (str "jolt/uncompilable: " why)))
-
 ;; Process-wide on purpose: an anon fn's generated name is REGISTERED (backend
 ;; rname), so it has to be unique across every thread compiling, not just within one
 ;; compilation. Read and bump in one swap! — reading the atom and then incrementing
@@ -96,12 +93,77 @@
 ;; compiler pays to bind LINE/COLUMN in analyzeSeq.
 (def ^:dynamic *positioned-form-box* nil)
 
+;; The innermost macro expansion currently being analyzed, as [macro-name form],
+;; or nil. A diagnostic raised inside expanded code names the MACRO CALL — the
+;; expansion has no position of its own — which leaves the reader looking at a
+;; form that is correct as written, with no hint that the error came from code
+;; the macro generated. Recording which macro was expanding turns that into a
+;; note: "expanded from (my-def ...)".
+;;
+;; Stored like the position box, and for the same reason: written per expansion,
+;; read only when something throws.
+(def ^:dynamic *expansion-box* nil)
+
 ;; The position a diagnostic should carry: the innermost positioned form's, or nil
 ;; when nothing under analysis had reader metadata (a macro-built form, or a form
 ;; handed straight to eval). nil box means nothing is under analysis on this thread.
 (defn current-form-position []
   (let [f (when *positioned-form-box* @*positioned-form-box*)]
     (when (some? f) (form-position f))))
+
+;; Raise a compile-time diagnostic. Two things this fixes over the bare string it
+;; replaces — (throw (str "jolt/uncompilable: " why)):
+;;
+;; It is a real THROWABLE. A program that caught a compile error got a Scheme
+;; string: (class e) answered String, (ex-message e) nil, (instance? Exception e)
+;; false. The message survived only because the uncaught reporter pr-str'd the raw
+;; value, so the report looked right while nothing could read it.
+;;
+;; It carries a KIND — a namespaced keyword registered in
+;; test/conformance/error-kinds.edn, gated by `make errorkinds` — so tooling and
+;; the reporter can key on the error rather than parse its prose, and so the
+;; wording can be improved without breaking either.
+;;
+;; :type stays :analysis-error for the reporter, which already keys on it to drop
+;; the analyzer's own recursion from the trace.
+;; The diagnostic keys are namespaced and FLAT — :jolt.error/kind beside
+;; :jolt.error/line, not a nested map under one key. Namespacing is what keeps
+;; jolt's metadata from colliding with the thrower's own ex-data, which this
+;; preserves; nesting would have been solving a problem the namespace already
+;; solves. The reference spells its own the same way (:clojure.error/line).
+(defn- current-expansion []
+  (when *expansion-box* @*expansion-box*))
+
+(defn- diagnostic-data [kind pos extra]
+  (let [exp (current-expansion)]
+    (cond-> (or extra {})
+      true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
+      ;; Name the macro ONLY when the position being reported is the macro call
+      ;; itself. That is exactly the case where the failing form was GENERATED —
+      ;; it has no position of its own, so the innermost positioned form is the
+      ;; call — and exactly the case where the reader is otherwise left staring
+      ;; at a line that is correct as written.
+      ;;
+      ;; When the user's own form is what failed, it has its own position and is
+      ;; not the call, so no note: (if) inside a defn body is the user's `if`,
+      ;; not something defn generated, even though it is analyzed inside defn's
+      ;; expansion. Without this test every diagnostic in ordinary code was
+      ;; labelled "expanding the `defn` macro", which is noise.
+      ;; Compared by POSITION, not object identity: a macro that builds its
+      ;; expansion with syntax-quote propagates the call site's line onto the
+      ;; generated form, so the form being reported is a different object that
+      ;; nonetheless sits exactly where the call does. Identity said "not the
+      ;; call" and dropped the note on the very case it exists for.
+      (and exp (= pos (form-position (second exp))))
+      (assoc :jolt.error/macro (first exp))
+      (:line pos) (assoc :jolt.error/line (:line pos))
+      (:column pos) (assoc :jolt.error/column (:column pos))
+      (:file pos) (assoc :jolt.error/file (:file pos)))))
+
+(defn- analysis-error
+  ([kind msg] (analysis-error kind msg nil))
+  ([kind msg extra]
+   (throw (ex-info msg (diagnostic-data kind (current-form-position) extra)))))
 
 (defn- empty-env [] {:locals #{} :hints {}})
 (defn- local? [env nm] (contains? (:locals env) nm))
@@ -211,6 +273,68 @@
                                (:arities node)))
     node))
 
+;; `recur` rebinds and jumps, so it may only appear where its value IS the value
+;; of the enclosing target. Anywhere else the surrounding expression is silently
+;; discarded: (loop [i 0] (+ 1 (recur (inc i)))) looped forever here and never
+;; applied the (+ 1 ...), where the reference refuses to compile it.
+;;
+;; Checked as a pass over the ANALYZED tree rather than threaded through the
+;; analyze-* arms, because tail position is a property of the tree and threading
+;; it would put a separate rule in every arm — where one wrong rule REJECTS VALID
+;; CODE, which is worse than the permissiveness it replaces. Here the default is
+;; "children are not tail", so an op this does not name can only be restrictive
+;; about a recur nested inside it, never wrong about one in tail position.
+;;
+;; Only three ops pass tail position down: an `if` to its branches, a `do` to its
+;; last form, a `let` to its body. Every other construct that admits a recur in
+;; tail position — case, cond, when, or, and, letfn — is a macro over exactly
+;; these, so it needs no rule of its own.
+;;
+;; NOT the back end's tail-transparent-ops (backend_scheme.clj), which is a
+;; larger set answering a different question. That one asks "may a tail call sit
+;; under this node", so it also names :invoke, :throw and :host-call — the ops
+;; that read *tail?* themselves to decide whether to store a frame site — and
+;; :loop, whose own body is where its self-call is tail. Widening this set to
+;; match it would put a recur back in an argument position: (loop [] (f (recur)))
+;; is exactly what an :invoke entry here would re-admit.
+;;
+;; :fn and :loop are their OWN recur targets: their bodies are checked when those
+;; bodies are analyzed, so descending into them here would check them twice
+;; against the wrong target. A loop's binding INITS still belong to the enclosing
+;; target, though, and are checked as non-tail.
+(defn- check-recur-tails!
+  ([node] (check-recur-tails! node true))
+  ([node tail?]
+   (when (some? node)
+     (let [op (:op node)]
+       (cond
+         (= op :recur)
+           (do (when-not tail?
+                 ;; The recur's OWN position, carried on the node, because this
+                 ;; pass runs after the body is analyzed — the position box has
+                 ;; been restored by then and names the enclosing loop/fn instead.
+                 ;; The reference points at the recur (pos.clj:6:12, not the loop
+                 ;; on 4:3) and so should this.
+                 (throw (ex-info "Can only recur from tail position"
+                                 (diagnostic-data :analyze/invalid-recur
+                                                  (:pos node) nil))))
+               (doseq [a (:args node)] (check-recur-tails! a false)))
+         (= op :fn) nil
+         (= op :loop)
+           (doseq [b (:bindings node)] (check-recur-tails! (nth b 1) false))
+         (= op :if)
+           (do (check-recur-tails! (:test node) false)
+               (check-recur-tails! (:then node) tail?)
+               (check-recur-tails! (:else node) tail?))
+         (= op :do)
+           (do (doseq [s (:statements node)] (check-recur-tails! s false))
+               (check-recur-tails! (:ret node) tail?))
+         (= op :let)
+           (do (doseq [b (:bindings node)] (check-recur-tails! (nth b 1) false))
+               (check-recur-tails! (:body node) tail?))
+         :else
+           (reduce-ir-children (fn [_ c] (check-recur-tails! c false)) nil node))))))
+
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
         n (count v)]
@@ -220,10 +344,19 @@
       :else (do-node (subvec v 0 (dec n)) (peek v)))))
 
 (defn- analyze-bindings [ctx bvec env]
+  ;; Checked BEFORE the walk, because the walk reads pairs: an odd vector sent
+  ;; (nth bvec (inc i)) past the end and the user got the raw fault that came
+  ;; back — "java.lang.IndexOutOfBoundsException: index out of bounds" as the
+  ;; compile error for (let [a 1 b] a). The reference reports the binding form.
+  (when (odd? (count bvec))
+    (analysis-error :analyze/invalid-binding
+                    "Bad binding form, expected matched symbol expression pairs"))
   (loop [i 0 env env pairs []]
     (if (< i (count bvec))
       (let [bsym (nth bvec i)]
-        (when-not (form-sym? bsym) (uncompilable "destructuring binding"))
+        (when-not (form-sym? bsym)
+          (analysis-error :analyze/invalid-binding
+                          "Bad binding form, expected symbol"))
         (let [nm (form-sym-name bsym)
               init0 (analyze ctx (nth bvec (inc i)) env)
               ;; a ^doubles/^floats/^longs/^ints let binding tags its init with the
@@ -246,10 +379,14 @@
   (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints [] ahints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
-        (when-not (form-sym? p) (uncompilable "destructuring fn param"))
+        (when-not (form-sym? p)
+          (analysis-error :analyze/invalid-fn-parameters
+                          "Bad parameter, expected symbol"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
-            (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
+            (when-not (form-sym? r)
+              (analysis-error :analyze/invalid-fn-parameters
+                              "Bad rest parameter, expected symbol"))
             (recur (+ i 2) fixed (form-sym-name r) hints phints nhints ahints))
           (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)
                 nh (nhint-of ctx p) ah (ahint-of ctx p)]
@@ -369,8 +506,13 @@
         ;; seq as one positional slot). fn-name is the self-ref, not a param.
         env0 (-> (add-locals env names) (with-recur rname (+ (count fixed) (if rst 1 0))))
         env* (reduce (fn [e pr] (add-hint e (nth pr 0) (nth pr 1))) env0 (:hints pp))
+        ;; One of the two recur-target roots (the other is loop*): the body is
+        ;; where a recur against THIS arity may legally sit, so it is where the
+        ;; tail-position check starts.
+        body-node (analyze-seq ctx body env*)
+        _ (check-recur-tails! body-node)
         arity {:params fixed
-               :body (analyze-seq ctx body env*)}
+               :body body-node}
         ;; carry record param hints (name -> ctor-key) for the inference to seed
         ;; the param type; only when present so a hintless arity stays a struct.
         arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)
@@ -529,7 +671,8 @@
                                 (let [cl (vec (form-elements clause))]
                                   (analyze-arity-with-ret ctx (first cl) (rest cl) env fn-name)))
                               rest-items))
-               :else (uncompilable "fn: bad params"))
+               :else (analysis-error :analyze/invalid-fn-parameters
+                                     "Parameter declaration should be a vector"))
         ;; :src-form is the original post-expansion (fn* params body…) form —
         ;; what the image rebuilds from; :free-names the original names of the
         ;; locals it captures. Attached to named fns too (invisible to emission
@@ -568,7 +711,8 @@
         ;; finally which must be last. Enforced eagerly (plain throw) so a misplaced
         ;; clause is a compile error rather than a silently-relocated body form.
         (when @seen-finally?
-          (throw "finally clause must be last in try expression"))
+          (analysis-error :analyze/invalid-try
+                          "finally clause must be last in try expression"))
         (cond
           (= hname "catch")
             (let [cl (vec (form-elements c))]
@@ -577,7 +721,8 @@
               ;; error rather than a compile->interpret punt) instead of letting
               ;; form-sym-name crash on a non-symbol.
               (when (or (< (count cl) 3) (not (form-sym? (nth cl 2))))
-                (throw "Unable to parse catch clause; expected (catch class binding body*)"))
+                (analysis-error :analyze/invalid-try
+                              "Unable to parse catch clause; expected (catch class binding body*)"))
               (swap! catches conj cl))
           (= hname "finally")
             (do (reset! seen-finally? true)
@@ -586,7 +731,8 @@
             (do
               ;; a body expr after a catch is illegal — only catch/finally may follow.
               (when (seq @catches)
-                (throw "Only catch or finally clause can follow catch in try expression"))
+                (analysis-error :analyze/invalid-try
+                      "Only catch or finally clause can follow catch in try expression"))
               (swap! body conj c)))))
     ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
     ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
@@ -725,7 +871,14 @@
     ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
     ;; runtime expression, so the interpreter evaluates the whole def.
     (when-not (form-sym? name-sym)
-      (uncompilable "def name with map metadata"))
+      ;; :arg 1 — the name is the second element of the def form. A keyword or a
+      ;; number carries no reader metadata, so its position cannot come from the
+      ;; form itself; the reporter recovers it by scanning the source, and this
+      ;; says which element to scan to.
+      (analysis-error :analyze/invalid-def
+                      "First argument to def must be a Symbol"
+                      {:jolt.error/arg 1
+                       :jolt.error/note "the name must be a symbol"}))
     (if (< (count items) 3)
       ;; (def name) with no init (declare): intern + reserve the cell so a forward
       ;; reference resolves; the back end keys on :no-init.
@@ -795,18 +948,20 @@
         {:op :set-field :obj (analyze ctx (nth ti 1) env)
          :field (if (= \- (first mname)) (subs mname 1) mname) :val val-node})
       (form-sym? target)
-      (do (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
+      (do (when (local? env (form-sym-name target)) (analysis-error :analyze/invalid-set
+                                (str "Cannot assign to non-mutable: " (form-sym-name target))))
           (let [r (resolve-global ctx target)]
-            (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
+            (when-not (= :var (:kind r)) (analysis-error :analyze/invalid-set "Invalid assignment target"))
             {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
-      :else (uncompilable "set! of an unsupported target"))))
+      :else (analysis-error :analyze/invalid-set "Invalid assignment target"))))
 
 ;; (monitor-enter x) / (monitor-exit x) — the raw monitor ops, lowered to the same
 ;; identity-keyed per-object mutex `locking` takes, so the two compose. Both
 ;; evaluate to nil, matching the JVM (which emits a NIL after the monitor op).
 (defn- analyze-monitor-op [ctx items env op]
   (when-not (= 2 (count items))
-    (throw (str "Wrong number of args (" (dec (count items)) ") passed to: " op)))
+    (analysis-error :analyze/invalid-arity
+            (str "Wrong number of args (" (dec (count items)) ") passed to: " op)))
   (invoke (var-ref "jolt.host" op) [(analyze ctx (nth items 1) env)]))
 
 (defn- analyze-special [ctx op form items env]
@@ -828,7 +983,10 @@
     "if" (do
            ;; 2 or 3 argument forms only (spec 03-special-forms X1)
            (when (or (< (count items) 3) (> (count items) 4))
-             (throw (str "Wrong number of args (" (dec (count items)) ") passed to: if")))
+             (analysis-error :analyze/invalid-if
+                             (if (< (count items) 3)
+                               "Too few arguments to if"
+                               "Too many arguments to if")))
            (if-node (analyze ctx (nth items 1) env)
                     (analyze ctx (nth items 2) env)
                     (if (> (count items) 3)
@@ -843,27 +1001,40 @@
     "loop*" (let [bvec (vec (form-vec-items (nth items 1)))
                   rname (gen-name "loop")
                   r (analyze-bindings ctx bvec env)
-                  env** (with-recur (second r) rname (quot (count bvec) 2))]
-              {:op :loop :bindings (first r)
-               :body (analyze-seq ctx (drop 2 items) env**)})
+                  env** (with-recur (second r) rname (quot (count bvec) 2))
+                  ;; The other recur-target root (see analyze-arity): a recur
+                  ;; against THIS loop may only sit in tail position of its body.
+                  body-node (analyze-seq ctx (drop 2 items) env**)
+                  _ (check-recur-tails! body-node)]
+              {:op :loop :bindings (first r) :body body-node})
     "recur" (let [rt (:recur env)
                   arity (:recur-arity env)
                   n (dec (count items))]
-              (when-not rt (uncompilable "recur outside loop/fn"))
+              (when-not rt (analysis-error :analyze/invalid-recur
+                                           "Cannot recur here: no enclosing loop or fn"))
               ;; A target exists but a `try` stands between here and it. Reported
               ;; before the arity check because the arity is beside the point when
               ;; the recur cannot happen at all, and with the reference's own two
               ;; messages: a try body may not be recurred ACROSS, while a catch or
               ;; finally is not a tail position to begin with.
               (case (:recur-blocked env)
-                :try (throw "Cannot recur across try")
-                :non-tail (throw "Can only recur from tail position")
+                :try (analysis-error :analyze/invalid-recur "Cannot recur across try")
+                :non-tail (analysis-error :analyze/invalid-recur
+                                          "Can only recur from tail position")
                 nil)
               (when (and arity (not= n arity))
-                (throw (str "Mismatched argument count to recur, expected: " arity
-                            " args, got: " n)))
-              {:op :recur
-               :args (mapv #(analyze ctx % env) (rest items))})
+                (analysis-error :analyze/invalid-recur
+                                (str "Mismatched argument count to recur, expected: " arity
+                                     " args, got: " n)))
+              ;; Carry the recur's own source position: the tail-position check is
+              ;; a pass over the finished tree, long after the position box has
+              ;; moved on, so the node is the only thing that still knows where
+              ;; this recur was written. nil for a macro-built recur with no
+              ;; reader metadata, which falls back to the enclosing form.
+              (let [node {:op :recur
+                          :args (mapv #(analyze ctx % env) (rest items))}
+                    p (form-position form)]
+                (if p (assoc node :pos p) node)))
     "try" (analyze-try ctx items env)
     ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
     ;; is a macro over the same jolt.host per-object monitor. Libraries that
@@ -883,11 +1054,13 @@
     ;; jolt holds imported classes in vars, so the symbol resolves as :var.
     "var" (let [sym (second items)]
             (if-not (form-sym? sym)
-              (uncompilable (str "var argument must be a symbol: " (pr-str sym)))
+              (analysis-error :analyze/invalid-var-reference
+                              (str "The argument to `var` must be a symbol, got: " (pr-str sym)))
               (let [r (resolve-global ctx sym)]
                 (if (= :var (:kind r))
                   (the-var (:ns r) (:name r))
-                  (uncompilable (str "Unable to resolve var: "
+                  (analysis-error :analyze/unresolved-var
+                                  (str "Unable to resolve var: "
                                      (if-let [ns (form-sym-ns sym)] (str ns "/") "")
                                      (form-sym-name sym) " in this context"))))))
     ;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
@@ -937,7 +1110,8 @@
                          :fn (analyze ctx fn-form env)}
                         (if meta-expr {:meta-expr meta-expr} {:meta base})))
     "set!" (analyze-set! ctx items env)
-    (uncompilable (str "special form " op))))
+    (analysis-error :analyze/unsupported-special-form
+                    (str "Unsupported special form: " op))))
 
 ;; Host interop method call. `(.method target arg*)` — a head that
 ;; starts with "." but not ".-" (field access stays punted). Analyzes to a
@@ -1005,7 +1179,8 @@
 
 (defn- analyze-host-call [ctx hname items env]
   (when (< (count items) 2)
-    (throw (str "Malformed member expression, expecting (.method target ...): " hname)))
+    (analysis-error :analyze/invalid-member-access
+      (str "Malformed member expression, expecting (.method target ...): " hname)))
   (let [raw (nth items 1)
         target (analyze ctx raw env)]
     (cond-> {:op :host-call
@@ -1060,34 +1235,34 @@
   (let [kind (ffi-layout-form-kind form)
         kind (when (or (= "struct" kind) (= "union" kind)) kind)]
     (when-not (form-vec? form)
-      (throw (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
+      (analysis-error :ffi/invalid-layout (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
                   "or [:union [[field type] ...]], got " (pr-str form))))
     (let [parts (vec (form-vec-items form))]
       (when-not (and kind (= 2 (count parts)) (form-vec? (nth parts 1)))
-        (throw (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
+        (analysis-error :ffi/invalid-layout (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
                     "or [:union [[field type] ...]], got " (pr-str form))))
       (let [field-forms (vec (form-vec-items (nth parts 1)))]
         (when (empty? field-forms)
-          (throw (str "jolt.ffi " kind " descriptor must contain at least one field")))
+          (analysis-error :ffi/invalid-layout (str "jolt.ffi " kind " descriptor must contain at least one field")))
         (loop [remaining field-forms names #{} fields []]
           (if (empty? remaining)
             {:ffi-kind (if (= "union" kind) :union :struct) :fields fields}
             (let [field (first remaining)]
               (when-not (form-vec? field)
-                (throw (str "jolt.ffi " kind " field must be [keyword type], got "
+                (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field must be [keyword type], got "
                             (pr-str field))))
               (let [fp (vec (form-vec-items field))]
                 (when-not (= 2 (count fp))
-                  (throw (str "jolt.ffi " kind " field must be [keyword type], got "
+                  (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field must be [keyword type], got "
                               (pr-str field))))
                 (let [field-name (nth fp 0)]
                   (when-not (and (form-keyword? field-name)
                                  (nil? (namespace field-name)))
-                    (throw (str "jolt.ffi " kind " field name must be an unqualified keyword, got "
+                    (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field name must be an unqualified keyword, got "
                                 (pr-str field-name))))
                   (let [nm (name field-name)]
                     (when (contains? names nm)
-                      (throw (str "jolt.ffi " kind " field names must be unique; duplicate :" nm)))
+                      (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field names must be unique; duplicate :" nm)))
                     (recur (rest remaining)
                            (conj names nm)
                            (conj fields {:name nm
@@ -1096,11 +1271,11 @@
 (defn- analyze-ffi-layout-array [form]
   (let [parts (vec (form-vec-items form))]
     (when-not (= 3 (count parts))
-      (throw (str "jolt.ffi array descriptor must be [:array element-type positive-count], got "
+      (analysis-error :ffi/invalid-array (str "jolt.ffi array descriptor must be [:array element-type positive-count], got "
                   (pr-str form))))
     (let [count (nth parts 2)]
       (when-not (and (integer? count) (pos? count))
-        (throw (str "jolt.ffi array count must be a positive integer literal, got "
+        (analysis-error :ffi/invalid-array (str "jolt.ffi array count must be a positive integer literal, got "
                     (pr-str count))))
       {:ffi-kind :array
        :count count
@@ -1111,7 +1286,7 @@
     (form-keyword? form)
     (let [n (name form)]
       (when-not (and (nil? (namespace form)) (contains? ffi-layout-scalars n))
-        (throw (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
+        (analysis-error :ffi/invalid-type (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
                     (pr-str form))))
       n)
 
@@ -1120,16 +1295,16 @@
       "struct" (analyze-ffi-layout-aggregate form)
       "union" (analyze-ffi-layout-aggregate form)
       "array" (analyze-ffi-layout-array form)
-      (throw (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
+      (analysis-error :ffi/invalid-type (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
                   (pr-str form))))
 
     :else
-    (throw (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
+    (analysis-error :ffi/invalid-type (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
                 (pr-str form)))))
 
 (defn- analyze-ffi-layout [items]
   (when-not (= 2 (count items))
-    (throw "jolt.ffi/layout expects one literal struct or union descriptor"))
+    (analysis-error :ffi/invalid-layout "jolt.ffi/layout expects one literal struct or union descriptor"))
   {:op :ffi-layout :layout (analyze-ffi-layout-aggregate (nth items 1))})
 
 (defn- ffi-by-value-form? [form]
@@ -1161,13 +1336,13 @@
       (let [parts (vec (form-vec-items form))
             analyzed (analyze-ffi-layout-aggregate (nth parts 1))]
         (when (ffi-layout-holds-union? analyzed)
-          (throw (str "jolt.ffi " position
+          (analysis-error :ffi/invalid-type (str "jolt.ffi " position
                       " type: a union is not passed by value, alone or inside a struct"
                       " — declare :pointer and read the member you know applies")))
         {:ffi-kind :by-value
          :type analyzed})
     :else
-      (throw (str "jolt.ffi " position
+      (analysis-error :ffi/invalid-type (str "jolt.ffi " position
                   " type must be a keyword or [:by-value [:struct ...]], got "
                   (pr-str form)))))
 
@@ -1201,12 +1376,12 @@
        (fn [res pr]
          (let [k (nth pr 0) v (nth pr 1)]
            (when-not (and (form-keyword? k) (nil? (namespace k)))
-             (throw (str "jolt.ffi: option key must be an unqualified keyword, got: " k)))
+             (analysis-error :ffi/invalid-option (str "jolt.ffi: option key must be an unqualified keyword, got: " k)))
            (let [kn (name k)]
              (when-not (or (= kn "blocking") (= kn "capture-native-error"))
-               (throw (str "jolt.ffi: unknown option :" kn)))
+               (analysis-error :ffi/invalid-option (str "jolt.ffi: unknown option :" kn)))
              (when-not (or (true? v) (false? v))
-               (throw (str "jolt.ffi: option :" kn
+               (analysis-error :ffi/invalid-option (str "jolt.ffi: option :" kn
                            " must be a literal Boolean, got: " v)))
              (assoc res
                     (if (= kn "blocking") :blocking :capture-native-error)
@@ -1215,11 +1390,11 @@
        (form-map-pairs opt))
 
      :else
-     (throw (str "jolt.ffi: option must be :blocking or an options map, got: " opt)))))
+     (analysis-error :ffi/invalid-option (str "jolt.ffi: option must be :blocking or an options map, got: " opt)))))
 
 (defn- analyze-ffi-fn [ctx items env]
   (when-not (<= 4 (count items) 5)
-    (throw (str "jolt.ffi/foreign-fn expects "
+    (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-fn expects "
                 "(foreign-fn \"sym\" [argtypes] rettype [:blocking | {opts}])")))
   (let [rettype (analyze-ffi-signature-type (nth items 3) "return")
         opt (if (= 5 (count items))
@@ -1228,10 +1403,10 @@
         blocking (:blocking opt)
         capture (:capture-native-error opt)]
     (when (and capture (= rettype "void"))
-      (throw (str "jolt.ffi: :capture-native-error is not supported for :void "
+      (analysis-error :ffi/invalid-option (str "jolt.ffi: :capture-native-error is not supported for :void "
                   "(no stable native result to pair with the error code)")))
     (when (and capture (map? rettype))
-      (throw "jolt.ffi: :capture-native-error is not supported for by-value returns"))
+      (analysis-error :ffi/invalid-option "jolt.ffi: :capture-native-error is not supported for by-value returns"))
     {:op :ffi-fn
      :csym (nth items 1)
      :argtypes (mapv #(analyze-ffi-signature-type % "argument")
@@ -1255,7 +1430,7 @@
 ;; that is not ACTIVE: one the runtime never started, or one in a :blocking call.
 (defn- analyze-ffi-callable [ctx items env]
   (when-not (<= 4 (count items) 5)
-    (throw (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
+    (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
   {:op :ffi-callable
    :fn (analyze ctx (nth items 1) env)
    :argtypes (mapv name (form-vec-items (nth items 2)))
@@ -1268,8 +1443,12 @@
 ;; member name verbatim (the leading "-" survives so the runtime dispatcher reads
 ;; it as a field). The Chez back end dispatches it through record-method-dispatch.
 (defn- analyze-dot [ctx items env]
+  ;; The missing-member form names the shape it wanted, as the reference does;
+  ;; the two-element (. 1 5), which HAS a member that is just not one, is the one
+  ;; that says only "Malformed member expression".
   (when (< (count items) 3)
-    (throw (str "Malformed (. target member ...) form")))
+    (analysis-error :analyze/invalid-member-access
+                    "Malformed member expression, expecting (. target member ...)"))
   (let [member0 (nth items 2)
         ;; (. target (member arg*)) is sugar for (. target member arg*) —
         ;; flatten the list-member form so the rest of the dispatch is uniform.
@@ -1317,11 +1496,12 @@
       ;; (. obj :kw) is a keyword lookup — invoke the keyword on the target.
       (form-keyword? member)
         (invoke (analyze ctx member env) [(analyze ctx (nth items 1) env)])
-      :else (uncompilable "special form . (non-symbol member)"))))
+      :else (analysis-error :analyze/invalid-member-access
+                            "Malformed member expression"))))
 
 (defn- analyze-field [ctx hname items env]
   (when (< (count items) 2)
-    (throw (str "Malformed (.-field target) form")))
+    (analysis-error :analyze/invalid-member-access "Malformed (.-field target) form"))
   {:op :host-call
    :method (subs hname 1)        ; ".-field" -> "-field"
    :target (analyze ctx (nth items 1) env)
@@ -1335,7 +1515,8 @@
 ;; `analyze` (form-var-value?) and analyze-special ("var") and never reach here.
 (defn- deny-macro-value [ctx form r]
   (when (form-macro? ctx form)
-    (throw (str "Can't take value of a macro: #'" (:ns r) "/" (:name r)))))
+    (analysis-error :analyze/invalid-macro-value
+           (str "Can't take value of a macro: #'" (:ns r) "/" (:name r)))))
 
 ;; instance? is a macro on jolt (so it can quote a bare class name — the class
 ;; model has no evaluable Class for every name), but the JVM has it as a plain fn,
@@ -1406,7 +1587,7 @@
 
 ;; Throw the structured "unable to resolve symbol" diagnostic. The human message
 ;; keeps the JVM wording (with any suggestions appended); the ex-data carries a
-;; machine-readable :jolt/error map the CLI reporter emits as EDN under
+;; machine-readable :jolt.error/* keys the CLI reporter emits as EDN under
 ;; JOLT_DIAG=edn, so editors/tools get the symbol, suggestions, and ns as data.
 ;; :line/:column/:file come from the innermost enclosing positioned form, so the
 ;; report names where the unknown name is WRITTEN. The reporter otherwise falls
@@ -1418,12 +1599,11 @@
         msg (if (seq sugg)
               (str base " (did you mean " (apply str (interpose ", " sugg)) "?)")
               base)
-        err {:type :unresolved-symbol
-             :symbol nm
-             :suggestions (vec sugg)
-             :ns (compile-ns ctx)}
-        pos (current-form-position)]
-    (throw (ex-info msg {:jolt/error (if pos (merge err pos) err)}))))
+        extra {:jolt.error/symbol nm
+               :jolt.error/suggestions (vec sugg)
+               :jolt.error/ns (compile-ns ctx)}]
+    (throw (ex-info msg (diagnostic-data :analyze/unresolved-symbol
+                                         (current-form-position) extra)))))
 
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
@@ -1434,7 +1614,7 @@
       ;; supported as a method reference. The call form (Class/.method target ...)
       ;; works; a bare Class/.method as a value is a residual.
       (and ns (> (count nm) 1) (= "." (subs nm 0 1)))
-        (uncompilable
+        (analysis-error :analyze/invalid-method-reference
          (str "Qualified instance method " (str ns "/" nm)
               " used as value; value form not yet supported. Use (.method target ...) or (Class/.method target ...) instead."))
       ns (let [r (resolve-global ctx form)]
@@ -1558,8 +1738,18 @@
             ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
             ;; source offset onto the resulting def, since the macro builds a fresh
             ;; (def …) with no metadata. So the back end can register fn defs.
-            (let [node (analyze ctx (form-expand-1 ctx form (amp-env-map env)) env)
-                  p (form-position form)]
+            ;; The box covers ANALYSIS of the expansion, not the macro function's
+            ;; own run: an error the macro itself raises (destructure rejecting a
+            ;; binding vector, defn rejecting a clause) is about code the user
+            ;; WROTE, and naming the macro there would tell them their own `let`
+            ;; is the problem.
+            (let* [expanded (form-expand-1 ctx form (amp-env-map env))
+                   ebox *expansion-box*
+                   prev (when ebox @ebox)
+                   _ (when ebox (reset! ebox [(form-sym-name head) form]))
+                   node (analyze ctx expanded env)
+                   _ (when ebox (reset! ebox prev))
+                   p (form-position form)]
               (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
           ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
           ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).
@@ -1601,7 +1791,8 @@
           (and hname (not shadowed) (field-head? hname))
             (stamp-pos (analyze-field ctx hname items env) form)
           (and hname (not shadowed) (form-special? hname))
-            (uncompilable (str "special form " hname))
+            (analysis-error :analyze/unsupported-special-form
+                             (str "Unsupported special form: " hname))
           ;; (ns/Name. args*) — a QUALIFIED trailing-dot constructor (a cross-ns or
           ;; aliased deftype, e.g. sci.impl.types/Reified.). hname is nil for a
           ;; namespaced head, so the bare ctor-head? arm above never sees it;
@@ -1671,7 +1862,7 @@
 
 ;; Anything raised while analyzing a form is a COMPILE-time failure, and the
 ;; reporter can only tell — and only knows where to point — when the throw carries
-;; a :jolt/error map. With one it names the innermost positioned form and drops the
+;; a :jolt.error/kind. With one it names the innermost positioned form and drops the
 ;; analyzer's own recursion from the trace; without one it falls back to the
 ;; LOADER's per-top-level-form position and prints thirty lines of jolt internals.
 ;; resolve-error was the only thing that built one, so every other compile failure
@@ -1681,10 +1872,7 @@
 ;;
 ;; Attaching it here, at the one entry every top-level analysis goes through, costs
 ;; a single try per top-level form and covers all of them. A throw that already
-;; carries :jolt/error passes through untouched: it knows its own position better.
-(defn- analysis-diagnostic? [e]
-  (let [d (ex-data e)] (and (some? d) (contains? d :jolt/error))))
-
+;; carries a POSITIONED kind passes through untouched: it knows where it failed.
 (defn- throw-message [e]
   (cond (string? e) e
         ;; an ex-info reports as its message alone; anything else keeps the
@@ -1695,11 +1883,33 @@
 ;; No position to add (a macro-built form, or a form handed straight to eval) means
 ;; nothing to improve on, so leave the throw exactly as it was rather than trading
 ;; its trace for a diagnostic that says no more than the fallback already does.
+;; The rebuilt ex-info keeps the ORIGINAL ex-data and adds the :jolt.error/* keys.
+;; Replacing it outright discarded whatever the thrower attached: a macro that
+;; raised (ex-info "m" {:orig true}) reported no :orig at all, and any library
+;; that hangs explain-data or a error code off its compile-time throw lost it the
+;; moment the form was analyzed. The position and kind are jolt's to add, not the
+;; thrower's data to overwrite.
 (defn- as-analysis-diagnostic [e]
-  (let [pos (current-form-position)]
-    (if (or (nil? pos) (analysis-diagnostic? e))
-      e
-      (ex-info (throw-message e) {:jolt/error (merge {:type :analysis-error} pos)}))))
+  (let [pos (current-form-position)
+        orig (ex-data e)
+        kind (when (map? orig) (:jolt.error/kind orig))]
+    (cond
+      (nil? pos) e
+      ;; Already positioned: it knows where it happened better than the box does.
+      (and kind (:jolt.error/line orig)) e
+      ;; A diagnostic with a KIND but no position. Raised from a macro — the
+      ;; `let`/`loop` destructurer and `defn`'s clause check are clojure.core code
+      ;; and cannot reach the analyzer's position box — so it names the error but
+      ;; not the place. Filling the position in here is what the box is for; the
+      ;; earlier "already a diagnostic, leave it alone" test skipped these
+      ;; entirely, and (defn f [] (let [a 1 b] a)) reported the DEFN's line 3
+      ;; where the reference names the let on line 4. Its own kind is kept.
+      kind (ex-info (throw-message e) (diagnostic-data kind pos orig))
+      ;; No diagnostic at all: anything else raised while analyzing. Keep the
+      ;; thrower's ex-data and add the position beside it.
+      :else (ex-info (throw-message e)
+                     (diagnostic-data :analyze/internal-failure pos
+                                      (when (map? orig) orig))))))
 
 (defn analyze
   ([ctx form]
@@ -1707,7 +1917,8 @@
    ;; reads it. `or` rather than a fresh box every time: an analyze that re-enters
    ;; this arity (a macro analyzing a form it built) keeps the chain it is nested
    ;; inside, which is what the single shared atom used to give it on one thread.
-   (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))]
+   (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))
+             *expansion-box* (or *expansion-box* (atom nil))]
      (try
        ;; ` is a reader macro in Clojure, so a form is already past its backticks
        ;; by the time anything looks at it. jolt reads one to a marker and lowers
@@ -1769,6 +1980,8 @@
      ;; data reader is applied before the form reaches here (loader.ss
      ;; ldr-apply-readers). Name the tag, the way the JVM's reader does; the
      ;; generic "unsupported form" pointed at nothing to fix.
-     (form-tagged? form) (uncompilable (str "No reader function for tag "
-                                            (form-tag-name form)))
-     :else (uncompilable "unsupported form"))))
+     (form-tagged? form) (analysis-error :read/invalid-data-reader
+                                         (str "No reader function for tag "
+                                              (form-tag-name form)))
+     :else (analysis-error :analyze/unsupported-form
+                           "Unsupported form"))))

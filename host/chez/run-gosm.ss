@@ -72,10 +72,13 @@
 ;; A recur the pass OWNS, sitting inside a collection literal. The literal is left
 ;; whole, so the recur would land inside a continuation fn* and target that fn
 ;; instead of the loop — the same trap the opaque arm bails on, reached through the
-;; arm above it. jolt accepts the form (the JVM does not: recur outside tail
-;; position), and unfixed the rewritten body looped forever where the ordinary
-;; expansion returns. Declining costs nothing here and keeps "the pass may cost a
-;; park its cheap representation, never its meaning" true by construction.
+;; arm above it. Declining costs nothing here and keeps "the pass may cost a park
+;; its cheap representation, never its meaning" true by construction.
+;;
+;; The analyzer now REFUSES a non-tail recur outright, as the reference does, so
+;; this shape can no longer be compiled at all (asserted below). The pass is still
+;; gated on it: macroexpand hands the pass any form at all, so it must keep
+;; declining what it cannot move even when nothing downstream would accept it.
 (define x-vrecur (go-expansion "(go (loop [i 0] (if (< i 2) [(recur (inc i))] (<! ch))))"))
 (gate-check "recur inside a collection literal -> declined" (gate-sub? x-vrecur "__sm-") #f)
 
@@ -85,8 +88,13 @@
 ;; and an if test each hand down a fresh continuation, and discarding that one
 ;; discarded the rest of the computation. Unfixed, each of these rewrote and
 ;; answered the take (100) where the ordinary expansion answers 102 / :after / :t.
-;; Asserted on the EXPANSION, since "declined" is the fix, and on one VALUE below,
-;; since agreeing with the ordinary expansion is the property the fix is for.
+;; Asserted on the EXPANSION, since "declined" is the fix.
+;;
+;; There is no VALUE assertion here any more, and its absence is the point: these
+;; four shapes used to COMPILE on jolt (they never did on the reference), so the
+;; ordinary expansion had a value to agree with. The analyzer refuses them now, so
+;; the only thing left to assert about running one is that it is refused — which
+;; is what the check below does.
 (define (recur-nontail-expansion shape)
   (go-expansion (string-append "(go (loop [i 0] (if (< i 2) " shape " (<! ch))))")))
 (for-each
@@ -97,15 +105,25 @@
    ("a let* init"             . "(let [x (recur (inc i))] (inc x))")
    ("a do statement"          . "(do (recur (inc i)) :after)")
    ("an if test"              . "(if (recur (inc i)) :t :f)")))
-;; and it still answers what the ordinary expansion answers
-(gate-check "non-tail recur: the value is the ordinary expansion's"
-            (ev (string-append
-                 "(let [c (clojure.core.async/chan 1)]"
-                 "  (clojure.core.async/>!! c 100)"
-                 "  (binding [clojure.core.async/*go-backend* :fiber]"
-                 "    (clojure.core.async/<!! (clojure.core.async/go"
-                 "      (loop [i 0] (if (< i 2) (inc (recur (inc i))) (<! c)))))))"))
-            102)
+;; Running one is refused, by the analyzer, before the pass or the backend is
+;; reached. Both arms are asserted: that it raises, and that it raises for THIS
+;; reason — a bare "it threw" would pass just as well if the channel or the
+;; backend binding had broken instead.
+(define (compile-refusal s)
+  (guard (e (#t (let ((m (guard (_ (#t #f)) (condition-message e))))
+                  (if (string? m) m (jolt-str-render-one (jolt-unwrap-throw e))))))
+    (ev s)
+    'no-refusal))
+(define nontail-go
+  (compile-refusal
+   (string-append
+    "(let [c (clojure.core.async/chan 1)]"
+    "  (clojure.core.async/>!! c 100)"
+    "  (binding [clojure.core.async/*go-backend* :fiber]"
+    "    (clojure.core.async/<!! (clojure.core.async/go"
+    "      (loop [i 0] (if (< i 2) (inc (recur (inc i))) (<! c)))))))")))
+(gate-check "non-tail recur in a go body: refused, not run"
+            (gate-sub? nontail-go "Can only recur from tail position") #t)
 
 ;; A special-form head may arrive clojure.core-QUALIFIED and still be that special
 ;; form to the analyzer (analyze-list*'s sf-name arm; verified here by evaluating

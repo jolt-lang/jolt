@@ -2,5 +2,4 @@ Unhandled exception (IllegalArgumentException): No matching field found: length 
   at ./test/errors/runtime/no-such-field/input.clj:5:1
   trace:
     input/f (./test/errors/runtime/no-such-field/input.clj:3)
-    cmd-run
 exit: 1
