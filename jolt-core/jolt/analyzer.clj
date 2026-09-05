@@ -242,11 +242,18 @@
 ;; "children are not tail", so an op this does not name can only be restrictive
 ;; about a recur nested inside it, never wrong about one in tail position.
 ;;
-;; Only three ops pass tail position down, and they are the same three the back
-;; end's tail-transparent-ops names for the same reason (backend_scheme.clj):
-;; an `if` to its branches, a `do` to its last form, a `let` to its body. Every
-;; other construct that admits a recur in tail position — case, cond, when, or,
-;; and, letfn — is a macro over exactly these, so it needs no rule of its own.
+;; Only three ops pass tail position down: an `if` to its branches, a `do` to its
+;; last form, a `let` to its body. Every other construct that admits a recur in
+;; tail position — case, cond, when, or, and, letfn — is a macro over exactly
+;; these, so it needs no rule of its own.
+;;
+;; NOT the back end's tail-transparent-ops (backend_scheme.clj), which is a
+;; larger set answering a different question. That one asks "may a tail call sit
+;; under this node", so it also names :invoke, :throw and :host-call — the ops
+;; that read *tail?* themselves to decide whether to store a frame site — and
+;; :loop, whose own body is where its self-call is tail. Widening this set to
+;; match it would put a recur back in an argument position: (loop [] (f (recur)))
+;; is exactly what an :invoke entry here would re-admit.
 ;;
 ;; :fn and :loop are their OWN recur targets: their bodies are checked when those
 ;; bodies are analyzed, so descending into them here would check them twice
@@ -1180,34 +1187,41 @@
   (let [kind (ffi-layout-form-kind form)
         kind (when (or (= "struct" kind) (= "union" kind)) kind)]
     (when-not (form-vec? form)
-      (throw (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
-                  "or [:union [[field type] ...]], got " (pr-str form))))
+      (analysis-error :analyze/invalid-ffi-layout
+                      (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
+                           "or [:union [[field type] ...]], got " (pr-str form))))
     (let [parts (vec (form-vec-items form))]
       (when-not (and kind (= 2 (count parts)) (form-vec? (nth parts 1)))
-        (throw (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
-                    "or [:union [[field type] ...]], got " (pr-str form))))
+        (analysis-error :analyze/invalid-ffi-layout
+                        (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
+                             "or [:union [[field type] ...]], got " (pr-str form))))
       (let [field-forms (vec (form-vec-items (nth parts 1)))]
         (when (empty? field-forms)
-          (throw (str "jolt.ffi " kind " descriptor must contain at least one field")))
+          (analysis-error :analyze/invalid-ffi-layout
+                          (str "jolt.ffi " kind " descriptor must contain at least one field")))
         (loop [remaining field-forms names #{} fields []]
           (if (empty? remaining)
             {:ffi-kind (if (= "union" kind) :union :struct) :fields fields}
             (let [field (first remaining)]
               (when-not (form-vec? field)
-                (throw (str "jolt.ffi " kind " field must be [keyword type], got "
-                            (pr-str field))))
+                (analysis-error :analyze/invalid-ffi-layout
+                                (str "jolt.ffi " kind " field must be [keyword type], got "
+                                     (pr-str field))))
               (let [fp (vec (form-vec-items field))]
                 (when-not (= 2 (count fp))
-                  (throw (str "jolt.ffi " kind " field must be [keyword type], got "
-                              (pr-str field))))
+                  (analysis-error :analyze/invalid-ffi-layout
+                                  (str "jolt.ffi " kind " field must be [keyword type], got "
+                                       (pr-str field))))
                 (let [field-name (nth fp 0)]
                   (when-not (and (form-keyword? field-name)
                                  (nil? (namespace field-name)))
-                    (throw (str "jolt.ffi " kind " field name must be an unqualified keyword, got "
-                                (pr-str field-name))))
+                    (analysis-error :analyze/invalid-ffi-layout
+                                    (str "jolt.ffi " kind " field name must be an unqualified keyword, got "
+                                         (pr-str field-name))))
                   (let [nm (name field-name)]
                     (when (contains? names nm)
-                      (throw (str "jolt.ffi " kind " field names must be unique; duplicate :" nm)))
+                      (analysis-error :analyze/invalid-ffi-layout
+                            (str "jolt.ffi " kind " field names must be unique; duplicate :" nm)))
                     (recur (rest remaining)
                            (conj names nm)
                            (conj fields {:name nm
@@ -1216,12 +1230,14 @@
 (defn- analyze-ffi-layout-array [form]
   (let [parts (vec (form-vec-items form))]
     (when-not (= 3 (count parts))
-      (throw (str "jolt.ffi array descriptor must be [:array element-type positive-count], got "
-                  (pr-str form))))
+      (analysis-error :analyze/invalid-ffi-layout
+                      (str "jolt.ffi array descriptor must be [:array element-type positive-count], got "
+                           (pr-str form))))
     (let [count (nth parts 2)]
       (when-not (and (integer? count) (pos? count))
-        (throw (str "jolt.ffi array count must be a positive integer literal, got "
-                    (pr-str count))))
+        (analysis-error :analyze/invalid-ffi-layout
+                        (str "jolt.ffi array count must be a positive integer literal, got "
+                             (pr-str count))))
       {:ffi-kind :array
        :count count
        :type (analyze-ffi-layout-type (nth parts 1))})))
@@ -1231,8 +1247,9 @@
     (form-keyword? form)
     (let [n (name form)]
       (when-not (and (nil? (namespace form)) (contains? ffi-layout-scalars n))
-        (throw (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
-                    (pr-str form))))
+        (analysis-error :analyze/invalid-ffi-layout
+                        (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
+                             (pr-str form))))
       n)
 
     (form-vec? form)
@@ -1240,16 +1257,19 @@
       "struct" (analyze-ffi-layout-aggregate form)
       "union" (analyze-ffi-layout-aggregate form)
       "array" (analyze-ffi-layout-array form)
-      (throw (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
-                  (pr-str form))))
+      (analysis-error :analyze/invalid-ffi-layout
+                      (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
+                           (pr-str form))))
 
     :else
-    (throw (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
-                (pr-str form)))))
+    (analysis-error :analyze/invalid-ffi-layout
+                    (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
+                         (pr-str form)))))
 
 (defn- analyze-ffi-layout [items]
   (when-not (= 2 (count items))
-    (throw "jolt.ffi/layout expects one literal struct or union descriptor"))
+    (analysis-error :analyze/invalid-ffi-layout
+                    "jolt.ffi/layout expects one literal struct or union descriptor"))
   {:op :ffi-layout :layout (analyze-ffi-layout-aggregate (nth items 1))})
 
 (defn- ffi-by-value-form? [form]
@@ -1281,15 +1301,17 @@
       (let [parts (vec (form-vec-items form))
             analyzed (analyze-ffi-layout-aggregate (nth parts 1))]
         (when (ffi-layout-holds-union? analyzed)
-          (throw (str "jolt.ffi " position
-                      " type: a union is not passed by value, alone or inside a struct"
-                      " — declare :pointer and read the member you know applies")))
+          (analysis-error :analyze/invalid-ffi-signature
+                          (str "jolt.ffi " position
+                               " type: a union is not passed by value, alone or inside a struct"
+                               " — declare :pointer and read the member you know applies")))
         {:ffi-kind :by-value
          :type analyzed})
     :else
-      (throw (str "jolt.ffi " position
-                  " type must be a keyword or [:by-value [:struct ...]], got "
-                  (pr-str form)))))
+      (analysis-error :analyze/invalid-ffi-signature
+                      (str "jolt.ffi " position
+                           " type must be a keyword or [:by-value [:struct ...]], got "
+                           (pr-str form)))))
 
 ;; jolt.ffi/__cfn: the low-level foreign-function form a jolt library
 ;; uses (via the jolt.ffi/foreign-fn macro) to bind native code. Shape:
@@ -1321,13 +1343,15 @@
        (fn [res pr]
          (let [k (nth pr 0) v (nth pr 1)]
            (when-not (and (form-keyword? k) (nil? (namespace k)))
-             (throw (str "jolt.ffi: option key must be an unqualified keyword, got: " k)))
+             (analysis-error :analyze/invalid-ffi-signature
+                             (str "jolt.ffi: option key must be an unqualified keyword, got: " k)))
            (let [kn (name k)]
              (when-not (or (= kn "blocking") (= kn "capture-native-error"))
-               (throw (str "jolt.ffi: unknown option :" kn)))
+               (analysis-error :analyze/invalid-ffi-signature (str "jolt.ffi: unknown option :" kn)))
              (when-not (or (true? v) (false? v))
-               (throw (str "jolt.ffi: option :" kn
-                           " must be a literal Boolean, got: " v)))
+               (analysis-error :analyze/invalid-ffi-signature
+                               (str "jolt.ffi: option :" kn
+                                    " must be a literal Boolean, got: " v)))
              (assoc res
                     (if (= kn "blocking") :blocking :capture-native-error)
                     v))))
@@ -1335,12 +1359,14 @@
        (form-map-pairs opt))
 
      :else
-     (throw (str "jolt.ffi: option must be :blocking or an options map, got: " opt)))))
+     (analysis-error :analyze/invalid-ffi-signature
+         (str "jolt.ffi: option must be :blocking or an options map, got: " opt)))))
 
 (defn- analyze-ffi-fn [ctx items env]
   (when-not (<= 4 (count items) 5)
-    (throw (str "jolt.ffi/foreign-fn expects "
-                "(foreign-fn \"sym\" [argtypes] rettype [:blocking | {opts}])")))
+    (analysis-error :analyze/invalid-ffi-signature
+                    (str "jolt.ffi/foreign-fn expects "
+                         "(foreign-fn \"sym\" [argtypes] rettype [:blocking | {opts}])")))
   (let [rettype (analyze-ffi-signature-type (nth items 3) "return")
         opt (if (= 5 (count items))
               (ffi-option (nth items 4))
@@ -1348,10 +1374,12 @@
         blocking (:blocking opt)
         capture (:capture-native-error opt)]
     (when (and capture (= rettype "void"))
-      (throw (str "jolt.ffi: :capture-native-error is not supported for :void "
-                  "(no stable native result to pair with the error code)")))
+      (analysis-error :analyze/invalid-ffi-signature
+                      (str "jolt.ffi: :capture-native-error is not supported for :void "
+                           "(no stable native result to pair with the error code)")))
     (when (and capture (map? rettype))
-      (throw "jolt.ffi: :capture-native-error is not supported for by-value returns"))
+      (analysis-error :analyze/invalid-ffi-signature
+                      "jolt.ffi: :capture-native-error is not supported for by-value returns"))
     {:op :ffi-fn
      :csym (nth items 1)
      :argtypes (mapv #(analyze-ffi-signature-type % "argument")
@@ -1375,7 +1403,8 @@
 ;; that is not ACTIVE: one the runtime never started, or one in a :blocking call.
 (defn- analyze-ffi-callable [ctx items env]
   (when-not (<= 4 (count items) 5)
-    (throw (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
+    (analysis-error :analyze/invalid-ffi-signature
+                    (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
   {:op :ffi-callable
    :fn (analyze ctx (nth items 1) env)
    :argtypes (mapv name (form-vec-items (nth items 2)))
@@ -1389,7 +1418,8 @@
 ;; it as a field). The Chez back end dispatches it through record-method-dispatch.
 (defn- analyze-dot [ctx items env]
   (when (< (count items) 3)
-    (analysis-error :analyze/invalid-member-access "Malformed member expression"))
+    (analysis-error :analyze/invalid-member-access
+                    "Malformed member expression, expecting (. target member ...)"))
   (let [member0 (nth items 2)
         ;; (. target (member arg*)) is sugar for (. target member arg*) —
         ;; flatten the list-member form so the rest of the dispatch is uniform.
@@ -1825,7 +1855,14 @@
 (defn- as-analysis-diagnostic [e]
   (let [pos (current-form-position)
         orig (ex-data e)
-        err (when (map? orig) (:jolt/error orig))]
+        ;; A MAP under :jolt/error, or nothing. The key is jolt's, but the value
+        ;; arrives from whatever was thrown: a macro that hung a non-map off it
+        ;; used to pass straight through, and merging position into it here threw
+        ;; IllegalArgumentException from inside the error path — the compiler
+        ;; failing while reporting a failure. Anything but a map is not a
+        ;; diagnostic, so it takes the :else arm and gets one built for it.
+        err (let [x (when (map? orig) (:jolt/error orig))]
+              (when (map? x) x))]
     (cond
       (nil? pos) e
       ;; Already positioned: it knows where it happened better than the box does.

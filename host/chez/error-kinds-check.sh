@@ -35,11 +35,18 @@ fi
 # broken analyzer is exactly when it matters.
 grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/registered"
 
-# Kinds the sources actually raise. Scanned out of the analyzer's diagnostic
-# calls and the literal :kind maps, not out of prose: a kind named only in a
-# comment is not raised.
-grep -ohE ':(analyze|read|codegen|aot)/[a-z-]+' \
-     jolt-core/jolt/*.clj jolt-core/jolt/passes/*.clj 2>/dev/null \
+# Kinds the sources actually raise. The compiler is not only jolt/: `let`'s
+# destructurer and `defn`'s clause check are clojure.core macros that build a
+# :jolt/error map of their own, so clojure/core is scanned too — leaving it out
+# is the blind spot that would let exactly those diagnostics go unregistered.
+#
+# Comment lines are dropped first: a kind named in prose (this file's own
+# rationale, a "raises :analyze/foo" note beside a call) is documentation, not a
+# raise, and counting it would let a registry entry nothing raises survive on the
+# strength of a comment mentioning it.
+sed 's/;;.*//' jolt-core/jolt/*.clj jolt-core/jolt/passes/*.clj \
+               jolt-core/clojure/core/*.clj 2>/dev/null \
+  | grep -ohE ':(analyze|read|codegen|aot)/[a-z-]+' \
   | LC_ALL=C sort -u > "$tmp/raised"
 
 # The registry is documentation, so it names each kind in prose too; exclude the

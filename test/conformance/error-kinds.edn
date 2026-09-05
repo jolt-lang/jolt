@@ -64,6 +64,18 @@
  :analyze/invalid-macro-value
  "A macro's var used as a value. Macros exist only at compile time."
 
+ :analyze/invalid-ffi-layout
+ "A jolt.ffi layout descriptor that does not parse: a struct/union that is not
+  [:struct [[field type] ...]], a field that is not [keyword type], a duplicate
+  field name, a bad [:array element-type count], or a member type that is not a
+  fixed-size scalar, nested aggregate or fixed array."
+
+ :analyze/invalid-ffi-signature
+ "A jolt.ffi/__cfn or __ccallable form whose signature or options do not parse:
+  the wrong argument count, an argument/return type that is neither a keyword nor
+  [:by-value [:struct ...]], a union passed by value, or an unknown option key,
+  non-Boolean option value, or option combination the back end cannot emit."
+
  :analyze/invalid-arity
  "A special form applied to the wrong number of arguments."
 
