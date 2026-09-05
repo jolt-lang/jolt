@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A compile error names its kind, points at the code, and can be caught.**
+  A report used to be a message, a line number, and thirty frames of the
+  analyzer's own recursion. It is now a framed diagnostic:
+
+  ```
+  error[analyze/invalid-def]: First argument to def must be a Symbol
+    --> ./src/app.clj:6:1
+     |
+   4 |   `(def ~name ~val))
+   5 |
+   6 | (my-def [1 2 3] 123)
+     |         ^^^^^^^ the name must be a symbol
+     = note: raised while expanding the `my-def` macro
+  ```
+
+  The kind (`analyze/invalid-def`) is the stable handle on the error — search
+  for it, key tooling on it — while the wording beside it stays free to improve.
+  Every kind is registered in `test/conformance/error-kinds.edn`, which the
+  build holds against the compiler's actual raise sites in both directions, and
+  which the site's error reference page is generated from
+  (`tools/gen-error-docs.clj`). The position is the innermost form that failed,
+  not the top-level form it sits in, and when the failing code was GENERATED the
+  report names the macro that generated it.
+  `JOLT_DIAG=edn` gives the same diagnostic as one line of EDN carrying the
+  kind, the position, the offending token's text and the surrounding source, so
+  an editor needs neither the caret geometry nor a second read of the file. Its
+  keys are flat and `:jolt.error/`-namespaced — printed with EDN's
+  `#:jolt.error{…}` shorthand when they are all jolt's own, and spelled out when
+  a thrower's own ex-data sits beside them. Read the line; do not match its text.
+
+  The diagnostic is a real throwable. A program that caught a compile error used
+  to get a Scheme string: `(class e)` answered `String`, `(ex-message e)` nil,
+  `(instance? Exception e)` false. It is an `ExceptionInfo` now, carrying
+  `:jolt.error/kind` and the position as flat namespaced keys beside whatever
+  ex-data the thrower attached — which is preserved rather than replaced, and
+  shown in the report.
+
 - **The class rows typed.clojure's annotation corpus names.** `java.lang.ref.Reference`
   (abstract, over the `SoftReference` / `WeakReference` shims, which now report
   their own classes instead of `:object`, plus `ReferenceQueue` and
@@ -36,6 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`recur` outside tail position is refused.** `recur` rebinds and jumps, so it
+  may only appear where its value IS the value of its target. Anywhere else the
+  surrounding expression is silently discarded, and jolt compiled it:
+  `(loop [i 0] (+ 1 (recur (inc i))))` looped forever and never applied the
+  `(+ 1 …)`, where the reference refuses it. Every construct that legitimately
+  carries tail position through — `if`, `do`, `let` and `letfn`, and the
+  `case` / `cond` / `when` / `or` / `and` macros over them — still compiles. Code that
+  relied on the old behaviour was already not doing what it read as.
+
 - **`-M` with nothing to run starts a REPL.** `jolt -M:test` where no selected
   alias declares `:main-opts` and the command line adds none used to exit 1
   with `alias(es) [:test] have no :main-opts`. `-M` is `clojure.main`, and
@@ -46,6 +92,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says which it does: `-m NS`, `-e EXPR`, `-r`, or a script file.
 
 ### Fixed
+
+- **`recur` across `try` compiled, and leaked.** The reference refuses it; jolt
+  compiled it — Chez has no bytecode-size limit to stop it — at about 400 bytes
+  an iteration, so ten million iterations of
+  `(loop [i 0] (try (if (< i 10000000) (recur (inc i)) i)))` reached 4.2GB of
+  resident memory, and two other shapes hung outright. It is a compile error now,
+  with the reference's two messages: a `try` body may not be recurred ACROSS,
+  while a `catch` or `finally` is not a tail position to begin with.
+
+- **`locking` and `with-out-str` swallowed a `recur`.** Both run their body in a
+  thunk — an OS mutex has thread granularity and a fiber is not a thread — and
+  that thunk quietly became the `recur` target, so `(loop [] (locking o (recur)))`
+  spun forever instead of being refused. On the reference both are `try`/`finally`
+  and a `recur` may not cross them; both bodies now carry the same marker, which
+  costs nothing to emit.
+
+- **`:pre` cost its body tail position.** A conditions map wrapped the body in
+  `(let [% (do body)] %)` whether or not there were any `:post` conditions, and a
+  binding init is not tail position, so a tail `recur` inside a `:pre`-only fn was
+  rejected. The reference emits that wrapper only for `:post`. malli's
+  `validate-times` is one such fn, and eight of its test namespaces stopped
+  loading over it.
+
+- **A bare `try` erased every frame from itself outwards.** `(try x)` with no
+  catch and no finally emits as its body and nothing else, so a tail call inside
+  one is a real tail call and needs its site stored — but `try` was opaque to the
+  back end's tail-site pass, TCO erased the frames anyway, and the trace stopped
+  at the throw. `(defn wrapped [x] (try (boom x)))` reported `boom` and nothing
+  above it, where the same fn without the `try` named itself and its caller.
+
+- **Host faults reached the user as compile errors.** `(let [a 1 b] a)` reported
+  `java.lang.IndexOutOfBoundsException: index out of bounds` — the desugarer
+  walking off the end of an odd binding vector — and `(defn f 5 6)` reported
+  `Don't know how to create ISeq from: java.lang.Long`. Both are checked now and
+  report what the reference reports. `(def :foo 2)`, `(if)`, a malformed `catch`
+  clause, a `set!` of a local and the `jolt.ffi` descriptor forms all name
+  themselves the same way.
+
+- **Read errors carry a position, a kind, and no reader internals.** A duplicate
+  map key, an odd map literal, an invalid token, an invalid number, a bad
+  character or unicode escape all report the literal that was written, instead of
+  the top of the file over ten frames of `rdr-read-form` / `rdr-read-seq`. The
+  position is in the ex-data (`:jolt.error/line`) rather than glued onto the
+  message text, where it used to disagree with the location printed beneath it.
+  A read that fails while a program RUNS — a `read-string` on data — keeps its
+  backtrace, and reports the position of the code that called it rather than a
+  position into the string rendered against an unrelated file.
+
+- **`clojure.core` threw raw strings.** `zero?`, `pos?`, `NaN?`, `num`, `==`,
+  `pop`, `realized?`, `inst-ms`, `future-done?`, `parse-boolean`, `destructure`,
+  `case`'s duplicate-constant check, `clojure.zip` and `jolt.ffi`'s macro
+  argument checks all raised a bare string, which `(catch Exception e …)` could
+  not match and `ex-message` answered nil for. Each raises a typed throwable a
+  `catch` can select.
+
+- **`NullPointerException`s with nothing in them.** `(alength nil)`, a nil where
+  a string or a number was required, and `key`/`val` on a nil all raised an NPE
+  with an empty message, so the report read `Unhandled exception
+  (NullPointerException):` and stopped — leaving out the one fact the reader
+  needed. Each says what was required. (An empty message stays where the JVM's
+  is genuinely null, as on `NoSuchElementException`.)
 
 - **Modeled Java collections return and fill object arrays from `toArray`.**
   `ArrayList`, `LinkedList`, and `ArrayDeque` share these methods. The

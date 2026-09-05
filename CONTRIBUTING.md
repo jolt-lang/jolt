@@ -307,8 +307,9 @@ one.
 
 **Raise a real throwable with a registered kind.** A thrown string is not
 catchable by class and answers `nil` to `ex-message`, so a program cannot handle
-its own errors. Use `analysis-error` (analyzer) or `rdr-error-kind` /
-`rdr-error-here*` (reader), and add the kind to
+its own errors. Use `analysis-error` (analyzer), or `rdr-error-kind` /
+`rdr-error-class` (reader — the latter when the error matches a JVM class a
+program can catch, like `NumberFormatException`), and add the kind to
 `test/conformance/error-kinds.edn` — `make errorkinds` fails on a kind that is
 raised but unregistered, and on one registered but never raised.
 
@@ -323,8 +324,9 @@ tools and language models as often as by people, and neither counts columns well
 
 **Describe the state of the world, not the compiler's attempt.** `foo is not
 defined`, not `Failed to resolve foo`. And state the constraint rather than
-blaming: `Taking a C++ namespace by value is not permitted`, not `You can't ...`.
-The tone should be the same whether the cause was a typo or a misunderstanding.
+blaming: `A union is not passed by value`, not `You can't pass a union by
+value`. The tone should be the same whether the cause was a typo or a
+misunderstanding.
 
 **One fact per sentence.** Densely packed messages get skimmed and misread.
 

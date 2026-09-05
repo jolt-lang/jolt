@@ -29,9 +29,6 @@
 compile-time like the analysis errors, but concern a foreign type description
 rather than Clojure itself."})
 
-(defn- anchor [k]
-  (str/replace (str (namespace k) "-" (name k)) #"[^a-z0-9-]" ""))
-
 (defn render []
   (let [kinds (read-string (slurp registry-path))
         by-phase (group-by (comp phase-of key) kinds)]
