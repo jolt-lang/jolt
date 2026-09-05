@@ -47,6 +47,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Modeled Java collections return and fill object arrays from `toArray`.**
+  `ArrayList`, `LinkedList`, and `ArrayDeque` share these methods. The
+  no-argument and destination-array overloads both ignored their Java contracts
+  and returned a persistent vector. The no-argument form now allocates an exact
+  `Object[]`;
+  the destination overload reuses a large-enough array, writes a null logical
+  terminator when it has spare capacity, preserves later cells, and allocates a
+  replacement when the supplied array is too short.
+
+  `HashSet` answers both overloads too. `toArray` is a `Collection` method, not
+  a `List` one, and the set had none at all — `(.toArray h)` was `No matching
+  field found: toArray for class java.util.HashSet`. It shares the one
+  implementation, which is written against a collection's element list rather
+  than against `ArrayList`'s backing vector, so whatever is modeled next needs
+  only its own list.
 - **Unicode-aware `String.equalsIgnoreCase` and JVM-compatible
   `compareToIgnoreCase` results.** The instance methods used a separate ASCII
   lowercase path and reduced every nonzero comparison to `-1` or `1`, even
