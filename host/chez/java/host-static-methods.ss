@@ -668,30 +668,10 @@
          (v (jolt-get-dispatch data (keyword #f name) jolt-nil)))
     (if (jolt-nil? v) dflt v)))
 
-;; String.CASE_INSENSITIVE_ORDER: String's one public static field, a Comparator
-;; of String's own (private, nested) class — class-hierarchy.ss maps the tag.
-;; compare is String.compareToIgnoreCase, character for character: each pair is
-;; folded to upper case, then to lower case when that still differs, and the
-;; first pair that differs answers the DIFFERENCE of the folded chars (not a
-;; sign); equal prefixes answer the length difference. So "a" vs "B" is -1, "Z"
-;; vs "a" is 25 and "É" vs "é" is 0.
-(define (string-ci-compare a b)
-  (let ((la (string-length a)) (lb (string-length b)))
-    (let loop ((i 0))
-      (cond ((or (fx=? i la) (fx=? i lb)) (fx- la lb))
-            (else
-             (let ((ca (string-ref a i)) (cb (string-ref b i)))
-               (if (char=? ca cb)
-                   (loop (fx+ i 1))
-                   (let ((ua (char-upcase ca)) (ub (char-upcase cb)))
-                     (if (char=? ua ub)
-                         (loop (fx+ i 1))
-                         (let ((da (char-downcase ua)) (db (char-downcase ub)))
-                           (if (char=? da db)
-                               (loop (fx+ i 1))
-                               (fx- (char->integer da) (char->integer db)))))))))))))
+;; String.CASE_INSENSITIVE_ORDER uses the same character-wise comparison as
+;; String.compareToIgnoreCase. class-hierarchy.ss maps its private nested tag.
 (register-host-methods! "string-ci-comparator"
-  (list (cons "compare" (lambda (self a b) (string-ci-compare a b)))))
+  (list (cons "compare" (lambda (self a b) (jvm-string-ci-compare a b)))))
 (define string-ci-comparator (make-jhost "string-ci-comparator" #f))
 (register-class-statics! "String"
   ;; String.valueOf(char[]) is the chars as a string, not the array's own rendering —

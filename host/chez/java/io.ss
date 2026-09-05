@@ -244,13 +244,78 @@
 ;; the launcher cd'd to the jolt repo root — matching the JVM, where io/file is
 ;; cwd-relative. (io/resource builds jfiles from the source roots directly, so it
 ;; isn't routed through here.)
+(define (path-separator-char? c)
+  (or (char=? c #\/) (char=? c #\\)))
+
+(define (ascii-drive-letter? c)
+  (or (and (char>=? c #\A) (char<=? c #\Z))
+      (and (char>=? c #\a) (char<=? c #\z))))
+
+(define (windows-drive-prefix? p)
+  (and (>= (string-length p) 2)
+       (ascii-drive-letter? (string-ref p 0))
+       (char=? (string-ref p 1) #\:)))
+
+(define (windows-root-relative? p)
+  (and (eq? (sa-os-family) 'windows)
+       (> (string-length p) 0)
+       (path-separator-char? (string-ref p 0))
+       (or (= (string-length p) 1)
+           (not (path-separator-char? (string-ref p 1))))))
+
+(define (trim-trailing-path-separator p)
+  (let ((n (string-length p)))
+    (if (and (> n 2) (path-separator-char? (string-ref p (- n 1))))
+        (substring p 0 (- n 1))
+        p)))
+
+;; java.io.File.isAbsolute is host-platform-specific. POSIX has one absolute
+;; prefix (/). Windows has drive-rooted paths (C:\x or C:/x) and UNC paths
+;; (\\server\share); drive-relative C:x and current-drive-rooted \x are not
+;; absolute in the JVM sense. Drive-rooted and UNC recognition is shared by
+;; filesystem resolution, getAbsolutePath, and isAbsolute. The rooted-but-
+;; relative case is resolved separately by project-relative below. `C:child`
+;; still depends on Windows' process-local current directory for that drive and
+;; remains an older File-shim compatibility gap.
+(define (jfile-path-absolute? p)
+  (let ((n (string-length p)))
+    (if (eq? (sa-os-family) 'windows)
+        (or (and (>= n 3)
+                 (windows-drive-prefix? p)
+                 (path-separator-char? (string-ref p 2)))
+            (and (>= n 2)
+                 (path-separator-char? (string-ref p 0))
+                 (path-separator-char? (string-ref p 1))))
+        (and (> n 0) (char=? (string-ref p 0) #\/)))))
+
 (define (project-relative p)
-  (if (or (= (string-length p) 0) (char=? (string-ref p 0) #\/))
-      p
-      (let ((base (jolt-user-dir)))
-        ;; "." adds nothing the OS won't do itself when it resolves a relative
-        ;; path — leave it alone rather than prefixing "./".
-        (if (string=? base ".") p (string-append base "/" p)))))
+  (cond
+    ((or (= (string-length p) 0) (jfile-path-absolute? p)) p)
+    ;; A single leading separator is rooted on the current drive but is not an
+    ;; absolute File pathname on Windows. The JVM resolves it against user.dir's
+    ;; drive; the process cwd is Jolt's source tree, so leaving it to the OS can
+    ;; select the wrong drive after the launcher changes directory.
+    ((windows-root-relative? p)
+     (let ((base (jolt-user-dir)))
+       (cond
+         ;; The base names a drive, so the current-drive-rooted path takes it.
+         ((windows-drive-prefix? base) (string-append (substring base 0 2) p))
+         ;; A UNC base has no drive letter; its \\server\share IS the root.
+         ((jfile-path-absolute? base)
+          (string-append (trim-trailing-path-separator base) p))
+         ;; Nothing to root against: JOLT_PWD is unset, so jolt-user-dir is ".".
+         ;; Prefixing that turns a ROOTED path into a relative one, which is
+         ;; strictly worse than leaving the OS to resolve it against the process
+         ;; drive — the drive is at least a plausible answer, "./\x" is not.
+         ;; jolt.deps/root-relative-for keeps the same arm for the same reason,
+         ;; and its (absolute true "." "\project") case pins it; without this
+         ;; the two classifiers disagree on the one input neither can resolve.
+         (else p))))
+    (else
+     (let ((base (jolt-user-dir)))
+       ;; "." adds nothing the OS won't do itself when it resolves a relative
+       ;; path — leave it alone rather than prefixing "./".
+       (if (string=? base ".") p (string-append base "/" p))))))
 
 ;; (io/file path) / (io/file parent child) — join children with "/". The File
 ;; keeps the path AS GIVEN (like the JVM: new File("rel").getPath() is "rel");
@@ -297,10 +362,11 @@
 ;; (current-directory) here instead reported paths under the jolt repo root the
 ;; launcher cd'd into, diverging from the JVM where io/file and getAbsolutePath
 ;; are user.dir-relative.
+;; project-relative answers an absolute path with itself, so asking it twice —
+;; once here to decide, once inside — only pays the host-specific classification
+;; twice per call. The empty path is the one case it does not cover.
 (define (jfile-abs p)
-  (cond ((= (string-length p) 0) (jolt-user-dir))
-        ((char=? (string-ref p 0) #\/) p)
-        (else (project-relative p))))
+  (if (= (string-length p) 0) (jolt-user-dir) (project-relative p)))
 
 ;; --- canonical paths --------------------------------------------------------
 ;; getCanonicalPath is realpath(3), not "make it absolute": it resolves
@@ -697,7 +763,7 @@
       ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
-      ((string=? name "isAbsolute")     (list (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/)) #t #f)))
+      ((string=? name "isAbsolute")     (list (if (jfile-path-absolute? p) #t #f)))
       ;; listFiles builds each child from the path AS GIVEN (new File(this, name)
       ;; on the JVM), so a File made from a relative path lists relative children.
       ((string=? name "listFiles")

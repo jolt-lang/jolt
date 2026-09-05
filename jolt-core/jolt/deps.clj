@@ -173,8 +173,65 @@
          (catch :default e
            (throw (ex-info (str path ": " (ex-message e)) {:path path :error e}))))))
 
+(defn- ascii-alpha? [c]
+  (let [n (int c)]
+    (or (<= (int \A) n (int \Z))
+        (<= (int \a) n (int \z)))))
+
+(defn- path-separator? [c] (or (= c \/) (= c \\)))
+
+(defn- native-path-kind-for
+  "Classify P without touching the filesystem. Windows has four useful forms:
+  drive-absolute (C:/x), UNC/device (//server/share, //?/C:/x), root-relative
+  (/x), and drive-relative (C:x). The last one depends on Windows' hidden
+  per-drive current directory, which the source launcher cannot preserve after
+  it changes directory, so the resolver rejects it rather than inventing a
+  different path."
+  [windows? p]
+  (let [n (count p)
+        drive? (and (>= n 2) (ascii-alpha? (nth p 0)) (= \: (nth p 1)))
+        sep0? (and (pos? n) (path-separator? (nth p 0)))]
+    (cond
+      (not windows?) (if (str/starts-with? p "/") :absolute :relative)
+      drive? (if (and (>= n 3) (path-separator? (nth p 2)))
+               :absolute
+               :drive-relative)
+      sep0? (if (and (>= n 2) (path-separator? (nth p 1)))
+              :absolute
+              :root-relative)
+      :else :relative)))
+
+(defn- windows? []
+  (str/includes? (str/lower-case (or (System/getProperty "os.name") "")) "win"))
+
+(defn- windows-drive-prefix? [p]
+  (and (>= (count p) 2)
+       (ascii-alpha? (nth p 0))
+       (= \: (nth p 1))))
+
+(defn- root-relative-for [dir p]
+  (cond
+    (windows-drive-prefix? dir) (str (subs dir 0 2) p)
+    (= :absolute (native-path-kind-for true dir))
+    (str (if (and (> (count dir) 2)
+                  (path-separator? (nth dir (dec (count dir)))))
+           (subs dir 0 (dec (count dir)))
+           dir)
+         p)
+    :else p))
+
+(defn- abspath-for [windows? dir p]
+  (case (native-path-kind-for windows? p)
+    :absolute p
+    :root-relative (root-relative-for dir p)
+    :drive-relative
+    (throw (ex-info (str "drive-relative path " (pr-str p)
+                         " is ambiguous; use a drive-absolute path such as C:/path")
+                    {:path p :kind :drive-relative}))
+    (str dir "/" p)))
+
 (defn- abspath [dir p]
-  (if (str/starts-with? p "/") p (str dir "/" p)))
+  (abspath-for (windows?) dir p))
 
 ;; --- git cache --------------------------------------------------------------
 ;; jolt's own clone cache. $GITLIBS (the tools.gitlibs location knob) is

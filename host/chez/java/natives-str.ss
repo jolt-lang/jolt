@@ -4,9 +4,15 @@
 ;; which falls through to jolt-string-method here when the target is a string.
 ;; Covers the
 ;; portable java.lang.String/CharSequence methods cljc libraries actually call.
-;; Case mapping is ASCII (the whole engine is byte-oriented), indexOf returns -1
-;; on miss as on the JVM, indices come in as flonums, char results are Scheme
-;; chars, and numeric results are flonums to match jolt's number model.
+;; Case handling here is Java's, in two flavours that must not be confused:
+;; toUpperCase / toLowerCase map the whole of Unicode, while the ignore-case
+;; COMPARISONS use Java's own per-character upper-then-lower fold
+;; (jvm-char-ci-diff), which is neither that nor Scheme's full case folding. The
+;; ascii-string-up/down pair below is for neither — it serves the ASCII-only
+;; lookups other files do (a month abbreviation, a charset alias, "true").
+;; indexOf returns -1 on miss as on the JVM, indices come in as flonums, char
+;; results are Scheme chars, and numeric results are flonums to match jolt's
+;; number model.
 ;;
 ;; Loaded from rt.ss AFTER regex.ss (the regex methods reuse jolt-re-pattern /
 ;; regex-t-irx) and records.ss (which calls jolt-string-method).
@@ -40,6 +46,66 @@
                     ((fx=? j n) r)
                   (string-set! r j (ascii-down-char (string-ref s j)))))
               (check (fx+ i 1)))))))
+
+;; Java's per-character case fold, as a DIFFERENCE: 0 when the two characters are
+;; equal ignoring case, else the difference of the folded characters. The fold is
+;; Character.toUpperCase, then Character.toLowerCase when that still differs.
+;;
+;; This one function is the whole ignore-case contract on the JVM:
+;; equalsIgnoreCase IS regionMatches(true, 0, other, 0, length), and
+;; compareToIgnoreCase and CASE_INSENSITIVE_ORDER differ from it only in
+;; answering the difference rather than a boolean. So they share it here, and a
+;; new ignore-case method has one place to reach for.
+;;
+;; It is NOT Scheme's string-ci=?, which folds the full Unicode way: the two
+;; disagree on "I" vs "\x131;" (dotless i), which Java calls equal because both
+;; upper-case to #\I while Unicode case folding maps them to different letters.
+;; regionMatches used string-ci=? and answered #f there while equalsIgnoreCase,
+;; on the same pair, answered #t — two answers for one JVM operation.
+(define (jvm-char-ci-diff ca cb)
+  (if (char=? ca cb)
+      0
+      (let ((ua (char-upcase ca)) (ub (char-upcase cb)))
+        (if (char=? ua ub)
+            0
+            (let ((da (char-downcase ua)) (db (char-downcase ub)))
+              (if (char=? da db)
+                  0
+                  (fx- (char->integer da) (char->integer db))))))))
+
+;; String.compareToIgnoreCase, character for character: the first pair that does
+;; not fold equal answers the DIFFERENCE of the folded chars (not merely a sign);
+;; equal prefixes answer the length difference. This is also the comparison
+;; contract used by String.CASE_INSENSITIVE_ORDER.
+(define (jvm-string-ci-compare a b)
+  (let ((la (string-length a)) (lb (string-length b)))
+    (let loop ((i 0))
+      (if (or (fx=? i la) (fx=? i lb))
+          (fx- la lb)
+          (let ((d (jvm-char-ci-diff (string-ref a i) (string-ref b i))))
+            (if (fx=? d 0) (loop (fx+ i 1)) d))))))
+
+;; String.equalsIgnoreCase / String.regionMatches(true, ...): the same fold, as
+;; equality. Length first, so a prefix is not equal to what it prefixes.
+(define (jvm-string-ci=? a b)
+  (and (fx=? (string-length a) (string-length b))
+       (fx=? 0 (jvm-string-ci-compare a b))))
+
+;; String.compareTo, the case-sensitive twin of jvm-string-ci-compare and the
+;; same shape without the fold: the first differing pair answers the DIFFERENCE
+;; of the chars, and equal prefixes the length difference. The JVM's magnitude is
+;; not decoration — (.compareTo "a" "c") is -2 and (.compareTo "abcd" "ab") is 2 —
+;; and a sign-only answer beside a compareToIgnoreCase that reports the real
+;; difference is two contracts for one pair of methods.
+(define (jvm-string-compare a b)
+  (let ((la (string-length a)) (lb (string-length b)))
+    (let loop ((i 0))
+      (if (or (fx=? i la) (fx=? i lb))
+          (fx- la lb)
+          (let ((ca (string-ref a i)) (cb (string-ref b i)))
+            (if (char=? ca cb)
+                (loop (fx+ i 1))
+                (fx- (char->integer ca) (char->integer cb))))))))
 
 ;; Two different notions of whitespace, and the JVM uses both. String.trim drops
 ;; anything at or below the space character; clojure.string/trim drops whatever
@@ -344,14 +410,15 @@
     ((string=? method "concat") (string-append s (str-arg (arg 0))))
     ((string=? method "replace") (str-replace-literal s (str-needle (arg 0)) (str-needle (arg 1))))
     ((string=? method "equalsIgnoreCase")
-     (string=? (ascii-string-down s) (ascii-string-down (arg 0))))
+     (let ((o (arg 0)))
+       (and (not (jolt-nil? o))
+            (jvm-string-ci=? s (jolt-need-str o)))))
     ;; compareTo answers an INT on the JVM, not a double — it fed straight into
     ;; (neg? …) fine but printed as -1.0, and (= -1 (.compareTo …)) was false.
     ((string=? method "compareTo")
-     (let ((o (jolt-need-str (arg 0)))) (cond ((string<? s o) -1) ((string>? s o) 1) (else 0))))
+     (jvm-string-compare s (jolt-need-str (arg 0))))
     ((string=? method "compareToIgnoreCase")
-     (let ((a (string-downcase s)) (b (string-downcase (jolt-need-str (arg 0)))))
-       (cond ((string<? a b) -1) ((string>? a b) 1) (else 0))))
+     (jvm-string-ci-compare s (jolt-need-str (arg 0))))
     ;; CharSequence content equality — the same characters, whatever the receiver's
     ;; concrete type (a StringBuilder compares equal to the String it holds).
     ((string=? method "contentEquals")
@@ -370,7 +437,7 @@
             (fx<=? (fx+ ooff len) (string-length other))
             (let ((a (substring s toff (fx+ toff len)))
                   (b (substring other ooff (fx+ ooff len))))
-              (if ic? (string-ci=? a b) (string=? a b))))))
+              (if ic? (jvm-string-ci=? a b) (string=? a b))))))
     ;; char[] of the string's characters — a real 'char array, the same value
     ;; (char-array s) builds and (String. ca) reads back.
     ((string=? method "toCharArray") (na-char-array s))

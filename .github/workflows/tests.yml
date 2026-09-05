@@ -81,3 +81,111 @@ jobs:
         # -j overlaps the independent gates (ci is a plain dependency list);
         # -Oline keeps per-recipe output contiguous for failure reading.
         run: make CHEZ=/opt/chez/bin/chez -j"$(nproc)" -Oline test
+
+  windows-deps:
+    name: Windows dependency paths
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive   # vendor/irregex, used by the Chez regex shim
+
+      # Match the release builder: a native MINGW64 toolchain and threaded
+      # Chez 10.4.1 built as ta6nt. Keep this job focused on dependency paths;
+      # the full gate still contains POSIX-specific cases and runs above.
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          # inherit the runner PATH so GITHUB_PATH additions (the chez wrapper
+          # dir) are visible inside the msys2 shell
+          path-type: inherit
+          install: >-
+            git make vim unzip zip
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-lz4
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-ntldd
+
+      - name: Cache Chez Scheme
+        id: cache-chez-win
+        uses: actions/cache@v4
+        with:
+          path: chez-install
+          key: chez-windows-latest-v10.4.1-mingw64
+
+      - name: Build Chez Scheme from source
+        if: steps.cache-chez-win.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
+          cd /tmp/chez-src
+          ./configure --threads
+          make -j"$(nproc)"
+          # `make install` drives the unix installsh through cmd and dies; the
+          # build tree has everything — assemble the layout by hand. Boot files
+          # sit next to scheme.exe (that's where the Windows kernel looks).
+          inst="$GITHUB_WORKSPACE/chez-install"
+          mkdir -p "$inst/bin" "$inst/csv"
+          cp ta6nt/bin/ta6nt/*.exe "$inst/bin/"
+          cp ta6nt/bin/ta6nt/*.dll "$inst/bin/" 2>/dev/null || true
+          cp ta6nt/boot/ta6nt/petite.boot ta6nt/boot/ta6nt/scheme.boot "$inst/bin/"
+          cp ta6nt/boot/ta6nt/petite.boot ta6nt/boot/ta6nt/scheme.boot "$inst/csv/"
+          cp ta6nt/boot/ta6nt/scheme.h "$inst/csv/"
+          cp ta6nt/boot/ta6nt/equates.h "$inst/csv/" 2>/dev/null || true
+          cp ta6nt/boot/ta6nt/libkernel.a "$inst/csv/" || { echo "libkernel.a not found:"; find ta6nt -name "*.a" -o -name "kernel*"; exit 1; }
+
+      - name: Put chez on PATH
+        run: |
+          bindir="$GITHUB_WORKSPACE/chez-install/bin"
+          { echo '#!/bin/sh'; echo "exec \"$bindir/scheme.exe\" \"\$@\""; } > "$bindir/chez"
+          chmod +x "$bindir/chez"
+          echo "$bindir" >> "$GITHUB_PATH"
+          echo "JOLT_CHEZ_CSV=$GITHUB_WORKSPACE/chez-install/csv" >> "$GITHUB_ENV"
+          # cc is the build's compiler name; alias it to mingw gcc
+          { echo '#!/bin/sh'; echo 'exec gcc "$@"'; } > "$bindir/cc"
+          chmod +x "$bindir/cc"
+
+      - name: Show Chez version
+        run: chez --version
+
+      - name: Gate native dependency paths
+        run: make CHEZ=./chez-install/bin/chez depsunit
+
+      # Use PowerShell so JOLT_PWD retains its native drive-rooted spelling.
+      # The MSYS shell can translate it before the runtime sees the value,
+      # which would make this regression check vacuous.
+      - name: Resolve a fixture from a native absolute project directory
+        shell: powershell
+        run: |
+          $project = Join-Path $env:RUNNER_TEMP 'absolute-path-project'
+          $marker = Join-Path $project 'marker-src'
+          New-Item -ItemType Directory -Force -Path $marker | Out-Null
+          Set-Content -NoNewline -Encoding ascii `
+            -Path (Join-Path $project 'deps.edn') `
+            -Value '{:paths ["marker-src"]}'
+          $env:JOLT_PWD = (Resolve-Path $project).Path
+          if ($env:JOLT_PWD -notmatch '^[A-Za-z]:[\\/]') {
+            throw "expected a drive-absolute JOLT_PWD, got: $env:JOLT_PWD"
+          }
+          $scheme = Join-Path $env:GITHUB_WORKSPACE 'chez-install\bin\scheme.exe'
+          $resolved = (& $scheme --script host\chez\cli.ss -Spath 2>&1 | Out-String)
+          Write-Host $resolved
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not $resolved.Contains('marker-src')) {
+            throw "resolved path did not contain the fixture's declared marker root"
+          }
+          $env:JOLT_EXPECTED_ROOTED = $env:JOLT_PWD.Substring(0, 2) + '\rooted.txt'
+          # Avoid string literals in the native `-e` argument: Windows
+          # PowerShell 5.1 removes their quotes while constructing argv.
+          $probe = '(let [p (str (char 92) (name (quote rooted.txt))) f (java.io.File. p)] (and (false? (.isAbsolute f)) (= (System/getenv (name (quote JOLT_EXPECTED_ROOTED))) (.getAbsolutePath f))))'
+          $rooted = (& $scheme --script host\chez\cli.ss -e $probe 2>&1 | Out-String).Trim()
+          Write-Host $rooted
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($rooted -ne 'true') {
+            throw "current-drive-rooted File resolution did not match user.dir's drive"
+          }

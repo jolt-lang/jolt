@@ -51,6 +51,58 @@
 
 (is= "portable facade returns nil" nil (portable-deps/add-deps {}))
 
+;;;; native path roots
+
+(let [kind (var jolt.deps/native-path-kind-for)
+      absolute (var jolt.deps/abspath-for)]
+  ;; POSIX has one root spelling; a backslash and a Windows drive prefix are
+  ;; ordinary filename characters there.
+  (is= "POSIX slash path is absolute" :absolute (kind false "/project"))
+  (is= "POSIX Windows drive path is relative" :relative (kind false "C:/project"))
+  (is= "POSIX backslash path is relative" :relative (kind false "\\project"))
+  (is= "POSIX absolute path keeps its spelling" "/project/../lib"
+       (absolute false "/base" "/project/../lib"))
+
+  ;; Windows accepts either separator in drive roots and UNC/device paths. Keep
+  ;; the input bytes: joining roots must not normalize away dot segments or
+  ;; rewrite separators behind a caller's back.
+  (doseq [p ["C:/project" "d:\\project" "//server/share/project"
+             "\\\\server\\share\\project" "\\\\?\\C:\\project"]]
+    (is= (str "Windows absolute path kind " (pr-str p)) :absolute (kind true p))
+    (is= (str "Windows absolute path spelling " (pr-str p)) p
+         (absolute true "D:/base" p)))
+  (is= "Windows relative path joins its declaring root" "D:/base/../lib"
+       (absolute true "D:/base" "../lib"))
+
+  ;; A leading separator is rooted on the declaring project's drive. Resolve
+  ;; the drive explicitly so later raw filesystem checks cannot accidentally
+  ;; use the runtime checkout's drive instead.
+  (doseq [p ["/project" "\\project"]]
+    (is= (str "Windows root-relative path kind " (pr-str p)) :root-relative (kind true p))
+    (is= (str "Windows root-relative path drive " (pr-str p)) (str "D:" p)
+         (absolute true "D:/base" p)))
+  (is= "Windows root-relative path under UNC base"
+       "\\\\server\\share\\base\\project"
+       (absolute true "\\\\server\\share\\base" "\\project"))
+  (is= "Windows root-relative path under trailing-separator UNC base"
+       "\\\\server\\share\\project"
+       (absolute true "\\\\server\\share\\" "\\project"))
+  (is= "Windows root-relative path without a rooted base stays rooted"
+       "\\project"
+       (absolute true "." "\\project"))
+
+  ;; C:path resolves against Windows' per-drive current directory, not the
+  ;; declaring project's directory. The launcher changes cwd before resolution,
+  ;; so fail with the form named instead of manufacturing D:/base/C:path.
+  (doseq [p ["C:project" "d:"]]
+    (is= (str "Windows drive-relative path kind " (pr-str p))
+         :drive-relative (kind true p))
+    (is= (str "Windows drive-relative path rejected " (pr-str p))
+         {:path p :kind :drive-relative}
+         (try (absolute true "D:/base" p)
+              nil
+              (catch Exception e (ex-data e))))))
+
 ;;;; the repo from tools.deps test_deps.clj
 
 (def base-repo

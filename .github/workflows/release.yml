@@ -126,7 +126,7 @@ jobs:
           # prebuilt runs on any glibc distro since ~2014 (CentOS 7+, Ubuntu
           # 14.04+, Debian 8+, Amazon Linux 2+) — every >=2.33 symbol the old
           # runner-built binary demanded was a build-host artifact, not a real
-          # API need (#452). Remaining dynamic deps: liblz4/libuuid + glibc.
+          # API need (#452). Remaining dynamic deps: libuuid + glibc.
           - os: ubuntu-latest
             target: x86_64-linux
             shell: bash
@@ -188,7 +188,12 @@ jobs:
             '${{ matrix.container-build }}' sh ci/glibc-floor-build.sh
 
       # --- macOS: Homebrew chezscheme ships `chez` plus the csv kernel dev files
-      # (libkernel.a, scheme.h, *.boot), which is all build-jolt needs. ---
+      # (libkernel.a, scheme.h, *.boot), which is all build-jolt needs — and,
+      # since it vendors lz4 rather than depending on the formula, the matching
+      # liblz4.a next to them. The lz4 keg is only build.ss's fallback source of
+      # a static archive for a Chez that arrived without one: the link names an
+      # archive, never a dylib, so nothing installed here can become a runtime
+      # dependency of the shipped binary (asserted below). ---
       - name: Install Chez Scheme (macOS)
         if: runner.os == 'macOS'
         run: brew install chezscheme lz4
@@ -310,6 +315,37 @@ jobs:
           ntldd target/release/jolt.exe 2>&1 | head -20
           ./target/release/jolt.exe -e '(+ 1 2)'
           echo "exit=$?"
+
+      # The prebuilt's whole promise is that it runs with nothing else installed,
+      # and the Chez kernel's compressors (lz4, zlib) are jolt's to bake in --
+      # lz4 is not a system library on either platform. The macOS binary shipped
+      # demanding /opt/homebrew/opt/lz4/lib/liblz4.1.dylib, which is present only
+      # on a Mac whose owner ran `brew install lz4`: the install script's own
+      # `jolt --version` check died with a dyld error for everyone else, and
+      # nothing in this workflow noticed. Now it would.
+      - name: Assert the binary needs no library the target machine may not have
+        if: runner.os != 'Windows'
+        run: |
+          bin=target/release/jolt
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            otool -L "$bin"
+            # Every load command must resolve inside the OS itself.
+            bad="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' \
+                   | grep -Ev '^(/usr/lib/|/System/Library/)' || true)"
+          else
+            readelf -d "$bin" | grep NEEDED || true
+            # ncurses/tinfo/uuid are the Linux build's own story (STATIC_DEPS,
+            # and libuuid on top of glibc); the compression libraries are the
+            # ones jolt bakes in itself, on every platform, so assert those.
+            bad="$(readelf -d "$bin" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' \
+                   | grep -Ei 'lz4|libz\.' || true)"
+          fi
+          if [ -n "$bad" ]; then
+            echo "::error::$bin needs libraries that are not on a stock machine:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "no unexpected dynamic dependencies"
 
       # Sanity: the built binary runs (no Chez needed) and self-reports a value.
       - name: Smoke the binary

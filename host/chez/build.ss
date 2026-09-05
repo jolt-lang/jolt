@@ -249,8 +249,111 @@
               (error 'jolt-build (string-append "target pack file missing: " p hint)))))
         '("xpatch" "link-libs")))))
 
-;; Link flags. macOS Homebrew layout for the kernel's lz4/zlib/ncurses deps. The
-;; host branches double as the target flags for a non-cross build (host = target).
+;; The kernel's compression libraries — lz4 and zlib — as absolute paths to
+;; STATIC archives, or #f when none is reachable. Chez compiles both as part of
+;; its own build and installs liblz4.a / libz.a next to libkernel.a, so the
+;; archives matching the kernel this link bakes in are normally already in the csv
+;; dir, on every platform — Homebrew's chezscheme included (it vendors them; it
+;; depends on neither formula). The keg and pkg-config are macOS fallbacks for a
+;; Chez that somehow installed without them.
+;;
+;; Naming an archive by path is what forces the static choice: Apple's ld has no
+;; -Bstatic, and a bare -llz4 pointed at a directory holding both a .dylib and a
+;; .a always takes the .dylib. That is how the released macOS binary came to
+;; demand /opt/homebrew/opt/lz4/lib/liblz4.1.dylib off every machine that ran it
+;; — the install script's own `jolt --version` check died with a dyld error on a
+;; Mac with no Homebrew lz4, which is most of them. Neither library has to be a
+;; dependency of anything jolt produces: a jolt binary is meant to run with
+;; nothing else installed, the way a Go binary does.
+
+;; Archives the caller has already put on disk, as (("lz4" . path) ("z" . path)).
+;; They outrank the search below: the self-contained jolt has no Chez install to
+;; look in, so it carries the archives its own kernel was linked against and
+;; spills them for the one link it still performs (bld-relink-stub).
+(define bld-bundled-archives (make-parameter '()))
+
+;; lib name -> (Homebrew keg, pkg-config module), for the macOS fallbacks.
+(define bld-archive-sources '(("lz4" "lz4" "liblz4") ("z" "zlib" "zlib")))
+
+(define (bld-static-archive lib)
+  (let ((file (string-append "lib" lib ".a"))
+        (src (assoc lib bld-archive-sources)))
+    (let loop ((thunks
+                 (cons*
+                   (lambda () (cond ((assoc lib (bld-bundled-archives)) => cdr) (else #f)))
+                   ;; The csv dir the kernel itself comes from. (bld-csv-dir), not
+                   ;; bld-host-csv-dir, for the reason the Linux branch gives
+                   ;; below. A cross build's link never asks (the pack's link-libs
+                   ;; carries its own -llz4 -lz, resolved against the archives
+                   ;; under lib/), but build-jolt does, to embed them — hence the
+                   ;; pack path.
+                   (lambda () (string-append (bld-csv-dir) "/" file))
+                   (lambda () (and (bld-cross?)
+                                   (string-append (bld-target-pack) "/lib/" file)))
+                   ;; macOS only. A distro's static archive is deliberately NOT
+                   ;; searched on Linux: it may well be non-PIC, which would turn
+                   ;; today's working `jolt build --library` into a link error
+                   ;; ("recompile with -fPIC"). Chez's own archives are built
+                   ;; alongside libkernel.a, which that link already folds into a
+                   ;; shared object, so they carry the same guarantee. Darwin
+                   ;; compiles PIC throughout, so neither fallback has the problem.
+                   (if (and bld-osx? src)
+                       (list
+                         (lambda ()
+                           (let ((prefix (bld-sh-capture
+                                           (string-append "brew --prefix " (cadr src) " 2>/dev/null"))))
+                             (and (> (string-length prefix) 0)
+                                  (string-append prefix "/lib/" file))))
+                         (lambda ()
+                           (let ((libdir (bld-sh-capture
+                                           (string-append "pkg-config --variable=libdir "
+                                             (caddr src) " 2>/dev/null"))))
+                             (and (> (string-length libdir) 0)
+                                  (string-append libdir "/" file)))))
+                       '()))))
+      (if (null? thunks)
+          #f
+          (let ((path ((car thunks))))
+            (if (and path (file-exists? path)) path (loop (cdr thunks))))))))
+
+;; No archive anywhere: the link still has to find SOMETHING, and a binary that
+;; needs a shared library beats one that does not link at all. Say so — the
+;; result runs here and nowhere else, which is not what a `jolt build` output is
+;; for.
+(define (bld-warn-dynamic-lib! lib)
+  (display (string-append
+    "jolt build: warning: no static lib" lib ".a found next to the Chez kernel\n"
+    "  — linking " lib " dynamically; the binary will need it on every machine that runs it\n")))
+
+;; The macOS -llz4 fallback: the keg (or pkg-config) at least tells the linker
+;; where the dylib is, which a bare -llz4 on a Mac with no lz4 in /usr/lib cannot.
+(define (bld-osx-lz4-dynamic)
+  (bld-warn-dynamic-lib! "lz4")
+  (let ((prefix (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
+    (if (> (string-length prefix) 0)
+        (string-append "-L" (bld-sh-quote (string-append prefix "/lib")) " -llz4")
+        (let ((pc (bld-sh-capture "pkg-config --libs-only-L liblz4 2>/dev/null")))
+          (if (> (string-length pc) 0)
+              (string-append pc " -llz4")
+              "-llz4")))))
+
+;; The link fragment for one of the kernel's compression libraries: the archive's
+;; path when one is reachable, else -l<lib>. WARN? says whether the fallback is
+;; worth a word. It always is for lz4, which no OS ships, and on Linux for zlib;
+;; on macOS libz is /usr/lib/libz.1.dylib, as much a part of the OS as libiconv,
+;; so falling back to it there is unremarkable.
+(define (bld-compression-lib lib warn?)
+  (let ((archive (bld-static-archive lib)))
+    (cond
+      (archive (string-append (bld-sh-quote archive) " "))
+      ;; a bare -llz4 finds nothing on a Mac: the keg is not on the default path.
+      ((and bld-osx? (string=? lib "lz4")) (string-append (bld-osx-lz4-dynamic) " "))
+      (else (when warn? (bld-warn-dynamic-lib! lib))
+            (string-append "-l" lib " ")))))
+
+;; Link flags. The kernel's lz4/zlib/ncurses deps, lz4 statically (see above).
+;; The host branches double as the target flags for a non-cross build
+;; (host = target).
 (define (bld-link-libs)
   (cond
     ;; cross: the static lz4/zlib live in the pack (lib/), and the pack's
@@ -261,17 +364,16 @@
      (or (getenv "JOLT_TARGET_LINK_LIBS")
          (string-append "-L" (bld-sh-quote (string-append (bld-target-pack) "/lib")) " "
            (bld-sh-capture (string-append "cat " (bld-sh-quote (string-append (bld-target-pack) "/link-libs")))))))
+    ;; macOS: libncurses, libiconv and Foundation ship with the OS and stay
+    ;; dynamic — they cannot be baked in. lz4 and zlib can, and are: lz4 because
+    ;; the OS has none at all, zlib because the archive Chez built is right there
+    ;; next to the kernel, which leaves the dependency list to things that are
+    ;; genuinely part of macOS.
     (bld-osx?
-     (let ((lz4 (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
-       (if (> (string-length lz4) 0)
-           (string-append "-L" lz4 "/lib -llz4 -lz -lncurses -framework Foundation -liconv -lm")
-           (let ((pc (bld-sh-capture "pkg-config --libs-only-L liblz4 2>/dev/null")))
-             (if (> (string-length pc) 0)
-                 (string-append pc " -llz4 -lz -lncurses -framework Foundation -liconv -lm")
-                 (begin
-                   (display "jolt build: warning: lz4 library path not found via brew or pkg-config")
-                   (display " — linker may not find -llz4\n")
-                   "-llz4 -lz -lncurses -framework Foundation -liconv -lm"))))))
+     (string-append
+       (bld-compression-lib "lz4" #t)
+       (bld-compression-lib "z" #f)
+       "-lncurses -framework Foundation -liconv -lm"))
     ;; Windows (ta6nt, MinGW-w64 under MSYS2): the Chez kernel pulls in
     ;; compression, winsock, COM/UUID, and the registry.
     (bld-nt?
@@ -300,8 +402,22 @@
        ;; caller of bld-link-libs takes -I and libkernel.a from the same
        ;; place, which for a cross build is the TARGET pack, not this host.
        "-L" (bld-sh-quote (bld-csv-dir)) " "
-       "-Wl,--exclude-libs,libncurses.a:libncursesw.a:libtinfo.a "
-       "-llz4 -lz -lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt"))))
+       ;; liblz4.a/libz.a join the list for a milder version of the same reason:
+       ;; the executable is searched before any dlopen'd library, so exporting a
+       ;; baked-in deflate/LZ4_decompress means an FFI-loaded libpng, libssl or
+       ;; libsqlite3 calls THIS copy instead of the one it was built against.
+       ;; ld matches these by basename, so naming the archives by absolute path
+       ;; above changes nothing here.
+       "-Wl,--exclude-libs,libncurses.a:libncursesw.a:libtinfo.a:liblz4.a:libz.a "
+       ;; lz4 and zlib by archive path rather than -llz4 -lz: the -L above
+       ;; already preferred the csv archives over any system .so, but only as a
+       ;; side effect of search order, so a Chez installed without them silently
+       ;; produced a binary with runtime compression dependencies. Naming them
+       ;; says so, and their absence is now a warning rather than silence. Falls
+       ;; back to -l (the -L above, then LIBRARY_PATH, then the system dirs).
+       (bld-compression-lib "lz4" #t)
+       (bld-compression-lib "z" #t)
+       "-lncurses -ltinfo -ldl -lm -lpthread -luuid -lrt"))))
 
 ;; --- optional built-binary startup profile ----------------------------------
 ;; JOLT_STARTUP_PROFILE=1 reports wall time, process CPU, collections,
@@ -1944,6 +2060,21 @@
                  "jolt build: note — on macOS this binary is unsigned; to share it,\n"
                  "  `xattr -d com.apple.quarantine " out-path "` on the target, or sign it.\n")))))
 
+;; Spill whichever bundled compression archives this binary carries into
+;; BUILDDIR, and answer them as bld-bundled-archives expects. Empty for a jolt
+;; built against a Chez that had none — bld-compression-lib then falls back and
+;; warns, exactly as it would on the dev machine.
+(define (bld-spill-bundled-archives builddir)
+  (fold-left
+    (lambda (acc lib)
+      (let ((name (string-append "lib" lib ".a")))
+        (if (jolt-embedded-bytes (string-append "csv/" name))
+            (let ((path (string-append builddir "/" name)))
+              (jolt-spill-embedded! (string-append "csv/" name) path)
+              (cons (cons lib path) acc))
+            acc)))
+    '() '("lz4" "z")))
+
 ;; Re-link the launcher stub with the app's static native archives baked in, to
 ;; OUT-PATH. The self-contained jolt bundles the Chez kernel (libkernel.a),
 ;; header, and launcher source; spill them and drive the system cc — the same link
@@ -1951,17 +2082,27 @@
 ;; (native-link) and, on Linux, -rdynamic so the baked-in symbols stay dlsym-
 ;; visible for (load-shared-object #f) + foreign-procedure at startup.
 (define (bld-relink-stub builddir native-link out-path)
-  (let ((h  (string-append builddir "/scheme.h"))
-        (lk (string-append builddir "/libkernel.a"))
-        (lc (string-append builddir "/launcher.c")))
+  (let* ((h  (string-append builddir "/scheme.h"))
+         (lk (string-append builddir "/libkernel.a"))
+         (lc (string-append builddir "/launcher.c"))
+         ;; The bundled lz4/zlib archives, spilled like the kernel: this link runs
+         ;; on a machine with no Chez install, so bld-static-archive has nowhere
+         ;; to look and the app would otherwise take whatever lz4 and zlib the
+         ;; machine happens to have — runtime dependencies the appended-stub path
+         ;; (the other 99% of builds) does not have, on a binary the user is
+         ;; about to ship. An archive is absent only when the jolt running this
+         ;; was itself built against a Chez that had none; then the link falls
+         ;; back to -l as it always did.
+         (archives (bld-spill-bundled-archives builddir)))
     (jolt-spill-embedded! "csv/scheme.h" h)
     (jolt-spill-embedded! "csv/libkernel.a" lk)
     (jolt-spill-embedded! "stub/launcher.c" lc)
     (display "jolt build: relinking launcher stub with static native libraries\n")
-    (bld-system (string-append
-      "cc -O2 " (bld-export-symbols-flag)
-      "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
-      native-link " " (bld-link-libs)))))
+    (parameterize ((bld-bundled-archives archives))
+      (bld-system (string-append
+        "cc -O2 " (bld-export-symbols-flag)
+        "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
+        native-link " " (bld-link-libs))))))
 
 ;; --- legacy cc link (dev bin/jolt): fresh Chez compile + xxd + cc ------------
 (define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link petite-only?)

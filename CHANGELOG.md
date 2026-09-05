@@ -47,6 +47,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Modeled Java collections return and fill object arrays from `toArray`.**
+  `ArrayList`, `LinkedList`, and `ArrayDeque` share these methods. The
+  no-argument and destination-array overloads both ignored their Java contracts
+  and returned a persistent vector. The no-argument form now allocates an exact
+  `Object[]`;
+  the destination overload reuses a large-enough array, writes a null logical
+  terminator when it has spare capacity, preserves later cells, and allocates a
+  replacement when the supplied array is too short.
+
+  `HashSet` answers both overloads too. `toArray` is a `Collection` method, not
+  a `List` one, and the set had none at all — `(.toArray h)` was `No matching
+  field found: toArray for class java.util.HashSet`. It shares the one
+  implementation, which is written against a collection's element list rather
+  than against `ArrayList`'s backing vector, so whatever is modeled next needs
+  only its own list.
+- **Unicode-aware `String.equalsIgnoreCase` and JVM-compatible
+  `compareToIgnoreCase` results.** The instance methods used a separate ASCII
+  lowercase path and reduced every nonzero comparison to `-1` or `1`, even
+  though `String/CASE_INSENSITIVE_ORDER` already modeled Java's character-wise
+  upper-then-lower fold and returned the differing character values. They now
+  share that implementation, so non-ASCII pairs such as `"É"` / `"é"`, null
+  equality, and comparison magnitudes agree with the JVM.
+
+  `compareTo` and `regionMatches` are the same two contracts and are now on the
+  same footing. `compareTo` still answered a sign, so `(.compareTo "a" "c")` was
+  `-1` where the JVM says `-2` and `(.compareTo "abcd" "ab")` was `1` where the
+  JVM says `2` — a magnitude beside `compareToIgnoreCase`'s and a sign from its
+  case-sensitive twin. And `equalsIgnoreCase` IS
+  `regionMatches(true, 0, other, 0, length)` on the JVM, but `regionMatches`
+  folded with Scheme's `string-ci=?` — the full Unicode folding, which is not
+  Java's per-character upper-then-lower one: `"I"` and `"ı"` compared equal
+  through `equalsIgnoreCase` and unequal through `regionMatches`, one JVM
+  operation with two answers. All four now go through one fold, so a new
+  ignore-case method has one place to reach for.
+
+- **A jolt binary carries its own lz4 and zlib, and needs neither at runtime.**
+  They are the Chez kernel's fasl compressors, so every binary — jolt itself and
+  anything `jolt build` produces — links them. The macOS link line took lz4 from
+  `$(brew --prefix lz4)/lib`, and a directory holding both a `.dylib` and a `.a`
+  gives `-llz4` the dylib, so the released binary demanded
+  `/opt/homebrew/opt/lz4/lib/liblz4.1.dylib` off every machine that ran it: on a
+  Mac that never ran `brew install lz4` — which is most of them — `curl … | bash`
+  died in the install script's own `jolt --version` check with a dyld error.
+  Every link now names the static `liblz4.a` and `libz.a` that Chez installs next
+  to `libkernel.a`, which is what forces the static choice (Apple's ld has no
+  `-Bstatic`); on macOS the brew keg and pkg-config stay as fallbacks for a Chez
+  that installed without one. Linux already resolved those same archives, but
+  through `-L` and search order rather than by name, so a Chez installed without
+  them silently produced a binary with runtime compression dependencies; that
+  case now warns. The self-contained jolt carries both archives alongside the
+  Chez kernel it already bundles, so the one link it performs itself — the relink
+  that bakes a `:jolt/native` `:static` archive into an app — takes them from the
+  bundle rather than from the machine the app happens to be built on. A built app
+  carries no compression dependency at all: on Linux the smoke's apps come out
+  needing libc and libm and nothing else. The release workflow asserts the binary it built needs no
+  library a stock machine lacks, and the install script names the missing library
+  when one fails to load.
+
+- **A built binary no longer exports the compression symbols it baked in
+  (Linux).** `-rdynamic` puts the executable's symbols in the dynamic table, and
+  the executable is searched before any `dlopen`'d library, so a baked-in
+  `deflate` or `LZ4_decompress_safe` was answering for an FFI-loaded libpng,
+  libssl or libsqlite3 instead of the zlib each was built against. `liblz4.a` and
+  `libz.a` join ncurses on the `--exclude-libs` list, which already existed for
+  the same reason. A `:jolt/native`'s own symbols are still exported, so
+  `(load-shared-object #f)` resolution is unchanged.
+
+- **Windows absolute paths survive both project and dependency resolution.** A
+  drive-rooted `JOLT_PWD` such as `D:\work\app` was treated as relative by the
+  host file layer, producing paths such as
+  `D:\work\app/D:\work\app/deps.edn` before any program could run. The File
+  shim now recognizes drive-rooted and UNC spellings consistently for file
+  access, `getAbsolutePath`, and `isAbsolute`; a single-leading-separator path
+  remains non-absolute but resolves against `user.dir`'s drive. Dependency
+  roots independently preserve drive, UNC, and device paths with either
+  separator and resolve root-relative paths against the declaring base's drive;
+  ambiguous drive-relative forms such as `C:project` fail with a targeted
+  error that asks for a drive-absolute path.
+
 - **`java.lang.ThreadLocal` is per-thread again, and the class exists.** The
   value lived in a Chez thread parameter, which a forked thread inherits, so a
   child observed the parent's stored value instead of running its own

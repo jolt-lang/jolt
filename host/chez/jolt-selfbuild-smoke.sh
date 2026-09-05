@@ -81,7 +81,8 @@ args: [alpha bb ccc]
 sum: 10
 greet-default: greet:default
 greet-loud: greet:loud
-greet-soft: greet:soft'
+greet-soft: greet:soft
+boot-threads: :ran :ran'
 rm -rf "$(dirname "$app")"
 if [ "$got" != "$want" ]; then
   echo "  FAIL: produced app output mismatch"
@@ -91,10 +92,13 @@ if [ "$got" != "$want" ]; then
 fi
 
 # 5. Static native linking through the distributed jolt: it bundles the Chez
-# kernel, so with the system cc (but still no external Chez) it re-links a stub
-# that bakes a :jolt/native :static archive into the app. The app then calls the
-# C function with the archive removed from disk. Uses the normal PATH so cc — and
-# the kernel's link deps (lz4/…) — are found, but Chez stays out of the build.
+# kernel AND the static liblz4.a / libz.a that kernel was built against, so with
+# the system cc (but still no external Chez) it re-links a stub that bakes a
+# :jolt/native :static archive into the app. The app then calls the C function
+# with the archive removed from disk. Uses the normal PATH so cc and the kernel's
+# remaining link deps are found, but Chez stays out of the build — and the
+# compression libraries come from the bundle, not from this machine, which the
+# dependency check below pins.
 napp="$(mktemp -d)/native-app"
 mkdir -p "$napp/src/app"
 printf 'int jolt_static_answer(void){return 42;}\n' > "$napp/greet.c"
@@ -110,9 +114,30 @@ cat > "$napp/deps.edn" <<EOF
 EOF
 nout="$napp/app"
 echo "jolt self-build smoke: static-linking a native lib via the binary (no external Chez)"
-if ! JOLT_PWD="$napp" "$jolt" build -m app.core -o "$nout" >/dev/null 2>&1; then
+if ! JOLT_PWD="$napp" "$jolt" build -m app.core -o "$nout" > "$napp/build.log" 2>&1; then
   echo "  FAIL: static native build via distributed jolt exited non-zero"
+  cat "$napp/build.log"
   rm -rf "$(dirname "$napp")"; exit 1
+fi
+
+# The relink is the one link the distributed jolt performs, and it must take lz4
+# and zlib from the archives the binary carries rather than from this machine: an
+# app built on a box with them installed has to run on one without them. Skipped
+# when this jolt is missing one — it says so at link time — because then there is
+# nothing to take, and the fallback is the pre-existing behaviour.
+if grep -q "no static lib" "$napp/build.log"; then
+  echo "  (compression dependency check skipped: this jolt bundles no archive)"
+else
+  ndeps=""
+  if command -v otool >/dev/null 2>&1; then ndeps="$(otool -L "$nout" 2>/dev/null)"
+  elif command -v readelf >/dev/null 2>&1; then ndeps="$(readelf -d "$nout" 2>/dev/null)"
+  elif command -v ldd >/dev/null 2>&1; then ndeps="$(ldd "$nout" 2>/dev/null)"
+  fi
+  if printf '%s' "$ndeps" | grep -qEi 'lz4|libz\.'; then
+    echo "  FAIL: the static-native app needs a compression library at runtime:"
+    printf '%s\n' "$ndeps" | grep -Ei 'lz4|libz\.'
+    rm -rf "$(dirname "$napp")"; exit 1
+  fi
 fi
 rm -f "$napp/libgreet.a" "$napp/greet.o"     # nothing to load at runtime
 got_n="$(cd / && "$nout" 2>&1)"

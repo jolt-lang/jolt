@@ -79,6 +79,40 @@
 (define (al->list self)                   ; the `count` live elements as a Scheme list
   (let ((v (al-vec self)) (h (al-head self)))
     (let loop ((i (fx- (al-cnt self) 1)) (acc '())) (if (fx<? i 0) acc (loop (fx- i 1) (cons (vector-ref v (fx+ h i)) acc))))))
+;; Collection.toArray, both overloads, for any modeled collection that can hand
+;; over its live elements in iteration order. Written against a LIST rather than
+;; against ArrayList's backing vector because toArray is a Collection method, not
+;; a List one: HashSet inherits exactly this contract and shares the code below,
+;; and whatever is modeled next needs only its own element list.
+(define (jcoll-to-array elems args)
+  (let ((n (length elems)))
+    (cond
+      ;; Collection.toArray() returns a new Object[], never a Clojure vector.
+      ((null? args)
+       (make-jolt-array (list->vector elems) 'object))
+      ((null? (cdr args))
+       (let ((dst (car args)))
+         (unless (and (jolt-array? dst)
+                      (eq? (jolt-array-kind dst) 'object))
+           (jolt-cast-throw dst "[Ljava.lang.Object;"))
+         (let* ((dv (jolt-array-vec dst))
+                (cap (vector-length dv)))
+           (if (fx<? cap n)
+               ;; Jolt models reference arrays with one object kind, so the
+               ;; replacement retains the strongest component type available.
+               (make-jolt-array (list->vector elems) 'object)
+               (begin
+                 (let fill ((i 0) (es elems))
+                   (unless (null? es)
+                     (vector-set! dv i (car es))
+                     (fill (fx+ i 1) (cdr es))))
+                 ;; The Java overload marks the logical end when the caller's
+                 ;; destination has spare capacity; later cells stay untouched.
+                 (when (fx>? cap n) (vector-set! dv n jolt-nil))
+                 dst)))))
+      (else
+       (throw-jvm 'IllegalArgumentException
+                  "Collection.toArray expects zero or one argument")))))
 (register-class-ctor! "ArrayList"
   (lambda args
     (cond ((null? args) (make-arraylist '()))
@@ -116,7 +150,7 @@
                        (al-remove-at! self idx) old)))
     (cons "clear" (lambda (self) (vector-set! (jhost-state self) 0 (make-vector al-min-cap jolt-nil)) (al-cnt! self 0) (al-head! self 0) jolt-nil))
     (cons "contains" (lambda (self x) (and (memp (lambda (e) (jolt=2 e x)) (al->list self)) #t)))
-    (cons "toArray" (lambda (self . _) (apply jolt-vector (al->list self))))
+    (cons "toArray" (lambda (self . args) (jcoll-to-array (al->list self) args)))
     (cons "iterator" (lambda (self) (make-jiterator (list->cseq (al->list self)))))
     (cons "toString" (lambda (self) (jolt-pr-str (list->cseq (al->list self)))))))
 ;; java.util.SequencedCollection (JDK 21): List and Deque both have it, so the
@@ -942,6 +976,11 @@
         (cons "size" (lambda (self) (hashtable-size (hm-tbl self))))
         (cons "isEmpty" (lambda (self) (= 0 (hashtable-size (hm-tbl self)))))
         (cons "clear" (lambda (self) (hashtable-clear! (hm-tbl self)) (hm-ord! self '()) jolt-nil))
+        ;; The Collection method, not a List one — a HashSet answers it on the
+        ;; JVM and had none here at all, so (.toArray h) was "No matching field
+        ;; found: toArray for class java.util.HashSet". Same jcoll-to-array the
+        ;; ArrayList family uses, over the set's own iteration order.
+        (cons "toArray" (lambda (self . args) (jcoll-to-array (hs->list self) args)))
         (cons "toString" (lambda (self) (jolt-pr-str (apply jolt-hash-set (hs->list self)))))))
 (register-seq-arm! hs-hashset? (lambda (x) (list->cseq (hs->list x))))
 (register-get-arm! hm-hashmap?

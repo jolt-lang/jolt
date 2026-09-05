@@ -187,6 +187,16 @@ chmod +x "$install_dir/jolt"
 if ! run_err="$("$install_dir/jolt" --version 2>&1 >/dev/null)"; then
     >&2 echo "The installed binary does not run on this system:"
     >&2 echo "  ${run_err}"
+    # A macOS build that was linked against a library the machine does not have
+    # (releases before jolt started baking lz4 in named Homebrew's
+    # liblz4.1.dylib, which only a Mac with `brew install lz4` carries).
+    if [[ "$run_err" == *"Library not loaded"* ]]; then
+        missing="$(printf '%s' "$run_err" | sed -nE 's/.*[Ll]ibrary not loaded: ([^ ]+).*/\1/p' | head -1)"
+        >&2 echo ""
+        >&2 echo "This build needs ${missing:-a library that is not installed here}."
+        >&2 echo "Install that library, or install a jolt that bakes it in:"
+        >&2 echo "  brew install lz4        # if the missing library is liblz4"
+    fi
     if [[ "$run_err" == *GLIBC_* ]]; then
         need="$(printf '%s' "$run_err" | sed -nE "s/.*GLIBC_([0-9.]+).*/\1/p" | head -1)"
         have="$(ldd --version 2>/dev/null | sed -nE '1s/.* ([0-9.]+)$/\1/p')"
