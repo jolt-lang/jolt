@@ -414,7 +414,18 @@
              (if (< i (count bindings))
                (ploop (+ i 2) (proc (nth bindings i) (nth bindings (inc i)) acc))
                acc))]
-    (ploop 0 []))))
+    ;; Checked before the walk, which steps in twos and reads (nth bindings
+    ;; (inc i)): an odd vector ran off the end and the user got the raw fault
+    ;; back — "java.lang.IndexOutOfBoundsException: index out of bounds" as the
+    ;; compile error for (let [a 1 b] a). analyze-bindings makes the same check
+    ;; for let*, but destructuring runs FIRST, so every `let`, `loop`, `for`,
+    ;; `doseq` and `if-let` reached the fault before the analyzer ever saw the
+    ;; form. Same wording as the special form, which is the reference's.
+    (if (odd? (count bindings))
+      (throw (ex-info "Bad binding form, expected matched symbol expression pairs"
+                      {:jolt/error {:kind :analyze/invalid-binding
+                                    :type :analysis-error}}))
+      (ploop 0 [])))))
 
 ;; let desugars destructuring patterns to plain bindings (via destructure) so the
 ;; COMPILER sees only plain symbols — analyze-bindings rejects patterns as
@@ -586,6 +597,25 @@
                           (if (and (vector? pv) (> (count pv) 1) (= (first pv) '&form))
                             (subvec pv 2)
                             pv))
+        ;; Past the single-arity `[params] body*` shape, every remaining form must
+        ;; be a `([params] body*)` clause. Checked here because the arglists walk
+        ;; below reaches straight into each one with (first (first cs)): given
+        ;; (defn f 5 6) that is (first 5), and the user got the raw cast back —
+        ;; "Don't know how to create ISeq from: java.lang.Long" as the compile
+        ;; error for their defn. The reference reports this through
+        ;; clojure.core.specs.alpha; jolt has no core specs, so it says so itself.
+        ;; Only `assert`-tier primitives are available this early in the prelude.
+        _ (when (not (vector? (first body)))
+            (loop [cs body]
+              (if (seq cs)
+                (let [c (first cs)]
+                  (if (if (seq? c) (vector? (first c)) false)
+                    (recur (rest cs))
+                    (throw (ex-info (str "Parameter declaration " (pr-str c)
+                                         " should be a vector")
+                                    {:jolt/error {:kind :analyze/invalid-fn-parameters
+                                                  :type :analysis-error}}))))
+                nil)))
         arglists (if (vector? (first body))
                    (list (declared-params (first body)))
                    (loop [cs body acc []]

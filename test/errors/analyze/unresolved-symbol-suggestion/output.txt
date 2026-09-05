@@ -1,4 +1,3 @@
 Unhandled exception: Unable to resolve symbol: prinltn in this context (did you mean print, printf, println?)
-  ex-data: {:jolt/error {:type :unresolved-symbol, :symbol prinltn, :suggestions [print printf println], :ns input, :line 4, :column 3, :file ./test/errors/analyze/unresolved-symbol-suggestion/input.clj}}
   at ./test/errors/analyze/unresolved-symbol-suggestion/input.clj:4:3
 exit: 1

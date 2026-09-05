@@ -47,6 +47,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A compile error is a real throwable, carries a kind, and says what the
+  reference says.** The analyzer raised bare Scheme strings — `(class e)`
+  answered `String`, `(ex-message e)` `nil`, `(instance? Exception e)` false — so
+  a program that caught one could read nothing off it; the report only looked
+  right because the uncaught printer `pr-str`'d the raw value. Every diagnostic
+  is now an `ex-info` whose `:jolt/error` map carries a namespaced `:kind`
+  alongside the position, registered in `test/conformance/error-kinds.edn` and
+  held to the sources in both directions by `make errorkinds`: tooling and
+  `JOLT_DIAG=edn` key on the kind, so the wording beside it stays free to
+  improve. The wording itself now matches clojure 1.12 where the reference has a
+  message of its own — `Too few arguments to if`, `First argument to def must be
+  a Symbol`, `Cannot assign to non-mutable: x`, `Malformed member expression,
+  expecting (. target member ...)` — and where the reference reports through
+  core specs jolt has none of, it says the same thing itself rather than leaking
+  the raw fault: `(let [a 1 b] a)` reported
+  `java.lang.IndexOutOfBoundsException` and `(defn f 5 6)` reported
+  `Don't know how to create ISeq from: java.lang.Long`. The `jolt.ffi` descriptor
+  and signature errors are in the registry too, as
+  `:analyze/invalid-ffi-layout` and `:analyze/invalid-ffi-signature`; without
+  kinds of their own all twenty reported as `:analyze/internal-failure`, which
+  the registry defines as a gap in the compiler rather than a mistake in the
+  caller's descriptor.
+
+- **A compile diagnostic no longer buries the thrower's own `ex-data`, or dies
+  reporting it.** `:jolt/error` is machinery — position and kind — so the report
+  prints the user's `ex-data` without it, and drops the line entirely when
+  nothing else was attached; `(ex-info "m" {:orig true})` from a macro reported
+  `{:jolt/error …}` and no `:orig`. The rebuilt `ex-info` keeps the original data
+  and adds `:jolt/error` beside it rather than replacing it. A throw that already
+  carried a NON-map under that key used to pass through untouched and then met
+  `merge`, raising `IllegalArgumentException` out of the error path itself — the
+  compiler failing while reporting a failure, with the macro's own message lost.
+  Anything but a map is not a diagnostic and gets one built for it.
+
 - **`java.lang.ThreadLocal` is per-thread again, and the class exists.** The
   value lived in a Chez thread parameter, which a forked thread inherits, so a
   child observed the parent's stored value instead of running its own
