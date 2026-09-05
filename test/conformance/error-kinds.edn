@@ -38,6 +38,10 @@
  "A \\uXXXX escape that is not four hex digits, is not a valid code point, or is
   an unpaired surrogate."
 
+ :read/invalid-number
+ "A token that starts like a number but is not one — `1a`, `08`, `0x2g`, `2r2`.
+  A `NumberFormatException` on both runtimes."
+
  :read/duplicate-key
  "The same key twice in a map literal, or the same element twice in a set
   literal. An IllegalArgumentException on both runtimes."

@@ -41,13 +41,23 @@ grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/
 # one — six read/* kinds were added and this gate reported "registry and sources
 # agree" because it could not see the file they were in.
 #
+# WHOLE TREES, not a list of directories, for the same reason: a kind raised from
+# a file nobody thought to enumerate is exactly the one this is here to catch.
+# The minted seeds (host/*/seed) are excluded — they are a rendering of jolt-core
+# that lags it until `make remint`, so a kind retired from the analyzer would
+# keep reading as raised from there.
+#
 # Scheme spells a kind (keyword "read" "duplicate-key"), Clojure spells it
 # :read/duplicate-key; both are normalized to the Clojure form here.
+#
+# -exec … {} + rather than a pipe into xargs: GNU xargs runs the command once
+# with no arguments when its input is empty, and a bare `grep PATTERN` then reads
+# stdin and hangs the gate.
 {
-  grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' \
-       jolt-core/jolt/*.clj jolt-core/jolt/passes/*.clj jolt-core/clojure/core/*.clj 2>/dev/null
-  grep -ohE '\(keyword "(analyze|read|runtime|ffi|codegen|aot)" "[a-z-]+"\)' \
-       host/chez/*.ss host/chez/java/*.ss 2>/dev/null \
+  find jolt-core stdlib tools \( -name '*.clj' -o -name '*.cljc' \) \
+    -exec grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' {} + 2>/dev/null
+  find host -name '*.ss' -not -path '*/seed/*' \
+    -exec grep -ohE '\(keyword "(analyze|read|runtime|ffi|codegen|aot)" "[a-z-]+"\)' {} + 2>/dev/null \
     | sed -E 's/\(keyword "([a-z]+)" "([a-z-]+)"\)/:\1\/\2/'
 } | LC_ALL=C sort -u > "$tmp/raised"
 
