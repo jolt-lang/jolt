@@ -1,4 +1,12 @@
-Unhandled exception: macro blew up
-  ex-data: {:while :expanding}
-  at ./test/errors/macro/throws-during-expansion/input.clj:6:12
+─ analyze/internal-failure ─────────────────────────────────────────────────────
+error: macro blew up
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/macro/throws-during-expansion/input.clj:6:12
+───┼────────────────────────────────────────────────────────────────────────────
+ 4 │   (throw (ex-info "macro blew up" {:while :expanding})))
+ 5 │ 
+ 6 │ (defn f [] (boom))
+   │            ^^^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

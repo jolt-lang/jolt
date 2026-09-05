@@ -1,3 +1,12 @@
-Unhandled exception: First argument to def must be a Symbol
-  at ./test/errors/analyze/invalid-def-keyword-name/input.clj:3:1
+─ analyze/invalid-def ──────────────────────────────────────────────────────────
+error: First argument to def must be a Symbol
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/analyze/invalid-def-keyword-name/input.clj:3:1
+───┼────────────────────────────────────────────────────────────────────────────
+ 1 │ (ns input)
+ 2 │ 
+ 3 │ (def :foo 2)
+   │      ^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

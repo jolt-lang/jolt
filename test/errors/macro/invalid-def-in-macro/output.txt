@@ -1,3 +1,12 @@
-Unhandled exception: First argument to def must be a Symbol
-  at ./test/errors/macro/invalid-def-in-macro/input.clj:6:1
+─ analyze/invalid-def ──────────────────────────────────────────────────────────
+error: First argument to def must be a Symbol
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/macro/invalid-def-in-macro/input.clj:6:1
+───┼────────────────────────────────────────────────────────────────────────────
+ 4 │   `(def ~name ~val))
+ 5 │ 
+ 6 │ (my-def [1 2 3] 123)
+   │         ^^^^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

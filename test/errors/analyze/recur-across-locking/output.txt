@@ -1,3 +1,12 @@
-Unhandled exception: Cannot recur across try
-  at ./test/errors/analyze/recur-across-locking/input.clj:9:9
+─ analyze/invalid-recur ────────────────────────────────────────────────────────
+error: Cannot recur across try
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/analyze/recur-across-locking/input.clj:9:9
+───┼────────────────────────────────────────────────────────────────────────────
+ 7 │     (locking lock
+ 8 │       (if (< i 3)
+ 9 │         (recur (inc i))
+   │         ^^^^^^^^^^^^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

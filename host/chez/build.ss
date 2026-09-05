@@ -385,6 +385,7 @@
     "(load \"host/chez/cli-core.ss\")"
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
+    "(load \"host/chez/diagnostic-render.ss\")"
     "(load \"host/chez/java/ffi.ss\")"
     (string-append "(set-source-roots! " (ldr-install-roots-str) ")")))
 

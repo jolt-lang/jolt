@@ -1,3 +1,12 @@
-Unhandled exception: Unable to resolve symbol: unknown-thing in this context
-  at ./test/errors/analyze/unresolved-symbol/input.clj:4:3
+─ analyze/unresolved-symbol ────────────────────────────────────────────────────
+error: Unable to resolve symbol: unknown-thing in this context
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/analyze/unresolved-symbol/input.clj:4:3
+───┼────────────────────────────────────────────────────────────────────────────
+ 2 │ 
+ 3 │ (defn f []
+ 4 │   (+ 1 unknown-thing))
+   │   ^^^^^^^^^^^^^^^^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

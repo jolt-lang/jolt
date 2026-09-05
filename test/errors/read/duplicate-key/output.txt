@@ -1,3 +1,12 @@
-Unhandled exception (IllegalArgumentException): Duplicate key: :a
-  at ./test/errors/read/duplicate-key/input.clj:3:8
+─ read/duplicate-key ───────────────────────────────────────────────────────────
+error: Duplicate key: :a
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/read/duplicate-key/input.clj:3:8
+───┼────────────────────────────────────────────────────────────────────────────
+ 1 │ (ns input)
+ 2 │ 
+ 3 │ (def m {:a 1
+   │        ^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

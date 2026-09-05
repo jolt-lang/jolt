@@ -1,3 +1,12 @@
-Unhandled exception: Too few arguments to if
-  at ./test/errors/analyze/invalid-if-too-few-args/input.clj:4:3
+─ analyze/invalid-if ───────────────────────────────────────────────────────────
+error: Too few arguments to if
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/analyze/invalid-if-too-few-args/input.clj:4:3
+───┼────────────────────────────────────────────────────────────────────────────
+ 2 │ 
+ 3 │ (defn f []
+ 4 │   (if))
+   │   ^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

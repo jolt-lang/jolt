@@ -831,8 +831,13 @@
     ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
     ;; runtime expression, so the interpreter evaluates the whole def.
     (when-not (form-sym? name-sym)
+      ;; :arg 1 — the name is the second element of the def form. A keyword or a
+      ;; number carries no reader metadata, so its position cannot come from the
+      ;; form itself; the reporter recovers it by scanning the source, and this
+      ;; says which element to scan to.
       (analysis-error :analyze/invalid-def
-                      "First argument to def must be a Symbol"))
+                      "First argument to def must be a Symbol"
+                      {:jolt.error/arg 1}))
     (if (< (count items) 3)
       ;; (def name) with no init (declare): intern + reserve the cell so a forward
       ;; reference resolves; the back end keys on :no-init.

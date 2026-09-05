@@ -1,3 +1,12 @@
-Unhandled exception: Cannot recur here: no enclosing loop or fn
-  at ./test/errors/analyze/recur-outside-loop/input.clj:3:8
+─ analyze/invalid-recur ────────────────────────────────────────────────────────
+error: Cannot recur here: no enclosing loop or fn
+
+───┬────────────────────────────────────────────────────────────────────────────
+   │ ./test/errors/analyze/recur-outside-loop/input.clj:3:8
+───┼────────────────────────────────────────────────────────────────────────────
+ 1 │ (ns input)
+ 2 │ 
+ 3 │ (def x (recur 1))
+   │        ^^^^^^^^^
+───┴────────────────────────────────────────────────────────────────────────────
 exit: 1

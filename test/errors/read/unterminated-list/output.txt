@@ -1,3 +1,4 @@
-Unhandled exception: EOF while reading
-  at ./test/errors/read/unterminated-list/input.clj:4:1
+─ read/invalid-syntax ──────────────────────────────────────────────────────────
+error: EOF while reading
+
 exit: 1

@@ -28,9 +28,24 @@
 ;; diagnostic, alongside the human :message and the current form's :line/:column/
 ;; :file. A plain error still yields {:message ... :line ... :column ...}.
 (define diag-kw-message (keyword #f "message"))
+(define diag-kw-err-arg (keyword "jolt.error" "arg"))
 (define diag-kw-line (keyword #f "line"))
 (define diag-kw-column (keyword #f "column"))
 (define diag-kw-file (keyword #f "file"))
+
+;; "analyze/invalid-def" from the keyword :analyze/invalid-def, for the header.
+;; The message alone, for the "error:" line — the class and ex-data that
+;; jolt-render-throwable prints belong to the untyped report, not the framed one.
+(define (jolt-diagnostic-message v)
+  (if (jolt-ex-info-record? v)
+      (jolt-str-render-one (jolt-ex-info-record-message v))
+      (jolt-pr-str v)))
+
+(define (jolt-kind->string k)
+  (if (keyword? k)
+      (let ((ns (keyword-t-ns k)) (nm (keyword-t-name k)))
+        (if ns (string-append ns "/" nm) nm))
+      (jolt-str-render-one k)))
 
 (define (jolt-diag-machine?)
   (let ((e (getenv "JOLT_DIAG")))
@@ -78,13 +93,39 @@
         ;; jolt-pr-readable, not jolt-pr-str: strings must be quoted so the line
         ;; is valid EDN a tool can read back.
         (begin (display (jolt-pr-readable (jolt-diagnostic-map raw v)) port) (newline port))
-        (let ((diag (jolt-analyzer-diagnostic v)))
-          (jolt-render-throwable v port)
-          ;; Where it failed: the diagnostic's own position, the form a file load
-          ;; was at when this crossed it, or the top-level form evaluating now
-          ;; (jolt-throwable-source-string, compile-eval.ss).
-          (let ((loc (jolt-throwable-source-string raw)))
-            (when loc (display "  at " port) (display loc port) (newline port)))
+        (let* ((diag (jolt-analyzer-diagnostic v))
+               (kind (and diag (jolt-get diag diag-kw-err-kind jolt-nil)))
+               (dfile (and diag (jolt-get diag diag-kw-err-file jolt-nil)))
+               (dline (and diag (jolt-get diag diag-kw-err-line jolt-nil)))
+               (dcol (and diag (jolt-get diag diag-kw-err-column jolt-nil)))
+               (darg (and diag (jolt-get diag diag-kw-err-arg jolt-nil)))
+               (loc (jolt-throwable-source-string raw))
+               ;; A snippet is shown only when there is a real file position to
+               ;; frame. Everything else — a -e form, an unreadable path, a
+               ;; runtime throw with no diagnostic — keeps the plain report.
+               (snippet? (and dfile dline
+                              (not (jolt-nil? dfile)) (not (jolt-nil? dline)))))
+          (if (and kind (not (jolt-nil? kind)))
+              ;; The framed form: the kind names the error, "error:" carries the
+              ;; message, and the position rides on the snippet's header row
+              ;; rather than on a separate "at" line that would say it twice.
+              (begin
+                (diag-render-header port (jolt-kind->string kind))
+                (display "error: " port)
+                (display (jolt-diagnostic-message v) port)
+                (newline port)
+                (newline port)
+                (if snippet?
+                    (diag-render-snippet port
+                                         (jolt-str-render-one dfile)
+                                         (jnum->exact dline)
+                                         (if (jolt-nil? dcol) 1 (jnum->exact dcol))
+                                         loc
+                                         (if (jolt-nil? darg) 0 (jnum->exact darg)))
+                    (when loc (display "  at " port) (display loc port) (newline port))))
+              (begin
+                (jolt-render-throwable v port)
+                (when loc (display "  at " port) (display loc port) (newline port))))
           ;; No trace for a compile-time diagnostic. It is raised while ANALYZING,
           ;; so the frames are jolt's own analyzer recursing into the form
           ;; (analyze-list, analyze-seq, map-seq, …) — thirty lines of internals
