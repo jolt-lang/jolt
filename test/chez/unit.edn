@@ -697,8 +697,14 @@
   ;; does. It used to reach the analyzer's catch-all as "unsupported form", which
   ;; said nothing about what to fix. The tags the compiler does build a leaf for
   ;; are unaffected.
-  {:suite "reader" :expr "(try (load-string \"#foo/bar [1 2]\") (catch Throwable e (str e)))" :expected "\"jolt/uncompilable: No reader function for tag foo/bar\""}
-  {:suite "reader" :expr "(try (load-string \"#zz 1\") (catch Throwable e (str e)))" :expected "\"jolt/uncompilable: No reader function for tag zz\""}
+  {:suite "reader" :expr "(try (load-string \"#foo/bar [1 2]\") (catch Throwable e (ex-message e)))" :expected "\"No reader function for tag foo/bar\""}
+  {:suite "reader" :expr "(try (load-string \"#zz 1\") (catch Throwable e (ex-message e)))" :expected "\"No reader function for tag zz\""}
+  ;; A compile diagnostic is a real throwable now, not a bare string: it answers
+  ;; ex-message, reports as ExceptionInfo, and carries its kind for tooling.
+  ;; Pinned here because the whole point of the change is that a program can READ
+  ;; a compile error — (class e) was String and (ex-message e) nil.
+  {:suite "reader" :expr "(try (load-string \"#zz 1\") (catch Throwable e (.getSimpleName (class e))))" :expected "\"ExceptionInfo\""}
+  {:suite "reader" :expr "(try (load-string \"#zz 1\") (catch Throwable e (str (:kind (:jolt/error (ex-data e))))))" :expected "\":read/invalid-data-reader\""}
   {:suite "reader" :expr "[(try (load-string \"#inst \\\"2020-01-01\\\"\") :ok (catch Throwable e (str e))) (try (load-string \"#uuid \\\"00000000-0000-0000-0000-000000000000\\\"\") :ok (catch Throwable e (str e))) (try (load-string \"1.5M\") :ok (catch Throwable e (str e)))]" :expected "[:ok :ok :ok]"}
   {:suite "reader" :expr "(let [t (first (quote [#foo bar]))] (and (tagged-literal? t) (= (quote foo) (:tag t)) (= \"#foo bar\" (pr-str t))))" :expected "true"}
   {:suite "reader" :expr "(= \\a (read-string \"\\\\a\"))" :expected "true"}

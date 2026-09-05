@@ -783,6 +783,12 @@
     (let ((bt (jolt-history-backtrace)))
       (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
+;; :jolt/error, the key a compile diagnostic hangs its kind and position on.
+;; Defined here rather than shared with compile-eval.ss's diag-kw-jolt-error
+;; because THIS file loads first (rt.ss), and compile-eval.ss is not loaded at
+;; all in some embeddings. Keywords intern, so both names are the same object.
+(define srcreg-kw-jolt-error (keyword "jolt" "error"))
+
 ;; Render an uncaught jolt throw (any value, not just a Chez condition) to a port:
 ;; an ex-info shows its message + ex-data (+ a host cause); anything else is
 ;; pr-str'd. Shared by the cli (cli.ss) and a built binary's launcher (build.ss).
@@ -801,8 +807,18 @@
           (display ": " port)
           (display (jolt-str-render-one (jolt-ex-info-record-message v)) port)
           (newline port)
-          (let ((data (jolt-ex-info-record-data v)))
-            (unless (jolt-nil? data)
+          ;; The USER's ex-data, never the compiler's. A diagnostic carries its
+          ;; position and kind under :jolt/error, which is machinery: printing it
+          ;; put ":jolt/error {:type :analysis-error, :line 6, :column 12 ...}" in
+          ;; front of a reader who is being told the same line and column on the
+          ;; next line anyway, and BURIED the ex-data a throwing macro actually
+          ;; attached — (ex-info "m" {:orig true}) reported {:jolt/error ...} and
+          ;; no :orig. Dropping the key leaves the user's own map; when nothing
+          ;; else was attached the line goes away entirely. JOLT_DIAG=edn is where
+          ;; the structured form belongs, and it still emits it (cli-core.ss).
+          (let* ((data (jolt-ex-info-record-data v))
+                 (data (if (pmap? data) (jolt-dissoc data srcreg-kw-jolt-error) data)))
+            (unless (or (jolt-nil? data) (and (pmap? data) (= 0 (jolt-count data))))
               (display "  ex-data: " port) (display (jolt-pr-str data) port) (newline port)))
           (let ((cause (jolt-ex-info-record-cause v)))
             (when (condition? cause)

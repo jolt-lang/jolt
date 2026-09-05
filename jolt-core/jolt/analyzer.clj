@@ -7,7 +7,7 @@
   bootstrap can compile this namespace via its plain :var path. ctx is an opaque
   host handle threaded to the contract fns; the analyzer never inspects it.
 
-  Unsupported forms throw :jolt/uncompilable
+  Unsupported forms throw an ex-info carrying :jolt/error {:kind ...}
   so the caller falls back to the interpreter (the hybrid contract).
 
   `env` carries lexical state: {:locals #{names} :recur recur-target-name|nil}.
@@ -59,9 +59,6 @@
 ;; practice, and matches how the reader spells ~ and ~@.
 (def ^:private qualified-only #{"syntax-quote"})
 
-(defn- uncompilable [why]
-  (throw (str "jolt/uncompilable: " why)))
-
 ;; Process-wide on purpose: an anon fn's generated name is REGISTERED (backend
 ;; rname), so it has to be unique across every thread compiling, not just within one
 ;; compilation. Read and bump in one swap! — reading the atom and then incrementing
@@ -102,6 +99,28 @@
 (defn current-form-position []
   (let [f (when *positioned-form-box* @*positioned-form-box*)]
     (when (some? f) (form-position f))))
+
+;; Raise a compile-time diagnostic. Two things this fixes over the bare string it
+;; replaces — (throw (str "jolt/uncompilable: " why)):
+;;
+;; It is a real THROWABLE. A program that caught a compile error got a Scheme
+;; string: (class e) answered String, (ex-message e) nil, (instance? Exception e)
+;; false. The message survived only because the uncaught reporter pr-str'd the raw
+;; value, so the report looked right while nothing could read it.
+;;
+;; It carries a KIND — a namespaced keyword registered in
+;; test/conformance/error-kinds.edn, gated by `make errorkinds` — so tooling and
+;; the reporter can key on the error rather than parse its prose, and so the
+;; wording can be improved without breaking either.
+;;
+;; :type stays :analysis-error for the reporter, which already keys on it to drop
+;; the analyzer's own recursion from the trace.
+(defn- analysis-error
+  ([kind msg] (analysis-error kind msg nil))
+  ([kind msg extra]
+   (let [pos (current-form-position)
+         err (merge (or extra {}) pos {:kind kind :type :analysis-error})]
+     (throw (ex-info msg {:jolt/error err})))))
 
 (defn- empty-env [] {:locals #{} :hints {}})
 (defn- local? [env nm] (contains? (:locals env) nm))
@@ -246,11 +265,10 @@
                  ;; been restored by then and names the enclosing loop/fn instead.
                  ;; The reference points at the recur (pos.clj:6:12, not the loop
                  ;; on 4:3) and so should this.
-                 (let [p (:pos node)]
-                   (if p
-                     (throw (ex-info "Can only recur from tail position"
-                                     {:jolt/error (merge {:type :analysis-error} p)}))
-                     (throw "Can only recur from tail position"))))
+                 (throw (ex-info "Can only recur from tail position"
+                                 {:jolt/error (merge (:pos node)
+                                                     {:kind :analyze/invalid-recur
+                                                      :type :analysis-error})})))
                (doseq [a (:args node)] (check-recur-tails! a false)))
          (= op :fn) nil
          (= op :loop)
@@ -277,10 +295,19 @@
       :else (do-node (subvec v 0 (dec n)) (peek v)))))
 
 (defn- analyze-bindings [ctx bvec env]
+  ;; Checked BEFORE the walk, because the walk reads pairs: an odd vector sent
+  ;; (nth bvec (inc i)) past the end and the user got the raw fault that came
+  ;; back — "java.lang.IndexOutOfBoundsException: index out of bounds" as the
+  ;; compile error for (let [a 1 b] a). The reference reports the binding form.
+  (when (odd? (count bvec))
+    (analysis-error :analyze/invalid-binding
+                    "Bad binding form, expected matched symbol expression pairs"))
   (loop [i 0 env env pairs []]
     (if (< i (count bvec))
       (let [bsym (nth bvec i)]
-        (when-not (form-sym? bsym) (uncompilable "destructuring binding"))
+        (when-not (form-sym? bsym)
+          (analysis-error :analyze/invalid-binding
+                          "Bad binding form, expected symbol"))
         (let [nm (form-sym-name bsym)
               init0 (analyze ctx (nth bvec (inc i)) env)
               ;; a ^doubles/^floats/^longs/^ints let binding tags its init with the
@@ -303,10 +330,14 @@
   (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints [] ahints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
-        (when-not (form-sym? p) (uncompilable "destructuring fn param"))
+        (when-not (form-sym? p)
+          (analysis-error :analyze/invalid-fn-parameters
+                          "Bad parameter, expected symbol"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
-            (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
+            (when-not (form-sym? r)
+              (analysis-error :analyze/invalid-fn-parameters
+                              "Bad rest parameter, expected symbol"))
             (recur (+ i 2) fixed (form-sym-name r) hints phints nhints ahints))
           (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)
                 nh (nhint-of ctx p) ah (ahint-of ctx p)]
@@ -591,7 +622,8 @@
                                 (let [cl (vec (form-elements clause))]
                                   (analyze-arity-with-ret ctx (first cl) (rest cl) env fn-name)))
                               rest-items))
-               :else (uncompilable "fn: bad params"))
+               :else (analysis-error :analyze/invalid-fn-parameters
+                                     "Parameter declaration should be a vector"))
         ;; :src-form is the original post-expansion (fn* params body…) form —
         ;; what the image rebuilds from; :free-names the original names of the
         ;; locals it captures. Attached to named fns too (invisible to emission
@@ -630,7 +662,8 @@
         ;; finally which must be last. Enforced eagerly (plain throw) so a misplaced
         ;; clause is a compile error rather than a silently-relocated body form.
         (when @seen-finally?
-          (throw "finally clause must be last in try expression"))
+          (analysis-error :analyze/invalid-try
+                          "finally clause must be last in try expression"))
         (cond
           (= hname "catch")
             (let [cl (vec (form-elements c))]
@@ -639,7 +672,8 @@
               ;; error rather than a compile->interpret punt) instead of letting
               ;; form-sym-name crash on a non-symbol.
               (when (or (< (count cl) 3) (not (form-sym? (nth cl 2))))
-                (throw "Unable to parse catch clause; expected (catch class binding body*)"))
+                (analysis-error :analyze/invalid-try
+                              "Unable to parse catch clause; expected (catch class binding body*)"))
               (swap! catches conj cl))
           (= hname "finally")
             (do (reset! seen-finally? true)
@@ -648,7 +682,8 @@
             (do
               ;; a body expr after a catch is illegal — only catch/finally may follow.
               (when (seq @catches)
-                (throw "Only catch or finally clause can follow catch in try expression"))
+                (analysis-error :analyze/invalid-try
+                      "Only catch or finally clause can follow catch in try expression"))
               (swap! body conj c)))))
     ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
     ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
@@ -787,7 +822,8 @@
     ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
     ;; runtime expression, so the interpreter evaluates the whole def.
     (when-not (form-sym? name-sym)
-      (uncompilable "def name with map metadata"))
+      (analysis-error :analyze/invalid-def
+                      "First argument to def must be a Symbol"))
     (if (< (count items) 3)
       ;; (def name) with no init (declare): intern + reserve the cell so a forward
       ;; reference resolves; the back end keys on :no-init.
@@ -857,18 +893,20 @@
         {:op :set-field :obj (analyze ctx (nth ti 1) env)
          :field (if (= \- (first mname)) (subs mname 1) mname) :val val-node})
       (form-sym? target)
-      (do (when (local? env (form-sym-name target)) (uncompilable "set! of a local"))
+      (do (when (local? env (form-sym-name target)) (analysis-error :analyze/invalid-set
+                                (str "Cannot assign to non-mutable: " (form-sym-name target))))
           (let [r (resolve-global ctx target)]
-            (when-not (= :var (:kind r)) (uncompilable "set! of a non-var"))
+            (when-not (= :var (:kind r)) (analysis-error :analyze/invalid-set "Invalid assignment target"))
             {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
-      :else (uncompilable "set! of an unsupported target"))))
+      :else (analysis-error :analyze/invalid-set "Invalid assignment target"))))
 
 ;; (monitor-enter x) / (monitor-exit x) — the raw monitor ops, lowered to the same
 ;; identity-keyed per-object mutex `locking` takes, so the two compose. Both
 ;; evaluate to nil, matching the JVM (which emits a NIL after the monitor op).
 (defn- analyze-monitor-op [ctx items env op]
   (when-not (= 2 (count items))
-    (throw (str "Wrong number of args (" (dec (count items)) ") passed to: " op)))
+    (analysis-error :analyze/invalid-arity
+            (str "Wrong number of args (" (dec (count items)) ") passed to: " op)))
   (invoke (var-ref "jolt.host" op) [(analyze ctx (nth items 1) env)]))
 
 (defn- analyze-special [ctx op form items env]
@@ -890,7 +928,10 @@
     "if" (do
            ;; 2 or 3 argument forms only (spec 03-special-forms X1)
            (when (or (< (count items) 3) (> (count items) 4))
-             (throw (str "Wrong number of args (" (dec (count items)) ") passed to: if")))
+             (analysis-error :analyze/invalid-if
+                             (if (< (count items) 3)
+                               "Too few arguments to if"
+                               "Too many arguments to if")))
            (if-node (analyze ctx (nth items 1) env)
                     (analyze ctx (nth items 2) env)
                     (if (> (count items) 3)
@@ -914,19 +955,22 @@
     "recur" (let [rt (:recur env)
                   arity (:recur-arity env)
                   n (dec (count items))]
-              (when-not rt (uncompilable "recur outside loop/fn"))
+              (when-not rt (analysis-error :analyze/invalid-recur
+                                           "Cannot recur here: no enclosing loop or fn"))
               ;; A target exists but a `try` stands between here and it. Reported
               ;; before the arity check because the arity is beside the point when
               ;; the recur cannot happen at all, and with the reference's own two
               ;; messages: a try body may not be recurred ACROSS, while a catch or
               ;; finally is not a tail position to begin with.
               (case (:recur-blocked env)
-                :try (throw "Cannot recur across try")
-                :non-tail (throw "Can only recur from tail position")
+                :try (analysis-error :analyze/invalid-recur "Cannot recur across try")
+                :non-tail (analysis-error :analyze/invalid-recur
+                                          "Can only recur from tail position")
                 nil)
               (when (and arity (not= n arity))
-                (throw (str "Mismatched argument count to recur, expected: " arity
-                            " args, got: " n)))
+                (analysis-error :analyze/invalid-recur
+                                (str "Mismatched argument count to recur, expected: " arity
+                                     " args, got: " n)))
               ;; Carry the recur's own source position: the tail-position check is
               ;; a pass over the finished tree, long after the position box has
               ;; moved on, so the node is the only thing that still knows where
@@ -955,11 +999,13 @@
     ;; jolt holds imported classes in vars, so the symbol resolves as :var.
     "var" (let [sym (second items)]
             (if-not (form-sym? sym)
-              (uncompilable (str "var argument must be a symbol: " (pr-str sym)))
+              (analysis-error :analyze/invalid-var-reference
+                              (str "The argument to `var` must be a symbol, got: " (pr-str sym)))
               (let [r (resolve-global ctx sym)]
                 (if (= :var (:kind r))
                   (the-var (:ns r) (:name r))
-                  (uncompilable (str "Unable to resolve var: "
+                  (analysis-error :analyze/unresolved-var
+                                  (str "Unable to resolve var: "
                                      (if-let [ns (form-sym-ns sym)] (str ns "/") "")
                                      (form-sym-name sym) " in this context"))))))
     ;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
@@ -1009,7 +1055,8 @@
                          :fn (analyze ctx fn-form env)}
                         (if meta-expr {:meta-expr meta-expr} {:meta base})))
     "set!" (analyze-set! ctx items env)
-    (uncompilable (str "special form " op))))
+    (analysis-error :analyze/unsupported-special-form
+                    (str "Unsupported special form: " op))))
 
 ;; Host interop method call. `(.method target arg*)` — a head that
 ;; starts with "." but not ".-" (field access stays punted). Analyzes to a
@@ -1077,7 +1124,8 @@
 
 (defn- analyze-host-call [ctx hname items env]
   (when (< (count items) 2)
-    (throw (str "Malformed member expression, expecting (.method target ...): " hname)))
+    (analysis-error :analyze/invalid-member-access
+      (str "Malformed member expression, expecting (.method target ...): " hname)))
   (let [raw (nth items 1)
         target (analyze ctx raw env)]
     (cond-> {:op :host-call
@@ -1341,7 +1389,7 @@
 ;; it as a field). The Chez back end dispatches it through record-method-dispatch.
 (defn- analyze-dot [ctx items env]
   (when (< (count items) 3)
-    (throw (str "Malformed (. target member ...) form")))
+    (analysis-error :analyze/invalid-member-access "Malformed member expression"))
   (let [member0 (nth items 2)
         ;; (. target (member arg*)) is sugar for (. target member arg*) —
         ;; flatten the list-member form so the rest of the dispatch is uniform.
@@ -1389,11 +1437,12 @@
       ;; (. obj :kw) is a keyword lookup — invoke the keyword on the target.
       (form-keyword? member)
         (invoke (analyze ctx member env) [(analyze ctx (nth items 1) env)])
-      :else (uncompilable "special form . (non-symbol member)"))))
+      :else (analysis-error :analyze/invalid-member-access
+                            "Malformed member expression"))))
 
 (defn- analyze-field [ctx hname items env]
   (when (< (count items) 2)
-    (throw (str "Malformed (.-field target) form")))
+    (analysis-error :analyze/invalid-member-access "Malformed (.-field target) form"))
   {:op :host-call
    :method (subs hname 1)        ; ".-field" -> "-field"
    :target (analyze ctx (nth items 1) env)
@@ -1407,7 +1456,8 @@
 ;; `analyze` (form-var-value?) and analyze-special ("var") and never reach here.
 (defn- deny-macro-value [ctx form r]
   (when (form-macro? ctx form)
-    (throw (str "Can't take value of a macro: #'" (:ns r) "/" (:name r)))))
+    (analysis-error :analyze/invalid-macro-value
+           (str "Can't take value of a macro: #'" (:ns r) "/" (:name r)))))
 
 ;; instance? is a macro on jolt (so it can quote a bare class name — the class
 ;; model has no evaluable Class for every name), but the JVM has it as a plain fn,
@@ -1490,7 +1540,8 @@
         msg (if (seq sugg)
               (str base " (did you mean " (apply str (interpose ", " sugg)) "?)")
               base)
-        err {:type :unresolved-symbol
+        err {:kind :analyze/unresolved-symbol
+             :type :unresolved-symbol
              :symbol nm
              :suggestions (vec sugg)
              :ns (compile-ns ctx)}
@@ -1506,7 +1557,7 @@
       ;; supported as a method reference. The call form (Class/.method target ...)
       ;; works; a bare Class/.method as a value is a residual.
       (and ns (> (count nm) 1) (= "." (subs nm 0 1)))
-        (uncompilable
+        (analysis-error :analyze/invalid-method-reference
          (str "Qualified instance method " (str ns "/" nm)
               " used as value; value form not yet supported. Use (.method target ...) or (Class/.method target ...) instead."))
       ns (let [r (resolve-global ctx form)]
@@ -1673,7 +1724,8 @@
           (and hname (not shadowed) (field-head? hname))
             (stamp-pos (analyze-field ctx hname items env) form)
           (and hname (not shadowed) (form-special? hname))
-            (uncompilable (str "special form " hname))
+            (analysis-error :analyze/unsupported-special-form
+                             (str "Unsupported special form: " hname))
           ;; (ns/Name. args*) — a QUALIFIED trailing-dot constructor (a cross-ns or
           ;; aliased deftype, e.g. sci.impl.types/Reified.). hname is nil for a
           ;; namespaced head, so the bare ctor-head? arm above never sees it;
@@ -1754,9 +1806,6 @@
 ;; Attaching it here, at the one entry every top-level analysis goes through, costs
 ;; a single try per top-level form and covers all of them. A throw that already
 ;; carries :jolt/error passes through untouched: it knows its own position better.
-(defn- analysis-diagnostic? [e]
-  (let [d (ex-data e)] (and (some? d) (contains? d :jolt/error))))
-
 (defn- throw-message [e]
   (cond (string? e) e
         ;; an ex-info reports as its message alone; anything else keeps the
@@ -1767,11 +1816,35 @@
 ;; No position to add (a macro-built form, or a form handed straight to eval) means
 ;; nothing to improve on, so leave the throw exactly as it was rather than trading
 ;; its trace for a diagnostic that says no more than the fallback already does.
+;; The rebuilt ex-info keeps the ORIGINAL ex-data and adds :jolt/error beside it.
+;; Replacing it outright discarded whatever the thrower attached: a macro that
+;; raised (ex-info "m" {:orig true}) reported no :orig at all, and any library
+;; that hangs explain-data or a error code off its compile-time throw lost it the
+;; moment the form was analyzed. The position and kind are jolt's to add, not the
+;; thrower's data to overwrite.
 (defn- as-analysis-diagnostic [e]
-  (let [pos (current-form-position)]
-    (if (or (nil? pos) (analysis-diagnostic? e))
-      e
-      (ex-info (throw-message e) {:jolt/error (merge {:type :analysis-error} pos)}))))
+  (let [pos (current-form-position)
+        orig (ex-data e)
+        err (when (map? orig) (:jolt/error orig))]
+    (cond
+      (nil? pos) e
+      ;; Already positioned: it knows where it happened better than the box does.
+      (and err (:line err)) e
+      ;; A diagnostic with a KIND but no position. Raised from a macro — the
+      ;; `let`/`loop` destructurer and `defn`'s clause check are clojure.core code
+      ;; and cannot reach the analyzer's position box — so it names the error but
+      ;; not the place. Filling the position in here is what the box is for; the
+      ;; earlier "already a diagnostic, leave it alone" test skipped these
+      ;; entirely, and (defn f [] (let [a 1 b] a)) reported the DEFN's line 3
+      ;; where the reference names the let on line 4. Its own kind is kept.
+      err (ex-info (throw-message e)
+                   (assoc orig :jolt/error (merge pos err)))
+      ;; No diagnostic at all: anything else raised while analyzing. Keep the
+      ;; thrower's ex-data and add position beside it.
+      :else (ex-info (throw-message e)
+                     (assoc (if (map? orig) orig {})
+                            :jolt/error (merge pos {:kind :analyze/internal-failure
+                                                    :type :analysis-error}))))))
 
 (defn analyze
   ([ctx form]
@@ -1841,6 +1914,8 @@
      ;; data reader is applied before the form reaches here (loader.ss
      ;; ldr-apply-readers). Name the tag, the way the JVM's reader does; the
      ;; generic "unsupported form" pointed at nothing to fix.
-     (form-tagged? form) (uncompilable (str "No reader function for tag "
-                                            (form-tag-name form)))
-     :else (uncompilable "unsupported form"))))
+     (form-tagged? form) (analysis-error :read/invalid-data-reader
+                                         (str "No reader function for tag "
+                                              (form-tag-name form)))
+     :else (analysis-error :analyze/unsupported-form
+                           "Unsupported form"))))

@@ -1,0 +1,80 @@
+;; error-kinds.edn — every diagnostic kind jolt can raise.
+;;
+;; A kind is a namespaced keyword on the :jolt/error map an ex-info carries
+;; ({:kind :analyze/invalid-def :type :analysis-error :line .. :column .. :file ..}).
+;; It is the STABLE handle on an error: tooling keys on it, `JOLT_DIAG=edn` emits
+;; it, and the wording beside it can be improved without breaking either.
+;;
+;; `make errorkinds` holds this file and the sources to each other in both
+;; directions: a kind raised but not listed fails (an unregistered error has no
+;; documented meaning), and a kind listed but never raised fails too (a registry
+;; that accumulates dead entries stops describing the compiler).
+;;
+;; The namespace segment is the compiler phase that raises it, after jank's
+;; taxonomy: read/ for the reader, analyze/ for semantic analysis. Phases jolt
+;; does not yet report through — codegen, aot — get theirs when they do.
+
+{:read/invalid-data-reader
+ "A #tag literal whose reader function is not registered in *data-readers*."
+
+ :analyze/invalid-def
+ "A `def` whose first argument is not a symbol."
+
+ :analyze/invalid-binding
+ "A `let*`/`loop*` binding whose left-hand side is not a symbol. Destructuring is
+  a macro over these, so a pattern that reaches the special form directly is one
+  the desugarer did not rewrite."
+
+ :analyze/invalid-fn-parameters
+ "A `fn*` parameter list that is not a vector of symbols, or a rest parameter
+  that is not a symbol."
+
+ :analyze/invalid-if
+ "An `if` with fewer than two or more than three arguments."
+
+ :analyze/invalid-try
+ "A `try` whose clauses are out of order (a body form after a catch, a finally
+  that is not last) or a catch clause that does not parse."
+
+ :analyze/invalid-recur
+ "A `recur` that cannot reach its target: no enclosing loop or fn, the wrong
+  argument count, across a `try`, or outside tail position."
+
+ :analyze/invalid-set
+ "A `set!` whose target is not an assignable place — a local, a non-var, or a
+  form that is neither a symbol nor a field access."
+
+ :analyze/invalid-var-reference
+ "A `var` special form whose argument is not a symbol."
+
+ :analyze/unresolved-var
+ "A `var` special form naming a var that does not exist."
+
+ :analyze/unresolved-symbol
+ "A symbol that names neither a local, an interned var, nor an imported class.
+  Carries :symbol, :suggestions and :ns alongside the position."
+
+ :analyze/invalid-member-access
+ "A host interop form that does not parse: (. target member ...), (.method
+  target ...) or (.-field target) with a missing or non-symbol member."
+
+ :analyze/invalid-method-reference
+ "A qualified instance method (Class/.method) used as a value rather than called."
+
+ :analyze/invalid-macro-value
+ "A macro's var used as a value. Macros exist only at compile time."
+
+ :analyze/invalid-arity
+ "A special form applied to the wrong number of arguments."
+
+ :analyze/unsupported-special-form
+ "A special-form head jolt's analyzer has no arm for."
+
+ :analyze/unsupported-form
+ "A form the analyzer cannot classify at all — neither literal, symbol,
+  collection, nor list."
+
+ :analyze/internal-failure
+ "Anything else raised while analyzing a form, carrying the position of the
+  innermost form under analysis. A diagnostic that reaches a user with this kind
+  is a gap in the list above, not a category of its own."}

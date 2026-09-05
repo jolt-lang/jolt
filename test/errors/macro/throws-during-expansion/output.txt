@@ -1,4 +1,4 @@
 Unhandled exception: macro blew up
-  ex-data: {:jolt/error {:type :analysis-error, :line 6, :column 12, :file ./test/errors/macro/throws-during-expansion/input.clj}}
+  ex-data: {:while :expanding}
   at ./test/errors/macro/throws-during-expansion/input.clj:6:12
 exit: 1
