@@ -91,6 +91,34 @@
                             (str "(substring " t " (jolt->idx " a0 ") (jolt->idx " a1 "))"))
       (= m "replace")     (when (= argc 2)
                              (str "(str-replace-literal " t " (str-needle " a0 ") (str-needle " a1 "))"))
+      ;; The rest route to a jolt-str-* native (java/natives-str.ss), which is the
+      ;; SAME procedure the generic jolt-string-method arm calls — so the hinted
+      ;; and unhinted paths cannot drift, and each argument is spliced exactly
+      ;; once (they are raw expressions here, not temporaries: a second splice
+      ;; would evaluate the argument twice).
+      (= m "equals")               (when (= argc 1) (str "(jolt-str-equals? " t " " a0 ")"))
+      (= m "equalsIgnoreCase")     (when (= argc 1) (str "(jolt-str-equals-ci? " t " " a0 ")"))
+      (= m "compareTo")            (when (= argc 1) (str "(jolt-str-compare " t " " a0 ")"))
+      (= m "compareToIgnoreCase")  (when (= argc 1) (str "(jolt-str-compare-ci " t " " a0 ")"))
+      (= m "isBlank")              (when (= argc 0) (str "(jolt-str-blank? " t ")"))
+      (= m "repeat")               (when (= argc 1) (str "(jolt-str-repeat " t " " a0 ")"))
+      (= m "codePointAt")          (when (= argc 1) (str "(jolt-str-code-point-at " t " " a0 ")"))
+      (= m "lastIndexOf")          (when (= argc 1) (str "(jolt-str-last-index-of " t " " a0 ")"))
+      (= m "strip")                (when (= argc 0) (str "(jolt-str-strip " t " #t #t)"))
+      (= m "stripLeading")         (when (= argc 0) (str "(jolt-str-strip " t " #t #f)"))
+      (= m "stripTrailing")        (when (= argc 0) (str "(jolt-str-strip " t " #f #t)"))
+      (= m "toCharArray")          (when (= argc 0) (str "(jolt-str-to-char-array " t ")"))
+      (= m "getBytes")             (cond (= argc 0) (str "(jolt-str-get-bytes " t " \"utf-8\")")
+                                         (= argc 1) (str "(jolt-str-get-bytes " t " " a0 ")")
+                                         :else nil)
+      (= m "matches")              (when (= argc 1) (str "(jolt-str-matches? " t " " a0 ")"))
+      (= m "replaceAll")           (when (= argc 2) (str "(jolt-str-replace-all " t " " a0 " " a1 ")"))
+      (= m "replaceFirst")         (when (= argc 2) (str "(jolt-str-replace-first " t " " a0 " " a1 ")"))
+      (= m "split")                (cond (= argc 1) (str "(jolt-str-split " t " " a0 " 0)")
+                                         (= argc 2) (str "(jolt-str-split " t " " a0 " " a1 ")")
+                                         :else nil)
+      (= m "subSequence")          (when (= argc 2) (str "(jolt-str-sub-sequence " t " " a0 " " a1 ")"))
+      (= m "intern")               (when (= argc 0) t)
       :else nil)))
 
 ;; Direct emission for (.m target …) whose target is PROVEN a keyword
@@ -2462,7 +2490,19 @@
                     (or hv (str "(jolt-array-vec " (first as) ")"))
                     " " (second as) " " v ") " v ")"))
              (str "(jolt-flaset " (str/join " " as) ")")))))
+      ;; (aget ^longs/^ints/^bytes/^objects a i) and its aset twin. A boxed backing
+      ;; cannot unbox, so there is no inline form and no hoisted vector — the win is
+      ;; skipping jolt-nth's dispatch walk, which the call already gets.
+      (:v-aget node) (order-args (fn [as] (str "(jolt-vaget " (str/join " " as) ")")))
+      (:v-aset node) (order-args (fn [as] (str "(jolt-vaset " (str/join " " as) ")")))
       (:fl-op node) (order-args (fn [as] (str "(" (:fl-op node) " " (str/join " " as) ")")))
+      ;; the integer twin of :fl-op — a java.lang.Math member over proven fixnum
+      ;; operands, lowered to its jolt-l-* macro (jolt.passes.numeric math-lng-ops).
+      (:lng-op node) (order-args (fn [as] (str "(" (:lng-op node) " " (str/join " " as) ")")))
+      ;; a clojure.core call the collection lattice proved reduces to a Chez
+      ;; primitive — (count s) / (str a b) over proven strings (jolt.passes.types
+      ;; str-prim-op). No var deref, no jolt-invoke, no type dispatch.
+      (:prim-op node) (order-args (fn [as] (str "(" (:prim-op node) " " (str/join " " as) ")")))
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
@@ -2600,12 +2640,19 @@
              shape (get (ctor-shapes) key)]
          (and (= :var (:op fnode)) shape
               (= (count (get shape :fields)) (count args))
-              (<= (count args) 6)
-              ;; skip if any ^double field — the inlined path doesn't coerce
-              (not-any? #{"double"} (get shape :tags))))
+              (<= (count args) 6)))
        (let [s (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))
              tag (:type s)
              cells *cache-cells*
+             ;; A ^double field is widened on the way in, exactly as the dispatched
+             ;; ctor does it (make-deftype-ctor's build calls the same jolt-rec-dbl).
+             ;; This used to disqualify the whole inline path — which meant a
+             ;; coordinate record, the shape the ^double machinery exists for, always
+             ;; paid the slow ctor: jolt-invoke, var-deref, rest-list, ctor call,
+             ;; hashtable lookup and a field vector.
+             tags (vec (get s :tags))
+             coerce-arg (fn [i a]
+                          (if (= "double" (nth tags i nil)) (str "(jolt-rec-dbl " a ")") a))
              desc-lookup (str "(hashtable-ref chez-tag-desc " (chez-str-lit tag) " #f)")
              cached-desc (if cells
                            (let [c (fresh-label "_cdesc$")]
@@ -2613,7 +2660,8 @@
                              (str "(or " c " (let ((_d " desc-lookup ")) (set! " c " _d) _d))"))
                            desc-lookup)]
          (order-args (fn [as]
-                       (let [n (count as)]
+                       (let [n (count as)
+                             as (vec (map-indexed coerce-arg as))]
                          (if (<= n 8)
                            (str "(make-jrec" n " " cached-desc " jolt-nil 0"
                                 (when (pos? n) (str " " (str/join " " as))) ")")

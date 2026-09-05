@@ -442,6 +442,11 @@
 (define (chez-double-tag? t)
   (and (string? t) (string=? t "double")))
 
+(define (jolt-rec-dbl a)
+  (if (and (number? a) (not (flonum? a)))
+      (exact->inexact a)
+      a))
+
 (define chez-record-fields-tbl
   (make-hashtable string-hash string=?))
 
@@ -476,6 +481,13 @@
     ((or (not tag) (jolt-nil-t? tag)) jolt-nil)
     ((string=? tag "num") "num")
     ((string=? tag "double") "double")
+    ((string=? tag "long") "num")
+    ((or (string=? tag "String")
+         (string=? tag "java.lang.String"))
+     "str")
+    ((or (string=? tag "Keyword")
+         (string=? tag "clojure.lang.Keyword"))
+     "kw")
     (else
      (let* ((simple (chez-shape-simple-name tag))
             (qualified? (not (string=? simple tag)))
@@ -1683,10 +1695,8 @@
                               v
                               i
                               (if (and (fx< i ndbl)
-                                       (vector-ref dbl-flags i)
-                                       (number? a)
-                                       (not (flonum? a)))
-                                  (exact->inexact a)
+                                       (vector-ref dbl-flags i))
+                                  (jolt-rec-dbl a)
                                   a))
                             (loop (cdr as) (+ i 1))))))))
          (ctor (lambda args

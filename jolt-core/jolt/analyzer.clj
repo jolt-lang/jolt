@@ -187,20 +187,64 @@
   (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
     (cond (= s "double") :double (= s "long") :long :else nil)))
 
-;; A primitive numeric hint (^long / ^double) on a binding symbol. Drives the
-;; fl*/fx* fast path (jolt.passes.numeric).
+;; A primitive numeric hint on a BINDING symbol. Drives the fl*/fx* fast path
+;; (jolt.passes.numeric).
+;;
+;; ^int joins ^long here, and only here. jolt has no 32-bit integer — an int and a
+;; long are the same value — so a ^int binding is a fixnum promise exactly as a
+;; ^long one is, and honouring it lights up ported JVM code (60-gvec.clj is written
+;; entirely in ^int indices) that until now paid generic arithmetic for a hint the
+;; compiler dropped. The RETURN path (tag->nkind, used by with-ret-nhint and
+;; arglist-ret-nkind) deliberately does NOT take it: a ^int return would coerce
+;; through jolt->fx-ret and WRAP to 64 bits, and a wrap is a value change, where a
+;; parameter coercion only refuses a value that was never an int to begin with.
+;;
+;; Divergence: reference Clojure supports only long and double primitive
+;; parameters, so ^int on a param is an inert type tag there and coerces nothing.
+;; Here it range-checks (and refuses a char, per RT.longCast(Object)). Recorded in
+;; test/conformance/known-divergences.edn.
+(defn- tag->pnkind [t]
+  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
+    (if (= s "int") :long (tag->nkind t))))
 (defn- nhint-of [ctx sym]
-  (let [m (form-sym-meta sym)] (when m (tag->nkind (get m :tag)))))
+  (let [m (form-sym-meta sym)] (when m (tag->pnkind (get m :tag)))))
 
-;; A primitive ARRAY hint (^doubles / ^floats / ^longs / ^ints) on a param. Drives
-;; the unboxed flvector-ref/-set! fast path for aget/aset (jolt.passes.numeric):
-;; a double/float array reads back a proven :double. floats share the flvector kind.
+;; A primitive ARRAY hint on a param. Drives the aget/aset fast paths
+;; (jolt.passes.numeric):
+;;
+;;   :doubles  the UNBOXED flvector-ref/-set! path — a double/float array's backing
+;;             is a Chez flvector, so an element reads back a proven :double.
+;;             floats share the flvector kind.
+;;   :longs :ints :bytes :objects
+;;             a boxed Chez vector backing, so no unboxing and no result type — but
+;;             the read still skips jolt-nth's whole dispatch walk (jolt-vaget).
 (defn- tag->akind [t]
   (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
     (cond (= s "doubles") :doubles (= s "floats") :doubles
-          (= s "longs") :longs (= s "ints") :ints :else nil)))
+          (= s "longs") :longs (= s "ints") :ints
+          (= s "bytes") :bytes (= s "objects") :objects
+          :else nil)))
 (defn- ahint-of [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag->akind (get m :tag)))))
+
+;; A PRIMITIVE tag jolt parses and then acts on nowhere. The hint surface is
+;; invisible from the source — ^double is a load-bearing contract and ^float is
+;; decoration, and the two look identical — so the JOLT_CHECK lint reports these,
+;; and jolt.passes.types turns each into a located warning.
+;;
+;; Only primitives and primitive arrays. A tag like ^Object, ^java.util.List or
+;; ^clojure.lang.IFn is inert on the JVM too — it is documentation, the programmer
+;; knows it, and reporting it would bury the real finding in noise. A ^Foo naming a
+;; record that is not registered is excluded for a different reason: the record can
+;; be defined later or in another namespace, so "unknown here" is not "wrong".
+(def ^:private inert-prim-tags
+  #{"float" "boolean" "char" "byte" "short"
+    "chars" "booleans" "shorts"})
+(defn- dead-hint-of [ctx sym]
+  (let [m (form-sym-meta sym)
+        t (when m (get m :tag))
+        s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
+    (when (and s (contains? inert-prim-tags s)) s)))
 
 ;; Push a numeric return hint (from ^double/^long on a defn's name) onto each arity
 ;; of its fn, so the back end coerces the body's value to that kind on return —
@@ -243,22 +287,24 @@
   ;; folds it with a plain reduce — no reduce-over-map in the kernel subset).
   ;; :phints is the parallel vector of [name ctor-key] for record param hints,
   ;; carrying the specific type for the inference to seed.
-  (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints [] ahints []]
+  (loop [i 0 fixed [] rest-name nil hints [] phints [] nhints [] ahints [] dhints []]
     (if (< i (count pvec))
       (let [p (nth pvec i)]
         (when-not (form-sym? p) (uncompilable "destructuring fn param"))
         (if (= "&" (form-sym-name p))
           (let [r (nth pvec (inc i))]
             (when-not (form-sym? r) (uncompilable "destructuring fn rest"))
-            (recur (+ i 2) fixed (form-sym-name r) hints phints nhints ahints))
+            (recur (+ i 2) fixed (form-sym-name r) hints phints nhints ahints dhints))
           (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)
-                nh (nhint-of ctx p) ah (ahint-of ctx p)]
+                nh (nhint-of ctx p) ah (ahint-of ctx p) dh (dead-hint-of ctx p)]
             (recur (inc i) (conj fixed nm) rest-name
                    (if h (conj hints [nm h]) hints)
                    (if ph (conj phints [nm ph]) phints)
                    (if nh (conj nhints [nm nh]) nhints)
-                   (if ah (conj ahints [nm ah]) ahints)))))
-      {:fixed fixed :rest rest-name :hints hints :phints phints :nhints nhints :ahints ahints})))
+                   (if ah (conj ahints [nm ah]) ahints)
+                   (if dh (conj dhints [nm dh]) dhints)))))
+      {:fixed fixed :rest rest-name :hints hints :phints phints :nhints nhints
+       :ahints ahints :dhints dhints})))
 
 ;; Clojure lets a later param shadow an earlier same-named one (a macro expander
 ;; uses _ for both its &form and &env slots, so its param list is (_ _ …)); the
@@ -376,9 +422,13 @@
         arity (if (seq (:phints pp)) (assoc arity :phints (:phints pp)) arity)
         ;; numeric param hints (name -> :long/:double) for jolt.passes.numeric.
         arity (if (seq (:nhints pp)) (assoc arity :nhints (:nhints pp)) arity)
-        ;; array param hints (name -> :doubles/:longs/:ints) for jolt.passes.numeric:
-        ;; aget/aset over them lower to the unboxed flvector fast path.
-        arity (if (seq (:ahints pp)) (assoc arity :ahints (:ahints pp)) arity)]
+        ;; array param hints (name -> :doubles/:longs/:ints/:bytes/:objects) for
+        ;; jolt.passes.numeric: aget/aset over them lower to the unboxed flvector
+        ;; path (:doubles) or the boxed-vector one (the rest).
+        arity (if (seq (:ahints pp)) (assoc arity :ahints (:ahints pp)) arity)
+        ;; inert primitive hints (name -> tag), for the JOLT_CHECK lint alone.
+        ;; Nothing in codegen reads them — that is the point of reporting them.
+        arity (if (seq (:dhints pp)) (assoc arity :dead-hints (:dhints pp)) arity)]
     ;; :rest only when variadic — an absent :rest reads back nil, same as before,
     ;; but keeps a fixed arity a nil-free struct rather than a phm.
     (if rst (assoc arity :rest rst) arity)))

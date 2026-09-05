@@ -57,6 +57,13 @@
        ;; declared kind on a let-bound local. Costs nothing against the state before
        ;; :loop landed -- these fns are nearly all loops, so none of them were
        ;; spliceable then either.
+       ;;
+       ;; This covers EVERY array kind, not just :doubles. The boxed kinds have no
+       ;; unboxed path to fall off, but they do have jolt-vaget, and a spliced copy
+       ;; loses that too: measured, an (aget ^objects a i) in a spliceable fn emitted
+       ;; jolt-vaget in the standalone definition and jolt-nth in all three spliced
+       ;; copies -- which is every call on the hot path. Narrowing this to :doubles
+       ;; cost the entire boxed-array win and bought nothing.
        (not (seq (:ahints (first (:arities (:init node))))))
        ;; ...and not a var this program defines more than once. A stash is a
        ;; promise that the body a call site copies is the body that var will

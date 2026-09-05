@@ -61,7 +61,7 @@ bindir="$(mktemp -d)"
 trap 'rm -rf "$bindir"' EXIT
 
 # name:default-arg, each sized to run in a few seconds. Axes: see README.md.
-BENCHES="fib:30 tak:24 loop-recur:20000 mandelbrot:200 arrays:40000 mathfns:1000000 collections:30000 vecops:60000 seqs:20000 sorted-access:40000 nth-access:1000000 transducers:20000 transients:50000 keyed-lookup:3000 hash-eq:2000 literals:100000 string-build:60000 string-ops:100000 char-scan:40000 mono-dispatch:2000 dispatch:2000 binary-trees:14 executors:60000"
+BENCHES="fib:30 tak:24 loop-recur:20000 mandelbrot:200 arrays:40000 mathfns:1000000 collections:30000 vecops:60000 seqs:20000 sorted-access:40000 nth-access:1000000 transducers:20000 transients:50000 keyed-lookup:3000 hash-eq:2000 literals:100000 string-build:60000 string-ops:100000 char-scan:40000 mono-dispatch:2000 dispatch:2000 binary-trees:14 typed-records:100000 executors:60000"
 
 run_one() {
   ns="${1%%:*}"; arg="${2:-${1##*:}}"

@@ -117,3 +117,13 @@
 (%eval-fn (define (jolt-l-quot a b) (quotient a b)))
 (%eval-fn (define (jolt-l-rem a b) (remainder a b)))
 (%eval-fn (define (jolt-l-mod a b) (modulo a b)))
+;; java.lang.Math over proven longs (jolt.passes.numeric math-lng-ops). Mirrors
+;; seq.ss: floorMod reuses jolt-l-mod, floorDiv needs floor semantics, abs is the
+;; generic one there too.
+(%eval-fn (define (jolt-l-abs a) (abs a)))
+(%eval-fn (define (jolt-floor-quotient a b)
+            (let ((q (quotient a b)))
+              (if (and (not (eqv? 0 (remainder a b)))
+                       (if (negative? b) (positive? a) (negative? a)))
+                  (- q 1)
+                  q))))

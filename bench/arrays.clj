@@ -5,6 +5,15 @@
 ;; it tracks that codegen directly and guards it against regression. mandelbrot
 ;; covers scalar double arith; this covers indexed array reads/writes.
 ;;
+;; The REFERENCE-array half is a different path and is timed separately. Only a
+;; double/float array has an unboxed backing here; ^longs, ^ints, ^bytes and
+;; ^objects all keep a boxed Chez vector, so there is no flvector to read. What
+;; they can still skip is the DISPATCH: an untyped (aget a i) lowers to the generic
+;; nth, which nil-checks the index, coerces it, and then walks vector/string/seq/
+;; record before it reaches the array arm. ^objects is the shape that matters most
+;; in practice — it is what a hand-written trie node holds, and what clojure.core's
+;; own gvec is written in.
+;;
 ;; Portable Clojure (jolt + JVM Clojure) — ^doubles/aget/aset hit primitive arrays
 ;; on both.
 ;;   bench/run.sh arrays 40000
@@ -23,16 +32,47 @@
       (recur (inc i) (+ acc (* (aget a i) (aget b i))))
       acc)))
 
+;; --- reference arrays: boxed backing, so the win is the skipped dispatch ------
+(defn ofill! [^objects a ^long n]
+  (loop [i 0]
+    (when (< i n)
+      (aset a i (inc i))
+      (recur (inc i))))
+  a)
+
+(defn osum ^long [^objects a ^long n]
+  (loop [i 0 acc 0]
+    (if (< i n)
+      (recur (inc i) (unchecked-add acc (aget a i)))
+      acc)))
+
+(defn lfill! [^longs a ^long n]
+  (loop [i 0]
+    (when (< i n)
+      (aset a i (* i 3))
+      (recur (inc i))))
+  a)
+
+(defn lsum ^long [^longs a ^long n]
+  (loop [i 0 acc 0]
+    (if (< i n)
+      (recur (inc i) (unchecked-add acc (aget a i)))
+      acc)))
+
 ;; `passes` dot products over two n-element arrays; each pass reads 2n elements
 ;; unboxed and does n fused multiply-adds. The arrays are filled once (the aset
-;; path) then read every pass (the aget path).
+;; path) then read every pass (the aget path). The reference arrays are walked the
+;; same number of times, over the boxed path.
 (defn run ^double [^long passes]
   (let [n 1000
         a (fill! (double-array n) n)
-        b (fill! (double-array n) n)]
+        b (fill! (double-array n) n)
+        o (ofill! (object-array n) n)
+        l (lfill! (long-array n) n)]
     (loop [p 0 acc 0.0]
       (if (< p passes)
-        (recur (inc p) (+ acc (dot a b n)))
+        (recur (inc p) (+ acc (dot a b n)
+                          (* 1.0e-9 (unchecked-add (osum o n) (lsum l n)))))
         acc))))
 
 (defn -main [& args]

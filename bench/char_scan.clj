@@ -20,6 +20,10 @@
 ;; character state machine, called once per entity part inside format-entity, and
 ;; it ran at 30x the JVM — almost entirely in the casts, not the loop.
 ;;
+;; `count-digits-hinted` adds the fourth shape: the SAME walk with the index
+;; declared `^int` on the parameter rather than cast at each use, which is how
+;; ported JVM code is actually written.
+;;
 ;; Portable Clojure (jolt + JVM Clojure).
 ;;   bench/run.sh char-scan 40000
 (ns char-scan)
@@ -81,6 +85,21 @@
         (let [c (long (int (.charAt s (int i))))]
           (recur (inc i) (if (and (>= c 48) (<= c 57)) (inc acc) acc)))))))
 
+;; --- the same walk with the index HINTED ^int, not cast per use ---------------
+;; ^int is the tag ported JVM code writes on an index parameter — clojure.core's
+;; own gvec is written in them. Reference Clojure supports long and double
+;; primitive parameters only, so ^int there is inert documentation; jolt has no
+;; 32-bit integer, so it can read one as the fixnum promise ^long is. Without that
+;; the whole body is generic arithmetic over a parameter the source has already
+;; declared. Same work as `count-digits`, with the casts moved to the signature.
+(defn count-digits-hinted ^long [^String s ^int from]
+  (let [n (.length s)]
+    (loop [i from acc 0]
+      (if (>= i n)
+        acc
+        (let [c (long (int (.charAt s i)))]
+          (recur (inc i) (if (and (>= c 48) (<= c 57)) (inc acc) acc)))))))
+
 (defn run [iters]
   (loop [i 0 acc 0]
     (if (< i iters)
@@ -90,7 +109,8 @@
               (unchecked-add
                (unchecked-add (reduce (fn [a e] (if (alphanumeric? e) (inc a) a)) 0 entities)
                               (sum-code-points sentence))
-               (count-digits sentence))))
+               (unchecked-add (count-digits sentence)
+                              (count-digits-hinted sentence 0)))))
       acc)))
 
 (defn -main [& args]

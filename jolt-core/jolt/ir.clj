@@ -175,9 +175,26 @@
 ;;   :num-kind :num-read     numeric pass (jolt.passes.numeric) — an :invoke's
 ;;                           proven :double/:long arithmetic kind, and a field
 ;;                           read's numeric kind.
+;;   :fl-aget :fl-aset       an aget/aset over a ^doubles array, lowered to the
+;;   :v-aget :v-aset         unboxed flvector path / to the boxed-vector path for
+;;                           the other array kinds (jolt.passes.numeric).
+;;   :prim-op                a clojure.core call lowered to a Chez primitive over
+;;                           operands the collection lattice proved
+;;                           (jolt.passes.types str-prim-op).
+;;   :fl-op :lng-op          a java.lang.Math member lowered to a native Chez
+;;                           flonum op / a jolt-l-* fixnum macro, over operands
+;;                           the numeric pass proved (jolt.passes.numeric).
+;;   :target-type            a :host-call receiver PROVEN :str/:kw/:sb — by a
+;;                           hint (analyzer) or by inference (jolt.passes.types).
+;;                           Drives the direct interop emit, and is what the
+;;                           call's own answer type is read off.
 ;;   :devirt-type :devirt-*  a monomorphic protocol call's resolved impl (backend).
 ;;   :num-ret                a ^double/^long declared return, on a :var node.
 ;;   :phints :nhints         per-arity ^Record / ^double param hints (analyzer).
+;;   :dead-hints             per-arity params carrying a primitive tag jolt acts
+;;                           on nowhere. Read ONLY by the JOLT_CHECK lint
+;;                           (jolt.passes.types report-dead-hints!); nothing in
+;;                           codegen consumes them, which is what they report.
 ;;   :rec-hint               a declared ^Record type on a :local, moved off a
 ;;                           callee arity by the inline pass onto the local that
 ;;                           replaced the param (a spliced body has no arity).

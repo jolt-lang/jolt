@@ -15,7 +15,8 @@
               mk-struct union-cap scalar-t? union-type? umembers union-of merge-fields
               join-t join type-depth cap struct-safe? field-type type-shape
               mark-struct truthy-type? num-ret-fns vector-ret-fns
-              str-ret-fns string-ns-ret-fns nilable? strip-nilable]]))
+              str-ret-fns string-ns-ret-fns nilable? strip-nilable
+              interop-ret-type]]))
 
 ;; --- engine state ------------------------------------------------------------
 ;; The walk threads an immutable `env` (mk-env) instead of reading scattered
@@ -189,11 +190,21 @@
 ;; the type a field reads back as. A declared coercible ^double hint always wins
 ;; (the ctor coerces the arg to a flonum). A declared ^Record hint recurses. An
 ;; UNTAGGED field takes the inferred ctor-arg join from the unit lean field types (or :any).
+;;
+;; The scalar tags arrive already normalized by chez-resolve-field-tag
+;; (host/chez/records.ss): "double", "num" (which is also where ^long lands),
+;; "str" and "kw". A tag that is none of those is a record type name to recurse
+;; into. The point of "str"/"kw" is that a field read now PROVES its receiver for
+;; the interop path — (.length (:nm p)) on a ^String field emits the string native
+;; with no runtime string? test — and feeds the same success checking a ^String
+;; parameter already gets.
 (defn- field-type-from-tag [tag depth shapes ctor-key field-kw]
   (cond
     (<= depth 0) :any
     (= tag "double") :double
     (= tag "num") :num
+    (= tag "str") :str
+    (= tag "kw") :kw
     (some? tag) (let [e (get shapes tag)]
                   (if e (record-type-from-entry e tag depth shapes) :any))
     :else (let [box *field-type-box*
@@ -568,6 +579,50 @@
               (swap! (:wp-field-demote (:unit env)) conj ck)))))
       :else nil)))
 
+;; A parameter carrying a primitive tag jolt acts on nowhere (analyzer
+;; dead-hint-of) becomes a JOLT_CHECK warning, so the difference between a
+;; load-bearing hint and decoration is visible in the source rather than only in
+;; the emitted Scheme. Warning-level and opt-in: nothing about the compile changes.
+(def ^:private honoured-prim-tags
+  "^long ^double ^int ^doubles ^floats ^longs ^ints ^bytes ^objects")
+(defn- report-dead-hints! [a node env]
+  (run! (fn [pr]
+          (swap! (get env :diags) conj
+                 {:op :hint :pos (get node :pos)
+                  :msg (str "type hint ^" (nth pr 1) " on `" (nth pr 0)
+                            "` is ignored — jolt honours " honoured-prim-tags
+                            " on a binding")}))
+        (get a :dead-hints)))
+
+;; The Chez primitive a clojure.core call over PROVEN-string operands lowers to,
+;; or nil for "keep the generic call". This is the collection lattice reaching an
+;; emit site: until now :str/:vec/:phm were computed and then read by nothing but
+;; the checker, and only :struct ever changed what was emitted.
+;;
+;; count on a string: jolt-count runs four failed type tests (pvec/pmap/pset)
+;; before it reaches its string? arm. str on strings: a var-deref, a jolt-invoke
+;; and str's own render loop, to concatenate.
+;;
+;; The targets are the nil-tolerant jolt-str-* natives, NOT string-length and
+;; string-append directly, because a :str can come from a DECLARED ^String hint and
+;; a hint is not a nil proof — while (count nil) is 0 and (str nil) is "". Same rule
+;; as :nilable on the struct path: where nil is possible, keep the nil-safe form.
+;;
+;; str needs EVERY argument proven, and stops at three arguments: past that the
+;; enumerated natives would be a family with no end, and str's own loop is fine. At
+;; ONE argument str is the identity on a string, which is const-fold's business.
+;;
+;; Deliberately NOT here: nth and get over a proven vector. pvec? is already the
+;; FIRST arm of jolt-nth, so a specialization would save one type test and cost a
+;; second emit path.
+(defn- str-prim-op [cn n ares]
+  (let [all-str? (and (pos? n) (every? (fn [r] (= :str (ty r))) ares))]
+    (cond
+      (and (= cn "count") (= n 1) all-str?) "jolt-str-count"
+      (and (= cn "str") (= n 2) all-str?) "jolt-str-cat2"
+      (and (= cn "str") (= n 3) all-str?) "jolt-str-cat3"
+      :else nil)))
+
 (defn- infer-call
   "Everything else: type the args, collect the call (var callee) for whole-program
   inference, run the success-type check, and use the declared/estimated return type.
@@ -672,8 +727,10 @@
                        (assoc base* :num-read :double) base*)
                  rt2 (if rtype
                        (assoc rt1 :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-                       rt1)]
-             [rt* rt2])))))
+                       rt1)
+                 prim (when iscall-var (str-prim-op cn n ares))
+                 rt3 (if prim (assoc rt2 :prim-op prim) rt2)]
+             [rt* rt3])))))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."
@@ -738,8 +795,22 @@
             t (if (or (nil? t0) (= :any t0))
                 (let [ck (get node :rec-hint)
                       ent (when ck (get (get env :record-shapes) ck))]
-                  (if ent (record-type-from-entry ent ck type-depth (get env :record-shapes))
-                      (if t0 t0 :any)))
+                  (cond
+                    ent (record-type-from-entry ent ck type-depth (get env :record-shapes))
+                    ;; a DECLARED ^String / ^Keyword hint, which the analyzer put on
+                    ;; this reference (hint-of). The interop emit has always trusted
+                    ;; it — it is what stamps :target-type — so the lattice trusts it
+                    ;; too, which is what lets a hinted binding reach the type-directed
+                    ;; emit sites (count/str over proven strings) and the success
+                    ;; checker, not just the `.method` path. Fills in only where
+                    ;; inference has nothing, exactly as :rec-hint above does.
+                    ;;
+                    ;; :struct and :sb are deliberately absent: a :struct hint is
+                    ;; consumed by mark-struct/:shape at the lookup sites and has no
+                    ;; scalar to name here, and the lattice has no StringBuilder type.
+                    (= :str (get node :hint)) :str
+                    (= :kw (get node :hint)) :kw
+                    :else (if t0 t0 :any)))
                 t0)]
         [t
          (cond
@@ -855,7 +926,8 @@
                                    ;; same-named outer local — bind it :any (a fn's
                                    ;; own type is opaque to the lattice), else it
                                    ;; inherits the outer local's type.
-                                   pe (if self (assoc pe self :any) pe)]
+                                   pe (if self (assoc pe self :any) pe)
+                                   _ (when (get env :checking?) (report-dead-hints! a node env))]
                                (assoc a :body (nth (infer (get a :body) pe fenv) 1))))
                            (get node :arities)))])
        (= op :def)
@@ -892,12 +964,26 @@
       ;; identity instead of ":ns/name". Only reachable via a hint that is
       ;; already wrong, but "adds, never removes" has to be what the code does,
       ;; not just what it says.
+      ;;
+      ;; The stamp is also what the call's own ANSWER type is read off
+      ;; (interop-ret-type): once the receiver is proven, the method name settles
+      ;; what comes back, so (.trim s) types :str and (.length s) types :num
+      ;; instead of the :any every interop result used to be. That is what lets a
+      ;; chain — (.toUpperCase (.trim s)), or a let-bound (.substring s 1 2) —
+      ;; prove its own receiver and drop the runtime string? test, and what puts
+      ;; an interop result into the arithmetic the surrounding code does with it.
+      ;; Unproven receiver, or a method not in the table, stays :any.
       (let [tr (infer (get node :target) tenv env)
             ars (mapv (fn [a] (infer a tenv env)) (get node :args))
-            n (assoc node :target (nth tr 1) :args (mapv (fn [r] (nth r 1)) ars))]
-        [:any (if (and (= :str (nth tr 0)) (nil? (get n :target-type)))
-                (assoc n :target-type :str)
-                n)])
+            n (assoc node :target (nth tr 1) :args (mapv (fn [r] (nth r 1)) ars))
+            tt (nth tr 0)
+            n (if (some? (get n :target-type))
+                n
+                (cond (= :str tt) (assoc n :target-type :str)
+                      (= :kw tt) (assoc n :target-type :kw)
+                      :else n))
+            rt (interop-ret-type (get n :target-type) (get n :method))]
+        [(if rt rt :any) n])
       :else [:any node])))
 
 (defn- infer-top [node env] (nth (infer node {} env) 1))

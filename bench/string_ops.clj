@@ -18,6 +18,19 @@
 ;; inference. Keywords get the same treatment, so `.getName`/`.getNamespace` on a
 ;; hinted keyword are timed too.
 ;;
+;; `chain-proven` is the follow-up seam. An interop call used to answer :any, so
+;; only the FIRST call in a chain could be proven — (.toUpperCase (.trim s)) knew
+;; its inner target and not its outer one, and emitted a runtime string? test plus
+;; a dispatch fallback around the outer call. Once a method's return type is known
+;; the whole chain proves, and so does a let-bound interop result. `direct-methods`
+;; covers the methods that had no direct form at all: `.equals` on two proven
+;; strings emitted a KEYWORD type test and then fell through to generic dispatch.
+;;
+;; `core-over-strings` is the same proof reaching clojure.core rather than interop:
+;; `count` on a proven string, and `str` over proven strings, which otherwise pay a
+;; var deref plus jolt-invoke plus a type walk (jolt-count tries pvec/pmap/pset
+;; before string) to do a string-length and a string-append.
+;;
 ;; `strfns` is the `clojure.string` layer: every fn there coerces its argument
 ;; through `to-str`, which took `.toString` unconditionally, so passing a plain
 ;; string paid the full dispatch chain to reach the String surface — over 90% of
@@ -46,6 +59,29 @@
      (unchecked-add (.indexOf t "/") (if (.endsWith t "!") 1 0))
      (count (.toLowerCase t)))))
 
+;; --- chained interop: every target but the first is an interop RESULT ---------
+;; Only provable once a method's return type is known; before that each outer call
+;; carried a string? test and a dispatch arm.
+(defn chain-proven [^String s]
+  (unchecked-add
+   (.length (.toUpperCase (.trim s)))
+   (let [t (.substring s 0 8)]                  ; let-bound interop result
+     (unchecked-add (.length (.toLowerCase t))
+                    (if (.startsWith (.trim t) "some") 1 0)))))
+
+;; --- methods that had no direct form: they fell to the generic dispatcher -----
+(defn direct-methods [^String a ^String b]
+  (unchecked-add
+   (unchecked-add (if (.equals a b) 1 0) (if (.equalsIgnoreCase a b) 1 0))
+   (unchecked-add (.lastIndexOf a "e")
+                  (unchecked-add (if (.isBlank a) 1 0) (.compareTo a b)))))
+
+;; --- clojure.core over PROVEN strings ----------------------------------------
+(defn core-over-strings [^String s ^String t]
+  (unchecked-add
+   (unchecked-add (count s) (count t))
+   (unchecked-add (count (str s t)) (count (str s "-" t)))))
+
 ;; --- the clojure.string layer over arguments that are already strings --------
 (defn strfns [s]
   (unchecked-add
@@ -68,14 +104,19 @@
           0 ks))
 
 (defn run [iters]
-  (let [s entity]
+  (let [s entity
+        other "some.qualified/other-name"]
     (loop [i 0 acc 0]
       (if (< i iters)
         (recur (inc i)
                (unchecked-add
                 acc
                 (unchecked-add
-                 (unchecked-add (scan-hinted s) (scan-proven s))
+                 (unchecked-add
+                  (unchecked-add (scan-hinted s) (scan-proven s))
+                  (unchecked-add (chain-proven s)
+                                 (unchecked-add (direct-methods s other)
+                                                (core-over-strings s other))))
                  (unchecked-add
                   (unchecked-add (strfns s) (join-words words))
                   (walk-kws kws)))))

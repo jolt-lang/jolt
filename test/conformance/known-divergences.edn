@@ -31,6 +31,8 @@
   "jolt's namespace layer is permissive: clojure.core always resolves (a :refer-clojure :exclude/:only affects syntax-quote qualification but not resolve/ns-resolve) and var privacy is not enforced across namespaces. A superset — code that resolves on the JVM resolves on jolt.",
   :deps-model
   "jolt resolves deps.edn itself (grenadine, no JVM toolchain) and jolt IS Clojure, so a host-supplied coordinate is TERMINAL: it contributes neither an artifact nor children. Not a superset — the JVM's org.clojure/clojure carries dependencies of its own, and those do not arrive here.",
+  :type-hint-model
+  "jolt reads a type hint as a compile-time contract wherever it can act on one. ^int is the visible case: reference Clojure supports only long and double primitive parameters, so ^int on a parameter is inert documentation there, while jolt — which has no 32-bit integer, an int and a long being the same value — treats it as the fixnum promise ^long is and coerces at entry. The coercion is RT.longCast(Object): it accepts any 64-bit integer and refuses a value that was never an integer. So the two agree on every int, and disagree exactly where the JVM was silently carrying a non-integer through a parameter it had been told was an int.",
   :reflection-member-model
   "Class reflection (getMethods / getDeclaredFields / getMethod …) answers from jolt's registries — the protocol/type registry, the host shim tables, class-statics — not from JVM class files, which jolt does not have. A member in none of them is absent rather than guessed at; every parameter type is Object and getMethod selects by parameter count, since jolt carries no signatures. Substrate-inherent; the per-registry model is pinned jolt-side in unit.edn (reflect-member-model)."},
  :documented
@@ -54,6 +56,21 @@
   ;; arrive unverified. Rendering is pr-str for a value, "throws <SimpleName>" for
   ;; a raise (the ROOT cause's simple name). :jvm/:jolt outside :check are prose
   ;; for a reader; the :check pair is what the gate holds to.
+  ;; ^int on a parameter. Reference Clojure supports long and double primitive
+  ;; parameters only, so ^int there is an inert tag and the value passes through
+  ;; untouched — including a value that is not an integer at all. jolt honours it as
+  ;; the fixnum hint ^long is (there is no 32-bit integer here; an int and a long are
+  ;; the same value), which lights up ported JVM code written in ^int indices, and
+  ;; coerces at entry through RT.longCast(Object). Every actual integer agrees; a
+  ;; char, nil or non-number is refused here and carried there.
+  {:category :type-hint-model
+   :behavior "((fn [^int x] x) \\a)"
+   :jvm "\\a — the tag is inert, so a Character passes through an ^int parameter"
+   :jolt "throws ClassCastException — the entry coercion refuses a non-number"
+   :check {:expr "((fn [^int x] x) \\a)"
+           :jvm "\\a"
+           :jolt "throws ClassCastException"}
+   :note "^long has always behaved this way; ^int now joins it. Arithmetic over an ^int parameter takes the fx path instead of the generic ops."}
   ;; (NumberFormat/getCurrencyInstance) with no argument resolves the JVM's DEFAULT
   ;; locale, which is a property of the machine — en_CA gives "$123.45", en_US
   ;; "$123.45", de_DE "123,45 €". jolt core has no notion of a default locale (it does

@@ -291,6 +291,77 @@
 (define (java-symbol-hash name ns)
   (java-hash-combine (java-string-hash name) (if ns (java-string-hash ns) 0)))
 
+;; --- String methods as named natives -----------------------------------------
+;; The back end's string-direct-emit (backend_scheme.clj) open-codes a `.method`
+;; call whose receiver is PROVEN a string, and jolt-string-method below dispatches
+;; the same call when it is not. Every method whose body is more than a single
+;; Chez form gets its native here so those two paths are the SAME code rather than
+;; two transcriptions of it — a divergence between them would show up only on the
+;; hinted path, which is exactly where nobody looks.
+;;
+;; The `jolt-` prefix is load-bearing: munge-name (backend_scheme.clj) prefixes any
+;; user local whose name starts with "jolt-", so a bare emitted head with it can
+;; never be shadowed by a local, and the name needs no entry in rt-emitted-names.
+(define (jolt-str-equals? s o) (and (string? o) (string=? s o)))
+(define (jolt-str-equals-ci? s o)
+  (string=? (ascii-string-down s) (ascii-string-down o)))
+;; compareTo answers an INT on the JVM, not a double.
+(define (jolt-str-compare s o)
+  (let ((o (jolt-need-str o))) (cond ((string<? s o) -1) ((string>? s o) 1) (else 0))))
+(define (jolt-str-compare-ci s o)
+  (let ((a (string-downcase s)) (b (string-downcase (jolt-need-str o))))
+    (cond ((string<? a b) -1) ((string>? a b) 1) (else 0))))
+(define (jolt-str-blank? s)
+  (let blank ((i 0))
+    (cond ((fx=? i (string-length s)) #t)
+          ((char-whitespace? (string-ref s i)) (blank (fx+ i 1)))
+          (else #f))))
+(define (jolt-str-repeat s n)
+  (let ((n (jolt->idx n)))
+    (if (fx<=? n 0) ""
+        (apply string-append
+               (let rep ((i n) (a (quote ()))) (if (fx=? i 0) a (rep (fx- i 1) (cons s a))))))))
+(define (jolt-str-code-point-at s i) (char->integer (string-ref s (jolt->idx i))))
+(define (jolt-str-last-index-of s needle) (str-last-index-of s (str-needle needle)))
+(define (jolt-str-strip s left? right?) (str-strip s left? right?))
+(define (jolt-str-to-char-array s) (na-char-array s))
+(define (jolt-str-get-bytes s cs) (na-byte-array (charset-encode-bv s cs)))
+(define (jolt-str-matches? s pat) (if (irregex-match (str-irx pat) s) #t #f))
+(define (jolt-str-replace-all s pat repl) (irregex-replace/all (str-irx pat) s repl))
+(define (jolt-str-replace-first s pat repl) (irregex-replace (str-irx pat) s repl))
+;; re-split, not irregex-split: irregex-split collapses an empty field, so
+;; ("a::b" ":") came back ("a" "b") where the JVM gives ("a" "" "b").
+;; `limit` arrives raw from the direct-emit path (the JVM's 2-arg overload) and
+;; already normalized from split-limit-arg on the dispatch path; normalizing here
+;; is idempotent, so both callers can hand over whatever they hold.
+(define (jolt-str-split s pat limit)
+  (jvm-split-array (str-irx pat) s (if (number? limit) (exact (truncate limit)) 0)))
+(define (jolt-str-sub-sequence s from to) (substring s (jolt->idx from) (jolt->idx to)))
+(define (jolt-str-simple-name s)
+  (let ((i (str-last-index-of s "."))) (if (>= i 0) (substring s (+ i 1) (string-length s)) s)))
+
+;; --- lattice-proven clojure.core calls ---------------------------------------
+;; The back end lowers (count s) / (str a b) to these when the collection lattice
+;; proved every operand a string (jolt.passes.types str-prim-op).
+;;
+;; They tolerate NIL, and that is the whole reason they exist rather than
+;; string-length / string-append being emitted directly. A :str type can come from
+;; a DECLARED ^String hint, and a hint is not a nil proof — people write ^String on
+;; a parameter that may be nil — while (count nil) is 0 and (str nil) is "" in
+;; Clojure, which is load-bearing in real code. The nil test costs one branch
+;; against the four failed type tests jolt-count runs before its string? arm, and
+;; against a var-deref plus jolt-invoke plus str's own render loop.
+;;
+;; This mirrors the :nilable rule on the struct path: where nil is possible, keep
+;; the nil-safe form. A LYING hint (a non-string, non-nil receiver) fails here, the
+;; same contract every other hint-directed path has.
+(define (jolt-str-count s) (if (jolt-nil? s) 0 (string-length s)))
+(define (jolt-str-nil->empty x) (if (jolt-nil? x) "" x))
+(define (jolt-str-cat2 a b)
+  (string-append (jolt-str-nil->empty a) (jolt-str-nil->empty b)))
+(define (jolt-str-cat3 a b c)
+  (string-append (jolt-str-nil->empty a) (jolt-str-nil->empty b) (jolt-str-nil->empty c)))
+
 (define (jolt-string-method method s rest)
   ;; A missing argument is the JVM's reflective miss (dispatch-miss: a 0-arg read
   ;; reports as a field, more as a method of that arity), not an index fault from
@@ -319,22 +390,13 @@
     ((string=? method "toUpperCase") (string-upcase s))
     ((string=? method "trim") (str-trim s))
     ((string=? method "isEmpty") (fx=? (string-length s) 0))
-    ((string=? method "isBlank")
-     (let blank ((i 0))
-       (cond ((fx=? i (string-length s)) #t)
-             ((char-whitespace? (string-ref s i)) (blank (fx+ i 1)))
-             (else #f))))
-    ((string=? method "repeat")
-     (let ((n (jolt->idx (arg 0))))
-       (if (fx<=? n 0) ""
-           (apply string-append (let rep ((i n) (a '())) (if (fx=? i 0) a (rep (fx- i 1) (cons s a))))))))
-    ((string=? method "codePointAt")
-     (char->integer (string-ref s (jolt->idx (arg 0)))))
+    ((string=? method "isBlank") (jolt-str-blank? s))
+    ((string=? method "repeat") (jolt-str-repeat s (arg 0)))
+    ((string=? method "codePointAt") (jolt-str-code-point-at s (arg 0)))
     ((string=? method "substring")
      (substring s (jolt->idx (arg 0))
                 (if (fx>? (length rest) 1) (jolt->idx (arg 1)) (string-length s))))
-    ((string=? method "lastIndexOf")
-     (str-last-index-of s (str-needle (arg 0))))
+    ((string=? method "lastIndexOf") (jolt-str-last-index-of s (arg 0)))
     ((string=? method "endsWith")
      (let ((p (str-arg (arg 0))) (slen (string-length s)))
        (and (fx>=? slen (string-length p))
@@ -343,15 +405,9 @@
      (fx>=? (str-index-of s (str-needle (arg 0)) 0) 0))
     ((string=? method "concat") (string-append s (str-arg (arg 0))))
     ((string=? method "replace") (str-replace-literal s (str-needle (arg 0)) (str-needle (arg 1))))
-    ((string=? method "equalsIgnoreCase")
-     (string=? (ascii-string-down s) (ascii-string-down (arg 0))))
-    ;; compareTo answers an INT on the JVM, not a double — it fed straight into
-    ;; (neg? …) fine but printed as -1.0, and (= -1 (.compareTo …)) was false.
-    ((string=? method "compareTo")
-     (let ((o (jolt-need-str (arg 0)))) (cond ((string<? s o) -1) ((string>? s o) 1) (else 0))))
-    ((string=? method "compareToIgnoreCase")
-     (let ((a (string-downcase s)) (b (string-downcase (jolt-need-str (arg 0)))))
-       (cond ((string<? a b) -1) ((string>? a b) 1) (else 0))))
+    ((string=? method "equalsIgnoreCase") (jolt-str-equals-ci? s (arg 0)))
+    ((string=? method "compareTo") (jolt-str-compare s (arg 0)))
+    ((string=? method "compareToIgnoreCase") (jolt-str-compare-ci s (arg 0)))
     ;; CharSequence content equality — the same characters, whatever the receiver's
     ;; concrete type (a StringBuilder compares equal to the String it holds).
     ((string=? method "contentEquals")
@@ -373,11 +429,11 @@
               (if ic? (string-ci=? a b) (string=? a b))))))
     ;; char[] of the string's characters — a real 'char array, the same value
     ;; (char-array s) builds and (String. ca) reads back.
-    ((string=? method "toCharArray") (na-char-array s))
+    ((string=? method "toCharArray") (jolt-str-to-char-array s))
     ;; Java 11 strip family. Unicode-aware whitespace, where trim cuts at <= U+0020.
-    ((string=? method "strip") (str-strip s #t #t))
-    ((string=? method "stripLeading") (str-strip s #t #f))
-    ((string=? method "stripTrailing") (str-strip s #f #t))
+    ((string=? method "strip") (jolt-str-strip s #t #t))
+    ((string=? method "stripLeading") (jolt-str-strip s #t #f))
+    ((string=? method "stripTrailing") (jolt-str-strip s #f #t))
     ((string=? method "getBytes")
      ;; (.getBytes s) / (.getBytes s charset) -> a jolt byte-array (seqable /
      ;; countable / alength-able, like (byte-array …)); the JVM returns byte[].
@@ -385,28 +441,23 @@
      ;; name string or a Charset object through charset-arg-name. Rendering a
      ;; Charset here produced "#object[java.nio.charset.Charset]", which matched
      ;; no arm and silently encoded as UTF-8.
-     (na-byte-array
-      (charset-encode-bv s (if (null? rest) "utf-8" (arg 0)))))
-    ((string=? method "matches") (if (irregex-match (str-irx (arg 0)) s) #t #f))
-    ((string=? method "replaceAll") (irregex-replace/all (str-irx (arg 0)) s (arg 1)))
-    ((string=? method "replaceFirst") (irregex-replace (str-irx (arg 0)) s (arg 1)))
-    ;; re-split, not irregex-split: irregex-split collapses an empty field, so
-    ;; ("a::b" ":") came back ("a" "b") where the JVM gives ("a" "" "b").
-    ((string=? method "split")
-     (jvm-split-array (str-irx (arg 0)) s (split-limit-arg rest 1)))
+     (jolt-str-get-bytes s (if (null? rest) "utf-8" (arg 0))))
+    ((string=? method "matches") (jolt-str-matches? s (arg 0)))
+    ((string=? method "replaceAll") (jolt-str-replace-all s (arg 0) (arg 1)))
+    ((string=? method "replaceFirst") (jolt-str-replace-first s (arg 0) (arg 1)))
+    ((string=? method "split") (jolt-str-split s (arg 0) (split-limit-arg rest 1)))
     ;; universal object-methods that reach a string target (seed object-methods):
     ;; a thrown string / Exception. ctor (which keeps the message string) answers
     ;; getMessage with itself; equals is value equality.
     ((or (string=? method "getMessage") (string=? method "getLocalizedMessage")) s)
-    ((string=? method "equals") (and (string? (arg 0)) (string=? s (arg 0))))
+    ((string=? method "equals") (jolt-str-equals? s (arg 0)))
     ;; String.intern: jolt strings aren't pooled, but value equality holds, so the
     ;; canonical representation is the string itself.
     ((string=? method "intern") s)
     ;; A class token is its canonical-name string, so Class methods land here:
     ;; (.getName (.getClass x)) / (.getSimpleName …) over the name string.
     ((or (string=? method "getName") (string=? method "getCanonicalName")) s)
-    ((string=? method "getSimpleName")
-     (let ((i (str-last-index-of s "."))) (if (>= i 0) (substring s (+ i 1) (string-length s)) s)))
+    ((string=? method "getSimpleName") (jolt-str-simple-name s))
     ;; .getChars srcBegin srcEnd dst dstBegin — copy s[srcBegin,srcEnd) into the
     ;; char-array dst at dstBegin (used by buffered readers, e.g. data.json).
     ((string=? method "getChars")
@@ -417,8 +468,7 @@
            (vector-set! dv j (string-ref s i))
            (loop (fx+ i 1) (fx+ j 1)))))
      jolt-nil)
-    ((string=? method "subSequence")
-     (substring s (jolt->idx (arg 0)) (jolt->idx (arg 1))))
+    ((string=? method "subSequence") (jolt-str-sub-sequence s (arg 0) (arg 1)))
     ;; Class.isArray over a class-name string: array classes are "[…" (e.g. "[C").
     ((string=? method "isArray") (and (fx>? (string-length s) 0) (char=? (string-ref s 0) #\[)))
     ;; the shared end of the chain, so a string reports the same way every other

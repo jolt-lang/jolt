@@ -51,6 +51,7 @@ absolute reference.
 | `string-build` | `StringBuilder` appended to in a loop, and the transducer-over-`join` shape libraries render text with | proven-StringBuilder direct emission vs jhost method-table dispatch | honeysql `format-entity` |
 | `string-ops` | the ordinary String surface — `.indexOf`/`.startsWith`/`.substring`/`.toLowerCase` on hinted and inference-proven targets, `clojure.string` over already-string arguments, `.getName`/`.getNamespace` on a keyword | direct emission for proven-string and proven-keyword interop targets, `clojure.string/to-str` string fast path | honeysql, clojure.string |
 | `char-scan` | walking a string one code point at a time via `.charAt`, with the `int`/`long`/`unchecked-*` casts hinted Clojure puts around it, incl. a `case`-dispatched character state machine | numeric cast fast paths, `.charAt` on a proven string, `case` over small ints | honeysql `alphanumeric?` |
+| `typed-records` | DECLARED field types on a record: `^double`/`^long`/`^String` at construction and at every read | inlined per-arity record constructor, declared-field-tag typing | — |
 | `sorted-access` | reads a collection's structure can answer without walking: `count`/`drop` on a vector seq, `rseq`, `first` on a sorted map/set | shape-answered reads (Counted / IDrop / leftmost-node), not traversal | — |
 | `nth-access` | `nth` on a vector, small and large, and with a default — the constant cost of an indexed read | `Indexed`-first ordering in `jolt-nth` ahead of the extension-type probes | — |
 | `executors` | `java.util.concurrent` dispatch: fire-and-forget at a cached pool faster than it can drain, submit/get round trips, growth to 64 blocking tasks, and four producers on one pool | the RUNTIME rather than a pass — the executor's queue, its wake rule and its growth rule (`host/chez/java/concurrency.ss`) | — |
@@ -94,6 +95,18 @@ The previous refresh (2026-08-24, x86_64 Linux, Intel i5-4278U, OpenJDK
 0.8× where this one reads 2.0×, a JVM warmup/JIT effect of that host rather
 than a jolt-side change.
 
+> **Four rows below are stale as of 2026-09-05 and are marked ⚠.** The type-hint
+> codegen round changed the SOURCE of `mathfns`, `arrays`, `string-ops` and
+> `char-scan` (each grew a phase for an axis it did not previously cover), so
+> their absolute ms and their vs-JVM ratios no longer describe what the benchmark
+> now runs, and `typed-records` is new and has no row at all. They are marked
+> rather than patched on purpose: this table is one same-sitting run on one
+> machine, and dropping four freshly-measured numbers from a different machine
+> into it is precisely how the stale-scorecard incident below happened. The
+> evidence for that round is the before/after A/B above, which is a ratio between
+> two compilers on one machine and does not depend on this table. A full
+> same-sitting refresh is owed and is the way these rows come back.
+
 | Benchmark | vs JVM | vs JVM (release) | jolt (ms) | JVM (ms) | Axis |
 |---|---:|---:|---:|---:|---|
 | `vecops` | **0.3×** | 0.3× | 4.5 | 15.5 | vector concat + slice (beats the JVM) |
@@ -101,7 +114,7 @@ than a jolt-side change.
 | `dispatch` | **1.2×** | 1.2× | 62.2 | 52.3 | megamorphic protocol dispatch |
 | `fib` | **1.3×** | 1.3× | 9.3 | 6.9 | recursion: call + integer arith |
 | `loop-recur` | **1.5×** | 1.5× | 27.9 | 18.6 | tight loop/recur + per-iteration integer arith |
-| `mathfns` | **1.5×** | 1.5× | 24.0 | 16.5 | transcendental math (`Math` sqrt/sin/cos/log/pow/atan2) |
+| ⚠ `mathfns` | **1.5×** | 1.5× | 24.0 | 16.5 | transcendental math (`Math` sqrt/sin/cos/log/pow/atan2) |
 | `mandelbrot` | **1.6×** | 1.5× | 22.6 | 14.5 | pure float compute |
 | `collections` | **1.6×** | 1.6× | 17.0 | 10.7 | persistent map/vector churn |
 | `binary-trees` | **2.0×** | 1.9× | 73.2 | 37.1 | escaping short-lived records (allocation/GC) |
@@ -114,16 +127,63 @@ than a jolt-side change.
 | `nth-access` | **2.9×** | 2.9× | 62.9 | 21.5 | `nth` on a vector, small and large |
 | `executors` | **3.4×** | 3.4× | 1427.9 | 417.5 | `java.util.concurrent` dispatch: enqueue, submit/get, growth, contention |
 | `keyed-lookup` | **3.5×** | 3.5× | 91 | 26 | scalar-key hashing + small-map lookup |
-| `string-ops` | **3.7×** | 3.7× | 250 | 68 | String/Keyword interop + `clojure.string` |
-| `arrays` | **3.9×** | 3.9× | 141.1 | 35.9 | primitive `double-array` throughput |
+| ⚠ `string-ops` | **3.7×** | 3.7× | 250 | 68 | String/Keyword interop + `clojure.string` |
+| ⚠ `arrays` | **3.9×** | 3.9× | 141.1 | 35.9 | primitive `double-array` throughput |
 | `transducers` | **4.2×** | 4.3× | 128.2 | 30.4 | transducer pipelines |
 | `string-build` | **4.5×** | 4.6× | 170 | 38 | `StringBuilder` assembly + `join` |
-| `char-scan` | **6.7×** | 6.6× | 94 | 14 | per-character `.charAt` + numeric casts |
+| ⚠ `char-scan` | **6.7×** | 6.6× | 94 | 14 | per-character `.charAt` + numeric casts |
 
 `opt` and `release` track each other closely across the whole suite — the plain
 `jolt build` picks up essentially all of the win. Every row is within 0.2 of a
 ratio point; the widest gaps are `mono-dispatch` (2.7× vs 2.5×) and `hash-eq`
 (467 vs 457 ms), both of which read level on repeat runs.
+
+### The type-hint codegen round (2026-09-05)
+
+Widening the bridges from jolt's Java-type hints into codegen. Measured with
+`ci/bench-gate.sh <main-jolt> <branch-jolt>`, which builds THIS checkout's bench
+sources with both compilers and alternates timed runs, so the ratio is codegen and
+nothing else. Same machine, one sitting, min of 3 runs per side; every row below
+was reproduced in a second independent round.
+
+| Benchmark | before (ms) | after (ms) | ratio | what moved |
+|---|---:|---:|---:|---|
+| `mathfns` | 1165.0 | 179.4 | **0.15×** | `Math/abs`/`min`/`max`/`floorDiv`/`floorMod` on proven longs stopped taking `host-static-call`'s per-invocation method lookup |
+| `arrays` | 2631.2 | 949.8 | **0.36×** | `aget`/`aset` on `^objects`/`^longs` stopped taking the generic `nth` dispatch walk |
+| `string-ops` | 720.0 | 581.0 | **0.81×** | interop results carry a type, so chains and let-bound results prove; 20 more methods emit directly; `count`/`str` over proven strings lower to primitives |
+| `typed-records` | 56.4 | 50.4 | **0.89×** | the inlined record constructor stopped refusing `^double` fields |
+
+Two isolating micro-benchmarks, written to separate the axes inside those rows and
+then deleted (they are reproduced here rather than kept, because each is a single
+shape and the suite's rows are meant to be workloads): an `^objects` `aget` loop
+alone went **0.32×**, and an escaping `^double`-field record constructor alone went
+**0.60×**.
+
+**What did NOT move, measured and reported rather than assumed.** `char-scan` came
+back 0.97× — inside noise. Isolated micro-benchmarks for the `^int` parameter hint
+and for the record field tags (`^long`/`^String`) both came back 1.00–1.03×. The
+codegen change is real and visible in the emitted Scheme — a hinted record's field
+reads dropped two `record-method-dispatch` sites and turned a `jolt-count` into a
+`jolt-str-count` — but in every shape benchmarked, something else dominated the
+time: a `reduce` closure, an allocating `.toUpperCase`, or a literal-argument call
+that the inliner had already specialized. They are correctness-and-codegen wins
+with no measured speed claim attached.
+
+**Two measurement traps this round walked into**, both worth knowing about before
+writing a benchmark here:
+
+*A record that never escapes is deleted.* The first draft of `typed-records`
+allocated a `Vec3` per iteration and ran at 3ns an iteration — scalar-replace had
+removed the record entirely, so the constructor benchmark was timing an empty
+loop. `make-vecs` now stores into an `object-array` to force the escape.
+
+*A hint on a callee is erased by inlining.* The first draft of the boxed-array work
+narrowed the inline pass's array-hint refusal, on the reasoning that the boxed
+kinds have no unboxed path to lose. They lose `jolt-vaget`: the emitted Scheme
+showed the standalone `osum` with `jolt-vaget` and all three spliced copies — every
+call on the hot path — with `jolt-nth`. The A/B read 1.02×, i.e. the entire win
+cancelled. Restoring the refusal took the same benchmark to 0.32×. A ratio near
+1.00 on a change you expected to matter is worth reading the emitted code over.
 
 ### A stale scorecard hid a 1.7× regression for three weeks (now fixed)
 

@@ -344,6 +344,25 @@
   (let ((fv (if (flonum? v) v (exact->inexact v))))
     (flvector-set! (jolt-array-vec a) (if (fixnum? i) i (exact (na-idx i))) fv) fv))
 
+;; The BOXED-backing counterparts, for (aget ^longs a i) / (aset ^ints a i v) /
+;; (aget ^objects a i). Every kind but double/float keeps a Chez vector backing, so
+;; these cannot unbox — what they skip is the DISPATCH: an untyped (aget a i)
+;; lowers to jolt-nth, which nil-checks the index, coerces it, and then walks
+;; pvec?/string?/cseq?/rec-coll-method before it reaches the array arm.
+;;
+;; No result-type promise, unlike the flvector pair: an int/long array's backing
+;; holds whatever exact integer was stored (nothing narrows on the way in), so an
+;; element is not provably a fixnum and the numeric pass must not type it :long.
+;;
+;; 'byte is deliberately NOT a write target here. A byte array's elements are
+;; signed 8-bit and na-elem-of is the one place a value entering one is narrowed;
+;; routing a write around it would let a byte array hold 200. Reads are fine — the
+;; narrowing already happened at the store.
+(define (jolt-vaget a i)
+  (vector-ref (jolt-array-vec a) (if (fixnum? i) i (exact (na-idx i)))))
+(define (jolt-vaset a i v)
+  (vector-set! (jolt-array-vec a) (if (fixnum? i) i (exact (na-idx i))) v) v)
+
 ;; A range condition escaping jolt-flaget/jolt-flaset IS the array bounds error
 ;; on the proven ^doubles path (a typed pre-check there costs ~1ns/access, ~11%
 ;; on an array-walking loop; wrapping in guard costs ~30ns/call). The catch

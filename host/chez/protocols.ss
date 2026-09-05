@@ -540,9 +540,8 @@
                         (if (or (null? as) (fx=? i nf)) (make-jrec desc v jolt-nil)
                             (let ((a (car as)))
                              (vector-set! v i
-                                          (if (and (fx< i ndbl) (vector-ref dbl-flags i)
-                                                   (number? a) (not (flonum? a)))
-                                              (exact->inexact a) a))
+                                          (if (and (fx< i ndbl) (vector-ref dbl-flags i))
+                                              (jolt-rec-dbl a) a))
                              (loop (cdr as) (+ i 1))))))))
            (ctor (lambda args
                    (let ((n (length args)))

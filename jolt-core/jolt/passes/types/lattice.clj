@@ -204,6 +204,46 @@
 ;; string native directly. Per-namespace: clojure.core/replace is polymorphic,
 ;; clojure.string/replace is always a string.
 (def str-ret-fns #{"str" "name" "subs" "pr-str" "format"})
+
+;; --- interop return types ----------------------------------------------------
+;; The type a `.method` call ANSWERS, keyed by the method name, per proven
+;; receiver type. Read only when the receiver's own type is proven (the
+;; :target-type stamp), so a same-named protocol method on a record is untouched:
+;; (.length some-record) is still :any.
+;;
+;; Two omissions are deliberate, and both would be bugs:
+;;
+;;   Predicates are NOT here. :truthy means "provably neither nil nor false", and
+;;   (.isEmpty s) is exactly the expression that returns false — mapping a
+;;   boolean-returning method to :truthy would let some?/if-folding treat a false
+;;   as a value. They stay :any.
+;;
+;;   .getNamespace is NOT here. It answers nil for an unqualified keyword (the
+;;   keyword arm emits (or (keyword-t-ns t) jolt-nil)), and :str claims non-nil.
+;;
+;; Methods answering a char, an array or a builder are absent for the plainer
+;; reason that the lattice has no type for them.
+(def str-method-ret
+  {"length" :num "indexOf" :num "lastIndexOf" :num "hashCode" :num
+   "compareTo" :num "compareToIgnoreCase" :num "codePointAt" :num
+   "toString" :str "substring" :str "subSequence" :str "concat" :str
+   "toUpperCase" :str "toLowerCase" :str "trim" :str
+   "strip" :str "stripLeading" :str "stripTrailing" :str
+   "replace" :str "replaceAll" :str "replaceFirst" :str "repeat" :str
+   "intern" :str "getName" :str "getCanonicalName" :str "getSimpleName" :str
+   "getMessage" :str "getLocalizedMessage" :str})
+(def kw-method-ret
+  {"getName" :str "toString" :str "hashCode" :num})
+(def sb-method-ret
+  {"toString" :str "length" :num})
+;; the type a `.method` on a receiver of proven type `tt` answers, or nil for
+;; "nothing proven" (which the caller reads as :any).
+(defn interop-ret-type [tt m]
+  (cond
+    (= tt :str) (get str-method-ret m)
+    (= tt :kw) (get kw-method-ret m)
+    (= tt :sb) (get sb-method-ret m)
+    :else nil))
 (def string-ns-ret-fns
   #{"upper-case" "lower-case" "capitalize" "trim" "triml" "trimr" "trim-newline"
     "reverse" "replace" "replace-first" "join" "escape"})

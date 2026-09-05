@@ -322,6 +322,18 @@
 ;; reading the field back as :double sound for fl-ops).
 (define chez-record-dbl-tbl (make-hashtable string-hash string=?))
 (define (chez-double-tag? t) (and (string? t) (string=? t "double")))
+;; The ^double field coercion, as one procedure. A NUMBER is widened to a flonum
+;; (JVM primitive-field parity, and what makes reading the field back as :double
+;; sound for the fl-ops); anything else passes through unchanged, which is the
+;; hint-as-contract behaviour the field read already has.
+;;
+;; It is a named procedure because there are two callers: make-deftype-ctor's
+;; `build` (protocols.ss) on the dispatched path, and the back end's inlined
+;; make-jrecN emission, which splices it by name. Two transcriptions of the rule
+;; would let the fast ctor and the slow one disagree about a field's value.
+;; The "jolt-" prefix keeps munge-name from letting a user local shadow it.
+(define (jolt-rec-dbl a)
+  (if (and (number? a) (not (flonum? a))) (exact->inexact a) a))
 
 ;; type-tag "ns.Name" -> the declared field keywords, in order. The shapes table
 ;; above is keyed by ctor-key, which the reflection surface does not have: it is
@@ -358,6 +370,18 @@
   (cond ((or (not tag) (jolt-nil-t? tag)) jolt-nil)
         ((string=? tag "num") "num")
         ((string=? tag "double") "double")   ; a ^double field reads back as a flonum
+        ;; The scalar tags a declared field can carry, normalized to the short
+        ;; names jolt.passes.types/field-type-from-tag keys on. They resolve HERE,
+        ;; ahead of the record-name lookup below, so a record that happens to be
+        ;; named String cannot shadow the scalar reading.
+        ;;
+        ;; ^long reads back "num" rather than a long of its own: the lattice has no
+        ;; :long scalar, and :num is the honest answer — the field holds a number,
+        ;; which is what the checker and the flonum contagion need. Giving ^long the
+        ;; fx arithmetic path needs a new lattice scalar; see the follow-up bead.
+        ((string=? tag "long") "num")
+        ((or (string=? tag "String") (string=? tag "java.lang.String")) "str")
+        ((or (string=? tag "Keyword") (string=? tag "clojure.lang.Keyword")) "kw")
         (else (let* ((simple (chez-shape-simple-name tag))
                      (qualified? (not (string=? simple tag)))
                      (ck (or (and qualified? (hashtable-ref by-name tag #f))
