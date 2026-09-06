@@ -2050,8 +2050,14 @@
     (if (> (string-length native-link) 0)
         (bld-relink-stub builddir native-link out-path)
         (jolt-spill-embedded! "stub/launcher" out-path))
-    ;; link: stub bytes ++ boot ++ frame, then make it executable.
-    (jolt-append-payload! out-path (read-file-bytes boot))
+    ;; link: stub bytes ++ packed boot ++ frame, then make it executable. The
+    ;; payload is LZ4-framed and the frame carries the unpacked length, so this
+    ;; binary's first run reads ~60% of the bytes the verbatim boot would have
+    ;; cost it; bld-pack-boot! returns 0 and copies verbatim when packing did not
+    ;; pay, which is the layout the stub had before.
+    (let* ((packed (string-append boot ".lz4"))
+           (raw-len (bld-pack-boot! boot packed)))
+      (jolt-append-payload! out-path (read-file-bytes packed) raw-len))
     (jolt-chmod-755 out-path)
     (ei-mark! "stub + payload link")
     (display (string-append "jolt build: wrote " out-path "\n"))
@@ -2104,28 +2110,66 @@
         "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
         native-link " " (bld-link-libs))))))
 
-;; --- boot-image prefetch (cold start) ---------------------------------------
-;; A binary that embeds its boot as a C array hands Chez a pointer into .data — a
-;; private, file-backed mapping the kernel demand-pages 4KB at a time as
-;; Sbuild_heap walks it — and nothing tells the kernel that the whole multi-MB
-;; range is about to be read in order. A cold jolt run reads 19.1MB of its 27.8MB
-;; binary before it prints anything, nearly all of it this boot. MADV_WILLNEED
-;; over the range, issued BEFORE Sscheme_init, lets that read overlap kernel init
-;; and the runtime image's top levels instead of being scheduled fault by fault
-;; behind them.
+;; --- boot image: packing and unpacking (cold start) -------------------------
+;; What a cold start costs is BYTES READ. jolt's boot image is 18MB, a cold run
+;; faults in 19.1MB of the 27.8MB binary before it prints anything, and on an
+;; ordinary disk that read is already running at full sequential bandwidth — so
+;; scheduling it better buys nothing and reading less of it buys everything.
 ;;
-;; It is a hint, and it buys nothing measurable on storage that is already
-;; bandwidth-bound — the A/B is in the commit that added this. What it targets is
-;; the opposite regime, a page-in bound by latency rather than throughput.
-;; Advisory in every sense: nothing checks the result, no platform has to
-;; implement it, and a failure costs the speedup and nothing else. Shared by the
-;; three C-array boot sites — jolt's own main (build-jolt.ss), `jolt build`'s cc
-;; executable, and --library. The appended-boot stub reads its boot through an fd
-;; rather than a mapping and carries the fadvise-shaped equivalent itself
-;; (stub/launcher.c).
-(define (bld-boot-prefetch-defn)
+;; The image is therefore stored LZ4-framed. Measured on jolt's own boot:
+;;
+;;   stored verbatim   17,989,619 bytes
+;;   lz4 (this path)   11,071,007 bytes (61.5%)   unpack ~5ms
+;;   zlib -9            9,896,111 bytes (55.0%)   unpack ~85ms
+;;
+;; zlib's extra 6% is not worth 80ms on every start, warm ones included; lz4's
+;; 6.9MB is worth 5ms. Chez's own compressed ports emit a STANDARD LZ4 frame
+;; (magic 04 22 4d 18), which is what makes this work everywhere: the build side
+;; is one Chez port, so it needs no C toolchain — `jolt build`'s default path
+;; deliberately has none — and the runtime side is LZ4F_decompress out of the
+;; liblz4 already linked in for those same Chez ports. No new dependency, no
+;; bundled lz4 header.
+
+;; Write BOOT to PACKED as an LZ4 frame and return BOOT's length, which is what
+;; the runtime needs to size its output buffer. Returns 0 — having copied the
+;; bytes verbatim — when the frame came out no smaller, or when this Chez has no
+;; lz4 to offer; 0 is the runtime's "stored verbatim" signal, so either way the
+;; result is a working binary and the only difference is its size.
+(define (bld-pack-boot! boot packed)
+  (let* ((bv (read-file-bytes boot))
+         (raw-len (bytevector-length bv))
+         (packed-len
+           (guard (e (#t #f))
+             (parameterize ((compress-format 'lz4) (compress-level 'maximum))
+               (with-port (open-file-output-port packed (file-options replace compressed))
+                 (lambda (p) (put-bytevector p bv))))
+             (with-port (open-file-input-port packed) file-length))))
+    (cond
+      ((and packed-len (< packed-len raw-len)) raw-len)
+      (else
+        (with-port (open-file-output-port packed (file-options replace) (buffer-mode block))
+          (lambda (p) (put-bytevector p bv)))
+        0))))
+
+;; The C the three C-array boot sites share — jolt's own main (build-jolt.ss),
+;; `jolt build`'s cc executable, and --library. RAW-LEN is what bld-pack-boot!
+;; returned: the unpacked length, or 0 for a boot stored verbatim.
+;;
+;; A verbatim boot keeps the old behaviour exactly, down to the readahead hint:
+;; its bytes live in .data, a private file-backed mapping the kernel demand-pages
+;; 4KB at a time, and MADV_WILLNEED is the only thing that can be said about it
+;; up front. A packed boot is unpacked into a buffer the caller frees the moment
+;; Sbuild_heap returns — Chez copies what it needs into the Scheme heap, frees
+;; its boot descriptors and compacts before returning (ChezScheme c/scheme.c), so
+;; nothing points into that buffer afterwards and the process keeps no resident
+;; copy of the image.
+(define (bld-boot-prep-defn raw-len)
   (string-append
     "#include <stddef.h>\n"
+    "#include <stdio.h>\n"
+    "#include <stdlib.h>\n"
+    "/* The unpacked length of an LZ4-framed boot; 0 = stored verbatim. */\n"
+    "#define JOLT_BOOT_RAW_LEN " (number->string raw-len) "\n"
     "#if defined(__linux__) || defined(__APPLE__)\n"
     "#include <stdint.h>\n"
     "#include <sys/mman.h>\n"
@@ -2141,12 +2185,83 @@
     "}\n"
     "#else\n"
     "static void jolt_prefetch_boot(const void *p, size_t n) { (void)p; (void)n; }\n"
-    "#endif\n"))
+    "#endif\n"
+    (if (= raw-len 0)
+        ""
+        (string-append
+          "/* The LZ4 frame API, declared by hand: liblz4 is linked in already (the\n"
+          "   Chez kernel uses it for compressed ports) but lz4frame.h is not bundled\n"
+          "   and a build host is not required to have one installed. */\n"
+          "typedef struct LZ4F_dctx_s LZ4F_dctx;\n"
+          "extern unsigned LZ4F_isError(size_t);\n"
+          "extern const char *LZ4F_getErrorName(size_t);\n"
+          "extern size_t LZ4F_createDecompressionContext(LZ4F_dctx **, unsigned);\n"
+          "extern size_t LZ4F_freeDecompressionContext(LZ4F_dctx *);\n"
+          "extern size_t LZ4F_decompress(LZ4F_dctx *, void *, size_t *,\n"
+          "                              const void *, size_t *, const void *);\n"))
+    "/* The bytes Sbuild_heap should read, and whether the caller now owns them. */\n"
+    "static unsigned char *jolt_boot_prepare(unsigned char *stored, size_t stored_len,\n"
+    "                                        size_t *len, int *owned) {\n"
+    "  jolt_prefetch_boot(stored, stored_len);\n"
+    "#if JOLT_BOOT_RAW_LEN\n"
+    "  {\n"
+    "    LZ4F_dctx *dctx = NULL;\n"
+    "    unsigned char *raw;\n"
+    "    size_t sp = 0, dp = 0;\n"
+    "    if (LZ4F_isError(LZ4F_createDecompressionContext(&dctx, 100))) {\n"
+    "      fprintf(stderr, \"jolt: cannot start LZ4 decompression\\n\");\n"
+    "      exit(1);\n"
+    "    }\n"
+    "    if ((raw = (unsigned char *)malloc(JOLT_BOOT_RAW_LEN)) == NULL) {\n"
+    "      fprintf(stderr, \"jolt: cannot allocate %lu bytes for the boot image\\n\",\n"
+    "              (unsigned long)JOLT_BOOT_RAW_LEN);\n"
+    "      exit(1);\n"
+    "    }\n"
+    "    /* A Chez compressed port emits one frame per 256KB of input, so this is\n"
+    "       a SEQUENCE of frames, not one: a zero return means the current frame\n"
+    "       ended, not that the image did, and the context is reusable for the\n"
+    "       next one. Only a lack of progress ends the loop. */\n"
+    "    while (dp < (size_t)JOLT_BOOT_RAW_LEN && sp < stored_len) {\n"
+    "      size_t dn = (size_t)JOLT_BOOT_RAW_LEN - dp, sn = stored_len - sp;\n"
+    "      size_t r = LZ4F_decompress(dctx, raw + dp, &dn, stored + sp, &sn, NULL);\n"
+    "      if (LZ4F_isError(r)) {\n"
+    "        fprintf(stderr, \"jolt: boot image is corrupt (%s)\\n\", LZ4F_getErrorName(r));\n"
+    "        exit(1);\n"
+    "      }\n"
+    "      if (dn == 0 && sn == 0) break;  /* no progress: the frame is truncated */\n"
+    "      dp += dn;\n"
+    "      sp += sn;\n"
+    "    }\n"
+    "    LZ4F_freeDecompressionContext(dctx);\n"
+    "    if (dp != (size_t)JOLT_BOOT_RAW_LEN) {\n"
+    "      fprintf(stderr, \"jolt: boot image is truncated (%lu of %lu bytes)\\n\",\n"
+    "              (unsigned long)dp, (unsigned long)JOLT_BOOT_RAW_LEN);\n"
+    "      exit(1);\n"
+    "    }\n"
+    "    *len = dp;\n"
+    "    *owned = 1;\n"
+    "    return raw;\n"
+    "  }\n"
+    "#else\n"
+    "  *len = stored_len;\n"
+    "  *owned = 0;\n"
+    "  return stored;\n"
+    "#endif\n"
+    "}\n"))
 
-;; The call: the first statement of main / jolt_library_init, so the readahead is
-;; already in flight for everything that follows it.
-(define (bld-boot-prefetch-call)
-  "  jolt_prefetch_boot(jolt_boot, (size_t)jolt_boot_len);\n")
+;; The three statements the sites wrap around Sbuild_heap: prepare before
+;; Sscheme_init, register what prepare returned, release it once the heap is
+;; built. Kept together here so the three C-array sites cannot drift.
+(define (bld-boot-prep-call)
+  (string-append
+    "  size_t jolt_boot_use_len;\n"
+    "  int jolt_boot_owned;\n"
+    "  unsigned char *jolt_boot_use =\n"
+    "    jolt_boot_prepare(jolt_boot, (size_t)jolt_boot_len, &jolt_boot_use_len, &jolt_boot_owned);\n"))
+(define (bld-boot-register-call)
+  "  Sregister_boot_file_bytes(\"jolt\", jolt_boot_use, (iptr)jolt_boot_use_len);\n")
+(define (bld-boot-release-call)
+  "  if (jolt_boot_owned) free(jolt_boot_use);\n")
 
 ;; --- legacy cc link (dev bin/jolt): fresh Chez compile + xxd + cc ------------
 (define (build-with-cc entry-ns out-path mode builddir flat-ss flat-so boot boot-h main-c native-link petite-only?)
@@ -2172,7 +2287,11 @@
           (ei-str-lit flat-so) ")\n"))
       (close-port p))
     (bld-system (string-append bld-chez " --script '" cs "'")))
-  (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
+  ;; the array that gets embedded is the PACKED boot; raw-len tells the binary
+  ;; how much to unpack it to (0 = it was stored verbatim).
+  (let* ((packed (string-append boot ".lz4"))
+         (raw-len (bld-pack-boot! boot packed)))
+  (bld-system (string-append "xxd -i '" packed "' > '" boot-h "'"))
   ;; The xxd symbol is derived from the path; normalize to jolt_boot.
   (bld-system (string-append
     "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/unsigned char jolt_boot[]/; "
@@ -2181,12 +2300,13 @@
     (put-string mc
       (string-append
         "#include \"scheme.h\"\n#include \"boot_data.h\"\n"
-        (bld-boot-prefetch-defn)
+        (bld-boot-prep-defn raw-len)
         "int main(int argc, char *argv[]) {\n"
-        (bld-boot-prefetch-call)
+        (bld-boot-prep-call)
         "  Sscheme_init(0);\n"
-        "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, jolt_boot_len);\n"
+        (bld-boot-register-call)
         "  Sbuild_heap(0, 0);\n"
+        (bld-boot-release-call)
         "  int status = Sscheme_start(argc, (const char **)argv);\n"
         "  Sscheme_deinit();\n  return status;\n}\n"))
     (close-port mc))
@@ -2198,7 +2318,7 @@
     (bld-cc) " " (bld-arch-flag) " -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "")
     "-I'" (bld-csv-dir) "' '" main-c "' '" (bld-csv-dir) "/libkernel.a' "
     "-o '" out-path "' " native-link " " (bld-link-libs)))
-  (display (string-append "jolt build: wrote " out-path "\n")))
+  (display (string-append "jolt build: wrote " out-path "\n"))))
 
 ;; --- shared-library link (jolt build --library) -----------------------------
 ;; The cc path adapted to emit a shared object instead of an executable: the same
@@ -2214,12 +2334,12 @@
           ((char=? (string-ref p i) #\/) (substring p (fx+ i 1) (string-length p)))
           (else (loop (fx- i 1))))))
 
-(define (bld-library-stub)
+(define (bld-library-stub raw-len)
   (string-append
     "#include \"scheme.h\"\n"
     "#include <string.h>\n"
     "#include \"boot_data.h\"\n"
-    (bld-boot-prefetch-defn)
+    (bld-boot-prep-defn raw-len)
     "/* jolt_set_lookup_addr is called from the built library's scheme-start\n"
     "   handler (registered via Sforeign_symbol after Sbuild_heap) to hand the\n"
     "   stub the Scheme lookup callable's address. */\n"
@@ -2228,10 +2348,11 @@
     "void* jolt_lookup(const char* name) { return jolt_lookup_fn ? jolt_lookup_fn(name) : 0; }\n"
     "int jolt_library_init(int argc, char** argv) {\n"
     "  if (!argv) argc = 0;  /* Sscheme_start reads argv[0..argc-1]; a NULL argv means no args */\n"
-    (bld-boot-prefetch-call)
+    (bld-boot-prep-call)
     "  Sscheme_init(0);\n"
-    "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, (iptr)jolt_boot_len);\n"
+    (bld-boot-register-call)
     "  Sbuild_heap(0, 0);\n"
+    (bld-boot-release-call)
     "  Sforeign_symbol(\"jolt_set_lookup_addr\", (void*)jolt_set_lookup_addr);\n"
     "  return Sscheme_start(argc, (const char**)argv); }\n"
     "void jolt_library_shutdown(void) { Sscheme_deinit(); }\n"))
@@ -2267,13 +2388,15 @@
           (ei-str-lit flat-so) ")\n"))
       (close-port p))
     (bld-system (string-append bld-chez " --script '" cs "'")))
-  (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
+  (let* ((packed (string-append boot ".lz4"))
+         (raw-len (bld-pack-boot! boot packed)))
+  (bld-system (string-append "xxd -i '" packed "' > '" boot-h "'"))
   (bld-system (string-append
     "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/unsigned char jolt_boot[]/; "
     "s/unsigned int [A-Za-z0-9_]+_len/unsigned int jolt_boot_len/' '" boot-h "'"))
   (let ((lc (string-append builddir "/library.c")))
     (let ((p (open-output-file lc 'replace)))
-      (put-string p (bld-library-stub))
+      (put-string p (bld-library-stub raw-len))
       (close-port p))
     (bld-clear-output! out-path)
     (bld-system (string-append
@@ -2284,7 +2407,7 @@
           (string-append "-dynamiclib -install_name '@rpath/" (bld-basename out-path) "' ")
           "-shared ")
       "-I'" (bld-csv-dir) "' '" lc "' '" (bld-csv-dir) "/libkernel.a' "
-      "-o '" out-path "' " native-link " " (bld-link-libs))))
+      "-o '" out-path "' " native-link " " (bld-link-libs)))))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 ;; optional trailing (target target-pack): a Chez machine string + a prepared

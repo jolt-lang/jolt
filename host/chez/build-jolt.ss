@@ -660,7 +660,14 @@
     (close-port p)))
 
 (display "build-jolt: embedding boots + stub, linking\n")
-(jb-c-array jb-boot (string-append jb-build "/boot_data.h") "jolt_boot")
+;; The embedded array is the PACKED boot. jolt's own image is the biggest one
+;; anybody ships — 18.0MB verbatim, 11.1MB as an LZ4 frame — and every cold start
+;; reads it before the runtime exists, so those 6.9MB are the largest single
+;; thing standing between a first run and a warm one. jb-boot-raw-len is what the
+;; binary unpacks it to, or 0 if packing did not pay and it was stored verbatim.
+(define jb-boot-packed (string-append jb-build "/jolt.boot.lz4"))
+(define jb-boot-raw-len (bld-pack-boot! jb-boot jb-boot-packed))
+(jb-c-array jb-boot-packed (string-append jb-build "/boot_data.h") "jolt_boot")
 (jb-c-array (string-append (bld-csv-dir) "/petite.boot") (string-append jb-build "/petite_data.h") "jolt_petite_boot")
 (jb-c-array (string-append (bld-csv-dir) "/scheme.boot") (string-append jb-build "/scheme_data.h") "jolt_scheme_boot")
 (jb-c-array jb-stub (string-append jb-build "/stub_data.h") "jolt_stub")
@@ -712,14 +719,15 @@
       "#include \"z_data.h\"\n"
       "#include \"launcherc_data.h\"\n"
       "#include \"stdlib_fasls_data.h\"\n"
-      (bld-boot-prefetch-defn)
+      (bld-boot-prep-defn jb-boot-raw-len)
       "int main(int argc, char *argv[]) {\n"
-      ;; before Sscheme_init: the 18MB boot's readahead then overlaps kernel
-      ;; init and the runtime image top levels instead of stalling behind them.
-      (bld-boot-prefetch-call)
+      ;; before Sscheme_init, so the unpack (or, for a verbatim boot, the
+      ;; readahead hint) is done with by the time the kernel wants the bytes.
+      (bld-boot-prep-call)
       "  Sscheme_init(0);\n"
-      "  Sregister_boot_file_bytes(\"jolt\", jolt_boot, jolt_boot_len);\n"
+      (bld-boot-register-call)
       "  Sbuild_heap(0, 0);\n"
+      (bld-boot-release-call)
       "  int status = Sscheme_start(argc, (const char **)argv);\n"
       "  Sscheme_deinit();\n  return status;\n}\n"))
   (close-port mc))

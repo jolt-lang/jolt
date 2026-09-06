@@ -188,15 +188,22 @@
       (lambda (p) (put-bytevector p bv)))))
 
 ;; Frame an app boot onto a file that already holds the stub bytes. Layout:
-;; [stub][boot][boot-length:le64]["JOLTBOOT"]. The stub (host/chez/stub/launcher.c)
-;; reads the trailing 16 bytes — the 8-byte magic, then the preceding 8-byte LE
-;; length — to locate and register the boot, so a boot that itself contains the
-;; magic bytes can't be mistaken for the frame.
-(define jolt-payload-magic (string->utf8 "JOLTBOOT"))
-(define (jolt-append-payload! path boot-bv)
+;; [stub][boot][boot-length:le64][unpacked-length:le64]["JOLTBOO2"]. The stub
+;; (host/chez/stub/launcher.c) reads the trailing 24 bytes — the 8-byte magic,
+;; then the two preceding 8-byte LE lengths — to locate and register the boot, so
+;; a boot that itself contains the magic bytes can't be mistaken for the frame.
+;;
+;; RAW-LEN is the boot's unpacked length when BOOT-BV is the LZ4 frame that
+;; bld-pack-boot! produced, and 0 when it is the boot stored verbatim; the stub
+;; branches on it, and 0 keeps the original zero-copy fd-region path. The magic
+;; went from "JOLTBOOT" to "JOLTBOO2" along with the second length, so a stub and
+;; a payload from different versions fail loudly rather than misread the frame.
+(define jolt-payload-magic (string->utf8 "JOLTBOO2"))
+(define (jolt-append-payload! path boot-bv raw-len)
   (let* ((head (read-file-bytes path))           ; the stub bytes already written
-         (lb (make-bytevector 8 0)))
+         (lb (make-bytevector 16 0)))
     (bytevector-u64-set! lb 0 (bytevector-length boot-bv) (endianness little))
+    (bytevector-u64-set! lb 8 raw-len (endianness little))
     (with-port (open-file-output-port path (file-options no-fail) (buffer-mode block))
       (lambda (p)
         (put-bytevector p head)
