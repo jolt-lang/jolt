@@ -93,9 +93,14 @@ run_case() {
 #   - the compiler image: a shake that does NOT bail always drops it (every
 #     dce-compile-ref is also a dce-bail-ref, so reaching no bail ref means
 #     reaching no compile ref either — see dce.ss), and a bail always keeps it.
+#
+# EXPECT_OUT ($7): a fixed string the --tree-shake build's stdout must contain —
+# for a bailing fixture, the paste-ready :allow-dynamic hint naming exactly the
+# sites that remain, which is how the gate proves an allowed site next to a
+# non-allowed one is neither let through nor re-suggested.
 run_local_case() {
   app="$root/test/chez/$1"; ns="$2"; args="$3"; assert_missing="$4"; expect="${5:-shake}"
-  max_kept="${6:-$shake_max_kept}"
+  max_kept="${6:-$shake_max_kept}"; expect_out="$7"
   [ -d "$app" ] || { echo "  - $1: skipped (not present)"; return; }
   b0="$tmp/$1-plain"; b1="$tmp/$1-shake"
   bdir="$tmp/$1-shake.build"
@@ -142,6 +147,11 @@ run_local_case() {
       fi ;;
     *) echo "  - $1: FAIL (unknown EXPECT '$expect')"; fail=1; return ;;
   esac
+  if [ -n "$expect_out" ] && ! grep -qF -- "$expect_out" "$tmp/$1-shake-out"; then
+    echo "  - $1: FAIL (the --tree-shake build output lacks: $expect_out)"
+    sed -n '/^jolt build: tree-shake skipped/,/^jolt build: compiling/p' "$tmp/$1-shake-out" | grep -v '^jolt build: compiling' | head -8
+    fail=1; return
+  fi
   o0="$(cd "$app" && "$b0" $args 2>&1)"
   o1="$(cd "$app" && "$b1" $args 2>&1)"
   if [ "$o0" != "$o1" ]; then
@@ -208,6 +218,19 @@ run_local_case dupfqn-app      app.core  ""     ""
 # loaded core.async. Bails against the pre-#882 dce.ss. app.core/walk-body is the
 # unreachable caller the helpers were spliced into, so it must be pruned.
 run_local_case spliced-resolve-app app.core "" "\"app.core\" \"walk-body\""
+# deps.edn :jolt/tree-shake {:allow-dynamic […]}: two reachable `resolve` callers
+# on paths -main never takes — the app's own `res` (spec.alpha/res's shape) and
+# a :local/root library's `dynaload` behind a delay (spec.gen's shape). The app's
+# deps.edn vouches for the first, the LIBRARY's for the second, and the union
+# lets the shake run: `dead` is pruned and the compiler image dropped. Bails
+# against a jolt that does not read the key. Both callers are ^:redef so the
+# inline pass leaves them as the defs the bail names.
+run_local_case allow-dynamic-app app.core "" "\"app.core\" \"dead\""
+# …and the same app with one more reachable caller nothing vouches for must
+# still bail, with the hint naming that caller alone — proof the allowed sites
+# were honoured (neither is listed) and the non-allowed one was not let through.
+run_local_case allow-dynamic-partial-app app.core "" "" bail "" \
+  ':jolt/tree-shake {:allow-dynamic [app.core/lookup]}'
 
 [ "$fail" = 0 ] && echo "shake smoke: passed" || echo "shake smoke: FAILED"
 exit $fail

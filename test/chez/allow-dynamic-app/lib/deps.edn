@@ -1,0 +1,4 @@
+{:paths ["src"]
+ ;; the library vouches for its own dynamic site, once, for every app that
+ ;; uses it — the way spec.gen would for dynaload
+ :jolt/tree-shake {:allow-dynamic [allowlib.core/dynaload]}}

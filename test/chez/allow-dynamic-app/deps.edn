@@ -1,0 +1,4 @@
+{:paths ["src"]
+ :deps {allowlib/allowlib {:local/root "lib"}}
+ ;; the app vouches for its own site; the library's comes from lib/deps.edn
+ :jolt/tree-shake {:allow-dynamic [app.core/res]}}

@@ -1,0 +1,3 @@
+{:paths ["src"]
+ :deps {allowlib/allowlib {:local/root "lib"}}
+ :jolt/tree-shake {:allow-dynamic [app.core/res]}}
