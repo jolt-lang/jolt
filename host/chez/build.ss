@@ -1559,7 +1559,8 @@
                                           per-ns)))
                               (loopfe (cdr rest))))
                           (apply append (reverse per-ns))))
-                        (string-append entry-ns "/-main"))
+                        (string-append entry-ns "/-main")
+                        '())
                       (values
                         #f
                         ;; EAGER per-ns accumulation, NOT (apply append (map …)):

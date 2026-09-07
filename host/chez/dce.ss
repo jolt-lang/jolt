@@ -3,7 +3,8 @@
 ;; Build one call graph over the re-emitted app + libraries AND the clojure.core
 ;; prelude, keep -main + every side-effecting top-level form + everything reachable
 ;; from those, drop the rest. Bails (keeps everything) if reachable code resolves a
-;; var by name at runtime (eval/resolve/...), which a static graph can't follow. Per
+;; var by name at runtime (eval/resolve/...), which a static graph can't follow —
+;; unless a deps.edn vouches for that def (:jolt/tree-shake {:allow-dynamic […]}). Per
 ;; Stalin's rule, ANY reference — a call OR a value/#'x — keeps its target live, so a
 ;; fn passed to map or referenced as #'x is never dropped.
 ;;
@@ -312,28 +313,50 @@
   (or (dce-rec-keep? r) (hashtable-ref reached (dce-rec-fqn r) #f)))
 
 ;; Scan the KEPT records: does any resolve a var at runtime (bail), and does any need
-;; the compiler? Returns (values bail? bail-why needs-compiler?). bail-why is up to 6
-;; (def . bail-ref) pairs for the diagnostic. Uses hash sets for O(1) membership
-;; instead of O(n*m) linear scans over the bail/compile lists.
-(define (dce-bail-scan records reached)
-  (let ((bail #f) (why '()) (needs-compiler #f)
+;; the compiler? Returns (values bail? bail-why bail-hint needs-compiler?). bail-why
+;; is up to 6 DISTINCT (def . bail-ref) pairs for the diagnostic — distinct because
+;; dce-app-refs unions an IR walk with a text scan, so one call is usually two refs,
+;; and each line printed twice. bail-hint is every distinct def that bailed
+;; (uncapped, first-seen order) for the paste-ready key. Uses hash sets for O(1)
+;; membership instead of O(n*m) linear scans over the lists.
+;;
+;; allow: "ns/name" strings from deps.edn :jolt/tree-shake {:allow-dynamic […]} —
+;; callers pass the union of the app's and every library's; a list, '() when
+;; nothing is declared, never #f. A def in the set is skipped by BOTH scans: the
+;; author is asserting its lookup never runs in the built binary (or names only
+;; vars the graph keeps anyway), and a site that never runs needs no compiler
+;; either. Nothing is kept on an allowed def's behalf — it enters the graph
+;; exactly as before, and the scan is the only place the set is consulted. A
+;; top-level non-def form has no fqn and cannot be allowed by name. The fqn to
+;; allow is the def the ref ended up IN — after the inline pass that is the
+;; caller of a spliced helper, not the helper — which is why the hint prints the
+;; name rather than leaving it to the reader to derive.
+(define (dce-bail-scan records reached allow)
+  (let ((bail #f) (why '()) (hint '()) (needs-compiler #f)
         (bail-ht (make-hashtable string-hash string=?))
-        (compile-ht (make-hashtable string-hash string=?)))
+        (compile-ht (make-hashtable string-hash string=?))
+        (allow-ht (make-hashtable string-hash string=?)))
     (for-each (lambda (b) (hashtable-set! bail-ht b #t)) dce-bail-refs)
     (for-each (lambda (c) (hashtable-set! compile-ht c #t)) dce-compile-refs)
+    (for-each (lambda (a) (hashtable-set! allow-ht a #t)) allow)
     (for-each
       (lambda (r)
-        (when (dce-rec-reached? r reached)
-          (for-each (lambda (ref)
-                      (when (hashtable-ref bail-ht ref #f)
-                        (set! bail #t)
-                        (when (< (length why) 6)
-                          (set! why (cons (cons (or (dce-rec-fqn r) "<form>") ref) why)))))
-                    (dce-rec-refs r))
-          (when (ormap (lambda (ref) (and (hashtable-ref compile-ht ref #f) #t)) (dce-rec-refs r))
-            (set! needs-compiler #t))))
+        (let ((fqn (dce-rec-fqn r)))
+          (when (and (dce-rec-reached? r reached)
+                     (not (and fqn (hashtable-ref allow-ht fqn #f))))
+            (for-each (lambda (ref)
+                        (when (hashtable-ref bail-ht ref #f)
+                          (set! bail #t)
+                          (let ((pair (cons (or fqn "<form>") ref)))
+                            (when (and (< (length why) 6) (not (member pair why)))
+                              (set! why (cons pair why))))
+                          (when (and fqn (not (member fqn hint)))
+                            (set! hint (cons fqn hint)))))
+                      (dce-rec-refs r))
+            (when (ormap (lambda (ref) (and (hashtable-ref compile-ht ref #f) #t)) (dce-rec-refs r))
+              (set! needs-compiler #t)))))
       records)
-    (values bail (reverse why) needs-compiler)))
+    (values bail (reverse why) (reverse hint) needs-compiler)))
 
 ;; Kept records -> (values kept-strings n-defs n-kept-defs).
 (define (dce-partition records reached)
@@ -346,8 +369,10 @@
               (loop (cdr rs) acc (if isdef (+ n 1) n) k))))))
 
 ;; Returns (values core-strs app-strs drop-compiler?). core-strs is #f on a bail,
-;; signalling "inline prelude.ss unshaken" + keep the compiler.
-(define (dce-shake core-records app-records entry-main)
+;; signalling "inline prelude.ss unshaken" + keep the compiler. allow: see
+;; dce-bail-scan. On a bail the diagnostic ends with the deps.edn key that would
+;; allow every def it named, so the path from "skipped" to "kept" is one paste.
+(define (dce-shake core-records app-records entry-main allow)
   (let-values (((edges roots spliced)
                 (dce-build-graph (append core-records app-records) entry-main)))
     (let* ((reached (dce-reachable edges roots))
@@ -356,12 +381,16 @@
            (kept (if (null? spliced)
                      reached
                      (dce-reachable edges (append spliced roots)))))
-      (let-values (((bail why needs-compiler) (dce-bail-scan (append core-records app-records) reached)))
+      (let-values (((bail why hint needs-compiler)
+                    (dce-bail-scan (append core-records app-records) reached allow)))
         (let ((drop-compiler? (and (not bail) (not needs-compiler))))
           (if bail
               (begin
                 (display "jolt build: tree-shake skipped (reachable code resolves vars at runtime):\n")
                 (for-each (lambda (w) (display (string-append "  " (car w) " -> " (cdr w) "\n"))) why)
+                (unless (null? hint)
+                  (display "to proceed, if these never run in the built binary, add to deps.edn:\n")
+                  (display (string-append "  :jolt/tree-shake {:allow-dynamic [" (jolt-str-join hint) "]}\n")))
                 (values #f (map dce-rec-str app-records) drop-compiler?))
               (let-values (((core-strs cn ck) (dce-partition core-records kept))
                            ((app-strs an ak) (dce-partition app-records kept)))

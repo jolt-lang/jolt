@@ -247,7 +247,7 @@
                   (rec "gate.app/named-by-walker" '())
                   (rec "gate.app/dead" '()))))
   (hc-mark-spliced! #f "gate.app" "walker")
-  (let-values (((core-strs app-strs drop-compiler?) (dce-shake '() app "gate.app/-main")))
+  (let-values (((core-strs app-strs drop-compiler?) (dce-shake '() app "gate.app/-main" '())))
     (gate-check "spliced: a spliced resolve caller does not bail the shake" (and core-strs #t) #t)
     (gate-check "spliced: the compiler image is dropped" drop-compiler? #t)
     (gate-check "spliced: the entry and what it reaches are kept"
@@ -260,7 +260,86 @@
                 (and (member "(gate.app/dead)" app-strs) #t) #f))
   ;; the same graph with the walker genuinely reachable bails as before
   (let-values (((core-strs app-strs drop-compiler?)
-                (dce-shake '() (cons (rec "gate.app/-main" '("gate.app/walker")) (cdr app)) "gate.app/-main")))
+                (dce-shake '() (cons (rec "gate.app/-main" '("gate.app/walker")) (cdr app)) "gate.app/-main" '())))
     (gate-check "spliced: a reachable resolve caller still bails" core-strs #f)))
+
+;; --- :allow-dynamic: a vouched-for def is not a bail --------------------------
+;; deps.edn :jolt/tree-shake {:allow-dynamic [ns/name …]} names the defs whose
+;; runtime var lookups the author asserts never run in a built binary (or name
+;; only vars the graph keeps anyway). An allowed def is skipped by the bail scan
+;; and by the compiler-needed scan — a site vouched never to run needs no
+;; compiler — but nothing is kept on its behalf: it is pruned or kept exactly as
+;; reachability says, and what it names stays defined when it is kept.
+;; (The block above marked gate.app/walker spliced, and that mark is process-
+;; global; none of the records here is named walker, so it does not reach in.)
+(let* ((rec (lambda (fqn refs) (dce-rec #f fqn refs (string-append "(" fqn ")"))))
+       (app (list (rec "gate.app/-main" '("gate.app/res"))
+                  (rec "gate.app/res" '("clojure.core/resolve" "gate.app/named-by-res"))
+                  (rec "gate.app/named-by-res" '())
+                  (rec "gate.app/dead" '()))))
+  ;; the empty allow list is today's behaviour: a reachable resolve caller bails
+  (let-values (((core-strs app-strs drop-compiler?) (dce-shake '() app "gate.app/-main" '())))
+    (gate-check "allow: a reachable resolve caller bails with an empty allow list" core-strs #f)
+    (gate-check "allow: that bail keeps the compiler image" drop-compiler? #f))
+  (let-values (((core-strs app-strs drop-compiler?) (dce-shake '() app "gate.app/-main" '("gate.app/res"))))
+    (gate-check "allow: an allowed resolve caller does not bail" (and core-strs #t) #t)
+    (gate-check "allow: the compiler image is dropped" drop-compiler? #t)
+    (gate-check "allow: the allowed def is kept because it is reachable"
+                (and (member "(gate.app/res)" app-strs) #t) #t)
+    (gate-check "allow: what the allowed def names stays defined"
+                (and (member "(gate.app/named-by-res)" app-strs) #t) #t)
+    (gate-check "allow: an unreferenced def is still pruned"
+                (and (member "(gate.app/dead)" app-strs) #t) #f))
+  ;; an allowed def that is NOT reachable is pruned like any other def
+  (let-values (((core-strs app-strs drop-compiler?)
+                (dce-shake '() (cons (rec "gate.app/-main" '()) (cdr app)) "gate.app/-main" '("gate.app/res"))))
+    (gate-check "allow: an unreachable allowed def is pruned, not kept"
+                (and (member "(gate.app/res)" app-strs) #t) #f))
+  ;; a second, non-allowed reachable caller still bails, and the hint names it
+  ;; alone. Its resolve ref is listed twice, as dce-app-refs' IR+text union
+  ;; produces in a real build, and must print once.
+  (let* ((app2 (cons (rec "gate.app/-main" '("gate.app/res" "gate.app/lookup"))
+                     (cons (rec "gate.app/lookup" '("clojure.core/resolve" "clojure.core/resolve")) (cdr app))))
+         (got-core #t) (got-drop #t)
+         (out (with-output-to-string
+                (lambda ()
+                  (let-values (((core-strs app-strs drop-compiler?)
+                                (dce-shake '() app2 "gate.app/-main" '("gate.app/res"))))
+                    (set! got-core core-strs)
+                    (set! got-drop drop-compiler?))))))
+    (gate-check "allow: a non-allowed reachable caller still bails" got-core #f)
+    (gate-check "allow: a non-allowed bail keeps the compiler image" got-drop #f)
+    (gate-check "allow: the bail lists the non-allowed caller"
+                (gate-sub? out "  gate.app/lookup -> clojure.core/resolve\n") #t)
+    (gate-check "allow: a ref counted twice in one record is listed once"
+                (gate-sub? out "resolve\n  gate.app/lookup -> clojure.core/resolve\n") #f)
+    (gate-check "allow: the bail does not list the allowed def"
+                (gate-sub? out "gate.app/res ->") #f)
+    (gate-check "allow: the hint is the paste-ready deps.edn key"
+                (gate-sub? out "  :jolt/tree-shake {:allow-dynamic [gate.app/lookup]}\n") #t))
+  ;; two non-allowed bailing defs join the hint space-separated, in record order
+  (let ((out (with-output-to-string
+               (lambda ()
+                 (dce-shake '() (list (rec "gate.app/-main" '("gate.app/a" "gate.app/b"))
+                                      (rec "gate.app/a" '("clojure.core/resolve"))
+                                      (rec "gate.app/b" '("clojure.core/ns-resolve")))
+                            "gate.app/-main" '())))))
+    (gate-check "allow: the hint names every bailing def, space-joined in record order"
+                (gate-sub? out "  :jolt/tree-shake {:allow-dynamic [gate.app/a gate.app/b]}\n") #t))
+  ;; an allowed caller of a compile-ref (eval) is skipped by the compile scan too
+  (let-values (((core-strs app-strs drop-compiler?)
+                (dce-shake '() (list (rec "gate.app/-main" '("gate.app/ev"))
+                                     (rec "gate.app/ev" '("clojure.core/eval")))
+                           "gate.app/-main" '("gate.app/ev"))))
+    (gate-check "allow: an allowed eval caller does not bail" (and core-strs #t) #t)
+    (gate-check "allow: an allowed eval caller drops the compiler image" drop-compiler? #t))
+  ;; a top-level non-def form has no fqn and cannot be allowed by name: no hint
+  (let ((out (with-output-to-string
+               (lambda ()
+                 (dce-shake '() (list (dce-rec #t #f '("clojure.core/resolve") "(resolve-at-load)")
+                                      (rec "gate.app/-main" '()))
+                            "gate.app/-main" '())))))
+    (gate-check "allow: a <form> bail lists the form" (gate-sub? out "  <form> -> clojure.core/resolve\n") #t)
+    (gate-check "allow: a <form> bail prints no hint" (gate-sub? out ":jolt/tree-shake") #f)))
 
 (gate-summary "dce-refs")
