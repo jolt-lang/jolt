@@ -1133,6 +1133,9 @@
 ;; natives: encoded :jolt/native libs to load at startup. embed-dirs: dirs whose
 ;; files bake into the binary (single-file). ext-roots: project-relative io/resource
 ;; roots resolved at runtime against JOLT_PWD (ship-alongside resources).
+;; allow-dynamic: "ns/name" strings the project and its deps vouch never resolve
+;; vars at runtime in the built binary (deps.edn :jolt/tree-shake {:allow-dynamic
+;; […]}); dce-shake skips them in its bail scan. '() when nothing declared one.
 ;; direct-link?: closed-world direct-linking (app->app calls bind directly; a plain
 ;; def is frozen, ^:redef/^:dynamic stay var-routed). The caller (jolt.main) turns
 ;; this ON for release and optimized and OFF for --dev / --no-direct-link.
@@ -1343,7 +1346,7 @@
           (for-each (lambda (p) (put-string out (string-append "\n    " (car p) " " (cdr p)))) pairs)
           (put-string out "))\n"))))))
 
-(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? library?)
+(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? allow-dynamic library?)
   (ei-profile-init!)
   ;; Windows executables carry .exe; normalize here so the append-payload and
   ;; cc paths agree and the shell can run the result. A library keeps its own
@@ -1560,7 +1563,7 @@
                               (loopfe (cdr rest))))
                           (apply append (reverse per-ns))))
                         (string-append entry-ns "/-main")
-                        '())
+                        allow-dynamic)
                       (values
                         #f
                         ;; EAGER per-ns accumulation, NOT (apply append (map …)):
@@ -2605,8 +2608,10 @@
       "-o '" out-path "' " native-link " " (bld-link-libs))))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
-;; optional trailing (target target-pack): a Chez machine string + a prepared
-;; target pack dir when cross-compiling (jolt build --target). Absent/nil = host.
+;; optional trailing (target target-pack boot-mode allow-dynamic): a Chez machine
+;; string + a prepared target pack dir when cross-compiling (jolt build --target)
+;; — absent/nil = host — then the boot mode (bld-opt-boot-mode) and the
+;; :allow-dynamic list (bld-opt-strs).
 (define (bld-opt-str opt i)
   (let loop ((o opt) (i i))
     (cond ((or (null? o) (< i 0)) #f)
@@ -2620,6 +2625,13 @@
     (cond ((equal? s "small") 'small)
           ((equal? s "plain") 'plain)
           (else 'fast))))
+;; optional trailing (allow-dynamic), index 3: a vector of "ns/name" strings
+;; (see build-binary). Absent/nil = '().
+(define (bld-opt-strs opt i)
+  (let loop ((o opt) (i i))
+    (cond ((or (null? o) (< i 0)) '())
+          ((= i 0) (if (jolt-nil? (car o)) '() (bld-strs (car o))))
+          (else (loop (cdr o) (- i 1))))))
 (def-var! "jolt.host" "build-binary"
   (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake? . opt)
     (parameterize ((bld-target (bld-opt-str opt 0)) (bld-target-pack (bld-opt-str opt 1))
@@ -2627,7 +2639,8 @@
       (build-binary (jolt-str-render-one entry)
                     (jolt-str-render-one out)
                     (jolt-str-render-one mode)
-                    natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?) #f))
+                    natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?)
+                    (bld-opt-strs opt 3) #f))
     jolt-nil))
 (def-var! "jolt.host" "build-library"
   (lambda (entry out mode natives embed-dirs ext-roots direct-link? tree-shake? . opt)
@@ -2636,5 +2649,6 @@
       (build-binary (jolt-str-render-one entry)
                     (jolt-str-render-one out)
                     (jolt-str-render-one mode)
-                    natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?) #t))
+                    natives embed-dirs ext-roots (jolt-truthy? direct-link?) (jolt-truthy? tree-shake?)
+                    (bld-opt-strs opt 3) #t))
     jolt-nil))
