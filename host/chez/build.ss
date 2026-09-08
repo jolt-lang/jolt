@@ -1135,7 +1135,8 @@
 ;; roots resolved at runtime against JOLT_PWD (ship-alongside resources).
 ;; allow-dynamic: "ns/name" strings the project and its deps vouch never resolve
 ;; vars at runtime in the built binary (deps.edn :jolt/tree-shake {:allow-dynamic
-;; […]}); dce-shake skips them in its bail scan. '() when nothing declared one.
+;; […]}); dce-shake skips them in its bail and compiler-needed scans (see
+;; dce-bail-scan). '() when nothing declared one.
 ;; direct-link?: closed-world direct-linking (app->app calls bind directly; a plain
 ;; def is frozen, ^:redef/^:dynamic stay var-routed). The caller (jolt.main) turns
 ;; this ON for release and optimized and OFF for --dev / --no-direct-link.
