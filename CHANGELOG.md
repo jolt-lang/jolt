@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds one caller nothing vouches for and must still bail with a hint naming
   that caller alone. Verified by mutation: dropping either declaration bails
   the shaking fixture. `run-dce-refs.ss` pins the semantics on a synthetic
-  graph, including that an unreachable allowed def is still pruned.
+  graph, including that an unreachable allowed def is still pruned. (#890)
 
 ### Internal
 
