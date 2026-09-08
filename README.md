@@ -440,6 +440,24 @@ library responsible — when reachable code resolves vars by name at runtime
 (`eval`/`resolve`/`ns-resolve`/…). See
 [RFC 0007](https://jolt-lang.github.io/docs/rfc/0007-compilation-modes-and-binary-output.html).
 
+When the site it names is dead in a built binary and you can say why — spec's
+`res` only qualifies a symbol for a description, spec.gen's `dynaload` sits
+behind a `delay` nothing forces — a `deps.edn` can vouch for it and the shake
+proceeds past it, keeping nothing extra:
+
+```clojure
+:jolt/tree-shake {:allow-dynamic [clojure.spec.alpha/res
+                                  clojure.spec.gen.alpha/dynaload]}
+```
+
+The key is read from the app's `deps.edn` and from every library's, and
+unioned, so a library ships its list once for every app that uses it. The bail
+message ends with the exact line to paste for the sites that remain; paste
+what it prints, because the def to name is the one the lookup ended up in
+after inlining, which may be the caller of the fn that wrote it. An allowed
+def is skipped by the compiler-image check too: a lookup vouched never to run
+needs no compiler.
+
 `--boot` trades the other way. The boot image ships as a prebuilt heap image
 (*vfasl*), which starts faster and takes more room — `--boot small` keeps the
 image but compresses it with gzip, and `--boot plain` drops it altogether:

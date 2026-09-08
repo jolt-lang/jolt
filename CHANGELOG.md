@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `deps.edn` can vouch for a runtime var lookup, so `--tree-shake` proceeds
+  past it.** The shake bails, and must, when reachable code resolves a var by
+  name: the static graph cannot follow a runtime name. But some of those sites
+  are dead in a built binary and the author can prove it, and one `s/def` was
+  enough to lose the whole shake — spec.alpha's `res` only qualifies a symbol
+  so a spec's form can be printed, and spec.gen's `dynaload` sits behind a
+  `delay` nothing forces. `:jolt/tree-shake {:allow-dynamic [ns/name …]}` in
+  the app's `deps.edn` or any library's names the defs the author vouches for,
+  read where `:jolt/native` is read and unioned, so a library ships its list
+  once for every app that uses it. Nothing is kept on an allowed def's behalf.
+  With no declaration the shake bails exactly as before.
+
+  An allowed def is skipped by the compiler-needed scan as well as the bail
+  scan, on purpose: a site vouched never to run needs no compiler, and skipping
+  only the bail scan would let an allowed `eval` caller shake without dropping
+  the compiler image, which breaks the "a shake that does not bail drops it"
+  invariant `make shakelocal` asserts.
+
+  The bail message lists each site once — the IR-walk-plus-text-scan ref union
+  had it printing every line twice — and ends with the paste-ready key for
+  every def it named:
+
+  ```
+  jolt build: tree-shake skipped (reachable code resolves vars at runtime):
+    clojure.spec.alpha/res -> clojure.core/resolve
+  to proceed, if these never run in the built binary, add to deps.edn:
+    :jolt/tree-shake {:allow-dynamic [clojure.spec.alpha/res]}
+  ```
+
+  The def to name is the one the lookup ended up in: the inline pass splices a
+  small helper into its callers, and the bail then names the caller. The hint
+  prints that name, so paste what it prints rather than the fn that wrote the
+  call.
+
+  `test/chez/allow-dynamic-app` is the build-level gate — the app's own `res`
+  and a `:local/root` library's `dynaload`, each vouched for by its own
+  `deps.edn`, must shake and prune `dead` — and `allow-dynamic-partial-app`
+  adds one caller nothing vouches for and must still bail with a hint naming
+  that caller alone. Verified by mutation: dropping either declaration bails
+  the shaking fixture. `run-dce-refs.ss` pins the semantics on a synthetic
+  graph, including that an unreachable allowed def is still pruned.
+
 ### Internal
 
 - **The repository's tooling is jolt, not Python.** `bench/pagecache.clj`

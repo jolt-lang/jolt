@@ -946,10 +946,10 @@
 ;; Dependencies are resolved as a TREE (resolve-deps' BFS, which visits each
 ;; coordinate once) and then reconciled into a definitive, de-duplicated set —
 ;; one place, not ad-hoc per call site. dedup-by keeps the first item per key,
-;; order preserved; it dedups both source roots (by path) and native libraries
-;; (by identity), so an app pulling two libs that declare the same shared object
-;; (e.g. libcrypto via both http-client and the ring adapter) includes and loads
-;; it ONCE.
+;; order preserved; it dedups source roots (by path), native libraries (by
+;; identity) and the :allow-dynamic list (by name), so an app pulling two libs
+;; that declare the same shared object (e.g. libcrypto via both http-client and
+;; the ring adapter) includes and loads it ONCE.
 (defn- dedup-by [key xs]
   (second (reduce (fn [[seen acc] x]
                     (let [k (key x)]

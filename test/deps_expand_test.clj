@@ -362,6 +362,15 @@
   (is= "the key without :allow-dynamic is the empty list" []
        (allow-dynamic-entries {:jolt/tree-shake {}})))
 
+;; The union itself, against the committed shake fixture: the app's own entry
+;; comes first, the :local/root library's after it, and both arrive — the
+;; build-level gate (make shakelocal) can only show that the shake ran, not
+;; which declaration got it there. Relative to the repo root, like the "."
+;; base-dir the resolve-deps cases above use.
+(is= "resolve-project unions the project's list with its :local/root dep's, project first"
+     ["app.core/res" "allowlib.core/dynaload"]
+     (:allow-dynamic (deps/resolve-project "test/chez/allow-dynamic-app")))
+
 (println (str "deps-expand: " (- @checks @failures) "/" @checks " passed"))
 (when (pos? @failures)
   (System/exit 1))
