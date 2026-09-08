@@ -990,12 +990,24 @@
          (into [(str install-ns) (when lib (str lib))] (map str classes)))
        (:jolt/provides edn)))
 
+(defn- allow-dynamic-entries
+  "The defs a deps.edn vouches never resolve vars at runtime in a built binary
+  — :jolt/tree-shake {:allow-dynamic [ns/name …]} — as \"ns/name\" strings, the
+  shape the build driver's bail scan (dce.ss) keys on. Symbols are the
+  documented form; a string is taken as written. Nothing else is validated
+  here: an entry that names no def is inert, and the bail diagnostic prints the
+  exact key for the sites that remain, so a misspelling corrects itself on the
+  next build rather than needing a checker of its own."
+  [edn]
+  (mapv str (:allow-dynamic (:jolt/tree-shake edn))))
+
 (defn resolve-deps
   "Expand a deps map through the tools.deps expansion engine, then collect the
   selected libraries' source roots, :jolt/native and :jolt/provides declarations
   in stable first-inclusion order. Returns {:roots [...] :natives [...]
-  :min-versions [...] :provides [...] :prep [...] :libs {lib coord}} — :libs is
-  the tools.deps lib map (selected coordinate per library).
+  :allow-dynamic [...] :min-versions [...] :provides [...] :prep [...]
+  :libs {lib coord}} — :libs is the tools.deps lib map (selected coordinate per
+  library).
 
   `opts` carries the alias-combined coordinate maps applied at every node like
   tools.deps: :override-deps replaces a lib's coordinate wherever it appears
@@ -1049,6 +1061,13 @@
                                 (map #(assoc % :jolt.deps/root root)
                                      (:jolt/native edn)))
                               infos))
+        ;; The defs each dep vouches never resolve vars at runtime in a built
+        ;; binary (:jolt/tree-shake {:allow-dynamic […]}). A LIBRARY is the
+        ;; natural declarer — spec.alpha knows its `res` only qualifies a symbol
+        ;; for a description and its `dynaload` sits behind a delay — and it
+        ;; ships the list once for every app that uses it, the way :jolt/native
+        ;; ships a shared library.
+        :allow-dynamic (vec (mapcat (fn [{:keys [edn]}] (allow-dynamic-entries edn)) infos))
         ;; Each dep's declared jolt floor, as [lib version] — checked by
         ;; resolve-project against the running runtime. A LIBRARY is the common
         ;; declarer: it knows which jolt its FFI bindings or host shims need, and
@@ -1520,8 +1539,10 @@
 
 (defn resolve-project
   "Resolve `project-dir`'s deps.edn with the selected alias keywords. Returns
-  {:roots [...] :main-opts [...] :tasks {...} :natives [...]}; :natives are the
-  project's + deps' :jolt/native shared-library declarations.
+  {:roots [...] :main-opts [...] :tasks {...} :natives [...] :allow-dynamic [...]};
+  :natives are the project's + deps' :jolt/native shared-library declarations,
+  :allow-dynamic the project's + deps' :jolt/tree-shake {:allow-dynamic […]}
+  entries as \"ns/name\" strings.
 
   :jolt/min-version, declared by the project or by any dependency, is the oldest
   jolt that entry works on; a runtime below it raises here rather than running
@@ -1604,7 +1625,7 @@
           ;; the merged edn and argmap, without calc-basis.
           {dep-roots :roots dep-natives :natives dep-provides :provides
            prep-libs :prep dep-trace :trace
-           dep-min-versions :min-versions}
+           dep-min-versions :min-versions dep-allow-dynamic :allow-dynamic}
           (when-not cp
             (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
                                          (abspath project-dir r))
@@ -1652,6 +1673,12 @@
                          (concat (map #(assoc % :jolt.deps/root project-dir)
                                       (:jolt/native edn))
                                  dep-natives))
+      ;; the project's own vouched-for defs first, then every dep's, deduped —
+      ;; `jolt build --tree-shake` hands the union to the bail scan. The
+      ;; project's list is where an app allows a site in a library that has
+      ;; not shipped its own list yet.
+      :allow-dynamic (dedup-by identity
+                               (concat (allow-dynamic-entries edn) dep-allow-dynamic))
       ;; declared host-class providers (RFC 0014), the project's own first: a
       ;; project may supply a class itself rather than take a library's.
       :provides (host-class-providers (concat (provides-entries edn nil) dep-provides))

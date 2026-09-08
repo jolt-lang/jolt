@@ -346,6 +346,22 @@
                         [{:static {:archive "native/libfoo.a"} :jolt.deps/root "/a"}
                          {:static {:archive "native/libfoo.a"} :jolt.deps/root "/b"}]))))
 
+;;;; :jolt/tree-shake {:allow-dynamic […]} → "ns/name" strings
+
+(let [allow-dynamic-entries (var jolt.deps/allow-dynamic-entries)]
+  ;; The list travels to the Scheme build driver as strings — the shape
+  ;; dce-bail-scan keys its allow set on — so a symbol is rendered as written.
+  (is= "symbols render as ns/name strings"
+       ["clojure.spec.alpha/res" "clojure.spec.gen.alpha/dynaload"]
+       (allow-dynamic-entries {:jolt/tree-shake {:allow-dynamic '[clojure.spec.alpha/res
+                                                                  clojure.spec.gen.alpha/dynaload]}}))
+  (is= "a string entry is taken as written"
+       ["a.b/c"]
+       (allow-dynamic-entries {:jolt/tree-shake {:allow-dynamic ["a.b/c"]}}))
+  (is= "no key is the empty list, not nil" [] (allow-dynamic-entries {}))
+  (is= "the key without :allow-dynamic is the empty list" []
+       (allow-dynamic-entries {:jolt/tree-shake {}})))
+
 (println (str "deps-expand: " (- @checks @failures) "/" @checks " passed"))
 (when (pos? @failures)
   (System/exit 1))
