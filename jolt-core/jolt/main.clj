@@ -854,6 +854,12 @@
                           (throw (ex-info (str "--boot must be fast, small or plain (got " v ")")
                                           {:boot v})))
                         v)
+            ;; defs the project and its deps vouch never resolve vars at runtime
+            ;; in the built binary (deps.edn :jolt/tree-shake {:allow-dynamic […]},
+            ;; unioned by resolve-project): the shake skips them in its bail scan
+            ;; instead of keeping everything. Passed even without --tree-shake;
+            ;; the driver ignores it then.
+            allow-dynamic (vec (:allow-dynamic resolved))
             ;; a shared library (callable from C/C++/Rust via jolt_library_init +
             ;; jolt_lookup) instead of an executable: --library.
             library? (some #{"--library"} flag-args)
@@ -867,8 +873,8 @@
         ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
         ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
         (if library?
-          (jolt.host/build-library entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode)
-          (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode))))))
+          (jolt.host/build-library entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode allow-dynamic)
+          (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode allow-dynamic))))))
 
 (defn- nrepl [more]
   ;; resolve the project (deps on the roots, native libs loaded), then start the
