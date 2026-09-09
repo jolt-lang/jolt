@@ -46,6 +46,16 @@
   (or (rdr-ws? c)
       (memv c '(#\( #\) #\[ #\] #\{ #\} #\" #\; #\@ #\^ #\` #\~ #\\))))
 
+;; @ ` ~ end a token above because they are reader MACRO characters in source.
+;; EDN has no macros for them at all, and Clojure's EdnReader goes further: they
+;; are NON-CONSTITUENT, refused wherever a token could hold one rather than
+;; quietly ending it. That difference is load-bearing — a token terminator makes
+;; "garbage!@" read as `garbage!` with the rest of the input dropped on the
+;; floor, where the reference throws (#905). Only the edn seam consults this;
+;; source reading keeps the terminator behavior.
+(define (rdr-nonconstituent? c)
+  (or (char=? c #\@) (char=? c #\`) (char=? c #\~)))
+
 (define (rdr-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
 (define (rdr-octal? c) (and (char>=? c #\0) (char<=? c #\7)))
 (define (rdr-all-digits? s from to)
@@ -411,6 +421,16 @@
                      (or (char-alphabetic? c) (char-numeric? c))))
               (loop (+ j 1))
               (let ((name (substring s i j)))
+                ;; The character name is a token too, so in edn it may not run
+                ;; into an @ ` or ~ — \a@ is a constituent error there, not the
+                ;; character \a with the rest of the input dropped. (A literal
+                ;; \@ is still fine: the reference checks the name's FIRST
+                ;; character only when a form starts there, never after \.)
+                (when (and (< j end) (rdr-nonconstituent? (string-ref s j)) (rdr-edn-mode))
+                  (rdr-error-class s j "java.lang.RuntimeException"
+                                   (keyword "read" "invalid-constituent")
+                                   (string-append "Invalid constituent character: "
+                                                  (string (string-ref s j)))))
                 (if (= (string-length name) 1)
                     (values c0 j)
                     (values (rdr-named-char name s start) j)))))
@@ -456,11 +476,54 @@
                           (string-append "Unsupported character: \\" name)))))
 
 ;; --- token (symbol / keyword / number / nil|true|false) ---------------------
-(define (rdr-read-token s i end)
+;; Two entry points, differing only in EDN mode. rdr-read-token-lead is the main
+;; form dispatch's, the one call site where the JVM would have chosen readNumber
+;; — on a digit, or a sign directly in front of one. readNumber has no
+;; non-constituent check (it stops at whitespace or a macro char and nothing
+;; else), so an `@` there lands INSIDE the token and the failure is worded
+;; "Invalid number: 1@". Every other caller — keyword, #tag, ##, #:ns — reads a
+;; plain token, where the same `@` is a constituent error.
+(define (rdr-read-token s i end) (rdr-read-token* s i end #f))
+(define (rdr-read-token-lead s i end) (rdr-read-token* s i end #t))
+
+(define (rdr-read-token* s i end numeric?)
   (let loop ((j i))
     (if (and (< j end) (not (rdr-terminator? (string-ref s j))))
         (loop (+ j 1))
-        (values (substring s i j) j))))
+        ;; The character class is checked before the parameter: source reading
+        ;; pays three char compares on the token's last character and nothing
+        ;; else, and a token ends at whitespace or a close delimiter almost
+        ;; always.
+        (if (and (< j end) (rdr-nonconstituent? (string-ref s j)) (rdr-edn-mode))
+            (rdr-token-nonconstituent s i j end numeric?)
+            (values (substring s i j) j)))))
+
+;; The edn arm: the scan stopped on @ ` or ~. J is that character's index, I the
+;; token's start.
+(define (rdr-token-nonconstituent s i j end numeric?)
+  (if (and numeric? (rdr-number-lead? s i end))
+      ;; readNumber's loop, which the non-constituent never interrupts: take it
+      ;; into the token and let rdr-token->value report the whole run as an
+      ;; invalid number.
+      (let loop ((k j))
+        (if (and (< k end)
+                 (let ((c (string-ref s k)))
+                   (or (rdr-nonconstituent? c) (not (rdr-terminator? c)))))
+            (loop (+ k 1))
+            (values (substring s i k) k)))
+      (rdr-error-class s j "java.lang.RuntimeException"
+                       (keyword "read" "invalid-constituent")
+                       (string-append "Invalid constituent character: "
+                                      (string (string-ref s j))))))
+
+;; The JVM's number dispatch: a digit, or a sign with a digit behind it.
+(define (rdr-number-lead? s i end)
+  (and (< i end)
+       (let ((c (string-ref s i)))
+         (or (rdr-digit? c)
+             (and (or (char=? c #\+) (char=? c #\-))
+                  (< (+ i 1) end)
+                  (rdr-digit? (string-ref s (+ i 1))))))))
 
 ;; split a "ns/name" token on the FIRST slash (a lone "/" is name "/")
 (define (rdr-sym-parts tok)
@@ -1446,6 +1509,15 @@
             ((char=? c #\:) (rdr-read-keyword s (+ i 1) end i))
             ((char=? c #\#) (rdr-read-dispatch s (+ i 1) end))
             ((char=? c #\') (rdr-wrap s (+ i 1) end (jolt-symbol #f "quote")))
+            ;; EDN, before the three arms below claim these as reader macros:
+            ;; ` @ ~ are non-constituent there, and one where a form should start
+            ;; is the reference's "Invalid leading character" (see
+            ;; rdr-nonconstituent?). Reading it as a deref/quote form instead
+            ;; invented a value edn cannot express.
+            ((and (rdr-nonconstituent? c) (rdr-edn-mode))
+             (rdr-error-class s i "java.lang.RuntimeException"
+                              (keyword "read" "invalid-constituent")
+                              (string-append "Invalid leading character: " (string c))))
             ;; syntax-quote of a self-evaluating literal collapses to the literal at
             ;; READ time (Clojure's reader), so nested backticks over a literal are
             ;; inert: ``42 reads as 42, ```"meow" as "meow".
@@ -1478,7 +1550,7 @@
                    (rdr-error s i "EOF after ^meta"))
                  (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
             (else
-             (let-values (((tok j) (rdr-read-token s i end)))
+             (let-values (((tok j) (rdr-read-token-lead s i end)))
                (values (rdr-token->value tok s i) j))))))))
 
 ;; wrap the next form in a 2-element list (READER-MACRO form)

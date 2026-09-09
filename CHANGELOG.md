@@ -56,6 +56,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JVM; an atomic restored from an image written before the split keeps working
   through the tag it travelled with.
 
+- **`clojure.edn` refuses `@`, `` ` `` and `~` instead of dropping the rest of
+  the input.** `(edn/read-string "garbage!@")` answered `garbage!`, `"1@"`
+  answered `1` and `"a@b"` answered `a` — the reader ended the token at the `@`
+  and discarded everything after it, so junk that the reference rejects read as
+  a value. Those three are reader macro characters in SOURCE, which is why they
+  terminate a token there, but edn has no macros at all and its reader treats
+  them as non-constituent: inside or after a token that is `Invalid constituent
+  character: @`, where a form should start it is `Invalid leading character: @`,
+  and in a token that began like a number the character joins the token and
+  fails as `Invalid number: 1@` (a `NumberFormatException`, as on the JVM). A
+  character literal's name is checked the same way (`\a@`), an `@` after a
+  DELIMITED form is still ordinary trailing junk (`{:a 1}@` reads `{:a 1}`), and
+  source reading is untouched — `@foo` there is a deref form (#905).
+
+- **`(clojure.edn/read reader)` reads EDN, not source.** The 1-arity drained the
+  reader and handed the string to `clojure.core/read-string`, so everything the
+  edn seam exists to refuse got in through it: `::kw` resolved, `#(…)` and `#=`
+  were read, an `@` ended the token, and end of input answered `nil` where the
+  reference throws. It goes through `clojure.edn/read-string` now, with the same
+  strictness and the same `:readers`/`:default`/`:eof` handling as the string
+  arity (the 2-arity already did).
+
 ### Internal
 
 - **Two new gates over the host tree.** `make mirrordrift` covers the two
