@@ -746,6 +746,19 @@
   {:suite "destructure / keyword args (& {:keys})" :label "fn kwargs + fixed" :expected "[0 5]" :actual "(do (defn g [x & {:keys [a]}] [x a]) (g 0 :a 5))" :portability :common}
   {:suite "destructure / keyword args (& {:keys})" :label "fn kwargs :or" :expected "9" :actual "(do (defn h [& {:keys [a] :or {a 9}}] a) (h))" :portability :common}
   {:suite "destructure / keyword args (& {:keys})" :label "fn kwargs trailing map" :expected "7" :actual "(do (defn k [& {:keys [a]}] a) (k {:a 7}))" :portability :common}
+  ;; A map pattern over a fn's seq rest takes the args pairwise, and destmap*
+  ;; special-cases a rest of exactly ONE element: that element IS the map, whatever
+  ;; it is. So (f 1 {:a 2}) passes a map, and a stray (f 1 :a) looks keys up in a
+  ;; keyword — answering nil, not throwing. Only a longer odd rest is an error, and
+  ;; only a seq is coerced at all: a vector init destructures as itself.
+  {:suite "destructure / keyword args (& {:keys})" :label "a lone trailing non-map arg IS the map, so its keys read as nil" :expected "[1 nil :a]" :actual "(do (defn kw1 [x & {:keys [a] :as m}] [x a m]) (kw1 1 :a))" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "an unpaired arg after a pair throws" :expected ":threw" :actual "(do (defn kw2 [x & {:keys [a]}] [x a]) (try (kw2 1 :a 2 :b) (catch Throwable _ :threw)))" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "a lone nil arg is a nil map, not an empty one" :expected "[1 nil nil]" :actual "(do (defn kw3 [x & {:keys [a] :as m}] [x a m]) (kw3 1 nil))" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "a lone vector arg is the map itself, not a pair" :expected "[1 nil [:a 2]]" :actual "(do (defn kw4 [x & {:keys [a] :as m}] [x a m]) (kw4 1 [:a 2]))" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "a vector init is not a kwargs seq" :expected "[nil [:a 1]]" :actual "(let [{:keys [a] :as m} [:a 1]] [a m])" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "a trailing map wins over the pairs" :expected "[1 3]" :actual "(do (defn kw5 [x & {:keys [a]}] [x a]) (kw5 1 :a 2 {:a 3}))" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "a repeated kwarg takes the last value" :expected "[1 2]" :actual "(do (defn kw6 [x & {:keys [a]}] [x a]) (kw6 1 :a 1 :a 2))" :portability :common}
+  {:suite "destructure / keyword args (& {:keys})" :label "no kwargs at all is a nil map" :expected "[1 nil nil]" :actual "(do (defn kw7 [x & {:keys [a] :as m}] [x a m]) (kw7 1))" :portability :common}
   {:suite "destructure / fn params & loop" :label "fn vector param" :expected "7" :actual "((fn [[a b]] (+ a b)) [3 4])" :portability :common}
   {:suite "destructure / fn params & loop" :label "fn map param" :expected "30" :actual "((fn [{:keys [x y]}] (* x y)) {:x 5 :y 6})" :portability :common}
   {:suite "destructure / fn params & loop" :label "fn :or param" :expected "7" :actual "((fn [{:keys [x] :or {x 7}}] x) {})" :portability :common}

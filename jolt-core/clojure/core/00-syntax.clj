@@ -258,17 +258,24 @@
                         select (get pat :select)
                         as-sym (get pat :as)
                         or-keys (if defaults (keys defaults) [])
-                        ;; kwargs: a map pattern may bind against the sequential rest of
-                        ;; a fn — (& {:keys [...]}) — a seq of alternating k/v args,
-                        ;; optionally with a trailing map (Clojure 1.11: (f :a 1 {:b 2})
-                        ;; merges the map over the pairs; (f {:a 1}) is just the map). An
-                        ;; odd count means the last arg is that trailing map. A real map
-                        ;; is used as-is. g holds init once; gm is the coerced map every
-                        ;; lookup (and :as) reads from.
-                        coerce `(if (sequential? ~g)
-                                  (if (odd? (count ~g))
-                                    (merge (apply hash-map (butlast ~g)) (last ~g))
-                                    (apply hash-map ~g))
+                        ;; kwargs: a map pattern may bind against the seq rest of a fn
+                        ;; — (& {:keys [...]}) — a seq of alternating k/v args, optionally
+                        ;; with a trailing map (Clojure 1.11: (f :a 1 {:b 2}) merges the
+                        ;; map over the pairs). An odd count means the last arg is that
+                        ;; trailing map — except for a LONE element, which is the whole
+                        ;; value: (f {:a 1}) passes the map itself, and the JVM takes that
+                        ;; element as the map whatever it is, so a stray (f 1 :a) looks
+                        ;; keys up in a keyword and answers nil instead of throwing
+                        ;; (#909). Only a seq is coerced, like destmap*'s (seq? gmap): a
+                        ;; vector init destructures as itself, never as pairs. g holds
+                        ;; init once; gm is the coerced map every lookup (and :as) reads
+                        ;; from.
+                        coerce `(if (seq? ~g)
+                                  (if (next ~g)
+                                    (if (odd? (count ~g))
+                                      (merge (apply hash-map (butlast ~g)) (last ~g))
+                                      (apply hash-map ~g))
+                                    (if (seq ~g) (first ~g) (hash-map)))
                                   ~g)
                         acc-m (conj (conj (conj (conj acc g) init) gm) coerce)
                         base  (if as-sym (conj (conj acc-m as-sym) gm) acc-m)

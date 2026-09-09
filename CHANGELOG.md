@@ -98,6 +98,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the source reader with `*read-eval*` false now, which is the reader babashka
   reads a bb.edn with; a project file still evaluates nothing at read time.
 
+- **A lone unpaired kwarg no longer throws.** `((fn [x & {:keys [a]}] [x a]) 1 :a)`
+  raised `IllegalArgumentException: Don't know how to create ISeq from:
+  clojure.lang.Keyword` where Clojure answers `[1 nil]` (#909), so a call site
+  passing a stray positional argument after the options crashed instead of
+  ignoring it. `destructure` read every odd-length rest as pairs plus a trailing
+  map and merged the leftover element into `{}`; a rest of exactly one element is
+  instead the whole map value — which is how `(f {:a 1})` passes a map, and why
+  the JVM reads keys off a keyword and answers `nil` rather than failing. A
+  longer odd rest still throws, as it does on the JVM. Coercion is also now
+  limited to a `seq?` init, matching `destmap*`: a vector destructures as itself,
+  so `(let [{:keys [a]} [:a 1]] a)` is `nil`, and a lone `nil` kwarg leaves the
+  map `nil` instead of `{}`.
+
 ### Internal
 
 - **Two new gates over the host tree.** `make mirrordrift` covers the two
@@ -516,6 +529,7 @@ rounds and reads flags the way `java.util.Formatter` does.
   now reads the same per-method probes the `seq` arms read, so the two answers
   cannot drift apart again; the collection-BEHAVIOUR interfaces stay out of it,
   because `ILookup` and `Counted` are not `Seqable` on the JVM either.
+
 - **`Files.size` reports a directory's own size.** It answered a hardcoded `0`
   for any directory, and so did the `size` attribute behind `readAttributes` and
   `BasicFileAttributes`. All three now report `st_size`, as the JVM does. The
