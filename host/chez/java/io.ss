@@ -1069,9 +1069,16 @@
               (begin (reader-refill! r (jolt-nth pr 1)) (values (jolt-nth pr 0) #t)))))))
 
 ;; clojure.edn/read over a reader: drain the jhost reader to a string and read the
-;; first EDN form (read-string). Re-asserted over the prelude in post-prelude.ss.
+;; first EDN form. Re-asserted over the prelude in post-prelude.ss.
+;;
+;; Through clojure.edn/read-string, NOT the core one: this is the edn seam, and
+;; the core reader is the SOURCE reader — it resolves ::kw, takes #(…) and #=,
+;; and ends a token at an @ where edn refuses it (#905). An empty opts map is
+;; what makes end of input an error here, as it is on the JVM; the core
+;; read-string answered nil.
 (define (chez-edn-read reader)
-  (jolt-invoke (var-deref "clojure.core" "read-string")
+  (jolt-invoke (var-deref "clojure.edn" "read-string")
+               empty-pmap
                (if (reader-jhost? reader) (drain-reader reader) (jolt-str-render-one reader))))
 
 ;; line-seq: an io/reader is a jhost StringReader. Drain it (or take a string)

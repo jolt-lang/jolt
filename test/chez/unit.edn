@@ -706,8 +706,10 @@
   ;; whatever file the literal sits in. An ordinary read still positions its lists.
   {:suite "reader-macros" :expr "[(meta (nth (read-string \"#$\\\"a ~(inc x)\\\"\") 2)) (some? (:line (meta (read-string \"(inc x)\"))))]" :expected "[nil true]"}
   ;; edn is a closed grammar with no user extension point, so the table is not
-  ;; consulted there and #$ stays the unreadable tag it always was.
-  {:suite "reader-macros" :expr "(try (clojure.edn/read-string \"#$\\\"a\\\"\") :no-throw (catch Exception e (ex-message e)))" :expected "\"No reader function for tag $\""}
+  ;; consulted there. Nor does #$ fall through to the tagged-literal arm: the
+  ;; reference dispatches a tag on a LETTER only, and answers "No dispatch macro"
+  ;; for anything else — verified against Clojure 1.12.5.
+  {:suite "reader-macros" :expr "(try (clojure.edn/read-string \"#$\\\"a\\\"\") :no-throw (catch Exception e (ex-message e)))" :expected "\"No dispatch macro for: $\""}
   ;; the two registration tiers: the default reads the next form and hands it to
   ;; the fn, :raw hands the fn the source and an index and takes back [form end].
   {:suite "reader-macros" :expr "(do (require (quote [jolt.reader :as r])) (r/set-dispatch-macro! \\% (fn [f] (list (quote clojure.core/vector) f f))) (load-string \"#%(+ 1 2)\"))" :expected "[3 3]"}

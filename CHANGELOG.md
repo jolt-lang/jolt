@@ -56,6 +56,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JVM; an atomic restored from an image written before the split keeps working
   through the tag it travelled with.
 
+- **`clojure.edn` refuses `@`, `` ` `` and `~` instead of dropping the rest of
+  the input.** `(edn/read-string "garbage!@")` answered `garbage!`, `"1@"`
+  answered `1` and `"a@b"` answered `a` — the reader ended the token at the `@`
+  and discarded everything after it, so junk that the reference rejects read as
+  a value. Those three are reader macro characters in SOURCE, which is why they
+  terminate a token there, but edn has no macros at all and its reader treats
+  them as non-constituent: inside or after a token that is `Invalid constituent
+  character: @`, where a form should start it is `Invalid leading character: @`,
+  and in a token that began like a number the character joins the token and
+  fails as `Invalid number: 1@` (a `NumberFormatException`, as on the JVM). A
+  character literal's name is checked the same way (`\a@`), an `@` after a
+  DELIMITED form is still ordinary trailing junk (`{:a 1}@` reads `{:a 1}`), and
+  source reading is untouched — `@foo` there is a deref form (#905).
+
+- **`(clojure.edn/read reader)` reads EDN, not source.** The 1-arity drained the
+  reader and handed the string to `clojure.core/read-string`, so everything the
+  edn seam exists to refuse got in through it: `::kw` resolved, `#(…)` and `#=`
+  were read, an `@` ended the token, and end of input answered `nil` where the
+  reference throws. It goes through `clojure.edn/read-string` now, with the same
+  strictness and the same `:readers`/`:default`/`:eof` handling as the string
+  arity (the 2-arity already did).
+
+- **`clojure.edn`'s dispatch table is closed.** `#(…)` read as a fn form, `#"…"`
+  as a regex, `#?(…)` as a reader conditional and `#'x` as a var form — none of
+  which edn can express, and all of which the reference refuses with `No
+  dispatch macro for: X`. EDN has `#{`, `#_`, `#^`, `#<`, `#:`, `##` and a
+  tagged literal, and nothing else; that is one gate now rather than a guard per
+  arm, so a dispatch character added later is refused there by default. A
+  leading `'` is part of the symbol for the same reason — edn has no quote, so
+  `'foo` reads as a symbol named `'foo` rather than `(quote foo)`. `#<…>` is
+  `Unreadable form` in both readers, where it used to report a tagged literal
+  running to end of input.
+
+- **A project file's task bodies are code, and are read like code.** `deps.edn`
+  and `bb.edn` went through `clojure.edn`, which worked only while jolt's edn
+  mode still honored the source reader's macros: a `:tasks` body is a form jolt
+  evaluates, and the ones people write are full of them — `(run 'clean)`,
+  `(require '[app.core])`, `@(future …)`, a `` ` ``/`~` template. Making the edn
+  seam strict (above) stopped every one of those reading. Both files go through
+  the source reader with `*read-eval*` false now, which is the reader babashka
+  reads a bb.edn with; a project file still evaluates nothing at read time.
+
 ### Internal
 
 - **Two new gates over the host tree.** `make mirrordrift` covers the two

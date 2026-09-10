@@ -6318,4 +6318,44 @@
   ;; (host/chez/script-smoke.sh runs the executable-script end of it).
   {:suite "reader / shebang line" :label "a #! line reads as nothing, so a script's first line is a comment" :expected "42" :actual "(read-string \"#!/usr/bin/env jolt\\n42\")" :portability :common}
   {:suite "reader / shebang line" :label "and it comments to end of line anywhere, not only at the start of input" :expected "[1 3]" :actual "(read-string \"[1 #! two\\n 3]\")" :portability :common}
+
+  ;; EDN has no reader macros, and @ ` ~ are refused there rather than ending the
+  ;; token they sit in: "garbage!@" used to read as `garbage!` with the rest of the
+  ;; input silently dropped (#905). Where the reference dispatches readNumber — a
+  ;; digit, or a sign in front of one — the character joins the token instead and
+  ;; the failure is an invalid NUMBER naming the whole run, so both wordings and
+  ;; both throwable classes are pinned here.
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "a trailing @ after a token throws instead of truncating the read" :expected "\"Invalid constituent character: @\"" :actual "(do (require (quote [clojure.edn :as en1])) (try (en1/read-string \"garbage!@\") (catch RuntimeException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "an @ mid-token throws, rather than dropping everything from it on" :expected "\"Invalid constituent character: @\"" :actual "(do (require (quote [clojure.edn :as en2])) (try (en2/read-string \"a@b\") (catch RuntimeException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "a token that starts like a number takes the @ in and fails as a number" :expected "\"Invalid number: 1@\"" :actual "(do (require (quote [clojure.edn :as en3])) (try (en3/read-string \"1@\") (catch NumberFormatException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "@ where a form should start is a leading-character error, not a deref form" :expected "\"Invalid leading character: @\"" :actual "(do (require (quote [clojure.edn :as en4])) (try (en4/read-string \"@foo\") (catch RuntimeException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "` and ~ are non-constituent on the same terms" :expected "[\"Invalid constituent character: ~\" \"Invalid leading character: `\"]" :actual "(do (require (quote [clojure.edn :as en5])) (mapv (fn [s] (try (en5/read-string s) (catch RuntimeException e (.getMessage e)))) [\"a~b\" \"`foo\"]))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "a keyword's token is judged the same way" :expected "\"Invalid constituent character: @\"" :actual "(do (require (quote [clojure.edn :as en6])) (try (en6/read-string \":kw@\") (catch RuntimeException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "and so is a token inside a collection" :expected "\"Invalid constituent character: @\"" :actual "(do (require (quote [clojure.edn :as en7])) (try (en7/read-string \"[a@]\") (catch RuntimeException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "a character literal's name is a token too" :expected "\"Invalid constituent character: @\"" :actual "(do (require (quote [clojure.edn :as en8])) (try (en8/read-string \"\\\\a@\") (catch RuntimeException e (.getMessage e))))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "an @ after a DELIMITED form is ordinary trailing junk, and still ignored" :expected "{:a 1}" :actual "(do (require (quote [clojure.edn :as en9])) (en9/read-string \"{:a 1}@\"))" :portability :common}
+  {:suite "clojure.edn / non-constituent @ ` ~" :label "the source reader is untouched — there @ ends the token and derefs" :expected "[\"garbage!\" \"(clojure.core/deref foo)\"]" :actual "[(str (read-string \"garbage!@\")) (str (read-string \"@foo\"))]" :portability :common}
+
+  ;; EDN's dispatch table is CLOSED — #{ #_ #^ #< #: ## and a tagged literal are
+  ;; all of it — so every dispatch character the clojure reader adds is refused
+  ;; there. #( #" and #? used to read as a fn form, a regex and a conditional,
+  ;; inventing values edn cannot express; #! and #= were already refused, one arm
+  ;; at a time, which is why this is now one gate.
+  {:suite "clojure.edn / closed dispatch table" :label "the dispatch characters edn does not have" :expected "[\"No dispatch macro for: (\" \"No dispatch macro for: \\\"\" \"No dispatch macro for: '\" \"No dispatch macro for: ?\"]" :actual "(do (require (quote [clojure.edn :as ed1])) (mapv (fn [s] (try (ed1/read-string s) (catch RuntimeException e (.getMessage e)))) [\"#(inc 1)\" \"#\\\"re\\\"\" \"#'foo\" \"#?(:clj 1)\"]))" :portability :common}
+  {:suite "clojure.edn / closed dispatch table" :label "the ones it does have still read" :expected "(quote [#{1} 2 x {:a/b 1} ##Inf])" :actual "(do (require (quote [clojure.edn :as ed2])) [(ed2/read-string \"#{1}\") (ed2/read-string \"#_1 2\") (ed2/read-string \"#^{:m 1} x\") (ed2/read-string \"#:a{:b 1}\") (ed2/read-string \"##Inf\")])" :portability :common}
+  ;; ' is a reader macro in SOURCE only: EdnReader has no quote and does not end
+  ;; a token on it, so 'foo there is a symbol whose name starts with a quote.
+  {:suite "clojure.edn / closed dispatch table" :label "a leading quote is part of the symbol, not a quote form" :expected "[true \"'foo\"]" :actual "(do (require (quote [clojure.edn :as ed3])) (let [v (ed3/read-string \"'foo\")] [(symbol? v) (name v)]))" :portability :common}
+  {:suite "clojure.edn / closed dispatch table" :label "the source reader still quotes" :expected "(quote (quote foo))" :actual "(read-string \"'foo\")" :portability :common}
+  ;; #<…> is what a Java toString prints; neither reader takes it back. jolt read
+  ;; it as a tagged literal whose tag ran to end of input.
+  {:suite "clojure.edn / closed dispatch table" :label "#< is unreadable in both readers" :expected "[\"Unreadable form\" \"Unreadable form\"]" :actual "(do (require (quote [clojure.edn :as ed4])) (mapv (fn [f] (try (f) (catch RuntimeException e (.getMessage e)))) [(fn [] (ed4/read-string \"#<foo>\")) (fn [] (read-string \"#<foo>\"))]))" :portability :common}
+
+  ;; The 1-arity (edn/read reader) drained the reader and handed the string to
+  ;; the CORE read-string — the source reader, which resolves ::kw, takes #(…)
+  ;; and #=, and ends a token at an @. It reads through clojure.edn/read-string
+  ;; now, so the seam is the same one read-string uses, end of input included.
+  {:suite "clojure.edn / read over a reader" :label "the same non-constituent rejection as read-string" :expected "\"Invalid constituent character: @\"" :actual "(do (require (quote [clojure.edn :as er1])) (try (er1/read (java.io.PushbackReader. (java.io.StringReader. \"garbage!@\"))) (catch RuntimeException e (.getMessage e))))" :portability :jvm}
+  {:suite "clojure.edn / read over a reader" :label "an auto-resolved keyword is not edn" :expected "\"Invalid token: ::kw\"" :actual "(do (require (quote [clojure.edn :as er2])) (try (er2/read (java.io.PushbackReader. (java.io.StringReader. \"::kw\"))) (catch RuntimeException e (.getMessage e))))" :portability :jvm}
+  {:suite "clojure.edn / read over a reader" :label "end of input is an error without an :eof option, and the option's value with one" :expected "[\"EOF while reading\" :end]" :actual "(do (require (quote [clojure.edn :as er3])) [(try (er3/read (java.io.PushbackReader. (java.io.StringReader. \"\"))) (catch RuntimeException e (.getMessage e))) (er3/read {:eof :end} (java.io.PushbackReader. (java.io.StringReader. \"\")))])" :portability :jvm}
 ]

@@ -1,5 +1,8 @@
 ;; No bb.edn: jolt's own deps.edn :tasks forms keep working unchanged.
 {:paths ["src"]
+ ;; deps.edn :tasks carry code too, so the same reader macros have to read out
+ ;; of THIS file — it is not read as edn either.
  :tasks {hello "echo deps-only-hello"
+         macros {:task (println "macros:" @(future 41) (quote sym) (mapv #(* 2 %) [1 2]))}
          fail  "exit 3"
          main  {:doc "app entry" :main-opts ["-m" "depsonly.core"]}}}

@@ -30,6 +30,14 @@
  "A token that is not a valid symbol or keyword: a leading or trailing slash, a
   bare `:` or `::`, or a keyword name beginning with a colon (`:::c`)."
 
+ :read/invalid-constituent
+ "An `@`, `` ` `` or `~` read as EDN (`clojure.edn`). EDN has no reader macros,
+  and those three are refused outright rather than ending the token they sit in:
+  inside or after a token it is an `Invalid constituent character`, where a form
+  should start an `Invalid leading character`. A `RuntimeException` on both
+  runtimes. Source reading is unaffected — there they are ordinary macro
+  characters."
+
  :read/invalid-character
  "A character literal that names nothing — an unknown `\\name`, or an octal escape
   outside `[0, 377]`."
