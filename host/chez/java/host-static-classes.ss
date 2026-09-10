@@ -845,6 +845,15 @@
     ((boolean) "atomic-boolean")
     (else "atomic-reference")))
 (define atomic-tags '("atomic-integer" "atomic-long" "atomic-boolean" "atomic-reference"))
+;; A jhost is a nongenerative record, so an atomic written into a jolt image
+;; travels with its tag STRING, and this build still reads image formats 2 to 7.
+;; Every atomic dumped before the tag split carries the old shared "atomic", and
+;; a tag with no method table answers no method at all — the restored cell would
+;; be inert. Registering the same table under it keeps those images working
+;; exactly as they did: the methods read the kind out of the state, and an old
+;; atomic reports :object to (class x) there, as it always has (there is one FQN
+;; per tag, and the old tag names four classes).
+(define atomic-legacy-tag "atomic")
 (define (make-atomic init kind)
   (make-jhost (atomic-tag-for kind) (vector (box init) (make-mutex) kind)))
 (define (atomic-box self) (vector-ref (jhost-state self) 0))
@@ -954,7 +963,8 @@
               (jnum->exact (unbox (atomic-box self))))))
         (cons "longValue" (lambda (self) (jnum->exact (unbox (atomic-box self)))))
         (cons "toString" (lambda (self) (jolt-str-render-one (unbox (atomic-box self))))))))
-  (for-each (lambda (t) (register-host-methods! t atomic-methods)) atomic-tags))
+  (for-each (lambda (t) (register-host-methods! t atomic-methods))
+            (cons atomic-legacy-tag atomic-tags)))
 ;; java.util.Collections/synchronizedMap|List|Set wrap a collection for
 ;; thread-safe access. The shared-heap HashMap/ArrayList shims already serialize
 ;; individual ops adequately for these uses, so the wrapper returns its argument.
