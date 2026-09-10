@@ -10,7 +10,11 @@
 ;;
 ;; Loaded from rt.ss after java/io.ss (needs make-jfile / jfile? / jfile-abs).
 
-(define files-accum '())   ; collects Files member alists for one-shot registration
+;; Files' member alists, collected in REVERSE and flattened once at the bottom.
+;; Eleven chunks are appended over the file; growing the accumulation with
+;; (append files-accum chunk) copied everything gathered so far each time. The
+;; flush restores source order, which matters: the dedup below is last-wins.
+(define files-accum-chunks '())
 
 ;; ---- path string algebra ----------------------------------------------------
 (define (npath-absolute? s) (and (> (string-length s) 0) (char=? (string-ref s 0) #\/)))
@@ -429,7 +433,7 @@
                                                 (make-in-stream (nio-open-input-port fp)))))
         (cons "createTempFile"      (lambda args (nio-files-create-temp args #f)))
         (cons "createTempDirectory" (lambda args (nio-files-create-temp args #t))))))
-  (set! files-accum (append files-accum files-statics)))
+  (set! files-accum-chunks (cons files-statics files-accum-chunks)))
 
 ;; createTempFile(prefix, suffix, attrs*) | createTempFile(dir, prefix, suffix, attrs*)
 ;; createTempDirectory(prefix, attrs*)    | createTempDirectory(dir, prefix, attrs*)
@@ -561,7 +565,7 @@
 ;; register the Files walk/stream ops + the FileVisitResult / FileVisitOption enums.
 (let ((files-walk (list (cons "walkFileTree" nio-walk-file-tree)
                         (cons "newDirectoryStream" nio-new-directory-stream))))
-  (set! files-accum (append files-accum files-walk)))
+  (set! files-accum-chunks (cons files-walk files-accum-chunks)))
 (let ((fvr-statics (list (cons "CONTINUE" fvr-continue) (cons "SKIP_SUBTREE" fvr-skip-subtree)
                          (cons "SKIP_SIBLINGS" fvr-skip-siblings) (cons "TERMINATE" fvr-terminate))))
   (register-class-statics! "FileVisitResult" fvr-statics)
@@ -715,7 +719,7 @@
                                                           (else (nio-fs-throw "java.nio.file.NotLinkException" fp))))))
              (cons "setPosixFilePermissions" (lambda (p perms . _)
                                                (when c-chmod (c-chmod (nfp p) (posix-set->mode perms))) (->path p))))))
-  (set! files-accum (append files-accum files-attr)))
+  (set! files-accum-chunks (cons files-attr files-accum-chunks)))
 (let ((lo-statics (list (cons "NOFOLLOW_LINKS" fvo-nofollow))))
   (register-class-statics! "LinkOption" lo-statics)
   (register-class-statics! "java.nio.file.LinkOption" lo-statics))
@@ -805,7 +809,7 @@
                                       (make-out-stream
                                        (nio-open-output-port
                                         (nfp p) (nio-output-file-options opts))))))))
-  (set! files-accum (append files-accum files-opt)))
+  (set! files-accum-chunks (cons files-opt files-accum-chunks)))
 
 ;; ---- stat-backed perms + real path (increment: what the fs suite exercises) --
 ;; st_mode lives at a platform-specific offset in struct stat; read only that.
@@ -940,7 +944,7 @@
 (let ((files-stat
        (list (cons "getPosixFilePermissions"
                    (lambda (p . _) (nio-mode->perm-set (or (nio-stat-mode (nfp p)) #o755)))))))
-  (set! files-accum (append files-accum files-stat)))
+  (set! files-accum-chunks (cons files-stat files-accum-chunks)))
 ;; instance? FileTime
 (register-instance-check-arm!
   (lambda (type-sym val)
@@ -969,7 +973,7 @@
                                 (let ((fp (nfp p)))
                                   (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp)) #f
                                       (if (and (file-exists? fp) (not (file-directory? fp))) #t #f))))))))
-  (set! files-accum (append files-accum files-nofollow)))
+  (set! files-accum-chunks (cons files-nofollow files-accum-chunks)))
 (register-host-methods! "user-principal"
   (list (cons "getName" (lambda (self) (jhost-state self)))
         (cons "toString" (lambda (self) (jhost-state self)))))
@@ -1052,7 +1056,7 @@
                             (nio-already-exists d))
                            (else (when (nio-dest-present? d) (nio-delete1 d #t))
                                  (nio-fs-call s (lambda () (rename-file s d))) (->path dst)))))))))
-  (set! files-accum (append files-accum files-create+move)))
+  (set! files-accum-chunks (cons files-create+move files-accum-chunks)))
 
 ;; ---- nofollow timestamps (the link's own mtime, via lstat/lutimes) ----------
 (define c-lstat (jolt-foreign-proc-safe "lstat" '(string u8*) 'int))
@@ -1085,7 +1089,7 @@
                                  (if (member nm '("lastModifiedTime" "creationTime" "lastAccessTime"))
                                      (make-file-time (nio-lmtime-millis fp opts))
                                      (nio-attr-value fp nm))))))))
-  (set! files-accum (append files-accum files-nofollow-time)))
+  (set! files-accum-chunks (cons files-nofollow-time files-accum-chunks)))
 
 ;; java.nio.channels.FileChannel/open — babashka.fs/touch uses it only to create
 ;; a file (CREATE + WRITE) inside with-open, so support open+close of a channel.
@@ -1119,7 +1123,7 @@
                                    (nio-require-exists fp)
                                    (nio-set-lmtime! fp (if (file-time? value) (file-time-ms value) (jnum->exact value)) opts))
                                  (->path path)))))))
-  (set! files-accum (append files-accum files-throwing-setters)))
+  (set! files-accum-chunks (cons files-throwing-setters files-accum-chunks)))
 
 ;; isSameFile compares inodes (so hard links are the same file); copy preserves
 ;; the source permissions by default, like java.nio.file on this host.
@@ -1152,7 +1156,7 @@
                                (when (nio-opts-have? opts copt-sym 'copy-attributes)
                                  (set-file-mtime-millis! d (file-mtime-millis s)))))
                             (->path dst))))))) ))
-  (set! files-accum (append files-accum files-final)))
+  (set! files-accum-chunks (cons files-final files-accum-chunks)))
 
 ;; getOwner resolves the real owning user (stat st_uid -> getpwuid -> pw_name),
 ;; so it distinguishes root-owned paths from user files.
@@ -1186,13 +1190,14 @@
                                                 (nio-lstat-uid fp) (nio-stat-uid fp))))
                                   (make-jhost "user-principal"
                                               (or (and uid (nio-uid->name uid)) (getenv "USER") ""))))))))
-  (set! files-accum (append files-accum files-owner2)))
+  (set! files-accum-chunks (cons files-owner2 files-accum-chunks)))
 
 ;; One-shot Files registration: deduplicate the accumulated alist (last wins)
 ;; and register the live member set under both the short and FQN class name.
 (let ((seen (make-hashtable string-hash string=?))
       (live '()))
-  (for-each (lambda (p) (hashtable-set! seen (car p) (cdr p))) files-accum)
+  (for-each (lambda (p) (hashtable-set! seen (car p) (cdr p)))
+            (apply append (reverse files-accum-chunks)))
   (for-each (lambda (k) (set! live (cons (cons k (hashtable-ref seen k #f)) live)))
             (vector->list (hashtable-keys seen)))
   (register-class-statics! "Files" live)

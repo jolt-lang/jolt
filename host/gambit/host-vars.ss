@@ -117,6 +117,15 @@
       (lambda (cls val) (jolt-truthy? (jolt-invoke f cls val))))
     jolt-nil))
 
+;; The class-methods half of the same seam. The table is write-only on this boot
+;; (host-static-classes.ss is excluded, so no host interop reads it back), but the
+;; var has to EXIST: jolt.socket and jolt/time/*.clj call it at the top level, and
+;; an unbound clojure.core/__register-class-methods! fails their load outright.
+(def-var! "clojure.core" "__register-class-methods!"
+  (lambda (tag members)
+    (register-class-methods! tag members)
+    jolt-nil))
+
 ;; ---- queries answer, they do not raise -------------------------------------
 ;; A predicate whose type cannot exist on this target is false, not an error —
 ;; a caller asking "is this a delay?" deserves an answer.

@@ -620,17 +620,6 @@
 ;; slot when a form starts to compile and again when its compiled code starts to
 ;; run, since macroexpansion runs user code in between.
 (define (jolt-site-reset!) (set-virtual-register! jolt-vreg-site 0))
-;; The line to report for the INNERMOST frame. Inside a catch clause that is the
-;; line the throw came from, snapshotted on the way in; else the pair stashed at
-;; the raise. Never the live vreg — it can be stale between throws.
-(define (jolt-throw-line)
-  (let ((c (virtual-register jolt-vreg-catch-line)))
-    (if (pair? c)
-        (let ((l (cdr c))) (and (fixnum? l) (fx>? l 0) l))
-        (let ((s (jolt-throw-sitep)))
-          (if (pair? s)
-              (let ((l (cdr s))) (and (fixnum? l) (fx>? l 0) l))
-              #f)))))
 ;; The site pair ('ns/fn' . line) of the innermost call at the throw — the
 ;; catch-line snapshot when a handler is running, else the raise-time stash.
 ;; #f when unset. The reporter must validate this against the callsite table
@@ -695,11 +684,24 @@
 ;; because one registration writes up to four of them and they are never read
 ;; under it.
 (define jolt-callsite-mu (make-mutex))
+;; Membership is answered by a companion index, not by scanning the list being
+;; built. jolt-tail-entries is keyed by CALLEE, so its list is every tail site
+;; that reaches one function: (member entry cur) made registering n of them cost
+;; O(n^2). Small today — a release build emits 5 registrations — but the cost is
+;; in the number of tail sites in the program, which is not a number to leave
+;; quadratic. The stored value stays a plain list; readers are unchanged.
+(define jolt-table-seen (make-eq-hashtable))          ; tbl -> {(key . entry) -> #t}
+(define (jolt-table-seen-for tbl)
+  (or (hashtable-ref jolt-table-seen tbl #f)
+      (let ((h (make-hashtable equal-hash equal?)))
+        (hashtable-set! jolt-table-seen tbl h)
+        h)))
 (define (jolt-table-add! tbl key entry)
   (jolt-with-mutex jolt-callsite-mu
-    (let ((cur (hashtable-ref tbl key '())))
-      (unless (member entry cur)
-        (hashtable-set! tbl key (cons entry cur))))))
+    (let ((seen (jolt-table-seen-for tbl)) (k (cons key entry)))
+      (unless (hashtable-ref seen k #f)
+        (hashtable-set! seen k #t)
+        (hashtable-set! tbl key (cons entry (hashtable-ref tbl key '())))))))
 (define (jolt-register-callsite! fqn line callee tail?)
   (jolt-table-add! jolt-callsite-table (jolt-callsite-key fqn line) callee)
   (jolt-table-add! jolt-fn-callees-table fqn callee)
@@ -1540,10 +1542,6 @@
           (readable? (string-append "#object[" cls " \"" (jolt-str-escape content) "\"]"))
           (else (string-append "#object[" cls " " content "]")))))
 
-;; readable? reaches only the #object[…] fallback: every other branch renders the
-;; same either way, and the readable printer handles the types that differ (string
-;; quoting, ##Inf) before it delegates here.
-(define (jolt-pr-str-base x) (jolt-pr-str-base/readable x #f))
 (define (jolt-pr-str-base/readable x readable?)
   (cond
     ((jolt-nil? x) "nil")

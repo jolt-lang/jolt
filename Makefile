@@ -102,6 +102,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   devbootsmoke devirt directlink ffi fibers fieldjoin fieldnum fieldread flarr fnform coreproc grenadine \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inline inline-body irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance mandelbrot-num mathfl mvnhttp \
+  deadhost mirrordrift mirrordrift-regen \
   narrow narrowhash numeric numwp oparity pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit vfaslceiling \
   shakesmoke smoke staticnativesmoke stateimage test testbin transient unit unitcontext \
@@ -164,7 +165,7 @@ CI-GATES := submodules values corpus unit documented grenadine mvnhttp readscali
   hasheq narrowhash \
   protoret pic narrow directlink directcall arraymap arraybacking unitcontext numeric oparity mathfl flarr \
   fnform coreproc traceemit traceeval degradedbacktrace \
-  inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck adaptercheck hostprops statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
+  inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift deadhost adaptercheck hostprops statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotfingerprint vfaslceiling compilepathsmoke makefilesmoke versionsmoke \
   systemstreams \
   certify gambitcheck gambitgencheck gambitseedcheck gambitboot grenadinecheck fibers gosm asynctimer interruptnest threadsafety flow
@@ -945,6 +946,29 @@ readmecheck:
 # current reality; the R10 end state is the two target-owned files.
 portcheck:
 	@sh host/chez/portability-check.sh
+
+# The two hand-mirrored host file pairs (chez/rt.ss <-> gambit/rt-core.ss and the
+# two hasheq.ss) must not drift: a procedure defined in BOTH has to be identical
+# unless mirror-drift-allowlist.txt records the split as deliberate. Everything
+# else the hosts share is generated and gated by its own generator check; these
+# two pairs were kept in step by hand with nothing watching. Compares read
+# DATA, so reformatting is not drift, and a stale allowlist line fails too.
+mirrordrift:
+	@sh host/chez/mirror-drift-check.sh
+
+mirrordrift-regen:
+	@sh host/chez/mirror-drift-check.sh --regen
+
+# Top-level host procedures nothing calls. A definition whose last caller went
+# away is still compiled into every binary and still copied forward into the
+# Gambit half by gen-records.ss — four of the first batch were dead in BOTH
+# copies for exactly that reason. Counts a name referenced when it appears as a
+# token anywhere OUTSIDE a comment, string bodies included (the backend emits
+# calls as text), or when an identifier inside a string literal is its stem and
+# the tail is all digits: (str "jolt-ffi-varargs-proc" k) reaches proc0..proc3,
+# and a gate without that rule would have deleted every varargs FFI binding.
+deadhost:
+	@sh host/chez/dead-host-check.sh
 
 census:
 	@sh host/chez/portability-check.sh --census

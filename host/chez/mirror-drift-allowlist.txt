@@ -1,0 +1,44 @@
+# mirror-drift-allowlist.txt — procedures DELIBERATELY per-host.
+#
+# One <chez-file>::<procedure> per line: defined in both halves of a
+# mirrored pair and different on purpose (Chez mutexes and hash-fx
+# arithmetic against Gambit's plain operators, capabilities one host
+# does not have). Everything else defined in both must stay identical.
+#
+# Regenerate with `make mirrordrift-regen`. A line whose procedure no
+# longer diverges is STALE and fails the gate — the list only shrinks
+# truthfully.
+host/chez/hasheq.ss::big-integer-hashcode
+host/chez/hasheq.ss::double-hasheq
+host/chez/hasheq.ss::double-to-raw-bits
+host/chez/hasheq.ss::entry-hasheq
+host/chez/hasheq.ss::hash-combine
+host/chez/hasheq.ss::hash-ordered
+host/chez/hasheq.ss::hash-unordered
+host/chez/hasheq.ss::java-string-hashcode
+host/chez/hasheq.ss::jolt-hasheq
+host/chez/hasheq.ss::jolt-hasheq-fallback
+host/chez/hasheq.ss::murmur3-fmix
+host/chez/hasheq.ss::murmur3-hash-int
+host/chez/hasheq.ss::murmur3-hash-long
+host/chez/hasheq.ss::murmur3-hash-long-flat
+host/chez/hasheq.ss::murmur3-hash-unencoded-chars
+host/chez/hasheq.ss::murmur3-mix-h1
+host/chez/hasheq.ss::string-hasheq
+host/chez/hasheq.ss::symbol-hasheq
+host/chez/rt.ss::code-value?
+host/chez/rt.ss::declare-var!
+host/chez/rt.ss::def-var!
+host/chez/rt.ss::jolt->fx
+host/chez/rt.ss::jolt-available-processors
+host/chez/rt.ss::jolt-capture-fault!
+host/chez/rt.ss::jolt-random
+host/chez/rt.ss::jolt-random-bytes
+host/chez/rt.ss::jolt-str-join-sep
+host/chez/rt.ss::jolt-table-add!
+host/chez/rt.ss::jolt-throw
+host/chez/rt.ss::jolt-unwrap-throw
+host/chez/rt.ss::jolt-var
+host/chez/rt.ss::register-code-value!
+host/chez/rt.ss::register-proc-name!
+host/chez/rt.ss::var-redefined?

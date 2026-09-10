@@ -49,6 +49,14 @@
 ;;   - a defrecord caches its structural hash in the slot (the __hasheq field);
 ;;     a plain deftype caches its identity hash there (Object.hashCode), each
 ;;     paired with the matching equality above so the hash/eq contract holds.
+;;
+;; The slot is the cache because the jrec LAYOUT is image-format surface — adding
+;; a field means bumping every family tag — so there is nowhere else to put it.
+;; A type with a declared hasheq/hashCode never fills it. The write is a plain
+;; fixnum store with no lock: racing writers compute the same value (a structural
+;; hash is deterministic, and the identity table answers one id per object), so a
+;; double store is benign. The slot never travels — the image dump starts it
+;; unset (state-image.ss), the way the JVM marks __hasheq transient.
 (define (jrec-hasheq-slow x)
   (cond ((jrec-cl x "hasheq") => (lambda (m) (jolt-invoke m x)))
         ((jrec-cl x "hashCode") => (lambda (m) (jolt-invoke m x)))

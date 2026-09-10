@@ -922,6 +922,23 @@
 (jch-register-supers! "java.util.concurrent.FutureTask"
                       '("java.util.concurrent.RunnableFuture"
                         "java.util.concurrent.Future" "java.lang.Runnable"))
+;; locks, latches and the four atomics. Every one of these had a shim with
+;; methods and NO class row, so (class x) answered the :object placeholder and
+;; (instance? java.util.concurrent.locks.Lock a-reentrant-lock) was false.
+(jch-register-supers! "java.util.concurrent.locks.Lock" '())
+(jch-mark-interface! "java.util.concurrent.locks.Lock")
+(jch-register-supers! "java.util.concurrent.locks.ReentrantLock"
+                      '("java.util.concurrent.locks.Lock" "java.io.Serializable"))
+(jch-register-supers! "java.util.concurrent.CountDownLatch" '())
+;; AtomicInteger and AtomicLong extend Number on the JVM; AtomicBoolean and
+;; AtomicReference extend Object. (instance? Number an-atomic) has to tell them
+;; apart, which is why the four carry four tags.
+(jch-register-supers! "java.util.concurrent.atomic.AtomicInteger"
+                      '("java.lang.Number" "java.io.Serializable"))
+(jch-register-supers! "java.util.concurrent.atomic.AtomicLong"
+                      '("java.lang.Number" "java.io.Serializable"))
+(jch-register-supers! "java.util.concurrent.atomic.AtomicBoolean" '("java.io.Serializable"))
+(jch-register-supers! "java.util.concurrent.atomic.AtomicReference" '("java.io.Serializable"))
 ;; java.time temporal interfaces — base abstractions the concrete time classes implement
 (jch-register-supers! "java.time.temporal.TemporalAccessor" '())
 (jch-mark-interface! "java.time.temporal.TemporalAccessor")
@@ -961,6 +978,25 @@
 (jch-register-supers! "java.time.format.DateTimeFormatter" '())
 ;; text / util classes with host shims
 (jch-register-supers! "java.text.SimpleDateFormat" '())
+;; java.util.Random and its SecureRandom subclass, StringTokenizer's Enumeration,
+;; Optional, Base64's two nested helpers, Runtime, and the NumberFormat family —
+;; all shims that reported the :object placeholder for want of a row.
+(jch-register-supers! "java.util.random.RandomGenerator" '())
+(jch-mark-interface! "java.util.random.RandomGenerator")
+(jch-register-supers! "java.util.Random"
+                      '("java.util.random.RandomGenerator" "java.io.Serializable"))
+(jch-register-supers! "java.security.SecureRandom" '("java.util.Random"))
+(jch-register-supers! "java.util.Enumeration" '())
+(jch-mark-interface! "java.util.Enumeration")
+(jch-register-supers! "java.util.StringTokenizer" '("java.util.Enumeration"))
+(jch-register-supers! "java.util.Optional" '())
+(jch-register-supers! "java.util.Base64" '())
+(jch-register-supers! "java.util.Base64$Encoder" '())
+(jch-register-supers! "java.util.Base64$Decoder" '())
+(jch-register-supers! "java.lang.Runtime" '())
+(jch-register-supers! "java.text.Format" '("java.io.Serializable" "java.lang.Cloneable"))
+(jch-register-supers! "java.text.NumberFormat" '("java.text.Format"))
+(jch-register-supers! "java.text.DecimalFormat" '("java.text.NumberFormat"))
 (jch-register-supers! "java.util.GregorianCalendar" '())
 (jch-register-supers! "java.util.Locale" '())
 (jch-register-supers! "java.util.TimeZone" '())
@@ -1083,7 +1119,31 @@
     ;; inheriting one. Without these rows both reported (class x) => :object and
     ;; answered false to (instance? ThreadLocal x).
     ("threadlocal" . "java.lang.ThreadLocal")
-    ("inheritable-threadlocal" . "java.lang.InheritableThreadLocal")))
+    ("inheritable-threadlocal" . "java.lang.InheritableThreadLocal")
+    ;; Thread/currentThread hands back a "thread" handle (io.ss) while (Thread. f)
+    ;; makes a "user-thread" (concurrency.ss). Two tags, ONE class — like the two
+    ;; writer tags and the two field tags above. Only user-thread had a row, so the
+    ;; handle every caller actually gets from currentThread reported :object.
+    ("thread" . "java.lang.Thread")
+    ;; the four atomics (host-static-classes.ss), one tag each so instance? can
+    ;; tell the Number-extending pair from the other two
+    ("atomic-integer" . "java.util.concurrent.atomic.AtomicInteger")
+    ("atomic-long" . "java.util.concurrent.atomic.AtomicLong")
+    ("atomic-boolean" . "java.util.concurrent.atomic.AtomicBoolean")
+    ("atomic-reference" . "java.util.concurrent.atomic.AtomicReference")
+    ("reentrant-lock" . "java.util.concurrent.locks.ReentrantLock")
+    ("count-down-latch" . "java.util.concurrent.CountDownLatch")
+    ("random" . "java.util.Random")
+    ("securerandom" . "java.security.SecureRandom")
+    ("optional" . "java.util.Optional")
+    ("string-tokenizer" . "java.util.StringTokenizer")
+    ("b64-encoder" . "java.util.Base64$Encoder")
+    ("b64-decoder" . "java.util.Base64$Decoder")
+    ("jolt-runtime" . "java.lang.Runtime")
+    ;; NumberFormat/getInstance hands back a DecimalFormat on the JVM, and the one
+    ;; numberformat shim is only ever built by those statics (host-static-methods.ss),
+    ;; so it reports the class a caller actually receives.
+    ("numberformat" . "java.text.DecimalFormat")))
 ;; FQN for a jhost tag, or #f if the tag names no modeled class (e.g. "class",
 ;; "in-stream", "jolt-comparator") — callers fall through on #f.
 (define (jhost-fqn tag) (hashtable-ref jhost-tag->fqn tag #f))

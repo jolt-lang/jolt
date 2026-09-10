@@ -138,12 +138,9 @@
 ;; typed host throwable via jolt-host-throwable) or a raw Chez condition (an error
 ;; the host itself raised). Both answer here.
 ;;
-;; Returns a BOXED result (a one-element list) or #f for "not a Throwable method",
-;; matching dot-object-method — a legitimate nil/#f result has to stay
-;; distinguishable from "no such method".
-(define (jolt-throwable-value? v)
-  (or (jolt-ex-info-record? v) (condition? v)))
-
+;; jolt-throwable-method returns a BOXED result (a one-element list) or #f for
+;; "not a Throwable method", matching dot-object-method — a legitimate nil/#f
+;; result has to stay distinguishable from "no such method".
 (define (jolt-throwable-message v)
   (cond ((jolt-ex-info-record? v) (jolt-ex-info-record-message v))
         ((condition? v) (condition->message-string v))

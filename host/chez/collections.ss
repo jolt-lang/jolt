@@ -121,8 +121,6 @@
 (define (vec-set-or-snoc v i x)        ; replace index i, or append when i = length
   (let ((n (vector-length v))) (if (fx<? i n) (vec-set v i x) (vec-snoc v x))))
 
-(define (pv-tailoff cnt)
-  (if (fx<? cnt pv-width) 0 (fxsll (fxsra (fx- cnt 1) pv-bits) pv-bits)))
 
 ;; --- RRB relaxed nodes -------------------------------------------------------
 ;; catvec/slice (below) produce RELAXED branch nodes: children needn't be full,

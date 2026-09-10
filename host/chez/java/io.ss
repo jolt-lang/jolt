@@ -127,7 +127,6 @@
 ;; jolt-embedded-fasl then memcpy's the slice out of the C array on demand — once
 ;; per ns per process, never cached.
 (define embedded-fasls (make-hashtable string-hash string=?))
-(define (register-embedded-fasl! name bv) (hashtable-set! embedded-fasls name bv))
 ;; ns-name -> (offset . length) into the linked jolt_stdlib_fasls C array.
 ;; Populated once by the launcher's jolt-stdlib-fasls-attach!; empty in every
 ;; path that carries no such array (dev bin/jolt, devcache, app binaries).

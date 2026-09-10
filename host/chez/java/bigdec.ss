@@ -23,11 +23,6 @@
 
 (define-record-type jbigdec (fields unscaled scale) (nongenerative chez-jbigdec-v1))
 
-(define (bd-index-char s ch)
-  (let loop ((i 0))
-    (cond ((>= i (string-length s)) #f)
-          ((char=? (string-ref s i) ch) i)
-          (else (loop (+ i 1))))))
 
 ;; "1.50" -> {150,2}; "3" -> {3,0}; "-0.0" -> {0,1}; ".5" -> {5,1};
 ;; "1.0E300" -> {10,-299}; "1.5E-7" -> {15,8}. Throws NumberFormatException on

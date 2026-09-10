@@ -68,19 +68,7 @@
 (define gs-prelude (jolt-emit-prelude))
 (define gs-image (jolt-emit-image))
 
-(define (gs-has? text needle)
-  (let loop ((i 0))
-    (cond
-      ((>= i (string-length text)) #f)
-      ((string=? (substring text i (min (+ i (string-length needle)) (string-length text))) needle) #t)
-      (else (loop (+ i 1))))))
 
-(define (gs-index text needle)
-  (let loop ((i 0))
-    (cond
-      ((>= i (string-length text)) -1)
-      ((string=? (substring text i (min (+ i (string-length needle)) (string-length text))) needle) i)
-      (else (loop (+ i 1))))))
 
 ;; A "#3%" occurrence is a chez-only EMISSION only when it is a USE
 ;; (e.g. "(#3%vector-ref ...)" / "(#3%fl+ ...)" — a paren/whitespace right

@@ -1616,7 +1616,6 @@
           (begin (vector-set! st 0 'cancelled)
                  (jolt-cv-wake! (vector-ref st 4))
                  #t)))))
-(define (j-future? x) (and (jhost? x) (string=? (jhost-tag x) "j-future")))
 ;; get() waits for the task; get(timeout, unit) gives up at the deadline and throws
 ;; TimeoutException, like the JVM. The timeout used to be discarded, so the bounded
 ;; overload waited forever on a task that never finished.

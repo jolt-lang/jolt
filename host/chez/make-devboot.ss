@@ -35,9 +35,6 @@
 (define jb-build "target/dev")
 (bld-system (string-append "mkdir -p '" jb-build "'"))
 
-(define (str-suffix? s suf)
-  (let ((n (string-length s)) (m (string-length suf)))
-    (and (>= n m) (string=? (substring s (- n m) n) suf))))
 
 ;; --- collect inputs (same algorithm as build-jolt's jb-collect-load-paths) ---
 (define (db-collect-load-paths)

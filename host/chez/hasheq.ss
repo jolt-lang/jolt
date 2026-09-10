@@ -407,8 +407,6 @@
 ;; (not Murmur3).
 ;; ============================================================================
 
-(define (long-hashcode x)
-  (i32 (bitwise-xor x (bitwise-arithmetic-shift-right (bitwise-and x #xFFFFFFFFFFFFFFFF) 32))))
 
 ;; BigInteger.hashCode — java.math.BigInteger.hashCode() for exact integers
 ;; that don't fit in 64-bit. Iterates 32-bit magnitude limbs (big-endian),

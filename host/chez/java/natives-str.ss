@@ -18,23 +18,9 @@
 ;; regex-t-irx) and records.ss (which calls jolt-string-method).
 
 ;; --- ASCII case mapping (byte-oriented) -------
-(define (ascii-up-char c)
-  (if (and (char<=? #\a c) (char<=? c #\z))
-      (integer->char (fx- (char->integer c) 32)) c))
 (define (ascii-down-char c)
   (if (and (char<=? #\A c) (char<=? c #\Z))
       (integer->char (fx+ (char->integer c) 32)) c))
-(define (ascii-string-up s)
-  (let ((n (string-length s)))
-    (let check ((i 0))
-      (if (fx=? i n)
-          s
-          (if (and (char<=? #\a (string-ref s i)) (char<=? (string-ref s i) #\z))
-              (let ((r (make-string n)))
-                (do ((j 0 (fx+ j 1)))
-                    ((fx=? j n) r)
-                  (string-set! r j (ascii-up-char (string-ref s j)))))
-              (check (fx+ i 1)))))))
 (define (ascii-string-down s)
   (let ((n (string-length s)))
     (let check ((i 0))

@@ -802,12 +802,6 @@
   (guard (e (#t (lambda (r) #f)))
     (record-accessor sa-winder-rtd 0)))
 
-;; (sa-winder-in w) -> the winder's before-thunk, or #f when W is not a
-;; dynamic-wind winder (a parameterize's critical-winder answers #f).
-(define (sa-winder-in w)
-  (and sa-winder-rtd
-       (eq? (record-rtd w) sa-winder-rtd)
-       (sa-winder-in-ref w)))
 
 ;; (sa-current-winders) -> the chain, innermost first.
 ;; (sa-current-winders-set! w) -> void. Replaces it wholesale.

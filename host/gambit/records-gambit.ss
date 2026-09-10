@@ -357,12 +357,6 @@
 (define jrec-fast-type-probe
   (make-jrec 'fast-type-probe (vector) jolt-nil))
 
-(define (jrec-vals r)
-  (let* ((n (jrec-nfields r)) (v (make-vector n)))
-    (do ((i 0 (fx+ i 1)))
-        ((fx= i n) v)
-      (vector-set! v i (jrec-field-ref r i)))))
-
 (define (jrec-tag r) (jrdesc-tag (jrec-desc r)))
 
 (define (jrec-pic-desc x) (and (jrec? x) (jrec-desc x)))
@@ -449,9 +443,6 @@
 
 (define chez-record-fields-tbl
   (make-hashtable string-hash string=?))
-
-(define (chez-record-field-kws type-tag)
-  (or (hashtable-ref chez-record-fields-tbl type-tag #f) '()))
 
 (define (register-record-shape! ctor-key field-kws
          field-tags type-tag)
@@ -763,14 +754,6 @@
                       result)))
          (map-hash (mix-coll-hash (car total) (cdr total))))
     (i32 (bitwise-xor class-hash map-hash))))
-
-(define (jrec-hash-cached r)
-  (if (jrec-record? r)
-      (let ((h (jrec-hasheq r)))
-        (if (eqv? h 0)
-            (let ((h2 (jrec-hash r))) (jrec-hasheq-set! r h2) h2)
-            h))
-      (jrec-hash r)))
 
 (define (jrec-coll-print-shape r)
   (vector-ref (jrdesc-ifc-of r) 1))

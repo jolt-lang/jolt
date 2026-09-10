@@ -182,8 +182,6 @@
              (if (jolt-eval-source-name? name)
                  (jolt-eval-source-entry name offset)
                  (jolt-marker-entry-in-file name offset)))))))
-(define (srcreg-frame-line-from-source-pair io)
-  (jolt-marker-entry-line (srcreg-frame-entry-from-source-pair io)))
 
 
 ;; The logical frames a marker/site entry stands for, innermost first, as
@@ -433,15 +431,6 @@
 (define (jolt-marker-entry-line e) (if (vector? e) (vector-ref e 0) e))
 (define (jolt-marker-entry-chain e) (if (vector? e) (vector-ref e 1) '()))
 
-(define (jolt-marker-entry-at-offset text offset)
-  (let ((tbl (hashtable-ref jolt-marker-cache-text text #f)))
-    (if tbl
-        (jolt-marker-line-from-table tbl offset)
-        (let ((tbl (jolt-marker-table text)))
-          (when (fx>=? (hashtable-size jolt-marker-cache-text) 16)
-            (hashtable-clear! jolt-marker-cache-text))
-          (hashtable-set! jolt-marker-cache-text text tbl)
-          (jolt-marker-line-from-table tbl offset)))))
 
 (define (jolt-marker-line-at-offset text offset)
   (jolt-marker-entry-line
@@ -649,8 +638,6 @@
   (srcreg-entry-frames (car site)
                        (hashtable-ref source-registry (car site) #f)
                        (cdr site)))
-;; the single-frame spelling, where only one is wanted
-(define (jolt-site-frame site) (car (jolt-site-frame* site)))
 ;; (append-map jolt-site-frame* sites). Written out rather than pulled from
 ;; SRFI-1: (chezscheme) has no append-map, and every list here is capped
 ;; (jolt-chain-cap / the 30-frame render limit) so the naive shape is fine.

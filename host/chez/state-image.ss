@@ -543,9 +543,6 @@
 
 (define (image-munge s) (jolt-invoke1 (var-deref "jolt.host" "munge-name") s))
 
-(define (image-string-prefix? s pre)
-  (let ((n (string-length s)) (m (string-length pre)))
-    (and (fx>=? n m) (string=? (substring s 0 m) pre))))
 
 ;; Carry the meta side-table entry from a rebuilt object's original (the weak
 ;; table in natives-meta.ss), so image-collect-meta keys the SUBSTITUTED
@@ -865,19 +862,31 @@
 ;; modes share every container arm; only report diverges.
 (define (image-rebuild-mode? mode)
   (or (eq? mode 'rebuild) (eq? mode 'rebuild-stub) (eq? mode 'restore)))
-;; Stub mode: a refusal builds an image-stub instead of throwing. 'rebuild-stub
-;; substitutes stubs in; 'report-stub reports them with a :would-stub finding
-;; instead of :unwritable.
-(define (image-stub-mode? mode)
-  (or (eq? mode 'rebuild-stub) (eq? mode 'report-stub)))
 (define (image-report-disposition mode)
   (if (eq? mode 'report-stub)
       (jolt-keyword "would-stub")
       (jolt-keyword "unwritable")))
 
+;; Stub mode: a refusal builds an image-stub instead of throwing. 'rebuild-stub
+;; substitutes stubs in; 'report-stub reports them with a :would-stub finding
+;; instead of :unwritable.
 (define (image-graph-process root mode report!)
-  (let ((memo (make-eq-hashtable))
-        (stub-acc '()))
+  ;; MODE decided once, not re-asked per node. The walk is ONE traversal for all
+  ;; four modes — what differs is whether a container MATERIALIZES a transformed
+  ;; copy or just answers #t, plus a handful of leaf cases. Splitting it per mode
+  ;; would copy all 30-odd container walkers four times, which is the opposite of
+  ;; what this file needs; naming the policy is the part that was missing.
+  ;;
+  ;;   rebuild?   build a substituted/restored copy ('rebuild 'rebuild-stub 'restore)
+  ;;   restore?   the read side, which has its own image-* leaf cases
+  ;;   stubbing?  a refusal builds an image-stub instead of throwing
+  ;;   reporting? walk for findings only, materializing nothing
+  (let* ((rebuild?   (image-rebuild-mode? mode))
+         (restore?   (eq? mode 'restore))
+         (stubbing?  (eq? mode 'rebuild-stub))
+         (reporting? (or (eq? mode 'report) (eq? mode 'report-stub)))
+         (memo (make-eq-hashtable))
+         (stub-acc '()))
     (letrec ((stub-id-box (list 0))
              (make-stub
                (lambda (x path desc)
@@ -919,44 +928,44 @@
                   ;; scalar leaves can never hold a procedure
                   ((or (null? x) (boolean? x) (number? x) (char? x)
                        (symbol? x) (string? x) (bytevector? x))
-                   (if (image-rebuild-mode? mode) x #t))
+                   (if rebuild? x #t))
                   ((hashtable-ref memo x #f) =>
-                   (lambda (m) (if (image-rebuild-mode? mode) m #t)))
+                   (lambda (m) (if rebuild? m #t)))
                   (else
                    (cond
                      ;; R3 read side: image-owned records rebuild first, before
                      ;; user handlers could claim them. A stored fn source record
                      ;; becomes a live closure; a stored handler payload is handed
                      ;; to the registered restore fn.
-                     ((and (eq? mode 'restore) (image-fnsrc? x))
+                     ((and restore? (image-fnsrc? x))
                       (walk-fnsrc-restore x path))
-                     ((and (eq? mode 'restore) (image-handled? x))
+                     ((and restore? (image-handled? x))
                       (walk-handled-restore x path))
-                     ((and (eq? mode 'restore) (image-sorted? x))
+                     ((and restore? (image-sorted? x))
                       (walk-sorted-restore x path))
-                     ((and (eq? mode 'restore) (image-rekey? x))
+                     ((and restore? (image-rekey? x))
                       (walk-rekey-restore x path))
                      ;; a ref descriptor re-mints a live ref; a raw jolt-ref-v1
                      ;; record from a format-2 image re-mints through the
                      ;; legacy arm (same construction, val read via its own rtd)
-                     ((and (eq? mode 'restore) (image-sync? x))
+                     ((and restore? (image-sync? x))
                       (if (eq? (image-sync-kind x) 'condition) (make-condition) (make-mutex)))
-                     ((and (eq? mode 'restore) (image-ref? x))
+                     ((and restore? (image-ref? x))
                       (walk-ref-restore (image-ref-val x) x path))
-                     ((and (eq? mode 'restore) (image-legacy-ref? x))
+                     ((and restore? (image-legacy-ref? x))
                       (walk-ref-restore (legacy-ref-val x) x path))
-                     ((and (eq? mode 'restore) (image-legacy-jrec? x))
+                     ((and restore? (image-legacy-jrec? x))
                       (walk-legacy-jrec x path))
                      ;; a pre-format-7 map, or a set over one, re-minted into
                      ;; the current representation and then walked like any map
-                     ((and (eq? mode 'restore) (image-legacy-pmap? x))
+                     ((and restore? (image-legacy-pmap? x))
                       (walk-legacy-pmap x path))
-                     ((and (eq? mode 'restore) (pset? x) (image-legacy-pmap? (pset-m x)))
+                     ((and restore? (pset? x) (image-legacy-pmap? (pset-m x)))
                       (walk-legacy-pmap x path))
                      ;; a stub with a matching resolver becomes the live value it
                      ;; stands for; without one it stays the inert record — the
                      ;; per-restore table (populated by restore-world!) lists it
-                     ((and (eq? mode 'restore) (image-stub? x))
+                     ((and restore? (image-stub? x))
                       (let ((r (image-stub-resolver-for x)))
                         (if r
                             (let ((v (guard (e (#t (jolt-throw (jolt-ex-info
@@ -972,7 +981,7 @@
                      ;; handlers claim at any depth, before anything else
                      ((and (pair? image-handlers) (image-handler-for x)) =>
                       (lambda (h)
-                        (if (image-rebuild-mode? mode)
+                        (if rebuild?
                             (let ((r (make-image-handled (jolt-invoke (cadr h) x))))
                               (hashtable-set! memo x r)
                               r)
@@ -982,19 +991,19 @@
                      ;; On the READ side a procedure IS an already-restored
                      ;; fn-ref external — force the fn-ref verdict (identity).
                      ((procedure? x)
-                      (let ((v (if (eq? mode 'restore) 'fn-ref (image-proc-verdict x))))
+                      (let ((v (if restore? 'fn-ref (image-proc-verdict x))))
                         (cond
                           ((eq? v 'fn-ref)
-                           (if (image-rebuild-mode? mode)
+                           (if rebuild?
                                (begin (hashtable-set! memo x x) x)
                                #t))
                           ((eq? v 'refuse)
                            (cond
-                             ((eq? mode 'rebuild-stub)
+                             (stubbing?
                               (let ((s (make-stub x path #f)))
                                 (hashtable-set! memo x s)
                                 s))
-                             ((image-rebuild-mode? mode)
+                             (rebuild?
                               (jolt-throw
                                 (jolt-ex-info
                                   (string-append "image: cannot write " (image-describe-obj x)
@@ -1008,9 +1017,9 @@
                            ;; v is a (name . registration) pair. Report mode must
                            ;; agree with what the build would do, so it prechecks
                            ;; recoverability (a const-folded capture refuses).
-                           (if (image-rebuild-mode? mode)
+                           (if rebuild?
                                (image-fnsrc-build x v walk memo path
-                                                  (if (eq? mode 'rebuild-stub) make-stub #f))
+                                                  (if stubbing? make-stub #f))
                                ;; the REAL walk, not a stub: a captured value can
                                ;; itself be unwritable (a letfn fn a lazy-seq
                                ;; thunk closes over), and passing (lambda (fv p) #t)
@@ -1034,13 +1043,13 @@
                        (cond
                          ;; stub-mode REBUILD substitutes; stub-mode REPORT must
                          ;; still report (as :would-stub), never swallow
-                         ((and (eq? mode 'rebuild-stub) (image-external? x)
+                         ((and stubbing? (image-external? x)
                                (not (image-encode-external x)))
                           (let ((s (make-stub x path #f)))
                             (hashtable-set! memo x s)
                             s))
                          (else
-                           (when (and (or (eq? mode 'report) (eq? mode 'report-stub))
+                           (when (and reporting?
                                       (image-external? x)
                                       (not (image-encode-external x)))
                              (hashtable-set! memo x #t)
@@ -1090,10 +1099,10 @@
                              ;; travels.
                              ((and (jolt-future? x) (not (jolt-future-done? x)))
                               (cond
-                                ((eq? mode 'rebuild-stub)
+                                (stubbing?
                                  (let ((st (make-stub x path "a future that has not completed")))
                                    (hashtable-set! memo x st) st))
-                                ((image-rebuild-mode? mode)
+                                (rebuild?
                                  (jolt-throw
                                    (jolt-ex-info
                                      (string-append
@@ -1113,7 +1122,7 @@
                              ;; queue behind nothing and never run -- silently
                              ;; wedged, which is worse than dropping them.
                              ((jolt-agent? x)
-                              (if (image-rebuild-mode? mode)
+                              (if rebuild?
                                   ;; mu/cv go through the walk like any other
                                   ;; field, so the marker/mint rule below covers
                                   ;; this arm in both directions rather than
@@ -1155,10 +1164,10 @@
                                    (procedure? (jolt-lazyseq-thunk x))
                                    (not (image-fnsrc-probe (jolt-lazyseq-thunk x))))
                               (cond
-                                ((eq? mode 'rebuild-stub)
+                                (stubbing?
                                  (let ((st (make-stub x path "an unrealized lazy sequence")))
                                    (hashtable-set! memo x st) st))
-                                ((image-rebuild-mode? mode)
+                                (rebuild?
                                  (jolt-throw
                                    (jolt-ex-info
                                      (string-append
@@ -1185,11 +1194,11 @@
                              ;; keeps generating and a side effect still has not
                              ;; run (jolt-a6k2).
                              ((and (lazy-src? x)
-                                   (if (eq? mode 'restore)
+                                   (if restore?
                                        (lazy-src-proc-of (lazy-src-fn x))
                                        (lazy-src-name-of (lazy-src-fn x))))
                               => (lambda (swapped)
-                                   (if (image-rebuild-mode? mode)
+                                   (if rebuild?
                                        (let ((nx (make-lazy-src swapped #f #f)))
                                          (hashtable-set! memo x nx)
                                          (image-meta-copy! x nx)
@@ -1216,10 +1225,10 @@
                              ;; Refuse both, saying what to do (jolt-ji1h).
                              ((jolt-transient? x)
                               (cond
-                                ((eq? mode 'rebuild-stub)
+                                (stubbing?
                                  (let ((st (make-stub x path "a transient")))
                                    (hashtable-set! memo x st) st))
-                                ((image-rebuild-mode? mode)
+                                (rebuild?
                                  (jolt-throw
                                    (jolt-ex-info
                                      (string-append
@@ -1235,19 +1244,19 @@
                               (hashtable-set! memo x x)
                               x)
                              ((mutex? x)
-                              (cond ((eq? mode 'restore) (make-mutex))
-                                    ((image-rebuild-mode? mode) (make-image-sync 'mutex))
+                              (cond (restore? (make-mutex))
+                                    (rebuild? (make-image-sync 'mutex))
                                     (else #t)))
                              ((thread-condition? x)
-                              (cond ((eq? mode 'restore) (make-condition))
-                                    ((image-rebuild-mode? mode) (make-image-sync 'condition))
+                              (cond (restore? (make-condition))
+                                    (rebuild? (make-image-sync 'condition))
                                     (else #t)))
                              ((and (record? x) (record-rtd x))
                               (walk-record x path))
-                             (else (if (image-rebuild-mode? mode) x #t)))))))))))
+                             (else (if rebuild? x #t)))))))))))
              (walk-pmap
               (lambda (x path)
-                (if (image-rebuild-mode? mode)
+                (if rebuild?
                     (let ((entries '()) (dirty #f) (rekey #f))
                       (pmap-fold-fwd x
                         (lambda (k v acc)
@@ -1288,7 +1297,7 @@
                       #t))))
              (walk-pset
               (lambda (x path)
-                (if (image-rebuild-mode? mode)
+                (if rebuild?
                     ;; pair-wise, like the sub path: the lookup value can be an
                     ;; element merely jolt= to the key it is filed under
                     (let ((pairs '()) (dirty #f) (rekey #f))
@@ -1332,7 +1341,7 @@
                       #t))))
              (walk-sorted
               (lambda (x path)
-                (if (image-rebuild-mode? mode)
+                (if rebuild?
                     ;; write side: substitute to an image-sorted record. The
                     ;; wrapper is immutable data, so there are no cycles to
                     ;; pre-memoize; cmp-fn routes through the shared proc
@@ -1385,7 +1394,7 @@
              (walk-pvec
               (lambda (x path)
                 (let ((n (pvec-count x)))
-                  (if (image-rebuild-mode? mode)
+                  (if rebuild?
                       (let ((items '()) (dirty #f))
                         (let loop ((i 0))
                           (if (fx<? i n)
@@ -1419,7 +1428,7 @@
                 (let* ((vp (string-append "#'" (var-cell-ns x) "/" (var-cell-name x)))
                        (mp (cons (string-append vp " meta") path))
                        (m (var-cell-meta x)))
-                  (if (image-rebuild-mode? mode)
+                  (if rebuild?
                       ;; dyn-bound? is NOT carried over: it is a per-process
                       ;; observation ("someone bound this var here"), not part of
                       ;; the var's value, and a rebuilt cell has had no bindings.
@@ -1442,7 +1451,7 @@
              ;; (the scan/dump parity fix)
              (walk-atom
               (lambda (x path)
-                (if (image-rebuild-mode? mode)
+                (if rebuild?
                     (let ((nx (make-jolt-atom jolt-nil '() jolt-nil (make-mutex))))
                       (hashtable-set! memo x nx)
                       (image-meta-copy! x nx)
@@ -1468,7 +1477,7 @@
              ;; descriptor.
              (walk-ref
               (lambda (x path)
-                (if (image-rebuild-mode? mode)
+                (if rebuild?
                     (let ((nx (make-image-ref jolt-nil)))
                       (hashtable-set! memo x nx)
                       (image-meta-copy! x nx)
@@ -1491,7 +1500,7 @@
                   nx)))
              (walk-pair
               (lambda (x path)
-                (if (image-rebuild-mode? mode)
+                (if rebuild?
                     (let* ((a (walk (car x) (cons "car" path)))
                            (d (walk (cdr x) (cons "cdr" path))))
                       (or (hashtable-ref memo x #f)
@@ -1508,7 +1517,7 @@
              (walk-vector
               (lambda (x path)
                 (let ((n (vector-length x)))
-                  (if (image-rebuild-mode? mode)
+                  (if rebuild?
                       (let ((out (make-vector n)) (dirty #f))
                         (let loop ((i 0))
                           (if (fx<? i n)
@@ -1534,7 +1543,7 @@
              (walk-hashtable
               (lambda (x path)
                 (let-values (((ks vs) (hashtable-entries x)))
-                  (if (image-rebuild-mode? mode)
+                  (if rebuild?
                       ;; an eq/eqv hashtable has NO hash function to read back
                       ;; (hashtable-hash-function answers #f), so it has to be
                       ;; re-made through its own constructor
@@ -1606,7 +1615,7 @@
                 (let* ((rtd (record-rtd x))
                        (fs (image-record-fields rtd))
                        (n (vector-length fs)))
-                  (if (image-rebuild-mode? mode)
+                  (if rebuild?
                       (let ((vals (make-vector n)) (dirty #f))
                         (let loop ((i 0))
                           (if (fx<? i n)
@@ -1733,13 +1742,6 @@
       (let ((g (walk root '())))
         (values g (reverse stub-acc))))))
 
-;; The write path's substitution entry: a copy of the graph where every anon
-;; closure became an image-fnsrc record and every handler-claimed resource an
-;; image-handled payload; throws (with the object's route) on the first thing
-;; the write path cannot encode.
-(define (image-substitute v)
-  (let-values (((g stubs) (image-graph-process v 'rebuild #f)))
-    g))
 
 ;; --- scan ----------------------------------------------------------------------
 ;; Dry run: every object that cannot be encoded, with the route to it. Returns a

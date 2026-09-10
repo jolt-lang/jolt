@@ -751,7 +751,6 @@
           (set! out (cons sep out)))
         (set! out (cons (string (string-ref digs i)) out)) (loop (+ i 1))))
     (apply string-append (if neg "-" "") (reverse out))))
-(define (group-int-str s) (group-int-str* s ","))
 (define (nf-format self x)
   (let* ((cur (nf-currency-of self))
          (cfield (lambda (name dflt)

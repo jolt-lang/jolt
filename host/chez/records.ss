@@ -178,12 +178,6 @@
 ;; loads before this file and the earliest arms register before it too.
 (define jrec-fast-type-probe (make-jrec 'fast-type-probe (vector) jolt-nil))
 
-;; compatibility accessor: rebuilds a fresh field vector from the inline slots.
-;; Read-only — never set! through this, it returns a copy.
-(define (jrec-vals r)
-  (let* ((n (jrec-nfields r)) (v (make-vector n)))
-    (do ((i 0 (fx+ i 1))) ((fx= i n) v)
-      (vector-set! v i (jrec-field-ref r i)))))
 (define (jrec-tag r) (jrdesc-tag (jrec-desc r)))
 ;; descriptor or #f — the dispatch key the inline cache eq?-scans. #f for a
 ;; non-record so a PIC site (and protocol-resolve's record branch) cheaply falls
@@ -339,8 +333,6 @@
 ;; above is keyed by ctor-key, which the reflection surface does not have: it is
 ;; handed a class and has to answer what that class declares.
 (define chez-record-fields-tbl (make-hashtable string-hash string=?))
-(define (chez-record-field-kws type-tag)
-  (or (hashtable-ref chez-record-fields-tbl type-tag #f) '()))
 
 (define (register-record-shape! ctor-key field-kws field-tags type-tag)
   (jolt-with-mutex rec-tbl-mu
@@ -674,25 +666,6 @@
                                result)))
          (map-hash (mix-coll-hash (car total) (cdr total))))
     (i32 (bitwise-xor class-hash map-hash))))
-;; Per-INSTANCE hasheq cache for defrecords — the JVM's __hasheq field
-;; (core_deftype.clj emits it; computed once, then a field read). jolt's jrec
-;; layout is image-format surface (a field means bumping every family tag), so
-;; the cache is the hasheq slot on the instance — the JVM defrecord's __hasheq
-;; field. DEFRECORDS ONLY (jrec-record?) fill it with the STRUCTURAL hash here; a
-;; plain deftype fills it with its identity hash instead, and a type with a
-;; declared hasheq/hashCode never fills it — both in records-coll.ss
-;; jrec-hasheq-slow, the one dispatch site. The slot write is a plain fixnum
-;; store with no lock: racing writers compute the same value (a structural hash
-;; is deterministic, and the identity table answers one id per object), so a
-;; double store is benign. The slot never travels: the image dump zeroes it
-;; (state-image.ss), as the JVM marks __hasheq transient.
-(define (jrec-hash-cached r)
-  (if (jrec-record? r)
-      (let ((h (jrec-hasheq r)))
-        (if (eqv? h 0)
-            (let ((h2 (jrec-hash r))) (jrec-hasheq-set! r h2) h2)
-            h))
-      (jrec-hash r)))
 ;; A non-record deftype that declares a collection interface prints in THAT
 ;; collection's shape, which is how print-method dispatches on the JVM: ISeq as
 ;; (…), IPersistentVector as […], IPersistentSet as #{…}, IPersistentMap as

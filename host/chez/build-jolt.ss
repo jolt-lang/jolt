@@ -88,9 +88,6 @@
 
 ;; --- 1. emit flat.ss --------------------------------------------------------
 (define jb-flat-ss (string-append jb-build "/flat.ss"))
-(define (str-suffix? s suf)
-  (let ((n (string-length s)) (m (string-length suf)))
-    (and (>= n m) (string=? (substring s (- n m) n) suf))))
 
 ;; Embed every jolt-core/stdlib source file keyed by its root-relative path
 ;; ("jolt/main.clj", "clojure/string.clj") — exactly what resolve-on-roots probes

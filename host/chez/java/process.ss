@@ -340,7 +340,6 @@
   (let ((h (make-hashtable string-hash string=?)))
     (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) (proc-child-env-pairs))
     (make-jhost "jolt-env-map" h)))
-(define (proc-env-map? x) (and (jhost? x) (string=? (jhost-tag x) "jolt-env-map")))
 (define (proc-env-map-pairs em)
   (let ((h (jhost-state em)))
     (vector->list
@@ -366,7 +365,6 @@
 ;; state: #(cmd env-map dir redir-in redir-out redir-err merge-err?)
 (define (make-proc-builder cmd)
   (make-jhost "process-builder" (vector cmd #f #f #f #f #f #f)))
-(define (proc-builder? x) (and (jhost? x) (string=? (jhost-tag x) "process-builder")))
 (define (proc-pb-cmd st)         (vector-ref (jhost-state st) 0))
 (define (proc-pb-env st)         (vector-ref (jhost-state st) 1))
 (define (proc-pb-dir st)         (vector-ref (jhost-state st) 2))
@@ -802,7 +800,6 @@
 (define (proc-p-stderr-is st)  (vector-ref (jhost-state st) 2))
 (define (proc-p-pid st)        (vector-ref (jhost-state st) 3))
 (define (proc-p-exit-box st)   (vector-ref (jhost-state st) 4))
-(define (proc-p-cmd st)        (vector-ref (jhost-state st) 5))
 (define (proc-p-mutex st)      (vector-ref (jhost-state st) 6))
 (define (proc-p-stdout-port st) (vector-ref (jhost-state st) 7))
 (define (proc-p-stdin-port st)  (vector-ref (jhost-state st) 8))
@@ -810,7 +807,6 @@
 ;; The 128+signal status of a signal WE sent, if any — the one recoverable answer
 ;; when the child turns out to be unwaitable (see proc-lost-status).
 (define (proc-p-signalled st)  (vector-ref (jhost-state st) 10))
-(define (proc-process? x) (and (jhost? x) (string=? (jhost-tag x) "process")))
 
 ;; ProcessBuilder.start resolves the program before spawning and throws
 ;; IOException("…No such file or directory") when it can't be found; our shell

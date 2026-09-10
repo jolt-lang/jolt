@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Regex character-class escapes match `java.util.regex`.** `[\a]` matched the
+  letter `a` instead of BEL, `\cA` and `[\cA]` matched the letter `c`, `\R`
+  matched the letter `R` rather than a linebreak, and `[\b]` was Perl's
+  backspace where Java refuses the pattern outright. The bare-pattern and
+  character-class decoders were hand-kept copies of one escape table and had
+  drifted apart; the shared clauses are one decoder both fall through to now,
+  and what stays per-caller is what Java itself treats differently (`\b`, `\R`
+  and back-references, none of which are legal inside a class).
+
+- **Host shims report their class.** Twelve shims had methods but no row in the
+  tag → class registry, so `(class x)` answered the `:object` placeholder and
+  every `instance?` question about them was false: the handle
+  `Thread/currentThread` returns (`(Thread. f)` had a row — the value nearly
+  every caller actually holds did not), the four atomics, `ReentrantLock`,
+  `CountDownLatch`, `Random`, `SecureRandom`, `Optional`, `StringTokenizer`,
+  `Base64`'s encoder and decoder, `Runtime` and `NumberFormat`. The four atomics
+  carry four tags now rather than one, so `(instance? Number (AtomicLong. 1))`
+  is true and `(instance? Number (AtomicBoolean. true))` is false, as on the
+  JVM; an atomic restored from an image written before the split keeps working
+  through the tag it travelled with.
+
 ### Internal
+
+- **Two new gates over the host tree.** `make mirrordrift` covers the two
+  hand-mirrored file pairs (`chez/rt.ss` ↔ `gambit/rt-core.ss` and the two
+  `hasheq.ss`): 94 procedures are defined in both, 60 of them byte-identical and
+  kept that way by hand with nothing checking. The 34 deliberate per-host splits
+  are an allowlist, and a line that has gone stale fails the gate too.
+  `make deadhost` reports top-level host procedures nothing calls; 28 were
+  removed against it, run to a fixpoint. Everything else the two hosts share is
+  generated and gated by its own generator check; these pairs were not.
 
 - **The repository's tooling is jolt, not Python.** `bench/pagecache.clj`
   (page-cache eviction and residency through `jolt.ffi`: `posix_fadvise` on
