@@ -1347,9 +1347,21 @@
 
 (rdr-set-dispatch-macro! #\$ rdr-interpolate #f)
 
+;; EDN's dispatch table is CLOSED, and much smaller than the source reader's:
+;; #{ #_ #^ #< #: ## and a tagged literal (#name, a LETTER) are all of it. Every
+;; character the clojure reader adds on top — #( #" #' #? #! #= and any macro a
+;; library registered — is "No dispatch macro for: X" there. One gate rather than
+;; a guard per arm, so a dispatch character added later is refused in edn by
+;; default instead of leaking in unnoticed (#905 was this, one arm at a time).
+(define (rdr-edn-dispatch-char? c)
+  (or (memv c '(#\{ #\_ #\^ #\< #\: #\#))
+      (char-alphabetic? c)))
+
 (define (rdr-read-dispatch s i end)      ; i points just past the '#'
   (when (>= i end) (rdr-error s i "EOF after #"))
   (let ((c (string-ref s i)))
+    (when (and (rdr-edn-mode) (not (rdr-edn-dispatch-char? c)))
+      (rdr-error s i (string-append "No dispatch macro for: " (string c))))
     (cond
       ((char=? c #\{)                    ; #{...} set
        (let-values (((elems j) (rdr-read-seq s (+ i 1) end #\})))
@@ -1374,13 +1386,16 @@
             (when cb (jolt-invoke cb d)))
           (rdr-read-form s j end)))
        ((char=? c #\!)                    ; #! shebang line comment — skip to EOL
-        ;; a clojure-reader extension only: EDN rejects #! (No dispatch macro)
-        (when (rdr-edn-mode) (rdr-error s i "No dispatch macro for: !"))
+        ;; a clojure-reader extension only; the edn gate above rejects it there
         (let eol ((j (+ i 1)))
           (if (or (>= j end) (char=? (string-ref s j) #\newline)
                   (char=? (string-ref s j) #\return))
               (rdr-read-form s j end)
               (eol (+ j 1)))))
+      ((char=? c #\<)                    ; #<…> is unreadable by construction: it is
+       ;; what a Java toString prints, and neither reader will take it back.
+       ;; Reported as the tagged literal "#<" running to EOF before.
+       (rdr-error s i "Unreadable form"))
       ((char=? c #\')                    ; #'x var-quote -> (var x)
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
          (values (jolt-list (jolt-symbol #f "var") form) j)))
@@ -1403,7 +1418,7 @@
        ;; computes its bit masks with #=). EDN has no = dispatch. The var cell
        ;; and the eval entry point live in later-loaded files; both resolve at
        ;; call time, and by the time user source is read the runtime is up.
-       (when (rdr-edn-mode) (rdr-error s i "No dispatch macro for: ="))
+       ;; EDN has no = dispatch; the gate above rejects it there.
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
          (when (rdr-eof? form) (rdr-error s i "EOF after #="))
          (unless (rdr-read-eval?)
@@ -1508,7 +1523,12 @@
             ((char=? c #\\) (rdr-read-char s (+ i 1) end i))
             ((char=? c #\:) (rdr-read-keyword s (+ i 1) end i))
             ((char=? c #\#) (rdr-read-dispatch s (+ i 1) end))
-            ((char=? c #\') (rdr-wrap s (+ i 1) end (jolt-symbol #f "quote")))
+            ;; ' is a reader macro in SOURCE only. EdnReader has no quote at all
+            ;; and does not terminate a token on it either, so "'foo" there is
+            ;; the symbol named 'foo — reading (quote foo) invented a form edn
+            ;; cannot express, exactly like the @ ` ~ arm below.
+            ((and (char=? c #\') (not (rdr-edn-mode)))
+             (rdr-wrap s (+ i 1) end (jolt-symbol #f "quote")))
             ;; EDN, before the three arms below claim these as reader macros:
             ;; ` @ ~ are non-constituent there, and one where a form should start
             ;; is the reference's "Invalid leading character" (see

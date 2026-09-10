@@ -14,6 +14,13 @@
   args   {:task (println "args:" (pr-str *command-line-args*))}
   boom   {:doc "fail with 7" :task (shell "sh" "-c" "exit 7")}
   nested {:task (do (println "before") (run 'clean) (println "after"))}
+  ;; A task body is CODE, and the reader macros code uses have to read here:
+  ;; quote (as `nested` above already needs), deref, syntax-quote/unquote and
+  ;; #(). EDN has none of them and refuses ' @ ` ~ outright, which is why a
+  ;; project file is not read with the edn reader.
+  macros {:doc "the reader macros a code body needs"
+          :task (let [f (future 41) n 7]
+                  (println "macros:" @f (quote sym) (pr-str `[1 ~n]) (mapv #(* 2 %) [1 2])))}
   secret {:private true :task (println "secret")}
   ;; babashka's other spelling of "helper, not an entry point": a leading dash.
   ;; Hidden from the listing like :private, and runnable like it too.

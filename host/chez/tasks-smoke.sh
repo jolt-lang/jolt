@@ -126,6 +126,13 @@ from-shell
 leave echo" "$(inbb "$BB" echo)"
 
 # babashka.tasks/run invokes another task in-process
+# A project file is edn that carries CODE, so a task body's reader macros —
+# quote, deref, syntax-quote/unquote, #() — have to read. EDN refuses ' @ ` ~
+# outright, so reading these files with the edn reader breaks every one of them.
+check "reader macros in a bb.edn task body" "enter macros
+macros: 41 sym [1 7] [2 4]
+leave macros" "$(inbb "$BB" macros)"
+
 check "run" "enter nested
 before
 enter clean
@@ -211,6 +218,7 @@ esac
 # --- jolt's own deps.edn :tasks forms ----------------------------------------
 
 check "deps.edn string task"    "deps-only-hello"           "$(inbb "$DEPS" hello)"
+check "reader macros in a deps.edn task body" "macros: 41 sym [2 4]" "$(inbb "$DEPS" macros)"
 check "deps.edn :main-opts task" 'depsonly main ("z")'      "$(inbb "$DEPS" main z)"
 check "a :main-opts task consumes one --" 'depsonly main ("z" "--" "w")' "$(inbb "$DEPS" main -- z -- w)"
 

@@ -6336,6 +6336,21 @@
   {:suite "clojure.edn / non-constituent @ ` ~" :label "an @ after a DELIMITED form is ordinary trailing junk, and still ignored" :expected "{:a 1}" :actual "(do (require (quote [clojure.edn :as en9])) (en9/read-string \"{:a 1}@\"))" :portability :common}
   {:suite "clojure.edn / non-constituent @ ` ~" :label "the source reader is untouched — there @ ends the token and derefs" :expected "[\"garbage!\" \"(clojure.core/deref foo)\"]" :actual "[(str (read-string \"garbage!@\")) (str (read-string \"@foo\"))]" :portability :common}
 
+  ;; EDN's dispatch table is CLOSED — #{ #_ #^ #< #: ## and a tagged literal are
+  ;; all of it — so every dispatch character the clojure reader adds is refused
+  ;; there. #( #" and #? used to read as a fn form, a regex and a conditional,
+  ;; inventing values edn cannot express; #! and #= were already refused, one arm
+  ;; at a time, which is why this is now one gate.
+  {:suite "clojure.edn / closed dispatch table" :label "the dispatch characters edn does not have" :expected "[\"No dispatch macro for: (\" \"No dispatch macro for: \\\"\" \"No dispatch macro for: '\" \"No dispatch macro for: ?\"]" :actual "(do (require (quote [clojure.edn :as ed1])) (mapv (fn [s] (try (ed1/read-string s) (catch RuntimeException e (.getMessage e)))) [\"#(inc 1)\" \"#\\\"re\\\"\" \"#'foo\" \"#?(:clj 1)\"]))" :portability :common}
+  {:suite "clojure.edn / closed dispatch table" :label "the ones it does have still read" :expected "(quote [#{1} 2 x {:a/b 1} ##Inf])" :actual "(do (require (quote [clojure.edn :as ed2])) [(ed2/read-string \"#{1}\") (ed2/read-string \"#_1 2\") (ed2/read-string \"#^{:m 1} x\") (ed2/read-string \"#:a{:b 1}\") (ed2/read-string \"##Inf\")])" :portability :common}
+  ;; ' is a reader macro in SOURCE only: EdnReader has no quote and does not end
+  ;; a token on it, so 'foo there is a symbol whose name starts with a quote.
+  {:suite "clojure.edn / closed dispatch table" :label "a leading quote is part of the symbol, not a quote form" :expected "[true \"'foo\"]" :actual "(do (require (quote [clojure.edn :as ed3])) (let [v (ed3/read-string \"'foo\")] [(symbol? v) (name v)]))" :portability :common}
+  {:suite "clojure.edn / closed dispatch table" :label "the source reader still quotes" :expected "(quote (quote foo))" :actual "(read-string \"'foo\")" :portability :common}
+  ;; #<…> is what a Java toString prints; neither reader takes it back. jolt read
+  ;; it as a tagged literal whose tag ran to end of input.
+  {:suite "clojure.edn / closed dispatch table" :label "#< is unreadable in both readers" :expected "[\"Unreadable form\" \"Unreadable form\"]" :actual "(do (require (quote [clojure.edn :as ed4])) (mapv (fn [f] (try (f) (catch RuntimeException e (.getMessage e)))) [(fn [] (ed4/read-string \"#<foo>\")) (fn [] (read-string \"#<foo>\"))]))" :portability :common}
+
   ;; The 1-arity (edn/read reader) drained the reader and handed the string to
   ;; the CORE read-string — the source reader, which resolves ::kw, takes #(…)
   ;; and #=, and ends a token at an @. It reads through clojure.edn/read-string

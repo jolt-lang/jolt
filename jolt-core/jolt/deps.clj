@@ -167,9 +167,21 @@
                                      missed)))
             {:unresolved (mapv #(select-keys % [:coord :version :detail]) missed)}))))
 
+;; A project file is edn that also carries CODE: a :tasks body is a form jolt
+;; evaluates, and the ones people write are full of reader macros —
+;; (run 'clean), (require '[app.core]), @(future …), a `~ template. So the
+;; reader here is the source one with *read-eval* off, which is what babashka
+;; reads a bb.edn with and the only reader that takes those.
+;;
+;; clojure.edn cannot: EDN has no quote and no deref, and refuses ' @ ` ~
+;; outright. It only appeared to work while jolt's edn mode still honored the
+;; source reader macros, and the moment that seam was made strict (#905) a task
+;; body holding an @ stopped reading at all. *read-eval* false is the piece
+;; worth keeping from the edn reading — a project file must not evaluate
+;; anything at READ time.
 (defn- read-edn [path]
   (when (file-exists? path)
-    (try (edn/read-string (slurp path))
+    (try (binding [*read-eval* false] (read-string (slurp path)))
          (catch :default e
            (throw (ex-info (str path ": " (ex-message e)) {:path path :error e}))))))
 
