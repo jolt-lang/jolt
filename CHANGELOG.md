@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only remaining divergence is that jolt's non-raw getters do not
   percent-decode (jolt-oov).
 
+- **An existing directory's `File.toURI` and `File.toURL` end in a slash.**
+  `(.toURI (java.io.File. "/tmp"))` was `file:/tmp` where the JVM answers
+  `file:/tmp/` — its `slashify` asks the filesystem and marks a directory as
+  one. The slash is what relative resolution against the URL keys on: resolved
+  against `file:/root` a name replaces the last segment, against `file:/root/`
+  it lands inside. A plain file, and a path that is not there, get no slash.
+
 - **Regex character-class escapes match `java.util.regex`.** `[\a]` matched the
   letter `a` instead of BEL, `\cA` and `[\cA]` matched the letter `c`, `\R`
   matched the letter `R` rather than a linebreak, and `[\b]` was Perl's

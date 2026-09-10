@@ -429,6 +429,21 @@
 (define (jfile-abs p)
   (if (= (string-length p) 0) (jolt-user-dir) (project-relative p)))
 
+;; java.io.File.slashify, the path File.toURI and File.toURL are built from: an
+;; EXISTING directory's URL ends in "/". That trailing slash is not cosmetic —
+;; it is what tells a consumer of the URL that the thing is a container, and
+;; what relative resolution against the URL keys on: resolved against
+;; "file:/root" a name replaces the last segment, against "file:/root/" it lands
+;; inside. The JVM asks the filesystem (File.isDirectory), so a path that is not
+;; there, or is a plain file, gets no slash.
+(define (jfile-uri-path p)
+  (let ((abs (jfile-abs p)))
+    (if (and (file-directory? p)
+             (> (string-length abs) 0)
+             (not (char=? (string-ref abs (- (string-length abs) 1)) #\/)))
+        (string-append abs "/")
+        abs)))
+
 ;; --- canonical paths --------------------------------------------------------
 ;; getCanonicalPath is realpath(3), not "make it absolute": it resolves
 ;; symlinks as well as "." and "..". Answering with the absolute path -- which
@@ -819,8 +834,8 @@
       ((string=? name "getAbsolutePath")(list (jfile-abs fp)))
       ((string=? name "getCanonicalPath")(list (jfile-canonical fp)))
       ;; File.toURI returns a java.net.URI (JVM), not a String.
-      ((string=? name "toURI")          (list (uri-parse (string-append "file:" (uri-quote-path (jfile-abs fp))))))
-      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-abs fp)))))
+      ((string=? name "toURI")          (list (uri-parse (string-append "file:" (uri-quote-path (jfile-uri-path fp))))))
+      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-uri-path fp)))))
       ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
