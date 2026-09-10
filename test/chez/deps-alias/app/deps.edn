@@ -24,8 +24,10 @@
   ;; RFC 0014 provider resolution (jolt#914): provclaim DECLARES
   ;; java.security.Signature, provsquat declares javax.crypto.Mac and registers
   ;; Signature anyway. The declared provider must win in either reference order.
+  ;; provgone declares a class and ships no install namespace for it.
   :prov   {:extra-deps {local/provclaim {:local/root "../provclaim"}
-                        local/provsquat {:local/root "../provsquat"}}}
+                        local/provsquat {:local/root "../provsquat"}
+                        local/provgone  {:local/root "../provgone"}}}
   ;; a dep directory with NO deps.edn defaults to its src path
   :noedn  {:extra-deps {local/libnoedn {:local/root "../libnoedn"}}}
   ;; -X / -T exec fixtures

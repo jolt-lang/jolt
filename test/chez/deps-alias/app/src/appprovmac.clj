@@ -12,4 +12,8 @@
   (println (java.security.Signature/getInstance "SHA256withECDSA"))
   ;; the imported simple name and the constructor resolve through the same claim
   (println (Signature/getInstance "SHA256withECDSA"))
-  (println (Signature.)))
+  (println (Signature.))
+  ;; ...and the member provclaim's shim does NOT answer, held while provsquat had
+  ;; no claim to compare against, lands once the claim settles — the additive half
+  ;; survives the hold in this order too.
+  (println (Signature/getMaxSigLength "x")))

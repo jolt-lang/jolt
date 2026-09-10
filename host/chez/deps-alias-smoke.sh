@@ -4,7 +4,7 @@
 # Fixture projects live in test/chez/deps-alias/: `app` selects aliases over two
 # local libs that define the same namespace at different "versions" (liba/libb),
 # a third lib (libc), a stand-in jolt.time lib for the roots-autoload gate, and
-# provclaim/provsquat for RFC 0014 provider resolution.
+# provclaim/provsquat/provgone for RFC 0014 provider resolution.
 # Asserts the tools.deps alias args-map keys jolt supports — :extra-deps /
 # :extra-paths / :override-deps / :default-deps / :replace-deps / :replace-paths
 # / :main-opts — plus multi-alias combination rules, alias visibility in `path`,
@@ -324,7 +324,7 @@ check "the declared provider resolves a claimed class" "claimer-sig:SHA256withEC
       "$(run -A:prov run -m appprovsig)"
 out="$(runall -A:prov run -m appprovmac)"
 check "a squatting registration does not pre-empt the claimer" \
-      "squatter-mac:HmacSHA256 claimer-sig:SHA256withECDSA claimer-sig:SHA256withECDSA claimer-sig-ctor" \
+      "squatter-mac:HmacSHA256 claimer-sig:SHA256withECDSA claimer-sig:SHA256withECDSA claimer-sig-ctor squatter-extra" \
       "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
 # ...and in the other order, where the claimer is already loaded when the
 # squatter's install namespace runs, the late registration is dropped rather than
@@ -349,6 +349,13 @@ esac
 # declared class still resolves to it.
 check "a provider still registers what it declares" "squatter-mac:HmacSHA256" \
       "$(run -A:prov run -m appprovsquat)"
+# Holding a registration is a wait for the claimer, not a veto. provgone declares
+# java.security.KeyPairGenerator and ships no install namespace, so its claim
+# settles without ever registering anything — and provsquat's held registration for
+# that class has to be released rather than lost with the provider.
+check "a provider that never loads releases what it held" \
+      "squatter-mac:HmacSHA256 squatter-kpg:RSA" \
+      "$(runall -A:prov run -m appprovgone | tr '\n' ' ' | sed 's/ $//')"
 
 # io/resource answers an ABSOLUTE file: URL for a file on a source root, like the
 # JVM classloader. The roots here are relative ("./src"), and "file:./src/x" is

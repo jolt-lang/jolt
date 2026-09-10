@@ -1,0 +1,7 @@
+{:paths ["src"]
+
+ ;; A DECLARED provider that cannot deliver: provgone.install is not on the roots.
+ ;; RFC 0014 keeps that case distinct from an undeclared dependency — and it is the
+ ;; case where a registration HELD against this claim has to be released rather
+ ;; than lost with the provider (jolt#914).
+ :jolt/provides {provgone.install ["java.security.KeyPairGenerator"]}}

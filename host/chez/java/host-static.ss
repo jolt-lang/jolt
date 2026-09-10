@@ -96,21 +96,41 @@
 (define (register-class-ctor-user! name proc)
   ;; A constructor is one value, so there is no additive half to let through the
   ;; way register-class-statics-user! does with members.
-  (unless (let ((owner (lib-provider-owner-elsewhere name)))
-            (and owner (begin (provider-claim-drop! name owner '()) #t)))
-    (provider-claim-note! name)
-    (when (and (getenv "JOLT_DEBUG") (hashtable-ref host-class-ctors-tbl name #f))
-      (fprintf (current-error-port)
-               "warning: a library replaced the host constructor for ~a — every (~a. ...) in this process now builds its shim, including in namespaces that never asked for it\n"
-               name name))
-    (lib-note-provider-registration! name)
-    (hashtable-set! class-ctors-tbl name proc)))
+  (cond
+    ((lib-pending-claimer name)
+     => (lambda (pending)
+          (provider-claim-hold! name pending '())
+          (lib-defer-registration! pending (lambda () (register-class-ctor-user! name proc)))))
+    ((lib-provider-owner-elsewhere name)
+     => (lambda (owner) (provider-claim-drop! name owner '())))
+    (else
+     (provider-claim-note! name)
+     (when (and (getenv "JOLT_DEBUG") (hashtable-ref host-class-ctors-tbl name #f))
+       (fprintf (current-error-port)
+                "warning: a library replaced the host constructor for ~a — every (~a. ...) in this process now builds its shim, including in namespaces that never asked for it\n"
+                name name))
+     (lib-note-provider-registration! name)
+     (hashtable-set! class-ctors-tbl name proc))))
 
 ;; clojure.core/__register-class-statics! lands here — the statics counterpart of
 ;; register-class-ctor-user!, and under the same provider guard. The host's own
 ;; boot-time registrations go straight to register-class-statics! and are not
 ;; subject to it: nothing has declared anything yet when they run.
 (define (register-class-statics-user! name members)
+  (let ((pending (lib-pending-claimer name)))
+    (if pending
+        ;; The claimer has not spoken yet, so there is nothing to compare this
+        ;; against — and letting it land would put an entry in the registry for a
+        ;; class whose provider has not loaded, which is exactly what stops the
+        ;; autoload from ever running (jolt#914). Hold it until the claim settles.
+        (begin (provider-claim-hold! name pending (map car members))
+               (lib-defer-registration!
+                pending (lambda () (register-class-statics-user! name members))))
+        (register-class-statics-owned! name members))))
+
+;; The claim on `name` has settled (or there never was one): what the class's
+;; provider registered is authority, everything else is additive or refused.
+(define (register-class-statics-owned! name members)
   (let ((owner (lib-provider-owner-elsewhere name)))
     (if owner
         ;; A provider owns the members it registered, not the whole name. Adding a
@@ -373,20 +393,20 @@
 (define lib-class-providers core-class-providers)
 
 ;; ---- claim index: which claims have not had their chance yet ----------------
-;; Resolution consults the provider table on EVERY reference to a claimed class,
-;; not only on a registry miss (jolt#914) — see lib-ensure-provider!. That puts
-;; the lookup on the hot path of every Class/member, so it cannot be the linear
-;; walk lib-provider-for does. This table holds one entry per SPELLING for the
-;; claims of providers that have not been autoloaded yet, and entries leave it
-;; the moment their provider is attempted; the flag makes the common case — every
-;; provider already loaded, or none declared — a single boolean test.
+;; One entry per SPELLING for the claims of providers that have not been
+;; autoloaded yet; entries leave the moment their provider is attempted. Two
+;; questions read it, and neither is on the hot path: which provider to autoload
+;; when a class reference MISSES (lib-try-autoload!), and whether a registration
+;; is about to squat on a class whose claimer has not spoken (lib-pending-claimer).
+;; The flag keeps the second one — asked once per registration — a boolean test
+;; when nothing is declared.
 (define lib-pending-claims-tbl (make-hashtable string-hash string=?))
 (define lib-any-pending-claims? #f)
-;; Autoload is one-shot per provider and now runs from every reference, so two
-;; threads reaching a claimed class at once must not both load the install
-;; namespace. The latch flip and the index purge go under this mutex; the load
-;; itself does NOT, because an install namespace requires others and a nested
-;; autoload would deadlock on a non-recursive mutex.
+;; Autoload is one-shot per provider, and two threads reaching a claimed class at
+;; once must not both load the install namespace. The latch flip, the index purge
+;; and the held-registration list go under this mutex; the load itself does NOT,
+;; because an install namespace requires others and a nested autoload would
+;; deadlock on a non-recursive mutex.
 (define lib-claims-mu (make-mutex))
 (define (lib-claim-pending! p)
   (for-each (lambda (c) (hashtable-set! lib-pending-claims-tbl c p)) (vector-ref p 2))
@@ -395,6 +415,29 @@
   (for-each (lambda (c) (hashtable-delete! lib-pending-claims-tbl c)) (vector-ref p 2))
   (set! lib-any-pending-claims? (> (hashtable-size lib-pending-claims-tbl) 0)))
 (for-each lib-claim-pending! core-class-providers)
+
+;; Registrations HELD because the class's declared provider has not loaded yet.
+;; Letting one land would put an entry in the registry for a class whose claimer
+;; has not spoken — and a registry HIT is exactly what stops the autoload, which
+;; is how resolution came to depend on compile order (jolt#914). They are replayed
+;; the moment the claim settles, through the same guard as any other registration:
+;; what the provider implements wins, what it left unanswered still lands. Keyed
+;; by provider, because the provider is what settles.
+(define lib-deferred-tbl (make-eq-hashtable))
+(define (lib-defer-registration! p thunk)
+  (jolt-with-mutex lib-claims-mu
+    (hashtable-set! lib-deferred-tbl p (cons thunk (hashtable-ref lib-deferred-tbl p '())))))
+;; Called for every settled claim, including one whose install namespace was off
+;; the source roots or raised: a provider that cannot deliver must not swallow
+;; somebody else's registration with it. Answers whether anything was held, which
+;; is a change to what the registry says and so a reason for the caller to retry.
+(define (lib-replay-deferred! p)
+  (let ((held (jolt-with-mutex lib-claims-mu
+                (let ((h (hashtable-ref lib-deferred-tbl p '())))
+                  (hashtable-delete! lib-deferred-tbl p)
+                  h))))
+    (for-each (lambda (t) (t)) (reverse held))
+    (pair? held)))
 
 ;; The provider whose install namespace is loading on THIS thread, or #f. A
 ;; provider registers its classes as its install namespace loads, and the
@@ -477,29 +520,59 @@
               (begin (set-box! (vector-ref p 3) 'ok)
                      (lib-claim-settled! p)
                      #t)))
-       (find-ns-file (vector-ref p 0))
-       (begin (guard (c (#t (set-box! (vector-ref p 3) 'failed)
-                            (raise c)))
-                (parameterize ((lib-loading-provider p))
-                  (load-namespace (vector-ref p 0))))
-              #t)))
+       ;; The claim is settled from here whatever happens next, so registrations
+       ;; held against it are replayed on every exit — including the install
+       ;; namespace being off the roots, and the one that raises. A provider that
+       ;; cannot deliver leaves the class to whoever else registered it, which is
+       ;; what happened before the claim was honoured at all.
+       ;;
+       ;; Either half is a reason for the caller to look again, so the answer is
+       ;; their OR: a class can become resolvable through a replay alone.
+       (let* ((loaded (and (find-ns-file (vector-ref p 0))
+                           (begin (guard (c (#t (set-box! (vector-ref p 3) 'failed)
+                                                (lib-replay-deferred! p)
+                                                (raise c)))
+                                    (parameterize ((lib-loading-provider p))
+                                      (load-namespace (vector-ref p 0))))
+                                  #t)))
+              (replayed (lib-replay-deferred! p)))
+         (or loaded replayed))))
 
-;; RFC 0014's resolution step. A declared provider must load before the FIRST
-;; reference to a class it claims resolves — including when the registry ALREADY
-;; holds an entry for that class (jolt#914). Autoloading only on a registry miss
-;; made resolution depend on compile order: a library whose install! registers
-;; classes it does not declare (jolt.crypto registers java.security.Signature and
-;; declares only the symmetric classes) pre-empted the provider that DOES declare
-;; them, because the table hit served the incumbent and the claimer never loaded.
-;; Same deps.edn, two outcomes. A claim is an authority over who implements a
-;; class, not merely a fallback for an absent one, so the claimer loads first and
-;; its registration is the one resolution sees.
+;; RFC 0014's resolution step: a class reference that MISSES the registry
+;; autoloads the provider that declares the class, and retries.
 ;;
-;; Cost on the hot path is one boolean test once every provider has loaded.
-(define (lib-ensure-provider! class)
+;; A miss is enough because a claimed class cannot be a HIT before its claimer has
+;; loaded — register-class-provider! refuses a claim on a class the runtime
+;; already implements, and lib-pending-claimer holds any other library's
+;; registration until the claim settles. That is what makes resolution a property
+;; of the dependency graph rather than of compile order (jolt#914): the table hit
+;; that used to serve an undeclared registration — jolt.crypto registers an
+;; EC-only java.security.Signature while declaring only the symmetric classes —
+;; never forms, so the claimer still autoloads and still wins.
+;;
+;; Keeping it on the miss path is also what keeps it off the hot one: every
+;; static reference and every (Class. ...) would otherwise pay a lookup here, and
+;; jolt.time.base / jolt.socket leave a claim pending in almost every program, so
+;; there is no steady state in which that lookup goes away.
+(define (lib-try-autoload! class)
   (and lib-any-pending-claims?
        (let ((p (hashtable-ref lib-pending-claims-tbl class #f)))
          (and p (lib-load-provider! p)))))
+
+;; The provider that DECLARES this class and has not had its chance yet — meaning
+;; the registration about to happen is somebody else's, and must wait. #f when
+;; nothing claims the class, when the claim has already settled, or when this IS
+;; the claimer registering.
+(define (lib-pending-claimer name)
+  (and lib-any-pending-claims?
+       (let ((p (hashtable-ref lib-pending-claims-tbl name #f)))
+         (and p
+              (not (eq? p (lib-loading-provider)))
+              ;; An install namespace pulled in by a plain require rather than by
+              ;; the autoload carries no lib-loading-provider mark, and its own
+              ;; registrations must not be held against it.
+              (not (ns-dedup-loaded? (vector-ref p 0)))
+              p))))
 
 ;; ---- the registration guard -------------------------------------------------
 ;; A class a dependency DECLARES is that dependency's to implement, and RFC 0014
@@ -545,36 +618,39 @@
                    ((null? (cdr members)) "that member")
                    (else "those members")))))
 
-;; The same registration BEFORE the claimer has loaded is not a bug the runtime
-;; has to stop — the claimer autoloads on the first reference to the class and
-;; registers over this one, so resolution lands on the provider either way. It is
-;; still a library registering a class it did not declare, which is the thing to
-;; fix at the source, so say so under JOLT_DEBUG the way the other registry
-;; diagnostics do.
+;; The same registration BEFORE the claimer has loaded costs nobody the class:
+;; it is held, the claimer autoloads on the first reference and registers, and
+;; whatever the claimer left unanswered lands after it. So this is a note, not the
+;; refusal provider-claim-drop! reports — but it is still a library registering a
+;; class it did not declare, which is the thing to fix at the source, so say so
+;; under JOLT_DEBUG the way the other registry diagnostics do.
+(define (provider-claim-hold! name pending members)
+  (when (and (getenv "JOLT_DEBUG") (claim-warn-once? "hold" name))
+    (fprintf (current-error-port)
+             "warning: holding ~a — ~a declares that class (:jolt/provides, RFC 0014) and has not loaded yet; it loads on the first reference to ~a, and what it does not implement is registered after it\n"
+             (if (null? members)
+                 (string-append "a constructor registration for " name)
+                 (string-append "a registration for "
+                                (fold-left (lambda (a m)
+                                             (let ((one (string-append name "/" m)))
+                                               (if (string=? a "") one (string-append a ", " one))))
+                                           "" members)))
+             (vector-ref pending 0) name)))
+
+;; The contract from the other side: an install namespace registering a class it
+;; does not declare. Nothing autoloads a provider for a class it never claimed, so
+;; whether that class resolves at all depends on what else happens to pull the
+;; namespace in first — which is how a reference to java.security.KeyPairGenerator
+;; reported "No dependency provides" in one namespace and answered an EC-only shim
+;; in the next (jolt#914).
 (define (provider-claim-note! name)
   (when (getenv "JOLT_DEBUG")
-    (let ((self (lib-loading-provider))
-          (p (lib-provider-for name)))
-      ;; Both arms are about the same class, so they share one dedupe key: the
-      ;; claimed-elsewhere reading is the more actionable one and goes first.
-      (cond
-        ((and p (not (eq? p self)) (not (unbox (vector-ref p 3))))
-         (when (claim-warn-once? "note" name)
-           (fprintf (current-error-port)
-                    "warning: a registration for ~a is a class ~a declares (:jolt/provides); that provider loads on the first reference to ~a and its registration is the one that resolves\n"
-                    name (vector-ref p 0) name)))
-        ;; The contract from the other side: an install namespace registering a
-        ;; class it does not declare. Nothing autoloads a provider for a class it
-        ;; never claimed, so whether that class resolves at all depends on what
-        ;; else happens to pull the namespace in first — which is how a reference
-        ;; to java.security.KeyPairGenerator reported "No dependency provides" in
-        ;; one namespace and answered an EC-only shim in the next (jolt#914).
-        ((and self (not (member name (vector-ref self 2))))
-         (when (claim-warn-once? "note" name)
-           (fprintf (current-error-port)
-                    "warning: ~a registers ~a without declaring it in :jolt/provides (RFC 0014); nothing autoloads ~a for a class it does not declare, so whether ~a resolves depends on what else pulls that namespace in\n"
-                    (vector-ref self 0) name (vector-ref self 0) name)))
-        (else #f)))))
+    (let ((self (lib-loading-provider)))
+      (when (and self (not (member name (vector-ref self 2)))
+                 (claim-warn-once? "note" name))
+        (fprintf (current-error-port)
+                 "warning: ~a registers ~a without declaring it in :jolt/provides (RFC 0014); nothing autoloads ~a for a class it does not declare, so whether ~a resolves depends on what else pulls that namespace in\n"
+                 (vector-ref self 0) name (vector-ref self 0) name)))))
 
 ;; A provider that is on the source roots but raised while loading leaves the
 ;; class unregistered exactly like an undeclared dependency does — but the fix is
@@ -650,9 +726,6 @@
 ;; cannot be read off a #f result.
 (define host-static-miss (list 'host-static-miss))
 (define (host-static-ref class member)
-  ;; the class's declared provider, if any, loads BEFORE the lookup — so what the
-  ;; registry answers does not depend on who happened to register first (jolt#914)
-  (lib-ensure-provider! class)
   (let ((cell (mutable-static-cell class member #f)))
     (if cell
         (vector-ref cell 0)
@@ -663,11 +736,14 @@
                     (or (class-instance-fallback class member)
                         (throw-jvm (quote IllegalArgumentException) (string-append "No matching field or method: " class "/" member)))
                     v))
-              ;; class miss with the provider already given its chance above:
-              ;; either nothing claims the class, or its install namespace is off
-              ;; the roots / failed to load — static-miss-message tells those apart.
-              (or (and (jch-known? class) (class-instance-fallback class member))
-                  (throw-jvm (quote IllegalArgumentException) (static-miss-message class member))))))))
+              ;; class miss — autoload the provider that declares the class (the
+              ;; java.time base, jolt.socket, or a library that installs it) and
+              ;; retry once. A claimed class cannot be a hit before its claimer
+              ;; has loaded, so the miss is where resolution belongs (jolt#914).
+              (if (lib-try-autoload! class)
+                  (host-static-ref class member)
+                  (or (and (jch-known? class) (class-instance-fallback class member))
+                      (throw-jvm (quote IllegalArgumentException) (static-miss-message class member)))))))))
 
 (define (host-static-call class member . args)
   ;; the registry's one rule: a procedure is a method to call, anything else is
@@ -691,12 +767,12 @@
       (if (procedure? v) (v) v))))
 
 (define (host-new class . args)
-  ;; same rule as host-static-ref: the declared provider of the class loads before
-  ;; the ctor lookup, not only when the lookup misses (jolt#914).
-  (lib-ensure-provider! class)
   (let ((ctor (lookup-class class-ctors-tbl class)))
     (cond
       (ctor (apply ctor args))
+      ;; the constructor may live in a provider that has not loaded yet — autoload
+      ;; and retry once before falling through to the var / no-ctor paths.
+      ((lib-try-autoload! class) (apply host-new class args))
       ;; deftype/defrecord: the type name is bound as a VAR (the
       ;; make-deftype-ctor closure) in its defining ns, not a registered host class.
       ;; Resolve it in the current ns / clojure.core and invoke it — so (P. args)

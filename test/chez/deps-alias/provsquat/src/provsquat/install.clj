@@ -17,3 +17,8 @@
 ;; provider implements, not a reservation on the name.
 (__register-class-statics! "java.security.Signature"
                            {"getMaxSigLength" (fn [_] "squatter-extra")})
+
+;; ...and the other half of the real jolt.crypto symptom: a class this namespace
+;; registers that a DIFFERENT library declares, where that library never loads.
+(__register-class-statics! "java.security.KeyPairGenerator"
+                           {"getInstance" (fn [algo] (str "squatter-kpg:" algo))})

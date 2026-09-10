@@ -15,24 +15,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registers classes it does not declare pre-empted the library that does declare
   them: jolt.crypto registers an EC-only `java.security.Signature` while
   declaring only the symmetric classes, and once that side-effect registration
-  landed the declared provider never loaded. Same deps.edn, two outcomes —
-  whichever namespace compiled first won, silently (#914). A claim is now an
-  authority over WHO implements a class, not a fallback for an absent one: the
-  declared provider loads before the first reference to a class it claims
-  resolves, table hit or not, and once it has registered a member of that class
-  a registration of the same member from anywhere else is dropped rather than
-  allowed to win by being last. A member the provider's shim does NOT answer
-  still registers — a claim is authority over what the provider implements, not
-  a reservation on the name, and filling a gap in a shim is what
-  `extend-class!` is for. The drop is reported on stderr, because the library
-  asked for something it did not get; under `JOLT_DEBUG` so are the two cases
-  that are merely the contract being bent — a registration for a class whose
-  provider has not loaded yet, and an install namespace registering a class it
-  never declared, which is why a reference to `java.security.KeyPairGenerator`
-  could report "No dependency provides" in one namespace and answer an EC-only
-  shim in the next. A provider's own declared classes are untouched, and so are
-  registrations for classes nobody declares. Resolution costs one boolean test
-  on the static-reference path once every declared provider has loaded.
+  landed the registry hit meant the declared provider never loaded. Same
+  deps.edn, two outcomes — whichever namespace compiled first won, silently
+  (#914). A claim is now an authority over WHO implements a class, not a
+  fallback for an absent one, and the registry can no longer answer for a
+  claimed class before its claimer has spoken. A registration from anywhere else
+  is HELD while the claim is outstanding and replayed once it settles, so the
+  autoload still happens; a registration that arrives after the provider has
+  claimed a member is dropped rather than allowed to win by being last. A member
+  the provider's shim does NOT answer still registers, in either order — a claim
+  is authority over what the provider implements, not a reservation on the name,
+  and filling a gap in a shim is what `extend-class!` is for. A provider that
+  cannot deliver, its install namespace off the source roots or raising,
+  releases what it held rather than taking it down with it. The drop is reported
+  on stderr, because the library asked for something it did not get; under
+  `JOLT_DEBUG` so are the two cases that are merely the contract being bent — a
+  registration held for a provider that has not loaded, and an install namespace
+  registering a class it never declared, which is why a reference to
+  `java.security.KeyPairGenerator` could report "No dependency provides" in one
+  namespace and answer an EC-only shim in the next. A provider's own declared
+  classes are untouched, and so are registrations for classes nobody declares.
+  Resolution stays on the registry-miss path, so a static reference and a
+  `(Class. …)` cost exactly what they did before.
 
 - **`java.net.URI`'s constructor validates.** `(java.net.URI. "https://not a
   url")` answered a URI whose `.getHost` was `"not a url"`; the JVM's
