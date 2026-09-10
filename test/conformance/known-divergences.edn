@@ -127,6 +127,49 @@
    :check :prose
    :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
    :note "Core has no default locale. Explicit locale ids resolve through the :date-names extension point (:fallback :default): an unregistered id falls back to ROOT rather than throwing."}
+  ;; format's %t name conversions read the SAME names, for the same reason, and
+  ;; so carry the same divergence: %tB / %tb / %tA / %ta come off the :date-names
+  ;; extension point, ROOT's abbreviated forms with nothing registered, where the
+  ;; JVM renders the machine locale's ("February"/"Friday" under en). Verified
+  ;; against the JVM's OWN Locale.ROOT rendering, which agrees with jolt exactly
+  ;; on every one of them (String.format(Locale.ROOT, "%tB", …) is "Feb"), so the
+  ;; gap is the default locale and not the names. The numeric conversions (%tF
+  ;; %tT %tY %tj %tz …) are locale-free and ARE corpus rows. The jolt side is
+  ;; pinned in unit.edn's format-datetime suite.
+  {:category :host-model
+   :behavior "(format \"%tB\" some-date)"
+   :jvm "the default locale's month name, e.g. \"February\" under en"
+   :jolt "\"Feb\" — the Locale.ROOT name, the JVM's own answer under Locale/ROOT"
+   :check :prose
+   :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
+   :note "%tp is \"pm\"/\"PM\" and %tr's marker upper case, which is ROOT and en alike; only the month and day names differ."}
+  ;; %t reads its fields on a ZONE, and for a Date / #inst / epoch-ms long that
+  ;; zone is the machine default — so %tF of an instant inherits the default-zone
+  ;; divergence recorded below wholesale: core answers UTC where the JVM answers
+  ;; the machine's zone, and with jolt.time loaded (or TZ set) the two agree. A
+  ;; Calendar carries its own zone, so an explicit-zone Calendar is exact on both
+  ;; and that is the shape the corpus rows use.
+  {:category :host-model
+   :behavior "(format \"%tF %tz\" (java.util.Date. 0) (java.util.Date. 0))"
+   :jvm "the fields on the machine's zone, e.g. \"1969-12-31 -0500\" under America/Toronto"
+   :jolt "the fields on TZ, else the registered provider's zone, else UTC — \"1970-01-01 +0000\" bare"
+   :check :prose
+   :why "the JVM's answer is the machine's default time zone"
+   :note "The same zone the rest of the date layer reads: (format \"%tF\" d) and (.format (SimpleDateFormat. \"yyyy-MM-dd\") d) always agree, pinned in unit.edn."}
+  ;; %t's civil fields come from the PROLEPTIC Gregorian calendar with an
+  ;; astronomical year, java.time's model and the one jolt's whole date layer
+  ;; uses; java.util.Formatter reads them off a java.util.Calendar, which is
+  ;; Julian before 1582 and whose YEAR is era-relative (1 BC is year 1, ERA 0).
+  ;; Every date from 1583 on agrees exactly; before it the two calendars differ
+  ;; by up to ten days and the year 0 reads as 1. Inherited, not new: the same
+  ;; gap is already there for SimpleDateFormat and Calendar/get.
+  {:category :host-model
+   :behavior "(format \"%tY\" (java.util.Date. -62167219200000))"
+   :jvm "\"0001\" — Calendar's era-relative year over the Julian calendar"
+   :jolt "\"0000\" — the proleptic Gregorian astronomical year"
+   :check :prose
+   :why "the JVM's java.util.Calendar is Julian before 1582 with an era-relative year; jolt's date layer is proleptic Gregorian throughout"
+   :note "Pre-existing across the date layer: (.get cal Calendar/YEAR) and SimpleDateFormat \"yyyy\" diverge the same way on the same dates."}
   ;; The default time zone: the JVM's is the machine's (its own tzdata plus the
   ;; OS's zone setting). Core reads TZ from its environment and otherwise answers
   ;; UTC — it reads no system file (/etc/localtime, /etc/timezone) on its own;

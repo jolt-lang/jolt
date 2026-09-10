@@ -224,6 +224,23 @@
   {:suite "sdf" :expr "(.getTime (.parse (java.text.SimpleDateFormat. \"EEEE, dd-MMM-yy HH:mm:ss zzz\") \"Sunday, 23-Sep-12 11:52:50 GMT\"))" :expected "1348401170000"}
   {:suite "sdf" :expr "(.getTime (.parse (doto (java.text.SimpleDateFormat. \"EEE MMM d HH:mm:ss yyyy\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) \"Sun Sep 23 11:52:50 2012\"))" :expected "1348401170000"}
   {:suite "sdf" :expr "(let [f (java.text.SimpleDateFormat. \"yyyy-MM-dd\")] (.format f (.parse f \"2023-07-15\")))" :expected "\"2023-07-15\""}
+  ;; format's %t / %T name conversions and the zone they read. Core carries no
+  ;; java.util.Locale (RFC 0008), so the month, day and am/pm names are ROOT's —
+  ;; the same choice SimpleDateFormat's name directives make, and the same
+  ;; documented divergence from a machine-locale JVM, which is why these are unit
+  ;; rows and not corpus ones. The zone is the one the rest of the date layer
+  ;; reads: a Calendar's own, else the machine default. jolt-c90
+  {:suite "format-datetime" :expr "[(format \"%tB\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%tb\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%th\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))]" :expected "[\"Feb\" \"Feb\" \"Feb\"]"}
+  {:suite "format-datetime" :expr "[(format \"%tA\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%ta\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))]" :expected "[\"Fri\" \"Fri\"]"}
+  {:suite "format-datetime" :expr "[(format \"%tp\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%Tp\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))]" :expected "[\"pm\" \"PM\"]"}
+  {:suite "format-datetime" :expr "(format \"%tp\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"Asia/Tokyo\"))))" :expected "\"am\""}
+  {:suite "format-datetime" :expr "(format \"%tr\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))" :expected "\"11:31:30 PM\""}
+  {:suite "format-datetime" :expr "(format \"%tc\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))" :expected "\"Fri Feb 13 23:31:30 UTC 2009\""}
+  {:suite "format-datetime" :expr "(format \"%Tc\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))" :expected "\"FRI FEB 13 23:31:30 UTC 2009\""}
+  {:suite "format-datetime" :expr "(format \"%tZ\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))" :expected "\"UTC\""}
+  {:suite "format-datetime" :expr "(format \"%tB\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 0) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))" :expected "\"Jan\""}
+  {:suite "format-datetime" :expr "(let [d (java.util.Date. 1234567890123)] (= (format \"%tF %tT\" d d) (.format (java.text.SimpleDateFormat. \"yyyy-MM-dd HH:mm:ss\") d)))" :expected "true"}
+  {:suite "format-datetime" :expr "(let [d (java.util.Date. 1234567890123)] (= (format \"%tz\" d) (.format (java.text.SimpleDateFormat. \"Z\") d)))" :expected "true"}
   {:suite "reader" :expr "(let [r (-> \"foo bar baz\" java.io.StringReader. java.io.PushbackReader.)] [(read r) (slurp r)])" :expected "[foo \" bar baz\"]"}
   {:suite "reader" :expr "(let [r (-> \"(+ 1 2) 99\" java.io.StringReader. java.io.PushbackReader.)] [(read r) (read r)])" :expected "[(+ 1 2) 99]"}
   ;; A namespaced-map prefix ends at the namespace token.  Ordinary reader

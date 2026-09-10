@@ -56,6 +56,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`format` speaks the rest of `java.util.Formatter`.** `%.3s` truncates a
+  string where the precision used to be ignored (`(format "%.3s" "abcdef")` was
+  `"abcdef"`), `%#x` / `%#X` / `%#o` prefix the radix (`0x`, `0X`, `0`) with the
+  `0` flag's zeros landing between prefix and digits as the JVM's do, and the
+  argument-index forms `%N$s` and `%<s` pick and re-pick an argument instead of
+  reading the index as a width and failing on `'$'`. Three conversions that were
+  not there at all: `%h` / `%H` (the argument's `hashCode` as unsigned 32-bit
+  hex, off the same dispatch `.hashCode` takes), `%a` / `%A` (hexadecimal float
+  — `Double/toHexString`'s spelling bare, and with a precision the normalized
+  form rounded half to even at `1+4p` bits, subnormals included), and `%t` /
+  `%T` (the whole date-time family: `HIklMSLNpzZsQBbhAaCYyjmdeRTrDFc`, read on a
+  `Calendar`'s own zone or the machine default, and composed from the same
+  fields the rest of the date layer uses). A flag or precision a conversion
+  cannot take is now the JVM's refusal rather than a silent drop, so `%#d`,
+  `%,e`, `%.2d` and `%#g` raise the `IllegalFormatException` a caller catches,
+  and a missing argument is `MissingFormatArgumentException` where it used to
+  render `"null"`. `(format "abc%")` no longer leaks a raw Chez `string-ref`
+  index error, and a width or precision too large for an int no longer escapes
+  as a "fixnum overflow" `ArithmeticException`. 86 corpus rows and 11 unit rows,
+  all certified against reference Clojure. (#903 was `%g`, which landed in
+  0.8.6; these are the rest.)
+
+- **`Matcher.find(int)` scans from the index, and `Matcher.region` exists.**
+  `.find` dropped its `int`, so it always returned the first match in the whole
+  string — every anchored-scan idiom `(.find m i)` + `(= (.start m) i)` only
+  ever matched at index 0, or nothing. It now resets and scans from `from`, with
+  the JVM's `IndexOutOfBoundsException` outside `[0, length]`. `.region`,
+  `.regionStart`, `.regionEnd` and the no-argument `.reset` are new: a matcher
+  confined to `[start, end)` finds, `.matches`, `.lookingAt` and anchors `^` and
+  `$` at the region's own edges, the way the JVM's default anchoring bounds do
+  (#906, #907). `.group` / `.start` / `.end` before a successful match now raise
+  `IllegalStateException` "No match found" — the bare `ex-info` they threw could
+  not be selected by a `(catch IllegalStateException …)`. 27 corpus rows.
+
 - **A declared `:jolt/provides` provider resolves a class whatever loaded
   first.** RFC 0014 autoloaded a provider's install namespace only when the
   referenced class was still UNREGISTERED, so a library whose `install!`

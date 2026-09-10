@@ -162,12 +162,19 @@
     (if m (irx-result m) jolt-nil)))
 
 ;; A stateful matcher (java.util.regex.Matcher): the compiled pattern, the target
-;; string, the next search position, and the last successful irregex match. re-find
-;; over a matcher steps through non-overlapping matches; re-groups returns the
-;; groups of the last one.
+;; string, the next search position, the last successful irregex match, and the
+;; REGION the matcher is confined to. re-find over a matcher steps through
+;; non-overlapping matches; re-groups returns the groups of the last one.
+;;
+;; The region is [rstart, rend) and defaults to the whole string. Under the JVM's
+;; default anchoring bounds ^ and $ match AT the region's edges, and that is what
+;; irregex gives for free: an (irregex-search irx s from rend) chunks the string
+;; as (s from rend), so bos sits at the search origin and eos at the region end.
+;; The consumer guard below is what keeps ^ from re-anchoring at a resumed scan
+;; position instead of the region start.
 (define-record-type matcher-t
-  (fields irx str (mutable pos) (mutable last))
-  (nongenerative jolt-matcher-v1))
+  (fields irx str (mutable pos) (mutable last) (mutable rstart) (mutable rend))
+  (nongenerative jolt-matcher-v2))
 ;; EVERY regex entry point takes a CharSequence on the JVM, not just a String, and
 ;; a library matching over a WINDOW of a larger string passes its own
 ;; implementation rather than copying — instaparse's Segment is a deftype with
@@ -188,7 +195,8 @@
         ((rx-host-charseq->string s))
         (else (jolt-need-str s))))
 (define (jolt-re-matcher re s)
-  (make-matcher-t (regex-t-irx (jolt-re-pattern re)) (rx-charseq->string s) 0 #f))
+  (let ((s (rx-charseq->string s)))
+    (make-matcher-t (regex-t-irx (jolt-re-pattern re)) s 0 #f 0 (string-length s))))
 (define (jolt-matcher? x) (matcher-t? x))
 
 ;; java.util.regex.Pattern.flags(). jolt compiles a pattern from its source alone,
@@ -224,9 +232,10 @@
        (if m (irx-result m) jolt-nil)))
     ((m)
      (let* ((str (matcher-t-str m))
-            (len (string-length str))
+            (end (matcher-t-rend m))
             (start (matcher-t-pos m))
-            (mm (and (<= start len) (irx-search-from (matcher-t-irx m) str start))))
+            (mm (and (<= start end)
+                     (irx-search-from (matcher-t-irx m) str start (matcher-t-rstart m) end))))
        (if mm
            (let ((ms (irregex-match-start-index mm 0))
                  (e (irregex-match-end-index mm 0)))
@@ -248,17 +257,23 @@
 ;; match and remembers it for .group; .group n returns submatch n (0 = whole) or
 ;; nil; .groupCount is the pattern's capturing-group count.
 (define (jolt-matcher-matches m)
-  (let ((mm (irregex-match (matcher-t-irx m) (matcher-t-str m))))
+  (let ((mm (irregex-match (matcher-t-irx m) (matcher-t-str m)
+                           (matcher-t-rstart m) (matcher-t-rend m))))
     ;; like .lookingAt, anchored at the region start rather than the find cursor,
     ;; and a success moves the cursor past the match so a following .find resumes
     ;; where the JVM's would instead of re-finding what was just matched.
     (if mm (matcher-note-match! m mm) (begin (matcher-t-last-set! m #f) #f))))
+;; .group before a successful match is the JVM's IllegalStateException, message
+;; and all. It used to be a bare ex-info, which a (catch IllegalStateException …)
+;; could not select — the same shape of bug as a raw host condition escaping.
+(define (jolt-matcher-no-match)
+  (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match found")))
 (define (jolt-matcher-group m . n)
   (let ((last (matcher-t-last m)))
     (if last
         (let ((s (irregex-match-substring last (if (pair? n) (->idx (car n)) 0))))
           (if s s jolt-nil))
-        (jolt-throw (jolt-ex-info "No match available" (jolt-hash-map))))))
+        (jolt-matcher-no-match))))
 (define (jolt-matcher-group-count m) (irregex-num-submatches (matcher-t-irx m)))
 ;; .lookingAt: anchored at the region START, matching a PREFIX — the middle ground
 ;; between .matches (the whole region) and .find (anywhere). It does NOT resume
@@ -277,10 +292,49 @@
     (matcher-t-pos-set! m (if (> e ms) e (+ e 1))))
   #t)
 (define (jolt-matcher-looking-at m)
-  (let ((mm (irregex-search (matcher-t-irx m) (matcher-t-str m) 0)))
-    (if (and mm (= (irregex-match-start-index mm 0) 0))
+  (let* ((origin (matcher-t-rstart m))
+         (mm (irregex-search (matcher-t-irx m) (matcher-t-str m) origin (matcher-t-rend m))))
+    (if (and mm (= (irregex-match-start-index mm 0) origin))
         (matcher-note-match! m mm)
         (begin (matcher-t-last-set! m #f) #f))))
+
+;; --- .reset / .find(int) / .region: the JVM's scan-position and region controls
+;; .reset drops the last match, clears the region back to the whole input and
+;; puts the scan cursor at 0. It is what .find(int) and .region are both defined
+;; in terms of on the JVM, and it returns the matcher so .reset chains.
+(define (matcher-reset! m)
+  (matcher-t-last-set! m #f)
+  (matcher-t-rstart-set! m 0)
+  (matcher-t-rend-set! m (string-length (matcher-t-str m)))
+  (matcher-t-pos-set! m 0)
+  m)
+;; .find(int from): RESET the matcher — region included, which is why the bounds
+;; check is against the whole input — and then scan from `from`. The int used to
+;; be dropped, so every (.find m i) answered with the first match in the string
+;; and the anchored-scan idiom (.find m i) + (= (.start m) i) only ever matched
+;; at 0.
+(define (jolt-matcher-find-from m i)
+  (let ((n (string-length (matcher-t-str m))))
+    (when (or (< i 0) (> i n))
+      (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "Illegal start index")))
+    (matcher-reset! m)
+    (matcher-t-pos-set! m i)
+    (not (jolt-nil? (jolt-re-find m)))))
+;; .region(start, end): confine every subsequent match to [start, end). Resets
+;; first, as the JVM does, so a region also clears the last match and puts the
+;; scan cursor at the region start.
+(define (jolt-matcher-region m a b)
+  (let ((n (string-length (matcher-t-str m))))
+    (define (oob what)
+      (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" what)))
+    (when (or (< a 0) (> a n)) (oob "start"))
+    (when (or (< b 0) (> b n)) (oob "end"))
+    (when (> a b) (oob "start > end"))
+    (matcher-reset! m)
+    (matcher-t-rstart-set! m a)
+    (matcher-t-rend-set! m b)
+    (matcher-t-pos-set! m a)
+    m))
 
 ;; Next match at or after cursor `i`.
 ;;
@@ -301,9 +355,16 @@
 ;; consumer — it can legitimately match elsewhere — so scanning continues and its
 ;; ^ branch can still re-anchor at the resume offset. irregex's own fold has the
 ;; same limit.
-(define (irx-search-from irx s i)
-  (and (or (= i 0) (not (flag-set? (irregex-flags irx) ~consumer?)))
-       (irregex-search irx s i)))
+;;
+;; The ORIGIN a bos anchors at is index 0 for a whole-string scan and the REGION
+;; START for a matcher confined to one, so the guard is against that origin
+;; rather than against 0; the four-argument form takes both it and the region end.
+(define irx-search-from
+  (case-lambda
+    ((irx s i) (irx-search-from irx s i 0 (string-length s)))
+    ((irx s i origin end)
+     (and (or (= i origin) (not (flag-set? (irregex-flags irx) ~consumer?)))
+          (irregex-search irx s i end)))))
 
 ;; All non-overlapping matches, left to right. Advance past each match end (or by
 ;; one on a zero-width match). nil when there are no matches (Clojure: seq-able as

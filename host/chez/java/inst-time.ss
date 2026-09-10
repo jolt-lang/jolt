@@ -895,6 +895,101 @@
                  (if (jolt-nil? s) (vector-ref sdf-root-names i) (list->vector (seq->list s)))))))
       (vector (f "months" 0) (f "months-short" 1) (f "days" 2) (f "days-short" 3)))))
 
+;; --- %t / %T: java.util.Formatter's date-time conversions --------------------
+;; natives-format.ss owns the format grammar; it scans %t<sub>, hands the
+;; sub-conversion char and the argument here through set-format-datetime!, and
+;; pads what comes back. This file owns everything a date-time rendering needs
+;; and natives-format.ss (loaded long before it) has no way to reach: the
+;; epoch-ms projection off a Date / Calendar / long, the machine's default zone,
+;; and the month and day names.
+;;
+;; The JVM reads the fields ON A ZONE — a Calendar's own, the machine's default
+;; for a Date / #inst / epoch-ms long — and so does this. The names are ROOT's
+;; (core carries no java.util.Locale; that is the jolt-lang/time library, RFC
+;; 0008), the same choice and the same documented divergence from a
+;; machine-locale JVM that SimpleDateFormat's name directives make.
+;;
+;; Every field renders in LOWER case and natives-format.ss upcases the whole
+;; result for %T. The one exception the JVM itself makes is %tr's am/pm marker,
+;; which is upper case under %t too.
+(define (fmt-dt-pad n w)                 ; n zero-padded to w digits
+  (let ((s (number->string n)))
+    (string-append (make-string (max 0 (- w (string-length s))) #\0) s)))
+;; The date-time argument types the JVM takes are Long, Date, Calendar and
+;; TemporalAccessor; here they are exactly what ms-of projects (a #inst /
+;; java.util.Date, a Calendar, a java.sql.Date / Timestamp, a long). Anything
+;; else is the IllegalFormatConversionException the JVM gives, naming the
+;; SUB-conversion ("F != java.lang.String") as the JVM does — including a
+;; java.time value, which the JVM's TemporalAccessor arm accepts for a
+;; LocalDate / ZonedDateTime. Core does not carry java.time (RFC 0008: it is the
+;; jolt-lang/time base), so it has nothing to project one from; the refusal is
+;; the honest answer until the library registers a projection. jolt-0la
+(define (fmt-dt-ms+zone a)               ; -> (values ms zone) | (values #f #f)
+  (cond ((and (jhost? a) (string=? (jhost-tag a) "calendar")) (values (cal-ms a) (cal-zone a)))
+        ((number? a) (values (ms->exact a) (default-timezone)))
+        ((jinst? a) (values (ms->exact (jinst-ms a)) (default-timezone)))
+        ((and (jhost? a) (string=? (jhost-tag a) "sql-date"))
+         (values (ms->exact (vector-ref (jhost-state a) 0)) (default-timezone)))
+        (else (values #f #f))))
+;; One field of a broken-down time. The composite conversions (%tR %tT %tr %tD
+;; %tF %tc) are spelled out of the simple ones, as java.util.Formatter spells
+;; them. #f for a sub-conversion that is not one of Java's — the caller turns
+;; that into UnknownFormatConversionException, which needs the %t / %T it saw.
+(define (fmt-dt-field sub y mo d hh mi se frac dow-mon h12 off-s ms zone names)
+  (define (self c) (fmt-dt-field c y mo d hh mi se frac dow-mon h12 off-s ms zone names))
+  (case sub
+    ((#\H) (fmt-dt-pad hh 2))
+    ((#\I) (fmt-dt-pad h12 2))
+    ((#\k) (number->string hh))
+    ((#\l) (number->string h12))
+    ((#\M) (fmt-dt-pad mi 2))
+    ((#\S) (fmt-dt-pad se 2))
+    ((#\L) (fmt-dt-pad frac 3))
+    ((#\N) (fmt-dt-pad (* frac 1000000) 9))
+    ((#\p) (if (< hh 12) "am" "pm"))
+    ((#\z) (offset-string off-s (quote rfc822)))
+    ((#\Z) (tz-abbrev zone ms))
+    ;; SECONDS_SINCE_EPOCH is a plain ms/1000 on the JVM, truncating toward
+    ;; zero, not the floor division the civil fields take.
+    ((#\s) (number->string (quotient ms 1000)))
+    ((#\Q) (number->string ms))
+    ((#\B) (vector-ref (vector-ref names 0) (- mo 1)))
+    ((#\b #\h) (vector-ref (vector-ref names 1) (- mo 1)))
+    ((#\A) (vector-ref (vector-ref names 2) dow-mon))
+    ((#\a) (vector-ref (vector-ref names 3) dow-mon))
+    ((#\C) (fmt-dt-pad (quotient (abs y) 100) 2))
+    ((#\Y) (if (< y 0) (string-append "-" (fmt-dt-pad (- y) 4)) (fmt-dt-pad y 4)))
+    ((#\y) (fmt-dt-pad (modulo y 100) 2))
+    ((#\j) (fmt-dt-pad (+ 1 (- (days-from-civil y mo d) (days-from-civil y 1 1))) 3))
+    ((#\m) (fmt-dt-pad mo 2))
+    ((#\d) (fmt-dt-pad d 2))
+    ((#\e) (number->string d))
+    ((#\R) (string-append (self #\H) ":" (self #\M)))
+    ((#\T) (string-append (self #\H) ":" (self #\M) ":" (self #\S)))
+    ((#\r) (string-append (self #\I) ":" (self #\M) ":" (self #\S) " " (string-upcase (self #\p))))
+    ((#\D) (string-append (self #\m) "/" (self #\d) "/" (self #\y)))
+    ((#\F) (string-append (self #\Y) "-" (self #\m) "-" (self #\d)))
+    ((#\c) (string-append (self #\a) " " (self #\b) " " (self #\d) " "
+                          (self #\T) " " (self #\Z) " " (self #\Y)))
+    (else #f)))
+(define (fmt-datetime-render sub a)
+  (if (jolt-nil? a)
+      "null"
+      (let-values (((ms zone) (fmt-dt-ms+zone a)))
+        (if (not ms)
+            (jolt-throw (jolt-host-throwable "java.util.IllegalFormatConversionException"
+                                             (string-append (string sub) " != " (jolt-class-name a))))
+            (let* ((off-ms (tz-offset-ms zone ms))
+                   (f (inst-fields (+ ms off-ms)))
+                   (hh (list-ref f 3)))
+              (fmt-dt-field sub (list-ref f 0) (list-ref f 1) (list-ref f 2)
+                            hh (list-ref f 4) (list-ref f 5) (list-ref f 6)
+                            (modulo (+ (list-ref f 7) 6) 7)
+                            (let ((h (modulo hh 12))) (if (= h 0) 12 h))
+                            (quotient off-ms 1000) ms zone
+                            (sdf-date-names "")))))))
+(set-format-datetime! fmt-datetime-render)
+
 ;; state: #(pattern locale-id zone). The zone is the machine's at construction,
 ;; as the JVM's is, and setTimeZone replaces it: format renders the instant on
 ;; that zone's clock and parse reads a zone-less input on it.

@@ -1614,22 +1614,37 @@
                ((string=? method-name "flags") (rx-inline-flags (regex-t-source obj)))
                (else (dispatch-miss obj method-name rest))))
         ;; java.util.regex.Matcher: .matches (anchored whole-region), .find
-        ;; (next match), .group [n], .groupCount.
+        ;; (next match, or the next at-or-after an index), .group [n],
+        ;; .groupCount, and the region controls .region / .regionStart /
+        ;; .regionEnd / .reset.
         ((jolt-matcher? obj)
          (cond ((string=? method-name "matches") (jolt-matcher-matches obj))
                ((string=? method-name "lookingAt") (jolt-matcher-looking-at obj))
-               ((string=? method-name "find") (not (jolt-nil? (jolt-re-find obj))))
+               ;; .find() resumes at the scan cursor; .find(from) resets and
+               ;; scans from `from`.
+               ((string=? method-name "find")
+                (if (pair? rest)
+                    (jolt-matcher-find-from obj (jnum->exact (car rest)))
+                    (not (jolt-nil? (jolt-re-find obj)))))
                ((string=? method-name "group") (apply jolt-matcher-group obj rest))
                ((string=? method-name "groupCount") (jolt-matcher-group-count obj))
+               ((string=? method-name "region")
+                (jolt-matcher-region obj (jnum->exact (car rest)) (jnum->exact (cadr rest))))
+               ((string=? method-name "regionStart") (matcher-t-rstart obj))
+               ((string=? method-name "regionEnd") (matcher-t-rend obj))
+               ;; .reset(cs) — a new input on the same pattern — is not modelled;
+               ;; only the no-argument reset, which is the one region and
+               ;; find(int) are defined in terms of.
+               ((and (string=? method-name "reset") (null? rest)) (matcher-reset! obj))
                ;; start/end of the last successful find (whole match, or group n)
                ((string=? method-name "start")
                 (let ((mm (matcher-t-last obj)))
                   (if mm (irregex-match-start-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
-                      (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match available")))))
+                      (jolt-matcher-no-match))))
                ((string=? method-name "end")
                 (let ((mm (matcher-t-last obj)))
                   (if mm (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
-                      (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "No match available")))))
+                      (jolt-matcher-no-match))))
                (else (dispatch-miss obj method-name rest))))
         (else 'pass)))))
 
