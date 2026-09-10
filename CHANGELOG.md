@@ -35,8 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `java.security.KeyPairGenerator` could report "No dependency provides" in one
   namespace and answer an EC-only shim in the next. A provider's own declared
   classes are untouched, and so are registrations for classes nobody declares.
-  Resolution stays on the registry-miss path, so a static reference and a
-  `(Class. …)` cost exactly what they did before.
+  What jolt itself ships claims a NAME, not the implementation of every member
+  under it: `jolt.time.base` and `jolt.socket` are the runtime's base tier, and a
+  base tier exists to be extended — jolt-lang/time declares only the formatting
+  classes and adds a `DateTimeFormatter` arm to `java.time.LocalDate/from` — so
+  the guard is between two DEPENDENCIES, which is what #914 is. Resolution stays
+  on the registry-miss path, so a static reference and a `(Class. …)` cost
+  exactly what they did before.
 
 - **`java.net.URI`'s constructor validates.** `(java.net.URI. "https://not a
   url")` answered a URI whose `.getHost` was `"not a url"`; the JVM's

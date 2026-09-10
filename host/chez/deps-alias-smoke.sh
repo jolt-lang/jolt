@@ -349,6 +349,15 @@ esac
 # declared class still resolves to it.
 check "a provider still registers what it declares" "squatter-mac:HmacSHA256" \
       "$(run -A:prov run -m appprovsquat)"
+# The runtime's own base tier is EXTENDED, not owned: jolt.time.base declares
+# java.time.Instant and implements parse, and jolt-lang/time adds a
+# DateTimeFormatter arm to members exactly like it. Treating a shipped provider's
+# claim as authority over the library that completes it cost the tick suite five
+# parse tests to "dropping a registration for LocalDate/from". What jolt ships
+# claims the NAME; RFC 0014's guard is about two DEPENDENCIES disagreeing.
+check "a library registers over the base tier" \
+      "claimer-sig:x claimer-instant" \
+      "$(runall -A:prov run -m appprovbase | tr '\n' ' ' | sed 's/ $//')"
 # Holding a registration is a wait for the claimer, not a veto. provgone declares
 # java.security.KeyPairGenerator and ships no install namespace, so its claim
 # settles without ever registering anything — and provsquat's held registration for

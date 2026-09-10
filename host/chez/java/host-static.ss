@@ -452,13 +452,26 @@
 ;; REGISTRATION time, not from the declaration, so a class a provider declares and
 ;; never registers stays open — the declaration alone is not an implementation.
 (define lib-provider-owned-tbl (make-hashtable string-hash string=?))
+;; jolt.time.base and jolt.socket are the runtime's own BASE tier, and a base tier
+;; exists to be extended: jolt-lang/time declares only the formatting classes
+;; (DateTimeFormatter, ZoneId, ...) and adds a DateTimeFormatter arm to
+;; java.time.LocalDate/from, a class the base declares. That is the arrangement
+;; working, not a squat — the base ships the value types that must resolve with no
+;; dependency, and the library completes them.
+;;
+;; So what jolt ships claims a NAME, not the implementation of every member under
+;; it. RFC 0014's guard is about two DEPENDENCIES disagreeing over who implements a
+;; class (jolt#914), and the base tier is not one of them. Without this the tick
+;; suite lost five parse tests to "dropping a registration for LocalDate/from".
+(define (lib-core-provider? p) (and (memq p core-class-providers) #t))
+
 ;; Every SPELLING of the class goes in, not just the one written: the statics
 ;; table keys the fully-qualified and the simple name to ONE member table
 ;; (register-class-statics!), so a registration under either spelling reaches the
 ;; same members and both have to be covered.
 (define (lib-note-provider-registration! name)
   (let ((p (lib-loading-provider)))
-    (when (and p (member name (vector-ref p 2)))
+    (when (and p (not (lib-core-provider? p)) (member name (vector-ref p 2)))
       (let ((short (short-class-name name)))
         (for-each (lambda (c)
                     (when (string=? (short-class-name c) short)
