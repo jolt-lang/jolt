@@ -21,6 +21,11 @@
   :time   {:extra-deps {local/timefix {:local/root "../timefix"}}}
   ;; a jolt.time that is on the roots but does not compile
   :timebroken {:extra-deps {local/timebroken {:local/root "../timebroken"}}}
+  ;; RFC 0014 provider resolution (jolt#914): provclaim DECLARES
+  ;; java.security.Signature, provsquat declares javax.crypto.Mac and registers
+  ;; Signature anyway. The declared provider must win in either reference order.
+  :prov   {:extra-deps {local/provclaim {:local/root "../provclaim"}
+                        local/provsquat {:local/root "../provsquat"}}}
   ;; a dep directory with NO deps.edn defaults to its src path
   :noedn  {:extra-deps {local/libnoedn {:local/root "../libnoedn"}}}
   ;; -X / -T exec fixtures

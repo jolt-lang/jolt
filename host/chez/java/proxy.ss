@@ -21,10 +21,9 @@
 ;; constructor is not mistaken for "this name is an interface".
 (define (proxy-class-constructible? class)
   (and (string? class)
-       (or (and (lookup-class class-ctors-tbl class) #t)
-           ;; the constructor may live in a provider that has not loaded yet
-           (and (lib-try-autoload! class)
-                (and (lookup-class class-ctors-tbl class) #t)))))
+       ;; the constructor may live in a provider that has not loaded yet
+       (begin (lib-ensure-provider! class)
+              (and (lookup-class class-ctors-tbl class) #t))))
 
 (define (proxy-name->string p)
   (cond ((symbol-t? p) (symbol-t-name p))

@@ -1,0 +1,7 @@
+{:paths ["src"]
+
+ ;; Stands in for a library that declares ONE class and registers TWO (jolt#914):
+ ;; jolt.crypto declares the symmetric classes and its install! also registers an
+ ;; EC-only java.security.Signature it never declared. Only the declared class is
+ ;; listed here — the undeclared registration is the whole point of the fixture.
+ :jolt/provides {provsquat.install ["javax.crypto.Mac"]}}

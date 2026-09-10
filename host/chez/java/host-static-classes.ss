@@ -1650,7 +1650,7 @@
 (def-var! "clojure.core" "__register-class-ctor!"
   (lambda (name proc) (register-class-ctor-user! name proc) jolt-nil))
 (def-var! "clojure.core" "__register-class-statics!"
-  (lambda (name members) (register-class-statics! name (jmap->static-alist members)) jolt-nil))
+  (lambda (name members) (register-class-statics-user! name (jmap->static-alist members)) jolt-nil))
 
 ;; ---- tagged-table method dispatch + pluggable instance? --------------------
 ;; A jolt library can build stateful host objects with (jolt.host/tagged-table

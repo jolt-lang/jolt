@@ -1,0 +1,6 @@
+{:paths ["src"]
+
+ ;; The library that DECLARES java.security.Signature. RFC 0014 makes that a
+ ;; claim on who implements the class, so it must resolve to this namespace
+ ;; whatever else registered the class first (jolt#914).
+ :jolt/provides {provclaim.install ["java.security.Signature"]}}

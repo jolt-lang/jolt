@@ -3,12 +3,14 @@
 #
 # Fixture projects live in test/chez/deps-alias/: `app` selects aliases over two
 # local libs that define the same namespace at different "versions" (liba/libb),
-# a third lib (libc), and a stand-in jolt.time lib for the roots-autoload gate.
+# a third lib (libc), a stand-in jolt.time lib for the roots-autoload gate, and
+# provclaim/provsquat for RFC 0014 provider resolution.
 # Asserts the tools.deps alias args-map keys jolt supports — :extra-deps /
 # :extra-paths / :override-deps / :default-deps / :replace-deps / :replace-paths
 # / :main-opts — plus multi-alias combination rules, alias visibility in `path`,
 # -A composing with -M, an undeclared alias warning and being skipped, the
-# java.time library autoload from the source roots, and the tools.deps CLI
+# java.time library autoload from the source roots, load-order-independent
+# :jolt/provides resolution, and the tools.deps CLI
 # surface: -X/-T exec, -Sdeps, the report options (-Spath / -Stree / -Strace /
 # -Sdescribe / -P), -Scp, -Srepro, -Sverbose, the accepted-and-ignored options,
 # the user deps.edn chain, :local/root jars, :git/tag + short sha, and git cache
@@ -310,6 +312,43 @@ case "$(printf '%s' "$out" | head -1)" in
   *jolt-lang/*) check "library miss names no library" "no library named" "$(printf '%s' "$out" | head -1)" ;;
   *) check "library miss names no library" ok ok ;;
 esac
+
+# RFC 0014 provider resolution is a property of the GRAPH, not of compile order
+# (jolt#914). provclaim declares java.security.Signature; provsquat declares
+# javax.crypto.Mac and its install namespace registers Signature too, without
+# declaring it. Autoloading a provider only on a registry MISS meant the
+# undeclared registration pre-empted the claimer whenever the Mac reference came
+# first — same deps.edn, two answers, and no diagnostic. Both orders must resolve
+# Signature to the library that declares it.
+check "the declared provider resolves a claimed class" "claimer-sig:SHA256withECDSA" \
+      "$(run -A:prov run -m appprovsig)"
+out="$(runall -A:prov run -m appprovmac)"
+check "a squatting registration does not pre-empt the claimer" \
+      "squatter-mac:HmacSHA256 claimer-sig:SHA256withECDSA claimer-sig:SHA256withECDSA claimer-sig-ctor" \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+# ...and in the other order, where the claimer is already loaded when the
+# squatter's install namespace runs, the late registration is dropped rather than
+# allowed to win by being last.
+# The last line is the additive half: a MEMBER the provider's shim does not
+# answer is not a substitution and still registers, the same posture
+# class-extensions.ss takes. The claim is authority over what the provider
+# implements, not a reservation on the name.
+check "a late squatting registration does not take the class over" \
+      "claimer-sig:a squatter-mac:b claimer-sig:c squatter-extra" \
+      "$(runall -A:prov run -m appprovboth | tr '\n' ' ' | sed 's/ $//')"
+# The drop is reported: the library asked for something it did not get, and the
+# symptom would otherwise surface somewhere else entirely.
+out="$(runfull -A:prov run -m appprovboth)"
+case "$out" in
+  *"dropping a registration for java.security.Signature"*)
+    check "the dropped registration is reported" ok ok ;;
+  *) check "the dropped registration is reported" "a warning naming the dropped class" \
+           "$(printf '%s' "$out" | head -2)" ;;
+esac
+# The guard is about classes ANOTHER dependency declares. A provider's own
+# declared class still resolves to it.
+check "a provider still registers what it declares" "squatter-mac:HmacSHA256" \
+      "$(run -A:prov run -m appprovsquat)"
 
 # io/resource answers an ABSOLUTE file: URL for a file on a source root, like the
 # JVM classloader. The roots here are relative ("./src"), and "file:./src/x" is
