@@ -21,7 +21,7 @@ The `grenadine-<version>-src.tar.gz` asset of the matching Grenadine release,
 which ships the generated sources alongside the committed ones. Verified
 against the release's `grenadine-checksums.txt`:
 
-    302e26b50f765abb9fee4a76148ed81ed8de74a6938acad3eeaa4d6c0106dd3b  grenadine-0.1.7-src.tar.gz
+    49c5f701e19d9a2a517581d0a4b222f2069209a9c2971d9f516b3dd15970c3e1  grenadine-0.1.13-src.tar.gz
 
 The tarball's copies of the files Grenadine *does* commit are byte-identical to
 the git tag, checked file by file — which is what makes taking half the tree
@@ -47,8 +47,11 @@ wrong way round for a gate.
     tar xzf grenadine-X.Y.Z-src.tar.gz
     cp grenadine-X.Y.Z-src/src/grenadine/{basis,coordinate,expander,gitlibs}.cljc \
        vendor/grenadine-generated/grenadine/
-    printf 'vX.Y.Z %s\n' "$(git -C vendor/grenadine rev-parse HEAD)" \
-      >> vendor/grenadine-generated/VERSION   # keep the comment header
+    # REPLACE the version line, keeping the comment header — appending a
+    # second one makes grenadinecheck read both shas as one string and fail.
+    { grep '^#' vendor/grenadine-generated/VERSION
+      printf 'vX.Y.Z %s\n' "$(git -C vendor/grenadine rev-parse HEAD)"
+    } > /tmp/VERSION && mv /tmp/VERSION vendor/grenadine-generated/VERSION
 
 If a future Grenadine generates a different set, `make grenadinecheck` will not
 catch that on its own — the load will fail with an unresolved namespace, which

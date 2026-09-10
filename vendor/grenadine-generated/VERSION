@@ -3,4 +3,4 @@
 # grenadinecheck compares the SHA, not the tag — a submodule checkout does not
 # necessarily carry tags (CI's does not), so `git describe` is not available
 # everywhere and a tag comparison fails wherever it is missing.
-v0.1.7 77992327c0b220c186ece61d74f7eb570978a6f5
+v0.1.13 9d0361c623d665aac5ced4e036bf716a4076f1ba

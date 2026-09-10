@@ -51,6 +51,7 @@ grenadine.lock
 grenadine.repo
 grenadine.runtime
 grenadine.source
+grenadine.tree
 jolt.completions
 jolt.continuations
 jolt.fibers

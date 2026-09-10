@@ -177,7 +177,8 @@
                          (merge {:tool? *cli-tool?*
                                  :repro? *cli-repro?*
                                  :cp *cli-cp*
-                                 :trace? (contains? #{:tree :trace-file} *cli-report*)}
+                                 :trace? (contains? #{:tree :trace-file} *cli-report*)
+                                 :graph? (contains? #{:graph :outdated} *cli-report*)}
                                 opts))))
 
 ;; The resolution a task runs against: :tasks? lets a project's bb.edn
@@ -233,6 +234,10 @@
   (case *cli-report*
     :path     (print-roots resolved)
     :tree     (run! println (deps/dep-tree-lines (:trace resolved)))
+    ;; -Sgraph and -Soutdated render the same tree; only -Soutdated pays for the
+    ;; remote lookups that fill in the `-> VERSION` arrows.
+    :graph    (run! println (deps/dep-graph-lines resolved))
+    :outdated (run! println (deps/dep-graph-lines resolved (deps/dep-updates resolved)))
     :describe (print-describe (into *cli-aliases* aliases))
     ;; -Strace: the same trace -Stree renders, written beside the deps.edn it
     ;; describes (`clojure -Strace` drops it in the current directory; jolt's is
@@ -967,7 +972,9 @@
   (println "Each takes the aliases around it, so -A:test -Spath and -Spath -M:test")
   (println "both report on the resolution that run would use:")
   (println "  -Spath                 print the resolved source roots")
-  (println "  -Stree                 print the dependency tree")
+  (println "  -Stree                 print the dependency tree, tools.deps format")
+  (println "  -Sgraph                print the dependency tree as an indented graph")
+  (println "  -Soutdated             the same graph, marking available updates")
   (println "  -Strace                write the dep expansion to trace.edn")
   (println "  -Sdescribe             print the environment as an edn map")
   (println "  -P                     fetch every dependency, then stop")
@@ -987,16 +994,18 @@
 
 ;; Argv forms that only add resolution context — which files to read, which
 ;; aliases to select, what to merge in — rather than doing something. A report
-;; option (-Spath / -Stree / -Sdescribe / -P) still lets these dispatch, since
+;; option (-Spath / -Stree / -Sgraph / -Soutdated / -Sdescribe / -P) still lets
+;; these dispatch, since
 ;; they change the answer, and skips everything else: a report runs no program.
 (defn- context-arg? [cmd]
   (boolean (and cmd (or (#{"-Sdeps" "-Scp" "-Srepro" "-Sforce" "-Sthreads" "-Sverbose"
-                           "-Spath" "-Stree" "-Strace" "-Sdescribe"} cmd)
+                           "-Spath" "-Stree" "-Sgraph" "-Soutdated" "-Strace"
+                           "-Sdescribe"} cmd)
                         (some #(str/starts-with? cmd %) ["-A" "-M" "-X" "-T" "-J"])))))
 
 (def ^:private report-opts
-  {"-Spath" :path, "-Stree" :tree, "-Strace" :trace-file,
-   "-Sdescribe" :describe, "-P" :prepare})
+  {"-Spath" :path, "-Stree" :tree, "-Sgraph" :graph, "-Soutdated" :outdated,
+   "-Strace" :trace-file, "-Sdescribe" :describe, "-P" :prepare})
 
 (defn -main [& args]
   (let [[cmd & more] args]

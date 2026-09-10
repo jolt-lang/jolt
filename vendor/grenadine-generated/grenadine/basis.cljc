@@ -20,7 +20,8 @@
             [grenadine.graph :as graph]
             [grenadine.lock :as lock]
             [grenadine.pom :as pom]
-            [grenadine.repo :as repo]))
+            [grenadine.repo :as repo]
+            [grenadine.tree :as tree]))
 
 (defn- join-path [base path]
   (if (or (nil? path) (= "" path))
@@ -368,7 +369,10 @@
                      [(coordinate/lib-symbol group artifact classifier) entry]))
               (:artifacts final-lock))
         parent-data (parents-data (:trace expansion) libs)
-        expansion-libs (filter #(contains? libs %) (:order expansion))
+        ;; Alternate mediators can select libraries tools-deps never expanded.
+        expansion-libs (distinct (concat (filter #(contains? libs %)
+                                                 (:order expansion))
+                                         (sort-by str (keys libs))))
         lib-map
         (into {}
               (map
@@ -510,4 +514,8 @@
             :grenadine/resolution expansion
             :grenadine/source-roots
             (vec (concat (:roots source-extraction)
-                         non-maven-source-roots))})))
+                         non-maven-source-roots))}
+           (when (:dependency-tree? opts)
+             {:grenadine/tree
+              (tree/dependency-graph
+               top libs (fn [lib coord] (:children (info lib coord))))}))))

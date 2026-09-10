@@ -51,6 +51,8 @@
    ["-P"         "fetch every dependency, then stop"]
    ["-Spath"     "print the resolved source roots"]
    ["-Stree"     "print the dependency tree"]
+   ["-Sgraph"    "print the dependency tree as an indented graph"]
+   ["-Soutdated" "print the dependency graph, marking available updates"]
    ["-Strace"    "write the dep expansion to trace.edn"]
    ["-Sdescribe" "print the environment as an edn map"]
    ["-Sdeps"     "merge an extra deps.edn map"]

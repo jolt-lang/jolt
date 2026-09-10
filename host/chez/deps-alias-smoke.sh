@@ -201,6 +201,56 @@ case "$out" in
   *) check "-Stree indents a transitive dep" "child under parent" "$out" ;;
 esac
 
+# -Sgraph — the same resolution as -Stree, rendered as the indented graph
+# grenadine's --expand prints. It answers "what does this depend on", where
+# -Stree answers "how did the resolution get here", so the losing candidates
+# -Stree marks `X` are absent and a shared library is expanded once.
+out="$(runall -Sgraph)"
+case "$out" in
+  *"── local/liba "*) check "-Sgraph prints the top dep" ok ok ;;
+  *) check "-Sgraph prints the top dep" "a branch naming local/liba" "$out" ;;
+esac
+out="$(runall -A:dev -Sgraph)"
+case "$out" in
+  *"── local/libc "*) check "-Sgraph sees the alias's deps" ok ok ;;
+  *) check "-Sgraph sees the alias's deps" "local/libc in the graph" "$out" ;;
+esac
+# a transitive dep hangs under the dep that pulled it in, indented by the
+# connector rather than by -Stree's two spaces
+out="$(JOLT_PWD="$tmp/treeproj" JOLT_QUIET=1 "$JOLT" -Sgraph 2>/dev/null)"
+case "$out" in
+  *"── local/treeparent "*"
+    └── local/treechild "*) check "-Sgraph indents a transitive dep" ok ok ;;
+  *) check "-Sgraph indents a transitive dep" "child under parent" "$out" ;;
+esac
+# A library reached twice is expanded ONCE: the second parent shows it marked
+# rather than repeating the subtree, which is what keeps a wide graph readable.
+mkdir -p "$tmp/gshare/src"
+printf '{:paths ["src"] :deps {local/treeparent {:local/root "../treeparent"}\n
+                               local/treechild {:local/root "../treechild"}}}\n' \
+  > "$tmp/gshare/deps.edn"
+out="$(JOLT_PWD="$tmp/gshare" JOLT_QUIET=1 "$JOLT" -Sgraph 2>/dev/null)"
+case "$out" in
+  *"local/treechild "*"(already shown)"*) check "-Sgraph expands a shared dep once" ok ok ;;
+  *) check "-Sgraph expands a shared dep once" "treechild marked (already shown)" "$out" ;;
+esac
+# -Stree is NOT the same rendering — the two answer different questions and the
+# tools.deps one is what `clojure -Stree` prints, so it stays byte-for-byte.
+case "$(runall -Stree)" in
+  *"──"*) check "-Stree keeps the tools.deps format" "no box-drawing connectors" "$(runall -Stree)" ;;
+  *) check "-Stree keeps the tools.deps format" ok ok ;;
+esac
+# Both take the aliases around them, like every other report option. Compared
+# against the EXPECTED text rather than against each other: two empty outputs
+# are equal, so an -Sgraph that printed nothing would pass a side-by-side.
+before="$(runall -A:dev -Sgraph | tr '\n' ' ' | sed 's/ $//')"
+after="$(runall -Sgraph -A:dev | tr '\n' ' ' | sed 's/ $//')"
+case "$before" in
+  *"── local/libc "*) check "-Sgraph takes the aliases after it" ok ok ;;
+  *) check "-Sgraph takes the aliases after it" "local/libc in the graph" "$before" ;;
+esac
+check "-Sgraph takes the aliases before it" "$before" "$after"
+
 # accepted-and-ignored options don't change the answer or fail
 check "-Sforce is accepted" "$(runout path)" "$(runout -Sforce -Spath)"
 check "-Sthreads N is accepted" "$(runout path)" "$(runout -Sthreads 4 -Spath)"

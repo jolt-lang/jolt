@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt -Sgraph` prints the dependency tree as a graph, and `-Soutdated`
+  marks the updates available for it.** `-Stree` renders the tools.deps trace —
+  a top dep unprefixed, the candidates that lost marked `X` with the reason —
+  which answers how the resolution got where it did. That is the wrong shape
+  for the other question, "what does this program depend on", and it is the one
+  people actually ask a dependency tree. `-Sgraph` answers that one instead:
+  the SELECTED edges, indented under the dependency that pulled each in, with a
+  library reached twice expanded once and marked `(already shown)` rather than
+  repeating its subtree, and a coordinate that reaches itself marked `(cycle)`.
+
+  ```
+  ├── org.clojure/data.json 2.4.0
+  ├── org.clojure/tools.reader 1.3.6
+  └── rewrite-clj/rewrite-clj 1.1.47
+      └── org.clojure/tools.reader 1.3.6 (already shown)
+  ```
+
+  `-Soutdated` renders the same graph and appends `-> VERSION` to every Maven
+  library with a newer release, which is the one thing here that costs a
+  network round-trip per library — so it is its own option rather than a mode
+  of `-Sgraph`, which stays as cheap as `-Stree`. A lookup that fails warns on
+  stderr and leaves that library unmarked instead of failing the command, so
+  one unreachable repository does not cost the whole report. Git and
+  `:local/root` coordinates are printed but have no "newer" to report.
+
+  Both take the aliases around them like every other report option, and
+  `-Stree` is unchanged — the two answer different questions and the
+  tools.deps rendering is what `clojure -Stree` prints.
+
 - **A `deps.edn` can vouch for a runtime var lookup, so `--tree-shake` proceeds
   past it.** The shake bails, and must, when reachable code resolves a var by
   name: the static graph cannot follow a runtime name. But some of those sites
