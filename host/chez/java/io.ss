@@ -429,6 +429,21 @@
 (define (jfile-abs p)
   (if (= (string-length p) 0) (jolt-user-dir) (project-relative p)))
 
+;; java.io.File.slashify, the path File.toURI and File.toURL are built from: an
+;; EXISTING directory's URL ends in "/". That trailing slash is not cosmetic —
+;; it is what tells a consumer of the URL that the thing is a container, and
+;; what relative resolution against the URL keys on: resolved against
+;; "file:/root" a name replaces the last segment, against "file:/root/" it lands
+;; inside. The JVM asks the filesystem (File.isDirectory), so a path that is not
+;; there, or is a plain file, gets no slash.
+(define (jfile-uri-path p)
+  (let ((abs (jfile-abs p)))
+    (if (and (file-directory? p)
+             (> (string-length abs) 0)
+             (not (char=? (string-ref abs (- (string-length abs) 1)) #\/)))
+        (string-append abs "/")
+        abs)))
+
 ;; --- canonical paths --------------------------------------------------------
 ;; getCanonicalPath is realpath(3), not "make it absolute": it resolves
 ;; symlinks as well as "." and "..". Answering with the absolute path -- which
@@ -819,8 +834,8 @@
       ((string=? name "getAbsolutePath")(list (jfile-abs fp)))
       ((string=? name "getCanonicalPath")(list (jfile-canonical fp)))
       ;; File.toURI returns a java.net.URI (JVM), not a String.
-      ((string=? name "toURI")          (list (uri-parse (string-append "file:" (jfile-abs fp)))))
-      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-abs fp)))))
+      ((string=? name "toURI")          (list (uri-parse (string-append "file:" (uri-quote-path (jfile-uri-path fp))))))
+      ((string=? name "toURL")          (list (make-url (string-append "file:" (jfile-uri-path fp)))))
       ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
@@ -1904,80 +1919,371 @@
 (register-class-ctor! "java.lang.Boolean" boolean-ctor)
 
 ;; --- java.net.URI -----------------------------------------------------------
-;; A minimal RFC-3986 split into scheme/authority/host/port/path/query/fragment,
-;; kept in a jhost "uri" carrying the original string. (str u)/(.toString u) give
-;; the original; getHost is nil for a relative URI (hiccup.util/to-str branches on
-;; it). instance? java.net.URI + extend-protocol dispatch work via value-host-tags.
+;; An RFC-2396 parse that follows java.net.URI's, because the single-argument
+;; constructor VALIDATES: a space — or any character illegal in the component it
+;; lands in — is a URISyntaxException, not a URI whose getHost is the garbage.
+;; Callers lean on that: validation that only tries (URI. s) and catches, and
+;; anything downstream that trusts getHost to be a host (jolt-oov, #904).
+;;
+;; The shape mirrors the JVM's parser closely enough to reproduce its messages
+;; ("Illegal character in authority at index 11: …"), including the three rules
+;; that are easy to miss:
+;;   - a registry-based authority is legal but has NO host: "http://h_c.com/p"
+;;     parses and getHost is nil, because "_" is not a hostname character. Same
+;;     for a non-ASCII host and for a port that is not all digits.
+;;   - a character above 0x80 that is neither a space nor an ISO control is
+;;     legal UNESCAPED wherever an escape is, so "http://h.com/ä" is a valid URI.
+;;   - an opaque URI ("mailto:a@b.com") has no path at all; its body is the
+;;     scheme-specific part.
+;; The result is kept in a jhost "uri" carrying the original string, so (str u) /
+;; (.toString u) give the original. instance? java.net.URI + extend-protocol
+;; dispatch work via value-host-tags.
 (define (uri-index-of s ch from)
   (let ((n (string-length s)))
     (let loop ((i from)) (cond ((>= i n) #f) ((char=? (string-ref s i) ch) i) (else (loop (+ i 1)))))))
-(define (uri-scheme-end s)
-  ;; index of ':' that ends a scheme (letter then alnum/+-. before any /?#), or #f.
-  (let ((n (string-length s)))
-    (and (> n 0) (char-alphabetic? (string-ref s 0))
-         (let loop ((i 1))
-           (cond ((>= i n) #f)
-                 ((char=? (string-ref s i) #\:) i)
-                 ((let ((c (string-ref s i)))
-                    (or (char-alphabetic? c) (char-numeric? c) (char=? c #\+) (char=? c #\-) (char=? c #\.)))
-                  (loop (+ i 1)))
-                 (else #f))))))
-(define (uri-parse s)
-  (let* ((n (string-length s))
-         (se (uri-scheme-end s))
-         (scheme (and se (substring s 0 se)))
-         (rest-start (if se (+ se 1) 0))
-         ;; fragment
-         (hash (uri-index-of s #\# rest-start))
-         (frag (and hash (substring s (+ hash 1) n)))
-         (pre-frag-end (or hash n))
-         ;; query
-         (qm (uri-index-of s #\? rest-start))
-         (query (and qm (< qm pre-frag-end) (substring s (+ qm 1) pre-frag-end)))
-         (hp-end (cond ((and qm (< qm pre-frag-end)) qm) (else pre-frag-end)))
-         ;; authority (after "//")
-         (has-auth (and (<= (+ rest-start 2) n)
-                        (char=? (string-ref s rest-start) #\/)
-                        (char=? (string-ref s (+ rest-start 1)) #\/)))
-         (auth-start (and has-auth (+ rest-start 2)))
-         (auth-end (and has-auth
-                        (let loop ((i auth-start))
-                          (cond ((>= i hp-end) hp-end)
-                                ((char=? (string-ref s i) #\/) i)
-                                (else (loop (+ i 1)))))))
-         (authority (and has-auth (substring s auth-start auth-end)))
-         (path-start (if has-auth auth-end rest-start))
-         (path (substring s path-start hp-end)))
-    ;; host:port from authority (strip userinfo@)
-    (let* ((at (and authority (uri-index-of authority #\@ 0)))
-           (user-info (and at (substring authority 0 at)))
-           (hostport (if at (substring authority (+ at 1) (string-length authority)) authority))
-           (colon (and hostport (uri-index-of hostport #\: 0)))
-           (host (cond ((not hostport) jolt-nil)
-                       (colon (substring hostport 0 colon))
-                       (else hostport)))
-           (port (if (and colon (< (+ colon 1) (string-length hostport)))
-                     (or (string->number (substring hostport (+ colon 1) (string-length hostport))) -1)
-                     -1)))
+
+;; Character classes, ASCII-exact: Chez's char-alphabetic? spans Unicode, and a
+;; letter above 0x80 is "other" to the URI grammar, not an alpha.
+(define (uri-alpha? c) (or (and (char>=? c #\a) (char<=? c #\z)) (and (char>=? c #\A) (char<=? c #\Z))))
+(define (uri-digit? c) (and (char>=? c #\0) (char<=? c #\9)))
+(define (uri-alphanum? c) (or (uri-alpha? c) (uri-digit? c)))
+(define (uri-hex? c) (or (uri-digit? c) (and (char>=? c #\a) (char<=? c #\f)) (and (char>=? c #\A) (char<=? c #\F))))
+(define (uri-in-set? c set) (and (uri-index-of set c 0) #t))
+;; unreserved = alphanum | mark
+(define (uri-unreserved? c) (or (uri-alphanum? c) (uri-in-set? c "-_.!~*'()")))
+;; uric = reserved | unreserved
+(define (uri-uric? c) (or (uri-unreserved? c) (uri-in-set? c ";/?:@&=+$,[]")))
+;; path = pchar | ";" | "/", pchar = unreserved | ":" "@" "&" "=" "+" "$" ","
+(define (uri-path-char? c) (or (uri-unreserved? c) (uri-in-set? c ":@&=+$,;/")))
+(define (uri-userinfo-char? c) (or (uri-unreserved? c) (uri-in-set? c ";:&=+$,")))
+(define (uri-reg-name-char? c) (or (uri-unreserved? c) (uri-in-set? c "$,;:@&=+")))
+;; server = userinfo | alphanum | "-" | "." ":" "@" "[" "]"
+(define (uri-server-char? c) (or (uri-userinfo-char? c) (uri-in-set? c ".:@[]")))
+;; …and inside a literal IPv6 address "%" is the scope-id separator, not an escape.
+(define (uri-server%-char? c) (or (uri-server-char? c) (char=? c #\%)))
+(define (uri-scheme-char? c) (or (uri-alphanum? c) (uri-in-set? c "+-.")))
+(define (uri-alphanum-dash? c) (or (uri-alphanum? c) (char=? c #\-)))
+(define (uri-digit-dot? c) (or (uri-digit? c) (char=? c #\.)))
+;; Character.isISOControl / isSpaceChar over the range scanEscape can reach.
+(define (uri-iso-control? c)
+  (let ((i (char->integer c))) (or (<= i #x1f) (and (>= i #x7f) (<= i #x9f)))))
+(define (uri-space-char? c)
+  (let ((i (char->integer c)))
+    (or (= i #x20) (= i #xa0) (= i #x1680) (and (>= i #x2000) (<= i #x200a))
+        (= i #x2028) (= i #x2029) (= i #x202f) (= i #x205f) (= i #x3000))))
+;; java.net.URI.scanEscape: "%hh", or an unescaped character above 0x80 that is
+;; neither a space nor an ISO control. Answers the index past the unit,
+;; 'malformed for a bad "%" pair, or the same index when neither applies.
+(define (uri-scan-escape s p n)
+  (let ((c (string-ref s p)))
+    (cond ((char=? c #\%)
+           (if (and (<= (+ p 3) n) (uri-hex? (string-ref s (+ p 1))) (uri-hex? (string-ref s (+ p 2))))
+               (+ p 3)
+               'malformed))
+          ((and (> (char->integer c) 128) (not (uri-space-char? c)) (not (uri-iso-control? c))) (+ p 1))
+          (else p))))
+
+;; The parse proper. Every failure goes to `bail` with a reason and an index
+;; rather than raising, because two callers want two different exceptions —
+;; the constructor a URISyntaxException, URI/create an IllegalArgumentException —
+;; and parse-authority itself RETRIES a failed server parse as a registry-based
+;; authority, which needs the failure as a value.
+(define (uri-parse-1 s bail)
+  (let ((n (string-length s))
+        (cur-bail bail)
+        (scheme jolt-nil) (ssp-start 0) (authority jolt-nil) (user-info jolt-nil)
+        (host jolt-nil) (port -1) (path jolt-nil) (query jolt-nil) (fragment jolt-nil)
+        (v6bytes 0))
+    (define (fail reason idx) (cur-bail reason idx))
+    (define (failx what idx) (cur-bail (string-append "Expected " what) idx))
+    (define (at? p e ch) (and (< p e) (char=? (string-ref s p) ch)))
+    (define (at2? p e a b) (and (< (+ p 1) e) (char=? (string-ref s p) a) (char=? (string-ref s (+ p 1)) b)))
+    ;; scan by character class, honoring escapes when `esc`.
+    (define (scan p e pred esc)
+      (let loop ((i p))
+        (if (>= i e) i
+            (let ((c (string-ref s i)))
+              (cond ((pred c) (loop (+ i 1)))
+                    (esc (let ((q (uri-scan-escape s i e)))
+                           (cond ((eq? q 'malformed) (fail "Malformed escape pair" i))
+                                 ((> q i) (loop q))
+                                 (else i))))
+                    (else i))))))
+    (define (check p e pred esc what)
+      (let ((q (scan p e pred esc)))
+        (when (< q e) (fail (string-append "Illegal character in " what) q))))
+    ;; scan to the first character of `stop`; -1 if one of `err` comes first.
+    (define (scan-until p e err stop)
+      (let loop ((i p))
+        (cond ((>= i e) i)
+              ((uri-in-set? (string-ref s i) err) -1)
+              ((uri-in-set? (string-ref s i) stop) i)
+              (else (loop (+ i 1))))))
+    ;; 1-3 digits whose value fits in a byte.
+    (define (scan-byte p e)
+      (let ((q (scan p e uri-digit? #f)))
+        (if (<= q p) q (if (> (string->number (substring s p q)) 255) p q))))
+    ;; A dotted quad. `strict` requires it to consume the whole range. `soft`
+    ;; answers #f where the JVM raises "Malformed IPv4 address" — the hostname
+    ;; path treats a malformed quad as simply "not an address" and tries a
+    ;; hostname instead, which is what parseIPv4Address's catch amounts to.
+    (define (scan-ipv4 p e strict soft)
+      (let ((m (scan p e uri-digit-dot? #f)))
+        (if (or (<= m p) (and strict (not (= m e))))
+            #f
+            (let loop ((i p) (step 0))
+              (cond ((= step 7) (if (= i m) i (if soft #f (fail "Malformed IPv4 address" i))))
+                    ((even? step)
+                     (let ((q (scan-byte i m)))
+                       (if (<= q i) (if soft #f (fail "Malformed IPv4 address" q)) (loop q (+ step 1)))))
+                    (else (if (at? i m #\.)
+                              (loop (+ i 1) (+ step 1))
+                              (if soft #f (fail "Malformed IPv4 address" i)))))))))
+    (define (take-ipv4 p e what)
+      (let ((q (scan-ipv4 p e #t #f)))
+        (if (or (not q) (<= q p)) (failx what p) q)))
+    (define (parse-ipv4-address p e)
+      (let ((m (scan-ipv4 p e #f #t)))
+        (cond ((or (not m) (<= m p)) #f)
+              ((and (< m e) (not (char=? (string-ref s m) #\:))) #f)
+              (else (set! host (substring s p m)) m))))
+    (define (scan-hex-seq p e)
+      (let ((q (scan p e uri-hex? #f)))
+        (cond ((<= q p) -1)
+              ((at? q e #\.) -1)                       ; the start of an IPv4 address
+              (else
+               (when (> q (+ p 4)) (fail "IPv6 hexadecimal digit sequence too long" p))
+               (set! v6bytes (+ v6bytes 2))
+               (let loop ((i q))
+                 (cond ((>= i e) i)
+                       ((not (at? i e #\:)) i)
+                       ((at2? i e #\: #\:) i)          ; "::" ends this sequence
+                       ((= (+ i 1) e) (fail "Expected digits for an IPv6 address" (+ i 1)))
+                       (else
+                        (let* ((p2 (+ i 1)) (q2 (scan p2 e uri-hex? #f)))
+                          (cond ((<= q2 p2) (failx "digits for an IPv6 address" p2))
+                                ((at? q2 e #\.) i)     ; an IPv4 tail; stop at the ":"
+                                (else
+                                 (when (> q2 (+ p2 4)) (fail "IPv6 hexadecimal digit sequence too long" p2))
+                                 (set! v6bytes (+ v6bytes 2))
+                                 (loop q2)))))))))))
+    (define (scan-hex-post p e)
+      (if (= p e)
+          p
+          (let ((q (scan-hex-seq p e)))
+            (if (> q p)
+                (if (at? q e #\:)
+                    (let ((r (take-ipv4 (+ q 1) e "hex digits or IPv4 address")))
+                      (set! v6bytes (+ v6bytes 4)) r)
+                    q)
+                (let ((r (take-ipv4 p e "hex digits or IPv4 address")))
+                  (set! v6bytes (+ v6bytes 4)) r)))))
+    (define (parse-ipv6-ref start e)
+      (let* ((q (scan-hex-seq start e))
+             (compressed #f)
+             (p (cond ((> q start)
+                       (cond ((at2? q e #\: #\:) (set! compressed #t) (scan-hex-post (+ q 2) e))
+                             ((at? q e #\:)
+                              (let ((r (take-ipv4 (+ q 1) e "IPv4 address")))
+                                (set! v6bytes (+ v6bytes 4)) r))
+                             (else q)))
+                      ((at2? start e #\: #\:) (set! compressed #t) (scan-hex-post (+ start 2) e))
+                      (else start))))
+        (when (< p e) (fail "Malformed IPv6 address" start))
+        (when (> v6bytes 16) (fail "IPv6 address too long" start))
+        (when (and (not compressed) (< v6bytes 16)) (fail "IPv6 address too short" start))
+        (when (and compressed (= v6bytes 16)) (fail "Malformed IPv6 address" start))
+        p))
+    ;; hostname = domainlabel *( "." domainlabel ) [ "." ], and a multi-label
+    ;; name must have an alphabetic rightmost label — "1.2.3.4.5" is neither an
+    ;; address nor a hostname, so it falls back to a registry authority.
+    (define (parse-hostname start e)
+      (define (done p l)
+        (when (and (< p e) (not (at? p e #\:))) (fail "Illegal character in hostname" p))
+        (when (< l 0) (failx "hostname" start))
+        (when (and (> l start) (not (uri-alpha? (string-ref s l)))) (fail "Illegal character in hostname" l))
+        (set! host (substring s start p))
+        p)
+      (let loop ((p start) (l -1))
+        (let ((q (scan p e uri-alphanum? #f)))
+          (if (<= q p)
+              (done p l)
+              (let* ((q2 (scan q e uri-alphanum-dash? #f))
+                     (p2 (if (> q2 q)
+                             (begin (when (char=? (string-ref s (- q2 1)) #\-)
+                                      (fail "Illegal character in hostname" (- q2 1)))
+                                    q2)
+                             q)))
+                (if (at? p2 e #\.)
+                    (let ((p3 (+ p2 1))) (if (< p3 e) (loop p3 p) (done p3 p)))
+                    (done p2 p)))))))
+    (define (parse-server start e)
+      (let* ((q (scan-until start e "/?#" "@"))
+             (p (if (and (>= q start) (at? q e #\@))
+                    (begin (check start q uri-userinfo-char? #t "user info")
+                           (set! user-info (substring s start q))
+                           (+ q 1))
+                    start))
+             (p (if (at? p e #\[)
+                    (let* ((b (+ p 1)) (q2 (scan-until b e "/?#" "]")))
+                      (if (and (> q2 b) (at? q2 e #\]))
+                          ;; A "%" splits the address from a scope id. With no
+                          ;; "%" the scan lands on the closing bracket, which is
+                          ;; the same thing as the whole range being the address.
+                          (let ((m (scan-until b q2 "" "%")))
+                            (if (> m b)
+                                (begin (parse-ipv6-ref b m)
+                                       (when (= (+ m 1) q2) (fail "scope id expected" -1))
+                                       (check (+ m 1) q2 uri-alphanum? #f "scope id"))
+                                (parse-ipv6-ref b q2))
+                            (set! host (substring s p (+ q2 1)))
+                            (+ q2 1))
+                          (failx "closing bracket for IPv6 address" q2)))
+                    (or (parse-ipv4-address p e) (parse-hostname p e))))
+             (p (if (at? p e #\:)
+                    (let* ((pp (+ p 1)) (q3 (scan-until pp e "" "/")))
+                      (if (> q3 pp)
+                          (begin (check pp q3 uri-digit? #f "port number")
+                                 (let ((v (string->number (substring s pp q3))))
+                                   (when (> v 2147483647) (fail "Malformed port number" pp))
+                                   (set! port v))
+                                 q3)
+                          pp))
+                    ;; A host that ran to a character other than ":" only gets
+                    ;; here from the bracket branch — parse-hostname and the IPv4
+                    ;; scan both refuse a trailing anything-else themselves.
+                    (begin (when (< p e) (failx "port number" p)) p))))
+        p))
+    ;; An authority is server-based when it parses as one, and registry-based
+    ;; otherwise; only a string that is neither is an error.
+    (define (parse-authority start e)
+      (let* ((bracket (> (scan-until start e "" "]") start))
+             (server-pred (if bracket uri-server%-char? uri-server-char?))
+             (server-ok (= (scan start e server-pred #t) e))
+             (reg-stop (scan start e uri-reg-name-char? #t))
+             (reg-ok (= reg-stop e)))
+        (cond
+          ((and reg-ok (not server-ok)) (set! authority (substring s start e)))
+          (server-ok
+           (let* ((outer cur-bail)
+                  (err (call/cc (lambda (k)
+                                  (set! cur-bail (lambda (r i) (k (cons r i))))
+                                  (parse-server start e)
+                                  #f))))
+             (set! cur-bail outer)
+             (cond ((not err) (set! authority (substring s start e)))
+                   (else (set! user-info jolt-nil) (set! host jolt-nil) (set! port -1)
+                         (if reg-ok
+                             (set! authority (substring s start e))
+                             (fail (car err) (cdr err)))))))
+          (else (fail "Illegal character in authority" reg-stop)))
+        e))
+    (define (parse-hierarchical start)
+      (let* ((p (if (and (at? start n #\/) (at? (+ start 1) n #\/))
+                    (let* ((p2 (+ start 2)) (q (scan-until p2 n "" "/?#")))
+                      (cond ((> q p2) (parse-authority p2 q))
+                            ;; an empty authority is allowed before a non-empty
+                            ;; path — "file:///a/b" is the everyday shape.
+                            ((< q n) p2)
+                            (else (failx "authority" p2))))
+                    start))
+             (q (scan-until p n "" "?#")))
+        (check p q uri-path-char? #t "path")
+        (set! path (substring s p q))
+        (if (at? q n #\?)
+            (let* ((p3 (+ q 1)) (q3 (scan-until p3 n "" "#")))
+              (check p3 q3 uri-uric? #t "query")
+              (set! query (substring s p3 q3))
+              q3)
+            q)))
+    (let* ((p0 (scan-until 0 n "/?#" ":"))
+           (body-end
+            (if (and (>= p0 0) (at? p0 n #\:))
+                (begin
+                  (when (= p0 0) (failx "scheme name" 0))
+                  (unless (uri-alpha? (string-ref s 0)) (fail "Illegal character in scheme name" 0))
+                  (check 1 p0 uri-scheme-char? #f "scheme name")
+                  (set! scheme (substring s 0 p0))
+                  (set! ssp-start (+ p0 1))
+                  ;; "scheme:/…" is hierarchical, anything else opaque.
+                  (if (at? ssp-start n #\/)
+                      (parse-hierarchical ssp-start)
+                      (let ((q (scan-until ssp-start n "" "#")))
+                        (when (<= q ssp-start) (failx "scheme-specific part" ssp-start))
+                        (check ssp-start q uri-uric? #t "opaque part")
+                        q)))
+                (parse-hierarchical 0)))
+           (end (if (at? body-end n #\#)
+                    (begin (check (+ body-end 1) n uri-uric? #t "fragment")
+                           (set! fragment (substring s (+ body-end 1) n))
+                           n)
+                    body-end)))
+      (when (< end n) (failx "end of URI" end))
       (make-jhost "uri"
         (list (cons 'string s)
-              (cons 'scheme (or scheme jolt-nil))
-              (cons 'authority (or authority jolt-nil))
-              (cons 'host (if (and host (string? host) (= 0 (string-length host))) jolt-nil host))
-              (cons 'user-info (or user-info jolt-nil))
+              (cons 'scheme scheme)
+              (cons 'ssp (substring s ssp-start body-end))
+              (cons 'authority authority)
+              (cons 'host host)
+              (cons 'user-info user-info)
               (cons 'port (->num port))
-              (cons 'path (if (= 0 (string-length path)) (if has-auth "" jolt-nil) path))
-              (cons 'query (or query jolt-nil))
-              (cons 'fragment (or frag jolt-nil)))))))
+              (cons 'path path)
+              (cons 'query query)
+              (cons 'fragment fragment))))))
+(define (uri-parse-either s)
+  (call/cc (lambda (k) (uri-parse-1 s (lambda (reason idx) (k (list 'uri-error reason idx)))))))
+(define (uri-error? r) (and (pair? r) (eq? (car r) 'uri-error)))
+(define (uri-error-message s r)
+  (let ((idx (caddr r)))
+    (string-append (cadr r) (if (< idx 0) "" (string-append " at index " (number->string idx))) ": " s)))
+(define (uri-parse s)
+  (let ((r (uri-parse-either s)))
+    (if (uri-error? r)
+        (jolt-throw (jolt-host-throwable "java.net.URISyntaxException" (uri-error-message s r)))
+        r)))
+;; Percent-encode what is illegal in a URI path. File.toURI is new URI(scheme,
+;; host, path, fragment) on the JVM, which QUOTES rather than rejects, so a file
+;; whose name holds a space is file:/tmp/a%20b and not an invalid URI string.
+;; A character above 0x80 is legal unescaped and stays as it is.
+(define (uri-hex2 b)
+  (let ((d "0123456789ABCDEF"))
+    (string (string-ref d (quotient b 16)) (string-ref d (remainder b 16)))))
+(define (uri-percent-encode c)
+  (let ((bv (string->utf8 (string c))))
+    (let loop ((i 0) (acc ""))
+      (if (>= i (bytevector-length bv))
+          acc
+          (loop (+ i 1) (string-append acc "%" (uri-hex2 (bytevector-u8-ref bv i))))))))
+(define (uri-quote-path p)
+  (let ((n (string-length p)))
+    (let loop ((i 0) (acc '()))
+      (if (>= i n)
+          (apply string-append (reverse acc))
+          (let ((c (string-ref p i)))
+            (loop (+ i 1)
+                  (cons (if (or (uri-path-char? c)
+                                (and (> (char->integer c) 128)
+                                     (not (uri-space-char? c)) (not (uri-iso-control? c))))
+                            (string c)
+                            (uri-percent-encode c))
+                        acc)))))))
 (define (uri-field u k) (let ((p (assq k (jhost-state u)))) (if p (cdr p) jolt-nil)))
 (register-class-ctor! "URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
 (register-class-ctor! "java.net.URI" (lambda (s) (uri-parse (jolt-str-render-one s))))
-;; URI/create — the static factory, same as the (URI. s) constructor.
-(register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-parse (jolt-str-render-one s))))))
+;; URI/create — the (URI. s) constructor with the checked URISyntaxException
+;; rewrapped as an unchecked IllegalArgumentException, as the JVM's does.
+(define (uri-create s)
+  (let ((r (uri-parse-either s)))
+    (if (uri-error? r)
+        (throw-jvm (quote IllegalArgumentException) (uri-error-message s r))
+        r)))
+(register-class-statics! "java.net.URI" (list (cons "create" (lambda (s) (uri-create (jolt-str-render-one s))))))
 (register-host-methods! "uri"
   (list (cons "toString" (lambda (u) (uri-field u 'string)))
         (cons "toASCIIString" (lambda (u) (uri-field u 'string)))
         (cons "getScheme" (lambda (u) (uri-field u 'scheme)))
+        (cons "getSchemeSpecificPart" (lambda (u) (uri-field u 'ssp)))
+        (cons "getRawSchemeSpecificPart" (lambda (u) (uri-field u 'ssp)))
         (cons "getAuthority" (lambda (u) (uri-field u 'authority)))
         (cons "getHost" (lambda (u) (uri-field u 'host)))
         (cons "getUserInfo" (lambda (u) (uri-field u 'user-info)))

@@ -664,6 +664,7 @@
 (jch-register-supers! "java.net.ConnectException" '("java.net.SocketException"))
 (jch-register-supers! "java.net.SocketTimeoutException" '("java.io.InterruptedIOException"))
 (jch-register-supers! "java.net.MalformedURLException" '("java.io.IOException"))
+(jch-register-supers! "java.net.URISyntaxException" '("java.lang.Exception"))
 (jch-register-supers! "javax.net.ssl.SSLException" '("java.io.IOException"))
 (jch-register-supers! "java.nio.charset.UnsupportedCharsetException" '("java.lang.IllegalArgumentException"))
 (jch-register-supers! "java.nio.charset.IllegalCharsetNameException" '("java.lang.IllegalArgumentException"))

@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`java.net.URI`'s constructor validates.** `(java.net.URI. "https://not a
+  url")` answered a URI whose `.getHost` was `"not a url"`; the JVM's
+  single-argument constructor parses per RFC 2396 and throws
+  `java.net.URISyntaxException` — so code that validates input by constructing a
+  URI and catching passed malformed strings straight through (#904). The parse
+  now follows the JVM's, down to the message and index ("Illegal character in
+  authority at index 11: …"), and with it the two rules a lenient split misses:
+  an authority that is not server-based is legal but has NO host, so
+  `http://h_c.com/p` parses with a nil `.getHost` rather than reporting the
+  underscore host, and a character above 0x80 is legal unescaped, so
+  `http://h.com/ä` is still a valid URI. `URI/create` rewraps the checked
+  exception as an `IllegalArgumentException` as the JVM does, an opaque URI
+  ("mailto:a@b.com") has a nil path and reaches its body through the new
+  `.getSchemeSpecificPart`, and `File.toURI` quotes what is illegal in a path
+  (`/tmp/a b` is `file:/tmp/a%20b`) instead of building a URI that would not
+  parse. Checked by differential fuzzing against the JDK: across ~9k inputs the
+  only remaining divergence is that jolt's non-raw getters do not
+  percent-decode (jolt-oov).
+
+- **An existing directory's `File.toURI` and `File.toURL` end in a slash.**
+  `(.toURI (java.io.File. "/tmp"))` was `file:/tmp` where the JVM answers
+  `file:/tmp/` — its `slashify` asks the filesystem and marks a directory as
+  one. The slash is what relative resolution against the URL keys on: resolved
+  against `file:/root` a name replaces the last segment, against `file:/root/`
+  it lands inside. A plain file, and a path that is not there, get no slash.
+
 - **Regex character-class escapes match `java.util.regex`.** `[\a]` matched the
   letter `a` instead of BEL, `\cA` and `[\cA]` matched the letter `c`, `\R`
   matched the letter `R` rather than a linebreak, and `[\b]` was Perl's
