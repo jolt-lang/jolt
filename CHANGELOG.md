@@ -64,6 +64,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Pattern.quote` does; `UNICODE_CHARACTER_CLASS` is accepted but `\w` `\d`
   `\s` stay ASCII under it (jolt-janu, also recorded). (#961)
 
+- **`java.io.PushbackInputStream`.** `(PushbackInputStream. in)` and
+  `(PushbackInputStream. in size)` over any InputStream — jolt's own, a
+  process or socket stream, or a `proxy` — with `unread` for an int, a
+  `byte[]` or a range of one, the JVM's fixed capacity (`Push back buffer is
+  full` past it), `available` counting the pushed-back bytes, `close`
+  reaching the wrapped stream, and `markSupported` false. bencode reads a
+  byte to classify a token and puts it back before reading a netstring, which
+  is how `babashka.pods` and nrepl talk to a process; neither could load. The
+  pushed-back bytes live in the stream's own port buffer, so its `read` /
+  `readAllBytes` / `skip`, `slurp`, `io/copy`, a reader over it and
+  `read-line` through a `System/setIn` of it all see them first, and a
+  `read(byte[] …)` that finds fewer pushed-back bytes than it asked for reads
+  the wrapped stream once for the rest, as the JVM's does. (#965)
+
 - **`clojure.core/pr-on`**, the reference's private print entry that nREPL's
   print middleware binds through `@#'clojure.core/pr-on`.
 
@@ -71,6 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.main/renumbering-read` and `repl`'s prompt logic are built on.
 
 ### Fixed
+
+- **The concrete `java.io` stream classes are in the class graph.**
+  `FileInputStream`, `ByteArrayInputStream`, `PipedInputStream`,
+  `FilterInputStream`, `BufferedInputStream`, `PushbackInputStream`,
+  `FileOutputStream`, `ByteArrayOutputStream`, `PipedOutputStream`,
+  `BufferedOutputStream`, `FileReader` and `BufferedWriter` had constructors
+  but no ancestry, so `(isa? java.io.FileInputStream java.io.InputStream)`
+  was false and `(supers java.io.BufferedInputStream)` nil.
 
 - **A form `load-string` read carried the calling file's path.** The loader
   binds the reader's file around a whole file load and `load-string` read

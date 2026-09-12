@@ -46,6 +46,9 @@
 (define (in-stream-markable? self) (vector-ref (jhost-state self) 1))
 (define (make-in-stream-markable port) (make-in-stream port 'markable))
 (define (in-stream? x) (and (jhost? x) (string=? (jhost-tag x) "in-stream")))
+;; Two optional slots follow, each #f or absent on an ordinary stream: slot 3 is
+;; a piped stream's shared pipe (piped-cell, below), slot 4 a
+;; PushbackInputStream's pushback state (in-stream-pushback, below).
 
 ;; The port behind a stream, or the JVM's IOException when it has been closed.
 ;; Reading a closed Chez port raises a classless host error instead, which no
@@ -130,6 +133,13 @@
   (let ((port (in-stream-live-port self))
         (p (piped-pipe self)))
     (cond
+      ;; a pushback stream: what its port holds — the pushed-back bytes and any
+      ;; block already pulled from the wrapped stream — plus the wrapped
+      ;; stream's own count, asked through ITS available (a proxy's included)
+      ((in-stream-pushback self)
+       => (lambda (pb)
+            (+ (port-buffered port)
+               (jnum->exact (record-method-dispatch (pushback-inner pb) "available" jolt-nil)))))
       ;; a piped stream holds its bytes in two places: what the writer has queued
       ;; and what an earlier read already pulled into the port's buffer
       (p (+ (port-buffered port) (pipe-available p)))
@@ -163,7 +173,7 @@
                         (off (if (>= (length rest) 3) (jnum->exact (cadr rest)) 0))
                         (len (if (>= (length rest) 3) (jnum->exact (caddr rest)) (ja-len buf)))
                         (tmp (make-bytevector (max len 1)))
-                        (n (if (<= len 0) 0 (get-bytevector-some! port tmp 0 len))))
+                        (n (if (<= len 0) 0 (in-stream-read-some! self port tmp len))))
                    (cond
                      ((<= len 0) (->num 0))
                      ((eof-object? n) -1)
@@ -175,6 +185,12 @@
    (cons "skip" (lambda (self n) (let ((bv (get-bytevector-n (in-stream-live-port self) (jnum->exact n))))
                                    (->num (if (eof-object? bv) 0 (bytevector-length bv))))))
    (cons "available" (lambda (self) (->num (in-stream-available self))))
+   ;; PushbackInputStream.unread — see the pushback section below. Any other
+   ;; stream has no such method, and says so the way every missing method does.
+   (cons "unread" (lambda (self b . rest)
+                    (if (in-stream-pushback self)
+                        (in-stream-unread! self b rest)
+                        (dispatch-miss self "unread" (cons b rest)))))
    ;; A piped stream marks its shared pipe instead of closing the Chez port: a
    ;; read after close has to raise the JVM's IOException, and a closed Chez port
    ;; raises a classless host error before the port's own reader is consulted.
@@ -849,16 +865,17 @@
 ;; leaves the wrapped stream OPEN — R6RS transcoded-port takes ownership of the
 ;; port it is given, so (io/reader System/in) used to take standard input away
 ;; from System/in, and from read-line with it, the moment it was called.
+(define (stream-read-into! in bv start count)
+  (let* ((arr (na-byte-array (make-bytevector count)))
+         (n (jnum->exact (record-method-dispatch in "read"
+                           (list->cseq (list arr (->num 0) (->num count)))))))
+    (if (<= n 0)
+        0                                   ; the custom-port way of saying EOF
+        (begin (bytevector-copy! (na-bytearray->bv arr) 0 bv start n) n))))
 (define (in-stream-source-port in)
   (make-custom-binary-input-port
    "stream-source"
-   (lambda (bv start count)
-     (let* ((arr (na-byte-array (make-bytevector count)))
-            (n (jnum->exact (record-method-dispatch in "read"
-                              (list->cseq (list arr (->num 0) (->num count)))))))
-       (if (<= n 0)
-           0                                   ; the custom-port way of saying EOF
-           (begin (bytevector-copy! (na-bytearray->bv arr) 0 bv start n) n))))
+   (lambda (bv start count) (stream-read-into! in bv start count))
    #f #f (lambda () #f)))
 (reg-ctor! '("InputStreamReader" "java.io.InputStreamReader")
   (lambda (in . _)
@@ -927,6 +944,118 @@
                     (make-in-stream-markable (in-stream-port inner))
                     inner))))
           '("BufferedInputStream" "java.io.BufferedInputStream"))
+
+;; --- java.io.PushbackInputStream ---------------------------------------------
+;; An InputStream whose next bytes can be put back (bencode reads one byte to
+;; classify a token and unreads it when it opens a netstring, which is how
+;; babashka.pods and nrepl talk to a process). It is an in-stream like every
+;; other: its port is a custom binary port that pulls each block through the
+;; wrapped stream's OWN read — a proxy's override, a process or socket stream's
+;; own read — and unread writes the bytes into the front of THAT port's buffer.
+;; The port is the one place every reader of a stream goes: read / readAllBytes
+;; / skip here, slurp, io/copy, an InputStreamReader over it, read-line over a
+;; System/in it was setIn as. So a byte put back is the next byte for all of
+;; them by construction, where a prefix buffer of its own would be honoured only
+;; by the sites it was threaded through.
+;;
+;; pushback state #(inner capacity pb-end): capacity is the JVM's fixed buffer
+;; size (unread past it is "Push back buffer is full"); pb-end the port-buffer
+;; index where the pushed-back region ends, so the bytes still pending are
+;; pb-end - index, and reading them back frees their room. A refill starts the
+;; buffer over, and clears it.
+(define (in-stream-pushback x)
+  (let ((st (and (jhost? x) (jhost-state x))))
+    (and (vector? st) (fx>? (vector-length st) 4) (vector-ref st 4))))
+(define (pushback-inner pb) (vector-ref pb 0))
+(define (pushback-pending pb port)
+  (max 0 (fx- (vector-ref pb 2) (port-input-index port))))
+(define (make-pushback-in-stream inner . rest)
+  ;; A Reader is already decoded characters — the same guard InputStreamReader
+  ;; makes, for the same reason: the byte port drives the wrapped value's
+  ;; read(byte[],int,int), which a Reader answers with characters, and the
+  ;; failure would surface from whatever finally reads a char as a number.
+  (when (reader-jhost? inner)
+    (throw-jvm (quote IllegalArgumentException)
+               "PushbackInputStream wraps an InputStream, not a Reader (it is already decoded)"))
+  (let ((capacity (if (pair? rest) (jnum->exact (car rest)) 1)))
+    (when (<= capacity 0) (throw-jvm (quote IllegalArgumentException) "size <= 0"))
+    (let* ((pb (vector inner capacity 0))
+           (port (make-custom-binary-input-port
+                  "pushback-source"
+                  (lambda (bv start count)
+                    (vector-set! pb 2 0)        ; drained: nothing pushed back is pending
+                    (stream-read-into! inner bv start count))
+                  #f #f
+                  ;; close reaches the wrapped stream, as FilterInputStream's does
+                  (lambda () (record-method-dispatch inner "close" jolt-nil)))))
+      (make-jhost "in-stream" (vector port #f 0 #f pb)))))
+(reg-ctor! '("PushbackInputStream" "java.io.PushbackInputStream") make-pushback-in-stream)
+
+;; unread(int) | unread(byte[]) | unread(byte[] off len). The int is the byte's
+;; low 8 bits — bencode hands back the SIGNED value read-byte narrowed to — and
+;; a byte[]'s elements are signed too, so both go in as their u8 view.
+(define (in-stream-unread! self b rest)
+  (let* ((port (in-stream-live-port self))
+         (bytes (cond
+                  ((number? b) (let ((bv (make-bytevector 1)))
+                                 (bytevector-u8-set! bv 0 (bitwise-and (jnum->exact b) #xff))
+                                 bv))
+                  ((and (jolt-array? b) (eq? (jolt-array-kind b) 'byte))
+                   (let* ((bv (na-bytearray->bv b))
+                          (off (if (>= (length rest) 2) (jnum->exact (car rest)) 0))
+                          (len (if (>= (length rest) 2) (jnum->exact (cadr rest)) (bytevector-length bv))))
+                     (when (or (< off 0) (< len 0) (> (+ off len) (bytevector-length bv)))
+                       (throw-jvm (quote IndexOutOfBoundsException) "unread range"))
+                     (let ((out (make-bytevector len)))
+                       (bytevector-copy! bv off out 0 len)
+                       out)))
+                  (else (throw-jvm (quote IllegalArgumentException)
+                                   "PushbackInputStream/unread: expects an int or a byte[]")))))
+    (pushback-prepend! (in-stream-pushback self) port bytes)
+    jolt-nil))
+
+;; Put BYTES in front of the port's unread bytes. When the buffer has that much
+;; room before its index — the bytes just read are still there — back the index
+;; up and write over them; otherwise rebuild the buffer as the bytes followed by
+;; what is still unread, no smaller than the block the port was reading in, so a
+;; byte-at-a-time reader keeps pulling whole blocks from the wrapped stream.
+(define (pushback-prepend! pb port bytes)
+  (let* ((n (bytevector-length bytes))
+         (idx (port-input-index port))
+         (size (port-input-size port))
+         (pending (pushback-pending pb port)))
+    (when (fx>? (fx+ pending n) (vector-ref pb 1))
+      (io-throw "Push back buffer is full"))
+    (if (fx>=? idx n)
+        (let ((at (fx- idx n)))
+          (bytevector-copy! bytes 0 (port-input-buffer port) at n)
+          (set-port-input-index! port at)
+          (vector-set! pb 2 (fx+ idx pending)))
+        (let* ((rest (fx- size idx))
+               (buf (port-input-buffer port))
+               (nb (make-bytevector (fxmax (bytevector-length buf) (fx+ n rest)))))
+          (bytevector-copy! bytes 0 nb 0 n)
+          (bytevector-copy! buf idx nb n rest)
+          (set-port-input-buffer! port nb)
+          (set-port-input-index! port 0)
+          (set-port-input-size! port (fx+ n rest))
+          (vector-set! pb 2 (fx+ n pending))))))
+
+;; read(byte[] …) for any in-stream: what the port has, or one read from the
+;; source when it has nothing (get-bytevector-some!). A pushback stream adds the
+;; JVM's rule for the pushed-back bytes: they come first, and when they fall
+;; short of LEN the wrapped stream is read ONCE for the rest — so a caller that
+;; put a header back and asks for header + body in one read gets both, as it
+;; does on the JVM, instead of the header alone.
+(define (in-stream-read-some! self port tmp len)
+  (let ((pb (in-stream-pushback self)))
+    (if (and pb (fx>? (pushback-pending pb port) 0))
+        (let ((n (get-bytevector-some! port tmp 0 len)))
+          (if (or (eof-object? n) (fx>=? n len))
+              n
+              (let ((more (get-bytevector-some! port tmp n (fx- len n))))
+                (if (eof-object? more) n (fx+ n more)))))
+        (get-bytevector-some! port tmp 0 len))))
 
 ;; --- integration: slurp / line-seq / with-open ------------------------------
 ;; a char-reader joins the reader-jhost set (drain-reader / line-seq read it via
@@ -1129,7 +1258,8 @@
 (def-var! "clojure.java.io" "copy" jio-copy)
 
 ;; --- instance? for the java.io stream taxonomy ------------------------------
-(register-class-arm! in-stream? (lambda (x) "java.io.InputStream"))
+(register-class-arm! in-stream?
+  (lambda (x) (if (in-stream-pushback x) "java.io.PushbackInputStream" "java.io.InputStream")))
 (register-class-arm! out-stream? (lambda (x) "java.io.OutputStream"))
 (register-class-arm! char-reader? (lambda (x) "java.io.Reader"))
 (register-class-arm! reader-adapter? (lambda (x) "java.io.BufferedReader"))
@@ -1139,6 +1269,9 @@
     (if (not (symbol-t? type-sym)) 'pass
     (let ((short (last-dot (symbol-t-name type-sym))))
       (cond
+        ;; a PushbackInputStream is the one in-stream that IS one; every other
+        ;; in-stream answers false to it, as a ByteArrayInputStream does
+        ((and (string=? short "PushbackInputStream") (in-stream? val)) (and (in-stream-pushback val) #t))
         ((and (in-stream? val) (member short '("InputStream" "FileInputStream" "ByteArrayInputStream"
                                                "BufferedInputStream" "FilterInputStream" "Closeable" "AutoCloseable"))) #t)
         ((and (out-stream? val) (member short '("OutputStream" "FileOutputStream" "ByteArrayOutputStream"

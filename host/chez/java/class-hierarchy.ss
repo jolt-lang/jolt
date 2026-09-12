@@ -751,6 +751,20 @@
 (jch-register-supers! "java.io.Flushable" '())
 (jch-register-supers! "java.io.InputStream" '("java.io.Closeable"))
 (jch-register-supers! "java.io.OutputStream" '("java.io.Closeable" "java.io.Flushable"))
+;; The concrete stream classes jolt constructs (io-streams.ss). Each modeled
+;; one is a row here, so isa?/supers on the class token and a protocol
+;; extended to the class both answer — a constructor with no row left
+;; (isa? java.io.FileInputStream java.io.InputStream) false and (supers …) nil.
+(jch-register-supers! "java.io.FileInputStream" '("java.io.InputStream"))
+(jch-register-supers! "java.io.ByteArrayInputStream" '("java.io.InputStream"))
+(jch-register-supers! "java.io.PipedInputStream" '("java.io.InputStream"))
+(jch-register-supers! "java.io.FilterInputStream" '("java.io.InputStream"))
+(jch-register-supers! "java.io.BufferedInputStream" '("java.io.FilterInputStream"))
+(jch-register-supers! "java.io.PushbackInputStream" '("java.io.FilterInputStream"))
+(jch-register-supers! "java.io.FileOutputStream" '("java.io.OutputStream"))
+(jch-register-supers! "java.io.ByteArrayOutputStream" '("java.io.OutputStream"))
+(jch-register-supers! "java.io.PipedOutputStream" '("java.io.OutputStream"))
+(jch-register-supers! "java.io.BufferedOutputStream" '("java.io.FilterOutputStream"))
 (jch-register-supers! "java.io.Reader" '("java.io.Closeable" "java.lang.Readable"))
 (jch-register-supers! "java.lang.Readable" '())
 (jch-register-supers! "java.io.Writer" '("java.io.Closeable" "java.io.Flushable" "java.lang.Appendable"))
@@ -767,7 +781,9 @@
 (jch-register-supers! "java.io.OutputStreamWriter" '("java.io.Writer"))
 (jch-register-supers! "java.io.FileWriter" '("java.io.OutputStreamWriter"))
 (jch-register-supers! "java.io.InputStreamReader" '("java.io.Reader"))
+(jch-register-supers! "java.io.FileReader" '("java.io.InputStreamReader"))
 (jch-register-supers! "java.io.BufferedReader" '("java.io.Reader"))
+(jch-register-supers! "java.io.BufferedWriter" '("java.io.Writer"))
 (jch-register-supers! "java.io.StringWriter" '("java.io.Writer"))
 ;; StringBuilder is a CharSequence and an Appendable, which is what lets count/seq/
 ;; nth and the regex entry points take one the way they take a String.
