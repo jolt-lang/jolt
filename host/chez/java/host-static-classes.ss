@@ -1148,9 +1148,13 @@
         (cons "close" (lambda (self) jolt-nil))))
 
 ;; ---- PushbackReader ---------------------------------------------------------
-;; state: a vector #(wrapped-reader pushed-list line-numbering? line column skip-lf?)
+;; state: a vector #(wrapped-reader pushed-list line-numbering? line column skip-lf?
+;;                   at-line-start? prev-at-line-start?)
+;; The last two are LineNumberingPushbackReader's atLineStart: true before
+;; anything is read, then whether the last unit read was a newline (or EOF); an
+;; unread restores the value from before that read, as the JVM's does.
 (register-class-ctor! "PushbackReader"
-  (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '() #f 0 0 #f))))
+  (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '() #f 0 0 #f #t #t))))
 ;; Fully-qualified aliases so (java.io.PushbackReader. …) / (java.io.StringReader. …)
 ;; resolve to these built-ins even when a library defines a deftype of the same
 ;; simple name (tools.reader), which would otherwise take the bare-name slot.
@@ -1166,7 +1170,7 @@
 ;; (extend LineNumberingPushbackReader IndexingReader …) to dispatch. The methods
 ;; are shared with the plain reader below, so the two cannot drift.
 (define (make-lnpbr rdr . _)
-  (make-jhost "line-numbering-pushback-reader" (vector rdr '() #t 0 0 #f)))
+  (make-jhost "line-numbering-pushback-reader" (vector rdr '() #t 0 0 #f #t #t)))
 (register-class-ctor! "LineNumberingPushbackReader" make-lnpbr)
 (register-class-ctor! "clojure.lang.LineNumberingPushbackReader" make-lnpbr)
 (define (read-unit r)        ; read one code unit (flonum) from any reader, -1 at EOF
@@ -1194,11 +1198,15 @@
   (list (cons "read"
           (lambda (self . rest)
             (define (read1)
-              (let* ((st (jhost-state self)) (pushed (vector-ref st 1)))
-                (cond
-                  ((pair? pushed) (vector-set! st 1 (cdr pushed)) (car pushed))
-                  ((vector-ref st 2) (pbr-read-translated self))
-                  (else (read-unit (vector-ref st 0))))))
+              (let* ((st (jhost-state self)) (pushed (vector-ref st 1))
+                     (c (cond
+                          ((pair? pushed) (vector-set! st 1 (cdr pushed)) (car pushed))
+                          ((vector-ref st 2) (pbr-read-translated self))
+                          (else (read-unit (vector-ref st 0)))))
+                     (n (and (number? c) (jnum->exact c))))
+                (vector-set! st 7 (vector-ref st 6))
+                (vector-set! st 6 (or (eqv? n 10) (eqv? n -1) (jolt-nil? c)))
+                c))
             (if (null? rest)
                 (read1)
                 ;; .read(cbuf, off, len) -> read one code unit at a time into cbuf,
@@ -1211,6 +1219,7 @@
                               (begin (ja-set! cbuf (+ off i) (integer->char c)) (loop (+ i 1)))))))))))
         (cons "unread"
           (lambda (self ch . rest)
+            (vector-set! (jhost-state self) 6 (vector-ref (jhost-state self) 7))
             (if (null? rest)
                 ;; unread(int|char) — push one code unit back
                 (vector-set! (jhost-state self) 1
@@ -1227,6 +1236,13 @@
         ;; 1-based, like clojure.lang.LineNumberingPushbackReader's own +1 over the
         ;; underlying LineNumberReader. A plain PushbackReader counts nothing.
         (cons "getLineNumber" (lambda (self) (->num (+ 1 (vector-ref (jhost-state self) 3)))))
+        ;; setLineNumber(n): the NEXT getLineNumber answers n — the JVM stores
+        ;; n-1 on the underlying LineNumberReader and adds its 1 back on read.
+        ;; clojure.main/renumbering-read re-reads a form under the line it
+        ;; came from this way.
+        (cons "setLineNumber"
+          (lambda (self n) (vector-set! (jhost-state self) 3 (- (jnum->exact n) 1)) jolt-nil))
+        (cons "atLineStart" (lambda (self) (vector-ref (jhost-state self) 6)))
         (cons "getColumnNumber" (lambda (self) (->num (vector-ref (jhost-state self) 4))))
         ;; readLine: the next line without its terminator, nil at EOF. On the JVM
         ;; only the line-numbering subclass has it (from its BufferedReader half);

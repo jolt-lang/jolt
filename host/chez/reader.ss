@@ -785,18 +785,32 @@
 (define rdr-kw-err-column (keyword "jolt.error" "column"))
 (define rdr-kw-err-file (keyword "jolt.error" "file"))
 (define rdr-kw-read-error (keyword #f "read-error"))
+;; The reference's keys, carried beside jolt's so clojure.main/ex-triage (and
+;; what is built on it) reads a read error's phase and position under the
+;; names it knows. The reference wraps the cause in a CompilerException with
+;; these; jolt puts them on the one throwable. Its :clojure.error/source is
+;; the file, or NO_SOURCE_PATH, which ex-triage knows to drop.
+(define rdr-kw-ref-phase (keyword "clojure.error" "phase"))
+(define rdr-kw-ref-line (keyword "clojure.error" "line"))
+(define rdr-kw-ref-column (keyword "clojure.error" "column"))
+(define rdr-kw-ref-source (keyword "clojure.error" "source"))
+(define rdr-kw-read-source (keyword #f "read-source"))
 
 ;; One FLAT namespaced shape. Namespacing, not nesting, is what keeps these from
 ;; colliding with the thrower's own ex-data (which the analyzer preserves), so
 ;; there is no wrapper map and no second copy of the position to drift out of
 ;; step with the first. The reference spells its own the same way
-;; (:clojure.error/line).
+;; (:clojure.error/line) — and those keys ride along, see above.
 (define (rdr-diagnostic-data kind line col)
   (let* ((f (rdr-source-file))
          (m (jolt-hash-map rdr-kw-err-kind kind
                            rdr-kw-err-type rdr-kw-read-error
                            rdr-kw-err-line line
-                           rdr-kw-err-column col)))
+                           rdr-kw-err-column col
+                           rdr-kw-ref-phase rdr-kw-read-source
+                           rdr-kw-ref-line line
+                           rdr-kw-ref-column col
+                           rdr-kw-ref-source (or f "NO_SOURCE_PATH"))))
     (if f (jolt-assoc m rdr-kw-err-file f) m)))
 
 (define (rdr-error-kind s i kind msg)
@@ -844,7 +858,8 @@
   (jolt-throw (make-jolt-ex-info-record
                class msg jolt-nil
                (jolt-hash-map rdr-kw-err-kind kind
-                              rdr-kw-err-type rdr-kw-read-error)
+                              rdr-kw-err-type rdr-kw-read-error
+                              rdr-kw-ref-phase rdr-kw-read-source)
                0)))
 
 ;; Run THUNK, and if it raises a read diagnostic with no position, fill in the one

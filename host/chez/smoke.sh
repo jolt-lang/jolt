@@ -265,6 +265,12 @@ else
   fails=$((fails + 1))
 fi
 
+# A diagnostic also carries the reference's :clojure.error/* keys (phase and
+# position, for clojure.main/ex-triage). They are machinery like the
+# :jolt.error/* keys and stay out of the report the same way.
+check_no "$nested_unresolved" 'clojure.error'
+check_no '(read-string "(")' 'clojure.error'
+
 # ...and it does not dump the analyzer's own recursion as a "stack trace". Those
 # frames are jolt compiling the form, never the user's program: the error is raised
 # while ANALYZING, so there is no user call stack to show.

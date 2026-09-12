@@ -783,14 +783,18 @@
     (let ((bt (jolt-history-backtrace)))
       (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
-;; A diagnostic's own keys all live in the "jolt.error" namespace, so the report
-;; hides them by NAMESPACE rather than by naming each one. The list this replaces
-;; had to be edited every time a diagnostic gained a field, and would silently
-;; start leaking machinery into the user's ex-data the first time someone forgot.
+;; A diagnostic's own keys all live in the "jolt.error" namespace — and, since
+;; the same diagnostic also carries the reference's spelling of its phase and
+;; position for clojure.main/ex-triage, in "clojure.error" — so the report
+;; hides them by NAMESPACE rather than by naming each one. The list this
+;; replaces had to be edited every time a diagnostic gained a field, and would
+;; silently start leaking machinery into the user's ex-data the first time
+;; someone forgot.
 (define (srcreg-jolt-error-key? k)
   (and (keyword-t? k)
        (let ((ns (keyword-t-ns k)))
-         (and (string? ns) (string=? ns "jolt.error")))))
+         (and (string? ns)
+              (or (string=? ns "jolt.error") (string=? ns "clojure.error"))))))
 
 ;; The thrower's own ex-data, with jolt's diagnostic keys taken out; jolt-nil
 ;; when there was none. Both report shapes go through this — the plain one below

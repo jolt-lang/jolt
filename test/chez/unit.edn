@@ -2773,4 +2773,40 @@
   {:suite "class-lattice" :expr "[(.getName (Class/forName \"clojure.lang.IDeref\")) (.getName (Class/forName \"clojure.lang.IAtom\")) (try (Class/forName \"IDeref\") :found (catch ClassNotFoundException _ :not-found)) (try (Class/forName \"String\") :found (catch ClassNotFoundException _ :not-found))]" :expected "[\"clojure.lang.IDeref\" \"clojure.lang.IAtom\" :not-found :not-found]"}
   {:suite "host faults" :expr "(try (.concat \"a\" nil) (catch Throwable t (ex-message t)))" :expected "\"string-append: nil is not a string\""}
   {:suite "host faults" :expr "(try (subs \"abc\" 5) (catch Throwable t [(.getName (class t)) (ex-message t)]))" :expected "[\"java.lang.StringIndexOutOfBoundsException\" \"substring: 5 and 3 are not valid start/end indices for \\\"abc\\\"\"]"}
+  ;; A read/compile diagnostic carries the reference's :clojure.error/* keys beside
+  ;; jolt's own, so clojure.main/ex-triage reads its phase and position. The
+  ;; reference wraps the cause in a CompilerException carrying them; jolt puts
+  ;; them on the one throwable (analyzer diagnostic-data, reader.ss). #962
+  {:suite "error-phase" :expr "(try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column :clojure.error/source])))" :expected "#:clojure.error{:phase :compile-syntax-check, :line 2, :column 3, :source \"NO_SOURCE_PATH\"}"}
+  {:suite "error-phase" :expr "(try (read-string \"(\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column])))" :expected "#:clojure.error{:phase :read-source, :line 1, :column 2}"}
+  ;; What a macro's own run raises is the reference's macro phase, naming the
+  ;; macro: a kinded diagnostic (let's destructurer) or an argument complaint
+  ;; (IllegalArgument/IllegalState/ExceptionInfo/bare Exception) is
+  ;; :macro-syntax-check; anything else out of the expander is :macroexpansion.
+  {:suite "error-phase" :expr "(try (load-string \"(let [x] 1)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e)) (:jolt.error/kind (ex-data e))]))" :expected "[:macro-syntax-check clojure.core/let :analyze/invalid-binding]"}
+  {:suite "error-phase" :expr "(do (defmacro ep-boom1 [] (throw (Exception. \"b1\"))) (try (load-string \"(user/ep-boom1)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e)) (ex-message e)])))" :expected "[:macro-syntax-check user/ep-boom1 \"java.lang.Exception: b1\"]"}
+  {:suite "error-phase" :expr "(do (defmacro ep-boom2 [] (throw (ex-info \"b2\" {:mine 1}))) (try (load-string \"(user/ep-boom2)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:mine (ex-data e))])))" :expected "[:macro-syntax-check 1]"}
+  {:suite "error-phase" :expr "(do (defmacro ep-boom3 [] (throw (RuntimeException. \"b3\"))) (try (load-string \"(user/ep-boom3)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e))])))" :expected "[:macroexpansion user/ep-boom3]"}
+  ;; an eval'd form has no position; a kinded diagnostic still carries the phase
+  {:suite "error-phase" :expr "(try (eval '(let [x] 1)) (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/line (ex-data e))]))" :expected "[:macro-syntax-check nil]"}
+  ;; a macro that re-enters the compiler is compiling on its own account
+  {:suite "error-phase" :expr "(do (defmacro ep-inner [] (eval '(fn [] zzz9))) (try (load-string \"(user/ep-inner)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e))])))" :expected "[:compile-syntax-check nil]"}
+  ;; Throwable->map lifts the phase to the top, where ex-triage reads it
+  {:suite "error-phase" :expr "(:phase (Throwable->map (try (load-string \"zzz\") (catch Throwable e e))))" :expected ":compile-syntax-check"}
+  {:suite "error-phase" :expr "(contains? (Throwable->map (ex-info \"plain\" {})) :phase)" :expected "false"}
+  ;; ...and clojure.main renders each phase from a real jolt error
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e e))))" :expected "\"Syntax error (ExceptionInfo) compiling at (REPL:2:3).\\nUnable to resolve symbol: zzz in this context\\n\""}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (read-string \"(\") (catch Throwable e e))))" :expected "\"Syntax error reading source at (REPL:1:2).\\nEOF while reading\\n\""}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (load-string \"(let [x] 1)\") (catch Throwable e e))))" :expected "\"Syntax error macroexpanding clojure.core/let at (REPL:1:1).\\nBad binding form, expected matched symbol expression pairs\\n\""}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (ClassCastException. \"class java.lang.String cannot be cast to class java.lang.Number\")))" :expected "\"Execution error (ClassCastException) at (REPL:1).\\nclass java.lang.String cannot be cast to class java.lang.Number\\n\""}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (clojure.lang.ArityException. 0 \"clojure.core//\")))" :expected "\"Execution error (ArityException) at (REPL:1).\\nWrong number of args (0) passed to: clojure.core//\\n\""}
+  ;; the default :caught hook prints that to *err*
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (with-out-str (binding [*err* *out*] (clojure.main/repl-caught (IllegalStateException. \"something went wrong\")))))" :expected "\"Execution error (IllegalStateException) at (REPL:1).\\nsomething went wrong\\n\""}
+  ;; the report's diagnostic keys stay hidden by NAMESPACE — both of them
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (let [s (with-out-str (binding [*err* *out*] (clojure.main/report-error (try (load-string \"(zzz)\") (catch Throwable e e)) :target \"stderr\")))] [(boolean (re-find #\"Syntax error \\(ExceptionInfo\\) compiling at \\(REPL:1:1\\)\" s)) (boolean (re-find #\":clojure.main/triage\" s))]))" :expected "[true true]"}
+  ;; clojure.core/pr-on, the private print entry nREPL's print middleware binds
+  {:suite "pr-on" :expr "(with-out-str (@#'clojure.core/pr-on {:a \"s\"} *out*))" :expected "\"{:a \\\"s\\\"}\""}
+  {:suite "pr-on" :expr "(:private (meta #'clojure.core/pr-on))" :expected "true"}
+  ;; an imported short name misses with the JDK-provider message, not "Unknown class"
+  {:suite "unknown-class" :expr "(try (load-string \"(ns ucm1 (:import (java.security.cert CertificateFactory))) (CertificateFactory/getInstance \\\"X.509\\\")\") (catch Throwable e (boolean (re-find #\"^No dependency provides java.security.cert.CertificateFactory\" (ex-message e)))))" :expected "true"}
 ]
