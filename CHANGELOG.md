@@ -72,6 +72,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`:allow-dynamic` covers a vouched def's computed `require`, so an app with
+  a spec shakes again.** 0.8.7 made a `require` of a computed name a bail ref
+  and a compile ref, and made a vouch cover a resolution only. spec.gen's
+  `dynaload` is `(require (c/symbol ns))` followed by `(resolve s)` in one def,
+  so no key could ever clear it: the bail printed a paste-ready key naming
+  `dynaload`, and the build with that key bailed again on the same def. Every
+  app with a spec in its graph hit this, which is the case #890 was filed
+  about. The vouch is one assertion for both refs — the site never runs in the
+  built binary, or names only what the build baked — so an allowed def's
+  computed load is spared the bail and the compiler scan, like its resolve. A
+  ref that runs the compiler on code (`eval`, `load-string`, an image restore)
+  stays unvouchable: the compiler image is direct-linked against the whole core
+  and cannot run over a shaken one.
+
+  The hint no longer names a def whose bail includes a ref no key can cover. It
+  offered `dynaload` on the strength of its `resolve` while its `require`
+  blocked the shake, so the printed key was one no paste could satisfy; a def
+  that both resolves and evals was offered the same way.
+
+  The hello world from #890, `spec.alpha 0.5.238`, plain against shaken with
+  the key it prints:
+
+  | build | bytes |
+  | --- | --- |
+  | plain | 14,513,800 |
+  | `--tree-shake`, 0.8.7 (bailed) | 14,427,995 |
+  | `--tree-shake`, with the key | 9,689,311 |
+
+  It keeps 358 of 855 defs and drops the compiler image; `s/valid?` and
+  `s/describe` answer as they do unshaken. The fixture library's `dynaload`
+  does the computed `require` before its `resolve` now, spec.gen's real shape —
+  it mirrored only the `resolve` half, which is why the gate stayed green
+  through the 0.8.7 change. `run-dce-refs.ss` pins the vouched and unvouched
+  loads, the verdict that agrees with each, and both hint cases. (#890)
+
 - **A form `load-string` read carried the calling file's path.** The loader
   binds the reader's file around a whole file load and `load-string` read
   under it, so a diagnostic in the string named the script with a snippet of

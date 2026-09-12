@@ -227,13 +227,16 @@ run_local_case dupfqn-app      app.core  ""     ""
 # loaded core.async. Bails against the pre-#882 dce.ss. app.core/walk-body is the
 # unreachable caller the helpers were spliced into, so it must be pruned.
 run_local_case spliced-resolve-app app.core "" "\"app.core\" \"walk-body\""
-# deps.edn :jolt/tree-shake {:allow-dynamic […]}: two reachable `resolve` callers
-# on paths -main never takes — the app's own `res` (spec.alpha/res's shape) and
-# a :local/root library's `dynaload` behind a delay (spec.gen's shape). The app's
+# deps.edn :jolt/tree-shake {:allow-dynamic […]}: two reachable dynamic callers
+# on paths -main never takes — the app's own `res` (spec.alpha/res's shape, a
+# `resolve`) and a :local/root library's `dynaload` behind a delay (spec.gen's
+# shape, whole: a `require` of a COMPUTED name, then a `resolve`). The app's
 # deps.edn vouches for the first, the LIBRARY's for the second, and the union
 # lets the shake run: `dead` is pruned and the compiler image dropped. Bails
-# against a jolt that does not read the key. Both callers are ^:redef so the
-# inline pass leaves them as the defs the bail names.
+# against a jolt that does not read the key, and against 0.8.7, whose vouch
+# covered the resolve but not the computed require — the shape every spec app
+# has. Both callers are ^:redef so the inline pass leaves them as the defs the
+# bail names.
 run_local_case allow-dynamic-app app.core "" "\"app.core\" \"dead\""
 # …and the same app with one more reachable caller nothing vouches for must
 # still bail, with the hint naming that caller alone — proof the allowed sites

@@ -460,10 +460,13 @@ message ends with the exact line to paste for the sites that remain; paste
 what it prints, because the def to name is the one the lookup ended up in
 after inlining, which may be the caller of the fn that wrote it. A vouch
 covers a RESOLUTION the graph cannot follow — `resolve`, `ns-publics`,
-`requiring-resolve` — and only that: a def that runs the compiler (`eval`,
-`load-string`, an image restore, a `require` of a computed name) bails
-whatever the list says, because the compiler image is direct-linked against
-the whole of `clojure.core` and cannot run over a pruned one.
+`requiring-resolve` — and a `require` of a computed name, which is what
+spec.gen's `dynaload` does before its `resolve`; both are the one assertion
+that the site never runs in the binary, or names only what the build baked.
+It does not cover a def that runs the compiler on code (`eval`,
+`load-string`, an image restore): that bails whatever the list says, because
+the compiler image is direct-linked against the whole of `clojure.core` and
+cannot run over a pruned one, and the hint never offers a key for such a def.
 
 Vouching wrongly does not fail the build — it moves the failure into the
 binary, where the lookup sees only what the shake kept: a `resolve` of a def

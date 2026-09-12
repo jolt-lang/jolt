@@ -183,9 +183,10 @@
 ;; Writing an image needs the fasl writer in scheme.boot and shakes fine; a bare
 ;; varargs FFI binding compiles a foreign-procedure per tail shape and shakes
 ;; fine. A def :allow-dynamic vouches for is spared the bail for a RESOLUTION
-;; ref only: a ref that runs the compiler bails regardless, because the
-;; compiler image is direct-linked against the whole core and cannot run over
-;; a shaken one (dce-bail-scan). drop-compiler? is (and (not bail) (not
+;; ref and for a load by a COMPUTED name (jolt.host/load-namespace, the one
+;; compile ref a vouch covers): a ref that runs the compiler on code bails
+;; regardless, because the compiler image is direct-linked against the whole
+;; core and cannot run over a shaken one (dce-bail-scan). drop-compiler? is (and (not bail) (not
 ;; needs-compiler)): a bail keeps the compiler too, since a requiring-resolve
 ;; may load and compile source at runtime.
 (define dce-compile-refs
@@ -532,27 +533,46 @@
         (let ((fqn (dce-rec-fqn r)))
           (when (dce-rec-reached? r reached)
             ;; :allow-dynamic vouches for a RESOLUTION the graph cannot follow
-            ;; (resolve, requiring-resolve, ns-publics ...). It cannot vouch for
-            ;; a ref that RUNS the compiler -- eval, load-string, an image
-            ;; restore -- because the compiler image is direct-linked against
-            ;; the whole core and cannot run over a shaken one (an allowed eval
-            ;; used to shake, and died on a pruned core def inside the
-            ;; compiler). So an allowed def bails on those still, and the hint
-            ;; does not offer to allow it: nothing the key says would help.
-            (let ((allowed? (and fqn (hashtable-ref allow-ht fqn #f))))
-            (for-each (lambda (ref)
-                        (when (and (hashtable-ref bail-ht ref #f)
-                                   (or (not allowed?) (hashtable-ref compile-ht ref #f)))
-                          (set! bail #t)
-                          (let ((pair (cons (or fqn "<form>") ref)))
-                            (when (and (< (length why) 6) (not (member pair why)))
-                              (set! why (cons pair why))))
-                          (when (and fqn (not (member fqn hint))
-                                     (not (hashtable-ref compile-ht ref #f)))
-                            (set! hint (cons fqn hint)))))
-                      (dce-rec-refs r)))
-            (when (ormap (lambda (ref) (and (hashtable-ref compile-ht ref #f) #t)) (dce-rec-refs r))
-              (set! needs-compiler #t)))))
+            ;; (resolve, requiring-resolve, ns-publics ...) and for a load by a
+            ;; COMPUTED name (jolt.host/load-namespace): both are the one
+            ;; assertion that the site never runs in the binary, or names only
+            ;; what the build baked, and spec.gen's dynaload is exactly that
+            ;; pair in one def -- a vouch that covered its resolve but not its
+            ;; require bailed again on the key its own hint had printed. It
+            ;; cannot vouch for a ref that RUNS the compiler on code -- eval,
+            ;; load-string, an image restore -- because the compiler image is
+            ;; direct-linked against the whole core and cannot run over a
+            ;; shaken one (an allowed eval used to shake, and died on a pruned
+            ;; core def inside the compiler). So an allowed def bails on those
+            ;; still, and a def whose bail includes one gets no hint at all,
+            ;; whatever else it references: a key that names it would not
+            ;; proceed.
+            (let* ((allowed? (and fqn (hashtable-ref allow-ht fqn #f)))
+                   (refs (dce-rec-refs r))
+                   ;; a bail ref no vouch covers
+                   (blocks? (lambda (ref)
+                              (and (hashtable-ref bail-ht ref #f)
+                                   (hashtable-ref compile-ht ref #f)
+                                   (not (string=? ref dce-dynamic-load-ref)))))
+                   (hintable? (and fqn (not (ormap blocks? refs)))))
+              (for-each (lambda (ref)
+                          (when (and (hashtable-ref bail-ht ref #f)
+                                     (or (not allowed?) (blocks? ref)))
+                            (set! bail #t)
+                            (let ((pair (cons (or fqn "<form>") ref)))
+                              (when (and (< (length why) 6) (not (member pair why)))
+                                (set! why (cons pair why))))
+                            (when (and hintable? (not (member fqn hint)))
+                              (set! hint (cons fqn hint)))))
+                        refs)
+              ;; the vouched load is the one compile ref a vouch spares: a site
+              ;; that never runs needs no compiler. Every other compile ref
+              ;; keeps it, vouched or not.
+              (when (ormap (lambda (ref)
+                             (and (hashtable-ref compile-ht ref #f)
+                                  (not (and allowed? (string=? ref dce-dynamic-load-ref)))))
+                           refs)
+                (set! needs-compiler #t))))))
       records)
     (values bail (reverse why) (reverse hint) needs-compiler)))
 
