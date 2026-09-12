@@ -32,7 +32,7 @@
 ;; otherwise parse (fn* [x] 'x) as an edn error -- which image-fnsrc-probe's
 ;; guard turns into "unregistered", refusing a closure that was registered.
 (define (image-fn-form-parse s)
-  (parameterize ((rdr-source-file #f) (rdr-suppress-pos #t)
+  (parameterize ((rdr-source-file #f) (rdr-suppress-pos #t) (rdr-data-read #f)
                  (rdr-edn-mode #f) (rdr-scan-mode #f) (rdr-discard-cb #f))
     (let-values (((form j) (rdr-read-top s 0 (string-length s))))
       form)))

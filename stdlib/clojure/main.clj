@@ -376,10 +376,17 @@ by default when a new command-line REPL is started."} repl-requires
   `(binding [*read-eval* (if (= :unknown *read-eval*) true *read-eval*)]
      ~@body))
 
-;; Ported without the reference's two JVM-only pieces: the DynamicClassLoader it
-;; installs on the current thread (no class loading here), and the catch that
-;; rewraps a LispReader$ReaderException under :read-source — jolt's read errors
-;; already carry :clojure.error/phase :read-source in their data (reader.ss).
+;; Ported without the DynamicClassLoader the reference installs on the current
+;; thread (no class loading here). The catch that files what the :read hook
+;; raised under :read-source is kept: the reference's is on
+;; LispReader$ReaderException, and jolt's read diagnostics are the throwables
+;; whose data says :jolt.error/type :read-error (reader.ss). The phase is the
+;; REPL's to add, not the reader's — read-string in a program is that program's
+;; execution error on both runtimes — so the reader stamps none and this seam,
+;; like load-string's, is where a read of source becomes a syntax error.
+(defn- read-diagnostic? [e]
+  (= :read-error (:jolt.error/type (ex-data e))))
+
 (defn repl
   "Generic, reusable, read-eval-print loop. By default, reads from *in*,
   writes to *out*, and prints exception summaries to *err*. If you use the
@@ -442,7 +449,12 @@ by default when a new command-line REPL is started."} repl-requires
         (fn []
           (try
             (let [read-eval *read-eval*
-                  input (with-read-known (read request-prompt request-exit))]
+                  input (try
+                          (with-read-known (read request-prompt request-exit))
+                          (catch Throwable e
+                            (if (read-diagnostic? e)
+                              (throw (ex-info nil {:clojure.error/phase :read-source} e))
+                              (throw e))))]
              (or (#{request-prompt request-exit} input)
                  (let [value (binding [*read-eval* read-eval] (eval input))]
                    (set! *3 *2)

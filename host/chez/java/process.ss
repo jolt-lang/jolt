@@ -1160,8 +1160,12 @@
         (cons "waitFor" (lambda (self . args)
           (if (null? args)
               (->num (proc-wait-blocking self))
-              ;; (waitFor timeout unit): babashka always passes MILLISECONDS.
-              (proc-wait-timed self (jnum->exact (car args))))))
+              ;; (waitFor timeout unit), scaled by the unit through the one
+              ;; conversion every (timeout, unit) method uses (concurrency.ss).
+              ;; This read the amount as milliseconds whatever the unit said —
+              ;; babashka passes MILLISECONDS, so it never showed there — and a
+              ;; (.waitFor p 10 SECONDS) gave the child 10ms.
+              (proc-wait-timed self (tu-args->ms args)))))
         (cons "exitValue" (lambda (self)
           (jolt-with-mutex (proc-p-mutex self)
             (or (unbox (proc-p-exit-box self))

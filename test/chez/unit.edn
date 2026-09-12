@@ -427,6 +427,14 @@
   {:suite "interrupt / blocking" :expr "(let [ex (java.util.concurrent.Executors/newSingleThreadExecutor) fut (.submit ex ^java.util.concurrent.Callable (fn [] (Thread/sleep 30000) 42)) ready (promise) out (promise) t (Thread. (fn [] (deliver ready true) (let [t0 (System/nanoTime) r (try (.get fut) :no-throw (catch InterruptedException e :threw))] (deliver out [r (< (quot (- (System/nanoTime) t0) 1000000) 3000)]))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 50) (.interrupt t) (let [r (deref out 5000 :timeout)] (.shutdownNow ex) r))" :expected "[:threw true]"}
   {:suite "interrupt / blocking" :expr "(let [ft (java.util.concurrent.FutureTask. (fn [] (Thread/sleep 30000) 1)) ready (promise) out (promise) t (Thread. (fn [] (deliver ready true) (let [t0 (System/nanoTime) r (try (.get ft) :no-throw (catch InterruptedException e :threw))] (deliver out [r (< (quot (- (System/nanoTime) t0) 1000000) 3000)]))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 50) (.interrupt t) (deref out 5000 :timeout))" :expected "[:threw true]"}
   {:suite "interrupt / blocking" :expr "(let [ex (doto (java.util.concurrent.Executors/newSingleThreadExecutor) (.submit ^java.util.concurrent.Callable (fn [] (Thread/sleep 30000) 1)) (.shutdown)) ready (promise) out (promise) t (Thread. (fn [] (deliver ready true) (let [t0 (System/nanoTime) r (try (.awaitTermination ex 30 java.util.concurrent.TimeUnit/SECONDS) :no-throw (catch InterruptedException e :threw))] (deliver out [r (< (quot (- (System/nanoTime) t0) 1000000) 3000)]))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 50) (.interrupt t) (let [r (deref out 5000 :timeout)] (.shutdownNow ex) r))" :expected "[:threw true]"}
+  ;; Process.waitFor(timeout, unit) scales by the unit. It read the amount as
+  ;; milliseconds whatever the unit said ("babashka always passes MILLISECONDS"),
+  ;; so (.waitFor p 10 SECONDS) gave a child 10ms: process-test.clj's
+  ;; redirectInput row passed on a fast machine and failed under a loaded one.
+  ;; Every other (timeout, unit) method converts through tu->ms (concurrency.ss).
+  {:suite "process / waitFor unit" :expr "(let [p (.start (ProcessBuilder. [\"sh\" \"-c\" \"sleep 0.3\"]))] [(.waitFor p 2 java.util.concurrent.TimeUnit/SECONDS) (.exitValue p)])" :expected "[true 0]"}
+  {:suite "process / waitFor unit" :expr "(let [p (.start (ProcessBuilder. [\"sh\" \"-c\" \"sleep 0.3\"]))] (try [(.waitFor p 20 java.util.concurrent.TimeUnit/MILLISECONDS) (.isAlive p)] (finally (.destroyForcibly p) (.waitFor p))))" :expected "[false true]"}
+  {:suite "process / waitFor unit" :expr "(let [p (.start (ProcessBuilder. [\"sh\" \"-c\" \"sleep 0.3\"]))] (try [(.waitFor p 20000 java.util.concurrent.TimeUnit/MICROSECONDS) (.isAlive p)] (finally (.destroyForcibly p) (.waitFor p))))" :expected "[false true]"}
   {:suite "interrupt / blocking" :expr "(let [pr (.start (ProcessBuilder. [\"sleep\" \"30\"])) ready (promise) out (promise) t (Thread. (fn [] (deliver ready true) (let [t0 (System/nanoTime) r (try (.waitFor pr) :no-throw (catch InterruptedException e :threw))] (deliver out [r (< (quot (- (System/nanoTime) t0) 1000000) 3000)]))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 200) (.interrupt t) (let [r (deref out 5000 :timeout)] (.destroyForcibly pr) r))" :expected "[:threw true]"}
   {:suite "interrupt / blocking" :expr "(let [a (agent 0) ready (promise) out (promise)] (send-off a (fn [x] (Thread/sleep 4000) (inc x))) (let [t (Thread. (fn [] (deliver ready true) (let [t0 (System/nanoTime) r (try (await a) :no-throw (catch InterruptedException e :threw))] (deliver out [r (< (quot (- (System/nanoTime) t0) 1000000) 3000)]))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 50) (.interrupt t) (deref out 5000 :timeout)))" :expected "[:threw true]"}
   {:suite "interrupt / blocking" :expr "(let [a (agent 0) ready (promise) out (promise)] (send-off a (fn [x] (Thread/sleep 4000) (inc x))) (let [t (Thread. (fn [] (deliver ready true) (let [t0 (System/nanoTime) r (try (await-for 30000 a) :no-throw (catch InterruptedException e :threw))] (deliver out [r (< (quot (- (System/nanoTime) t0) 1000000) 3000)]))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 50) (.interrupt t) (deref out 5000 :timeout)))" :expected "[:threw true]"}
@@ -2777,8 +2785,20 @@
   ;; jolt's own, so clojure.main/ex-triage reads its phase and position. The
   ;; reference wraps the cause in a CompilerException carrying them; jolt puts
   ;; them on the one throwable (analyzer diagnostic-data, reader.ss). #962
-  {:suite "error-phase" :expr "(try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column :clojure.error/source])))" :expected "#:clojure.error{:phase :compile-syntax-check, :line 2, :column 3, :source \"NO_SOURCE_PATH\"}"}
-  {:suite "error-phase" :expr "(try (read-string \"(\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column])))" :expected "#:clojure.error{:phase :read-source, :line 1, :column 2}"}
+  {:suite "error-phase" :expr "(try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column :clojure.error/source])))" :expected "#:clojure.error{:phase :compile-syntax-check, :line 2, :column 3}"}
+  ;; The phase is the CONSUMER's, not the reader's. load-string (and the loader,
+  ;; -e, the mint) read SOURCE, so a read error there is :read-source, as the
+  ;; reference's Compiler.load files one; read-string, edn and a Reader's read
+  ;; are the program reading DATA, and the reference's read-string raises a bare
+  ;; RuntimeException that ex-triage files under :execution. The position stays
+  ;; either way.
+  {:suite "error-phase" :expr "(try (load-string \"(\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column :clojure.error/source])))" :expected "#:clojure.error{:phase :read-source, :line 1, :column 2}"}
+  {:suite "error-phase" :expr "(try (read-string \"(\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column])))" :expected "#:clojure.error{:line 1, :column 2}"}
+  {:suite "error-phase" :expr "(try (read-string \"{:a 1 :a 2}\") (catch Throwable e [(.getName (class e)) (:clojure.error/phase (ex-data e)) (:jolt.error/type (ex-data e))]))" :expected "[\"java.lang.IllegalArgumentException\" nil :read-error]"}
+  {:suite "error-phase" :expr "(try (load-string \"{:a 1 :a 2}\") (catch Throwable e [(.getName (class e)) (:clojure.error/phase (ex-data e))]))" :expected "[\"java.lang.IllegalArgumentException\" :read-source]"}
+  {:suite "error-phase" :expr "(do (require 'clojure.edn) (try (clojure.edn/read-string \"(\") (catch Throwable e (contains? (ex-data e) :clojure.error/phase))))" :expected "false"}
+  {:suite "error-phase" :expr "(try (read (java.io.PushbackReader. (java.io.StringReader. \"(\"))) (catch Throwable e (contains? (ex-data e) :clojure.error/phase)))" :expected "false"}
+  {:suite "error-phase" :expr "(contains? (Throwable->map (try (read-string \"(\") (catch Throwable e e))) :phase)" :expected "false"}
   ;; What a macro's own run raises is the reference's macro phase, naming the
   ;; macro: a kinded diagnostic (let's destructurer) or an argument complaint
   ;; (IllegalArgument/IllegalState/ExceptionInfo/bare Exception) is
@@ -2787,6 +2807,16 @@
   {:suite "error-phase" :expr "(do (defmacro ep-boom1 [] (throw (Exception. \"b1\"))) (try (load-string \"(user/ep-boom1)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e)) (ex-message e)])))" :expected "[:macro-syntax-check user/ep-boom1 \"java.lang.Exception: b1\"]"}
   {:suite "error-phase" :expr "(do (defmacro ep-boom2 [] (throw (ex-info \"b2\" {:mine 1}))) (try (load-string \"(user/ep-boom2)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:mine (ex-data e))])))" :expected "[:macro-syntax-check 1]"}
   {:suite "error-phase" :expr "(do (defmacro ep-boom3 [] (throw (RuntimeException. \"b3\"))) (try (load-string \"(user/ep-boom3)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e))])))" :expected "[:macroexpansion user/ep-boom3]"}
+  ;; The throwable a macro's run raised is the diagnostic's CAUSE (the reference
+  ;; has it as the CompilerException's), so its class survives: ex-triage reads
+  ;; the class and message off the end of the via chain, and a catch on the
+  ;; diagnostic can still reach the original. A kinded diagnostic rebuilt only
+  ;; to add its position is not its own cause.
+  {:suite "error-phase" :expr "(do (defmacro ep-boom4 [] (throw (IllegalArgumentException. \"b4\"))) (try (load-string \"(user/ep-boom4)\") (catch Throwable e [(.getName (class (ex-cause e))) (ex-message (ex-cause e)) (ex-message e)])))" :expected "[\"java.lang.IllegalArgumentException\" \"b4\" \"java.lang.IllegalArgumentException: b4\"]"}
+  {:suite "error-phase" :expr "(do (defmacro ep-boom5 [] (throw (ex-info \"b5\" {:mine 5}))) (try (load-string \"(user/ep-boom5)\") (catch Throwable e [(:mine (ex-data (ex-cause e))) (:mine (ex-data e))])))" :expected "[5 5]"}
+  {:suite "error-phase" :expr "(try (load-string \"(let [x] 1)\") (catch Throwable e (nil? (ex-cause e))))" :expected "true"}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (defmacro ep-boom6 [] (throw (IllegalStateException. \"b6\"))) (let [t (clojure.main/ex-triage (Throwable->map (try (load-string \"(user/ep-boom6)\") (catch Throwable e e))))] [(:clojure.error/phase t) (:clojure.error/class t) (:clojure.error/cause t) (:clojure.error/symbol t)]))" :expected "[:macro-syntax-check java.lang.IllegalStateException \"b6\" user/ep-boom6]"}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (defmacro ep-boom7 [] (throw (ClassCastException. \"b7\"))) (clojure.main/err->msg (try (load-string \"(user/ep-boom7)\") (catch Throwable e e))))" :expected "\"Unexpected error (ClassCastException) macroexpanding user/ep-boom7 at (REPL:1:1).\\nb7\\n\""}
   ;; an eval'd form has no position; a kinded diagnostic still carries the phase
   {:suite "error-phase" :expr "(try (eval '(let [x] 1)) (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/line (ex-data e))]))" :expected "[:macro-syntax-check nil]"}
   ;; a macro that re-enters the compiler is compiling on its own account
@@ -2796,7 +2826,15 @@
   {:suite "error-phase" :expr "(contains? (Throwable->map (ex-info \"plain\" {})) :phase)" :expected "false"}
   ;; ...and clojure.main renders each phase from a real jolt error
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e e))))" :expected "\"Syntax error (ExceptionInfo) compiling at (REPL:2:3).\\nUnable to resolve symbol: zzz in this context\\n\""}
-  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (read-string \"(\") (catch Throwable e e))))" :expected "\"Syntax error reading source at (REPL:1:2).\\nEOF while reading\\n\""}
+  ;; a read-string that fails at run time is the program's execution error (the
+  ;; reference's shape, minus the trace frame it names); the source reads are
+  ;; the syntax errors
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (read-string \"(\") (catch Throwable e e))))" :expected "\"Execution error (ExceptionInfo) at (REPL:1).\\nEOF while reading\\n\""}
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (load-string \"(\") (catch Throwable e e))))" :expected "\"Syntax error reading source at (REPL:1:2).\\nEOF while reading\\n\""}
+  ;; ...and repl files what ITS read raised under :read-source, as the
+  ;; reference's does around LispReader$ReaderException: the hook sees the
+  ;; phase on a wrapper whose cause is the read diagnostic, with its position
+  {:suite "clojure.main" :expr "(do (require 'clojure.main) (let [seen (atom nil)] (binding [*ns* (create-ns 'replx)] (refer-clojure) (with-out-str (binding [*in* (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(\\n\"))] (clojure.main/repl :caught (fn [e] (reset! seen [(:clojure.error/phase (ex-data e)) (:phase (Throwable->map e)) (ex-message e) (ex-message (ex-cause e)) (clojure.main/err->msg e)])))))) @seen))" :expected "[:read-source :read-source nil \"EOF while reading\" \"Syntax error reading source at (REPL:2:1).\\nEOF while reading\\n\"]"}
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (load-string \"(let [x] 1)\") (catch Throwable e e))))" :expected "\"Syntax error macroexpanding clojure.core/let at (REPL:1:1).\\nBad binding form, expected matched symbol expression pairs\\n\""}
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (ClassCastException. \"class java.lang.String cannot be cast to class java.lang.Number\")))" :expected "\"Execution error (ClassCastException) at (REPL:1).\\nclass java.lang.String cannot be cast to class java.lang.Number\\n\""}
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (clojure.lang.ArityException. 0 \"clojure.core//\")))" :expected "\"Execution error (ArityException) at (REPL:1).\\nWrong number of args (0) passed to: clojure.core//\\n\""}

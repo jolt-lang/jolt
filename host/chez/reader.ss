@@ -789,12 +789,33 @@
 ;; what is built on it) reads a read error's phase and position under the
 ;; names it knows. The reference wraps the cause in a CompilerException with
 ;; these; jolt puts them on the one throwable. Its :clojure.error/source is
-;; the file, or NO_SOURCE_PATH, which ex-triage knows to drop.
+;; the file when there is one and ABSENT otherwise, as the reference's is for a
+;; read with no path (Compiler.load over a string binds none): a sentinel there
+;; leaked into a REPL's loc through ex-triage's :read-source merge, which takes
+;; the read error's keys as they are.
 (define rdr-kw-ref-phase (keyword "clojure.error" "phase"))
 (define rdr-kw-ref-line (keyword "clojure.error" "line"))
 (define rdr-kw-ref-column (keyword "clojure.error" "column"))
 (define rdr-kw-ref-source (keyword "clojure.error" "source"))
 (define rdr-kw-read-source (keyword #f "read-source"))
+
+;; A read of DATA — read-string, edn, a Reader's read — as against the SOURCE
+;; the loader, load-string, -e and the mint read. Two things differ for data,
+;; and the one seam binds both so a new data entry cannot get one without the
+;; other. The string is not the file being loaded, so the reader's file is off:
+;; a (read-string s) a loaded file's own code ran at runtime came back tagged
+;; :file "app.clj", and a read error carried a position into the string
+;; rendered against app.clj's lines. And a read error carries no
+;; :clojure.error/phase, because the phase is the CONSUMER's, not the reader's:
+;; the reference's read-string raises a bare RuntimeException that ex-triage
+;; files under :execution — the program's own error — and only Compiler.load
+;; and clojure.main/repl, reading source, wrap one under :read-source. The
+;; position keys stay on either kind of read.
+(define rdr-data-read (make-thread-parameter #f))
+(define (rdr-call-as-data thunk)
+  (parameterize ((rdr-source-file #f) (rdr-data-read #t)) (thunk)))
+(define (rdr-phase-keys m)
+  (if (rdr-data-read) m (jolt-assoc m rdr-kw-ref-phase rdr-kw-read-source)))
 
 ;; One FLAT namespaced shape. Namespacing, not nesting, is what keeps these from
 ;; colliding with the thrower's own ex-data (which the analyzer preserves), so
@@ -803,15 +824,14 @@
 ;; (:clojure.error/line) — and those keys ride along, see above.
 (define (rdr-diagnostic-data kind line col)
   (let* ((f (rdr-source-file))
-         (m (jolt-hash-map rdr-kw-err-kind kind
-                           rdr-kw-err-type rdr-kw-read-error
-                           rdr-kw-err-line line
-                           rdr-kw-err-column col
-                           rdr-kw-ref-phase rdr-kw-read-source
-                           rdr-kw-ref-line line
-                           rdr-kw-ref-column col
-                           rdr-kw-ref-source (or f "NO_SOURCE_PATH"))))
-    (if f (jolt-assoc m rdr-kw-err-file f) m)))
+         (m (rdr-phase-keys
+             (jolt-hash-map rdr-kw-err-kind kind
+                            rdr-kw-err-type rdr-kw-read-error
+                            rdr-kw-err-line line
+                            rdr-kw-err-column col
+                            rdr-kw-ref-line line
+                            rdr-kw-ref-column col))))
+    (if f (jolt-assoc (jolt-assoc m rdr-kw-err-file f) rdr-kw-ref-source f) m)))
 
 (define (rdr-error-kind s i kind msg)
   (let-values (((line col) (rdr-line-col-at s i)))
@@ -857,9 +877,9 @@
   ;; to the top-level position with no kind at all.
   (jolt-throw (make-jolt-ex-info-record
                class msg jolt-nil
-               (jolt-hash-map rdr-kw-err-kind kind
-                              rdr-kw-err-type rdr-kw-read-error
-                              rdr-kw-ref-phase rdr-kw-read-source)
+               (rdr-phase-keys
+                (jolt-hash-map rdr-kw-err-kind kind
+                               rdr-kw-err-type rdr-kw-read-error))
                0)))
 
 ;; Run THUNK, and if it raises a read diagnostic with no position, fill in the one
@@ -2036,16 +2056,13 @@
 ;; (parse-string wart, matched deliberately). jolt-read-form-raw keeps set FORMS
 ;; for the compiler spine (compile-eval); the data seam converts them to sets.
 (define (jolt-read-form-raw s)
-  ;; rdr-source-file OFF, because the string is not that file. It is a
-  ;; thread parameter the loader binds around a whole file load, so a
-  ;; (read-string "…") the file's own code runs at RUNTIME inherited it: the
-  ;; forms came back tagged :file "app.clj", and a read error carried a position
-  ;; into the string rendered against app.clj — "app.clj:1:5" with a framed
-  ;; snippet of a line that had nothing to do with it. The file paths read
-  ;; through rdr-read-top (loader.ss, emit-image.ss ei-read-all) and keep it.
-  (parameterize ((rdr-source-file #f))
-    (let-values (((form j) (rdr-read-top s 0 (string-length s))))
-      (if (rdr-eof? form) jolt-nil form))))
+  ;; A DATA read (rdr-call-as-data): the reader's file is off and the error
+  ;; carries no phase. The file paths read through rdr-read-top (loader.ss,
+  ;; emit-image.ss ei-read-all) and load-string (compile-eval.ss) are source.
+  (rdr-call-as-data
+   (lambda ()
+     (let-values (((form j) (rdr-read-top s 0 (string-length s))))
+       (if (rdr-eof? form) jolt-nil form)))))
 
 ;; the edn seam: strict mode (no auto-resolved keywords), each #_ discard handed
 ;; to the callback for tag validation, and a distinct EOF sentinel so the edn
@@ -2054,10 +2071,11 @@
   (if (jolt-nil? s)
       (keyword "jolt" "reader-eof")
       (parameterize ((rdr-edn-mode #t)
-                     (rdr-source-file #f)   ; a string, not the file being loaded
                      (rdr-discard-cb (if (jolt-nil? cb) #f cb)))
-        (let-values (((form j) (rdr-read-top s 0 (string-length s))))
-          (if (rdr-eof? form) (keyword "jolt" "reader-eof") form)))))
+        (rdr-call-as-data
+         (lambda ()
+           (let-values (((form j) (rdr-read-top s 0 (string-length s))))
+             (if (rdr-eof? form) (keyword "jolt" "reader-eof") form)))))))
 ;; read-string: the 1-arity returns nil at end of input (the documented seed
 ;; wart, src 18); the (opts s) arity is the reference's, where :eof sets the
 ;; end-of-input value and its ABSENCE makes end of input an error. :read-cond and
@@ -2079,12 +2097,13 @@
 
 ;; __parse-next: [form rest-of-string] or nil when only whitespace/comments left.
 (define (jolt-parse-next s)
-  (parameterize ((rdr-source-file #f))    ; a string, not the file being loaded
-   (let ((end (string-length s)))
-    (let-values (((form j) (rdr-read-top s 0 end)))
-      (if (rdr-eof? form)
-          jolt-nil
-          (jolt-vector (rdr-form->data form) (substring s j end)))))))
+  (rdr-call-as-data
+   (lambda ()
+     (let ((end (string-length s)))
+       (let-values (((form j) (rdr-read-top s 0 end)))
+         (if (rdr-eof? form)
+             jolt-nil
+             (jolt-vector (rdr-form->data form) (substring s j end))))))))
 
 ;; The same read, at an INDEX into s rather than off the front: (form . next-index),
 ;; or #f when only whitespace/comments remain. Handing back an index instead of the
@@ -2093,10 +2112,11 @@
 ;; host reader read that way (java/io.ss host-reader-read-form) was quadratic.
 ;; Scheme-level, for that one caller: the jolt-visible __parse-next is unchanged.
 (define (rdr-parse-at s i)
-  (parameterize ((rdr-source-file #f))    ; a Reader's text, not the loaded file
-    (let ((end (string-length s)))
-      (let-values (((form j) (rdr-read-top s i end)))
-        (and (not (rdr-eof? form)) (cons (rdr-form->data form) j))))))
+  (rdr-call-as-data
+   (lambda ()
+     (let ((end (string-length s)))
+       (let-values (((form j) (rdr-read-top s i end)))
+         (and (not (rdr-eof? form)) (cons (rdr-form->data form) j)))))))
 
 ;; __read-tagged: apply a built-in data reader to an already-read form. The tag
 ;; is the :#name keyword the reader produced; #uuid/#inst reuse the inst-time ctors.

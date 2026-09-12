@@ -27,13 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keys beside jolt's own.** `:clojure.error/phase` (`:read-source`,
   `:compile-syntax-check`, or for what a macro's own run raised
   `:macro-syntax-check` / `:macroexpansion` with `:clojure.error/symbol`
-  naming the macro), `:clojure.error/line`, `:clojure.error/column` and
-  `:clojure.error/source` ride on the diagnostic's ex-data, and
+  naming the macro — the var for its own argument check, the head as written
+  for anything else the expander threw, as the reference spells them),
+  `:clojure.error/line`, `:clojure.error/column` and `:clojure.error/source`
+  (the file, when there is one) ride on the diagnostic's ex-data, and
   `Throwable->map` lifts the phase to a top-level `:phase` as the reference
   does, so `ex-triage` — and everything built on it: REPL hooks, test
   runners, editor middleware — reads the phase and position of a jolt error
   under the names it already knows. The reporter hides them the way it hides
-  the `:jolt.error/*` keys.
+  the `:jolt.error/*` keys. What a macro threw is the diagnostic's `ex-cause`,
+  as it is the reference's `CompilerException`'s, so its class survives:
+  `ex-triage` names a `ClassCastException` out of an expander as one, with
+  its own message, rather than an `ExceptionInfo` whose cause line read
+  `"java.lang.ClassCastException: …"`. The `:read-source` phase is the source
+  consumer's, as on the JVM: the loader, `load-string`, `-e` and
+  `clojure.main/repl` file a read error under it; a program's own
+  `read-string`, `clojure.edn/read-string` or `read` raises the positioned
+  diagnostic with no phase, which `ex-triage` files as the `:execution` error
+  it is there too.
 
   ```clojure
   (clojure.main/err->msg (try (load-string "(let [x] 1)") (catch Throwable e e)))
@@ -60,6 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.main/renumbering-read` and `repl`'s prompt logic are built on.
 
 ### Fixed
+
+- **A form `load-string` read carried the calling file's path.** The loader
+  binds the reader's file around a whole file load and `load-string` read
+  under it, so a diagnostic in the string named the script with a snippet of
+  the script's line at the string's position, and `*file*` inside the string
+  was the script. The string's forms carry no file now, as `read-string`'s
+  never did, and `*file*` / `*source-path*` are nil / `"NO_SOURCE_FILE"` in
+  there, what the reference's `Compiler.load` binds for a reader with no
+  path.
+
+- **`Process.waitFor(timeout, unit)` scales by the unit.** It read the amount
+  as milliseconds whatever the unit said (babashka passes `MILLISECONDS`, so
+  it never showed there), so `(.waitFor p 10 TimeUnit/SECONDS)` gave the child
+  10ms — enough on a fast machine and not on a loaded one.
 
 - **A regex that had been used could not be written to an image.** The engine
   compiled into its cell on first match holds procedures, so `dump!` refused

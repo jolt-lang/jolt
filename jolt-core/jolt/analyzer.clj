@@ -107,8 +107,8 @@
 ;; read only when something throws.
 (def ^:dynamic *expansion-box* nil)
 
-;; The macro whose expander is RUNNING, as [qualified-symbol form], or nil
-;; between runs. Distinct from the expansion box, which covers analysis of what
+;; The macro whose expander is RUNNING, as [qualified-symbol head-as-written
+;; form], or nil between runs. Distinct from the expansion box, which covers analysis of what
 ;; a macro returned: this one covers the macro function's own execution, which
 ;; is the one window the reference compiler files under a different PHASE
 ;; (:macro-syntax-check / :macroexpansion, naming the macro) from everything
@@ -150,6 +150,17 @@
 (defn- current-macro-run []
   (when *macro-run-box* @*macro-run-box*))
 
+;; How the reference spells :clojure.error/symbol for a throw out of a macro's
+;; run depends on WHOSE complaint it is. Its own check on the macro's arguments
+;; (the spec check, checkSpecs) names the VAR — clojure.core/let for a bare
+;; `let`; anything the expander itself threw names the head AS WRITTEN — mm,
+;; u/mm, user/mm — the op of the form being expanded. jolt's kinded
+;; diagnostics out of let/defn/fn's own argument checks are the counterpart of
+;; the first; the :analyze/internal-failure kind is exactly "the expander
+;; threw something else" (as-analysis-diagnostic), and gets the second.
+(defn- macro-run-symbol [run kind]
+  (if (= kind :analyze/internal-failure) (second run) (first run)))
+
 ;; The reference compiler's phase for what E raised. Everything the analyzer
 ;; says about a form is :compile-syntax-check. What a macro's own run raised is
 ;; :macro-syntax-check when it is the kind of complaint a macro makes about its
@@ -174,23 +185,24 @@
 ;; :caught hooks, test runners, editor middleware) — finds the phase and
 ;; position under the names it already knows. The two spellings differ in
 ;; one respect: the reference WRAPS the cause in a CompilerException carrying
-;; these keys, where jolt raises the one positioned throwable; so ex-triage
-;; reads the phase off it and the class/message off it too. :clojure.error/
-;; source is the file, or the reference's NO_SOURCE_PATH sentinel, which
-;; ex-triage knows to drop.
-(defn- reference-error-keys [m pos e]
+;; these keys, where jolt raises the one positioned throwable, with the cause
+;; as ITS cause (as-analysis-diagnostic); so ex-triage reads the phase off the
+;; top of the chain and the class/message off its end, on both.
+;; :clojure.error/source is the file when the position has one and absent
+;; otherwise, the reference's shape for a form read with no path.
+(defn- reference-error-keys [m pos e kind]
   (let [run (current-macro-run)]
-    (cond-> (assoc m :clojure.error/phase (error-phase e)
-                     :clojure.error/source (or (:file pos) "NO_SOURCE_PATH"))
+    (cond-> (assoc m :clojure.error/phase (error-phase e))
+      (:file pos) (assoc :clojure.error/source (:file pos))
       (:line pos) (assoc :clojure.error/line (:line pos))
       (:column pos) (assoc :clojure.error/column (:column pos))
-      run (assoc :clojure.error/symbol (first run)))))
+      run (assoc :clojure.error/symbol (macro-run-symbol run kind)))))
 
 (defn- diagnostic-data
   ([kind pos extra] (diagnostic-data kind pos extra nil))
   ([kind pos extra e]
   (let [exp (current-expansion)]
-    (cond-> (reference-error-keys (or extra {}) pos e)
+    (cond-> (reference-error-keys (or extra {}) pos e kind)
       true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
       ;; Name the macro ONLY when the position being reported is the macro call
       ;; itself. That is exactly the case where the failing form was GENERATED —
@@ -228,9 +240,11 @@
 (defn- amp-env-map [env]
   (reduce (fn [m n] (assoc m (symbol n) nil)) {} (:locals env)))
 ;; The macro var's qualified symbol, as the reference names an expanding macro
-;; (clojure.core/let for a bare `let`); the head as written when it does not
-;; resolve to a var (it cannot fail to, having passed form-macro?, but a name
-;; is better than a nil either way).
+;; whose argument check failed (clojure.core/let for a bare `let`); the head as
+;; written when it does not resolve to a var (it cannot fail to, having passed
+;; form-macro?, but a name is better than a nil either way). The macro-run box
+;; carries this AND the head as written, for the two spellings macro-run-symbol
+;; picks between.
 (defn- macro-symbol [ctx head]
   (let [r (resolve-global ctx head)]
     (if (and (= :var (:kind r)) (:ns r))
@@ -1937,7 +1951,7 @@
             ;; names the macro, which is a different thing from the note above.
             (let* [mbox *macro-run-box*
                    mprev (when mbox @mbox)
-                   _ (when mbox (reset! mbox [(macro-symbol ctx head) form]))
+                   _ (when mbox (reset! mbox [(macro-symbol ctx head) head form]))
                    expanded (form-expand-1 ctx form (amp-env-map env))
                    _ (when mbox (reset! mbox mprev))
                    ebox *expansion-box*
@@ -2086,6 +2100,14 @@
 ;; that hangs explain-data or a error code off its compile-time throw lost it the
 ;; moment the form was analyzed. The position and kind are jolt's to add, not the
 ;; thrower's data to overwrite.
+;; It also keeps the ORIGINAL THROWABLE, as its cause. The reference's
+;; CompilerException wraps what the macro threw, so the class survives: a
+;; ClassCastException out of an expander is still one at the end of the cause
+;; chain, and clojure.main/ex-triage names it (and its bare message) from
+;; there. Folded into the message alone, as this used to do, it read back as an
+;; ExceptionInfo whose cause line was "java.lang.ClassCastException: msg". A
+;; kinded diagnostic rebuilt only to gain its position keeps its own cause
+;; rather than becoming one: it IS the throwable, not a wrapper around it.
 (defn- as-analysis-diagnostic [e]
   (let [pos (current-form-position)
         orig (ex-data e)
@@ -2103,13 +2125,14 @@
       ;; Rebuilt even with no position to add: it is a diagnostic already (the
       ;; reporter shows no trace for one either way), and the phase and the
       ;; macro it came out of are worth carrying on their own.
-      kind (ex-info (throw-message e) (diagnostic-data kind pos orig e))
+      kind (ex-info (throw-message e) (diagnostic-data kind pos orig e) (ex-cause e))
       (nil? pos) e
       ;; No diagnostic at all: anything else raised while analyzing. Keep the
       ;; thrower's ex-data and add the position beside it.
       :else (ex-info (throw-message e)
                      (diagnostic-data :analyze/internal-failure pos
-                                      (when (map? orig) orig) e)))))
+                                      (when (map? orig) orig) e)
+                     (when (instance? Throwable e) e)))))
 
 ;; A live value a macro put in its expansion, rendered as code that rebuilds it.
 ;; embed-plan (state-image.ss) answers with the image writer's verdict:
