@@ -163,6 +163,14 @@
 ;; literals whose printed form is not the whole story
 (rtu "regex"       "#\"a+b\""
      "[(str $rt) (re-find $rt \"xaabz\")]"                   "[\"a+b\" \"aab\"]")
+;; a USED regex holds its compiled engine (procedures) in its irx-cell; the
+;; image writes the source alone and the restored one recompiles on use. It
+;; used to refuse: "cannot write #<procedure> at irx-cell -> 3".
+(rtu "regex used"  "(let [r #\"a(b+)\"] (re-find r \"xabbz\") r)"
+     "[(str $rt) (re-find $rt \"xabbz\")]"                  "[\"a(b+)\" [\"abb\" \"bb\"]]")
+(rtu "regex compiled with flags"
+     "(let [r (java.util.regex.Pattern/compile \"^x\" java.util.regex.Pattern/MULTILINE)] (re-find r \"y\\nx\") r)"
+     "[(re-find $rt \"y\\nx\") (.flags $rt)]"               "[\"x\" 8]")
 (rtu "class token" "String"     "[(str $rt) (instance? $rt \"x\")]"
      "[\"class java.lang.String\" true]")
 (rtu "File"        "(java.io.File. \"/tmp\")"

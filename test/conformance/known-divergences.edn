@@ -1119,6 +1119,36 @@
            :jvm "throws IllegalArgumentException"
            :jolt "[0 -1 0]"}
    :note "(aget a 1.7) floors the same way on jolt. The truncation is toward zero, not floor: (aset a 0 -1.9) stores -1, matching what (byte-array [-1.9]) builds on both runtimes."}
+  ;; A jolt regex is its source string and nothing else — the regex-t record
+  ;; travels raw in images, so its layout is frozen — where the JVM's Pattern
+  ;; keeps the flags word beside the source. Pattern/compile with a flags
+  ;; argument therefore writes the flags INTO the source as the equivalent
+  ;; inline group ((?i), (?ms) …; LITERAL as \\Q…\\E), which matches and
+  ;; .flags reads back identically, but .pattern / str / toString answer the
+  ;; rewritten source. Java accepts that spelling too, so the answer re-compiles
+  ;; to the same pattern on either runtime; only the text differs. jolt-lang/jolt#961
+  {:category :host-model
+   :behavior "(.pattern (Pattern/compile \"a.c\" Pattern/CASE_INSENSITIVE))"
+   :jvm "\"a.c\" — the flags live in a separate field"
+   :jolt "\"(?i)a.c\" — the flags are spelled inline in the one source string"
+   :check {:expr "(.pattern (java.util.regex.Pattern/compile \"a.c\" java.util.regex.Pattern/CASE_INSENSITIVE))"
+           :jvm "\"a.c\""
+           :jolt "\"(?i)a.c\""}
+   :note "(.flags p) is 2 on both. A flag with an inline spelling (d i x m s u U) round-trips through .flags; LITERAL (16) and CANON_EQ (128) do not, since neither has one — LITERAL is spelled by quoting the source, CANON_EQ is a no-op."}
+  ;; UNICODE_CHARACTER_CLASS is accepted (as a compile flag and as an inline
+  ;; (?U)) but not yet applied: the JVM makes \w \d \s \b and the POSIX
+  ;; \p{..} names Unicode-aware under it, jolt keeps them ASCII. The pieces are
+  ;; in regex-translate.ss (unicode-category-ranges already builds the sets
+  ;; \p{L} uses); jolt-janu tracks threading the flag through. Delete this entry
+  ;; when that lands.
+  {:category :host-model
+   :behavior "(re-find (Pattern/compile \"\\\\w+\" Pattern/UNICODE_CHARACTER_CLASS) \"héllo\")"
+   :jvm "\"héllo\" — \\w is Unicode letters under the flag"
+   :jolt "\"h\" — the flag parses and \\w stays [a-zA-Z0-9_]"
+   :check {:expr "(re-find (java.util.regex.Pattern/compile \"\\\\w+\" java.util.regex.Pattern/UNICODE_CHARACTER_CLASS) \"héllo\")"
+           :jvm "\"héllo\""
+           :jolt "\"h\""}
+   :note "Without the flag both answer \"h\": \\w is ASCII on the JVM by default too. The Unicode CATEGORY names (\\p{L}, \\p{Nd} …) are Unicode on both regardless of the flag."}
 ]
  :entries
  [;; Wherever a syntax-quote's CONSTRUCTION CODE becomes a value rather than

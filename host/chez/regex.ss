@@ -226,6 +226,7 @@
                   ((#\s) (loop (fx+ i 1) (fxlogor acc 32)))   ; DOTALL
                   ((#\u) (loop (fx+ i 1) (fxlogor acc 64)))   ; UNICODE_CASE
                   ((#\d) (loop (fx+ i 1) (fxlogor acc 1)))    ; UNIX_LINES
+                  ((#\U) (loop (fx+ i 1) (fxlogor acc 256)))  ; UNICODE_CHARACTER_CLASS
                   (else 0))))))))                ; (?:, (?=, a flag we don't model
 
 ;; re-find: stateless over (re s), or stateful over a matcher (advance + remember).
