@@ -759,7 +759,20 @@
       ;; last segment, which is exactly the simple-name case.
       (jch-known? class)))
 
+;; A simple name the current namespace IMPORTED names the class its import
+;; bound — (:import (java.security.cert CertificateFactory)) binds
+;; CertificateFactory to that class token — so the message is about
+;; java.security.cert.CertificateFactory and says a library provides it, not
+;; "Unknown class CertificateFactory", which reads as a typo.
+(define (imported-class-fqn class)
+  (let ((c (var-cell-lookup (chez-current-ns) class)))
+    (and c (var-cell-defined? c)
+         (let ((root (var-cell-root c)))
+           (and (jhost? root) (string=? (jhost-tag root) "class")
+                (vector-ref (jhost-state root) 0))))))
+
 (define (unknown-class-message class)
+  (let ((class (or (imported-class-fqn class) class)))
   (cond
     ;; A provider CLAIMS this class and is on the source roots, but raised while
     ;; loading. Naming it is not a catalogue — it is the dependency the caller
@@ -776,7 +789,7 @@
                     " — a concrete implementation of the JDK classes must be "
                     "provided. A library supplies one by declaring :jolt/provides "
                     "in its deps.edn (RFC 0014)."))
-    (else (string-append "Unknown class " class))))
+    (else (string-append "Unknown class " class)))))
 
 ;; ---- emit entry points ------------------------------------------------------
 ;; A qualified reference whose namespace segment names a live namespace — directly
