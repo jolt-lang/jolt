@@ -78,6 +78,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `read(byte[] …)` that finds fewer pushed-back bytes than it asked for reads
   the wrapped stream once for the rest, as the JVM's does. (#965)
 
+- **A `proxy` over `java.io.InputStream`, `OutputStream`, `Reader` or
+  `Writer` inherits the class's concrete methods.** `(proxy
+  [java.io.InputStream] [] (read …))` extends the class on the JVM and gets
+  `readAllBytes`, `readNBytes`, `skip`, `transferTo`, `available`, `close`,
+  `mark`, `reset` and `markSupported` for free, each reaching the `read` the
+  proxy wrote; jolt generates no class, so every one of those was `No matching
+  field found`, and `slurp`, `io/reader`, `io/copy`, `spit`, `io/writer`,
+  `with-open` and a `PushbackInputStream` over such a proxy failed with it.
+  The four roots' inherited surfaces are method tables a reify's method miss
+  consults through the classes it declares and their ancestry, the method
+  running against the reify so its calls back into `read` / `write` reach the
+  override as the JVM's virtual dispatch does. An abstract method the body omits raises what the proxy
+  macro's stub raises, `UnsupportedOperationException` naming it. The
+  coercion sites treat such a value as the class it declares, and hand an
+  OutputStream `write(byte[],int,int)` where the JVM's encoders do — a proxy
+  fn stands in for every overload of a name, so one written for `(write [b])`
+  alone sees the same `ArityException` from a writer over it on both hosts.
+
 - **`clojure.core/pr-on`**, the reference's private print entry that nREPL's
   print middleware binds through `@#'clojure.core/pr-on`.
 
@@ -85,6 +103,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.main/renumbering-read` and `repl`'s prompt logic are built on.
 
 ### Fixed
+
+- **`(str baos)` is the `ByteArrayOutputStream`'s bytes as text**, as `str`
+  is `toString` on the JVM; it rendered as `#object[java.io.OutputStream]`,
+  and transit clients read a payload back with exactly that `str`.
+
+- **An `OutputStream` closed twice, or flushed after close, is a no-op, and
+  a write after close is the JVM's `IOException`.** All three raised a
+  classless `flush-output-port: not permitted on closed port` that no
+  `(catch java.io.IOException …)` could see.
 
 - **The concrete `java.io` stream classes are in the class graph.**
   `FileInputStream`, `ByteArrayInputStream`, `PipedInputStream`,

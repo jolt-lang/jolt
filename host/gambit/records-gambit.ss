@@ -2441,6 +2441,9 @@
            (cond
              (f (apply jolt-invoke f obj rest))
              (d (record-method-dispatch d method-name rest-args))
+             ((and abstract-class-method-hook
+                   (abstract-class-method-hook obj method-name)) =>
+              (lambda (m) (apply m obj rest)))
              (else (dispatch-miss obj method-name rest))))))
       ((string? obj) (jolt-string-method method-name obj rest))
       ((jiterator? obj)
@@ -2657,6 +2660,11 @@
 
 (define (set-class-ext-fallback-hook! f)
   (set! class-ext-fallback-hook f))
+
+(define abstract-class-method-hook #f)
+
+(define (set-abstract-class-method-hook! f)
+  (set! abstract-class-method-hook f))
 
 (define (dispatch-miss obj method-name args)
   (let ((f (and class-ext-fallback-hook

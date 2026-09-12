@@ -384,6 +384,12 @@
                 ;; whatever method resolution its own kind of value has.
                 ;; rest-args, not rest: the dispatcher takes a jolt seq
                 (d (record-method-dispatch d method-name rest-args))
+                ;; a concrete method of an abstract class the reify declares —
+                ;; (proxy [java.io.InputStream] …) inheriting readAllBytes — runs
+                ;; against the reify itself, so its calls back into the
+                ;; abstract method reach the override (the hook below).
+                ((and abstract-class-method-hook (abstract-class-method-hook obj method-name))
+                 => (lambda (m) (apply m obj rest)))
                 (else (dispatch-miss obj method-name rest))))))
       ;; java.lang.String interop: defined in natives-str.ss, loaded
       ;; after this file (free reference, resolved at call time).
@@ -635,6 +641,14 @@
 ;; (obj method-name) -> proc | #f.
 (define class-ext-fallback-hook #f)
 (define (set-class-ext-fallback-hook! f) (set! class-ext-fallback-hook f))
+
+;; The concrete methods of an abstract host class, for a reify that declares the
+;; class and did not write the method: (obj method-name) -> proc | #f, the proc
+;; taking the reify as its first argument. host-static.ss installs it over its
+;; per-class tables (register-abstract-methods!); until then a reify's method
+;; miss is a miss, as it was.
+(define abstract-class-method-hook #f)
+(define (set-abstract-class-method-hook! f) (set! abstract-class-method-hook f))
 (define (dispatch-miss obj method-name args)
   (let ((f (and class-ext-fallback-hook (class-ext-fallback-hook obj method-name))))
     (if f

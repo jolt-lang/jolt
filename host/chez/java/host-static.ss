@@ -212,6 +212,35 @@
   (or (hashtable-ref h-tbl name #f)
       (hashtable-ref h-tbl (short-class-name name) #f)))
 
+;; ---- the concrete methods of an abstract host class -------------------------
+;; (proxy [java.io.InputStream] [] (read …)) extends the class on the JVM and
+;; inherits every method it does not name — readAllBytes, skip, available,
+;; close — each written against the abstract read() the proxy supplies and
+;; reaching it by virtual dispatch. jolt generates no class: a proxy over a class
+;; with no constructor is a bare reify, and a method it did not write was a
+;; miss ("No matching field found: available"), so slurp, io/copy and a
+;; PushbackInputStream over such a proxy all failed. These tables ARE that
+;; inheritance. A reify's method miss (records-dispatch.ss) asks here; the
+;; classes the reify declares and their modeled ancestry are walked in order, and
+;; the method found runs against the reify itself, so its own calls back into
+;; read() reach the override as the JVM's would. A method the class leaves
+;; abstract is in its table too, raising what the proxy macro's stub raises for a
+;; method the body omits: UnsupportedOperationException naming the method.
+;; Keyed by the class's qualified name; io-streams.ss registers the java.io four.
+(define abstract-methods-tbl (make-hashtable string-hash string=?))   ; FQN -> (method-ht)
+(define (register-abstract-methods! class members)
+  (let ((h (or (hashtable-ref abstract-methods-tbl class #f)
+               (let ((h (make-hashtable string-hash string=?)))
+                 (hashtable-set! abstract-methods-tbl class h) h))))
+    (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
+(define (abstract-class-method obj method-name)
+  (let loop ((tags (jreify-host-tags obj)))
+    (cond ((null? tags) #f)
+          ((hashtable-ref abstract-methods-tbl (car tags) #f)
+           => (lambda (h) (or (hashtable-ref h method-name #f) (loop (cdr tags)))))
+          (else (loop (cdr tags))))))
+(set-abstract-class-method-hook! abstract-class-method)
+
 ;; ---- host object ------------------------------------------------------------
 (define-record-type jhost (fields tag (mutable state)) (nongenerative chez-jhost-v1))
 
