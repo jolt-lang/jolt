@@ -663,6 +663,22 @@
            :jvm "false"
            :jolt "true"}
    :note "io/reader's result and a bare StringReader are one jhost tag; the BufferedReader answer belongs to the former. Widening only, and only for readers."}
+  ;; The byte streams are the same shape: every InputStream jolt builds is one
+  ;; jhost tag over a Chez port (a FileInputStream, a ByteArrayInputStream and a
+  ;; BufferedInputStream differ only in the port behind them), and instance?
+  ;; answers true for every concrete InputStream class over any of them; the
+  ;; OutputStream side collapses the same way. A PushbackInputStream does NOT:
+  ;; it answers to its own class alone, and no other stream answers to it
+  ;; (corpus, "io / PushbackInputStream"), since bencode-style code branches
+  ;; on exactly that.
+  {:category :host-model
+   :behavior "(instance? java.io.FileInputStream (java.io.ByteArrayInputStream. (byte-array 0)))"
+   :jvm "false"
+   :jolt "true"
+   :check {:expr "[(instance? java.io.FileInputStream (java.io.ByteArrayInputStream. (byte-array 0))) (instance? java.io.FileOutputStream (java.io.ByteArrayOutputStream.))]"
+           :jvm "[false false]"
+           :jolt "[true true]"}
+   :note "One in-stream tag and one out-stream tag; the class arm reports java.io.InputStream / java.io.OutputStream for (class x). Widening only."}
   ;; On the JVM syntax-quote is purely a reader macro, so nothing of it survives a
   ;; read. jolt's compile-path reader emits (clojure.core/syntax-quote form) and
   ;; the analyzer lowers it, which is invisible except when the form is itself

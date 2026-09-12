@@ -229,6 +229,18 @@ check r9 "$(run '(loop [total 0 tries 0] (let [n (.available System/in)] (cond (
 check r7 "$(run '(let [b (java.io.ByteArrayInputStream. (.getBytes "hi"))] (.close b) (println (try (.available b) (catch java.io.IOException e (.getMessage e)))))')" "Stream closed"
 check r8 "$(run '(let [o (java.io.PipedOutputStream.) i (java.io.PipedInputStream. o)] (.close i) (println (try (.available i) (catch java.io.IOException e (.getMessage e)))))')" "Pipe closed"
 
+# --- (s) PushbackInputStream over the process stream -------------------------
+# bencode (babashka.pods, nrepl) reads a byte to classify a token and puts it
+# back before reading the netstring. The pushed-back byte lives in the stream's
+# own port buffer, so it is the next byte for everything that reads the stream:
+# its own read/readAllBytes over real stdin, and read-line through a System/in
+# it was setIn as — no site has to know the stream is a pushback one.
+check s1 "$(run '(let [p (java.io.PushbackInputStream. System/in) c (.read p)] (.unread p c) (println (pr-str [(class p) (String. (.readAllBytes p))])))' 'hello')" "[java.io.PushbackInputStream \"hello\"]"
+check s2 "$(run '(let [p (java.io.PushbackInputStream. (java.io.ByteArrayInputStream. (.getBytes "bc\nd\n")))] (.unread p 97) (System/setIn p) (println (pr-str [(read-line) (.read System/in) (read-line)])))')" "[\"abc\" 100 \"\"]"
+# available over a pipe: the pushed-back byte counts, on top of whatever the
+# kernel reports (r9 above shows why that part is not a fixed number here)
+check s3 "$(run '(let [p (java.io.PushbackInputStream. System/in)] (.unread p 120) (println (pr-str [(>= (.available p) 1) (.read p) (.read p)])))' 'ab')" "[true 120 97]"
+
 echo ""
 echo "system-streams smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]

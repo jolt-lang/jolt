@@ -1158,7 +1158,10 @@
 ;; already renders as its content.
 (define (drain-any-stream s)
   (cond ((reader-jhost? s) (drain-reader s))
-        ((and (jhost? s) (string=? (jhost-tag s) "in-stream"))
+        ;; jolt's byte stream, or a reify/proxy InputStream (io-streams.ss),
+        ;; whose readAllBytes is the class's
+        ((or (and (jhost? s) (string=? (jhost-tag s) "in-stream"))
+             (user-in-stream? s))
          (utf8->string (na-bytearray->bv
                         (record-method-dispatch s "readAllBytes" jolt-nil))))
         (else (jolt-str-render-one s))))
