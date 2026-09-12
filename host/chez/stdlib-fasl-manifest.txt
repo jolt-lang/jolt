@@ -33,7 +33,6 @@ clojure.instant
 clojure.java.browse
 clojure.java.javadoc
 clojure.java.shell
-clojure.main
 clojure.sci.host-stubs
 clojure.sci.io-stubs
 clojure.sci.lang-stubs

@@ -265,6 +265,36 @@ else
   fails=$((fails + 1))
 fi
 
+# A diagnostic also carries the reference's :clojure.error/* keys (phase and
+# position, for clojure.main/ex-triage). They are machinery like the
+# :jolt.error/* keys and stay out of the report the same way.
+check_no "$nested_unresolved" 'clojure.error'
+check_no '(read-string "(")' 'clojure.error'
+
+# A form load-string reads is not the file that called load-string. The loader
+# binds the reader's file around a whole file load, and load-string used to read
+# under it: a diagnostic in the string named the SCRIPT's path with a snippet of
+# the script's line 2 (the position is the string's), and *file* inside the
+# string was the script where the JVM binds nil. read-string had this fix
+# already (reader.ss jolt-read-form-raw); load-string is source, so it keeps the
+# :read-source phase and only drops the file.
+ls_dir="$(mktemp -d)"; ls_prog="$ls_dir/outer.clj"
+printf '%s\n' \
+  '(println "F" (pr-str (load-string "*file*")) (pr-str (load-string "*source-path*")))' \
+  '(load-string "(defn f []\n  (let [a 1]\n    zzz))")' > "$ls_prog"
+ls_err="$($jolt run "$ls_prog" 2>&1 >/dev/null)"
+ls_out="$($jolt run "$ls_prog" 2>/dev/null)"
+if printf '%s' "$ls_err" | grep -q -- '--> 2:3' && ! printf '%s' "$ls_err" | grep -q 'outer.clj' \
+   && ! printf '%s' "$ls_err" | grep -q 'println' && [ "$ls_out" = 'F nil "NO_SOURCE_FILE"' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: load-string positions are the string's, not the calling file's"
+  echo "    stdout: $ls_out"
+  printf '%s\n' "$ls_err" | head -8 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+rm -rf "$ls_dir"
+
 # ...and it does not dump the analyzer's own recursion as a "stack trace". Those
 # frames are jolt compiling the form, never the user's program: the error is raised
 # while ANALYZING, so there is no user call stack to show.

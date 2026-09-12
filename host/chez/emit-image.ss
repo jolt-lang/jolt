@@ -348,8 +348,19 @@
                ;; a macro's expander is a bare fn form here, so hand the emitter
                ;; the macro's name for fn-form registration (see emit-top-form)
                (fnsrc-def (and (eq? kind 'macro) nm))
+               ;; A guarded form that fails is reported by name only; the
+               ;; reason is deliberately quiet during the fixpoint (an early
+               ;; pass compiles against an older seed and fails forms a later
+               ;; pass emits fine). JOLT_MINT_DEBUG=1 prints it, for the pass
+               ;; that stays failing at convergence.
                (scm (if guard?
-                        (guard (e (#t #f)) (ei-compile-form (make-analyze-ctx ns) form optimize? fnsrc-def))
+                        (guard (e (#t (when (getenv "JOLT_MINT_DEBUG")
+                                        (fprintf (current-error-port) "mint: ~a/~a raised: ~a\n" ns (or nm "<top-level-form>")
+                                                 (if (and (condition? e) (message-condition? e))
+                                                     (apply format (condition-message e) (if (irritants-condition? e) (condition-irritants e) '()))
+                                                     (guard (_ (#t "?")) (jolt-repl-str (jolt-unwrap-throw e))))))
+                                      #f))
+                          (ei-compile-form (make-analyze-ctx ns) form optimize? fnsrc-def))
                         (ei-compile-form (make-analyze-ctx ns) form optimize? fnsrc-def))))
           (if (and guard? (not scm))
               ;; a form the guard swallowed — report it so the drop isn't silent
@@ -436,6 +447,7 @@
           (cons "clojure.set" "stdlib/clojure/set.clj")
           (cons "clojure.pprint" "stdlib/clojure/pprint.clj")
           (cons "clojure.repl" "stdlib/clojure/repl.clj")
+          (cons "clojure.main" "stdlib/clojure/main.clj")
           ;; LAST: the generated :doc/:arglists shard fills what the sources
           ;; above did not declare, for every image ns (tools/gen-core-docs.sh).
           (cons "clojure.core" "jolt-core/clojure/core/90-docs.clj"))))

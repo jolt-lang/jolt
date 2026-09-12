@@ -209,8 +209,11 @@
 
 ;; Throwable->map: the reference data rendering of a throwable. :via chains
 ;; through ex-cause the way the reference walks getCause; :cause/:data come
-;; from the root cause. Throwables carry no stack-trace elements here, so
-;; :trace is empty and :via entries have no :at.
+;; from the root cause; :phase is the throwable's own :clojure.error/phase,
+;; lifted to the top the way the reference does it — clojure.main/ex-triage
+;; reads the phase there, and a compile diagnostic carries one (analyzer
+;; diagnostic-data, reader.ss). Throwables carry no stack-trace elements here,
+;; so :trace is empty and :via entries have no :at.
 (defn Throwable->map [o]
   (let [msg-of (fn [t] (or (ex-message t) (jolt.host/condition-message t)))
         entry (fn [t]
@@ -222,8 +225,9 @@
               (if (some? t) (recur (conj acc t) (ex-cause t)) acc))
         root (peek via)
         m {:via (mapv entry via) :trace []}
-        m (if-let [c (msg-of root)] (assoc m :cause c) m)]
-    (if-let [d (ex-data root)] (assoc m :data d) m)))
+        m (if-let [c (msg-of root)] (assoc m :cause c) m)
+        m (if-let [d (ex-data root)] (assoc m :data d) m)]
+    (if-let [phase (:clojure.error/phase (ex-data o))] (assoc m :phase phase) m)))
 
 ;; inst-ms: epoch milliseconds of an instant; throws on a non-inst (Clojure
 ;; protocol behavior).

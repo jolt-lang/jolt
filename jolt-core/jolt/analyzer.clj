@@ -107,6 +107,16 @@
 ;; read only when something throws.
 (def ^:dynamic *expansion-box* nil)
 
+;; The macro whose expander is RUNNING, as [qualified-symbol head-as-written
+;; form], or nil between runs. Distinct from the expansion box, which covers analysis of what
+;; a macro returned: this one covers the macro function's own execution, which
+;; is the one window the reference compiler files under a different PHASE
+;; (:macro-syntax-check / :macroexpansion, naming the macro) from everything
+;; the analyzer itself raises (:compile-syntax-check). Set before the expander
+;; is applied and cleared after, so a throw out of the expander leaves the
+;; macro's name in the box for the diagnostic to read.
+(def ^:dynamic *macro-run-box* nil)
+
 ;; The position a diagnostic should carry: the innermost positioned form's, or nil
 ;; when nothing under analysis had reader metadata (a macro-built form, or a form
 ;; handed straight to eval). nil box means nothing is under analysis on this thread.
@@ -137,9 +147,62 @@
 (defn- current-expansion []
   (when *expansion-box* @*expansion-box*))
 
-(defn- diagnostic-data [kind pos extra]
+(defn- current-macro-run []
+  (when *macro-run-box* @*macro-run-box*))
+
+;; How the reference spells :clojure.error/symbol for a throw out of a macro's
+;; run depends on WHOSE complaint it is. Its own check on the macro's arguments
+;; (the spec check, checkSpecs) names the VAR — clojure.core/let for a bare
+;; `let`; anything the expander itself threw names the head AS WRITTEN — mm,
+;; u/mm, user/mm — the op of the form being expanded. jolt's kinded
+;; diagnostics out of let/defn/fn's own argument checks are the counterpart of
+;; the first; the :analyze/internal-failure kind is exactly "the expander
+;; threw something else" (as-analysis-diagnostic), and gets the second.
+(defn- macro-run-symbol [run kind]
+  (if (= kind :analyze/internal-failure) (second run) (first run)))
+
+;; The reference compiler's phase for what E raised. Everything the analyzer
+;; says about a form is :compile-syntax-check. What a macro's own run raised is
+;; :macro-syntax-check when it is the kind of complaint a macro makes about its
+;; arguments — the classes Compiler.macroexpand1 files there: IllegalArgument,
+;; IllegalState, ExceptionInfo and a bare Exception — and :macroexpansion for
+;; anything else escaping the expander. The analyzer's own diagnostics
+;; (analysis-error, E nil) never come out of a running expander: a macro that
+;; re-enters the analyzer gets a fresh macro-run box (see analyze).
+(defn- error-phase [e]
+  (if (current-macro-run)
+    (if (or (nil? e)
+            (instance? IllegalArgumentException e)
+            (instance? IllegalStateException e)
+            (instance? clojure.lang.ExceptionInfo e)
+            (= (class e) Exception))
+      :macro-syntax-check
+      :macroexpansion)
+    :compile-syntax-check))
+
+;; The reference's own keys ride beside jolt's, so a JVM-portable reader of a
+;; compile error — clojure.main/ex-triage and everything built on it (REPL
+;; :caught hooks, test runners, editor middleware) — finds the phase and
+;; position under the names it already knows. The two spellings differ in
+;; one respect: the reference WRAPS the cause in a CompilerException carrying
+;; these keys, where jolt raises the one positioned throwable, with the cause
+;; as ITS cause (as-analysis-diagnostic); so ex-triage reads the phase off the
+;; top of the chain and the class/message off its end, on both.
+;; :clojure.error/source is the file when the position has one and absent
+;; otherwise, the reference's shape for a form read with no path.
+(defn- reference-error-keys [m pos e kind]
+  (let [run (current-macro-run)]
+    (cond-> (assoc m :clojure.error/phase (error-phase e))
+      (:file pos) (assoc :clojure.error/source (:file pos))
+      (:line pos) (assoc :clojure.error/line (:line pos))
+      (:column pos) (assoc :clojure.error/column (:column pos))
+      run (assoc :clojure.error/symbol (macro-run-symbol run kind)))))
+
+(defn- diagnostic-data
+  ([kind pos extra] (diagnostic-data kind pos extra nil))
+  ([kind pos extra e]
   (let [exp (current-expansion)]
-    (cond-> (or extra {})
+    (cond-> (reference-error-keys (or extra {}) pos e kind)
       true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
       ;; Name the macro ONLY when the position being reported is the macro call
       ;; itself. That is exactly the case where the failing form was GENERATED —
@@ -161,7 +224,7 @@
       (assoc :jolt.error/macro (first exp))
       (:line pos) (assoc :jolt.error/line (:line pos))
       (:column pos) (assoc :jolt.error/column (:column pos))
-      (:file pos) (assoc :jolt.error/file (:file pos)))))
+      (:file pos) (assoc :jolt.error/file (:file pos))))))
 
 (defn- analysis-error
   ([kind msg] (analysis-error kind msg nil))
@@ -176,6 +239,17 @@
 ;; core.logic's matche only read its keys to tell locals from fresh pattern vars).
 (defn- amp-env-map [env]
   (reduce (fn [m n] (assoc m (symbol n) nil)) {} (:locals env)))
+;; The macro var's qualified symbol, as the reference names an expanding macro
+;; whose argument check failed (clojure.core/let for a bare `let`); the head as
+;; written when it does not resolve to a var (it cannot fail to, having passed
+;; form-macro?, but a name is better than a nil either way). The macro-run box
+;; carries this AND the head as written, for the two spellings macro-run-symbol
+;; picks between.
+(defn- macro-symbol [ctx head]
+  (let [r (resolve-global ctx head)]
+    (if (and (= :var (:kind r)) (:ns r))
+      (symbol (:ns r) (:name r))
+      (symbol (form-sym-name head)))))
 ;; A recur target carries its name (the compiled self-call) and its ARITY (the
 ;; binding count) so a recur with the wrong number of args is a compile error,
 ;; like the JVM, instead of failing only at runtime on the branch that runs.
@@ -1872,7 +1946,14 @@
             ;; binding vector, defn rejecting a clause) is about code the user
             ;; WROTE, and naming the macro there would tell them their own `let`
             ;; is the problem.
-            (let* [expanded (form-expand-1 ctx form (amp-env-map env))
+            ;; The RUN of the expander is marked separately (macro-run box): a
+            ;; throw out of it is filed under the reference's macro phases and
+            ;; names the macro, which is a different thing from the note above.
+            (let* [mbox *macro-run-box*
+                   mprev (when mbox @mbox)
+                   _ (when mbox (reset! mbox [(macro-symbol ctx head) head form]))
+                   expanded (form-expand-1 ctx form (amp-env-map env))
+                   _ (when mbox (reset! mbox mprev))
                    ebox *expansion-box*
                    prev (when ebox @ebox)
                    _ (when ebox (reset! ebox [(form-sym-name head) form]))
@@ -2010,20 +2091,28 @@
         :else (str e)))
 
 ;; No position to add (a macro-built form, or a form handed straight to eval) means
-;; nothing to improve on, so leave the throw exactly as it was rather than trading
-;; its trace for a diagnostic that says no more than the fallback already does.
+;; nothing to improve on for a throw that is not yet a diagnostic, so leave it
+;; exactly as it was rather than trading its trace for a diagnostic that says no
+;; more than the fallback already does.
 ;; The rebuilt ex-info keeps the ORIGINAL ex-data and adds the :jolt.error/* keys.
 ;; Replacing it outright discarded whatever the thrower attached: a macro that
 ;; raised (ex-info "m" {:orig true}) reported no :orig at all, and any library
 ;; that hangs explain-data or a error code off its compile-time throw lost it the
 ;; moment the form was analyzed. The position and kind are jolt's to add, not the
 ;; thrower's data to overwrite.
+;; It also keeps the ORIGINAL THROWABLE, as its cause. The reference's
+;; CompilerException wraps what the macro threw, so the class survives: a
+;; ClassCastException out of an expander is still one at the end of the cause
+;; chain, and clojure.main/ex-triage names it (and its bare message) from
+;; there. Folded into the message alone, as this used to do, it read back as an
+;; ExceptionInfo whose cause line was "java.lang.ClassCastException: msg". A
+;; kinded diagnostic rebuilt only to gain its position keeps its own cause
+;; rather than becoming one: it IS the throwable, not a wrapper around it.
 (defn- as-analysis-diagnostic [e]
   (let [pos (current-form-position)
         orig (ex-data e)
         kind (when (map? orig) (:jolt.error/kind orig))]
     (cond
-      (nil? pos) e
       ;; Already positioned: it knows where it happened better than the box does.
       (and kind (:jolt.error/line orig)) e
       ;; A diagnostic with a KIND but no position. Raised from a macro — the
@@ -2033,12 +2122,17 @@
       ;; earlier "already a diagnostic, leave it alone" test skipped these
       ;; entirely, and (defn f [] (let [a 1 b] a)) reported the DEFN's line 3
       ;; where the reference names the let on line 4. Its own kind is kept.
-      kind (ex-info (throw-message e) (diagnostic-data kind pos orig))
+      ;; Rebuilt even with no position to add: it is a diagnostic already (the
+      ;; reporter shows no trace for one either way), and the phase and the
+      ;; macro it came out of are worth carrying on their own.
+      kind (ex-info (throw-message e) (diagnostic-data kind pos orig e) (ex-cause e))
+      (nil? pos) e
       ;; No diagnostic at all: anything else raised while analyzing. Keep the
       ;; thrower's ex-data and add the position beside it.
       :else (ex-info (throw-message e)
                      (diagnostic-data :analyze/internal-failure pos
-                                      (when (map? orig) orig))))))
+                                      (when (map? orig) orig) e)
+                     (when (instance? Throwable e) e)))))
 
 ;; A live value a macro put in its expansion, rendered as code that rebuilds it.
 ;; embed-plan (state-image.ss) answers with the image writer's verdict:
@@ -2100,8 +2194,13 @@
    ;; reads it. `or` rather than a fresh box every time: an analyze that re-enters
    ;; this arity (a macro analyzing a form it built) keeps the chain it is nested
    ;; inside, which is what the single shared atom used to give it on one thread.
+   ;; The macro-run box is FRESH per entry, not shared like the other two: a
+   ;; macro that re-enters the analyzer (eval on a form it built) is compiling
+   ;; on its own account, and a diagnostic raised in there is that code's
+   ;; :compile-syntax-check, not the outer macro's run.
    (binding [*positioned-form-box* (or *positioned-form-box* (atom nil))
-             *expansion-box* (or *expansion-box* (atom nil))]
+             *expansion-box* (or *expansion-box* (atom nil))
+             *macro-run-box* (atom nil)]
      (try
        ;; ` is a reader macro in Clojure, so a form is already past its backticks
        ;; by the time anything looks at it. jolt reads one to a marker and lowers

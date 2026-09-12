@@ -5,6 +5,103 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`clojure.main`'s exception machinery and reusable REPL, ported from the
+  reference.** `ex-triage`, `ex-str`, `err->msg`, `repl-caught`,
+  `report-error`, `root-cause`, `stack-element-str`, `with-bindings`,
+  `with-read-known`, `repl-read` with `skip-whitespace` / `skip-if-eol` /
+  `renumbering-read`, `repl-prompt`, `repl-requires`, `load-script` and `repl`
+  itself. A REPL `:caught` hook that rephrases an error is built on
+  `ex-triage` + `ex-str`, and the namespace carried only `demunge` and
+  `root-cause`, so such a hook died at load. The namespace is part of the
+  image now, beside `clojure.repl`. `clojure.spec.alpha` is a library here, so
+  `ex-str` resolves spec's explain fns when a triage carries explain-data
+  rather than requiring spec up front, and `with-bindings` does not rebind
+  spec's `*explain-out*`. `main` and the option parsing behind it stay with
+  the jolt CLI. (#962)
+
+- **A read or compile diagnostic carries the reference's `:clojure.error/*`
+  keys beside jolt's own.** `:clojure.error/phase` (`:read-source`,
+  `:compile-syntax-check`, or for what a macro's own run raised
+  `:macro-syntax-check` / `:macroexpansion` with `:clojure.error/symbol`
+  naming the macro — the var for its own argument check, the head as written
+  for anything else the expander threw, as the reference spells them),
+  `:clojure.error/line`, `:clojure.error/column` and `:clojure.error/source`
+  (the file, when there is one) ride on the diagnostic's ex-data, and
+  `Throwable->map` lifts the phase to a top-level `:phase` as the reference
+  does, so `ex-triage` — and everything built on it: REPL hooks, test
+  runners, editor middleware — reads the phase and position of a jolt error
+  under the names it already knows. The reporter hides them the way it hides
+  the `:jolt.error/*` keys. What a macro threw is the diagnostic's `ex-cause`,
+  as it is the reference's `CompilerException`'s, so its class survives:
+  `ex-triage` names a `ClassCastException` out of an expander as one, with
+  its own message, rather than an `ExceptionInfo` whose cause line read
+  `"java.lang.ClassCastException: …"`. The `:read-source` phase is the source
+  consumer's, as on the JVM: the loader, `load-string`, `-e` and
+  `clojure.main/repl` file a read error under it; a program's own
+  `read-string`, `clojure.edn/read-string` or `read` raises the positioned
+  diagnostic with no phase, which `ex-triage` files as the `:execution` error
+  it is there too.
+
+  ```clojure
+  (clojure.main/err->msg (try (load-string "(let [x] 1)") (catch Throwable e e)))
+  ;; "Syntax error macroexpanding clojure.core/let at (REPL:1:1).\nBad binding form, expected matched symbol expression pairs\n"
+  ```
+
+- **The `java.util.regex.Pattern` flag constants, and `Pattern/compile`
+  honors a flags word.** `UNIX_LINES`, `CASE_INSENSITIVE`, `COMMENTS`,
+  `MULTILINE`, `LITERAL`, `DOTALL`, `UNICODE_CASE`, `CANON_EQ` and
+  `UNICODE_CHARACTER_CLASS` are the JVM ints; only `MULTILINE` existed, and
+  as a `Double`, so `(bit-or Pattern/MULTILINE Pattern/CASE_INSENSITIVE)`
+  threw. lazytest reads every constant at load time. A flags word compiles as
+  the equivalent inline `(?…)` group — a jolt regex is its source string, and
+  that record's layout travels in images — so `.flags` reads the flags back
+  and `.pattern` answers the rewritten source (recorded in
+  `known-divergences.edn`). `LITERAL` quotes the source the way
+  `Pattern.quote` does; `UNICODE_CHARACTER_CLASS` is accepted but `\w` `\d`
+  `\s` stay ASCII under it (jolt-janu, also recorded). (#961)
+
+- **`clojure.core/pr-on`**, the reference's private print entry that nREPL's
+  print middleware binds through `@#'clojure.core/pr-on`.
+
+- **`LineNumberingPushbackReader.setLineNumber` and `.atLineStart`**, which
+  `clojure.main/renumbering-read` and `repl`'s prompt logic are built on.
+
+### Fixed
+
+- **A form `load-string` read carried the calling file's path.** The loader
+  binds the reader's file around a whole file load and `load-string` read
+  under it, so a diagnostic in the string named the script with a snippet of
+  the script's line at the string's position, and `*file*` inside the string
+  was the script. The string's forms carry no file now, as `read-string`'s
+  never did, and `*file*` / `*source-path*` are nil / `"NO_SOURCE_FILE"` in
+  there, what the reference's `Compiler.load` binds for a reader with no
+  path.
+
+- **`Process.waitFor(timeout, unit)` scales by the unit.** It read the amount
+  as milliseconds whatever the unit said (babashka passes `MILLISECONDS`, so
+  it never showed there), so `(.waitFor p 10 TimeUnit/SECONDS)` gave the child
+  10ms — enough on a fast machine and not on a loaded one.
+
+- **A regex that had been used could not be written to an image.** The engine
+  compiled into its cell on first match holds procedures, so `dump!` refused
+  with `cannot write #<procedure> at irx-cell -> 3` while the same pattern
+  unused travelled. The source alone is written now and the restored pattern
+  recompiles on its next match.
+
+- **An imported short name that misses reports the JDK class it names.**
+  `(:import (java.security.cert CertificateFactory))` then
+  `(CertificateFactory/getInstance "X.509")` said `Unknown class
+  CertificateFactory`, which reads as a typo; it names
+  `java.security.cert.CertificateFactory` and says a library provides it
+  (RFC 0014), as the fully-qualified spelling already did.
+
+- **`(?x)` combined with `d` or `U` in one inline group did not apply
+  comment mode**; the group scanner stopped at a letter it did not model.
+
 ## [0.8.7] - 2026-09-11
 
 A release build is a third of the bytes and starts in half the time, with no

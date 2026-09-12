@@ -78,7 +78,7 @@
                 (if (>= j n) src
                     (let ((fc (string-ref src j)))
                       (cond
-                       ((memv fc '(#\s #\i #\m #\x #\u))
+                       ((memv fc '(#\s #\i #\m #\x #\u #\d #\U))
                         (scan (+ j 1) (cons fc fs)))
                        ((and (char=? fc #\)) (pair? fs) (memv #\x fs))
                         (let ((others (reverse (remv #\x fs))))

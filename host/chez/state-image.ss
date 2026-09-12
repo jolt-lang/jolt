@@ -1243,6 +1243,22 @@
                              ((and (not (procedure? x)) (proc-name-of x))
                               (hashtable-set! memo x x)
                               x)
+                             ;; A regex is its source. The engine in its
+                             ;; irx-cell is built on first match (regex.ss)
+                             ;; and holds procedures, so a pattern that had
+                             ;; been USED refused to write while the same
+                             ;; pattern unused travelled. Write the source
+                             ;; alone; the restored pattern recompiles on
+                             ;; its next match.
+                             ((regex-t? x)
+                              (cond ((not (regex-t-irx-cell x))
+                                     (hashtable-set! memo x x)
+                                     (if rebuild? x #t))
+                                    (rebuild?
+                                     (let ((nx (make-regex-t (regex-t-source x) #f)))
+                                       (hashtable-set! memo x nx)
+                                       nx))
+                                    (else (hashtable-set! memo x #t) #t)))
                              ((mutex? x)
                               (cond (restore? (make-mutex))
                                     (rebuild? (make-image-sync 'mutex))

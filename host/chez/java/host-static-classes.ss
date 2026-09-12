@@ -1148,9 +1148,13 @@
         (cons "close" (lambda (self) jolt-nil))))
 
 ;; ---- PushbackReader ---------------------------------------------------------
-;; state: a vector #(wrapped-reader pushed-list line-numbering? line column skip-lf?)
+;; state: a vector #(wrapped-reader pushed-list line-numbering? line column skip-lf?
+;;                   at-line-start? prev-at-line-start?)
+;; The last two are LineNumberingPushbackReader's atLineStart: true before
+;; anything is read, then whether the last unit read was a newline (or EOF); an
+;; unread restores the value from before that read, as the JVM's does.
 (register-class-ctor! "PushbackReader"
-  (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '() #f 0 0 #f))))
+  (lambda (rdr . _) (make-jhost "pushback-reader" (vector rdr '() #f 0 0 #f #t #t))))
 ;; Fully-qualified aliases so (java.io.PushbackReader. …) / (java.io.StringReader. …)
 ;; resolve to these built-ins even when a library defines a deftype of the same
 ;; simple name (tools.reader), which would otherwise take the bare-name slot.
@@ -1166,7 +1170,7 @@
 ;; (extend LineNumberingPushbackReader IndexingReader …) to dispatch. The methods
 ;; are shared with the plain reader below, so the two cannot drift.
 (define (make-lnpbr rdr . _)
-  (make-jhost "line-numbering-pushback-reader" (vector rdr '() #t 0 0 #f)))
+  (make-jhost "line-numbering-pushback-reader" (vector rdr '() #t 0 0 #f #t #t)))
 (register-class-ctor! "LineNumberingPushbackReader" make-lnpbr)
 (register-class-ctor! "clojure.lang.LineNumberingPushbackReader" make-lnpbr)
 (define (read-unit r)        ; read one code unit (flonum) from any reader, -1 at EOF
@@ -1194,11 +1198,15 @@
   (list (cons "read"
           (lambda (self . rest)
             (define (read1)
-              (let* ((st (jhost-state self)) (pushed (vector-ref st 1)))
-                (cond
-                  ((pair? pushed) (vector-set! st 1 (cdr pushed)) (car pushed))
-                  ((vector-ref st 2) (pbr-read-translated self))
-                  (else (read-unit (vector-ref st 0))))))
+              (let* ((st (jhost-state self)) (pushed (vector-ref st 1))
+                     (c (cond
+                          ((pair? pushed) (vector-set! st 1 (cdr pushed)) (car pushed))
+                          ((vector-ref st 2) (pbr-read-translated self))
+                          (else (read-unit (vector-ref st 0)))))
+                     (n (and (number? c) (jnum->exact c))))
+                (vector-set! st 7 (vector-ref st 6))
+                (vector-set! st 6 (or (eqv? n 10) (eqv? n -1) (jolt-nil? c)))
+                c))
             (if (null? rest)
                 (read1)
                 ;; .read(cbuf, off, len) -> read one code unit at a time into cbuf,
@@ -1211,6 +1219,7 @@
                               (begin (ja-set! cbuf (+ off i) (integer->char c)) (loop (+ i 1)))))))))))
         (cons "unread"
           (lambda (self ch . rest)
+            (vector-set! (jhost-state self) 6 (vector-ref (jhost-state self) 7))
             (if (null? rest)
                 ;; unread(int|char) — push one code unit back
                 (vector-set! (jhost-state self) 1
@@ -1227,6 +1236,13 @@
         ;; 1-based, like clojure.lang.LineNumberingPushbackReader's own +1 over the
         ;; underlying LineNumberReader. A plain PushbackReader counts nothing.
         (cons "getLineNumber" (lambda (self) (->num (+ 1 (vector-ref (jhost-state self) 3)))))
+        ;; setLineNumber(n): the NEXT getLineNumber answers n — the JVM stores
+        ;; n-1 on the underlying LineNumberReader and adds its 1 back on read.
+        ;; clojure.main/renumbering-read re-reads a form under the line it
+        ;; came from this way.
+        (cons "setLineNumber"
+          (lambda (self n) (vector-set! (jhost-state self) 3 (- (jnum->exact n) 1)) jolt-nil))
+        (cons "atLineStart" (lambda (self) (vector-ref (jhost-state self) 6)))
         (cons "getColumnNumber" (lambda (self) (->num (vector-ref (jhost-state self) 4))))
         ;; readLine: the next line without its terminator, nil at EOF. On the JVM
         ;; only the line-numbering subclass has it (from its BufferedReader half);
@@ -1646,7 +1662,6 @@
 ;; ---- java.util.regex.Pattern ------------------------------------------------
 ;; Pattern/compile returns a jolt-regex value (regex-t), so str/replace, re-find,
 ;; .split etc. accept it transparently.
-(define pattern-multiline 8.0)
 (define (pattern-quote s)
   (let ((meta "\\.[]{}()*+-?^$|&") (s (if (string? s) s (jolt-str-render-one s))) (out '()))
     (let loop ((i 0))
@@ -1655,16 +1670,51 @@
             (when (memv c (string->list meta)) (set! out (cons #\\ out)))
             (set! out (cons c out))
             (loop (+ i 1)))))))
-;; the one Pattern statics block (compile / quote / MULTILINE). nio-file and
-;; host-static-methods used to register competing compile/quote members that
+;; The flag constants, as the JVM ints (java.util.regex.Pattern). They are exact
+;; integers: a library builds a flags word with bit-or, which a flonum refused.
+(define pattern-flag-bits
+  '(("UNIX_LINES" . 1) ("CASE_INSENSITIVE" . 2) ("COMMENTS" . 4) ("MULTILINE" . 8)
+    ("LITERAL" . 16) ("DOTALL" . 32) ("UNICODE_CASE" . 64) ("CANON_EQ" . 128)
+    ("UNICODE_CHARACTER_CLASS" . 256)))
+;; A regex-t carries its source and nothing else (the layout travels raw in
+;; images, so it is frozen), so a flags word compiles as the equivalent inline
+;; (?…) group, which the translator reads and .flags reads back. LITERAL has no
+;; inline spelling: the source is \Q-quoted instead, the way Pattern.quote
+;; spells a literal (a \E inside it is closed and reopened around). CANON_EQ
+;; has no effect here.
+(define pattern-flag-letters
+  '((1 . #\d) (2 . #\i) (4 . #\x) (8 . #\m) (32 . #\s) (64 . #\u) (256 . #\U)))
+(define (pattern-flags-source s flags)
+  (let* ((flags (jnum->exact flags))
+         (on? (lambda (bit) (= (bitwise-and flags bit) bit)))
+         (letters (apply string-append
+                         (map (lambda (e) (if (on? (car e)) (string (cdr e)) ""))
+                              pattern-flag-letters)))
+         (body (if (on? 16) (pattern-literal-quote s) s)))
+    (if (string=? letters "")
+        body
+        (string-append "(?" letters ")" body))))
+(define (pattern-literal-quote s)
+  ;; \Q…\E around s. A \E inside s would end the quote early, so it is spelled
+  ;; \E (end) \\E (a literal backslash-E) \Q (resume), as Pattern.quote does.
+  (let loop ((i 0) (start 0) (parts (list "\\Q")))
+    (cond ((>= (+ i 1) (string-length s))
+           (apply string-append
+                  (reverse (cons "\\E" (cons (substring s start (string-length s)) parts)))))
+          ((and (char=? (string-ref s i) #\\) (char=? (string-ref s (+ i 1)) #\E))
+           (loop (+ i 2) (+ i 2) (cons "\\E\\\\E\\Q" (cons (substring s start i) parts))))
+          (else (loop (+ i 1) start parts)))))
+;; the one Pattern statics block (compile / quote / the flag constants). nio-file
+;; and host-static-methods used to register competing compile/quote members that
 ;; last-wins clobbered; this is now the single source.
 (let ((pattern-statics
-       (list (cons "compile" (lambda (s . flags)
-                               (if (and (pair? flags) (= (bitwise-and (jnum->exact (car flags)) 8) 8))
-                                   (jolt-regex (string-append "(?m)" s))
-                                   (jolt-regex s))))
-             (cons "quote" (lambda (s) (pattern-quote s)))
-             (cons "MULTILINE" pattern-multiline))))
+       (append
+        (list (cons "compile" (lambda (s . flags)
+                                (if (pair? flags)
+                                    (jolt-regex (pattern-flags-source s (car flags)))
+                                    (jolt-regex s))))
+              (cons "quote" (lambda (s) (pattern-quote s))))
+        pattern-flag-bits)))
   (register-class-statics! "Pattern" pattern-statics)
   (register-class-statics! "java.util.regex.Pattern" pattern-statics))
 ;; record-method-dispatch already routes string? -> jolt-string-method. Add a

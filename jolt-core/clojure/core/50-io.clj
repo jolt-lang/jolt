@@ -202,6 +202,18 @@
 
 (defmethod print-dup :default [o w] (print-method o w))
 
+;; The reference's private print entry, reached by libraries through
+;; @#'clojure.core/pr-on (nREPL's print middleware binds it as its default
+;; print fn). Private there and here; verbatim.
+(defn pr-on
+  {:private true
+   :static true}
+  [x w]
+  (if *print-dup*
+    (print-dup x w)
+    (print-method x w))
+  nil)
+
 ;; An Eduction prints as the seq it yields — (2 3 4), not the deftype's fields.
 ;; Registered against the type rather than derived from its interfaces because
 ;; that is what the JVM does: a bare Sequential/Seqable deftype prints as

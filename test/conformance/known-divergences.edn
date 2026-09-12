@@ -1119,6 +1119,82 @@
            :jvm "throws IllegalArgumentException"
            :jolt "[0 -1 0]"}
    :note "(aget a 1.7) floors the same way on jolt. The truncation is toward zero, not floor: (aset a 0 -1.9) stores -1, matching what (byte-array [-1.9]) builds on both runtimes."}
+  ;; A jolt regex is its source string and nothing else — the regex-t record
+  ;; travels raw in images, so its layout is frozen — where the JVM's Pattern
+  ;; keeps the flags word beside the source. Pattern/compile with a flags
+  ;; argument therefore writes the flags INTO the source as the equivalent
+  ;; inline group ((?i), (?ms) …; LITERAL as \\Q…\\E), which matches and
+  ;; .flags reads back identically, but .pattern / str / toString answer the
+  ;; rewritten source. Java accepts that spelling too, so the answer re-compiles
+  ;; to the same pattern on either runtime; only the text differs. jolt-lang/jolt#961
+  {:category :host-model
+   :behavior "(.pattern (Pattern/compile \"a.c\" Pattern/CASE_INSENSITIVE))"
+   :jvm "\"a.c\" — the flags live in a separate field"
+   :jolt "\"(?i)a.c\" — the flags are spelled inline in the one source string"
+   :check {:expr "(.pattern (java.util.regex.Pattern/compile \"a.c\" java.util.regex.Pattern/CASE_INSENSITIVE))"
+           :jvm "\"a.c\""
+           :jolt "\"(?i)a.c\""}
+   :note "(.flags p) is 2 on both. A flag with an inline spelling (d i x m s u U) round-trips through .flags; LITERAL (16) and CANON_EQ (128) do not, since neither has one — LITERAL is spelled by quoting the source, CANON_EQ is a no-op."}
+  ;; UNICODE_CHARACTER_CLASS is accepted (as a compile flag and as an inline
+  ;; (?U)) but not yet applied: the JVM makes \w \d \s \b and the POSIX
+  ;; \p{..} names Unicode-aware under it, jolt keeps them ASCII. The pieces are
+  ;; in regex-translate.ss (unicode-category-ranges already builds the sets
+  ;; \p{L} uses); jolt-janu tracks threading the flag through. Delete this entry
+  ;; when that lands.
+  {:category :host-model
+   :behavior "(re-find (Pattern/compile \"\\\\w+\" Pattern/UNICODE_CHARACTER_CLASS) \"héllo\")"
+   :jvm "\"héllo\" — \\w is Unicode letters under the flag"
+   :jolt "\"h\" — the flag parses and \\w stays [a-zA-Z0-9_]"
+   :check {:expr "(re-find (java.util.regex.Pattern/compile \"\\\\w+\" java.util.regex.Pattern/UNICODE_CHARACTER_CLASS) \"héllo\")"
+           :jvm "\"héllo\""
+           :jolt "\"h\""}
+   :note "Without the flag both answer \"h\": \\w is ASCII on the JVM by default too. The Unicode CATEGORY names (\\p{L}, \\p{Nd} …) are Unicode on both regardless of the flag."}
+  ;; A compile diagnostic is an ExceptionInfo here, carrying its :jolt.error/kind
+  ;; and position (and the reference's :clojure.error/* keys beside them); the
+  ;; reference raises a CompilerException — itself a RuntimeException — whose
+  ;; CAUSE is what the compiler threw: a RuntimeException for an unresolved
+  ;; symbol, an IllegalArgumentException for a bad recur. clojure.main/ex-triage
+  ;; names the class at the END of the cause chain, so the one place this shows
+  ;; is the "(ExceptionInfo)" in ex-str's headline for a diagnostic the analyzer
+  ;; raised itself; what a macro's own run threw keeps its class on both (it is
+  ;; the diagnostic's cause here, as it is the CompilerException's there).
+  {:category :impl-detail
+   :behavior "(clojure.main/err->msg <the throw from (load-string \"(zzz)\")>)"
+   :jvm "\"Syntax error compiling at (REPL:1:1).\\nUnable to resolve symbol: zzz in this context\\n\" — the cause is a RuntimeException, which ex-str omits"
+   :jolt "\"Syntax error (ExceptionInfo) compiling at (REPL:1:1).\\nUnable to resolve symbol: zzz in this context\\n\" — the diagnostic is an ExceptionInfo"
+   :check {:expr "(do (require (quote clojure.main)) (clojure.main/err->msg (try (load-string \"(zzz)\") (catch Throwable e e))))"
+           :jvm "\"Syntax error compiling at (REPL:1:1).\\nUnable to resolve symbol: zzz in this context\\n\""
+           :jolt "\"Syntax error (ExceptionInfo) compiling at (REPL:1:1).\\nUnable to resolve symbol: zzz in this context\\n\""}
+   :note "The phase, position and message agree. A diagnostic that keeps a JVM class keeps it here too (a NumberFormatException out of the reader, an IllegalArgumentException for a duplicate map key). Positions come from the reader's LIST forms: a bare top-level symbol (load-string \"zzz\") has none here and reports (REPL:1), where the reference's compiler takes 1:1 off its reader's cursor."}
+  ;; A macro called with the wrong number of arguments. The reference's
+  ;; macroexpand1 catches the ArityException its expander raised and rethrows it
+  ;; BARE (to take the &form and &env params back out of the count), so it
+  ;; escapes the macro-phase wrapping there and Compiler.load files it under
+  ;; :execution like any runtime throw. jolt's expander raises the same
+  ;; ArityException (an IllegalArgumentException, with the count already right)
+  ;; and the analyzer files what a macro's run raised under the reference's
+  ;; macro-phase rule, where that class is :macro-syntax-check.
+  {:category :impl-detail
+   :behavior "(:clojure.error/phase (ex-data (try (load-string \"(m)\") (catch Throwable e e)))) for (defmacro m [x] x)"
+   :jvm ":execution — the ArityException is rethrown bare out of macroexpand1 and wrapped by load"
+   :jolt ":macro-syntax-check — an IllegalArgumentException out of the expander's run"
+   :check {:expr "(do (defmacro kd-arity-m [x] x) (:clojure.error/phase (ex-data (try (load-string \"(kd-arity-m)\") (catch Throwable e e)))))"
+           :jvm ":execution"
+           :jolt ":macro-syntax-check"}
+   :note "The class (ArityException) and message (\"Wrong number of args (0) passed to: user/kd-arity-m\") agree; only the phase differs. Every other throwable class out of a macro's run is filed as the reference files it (unit.edn error-phase)."}
+  ;; A var defined under load-string. The reference's Compiler.load over a
+  ;; reader with no path binds *file* to nil and *source-path* to
+  ;; "NO_SOURCE_FILE", and stamps the latter on the var; jolt binds the same two
+  ;; (a form read from a string is not the calling file) and stamps a def with
+  ;; the READER's position, which has no file to give, so the key is absent.
+  {:category :impl-detail
+   :behavior "(:file (meta (load-string \"(defn kd-ls-f [])\")))"
+   :jvm "\"NO_SOURCE_FILE\" — the sentinel *source-path* holds during the load"
+   :jolt "nil — no :file in the var's meta"
+   :check {:expr "(:file (meta (load-string \"(defn kd-ls-f [])\")))"
+           :jvm "\"NO_SOURCE_FILE\""
+           :jolt "nil"}
+   :note "*file* is nil and *source-path* \"NO_SOURCE_FILE\" inside the load-string on both. A var defined in a loaded FILE carries the file's path on both."}
 ]
  :entries
  [;; Wherever a syntax-quote's CONSTRUCTION CODE becomes a value rather than

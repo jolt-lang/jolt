@@ -723,9 +723,27 @@
 ;; read so load-string still works in a bootstrap/build context without it.
 ;; Establishes default thread bindings for JVM-compiler vars so vendored code
 ;; that (set! *warn-on-reflection* …) at the file level finds a thread-local slot.
+;;
+;; The string is not the file that called load-string. The loader binds the
+;; reader's file around a whole file load, and reading under it tagged the
+;; string's forms with the CALLER's path: a diagnostic at the string's line 2
+;; rendered against line 2 of the calling script, with a snippet of it, and
+;; *file* inside the string answered the script. So the reader's file is off
+;; here, as read-string's is (reader.ss jolt-read-form-raw), and *file* /
+;; *source-path* are what the reference's Compiler.load binds for a reader with
+;; no path: nil and "NO_SOURCE_FILE". Only the FILE goes: load-string is source,
+;; and a read error in it keeps the :read-source phase a read-string's lacks.
+(define ls-file-cells #f)
 (define (jolt-load-string s)
   (let ((end (string-length s))
         (drl (guard (_ (#t #f)) data-readers-active)))
+    ;; Resolved once the vars exist (a bootstrap context may run this first),
+    ;; the way ldr-with-file-vars resolves the loader's; until then no frame.
+    (unless ls-file-cells
+      (let ((f (var-cell-lookup "clojure.core" "*file*"))
+            (sp (var-cell-lookup "clojure.core" "*source-path*")))
+        (when (and f sp)
+          (set! ls-file-cells (list (cons f jolt-nil) (cons sp "NO_SOURCE_FILE"))))))
     ;; The same frame ldr-with-file-vars gives a file and the loader gives a
     ;; compiled namespace, from the one definition of which vars that is — this
     ;; site listed two of the three by hand, so a (set! *unchecked-math* true)
@@ -736,17 +754,20 @@
     ;; the winder shape pushes a second frame when a fiber resumes inside it.
     (jolt-with-ns-load-vars
       (lambda ()
-        (let loop ((i 0) (result jolt-nil))
-          (if (>= i end)
-              result
-              (let-values (((form j) (rdr-read-form s i end)))
-                (if (> j i)
-                    (loop j (if (rdr-eof? form)
-                                result
-                                (jolt-compile-eval-form
-                                 (if drl (ldr-apply-readers form) form)
-                                 (chez-current-ns))))
-                    result))))))))
+        (dyn-with-frame (or ls-file-cells '())
+          (lambda ()
+            (parameterize ((rdr-source-file #f))
+              (let loop ((i 0) (result jolt-nil))
+                (if (>= i end)
+                    result
+                    (let-values (((form j) (rdr-read-form s i end)))
+                      (if (> j i)
+                          (loop j (if (rdr-eof? form)
+                                      result
+                                      (jolt-compile-eval-form
+                                       (if drl (ldr-apply-readers form) form)
+                                       (chez-current-ns))))
+                          result)))))))))))
 
 ;; eval / load-string are FUNCTIONS on the spine (the compiler image is resident
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and
