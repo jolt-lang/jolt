@@ -378,6 +378,59 @@
     (gate-check "allow: a <form> bail lists the form" (gate-sub? out "  <form> -> clojure.core/resolve\n") #t)
     (gate-check "allow: a <form> bail prints no hint" (gate-sub? out ":jolt/tree-shake") #f)))
 
+;; --- :allow-dynamic covers a vouched def's computed require ------------------
+;; spec.gen's dynaload is a (require (symbol ns)) followed by a resolve, in one
+;; def. The require is a load from source at run time (jolt.host/load-namespace,
+;; a bail ref AND a compile ref), and a vouch that spared the resolve but not the
+;; load bailed again on the very key its hint had printed -- every spec app hit
+;; it. The vouch is one assertion for both refs: the site never runs in the
+;; binary, or names only what the build baked. So an allowed def's computed load
+;; is spared the bail and the compiler scan, like its resolve; eval and the other
+;; compile refs stay unvouchable (the block above). And the hint never names a
+;; def whose bail includes a ref no key can cover: the key would not proceed.
+(let* ((rec (lambda (fqn refs) (dce-rec #f fqn refs (string-append "(" fqn ")"))))
+       (dl (list (rec "gate.app/-main" '("gate.app/dynaload"))
+                 (rec "gate.app/dynaload" '("jolt.host/load-namespace" "clojure.core/resolve")))))
+  ;; unvouched: bails on both refs, and the hint offers the def -- a key covers it
+  (let* ((got-core 'unset) (got-drop 'unset)
+         (out (with-output-to-string
+                (lambda ()
+                  (let-values (((core-strs app-strs drop-compiler?)
+                                (dce-shake '() dl "gate.app/-main" '())))
+                    (set! got-core core-strs)
+                    (set! got-drop drop-compiler?))))))
+    (gate-check "dynload: an unvouched computed require bails" got-core #f)
+    (gate-check "dynload: ...and keeps the compiler image" got-drop #f)
+    (gate-check "dynload: the bail lists the load"
+                (gate-sub? out "  gate.app/dynaload -> jolt.host/load-namespace\n") #t)
+    (gate-check "dynload: the bail lists the resolve"
+                (gate-sub? out "  gate.app/dynaload -> clojure.core/resolve\n") #t)
+    (gate-check "dynload: the hint offers the def"
+                (gate-sub? out "  :jolt/tree-shake {:allow-dynamic [gate.app/dynaload]}\n") #t))
+  ;; vouched: shakes and drops the compiler -- the load is asserted never to run
+  (let-values (((core-strs app-strs drop-compiler?)
+                (dce-shake '() dl "gate.app/-main" '("gate.app/dynaload"))))
+    (gate-check "dynload: a vouched computed require does not bail" (and core-strs #t) #t)
+    (gate-check "dynload: ...and drops the compiler image" drop-compiler? #t)
+    (gate-check "dynload: the vouched def is kept because it is reachable"
+                (and (member "(gate.app/dynaload)" app-strs) #t) #t))
+  ;; the verdict every build runs agrees with the shake
+  (gate-check "dynload: the verdict drops the compiler for a vouched computed require"
+              (dce-needs-compiler? '() dl "gate.app/-main" '("gate.app/dynaload")) #f)
+  (gate-check "dynload: ...and keeps it for an unvouched one"
+              (dce-needs-compiler? '() dl "gate.app/-main" '()) #t)
+  ;; a def that resolves AND evals: the hint used to offer it on the strength of
+  ;; the resolve, and the key it printed could not proceed. No hint at all.
+  (let* ((ev (list (rec "gate.app/-main" '("gate.app/both"))
+                   (rec "gate.app/both" '("clojure.core/resolve" "clojure.core/eval"))))
+         (out (with-output-to-string
+                (lambda () (dce-shake '() ev "gate.app/-main" '())))))
+    (gate-check "dynload: a def that resolves AND evals is listed for both"
+                (and (gate-sub? out "  gate.app/both -> clojure.core/resolve\n")
+                     (gate-sub? out "  gate.app/both -> clojure.core/eval\n")) #t)
+    (gate-check "dynload: ...and gets no hint, since no key would proceed"
+                (gate-sub? out ":allow-dynamic [") #f)))
+
 ;; --- a bare varargs FFI binding names its compile entry ----------------------
 ;; jolt.ffi/foreign-fn with a BARE :& lowers to direct Scheme calls that no :var
 ;; names, so dce-collect-refs reads the :ffi-fn node itself: the host entry that
