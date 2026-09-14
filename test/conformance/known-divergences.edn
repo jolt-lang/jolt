@@ -441,6 +441,24 @@
            :jvm "nil"
            :jolt ":x"}
    :note "No method signatures; reify has always behaved this way."}
+  ;; clojure.main/repl-read's "the rest of this line is blank, so prompt again"
+  ;; answer needs one character of lookahead on *in*. jolt's *in* is clojure.core's
+  ;; IReader (50-io.clj) and with-in-str binds one too, where the JVM's binds a
+  ;; LineNumberingPushbackReader; its smallest unit is a whole form, so repl-read
+  ;; reads THROUGH the blank line to the next form instead of answering
+  ;; request-prompt. Nothing is lost at a REPL: repl's need-prompt default is
+  ;; (constantly true) for an *in* that is not a LineNumberingPushbackReader, so a
+  ;; fresh prompt is printed before every read regardless. The character path is
+  ;; still taken for a java.io.PushbackReader, so a reader built by hand behaves
+  ;; exactly as it does on the JVM (jolt-89q, #981).
+  {:category :host-model
+   :behavior "(clojure.main/repl-read request-prompt request-exit) on a line with nothing but whitespace left"
+   :jvm "request-prompt — skip-whitespace reports :line-start off the character stream"
+   :jolt "the next form — a form-at-a-time reader cannot see the end of the line without consuming past it"
+   :check {:expr "(do (require (quote clojure.main)) (with-in-str \"\\n(+ 1 2)\" (clojure.main/repl-read :p :e)))"
+           :jvm ":p"
+           :jolt "(+ 1 2)"}
+   :note "End of input still answers request-exit on both, so the loop terminates."}
   {:category :numeric-model
    :behavior "(loop [i 5] (+ i 9223372036854775807))"
    :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"

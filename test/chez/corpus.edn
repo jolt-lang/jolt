@@ -487,6 +487,20 @@
   {:suite "clojure.main / error keys" :label "a macro's own throw carries the macro phase, its name and the position" :expected "(quote #:clojure.error{:phase :macro-syntax-check, :line 1, :column 1, :symbol ek-m})" :actual "(do (defmacro ek-m [] (throw (ex-info \"no\" {}))) (try (load-string \"(ek-m)\") (catch Throwable e (select-keys (ex-data e) [:clojure.error/phase :clojure.error/line :clojure.error/column :clojure.error/source :clojure.error/symbol]))))" :portability :jvm}
   {:suite "clojure.main / error keys" :label "err->msg on a real compile error under load-string" :expected "\"Syntax error compiling at (REPL:2:3).\\nUnable to resolve symbol: zzz in this context\\n\"" :actual "(do (require (quote clojure.main)) (clojure.string/replace (clojure.main/err->msg (try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e e))) #\" \\((ExceptionInfo|RuntimeException)\\)\" \"\"))" :portability :jvm}
   {:suite "clojure.main / error keys" :label ":clojure.error/symbol is the head as written for the expander's own throw, the var for its argument check" :expected "(quote [ek-w user/ek-w clojure.core/let])" :actual "(do (defmacro ek-w [] (throw (ex-info \"no\" {}))) (mapv (fn [src] (:clojure.error/symbol (ex-data (try (load-string src) (catch Throwable e e))))) [\"(ek-w)\" \"(user/ek-w)\" \"(let [x] 1)\"]))" :portability :jvm}
+  ;; (clojure.main/repl) at a REPL, #981. Its default :read hook is written
+  ;; against LineNumberingPushbackReader's character protocol, which the reader
+  ;; jolt binds to *in* — clojure.core's IReader, and what with-in-str hands over
+  ;; here — does not speak; every read raised without consuming input, so the
+  ;; loop repeated the same error forever. The hooks are pinned so the rows read
+  ;; the same on both runtimes: the JVM's *in* IS a LineNumberingPushbackReader,
+  ;; so its need-prompt default is .atLineStart rather than the constantly-true
+  ;; one a non-character reader gets.
+  {:suite "clojure.main / repl over *in*" :label "a repl over with-in-str evaluates and prints every form" :expected "\"3\\n6\\n\"" :actual "(do (require (quote clojure.main)) (with-out-str (with-in-str \"(+ 1 2) (* 2 3)\" (clojure.main/repl :prompt (fn []) :need-prompt (constantly false)))))" :portability :common}
+  {:suite "clojure.main / repl over *in*" :label "end of input ends the loop rather than repeating" :expected "\"\"" :actual "(do (require (quote clojure.main)) (with-out-str (with-in-str \"\" (clojure.main/repl :prompt (fn []) :need-prompt (constantly false)))))" :portability :common}
+  {:suite "clojure.main / repl over *in*" :label "a form split across lines is read whole" :expected "\"3\\n\"" :actual "(do (require (quote clojure.main)) (with-out-str (with-in-str \"(+ 1\\n   2)\\n\" (clojure.main/repl :prompt (fn []) :need-prompt (constantly false)))))" :portability :common}
+  {:suite "clojure.main / repl over *in*" :label "each form is evaluated, so a def is a var and its use a value" :expected "\"clojure.lang.Var\\njava.lang.Long\\n\"" :actual "(do (require (quote clojure.main)) (with-out-str (with-in-str \"(def nrx 1) nrx\" (clojure.main/repl :prompt (fn []) :need-prompt (constantly false) :print (fn [v] (prn (class v)))))))" :portability :common}
+  {:suite "clojure.main / repl-read" :label "repl-read reads one form off *in*" :expected "(quote (+ 1 2))" :actual "(do (require (quote clojure.main)) (with-in-str \"(+ 1 2)\" (clojure.main/repl-read :p :e)))" :portability :common}
+  {:suite "clojure.main / repl-read" :label "repl-read answers request-exit at end of input" :expected ":e" :actual "(do (require (quote clojure.main)) (with-in-str \"\" (clojure.main/repl-read :p :e)))" :portability :common}
   ;; The read phase is the consumer's: load-string (Compiler.load) files a read
   ;; error under :read-source, read-string raises one with no phase (the
   ;; program's own execution error), and repl wraps what its read raised.

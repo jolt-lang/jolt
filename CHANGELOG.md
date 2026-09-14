@@ -308,6 +308,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`(clojure.main/repl)` raised `No matching field found: read` on every
+  iteration and never terminated.** The ported `repl-read` is written against
+  `LineNumberingPushbackReader`'s character protocol — `.read`, `.unread`,
+  `.readLine` — and the reader jolt binds to `*in*` speaks none of it: the
+  default standard-input reader is `clojure.core`'s `IReader` over the shared
+  stdin buffer, whose smallest unit is a whole form, and so is the reader
+  `with-in-str` binds where the JVM's hands over a
+  `LineNumberingPushbackReader`. The raise consumed no input, so `repl`'s
+  `:caught` hook reported it and the loop read the same nothing again, until
+  the process was killed. A nested REPL now reads a form at a time through
+  `clojure.core/read` and ends on end of input; a `java.io.PushbackReader`
+  still takes the ported path, so hand-built readers keep their line numbering
+  and `:read-source` positions. The one behavior a form-at-a-time reader
+  cannot offer is `request-prompt` for a line with only whitespace left — it
+  reads on to the next form — and nothing is lost at a REPL, where
+  `need-prompt` already defaults to `(constantly true)` for an `*in*` that is
+  not a `LineNumberingPushbackReader`. (#981)
+
 - **`String.indexOf` with an empty needle past the end of the string answered
   `-1` instead of the string's length.** `String.indexOf(String,int)` is
   explicit that "if `fromIndex` is greater than the length of this String, and

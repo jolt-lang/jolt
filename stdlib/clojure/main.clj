@@ -154,6 +154,31 @@
                      (.setLineNumber (if (and line (or eval-file (not= pre-line line))) line line-number)))]
      (read opts re-reader))))
 
+;; jolt's *in* is not a character stream. The reference's three reader helpers
+;; above — and renumbering-read's re-read through a fresh LineNumberingPushbackReader
+;; — are written against the character protocol .read / .unread / .readLine, and
+;; clojure.core's default *in* (50-io.clj) has none of them: it is an IReader over
+;; the shared stdin buffer, whose smallest unit is a whole form. So is the reader
+;; with-in-str binds, where the JVM's with-in-str hands over a
+;; LineNumberingPushbackReader. Calling (.read *in*) on one raised "No matching
+;; field found: read", and since the raise consumed nothing, repl's :caught hook
+;; reported it and the loop read the same nothing again, forever (#981).
+;;
+;; A host reader — a java.io.PushbackReader, which is what
+;; clojure.lang.LineNumberingPushbackReader is here — still takes the ported path,
+;; so its line numbering and the :read-source positions built on it are unchanged.
+;; Anything else reads one form through clojure.core/read, which already blocks for
+;; as many lines as the form needs and answers the :eof value at end of input.
+;; request-prompt is not part of that path: a reader with no character lookahead
+;; cannot report "nothing but whitespace left on this line" without consuming the
+;; next form, and repl's need-prompt is already (constantly true) for an *in* that
+;; is not a LineNumberingPushbackReader, so every read gets a fresh prompt anyway.
+(defn- char-reader?
+  "True when s speaks the character protocol repl-read's skipping is written
+  against (.read / .unread), rather than clojure.core's form-at-a-time IReader."
+  [s]
+  (instance? java.io.PushbackReader s))
+
 (defn repl-read
   "Default :read hook for repl. Reads from *in* which must either be an
   instance of LineNumberingPushbackReader or duplicate its behavior of both
@@ -164,13 +189,19 @@
       - returns request-exit on end of stream, or
       - reads an object from the input stream, then
         - skips the next input character if it's end of line, then
-        - returns the object."
+        - returns the object.
+
+  On jolt an *in* that is not a character reader — the default standard-input
+  reader and with-in-str's, both clojure.core IReader values — is read one form
+  at a time instead, and end of input answers request-exit."
   [request-prompt request-exit]
-  (or ({:line-start request-prompt :stream-end request-exit}
-       (skip-whitespace *in*))
-      (let [input (renumbering-read {:read-cond :allow} *in* 1)]
-        (skip-if-eol *in*)
-        input)))
+  (if (char-reader? *in*)
+    (or ({:line-start request-prompt :stream-end request-exit}
+         (skip-whitespace *in*))
+        (let [input (renumbering-read {:read-cond :allow} *in* 1)]
+          (skip-if-eol *in*)
+          input))
+    (read {:read-cond :allow :eof request-exit} *in*)))
 
 (defn repl-exception
   "Returns the root cause of throwables"
