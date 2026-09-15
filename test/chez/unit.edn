@@ -701,6 +701,15 @@
   {:suite "ioreader / user Reader" :expr "(let [src (let [p (atom 0) s \"hi\\r\\nthere\"] (reify java.io.Reader (read [_ cbuf off len] (let [i @p] (if (>= i (count s)) -1 (do (aset cbuf off (.charAt s i)) (reset! p (inc i)) 1)))))) b (java.io.BufferedReader. src)] [(identical? src b) (.getName (class b)) (instance? java.io.BufferedReader b) (.readLine b) (.readLine b) (.readLine b) (.close b)])" :expected "[false \"java.io.BufferedReader\" true \"hi\" \"there\" nil nil]"}
   {:suite "ioreader / user Reader" :expr "(do (require (quote [clojure.java.io :as io])) (line-seq (io/reader (proxy [java.io.Reader] [] (read [cbuf off len] -1)))))" :expected ""}
 
+  ;; --- line-seq is LAZY (gh-1007) ---------------------------------------------
+  ;; It used to drain the reader and split the string, so the first line was not
+  ;; visible until the last had been read. That is only a latency question for a
+  ;; file, and a hang for a reader over something still arriving: an SSE body, a
+  ;; tailed log, a pipe. The counters below are what the producer was asked for
+  ;; at the point the consumer had taken one line.
+  {:suite "line-seq / lazy" :expr "(do (require (quote [clojure.java.io :as io])) (let [p (atom 0) s \"a\\nb\\nc\\n\" rdr (io/reader (proxy [java.io.Reader] [] (read [cbuf off len] (let [i @p] (if (>= i (count s)) -1 (do (aset cbuf off (.charAt s i)) (swap! p inc) 1)))))) ls (line-seq rdr) a (first ls) after @p] [a after (vec (rest ls)) @p]))" :expected "[\"a\" 2 [\"b\" \"c\"] 6]"}
+  {:suite "line-seq / lazy" :expr "(do (require (quote [clojure.java.io :as io])) (let [n (atom 0) src (proxy [java.io.InputStream] [] (read ([] -1) ([b off len] (if (>= @n 3) -1 (let [ba (.getBytes (str \"tick \" @n \"\\n\") \"UTF-8\")] (swap! n inc) (System/arraycopy ba 0 b off (alength ba)) (alength ba)))))) ls (line-seq (io/reader src)) a (first ls) after @n] [a after (vec (rest ls))]))" :expected "[\"tick 0\" 1 [\"tick 1\" \"tick 2\"]]"}
+
   ;; a byte[] is a ByteArrayInputStream read as UTF-8, as on the JVM; it used to
   ;; fall through to the seq arm and read as the text of its element values.
   {:suite "ioreader / user Reader" :expr "(do (require (quote [clojure.java.io :as io])) [(vec (line-seq (io/reader (.getBytes \"a\\r\\nb\" \"UTF-8\")))) (slurp (io/reader (.getBytes \"é\" \"UTF-8\")))])" :expected "[[\"a\" \"b\"] \"é\"]"}

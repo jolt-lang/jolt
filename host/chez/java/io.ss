@@ -1156,10 +1156,31 @@
                          (fx+ i 1))))
            (loop next next (cons (substring s start i) acc))))
         (else (loop (fx+ i 1) start acc))))))
+;; line-seq over a host reader is LAZY, one readLine per element, as it is on the
+;; JVM: (when-let [line (.readLine rdr)] (cons line (lazy-seq (line-seq rdr)))).
+;; It used to drain the reader whole and split the string, which is right for a
+;; file and wrong for a reader over something still arriving — an SSE body, a
+;; tailed log, a pipe — where draining cannot finish until the producer stops,
+;; so the FIRST line was not visible until the LAST one had been read.
+;;
+;; Every reader-jhost answers readLine: string-reader and pushback-reader
+;; (host-static-classes.ss), char-reader and the reader-adapter over a
+;; hand-written java.io.Reader (io-streams.ss). Each applies the same \n / \r /
+;; \r\n rule and the same nil-at-EOF that chez-lines applied to the drained
+;; string, so the ELEMENTS are unchanged — only when they are read is.
+;;
+;; The first line is read eagerly, which is what makes (line-seq empty-rdr) nil
+;; rather than a lazy cell: an unrealized lazyseq that forces to nil still
+;; prints "()" (lazy-bridge.ss), and nil is what the JVM's when-let yields.
+(define (chez-line-seq-lazy rdr)
+  (let ((l (record-method-dispatch rdr "readLine" jolt-nil)))
+    (if (jolt-nil? l)
+        jolt-nil
+        (jolt-cons l (jolt-make-lazy-seq (lambda () (chez-line-seq-lazy rdr)))))))
 (define (chez-line-seq rdr)
-  (list->cseq (chez-lines (cond ((string? rdr) rdr)
-                                ((reader-jhost? rdr) (drain-reader rdr))
-                                (else (jolt-str-render-one rdr))))))
+  (cond ((string? rdr) (list->cseq (chez-lines rdr)))
+        ((reader-jhost? rdr) (chez-line-seq-lazy rdr))
+        (else (list->cseq (chez-lines (jolt-str-render-one rdr))))))
 
 ;; (slurp src :encoding "...") — pull the charset from the trailing kwargs.
 (define (slurp-encoding opts)
