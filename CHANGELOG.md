@@ -27,7 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two new gates run in ci beside `gambiteval`: `gambitunbound` asks Gambit's
   own linker for every global the compiled boot references and defines
   nowhere, and `gambitvars` walks the booted var table for cells nothing
-  bound; each has an allowlist that only shrinks truthfully.
+  bound; each has an allowlist that only shrinks truthfully. GitHub CI builds
+  Gambit 4.9.8 from source now (cached like Chez) and runs every gambit gate
+  (`gambitkernel` and `gambitprofile` joined the ci list) with
+  `JOLT_REQUIRE_GAMBIT=1`, under which a skip is a failure — until this the
+  runner had no Gambit and the gates skipped on every push.
 
 - **Gambit's `case-lambda` miscompiles a two-clause `(fn ([x y] …) ([x y & more]
   …))`** (4.9.7 and 4.9.8: `lib/_nonstd.scm` appends the rest parameter only

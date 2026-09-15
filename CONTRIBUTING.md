@@ -143,7 +143,11 @@ Host-specific runtime code sits behind an adapter contract
 capability or degrades it honestly — an absent one raises rather than faking a
 result.
 
-The Gambit targets need `gambit-scheme` (brew) and skip cleanly without it:
+The Gambit targets run the `gsi`/`gsc` under `GAMBIT_PREFIX/bin` — brew's
+`gambit-scheme` prefix by default, `make GAMBIT_PREFIX=/opt/gambit …` for
+another install — and skip cleanly when there is none. CI builds Gambit 4.9.8
+from source and runs them with `JOLT_REQUIRE_GAMBIT=1`, which turns that skip
+into a failure, so the gates cannot silently stop running there:
 
 ```bash
 make gambitcheck              # adapter + shims on native gsi

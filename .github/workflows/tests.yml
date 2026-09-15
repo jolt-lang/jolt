@@ -59,6 +59,35 @@ jobs:
           echo '/opt/chez/bin' >> "$GITHUB_PATH"
           /opt/chez/bin/chez --version
 
+      # Gambit, for the host/gambit gates (gambitcheck/kernel/eval/boot/unbound/
+      # vars/profile). apt's gambc is 4.9.3; the gates run on 4.9.8, the brew
+      # pin, so build the tag from source and cache it like Chez. The git tag
+      # ships the generated C files, so no bootstrap compiler is involved.
+      # Flags are the brew formula's minus openssl, which nothing here uses:
+      # --enable-single-host is the one-C-file-per-module build, the runtime
+      # options make UTF-8 the default encoding on files, stdio and terminals.
+      - name: Cache Gambit
+        id: cache-gambit
+        uses: actions/cache@v4
+        with:
+          path: /opt/gambit
+          key: gambit-${{ runner.os }}-${{ env.ImageOS }}-v4.9.8-single-host-f8
+
+      - name: Build Gambit from source
+        if: steps.cache-gambit.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch v4.9.8 https://github.com/gambit/gambit.git /tmp/gambit-src
+          cd /tmp/gambit-src
+          ./configure --prefix=/opt/gambit --enable-single-host --enable-default-runtime-options=f8,-8,t8
+          make -j"$(nproc)"
+          sudo make install
+          sudo chown -R "$USER" /opt/gambit
+
+      - name: Show Gambit version
+        # Not on PATH: `gsc` is Ghostscript's name too, and the Makefile only
+        # ever runs $(GAMBIT_PREFIX)/bin/gsi and gsc.
+        run: /opt/gambit/bin/gsi -v
+
       - name: Install JDK + Clojure (certify oracle)
         run: |
           sudo apt-get install -y default-jdk rlwrap
@@ -91,7 +120,10 @@ jobs:
           # buildlibsmoke must actually run. This makes its skip paths fatal, so
           # the gate cannot go back to reporting green without testing.
           JOLT_REQUIRE_BUILDLIB: "1"
-        run: make CHEZ=/opt/chez/bin/chez -j"$(nproc)" -Oline test
+          # Same for the gambit gates: with a Gambit built above, a skip is a
+          # failure, so they cannot go back to being the no-ops they were.
+          JOLT_REQUIRE_GAMBIT: "1"
+        run: make CHEZ=/opt/chez/bin/chez GAMBIT_PREFIX=/opt/gambit -j"$(nproc)" -Oline test
 
   # No AI-assistant attribution in what a push or PR adds: tools/attributioncheck.sh
   # over the pushed range (push) or the PR's commits and its description (PR).

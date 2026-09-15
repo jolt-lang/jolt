@@ -7,7 +7,7 @@ cd "$root"
 
 # Test each caller override independently of the Make process that launched us.
 # Command-line variables also propagate to nested Makes through these flags.
-unset CC JOLT_CC CHEZ CHEZSCHEME MAKEFLAGS MAKEOVERRIDES
+unset CC JOLT_CC CHEZ CHEZSCHEME MAKEFLAGS MAKEOVERRIDES GAMBIT_PREFIX JOLT_REQUIRE_GAMBIT
 
 tmp="$(mktemp -d)"
 # A provision-armed Makefile parse mkdirs .cache/local (local.mk runs at parse;
@@ -51,6 +51,8 @@ inspect-chez:
 	  "gcc-origin=$(origin GCC-LOADED)" \
 	  "joltcc-origin=$(origin JOLT_CC)" \
 	  "joltcc-env=$${JOLT_CC-}"
+inspect-gambit:
+	@printf "%s\n" "gsi=$(GAMBIT_GSI)" "gsc=$(GAMBIT_GSC)"
 MK
 
 check_override() {
@@ -241,12 +243,64 @@ check_broken_chez_falls_back() {
   }
 }
 
+# The gambit gates find gsi/gsc under GAMBIT_PREFIX (brew's prefix when unset;
+# tests.yml points it at the Gambit it builds from source) and skip when there
+# is none there — unless JOLT_REQUIRE_GAMBIT is set, which makes the skip a
+# failure. CI sets it: without that, an install step that quietly stopped
+# installing turns every gambit gate into a no-op that reads as green, which is
+# exactly how the boot ran dead for two weeks before the gates existed.
+# Probed with a prefix holding no binaries at all, so the branch under test is
+# the one taken on a machine without gambit.
+check_gambit_detection() {
+  local out t
+  mkdir -p "$tmp/no-gambit/bin"
+
+  # A relative prefix resolves against the repo root: gambitboot and
+  # unbound-check.sh cd into host/gambit before running the binary.
+  out="$(make -C "$root" -f "$probe_mk" --no-print-directory -s "GAMBIT_PREFIX=test/.no-gambit" inspect-gambit)"
+  grep -Fx "gsi=$root/test/.no-gambit/bin/gsi" <<<"$out" >/dev/null || {
+    echo "GAMBIT_PREFIX not honored, or not made absolute:" >&2
+    echo "$out" >&2
+    exit 1
+  }
+  grep -Fx "gsc=$root/test/.no-gambit/bin/gsc" <<<"$out" >/dev/null || {
+    echo "GAMBIT_GSC does not follow GAMBIT_PREFIX:" >&2
+    echo "$out" >&2
+    exit 1
+  }
+
+  # One gsi-gated and one gsc-gated target (the latter also pulls gambitboot).
+  for t in gambitcheck gambitunbound; do
+    out="$(JOLT_REQUIRE_GAMBIT= make -C "$root" --no-print-directory "GAMBIT_PREFIX=$tmp/no-gambit" "$t" 2>&1)" || {
+      echo "$t failed instead of skipping on a machine without gambit:" >&2
+      echo "$out" >&2
+      exit 1
+    }
+    grep -q "skipped" <<<"$out" || {
+      echo "$t skipped silently (no skip line to read in a log):" >&2
+      echo "$out" >&2
+      exit 1
+    }
+    if out="$(JOLT_REQUIRE_GAMBIT=1 make -C "$root" --no-print-directory "GAMBIT_PREFIX=$tmp/no-gambit" "$t" 2>&1)"; then
+      echo "$t skipped although JOLT_REQUIRE_GAMBIT is set:" >&2
+      echo "$out" >&2
+      exit 1
+    fi
+    grep -q "JOLT_REQUIRE_GAMBIT" <<<"$out" || {
+      echo "$t failed under JOLT_REQUIRE_GAMBIT without saying why:" >&2
+      echo "$out" >&2
+      exit 1
+    }
+  done
+}
+
 had_provision_dirs=0
 [ -e "$root/.cache/local" ] && had_provision_dirs=1
 
 check_system_chez_preferred
 check_provision_fallback
 check_broken_chez_falls_back
+check_gambit_detection
 
 # build.ss bld-cc is the seam the JOLT_CC pin lands on: the native link honors
 # $JOLT_CC (empty/unset falls back to cc); JOLT_TARGET_CC still rules cross.
@@ -309,4 +363,5 @@ echo "makefile smoke: explicit Chez overrides bypass local provisioning,"
 echo "                a Chez on PATH is used without provisioning,"
 echo "                a same-or-newer system Chez is preferred over provisioning,"
 echo "                provisioning pins CC to the provisioned GCC,"
+echo "                the gambit gates honor GAMBIT_PREFIX and JOLT_REQUIRE_GAMBIT,"
 echo "                and bld-cc honors CC / JOLT_TARGET_CC"
