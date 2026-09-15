@@ -398,9 +398,12 @@
   ;; The ops jolt makes interruptible are the ones a JVM caller can already name;
   ;; the runtime's own plumbing (carrier idle wait, load barrier, main-queue pump,
   ;; tap queue, channel internals) is deliberately NOT — see host/chez/locks.ss.
-  ;; jolt has no Object.wait/notify at all, on any object, so the JVM's Object.wait
-  ;; has nothing here to make interruptible; monitor-wait! in java/concurrency.ss is
-  ;; the monitor ENTER wait, which correctly stays uninterruptible (row (e) below).
+  ;; Object.wait is one of them (jolt#1011), and the only one that has a LOCK to put
+  ;; back: the JVM reacquires the monitor BEFORE the InterruptedException leaves, so
+  ;; the catch runs inside the same critical section the wait did — rows (f) below
+  ;; check that half rather than just the throw. monitor-wait! in java/
+  ;; concurrency.ss is a different wait, the monitor ENTER one, and it correctly
+  ;; stays uninterruptible (row (e) below).
   ;;
   ;; NO ROW MAY BLOCK THE EVALUATING THREAD UNBOUNDEDLY. A row that hangs stalls the
   ;; gate with no output instead of reporting, so every wait here is either on a
@@ -449,6 +452,12 @@
   {:suite "interrupt / blocking" :expr "(let [o (Object.) held (promise) rel (promise) ready (promise) out (promise) h (Thread. (fn [] (locking o (deliver held true) (deref rel 5000 :t)))) t (Thread. (fn [] (deliver ready true) (deliver out (try (locking o [:entered (.isInterrupted (Thread/currentThread))]) (catch InterruptedException e :threw)))))] (.start h) (deref held 5000 :t) (.start t) (deref ready 5000 :t) (Thread/sleep 100) (.interrupt t) (Thread/sleep 200) (deliver rel true) (deref out 5000 :timeout))" :expected "[:entered true]"}
   ;; (c) a wait nobody interrupts still returns its value, and the flag stays clear
   {:suite "interrupt / blocking" :expr "(let [p (promise)] (future (Thread/sleep 20) (deliver p :ok)) [(deref p 5000 :timeout) (.isInterrupted (Thread/currentThread))])" :expected "[:ok false]"}
+  ;; (f) OBJECT.WAIT, whose throw has to give the monitor back first. The last
+  ;; element is the check that costs nothing to get wrong: a .notify inside the
+  ;; catch answers IllegalMonitorStateException unless the wait really did
+  ;; re-acquire on its way out, so a runtime that threw from the wait set and left
+  ;; the monitor free reads :lost-monitor here rather than passing.
+  {:suite "interrupt / blocking" :expr "(let [o (Object.) ready (promise) out (promise) t (Thread. (fn [] (deliver ready true) (deliver out (locking o (let [t0 (System/nanoTime) r (try (.wait o 30000) :no-throw (catch InterruptedException e :threw))] [r (< (quot (- (System/nanoTime) t0) 1000000) 3000) (.isInterrupted (Thread/currentThread)) (try (.notify o) :owns-monitor (catch IllegalMonitorStateException e :lost-monitor))])))))] (.start t) (deref ready 5000 :timeout) (Thread/sleep 50) (.interrupt t) (deref out 5000 :timeout))" :expected "[:threw true false :owns-monitor]"}
   ;; THE FIBER ROWS, and they bind *go-backend* :fiber ON PURPOSE — go defaults to
   ;; :thread, so an unbound (go ...) row runs on a plain OS thread and re-tests the
   ;; thread rows above rather than the fiber path. (jolt.host/fiber?) is carried in
@@ -463,6 +472,10 @@
   ;; This is the half a self-interrupt cannot show: the fiber is off the CPU when the
   ;; interrupt lands, so it is the registry that has to find it.
   {:suite "interrupt / blocking fibers" :expr "(do (require (quote [clojure.core.async :as a])) (binding [a/*go-backend* :fiber] (let [p (promise) carrier (promise) out (promise)] (a/go (deliver carrier [(jolt.host/fiber?) (Thread/currentThread)]) (deliver out (try (deref p) :no-throw (catch InterruptedException e :threw)))) (let [[fib? c] (deref carrier 5000 :timeout)] (Thread/sleep 150) (.interrupt c) [fib? (deref out 5000 :timeout)]))))" :expected "[true :threw]"}
+  ;; ...and the same for a fiber parked in Object.wait: it is in the monitor's WAIT
+  ;; SET, not on a channel, and the interrupt still finds it through the registry —
+  ;; then it takes the monitor again before the throw, as on a thread.
+  {:suite "interrupt / blocking fibers" :expr "(do (require (quote [clojure.core.async :as a])) (binding [a/*go-backend* :fiber] (let [o (Object.) carrier (promise) out (promise)] (a/go (deliver carrier [(jolt.host/fiber?) (Thread/currentThread)]) (deliver out (locking o (try (.wait o 30000) :no-throw (catch InterruptedException e :threw))))) (let [[fib? c] (deref carrier 5000 :timeout)] (Thread/sleep 150) (.interrupt c) [fib? (deref out 5000 :timeout)]))))" :expected "[true :threw]"}
   ;; Thread/sleep on a fiber sleeps its CARRIER (fibers-pool-test case 6 pins that),
   ;; but it still owes the already-set half of the rule.
   {:suite "interrupt / blocking fibers" :expr "(do (require (quote [clojure.core.async :as a])) (binding [a/*go-backend* :fiber] (a/<!! (a/go [(jolt.host/fiber?) (try (.interrupt (Thread/currentThread)) (Thread/sleep 2000) :no-throw (catch InterruptedException e :threw))]))))" :expected "[true :threw]"}

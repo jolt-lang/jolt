@@ -1017,7 +1017,7 @@
 ;; so, which is the line that keeps the rest of the runtime on jolt-with-mutex.
 (define monitor-table (make-weak-eq-hashtable))
 (define monitor-table-lock (make-mutex))
-;; #(bk owner count cv fibers box)
+;; #(bk owner count cv fibers box wcv waiters)
 ;;   bk     the bookkeeping mutex — held across a decision, never across a body
 ;;   owner  the FIBER when a fiber holds it, else the thread's interrupt box
 ;;          (current-interrupt-box, an identity that is safe under
@@ -1027,19 +1027,26 @@
 ;;   fibers parked fiber waiters, resumed by the release
 ;;   box    the interrupt box of the thread the owner took it on — the THREAD
 ;;          identity, which is what monitor-owner? needs when the owner is a fiber
+;;   wcv    the WAIT SET's condition — Object.wait/notify, not monitor entry
+;;   waiters the wait set itself, FIFO. The last two are the condition-variable
+;;          half and are documented at monitor-object-wait! below; every monitor
+;;          carries them, but a monitor nobody waits on never touches them.
 (define monitor-i-bk 0)
 (define monitor-i-owner 1)
 (define monitor-i-count 2)
 (define monitor-i-cv 3)
 (define monitor-i-fibers 4)
 (define monitor-i-box 5)
+(define monitor-i-wcv 6)
+(define monitor-i-waiters 7)
 ;; A fresh monitor. Named rather than inlined at the one use site, because
 ;; object-monitor is no longer the only thing that needs one:
 ;; java.util.concurrent.locks.ReentrantLock is a lock in its own right — (locking
 ;; lk …) and (.lock lk) are DIFFERENT locks on the JVM and stay different here,
 ;; so it gets its own record rather than the object's — but the hard part it needs
 ;; is exactly this (jolt-ga8o). One implementation, two locks.
-(define (make-monitor) (vector (make-mutex) #f 0 (make-condition) '() #f))
+(define (make-monitor)
+  (vector (make-mutex) #f 0 (make-condition) '() #f (make-condition) '()))
 
 (define (object-monitor obj)
   (jolt-with-mutex monitor-table-lock
@@ -1279,6 +1286,219 @@
   jolt-nil)
 (def-var! "jolt.host" "monitor-enter" jolt-monitor-enter)
 (def-var! "jolt.host" "monitor-exit" jolt-monitor-exit)
+
+;; --- Object.wait / .notify / .notifyAll -------------------------------------
+;; The condition-variable half of the object monitor. `locking` is the exclusion
+;; half and was already here; this is the part that lets a holder GIVE THE MONITOR
+;; BACK while it waits for someone else to change the state it guards, which is the
+;; portable primitive every hand-rolled condition variable on the JVM is built from
+;; (jolt#1011).
+;;
+;; THE WAIT SET IS NOT THE ENTRY SET, and that is the whole shape of this code. A
+;; monitor already had one queue — the contenders blocked in monitor-enter!, on the
+;; cv and the fibers list — and a waiter is not one of them: it is not trying to
+;; take the monitor, it is waiting to be told. So there is a second queue (waiters,
+;; woken through wcv) and a notify moves an entry from it to the entry set; mixing
+;; the two would make every monitor release wake every waiter and every notify wake
+;; every contender.
+;;
+;; WHAT MAKES IT ATOMIC. "Releases the monitor and enters the wait set" has to be
+;; one step or a notify lands in the gap and is lost. Both structures are guarded by
+;; bk, so one critical section covers both — and the notification is a FIELD on the
+;; waiter's own entry, not the wake itself, so a wake that arrives early (or a
+;; spurious one, which is allowed and which jolt-cv-wake! delivers freely) is
+;; re-checked against it rather than believed.
+;;
+;; THE RELEASE IS FULL, the re-acquire restores the DEPTH. wait releases a reentrant
+;; monitor completely however deep it was held — the JVM's rule, and the reason a
+;; (locking o (locking o (.wait o))) does not deadlock its own notifier — so the
+;; saved count is what makes the return indistinguishable from never having waited.
+;;
+;; The wait itself is jolt-cv-wait-interruptibly over bk and wcv, so it inherits
+;; everything that carrier already settles: a thread blocks, a FIBER parks and gives
+;; its carrier up, the decision is retaken on every wake (which is what makes a
+;; spurious wake harmless), and .interrupt throws InterruptedException and clears
+;; the flag. The one thing the carrier cannot know about is the monitor, so the
+;; re-acquire is done here on BOTH exits — the guard below is not cleanup, it is the
+;; JVM's rule that an interrupted wait reacquires before it throws.
+
+;; Enter the wait set and release the monitor outright; answers the hold count to
+;; restore. The fiber contenders are resumed OUTSIDE bk for monitor-exit!'s reason
+;; — sa-fiber-resume takes a carrier's run-queue mutex, and keeping the two apart
+;; means this path closes no cycle at all.
+;;
+;; Appended rather than consed: the wait set is FIFO, so a notify wakes the waiter
+;; that has been waiting longest. The JVM picks arbitrarily and HotSpot is FIFO by
+;; default; arbitrary permits fair, and a wait set is short enough that the append
+;; is not worth a second data structure.
+(define (monitor-wait-enter! m me w)
+  (let ((r (jolt-with-mutex (vector-ref m monitor-i-bk)
+             (unless (monitor-owner? m me)
+               (jolt-throw (jolt-host-throwable "java.lang.IllegalMonitorStateException"
+                                                "current thread is not owner")))
+             (let ((saved (vector-ref m monitor-i-count))
+                   (fs (vector-ref m monitor-i-fibers)))
+               (vector-set! m monitor-i-waiters
+                            (append (vector-ref m monitor-i-waiters) (list w)))
+               (vector-set! m monitor-i-owner #f)
+               (vector-set! m monitor-i-box #f)
+               (vector-set! m monitor-i-count 0)
+               (vector-set! m monitor-i-fibers '())
+               (condition-broadcast (vector-ref m monitor-i-cv))
+               (cons saved fs)))))
+    (for-each sa-fiber-resume (cdr r))
+    (car r)))
+
+;; Mark the next waiter notified, or all of them. Call with bk HELD. A notified
+;; entry LEAVES the wait set here rather than on its own way out: it is in the
+;; entry set from this moment, so a second notify reaches the next waiter instead
+;; of the same one twice. Answers whether anything was marked, so a notify with no
+;; waiters costs no wake.
+(define (monitor-mark-notified! m all?)
+  (let ((ws (vector-ref m monitor-i-waiters)))
+    (cond
+      ((null? ws) #f)
+      (all? (for-each (lambda (w) (set-box! w #t)) ws)
+            (vector-set! m monitor-i-waiters '())
+            #t)
+      (else (set-box! (car ws) #t)
+            (vector-set! m monitor-i-waiters (cdr ws))
+            #t))))
+
+;; Take the monitor again at the depth it was released at, and leave the wait set.
+;;
+;; threw? is the interrupted exit, and the one case that has to hand a notification
+;; ON: a waiter that was notified and then interrupted before it could return has
+;; consumed a notify that was meant to move SOMEBODY to the entry set, so it
+;; notifies the next waiter in its place. That is HotSpot's own behaviour and the
+;; alternative is a lost wakeup on a wait set that may still hold the only thread
+;; able to make progress.
+(define (monitor-wait-exit! m saved w threw?)
+  (monitor-enter! m)
+  (jolt-with-mutex (vector-ref m monitor-i-bk)
+    (vector-set! m monitor-i-count saved)
+    (let ((ws (vector-ref m monitor-i-waiters)))
+      (cond
+        ;; still queued — a timeout or an interrupt that no notify reached
+        ((memq w ws) (vector-set! m monitor-i-waiters (remq w ws)))
+        ((and threw? (unbox w))
+         (when (monitor-mark-notified! m #f)
+           (jolt-cv-wake! (vector-ref m monitor-i-wcv))))
+        (else (void))))))
+
+(define (monitor-object-wait! m ms)
+  (let* ((me (monitor-self))
+         (w (box #f))
+         (saved (monitor-wait-enter! m me w))
+         (deadline (and ms (+ (now-millis) ms))))
+    (guard (e (#t (monitor-wait-exit! m saved w #t) (raise e)))
+      (jolt-cv-wait-interruptibly "Object.wait"
+        (vector-ref m monitor-i-bk) (vector-ref m monitor-i-wcv) deadline
+        (lambda (timed-out?)
+          (cond ((unbox w) #t)
+                ;; the deadline is read by decide, never signalled, so a timeout
+                ;; leaving the wait set HERE is atomic with the decision: a notify
+                ;; that had already marked us takes the arm above instead.
+                (timed-out?
+                 (vector-set! m monitor-i-waiters
+                              (remq w (vector-ref m monitor-i-waiters)))
+                 #t)
+                (else jolt-cv-again)))))
+    (monitor-wait-exit! m saved w #f)
+    jolt-nil))
+
+(define (monitor-notify! m all?)
+  (let ((me (monitor-self)))
+    (jolt-with-mutex (vector-ref m monitor-i-bk)
+      (unless (monitor-owner? m me)
+        (jolt-throw (jolt-host-throwable "java.lang.IllegalMonitorStateException"
+                                         "current thread is not owner")))
+      ;; jolt-cv-wake! is documented "call with mu HELD": it broadcasts to the
+      ;; thread waiters and resumes the parked fibers, and every one of them
+      ;; re-reads its own entry, so the broadcast is a wake and not a decision.
+      (when (monitor-mark-notified! m all?)
+        (jolt-cv-wake! (vector-ref m monitor-i-wcv)))))
+  jolt-nil)
+
+;; (.wait o) / (.wait o ms) / (.wait o ms ns) -> the timeout in ms, or #f for an
+;; unbounded wait. The JVM's own arithmetic and its own two refusals, which it
+;; makes BEFORE the ownership check (they are argument validation in Object.java,
+;; above the native): a negative timeout and a nanosecond argument outside its
+;; range are IllegalArgumentException, and any positive nanos rounds the
+;; millisecond up — so (.wait o 0 1) waits about a millisecond rather than forever.
+;;
+;; A non-number where a timeout belongs is a ClassCastException and not a silent
+;; forever-wait: wait(long) is a declared signature, so reference Clojure compiles
+;; the argument through a Number cast and (.wait o :x) is "class
+;; clojure.lang.Keyword cannot be cast to class java.lang.Number" there (probed on
+;; 1.12.5). A fourth argument is no overload at all — the same "No matching method"
+;; every other arity miss answers.
+(define (object-wait-timeout args)
+  ;; TRUNCATED toward zero, like the cast to long the parameter type forces: the
+  ;; JVM takes (.wait o 10.5) as ten milliseconds rather than refusing it.
+  (define (num-arg x)
+    (unless (number? x) (jolt-num-cast-throw x))
+    (truncate (jnum->exact x)))
+  (define (ms-arg x)
+    (let ((n (num-arg x)))
+      (when (negative? n)
+        (throw-jvm (quote IllegalArgumentException) "timeout value is negative"))
+      n))
+  (let ((ms (cond ((null? args) 0)
+                  ((null? (cdr args)) (ms-arg (car args)))
+                  (else
+                   (let ((ms (ms-arg (car args)))
+                         (ns (num-arg (cadr args))))
+                     (when (or (negative? ns) (> ns 999999))
+                       (throw-jvm (quote IllegalArgumentException)
+                                  "nanosecond timeout value out of range"))
+                     (if (positive? ns) (+ ms 1) ms))))))
+    ;; zero is "wait forever", not "do not wait" — the JVM's one piece of
+    ;; overloading in this API, and what the no-arg form means.
+    (and (positive? ms) ms)))
+
+(define (jolt-object-wait obj . args)
+  (when (> (length args) 2) (no-method-throw "wait" obj (length args)))
+  (monitor-object-wait! (object-monitor obj) (object-wait-timeout args)))
+(define (jolt-object-notify obj) (monitor-notify! (object-monitor obj) #f))
+(define (jolt-object-notify-all obj) (monitor-notify! (object-monitor obj) #t))
+
+;; wait / notify / notifyAll are FINAL on java.lang.Object: no class can define one,
+;; and every object has a monitor. So they are a universal arm in the tier .getClass
+;; already occupies rather than a per-type entry, and no type arm below can shadow
+;; them — which is what keeps (.wait s) on a string or a record working, the same
+;; values `locking` already takes a monitor for.
+;;
+;; The arm is consulted on EVERY .method call in the process, so the reject has to
+;; be cheap: three string=? would be three string walks per call, while the first
+;; character rules out all but a handful of method names in one char compare. Priced
+;; on bench/char_scan_unhinted.clj, whose .charAt and .length reach the generic
+;; dispatcher: 203-207ms with this arm ahead of the string tier and 204-206ms with
+;; it demoted below every arm (two runs of three each way, release binary), so the
+;; universal placement is inside the run-to-run spread.
+
+;; notify and notifyAll take no arguments, so a call that passes one is the arity
+;; miss the JVM reports rather than a silently ignored argument. The count is read
+;; only once a name has matched: ".next" and ".name" reach this arm too.
+(define (object-monitor-notify obj name rest-args f)
+  (let ((argc (if (jolt-nil? rest-args) 0 (jolt-count rest-args))))
+    (if (fx=? argc 0) (f obj) (no-method-throw name obj argc))))
+
+(register-method-arm! arm-priority-monitor
+  (lambda (obj method-name rest-args)
+    (let ((c (and (fx>? (string-length method-name) 0) (string-ref method-name 0))))
+      (cond
+        ((eqv? c #\w)
+         (if (string=? method-name "wait")
+             (apply jolt-object-wait obj (method-rest-args->list rest-args))
+             (quote pass)))
+        ((eqv? c #\n)
+         (cond ((string=? method-name "notify")
+                (object-monitor-notify obj "notify" rest-args jolt-object-notify))
+               ((string=? method-name "notifyAll")
+                (object-monitor-notify obj "notifyAll" rest-args jolt-object-notify-all))
+               (else (quote pass))))
+        (else (quote pass))))))
 
 ;; --- cooperative thread interrupt -------------------------------------------
 ;; Chez has no force-kill, but its engine timer (set-timer + timer-interrupt-

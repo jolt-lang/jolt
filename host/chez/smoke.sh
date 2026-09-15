@@ -838,14 +838,15 @@ else
   fails=$((fails + 1))
 fi
 
-# A fiber must never block or occupy its carrier (jolt-x1no). Fourteen checks —
+# A fiber must never block or occupy its carrier (jolt-x1no). Sixteen checks —
 # promise and future deref, Thread.join, CountDownLatch.await, a task Future's get,
-# awaitTermination, a piped stream read, agent await, .waitFor on a subprocess and
-# read-line — each exercised by two fibers on ONE carrier: a waiter and, behind it in
-# the queue, the releaser or sibling that only runs if the waiter gave the carrier
-# up. If the waiter keeps it, that second fiber never runs at all, so every case is a
-# hang rather than a stall. Three have no releaser and check the other half, that a
-# fiber parked with a DEADLINE is woken at it. Unfixed this reports 12 of 12.
+# awaitTermination, a piped stream read, agent await, .waitFor on a subprocess,
+# read-line and Object.wait — each exercised by two fibers on ONE carrier: a waiter
+# and, behind it in the queue, the releaser or sibling that only runs if the waiter
+# gave the carrier up. If the waiter keeps it, that second fiber never runs at all,
+# so every case is a hang rather than a stall. Four have no releaser and check the
+# other half, that a fiber parked with a DEADLINE is woken at it. Unfixed this
+# reports 12 of 12.
 fb_out="$($jolt run test/chez/fiber-blocking.clj 2>&1)"
 if printf '%s' "$fb_out" | grep -q 'FIBER-BLOCKING OK'; then
   pass=$((pass + 1))

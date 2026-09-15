@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`Object.wait`, `.notify` and `.notifyAll`, on every object.** `locking` was
+  already a real per-object monitor — reentrant, fiber-aware, shared with
+  `monitor-enter` — but the condition-variable half of that monitor was in no host
+  method table, so the standard idiom (`(locking o (while (not ready?) (.wait o)))`
+  against a `(locking o (.notifyAll o))`) failed at runtime and a consumer had to
+  branch `#?(:jolt …)` onto a queue instead. Each monitor now carries a WAIT SET
+  beside its entry set, and the two queues stay apart: a release wakes contenders,
+  a notify wakes waiters. `wait` releases the monitor outright — however deep it
+  was held, so a nested `locking` does not deadlock its own notifier — and takes it
+  again at the same depth on the way out. The argument handling is the JVM's:
+  `wait()` and `wait(0)` wait indefinitely, a negative timeout or a nanosecond
+  argument outside 0–999999 is an `IllegalArgumentException`, any positive nanos
+  rounds the millisecond up, and a caller that does not own the monitor gets
+  `IllegalMonitorStateException`. The five entry points are a universal dispatch
+  arm rather than a per-type entry, because they are final methods on
+  `java.lang.Object` that no type may shadow. On a fiber the wait PARKS and gives
+  its carrier up, like every other wait in the runtime, and `.interrupt` throws
+  `InterruptedException` with the flag cleared *after* the monitor has been
+  reacquired — so the catch clause runs inside the critical section the wait left.
+  (#1011)
+
 ## [0.8.8] - 2026-09-15
 
 The theme is SCI on jolt. An embedded interpreter could not evaluate protocol

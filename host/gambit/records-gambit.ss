@@ -2746,6 +2746,8 @@
 
 (define arm-priority-getclass 5)
 
+(define arm-priority-monitor 5)
+
 (define arm-priority-string 6)
 
 (define arm-priority-dotform 30)

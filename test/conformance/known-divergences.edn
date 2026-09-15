@@ -892,12 +892,13 @@
    :check :prose
    :why "needs a thread blocked in a PipedInputStream read with an interrupt landing during it"
    :note "PipedInputStream signals interruption with an IOException subclass rather than InterruptedException, so it is a different contract from the ops jolt-cv-wait-interruptibly covers. Bound the read with a timeout or close the write end to release a reader."}
-  ;; NOT a divergence, and recorded so it does not read as an oversight: jolt has no
-  ;; Object.wait / .notify / .notifyAll on any object — they are in no host method
-  ;; table — so the JVM's interruptible Object.wait has no jolt counterpart to
-  ;; convert. (monitor-wait! in java/concurrency.ss is the monitor ENTER wait, not
-  ;; Object.wait, and it is correctly uninterruptible; see the row below.)
-  ;; NOT a divergence either, recorded so it is not "fixed": monitor-enter / locking is
+  ;; Object.wait / .notify / .notifyAll exist on every object now (jolt#1011) and are
+  ;; interruptible like the rest of this family, with the monitor reacquired before
+  ;; the throw. The corpus rows are "locking / wait-notify" in test/chez/corpus.edn
+  ;; and the interrupt half is pinned in test/chez/unit.edn; nothing is recorded
+  ;; here because nothing diverges. (monitor-wait! in java/concurrency.ss is the
+  ;; monitor ENTER wait, a different thing, and it is correctly uninterruptible.)
+  ;; NOT a divergence, recorded so it is not "fixed": monitor-enter / locking is
   ;; uninterruptible on the JVM too — a thread blocked entering a monitor stays
   ;; blocked and its flag stays SET rather than being consumed. jolt matches it
   ;; exactly, both halves probed against JVM Clojure 1.12. ReentrantLock is the

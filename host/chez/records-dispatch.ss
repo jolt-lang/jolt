@@ -712,6 +712,11 @@
 ;; has no such arm in the chain at all.
 (define arm-priority-user-override 1)
 (define arm-priority-getclass 5)      ; .getClass — universal Object method, first
+;; .wait / .notify / .notifyAll — final methods on java.lang.Object, so no type may
+;; define one and no type arm may shadow one. Same universal tier as .getClass, and
+;; registered by java/concurrency.ss, which owns the object monitors and loads long
+;; after this file (the Gambit host has no monitors and no such arm).
+(define arm-priority-monitor 5)       ; Object.wait/.notify/.notifyAll — universal too
 (define arm-priority-string 6)       ; string receivers — the base's string? case hoisted
 (define arm-priority-dotform 30)      ; -field accessor + dot-form method dispatch
 (define arm-priority-date 40)         ; java.util.Date (jinst) method surface

@@ -18,7 +18,7 @@
 ;; these passes while still stalling every OTHER fiber on the waiter's carrier,
 ;; which is the part no assertion can see.)
 ;;
-;; The three TIMED cases have no releaser at all. They cover the other half of a
+;; The four TIMED cases have no releaser at all. They cover the other half of a
 ;; parked wait, which is that something must wake a fiber AT its deadline: a thread
 ;; hands the deadline to condition-wait, and a fiber has nothing to do that, so
 ;; jolt-cv-wait registers with the shared timer. A fiber that parks with a deadline
@@ -131,6 +131,20 @@
   (let [[v port] (a/alts!! [order (a/timeout case-timeout-ms)])]
     (swap! results conj [:read-line-yields (if (= port order) v :HUNG)])))
 
+;; 15-16. Object.wait on an object monitor (jolt#1011), which is the one wait in
+;; the runtime that hands a LOCK back before it parks. The releaser can only take
+;; the monitor because the waiter gave it up, so this case checks the release as
+;; well as the park; and the waiter re-acquires on the way out, which on one
+;; carrier it can only do after the releaser has left the monitor.
+(let [o (Object.)]
+  (probe :object-wait
+         (fn [] (locking o (.wait o 10000)) :notified)
+         (fn [] (locking o (.notify o)))))
+(let [o (Object.)]
+  (probe :object-wait-deadline
+         (fn [] (locking o (.wait o 150)) :timed-out)
+         nil))
+
 (def expected
   {:promise :delivered
    :promise-timed :delivered
@@ -145,7 +159,9 @@
    :piped-read 65
    :agent-await :drained
    :waitfor-yields :sibling-ran
-   :read-line-yields :sibling-ran})
+   :read-line-yields :sibling-ran
+   :object-wait :notified
+   :object-wait-deadline :timed-out})
 
 (let [got (into {} @results)
       bad (remove (fn [[k v]] (= v (get expected k))) (seq got))
