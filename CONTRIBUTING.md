@@ -149,6 +149,8 @@ The Gambit targets need `gambit-scheme` (brew) and skip cleanly without it:
 make gambitcheck              # adapter + shims on native gsi
 make gambitkernel             # the booted kernel and natives (113 checks)
 make gambiteval               # jolt source through the compiler, renders pinned to Chez
+make gambitunbound            # gate: every Scheme global the boot references is defined (~75s)
+make gambitvars               # gate: every var the boot interns is bound
 make gambitseed               # re-mint host/gambit/seed/ (runs on Chez, after a seed change)
 make gambitweb                # => target/gambit/jolt-web.js, the browser bundle
 make gambitweb PROFILE=repl   # a smaller bundle (see Build profiles below)
@@ -168,6 +170,18 @@ make gambitweb GAMBIT_WEB_OUT=../jolt-lang.github.io/resources/static/js/jolt-we
 Some Gambit host files are generated from their Chez counterparts (for example
 `records-gambit.ss` from `records.ss`); run `make gambitgen` after editing the
 source, and `make gambitgencheck` gates the drift.
+
+The boot splices most of `host/chez` into one Gambit unit, so a Chez-only name
+reaching a shared file is an unbound global there that no Chez gate can see.
+`make gambitunbound` compiles the boot with `gsc` and reads the linker's report
+of globals defined nowhere; `make gambitvars` boots on `gsi` and lists the var
+cells nothing bound. Both compare against an allowlist
+(`host/gambit/unbound-allowlist.txt`, `unbound-vars-allowlist.txt`) of paths the
+target never takes, and a line whose name has since been defined fails the
+gate; `make gambitunbound-regen` / `gambitvars-regen` rewrite the lists keeping
+the comments. Bind a new name — a mirror in `rt-core.ss`, a shim in
+`prelude-shims.ss`, a raise naming the absent capability in `host-vars.ss` —
+before reaching for the allowlist.
 
 ### Build profiles
 

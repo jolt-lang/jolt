@@ -439,15 +439,21 @@
 ;; --- host interop ------------------------------------------------------------
 ;; (.method target arg*) with method in backend supported-host-methods
 ;; (isDirectory/listFiles) lowers to (jolt-host-call "method" target arg*). Those
-;; map onto Chez path operations when the receiver is a path STRING; a File value
-;; is intercepted by io.ss's wrapper before reaching here. Any other receiver (a
+;; map onto Gambit's path operations when the receiver is a path STRING (the
+;; Chez spellings file-directory? / directory-list this used to call are not
+;; Gambit names, so file-seq died on the first directory). Any other receiver (a
 ;; deftype/record with its own .isDirectory) routes to the normal method dispatch
 ;; instead of misapplying file ops to it. record-method-dispatch is loaded later
 ;; (records.ss) and resolved at call time.
+(define (jolt-path-directory? p)
+  (and (file-exists? p) (eq? (file-type p) 'directory)))
+(define (jolt-path-entries p)
+  (let ((dir (if (string-suffix? "/" p) p (string-append p "/"))))
+    (map (lambda (e) (string-append dir e)) (directory-files p))))
 (define (jolt-host-call method target . args)
   (cond
-    ((and (string=? method "isDirectory") (string? target)) (if (file-directory? target) #t #f))
-    ((and (string=? method "listFiles") (string? target)) (list->cseq (directory-list target)))
+    ((and (string=? method "isDirectory") (string? target)) (if (jolt-path-directory? target) #t #f))
+    ((and (string=? method "listFiles") (string? target)) (list->cseq (jolt-path-entries target)))
     (else (record-method-dispatch target method (apply jolt-vector args)))))
 
 ;; --- var cells: late-bound global roots (Clojure vars) -----------------------
@@ -474,6 +480,29 @@
 ;; The whole-table snapshots host-contract.ss's completion scan reads (mirrors
 ;; host/chez/rt.ss: a locked copy, iterated by the caller outside the lock).
 (define var-table-mu (make-mutex))
+;; ns -> hashtable(name -> cell): the per-namespace index of var-table that
+;; ns.ss's refer / ns-publics / ns-map / all-ns answer from (see host/chez/rt.ss
+;; ns-cells-index). Kept in lockstep with var-table at both insert sites below,
+;; exactly as Chez does — the shared ns.ss reads it, so without it every
+;; namespace looked empty here.
+(define ns-cells-index (make-hashtable string-hash string=?))
+(define (ns-cells-add! c)                ; caller holds var-table-mu
+  (let* ((ns (var-cell-ns c))
+         (b (or (hashtable-ref ns-cells-index ns #f)
+                (let ((b (make-hashtable string-hash string=?)))
+                  (hashtable-set! ns-cells-index ns b)
+                  b))))
+    (hashtable-set! b (var-cell-name c) c)))
+(define (ns-cells-list ns)
+  (jolt-with-mutex var-table-mu
+    (let ((b (hashtable-ref ns-cells-index ns #f)))
+      (if b (vector->list (hashtable-values b)) '()))))
+(define (ns-index-names)
+  (jolt-with-mutex var-table-mu (hashtable-keys ns-cells-index)))
+(define (rebuild-ns-cells-index!)
+  (jolt-with-mutex var-table-mu
+    (hashtable-clear! ns-cells-index)
+    (vector-for-each ns-cells-add! (hashtable-values var-table))))
 (define (var-table-cells) (jolt-with-mutex var-table-mu (hashtable-values var-table)))
 (define (var-table-entries)
   (jolt-with-mutex var-table-mu
@@ -481,9 +510,12 @@
 (define (jolt-var ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
-        (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #f #f #f #f #f)))
-          (hashtable-set! var-table k c)
-          c))))
+        (jolt-with-mutex var-table-mu
+          (or (hashtable-ref var-table k #f)
+              (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #f #f #f #f #f)))
+                (hashtable-set! var-table k c)
+                (ns-cells-add! c)
+                c))))))
 ;; non-creating lookup (resolve / find-var / ns-unmap): #f when absent, so a
 ;; probe never interns an empty cell.
 (define (var-cell-lookup ns name) (hashtable-ref var-table (string-append ns "/" name) #f))
@@ -496,6 +528,11 @@
 ;; JVM-style class name and clojure.spec.alpha's fn-sym can recover the symbol of a
 ;; bare-fn predicate. Weak so GC'd fns drop out. Last def of a given proc wins.
 (define proc-name-tbl (make-weak-eq-hashtable))
+;; The READS take the table's mutex through proc-name-of, as on Chez (rt.ss):
+;; seq.ss prints a fn's name with it and host-class.ss's class arm reads it for
+;; (class a-fn) — both shared files, both unbound here until this mirror.
+(define proc-name-mu (make-mutex))
+(define (proc-name-of v) (jolt-with-mutex proc-name-mu (hashtable-ref proc-name-tbl v #f)))
 (define var-redefined-set (make-hashtable string-hash string=?))
 (define (var-redefined? ns name)
   (hashtable-contains? var-redefined-set (string-append ns "/" name)))
@@ -516,6 +553,7 @@
 ;; var-routed (gen-seed.ss sets no mint flags), so nothing links here yet; the
 ;; funnel is mirrored so a def-var-linked! form loads if one ever arrives.
 (define var-linked-tbl (make-eq-hashtable))
+(define var-linked-mu (make-mutex))      ; ns.ss's remove-ns sweep takes it
 (define (var-root-set! c v)
   (var-cell-root-set! c v)
   (let ((l (hashtable-ref var-linked-tbl c #f)))
@@ -625,9 +663,14 @@
         ;; declaration-only var stays defined?=#f and resolve/find-var/ns-interns
         ;; miss it in an AOT build. The existing root is left intact.
         (begin (var-cell-defined?-set! c #t) c)
-        (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #t #f #f #f #f)))  ; declared => interned/resolvable
-          (hashtable-set! var-table k c)
-          c))))
+        (jolt-with-mutex var-table-mu
+          (let ((c (hashtable-ref var-table k #f)))
+            (if c
+                (begin (var-cell-defined?-set! c #t) c)
+                (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #t #f #f #f #f)))  ; declared => interned/resolvable
+                  (hashtable-set! var-table k c)
+                  (ns-cells-add! c)
+                  c)))))))
 
 ;; regex: defines regex-t + the re-* fns (def-var!'d into
 ;; clojure.core), so it loads after def-var! and before the printer below (which
@@ -1188,14 +1231,15 @@
     ((string=? method "toString") s)
     ((string=? method "length") (string-length s))
     ((string=? method "charAt") (string-ref s (arg-idx 0)))
+    ;; the kernel's own searches below: string-index / string-rindex are Chez
+    ;; spellings Gambit does not bind, so (.indexOf s x) died on an unbound
+    ;; global. A char or a code point needle (String.indexOf(int)) is searched
+    ;; as its one-char string, like natives-str.ss.
     ((string=? method "indexOf")
-     (let ((needle (jolt-need-str (arg 0))))
-       (or (if (fx>? (length rest) 1)
-               (string-index s needle (arg-idx 1))
-               (string-index s needle))
-           -1)))
+     (str-index-of s (str-needle (arg 0)) (if (fx>? (length rest) 1) (arg-idx 1) 0)))
     ((string=? method "lastIndexOf")
-     (or (string-rindex s (jolt-need-str (arg 0))) -1))
+     (str-last-index-of s (str-needle (arg 0))))
+    ((string=? method "hashCode") (java-string-hash s))   ; natives-misc.ss, shared
     ((string=? method "startsWith") (string-prefix? (jolt-need-str (arg 0)) s))
     ((string=? method "endsWith") (string-suffix? (jolt-need-str (arg 0)) s))
     ((string=? method "substring")
@@ -1315,6 +1359,60 @@
 (def-var! "clojure.core" "str-replace" str-replace)
 (def-var! "clojure.core" "str-replace-all" str-replace-all)
 
+;; ---- names the shared files read that rt.ss owns on Chez ---------------------
+
+;; The build's def-ordinal replay (host/chez/rt.ss var-def-ordinals):
+;; host-contract.ss's hc-resolve-cell reads jolt-form-ordinal as its gate and
+;; consults var-def-ordinal only when a build walk has set it. Nothing here
+;; runs a build walk — emit-image.ss and build.ss are not in the boot — so the
+;; gate stays #f and every var reads the unstamped 0, which is what Chez
+;; answers outside a walk too. The parameter exists so the shared file's read
+;; is a read, not an unbound global on the first `defn`.
+(define jolt-form-ordinal (make-parameter #f))
+(define (var-def-ordinal ns name) 0)
+
+;; A file path the way a report shows it (compile-eval.ss's diagnostics);
+;; mirrors host/chez/rt.ss jolt-display-path.
+(define (jolt-display-path p)
+  (define (under? p dir)
+    (and (string? dir) (> (string-length dir) 0)
+         (> (string-length p) (string-length dir))
+         (string=? (substring p 0 (string-length dir)) dir)
+         (char=? (string-ref p (string-length dir)) #\/)))
+  (define (strip-dot p)
+    (let loop ((p p))
+      (if (and (> (string-length p) 2) (string=? (substring p 0 2) "./"))
+          (loop (substring p 2 (string-length p)))
+          p)))
+  (cond
+    ((not (string? p)) p)
+    ((and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
+     (let ((cwd (or (getenv "JOLT_PWD") (guard (_ (#t #f)) (current-directory))))
+           (home (getenv "HOME")))
+       (cond ((under? p cwd) (string-append "./" (substring p (+ 1 (string-length cwd)) (string-length p))))
+             ((under? p home) (string-append "~/" (substring p (+ 1 (string-length home)) (string-length p))))
+             (else p))))
+    ((and (> (string-length p) 1) (string=? (substring p 0 2) "./"))
+     (string-append "./" (strip-dot p)))
+    (else p)))
+
+;; Object monitors — `locking`, alter-var-root (dyn-binding.ss) and the STM's
+;; commit lock (refs.ss) take one through jolt-with-monitor, which
+;; java/concurrency.ss owns on Chez. One mutex per object in a weak table,
+;; entered through jwm-call so a re-entry by the holder runs inline (Chez's
+;; monitors are reentrant; SRFI-18's mutexes are not). No fibers park here, so
+;; the release on exit is unconditional.
+(define %monitor-tbl (make-weak-eq-hashtable))
+(define %monitor-mu (make-mutex))
+(define (object-monitor obj)
+  (jolt-with-mutex %monitor-mu
+    (or (hashtable-ref %monitor-tbl obj #f)
+        (let ((m (make-mutex)))
+          (hashtable-set! %monitor-tbl obj m)
+          m))))
+(define (jolt-with-monitor obj thunk) (jwm-call (object-monitor obj) thunk))
+(def-var! "jolt.host" "with-monitor" jolt-with-monitor)
+
 ;; source-registry.ss is excluded (introspect off on this target); the def
 ;; path emits registration calls — a no-op keeps them inert, matching the
 ;; degraded-introspection mode where backtraces carry no frames.
@@ -1339,6 +1437,20 @@
 (define (code-value? x) #f)
 
 ;; jclass?/jclass-name and the class objects they read live in host-vars.ss.
+
+;; ---- values the excluded java/ tree owns: none exists here ------------------
+;; The shared dispatch arms ask these of ANY value on the way to their own
+;; answer — value-host-tags tests jolt-array? before regex/uuid, inst? asks
+;; jinst?, format asks jbigdec?, (instance? File x) asks jfile? — so they have
+;; to answer, and the answer is #f: no array, inst, bigdec or File value can be
+;; constructed on this boot (natives-array.ss, inst-time.ss, bigdec.ss and
+;; io.ss are not in it). The accessors behind each predicate stay unbound and
+;; unreachable (unbound-allowlist.txt).
+(define (jolt-array? x) #f)
+(define (jolt-array-kind x) #f)
+(define (jinst? x) #f)
+(define (jfile? x) #f)
+(define (jbigdec? x) #f)
 
 ;; ---- concurrency tier stubs (demo boot: single-threaded) ---------------------
 ;; java/concurrency.ss + natives-queue.ss are excluded from this boot. Gambit
@@ -1369,6 +1481,11 @@
 ;; this boot reads them back — no host interop), so definitions succeed.
 (define class-ctors-tbl (make-hashtable string-hash string=?))
 (define (register-class-ctor! tag ctor) (hashtable-set! class-ctors-tbl tag ctor))
+;; The analyzer's two class questions (host-contract.ss): a bare Capitalized
+;; name is a host class when a constructor is registered under it (a deftype,
+;; or the throwable ctors host-vars.ss derives); nothing here has statics.
+(define (host-class-registered? nm) (and (hashtable-ref class-ctors-tbl nm #f) #t))
+(define (host-class-has-statics? nm) #f)
 ;; On Chez the two differ in whether the class is also recorded as one the host
 ;; provides (java/host-static.ss); there is no such registry here, so a deftype's
 ;; ctor takes the same write under the name protocols.ss calls.

@@ -41,6 +41,13 @@
   (inexact->exact (floor (* 1000 (time->seconds (current-time))))))
 (def-var! "clojure.core" "current-time-ms" gambit-epoch-ms)
 
+;; The monotonic nanosecond clock `time` expands to (System/nanoTime on the
+;; JVM; host-static-methods.ss on Chez). real-time is Gambit's monotonic clock
+;; in float seconds. Unbound, the macro's clojure.core/current-time-ns call
+;; read as a static member access and (time 1) died on jolt.host/static-member.
+(def-var! "clojure.core" "current-time-ns"
+  (lambda () (inexact->exact (floor (* 1e9 (real-time))))))
+
 (def-var! "clojure.core" "flush"
   (lambda args (force-output) jolt-nil))
 
@@ -82,6 +89,32 @@
         (jolt-throw
           (jolt-host-throwable "java.lang.IllegalArgumentException"
             "spit on the gambit target takes a path string")))))
+
+;; file-seq's seams (clojure/core/21-coll.clj): a path string names a file; a
+;; directory answers its entries as paths. No java.io.File value exists here, so
+;; __file? is "is this a path string" and every walk starts from one.
+(def-var! "clojure.core" "__file?" (lambda (x) (if (string? x) #t jolt-nil)))
+(def-var! "clojure.core" "__dir?"
+  (lambda (p) (if (and (string? p) (jolt-path-directory? p)) #t jolt-nil)))
+(def-var! "clojure.core" "__list-dir"
+  (lambda (p) (list->cseq (jolt-path-entries p))))
+
+;; with-open's close seam (io.ss jolt-close on Chez), minus the arms for host
+;; readers that cannot exist here: a deftype/reify with a close method closes
+;; through it, a library's tagged-table stream through its registered .close,
+;; a map-like value through its :close fn; nil is a no-op.
+(def-var! "clojure.core" "__close"
+  (lambda (x)
+    (cond
+      ((jolt-nil? x) jolt-nil)
+      ((htable? x) (guard (e (#t jolt-nil)) (record-method-dispatch x "close" jolt-nil)) jolt-nil)
+      ((iface-method x "close" #f)
+       (record-method-dispatch x "close" jolt-nil) jolt-nil)
+      (else
+       (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
+         (if (and (not (jolt-nil? closef)) (procedure? closef))
+             (begin (jolt-invoke closef) jolt-nil)
+             (throw-jvm (quote IllegalArgumentException) "with-open: no .close method on value")))))))
 
 ;; ---- library shim hooks: real ----------------------------------------------
 ;; The underlying arm registries are all present in the portable runtime, so a
@@ -195,58 +228,119 @@
 (register-pr-arm! gambit-host-error? gambit-error-tostring)
 
 ;; ---- host objects cannot exist here ----------------------------------------
-;; The jhost record (java/host-static.ss) and the reader/stream shims built on
-;; it live in the java/ tree this target does not boot, so no value here can BE
-;; one. Answering #f makes every branch guarded by these predicates dead code —
-;; which is why the accessors behind them need no stand-in, since Scheme resolves
-;; a global only when it is actually reached. printing.ss consults jhost? on the
-;; way to a writer, which is what made `(time 1)` die on an unbound name.
-
-;; The reader/stream shims genuinely do not exist here, so nothing is one.
+;; The reader/stream shims built on the jhost record live in the java/ tree this
+;; target does not boot, so no value here can BE one. Answering #f makes every
+;; branch guarded by these predicates dead code — which is why the accessors
+;; behind them need no stand-in, since Scheme resolves a global only when it is
+;; actually reached. printing.ss consults jhost? on the way to a writer, which
+;; is what made `(time 1)` die on an unbound name. (The jhost record itself and
+;; the class objects built on it are class-objects.ss, which loads before the
+;; prelude: its own (import …) forms intern class tokens.)
 (define (reader-jhost? x) #f)
 (define (jhost-seqable-shim? x) #f)
 
-;; jhost itself, on the other hand, is the generic carrier for a host value, and
-;; the class model needs it: (class x) returns a Class OBJECT, which on Chez is a
-;; jhost tagged "class" (java/host-static-classes.ss). Without it (class e) died
-;; on an unbound make-class-obj. Same record shape as Chez's, so the booted
-;; class/printing code reads it unchanged.
-(define-record-type jhost
-  (fields tag (mutable state))
-  (nongenerative gambit-jhost-v1))
+;; ---- the streams and reader tables the printer and reader consult ----------
+;; *out* / *err* hold the same default port-writer jhosts Chez binds
+;; (host-static-classes.ss): the printer's jolt-write (printing.ss) treats that
+;; exact value as "the fast port path" and only a REBOUND writer goes through
+;; a write method. clojure.pprint (seed-embedded) reads *out* directly, so the
+;; cells must be bound, not merely interned by the first read.
+(def-dynvar! "clojure.core" "*out*" (make-jhost "port-writer" (vector 'out)))
+(def-dynvar! "clojure.core" "*err*" (make-jhost "port-writer" (vector 'err)))
+;; The reader consults *data-readers* like default-data-readers; empty is the
+;; truth here (inst-time.ss binds the same default on Chez).
+(def-dynvar! "clojure.core" "*data-readers*" empty-pmap)
 
-(define (make-class-obj name) (make-jhost "class" (vector name)))
-(define (jclass? x) (and (jhost? x) (string=? (jhost-tag x) "class")))
-(define (jclass-name x) (vector-ref (jhost-state x) 0))
-
-;; Class tokens intern per name so identity, = and defmethod keys are stable.
-(define jolt-class-for-tbl (make-hashtable string-hash string=?))
-(define (jolt-class-for name)
-  (or (hashtable-ref jolt-class-for-tbl name #f)
-      (let ((obj (make-class-obj name)))
-        (hashtable-set! jolt-class-for-tbl name obj)
-        obj)))
-(register-str-render! jclass? (lambda (x) (string-append "class " (jclass-name x))))
-(register-pr-arm! jclass? jclass-name)
-(register-eq-arm! (lambda (a b) (and (jclass? a) (jclass? b)))
-                  (lambda (a b) (string=? (jclass-name a) (jclass-name b))))
-
-;; The auto-imported class tokens as clojure.core vars, the way Chez's
-;; host-static-classes.ss binds them: compiled code reads `Throwable` as
-;; (var-deref "clojure.core" "Throwable"), and the compiler's own diagnostic
-;; wrapper does (instance? Throwable e) — so with these unbound every analysis
-;; error became "symbol-t-name: not an instance of this record type" on the
-;; Unbound sentinel, and the eval gate could not report what actually failed.
-(for-each
-  (lambda (n)
-    (let ((fqn (jolt-default-import-canonical n)))
-      (when (jch-known? fqn) (def-var! "clojure.core" n (jolt-class-for fqn)))))
-  jolt-default-import-names)
+;; ---- the image seams the analyzer asks ---------------------------------------
+;; embed-plan is how a macro's live value gets rebuilt as code (analyzer.clj
+;; embedded-value). state-image.ss answers with the image writer's verdict; this
+;; target has no fn-form registry (rt-core's image-register-fn-form! is a no-op),
+;; so the only rebuildable value is one some var roots — {:kind :var} from the
+;; proc-name table — and everything else is honestly nil: the analyzer then
+;; reports "cannot be rebuilt as code" instead of dying on an unbound var.
+(def-var! "jolt.host" "embed-plan"
+  (lambda (x)
+    (let ((p (and (procedure? x) (proc-name-of x))))
+      (if p
+          (jolt-hash-map (keyword #f "kind") (keyword #f "var")
+                         (keyword #f "ns") (car p)
+                         (keyword #f "name") (cdr p))
+          jolt-nil))))
 
 ;; ---- absent capabilities ---------------------------------------------------
 
-(degrade-core-vars! '("host-new" "host-static-call" "host-static-ref" "make-proxy")
-                    "there are no JVM class shims on this target")
+;; (new Class args) is emitted as (host-new "Class" args). Two kinds of class
+;; exist on this target: the exception hierarchy, which every core throw site
+;; constructs ((new ClassCastException msg) is what (zero? "a") raises), and a
+;; deftype/defrecord, whose type name is a var holding its ctor — the same two
+;; arms Chez's host-new (host-static.ss) takes before its class shims. The
+;; throwable ctors are derived from the ONE hierarchy in class-hierarchy.ss the
+;; way host-static-classes.ss derives them, so (E. msg), (E. msg cause),
+;; (E. cause) and (E.) all build the typed throwable. Anything else names a JVM
+;; class this target has no shim for, and says so.
+(define (gambit-exc-ctor canonical)
+  (lambda args
+    (let* ((a0 (if (pair? args) (car args) jolt-nil))
+           (rest (if (pair? args) (cdr args) '()))
+           (cause (if (pair? rest) (car rest) jolt-nil)))
+      (cond
+        ((string? a0) (jolt-host-throwable canonical a0 cause))
+        ((jolt-nil? a0) (jolt-host-throwable canonical jolt-nil))
+        ((and (null? rest) (ex-info-map? a0)) (jolt-host-throwable canonical jolt-nil a0))
+        (else (jolt-host-throwable canonical (jolt-str-render-one a0) cause))))))
+(let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+  (vector-for-each
+    (lambda (canonical supers)
+      (when (jch-isa? canonical "Throwable")
+        (let ((short (jch-last-segment canonical)))
+          (register-class-ctor! short (gambit-exc-ctor canonical))
+          (unless (string=? short canonical)
+            (register-class-ctor! canonical (gambit-exc-ctor canonical))))))
+    keys vals))
+(define (host-new class . args)
+  (let ((ctor (hashtable-ref class-ctors-tbl class #f)))
+    (cond
+      (ctor (apply ctor args))
+      (else
+       (let ((cell (or (var-cell-lookup (chez-current-ns) class)
+                       (var-cell-lookup "clojure.core" class))))
+         (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
+             (apply (var-cell-root cell) args)
+             (jolt-throw
+               (jolt-host-throwable
+                 "java.lang.UnsupportedOperationException"
+                 (string-append "(new " class ") is unsupported on the gambit target: "
+                                "there are no JVM class shims")))))))))
+(def-var! "clojure.core" "host-new" (lambda (c . a) (apply host-new c a)))
+
+(degrade-core-vars! '("make-proxy") "there are no JVM class shims on this target")
+;; (Class/member args) is emitted as (host-static-call "Class" "member" args) and
+;; a static field read as (host-static-ref …) — Scheme-level calls in the seed
+;; (Math/floor, Long/parseLong, clojure.lang.Util/equiv), not var references,
+;; so the two need to be GLOBALS here as well as clojure.core vars. The statics
+;; registry is host-static-methods.ss's, excluded on this target; each call
+;; reports the class it wanted instead of dying on an unbound global.
+(define (host-static-ref class member)
+  (jolt-throw
+    (jolt-host-throwable
+      "java.lang.UnsupportedOperationException"
+      (string-append class "/" member
+                     " is unsupported on the gambit target: there are no JVM class shims"))))
+(define (host-static-call class member . args) (host-static-ref class member))
+(def-var! "clojure.core" "host-static-call" host-static-call)
+(def-var! "clojure.core" "host-static-ref" host-static-ref)
+;; (Class/member) with no arguments — a static field read or a no-arg static
+;; call — is the analyzer's jolt.host/static-member (host-static.ss on Chez).
+(def-var! "jolt.host" "static-member" host-static-ref)
+;; The fn-form registry (fn-form-registry.ss) is the image's; the back end asks
+;; it inside a try and falls back to constructing the form.
+(def-var! "jolt.host" "fn-form-parse"
+  (gambit-unsupported-fn "fn-form-parse" "there is no fn-form registry on this target"))
+
+(degrade-core-vars! '("aclone" "into-array" "to-array" "object-array" "int-array"
+                      "long-array" "double-array" "float-array" "boolean-array"
+                      "byte-array" "char-array" "short-array")
+                    "arrays are not wired up on this target (java/natives-array.ss)")
 
 (degrade-core-vars! '("future-call" "future-cancel" "send-via" "agent-errors"
                       "clear-agent-errors" "await-for" "error-handler" "error-mode"

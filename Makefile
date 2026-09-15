@@ -111,7 +111,8 @@ JOLT-TARGETS-NEEDING-DEPS := \
 # Only mark PHONY targets for names that have file system conflicts:
 .PHONY: build install test ci gate-run-test gate-run-ci gate-status hooks attributioncheck \
         gambitcheck gambitkernel gambiteval gambitseed gambitweb gambitprofile \
-        gambitgen gambitgencheck gambitseedcheck grenadinecheck \
+        gambitgen gambitgencheck gambitseedcheck gambitunbound gambitunbound-regen \
+        gambitvars gambitvars-regen grenadinecheck \
         fibersbench dynbench \
         fibersresidue
 
@@ -168,7 +169,7 @@ CI-GATES := submodules values corpus unit documented grenadine mvnhttp readscali
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa deadhost adaptercheck hostprops statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotfingerprint vfaslceiling compilepathsmoke makefilesmoke versionsmoke attributioncheck \
   systemstreams \
-  certify gambitcheck gambitgencheck gambitseedcheck gambitboot grenadinecheck fibers gosm asynctimer interruptnest threadsafety flow
+  certify gambitcheck gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars grenadinecheck fibers gosm asynctimer interruptnest threadsafety flow
 TEST-GATES := submodules selfhost ci
 
 GATE-RECEIPT := target/gate-receipt
@@ -1222,14 +1223,51 @@ gambitkernel:
 
 # G3 eval gate: real jolt source through jolt-compile-eval on the booted
 # manifest + cross-minted seed, renders pinned to Chez captures. Detection-
-# gated like gambitcheck and NOT in the ci list — it boots the full seed, so
-# it takes about a minute on gsi. Run from the repo root.
+# gated like gambitcheck. In the ci list: it is the only gate that runs
+# emitted code on gsi end to end, and while it sat outside ci every row failed
+# for two weeks (jolt-cw2p) with nothing red. Run from the repo root.
 gambiteval:
 	@if [ -x "$(GAMBIT_GSI)" ]; then \
 		"$(GAMBIT_GSI)" host/gambit/eval-test.ss; \
 	else \
 		echo "gambiteval: gambit-scheme not installed (brew) — skipped"; \
 	fi
+
+# Every Scheme global the full-profile boot references is defined — Gambit's
+# own linker report over the compiled boot, minus what the record translator
+# evals at runtime, against host/gambit/unbound-allowlist.txt (untaken paths;
+# a stale line fails). The boot splices most of host/chez, so a Chez-side name
+# reaching a shared file is otherwise an unbound global no Chez gate can see;
+# mirrordrift only compares names defined on BOTH hosts. ~75s: it compiles the
+# seed to js (text only, no C compiler, no node). Detection-gated. Ordered
+# after gambitboot: both regenerate boot-full.ss, and under -j a reader must
+# not open the file mid-rewrite.
+gambitunbound: gambitboot
+	@if [ -x "$(GAMBIT_GSC)" ]; then \
+		JOLT_GSC="$(GAMBIT_GSC)" sh host/gambit/unbound-check.sh; \
+	else \
+		echo "gambitunbound: gambit-scheme not installed (brew) — skipped"; \
+	fi
+
+gambitunbound-regen:
+	@JOLT_GSC="$(GAMBIT_GSC)" sh host/gambit/unbound-check.sh --regen
+
+# The jolt half of the same question: every var cell the boot interned is
+# bound. Emitted code reaches a var through its cell, so after the boot the
+# var table holds every var the seed and the compiler image reference — an
+# unbound root is a reference nothing this boot defines (clojure.core/
+# chunk-first, bound by the excluded natives-array.ss, is how every `defn`
+# died). Against host/gambit/unbound-vars-allowlist.txt; a stale line fails.
+# One gsi boot, a few seconds. Detection-gated.
+gambitvars:
+	@if [ -x "$(GAMBIT_GSI)" ]; then \
+		"$(GAMBIT_GSI)" host/gambit/unbound-vars.ss < /dev/null; \
+	else \
+		echo "gambitvars: gambit-scheme not installed (brew) — skipped"; \
+	fi
+
+gambitvars-regen:
+	@JOLT_GAMBITVARS=regen "$(GAMBIT_GSI)" host/gambit/unbound-vars.ss < /dev/null
 
 # Build profiles: generate the reduced repl profile and check that the language
 # still works while an excluded feature reports itself instead of failing as an

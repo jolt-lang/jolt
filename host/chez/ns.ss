@@ -592,6 +592,48 @@
               jolt-default-import-names)
     t))
 (define (jolt-default-import-fqn nm) (hashtable-ref jolt-default-import-tbl nm #f))
+
+;; import: bring a deftype/defrecord from another ns into the current one. A spec
+;; [from-ns Type ...] binds each Type's ctor closure under the current ns, so its
+;; (Type. ...) constructor (host-new resolves it as a var) works after :import.
+;; A bare fully-qualified symbol spec — (import 'java.util.Date), or java.util.Date
+;; in an ns :import clause — is the (java.util Date) list it abbreviates. A name
+;; with no package (a default-package class the JVM would look up) binds nothing.
+(define (import-spec-of-fqn nm)
+  (let ((i (let loop ((i (fx- (string-length nm) 1)))
+             (cond ((fx<? i 0) #f)
+                   ((char=? (string-ref nm i) #\.) i)
+                   (else (loop (fx- i 1)))))))
+    (if i
+        (list (jolt-symbol #f (substring nm 0 i))
+              (jolt-symbol #f (substring nm (fx+ i 1) (string-length nm))))
+        '())))
+(define (chez-runtime-import . specs)
+  (for-each
+    (lambda (spec)
+      (let ((items (cond ((pvec? spec) (seq->list spec))
+                         ((or (cseq? spec) (empty-list-t? spec)) (seq->list spec))
+                         ((symbol-t? spec) (import-spec-of-fqn (symbol-t-name spec)))
+                         (else '()))))
+        (when (and (pair? items) (symbol-t? (car items)))
+          (let ((from (symbol-t-name (car items))))
+            (for-each
+              (lambda (tn)
+                (when (symbol-t? tn)
+                  ;; bind the short name to the interned CLASS value (java.lang.Class
+                  ;; token) for its fully-qualified name — the same self-evaluating
+                  ;; pattern the core Long/Integer/String tokens use. For a deftype/
+                  ;; defrecord this is its "ns.Name" class, equal to (type inst) /
+                  ;; (class inst), so (= SomeType (type inst)) and (instance? SomeType
+                  ;; x) work; (SomeType. …) construction resolves through the ctor
+                  ;; registry (host-new), not this binding.
+                  (def-var! (chez-current-ns) (symbol-t-name tn)
+                            (jolt-class-for (string-append from "." (symbol-t-name tn))))))
+              (cdr items))))))
+    specs)
+  jolt-nil)
+;; clojure.core/import is a macro (00-syntax.clj) expanding to this runtime fn.
+(def-var! "clojure.core" "__import" chez-runtime-import)
 ;; The base is the auto-imports alone; host-static-classes.ss extends it with the
 ;; namespace's OWN class mappings (its :imports and deftypes) once the class model
 ;; it reads them out of exists. jolt-ns-map below goes through this variable, so

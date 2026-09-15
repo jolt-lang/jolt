@@ -1,0 +1,30 @@
+# unbound-vars-allowlist.txt — vars the Gambit boot references and never binds.
+#
+# One ns/name per line, grouped under a comment that says why nothing on this
+# target reaches the var. host/gambit/unbound-vars.ss (make gambitvars) walks
+# the booted var table and pins its unbound cells against this list: a var
+# missing here fails the gate, and so does a line whose var is bound now —
+# the list only shrinks truthfully. `make gambitvars-regen` keeps comments
+# and still-valid lines in place, drops stale lines and appends new names at
+# the end for classification.
+#
+# A line here is a documented gap: calling the var raises "Attempting to
+# call unbound fn". A binding in host-vars.ss — real, an answer, or a raise
+# naming the absent capability — is always better than a line here.
+#
+# The syntax-quote markers: declared so ` can name them, never bound. Chez
+# ends its load with exactly these two unbound as well.
+clojure.core/unquote
+clojure.core/unquote-splicing
+#
+# clojure.core.Vec (vector-of, clojure/core/60-gvec.clj) is built on arrays,
+# which java/natives-array.ss owns; every array constructor is degraded here
+# (host-vars.ss), so its (def EMPTY-NODE (VecNode. nil (object-array 32)))
+# raises under the seed's guard and nothing downstream of it can run.
+clojure.core/EMPTY-NODE
+#
+# with-in-str's string reader (clojure/core/50-io.clj) reads lines through
+# java/io-streams.ss, where the line rule is kept beside the port readers so
+# the three cannot disagree about CRLF — a second copy here would be the
+# drift that placement exists to prevent.
+clojure.core/__string-line-from

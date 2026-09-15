@@ -928,8 +928,8 @@
 
 ;; ---- coercion helpers -------------------------------------------------------
 ;; numeric tower: currentTimeMillis/nanoTime are exact longs (JVM).
+;; (jnum->exact lives in seq.ss: the shared dispatch arms read it too.)
 (define (->num x) x)
-(define (jnum->exact n) (exact (truncate (jolt-need-num n))))
 ;; ---- java.lang integer parsing ----------------------------------------------
 ;; The grammar and the width check are java-int-parse (natives-num.ss), shared
 ;; with clojure.core/parse-long, which is Long/valueOf with the throw caught.

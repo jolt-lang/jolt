@@ -85,6 +85,10 @@
 (##include "../chez/reader.ss")
 (##include "../chez/syntax-quote.ss")
 (##include "../chez/host-contract.ss")
+;; Class objects, the class-token vars and the jolt.host/class-* answers: the
+;; prelude's own (import …) forms intern through jolt-class-for, so this comes
+;; before the seed (host-vars.ss, the rest of the java/ tree's names, after it).
+(##include "class-objects.ss")
 
 ;; ---- G3: the cross-minted compiler on gsi (jolt-mj95.4) ----------------------
 ;;
@@ -96,6 +100,11 @@
 ;; the seed's emitted code expands seq.ss's macros in this unit; a load'd seed
 ;; would be a separate unit that cannot see them.
 (##include "eval-fns.ss")  ;; seq.ss numeric macros as eval-world FUNCTIONS (js exes cannot eval define-syntax)
+;; clojure.core is the current namespace while its own prelude loads, as in
+;; cli.ss: the prelude's defmultis (print-method) def-var! into the current ns
+;; and its (import …) forms bind class tokens there — under the default "user"
+;; both landed in the wrong namespace (clojure.core/Sequential stayed unbound).
+(set-chez-ns! "clojure.core")
 (##include "seed/prelude.ss")
 ;; post-prelude re-asserts the native overrides the overlay stubs out (ns-name,
 ;; char?, atom?, realized?, ...) — cli.ss order: prelude, post-prelude, image.
@@ -103,6 +112,7 @@
 ;; the clojure.core names the excluded java/ tree owns on Chez — after
 ;; post-prelude so these bindings are the last word
 (##include "host-vars.ss")
+(set-chez-ns! "user")
 (##include "seed/image.ss")
 (##include "../chez/compile-eval.ss")
 

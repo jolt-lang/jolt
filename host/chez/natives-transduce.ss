@@ -1,5 +1,5 @@
 ;; natives-transduce.ss — the transducer surface: volatiles, the `cat` transducer,
-;; and sequence / transduce application.
+;; sequence / transduce application, and the chunked-seq builder API.
 ;;
 ;; `sequence` and `transduce` are seed natives. The stateful transducer arities
 ;; (take-nth/map-indexed/partition-by/dedupe/distinct, all overlay) use
@@ -108,3 +108,49 @@
        (let loop ((xs (seq->list (jolt-seq (cadr a)))) (acc (car a)))
          (if (null? xs) acc (loop (cdr xs) (jolt-invoke rf acc (car xs)))))))))
 (def-var! "clojure.core" "cat" jolt-cat)
+
+;; --- chunked seqs -----------------------------------------------------------
+;; The chunked-seq accessors (chunked-seq? / chunk-first / chunk-rest / chunk-next)
+;; live in seq.ss with the cseq core they read; here we only bind them plus the
+;; chunk-builder API (clojure.lang.ChunkBuffer + chunk-cons). chunk-buffer
+;; collects appended items, chunk seals them into a pvec chunk, and chunk-cons
+;; prepends that chunk onto a rest seq as a real ChunkedCons (cseq-chunked) —
+;; empty chunk == just the rest, like clojure.core/chunk-cons.
+;; Here rather than in java/natives-array.ss: core's chunked map/filter/keep
+;; read these vars, and this file is shared with the Gambit boot where the
+;; java/ tree is not — bound there, every `defn` on Gambit died on chunk-first.
+;; The buffer is a vector sized by cap (32 everywhere in core) + a fill count, so
+;; an append is one vector-set! — it was a per-item (append items (list x)) list
+;; copy, O(n^2) over a chunk's life with cap ignored (`make chunkscaling` gates
+;; the shape). Appends past cap grow the vector: the JVM ChunkBuffer throws
+;; there, and growing is the documented jolt superset (test/chez/unit.edn
+;; "chunk-builder overflow"). Sealing copies, so the buffer stays appendable
+;; after chunk — matching the list implementation, where the JVM nulls it.
+(define-record-type jolt-chunkbuf (fields (mutable vec) (mutable cnt)) (nongenerative jolt-chunkbuf-v2))
+(define (na-chunk-buffer cap)
+  (make-jolt-chunkbuf (make-vector (if (and (fixnum? cap) (fx>? cap 0)) cap 32)) 0))
+(define (na-chunk-append b x)
+  (let ((v (jolt-chunkbuf-vec b)) (n (jolt-chunkbuf-cnt b)))
+    (let ((v (if (fx=? n (vector-length v))
+                 (let ((w (make-vector (fx* 2 n))))
+                   (let copy ((i 0)) (when (fx<? i n) (vector-set! w i (vector-ref v i)) (copy (fx+ i 1))))
+                   (jolt-chunkbuf-vec-set! b w)
+                   w)
+                 v)))
+      (vector-set! v n x)
+      (jolt-chunkbuf-cnt-set! b (fx+ n 1))))
+  b)
+(define (na-chunk b)
+  (let* ((n (jolt-chunkbuf-cnt b)) (v (jolt-chunkbuf-vec b)) (out (make-vector n)))
+    (let copy ((i 0)) (when (fx<? i n) (vector-set! out i (vector-ref v i)) (copy (fx+ i 1))))
+    (make-pvec out)))
+(define (na-chunk-cons chunk rest)
+  (if (fx=? 0 (pvec-count chunk)) rest (cseq-chunked chunk 0 rest)))
+;; the buffer is clojure.lang.ChunkBuffer, a Counted: count reads its fill
+(register-class-arm! jolt-chunkbuf? (lambda (b) "clojure.lang.ChunkBuffer"))
+(register-count-arm! jolt-chunkbuf? (lambda (b) (jolt-chunkbuf-cnt b)))
+(let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
+  (d! "chunk-buffer" na-chunk-buffer) (d! "chunk-append" na-chunk-append)
+  (d! "chunk" na-chunk) (d! "chunk-cons" na-chunk-cons)
+  (d! "chunk-first" na-chunk-first) (d! "chunk-rest" na-chunk-rest)
+  (d! "chunk-next" na-chunk-next) (d! "chunked-seq?" na-chunked-seq?))

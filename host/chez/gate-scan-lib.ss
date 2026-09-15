@@ -45,10 +45,12 @@
                 ((file-regular? p) (proc p)))))
       (directory-list dir))))
 
-;; Gambit spells its primitives ##name, which Chez's reader rejects outright.
-;; Rewriting the prefix to a plain symbol prefix at TOKEN START (after an open
-;; paren, whitespace or a quote) lets a Gambit source read as data here; a #\#
-;; character literal is left alone because it is not at a token start.
+;; Gambit spells its primitives ##name, which Chez's reader rejects outright,
+;; and its special objects #!void / #!unbound / #!optional, which Chez's
+;; reader rejects too (its own #! set is different). Rewriting either prefix
+;; to a plain symbol prefix at TOKEN START (after an open paren, whitespace or
+;; a quote) lets a Gambit source read as data here; a #\# character literal is
+;; left alone because it is not at a token start.
 ;;
 ;; The rewrite is one-way and only ever applied to the Gambit side, so where a
 ;; gate compares the two hosts its failure mode is a spurious DIVERGED — which
@@ -59,12 +61,18 @@
       (if (>= i n)
           (get-output-string out)
           (let ((c (string-ref text i)))
-            (if (and (char=? c #\#)
-                     (< (+ i 1) n)
-                     (char=? (string-ref text (+ i 1)) #\#)
-                     (memv prev '(#\space #\newline #\tab #\( #\' #\` #\,)))
-                (begin (display "gambit-ns:" out) (loop (+ i 2) #\:))
-                (begin (write-char c out) (loop (+ i 1) c))))))))
+            (cond
+              ((and (char=? c #\#)
+                    (< (+ i 1) n)
+                    (char=? (string-ref text (+ i 1)) #\#)
+                    (memv prev '(#\space #\newline #\tab #\( #\' #\` #\,)))
+               (display "gambit-ns:" out) (loop (+ i 2) #\:))
+              ((and (char=? c #\#)
+                    (< (+ i 1) n)
+                    (char=? (string-ref text (+ i 1)) #\!)
+                    (memv prev '(#\space #\newline #\tab #\( #\' #\` #\,)))
+               (display "gambit-hb:" out) (loop (+ i 2) #\:))
+              (else (write-char c out) (loop (+ i 1) c))))))))
 
 ;; Every top-level datum in a Scheme source, Gambit dialect included. Raises if
 ;; the file cannot be read: to a gate that is a lint HOLE, not something to skip.

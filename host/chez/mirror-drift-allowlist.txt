@@ -24,6 +24,7 @@ host/chez/hasheq.ss::murmur3-hash-long
 host/chez/hasheq.ss::murmur3-hash-long-flat
 host/chez/hasheq.ss::murmur3-hash-unencoded-chars
 host/chez/hasheq.ss::murmur3-mix-h1
+host/chez/hasheq.ss::pvec-hasheq-cached
 host/chez/hasheq.ss::string-hasheq
 host/chez/hasheq.ss::symbol-hasheq
 host/chez/rt.ss::code-value?
@@ -33,14 +34,15 @@ host/chez/rt.ss::def-var-linked!
 host/chez/rt.ss::jolt->fx
 host/chez/rt.ss::jolt-available-processors
 host/chez/rt.ss::jolt-capture-fault!
+host/chez/rt.ss::jolt-host-call
 host/chez/rt.ss::jolt-random
 host/chez/rt.ss::jolt-random-bytes
 host/chez/rt.ss::jolt-str-join-sep
 host/chez/rt.ss::jolt-table-add!
 host/chez/rt.ss::jolt-throw
 host/chez/rt.ss::jolt-unwrap-throw
-host/chez/rt.ss::jolt-var
 host/chez/rt.ss::register-code-value!
 host/chez/rt.ss::register-proc-name!
+host/chez/rt.ss::var-def-ordinal
 host/chez/rt.ss::var-redefined?
 host/chez/rt.ss::var-root-set!

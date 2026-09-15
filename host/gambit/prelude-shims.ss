@@ -309,6 +309,11 @@
 (define (hashtable-cells t)
   (table->list t))
 
+;; R6RS (hashtable-copy t [mutable?]) over table-copy, which keeps the source's
+;; test and weakness — records.ss copies the weak deftype-ctor-tag table on
+;; every deftype and expects the copy to stay weak.
+(define (hashtable-copy t . mutable?) (table-copy t))
+
 ;; ============================================================================
 ;; fx spelling aliases.
 ;;
@@ -460,9 +465,7 @@
 (define (%trim-trailing-newline s)
   (let loop ((n (string-length s)))
     (cond ((= n 0) "")
-          ((memv (string-ref s (- n 1)) '(#
-ewline #
-eturn)) (loop (- n 1)))
+          ((memv (string-ref s (- n 1)) '(#\newline #\return)) (loop (- n 1)))
           (else (substring s 0 n)))))
 
 (define (condition? x)
@@ -474,6 +477,16 @@ eturn)) (loop (- n 1)))
         (else #f)))
 (define (condition-irritants c)
   (if (error-object? c) (error-object-irritants c) '()))
+;; The R6RS condition-type predicates records-dispatch.ss's message rendering
+;; asks (condition->message-string): only an error object carries irritants,
+;; and no Gambit exception has a who slot (the error shim above folds a Chez
+;; `who` into the message text), so who-condition? is #f and condition-who is
+;; never reached. display-condition is display-exception's job here.
+(define (irritants-condition? c) (error-object? c))
+(define (who-condition? c) #f)
+(define (condition-who c) #f)
+(define (display-condition c . port)
+  (display-exception c (if (pair? port) (car port) (current-output-port))))
 
 ;; ============================================================================
 ;; thread-name mappings (G0 verdicts: the PIN holds — parameters fork-inherit
@@ -667,8 +680,38 @@ eturn)) (loop (- n 1)))
         (if (null? (car ls)) init
             (apply f (append (map car ls) (list (loop (map cdr ls)))))))))
 
-;; R6RS get-line over Gambit's read-line.
+;; R6RS (rnrs lists) for-all / exists — Gambit has SRFI-1's every / any under
+;; different names and the same contract (the last application's value is the
+;; result; the empty list answers #t / #f). seq.ss, vars.ss, dyn-binding.ss and
+;; predicates.ss use them: (range 5) died on for-all and every gate was green.
+(define (for-all pred . lists) (apply every pred lists))
+(define (exists pred . lists) (apply any pred lists))
+
+;; R6RS (remp pred list) / (remv obj list): SRFI-1's remove is the same as remp;
+;; remv keeps the elements that are not eqv? to obj (atoms.ss's remove-watch,
+;; regex-translate.ss).
+(define (remp pred lst) (remove pred lst))
+(define (remv obj lst) (remove (lambda (x) (eqv? x obj)) lst))
+
+;; R6RS real->flonum: seq.ss's numeric macros widen an exact operand with it
+;; before every mixed fl* / fl+, so (* 2 1.5) reached an unbound global.
+(define (real->flonum x) (exact->inexact x))
+
+;; Chez bignum?: an exact integer outside the fixnum range (natives-format.ss).
+(define (bignum? x) (and (exact-integer? x) (not (fixnum? x))))
+
+;; R6RS char-general-category backs the \p{L}-style classes in
+;; regex-translate.ss. Gambit exposes no Unicode general categories, so such a
+;; pattern is refused as a syntax error (regex.ss's guard turns this raise into
+;; the PatternSyntaxException) rather than matched wrongly or left to die on an
+;; unbound global.
+(define (char-general-category c)
+  (error 'char-general-category
+         "\\p{...} character classes are unsupported on the gambit target"))
+
+;; R6RS get-line / put-string over Gambit's read-line / write-string.
 (define (get-line port) (read-line port))
+(define (put-string port s) (write-string s port))
 
 ;; Chez's format accepts a #f port meaning "to a string" — records.ss calls
 ;; (format #f "f~a" i). The plain SRFI-28 spelling (format "~a" x) is the
@@ -716,6 +759,31 @@ eturn)) (loop (- n 1)))
 ;; consults it.
 (define (jolt-locks-enter!) (set-virtual-register! 7 (+ 1 (virtual-register 7))))
 (define (jolt-locks-exit!) (set-virtual-register! 7 (- (virtual-register 7) 1)))
+
+;; locks.ss's explicit acquire/release pair, for the paths that hold a mutex
+;; by hand across a dynamic-wind (regex.ss's pattern cache). Same shape as
+;; Chez's: (jolt-lock! mu) blocks, (jolt-lock! mu #f) tries and answers #f, and
+;; the lock count above moves with the mutex. Recursive like Chez's mutexes and
+;; jwm-call above: a re-lock by the holder counts up instead of deadlocking on
+;; SRFI-18's non-recursive mutex, and only the matching unlock releases it.
+(define %jolt-lock-depth (make-table test: eq? weak-keys: #t))
+(define jolt-lock!
+  (case-lambda
+    ((mu) (jolt-lock! mu #t))
+    ((mu block?)
+     (if (eq? (mutex-state mu) (current-thread))
+         (begin (table-set! %jolt-lock-depth mu (+ 1 (table-ref %jolt-lock-depth mu 1)))
+                (jolt-locks-enter!)
+                #t)
+         (let ((got (if block? (mutex-lock! mu) (mutex-lock! mu 0))))
+           (when got (table-set! %jolt-lock-depth mu 1) (jolt-locks-enter!))
+           got)))))
+(define (jolt-unlock! mu)
+  (let ((d (table-ref %jolt-lock-depth mu 1)))
+    (if (> d 1)
+        (table-set! %jolt-lock-depth mu (- d 1))
+        (begin (table-set! %jolt-lock-depth mu) (mutex-unlock! mu)))
+    (jolt-locks-exit!)))
 
 ;; str-trim — String.trim (java/natives-str.ss, which G2 excludes): chars at or
 ;; below space. rt-core.ss binds clojure.core/trim to it.

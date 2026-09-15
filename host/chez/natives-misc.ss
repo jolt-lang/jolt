@@ -143,6 +143,62 @@
 ;; tagged-literal? is OVERLAY (reads :jolt/type) — asserted in post-prelude.ss.
 
 ;; --- hash family (JVM-compatible via hasheq.ss) ------------------------------
+;; Object.hashCode parity: Java's specified String hash and Clojure's Symbol hash
+;; (Util.hashCombine), so (.hashCode s) / (.hashCode sym) match the JVM. 32-bit int.
+;; Read by natives-str.ss (String.hashCode) and by the keyword/symbol arms in
+;; records-dispatch.ss — a shared file, which is why these live here and not in
+;; the java/ tree the Gambit boot excludes.
+(define (jolt-u32 x) (bitwise-and x #xFFFFFFFF))
+(define (jolt-s32 x) (let ((m (jolt-u32 x))) (if (>= m #x80000000) (- m #x100000000) m)))
+(define (java-string-hash s)
+  (let ((n (string-length s)))
+    (let loop ((i 0) (h 0))
+      (if (fx<? i n)
+          (loop (fx+ i 1) (jolt-s32 (+ (* 31 h) (char->integer (string-ref s i)))))
+          (jolt-s32 h)))))
+(define (java-hash-combine seed hash)
+  (let* ((su (jolt-u32 seed))
+         (sl (bitwise-arithmetic-shift-left su 6))
+         (sr (bitwise-arithmetic-shift-right (jolt-s32 su) 2))
+         (add (+ (jolt-u32 hash) #x9e3779b9 sl sr)))
+    (jolt-s32 (bitwise-xor su (jolt-u32 add)))))
+(define (java-symbol-hash name ns)
+  (java-hash-combine (java-string-hash name) (if ns (java-string-hash ns) 0)))
+
+;; Java .hashCode() for a collection (java.util.Map/Set/List semantics), NOT the
+;; Murmur3 hasheq that clojure.core/hash uses. A library computing .hashCode on its
+;; own collection type (flatland's OrderedMap via APersistentMap/mapHash, OrderedSet
+;; summing element .hashCodes) must agree with jolt's builtins, so map/set/vector
+;; .hashCode go here. Recursive: a nested collection element hashes the same way; a
+;; scalar routes to its own .hashCode. Sums use exact ints (jolt + is unbounded, as
+;; a Clojure (reduce + …) over element hashCodes is) except the map form, which
+;; mirrors APersistentMap.mapHash's 32-bit int accumulation.
+(define (jolt-java-hashcode x)
+  (cond
+    ((jolt-nil? x) 0)
+    ((pmap? x)
+     (pmap-fold x (lambda (k v a)
+                    (i32 (+ a (bitwise-xor (jolt-java-hashcode k) (jolt-java-hashcode v))))) 0))
+    ((pset? x)
+     (pset-fold x (lambda (e a) (if (jolt-nil? e) a (+ a (jolt-java-hashcode e)))) 0))
+    ((pvec? x)
+     (let ((n (pvec-count x)))
+       (let loop ((i 0) (h 1))
+         (if (fx>=? i n) h
+             (loop (fx+ i 1) (i32 (+ (* 31 h) (jolt-java-hashcode (pvec-nth-d x i jolt-nil)))))))))
+    ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x))
+     (let loop ((s (jolt-seq x)) (h 1))
+       (if (jolt-nil? s) h
+           (loop (jolt-seq (seq-more s)) (i32 (+ (* 31 h) (jolt-java-hashcode (seq-first s))))))))
+    ;; a jrec is jolt-map? (so dot-coll?) — route it here directly, NOT through
+    ;; record-method-dispatch, which would re-enter the .hashCode arm and loop. A
+    ;; declared hashCode governs (flatland's types via APersistentMap/mapHash);
+    ;; else the structural record hash.
+    ((jrec? x) (let ((m (find-method-any-protocol (jrec-tag x) "hashCode")))
+                 (if m (jolt-invoke m x) (jrec-hash x))))
+    (else (record-method-dispatch x "hashCode" jolt-nil))))
+(def-var! "jolt.host" "java-hashcode" jolt-java-hashcode)
+
 ;; Replaces the old 24-bit masked hash with JVM Murmur3 hasheq.
 (define (nm-hash x) (jolt-hasheq x))
 ;; clojure.core/hash-combine (core_deftype.clj) is

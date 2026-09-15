@@ -19,6 +19,15 @@
   (syntax-rules ()
     ((_ form) (eval 'form (interaction-environment)))))
 
+;; the spliced predicates (values.ss / rt-core.ss, macros since 2026-08-28):
+;; every `if` on a non-boolean test and every catch clause in eval'd code
+;; reads jolt-truthy? as a function — unbound, (try (/ 1 0) (catch …)) died on
+;; the catch. The -fn twins are the macros' own fallbacks.
+(%eval-fn (define (jolt-nil? x) (jolt-nil?-fn x)))
+(%eval-fn (define (jolt-some? x) (jolt-some?-fn x)))
+(%eval-fn (define (jolt-truthy? x) (jolt-truthy?-fn x)))
+(%eval-fn (define (jolt-not x) (jolt-not-fn x)))
+
 ;; checked arithmetic: fold the 2-arg fast path (+/-/* when both are numbers,
 ;; else the jolt-add/sub/mul dispatch) exactly like the macro chains
 (%eval-fn (define (jolt-n+ . xs)

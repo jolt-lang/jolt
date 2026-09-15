@@ -370,6 +370,66 @@
         h)))
 
 ;; ============================================================================
+;; identity hashes and the per-object caches (mirrors host/chez/hasheq.ss)
+;; ============================================================================
+
+;; A weak-eq side table hands each procedure (and each plain deftype instance —
+;; records-coll.ss) a murmured id on first hash; see the Chez file for why it is
+;; a table and not an address hash. jolt-identity-hasheq-seed! pins a deftype
+;; token's hash to its Class's before anything asks (records.ss
+;; deftype-ctor-tag-set!, a shared file — which is why these are here).
+(define proc-hasheq-tbl (make-weak-eq-hashtable))
+(define proc-hasheq-mu (make-mutex))
+(define proc-hasheq-counter 0)
+(define (jolt-identity-hasheq p)
+  (jolt-with-mutex proc-hasheq-mu
+    (or (hashtable-ref proc-hasheq-tbl p #f)
+        (begin
+          (set! proc-hasheq-counter (fx+ proc-hasheq-counter 1))
+          (let ((h (murmur3-hash-long-flat proc-hasheq-counter)))
+            (hashtable-set! proc-hasheq-tbl p h)
+            h)))))
+(define (procedure-hasheq p) (jolt-identity-hasheq p))
+(define (jolt-identity-hasheq-seed! p h)
+  (jolt-with-mutex proc-hasheq-mu
+    (unless (hashtable-ref proc-hasheq-tbl p #f)
+      (hashtable-set! proc-hasheq-tbl p h))))
+
+;; pvec hasheq cached in the record's field, computed by leaf runs with no seq
+;; cells (collections.ss's jolt-coll-hash reads this). Plain arithmetic where
+;; the Chez copy uses its hash-fx operators — the documented per-host split.
+(define (pvec-hasheq-cached p)
+  (let ((c (pvec-hasheq p)))
+    (if (and (fixnum? c) (not (= c 0)))
+        c
+        (let ((n (pvec-count p)))
+          (let loop ((i 0) (h 1))
+            (if (= i n)
+                (let ((r (mix-coll-hash h n)))
+                  (pvec-hasheq-set! p r)
+                  r)
+                (let-values (((leaf off) (pv-leaf-for p i)))
+                  (let ((run (min (- (vector-length leaf) off) (- n i))))
+                    (let cloop ((j 0) (h h))
+                      (if (>= j run)
+                          (loop (+ i run) h)
+                          (cloop (+ j 1)
+                                 (i32 (+ (* 31 h)
+                                         (jolt-hasheq (vector-ref leaf (+ off j))))))))))))))))
+
+;; Seq hasheq, cached per HEAD object — the JVM's ASeq._hasheq. Realized cells
+;; never change, so the ordered hash of a head is fixed once computed.
+(define seq-hasheq-tbl (make-weak-eq-hashtable))
+(define seq-hasheq-mu (make-mutex))
+(define (seq-hasheq-cached x)
+  (if (or (cseq? x) (jolt-lazyseq? x))
+      (or (jolt-with-mutex seq-hasheq-mu (hashtable-ref seq-hasheq-tbl x #f))
+          (let ((h (hash-ordered (jolt-seq x))))
+            (jolt-with-mutex seq-hasheq-mu (hashtable-set! seq-hasheq-tbl x h))
+            h))
+      (hash-ordered (jolt-seq x))))
+
+;; ============================================================================
 ;; jolt-hasheq — the top-level dispatch (mirrors Util.hasheq).
 ;; ============================================================================
 
@@ -385,6 +445,9 @@
     ;; Fixnum: all fixnums use hashLong (count=8) matching JVM's Long.hasheq.
     ((fixnum? x) (murmur3-hash-long-flat x))
     ((string? x) (string-hasheq x))
+    ;; A procedure hashes by identity, ahead of the arm walk as on Chez: a
+    ;; deftype token's seeded hash (deftype-ctor-tag-set!) is read here.
+    ((procedure? x) (procedure-hasheq x))
     (else
      ;; New hasheq arms (jrec via records.ss, etc.)
      (let loop ((as jolt-hasheq-arms))

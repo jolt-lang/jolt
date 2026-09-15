@@ -2248,8 +2248,40 @@
                            (str "(if jolt-fn-identity-probe " id-nm " " (nth c 1) ")")])
                         clauses)
                   clauses)
-        lambda (if (= 1 (count clauses))
+        ;; Gambit's case-lambda expander (lib/_nonstd.scm ##case-lambda, 4.9.7
+        ;; and 4.9.8) appends the rest parameter to the generated lambda's formals
+        ;; only when some clause has OPTIONAL parameters — and the two-clause fn
+        ;; (fn ([x y] …) ([x y & more] …)) has none: both clauses require exactly
+        ;; two. Its dispatch still reads the rest variable, so every call fails
+        ;; with "Unbound variable: #:gN" (bit-and, bit-or and four more seed fns
+        ;; were dead that way; gambitunbound reports the uninterned names). On
+        ;; that target the two clauses are emitted as the one rest lambda the
+        ;; macro should have produced: an empty rest is the fixed arity. Same
+        ;; behaviour under jolt-apply's boxed lazy rest (a one-element list, so
+        ;; the variadic body's jolt-rest-seq unwraps it). Nothing else changes —
+        ;; a third clause, or a variadic with more required params, expands fine.
+        gambit-merge (when (and (= :gambit (target)) (= 2 (count arities)))
+                       (let [[a b] arities
+                             fixed (cond (and (:rest a) (not (:rest b))) b
+                                         (and (:rest b) (not (:rest a))) a)
+                             variadic (if (= fixed a) b a)]
+                         (when (and fixed (= (count (:params fixed)) (count (:params variadic))))
+                           (let [fi (if (= fixed a) 0 1)
+                                 fbody (nth (nth clauses fi) 1)
+                                 [vformals vbody] (nth clauses (- 1 fi))
+                                 fps (map munge-name (:params fixed))
+                                 vps (map munge-name (:params variadic))
+                                 fbody (if (= fps vps)
+                                         fbody
+                                         (str "(let (" (str/join " " (map (fn [f v] (str "(" f " " v ")")) fps vps))
+                                              ") " fbody ")"))]
+                             (str "(lambda " vformals
+                                  " (if (null? " (munge-name (:rest variadic)) ") " fbody " " vbody "))")))))
+        lambda (cond
+                 (= 1 (count clauses))
                  (let [c (first clauses)] (str "(lambda " (nth c 0) " " (nth c 1) ")"))
+                 gambit-merge gambit-merge
+                 :else
                  (str "(case-lambda "
                       (str/join " " (map (fn [c] (str "(" (nth c 0) " " (nth c 1) ")")) clauses))
                       ")"))

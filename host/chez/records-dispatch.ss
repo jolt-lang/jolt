@@ -686,6 +686,80 @@
                                  (number->string argc) " args for class "
                                  (guard (e (#t "?")) (jolt-class-name obj))))))))
 
+;; --- the java.util collection surface of a jolt collection --------------------
+;; count/seq/nth/get/containsKey/contains/size/isEmpty/hashCode, the
+;; IPersistent* mutators, the java.util.Map views and .iterator/.reduce, as
+;; dot-forms.ss dispatches them for a (. coll member) on a vector/map/set. Here
+;; rather than in java/dot-forms.ss because record-method-dispatch below reaches
+;; it for a deftype built on the clojure.lang interfaces, and this file is
+;; shared with the Gambit boot while the java/ tree is not.
+;; Mirror coll-interop: return a one-element list boxing the result (so a jolt-nil
+;; result is still distinguishable from "not a collection method"), or #f.
+(define (dot-coll-method obj name args)
+  (cond
+    ((string=? name "count") (list (jolt-count obj)))
+    ((string=? name "seq")   (list (jolt-seq obj)))
+    ((string=? name "nth")   (list (apply jolt-nth obj args)))
+    ((or (string=? name "get") (string=? name "valAt"))
+     (list (apply jolt-get obj args)))
+    ((string=? name "containsKey") (list (jolt-contains? obj (car args))))
+    ;; java.util.Collection.contains(o): VALUE membership (a set is O(1) via
+    ;; contains?; a list/vector/seq is a linear scan — contains? on a vector tests
+    ;; an index, so it is wrong here).
+    ((string=? name "contains")
+     (list (if (pset? obj)
+               (jolt-contains? obj (car args))
+               (let ((x (car args)))
+                 (let loop ((s (jolt-seq obj)))
+                   (cond ((jolt-nil? s) #f)
+                         ((jolt=2 (seq-first s) x) #t)
+                         (else (loop (jolt-seq (seq-more s))))))))))
+    ((string=? name "size")    (list (jolt-count obj)))
+    ((string=? name "isEmpty") (list (jolt-empty? obj)))
+    ;; java.util.{Map,Set,List}.hashCode — the Java collection hashCode, so a
+    ;; jolt builtin matches a library's own type computing the same (flatland).
+    ((string=? name "hashCode") (list (jolt-java-hashcode obj)))
+    ;; IPersistentCollection / Associative / IPersistentVector / IPersistentMap /
+    ;; IPersistentSet mutators — a deftype built on the clojure.lang interfaces
+    ;; (e.g. flatland.ordered) calls these directly on its native backing
+    ;; map/vector/set. Each maps to the persistent op of the same meaning.
+    ((string=? name "cons")    (list (jolt-conj obj (car args))))
+    ((or (string=? name "assoc") (string=? name "assocN"))
+     (list (jolt-assoc obj (car args) (cadr args))))
+    ((string=? name "without") (list (jolt-dissoc obj (car args))))
+    ((string=? name "disjoin") (list (jolt-disj obj (car args))))
+    ((string=? name "pop")     (list (jolt-pop obj)))
+    ((string=? name "peek")    (list (jolt-peek obj)))
+    ((string=? name "equiv")   (list (if (jolt= obj (car args)) #t #f)))
+    ;; IEditableCollection.asTransient — hand back a transient over this coll.
+    ((string=? name "asTransient") (list (jolt-transient-new obj)))
+    ;; IObj — meta / withMeta thread metadata through the backing coll.
+    ((string=? name "meta")    (list (jolt-meta obj)))
+    ((string=? name "withMeta") (list (jolt-with-meta obj (car args))))
+    ;; MapEntry.key/val/getKey/getValue on a 2-elem entry (a flagged pvec).
+    ((and (jolt-map-entry? obj) (or (string=? name "key") (string=? name "getKey")))
+     (list (jolt-nth obj 0)))
+    ((and (jolt-map-entry? obj) (or (string=? name "val") (string=? name "getValue")))
+     (list (jolt-nth obj 1)))
+    ;; java.util.Map views: keySet (a Set), values (a Collection), entrySet.
+    ((and (jolt-map? obj) (string=? name "keySet"))
+     (list (apply jolt-hash-set (seq->list (jolt-keys obj)))))
+    ((and (jolt-map? obj) (string=? name "values"))
+     (list (apply jolt-vector (seq->list (jolt-vals obj)))))
+    ((and (jolt-map? obj) (string=? name "entrySet")) (list (jolt-seq obj)))
+    ;; (.iterator coll): a java.util.Iterator over the seq — for a map this is the
+    ;; entry iterator. Without this a map's .iterator falls into the map-as-object
+    ;; branch and is mis-read as a missing :iterator key (nil). Some libraries
+    ;; (e.g. malli's -vmap) iterate a map this way.
+    ((string=? name "iterator") (list (make-jiterator (jolt-seq obj))))
+    ;; (.reduce coll f) / (.reduce coll f init): clojure.lang.IReduce — every
+    ;; persistent collection reduces itself on the JVM.
+    ((string=? name "reduce")
+     (list (if (pair? (cdr args))
+               (jolt-reduce (car args) (cadr args) obj)
+               (jolt-reduce (car args) obj))))
+    (else #f)))
+
 ;; ---- method-dispatch arm registry ------------------------------------------
 ;; A .method call (record-method-dispatch) is resolved by an ordered list of arms
 ;; (ascending priority), each (obj method-name rest-args) -> result | 'pass.

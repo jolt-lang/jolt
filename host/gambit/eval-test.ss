@@ -111,6 +111,59 @@
        "\"class clojure.lang.ArityException\"")
 (check "(str (class 1))" "\"class java.lang.Long\"")
 
+;; ---- jolt-cw2p: the names the boot had lost since 2026-09-02 ------------------
+;; Every row here died on an unbound global or an unbound var while the gate sat
+;; outside ci. gambitunbound / gambitvars pin the names statically; these pin
+;; the paths.
+
+;; Gambit's case-lambda miscompiles the two-clause (fixed n / variadic n) fn —
+;; the emitter merges it on this target (backend_scheme.clj emit-fn), in the
+;; seed (bit-and) and in eval'd code (f2), under jolt-apply's boxed rest too.
+(check "(bit-and 12 10)" "8")
+(check "(bit-or 1 2 4)" "7")
+(check "(do (defn f2 ([x y] [x y]) ([x y & more] [x y more])) [(f2 1 2) (f2 1 2 3) (apply f2 1 2 [3 4]) (apply f2 1 [2])])"
+       "[[1 2] [1 2 (3)] [1 2 (3 4)] [1 2]]")
+;; for-all / real->flonum (prelude-shims), the chunk builder (natives-transduce.ss)
+(check "(seq (chunk-first (seq (vec (range 40)))))"
+       "(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31)")
+(check "(* 2 1.5)" "3.0")
+;; the hash caches (hasheq.ss mirrors) and Object.hashCode parity (natives-misc.ss)
+(check "(hash [1 2 3])" "736442005")
+(check "(hash (map inc [1 2]))" "-1504369821")
+(check "[(.hashCode :a) (.hashCode (quote a/b)) (.hashCode \"ab\")]" "[1013910569 -1640525104 3105]")
+(check "(defrecord Q [a])" "#'user/map->Q")
+(check "(= (hash (->Q 1)) (hash (->Q 1)))" "true")
+;; rt-core: indexOf/lastIndexOf on the kernel's own search, object monitors, the
+;; ns-cells index ns.ss reads, proc-name-of for (class a-fn)
+(check "[(.indexOf \"hello\" \"l\") (.indexOf \"hello\" \"l\" 3) (.lastIndexOf \"hello\" \"l\") (.indexOf \"hello\" \\l)]" "[2 3 3 2]")
+(check "(locking :x 1)" "1")
+(check "(count (ns-publics (quote clojure.set)))" "12")
+(check "(str (find-var (quote clojure.core/print-method)))" "\"#'clojure.core/print-method\"")
+;; class-objects.ss: the class model core's predicates and isa? read
+(check "[(isa? Long Number) (seqable? 1) (ifn? :a) (class? String) (instance? String \"a\")]"
+       "[true false true true true]")
+(check "(count (supers Long))" "4")
+(check "(do (defmulti m1 (fn [x] (class x))) (defmethod m1 Number [x] :num) (m1 1))" ":num")
+;; the prelude's own (import '(clojure.lang … Sequential …)) binds under
+;; clojure.core now that the boot brackets the prelude in that namespace
+(check "(instance? Sequential (eduction (map inc) [1 2]))" "true")
+(check "(seq (eduction (map inc) [1 2]))" "(2 3)")
+;; host-new builds the typed throwable every core throw site constructs
+(check "(try (zero? \"a\") (catch ClassCastException e (ex-message e)))"
+       "\"class java.lang.String cannot be cast to class java.lang.Number\"")
+;; with-open's close seam, the printer's *out* default, the eval'd-code twins of
+;; the spliced predicates (a catch clause reads jolt-truthy? as a function)
+(check "(with-open [r (reify java.io.Closeable (close [_] nil))] 1)" "1")
+(check "(with-out-str (print \"hi\"))" "\"hi\"")
+(check "(try (throw (ex-info \"x\" {})) (catch Exception e :caught))" ":caught")
+;; DIVERGENCES this target documents rather than hides: a \\p{…} class is a
+;; PatternSyntaxException (no Unicode categories here; Chez matches), and a
+;; host class this boot has no shim for names itself.
+(check "(try (re-pattern \"\\\\p{L}\") (catch Exception e (str (class e))))"
+       "\"class java.util.regex.PatternSyntaxException\"")
+(check "(try (clojure.pprint/pprint 1) (catch UnsupportedOperationException e (ex-message e)))"
+       "\"(new StringBuilder) is unsupported on the gambit target: there are no JVM class shims\"")
+
 ;; a ^double-hinted fn compiles WITHOUT #3% in the emitted text (the R9
 ;; target-prims table at :gambit maps the unsafe prefix to "")
 (let ((scm (jolt-analyze-emit-form

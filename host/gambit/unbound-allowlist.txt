@@ -1,0 +1,65 @@
+# unbound-allowlist.txt — Scheme globals the Gambit boot references and DOES NOT
+# define, each on a path this target never takes.
+#
+# One name per line, grouped under a comment that says why the group is
+# unreachable here. host/gambit/unbound-check.ss (make gambitunbound) pins
+# this against Gambit's own linker report over the full-profile boot: a name
+# missing from this list fails the gate, and so does a line whose name has
+# since been defined — the list only shrinks truthfully. `make
+# gambitunbound-regen` keeps the comments and still-valid lines in place,
+# drops stale lines and appends new names at the end for classification.
+#
+# A name here is a documented gap, not a free pass: reaching it raises
+# "Unbound variable" with no jolt context. Binding it — a mirror in
+# rt-core.ss, a shim in prelude-shims.ss, a raise naming the absent
+# capability — is always better than a line here.
+#
+# gsi runtime names the js link file does not carry. Every site is guarded
+# and answers a fallback when the name is missing: sa-bytes-allocated (0),
+# scheme-version ("Gambit Scheme"), the equal?-hash probe (a string fold),
+# %jolt-interaction-environment (interaction-environment first).
+##bytes-allocated
+##version-string
+equal?-hash
+repl-environment
+#
+# compile-eval.ss's source-annotated eval (jolt-eval-with-source): Chez's
+# annotation APIs behind (jolt-ce-trace-frames?), which no hook sets here —
+# tracing is the excluded source-registry.ss's, and the plain eval path runs.
+get-datum/annotations
+make-source-file-descriptor
+native-transcoder
+open-bytevector-input-port
+transcoded-port
+jolt-register-eval-marker-table!
+#
+# compile-eval.ss's data-reader pass: the loader's flag is read under a guard
+# (#f when unbound) and the apply step runs only when it was set.
+data-readers-active
+ldr-apply-readers
+#
+# The accessors behind the value predicates rt-core.ss answers #f for: an
+# inst, a BigDecimal, an array and a host reader cannot be built here, so the
+# arms that read them (inst-ms, format's %f, the array class tags, the reader
+# protocols in post-prelude.ss and clojure.edn/read) are never entered.
+inst-rfc3339
+jinst-ms
+jbigdec->string
+jbigdec-scale
+jbigdec-unscaled
+jolt-bigdec-from-string
+jolt-inst-from-string
+chez-edn-read
+chez-line-seq
+drain-reader
+host-reader-read-form
+reader-refill!
+#
+# Emitted for clojure.core.Vec's node writes (vector-of, 60-gvec.clj); no
+# array constructor exists here, so no Vec is ever built.
+jolt-aset3
+#
+# Native backtrace text (source-registry.ss): printStackTrace asks under a
+# guard and prints the throwable alone when there is none — the degraded
+# introspection mode.
+jolt-backtrace-string

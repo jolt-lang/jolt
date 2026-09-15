@@ -727,6 +727,11 @@
                    (string-append "class " (jolt-class-name x)
                                   " cannot be cast to class " target)))))
 (define (jolt-need-num x) (if (number? x) x (jolt-num-cast-throw x)))
+;; A number as a JVM long: the truncating coercion the host-method arms
+;; (records-dispatch.ss compareTo) and compile-eval.ss read through. Here, in
+;; the shared tier, because those files are shared — it used to sit in
+;; java/host-static.ss, which the Gambit boot excludes.
+(define (jnum->exact n) (exact (truncate (jolt-need-num n))))
 (define (jolt-need-str x) (if (string? x) x (jolt-cast-throw x "java.lang.CharSequence")))
 (define (jolt-need-string x) (if (string? x) x (jolt-cast-throw x "java.lang.String")))
 

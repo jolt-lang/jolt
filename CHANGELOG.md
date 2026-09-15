@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Gambit boot had been dead since 2026-09-02, and two gates now keep it
+  alive.** `make gambiteval` sat outside the ci list and every row failed:
+  each Chez-side name a shared file or the seed picked up in the meantime was
+  an unbound global on Gambit (`for-all`, `jolt-form-ordinal`, `jolt-lock!`,
+  `proc-name-of`, `jolt-with-monitor`, the ns-cells index) or an unbound var
+  (`chunk-first` — bound by the excluded `natives-array.ss`, so every `defn`
+  died on it — `jolt.host/class-object?`, `embed-plan`, `static-member`,
+  `current-time-ns`), and `mirrordrift` only sees names defined on BOTH
+  hosts. The shared code moved to shared files where that was the root
+  (the chunk builder to `natives-transduce.ss`, `jnum->exact` to `seq.ss`, the
+  Java `hashCode` helpers and `jolt-java-hashcode` to `natives-misc.ss`,
+  `dot-coll-method` to `records-dispatch.ss`, `import` to `ns.ss`), the rest
+  got mirrors and shims, and `host/gambit/class-objects.ss` carries the class
+  model the prelude's own `(import …)` interns through — it has to load before
+  the seed, which also now loads with `clojure.core` current, as `cli.ss` does.
+  Two new gates run in ci beside `gambiteval`: `gambitunbound` asks Gambit's
+  own linker for every global the compiled boot references and defines
+  nowhere, and `gambitvars` walks the booted var table for cells nothing
+  bound; each has an allowlist that only shrinks truthfully.
+
+- **Gambit's `case-lambda` miscompiles a two-clause `(fn ([x y] …) ([x y & more]
+  …))`** (4.9.7 and 4.9.8: `lib/_nonstd.scm` appends the rest parameter only
+  when some clause has optional parameters), so `bit-and`, `bit-or`, `bit-xor`,
+  `bit-and-not` and every user fn of that shape failed with `Unbound variable:
+  #:gN`. The `:gambit` emission merges the two clauses into the one rest lambda
+  the macro should have produced; the gate reports the uninterned names as that
+  class of failure rather than as a missing definition.
+
+- **`(.indexOf s x)` and `(.lastIndexOf s x)` on Gambit** called Chez's
+  `string-index` / `string-rindex`, which Gambit does not bind, and `file-seq`
+  died the same way on `file-directory?` / `directory-list` in the kernel's
+  `.isDirectory` arm — the mirror was byte-identical to Chez's and wrong for
+  it. `%trim-trailing-newline` in `prelude-shims.ss` compared against
+  `#\newline` and `#\return` literals a tool had mangled into `#` + a real
+  newline, which Gambit reads as a REPL history reference, so it never trimmed.
+
 ## [0.8.8] - 2026-09-15
 
 The theme is SCI on jolt. An embedded interpreter could not evaluate protocol
