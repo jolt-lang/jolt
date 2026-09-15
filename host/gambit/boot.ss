@@ -85,10 +85,19 @@
 (##include "../chez/reader.ss")
 (##include "../chez/syntax-quote.ss")
 (##include "../chez/host-contract.ss")
-;; Class objects, the class-token vars and the jolt.host/class-* answers: the
-;; prelude's own (import …) forms intern through jolt-class-for, so this comes
-;; before the seed (host-vars.ss, the rest of the java/ tree's names, after it).
-(##include "class-objects.ss")
+;; The interop tier: the jhost record and the registries (host-statics.ss),
+;; then the java/ files shared with Chez that register into them — Class
+;; objects and the class model core reads (class-model.ss), StringBuilder
+;; (string-builder.ss), the `.`/`.-field` dispatch arms over records, maps and
+;; transients (dot-forms.ss). Before the seed: the prelude's own (import …) forms
+;; intern through jolt-class-for (host-vars.ss, the rest of the java/ tree's
+;; names, comes after it). java-parse.ss is the NumberFormatException family
+;; Long/parseLong and its siblings raise.
+(##include "../chez/java/java-parse.ss")
+(##include "host-statics.ss")
+(##include "../chez/java/class-model.ss")
+(##include "../chez/java/string-builder.ss")
+(##include "../chez/java/dot-forms.ss")
 
 ;; ---- G3: the cross-minted compiler on gsi (jolt-mj95.4) ----------------------
 ;;

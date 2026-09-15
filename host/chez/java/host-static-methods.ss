@@ -1140,55 +1140,6 @@
           (if (and allow (not (member name allow))) jolt-nil
               (let ((v (getenv name))) (if v v jolt-nil)))))))
 
-;; ---- StringBuilder ----------------------------------------------------------
-;; state: #(materialised-string pending-chunks-reversed pending-length).
-;;
-;; Appends accumulate as a list of chunks and are joined only when something
-;; reads the buffer. The obvious representation — one string, appended to with
-;; string-append — copies the whole buffer on every append, which makes building
-;; an n-char string O(n^2). That is not theoretical: clojure.data.json reads a
-;; quoted string a character at a time into a StringBuilder, so one 88KB JSON
-;; string value cost 623ms to parse against 30ms for the same bytes spread over
-;; many short values. See test/chez/string-builder-perf.ss.
-;;
-;; Every other method still reads through sb-str, so it flushes first and
-;; behaves exactly as before; only append and the two size reads skip the join.
-(define (sb-str self)
-  (let* ((st (jhost-state self))
-         (pending (vector-ref st 1)))
-    (if (null? pending)
-        (vector-ref st 0)
-        (let* ((base (vector-ref st 0))
-               (blen (string-length base))
-               (out (make-string (+ blen (vector-ref st 2)))))
-          (sa-string-copy-range! out 0 base 0 blen)
-          (let loop ((cs (reverse pending)) (i blen))
-            (if (null? cs)
-                (begin (vector-set! st 0 out)
-                       (vector-set! st 1 '())
-                       (vector-set! st 2 0)
-                       out)
-                (let* ((c (car cs)) (n (string-length c)))
-                  (sa-string-copy-range! out i c 0 n)
-                  (loop (cdr cs) (+ i n)))))))))
-(define (sb-set! self s)
-  (let ((st (jhost-state self)))
-    (vector-set! st 0 s)
-    (vector-set! st 1 '())
-    (vector-set! st 2 0)))
-;; O(1): the chunk is retained as-is and nothing is copied until a read.
-(define (sb-append! self piece)
-  (let ((st (jhost-state self)))
-    (vector-set! st 1 (cons piece (vector-ref st 1)))
-    (vector-set! st 2 (+ (vector-ref st 2) (string-length piece)))))
-;; Size without flushing, so the common `while (.length sb) < n: append` shape
-;; does not force a join per iteration and put the O(n^2) straight back.
-(define (sb-length self)
-  (let ((st (jhost-state self)))
-    (+ (string-length (vector-ref st 0)) (vector-ref st 2))))
-(define (render-piece x)
-  (cond ((jolt-nil? x) "null") ((char? x) (string x)) ((string? x) x)
-        (else (jolt-str-render-one x))))
 ;; (Object.) — a fresh value with distinct identity (libraries use it as a lock
 ;; or a unique sentinel). Each call returns a new jhost so identical?/= separate.
 (register-class-ctor! "Object" (lambda _ (make-jhost "object" (vector))))

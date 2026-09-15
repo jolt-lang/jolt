@@ -2000,8 +2000,11 @@
 ;; host-static-call/host-new + the jhost method registry. Loads LAST — it extends
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
-(load "host/chez/java/host-static.ss")          ; registries + jhost + coercion helpers
+(load "host/chez/java/java-parse.ss")           ; Long/parseLong & co: the NumberFormatException family (shared)
+(load "host/chez/java/host-static.ss")          ; registries + jhost + the emit entry points
+(load "host/chez/java/string-builder.ss")       ; StringBuilder/StringBuffer over jhost (shared)
 (load "host/chez/java/host-static-methods.ss")  ; Class/member static methods + fields
+(load "host/chez/java/class-model.ss")          ; java.lang.Class values + the class model core reads (shared)
 (load "host/chez/java/host-static-classes.ss")  ; instantiable host object classes
 (load "host/chez/java/byte-buffer.ss")          ; java.nio.ByteBuffer over a byte-array
 (load "host/chez/java/charset-coding.ss")       ; CharBuffer + the CharsetDecoder decode loop

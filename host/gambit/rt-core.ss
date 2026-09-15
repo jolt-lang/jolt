@@ -1245,6 +1245,15 @@
     ((string=? method "substring")
      (substring s (arg-idx 0)
                 (if (fx>? (length rest) 1) (arg-idx 1) (string-length s))))
+    ;; the rest of the surface the seed's own sources call: cl-format's case
+    ;; directives, clojure.main's argument parsing, the printer's checks
+    ((string=? method "toLowerCase") (string-downcase s))
+    ((string=? method "toUpperCase") (string-upcase s))
+    ((string=? method "trim") (str-trim s))
+    ((string=? method "isEmpty") (fx=? (string-length s) 0))
+    ((string=? method "contains") (fx>=? (str-index-of s (str-needle (arg 0)) 0) 0))
+    ((string=? method "concat") (string-append s (jolt-need-str (arg 0))))
+    ((string=? method "equals") (let ((o (arg 0))) (and (string? o) (string=? s o))))
     (else (error 'jolt-string-method "unhandled string method on gambit" method))))
 
 ;; ---- clojure.core/str-* natives ---------------------------------------------
@@ -1332,21 +1341,40 @@
           (else (loop (cdr xs) #f (cons (car xs) (cons sep acc)))))))
 (define (str-split pat s . opt)
   (let ((limit (if (and (pair? opt) (not (jolt-nil? (car opt)))) (jolt->idx (car opt)) #f)))
-    (if (jolt-regex? pat)
-        (error 'str-split "regex split unsupported on the gambit boot" pat)
-        (let ((parts (str-literal-split s pat)))
-          (apply jolt-vector
-            (if (and limit (fx>? limit 0) (fx>? (length parts) limit))
-                (append (list-head parts (fx- limit 1))
-                        (list (jolt-str-join-strs (list-tail parts (fx- limit 1)) pat)))
-                parts))))))
+    (define (literal-parts sep)
+      (let ((parts (str-literal-split s sep)))
+        (if (and limit (fx>? limit 0) (fx>? (length parts) limit))
+            (append (list-head parts (fx- limit 1))
+                    (list (jolt-str-join-strs (list-tail parts (fx- limit 1)) sep)))
+            parts)))
+    (apply jolt-vector
+      (if (jolt-regex? pat)
+          ;; a pattern that matches exactly one string splits on that text
+          ;; (#"\n" is pprint's line splitter); anything with regex structure
+          ;; runs the engine — regex-literal-text and re-split are regex.ss's,
+          ;; the same two natives-str.ss splits with on Chez
+          (let ((lit (regex-literal-text (regex-t-source pat))))
+            (if lit (literal-parts lit) (re-split (regex-t-irx pat) s limit)))
+          (literal-parts pat)))))
+;; Regex or literal, the natives-str.ss shape: a regex that is really a literal
+;; replaced by a string that is really a literal is a plain search-and-replace,
+;; anything else runs the engine (re-replace, regex.ss — $N expansion and fn
+;; replacements included). The regex? test comes first: under a profile
+;; without the regex group every regex.ss name but the predicates is bound to
+;; a raise, and no regex value exists to take that branch.
 (define (str-replace-all pat repl s)
   (if (jolt-regex? pat)
-      (error 'str-replace-all "regex replace unsupported on the gambit boot" pat)
+      (let ((lit (literal-replace-text pat repl)))
+        (if lit
+            (str-replace-literal s lit repl)
+            (re-replace (regex-t-irx pat) s repl #t)))
       (str-replace-literal s (str-needle pat) (str-needle repl))))
 (define (str-replace pat repl s)
   (if (jolt-regex? pat)
-      (error 'str-replace "regex replace unsupported on the gambit boot" pat)
+      (let ((lit (literal-replace-text pat repl)))
+        (if lit
+            (str-replace-literal-first s lit repl)
+            (re-replace (regex-t-irx pat) s repl #f)))
       (str-replace-literal-first s (str-needle pat) (str-needle repl))))
 (def-var! "clojure.core" "str-upper" str-upper)
 (def-var! "clojure.core" "str-lower" str-lower)

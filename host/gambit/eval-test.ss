@@ -139,7 +139,7 @@
 (check "(locking :x 1)" "1")
 (check "(count (ns-publics (quote clojure.set)))" "12")
 (check "(str (find-var (quote clojure.core/print-method)))" "\"#'clojure.core/print-method\"")
-;; class-objects.ss: the class model core's predicates and isa? read
+;; java/class-model.ss (shared with Chez): the class model core's predicates and isa? read
 (check "[(isa? Long Number) (seqable? 1) (ifn? :a) (class? String) (instance? String \"a\")]"
        "[true false true true true]")
 (check "(count (supers Long))" "4")
@@ -156,13 +156,39 @@
 (check "(with-open [r (reify java.io.Closeable (close [_] nil))] 1)" "1")
 (check "(with-out-str (print \"hi\"))" "\"hi\"")
 (check "(try (throw (ex-info \"x\" {})) (catch Exception e :caught))" ":caught")
-;; DIVERGENCES this target documents rather than hides: a \\p{…} class is a
-;; PatternSyntaxException (no Unicode categories here; Chez matches), and a
-;; host class this boot has no shim for names itself.
+;; A DIVERGENCE this target documents rather than hides: a \\p{…} class is a
+;; PatternSyntaxException (no Unicode categories here; Chez matches).
 (check "(try (re-pattern \"\\\\p{L}\") (catch Exception e (str (class e))))"
        "\"class java.util.regex.PatternSyntaxException\"")
-(check "(try (clojure.pprint/pprint 1) (catch UnsupportedOperationException e (ex-message e)))"
-       "\"(new StringBuilder) is unsupported on the gambit target: there are no JVM class shims\"")
+
+;; ---- the seed's own statics and constructors (host-statics.ss) ---------------
+;; Every Class/member the seed emits resolves (make gambitstatics); these rows
+;; run the paths behind them. parse-long is Long/parseLong with the throw
+;; caught, munge/demunge are the Compiler statics compile-eval.ss registers,
+;; pprint and cl-format build into a StringBuilder (java/string-builder.ss,
+;; shared with Chez), and (Object.) is the fresh-identity sentinel.
+(check "[(parse-long \"42\") (parse-long \"x\") (parse-long \"-7\")]" "[42 nil -7]")
+(check "(try (Long/parseLong \"zz\") (catch NumberFormatException e (ex-message e)))"
+       "\"For input string: \\\"zz\\\"\"")
+(check "[(munge \"a-b?\") (clojure.lang.Compiler/demunge \"a_b_QMARK_\")]" "[\"a_b_QMARK_\" \"a-b?\"]")
+(check "[(Math/floor 2.5) (Math/abs -3) (String/join \",\" [\"a\" \"b\"]) (Character/isWhitespace \\space) (clojure.lang.Util/equiv 1 1)]"
+       "[2.0 3 \"a,b\" true true]")
+(check "[(= (class (Object.)) Object) (identical? (Object.) (Object.)) (System/getProperty \"line.separator\")]"
+       "[true false \"\\n\"]")
+(check "(let [sb (StringBuilder.)] (.append sb \"a\") (.append sb 1) (.append sb \\c) (str sb))" "\"a1c\"")
+(check "(let [sb (StringBuilder. \"abc\")] [(.length sb) (.charAt sb 1) (str (.reverse sb)) (count sb) (instance? CharSequence sb)])"
+       "[3 \\b \"cba\" 3 true]")
+(check "(with-out-str (clojure.pprint/pprint {:a [1 2] :b \"x\"}))" "\"{:a [1 2], :b \\\"x\\\"}\\n\"")
+(check "(clojure.pprint/cl-format nil \"~5d|~a|~{~a~^,~}\" 42 :x [1 2 3])" "\"   42|:x|1,2,3\"")
+(check "(clojure.pprint/cl-format nil \"~,2f\" 3.14159)" "\"3.14\"")
+(check "(with-out-str (clojure.pprint/print-table [{:a 1 :b 2}]))"
+       "\"\\n| :a | :b |\\n|----+----|\\n|  1 |  2 |\\n\"")
+;; java/class-model.ss (shared with Chez): the Class object's own methods and
+;; the JVM's three spellings of a class
+(check "[(.getName (class 1)) (.getSimpleName String) (.isInterface Sequential) (str (.getSuperclass Long))]"
+       "[\"java.lang.Long\" \"String\" true \"class java.lang.Number\"]")
+(check "[(str (class [])) (str Sequential) (pr-str Long)]"
+       "[\"class clojure.lang.PersistentVector\" \"interface clojure.lang.Sequential\" \"java.lang.Long\"]")
 
 ;; a ^double-hinted fn compiles WITHOUT #3% in the emitted text (the R9
 ;; target-prims table at :gambit maps the unsafe prefix to "")

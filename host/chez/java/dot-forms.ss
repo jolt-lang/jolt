@@ -13,9 +13,11 @@
 ;;                    other value is returned as a field.
 ;;
 ;; Anything not recognized falls through to the previous dispatcher (jhost /
-;; number / regex / jrec protocol / string). Loaded LAST (after host-static.ss).
-;; A record (jrec) is jolt-map? here (records.ss makes it so) and a collection,
-;; so its protocol method (no dash, not a coll method) lands in the base.
+;; number / regex / jrec protocol / string). Loaded after the jhost record and
+;; its method registry (host-static.ss on Chez, host-statics.ss on Gambit —
+;; this file is shared with the Gambit boot). A record (jrec) is jolt-map? here
+;; (records.ss makes it so) and a collection, so its protocol method (no dash,
+;; not a coll method) lands in the base.
 
 ;; Vectors / maps / sets only (records are jolt-map? here). Raw seqs are excluded:
 ;; coll-interop accepts some seq representations and not others (a
@@ -27,13 +29,10 @@
   (or (jolt-vector? obj) (jolt-map? obj) (pset? obj)))
 
 ;; (jolt-java-hashcode — Java .hashCode() for a collection — lives in
-;; natives-misc.ss beside the hash API: hash-combine reads it there, and that
-;; file is shared with the Gambit boot where this one is not.)
-
-;; (dot-coll-method — the java.util.Map/Collection/List surface of a collection
-;; — lives in records-dispatch.ss: record-method-dispatch reaches it for a
-;; deftype built on the clojure.lang interfaces, and that file is shared with
-;; the Gambit boot where this one is not.)
+;; natives-misc.ss beside the hash API, where hash-combine reads it;
+;; dot-coll-method — the java.util.Map/Collection/List surface of a collection
+;; — in records-dispatch.ss, where record-method-dispatch reaches it for a
+;; deftype built on the clojure.lang interfaces.)
 
 ;; Universal object-methods: on a
 ;; non-record map these win OVER a field lookup, like dispatch-member. getMessage
@@ -69,6 +68,40 @@
                 (list (if (or (jolt-nil? ext) (fx=? 0 (jolt-count ext))) jolt-nil ext))))
              ((string=? mname "__meta") (list (jolt-meta obj)))
              (else #f))))
+
+;; clojure.lang.Sorted on jolt's sorted-map / sorted-set: comparator / entryKey /
+;; seqFrom / seq. data.priority-map's subseq/rsubseq reach for these (its
+;; PersistentPriorityMap delegates .comparator to the backing sorted-map). The
+;; comparator is returned as a small Comparator object whose .compare runs the
+;; map's 3-way fn, since (.. sc comparator (compare a b)) is the calling form.
+(define sorted-cmp-kw (keyword #f "cmp"))
+(register-host-methods! "jolt-comparator"
+  (list (cons "compare" (lambda (self a b) (jolt-invoke (jhost-state self) a b)))))
+(define (sorted-comparator-of sc)
+  (let ((c (jolt-ref-get sc sorted-cmp-kw)))
+    (make-jhost "jolt-comparator" (if (jolt-nil? c) jolt-compare c))))
+(define (sorted-iface-method? m)
+  (or (string=? m "comparator") (string=? m "entryKey")
+      (string=? m "seqFrom") (string=? m "seq")))
+(define (sorted-iface-dispatch obj method rest)
+  (cond
+    ((string=? method "comparator") (sorted-comparator-of obj))
+    ((string=? method "entryKey") (jolt-first (car rest)))   ; map entry -> its key
+    ((string=? method "seq")                                 ; (.seq sc) or (.seq sc ascending?)
+     (if (or (null? rest) (jolt-truthy? (car rest))) (jolt-seq obj) (jolt-rseq obj)))
+    ;; (.seqFrom sc k ascending?) — the entries from k onward, in order. Done with a
+    ;; comparator filter over the seq (jolt has no tree cursor), like subseq.
+    ((string=? method "seqFrom")
+     (let* ((k (car rest)) (asc (jolt-truthy? (cadr rest)))
+            (cmp (jolt-ref-get obj sorted-cmp-kw))
+            (cmpf (if (jolt-nil? cmp) jolt-compare cmp))
+            (es (seq->list (jolt-seq obj)))
+            (keep (filter (lambda (e)
+                            (let ((c (jnum->exact (jolt-invoke cmpf (jolt-first e) k))))
+                              (if asc (>= c 0) (<= c 0))))
+                          es)))
+       (list->cseq (if asc keep (reverse keep)))))
+    (else (dispatch-miss obj method rest))))
 
 (register-method-arm! arm-priority-dotform
   (lambda (obj method-name rest-args)

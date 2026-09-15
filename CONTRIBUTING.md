@@ -155,6 +155,8 @@ make gambitkernel             # the booted kernel and natives (113 checks)
 make gambiteval               # jolt source through the compiler, renders pinned to Chez
 make gambitunbound            # gate: every Scheme global the boot references is defined (~75s)
 make gambitvars               # gate: every var the boot interns is bound
+make gambitstatics            # gate: every Class/member and (new Class) the seed emits resolves
+make gambittwins              # gate: every call-position macro has an eval twin (grep only)
 make gambitseed               # re-mint host/gambit/seed/ (runs on Chez, after a seed change)
 make gambitweb                # => target/gambit/jolt-web.js, the browser bundle
 make gambitweb PROFILE=repl   # a smaller bundle (see Build profiles below)
@@ -186,6 +188,20 @@ gate; `make gambitunbound-regen` / `gambitvars-regen` rewrite the lists keeping
 the comments. Bind a new name — a mirror in `rt-core.ss`, a shim in
 `prelude-shims.ss`, a raise naming the absent capability in `host-vars.ss` —
 before reaching for the allowlist.
+
+The seed's own `Class/member` calls and `(Class. …)` constructors resolve
+against `host/gambit/host-statics.ss`, the Gambit target's interop tier: the
+jhost record and the registries in the same shape as Chez's `host-static.ss`,
+plus the members clojure.core and the embedded stdlib reach. `make
+gambitstatics` greps every static and constructor the seed emits and boots to
+ask the registries; a miss is a classified line in
+`host/gambit/seed-statics-allowlist.txt` (`make gambitstatics-regen`), and a
+line that resolves now fails. The java/ files both boots load — `class-model.ss`,
+`string-builder.ss`, `java-parse.ss`, `dot-forms.ss` — register into those
+registries, so a shim written against them runs on both hosts. Compiled code
+the Gambit boot evals cannot see the unit's macros; `make gambittwins` derives
+the call-position macros from the op registry and checks each has a function
+twin in `host/gambit/eval-fns.ss`.
 
 ### Build profiles
 

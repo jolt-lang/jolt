@@ -1,0 +1,36 @@
+# seed-statics-allowlist.txt — Class/member calls and constructors the seed
+# emits that the Gambit boot does not resolve.
+#
+# One entry per line — Class/member for a static, new Class for a
+# constructor — grouped under a comment that says why this target degrades
+# it. host/gambit/seed-statics.ss (make gambitstatics) reads every
+# host-static-call / host-static-ref / host-new the seed emits and pins the
+# ones the booted registries miss against this list: a miss missing here
+# fails the gate, and so does a line whose entry resolves now — the list
+# only shrinks truthfully. `make gambitstatics-regen` keeps comments and
+# still-valid lines in place, drops stale lines and appends new entries.
+#
+# A line here is a documented gap: the call raises a named
+# UnsupportedOperationException. A registration in host-statics.ss is
+# always better than a line here.
+#
+# clojure.core.Vec (vector-of, clojure/core/60-gvec.clj) is built on arrays,
+# which java/natives-array.ss owns and no constructor here builds
+# (host-vars.ss degrades them all); its tail copies, its seq cells and its
+# iterator are unreachable behind that.
+System/arraycopy
+new SeqIterator
+new clojure.lang.APersistentVector$RSeq
+new clojure.lang.Cons
+new java.util.concurrent.atomic.AtomicInteger
+#
+# clojure.main's REPL plumbing (stdlib/clojure/main.clj): the line-numbering
+# reader its read hook wraps input in, and the temp file plus writer its
+# error report is spilled to. The java.io / java.nio shims are the excluded
+# java/ tree's; this target's IO is slurp/spit over ports (host-vars.ss).
+java.nio.file.Files/createTempFile
+new BufferedWriter
+new FileWriter
+new LineNumberingPushbackReader
+new StringReader
+new java.io.File

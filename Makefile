@@ -112,7 +112,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
 .PHONY: build install test ci gate-run-test gate-run-ci gate-status hooks attributioncheck \
         gambitcheck gambitkernel gambiteval gambitseed gambitweb gambitprofile \
         gambitgen gambitgencheck gambitseedcheck gambitunbound gambitunbound-regen \
-        gambitvars gambitvars-regen grenadinecheck \
+        gambitvars gambitvars-regen gambitstatics gambitstatics-regen gambittwins grenadinecheck \
         fibersbench dynbench \
         fibersresidue
 
@@ -169,7 +169,7 @@ CI-GATES := submodules values corpus unit documented grenadine mvnhttp readscali
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa deadhost adaptercheck hostprops statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotfingerprint vfaslceiling compilepathsmoke makefilesmoke versionsmoke attributioncheck \
   systemstreams \
-  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitprofile grenadinecheck fibers gosm asynctimer interruptnest threadsafety flow
+  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers gosm asynctimer interruptnest threadsafety flow
 TEST-GATES := submodules selfhost ci
 
 GATE-RECEIPT := target/gate-receipt
@@ -1284,6 +1284,31 @@ gambitvars:
 
 gambitvars-regen:
 	@JOLT_GAMBITVARS=regen "$(GAMBIT_GSI)" host/gambit/unbound-vars.ss < /dev/null
+
+# The third question: every Class/member call and (new Class) the seed emits
+# resolves in the booted statics/constructor registries. The registries are
+# host-static-methods.ss's on Chez and host/gambit/host-statics.ss's here, and
+# nothing else says which of the seed's statics this target carries — a remint
+# reaching a new one degraded silently (parse-long answered "unsupported" with
+# every gate green). Reads the seed as text, boots, asks the registries; misses
+# against host/gambit/seed-statics-allowlist.txt, a stale line fails. A grep
+# and one gsi boot, a few seconds. Detection-gated.
+gambitstatics:
+	@if [ -x "$(GAMBIT_GSI)" ]; then \
+		JOLT_GSI="$(GAMBIT_GSI)" sh host/gambit/seed-statics.sh; \
+	else \
+		$(GAMBIT-SKIP); \
+	fi
+
+gambitstatics-regen:
+	@JOLT_GSI="$(GAMBIT_GSI)" sh host/gambit/seed-statics.sh --regen
+
+# Every macro the emitter can put in call position (the op registry's :call
+# names, the numeric op tables) has a same-named function in eval-fns.ss:
+# eval'd code on the Gambit boot cannot see unit macros. grep only, so it
+# gates in CI whether or not gambit is installed.
+gambittwins:
+	@sh host/gambit/eval-twins-check.sh
 
 # Build profiles: generate the reduced repl profile and check that the language
 # still works while an excluded feature reports itself instead of failing as an

@@ -406,3 +406,157 @@
 ;; asserts a fresh pattern answers false and a matched one true.
 (def-var! "jolt.host" "regex-compiled?"
   (lambda (x) (if (and (regex-t? x) (regex-t-irx-cell x)) #t #f)))
+
+;; ---- splitting ----------------------------------------------------------------
+;; The two halves clojure.string/split and String.split share, here rather than
+;; in java/natives-str.ss because the Gambit boot's string surface (rt-core.ss)
+;; splits on a regex too and that file is not shared.
+
+;; The exact text a pattern matches, when it matches exactly one string — or #f
+;; when the pattern has any regex structure at all.
+;;
+;; A great many regex splits are not really regex splits: #"\n" is the single
+;; commonest separator in line-oriented code, and it costs a full irregex search
+;; per line to find a character. Splitting 20k lines on #"\n" measured ~10x
+;; babashka (1086 ms vs 106 ms). Recognising the literal lets the same call take
+;; the non-allocating str-index-of scan the literal-separator arm already uses.
+;;
+;; This is Java regex SOURCE, so a backslash escape is either a control letter or
+;; a quoted punctuation character. Anything that can match more than one string —
+;; a metacharacter, a quantifier, a class, a group, an anchor, a predefined class
+;; like \d, an inline flag like (?i) — declines and keeps the engine. Declining
+;; is always safe; only accepting wrongly would be a bug.
+(define (regex-literal-text src)
+  (let ((n (string-length src)))
+    (and (fx>? n 0)
+         (let ((out (open-output-string)))
+           (let loop ((i 0))
+             (if (fx>=? i n)
+                 (get-output-string out)
+                 (let ((c (string-ref src i)))
+                   (cond
+                     ((memv c '(#\. #\* #\+ #\? #\[ #\] #\( #\) #\{ #\} #\| #\^ #\$)) #f)
+                     ((char=? c #\\)
+                      (and (fx<? (fx+ i 1) n)
+                           (let ((e (string-ref src (fx+ i 1))))
+                             (cond
+                               ((char=? e #\n) (write-char #\newline out) (loop (fx+ i 2)))
+                               ((char=? e #\r) (write-char #\return out) (loop (fx+ i 2)))
+                               ((char=? e #\t) (write-char #\tab out) (loop (fx+ i 2)))
+                               ((char=? e #\f) (write-char #\page out) (loop (fx+ i 2)))
+                               ;; a quoted punctuation character stands for itself;
+                               ;; a quoted LETTER or DIGIT is a class or a back
+                               ;; reference (\d \w \s \b \Q \p \1), never a literal
+                               ((and (char>? e #\space) (char<=? e #\~)
+                                     (not (char-alphabetic? e)) (not (char-numeric? e)))
+                                (write-char e out) (loop (fx+ i 2)))
+                               (else #f)))))
+                     (else (write-char c out) (loop (fx+ i 1)))))))))))
+
+;; (re-split irx s limit) -> parts, splitting at each match. Keeps interior AND
+;; trailing empty strings (the clojure.string wrapper drops trailing for limit 0);
+;; a positive limit yields at most `limit` parts (the rest kept unsplit).
+;; The clojure.string.clj split wrapper
+;; layers the trailing-empty trim on top.
+(define (re-split irx s limit)
+  (let* ((s (jolt-need-str s))
+         (len (string-length s)))
+    ;; nout counts out — (length out) per part made a limited split O(parts^2)
+    (let loop ((start 0) (last 0) (out '()) (nout 0))
+      (if (and limit (fx>=? nout (fx- limit 1)))
+          (reverse (cons (substring s last len) out))
+          (let ((m (and (fx<=? start len) (irx-search-from irx s start))))
+            (if (not m)
+                (reverse (cons (substring s last len) out))
+                (let ((ms (irregex-match-start-index m 0))
+                      (me (irregex-match-end-index m 0)))
+                  (if (fx=? me ms)                 ; zero-width: emit single-char segment
+                      (if (fx>=? start len)
+                          (reverse (cons (substring s last len) out))
+                          ;; Emit the segment from last to this match point, skip
+                          ;; leading empty (JVM semantics for zero-width splits).
+                          ;; Resume at me+1, not start+1 — start+1 can still sit at
+                          ;; or before ms and re-find this same match (#940).
+                          (let ((seg (substring s last ms)))
+                            (if (and (string=? seg "") (null? out))
+                                (loop (fx+ me 1) me out nout)
+                                (loop (fx+ me 1) me (cons seg out) (fx+ nout 1)))))
+                      (loop me me (cons (substring s last ms) out) (fx+ nout 1))))))))))
+
+;; ---- replacing --------------------------------------------------------------
+;; The same split of labor for clojure.string/replace and replace-first: here
+;; so rt-core.ss's Gambit string surface replaces on a regex with the code
+;; natives-str.ss uses.
+(define (string-has-char? s c)
+  (let loop ((i 0))
+    (cond ((fx=? i (string-length s)) #f)
+          ((char=? (string-ref s i) c) #t)
+          (else (loop (fx+ i 1))))))
+
+;; Replacement-string expansion against an irregex match, with the JVM's
+;; Matcher.appendReplacement syntax: $N inserts group N's text (dropped when the
+;; group didn't participate) and a backslash escapes the next character — so
+;; \\ inserts one backslash and \$ a literal dollar. re-quote-replacement's
+;; output round-trips through this.
+(define (expand-dollar repl m)
+  (let ((len (string-length repl)))
+    (let loop ((i 0) (acc '()))
+      (if (fx>=? i len)
+          (apply string-append (reverse acc))
+          (let ((c (string-ref repl i)))
+            (cond
+              ((and (char=? c #\\) (fx<? (fx+ i 1) len))
+               (loop (fx+ i 2) (cons (string (string-ref repl (fx+ i 1))) acc)))
+              ((and (char=? c #\$) (fx<? (fx+ i 1) len)
+                    (char<=? #\0 (string-ref repl (fx+ i 1)))
+                    (char<=? (string-ref repl (fx+ i 1)) #\9))
+               (let* ((n (fx- (char->integer (string-ref repl (fx+ i 1))) 48))
+                      (g (and (fx<=? n (irregex-match-num-submatches m))
+                              (irregex-match-substring m n))))
+                 (loop (fx+ i 2) (if g (cons g acc) acc))))
+              (else (loop (fx+ i 1) (cons (string c) acc)))))))))
+
+;; One match's replacement text. A string gets $N expansion; a fn (jolt closure)
+;; is called with the match result (whole string, or [whole g1 ...] when grouped)
+;; and its result stringified.
+(define (replacement-text replacement m)
+  (cond
+    ((string? replacement) (expand-dollar replacement m))
+    ((procedure? replacement) (jolt-str-render-one (jolt-invoke replacement (irx-result m))))
+    (else (jolt-str-render-one replacement))))
+
+;; regex replace, first or all matches.
+(define (re-replace irx s replacement all?)
+  (let ((len (string-length s)))
+    (let loop ((start 0) (last 0) (acc '()))
+      (let ((m (and (fx<=? start len) (irx-search-from irx s start))))
+        (if (not m)
+            (apply string-append (reverse (cons (substring s last len) acc)))
+            (let ((ms (irregex-match-start-index m 0))
+                  (me (irregex-match-end-index m 0)))
+              (if (fx=? me ms)                     ; zero-width: step past
+                  (if (fx>=? start len)
+                      (apply string-append (reverse (cons (substring s last len) acc)))
+                      (loop (fx+ start 1) last acc))
+                  (let ((acc2 (cons (replacement-text replacement m)
+                                    (cons (substring s last ms) acc))))
+                    (if all?
+                        (loop me me acc2)
+                        (apply string-append (reverse (cons (substring s me len) acc2))))))))))))
+
+;; A regex that is really a literal, replaced by a string that is really a
+;; literal, is a plain search-and-replace — the same recognition split uses.
+;; (str/replace s #"abc" "xyz") ran the engine over every position and measured
+;; ~10x babashka (1661 ms vs 174 ms) where THIS function's own literal arm did
+;; the identical work in 171 ms.
+;;
+;; Answers the literal text to search for, or #f to keep the engine. It declines
+;; whenever the replacement could mean more than itself: a $-group reference or
+;; a backslash escape, both of which the engine path expands, or a FUNCTION,
+;; which has to be called with each match. Declining is always safe.
+(define (literal-replace-text pat repl)
+  (and (jolt-regex? pat)
+       (string? repl)
+       (not (string-has-char? repl #\$))
+       (not (string-has-char? repl #\\))
+       (regex-literal-text (regex-t-source pat))))

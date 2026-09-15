@@ -8,8 +8,9 @@
 ;; macro in this set is a STRICT fast-path wrapper over runtime helpers that
 ;; are unit globals visible from eval'd code — so same-named functions are
 ;; semantically identical (the macro buys inlining, which the interpretation
-;; path forgoes anyway). Hand-maintained against seq.ss's macro region
-;; (~lines 440-612); the gambitkernel/gambiteval gates catch drift.
+;; path forgoes anyway). The set is derived by host/gambit/eval-twins-check.sh
+;; (make gambittwins): every call-position macro the emitter can write has a
+;; twin here, or the gate names it.
 ;;
 ;; Registration is (eval '(define ...) (interaction-environment)) per form —
 ;; eval'd, not unit-defined, so the definitions land where eval'd emitted code
@@ -27,6 +28,11 @@
 (%eval-fn (define (jolt-some? x) (jolt-some?-fn x)))
 (%eval-fn (define (jolt-truthy? x) (jolt-truthy?-fn x)))
 (%eval-fn (define (jolt-not x) (jolt-not-fn x)))
+;; identical? and identity are spliced the same way (natives-seq.ss / seq.ss);
+;; eval-twins-check.sh (make gambittwins) derives this set from the op
+;; registry, so a newly spliced op cannot be missed here again.
+(%eval-fn (define (jolt-identical? a b) (jolt-identical?-fn a b)))
+(%eval-fn (define (jolt-identity x) (jolt-identity-fn x)))
 
 ;; checked arithmetic: fold the 2-arg fast path (+/-/* when both are numbers,
 ;; else the jolt-add/sub/mul dispatch) exactly like the macro chains
