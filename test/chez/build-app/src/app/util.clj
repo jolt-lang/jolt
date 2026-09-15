@@ -56,6 +56,16 @@
 (def ^:redef redef-fn (fn [] :original))
 (def ^:dynamic *config* :default)
 
+;; jolt#1009: a PLAIN def — no ^:redef, no ^:dynamic — is direct-linked, and a
+;; direct-linked def is also LINKED: a root write reaches the jv$ binding that
+;; compiled value-position reads go to. Before that the binding froze at load,
+;; so in a built binary `(var-get #'root-val)` answered the new root while a
+;; compiled `root-val` kept answering the old one, forever. `nil` is the exact
+;; shape the issue was filed against (a plain `(def x nil)` holding no value yet
+;; — a config slot, a test fixture, an injected dependency).
+(def root-val nil)
+(defn root-fn [] :original)
+
 ;; A two-deep non-tail call chain that throws — exercises native stack traces in a
 ;; direct-link build (build-smoke runs -main with a --boom sentinel arg). deep-boom
 ;; is defined through a USER macro: its source registration only gets a real line

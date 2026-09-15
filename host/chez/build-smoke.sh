@@ -249,6 +249,29 @@ if ! printf '%s' "$got_rd" | grep -q '^redef: :patched$'    || ! printf '%s' "$g
   echo "--- got ----"; echo "$got_rd"; exit 1
 fi
 
+# jolt#1009: a PLAIN def (no ^:redef/^:dynamic) is direct-linked, and a root write
+# must reach the jv$ binding a compiled value READ goes to — or the var cell and
+# the binding split and never rejoin. The first three lines print the compiled
+# read and the var-cell read of the SAME var; before the fix the left half stayed
+# nil/:original in a built binary while the right half moved, and only in a built
+# binary. fn-direct pins the other half of the closed world, unchanged: an
+# inlined direct CALL keeps the body it was compiled with, and ^:redef opts out.
+got_vr="$(cd / && "$out" --varroot 2>&1)"
+# grep per line, not one equality: -main prints its unconditional output around
+# these, exactly as the --redef check above works around.
+for line in 'same-ns: :set / :set' \
+            'cross-ns: :set / :set' \
+            'fn-value: :patched / :patched' \
+            'fn-direct: :original' \
+            'with-redefs: :bound' \
+            'after-redefs: :set'; do
+  if ! printf '%s\n' "$got_vr" | grep -qxF "$line"; then
+    echo "  FAIL: alter-var-root/with-redefs of a plain def — want '$line'"
+    echo "--- got ----"; echo "$got_vr"
+    exit 1
+  fi
+done
+
 check_fnid "$out" "the direct-linked release build"
 
 # The heap ceiling, in a BUILT binary. jolt bounds its heap at 25% of RAM by

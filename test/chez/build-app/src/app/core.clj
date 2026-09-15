@@ -8,6 +8,10 @@
 ;; ns "util" and never reaches app.util/greet (the dispatch falls to :default).
 (defmethod util/greet :loud [_] "greet:loud")
 
+;; jolt#1009, the same-namespace half: a plain def and the reads of it are linked
+;; app->app within one unit. See --varroot in -main.
+(def same-ns-val nil)
+
 ;; A defmethod on a REFERRED multifn (bare `greet`): the AOT build must register
 ;; the :refer so the bare name resolves to app.util/greet, not a shadow.
 (defmethod greet :soft [_] "greet:soft")
@@ -51,6 +55,26 @@
                         (util/redef-fn)))
     (println "dyn:" (binding [util/*config* :bound]
                       util/*config*)))
+  ;; --varroot: jolt#1009. A PLAIN (no ^:redef/^:dynamic) def is direct-linked,
+  ;; and a root write must still reach the binding a compiled value read goes to.
+  ;; Every line here read the STALE value in a built binary while `jolt run` and
+  ;; the REPL read the new one — the split that made a green test suite go red as
+  ;; a binary. `same-ns` covers an app->app link inside one namespace; the util/
+  ;; ones cover the cross-ns link, a value read of a fn var, and with-redefs.
+  (when (= (first args) "--varroot")
+    (alter-var-root #'same-ns-val (constantly :set))
+    (println "same-ns:" same-ns-val "/" (var-get #'same-ns-val))
+    (alter-var-root #'util/root-val (constantly :set))
+    (println "cross-ns:" util/root-val "/" (var-get #'util/root-val))
+    (alter-var-root #'util/root-fn (constantly (fn [] :patched)))
+    (println "fn-value:" ((identity util/root-fn)) "/" ((var-get #'util/root-fn)))
+    ;; A DIRECT CALL is the other half of the closed world and is NOT expected to
+    ;; follow: the inline pass may have spliced root-fn's old body into this site
+    ;; (here it const-folds to :original outright), so there is no read left to
+    ;; redirect. ^:redef / ^:dynamic opt a var out of that, as --redef pins.
+    (println "fn-direct:" (util/root-fn))
+    (println "with-redefs:" (with-redefs [util/root-val :bound] util/root-val))
+    (println "after-redefs:" util/root-val))
   ;; --fnid: closure identity in a BUILT binary. Chez returns ONE closure object
   ;; for every evaluation of a lambda with no free variables, where Clojure
   ;; allocates a fresh fn each time, so the back end gives such a lambda

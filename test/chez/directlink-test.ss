@@ -2,7 +2,10 @@
 ;; top-level app def emits a Scheme binding jv$<ns>$<name> aliased to its var cell,
 ;; and an app->app call/value-ref binds to it directly instead of reading the var
 ;; cell (see var-routed? below for the two spellings that read counts as).
-;; ^:dynamic/^:redef defs and nested defs opt out.
+;; ^:dynamic/^:redef defs and nested defs opt out. A direct-linked def is LINKED
+;; (def-var-linked!): it hands the runtime a setter over the binding, so a root
+;; write — alter-var-root, with-redefs, a later def — reaches the binding the
+;; direct sites read, and the cell and the binding never split (jolt#1009).
 ;; Off direct-link mode the emission is byte-identical to plain `emit`. Run:
 ;;   chez --script test/chez/directlink-test.ss
 
@@ -60,9 +63,10 @@
   (ok "off: no jv$ direct call" (not (contains? eb "(jv$app$a)")))
   ;; a def carries source position in its var meta (:line/:column/:file), so it
   ;; emits def-var-with-meta! — but still NO jv$ binding off direct-link.
-  (ok "off: def emits def-var-with-meta! (no jv$ binding)"
+  (ok "off: def emits def-var-with-meta! (no jv$ binding, not linked)"
       (and (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(def-var-with-meta! \"app\" \"a\"")
-           (not (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(define jv$app$a")))))
+           (not (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(define jv$app$a"))
+           (not (contains? (emit-form "app" "(def a (fn* ([] 1)))") "(def-var-linked!")))))
 
 ;; --- direct-link ON ---
 (set-direct-link! #t)
@@ -71,7 +75,14 @@
 (let ((ea (emit-form "app" "(def a (fn* ([] 1)))")))   ; registers app/a in the set
   (ok "on: a's def emits a jv$ binding aliased to its var cell"
       (and (contains? ea "(begin (define jv$app$a ")
-           (contains? ea "(def-var-with-meta! \"app\" \"a\" jv$app$a"))))
+           (contains? ea "(def-var-linked! \"app\" \"a\" 'jv$app$a jv$app$a")))
+  ;; jolt#1009: the def is LINKED — it registers a setter over the binding, so a
+  ;; later alter-var-root / with-redefs / def writes the new root through to the
+  ;; jv$ name every direct call site applies and every value-ref reads. Without
+  ;; it the binding froze at load and the var cell alone moved, so `(var-get #'a)`
+  ;; and a compiled `a` disagreed for the rest of the process.
+  (ok "on: a's def registers a write-through setter over the binding"
+      (contains? ea "(lambda (v) (set! jv$app$a v))")))
 
 (let ((eb (emit-form "app" "(def b (fn* ([] (a))))")))
   (ok "on: b's call to a is a direct (jv$app$a) call" (contains? eb "(jv$app$a)"))
@@ -86,7 +97,12 @@
 ;; a direct-link call to it must route through jolt-invoke, never raw-apply the
 ;; binding (which crashed with "attempt to apply non-procedure" before the fix).
 (let ((ec (emit-form "app" "(def cfg {:a 1 :b 2})")))   ; registers app/cfg (non-fn) in the set
-  (ok "on: a non-fn def still gets a jv$ binding" (contains? ec "(define jv$app$cfg ")))
+  (ok "on: a non-fn def still gets a jv$ binding" (contains? ec "(define jv$app$cfg "))
+  ;; jolt#1009 was reported against exactly this shape — a plain value def, whose
+  ;; only reachable uses are value-position reads of the binding.
+  (ok "on: a non-fn def is linked too"
+      (and (contains? ec "(def-var-linked! \"app\" \"cfg\" 'jv$app$cfg jv$app$cfg")
+           (contains? ec "(lambda (v) (set! jv$app$cfg v))"))))
 (let ((eu (emit-form "app" "(def usecfg (fn* ([] (cfg :a))))")))
   (ok "on: call to a map-valued def routes through jolt-invoke" (contains? eu "(jolt-invoke"))
   (ok "on: call to a map-valued def still uses the direct binding" (contains? eu "jv$app$cfg"))
@@ -94,14 +110,16 @@
 
 ;; ^:dynamic opts out: no jv$ binding, callers stay indirect.
 (let ((ed (emit-form "app" "(def ^:dynamic d 5)")))
-  (ok "on: ^:dynamic def gets no jv$ binding" (not (contains? ed "(define jv$app$d"))))
+  (ok "on: ^:dynamic def gets no jv$ binding" (not (contains? ed "(define jv$app$d")))
+  (ok "on: ^:dynamic def is not linked" (not (contains? ed "(def-var-linked!"))))
 (let ((eu (emit-form "app" "(def usesd (fn* ([] (d))))")))
   (ok "on: call to a ^:dynamic var stays indirect" (var-routed? eu "app" "d"))
   (ok "on: ^:dynamic var not direct-linked" (not (contains? eu "(jv$app$d)"))))
 
 ;; ^:redef opts out too (a def redefinable after build stays var-routed).
 (let ((er (emit-form "app" "(def ^:redef r 5)")))
-  (ok "on: ^:redef def gets no jv$ binding" (not (contains? er "(define jv$app$r"))))
+  (ok "on: ^:redef def gets no jv$ binding" (not (contains? er "(define jv$app$r")))
+  (ok "on: ^:redef def is not linked" (not (contains? er "(def-var-linked!"))))
 (let ((eu (emit-form "app" "(def usesr (fn* ([] (r))))")))
   (ok "on: call to a ^:redef var stays indirect" (var-routed? eu "app" "r"))
   (ok "on: ^:redef var not direct-linked" (not (contains? eu "(jv$app$r)"))))
