@@ -170,7 +170,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/chez-opt
-          key: chez-manylinux2014-v10.4.1-static-v1
+          key: chez-manylinux2014-v10.4.1-static-pic-v2
 
       - name: Build jolt in ${{ matrix.container-build }} (Linux)
         if: runner.os == 'Linux'
@@ -388,6 +388,48 @@ jobs:
           out="$($JOLT_RUN_PREFIX "$work/app/app")"
           want="$(printf 'built: 45\ngzip: 3000 true')"
           test "$out" = "$want" || { echo "self-contained build ran '$out', want '$want'"; exit 1; }
+
+      # The one link the packaged binary still performs. A :static native sends
+      # the build down bld-relink-stub, which cc-links the bundled Chez kernel
+      # on the USER's machine — and the kernel was compiled in the manylinux
+      # container, whose gcc has no PIE default, while this runner's gcc does.
+      # 0.8.9 and 0.8.10 shipped a binary whose every :static build died there
+      # with "libkernel.a(foreign.o): relocation R_X86_64_32 ... can not be used
+      # when making a PIE object" (issue #1060), because nothing in this
+      # workflow linked a :static native with the packaged binary — the smoke
+      # above takes the appended-stub path, which performs no link at all.
+      # Linux only: it is the platform whose kernel is not PIC, and the macOS
+      # cross row runs an x86_64 binary under Rosetta, where a `cc` that
+      # defaults to arm64 cannot link the spilled x86_64 kernel at all.
+      - name: Smoke a self-contained build with a static native (the relink path)
+        if: runner.os == 'Linux'
+        run: |
+          jolt="$(pwd)/target/release/jolt"
+          work="$(mktemp -d)"
+          mkdir -p "$work/app/src/app"
+          printf 'int jolt_relink_answer(void) { return 42; }\n' > "$work/native.c"
+          cc -c "$work/native.c" -o "$work/native.o"
+          ar rcs "$work/libnative.a" "$work/native.o"
+          cat > "$work/app/deps.edn" <<EOF
+          {:paths ["src"]
+           :jolt/native [{:name "native" :static {:archive "$work/libnative.a"}}]}
+          EOF
+          cat > "$work/app/src/app/core.clj" <<'EOF'
+          (ns app.core (:require [jolt.ffi :as ffi]))
+          (ffi/defcfn answer "jolt_relink_answer" [] :int)
+          (defn -main [& _] (println "relinked:" (answer)))
+          EOF
+          # Not `| tee`: the pipeline's status is tee's, so a failed build would
+          # pass the step.
+          ( cd "$work/app" && $JOLT_RUN_PREFIX "$jolt" build -m app.core -o app ) \
+            > "$work/build.log" 2>&1 || { cat "$work/build.log"; exit 1; }
+          cat "$work/build.log"
+          grep -q 'relinking launcher stub' "$work/build.log" || {
+            echo "the :static build did not take the relink path"; exit 1; }
+          # The archive is linked in, so the binary answers with it deleted.
+          rm -f "$work/libnative.a"
+          out="$($JOLT_RUN_PREFIX "$work/app/app")"
+          test "$out" = "relinked: 42" || { echo "relinked build ran '$out', want 'relinked: 42'"; exit 1; }
 
       # A built binary must also run the DYNAMIC require path: a namespace not
       # in the static ns graph compiles from the source roots at runtime, so the

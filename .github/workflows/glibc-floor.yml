@@ -57,7 +57,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/chez-opt
-          key: glibc-floor-chez-v10.4.1-${{ matrix.name }}-v1
+          key: glibc-floor-chez-v10.4.1-${{ matrix.name }}-pic-v2
 
       - name: Build jolt in ${{ matrix.image }}
         run: |

@@ -91,6 +91,62 @@ if [ "$got" != "answer: 42" ]; then
   echo "--- want ---"; echo "answer: 42"; echo "--- got ----"; echo "$got"; exit 1
 fi
 
+# --- a static archive that is not position-independent (jolt#1060) ----------
+# gcc on most Linux distributions links PIE by default, and an archive compiled
+# without -fPIC cannot go into a position-independent executable:
+#
+#   relocation R_X86_64_32 against `.rodata' can not be used when making a PIE
+#   object; recompile with -fPIE
+#
+# Two archives in this link can be in that state and neither is the app's doing:
+# the Chez kernel the self-contained jolt carries (built on an image whose gcc
+# had no PIE default) and a :static native compiled the same way. The link falls
+# back to -no-pie (build.ss bld-link-executable), so the build must succeed.
+# Linux only: -fno-pie means nothing where there is no PIE default to undo, and
+# arm64 macOS has no non-PIC form at all.
+if [ "$(uname -s)" = Linux ] && cc -no-pie -E -x c /dev/null -o /dev/null 2>/dev/null; then
+  # A leaf function is position-independent by accident — take the address of
+  # static data, which is what gets the absolute relocation.
+  cat > "$work/nopic.c" <<'EOF'
+static const char greeting[] = "static";
+const char *jolt_static_greeting(void) { return greeting; }
+int jolt_static_answer(void) { return 42; }
+EOF
+  cc -fno-pie -fno-PIC -c "$work/nopic.c" -o "$work/nopic.o"
+  ar rcs "$work/libnopic.a" "$work/nopic.o"
+  cat > "$app/deps.edn" <<EOF
+{:paths ["src"]
+ :jolt/native [{:name "nopic" :static {:archive "$work/libnopic.a"}}]}
+EOF
+  rm -rf "$app/.jolt"
+  echo "static-native smoke: building (non-PIC static archive)"
+  if ! JOLT_PWD="$app" "$jolt" build -m app.core -o "$out" >"$work/build.log" 2>&1; then
+    echo "  FAIL: jolt build with a non-PIC static archive exited non-zero (jolt#1060)"
+    cat "$work/build.log"; exit 1
+  fi
+  # The archive cannot be preloaded as a shared object either (no flag makes an
+  # absolute relocation work in a library the loader maps anywhere), so the build
+  # says what it gave up rather than failing.
+  if ! grep -q "symbols cannot be resolved while the build runs" "$work/build.log"; then
+    echo "  FAIL: the build did not report the archive it could not preload"
+    cat "$work/build.log"; exit 1
+  fi
+  # Where the compiler links PIE by default (__PIE__), the first link must have
+  # failed and the -no-pie retry must be what produced the binary.
+  if echo | cc -E -dM -x c - 2>/dev/null | grep -q '__PIE__'; then
+    if ! grep -q 'relinking with -no-pie' "$work/build.log"; then
+      echo "  FAIL: a PIE-by-default toolchain linked a non-PIC archive without the -no-pie retry"
+      cat "$work/build.log"; exit 1
+    fi
+  fi
+  got="$(cd / && "$out" 2>&1)"
+  if [ "$got" != "answer: 42" ]; then
+    echo "  FAIL: non-PIC static archive binary output mismatch"
+    echo "--- got ----"; echo "$got"; exit 1
+  fi
+  rm -rf "$app/.jolt"
+fi
+
 # --- --dynamic: runtime load ------------------------------------------------
 # Rebuild the shared object (static phase deleted it) and give the spec a runtime
 # candidate; --dynamic loads it at startup instead of linking the archive.
@@ -250,4 +306,4 @@ if grep -qn 'bld-link-libs.*native-link' host/chez/build.ss; then
   exit 1
 fi
 
-echo "static-native smoke: passed (static default + --dynamic runtime load + project-relative archive + transitive-dep relative archive + runtime-native report + link order)"
+echo "static-native smoke: passed (static default + non-PIC archive + --dynamic runtime load + project-relative archive + transitive-dep relative archive + runtime-native report + link order)"

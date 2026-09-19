@@ -39,7 +39,28 @@
 (define (bld-system cmd)
   (let ((rc (system (bld-sh-wrap cmd))))
     (unless (zero? rc)
-      (error 'jolt-build (string-append "command failed (" (number->string rc) "): " cmd)))))
+      (bld-command-failed rc cmd))))
+
+(define (bld-command-failed rc cmd)
+  (error 'jolt-build (string-append "command failed (" (number->string rc) "): " cmd)))
+
+;; bld-system with the command's output (both streams) collected into LOG
+;; instead of the terminal, answering the exit status rather than raising: for a
+;; command whose failure the caller reads before deciding whether to retry. The
+;; caller shows the log itself — bld-echo-log, on every path, or a warning the
+;; compiler emitted on a command that then succeeded would be swallowed.
+(define (bld-system->log cmd log)
+  (system (bld-sh-wrap (string-append cmd " > '" log "' 2>&1"))))
+
+(define (bld-log-string log)
+  (if (not (file-exists? log))
+      ""
+      (let* ((ip (open-input-file log)) (s (get-string-all ip)))
+        (close-port ip)
+        (if (eof-object? s) "" s))))
+
+(define (bld-echo-log log)
+  (display (bld-log-string log)))
 
 ;; mkdir -p without a subprocess (the self-contained build shells out to nothing).
 (define (bld-mkdir-p dir)
@@ -140,6 +161,65 @@
   (cond (bld-osx? "")
         (bld-nt? "-Wl,--export-all-symbols ")
         (else "-rdynamic ")))
+
+;; --- linking an executable against archives that may not be PIC -------------
+;; A static archive compiled without -fPIC cannot go into a position-independent
+;; executable, and most Linux distributions' gcc links PIE by default (jolt#1060):
+;;
+;;   /usr/bin/ld: libkernel.a(foreign.o): relocation R_X86_64_32 against symbol
+;;   `S_tc_mutex' can not be used when making a PIE object; recompile with -fPIE
+;;
+;; Both archives an app's link folds in can be in that state: the Chez kernel
+;; (its own configure does not pass -fPIC, and the kernel the self-contained
+;; jolt carries was built on an image whose gcc did not default to PIE, so the
+;; error only appears on the user's machine), and the app's own :static natives,
+;; which jolt does not compile. -no-pie is the flag that links them anyway.
+;;
+;; It is a fallback rather than a default because it costs the binary its
+;; address-space randomization: the link runs as it always did, and only a
+;; failure that ld blames on PIE gets a second attempt with -no-pie. Nothing
+;; else is retried — a missing symbol fails the same way it did before.
+(define (bld-pie-relocation-error? out)
+  (or (bld-contains? out "when making a PIE object")
+      (bld-contains? out "recompile with -fPIE")
+      (bld-contains? out "recompile with -fPIC")))
+
+;; Does CC know -no-pie? gcc before 6 does not, and its driver rejects the whole
+;; command line for an unrecognized option, which would turn a link that works
+;; today into an error. Windows and macOS have no PIE default to undo, and
+;; Android's loader requires a PIE executable, so a non-PIE binary there would
+;; build and then not run — none of them take the fallback. Probed once, on the
+;; first failing link, with a preprocess of an empty file.
+(define bld-no-pie-cache 'unknown)
+(define (bld-no-pie-supported? cc)
+  (when (eq? bld-no-pie-cache 'unknown)
+    (set! bld-no-pie-cache
+          (and (not bld-osx?) (not bld-nt?) (not (bld-bionic?))
+               (bld-contains?
+                 (bld-sh-capture
+                   (string-append cc " -no-pie -E -x c /dev/null -o /dev/null 2>/dev/null"
+                                  " && echo jolt-no-pie-ok"))
+                 "jolt-no-pie-ok"))))
+  bld-no-pie-cache)
+
+;; Run an executable link, with that fallback. MAKE-CMD takes the extra flags to
+;; splice in (a string, already terminated by a space) and answers the command;
+;; LOG is where the compiler's output goes while the outcome is undecided.
+(define (bld-link-executable cc make-cmd log)
+  (let* ((cmd (make-cmd ""))
+         (rc (bld-system->log cmd log)))
+    (cond
+      ((zero? rc) (bld-echo-log log))
+      ((and (bld-pie-relocation-error? (bld-log-string log))
+            (bld-no-pie-supported? cc))
+       (display (string-append
+                  "jolt build: a static archive is not position-independent; "
+                  "relinking with -no-pie\n"))
+       (let* ((cmd (make-cmd "-no-pie "))
+              (rc (bld-system->log cmd log)))
+         (bld-echo-log log)
+         (unless (zero? rc) (bld-command-failed rc cmd))))
+      (else (bld-echo-log log) (bld-command-failed rc cmd)))))
 
 ;; Chez's system/process run through cmd.exe on Windows; every build command
 ;; here is written for sh (MSYS2 provides it). On nt, spill the command to a
@@ -1072,6 +1152,14 @@
 ;; every member) and load it. The output binary still cc-links the static archive;
 ;; this temp .so is build-time only. Only the "archive" form is preloaded — the
 ;; "lib" form names a system library the OS loader already finds by soname.
+;;
+;; An archive compiled without -fPIC cannot become a shared object at all — no
+;; linker flag makes an absolute relocation work in a library the loader may map
+;; anywhere — so that one is skipped rather than fatal (jolt#1060). The binary's
+;; own link still gets it (a non-PIE executable, see bld-link-executable); what
+;; is lost is only build-time resolution, which matters when a macro or a
+;; top-level form CALLS the native while the build runs. The same hole the
+;; ["static" "lib" …] form has always had, and the warning says so.
 (define (bld-preload-static-natives! natives builddir)
   (let ((n 0))
     (for-each
@@ -1080,15 +1168,23 @@
           (when (and (string=? (car parts) "static") (string=? (cadr parts) "archive"))
             (let* ((archive (caddr parts))
                    (so (string-append builddir "/native-" (number->string n)
-                                      (if bld-osx? ".dylib" ".so"))))
+                                      (if bld-osx? ".dylib" ".so")))
+                   (log (string-append so ".log"))
+                   (cmd (if bld-osx?
+                            (string-append "cc -dynamiclib -undefined dynamic_lookup -Wl,-all_load '"
+                                           archive "' -o '" so "'")
+                            (string-append "cc -shared -Wl,--whole-archive '" archive
+                                           "' -Wl,--no-whole-archive -Wl,--unresolved-symbols=ignore-all -o '" so "'"))))
               (set! n (+ n 1))
-              (bld-system
-                (if bld-osx?
-                    (string-append "cc -dynamiclib -undefined dynamic_lookup -Wl,-all_load '"
-                                   archive "' -o '" so "'")
-                    (string-append "cc -shared -Wl,--whole-archive '" archive
-                                   "' -Wl,--no-whole-archive -Wl,--unresolved-symbols=ignore-all -o '" so "'")))
-              (sa-load-shared-object so)))))
+              (let ((rc (bld-system->log cmd log)))
+                (cond
+                  ((zero? rc) (bld-echo-log log) (sa-load-shared-object so))
+                  ((bld-pie-relocation-error? (bld-log-string log))
+                   (display (string-append
+                              "jolt build: warning: " archive " is not position-independent, so its\n"
+                              "  symbols cannot be resolved while the build runs (it is still linked into\n"
+                              "  the binary). Compile it with -fPIC if the build itself has to call it.\n")))
+                  (else (bld-echo-log log) (bld-command-failed rc cmd))))))))
       (seq->list natives))))
 
 (define (bld-one-static-link form)
@@ -2506,10 +2602,15 @@
     (bld-write-zlib-header! builddir)
     (display "jolt build: relinking launcher stub with static native libraries\n")
     (parameterize ((bld-bundled-archives archives))
-      (bld-system (string-append
-        "cc -O2 " (bld-export-symbols-flag)
-        "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
-        native-link " " (bld-link-libs))))))
+      ;; bld-link-executable, not bld-system: the kernel spilled just above is
+      ;; the one archive in this link jolt built itself, and it is not PIC.
+      (bld-link-executable "cc"
+        (lambda (extra)
+          (string-append
+            "cc -O2 " (bld-export-symbols-flag) extra
+            "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
+            native-link " " (bld-link-libs)))
+        (string-append builddir "/relink.log")))))
 
 ;; --- boot-image prefetch (cold start) ---------------------------------------
 ;; A binary that embeds its boot as a C array hands Chez a pointer into .data — a
@@ -2617,10 +2718,16 @@
   ;; a statically-linked native lib's symbols resolve via (load-shared-object #f)
   ;; at startup. macOS keeps unstripped executable symbols dlsym-visible already.
   (bld-clear-output! out-path)
-  (bld-system (string-append
-    (bld-cc) " " (bld-arch-flag) " -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "")
-    "-I'" (bld-csv-dir) "' '" main-c "' '" (bld-csv-dir) "/libkernel.a' "
-    "-o '" out-path "' " native-link " " (bld-link-libs)))
+  ;; This link folds in the libkernel.a of whatever Chez it found, which a stock
+  ;; ./configure builds without -fPIC — hence the same -no-pie fallback the
+  ;; relink takes (bld-link-executable).
+  (bld-link-executable (bld-cc)
+    (lambda (extra)
+      (string-append
+        (bld-cc) " " (bld-arch-flag) " -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "") extra
+        "-I'" (bld-csv-dir) "' '" main-c "' '" (bld-csv-dir) "/libkernel.a' "
+        "-o '" out-path "' " native-link " " (bld-link-libs)))
+    (string-append builddir "/link.log"))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 ;; --- shared-library link (jolt build --library) -----------------------------

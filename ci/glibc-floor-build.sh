@@ -42,7 +42,16 @@ if [ ! -x /opt/chez/bin/scheme ]; then
   # stays clean.
   cp -a /chez-src /tmp/chez-build
   cd /tmp/chez-build
-  ./configure --installprefix=/opt/chez --threads --disable-x11
+  # CFLAGS+=-fPIC: libkernel.a (and the liblz4.a/libz.a built beside it) is
+  # BUNDLED INTO the jolt this container produces, and `jolt build` with a
+  # :static native cc-links it again on the user's machine, where gcc links PIE
+  # by default — which a kernel compiled here, with no PIE default, cannot go
+  # into ("relocation R_X86_64_32 ... can not be used when making a PIE object",
+  # issue #1060). The relink falls back to -no-pie for an archive it cannot fix,
+  # but the one jolt ships is jolt's to get right, and a PIC kernel keeps the
+  # user's binary position-independent. Same flag tests.yml passes, for the
+  # neighbouring reason (--library folds the kernel into a shared object).
+  ./configure --installprefix=/opt/chez --threads --disable-x11 CFLAGS+=-fPIC
   make -j"$(nproc)"
   make install
 fi
