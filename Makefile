@@ -573,15 +573,20 @@ compilescaling: testbin
 # jolt-register-variadic! registration on the native + - * / min max and the
 # comparison chains (host/chez/seq.ss). Without it (apply max (range)) realizes
 # an unbounded seq until the process dies.
+# Both footprint gates below judge the collector's high-water mark against ONE
+# collection trip, so the trip is pinned (JOLT_GC_TRIP_BYTES) rather than left to
+# the collector policy (rt.ss jolt-install-gc-policy!): a nursery that grows during
+# an allocation-heavy arm raises the floor the reading is judged against, and the
+# arms that must differ read the same (what failed apply-scaling's control on CI).
 applyscaling: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/apply_scaling_test.clj
+	@JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/apply_scaling_test.clj
 
 # Peak memory of the java.util.zip streams: 100 MB through GZIPOutputStream or
 # GZIPInputStream peaks within 2 MB of 1 MB. It reads the live heap, not the
 # collector's high-water mark applyscaling reads: that mark hides anything under
 # one collection trip, and the ceiling here is 2 MB.
 zipmemory: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/zip_memory_test.clj
+	@JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/zip_memory_test.clj
 
 # Lazy realization costs the same whether or not a thread has ever existed: a
 # cell publishes its forced tail through one word and reads it lock-free, and the
