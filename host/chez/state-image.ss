@@ -45,10 +45,16 @@
 ;; image-legacy-coll? / image-legacy-pmap? below, and the sidecar entry is
 ;; carried onto the rebuilt record like any substitution.
 ;;
-;; This build still READS versions 2 to 7: everything they can contain
+;; Version 9: a throwable is jolt-ex-info-record-v2, which carries where it was
+;; constructed (its capture, rt.ss). The capture does not travel -- a continuation
+;; cannot be written, and another process's frames would name nothing -- so a
+;; throwable is written as a copy without it. Formats 8 and older carry the v1
+;; layout, which restores through image-legacy-ex-info? below.
+;;
+;; This build still READS versions 2 to 8: everything they can contain
 ;; (including raw jolt-ref-v1 records) restores here via the legacy arms.
-(define jolt-image-format-version 8)
-(define jolt-image-read-versions '(2 3 4 5 6 7 8))
+(define jolt-image-format-version 9)
+(define jolt-image-read-versions '(2 3 4 5 6 7 8 9))
 
 ;; --- classification -----------------------------------------------------------
 ;; An eq hashtable is the ONE hashtable kind Chez can fasl; eqv/equal/string-hash
@@ -429,6 +435,13 @@
                      (string=? (substring n 0 9) "chez-jrec")))))))
 (define (legacy-ref-val x)
   ((record-accessor (record-rtd x) 0) x))
+;; A throwable from a format <= 8 image: the v1 layout (class-name message cause
+;; data error-offset), with no capture field. Its uid is retired, so the fasl
+;; materializes the old rtd and the instance answers #f to jolt-ex-info-record?.
+(define (image-legacy-ex-info? x)
+  (and (record? x)
+       (record-rtd x)
+       (eq? (record-type-uid (record-rtd x)) 'jolt-ex-info-record-v1)))
 ;; A map from an image written before the meta slot (format <= 7). Two
 ;; generations: chez-pmap-v5 (root cnt hasheq) is the current layout minus the
 ;; slot; chez-pmap-v4 (root cnt order hasheq all-kw, format <= 6) has a trie
@@ -1022,6 +1035,9 @@
                       (walk-ref-restore (legacy-ref-val x) x path))
                      ((and restore? (image-legacy-jrec? x))
                       (walk-legacy-jrec x path))
+                     ((and restore? (image-legacy-ex-info? x))
+                      (let ((f (lambda (i) ((record-accessor (record-rtd x) i) x))))
+                        (walk-ex-info-fields x (f 0) (f 1) (f 2) (f 3) (f 4) path)))
                      ;; a pre-format-8 collection re-minted into the current
                      ;; record (meta slot) and then walked like any collection;
                      ;; a pre-format-7 map, or a set over one, likewise through
@@ -1132,6 +1148,13 @@
                              ((var-cell? x) (walk-var-cell x path))
                              ((jolt-atom? x) (walk-atom x path))
                              ((jolt-ref? x) (walk-ref x path))
+                             ((jolt-ex-info-record? x)
+                              (walk-ex-info-fields
+                                x (jolt-ex-info-record-class-name x)
+                                (jolt-ex-info-record-message x)
+                                (jolt-ex-info-record-cause x)
+                                (jolt-ex-info-record-data x)
+                                (jolt-ex-info-record-error-offset x) path))
                              ((pair? x) (walk-pair x path))
                              ((vector? x) (walk-vector x path))
                              ((and (hashtable? x) (hashtable-mutable? x))
@@ -1590,6 +1613,27 @@
                     (begin
                       (hashtable-set! memo x #t)
                       (walk (jolt-ref-val x) (cons "ref" path))
+                      #t))))
+;; a throwable, written and read as its fields and never its capture (a
+             ;; continuation cannot be written; rt.ss). The cause and data are
+             ;; values like any other and are walked. A placeholder is memoized
+             ;; before them so a throwable whose own data reaches it back ends the
+             ;; walk; the fields are immutable, so that one reference lands on
+             ;; the placeholder, without its cause and data.
+             (walk-ex-info-fields
+              (lambda (x class-name message cause data error-offset path)
+                (if rebuild?
+                    (let ((nx (make-jolt-ex-info-record class-name message jolt-nil jolt-nil error-offset)))
+                      (hashtable-set! memo x nx)
+                      (let ((c (walk cause (cons "cause" path)))
+                            (d (walk data (cons "data" path))))
+                        (let ((out (make-jolt-ex-info-record class-name message c d error-offset)))
+                          (hashtable-set! memo x out)
+                          out)))
+                    (begin
+                      (hashtable-set! memo x #t)
+                      (walk cause (cons "cause" path))
+                      (walk data (cons "data" path))
                       #t))))
              ;; read side: re-mint a live ref from a descriptor's (or a legacy
              ;; raw record's) val — the caller passes the val read the right

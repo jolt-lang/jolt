@@ -116,13 +116,13 @@
 (define (sa-reset-max-memory-bytes!)
   #f)
 
-;; (sa-gc-install-ceiling! soft hard on-exceeded) -> boolean
+;; (sa-gc-install-after-collect! maintain observe) -> boolean
 ;; Permitted degradation: Gambit exposes no hook equivalent to Chez's
 ;; collect-request-handler, so answer #f and install nothing. The heap is then
-;; unbounded, which is what every jolt before 0.8.5 did on every target, and
-;; the caller reports maxMemory as unbounded rather than promising a bound it
-;; cannot enforce.
-(define (sa-gc-install-ceiling! soft hard on-exceeded)
+;; unbounded and the nursery fixed, which is what every jolt before 0.8.5 did on
+;; every target, and the caller reports maxMemory as unbounded rather than
+;; promising a bound it cannot enforce.
+(define (sa-gc-install-after-collect! maintain observe)
   #f)
 
 ;; (sa-gc-install-stall-watch! seconds on-stall) -> boolean

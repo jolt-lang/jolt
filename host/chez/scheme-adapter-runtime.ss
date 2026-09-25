@@ -1054,31 +1054,43 @@
       (vfasl-convert-file in out #f))
     #t))
 
-;; (sa-gc-install-ceiling! soft hard on-exceeded) -> boolean
-;; Install a collection hook enforcing a heap ceiling, and answer whether the
-;; target could. On each collection the target performs its normal collection,
-;; then: above SOFT live bytes it forces a FULL collection — the one a
-;; generational collector defers, and the whole point under memory pressure —
-;; and if live bytes still exceed HARD it calls ON-EXCEEDED with that count.
+;; (sa-gc-install-after-collect! maintain observe) -> boolean
+;; Hook every collection: the target performs its normal collection, then calls
+;; (MAINTAIN collect-full!) -- collect-full! a thunk that collects EVERY
+;; generation now, the collection a generational collector defers -- and then
+;; (OBSERVE gc-ns elapsed-ns): how long the whole of this collection took,
+;; MAINTAIN's work included, and how long since the previous one ended, both
+;; monotonic nanoseconds. Answers whether the target could install the hook.
 ;;
-;; The policy lives in the caller (rt.ss jolt-install-heap-ceiling!): the
-;; thresholds, the message, and what ON-EXCEEDED does. This is only the seam
-;; that hooks collection, because doing that needs a target-specific native.
+;; The policy lives in the caller (rt.ss jolt-install-gc-policy!): the heap
+;; ceiling, when to collect the older generations, and the nursery size. This is
+;; only the seam that hooks collection, because doing that needs a target-specific
+;; native. Both run where the collect request is handled, with the world stopped:
+;; MAINTAIN may collect everything (collect-full!, and only that way: sa-gc-collect
+;; is the out-of-handler entry), both may read the heap (sa-bytes-allocated) and
+;; set the trip threshold (sa-gc-trip-bytes!); raising from MAINTAIN is how a
+;; ceiling reports.
 ;;
-;; Contract: ON-EXCEEDED is called only when the heap genuinely cannot be
-;; brought under HARD, so raising from it is the expected use.
-;; Degradation: answer #f without installing anything. The ceiling is then
-;; unenforced, which is what every jolt before 0.8.5 did, and the caller
-;; reports maxMemory accordingly rather than promising a bound it lacks.
-(define (sa-gc-install-ceiling! soft hard on-exceeded)
-  (collect-request-handler
-    (lambda ()
-      (collect)
-      (when (> (bytes-allocated) soft)
-        (collect (collect-maximum-generation))
-        (when (> (bytes-allocated) hard)
-          (on-exceeded (bytes-allocated))))))
+;; Contract: both are called after each collection the target runs on its own
+;; schedule. Degradation: answer #f without installing anything. The caller then
+;; enforces no ceiling -- what every jolt before 0.8.5 did -- and keeps a fixed
+;; nursery, and reports maxMemory as unbounded rather than promising a bound it
+;; lacks.
+(define (sa-gc-install-after-collect! maintain observe)
+  (let ((last-end (sa-monotonic-ns))
+        (collect-full! (lambda () (collect (collect-maximum-generation)))))
+    (collect-request-handler
+      (lambda ()
+        (let ((t0 (sa-monotonic-ns)))
+          (collect)
+          (maintain collect-full!)
+          (let ((t1 (sa-monotonic-ns)))
+            (observe (- t1 t0) (- t1 last-end))
+            (set! last-end t1))))))
   #t)
+(define (sa-monotonic-ns)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* (time-second t) 1000000000) (time-nanosecond t))))
 ;; (sa-gc-install-stall-watch! seconds on-stall) -> boolean
 ;; Make a stalled collection observable. Chez stops the world by rendezvous:
 ;; the thread whose allocation tripped runs $collect-rendezvous, and unless it

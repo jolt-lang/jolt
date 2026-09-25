@@ -892,31 +892,6 @@
            :jvm "true"
            :jolt "false"}
    :note "Inherent to tail calls, not a missing shim. spec's instrument still throws the same conform ExceptionInfo with the same explain-data — only the ::caller annotation is absent. Surfaces in spec.alpha's clojure.test-clojure.instr suite."}
-  ;; A Throwable's frames come from the continuation its first THROW captured
-  ;; (rt.ss jolt-remember-throw!). The JVM fills them in when the object is
-  ;; constructed, so one that was built and never thrown has frames there and none
-  ;; here. A thrown one has them on both, whenever it is asked.
-  {:category :host-model
-   :behavior "(.getStackTrace t) and Throwable->map's :trace for a throwable that was constructed but never thrown"
-   :jvm "the frames where it was constructed"
-   :jolt "empty"
-   :check {:expr "(pos? (count (.getStackTrace (ex-info \"never thrown\" {}))))"
-           :jvm "true"
-           :jolt "false"}
-   :note "Capturing a continuation per construction would put a call/cc on every ex-info call, including the ones that are data and never thrown; the throw already captures one."}
-  ;; A loop local bound to an expression the JVM compiles to a PRIMITIVE boolean
-  ;; ((nil? q), (= a b), (< a b)) takes the primitive type, and recurring a boxed
-  ;; Boolean or any other value into it is a compile error there. jolt has no
-  ;; primitive locals, so the loop compiles and runs. writ's solver
-  ;; (writ/solve/search.clj propagate) relies on it without knowing.
-  {:category :permissive
-   :behavior "(loop [x (nil? nil)] (if x (recur false) :done))"
-   :jvm "IllegalArgumentException: recur arg for primitive local: x is not matching primitive, had: java.lang.Boolean, needed: boolean"
-   :jolt ":done"
-   :check {:expr "(try (eval (quote (loop [x (nil? nil)] (if x (recur false) :done)))) (catch Exception e :compile-error))"
-           :jvm ":compile-error"
-           :jolt ":done"}
-   :note "A primitive loop local is a JVM codegen artifact; rejecting the recur would mean modelling which core fns inline to primitives. Code that must also run on the JVM can bind (if (nil? q) true false), which stays boxed."}
   ;; clojure.instant's third reader. jolt has one millisecond instant type, so
   ;; java.sql.Timestamp is java.util.Date and the sub-millisecond digits are gone.
   ;; The other two readers agree with the JVM exactly, offset zone included

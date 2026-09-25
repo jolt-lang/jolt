@@ -367,7 +367,7 @@
     (and base (exact (floor (/ base 4))))))
 (define jolt-heap-ceiling-bytes #f)      ; #f until installed; #f = unbounded
 (define (jolt-heap-max-bytes) jolt-heap-ceiling-bytes)
-(define (jolt-install-heap-ceiling!)
+(define (jolt-install-gc-policy!)
   (let* ((env (heap-from-env))
          (ceiling (cond ((eq? env 'off) #f)
                         ((and env (number? env)) env)
@@ -387,26 +387,107 @@
                (number->string (sa-bytes-allocated))
                ". Give it at least twice that, or JOLT_MAX_HEAP=off for no ceiling.")))
     (set! jolt-heap-ceiling-bytes ceiling)
+    (gc-nursery-setup! ceiling)
     ;; The hook itself is target-specific, so it goes through the adapter
-    ;; (sa-gc-install-ceiling!): this file is portable and the natives that hook
-    ;; collection are blocklisted here for exactly that reason. A target that
+    ;; (sa-gc-install-after-collect!): this file is portable and the natives that
+    ;; hook collection are blocklisted here for exactly that reason. A target that
     ;; cannot hook collection answers #f, and then jolt is unbounded as it was
-    ;; before 0.8.5 — so the ceiling is forgotten rather than reported, keeping
-    ;; Runtime.maxMemory honest.
-    (when ceiling
-      (unless (sa-gc-install-ceiling!
-                (exact (floor (* ceiling 3/4)))
-                ceiling
-                (lambda (live)
-                  (error 'jolt
-                         (string-append
-                           "out of memory: the heap ceiling of "
-                           (number->string ceiling)
-                           " bytes was exceeded (live "
-                           (number->string live)
-                           "). Raise or disable it with JOLT_MAX_HEAP=<n>[k|m|g] or "
-                           "JOLT_MAX_HEAP=off."))))
+    ;; before 0.8.5, with a fixed nursery — so the ceiling is forgotten rather
+    ;; than reported, keeping Runtime.maxMemory honest.
+    (let ((soft (and ceiling (exact (floor (* ceiling 3/4))))))
+      (set! gc-live-after-full (sa-bytes-allocated))
+      (unless (sa-gc-install-after-collect!
+                (lambda (collect-full!)
+                  (gc-collect-old-when-grown! collect-full!)
+                  (when ceiling (gc-enforce-ceiling! soft ceiling collect-full!)))
+                gc-size-nursery!)
         (set! jolt-heap-ceiling-bytes #f)))))
+
+;; Above SOFT live bytes after a collection, force the FULL one a generational
+;; collector defers; still above HARD after it, the heap cannot fit.
+(define (gc-enforce-ceiling! soft hard collect-full!)
+  (when (> (sa-bytes-allocated) soft)
+    (collect-full!)
+    (set! gc-live-after-full (sa-bytes-allocated))
+    (when (> (sa-bytes-allocated) hard)
+      (error 'jolt
+             (string-append
+               "out of memory: the heap ceiling of "
+               (number->string hard)
+               " bytes was exceeded (live "
+               (number->string (sa-bytes-allocated))
+               "). Raise or disable it with JOLT_MAX_HEAP=<n>[k|m|g] or "
+               "JOLT_MAX_HEAP=off.")))))
+
+;; --- the nursery ---------------------------------------------------------------
+;; How much a program allocates between two collections (the trip threshold)
+;; decides what a young collection costs: it copies what is still live, and a
+;; short window catches objects that would have died a moment later. At a fixed
+;; 16MB, writ's prover spent 40% of its time collecting (122GB allocated, 7271
+;; collections, ~100MB live at the end) and `jolt build`'s back end 60% (#1059,
+;; fixed there by hand at 64MB); the JVM's young generation starts in the
+;; hundreds of MB and is sized by the collector's own time share.
+;;
+;; So size it the same way. After each collection, the share of time spent in
+;; collection is averaged over recent collections; above a sixth of the time the
+;; trip doubles, under a thirtieth it halves back, between FLOOR and CAP. A
+;; program that allocates little never leaves the floor, so its footprint is
+;; what it was; one that churns grows its nursery until collection stops
+;; dominating. JOLT_GC_TRIP_BYTES pins the size and turns the adapting off.
+(define gc-trip-floor (* 16 1024 1024))
+(define gc-trip-cap (* 1024 1024 1024))
+(define gc-adaptive? #t)
+(define gc-share 0.0)                     ; recent average of gc-time / elapsed
+(define (gc-nursery-setup! ceiling)
+  (let ((pinned (let ((v (getenv "JOLT_GC_TRIP_BYTES"))) (and v (string->number v)))))
+    ;; an eighth of the heap ceiling at most, so the nursery can never be what
+    ;; pushes a small heap over it
+    (when ceiling (set! gc-trip-cap (max gc-trip-floor (min gc-trip-cap (quotient ceiling 8)))))
+    (cond
+      ((and pinned (exact? pinned) (> pinned 0))
+       (set! gc-adaptive? #f)
+       (sa-gc-trip-bytes! pinned))
+      (else (sa-gc-trip-bytes! (max (sa-gc-trip-bytes) gc-trip-floor))))))
+(define (gc-size-nursery! gc-ns elapsed-ns)
+  (when (and gc-adaptive? (> elapsed-ns 0))
+    (set! gc-share (+ (* 0.7 gc-share) (* 0.3 (/ (exact->inexact gc-ns) elapsed-ns))))
+    (let ((trip (sa-gc-trip-bytes)))
+      (cond
+        ((and (> gc-share 1/6) (< trip gc-trip-cap))
+         (sa-gc-trip-bytes! (min gc-trip-cap (* 2 trip))))
+        ((and (< gc-share 1/30) (> trip gc-trip-floor))
+         (sa-gc-trip-bytes! (max gc-trip-floor (quotient trip 2))))))))
+;; --- the older generations ---------------------------------------------------
+;; The collector takes generation n every 4^n trips, so the older generations'
+;; schedule is counted in nurseries: grow the nursery to 1GB and generation 1 is
+;; collected every 4GB of allocation, generation 2 every 16GB, and whatever died
+;; after reaching one of them waits that long. Measured: a program with ~100MB
+;; live passed 12GB allocated between collections. It happened at the fixed 16MB
+;; too, only slower -- writ's examples ran at 7.7GB resident for ~100MB of data.
+;; So the old generations are also collected by HEAP GROWTH, the rule Go's GOGC
+;; and the JVM's occupancy trigger use: once the heap is more than twice what was
+;; live after the last full collection (and 64MB past it, so a tiny heap does not
+;; collect constantly), collect everything and measure again. The footprint is
+;; then bounded by the program's own live data, whatever the nursery.
+(define gc-live-after-full 0)
+(define (gc-collect-old-when-grown! collect-full!)
+  (let ((live gc-live-after-full))
+    (when (> (sa-bytes-allocated) (max (* 2 live) (+ live (* 64 1024 1024))))
+      (collect-full!)
+      (set! gc-live-after-full (sa-bytes-allocated)))))
+
+;; Run THUNK with the nursery at least BYTES, the floor restored after: for a
+;; phase known to churn before the average has seen it (the build's back end).
+(define (jolt-with-gc-trip-floor bytes thunk)
+  (let ((saved-floor gc-trip-floor) (saved-trip (sa-gc-trip-bytes)))
+    (dynamic-wind
+      (lambda () (set! gc-trip-floor (max saved-floor bytes))
+                 (sa-gc-trip-bytes! (max saved-trip gc-trip-floor)))
+      thunk
+      ;; back exactly as it was; the policy regrows the nursery if the program
+      ;; that follows still needs it
+      (lambda () (set! gc-trip-floor saved-floor)
+                 (sa-gc-trip-bytes! saved-trip)))))
 
 
 ;; --- a stalled collection says so ---------------------------------------------
@@ -562,9 +643,19 @@
 ;; (= e e) true, matching the JVM where ExceptionInfo does NOT implement
 ;; equals). get / keyword lookup: MISS (record is NOT ILookup).
 ;; error-offset stores ParseException.getErrorOffset (0 when not set).
-(define-record-type jolt-ex-info-record
-  (fields class-name message cause data (mutable error-offset))
-  (nongenerative jolt-ex-info-record-v1))
+;; capture is (k . site): the continuation and site pair where the throwable was
+;; constructed (jolt-capture-throwable!), which its stack trace is read from, or
+;; #f. A field and not a side table: it costs a store, where a table shared across
+;; threads needed a lock and an insert (~130ns per ex-info), and it dies with the
+;; exception -- a weak table kept every entry forever, since the captured frames
+;; hold the throwable they were capturing. The layout is image surface: images
+;; drop the capture (a continuation cannot be written) and read the v1 layout
+;; through a legacy arm (state-image.ss); the v1 uid is retired.
+(define-record-type (jolt-ex-info-record make-jolt-ex-info-record* jolt-ex-info-record?)
+  (fields class-name message cause data (mutable error-offset) (mutable capture))
+  (nongenerative jolt-ex-info-record-v2))
+(define (make-jolt-ex-info-record class-name message cause data error-offset)
+  (make-jolt-ex-info-record* class-name message cause data error-offset #f))
 
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
@@ -818,37 +909,45 @@
       (let ((m (jolt-ex-info-record-message v)))
         (if (string? m) m "jolt error"))
       "jolt error"))
-;; ...and what each THROWABLE was first thrown with -- its continuation and the
-;; raise-time site pair, (k . site) -- so a caught one still has its own frames
-;; after other throws have replaced the slots above: those are one per thread, the
-;; continuation slot is cleared when a catch completes, and the site snapshot is
-;; whatever threw last. .getStackTrace and printStackTrace on a caught exception
-;; used to read them, so they answered for nothing or for a different throw.
-;;
-;; Weak on the throwable, so the frames live exactly as long as the exception
-;; object does -- the JVM's own trade, where a Throwable keeps its backtrace --
-;; and not a moment longer; the slot above still drops them when a catch ends.
-;; Resolved into elements only when asked (source-registry.ss): a frame walk is
-;; ~100x a throw, so it cannot happen per throw. First throw wins, since a rethrow
-;; keeps the original trace on the JVM too.
-(define jolt-thrown-conts (make-weak-eq-hashtable))
-(define jolt-thrown-conts-mu (make-mutex))
+;; ...and where each THROWABLE was made: its capture field (the record above),
+;; set at construction by jolt-capture-throwable!, or at its first throw for one
+;; built without a constructor that captures. A caught exception thus keeps its
+;; own frames after other throws have replaced the slots above: those are one per
+;; thread, the continuation slot is cleared when a catch completes, and the site
+;; snapshot is whatever threw last. Resolved into elements only when asked
+;; (source-registry.ss): a frame walk is ~100x a throw, so it cannot happen per
+;; throw. The first capture wins, since a rethrow keeps the original trace on the
+;; JVM too.
 (define (jolt-remember-throw! v k site)
-  (when (jolt-ex-info-record? v)
-    (jolt-with-mutex jolt-thrown-conts-mu
-      (unless (hashtable-contains? jolt-thrown-conts v)
-        (hashtable-set! jolt-thrown-conts v (cons k site))))))
+  (when (and (jolt-ex-info-record? v) (not (jolt-ex-info-record-capture v)))
+    (jolt-ex-info-record-capture-set! v (cons k site))))
 (define (jolt-thrown-cont v)
-  (jolt-with-mutex jolt-thrown-conts-mu (hashtable-ref jolt-thrown-conts v #f)))
+  (and (jolt-ex-info-record? v) (jolt-ex-info-record-capture v)))
 
 (define (jolt-throw v)
+  ;; The throw takes its own capture for the per-thread slots the uncaught-error
+  ;; report reads: it rebuilds frames a tail call erased from the throw-time site,
+  ;; which only the throw has. The throwable's OWN trace keeps the capture made
+  ;; when it was constructed (jolt-remember-throw! does not overwrite it), which is
+  ;; what the JVM's getStackTrace answers with.
   (call/cc (lambda (k)
              (jolt-throw-cont (cons v k))
              (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
                                  (and (pair? s) s)))
              (jolt-remember-throw! v k (jolt-throw-sitep))
-             (raise (condition (make-message-condition (jolt-throw-message v))
-                               (make-jolt-throw-condition v))))))
+             (jolt-raise-thrown v))))
+(define (jolt-raise-thrown v)
+  (raise (condition (make-message-condition (jolt-throw-message v))
+                    (make-jolt-throw-condition v))))
+;; A throwable's frames are those of where it was CONSTRUCTED, as the JVM fills
+;; them in (Throwable's constructor calls fillInStackTrace): one built here and
+;; never thrown -- handed to a callback, logged, returned as a value -- has its
+;; stack trace too.
+(define (jolt-capture-throwable! v)
+  (call/cc (lambda (k)
+             (jolt-remember-throw! v k (let ((s (virtual-register jolt-vreg-site)))
+                                         (and (pair? s) s)))))
+  v)
 ;; The same capture for a HOST condition (a fault raised outside jolt-throw:
 ;; car of a non-pair, a bad flvector index). Installed by the cli's run wrapper
 ;; via with-exception-handler, which runs BEFORE the stack unwinds — a guard's
@@ -908,18 +1007,20 @@
 ;; jolt-host-throwable / throw-jvm, which is what the JVM raises wherever
 ;; ex-data is nil.
 (define (jolt-ex-info msg data . more)
-  (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
-                             (if (null? more) jolt-nil (car more))
-                             (if (jolt-nil? data) empty-pmap data) 0))
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
+                              (if (null? more) jolt-nil (car more))
+                              (if (jolt-nil? data) empty-pmap data) 0)))
 ;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record
 ;; carrying its canonical JVM class-name, so (class …) / instance? / .getMessage /
 ;; ex-message all reflect the real type.
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
 (define (jolt-host-throwable class-name msg . more)
-  (make-jolt-ex-info-record class-name msg
-                             (if (null? more) jolt-nil (car more))
-                             jolt-nil 0))
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record class-name msg
+                              (if (null? more) jolt-nil (car more))
+                              jolt-nil 0)))
 
 ;; throw-jvm: raise a typed JVM throwable by simple class name.
 ;; (throw-jvm 'NoSuchElementException msg) -> (jolt-throw (jolt-host-throwable

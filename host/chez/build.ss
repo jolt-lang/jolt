@@ -2041,20 +2041,13 @@
           ;; io/resource that wasn't embedded still resolves next to the binary.
           (put-string out "\n;; === launcher ===\n")
           (put-string out "(suppress-greeting #t)\n")
-          ;; GC tuning: larger nursery for allocation-heavy workloads (binary-trees,
-          ;; ray tracer, etc.). Default 16 MB; override via JOLT_GC_TRIP_BYTES
-          ;; environment variable (integer bytes, e.g. \"33554432\" for 32 MB).
-          (put-string out
-            (string-append
-              "(sa-gc-trip-bytes!\n"
-              "  (let ((trip (getenv \"JOLT_GC_TRIP_BYTES\"))\n"
-              "        (default (* 16 1024 1024)))\n"
-              "    (if trip (or (string->number trip) default) default)))\n"
-              ;; and a heap ceiling, so a built app fails with an
-              ;; OutOfMemoryError carrying a stack rather than being SIGKILLed
-              ;; by the kernel with nothing to read. Same contract as jolt's own
-              ;; launcher and as the JVM's MaxRAMPercentage default.
-              "(jolt-install-heap-ceiling!)\n"))
+          ;; The collector policy (rt.ss jolt-install-gc-policy!): a nursery sized
+          ;; by the time collection takes, from 16MB up (JOLT_GC_TRIP_BYTES pins
+          ;; it), and a heap ceiling, so a built app fails with an
+          ;; OutOfMemoryError carrying a stack rather than being SIGKILLed by the
+          ;; kernel with nothing to read. Same as jolt's own launcher, and the
+          ;; ceiling the JVM's MaxRAMPercentage default.
+          (put-string out "(jolt-install-gc-policy!)\n")
           (put-string out "(scheme-start\n  (lambda args\n")
           (bld-emit-startup-profile-mark! out "scheme-start begin")
           ;; Shutdown hooks (`:shutdown` on a jolt.process, jolt.host/
@@ -2340,17 +2333,15 @@
 (define (bld-units-so-args units)
   (fold-left (lambda (acc u) (string-append acc "  " (ei-str-lit (cadr u)) "\n")) "" units))
 
-;; Run THUNK with a larger collect trip, restoring it after. The back-end steps
-;; (compile-file, vfasl-convert-file) allocate tens of GB on a large app and at
-;; the CLI's 16MB trip spent ~60% of their time collecting (#1059): a 28MB app
-;; half compiled in 49.6s at the default and 36.2s at 64MB.
+;; Run THUNK with the nursery at least 64MB. The back-end steps (compile-file,
+;; vfasl-convert-file) allocate tens of GB on a large app and at a 16MB trip spent
+;; ~60% of their time collecting (#1059): a 28MB app half compiled in 49.6s at
+;; 16MB and 36.2s at 64MB. The collector policy would grow the nursery there on
+;; its own, but only after the collections that tell it to; this starts the phase
+;; at the size it is known to need.
 (define bld-backend-trip-bytes (* 64 1024 1024))
 (define (bld-with-backend-gc thunk)
-  (let ((saved (sa-gc-trip-bytes)))
-    (dynamic-wind
-      (lambda () (sa-gc-trip-bytes! (max saved bld-backend-trip-bytes)))
-      thunk
-      (lambda () (sa-gc-trip-bytes! saved)))))
+  (jolt-with-gc-trip-floor bld-backend-trip-bytes thunk))
 
 ;; Compile SRC to SO in this process under PARAMS (an alist as above), by
 ;; translating the parameter names into the target-neutral profile

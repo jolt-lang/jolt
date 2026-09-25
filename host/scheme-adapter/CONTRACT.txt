@@ -147,9 +147,9 @@ system
 # keeps no peak answers "now"), in which case sa-reset-max-memory-bytes! may
 # no-op; sa-gc-trip-bytes may answer 0 where no trip threshold exists (the
 # apply-scaling gate floors a footprint reading at it, and 0 is no floor);
-# sa-gc-install-ceiling! may answer
+# sa-gc-install-after-collect! may answer
 # #f without installing anything, which leaves the heap unbounded as it was
-# before 0.8.5 — a target with no collection hook cannot enforce a ceiling,
+# before 0.8.5 and the nursery fixed — a target with no collection hook cannot enforce a ceiling,
 # and the caller then reports maxMemory as unbounded rather than promising a
 # bound it does not have. sa-gc-install-stall-watch! may likewise answer #f:
 # a target whose collector is not a rendezvous of active threads, or a Chez
@@ -168,7 +168,7 @@ sa-file-mtime-ms
 sa-gc-trip-bytes!
 sa-gc-trip-bytes
 sa-reset-max-memory-bytes!
-sa-gc-install-ceiling!
+sa-gc-install-after-collect!
 sa-gc-install-stall-watch!
 #
 # tier: capability-introspect

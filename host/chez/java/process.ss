@@ -2182,7 +2182,7 @@
         (cons "freeMemory"
           (lambda (self) (->num (max 0 (- (sa-total-memory-bytes) (sa-bytes-allocated))))))
         ;; maxMemory is -Xmx on the JVM. jolt has a ceiling of its own now
-        ;; (rt.ss jolt-install-heap-ceiling!, 25% of RAM by default, the same
+        ;; (rt.ss jolt-install-gc-policy!, 25% of RAM by default, the same
         ;; share MaxRAMPercentage uses), so report that. Long/MAX_VALUE is still
         ;; the answer under JOLT_MAX_HEAP=off, which is what unbounded means and
         ;; what every release before 0.8.5 reported unconditionally.

@@ -181,6 +181,16 @@
       out (str sw)]
   (ok= (boolean (re-find #"thrower" out)) true "printStackTrace names the exception's own thrower")
   (ok= (boolean (re-find #"other-thrower" out)) false "...and not the frames of a later throw"))
+;; a throwable that is built and never thrown has the frames of where it was built,
+;; as the JVM's constructor fills them in
+(defn- builder [] (let [e (ex-info "never thrown" {})] e))
+(let [st (.getStackTrace (builder))]
+  (ok= (first (own-frames st)) ["stack_trace_test$builder" "stack-trace-test.clj"]
+       "a never-thrown throwable's first own frame is where it was constructed"))
+(defn- host-builder [] (let [e (RuntimeException. "built")] e))
+(ok= (first (own-frames (.getStackTrace (host-builder))))
+     ["stack_trace_test$host_builder" "stack-trace-test.clj"]
+     "so is a host throwable's")
 ;; a rethrow keeps the frames of the first throw, as on the JVM
 (let [e (catch-it)
       e2 (try (throw e) (catch Exception x x))]

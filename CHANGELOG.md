@@ -19,9 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5.6GB of memory to 55s from cold, 35s for an unchanged rebuild and 38s after editing
   one namespace, under 1GB. `JOLT_BUILD_CACHE=0`, `JOLT_BUILD_CACHE_DIR`,
   `JOLT_BUILD_CACHE_MB` and `JOLT_BUILD_JOBS` control the unit cache.
+- **The nursery size follows the time spent collecting.** It starts at 16MB and
+  doubles while collections take more than a sixth of the run, up to 1GB (or an eighth
+  of the heap ceiling), and halves back when they take under a thirtieth. A program
+  that allocates little keeps the 16MB it had. writ's prover spent 40% of its time
+  collecting at the fixed 16MB and 19% now (64.5s to 48.9s). `JOLT_GC_TRIP_BYTES`
+  still pins the size.
 
 ### Fixed
 
+- clojure.core vars carry the reference's `:tag` metadata (`(:tag (meta #'not))` is
+  `Boolean`, `(:tag (meta #'str))` is `String`), where they carried none.
+- A `loop` local bound to a primitive boolean (`(nil? x)`, `(= a b)`, `(< a b)`,
+  `(instance? C x)` …) refuses a `recur` of anything that is not one, with the JVM's
+  "recur arg for primitive local" error; jolt used to run such a loop.
 - A built binary's stack traces no longer depend on its build directory. Each frame's
   line was read from the generated unit files under `<out>.build`, so a binary copied
   elsewhere, or whose build directory was cleaned, showed frames at their `defn` lines
@@ -38,8 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it was later run a second time ("fiber in unexpected state") or its carrier
   stopped running fibers.
 - A caught exception keeps its stack trace. `.getStackTrace`, `.printStackTrace` and
-  `Throwable->map`'s `:trace` (and each `:via` entry's `:at`) answer the frames of the
-  throw; they were empty unless nothing else had thrown since. `StackTraceElement->vec`
+  `Throwable->map`'s `:trace` (and each `:via` entry's `:at`) answer the frames of where
+  the exception was constructed, as on the JVM, including one that was never thrown;
+  they were empty unless nothing else had thrown since. `StackTraceElement->vec`
   names the class and method as symbols, as on the JVM.
 - A static member reference like `Long/MIN_VALUE` or a call like
   `(Long/numberOfLeadingZeros x)` looks its member up once per call site instead of

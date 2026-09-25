@@ -121,7 +121,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink ffi fibers fieldjoin fieldnum fieldread flarr fnform coreproc grenadine \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inline inline-body irvalidate statlayout \
-  jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite \
+  jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy \
   deadhost mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax \
   hostarity narrow narrowhash numeric numwp oparity pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit vfaslceiling \
@@ -180,7 +180,7 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke completionssmoke depscpcache depsunit \
+CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient rrbprop rrbscaling stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
@@ -546,6 +546,21 @@ mvnhttp:
 # Takes the built binary: script mode would measure the same ratio far slower.
 readscaling: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/read_scaling_test.clj
+
+# The nursery follows the collector's time share (rt.ss jolt-install-gc-policy!):
+# a churning program grows it past the 16MB floor, a light one leaves it there,
+# and JOLT_GC_TRIP_BYTES pins it. Each mode is its own process, since the policy
+# is per process and a grown nursery does not shrink on demand.
+gcpolicy: testbin
+	@floor=16777216; \
+	 churn=$$(JOLT_NO_USER_DEPS=1 target/release/jolt run test/gc_policy_test.clj churn 2>&1 | sed -n 's/^trip //p'); \
+	 light=$$(JOLT_NO_USER_DEPS=1 target/release/jolt run test/gc_policy_test.clj light 2>&1 | sed -n 's/^trip //p'); \
+	 pinned=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=33554432 target/release/jolt run test/gc_policy_test.clj pinned 2>&1 | sed -n 's/^trip //p'); \
+	 echo "gcpolicy: churn $$churn, light $$light, pinned $$pinned"; \
+	 [ -n "$$churn" ] && [ "$$churn" -gt "$$floor" ] || { echo "FAIL gcpolicy: a churning program kept the $$floor floor"; exit 1; }; \
+	 [ "$$light" = "$$floor" ] || { echo "FAIL gcpolicy: a light program left the floor ($$light)"; exit 1; }; \
+	 [ "$$pinned" = "33554432" ] || { echo "FAIL gcpolicy: JOLT_GC_TRIP_BYTES did not pin the nursery ($$pinned)"; exit 1; }; \
+	 echo "gcpolicy: passed"
 
 # Compiling a namespace stays linear in its source, and a quoted form does not
 # cost dramatically more than the construction it is. The second half is not
