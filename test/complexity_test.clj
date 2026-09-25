@@ -109,7 +109,9 @@
         sm1 (into (sorted-map) (map (fn [i] [i i]) (range n1)))
         sm2 (into (sorted-map) (map (fn [i] [i i]) (range n2)))
         ss1 (into (sorted-set) (range n1))
-        ss2 (into (sorted-set) (range n2))]
+        ss2 (into (sorted-set) (range n2))
+        chain (fn [d] (reduce (fn [acc i] [i acc]) [] (range d)))
+        c1 (chain 500)                 c4 (chain 2000)]
 
     ;; values first — a ratio over wrong answers would mean nothing
     (when-not (and (= (count s1) n1) (= (count s2) n2)
@@ -117,6 +119,8 @@
                    (= (first (rseq v1)) (dec n1))
                    (= (last (rseq v1)) 0)
                    (= (first sm1) [0 0]) (= (first ss1) 0)
+                   (= (count (tree-seq coll? seq c4)) 4001)
+                   (= (take 3 (tree-seq coll? seq c1)) [c1 499 (second c1)])
                    (= (first (sorted-map)) nil) (= (first (sorted-set)) nil)
                    (= (clojure.string/index-of src1 "bar)" 4) 5)
                    (= (clojure.string/index-of src1 "(foo" 1) 9)
@@ -127,6 +131,17 @@
                    (= (clojure.string/last-index-of src1 "(foo" (- (count src1) 1)) (- (count src1) 9)))
       (println "FAIL complexity: wrong values before timing")
       (System/exit 1))
+
+;; mapcat and (apply concat ...) hand back their LAST collection as it is, as
+    ;; clojure.lang's concat does, instead of copying it one cell per element.
+    ;; tree-seq nests one mapcat per level of depth, so a copy at every level
+    ;; costs each element its depth: a proof trace 325k nodes deep in places
+    ;; took 31s to walk, JVM 30ms. Both arms walk 4d elements -- four chains of
+    ;; depth d, one of depth 4d -- so linear reads ~1.0 and the copy ~4.0.
+    (judge "tree-seq deep chain"
+           #(dotimes [_ 4] (count (tree-seq coll? seq c1)))
+           #(count (tree-seq coll? seq c4))
+           "mapcat/apply concat is copying its last collection instead of returning it, so nested concats cost each element its depth (lazy-concat-outer, seq.ss)")
 
     (judge "count vector-seq"
            #(count s1)

@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `mapcat` and `(apply concat ...)` return their last collection as it is instead of
+  copying it, as the JVM's `concat` does. `tree-seq` nests one `mapcat` per level, so
+  the copy cost every element its depth: a 4000-deep chain took 1.6s to walk (JVM
+  1ms), and writ's proof summaries spent minutes in `tree-seq`. The concat now steps
+  its source one collection ahead, as the JVM's does.
 - An interop field read or `set!` on a record or deftype finds a declared slot under
   any spelling that munges to the slot's name, as the JVM's compiler does:
   `(.-processed_count r)` reads `[processed-count]`, `(.-my-field r)` reads `[my_field]`,
