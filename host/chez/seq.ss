@@ -1960,18 +1960,39 @@
 ;; collection, which dominates when the inner colls are small (mapcat over
 ;; 2-element lists is the common shape).
 ;;
-;; An empty inner coll is skipped without emitting a cell, and the outer seq is
-;; advanced only at a boundary — so f runs once per inner collection, lazily,
-;; exactly as before.
-;; outer/inner are top-level rather than a named let, so a cell's tail can name
+;; An empty inner coll is skipped without emitting a cell, and f runs once per
+;; inner collection, lazily.
+;;
+;; The LAST collection is returned as it is, not copied: clojure.lang's concat
+;; does the same, and it is what keeps nested concats linear. tree-seq nests one
+;; mapcat per level, so copying the last coll at every level cost each element
+;; its depth -- walking a 4000-deep chain took 1.6s against the JVM's 1ms.
+;; Knowing a coll is the last means stepping the outer seq when the coll starts
+;; rather than when it runs out: one coll ahead, as the JVM's concat is when its
+;; cat moves on with (next zs).
+;; outer/rest are top-level rather than a named let, so a cell's tail can name
 ;; them instead of closing over them (seq.ss lazy-src).
 (define (lazy-concat-outer s)
   (if (jolt-nil? s)
       jolt-empty-list
-      (lazy-concat-inner (jolt-seq (seq-first s)) s)))
+      (lazy-concat-start (jolt-seq (seq-first s)) (jolt-seq (seq-more s)))))
+;; cur: the coll to emit, as a seq; more: the outer seq after it.
+(define (lazy-concat-start cur more)
+  (cond ((jolt-nil? more) (if (jolt-nil? cur) jolt-empty-list cur))  ; last: share it
+        ((jolt-nil? cur) (lazy-concat-outer more))                   ; empty: skip, no cell
+        (else (cseq-lazy (seq-first cur) (make-lazy-src lz-concat-rest cur more)))))
+(define lz-concat-rest
+  (register-lazy-src! 'concat-rest
+    (lambda (cur more)
+      (let ((nx (jolt-seq (seq-more cur))))
+        (if (jolt-nil? nx)
+            (lazy-concat-outer more)                                  ; boundary
+            (cseq-lazy (seq-first nx) (make-lazy-src lz-concat-rest nx more)))))))
+;; The walk before the last coll was shared, kept so an image holding its cells
+;; still restores.
 (define (lazy-concat-inner cur s)
   (if (jolt-nil? cur)
-      (lazy-concat-outer (jolt-seq (seq-more s)))      ; empty inner: skip, no cell
+      (lazy-concat-outer (jolt-seq (seq-more s)))
       (cseq-lazy (seq-first cur) (make-lazy-src lz-concat-inner cur s))))
 (define lz-concat-inner
   (register-lazy-src! 'concat-inner
