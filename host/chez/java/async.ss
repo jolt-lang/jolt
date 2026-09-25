@@ -855,7 +855,11 @@
           ;; accumulates dead handlers from lost alts! calls. ac-notify!'s scan is
           ;; the backstop for a registration that dies by claim-race mid-notify
           ;; ("dead registration — dropped" in the drain steps).
-          (let* ((f (jolt-current-fiber))
+          ;; A fiber registers on every port below and then parks, so the lock
+          ;; check comes first (locks.ss jolt-fiber-may-park!). The gate cannot
+          ;; see this one: the await is reached through jolt-fiber-alt-await-fn.
+          (let* ((_ (jolt-fiber-may-park! 'clojure.core.async/alts!))
+                 (f (jolt-current-fiber))
                  (h (alt-handler-alloc f))
                  (registered '()))
             (let* ((unregister!

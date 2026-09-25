@@ -332,9 +332,9 @@
 (define (seq-first s) (cseq-head s))
 ;; --- forcing once, without a mutex per cell -----------------------------------
 ;; Reading a cell needs no lock (seq-tail-realized?, above). What still needs
-;; exclusion is running a tail thunk exactly once when two threads reach the
-;; same unforced cell together, and that is a CLAIM, not a lock: the forcing
-;; thread swaps the cell's lock field from #f to a claim, runs the thunk,
+;; exclusion is running a tail thunk exactly once when two forcers (threads, or
+;; fibers) reach the same unforced cell together, and that is a CLAIM, not a lock:
+;; the forcer swaps the cell's lock field from #f to a claim, runs the thunk,
 ;; publishes the tail, and swaps it back. Two compare-and-swaps and no mutex,
 ;; so a program with a million lazy cells and a thread allocates nothing for
 ;; them but the claim pair -- where a mutex per cell made every collection
@@ -342,60 +342,87 @@
 ;; process (a Chez mutex is a finalized object the collector visits: measured,
 ;; ~20x the cost of a vector its size).
 ;;
-;; A thread that finds a cell claimed by ANOTHER thread waits for the tail to
-;; appear: it spins a little, since a tail thunk is usually a few dozen
-;; nanoseconds of work, and then sleeps in growing steps up to a millisecond.
-;; Not a mutex, because a mutex can only make a thread wait if the runner held
-;; it across the thunk, and that acquire/release pair is what this design
-;; exists to avoid; not a condition variable, because waiting on one from a
-;; fiber is refused (locks.ss) and forcing a seq must never park. The runner
-;; counts the run as a held lock (jolt-locks-enter!) for exactly that reason:
-;; a fiber cannot park inside a tail thunk and cannot be preempted there, so a
-;; runner and a waiter are never fibers on the same carrier, and a waiter that
-;; sleeps only ever waits on a thread that is making progress. A thunk that
-;; reaches its OWN cell -- the claim is this thread's -- runs it again, which
-;; is the reference's reentrant monitor: an infinite recursion there, not a
-;; wait on itself. A thunk that raises leaves the tail pending and the claim
-;; released; the next forcer runs it again, as before.
+;; A forcer that finds a cell claimed by ANOTHER owner waits for the tail to
+;; appear. Not on a mutex, because a mutex can only make a waiter wait if the
+;; runner held it across the thunk, and that acquire/release pair is what this
+;; design exists to avoid.
 ;;
-;; The claim is (token . thread-id), with a token unique to THIS process: a
-;; cell that arrives from a state image carries whatever its lock field held
-;; when it was written -- a mutex, from a runtime that kept one per cell, or a
-;; claim of the process that was mid-force -- and neither is live. Anything in
-;; the field that is not this process's claim is stale and is cleared on the
-;; way to claiming.
+;; The owner is the FIBER when the forcer runs on one, and the thread otherwise
+;; (the loader's claims are keyed the same way, loader.ss ldr-load-ctx). Fibers
+;; multiplex a carrier's thread, so a thread-id claim would read a sibling fiber's
+;; claim as this forcer's own and walk into its half-run thunk. Keyed by fiber, a
+;; thunk may do what any other code does -- wait on a lock, sleep, take from a
+;; channel -- because a claim held across a park is still only its fiber's. That
+;; is the JVM's LazySeq, whose sval is a monitor held across whatever the thunk
+;; blocks on (jolt-lang/jolt#1142: an ordinary DB call inside (doall (map f xs))
+;; on a fiber failed whenever another fiber held the DB's lock). It is also why
+;; the claim's release is a jolt-finally-in winder (values.ss): a park is an
+;; escape that is not an exit, and must not give the claim up.
+;;
+;; A waiter waits in the way its context allows:
+;;   a thread       spins a little -- a tail thunk is usually a few dozen
+;;                  nanoseconds of work -- then sleeps in growing steps up to 1ms;
+;;   a fiber        gives its carrier away (locks.ss jolt-fiber-wait-turn!), since
+;;                  the runner may be a fiber on the SAME carrier that can only
+;;                  run once this one leaves;
+;;   a fiber that holds a counted lock cannot leave, so it waits like a thread
+;;                  -- which ends if the runner is anywhere but its own carrier.
+;;                  On its own carrier the runner can never run again, and that
+;;                  is raised rather than hung.
+;; A thunk that reaches its OWN cell -- the claim is this owner's -- runs it
+;; again, which is the reference's reentrant monitor: an infinite recursion
+;; there, not a wait on itself. A thunk that raises leaves the tail pending and
+;; the claim released; the next forcer runs it again, as before.
+;;
+;; The claim is (token . owner), with a token unique to THIS process: a cell
+;; that arrives from a state image carries whatever its lock field held when it
+;; was written -- a mutex, from a runtime that kept one per cell, or a claim of
+;; the process that was mid-force -- and neither is live. Anything in the field
+;; that is not this process's claim is stale and is cleared on the way to
+;; claiming.
 ;;
 ;; (force-claimed! cell get-lock L get-tail body): body re-reads the cell and
 ;; either delivers its published tail or, holding the claim, runs the thunk and
 ;; publishes. L is the lock field's index (sa-record-cas!).
 (define (force-pending? t) (or (procedure? t) (lazy-src? t)))
 (define force-claim-token (list 'forcing))
+(define (force-owner) (or (jolt-current-fiber) (get-thread-id)))
 (define (force-claimed! cell get-lock L get-tail body)
-  (let retry ((spins 0))
-    (let ((c (get-lock cell)))
-      (cond
-        ((not (force-pending? (get-tail cell))) (body))
-        ((not c)
-         (let ((claim (cons force-claim-token (get-thread-id))))
-           (if (sa-record-cas! cell L #f claim)
-               ;; A compare-and-swap orders nothing but its own word: the acquire
-               ;; makes every store the previous holder released visible to this
-               ;; thread's re-read of the tail, and the release orders the
-               ;; published tail before the claim clears -- without them the
-               ;; cleared claim can be seen ahead of the tail, a second forcer
-               ;; claims a cell that only looks pending, and its thunk runs twice.
-               (dynamic-wind
-                 (lambda () (jolt-locks-enter!) (memory-order-acquire))
-                 body
-                 (lambda () (jolt-locks-exit!) (memory-order-release) (sa-record-cas! cell L claim #f)))
-               (retry spins))))
-        ((and (pair? c) (eq? (car c) force-claim-token))
-         (if (eqv? (cdr c) (get-thread-id))
-             (body)                                     ; this thread's own claim: recursion
-             (begin (force-wait! spins) (retry (fx+ spins 1)))))
-        (else (sa-record-cas! cell L c #f) (retry spins))))))
-;; spin for the first hundred looks, then sleep 1us doubling to 1ms
-(define (force-wait! spins)
+  (let ((me (force-owner)))
+    (let retry ((spins 0))
+      (let ((c (get-lock cell)))
+        (cond
+          ((not (force-pending? (get-tail cell))) (body))
+          ((not c)
+           (let ((claim (cons force-claim-token me)))
+             (if (sa-record-cas! cell L #f claim)
+                 ;; A compare-and-swap orders nothing but its own word: the acquire
+                 ;; makes every store the previous holder released visible to this
+                 ;; owner's re-read of the tail, and the release orders the
+                 ;; published tail before the claim clears -- without them the
+                 ;; cleared claim can be seen ahead of the tail, a second forcer
+                 ;; claims a cell that only looks pending, and its thunk runs twice.
+                 (begin
+                   (memory-order-acquire)
+                   (dynamic-wind
+                     jolt-finally-in
+                     body
+                     (lambda () (memory-order-release) (sa-record-cas! cell L claim #f))))
+                 (retry spins))))
+          ((and (pair? c) (eq? (car c) force-claim-token))
+           (if (eqv? (cdr c) me)
+               (body)                                   ; this owner's own claim: recursion
+               (begin (force-wait! spins (cdr c)) (retry (fx+ spins 1)))))
+          (else (sa-record-cas! cell L c #f) (retry spins)))))))
+;; One round of waiting on a cell OWNER is running.
+(define (force-wait! spins owner)
+  (unless (jolt-fiber-wait-turn! spins)
+    (when (and (jolt-fiber? owner) (jolt-current-fiber)
+               (eq? (jolt-fiber-carrier owner) (jolt-fiber-carrier (jolt-current-fiber))))
+      (jolt-locks-assert-none! 'force-claimed!))
+    (force-sleep! spins)))
+;; the thread's wait: spin for the first hundred looks, then sleep 1us doubling to 1ms
+(define (force-sleep! spins)
   (when (fx>? spins 100)
     (let ((k (fx- spins 100)))
       (sleep (make-time 'time-duration (fxmin 1000000 (fxsll 1000 (fxmin k 10))) 0)))))

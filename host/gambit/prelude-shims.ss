@@ -763,16 +763,26 @@
 (define (set-virtual-register! n v) (vector-set! (%vreg-slots) n v))
 (define (virtual-register-count) 16)
 
-;; locks.ss's lock count, which seq.ss's force-claimed! keeps while a tail
-;; thunk runs. On Chez the scheduler reads it to refuse preempting a fiber that
-;; holds a lock; this host has no fibers, so the count is kept and nothing
-;; consults it.
+;; locks.ss's lock count. On Chez the scheduler reads it to refuse preempting a
+;; fiber that holds a lock; this host has no fibers, so the count is kept and
+;; nothing consults it.
 ;; jolt-current-fiber: dyn-binding.ss tags each binding frame with its owner,
 ;; the fiber running now or else the thread (dyn-owner). This host has no
 ;; fibers, so the owner is always the thread.
 (define (jolt-current-fiber) #f)
 (define (jolt-locks-enter!) (set-virtual-register! 7 (+ 1 (virtual-register 7))))
 (define (jolt-locks-exit!) (set-virtual-register! 7 (- (virtual-register 7) 1)))
+;; seq.ss force-claimed!'s waiting, for a cell another fiber is forcing. No fiber
+;; exists here, so a waiter never has a carrier to give away (wait-turn answers
+;; #f and it waits as a thread) and none can leave the CPU holding a lock.
+(define (jolt-fiber-wait-turn! n) #f)
+(define (jolt-locks-assert-none! who) (void))
+(define (jolt-fiber-carrier f) #f)
+;; A throwable's own frames (source-registry.ss on Chez, which this boot does not
+;; load): the degraded introspection mode -- no frames, and printStackTrace
+;; prints the throwable line alone.
+(define (jolt-throwable-stack-trace v) (jolt-vector))
+(define (jolt-throwable-backtrace-string v) #f)
 
 ;; locks.ss's explicit acquire/release pair, for the paths that hold a mutex
 ;; by hand across a dynamic-wind (regex.ss's pattern cache). Same shape as

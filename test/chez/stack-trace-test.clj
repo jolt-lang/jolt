@@ -47,7 +47,7 @@
         "stack_trace_test$outer_tail" "stack_trace_test$probe_chain"]
        "TCO-erased callers are reconstructed, in order")
   (ok= (vec (StackTraceElement->vec (first st)))
-       ["java.lang.Thread" "getStackTrace" "Thread.java" -1]
+       ['java.lang.Thread 'getStackTrace "Thread.java" -1]
        "the first element is Thread.getStackTrace itself, as on the JVM")
   (ok= (set (map second (own-frames st))) #{"stack-trace-test.clj"}
        "a frame's file is the source file's base name")
@@ -149,6 +149,47 @@
   (.start t)
   (ok= (count (.getStackTrace t)) 0 "another thread's stack is empty")
   (.join t))
+
+;; --- a caught Throwable's own frames ------------------------------------------
+;; The frames are the ones its throw captured, kept on the throwable itself, so they
+;; survive the catch and any number of throws after it. They used to come from a
+;; per-thread slot that the next throw replaced and a completed catch cleared, so a
+;; caught exception's .getStackTrace was empty (jolt-lang/jolt#1142's second report).
+(defn- thrower [] (let [r (throw (ex-info "boom" {:k 1}))] r))
+(defn- catch-it [] (let [e (try (thrower) (catch Exception e e))] e))
+(let [e (catch-it)
+      _ (dotimes [_ 3] (try (throw (ex-info "other" {})) (catch Exception _ nil)))
+      st (.getStackTrace e)]
+  (ok= (first (own-frames st)) ["stack_trace_test$thrower" "stack-trace-test.clj"]
+       "a caught throwable's first own frame is where it was thrown")
+  (ok= (boolean (some #(= "stack_trace_test$catch_it" (first %)) (own-frames st))) true
+       "...its caller follows")
+  (let [m (Throwable->map e)]
+    (ok= (pos? (count (:trace m))) true "Throwable->map has a :trace")
+    (ok= (every? (fn [[c meth f l]] (and (symbol? c) (symbol? meth) (or (nil? f) (string? f)) (int? l)))
+                 (:trace m))
+         true
+         "each :trace entry is [class-symbol method-symbol file line]")
+    (ok= (:at (first (:via m))) (first (:trace m)) "the :via entry's :at is its top frame")))
+;; printStackTrace renders the same capture: an exception caught earlier and printed
+;; after other throws shows ITS frames, not the last throw's
+(defn- other-thrower [] (let [r (throw (ex-info "other" {}))] r))
+(let [e (catch-it)
+      _ (try (other-thrower) (catch Exception _ nil))
+      sw (java.io.StringWriter.)
+      _ (.printStackTrace e (java.io.PrintWriter. sw))
+      out (str sw)]
+  (ok= (boolean (re-find #"thrower" out)) true "printStackTrace names the exception's own thrower")
+  (ok= (boolean (re-find #"other-thrower" out)) false "...and not the frames of a later throw"))
+;; a rethrow keeps the frames of the first throw, as on the JVM
+(let [e (catch-it)
+      e2 (try (throw e) (catch Exception x x))]
+  (ok= (identical? e e2) true "the rethrown object is the same one")
+  (ok= (first (own-frames (.getStackTrace e2))) ["stack_trace_test$thrower" "stack-trace-test.clj"]
+       "a rethrow keeps the original frames"))
+(ok= (StackTraceElement->vec (first (.getStackTrace (catch-it))))
+     ['stack_trace_test$thrower 'invoke "stack-trace-test.clj" 158]
+     "StackTraceElement->vec names class and method as symbols")
 
 (let [n @passes f @fails]
   (doseq [m f] (println "stack-trace FAIL " m))

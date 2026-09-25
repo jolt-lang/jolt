@@ -895,6 +895,46 @@
     (eq? 'thread-got-it (unbox l10-tanswer)))
 (ok "10e. and left nothing counted on this thread" (= 0 (jolt-locks-held)))
 
+;; 10f. a refused switch commits NOTHING. A fiber that catches the lock rule's
+;; raise and carries on must not be left queued (yield), marked parked (park), or
+;; registered as a channel waiter (take): each of those used to happen BEFORE the
+;; check, so the fiber ran on while queued or registered, a waker or the scheduler
+;; dispatched it a second time after it finished ("fiber in unexpected state"),
+;; and a value given to the channel went to the dead registration. The yield also
+;; left interrupts disabled one level deeper than it found them.
+(define l10f-mu (make-mutex))
+(define l10f-ch (ac-make 1 'fixed #f))
+(define l10f-yield (box 'unset))
+(define l10f-take (box 'unset))
+(define l10f-depth (box 'unset))
+(define l10f
+  (sa-fiber-spawn
+   (lambda ()
+     (let ((d0 (jolt-current-disable-count)))
+       (jolt-with-mutex l10f-mu
+         (set-box! l10f-yield (guard (e (#t 'refused)) (sa-fiber-yield) 'switched))
+         (set-box! l10f-depth (- (jolt-current-disable-count) d0))
+         (set-box! l10f-take (guard (e (#t 'refused)) (jolt-fiber-<! l10f-ch) 'took))))
+     'finished)))
+(jolt-fiber-ensure-carrier!)
+(ok "10f. the fiber finished after catching both refusals"
+    (wait-until (lambda () (memq (jolt-fiber-state l10f) '(done dead))) 5.0
+                "10f. the fiber ended"))
+(ok "10f. it finished rather than died" (eq? 'done (jolt-fiber-state l10f)))
+(ok "10f. the yield was refused" (eq? 'refused (unbox l10f-yield)))
+(ok "10f. and left the interrupt depth where it was" (eqv? 0 (unbox l10f-depth)))
+(ok "10f. the take was refused" (eq? 'refused (unbox l10f-take)))
+(jolt-async-give l10f-ch 'v)
+(ok "10f. the refused take left no taker behind: a later give stays buffered"
+    (eq? 'v (ac-poll! l10f-ch)))
+(define l10f-ch2 (ac-make 1 'fixed #f))
+(define l10f-next (sa-fiber-spawn (lambda () (jolt-fiber-<! l10f-ch2))))
+(sleep (make-time 'time-duration 50000000 0))
+(jolt-async-give l10f-ch2 'ok)
+(ok "10f. the carrier still parks and resumes fibers afterwards"
+    (wait-until (lambda () (eq? 'done (jolt-fiber-state l10f-next))) 5.0
+                "10f. a fiber after the refusals ran"))
+
 (jolt-fiber-pool-reset!)
 
 (printf "\nfibers-lock-test: ~a checks, ~a failure(s)\n" total fails)

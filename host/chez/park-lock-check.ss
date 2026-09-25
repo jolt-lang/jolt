@@ -82,10 +82,37 @@
 (define switch-points '(jolt-fiber-to-scheduler! jolt-sm-park!))
 (define assertion 'jolt-locks-assert-none!)
 
+;; A switch is a SEQUENCE: commit the fiber's new state (mark it parked or ready,
+;; enqueue it, register it as a waiter, which happens under a mutex), then switch.
+;; The assertion inside the switch point comes too late to protect that: when it
+;; raises, the commit has already happened, and the fiber runs on marked parked,
+;; queued, or registered with a waker that will resume it a second time — a second
+;; dispatch of a fiber that finished is "fiber in unexpected state". So in every
+;; definition that calls a switch point, a lock check must come before the first
+;; commit operation, and before the switch itself.
+(define lock-checks '(jolt-locks-assert-none! jolt-locks-held jolt-fiber-may-park!))
+;; What commits a fiber to leaving, wherever it appears: its state, its place on
+;; a run queue, its registration as a channel waiter.
+(define commit-ops
+  '(jolt-fiber-state-set! jolt-fiber-enqueue!
+    async-chan-alt-takers-set! async-chan-alt-putters-set!))
+;; ...and, in a definition that calls a switch point directly, the opening of the
+;; sequence itself: the non-preemptible region, or the mutex a waiter registers
+;; under (jolt-lock-wait's decide runs inside it).
+(define sequence-ops '(disable-interrupts jolt-with-mutex))
+
 ;; The closure's seeds: the switch points themselves and the two wrappers that
 ;; exist only to reach them.
 (define park-seeds
   '(jolt-fiber-to-scheduler! jolt-sm-park! jolt-fiber-park! sa-fiber-yield))
+
+;; Definitions that park only when no counted lock is held, and otherwise return
+;; without parking (locks.ss jolt-fiber-wait-turn!). Calling one from inside a
+;; region cannot leave the CPU, so they do not grow the closure — which is what
+;; lets a lazy seq's forcer wait by giving its carrier away without making every
+;; seq traversal "can park". The teeth: each must test jolt-locks-held before its
+;; first call to anything that parks (guarded-parks-unguarded below).
+(define guarded-parks '(jolt-fiber-wait-turn!))
 
 ;; Calling into code the lock did not write. Counted wherever it appears in a
 ;; region, not only in operator position, because (apply jolt-invoke f args) is
@@ -235,6 +262,21 @@
 (define (unit-calls u) (caddr u))
 (define (unit-locked u) (cadddr u))
 (define (unit-locked-any u) (car (cddddr u)))
+(define (unit-heads u) (cadr (cddddr u)))
+
+;; Every operator-position symbol in textual (evaluation) order, the region form
+;; included — the ordering rule above needs order, which the call sets do not keep.
+(define (ordered-heads forms)
+  (let ((acc '()))
+    (let walk ((x forms))
+      (when (pair? x)
+        (cond
+          ((eq? (car x) 'quote) (void))
+          ((list? x)
+           (when (symbol? (car x)) (set! acc (cons (car x) acc)))
+           (for-each walk x))
+          (else (walk (car x)) (walk (cdr x))))))
+    (reverse acc)))
 
 (define (definition-name d)
   (and (pair? d) (eq? 'define (car d)) (pair? (cdr d))
@@ -247,7 +289,7 @@
         (when operator? (set! calls (cons sym calls)))
         (when (and in-lock? operator?) (set! locked (cons sym locked)))
         (when in-lock? (set! locked-any (cons sym locked-any)))))
-    (list file name calls locked locked-any)))
+    (list file name calls locked locked-any (ordered-heads forms))))
 
 (define (collect-file file)
   (let loop ((ds (read-datums file)) (acc '()))
@@ -283,7 +325,8 @@
       (let ((changed #f))
         (for-each
           (lambda (u)
-            (unless (hashtable-ref parks (unit-name u) #f)
+            (unless (or (hashtable-ref parks (unit-name u) #f)
+                        (memq (unit-name u) guarded-parks))
               (when (let loop ((cs (unit-calls u)))
                       (cond ((null? cs) #f)
                             ((hashtable-ref parks (car cs) #f) #t)
@@ -353,6 +396,52 @@
                           (else (g (cdr ds)))))
                   missing)
                  (else (cons (cons sp "does not call the assertion") missing)))))))))
+
+(define (index-of pred xs)
+  (let loop ((xs xs) (i 0))
+    (cond ((null? xs) #f) ((pred (car xs)) i) (else (loop (cdr xs) (+ i 1))))))
+
+;; Definitions that can park (the closure), other than the switch points
+;; themselves, whose first commit operation — or first call to anything that parks
+;; — comes before any lock check. The commit is often a level above the switch (a
+;; channel op registers its waiter, then calls the wait), so this reads every
+;; definition in the closure, not only the switch points' direct callers.
+(define (unchecked-commits units parks)
+  (let loop ((us units) (bad '()))
+    (if (null? us)
+        (reverse bad)
+        (let* ((u (car us)) (hs (unit-heads u)))
+          (loop (cdr us)
+                (if (and (not (memq (unit-name u) switch-points))
+                         (hashtable-ref parks (unit-name u) #f)
+                         (or (index-of (lambda (h) (memq h commit-ops)) hs)
+                             (index-of (lambda (h) (memq h switch-points)) hs)))
+                    (let* ((direct? (index-of (lambda (h) (memq h switch-points)) hs))
+                           (chk (index-of (lambda (h) (memq h lock-checks)) hs))
+                           (first-commit
+                             (index-of (lambda (h) (or (memq h commit-ops)
+                                                       (and direct? (memq h sequence-ops))
+                                                       (memq h switch-points)))
+                                       hs)))
+                      (if (and chk (< chk first-commit))
+                          bad
+                          (cons (string-append (unit-file u) " "
+                                               (symbol->string (unit-name u)))
+                                bad)))
+                    bad))))))
+
+;; A guarded park whose guard is gone, or comes after the park.
+(define (guarded-parks-unguarded units parks)
+  (let loop ((gs guarded-parks) (bad '()))
+    (if (null? gs)
+        (reverse bad)
+        (let* ((defs (filter (lambda (u) (eq? (unit-name u) (car gs))) units))
+               (ok? (and (pair? defs)
+                         (let* ((hs (unit-heads (car defs)))
+                                (guard (index-of (lambda (h) (eq? h 'jolt-locks-held)) hs))
+                                (park (index-of (lambda (h) (hashtable-ref parks h #f)) hs)))
+                           (and guard park (< guard park))))))
+          (loop (cdr gs) (if ok? bad (cons (symbol->string (car gs)) bad)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; allowlist
@@ -444,7 +533,9 @@
       (exit 1))
     (let* ((parks (build-parkers units))
            (got (map finding->line (findings units parks)))
-           (missing (missing-assertions units)))
+           (missing (missing-assertions units))
+           (unchecked (unchecked-commits units parks))
+           (unguarded (guarded-parks-unguarded units parks)))
       (cond
         ((and (pair? args) (string=? (car args) "--regen"))
          (write-allowlist! got)
@@ -460,6 +551,18 @@
                                     " " (cdr m) " — the runtime half of the rule is"
                                     " gone (host/chez/locks.ss)")))
              missing)
+           (for-each
+             (lambda (u)
+               (add! (string-append "  COMMIT BEFORE CHECK: " u " — call"
+                                    " jolt-locks-assert-none! before it commits the"
+                                    " fiber's state (see commit-ops above)")))
+             unchecked)
+           (for-each
+             (lambda (g)
+               (add! (string-append "  GUARDED PARK UNGUARDED: " g " — it must test"
+                                    " jolt-locks-held before it parks, or it is an"
+                                    " ordinary park and belongs in the closure")))
+             unguarded)
            (for-each
              (lambda (g)
                (let ((w (find-line (line-key g) want)))

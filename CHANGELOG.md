@@ -22,6 +22,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A built binary's stack traces no longer depend on its build directory. Each frame's
+  line was read from the generated unit files under `<out>.build`, so a binary copied
+  elsewhere, or whose build directory was cleaned, showed frames at their `defn` lines
+  and dropped inlined ones, and so did a binary assembled from build-cache units that
+  an earlier build compiled. The line tables are baked into the binary now.
+- On a fiber, code inside a lazy seq can wait: a `locking` that is contended, a
+  promise deref, a channel take or any other park inside `(doall (map f xs))`, a
+  `for` body or a two-collection `mapv` used to raise "a fiber cannot leave the CPU
+  while its carrier holds a counted lock" (#1142). Forcing a lazy seq no longer counts
+  as holding a lock; a lazy cell is claimed by the fiber forcing it, and another fiber
+  waiting on it gives up the carrier instead of blocking it.
+- A fiber that catches the error for parking while it holds a lock is left as it was.
+  The yield, park or channel take used to mark it queued, parked or registered first,
+  so it was later run a second time ("fiber in unexpected state") or its carrier
+  stopped running fibers.
+- A caught exception keeps its stack trace. `.getStackTrace`, `.printStackTrace` and
+  `Throwable->map`'s `:trace` (and each `:via` entry's `:at`) answer the frames of the
+  throw; they were empty unless nothing else had thrown since. `StackTraceElement->vec`
+  names the class and method as symbols, as on the JVM.
 - A static member reference like `Long/MIN_VALUE` or a call like
   `(Long/numberOfLeadingZeros x)` looks its member up once per call site instead of
   hashing the class and member names on every evaluation (136 to 32 ns for a

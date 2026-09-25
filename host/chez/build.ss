@@ -2022,7 +2022,11 @@
                           (let-values (((decls bodies) (bld-defer-app-strs (cdar gs))))
                             (for-each (lambda (s) (put-string gout s) (put-string gout "\n")) decls)
                             (let ((ns-names (bld-emit-app-chunks gout (bld-unit-tag (caar gs)) bodies)))
-                              (when split? (close-port gout))
+                              (when split?
+                                (close-port gout)
+                                ;; a shaken app is one group holding every namespace
+                                (bld-append-marker-table! (car fs)
+                                                          (if tree-shake? (map car ordered) (list (caar gs)))))
                               (loop (cdr gs) (cdr fs) (append acc ns-names)))))))))
             (when split?
               (close-port out)
@@ -2364,6 +2368,28 @@
       (sa-compile-file src so #f)))
 
 ;; Compile one app-half (or one-file) source under MODE's row.
+;; A unit's line-marker table, appended to the unit as a registration it runs
+;; when it loads (source-registry.ss jolt-register-marker-table!), under each
+;; namespace the unit holds. A frame's line is the nearest marker before its offset
+;; in the unit file; read off the disk, that answer needed the build directory, so
+;; a binary copied elsewhere or with its .build dir cleaned reported frames at their
+;; defn lines and lost every spliced frame -- and so did one assembled from cached
+;; units, which name the directory of whichever build compiled them first. Carried
+;; in the unit, the table is compiled and cached with the code it describes, so a
+;; unit edit recompiles that one unit and a cache hit brings its own table. It goes
+;; AFTER the code, so no offset it records moves. A unit with no markers
+;; registers nothing.
+(define (bld-append-marker-table! path nses)
+  (let ((table (jolt-marker-table (read-file-string path))))
+    (when (and (pair? nses) (fx>? (vector-length table) 0))
+      (let ((out (open-output-file path 'append)))
+        (put-string out ";; === source line markers ===\n")
+        (put-string out (string-append
+                          "(jolt-register-marker-table! '"
+                          (with-output-to-string (lambda () (write nses)))
+                          " '" (with-output-to-string (lambda () (write table)))
+                          ")\n"))
+        (close-port out)))))
 (define (bld-chez-compile-file mode src so)
   (bld-chez-compile-params! (bld-mode-params mode) src so))
 

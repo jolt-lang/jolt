@@ -61,8 +61,3 @@ host-reader-read
 # Emitted for clojure.core.Vec's node writes (vector-of, 60-gvec.clj); no
 # array constructor exists here, so no Vec is ever built.
 jolt-aset3
-#
-# Native backtrace text (source-registry.ss): printStackTrace asks under a
-# guard and prints the throwable alone when there is none — the degraded
-# introspection mode.
-jolt-backtrace-string

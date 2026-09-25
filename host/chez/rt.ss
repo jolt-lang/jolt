@@ -818,11 +818,35 @@
       (let ((m (jolt-ex-info-record-message v)))
         (if (string? m) m "jolt error"))
       "jolt error"))
+;; ...and what each THROWABLE was first thrown with -- its continuation and the
+;; raise-time site pair, (k . site) -- so a caught one still has its own frames
+;; after other throws have replaced the slots above: those are one per thread, the
+;; continuation slot is cleared when a catch completes, and the site snapshot is
+;; whatever threw last. .getStackTrace and printStackTrace on a caught exception
+;; used to read them, so they answered for nothing or for a different throw.
+;;
+;; Weak on the throwable, so the frames live exactly as long as the exception
+;; object does -- the JVM's own trade, where a Throwable keeps its backtrace --
+;; and not a moment longer; the slot above still drops them when a catch ends.
+;; Resolved into elements only when asked (source-registry.ss): a frame walk is
+;; ~100x a throw, so it cannot happen per throw. First throw wins, since a rethrow
+;; keeps the original trace on the JVM too.
+(define jolt-thrown-conts (make-weak-eq-hashtable))
+(define jolt-thrown-conts-mu (make-mutex))
+(define (jolt-remember-throw! v k site)
+  (when (jolt-ex-info-record? v)
+    (jolt-with-mutex jolt-thrown-conts-mu
+      (unless (hashtable-contains? jolt-thrown-conts v)
+        (hashtable-set! jolt-thrown-conts v (cons k site))))))
+(define (jolt-thrown-cont v)
+  (jolt-with-mutex jolt-thrown-conts-mu (hashtable-ref jolt-thrown-conts v #f)))
+
 (define (jolt-throw v)
   (call/cc (lambda (k)
              (jolt-throw-cont (cons v k))
              (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
                                  (and (pair? s) s)))
+             (jolt-remember-throw! v k (jolt-throw-sitep))
              (raise (condition (make-message-condition (jolt-throw-message v))
                                (make-jolt-throw-condition v))))))
 ;; The same capture for a HOST condition (a fault raised outside jolt-throw:

@@ -43,6 +43,11 @@ name='[A-Za-z0-9_.$-]*'
   grep -ohE "\((host-static-call|host-static-ref) \"$name\" \"$name\"" \
     host/gambit/seed/prelude.ss host/gambit/seed/image.ss \
     | sed -E 's/^\((host-static-call|host-static-ref) "([^"]*)" "([^"]*)"$/\2\/\3/'
+  # the per-site cached forms (host/chez/java/host-static.ss): the site cell
+  # comes first, then the same class and member
+  grep -ohE "\((host-static-ref-site|host-static-proc-site) [^ ]+ \"$name\" \"$name\"" \
+    host/gambit/seed/prelude.ss host/gambit/seed/image.ss \
+    | sed -E 's/^\((host-static-ref-site|host-static-proc-site) [^ ]+ "([^"]*)" "([^"]*)"$/\2\/\3/'
   grep -ohE "\(host-new \"$name\"" host/gambit/seed/prelude.ss host/gambit/seed/image.ss \
     | sed -E 's/^\(host-new "([^"]*)"$/new \1/'
 } | LC_ALL=C sort -u > "$refs"

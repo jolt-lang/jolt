@@ -602,7 +602,8 @@
 (define (sa-fiber-yield)
   (let ((f (jolt-current-fiber)))
     (if f
-        (begin (disable-interrupts)
+        (begin (jolt-fiber-may-park! 'sa-fiber-yield)   ; before the enqueue commits
+               (disable-interrupts)
                (jolt-fiber-state-set! f 'ready)
                (jolt-fiber-enqueue! (jolt-fiber-carrier f) f)
                (jolt-fiber-to-scheduler! f)
@@ -622,7 +623,8 @@
 (define (jolt-fiber-park!)
   (let ((f (jolt-current-fiber)))
     (if f
-        (begin (disable-interrupts)
+        (begin (jolt-fiber-may-park! 'jolt-fiber-park!)  ; before 'parked commits
+               (disable-interrupts)
                (jolt-fiber-state-set! f 'parked)
                (jolt-fiber-to-scheduler! f)
                (enable-interrupts))          ; balance, see sa-fiber-yield

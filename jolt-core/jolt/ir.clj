@@ -26,8 +26,8 @@
 
 ;; A qualified static reference to a host class member, `Class/member` (e.g.
 ;; Math/sqrt, Long/MAX_VALUE, System/getenv). A leaf node carrying the class and
-;; member names. The Chez back end lowers a value ref to host-static-ref and a
-;; call head to host-static-call (host-static.ss).
+;; member names. The Chez back end lowers them to host-static-ref / -call, or to
+;; a cached site (host-static-ref-site / -proc-site) under a const pool.
 (defn host-static [class member] {:op :host-static :class class :member member})
 
 ;; A host constructor, `(Class. args*)` / `(new Class args*)`. Carries the class

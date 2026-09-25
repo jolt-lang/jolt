@@ -212,19 +212,26 @@
 ;; from the root cause; :phase is the throwable's own :clojure.error/phase,
 ;; lifted to the top the way the reference does it — clojure.main/ex-triage
 ;; reads the phase there, and a compile diagnostic carries one (analyzer
-;; diagnostic-data, reader.ss). Throwables carry no stack-trace elements here,
-;; so :trace is empty and :via entries have no :at.
+;; diagnostic-data, reader.ss). :trace is the root cause's stack trace and each
+;; :via entry's :at its throwable's top frame, as [class method file line] with
+;; class and method symbols (StackTraceElement->vec, written out here because
+;; that is defined later in core).
 (defn Throwable->map [o]
   (let [msg-of (fn [t] (or (ex-message t) (jolt.host/condition-message t)))
+        ste-vec (fn [e] [(symbol (.getClassName e)) (symbol (.getMethodName e))
+                         (.getFileName e) (.getLineNumber e)])
+        trace-of (fn [t] (if (instance? Throwable t) (.getStackTrace t) []))
         entry (fn [t]
                 (let [c (class t)
                       m {:type (symbol (if (string? c) c (.getName c)))
-                         :message (msg-of t)}]
-                  (if-let [d (ex-data t)] (assoc m :data d) m)))
+                         :message (msg-of t)}
+                      m (if-let [d (ex-data t)] (assoc m :data d) m)
+                      st (trace-of t)]
+                  (if (pos? (count st)) (assoc m :at (ste-vec (first st))) m)))
         via (loop [acc [] t o]
               (if (some? t) (recur (conj acc t) (ex-cause t)) acc))
         root (peek via)
-        m {:via (mapv entry via) :trace []}
+        m {:via (mapv entry via) :trace (mapv ste-vec (trace-of (or root o)))}
         m (if-let [c (msg-of root)] (assoc m :cause c) m)
         m (if-let [d (ex-data root)] (assoc m :data d) m)]
     (if-let [phase (:clojure.error/phase (ex-data o))] (assoc m :phase phase) m)))
