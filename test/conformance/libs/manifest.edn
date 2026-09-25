@@ -66,6 +66,8 @@
    ;; standing regression gate for async.ss, which the fibers epic modifies.
    :paths ["src/test/clojure"]
    :test-paths ["src/test/clojure"]
+   ;; the JVM runs the same suites against upstream's own implementation
+   :jvm {:paths ["src/main/clojure" "src/test/clojure"]}
    ;; impl.buffers / impl.timers are upstream internals the suites reach for
    ;; directly; the shims map them onto jolt's native equivalents.
    :shims ["!test/conformance/libs/shims/core.async"]
@@ -198,6 +200,9 @@
   {:name "spec.alpha"
    :paths ["src/main/clojure" "src/test/clojure"]
    :test-paths ["src/test/clojure"]
+   ;; the JVM keeps the spec.alpha Clojure boots with; a source copy on the
+   ;; classpath redefines it part way through clojure.core's own specs
+   :jvm {:paths ["src/test/clojure"]}
    ;; s/exercise generates through test.check
    :deps ["@test.check/src/main/clojure"]
    ;; the 4 fails are instrument's ::caller, which spec reads off the JVM stack
@@ -270,6 +275,8 @@
   {:name "data.codec"
    :paths ["src/main/clojure" "src/test/clojure"]
    :test-paths ["src/test/clojure"]
+   ;; project.clj asks for commons-codec "1.12.0", which Central has as "1.12"
+   :jvm {:extra-deps {commons-codec/commons-codec {:mvn/version "1.12"}}}
    :deps ["@test.check/src/main/clojure" "@spec.alpha/src/main/clojure"]
    ;; The suite checks jolt's base64 against commons-codec's, which the
    ;; jolt.shim.commons-codec shim registers ahead of the library's sources.
@@ -549,6 +556,9 @@
    :test-paths ["test/cljc"]
    :deps ["~router/src" "@spec.alpha/src/main/clojure"]
    :extra-deps {meta-merge/meta-merge {:mvn/version "1.0.0"}}
+   ;; reitit.trie imports reitit.Trie, a Java class built by the module's javac
+   ;; step, so the source roots alone do not load on the JVM
+   :jvm {:skip "reitit.Trie is Java source the JVM run would have to compile"}
    ;; test/cljc holds the suites for every reitit module; these are the ones that
    ;; need reitit-core alone (the rest pull reitit-ring / -malli / muuntaja /
    ;; jsonista, which are not in the checkout).
@@ -598,6 +608,8 @@
   {:name "tools.logging"
    :paths ["src/main/clojure" "src/test/clojure"]
    :test-paths ["src/test/clojure"]
+   ;; slf4j-log4j12 2.x is a relocation pom with no jar; the JVM run drops it
+   :jvm {:exclude-deps [org.slf4j/slf4j-log4j12]}
    ;; test-impl pins the log4j2 backend, which needs the org.apache.logging.log4j jars
    :exclude-nses ["clojure.tools.logging.test-impl"]
    ;; impl/find-factory picks a backend at LOAD time and throws when every one it

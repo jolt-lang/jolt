@@ -113,6 +113,23 @@
 (chk "ns-binding: cross-ns call works"
      (= :ok (when-let [v (ns-resolve 'nfy 'nfy-fn)] ((deref v)))))
 
+;; --- (9) load-file and load put *ns* back after the file's ns form ---------
+;; Compiler.load binds *ns* for the duration, so a loaded file's `ns` form never
+;; leaks into the caller. jolt left *ns* on the loaded file's namespace, and the
+;; caller's next form resolved its aliases in the wrong place. Probed against
+;; JVM Clojure 1.12: both stay in the caller's namespace.
+(spit (str root "/lfa.clj") "(ns lfa) (def v :file)")
+(load-file (str root "/lfa.clj"))
+(chk "load-file: *ns* is the caller's afterwards" (= "loader-test" (str *ns*)))
+(chk "load-file: the file's def landed in its ns" (= :file (vof 'lfa 'v)))
+(spit (str root "/lfb.clj") "(ns lfb) (def v :load)")
+(load "/lfb")
+(chk "load: *ns* is the caller's afterwards" (= "loader-test" (str *ns*)))
+(chk "load: the file's def landed in its ns" (= :load (vof 'lfb 'v)))
+(spit (str root "/lfc.clj") "(ns lfc) (throw (ex-info \"LFC\" {}))")
+(try (load-file (str root "/lfc.clj")) (catch :default _ nil))
+(chk "load-file: *ns* is restored when the file throws" (= "loader-test" (str *ns*)))
+
 (if (empty? @failures)
   (println "LOADER OK")
   (doseq [f @failures] (println "FAIL:" f)))

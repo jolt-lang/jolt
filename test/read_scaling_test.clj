@@ -23,7 +23,14 @@
 
 (ns read-scaling-test)
 
-(def ^:private form-text "(def some-name-here [1 2 3 :a :b \"str\"])\n")
+;; A list NESTED in a list, not just a flat one. A list's :line/:column is taken
+;; through rdr-line-col-at's forward-only cursor, and a list that asked for its
+;; position after reading its children asked for an EARLIER index than they had,
+;; which sent the cursor back to the start of the string on every enclosing list.
+;; A flat form never asks twice, so it read linear while every real source file,
+;; all nested lists, read quadratic: clojure/core.clj took 1s where the JVM takes
+;; 20ms, and twice core.clj took 4s.
+(def ^:private form-text "(defn some-name-here [x] (let [y (inc x)] (str y \"str\" [1 2 :a])))\n")
 
 (defn- source [n] (apply str (repeat n form-text)))
 

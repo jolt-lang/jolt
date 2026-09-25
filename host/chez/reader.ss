@@ -1629,14 +1629,18 @@
         (values rdr-eof i)
         (let ((c (string-ref s i)))
           (cond
+            ;; The position is taken BEFORE the children are read. rdr-line-col-at's
+            ;; cursor only walks forward, and the children ask for later indices, so
+            ;; asking afterwards sent it back to the start of the string on every
+            ;; list holding a list: quadratic over any real source file.
             ((char=? c #\()
-             (let-values (((es j) (rdr-read-seq s (+ i 1) end #\))))
-               (let ((lst (apply jolt-list es)))
-                 (values (if (rdr-suppress-pos)
-                             lst
+             (let ((pos (and (not (rdr-suppress-pos))
                              (let-values (((line col) (rdr-form-line-col s i)))
-                               (rdr-attach-pos lst line col)))
-                         j))))
+                               (cons line col)))))
+               (let-values (((es j) (rdr-read-seq s (+ i 1) end #\))))
+                 (let ((lst (apply jolt-list es)))
+                   (values (if pos (rdr-attach-pos lst (car pos) (cdr pos)) lst)
+                           j)))))
             ((char=? c #\[) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\])))
                               (values (apply jolt-vector es) j)))
             ((char=? c #\{) (let-values (((es j) (rdr-read-seq s (+ i 1) end #\})))

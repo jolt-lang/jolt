@@ -1406,10 +1406,18 @@
 ;; ^{:inline (fn ...)} was never registered, so a macro splicing that value out of
 ;; (meta #'f) had no source to rebuild it from -- "Cannot compile this value into
 ;; code".
+;;
+;; The expression gets the init's cache-cell scope. Its values are mostly fns —
+;; every deftest body is the :test fn in its def's metadata — and without the scope
+;; each var they reference resolved by name per call: a loop calling an aliased
+;; var ran 66 ns/iter in a deftest body against 8 ns in a defn. Gated on
+;; var-cache? like emit-top-cells, so the seed mint's output does not move.
 (defn- emit-def-meta [node]
   (if (:meta-expr node)
     (binding [*fnsrc-def-init?* false]
-      (emit (:meta-expr node)))
+      (if (var-cache?)
+        (emit-with-cells #(emit (:meta-expr node)))
+        (emit (:meta-expr node))))
     (emit-quoted (:meta node))))
 
 (defn- emit-binding [b]

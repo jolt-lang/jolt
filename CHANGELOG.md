@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A function in a def's metadata looks up the vars it calls once, as the def's value
+  does, instead of by name on every call. Every `deftest` body is such a function, so
+  test code ran its var calls about 8x slower than the same code in a `defn`.
+- Reading source off a reader is linear again for nested code. A list took its
+  `:line`/`:column` after reading its children, which sent the position cursor back
+  to the start of the input on every list holding a list, so `(read r)` over
+  `clojure/core.clj` took 1s (the JVM takes 20ms) and twice that file took 4s. It
+  now takes 17ms. This also covered edamame, tools.reader and anything else
+  reading through jolt's reader.
+- `load-file` and `load` put `*ns*` back when the file finishes, including when it
+  throws, as the JVM does. A loaded file's `ns` form used to leave the caller in the
+  file's namespace, so the caller's next form resolved its aliases there.
 - An interop field read or `set!` on a record or deftype finds a declared slot under
   any spelling that munges to the slot's name, as the JVM's compiler does:
   `(.-processed_count r)` reads `[processed-count]`, `(.-my-field r)` reads `[my_field]`,

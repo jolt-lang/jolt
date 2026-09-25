@@ -78,3 +78,22 @@ a library that used to work.
    regression test — `make ci` must fail without the external checkout too.
 4. If jolt is deliberately different, record it in
    `test/conformance/known-divergences.edn` and note it on the manifest entry.
+
+## Timing against the JVM
+
+`make libperf` runs the same suites per test on jolt and on JVM Clojure and lists
+the tests that are more than 5x slower on jolt (`JOLT_LIBPERF_THRESHOLD`). It is a
+report, not a gate. Each namespace's suite runs `JOLT_LIBPERF_REPS` times (default
+3) and a test's time is its minimum, measured between its `:begin-test-var` and
+`:end-test-var` reports. Tests under `JOLT_LIBPERF_FLOOR_MS` (default 1ms) on jolt
+are not flagged. Namespace load times are reported per library but kept apart
+from the test times, since jolt compiles ahead of time at load.
+
+The JVM classpath comes from the library's own `deps.edn` (`:deps` plus the `:dev` and
+`:test` aliases) and `project.clj` (`:dependencies` plus the `:dev`/`:test`
+profiles), with Clojure pinned. jolt's stand-ins (`~` libraries, `!` shims,
+`:local-deps`) stay off it. A library that needs a different JVM recipe carries
+`:jvm {:paths [...] :extra-deps {...} :exclude-deps [...] :skip "why"}`.
+
+Output lands in `target/libperf/`: `report.tsv` sorted by ratio, `report.edn`
+with every timed test, and `<lib>.jolt.log` / `<lib>.jvm.log`.
