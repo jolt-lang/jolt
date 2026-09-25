@@ -856,6 +856,9 @@
 ;; boot has no provider registry to ask — records-dispatch.ss's defrecord
 ;; `create` takes the merge, so the name has to exist.
 (define (class-statics-merge! name members) (register-class-statics! name members))
+;; A member-table write, which on Chez also moves the epoch its static-site caches
+;; validate against. Gambit's sites do not cache (host-statics.ss), so it is the write.
+(define (class-statics-member-set! h member v) (hashtable-set! h member v))
 
 ;; Chez gensym accepts a STRING prefix; Gambit only a symbol. Normalize.
 (define %gambit-gensym gensym)

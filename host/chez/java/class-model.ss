@@ -125,7 +125,7 @@
     (let ((h (hashtable-ref class-statics-tbl cls #f)))
       (when h
         (let ((v (hashtable-ref h "TYPE" #f)))
-          (when (string? v) (hashtable-set! h "TYPE" (jolt-class-for v)))))))
+          (when (string? v) (class-statics-member-set! h "TYPE" (jolt-class-for v)))))))
   '("Long" "Integer" "Short" "Byte" "Character" "Boolean" "Double" "Float" "Void"))
 ;; A deftype registered AFTER its JVM spelling was interned — an :import or a
 ;; class symbol compiled ahead of the defining namespace, which the JVM rejects

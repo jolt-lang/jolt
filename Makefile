@@ -121,7 +121,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink ffi fibers fieldjoin fieldnum fieldread flarr fnform coreproc grenadine \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inline inline-body irvalidate statlayout \
-  jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells \
+  jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite \
   deadhost mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax \
   hostarity narrow narrowhash numeric numwp oparity pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit vfaslceiling \
@@ -184,7 +184,7 @@ CI-GATES := submodules values recordinline corpus unit documented grenadine clis
   smoke tracesmoke errorreport errorkinds buildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient rrbprop rrbscaling stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink directcall defmetacells arraymap arraybacking unitcontext numeric oparity mathfl flarr \
+  protoret accfix pic narrow directlink directcall defmetacells staticsite arraymap arraybacking unitcontext numeric oparity mathfl flarr \
   fnform coreproc traceemit traceeval degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax deadhost adaptercheck hostprops normalizecheck hostregistry hostarity foreignhandles dispatchalloc regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotfingerprint vfaslceiling buildscaling compilepathsmoke makefilesmoke versionsmoke attributioncheck \
@@ -973,6 +973,10 @@ directcall:
 # A var named in a def's evaluated metadata (every deftest body) is cell-cached.
 defmetacells:
 	@$(CHEZ) --script host/chez/run-defmetacells.ss
+
+# Class/member sites are emitted with a per-site cache (host-static.ss).
+staticsite:
+	@$(CHEZ) --script host/chez/run-staticsite.ss
 
 # Array-mode maps are one flat k/v slot vector (PersistentArrayMap), their
 # transients a slot buffer, their seq views vector-backed (test/chez/arraymap-test.ss).

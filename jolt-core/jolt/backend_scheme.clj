@@ -968,6 +968,10 @@
                   ;; host interop (emit-invoke static call, :host-new,
                   ;; :host-static field ref).
                   "host-new" "host-static-call" "host-static-ref"
+                  ;; per-site caches: the static member site and the instance?
+                  ;; site, each with the constructor its hoisted cell calls
+                  "host-static-ref-site" "host-static-proc-site" "host-static-site-make"
+                  "jolt-instance-site" "jolt-instance-site-make"
                   ;; record/reify protocol-method dispatch (:host-call fallback
                   ;; for any .method not in supported-host-methods).
                   "record-method-dispatch"
@@ -3093,11 +3097,21 @@
       (and (stdlib-var? fnode) (not (prelude-mode?)))
       (throw (ex-info (str "emit: unsupported stdlib fn `" (:ns fnode) "/" (:name fnode)
                            "` (no core on Chez yet)") {}))
-      ;; static method call (Class/method arg*) -> (host-static-call ...).
+      ;; static method call (Class/method arg*). With a const pool the site gets a
+      ;; cache (host-static.ss host-static-proc-site): it answers the procedure the
+      ;; call applies, so a warm call is one epoch compare and a plain application
+      ;; instead of three string-keyed lookups and a rest list. Gated like the
+      ;; instance? site, so the seed mint stays byte-identical.
       (= :host-static (:op fnode))
-      (order-args (fn [as]
-                    (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
-                         (if (empty? as) "" (str " " (str/join " " as))) ")")))
+      (if (and *const-pool* (var-cache?))
+        (let [site (hoist-const-per-site "(host-static-site-make)")]
+          (order-args (fn [as]
+                        (str "((host-static-proc-site " site " " (chez-str-lit (:class fnode)) " "
+                             (chez-str-lit (:member fnode)) " " (count as) ")"
+                             (if (empty? as) "" (str " " (str/join " " as))) ")"))))
+        (order-args (fn [as]
+                      (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
+                           (if (empty? as) "" (str " " (str/join " " as))) ")"))))
       (= :host (:op fnode))
       (throw (ex-info (str "emit: unsupported host call `" (:name fnode) "`") {}))
       ;; a :local callee: a known procedure (the letrec-bound self-name of a named
@@ -3455,8 +3469,12 @@
                    ") (mark-macro! " (chez-str-lit (:ns node)) " "
                    (chez-str-lit (:name node)) ") jolt-nil)")
     :host (throw (ex-info (str "emit: unsupported host ref `" (:name node) "`") {}))
-    :host-static (str "(host-static-ref " (chez-str-lit (:class node)) " "
-                      (chez-str-lit (:member node)) ")")
+    ;; a static field read (Long/MIN_VALUE); cached per site like the call above
+    :host-static (if (and *const-pool* (var-cache?))
+                   (str "(host-static-ref-site " (hoist-const-per-site "(host-static-site-make)") " "
+                        (chez-str-lit (:class node)) " " (chez-str-lit (:member node)) ")")
+                   (str "(host-static-ref " (chez-str-lit (:class node)) " "
+                        (chez-str-lit (:member node)) ")"))
     :host-new (str "(host-new " (chez-str-lit (:class node))
                    (let [args (map emit (:args node))]
                      (if (empty? args) "" (str " " (str/join " " args)))) ")")

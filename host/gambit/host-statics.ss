@@ -110,6 +110,13 @@
           ((null? args) v)
           (else (throw-jvm (quote IllegalArgumentException)
                   (string-append class "/" member " is a static field; it takes no arguments"))))))
+;; The per-site entry points the shared emitter uses when it has a const pool
+;; (Chez caches in them: host/chez/java/host-static.ss). Here they answer through
+;; the uncached lookups, which is the same answer.
+(define (host-static-site-make) (vector #f))
+(define (host-static-ref-site site class member) (host-static-ref class member))
+(define (host-static-proc-site site class member n)
+  (lambda args (apply host-static-call class member args)))
 (def-var! "clojure.core" "host-static-call" host-static-call)
 (def-var! "clojure.core" "host-static-ref" host-static-ref)
 ;; (Class/member) with no arguments is a field read when a field is registered

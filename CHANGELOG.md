@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A static member reference like `Long/MIN_VALUE` or a call like
+  `(Long/numberOfLeadingZeros x)` looks its member up once per call site instead of
+  hashing the class and member names on every evaluation (136 to 32 ns for a
+  `Long/MIN_VALUE` compare). The site notices a member a library adds or replaces
+  later, and a mutable static set later. test.check's generators spent a fifth of
+  their time on those lookups.
 - A function in a def's metadata looks up the vars it calls once, as the def's value
   does, instead of by name on every call. Every `deftest` body is such a function, so
   test code ran its var calls about 8x slower than the same code in a `defn`.
