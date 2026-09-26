@@ -573,6 +573,10 @@ lazyretain: testbin
 # (fragments that cannot go back to the OS) --
 # JOLT_MAX_RAM_PERCENTAGE sets the heap ceiling, and a bad value is refused by
 # name. Each mode is its own process, since the policy is per process.
+# Recipes run under bash -e (.cache/makes/init.mk), so a capture whose process is
+# meant to fail takes `|| true` and the check after it decides; without it the
+# recipe exits there with no FAIL line (macOS's make 3.81 ignores .SHELLFLAGS,
+# which is why it only showed on Linux).
 gcpolicy: testbin
 	@floor=16777216; t=test/gc_policy_test.clj; j=target/release/jolt; \
 	 trip() { env JOLT_NO_USER_DEPS=1 "$$@" $$j run $$t churn 2>&1 | sed -n 's/^trip //p'; }; \
@@ -595,13 +599,13 @@ gcpolicy: testbin
 	 echo "gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
 	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
 	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)"; exit 1; }; \
-	 oh=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $$j run $$t churn 2>&1); \
+	 oh=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $$j run $$t churn 2>&1) || true; \
 	 case "$$oh" in *OutOfMemoryError*"GC overhead limit exceeded"*) ;; *) echo "FAIL gcpolicy: with every collection over the limits, the GC overhead limit did not raise: $$(printf '%s' "$$oh" | head -2)"; exit 1;; esac; \
 	 off=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 JOLT_GC_OVERHEAD_LIMIT=off $$j run $$t churn 2>&1 | sed -n 's/^trip //p'); \
 	 [ -n "$$off" ] || { echo "FAIL gcpolicy: JOLT_GC_OVERHEAD_LIMIT=off did not turn the limit off"; exit 1; }; \
 	 echo "gcpolicy: the GC overhead limit raises OutOfMemoryError, and JOLT_GC_OVERHEAD_LIMIT=off turns it off"; \
 	 for bad in JOLT_GC_TIME_RATIO=0 JOLT_MAX_HEAP_FREE_RATIO=100 JOLT_MAX_RAM_PERCENTAGE=abc JOLT_NEW_SIZE=12q JOLT_GC_TIME_LIMIT=200; do \
-	   msg=$$(env JOLT_NO_USER_DEPS=1 $$bad $$j -e '(println :ran)' 2>&1); \
+	   msg=$$(env JOLT_NO_USER_DEPS=1 $$bad $$j -e '(println :ran)' 2>&1) || true; \
 	   case "$$msg" in *"$${bad%%=*}"*"is not valid"*) ;; *) echo "FAIL gcpolicy: $$bad was not refused by name: $$msg"; exit 1;; esac; \
 	 done; \
 	 echo "gcpolicy: passed"
