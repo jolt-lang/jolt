@@ -547,19 +547,33 @@ mvnhttp:
 readscaling: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/read_scaling_test.clj
 
-# The nursery follows the collector's time share (rt.ss jolt-install-gc-policy!):
-# a churning program grows it past the 16MB floor, a light one leaves it there,
-# and JOLT_GC_TRIP_BYTES pins it. Each mode is its own process, since the policy
-# is per process and a grown nursery does not shrink on demand.
+# The nursery follows the collector's time share, bounded by the live set
+# (rt.ss jolt-install-gc-policy!): a churning program grows it past the 16MB floor
+# but not past its footprint bound (the fixed-cap policy grew the same loop's to
+# 512MB+), a light one leaves it at the floor, and the JVM-named knobs take
+# effect: JOLT_GC_TRIP_BYTES pins it, JOLT_MAX_NEW_SIZE caps it,
+# JOLT_MAX_RAM_PERCENTAGE sets the heap ceiling, and a bad value is refused by
+# name. Each mode is its own process, since the policy is per process.
 gcpolicy: testbin
-	@floor=16777216; \
-	 churn=$$(JOLT_NO_USER_DEPS=1 target/release/jolt run test/gc_policy_test.clj churn 2>&1 | sed -n 's/^trip //p'); \
-	 light=$$(JOLT_NO_USER_DEPS=1 target/release/jolt run test/gc_policy_test.clj light 2>&1 | sed -n 's/^trip //p'); \
-	 pinned=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=33554432 target/release/jolt run test/gc_policy_test.clj pinned 2>&1 | sed -n 's/^trip //p'); \
-	 echo "gcpolicy: churn $$churn, light $$light, pinned $$pinned"; \
+	@floor=16777216; t=test/gc_policy_test.clj; j=target/release/jolt; \
+	 trip() { env JOLT_NO_USER_DEPS=1 "$$@" $$j run $$t churn 2>&1 | sed -n 's/^trip //p'; }; \
+	 churn=$$(trip); \
+	 light=$$(JOLT_NO_USER_DEPS=1 $$j run $$t light 2>&1 | sed -n 's/^trip //p'); \
+	 pinned=$$(trip JOLT_GC_TRIP_BYTES=33554432); \
+	 capped=$$(trip JOLT_MAX_NEW_SIZE=24m); \
+	 echo "gcpolicy: churn $$churn, light $$light, pinned $$pinned, max-new-size 24m -> $$capped"; \
 	 [ -n "$$churn" ] && [ "$$churn" -gt "$$floor" ] || { echo "FAIL gcpolicy: a churning program kept the $$floor floor"; exit 1; }; \
+	 [ "$$churn" -lt 536870912 ] || { echo "FAIL gcpolicy: a ~40MB-live loop grew its nursery to $$churn, past the live-set bound"; exit 1; }; \
 	 [ "$$light" = "$$floor" ] || { echo "FAIL gcpolicy: a light program left the floor ($$light)"; exit 1; }; \
 	 [ "$$pinned" = "33554432" ] || { echo "FAIL gcpolicy: JOLT_GC_TRIP_BYTES did not pin the nursery ($$pinned)"; exit 1; }; \
+	 [ -n "$$capped" ] && [ "$$capped" -le 25165824 ] || { echo "FAIL gcpolicy: JOLT_MAX_NEW_SIZE=24m did not cap the nursery ($$capped)"; exit 1; }; \
+	 full=$$(JOLT_NO_USER_DEPS=1 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
+	 tenth=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
+	 [ $$((tenth * 25 / 10)) -le $$((full + 1)) ] && [ $$((tenth * 25 / 10)) -ge $$((full - 4)) ] || { echo "FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $$tenth against $$full at the default 25"; exit 1; }; \
+	 for bad in JOLT_GC_TIME_RATIO=0 JOLT_MAX_HEAP_FREE_RATIO=100 JOLT_MAX_RAM_PERCENTAGE=abc JOLT_NEW_SIZE=12q; do \
+	   msg=$$(env JOLT_NO_USER_DEPS=1 $$bad $$j -e '(println :ran)' 2>&1); \
+	   case "$$msg" in *"$${bad%%=*}"*"is not valid"*) ;; *) echo "FAIL gcpolicy: $$bad was not refused by name: $$msg"; exit 1;; esac; \
+	 done; \
 	 echo "gcpolicy: passed"
 
 # Compiling a namespace stays linear in its source, and a quoted form does not

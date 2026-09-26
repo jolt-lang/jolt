@@ -344,8 +344,12 @@
                (loop (cdr fs)))))))
 ;; JOLT_MAX_HEAP: "2g", "512m", "1048576", "0"/"off"/"none". Returns bytes, the
 ;; symbol 'off, or #f when unset/unparseable (fall back to the default).
-(define (heap-from-env)
-  (let ((v (getenv "JOLT_MAX_HEAP")))
+;; A byte size from the environment the way the JVM spells one (-Xmx4g): digits
+;; with an optional k/m/g suffix. 'off for 0/off/none where OFF-OK?, #f when
+;; unset; any other spelling is a configuration error, raised by name rather than
+;; quietly running with a default the user did not ask for.
+(define (env-bytes name off-ok?)
+  (let ((v (getenv name)))
     (and v (> (string-length v) 0)
          (let* ((t (string-downcase v))
                 (n (string-length t))
@@ -354,17 +358,32 @@
                 (digits (if (= mult 1) t (substring t 0 (- n 1))))
                 (num (string->number digits)))
            (cond
-             ((member t '("0" "off" "none")) 'off)
-             ((and num (exact? num) (> num 0)) (* num mult))
-             (else #f))))))
-;; 25% of the smaller of physical RAM and any cgroup limit, matching
-;; MaxRAMPercentage. #f when neither can be read, which leaves jolt unbounded
+             ((and off-ok? (member t '("0" "off" "none"))) 'off)
+             ((and num (exact? num) (integer? num) (> num 0)) (* num mult))
+             (else (gc-config-error name v "a size like 512m or 4g")))))))
+;; A number from the environment within [LO, HI] (a percentage or a ratio), #f
+;; when unset.
+(define (env-number name lo hi what)
+  (let ((v (getenv name)))
+    (and v (> (string-length v) 0)
+         (let ((num (string->number v)))
+           (if (and num (real? num) (<= lo num hi))
+               num
+               (gc-config-error name v what))))))
+(define (gc-config-error name v what)
+  ;; not worded "out of memory": host-faults.ss would classify it as one
+  (error 'jolt (string-append name "=" v " is not valid: expected " what ".")))
+(define (heap-from-env) (env-bytes "JOLT_MAX_HEAP" #t))
+;; JOLT_MAX_RAM_PERCENTAGE (default 25) of the smaller of physical RAM and any
+;; cgroup limit, the JVM's -XX:MaxRAMPercentage and its default. #f when neither can be read, which leaves jolt unbounded
 ;; rather than guessing a ceiling that could break a working program.
 (define (heap-default-ceiling)
   (let* ((phys (heap-phys-from-sysconf))
          (cg (heap-cgroup-limit))
          (base (cond ((and phys cg) (min phys cg)) (phys phys) (cg cg) (else #f))))
-    (and base (exact (floor (/ base 4))))))
+    (and base
+         (let ((pct (or (env-number "JOLT_MAX_RAM_PERCENTAGE" 0.01 100 "a percentage of RAM, 0-100") 25)))
+           (exact (floor (* base (/ (inexact pct) 100))))))))
 (define jolt-heap-ceiling-bytes #f)      ; #f until installed; #f = unbounded
 (define (jolt-heap-max-bytes) jolt-heap-ceiling-bytes)
 (define (jolt-install-gc-policy!)
@@ -439,34 +458,81 @@
 ;; fixed there by hand at 64MB); the JVM's young generation starts in the
 ;; hundreds of MB and is sized by the collector's own time share.
 ;;
-;; So size it the same way. After each collection, the share of time spent in
-;; collection is averaged over recent collections; above a sixth of the time the
-;; trip doubles, under a thirtieth it halves back, between FLOOR and CAP. A
-;; program that allocates little never leaves the floor, so its footprint is
-;; what it was; one that churns grows its nursery until collection stops
-;; dominating. JOLT_GC_TRIP_BYTES pins the size and turns the adapting off.
+;; So size it by the collector's time share, as the JVM does, but bounded by what
+;; the program keeps. The knobs are the JVM's, spelled as environment variables:
+;;
+;;   JOLT_GC_TIME_RATIO=N (-XX:GCTimeRatio, default 9): the target share of time in
+;;     collection is 1/(1+N), 10%. Above it the nursery doubles; under a quarter of
+;;     it the nursery halves back.
+;;   JOLT_MAX_HEAP_FREE_RATIO=P (-XX:MaxHeapFreeRatio, default 50): at most P% of
+;;     the heap may be nursery headroom over the live data -- the heap live after
+;;     the last full collection -- so the nursery grows to live*P/(100-P), 1x the
+;;     live set by default. This is the footprint bound: a nursery is memory held
+;;     on top of the program's data, and without it a loop with 40MB live ran in
+;;     1.4GB for a 1.4x speedup (the JVM, which bounds its young generation by
+;;     pause time instead, ran the same loop in 4.1GB).
+;;   Growth past that bound is still allowed while collection takes more than
+;;     twice the target: a program whose data is small but whose collections still
+;;     dominate is exactly the one the nursery is for (writ's prover, 32% of its
+;;     time collecting at 1x live, is not capped there). It takes three collections
+;;     in a row AT the bound that all say so, since one reading is not evidence: at
+;;     startup collections come milliseconds apart and the share spikes past 40%
+;;     before the program has settled, which grew a 40MB-live loop's nursery to
+;;     512MB. When the pressure drops the nursery comes back to the bound.
+;;   JOLT_NEW_SIZE / JOLT_MAX_NEW_SIZE (-XX:NewSize / -XX:MaxNewSize): the floor
+;;     (16MB) and the hard cap (1GB, and never over an eighth of the heap ceiling,
+;;     so the nursery cannot be what pushes a small heap over it).
+;;   JOLT_GC_TRIP_BYTES pins the nursery and turns all of this off.
+;;
+;; A program that allocates little never leaves the floor, so its footprint is what
+;; it was at a fixed 16MB.
 (define gc-trip-floor (* 16 1024 1024))
 (define gc-trip-cap (* 1024 1024 1024))
 (define gc-adaptive? #t)
 (define gc-share 0.0)                     ; recent average of gc-time / elapsed
+(define gc-target-share 1/10)
+(define gc-free-ratio 50)
+(define gc-hot-at-bound 0)                ; consecutive dominating collections at the bound
 (define (gc-nursery-setup! ceiling)
-  (let ((pinned (let ((v (getenv "JOLT_GC_TRIP_BYTES"))) (and v (string->number v)))))
-    ;; an eighth of the heap ceiling at most, so the nursery can never be what
-    ;; pushes a small heap over it
-    (when ceiling (set! gc-trip-cap (max gc-trip-floor (min gc-trip-cap (quotient ceiling 8)))))
+  (let ((pinned (env-bytes "JOLT_GC_TRIP_BYTES" #f))
+        (floor (env-bytes "JOLT_NEW_SIZE" #f))
+        (cap (env-bytes "JOLT_MAX_NEW_SIZE" #f))
+        (ratio (env-number "JOLT_GC_TIME_RATIO" 1 1000 "a number from 1 to 1000"))
+        (free (env-number "JOLT_MAX_HEAP_FREE_RATIO" 1 99 "a percentage from 1 to 99")))
+    (when floor (set! gc-trip-floor floor))
+    (when cap (set! gc-trip-cap cap))
+    (when ratio (set! gc-target-share (/ 1 (+ 1 (exact ratio)))))
+    (when free (set! gc-free-ratio (exact free)))
+    (when ceiling (set! gc-trip-cap (min gc-trip-cap (quotient ceiling 8))))
+    (set! gc-trip-cap (max gc-trip-floor gc-trip-cap))
     (cond
-      ((and pinned (exact? pinned) (> pinned 0))
-       (set! gc-adaptive? #f)
-       (sa-gc-trip-bytes! pinned))
-      (else (sa-gc-trip-bytes! (max (sa-gc-trip-bytes) gc-trip-floor))))))
+      (pinned (set! gc-adaptive? #f)
+              (sa-gc-trip-bytes! pinned))
+      (else (sa-gc-trip-bytes! gc-trip-floor)))))
+;; The footprint bound: live * P/(100-P), within [floor, cap].
+(define (gc-trip-limit)
+  (max gc-trip-floor
+       (min gc-trip-cap
+            (quotient (* gc-live-after-full gc-free-ratio) (- 100 gc-free-ratio)))))
 (define (gc-size-nursery! gc-ns elapsed-ns)
   (when (and gc-adaptive? (> elapsed-ns 0))
     (set! gc-share (+ (* 0.7 gc-share) (* 0.3 (/ (exact->inexact gc-ns) elapsed-ns))))
-    (let ((trip (sa-gc-trip-bytes)))
+    (let ((trip (sa-gc-trip-bytes)) (limit (gc-trip-limit)))
+      (set! gc-hot-at-bound
+            (if (and (>= trip limit) (> gc-share (* 2 gc-target-share))) (+ gc-hot-at-bound 1) 0))
       (cond
-        ((and (> gc-share 1/6) (< trip gc-trip-cap))
+        ;; collection still dominates at the bound, three times running: grow past it
+        ((and (>= gc-hot-at-bound 3) (< trip gc-trip-cap))
+         (set! gc-hot-at-bound 0)
          (sa-gc-trip-bytes! (min gc-trip-cap (* 2 trip))))
-        ((and (< gc-share 1/30) (> trip gc-trip-floor))
+        ;; over the target: grow up to the bound
+        ((and (> gc-share gc-target-share) (< trip limit))
+         (sa-gc-trip-bytes! (min limit (* 2 trip))))
+        ;; past the bound once the pressure that justified it is gone: come back
+        ((and (> trip limit) (< gc-share gc-target-share))
+         (sa-gc-trip-bytes! (max limit (quotient trip 2))))
+        ;; well under the target: give memory back
+        ((and (< gc-share (/ gc-target-share 4)) (> trip gc-trip-floor))
          (sa-gc-trip-bytes! (max gc-trip-floor (quotient trip 2))))))))
 ;; --- the older generations ---------------------------------------------------
 ;; The collector takes generation n every 4^n trips, so the older generations'

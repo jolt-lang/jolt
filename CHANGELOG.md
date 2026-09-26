@@ -19,18 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5.6GB of memory to 55s from cold, 35s for an unchanged rebuild and 38s after editing
   one namespace, under 1GB. `JOLT_BUILD_CACHE=0`, `JOLT_BUILD_CACHE_DIR`,
   `JOLT_BUILD_CACHE_MB` and `JOLT_BUILD_JOBS` control the unit cache.
-- **The nursery size follows the time spent collecting.** It starts at 16MB and
-  doubles while collections take more than a sixth of the run, up to 1GB (or an eighth
-  of the heap ceiling), and halves back when they take under a thirtieth. A program
-  that allocates little keeps the 16MB it had. writ's prover spent 40% of its time
-  collecting at the fixed 16MB and 19% now (64.5s to 48.9s). `JOLT_GC_TRIP_BYTES`
-  still pins the size. The older generations are also collected once the heap passes
-  twice what was live after the last full collection, so garbage there no longer waits
-  for a schedule counted in nurseries. Near the heap ceiling, a full collection that
-  cannot get under its soft limit no longer repeats after every young collection; the
-  next waits until half the remaining room is used. A program whose live data sat
-  above the soft limit (writ's prover on a 16GB CI runner) used to stall there for
-  hours. `JOLT_GC_LOG=1` prints a line per collection.
+- **The nursery size follows the time spent collecting, bounded by the live data.**
+  It starts at 16MB and doubles while collection takes more than a tenth of the run,
+  up to the size of the data the program keeps; past that only while collection keeps
+  taking more than a fifth. A program that allocates little keeps 16MB. writ's prover
+  spent 40% of its time collecting at the fixed 16MB and 25% now (65.4s to 58.8s, peak
+  RSS 2.14GB to 2.28GB); a loop holding 40MB went from 2.9s to 2.25s at 274MB to 406MB.
+  The knobs mirror the JVM's: `JOLT_MAX_RAM_PERCENTAGE`, `JOLT_GC_TIME_RATIO`,
+  `JOLT_MAX_HEAP_FREE_RATIO`, `JOLT_NEW_SIZE`, `JOLT_MAX_NEW_SIZE`; `JOLT_GC_TRIP_BYTES`
+  still pins the size, and a value jolt cannot read is refused at startup. The older
+  generations are also collected once the heap passes twice what was live after the
+  last full collection, so garbage there no longer waits for a schedule counted in
+  nurseries. Near the heap ceiling, a full collection that cannot get under its soft
+  limit no longer repeats after every young collection; the next waits until half the
+  remaining room is used. A program whose live data sat above the soft limit (writ's
+  prover on a 16GB CI runner) used to stall there for hours. `JOLT_GC_LOG=1` prints a
+  line per collection.
 
 ### Fixed
 
