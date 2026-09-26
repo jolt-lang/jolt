@@ -303,7 +303,7 @@
 (test-equality)
 
 ;; Forcing a lazy cell once a thread exists takes seq.ss's claim path
-;; (force-claimed!), which the single-threaded rows above never reach: every
+;; (cell-force-claimed! for a cell, force-claimed! for a node), which the single-threaded rows above never reach: every
 ;; shim that path needs on this host has to be present, and two threads on the
 ;; same unforced cell must still run its thunk once.
 (define (test-threaded-force)
@@ -318,7 +318,7 @@
     (check "two threads forcing one cell and one node ran each thunk once" runs 2)
     (check "the cell's tail is published" (seq-first (seq-more cell)) 1)
     (check "the node's value is published" (seq-first (force-lazyseq node)) 2)
-    (check "no claim is left behind" (list (cseq-lock cell) (jolt-lazyseq-lock node)) '(#f #f))))
+    (check "no claim is left behind" (list (tail-claim? (cseq-tail cell)) (jolt-lazyseq-lock node)) '(#f #f))))
 (test-threaded-force)
 
 (printf "\nkernel-test: ~a failure(s)\n" failures)

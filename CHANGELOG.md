@@ -45,7 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generations are also collected once the heap passes twice what was live after the
   last full collection, so garbage there no longer waits for a schedule counted in
   nurseries; that allowance grows toward 8x when the full collections take more than
-  the target share of the time (writ's pong: 263 full collections down to 86). Near the heap ceiling, a full collection that cannot get under its soft
+  the target share of the time (writ's pong: 263 full collections down to 86). Growth
+  of the nursery past the live data is checked: eight collections after it, a share of
+  time that rose by more than a tenth sends it back and holds it (a bigger window cost
+  writ's prover 10x per collection), after one jump to 8x for programs where only a
+  big window lets most of it die.
+- **Seq cells are 48 bytes, not 80.** A cell carries its head, tail, kind and
+  metadata; the chunk fields moved to a vector-backed subtype, a claim swaps the tail
+  word itself instead of a lock field, and the image mirror of the forced flag is
+  gone. writ's pong allocates 345GB where it allocated 449GB; a realized `map` costs
+  77 bytes per element where it cost 92. Near the heap ceiling, a full collection that cannot get under its soft
   limit no longer repeats after every young collection; the next waits until half the
   remaining room is used. A program whose live data sat above the soft limit (writ's
   prover on a 16GB CI runner) used to stall there for hours. `JOLT_GC_LOG=1` prints a

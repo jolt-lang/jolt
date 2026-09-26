@@ -96,8 +96,8 @@
 ;; so adding a flavor above needs no second edit to keep them in step.
 (define sk-count        24)
 
-;; The cseq record (head tail forced? kind cvec ci crest lock meta, chez-cseq-v7)
-;; is defined in values.ss with the other collection layouts, ahead of every
+;; The cseq record (head tail kind meta, chez-cseq-v8) and its vector-backed
+;; subtype cseqv (+ cvec ci crest) are defined in values.ss with the other collection layouts, ahead of every
 ;; dispatcher.
 ;; A cell's tail is ONE published word: the thunk (a procedure or a lazy-src
 ;; descriptor) or a lazy seq -- (cons x a-lazy-seq), which is the reference's Cons
@@ -107,34 +107,38 @@
 ;; it at every use). Pending is therefore a type test on that word and realized
 ;; is its complement, so a reader that finds an answer there is done without a
 ;; lock on any thread: a single aligned word store cannot tear, and every read
-;; of what it points to is a dependent load. The forced? field mirrors the answer
-;; for the image (the layout is frozen) and is written after the tail; nothing
-;; decides from it. Macros, not procedures: this test is on the path of every
-;; element of every lazy chain, and a cseq -- the common answer -- is one check.
+;; of what it points to is a dependent load. While a thread runs a pending tail
+;; the word is a tail-claim holding it (cell-force-claimed!, below): pending too.
+;; Macros, not procedures: this test is on the path of every element of every
+;; lazy chain, and a cseq -- the common answer -- is one check.
 (define-syntax seq-tail-pending?
   ;; #f first: a vector-backed (chunked) cell's word, on every element of a walk
-  (syntax-rules () ((_ t) (let ((st t)) (or (not st) (procedure? st) (lazy-src? st) (jolt-lazyseq? st))))))
+  (syntax-rules () ((_ t) (let ((st t)) (or (not st) (procedure? st) (lazy-src? st) (jolt-lazyseq? st) (tail-claim? st))))))
 (define-syntax seq-tail-realized?
   (syntax-rules () ((_ t) (let ((st t)) (or (cseq? st) (not (seq-tail-pending? st)))))))
 (define-syntax cseq-forced?
   (syntax-rules () ((_ s) (seq-tail-realized? (cseq-tail s)))))
-;; the lock field's position, for the compare-and-swap that claims a cell
-;; (force-claimed!, below). Checked at load: a wrong index would corrupt a
+;; A running tail's claim: the pending word it replaced, the fiber or thread
+;; running it, and this process's token -- a claim that arrives in a state image
+;; belongs to a force that is not running, and is put back on the way to claiming.
+(define-record-type tail-claim (fields tail owner token) (nongenerative jolt-tail-claim-v1))
+;; the tail's position, for the compare-and-swap that claims a cell
+;; (cell-force-claimed!, below). Checked at load: a wrong index would corrupt a
 ;; neighbouring field silently.
-(define cseq-lock-index 7)
-(let ((c (make-cseq 'h 't #t 0 #f 0 #f #f jolt-nil)))
-  (unless (and (sa-record-cas! c cseq-lock-index #f 'probe)
-               (eq? (cseq-lock c) 'probe)
-               (not (sa-record-cas! c cseq-lock-index #f 'again))
-               (eq? (cseq-head c) 'h) (eq? (cseq-tail c) 't) (eq? (cseq-crest c) #f))
-    (error 'seq.ss "cseq-lock-index does not address the lock field")))
+(define cseq-tail-index 1)
+(let ((c (make-cseq 'h 't 0 jolt-nil)))
+  (unless (and (sa-record-cas! c cseq-tail-index 't 'probe)
+               (eq? (cseq-tail c) 'probe)
+               (not (sa-record-cas! c cseq-tail-index 't 'again))
+               (eq? (cseq-head c) 'h) (eqv? (cseq-kind c) 0))
+    (error 'seq.ss "cseq-tail-index does not address the tail field")))
 ;; tail already a seq. The /k variants take the flavor; the bare ones are the
 ;; generic cell, which is the overwhelming majority of call sites.
-(define (cseq-realized head tail) (make-cseq head tail #t sk-cons #f 0 #f #f jolt-nil))
-(define (cseq-realized/k head tail kind) (make-cseq head tail #t kind #f 0 #f #f jolt-nil))
-(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk #f sk-cons #f 0 #f #f jolt-nil))
-(define (cseq-lazy/k head tail-thunk kind) (make-cseq head tail-thunk #f kind #f 0 #f #f jolt-nil))
-(define (cseq-list head tail) (make-cseq head tail #t sk-list #f 0 #f #f jolt-nil))   ; a PersistentList node
+(define (cseq-realized head tail) (make-cseq head tail sk-cons jolt-nil))
+(define (cseq-realized/k head tail kind) (make-cseq head tail kind jolt-nil))
+(define (cseq-lazy head tail-thunk) (make-cseq head tail-thunk sk-cons jolt-nil))
+(define (cseq-lazy/k head tail-thunk kind) (make-cseq head tail-thunk kind jolt-nil))
+(define (cseq-list head tail) (make-cseq head tail sk-list jolt-nil))   ; a PersistentList node
 
 ;; --- a lazy cell's thunk, as DATA ---------------------------------------------
 ;; A thunk built in Scheme carries its captured values where nothing can read
@@ -286,7 +290,7 @@
 ;; pvec is a PersistentTreeMap$Seq that happens to be vector-backed. Keeping the
 ;; two independent is what lets the class answer stay right while the O(1)
 ;; count/chunk fast paths keep keying off cvec alone.
-(define (cseq-vec head v i kind) (make-cseq head #f #f kind v i #f #f jolt-nil))
+(define (cseq-vec head v i kind) (make-cseqv head #f kind jolt-nil v i #f))
 ;; A ChunkedCons cell over a standalone chunk pvec: head is chunk[i], walking
 ;; (seq-more) advances within the chunk and then continues into `rest`. `rest` is
 ;; the already-coerced after-chunk seq (cseq | jolt-nil | a jolt-lazyseq), held in
@@ -311,9 +315,9 @@
 ;; A ChunkedCons by default; `kind` lets a producer that chunks say what it really
 ;; is instead (a bounded range chunks, and is a LongRange).
 (define (cseq-chunked chunk i rest)
-  (make-cseq (pvec-nth-d chunk i jolt-nil) #f #f sk-chunked-cons chunk i rest #f jolt-nil))
+  (make-cseqv (pvec-nth-d chunk i jolt-nil) #f sk-chunked-cons jolt-nil chunk i rest))
 (define (cseq-chunked/k chunk i rest kind)
-  (make-cseq (pvec-nth-d chunk i jolt-nil) #f #f kind chunk i rest #f jolt-nil))
+  (make-cseqv (pvec-nth-d chunk i jolt-nil) #f kind jolt-nil chunk i rest))
 ;; The tail of a cvec-bearing cell. Two shapes share the field: a ChunkedCons
 ;; (crest set — cvec is a standalone <=32 chunk, and the after-chunk seq follows)
 ;; and a vector-backed index seq (crest #f — cvec is the whole backing vector).
@@ -333,7 +337,7 @@
             (if force? (jolt-seq cr) cr))
         (if (fx>=? i1 (pvec-count v))
             jolt-nil
-            (make-cseq (pvec-nth-d v i1 jolt-nil) #f #f (cseq-kind s) v i1 #f #f jolt-nil)))))
+            (make-cseqv (pvec-nth-d v i1 jolt-nil) #f (cseq-kind s) jolt-nil v i1 #f)))))
 (define (seq-first s) (cseq-head s))
 ;; --- forcing once, without a mutex per cell -----------------------------------
 ;; Reading a cell needs no lock (seq-tail-realized?, above). What still needs
@@ -393,7 +397,7 @@
 ;; still going (lazy-bridge.ss lazyseq-realize!): pending to everyone but the
 ;; walker, who reaches it only by reentry, so another forcer waits on the claim.
 (define force-walking (list 'lazyseq-walking))
-(define (force-pending? t) (or (procedure? t) (lazy-src? t) (jolt-lazyseq? t) (eq? t force-walking)))
+(define (force-pending? t) (or (procedure? t) (lazy-src? t) (jolt-lazyseq? t) (tail-claim? t) (eq? t force-walking)))
 (define force-claim-token (list 'forcing))
 (define (force-owner) (or (jolt-current-fiber) (get-thread-id)))
 (define (force-claimed! cell get-lock L get-tail body)
@@ -440,8 +444,7 @@
 ;; (ARM64). The mirror flag follows the word.
 (define (cseq-publish-tail! s r)
   (memory-order-release)
-  (cseq-tail-set! s r)
-  (cseq-forced-flag-set! s #t))
+  (cseq-tail-set! s r))
 
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
   ;; Kept this small on purpose: Chez inlines it into every walk (fold-rest-seq,
@@ -469,17 +472,52 @@
     ;; reference's Cons keeps its LazySeq _more after realizing it, so (rest s)
     ;; is that same, now realized, lazy seq
     ((jolt-lazyseq? t) (force-lazyseq t))
+    ((tail-claim? t) (cell-force-claimed! s))
     ((not jolt-mt?)
      (let ((r (if t (cseq-run-tail t) (cseq-cvec-more s #t))))
-       (cseq-tail-set! s r) (cseq-forced-flag-set! s #t) r))
+       (cseq-tail-set! s r) r))
     ((not t)
      (let ((r (cseq-cvec-more s #t))) (cseq-publish-tail! s r) r))
-    (else
-     (force-claimed! s cseq-lock cseq-lock-index cseq-tail
-       (lambda ()
-         (let ((t (cseq-tail s)))
-           (if (seq-tail-realized? t) t
-               (let ((r (cseq-run-tail t))) (cseq-publish-tail! s r) r))))))))
+    (else (cell-force-claimed! s))))
+;; Run a cell's pending tail once, among threads: the word itself is the claim. A
+;; forcer compare-and-swaps the pending word for a tail-claim carrying it, runs
+;; it, and swaps the answer in; a forcer that finds another's claim waits in the
+;; way its context allows (force-wait!, as for a lazy seq node); a claim of its
+;; own is reentry, which the reference's reentrant monitor runs again; a claim
+;; from another process (a state image) is stale and is put back. A tail that
+;; escapes -- raises, or a fiber leaves by a continuation that is not a park -- is
+;; put back as it was, so the next forcer runs it (jolt-finally-in: a park is not
+;; an exit, and keeps the claim). The claim lived in a lock field on every cell;
+;; in the word, it costs a cell nothing.
+(define (cell-force-claimed! s)
+  (let ((me (force-owner)))
+    (let retry ((spins 0))
+      (let ((w (cseq-tail s)))
+        (cond
+          ((tail-claim? w)
+           (cond ((not (eq? (tail-claim-token w) force-claim-token))
+                  (sa-record-cas! s cseq-tail-index w (tail-claim-tail w))
+                  (retry spins))
+                 ((eqv? (tail-claim-owner w) me) (cseq-run-tail (tail-claim-tail w)))
+                 (else (force-wait! spins (tail-claim-owner w)) (retry (fx+ spins 1)))))
+          ((not (seq-tail-pending? w)) w)
+          ((jolt-lazyseq? w) (force-lazyseq w))
+          ((not w) (let ((r (cseq-cvec-more s #t))) (cseq-publish-tail! s r) r))
+          (else
+           (let ((claim (make-tail-claim w me force-claim-token)))
+             (if (sa-record-cas! s cseq-tail-index w claim)
+                 (let ((done #f))
+                   (memory-order-acquire)
+                   (dynamic-wind
+                     jolt-finally-in
+                     (lambda ()
+                       (let ((r (cseq-run-tail w)))
+                         (memory-order-release)
+                         (sa-record-cas! s cseq-tail-index claim r)
+                         (set! done #t)
+                         r))
+                     (lambda () (unless done (sa-record-cas! s cseq-tail-index claim w)))))
+                 (retry spins)))))))))
 
 ;; The empty seq (Clojure's empty list ()), distinct from nil; the empty-list-t
 ;; record (one field, its metadata) is defined in values.ss. A metadata-bearing
@@ -732,8 +770,8 @@
 ;; The remainder is the test itself and is the price of the distinction.
 (define (jolt-cons x coll)
   (if (jolt-nil? coll)
-      (make-cseq x jolt-nil #t sk-list #f 0 #f #f jolt-nil)
-      (make-cseq x (jolt-seq coll) #t sk-cons #f 0 #f #f jolt-nil)))
+      (make-cseq x jolt-nil sk-list jolt-nil)
+      (make-cseq x (jolt-seq coll) sk-cons jolt-nil)))
 ;; Scheme list -> a jolt PersistentList. For (list …) and quoted list literals
 ;; (the emitter lowers '(a b) to (jolt-list a b)).
 (define (jolt-list . xs)

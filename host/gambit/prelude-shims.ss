@@ -222,7 +222,10 @@
     ((_ (f rest ...)) (cons (cons 'immutable 'f) (jolt-record-field-names (rest ...))))))
 
 (define-syntax define-record-type
-  (syntax-rules (fields mutable immutable nongenerative parent protocol)
+  (syntax-rules (fields mutable immutable nongenerative parent protocol sealed)
+    ;; (sealed #t) only lets Chez check the type faster; nothing to do here
+    ((_ (name ctor pred) (parent p) (fields spec ...) (nongenerative uid) (sealed s))
+     (define-record-type (name ctor pred) (parent p) (fields spec ...) (nongenerative uid)))
     ((_ (name ctor pred) (parent p) (fields spec ...) (nongenerative uid))
      (define name (make-jolt-record-type 'name 'ctor 'pred 'p
                                          (jolt-record-field-names (spec ...)))))

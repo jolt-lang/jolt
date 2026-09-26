@@ -420,10 +420,15 @@
       (unless (sa-gc-install-after-collect!
                 (lambda (collect-full!)
                   (set! gc-full-this-time #f)
+                  (set! gc-full-ms-this-time 0)
                   (gc-collect-old-when-grown! collect-full!)
                   (when ceiling (gc-enforce-ceiling! soft ceiling collect-full!)))
                 (lambda (gc-ns elapsed-ns)
-                  (gc-size-nursery! gc-ns elapsed-ns)
+                  ;; the nursery answers for young collections only: a full one
+                  ;; the policy forced in the same hook is the old generations'
+                  ;; cost (gc-old-factor), and counting it here grew the nursery
+                  ;; to 1GB, where a young collection cost 10x one at 256MB
+                  (gc-size-nursery! (max 0 (- gc-ns (* gc-full-ms-this-time 1000000))) elapsed-ns)
                   (when gc-log? (gc-log-line gc-ns elapsed-ns))
                   (when ceiling (gc-check-overhead! gc-ns elapsed-ns ceiling))))
         (set! jolt-heap-ceiling-bytes #f)))))
@@ -472,7 +477,9 @@
     ;; needs a second copy's worth of room, which a heap at its ceiling lacks (a
     ;; 150MB-live program under 384m peaked at 402MB copying them).
     (gc-fit-reserve-to! hard gc-live-after-full)
-    (collect-full! #t)
+    (let ((t0 (sa-real-time-ms)))
+      (collect-full! #t)
+      (set! gc-full-ms-this-time (+ gc-full-ms-this-time (- (sa-real-time-ms) t0))))
     (set! gc-full-this-time 'ceiling)
     (set! gc-live-after-full (sa-bytes-allocated))
     (set! gc-total-stuck? (> (sa-total-memory-bytes) hard))
@@ -621,30 +628,79 @@
   (min (gc-max-trip)
        (max gc-trip-floor
             (quotient (* gc-live-after-full gc-free-ratio) (- 100 gc-free-ratio)))))
+;; Growth past the bound is a bet that a bigger window lets more die young, and
+;; it does not always pay: a program whose working set spans the window copies
+;; more the bigger it is (writ's prover: 10.6ms a young collection at 256MB, 105ms
+;; at 1GB, with ~130MB live; it runs fastest at its bound). So growth past the
+;; bound -- and only that: growth up to it is what the bound is for -- is checked.
+;; Eight collections after a doubling (two whole cycles of the generation-1
+;; collection that comes every fourth trip), a share of time that ROSE by more
+;; than a tenth over the eight before it sends the nursery back and holds it
+;; there; a doubling that did not pay much is kept. The share is not monotonic in
+;; the size -- a window pays only once most of it dies -- so a doubling that
+;; hurts is followed by one jump to 8x the base before the hold (a loop
+;; rebuilding 40MB each round runs 1.3x faster at 128MB than at its bound). The
+;; hold lifts after 256 collections, in case the program has moved on. The
+;; shares compared are plain sums over each window, not the smoothed average.
+(define gc-probe-from #f)                 ; the size a growth left, while it is checked
+(define gc-probe-share 0.0)
+(define gc-probe-jumped? #f)
+(define gc-growth-hold #f)                ; growth past the bound stops here while held
+(define gc-hold-n 0)
+(define gc-win-gc 0) (define gc-win-el 0) (define gc-win-n 0)
+(define gc-win-min 8)
+(define (gc-win-reset!) (set! gc-win-gc 0) (set! gc-win-el 0) (set! gc-win-n 0))
+(define (gc-win-share) (if (> gc-win-el 0) (/ (exact->inexact gc-win-gc) gc-win-el) gc-share))
+(define (gc-set-trip! n) (gc-win-reset!) (sa-gc-trip-bytes! n))
+(define (gc-grow-past-bound! from to)
+  (when (and (> to from) (>= gc-win-n gc-win-min) (or (not gc-growth-hold) (< from gc-growth-hold)))
+    (set! gc-probe-from from) (set! gc-probe-share (gc-win-share)) (set! gc-probe-jumped? #f)
+    (gc-set-trip! (if gc-growth-hold (min to gc-growth-hold) to))))
+(define (gc-check-growth! gc-ns elapsed-ns)
+  (set! gc-win-gc (+ gc-win-gc gc-ns)) (set! gc-win-el (+ gc-win-el elapsed-ns))
+  (set! gc-win-n (+ gc-win-n 1))
+  (when gc-growth-hold
+    (set! gc-hold-n (+ gc-hold-n 1))
+    (when (> gc-hold-n 256) (set! gc-growth-hold #f)))
+  (when (and gc-probe-from (>= gc-win-n gc-win-min))
+    (cond
+      ((<= (gc-win-share) (* 1.1 gc-probe-share)) (set! gc-probe-from #f) (gc-win-reset!))
+      ((and (not gc-probe-jumped?) (<= (* 8 gc-probe-from) (gc-max-trip))
+            (or (not gc-growth-hold) (< (* 8 gc-probe-from) gc-growth-hold)))
+       (set! gc-probe-jumped? #t)
+       (gc-set-trip! (* 8 gc-probe-from)))
+      (else
+       (gc-set-trip! gc-probe-from)
+       (set! gc-growth-hold gc-probe-from) (set! gc-hold-n 0)
+       (set! gc-probe-from #f)))))
 (define (gc-size-nursery! gc-ns elapsed-ns)
   (when (and gc-adaptive? (> elapsed-ns 0))
     (set! gc-share (+ (* 0.7 gc-share) (* 0.3 (/ (exact->inexact gc-ns) elapsed-ns))))
+    (gc-check-growth! gc-ns elapsed-ns)
     (let ((trip (sa-gc-trip-bytes)) (limit (gc-trip-limit)) (cap (gc-max-trip)))
       (set! gc-hot-at-bound
             (if (and (>= trip limit) (> gc-share (* 2 gc-target-share))) (+ gc-hot-at-bound 1) 0))
       (cond
-        ;; the heap ceiling's room shrank under the nursery: follow it down now
-        ((> trip cap) (sa-gc-trip-bytes! cap))
+        ;; the heap ceiling's room shrank under the nursery: follow it down now,
+        ;; probe or not -- the ceiling comes before any bet on the nursery
+        ((> trip cap) (set! gc-probe-from #f) (gc-set-trip! cap))
+        ;; a growth past the bound still being checked: leave it be
+        (gc-probe-from #f)
         ;; under the floor for want of room, and the room is back: to the floor
-        ((< trip (min cap gc-trip-floor)) (sa-gc-trip-bytes! (min cap gc-trip-floor)))
-        ;; collection still dominates at the bound, three times running: grow past it
+        ((< trip (min cap gc-trip-floor)) (gc-set-trip! (min cap gc-trip-floor)))
+        ;; collection still dominates at the bound, three times running: try past it
         ((and (>= gc-hot-at-bound 3) (< trip cap))
          (set! gc-hot-at-bound 0)
-         (sa-gc-trip-bytes! (min cap (* 2 trip))))
+         (gc-grow-past-bound! trip (min cap (* 2 trip))))
         ;; over the target: grow up to the bound
         ((and (> gc-share gc-target-share) (< trip limit))
-         (sa-gc-trip-bytes! (min limit (* 2 trip))))
+         (gc-set-trip! (min limit (* 2 trip))))
         ;; past the bound once the pressure that justified it is gone: come back
         ((and (> trip limit) (< gc-share gc-target-share))
-         (sa-gc-trip-bytes! (max limit (quotient trip 2))))
+         (gc-set-trip! (max limit (quotient trip 2))))
         ;; well under the target: give memory back
         ((and (< gc-share (/ gc-target-share 4)) (> trip gc-trip-floor))
-         (sa-gc-trip-bytes! (max gc-trip-floor (quotient trip 2))))))))
+         (gc-set-trip! (max gc-trip-floor (quotient trip 2))))))))
 ;; --- the older generations ---------------------------------------------------
 ;; The collector takes generation n every 4^n trips, so the older generations'
 ;; schedule is counted in nurseries: grow the nursery to 1GB and generation 1 is
@@ -668,6 +724,7 @@
 ;; back toward 2x. A program with little churn keeps the tight bound.
 (define gc-live-after-full 0)
 (define gc-full-this-time #f)
+(define gc-full-ms-this-time 0)
 (define gc-old-factor 2.0)
 (define gc-last-full-end-ms 0)
 (define (gc-collect-old-when-grown! collect-full!)
@@ -680,11 +737,12 @@
         (let ((c jolt-heap-ceiling-bytes))
           (collect-full! (and c (> (+ (sa-total-memory-bytes) live) c))))
         (let* ((t1 (sa-real-time-ms))
-               (since (max 1 (- t1 gc-last-full-end-ms)))
-               (share (/ (exact->inexact (- t1 t0)) since)))
-          (cond ((> share gc-target-share) (set! gc-old-factor (min 8.0 (* gc-old-factor 1.5))))
-                ((< share (/ gc-target-share 4)) (set! gc-old-factor (max 2.0 (/ gc-old-factor 1.5)))))
-          (set! gc-last-full-end-ms t1)))
+               (since (max 1 (- t1 gc-last-full-end-ms))))
+          (set! gc-full-ms-this-time (+ gc-full-ms-this-time (- t1 t0)))
+          (let ((share (/ (exact->inexact (- t1 t0)) since)))
+            (cond ((> share gc-target-share) (set! gc-old-factor (min 8.0 (* gc-old-factor 1.5))))
+                  ((< share (/ gc-target-share 4)) (set! gc-old-factor (max 2.0 (/ gc-old-factor 1.5)))))
+            (set! gc-last-full-end-ms t1))))
       (set! gc-full-this-time 'grown)
       (set! gc-live-after-full (sa-bytes-allocated)))))
 

@@ -602,26 +602,23 @@
     (run-threads 8 (lambda (i) (seq-more ts12-cell)) 30.0 "12. racing seq-more"))
 (ok "12. the tail thunk ran exactly once" (= 1 ts12-runs))
 (ok "12. and every reader sees the published tail" (= 1 (seq-first (seq-more ts12-cell))))
-(ok "12. the claim is released after the run" (not (cseq-lock ts12-cell)))
-;; stale values in the lock field
-(define ts12-runs2 0)
-(define ts12-stale
-  (make-cseq 0 (lambda () (set! ts12-runs2 (+ ts12-runs2 1)) (cseq-realized 2 jolt-nil)) #f sk-cons #f 0 #f (make-mutex) jolt-nil))
-(ok "12. a cell restored with a mutex in its lock field still forces"
-    (run-threads 4 (lambda (i) (seq-more ts12-stale)) 30.0 "12. stale mutex"))
-(ok "12. ...once" (and (= 1 ts12-runs2) (= 2 (seq-first (seq-more ts12-stale)))))
+(ok "12. the claim is released after the run" (not (tail-claim? (cseq-tail ts12-cell))))
+;; a claim left in the tail word by another process (a state image): its token is
+;; not this process's, so it is put back and the tail runs, once
 (define ts12-runs3 0)
 (define ts12-foreign
-  (make-cseq 0 (lambda () (set! ts12-runs3 (+ ts12-runs3 1)) (cseq-realized 3 jolt-nil)) #f sk-cons #f 0 #f (list 'forcing) jolt-nil))
-(ok "12. a cell restored with another process's claim token still forces"
-    (run-threads 4 (lambda (i) (seq-more ts12-foreign)) 30.0 "12. foreign token"))
+  (make-cseq 0 (make-tail-claim (lambda () (set! ts12-runs3 (+ ts12-runs3 1)) (cseq-realized 3 jolt-nil))
+                                'another-owner (list 'forcing))
+             sk-cons jolt-nil))
+(ok "12. a cell restored with another process's claim in its tail still forces"
+    (run-threads 4 (lambda (i) (seq-more ts12-foreign)) 30.0 "12. foreign claim"))
 (ok "12. ...once" (and (= 1 ts12-runs3) (= 3 (seq-first (seq-more ts12-foreign)))))
 ;; a raising thunk releases the claim
 (define ts12-raises 0)
 (define ts12-bad (cseq-lazy 0 (lambda () (set! ts12-raises (+ ts12-raises 1)) (error 'ts12 "boom"))))
 (define (ts12-try) (guard (e (#t 'raised)) (seq-more ts12-bad)))
 (ok "12. a raising tail thunk raises to its forcer" (eq? 'raised (ts12-try)))
-(ok "12. and leaves no claim behind" (not (cseq-lock ts12-bad)))
+(ok "12. and leaves no claim behind" (not (tail-claim? (cseq-tail ts12-bad))))
 (ok "12. so the next forcer runs it again" (and (eq? 'raised (ts12-try)) (= 2 ts12-raises)))
 ;; the same for a lazy node
 (define ts12-lruns 0)

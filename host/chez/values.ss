@@ -123,16 +123,28 @@
 (define-record-type (pset %mk-pset pset?)
   (fields m (mutable hasheq) (mutable meta)) (nongenerative chez-pset-v3))
 
-;; seq cell (seq.ss): the head; the tail, ONE published word (see seq.ss
-;; seq-tail-realized?); the forced flag; the cell's kind (sk-* in seq.ss); the
-;; chunk fields cvec/ci/crest; the claim lock (slot 7, seq.ss cseq-lock-index,
-;; which is why `meta` comes last); and the cell's metadata, jolt-nil or a map --
-;; the _meta of a PersistentList node or a Cons (natives-meta.ss owns the slot;
-;; written only on a cell nobody else holds yet). chez-cseq-v6, without the meta
-;; slot, restores through state-image.ss's legacy arm.
+;; seq cell (seq.ss): the head; the tail, ONE published word (slot 1, see seq.ss
+;; seq-tail-realized?, which a claim compare-and-swaps); the cell's kind (sk-* in
+;; seq.ss); and its metadata, jolt-nil or a map -- the reference's Cons carries
+;; _meta too (natives-meta.ss owns the slot; written only on a cell nobody else
+;; holds yet). Four fields, 48 bytes: the reference's Cons is 32, and this was 80
+;; -- a forced? mirror for the image, a claim lock and three chunk fields on every
+;; cell of every seq, which writ's prover allocated half a terabyte of.
+;; A cell that walks a vector or a chunk is the cseqv subtype, carrying cvec, ci
+;; and crest (cseq-cvec and co. answer #f / 0 for a plain cell). chez-cseq-v7
+;; (head tail forced? kind cvec ci crest lock meta) and chez-cseq-v6 restore
+;; through state-image.ss's legacy arm.
 (define-record-type cseq
-  (fields head (mutable tail) (mutable forced? cseq-forced-flag cseq-forced-flag-set!) kind cvec ci crest (mutable lock) (mutable meta))
-  (nongenerative chez-cseq-v7))
+  (fields head (mutable tail) kind (mutable meta))
+  (nongenerative chez-cseq-v8))
+(define-record-type (cseqv make-cseqv cseqv?)
+  (parent cseq) (fields cvec ci crest)
+  (nongenerative chez-cseqv-v1) (sealed #t))
+;; Macros, so they inline as the record accessors they replace did: several sit
+;; on the step of every vector walk.
+(define-syntax cseq-cvec (syntax-rules () ((_ s) (let ((x s)) (and (cseqv? x) (cseqv-cvec x))))))
+(define-syntax cseq-ci (syntax-rules () ((_ s) (let ((x s)) (if (cseqv? x) (cseqv-ci x) 0)))))
+(define-syntax cseq-crest (syntax-rules () ((_ s) (let ((x s)) (and (cseqv? x) (cseqv-crest x))))))
 
 ;; The empty seq (Clojure's empty list ()), distinct from nil. Its one field is
 ;; its metadata, jolt-nil or a map (EmptyList extends Obj): a metadata-bearing ()

@@ -35,7 +35,7 @@
   (let ((t (jolt-lazyseq-thunk x)))
     (not (or (lazyseq-pending? t) (jolt-lazyseq? t) (eq? t lazyseq-walking)))))
 ;; the lock field's position for the claiming CAS (seq.ss force-claimed!),
-;; checked at load like cseq-lock-index
+;; checked at load like seq.ss's cseq-tail-index
 (define jolt-lazyseq-lock-index 4)
 (let ((x (make-jolt-lazyseq 'th 'v #f #f #f jolt-nil)))
   (unless (and (sa-record-cas! x jolt-lazyseq-lock-index #f 'probe)
