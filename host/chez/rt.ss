@@ -396,18 +396,29 @@
     ;; than reported, keeping Runtime.maxMemory honest.
     (let ((soft (and ceiling (exact (floor (* ceiling 3/4))))))
       (set! gc-live-after-full (sa-bytes-allocated))
+      (set! gc-log? (let ((v (getenv "JOLT_GC_LOG"))) (and v (not (member v '("" "0" "false" "off"))))))
       (unless (sa-gc-install-after-collect!
                 (lambda (collect-full!)
+                  (set! gc-full-this-time #f)
                   (gc-collect-old-when-grown! collect-full!)
                   (when ceiling (gc-enforce-ceiling! soft ceiling collect-full!)))
-                gc-size-nursery!)
+                (lambda (gc-ns elapsed-ns)
+                  (gc-size-nursery! gc-ns elapsed-ns)
+                  (when gc-log? (gc-log-line gc-ns elapsed-ns))))
         (set! jolt-heap-ceiling-bytes #f)))))
 
-;; Above SOFT live bytes after a collection, force the FULL one a generational
-;; collector defers; still above HARD after it, the heap cannot fit.
+;; Above SOFT after a collection, force the FULL one a generational collector
+;; defers; still above HARD after it, the heap cannot fit. Once a full collection
+;; leaves the live set itself above SOFT, the next one waits until the heap has
+;; used half the room left under HARD: forcing one after every young collection
+;; copied gigabytes per nursery and ran nowhere (writ's prover, ~4GB live against
+;; the 4GB default ceiling of a 16GB CI runner, sat for hours). The heap is still
+;; bounded by HARD, and a live set that cannot fit still raises.
 (define (gc-enforce-ceiling! soft hard collect-full!)
-  (when (> (sa-bytes-allocated) soft)
+  (when (> (sa-bytes-allocated)
+           (max soft (+ gc-live-after-full (quotient (- hard gc-live-after-full) 2))))
     (collect-full!)
+    (set! gc-full-this-time 'ceiling)
     (set! gc-live-after-full (sa-bytes-allocated))
     (when (> (sa-bytes-allocated) hard)
       (error 'jolt
@@ -470,11 +481,28 @@
 ;; collect constantly), collect everything and measure again. The footprint is
 ;; then bounded by the program's own live data, whatever the nursery.
 (define gc-live-after-full 0)
+(define gc-full-this-time #f)
 (define (gc-collect-old-when-grown! collect-full!)
   (let ((live gc-live-after-full))
     (when (> (sa-bytes-allocated) (max (* 2 live) (+ live (* 64 1024 1024))))
       (collect-full!)
+      (set! gc-full-this-time 'grown)
       (set! gc-live-after-full (sa-bytes-allocated)))))
+
+;; JOLT_GC_LOG=1: one line per collection on stderr -- what the JVM's -verbose:gc
+;; answers. How long it took, what share of the time since the last one, the heap
+;; after it, the nursery it leaves, and whether the policy collected everything
+;; (grown: the heap passed twice the live set; ceiling: it passed the soft limit).
+(define gc-log? #f)
+(define (gc-log-line gc-ns elapsed-ns)
+  (let ((mb (lambda (b) (quotient b (* 1024 1024)))))
+    (fprintf (current-error-port)
+             "gc: ~ams (~a% of ~ams) heap ~aMB live-after-full ~aMB trip ~aMB~a\n"
+             (quotient gc-ns 1000000)
+             (if (> elapsed-ns 0) (quotient (* 100 gc-ns) elapsed-ns) 0)
+             (quotient elapsed-ns 1000000)
+             (mb (sa-bytes-allocated)) (mb gc-live-after-full) (mb (sa-gc-trip-bytes))
+             (if gc-full-this-time (string-append " full:" (symbol->string gc-full-this-time)) ""))))
 
 ;; Run THUNK with the nursery at least BYTES, the floor restored after: for a
 ;; phase known to churn before the average has seen it (the build's back end).

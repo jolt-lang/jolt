@@ -24,7 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the heap ceiling), and halves back when they take under a thirtieth. A program
   that allocates little keeps the 16MB it had. writ's prover spent 40% of its time
   collecting at the fixed 16MB and 19% now (64.5s to 48.9s). `JOLT_GC_TRIP_BYTES`
-  still pins the size.
+  still pins the size. The older generations are also collected once the heap passes
+  twice what was live after the last full collection, so garbage there no longer waits
+  for a schedule counted in nurseries. Near the heap ceiling, a full collection that
+  cannot get under its soft limit no longer repeats after every young collection; the
+  next waits until half the remaining room is used. A program whose live data sat
+  above the soft limit (writ's prover on a 16GB CI runner) used to stall there for
+  hours. `JOLT_GC_LOG=1` prints a line per collection.
 
 ### Fixed
 
