@@ -100,7 +100,8 @@
 ;; is defined in values.ss with the other collection layouts, ahead of every
 ;; dispatcher.
 ;; A cell's tail is ONE published word: the thunk (a procedure or a lazy-src
-;; descriptor) until it is forced, #f for a vector-backed cell whose tail follows
+;; descriptor) or a lazy seq -- (cons x a-lazy-seq), which is the reference's Cons
+;; with a LazySeq _more -- until it is forced, #f for a vector-backed cell whose tail follows
 ;; from its own fields, and whatever the thunk answered after -- a cseq, jolt-nil,
 ;; or () from a producer whose result is empty (filter's, say; jolt-seq coerces
 ;; it at every use). Pending is therefore a type test on that word and realized
@@ -111,7 +112,8 @@
 ;; decides from it. Macros, not procedures: this test is on the path of every
 ;; element of every lazy chain, and a cseq -- the common answer -- is one check.
 (define-syntax seq-tail-pending?
-  (syntax-rules () ((_ t) (let ((st t)) (or (procedure? st) (lazy-src? st) (not st))))))
+  ;; #f first: a vector-backed (chunked) cell's word, on every element of a walk
+  (syntax-rules () ((_ t) (let ((st t)) (or (not st) (procedure? st) (lazy-src? st) (jolt-lazyseq? st))))))
 (define-syntax seq-tail-realized?
   (syntax-rules () ((_ t) (let ((st t)) (or (cseq? st) (not (seq-tail-pending? st)))))))
 (define-syntax cseq-forced?
@@ -171,7 +173,10 @@
 (define (lazy-src-force t) ((lazy-src-fn t) (lazy-src-a t) (lazy-src-b t)))
 ;; a cseq's unforced tail is either a thunk or a descriptor, same as a lazy
 ;; cell's. One record predicate on the force path, measured at no cost.
-(define (cseq-run-tail t) (if (lazy-src? t) (lazy-src-force t) (t)))
+(define (cseq-run-tail t)
+  (cond ((lazy-src? t) (lazy-src-force t))
+        ((jolt-lazyseq? t) (force-lazyseq t))
+        (else (t))))
 
 ;; forced tail of a seq whose own tail was not yet realized (jolt-rest)
 (define lz-rest
@@ -384,7 +389,11 @@
 ;; (force-claimed! cell get-lock L get-tail body): body re-reads the cell and
 ;; either delivers its published tail or, holding the claim, runs the thunk and
 ;; publishes. L is the lock field's index (sa-record-cas!).
-(define (force-pending? t) (or (procedure? t) (lazy-src? t)))
+;; force-walking marks a lazy seq whose own thunk has run while its walk is
+;; still going (lazy-bridge.ss lazyseq-realize!): pending to everyone but the
+;; walker, who reaches it only by reentry, so another forcer waits on the claim.
+(define force-walking (list 'lazyseq-walking))
+(define (force-pending? t) (or (procedure? t) (lazy-src? t) (jolt-lazyseq? t) (eq? t force-walking)))
 (define force-claim-token (list 'forcing))
 (define (force-owner) (or (jolt-current-fiber) (get-thread-id)))
 (define (force-claimed! cell get-lock L get-tail body)
@@ -435,8 +444,15 @@
   (cseq-forced-flag-set! s #t))
 
 (define (seq-more s)                  ; force the tail; returns a seq (cseq | jolt-nil)
+  ;; Kept this small on purpose: Chez inlines it into every walk (fold-rest-seq,
+  ;; jolt-next, the reduce loops), and it stops being inlined the moment the whole
+  ;; pending test is spelled out here -- adding one type to that test made apply
+  ;; over a range 1.10x slower. A realized cell, the answer on every step but the
+  ;; first, is the one check; the rest is out of line.
   (let ((t (cseq-tail s)))
-    (if (seq-tail-realized? t) t (seq-more-force s t))))
+    (if (cseq? t) t (seq-more-other s t))))
+(define (seq-more-other s t)
+  (if (seq-tail-pending? t) (seq-more-force s t) t))
 ;; The tail is a thunk, a descriptor, or #f. A cvec cell (#f) has no thunk: its
 ;; tail follows from its own fields, so it is COMPUTED rather than run, and needs
 ;; no exclusion -- two threads racing here build two equal cells and the later
@@ -449,6 +465,10 @@
 ;; unchanged at ~23 (going memo-free the way Clojure does took re-walks to ~42).
 (define (seq-more-force s t)
   (cond
+    ;; a lazy seq as the tail stays the tail: it memoizes its own answer, and the
+    ;; reference's Cons keeps its LazySeq _more after realizing it, so (rest s)
+    ;; is that same, now realized, lazy seq
+    ((jolt-lazyseq? t) (force-lazyseq t))
     ((not jolt-mt?)
      (let ((r (if t (cseq-run-tail t) (cseq-cvec-more s #t))))
        (cseq-tail-set! s r) (cseq-forced-flag-set! s #t) r))
@@ -658,6 +678,8 @@
       ((cseq-cvec s) (let ((m (cseq-cvec-more s #f)))
                        (if (jolt-nil? m) jolt-empty-list m)))
       ((cseq-forced? s) (let ((m (cseq-tail s))) (if (jolt-nil? m) jolt-empty-list m)))
+      ;; a pending tail that IS a lazy seq is the rest, as Cons.more() answers _more
+      ((jolt-lazyseq? (cseq-tail s)) (cseq-tail s))
       ;; A string seq's tail is a pure O(1) step to the next index of the same
       ;; string, so force it instead of wrapping a lazy-seq around it: (rest "abc")
       ;; is a StringSeq on the JVM, not a LazySeq, and there is no laziness to
@@ -1987,26 +2009,32 @@
 ;; collection, which dominates when the inner colls are small (mapcat over
 ;; 2-element lists is the common shape).
 ;;
-;; An empty inner coll is skipped without emitting a cell, and the outer seq is
-;; advanced only at a boundary — so f runs once per inner collection, lazily,
-;; exactly as before.
+;; An empty inner coll is skipped without emitting a cell.
+;;
+;; The pending tail holds the REMAINING colls, never the outer cell of the coll
+;; being walked: that cell's first IS the coll, so holding it pinned every element
+;; of the walk -- the whole tree, for a tree-seq at its root (writ's prover held
+;; 9M cells, 3.8GB live, where the JVM held 256MB). The reference starts each coll
+;; as (cat (first zs) (next zs)), advancing the outer seq as the coll starts, and
+;; this does the same, which is also the reference's realization count.
 ;; outer/inner are top-level rather than a named let, so a cell's tail can name
 ;; them instead of closing over them (seq.ss lazy-src).
 (define (lazy-concat-outer s)
   (if (jolt-nil? s)
       jolt-empty-list
-      (lazy-concat-inner (jolt-seq (seq-first s)) s)))
-(define (lazy-concat-inner cur s)
+      (let ((cur (jolt-seq (seq-first s))))
+        (lazy-concat-inner cur (jolt-seq (seq-more s))))))
+(define (lazy-concat-inner cur more)
   (if (jolt-nil? cur)
-      (lazy-concat-outer (jolt-seq (seq-more s)))      ; empty inner: skip, no cell
-      (cseq-lazy (seq-first cur) (make-lazy-src lz-concat-inner cur s))))
+      (lazy-concat-outer more)                         ; empty inner: skip, no cell
+      (cseq-lazy (seq-first cur) (make-lazy-src lz-concat-inner cur more))))
 (define lz-concat-inner
   (register-lazy-src! 'concat-inner
-    (lambda (cur s)
+    (lambda (cur more)
       (let ((nx (jolt-seq (seq-more cur))))
         (if (jolt-nil? nx)
-            (lazy-concat-outer (jolt-seq (seq-more s)))   ; boundary
-            (lazy-concat-inner nx s))))))
+            (lazy-concat-outer more)                   ; boundary
+            (lazy-concat-inner nx more))))))
 (define (lazy-concat-seq ss) (lazy-concat-outer (jolt-seq ss)))
 
 ;; (apply f a b ... coll): spread the trailing seqable into the call.
@@ -2056,7 +2084,13 @@
          (v (and (procedure? f) (variadic-fixed-arity-of f))))
     (cond
       ((eq? f jolt-concat)
-       (lazy-concat-seq (fold-right jolt-cons (jolt-seq tail) fixed)))
+       ;; the reference's RestFn.applyTo first measures the args against concat's
+       ;; two required ones (RT.boundedLength(args, 2)): three next() calls, so
+       ;; the fourth coll is realized before any element is asked for
+       (let ((s (fold-right jolt-cons (jolt-seq tail) fixed)))
+         (let walk ((x s) (i 0))
+           (when (and (fx<? i 3) (not (jolt-nil? x))) (walk (jolt-next x) (fx+ i 1))))
+         (lazy-concat-seq s)))
       ;; registered variadic: peel V+1 off fixed++tail, pass V + a boxed rest
       ((and v (jolt-peel (fx+ v 1) (fold-right cseq-realized (jolt-seq tail) fixed)))
        => (lambda (peeled)

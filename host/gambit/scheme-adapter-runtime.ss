@@ -165,6 +165,15 @@
         (inexact->exact (floor (* t 1000)))
         (inexact->exact (floor (* (time->seconds t) 1000))))))
 
+;; (sa-gc-tight! on?) -> void
+;; Permitted degradation: Gambit has no in-place collection mode, so this is
+;; ignored.
+(define (sa-gc-tight! on?) (if #f #f))
+
+;; (sa-gc-reserve-ratio! r) -> void
+;; Permitted degradation: Gambit sizes its own heap reserve, so this is ignored.
+(define (sa-gc-reserve-ratio! r) (if #f #f))
+
 ;; (sa-gc-trip-bytes! n) -> void
 ;; Set the allocation threshold at which a trip collection triggers — the
 ;; dev-cache CLI's GC tuning knob. Contract: honor N as a collection-trip

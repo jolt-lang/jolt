@@ -89,6 +89,32 @@
 (define (sa-total-memory-bytes)
   (current-memory-bytes))
 
+;; (sa-gc-reserve-ratio! r) -> void
+;; How much free memory the collector keeps from the OS after a collection, as a
+;; ratio of the memory in use (a nonnegative real): the rest it returns. Chez's
+;; heap-reserve-ratio, default 1.0 -- one free page kept for each page in use,
+;; which alone lets a process hold twice its data. The heap ceiling lowers it as
+;; the heap nears the limit (rt.ss). Contract: best effort. Degradation: a target
+;; that does not return memory ignores it.
+(define (sa-gc-reserve-ratio! r)
+  (heap-reserve-ratio (inexact r)))
+
+;; (sa-gc-tight! on?) -> void
+;; Collect TIGHT while ON?: objects already in the older generations are marked
+;; where they are rather than copied, so a collection needs little memory beyond
+;; what the heap already holds. Copying needs a second copy's worth of room for
+;; everything it moves -- a 100MB structure promoted by a scheduled collection
+;; carried a 150MB-live program 20MB past a 384MB ceiling. The price is
+;; fragmentation (more memory held over a long run: writ's prover peaked 2.3GB ->
+;; 2.8GB with it on throughout), so the heap ceiling turns it on only near the
+;; limit. Chez's in-place-minimum-generation at 2 (1 fragmented worse: 380MB for
+;; that program against 343MB), and back to the maximum generation, its default.
+;; Degradation: a target without the choice ignores it.
+(define sa-gc-tight-generation 2)
+(define (sa-gc-tight! on?)
+  (in-place-minimum-generation
+    (if on? (min sa-gc-tight-generation (collect-maximum-generation)) (collect-maximum-generation))))
+
 ;; (sa-max-memory-bytes) -> exact integer
 ;; Peak heap bytes: the most the collector has held from the OS since the last
 ;; sa-reset-max-memory-bytes! (or since boot) -- the high-water mark behind
@@ -1056,8 +1082,9 @@
 
 ;; (sa-gc-install-after-collect! maintain observe) -> boolean
 ;; Hook every collection: the target performs its normal collection, then calls
-;; (MAINTAIN collect-full!) -- collect-full! a thunk that collects EVERY
-;; generation now, the collection a generational collector defers -- and then
+;; (MAINTAIN collect-full!) -- collect-full! collects EVERY generation now, the
+;; collection a generational collector defers; (collect-full! #t) does it TIGHT
+;; (see sa-gc-tight!) -- and then
 ;; (OBSERVE gc-ns elapsed-ns): how long the whole of this collection took,
 ;; MAINTAIN's work included, and how long since the previous one ended, both
 ;; monotonic nanoseconds. Answers whether the target could install the hook.
@@ -1068,8 +1095,8 @@
 ;; native. Both run where the collect request is handled, with the world stopped:
 ;; MAINTAIN may collect everything (collect-full!, and only that way: sa-gc-collect
 ;; is the out-of-handler entry), both may read the heap (sa-bytes-allocated) and
-;; set the trip threshold (sa-gc-trip-bytes!); raising from MAINTAIN is how a
-;; ceiling reports.
+;; set the trip threshold (sa-gc-trip-bytes!); raising from either is how a
+;; ceiling or the GC overhead limit reports.
 ;;
 ;; Contract: both are called after each collection the target runs on its own
 ;; schedule. Degradation: answer #f without installing anything. The caller then
@@ -1078,7 +1105,17 @@
 ;; lacks.
 (define (sa-gc-install-after-collect! maintain observe)
   (let ((last-end (sa-monotonic-ns))
-        (collect-full! (lambda () (collect (collect-maximum-generation)))))
+        (collect-full!
+          (case-lambda
+            (() (collect (collect-maximum-generation)))
+            ((tight?)
+             (if tight?
+                 (let ((saved (in-place-minimum-generation)))
+                   (dynamic-wind
+                     (lambda () (in-place-minimum-generation (min saved sa-gc-tight-generation)))
+                     (lambda () (collect (collect-maximum-generation)))
+                     (lambda () (in-place-minimum-generation saved))))
+                 (collect (collect-maximum-generation)))))))
     (collect-request-handler
       (lambda ()
         (let ((t0 (sa-monotonic-ns)))

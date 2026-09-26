@@ -920,7 +920,12 @@
         ;; equality costs the subtree the sharing was meant to save.
         node (assoc node
                     :src-form (if (fn-head-canonical? items) form (cons 'fn* (rest items)))
-                    :free-names (fn-free-names (:arities node) fn-name))]
+                    :free-names (fn-free-names (:arities node) fn-name))
+        ;; ^{:once true} on the fn* symbol, as the reference's lazy-seq writes it:
+        ;; the fn runs at most once, so its captures may be let go as it runs
+        ;; (backend_scheme.clj emit-fn)
+        hm (form-sym-meta (first items))
+        node (if (and (map? hm) (get hm :once)) (assoc node :once true) node)]
     node))
 
 ;; class names that catch everything (the JVM root types); a (catch Throwable e …)

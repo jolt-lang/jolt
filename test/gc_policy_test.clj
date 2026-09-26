@@ -20,11 +20,28 @@
       (recur (inc i) (mapv (fn [j] {:i j :s (str j "-" i)}) (range 200000)))
       (count window))))
 
+;; For the ceiling: 600k small maps held (~100MB, promoted through the
+;; generations by scheduled collections, which is what copies them) while the
+;; churn runs beside them.
+(def ^:private held (atom nil))
+(defn- hold-and-churn []
+  (reset! held (vec (map (fn [i] {:i i :s (str "held-" i)}) (range 600000))))
+  (jolt.host/reset-maximum-memory-bytes!)
+  (loop [i 0 window []]
+    (if (< i 40)
+      (recur (inc i) (mapv (fn [j] {:i j :s (str j "-" i)}) (range 200000)))
+      (+ (count window) (count @held)))))
+
 (defn -main [mode]
   (case mode
     "churn" (churn)
     "light" (reduce + (range 1000))
-    "pinned" (churn))
-  (println "trip" (jolt.host/gc-trip-bytes)))
+    "pinned" (churn)
+    ;; the heap ceiling bounds the TOTAL heap, as -Xmx does: live data, nursery
+    ;; and the free memory kept (the gate reads the high-water mark and the GC log)
+    "ceiling" (hold-and-churn))
+  (println "trip" (jolt.host/gc-trip-bytes))
+  (when (= mode "ceiling")
+    (println "peak" (jolt.host/maximum-memory-bytes) "max" (.maxMemory (Runtime/getRuntime)))))
 
 (apply -main *command-line-args*)

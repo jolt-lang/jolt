@@ -145,24 +145,24 @@
             (vreset! pv [true input])
             (if (and seen (= prior input)) result (rf result input))))))))
   ([coll]
+   ;; lazy-seq, not a bare make-lazy-seq: its thunk is ^:once, so a run of
+   ;; repeats does not pin the head it started from
    (let [step (fn step [s prev]
-                (make-lazy-seq
-                  (fn* []
-                    (let [s (seq s)]
-                      (if s
-                        (let [x (first s)]
-                          (if (= x prev)
-                            (coll->cells (step (rest s) prev))
-                            (coll->cells (cons x (step (rest s) x)))))
-                        nil)))))]
+                (lazy-seq
+                  (let [s (seq s)]
+                    (if s
+                      (let [x (first s)]
+                        (if (= x prev)
+                          (step (rest s) prev)
+                          (cons x (step (rest s) x))))
+                      nil))))]
      ;; defer (seq coll) into the lazy-seq so a side-effecting source is not
      ;; realized at construction (dedupe is lazy, like Clojure's).
-     (make-lazy-seq
-       (fn* []
-         (let [s (seq coll)]
-           (if s
-             (coll->cells (cons (first s) (step (rest s) (first s))))
-             nil)))))))
+     (lazy-seq
+       (let [s (seq coll)]
+         (if s
+           (cons (first s) (step (rest s) (first s)))
+           nil))))))
 
 ;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs —
 ;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):

@@ -68,17 +68,17 @@
   (let [s (map inc (vec (range n)))
         sums (run-walkers #(reduce + 0 s))]
     (when-not (apply = sums) (fail (str "walkers disagree over a chunked chain: " sums))))
-  ;; a failing producer: one run, the same exception to everyone, and the cell
-  ;; stays failed
-  (let [calls (atom 0)
-        s (lazy-seq (swap! calls inc) (throw (ex-info "boom" {:once true})))
+  ;; a failing producer: every racing walker gets the exception, none hangs on
+  ;; the claim the failed force leaves behind, and none sees an empty seq. The
+  ;; body runs again for each force, as the reference's LazySeq keeps fn until
+  ;; invoke returns (a ^:once body's captured locals are cleared by then, so this
+  ;; one captures nothing and fails the same way every time).
+  (let [s (lazy-seq (throw (ex-info "boom" {:once true})))
         msgs (run-walkers #(try (doall s) :no-throw
                                 (catch clojure.lang.ExceptionInfo e (ex-data e))))]
     (when-not (every? #(= {:once true} %) msgs)
-      (fail (str "a failing lazy-seq did not fail every walker the same way: " msgs)))
-    (when-not (= 1 @calls)
-      (fail (str "a failing lazy-seq body ran " @calls " times — the failure was not memoized"))))
-  (println "lazyseq-mt-scaling once-only: 8 racing walkers, every producer ran once"))
+      (fail (str "a failing lazy-seq did not fail every walker the same way: " msgs))))
+  (println "lazyseq-mt-scaling once-only: 8 racing walkers, every producer ran once, a failure reached all"))
 
 (defn- work []
   ;; allocation-heavy lazy walking: a few lazy cells per iteration, many iterations

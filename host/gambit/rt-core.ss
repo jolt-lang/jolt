@@ -195,6 +195,11 @@
 ;; no compiler can fold the capture away, exactly as on Chez.
 (define jolt-fn-identity-seed 0)
 (define jolt-fn-identity-probe #f)
+;; A ^:once fn's box of captures (backend emit-fn), as rt.ss.
+(define jolt-once-tag (list 'jolt-once))
+(define (jolt-once-clear! env)
+  (let loop ((i (fx- (vector-length env) 1)))
+    (when (fx>? i 0) (vector-set! env i jolt-nil) (loop (fx- i 1)))))
 (set! jolt-fn-identity-seed 1)
 (set! jolt-fn-identity-probe #f)
 

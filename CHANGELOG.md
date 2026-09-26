@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5.6GB of memory to 55s from cold, 35s for an unchanged rebuild and 38s after editing
   one namespace, under 1GB. `JOLT_BUILD_CACHE=0`, `JOLT_BUILD_CACHE_DIR`,
   `JOLT_BUILD_CACHE_MB` and `JOLT_BUILD_JOBS` control the unit cache.
+- **The heap ceiling bounds the heap's total size, as `-Xmx` does.** `JOLT_MAX_HEAP`
+  (and the 25%-of-RAM default) used to bound only the live data, so a program near a
+  4GB ceiling held 6.5GB. It now covers the live data, the nursery and the free memory
+  the collector keeps, within the working room a collection needs: about 10%, since
+  Chez's collector cannot compact in place (under 256MB with 100MB held, 0.8.12 went
+  23% over). Near the ceiling the nursery
+  shrinks to a quarter of the remaining room, the collector keeps less free memory,
+  and collections mark older objects in place instead of copying them. The
+  out-of-memory error is unchanged: it is raised only when the live data cannot fit.
+- **The JVM's GC overhead limit.** Five collections in a row that find more than 98% of
+  the time spent collecting with under 2% of the ceiling free raise `OutOfMemoryError`
+  ("GC overhead limit exceeded") instead of running on at a crawl.
+  `JOLT_GC_OVERHEAD_LIMIT=off`, `JOLT_GC_TIME_LIMIT` and `JOLT_GC_HEAP_FREE_LIMIT`
+  mirror `-XX:-UseGCOverheadLimit`, `GCTimeLimit` and `GCHeapFreeLimit`.
 - **The nursery size follows the time spent collecting, bounded by the live data.**
   It starts at 16MB and doubles while collection takes more than a tenth of the run,
   up to the size of the data the program keeps; past that only while collection keeps
@@ -38,6 +52,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Lazy seqs no longer keep what they have walked past.** Three retention bugs,
+  each fixed the way the reference does it:
+  - A lazy seq whose body answers another lazy seq (a `keep` or `dedupe` skip, a
+    `lazy-seq` returning a `lazy-seq`) was forced inside the body, so a run of skips
+    was a recursion as deep as the run, each frame pinning its place in the source.
+    The chain is now walked in a loop, as `LazySeq.realize`/`unwrap` does, with the
+    forced node holding nothing but its answer.
+  - A `lazy-seq` thunk kept what it closed over until it returned. It is now
+    `^:once`, as in the reference: its captures are released as it runs, so a thunk
+    looping over a run (`distinct`, `for` with `:when`) does not pin its source.
+    `^{:once true} fn*` works in user code too.
+  - `concat` over a seq of colls (`mapcat`, `apply concat`, `tree-seq`, `flatten`)
+    held the outer cell of the coll it was walking, whose first is that coll, so the
+    whole walk stayed live. It holds only the remaining colls now, as the reference's
+    `(cat (first zs) (next zs))` does, and realizes the same amount of its source.
+  writ's prover went from 3.8GB live to 134MB (the JVM holds 256MB) and from 507s to
+  277s; `drop-while`, `distinct`, `mapcat`, `for`, `remove`, `flatten`, `interleave`
+  and `dedupe` over a 3M-element run now fit in a 256MB heap, as on the JVM.
+  `(apply concat xs)` realizes as much of `xs` as the JVM does (4 colls, from
+  `RestFn.applyTo`), where it realized 1.
+- **A lazy seq whose body throws runs its body again on the next force**, as the
+  reference's `LazySeq` does (it keeps `fn` until `invoke` returns); a `lazy-seq`
+  body's captured locals are cleared by then, so the rerun sees them nil, as there.
+  jolt cached the failure and re-raised it. Not recording failures also removed an
+  exception handler from every force: with the pieces above, a `lazy-seq` walker
+  costs 86ns per element where it cost 115ns, `keep` 100ns (was 142), `for` with
+  `:when` 141ns (was 196).
 - clojure.core vars carry the reference's `:tag` metadata (`(:tag (meta #'not))` is
   `Boolean`, `(:tag (meta #'str))` is `String`), where they carried none.
 - A `loop` local bound to a primitive boolean (`(nil? x)`, `(= a b)`, `(< a b)`,

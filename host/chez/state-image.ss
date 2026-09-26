@@ -767,7 +767,7 @@
                                         (if (fx=? i n)
                                             (reverse acc)
                                             (loop (fx+ i 1) (cons (list 'jolt-fnsrc-probe i) acc)))))
-                                (slots (sa-procedure-free-values (apply mk sent))))
+                                (slots (image-flat-free-values (apply mk sent))))
                            (if (not slots)
                                'none
                                (let ((perm (map (lambda (s)
@@ -780,13 +780,27 @@
             (image-fn-form-layout-set! reg v)
             v)))))
 
+;; A closure's captures in position order, with a ^:once fn's box of captures
+;; (backend emit-fn: a vector tagged jolt-once-tag) expanded in place into the
+;; values it holds, so the maker's probe and the live closure read the same way.
+(define (image-flat-free-values x)
+  (let ((slots (sa-procedure-free-values x)))
+    (and slots
+         (let loop ((l slots) (acc '()))
+           (cond
+             ((null? l) (reverse acc))
+             ((and (vector? (car l)) (fx>? (vector-length (car l)) 0)
+                   (eq? (vector-ref (car l) 0) jolt-once-tag))
+              (loop (cdr l) (append (reverse (cdr (vector->list (car l)))) acc)))
+             (else (loop (cdr l) (cons (car l) acc))))))))
+
 (define (image-recover-free-values x reg frees lives walk path)
   (call/cc
     (lambda (refuse)
       (define (refuse-on-fail thunk)
         (guard (e (#t (refuse 'image-no))) (thunk)))
       (let* ((layout (and reg (let ((l (image-fnsrc-layout reg))) (and (pair? l) l))))
-             (slots  (and layout (sa-procedure-free-values x)))
+             (slots  (and layout (image-flat-free-values x)))
              (info (refuse-on-fail (lambda () (sa-procedure-info x))))
              ;; No inspector information at all is fatal only when there is no
              ;; layout to read positions through.

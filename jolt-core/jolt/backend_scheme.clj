@@ -970,7 +970,7 @@
                   "host-new" "host-static-call" "host-static-ref"
                   ;; per-site caches: the static member site and the instance?
                   ;; site, each with the constructor its hoisted cell calls
-                  "host-static-ref-site" "host-static-proc-site" "host-static-site-make"
+                  "jolt-once-tag" "jolt-once-clear!" "host-static-ref-site" "host-static-proc-site" "host-static-site-make"
                   "jolt-instance-site" "jolt-instance-site-make"
                   ;; record/reify protocol-method dispatch (:host-call fallback
                   ;; for any .method not in supported-host-methods).
@@ -2485,6 +2485,33 @@
                                               ") " fbody ")"))]
                              (str "(lambda " vformals
                                   " (if (null? " (munge-name (:rest variadic)) ") " fbody " " vbody "))")))))
+        ;; A ^:once fn (the reference's lazy-seq thunk) lets go of what it captured
+        ;; as it runs: the reference's compiler nulls a once-fn's closed-over
+        ;; fields at their last use. Here the captures ride in one box the closure
+        ;; holds; the body copies them into locals and empties the box first
+        ;; thing, and Chez frames keep only live values, so each is released at
+        ;; its last use (the box empties to nil, which is what a rerun after a failure
+        ;; then sees, as the reference's cleared locals are). A plain rebinding would not do -- the optimizer
+        ;; propagates (let ((x x)) ...) straight back to the closure's slot.
+        ;; Without it a thunk that walks a source -- for's :when loop, which keeps
+        ;; the closure alive for its step fn -- pinned the head of the source for
+        ;; the whole walk (3M skipped elements out of a 256MB heap the JVM does
+        ;; in 96MB). A literal the inline pass copied (:live-names) keeps the
+        ;; plain closure: its captures are renamed and the box would name them
+        ;; wrong. The tag lets the image read a boxed closure's captures in
+        ;; order (state-image.ss image-flat-free-values).
+        once-env (when (and (:once node) (seq (:free-names node)) (nil? (:live-names node)))
+                   (fresh-label "_once$"))
+        once-ps (when once-env (map munge-name (:free-names node)))
+        clauses (if once-env
+                  (let [binds (apply str (map-indexed (fn [i p] (str "(" p " (vector-ref " once-env " " (inc i) "))")) once-ps))
+                        ;; a few slots cleared inline; a bigger box by the runtime loop
+                        clear (if (<= (count once-ps) 4)
+                                (apply str (map (fn [i] (str "(vector-set! " once-env " " (inc i) " jolt-nil) ")) (range (count once-ps))))
+                                (str "(jolt-once-clear! " once-env ") "))]
+                    (mapv (fn [c] [(nth c 0) (str "(let (" binds ") " clear (nth c 1) ")")])
+                          clauses))
+                  clauses)
         lambda (cond
                  (= 1 (count clauses))
                  (let [c (first clauses)] (str "(lambda " (nth c 0) " " (nth c 1) ")"))
@@ -2498,6 +2525,9 @@
         ;; and native backtrace frames depend on. Verified before relying on it.
         lambda (if force-id?
                  (str "(let ((" id-nm " jolt-fn-identity-seed)) " lambda ")")
+                 lambda)
+        lambda (if once-env
+                 (str "(let ((" once-env " (vector jolt-once-tag " (str/join " " once-ps) "))) " lambda ")")
                  lambda)
         ;; A fn with a variadic arity records that arity's FIXED param count, so
         ;; jolt-apply can hand it a lazy rest instead of realizing the tail. The

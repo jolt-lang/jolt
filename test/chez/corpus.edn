@@ -1066,6 +1066,21 @@
   ;; A recur target established INSIDE the try is the target's own; only a target
   ;; the recur would have to cross the try to reach is refused.
   {:suite "exceptions / recur across try" :label "fn inside try recurs to itself" :expected "15" :actual "(try ((fn f [n acc] (if (zero? n) acc (recur (dec n) (+ acc n)))) 5 0) (catch Exception e :err))" :portability :common}
+  ;; A lazy seq whose body throws runs its body again on the next force, as the
+  ;; reference's LazySeq keeps fn until invoke returns; a ^:once body's captured
+  ;; locals are cleared by then, so the rerun sees them nil. Certified on JVM.
+  {:suite "lazy-seq / rest" :label "rest of a cons onto a lazy seq is that lazy seq, realized by next" :expected "[clojure.lang.LazySeq false clojure.lang.LazySeq true]" :actual "(let [lr (fn lr [n] (lazy-seq (cons n (lr (inc n))))) s (lr 0) a (rest s) b (realized? a) _ (next s)] [(class a) b (class (rest s)) (realized? (rest s))])" :portability :jvm}
+  {:suite "lazy-seq / failure" :label "a failed body runs again on the next force" :expected "[\"boom\" \"boom\" false]" :actual "(let [s (lazy-seq (throw (ex-info \"boom\" {})))] [(try (seq s) (catch Exception e (ex-message e))) (try (seq s) (catch Exception e (ex-message e))) (realized? s)])" :portability :jvm}
+  {:suite "lazy-seq / failure" :label "and again on every force after that" :expected "[\"boom\" \"boom\" \"boom\" \"boom\"]" :actual "(let [s (lazy-seq (throw (ex-info \"boom\" {})))] (mapv (fn [_] (try (seq s) :no-throw (catch Exception e (ex-message e)))) (range 4)))" :portability :jvm}
+  {:suite "lazy-seq / failure" :label "and sees its captured locals cleared" :expected "[\"boom2\" (quote (:locals-cleared)) true]" :actual "(let [s (let [v [1 2 3]] (lazy-seq (if (nil? v) (list :locals-cleared) (throw (ex-info \"boom2\" {})))))] [(try (seq s) (catch Exception e (ex-message e))) (try (seq s) (catch Exception e (ex-message e))) (realized? s)])" :portability :jvm}
+  ;; How much of the source concat and mapcat realize, as the reference does: each
+  ;; coll starts as (cat (first zs) (next zs)), one outer step ahead, and apply
+  ;; measures the args against concat's two required ones first. Certified on JVM.
+  {:suite "concat / realization" :label "first of mapcat over iterate" :expected "4" :actual "(let [c (atom 0) f (fn [x] (swap! c inc) [x x])] (first (mapcat f (iterate inc 0))) @c)" :portability :jvm}
+  {:suite "concat / realization" :label "take 3 of mapcat over iterate" :expected "4" :actual "(let [c (atom 0) f (fn [x] (swap! c inc) [x x])] (doall (take 3 (mapcat f (iterate inc 0)))) @c)" :portability :jvm}
+  {:suite "concat / realization" :label "first of apply concat over map" :expected "4" :actual "(let [c (atom 0) f (fn [x] (swap! c inc) [x x])] (first (apply concat (map f (iterate inc 0)))) @c)" :portability :jvm}
+  {:suite "concat / realization" :label "first of mapcat over a list" :expected "4" :actual "(let [c (atom 0) f (fn [x] (swap! c inc) [x x])] (first (mapcat f (list 1 2 3 4 5))) @c)" :portability :jvm}
+  {:suite "concat / realization" :label "drop 3 of mapcat over a list" :expected "4" :actual "(let [c (atom 0) f (fn [x] (swap! c inc) [x x])] (first (drop 3 (mapcat f (list 1 2 3 4 5)))) @c)" :portability :jvm}
   ;; The reference gives a loop local the JVM type of its init. An init that inlines
   ;; to a primitive boolean ((nil? x), (= a b), (< a b), (instance? C x)) makes a
   ;; boolean local, and recurring anything that is not a primitive boolean into it

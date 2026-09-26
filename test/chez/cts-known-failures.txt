@@ -24,7 +24,6 @@ clojure.core-test.eq 2 0
 clojure.core-test.float 1 0
 clojure.core-test.inc 1 0
 clojure.core-test.int-qmark 3 0
-clojure.core-test.lazy-seq 1 2
 clojure.core-test.minus 2 0
 clojure.core-test.mod 18 0
 clojure.core-test.neg-int-qmark 1 0

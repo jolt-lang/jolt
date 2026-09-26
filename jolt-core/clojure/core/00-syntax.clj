@@ -864,7 +864,10 @@
 ;; lazy-seq defers its body: make-lazy-seq holds a thunk that realizes the body
 ;; to cells when forced. lazy-cat wraps each coll in a lazy-seq and concats.
 (defmacro lazy-seq [& body]
-  `(make-lazy-seq (fn* [] (coll->cells (do ~@body)))))
+  ;; ^:once, as the reference writes it: the thunk runs once, and lets go of what
+  ;; it closed over as it runs (backend emit-fn) -- a thunk walking a source must
+  ;; not pin the source's head
+  `(make-lazy-seq (~(with-meta 'fn* {:once true}) [] (coll->cells (do ~@body)))))
 
 (defmacro lazy-cat [& colls]
   `(concat ~@(map (fn [c] `(lazy-seq ~c)) colls)))
