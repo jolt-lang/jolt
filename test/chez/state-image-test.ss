@@ -1418,6 +1418,10 @@
     (call/cc (lambda (k)
       (with-exception-handler (lambda (e) (k #t))
         (lambda () (jolt-image-read tmp) #f)))))
+(is "the refusal names the versions this build reads"
+    (string-append "(try (jolt.host/image-read \"" tmp "\") :no-throw"
+                   " (catch Exception e (re-find #\"reads versions [0-9]+ to [0-9]+\" (ex-message e))))")
+    (string-append "reads versions 2 to " (number->string jolt-image-format-version)))
 
 (cleanup!)
 (when (file-exists? (string-append tmp ".txt")) (delete-file (string-append tmp ".txt")))
@@ -1491,6 +1495,18 @@
 (is "v0.8.12 fixture: the restored throwable is live, not an inert record"
     "(try (throw imgexi9/boom) (catch clojure.lang.ExceptionInfo e (ex-data e)))"
     "{:k 1}")
+
+;; A concat part-way through a collection travels as its pending lazy source,
+;; whose arguments are image surface: the format 8 walk held (coll-seq outer-cell),
+;; and the concat that holds only the remaining colls must not read that outer
+;; cell as the rest (it would walk the current collection twice). Fixture made by
+;; the 0.8.12-era build (format 8); permanent, like those above.
+(ok "v0.8.12 concat fixture present" (file-exists? "test/chez/fixtures/image-v0.8.12-concat.image"))
+(jolt-image-restore-world! "test/chez/fixtures/image-v0.8.12-concat.image")
+(is "v0.8.12 fixture: imgcat8/plain" "imgcat8/plain" "7")
+(is "v0.8.12 fixture: a half-walked mapcat and apply concat finish once"
+    "[(vec imgcat8/walked) (vec imgcat8/outer-walked)]"
+    "[[1 2 3 4 5 6] [1 2 3 4 5 6]]")
 
 (printf "~a/~a state-image assertions passed\n" (- total fails) total)
 (when (> fails 0) (exit 1))

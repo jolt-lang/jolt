@@ -2069,14 +2069,24 @@
 (define (lazy-concat-inner cur more)
   (if (jolt-nil? cur)
       (lazy-concat-outer more)                         ; empty inner: skip, no cell
-      (cseq-lazy (seq-first cur) (make-lazy-src lz-concat-inner cur more))))
-(define lz-concat-inner
-  (register-lazy-src! 'concat-inner
+      (cseq-lazy (seq-first cur) (make-lazy-src lz-concat-more cur more))))
+(define lz-concat-more
+  (register-lazy-src! 'concat-more
     (lambda (cur more)
       (let ((nx (jolt-seq (seq-more cur))))
         (if (jolt-nil? nx)
             (lazy-concat-outer more)                   ; boundary
             (lazy-concat-inner nx more))))))
+;; A lazy source's arguments are image surface. 'concat-inner is the walk images
+;; of format 9 and older carry, whose second argument is the outer cell of the
+;; coll being walked rather than the colls after it; it restores into the walk
+;; above.
+(register-lazy-src! 'concat-inner
+  (lambda (cur s)
+    (let ((nx (jolt-seq (seq-more cur))))
+      (if (jolt-nil? nx)
+          (lazy-concat-outer (jolt-seq (seq-more s)))
+          (lazy-concat-inner nx (jolt-seq (seq-more s)))))))
 (define (lazy-concat-seq ss) (lazy-concat-outer (jolt-seq ss)))
 
 ;; (apply f a b ... coll): spread the trailing seqable into the call.

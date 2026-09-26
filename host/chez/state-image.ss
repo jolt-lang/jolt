@@ -1976,7 +1976,9 @@
   (unless (member (vector-ref h 1) jolt-image-read-versions)
     (jolt-throw (jolt-ex-info
                   (string-append "image: " path " has format version "
-                                 (jolt-str-one (vector-ref h 1)) ", this build reads versions 2 to 7")
+                                 (jolt-str-one (vector-ref h 1)) ", this build reads versions "
+                                 (number->string (apply min jolt-image-read-versions)) " to "
+                                 (number->string (apply max jolt-image-read-versions)))
                   empty-pmap)))
   ;; The fasl version moves with Chez, and a mismatch otherwise surfaces as an
   ;; opaque fasl-read error, so name it here instead.
