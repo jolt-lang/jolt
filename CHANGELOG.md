@@ -93,6 +93,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `lazy-seq` body that fails and is forced again sees the locals it had not
+  finished with, as on the JVM.** The reference's compiler nulls a `^:once` fn's
+  captured field at its last use on the path the body takes; jolt emptied every
+  capture on entry, so a body that threw before reading a capture reran with it nil
+  (`(let [v [1 2]] (lazy-seq (when (first-run?) (throw …)) v))` answered `nil` on the
+  second force where the JVM answers `(1 2)`). Each capture is now emptied at its
+  last use, with loops, branches and nested fns accounted for, and the store that
+  empties it needs no write barrier: a `lazy-seq` walker is 44ns per element (was
+  47), `keep` 59ns (was 65).
+
 - **Lazy seqs no longer keep what they have walked past.** Three retention bugs,
   each fixed the way the reference does it:
   - A lazy seq whose body answers another lazy seq (a `keep` or `dedupe` skip, a

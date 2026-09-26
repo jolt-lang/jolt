@@ -810,7 +810,10 @@
              ((null? l) (reverse acc))
              ((and (vector? (car l)) (fx>? (vector-length (car l)) 0)
                    (eq? (vector-ref (car l) 0) jolt-once-tag))
-              (loop (cdr l) (append (reverse (cdr (vector->list (car l)))) acc)))
+              ;; an emptied slot (rt.ss jolt-once-ref) reads as nil
+              (loop (cdr l) (append (reverse (map (lambda (v) (if (eq? v #!bwp) jolt-nil v))
+                                                  (cdr (vector->list (car l)))))
+                                    acc)))
              (else (loop (cdr l) (cons (car l) acc))))))))
 
 (define (image-recover-free-values x reg frees lives walk path)

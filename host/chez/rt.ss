@@ -1211,8 +1211,16 @@
   (and (jolt-ex-info-record? v) (jolt-ex-info-record-capture v)))
 
 ;; A ^:once fn's box of captures (backend emit-fn): the tag marks the box so the
-;; image can read its values in order, and a once-fn empties it as it starts.
+;; image can read its values in order. The body empties each slot at the
+;; capture's last use -- on Chez by storing #!bwp, an immediate the store needs
+;; no write barrier for -- and reads a slot back through jolt-once-ref, which
+;; answers nil for an emptied one (a rerun after a failure sees the capture
+;; cleared, as the reference's nulled field is). An unmarked (multi-arity) body
+;; empties them all on entry with jolt-once-clear!.
 (define jolt-once-tag (list 'jolt-once))
+(define-syntax jolt-once-ref
+  (syntax-rules ()
+    ((_ env i) (let ((v (vector-ref env i))) (if (eq? v #!bwp) jolt-nil v)))))
 (define (jolt-once-clear! env)
   (let loop ((i (fx- (vector-length env) 1)))
     (when (fx>? i 0) (vector-set! env i jolt-nil) (loop (fx- i 1)))))
