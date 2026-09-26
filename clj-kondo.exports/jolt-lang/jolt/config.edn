@@ -1,0 +1,30 @@
+;; clj-kondo config for jolt.ffi, exported from the jolt repo itself.
+;;
+;; jolt.ffi's macros expand to special forms the compiler alone understands,
+;; so clj-kondo cannot see through any of them without help. Two kinds of
+;; help are used here, matched to what each macro actually needs:
+;;
+;; 1. jolt.ffi/defcfn defines a var (or, in its wrapper form, a function)
+;;    per bound C symbol. hooks/jolt/ffi.clj rewrites each call into an
+;;    equivalent def/defn. See that file for what it covers and why.
+;;
+;; 2. jolt.ffi/with-alloc, with-out, with-layout and with-c-string each bind
+;;    exactly one [symbol expr] pair, the same shape `let` uses for one
+;;    binding, so :lint-as maps them straight onto `let`.
+;;
+;;    jolt.ffi/with-c-string-array binds one [symbol count] pair too. count
+;;    is a size, not `let`'s expected value, but that distinction is a
+;;    runtime concern `let` doesn't need to share for clj-kondo to resolve
+;;    the bound symbol and lint the body.
+;;
+;;    jolt.ffi/with-arena is the one exception: its binding is a single
+;;    symbol with no accompanying expression ([arena], not [arena expr]),
+;;    which `let` rejects outright ("binding vector requires even number of
+;;    forms"). It gets its own hook instead.
+{:hooks {:analyze-call {jolt.ffi/defcfn hooks.jolt.ffi/defcfn
+                        jolt.ffi/with-arena hooks.jolt.ffi/with-arena}}
+ :lint-as {jolt.ffi/with-alloc clojure.core/let
+           jolt.ffi/with-out clojure.core/let
+           jolt.ffi/with-layout clojure.core/let
+           jolt.ffi/with-c-string clojure.core/let
+           jolt.ffi/with-c-string-array clojure.core/let}}

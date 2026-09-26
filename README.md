@@ -462,6 +462,31 @@ sessions and interruptible eval, plus the cider-nrepl ops an editor expects
 
 See [REPL-Driven Development](https://jolt-lang.github.io/docs/repl-driven-development.html).
 
+### Linting with clj-kondo
+
+`jolt.ffi`'s macros (`defcfn` and the scoped-allocation helpers) expand to
+special forms only the compiler understands, so without help
+[clj-kondo](https://github.com/clj-kondo/clj-kondo) reports every C symbol
+`defcfn` binds as an unresolved var, with no way to catch a wrong-arity call
+either. This repo exports a config and hook for that, at
+`clj-kondo.exports/jolt-lang/jolt/`:
+
+```bash
+mkdir -p .clj-kondo
+clj-kondo --lint /path/to/jolt/checkout --dependencies --copy-configs
+```
+
+`/path/to/jolt/checkout` is wherever jolt's own source lives locally. The
+export ships in the repo, not in the installed binary, so a checkout (a full
+clone, or one already on disk for another reason) is what `--copy-configs`
+needs to read. The command copies `config.edn` and its hook into
+`.clj-kondo/imports/jolt-lang/jolt/`; clj-kondo loads every config under
+`.clj-kondo/imports/` on its own, so nothing further has to name it in the
+project's own `.clj-kondo/config.edn`. Re-run the command whenever the
+export changes upstream. `test/clj-kondo/` in this repo has a fixture
+covering every `defcfn` shape and the other macros the config touches, with
+its own README for re-running that check.
+
 ## Compile a binary
 
 `jolt build` ahead-of-time compiles a project into a single self-contained

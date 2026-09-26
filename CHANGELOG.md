@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A clj-kondo config and hook for `jolt.ffi`, exported at
+  `clj-kondo.exports/jolt-lang/jolt/`.** Without it, clj-kondo cannot see
+  through `defcfn`'s `__cfn` expansion, so every C symbol it binds reads as
+  an unresolved var and a wrong-arity call at the binding's call site goes
+  uncaught. The hook rewrites every `defcfn` shape (plain, docstring,
+  attribute map, `:blocking`/options-map trailing, the raw-binding wrapper
+  in both its single- and multi-arity forms, and both spellings of the
+  variadic marker) into a `def`/`defn` clj-kondo can check for real, with
+  the same arity as the C binding; `with-arena`'s single-symbol binding
+  gets a small hook of its own, and `with-alloc`/`with-out`/`with-layout`/
+  `with-c-string`/`with-c-string-array` are covered by `:lint-as
+  clojure.core/let` since each binds one `[symbol expr]` pair already. See
+  the README's "Linting with clj-kondo" section for the import command and
+  `test/clj-kondo/` for the fixture that exercises it.
+
 ### Changed
 
 - **`jolt build` caches and parallelizes its back end (#1059).** The app half of a
