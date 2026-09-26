@@ -143,6 +143,18 @@
    ;; else to clojure.core/find-other, so it is only the 2-arity call form; a
    ;; value-position `find` still resolves to the overlay var.
    "find"        {:call "jolt-find2"  :arity #(= % 2) :inline-only? true}
+   ;; The two halves of every `lazy-seq` form (00-syntax.clj): the node over the
+   ;; thunk, and the body's answer as a seq. Not public names -- the macro's
+   ;; expansion is their only caller -- so nothing rebinds them, and through their
+   ;; vars they cost a deref and a generic invoke each, on every element of every
+   ;; lazy-seq walk (lazy-bridge.ss).
+   "make-lazy-seq" {:call "jolt-make-lazy-seq/once" :arity #(= % 1)}
+   "coll->cells"   {:call "jolt-coll->cells" :arity #(= % 1)}
+   ;; Asked of every element by the lazy-seq fns that keep a chunked source
+   ;; chunked (keep, keep-indexed, ...); through the var it cost a deref and a
+   ;; generic invoke each time. The overlay's placeholder (21-coll.clj) still binds
+   ;; the var until post-prelude.ss re-asserts it.
+   "chunked-seq?"  {:call "na-chunked-seq?" :arity #(= % 1) :bool? true :pure? true}
    "empty?"      {:call "jolt-empty?"   :arity #(= % 1) :bool? true}
    "peek"        {:call "jolt-peek"    :arity #(= % 1)}
    "pop"         {:call "jolt-pop"     :arity #(= % 1)}

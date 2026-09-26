@@ -329,6 +329,21 @@ sa-uvector-set!
 #     adapter reorders; a target with the R7RS order passes through. A bulk
 #     move in the target's runtime — what beats a Scheme copy loop.
 sa-vector-copy-range!
+#   (sa-vector-copy v) -> a fresh copy of V, the same block move as below. Not
+#     a bare vector-copy in shared code: the vendored irregex redefines that
+#     name at top level as a one-argument copy loop.
+sa-vector-copy
+#   (sa-subvector v start end) -> a fresh vector of V's elements start..end-1,
+#     the R7RS 3-argument vector-copy. Chez's 3-argument vector-copy takes
+#     (v start count), so its adapter converts; Gambit has subvector. Unlike
+#     sa-vector-copy-range! into a vector the caller made, the target fills a
+#     fresh vector in one block move, with no initializing fill and no write
+#     barrier per slot (Chez: 40 ns against 84 for a 31-slot insert).
+sa-subvector
+#   (sa-vector-append v ...) -> a fresh vector of the arguments' elements in
+#     order, R7RS vector-append (Chez and Gambit both have it; blocklisted as a
+#     bare name only because not every target does).
+sa-vector-append
 #   (sa-string-copy-range! to at from start end) -> unspecified: the same shape
 #     over strings. Chez's string-copy! is (from from-start to to-start count)
 #     while R7RS (Gambit, Guile) is (to at from start end) — the two orders

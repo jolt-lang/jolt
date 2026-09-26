@@ -75,6 +75,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining room is used. A program whose live data sat above the soft limit (writ's
   prover on a 16GB CI runner) used to stall there for hours. `JOLT_GC_LOG=1` prints a
   line per collection.
+- **Hand-written lazy seqs cost less per element.** A `lazy-seq` node's own thunk stays
+  on it while it runs, as the reference keeps `fn`, which drops three stores and a
+  marker from every force; the macro's two halves and `chunked-seq?` compile to direct
+  calls instead of a var lookup and a generic invoke. A `lazy-seq` walker over a list
+  went from 74ns to 47ns per element, `keep` from 95ns to 64ns, and `for` with `:when`
+  from 61ns to 39ns.
+- **Hashing a long is 3x faster, and hash sets and maps with it.** The 32-bit
+  sign-extension the murmur hash applies at every step branched on the hash's sign bit,
+  a coin flip the CPU mispredicted about half the time; it is branch-free now, and the
+  long hash keeps its steps unsigned until one final conversion (85ns to 30ns for
+  `(hash n)`). A persistent map or set copies a changed node in one block move instead
+  of a zero fill and a copy loop with a write barrier per slot, the per-level
+  helpers inline, and `contains?` takes the lookup path `get` already had: `conj` onto
+  a 100k-element set went from 610ns to 300ns, `contains?` from 148ns to 95ns, and
+  `distinct` from 946ns to 450ns per element.
 
 ### Fixed
 

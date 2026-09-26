@@ -624,3 +624,6 @@
   (vector-copy! to at from start end))
 (define (sa-string-copy-range! to at from start end)
   (string-copy! to at from start end))
+(define (sa-vector-copy v) (subvector v 0 (vector-length v)))
+(define (sa-subvector v start end) (subvector v start end))
+(define sa-vector-append vector-append)

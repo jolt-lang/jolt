@@ -120,11 +120,15 @@
   (syntax-rules ()
     ((_ x) (#3%bitwise-and x #xFFFFFFFF))))
 
-;; Interpret unsigned 32 bits as signed 32-bit (-2^31 .. 2^31-1).
+;; Interpret unsigned 32 bits as signed 32-bit (-2^31 .. 2^31-1). Branch-free:
+;; flipping the sign bit and subtracting it back sign-extends. The test it
+;; replaced was a coin flip on every hash value -- a hash's sign bit is random --
+;; and the murmur chain below runs thirty of them per long: mispredicted, they
+;; were most of its cost (66 ns a hash, where the arithmetic is under 10).
 (define-syntax i32
   (syntax-rules ()
     ((_ x) (let ((u (u32 x)))
-             (if (hash-fx>=? u #x80000000) (hash-fx- u #x100000000) u)))))
+             (hash-fx- (hash-fxxor u #x80000000) #x80000000)))))
 
 ;; 32-bit wrapping multiply via a 16-bit split. On a wide-fixnum target the
 ;; selected fast path is fixnum-pure; on a narrow target the same bounded
@@ -201,6 +205,23 @@
 ;; key-hash→jolt-hasheq→cond→hashLong→mixK1→mixH1→fmix chain.
 ;; ============================================================================
 
+;; The unsigned forms: operands already in [0, 2^32), result too.
+(define-syntax mulu32
+  (syntax-rules ()
+    ((_ a b)
+     (let ((a* a) (b* b))
+       (u32 (hash-fx+ (hash-fxsll (hash-fxand (hash-fx* a* (hash-fxsrl b* 16)) #xFFFF) 16)
+                      (hash-fx* a* (hash-fxand b* #xFFFF))))))))
+(define-syntax rotlu32
+  (syntax-rules ()
+    ((_ x n)
+     (let ((x* x))
+       (hash-fxior (hash-fxsll (hash-fxand x* (hash-fxsrl #xFFFFFFFF n)) n)
+                   (hash-fxsrl x* (hash-fx- 32 n)))))))
+(define-syntax addu32
+  (syntax-rules ()
+    ((_ a b) (u32 (hash-fx+ a b)))))
+
 (define murmur3-seed (i32 0))
 (define murmur3-C1   #xcc9e2d51)   ;; -862048943
 (define murmur3-C2   #x1b873593)   ;; 461845907
@@ -272,33 +293,27 @@
 (define (murmur3-hash-long-flat input)
   ;; input: fixnum. Java Long.hasheq: (int)(input ^ (input >>> 32))
   ;; If 0 → return 0; otherwise murmur3-hash-long with count=8.
+  ;; Every step is taken modulo 2^32, where signed and unsigned agree, so the
+  ;; chain keeps its values unsigned and sign-extends once at the end: the same
+  ;; answer as mixK1/mixH1/fmix over signed ints, without renormalizing between
+  ;; steps (8 ns against 27 with the branch-free i32 at every step).
   (if (hash-fx=? input 0) 0
-      (let* ((low (i32 input))
-             (high (i32 (bitwise-arithmetic-shift-right input 32)))
-             ;; --- mixK1(low): mul32(low, C1) ---
-             (k1 (mul32 low murmur3-C1))
-             (k1 (rotl32 k1 15))
-             (k1 (mul32 k1 murmur3-C2))
-             ;; --- mixH1(seed, k1) ---
-             (h1 (hash-fxxor murmur3-seed k1))
-             (h1 (rotl32 h1 13))
-             (h1 (add32 (mul32 h1 5) #xe6546b64))
-             ;; --- mixK1(high) ---
-             (k1 (mul32 high murmur3-C1))
-             (k1 (rotl32 k1 15))
-             (k1 (mul32 k1 murmur3-C2))
-             ;; --- mixH1(h1 from low, k1 from high) ---
-             (h1 (hash-fxxor h1 k1))
-             (h1 (rotl32 h1 13))
-             (h1 (add32 (mul32 h1 5) #xe6546b64))
+      (let* ((low (u32 input))
+             (high (u32 (bitwise-arithmetic-shift-right input 32)))
+             ;; --- mixK1(low), mixH1(seed = 0, k1) ---
+             (k1 (mulu32 (rotlu32 (mulu32 low murmur3-C1) 15) murmur3-C2))
+             (h1 (addu32 (mulu32 (rotlu32 k1 13) 5) #xe6546b64))
+             ;; --- mixK1(high), mixH1(h1, k1) ---
+             (k1 (mulu32 (rotlu32 (mulu32 high murmur3-C1) 15) murmur3-C2))
+             (h1 (addu32 (mulu32 (rotlu32 (hash-fxxor h1 k1) 13) 5) #xe6546b64))
              ;; --- fmix(h1, 8) ---
              (h1 (hash-fxxor h1 8))
-             (h1 (hash-fxxor h1 (urs32 h1 16)))
-             (h1 (mul32 h1 #x85ebca6b))
-             (h1 (hash-fxxor h1 (urs32 h1 13)))
-             (h1 (mul32 h1 #xc2b2ae35))
-             (h1 (hash-fxxor h1 (urs32 h1 16))))
-        h1)))
+             (h1 (hash-fxxor h1 (hash-fxsrl h1 16)))
+             (h1 (mulu32 h1 #x85ebca6b))
+             (h1 (hash-fxxor h1 (hash-fxsrl h1 13)))
+             (h1 (mulu32 h1 #xc2b2ae35))
+             (h1 (hash-fxxor h1 (hash-fxsrl h1 16))))
+        (i32 h1))))
 
 ;; Legacy entry points — kept for cold paths (strings, bignums).
 ;; The hot fixnum path in jolt-hasheq and key-hash calls the flat versions above.

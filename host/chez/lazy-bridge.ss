@@ -101,6 +101,7 @@
     (if (or (cseq? t) (jolt-nil? t)) t (force-lazyseq-slow x t))))
 (define (force-lazyseq-slow x t)
   (cond
+    ((and (procedure? t) (not jolt-mt?)) (lazyseq-realize! x))
     ((lazyseq-fail? t) (raise (lazyseq-fail-condition t)))
     ((not jolt-mt?) (lazyseq-realize! x))
     (else
@@ -155,7 +156,29 @@
 ;; X's own thunk has answered, a failure further down the chain leaves X answering
 ;; nil, as realize() does after nulling sv. No handler is installed per force --
 ;; it cost 22ns of every realized element, the most of any part of a force.
+;; A `lazy-seq` node's own thunk is the fast case: it let go of its captures as it
+;; started (^:once), so it stays in the word while it runs, as the reference's fn
+;; stays until invoke returns. A force that comes back in, or comes after a failed
+;; run, then finds the thunk and runs it again, with nothing left to pin -- what the
+;; walking marker and the val mirror spell out for every other thunk, without the
+;; three stores they cost on every element. val keeps the tag, which pins nothing.
 (define (lazyseq-realize! x)
+  (let ((t (jolt-lazyseq-thunk x)))
+    (if (and (procedure? t) (eq? (jolt-lazyseq-val x) lazyseq-rerun-tag))
+        (let ((r (t)))
+          (if (jolt-lazyseq? r)
+              (begin
+                (jolt-lazyseq-val-set! x lazyseq-nil-thunk)
+                (jolt-lazyseq-thunk-set! x lazyseq-walking)
+                (let ((r (lazyseq-walk r)))
+                  (lazyseq-publish! x r #f)
+                  r))
+              (begin
+                (when jolt-mt? (memory-order-release))
+                (jolt-lazyseq-thunk-set! x r)
+                r)))
+        (lazyseq-realize-general! x))))
+(define (lazyseq-realize-general! x)
   (let* ((t (jolt-lazyseq-thunk x))
          (first (cond ((lazyseq-pending? t) (lazyseq-take-call! x t))
                       ((eq? t lazyseq-walking) (lazyseq-take-call! x (lazyseq-rerun-thunk x)))
@@ -180,6 +203,12 @@
       (cond ((or (cseq? t) (jolt-nil? t)) t)
             ((lazyseq-fail? t) (raise (lazyseq-fail-condition t)))
             ((jolt-lazyseq? t) t)
+            ;; a `lazy-seq` node's thunk stays on it while it runs (lazyseq-realize!)
+            ((and (procedure? t) (eq? (jolt-lazyseq-val node) lazyseq-rerun-tag))
+             (let ((r (t)))
+               (when jolt-mt? (memory-order-release))
+               (jolt-lazyseq-thunk-set! node r)
+               r))
             (else
              (let ((r (lazyseq-take-call! node (if (eq? t lazyseq-walking) (lazyseq-rerun-thunk node) t))))
                (lazyseq-publish! node r #f)

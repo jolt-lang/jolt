@@ -1375,6 +1375,15 @@
 ;; (vector-copy! from from-start to to-start count).
 (define (sa-vector-copy-range! to at from start end)
   (vector-copy! from start to at (fx- end start)))
+;; (sa-vector-copy v): a fresh copy of v. (sa-subvector v start end): a fresh
+;; copy of v[start, end), over Chez's (vector-copy v start count). The #%
+;; forms name the primitives themselves: the vendored irregex redefines
+;; vector-copy at top level as a one-argument loop, and in an app's runtime that
+;; definition is what a bare vector-copy reaches.
+(define (sa-vector-copy v) (#%vector-copy v))
+(define (sa-subvector v start end)
+  (#%vector-copy v start (fx- end start)))
+(define sa-vector-append #%vector-append)
 ;; (sa-string-copy-range! to at from start end): the same reorder over Chez's
 ;; (string-copy! from from-start to to-start count).
 (define (sa-string-copy-range! to at from start end)
