@@ -36,12 +36,12 @@
     (not (or (lazyseq-pending? t) (jolt-lazyseq? t) (eq? t lazyseq-walking)))))
 ;; the lock field's position for the claiming CAS (seq.ss force-claimed!),
 ;; checked at load like seq.ss's cseq-tail-index
-(define jolt-lazyseq-lock-index 4)
-(let ((x (make-jolt-lazyseq 'th 'v #f #f #f jolt-nil)))
+(define jolt-lazyseq-lock-index 2)
+(let ((x (make-jolt-lazyseq 'th 'v #f jolt-nil)))
   (unless (and (sa-record-cas! x jolt-lazyseq-lock-index #f 'probe)
                (eq? (jolt-lazyseq-lock x) 'probe)
                (eq? (jolt-lazyseq-thunk x) 'th) (eq? (jolt-lazyseq-val x) 'v)
-               (eq? (jolt-lazyseq-error-flag x) #f))
+               (jolt-nil? (jolt-lazyseq-meta x)))
     (error 'lazy-bridge.ss "jolt-lazyseq-lock-index does not address the lock field")))
 
 ;; Thread-safety for lazy realization is only needed once a second OS thread can
@@ -59,17 +59,17 @@
 ;; for the duration (seq.ss force-claimed!) and publishes behind a release
 ;; fence; reads stay free.
 
-(define (jolt-make-lazy-seq thunk) (make-jolt-lazyseq thunk jolt-nil #f #f #f jolt-nil))
+(define (jolt-make-lazy-seq thunk) (make-jolt-lazyseq thunk jolt-nil #f jolt-nil))
 ;; A `lazy-seq` form's node (the clojure.core/make-lazy-seq var the macro calls).
 ;; Its thunk is ^:once and lets go of its captures as it starts, so the node may
 ;; keep it while it runs, for the rerun after a failure the reference does
 ;; (lazyseq-take-call!); the val mirror, unused until the node is realized, says so.
 (define lazyseq-rerun-tag (list 'lazyseq-rerun))
-(define (jolt-make-lazy-seq/once thunk) (make-jolt-lazyseq thunk lazyseq-rerun-tag #f #f #f jolt-nil))
+(define (jolt-make-lazy-seq/once thunk) (make-jolt-lazyseq thunk lazyseq-rerun-tag #f jolt-nil))
 ;; the descriptor form: a producer that records what it is instead of closing
 ;; over it, so the cell can be written to a state image (seq.ss lazy-src).
 (define (jolt-make-lazy-src fn a b)
-  (make-jolt-lazyseq (make-lazy-src fn a b) jolt-nil #f #f #f jolt-nil))
+  (make-jolt-lazyseq (make-lazy-src fn a b) jolt-nil #f jolt-nil))
 
 ;; force once and memoize, the reference's LazySeq.realize. A thunk may answer
 ;; another lazy seq -- (keep f (rest s)) on a skip, (dedupe)'s run of repeats,
@@ -101,31 +101,20 @@
     (if (or (cseq? t) (jolt-nil? t)) t (force-lazyseq-slow x t))))
 (define (force-lazyseq-slow x t)
   (cond
-    ((lazyseq-settled x t) => lazyseq-settle-value)
+    ((lazyseq-fail? t) (raise (lazyseq-fail-condition t)))
     ((not jolt-mt?) (lazyseq-realize! x))
     (else
      (force-claimed! x jolt-lazyseq-lock jolt-lazyseq-lock-index jolt-lazyseq-thunk
        (lambda ()
          (let ((t (jolt-lazyseq-thunk x)))
-           (cond ((lazyseq-settled x t) => lazyseq-settle-value)
+           (cond ((or (cseq? t) (jolt-nil? t)) t)
+                 ((lazyseq-fail? t) (raise (lazyseq-fail-condition t)))
                  (else (lazyseq-realize! x)))))))))
-;; A word that needs no running: the node's seq, its failure, or an older image's
-;; mirrors -- boxed so a nil answer is still an answer. #f while the node has a
-;; thunk to run or a next node to follow.
-(define (lazyseq-settled x t)
-  (cond ((or (cseq? t) (jolt-nil? t)) (list t))
-        ;; a thunk that has been called and has not answered: running now (a
-        ;; reentrant force, which the reference also runs again) or failed (which
-        ;; it reruns) -- either way, run what the node kept (lazyseq-take-call!)
-        ((eq? t lazyseq-walking) #f)
-        ((lazyseq-fail? t) (list t))
-        ((not t) (list (if (jolt-lazyseq-error-flag x)
-                           (make-lazyseq-fail (jolt-lazyseq-val x))
-                           (jolt-lazyseq-val x))))
-        (else #f)))
-(define (lazyseq-settle-value box)
-  (let ((v (car box)))
-    (if (lazyseq-fail? v) (raise (lazyseq-fail-condition v)) v)))
+;; The node's word is a seq (the answer), the walking marker (a thunk called and
+;; not answered: running now -- a reentrant force, which the reference also runs
+;; again -- or failed, which it reruns: either way run what the node kept), a
+;; thunk, a next node, or a lazyseq-fail from an image written when failures were
+;; recorded.
 ;; Realize X: its answer (its own thunk's, or the node it already records), then
 ;; the chain walked from there with nothing but a local, then the seq -- or the
 ;; failure -- published on X.
@@ -188,7 +177,8 @@
 (define (lazyseq-step node)
   (define (settled-or-run)
     (let ((t (jolt-lazyseq-thunk node)))
-      (cond ((lazyseq-settled node t) => lazyseq-settle-value)
+      (cond ((or (cseq? t) (jolt-nil? t)) t)
+            ((lazyseq-fail? t) (raise (lazyseq-fail-condition t)))
             ((jolt-lazyseq? t) t)
             (else
              (let ((r (lazyseq-take-call! node (if (eq? t lazyseq-walking) (lazyseq-rerun-thunk node) t))))
@@ -200,16 +190,13 @@
           ((not jolt-mt?) (settled-or-run))
           (else (force-claimed! node jolt-lazyseq-lock jolt-lazyseq-lock-index
                                 jolt-lazyseq-thunk settled-or-run)))))
-;; mirrors first, then the word readers decide from -- behind a fence on the
-;; multi-threaded path so the answer's own fields (and the fail record's, which is
-;; why it is built up front) are visible before the word that points to them.
+;; The answer into the word, behind a fence on the multi-threaded path so the
+;; answer's own fields are visible before the word that points to them. val lets
+;; go of the rerun thunk, as the reference nulls fn once invoke has returned.
 (define (lazyseq-publish! x v fail?)
-  (let ((w (if fail? (make-lazyseq-fail v) v)))
-    (jolt-lazyseq-val-set! x v)
-    (jolt-lazyseq-error-flag-set! x fail?)
-    (jolt-lazyseq-realized-flag-set! x (not (jolt-lazyseq? v)))
-    (when jolt-mt? (memory-order-release))
-    (jolt-lazyseq-thunk-set! x w)))
+  (jolt-lazyseq-val-set! x jolt-nil)
+  (when jolt-mt? (memory-order-release))
+  (jolt-lazyseq-thunk-set! x v))
 
 ;; Shadow fork-thread so any spawn (future/agent/core.async/process, all loaded
 ;; after this file) flips jolt-mt? on and joins the live-thread set. Captured in a

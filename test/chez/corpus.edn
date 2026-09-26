@@ -1073,6 +1073,13 @@
   {:suite "lazy-seq / failure" :label "a failed body runs again on the next force" :expected "[\"boom\" \"boom\" false]" :actual "(let [s (lazy-seq (throw (ex-info \"boom\" {})))] [(try (seq s) (catch Exception e (ex-message e))) (try (seq s) (catch Exception e (ex-message e))) (realized? s)])" :portability :jvm}
   {:suite "lazy-seq / failure" :label "and again on every force after that" :expected "[\"boom\" \"boom\" \"boom\" \"boom\"]" :actual "(let [s (lazy-seq (throw (ex-info \"boom\" {})))] (mapv (fn [_] (try (seq s) :no-throw (catch Exception e (ex-message e)))) (range 4)))" :portability :jvm}
   {:suite "lazy-seq / failure" :label "and sees its captured locals cleared" :expected "[\"boom2\" (quote (:locals-cleared)) true]" :actual "(let [s (let [v [1 2 3]] (lazy-seq (if (nil? v) (list :locals-cleared) (throw (ex-info \"boom2\" {})))))] [(try (seq s) (catch Exception e (ex-message e))) (try (seq s) (catch Exception e (ex-message e))) (realized? s)])" :portability :jvm}
+  ;; for is the reference's expansion: its modifiers, its errors, and how much of
+  ;; its source a first element realizes (a chunk over a chunked seq). JVM-certified.
+  {:suite "for / reference expansion" :label "an unknown keyword is refused by name" :expected "\"Invalid 'for' keyword :foo\"" :actual "(try (eval (quote (for [x [1] :foo 1] x))) (catch Exception e (ex-message (or (ex-cause e) e))))" :portability :jvm}
+  {:suite "for / reference expansion" :label "first over a chunked range realizes its chunk" :expected "32" :actual "(let [c (atom 0)] (first (for [x (range 100)] (do (swap! c inc) x))) @c)" :portability :jvm}
+  {:suite "for / reference expansion" :label "first over iterate realizes one" :expected "1" :actual "(let [c (atom 0)] (first (for [x (iterate inc 0)] (do (swap! c inc) x))) @c)" :portability :jvm}
+  {:suite "for / reference expansion" :label "and :when over a chunked vector" :expected "16" :actual "(let [c (atom 0)] (first (for [x (vec (range 100)) :when (odd? x)] (do (swap! c inc) x))) @c)" :portability :jvm}
+  {:suite "for / reference expansion" :label ":when then a nested :while" :expected "(quote ([2 0] [2 1] [3 0] [3 1]))" :actual "(for [x (list 1 2 3) :when (> x 1) y (range x) :while (< y 2)] [x y])" :portability :jvm}
   ;; How much of the source concat and mapcat realize, as the reference does: each
   ;; coll starts as (cat (first zs) (next zs)), one outer step ahead, and apply
   ;; measures the args against concat's two required ones first. Certified on JVM.

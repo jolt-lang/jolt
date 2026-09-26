@@ -768,7 +768,9 @@
         (= k :when)  (for-scan bvec (+ i 2) bind coll (conj mods [:when v]))
         (= k :let)   (for-scan bvec (+ i 2) bind coll (conj mods [:let v]))
         (= k :while) (for-scan bvec (+ i 2) bind coll (conj mods [:while v]))
-        :else        (for-scan bvec (inc i) bind coll mods)))
+        ;; kept, so for and doseq refuse it by name (skipping one form misread
+        ;; the rest of the vector: "index out of bounds")
+        :else        (for-scan bvec (+ i 2) bind coll (conj mods [k v]))))
     [i bind coll mods]))
 (defn- for-parse-groups [bvec i groups]
   (if (>= i (count bvec))
@@ -787,38 +789,92 @@
         (= k :let)   `(let ~v ~(comprehension-chain r proceed skip stop))
         (= k :when)  `(if ~v ~(comprehension-chain r proceed skip stop) ~skip)
         (= k :while) `(if ~v ~(comprehension-chain r proceed skip stop) ~stop)
-        :else        (comprehension-chain r proceed skip stop)))))
+        ;; the reference fails here too, from inside its own expansion (a
+        ;; NullPointerException); this names the keyword
+        :else        (throw (IllegalArgumentException. (str "Invalid 'doseq' keyword " k)))))))
 
-;; for: lazy list comprehension. A group with no modifiers is a plain map (last)
-;; or mapcat (nested); a group with :let/:when/:while uses a lazy walk that applies
-;; them in source order — a :when skips one element (looping, so long skip runs
-;; don't grow the stack), a :while ends the seq.
+;; for: lazy list comprehension, the reference's own expansion. Each binding
+;; group is a step fn over its seq; modifiers apply in source order (:let binds,
+;; :when skips the element with a recur, :while ends the group). The innermost
+;; group conses each value onto the step over the rest -- and over a chunked seq
+;; fills a chunk buffer a chunk at a time and chunk-conses it, as the reference
+;; does -- while an outer group concats the inner group's seq for each element.
+;; jolt's own expansion used (concat (list x) (step (rest s))) for every value:
+;; a list, a concat and its descriptor per element, 4x the JVM's cost. An
+;; innermost group with no modifiers is exactly (map (fn [x] body) coll) -- the
+;; same values, realized the same way (a chunk at a time over a chunked seq, one
+;; at a time otherwise) -- so it is emitted as that, and runs on the native map.
+(defn- for-bad-keyword [k]
+  (throw (IllegalArgumentException. (str "Invalid 'for' keyword " k))))
 (defmacro for [bindings body]
-  (let [build (fn build [idx groups]
-                (let [g (nth groups idx)
-                      my-bind (nth g 0)
-                      my-coll (nth g 1)
-                      my-mods (nth g 2)
-                      is-last (= idx (dec (count groups)))
-                      k-form (if is-last `(list ~body) (build (inc idx) groups))]
-                  (if (empty? my-mods)
-                    (if is-last
-                      `(map (fn [~my-bind] ~body) ~my-coll)
-                      `(mapcat (fn [~my-bind] ~k-form) ~my-coll))
-                    (let [stepf (fresh-sym) colls (fresh-sym) sv (fresh-sym)]
-                      `((fn ~stepf [~colls]
-                          (lazy-seq
-                            (loop [~sv (seq ~colls)]
-                              (when ~sv
-                                (let [~my-bind (first ~sv)]
-                                  ~(comprehension-chain my-mods
-                                          `(concat ~k-form (~stepf (rest ~sv)))
-                                          `(recur (next ~sv))
-                                          nil))))))
-                        ~my-coll)))))]
-    (if (>= (count bindings) 2)
-      (build 0 (for-parse-groups bindings 0 []))
-      body)))
+  (if (< (count bindings) 2)
+    body
+    (let [groups (for-parse-groups bindings 0 [])
+          ngroups (count groups)
+          emit-bind
+          (fn emit-bind [gi]
+            (let [g (nth groups gi)
+                  bind (nth g 0)
+                  mods (nth g 2)
+                  next? (< (inc gi) ngroups)
+                  giter (gensym "iter__")
+                  gxs (gensym "s__")
+                  do-mod (fn do-mod [ms]
+                           (if (seq ms)
+                             (let [m (first ms) k (nth m 0) v (nth m 1) etc (rest ms)]
+                               (cond
+                                 (= k :let) `(let ~v ~(do-mod etc))
+                                 (= k :while) `(when ~v ~(do-mod etc))
+                                 (= k :when) `(if ~v ~(do-mod etc) (recur (rest ~gxs)))
+                                 :else (for-bad-keyword k)))
+                             (if next?
+                               `(let [iterys# ~(emit-bind (inc gi))
+                                      fs# (seq (iterys# ~(nth (nth groups (inc gi)) 1)))]
+                                  (if fs#
+                                    (concat fs# (~giter (rest ~gxs)))
+                                    (recur (rest ~gxs))))
+                               `(cons ~body (~giter (rest ~gxs))))))]
+              (cond
+                next?
+                `(fn ~giter [~gxs]
+                   (lazy-seq
+                     (loop [~gxs ~gxs]
+                       (when-first [~bind ~gxs]
+                         ~(do-mod mods)))))
+                (empty? mods)
+                `(fn ~giter [~gxs] (map (fn [~bind] ~body) ~gxs))
+                :else
+                (let [gi2 (gensym "i__")
+                      gb (gensym "b__")
+                      do-cmod (fn do-cmod [ms]
+                                (if (seq ms)
+                                  (let [m (first ms) k (nth m 0) v (nth m 1) etc (rest ms)]
+                                    (cond
+                                      (= k :let) `(let ~v ~(do-cmod etc))
+                                      (= k :while) `(when ~v ~(do-cmod etc))
+                                      (= k :when) `(if ~v ~(do-cmod etc) (recur (inc ~gi2)))
+                                      :else (for-bad-keyword k)))
+                                  `(do (chunk-append ~gb ~body)
+                                       (recur (inc ~gi2)))))]
+                  `(fn ~giter [~gxs]
+                     (lazy-seq
+                       (loop [~gxs ~gxs]
+                         (when-let [~gxs (seq ~gxs)]
+                           (if (chunked-seq? ~gxs)
+                             (let [c# (chunk-first ~gxs)
+                                   size# (count c#)
+                                   ~gb (chunk-buffer size#)]
+                               (if (loop [~gi2 0]
+                                     (if (< ~gi2 size#)
+                                       (let [~bind (nth c# ~gi2)]
+                                         ~(do-cmod mods))
+                                       true))
+                                 (chunk-cons (chunk ~gb) (~giter (chunk-rest ~gxs)))
+                                 (chunk-cons (chunk ~gb) nil)))
+                             (let [~bind (first ~gxs)]
+                               ~(do-mod mods)))))))))))]
+      `(let [iter# ~(emit-bind 0)]
+         (iter# ~(nth (nth groups 0) 1))))))
 
 ;; doseq runs body for side effects across the bindings in constant space,
 ;; returning nil. A direct nested loop/recur per group (not (count (for …)),

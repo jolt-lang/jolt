@@ -647,8 +647,12 @@
 (define (jolt-seq x)
   (cond
     ((jolt-nil? x) jolt-nil)
-    ((empty-list-t? x) jolt-nil)
     ((cseq? x) x)
+    ;; a lazy seq is the next most common argument -- every lazy-seq body, every
+    ;; step of a keep or a tree-seq -- and reached through the arms it cost seven
+    ;; type tests and a closure call first (26% of a tree-seq walk, in jolt-seq)
+    ((jolt-lazyseq? x) (force-lazyseq x))
+    ((empty-list-t? x) jolt-nil)
     ((pvec? x) (vec->seq x 0))
     ;; array mode and hash mode are different classes on the JVM, the same split
     ;; (class …) already reports for the map itself. The view is vector-backed

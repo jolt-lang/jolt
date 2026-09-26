@@ -1392,7 +1392,11 @@
     (memory-order-acquire)
     (let-values (((kind v) (host-static-resolve class member)))
       (if kind
-          (begin (vector-set! site 0 (vector e kind v))
+          ;; a release before the store that publishes the entry: on a weakly
+          ;; ordered machine (ARM64) another thread could otherwise see the new
+          ;; entry before its slots, and apply a stale procedure
+          (begin (memory-order-release)
+                 (vector-set! site 0 (vector e kind v))
                  (if (eq? kind 'cell) (vector-ref v 0) v))
           (host-static-ref class member)))))
 
@@ -1421,7 +1425,7 @@
                  ((fx=? n 0) (lambda () v))
                  (else #f))))
         (if p
-            (begin (vector-set! site 0 (vector e 'proc p)) p)
+            (begin (memory-order-release) (vector-set! site 0 (vector e 'proc p)) p)
             (lambda args (apply host-static-call class member args)))))))
 
 ;; (. Class member) with no arguments is ambiguous on the JVM too: it reads a

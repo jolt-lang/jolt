@@ -143,9 +143,7 @@
     ;; agree with it (lazy-bridge.ss).
     ((jolt-lazyseq? x)
      (jolt-seq x)
-     (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x)
-                        (jolt-lazyseq-realized-flag x) (jolt-lazyseq-error-flag x)
-                        #f m))
+     (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x) #f m))
     (else (error 'coll-with-meta "not a collection with a meta slot" x))))
 
 (define (jolt-meta x)

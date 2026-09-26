@@ -52,9 +52,10 @@
 ;; layout, which restores through image-legacy-ex-info? below.
 ;;
 ;; Version 10: a seq cell is chez-cseq-v8 (head tail kind meta), with the chunk
-;; fields on a chez-cseqv-v1 subtype; formats 9 and older carry chez-cseq-v7
-;; (head tail forced? kind cvec ci crest lock meta), which restores through
-;; image-legacy-coll? below.
+;; fields on a chez-cseqv-v1 subtype, and a lazy seq node is jolt-lazyseq-v4
+;; (thunk val lock meta); formats 9 and older carry chez-cseq-v7 (head tail
+;; forced? kind cvec ci crest lock meta) and jolt-lazyseq-v3 (thunk val realized?
+;; error? lock meta), which restore through image-legacy-coll? below.
 ;;
 ;; This build still READS versions 2 to 9: everything they can contain
 ;; (including raw jolt-ref-v1 records) restores here via the legacy arms.
@@ -495,12 +496,14 @@
 (define (image-legacy-coll? x)
   (and (record? x)
        (memq (record-type-uid (record-rtd x))
-             '(chez-pvec-v3 chez-pset-v2 chez-cseq-v6 chez-cseq-v7 jolt-lazyseq-v2 empty-list-v2))
+             '(chez-pvec-v3 chez-pset-v2 chez-cseq-v6 chez-cseq-v7 jolt-lazyseq-v2 jolt-lazyseq-v3 empty-list-v2))
        #t))
 (define (legacy-cell head tail kind cvec ci crest meta)
   (if cvec
       (make-cseqv head tail kind meta cvec ci crest)
       (make-cseq head tail kind meta)))
+(define (legacy-lazyseq word val error? meta)
+  (make-jolt-lazyseq (if word word (if error? (make-lazyseq-fail val) val)) jolt-nil #f meta))
 (define (legacy-coll->coll x)
   (let* ((rtd (record-rtd x))
          (f (lambda (i) ((record-accessor rtd i) x))))
@@ -512,7 +515,11 @@
       ;; it the vector-backed subtype, and a v7 cell's meta is its own
       ((chez-cseq-v6) (legacy-cell (f 0) (f 1) (f 3) (f 4) (f 5) (f 6) jolt-nil))
       ((chez-cseq-v7) (legacy-cell (f 0) (f 1) (f 3) (f 4) (f 5) (f 6) (f 8)))
-      ((jolt-lazyseq-v2) (make-jolt-lazyseq (f 0) (f 1) (f 2) (f 3) #f jolt-nil))
+      ;; thunk val realized? error? lock [meta]: a node written by the two-field
+      ;; protocol holds its answer in val (or its failure, error? set) with #f for
+      ;; a word; later ones hold it in the word
+      ((jolt-lazyseq-v2) (legacy-lazyseq (f 0) (f 1) (f 3) jolt-nil))
+      ((jolt-lazyseq-v3) (legacy-lazyseq (f 0) (f 1) (f 3) (f 5)))
       ((empty-list-v2) (fresh-empty-list))
       (else (error 'legacy-coll->coll "not a legacy collection record" x)))))
 

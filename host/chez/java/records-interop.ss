@@ -267,11 +267,13 @@
                        (cond ((not (eq? before 'pass)) (if before #t #f))
                              ((user-instance-checks-empty?) (if (vector-ref e 2) #t #f))
                              (else 'uncached)))))))
+    ;; each entry is published behind a release: on a weakly ordered machine
+    ;; (ARM64) another thread could otherwise see the new entry before its slots
     (if (eq? ans 'uncached)
         (begin
-          (unless same-t (vector-set! site 0 (vector t ts tname #f #f -1)))
+          (unless same-t (memory-order-release) (vector-set! site 0 (vector t ts tname #f #f -1)))
           (if (instance-check ts val) #t #f))
-        (begin (vector-set! site 0 (vector t ts tname k ans epoch)) ans))))
+        (begin (memory-order-release) (vector-set! site 0 (vector t ts tname k ans epoch)) ans))))
 
 ;; The plain walk, which the memo must always agree with (the dispatch-caches
 ;; unit rows compare the two).

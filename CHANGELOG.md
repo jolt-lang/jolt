@@ -50,6 +50,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time that rose by more than a tenth sends it back and holds it (a bigger window cost
   writ's prover 10x per collection), after one jump to 8x for programs where only a
   big window lets most of it die.
+- **`for` is the reference's expansion.** The innermost binding conses each value (and
+  over a chunked seq fills a chunk at a time, as the reference does) where jolt's
+  expansion built `(concat (list x) (step (rest s)))` per value; an innermost binding
+  with no modifiers runs on the native `map`. `for` with `:when` over a vector went from
+  178ns to 38ns per element, and how much of its source a first element realizes now
+  matches the JVM (a chunk over a chunked seq). An unknown keyword in a `for` or `doseq`
+  binding is refused by name, where it read the rest of the vector wrong ("index out of
+  bounds").
+- **`seq` on a lazy seq takes the fast path.** It went through the registered arms
+  after seven type tests: a quarter of a `tree-seq` walk. `tree-seq` is 293ns per node
+  where it was 370.
+- **Lazy seq nodes are 48 bytes, not 64**, without the two mirror fields they wrote for
+  images on every force (images derive them; older images restore through the legacy
+  arm), and a realized node lets go of its rerun thunk, as the reference nulls `fn`.
+- The per-site static member and instance-check caches publish each entry behind a
+  release fence; on ARM64 another thread could see a new entry before its slots.
 - **Seq cells are 48 bytes, not 80.** A cell carries its head, tail, kind and
   metadata; the chunk fields moved to a vector-backed subtype, a claim swaps the tail
   word itself instead of a lock field, and the image mirror of the forced flag is

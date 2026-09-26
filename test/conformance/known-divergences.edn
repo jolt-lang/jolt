@@ -377,6 +377,17 @@
            :jvm "throws ClassCastException"
            :jolt "5"}
    :note "Unchecked data argument; a map behaves identically. Verified against Clojure 1.12.5."}
+  ;; doseq with an unknown keyword among its bindings: the reference fails from
+  ;; inside its own expansion (a NullPointerException, its "steppair" is null),
+  ;; while for refuses the same keyword by name. jolt refuses both by name.
+  {:category :permissive
+   :behavior "(doseq [x [1] :foo 1] x)"
+   :jvm "throws NullPointerException (Cannot invoke IFn.invoke because steppair is null)"
+   :jolt "throws IllegalArgumentException: Invalid 'doseq' keyword :foo"
+   :check {:expr "(try (eval (quote (doseq [x [1] :foo 1] x))) (catch Exception e (.getSimpleName (class (or (ex-cause e) e)))))"
+           :jvm "\"NullPointerException\""
+           :jolt "\"IllegalArgumentException\""}
+   :note "Both refuse; the difference is the class and message. (for [x [1] :foo 1] x) is IllegalArgumentException \"Invalid 'for' keyword :foo\" on both. Verified against Clojure 1.12.4 on JDK 20."}
   ;; A Java varargs member (T... last parameter) takes its trailing elements loose
   ;; as well as in an array: (String/format "%s-%s" "a" "b"), (Paths/get "a" "b"),
   ;; (Arrays/asList 1 2 3). Reference Clojure passes a varargs array only as an

@@ -155,18 +155,17 @@
 (define-record-type empty-list-t (fields (mutable meta)) (nongenerative empty-list-v3))
 
 ;; deferred seq node (lazy-bridge.ss): `thunk` is the node's ONE published word
-;; (the thunk until the node is forced, then the seq or a lazyseq-fail); val,
-;; realized? and error? are mirrors written before it, for the image; `lock` is
-;; the claim lock (slot 4, which is why `meta` comes last); `meta` is LazySeq's
-;; _meta (natives-meta.ss owns the slot; written only on a node nobody else
-;; holds yet). jolt-lazyseq-v2, without the meta slot, restores through
+;; (the thunk until the node is forced, then the seq, the next node, or -- from an
+;; older image -- a lazyseq-fail); `val` what to run again if a force is cut short
+;; (lazyseq-take-call!), cleared once the answer is published; `lock` the claim
+;; lock (slot 2, lazy-bridge.ss jolt-lazyseq-lock-index); `meta` is LazySeq's
+;; _meta (natives-meta.ss owns the slot; written only on a node nobody else holds
+;; yet). jolt-lazyseq-v3 (thunk val realized? error? lock meta: two mirrors of the
+;; word, written for the image on every force) and v2 restore through
 ;; state-image.ss's legacy arm.
 (define-record-type jolt-lazyseq
-  (fields (mutable thunk) (mutable val)
-          (mutable realized? jolt-lazyseq-realized-flag jolt-lazyseq-realized-flag-set!)
-          (mutable error? jolt-lazyseq-error-flag jolt-lazyseq-error-flag-set!)
-          (mutable lock) (mutable meta))
-  (nongenerative jolt-lazyseq-v3))
+  (fields (mutable thunk) (mutable val) (mutable lock) (mutable meta))
+  (nongenerative jolt-lazyseq-v4))
 
 ;; deftype/defrecord instance base (records.ss): `desc` the type descriptor,
 ;; `ext` the extension map, `hasheq` the defrecord __hasheq slot generalized to
