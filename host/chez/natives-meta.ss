@@ -127,16 +127,14 @@
     ;; the producer jolt-rest already registers, so the copy still dumps to an
     ;; image), and the thunk runs once, in X, whichever cell is walked first. A
     ;; realized tail, or a cvec cell's #f (computed from its own fields, no
-    ;; thunk to run twice), is shared as it is; the mirror flag follows the
-    ;; word. The lock field is #f: it holds a mutex only while a force is in
-    ;; progress, borrowed for that cell alone (seq.ss force-claimed!), and the
-    ;; copy is a different cell.
+    ;; thunk to run twice), is shared as it is. A vector-backed cell stays one, with
+    ;; its chunk fields, so the copy walks the same way.
     ((cseq? x)
-     (let ((t (cseq-tail x)))
-       (make-cseq (cseq-head x)
-                  (if (force-pending? t) (make-lazy-src lz-rest x #f) t)
-                  (seq-tail-realized? t)
-                  (cseq-kind x) (cseq-cvec x) (cseq-ci x) (cseq-crest x) #f m)))
+     (let* ((t (cseq-tail x))
+            (t2 (if (force-pending? t) (make-lazy-src lz-rest x #f) t)))
+       (if (cseqv? x)
+           (make-cseqv (cseq-head x) (if t t2 t) (cseq-kind x) m (cseq-cvec x) (cseq-ci x) (cseq-crest x))
+           (make-cseq (cseq-head x) t2 (cseq-kind x) m))))
     ((empty-list-t? x) (make-empty-list-t m))
     ;; LazySeq.withMeta is new LazySeq(meta, seq()): the copy is REALIZED and
     ;; shares the forced seq, so the body runs once for both, and forcing X here
@@ -145,9 +143,7 @@
     ;; agree with it (lazy-bridge.ss).
     ((jolt-lazyseq? x)
      (jolt-seq x)
-     (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x)
-                        (jolt-lazyseq-realized-flag x) (jolt-lazyseq-error-flag x)
-                        #f m))
+     (make-jolt-lazyseq (jolt-lazyseq-thunk x) (jolt-lazyseq-val x) #f m))
     (else (error 'coll-with-meta "not a collection with a meta slot" x))))
 
 (define (jolt-meta x)

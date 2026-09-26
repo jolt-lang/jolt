@@ -193,14 +193,31 @@
 ;; eval registry (jolt-eval-source-line). #f when the frame carries no source or
 ;; no marker precedes its offset — the renderer then falls back to the defn line.
 ;; Exception-proof: the reporter runs while an error is being reported.
-(define (srcreg-frame-entry-from-source-pair io)
+(define (srcreg-frame-entry-from-source-pair io ns)
   (guard (e (#t #f))
     (let ((pair (srcreg-frame-source-pair io)))
       (and pair
            (let ((name (car pair)) (offset (cdr pair)))
-             (if (jolt-eval-source-name? name)
-                 (jolt-eval-source-entry name offset)
-                 (jolt-marker-entry-in-file name offset)))))))
+             (cond
+               ((jolt-eval-source-name? name) (jolt-eval-source-entry name offset))
+               ((jolt-baked-marker-table ns) => (lambda (t) (jolt-marker-line-from-table t offset)))
+               (else (jolt-marker-entry-in-file name offset))))))))
+
+;; --- marker tables a built binary carries ------------------------------------
+;; A built binary's app code was compiled from unit files in its build directory,
+;; one per namespace, and a frame's line comes from the markers in that file. Read
+;; off the disk, the answer depended on the directory still being there: a binary
+;; copied elsewhere, or one whose .build dir was cleaned, reported its frames at
+;; their defn lines and lost every spliced frame, and so did one assembled from
+;; build-cache units, which name the directory of the build that first compiled
+;; them. So each unit carries its own table and registers it here as it loads,
+;; under the namespaces it holds (build.ss bld-append-marker-table!); a frame's
+;; namespace is its fn's, which the walk already has.
+(define jolt-baked-marker-tables (make-hashtable string-hash string=?))   ; ns -> table
+(define (jolt-register-marker-table! nses table)
+  (for-each (lambda (ns) (hashtable-set! jolt-baked-marker-tables ns table)) nses))
+(define (jolt-baked-marker-table ns)
+  (and (string? ns) (hashtable-ref jolt-baked-marker-tables ns #f)))
 
 
 ;; The logical frames a marker/site entry stands for, innermost first, as
@@ -254,8 +271,12 @@
                  (keep? (and nm (or src (not (srcreg-plumbing-name? nm)))))
                  ;; the marker entry at the offset this frame is stopped at (only
                  ;; a mapped frame prints a line, so only it pays the lookup)
-                 (entry (and nm (or src (srcreg-jfn-parts nm))
-                             (srcreg-frame-entry-from-source-pair io)))
+                 (parts (and nm (not src) (srcreg-jfn-parts nm)))
+                 (entry (and nm (or src parts)
+                             (srcreg-frame-entry-from-source-pair
+                               io (cond ((vector? src) (vector-ref src 0))
+                                        ((pair? parts) (car parts))
+                                        (else #f)))))
                  (line (jolt-marker-entry-line entry)))
             (when (and debug? nm)
               (display (string-append "  [frame] " nm (if src " *MAPPED*"
@@ -846,18 +867,21 @@
 ;; live? is a stack read in place rather than at a throw: the pair may then
 ;; belong to a caller outside the live frames, so it may bridge a gap first.
 (define (jolt-continuation-recs k live?)
+  (jolt-continuation-recs/site k live?
+    ;; a throw reads the raise-time snapshot; a live read takes the slot as
+    ;; it stands, the most recent tail call made on this thread
+    (if live?
+        (let ((s (virtual-register jolt-vreg-site))) (and (pair? s) s))
+        (jolt-throw-site))))
+;; ...with the site pair given: a caught throwable's own (jolt-throwable-recs).
+(define (jolt-continuation-recs/site k live? site0)
   (let* ((cont (jolt-frame-records k))
          (cont-names (let ((h (make-hashtable string-hash string=?)))
                        (for-each (lambda (f)
                                    (hashtable-set! h (srcreg-frame-nm f) #t))
                                  cont)
                        h))
-         ;; a throw reads the raise-time snapshot; a live read takes the slot as
-         ;; it stands, the most recent tail call made on this thread
-         (site (if live?
-                   (let ((s (virtual-register jolt-vreg-site))) (and (pair? s) s))
-                   (jolt-throw-site)))
-         (site (and (pair? site) (not (hashtable-ref cont-names (car site) #f)) site)))
+         (site (and (pair? site0) (not (hashtable-ref cont-names (car site0) #f)) site0)))
     (call-with-values (lambda () (jolt-fill-gaps cont (and live? site)))
       (lambda (body used?)
         ;; At a throw the pair is the innermost call, so it splices in innermost
@@ -918,12 +942,33 @@
                         (file-of (vector-ref rec 2)) (if (fixnum? line) line -1)))))
       (else #f))))
 
+;; A throwable's own frames as a StackTraceElement array, or an empty one for a
+;; throwable that was never thrown (the JVM fills one in at construction; jolt
+;; has no frames until the throw captures them).
+;;
+;; From its OWN capture (rt.ss jolt-thrown-cont: the continuation and the site pair
+;; of its throw), rendered as a throw is: the live spine, and the frames a tail
+;; call erased recovered from that site. Not from jolt-error-continuation and the
+;; thread's site snapshot, which belong to whatever threw last on this thread.
+(define (jolt-throwable-recs v)
+  (let ((cap (jolt-thrown-cont (jolt-unwrap-throw v))))
+    (and cap (guard (e (#t #f)) (jolt-continuation-recs/site (car cap) #f (cdr cap))))))
+(define (jolt-throwable-stack-trace v)
+  (let ((recs (jolt-throwable-recs v)))
+    (if recs (apply jolt-vector (jolt-recs->stack-trace recs)) (jolt-vector))))
+;; printStackTrace's frame lines: the same capture, rendered like a report.
+(define (jolt-throwable-backtrace-string v)
+  (let ((recs (jolt-throwable-recs v)))
+    (if (pair? recs) (jolt-render-recs recs) (jolt-backtrace-string v))))
+
 (define (jolt-stack-trace-list k)
   (guard (e (#t '()))
-    (let loop ((fs (jolt-continuation-recs k #t)) (acc '()))
-      (cond ((null? fs) (reverse acc))
-            ((ste-of-frame (car fs)) => (lambda (e) (loop (cdr fs) (cons e acc))))
-            (else (loop (cdr fs) acc))))))
+    (jolt-recs->stack-trace (jolt-continuation-recs k #t))))
+(define (jolt-recs->stack-trace recs)
+  (let loop ((fs recs) (acc '()))
+    (cond ((null? fs) (reverse acc))
+          ((ste-of-frame (car fs)) => (lambda (e) (loop (cdr fs) (cons e acc))))
+          (else (loop (cdr fs) acc)))))
 
 ;; Thread.getStackTrace on the calling thread: its own frame first, as on the JVM,
 ;; then the caller's frames.

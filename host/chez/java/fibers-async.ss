@@ -87,6 +87,7 @@
 ;; value, a waiting putter, or a closed channel complete immediately (no
 ;; capture); an empty open channel registers an alt-taker and parks.
 (define (jolt-fiber-<! ch)
+  (jolt-fiber-may-park! 'clojure.core.async/<!)   ; before registering as a taker
   (jolt-chan-lock! ch)
   (let ((r (ac-poll!/locked ch)))
     (if (eq? r ac-poll-empty)
@@ -108,6 +109,7 @@
 ;; taker completes immediately (no capture); a full channel registers an
 ;; alt-putter and parks.
 (define (jolt-fiber->! ch v)
+  (jolt-fiber-may-park! 'clojure.core.async/>!)   ; before registering as a putter
   (async-check-put! v)                   ; throws — keep it outside the mutex
   (jolt-chan-lock! ch)
   (let ((r (jolt-chan-locked-give! ch v)))
@@ -192,6 +194,9 @@
   (let ((f (jolt-current-fiber)))
     (unless f
       (error 'jolt-fiber-waiter-wait! "channel wait outside a fiber"))
+    ;; the take/put ops checked before registering; alts! registers its shared
+    ;; handler in async.ss and arrives here first
+    (jolt-fiber-may-park! 'jolt-fiber-waiter-wait!)
     ;; Commit and park are ONE region with interrupts disabled — see
     ;; jolt-sm-commit!. The park records the depth (swish's pcb-sic) and the
     ;; resume is restored to it, so the resumed path must NOT enable again; only
@@ -293,12 +298,16 @@
 ;; that commits must switch (wait-fiber does; nothing else calls them).
 (def-var! "jolt.host" "fiber-park-commit!"
   (lambda ()
+    (jolt-fiber-may-park! 'jolt.host/fiber-park-commit!)
     (disable-interrupts)
     (jolt-fiber-state-set! (jolt-current-fiber) 'parked)))
 ;; jolt-fiber-to-scheduler! takes the fiber (it clears the current-fiber vreg
 ;; before capturing, so the record has to be passed in, not read afterwards).
 (def-var! "jolt.host" "fiber-to-scheduler!"
   (lambda ()
+    ;; the commit seam above checked already, and a caller takes no counted lock
+    ;; between the two; this is the gate's rule for a switching definition
+    (jolt-fiber-may-park! 'jolt.host/fiber-to-scheduler!)
     (jolt-fiber-to-scheduler! (jolt-current-fiber))
     ;; balances fiber-park-commit!'s disable, on resume — see jolt-fiber-park!.
     (enable-interrupts)))

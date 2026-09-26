@@ -2097,9 +2097,19 @@
                                               " was compiled by a different jolt build, or"
                                               " a namespace it requires has changed — recompile it"))))))))))
 
-;; load-file: load an explicit path (a `run FILE`), in the current ns.
+;; load-file / load run a file's forms starting in the current ns, and put
+;; *ns* back afterwards however the load exits: Compiler.load binds *ns* for the
+;; duration, so an `ns` form in the loaded file never leaks into the caller.
+(define (load-jolt-file/restoring-ns path)
+  (let ((saved (chez-current-ns)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (load-jolt-file path))
+      (lambda () (set-chez-ns! saved)))))
+
+;; load-file: load an explicit path, in the current ns.
 (define (jolt-load-file path)
-  (load-jolt-file path)
+  (load-jolt-file/restoring-ns path)
   jolt-nil)
 
 ;; expand-spec: the shared prefix-list expansion (expand-libspec, ns.ss) —
@@ -2157,7 +2167,7 @@
                     (else (let ((dir (ns-rel-dir (chez-current-ns))))
                             (if (string=? dir "") p (string-append dir "/" p))))))
              (f (resolve-on-roots rel)))
-        (if f (load-jolt-file f)
+        (if f (load-jolt-file/restoring-ns f)
             (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate resource on source roots: " p)))))
     paths)
   jolt-nil)

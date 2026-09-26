@@ -116,13 +116,13 @@
 (define (sa-reset-max-memory-bytes!)
   #f)
 
-;; (sa-gc-install-ceiling! soft hard on-exceeded) -> boolean
+;; (sa-gc-install-after-collect! maintain observe) -> boolean
 ;; Permitted degradation: Gambit exposes no hook equivalent to Chez's
 ;; collect-request-handler, so answer #f and install nothing. The heap is then
-;; unbounded, which is what every jolt before 0.8.5 did on every target, and
-;; the caller reports maxMemory as unbounded rather than promising a bound it
-;; cannot enforce.
-(define (sa-gc-install-ceiling! soft hard on-exceeded)
+;; unbounded and the nursery fixed, which is what every jolt before 0.8.5 did on
+;; every target, and the caller reports maxMemory as unbounded rather than
+;; promising a bound it cannot enforce.
+(define (sa-gc-install-after-collect! maintain observe)
   #f)
 
 ;; (sa-gc-install-stall-watch! seconds on-stall) -> boolean
@@ -164,6 +164,15 @@
     (if (number? t)
         (inexact->exact (floor (* t 1000)))
         (inexact->exact (floor (* (time->seconds t) 1000))))))
+
+;; (sa-gc-tight! on?) -> void
+;; Permitted degradation: Gambit has no in-place collection mode, so this is
+;; ignored.
+(define (sa-gc-tight! on?) (if #f #f))
+
+;; (sa-gc-reserve-ratio! r) -> void
+;; Permitted degradation: Gambit sizes its own heap reserve, so this is ignored.
+(define (sa-gc-reserve-ratio! r) (if #f #f))
 
 ;; (sa-gc-trip-bytes! n) -> void
 ;; Set the allocation threshold at which a trip collection triggers — the
@@ -615,3 +624,6 @@
   (vector-copy! to at from start end))
 (define (sa-string-copy-range! to at from start end)
   (string-copy! to at from start end))
+(define (sa-vector-copy v) (subvector v 0 (vector-length v)))
+(define (sa-subvector v start end) (subvector v start end))
+(define sa-vector-append vector-append)

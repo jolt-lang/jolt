@@ -37,3 +37,4 @@ host/chez/scheme-adapter-runtime.ss string-copy!
 host/chez/scheme-adapter-runtime.ss top-level-bound?
 host/chez/scheme-adapter-runtime.ss top-level-value
 host/chez/scheme-adapter-runtime.ss unlock-object
+host/chez/scheme-adapter-runtime.ss vector-append

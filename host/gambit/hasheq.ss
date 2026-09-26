@@ -45,10 +45,12 @@
 ;; Interpret an unsigned 32-bit value as signed 32-bit (-2^31 .. 2^31-1).
 ;; Input must already be ≤ 32 bits (u32-masked); already-signed values pass
 ;; through unchanged — same semantics as the Chez i32.
+;; Branch-free, as in the Chez build: a hash's sign bit is random, so a test on
+;; it mispredicts half the time, thirty times a long hash.
 (define-syntax i32
   (syntax-rules ()
     ((_ x) (let ((u (u32 x)))
-             (if (>= u #x80000000) (- u #x100000000) u)))))
+             (- (bitwise-xor u #x80000000) #x80000000)))))
 
 ;; 32-bit wrapping multiply via a 16-bit split. Plain arithmetic throughout;
 ;; every intermediate is ≤ 2^48, far inside Gambit's 62-bit fixnum range.
@@ -114,34 +116,40 @@
     h1))
 
 ;; Flat-inlined murmur3-hash-long for fixnums (Java Long.hasheq: two 32-bit
-;; halves, count=8; input 0 → 0).
+;; halves, count=8; input 0 → 0). Every step is modulo 2^32, where signed and
+;; unsigned agree, so the chain stays unsigned and sign-extends once at the end
+;; (the Chez build's shape).
+(define-syntax mulu32
+  (syntax-rules ()
+    ((_ a b)
+     (let ((a* a) (b* b))
+       (u32 (+ (arithmetic-shift (bitwise-and (* a* (arithmetic-shift b* -16)) #xFFFF) 16)
+               (* a* (bitwise-and b* #xFFFF))))))))
+(define-syntax rotlu32
+  (syntax-rules ()
+    ((_ x n)
+     (let ((x* x))
+       (bitwise-ior (u32 (arithmetic-shift x* n)) (arithmetic-shift x* (- n 32)))))))
+(define-syntax addu32
+  (syntax-rules ()
+    ((_ a b) (u32 (+ a b)))))
 (define (murmur3-hash-long-flat input)
   (if (= input 0) 0
-      (let* ((low (i32 input))
-             (high (i32 (arithmetic-shift input -32)))
-             ;; --- mixK1(low): mul32(low, C1) ---
-             (k1 (mul32 low murmur3-C1))
-             (k1 (rotl32 k1 15))
-             (k1 (mul32 k1 murmur3-C2))
-             ;; --- mixH1(seed, k1) ---
-             (h1 (bitwise-xor murmur3-seed k1))
-             (h1 (rotl32 h1 13))
-             (h1 (add32 (mul32 h1 5) #xe6546b64))
-             ;; --- mixK1(high) ---
-             (k1 (mul32 high murmur3-C1))
-             (k1 (rotl32 k1 15))
-             (k1 (mul32 k1 murmur3-C2))
-             ;; --- mixH1(h1 from low, k1 from high) ---
-             (h1 (bitwise-xor h1 k1))
-             (h1 (rotl32 h1 13))
-             (h1 (add32 (mul32 h1 5) #xe6546b64))
+      (let* ((low (u32 input))
+             (high (u32 (arithmetic-shift input -32)))
+             ;; --- mixK1(low), mixH1(seed = 0, k1) ---
+             (k1 (mulu32 (rotlu32 (mulu32 low murmur3-C1) 15) murmur3-C2))
+             (h1 (addu32 (mulu32 (rotlu32 k1 13) 5) #xe6546b64))
+             ;; --- mixK1(high), mixH1(h1, k1) ---
+             (k1 (mulu32 (rotlu32 (mulu32 high murmur3-C1) 15) murmur3-C2))
+             (h1 (addu32 (mulu32 (rotlu32 (bitwise-xor h1 k1) 13) 5) #xe6546b64))
              ;; --- fmix(h1, 8) ---
              (h1 (bitwise-xor h1 8))
-             (h1 (bitwise-xor h1 (urs32 h1 16)))
-             (h1 (mul32 h1 #x85ebca6b))
-             (h1 (bitwise-xor h1 (urs32 h1 13)))
-             (h1 (mul32 h1 #xc2b2ae35)))
-        (i32 (bitwise-xor h1 (urs32 h1 16))))))
+             (h1 (bitwise-xor h1 (arithmetic-shift h1 -16)))
+             (h1 (mulu32 h1 #x85ebca6b))
+             (h1 (bitwise-xor h1 (arithmetic-shift h1 -13)))
+             (h1 (mulu32 h1 #xc2b2ae35)))
+        (i32 (bitwise-xor h1 (arithmetic-shift h1 -16))))))
 
 ;; murmur3-hash-int for int32-range values (Java Murmur3.hashInt, count=4).
 (define (murmur3-hash-int input)

@@ -189,6 +189,10 @@
 ;;                                        unchecked accessors when the port is tuned.
 ;;   sa-vector-copy-range!                UNIMPLEMENTED  Guile: R7RS vector-copy!
 ;;                                        has the contract's argument order.
+;;   sa-vector-copy                       UNIMPLEMENTED  Guile: vector-copy.
+;;   sa-subvector                         UNIMPLEMENTED  Guile: R7RS vector-copy with
+;;                                        start and end.
+;;   sa-vector-append                     UNIMPLEMENTED  Guile: vector-append (R7RS).
 ;;   sa-string-copy-range!                UNIMPLEMENTED  Guile: string-copy! (SRFI-13 /
 ;;                                        R7RS) has the contract's argument order.
 

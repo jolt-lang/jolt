@@ -267,11 +267,13 @@
                        (cond ((not (eq? before 'pass)) (if before #t #f))
                              ((user-instance-checks-empty?) (if (vector-ref e 2) #t #f))
                              (else 'uncached)))))))
+    ;; each entry is published behind a release: on a weakly ordered machine
+    ;; (ARM64) another thread could otherwise see the new entry before its slots
     (if (eq? ans 'uncached)
         (begin
-          (unless same-t (vector-set! site 0 (vector t ts tname #f #f -1)))
+          (unless same-t (memory-order-release) (vector-set! site 0 (vector t ts tname #f #f -1)))
           (if (instance-check ts val) #t #f))
-        (begin (vector-set! site 0 (vector t ts tname k ans epoch)) ans))))
+        (begin (memory-order-release) (vector-set! site 0 (vector t ts tname k ans epoch)) ans))))
 
 ;; The plain walk, which the memo must always agree with (the dispatch-caches
 ;; unit rows compare the two).
@@ -370,7 +372,7 @@
 (define (jolt-throwable-print-stack-trace v port)
   (display (jolt-throwable-tostring v) port)
   (newline port)
-  (let ((bt (guard (e (#t #f)) (jolt-backtrace-string v))))
+  (let ((bt (guard (e (#t #f)) (jolt-throwable-backtrace-string v))))
     (when bt (display bt port)))
   jolt-nil)
 
@@ -398,11 +400,11 @@
     ;; java.text.ParseException.getErrorOffset — the int its ctor stashed.
     ((string=? name "getErrorOffset")
      (list (if (jolt-ex-info-record? obj) (jolt-ex-info-record-error-offset obj) 0)))
-    ;; jolt reifies no StackTraceElement array: TCO erases caller frames, so there
-    ;; is no faithful per-frame array to hand back. Empty, like a JVM throwable
-    ;; whose stack trace has been stripped. The real frames are what
-    ;; printStackTrace renders, and what an uncaught error reports.
-    ((string=? name "getStackTrace") (list (jolt-vector)))
+    ;; The frames printStackTrace renders, as elements: the ones that map to
+    ;; Clojure source, from the continuation the throwable was thrown with
+    ;; (source-registry.ss). A tail call leaves no frame to report, so a caller
+    ;; erased by one is missing, as it is from Thread.getStackTrace.
+    ((string=? name "getStackTrace") (list (jolt-throwable-stack-trace obj)))
     ;; jolt never suppresses: an empty array is the JVM's own answer for a
     ;; throwable with nothing suppressed, so this is exact rather than a stand-in.
     ((string=? name "getSuppressed") (list (jolt-vector)))

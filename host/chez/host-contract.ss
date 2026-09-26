@@ -960,6 +960,8 @@
     ;; (records.ss jrec-field). Declared here like the rest so the list matches
     ;; native-ops, which manifest-check.sh enforces.
     "__deftype-field"
+    ;; the `lazy-seq` macro's two halves (lazy-bridge.ss): internal names too
+    "make-lazy-seq" "coll->cells" "chunked-seq?"
     "aget" "aset" "alength"
     "bit-and" "bit-or" "bit-xor" "bit-not"
     "bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"

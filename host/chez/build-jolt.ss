@@ -232,16 +232,12 @@
         (\"host/chez/stub/jolt_zlib.h\" \"jolt_zlib_h\" \"jolt_zlib_h_len\")))))
 
 (suppress-greeting #t)
-;; GC tuning: larger nursery for allocation-heavy workloads. Default 16 MB;
-;; override via JOLT_GC_TRIP_BYTES env (integer bytes).
-(sa-gc-trip-bytes!
-  (let ((trip (getenv \"JOLT_GC_TRIP_BYTES\"))
-        (default (* 16 1024 1024)))
-    (if trip (or (string->number trip) default) default)))
-;; A heap ceiling, matching the JVM's MaxRAMPercentage default. Installed HERE
-;; and not at heap-build: it reads syscalls and the environment, both of which
+;; The collector policy: a nursery sized by the time collection takes (16MB
+;; floor, JOLT_GC_TRIP_BYTES pins it) and a heap ceiling matching the JVM's
+;; MaxRAMPercentage default (rt.ss jolt-install-gc-policy!). Installed HERE and
+;; not at heap-build: it reads syscalls and the environment, both of which
 ;; belong to the running process rather than the build.
-(jolt-install-heap-ceiling!)
+(jolt-install-gc-policy!)
 
 (scheme-start
   (lambda args

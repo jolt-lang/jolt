@@ -89,6 +89,32 @@
 (define (sa-total-memory-bytes)
   (current-memory-bytes))
 
+;; (sa-gc-reserve-ratio! r) -> void
+;; How much free memory the collector keeps from the OS after a collection, as a
+;; ratio of the memory in use (a nonnegative real): the rest it returns. Chez's
+;; heap-reserve-ratio, default 1.0 -- one free page kept for each page in use,
+;; which alone lets a process hold twice its data. The heap ceiling lowers it as
+;; the heap nears the limit (rt.ss). Contract: best effort. Degradation: a target
+;; that does not return memory ignores it.
+(define (sa-gc-reserve-ratio! r)
+  (heap-reserve-ratio (inexact r)))
+
+;; (sa-gc-tight! on?) -> void
+;; Collect TIGHT while ON?: objects already in the older generations are marked
+;; where they are rather than copied, so a collection needs little memory beyond
+;; what the heap already holds. Copying needs a second copy's worth of room for
+;; everything it moves -- a 100MB structure promoted by a scheduled collection
+;; carried a 150MB-live program 20MB past a 384MB ceiling. The price is
+;; fragmentation (more memory held over a long run: writ's prover peaked 2.3GB ->
+;; 2.8GB with it on throughout), so the heap ceiling turns it on only near the
+;; limit. Chez's in-place-minimum-generation at 2 (1 fragmented worse: 380MB for
+;; that program against 343MB), and back to the maximum generation, its default.
+;; Degradation: a target without the choice ignores it.
+(define sa-gc-tight-generation 2)
+(define (sa-gc-tight! on?)
+  (in-place-minimum-generation
+    (if on? (min sa-gc-tight-generation (collect-maximum-generation)) (collect-maximum-generation))))
+
 ;; (sa-max-memory-bytes) -> exact integer
 ;; Peak heap bytes: the most the collector has held from the OS since the last
 ;; sa-reset-max-memory-bytes! (or since boot) -- the high-water mark behind
@@ -1054,31 +1080,54 @@
       (vfasl-convert-file in out #f))
     #t))
 
-;; (sa-gc-install-ceiling! soft hard on-exceeded) -> boolean
-;; Install a collection hook enforcing a heap ceiling, and answer whether the
-;; target could. On each collection the target performs its normal collection,
-;; then: above SOFT live bytes it forces a FULL collection — the one a
-;; generational collector defers, and the whole point under memory pressure —
-;; and if live bytes still exceed HARD it calls ON-EXCEEDED with that count.
+;; (sa-gc-install-after-collect! maintain observe) -> boolean
+;; Hook every collection: the target performs its normal collection, then calls
+;; (MAINTAIN collect-full!) -- collect-full! collects EVERY generation now, the
+;; collection a generational collector defers; (collect-full! #t) does it TIGHT
+;; (see sa-gc-tight!) -- and then
+;; (OBSERVE gc-ns elapsed-ns): how long the whole of this collection took,
+;; MAINTAIN's work included, and how long since the previous one ended, both
+;; monotonic nanoseconds. Answers whether the target could install the hook.
 ;;
-;; The policy lives in the caller (rt.ss jolt-install-heap-ceiling!): the
-;; thresholds, the message, and what ON-EXCEEDED does. This is only the seam
-;; that hooks collection, because doing that needs a target-specific native.
+;; The policy lives in the caller (rt.ss jolt-install-gc-policy!): the heap
+;; ceiling, when to collect the older generations, and the nursery size. This is
+;; only the seam that hooks collection, because doing that needs a target-specific
+;; native. Both run where the collect request is handled, with the world stopped:
+;; MAINTAIN may collect everything (collect-full!, and only that way: sa-gc-collect
+;; is the out-of-handler entry), both may read the heap (sa-bytes-allocated) and
+;; set the trip threshold (sa-gc-trip-bytes!); raising from either is how a
+;; ceiling or the GC overhead limit reports.
 ;;
-;; Contract: ON-EXCEEDED is called only when the heap genuinely cannot be
-;; brought under HARD, so raising from it is the expected use.
-;; Degradation: answer #f without installing anything. The ceiling is then
-;; unenforced, which is what every jolt before 0.8.5 did, and the caller
-;; reports maxMemory accordingly rather than promising a bound it lacks.
-(define (sa-gc-install-ceiling! soft hard on-exceeded)
-  (collect-request-handler
-    (lambda ()
-      (collect)
-      (when (> (bytes-allocated) soft)
-        (collect (collect-maximum-generation))
-        (when (> (bytes-allocated) hard)
-          (on-exceeded (bytes-allocated))))))
+;; Contract: both are called after each collection the target runs on its own
+;; schedule. Degradation: answer #f without installing anything. The caller then
+;; enforces no ceiling -- what every jolt before 0.8.5 did -- and keeps a fixed
+;; nursery, and reports maxMemory as unbounded rather than promising a bound it
+;; lacks.
+(define (sa-gc-install-after-collect! maintain observe)
+  (let ((last-end (sa-monotonic-ns))
+        (collect-full!
+          (case-lambda
+            (() (collect (collect-maximum-generation)))
+            ((tight?)
+             (if tight?
+                 (let ((saved (in-place-minimum-generation)))
+                   (dynamic-wind
+                     (lambda () (in-place-minimum-generation (min saved sa-gc-tight-generation)))
+                     (lambda () (collect (collect-maximum-generation)))
+                     (lambda () (in-place-minimum-generation saved))))
+                 (collect (collect-maximum-generation)))))))
+    (collect-request-handler
+      (lambda ()
+        (let ((t0 (sa-monotonic-ns)))
+          (collect)
+          (maintain collect-full!)
+          (let ((t1 (sa-monotonic-ns)))
+            (observe (- t1 t0) (- t1 last-end))
+            (set! last-end t1))))))
   #t)
+(define (sa-monotonic-ns)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* (time-second t) 1000000000) (time-nanosecond t))))
 ;; (sa-gc-install-stall-watch! seconds on-stall) -> boolean
 ;; Make a stalled collection observable. Chez stops the world by rendezvous:
 ;; the thread whose allocation tripped runs $collect-rendezvous, and unless it
@@ -1326,6 +1375,15 @@
 ;; (vector-copy! from from-start to to-start count).
 (define (sa-vector-copy-range! to at from start end)
   (vector-copy! from start to at (fx- end start)))
+;; (sa-vector-copy v): a fresh copy of v. (sa-subvector v start end): a fresh
+;; copy of v[start, end), over Chez's (vector-copy v start count). The #%
+;; forms name the primitives themselves: the vendored irregex redefines
+;; vector-copy at top level as a one-argument loop, and in an app's runtime that
+;; definition is what a bare vector-copy reaches.
+(define (sa-vector-copy v) (#%vector-copy v))
+(define (sa-subvector v start end)
+  (#%vector-copy v start (fx- end start)))
+(define sa-vector-append #%vector-append)
 ;; (sa-string-copy-range! to at from start end): the same reorder over Chez's
 ;; (string-copy! from from-start to to-start count).
 (define (sa-string-copy-range! to at from start end)

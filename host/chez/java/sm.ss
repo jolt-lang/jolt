@@ -142,6 +142,7 @@
 ;; with an empty mailbox. jolt-sm-park! clears the region as it escapes; the
 ;; no-park path exits it here.
 (define (jolt-sm-commit! f h resume)
+  (jolt-fiber-may-park! 'jolt-sm-commit!)
   (disable-interrupts)
   (let* ((park? (jolt-with-mutex (alt-handler-wmu h)
                   (if (vector-ref (alt-handler-mailbox h) 0)
@@ -249,6 +250,7 @@
         (jolt-invoke k (jolt-async-take ch)))))
 
 (define (jolt-sm-fiber-take f ch k)
+  (jolt-fiber-may-park! 'clojure.core.async/<!)   ; before registering as a taker
   (jolt-chan-lock! ch)
   (let ((r (ac-poll!/locked ch)))
     (if (eq? r ac-poll-empty)
@@ -275,6 +277,7 @@
         (jolt-invoke k (jolt-async-give ch v)))))
 
 (define (jolt-sm-fiber-put f ch v k)
+  (jolt-fiber-may-park! 'clojure.core.async/>!)   ; before registering as a putter
   ;; the nil check BEFORE the mutex: it throws, and this path releases by hand
   (async-check-put! v)
   (jolt-chan-lock! ch)

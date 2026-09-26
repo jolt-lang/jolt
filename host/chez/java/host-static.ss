@@ -403,6 +403,27 @@
             f))
       f))
 
+;; ---- what a static site may cache ------------------------------------------
+;; A `Class/member` site caches what the name resolved to (host-static-site
+;; below). That answer holds until the registry changes, and the registry changes
+;; in exactly two ways: a member is written into a class's member table, or a
+;; mutable cell is created that now shadows the table. Both bump this epoch, and
+;; a site revalidates against it — so every write to a member table goes through
+;; class-statics-member-set!, never a bare hashtable-set!.
+;; A box moved by CAS, not a set!: two writers bumping at once must move it twice,
+;; or a site that read the value between them would validate against a write it
+;; never saw. The release orders the table write before the new value.
+(define host-static-epoch-box (box 0))
+(define (host-static-epoch) (unbox host-static-epoch-box))
+(define (host-static-epoch-bump!)
+  (memory-order-release)
+  (let retry ()
+    (let ((e (unbox host-static-epoch-box)))
+      (unless (box-cas! host-static-epoch-box e (fx+ e 1)) (retry)))))
+(define (class-statics-member-set! h member v)
+  (hashtable-set! h member v)
+  (host-static-epoch-bump!))
+
 ;; The merge itself: also the LIBRARY path (register-class-statics-owned!,
 ;; extend-class!), which adds members without making the class the runtime's.
 (define (class-statics-merge! name members)  ; members: list of (str . val/proc)
@@ -421,8 +442,11 @@
                 (let ((v (host-arity-declared host-static-arities short (car p) (cdr p) #f))
                       (old (hashtable-ref h (car p) #f)))
                   (when old (registry-collision! "static" name (car p) old v))
-                  (hashtable-set! h (car p) v)))
-              members)))
+                  (class-statics-member-set! h (car p) v)))
+              members)
+    ;; a class name newly resolving is a change too: a site that missed on it
+    ;; answers from the table now
+    (host-static-epoch-bump!)))
 
 ;; Names the HOST registered (io.ss, io-streams.ss, …), as opposed to a library
 ;; registering a class jolt does not model. Only the host's own boot-time calls
@@ -784,7 +808,11 @@
                      (let ((nh (make-hashtable string-hash string=?)))
                        (hashtable-set! mutable-statics-tbl class nh) nh))))
           (or (hashtable-ref h member #f)
-              (let ((c (vector jolt-nil))) (hashtable-set! h member c) c))))
+              (let ((c (vector jolt-nil)))
+                (hashtable-set! h member c)
+                ;; the cell shadows whatever the member table held for this name
+                (host-static-epoch-bump!)
+                c))))
       (let ((h (hashtable-ref mutable-statics-tbl class #f)))
         (and h (hashtable-ref h member #f)))))
 (def-var! "jolt.host" "set-static-field!"
@@ -1320,6 +1348,85 @@
           ((null? args) v)
           (else (throw-jvm (quote IllegalArgumentException)
                   (string-append class "/" member " is a static field; it takes no arguments"))))))
+
+;; ---- per-site caches -----------------------------------------------------------
+;; The emitter hoists one of these per `Class/member` site (backend_scheme.clj),
+;; the same shape as jolt-instance-site. Without it every evaluation hashed the
+;; class and member strings two or three times over — mutable-static-cell, then
+;; lookup-class, then the member table — which put Long/MIN_VALUE at ~58 ns and a
+;; Long/numberOfLeadingZeros call at ~142 ns against the JVM's ~2, and made
+;; test.check's generators spend a fifth of their time in string-hash.
+;;
+;; A site holds #f or #(epoch kind value): kind 'cell is a mutable static's cell
+;; (read through on every hit, so a set-static-field! is seen), 'val a registered
+;; value, 'proc the procedure a call site applies. It is valid while the registry
+;; epoch has not moved (host-static-epoch above). A miss that raises or autoloads
+;; caches nothing and takes the uncached path, so its errors and its provider
+;; loading stay exactly host-static-ref's.
+(define (host-static-site-make) (vector #f))
+(define (host-static-site-hit site)
+  (let ((st (vector-ref site 0)))
+    (and st (fx=? (vector-ref st 0) (host-static-epoch)) st)))
+;; What CLASS/MEMBER resolves to without raising or loading anything:
+;; (values kind value), or (values #f #f) when only the slow path can answer.
+(define (host-static-resolve class member)
+  (let ((cell (mutable-static-cell class member #f)))
+    (if cell
+        (values 'cell cell)
+        (let ((h (lookup-class class-statics-tbl class)))
+          (if h
+              (let ((v (hashtable-ref h member host-static-miss)))
+                (if (eq? v host-static-miss) (values #f #f) (values 'val v)))
+              (values #f #f))))))
+
+(define (host-static-ref-site site class member)
+  (let ((st (host-static-site-hit site)))
+    (if st
+        (let ((v (vector-ref st 2)))
+          (if (eq? (vector-ref st 1) 'cell) (vector-ref v 0) v))
+        (host-static-ref-site-miss site class member))))
+(define (host-static-ref-site-miss site class member)
+  ;; the epoch is read BEFORE resolving: a write landing after it leaves the entry
+  ;; already stale rather than valid for a table it never saw
+  (let ((e (host-static-epoch)))
+    (memory-order-acquire)
+    (let-values (((kind v) (host-static-resolve class member)))
+      (if kind
+          ;; a release before the store that publishes the entry: on a weakly
+          ;; ordered machine (ARM64) another thread could otherwise see the new
+          ;; entry before its slots, and apply a stale procedure
+          (begin (memory-order-release)
+                 (vector-set! site 0 (vector e kind v))
+                 (if (eq? kind 'cell) (vector-ref v 0) v))
+          (host-static-ref class member)))))
+
+;; A call site: (host-static-proc-site site class member n) answers the procedure
+;; the n-argument call applies, so the call itself is a plain application with no
+;; rest list. A field read with no arguments answers a thunk over the field. What
+;; host-static-call would raise (an arity miss, a field given arguments, an
+;; unknown member) is never cached: the answer is a procedure that makes the
+;; uncached call, so the error, and any provider load, happen exactly as before.
+(define (host-static-proc-site site class member n)
+  (let ((st (host-static-site-hit site)))
+    (if st
+        (vector-ref st 2)
+        (host-static-proc-site-miss site class member n))))
+(define (host-static-proc-site-miss site class member n)
+  (let ((e (host-static-epoch)))
+    (memory-order-acquire)
+    (let-values (((kind v) (host-static-resolve class member)))
+      (let ((p (cond
+                 ((not kind) #f)
+                 ;; a mutable static's value can change between calls, and whether
+                 ;; it is a procedure decides call-or-field per call; leave it on
+                 ;; the uncached path (they are clojure.lang.RT/Compiler flags)
+                 ((eq? kind 'cell) #f)
+                 ((procedure? v) (and (host-arity-ok? v n #f) v))
+                 ((fx=? n 0) (lambda () v))
+                 (else #f))))
+        (if p
+            (begin (memory-order-release) (vector-set! site 0 (vector e 'proc p)) p)
+            (lambda args (apply host-static-call class member args)))))))
 
 ;; (. Class member) with no arguments is ambiguous on the JVM too: it reads a
 ;; static FIELD when one exists and otherwise calls a no-arg static method. jolt

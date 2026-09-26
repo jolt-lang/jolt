@@ -2017,7 +2017,7 @@
   {:suite "def-meta-numeric" :expr "(do (def dmm-mi Long/MIN_VALUE) (def ^{:test (fn [] (* (long (/ dmm-mi 2)) 3))} dmm-x 1) (try ((:test (meta (var dmm-x)))) (catch ArithmeticException e :overflow)))" :expected ":overflow"}
   {:suite "splittable-random" :expr "(let [r (java.util.SplittableRandom. 42)] (mapv (fn [_] (= (- Double/MIN_VALUE) (.nextDouble r (- Double/MIN_VALUE) 0.0))) (range 6)))" :expected "[true true true true true true]"}
   {:suite "splittable-random" :expr "(let [r (java.util.SplittableRandom. 42)] [(try (.nextInt r 3000000000) (catch IllegalArgumentException e (ex-message e))) (try (.nextInt r -3000000000 5) (catch IllegalArgumentException e (ex-message e))) (.nextInt r 3.0e9) (.nextInt r 5.7) (.nextLong r 100000000000000000000N)])" :expected "[\"bound must be positive\" \"bound must be greater than origin\" 1901845031 1 2569641874231381929]"}
-  {:suite "core / StackTraceElement->vec" :expr "(StackTraceElement->vec (first (.getStackTrace (Thread/currentThread))))" :expected "[\"java.lang.Thread\" \"getStackTrace\" \"Thread.java\" -1]"}
+  {:suite "core / StackTraceElement->vec" :expr "(StackTraceElement->vec (first (.getStackTrace (Thread/currentThread))))" :expected "[java.lang.Thread getStackTrace \"Thread.java\" -1]"}
   ;; an unbound var reads as a per-cell sentinel naming its var (JVM Var$Unbound
   ;; parity) on every read surface: a plain compiled read, var-get, and deref/@.
   {:suite "vars / unbound" :expr "(do (declare uv-a) (pr-str uv-a))" :expected "\"#object[clojure.lang.Var$Unbound 0 \\\"Unbound: #'user/uv-a\\\"]\""}

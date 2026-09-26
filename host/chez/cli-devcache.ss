@@ -7,9 +7,6 @@
 (load "target/dev/flat.so")
 (when (let ((m (getenv "JOLT_DEVCACHE"))) (and m (not (string=? m ""))))
   (display "devcache: using target/dev/flat.so\n" (current-error-port)))
-;; GC tuning (same as the binary's launcher).
-(sa-gc-trip-bytes!
-  (let ((trip (getenv "JOLT_GC_TRIP_BYTES"))
-        (default (* 16 1024 1024)))
-    (if trip (or (string->number trip) default) default)))
+;; The collector policy, as the binary's launcher installs it (rt.ss).
+(jolt-install-gc-policy!)
 (load "host/chez/cli-tail.ss")

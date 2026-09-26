@@ -14,23 +14,19 @@
 ;; ============================================================================
 ;; No copy here is a checked Scheme loop: the runtime compiles at
 ;; optimize-level 2, where such a loop pays a type and bounds check per element
-;; (a 64-slot copy measured 390ns). Ranges the caller COMPUTES (vec-copy-range,
-;; vec-insert, vec-remove — trie leaves and nodes) go through the target's
-;; checked bulk move; the whole-vector copies below it (a node update, an
-;; array-map assoc/dissoc) run an unchecked loop over 0..n with n the source's
-;; own length, which on Chez beats the bulk-move primitive at every size (10
-;; slots: 14 vs 19ns, 64: 62 vs 72). Not vector-copy: the vendored irregex
-;; redefines that name at top level as a one-argument loop.
-(define (vec-copy-range v start end)
-  (let ((out (make-vector (fx- end start))))
-    (sa-vector-copy-range! out 0 v start end)
-    out))
-(define (vec-insert v i x)            ; copy of v with x spliced in at index i
-  (let* ((n (vector-length v)) (out (make-vector (fx+ n 1))))
-    (sa-vector-copy-range! out 0 v 0 i)
-    (vector-set! out i x)
-    (sa-vector-copy-range! out (fx+ i 1) v i n)
-    out))
+;; (a 64-slot copy measured 390ns). Whole vectors and computed ranges (a node
+;; update, vec-copy-range, vec-insert) are the target's block copy INTO A FRESH
+;; vector (sa-vector-copy / sa-subvector): no initializing fill and no write
+;; barrier per slot, 19ns for 32 slots against 82 for the unchecked loop below
+;; and 86 for Chez's vector-copy!, which is that same barriered loop. What still
+;; copies into a vector made first (vec-remove, the array-map's append/remove)
+;; runs the unchecked loop or the checked bulk move. Never a bare vector-copy:
+;; the vendored irregex redefines that name at top level as a one-argument loop.
+(define (vec-copy-range v start end) (sa-subvector v start end))
+;; copy of v with x spliced in at index i: the two halves are block copies into
+;; fresh vectors (sa-subvector), which beats copying into one made up front
+(define (vec-insert v i x)
+  (sa-vector-append (sa-subvector v 0 i) (vector x) (sa-subvector v i (vector-length v))))
 (define (vec-remove v i)              ; copy of v with index i dropped
   (let* ((n (vector-length v)) (out (make-vector (fx- n 1))))
     (sa-vector-copy-range! out 0 v 0 i)
@@ -42,9 +38,12 @@
     (when (sa-ufx<? j n)
       (sa-uvector-set! out j (sa-uvector-ref v j))
       (loop (sa-ufx+ j 1)))))
-(define (vec-set v i x)               ; functional update at index i
-  (let* ((n (vector-length v)) (out (make-vector n)))
-    (vec-fill-prefix! out v n)
+;; functional update at index i. A block copy (sa-vector-copy), not make-vector and a copy loop:
+;; it fills a fresh, uninitialized vector in one block move, where the loop paid
+;; the zero fill and a write barrier per slot (82 ns against 19 for a 32-slot
+;; node -- the path copy on every level of every persistent assoc and conj).
+(define (vec-set v i x)
+  (let ((out (sa-vector-copy v)))
     (vector-set! out i x)
     out))
 ;; the two below serve the array-mode map's k/v slot vector
@@ -766,10 +765,17 @@
   ;; Mask to unsigned 32 bits for the HAMT's fx ops.
   (let ((h (jolt-hasheq k)))
     (if (fixnum? h) (hamt-and h hmask) (bitwise-and h hmask))))
-(define (chunk h shift) (hamt-and (hamt-sra h shift) 31))
-(define (bitpos h shift) (hamt-sll 1 (chunk h shift)))
-(define (popcount n) (hamt-popcount n))
-(define (arr-index bm bit) (popcount (hamt-and bm (hamt-sub bit 1))))
+;; Macros: every level of every lookup, insert and removal runs all four, and
+;; as procedures they were four out-of-line calls a level -- most of a set
+;; lookup's cost once the key is hashed (a cache-resident two-level lookup took
+;; 37 ns).
+(define-syntax hamt-chunk
+  (syntax-rules () ((_ h shift) (hamt-and (hamt-sra h shift) 31))))
+(define-syntax hamt-bitpos
+  (syntax-rules () ((_ h shift) (hamt-sll 1 (hamt-chunk h shift)))))
+(define-syntax hamt-arr-index
+  (syntax-rules () ((_ bm bit) (hamt-popcount (hamt-and bm (hamt-sub bit 1))))))
+(define (chunk h shift) (hamt-chunk h shift))
 
 ;; jolt= alist ops (for hash-collision buckets)
 (define (assoc-jolt k al) (cond ((null? al) #f) ((jolt= (caar al) k) (car al)) (else (assoc-jolt k (cdr al)))))
@@ -786,7 +792,7 @@
   (let ((eh (key-hash ek)))
     (if (or (fx>? shift max-shift) (hamt=? eh h))
         (make-hcoll h (list (cons ek ev) (cons k v)))
-        (let ((ei (chunk eh shift)) (ni (chunk h shift)))
+        (let ((ei (hamt-chunk eh shift)) (ni (hamt-chunk h shift)))
           (if (fx=? ei ni)
               (make-hnode (hamt-sll 1 ei) (vector (split-leaf (fx+ shift 5) ek ev h k v)))
               (let ((eb (hamt-sll 1 ei)) (nb (hamt-sll 1 ni)))
@@ -799,11 +805,11 @@
 ;; caller's map back untouched (the eq? test at the root), the way both
 ;; PersistentArrayMap.assoc and PersistentHashMap.assoc do.
 (define (node-assoc node shift h k v added)
-  (let* ((bit (bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
+  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
     (if (hamt=? 0 (hamt-and bm bit))
         (begin (set-box! added #t)
-               (make-hnode (hamt-ior bm bit) (vec-insert arr (arr-index bm bit) (cons k v))))
-        (let* ((i (arr-index bm bit)) (child (vector-ref arr i)))
+               (make-hnode (hamt-ior bm bit) (vec-insert arr (hamt-arr-index bm bit) (cons k v))))
+        (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
           (cond
             ((hnode? child)
              (let ((nc (node-assoc child (fx+ shift 5) h k v added)))
@@ -822,9 +828,9 @@
                   (make-hnode bm (vec-set arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v)))))))))
 
 (define (node-get node shift h k default)
-  (let* ((bit (bitpos h shift)) (bm (hnode-bm node)))
+  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)))
     (if (hamt=? 0 (hamt-and bm bit)) default
-        (let ((child (vector-ref (hnode-arr node) (arr-index bm bit))))
+        (let ((child (vector-ref (hnode-arr node) (hamt-arr-index bm bit))))
           (cond ((hnode? child) (node-get child (fx+ shift 5) h k default))
                 ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
                 ((jolt= (car child) k) (cdr child))
@@ -834,18 +840,18 @@
 ;; key is absent. The pair's car is the key the map HOLDS, which is what `find`
 ;; must put in its entry (see pmap-entry-at).
 (define (node-entry node shift h k)
-  (let* ((bit (bitpos h shift)) (bm (hnode-bm node)))
+  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)))
     (if (hamt=? 0 (hamt-and bm bit)) #f
-        (let ((child (vector-ref (hnode-arr node) (arr-index bm bit))))
+        (let ((child (vector-ref (hnode-arr node) (hamt-arr-index bm bit))))
           (cond ((hnode? child) (node-entry child (fx+ shift 5) h k))
                 ((hcoll? child) (assoc-jolt k (hcoll-alist child)))
                 ((jolt= (car child) k) child)
                 (else #f))))))
 
 (define (node-dissoc node shift h k removed)
-  (let* ((bit (bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
+  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
     (if (hamt=? 0 (hamt-and bm bit)) node
-        (let* ((i (arr-index bm bit)) (child (vector-ref arr i)))
+        (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
           (cond
             ((hnode? child) (make-hnode bm (vec-set arr i (node-dissoc child (fx+ shift 5) h k removed))))
             ((hcoll? child)
@@ -894,13 +900,13 @@
 ;; transients can never share one. The immutable node functions above therefore
 ;; never see an enode, and nothing on the persistent map path changes.
 ;;
-;; `arr` carries SLACK — (vector-length arr) >= (popcount bm) — so an insert
+;; `arr` carries SLACK — (vector-length arr) >= (hamt-popcount bm) — so an insert
 ;; that fits shifts the tail right in place instead of reallocating.
 (define-record-type enode (fields (mutable bm) (mutable arr)) (nongenerative chez-enode-v1))
 (define enode-slack 4)
 (define enode-max 32)                   ; a bitmap node holds at most 32 slots
 
-(define (enode-used nd) (popcount (enode-bm nd)))
+(define (enode-used nd) (hamt-popcount (enode-bm nd)))
 
 ;; Claim a node: an enode is already ours; an hnode is copied once, with room to
 ;; grow. Its CHILDREN and its (k . v) leaves stay shared with the source — see
@@ -934,12 +940,12 @@
 ;; `nd` must already be claimed. Mutates in place; `added` is boxed like
 ;; node-assoc's so the transient can keep its count.
 (define (enode-assoc! nd shift h k v added)
-  (let ((bit (bitpos h shift)) (bm (enode-bm nd)))
+  (let ((bit (hamt-bitpos h shift)) (bm (enode-bm nd)))
     (if (hamt=? 0 (hamt-and bm bit))
         (begin (set-box! added #t)
-               (enode-insert! nd (arr-index bm bit) (cons k v))
+               (enode-insert! nd (hamt-arr-index bm bit) (cons k v))
                (enode-bm-set! nd (hamt-ior bm bit)))
-        (let* ((i (arr-index bm bit)) (arr (enode-arr nd)) (child (vector-ref arr i)))
+        (let* ((i (hamt-arr-index bm bit)) (arr (enode-arr nd)) (child (vector-ref arr i)))
           (cond
             ((enode? child) (enode-assoc! child (fx+ shift 5) h k v added))
             ((hnode? child)
@@ -964,9 +970,9 @@
 ;; Mirrors node-dissoc, including leaving an emptied interior node in place
 ;; rather than collapsing it (node-dissoc does the same).
 (define (enode-dissoc! nd shift h k removed)
-  (let ((bit (bitpos h shift)) (bm (enode-bm nd)))
+  (let ((bit (hamt-bitpos h shift)) (bm (enode-bm nd)))
     (unless (hamt=? 0 (hamt-and bm bit))
-      (let* ((i (arr-index bm bit)) (arr (enode-arr nd)) (child (vector-ref arr i)))
+      (let* ((i (hamt-arr-index bm bit)) (arr (enode-arr nd)) (child (vector-ref arr i)))
         (cond
           ((or (enode? child) (hnode? child))
            (let ((c (enode-claim child)))
@@ -992,10 +998,10 @@
 ;; unclaimed subtree hands off to node-get, which carries no enode tests at all.
 (define (enode-get nd shift h k default)
   (if (enode? nd)
-      (let ((bit (bitpos h shift)) (bm (enode-bm nd)))
+      (let ((bit (hamt-bitpos h shift)) (bm (enode-bm nd)))
         (if (hamt=? 0 (hamt-and bm bit))
             default
-            (let ((child (vector-ref (enode-arr nd) (arr-index bm bit))))
+            (let ((child (vector-ref (enode-arr nd) (hamt-arr-index bm bit))))
               (cond ((pair? child) (if (jolt= (car child) k) (cdr child) default))
                     ((enode? child) (enode-get child (fx+ shift 5) h k default))
                     ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
@@ -1261,11 +1267,10 @@
         (node-entry root 0 (key-hash k) k)
         (let ((i (amap-index root (vector-length root) k)))
           (and (fx>=? i 0) (cons (vector-ref root i) (vector-ref root (fx+ i 1))))))))
+;; pmap-fast-get's descent (flattened, key compare specialized), which no value
+;; can answer with pmap-absent
 (define (pmap-contains? m k)
-  (let ((root (pmap-root m)))
-    (if (hnode? root)
-        (not (eq? pmap-absent (node-get root 0 (key-hash k) k pmap-absent)))
-        (fx>=? (amap-index root (vector-length root) k) 0))))
+  (not (eq? pmap-absent (pmap-fast-get m k pmap-absent))))
 
 ;; --- folds --------------------------------------------------------------------
 ;; The universal fold idiom across the runtime is `(pmap-fold m (lambda (k v a)

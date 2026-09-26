@@ -1725,6 +1725,18 @@ else
   fails=$((fails + 1))
 fi
 
+# Static member sites (Class/member) cache their resolution; a member added or
+# replaced later, a mutable static set later, and the uncached path's errors must
+# all still come through a warm site.
+static_site_out="$($jolt run test/chez/static-site-test.clj 2>/dev/null)"
+if printf '%s' "$static_site_out" | grep -q 'STATIC SITES OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: static member site caching"
+  printf '%s\n' "$static_site_out" | grep FAIL | head -8 | sed 's/^/    /'
+  fails=$((fails + 1))
+fi
+
 # Unit-checks the REPL read-until-complete predicate over balanced/unbalanced,
 # string, comment and regex-literal inputs. A multi-form `jolt run` so jolt.main
 # is loaded and its private var resolves; the file self-checks and prints a sentinel.

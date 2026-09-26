@@ -72,7 +72,7 @@
           ;; the record constructor, not jolt-make-lazy-seq: lazy-bridge.ss loads
           ;; after this file and its arms register, and an unbound reference is
           ;; not a catchable condition in the whole-program release compile
-          (probe-if-available (lambda () (make-jolt-lazyseq (lambda () jolt-nil) jolt-nil #f #f #f jolt-nil)))
+          (probe-if-available (lambda () (make-jolt-lazyseq (lambda () jolt-nil) jolt-nil #f jolt-nil)))
           (probe-if-available (lambda () jrec-fast-type-probe))
           (probe-if-available (lambda () (make-reified (jolt-hash-map))))))
 (define (class-arm-reject-fast-type! who pred)

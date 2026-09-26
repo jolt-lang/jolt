@@ -145,24 +145,24 @@
             (vreset! pv [true input])
             (if (and seen (= prior input)) result (rf result input))))))))
   ([coll]
+   ;; lazy-seq, not a bare make-lazy-seq: its thunk is ^:once, so a run of
+   ;; repeats does not pin the head it started from
    (let [step (fn step [s prev]
-                (make-lazy-seq
-                  (fn* []
-                    (let [s (seq s)]
-                      (if s
-                        (let [x (first s)]
-                          (if (= x prev)
-                            (coll->cells (step (rest s) prev))
-                            (coll->cells (cons x (step (rest s) x)))))
-                        nil)))))]
+                (lazy-seq
+                  (let [s (seq s)]
+                    (if s
+                      (let [x (first s)]
+                        (if (= x prev)
+                          (step (rest s) prev)
+                          (cons x (step (rest s) x))))
+                      nil))))]
      ;; defer (seq coll) into the lazy-seq so a side-effecting source is not
      ;; realized at construction (dedupe is lazy, like Clojure's).
-     (make-lazy-seq
-       (fn* []
-         (let [s (seq coll)]
-           (if s
-             (coll->cells (cons (first s) (step (rest s) (first s))))
-             nil)))))))
+     (lazy-seq
+       (let [s (seq coll)]
+         (if s
+           (cons (first s) (step (rest s) (first s)))
+           nil))))))
 
 ;; Internal helper for {:keys [...]} destructuring over a seq of k/v pairs —
 ;; canonical Clojure 1.11 shape (core.clj seq-to-map-for-destructuring):
@@ -212,19 +212,26 @@
 ;; from the root cause; :phase is the throwable's own :clojure.error/phase,
 ;; lifted to the top the way the reference does it — clojure.main/ex-triage
 ;; reads the phase there, and a compile diagnostic carries one (analyzer
-;; diagnostic-data, reader.ss). Throwables carry no stack-trace elements here,
-;; so :trace is empty and :via entries have no :at.
+;; diagnostic-data, reader.ss). :trace is the root cause's stack trace and each
+;; :via entry's :at its throwable's top frame, as [class method file line] with
+;; class and method symbols (StackTraceElement->vec, written out here because
+;; that is defined later in core).
 (defn Throwable->map [o]
   (let [msg-of (fn [t] (or (ex-message t) (jolt.host/condition-message t)))
+        ste-vec (fn [e] [(symbol (.getClassName e)) (symbol (.getMethodName e))
+                         (.getFileName e) (.getLineNumber e)])
+        trace-of (fn [t] (if (instance? Throwable t) (.getStackTrace t) []))
         entry (fn [t]
                 (let [c (class t)
                       m {:type (symbol (if (string? c) c (.getName c)))
-                         :message (msg-of t)}]
-                  (if-let [d (ex-data t)] (assoc m :data d) m)))
+                         :message (msg-of t)}
+                      m (if-let [d (ex-data t)] (assoc m :data d) m)
+                      st (trace-of t)]
+                  (if (pos? (count st)) (assoc m :at (ste-vec (first st))) m)))
         via (loop [acc [] t o]
               (if (some? t) (recur (conj acc t) (ex-cause t)) acc))
         root (peek via)
-        m {:via (mapv entry via) :trace []}
+        m {:via (mapv entry via) :trace (mapv ste-vec (trace-of (or root o)))}
         m (if-let [c (msg-of root)] (assoc m :cause c) m)
         m (if-let [d (ex-data root)] (assoc m :data d) m)]
     (if-let [phase (:clojure.error/phase (ex-data o))] (assoc m :phase phase) m)))

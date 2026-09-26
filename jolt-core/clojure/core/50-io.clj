@@ -419,12 +419,10 @@
 (defn print-simple [o w]
   (.write w (str o)))
 
-;; StackTraceElement->vec — [class method file line]. jolt stack traces are
-;; empty, so this exists for API compatibility; nil -> [].
+;; StackTraceElement->vec — [class method file line], class and method as
+;; symbols, as the reference returns them.
 (defn StackTraceElement->vec [o]
-  (if (nil? o)
-    []
-    [(.getClassName o) (.getMethodName o) (.getFileName o) (.getLineNumber o)]))
+  [(symbol (.getClassName o)) (symbol (.getMethodName o)) (.getFileName o) (.getLineNumber o)])
 
 ;; The reference's Inst protocol (core.clj): inst-ms* is its one method, inst-ms
 ;; calls it, inst? is satisfies?. So a type that extends Inst is an inst to

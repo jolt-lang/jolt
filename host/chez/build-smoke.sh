@@ -343,6 +343,20 @@ if [ "$n_inner" != "1" ]; then
   echo "  FAIL: inner-fn trace names app.util/inner-boom $n_inner times, want 1"
   echo "--- got ----"; echo "$got_if"; exit 1
 fi
+# ...and the same trace with the build directory gone. A frame's line comes from
+# the markers in the unit file it was compiled from; read off the disk, a binary
+# whose .build dir was cleaned (or that was copied elsewhere) fell back to defn
+# lines and lost every spliced frame, and so did one built from cached units,
+# which name the directory of the build that first compiled them. The build bakes
+# each unit's table into the unit (build.ss bld-append-marker-table!).
+mv "$out.build" "$out.build-away"
+got_if_nodir="$(cd / && "$out" --innerfn 2>&1)"
+mv "$out.build-away" "$out.build"
+if [ "$got_if_nodir" != "$got_if" ]; then
+  echo "  FAIL: the trace changed once the build directory was gone"
+  echo "--- with it ----"; echo "$got_if"
+  echo "--- without ----"; echo "$got_if_nodir"; exit 1
+fi
 
 # --tree-shake must not cost the trace its inlined frames. A callee whose every
 # call site was spliced has no reference left in the graph, so the shake dropped

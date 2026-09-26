@@ -36,9 +36,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   5.6GB of memory to 55s from cold, 35s for an unchanged rebuild and 38s after editing
   one namespace, under 1GB. `JOLT_BUILD_CACHE=0`, `JOLT_BUILD_CACHE_DIR`,
   `JOLT_BUILD_CACHE_MB` and `JOLT_BUILD_JOBS` control the unit cache.
+- **The heap ceiling bounds the heap's total size, as `-Xmx` does.** `JOLT_MAX_HEAP`
+  (and the 25%-of-RAM default) used to bound only the live data, so a program near a
+  4GB ceiling held 6.5GB. It now covers the live data, the nursery and the free memory
+  the collector keeps, within the working room a collection needs: about 10%, since
+  Chez's collector cannot compact in place (under 256MB with 100MB held, 0.8.12 went
+  23% over). Near the ceiling the nursery
+  shrinks to a quarter of the remaining room, the collector keeps less free memory,
+  and collections mark older objects in place instead of copying them. The
+  out-of-memory error is unchanged: it is raised only when the live data cannot fit.
+- **The JVM's GC overhead limit.** Five collections in a row that find more than 98% of
+  the time spent collecting with under 2% of the ceiling free raise `OutOfMemoryError`
+  ("GC overhead limit exceeded") instead of running on at a crawl.
+  `JOLT_GC_OVERHEAD_LIMIT=off`, `JOLT_GC_TIME_LIMIT` and `JOLT_GC_HEAP_FREE_LIMIT`
+  mirror `-XX:-UseGCOverheadLimit`, `GCTimeLimit` and `GCHeapFreeLimit`.
+- **The nursery size follows the time spent collecting, bounded by the live data.**
+  It starts at 16MB and doubles while collection takes more than a tenth of the run,
+  up to the size of the data the program keeps; past that only while collection keeps
+  taking more than a fifth. A program that allocates little keeps 16MB. writ's prover
+  spent 40% of its time collecting at the fixed 16MB and 25% now (65.4s to 58.8s, peak
+  RSS 2.14GB to 2.28GB); a loop holding 40MB went from 2.9s to 2.25s at 274MB to 406MB.
+  The knobs mirror the JVM's: `JOLT_MAX_RAM_PERCENTAGE`, `JOLT_GC_TIME_RATIO`,
+  `JOLT_MAX_HEAP_FREE_RATIO`, `JOLT_NEW_SIZE`, `JOLT_MAX_NEW_SIZE`; `JOLT_GC_TRIP_BYTES`
+  still pins the size, and a value jolt cannot read is refused at startup. The older
+  generations are also collected once the heap passes twice what was live after the
+  last full collection, so garbage there no longer waits for a schedule counted in
+  nurseries; that allowance grows toward 8x when the full collections take more than
+  the target share of the time (writ's pong: 263 full collections down to 86). Growth
+  of the nursery past the live data is checked: eight collections after it, a share of
+  time that rose by more than a tenth sends it back and holds it (a bigger window cost
+  writ's prover 10x per collection), after one jump to 8x for programs where only a
+  big window lets most of it die.
+- **`for` is the reference's expansion.** The innermost binding conses each value (and
+  over a chunked seq fills a chunk at a time, as the reference does) where jolt's
+  expansion built `(concat (list x) (step (rest s)))` per value; an innermost binding
+  with no modifiers runs on the native `map`. `for` with `:when` over a vector went from
+  178ns to 38ns per element, and how much of its source a first element realizes now
+  matches the JVM (a chunk over a chunked seq). An unknown keyword in a `for` or `doseq`
+  binding is refused by name, where it read the rest of the vector wrong ("index out of
+  bounds").
+- **`seq` on a lazy seq takes the fast path.** It went through the registered arms
+  after seven type tests: a quarter of a `tree-seq` walk. `tree-seq` is 293ns per node
+  where it was 370.
+- **Lazy seq nodes are 48 bytes, not 64**, without the two mirror fields they wrote for
+  images on every force (images derive them; older images restore through the legacy
+  arm), and a realized node lets go of its rerun thunk, as the reference nulls `fn`.
+- The per-site static member and instance-check caches publish each entry behind a
+  release fence; on ARM64 another thread could see a new entry before its slots.
+- **Seq cells are 48 bytes, not 80.** A cell carries its head, tail, kind and
+  metadata; the chunk fields moved to a vector-backed subtype, a claim swaps the tail
+  word itself instead of a lock field, and the image mirror of the forced flag is
+  gone. writ's pong allocates 345GB where it allocated 449GB; a realized `map` costs
+  77 bytes per element where it cost 92. Near the heap ceiling, a full collection that cannot get under its soft
+  limit no longer repeats after every young collection; the next waits until half the
+  remaining room is used. A program whose live data sat above the soft limit (writ's
+  prover on a 16GB CI runner) used to stall there for hours. `JOLT_GC_LOG=1` prints a
+  line per collection.
+- **Hand-written lazy seqs cost less per element.** A `lazy-seq` node's own thunk stays
+  on it while it runs, as the reference keeps `fn`, which drops three stores and a
+  marker from every force; the macro's two halves and `chunked-seq?` compile to direct
+  calls instead of a var lookup and a generic invoke. A `lazy-seq` walker over a list
+  went from 74ns to 47ns per element, `keep` from 95ns to 64ns, and `for` with `:when`
+  from 61ns to 39ns.
+- **Hashing a long is 3x faster, and hash sets and maps with it.** The 32-bit
+  sign-extension the murmur hash applies at every step branched on the hash's sign bit,
+  a coin flip the CPU mispredicted about half the time; it is branch-free now, and the
+  long hash keeps its steps unsigned until one final conversion (85ns to 30ns for
+  `(hash n)`). A persistent map or set copies a changed node in one block move instead
+  of a zero fill and a copy loop with a write barrier per slot, the per-level
+  helpers inline, and `contains?` takes the lookup path `get` already had: `conj` onto
+  a 100k-element set went from 610ns to 300ns, `contains?` from 148ns to 95ns, and
+  `distinct` from 946ns to 450ns per element.
 
 ### Fixed
 
+- **A `lazy-seq` body that fails and is forced again sees the locals it had not
+  finished with, as on the JVM.** The reference's compiler nulls a `^:once` fn's
+  captured field at its last use on the path the body takes; jolt emptied every
+  capture on entry, so a body that threw before reading a capture reran with it nil
+  (`(let [v [1 2]] (lazy-seq (when (first-run?) (throw …)) v))` answered `nil` on the
+  second force where the JVM answers `(1 2)`). Each capture is now emptied at its
+  last use, with loops, branches and nested fns accounted for, and the store that
+  empties it needs no write barrier: a `lazy-seq` walker is 44ns per element (was
+  47), `keep` 59ns (was 65).
+
+- **Lazy seqs no longer keep what they have walked past.** Three retention bugs,
+  each fixed the way the reference does it:
+  - A lazy seq whose body answers another lazy seq (a `keep` or `dedupe` skip, a
+    `lazy-seq` returning a `lazy-seq`) was forced inside the body, so a run of skips
+    was a recursion as deep as the run, each frame pinning its place in the source.
+    The chain is now walked in a loop, as `LazySeq.realize`/`unwrap` does, with the
+    forced node holding nothing but its answer.
+  - A `lazy-seq` thunk kept what it closed over until it returned. It is now
+    `^:once`, as in the reference: its captures are released as it runs, so a thunk
+    looping over a run (`distinct`, `for` with `:when`) does not pin its source.
+    `^{:once true} fn*` works in user code too.
+  - `concat` over a seq of colls (`mapcat`, `apply concat`, `tree-seq`, `flatten`)
+    held the outer cell of the coll it was walking, whose first is that coll, so the
+    whole walk stayed live. It holds only the remaining colls now, as the reference's
+    `(cat (first zs) (next zs))` does, and realizes the same amount of its source.
+  writ's prover went from 3.8GB live to 134MB (the JVM holds 256MB) and from 507s to
+  277s; `drop-while`, `distinct`, `mapcat`, `for`, `remove`, `flatten`, `interleave`
+  and `dedupe` over a 3M-element run now fit in a 256MB heap, as on the JVM.
+  `(apply concat xs)` realizes as much of `xs` as the JVM does (4 colls, from
+  `RestFn.applyTo`), where it realized 1.
+- **A lazy seq whose body throws runs its body again on the next force**, as the
+  reference's `LazySeq` does (it keeps `fn` until `invoke` returns); a `lazy-seq`
+  body's captured locals are cleared by then, so the rerun sees them nil, as there.
+  jolt cached the failure and re-raised it. Not recording failures also removed an
+  exception handler from every force: with the pieces above, a `lazy-seq` walker
+  costs 86ns per element where it cost 115ns, `keep` 100ns (was 142), `for` with
+  `:when` 141ns (was 196).
+- clojure.core vars carry the reference's `:tag` metadata (`(:tag (meta #'not))` is
+  `Boolean`, `(:tag (meta #'str))` is `String`), where they carried none.
+- A `loop` local bound to a primitive boolean (`(nil? x)`, `(= a b)`, `(< a b)`,
+  `(instance? C x)` …) refuses a `recur` of anything that is not one, with the JVM's
+  "recur arg for primitive local" error; jolt used to run such a loop.
+- A built binary's stack traces no longer depend on its build directory. Each frame's
+  line was read from the generated unit files under `<out>.build`, so a binary copied
+  elsewhere, or whose build directory was cleaned, showed frames at their `defn` lines
+  and dropped inlined ones, and so did a binary assembled from build-cache units that
+  an earlier build compiled. The line tables are baked into the binary now.
+- On a fiber, code inside a lazy seq can wait: a `locking` that is contended, a
+  promise deref, a channel take or any other park inside `(doall (map f xs))`, a
+  `for` body or a two-collection `mapv` used to raise "a fiber cannot leave the CPU
+  while its carrier holds a counted lock" (#1142). Forcing a lazy seq no longer counts
+  as holding a lock; a lazy cell is claimed by the fiber forcing it, and another fiber
+  waiting on it gives up the carrier instead of blocking it.
+- A fiber that catches the error for parking while it holds a lock is left as it was.
+  The yield, park or channel take used to mark it queued, parked or registered first,
+  so it was later run a second time ("fiber in unexpected state") or its carrier
+  stopped running fibers.
+- A caught exception keeps its stack trace. `.getStackTrace`, `.printStackTrace` and
+  `Throwable->map`'s `:trace` (and each `:via` entry's `:at`) answer the frames of where
+  the exception was constructed, as on the JVM, including one that was never thrown;
+  they were empty unless nothing else had thrown since. `StackTraceElement->vec`
+  names the class and method as symbols, as on the JVM.
+- A static member reference like `Long/MIN_VALUE` or a call like
+  `(Long/numberOfLeadingZeros x)` looks its member up once per call site instead of
+  hashing the class and member names on every evaluation (136 to 32 ns for a
+  `Long/MIN_VALUE` compare). The site notices a member a library adds or replaces
+  later, and a mutable static set later. test.check's generators spent a fifth of
+  their time on those lookups.
+- A function in a def's metadata looks up the vars it calls once, as the def's value
+  does, instead of by name on every call. Every `deftest` body is such a function, so
+  test code ran its var calls about 8x slower than the same code in a `defn`.
+- Reading source off a reader is linear again for nested code. A list took its
+  `:line`/`:column` after reading its children, which sent the position cursor back
+  to the start of the input on every list holding a list, so `(read r)` over
+  `clojure/core.clj` took 1s (the JVM takes 20ms) and twice that file took 4s. It
+  now takes 17ms. This also covered edamame, tools.reader and anything else
+  reading through jolt's reader.
+- `load-file` and `load` put `*ns*` back when the file finishes, including when it
+  throws, as the JVM does. A loaded file's `ns` form used to leave the caller in the
+  file's namespace, so the caller's next form resolved its aliases there.
 - An interop field read or `set!` on a record or deftype finds a declared slot under
   any spelling that munges to the slot's name, as the JVM's compiler does:
   `(.-processed_count r)` reads `[processed-count]`, `(.-my-field r)` reads `[my_field]`,

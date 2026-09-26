@@ -180,6 +180,38 @@
          " held). Commit under the lock and switch outside it — jolt-lock-wait,"
          " host/chez/locks.ss.")))))
 
+;; The same check, made where a wait BEGINS rather than where it switches. A park
+;; is a sequence: commit (mark the fiber parked or ready, enqueue it, register it
+;; as a channel or condition waiter), then switch. The assertion above sits at the
+;; switch, so by the time it raises the commit has happened, and the fiber runs on
+;; while marked parked, queued, or registered with a waker that will dispatch it a
+;; second time ("fiber in unexpected state"). Every sequence calls this first; the
+;; park/lock gate checks that it comes before the commit. On a plain thread it is
+;; nothing: a thread may wait while holding a lock.
+(define (jolt-fiber-may-park! who)
+  (when (jolt-current-fiber) (jolt-locks-assert-none! who)))
+
+;; (jolt-fiber-wait-turn! n) -> #t when this fiber gave its carrier away for a
+;; while, #f when it could not (not a fiber, or a counted lock is held) and the
+;; caller must wait its own way. For a waiter that POLLS -- a lazy seq's forcer
+;; waiting on the cell's runner (seq.ss force-claimed!) -- where the thing it
+;; waits for may be a fiber on this same carrier that runs only once this one
+;; leaves. The first rounds yield, which is enough when the runner is merely
+;; queued; later ones pause with a growing deadline (1ms to 8ms), for a runner
+;; that is itself parked on something slow.
+;;
+;; The park is guarded rather than unconditional, and that is what the park/lock
+;; gate is told (park-lock-check.ss guarded-parks): with a lock held it returns #f
+;; instead of parking, so calling it from inside a region cannot leave the CPU.
+(define (jolt-fiber-wait-turn! n)
+  (if (and (jolt-current-fiber) (fx=? (jolt-locks-held) 0))
+      (begin
+        (if (fx<? n 16)
+            (sa-fiber-yield)
+            (jolt-pause-ms (fxsll 1 (fxmin 3 (fxsrl (fx- n 16) 2)))))
+        #t)
+      #f))
+
 ;; --- waiting for state a lock guards ----------------------------------------
 ;; (jolt-lock-wait mu decide) -> whatever decide returns
 ;;
@@ -224,6 +256,8 @@
 (define jolt-lock-parked (list 'jolt-lock-parked))   ; unique; never a decision
 
 (define (jolt-lock-wait mu decide)
+  ;; before decide, which registers the waiter under mu
+  (jolt-fiber-may-park! 'jolt-lock-wait)
   (let retake ()
     (let ((r (jolt-with-mutex mu (decide))))
       (if (eq? r jolt-lock-parked)
@@ -450,6 +484,8 @@
 ;; deref 1.15x against a 1.1x ceiling (release binary, A/B/A). Threaded through,
 ;; the fast path is an `(if ibox ...)` that falls through (jolt-a0f1).
 (define (jolt-cv-wait/ibox mu cv deadline decide ibox who)
+  ;; before the deadline timer below registers a wake for this wait
+  (jolt-fiber-may-park! who)
   ;; Registered OUTSIDE mu, and only for a fiber. Outside because the timer's
   ;; thunks run with timeout-mu released but registering takes it, so doing this
   ;; under mu would order mu above timeout-mu here and below it there.

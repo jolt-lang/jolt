@@ -195,6 +195,11 @@
 ;; no compiler can fold the capture away, exactly as on Chez.
 (define jolt-fn-identity-seed 0)
 (define jolt-fn-identity-probe #f)
+;; A ^:once fn's box of captures (backend emit-fn), as rt.ss.
+(define jolt-once-tag (list 'jolt-once))
+(define (jolt-once-clear! env)
+  (let loop ((i (fx- (vector-length env) 1)))
+    (when (fx>? i 0) (vector-set! env i jolt-nil) (loop (fx- i 1)))))
 (set! jolt-fn-identity-seed 1)
 (set! jolt-fn-identity-probe #f)
 
@@ -408,18 +413,24 @@
 ;; jolt-host-throwable / throw-jvm, which is what the JVM raises wherever
 ;; ex-data is nil.
 (define (jolt-ex-info msg data . more)
-  (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
-                             (if (null? more) jolt-nil (car more))
-                             (if (jolt-nil? data) empty-pmap data) 0))
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
+                              (if (null? more) jolt-nil (car more))
+                              (if (jolt-nil? data) empty-pmap data) 0)))
 ;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record
 ;; carrying its canonical JVM class-name, so (class …) / instance? / .getMessage /
 ;; ex-message all reflect the real type.
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
 (define (jolt-host-throwable class-name msg . more)
-  (make-jolt-ex-info-record class-name msg
-                             (if (null? more) jolt-nil (car more))
-                             jolt-nil 0))
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record class-name msg
+                              (if (null? more) jolt-nil (car more))
+                              jolt-nil 0)))
+;; Chez records where a throwable was constructed, for its stack trace (rt.ss).
+;; This target keeps no frames (a throwable's trace is empty here), so there is
+;; nothing to capture and the throwable is returned as made.
+(define (jolt-capture-throwable! v) v)
 
 ;; throw-jvm: raise a typed JVM throwable by simple class name.
 ;; (throw-jvm 'NoSuchElementException msg) -> (jolt-throw (jolt-host-throwable

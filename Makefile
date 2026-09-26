@@ -121,7 +121,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink ffi fibers fieldjoin fieldnum fieldread flarr fnform coreproc grenadine \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inline inline-body irvalidate statlayout \
-  jolt jolt-debug jolt-release joltsmoke libconformance mandelbrot-num mathfl mvnhttp \
+  jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy lazyretain \
   deadhost mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax \
   hostarity narrow narrowhash numeric numwp oparity pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit vfaslceiling \
@@ -180,11 +180,11 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke completionssmoke depscpcache depsunit \
+CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient rrbprop rrbscaling stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink directcall arraymap arraybacking unitcontext numeric oparity mathfl flarr \
+  protoret accfix pic narrow directlink directcall defmetacells staticsite arraymap arraybacking unitcontext numeric oparity mathfl flarr \
   fnform coreproc traceemit traceeval degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax deadhost adaptercheck hostprops normalizecheck hostregistry hostarity foreignhandles dispatchalloc regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotfingerprint vfaslceiling buildscaling compilepathsmoke makefilesmoke versionsmoke attributioncheck \
@@ -525,6 +525,14 @@ libconformance: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" \
 	 JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/run.clj $(LIBS)
 
+# OPT-IN: time the same library suites per test on jolt and on JVM Clojure, and
+# list the tests more than JOLT_LIBPERF_THRESHOLD (default 5) times slower on
+# jolt. Needs the checkouts and a `clojure` CLI. Report in target/libperf/.
+# `make libperf LIBS="malli honeysql"` runs a subset.
+libperf: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" \
+	 JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $(LIBS)
+
 # jolt.mvn-http pure-function tests (URL/redirect/header/body parsing). No
 # network, no OpenSSL — runs in the default gate.
 mvnhttp:
@@ -539,6 +547,69 @@ mvnhttp:
 readscaling: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/read_scaling_test.clj
 
+# Lazy realization walks past what it has consumed in constant memory, as the
+# JVM does (test/lazy_retention_test.clj): each case in its own process under a
+# 256MB ceiling, so one that runs out cannot mask the next. A run of skips used
+# to become a recursion pinning the whole run (lazy-bridge.ss, and ^:once thunks
+# in backend emit-fn).
+lazyretain: testbin
+	@t=test/lazy_retention_test.clj; j=target/release/jolt; fails=0; n=0; \
+	 for c in $$(JOLT_NO_USER_DEPS=1 $$j run $$t); do \
+	   n=$$((n + 1)); \
+	   out=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=256m timeout 60 $$j run $$t $$c 2>&1 | tail -1); \
+	   case "$$out" in "$$c ok") ;; *) fails=$$((fails + 1)); echo "FAIL lazyretain: $$c: $${out:-timed out}";; esac; \
+	 done; \
+	 [ "$$fails" = 0 ] || exit 1; \
+	 echo "lazyretain: $$n cases in constant memory under a 256MB heap"
+
+# The nursery follows the collector's time share, bounded by the live set
+# (rt.ss jolt-install-gc-policy!): a churning program grows it past the 16MB floor
+# but not past its footprint bound (the fixed-cap policy grew the same loop's to
+# 512MB+), a light one leaves it at the floor, and the JVM-named knobs take
+# effect: JOLT_GC_TRIP_BYTES pins it, JOLT_MAX_NEW_SIZE caps it, JOLT_MAX_HEAP
+# bounds the total heap (not only the live data) within the collector's working
+# room -- 10%: Chez cannot compact in place, so a full collection over live data
+# near the limit either copies (room for a second copy) or marks in place
+# (fragments that cannot go back to the OS) --
+# JOLT_MAX_RAM_PERCENTAGE sets the heap ceiling, and a bad value is refused by
+# name. Each mode is its own process, since the policy is per process.
+# Recipes run under bash -e (.cache/makes/init.mk), so a capture whose process is
+# meant to fail takes `|| true` and the check after it decides; without it the
+# recipe exits there with no FAIL line (macOS's make 3.81 ignores .SHELLFLAGS,
+# which is why it only showed on Linux).
+gcpolicy: testbin
+	@floor=16777216; t=test/gc_policy_test.clj; j=target/release/jolt; \
+	 trip() { env JOLT_NO_USER_DEPS=1 "$$@" $$j run $$t churn 2>&1 | sed -n 's/^trip //p'; }; \
+	 churn=$$(trip); \
+	 light=$$(JOLT_NO_USER_DEPS=1 $$j run $$t light 2>&1 | sed -n 's/^trip //p'); \
+	 pinned=$$(trip JOLT_GC_TRIP_BYTES=33554432); \
+	 capped=$$(trip JOLT_MAX_NEW_SIZE=24m); \
+	 echo "gcpolicy: churn $$churn, light $$light, pinned $$pinned, max-new-size 24m -> $$capped"; \
+	 [ -n "$$churn" ] && [ "$$churn" -gt "$$floor" ] || { echo "FAIL gcpolicy: a churning program kept the $$floor floor"; exit 1; }; \
+	 [ "$$churn" -lt 536870912 ] || { echo "FAIL gcpolicy: a ~40MB-live loop grew its nursery to $$churn, past the live-set bound"; exit 1; }; \
+	 [ "$$light" = "$$floor" ] || { echo "FAIL gcpolicy: a light program left the floor ($$light)"; exit 1; }; \
+	 [ "$$pinned" = "33554432" ] || { echo "FAIL gcpolicy: JOLT_GC_TRIP_BYTES did not pin the nursery ($$pinned)"; exit 1; }; \
+	 [ -n "$$capped" ] && [ "$$capped" -le 25165824 ] || { echo "FAIL gcpolicy: JOLT_MAX_NEW_SIZE=24m did not cap the nursery ($$capped)"; exit 1; }; \
+	 full=$$(JOLT_NO_USER_DEPS=1 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
+	 tenth=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_RAM_PERCENTAGE=10 $$j -e '(print (.maxMemory (Runtime/getRuntime)))'); \
+	 [ $$((tenth * 25 / 10)) -le $$((full + 1)) ] && [ $$((tenth * 25 / 10)) -ge $$((full - 4)) ] || { echo "FAIL gcpolicy: JOLT_MAX_RAM_PERCENTAGE=10 gave $$tenth against $$full at the default 25"; exit 1; }; \
+	 out=$$(JOLT_NO_USER_DEPS=1 JOLT_GC_LOG=1 JOLT_MAX_HEAP=256m $$j run $$t ceiling 2>&1); \
+	 set -- $$(printf '%s\n' "$$out" | sed -n 's/^peak //p'); pk=$$1; mx=$$3; \
+	 after=$$(printf '%s\n' "$$out" | sed -n 's/^gc: .* total \([0-9]*\)MB .*/\1/p' | sort -n | tail -1); \
+	 echo "gcpolicy: JOLT_MAX_HEAP=256m with ~100MB held -> total after collections $${after}MB, peak $$((pk / 1048576))MB, max $$((mx / 1048576))MB"; \
+	 [ -n "$$after" ] && [ $$((after * 1048576 * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: a collection left the total heap at $${after}MB, more than 10% over JOLT_MAX_HEAP=256m: the ceiling bounds the TOTAL heap, as -Xmx does, within the collector's working room"; exit 1; }; \
+	 [ -n "$$pk" ] && [ $$((pk * 10)) -le $$((mx * 11)) ] || { echo "FAIL gcpolicy: the total heap peaked at $$pk during collections, more than 10% over JOLT_MAX_HEAP=256m (v0.8.12 peaked 23% over)"; exit 1; }; \
+	 oh=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 $$j run $$t churn 2>&1) || true; \
+	 case "$$oh" in *OutOfMemoryError*"GC overhead limit exceeded"*) ;; *) echo "FAIL gcpolicy: with every collection over the limits, the GC overhead limit did not raise: $$(printf '%s' "$$oh" | head -2)"; exit 1;; esac; \
+	 off=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=1g JOLT_GC_TIME_LIMIT=0 JOLT_GC_HEAP_FREE_LIMIT=100 JOLT_GC_OVERHEAD_LIMIT=off $$j run $$t churn 2>&1 | sed -n 's/^trip //p'); \
+	 [ -n "$$off" ] || { echo "FAIL gcpolicy: JOLT_GC_OVERHEAD_LIMIT=off did not turn the limit off"; exit 1; }; \
+	 echo "gcpolicy: the GC overhead limit raises OutOfMemoryError, and JOLT_GC_OVERHEAD_LIMIT=off turns it off"; \
+	 for bad in JOLT_GC_TIME_RATIO=0 JOLT_MAX_HEAP_FREE_RATIO=100 JOLT_MAX_RAM_PERCENTAGE=abc JOLT_NEW_SIZE=12q JOLT_GC_TIME_LIMIT=200; do \
+	   msg=$$(env JOLT_NO_USER_DEPS=1 $$bad $$j -e '(println :ran)' 2>&1) || true; \
+	   case "$$msg" in *"$${bad%%=*}"*"is not valid"*) ;; *) echo "FAIL gcpolicy: $$bad was not refused by name: $$msg"; exit 1;; esac; \
+	 done; \
+	 echo "gcpolicy: passed"
+
 # Compiling a namespace stays linear in its source, and a quoted form does not
 # cost dramatically more than the construction it is. The second half is not
 # implied by the first: a per-form cost regression is linear, just linear and
@@ -550,15 +621,20 @@ compilescaling: testbin
 # jolt-register-variadic! registration on the native + - * / min max and the
 # comparison chains (host/chez/seq.ss). Without it (apply max (range)) realizes
 # an unbounded seq until the process dies.
+# Both footprint gates below judge the collector's high-water mark against ONE
+# collection trip, so the trip is pinned (JOLT_GC_TRIP_BYTES) rather than left to
+# the collector policy (rt.ss jolt-install-gc-policy!): a nursery that grows during
+# an allocation-heavy arm raises the floor the reading is judged against, and the
+# arms that must differ read the same (what failed apply-scaling's control on CI).
 applyscaling: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/apply_scaling_test.clj
+	@JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/apply_scaling_test.clj
 
 # Peak memory of the java.util.zip streams: 100 MB through GZIPOutputStream or
 # GZIPInputStream peaks within 2 MB of 1 MB. It reads the live heap, not the
 # collector's high-water mark applyscaling reads: that mark hides anything under
 # one collection trip, and the ceiling here is 2 MB.
 zipmemory: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/zip_memory_test.clj
+	@JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/zip_memory_test.clj
 
 # Lazy realization costs the same whether or not a thread has ever existed: a
 # cell publishes its forced tail through one word and reads it lock-free, and the
@@ -961,6 +1037,14 @@ narrow:
 # family lowered to its helpers, case on interned constants (run-directcall.ss).
 directcall:
 	@$(CHEZ) --script host/chez/run-directcall.ss
+
+# A var named in a def's evaluated metadata (every deftest body) is cell-cached.
+defmetacells:
+	@$(CHEZ) --script host/chez/run-defmetacells.ss
+
+# Class/member sites are emitted with a per-site cache (host-static.ss).
+staticsite:
+	@$(CHEZ) --script host/chez/run-staticsite.ss
 
 # Array-mode maps are one flat k/v slot vector (PersistentArrayMap), their
 # transients a slot buffer, their seq views vector-backed (test/chez/arraymap-test.ss).

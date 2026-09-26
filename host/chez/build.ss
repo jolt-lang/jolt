@@ -2022,7 +2022,11 @@
                           (let-values (((decls bodies) (bld-defer-app-strs (cdar gs))))
                             (for-each (lambda (s) (put-string gout s) (put-string gout "\n")) decls)
                             (let ((ns-names (bld-emit-app-chunks gout (bld-unit-tag (caar gs)) bodies)))
-                              (when split? (close-port gout))
+                              (when split?
+                                (close-port gout)
+                                ;; a shaken app is one group holding every namespace
+                                (bld-append-marker-table! (car fs)
+                                                          (if tree-shake? (map car ordered) (list (caar gs)))))
                               (loop (cdr gs) (cdr fs) (append acc ns-names)))))))))
             (when split?
               (close-port out)
@@ -2037,20 +2041,13 @@
           ;; io/resource that wasn't embedded still resolves next to the binary.
           (put-string out "\n;; === launcher ===\n")
           (put-string out "(suppress-greeting #t)\n")
-          ;; GC tuning: larger nursery for allocation-heavy workloads (binary-trees,
-          ;; ray tracer, etc.). Default 16 MB; override via JOLT_GC_TRIP_BYTES
-          ;; environment variable (integer bytes, e.g. \"33554432\" for 32 MB).
-          (put-string out
-            (string-append
-              "(sa-gc-trip-bytes!\n"
-              "  (let ((trip (getenv \"JOLT_GC_TRIP_BYTES\"))\n"
-              "        (default (* 16 1024 1024)))\n"
-              "    (if trip (or (string->number trip) default) default)))\n"
-              ;; and a heap ceiling, so a built app fails with an
-              ;; OutOfMemoryError carrying a stack rather than being SIGKILLed
-              ;; by the kernel with nothing to read. Same contract as jolt's own
-              ;; launcher and as the JVM's MaxRAMPercentage default.
-              "(jolt-install-heap-ceiling!)\n"))
+          ;; The collector policy (rt.ss jolt-install-gc-policy!): a nursery sized
+          ;; by the time collection takes, from 16MB up (JOLT_GC_TRIP_BYTES pins
+          ;; it), and a heap ceiling, so a built app fails with an
+          ;; OutOfMemoryError carrying a stack rather than being SIGKILLed by the
+          ;; kernel with nothing to read. Same as jolt's own launcher, and the
+          ;; ceiling the JVM's MaxRAMPercentage default.
+          (put-string out "(jolt-install-gc-policy!)\n")
           (put-string out "(scheme-start\n  (lambda args\n")
           (bld-emit-startup-profile-mark! out "scheme-start begin")
           ;; Shutdown hooks (`:shutdown` on a jolt.process, jolt.host/
@@ -2336,17 +2333,15 @@
 (define (bld-units-so-args units)
   (fold-left (lambda (acc u) (string-append acc "  " (ei-str-lit (cadr u)) "\n")) "" units))
 
-;; Run THUNK with a larger collect trip, restoring it after. The back-end steps
-;; (compile-file, vfasl-convert-file) allocate tens of GB on a large app and at
-;; the CLI's 16MB trip spent ~60% of their time collecting (#1059): a 28MB app
-;; half compiled in 49.6s at the default and 36.2s at 64MB.
+;; Run THUNK with the nursery at least 64MB. The back-end steps (compile-file,
+;; vfasl-convert-file) allocate tens of GB on a large app and at a 16MB trip spent
+;; ~60% of their time collecting (#1059): a 28MB app half compiled in 49.6s at
+;; 16MB and 36.2s at 64MB. The collector policy would grow the nursery there on
+;; its own, but only after the collections that tell it to; this starts the phase
+;; at the size it is known to need.
 (define bld-backend-trip-bytes (* 64 1024 1024))
 (define (bld-with-backend-gc thunk)
-  (let ((saved (sa-gc-trip-bytes)))
-    (dynamic-wind
-      (lambda () (sa-gc-trip-bytes! (max saved bld-backend-trip-bytes)))
-      thunk
-      (lambda () (sa-gc-trip-bytes! saved)))))
+  (jolt-with-gc-trip-floor bld-backend-trip-bytes thunk))
 
 ;; Compile SRC to SO in this process under PARAMS (an alist as above), by
 ;; translating the parameter names into the target-neutral profile
@@ -2364,6 +2359,28 @@
       (sa-compile-file src so #f)))
 
 ;; Compile one app-half (or one-file) source under MODE's row.
+;; A unit's line-marker table, appended to the unit as a registration it runs
+;; when it loads (source-registry.ss jolt-register-marker-table!), under each
+;; namespace the unit holds. A frame's line is the nearest marker before its offset
+;; in the unit file; read off the disk, that answer needed the build directory, so
+;; a binary copied elsewhere or with its .build dir cleaned reported frames at their
+;; defn lines and lost every spliced frame -- and so did one assembled from cached
+;; units, which name the directory of whichever build compiled them first. Carried
+;; in the unit, the table is compiled and cached with the code it describes, so a
+;; unit edit recompiles that one unit and a cache hit brings its own table. It goes
+;; AFTER the code, so no offset it records moves. A unit with no markers
+;; registers nothing.
+(define (bld-append-marker-table! path nses)
+  (let ((table (jolt-marker-table (read-file-string path))))
+    (when (and (pair? nses) (fx>? (vector-length table) 0))
+      (let ((out (open-output-file path 'append)))
+        (put-string out ";; === source line markers ===\n")
+        (put-string out (string-append
+                          "(jolt-register-marker-table! '"
+                          (with-output-to-string (lambda () (write nses)))
+                          " '" (with-output-to-string (lambda () (write table)))
+                          ")\n"))
+        (close-port out)))))
 (define (bld-chez-compile-file mode src so)
   (bld-chez-compile-params! (bld-mode-params mode) src so))
 

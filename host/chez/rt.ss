@@ -344,8 +344,12 @@
                (loop (cdr fs)))))))
 ;; JOLT_MAX_HEAP: "2g", "512m", "1048576", "0"/"off"/"none". Returns bytes, the
 ;; symbol 'off, or #f when unset/unparseable (fall back to the default).
-(define (heap-from-env)
-  (let ((v (getenv "JOLT_MAX_HEAP")))
+;; A byte size from the environment the way the JVM spells one (-Xmx4g): digits
+;; with an optional k/m/g suffix. 'off for 0/off/none where OFF-OK?, #f when
+;; unset; any other spelling is a configuration error, raised by name rather than
+;; quietly running with a default the user did not ask for.
+(define (env-bytes name off-ok?)
+  (let ((v (getenv name)))
     (and v (> (string-length v) 0)
          (let* ((t (string-downcase v))
                 (n (string-length t))
@@ -354,20 +358,35 @@
                 (digits (if (= mult 1) t (substring t 0 (- n 1))))
                 (num (string->number digits)))
            (cond
-             ((member t '("0" "off" "none")) 'off)
-             ((and num (exact? num) (> num 0)) (* num mult))
-             (else #f))))))
-;; 25% of the smaller of physical RAM and any cgroup limit, matching
-;; MaxRAMPercentage. #f when neither can be read, which leaves jolt unbounded
+             ((and off-ok? (member t '("0" "off" "none"))) 'off)
+             ((and num (exact? num) (integer? num) (> num 0)) (* num mult))
+             (else (gc-config-error name v "a size like 512m or 4g")))))))
+;; A number from the environment within [LO, HI] (a percentage or a ratio), #f
+;; when unset.
+(define (env-number name lo hi what)
+  (let ((v (getenv name)))
+    (and v (> (string-length v) 0)
+         (let ((num (string->number v)))
+           (if (and num (real? num) (<= lo num hi))
+               num
+               (gc-config-error name v what))))))
+(define (gc-config-error name v what)
+  ;; not worded "out of memory": host-faults.ss would classify it as one
+  (error 'jolt (string-append name "=" v " is not valid: expected " what ".")))
+(define (heap-from-env) (env-bytes "JOLT_MAX_HEAP" #t))
+;; JOLT_MAX_RAM_PERCENTAGE (default 25) of the smaller of physical RAM and any
+;; cgroup limit, the JVM's -XX:MaxRAMPercentage and its default. #f when neither can be read, which leaves jolt unbounded
 ;; rather than guessing a ceiling that could break a working program.
 (define (heap-default-ceiling)
   (let* ((phys (heap-phys-from-sysconf))
          (cg (heap-cgroup-limit))
          (base (cond ((and phys cg) (min phys cg)) (phys phys) (cg cg) (else #f))))
-    (and base (exact (floor (/ base 4))))))
+    (and base
+         (let ((pct (or (env-number "JOLT_MAX_RAM_PERCENTAGE" 0.01 100 "a percentage of RAM, 0-100") 25)))
+           (exact (floor (* base (/ (inexact pct) 100))))))))
 (define jolt-heap-ceiling-bytes #f)      ; #f until installed; #f = unbounded
 (define (jolt-heap-max-bytes) jolt-heap-ceiling-bytes)
-(define (jolt-install-heap-ceiling!)
+(define (jolt-install-gc-policy!)
   (let* ((env (heap-from-env))
          (ceiling (cond ((eq? env 'off) #f)
                         ((and env (number? env)) env)
@@ -387,26 +406,374 @@
                (number->string (sa-bytes-allocated))
                ". Give it at least twice that, or JOLT_MAX_HEAP=off for no ceiling.")))
     (set! jolt-heap-ceiling-bytes ceiling)
+    (gc-nursery-setup! ceiling)
+    (gc-overhead-setup!)
     ;; The hook itself is target-specific, so it goes through the adapter
-    ;; (sa-gc-install-ceiling!): this file is portable and the natives that hook
-    ;; collection are blocklisted here for exactly that reason. A target that
+    ;; (sa-gc-install-after-collect!): this file is portable and the natives that
+    ;; hook collection are blocklisted here for exactly that reason. A target that
     ;; cannot hook collection answers #f, and then jolt is unbounded as it was
-    ;; before 0.8.5 — so the ceiling is forgotten rather than reported, keeping
-    ;; Runtime.maxMemory honest.
-    (when ceiling
-      (unless (sa-gc-install-ceiling!
-                (exact (floor (* ceiling 3/4)))
-                ceiling
-                (lambda (live)
-                  (error 'jolt
-                         (string-append
-                           "out of memory: the heap ceiling of "
-                           (number->string ceiling)
-                           " bytes was exceeded (live "
-                           (number->string live)
-                           "). Raise or disable it with JOLT_MAX_HEAP=<n>[k|m|g] or "
-                           "JOLT_MAX_HEAP=off."))))
+    ;; before 0.8.5, with a fixed nursery — so the ceiling is forgotten rather
+    ;; than reported, keeping Runtime.maxMemory honest.
+    (let ((soft (and ceiling (exact (floor (* ceiling 3/4))))))
+      (set! gc-live-after-full (sa-bytes-allocated))
+      (set! gc-log? (let ((v (getenv "JOLT_GC_LOG"))) (and v (not (member v '("" "0" "false" "off"))))))
+      (unless (sa-gc-install-after-collect!
+                (lambda (collect-full!)
+                  (set! gc-full-this-time #f)
+                  (set! gc-full-ms-this-time 0)
+                  (gc-collect-old-when-grown! collect-full!)
+                  (when ceiling (gc-enforce-ceiling! soft ceiling collect-full!)))
+                (lambda (gc-ns elapsed-ns)
+                  ;; the nursery answers for young collections only: a full one
+                  ;; the policy forced in the same hook is the old generations'
+                  ;; cost (gc-old-factor), and counting it here grew the nursery
+                  ;; to 1GB, where a young collection cost 10x one at 256MB
+                  (gc-size-nursery! (max 0 (- gc-ns (* gc-full-ms-this-time 1000000))) elapsed-ns)
+                  (when gc-log? (gc-log-line gc-ns elapsed-ns))
+                  (when ceiling (gc-check-overhead! gc-ns elapsed-ns ceiling))))
         (set! jolt-heap-ceiling-bytes #f)))))
+
+;; The ceiling bounds the heap's TOTAL size, as -Xmx does on the JVM: the live
+;; data, the nursery and the free memory the collector keeps
+;; (sa-total-memory-bytes, what Runtime.totalMemory answers), so totalMemory stays
+;; under maxMemory. It bounded only the live data before, and a program near a
+;; 4GB ceiling held 6.5GB. Three things keep the total under it:
+;;   - the nursery is at most a quarter of the room left over the heap in use
+;;     (gc-room-cap, below), so a program close to the limit allocates in small
+;;     windows rather than past it;
+;;   - the free memory Chez keeps after a collection (its heap-reserve-ratio,
+;;     one free page per page in use by default) is cut to what fits;
+;;   - a total over the limit forces a full collection, which returns the rest to
+;;     the OS, with the same back-off as below;
+;;   - under pressure -- the total plus the data in use, roughly what the next
+;;     collection may copy, over the limit -- collections mark the older
+;;     generations in place instead of copying them (sa-gc-tight!), and go back
+;;     to copying once that is under three quarters of the limit.
+;; The out-of-memory error is unchanged: only live data that cannot fit raises.
+;;
+;; Above SOFT after a collection, force the FULL one a generational collector
+;; defers; still above HARD after it, the heap cannot fit. Once a full collection
+;; leaves the live set itself above SOFT, the next one waits until the heap has
+;; used half the room left under HARD: forcing one after every young collection
+;; copied gigabytes per nursery and ran nowhere (writ's prover, ~4GB live against
+;; the 4GB default ceiling of a 16GB CI runner, sat for hours). The heap is still
+;; bounded by HARD, and a live set that cannot fit still raises.
+(define (gc-enforce-ceiling! soft hard collect-full!)
+  (when (or (> (sa-bytes-allocated)
+               (max soft (+ gc-live-after-full (quotient (- hard gc-live-after-full) 2))))
+            ;; the total is over: collect and give memory back at once -- unless
+            ;; the last time did not get it under, and then not again until half
+            ;; the room has been used since, the same back-off as the live data
+            ;; above (at a quarter, writ's prover -- 3.9GB live under 4GB, where
+            ;; in-place collection leaves the total over from fragmentation --
+            ;; forced a 3.8s full collection every 135MB and ran 764s, not 520s)
+            (and (> (sa-total-memory-bytes) hard)
+                 (or (not gc-total-stuck?)
+                     (> (sa-bytes-allocated)
+                        (+ gc-live-after-full (quotient (max 0 (- hard gc-live-after-full)) 2))))))
+    ;; the reserve is what the collector keeps when it returns memory, which it
+    ;; does DURING a full collection: fit it to the last live set first. And the
+    ;; collection itself keeps objects in place: copying the old generations
+    ;; needs a second copy's worth of room, which a heap at its ceiling lacks (a
+    ;; 150MB-live program under 384m peaked at 402MB copying them).
+    (gc-fit-reserve-to! hard gc-live-after-full)
+    (let ((t0 (sa-real-time-ms)))
+      (collect-full! #t)
+      (set! gc-full-ms-this-time (+ gc-full-ms-this-time (- (sa-real-time-ms) t0))))
+    (set! gc-full-this-time 'ceiling)
+    (set! gc-live-after-full (sa-bytes-allocated))
+    (set! gc-total-stuck? (> (sa-total-memory-bytes) hard))
+    (when (> (sa-bytes-allocated) hard)
+      (error 'jolt
+             (string-append
+               "out of memory: the heap ceiling of "
+               (number->string hard)
+               " bytes was exceeded (live "
+               (number->string (sa-bytes-allocated))
+               "). Raise or disable it with JOLT_MAX_HEAP=<n>[k|m|g] or "
+               "JOLT_MAX_HEAP=off."))))
+  (gc-fit-reserve! hard)
+  (let ((pressure (+ (sa-total-memory-bytes) (sa-bytes-allocated))))
+    (cond ((and (not gc-tight?) (> pressure hard))
+           (set! gc-tight? #t) (sa-gc-tight! #t))
+          ((and gc-tight? (< pressure (quotient (* 3 hard) 4)))
+           (set! gc-tight? #f) (sa-gc-tight! #f)))))
+;; --- the GC overhead limit ----------------------------------------------------
+;; The JVM's answer to a heap that fits but only just (UseGCOverheadLimit, on by
+;; default; G1CollectedHeap::update_gc_overhead_counter in the JDK): after each
+;; collection, if collection has taken GCTimeLimit (98%) of the time over the
+;; long term AND under GCHeapFreeLimit (2%) of the maximum heap is free, a counter
+;; goes up, and any other collection resets it; at GCOverheadLimitThreshold (5) in
+;; a row the program gets an OutOfMemoryError instead of running on at a crawl.
+;; A live set that fits with a few percent to spare keeps running, as there. The
+;; knobs: JOLT_GC_OVERHEAD_LIMIT=off (-XX:-UseGCOverheadLimit),
+;; JOLT_GC_TIME_LIMIT (-XX:GCTimeLimit), JOLT_GC_HEAP_FREE_LIMIT
+;; (-XX:GCHeapFreeLimit). Only under a heap ceiling: without one the heap grows.
+(define gc-overhead-limit? #t)
+(define gc-time-limit 98)
+(define gc-heap-free-limit 2)
+(define gc-overhead-threshold 5)
+(define gc-overhead-count 0)
+(define gc-share-long 0.0)                ; long-term average of gc-time / elapsed
+(define (gc-overhead-setup!)
+  (let ((v (getenv "JOLT_GC_OVERHEAD_LIMIT")))
+    (when (and v (member (string-downcase v) '("off" "0" "false" "none")))
+      (set! gc-overhead-limit? #f)))
+  (let ((t (env-number "JOLT_GC_TIME_LIMIT" 0 100 "a percentage from 0 to 100"))
+        (f (env-number "JOLT_GC_HEAP_FREE_LIMIT" 0 100 "a percentage from 0 to 100")))
+    (when t (set! gc-time-limit t))
+    (when f (set! gc-heap-free-limit f))))
+(define (gc-check-overhead! gc-ns elapsed-ns hard)
+  (when (> elapsed-ns 0)
+    (set! gc-share-long (+ (* 0.9 gc-share-long) (* 0.1 (/ (exact->inexact gc-ns) elapsed-ns)))))
+  (when gc-overhead-limit?
+    (let ((free-pct (* 100 (/ (exact->inexact (max 0 (- hard (sa-bytes-allocated)))) hard))))
+      (if (and (>= (* 100 gc-share-long) gc-time-limit) (< free-pct gc-heap-free-limit))
+          (set! gc-overhead-count (+ gc-overhead-count 1))
+          (set! gc-overhead-count 0))
+      (when (>= gc-overhead-count gc-overhead-threshold)
+        (set! gc-overhead-count 0)
+        (error 'jolt
+               (string-append
+                 "out of memory: GC overhead limit exceeded: "
+                 (number->string (exact (round (* 100 gc-share-long))))
+                 "% of the time collecting, with "
+                 (number->string (exact (round free-pct)))
+                 "% of the heap ceiling of " (number->string hard)
+                 " bytes free. Raise it with JOLT_MAX_HEAP=<n>[k|m|g], or turn the "
+                 "limit off with JOLT_GC_OVERHEAD_LIMIT=off."))))))
+(define gc-tight? #f)
+(define gc-total-stuck? #f)                ; the last forced full left the total over
+;; Keep only the free memory that fits: half the room over the heap in use, as a
+;; ratio of it, never more than Chez's own 1:1.
+(define (gc-fit-reserve! hard) (gc-fit-reserve-to! hard (sa-bytes-allocated)))
+(define (gc-fit-reserve-to! hard used)
+  (let ((used (max 1 used)))
+    (sa-gc-reserve-ratio! (max 0 (min 1 (/ (max 0 (- hard used)) (* 2 used)))))))
+
+;; --- the nursery ---------------------------------------------------------------
+;; How much a program allocates between two collections (the trip threshold)
+;; decides what a young collection costs: it copies what is still live, and a
+;; short window catches objects that would have died a moment later. At a fixed
+;; 16MB, writ's prover spent 40% of its time collecting (122GB allocated, 7271
+;; collections, ~100MB live at the end) and `jolt build`'s back end 60% (#1059,
+;; fixed there by hand at 64MB); the JVM's young generation starts in the
+;; hundreds of MB and is sized by the collector's own time share.
+;;
+;; So size it by the collector's time share, as the JVM does, but bounded by what
+;; the program keeps. The knobs are the JVM's, spelled as environment variables:
+;;
+;;   JOLT_GC_TIME_RATIO=N (-XX:GCTimeRatio, default 9): the target share of time in
+;;     collection is 1/(1+N), 10%. Above it the nursery doubles; under a quarter of
+;;     it the nursery halves back.
+;;   JOLT_MAX_HEAP_FREE_RATIO=P (-XX:MaxHeapFreeRatio, default 50): at most P% of
+;;     the heap may be nursery headroom over the live data -- the heap live after
+;;     the last full collection -- so the nursery grows to live*P/(100-P), 1x the
+;;     live set by default. This is the footprint bound: a nursery is memory held
+;;     on top of the program's data, and without it a loop with 40MB live ran in
+;;     1.4GB for a 1.4x speedup (the JVM, which bounds its young generation by
+;;     pause time instead, ran the same loop in 4.1GB).
+;;   Growth past that bound is still allowed while collection takes more than
+;;     twice the target: a program whose data is small but whose collections still
+;;     dominate is exactly the one the nursery is for (writ's prover, 32% of its
+;;     time collecting at 1x live, is not capped there). It takes three collections
+;;     in a row AT the bound that all say so, since one reading is not evidence: at
+;;     startup collections come milliseconds apart and the share spikes past 40%
+;;     before the program has settled, which grew a 40MB-live loop's nursery to
+;;     512MB. When the pressure drops the nursery comes back to the bound.
+;;   JOLT_NEW_SIZE / JOLT_MAX_NEW_SIZE (-XX:NewSize / -XX:MaxNewSize): the floor
+;;     (16MB) and the hard cap (1GB, and never over an eighth of the heap ceiling,
+;;     so the nursery cannot be what pushes a small heap over it).
+;;   JOLT_GC_TRIP_BYTES pins the nursery and turns all of this off.
+;;
+;; A program that allocates little never leaves the floor, so its footprint is what
+;; it was at a fixed 16MB.
+(define gc-trip-floor (* 16 1024 1024))
+(define gc-trip-cap (* 1024 1024 1024))
+(define gc-adaptive? #t)
+(define gc-share 0.0)                     ; recent average of gc-time / elapsed
+(define gc-target-share 1/10)
+(define gc-free-ratio 50)
+(define gc-hot-at-bound 0)                ; consecutive dominating collections at the bound
+(define (gc-nursery-setup! ceiling)
+  (let ((pinned (env-bytes "JOLT_GC_TRIP_BYTES" #f))
+        (floor (env-bytes "JOLT_NEW_SIZE" #f))
+        (cap (env-bytes "JOLT_MAX_NEW_SIZE" #f))
+        (ratio (env-number "JOLT_GC_TIME_RATIO" 1 1000 "a number from 1 to 1000"))
+        (free (env-number "JOLT_MAX_HEAP_FREE_RATIO" 1 99 "a percentage from 1 to 99")))
+    (when floor (set! gc-trip-floor floor))
+    (when cap (set! gc-trip-cap cap))
+    (when ratio (set! gc-target-share (/ 1 (+ 1 (exact ratio)))))
+    (when free (set! gc-free-ratio (exact free)))
+    (when ceiling (set! gc-trip-cap (min gc-trip-cap (quotient ceiling 8))))
+    (set! gc-trip-cap (max gc-trip-floor gc-trip-cap))
+    (cond
+      (pinned (set! gc-adaptive? #f)
+              (sa-gc-trip-bytes! pinned))
+      (else (sa-gc-trip-bytes! gc-trip-floor)))))
+;; Under a heap ceiling, at most a quarter of the room left over the heap in use,
+;; so the nursery is never what carries the total past it. That beats the floor:
+;; a collection needs room to copy the nursery's survivors, and a 16MB nursery
+;; with 10MB of room carried a program 20MB over a 256MB ceiling. 1MB at least,
+;; below which collections cost more than they save.
+(define gc-room-min (* 1024 1024))
+(define (gc-room-cap)
+  (let ((c jolt-heap-ceiling-bytes))
+    (if c
+        (max gc-room-min (quotient (max 0 (- c (sa-bytes-allocated))) 4))
+        gc-trip-cap)))
+(define (gc-max-trip) (min gc-trip-cap (gc-room-cap)))
+;; The footprint bound: live * P/(100-P), within [floor, cap].
+(define (gc-trip-limit)
+  (min (gc-max-trip)
+       (max gc-trip-floor
+            (quotient (* gc-live-after-full gc-free-ratio) (- 100 gc-free-ratio)))))
+;; Growth past the bound is a bet that a bigger window lets more die young, and
+;; it does not always pay: a program whose working set spans the window copies
+;; more the bigger it is (writ's prover: 10.6ms a young collection at 256MB, 105ms
+;; at 1GB, with ~130MB live; it runs fastest at its bound). So growth past the
+;; bound -- and only that: growth up to it is what the bound is for -- is checked.
+;; Eight collections after a doubling (two whole cycles of the generation-1
+;; collection that comes every fourth trip), a share of time that ROSE by more
+;; than a tenth over the eight before it sends the nursery back and holds it
+;; there; a doubling that did not pay much is kept. The share is not monotonic in
+;; the size -- a window pays only once most of it dies -- so a doubling that
+;; hurts is followed by one jump to 8x the base before the hold (a loop
+;; rebuilding 40MB each round runs 1.3x faster at 128MB than at its bound). The
+;; hold lifts after 256 collections, in case the program has moved on. The
+;; shares compared are plain sums over each window, not the smoothed average.
+(define gc-probe-from #f)                 ; the size a growth left, while it is checked
+(define gc-probe-share 0.0)
+(define gc-probe-jumped? #f)
+(define gc-growth-hold #f)                ; growth past the bound stops here while held
+(define gc-hold-n 0)
+(define gc-win-gc 0) (define gc-win-el 0) (define gc-win-n 0)
+(define gc-win-min 8)
+(define (gc-win-reset!) (set! gc-win-gc 0) (set! gc-win-el 0) (set! gc-win-n 0))
+(define (gc-win-share) (if (> gc-win-el 0) (/ (exact->inexact gc-win-gc) gc-win-el) gc-share))
+(define (gc-set-trip! n) (gc-win-reset!) (sa-gc-trip-bytes! n))
+(define (gc-grow-past-bound! from to)
+  (when (and (> to from) (>= gc-win-n gc-win-min) (or (not gc-growth-hold) (< from gc-growth-hold)))
+    (set! gc-probe-from from) (set! gc-probe-share (gc-win-share)) (set! gc-probe-jumped? #f)
+    (gc-set-trip! (if gc-growth-hold (min to gc-growth-hold) to))))
+(define (gc-check-growth! gc-ns elapsed-ns)
+  (set! gc-win-gc (+ gc-win-gc gc-ns)) (set! gc-win-el (+ gc-win-el elapsed-ns))
+  (set! gc-win-n (+ gc-win-n 1))
+  (when gc-growth-hold
+    (set! gc-hold-n (+ gc-hold-n 1))
+    (when (> gc-hold-n 256) (set! gc-growth-hold #f)))
+  (when (and gc-probe-from (>= gc-win-n gc-win-min))
+    (cond
+      ((<= (gc-win-share) (* 1.1 gc-probe-share)) (set! gc-probe-from #f) (gc-win-reset!))
+      ((and (not gc-probe-jumped?) (<= (* 8 gc-probe-from) (gc-max-trip))
+            (or (not gc-growth-hold) (< (* 8 gc-probe-from) gc-growth-hold)))
+       (set! gc-probe-jumped? #t)
+       (gc-set-trip! (* 8 gc-probe-from)))
+      (else
+       (gc-set-trip! gc-probe-from)
+       (set! gc-growth-hold gc-probe-from) (set! gc-hold-n 0)
+       (set! gc-probe-from #f)))))
+(define (gc-size-nursery! gc-ns elapsed-ns)
+  (when (and gc-adaptive? (> elapsed-ns 0))
+    (set! gc-share (+ (* 0.7 gc-share) (* 0.3 (/ (exact->inexact gc-ns) elapsed-ns))))
+    (gc-check-growth! gc-ns elapsed-ns)
+    (let ((trip (sa-gc-trip-bytes)) (limit (gc-trip-limit)) (cap (gc-max-trip)))
+      (set! gc-hot-at-bound
+            (if (and (>= trip limit) (> gc-share (* 2 gc-target-share))) (+ gc-hot-at-bound 1) 0))
+      (cond
+        ;; the heap ceiling's room shrank under the nursery: follow it down now,
+        ;; probe or not -- the ceiling comes before any bet on the nursery
+        ((> trip cap) (set! gc-probe-from #f) (gc-set-trip! cap))
+        ;; a growth past the bound still being checked: leave it be
+        (gc-probe-from #f)
+        ;; under the floor for want of room, and the room is back: to the floor
+        ((< trip (min cap gc-trip-floor)) (gc-set-trip! (min cap gc-trip-floor)))
+        ;; collection still dominates at the bound, three times running: try past it
+        ((and (>= gc-hot-at-bound 3) (< trip cap))
+         (set! gc-hot-at-bound 0)
+         (gc-grow-past-bound! trip (min cap (* 2 trip))))
+        ;; over the target: grow up to the bound
+        ((and (> gc-share gc-target-share) (< trip limit))
+         (gc-set-trip! (min limit (* 2 trip))))
+        ;; past the bound once the pressure that justified it is gone: come back
+        ((and (> trip limit) (< gc-share gc-target-share))
+         (gc-set-trip! (max limit (quotient trip 2))))
+        ;; well under the target: give memory back
+        ((and (< gc-share (/ gc-target-share 4)) (> trip gc-trip-floor))
+         (gc-set-trip! (max gc-trip-floor (quotient trip 2))))))))
+;; --- the older generations ---------------------------------------------------
+;; The collector takes generation n every 4^n trips, so the older generations'
+;; schedule is counted in nurseries: grow the nursery to 1GB and generation 1 is
+;; collected every 4GB of allocation, generation 2 every 16GB, and whatever died
+;; after reaching one of them waits that long. Measured: a program with ~100MB
+;; live passed 12GB allocated between collections. It happened at the fixed 16MB
+;; too, only slower -- writ's examples ran at 7.7GB resident for ~100MB of data.
+;; So the old generations are also collected by HEAP GROWTH, the rule Go's GOGC
+;; and the JVM's occupancy trigger use: once the heap is more than twice what was
+;; live after the last full collection (and 64MB past it, so a tiny heap does not
+;; collect constantly), collect everything and measure again. The footprint is
+;; then bounded by the program's own live data, whatever the nursery.
+;;
+;; "Twice" is where it starts, not a constant. A full collection copies all the
+;; live data, and a program that promotes a lot of medium-lived data reaches
+;; twice its live set quickly: writ's prover (~150MB live) ran 263 of them, 47s of
+;; its 56s collecting. So the growth allowed is sized by what the full
+;; collections cost, as the nursery is by what young ones cost (and the JVM its
+;; heap, GCTimeRatio): above the target share of the time since the previous one
+;; the allowance grows by half, up to 8x live, and below a quarter of it shrinks
+;; back toward 2x. A program with little churn keeps the tight bound.
+(define gc-live-after-full 0)
+(define gc-full-this-time #f)
+(define gc-full-ms-this-time 0)
+(define gc-old-factor 2.0)
+(define gc-last-full-end-ms 0)
+(define (gc-collect-old-when-grown! collect-full!)
+  (let ((live gc-live-after-full))
+    (when (> (sa-bytes-allocated)
+             (max (exact (floor (* gc-old-factor live))) (+ live (* 64 1024 1024))))
+      (let ((t0 (sa-real-time-ms)))
+        ;; tight (in place) when a second copy of the live data would not fit
+        ;; under a heap ceiling, as for the ceiling's own collections
+        (let ((c jolt-heap-ceiling-bytes))
+          (collect-full! (and c (> (+ (sa-total-memory-bytes) live) c))))
+        (let* ((t1 (sa-real-time-ms))
+               (since (max 1 (- t1 gc-last-full-end-ms))))
+          (set! gc-full-ms-this-time (+ gc-full-ms-this-time (- t1 t0)))
+          (let ((share (/ (exact->inexact (- t1 t0)) since)))
+            (cond ((> share gc-target-share) (set! gc-old-factor (min 8.0 (* gc-old-factor 1.5))))
+                  ((< share (/ gc-target-share 4)) (set! gc-old-factor (max 2.0 (/ gc-old-factor 1.5)))))
+            (set! gc-last-full-end-ms t1))))
+      (set! gc-full-this-time 'grown)
+      (set! gc-live-after-full (sa-bytes-allocated)))))
+
+;; JOLT_GC_LOG=1: one line per collection on stderr -- what the JVM's -verbose:gc
+;; answers. How long it took, what share of the time since the last one, the heap
+;; after it (in use, and the total the collector holds), the nursery it leaves,
+;; and whether the policy collected everything
+;; (grown: the heap passed twice the live set; ceiling: it passed the soft limit).
+(define gc-log? #f)
+(define (gc-log-line gc-ns elapsed-ns)
+  (let ((mb (lambda (b) (quotient b (* 1024 1024)))))
+    (fprintf (current-error-port)
+             "gc: ~ams (~a% of ~ams) heap ~aMB total ~aMB live-after-full ~aMB trip ~aMB~a\n"
+             (quotient gc-ns 1000000)
+             (if (> elapsed-ns 0) (quotient (* 100 gc-ns) elapsed-ns) 0)
+             (quotient elapsed-ns 1000000)
+             (mb (sa-bytes-allocated)) (mb (sa-total-memory-bytes)) (mb gc-live-after-full) (mb (sa-gc-trip-bytes))
+             (if gc-full-this-time (string-append " full:" (symbol->string gc-full-this-time)) ""))))
+
+;; Run THUNK with the nursery at least BYTES, the floor restored after: for a
+;; phase known to churn before the average has seen it (the build's back end).
+(define (jolt-with-gc-trip-floor bytes thunk)
+  (let ((saved-floor gc-trip-floor) (saved-trip (sa-gc-trip-bytes)))
+    (dynamic-wind
+      (lambda () (set! gc-trip-floor (max saved-floor bytes))
+                 (sa-gc-trip-bytes! (max saved-trip gc-trip-floor)))
+      thunk
+      ;; back exactly as it was; the policy regrows the nursery if the program
+      ;; that follows still needs it
+      (lambda () (set! gc-trip-floor saved-floor)
+                 (sa-gc-trip-bytes! saved-trip)))))
 
 
 ;; --- a stalled collection says so ---------------------------------------------
@@ -562,9 +929,19 @@
 ;; (= e e) true, matching the JVM where ExceptionInfo does NOT implement
 ;; equals). get / keyword lookup: MISS (record is NOT ILookup).
 ;; error-offset stores ParseException.getErrorOffset (0 when not set).
-(define-record-type jolt-ex-info-record
-  (fields class-name message cause data (mutable error-offset))
-  (nongenerative jolt-ex-info-record-v1))
+;; capture is (k . site): the continuation and site pair where the throwable was
+;; constructed (jolt-capture-throwable!), which its stack trace is read from, or
+;; #f. A field and not a side table: it costs a store, where a table shared across
+;; threads needed a lock and an insert (~130ns per ex-info), and it dies with the
+;; exception -- a weak table kept every entry forever, since the captured frames
+;; hold the throwable they were capturing. The layout is image surface: images
+;; drop the capture (a continuation cannot be written) and read the v1 layout
+;; through a legacy arm (state-image.ss); the v1 uid is retired.
+(define-record-type (jolt-ex-info-record make-jolt-ex-info-record* jolt-ex-info-record?)
+  (fields class-name message cause data (mutable error-offset) (mutable capture))
+  (nongenerative jolt-ex-info-record-v2))
+(define (make-jolt-ex-info-record class-name message cause data error-offset)
+  (make-jolt-ex-info-record* class-name message cause data error-offset #f))
 
 ;; --- exceptions --------------------------------------------------------------
 ;; throw raises a Chez condition WRAPPING the jolt value; catch (emitted as
@@ -818,13 +1195,60 @@
       (let ((m (jolt-ex-info-record-message v)))
         (if (string? m) m "jolt error"))
       "jolt error"))
+;; ...and where each THROWABLE was made: its capture field (the record above),
+;; set at construction by jolt-capture-throwable!, or at its first throw for one
+;; built without a constructor that captures. A caught exception thus keeps its
+;; own frames after other throws have replaced the slots above: those are one per
+;; thread, the continuation slot is cleared when a catch completes, and the site
+;; snapshot is whatever threw last. Resolved into elements only when asked
+;; (source-registry.ss): a frame walk is ~100x a throw, so it cannot happen per
+;; throw. The first capture wins, since a rethrow keeps the original trace on the
+;; JVM too.
+(define (jolt-remember-throw! v k site)
+  (when (and (jolt-ex-info-record? v) (not (jolt-ex-info-record-capture v)))
+    (jolt-ex-info-record-capture-set! v (cons k site))))
+(define (jolt-thrown-cont v)
+  (and (jolt-ex-info-record? v) (jolt-ex-info-record-capture v)))
+
+;; A ^:once fn's box of captures (backend emit-fn): the tag marks the box so the
+;; image can read its values in order. The body empties each slot at the
+;; capture's last use -- on Chez by storing #!bwp, an immediate the store needs
+;; no write barrier for -- and reads a slot back through jolt-once-ref, which
+;; answers nil for an emptied one (a rerun after a failure sees the capture
+;; cleared, as the reference's nulled field is). An unmarked (multi-arity) body
+;; empties them all on entry with jolt-once-clear!.
+(define jolt-once-tag (list 'jolt-once))
+(define-syntax jolt-once-ref
+  (syntax-rules ()
+    ((_ env i) (let ((v (vector-ref env i))) (if (eq? v #!bwp) jolt-nil v)))))
+(define (jolt-once-clear! env)
+  (let loop ((i (fx- (vector-length env) 1)))
+    (when (fx>? i 0) (vector-set! env i jolt-nil) (loop (fx- i 1)))))
+
 (define (jolt-throw v)
+  ;; The throw takes its own capture for the per-thread slots the uncaught-error
+  ;; report reads: it rebuilds frames a tail call erased from the throw-time site,
+  ;; which only the throw has. The throwable's OWN trace keeps the capture made
+  ;; when it was constructed (jolt-remember-throw! does not overwrite it), which is
+  ;; what the JVM's getStackTrace answers with.
   (call/cc (lambda (k)
              (jolt-throw-cont (cons v k))
              (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
                                  (and (pair? s) s)))
-             (raise (condition (make-message-condition (jolt-throw-message v))
-                               (make-jolt-throw-condition v))))))
+             (jolt-remember-throw! v k (jolt-throw-sitep))
+             (jolt-raise-thrown v))))
+(define (jolt-raise-thrown v)
+  (raise (condition (make-message-condition (jolt-throw-message v))
+                    (make-jolt-throw-condition v))))
+;; A throwable's frames are those of where it was CONSTRUCTED, as the JVM fills
+;; them in (Throwable's constructor calls fillInStackTrace): one built here and
+;; never thrown -- handed to a callback, logged, returned as a value -- has its
+;; stack trace too.
+(define (jolt-capture-throwable! v)
+  (call/cc (lambda (k)
+             (jolt-remember-throw! v k (let ((s (virtual-register jolt-vreg-site)))
+                                         (and (pair? s) s)))))
+  v)
 ;; The same capture for a HOST condition (a fault raised outside jolt-throw:
 ;; car of a non-pair, a bad flvector index). Installed by the cli's run wrapper
 ;; via with-exception-handler, which runs BEFORE the stack unwinds — a guard's
@@ -884,18 +1308,20 @@
 ;; jolt-host-throwable / throw-jvm, which is what the JVM raises wherever
 ;; ex-data is nil.
 (define (jolt-ex-info msg data . more)
-  (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
-                             (if (null? more) jolt-nil (car more))
-                             (if (jolt-nil? data) empty-pmap data) 0))
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record "clojure.lang.ExceptionInfo" msg
+                              (if (null? more) jolt-nil (car more))
+                              (if (jolt-nil? data) empty-pmap data) 0)))
 ;; A host-constructed throwable (RuntimeException. etc.): a jolt-ex-info-record
 ;; carrying its canonical JVM class-name, so (class …) / instance? / .getMessage /
 ;; ex-message all reflect the real type.
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
 (define (jolt-host-throwable class-name msg . more)
-  (make-jolt-ex-info-record class-name msg
-                             (if (null? more) jolt-nil (car more))
-                             jolt-nil 0))
+  (jolt-capture-throwable!
+    (make-jolt-ex-info-record class-name msg
+                              (if (null? more) jolt-nil (car more))
+                              jolt-nil 0)))
 
 ;; throw-jvm: raise a typed JVM throwable by simple class name.
 ;; (throw-jvm 'NoSuchElementException msg) -> (jolt-throw (jolt-host-throwable

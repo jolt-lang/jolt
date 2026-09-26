@@ -181,8 +181,18 @@
            (site (jolt-kw-site))
            (n 2000000)
            (time-it (lambda (thunk) (let ((t0 (real-time))) (do ((i 0 (fx+ i 1))) ((fx= i n)) (thunk)) (- (real-time) t0))))
-           (scan (time-it (lambda () (jolt-get m k9))))
-           (cached (time-it (lambda () (jolt-kw-get-site m k9 site)))))
+           ;; best of three per arm, alternating: interference (a collection, a
+           ;; loaded machine running the rest of the gate) only ever makes an arm
+           ;; slower, and one bad sample in the cached arm read as a regression
+           ;; (29 ms against the scan's 23 under `make test`, 8 against 21 alone)
+           (best (lambda (a b) (let loop ((i 0) (ba #f) (bb #f))
+                                 (if (fx= i 3)
+                                     (cons ba bb)
+                                     (let* ((x (time-it a)) (y (time-it b)))
+                                       (loop (fx+ i 1) (if ba (min ba x) x) (if bb (min bb y) y)))))))
+           (both (best (lambda () (jolt-get m k9)) (lambda () (jolt-kw-get-site m k9 site))))
+           (scan (car both))
+           (cached (cdr both)))
       (printf "  kw site: scan ~a ms, cached ~a ms (ratio ~a, ceiling 0.6)\n" scan cached (if (> scan 0) (/ (round (* 100.0 (/ cached scan))) 100.0) 'n/a))
       (< cached (* 0.6 scan))))
 
