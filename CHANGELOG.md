@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still pins the size, and a value jolt cannot read is refused at startup. The older
   generations are also collected once the heap passes twice what was live after the
   last full collection, so garbage there no longer waits for a schedule counted in
-  nurseries. Near the heap ceiling, a full collection that cannot get under its soft
+  nurseries; that allowance grows toward 8x when the full collections take more than
+  the target share of the time (writ's pong: 263 full collections down to 86). Near the heap ceiling, a full collection that cannot get under its soft
   limit no longer repeats after every young collection; the next waits until half the
   remaining room is used. A program whose live data sat above the soft limit (writ's
   prover on a 16GB CI runner) used to stall there for hours. `JOLT_GC_LOG=1` prints a

@@ -657,15 +657,34 @@
 ;; live after the last full collection (and 64MB past it, so a tiny heap does not
 ;; collect constantly), collect everything and measure again. The footprint is
 ;; then bounded by the program's own live data, whatever the nursery.
+;;
+;; "Twice" is where it starts, not a constant. A full collection copies all the
+;; live data, and a program that promotes a lot of medium-lived data reaches
+;; twice its live set quickly: writ's prover (~150MB live) ran 263 of them, 47s of
+;; its 56s collecting. So the growth allowed is sized by what the full
+;; collections cost, as the nursery is by what young ones cost (and the JVM its
+;; heap, GCTimeRatio): above the target share of the time since the previous one
+;; the allowance grows by half, up to 8x live, and below a quarter of it shrinks
+;; back toward 2x. A program with little churn keeps the tight bound.
 (define gc-live-after-full 0)
 (define gc-full-this-time #f)
+(define gc-old-factor 2.0)
+(define gc-last-full-end-ms 0)
 (define (gc-collect-old-when-grown! collect-full!)
   (let ((live gc-live-after-full))
-    (when (> (sa-bytes-allocated) (max (* 2 live) (+ live (* 64 1024 1024))))
-      ;; tight (in place) when a second copy of the live data would not fit
-      ;; under a heap ceiling, as for the ceiling's own collections
-      (let ((c jolt-heap-ceiling-bytes))
-        (collect-full! (and c (> (+ (sa-total-memory-bytes) live) c))))
+    (when (> (sa-bytes-allocated)
+             (max (exact (floor (* gc-old-factor live))) (+ live (* 64 1024 1024))))
+      (let ((t0 (sa-real-time-ms)))
+        ;; tight (in place) when a second copy of the live data would not fit
+        ;; under a heap ceiling, as for the ceiling's own collections
+        (let ((c jolt-heap-ceiling-bytes))
+          (collect-full! (and c (> (+ (sa-total-memory-bytes) live) c))))
+        (let* ((t1 (sa-real-time-ms))
+               (since (max 1 (- t1 gc-last-full-end-ms)))
+               (share (/ (exact->inexact (- t1 t0)) since)))
+          (cond ((> share gc-target-share) (set! gc-old-factor (min 8.0 (* gc-old-factor 1.5))))
+                ((< share (/ gc-target-share 4)) (set! gc-old-factor (max 2.0 (/ gc-old-factor 1.5)))))
+          (set! gc-last-full-end-ms t1)))
       (set! gc-full-this-time 'grown)
       (set! gc-live-after-full (sa-bytes-allocated)))))
 
