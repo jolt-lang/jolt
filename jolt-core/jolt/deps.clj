@@ -1015,16 +1015,42 @@
 ;; silent about, and the root those filled-in candidates resolve against travels
 ;; with them, so a dependency's relative "native/libfoo.so" still resolves
 ;; against that dependency rather than against whoever won the identity.
+;;
+;; :link-libs — the system libraries a :static archive links against — follows
+;; the same rule per platform: the winner's platforms win, and a later
+;; declaration fills the ones it leaves out. That is what keeps a library's libs
+;; when a consumer overlays only the :static archive (an app that links
+;; jolt.crypto's OpenSSL statically declares {:name "crypto" :static {...}} and
+;; nothing else). A flat vector names every platform. The names carry no path,
+;; so no root travels with them.
+(defn- link-libs-map [v]
+  (cond (map? v) v
+        (sequential? v) (zipmap native-platform-keys (repeat (vec v)))
+        :else nil))
+
+(defn- overlay-link-libs [acc b]
+  (if-not (contains? b :link-libs)
+    acc
+    (let [mine (link-libs-map (:link-libs acc))
+          theirs (link-libs-map (:link-libs b))]
+      (cond
+        ;; a malformed value stays as written for encode-natives to report
+        (and (contains? acc :link-libs) (nil? mine)) acc
+        (nil? theirs) (if (contains? acc :link-libs) acc (assoc acc :link-libs (:link-libs b)))
+        :else (assoc acc :link-libs (merge theirs mine))))))
+
 (defn- overlay-native [a b]
-  (reduce (fn [acc k]
-            (if (or (contains? acc k) (not (contains? b k)))
-              acc
-              (let [acc (assoc acc k (get b k))]
-                (if-let [r (:jolt.deps/root b)]
-                  (assoc acc :jolt.deps/roots (assoc (:jolt.deps/roots acc) k r))
-                  acc))))
-          a
-          native-platform-keys))
+  (overlay-link-libs
+    (reduce (fn [acc k]
+              (if (or (contains? acc k) (not (contains? b k)))
+                acc
+                (let [acc (assoc acc k (get b k))]
+                  (if-let [r (:jolt.deps/root b)]
+                    (assoc acc :jolt.deps/roots (assoc (:jolt.deps/roots acc) k r))
+                    acc))))
+            a
+            native-platform-keys)
+    b))
 
 (defn- reconcile-natives
   "dedup-by native-key, but folding each dropped spec's unclaimed platform keys

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`:link-libs` on a `:jolt/native` entry.** A library whose static archive
+  calls into system libraries can now say so, instead of every app that links
+  it adding them: `:link-libs {:windows ["ws2_32" "gdi32" "crypt32"]}` for
+  OpenSSL's `libcrypto.a`, or a vector for every platform. Names are given as
+  `-l` takes them, without the `-l`. They count only when the entry is linked
+  statically, and follow the app's archives in the link, once each, and in the
+  build-time preload. When an app overlays a library's entry (to add the
+  `:static` archive, say), the library's `:link-libs` carry over for every
+  platform the app does not name. Honoured from 0.8.16; an older jolt ignores
+  the key.
+
 - **`Socket.shutdownOutput`, `shutdownInput`, `isOutputShutdown` and
   `isInputShutdown`.** The half-close, as on the JVM: after `shutdownOutput`
   the peer reads EOF, this side still reads, and a write throws "Broken

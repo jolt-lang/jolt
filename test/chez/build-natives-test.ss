@@ -20,6 +20,12 @@
 ;;   e. a non-PIC archive in the set is skipped with the warning it always got,
 ;;      and does not take the others' build-time resolution down with it (Linux
 ;;      with a -no-pie capable cc only: arm64 macOS has no non-PIC code).
+;;   f. the system libraries an archive declares (:link-libs, encoded as a
+;;      ["link" lib…] entry) follow the archives in the link once each, and leave
+;;      the global list (bld-link-libs) rather than appearing twice.
+;;   g. the preload links them too: an archive calling into a system library
+;;      (sqlite3 on macOS, libcrypt on Linux) resolves with it declared, and on
+;;      Linux, where the process has not loaded libcrypt, only then.
 ;;
 ;;   chez --script test/chez/build-natives-test.ss
 (import (chezscheme))
@@ -99,6 +105,50 @@
                 (and (bld-contains? out "is not position-independent")
                      (bld-contains? out "plnopic")))
             (ok "(e) the PIC archive beside it still resolves" (eqv? (entry-value "jolt_pl_more") 9)))))))
+
+;; --- (f) ----------------------------------------------------------------------
+(define (with-link nats . libs)
+  (apply jolt-vector (append (seq->list nats) (list (apply jolt-vector "link" libs)))))
+(let ((flags (bld-native-link-flags (with-link (natives "/x/liba.a") "m" "iconv" "m"))))
+  (ok "(f) declared libs follow the archives, once each"
+      (let ((n (string-length flags)))
+        (and (>= n 12) (string=? (substring flags (- n 12) n) " -lm -liconv"))))
+  (ok "(f) no static native, no libs" (string=? (bld-native-link-flags (jolt-vector)) "")))
+(let ((after (bld-link-libs-after " -lm")))
+  (ok "(f) the global list drops what the archives already declared"
+      (and (bld-contains? (bld-link-libs) "-lm")
+           (not (bld-contains? (string-append after " ") "-lm "))))
+  (ok "(f) ...and keeps the rest"
+      (string=? (bld-link-libs-after "") (bld-link-libs))))
+
+;; --- (g) ----------------------------------------------------------------------
+(define sys-lib
+  (case (sa-os-family)
+    ((macos) '("sqlite3" "int sqlite3_libversion_number(void);\nint jolt_pl_needs(void) { return sqlite3_libversion_number() > 0 ? 7 : 0; }\n"))
+    ((linux) '("crypt" "char *crypt(const char *, const char *);\nint jolt_pl_needs(void) { return crypt(\"a\", \"ab\") ? 7 : 0; }\n"))
+    (else #f)))
+(when (and sys-lib (bld-have-cc?)
+           (sh (string-append "printf 'int main(void){return 0;}' | cc -x c - -l" (car sys-lib)
+                              " -o '" work "/probe' 2>/dev/null")))
+  (let ((needs (cc-archive! "plneeds" (cadr sys-lib) #t)))
+    ;; macOS has every system library in the process already (the shared cache),
+    ;; so only Linux can show the preload failing without it; the final link
+    ;; fails on both, which static-native-smoke.sh checks
+    (when (eq? (sa-os-family) 'linux)
+     (let ((dir (string-append work "/g0.build")))
+      (bld-mkdir-p dir)
+      (ok "(g) without the library declared the preload fails"
+          (guard (e (#t #t))
+            (let ((p (open-output-file (string-append work "/g0.log") 'replace)))
+              (parameterize ((current-output-port p))
+                (bld-preload-static-natives! (natives needs) dir))
+              (close-port p))
+            #f))))
+    (let ((dir (string-append work "/g.build")))
+      (bld-mkdir-p dir)
+      (bld-preload-static-natives! (with-link (natives needs) (car sys-lib)) dir)
+      (ok "(g) with it declared the archive resolves at build time"
+          (eqv? (entry-value "jolt_pl_needs") 7)))))
 
 (sh (string-append "rm -rf '" work "'"))
 (printf "\nbuild natives: ~a passed, ~a failed\n" (- total fails) fails)

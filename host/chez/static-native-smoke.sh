@@ -206,6 +206,58 @@ fi
 cp "$work/core.clj.saved" "$app/src/app/core.clj"
 rm -rf "$app/.jolt" "$work/decoy"
 
+# --- an archive's own system library, from :link-libs -------------------------
+# An archive that calls into a system library jolt does not otherwise link —
+# sqlite3 on macOS, libcrypt on Linux — links only when its spec declares it.
+# Without the declaration the build fails (the control: the library really is
+# missing from the line); with it, the binary runs.
+case "$(uname -s)" in
+  Darwin) syslib=sqlite3
+          printf 'int sqlite3_libversion_number(void);\nint jolt_needs(void) { return sqlite3_libversion_number() > 0 ? 7 : 0; }\n' > "$work/needs.c" ;;
+  *)      syslib=crypt
+          printf 'char *crypt(const char *, const char *);\nint jolt_needs(void) { return crypt("a", "ab") ? 7 : 0; }\n' > "$work/needs.c" ;;
+esac
+if printf 'int main(void){return 0;}' | cc -x c - -l"$syslib" -o "$work/probe" 2>/dev/null; then
+  cc -fPIC -c "$work/needs.c" -o "$work/needs.o" && ar rcs "$work/libneeds.a" "$work/needs.o"
+  cp "$app/src/app/core.clj" "$work/core.clj.saved"
+  cat > "$app/src/app/core.clj" <<'EOF'
+(ns app.core
+  (:require [jolt.ffi :as ffi]))
+(ffi/defcfn needs "jolt_needs" [] :int)
+(def at-load (needs))
+(defn -main [& _]
+  (println "needs:" at-load (needs)))
+EOF
+  cat > "$app/deps.edn" <<EOF
+{:paths ["src"]
+ :jolt/native [{:name "needs" :static {:archive "$work/libneeds.a"}}]}
+EOF
+  rm -rf "$app/.jolt" "$out.build"
+  echo "static-native smoke: building (an archive needing -l$syslib, undeclared)"
+  if JOLT_PWD="$app" "$jolt" build -m app.core -o "$out" >"$work/build.log" 2>&1; then
+    echo "  FAIL: an archive needing -l$syslib linked without it — the case proves nothing"
+    cat "$work/build.log"; exit 1
+  fi
+  cat > "$app/deps.edn" <<EOF
+{:paths ["src"]
+ :jolt/native [{:name "needs" :static {:archive "$work/libneeds.a"}
+                :link-libs {:darwin ["sqlite3"] :linux ["crypt"]}}]}
+EOF
+  rm -rf "$app/.jolt" "$out.build"
+  echo "static-native smoke: building (an archive needing -l$syslib, declared in :link-libs)"
+  if ! JOLT_PWD="$app" "$jolt" build -m app.core -o "$out" >"$work/build.log" 2>&1; then
+    echo "  FAIL: jolt build with :link-libs exited non-zero"; cat "$work/build.log"; exit 1
+  fi
+  got="$(cd / && "$out" 2>&1)"
+  if [ "$got" != "needs: 7 7" ]; then
+    echo "  FAIL: :link-libs binary output mismatch"; echo "--- got ----"; echo "$got"; exit 1
+  fi
+  cp "$work/core.clj.saved" "$app/src/app/core.clj"
+  rm -rf "$app/.jolt"
+else
+  echo "static-native smoke: :link-libs case skipped (cc cannot link -l$syslib here)"
+fi
+
 # --- one archive calling into another (jolt-lang/jolt#1205) ------------------
 # libssl.a calls into libcrypto.a; here libdep.a calls into libbase.a, and the
 # dependent one is declared FIRST. The namespace calls it while it loads, so the
@@ -403,9 +455,10 @@ fi
 # Static archives that reference system symbols (libm, libpthread) must appear
 # BEFORE the -l flags for those libraries. grep build.ss for the pattern that
 # indicates the OPPOSITE (syslibs before archives — bad on Linux).
-if grep -qn 'bld-link-libs.*native-link' host/chez/build.ss; then
+# (bld-link-libs-after native-link) names native-link as its argument, after it.
+if grep -n 'bld-link-libs.*native-link' host/chez/build.ss | grep -qv 'native-link " " (bld-link-libs-after native-link)'; then
   echo "  FAIL: native-link appears after (bld-link-libs) in build.ss — GNU ld would get undefined references"
   exit 1
 fi
 
-echo "static-native smoke: passed (static default + non-PIC archive + dependent archives + --dynamic runtime load + project-relative archive + transitive-dep relative archive + runtime-native report + link order)"
+echo "static-native smoke: passed (static default + non-PIC archive + dependent archives + :link-libs + --dynamic runtime load + project-relative archive + transitive-dep relative archive + runtime-native report + link order)"

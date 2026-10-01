@@ -889,16 +889,55 @@
 ;;                            symbols load from the process (default when :static
 ;;                            is present and --dynamic wasn't passed)
 ;;   ["req"|"opt" cand…]    — load a shared object at runtime, trying each in turn
+;;   ["link" lib…]          — the system libraries the static archives link
+;;                            against (:link-libs), once each, after the natives
+;;                            — build.ss links them after the archives
 ;; dynamic? forces the runtime path for every lib (the --dynamic build flag).
+;;
+;; :link-libs is a vector of library names as -l takes them, without the -l, for
+;; every platform, or a map of platform -> vector. It counts only for an entry
+;; that is linked statically: a library loaded at runtime brings its own
+;; dependencies. jolt before 0.8.16 ignores the key.
+(def ^:private link-lib-name #"[A-Za-z0-9_.+-]+")
+
+(defn- link-libs-for [spec plat]
+  (let [v (:link-libs spec)
+        nm (or (:name spec) "a :jolt/native entry")
+        shape-err #(throw (ex-info (str "jolt.native: " nm " :link-libs must be a vector of library"
+                                        " names or a map of platform -> vector, got " (pr-str v))
+                                   {:native spec}))
+        check (fn [libs]
+                (when-not (or (nil? libs) (sequential? libs)) (shape-err))
+                (doseq [l libs]
+                  (when-not (and (string? l) (re-matches link-lib-name l)
+                                 (not (str/starts-with? l "-")))
+                    (throw (ex-info (str "jolt.native: " nm " :link-libs has " (pr-str l)
+                                         ", which is not a library name — give it as -l takes it,"
+                                         " without the -l"
+                                         (when (and (string? l) (str/starts-with? l "-l"))
+                                           (str " (" (pr-str (subs l 2)) ")")))
+                                    {:native spec :link-lib l}))))
+                (vec libs))]
+    (cond
+      (nil? v) []
+      (map? v) (do (doseq [[_ libs] v] (check libs)) (check (get v plat)))
+      (sequential? v) (check v)
+      :else (shape-err))))
+
+(defn- encode-natives-for [natives dynamic? base plat]
+  (let [entries (vec (for [spec natives]
+                       (let [static (and (not dynamic?) (static-link-spec spec plat base))]
+                         (cond
+                           (:process spec) ["process"]
+                           static          (into ["static"] static)
+                           :else           (into [(if (:optional spec) "opt" "req")]
+                                                 (native-candidates spec plat base))))))
+        libs (distinct (mapcat (fn [spec e] (when (= "static" (first e)) (link-libs-for spec plat)))
+                               natives entries))]
+    (if (seq libs) (conj entries (into ["link"] libs)) entries)))
+
 (defn- encode-natives [natives dynamic? base]
-  (let [plat (current-platform)]
-    (vec (for [spec natives]
-           (let [static (and (not dynamic?) (static-link-spec spec plat base))]
-             (cond
-               (:process spec) ["process"]
-               static          (into ["static"] static)
-               :else           (into [(if (:optional spec) "opt" "req")]
-                                     (native-candidates spec plat base))))))))
+  (encode-natives-for natives dynamic? base (current-platform)))
 
 ;; Say which :jolt/native libraries the built binary will still dlopen. A
 ;; `jolt build` is otherwise self-contained — the Clojure, the runtime and every

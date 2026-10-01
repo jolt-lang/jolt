@@ -1296,9 +1296,48 @@
 ;; added by build-with-cc when this fragment is non-empty). Returns "" when no lib
 ;; is statically linked. Entry forms: ["static" "archive" path] | ["static" "lib"
 ;; name libdir].
+;;
+;; The archives are followed by the system libraries they declared with
+;; :link-libs (the ["link" lib…] entry), which is where a single-pass linker needs
+;; them: after the archives that reference them. A library the global list
+;; (bld-link-libs) also names is dropped from that list rather than from this
+;; one — see bld-link-libs-after.
+(define (bld-link-lib-names natives)
+  (let loop ((es (seq->list natives)) (acc '()))
+    (if (null? es)
+        (reverse acc)
+        (let ((parts (bld-strs (car es))))
+          (loop (cdr es)
+                (if (string=? (car parts) "link")
+                    (fold-left (lambda (acc l) (if (member l acc) acc (cons l acc))) acc (cdr parts))
+                    acc))))))
+(define (bld-link-lib-flags natives)
+  (apply string-append (map (lambda (l) (string-append " -l" l)) (bld-link-lib-names natives))))
+
 (define (bld-native-link-flags natives)
-  (fold-left (lambda (acc form) (string-append acc " " (bld-one-static-link form)))
-             "" (bld-static-forms natives)))
+  (let ((archives (fold-left (lambda (acc form) (string-append acc " " (bld-one-static-link form)))
+                             "" (bld-static-forms natives))))
+    (if (string=? archives "")
+        ""
+        (string-append archives (bld-link-lib-flags natives)))))
+
+;; (bld-link-libs) without the -l flags LINK (the native link fragment) carries, so a library
+;; an archive declared is linked once, at the archive's place in the line. Split
+;; and rejoined on single spaces, so a quoted path in the list comes back as it
+;; went in.
+(define (bld-link-libs-after link)
+  (let* ((split (lambda (s)
+                  (let loop ((i 0) (start 0) (acc '()))
+                    (cond ((= i (string-length s)) (reverse (cons (substring s start i) acc)))
+                          ((char=? (string-ref s i) #\space)
+                           (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
+                          (else (loop (+ i 1) start acc))))))
+         (taken (filter (lambda (t) (and (> (string-length t) 2) (string=? (substring t 0 2) "-l")))
+                        (split link)))
+         (kept (filter (lambda (t) (not (member t taken))) (split (bld-link-libs)))))
+    (if (null? kept)
+        ""
+        (fold-left (lambda (acc t) (string-append acc " " t)) (car kept) (cdr kept)))))
 
 ;; A statically-linked native is only in the OUTPUT binary, but build step 1
 ;; evaluates the app's `foreign-procedure` forms in THIS process (to register its
@@ -1331,13 +1370,17 @@
 ;; warning says so. The combined link names no culprit, so when it fails that way
 ;; each archive is linked alone to find the ones that are not position-
 ;; independent, and the object is rebuilt from the rest.
-(define (bld-preload-link-cmd archives so)
+;;
+;; The libraries the archives declared (:link-libs) are linked into the object on
+;; every platform: a symbol only they define is in neither the process nor the
+;; archives, and a loader binding at load time refuses the object without it.
+(define (bld-preload-link-cmd archives libs so)
   (let ((qs (apply string-append (map (lambda (a) (string-append " " (bld-sh-quote a))) archives))))
     (if bld-osx?
-        (string-append (bld-cc) " -dynamiclib -undefined dynamic_lookup -Wl,-all_load" qs
+        (string-append (bld-cc) " -dynamiclib -undefined dynamic_lookup -Wl,-all_load" qs libs
                        " -o " (bld-sh-quote so))
-        (string-append (bld-cc) " -shared -Wl,--whole-archive" qs " -Wl,--no-whole-archive"
-                       (if bld-nt? (string-append " " (bld-link-libs)) "")
+        (string-append (bld-cc) " -shared -Wl,--whole-archive" qs " -Wl,--no-whole-archive" libs
+                       (if bld-nt? (string-append " " (bld-link-libs-after libs)) "")
                        " -Wl,--unresolved-symbols=ignore-all -o " (bld-sh-quote so)))))
 
 (define (bld-preload-so builddir name)
@@ -1350,12 +1393,13 @@
              "  the binary). Compile it with -fPIC if the build itself has to call it.\n")))
 
 (define (bld-preload-static-natives! natives builddir)
+  (define libs (bld-link-lib-flags natives))
   (let loop ((archives (map cadr (filter (lambda (f) (string=? (car f) "archive"))
                                          (bld-static-forms natives)))))
     (unless (null? archives)
       (let* ((so (bld-preload-so builddir "native-static"))
              (log (string-append so ".log"))
-             (cmd (bld-preload-link-cmd archives so))
+             (cmd (bld-preload-link-cmd archives libs so))
              (rc (bld-system->log cmd log)))
         (cond
           ((zero? rc) (bld-echo-log log) (sa-load-shared-object so))
@@ -1364,7 +1408,7 @@
                    (filter (lambda (a)
                              (let* ((probe (bld-preload-so builddir "native-probe"))
                                     (plog (string-append probe ".log")))
-                               (and (not (zero? (bld-system->log (bld-preload-link-cmd (list a) probe) plog)))
+                               (and (not (zero? (bld-system->log (bld-preload-link-cmd (list a) libs probe) plog)))
                                     (bld-pie-relocation-error? (bld-log-string plog)))))
                            archives)))
              (when (null? not-pic)
@@ -3354,7 +3398,7 @@
           (string-append
             (bld-cc) " -O2 " (bld-export-symbols-flag) extra
             "-I'" builddir "' '" lc "' '" lk "' -o '" out-path "' "
-            native-link " " (bld-link-libs)))
+            native-link " " (bld-link-libs-after native-link)))
         (string-append builddir "/relink.log")))))
 
 ;; --- boot-image prefetch (cold start) ---------------------------------------
@@ -3471,7 +3515,7 @@
       (string-append
         (bld-cc) " " (bld-arch-flag) " -O2 " (if (> (string-length native-link) 0) (bld-export-symbols-flag) "") extra
         "-I'" (bld-csv-dir) "' '" main-c "' '" (bld-csv-dir) "/libkernel.a' "
-        "-o '" out-path "' " native-link " " (bld-link-libs)))
+        "-o '" out-path "' " native-link " " (bld-link-libs-after native-link)))
     (string-append builddir "/link.log"))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
@@ -3576,7 +3620,7 @@
           (string-append "-dynamiclib -install_name '@rpath/" (bld-basename out-path) "' ")
           "-shared ")
       "-I'" (bld-csv-dir) "' '" lc "' '" (bld-csv-dir) "/libkernel.a' "
-      "-o '" out-path "' " native-link " " (bld-link-libs))))
+      "-o '" out-path "' " native-link " " (bld-link-libs-after native-link))))
   (display (string-append "jolt build: wrote " out-path "\n")))
 
 ;; optional trailing (target target-pack boot-mode allow-dynamic): a Chez machine

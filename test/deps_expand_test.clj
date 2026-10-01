@@ -395,6 +395,55 @@
        (count (reconcile [{:name "a" :linux ["liba.so"]}
                           {:name "b" :windows ["b.dll"]}]))))
 
+;;;; :jolt/native :link-libs — the system libraries a static archive needs
+
+;; A library states what its archive links against, per platform or for all of
+;; them, and a consumer that overlays the :static archive keeps it: the winner's
+;; platforms win, a later declaration fills the rest, the way candidate keys do.
+(let [reconcile (var jolt.deps/reconcile-natives)
+      lib {:name "crypto" :windows ["libcrypto-3-x64.dll"]
+           :link-libs {:windows ["ws2_32" "crypt32"] :linux ["dl"]}
+           :jolt.deps/root "/crypto"}
+      app {:name "crypto" :static {:archive "/m/libcrypto.a"} :jolt.deps/root "/app"}]
+  (is= "a consumer's :static overlay keeps the library's :link-libs"
+       {:windows ["ws2_32" "crypt32"] :linux ["dl"]}
+       (:link-libs (first (reconcile [app lib]))))
+  (is= "the winner's platforms win and a later one fills the rest"
+       {:windows ["ws2_32"] :linux ["dl"]}
+       (:link-libs (first (reconcile [(assoc app :link-libs {:windows ["ws2_32"]}) lib]))))
+  (is= "a flat vector names every platform"
+       {:darwin ["z"] :linux ["z"] :windows ["z"]}
+       (:link-libs (first (reconcile [(assoc app :link-libs ["z"]) lib]))))
+  (is= "a later flat vector fills only the platforms the winner left out"
+       {:windows ["ws2_32" "crypt32"] :linux ["dl"] :darwin ["z"]}
+       (:link-libs (first (reconcile [(dissoc lib :jolt.deps/root) (assoc app :link-libs ["z"])])))))
+
+(let [encode (var jolt.main/encode-natives-for)
+      crypto {:name "crypto" :static {:archive "/m/libcrypto.a"}
+              :link-libs {:windows ["ws2_32" "gdi32" "crypt32"] :linux ["dl" "pthread"]}}
+      ssl {:name "ssl" :static {:archive "/m/libssl.a"} :link-libs ["crypt32"]}]
+  (is= "a static entry's libs become one deduped link entry, after the natives"
+       [["static" "archive" "/m/libcrypto.a"] ["static" "archive" "/m/libssl.a"]
+        ["link" "ws2_32" "gdi32" "crypt32"]]
+       (encode [crypto ssl] false nil :windows))
+  (is= "only the build platform's libs"
+       [["static" "archive" "/m/libcrypto.a"] ["link" "dl" "pthread"]]
+       (encode [crypto] false nil :linux))
+  (is= "a platform with none adds no link entry"
+       [["static" "archive" "/m/libcrypto.a"]]
+       (encode [crypto] false nil :darwin))
+  (is= "a dynamic entry links nothing, so its libs are not encoded"
+       [["req" "libcrypto.dylib"]]
+       (encode [(assoc crypto :darwin ["libcrypto.dylib"] :link-libs ["z"])] true nil :darwin))
+  (is= "a bad name is an error that names it"
+       "jolt.native: crypto :link-libs has \"-lcrypt32\", which is not a library name — give it as -l takes it, without the -l (\"crypt32\")"
+       (try (encode [(assoc crypto :link-libs ["-lcrypt32"])] false nil :windows) nil
+            (catch Exception e (ex-message e))))
+  (is= "so is a shape that is neither a vector nor a platform map"
+       "jolt.native: crypto :link-libs must be a vector of library names or a map of platform -> vector, got \"crypt32\""
+       (try (encode [(assoc crypto :link-libs "crypt32")] false nil :windows) nil
+            (catch Exception e (ex-message e)))))
+
 ;;;; :jolt/tree-shake {:allow-dynamic […]} → "ns/name" strings
 
 (let [allow-dynamic-entries (var jolt.deps/allow-dynamic-entries)]
