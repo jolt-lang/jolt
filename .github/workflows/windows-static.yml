@@ -7,7 +7,9 @@ name: windows-static
 # libraries while it loads (so the build itself has to resolve them).
 #
 #   #1205  the build-time preload of libssl.a has to resolve libcrypto.a
-#   #1206  libcrypto.a needs crypt32 at the final link
+#   #1206  libcrypto.a needs crypt32 at the final link, which the crypto entry
+#          now states itself with :link-libs (checked with a cc that drops
+#          jolt's own -lcrypt32)
 #   #1207  bld-mkdir-p walking up a backslash path
 #   #1203  jolt.loader opening a file:/C:/… resource hit   (winparity)
 #   #1208  Socket half-close over Winsock                  (winparity)
@@ -22,6 +24,8 @@ on:
       - '.github/workflows/windows-static.yml'
       - 'host/chez/build.ss'
       - 'host/chez/build-jolt.ss'
+      - 'jolt-core/jolt/main.clj'
+      - 'jolt-core/jolt/deps.clj'
       - 'host/chez/loader.ss'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/io-streams.ss'
@@ -117,11 +121,14 @@ jobs:
           rm -rf "$tmp/static-openssl"
           mkdir -p "$app/src/app"
           # libssl first: the dependent archive, which the old per-archive preload
-          # could never load on its own
+          # could never load on its own. The crypto entry states the system
+          # libraries libcrypto.a links against (its .pc's Libs.private), as
+          # jolt-lang/crypto's own declaration does.
           cat > "$app/deps.edn" <<EOF
           {:paths ["src"]
            :jolt/native [{:name "ssl"    :static {:archive "$ssl"}}
-                         {:name "crypto" :static {:archive "$crypto"}}]}
+                         {:name "crypto" :static {:archive "$crypto"}
+                          :link-libs {:windows ["ws2_32" "gdi32" "crypt32"]}}]}
           EOF
           # The top-level defs call both libraries while the namespace loads, so
           # the build resolves them in its own process before it links anything.
@@ -154,7 +161,39 @@ jobs:
           jolt="$GITHUB_WORKSPACE/target/release/jolt.exe"
           base="$(cygpath -m "$RUNNER_TEMP")/static-openssl"
           out="$base/out-slash/bin/app"
-          ( cd "$(cygpath -u "$RUNNER_TEMP")/static-openssl/app" && "$jolt" build -m app.core -o "$out" )
+          # A cc that records each command and drops any -lcrypt32 from jolt's
+          # own system list (everything after -static), so the link has to get
+          # crypt32 from the crypto entry's :link-libs.
+          wrap="$(cygpath -u "$RUNNER_TEMP")/ccwrap"
+          mkdir -p "$wrap"
+          export CCLOG="$wrap/cc.log"
+          : > "$CCLOG"
+          cat > "$wrap/cc" <<'EOF'
+          #!/bin/sh
+          echo "cc $*" >> "$CCLOG"
+          static=
+          for a do
+            shift
+            [ "$a" = -static ] && static=1
+            if [ -n "$static" ] && [ "$a" = -lcrypt32 ]; then
+              echo "dropped jolt's own -lcrypt32" >> "$CCLOG"; continue
+            fi
+            set -- "$@" "$a"
+          done
+          exec gcc "$@"
+          EOF
+          chmod +x "$wrap/cc"
+          ( cd "$(cygpath -u "$RUNNER_TEMP")/static-openssl/app" && PATH="$wrap:$PATH" "$jolt" build -m app.core -o "$out" )
+          cat "$CCLOG"
+          # the final link (the launcher relink) and the preload both carry the
+          # spec's libraries right after the archives, and crypt32 only there
+          for kind in launcher.c native-static.so; do
+            line="$(grep -- "$kind" "$CCLOG" | tail -1)"
+            echo "$line" | grep -q -- "libcrypto.a -Wl,--no-whole-archive -lws2_32 -lgdi32 -lcrypt32 -static" \
+              || { echo "::error::the $kind link does not carry crypto's :link-libs after the archives"; exit 1; }
+            n="$(echo "$line" | tr ' ' '\n' | grep -c -- '^-lcrypt32$')"
+            test "$n" = 1 || { echo "::error::the $kind link names -lcrypt32 $n times"; exit 1; }
+          done
           exe="$(cygpath -u "$out").exe"
           ntldd "$exe"
           if ntldd "$exe" | grep -Ei 'libcrypto|libssl'; then
