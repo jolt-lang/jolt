@@ -918,7 +918,7 @@
    :check {:expr "(let [b (java.nio.ByteBuffer/allocate 4)] (.putFloat b 0.1) [(pr-str (.getFloat b 0)) (double (.getFloat b 0)) (pr-str (float 0.1))])"
            :jvm "[\"0.1\" 0.10000000149011612 \"0.1\"]"
            :jolt "[\"0.10000000149011612\" 0.10000000149011612 \"0.10000000149011612\"]"}
-   :note "Chez has one flonum, so jolt cannot tell a float from a double holding the same value and prints both as a double. Values agree with the JVM: (float x) rounds to single precision (flsingle), and putFloat rounds exactly as the JDK does (every finite pattern round-trips byte for byte, checked against JDK 21 over 4000 random patterns). NaN payloads are not observable on jolt: the encoders are exact arithmetic over the value, which has no payload to read."}
+   :note "Chez has one flonum, so jolt cannot tell a float from a double holding the same value and prints both as a double. Values agree with the JVM: (float x) rounds to single precision, and putFloat rounds exactly as the JDK does (every finite pattern round-trips byte for byte, checked against JDK 21 over 4000 random patterns). NaN payloads are not observable on jolt: the encoders are exact arithmetic over the value, which has no payload to read."}
   ;; Thread.getStackTrace names the frames jolt can reconstruct: the live
   ;; continuation, plus callers TCO erased that the compile-time callsite tables
   ;; name (a static tail edge, or the one most recent tail site bridging a gap).

@@ -487,7 +487,8 @@
 (def-var! "clojure.core" "unchecked-int" jolt-unchecked-int)
 (def-var! "clojure.core" "double" jolt-double)
 ;; float: Chez has no single-float type, so the value stays a flonum, but it is
-;; the nearest single-precision value (flsingle), as the JVM's float holds:
+;; the nearest single-precision value, as the JVM's float holds (rounded
+;; through math.ss's flt->bits/bits->flt, which run on Chez and Gambit alike):
 ;; (double (float 0.3)) is 0.30000001192092896 and (float Double/MIN_VALUE) is
 ;; 0.0. The cast range-checks against Float/MAX_VALUE first, like
 ;; RT.floatCast (an infinity is out of range; NaN passes).
@@ -498,7 +499,7 @@
       ((not (flonum? d)) d)
       ((and (not (nan? d)) (or (< d (- fl-float-max)) (> d fl-float-max)))
        (jolt-cast-range-throw "float" x))
-      (else (flsingle d)))))
+      (else (bits->flt (flt->bits d))))))
 (def-var! "clojure.core" "float" jolt-float)
 ;; numerator/denominator: jolt ratios are Chez exact rationals; a non-ratio is
 ;; the JVM's Ratio cast failure.

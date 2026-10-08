@@ -214,7 +214,7 @@
 (check "(let [b (.order (java.nio.ByteBuffer/allocate 4) java.nio.ByteOrder/LITTLE_ENDIAN)] (.putInt b 1) (.rewind b) [(.get b) (.get b 1) (str (.order b))])"
        "[1 0 \"LITTLE_ENDIAN\"]")
 (check "(let [b (java.nio.ByteBuffer/allocate 4)] (.putFloat b 0.1) [(.getFloat b 0) (.getInt b 0)])"
-       "[0.1 1036831949]")
+       "[0.10000000149011612 1036831949]")
 (check "[(str (java.nio.ByteBuffer/allocate 2)) (.getName (class (java.nio.ByteBuffer/allocateDirect 1))) (instance? java.nio.Buffer (java.nio.ByteBuffer/allocate 1))]"
        "[\"java.nio.HeapByteBuffer[pos=0 lim=2 cap=2]\" \"java.nio.DirectByteBuffer\" true]")
 (check "(let [b (java.nio.ByteBuffer/allocate 8) i (.asIntBuffer b)] (.put i 1 7) [(.getInt b 4) (str (.asCharBuffer (doto (java.nio.ByteBuffer/allocate 4) (.putChar \\h) (.putChar \\i) .flip)))])"
