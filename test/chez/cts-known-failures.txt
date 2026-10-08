@@ -12,22 +12,19 @@ clojure.core-test.byte 1 0
 clojure.core-test.char 1 0
 clojure.core-test.dec 1 0
 clojure.core-test.double-qmark 3 0
-# eq / not-eq: two ##NaN rows the suite itself flags as arguably-undefined.
+# eq / not-eq: ##NaN rows the suite itself flags as arguably-undefined.
 # (= (list ##NaN) (list ##NaN)) is true on the JVM only because the compiler
 # hands both lists the same boxed Double and Util.equiv short-circuits on
 # reference identity; jolt compares by value and says false. (not= ##NaN ##NaN)
 # is the JVM bug the suite links (ask.clojure.org 14298) — it answers false
 # where jolt answers true. Both recorded in known-divergences (:numeric-model).
-# The third row in each is (= (float 0.1) (double 0.1)), which follows from
-# Chez's one flonum type (:integer-box-model).
-clojure.core-test.eq 2 0
-clojure.core-test.float 1 0
+clojure.core-test.eq 1 0
 clojure.core-test.inc 1 0
 clojure.core-test.int-qmark 3 0
 clojure.core-test.minus 2 0
 clojure.core-test.mod 18 0
 clojure.core-test.neg-int-qmark 1 0
-clojure.core-test.not-eq 3 0
+clojure.core-test.not-eq 2 0
 # num: the suite's :clj branch dispatches a definterface over ^long/^Object and
 # ^double/^Object overloads to prove `num` boxes, and asserts (num 1N) is a
 # clojure.lang.BigInt. jolt has one integer type and no primitive-overload

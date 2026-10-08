@@ -486,16 +486,19 @@
 (def-var! "clojure.core" "unchecked-long" jolt-unchecked-long)
 (def-var! "clojure.core" "unchecked-int" jolt-unchecked-int)
 (def-var! "clojure.core" "double" jolt-double)
-;; float: Chez has no single-float type, so the value stays a flonum — but the
-;; cast range-checks against Float/MAX_VALUE like RT.floatCast (an infinity is
-;; out of range; NaN passes).
+;; float: Chez has no single-float type, so the value stays a flonum, but it is
+;; the nearest single-precision value (flsingle), as the JVM's float holds:
+;; (double (float 0.3)) is 0.30000001192092896 and (float Double/MIN_VALUE) is
+;; 0.0. The cast range-checks against Float/MAX_VALUE first, like
+;; RT.floatCast (an infinity is out of range; NaN passes).
 (define fl-float-max 3.4028234663852886e38)
 (define (jolt-float x)
   (let ((d (jolt-double x)))
-    (if (and (flonum? d) (not (nan? d))
-             (or (< d (- fl-float-max)) (> d fl-float-max)))
-        (jolt-cast-range-throw "float" x)
-        d)))
+    (cond
+      ((not (flonum? d)) d)
+      ((and (not (nan? d)) (or (< d (- fl-float-max)) (> d fl-float-max)))
+       (jolt-cast-range-throw "float" x))
+      (else (flsingle d)))))
 (def-var! "clojure.core" "float" jolt-float)
 ;; numerator/denominator: jolt ratios are Chez exact rationals; a non-ratio is
 ;; the JVM's Ratio cast failure.

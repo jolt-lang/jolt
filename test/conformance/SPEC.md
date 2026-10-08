@@ -153,10 +153,12 @@ throws), NaN casts to 0, ratios and bigdecs truncate, a non-number is
 ClassCastException. `float` range-checks against Float/MAX_VALUE. The
 `unchecked-*` casts wrap and sign-fold like the JVM primitive conversions
 (`(unchecked-byte 200)` is `-56`; a double saturates instead of wrapping).
-What jolt does NOT model is a distinct single-float type: `(float x)` keeps
-the double VALUE, so a double below Float/MIN_VALUE stays nonzero and float
-rounding does not occur (the accepted no-single-float residue, baselined with
-`:integer-box-model`'s class residue).
+What jolt does NOT model is a distinct single-float type: `(float x)` is a
+double holding the nearest single-precision value (`(double (float 0.3))` is
+0.30000001192092896, `(float Double/MIN_VALUE)` is 0.0), so values agree with
+the JVM's, but a float prints with a double's digits, `(pr-str (float 0.1))`
+being "0.10000000149011612" where the JVM prints "0.1" (the accepted
+no-single-float residue, baselined with `:integer-box-model`'s class residue).
 
 ## Strings are codepoint-indexed
 
@@ -262,9 +264,9 @@ documented model divergence — nothing in the baseline is an unexplained bug:
   rows (`(identical? (Boolean. "true") true)`, `(= x x)` on a boxed NaN — jolt
   numbers are immediates, there is no box to distinguish), and `num`'s
   primitive-overload reflection rows.
-- **no single float** (Narrow integer types, above): `(float Double/MIN_VALUE)`
-  keeps the double value instead of rounding to 0.0f; `(double? (float x))`
-  is true.
+- **no single float** (Narrow integer types, above): `(float x)` rounds to
+  single precision but stays a double, so `(double? (float x))` is true and it
+  prints with a double's digits.
 - **RFC 0003 transients**: `(transient sorted/list/lazy-seq)` succeeds through
   the copy-on-write fallback (a deliberate superset; non-collections now throw
   like the JVM), and double-transient is idempotent rather than throwing.

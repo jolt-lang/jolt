@@ -202,37 +202,11 @@
 ;; on both). What
 ;; is this file's own is how a FLOAT reads back.
 ;;
-;; The float a pattern holds, as jolt holds a float: a double. jolt has no
-;; single-precision type -- (float 0.1) is the double 0.1 -- so the double is the
-;; SHORTEST decimal that reads back as this float, the digits Float.toString
-;; prints. Then (.getFloat b) after (.putFloat b 0.1) is 0.1, prints as the JVM's
-;; does, and equals (float 0.1).
-(define (nb-bits->flt b)
-  (let ((x (bits->flt b)))
-    (if (or (nan? x) (infinite? x) (= x 0.0))
-        x
-        (let ((d (nb-shortest-float (exact (abs x)) (bitwise-and b #x7fffffff))))
-          (if (< x 0.0) (- d) d)))))
-(define (nb-decimal-exponent m)          ; e with 10^e <= m < 10^(e+1)
-  (let loop ((e (exact (floor (/ (log (inexact m)) (log 10))))))
-    (cond ((> (expt 10 e) m) (loop (- e 1)))
-          ((<= (expt 10 (+ e 1)) m) (loop (+ e 1)))
-          (else e))))
-;; Float.toString writes at least one digit after the point, so in its
-;; scientific range (below 10^-3, from 10^7) the shortest form has two
-;; significant digits: Float.MIN_VALUE is 1.4E-45, the closest two-digit
-;; decimal, never 1.0E-45. M is the float's exact magnitude, BITS its pattern
-;; without the sign.
-(define (nb-shortest-float m bits)
-  (let ((e10 (nb-decimal-exponent m)))
-    (let loop ((n (if (or (< m 1/1000) (>= m 10000000)) 2 1)))
-      (if (> n 9)
-          (inexact m)
-          (let* ((s (expt 10 (- e10 (- n 1))))
-                 (cand (* (round (/ m s)) s)))
-            (if (and (> cand 0) (= (flt-mag->bits cand) bits))
-                (inexact cand)
-                (loop (+ n 1))))))))
+;; The float a pattern holds, as jolt holds a float: a double with the float's
+;; exact value, which is what (float x) rounds to (converters.ss) and what the
+;; JVM's Float widens to. Then (.getFloat b) after (.putFloat b 0.1) equals
+;; (float 0.1), both 0.10000000149011612.
+(define (nb-bits->flt b) (bits->flt b))
 
 ;; --- element kinds -------------------------------------------------------------
 ;; What a stored unsigned W-octet integer reads as, and what an argument stores.

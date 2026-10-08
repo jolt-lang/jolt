@@ -908,17 +908,17 @@
            :jvm "[\"java.lang.Float\" false]"
            :jolt "[\"java.lang.Double\" true]"}
    :note "Chez has one flonum. instance? is deliberately permissive for Float/Double and Integer/Long — a value answers to both spellings of its collapsed class — while Short and Byte stay false. Since #627 the big classes are value-sensitive: BigInt/BigInteger answer only for bignums (which also class as clojure.lang.BigInt), Long/Integer only for fixnums, matching the JVM. A bignum still answers BigInteger (one big representation serves both classes; the JVM says false) — the remaining superset."}
-  ;; The same collapse at the java.nio seam: a float read out of a buffer has no
-  ;; Float to be, so it is the double jolt's (float x) would have made of the
-  ;; digits Float.toString prints.
+  ;; The same collapse at the java.nio seam and in printing: a float read out of
+  ;; a buffer, like (float x), is a Double holding the float's exact value, so it
+  ;; prints every digit of that value where the JVM prints Float.toString's.
   {:category :integer-box-model
-   :behavior "(.getFloat b) on a ByteBuffer, (.get fb) on a FloatBuffer"
-   :jvm "a java.lang.Float; widened to double it is the float's exact value (0.10000000149011612 for 0.1f), and a NaN keeps its payload bits"
-   :jolt "a Double holding the shortest decimal that reads back as that float (0.1), so it prints as the JVM's Float does and equals (float 0.1); a NaN re-encodes as the canonical 0x7fc00000"
-   :check {:expr "(let [b (java.nio.ByteBuffer/allocate 4)] (.putFloat b 0.1) (double (.getFloat b 0)))"
-           :jvm "0.10000000149011612"
-           :jolt "0.1"}
-   :note "putFloat rounds to single precision exactly as the JDK does (every finite pattern round-trips byte for byte, checked against JDK 21 over 4000 random patterns). NaN payloads are not observable on jolt: the encoders are exact arithmetic over the value, which has no payload to read."}
+   :behavior "(pr-str (float 0.1)), (.getFloat b) on a ByteBuffer, (.get fb) on a FloatBuffer"
+   :jvm "a java.lang.Float, printed as Float.toString's shortest digits (0.1); widened to double it is 0.10000000149011612, and a NaN keeps its payload bits"
+   :jolt "a Double holding the float's exact value (0.10000000149011612), equal to the JVM's widened value and to (float 0.1), printed with a double's digits; a NaN re-encodes as the canonical 0x7fc00000"
+   :check {:expr "(let [b (java.nio.ByteBuffer/allocate 4)] (.putFloat b 0.1) [(pr-str (.getFloat b 0)) (double (.getFloat b 0)) (pr-str (float 0.1))])"
+           :jvm "[\"0.1\" 0.10000000149011612 \"0.1\"]"
+           :jolt "[\"0.10000000149011612\" 0.10000000149011612 \"0.10000000149011612\"]"}
+   :note "Chez has one flonum, so jolt cannot tell a float from a double holding the same value and prints both as a double. Values agree with the JVM: (float x) rounds to single precision (flsingle), and putFloat rounds exactly as the JDK does (every finite pattern round-trips byte for byte, checked against JDK 21 over 4000 random patterns). NaN payloads are not observable on jolt: the encoders are exact arithmetic over the value, which has no payload to read."}
   ;; Thread.getStackTrace names the frames jolt can reconstruct: the live
   ;; continuation, plus callers TCO erased that the compile-time callsite tables
   ;; name (a static tail edge, or the one most recent tail site bridging a gap).

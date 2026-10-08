@@ -99,6 +99,13 @@
     ;; jolt's numeric casts accept a char for the FLOAT widths too; the reference
     ;; only does for the integer ones. See known-divergences.edn (:permissive).
     "double and float reject a char; the integer casts take its code point"
+    ;; a float is a double holding the float's exact value, so it prints with a
+    ;; double's digits where the JVM prints Float.toString's. See
+    ;; known-divergences.edn (:integer-box-model, the float/ByteBuffer entry).
+    "float 0.1 is rounded to single precision"
+    "a float reads back as its shortest decimal"
+    "float specials read back"
+    "a float view rounds to single precision"
     "no param vector"))
 (define known-fail (make-hashtable string-hash string=?))
 (for-each (lambda (l) (hashtable-set! known-fail l #t)) known-fail-labels)
