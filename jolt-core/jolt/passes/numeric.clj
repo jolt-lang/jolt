@@ -233,7 +233,15 @@
       ;; a call to a var with a declared numeric return (^double/^long) yields that
       ;; kind, so an accumulator over the result types. The call itself isn't an
       ;; arithmetic op to lower — its body already coerces the return.
-      (get fnode :num-ret) [(get fnode :num-ret) node1]
+      ;;
+      ;; The declaration is a claim about the var, not a proof about this call:
+      ;; redefining the var leaves this site compiled against it, and a :double or
+      ;; :float operand reaches an unsafe fl op. :num-ret-guard has the back end
+      ;; check the value the call answers. A :long needs none, since the jolt-l
+      ;; ops test their operands.
+      (get fnode :num-ret)
+      (let [k (get fnode :num-ret)]
+        [k (if (or (= k :double) (= k :float)) (assoc node1 :num-ret-guard k) node1)])
       ;; java.lang.Math over proven flonum operands -> native Chez flonum op, result
       ;; typed :double (so it doesn't de-opt the surrounding arithmetic). Requires at
       ;; least one genuine :double operand (so (Math/abs 5) keeps its int result) and

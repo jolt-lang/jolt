@@ -987,22 +987,33 @@
 (define (jolt-num-cmp-slow a b)
   (jolt-num-cast-throw (if (number? a) b a)))
 
+;; A Float (a jfloat) meeting a double or another Float is double arithmetic,
+;; as on the JVM, so it is answered here: through the slow hooks it cost a
+;; second full dispatch, and a jolt.ffi :float result is a Float. Every other
+;; mix still reaches the hooks, which float.ss extends.
+(define (jolt-floating? x) (or (flonum? x) (jfloat? x)))
 (define (jolt-add2 a b)
-  (if (and (number? a) (number? b)) (+ a b) (jolt-add-slow a b)))
+  (cond ((and (number? a) (number? b)) (+ a b))
+        ((and (jolt-floating? a) (jolt-floating? b)) (fl+ (jfloat-unbox a) (jfloat-unbox b)))
+        (else (jolt-add-slow a b))))
 (define (jolt-sub2 a b)
-  (if (and (number? a) (number? b)) (- a b) (jolt-sub-slow a b)))
+  (cond ((and (number? a) (number? b)) (- a b))
+        ((and (jolt-floating? a) (jolt-floating? b)) (fl- (jfloat-unbox a) (jfloat-unbox b)))
+        (else (jolt-sub-slow a b))))
 (define (jolt-mul2 a b)
-  (if (and (number? a) (number? b))
-      (if (or (flonum? a) (flonum? b))
-          (fl* (real->flonum a) (real->flonum b))
-          (* a b))
-      (jolt-mul-slow a b)))
+  (cond ((and (number? a) (number? b))
+         (if (or (flonum? a) (flonum? b))
+             (fl* (real->flonum a) (real->flonum b))
+             (* a b)))
+        ((and (jolt-floating? a) (jolt-floating? b)) (fl* (jfloat-unbox a) (jfloat-unbox b)))
+        (else (jolt-mul-slow a b))))
 (define (jolt-div2 a b)
-  (if (and (number? a) (number? b))
-      (if (or (flonum? a) (flonum? b))
-          (fl/ (real->flonum a) (real->flonum b))
-          (if (eqv? b 0) (jolt-div0-throw) (/ a b)))
-      (jolt-div-slow a b)))
+  (cond ((and (number? a) (number? b))
+         (if (or (flonum? a) (flonum? b))
+             (fl/ (real->flonum a) (real->flonum b))
+             (if (eqv? b 0) (jolt-div0-throw) (/ a b))))
+        ((and (jolt-floating? a) (jolt-floating? b)) (fl/ (jfloat-unbox a) (jfloat-unbox b)))
+        (else (jolt-div-slow a b))))
 (define (jolt-lt2 a b)
   (if (and (number? a) (number? b)) (< a b) (< (jolt-num-cmp-slow a b) 0)))
 (define (jolt-gt2 a b)
@@ -1199,21 +1210,22 @@
 (define jolt-ge (jolt-cmp-chain jolt-ge2))
 
 ;; call-position arithmetic: inlined macros with the both-Chez-numbers fast path
-;; open-coded; anything else falls to the binary dispatch above. Comparisons
+;; open-coded; anything else falls to the binary dispatch above — jolt-add2, not
+;; the variadic jolt-add, whose rest list cost a Float operand ~10ns a step. Comparisons
 ;; return a genuine Scheme boolean (the backend's truthy elision relies on it).
 (define-syntax jolt-n+
   (syntax-rules ()
     ((_) 0)
     ((_ a) (jolt-add a))
     ((_ ea eb) (let ((a ea) (b eb))
-                 (if (and (number? a) (number? b)) (+ a b) (jolt-add a b))))
+                 (if (and (number? a) (number? b)) (+ a b) (jolt-add2 a b))))
     ((_ a b c ...) (jolt-n+ (jolt-n+ a b) c ...))))
 (define-syntax jolt-n-
   (syntax-rules ()
     ((_) (jolt-sub))
     ((_ a) (jolt-sub a))
     ((_ ea eb) (let ((a ea) (b eb))
-                 (if (and (number? a) (number? b)) (- a b) (jolt-sub a b))))
+                 (if (and (number? a) (number? b)) (- a b) (jolt-sub2 a b))))
     ((_ a b c ...) (jolt-n- (jolt-n- a b) c ...))))
 (define-syntax jolt-n*
   (syntax-rules ()
@@ -1224,7 +1236,7 @@
                      (if (or (flonum? a) (flonum? b))
                          (fl* (real->flonum a) (real->flonum b))
                          (* a b))
-                     (jolt-mul a b))))
+                     (jolt-mul2 a b))))
     ((_ a b c ...) (jolt-n* (jolt-n* a b) c ...))))
 (define-syntax jolt-n-div
   (syntax-rules ()

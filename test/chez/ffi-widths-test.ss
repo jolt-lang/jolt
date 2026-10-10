@@ -221,13 +221,33 @@
    (":double argument takes a Float" 1.5 "(w-neg-double (float -1.5))")
    (":& tail takes a double" "2.5" "(tail-format 2.5)")
    (":& tail takes a Float" "2.5" "(tail-format (float 2.5))")
-   ("write :float takes a Float" 2.5 "(width-rw :float (float 2.5))")
    ("write :double takes a Float" 2.5 "(width-rw :double (float 2.5))")
    (":float callback may answer a Float" 3.0 "(call-float cb-float)")
    (":double callback may answer a Float" 3.0 "(call-double cb-double)")))
 (for-each
  (lambda (name) (ev (string-append "(jolt.ffi/free-callable " name ")")))
  '("cb-float" "cb-double"))
+
+;; The other direction: a C float reaches jolt as a java.lang.Float, as it
+;; reaches Clojure on the JVM — a :float result, a read of :float, and a
+;; :float callback argument. A :double stays a double.
+(for-each
+ ev
+ '("(def w-half-float (jolt.ffi/__cfn \"jolt_w_half_float\" [:float] :float))"
+   "(def cb-float-arg (jolt.ffi/__ccallable (fn [x] (if (and (instance? Float x) (= x 1.5)) 1 0)) [:float] :int64))"
+   "(def call-float-arg (jolt.ffi/__cfn \"jolt_w_call_float_arg\" [:pointer] :int64))"))
+(for-each
+ (lambda (entry) (ok (car entry) (eq? #t (ev-or-raised (cdr entry)))))
+ '((":float result is a Float" . "(let [r (w-half-float 3.0)] (and (instance? Float r) (= r 1.5)))")
+   (":float result of a Float argument" . "(let [r (w-half-float (float 0.1))] (and (instance? Float r) (= r (float 0.05))))")
+   (":double result stays a double" . "(instance? Double (w-neg-double (float 1.5)))")
+   ("read :float is a Float" . "(let [r (width-rw :float 2.5)] (and (instance? Float r) (= r 2.5)))")
+   ("write and read :float of a Float" . "(let [r (width-rw :float (float 0.1))] (and (instance? Float r) (= r (float 0.1))))")
+   ("read :double stays a double" . "(instance? Double (width-rw :double (float 2.5)))")
+   (":float callback argument is a Float" . "(= 1 (call-float-arg cb-float-arg))")))
+(for-each
+ (lambda (name) (ev (string-append "(jolt.ffi/free-callable " name ")")))
+ '("cb-float-arg"))
 
 (for-each
  (lambda (entry) (ok (car entry) (raises? (lambda () (ev (cdr entry))))))

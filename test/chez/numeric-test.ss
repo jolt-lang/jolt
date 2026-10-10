@@ -294,6 +294,29 @@
 (let ((e (emitf "u" "(fn* ([^double y] (+ y (dsq 2.0))))")))
   (ok "straight-line op over ^double call lowers to fl+" (has? e "(#3%fl+")))
 
+;; A call typed :double from a var's declared return is a claim about the var,
+;; not a proof: redefining the var leaves the compiled site behind. The site
+;; checks the value the call answers before an unsafe fl op takes it, so a
+;; stale site raises ClassCastException on a non-number (a stale invokePrim
+;; site on the JVM raises too) and widens a number, never reading a string as
+;; a flonum.
+(jolt-compile-eval "(def ^double stale-d (fn* ([] 1.0)))" "u")
+(jolt-compile-eval "(def stale-user (fn* ([] (+ 0.5 (stale-d)))))" "u")
+(jolt-compile-eval "(def stale-acc (fn* ([] (loop [acc 0.0 i 0] (if (< i 2) (recur (+ acc (stale-d)) (inc i)) acc)))))" "u")
+(jolt-compile-eval "(def stale-let (fn* ([] (let [x (stale-d)] (* x x)))))" "u")
+(ok "^double call site before redefinition" (eqv? 1.5 (ev "(stale-user)")))
+(jolt-compile-eval "(def stale-d (fn* ([] \"x\")))" "u")
+(define (raises-cce? call)
+  (jolt= (keyword #f "cce")
+         (guard (e (#t #f))
+           (ev (string-append "(try " call " (catch ClassCastException e :cce))")))))
+(ok "stale ^double site raises on a string" (raises-cce? "(stale-user)"))
+(ok "stale ^double accumulator raises on a string" (raises-cce? "(stale-acc)"))
+(ok "stale ^double let-bound operand raises on a string" (raises-cce? "(stale-let)"))
+(jolt-compile-eval "(def stale-d (fn* ([] 2)))" "u")
+(ok "stale ^double site widens a long" (eqv? 2.5 (ev "(stale-user)")))
+(ok "stale ^double let-bound operand widens a long" (eqv? 4.0 (ev "(stale-let)")))
+
 ;; --- Part 1 (jolt-30q9): (double x)/(long x)/(int x)/(float x) casts ---
 ;; A non-shadowed clojure.core cast becomes a :coerce node carrying the checked
 ;; runtime helper, so it feeds the numeric lattice like a ^double/^long hint:

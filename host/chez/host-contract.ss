@@ -37,6 +37,8 @@
 (define hc-kw-num-ret (keyword #f "num-ret"))
 (define hc-kw-double (keyword #f "double"))
 (define hc-kw-long (keyword #f "long"))
+(define hc-kw-float (keyword #f "float"))
+(define hc-kw-jolt-num-ret (keyword "jolt" "num-ret"))
 (define hc-kw-inst  (keyword #f "#inst"))
 (define hc-kw-uuid  (keyword #f "#uuid"))
 (define hc-kw-bigdec (keyword #f "bigdec"))
@@ -471,13 +473,21 @@
 ;; they classify as :var and the emitter's native-op path lowers them.
 ;; A var's declared numeric return (^double/^long on its name) -> :double/:long,
 ;; read from its meta. Lets jolt.passes.numeric type a call to it.
+;;
+;; :jolt/num-ret is the same answer from a definer that guarantees it rather than
+;; a hint: jolt.ffi/defcfn sets :float on a binding whose C result is a float,
+;; which the binding always answers as a java.lang.Float. A ^float tag is not
+;; read, since on the JVM it is only a hint and coerces nothing.
 (define (hc-cell-num-ret cell)
   (let ((m (and cell (var-cell-meta cell))))
-    (and m (let* ((t (jolt-get m hc-kw-tag))   ; ^double/^long is a symbol; ^"double" a string
-                  (s (cond ((symbol-t? t) (symbol-t-name t)) ((string? t) t) (else #f))))
-             (cond ((equal? s "double") hc-kw-double)
-                   ((equal? s "long") hc-kw-long)
-                   (else #f))))))
+    (and m (let ((declared (jolt-get m hc-kw-jolt-num-ret)))
+             (if (memq declared (list hc-kw-double hc-kw-float))
+                 declared
+                 (let* ((t (jolt-get m hc-kw-tag))   ; ^double/^long is a symbol; ^"double" a string
+                        (s (cond ((symbol-t? t) (symbol-t-name t)) ((string? t) t) (else #f))))
+                   (cond ((equal? s "double") hc-kw-double)
+                         ((equal? s "long") hc-kw-long)
+                         (else #f))))))))
 
 ;; A slash-free dotted symbol whose final segment is Capitalized is a class
 ;; reference (java.util.Map, clojure.lang.Named) — Clojure has no such vars. With

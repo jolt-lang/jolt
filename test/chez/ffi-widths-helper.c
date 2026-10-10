@@ -73,3 +73,12 @@ JOLT_WIDTHS_EXPORT double jolt_w_call_float(jolt_w_float_callback callback) {
 JOLT_WIDTHS_EXPORT double jolt_w_call_double(jolt_w_double_callback callback) {
   return callback(1.5);
 }
+
+/* A :float result and a :float callback argument reach jolt as a
+   java.lang.Float, as a C float reaches Clojure on the JVM. */
+JOLT_WIDTHS_EXPORT float jolt_w_half_float(float value) { return value / 2.0f; }
+
+typedef int64_t (*jolt_w_float_arg_callback)(float);
+JOLT_WIDTHS_EXPORT int64_t jolt_w_call_float_arg(jolt_w_float_arg_callback callback) {
+  return callback(1.5f);
+}
