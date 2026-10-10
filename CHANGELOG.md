@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Division by zero raises where the JVM raises.** `(/ x y)` on boxed
+  operands is `Numbers.divide(Object, Object)`, which raises `Divide by zero`
+  for any zero divisor, `0.0` included, unless an operand is NaN. jolt answered
+  `##Inf` there. Now value-position (`apply`, `reduce`), unary, and boxed calls
+  raise, while a call with a primitive double or float operand still answers
+  an infinity, as the JVM's primitive overloads do. Primitive operands include
+  a literal, a `^double` param, a primitive local, a `(double x)` cast, and a
+  `Math` call. Each step of `(/ a b c)` is decided on its own, as on the JVM.
 - **A call typed from a var's `^double` return checks what it answered.** The
   numeric pass trusted the declaration and handed the result to an unchecked
   flonum op, so once the var was redefined, a site compiled against it read a

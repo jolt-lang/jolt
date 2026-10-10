@@ -128,8 +128,11 @@
 ;; jolt.backend-scheme/dbl-ops resp. lng-ops, or emit-numeric splices a nil op.
 (defn- dbl-spec [nm n]
   (cond
-    (and (>= n 1) (contains? #{"+" "-" "*" "/" "min" "max"
+    (and (>= n 1) (contains? #{"+" "-" "*" "min" "max"
                                "unchecked-add" "unchecked-subtract" "unchecked-multiply"} nm)) :double
+    ;; Not unary /: Clojure inlines / only at two or more operands, so (/ x) is a
+    ;; call through the Object path, which raises on a zero divisor even for 0.0.
+    (and (>= n 2) (= "/" nm)) :double
     (and (= n 1) (contains? #{"inc" "dec" "unchecked-inc" "unchecked-dec" "unchecked-negate"} nm)) :double
     (and (>= n 2) (contains? #{"<" ">" "<=" ">=" "=" "=="} nm)) :bool
     :else nil))
@@ -401,6 +404,17 @@
            ;; through to the generic op.
            (and bs bd-ok?)
             [(propagate bs) (assoc node1 :num-kind :bigdec)]
+           ;; Division the fl op did not take still has to pick the JVM's overload
+           ;; per step: a step with a primitive double or float operand divides as
+           ;; IEEE does, where divide(Object, Object) raises on a zero divisor.
+           ;; (/ a b c) is (/ (/ a b) c), and a primitive step answers a primitive
+           ;; double, so a step is primitive once any operand up to it is.
+           ;; :div-prim is that per-step vector; the back end emits jolt-div2-prim
+           ;; for a true step and jolt-div2 for the rest.
+           (and (= nm "/") (>= n 2) (some (fn [c] (or (= c :double) (= c :float))) cls))
+           (let [prim (mapv (fn [c] (or (= c :double) (= c :float))) cls)]
+             [nil (assoc node1 :div-prim
+                         (vec (rest (reductions (fn [acc p] (or acc p)) (first prim) (rest prim)))))])
           :else [nil node1])))))
 
 ;; Returns [kind node'] — kind is :double, :long, or nil.

@@ -1007,7 +1007,30 @@
              (* a b)))
         ((and (jolt-floating? a) (jolt-floating? b)) (fl* (jfloat-unbox a) (jfloat-unbox b)))
         (else (jolt-mul-slow a b))))
+;; Division is the one op whose answer depends on the overload the JVM compiler
+;; picks. Numbers.divide(Object, Object) raises "Divide by zero" on ANY zero
+;; divisor, 0.0 included, unless an operand is a NaN; an overload with a
+;; primitive double operand divides as IEEE does and answers an infinity.
+;; jolt-div2 is the Object path: every value-position, unary and boxed call.
+;; jolt-div2-prim is the primitive one, which the back end emits for a step
+;; with an operand jolt.passes.numeric proved a double or float (:div-prim).
+(define (jolt-nan-operand? x)
+  (or (and (flonum? x) (nan? x)) (and (jfloat? x) (nan? (jfloat-fl x)))))
+(define (jolt-zero-divisor? b)
+  (or (eq? b 0)
+      (and (flonum? b) (fl= b 0.0))
+      (and (jfloat? b) (fl= (jfloat-fl b) 0.0))))
 (define (jolt-div2 a b)
+  (cond ((and (number? a) (number? b))
+         (if (or (flonum? a) (flonum? b))
+             (if (and (if (flonum? b) (fl= b 0.0) (eq? b 0))
+                      (not (and (flonum? a) (nan? a))))
+                 (jolt-div0-throw)
+                 (fl/ (real->flonum a) (real->flonum b)))
+             (if (eqv? b 0) (jolt-div0-throw) (/ a b))))
+        ((and (jolt-zero-divisor? b) (not (jolt-nan-operand? a))) (jolt-div0-throw))
+        (else (jolt-div2-prim a b))))
+(define (jolt-div2-prim a b)
   (cond ((and (number? a) (number? b))
          (if (or (flonum? a) (flonum? b))
              (fl/ (real->flonum a) (real->flonum b))
