@@ -32,7 +32,7 @@
 (jfloat-num-arm 'add-slow jolt-add2)
 (jfloat-num-arm 'sub-slow jolt-sub2)
 (jfloat-num-arm 'mul-slow jolt-mul2)
-(jfloat-num-arm 'div-slow jolt-div2)
+(jfloat-num-arm 'div-slow jolt-div2-prim)   ; jolt-div2 checked the divisor first
 (jfloat-num-arm 'quot-slow jolt-quot)
 (jfloat-num-arm 'rem-slow jolt-rem)
 (jfloat-num-arm 'mod-slow jolt-mod)

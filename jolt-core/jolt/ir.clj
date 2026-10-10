@@ -192,6 +192,8 @@
 ;;   :devirt-type :devirt-*  a monomorphic protocol call's resolved impl (backend).
 ;;   :num-ret                a ^double/^long declared return, on a :var node
 ;;                           (:float for a jolt.ffi :float result).
+;;   :div-prim               per-step flags on a (/ ...) :invoke: a true step has a
+;;                           primitive double/float operand (jolt-div2-prim).
 ;;   :num-ret-guard          :double/:float on an :invoke typed from its var's
 ;;                           :num-ret: the back end checks what the call answered.
 ;;   :phints :nhints         per-arity ^Record / ^double param hints (analyzer).

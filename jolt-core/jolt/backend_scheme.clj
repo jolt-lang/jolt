@@ -3315,6 +3315,14 @@
       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
       (:num-kind node) (emit-numeric (:num-kind node) (:name fnode) args order-args)
+      ;; a (/ ...) with a primitive double or float operand (jolt.passes.numeric
+      ;; :div-prim, one flag per step): a primitive step divides as IEEE does, the
+      ;; rest take the Object path, which raises on a zero divisor.
+      (:div-prim node)
+      (order-args (fn [as]
+        (reduce (fn [acc [prim? a]]
+                  (str "(" (if prim? "jolt-div2-prim" "jolt-div2") " " acc " " a ")"))
+                (first as) (map vector (:div-prim node) (rest as)))))
       (and nop (= 1 (count args)) (cmp1-ops nop)) (str "(begin " (first args) " #t)")
       ;; (get coll k [default]) with a struct-typed coll — the inference marked the
       ;; receiver with :hint :struct and a :shape matching the declared field layout.
