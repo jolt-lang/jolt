@@ -196,6 +196,39 @@
  (lambda (name) (ev (string-append "(jolt.ffi/free-callable " name ")")))
  '("cb-i8" "cb-i16" "cb-u16" "cb-i32" "cb-u32"))
 
+;; :float and :double take a java.lang.Float as well as a double. (float x) is
+;; a boxed Float, and a Chez float or double position takes only a flonum, so
+;; every place a jolt value crosses into C as one unboxes it: an argument, a
+;; bare :& tail, a write, and a callback's result. A double still passes as it
+;; did. A failure here is reported, not raised, so one red case does not hide
+;; the others.
+(define (ev-or-raised source) (guard (e (#t 'raised)) (ev source)))
+(for-each
+ ev
+ '("(def w-neg-float (jolt.ffi/__cfn \"jolt_w_neg_float\" [:float] :double))"
+   "(def w-neg-double (jolt.ffi/__cfn \"jolt_w_neg_double\" [:double] :double))"
+   "(def tail-snprintf (jolt.ffi/__cfn \"snprintf\" [:pointer :size_t :string :&] :int))"
+   "(def tail-format (fn [x] (let [p (jolt.ffi/alloc 32)] (try (tail-snprintf p 32 \"%.1f\" x) (jolt.ffi/ptr->string p) (finally (jolt.ffi/free p))))))"
+   "(def cb-float (jolt.ffi/__ccallable (fn [x] (float (* 2 x))) [:float] :float))"
+   "(def cb-double (jolt.ffi/__ccallable (fn [x] (float (* 2 x))) [:double] :double))"
+   "(def call-float (jolt.ffi/__cfn \"jolt_w_call_float\" [:pointer] :double))"
+   "(def call-double (jolt.ffi/__cfn \"jolt_w_call_double\" [:pointer] :double))"))
+(for-each
+ (lambda (entry) (ok (car entry) (equal? (cadr entry) (ev-or-raised (caddr entry)))))
+ '((":float argument takes a double" 1.5 "(w-neg-float -1.5)")
+   (":float argument takes a Float" 1.5 "(w-neg-float (float -1.5))")
+   (":double argument takes a double" 1.5 "(w-neg-double -1.5)")
+   (":double argument takes a Float" 1.5 "(w-neg-double (float -1.5))")
+   (":& tail takes a double" "2.5" "(tail-format 2.5)")
+   (":& tail takes a Float" "2.5" "(tail-format (float 2.5))")
+   ("write :float takes a Float" 2.5 "(width-rw :float (float 2.5))")
+   ("write :double takes a Float" 2.5 "(width-rw :double (float 2.5))")
+   (":float callback may answer a Float" 3.0 "(call-float cb-float)")
+   (":double callback may answer a Float" 3.0 "(call-double cb-double)")))
+(for-each
+ (lambda (name) (ev (string-append "(jolt.ffi/free-callable " name ")")))
+ '("cb-float" "cb-double"))
+
 (for-each
  (lambda (entry) (ok (car entry) (raises? (lambda () (ev (cdr entry))))))
  '(("unknown __cfn argument rejects" .

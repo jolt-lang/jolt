@@ -1790,6 +1790,7 @@
                 (cond
                   (= "string" (nth fixed i)) (str "(jolt-ffi-string->c " param ")")
                   (= "bool" (nth fixed i)) (str "(jolt-ffi-bool->c " param ")")
+                  (#{"float" "double"} (nth fixed i)) (str "(jolt-ffi-float->c " param ")")
                   :else param))
               (range n) params)
         fixed-args (if (seq native-args) (str " " (str/join " " native-args)) "")
@@ -1944,6 +1945,11 @@
                       (= "bool" (nth types i))
                       (str "(jolt-ffi-bool->c " param ")")
 
+                      ;; (float x) is a boxed java.lang.Float; a Chez float or
+                      ;; double position takes only a flonum.
+                      (#{"float" "double"} (nth types i))
+                      (str "(jolt-ffi-float->c " param ")")
+
                       :else param))
                   (range n) params)
             native-destination (when ret-aggregate?
@@ -2039,8 +2045,9 @@
 ;; the callback could not model the argument at all, and could not decline to
 ;; answer one.
 ;;
-;; The wrapper lambda is emitted only when the signature actually mentions
-;; :string; every other callable reaches sa-foreign-callable exactly as before.
+;; The wrapper lambda is emitted only when the signature has a :string or :bool
+;; position or a :float or :double result; every other callable reaches
+;; sa-foreign-callable exactly as before.
 (defn- emit-ffi-callable [node]
   ;; The mirror of the :blocking/:string rule in emit-ffi-fn, with the direction
   ;; swapped: on a __collect_safe CALLABLE it is the string RESULT Chez refuses,
@@ -2057,7 +2064,10 @@
   (let [argtypes (:argtypes node)
         rettype (:rettype node)
         converted? #{"string" "bool"}
-        converted-position? (or (converted? rettype) (some converted? argtypes))
+        ;; A float or double RESULT converts too: the fn may answer (float x), a
+        ;; boxed Float. Its arguments need nothing, since C hands over flonums.
+        converted-position? (or (converted? rettype) (some converted? argtypes)
+                                (#{"float" "double"} rettype))
         target
         (if-not converted-position?
           (emit (:fn node))
@@ -2078,6 +2088,7 @@
                  (cond
                    (= "string" rettype) (str "(jolt-ffi-string->c " invoke ")")
                    (= "bool" rettype) (str "(jolt-ffi-bool->c " invoke ")")
+                   (#{"float" "double"} rettype) (str "(jolt-ffi-float->c " invoke ")")
                    :else invoke)
                  "))")))
         ;; A :collect-safe callable counts itself in and out (java/ffi.ss
