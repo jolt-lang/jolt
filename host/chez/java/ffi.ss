@@ -724,6 +724,14 @@
 ;; as true/false rather than as the truthy number 0.
 (define (jolt-ffi-bool->c v) (if (or (jolt-nil? v) (eq? v #f)) 0 1))
 (define (jolt-ffi-c->bool raw) (not (eqv? (jnum->exact raw) 0)))
+;; --- :float/:double <- a java.lang.Float -------------------------------------
+;; (float x) answers a java.lang.Float, a jfloat record, and a Chez float or
+;; double position takes only a flonum: passing one raised "invalid
+;; foreign-procedure argument". Every place a jolt value crosses into C as a
+;; float or double unboxes it here, as jolt-double does — an argument, a
+;; callable's result, a write, a bare :& tail. Any other value passes through
+;; unchanged, so a wrong one still meets Chez's own check.
+(define (jolt-ffi-float->c x) (if (jfloat? x) (jfloat-fl x) x))
 ;; read/write take the type, then the OFFSET LAST — the babashka.ffi order, so
 ;; (write p t v) and (write p t v offset) are one binding in both APIs. The jolt
 ;; wrapper in stdlib/jolt/ffi.clj supplies the offset and resolves a layout or a
@@ -744,9 +752,12 @@
     ((ptr ty val off) (ffi-write* ptr ty val off))))
 (define (ffi-write* ptr ty val off)
   (let ((ct (ffi-type->chez ty)))
-    (if (eq? ct 'jolt-bool)
-        (sa-foreign-set! 'unsigned-8 (jnum->exact ptr) (jnum->exact off) (jolt-ffi-bool->c val))
-        (sa-foreign-set! ct (jnum->exact ptr) (jnum->exact off) val)))
+    (cond
+      ((eq? ct 'jolt-bool)
+       (sa-foreign-set! 'unsigned-8 (jnum->exact ptr) (jnum->exact off) (jolt-ffi-bool->c val)))
+      ((memq ct '(float double))
+       (sa-foreign-set! ct (jnum->exact ptr) (jnum->exact off) (jolt-ffi-float->c val)))
+      (else (sa-foreign-set! ct (jnum->exact ptr) (jnum->exact off) val))))
   jolt-nil)
 ;; sizeof a foreign type (for laying out structs / arrays).
 (define (ffi-sizeof ty) (sa-foreign-sizeof (ffi-chez-width (ffi-type->chez ty))))
@@ -1006,6 +1017,7 @@
     ;; ioctl request), so it answers on the first test rather than the fourth.
     ((fixnum? v) 0)
     ((flonum? v) 1)
+    ((jfloat? v) 1)
     ((string? v) 2)
     ((number? v) (if (and (exact? v) (integer? v)) 0 1))
     ((jolt-nil? v) 0)
@@ -1047,6 +1059,7 @@
     ;; are the common ones, and they answer first.
     ((fixnum? v) v)
     ((flonum? v) v)
+    ((jfloat? v) (jfloat-fl v))
     ((string? v) v)
     ((jolt-nil? v) 0)
     ((eq? v #t) 1)

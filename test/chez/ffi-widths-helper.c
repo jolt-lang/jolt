@@ -57,3 +57,19 @@ typedef bool (*jolt_w_bool_callback)(bool);
 JOLT_WIDTHS_EXPORT int64_t jolt_w_call_bool(jolt_w_bool_callback callback) {
   return (callback(true) ? 10 : 0) + (callback(false) ? 1 : 0);
 }
+
+/* :float and :double take a java.lang.Float from jolt as well as a double.
+   The result is negated, so a value that reached C as 0.0 cannot pass. The
+   results are double, so the test does not depend on how a :float result is
+   boxed. */
+JOLT_WIDTHS_EXPORT double jolt_w_neg_float(float value) { return -(double)value; }
+JOLT_WIDTHS_EXPORT double jolt_w_neg_double(double value) { return -value; }
+
+typedef float (*jolt_w_float_callback)(float);
+typedef double (*jolt_w_double_callback)(double);
+JOLT_WIDTHS_EXPORT double jolt_w_call_float(jolt_w_float_callback callback) {
+  return callback(1.5f);
+}
+JOLT_WIDTHS_EXPORT double jolt_w_call_double(jolt_w_double_callback callback) {
+  return callback(1.5);
+}

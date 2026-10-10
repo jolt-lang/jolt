@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A `java.lang.Float` crosses into C again.** 0.8.20 made `(float x)` a
+  boxed `java.lang.Float` (#1285). A Chez `float` or `double` foreign position
+  takes only a flonum, so passing one raised `invalid foreign-procedure
+  argument`. It failed wherever a jolt value crosses into C
+  as a float or double: a `defcfn` argument, a bare `:&` tail,
+  `jolt.ffi/write`, and a callback's result. Each now unboxes a Float, as
+  `(double x)` already did, and a double passes as before. glimmer-uikit binds
+  `objc_msgSend` with a `:float` priority, so every glimmer-uikit iOS app built
+  on 0.8.20 failed at mount and showed a black screen.
+
 ## [0.8.20] - 2026-10-08
 
 A float is a `java.lang.Float` rounded to single precision, and primitive
