@@ -1153,7 +1153,29 @@
   (let [s (if (and *tail?* (not (tail-transparent? node)))
             (binding [*tail?* false] (emit* node))
             (emit* node))
-        s (with-once-clears node s)]
+        s (with-once-clears node s)
+        ;; A call typed from its var's declared return (:num-ret-guard, numeric
+        ;; pass) checks what it answered: a stale site, after the var is
+        ;; redefined, otherwise hands an unsafe fl op a string. Anything else
+        ;; goes through jolt-double: a number widens, as generic arithmetic would
+        ;; take it, and a non-number raises ClassCastException. A double is safe
+        ;; wherever a :float is, since every consumer unboxes with jfloat-unbox. In
+        ;; tail position the value leaves the fn, so no fl op here takes it.
+        guard (and (not *tail?*) (:num-ret-guard node))
+        ;; An fl op taking a guarded :float call reads the double straight out of
+        ;; the Float, under the one test the guard makes (:fl-unbox below then has
+        ;; nothing left to do).
+        fused? (and (= guard :float) (:fl-unbox node))
+        s (if guard
+            (let [t (fresh-label "_nr$")]
+              (cond
+                fused?
+                (str "(let ((" t " " s ")) (if (jfloat? " t ") (jfloat-fl " t ") (jolt-double " t ")))")
+                (= guard :float)
+                (str "(let ((" t " " s ")) (if (jfloat? " t ") " t " (jolt-double " t ")))")
+                :else
+                (str "(let ((" t " " s ")) (if (flonum? " t ") " t " (jolt-double " t ")))")))
+            s)]
     ;; a :long operand of a :double-specialized op is tagged :fl-coerce by
     ;; jolt.passes.numeric so it widens to a flonum here (JVM long->double
     ;; widening). The obvious emit is a bare (fixnum->flonum s), and that is what
@@ -1175,7 +1197,7 @@
              " (jolt->fl " t ")))"))
       ;; a :float operand of a :double op: a float cast already emitted its
       ;; double (the :coerce arm); anything else of the kind holds a jfloat
-      (and (:fl-unbox node) (not (= :coerce (:op node))) (not (:fl-float node)))
+      (and (:fl-unbox node) (not (= :coerce (:op node))) (not (:fl-float node)) (not fused?))
       (str "(jfloat-unbox " s ")")
       :else s)))
 
@@ -1802,6 +1824,7 @@
                   (cond
                     (= "string" rettype) (str "(jolt-ffi-c->string " expr ")")
                     (= "bool" rettype) (str "(jolt-ffi-c->bool " expr ")")
+                    (= "float" rettype) (str "(make-jfloat " expr ")")
                     :else expr))
         wrap (fn [call]
                (if capture
@@ -2007,12 +2030,17 @@
                         (cond
                           (= "string" (:rettype node)) "(jolt-ffi-c->string result)"
                           (= "bool" (:rettype node)) "(jolt-ffi-c->bool result)"
+                          (= "float" (:rettype node)) "(make-jfloat result)"
                           :else "result")
                         " native-error)))")
 
                    ret-aggregate? (str "(begin " call " " return-param ")")
                    (= "string" (:rettype node)) (str "(jolt-ffi-c->string " call ")")
                    (= "bool" (:rettype node)) (str "(jolt-ffi-c->bool " call ")")
+                   ;; A C float reaches Clojure on the JVM as a java.lang.Float.
+                   ;; Chez hands over the single-precision flonum, so it is boxed
+                   ;; as it is (the constructor, not a helper: one call less).
+                   (= "float" (:rettype node)) (str "(make-jfloat " call ")")
                    :else call)
             binding (str "(let ((p #f)) (lambda (" (str/join " " wrapper-params) ") " body "))")]
         (if (or (seq aggregates) ret-aggregate?)
@@ -2045,8 +2073,8 @@
 ;; the callback could not model the argument at all, and could not decline to
 ;; answer one.
 ;;
-;; The wrapper lambda is emitted only when the signature has a :string or :bool
-;; position or a :float or :double result; every other callable reaches
+;; The wrapper lambda is emitted only when the signature has a :string, :bool or
+;; :float position or a :double result; every other callable reaches
 ;; sa-foreign-callable exactly as before.
 (defn- emit-ffi-callable [node]
   ;; The mirror of the :blocking/:string rule in emit-ffi-fn, with the direction
@@ -2065,9 +2093,11 @@
         rettype (:rettype node)
         converted? #{"string" "bool"}
         ;; A float or double RESULT converts too: the fn may answer (float x), a
-        ;; boxed Float. Its arguments need nothing, since C hands over flonums.
+        ;; boxed Float. A :float argument is boxed into one, as the JVM hands a
+        ;; C float to Clojure; a :double argument is already a double.
         converted-position? (or (converted? rettype) (some converted? argtypes)
-                                (#{"float" "double"} rettype))
+                                (#{"float" "double"} rettype)
+                                (some #{"float"} argtypes))
         target
         (if-not converted-position?
           (emit (:fn node))
@@ -2080,6 +2110,7 @@
                              (cond
                                (= "string" type) (str "(jolt-ffi-c->string " param ")")
                                (= "bool" type) (str "(jolt-ffi-c->bool " param ")")
+                               (= "float" type) (str "(make-jfloat " param ")")
                                :else param))
                            params argtypes)
                 invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]

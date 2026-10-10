@@ -1516,6 +1516,17 @@
           option (if option? [(nth tail 0)] [])
           tail (if option? (vec (rest tail)) tail)
           binding (cfn-form (nth args 0) (nth args 1) (nth args 2) option "defcfn")
+          ;; A bare binding of a :float or :double result always answers that
+          ;; kind, so the var declares it (:jolt/num-ret) and arithmetic over a
+          ;; call unboxes it. A wrapper fn answers whatever it returns, and a
+          ;; :capture-native-error binding answers a [result errno] vector.
+          ret (nth args 2)
+          num-ret (when (and (contains? #{:float :double} ret)
+                             (zero? (count tail))
+                             (not (and option? (map? (nth option 0))
+                                       (get (nth option 0) :capture-native-error))))
+                    ret)
+          attrs (if num-ret (assoc (or attrs {}) :jolt/num-ret num-ret) attrs)
           named (if attrs (with-meta name (merge (or (meta name) {}) attrs)) name)
           value (if (zero? (count tail))
                   binding

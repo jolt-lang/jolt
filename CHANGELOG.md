@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A C float reaches jolt as a `java.lang.Float`**, as it reaches Clojure on
+  the JVM: a `:float` result, `jolt.ffi/read` of `:float` (struct fields and
+  `read-array` included), and a `:float` callback argument. They answered a
+  Double before. A `:double` stays a Double. A bare `defcfn` binding of a
+  `:float` or `:double` result now declares that kind, so arithmetic over a
+  call unboxes it instead of taking generic dispatch: a loop adding `sinf`
+  results runs as fast as before, and one adding `sin` results 1.1x faster.
+- Arithmetic that mixes a Float with a double is about 1.6x faster. It was
+  dispatched twice, through the variadic `+` and then a second time after
+  unboxing.
+
 ### Fixed
+
+- **A call typed from a var's `^double` return checks what it answered.** The
+  numeric pass trusted the declaration and handed the result to an unchecked
+  flonum op, so once the var was redefined, a site compiled against it read a
+  string as a double (`(+ 0.5 (f))` answered 0.5) or faulted the process on
+  an integer. The site now widens a number and raises `ClassCastException` on
+  anything else.
 
 - **A `java.lang.Float` crosses into C again.** 0.8.20 made `(float x)` a
   boxed `java.lang.Float` (#1285). A Chez `float` or `double` foreign position

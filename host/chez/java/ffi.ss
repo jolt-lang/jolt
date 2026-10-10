@@ -732,6 +732,11 @@
 ;; callable's result, a write, a bare :& tail. Any other value passes through
 ;; unchanged, so a wrong one still meets Chez's own check.
 (define (jolt-ffi-float->c x) (if (jfloat? x) (jfloat-fl x) x))
+;; The other direction: a C float reaches Clojure on the JVM as a
+;; java.lang.Float, so a :float result, a read of :float and a :float callback
+;; argument box the flonum Chez hands over (make-jfloat; it is already single
+;; precision, and the emitter calls the constructor itself). A :double stays a
+;; double.
 ;; read/write take the type, then the OFFSET LAST — the babashka.ffi order, so
 ;; (write p t v) and (write p t v offset) are one binding in both APIs. The jolt
 ;; wrapper in stdlib/jolt/ffi.clj supplies the offset and resolves a layout or a
@@ -743,9 +748,12 @@
     ((ptr ty off) (ffi-read* ptr ty off))))
 (define (ffi-read* ptr ty off)
   (let ((ct (ffi-type->chez ty)))
-    (if (eq? ct 'jolt-bool)
-        (jolt-ffi-c->bool (sa-foreign-ref 'unsigned-8 (jnum->exact ptr) (jnum->exact off)))
-        (sa-foreign-ref ct (jnum->exact ptr) (jnum->exact off)))))
+    (cond
+      ((eq? ct 'jolt-bool)
+       (jolt-ffi-c->bool (sa-foreign-ref 'unsigned-8 (jnum->exact ptr) (jnum->exact off))))
+      ((eq? ct 'float)
+       (make-jfloat (sa-foreign-ref 'float (jnum->exact ptr) (jnum->exact off))))
+      (else (sa-foreign-ref ct (jnum->exact ptr) (jnum->exact off))))))
 (define ffi-write
   (case-lambda
     ((ptr ty val) (ffi-write* ptr ty val 0))

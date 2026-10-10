@@ -107,6 +107,38 @@
                 (rejects? #(ffi/with-c-string-array [p 2] ["one" "two"] p)))
               @frees)))
 
+;; A C float reaches jolt as a java.lang.Float. A bare defcfn binding of a
+;; :float or :double result declares that kind (:jolt/num-ret), so arithmetic
+;; over a call unboxes; a wrapper fn or a :capture-native-error binding answers
+;; something else and declares nothing.
+(ffi/load-library)
+(ffi/defcfn c-fabsf "fabsf" [:float] :float)
+(ffi/defcfn c-fabs "fabs" [:double] :double)
+(ffi/defcfn c-abs "abs" [:int] :int)
+(ffi/defcfn c-fabsf-wrapped "fabsf" [:float] :float raw ([x] (str (raw x))))
+(ffi/defcfn c-fabsf-capture "fabsf" [:float] :float {:capture-native-error true})
+(check ":float result is a Float"
+       (let [r (c-fabsf -1.5)] (and (instance? Float r) (= r 1.5))))
+(check ":double result is a Double" (instance? Double (c-fabs -1.5)))
+(check "defcfn declares a :float result" (= :float (:jolt/num-ret (meta #'c-fabsf))))
+(check "defcfn declares a :double result" (= :double (:jolt/num-ret (meta #'c-fabs))))
+(check "defcfn declares no :int result" (nil? (:jolt/num-ret (meta #'c-abs))))
+(check "a wrapper fn declares nothing" (nil? (:jolt/num-ret (meta #'c-fabsf-wrapped))))
+(check "a capture binding declares nothing" (nil? (:jolt/num-ret (meta #'c-fabsf-capture))))
+(check "a wrapper answers its own value" (= "1.5" (c-fabsf-wrapped -1.5)))
+(defn sum-fabsf [n] (loop [i 0 acc 0.0] (if (< i n) (recur (inc i) (+ acc (c-fabsf -0.5))) acc)))
+(defn sq-fabsf [] (let [x (c-fabsf -0.5)] (* x x)))
+(check "an accumulator over a :float call"
+       (let [r (sum-fabsf 3)] (and (instance? Double r) (= r 1.5))))
+(check "a let-bound :float call" (= 0.25 (sq-fabsf)))
+;; Redefining the var leaves those sites compiled against it; they check what
+;; the call answers instead of handing an unsafe fl op a string.
+(def c-fabsf (fn [_] "x"))
+(check "a stale :float site raises ClassCastException"
+       (= :cce (try (sum-fabsf 1) (catch ClassCastException _ :cce))))
+(def c-fabsf (fn [_] 2))
+(check "a stale :float site widens a number" (= 2.0 (sum-fabsf 1)))
+
 (if (empty? @failures)
   (do (println "JOLT-FFI-SCOPED-TEST OK") (flush) (System/exit 0))
   (do (doseq [failure @failures] (println "FAIL:" failure))
