@@ -249,7 +249,7 @@
     (cond ((not cell) (write!))
           (((vector-ref cell 1)) #f)
           (else (jolt-swallow-io (vector-ref cell 2) (write!))))))
-(define (unless (getenv "REPRO_NOINSTALL") (jolt-install-process-streams!))
+(define (jolt-install-process-streams!)
   (let* ((out0 (current-output-port))
          (err0 (current-error-port))
          (merged? (eq? out0 err0))       ; Chez found fd 1 and fd 2 the same file
@@ -274,7 +274,7 @@
          (let ((err (install! "stderr" 2 standard-error-port
                               (lambda (p) (current-error-port p) (console-error-port p)))))
            (when err (set! jolt-stderr-failsafe err))))))))
-(jolt-install-process-streams!)
+(unless (getenv "REPRO_NOINSTALL") (jolt-install-process-streams!))
 
 ;; --- process-wide exit --------------------------------------------------------
 ;; System.exit halts the VM from ANY thread on the JVM. Chez's exit unwinds only

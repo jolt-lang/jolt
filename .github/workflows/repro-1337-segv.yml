@@ -86,6 +86,7 @@ jobs:
           v noprobe           REPRO_NOPROBE=1
           v nomerge           REPRO_NOMERGE=1
           v noprobe-nomerge   REPRO_NOPROBE=1 REPRO_NOMERGE=1
+          echo "===== main-baseline same-file"; git fetch -q origin main && git worktree add -q ../base origin/main && (cd ../base && git submodule update --init -q && ../jolt/chez-install/bin/scheme.exe --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > ../base-same.txt 2>&1; echo "exit=$?"; cat ../base-same.txt)
           echo "===== two-files"; $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > a.txt 2> b.txt; echo "exit=$?"; cat a.txt b.txt
           echo "===== stdout-file-only"; $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > a.txt; echo "exit=$?"; cat a.txt
           echo "===== nil same-file"; $S --script host/chez/cli.ss -e 'nil' > n.txt 2>&1; echo "exit=$?"; cat n.txt
