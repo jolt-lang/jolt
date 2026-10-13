@@ -68,6 +68,9 @@ jobs:
           $env:REPRO_OUT = (Join-Path $env:RUNNER_TEMP 'kmetj-out')
           New-Item -ItemType Directory -Force $env:REPRO_OUT | Out-Null
           New-Item -ItemType Directory -Force C:\sym | Out-Null
+          function Dump-All($tag) {
+            foreach ($j in (Get-Process jolt -ErrorAction SilentlyContinue)) { Dump-Stacks $j.Id "$tag-$($j.Id)" }
+          }
           function Dump-Stacks($procId, $tag) {
             Write-Host "::group::cdb native stacks ($tag, pid $procId)"
             & $env:CDB -p $procId -pv -c ".symfix c:\sym; .reload; ~*kb 40; qd" 2>&1 | Out-File "cdb-$tag.txt"
@@ -83,14 +86,14 @@ jobs:
             while (-not $p.HasExited) {
               Start-Sleep -Milliseconds 500
               # stderr can land in the stdout file on Windows (#1331), so read both
-              $txt = (Get-Content $out, $err -Raw -ErrorAction SilentlyContinue) -join "`n"
+              $txt = (Get-Content $out, $err, build.log -Raw -ErrorAction SilentlyContinue) -join "`n"
               if ($dumps -eq 0 -and $txt -match 'garbage collection has been waiting') {
                 Write-Host "STALL REPORTED in $name after $(((Get-Date) - $t0).TotalSeconds) s"
-                Dump-Stacks $p.Id "$name-stall"; $dumps++
+                Dump-All "$name-stall"; $dumps++
               }
               if (((Get-Date) - $t0).TotalSeconds -gt $secs) {
                 Write-Host "HUNG: $name past ${secs}s"
-                Dump-Stacks $p.Id "$name-hung"
+                Dump-All "$name-hung"
                 Stop-Process -Id $p.Id -Force
                 Get-Process jolt -ErrorAction SilentlyContinue | Stop-Process -Force
                 break
@@ -110,6 +113,8 @@ jobs:
             }
             # a backgrounded build outlives the scenario; stop it before the next variant
             Get-Process jolt -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            if (Test-Path inherit-exit.txt) { Write-Host "inherit build: $(Get-Content inherit-exit.txt)"; Remove-Item inherit-exit.txt }
+            if (Test-Path build.log) { Write-Host "build.log lines: $((Get-Content build.log).Count)"; Get-Content build.log | Select-String 'build-exit|waiting|error|Error|Exception' | Write-Host }
             if (Test-Path build.log) { Write-Host "::group::build.log tail"; Get-Content build.log -Tail 20 | Write-Host; Write-Host "::endgroup::"; Remove-Item build.log }
           }
           Run-Variant "control" @("-A:repro", "repro/control.clj") 60

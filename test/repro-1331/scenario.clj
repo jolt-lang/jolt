@@ -17,7 +17,7 @@
   (fn []
     (case variant
       "redirect"
-      (do (bash "start-build" (str build-cmd " > build.log 2>&1 &"))
+      (do (bash "start-build" (str "( " build-cmd "; echo build-exit=$? ) > build.log 2>&1 &"))
           (loop [i 0]
             (when (< i 80)
               (Thread/sleep 3000)
@@ -27,10 +27,10 @@
                   (log "build no longer running")
                   (recur (inc i)))))))
       "inherit"
-      (do (bash "start-build-inherit" (str build-cmd " &"))
+      (do (bash "start-build-inherit" (str "( " build-cmd "; echo build-exit=$? > inherit-exit.txt ) &"))
           (dotimes [i 80]
             (Thread/sleep 3000)
-            (bash (str "poll-ps-" i) "ps | grep -i jolt | head -5")))
+            (bash (str "poll-ps-" i) "ps | grep -i jolt | head -5; cat inherit-exit.txt 2>/dev/null")))
       "timeout"
       (let [sig (atom false)]
         (bash "ping-timeout" "ping -n 60 127.0.0.1" :timeout 5)
