@@ -93,6 +93,8 @@ jobs:
           echo "===== jolt -e nil, stderr to NUL-equivalent /dev/null"; $S --script host/chez/cli.ss -e 'nil' > n.txt 2>/dev/null; echo "exit=$?"
           echo "===== jolt -e nil, stdout pipe stderr file"; $S --script host/chez/cli.ss -e 'nil' 2> n2.txt | cat; echo "exit=${PIPESTATUS[0]}"
           rm -f stage.txt; echo "===== bisect same-file"; $S --script host/chez/cli-bisect.ss -e 'nil' > bs.txt 2>&1; echo "exit=$?"; echo "-- last stages:"; tail -4 stage.txt
+          rm -f stage2.txt; echo "===== sa-bisect same-file"; $S -q --script host/chez/sa-bisect.ss > bs2.txt 2>&1; echo "exit=$?"; echo "-- last forms:"; tail -3 stage2.txt; cat bs2.txt | head -5
+          rm -f stage2.txt; echo "===== sa-bisect pipe"; $S -q --script host/chez/sa-bisect.ss 2>&1 | head -5; tail -1 stage2.txt
           echo "===== main-baseline"; git fetch -q --depth 50 origin main; rm -rf ../base; cp -r . ../base; (cd ../base && git checkout -q origin/main -- host stdlib jolt-core && git log -1 --format=%h origin/main; for m in same two; do if [ $m = same ]; then ./chez-install/bin/scheme.exe --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > ../b.txt 2>&1; else ./chez-install/bin/scheme.exe --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > ../b.txt 2> ../b2.txt; fi; echo "main $m exit=$?"; cat ../b.txt; done)
           echo "===== main-baseline nil same"; (cd ../base && ./chez-install/bin/scheme.exe --script host/chez/cli.ss -e 'nil' > ../n.txt 2>&1; echo "exit=$?")
           echo "===== two-files"; $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > a.txt 2> b.txt; echo "exit=$?"; cat a.txt b.txt
