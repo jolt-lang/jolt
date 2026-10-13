@@ -1,0 +1,118 @@
+name: repro-1331-trace
+
+on:
+  push:
+    branches: [repro/1331-windows-trace]
+  workflow_dispatch:
+
+jobs:
+  trace:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: markokocic/kmet
+          path: kmet
+      - uses: actions/checkout@v5
+        with:
+          repository: jolt-lang/otel
+          path: otel
+
+      - name: Fetch the nightly jolt.exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download vnightly -R jolt-lang/jolt -p 'jolt-vnightly-x86_64-windows.zip' -D nightly
+          Expand-Archive nightly/jolt-vnightly-x86_64-windows.zip -DestinationPath nightly
+          $exe = (Get-ChildItem -Recurse nightly -Filter jolt.exe | Select-Object -First 1).FullName
+          "JOLT_EXE=$exe" >> $env:GITHUB_ENV
+          & $exe --version
+
+      - name: Find cdb
+        shell: pwsh
+        run: |
+          $cands = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe",
+            "$env:ProgramFiles\Windows Kits\10\Debuggers\x64\cdb.exe")
+          $cdb = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $cdb) {
+            choco install windows-sdk-10-version-2004-windbg -y --no-progress | Out-Null
+            $cdb = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $cdb) { throw "no cdb" }
+          Write-Host "cdb: $cdb"
+          "CDB=$cdb" >> $env:GITHUB_ENV
+
+      - name: Prepare kmet
+        shell: pwsh
+        working-directory: kmet
+        run: |
+          New-Item -ItemType Directory -Force repro | Out-Null
+          Copy-Item ../test/repro-1331/*.clj repro/
+          & $env:JOLT_EXE repro/patch_deps.clj
+          # fetch deps once (git deps for kmet and the :repro alias)
+          & $env:JOLT_EXE -A:repro -e '(require (quote kmet.app.bash-executor) (quote otel.sdk)) (println :deps-ok)'
+          if ($LASTEXITCODE -ne 0) { throw "deps failed" }
+
+      - name: Run the variants under the stall watchdog
+        shell: pwsh
+        working-directory: kmet
+        env:
+          JOLT_GC_STALL: "1"
+          REPRO_BASH: C:\Program Files\Git\bin\bash.exe
+        run: |
+          $env:REPRO_JOLT = $env:JOLT_EXE
+          $env:REPRO_OUT = (Join-Path $env:RUNNER_TEMP 'kmetj-out')
+          New-Item -ItemType Directory -Force $env:REPRO_OUT | Out-Null
+          New-Item -ItemType Directory -Force C:\sym | Out-Null
+          function Dump-Stacks($procId, $tag) {
+            Write-Host "::group::cdb native stacks ($tag, pid $procId)"
+            & $env:CDB -p $procId -pv -c ".symfix c:\sym; .reload; ~*kb 40; qd" 2>&1 | Out-File "cdb-$tag.txt"
+            Get-Content "cdb-$tag.txt" | Write-Host
+            Write-Host "::endgroup::"
+          }
+          function Run-Variant($name, $argv, $secs) {
+            Write-Host "===== $name"
+            $out = "$name.out"; $err = "$name.err"
+            $p = Start-Process -FilePath $env:JOLT_EXE -ArgumentList $argv -NoNewWindow -PassThru `
+                   -RedirectStandardOutput $out -RedirectStandardError $err
+            $t0 = Get-Date; $dumps = 0
+            while (-not $p.HasExited) {
+              Start-Sleep -Milliseconds 500
+              # stderr can land in the stdout file on Windows (#1331), so read both
+              $txt = (Get-Content $out, $err -Raw -ErrorAction SilentlyContinue) -join "`n"
+              if ($dumps -eq 0 -and $txt -match 'garbage collection has been waiting') {
+                Write-Host "STALL REPORTED in $name after $(((Get-Date) - $t0).TotalSeconds) s"
+                Dump-Stacks $p.Id "$name-stall"; $dumps++
+              }
+              if (((Get-Date) - $t0).TotalSeconds -gt $secs) {
+                Write-Host "HUNG: $name past ${secs}s"
+                Dump-Stacks $p.Id "$name-hung"
+                Stop-Process -Id $p.Id -Force
+                Get-Process jolt -ErrorAction SilentlyContinue | Stop-Process -Force
+                break
+              }
+            }
+            Write-Host ("elapsed {0:N1}s exit {1}" -f ((Get-Date) - $t0).TotalSeconds, $p.ExitCode)
+            Write-Host "::group::$name stdout"; Get-Content $out -ErrorAction SilentlyContinue | Write-Host; Write-Host "::endgroup::"
+            Write-Host "::group::$name stderr"; Get-Content $err -ErrorAction SilentlyContinue | Write-Host; Write-Host "::endgroup::"
+            # heartbeat gaps over 1.5 s: the main thread could not allocate
+            $prev = $null
+            foreach ($l in (Get-Content $out -ErrorAction SilentlyContinue)) {
+              if ($l -match '^\[(\d+)ms t\d+\] heartbeat') {
+                $t = [int]$Matches[1]
+                if ($prev -ne $null -and ($t - $prev) -gt 1500) { Write-Host "GAP ${name}: $($t - $prev) ms before heartbeat at $t ms" }
+                $prev = $t
+              }
+            }
+            # a backgrounded build outlives the scenario; stop it before the next variant
+            Get-Process jolt -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            if (Test-Path build.log) { Write-Host "::group::build.log tail"; Get-Content build.log -Tail 20 | Write-Host; Write-Host "::endgroup::"; Remove-Item build.log }
+          }
+          Run-Variant "control" @("-A:repro", "repro/control.clj") 60
+          Run-Variant "timeout" @("-A:repro", "repro/scenario.clj", "timeout") 120
+          Run-Variant "inherit" @("-A:repro", "repro/scenario.clj", "inherit") 480
+          Run-Variant "redirect" @("-A:repro", "repro/scenario.clj", "redirect") 480
