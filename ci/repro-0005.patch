@@ -1,0 +1,13 @@
+diff --git a/c/prim5.c b/c/prim5.c
+index e0fe02e..dd24a28 100644
+--- a/c/prim5.c
++++ b/c/prim5.c
+@@ -2150,7 +2150,7 @@ static IBOOL s_same_devicep(INT fd1, INT fd2) {
+         case FILE_TYPE_DISK:
+           if (GetFileType(h2) == FILE_TYPE_DISK) {
+             BY_HANDLE_FILE_INFORMATION info1, info2;
+-            if (GetFileInformationByHandle(h1, &info1) && GetFileInformationByHandle(h1, &info2))
++            if (GetFileInformationByHandle(h1, &info1) && GetFileInformationByHandle(h2, &info2))
+               return info1.dwVolumeSerialNumber == info2.dwVolumeSerialNumber 
+                   && info1.nFileIndexHigh == info2.nFileIndexHigh 
+                   && info1.nFileIndexLow == info2.nFileIndexLow;
