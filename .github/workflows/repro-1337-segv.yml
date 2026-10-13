@@ -131,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kind: [with0005]
+        kind: [stock]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -168,6 +168,7 @@ jobs:
           set +e
           S=./chez-install/bin/scheme.exe
           rate() { label="$1"; shift; n=0; c=0; for k in 1 2 3 4 5; do sh -c "$*" >/dev/null 2>&1; rc=$?; n=$((n+1)); [ $rc = 139 ] && c=$((c+1)); done; echo "RATE ${{ matrix.kind }} $label: $c/$n crashed"; }
+          for k in $(seq 1 14); do STOP=$k $S --script host/chez/cli-stop.ss -e nil > r.txt 2>&1; echo "STOP $k exit=$?"; done
           rate "cli same-file"   "$S --script host/chez/cli.ss -e nil > r.txt 2>&1"
           rate "cli two-files"   "$S --script host/chez/cli.ss -e nil > r.txt 2> r2.txt"
           rate "cli stdout-file" "$S --script host/chez/cli.ss -e nil > r.txt"
