@@ -86,6 +86,12 @@ jobs:
           v noprobe           REPRO_NOPROBE=1
           v nomerge           REPRO_NOMERGE=1
           v noprobe-nomerge   REPRO_NOPROBE=1 REPRO_NOMERGE=1
+          printf '%s\n' '(display "o1") (newline) (display "e1" (current-error-port)) (newline (current-error-port))' > bare.ss
+          printf '%s\n' '(display "o1") (newline) (display 3.5) (newline) (display (exact->inexact 1/3) (current-error-port))' > bare-fl.ss
+          printf '%s\n' '(let loop ((i 0)) (when (< i 200000) (cons i i) (loop (+ i 1)))) (collect) (display "after-gc") (newline)' > bare-gc.ss
+          for f in bare bare-fl bare-gc; do echo "===== chez $f same-file"; $S -q --script $f.ss > c.txt 2>&1; echo "exit=$?"; cat c.txt; echo "===== chez $f pipe"; $S -q --script $f.ss 2>&1 | cat; done
+          echo "===== jolt -e nil, stderr to NUL-equivalent /dev/null"; $S --script host/chez/cli.ss -e 'nil' > n.txt 2>/dev/null; echo "exit=$?"
+          echo "===== jolt -e nil, stdout pipe stderr file"; $S --script host/chez/cli.ss -e 'nil' 2> n2.txt | cat; echo "exit=${PIPESTATUS[0]}"
           echo "===== main-baseline"; git fetch -q --depth 50 origin main; rm -rf ../base; cp -r . ../base; (cd ../base && git checkout -q origin/main -- host stdlib jolt-core && git log -1 --format=%h origin/main; for m in same two; do if [ $m = same ]; then ./chez-install/bin/scheme.exe --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > ../b.txt 2>&1; else ./chez-install/bin/scheme.exe --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > ../b.txt 2> ../b2.txt; fi; echo "main $m exit=$?"; cat ../b.txt; done)
           echo "===== main-baseline nil same"; (cd ../base && ./chez-install/bin/scheme.exe --script host/chez/cli.ss -e 'nil' > ../n.txt 2>&1; echo "exit=$?")
           echo "===== two-files"; $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > a.txt 2> b.txt; echo "exit=$?"; cat a.txt b.txt
