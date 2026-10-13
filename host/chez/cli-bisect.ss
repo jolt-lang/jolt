@@ -1,3 +1,4 @@
+(call-with-output-file "stage.txt" (lambda (p) (display "top\n" p)) (quote append))
 ;; cli.ss — the jolt runtime.
 ;;
 ;; Loads the checked-in seed (host/chez/seed/{prelude,image}.ss — the bootstrap
@@ -8,6 +9,7 @@
 ;;
 ;; Run from the repo root (bin/jolt cd's there); the project dir is JOLT_PWD.
 (import (chezscheme))
+(call-with-output-file "stage.txt" (lambda (p) (display "after-import\n" p)) (quote append))
 
 ;; Fail early and actionably when the vendored submodules aren't checked out —
 ;; a plain `git clone` or GitHub's auto-generated "Source code" release archive
@@ -29,6 +31,7 @@
 " (current-error-port))
   (exit 1))
 
+(call-with-output-file "stage.txt" (lambda (p) (display "before-sa-load\n" p)) (quote append))
 (load "host/chez/scheme-adapter-runtime.ss")  ; before rt.ss: macros + top-levels in rt.ss/java/*.ss call sa-*
 (call-with-output-file "stage.txt" (lambda (p) (display "host/chez/scheme-adapter-runtime.ss\n" p)) (quote append))
 (load "host/chez/rt.ss")
