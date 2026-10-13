@@ -168,14 +168,8 @@ jobs:
           set +e
           S=./chez-install/bin/scheme.exe
           rate() { label="$1"; shift; n=0; c=0; for k in 1 2 3 4 5; do sh -c "$*" >/dev/null 2>&1; rc=$?; n=$((n+1)); [ $rc = 139 ] && c=$((c+1)); done; echo "RATE ${{ matrix.kind }} $label: $c/$n crashed"; }
-          head -33 host/chez/cli-stop.ss > n6.ss; echo '(exit 0)' >> n6.ss
-          file n6.ss; od -c n6.ss | head -3
-          tr -d '\r' < n6.ss > n6lf.ss
-          grep -v '^ *;' n6.ss > n6nocomment.ss
-          awk 'BEGIN{skip=0} /^\(unless \(file-exists/{skip=1} skip&&/\(exit 1\)\)/{skip=0; next} !skip' n6.ss > n6nounless.ss
-          sed -n '1,9p' n6.ss > n6head.ss; echo '(exit 0)' >> n6head.ss
-          for f in n6 n6lf n6nocomment n6nounless n6head; do for k in 1 2 3; do $S -q --script $f.ss > r.txt 2>&1; echo "P $f same exit=$?"; done; done
-          wc -c n6.ss n6lf.ss n6nocomment.ss n6nounless.ss n6head.ss
+          for f in q1 q2 q3 q4 q5 q6; do for m in same out; do case $m in same) $S -q --script repro-q/$f.ss > r.txt 2>&1;; out) $S -q --script repro-q/$f.ss > r.txt;; esac; echo "Q $f $m exit=$?"; done; done
+
 
 
 
