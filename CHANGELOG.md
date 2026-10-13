@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: `ffi/read-into!` and `ffi/write-array` no longer take
+  `(p arr off n)`.** In that form `off` was an index into a byte-array; in
+  babashka.ffi's order, which every other form of both functions follows,
+  position four is a byte offset into `p`. Unlike `ffi/write`'s move in 0.8.0,
+  this one cannot pass silently: the old call raises, naming its replacement,
+  and reads or writes nothing. Give the type and move the two numbers to the
+  end, so `(read-into! p arr off n)` becomes `(read-into! p :byte arr 0 off n)`
+  and `(write-array p arr off n)` becomes `(write-array p :byte arr 0 off n)`.
+  A pointer offset folded into `p`, as in `(read-into! (+ p k) arr off n)`, can
+  move into the zero: `(read-into! p :byte arr k off n)`. `(write-array p arr)`
+  and `(read-array p n)` are unchanged.
+
+### Fixed
+
+- **`ffi/read-into!` and `ffi/write-array` refuse an array that is not a
+  byte-array on the byte route.** `(write-array p :byte (int-array [1 2]) 0 0 2)`
+  and `(write-array p (double-array 2))` truncated each element to a byte and
+  reported success, and `read-into!` into one failed with a raw `vector-set!`
+  error. Both now throw `expected a byte-array` before copying anything, and a
+  byte range error carries the same `:index`, `:length` and `:capacity` as the
+  wider types.
+
 ## [0.8.24] - 2026-11-05
 
 java.util and java.util.concurrent are filled out: the remaining collection

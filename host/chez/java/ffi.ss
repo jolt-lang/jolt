@@ -866,9 +866,9 @@
 (def-var! "jolt.ffi" "read-into!" ffi-read-into!)
 (def-var! "jolt.ffi" "write-array" ffi-write-array)
 ;; …and under the reserved names, for the same reason as __read/__write below:
-;; stdlib/jolt/ffi.clj defines read-array and write-array over these to add the
-;; typed forms, so it needs a name for the primitive its own definition has not
-;; taken.
+;; stdlib/jolt/ffi.clj defines read-array, write-array and read-into! over these
+;; to add the typed forms, so it needs a name for the primitive its own
+;; definition has not taken.
 (def-var! "jolt.ffi" "__read-array" ffi-read-array)
 (def-var! "jolt.ffi" "__write-array" ffi-write-array)
 (def-var! "jolt.ffi" "__read-into!" ffi-read-into!)

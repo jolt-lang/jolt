@@ -148,9 +148,9 @@
   string->ptr/null/null?) are host-provided, as are the buffer moves:
   read-bytes decodes UTF-8 and write-bytes encodes it, read-array/write-array
   move raw octets to and from a byte-array, and read-into! fills a slice of an
-  EXISTING byte-array — so a caller reading a stream whose length it already
-  knows fills one buffer instead of regrowing an accumulator per chunk. All of
-  them move the block in one copy, not a byte at a time.
+  EXISTING array — so a caller reading a stream whose length it already knows
+  fills one buffer instead of regrowing an accumulator per chunk. All of them
+  move the block in one copy, not a byte at a time.
 
   write-bytes takes a byte-array too, and then writes its octets exactly rather
   than encoding anything — the same block move write-array makes. Its `str`
@@ -184,7 +184,7 @@
         (loop [off 0]
           (when (< off total)
             (let [n (recv fd buf 65536 0)]
-              (ffi/read-into! buf frame off n)     ; no per-chunk array
+              (ffi/read-into! buf :byte frame 0 off n)   ; no per-chunk array
               (recur (+ off n))))))
 
   foreign-fn lowers a compile-time-typed signature to a real Chez
@@ -1276,7 +1276,6 @@
   "Copy a jolt array's elements into foreign memory; answers the element count.
 
       (write-array p arr)                        ; every octet of a byte-array (jolt's form)
-      (write-array p arr off n)                  ; n octets of it, from index off
       (write-array p t arr)                      ; arr's elements as type t
       (write-array p t arr offset)               ; the same, starting `offset` bytes into p
       (write-array p t arr offset index count)   ; only arr[index, index+count)
@@ -1288,19 +1287,24 @@
 
   index and count let a staging array sized for the largest batch be written
   part full, without first copying its used part into a right-sized array. A
-  range outside the array throws before anything is written. In the typed
-  forms offset is always a byte offset into p, as in babashka.ffi; only the
-  byte form's off is an index into arr."
+  range outside the array throws before anything is written. offset is always
+  a byte offset into p, as in babashka.ffi. To write a slice of a byte-array,
+  give it a one-byte type: (write-array p :byte arr 0 index count)."
   ([p arr] (jolt.ffi/__write-array p arr))
   ([p a b]
    (if (keyword? a)
      (write-array-typed p a b 0 0 nil)
-     (throw (ex-info "jolt.ffi/write-array: expected (write-array p t arr) or (write-array p arr off n)"
+     (throw (ex-info "jolt.ffi/write-array: expected (write-array p t arr)"
                      {:second a}))))
+  ;; (write-array p arr off n), with off an index into a byte-array, was removed
+  ;; for babashka.ffi's order, where position four is a byte offset into p. The
+  ;; old call raises, naming its replacement, rather than meaning something else.
   ([p a b c]
    (if (keyword? a)
      (write-array-typed p a b c 0 nil)
-     (jolt.ffi/__write-array p a b c)))
+     (throw (ex-info (str "jolt.ffi/write-array takes a type before the array: "
+                          "(write-array p :byte arr 0 index count) writes a slice of a byte-array")
+                     {:second a}))))
   ([p t arr off index n]
    (if (keyword? t)
      (write-array-typed p t arr off index n)
@@ -1319,7 +1323,6 @@
   "Copy elements out of foreign memory into an EXISTING jolt array; answers the
   element count. write-array in the other direction.
 
-      (read-into! p arr off n)                  ; n raw octets into a byte-array from index off
       (read-into! p t arr)                      ; fill all of arr with elements of type t
       (read-into! p t arr offset)               ; the same, starting `offset` bytes into p
       (read-into! p t arr offset index count)   ; count elements into arr[index, index+count)
@@ -1328,20 +1331,25 @@
   :int32 — so a loop that reads the same buffer every frame refills one array
   rather than allocating one per read. :float and :double each fill a
   float-array or a double-array: a :float widens exactly into a double-array,
-  and a :double rounds to single into a float-array, as aset rounds it. In the
-  typed forms offset is always a byte offset into p, as in babashka.ffi; only
-  the byte form's off is an index into arr. A range outside the array, or an
-  array that cannot hold the type's elements, throws before anything is
-  written."
+  and a :double rounds to single into a float-array, as aset rounds it. offset
+  is always a byte offset into p, as in babashka.ffi; a one-byte type fills a
+  byte-array, so (read-into! p :byte arr 0 index count) reads a slice into one.
+  A range outside the array, or an array that cannot hold the type's elements,
+  throws before anything is written."
   ([p t arr]
    (if (keyword? t)
      (read-into-typed! p t arr 0 0 nil)
-     (throw (ex-info "jolt.ffi/read-into!: expected (read-into! p t arr) or (read-into! p arr off n)"
+     (throw (ex-info "jolt.ffi/read-into!: expected (read-into! p t arr)"
                      {:second t}))))
+  ;; (read-into! p arr off n), with off an index into a byte-array, was removed
+  ;; for babashka.ffi's order, where position four is a byte offset into p. The
+  ;; old call raises, naming its replacement, rather than meaning something else.
   ([p a b c]
    (if (keyword? a)
      (read-into-typed! p a b c 0 nil)
-     (jolt.ffi/__read-into! p a b c)))
+     (throw (ex-info (str "jolt.ffi/read-into! takes a type before the array: "
+                          "(read-into! p :byte arr 0 index count) reads a slice into a byte-array")
+                     {:second a}))))
   ([p t arr off index n]
    (if (keyword? t)
      (read-into-typed! p t arr off index n)

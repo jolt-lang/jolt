@@ -250,11 +250,11 @@
   (try (ffi/read-into! buf :double dst 0 1 2) (catch Throwable _ nil))
   (check-eq "a refused read-into! writes nothing" (vec dst) [9.0 9.0]))
 
-;; the byte forms are unchanged, with or without a one-byte type
+;; a byte-array fills through a one-byte type, a slice through index and count
 (ffi/write-array buf (byte-array [1 -1 3]))
 (let [dst (byte-array 4)]
-  (check-eq "read-into! of bytes still answers n" (ffi/read-into! buf dst 1 3) 3)
-  (check-eq "read-into! of bytes still fills the slice" (vec dst) [0 1 -1 3]))
+  (check-eq "read-into! :byte of a slice answers n" (ffi/read-into! buf :byte dst 0 1 3) 3)
+  (check-eq "read-into! :byte fills the slice, signed" (vec dst) [0 1 -1 3]))
 (let [dst (byte-array 3)]
   (ffi/read-into! buf :uint8 dst 0 0 3)
   (check-eq "read-into! :uint8 is the byte form" (vec dst) [1 -1 3]))
@@ -418,8 +418,18 @@
 (let [dst (byte-array 4)]
   (check-eq "(read-into! p :uint8 arr offset index count) is the byte form's slice"
             [(ffi/read-into! buf :uint8 dst 2 1 2) (vec dst)] [2 [0 12 13 0]]))
-(check-eq "(read-into! p arr off n), jolt's byte form, keeps off as an index into arr"
-          (let [dst (byte-array 4)] (ffi/read-into! buf dst 1 2) (vec dst)) [0 10 11 0])
+;; jolt's (read-into! p arr off n) and (write-array p arr off n), with off an
+;; index into the byte-array, are removed: in babashka.ffi's order position four
+;; is a byte offset into p. The old call raises, naming its replacement, and
+;; reads or writes nothing.
+(let [dst (byte-array 4)]
+  (check-eq "the removed (read-into! p arr off n) raises, naming its replacement"
+            [(try (ffi/read-into! buf dst 1 2) :no-throw (catch Exception e (ex-message e))) (vec dst)]
+            [(str "jolt.ffi/read-into! takes a type before the array: "
+                  "(read-into! p :byte arr 0 index count) reads a slice into a byte-array")
+             [0 0 0 0]])
+  (check-eq "and its replacement reads the same slice"
+            (do (ffi/read-into! buf :byte dst 0 1 2) (vec dst)) [0 10 11 0]))
 (check-eq "read-into! of a range past the end throws before reading"
           (let [dst (double-array [9.0 9.0])]
             [(thrown-data #(ffi/read-into! buf :double dst 0 1 2)) (vec dst)])
@@ -442,8 +452,16 @@
           (try (ffi/write-array buf :double (double-array 3) 0 2) :no-throw
                (catch Throwable _ :threw))
           :threw)
-(check-eq "(write-array p arr off n), jolt's byte form, keeps off as an index into arr"
-          (do (ffi/write-array buf sentinel) (ffi/write-array buf (byte-array [1 2 3 4]) 1 2)
+(check-eq "the removed (write-array p arr off n) raises, naming its replacement"
+          (do (ffi/write-array buf sentinel)
+              [(try (ffi/write-array buf (byte-array [1 2 3 4]) 1 2) :no-throw
+                    (catch Exception e (ex-message e)))
+               (subvec (octets buf 96) 0 3)])
+          [(str "jolt.ffi/write-array takes a type before the array: "
+                "(write-array p :byte arr 0 index count) writes a slice of a byte-array")
+           [-86 -86 -86]])
+(check-eq "and its replacement writes the same slice"
+          (do (ffi/write-array buf sentinel) (ffi/write-array buf :byte (byte-array [1 2 3 4]) 0 1 2)
               (subvec (octets buf 96) 0 3))
           [2 3 -86])
 

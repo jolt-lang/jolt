@@ -49,7 +49,7 @@
              ["write-array :int16" #(ffi/write-array p :int16 sa)]
              ["write-array bytes" #(ffi/write-array p ba)]
              ["write-array :float 48" #(ffi/write-array small :float f48)]
-             ["read-into! bytes" #(ffi/read-into! p ba 0 n)]
+             ["read-into! bytes" #(ffi/read-into! p :byte ba 0 0 n)]
              ["read-into! :double" #(ffi/read-into! p :double db)]
              ["read-into! :float -> float-array" #(ffi/read-into! p :float fa)]
              ["read-into! :int32" #(ffi/read-into! p :int32 ia)]
