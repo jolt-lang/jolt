@@ -164,6 +164,7 @@
 ;; port the process started with. Windows asks the standard handle rather than
 ;; the C runtime's descriptor table, whose owner is whichever CRT answers.
 (define (jolt-std-fd-terminal? fd)
+  (if (getenv "REPRO_NOPROBE") #f
   (guard (e (#t #t))
     (if (eq? (sa-os-family) 'windows)
         (begin
@@ -172,7 +173,7 @@
                 (file-type (sa-foreign-procedure-runtime "GetFileType" '(void*) 'unsigned-32 #f)))
             ;; FILE_TYPE_CHAR: a console, or a device such as NUL
             (= 2 (file-type (get-std (if (= fd 1) -11 -12))))))
-        (if jolt-c-isatty (= 1 (jolt-c-isatty fd)) #t))))
+        (if jolt-c-isatty (= 1 (jolt-c-isatty fd)) #t)))))
 ;; (jolt-swallow-io on-fail body ...): BODY's value, or (ON-FAIL) when BODY
 ;; raises an i/o error; anything else propagates. The light form of R6RS guard —
 ;; a one-shot escape rather than a full continuation — since a line written to a
@@ -248,7 +249,7 @@
     (cond ((not cell) (write!))
           (((vector-ref cell 1)) #f)
           (else (jolt-swallow-io (vector-ref cell 2) (write!))))))
-(define (jolt-install-process-streams!)
+(define (unless (getenv "REPRO_NOINSTALL") (jolt-install-process-streams!))
   (let* ((out0 (current-output-port))
          (err0 (current-error-port))
          (merged? (eq? out0 err0))       ; Chez found fd 1 and fd 2 the same file
@@ -265,7 +266,7 @@
                          (lambda (p) (current-output-port p) (console-output-port p)))))
       (when out (set! jolt-stdout-failsafe out))
       (cond
-        ((and merged? out)
+        ((and merged? out (not (getenv "REPRO_NOMERGE")))
          (current-error-port (vector-ref out 0))
          (console-error-port (vector-ref out 0))
          (set! jolt-stderr-failsafe out))

@@ -78,22 +78,22 @@ jobs:
       - name: Variants
         continue-on-error: true
         run: |
+          set +e
           S=./chez-install/bin/scheme.exe
-          E='(println "o1") (binding [*out* *err*] (println "e1")) (println "o2") (.println System/err "e2") (println "o3")'
-          v() { name="$1"; shift; echo "===== $name"; "$@"; echo "exit=$?"; }
-          v same-file      sh -c "$S --script host/chez/cli.ss -e '$E' > same.txt 2>&1"; cat same.txt
-          v two-files      sh -c "$S --script host/chez/cli.ss -e '$E' > a.txt 2> b.txt"; echo "--a"; cat a.txt; echo "--b"; cat b.txt
-          v stdout-file    sh -c "$S --script host/chez/cli.ss -e '$E' > only.txt"; cat only.txt
-          v same-trivial   sh -c "$S --script host/chez/cli.ss -e '(println 1)' > t.txt 2>&1"; cat t.txt
-          v two-trivial    sh -c "$S --script host/chez/cli.ss -e '(println 1)' > t1.txt 2> t2.txt"; cat t1.txt t2.txt
-          v same-noprint   sh -c "$S --script host/chez/cli.ss -e 'nil' > n.txt 2>&1"; cat n.txt
-          v pipes          sh -c "$S --script host/chez/cli.ss -e '$E' 2>&1 | cat"
-          v err-only       sh -c "$S --script host/chez/cli.ss -e '(.println System/err \"x\")' > e.txt 2>&1"; cat e.txt
-          v out-only       sh -c "$S --script host/chez/cli.ss -e '(println \"x\")' > o.txt 2>&1"; cat o.txt
-      - name: cdb on the crash
+          v() { name="$1"; shift; echo "===== $name"; env "$@" $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1") (println "o2")' > same.txt 2>&1; echo "exit=$?"; cat same.txt; }
+          v plain             X=1
+          v noinstall         REPRO_NOINSTALL=1
+          v noprobe           REPRO_NOPROBE=1
+          v nomerge           REPRO_NOMERGE=1
+          v noprobe-nomerge   REPRO_NOPROBE=1 REPRO_NOMERGE=1
+          echo "===== two-files"; $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > a.txt 2> b.txt; echo "exit=$?"; cat a.txt b.txt
+          echo "===== stdout-file-only"; $S --script host/chez/cli.ss -e '(println "o1") (.println System/err "e1")' > a.txt; echo "exit=$?"; cat a.txt
+          echo "===== nil same-file"; $S --script host/chez/cli.ss -e 'nil' > n.txt 2>&1; echo "exit=$?"; cat n.txt
+      - name: cdb no-merge
         continue-on-error: true
         shell: cmd
         run: |
           set CDB="C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe"
-          %CDB% -g -G -o -c ".symfix c:\sym; .reload; .lastevent; r; kb 40; .ecxr; kb 40; q" chez-install\bin\scheme.exe --script host/chez/cli.ss -e "(println 1)" > cdb-same.txt 2>&1
-          type cdb-same.txt
+          set REPRO_NOMERGE=1
+          %CDB% -g -G -o -c "!sym quiet; .symfix c:\sym; .reload /f scheme.exe; kb 30; q" chez-install\bin\scheme.exe --script host/chez/cli.ss -e "(println 1)" > cdb.txt 2>&1
+          type cdb.txt | findstr /V "ModLoad NatVis Repository"
