@@ -131,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kind: [stock, with0005]
+        kind: [with0005]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -152,7 +152,8 @@ jobs:
           git clone --depth 1 --branch v10.4.1 https://github.com/cisco/ChezScheme.git /tmp/chez-src
           if [ "${{ matrix.kind }}" = with0005 ]; then
             sh "$GITHUB_WORKSPACE/ci/apply-chez-patches.sh" /tmp/chez-src
-            (cd /tmp/chez-src && git apply "$GITHUB_WORKSPACE/ci/repro-0005.patch")
+            sed -i 's/GetFileInformationByHandle(h1, &info2)/GetFileInformationByHandle(h2, \&info2)/' /tmp/chez-src/c/prim5.c
+            grep -n "GetFileInformationByHandle(h2" /tmp/chez-src/c/prim5.c
           fi
           cd /tmp/chez-src
           ./configure --threads
