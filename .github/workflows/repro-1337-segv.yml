@@ -168,14 +168,14 @@ jobs:
           set +e
           S=./chez-install/bin/scheme.exe
           rate() { label="$1"; shift; n=0; c=0; for k in 1 2 3 4 5; do sh -c "$*" >/dev/null 2>&1; rc=$?; n=$((n+1)); [ $rc = 139 ] && c=$((c+1)); done; echo "RATE ${{ matrix.kind }} $label: $c/$n crashed"; }
-          printf '%s\n' '(load "host/chez/scheme-adapter-runtime.ss") (exit 0)' > m1.ss
-          printf '%s\n' '(import (chezscheme)) (load "host/chez/scheme-adapter-runtime.ss") (exit 0)' > m2.ss
-          printf '%s\n' '(load "host/chez/scheme-adapter-runtime.ss") (display "x") (newline)' > m4.ss
-          printf '%s\n' '(load "host/chez/scheme-adapter-runtime.ss") (collect) (exit 0)' > m6.ss
-          printf '%s\n' '(load "host/chez/scheme-adapter-runtime.ss") (collect (collect-maximum-generation)) (display "after") (newline)' > m7.ss
-          printf '%s\n' '(define v (make-vector 100000 1.5)) (collect (collect-maximum-generation)) (display "after") (newline)' > m8.ss
-          for f in m1 m2 m4 m6 m7 m8; do for mode in same out; do case $mode in same) $S -q --script $f.ss > r.txt 2>&1;; out) $S -q --script $f.ss > r.txt;; esac; echo "MIN $f $mode exit=$?"; done; done
-          STOP=1 $S --script host/chez/cli-stop.ss > r.txt 2>&1; echo "MIN cli-stop1 noargs same exit=$?"
+          printf '%s\n' '(import (chezscheme)) (unless (file-exists? "vendor/irregex/irregex.scm") (exit 1)) (load "host/chez/scheme-adapter-runtime.ss") (exit 0)' > n1.ss
+          printf '%s\n' '(import (chezscheme)) (load "host/chez/scheme-adapter-runtime.ss") (exit 0)' > n2.ss
+          printf '%s\n' '(import (chezscheme)) (load "host/chez/scheme-adapter-runtime.ss") (when (equal? (getenv "STOP") "1") (exit 0))' > n3.ss
+          printf '%s\n' '(import (chezscheme)) (unless (file-exists? "vendor/irregex/irregex.scm") (exit 1)) (exit 0)' > n5.ss
+          head -33 host/chez/cli-stop.ss > n6.ss; echo '(exit 0)' >> n6.ss
+          for f in n1 n2 n3 n5 n6; do $S -q --script $f.ss > r.txt 2>&1; echo "N $f -q same exit=$?"; STOP=1 $S --script $f.ss > r.txt 2>&1; echo "N $f noq same exit=$?"; $S --script $f.ss > r.txt; echo "N $f noq out exit=$?"; done
+          tail -5 n6.ss
+
 
 
           rate "cli two-files"   "$S --script host/chez/cli.ss -e nil > r.txt 2> r2.txt"
