@@ -48,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A nil restored from a state image is the nil singleton.** nil travels
+  through an image as its singleton record, so the fasl read materialized a
+  second instance: `nil?` (a type check) accepted it, but `identical?` and
+  `=` against anything built in the restoring process said false. A map with
+  a nil in it, read back with `jolt.image/read-image`, no longer fails `=`
+  against an equal freshly built one; the restore walk maps every instance
+  back to the one nil, in values, collection slots, record fields and map
+  keys alike.
+
 - **`compare` and `sort` take any `Comparable` host value (#1395).** A
   `java.nio.file.Path`, `java.io.File`, `StringBuilder` or `TimeUnit` had a
   working `.compareTo` that `compare` never asked, so `(sort (fs/list-dir d))`
