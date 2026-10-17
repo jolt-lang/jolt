@@ -40,6 +40,9 @@
                     :else (long x)))
          s (coerce start)
          e (coerce end)]
+     ;; RT.subvec takes ints: Math.toIntExact refuses a long past that range
+     (when (or (< s -2147483648) (> s 2147483647) (< e -2147483648) (> e 2147483647))
+       (throw (jolt.host/throwable "java.lang.ArithmeticException" "integer overflow")))
      (when (or (< s 0) (< e s) (< (count v) e))
        (throw (jolt.host/throwable "java.lang.IndexOutOfBoundsException"
                                     (str "subvec index out of range: " s " " e))))

@@ -56,7 +56,27 @@
   '(flvector-ref flvector-set! fxvector-ref fxvector-set!
     bytevector-s8-ref bytevector-s8-set!))
 
+;; The unboxed paths' range check sees the index after the JVM would have
+;; refused it: an index outside the int range is RT.intCast's
+;; ArithmeticException (or, past the long range, its IllegalArgumentException),
+;; not an out-of-bounds read. index-int-check! (collections.ss) is that rule;
+;; this asks it, and answers the throwable it raises as (class . message).
+(define (array-index-int-refusal c)
+  (and (who-condition? c) (memq (condition-who c) array-index-whos)
+       (irritants-condition? c)
+       (let ((irr (condition-irritants c)))
+         (and (list? irr) (= (length irr) 2)
+              (let ((i (car irr)))
+                (and (integer? i) (exact? i)
+                     (not (and (fixnum? i) (fx<=? -2147483648 i 2147483647)))
+                     (if (and (>= i -9223372036854775808) (<= i 9223372036854775807))
+                         (cons "java.lang.ArithmeticException" "integer overflow")
+                         (cons "java.lang.IllegalArgumentException"
+                               (string-append "Value out of range for long: " (number->string i))))))))))
 (define (fault-class c)
+  (let ((r (array-index-int-refusal c)))
+    (if r (car r) (fault-class-of c))))
+(define (fault-class-of c)
   (let* ((m (if (message-condition? c) (condition-message c) ""))
          (m (if (string? m) m ""))
          (irr (if (irritants-condition? c) (condition-irritants c) '()))
@@ -92,7 +112,7 @@
   (and (who-condition? c) (memq (condition-who c) array-index-whos)
        (irritants-condition? c)
        (let ((irr (condition-irritants c)))
-         (and (list? irr) (= (length irr) 2) (fixnum? (car irr))
+         (and (list? irr) (= (length irr) 2) (and (integer? (car irr)) (exact? (car irr)))
               (let* ((b (cadr irr))
                      (n (cond ((flvector? b) (flvector-length b))
                               ((fxvector? b) (fxvector-length b))
@@ -104,7 +124,8 @@
   ;; a message that fails to render must not raise inside the handler that is
   ;; unwrapping the fault
   (guard (e (#t "host fault"))
-    (or (array-index-fault-message c)
+    (or (let ((r (array-index-int-refusal c))) (and r (cdr r)))
+        (array-index-fault-message c)
         (condition->message-string c))))
 
 ;; First sight of a condition is also where its throw site is stashed, unless

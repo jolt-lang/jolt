@@ -120,13 +120,13 @@ JOLT-TARGETS-NEEDING-DEPS := \
   aotcachepathsmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink mintgate ffi fibers fiberspoll fieldjoin fieldnum fieldread flarr fnform coreproc grenadine \
-  gateboot gatebootsmoke gosm hasheq httpsfetch infer inline inline-body irvalidate statlayout \
+  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
   hostarity narrow narrowhash numeric numwp oparity pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit vfaslceiling \
   shakesmoke smoke sortedcoll staticnativesmoke stateimage test testbin transient unit unitcontext zlibregistersmoke zlibnativesmoke noexecsmoke \
-  threadsafety values wp ci
+  threadsafety maskedacquire values wp ci
 
 # Only mark PHONY targets for names that have file system conflicts:
 .PHONY: build install test ci bionic-ci gate-run-test gate-run-ci gate-run-bionic-ci gate-status hooks attributioncheck noticecheck monitormodel \
@@ -182,14 +182,14 @@ install: build
 
 CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
-  transient sortedcoll rrbprop rrbscaling stateimage infer wp devirt fieldread numwp fieldnum fieldjoin contagion \
+  transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
   protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap arraybacking largebytesgc largefxgc unitcontext numeric oparity mathfl flonumdisp flarr \
   fnform coreproc traceemit traceeval degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths utf8decode \
-  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer interruptnest monitorescape windescape threadsafety cas flow
+  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer interruptnest monitorescape windescape threadsafety maskedacquire cas flow
 TEST-GATES := submodules selfhost ci
 
 GATE-RECEIPT := target/gate-receipt
@@ -978,6 +978,12 @@ stateimage:
 infer:
 	@$(CHEZ) --script host/chez/run-infer.ss
 
+# The optimizing passes stay polynomial in nesting depth: nested loops (the
+# loop-var fixpoint and numeric loop-kinds) and nested ^Record-hinted fns
+# (guard-declared-records). Ratios of depth n+3 to depth n inside one process.
+inferscaling:
+	@$(CHEZ) --script host/chez/run-infer-scaling.ss
+
 # Whole-program param-type fixpoint: record types flowing across fn boundaries
 # (a callee's param picks up its callers' ctor return types), the foundation the
 # bare-index field reads + protocol devirtualization build on.
@@ -1003,6 +1009,12 @@ gosm:
 # the same bug class through a core.async pipeline sweep.
 threadsafety:
 	@$(CHEZ) --script test/chez/thread-safety-test.ss
+
+# A lock a fiber park takes with interrupts disabled must not stall a collection
+# whose requester holds it (locks.ss jolt-mutex-acquire!). The failure is a hang
+# of the whole process, so the script runs the gate under an outside deadline.
+maskedacquire:
+	@sh host/chez/masked-acquire-gate.sh $(CHEZ)
 
 # compare-and-swap is strong. Chez's $record-cas! is one ldxr/stxr attempt on
 # AArch64 and answers #f with the field still holding the expected value when

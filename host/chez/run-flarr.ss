@@ -177,6 +177,9 @@
 (gate-check "(8) ^bytes read OOB carries the JVM message"
             (ev "(try (let [^bytes a (byte-array 4)] (aget a 9)) (catch ArrayIndexOutOfBoundsException e (ex-message e)))")
             "Index 9 out of bounds for length 4")
+(gate-check "(8) ^doubles read past the int range is RT.intCast's overflow"
+            (ev "(try (let [^doubles a (double-array 4)] (aget a 9223372036854775807)) (catch ArithmeticException e (ex-message e)))")
+            "integer overflow")
 (gate-check "(8) get on an array stays non-throwing OOB (returns default)"
             (ev "(get (int-array 3) 99 :d)") (keyword #f "d"))
 ;; --- the array kind survives the optimizing passes ---------------------------

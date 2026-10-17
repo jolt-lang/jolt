@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.23] - 2026-10-17
+
+Code loaded at the REPL or by `jolt run` can opt into the optimizations a
+`jolt build` makes, by binding `*compiler-options*` to `{:direct-linking
+true}` as on the JVM. Built binaries type more without hints: arrays from the
+array constructors, records carried through `loop`, and `reduce` with `+` or
+`*`. Type hints stop counting as proof of a value's type. `compare` and `sort`
+take any `Comparable`, `*in*` is a real `Reader`, and `java.io.RandomAccessFile`
+is new.
+
 ### Added
 
 - **`*compiler-options*` `{:direct-linking true}` optimizes REPL and `jolt run`
@@ -22,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `^:dynamic` and `^:redef` opt a var out, and `with-redefs` does not reach a
   direct-linked caller. A later `defmulti`, `ns-unmap` or `.setDynamic` on the
   var is still honored by code compiled after it. Off by default.
+- **`java.io.RandomAccessFile` (#1376).** It opens a String or File in mode
+  `"r"`, `"rw"`, `"rws"` or `"rwd"`, and answers `read`, `readFully`, `write`,
+  `seek`, `getFilePointer`, `length`, `setLength`, `skipBytes` and `close`,
+  with the JDK's exceptions. The `DataInput`/`DataOutput` methods (`readInt`,
+  `writeLong`, ...) are not there yet. `FileInputStream.skip` now seeks instead
+  of reading the bytes it skips, and can move backwards as the JDK's does;
+  skipping to the end of a 20 MB file went from 22 ms to 0.2 ms.
 
 ### Changed
 
@@ -47,6 +64,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on a four-field particle update (the JVM: 9.2).
 
 ### Fixed
+
+- **A nil restored from a state image is the nil singleton.** nil travels
+  through an image as its singleton record, so the fasl read materialized a
+  second instance: `nil?` (a type check) accepted it, but `identical?` and
+  `=` against anything built in the restoring process said false. A map with
+  a nil in it, read back with `jolt.image/read-image`, no longer fails `=`
+  against an equal freshly built one; the restore walk maps every instance
+  back to the one nil, in values, collection slots, record fields and map
+  keys alike.
+- **Indexes outside the int range behave as on the JVM.** `nth` (with or
+  without a default), `aget`, `aset`, `subs`, `subvec` and `.charAt` take their
+  index through `RT.intCast`, so `(nth v 4294967296)` raises
+  `ArithmeticException` "integer overflow", and a bignum past the long range
+  raises "Value out of range for long". jolt raised an out-of-bounds error, or
+  leaked Chez's `fx>=?: ... is not a fixnum`. `get`, `contains?`, `find`,
+  `assoc`, `assoc!` and a vector called as a fn read the key's `intValue` as
+  the JVM does, so `(get [:a :b] 4294967297)` is `:b`. A vector takes only an
+  integer key, so `(get [:a :b] 1.0)` is nil and `([:a :b] 1.0)` raises "Key
+  must be integer". A string or array takes any number, so `(contains? "ab"
+  1.5)` is true. `contains?` works on arrays, and a fractional index truncates
+  toward zero: `(nth v -0.5)` is the first element.
+- **A fiber parking while another thread held a runtime lock no longer hangs
+  the process.** A park takes its locks with interrupts disabled, and Chez
+  keeps a thread blocked that way counted as running, so a garbage collection
+  requested while the lock's holder was inside it waited forever on the
+  parking thread. With fibers parked on sockets or channels, the whole program
+  stopped; the fibers-io gate hit it about once in 150 runs. Such a lock now
+  waits in a call the collector can run through.
+- **`clojure.pprint/pp` prints `*1` (#1388).** It expanded to nil; it is
+  `(pprint *1)` now, as in Clojure.
+- **`.invoke` and `.applyTo` work on every `IFn`.** `(.invoke f x)` raised "No
+  matching method" on fns, keywords, symbols, vars and multimethods, and on a
+  map it read nil; `(.applyTo {:a 1} '(:a))` answered nil and `.applyTo` on a
+  set raised. All of them call the receiver now, as on the JVM.
+  `(.reset v x)` on a volatile sets it and returns `x`, and `fn?` is true of a
+  deftype or reify that declares `clojure.lang.Fn`, as `instance?` already
+  was. Together these let yamlstar's parser run.
+- **`io/input-stream` over a file or bytes supports `mark` and `reset`.** On
+  the JVM it hands back a `BufferedInputStream`; jolt's stream answered
+  `markSupported` false and `reset` threw.
 
 - **`compare` and `sort` take any `Comparable` host value (#1395).** A
   `java.nio.file.Path`, `java.io.File`, `StringBuilder` or `TimeUnit` had a
@@ -113,7 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`BufferedReader` reads ahead** like the JDK's: it fills its own buffer
   with one `read` of 8192 characters (or the size passed in), so what it has
   buffered is gone from the reader it wraps, and `read-line` on `*in*` after
-  `(io/reader *in*)` sees what the JVM does. Over jolt's own readers it used to
+  `(io/reader *in*)` sees what the JVM does on a terminal. (Over a pipe, the
+  JVM's buffer can take lines that have already arrived; jolt's `*in*` still
+  hands over one line per read.) Over jolt's own readers it used to
   be the reader itself (so `(class (BufferedReader. sr))` was `StringReader`),
   and over a Reader the program wrote it read one character at a time. `mark` and `reset` are the buffer's own, a line ending in
   `\r\n` no longer leaves the `\n` for the next `read`, and a closed reader
@@ -137,6 +196,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   folds away when the argument is already proven), anything else answers what
   `jolt run` does. `defrecord`'s own `this` is still trusted, since dispatch
   guarantees it.
+- **Nested loops no longer make a built binary's compile time grow
+  exponentially.** Each pass of an outer loop's fixpoint (the numeric pass's
+  loop-variable kinds, and the loop-variable types above) re-ran the fixpoint of
+  every loop nested in it, so each level of nesting doubled or tripled the
+  work: ten nested loops took 444 ms in the numeric pass and 20 ms in type
+  inference. Both take 0.2 ms now, and emit the same code. Hinted fns nested in
+  hinted fns no longer double the emitted code per level either, and neither do
+  `reduce` closures nested in `reduce` closures: each probe of the outer
+  closure's accumulator type re-ran the inner one's from scratch, so ten levels
+  took 13 ms to infer, now 0.13 ms.
 - **An out-of-bounds read or write on a hinted or constructed primitive array
   says `Index 5 out of bounds for length 3`**, as the JVM does, instead of
   Chez's `flvector-ref: 5 is not a valid index for #vfl(...)`.

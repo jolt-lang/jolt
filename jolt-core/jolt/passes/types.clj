@@ -375,11 +375,11 @@
 ;; binary on anything else. So the optimizing passes wrap a hinted arity's body
 ;; in a test of the param's record type:
 ;;
-;;   (if (jolt.host/rec-type? p "app.core.Point") body body)
+;;   (if (jolt.host/rec-type? p "app.core.Point") body plain-body)
 ;;
 ;; The then-branch PROVES p is that record (if-narrow), so it keeps the bare slot
 ;; reads, devirtualized protocol calls and ^double field arithmetic the hint was
-;; there for; the else-branch is the same body over an untyped p. When inference
+;; there for; the else-branch is the plain body (below). When inference
 ;; already proves the argument (a whole-program seed, a spliced call with a
 ;; constructed record), the test folds to true and const-fold drops the copy.
 ;; The guard args are [local tag ...]; :rec-guard holds the ctor key of each pair
@@ -391,15 +391,30 @@
     (let [args (get test :args) cks (get test :rec-guard)]
       (mapv (fn [i] [(nth args (* 2 i)) (get (nth args (inc (* 2 i))) :val) (nth cks i)])
             (range (count cks))))))
+(defn- strip-uphints
+  "node with every arity's :uphints dropped: the body jolt run compiles, where a
+  declared hint types nothing."
+  [node]
+  (let [node (map-ir-children strip-uphints node)]
+    (if (= :fn (get node :op))
+      (assoc node :arities (mapv (fn [a] (dissoc a :uphints)) (get node :arities)))
+      node)))
+;; The else-branch is that plain body, not a second guarded copy. It is the
+;; fallback for a value the hint was wrong about, and it answers what jolt run
+;; does. Guarding the hinted fns nested in it as well put every nested guard in
+;; both branches of every enclosing one, so a nest of hinted fns emitted
+;; 2^depth copies of the innermost body. With the else-branch plain, each level
+;; adds one guarded copy and one plain copy of what is below it.
 (defn guard-declared-records
   "Replace each arity's :uphints with a record-type test around its body (see
   above). `shapes` is the ctor-key -> record shape registry; a hint whose record
   the build doesn't know is dropped, leaving the param untyped."
   [node shapes]
-  (let [node (map-ir-children (fn [c] (guard-declared-records c shapes)) node)]
+  (let [orig node
+        node (map-ir-children (fn [c] (guard-declared-records c shapes)) node)]
     (if (= :fn (get node :op))
       (assoc node :arities
-             (mapv (fn [a]
+             (mapv (fn [a oa]
                      (let [uh (get a :uphints)]
                        (if (nil? uh)
                          a
@@ -417,8 +432,8 @@
                                                           [] pairs)
                                             :rec-guard (mapv (fn [pr] (nth pr 1)) pairs)}
                                      :then (get a :body)
-                                     :else (get a :body)}))))))
-                   (get node :arities)))
+                                     :else (strip-uphints (get oa :body))}))))))
+                   (get node :arities) (get orig :arities)))
       node)))
 
 (declare record-type-from-entry)
@@ -584,8 +599,18 @@
 ;; The vars shadow any same-named outer local: a loop that rebinds a
 ;; record-typed p must not keep the outer type (a bare slot read would
 ;; miscompile). numeric.clj's loop-kinds runs the same fixpoint for kinds.
+;;
+;; A trial pass exists only to collect THIS loop's recur types, and nothing a
+;; nested loop does can change them: a recur inside it targets it, and a loop
+;; types as :any whatever its body. So a trial env carries :loop-trial?, and a
+;; loop reached under one (directly, or inside a fn or let init in the trial
+;; body) answers :any without running its own fixpoint. It is inferred for real
+;; in the enclosing loop's final pass. Re-running it in every trial made a nest
+;; of loops whose vars widen cost (passes per level)^depth.
 (def ^:private loop-fixpoint-cap 4)
 (defn- infer-loop [node tenv env]
+  (if (get env :loop-trial?)
+    [:any node]
   (let [binds (get node :bindings)
         names (mapv (fn [b] (nth b 0)) binds)
         ;; inits in order, each seeing the loop vars bound before it
@@ -598,7 +623,7 @@
         body-env (fn [tys] (reduce (fn [t i] (assoc t (nth names i) (nth tys i))) tenv (range (count names))))
         recur-tys (fn [tys]
                     (let [rs (atom [])
-                          tenv' (assoc env :in-loop? true :loop-recurs rs
+                          tenv' (assoc env :in-loop? true :loop-recurs rs :loop-trial? true
                                        :diags (atom []) :calls (atom []) :checking? false)]
                       (infer (get node :body) (body-env tys) tenv')
                       @rs))
@@ -617,7 +642,7 @@
         lenv (assoc env :in-loop? true :loop-recurs nil)]
     [:any (assoc node
                  :bindings (mapv (fn [i] [(nth names i) (nd (nth inits i))]) (range (count names)))
-                 :body (nth (infer (get node :body) (body-env final-tys) lenv) 1))]))
+                 :body (nth (infer (get node :body) (body-env final-tys) lenv) 1))])))
 
 (defn- infer-kw-lookup
   "(:k m) / (:k m default): the result is m's field type, and if m is a struct the
@@ -663,14 +688,45 @@
 ;; The probes run under a sub-env with their own diags/calls cells (the
 ;; isolated-diag-count pattern) so only the final inference reports and feeds the
 ;; whole-program param joins.
+;;
+;; A probe of an outer closure re-infers every reduce nested in it, and each of
+;; those ran its own fixpoint from scratch, so nested reduce closures cost
+;; (probes per level)^depth. Two things keep it polynomial, both scoped to the
+;; outermost reduce (its :acc-memo cell, made by infer-reduce-hof):
+;;
+;; - The memo remembers, per closure, the context it last converged in (init,
+;;   element type, tenv) and the answer. The same context answers without a
+;;   probe. A context at least as wide as the remembered one restarts from the
+;;   remembered answer instead of the init: inference is monotone, so the old
+;;   answer is at or below the new least fixpoint, and iterating up from there
+;;   reaches the same one. Inside one outer fixpoint the contexts only widen.
+;; - A probe only needs a nested reduce's TYPE, which is its accumulator type
+;;   (the closure's return under a converged seed is within it), so under
+;;   :acc-probe? the nested reduce skips its final, node-producing inference.
 (def ^:private reduce-acc-rounds 4)
+(defn- type-le? [a b] (= (join a b) b))
+(defn- tenv-le? [a b]
+  (and (= (count a) (count b))
+       (every? (fn [e] (and (contains? a (key e)) (type-le? (get a (key e)) (val e)))) b)))
 (defn- reduce-acc-type [fnode init-t et tenv env]
-  (let [sub (assoc env :diags (atom []) :calls (atom []))]
-    (loop [seed init-t rounds reduce-acc-rounds]
-      (if (or (= seed :any) (= rounds 0))
-        :any
-        (let [next (join seed (ty (infer-fn-seeded fnode {0 seed 1 et} tenv sub)))]
-          (if (= next seed) seed (recur next (- rounds 1))))))))
+  (let [memo (get env :acc-memo)
+        prev (when memo (get @memo fnode))
+        ctx [init-t et tenv]]
+    (if (and prev (= (nth prev 0) ctx))
+      (nth prev 1)
+      (let [sub (assoc env :diags (atom []) :calls (atom []) :acc-probe? true)
+            pc (when prev (nth prev 0))
+            start (if (and pc (type-le? (nth pc 0) init-t) (type-le? (nth pc 1) et)
+                           (tenv-le? (nth pc 2) tenv))
+                    (join init-t (nth prev 1))
+                    init-t)
+            r (loop [seed start rounds reduce-acc-rounds]
+                (if (or (= seed :any) (= rounds 0))
+                  :any
+                  (let [next (join seed (ty (infer-fn-seeded fnode {0 seed 1 et} tenv sub)))]
+                    (if (= next seed) seed (recur next (- rounds 1))))))]
+        (when memo (swap! memo assoc fnode [ctx r]))
+        r))))
 
 (defn- infer-reduce-hof
   "reduce over a typed vector with a fn-literal: seed the closure's accumulator
@@ -678,17 +734,20 @@
   (param 1) to the vector's element type, so its body — and any calls it makes —
   see those types."
   [node args n tenv env]
-  (let [three (>= n 3)
+  (let [env (if (get env :acc-memo) env (assoc env :acc-memo (atom {})))
+        three (>= n 3)
         coll-r (infer (nth args (if three 2 1)) tenv env)
         init-r (when three (infer (nth args 1) tenv env))
         et (let [ct (ty coll-r)] (if (vec-type? ct) (velem ct) :any))
         init-t (if init-r (ty init-r) :any)
-        acc-t (reduce-acc-type (nth args 0) init-t et tenv env)
-        fn-r (infer-fn-seeded (nth args 0) {0 acc-t 1 et} tenv env)]
-    [(join acc-t (ty fn-r))
-     (assoc node :args (if three
-                         [(nd fn-r) (nd init-r) (nd coll-r)]
-                         [(nd fn-r) (nd coll-r)]))]))
+        acc-t (reduce-acc-type (nth args 0) init-t et tenv env)]
+    (if (get env :acc-probe?)
+      [acc-t node]
+      (let [fn-r (infer-fn-seeded (nth args 0) {0 acc-t 1 et} tenv env)]
+        [(join acc-t (ty fn-r))
+         (assoc node :args (if three
+                             [(nd fn-r) (nd init-r) (nd coll-r)]
+                             [(nd fn-r) (nd coll-r)]))]))))
 
 (defn- infer-seq-hof
   "map/mapv/filter/... over a typed vector with a fn-literal: seed the fn's element

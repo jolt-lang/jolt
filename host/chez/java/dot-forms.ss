@@ -159,6 +159,20 @@
              (else 'pass))))
         ;; (. rec __extmap) with no args: no method by that name, then the field
         ((and (null? rest) (jrec? obj) (jrec-class-field obj mname)) => car)
+        ;; (.invoke f a ...) and (.applyTo f args): IFn's own methods, for the
+        ;; IFn receivers this arm admits (fns, multimethods, maps, sets,
+        ;; vectors). A deftype that forwards through a ^clojure.lang.IFn field
+        ;; calls it this way (yaml-parser's Rule); clojure.spec's instrument
+        ;; uses applyTo. Ahead of the map-as-object read below, which answered
+        ;; (.applyTo {:a 1} '(:a)) with nil. A deftype's own invoke is answered
+        ;; further down.
+        ((and (or (string=? mname "invoke")
+                  (and (string=? mname "applyTo") (pair? rest) (null? (cdr rest))))
+              (or (procedure? obj) (jolt-multifn? obj) (jolt-map? obj) (jolt-set? obj)
+                  (jolt-vector? obj)))
+         (if (string=? mname "invoke")
+             (apply jolt-invoke obj rest)
+             (apply jolt-invoke obj (seq->list (jolt-seq (car rest))))))
         ;; clojure.lang.MultiFn .dispatchFn / .getMethod — clojure.spec.alpha's
         ;; multi-spec walks a multimethod through these.
         ((jolt-multifn? obj)
@@ -171,16 +185,6 @@
                   (hashtable-ref methods (jolt-multifn-default obj) #f)
                   jolt-nil)))
            (else 'pass)))
-        ;; (.invoke f a ...): IFn's own method, for the IFn receivers this arm
-        ;; admits (fns, maps, sets, vectors). A deftype that forwards through a
-        ;; ^clojure.lang.IFn field calls it this way (yaml-parser's Rule). A
-        ;; deftype's own invoke is answered further down.
-        ((and (string=? mname "invoke")
-              (or (procedure? obj) (jolt-map? obj) (jolt-set? obj) (jolt-vector? obj)))
-         (apply jolt-invoke obj rest))
-        ;; (.applyTo f args): apply a fn to a seq of args (clojure.spec instrument).
-        ((and (procedure? obj) (string=? mname "applyTo"))
-         (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
         ;; (.compare f a b): a fn is a java.util.Comparator — AFunction.compare
         ;; invokes it — so code holding a fn as a Comparator calls it this way.
         ((and (procedure? obj) (string=? mname "compare") (pair? rest) (pair? (cdr rest)))

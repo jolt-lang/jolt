@@ -148,6 +148,14 @@
      "[(deref $rt) (do (swap! $rt assoc :b 2) (deref $rt))]" "[{:a 1} {:a 1, :b 2}]")
 (rtu "volatile"    "(volatile! 1)"
      "[(deref $rt) (do (vreset! $rt 9) (deref $rt))]"        "[1 9]")
+
+;; a restored nil must be THE nil. Without the walk arm mapping it back,
+;; fasl materialized a second jolt-nil-t that answered nil? but failed
+;; identical? and =, so comparing restored data against freshly built data
+;; was false anywhere a nil sat (value, vector slot, map key or record field).
+(rtu "nil identity" "{:a nil :b [nil] :c {nil 1}}"
+     "[(identical? (:a $rt) nil) (= $rt {:a nil :b [nil] :c {nil 1}}) (= (get-in $rt [:b 0]) nil) (get-in $rt [:c nil])]"
+     "[true true true 1]")
 (rtu "delay unforced" "(delay (+ 1 2))"
      "[(realized? $rt) (deref $rt) (realized? $rt)]"         "[false 3 true]")
 (rtu "delay forced"   "(let [d (delay (+ 1 2))] @d d)"

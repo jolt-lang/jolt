@@ -157,7 +157,7 @@
                   {:shape :ok :read got-read :write got-write})))))))))
 
 (defn- run-rounds []
-  (let [ss (java.net.ServerSocket. 0)
+  (let [ss (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
         port (.getLocalPort ss)]
     (loop [r 0 acc 0]
       (swap! progress assoc :round r)

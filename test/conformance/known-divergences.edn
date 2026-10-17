@@ -547,6 +547,17 @@
    :check :prose
    :why "needs a non-seekable stream (process stdin), which the gate does not control"
    :note "Corpus rows cover the agreeing cases (file, ByteArrayInputStream, PipedInputStream, FileInputStream); unit rows pin System/in answering false without crashing."}
+  ;; *in* reads its source a line at a time (__stdin-read-line), so a
+  ;; BufferedReader over it, which fills with one read of up to 8192 chars,
+  ;; takes one line where the JVM's takes everything the pipe already holds.
+  ;; On a terminal the two agree, since the JVM's read also returns one line.
+  {:category :restrictive
+   :behavior "(let [r (io/reader *in*)] [(.readLine r) (read-line)]) over a pipe holding several lines"
+   :jvm "[line1 nil] when the lines had already arrived: the BufferedReader's fill took them all"
+   :jolt "[line1 line2]: the fill takes the current line only; .ready after read-line is false"
+   :check :prose
+   :why "the JVM's answer depends on how much the pipe holds at the read, which the gate does not control"
+   :note "A Reader.read may return fewer chars than asked, so (.read *in* buf) returning one line is within contract."}
   {:category :permissive
    :behavior "(double \\a) / (float \\a)"
    :jvm "throws ClassCastException — double/float are declared ^Number"

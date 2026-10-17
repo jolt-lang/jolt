@@ -432,6 +432,11 @@
               (jolt-s32 (+ (java-symbol-hash (keyword-t-name obj) (keyword-t-ns obj))
                            #x9e3779b9)))
              ((string=? method-name "equals") (and (pair? rest) (eq? obj (car rest))))
+             ;; Keyword is an IFn: (.invoke :a m) is (:a m), as the dot-form arm
+             ;; answers it for fns and collections; applyTo likewise.
+             ((string=? method-name "invoke") (apply jolt-invoke obj rest))
+             ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
+              (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
              (else (dispatch-miss obj method-name rest))))
       ;; clojure.lang.Symbol interop: the Named methods + getName/getNamespace.
       ((symbol-t? obj)
@@ -443,6 +448,9 @@
              ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
              ((string=? method-name "hashCode")
               (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
+             ((string=? method-name "invoke") (apply jolt-invoke obj rest))
+             ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
+              (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
              (else (dispatch-miss obj method-name rest))))
       ;; clojure.lang.Namespace: name/getName yield the ns name as a Symbol (JVM:
       ;; Namespace.name is a Symbol). clojure.spec.alpha reads (.name *ns*).
@@ -519,6 +527,10 @@
              ;; clojure.core/*loaded-libs* rather than whatever a load has bound
              ;; over it. deref would answer the binding.
              ((string=? method-name "getRawRoot") (var-cell-root obj))
+             ;; Var is an IFn that calls its value.
+             ((string=? method-name "invoke") (apply jolt-invoke obj rest))
+             ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
+              (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
              ;; The rest of Var's surface, each reading the state the clojure.core
              ;; fn of the same meaning reads: isMacro the cell's macro flag (which
              ;; alter-meta! keeps in step with meta :macro), isBound hasRoot OR a

@@ -2408,16 +2408,21 @@
        (let ((c (jolt-ref-get x socket-class-key)))
          (and (string? c) (jch-isa? c "java.net.Socket")))))
 (define (socket-stream x getter) (record-method-dispatch x getter jolt-nil))
+;; What io/input-stream opens over a file or bytes is, on the JVM, a
+;; BufferedInputStream, so mark/reset work on it; these streams' ports seek, so
+;; they are made markable the way the BufferedInputStream ctor makes them.
+(define (jio-open-in-file-buffered fs-path given)
+  (make-in-stream-markable (in-stream-port (jio-open-in-file fs-path given))))
 (define (jio-input-stream x . opts)
   (io-opts-check! opts)
   (cond ((or (in-stream? x) (user-in-stream? x)) x)
-        ((jfile? x) (jio-open-in-file (jfile-fs x) (jfile-path x)))
-        ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (make-in-stream (open-bytevector-input-port (na-bytearray->bv x))))
-        ((bytevector? x) (make-in-stream (open-bytevector-input-port x)))
+        ((jfile? x) (jio-open-in-file-buffered (jfile-fs x) (jfile-path x)))
+        ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (make-in-stream-markable (open-bytevector-input-port (na-bytearray->bv x))))
+        ((bytevector? x) (make-in-stream-markable (open-bytevector-input-port x)))
         ((and (jhost? x) (string=? (jhost-tag x) "url"))
          (if (jar-path? (url-spec x))
              (jar-path-stream (url-spec x))
-             (let ((up (file-url->path (url-spec x)))) (jio-open-in-file up up))))
+             (let ((up (file-url->path (url-spec x)))) (jio-open-in-file-buffered up up))))
         ;; io/resource's answer for a resource baked into a built binary — a
         ;; java.net.URL with an openStream (io.ss embedded-res). Without this arm
         ;; (io/input-stream (io/resource "baked.txt")) threw in a built binary
@@ -2429,7 +2434,7 @@
                             (if (bytevector? c) c (string->utf8 c))))))
         ;; an entry inside a jar on the roots streams out of the archive (io.ss)
         ((jar-path? x) (jar-path-stream x))
-        ((string? x) (jio-open-in-file (io-source-path x) (if (file-url-string? x) (file-url->path x) x)))
+        ((string? x) (jio-open-in-file-buffered (io-source-path x) (if (file-url-string? x) (file-url->path x) x)))
         ((socket-value? x) (socket-stream x "getInputStream"))
         (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as an InputStream.")))))
 (define (jio-output-stream x . rest)

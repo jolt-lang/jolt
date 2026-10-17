@@ -130,6 +130,7 @@
 ;; [0, length) is the JVM's StringIndexOutOfBoundsException with its message,
 ;; not Chez's string-ref error.
 (define (char-index-oob i n)
+  (index-int-check! i)                  ; an int parameter: RT.intCast first
   (throw-jvm 'StringIndexOutOfBoundsException
              (string-append "Index " (number->string i) " out of bounds for length "
                             (number->string n))))
@@ -155,7 +156,7 @@
       (let ((d (make-string (fx- end start))))
         (sa-string-copy-range! d 0 s start end)
         d)
-      (substring s start end)))
+      (begin (index-int-check! start) (index-int-check! end) (substring s start end))))
 
 ;; case-lambda, not `. end`: a rest-arg list allocated on every call is most of
 ;; what a one-character (subs txt i (inc i)) costs, and a parser does that per

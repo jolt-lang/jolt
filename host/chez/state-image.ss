@@ -1103,6 +1103,12 @@
                   ((or (null? x) (boolean? x) (number? x) (char? x)
                        (symbol? x) (string? x) (bytevector? x))
                    (if rebuild? x #t))
+                  ;; nil is a singleton record, so the fasl read materializes a
+                  ;; SECOND jolt-nil-t: it answers nil? (a type check) but fails
+                  ;; eq?, so = against anything built in this process, and every
+                  ;; identical?, said false. Map any instance back to THE nil.
+                  ;; The write side passes the canonical one through unchanged.
+                  ((jolt-nil? x) (if rebuild? jolt-nil #t))
                   ((hashtable-ref memo x #f) =>
                    (lambda (m) (if rebuild? m #t)))
                   (else

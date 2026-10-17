@@ -1049,12 +1049,25 @@
              (hashtable-delete! inline-stash-table
                                 (string-append (var-cell-ns c) "/" (var-cell-name c))))))))
 (set-var-root-write-hook! inline-stash-root-written!)
+;; A var made dynamic (.setDynamic) or given ^:redef meta after its body was
+;; stashed opts out the same way a def written ^:dynamic does: neither writes the
+;; root, so the stash outlives it, and a caller compiled afterwards must go
+;; through the var for binding and with-redefs to reach it, as on the JVM.
+(define (hc-var-opted-out? c)
+  (and c
+       (or (var-cell-dynamic? c)
+           (let ((m (var-cell-meta c)))
+             (and (pmap? m)
+                  (or (jolt-truthy? (jolt-get m hc-kw-dynamic jolt-nil))
+                      (jolt-truthy? (jolt-get m hc-kw-redef jolt-nil))))))))
 (define (hc-inline-ir ctx ns-name nm)
   (let* ((fqn (string-append ns-name "/" nm))
-         (owner (hashtable-ref inline-stash-owner fqn #f)))
-    (if (and owner
-             (not (and (eq? owner (var-cell-lookup ns-name nm))
-                       (hashtable-contains? inline-stash-live owner))))
+         (owner (hashtable-ref inline-stash-owner fqn #f))
+         (cell (var-cell-lookup ns-name nm)))
+    (if (or (and owner
+                 (not (and (eq? owner cell)
+                           (hashtable-contains? inline-stash-live owner))))
+            (hc-var-opted-out? cell))
         jolt-nil
         (or (hashtable-ref inline-stash-table fqn #f) jolt-nil))))
 

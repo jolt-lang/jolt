@@ -181,6 +181,39 @@
 ;; the precondition it replaces it is checkable — at the switch, and statically
 ;; over the whole runtime (host/chez/park-lock-check.ss).
 ;;
+;; ACQUIRING WITH INTERRUPTS DISABLED. A park commits inside a region with
+;; interrupts disabled (fibers.ss jolt-fiber-park!, fiber-park-commit!, the
+;; channel waiter), and takes the carrier's and the waiter's mutexes there. Chez
+;; gives up a blocked thread's place in a collect rendezvous only when interrupts
+;; are ENABLED (prim5.c s_mutex_acquire, like condition-wait and sleep:
+;; DISABLECOUNT(tc) == 0). So a commit that blocked on a mutex whose holder had
+;; reached a safe point and joined a collection stayed counted as active: the
+;; collection waited for it, it waited for the holder, and the process stopped
+;; with every other thread in the rendezvous (the fibers-io gate, about one run
+;; in a hundred). jolt-mutex-acquire! tries first, which is the whole cost when
+;; the lock is free; contended with interrupts off, it waits in a collect-safe
+;; foreign call between tries, which deactivates the thread whatever its
+;; disable count, so the collection finishes and the holder can release.
+;;
+;; Both come from the adapter (sa-disable-count, sa-collect-safe-pause). The
+;; fibers gates load this file without one, and get the derived count and a
+;; plain spin, as fibers.ss's jolt-current-disable-count does.
+(define jolt-locks-disable-count
+  (guard (e (#t (lambda () (let ((n (disable-interrupts))) (enable-interrupts) (fx- n 1)))))
+    sa-disable-count))
+(define jolt-collect-safe-pause
+  (guard (e (#t (lambda () 0))) sa-collect-safe-pause))
+(define-syntax jolt-mutex-acquire!
+  (syntax-rules ()
+    ((_ m) (let ((jma-mu m))
+             (unless (mutex-acquire jma-mu #f) (jolt-mutex-acquire-contended! jma-mu))))))
+(define (jolt-mutex-acquire-contended! mu)
+  (if (fx=? 0 (jolt-locks-disable-count))
+      (mutex-acquire mu)
+      (let retry ()
+        (jolt-collect-safe-pause)
+        (unless (mutex-acquire mu #f) (retry)))))
+
 ;; WAITING FOR STATE THIS LOCK GUARDS is what the exception existed for, and it
 ;; never needed one: commit under the lock, switch outside it. That is
 ;; jolt-lock-wait, below.
@@ -194,7 +227,7 @@
     ((_ m e1 e2 ...)
      (let ((jwm-mu m))
        (dynamic-wind
-         (lambda () (jolt-locks-enter!) (mutex-acquire jwm-mu))
+         (lambda () (jolt-locks-enter!) (jolt-mutex-acquire! jwm-mu))
          (lambda () e1 e2 ...)
          (lambda () (mutex-release jwm-mu) (jolt-locks-exit!)))))))
 
@@ -207,10 +240,10 @@
 ;; it holds something, and a successful one is never briefly uncounted.
 (define jolt-lock!
   (case-lambda
-    ((mu) (jolt-locks-enter!) (mutex-acquire mu))
+    ((mu) (jolt-locks-enter!) (jolt-mutex-acquire! mu))
     ((mu block?)
      (jolt-locks-enter!)
-     (let ((got (mutex-acquire mu block?)))
+     (let ((got (if block? (begin (jolt-mutex-acquire! mu) #t) (mutex-acquire mu #f))))
        (unless got (jolt-locks-exit!))
        got))))
 (define (jolt-unlock! mu) (mutex-release mu) (jolt-locks-exit!))

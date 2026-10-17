@@ -172,7 +172,7 @@
   (loop [acc []]
     (let [b (.read in)]
       (if (neg? b) (String. (byte-array acc) "UTF-8") (recur (conj acc b))))))
-(let [ss (java.net.ServerSocket. 0)
+(let [ss (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       c (java.net.Socket. "127.0.0.1" (.getLocalPort ss))
       s (.accept ss)
       cin (.getInputStream c)
@@ -201,7 +201,7 @@
 ;; stored but never enforced. The WSAPoll backend makes them what they are on
 ;; POSIX.
 (defn- pair []
-  (let [ss (java.net.ServerSocket. 0)
+  (let [ss (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
         c (java.net.Socket. "127.0.0.1" (.getLocalPort ss))
         s (.accept ss)]
     [ss c s]))

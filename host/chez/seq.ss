@@ -1529,7 +1529,7 @@
     ;; IPersistentVector.invoke); 0 or 2+ args are an ArityException.
     ((pvec? f) (let ((n (length args)))
                  (jolt-check-arity-1 (jolt-class-name f) n)
-                 (jolt-nth f (car args))))
+                 (pvec-nth! f (pvec-key-index! (car args)))))
     ;; a map invokes as get with 1 or 2 args; a set invokes as get with exactly 1.
     ((pmap? f) (let ((n (length args)))
                  (jolt-check-arity-1or2 (jolt-class-name f) n)
@@ -1606,7 +1606,7 @@
     ((keyword? f) (jolt-get a f))            ; (:k m) -> (get m :k)
     ((pmap? f) (jolt-get f a))               ; (m k)  -> (get m k)
     ((jolt-symbol? f) (jolt-get a f))        ; ('s m) -> (get m 's)
-    ((pvec? f) (jolt-nth f a))               ; (v i)  -> (nth v i)
+    ((pvec? f) (pvec-nth! f (pvec-key-index! a)))  ; (v i) -> nth at (.intValue i)
     ((pset? f) (jolt-get f a))               ; (s x)  -> (get s x)
     (else (jolt-invoke f a))))
 (define (jolt-invoke2 f a b)

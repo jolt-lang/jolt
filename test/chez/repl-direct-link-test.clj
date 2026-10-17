@@ -97,6 +97,20 @@
 (chk "a spliced ^long return truncates" (= 5 (use-lret)))
 (chk "a lazy-seq's captures read nil on a rerun" (= ["boom" '(:cleared)] (cleared)))
 
+;; .setDynamic or ^:redef meta given after the def opts later callers out of
+;; the splice, so binding and with-redefs reach them.
+(with-dl
+  (defn dyn-later [x] (let [a (str x x x) b (str a a)] (count (str a b))))
+  (.setDynamic #'dyn-later)
+  (defn use-dyn-later [x] (dyn-later x))
+  (defn redef-later [x] (let [a (str x x x) b (str a a)] (count (str a b))))
+  (alter-meta! #'redef-later assoc :redef true)
+  (defn use-redef-later [x] (redef-later x)))
+(chk "a later .setDynamic is honored by later callers"
+     (= :bound (binding [dyn-later (fn [_] :bound)] (use-dyn-later 1))))
+(chk "a later ^:redef is honored by later callers"
+     (= :redef (with-redefs [redef-later (fn [_] :redef)] (use-redef-later 1))))
+
 ;; The default is open world.
 (defn o [] 1)
 (defn use-o [] (o))

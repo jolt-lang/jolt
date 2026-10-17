@@ -89,7 +89,7 @@
     ((char) #\nul)
     (else jolt-nil)))
 
-(define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (floor i)) (jolt-need-num i)))
+(define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (truncate i)) (jolt-need-num i)))
 
 ;; The character a value denotes when it is STORED into a char array, or #f when
 ;; no character does — the test that decides whether a char array can keep its
@@ -188,6 +188,7 @@
 ;; they rely on the backing primitive's own range check, and its condition
 ;; classifies at inspection time instead (host-faults.ss array-index-whos).
 (define (na-oob-throw i n)
+  (index-int-check! i)                  ; RT.intCast refuses it first (collections.ss)
   (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
                                    (format "Index ~a out of bounds for length ~a" i n))))
 ;; The bounds test takes the BACKING its caller already read: jolt-array-vec is a
@@ -814,10 +815,10 @@
                  (pvec-nth! c i)
                  (if (jolt-array? c) (ja-ref c (exact (na-idx i))) (%na-nth c i))))
     ((c i d) (if (pvec? c)
-                 (begin (jolt-nth-nil-idx! i) (pvec-nth-d c i d))
+                 (begin (jolt-nth-nil-idx! i) (pvec-nth-cast-d c i d))
                  (if (jolt-array? c)
                      (let ((j (exact (na-idx i))))
-                       (if (and (>= j 0) (< j (ja-len c))) (ja-ref c j) d))
+                       (if (and (>= j 0) (< j (ja-len c))) (ja-ref c j) (begin (index-int-check! j) d)))
                      (%na-nth c i d))))))
 (def-var! "jolt.host" "array-value?" (lambda (x) (if (jolt-array? x) #t jolt-nil)))
 ;; jolt-get on arrays stays as a set!-wrap rather than register-get-arm! because
@@ -829,8 +830,21 @@
 (define %na-get jolt-get)
 (set! jolt-get
   (case-lambda
-    ((c k)   (if (jolt-array? c) (jolt-nth c k jolt-nil) (%na-get c k)))
-    ((c k d) (if (jolt-array? c) (jolt-nth c k d) (%na-get c k d)))))
+    ((c k)   (if (jolt-array? c) (ja-get c k jolt-nil) (%na-get c k)))
+    ((c k d) (if (jolt-array? c) (ja-get c k d) (%na-get c k d)))))
+;; get on an array is RT.getFrom's: any Number key, by intValue; anything else
+;; is the default.
+(define (ja-get c k d)
+  (let ((j (num-key-index k)))
+    (if (and j (fx>=? j 0) (fx<? j (ja-len c))) (ja-ref c j) d)))
+;; contains? on an array, as on a string: a Number key by intValue (RT.contains).
+(register-contains-arm! jolt-array?
+  (lambda (c k)
+    (if (number? k)
+        (let ((j (num-key-index k))) (and (fx>=? j 0) (fx<? j (ja-len c))))
+        (throw-jvm 'IllegalArgumentException
+                   (string-append "contains? not supported on type: "
+                                  (guard (e (#t "?")) (jolt-class-name c)))))))
 ;; aset (overlay) writes through jolt.host/ref-put! — mutate the slot, return arr.
 ;; count/nth/seq/get above are NATIVE-OPS (inlined at call sites), so aget/alength/
 ;; array-seq/vec already use the set!-extended globals; ref-put! is a host var

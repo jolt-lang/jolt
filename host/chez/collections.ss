@@ -180,7 +180,56 @@
 
 ;; jolt models every number as a double, so vector indices arrive as flonums —
 ;; coerce an integer-valued index to a Scheme fixnum before bounds math.
-(define (->idx i) (if (fixnum? i) i (if (flonum? i) (exact (floor i)) i)))
+(define (->idx i) (if (fixnum? i) i (if (flonum? i) (exact (fltruncate i)) i)))
+;; An int-indexed op (nth, aget, aset, subs, subvec, .charAt) takes its index
+;; through RT.intCast on the JVM before it looks at the collection: longCast
+;; (a double or bignum past the long range is IllegalArgumentException "Value
+;; out of range for long: x"), then Math.toIntExact (outside the int range is
+;; ArithmeticException "integer overflow"). No collection holds 2^31 elements,
+;; so every such index is out of bounds too, and the check lives on the
+;; out-of-bounds branches: an in-range read never pays for it. Returns when the
+;; index fits an int, for the caller's own bounds error.
+;;
+;; The KEYED ops are the other half: get, contains?, find, a vector invoked as
+;; a fn, assoc and assoc! read a key with Number.intValue, which keeps the low
+;; 32 bits instead of refusing, so (get [:a :b] 4294967297) is :b on the JVM.
+;; A vector takes only an integer key (Util.isInteger: a double is no index);
+;; a string or array takes any Number, a double truncated the way (int) casts.
+;; Number.intValue of an exact integer: its low 32 bits, signed.
+(define (int32-low n)
+  (let ((m (bitwise-and n #xFFFFFFFF)))
+    (if (>= m #x80000000) (- m #x100000000) m)))
+;; A vector's key as an index, or #f for a key that is not an integer.
+(define (vec-key-index k)
+  (cond ((fixnum? k) (if (and (fx>=? k -2147483648) (fx<=? k 2147483647)) k (int32-low k)))
+        ((and (number? k) (exact? k) (integer? k)) (int32-low k))
+        (else #f)))
+;; A string's or array's key as an index (RT.getFrom/contains), or #f for a key
+;; that is not a Number. A double is Java's (int) cast: NaN is 0, and past the
+;; int range it saturates.
+(define (num-key-index k)
+  (cond ((vec-key-index k))
+        ((flonum? k)
+         (cond ((not (fl= k k)) 0)
+               ((fl>= k 2147483647.0) 2147483647)
+               ((fl<= k -2147483648.0) -2147483648)
+               (else (exact (fltruncate k)))))
+        (else #f)))
+(define (index-int-check! i)
+  (cond ((fixnum? i)
+         (unless (and (fx>=? i -2147483648) (fx<=? i 2147483647))
+           (throw-jvm 'ArithmeticException "integer overflow")))
+        ((flonum? i)
+         (cond ((or (fl> i 9.223372036854775807e18) (fl< i -9.223372036854775808e18))
+                (throw-jvm 'IllegalArgumentException
+                           (string-append "Value out of range for long: " (jolt-str-render-one i))))
+              ((or (fl>= i 2147483648.0) (fl<= i -2147483649.0))
+               (throw-jvm 'ArithmeticException "integer overflow"))))
+        ((and (number? i) (exact? i) (integer? i))
+         (if (and (>= i -9223372036854775808) (<= i 9223372036854775807))
+             (throw-jvm 'ArithmeticException "integer overflow")
+             (throw-jvm 'IllegalArgumentException
+                        (string-append "Value out of range for long: " (number->string i)))))))
 (define (pvec-count p) (pvec-cnt p))
 ;; jolt-nth's throwing pvec read as its own entry: the base definition's pvec
 ;; arm and the fast path hoisted in front of the set! wrapper chain
@@ -200,15 +249,36 @@
 (define (pvec-nth! p i)
   (if (jolt-nil? i)
       (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))
-      (let ((i (if (fixnum? i) i (if (flonum? i) (exact (floor i)) i))))
+      (let ((i (if (fixnum? i) i (if (flonum? i) (exact (fltruncate i)) i))))
         (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
             (pvec-nth-in-range p i)
-            (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))))
+            (begin
+              (index-int-check! i)
+              (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))))
 (define (pvec-nth-d p i d)
   (let ((i (->idx i)))
     (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
         (pvec-nth-in-range p i)
         d)))
+;; get over a vector (APersistentVector.valAt): an in-range fixnum is the
+;; common key and reads directly; anything else goes through intValue.
+(define (pvec-get p k d)
+  (if (and (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt p)))
+      (pvec-nth-in-range p k)
+      (let ((j (vec-key-index k)))
+        (if (and j (fx>=? j 0) (fx<? j (pvec-cnt p))) (pvec-nth-in-range p j) d))))
+;; A vector called as a fn, assoc'd, or assoc!'d takes an integer key by
+;; intValue and refuses any other (APersistentVector.invoke / assoc).
+(define (pvec-key-index! k)
+  (or (vec-key-index k) (throw-jvm 'IllegalArgumentException "Key must be integer")))
+;; ([:a :b] k) with a literal vector in call position (backend :coll kind)
+(define (jolt-vec-invoke1 v k) (pvec-nth! v (pvec-key-index! k)))
+;; nth's notFound arity over a vector: RT.intCast refuses the index first.
+(define (pvec-nth-cast-d p i d)
+  (let ((i (->idx i)))
+    (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
+        (pvec-nth-in-range p i)
+        (begin (index-int-check! i) d))))
 
 ;; new-path: wrap a node in single-child nodes up `level` bits.
 (define (pv-new-path level node)
@@ -1537,9 +1607,9 @@
 (define (jolt-get-base coll k d)
   (cond ((pmap? coll) (pmap-get coll k d))
         ((pset? coll) (pset-get coll k d))
-        ((pvec? coll) (pvec-nth-d coll k d))
-        ((string? coll) (let ((i (->idx k)))
-                          (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
+        ((pvec? coll) (pvec-get coll k d))
+        ((string? coll) (let ((i (num-key-index k)))
+                          (if (and i (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
         (else d)))
 ;; A keyword-invoke SITE's cell: the slot index its key was last found at in
 ;; an array-mode map. Every map one literal builds is record-shaped — the same
@@ -1580,7 +1650,7 @@
 ;; resolved at call time. Check concrete types first, then records, then arms.
 (define (jolt-get-dispatch coll k d)
   (cond ((pmap? coll) (pmap-fast-get coll k d))
-        ((pvec? coll) (pvec-nth-d coll k d))
+        ((pvec? coll) (pvec-get coll k d))
         ((pset? coll) (pset-get coll k d))
         ((jrec? coll) (jrec-ref coll k d))
         (else (let loop ((as jolt-get-arms))
@@ -1617,13 +1687,15 @@
                             (simple-class-name (jolt-class-name coll)))))
 (define jolt-nth
   (case-lambda
-     ((coll i)
-      (jolt-nth-nil-idx! i)
-      (let ((i (->idx i)))
-        (cond ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
-        ;; pvec is the dominant receiver (every vector destructure lowers to nth);
-        ;; keep it first so a destructure pays one call, not the walk below.
-        ((pvec? coll) (pvec-nth! coll i))
+     ((coll i0)
+      (jolt-nth-nil-idx! i0)
+      (let ((i (->idx i0)))
+        (cond ((pvec? coll) (pvec-nth! coll i))
+              ;; pvec is the dominant receiver (every vector destructure lowers to nth);
+              ;; keep it first so a destructure pays one call, not the walk below.
+              ;; Every other receiver casts the index first, as RT.intCast does.
+              ((begin (index-int-check! i0) #f) #f)
+              ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
               ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
                                   (jolt-throw (jolt-host-throwable "java.lang.StringIndexOutOfBoundsException"
                                                                    (string-append "Index " (number->string i)
@@ -1639,11 +1711,13 @@
                => (lambda (kv) (case i ((0) (car kv)) ((1) (cdr kv))
                                  (else (throw-jvm 'IndexOutOfBoundsException jolt-nil)))))
               (else (unsupported-on-type "nth" coll)))))
-    ((coll i d)
-     (jolt-nth-nil-idx! i)
-     (let ((i (->idx i)))
-       (cond ((jolt-nil? coll) d)                 ; RT.nth(nil, i, notFound) is notFound
-             ((pvec? coll) (pvec-nth-d coll i d))
+    ((coll i0 d)
+     (jolt-nth-nil-idx! i0)
+     (let ((i (->idx i0)))
+       (cond ((pvec? coll) (pvec-nth-cast-d coll i d))
+             ;; notFound answers an out-of-range index, not one RT.intCast refuses
+             ((begin (index-int-check! i0) #f) #f)
+             ((jolt-nil? coll) d)                 ; RT.nth(nil, i, notFound) is notFound
              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #t d))
              ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i d)))
@@ -1731,7 +1805,7 @@
 
 (define (jolt-assoc1 coll k v)
   (cond ((pmap? coll) (pmap-assoc coll k v))
-        ((pvec? coll) (pvec-assoc coll k v))
+        ((pvec? coll) (pvec-assoc coll (pvec-key-index! k) v))
         ((jolt-nil? coll) (pmap-assoc empty-pmap k v))
         ((rec-coll-method coll "assoc") => (lambda (m) (jolt-invoke m coll k v)))
         (else (jolt-throw (jolt-host-throwable "java.lang.ClassCastException"
@@ -1761,14 +1835,14 @@
 (define (jolt-contains? coll k)
   (cond ((pmap? coll) (pmap-contains? coll k))
         ((pset? coll) (pset-contains? coll k))
-        ((pvec? coll) (let ((k (->idx k))) (and (fixnum? k) (fx>=? k 0) (fx<? k (pvec-count coll)))))
+        ((pvec? coll) (let ((j (vec-key-index k))) (and j (fx>=? j 0) (fx<? j (pvec-count coll)))))
         ((jolt-nil? coll) #f)
         ;; a string supports contains? by INDEX only (RT.contains: CharSequence +
         ;; Number key); any other key — or any unsupported type — is the JVM's
         ;; IllegalArgumentException.
         ((string? coll)
-         (if (and (number? k) (exact? k) (integer? k))
-             (and (>= k 0) (< k (string-length coll)))
+         (if (number? k)
+             (let ((j (num-key-index k))) (and (fx>=? j 0) (fx<? j (string-length coll))))
              (jolt-throw (jolt-host-throwable
                           "java.lang.IllegalArgumentException"
                           "contains? not supported on type: java.lang.String"))))

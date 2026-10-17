@@ -3613,7 +3613,7 @@
                     (fn [[c & as]]
                       (lookup-restore tail?
                         (str (if (= :vector (:op fnode))
-                               "(jolt-nth "
+                               "(jolt-vec-invoke1 "
                                "(jolt-get ")
                              c " " (str/join " " as) ")")))))
       (and (stdlib-var? fnode) (not (prelude-mode?)))

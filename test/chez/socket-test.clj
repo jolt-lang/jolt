@@ -22,8 +22,14 @@
 
 ;; connect lands in the listen backlog, so single-threaded connect-then-accept
 ;; is safe; every helper closes what it opens.
+;;
+;; A listener the test dials at 127.0.0.1 binds 127.0.0.1, not the wildcard. A
+;; wildcard listener on port P does not own 127.0.0.1:P: another process
+;; listening there (a long-running nREPL server, say) takes the connection, and
+;; the accept below waits forever. The wildcard sites left are the ones testing
+;; the wildcard itself.
 (defn with-pair [f]
-  (let [server (java.net.ServerSocket. 0)
+  (let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
         client (java.net.Socket. "127.0.0.1" (.getLocalPort server))
         conn   (.accept server)]
     (try (f server client conn)
@@ -234,7 +240,7 @@
 
 ;; write to a peer-closed socket throws instead of silently dropping — and the
 ;; process must survive it (SIGPIPE guarded via MSG_NOSIGNAL / SO_NOSIGPIPE).
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       client (java.net.Socket. "127.0.0.1" (.getLocalPort server))
       conn   (.accept server)
       out    (.getOutputStream client)
@@ -306,7 +312,7 @@
           (str (java.net.InetAddress/getByName "127.0.0.1")) "/127.0.0.1")
 
 ;; no-arg Socket + .connect(endpoint)
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       client (java.net.Socket.)]
   (.connect client (java.net.InetSocketAddress. "127.0.0.1" (.getLocalPort server)))
   (check-eq "connect endpoint" (.isConnected client) true)
@@ -328,7 +334,7 @@
 ;; free once closed, and the next socket to open gets it. Without the guard A's
 ;; read takes B's first byte and A's write reaches B's peer (jolt#1183). The JVM
 ;; prints SocketException "Socket closed" for every call below.
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       port   (.getLocalPort server)
       a      (java.net.Socket. "127.0.0.1" port)
       a-peer (.accept server)
@@ -366,7 +372,7 @@
 
 ;; the rest of a closed socket's surface answers from the object, never the fd
 ;; (which may be another socket's by now), and raises what the JVM raises.
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       port   (.getLocalPort server)
       a      (java.net.Socket. "127.0.0.1" port)
       a-peer (.accept server)
@@ -433,7 +439,7 @@
 ;; close had freed: B, opened right after, is handed that number, and A's read
 ;; took B's bytes. A's fd stays reserved until its read has left.
 (require '[jolt.fibers :as fib])
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       port   (.getLocalPort server)
       a      (java.net.Socket. "127.0.0.1" port)
       a-peer (.accept server)
@@ -614,7 +620,7 @@
       (check-eq "available counts past any buffer" (.available in) 20000))))
 
 ;; a peer that closed leaves its bytes readable, and the count with them
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       client (java.net.Socket. "127.0.0.1" (.getLocalPort server))
       conn   (.accept server)
       in     (.getInputStream conn)]
@@ -835,7 +841,7 @@
             ["ConnectException" "Connection refused"])
   (check-eq "…and closes the socket" (.isClosed s) true))
 
-(let [server (java.net.ServerSocket. 0)
+(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       s (java.net.Socket.)]
   (.connect s (java.net.InetSocketAddress. "127.0.0.1" (.getLocalPort server)) 1000)
   (check-eq "a timed connect that completes is connected" (.isConnected s) true)

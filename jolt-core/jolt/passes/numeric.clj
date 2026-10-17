@@ -199,12 +199,19 @@
 ;; agree, demotes the slot back to generic (arbitrary precision). A typed loop var's
 ;; init and recur args are all flonums/fixnums, so no entry coercion is needed here,
 ;; unlike a fn param.
+;;
+;; A trial only needs KINDS, and a nested loop or fn has none (both answer nil),
+;; so under *kind-probe?* `an` returns them untouched instead of annotating them:
+;; they are annotated once, by the final pass over the body. Annotating a loop in
+;; a let init on every trial re-ran its own fixpoint each time, which cost
+;; (trials per level)^depth for nested loops.
+(def ^:dynamic ^:private *kind-probe?* false)
 (defn- loop-kinds [names seed body tenv]
   (loop [cur seed iter 0]
     (if (> iter (count names))
       cur
       (let [te (reduce (fn [t i] (assoc t (nth names i) (nth cur i))) tenv (range (count names)))
-            rks (recur-kinds body te)
+            rks (binding [*kind-probe?* true] (doall (recur-kinds body te)))
             nxt (mapv (fn [j]
                         (let [k (nth cur j)]
                           (if (and k (every? (fn [rk] (= k (nth rk j))) rks)) k nil)))
@@ -458,6 +465,7 @@
                         [tenv []] (get node :bindings))
             br (an (get node :body) (nth res 0))]
         [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
+      (and *kind-probe?* (or (= op :loop) (= op :fn))) [nil node]
       (= op :loop)
       ;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
       (let [binds (get node :bindings)

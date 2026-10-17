@@ -112,9 +112,13 @@
 
 (printf "== fibers-io: transparent socket parking on a fiber ==\n")
 
+;; Every listener here binds the loopback address its clients dial. A wildcard
+;; listener on port P does not own 127.0.0.1:P, and another process listening
+;; there (a long-running nREPL server) took the connections: the accept waited
+;; forever, about one run in 600 on a machine with one.
 ;; --- 1. THE whole round: a read with no data parks; a sibling progresses ------
 (printf "\n== 1. a fiber read with no data parks; a sibling on the same carrier runs ==\n")
-(ev "(def r8-ss (java.net.ServerSocket. 0))")
+(ev "(def r8-ss (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress)))")
 (ev "(def r8-port (.getLocalPort r8-ss))")
 (ev "(def r8-client (java.net.Socket. \"127.0.0.1\" r8-port))")
 (ev "(def r8-srv (.accept r8-ss))")
@@ -141,7 +145,7 @@
 
 ;; --- 2. the same code path on a plain OS thread blocks and works --------------
 (printf "\n== 2. the thread path still blocks and still works ==\n")
-(ev "(def r8-ss2 (java.net.ServerSocket. 0))")
+(ev "(def r8-ss2 (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress)))")
 (ev "(def r8-port2 (.getLocalPort r8-ss2))")
 (ev "(def r8-client2 (java.net.Socket. \"127.0.0.1\" r8-port2))")
 (ev "(def r8-srv2 (.accept r8-ss2))")
@@ -165,7 +169,7 @@
 
 ;; --- 3. a full collect succeeds while the poller is blocked -------------------
 (printf "\n== 3. a full collect succeeds while the poller is blocked in kevent/epoll_wait ==\n")
-(ev "(def r8-ss3 (java.net.ServerSocket. 0))")
+(ev "(def r8-ss3 (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress)))")
 (ev "(def r8-port3 (.getLocalPort r8-ss3))")
 (ev "(def r8-client3 (java.net.Socket. \"127.0.0.1\" r8-port3))")
 (ev "(def r8-srv3 (.accept r8-ss3))")
@@ -198,7 +202,7 @@
 ;; --- 4. 8 fibers, one carrier: all park at once, all round-trip ---------------
 (printf "\n== 4. 8 fibers, one carrier, all parked simultaneously, all round-trip ==\n")
 (define r8-n 8)
-(ev "(def r8-ss4 (java.net.ServerSocket. 0))")
+(ev "(def r8-ss4 (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress)))")
 (ev "(def r8-port4 (.getLocalPort r8-ss4))")
 (ev "(def r8-clients (atom []))")
 (ev "(dotimes [i 8] (swap! r8-clients conj (java.net.Socket. \"127.0.0.1\" r8-port4)))")
@@ -234,7 +238,7 @@
 
 ;; --- 5. accept parks too -------------------------------------------------------
 (printf "\n== 5. a fiber blocked in accept parks and resumes on a connection ==\n")
-(ev "(def r8-ss5 (java.net.ServerSocket. 0))")
+(ev "(def r8-ss5 (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress)))")
 (ev "(def r8-port5 (.getLocalPort r8-ss5))")
 (define accept-thunk
   (ev "(fn [] (let [s (.accept r8-ss5)] (if (.isConnected s) :accepted :no)))"))
@@ -251,7 +255,7 @@
 ;; --- 6. jolt.socket off a fiber is unchanged ----------------------------------
 (printf "\n== 6. existing socket behaviour off a fiber is untouched ==\n")
 (define r6 (ev "
-(let [ss (java.net.ServerSocket. 0)
+(let [ss (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
       port (.getLocalPort ss)
       c (java.net.Socket. \"127.0.0.1\" port)
       s (.accept ss)
@@ -283,7 +287,7 @@
 (printf "\n== 7. timed fiber waits answered early leave no timer behind ==\n")
 (define (pending-timers) (jolt-with-mutex timeout-mu (timeout-pending-count)))
 (define base-timers (pending-timers))
-(ev "(def t7-ss (java.net.ServerSocket. 0))")
+(ev "(def t7-ss (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress)))")
 (ev "(def t7-client (java.net.Socket. \"127.0.0.1\" (.getLocalPort t7-ss)))")
 (ev "(def t7-srv (.accept t7-ss))")
 (ev "(.setSoTimeout t7-client 3600000)")

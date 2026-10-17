@@ -839,7 +839,7 @@ if ! JOLT_PWD="$rec_hint_app" "$jolt" build -m app.core -o "$rec_hint_out" --opt
   echo "  FAIL: rec-hint --opt build exited non-zero"; exit 1
 fi
 rec_hint_got="$(cd "$rec_hint_app" && "$rec_hint_out" 2>&1)"
-rec_hint_want="$(printf '1\nnil\nnil\n9\nfalse\ntrue\n25\n[:a 2.0]\n:fn\n:sp\n7 25.0')"
+rec_hint_want="$(printf '1\nnil\nnil\n9\nfalse\ntrue\n25\n[:a 2.0]\n:fn\n:sp\n[:m 2.0 4]\n[7 :w :z]\n[7 4.0 nil]\n[7 4.0 6]\n7 25.0')"
 if [ "$rec_hint_got" != "$rec_hint_want" ]; then
   echo "  FAIL: a ^Record hint taken as proof of the value — got \`$rec_hint_got\`, want \`$rec_hint_want\`"; exit 1
 fi

@@ -237,7 +237,7 @@
 (unless (eq? (sa-os-family) 'windows)
   (ev "(require 'jolt.socket)")
   (ok "socket recv keeps EAGAIN across an intervening errno clobber"
-      (evb "(let [server (java.net.ServerSocket. 0)
+      (evb "(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
                    client (java.net.Socket. \"127.0.0.1\" (.getLocalPort server))
                    conn (.accept server)
                    fd (jolt.host/ref-get conn :fd)
@@ -261,7 +261,7 @@
                    (.close server))))"))
 
   (ok "socket accept keeps EAGAIN across an intervening errno clobber"
-      (evb "(let [server (java.net.ServerSocket. 0)
+      (evb "(let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
                    server-fd (jolt.host/ref-get server :fd)
                    client (atom nil)
                    accepted-fd (atom -1)
