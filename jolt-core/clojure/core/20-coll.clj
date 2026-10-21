@@ -109,7 +109,9 @@
 ;; place (no second map rebuild). A bucket's FIRST element is stored as a cheap
 ;; persistent [x]; only the second element promotes it to a transient — so an
 ;; all-singletons grouping pays no transient alloc, while any bucket that
-;; actually grows rides the O(1) push.
+;; actually grows rides the O(1) push. A key not equal to itself (##NaN) misses
+;; on every lookup, so each occurrence gets its own [x] entry, as on the JVM;
+;; the freeze pass misses on it too (nil), and its bucket is already persistent.
 (defn group-by [f coll]
   (let [tm (transient {})
         ks (reduce (fn [ks x]
@@ -123,7 +125,7 @@
                    (transient []) coll)]
     (reduce (fn [_ k]
               (let [b (get tm k)]
-                (if (vector? b) nil (assoc! tm k (persistent! b)))))
+                (if (or (nil? b) (vector? b)) nil (assoc! tm k (persistent! b)))))
             nil (persistent! ks))
     (persistent! tm)))
 

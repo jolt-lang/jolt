@@ -2598,6 +2598,12 @@
   {:suite "maps / insertion order" :label "select-keys follows keyseq" :expected "[:c :a]" :actual "(vec (keys (select-keys {:a 1 :b 2 :c 3} [:c :a])))" :portability :common}
   {:suite "maps / insertion order" :label "frequencies first-occurrence order" :expected "[:c :a :b]" :actual "(vec (keys (frequencies [:c :a :b :a])))" :portability :common}
   {:suite "maps / insertion order" :label "group-by first-occurrence order" :expected "[:c :a :b]" :actual "(vec (keys (group-by identity [:c :a :b :a])))" :portability :common}
+  ;; NaN never equals itself, so each ##NaN misses its own bucket and becomes a
+  ;; separate entry, as on the JVM. The bucket-freeze pass used to look each key
+  ;; back up, missed on the NaN, and threw "persistent!: not a transient".
+  {:suite "maps / group-by NaN keys" :label "a NaN key gets its own bucket" :expected "\"{##NaN [##NaN], 1.0 [1.0]}\"" :actual "(pr-str (group-by identity [##NaN 1.0]))" :portability :common}
+  {:suite "maps / group-by NaN keys" :label "each NaN is a separate entry beside grown buckets" :expected "\"{##NaN [##NaN], 1 [1 1], ##NaN [##NaN], 2 [2]}\"" :actual "(pr-str (group-by identity [##NaN 1 ##NaN 2 1]))" :portability :common}
+  {:suite "maps / group-by NaN keys" :label "NaN keys in a hash-map-sized grouping" :expected "[42 true 2 [39 39]]" :actual "(let [g (group-by identity (concat (range 40) [##NaN ##NaN] (range 40)))] [(count g) (every? vector? (vals g)) (count (filter #(and (double? %) (NaN? %)) (keys g))) (get g 39)])" :portability :common}
   {:suite "clojure.math" :label "sqrt" :expected "true" :actual "(< 1.4142 (clojure.math/sqrt 2) 1.4143)" :portability :common}
   {:suite "clojure.math" :label "pow" :expected "1024" :actual "(long (clojure.math/pow 2 10))" :portability :common}
   {:suite "clojure.math" :label "tan of 0" :expected "0" :actual "(long (clojure.math/tan 0))" :portability :common}
