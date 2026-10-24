@@ -12,8 +12,12 @@
 #     kernel too; on a patched one it is what pins the protocol (with the
 #     collector's lock of a native thread's return code removed it crashes).
 #   - collect-safe-cost.clj, on jolt: a :blocking call against a plain one in
-#     one process. On a patched kernel the ratio must stay under 3 (it is
-#     ~1.7; a stock kernel is ~8).
+#     one process. On a patched kernel the ratio must stay under 4 (it is
+#     ~1.7-2.4 on most runners; a stock kernel is ~8). It is a RATIO over a
+#     fixed cost, two CASes and a fence (~13ns), so it climbs as the plain call
+#     gets cheaper: x86 runners whose plain call took 6ns read 3.16x and 3.25x
+#     against the 3x this bound used to be, while the same commit read 2.2x on
+#     a 23ns runner. 4x still sits well clear of the stock kernel.
 #   - collect-safe-scaling.ss, on any kernel: the tc mutex and a collection
 #     with many parked threads, so a quadratic thread walk cannot come back.
 #
@@ -65,8 +69,8 @@ if [ "$lockfree" != true ]; then
   echo "collect-safe-activation: stock Chez kernel, cost bound not checked"
   exit 0
 fi
-if awk "BEGIN { exit !($ratio >= 3) }"; then
-  echo "FAIL: a :blocking call costs ${ratio}x a plain one on a patched kernel (bound 3x)" >&2
+if awk "BEGIN { exit !($ratio >= 4) }"; then
+  echo "FAIL: a :blocking call costs ${ratio}x a plain one on a patched kernel (bound 4x)" >&2
   exit 1
 fi
 

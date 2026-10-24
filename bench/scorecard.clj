@@ -79,6 +79,11 @@
    "coll-dispatch" "kind dispatch on small collections: `get`/`assoc` on a 4-key map, a first/next walk, `count`/`conj`/`nth`/`=` on short lists and vectors"
    "metadata" "`with-meta`/`meta`/`vary-meta`, ops that carry meta (`assoc`/`conj`/`into` on a meta-bearing coll), a positioned form tree rebuilt with meta kept"
    "parallel-colls" "eight threads, each on its own values: `assoc`/`conj`/`swap!`/`str`/`hash`/`re-find`/`with-meta` (what the runtime shares behind their backs)"
+   "atom-ops" "atom paths per event: counter `swap!`, `deref` of a small map, `swap! assoc` into and `get` from a 1k-key map, a deref read whole"
+   "watched-swap" "a disk-backed atom: every `swap!` fires a watch that `spit`s the `pr-str` of the new state"
+   "pool-tasks" "64 small tasks fanned out and joined, onto a warm fixed pool of 8 and through `future`"
+   "sorted-set-build" "sorted sets built by `into` (scrambled longs, strings), `conj` in order, and `disj` of half"
+   "int-map-build" "long-keyed hash maps built by `into {}`, `assoc`, transient `assoc!` and `zipmap`, then a `get` of every key"
    "startup" "a built hello-world, whole process from exec to exit, best of {{startup-reps}} (JVM: `java -cp … clojure.main -m hello`)"})
 
 (def run-mode-descriptions

@@ -1,3 +1,8 @@
+;;   Portions of this file are from ClojureScript's src/main/cljs/cljs/core.cljs,
+;;   Copyright (c) Rich Hickey. All rights reserved.
+;;   The use and distribution terms for that software are covered by the
+;;   Eclipse Public License 1.0 (licenses/EPL-1.0.txt).
+
 ;; host tables + sorted collections — the jolt.host value primitives and the
 ;; 25-sorted tier's runtime.
 ;;
@@ -39,13 +44,65 @@
 ;; non-htable so the atom-watch / volatile uses (which pass a different ref type
 ;; and have no table yet) stay a crash rather than silently diverging.
 (define (jolt-ref-put! t k v)
-  (unless (htable? t) (error #f "ref-put!: not a host table" t))
+  (unless (and (htable? t) (not (scoll? t))) (error #f "ref-put!: not a host table" t))
   (if (jolt-nil? v)
       (hashtable-delete! (htable-h t) (kw->key k))
       (hashtable-set! (htable-h t) (kw->key k) v))
   t)
 (define (jolt-ref-get t k)
-  (if (htable? t) (hashtable-ref (htable-h t) (kw->key k) jolt-nil) jolt-nil))
+  (cond ((scoll? t) (scoll-ref t (kw->key k) jolt-nil))
+        ((htable? t) (hashtable-ref (htable-h t) (kw->key k) jolt-nil))
+        (else jolt-nil)))
+;; A table's field by its string key, for the host code that reads one directly
+;; (the class arm, tagged method dispatch). One door, so a sorted coll answers
+;; the same keys a tagged table does.
+(define (htable-str-ref t key dflt)
+  (if (scoll? t) (scoll-ref t key dflt) (hashtable-ref (htable-h t) key dflt)))
+
+;; --- the sorted collection's wrapper ---------------------------------------------
+;; A sorted-map / sorted-set is an htable whose fields are FIXED, so it is a record
+;; of them rather than a string-keyed hashtable: it was minted as a fresh
+;; hashtable and five ref-put!s per conj, and every field read, and every
+;; sorted-map?/sorted-set? test the dispatchers make, built a key string and
+;; hashed it. In a sorted-set build that was half the time, more than the tree.
+;; A subtype of htable, so everything that recognizes a tagged table recognizes
+;; it, and ref-get answers its keys as before; the table slot is #f. KIND is
+;; 'map or 'set, read off TAG once.
+(define-record-type (scoll make-scoll* scoll?)
+  (parent htable)
+  (fields kind tag tree cnt cmp cmp-fn ops)
+  (nongenerative chez-scoll-v1))
+(define scoll-map-tag (keyword "jolt" "sorted-map"))
+(define (make-scoll tag tree cnt cmp cmp-fn ops)
+  (make-scoll* #f #f (if (jolt=2 tag scoll-map-tag) 'map 'set)
+               tag tree cnt cmp cmp-fn ops))
+(define (scoll-copy x)
+  (make-scoll* #f (htable-hc x) (scoll-kind x) (scoll-tag x) (scoll-tree x) (scoll-cnt x)
+               (scoll-cmp x) (scoll-cmp-fn x) (scoll-ops x)))
+(define (scoll-ref t key dflt)
+  (cond ((string=? key "tree") (scoll-tree t))
+        ((string=? key "cnt") (scoll-cnt t))
+        ((string=? key "jolt/type") (scoll-tag t))
+        ((string=? key "ops") (scoll-ops t))
+        ((string=? key "cmp") (scoll-cmp t))
+        ((string=? key "cmp-fn") (scoll-cmp-fn t))
+        (else dflt)))
+(def-var! "jolt.host" "make-sorted" make-scoll)
+;; the collection an op answers: X's kind, tag, comparators and ops over a new
+;; tree and count — what nearly every op builds, in one call of three arguments
+;; rather than make-sorted's six read back out of X
+(def-var! "jolt.host" "sorted-with"
+  (lambda (x tree cnt)
+    (make-scoll* #f #f (scoll-kind x) (scoll-tag x) tree cnt (scoll-cmp x) (scoll-cmp-fn x) (scoll-ops x))))
+(def-var! "jolt.host" "sorted-tree" (lambda (x) (scoll-tree x)))
+(def-var! "jolt.host" "sorted-cnt" (lambda (x) (scoll-cnt x)))
+(def-var! "jolt.host" "sorted-cmp" (lambda (x) (scoll-cmp x)))
+(def-var! "jolt.host" "sorted-cmp-fn" (lambda (x) (scoll-cmp-fn x)))
+(def-var! "jolt.host" "sorted-ops" (lambda (x) (scoll-ops x)))
+;; :map, :set or nil — sorted-map? and sorted-set? in one test
+(def-var! "jolt.host" "sorted-kind"
+  (let ((km (keyword #f "map")) (ks (keyword #f "set")))
+    (lambda (x) (if (scoll? x) (if (eq? (scoll-kind x) 'map) km ks) jolt-nil))))
 
 (def-var! "jolt.host" "tagged-table" jolt-tagged-table)
 (def-var! "jolt.host" "ref-put!" jolt-ref-put!)
@@ -122,17 +179,254 @@
 (define kw-op-dissoc (keyword #f "dissoc"))
 (define kw-op-conj (keyword #f "conj"))
 (define kw-op-disj (keyword #f "disj"))
+;; the one-element ops: conj/assoc/dissoc/disj of a single item, which is every
+;; call into/reduce makes, go straight to the per-item fn rather than through a
+;; vector built to hold it and a reduce over that vector
+(define kw-op-conj1 (keyword #f "conj1"))
+(define kw-op-assoc1 (keyword #f "assoc1"))
+(define kw-op-dissoc1 (keyword #f "dissoc1"))
+(define kw-op-disj1 (keyword #f "disj1"))
 
-(define (htable-sorted-map? x) (and (htable? x) (jolt=2 (jolt-ref-get x kw-jtype) kw-sorted-map)))
-(define (htable-sorted-set? x) (and (htable? x) (jolt=2 (jolt-ref-get x kw-jtype) kw-sorted-set)))
-(define (htable-sorted? x) (or (htable-sorted-map? x) (htable-sorted-set? x)))
+(define (htable-sorted-map? x) (and (scoll? x) (eq? (scoll-kind x) 'map)))
+(define (htable-sorted-set? x) (and (scoll? x) (eq? (scoll-kind x) 'set)))
+(define (htable-sorted? x) (scoll? x))
 ;; the op fn for `op-kw` from the value's attached :ops map, then invoke it on sc.
-(define (sc-op sc op-kw) (jolt-get (jolt-ref-get sc kw-ops) op-kw jolt-nil))
-(define (sc-call sc op-kw . args) (apply jolt-invoke (sc-op sc op-kw) sc args))
+(define (sc-op sc op-kw) (jolt-get (scoll-ops sc) op-kw jolt-nil))
+(define sc-call
+  (case-lambda
+    ((sc op-kw) (jolt-invoke1 (sc-op sc op-kw) sc))
+    ((sc op-kw a) (jolt-invoke2 (sc-op sc op-kw) sc a))
+    ((sc op-kw a b) (jolt-invoke3 (sc-op sc op-kw) sc a b))))
+
+;; --- the red-black tree --------------------------------------------------------
+;; Rich Hickey's PersistentTreeMap algorithm (via cljs.core's port: tree-map-add,
+;; balance-left/right, tree-map-append, balance-*-del), which 25-sorted.clj
+;; carries the semantics around. A node is a 5-slot Scheme vector
+;; #(red? key val left right), red? a boolean and an absent child jolt-nil. It
+;; lived in 25-sorted.clj as a jolt vector [:red k v l r], where every field read
+;; was a generic nth and every node a persistent vector: ~200ns a tree level
+;; against the JVM's ~25ns, and a sorted-set build 4.5x the JVM's. Here a field
+;; read is a vector-ref.
+;;
+;; Not image surface: an image writes a sorted collection out as its entries and
+;; rebuilds it (state-image.ss walk-sorted), so the node layout never travels.
+;;
+;; CMP is the collection's comparator as 25-sorted.clj holds it, or jolt-nil for
+;; natural order, which is Util.compare (jolt-compare) and not the clojure.core
+;; var: the JVM's PersistentTreeMap orders by RT.DEFAULT_COMPARATOR, which a
+;; rebinding of #'compare does not reach. Every comparison is (cmp k node-key),
+;; once per level, as the reference makes it; the corpus pins the counts.
+;;
+;; The node helpers are macros, not procedures: a top-level procedure is a call
+;; Chez cannot inline across, and an insert makes a dozen of these per level.
+;; Only this file uses them as macros; sc-nd-key and friends below are the
+;; procedures the other files call.
+(define-syntax rb-red?
+  (syntax-rules () ((_ n) (let ((x n)) (and (not (jolt-nil? x)) (vector-ref x 0))))))
+(define-syntax rb-black?
+  (syntax-rules () ((_ n) (let ((x n)) (and (not (jolt-nil? x)) (not (vector-ref x 0)))))))
+(define-syntax rb-red (syntax-rules () ((_ k v l r) (vector #t k v l r))))
+(define-syntax rb-black (syntax-rules () ((_ k v l r) (vector #f k v l r))))
+(define-syntax rb-key (syntax-rules () ((_ n) (vector-ref n 1))))
+(define-syntax rb-val (syntax-rules () ((_ n) (vector-ref n 2))))
+(define-syntax rb-left (syntax-rules () ((_ n) (vector-ref n 3))))
+(define-syntax rb-right (syntax-rules () ((_ n) (vector-ref n 4))))
+(define (sc-nd-key n) (rb-key n))
+(define (sc-nd-val n) (rb-val n))
+(define (sc-nd-left n) (rb-left n))
+(define (sc-nd-right n) (rb-right n))
+;; BlackNode.blacken is the node itself; RedNode.blacken a black copy. redden is
+;; only ever applied to a known-black node.
+(define (rb-blacken n)
+  (if (rb-red? n) (rb-black (rb-key n) (rb-val n) (rb-left n) (rb-right n)) n))
+(define (rb-redden n) (rb-red (rb-key n) (rb-val n) (rb-left n) (rb-right n)))
+;; natural order on two fixnums answers in line; anything else goes through
+;; Util.compare or the comparator
+(define (rb-compare-slow cmp a b)
+  (if (jolt-nil? cmp) (jolt-compare a b) (jolt-invoke cmp a b)))
+(define-syntax rb-compare
+  (syntax-rules ()
+    ((_ cmp a b)
+     (let ((c cmp) (x a) (y b))
+       (if (and (jolt-nil? c) (fixnum? x) (fixnum? y))
+           (cond ((fx<? x y) -1) ((fx=? x y) 0) (else 1))
+           (rb-compare-slow c x y))))))
+
+;; insert balancing: RedNode/BlackNode .balanceLeft/.balanceRight
+(define (rb-ins-balance-left ins p)
+  (if (rb-red? ins)
+      (let ((l (rb-left ins)) (r (rb-right ins)))
+        (cond
+          ((rb-red? l) (rb-red (rb-key ins) (rb-val ins)
+                               (rb-blacken l)
+                               (rb-black (rb-key p) (rb-val p) r (rb-right p))))
+          ((rb-red? r) (rb-red (rb-key r) (rb-val r)
+                               (rb-black (rb-key ins) (rb-val ins) l (rb-left r))
+                               (rb-black (rb-key p) (rb-val p) (rb-right r) (rb-right p))))
+          (else (rb-black (rb-key p) (rb-val p) ins (rb-right p)))))
+      (rb-black (rb-key p) (rb-val p) ins (rb-right p))))
+(define (rb-ins-balance-right ins p)
+  (if (rb-red? ins)
+      (let ((l (rb-left ins)) (r (rb-right ins)))
+        (cond
+          ((rb-red? r) (rb-red (rb-key ins) (rb-val ins)
+                               (rb-black (rb-key p) (rb-val p) (rb-left p) l)
+                               (rb-blacken r)))
+          ((rb-red? l) (rb-red (rb-key l) (rb-val l)
+                               (rb-black (rb-key p) (rb-val p) (rb-left p) (rb-left l))
+                               (rb-black (rb-key ins) (rb-val ins) (rb-right l) r)))
+          (else (rb-black (rb-key p) (rb-val p) (rb-left p) ins))))
+      (rb-black (rb-key p) (rb-val p) (rb-left p) ins)))
+(define (rb-add-left p ins)
+  (if (rb-red? p)
+      (rb-red (rb-key p) (rb-val p) ins (rb-right p))
+      (rb-ins-balance-left ins p)))
+(define (rb-add-right p ins)
+  (if (rb-red? p)
+      (rb-red (rb-key p) (rb-val p) (rb-left p) ins)
+      (rb-ins-balance-right ins p)))
+
+;; Insert in ONE walk: the new subtree, or #f when k is present, with that node
+;; left in FOUND (PersistentTreeMap.add answers null and fills its box the same
+;; way).
+(define (rb-ins cmp t k v found)
+  (if (jolt-nil? t)
+      (rb-red k v jolt-nil jolt-nil)
+      (let ((c (rb-compare cmp k (rb-key t))))
+        (cond
+          ((zero? c) (set-box! found t) #f)
+          ((negative? c)
+           (let ((ins (rb-ins cmp (rb-left t) k v found)))
+             (and ins (rb-add-left t ins))))
+          (else
+           (let ((ins (rb-ins cmp (rb-right t) k v found)))
+             (and ins (rb-add-right t ins))))))))
+
+;; Replace the value at a present key, keeping the tree's shape and the node's
+;; own (first-inserted) key, as PersistentTreeMap.replace does.
+(define (rb-replace cmp t k v)
+  (let ((c (rb-compare cmp k (rb-key t))))
+    (vector (vector-ref t 0) (rb-key t)
+            (if (zero? c) v (rb-val t))
+            (if (negative? c) (rb-replace cmp (rb-left t) k v) (rb-left t))
+            (if (positive? c) (rb-replace cmp (rb-right t) k v) (rb-right t)))))
+
+(define (rb-lookup cmp t k)
+  (let loop ((t t))
+    (if (jolt-nil? t)
+        jolt-nil
+        (let ((c (rb-compare cmp k (rb-key t))))
+          (cond ((zero? c) t)
+                ((negative? c) (loop (rb-left t)))
+                (else (loop (rb-right t))))))))
+
+;; delete balancing: cljs's standalone balance-left/-right and *-del
+(define (rb-balance-left k v ins right)
+  (if (rb-red? ins)
+      (let ((il (rb-left ins)) (ir (rb-right ins)))
+        (cond
+          ((rb-red? il) (rb-red (rb-key ins) (rb-val ins) (rb-blacken il) (rb-black k v ir right)))
+          ((rb-red? ir) (rb-red (rb-key ir) (rb-val ir)
+                                (rb-black (rb-key ins) (rb-val ins) il (rb-left ir))
+                                (rb-black k v (rb-right ir) right)))
+          (else (rb-black k v ins right))))
+      (rb-black k v ins right)))
+(define (rb-balance-right k v left ins)
+  (if (rb-red? ins)
+      (let ((il (rb-left ins)) (ir (rb-right ins)))
+        (cond
+          ((rb-red? ir) (rb-red (rb-key ins) (rb-val ins) (rb-black k v left il) (rb-blacken ir)))
+          ((rb-red? il) (rb-red (rb-key il) (rb-val il)
+                                (rb-black k v left (rb-left il))
+                                (rb-black (rb-key ins) (rb-val ins) (rb-right il) ir)))
+          (else (rb-black k v left ins))))
+      (rb-black k v left ins)))
+(define (rb-invariant-violation)
+  (jolt-throw (jolt-ex-info "red-black tree invariant violation" (jolt-hash-map))))
+(define (rb-balance-left-del k v del right)
+  (cond
+    ((rb-red? del) (rb-red k v (rb-blacken del) right))
+    ((rb-black? right) (rb-balance-right k v del (rb-redden right)))
+    ((and (rb-red? right) (rb-black? (rb-left right)))
+     (let ((rl (rb-left right)))
+       (rb-red (rb-key rl) (rb-val rl)
+               (rb-black k v del (rb-left rl))
+               (rb-balance-right (rb-key right) (rb-val right) (rb-right rl)
+                                 (rb-redden (rb-right right))))))
+    (else (rb-invariant-violation))))
+(define (rb-balance-right-del k v left del)
+  (cond
+    ((rb-red? del) (rb-red k v left (rb-blacken del)))
+    ((rb-black? left) (rb-balance-left k v (rb-redden left) del))
+    ((and (rb-red? left) (rb-black? (rb-right left)))
+     (let ((lr (rb-right left)))
+       (rb-red (rb-key lr) (rb-val lr)
+               (rb-balance-left (rb-key left) (rb-val left) (rb-redden (rb-left left))
+                                (rb-left lr))
+               (rb-black k v (rb-right lr) del))))
+    (else (rb-invariant-violation))))
+;; merge the two subtrees of a removed node
+(define (rb-append left right)
+  (cond
+    ((jolt-nil? left) right)
+    ((jolt-nil? right) left)
+    ((rb-red? left)
+     (if (rb-red? right)
+         (let ((app (rb-append (rb-right left) (rb-left right))))
+           (if (rb-red? app)
+               (rb-red (rb-key app) (rb-val app)
+                       (rb-red (rb-key left) (rb-val left) (rb-left left) (rb-left app))
+                       (rb-red (rb-key right) (rb-val right) (rb-right app) (rb-right right)))
+               (rb-red (rb-key left) (rb-val left) (rb-left left)
+                       (rb-red (rb-key right) (rb-val right) app (rb-right right)))))
+         (rb-red (rb-key left) (rb-val left) (rb-left left) (rb-append (rb-right left) right))))
+    ((rb-red? right)
+     (rb-red (rb-key right) (rb-val right) (rb-append left (rb-left right)) (rb-right right)))
+    (else
+     (let ((app (rb-append (rb-right left) (rb-left right))))
+       (if (rb-red? app)
+           (rb-red (rb-key app) (rb-val app)
+                   (rb-black (rb-key left) (rb-val left) (rb-left left) (rb-left app))
+                   (rb-black (rb-key right) (rb-val right) (rb-right app) (rb-right right)))
+           (rb-balance-left-del (rb-key left) (rb-val left) (rb-left left)
+                                (rb-black (rb-key right) (rb-val right) app (rb-right right))))))))
+;; remove k, which the caller has found present
+(define (rb-del cmp t k)
+  (let ((c (rb-compare cmp k (rb-key t))))
+    (cond
+      ((zero? c) (rb-append (rb-left t) (rb-right t)))
+      ((negative? c)
+       (let ((del (rb-del cmp (rb-left t) k)))
+         (if (rb-black? (rb-left t))
+             (rb-balance-left-del (rb-key t) (rb-val t) del (rb-right t))
+             (rb-red (rb-key t) (rb-val t) del (rb-right t)))))
+      (else
+       (let ((del (rb-del cmp (rb-right t) k)))
+         (if (rb-black? (rb-right t))
+             (rb-balance-right-del (rb-key t) (rb-val t) (rb-left t) del)
+             (rb-red (rb-key t) (rb-val t) (rb-left t) del)))))))
+
+;; The ops 25-sorted.clj calls. A FOUND answer from rbt-insert is a pair holding
+;; the present node, which rbt-found unwraps; a tree is always a node (a vector)
+;; or nil, so the two cannot be confused.
+(def-var! "jolt.host" "rbt-insert"
+  (lambda (tree cmp k v)
+    (let* ((found (box #f)) (t (rb-ins cmp tree k v found)))
+      (if t (rb-blacken t) (cons 'rbt-found (unbox found))))))
+(def-var! "jolt.host" "rbt-found"
+  (lambda (r) (if (pair? r) (cdr r) jolt-nil)))
+(def-var! "jolt.host" "rbt-replace" (lambda (tree cmp k v) (rb-replace cmp tree k v)))
+(def-var! "jolt.host" "rbt-lookup" (lambda (tree cmp k) (rb-lookup cmp tree k)))
+(def-var! "jolt.host" "rbt-delete"
+  (lambda (tree cmp k) (let ((t (rb-del cmp tree k))) (if (jolt-nil? t) t (rb-blacken t)))))
+(def-var! "jolt.host" "rbt-key" (lambda (n) (rb-key n)))
+(def-var! "jolt.host" "rbt-val" (lambda (n) (rb-val n)))
+;; the leftmost node, down one spine: PersistentTreeMap.min
+(def-var! "jolt.host" "rbt-leftmost"
+  (lambda (n) (let loop ((n n)) (let ((l (rb-left n))) (if (jolt-nil? l) n (loop l))))))
 
 ;; --- the in-order walk over the red-black tree -------------------------------
-;; A node is the 5-slot vector [color key val left right] 25-sorted.clj builds;
-;; nil children are jolt-nil. The walk is Clojure's PersistentTreeMap$Seq: a stack
+;; Over the nodes above; nil children are jolt-nil. The walk is Clojure's PersistentTreeMap$Seq: a stack
 ;; of the nodes still to visit, whose top is the next one out, so the head is
 ;; O(log n) away and every later step is amortized O(1). It is done here rather
 ;; than in 25-sorted.clj because a per-node lazy cell written in Clojure cost
@@ -142,10 +436,6 @@
 (define kw-tree (keyword #f "tree"))
 (define kw-cnt (keyword #f "cnt"))
 (define kw-cmp (keyword #f "cmp"))
-(define (sc-nd-key n) (pvec-nth-in-range n 1))
-(define (sc-nd-val n) (pvec-nth-in-range n 2))
-(define (sc-nd-left n) (pvec-nth-in-range n 3))
-(define (sc-nd-right n) (pvec-nth-in-range n 4))
 ;; push n and its whole near-side spine: the left one walking up, the right one down
 (define (sc-push-spine n asc? stack)
   (if (jolt-nil? n)
@@ -232,17 +522,19 @@
   (lambda (coll k) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f)))
 (define %h-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
-  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-assoc (jolt-vector k v))) (%h-assoc1 coll k v))))
+  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-assoc1 k v)) (%h-assoc1 coll k v))))
 (define %h-dissoc jolt-dissoc)
 (set! jolt-dissoc (lambda (coll . ks)
   (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-dissoc (apply jolt-vector ks))) (apply %h-dissoc coll ks))))
 (define %h-dissoc2 jolt-dissoc2)
 (set! jolt-dissoc2 (lambda (coll k)
-  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-dissoc (jolt-vector k))) (%h-dissoc2 coll k))))
-(register-conj-arm! htable-sorted? (lambda (coll x) (meta-carry coll (sc-call coll kw-op-conj (jolt-vector x)))))
+  (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-dissoc1 k)) (%h-dissoc2 coll k))))
+(register-conj-arm! htable-sorted? (lambda (coll x) (meta-carry coll (sc-call coll kw-op-conj1 x))))
 (define %h-disj jolt-disj)
 (set! jolt-disj (lambda (s . xs)
-  (if (htable-sorted-set? s) (meta-carry s (sc-call s kw-op-disj (apply jolt-vector xs))) (apply %h-disj s xs))))
+  (cond ((not (htable-sorted-set? s)) (apply %h-disj s xs))
+        ((and (pair? xs) (null? (cdr xs))) (meta-carry s (sc-call s kw-op-disj1 (car xs))))
+        (else (meta-carry s (sc-call s kw-op-disj (apply jolt-vector xs)))))))
 (def-var! "clojure.core" "disj" jolt-disj)
 (register-empty-arm! htable-sorted? (lambda (coll) (zero? (sc-call coll kw-op-count))))
 (define %h-keys jolt-keys)
@@ -263,12 +555,14 @@
 (define %ht-meta-copy meta-copy)
 (set! meta-copy
   (lambda (x)
-    (if (htable? x)
+    (cond
+      ((scoll? x) (scoll-copy x))
+      ((htable? x)
         (let ((h (make-hashtable string-hash string=?)))
           (vector-for-each (lambda (k) (hashtable-set! h k (hashtable-ref (htable-h x) k #f)))
                            (hashtable-keys (htable-h x)))
-          (make-htable* h (htable-hc x)))
-        (%ht-meta-copy x))))
+          (make-htable* h (htable-hc x))))
+      (else (%ht-meta-copy x)))))
 (define %ht-with-meta jolt-with-meta)
 (set! jolt-with-meta
   (lambda (x m)
@@ -428,5 +722,5 @@
 ;; JVM :class, e.g. jolt-lang/http-client's UnknownHostException) reads that
 ;; class name, so clojure.test's (thrown? Class …) / (= Class (class e)) match.
 ;; an htable carrying a string "class" entry reports it (a host-object class mirror).
-(register-class-arm! (lambda (x) (and (htable? x) (string? (hashtable-ref (htable-h x) "class" #f))))
-                     (lambda (x) (hashtable-ref (htable-h x) "class" #f)))
+(register-class-arm! (lambda (x) (and (htable? x) (string? (htable-str-ref x "class" #f))))
+                     (lambda (x) (htable-str-ref x "class" #f)))

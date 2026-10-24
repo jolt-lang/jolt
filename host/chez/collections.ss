@@ -439,7 +439,17 @@
                     (begin (vector-set! out (fx+ i j) (vector-ref chunk (fx+ off j))) (cloop (fx+ j 1)))
                     (loop (fx+ i run))))))
           out))))
-(define (jolt-vector . xs) (make-pvec (list->vector xs)))
+;; The small arities build the backing vector directly: a vector literal with a
+;; non-constant element ([k v], [x y z]) compiles to a call here, and the
+;; variadic form paid a rest list, its length and a copy out of it for each one.
+(define jolt-vector
+  (case-lambda
+    (() (make-pvec (vector)))
+    ((a) (make-pvec (vector a)))
+    ((a b) (make-pvec (vector a b)))
+    ((a b c) (make-pvec (vector a b c)))
+    ((a b c d) (make-pvec (vector a b c d)))
+    (xs (make-pvec (list->vector xs)))))
 (define (make-map-entry k v) (make-pvec (vector k v) #t))
 (define (jolt-map-entry? x) (and (pvec? x) (eq? (pvec-ent x) #t)))
 ;; A HOST java.util.Map$Entry (a TreeMap$Entry, an AbstractMap$SimpleImmutableEntry)

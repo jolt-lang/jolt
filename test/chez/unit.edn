@@ -378,6 +378,12 @@
   {:suite "interrupt" :expr "(do (Thread/yield) :ok)" :expected ":ok"}
   {:suite "interrupt" :expr "(nil? (Thread/yield))" :expected "true"}
   {:suite "threads / id" :expr "(let [t (Thread/currentThread) a (.getId t) b (.getId t)] (and (integer? a) (= a b)))" :expected "true"}
+;; A pooled worker runs many futures: each gets the caller's namespace, and an
+;; in-ns inside one does not reach the next.
+  {:suite "threads / future ns" :expr "(let [before (str *ns*) _ (deref (future (in-ns (quote unit-future-zz)) nil)) after (deref (future (str *ns*)))] [(= before after) (= before (str *ns*))])" :expected "[true true]"}
+;; A task enqueued while the solo pool's only worker is between its spin and its
+;; park must still be taken: back-to-back futures with uneven gaps between them.
+  {:suite "threads / future handoff" :expr "(loop [i 0] (cond (= i 20000) :ok (= :stall (deref (future i) 2000 :stall)) [:stall i] :else (do (loop [j (rand-int 3000)] (when (pos? j) (recur (dec j)))) (recur (inc i)))))" :expected ":ok"}
   {:suite "threads / id" :expr "(let [current-id (.getId (Thread/currentThread)) ready (java.util.concurrent.CountDownLatch. 1) release (java.util.concurrent.CountDownLatch. 1) f (future (let [id (.getId (Thread/currentThread))] (.countDown ready) (.await release 5 java.util.concurrent.TimeUnit/SECONDS) id))] (.await ready 5 java.util.concurrent.TimeUnit/SECONDS) (.countDown release) (let [child-id (deref f)] (and (integer? child-id) (not= current-id child-id))))" :expected "true"}
   ;; A handle asks about the thread it STANDS FOR, not the thread doing the
   ;; asking — the distinction only shows through a handle for someone else, which
@@ -821,12 +827,18 @@
   {:suite "io" :label "slurp accepts the IReader used by *in*" :expr "(with-in-str \"one\\ntwo\" (slurp *in*))" :expected "\"one\\ntwo\""}
   {:suite "io" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-test.txt\")] (do (spit p \"hello\") (slurp p)))" :expected "\"hello\""}
   {:suite "io" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-test.txt\")] (do (spit p \"a\") (spit p \"b\" :append true) (slurp p)))" :expected "\"ab\""}
-  ;; spit stages into a temp file and renames over the target, so OVERWRITING is
-  ;; the case that broke on Windows, where a rename onto an existing destination
-  ;; is refused (#1074): the second spit to any path failed, as did the first
-  ;; spit to a File/createTempFile target. The Windows half needs that platform
-  ;; (.github/workflows/tests.yml); these rows keep the POSIX half honest.
+  ;; OVERWRITING is the case that broke on Windows while spit staged into a temp
+  ;; file and renamed it over the target, a rename onto an existing destination
+  ;; being refused there (#1074). spit writes in place now, as the JVM does; the
+  ;; rows stay because overwriting is still the case worth pinning.
   {:suite "io" :label "spit overwrites an existing file" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-overwrite.txt\")] (do (spit p \"first\") (spit p \"second\") (slurp p)))" :expected "\"second\""}
+  ;; spit WRITES the file it is given, as FileOutputStream does: through a
+  ;; symlink to its target, into the data a hard link shares, keeping the mode.
+  ;; The temp-and-rename it used to do replaced the file instead — the link came
+  ;; back a regular file, the hard link split, and a 0600 file came back 0644.
+  {:suite "io" :label "spit writes through a symlink" :expr "(do (require (quote [babashka.fs :as fs])) (let [d (str (fs/create-temp-dir)) t (str d \"/target.txt\") l (str d \"/link.txt\")] (spit t \"old\") (fs/create-sym-link l t) (spit l \"new\") [(fs/sym-link? l) (slurp t)]))" :expected "[true \"new\"]"}
+  {:suite "io" :label "spit writes into the data a hard link shares" :expr "(do (require (quote [babashka.fs :as fs])) (let [d (str (fs/create-temp-dir)) t (str d \"/target.txt\") h (str d \"/hard.txt\")] (spit t \"old\") (fs/create-link h t) (spit h \"new\") (slurp t)))" :expected "\"new\""}
+  {:suite "io" :label "spit keeps the file's mode" :expr "(do (require (quote [babashka.fs :as fs])) (let [p (str (fs/create-temp-dir) \"/secret.txt\")] (spit p \"old\") (fs/set-posix-file-permissions p (fs/str->posix \"rw-------\")) (spit p \"new\") [(fs/posix->str (fs/posix-file-permissions p)) (slurp p)]))" :expected "[\"rw-------\" \"new\"]"}
   {:suite "io" :label "spit overwrites a file the runtime just created" :expr "(let [f (java.io.File/createTempFile \"jolt-spit\" \".txt\")] (spit f \"written\") (let [v (slurp f)] (.delete f) v))" :expected "\"written\""}
   ;; The PATH-LIST separator is not the file separator. It is ":" here and ";" on
   ;; Windows, where ":" is the drive suffix — babashka.fs/split-paths and
@@ -2515,6 +2527,19 @@
   {:suite "getenv" :expr "(= (get (System/getenv) \"HOME\") (System/getenv \"HOME\"))" :expected "true"}
   ;; Stage C — setProperty visible in getProperties
   {:suite "sysprops" :expr "(do (System/setProperty \"zz.k\" \"v\") (get (System/getProperties) \"zz.k\"))" :expected "\"v\""}
+  ;; PersistentTreeMap.assoc keeps the map only when the value is the IDENTICAL
+  ;; object (found.val() == val); an `=` one is stored. Comparing with `=` kept
+  ;; [1] where the JVM stores the list it was handed.
+  {:suite "sorted / assoc identity" :expr "(let [m (assoc (sorted-map :a [1]) :a (list 1))] [(list? (get m :a)) (vec (get m :a))])" :expected "[true [1]]"}
+  {:suite "sorted / assoc identity" :expr "(let [v [1] m (sorted-map :a v)] [(identical? m (assoc m :a v)) (identical? m (assoc m :a [1]))])" :expected "[true false]"}
+  ;; the tree under a few thousand scrambled inserts and removals: order, count
+  ;; and membership agree with a plain set at every size (host-table.ss's tree)
+  {:suite "sorted / tree" :expr "(let [xs (map (fn [i] (mod (* i 7919) 5003)) (range 5003)) s (into (sorted-set) xs) d (reduce disj s (range 0 5003 3)) r (set (remove (fn [x] (zero? (mod x 3))) (range 5003)))] [(= (seq s) (range 5003)) (= (set d) r) (count d) (= (seq d) (sort r)) (= (rseq d) (reverse (sort r)))])" :expected "[true true 3335 true true]"}
+  {:suite "sorted / tree" :expr "(let [m (into (sorted-map-by (fn [a b] (compare b a))) (map (fn [i] [(str i) i]) (range 300))) m2 (reduce dissoc m (map str (range 0 300 2)))] [(first (keys m)) (count m2) (get m2 \"7\") (get m2 \"8\" :gone) (first (subseq m2 < \"5\"))])" :expected "[\"99\" 150 7 :gone [\"99\" 99]]"}
+  ;; a range of fixnums fills each chunk in place (seq.ss range-fx-chunk); one
+  ;; crossing the fixnum limit, a negative step and a short last chunk agree with
+  ;; the general path
+  {:suite "range / fixnum chunks" :expr "[(vec (range 1152921504606846970 1152921504606846990 4)) (vec (range 10 -70 -7)) (count (range 0 1000 33)) (last (range 0 1000 33)) (vec (range -5 5 3))]" :expected "[[1152921504606846970 1152921504606846974 1152921504606846978 1152921504606846982 1152921504606846986] [10 3 -4 -11 -18 -25 -32 -39 -46 -53 -60 -67] 31 990 [-5 -2 1 4]]"}
   {:suite "sorted / subseq laziness" :expr "(first (subseq (into (sorted-map) (map (fn [i] [i i]) (range 100000))) > 50000))" :expected "[50001 50001]"}
   ;; Stage B — nio Files consolidation: members from 6 original blocks (files-statics,
   ;; files-nofollow-time, files-throwing-setters, files-create+move, files-final, files-nofollow)

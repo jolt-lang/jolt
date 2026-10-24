@@ -2146,7 +2146,7 @@
 ;; answers a method before deciding how to resolve (java/io.ss's io/resource
 ;; 2-arity: a loader object with getResource resolves in its own context).
 (define (tagged-method-lookup obj name)
-  (let* ((tag (and (htable? obj) (hashtable-ref (htable-h obj) "jolt/type" #f)))
+  (let* ((tag (and (htable? obj) (htable-str-ref obj "jolt/type" #f)))
          (mh (and tag (hashtable-ref tagged-methods-tbl (tag->method-key tag) #f))))
     (and mh (hashtable-ref mh name #f))))
 
@@ -2154,7 +2154,7 @@
 ;; an unregistered method falls through (sorted colls are htables too).
 (register-method-arm! arm-priority-htable
   (lambda (obj method-name rest-args)
-    (let ((tag (and (htable? obj) (hashtable-ref (htable-h obj) "jolt/type" #f))))
+    (let ((tag (and (htable? obj) (htable-str-ref obj "jolt/type" #f))))
       (let* ((mh (and tag (hashtable-ref tagged-methods-tbl (tag->method-key tag) #f)))
              (f  (and mh (hashtable-ref mh method-name #f))))
         (cond
@@ -3193,8 +3193,8 @@
 ;; which lowers to (instance? C e). Non-match returns 'pass so other arms still run.
 (register-instance-check-arm!
   (lambda (type-sym val)
-    (if (and (htable? val) (string? (hashtable-ref (htable-h val) "class" #f)))
-        (let* ((cls (hashtable-ref (htable-h val) "class" #f))
+    (if (and (htable? val) (string? (htable-str-ref val "class" #f)))
+        (let* ((cls (htable-str-ref val "class" #f))
                (want (symbol-t-name type-sym))
                (want-seg (hsc-last-segment want)))
           (let loop ((names (cons cls (jch-closure cls))))

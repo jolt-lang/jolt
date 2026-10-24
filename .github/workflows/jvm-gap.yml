@@ -1,0 +1,42 @@
+name: jvm-gap
+
+# The held bench rows against JVM Clojure (ci/jvm-gap-gate.sh) on demand: on a
+# PR labeled jvm-gap (and its later pushes while the label stays), or by hand.
+# The release workflow runs the same gate against the release binary; this is
+# for checking a change to one of those paths before it gets that far. It times
+# two programs side by side on one runner, so its verdict is a ratio, but a
+# shared runner is noisy: a row near the ceiling is re-run before anything is
+# concluded.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+concurrency:
+  group: jvm-gap-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jvm-gap:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'jvm-gap')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up Chez and the JVM reference
+        uses: ./.github/actions/setup-chez
+
+      - name: Build jolt
+        run: make CHEZ=/opt/chez/bin/chez testbin
+
+      - name: Rows vs JVM Clojure (full output)
+        run: |
+          for b in atom-ops watched-swap pool-tasks sorted-set-build int-map-build; do
+            JOLT_BIN=target/release/jolt bench/run.sh "$b"
+          done
+
+      - name: Held rows vs JVM Clojure
+        run: ci/jvm-gap-gate.sh target/release/jolt

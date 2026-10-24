@@ -485,7 +485,11 @@
 (ok "11b. an interrupt for a parked fiber does not resume it"
     (eq? 'parked (jolt-fiber-state rp-a2)))
 (set-box! rp-stop2 #t)
-(wait-until (lambda () (unbox rp-c-done)) 5.0 "11b. the running fiber is not abandoned")
+;; Both halves are waited for: C sets the box as its body's last act and the
+;; scheduler publishes 'done after the body returns, so a check of the state as
+;; soon as the box flips raced that publish (seen on a loaded CI runner).
+(wait-until (lambda () (and (unbox rp-c-done) (eq? 'done (jolt-fiber-state rp-c)))) 5.0
+            "11b. the running fiber is not abandoned")
 (ok "11b. the fiber that owned the carrier still finished"
     (and (unbox rp-c-done) (eq? 'done (jolt-fiber-state rp-c))))
 ;; and the interrupt is not lost — the resume re-takes BOTH halves of the borrow,

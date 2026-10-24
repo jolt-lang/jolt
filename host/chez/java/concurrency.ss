@@ -137,38 +137,49 @@
   (fields (mutable done?) (mutable cancelled?) (mutable ok?) (mutable payload) mu cv ibox)
   (nongenerative jolt-future-v2))
 
-;; (future-call thunk): spawn a thread running (thunk). The dynamic bindings in
-;; effect now are conveyed into the worker (Chez inherits thread-parameters at
-;; fork; we also install an explicit snapshot for certainty). The result — value
-;; or thrown condition — is latched and broadcast; a cancel that already finalized
-;; the future makes the late result a no-op.
+;; (future-call thunk): run (thunk) on the solo pool (below). The dynamic
+;; bindings and current namespace in effect now are conveyed into the task as a
+;; snapshot, and the worker gets its own back afterwards, so an in-ns inside one
+;; future does not leak into the next task the pooled thread runs. The result —
+;; value or thrown condition — is latched and broadcast; a cancel that already
+;; finalized the future makes the late result a no-op, and a cancel that lands
+;; before a worker takes the task keeps the body from running at all, as a
+;; FutureTask cancelled before run() never runs.
 ;; A future runs on the agent system's cached pool on the JVM, so after
-;; shutdown-agents it is refused, and after it finishes its worker idles for the
-;; pool's keep-alive, holding the process up (exit-linger!, below).
+;; shutdown-agents it is refused.
 (define (jolt-future-call thunk)
   (when (jolt-agents-shutdown?)
     (jolt-throw (jolt-host-throwable "java.util.concurrent.RejectedExecutionException" jolt-nil)))
   (let* ((ibox (box #f))
          (f (make-jolt-future #f #f #f jolt-nil (make-mutex) (jolt-make-cv) ibox))
-         (snap (dyn-binding-stack)))
-    (fork-agent-thread
+         (snap (dyn-binding-stack))
+         (ns (chez-current-ns-param)))
+    (solo-pool-run!
      (lambda ()
-       (*txn* #f)                          ; child thread must not inherit parent's txn
-       (rdr-default-modes!)                ; and not the reader modes of a read it forked from
-       ;; The worker's flag is the future's flag: future-cancel sets it, and
-       ;; (Thread/currentThread) inside the body hands back a handle onto the same
-       ;; box, so .isInterrupted / Thread/interrupted inside the worker and the
-       ;; cancel from outside are ONE flag (the shape jolt#727 fixed for Thread.).
-       (adopt-interrupt-box! ibox)
-       (dyn-binding-stack snap)
-       (let ((r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
-         (jolt-with-mutex (jolt-future-mu f)
-           (unless (jolt-future-done? f)            ; not already cancelled
-             (jolt-future-ok?-set! f (car r))
-             (jolt-future-payload-set! f (cdr r))
-             (jolt-future-done?-set! f #t))
-           (jolt-cv-wake! (jolt-future-cv f)))
-         (exit-linger-after-task!))))
+       (unless (jolt-future-settled? f)              ; cancelled before it started
+         (*txn* #f)                          ; the task must not inherit a txn
+         (rdr-default-modes!)                ; and not the reader modes of a read it forked from
+         ;; The worker's flag is the future's flag while the body runs:
+         ;; future-cancel sets it, and (Thread/currentThread) inside the body
+         ;; hands back a handle onto the same box, so .isInterrupted /
+         ;; Thread/interrupted inside the worker and the cancel from outside are
+         ;; ONE flag (the shape jolt#727 fixed for Thread.). The worker takes its
+         ;; own flag back when the body is done.
+         (let ((own (current-os-thread-box))
+               (own-ns (chez-current-ns-param)))
+           (adopt-interrupt-box! ibox)
+           (dyn-binding-stack snap)
+           (chez-current-ns-param ns)
+           (let ((r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
+             (dyn-binding-stack '())
+             (chez-current-ns-param own-ns)
+             (adopt-interrupt-box! own)
+             (jolt-with-mutex (jolt-future-mu f)
+               (unless (jolt-future-done? f)            ; not already cancelled
+                 (jolt-future-ok?-set! f (car r))
+                 (jolt-future-payload-set! f (cdr r))
+                 (jolt-future-done?-set! f #t))
+               (jolt-cv-wake! (jolt-future-cv f))))))))
     f))
 
 ;; Wrap a task's captured throw in an ExecutionException, the original as the
@@ -204,6 +215,23 @@
 ;; parks now and the settle resumes it; a thread still blocks, which is what a
 ;; thread should do.
 ;;
+;; SPIN BRIEFLY FIRST. A deref of a future still running, or one a worker has
+;; not reached yet, is usually answered within a few microseconds, and parking
+;; costs more than that: the waker's broadcast, the kernel's wake and the
+;; reschedule. The JVM's FutureTask yields before it parks for the same reason,
+;; and its handoff queues spin. task-spin-until reads the flag WITHOUT the mutex,
+;; so it is only a hint of when to take it: a #t from it is followed by
+;; jolt-future-settled? under the mutex, which is what orders the payload's
+;; read after the worker's write. A fiber does not spin; it parks, so its carrier
+;; runs the other fibers instead.
+(define task-spin-rounds 64)
+(define (task-spin-until done?)
+  (and (not (jolt-current-fiber))
+       (let loop ((i 0))
+         (cond ((done?) #t)
+               ((fx=? i task-spin-rounds) #f)
+               (else (thread-yield!) (loop (fx+ i 1)))))))
+
 ;; A settled one answers without the wait. The wait begins by checking that the
 ;; caller may park (jolt-fiber-may-park!, which must precede the commit), and a
 ;; fiber holding a counted lock may not, so @ on a future or promise that had
@@ -214,7 +242,8 @@
   (jolt-with-mutex (jolt-future-mu f) (jolt-future-done? f)))
 
 (define (jolt-future-deref f)
-  (unless (jolt-future-settled? f)
+  (unless (begin (task-spin-until (lambda () (jolt-future-done? f)))
+                 (jolt-future-settled? f))
     (jolt-cv-wait-interruptibly "future deref" (jolt-future-mu f) (jolt-future-cv f) #f
       (lambda (_timed-out?)
         (if (jolt-future-done? f) #t jolt-cv-again))))
@@ -374,6 +403,7 @@
 (define (jolt-agents-shutdown?) (unbox agents-shutdown?))
 (define (jolt-shutdown-agents)
   (set-box! agents-shutdown? #t)
+  (solo-pool-shutdown!)
   (exit-release-pools!)
   jolt-nil)
 
@@ -384,15 +414,16 @@
 ;; every thread is forked (lazy-bridge.ss, exit-nondaemon-live), and a thread's
 ;; daemon flag is the one Thread.isDaemon answers, so the two cannot disagree.
 ;;
-;; Two more holds stand for the agent system's pools, which jolt does not run
-;; (futures and agent actions get threads of their own) but whose idle workers
-;; keep a JVM up all the same, certified with timing probes on JDK 21:
+;; The agent system's pools keep a JVM up after their last task as well,
+;; certified with timing probes on JDK 21:
 ;;
-;;   future / future-call / pmap / send-off  the cached "solo" pool: its worker
-;;       idles 60s after its last task, so the process ends 60s after the last one
-;;       finishes. exit-linger-after-task! is called as each task ends, on the
-;;       task's own thread, and only a non-daemon one counts (a pool thread made
-;;       on a daemon thread is a daemon).
+;;   future / future-call / pmap  the cached "solo" pool, which jolt runs (below):
+;;       its idle workers are live threads until their 60s keep-alive runs out,
+;;       so the process ends 60s after the last task finishes.
+;;   send-off  the same pool on the JVM; here an agent's actions get a thread of
+;;       their own, so exit-linger-after-task! stands in for the idle worker. It
+;;       is called as each run of actions ends, on that thread, and only a
+;;       non-daemon one counts (a pool thread made on a daemon thread is a daemon).
 ;;   send / await / await-for  the fixed pool: its workers never time out, so
 ;;       after one of these the process never ends by itself.
 ;;
@@ -412,6 +443,37 @@
 (define (fork-agent-thread thunk)
   (fork-thread/daemon agent-threads-daemon? thunk))
 (define solo-pool-keep-alive-ms 60000)     ; Executors.newCachedThreadPool's 60L, SECONDS
+
+;; The solo pool: what a future runs on, as clojure.lang.Agent/soloExecutor is on
+;; the JVM — a cached pool (0, unbounded, 60s keep-alive), so a worker that has
+;; finished a task takes the next one instead of a thread being forked per future
+;; (~25us a fork, against ~1us for a handoff to a parked worker). Its idle workers
+;; are live threads, so they hold the process up until their keep-alive runs out,
+;; which is the exit the JVM has after a future; shutdown-agents shuts the pool
+;; down, which retires them at once and lets running tasks finish.
+;;
+;; Its workers are never daemons, whatever thread's submit starts one, as
+;; clojure.core's pools are not (exit-wait-smoke pins a future started from a
+;; daemon thread holding the exit); under bb's semantics (agent-threads-daemon!)
+;; every worker is one. Made on first use, after jolt.main has settled that.
+(define solo-pool #f)
+(define solo-pool-mu (make-mutex))
+;; Built OUTSIDE the mutex and published under it, so nothing that may park runs
+;; with the lock held (park-lock-check.ss); a pool that loses the race to publish
+;; is dropped, and with no core workers it has forked nothing.
+(define (solo-pool-state)
+  (or solo-pool
+      (let ((p (make-executor* "executor-service" 0 executor-unbounded-workers
+                               solo-pool-keep-alive-ms #f
+                               agent-threads-daemon? #f)))
+        (jolt-with-mutex solo-pool-mu
+          (unless solo-pool (set! solo-pool p))
+          solo-pool))))
+(define (solo-pool-run! job)
+  (executor-enqueue! (solo-pool-state) job))
+(define (solo-pool-shutdown!)
+  (let ((p (jolt-with-mutex solo-pool-mu solo-pool)))
+    (when p (executor-shutdown! (jhost-state p)))))
 (define (exit-linger-after-task!)
   (unless (jolt-thread-daemon? (get-thread-id))
     (let ((until (mono-deadline solo-pool-keep-alive-ms)))
@@ -2648,6 +2710,10 @@
 ;; each task's in turn.
 (define (j-future-get-until self deadline on-timeout)
   (let* ((st (jhost-state self))
+         ;; the deref's short spin (task-spin-until), for an untimed get: a hint
+         ;; only, the wait below reads the status again under the mutex. A timed
+         ;; one does not spin, so a zero-timeout poll still answers at once.
+         (_ (unless deadline (task-spin-until (lambda () (j-future-settled? (vector-ref st 0))))))
          (status (jolt-cv-wait-interruptibly "Future.get"
                              (vector-ref st 3) (vector-ref st 4) deadline
                    (lambda (timed-out?)
@@ -2929,11 +2995,48 @@
           ;; above core, or any worker once allowCoreThreadTimeOut is on
           ((and (vector-ref st 8) (or (vector-ref st 19) (fx>? (vector-ref st 4) (vector-ref st 6))))
            (let ((dl (or deadline (mono-deadline (vector-ref st 8)))))
-             (if (mono-due? dl)
-                 (executor-worker-exit! st)                ; idle past keep-alive
-                 (begin (executor-idle-wait! st dl)
-                        (poll dl)))))
+             (cond ((mono-due? dl) (executor-worker-exit! st))   ; idle past keep-alive
+                   ((executor-idle-spin! st) (poll dl))
+                   (else (executor-idle-wait! st dl) (poll dl)))))
+          ((executor-idle-spin! st) (poll deadline))
           (else (executor-idle-wait! st #f) (poll deadline)))))
+;; Before an untimed park, a short spin with the mutex RELEASED, watching the queue
+;; depth and the shutdown flag: a burst of tasks (a fan-out, a submit/get loop)
+;; refills the queue within microseconds, and a worker that is still spinning takes
+;; the next task without the condition's wake, which costs the waker a signal and
+;; this thread a kernel wake and a reschedule. The JVM's cached pool hands over
+;; through a SynchronousQueue, which spins before it parks for the same reason.
+;;
+;; The spinner counts as IDLE (st 9), so the growth rule in executor-enqueue! sees
+;; it as a taker and forks no worker for a task it is about to take. An enqueue's
+;; signal finds no thread parked in the condition on its account (the condition's
+;; own count is of parked threads), so a lone spinner costs the enqueue nothing; with
+;; others parked, one of them may also wake, find the task taken, and park again,
+;; which is the spurious wake every waiter here already re-checks for. The depth is
+;; read without the mutex, as a hint: whatever it says, the caller re-polls under
+;; the mutex. Called and returning with the mutex HELD.
+;;
+;; NOT while delayed tasks are pending (a scheduled pool's st 13), and a schedule
+;; landing during the spin ends it. An idle worker is what times the delayed head
+;; (executor-idle-wait!'s leader), and executor-lead-handoff! / a schedule signal
+;; the condition for one when the idle count says one is parked: a spinner in
+;; that count is not parked, so the signal reached nobody and the head went
+;; untimed — periodic tasks skipped runs and missed their cancellation at
+;; shutdown (the corpus's scheduleAtFixedRate rows).
+(define (executor-idle-spin! st)
+  (and (null? (vector-ref st 13))
+       (let ((mu (vector-ref st 2))
+             (ready? (lambda () (or (fx>? (vector-ref st 10) 0) (vector-ref st 0)
+                                    (pair? (vector-ref st 13))))))
+         (vector-set! st 9 (fx+ (vector-ref st 9) 1))
+         (jolt-unlock! mu)
+         (let ((found (task-spin-until ready?)))
+           (jolt-lock! mu)
+           (vector-set! st 9 (fx- (vector-ref st 9) 1))
+           ;; Asked again under the mutex: an enqueue between the spin's last look
+           ;; and the lock counted this worker idle, so it neither grew the pool
+           ;; nor reached a parked waiter, and parking now would strand its task.
+           (or found (ready?))))))
 ;; A worker that dies must not take the pool's accounting with it. Everything a
 ;; TASK can throw is already caught at the task (submit's future keeps it, execute
 ;; reports it), so reaching this handler means the queue mechanics threw — which

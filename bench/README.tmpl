@@ -151,6 +151,15 @@ skipped with a note, not failed. The threshold is deliberately loose — it is a
 gate, not a scorecard — and a flagged row is re-measured alone before anything
 is concluded about its size.
 
+**Against the JVM.** `ci/jvm-gap-gate.sh <jolt> [max-ratio] [bench…]` holds a
+few rows against JVM Clojure itself rather than the last release: `atom-ops`,
+`watched-swap`, `pool-tasks`, `sorted-set-build` and `int-map-build`, the paths a
+cross-host comparison found jolt trailing and that were brought inside 2× the
+reference. Same measurement as above (one machine, alternating, min of the
+timed runs), and it fails a row above 2× the JVM. The release workflow runs it
+beside the release gate. A row joins the list when it is brought inside the
+ceiling, and leaves only with a reason.
+
 **Inside one process.** `make test` carries the shape gates, each a ratio
 measured in one run so machine speed cancels: `readscaling`, `compilescaling`
 (1× vs 4× input, and quoted-vs-constructed forms), `applyscaling` (`apply`

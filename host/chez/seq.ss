@@ -2069,12 +2069,34 @@
 ;; below) — it cannot be re-derived here, because the values this recurses with are
 ;; sums, and a long start plus a double step is a double from the second element on.
 ;; clojure.core/range picks the class from what it was handed, once.
+;; The size of the next chunk of a fixnum range, when start, end and step are all
+;; fixnums, the range is not yet done, and n + size*step is a fixnum too (so every
+;; value the chunk holds, and the start of the next one, is); #f otherwise.
+(define (range-fx-chunk n end step)
+  (and (fixnum? n) (fixnum? end) (fixnum? step) (not (fx=? step 0))
+       (if (fx>? step 0) (< n end) (> n end))
+       (let* ((left (if (fx>? step 0) (- end n) (- n end)))
+              (s (abs step))
+              (k (min seq-chunk-size (quotient (+ left s -1) s))))
+         (and (fixnum? (+ n (* k step))) k))))
 (define (range-chunked n end step kind)
   (cond
     ((= step 0)
      ;; JVM: (range start end 0) is Repeat.create(start) — it repeats start
      ;; forever, and is a clojure.lang.Repeat, not a range class at all.
      (cseq-lazy/k n (make-lazy-src lz-repeat n (cons end step)) sk-repeat))
+    ;; all fixnums, and the chunk's last value one too: fill the chunk in place
+    ;; with fixnum arithmetic. The general loop below conses each value, reverses
+    ;; the list and copies it into a vector, all through generic arithmetic.
+    ((range-fx-chunk n end step)
+     => (lambda (k)
+          (let ((out (make-vector k)))
+            (let fill ((i 0) (v n))
+              (if (fx<? i k)
+                  (begin (vector-set! out i v) (fill (fx+ i 1) (fx+ v step)))
+                  (cseq-chunked/k (make-pvec out) 0
+                                  (jolt-make-lazy-src lz-range v (list end step kind))
+                                  kind))))))
     ((if (> step 0.0) (< n end) (> n end))
      (let loop ((i 0) (v n) (acc '()))
        (if (and (fx<? i seq-chunk-size) (if (> step 0.0) (< v end) (> v end)))

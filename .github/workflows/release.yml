@@ -914,6 +914,23 @@ jobs:
       - name: No previous release
         if: steps.prev.outputs.none == '1'
         run: echo "First release — no baseline to compare against, bench gate skipped."
+      # The rows ci/jvm-gap-gate.sh holds against the JVM itself, not the last
+      # release: each was brought inside 2x the reference and stays there. JDK 21
+      # by name and the Clojure CLI, as the certify oracle installs them
+      # (.github/actions/setup-chez).
+      - name: Install JDK + Clojure (JVM reference)
+        run: |
+          set -eu
+          sudo apt-get install -y openjdk-21-jdk-headless rlwrap
+          jdk=/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)
+          curl --fail --retry 5 --retry-delay 10 --retry-all-errors -L -O \
+            https://github.com/clojure/brew-install/releases/latest/download/linux-install.sh
+          head -1 linux-install.sh | grep -q '^#!' || { echo "installer download corrupt"; exit 1; }
+          sudo bash linux-install.sh
+          echo "JAVA_CMD=$jdk/bin/java" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$jdk" >> "$GITHUB_ENV"
+      - name: Held rows vs JVM Clojure
+        run: jolt/ci/jvm-gap-gate.sh ./jolt-cand
 
   # Flip the draft release public. Nothing downstream (install script, Homebrew tap)
   # sees the release until this runs, so a red fleet gate aborts the release with the

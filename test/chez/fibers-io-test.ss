@@ -186,10 +186,21 @@
   (wait-until (lambda () (> (ev "@jolt.io-poller/waits") 0)) 15.0 "3. the poller entered its wait"))
 (ok "3. the poller entered its blocking wait" w3)
 (sleep (make-time 'time-duration 50000000 0))  ; let it settle into the wait
+;; An explicit collect also refuses while ANY other thread is briefly active, and
+;; one can be: test 2's future leaves an idle pool worker that spins on yields
+;; before it parks, which on a loaded runner can outlast the settle above. So the
+;; collect is retried for a while. A poller whose wait is not collect-safe stays
+;; in that wait for the whole window (nothing is written until after this check),
+;; so it fails every attempt; only a bystander that goes quiet lets one through.
 (define collect-ok
-  (guard (e (#t (printf "  FAIL detail: collect raised ~a\n" (condition-message e)) #f))
-    (collect (collect-maximum-generation))
-    #t))
+  (let retry ((n 0))
+    (guard (e (#t (if (fx<? n 40)
+                      (begin (sleep (make-time 'time-duration 50000000 0)) (retry (fx+ n 1)))
+                      (begin (printf "  FAIL detail: collect raised ~a (~a attempts)\n"
+                                     (condition-message e) (fx+ n 1))
+                             #f))))
+      (collect (collect-maximum-generation))
+      #t)))
 (ok "3. a full collect succeeded while the poller was blocked (wait is collect-safe)"
     collect-ok)
 (ok "3. the parked fiber survived the collection" (eq? (jolt-fiber-state fc) 'parked))
