@@ -86,10 +86,11 @@
 # MUTEXES ARE NON-RECURSIVE (PSL R4, pinned): same-thread re-acquire blocks,
 # per SRFI-18 mutex-acquire!. No host site re-acquires: re-entrant entry is
 # handled structurally — nested dosync joins the outer transaction through
-# the *txn* thread parameter (jolt-sync, refs.ss:159-161) and atom/ref/user
-# callbacks are never invoked under a held lock (atoms.ss swap! runs f and
-# watches outside the CAS lock; refs.ss fires watches after commit, outside
-# stm-lock). A target whose mutexes are recursive must still satisfy every
+# the *txn* thread parameter (jolt-sync, refs.ss) and atom/ref/user
+# callbacks are never invoked under a held mutex (atoms.ss swap! runs f and
+# watches outside the CAS lock; refs.ss runs a transaction body with no lock
+# held and fires watches after commit, outside stm-lock, a monitor). A target
+# whose mutexes are recursive must still satisfy every
 # contract name with the non-recursive discipline, since host code relies on
 # re-entrance NOT being recursion.
 fork-thread

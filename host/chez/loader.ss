@@ -546,21 +546,19 @@
 ;; next require — the very bug the load protocol below exists to stop, reached
 ;; through the other table.
 ;;
-;; A LOAD MUST NEVER ACQUIRE stm-lock. jolt-sync holds stm-lock across the whole
-;; body of a transaction (refs.ss), so (dosync (require 'x)) is inside require while
-;; holding it — and if that require parks in step 2, condition-wait releases
-;; ldr-load-mu and NOTHING else, so it sits there holding stm-lock until the load it
-;; is waiting for completes. A loading thread that then needed stm-lock could not
-;; complete, and the two would wait on each other forever:
+;; A LOAD NEVER ACQUIRES stm-lock. A commit holds stm-lock while it runs commute
+;; fns and validators (refs.ss), which are user code and may require a namespace
+;; that another thread is loading; a loader that needed stm-lock back would then
+;; wait on that commit while the commit waited on it:
 ;;
-;;   stm-lock -> ns_load   the parked dosync cannot release stm-lock until the load
-;;                         it is waiting for finishes
+;;   stm-lock -> ns_load   the commit cannot release stm-lock until the load it is
+;;                         waiting for finishes
 ;;   ns_load  -> stm-lock  the loader cannot finish without stm-lock
 ;;
-;; That is not hypothetical. It reproduces on the rollback path, where a failed load
-;; re-takes this lock to unmark before releasing its claim, and in the window between
-;; claiming a namespace and marking it. So the mark goes through a leaf mutex of our
-;; own that no transaction ever waits on, and the edge ns_load -> stm-lock does not
+;; The rollback path, where a failed load re-takes the mark's lock to unmark before
+;; releasing its claim, and the window between claiming a namespace and marking it
+;; are where that edge would sit. So the mark goes through a leaf mutex of our own
+;; that no transaction ever waits on, and the edge ns_load -> stm-lock does not
 ;; exist.
 ;;
 ;; NOT through the ambient transaction's log when there is one, which is what this
@@ -577,7 +575,7 @@
 ;; reload. Narrow, one-directional, and the alternatives are a hang or the two bugs
 ;; above.
 ;;
-;; Call with NO loader mutex held either. A (dosync (require ...)) reaches ldr-tbl-mu
+;; Call with NO loader mutex held either. A commit that requires reaches ldr-tbl-mu
 ;; while holding stm-lock, so the loader taking these in the other order would be the
 ;; same cycle by another route. Sequential, never nested, is what keeps them apart.
 (define ldr-libs-mu (make-mutex))
@@ -2235,7 +2233,7 @@
 ;; (dosync …) should force the reload from the next form onward, not from the
 ;; commit. Outside a transaction txn-read IS jolt-ref-val, so the ordinary path is
 ;; unchanged, and it acquires nothing, so this stays safe to call under ldr-load-mu
-;; (see ldr-libs-update!'s "a load must never take stm-lock"). The loader's own
+;; (see ldr-libs-update!'s "a load never acquires stm-lock"). The loader's own
 ;; marks are not in any log — ldr-libs-update! writes the ref directly, for the
 ;; reasons set out there — so this sees them whether a transaction is open or not.
 (define (ns-dedup-loaded? name)
@@ -2608,11 +2606,9 @@
 ;;                      on that carrier behind it. That edge is gone rather than
 ;;                      argued about — the switch happens with the lock released, and
 ;;                      locks.ss checks it at both switch points (jolt-04ee). The one
-;;                      edge that is not the loader's to remove is stm-lock -> the load a parked
-;;                      transaction is waiting for, because jolt-sync holds
-;;                      stm-lock across a whole dosync body. So no load may acquire
-;;                      stm-lock — see ldr-libs-update!, where that cycle was real
-;;                      and hung.
+;;                      edge that is not the loader's to remove is stm-lock -> the load
+;;                      a commit's commute fn or validator is waiting for. So no load
+;;                      may acquire stm-lock — see ldr-libs-update!.
 (define ldr-load-mu (make-mutex))
 (define ldr-load-cv (make-condition))
 (define ldr-loading (make-hashtable string-hash string=?))  ; ns -> the context loading it

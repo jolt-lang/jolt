@@ -1212,22 +1212,6 @@
    :check :prose
    :why "the JVM half blocks forever by design, so a gate cannot evaluate it"
    :note "await entered on an ALREADY-failed agent throws identically on both. jolt returning normally (pre-R4) was the silent-success worst case."}
-  ;; Ref history exists on the JVM to serve a transaction that started before a
-  ;; writer committed: rather than retry, the reader is handed an older value
-  ;; out of the ref's chain. jolt's transactions are serialized by one lock, so
-  ;; no transaction ever observes a commit inside its own extent and there is no
-  ;; such reader to serve — the chain has nothing to hold. ref-min-history /
-  ;; ref-max-history remain a faithful getter/setter pair (defaults 0 and 10,
-  ;; setter returns the ref) so tuning code keeps working and reads back what it
-  ;; set; only the count differs.
-  {:category :concurrency-model
-   :behavior "(ref-history-count r) after (ref-min-history r 3) and several committing transactions"
-   :jvm "3 — the chain grows to the minimum the ref was told to keep"
-   :jolt "0 — always, since serialized transactions keep no history"
-   :check {:expr "(let [r (ref 0)] (ref-min-history r 3) (dotimes [_ 5] (dosync (alter r inc))) (ref-history-count r))"
-           :jvm "3"
-           :jolt "0"}
-   :note "0 is also the JVM's answer for a fresh ref. Closing this means adding MVCC, which the single-lock design deliberately does not have (see refs.ss stm-lock)."}
   ;; *in* is a Reader over System/in on both, but the JVM's InputStreamReader
   ;; decodes into 8K of its own, so the first (read-line) pulls the whole of a
   ;; small stdin into the reader and the stream underneath reads as exhausted.

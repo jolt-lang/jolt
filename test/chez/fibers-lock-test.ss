@@ -363,28 +363,26 @@
 
 (jolt-fiber-pool-reset!)
 
-;; --- 8. the OTHER two locks that wrap user code -------------------------------
+;; --- 8. the OTHER regions that span user code -------------------------------
 ;; Sections 1-7 are about the object monitor, which is the lock this file was
-;; written for. It is not the only one whose region is a user body: jolt-sync
-;; (refs.ss) and jolt-delay-force (java/concurrency.ss) both ran theirs inside
-;; jolt-with-mutex, and locks.ss's premise — regions are SHORT and never span a
-;; park — is false of both for exactly the reason it was false of the monitor.
+;; written for. It is not the only region over a user body: a transaction body
+;; (refs.ss jolt-sync) and jolt-delay-force (java/concurrency.ss) both run user
+;; code, and locks.ss's premise — regions are SHORT and never span a park — is
+;; false of both for exactly the reason it was false of the monitor.
 ;;
-;; So they are the same three failures, and they belong here rather than beside
-;; the STM and delay unit tests, because what is under test is the lock and not
-;; the transaction or the memoization.
+;; They belong here rather than beside the STM and delay unit tests, because what
+;; is under test is how each one survives a park and not the transaction or the
+;; memoization.
 ;;
-;; 8a. THE TRANSACTION'S ISOLATION (jolt-pb2s). jolt's STM has no MVCC and no
-;; retry: the global lock IS the isolation, so a park that drops it mid-body drops
-;; the only mechanism there is, and nothing afterwards can detect the conflict.
-;; Unfixed, the second transaction below ran to completion inside the first one's
-;; extent and the first then committed a value derived from a read that predated
-;; it — r = 1, where the only serializable outcomes are 100 (a then b) and 101
-;; (b then a).
+;; 8a. THE TRANSACTION'S ISOLATION. A transaction body holds no lock: a second
+;; transaction runs to completion while the first is parked, and the first's
+;; write, derived from a read that predated that commit, is caught at its own
+;; commit and retried. The only serializable outcomes are 100 (a then b) and 101
+;; (b then a); a lost update reads 1.
 (jolt-fiber-carrier-count-set! 1)
 (define l10-r (jolt-ref-new 0))
 (define l10-ch (ac-make 1 'fixed #f))
-(define l10-read (box #f))
+(define l10-read (box '()))
 ;; a: read the ref, park mid-transaction, then write read+1.
 (define l10-a
   (sa-fiber-spawn
@@ -392,38 +390,40 @@
      (jolt-sync
       (lambda ()
         (let ((v (jolt-ref-deref l10-r)))
-          (set-box! l10-read v)
+          (set-box! l10-read (cons v (unbox l10-read)))
           (jolt-fiber-<! l10-ch)
           (jolt-ref-set l10-r (+ v 1))))))))
 (sa-fiber-run-all)
 (ok "8a. the first transaction parked inside its body"
-    (and (eqv? 0 (unbox l10-read)) (eq? 'parked (jolt-fiber-state l10-a))))
+    (and (equal? '(0) (unbox l10-read)) (eq? 'parked (jolt-fiber-state l10-a))))
 ;; b: a whole transaction, start to finish, while a is parked.
 (define l10-b (sa-fiber-spawn (lambda () (jolt-sync (lambda () (jolt-ref-set l10-r 100))))))
 (sa-fiber-run-all)
-(ok "8a. a second transaction cannot run inside the first one's extent"
-    (eq? 'parked (jolt-fiber-state l10-b)))
-(ok "8a. and cannot have committed" (eqv? 0 (jolt-ref-val l10-r)))
-;; let a finish; b then gets the lock and commits after it.
+(ok "8a. a second transaction runs to its commit inside the first one's extent"
+    (and (eq? 'done (jolt-fiber-state l10-b)) (eqv? 100 (jolt-ref-val l10-r))))
+;; let a go on: its commit conflicts with b's, so it reads again and parks again.
 (jolt-async-give l10-ch 1)
 (sa-fiber-run-all)
+(ok "8a. the first one's commit retried over the second's value"
+    (and (equal? '(100 0) (unbox l10-read)) (eq? 'parked (jolt-fiber-state l10-a))))
+(jolt-async-give l10-ch 1)
 (let loop ((i 0))
-  (when (and (< i 5) (not (eq? 'done (jolt-fiber-state l10-b))))
+  (when (and (< i 5) (not (eq? 'done (jolt-fiber-state l10-a))))
     (sa-fiber-run-all)
     (loop (+ i 1))))
 (ok "8a. both transactions finished"
     (and (eq? 'done (jolt-fiber-state l10-a)) (eq? 'done (jolt-fiber-state l10-b))))
-(ok "8a. the outcome is serializable (a then b)" (eqv? 100 (jolt-ref-val l10-r)))
+(ok "8a. the outcome is serializable (b then a)" (eqv? 101 (jolt-ref-val l10-r)))
 
-;; 8a'. AND THE TRANSACTION ENDS WHEN IT ENDS (jolt-49ay). The lock is only half of
-;; it: *txn* has to come back to nil too, and it did not. Chez's parameterize is a
+;; 8a'. AND THE TRANSACTION ENDS WHEN IT ENDS (jolt-49ay). *txn* has to come back
+;; to nil when the body is done, and it did not. Chez's parameterize is a
 ;; SWAP — one thunk is both the wind's before and its after, exchanging the
 ;; parameter with a saved slot — and jolt-fiber-slice-restore! writes *txn* BEFORE
 ;; the rewind runs that swap, so the saved slot came back holding the transaction
 ;; instead of the outer nil, and the way out then restored the transaction. The
 ;; fiber left its dosync still inside one, and its next dosync took the NESTED arm,
-;; joined the dead transaction, took no lock at all and wrote into a log nobody
-;; would ever commit. Three parked transactions in a row committed once.
+;; joined the dead transaction and wrote into a log nobody would ever commit.
+;; Three parked transactions in a row committed once.
 ;;
 ;; Pre-existing and reachable with no preemption at all, which is why the quantum is
 ;; pinned long here: the park is the whole mechanism.
@@ -481,7 +481,7 @@
     (loop (+ i 1))))
 (ok "8a'. control: preemptions did land inside the transactions"
     (> (jolt-fiber-preempts) l10c-before))
-(ok "8a'. every transaction was its own" (= (* 4 l10c-N) (length l10c-txns)))
+(ok "8a'. every attempt was its own transaction" (<= (* 4 l10c-N) (length l10c-txns)))
 (ok "8a'. and no update was lost" (= (* 4 l10c-N) (jolt-ref-val l10c-r)))
 (jolt-fiber-preempt-ticks-set! #f)
 

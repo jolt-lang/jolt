@@ -247,10 +247,7 @@
 ;; aren't visible in the IR call graph, so seed them as roots. (Found by grepping the
 ;; runtime shims; run-dce-refs.ss's core-root guard now keeps this list honest — a
 ;; new shim reference that isn't here fails that gate instead of shipping a prunable
-;; var a tree-shaken app dereferences at runtime.) `send` is rooted because the STM
-;; commit path (refs.ss) dispatches every queued agent send — including send-off /
-;; send-via queued inside a dosync — through clojure.core/send, so an app that uses
-;; send-off in a transaction roots send-off but not send in its own IR.
+;; var a tree-shaken app dereferences at runtime.)
 (define dce-runtime-core-roots
   '("clojure.core/identity" "clojure.core/isa?" "clojure.core/line-seq"
     "clojure.core/make-hierarchy" "clojure.core/read" "clojure.core/read-string"
@@ -258,7 +255,6 @@
     ;; post-prelude's read-line wrapper routes a host reader in *in* to its own
     ;; readLine and closes over the overlay version for the reify reader
     "clojure.core/read-line"
-    "clojure.core/send"
     ;; the LispReader$StringReader shim (host-static-methods.ss) pulls the literal
     ;; off the reader it is handed, a line at a time, through the IReader method
     "clojure.core/-read-line"

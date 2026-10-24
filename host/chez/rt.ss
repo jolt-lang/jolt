@@ -2526,7 +2526,7 @@
 ;; jolt-invoke (seq.ss) / jolt= (values.ss) / jolt-vector (collections.ss).
 (load "host/chez/atoms.ss")
 
-;; refs: Clojure refs and serialized transactions (STM).  Loaded after atoms
+;; refs: Clojure refs and transactions (STM).  Loaded after atoms
 ;; (shares the IRef seam and jolt-deref); must load before loader.ss (wires
 ;; *loaded-libs*) and before concurrency.ss (which chains jolt-deref further).
 (load "host/chez/refs.ss")

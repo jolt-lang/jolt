@@ -43,10 +43,9 @@
 ;;   E. two threads entering one require cycle from opposite ends report it instead
 ;;      of hanging, and one of them still completes. This is where the JVM gives up
 ;;      and deadlocks; the loader walks its wait-for graph before blocking.
-;;   F. a (dosync (require ...)) that has to wait does not deadlock the loader. It
-;;      parks holding stm-lock, so nothing a load does may ever need stm-lock back.
-;;      Found by modelling the lock graph rather than by running anything: the cycle
-;;      is stm-lock -> the load being waited on -> stm-lock, and it hung outright.
+;;   F. a (dosync (require ...)) that has to wait does not deadlock the loader, and
+;;      nothing a load does needs stm-lock: the cycle would be stm-lock -> the load
+;;      being waited on -> stm-lock.
 ;;   G. a require inside a transaction dedups, and an aborted transaction does not
 ;;      un-load a namespace that really loaded. The mark is two tables and buffering
 ;;      one of them in the txn log split them apart in both directions.
@@ -318,14 +317,10 @@
 
 ;; Property F: a (dosync (require ...)) that has to wait must not deadlock the loader.
 ;;
-;; jolt-sync holds stm-lock across the whole transaction body, and condition-wait
-;; releases ldr-load-mu and nothing else, so a dosync that parks in step 2 sits there
-;; holding stm-lock. If a load ever needed stm-lock to finish, the two would wait on
-;; each other forever. It did: ldr-mark-loaded! went through the STM, so the rollback
-;; on a failing load re-took it, and this test hung outright. The mark writes the
-;; ambient transaction's log when there is one and takes a leaf mutex otherwise, so
-;; the edge does not exist. The load here THROWS on purpose — that is the path with
-;; the wide window.
+;; A transaction waiting on another thread's load holds nothing, and the mark a load
+;; writes goes through a leaf mutex rather than the STM, so a load never waits on a
+;; transaction. The load here THROWS on purpose — the rollback is the path with the
+;; wide window.
 (defn- dosync-wait-failures []
   (let [plain (future (try (require 'ldrtest.boom) :loaded
                            (catch Throwable _ :threw)))
@@ -338,8 +333,7 @@
     (cond-> []
       (or (= :timeout s1) (= :timeout s2))
       (conj (str "a (dosync (require ...)) waiting on another thread's load"
-                 " deadlocked: the transaction holds stm-lock while parked and the"
-                 " load needed it back")))))
+                 " deadlocked")))))
 
 ;; Property G: a require inside a transaction dedups like any other, and an aborted
 ;; transaction does not undo a load that really happened.

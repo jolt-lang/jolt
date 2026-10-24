@@ -1,16 +1,20 @@
 ;; refs.ss — Clojure refs and STM for the Chez host.
 ;;
-;; A single global transaction lock gives correct serializable semantics on
-;; jolt's shared-heap threads — no MVCC needed.  Transactions buffer writes
-;; in a per-txn log and only commit (write ref values) on success, providing
-;; rollback on exception.  Watches fire once per changed ref after commit,
-;; outside the transaction lock, matching JVM semantics.
+;; Multiversion concurrency with a global commit clock, the shape of the JVM's
+;; LockingTransaction. A transaction reads the world as of its READ POINT (the
+;; clock when it started), buffers its writes in its own table, and commits under
+;; one short lock: it re-checks that nothing it wrote or ensured was committed
+;; after its read point, writes every ref at a new commit point, and only then
+;; advances the clock. A read that finds no version at or before the read point,
+;; or a commit that finds a newer version, throws the retry and the body runs
+;; again from the start, up to the JVM's 10000 attempts.
 ;;
-;; The lock IS the isolation, and it is an object MONITOR rather than an OS mutex
-;; because a mutex cannot carry that across a fiber park — see stm-lock below
-;; (jolt-pb2s), and dyn-with-txn for the other half, which is *txn* itself
-;; (jolt-49ay).
+;; No lock is held while the body runs. A body may block on another thread's
+;; transaction (deref a future that runs a dosync) and a fiber may park inside a
+;; body, and neither can deadlock or lose an update: the waiter holds nothing, and
+;; a write derived from a stale read is caught at commit and retried.
 ;;
+;; Watches fire once per changed ref after commit, outside the commit lock.
 ;; Refs participate in the IRef seam (watches/validators/metadata) like
 ;; atom/var/agent.  Loaded after atoms.ss (shares jolt-iref-state-throw and
 ;; the iref tables).
@@ -18,114 +22,80 @@
 ;; Refs travel in state images by VALUE (state-image.ss substitutes an
 ;; image-ref descriptor on dump and re-mints through make-jolt-ref on
 ;; restore), so this layout is NOT image-format surface and may change
-;; freely. The uid jolt-ref-v1 is RETIRED: format-2 images carry refs as raw
-;; nongenerative jolt-ref-v1 records (fields: val lock), and the legacy
-;; restore arm depends on materializing that rtd from the fasl without a
-;; live conflict — never reuse the v1 uid for a different layout.
-(define-record-type jolt-ref
-  (fields (mutable val))
-  (nongenerative jolt-ref-v2))
+;; freely. The uids jolt-ref-v1 and jolt-ref-v2 are RETIRED: format-2 images
+;; carry refs as raw nongenerative jolt-ref-v1 records (fields: val lock), and
+;; the legacy restore arm depends on materializing that rtd from the fasl
+;; without a live conflict — never reuse a retired uid for a different layout.
+;;
+;;   tvals       — the committed history, newest first: a list of (point . val).
+;;                 Never mutated, only replaced, so a reader that loads it holds a
+;;                 consistent history without a lock.
+;;   faults      — reads that found no version old enough since the last commit
+;;                 that kept one more; a fault lets the next commit grow the history
+;;   min-hist / max-hist — the history the ref keeps (ref-min-history)
+(define-record-type (jolt-ref %make-jolt-ref jolt-ref?)
+  (fields (mutable tvals) (mutable faults) (mutable min-hist) (mutable max-hist))
+  (nongenerative jolt-ref-v3))
+
+(define (make-jolt-ref v) (%make-jolt-ref (list (cons 0 v)) 0 0 10))
+;; the newest committed value
+(define (jolt-ref-val ref) (cdar (jolt-ref-tvals ref)))
+;; A write outside any transaction (the loader's *loaded-libs* mark, an image
+;; restore): the newest version takes the value and keeps its point.
+(define (jolt-ref-val-set! ref v)
+  (let ((tv (jolt-ref-tvals ref)))
+    (let ((ntv (cons (cons (caar tv) v) (cdr tv))))
+      (when jolt-mt? (memory-order-release))
+      (jolt-ref-tvals-set! ref ntv))))
 
 ;; IRef arm: refs are watchable/validatable through the iref tables.
 (register-iref-arm! jolt-ref?)
 
-;; Per-ref min/max history (defaults 0 and 10), stored in weak side tables.
-;; ref-min-history / ref-max-history live in side-tables rather than ref fields.
-;; A Chez hashtable is not thread-safe and STM is concurrent by definition, so
-;; both go through one mutex: unsynchronized mutation corrupts the table and the
-;; damage surfaces as a fault inside the collector, naming nothing. Cold on both
-;; sides — these are only touched by the user-facing getter/setter, never by the
-;; commit path (jolt-ref-history-count is 0; history is not implemented) — so the
-;; lock costs nothing measurable.
-(define ref-min-history-tbl (make-weak-eq-hashtable))
-(define ref-max-history-tbl (make-weak-eq-hashtable))
-(define ref-history-mu (make-mutex))
-
 ;; --- transaction record -------------------------------------------------------
 ;; A per-transaction record, held in the thread-parameter *txn* (#f when
-;; no transaction is running).
-;;   log         — eq-hashtable: ref -> in-txn value
-;;   old-vals    — eq-hashtable: ref -> committed value at first mutation
-;;                 (captured once per ref for the single watch notification)
-;;   pending-sends — list of (agent f args) enqueued during this txn (Round 3)
+;; no transaction is running). One record per attempt: a retry starts a new one.
+;;   read-point    — the clock when the attempt started
+;;   vals          — eq-hashtable: ref -> (in-txn value . set?), set? true once
+;;                   ref-set / alter wrote it (a commuted ref's is #f)
+;;   commutes      — alist: ref -> its commute fns, newest first, as (f . args)
+;;   ensures       — list of the refs ensured
+;;   pending-sends — thunks dispatching the agent sends made inside the txn
 (define-record-type jolt-txn
-  (fields (mutable log) (mutable old-vals) (mutable pending-sends))
-  (nongenerative jolt-txn-v1))
+  (fields read-point vals (mutable commutes) (mutable ensures) (mutable pending-sends))
+  (nongenerative jolt-txn-v2))
 
-(define (make-txn)
-  (make-jolt-txn (make-eq-hashtable) (make-eq-hashtable) '()))
+(define (make-txn rp)
+  (make-jolt-txn rp (make-eq-hashtable) '() '() '()))
 
 ;; --- transaction state -------------------------------------------------------
-;; A single global lock serializes all transactions.  Per-thread *txn* detects
-;; nested dosync (joins the outer transaction) and guards against io!/ref-set/
-;; alter/commute/ensure outside a transaction.
+;; stm-clock is the point of the last commit. Only a commit writes it, under
+;; stm-lock, and it advances AFTER the commit's refs are written: a transaction
+;; that reads point c then sees every ref commit c wrote.
 ;;
-;; AN OBJECT MONITOR AND NOT A MUTEX, and that is the isolation (jolt-pb2s).
-;;
-;; This was (define stm-lock (make-mutex)) taken through jolt-with-mutex around the
-;; whole transaction body. An OS mutex has THREAD granularity and a fiber is not a
-;; thread, so it cannot carry an invariant across a park — and jolt-with-mutex is a
-;; dynamic-wind, so a fiber that parks inside the body RELEASES it on the way out
-;; and re-acquires it on resume. That is exactly what locks.ss says makes parking
-;; inside jolt-with-mutex safe, and exactly what a transaction cannot survive:
-;; another transaction ran and COMMITTED inside this one's extent, and this one then
-;; committed writes derived from reads that predated it. Measured: a fiber reading
-;; r = 0, parking, and writing read+1 while a second transaction committed r = 100
-;; left r = 1, where the only serializable outcomes are 100 and 101.
-;;
-;; There is nothing downstream to catch it. jolt's STM has no MVCC and no retry —
-;; the lock IS the isolation — so dropping it mid-body drops the only mechanism
-;; there is, silently. And this is a scenario the design commits to rather than one
-;; to rule out: fibers.ss carries *txn* in the per-fiber dynamic slice precisely so
-;; that a fiber parked inside a dosync resumes inside its txn.
-;;
-;; So exclusion is carried the way jolt-3a87 carries an object monitor's: by an
-;; OWNER FIELD keyed on the execution context, which a context switch cannot
-;; disturb because it is not a wind. jolt-with-monitor is that lock already — its
-;; bookkeeping mutex is held only across the enter/exit decision, a fiber contender
-;; PARKS on the monitor's waiter list (never a condition-wait, which would block the
-;; carrier the holder may need in order to reach its commit) and a thread waits on
-;; its condition, and its after-thunk asks jolt-park-unwinding? so a park keeps
-;; ownership. Nothing here has to know any of that; it just has to stop using a
-;; mutex for a region that spans user code.
-;;
-;; The second thing this buys is jolt-d7l5: a monitor holds no COUNTED lock while
-;; the body runs, so a fiber inside a transaction is preemptible again. Under the
-;; mutex it was not, for the whole body, which is reason 3 of the three ways the
-;; monitor itself failed — an unbounded starvation window over arbitrary user code.
-;;
-;; WHAT IT TRADES. Two transactions that today interleave over a park will now
-;; serialize, and a program relying on that interleaving to make progress can
-;; deadlock instead. That is jolt-3a87's call again: a hang is diagnosable and a
-;; lost update is not.
-;;
-;; The lock-order rule the loader rests on is unchanged — a load must never acquire
-;; this lock (loader.ss ldr-libs-update!), which is what keeps stm-lock -> ns_load
-;; acyclic — and it is if anything easier to hold now, since a fiber contender parks
-;; instead of pinning its carrier.
-;;
-;; jolt-with-monitor lives in java/concurrency.ss, which rt.ss loads AFTER this
-;; file; the reference resolves at call time, the same forward reference
-;; jolt-alter-var-root makes from dyn-binding.ss and jolt-run-interruptible makes to
-;; fibers.ss. Nothing runs a transaction before the boot finishes loading.
+;; stm-lock is an object MONITOR and not a mutex because the commit runs user code
+;; (commute fns, validators), and a fiber that parks there must keep the lock: a
+;; mutex is released by jolt-with-mutex's wind on a park, a monitor's ownership is
+;; a field keyed on the execution context, which a switch does not disturb. A
+;; fiber contender parks on the monitor's waiter list rather than blocking its
+;; carrier. jolt-with-monitor lives in java/concurrency.ss, which rt.ss loads
+;; AFTER this file; the reference resolves at call time.
+(define stm-clock 0)
 (define stm-lock (vector 'stm-lock))
 (define *txn* (make-thread-parameter #f))
+(define stm-retry-limit 10000)
 
 ;; (dyn-with-txn txn thunk) — scope *txn* over a dynamic extent.
 ;;
 ;; NOT `parameterize`, and the reason is the rule dyn-binding.ss already states at
 ;; dyn-with-frame: a winder must not re-establish state the jolt-dslice already
-;; carries (jolt-49ay). The dslice carries *txn* — that is how a fiber parked inside
-;; a dosync resumes inside its own transaction — and Chez's parameterize is a SWAP:
-;; one thunk is both the wind's before and its after, exchanging the parameter with a
+;; carries. The dslice carries *txn* — that is how a fiber parked inside a dosync
+;; resumes inside its own transaction — and Chez's parameterize is a SWAP: one
+;; thunk is both the wind's before and its after, exchanging the parameter with a
 ;; saved slot. jolt-fiber-slice-restore! writes *txn* BEFORE the rewind runs that
-;; swap, so the saved slot came back holding the transaction instead of the outer
-;; nil, and the way out then restored the TRANSACTION. The fiber left its dosync
-;; still inside one, and its next dosync saw (*txn*) non-nil, took the nested arm,
-;; joined the dead transaction, took no lock at all and wrote into a log nobody would
-;; ever commit. Measured with no preemption at all: three parked transactions in a
-;; row committed once; under contention, 396 of 400 dosync calls joined a stale txn
-;; and four transaction objects served four hundred transactions.
+;; swap, so the saved slot would come back holding the transaction instead of the
+;; outer nil, and the way out would then restore the TRANSACTION: the fiber's next
+;; dosync would see (*txn*) non-nil, take the nested arm and join a dead
+;; transaction whose log nobody commits.
 ;;
 ;; So the same shape dyn-with-frame uses, for the same reason. The set happens ONCE,
 ;; outside the wind, so a rewind cannot re-establish anything; and the after-thunk
@@ -133,81 +103,155 @@
 ;; the extent is left and re-entered. The slice is then the single owner of *txn*
 ;; across a switch, which is what fibers.ss says the design is.
 ;;
-;; This is the ONLY parameterize the runtime had over a slice-carried parameter. The
-;; others are over parameters the slice does not touch (the reader's mode, the
-;; loader's sinks and flags), where the swap is sound because nothing else writes
-;; them while the extent is unwound.
-;;
-;; Note the after-thunk here DOES fire on a park, which is the opposite of
-;; jolt-with-monitor's just above it in jolt-sync — and the difference is which
-;; mechanism owns the state across the switch. The slice owns *txn*, so letting it
-;; revert and be restored is correct; the monitor owns its ownership field, so a park
-;; must not release it. Both rest on a park being a CAPTURE park that rewinds, which
-;; is what fn* opacity gives dosync (java/sm.ss's invariant; run-gosm.ss checks it).
+;; The after-thunk DOES fire on a park: the slice owns *txn*, so letting it revert
+;; and be restored is correct. That rests on a park being a CAPTURE park that
+;; rewinds, which is what fn* opacity gives dosync (java/sm.ss's invariant;
+;; run-gosm.ss checks it).
 (define (dyn-with-txn txn thunk)
   (let ((outer (*txn*)))
     ;; masked at its edges (jolt-wind*, locks.ss): an interrupt's escape at either
     ;; left *txn* set, and the thread ran on as if inside the transaction
     (jolt-wind* (lambda () #f) (*txn* txn) thunk (*txn* outer))))
 
-;; --- in-txn log helpers ------------------------------------------------------
+;; --- the retry ------------------------------------------------------------------
+;; A clojure.lang.LockingTransaction$RetryEx, which is an Error on the JVM, so a
+;; body's (catch Exception e) does not swallow it. One instance serves every retry,
+;; made on first use under a mutex so every thread raises and recognizes the same one.
+(define stm-retry-ex #f)
+(define stm-retry-mu (make-mutex))
+(define (stm-retry!)
+  (unless stm-retry-ex
+    (jolt-with-mutex stm-retry-mu
+      (unless stm-retry-ex
+        (set! stm-retry-ex (jolt-host-throwable "clojure.lang.LockingTransaction$RetryEx" jolt-nil)))))
+  (jolt-throw stm-retry-ex))
+(define (stm-retry? e)
+  (and stm-retry-ex (eq? (jolt-unwrap-throw e) stm-retry-ex)))
+
+;; --- in-txn reads and writes -------------------------------------------------
 
 ;; Sentinel for hashtable-ref to distinguish "not found" from a valid value.
 (define txn-not-found (list 'txn-not-found))
 
-;; Read a ref's in-txn value from the transaction log, falling back to the
-;; ref's committed value if this txn has not touched it.
+;; The newest version at or before point rp, or txn-not-found.
+(define (ref-val-at ref rp)
+  (let loop ((tv (jolt-ref-tvals ref)))
+    (cond ((null? tv) txn-not-found)
+          ((<= (caar tv) rp) (cdar tv))
+          (else (loop (cdr tv))))))
+
+;; Read a ref inside a transaction: its in-txn value, else the version the read
+;; point sees. No version that old is a fault, and the attempt retries.
+(define (txn-get txn ref)
+  (let ((cell (hashtable-ref (jolt-txn-vals txn) ref #f)))
+    (if cell
+        (car cell)
+        (let ((v (ref-val-at ref (jolt-txn-read-point txn))))
+          (when (eq? v txn-not-found)
+            (jolt-ref-faults-set! ref (+ 1 (jolt-ref-faults ref)))
+            (stm-retry!))
+          v))))
+
 (define (txn-read ref)
   (let ((txn (*txn*)))
-    (if txn
-        (let ((v (hashtable-ref (jolt-txn-log txn) ref txn-not-found)))
-          (if (eq? v txn-not-found) (jolt-ref-val ref) v))
-        (jolt-ref-val ref))))
+    (if txn (txn-get txn ref) (jolt-ref-val ref))))
 
-;; Write a ref's in-txn value to the log.  Captures the pre-txn committed
-;; value on first mutation if not already recorded.
-(define (txn-write! ref v)
-  (let* ((log (jolt-txn-log (*txn*)))
-         (ov (jolt-txn-old-vals (*txn*))))
-    ;; capture pre-txn value on first write to this ref
-    (unless (hashtable-contains? ov ref)
-      (hashtable-set! ov ref (jolt-ref-val ref)))
-    (hashtable-set! log ref v)))
+;; A ref committed after the read point is a write conflict.
+(define (txn-check-unchanged! txn ref)
+  (when (> (caar (jolt-ref-tvals ref)) (jolt-txn-read-point txn))
+    (stm-retry!)))
 
-;; Commit: write all buffered values to the refs.  Must be called while
-;; still holding stm-lock.
+;; ref-set / alter: a commuted ref cannot be set; the first set checks for a
+;; conflict, which the commit checks again.
+(define (txn-set! txn ref v)
+  (let ((cell (hashtable-ref (jolt-txn-vals txn) ref #f)))
+    (cond
+      ((and cell (cdr cell)) (set-car! cell v))
+      ((assq ref (jolt-txn-commutes txn))
+       (jolt-throw (jolt-host-throwable "java.lang.IllegalStateException" "Can't set after commute")))
+      (else
+       (txn-check-unchanged! txn ref)
+       (hashtable-set! (jolt-txn-vals txn) ref (cons v #t)))))
+  v)
+
+;; --- commit ---------------------------------------------------------------------
+
+;; The history a commit leaves: one version more when the ref faulted and is
+;; under its max, or is under its min; otherwise the oldest version goes.
+(define (ref-next-tvals ref point v)
+  (let ((tv (jolt-ref-tvals ref)))
+    (if (and (null? (cdr tv)) (eqv? 0 (jolt-ref-faults ref)) (eqv? 0 (jolt-ref-min-hist ref)))
+        (list (cons point v))
+        (let* ((hcount (- (length tv) 1))
+               (grow? (or (and (> (jolt-ref-faults ref) 0) (< hcount (jolt-ref-max-hist ref)))
+                          (< hcount (jolt-ref-min-hist ref)))))
+          (when grow? (jolt-ref-faults-set! ref 0))
+          (cons (cons point v)
+                (if grow? tv (let drop-last ((l tv)) (if (null? (cdr l)) '() (cons (car l) (drop-last (cdr l)))))))))))
+
+;; Run under stm-lock. Returns the (ref old new) notifications, or throws the
+;; retry when something this transaction wrote or ensured changed underneath it.
 (define (txn-commit! txn)
-  (let ((log (jolt-txn-log txn)))
-    (vector-for-each
-      (lambda (ref) (jolt-ref-val-set! ref (hashtable-ref log ref #f)))
-      (hashtable-keys log))))
+  (let-values (((refs cells) (hashtable-entries (jolt-txn-vals txn))))
+    (let ((n (vector-length refs)))
+      (do ((i 0 (fx+ i 1))) ((fx= i n))
+        (when (cdr (vector-ref cells i)) (txn-check-unchanged! txn (vector-ref refs i))))
+      (for-each (lambda (ref) (txn-check-unchanged! txn ref)) (jolt-txn-ensures txn))
+      ;; a commuted ref not also set takes its commutes over the newest value
+      (for-each
+        (lambda (rc)
+          (let ((cell (hashtable-ref (jolt-txn-vals txn) (car rc) #f)))
+            (unless (cdr cell)
+              (set-car! cell
+                (let loop ((v (jolt-ref-val (car rc))) (cfs (reverse (cdr rc))))
+                  (if (null? cfs)
+                      v
+                      (loop (apply jolt-invoke (caar cfs) v (cdar cfs)) (cdr cfs))))))))
+        (jolt-txn-commutes txn))
+      (do ((i 0 (fx+ i 1))) ((fx= i n))
+        (iref-validate (vector-ref refs i) (car (vector-ref cells i))))
+      ;; the (ref old new) notifications, when anything watches, and the history
+      ;; each ref is left with
+      (let ((point (+ stm-clock 1))
+            (notes (if (iref-any?)
+                       (let loop ((i (fx- n 1)) (acc '()))
+                         (if (fx< i 0)
+                             acc
+                             (loop (fx- i 1)
+                                   (let ((ref (vector-ref refs i)))
+                                     (cons (list ref (jolt-ref-val ref) (car (vector-ref cells i))) acc)))))
+                       '()))
+            (ntvs (make-vector n)))
+        (do ((i 0 (fx+ i 1))) ((fx= i n))
+          (vector-set! ntvs i (ref-next-tvals (vector-ref refs i) point (car (vector-ref cells i)))))
+        (when jolt-mt? (memory-order-release))
+        (do ((i 0 (fx+ i 1))) ((fx= i n))
+          (jolt-ref-tvals-set! (vector-ref refs i) (vector-ref ntvs i)))
+        (when jolt-mt? (memory-order-release))
+        (set! stm-clock point)
+        notes))))
 
-;; Fire watch notifications for committed changes.  Called AFTER releasing
-;; stm-lock and clearing *txn*, so watches can open their own dosync.
-(define (txn-fire-watches! txn)
-  (let ((log (jolt-txn-log txn))
-        (ov (jolt-txn-old-vals txn)))
-    (vector-for-each
-      (lambda (ref)
-        (let ((new-val (hashtable-ref log ref #f))
-              (old (hashtable-ref ov ref txn-not-found)))
-          (unless (eq? old txn-not-found)
-            (iref-notify ref old new-val))))
-      (hashtable-keys log))))
+(define (txn-writes? txn)
+  (or (fx> (hashtable-size (jolt-txn-vals txn)) 0)
+      (pair? (jolt-txn-ensures txn))))
 
 ;; --- constructor -------------------------------------------------------------
-;; (ref init :validator f :meta m) — the ARef ctor contract: validator runs
-;; against the initial value; :meta must be a map.
+;; (ref init :validator f :meta m :min-history n :max-history n) — the ARef ctor
+;; contract: validator runs against the initial value; :meta must be a map.
 (define (jolt-ref-new v . opts)
-  (let loop ((o opts) (validator jolt-nil) (m #f))
+  (let loop ((o opts) (validator jolt-nil) (m #f) (minh 0) (maxh 10))
     (cond
       ((or (null? o) (null? (cdr o)))
        (let ((r (make-jolt-ref v)))
+         (jolt-ref-min-hist-set! r minh)
+         (jolt-ref-max-hist-set! r maxh)
          ;; validate init via iref validator table
          (when (and (not (jolt-nil? validator)) (jolt-not (jolt-invoke validator v)))
            (jolt-iref-state-throw))
          (unless (jolt-nil? validator)
-           (hashtable-set! iref-validator-tbl r validator))
+           (jolt-with-mutex iref-tbl-mu
+             (iref-tbl-bump!)
+             (hashtable-set! iref-validator-tbl r validator)))
          (when (and m (not (jolt-nil? m)))
            (unless (jolt-map? m)
              (jolt-throw (jolt-host-throwable
@@ -216,110 +260,104 @@
                                          " cannot be cast to class clojure.lang.IPersistentMap"))))
            (meta-table-set! r m))
          r))
-      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "validator"))
-       (loop (cddr o) (cadr o) m))
-      ((and (keyword-t? (car o)) (string=? (keyword-t-name (car o)) "meta"))
-       (loop (cddr o) validator (cadr o)))
-      (else (loop (cddr o) validator m)))))
+      ((keyword-t? (car o))
+       (let ((k (keyword-t-name (car o))))
+         (cond ((string=? k "validator") (loop (cddr o) (cadr o) m minh maxh))
+               ((string=? k "meta") (loop (cddr o) validator (cadr o) minh maxh))
+               ((string=? k "min-history") (loop (cddr o) validator m (cadr o) maxh))
+               ((string=? k "max-history") (loop (cddr o) validator m minh (cadr o)))
+               (else (loop (cddr o) validator m minh maxh)))))
+      (else (loop (cddr o) validator m minh maxh)))))
 
 ;; --- transaction-guarded operations ------------------------------------------
 ;; Inside a transaction, ref-set/alter/commute/ensure write through the
-;; per-txn log; on commit the buffered values are written to the refs.
-;; On exception the log is discarded — rollback is implicit.
+;; per-txn table; the commit validates and writes them. On exception the table
+;; is discarded — rollback is implicit.
 
 (define (jolt-ref-ensure-txn)
-  (unless (*txn*)
-    (jolt-throw (jolt-host-throwable
-                 "java.lang.IllegalStateException"
-                 "No transaction running"))))
+  (or (*txn*)
+      (jolt-throw (jolt-host-throwable
+                   "java.lang.IllegalStateException"
+                   "No transaction running"))))
 
 (define (jolt-ref-set ref v)
-  (jolt-ref-ensure-txn)
-  (iref-validate ref v)
-  (txn-write! ref v)
-  v)
+  (txn-set! (jolt-ref-ensure-txn) ref v))
 
 (define (jolt-alter ref f . args)
-  (jolt-ref-ensure-txn)
-  (let* ((old (txn-read ref))
-         (v (apply jolt-invoke f old args)))
-    (iref-validate ref v)
-    (txn-write! ref v)
+  (let* ((txn (jolt-ref-ensure-txn))
+         (v (apply jolt-invoke f (txn-get txn ref) args)))
+    (txn-set! txn ref v)))
+
+;; commute never conflicts: the in-txn value starts from the newest committed
+;; one, and the commit applies the fns again to whatever is newest then.
+(define (jolt-commute ref f . args)
+  (let* ((txn (jolt-ref-ensure-txn))
+         (vals (jolt-txn-vals txn))
+         (cell (or (hashtable-ref vals ref #f)
+                   (let ((c (cons (jolt-ref-val ref) #f)))
+                     (hashtable-set! vals ref c)
+                     c)))
+         (v (apply jolt-invoke f (car cell) args)))
+    (let* ((cs (jolt-txn-commutes txn)) (rc (assq ref cs)))
+      (if rc
+          (set-cdr! rc (cons (cons f args) (cdr rc)))
+          (jolt-txn-commutes-set! txn (cons (list ref (cons f args)) cs))))
+    (set-car! cell v)
     v))
 
-;; Under serialized transactions, commute is equivalent to alter (no
-;; commutative optimization needed).
-(define (jolt-commute ref f . args)
-  (apply jolt-alter ref f args))
-
-;; ensure: under serialized transactions this is a no-op beyond the
-;; transaction-enforcement guard — there is no ref to "touch" because no
-;; other thread can mutate it while we hold the global lock.
+;; ensure: the commit fails if the ref changed after the read point, so a
+;; transaction that read it cannot commit on a stale value of it.
 (define (jolt-ensure ref)
-  (jolt-ref-ensure-txn)
-  (txn-read ref))
+  (let ((txn (jolt-ref-ensure-txn)))
+    (let ((v (txn-get txn ref)))
+      (unless (memq ref (jolt-txn-ensures txn))
+        (jolt-txn-ensures-set! txn (cons ref (jolt-txn-ensures txn))))
+      v)))
 
-;; __sync-call: run a thunk inside a serialized transaction — the seam the
-;; sync/dosync MACROS (30-macros.clj) expand through; sync itself is a macro
-;; with the reference's (sync flags & body) shape.  Nested calls join the
-;; outer transaction (re-entrant through the thread-local parameter).
+;; __sync-call: run a thunk inside a transaction — the seam the sync/dosync
+;; MACROS (30-macros.clj) expand through; sync itself is a macro with the
+;; reference's (sync flags & body) shape. Nested calls join the outer
+;; transaction (re-entrant through the thread-local parameter).
+;;
+;; The body is a thunk because dosync reaches here as (__sync-call (fn* [] body)) —
+;; an fn*, which is opaque to the CPS pass, so a park inside a transaction takes a
+;; CAPTURE park and rewinds properly through dyn-with-txn.
 (define (jolt-sync thunk)
   (if (*txn*)
       ;; nested — just run the body under the existing transaction
       (jolt-invoke thunk)
-      ;; outer transaction: acquire lock, buffer writes, commit or rollback
-      (let ((txn (make-txn))
-            (aborted #f)
-            (result #f))
-        ;; The body is handed over as a thunk because that is what a monitor takes,
-        ;; and dosync already reaches here as (__sync-call (fn* [] body)) — an fn*,
-        ;; which is opaque to the CPS pass, so a park inside a transaction takes a
-        ;; CAPTURE park and rewinds properly. jolt-with-monitor's after-thunk needs
-        ;; that: a CHEAP park never rewinds, so it would skip the release and leave
-        ;; the transaction lock held for the life of the process.
-        (jolt-with-monitor stm-lock
-          (lambda ()
-            (dyn-with-txn txn
-              (lambda ()
-                (guard (e (#t (set! aborted #t) (set! result e)))
-                  (set! result (jolt-invoke thunk)))
-                (unless aborted
-                  (txn-commit! txn))))))
-        ;; the monitor is released and *txn* is back to #f
-        (unless aborted
-          (txn-fire-watches! txn)
-          ;; dispatch deferred agent sends inside a txn.  Look up send from
-          ;; clojure.core (resolved at runtime, after concurrency.ss loads).
-          (let ((sends (jolt-txn-pending-sends txn)))
-            (when (pair? sends)
-              (let ((send-fn (or jolt-txn-send-fn
-                                 (let ((v (var-deref "clojure.core" "send")))
-                                   (set! jolt-txn-send-fn v) v))))
-                (for-each (lambda (entry)
-                            (apply send-fn entry))
-                          (reverse sends))))))
-        (if aborted (raise result) result))))
+      (let attempt ((n 0))
+        (when (fx= n stm-retry-limit)
+          (jolt-throw (jolt-host-throwable "java.lang.RuntimeException"
+                                           "Transaction failed after reaching retry limit")))
+        (let ((rp stm-clock))
+          (when jolt-mt? (memory-order-acquire))
+          ;; outcome: (result . notifications), #f to retry, or #(raised)
+          (let* ((txn (make-txn rp))
+                 (outcome
+                  (guard (e (#t (if (stm-retry? e) #f (vector e))))
+                    (let ((result (dyn-with-txn txn (lambda () (jolt-invoke thunk)))))
+                      (cons result
+                            (if (txn-writes? txn)
+                                (jolt-with-monitor stm-lock (lambda () (txn-commit! txn)))
+                                '()))))))
+            (cond
+              ((not outcome) (attempt (fx+ n 1)))
+              ((vector? outcome) (raise (vector-ref outcome 0)))
+              (else
+               ;; the commit lock is released and *txn* is back to #f
+               (for-each (lambda (nt) (apply iref-notify nt)) (cdr outcome))
+               (for-each (lambda (send) (send)) (reverse (jolt-txn-pending-sends txn)))
+               (car outcome))))))))
 
 ;; io! is a MACRO (30-macros.clj): its body must NOT evaluate when the
 ;; transaction check throws. The macro tests this seam.
 (define (jolt-txn-running?) (and (*txn*) #t))
 
 ;; --- history ops -------------------------------------------------------------
-;; On the JVM these control how many prior values a ref keeps for snapshot
-;; isolation: a reader in a transaction that started before a writer committed
-;; is served an older value out of the history chain instead of retrying.
-;;
-;; jolt's transactions are SERIALIZED by stm-lock, so there is no such reader —
-;; a transaction never observes a commit inside its own extent, which is what
-;; the history chain exists to paper over. There is therefore nothing to store
-;; and nothing for the commit path to store it in, and ref-history-count is 0
-;; where the JVM reports the chain's length (recorded as an accepted
-;; :concurrency-model divergence, not a gap to close).
-;;
-;; The min/max settings themselves stay a faithful GETTER/SETTER pair — the
-;; getter returns what the setter stored (defaults 0 and 10, as on the JVM) and
-;; the setter returns the ref — so code that tunes a ref keeps working and reads
-;; back what it set. They just do not feed a mechanism jolt has.
+;; ref-history-count is how many versions besides the newest a ref keeps. A ref
+;; keeps min-history of them at least, and grows toward max-history when a read
+;; finds no version old enough (a fault).
 ;;
 ;; case-lambda rather than a rest-arg: a rest-arg accepted ANY arg count and
 ;; silently took the getter branch for 3+ (so (ref-min-history r 1 2) read the
@@ -342,24 +380,23 @@
                                  " cannot be cast to class clojure.lang.Ref"))))))
 (define (jolt-ref-history-count ref)
   (ref-history-arg-check ref)
-  0)
+  (- (length (jolt-ref-tvals ref)) 1))
 
-(define (make-ref-history-op tbl default)
+(define (make-ref-history-op get set)
   (case-lambda
     ((ref)
      (ref-history-arg-check ref)
-     (jolt-with-mutex ref-history-mu (hashtable-ref tbl ref default)))
+     (get ref))
     ((ref n)
      (ref-history-arg-check ref)
-     (jolt-with-mutex ref-history-mu (hashtable-set! tbl ref n))
+     (set ref n)
      ref)))
-(define jolt-ref-min-history (make-ref-history-op ref-min-history-tbl 0))
-(define jolt-ref-max-history (make-ref-history-op ref-max-history-tbl 10))
+(define jolt-ref-min-history (make-ref-history-op jolt-ref-min-hist jolt-ref-min-hist-set!))
+(define jolt-ref-max-history (make-ref-history-op jolt-ref-max-hist jolt-ref-max-hist-set!))
 
 ;; --- deref -------------------------------------------------------------------
-;; Inside a transaction, return the in-txn value from the log (falling back
-;; to the ref's committed value).  Outside a transaction, return the ref's
-;; committed value directly.
+;; Inside a transaction, the in-txn value or the version the read point sees.
+;; Outside a transaction, the newest committed value.
 (define (jolt-ref-deref ref)
   (txn-read ref))
 
@@ -394,7 +431,3 @@
 ;; loaded-libs fn returns the derefed set.
 (def-var! "clojure.core" "loaded-libs"
   (lambda () (jolt-deref (var-deref "clojure.core" "*loaded-libs*"))))
-
-;; Cached send fn for dispatching deferred agent sends after txn commit.
-;; Resolved lazily at runtime (after concurrency.ss has loaded send into core).
-(define jolt-txn-send-fn #f)

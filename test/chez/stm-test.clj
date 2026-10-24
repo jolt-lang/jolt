@@ -44,8 +44,7 @@
 
 ;; --- PSL R4 cluster-1 confirmation: re-entrance is the *txn* join, never locking
 ;; A nested dosync on the SAME thread joins the outer transaction through the
-;; *txn* thread parameter (jolt-sync, refs.ss:159-161) — if it re-acquired the
-;; non-recursive stm-lock it would deadlock. Confirms the refs.ss contract-note.
+;; *txn* thread parameter (jolt-sync) rather than starting a second one.
 (let [r (ref 0)]
   (dosync
     (ref-set r 1)

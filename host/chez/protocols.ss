@@ -540,7 +540,7 @@
         ;; java.time.temporal.Temporal …) fires on an Instant, java.io.Reader on a
         ;; PushbackReader, java.util.List on an ArrayList — each inheriting the
         ;; modeled supers instead of a hand-copied literal that drifts. A tag naming
-        ;; no modeled class (in-stream, jolt-comparator) returns #f and falls through.
+        ;; no modeled class (in-stream) returns #f and falls through.
         ((and (jhost? obj) (jhost-value-tags (jhost-tag obj))) => (lambda (tags) tags))
         ;; arrays dispatch by their JVM array-class name — extend-protocol to
         ;; (Class/forName "[B") for byte[] (data.json, aws-api), "[C" for char[].

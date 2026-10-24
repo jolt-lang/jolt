@@ -152,7 +152,7 @@
 (register-class-statics! "Thread" thread-statics)
 (register-class-statics! "java.lang.Thread" thread-statics)
 
-;; clojure.lang.LockingTransaction: jolt refs with serialized transactions.
+;; clojure.lang.LockingTransaction: jolt refs and their transactions (refs.ss).
 ;; isRunning -> true when a transaction is active on this thread.
 (register-class-statics! "clojure.lang.LockingTransaction" (list (cons "isRunning" (lambda () (and (*txn*) #t)))))
 

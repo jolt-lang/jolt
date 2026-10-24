@@ -71,14 +71,17 @@
 ;; clojure.lang.Sorted on jolt's sorted-map / sorted-set: comparator / entryKey /
 ;; seqFrom / seq. data.priority-map's subseq/rsubseq reach for these (its
 ;; PersistentPriorityMap delegates .comparator to the backing sorted-map). The
-;; comparator is returned as a small Comparator object whose .compare runs the
-;; map's 3-way fn, since (.. sc comparator (compare a b)) is the calling form.
+;; comparator is the one the coll was built with, so (= > (.comparator
+;; (sorted-set-by > 1))); a coll built without one answers the single
+;; clojure.lang.RT$DefaultComparator, which compares with `compare`.
 (define sorted-cmp-kw (keyword #f "cmp"))
-(register-host-methods! "jolt-comparator"
-  (list (cons "compare" (lambda (self a b) (jolt-invoke (jhost-state self) a b)))))
+(define sorted-cmp-fn-kw (keyword #f "cmp-fn"))
+(register-host-methods! "rt-default-comparator"
+  (list (cons "compare" (lambda (self a b) (jolt-compare a b)))))
+(define rt-default-comparator (make-jhost "rt-default-comparator" #f))
 (define (sorted-comparator-of sc)
-  (let ((c (jolt-ref-get sc sorted-cmp-kw)))
-    (make-jhost "jolt-comparator" (if (jolt-nil? c) jolt-compare c))))
+  (let ((f (jolt-ref-get sc sorted-cmp-fn-kw)))
+    (if (jolt-nil? f) rt-default-comparator f)))
 (define (sorted-iface-method? m)
   (or (string=? m "comparator") (string=? m "entryKey")
       (string=? m "seqFrom") (string=? m "seq")))
@@ -183,9 +186,15 @@
                   jolt-nil)))
            (else 'pass)))
         ;; (.compare f a b): a fn is a java.util.Comparator — AFunction.compare
-        ;; invokes it — so code holding a fn as a Comparator calls it this way.
+        ;; invokes it — so code holding a fn as a Comparator calls it this way. A
+        ;; boolean answer is a less-than predicate's: -1, else 1 or 0 by the swap.
         ((and (procedure? obj) (string=? mname "compare") (pair? rest) (pair? (cdr rest)))
-         (jolt-invoke obj (car rest) (cadr rest)))
+         (let ((a (car rest)) (b (cadr rest)))
+           (let ((r (jolt-invoke obj a b)))
+             (cond ((not (boolean? r)) r)
+                   (r -1)
+                   ((jolt-truthy? (jolt-invoke obj b a)) 1)
+                   (else 0)))))
         ;; (.run f) / (.call f): a fn is a Runnable and a Callable — AFn.run and
         ;; AFn.call invoke it with no arguments — so an Executor handed a fn as
         ;; its task runs it this way. run answers nil, call the fn's value.

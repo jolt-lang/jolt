@@ -28,7 +28,7 @@
 ;;      and popped their own.
 ;;   4. Two fibers on one carrier cannot join each other's transaction: a fiber
 ;;      inside a dosync parks, another fiber runs and sees no transaction — and
-;;      cannot COMMIT one either while the first is still inside its own.
+;;      its commit inside the first one's extent makes the first one retry.
 ;;   5. Spawn conveys the parent's bindings (and does NOT convey its *txn*).
 ;;   6. The current namespace follows the fiber, not the carrier.
 
@@ -112,30 +112,28 @@
 
 ;; --- 4. two fibers on one carrier cannot join each other's transaction ------
 ;; t1 parks INSIDE a dosync (ref-set r 1, park, ref-set r 2). On park the
-;; parameterize unwinds *txn* and the slice swap keeps the carrier's *txn* #f —
-;; t2 runs and sees NO transaction; if it had inherited t1's *txn*, t2's
-;; jolt-sync would have joined it (ref-set into t1's log) instead of starting
-;; its own. That is the slice property this section is for.
+;; slice swap keeps the carrier's *txn* #f — t2 runs and sees NO transaction; if
+;; it had inherited t1's *txn*, t2's jolt-sync would have joined it (ref-set into
+;; t1's log) instead of starting its own. That is the slice property this section
+;; is for.
 ;;
-;; What t2 CANNOT do is finish. The transaction lock is an object monitor whose
-;; ownership is a field, so t1 keeps it across the park (jolt-pb2s) and t2 parks
-;; contending for it. This section used to assert the opposite — t2's whole
-;; transaction committing r = 9 inside t1's extent, and t1 then committing r = 2
-;; over the top of it — which is the isolation violation itself: t1's write is
-;; derived from a read that predated t2's commit, and the only serializable
-;; outcomes are 2 (t1 then t2, had t2 not committed) and 9 (t1 then t2). So the
-;; two properties are separated here: t2 never joins, and t2 never interleaves.
+;; A parked transaction holds no lock, so t2 runs its whole transaction and
+;; commits r = 9 inside t1's extent. t1's write then conflicts with that commit:
+;; its commit retries, the body runs again over r = 9 and parks again, and the
+;; outcome is serializable (t2 then t1).
 (define r (jolt-ref-new 0))
 (define t1-in-txn #f)        ; what t1 reads through its OWN log after resuming
 (define t1-committed-r #f)   ; and what is COMMITTED at that moment
+(define t1-runs 0)
 (define t1
   (sa-fiber-spawn
     (lambda ()
       (jolt-sync
         (lambda ()
+          (set! t1-runs (+ t1-runs 1))
           (jolt-ref-set r 1)
           (jolt-fiber-park!)
-          ;; resumed: the log is t1's own, and nothing has committed underneath it
+          ;; resumed: the log is t1's own
           (set! t1-in-txn (jolt-ref-deref r))
           (set! t1-committed-r (jolt-ref-val r))
           (jolt-ref-set r 2)))
@@ -152,19 +150,19 @@
       (jolt-sync (lambda () (jolt-ref-set r 9)))               ; its OWN txn
       (set! txn-log (cons (jolt-txn-running?) txn-log)))))     ; #f — over, not joined
 (sa-fiber-run-all)
-(ok "4. t2 sees no transaction while t1 is parked" (equal? txn-log '(#f)))
-(ok "4. and t2 waits for the transaction lock rather than joining"
-    (eq? (jolt-fiber-state t2) 'parked))
-(ok "4. so nothing of t2's is committed inside t1's extent" (= (jolt-ref-val r) 0))
-;; t1 finishes; releasing the lock resumes t2, which commits after it.
+(ok "4. t2 ran its own txn to the end, unjoined"
+    (and (eq? (jolt-fiber-state t2) 'done) (equal? txn-log '(#f #f))))
+(ok "4. and committed while t1 is parked" (= (jolt-ref-val r) 9))
+;; t1 resumes inside ITS txn, conflicts with t2's commit, and runs again.
 (sa-fiber-resume t1)
 (sa-fiber-run-all)
 (ok "4. t1 resumed inside ITS txn" (= t1-in-txn 1))
-(ok "4. with nothing committed underneath it" (= t1-committed-r 0))
+(ok "4. over t2's commit" (= t1-committed-r 9))
+(ok "4. its commit conflicted and the body ran again" (and (= t1-runs 2) (eq? (jolt-fiber-state t1) 'parked)))
+(sa-fiber-resume t1)
+(sa-fiber-run-all)
 (ok "4. t1 completed" (eq? (jolt-fiber-state t1) 'done))
-(ok "4. t2 then ran its own txn to the end, still unjoined"
-    (and (eq? (jolt-fiber-state t2) 'done) (equal? txn-log '(#f #f))))
-(ok "4. and the outcome is serializable (t1 then t2)" (= (jolt-ref-val r) 9))
+(ok "4. and the outcome is serializable (t2 then t1)" (= (jolt-ref-val r) 2))
 
 ;; --- 5. spawn conveys the parent's bindings (and NOT its *txn*) ------------
 (define *w* (def-dynvar! "app" "*w*" 0))

@@ -477,6 +477,12 @@
                                                          "clojure.lang.IPersistentStack" "clojure.lang.Reversible"
                                                          "clojure.lang.Indexed"))
 (jch-register-supers! "clojure.lang.IPersistentMap" '("java.lang.Iterable" "clojure.lang.Associative" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.Indexed" '("clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.IKVReduce" '())
+(jch-register-supers! "clojure.lang.MapEquivalence" '())
+(jch-register-supers! "clojure.lang.Obj" '("clojure.lang.IObj" "java.io.Serializable"))
+(for-each jch-mark-interface! '("clojure.lang.IKVReduce" "clojure.lang.MapEquivalence"))
+(jch-mark-abstract! "clojure.lang.Obj")
 (jch-register-supers! "clojure.lang.IPersistentSet" '("clojure.lang.IPersistentCollection" "clojure.lang.Counted"))
 (jch-register-supers! "clojure.lang.IPersistentList" '("clojure.lang.Sequential" "clojure.lang.IPersistentStack"))
 (jch-register-supers! "clojure.lang.IObj" '("clojure.lang.IMeta"))
@@ -521,25 +527,36 @@
 ;; instead of restating it, and (bases Long) stays what the JVM reports.
 (jch-register-supers! "java.io.Serializable" '())
 ;; concrete collection classes
-(jch-register-supers! "clojure.lang.APersistentVector" '("clojure.lang.IPersistentVector" "java.lang.Iterable" "java.util.List" "java.util.RandomAccess" "java.lang.Comparable" "java.io.Serializable"))
+;; AFn and IHashEq close each abstract collection row, after the interfaces the
+;; rows have always listed, so a protocol extended to both IPersistentMap and IFn
+;; keeps dispatching a map to IPersistentMap.
+(jch-register-supers! "clojure.lang.APersistentVector" '("clojure.lang.IPersistentVector" "java.lang.Iterable" "java.util.List" "java.util.RandomAccess" "java.lang.Comparable" "java.io.Serializable"
+                                                         "clojure.lang.AFn" "clojure.lang.IHashEq"))
 (jch-register-supers! "clojure.lang.PersistentVector" '("clojure.lang.APersistentVector" "clojure.lang.IObj"
-                                                        "java.util.List" "java.lang.Comparable"))
+                                                        "java.util.List" "java.lang.Comparable"
+                                                        "clojure.lang.IReduce" "clojure.lang.IKVReduce"))
 ;; subvec's view class (issue #629): an APersistentVector, so every vector
 ;; check holds; not a PersistentVector, so concrete-class dispatch doesn't
 (jch-register-supers! "clojure.lang.APersistentVector$SubVector"
                       '("clojure.lang.APersistentVector" "clojure.lang.IObj"
                         "java.util.List" "java.lang.Comparable"))
-(jch-register-supers! "clojure.lang.APersistentMap" '("clojure.lang.IPersistentMap" "java.util.Map" "java.lang.Iterable" "java.io.Serializable"))
-(jch-register-supers! "clojure.lang.PersistentArrayMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj"))
-(jch-register-supers! "clojure.lang.PersistentHashMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj"))
-(jch-register-supers! "clojure.lang.PersistentTreeMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj" "clojure.lang.Sorted" "clojure.lang.Reversible"))
-(jch-register-supers! "clojure.lang.APersistentSet" '("clojure.lang.IPersistentSet" "java.util.Collection" "java.util.Set" "java.io.Serializable"))
+(jch-register-supers! "clojure.lang.APersistentMap" '("clojure.lang.IPersistentMap" "java.util.Map" "java.lang.Iterable" "java.io.Serializable"
+                                                      "clojure.lang.MapEquivalence" "clojure.lang.AFn" "clojure.lang.IHashEq"))
+(jch-register-supers! "clojure.lang.PersistentArrayMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj" "clojure.lang.IKVReduce"))
+(jch-register-supers! "clojure.lang.PersistentHashMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj" "clojure.lang.IKVReduce"))
+(jch-register-supers! "clojure.lang.PersistentTreeMap" '("clojure.lang.APersistentMap" "clojure.lang.IObj" "clojure.lang.Sorted" "clojure.lang.Reversible"
+                                                         "clojure.lang.IKVReduce"))
+(jch-register-supers! "clojure.lang.APersistentSet" '("clojure.lang.IPersistentSet" "java.util.Collection" "java.util.Set" "java.io.Serializable"
+                                                      "clojure.lang.AFn" "clojure.lang.IHashEq"))
 (jch-register-supers! "clojure.lang.PersistentHashSet" '("clojure.lang.APersistentSet" "clojure.lang.IObj"))
 (jch-register-supers! "clojure.lang.PersistentTreeSet" '("clojure.lang.APersistentSet" "clojure.lang.IObj" "clojure.lang.Sorted" "clojure.lang.Reversible"))
-(jch-register-supers! "clojure.lang.ASeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "java.util.List" "java.io.Serializable"))
-(jch-register-supers! "clojure.lang.PersistentList" '("clojure.lang.ASeq" "clojure.lang.IPersistentList" "java.util.List" "clojure.lang.Counted"))
+(jch-register-supers! "clojure.lang.ASeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "java.util.List" "java.io.Serializable"
+                                             "clojure.lang.Obj" "clojure.lang.IHashEq"))
+(jch-register-supers! "clojure.lang.PersistentList" '("clojure.lang.ASeq" "clojure.lang.IPersistentList" "java.util.List" "clojure.lang.Counted"
+                                                      "clojure.lang.IReduce"))
 (jch-register-supers! "clojure.lang.PersistentList$EmptyList" '("clojure.lang.PersistentList"))
-(jch-register-supers! "clojure.lang.LazySeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "java.util.List" "clojure.lang.IObj"))
+(jch-register-supers! "clojure.lang.LazySeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "java.util.List" "clojure.lang.IObj"
+                                                 "clojure.lang.Obj" "clojure.lang.IHashEq"))
 (jch-register-supers! "clojure.lang.Cons" '("clojure.lang.ASeq"))
 ;; ---- the concrete seq classes -------------------------------------------------
 ;; One record backs every seq on this host, so which of these a value IS comes from
@@ -769,6 +786,8 @@
 (jch-register-supers! "java.nio.BufferUnderflowException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.lang.Error" '("java.lang.Throwable"))
 (jch-register-supers! "java.lang.AssertionError" '("java.lang.Error"))
+;; what a transaction throws to retry itself (refs.ss): an Error, past (catch Exception e)
+(jch-register-supers! "clojure.lang.LockingTransaction$RetryEx" '("java.lang.Error"))
 (jch-register-supers! "java.lang.ArrayIndexOutOfBoundsException" '("java.lang.IndexOutOfBoundsException"))
 (jch-register-supers! "java.lang.StringIndexOutOfBoundsException" '("java.lang.IndexOutOfBoundsException"))
 (jch-register-supers! "java.lang.ReflectiveOperationException" '("java.lang.Exception"))
@@ -1029,6 +1048,7 @@
 (jch-register-supers! "java.util.Collections$ReverseComparator" '("java.util.Comparator" "java.io.Serializable"))
 (jch-register-supers! "java.util.Collections$ReverseComparator2" '("java.util.Comparator" "java.io.Serializable"))
 (jch-register-supers! "java.util.Comparators$NaturalOrderComparator" '("java.lang.Enum" "java.util.Comparator"))
+(jch-register-supers! "clojure.lang.RT$DefaultComparator" '("java.util.Comparator" "java.io.Serializable"))
 (for-each jch-mark-abstract!
           '("java.util.AbstractMap" "java.util.AbstractCollection" "java.util.AbstractSet"
             "java.util.TreeMap$NavigableSubMap" "java.util.TreeMap$PrivateEntryIterator"))
@@ -1040,7 +1060,8 @@
           '("java.util.TreeMap$NavigableSubMap" "java.util.TreeMap$AscendingSubMap"
             "java.util.TreeMap$DescendingSubMap" "java.util.TreeMap$KeySet"
             "java.util.TreeMap$Values" "java.util.TreeMap$EntrySet"
-            "java.util.Comparators$NaturalOrderComparator" "java.util.TreeMap$Entry"))
+            "java.util.Comparators$NaturalOrderComparator" "java.util.TreeMap$Entry"
+            "clojure.lang.RT$DefaultComparator"))
 (for-each jch-mark-private!
           '("java.util.Collections$ReverseComparator" "java.util.Collections$ReverseComparator2"))
 (jch-mark-enum! "java.util.Comparators$NaturalOrderComparator")
@@ -1452,6 +1473,7 @@
     ("reverse-comparator" . "java.util.Collections$ReverseComparator")
     ("reverse-comparator2" . "java.util.Collections$ReverseComparator2")
     ("natural-comparator" . "java.util.Comparators$NaturalOrderComparator")
+    ("rt-default-comparator" . "clojure.lang.RT$DefaultComparator")
     ;; io writer/reader shims: *out* is a PrintWriter like the JVM REPL's
     ("port-writer" . "java.io.PrintWriter")
     ("print-writer" . "java.io.PrintWriter")
@@ -1539,7 +1561,7 @@
     ;; so it reports the class a caller actually receives.
     ("numberformat" . "java.text.DecimalFormat")))
 ;; FQN for a jhost tag, or #f if the tag names no modeled class (e.g. "class",
-;; "in-stream", "jolt-comparator") — callers fall through on #f.
+;; "in-stream") — callers fall through on #f.
 (define (jhost-fqn tag) (hashtable-ref jhost-tag->fqn tag #f))
 
 ;; The reverse: every tag that models class NAME, or '() for a class no shim
