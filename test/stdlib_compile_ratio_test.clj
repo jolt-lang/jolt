@@ -27,7 +27,7 @@
             [jolt.time.util]
             [babashka.process]))
 
-(def ^:private samples 5)
+(def ^:private samples 7)
 
 ;; Load the namespace's own source again as copy.<ns>, from the resource the
 ;; loader would read, so the two arms compile the same text.
@@ -45,10 +45,16 @@
 (defn- timed [f]
   (let [t (System/nanoTime)] (f) (/ (- (System/nanoTime) t) 1e6)))
 
-;; best-of per arm, the two arms' samples alternating so a neighbour's burst
-;; lands on both (see fastpath_ratio_test.clj).
+;; Best-of per arm. The arms alternate, and which one goes first alternates
+;; too, so a neighbour's burst under make -j lands on both; each sample starts
+;; from a fresh collection so neither arm inherits the other's garbage (see
+;; fastpath_ratio_test.clj).
+(defn- sample [f] (System/gc) (timed f))
 (defn- best-of-pair [a b]
-  (let [ps (vec (repeatedly samples #(vector (timed a) (timed b))))]
+  (let [ps (vec (for [i (range samples)]
+                  (if (even? i)
+                    (let [x (sample a) y (sample b)] [x y])
+                    (let [y (sample b) x (sample a)] [x y]))))]
     [(reduce min (map first ps)) (reduce min (map second ps))]))
 
 (def ^:private failures (atom []))
@@ -60,14 +66,21 @@
         _ (when (identical? sf uf) (throw (ex-info "copy resolved to the stdlib fn" {})))
         stdlib-arm #(dotimes [_ n] (call sf))
         user-arm #(dotimes [_ n] (call uf))
-        ratio (fn [] (let [[s u] (best-of-pair stdlib-arm user-arm)] (/ s (max u 0.05))))
+        ;; the best of every sample taken so far, per arm: a re-measure adds
+        ;; samples, it does not throw the first ones away
+        best (atom [Double/MAX_VALUE Double/MAX_VALUE])
+        ratio (fn []
+                (let [[s u] (best-of-pair stdlib-arm user-arm)]
+                  (swap! best (fn [[s0 u0]] [(min s0 s) (min u0 u)]))
+                  (let [[s u] @best] (/ s (max u 0.05)))))
         r1 (ratio)
         r (if (and (> r1 ceiling) (< r1 clear))
             (do (println (format "  %s: %.2f — in the re-measure band, sampling again" label r1))
                 (ratio))
-            r1)]
-    (println (format "  %-30s stdlib/user %5.2f  (ceiling %.1f)%s"
-                     label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
+            r1)
+        [sb ub] @best]
+    (println (format "  %-30s stdlib/user %5.2f  (%.1f / %.1f ms, ceiling %.1f)%s"
+                     label r sb ub ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
     (when (> r ceiling)
       (swap! failures conj (format "%s: ratio %.2f exceeds ceiling %.1f" label r ceiling)))))
 
@@ -88,4 +101,10 @@
         (System/exit 1))
     (println "\nok — stdlib runs at user-code speed")))
 
-(apply -main *command-line-args*)
+;; A run that dies before its verdict says why, on stdout beside the arms that
+;; did run, rather than leaving make's "Error 1" as the only line.
+(try (apply -main *command-line-args*)
+     (catch Throwable e
+       (println "\nFAIL — stdlibratio stopped:" (or (ex-message e) (str e)))
+       (when-let [d (ex-data e)] (println "  data:" (pr-str d)))
+       (System/exit 1)))
