@@ -116,6 +116,20 @@ else
   fails=$((fails+1))
 fi
 
+# (f) ...and a leading ./ stays in it, as File.getAbsolutePath keeps it
+out="$(cd "$tmp/moved" && JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -M -e \
+  '(load-file "./src/mylib/where.clj") (println (:file (meta (var mylib.where/f)))) (println mylib.where/baked)' 2>&1 || true)"
+want_lf="$tmp/moved/./src/mylib/where.clj
+$tmp/moved/./src/mylib/where.clj"
+if [ "$out" = "$want_lf" ]; then
+  echo "PASS: (f) load-file keeps a leading ./"; pass=$((pass+1))
+else
+  echo "FAIL: (f) load-file ./"
+  echo "  got:";  printf '%s\n' "$out"    | sed 's/^/    /'
+  echo "  want:"; printf '%s\n' "$want_lf" | sed 's/^/    /'
+  fails=$((fails+1))
+fi
+
 echo
 echo "aot-cache-source-path smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]
