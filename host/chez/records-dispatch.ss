@@ -1325,6 +1325,9 @@
 ;; The general entry (proxy, and any caller holding a {name fn} map): the layout
 ;; is built for this call.
 (define (make-reified-delegating methods-map delegate proto-names)
+  (make-reified-delegating/protos methods-map delegate (reify-proto-names proto-names)))
+;; …with PROTOS already interned (a proxy site interns its supers once)
+(define (make-reified-delegating/protos methods-map delegate protos)
   (let* ((ks (seq->list (jolt-keys methods-map)))
          (slots (make-hashtable string-hash string=?))
          (fns (make-vector (length ks))))
@@ -1334,7 +1337,7 @@
           (hashtable-set! slots (if (keyword? p) (keyword-t-name p) p) i)
           (vector-set! fns i (jolt-get methods-map p jolt-nil))
           (loop (cdr ks) (fx+ i 1)))))
-    (make-jreify (cons slots fns) (reify-proto-names proto-names) delegate #f)))
+    (make-jreify (cons slots fns) protos delegate #f)))
 ;; The reify macro's entry: SHAPE is the site's literal [[method-name …]
 ;; [protocol …]], a constant the site's pool binds once, so it is the same object
 ;; for every instance the site builds and its layout is computed once, keyed eq?

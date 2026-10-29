@@ -38,24 +38,36 @@
 ;; a constructible class, matching the JVM, where only the first may be a class.
 (define (jolt-make-proxy methods-map ctor-args . proto-names)
   (jolt-make-proxy* methods-map ctor-args proto-names))
+;; The proxy macro hands its supers as ONE vector of names, a constant of the
+;; site, so they are turned into the interned list a reify carries once per site
+;; rather than once per instance (memoized by eq on the vector; weak, so a site
+;; that is gone takes its entry with it).
+(define proxy-site-protos-memo (make-weak-eq-hashtable))
+(define proxy-site-protos-mu (make-mutex))
+(define (proxy-site-protos v)
+  (or (hashtable-ref proxy-site-protos-memo v #f)
+      (let ((ps (reify-proto-names (map proxy-name->string (seq->list v)))))
+        (jolt-with-mutex proxy-site-protos-mu (hashtable-set! proxy-site-protos-memo v ps))
+        ps)))
 (define (jolt-make-proxy* methods-map ctor-args proto-names)
   (let* (;; a lone argument may be a COLLECTION of names rather than one name;
          ;; a string is seqable, so exclude it or a single class name unravels
          ;; into its characters
-         (names (map proxy-name->string
-                     (if (and (pair? proto-names) (null? (cdr proto-names))
-                              (not (string? (car proto-names)))
-                              (not (symbol-t? (car proto-names)))
-                              (jolt-coll-pred? (car proto-names)))
-                         (seq->list (car proto-names))
-                         proto-names)))
+         (names (cond ((and (pair? proto-names) (null? (cdr proto-names)) (pvec? (car proto-names)))
+                       (proxy-site-protos (car proto-names)))
+                      ((and (pair? proto-names) (null? (cdr proto-names))
+                            (not (string? (car proto-names)))
+                            (not (symbol-t? (car proto-names)))
+                            (jolt-coll-pred? (car proto-names)))
+                       (reify-proto-names (map proxy-name->string (seq->list (car proto-names)))))
+                      (else (reify-proto-names (map proxy-name->string proto-names)))))
          (args (if (or (jolt-nil? ctor-args) (jolt-nil? (jolt-seq ctor-args)))
                    '()
                    (seq->list (jolt-seq ctor-args))))
          (base (and (pair? names)
                     (proxy-class-constructible? (car names))
                     (apply host-new (car names) args)))
-         (p (make-reified-delegating methods-map base names)))
+         (p (make-reified-delegating/protos methods-map base names)))
     (proxy-attach! base p)
     p))
 

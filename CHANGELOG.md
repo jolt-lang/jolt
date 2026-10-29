@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(proxy [java.util.AbstractList] [] (get [i] …) (size [] …))` gets the
   class's iterator, contains, indexOf, subList, equality, hashing and printing,
   and so do proxies over `AbstractSet`, `AbstractCollection`, `AbstractQueue`
-  and `AbstractMap` (whose lookups run over the proxy's `entrySet`).
+  and `AbstractMap` (whose lookups run over the proxy's `entrySet`). A super
+  named by an import (`(proxy [AbstractList] …)`) is the class the import
+  names.
 - **`Month`, `DayOfWeek` and `ChronoField` `getDisplayName` answer in the
   locale**, by `TextStyle` for the first two, from the `:date-names` point and a
   new `:field-names` point. jolt-lang/time supplies the locales and `TextStyle`;
@@ -66,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through. TreeMap, TreeSet and their key sets answer `SequencedMap` and
   `SequencedCollection` (`reversed`, `getFirst`, `pollLastEntry`, the
   sequenced views), and ArrayList, LinkedList and ArrayDeque answer `reversed`.
+- **`Collections` `sort`, `reverse`, `max`, `min`, `singletonList`, `nCopies`,
+  `emptySet` and `emptyIterator`.** `sort` and `reverse` change the list in
+  place; `emptyList`, `emptySet` and `emptyMap` are the JDK's single read-only
+  instances (`Collections$EmptyList` …), where `emptyList` and `emptyMap` were a
+  persistent vector and map. `ThreadPoolExecutor` answers
+  `getCompletedTaskCount`.
 - **`jolt.profile`, an execution-count profiler (#1421).** It reads Chez's
   `compile-profile` counters back by Clojure file, line and fn: turn on
   `(prof/instrument!)`, load the code, run it, and `(prof/report)` lists the
@@ -125,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StringBuffer` and the java.time values used to fail to write; they
   round-trip with their contents in order and their class, and one that holds
   itself restores as one. A view or entry of another collection, an iterator,
-  a thread, pool or task and an open stream are refused naming their class.
+  a thread, pool or task, an open stream, and a reify or proxy no var holds
+  are refused naming their class.
   `make imagecoverage` fails on a collection shim that does neither.
 
 ### Changed
@@ -145,8 +154,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WeakHashMap` drops an entry whose key nothing else holds, and an
   `IdentityHashMap` matches keys and values by reference.
 - **The JDK's interfaces are known** (every public interface in its java.* and
-  javax.* packages, annotation types included), so a proxy over a JDK class
-  jolt does not model (`java.util.TimerTask`) extends it, and `isInterface`
+  javax.* packages and in the com.sun.* and jdk.* packages it exports, such as
+  `com.sun.net.httpserver.HttpHandler`; annotation types included), so a
+  proxy over a JDK class jolt does not model (`java.util.TimerTask`) extends it, and `isInterface`
   answers for those types.
 - **Images are format 14**: an `ArrayDeque` travels as its ring buffer and a
   list carries its modCount; older images still read, except an old
@@ -154,7 +164,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`iterator-seq` is lazy, as `RT.chunkIteratorSeq` is**: it asks `hasNext`
   when made and pulls 32 elements at a time through `next`, so a list changed
   before the seq is walked throws `ConcurrentModificationException`, and any
-  iterator with `hasNext`/`next` works.
+  iterator with `hasNext`/`next` works. A Clojure collection's own iterator
+  still hands over the seq it walks without moving (known-divergences).
 - **`doseq` walks a chunked seq a chunk at a time**, reading each block where
   the vector holds it, as Clojure's `doseq` does. Over a vector it ran 3.5x a
   list of the same elements; it is now 0.54x what it was (a range 0.63x,
@@ -189,9 +200,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   jolt-lang/time's Locale can print as the JDK's `en_US`.
 - **Every `#object` print carries the identity hash, and a plain deftype prints
   as one**, `#object[user.T 0x1b2c3d4e "user.T@1b2c3d4e"]`, as on the JVM; a
-  defrecord keeps its `#ns.R{…}` form, and a deftype that is a `java.util.Map`
-  prints as a map. `str` of a deftype, a reify or a proxy with no `toString` is
-  `Class@hash`. An array prints with its class quoted. A deftype from an image
+  defrecord keeps its `#ns.R{…}` form, and a deftype that is a `java.util.Map`,
+  `List`, `RandomAccess` list or `Set` prints as a map, `(…)`, `[…]` or `#{…}`
+  under `pr` and as `#object` under `print`, as `print-method` has it.
+  `str` of a deftype, a reify or a proxy with no `toString` is `Class@hash`. An array prints with its class quoted. A deftype from an image
   whose code this process never loaded keeps the field form.
 - **`str` of a `ChronoField` is the JDK's display name** (`NanoOfSecond`,
   `AmPmOfDay`). A project pinned to a jolt-lang/time older than 28d55d62 needs
@@ -238,6 +250,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`jolt nrepl-server` says when it can't write its port file**, e.g. a
   `--port-file` into a missing directory. It used to start as if the file had
   been written, leaving the editor nothing to find.
+- **A map hands out one `keySet`, `values` and `entrySet` view**, as the JDK's
+  keep theirs in a field: `HashMap`, `LinkedHashMap`, `TreeMap` (whose `keySet`
+  is its `navigableKeySet`, and whose `descendingMap` is cached too), `EnumMap`,
+  `Hashtable`, `WeakHashMap` and `IdentityHashMap`. `(identical? (.keySet m)
+  (.keySet m))` is true, and so is `.equals` of a `values` view with itself.
+- **`TimeUnit` conversions saturate at Long's range**:
+  `(.toMicros TimeUnit/DAYS Long/MAX_VALUE)` is `Long/MAX_VALUE`, not a
+  bigint. `TimeUnit/of` names an unmapped `ChronoUnit` as it prints (`Weeks`).
+- **`AtomicInteger` and `AtomicLong` print as numbers** (`5`, not
+  `#object[…]`), as the `Number`s they are. `Thread`, `ReentrantLock`,
+  `CountDownLatch` and `ThreadPoolExecutor` have the JDK's `toString`
+  (`Thread[#1,main,5,main]`, `…@1b2c[Unlocked]`, `…[Count = 1]`,
+  `…[Running, pool size = 0, …]`), and `getActiveCount` no longer counts a
+  worker still starting.
+- **`System/identityHashCode` and the hash of a fn or plain deftype are
+  non-negative 31-bit values**, as HotSpot's are; half of them were negative.
 - **`HashMap` and `HashSet` `remove` is O(1)** (jolt-lfm8p). It rebuilt the
   map's insertion-order key list, so one removal from a 20k-entry map cost
   ~112us; it now leaves a stale entry the walk skips, and the list is rebuilt

@@ -335,6 +335,9 @@
       (v-make-sub v tag from from-incl to to-incl #f)))
 (define (v-flip v tag)
   (make-tm-view tag (v-root v) (v-lo v) (v-lo-incl v) (v-hi v) (v-hi-incl v) (not (v-desc? v)) #t))
+;; a map's descending view, made once per map as the JDK keeps it in a field
+(define (tm-descending-map v)
+  (jutil-view v 3 (lambda () (v-flip v (tm-map-tag (not (v-desc? v)))))))
 (define (v-retag v tag)
   (make-tm-view tag (v-root v) (v-lo v) (v-lo-incl v) (v-hi v) (v-hi-incl v) (v-desc? v) (v-sub? v)))
 
@@ -499,11 +502,16 @@
                                        #f))))
     (cons "clear" (lambda (self) (v-clear! self)))
     (cons "putAll" (lambda (self m) (tm-fill-map! self m) jolt-nil))
-    (cons "keySet" (lambda (self) (tm-key-set self (v-desc? self))))
-    (cons "navigableKeySet" (lambda (self) (tm-key-set self (v-desc? self))))
-    (cons "descendingKeySet" (lambda (self) (tm-key-set self (not (v-desc? self)) #t)))
-    (cons "values" (lambda (self) (v-retag self (tm-values-tag self))))
-    (cons "entrySet" (lambda (self) (v-retag self (tm-entryset-tag self))))
+    ;; keySet IS navigableKeySet on the JDK, one cached view
+    (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (tm-key-set self (v-desc? self))))))
+    (cons "navigableKeySet" (lambda (self) (jutil-view self 0 (lambda () (tm-key-set self (v-desc? self))))))
+    ;; descendingMap().navigableKeySet(), as the JDK answers it: cached on the
+    ;; cached descending map
+    (cons "descendingKeySet" (lambda (self)
+                               (let ((d (tm-descending-map self)))
+                                 (jutil-view d 0 (lambda () (tm-key-set d (v-desc? d)))))))
+    (cons "values" (lambda (self) (jutil-view self 1 (lambda () (v-retag self (tm-values-tag self))))))
+    (cons "entrySet" (lambda (self) (jutil-view self 2 (lambda () (v-retag self (tm-entryset-tag self))))))
     ;; Map's default methods. A key mapped to nil counts as absent, like the
     ;; JDK's; each returns what the JDK's returns (the previous value for
     ;; putIfAbsent, the new one for the compute/merge family).
@@ -581,10 +589,10 @@
                      ((self from to) (v-sub self (tm-map-tag (v-desc? self)) from #t to #f))
                      ((self from fi to ti)
                       (v-sub self (tm-map-tag (v-desc? self)) from (jolt-truthy? fi) to (jolt-truthy? ti)))))
-    (cons "descendingMap" (lambda (self) (v-flip self (tm-map-tag (not (v-desc? self))))))
+    (cons "descendingMap" (lambda (self) (tm-descending-map self)))
     ;; SequencedMap, as NavigableMap answers it: reversed is the descending map,
     ;; and a sorted map has no first or last place to put a key
-    (cons "reversed" (lambda (self) (v-flip self (tm-map-tag (not (v-desc? self))))))
+    (cons "reversed" (lambda (self) (tm-descending-map self)))
     (cons "putFirst" (lambda (self k val) (throw-jvm 'UnsupportedOperationException jolt-nil)))
     (cons "putLast" (lambda (self k val) (throw-jvm 'UnsupportedOperationException jolt-nil)))
     (cons "comparator" (lambda (self) (v-comparator self)))

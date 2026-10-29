@@ -49,9 +49,11 @@
 (define (make-time-unit nm nanos) (make-jhost "time-unit" (vector nm nanos)))
 (define (time-unit? x) (and (jhost? x) (string=? (jhost-tag x) "time-unit")))
 (define (time-unit-scale u) (vector-ref (jhost-state u) 1))
-;; JVM conversions TRUNCATE toward zero (SECONDS.toMinutes(90) is 1).
+;; JVM conversions TRUNCATE toward zero (SECONDS.toMinutes(90) is 1) and
+;; saturate at Long's range (DAYS.toMicros(Long.MAX_VALUE) is Long.MAX_VALUE);
+;; tu-saturate is below, read only when a conversion runs.
 (define (tu-convert self n per)
-  (quotient (* (jnum->exact n) (time-unit-scale self)) per))
+  (tu-saturate (quotient (* (jnum->exact n) (time-unit-scale self)) per)))
 
 ;; (amount, unit) -> milliseconds. A missing or non-TimeUnit unit leaves the amount
 ;; alone, which is the plain-milliseconds shape awaitTermination has always taken.
@@ -86,7 +88,9 @@
          (hit (find (lambda (p) (string=? (cdr p) nm)) time-unit-chrono-names)))
     (if hit
         (cdr (assoc (car hit) time-unit-constants))
-        (throw-jvm 'IllegalArgumentException (string-append "No TimeUnit equivalent for " nm)))))
+        ;; named by the ChronoUnit's toString (Weeks), as TimeUnit.of words it
+        (throw-jvm 'IllegalArgumentException
+                   (string-append "No TimeUnit equivalent for " (jolt-final-str (record-method-dispatch cu "toString" jolt-nil)))))))
 ;; convert(duration, unit) and convert(Duration): truncated toward zero and
 ;; saturated at Long's range, as TimeUnit.convert is
 (define (tu-saturate n)
@@ -2456,6 +2460,23 @@
                   ((vector-ref st 11) => values)
                   (else (thread-group-of self))))))))
 
+;; Thread.toString as JDK 21 writes it: Thread[#id,name,priority,group], the
+;; group left empty once the thread has terminated; a virtual thread is
+;; VirtualThread[#id,name]/state (the JDK adds @carrier while it is mounted,
+;; which jolt's carriers have no name for). Through the methods, so a thread
+;; whose name or priority changed reports what they answer now.
+(define (jthread-to-string self)
+  (let ((id (number->string (jnum->exact (record-method-dispatch self "threadId" jolt-nil))))
+        (nm (jolt-final-str (record-method-dispatch self "getName" jolt-nil))))
+    (if (jthread-fiber (jhost-state self))
+        (string-append "VirtualThread[#" id (if (string=? nm "") "" (string-append "," nm)) "]/"
+                       (string-downcase (jolt-final-str (record-method-dispatch (record-method-dispatch self "getState" jolt-nil) "name" jolt-nil))))
+        (let ((g (thread-group-of self)))
+          (string-append "Thread[#" id "," nm ","
+                         (number->string (jnum->exact (record-method-dispatch self "getPriority" jolt-nil))) ","
+                         (if (jolt-nil? g) "" (vector-ref (jhost-state g) 0)) "]")))))
+(register-host-methods! "user-thread" (list (cons "toString" jthread-to-string)))
+
 ;; --- uncaught exceptions ---------------------------------------------------
 ;; A throw that ends a thread goes to that thread's handler if it has one, else
 ;; to the default handler (Thread/setDefaultUncaughtExceptionHandler), else it is
@@ -2700,7 +2721,9 @@
                                      (else jolt-cv-again))))))
               ;; await() is void; await(timeout, unit) answers whether it reached zero
               (if ms reached jolt-nil)))))
-         (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))))
+         (cons "getCount" (lambda (self) (vector-ref (jhost-state self) 0)))
+         (cons "toString" (lambda (self)
+           (string-append (host-object-tostring self) "[Count = " (number->string (vector-ref (jhost-state self) 0)) "]")))))
 
 ;; --- java.util.concurrent.ExecutorService / Executors ----------------------
 ;; A real task QUEUE served by a fixed number of worker threads (FIFO). A single
@@ -2896,7 +2919,7 @@
                                   '() #f 0
                                   (and (pair? spec) (car spec) #t)
                                   (and (pair? spec) (pair? (cdr spec)) (cadr spec))
-                                  '() #f #f))))
+                                  '() #f #f 0))))
     (let ((st (jhost-state self)))
       ;; The core workers, eagerly. Above core, a worker appears when a task
       ;; arrives with nobody idle to take it, and not before: a cached pool that
@@ -3157,7 +3180,8 @@
     ;; back and, unless the pool is stopping, starts its replacement, as the
     ;; JVM's processWorkerExit does; then the throw goes on to end this thread,
     ;; where its uncaught-exception handler sees it (executor-spawn-worker!).
-    (guard (e (#t (let ((again? (jolt-with-mutex (vector-ref st 2)
+    (guard (e (#t (executor-task-done! st)
+                  (let ((again? (jolt-with-mutex (vector-ref st 2)
                                   (arrived!) (executor-worker-exit! st)
                                   (and (not (executor-stopping? st))
                                        (executor-claim-worker! st)))))
@@ -3177,6 +3201,7 @@
           (when job
             (unless (executor-stopping? st) (set-box! (current-interrupt-box) #f))
             (job)
+            (executor-task-done! st)
             (loop)))))))
 
 ;; shutdown: stop accepting, let what is queued drain — the delayed one-shots
@@ -3222,6 +3247,13 @@
 ;; Slot 20: STOP, which only shutdownNow reaches — the state in which a worker
 ;; keeps its interrupt rather than having it cleared before a task.
 (define (executor-stopping? st) (vector-ref st 20))
+;; Slot 21: the tasks the workers have finished, normally or not, which is
+;; ThreadPoolExecutor's completedTaskCount. Counted without the queue mutex, by
+;; a CAS retried until it lands (vector-cas! may fail spuriously on arm64).
+(define (executor-task-done! st)
+  (let loop ()
+    (let ((n (vector-ref st 21)))
+      (unless (vector-cas! st 21 n (fx+ n 1)) (loop)))))
 (define (executor-shutdown-now! st)
   ;; STOP, and the queue drained, under ONE hold of the queue mutex, and the
   ;; workers interrupted only after it. A worker takes its next task under that
@@ -3867,11 +3899,26 @@
         ;; getMaximumPoolSize of a cached pool answers Integer/MAX_VALUE, which is
         ;; the number the JVM's own newCachedThreadPool passes.
         (cons "getPoolSize" (lambda (self) (vector-ref (jhost-state self) 4)))
+        ;; neither an idle worker nor one still starting (st 12, not yet at the
+        ;; queue) is running a task
         (cons "getActiveCount" (lambda (self)
           (let ((st (jhost-state self)))
-            (max 0 (fx- (vector-ref st 4) (vector-ref st 9))))))
+            (max 0 (fx- (vector-ref st 4) (fx+ (vector-ref st 9) (vector-ref st 12)))))))
         (cons "getCorePoolSize" (lambda (self) (vector-ref (jhost-state self) 6)))
-        (cons "getMaximumPoolSize" (lambda (self) (vector-ref (jhost-state self) 7)))))
+        (cons "getMaximumPoolSize" (lambda (self) (vector-ref (jhost-state self) 7)))
+        (cons "getCompletedTaskCount" (lambda (self) (vector-ref (jhost-state self) 21)))
+        (cons "toString" (lambda (self) (executor-to-string self)))))
+;; ThreadPoolExecutor.toString: Object's, then the run state and the four counts
+(define (executor-to-string self)
+  (let ((st (jhost-state self)))
+    (string-append (host-object-tostring self)
+                   "[" (cond ((not (vector-ref st 0)) "Running")
+                             ((jolt-truthy? (record-method-dispatch self "isTerminated" jolt-nil)) "Terminated")
+                             (else "Shutting down"))
+                   ", pool size = " (number->string (vector-ref st 4))
+                   ", active threads = " (number->string (record-method-dispatch self "getActiveCount" jolt-nil))
+                   ", queued tasks = " (number->string (executor-queue-depth self))
+                   ", completed tasks = " (number->string (vector-ref st 21)) "]")))
 
 ;; --- ScheduledExecutorService ------------------------------------------------
 ;; schedule, scheduleAtFixedRate and scheduleWithFixedDelay on the scheduled pools
@@ -4688,7 +4735,28 @@
         (cons "isLocked" (lambda (self) (monitor-locked? (rlock-monitor self))))
         (cons "getHoldCount" (lambda (self) (monitor-self-count (rlock-monitor self))))
         (cons "isHeldByCurrentThread"
-              (lambda (self) (monitor-held-by-self? (rlock-monitor self))))))
+              (lambda (self) (monitor-held-by-self? (rlock-monitor self))))
+        ;; ReentrantLock.toString: Object's, then [Unlocked] or [Locked by thread
+        ;; <owner's name>]. The owner word is read as the JDK's getOwner reads it,
+        ;; with no lock: a snapshot.
+        (cons "toString" (lambda (self)
+          (let ((o (monitor-owner-id (rlock-monitor self))))
+            (string-append (host-object-tostring self)
+                           (if o (string-append "[Locked by thread " (monitor-owner-name o) "]") "[Unlocked]")))))))
+;; The name of the thread a monitor's owner word stands for: a fiber's own
+;; Thread, or the platform thread whose interrupt box it is.
+(define (monitor-owner-name o)
+  (let ((th (cond ((jolt-fiber? o) (fiber-thread-object o))
+                  ((box? o)
+                   (let ((id (jolt-with-mutex thread-boxes-mu
+                               (let-values (((ks vs) (hashtable-entries thread-boxes-by-id)))
+                                 (let loop ((i 0))
+                                   (cond ((fx=? i (vector-length ks)) #f)
+                                         ((eq? (vector-ref vs i) o) (vector-ref ks i))
+                                         (else (loop (fx+ i 1)))))))))
+                     (and id (thread-handle-for-id id))))
+                  (else #f))))
+    (if th (jolt-final-str (record-method-dispatch th "getName" jolt-nil)) "")))
 
 ;; --- main-thread executor ---------------------------------------------------
 ;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread

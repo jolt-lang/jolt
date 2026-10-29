@@ -889,6 +889,14 @@
 ;; reify wants one (name [params*] body*) per arity and groups same-named specs
 ;; into a multi-arity fn, so both shapes flatten to the same list here. `this` is
 ;; implicit in a proxy body and explicit in a reify one, hence the cons.
+;; A proxy's supers are classes, named as the namespace names them: a simple
+;; name it imported is that import's class, which is what the class graph knows
+;; it by (java.util.AbstractList, not AbstractList), so what the class inherits
+;; is found. A protocol keeps its key; a name nothing resolves stays as written.
+(defn- proxy-super-key [sym]
+  (or (jolt.host/protocol-key-of sym)
+      (let [c (when (and (symbol? sym) (nil? (namespace sym))) (resolve sym))]
+        (if (class? c) (.getName c) (name sym)))))
 (defn- proxy-arity-specs [m]
   (let [nm (first m)
         arities (if (vector? (second m)) [(rest m)] (rest m))]
@@ -926,7 +934,7 @@
            ~(str *ns*)
            ~(reduce (fn [m k] (assoc m k `(fn ~@(get clauses k)))) {} order)
            [~@ctor-args]
-           ~@(vec (map protocol-key supers)))
+           ~(vec (map proxy-super-key supers)))
         (let [spec (first specs)
               k (keyword (name (first spec)))]
           (recur (rest specs)

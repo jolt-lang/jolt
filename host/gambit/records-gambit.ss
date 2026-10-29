@@ -825,42 +825,46 @@
 (define (jrec-coll-print-shape r)
   (vector-ref (jrdesc-ifc-of r) 1))
 
-(define (jrec-coll-pr r shape)
-  (if (jolt-print-hash?)
-      "#"
-      (with-deeper-print
-        (if (memq shape '(map jmap))
-            (string-append
-              "{"
-              (jolt-str-join-comma
-                (jolt-limited-list-strs
-                  (map (lambda (e)
-                         (string-append
-                           (jolt-pr-readable (jolt-nth e 0))
-                           " "
-                           (jolt-pr-readable (jolt-nth e 1))))
-                       (if (eq? shape 'jmap)
-                           (seq->list
-                             (jolt-seq
-                               (record-method-dispatch
-                                 r
-                                 "entrySet"
-                                 jolt-nil)))
-                           (seq->list r)))))
-              "}")
-            (let ((body (jolt-str-join
-                          (jolt-limited-seq-strs
-                            (jolt-seq r)
-                            jolt-pr-readable))))
-              (case shape
-                ((seq) (string-append "(" body ")"))
-                ((vec) (string-append "[" body "]"))
-                (else (string-append "#{" body "}"))))))))
+(define (jrec-coll-pr r shape readable?)
+  (cond
+    ((and (memq shape '(jmap jvec jlist jset))
+          (not (jolt-pr-readable?)))
+     (jolt-object-repr r readable?))
+    ((jolt-print-hash?) "#")
+    (else
+     (with-deeper-print
+       (if (memq shape '(map jmap))
+           (string-append
+             "{"
+             (jolt-str-join-comma
+               (jolt-limited-list-strs
+                 (map (lambda (e)
+                        (string-append
+                          (jolt-pr-readable (jolt-nth e 0))
+                          " "
+                          (jolt-pr-readable (jolt-nth e 1))))
+                      (if (eq? shape 'jmap)
+                          (seq->list
+                            (jolt-seq
+                              (record-method-dispatch
+                                r
+                                "entrySet"
+                                jolt-nil)))
+                          (seq->list r)))))
+             "}")
+           (let ((body (jolt-str-join
+                         (jolt-limited-seq-strs
+                           (jolt-seq r)
+                           jolt-pr-readable))))
+             (case shape
+               ((seq jlist) (string-append "(" body ")"))
+               ((vec jvec) (string-append "[" body "]"))
+               (else (string-append "#{" body "}")))))))))
 
 (define (jrec-pr r readable?)
   (cond
     ((jrec-coll-print-shape r) =>
-     (lambda (shape) (jrec-coll-pr r shape)))
+     (lambda (shape) (jrec-coll-pr r shape readable?)))
     ((or (jrec-record? r)
          (not (hashtable-ref chez-deftype-tag-set (jrec-tag r) #f)))
      (jrec-field-pr r))
@@ -1028,6 +1032,9 @@
              ((jch-isa? tag "clojure.lang.IPersistentSet") 'set)
              ((jch-isa? tag "clojure.lang.IPersistentMap") 'map)
              ((jch-isa? tag "java.util.Map") 'jmap)
+             ((jch-isa? tag "java.util.RandomAccess") 'jvec)
+             ((jch-isa? tag "java.util.List") 'jlist)
+             ((jch-isa? tag "java.util.Set") 'jset)
              (else #f)))
       (jch-isa? tag "java.lang.CharSequence") record?
       (and (not record?) (tag-declares-coll-iface? tag))
@@ -3682,6 +3689,13 @@
 
 (define (make-reified-delegating methods-map delegate
          proto-names)
+  (make-reified-delegating/protos
+    methods-map
+    delegate
+    (reify-proto-names proto-names)))
+
+(define (make-reified-delegating/protos methods-map delegate
+         protos)
   (let* ((ks (seq->list (jolt-keys methods-map)))
          (slots (make-hashtable string-hash string=?))
          (fns (make-vector (length ks))))
@@ -3694,11 +3708,7 @@
             i)
           (vector-set! fns i (jolt-get methods-map p jolt-nil))
           (loop (cdr ks) (fx+ i 1)))))
-    (make-jreify
-      (cons slots fns)
-      (reify-proto-names proto-names)
-      delegate
-      #f)))
+    (make-jreify (cons slots fns) protos delegate #f)))
 
 (define reify-shape-memo (make-weak-eq-hashtable))
 
