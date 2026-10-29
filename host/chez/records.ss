@@ -757,9 +757,14 @@
 ;; Elements render through jolt-pr-readable, so print / println reach this too
 ;; (with *print-readably* off) rather than a type's toString, again as on the JVM.
 (define (jrec-coll-print-shape r) (vector-ref (jrdesc-ifc-of r) 1))
-(define (jrec-coll-pr r shape)
-  (if (jolt-print-hash?)
-      "#"
+;; The java.util arms print the collection only under *print-readably*, as
+;; core_print's do; print and println write the #object form instead.
+(define (jrec-coll-pr r shape readable?)
+  (cond
+    ((and (memq shape '(jmap jvec jlist jset)) (not (jolt-pr-readable?)))
+     (jolt-object-repr r readable?))
+    ((jolt-print-hash?) "#")
+    (else
       (with-deeper-print
         (if (memq shape '(map jmap))
             ;; a map's seq yields entries; render each as "k v" and comma-join, in
@@ -778,9 +783,9 @@
               "}")
             (let ((body (jolt-str-join (jolt-limited-seq-strs (jolt-seq r) jolt-pr-readable))))
               (case shape
-                ((seq) (string-append "(" body ")"))
-                ((vec) (string-append "[" body "]"))
-                (else (string-append "#{" body "}"))))))))
+                ((seq jlist) (string-append "(" body ")"))
+                ((vec jvec) (string-append "[" body "]"))
+                (else (string-append "#{" body "}")))))))))
 ;; A defrecord prints #ns.Name{:k v, :k v}. A plain deftype is an Object to
 ;; print-method on the JVM, so it prints the #object form over its toString,
 ;; identity hash included, and one that implements IDeref prints its
@@ -788,7 +793,7 @@
 ;; print's, which only the #object content's quoting depends on.
 (define (jrec-pr r readable?)
   (cond
-    ((jrec-coll-print-shape r) => (lambda (shape) (jrec-coll-pr r shape)))
+    ((jrec-coll-print-shape r) => (lambda (shape) (jrec-coll-pr r shape readable?)))
     ;; a type this process never defined (an instance that came in through an
     ;; image, its code not loaded) cannot say whether it was a defrecord or a
     ;; deftype; it keeps the field form rather than guess

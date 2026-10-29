@@ -355,12 +355,14 @@
 ;; an interface the graph marked, or one of java.base's (jdk-interfaces.ss)
 (define (jch-interface? name)
   (or (hashtable-ref jch-interface-set name #f) (hashtable-ref jdk-public-interfaces name #f)))
-;; a java.* / javax.* name that is not an interface: a JDK class, whether or not
-;; the graph models it (a proxy over java.util.TimerTask extends it)
+;; a java.* / javax.* / com.sun.* / jdk.* name that is not an interface: a JDK
+;; class, whether or not the graph models it (a proxy over java.util.TimerTask
+;; extends it). The interface table covers the com.sun.* and jdk.* packages
+;; the JDK exports, which are the ones a program can name.
 (define (jch-jdk-class? name)
+  (define (prefix? p) (let ((k (string-length p))) (and (fx>? (string-length name) k) (string=? (substring name 0 k) p))))
   (and (string? name)
-       (or (and (fx>? (string-length name) 5) (string=? (substring name 0 5) "java."))
-           (and (fx>? (string-length name) 6) (string=? (substring name 0 6) "javax.")))
+       (or (prefix? "java.") (prefix? "javax.") (prefix? "com.sun.") (prefix? "jdk."))
        (not (jch-interface? name))))
 (for-each jch-mark-interface!
           '("clojure.lang.Seqable" "clojure.lang.Sequential" "clojure.lang.Sorted"
