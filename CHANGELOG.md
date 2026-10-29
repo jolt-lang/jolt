@@ -253,6 +253,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does**: `(io/resource "migrations")` finds the directory entry
   `migrations/`, and `.openConnection` on a `jar:` URL is a
   `JarURLConnection` where it threw "no protocol handler".
+- **Resource URLs from directory and jar roots are percent-encoded** as the
+  JDK's class loader encodes them, so a space, `#`, `;` or non-ASCII character
+  in a root or a name no longer breaks `toURI` or relative resolution, and
+  `getPath` answers the encoded path, as on the JDK. `slurp`, `io/file` and the
+  streams decode it.
+- **`getBytes` in a charset jolt reaches through iconv writes `?` for a
+  character the charset lacks**, as the JDK does. It threw
+  `UnsupportedEncodingException` on Linux and wrote macOS iconv's own spelling
+  (`gal.` for 日 in ISO-8859-2) there.
 - **`InputStreamReader` and `OutputStreamWriter` built over a
   `CharsetDecoder` or `CharsetEncoder` use it**: a writer over an encoder wrote
   UTF-8 whatever its charset, and a decoder's REPORT action, its default, now

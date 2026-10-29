@@ -3215,8 +3215,14 @@
 ;; against it, which is where this surfaced.) Absolutize against user.dir, the
 ;; base every other filesystem touch uses, dropping a leading "./" so the path
 ;; reads like the JVM's instead of carrying a "/./" segment.
+;; The text is percent-encoded as the class loader's is (ParseUtil.encodePath,
+;; embedded-url-encode): a space, "#", "%", ";", "=" or a non-ASCII character in
+;; the root or the name is escaped, so the URL parses back to the same file and
+;; getPath answers the encoded path, as on the JDK. Every reader of a file: or
+;; jar: URL decodes it (file-url->path, jar-path-entry).
 (define (resource-file-url root nm)
-  (make-url (string-append "file:" (file-uri-path (root-path-abs (string-append root "/" nm))))))
+  (make-url (string-append "file:" (embedded-url-encode
+                                    (file-uri-path (root-path-abs (string-append root "/" nm)))))))
 ;; A path under a source root made absolute for a URL: the roots are spelled as
 ;; deps.edn spells them ("./src", "./lib.jar"), and the JVM's URL for a resource
 ;; carries no "./" segment, so a leading one is dropped before the cwd is put in
@@ -3242,7 +3248,8 @@
         (path-under (current-directory) p))))
 ;; The jar: URL for `nm` inside the jar at root JAR, absolute like the file: one.
 (define (resource-jar-url jar nm)
-  (make-url (make-jar-path (root-path-abs jar) nm)))
+  (make-url (string-append jar-path-prefix (embedded-url-encode (file-uri-path (root-path-abs jar)))
+                           "!/" (embedded-url-encode nm))))
 ;; The candidate for NM on ROOT, as (path-or-#f . url-thunk): a directory root's
 ;; file, or a jar root's entry (loader.ss root-jar-index says which roots are
 ;; jars). The path is what the AOT cache is told about; for a jar it is the

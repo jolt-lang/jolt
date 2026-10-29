@@ -291,16 +291,8 @@
       ;; every Unicode encoding holds every character a string can
       ((member cs '("utf-8" "utf-16" "utf-16be" "utf-16le" "utf-32" "utf-32be" "utf-32le"))
        (charset-encode-bv s name))
-      ;; iconv refuses a character its target lacks; find which one, so the
-      ;; length is that character's
-      (else
-       (or (iconv-bytes (string->utf8 s) "UTF-8" name)
-           (begin
-             (string-for-each
-              (lambda (c) (unless (iconv-bytes (string->utf8 (string c)) "UTF-8" name)
-                            (charset-report-unmappable c)))
-              s)
-             (charset-encode-bv s name)))))))
+      ;; the first character iconv cannot map exactly is the one reported
+      (else (charset-encode-iconv s name charset-report-unmappable)))))
 
 (register-host-methods! "charset-decoder"
   (list

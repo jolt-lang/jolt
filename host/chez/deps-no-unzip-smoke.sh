@@ -20,7 +20,8 @@
 #      .pom sits beside the jar: one it declares resolves and loads, and one no
 #      repository has fails the resolution;
 #   8. a jar root's resources answer as the JDK's class loader does: a
-#      directory without its slash, openConnection, toURI, relative URLs.
+#      directory without its slash, openConnection, toURI, relative URLs;
+#   9. resource URLs from directory and jar roots are percent-encoded.
 #
 # JOLT_BIN is a built jolt, which needs no program on PATH; the gate runs
 # target/release/jolt (make testbin).
@@ -255,6 +256,37 @@ yn "8: toURI is the URL's text as a URI" \
    "$(printf '%s\n' "$out8" | grep -qx "uri jar:file:$tmp/proj8/res8.jar!/top8.txt" && echo yes || echo no)"
 yn "8: a relative URL resolves against the entry" \
    "$(printf '%s\n' "$out8" | grep -qx 'rel "top\\n"' && echo yes || echo no)"
+
+# 9. resource URLs are percent-encoded as the JDK's class loader encodes them
+# (ParseUtil.encodePath): the root's path and the name, from a directory root and
+# from a jar root, and they still read, open as a File, and resolve relative URLs.
+mkdir -p "$tmp/proj9/r é#;=/s p"
+printf 'in dir\n' > "$tmp/proj9/r é#;=/s p/a b#;=é.txt"
+printf 'top\n' > "$tmp/proj9/r é#;=/top.txt"
+printf 'in jar\n' > "$tmp/jar9.txt"
+JOLT_PWD="$tmp" JOLT_QUIET=1 "$JOLT" run "$root/tools/mkjar.clj" "$tmp/proj9/l b.jar" "j p/x é.txt=$tmp/jar9.txt" >/dev/null \
+  || { echo "  FAIL: 9: mkjar did not write the jar" >&2; fail=$((fail+1)); }
+printf '{:paths ["r é#;=" "l b.jar"]}\n' > "$tmp/proj9/deps.edn"
+cat > "$tmp/run9.clj" <<'EOF4'
+(require '[clojure.java.io :as io])
+(let [d (io/resource "s p/a b#;=é.txt") j (io/resource "j p/x é.txt")]
+  (println "dir" (subs (str d) (.lastIndexOf (str d) "/r%20")))
+  (println "jar" (subs (str j) (.lastIndexOf (str j) "/l%20b.jar")))
+  (println "read" (pr-str (slurp d)) (pr-str (slurp j)))
+  (println "file" (.exists (io/file d)) (.getName (io/file d)))
+  (println "rel" (pr-str (slurp (java.net.URL. d "../top.txt")))))
+EOF4
+out9="$(cd "$tmp/proj9" && PATH="$empty" JOLT_PWD="$tmp/proj9" JOLT_QUIET=1 "$JOLT" "$tmp/run9.clj" 2>&1)"
+yn "9: a directory root's resource URL is encoded" \
+   "$(printf '%s\n' "$out9" | grep -qx 'dir /r%20%c3%a9%23%3b%3d/s%20p/a%20b%23%3b%3d%c3%a9.txt' && echo yes || echo no)"
+yn "9: a jar root's resource URL is encoded" \
+   "$(printf '%s\n' "$out9" | grep -qx 'jar /l%20b.jar!/j%20p/x%20%c3%a9.txt' && echo yes || echo no)"
+yn "9: both read" \
+   "$(printf '%s\n' "$out9" | grep -qx 'read "in dir\\n" "in jar\\n"' && echo yes || echo no)"
+yn "9: io/file decodes the URL" \
+   "$(printf '%s\n' "$out9" | grep -qx 'file true a b#;=é.txt' && echo yes || echo no)"
+yn "9: a relative URL resolves against the encoded one" \
+   "$(printf '%s\n' "$out9" | grep -qx 'rel "top\\n"' && echo yes || echo no)"
 
 echo "deps-no-unzip-smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
