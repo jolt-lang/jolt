@@ -3498,8 +3498,6 @@
 
 (define arm-priority-file 41)
 
-(define arm-priority-nio-path 42)
-
 (define arm-priority-htable 43)
 
 (define arm-priority-host-type 44)

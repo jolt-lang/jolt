@@ -180,6 +180,11 @@
 ;;                      1.49, after 2.9 / 2.5 / 3.0 / 1.36 / 1.22 (0.8.23 read
 ;;                      4.3 / 3.3 / 6.1 / 1.31 / 1.24).
 ;;
+;;   path-method        an unhinted Path member against an ArrayList's .size.
+;;                      Path's members were a method arm that walked the arms
+;;                      ahead of it and matched the name per call (~10x .size);
+;;                      as a host method table they take the call-site cache.
+;;
 ;;   host-object-pr     pr-str of a java.io.File is the #object fallback: the
 ;;                      print arms, the class name, the str registry, and the
 ;;                      identity hash minted for each fresh object. Against a
@@ -594,7 +599,14 @@
     (judge! "hashmap-get-own"
             #(dotimes [_ 200000] (.get hm 33))
             #(dotimes [_ 200000] (get hm 33))
-            1.4 1.8))
+            1.4 1.8)
+    ;; A Path member is a host method like an ArrayList's, served by the call
+    ;; site's cache: getFileSystem reads a field, as size does.
+    (let [p (java.nio.file.Paths/get "/tmp/work" (into-array String []))]
+      (judge! "path-method"
+              #(dotimes [_ 200000] (.size al))
+              #(dotimes [_ 200000] (.getFileSystem p))
+              2.5 4.0)))
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints
