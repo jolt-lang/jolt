@@ -208,6 +208,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports and traces still show the file's location in source mode, and the AOT
   cache keys on the name, so a project that moves keeps its cache.
 
+### Performance
+
+- **The precompiled stdlib runs at user-code speed under `jolt run`.** The
+  namespaces a release binary carries as embedded fasls (`jolt.time.*`,
+  `clojure.data`, `babashka.fs`, `babashka.process`, `clojure.test`, …) were
+  compiled with var caching off, so every var reference inside them was looked
+  up by name on each call. `jolt.time.util/hmsn->nano` goes from 143 ns to
+  20 ns a call, the same as a copy of it in a user file; `clojure.data/diff`
+  34 µs to 17 µs, `babashka.process/tokenize` 14.8 µs to 9.2 µs. The seven
+  seed-embedded namespaces (`clojure.string`, `clojure.set`, …) and `jolt
+  build` binaries were not affected. `make stdlibratio` gates the ratio.
+
 ### Fixed
 
 - **`load-string` no longer leaves the caller in the namespace it switched
