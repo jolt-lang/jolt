@@ -3161,6 +3161,9 @@
 ;; ZipOutputStream on the out-stream frame.
 (load "host/chez/java/zip-out-entries.ss")
 
+;; JarInputStream and JarOutputStream on the two zip streams, with the Manifest.
+(load "host/chez/java/jar-streams.ss")
+
 ;; java.lang.ProcessBuilder / Process. After io-streams (make-in-stream /
 ;; make-out-stream) and host-static-methods (all-env-pairs).
 ;; proxy: extends-by-delegation over a concrete host class. After host-static.ss
