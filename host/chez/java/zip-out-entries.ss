@@ -84,7 +84,7 @@
     ;; the timestamp block first, then the entry's own blocks (writeExtra)
     (if mtime
         (zip-cat (zip-le16 zip-extid-extt) (zip-le16 5) (make-bytevector 1 1)
-                 (zip-le32 (div mtime 1000))
+                 (zip-le32 (file-time-to mtime 1000000000))
                  kept)
         kept)))
 

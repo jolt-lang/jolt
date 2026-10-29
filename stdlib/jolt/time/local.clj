@@ -40,6 +40,26 @@
 (defn ld? [d] (= :jolt.time/local-date (impl/type-of d)))
 
 (defn- ld-of [y m d] (local-date (days-from-civil y m d)))
+;; LocalDate.of and LocalTime.of from loose fields, each checked as the JDK checks it.
+;; The common case is one inline test; the checkers say which field failed.
+(defn- ed-checked [y m d]
+  (let [y (u/->long y) m (e/month-num m) d (u/->long d)]
+    (when-not (and (<= -999999999 y 999999999) (<= 1 m 12)
+                   (or (<= 1 d 28) (and (<= 1 d) (<= d (u/len-of-month y m)))))
+      (u/check-date y m d))
+    (days-from-civil y m d)))
+(defn- ld-of-checked [y m d] (local-date (ed-checked y m d)))
+;; Inline at each `of`, so the check adds no call of its own; a literal 0 field
+;; (the arities that leave seconds or nanos out) is neither converted nor checked.
+(defmacro ^:private nod-of-checked [h m s n]
+  (let [arg (fn [x] (if (= x 0) 0 `(u/->long ~x)))
+        hs (gensym "h") ms (gensym "m") ss (gensym "s") ns (gensym "n")]
+    `(let [~hs ~(arg h) ~ms ~(arg m) ~ss ~(arg s) ~ns ~(arg n)]
+       (when-not (and (<= 0 ~hs 23) (<= 0 ~ms 59)
+                      ~@(when-not (= s 0) [`(<= 0 ~ss 59)])
+                      ~@(when-not (= n 0) [`(<= 0 ~ns 999999999)]))
+         (u/check-time ~hs ~ms ~ss ~ns))
+       (u/hmsn->nano ~hs ~ms ~ss ~ns))))
 (defn- ld-from-ms [ms] (local-date (u/floor-div ms 86400000)))
 
 (defn ld-plus-months [d n]
@@ -109,9 +129,9 @@
    "hashCode"       (fn [d] (ld-epoch-day d))
    "atStartOfDay"   (fn [d & _] (local-dt (ld-epoch-day d) 0))
    "atTime"         (fn ([d t] (local-dt (ld-epoch-day d) (lt-nano-of-day t)))
-                        ([d h m] (local-dt (ld-epoch-day d) (u/hmsn->nano (u/->long h) (u/->long m) 0 0)))
-                        ([d h m s] (local-dt (ld-epoch-day d) (u/hmsn->nano (u/->long h) (u/->long m) (u/->long s) 0)))
-                        ([d h m s nano] (local-dt (ld-epoch-day d) (u/hmsn->nano (u/->long h) (u/->long m) (u/->long s) (u/->long nano)))))
+                        ([d h m] (local-dt (ld-epoch-day d) (nod-of-checked h m 0 0)))
+                        ([d h m s] (local-dt (ld-epoch-day d) (nod-of-checked h m s 0)))
+                        ([d h m s nano] (local-dt (ld-epoch-day d) (nod-of-checked h m s nano))))
    "toString"       (fn [d] (iso-date-str (ld-epoch-day d)))})
 
 ;; X/from — the JVM TemporalAccessor query: answer from any temporal that
@@ -124,7 +144,7 @@
 (declare ldt? ldt-epoch-day ldt-nod)
 
 (statics! ["LocalDate" "java.time.LocalDate"]
-  {"of"         (fn [y m d] (ld-of (u/->long y) (e/month-num m) (u/->long d)))
+  {"of"         ld-of-checked
    "ofEpochDay" (fn [n] (local-date (u/->long n)))
    "ofYearDay"  (fn [y doy] (local-date (+ (days-from-civil (u/->long y) 1 1) (dec (u/->long doy)))))
    "parse"      (fn [s & _] (local-date (parse-iso-date (str s))))
@@ -200,9 +220,9 @@
    "toString"    (fn [t] (u/iso-time-str (lt-nano-of-day t)))})
 
 (statics! ["LocalTime" "java.time.LocalTime"]
-  {"of"           (fn ([h m] (local-time (u/hmsn->nano (u/->long h) (u/->long m) 0 0)))
-                      ([h m s] (local-time (u/hmsn->nano (u/->long h) (u/->long m) (u/->long s) 0)))
-                      ([h m s nano] (local-time (u/hmsn->nano (u/->long h) (u/->long m) (u/->long s) (u/->long nano)))))
+  {"of"           (fn ([h m] (local-time (nod-of-checked h m 0 0)))
+                      ([h m s] (local-time (nod-of-checked h m s 0)))
+                      ([h m s nano] (local-time (nod-of-checked h m s nano))))
    "ofNanoOfDay"  (fn [n] (local-time (u/->long n)))
    "ofSecondOfDay" (fn [n] (local-time (* (u/->long n) nps)))
    "parse"        (fn [s & _] (local-time (u/parse-hms->nano (str s))))
@@ -296,9 +316,9 @@
 
 (statics! ["LocalDateTime" "java.time.LocalDateTime"]
   {"of"      (fn ([d t] (local-dt (ld-epoch-day d) (lt-nano-of-day t)))
-                ([y mo d h mi] (local-dt (days-from-civil (u/->long y) (e/month-num mo) (u/->long d)) (u/hmsn->nano (u/->long h) (u/->long mi) 0 0)))
-                ([y mo d h mi s] (local-dt (days-from-civil (u/->long y) (e/month-num mo) (u/->long d)) (u/hmsn->nano (u/->long h) (u/->long mi) (u/->long s) 0)))
-                ([y mo d h mi s nano] (local-dt (days-from-civil (u/->long y) (e/month-num mo) (u/->long d)) (u/hmsn->nano (u/->long h) (u/->long mi) (u/->long s) (u/->long nano)))))
+                ([y mo d h mi] (local-dt (ed-checked y mo d) (nod-of-checked h mi 0 0)))
+                ([y mo d h mi s] (local-dt (ed-checked y mo d) (nod-of-checked h mi s 0)))
+                ([y mo d h mi s nano] (local-dt (ed-checked y mo d) (nod-of-checked h mi s nano))))
    "ofEpochSecond" (fn [secs nano _off]
                      (let [es (u/->long secs)]
                        (local-dt (u/floor-div es 86400) (+ (* (u/floor-mod es 86400) nps) (u/->long nano)))))
