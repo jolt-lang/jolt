@@ -4688,7 +4688,32 @@
         (cons "isLocked" (lambda (self) (monitor-locked? (rlock-monitor self))))
         (cons "getHoldCount" (lambda (self) (monitor-self-count (rlock-monitor self))))
         (cons "isHeldByCurrentThread"
-              (lambda (self) (monitor-held-by-self? (rlock-monitor self))))))
+              (lambda (self) (monitor-held-by-self? (rlock-monitor self))))
+        (cons "toString" (lambda (self) (rlock-tostring self)))))
+
+;; ReentrantLock.toString: Object's, then [Unlocked] or [Locked by thread NAME].
+;; The owner word is a fiber or a thread's interrupt box, not a Thread, so the
+;; name is found from it when asked rather than recorded on every lock: a fiber
+;; has its thread object, and a live thread's box is in thread-boxes-by-id. A
+;; thread that ended while holding the lock has left that table.
+(define (rlock-owner-name owner)
+  (cond
+    ((jolt-fiber? owner)
+     (jolt-str-render-one (record-method-dispatch (fiber-thread-object owner) "getName" jolt-nil)))
+    ((let-values (((ids boxes) (jolt-with-mutex thread-boxes-mu (hashtable-entries thread-boxes-by-id))))
+       (let loop ((i 0))
+         (cond ((fx= i (vector-length ids)) #f)
+               ((eq? (vector-ref boxes i) owner) (vector-ref ids i))
+               (else (loop (fx+ i 1))))))
+     => jolt-thread-name)
+    (else "<terminated>")))
+(define (rlock-tostring self)
+  (let ((owner (let ((m (rlock-monitor self)))
+                 (jolt-with-mutex (vector-ref m monitor-i-bk) (monitor-owner-id m)))))
+    (string-append (host-object-tostring self)
+                   (if owner
+                       (string-append "[Locked by thread " (rlock-owner-name owner) "]")
+                       "[Unlocked]"))))
 
 ;; --- main-thread executor ---------------------------------------------------
 ;; Lets a worker thread (e.g. an nREPL eval future) run a thunk on the thread

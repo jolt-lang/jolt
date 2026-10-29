@@ -3186,6 +3186,11 @@
 ;; (overlay, over `future`) light up once future-call exists here.
 (load "host/chez/java/concurrency.ss")
 
+;; Semaphore and ReentrantReadWriteLock on the same wait protocol (jolt-cv-wait),
+;; and AtomicIntegerArray / AtomicLongArray beside the scalar atomics.
+(load "host/chez/java/concurrency-sync.ss")
+(load "host/chez/java/atomic-arrays.ss")
+
 ;; clojure.core.async: real-thread blocking channels + go/go-loop/
 ;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses
 ;; ms->duration) and the collection/seq layer.

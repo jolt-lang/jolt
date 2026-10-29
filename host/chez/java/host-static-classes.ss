@@ -1668,6 +1668,23 @@
               (else #f))
             (begin (set-box! (atomic-box self) next) #t)
             #f)))))
+;; updateAndGet / getAndUpdate / accumulateAndGet / getAndAccumulate: F runs
+;; LOCK-FREE in a CAS retry loop (JVM parity), so it may re-enter the same atomic.
+;; atomic-cas! re-normalizes V and N, which keeps every CAS caller behind one
+;; typed boundary; conversion is idempotent.
+(define (atomic-update! self f return-old?)
+  (let loop ((v (unbox (atomic-box self))))
+    (let ((n (atomic-convert self (f v))))
+      (if (atomic-cas! self v n) (if return-old? v n) (loop (unbox (atomic-box self)))))))
+;; The functional interface's method: AtomicInteger takes IntUnaryOperator /
+;; IntBinaryOperator (applyAsInt), AtomicLong the Long pair (applyAsLong), and
+;; AtomicReference UnaryOperator / BinaryOperator (apply). A reify of the
+;; primitive interface has only its own method, so "apply" refused it.
+(define (atomic-fi-method self)
+  (case (atomic-kind self)
+    ((integer) "applyAsInt")
+    ((long) "applyAsLong")
+    (else "apply")))
 (let ((ref-ctor (lambda args
                   (make-atomic (if (pair? args) (car args) jolt-nil) 'reference)))
       (int-ctor (lambda args
@@ -1706,15 +1723,15 @@
                 o)))))
         (cons "compareAndSet" (lambda (self o n) (atomic-cas! self o n)))
         (cons "updateAndGet" (lambda (self f)
-          (let loop ((v (unbox (atomic-box self))))
-            ;; atomic-cas! deliberately re-normalizes V and N. This keeps every
-            ;; CAS caller behind one typed boundary; conversion is idempotent.
-            (let ((n (atomic-convert self (jolt-fi-call f "apply" v))))
-              (if (atomic-cas! self v n) n (loop (unbox (atomic-box self))))))))
+          (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v)) #f)))
         (cons "getAndUpdate" (lambda (self f)
-          (let loop ((v (unbox (atomic-box self))))
-            (let ((n (atomic-convert self (jolt-fi-call f "apply" v))))
-              (if (atomic-cas! self v n) v (loop (unbox (atomic-box self))))))))
+          (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v)) #t)))
+        (cons "accumulateAndGet" (lambda (self x f)
+          (let ((x (atomic-convert self x)))
+            (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v x)) #f))))
+        (cons "getAndAccumulate" (lambda (self x f)
+          (let ((x (atomic-convert self x)))
+            (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v x)) #t))))
         (cons "incrementAndGet"
           (lambda (self) (atomic-numeric-transition! self 1 #f)))
         (cons "decrementAndGet"
