@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trace leaves out because no def covers it, a defmethod's body or a record's
   method, is named as `jolt.profile` names it (`ns/Type.method`,
   `ns/mm[dispatch]`) when it was compiled under the debug mode.
+- **`java.util.jar.JarInputStream` and `JarOutputStream`.** The input stream
+  reads `META-INF/MANIFEST.MF` when it is the first entry or follows
+  `META-INF/`, and its entries are `JarEntry` values carrying their manifest
+  section; the output stream writes its manifest first and marks the first
+  entry with the JAR magic, byte-compatible with what the JDK writes.
+
 - **`java.util.concurrent.Semaphore` and `locks.ReentrantReadWriteLock`.**
   Permits and read/write holds, fair and non-fair, timed and interruptible
   acquires, the queue queries and the JDK's `toString`. Both wait through the
