@@ -108,12 +108,14 @@
   (hashtable-ref (hashtable-ref host-methods-tbl "in-stream" #f) "getNextEntry" #f))
 (register-host-methods! "in-stream"
   (list
+   ;; the prior member's arity, so a wrong count is still no matching method
    (cons "getNextEntry"
-         (lambda (self . args)
-           (let ((j (and (null? args) (jarin-of self))))
-             (if j
-                 (let ((e (jarin-next self j))) (or e jolt-nil))
-                 (apply jarin-prior-next-entry self args)))))
+         (host-arity-like jarin-prior-next-entry
+           (lambda (self . args)
+             (let ((j (and (null? args) (jarin-of self))))
+               (if j
+                   (let ((e (jarin-next self j))) (or e jolt-nil))
+                   (apply jarin-prior-next-entry self args))))))
    (cons "getNextJarEntry"
          (jarin-method "getNextJarEntry" '(0) (lambda (self j) (or (jarin-next self j) jolt-nil))))
    (cons "getManifest"
@@ -126,11 +128,12 @@
 (register-host-methods! "jar-entry"
   (list
    (cons "getAttributes"
-         (lambda (self . args)
-           (let ((attrs (and (null? args)
-                             (jolt-with-mutex jar-entry-stream-attrs-mu
-                               (hashtable-ref jar-entry-stream-attrs (zentry-of self) #f)))))
-             (or attrs (apply jar-entry-prior-attributes self args)))))))
+         (host-arity-like jar-entry-prior-attributes
+           (lambda (self . args)
+             (let ((attrs (and (null? args)
+                               (jolt-with-mutex jar-entry-stream-attrs-mu
+                                 (hashtable-ref jar-entry-stream-attrs (zentry-of self) #f)))))
+               (or attrs (apply jar-entry-prior-attributes self args))))))))
 
 ;; --- JarOutputStream ------------------------------------------------------------
 (define jar-magic #xCAFE)
@@ -171,10 +174,11 @@
 (register-host-methods! "out-stream"
   (list
    (cons "putNextEntry"
-         (lambda (self . args)
-           (when (and (= (length args) 1) (jarout? self))
-             (jarout-mark-first! self (car args)))
-           (apply jarout-prior-put self args)))))
+         (host-arity-like jarout-prior-put
+           (lambda (self . args)
+             (when (and (= (length args) 1) (jarout? self))
+               (jarout-mark-first! self (car args)))
+             (apply jarout-prior-put self args))))))
 
 ;; JarOutputStream(OutputStream) | JarOutputStream(OutputStream, Manifest)
 (define (make-jar-output-stream . args)
