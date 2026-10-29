@@ -1128,7 +1128,6 @@
 (define arm-priority-dotform 30)      ; -field accessor + dot-form method dispatch
 (define arm-priority-date 40)         ; java.util.Date (jinst) method surface
 (define arm-priority-file 41)         ; java.io.File (jfile) methods
-(define arm-priority-nio-path 42)     ; java.nio.file.Path methods (above jfile)
 (define arm-priority-htable 43)       ; tagged htable method registry
 (define arm-priority-host-type 44)    ; jhost/number/string per-type dispatch
 ;; java/concurrency.ss registers clojure.lang.Agent's own methods here rather

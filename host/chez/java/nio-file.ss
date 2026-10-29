@@ -84,12 +84,19 @@
 ;; Paths.get(first, more...) — join with the separator, no normalization. The
 ;; varargs `more` arrives as a jolt String[] (from into-array); spread it.
 (define (npath-spread-args args)
-  (apply append (map (lambda (x) (if (jolt-array? x) (ja->list x) (list x))) args)))
+  (cond ((null? args) '())
+        ;; Paths/get's usual shape: one varargs array, most often empty
+        ((and (null? (cdr args)) (jolt-array? (car args))) (ja->list (car args)))
+        (else (apply append (map (lambda (x) (if (jolt-array? x) (ja->list x) (list x))) args)))))
 ;; A joined path keeps the separator the left side is already spelled with
 ;; (java/io.ss path-join-sep), so a native "C:\\Users\\x" gains "\\" and everything
 ;; else gains "/"; a separator the caller already wrote — either kind, on
 ;; Windows — is not doubled.
 (define (npath-join-for windows? parts)
+  (if (and (pair? parts) (null? (cdr parts)))
+      (car parts)                       ; one part is itself, as the fold answers
+      (npath-join-parts windows? parts)))
+(define (npath-join-parts windows? parts)
   (fold-left (lambda (acc p)
                (cond ((string=? p "") acc)
                      ((string=? acc "") p)
@@ -189,15 +196,17 @@
 ;; One place Path and File normalize differently, and it is the JDK's: a UNC root
 ;; alone keeps its trailing separator as a Path ("\\\\srv\\sh\\", what
 ;; WindowsPathParser answers) where java.io.File drops it ("\\\\srv\\sh").
-(define (npath-held-for windows? s . refuse-nul)
-  (let ((n (if (null? refuse-nul)
-               (jolt-path-normalize-for windows? s)
-               (jolt-path-normalize-for/nul windows? s))))
+(define (npath-held-for windows? s) (npath-held-from windows? (jolt-path-normalize-for windows? s)))
+;; …refusing a NUL, as a path the default filesystem parses does
+(define (npath-held-for/nul windows? s)
+  (let ((n (jolt-path-normalize-for/nul windows? s)))
     (when (eq? n 'nul) (npath-refuse-nul windows? s))
-    (if (and windows? (fx>? (string-length n) 2) (string=? (substring n 0 2) "//"))
-        (let ((pp (path-parse #t n)))
-          (if (null? (ppath-segs pp)) (ppath-root pp) n))
-        n)))
+    (npath-held-from windows? n)))
+(define (npath-held-from windows? n)
+  (if (and windows? (fx>? (string-length n) 2) (string=? (substring n 0 2) "//"))
+      (let ((pp (path-parse #t n)))
+        (if (null? (ppath-segs pp)) (ppath-root pp) n))
+      n))
 (define default-nio-filesystem (make-jhost "nio-filesystem" #f))
 
 ;; ---- filesystem providers ------------------------------------------------------
@@ -231,6 +240,8 @@
 ;; accumulated chunks, at the bottom of this file; its Path members a few lines
 ;; below the Path methods.
 (define default-nio-provider
+  ;; nio-fs-windows? and nio-path-render answer the default filesystem with
+  ;; these two directly, without the lookup: change them there too
   (make-nio-provider "file" nio-windows? (lambda (s) (path-native s))
                      (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
                      #f
@@ -250,7 +261,12 @@
   (if (eq? fs default-nio-filesystem)
       default-nio-provider
       (hashtable-ref nio-fs-providers (jhost-tag fs) default-nio-provider)))
-(define (nio-fs-windows? fs) ((nio-provider-windows? (nio-fs-provider fs))))
+(define (nio-fs-windows? fs)
+  ;; the host filesystem's provider answers nio-windows?: every Path made and
+  ;; parsed asks this, so the default filesystem skips the provider lookup
+  (if (eq? fs default-nio-filesystem)
+      (nio-windows?)
+      ((nio-provider-windows? (nio-fs-provider fs)))))
 
 ;; A path string with a NUL names no file: the JDK's UnixPath (and WindowsPath,
 ;; in its own words) refuses it as it parses, so Paths/get, Path/of, File.toPath
@@ -270,7 +286,7 @@
   (make-jhost "nio-path"
               (cons fs (let ((w? (nio-fs-windows? fs)) (str (if (string? s) s (npath-string-of s))))
                          (if (eq? fs default-nio-filesystem)
-                             (npath-held-for w? str #t)
+                             (npath-held-for/nul w? str)
                              (npath-held-for w? str))))))
 (define (make-nio-path s) (make-nio-path-on default-nio-filesystem s))
 (define-jhost-tag-pred (nio-path? t) (string=? t "nio-path"))
@@ -278,7 +294,10 @@
 (define (nio-path-filesystem p) (car (jhost-state p)))
 (define (nio-path-provider p) (nio-fs-provider (nio-path-filesystem p)))
 (define (nio-path-windows? p) (nio-fs-windows? (nio-path-filesystem p)))
-(define (nio-path-render p) ((nio-provider-render (nio-path-provider p)) (nio-path-str p)))
+(define (nio-path-render p)
+  (if (eq? (nio-path-filesystem p) default-nio-filesystem)
+      (path-native (nio-path-str p))              ; the host provider's render
+      ((nio-provider-render (nio-path-provider p)) (nio-path-str p))))
 (define (npath-like self s) (make-nio-path-on (nio-path-filesystem self) s))
 ;; A Path member only some filesystems answer differently: the provider's own, or
 ;; the host filesystem's.
@@ -343,43 +362,59 @@
                 ((fx=? (bytevector-u8-ref x i) (bytevector-u8-ref y i)) (loop (fx+ i 1)))
                 (else (fx- (bytevector-u8-ref x i) (bytevector-u8-ref y i))))))))
 
-(define (nio-path-method self name rest)   ; -> boxed result, or #f to fall through
-  (let ((s (nio-path-str self))
-        (windows? (nio-path-windows? self)))
-    (cond
-      ((string=? name "toString")      (list (nio-path-render self)))
-      ((string=? name "getFileName")   (list (npath-file-name-on (nio-path-filesystem self) s)))
-      ((string=? name "getParent")     (list (npath-parent-on (nio-path-filesystem self) s)))
-      ((string=? name "getName")       (list (let ((segs (npath-segs-for windows? s)) (i (exact (truncate (car rest)))))
-                                               (npath-like self (list-ref segs i)))))
-      ((string=? name "getNameCount")  (list (length (npath-segs-for windows? s))))
-      ((string=? name "getRoot")       (list (let ((r (npath-root-for windows? s)))
-                                               (if (string=? r "") jolt-nil (npath-like self r)))))
-      ((string=? name "getFileSystem") (list (nio-path-filesystem self)))
-      ((string=? name "normalize")     (list (npath-like self (npath-normalize-for windows? s))))
-      ((string=? name "resolve")       (list (fold-left npath-resolve self (npath-spread-args rest))))
-      ((string=? name "resolveSibling")(list (let ((par (npath-parent-on (nio-path-filesystem self) s)))
-                                               (npath-resolve (if (jolt-nil? par) (npath-like self "") par) (car rest)))))
-      ((string=? name "relativize")    (list (npath-relativize self (car rest))))
-      ((member name '("toAbsolutePath" "toRealPath" "toFile" "toUri" "register"))
-       (list (apply (nio-path-op self name) self rest)))
-      ((string=? name "startsWith")    (list (npath-starts-with self (car rest))))
-      ((string=? name "endsWith")      (list (npath-ends-with self (car rest))))
-      ((string=? name "isAbsolute")    (list (npath-absolute-for? windows? s)))
-      ((string=? name "subpath")       (list (let ((segs (npath-segs-for windows? s))
-                                                   (b (exact (truncate (car rest))))
-                                                   (e (exact (truncate (cadr rest)))))
-                                               (npath-like self (npath-rebuild "" (list-head (list-tail segs b) (- e b)))))))
-      ((string=? name "compareTo")     (list (begin
-                                               (npath-same-provider! self (car rest))
-                                               (npath-compare-for windows? s (nio-path-str (car rest))))))
-      ((string=? name "equals")        (list (and (nio-path? (car rest))
-                                                 (eq? (nio-path-filesystem self) (nio-path-filesystem (car rest)))
-                                                 (string=? s (nio-path-str (car rest))))))
-      ((string=? name "hashCode")      (list (equal-hash (jhost-state self))))
-      ((string=? name "iterator")      (list (list->cseq (map (lambda (segment) (npath-like self segment))
-                                                              (npath-segs-for windows? s)))))
-      (else #f))))
+;; Path's members, a host method table under the "nio-path" tag, so an
+;; unhinted (.toString p) is served by the call site's cache (host-static.ss
+;; jolt-host-site-call*) as every other shim's members are. They were a method
+;; arm that matched the name against each member in turn, which every call
+;; reached through the arms ahead of it with its arguments in a fresh vector:
+;; ~100 ns before the member ran.
+(define (npath-w self) (nio-path-windows? self))
+(register-host-methods! "nio-path"
+  (list
+   (cons "toString"       (lambda (self) (nio-path-render self)))
+   (cons "getFileName"    (lambda (self) (npath-file-name-on (nio-path-filesystem self) (nio-path-str self))))
+   (cons "getParent"      (lambda (self) (npath-parent-on (nio-path-filesystem self) (nio-path-str self))))
+   (cons "getName"        (lambda (self i)
+                            (npath-like self (list-ref (npath-segs-for (npath-w self) (nio-path-str self))
+                                                       (exact (truncate i))))))
+   (cons "getNameCount"   (lambda (self) (length (npath-segs-for (npath-w self) (nio-path-str self)))))
+   (cons "getRoot"        (lambda (self)
+                            (let ((r (npath-root-for (npath-w self) (nio-path-str self))))
+                              (if (string=? r "") jolt-nil (npath-like self r)))))
+   (cons "getFileSystem"  (lambda (self) (nio-path-filesystem self)))
+   (cons "normalize"      (lambda (self) (npath-like self (npath-normalize-for (npath-w self) (nio-path-str self)))))
+   (cons "resolve"        (case-lambda
+                            ((self other) (if (jolt-array? other)
+                                              (fold-left npath-resolve self (ja->list other))
+                                              (npath-resolve self other)))
+                            ((self . rest) (fold-left npath-resolve self (npath-spread-args rest)))))
+   (cons "resolveSibling" (lambda (self other)
+                            (let ((par (npath-parent-on (nio-path-filesystem self) (nio-path-str self))))
+                              (npath-resolve (if (jolt-nil? par) (npath-like self "") par) other))))
+   (cons "relativize"     (lambda (self other) (npath-relativize self other)))
+   (cons "toAbsolutePath" (lambda (self) ((nio-path-op self "toAbsolutePath") self)))
+   (cons "toRealPath"     (lambda (self . opts) (apply (nio-path-op self "toRealPath") self opts)))
+   (cons "toFile"         (lambda (self) ((nio-path-op self "toFile") self)))
+   (cons "toUri"          (lambda (self) ((nio-path-op self "toUri") self)))
+   (cons "register"       (lambda (self . args) (apply (nio-path-op self "register") self args)))
+   (cons "startsWith"     (lambda (self other) (npath-starts-with self other)))
+   (cons "endsWith"       (lambda (self other) (npath-ends-with self other)))
+   (cons "isAbsolute"     (lambda (self) (npath-absolute-for? (npath-w self) (nio-path-str self))))
+   (cons "subpath"        (lambda (self b0 e0)
+                            (let ((segs (npath-segs-for (npath-w self) (nio-path-str self)))
+                                  (b (exact (truncate b0))) (e (exact (truncate e0))))
+                              (npath-like self (npath-rebuild "" (list-head (list-tail segs b) (- e b)))))))
+   (cons "compareTo"      (lambda (self other)
+                            (npath-same-provider! self other)
+                            (npath-compare-for (npath-w self) (nio-path-str self) (nio-path-str other))))
+   (cons "equals"         (lambda (self other)
+                            (and (nio-path? other)
+                                 (eq? (nio-path-filesystem self) (nio-path-filesystem other))
+                                 (string=? (nio-path-str self) (nio-path-str other)))))
+   (cons "hashCode"       (lambda (self) (equal-hash (jhost-state self))))
+   (cons "iterator"       (lambda (self)
+                            (list->cseq (map (lambda (segment) (npath-like self segment))
+                                             (npath-segs-for (npath-w self) (nio-path-str self))))))))
 
 ;; The host filesystem's answers to the Path members a provider owns.
 (for-each
@@ -527,14 +562,6 @@
   (register-class-statics! "FileSystems" fs-statics)
   (register-class-statics! "java.nio.file.FileSystems" fs-statics))
 
-;; nio-path method dispatch (priority above the jfile arm).
-(register-method-arm! arm-priority-nio-path
-  (lambda (obj method-name rest-args)
-    (if (nio-path? obj)
-        (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
-               (r (nio-path-method obj method-name rest)))
-          (if r (car r) (dispatch-miss obj method-name rest)))
-        'pass)))
 
 ;; (str p), value equality + hashing. instance? and (class p) come from the
 ;; jhost-tag->fqn rows for these three tags (class-hierarchy.ss) — the same
