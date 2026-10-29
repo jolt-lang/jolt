@@ -122,7 +122,7 @@
 ;; A class token (java.util.Date) now evaluates to a Class object (not a name
 ;; string), so (= (class x) java.util.Date) works by jclass identity.
 (define (make-class-obj name) (make-jhost "class" (vector name)))
-(define (jclass? x) (and (jhost? x) (string=? (jhost-tag x) "class")))
+(define-jhost-tag-pred (jclass? t) (string=? t "class"))
 (define (jclass-name x) (vector-ref (jhost-state x) 0))
 ;; The name a class token PRESENTS — .getName, toString, print: the JVM spelling.
 ;; A deftype's registered name is its namespace as written (rf.def-two.R3); the

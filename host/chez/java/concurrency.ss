@@ -3558,7 +3558,7 @@
   (when (< cap 1) (throw-jvm (quote IllegalArgumentException) jolt-nil))
   (make-jhost tag (vector cap (make-mutex) (jolt-make-cv) (cons '() '()) 0)))
 (define (make-abq cap) (make-abq* "abq" cap))
-(define (abq? x) (and (jhost? x) (member (jhost-tag x) '("abq" "lbq")) #t))
+(define-jhost-tag-pred (abq? t) (or (string=? t "abq") (string=? t "lbq")))
 ;; the mutators run under the mutex (jolt-cv-wait's decide, or jolt-with-mutex)
 (define (abq-enq! st v)
   (let ((q (vector-ref st 3)))
