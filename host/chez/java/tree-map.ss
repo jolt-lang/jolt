@@ -357,12 +357,12 @@
   (cond ((not (v-sub? v)) "treemap-entryset")
         ((v-desc? v) "treemap-desc-entryset")
         (else "treemap-asc-entryset")))
-(define (tm-tag-in? x tags) (and (jhost? x) (member (jhost-tag x) tags) #t))
-(define (tm-map? x) (tm-tag-in? x tm-map-tags))
-(define (tm-set? x) (tm-tag-in? x tm-set-tags))
-(define (tm-view? x)
-  (tm-tag-in? x (append '("treemap" "treemap-asc-sub" "treemap-desc-sub" "treeset" "treemap-keyset")
-                        tm-values-tags tm-entryset-tags)))
+(define-jhost-tag-pred (tm-map? t) (and (member t tm-map-tags) #t))
+(define-jhost-tag-pred (tm-set? t) (and (member t tm-set-tags) #t))
+(define-jhost-tag-pred (tm-view? t)
+  (and (or (member t tm-map-tags) (member t tm-set-tags)
+           (member t tm-values-tags) (member t tm-entryset-tags))
+       #t))
 ;; what a view's iteration yields, by what it is
 ;; ---- entries ---------------------------------------------------------------------------
 ;; What iteration hands out is a TreeMap$Entry: a live entry whose setValue
@@ -666,7 +666,8 @@
 (for-each (lambda (t) (register-host-methods! t treemap-iterator-methods)) tm-iterator-tags)
 (register-iterator-seq-fill! tm-iterator-tags tmi-fill tmi-next)
 ;; (iterator-seq it) / (seq it): what the iterator has not handed out yet
-(register-seq-arm! (lambda (x) (tm-tag-in? x tm-iterator-tags))
+(define-jhost-tag-pred (tm-iterator? t) (and (member t tm-iterator-tags) #t))
+(register-seq-arm! tm-iterator?
                    (lambda (it) (list->cseq (map (tmi-ref it 3) (tmi-ref it 1)))))
 ;; DESC? is a descendingIterator() call, which on the JDK goes through the
 ;; map's descending key set — a sub-map — even on the map itself.
@@ -811,7 +812,7 @@
 ;; Set.contains (RT.get has no Set arm, so get on a TreeSet stays nil).
 (register-get-arm! tm-map?
   (lambda (m k d) (let ((x (v-ref m k))) (if (eq? x tm-absent) d x))))
-(register-contains-arm! (lambda (x) (tm-tag-in? x '("treemap" "treemap-asc-sub" "treemap-desc-sub"
-                                                    "treeset" "treemap-keyset")))
-                        v-contains?)
-(register-contains-arm! (lambda (x) (tm-tag-in? x tm-entryset-tags)) tm-entry-in?)
+(define-jhost-tag-pred (tm-keyed? t) (and (or (member t tm-map-tags) (member t tm-set-tags)) #t))
+(define-jhost-tag-pred (tm-entryset? t) (and (member t tm-entryset-tags) #t))
+(register-contains-arm! tm-keyed? v-contains?)
+(register-contains-arm! tm-entryset? tm-entry-in?)

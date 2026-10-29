@@ -7,7 +7,7 @@
 ;; regard to case. Manifest holds the main Attributes and a live Map of entry
 ;; name to Attributes (a java.util.HashMap, what getEntries hands back).
 
-(define (attributes-name? x) (and (jhost? x) (string=? (jhost-tag x) "attributes-name")))
+(define-jhost-tag-pred (attributes-name? t) (string=? t "attributes-name"))
 (define (attributes-name-ctor name)
   (let* ((s (jolt-str-render-one name)) (n (string-length s)))
     (when (or (= n 0) (> n 70))
@@ -36,7 +36,7 @@
   (if (attributes-name? key) key (attributes-name-ctor key)))
 
 ;; ---- Attributes ------------------------------------------------------------------
-(define (jar-attributes? x) (and (jhost? x) (string=? (jhost-tag x) "jar-attributes")))
+(define-jhost-tag-pred (jar-attributes? t) (string=? t "jar-attributes"))
 (define (make-manifest-attributes) (make-jhost "jar-attributes" (lh-new #f)))
 (define (jar-attributes-chain a) (jhost-state a))
 (define (jar-attributes-pairs a)
@@ -90,7 +90,7 @@
 (register-hash-arm! jar-attributes? jar-attributes-hash)
 
 ;; ---- Manifest --------------------------------------------------------------------
-(define (jar-manifest? x) (and (jhost? x) (string=? (jhost-tag x) "jar-manifest")))
+(define-jhost-tag-pred (jar-manifest? t) (string=? t "jar-manifest"))
 (define (make-manifest) (make-jhost "jar-manifest" (vector (make-manifest-attributes) (host-new "java.util.HashMap"))))
 (define (manifest-main self) (vector-ref (jhost-state self) 0))
 (define (manifest-entry-map self) (vector-ref (jhost-state self) 1))

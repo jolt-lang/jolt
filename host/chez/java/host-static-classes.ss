@@ -71,11 +71,16 @@
             (vector-set! (jhost-state self) 0 nv)
             (al-head! self 0))))))
 (define (al-push! self x)
-  (al-bump! self)
-  (al-ensure-tail! self)
-  (let ((n (al-cnt self)))
-    (vector-set! (al-vec self) (fx+ (al-head self) n) x)
-    (al-cnt! self (fx+ n 1))))
+  (al-bump! self)                       ; first: it may replace an old image's state
+  ;; the state read once: an append with room is a store and a count
+  (let* ((st (jhost-state self)) (v (vector-ref st 0)) (n (vector-ref st 1))
+         (i (fx+ (vector-ref st 2) n)))
+    (if (fx<? i (vector-length v))
+        (begin (vector-set! v i x) (vector-set! st 1 (fx+ n 1)))
+        (begin
+          (al-ensure-tail! self)
+          (vector-set! (al-vec self) (fx+ (al-head self) n) x)
+          (al-cnt! self (fx+ n 1))))))
 (define (al-insert-at! self i x)
   (al-bump! self)
   (let ((n (al-cnt self)) (h (al-head self)))
@@ -90,15 +95,15 @@
             (vector-set! v (fx+ h i) x) (al-cnt! self (fx+ n 1)))))))
 (define (al-remove-at! self i)
   (al-bump! self)
-  (let ((n (al-cnt self)) (v (al-vec self)) (h (al-head self)))
+  (let* ((st (jhost-state self)) (v (vector-ref st 0)) (n (vector-ref st 1)) (h (vector-ref st 2)))
     (if (fx=? i 0)
         (begin (vector-set! v h jolt-nil)
-               (al-cnt! self (fx- n 1))
+               (vector-set! st 1 (fx- n 1))
                ;; empty resets head so a drained deque reuses the whole buffer
-               (al-head! self (if (fx=? n 1) 0 (fx+ h 1))))
+               (vector-set! st 2 (if (fx=? n 1) 0 (fx+ h 1))))
         (begin
           (let shift ((j (fx+ h i))) (when (fx<? j (fx+ h (fx- n 1))) (vector-set! v j (vector-ref v (fx+ j 1))) (shift (fx+ j 1))))
-          (vector-set! v (fx+ h (fx- n 1)) jolt-nil) (al-cnt! self (fx- n 1))))))
+          (vector-set! v (fx+ h (fx- n 1)) jolt-nil) (vector-set! st 1 (fx- n 1))))))
 (define (al->list self)                   ; the `count` live elements as a Scheme list
   (let ((v (al-vec self)) (h (al-head self)))
     (let loop ((i (fx- (al-cnt self) 1)) (acc '())) (if (fx<? i 0) acc (loop (fx- i 1) (cons (vector-ref v (fx+ h i)) acc))))))
@@ -421,8 +426,9 @@
     ;; answering whether there was one — for anything else, the overload
     ;; Clojure's reflector picks for a long and for any other argument
     (cons "remove" (lambda (self i)
-                     (if (and (number? i) (exact? i) (integer? i))
-                         (let* ((idx (jnum->exact i)) (old (begin (al-check-index! self idx) (al-ref self idx))))
+                     (if (or (fixnum? i) (and (number? i) (exact? i) (integer? i)))
+                         (let* ((idx (if (fixnum? i) i (jnum->exact i)))
+                                (old (begin (al-check-index! self idx) (al-ref self idx))))
                            (al-remove-at! self idx) old)
                          (let loop ((k 0))
                            (cond ((fx=? k (al-cnt self)) #f)
@@ -517,11 +523,9 @@
 
 ;; ArrayList / LinkedList are Iterable: (seq al) walks the elements (nil if empty),
 ;; so (seq pending-forms) and reduce/into over one work like the JVM.
-(define (al-family? x)
-  (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
-                       (string=? (jhost-tag x) "linkedlist")
-                       (string=? (jhost-tag x) "arrays-aslist")
-                       (string=? (jhost-tag x) "immutable-list"))))
+(define-jhost-tag-pred (al-family? t)
+  (or (string=? t "arraylist") (string=? t "linkedlist")
+      (string=? t "arrays-aslist") (string=? t "immutable-list")))
 ;; …through its iterator, 32 elements to a chunk, as clojure.lang.RT seqs an
 ;; Iterable (chunkIteratorSeq): the chunks after the first are read when the walk
 ;; reaches them, so a change made meanwhile is a ConcurrentModificationException,
@@ -1081,18 +1085,9 @@
 ;; #(table key-order) state. One predicate for every question about that shape —
 ;; seq, count, contains?, get, copy-into — so a new member of the family cannot
 ;; be map-like through one of them and opaque through another.
-(define (hm-hashmap? x)
-  (and (jhost? x)
-       ;; by the tag's first character first: this answers every count, seq and
-       ;; get arm walk that passes over the family, so a miss costs one compare
-       (let ((t (jhost-tag x)))
-         (and (fx>? (string-length t) 0)
-              (case (string-ref t 0)
-                ((#\h) (string=? t "hashmap"))
-                ((#\p) (string=? t "properties"))
-                ((#\c) (string=? t "chm"))
-                ((#\j) (or (string=? t "jx-weak-hashmap") (string=? t "jx-identity-hashmap")))
-                (else #f))))))
+(define-jhost-tag-pred (hm-hashmap? t)
+  (or (string=? t "hashmap") (string=? t "properties") (string=? t "chm")
+      (string=? t "jx-weak-hashmap") (string=? t "jx-identity-hashmap")))
 (define (hm-copy-into-ordered! self src)  ; copy a jolt map or hashmap, keeping insertion order
   (if (hm-hashmap? src)
       (for-each (lambda (kv)
@@ -1767,13 +1762,7 @@
 
 ;; A mutable set over the same value-keyed hashtable (element -> #t).
 ;; Constructors: () | (capacity) [ignored] | (coll) [copy].
-(define (hs-hashset? x)
-  (and (jhost? x)
-       (let ((t (jhost-tag x)))
-         (and (fx>? (string-length t) 0)
-              (case (string-ref t 0)
-                ((#\h) (string=? t "hashset"))
-                (else #f))))))
+(define-jhost-tag-pred (hs-hashset? t) (string=? t "hashset"))
 (define (hs->list self) (hm-keys-ordered self))
 (define (hs-ctor tag)
   (lambda args
@@ -3974,7 +3963,7 @@
 ;; HttpClient.connectTimeout). Value-equal so (= (Optional/of x) (Optional/of x)).
 (define (jt-optional present? value) (make-jhost "optional" (vector present? value)))
 (define jt-optional-empty (jt-optional #f jolt-nil))
-(define (opt? x) (and (jhost? x) (string=? (jhost-tag x) "optional")))
+(define-jhost-tag-pred (opt? t) (string=? t "optional"))
 (define (opt-present? o) (vector-ref (jhost-state o) 0))
 (define (opt-value o) (vector-ref (jhost-state o) 1))
 (let ((statics (list (cons "of" (lambda (v) (if (jolt-nil? v) (throw-jvm 'NullPointerException "Optional.of(null)") (jt-optional #t v))))
@@ -4311,7 +4300,7 @@
 (register-class-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "charset"))) (lambda (x) "java.nio.charset.Charset"))
 ;; Charset equality, hash and order go by canonical name, as Charset.equals,
 ;; hashCode and compareTo (case-insensitive) do.
-(define (charset-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "charset")))
+(define-jhost-tag-pred (charset-jhost? t) (string=? t "charset"))
 (register-eq-arm! (lambda (a b) (or (charset-jhost? a) (charset-jhost? b)))
                   (lambda (a b) (and (charset-jhost? a) (charset-jhost? b)
                                      (string=? (charset-name a) (charset-name b)))))

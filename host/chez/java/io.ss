@@ -1751,7 +1751,7 @@
   (let ((st (jhost-state u)))
     (and (> (vector-length st) 1)
          (let ((h (vector-ref st 1))) (and (not (jolt-nil? h)) h)))))
-(define (url-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "url")))
+(define-jhost-tag-pred (url-jhost? t) (string=? t "url"))
 ;; The path component: the spec without its scheme, and without an authority when
 ;; one is present. "https://example.com/a.html" -> "/a.html", "file:/a/b" -> "/a/b"
 ;; (a file: URL keeps giving the filesystem path callers read it for).
@@ -4512,7 +4512,7 @@
 ;; (= u1 u2) is value equality by string form (the .equals method above only
 ;; serves explicit (.equals …)); hash matches so a URI works as a map key / set
 ;; member (ring/hiccup compare (URI. "/") values).
-(define (uri-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
+(define-jhost-tag-pred (uri-jhost? t) (string=? t "uri"))
 (register-eq-arm! (lambda (a b) (or (uri-jhost? a) (uri-jhost? b)))
                   (lambda (a b) (and (uri-jhost? a) (uri-jhost? b)
                                      (string=? (uri-field a 'string) (uri-field b 'string)))))

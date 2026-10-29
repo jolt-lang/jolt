@@ -1343,7 +1343,7 @@
 ;; ambiguous frame would have to be invented, so it is left out.
 (define (ste-make cls method file line)
   (make-jhost "stack-trace-element" (vector cls method file line)))
-(define (ste? x) (and (jhost? x) (string=? (jhost-tag x) "stack-trace-element")))
+(define-jhost-tag-pred (ste? t) (string=? t "stack-trace-element"))
 (define (ste-field x i) (vector-ref (jhost-state x) i))
 
 (define (ste-base-name path)

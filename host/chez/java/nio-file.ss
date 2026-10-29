@@ -273,7 +273,7 @@
                              (npath-held-for w? str #t)
                              (npath-held-for w? str))))))
 (define (make-nio-path s) (make-nio-path-on default-nio-filesystem s))
-(define (nio-path? x) (and (jhost? x) (string=? (jhost-tag x) "nio-path")))
+(define-jhost-tag-pred (nio-path? t) (string=? t "nio-path"))
 (define (nio-path-str p) (cdr (jhost-state p)))
 (define (nio-path-filesystem p) (car (jhost-state p)))
 (define (nio-path-provider p) (nio-fs-provider (nio-path-filesystem p)))
@@ -900,7 +900,7 @@
 
 ;; ---- newDirectoryStream: a closeable, seqable listing of a directory's kids --
 (define (make-dir-stream paths) (make-jhost "dir-stream" paths))  ; state: list of Path
-(define (dir-stream? x) (and (jhost? x) (string=? (jhost-tag x) "dir-stream")))
+(define-jhost-tag-pred (dir-stream? t) (string=? t "dir-stream"))
 (define (nio-new-directory-stream dir . rest)
   (let* ((base (npath-string-of dir))
          (fp (project-relative base))
@@ -958,7 +958,7 @@
 (define (make-file-time-in value scale) (make-jhost "file-time" (cons value scale)))
 (define (make-file-time ms) (make-file-time-in ms 1000000))
 (define (make-file-time-ns ns) (make-file-time-in ns 1))
-(define (file-time? x) (and (jhost? x) (string=? (jhost-tag x) "file-time")))
+(define-jhost-tag-pred (file-time? t) (string=? t "file-time"))
 (define (file-time-parts x)
   (let ((st (jhost-state x))) (if (pair? st) st (cons st 1000000))))
 ;; epoch nanoseconds, exact
@@ -1117,7 +1117,7 @@
 (define posix-bits '(#o400 #o200 #o100 #o40 #o20 #o10 #o4 #o2 #o1))
 (define pfp-constants (map (lambda (nm) (cons nm (make-jhost "posix-perm" nm))) posix-order))
 (define (make-pfp name) (cdr (assoc name pfp-constants)))
-(define (pfp? x) (and (jhost? x) (string=? (jhost-tag x) "posix-perm")))
+(define-jhost-tag-pred (pfp? t) (string=? t "posix-perm"))
 ;; A permission set is a mutable java.util.Set (like the JVM): callers do
 ;; (.add perms OWNER_WRITE) before setPosixFilePermissions.
 (define (make-perm-set elems)
@@ -1811,7 +1811,7 @@
                     (cons (bitwise-and (nio-layout-dev-ref (nio-stat-layout) buf) #xFFFFFFFFFFFFFFFF)
                           (bytevector-u64-ref buf 8 (native-endianness))))
         jolt-nil)))
-(define (file-key? x) (and (jhost? x) (string=? (jhost-tag x) "file-key")))
+(define-jhost-tag-pred (file-key? t) (string=? t "file-key"))
 (define (nio-s64 u) (if (>= u #x8000000000000000) (- u #x10000000000000000) u))
 (define (nio-file-key-string k)
   (let ((dev (car (jhost-state k))) (ino (cdr (jhost-state k))))
@@ -1909,7 +1909,7 @@
 (define (nio-uid->name uid)
   (and c-getpwuid (let ((pw (c-getpwuid uid))) (and (not (= 0 pw)) (nio-cstr-at (sa-foreign-ref 'iptr pw 0))))))
 ;; user-principal values compare and hash by name; getOwner honors NOFOLLOW.
-(define (nio-userprin? x) (and (jhost? x) (string=? (jhost-tag x) "user-principal")))
+(define-jhost-tag-pred (nio-userprin? t) (string=? t "user-principal"))
 (register-eq-arm! (lambda (a b) (and (nio-userprin? a) (nio-userprin? b)))
                   (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
 (register-hash-arm! nio-userprin? (lambda (x) (string-hash (jhost-state x))))

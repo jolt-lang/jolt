@@ -687,10 +687,19 @@
 (define (jolt-hash-base x)
   ;; Delegate to jolt-hasheq for all scalars; sequential/coll handled by
   ;; seq-hash / jolt-coll-hash which now use the Murmur3 mixers from hasheq.ss.
+  ;; Only jolt-hash calls this, once its arms have all passed on x, and x is none
+  ;; of the types jolt-hasheq answers ahead of its walks (jolt-hash answered
+  ;; those, and the sequentials above). So jolt-hasheq's route for x is its own
+  ;; arms, then jolt-hash-arms again, then the fallback: the second walk of
+  ;; jolt-hash-arms is skipped here, as it can only miss again. It was a third
+  ;; of the hash of a host object no arm claims ((hash (Object.))).
   (cond
     ((jolt-sequential? x) (seq-hash x))
     ((jolt-coll? x) (jolt-coll-hash x))
-    (else (jolt-hasheq x))))
+    (else (let loop ((as jolt-hasheq-arms))
+            (cond ((null? as) (jolt-hasheq-fallback x))
+                  (((caar as) x) ((cdar as) x))
+                  (else (loop (cdr as))))))))
 (define (jolt-hash x)
   ;; Fast path for common types: skip the arm walk entirely.
   (cond ((jolt-nil? x) 0)

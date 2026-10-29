@@ -298,8 +298,8 @@
 (jch-register-supers! "java.util.AbstractList$SubList" '("java.util.AbstractList"))
 (jch-register-supers! "java.util.AbstractList$RandomAccessSubList" '("java.util.AbstractList$SubList" "java.util.RandomAccess"))
 (jch-register-supers! "java.util.ArrayList$SubList" '("java.util.AbstractList" "java.util.RandomAccess"))
-(define (cd-sublist? x)
-  (and (jhost? x) (member (jhost-tag x) '("cd-arraylist-sublist" "cd-ra-sublist" "cd-sublist")) #t))
+(define-jhost-tag-pred (cd-sublist? t)
+  (and (member t '("cd-arraylist-sublist" "cd-ra-sublist" "cd-sublist")) #t))
 (register-seq-arm-last! cd-sublist? (lambda (x) (let ((xs (cds-elems x))) (if (null? xs) jolt-nil (list->cseq xs)))))
 (register-count-arm-last! cd-sublist? (lambda (x) (cds-n x)))
 ;; a window's modCount is its root's: an iterator over it sees a change made
