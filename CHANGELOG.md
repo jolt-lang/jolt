@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trace leaves out because no def covers it, a defmethod's body or a record's
   method, is named as `jolt.profile` names it (`ns/Type.method`,
   `ns/mm[dispatch]`) when it was compiled under the debug mode.
+- **`java.util.concurrent.Semaphore` and `locks.ReentrantReadWriteLock`.**
+  Permits and read/write holds, fair and non-fair, timed and interruptible
+  acquires, the queue queries and the JDK's `toString`. Both wait through the
+  same protocol as `CountDownLatch`, so a fiber that waits parks and gives its
+  carrier up.
+- **`java.util.concurrent.atomic.AtomicIntegerArray` and `AtomicLongArray`**,
+  with the update/accumulate members and the memory-order variants.
+  `AtomicInteger`, `AtomicLong` and `AtomicReference` gain `accumulateAndGet`
+  and `getAndAccumulate`.
+
 - **A built binary's resources read as a jar (#1438).** `io/resource` and
   `ClassLoader.getResource(s)` answer `jar:file:jolt-embedded-resources.jar!/…`
   URLs for files and directories, with the JDK's percent-encoding and, in a
@@ -240,6 +250,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   op still switch namespace on an `(ns …)` or `in-ns`: each binds `*ns*` for
   the session and reads it after the eval, as clojure.main and nREPL do. The
   nREPL `load-file` op is a load and leaves the session's namespace alone.
+- `AtomicInteger.updateAndGet` and `AtomicLong.getAndUpdate` (and the other
+  update members) refused a reify of `IntUnaryOperator` / `LongUnaryOperator`:
+  they called `apply` instead of `applyAsInt` / `applyAsLong`.
+- `ReentrantLock.toString` adds `[Unlocked]` or `[Locked by thread NAME]`, as the
+  JDK's does.
 - **A `java.io.File` whose path holds a NUL no longer acts on another file.**
   The OS reads a path only up to a NUL, so `(.delete (File. "notes.txt\u0000x"))`
   deleted `notes.txt`, and `exists`, `length`, `list` and the rest answered
