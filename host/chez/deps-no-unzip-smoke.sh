@@ -18,7 +18,9 @@
 #      "./" spelling;
 #   7. the pom.xml a jar packages is consulted for its dependencies when no
 #      .pom sits beside the jar: one it declares resolves and loads, and one no
-#      repository has fails the resolution.
+#      repository has fails the resolution;
+#   8. a jar root's resources answer as the JDK's class loader does: a
+#      directory without its slash, openConnection, toURI, relative URLs.
 #
 # JOLT_BIN is a built jolt, which needs no program on PATH; the gate runs
 # target/release/jolt (make testbin).
@@ -218,6 +220,41 @@ yn "7: a dependency the jar's pom.xml declares that no repository has fails the 
    "$(printf '%s' "$out7b" | grep -q 'does-not-exist' && echo yes || echo no)"
 yn "7: the program did not run without it" \
    "$(printf '%s\n' "$out7b" | grep -qx 'ran' && echo no || echo yes)"
+
+# 8. a jar root's resources answer as the JDK's class loader answers them: a
+# directory to its name without the "/" (JarFile.getJarEntry's lookup), a
+# JarURLConnection from openConnection, a URI from toURI, and a relative URL
+# resolved against the entry with its ".." segments gone.
+mkdir -p "$tmp/proj8/src/app8"
+: > "$tmp/empty8"
+printf 'one\n' > "$tmp/one8.sql"
+printf 'top\n' > "$tmp/top8.txt"
+JOLT_PWD="$tmp" JOLT_QUIET=1 "$JOLT" run "$root/tools/mkjar.clj" "$tmp/proj8/res8.jar" \
+  "mig8/=$tmp/empty8" "mig8/001.sql=$tmp/one8.sql" "top8.txt=$tmp/top8.txt" >/dev/null \
+  || { echo "  FAIL: 8: mkjar did not write the jar" >&2; fail=$((fail+1)); }
+printf '{:paths ["src"] :deps {local/res8 {:local/root "res8.jar"}}}\n' > "$tmp/proj8/deps.edn"
+cat > "$tmp/proj8/src/app8/core.clj" <<'EOF3'
+(ns app8.core (:require [clojure.java.io :as io]))
+(defn -main [& _]
+  (println "dir" (str (io/resource "mig8")))
+  (let [c (.openConnection (io/resource "mig8/001.sql"))]
+    (println "conn" (instance? java.net.JarURLConnection c) (.getEntryName c)
+             (pr-str (slurp (.getInputStream c))) (.getName (.getJarEntry c))))
+  (println "dirconn" (.getEntryName (.openConnection (io/resource "mig8/"))))
+  (println "uri" (str (.toURI (io/resource "top8.txt"))))
+  (println "rel" (pr-str (slurp (java.net.URL. (io/resource "mig8/001.sql") "../top8.txt")))))
+EOF3
+out8="$(PATH="$empty" JOLT_PWD="$tmp/proj8" JOLT_QUIET=1 "$JOLT" run -m app8.core 2>&1)"
+yn "8: a directory resource answers to its name without the slash" \
+   "$(printf '%s\n' "$out8" | grep -qx "dir jar:file:$tmp/proj8/res8.jar!/mig8" && echo yes || echo no)"
+yn "8: openConnection is a JarURLConnection onto the entry" \
+   "$(printf '%s\n' "$out8" | grep -qx 'conn true mig8/001.sql "one\\n" mig8/001.sql' && echo yes || echo no)"
+yn "8: a directory's connection names the directory entry" \
+   "$(printf '%s\n' "$out8" | grep -qx 'dirconn mig8/' && echo yes || echo no)"
+yn "8: toURI is the URL's text as a URI" \
+   "$(printf '%s\n' "$out8" | grep -qx "uri jar:file:$tmp/proj8/res8.jar!/top8.txt" && echo yes || echo no)"
+yn "8: a relative URL resolves against the entry" \
+   "$(printf '%s\n' "$out8" | grep -qx 'rel "top\\n"' && echo yes || echo no)"
 
 echo "deps-no-unzip-smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

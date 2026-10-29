@@ -32,6 +32,28 @@
                   (lambda (a b) (string-ci=? (jhost-state a) (jhost-state b))))
 (register-hash-arm! attributes-name? attributes-name-hash)
 (register-str-render! attributes-name? jhost-state)
+;; Attributes.Name's public constants, one Name each, as the JDK's static finals.
+(let ((names (map (lambda (p) (cons (car p) (attributes-name-ctor (cdr p))))
+                  '(("MANIFEST_VERSION" . "Manifest-Version")
+                    ("SIGNATURE_VERSION" . "Signature-Version")
+                    ("CONTENT_TYPE" . "Content-Type")
+                    ("CLASS_PATH" . "Class-Path")
+                    ("MAIN_CLASS" . "Main-Class")
+                    ("SEALED" . "Sealed")
+                    ("EXTENSION_LIST" . "Extension-List")
+                    ("EXTENSION_NAME" . "Extension-Name")
+                    ("EXTENSION_INSTALLATION" . "Extension-Installation")
+                    ("IMPLEMENTATION_TITLE" . "Implementation-Title")
+                    ("IMPLEMENTATION_VERSION" . "Implementation-Version")
+                    ("IMPLEMENTATION_VENDOR" . "Implementation-Vendor")
+                    ("IMPLEMENTATION_VENDOR_ID" . "Implementation-Vendor-Id")
+                    ("IMPLEMENTATION_URL" . "Implementation-URL")
+                    ("SPECIFICATION_TITLE" . "Specification-Title")
+                    ("SPECIFICATION_VERSION" . "Specification-Version")
+                    ("SPECIFICATION_VENDOR" . "Specification-Vendor")
+                    ("MULTI_RELEASE" . "Multi-Release")))))
+  (register-class-statics! "Attributes$Name" names)
+  (register-class-statics! "java.util.jar.Attributes$Name" names))
 (define (attributes-name-of key)
   (if (attributes-name? key) key (attributes-name-ctor key)))
 
@@ -58,6 +80,12 @@
                     (let ((n (lh-node cb (car p))))
                       (and n (jolt=2 (cdr p) (n-val n)))))
                   pa))))
+;; Neither Attributes nor Manifest overrides toString: Object's, the class name
+;; and the hash in hex, which here is the content hash.
+(define (manifest-object-tostring class h)
+  (string-append class "@" (string-downcase (number->string (bitwise-and h #xffffffff) 16))))
+(define (jar-attributes-tostring a)
+  (manifest-object-tostring "java.util.jar.Attributes" (jar-attributes-hash a)))
 (define (jar-attributes-hash a)
   (int32-low (fold-left (lambda (h p) (+ h (bitwise-xor (attributes-name-hash (car p))
                                                         (java-string-hashcode (cdr p)))))
@@ -83,11 +111,13 @@
                      jolt-nil))
     (cons "clone" manifest-attributes-copy)
     (cons "equals" (lambda (self other) (and (jar-attributes? other) (jar-attributes-equal? self other))))
-    (cons "hashCode" jar-attributes-hash))))
+    (cons "hashCode" jar-attributes-hash)
+    (cons "toString" jar-attributes-tostring))))
 ;; seq, count, contains? and get answer through linked-hash.ss's arms (lh-kind),
 ;; which already sit behind the HashMap family's.
 (register-eq-arm! (lambda (a b) (and (jar-attributes? a) (jar-attributes? b))) jar-attributes-equal?)
 (register-hash-arm! jar-attributes? jar-attributes-hash)
+(register-str-render! jar-attributes? jar-attributes-tostring)
 
 ;; ---- Manifest --------------------------------------------------------------------
 (define (jar-manifest? x) (and (jhost? x) (string=? (jhost-tag x) "jar-manifest")))
@@ -120,6 +150,7 @@
                    (+ h (bitwise-xor (java-string-hashcode name)
                                      (jar-attributes-hash (manifest-entry self name)))))
                  0 (manifest-entry-names self)))))
+(define (manifest-tostring self) (manifest-object-tostring "java.util.jar.Manifest" (manifest-hash self)))
 (register-host-methods! "jar-manifest"
   (list
    (cons "getMainAttributes" manifest-main)
@@ -133,9 +164,11 @@
    (cons "read" (lambda (self in) (manifest-read! self in) jolt-nil))
    (cons "equals" (lambda (self other) (and (jar-manifest? other) (manifest-equal? self other))))
    (cons "hashCode" manifest-hash)
+   (cons "toString" manifest-tostring)
    (cons "clone" manifest-copy)))
 (register-eq-arm! (lambda (a b) (and (jar-manifest? a) (jar-manifest? b))) manifest-equal?)
 (register-hash-arm! jar-manifest? manifest-hash)
+(register-str-render! jar-manifest? manifest-tostring)
 
 ;; ---- reading (Manifest.read / Attributes.read) -------------------------------------
 ;; Lines end at "\r\n", "\n" or a lone "\r"; a line that starts with a space
@@ -287,6 +320,12 @@
 (hashtable-set! jhost-tag->fqn "jar-attributes" "java.util.jar.Attributes")
 (hashtable-set! jhost-tag->fqn "jar-manifest" "java.util.jar.Manifest")
 
+;; A jar is multi-release when its main section says Multi-Release: true, in any case.
+(define (manifest-multi-release? manifest)
+  (and (jar-manifest? manifest)
+       (let ((v (jar-attributes-value (manifest-main manifest) "Multi-Release")))
+         (and (string? v) (string-ci=? v "true")))))
+
 ;; ---- the embedded archive's manifest ------------------------------------------------
 ;; Parsed once, the first time anything asks: JarFile.getManifest hands back the
 ;; same Manifest each time, as the JDK's caching JarFile does, and whether the
@@ -300,9 +339,7 @@
                        (manifest-ctor (make-in-stream (open-bytevector-input-port
                                                        (if (bytevector? content) content (string->utf8 content)))))
                        jolt-nil))
-         (multi-release? (and (jar-manifest? manifest)
-                              (let ((v (jar-attributes-value (manifest-main manifest) "Multi-Release")))
-                                (and (string? v) (string-ci=? v "true"))))))
+         (multi-release? (manifest-multi-release? manifest)))
     (cons manifest multi-release?)))
 ;; Parsed outside the lock (reading a stream may park); the first parse
 ;; published wins, so every caller sees the one Manifest.
@@ -314,9 +351,3 @@
               (begin (set! embedded-archive-manifest-cache parsed) parsed))))))
 (define (embedded-archive-multi-release?) (cdr (embedded-archive-manifest)))
 (define (embedded-jar-manifest archive) (car (embedded-archive-manifest)))
-(define (embedded-jar-main-attributes archive)
-  (let ((manifest (embedded-jar-manifest archive)))
-    (if (jolt-nil? manifest) jolt-nil (manifest-main manifest))))
-(define (embedded-jar-entry-attributes archive name)
-  (let ((manifest (embedded-jar-manifest archive)))
-    (if (jolt-nil? manifest) jolt-nil (manifest-entry manifest name))))

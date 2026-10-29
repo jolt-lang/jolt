@@ -654,7 +654,9 @@
   (when (jolt-nil? entry) (zip-throw "java.lang.NullPointerException" "entry"))
   (unless (zip-entry? entry) (zip-class-cast entry "java.util.zip.ZipEntry"))
   (zfile-ensure-open self)
-  (let ((ent (zipdir-lookup (zfile-dir self) (zentry-name (zentry-of entry)))))
+  (zfile-input-stream-named self (zentry-name (zentry-of entry))))
+(define (zfile-input-stream-named self name)
+  (let ((ent (zipdir-lookup (zfile-dir self) name)))
     (if (not ent)
         jolt-nil
         (let ((s (zipdir-entry-stream (zfile-dir self) ent (zfile-reader self) (lambda () #f))))
@@ -665,6 +667,13 @@
 (define (zfile-entries self)
   (zfile-ensure-open self)
   (list->cseq (map zdirent->entry (vector->list (zipdir-order (zfile-dir self))))))
+;; stream(): the entries in the same order, read when the stream is consumed
+(define (zfile-stream self)
+  (zfile-ensure-open self)
+  (make-stream 'ref
+    (st-lazy (lambda ()
+               (zfile-ensure-open self)
+               (jolt-seq (list->cseq (map zdirent->entry (vector->list (zipdir-order (zfile-dir self))))))))))
 
 (define (zfile-close self)
   (unless (zfile-closed? self)
@@ -684,9 +693,12 @@
    (cons "getEntry" (zip-method "getEntry" '(1) zfile-get-entry))
    (cons "getInputStream" (zip-method "getInputStream" '(1) zfile-get-input-stream))
    (cons "entries" (zip-method "entries" '(0) zfile-entries))
+   (cons "stream" (zip-method "stream" '(0) zfile-stream))
    (cons "size" (zip-method "size" '(0)
                   (lambda (self) (zfile-ensure-open self) (->num (zipdir-size (zfile-dir self))))))
    (cons "getName" (zip-method "getName" '(0) zfile-name))
+   ;; ZipFile has no toString of its own in JDK 21: Object's
+   (cons "toString" (zip-method "toString" '(0) host-object-tostring))
    (cons "getComment" (zip-method "getComment" '(0)
                         (lambda (self)
                           (zfile-ensure-open self)
@@ -722,16 +734,16 @@
             (set! embedded-archive-entries-cache (cons index names))
             names)))))
 
-(define (jar-entry? x) (and (jhost? x) (string=? (jhost-tag x) "jar-entry")))
 (define (make-embedded-jar-entry name directory? . source)
   (let* ((source (if (pair? source) (car source) name))
          (content (and (not directory?) (embedded-resource-ref source)))
          (size (if directory? 0
                    (bytevector-length (if (bytevector? content) content (string->utf8 content)))))
-         (entry (make-jhost "jar-entry"
-                            (make-zentry name -1 -1 size size 0 jolt-nil jolt-nil 0))))
+         (entry (make-jhost "jar-file-entry"
+                            (make-zentry name -1 -1 size size 0 jolt-nil jolt-nil (make-file-time 0)))))
     (hashtable-set! zentry-real-names (zentry-of entry) source)
     entry))
+
 
 ;; java.lang.Runtime.Version. jolt models one Java version, the one its JVM
 ;; oracle certifies against (host-static-methods.ss jolt-java-feature-version);
@@ -766,15 +778,159 @@
                       runtime-version-string)
 (hashtable-set! jhost-tag->fqn "runtime-version" "java.lang.Runtime$Version")
 
-;; --- multi-release ------------------------------------------------------------
+;; --- java.util.jar.JarFile ------------------------------------------------------
+;; One JarFile over two kinds of archive: a jar on disk ("jar-file"), whose state
+;; is the ZipFile's with the version it was opened at and its manifest after it,
+;; and the application image's own archive ("embedded-jar-file"). They differ in
+;; how a name is found, listed and read, and only there: the manifest, the
+;; multi-release selection and the JarFileEntry are written once, over those.
+;;
 ;; JarFile.BASE_VERSION_FEATURE: a jar opened at this version, or below, reads
 ;; only its base entries, and META-INF/versions/N for N under it is never read.
 (define embedded-jar-base-feature 8)
-(define (embedded-jar-version self) (vector-ref (jhost-state self) 4))
-(define (embedded-jar-version-feature self) (runtime-version-feature (embedded-jar-version self)))
-(define (embedded-jar-multi-release? self) (embedded-archive-multi-release?))
+(define (jar-on-disk? self) (string=? (jhost-tag self) "jar-file"))
+(define (jar-ensure-open self)
+  (if (jar-on-disk? self) (zfile-ensure-open self) (embedded-jar-ensure-open self)))
+(define (jar-open-version self) (vector-ref (jhost-state self) (if (jar-on-disk? self) 7 4)))
+(define (jar-open-feature self) (runtime-version-feature (jar-open-version self)))
+;; The entry name NAME finds -- itself, or a directory's NAME + "/" -- or #f.
+(define (jar-find self name)
+  (if (jar-on-disk? self)
+      (let ((ent (zipdir-lookup (zfile-dir self) name))) (and ent (zdirent-name ent)))
+      (cond ((embedded-public-resource? name) name)
+            ((embedded-directory-name name) => (lambda (dir) dir))
+            (else #f))))
+;; Every entry name, in the archive's order.
+(define (jar-names self)
+  (if (jar-on-disk? self) (zipdir-names (zfile-dir self)) (embedded-archive-entry-names)))
+
+;; getManifest: META-INF/MANIFEST.MF (any case, as JarFile.getManEntry finds
+;; it) read once, so every call answers the same Manifest; nil without one.
+(define (jar-disk-manifest self)
+  (let ((cell (vector-ref (jhost-state self) 8)))
+    (or (unbox cell)
+        (let* ((dir (zfile-dir self))
+               (ent (or (zipdir-lookup dir "META-INF/MANIFEST.MF")
+                        (exists (lambda (e) (and (string-ci=? (zdirent-name e) "META-INF/MANIFEST.MF") e))
+                                (vector->list (zipdir-order dir)))))
+               (parsed (if ent
+                           (manifest-ctor (make-in-stream (open-bytevector-input-port (zipdir-entry-bytes dir ent))))
+                           jolt-nil)))
+          ;; parsed outside the lock; the first published wins
+          (jolt-with-mutex (zfile-mutex self)
+            (or (unbox cell) (begin (set-box! cell parsed) parsed)))))))
+(define (jar-manifest self)
+  (if (jar-on-disk? self) (jar-disk-manifest self) (embedded-jar-manifest self)))
+(define (jar-multi-release? self)
+  (if (jar-on-disk? self) (manifest-multi-release? (jar-manifest self)) (embedded-archive-multi-release?)))
+;; getVersion: the version it was opened at when it is multi-release, else the base.
+(define (jar-version self)
+  (if (jar-multi-release? self) (jar-open-version self) (make-runtime-version (list embedded-jar-base-feature))))
+
+;; The name a lookup of NAME reads at FEATURE (JarFile.getVersionedEntry): the
+;; highest META-INF/versions/N/NAME that FIND finds with BASE <= N <= FEATURE,
+;; else NAME itself. (values real-name versioned?), real-name #f when nothing is
+;; there at all.
+(define (jar-select-name feature multi-release? find name)
+  (let ((versioned
+         (and (> feature embedded-jar-base-feature)
+              (not (embedded-string-prefix? "META-INF/" name))
+              multi-release?
+              (let loop ((candidate feature))
+                (and (>= candidate embedded-jar-base-feature)
+                     (or (find (string-append "META-INF/versions/" (number->string candidate) "/" name))
+                         (loop (- candidate 1))))))))
+    (if versioned (values versioned #t) (values (find name) #f))))
+(define (jar-selected-name self name)
+  (jar-select-name (jar-open-feature self) (jar-multi-release? self) (lambda (n) (jar-find self n)) name))
+(define (embedded-select-resource-name feature name)
+  (let-values (((real versioned?)
+                (jar-select-name feature (embedded-archive-multi-release?)
+                                 (lambda (n) (and (embedded-public-resource? n) n)) name)))
+    (if versioned? real name)))
+;; A class loader opens a multi-release jar at the runtime version, so a
+;; resource URL names the entry that version selects.
+(define (embedded-runtime-resource-name name)
+  (embedded-select-resource-name jolt-java-feature-version name))
+
+;; JarFile$JarFileEntry: a JarEntry that knows its jar, so getAttributes reads
+;; that jar's manifest, and whose real name is the versioned entry it was read
+;; from when a multi-release lookup picked one (getName is the name asked for).
+(define zentry-jars (make-weak-eq-hashtable))
+(define (jar-entry-for self real name)
+  (let ((entry (if (jar-on-disk? self)
+                   (let ((e (zdirent->entry (zipdir-lookup (zfile-dir self) real))))
+                     (zentry-name-set! (zentry-of e) name)
+                     (make-jhost "jar-file-entry" (jhost-state e)))
+                   (let ((directory? (let ((n (string-length real)))
+                                       (and (fx>? n 0) (char=? (string-ref real (fx- n 1)) #\/)))))
+                     (make-embedded-jar-entry name directory? real)))))
+    (hashtable-set! zentry-real-names (zentry-of entry) real)
+    (hashtable-set! zentry-jars (zentry-of entry) self)
+    entry))
+;; getEntry / getJarEntry. A multi-release jar looks a null name up as a
+;; versioned one first, which is where the JDK's NullPointerException comes from.
+(define (jar-get-entry self name)
+  (when (and (jolt-nil? name) (jar-multi-release? self))
+    (zip-throw "java.lang.NullPointerException"
+               "Cannot invoke \"String.startsWith(String)\" because \"name\" is null"))
+  (let ((name (zfile-entry-arg self "name" name)))
+    (jar-ensure-open self)
+    (let-values (((real versioned?) (jar-selected-name self name)))
+      (if real (jar-entry-for self real (if versioned? name real)) jolt-nil))))
+(define (jar-raw-entry self name) (jar-entry-for self name name))
+;; getInputStream(ZipEntry): a JarFileEntry reads the entry it was read from;
+;; any other entry reads its own name.
+(define (jar-get-input-stream self entry)
+  (when (jolt-nil? entry) (zip-throw "java.lang.NullPointerException" "ze"))
+  (unless (zip-entry? entry) (zip-class-cast entry "java.util.zip.ZipEntry"))
+  (jar-ensure-open self)
+  (let ((name (or (and (string=? (jhost-tag entry) "jar-file-entry")
+                       (hashtable-ref zentry-real-names (zentry-of entry) #f))
+                  (zentry-name (zentry-of entry)))))
+    (if (jar-on-disk? self)
+        (zfile-input-stream-named self name)
+        (embedded-jar-input-stream-named self name))))
+(define (jar-entries self)
+  (jar-ensure-open self)
+  (if (jar-on-disk? self)
+      (list->cseq (map (lambda (name) (jar-raw-entry self name)) (jar-names self)))
+      (make-jhost "embedded-jar-enumeration"
+                  (vector self (map (lambda (name) (jar-raw-entry self name)) (jar-names self))))))
+;; A stream of the entries NAMES (a thunk) gives, each looked up by LOOKUP when
+;; the stream is consumed; a name it finds nothing for is dropped.
+(define (jar-lazy-stream self names lookup)
+  (jar-ensure-open self)
+  (make-stream 'ref
+    (st-lazy (lambda ()
+               (jar-ensure-open self)
+               (jolt-seq (list->cseq (filter (lambda (e) (not (jolt-nil? e)))
+                                             (map (lambda (name) (lookup self name)) (names)))))))))
+(define (jar-stream self) (jar-lazy-stream self (lambda () (jar-names self)) jar-raw-entry))
+;; JarFile.versionedStream: each entry's base name (a versioned entry above the
+;; jar's version, a malformed version or a bare version directory is dropped),
+;; first occurrence kept, then looked up at the jar's version -- which drops a
+;; name only a version the lookup never reads holds.
+(define (jar-versioned-names self)
+  (let ((feature (jar-open-feature self))
+        (seen (make-hashtable string-hash string=?)))
+    (let loop ((names (jar-names self)) (acc '()))
+      (if (null? names)
+          (reverse acc)
+          (let* ((name (car names))
+                 (base (if (embedded-string-prefix? "META-INF/versions/" name)
+                           (let ((part (jar-versioned-part name)))
+                             (and part (not (string=? (cdr part) "")) (<= (car part) feature) (cdr part)))
+                           name)))
+            (if (and base (not (hashtable-ref seen base #f)))
+                (begin (hashtable-set! seen base #t) (loop (cdr names) (cons base acc)))
+                (loop (cdr names) acc)))))))
+(define (jar-versioned-stream self)
+  (if (jar-multi-release? self)
+      (jar-lazy-stream self (lambda () (jar-versioned-names self)) jar-get-entry)
+      (jar-stream self)))
 ;; META-INF/versions/N/rest -> (N . rest), #f for anything else
-(define (embedded-jar-versioned-part name)
+(define (jar-versioned-part name)
   (and (>= (string-length name) 18)
        (string=? (substring name 0 18) "META-INF/versions/")
        (let* ((tail (substring name 18 (string-length name)))
@@ -785,39 +941,24 @@
               (version (and slash (string->number (substring tail 0 slash)))))
          (and version (exact? version) (integer? version) (>= version 0)
               (cons version (substring tail (+ slash 1) (string-length tail)))))))
-;; The entry a lookup of NAME reads at FEATURE (JarFile.getVersionedEntry): the
-;; highest META-INF/versions/N/NAME with BASE <= N <= FEATURE, else NAME itself.
-(define (embedded-select-resource-name feature name)
-  (if (or (<= feature embedded-jar-base-feature)
-          (embedded-jar-versioned-part name)
-          (embedded-string-prefix? "META-INF/" name)
-          (not (embedded-archive-multi-release?)))
-      name
-      (let loop ((candidate feature))
-        (if (< candidate embedded-jar-base-feature)
-            name
-            (let ((versioned (string-append "META-INF/versions/" (number->string candidate) "/" name)))
-              (if (embedded-public-resource? versioned)
-                  versioned
-                  (loop (- candidate 1))))))))
-(define (embedded-jar-selected-resource-name archive name)
-  (embedded-select-resource-name (embedded-jar-version-feature archive) name))
-;; A class loader opens a multi-release jar at the runtime version, so a
-;; resource URL names the entry that version selects.
-(define (embedded-runtime-resource-name name)
-  (embedded-select-resource-name jolt-java-feature-version name))
+;; The members every JarFile answers, over either archive.
+(define jar-file-members
+  (list
+   (cons "getEntry" (zip-method "getEntry" '(1) jar-get-entry))
+   (cons "getJarEntry" (zip-method "getJarEntry" '(1) jar-get-entry))
+   (cons "getInputStream" (zip-method "getInputStream" '(1) jar-get-input-stream))
+   (cons "entries" (zip-method "entries" '(0) jar-entries))
+   (cons "stream" (zip-method "stream" '(0) jar-stream))
+   (cons "versionedStream" (zip-method "versionedStream" '(0) jar-versioned-stream))
+   (cons "getManifest" (zip-method "getManifest" '(0)
+                         (lambda (self) (jar-ensure-open self) (jar-manifest self))))
+   (cons "getVersion" (zip-method "getVersion" '(0)
+                        (lambda (self) (jar-ensure-open self) (jar-version self))))
+   (cons "isMultiRelease" (zip-method "isMultiRelease" '(0)
+                            (lambda (self) (jar-ensure-open self) (jar-multi-release? self))))))
 
-(define (embedded-jar-entry name . archive)
-  (let* ((archive (if (pair? archive) (car archive) #f))
-         (source (if archive (embedded-jar-selected-resource-name archive name) name)))
-    (cond ((embedded-public-resource? source)
-           (make-embedded-jar-entry name #f source))
-          ((embedded-directory-name name) =>
-           (lambda (dir) (make-embedded-jar-entry dir #t)))
-          (else jolt-nil))))
-(define (embedded-jar-entry-for archive name)
-  (embedded-jar-entry name archive))
-
+;; --- the application image as a read-only JarFile ----------------------------------
+;; state #(name closed? streams mutex version)
 (define (embedded-jar-name self) (vector-ref (jhost-state self) 0))
 (define (embedded-jar-closed? self) (vector-ref (jhost-state self) 1))
 (define (embedded-jar-streams self) (vector-ref (jhost-state self) 2))
@@ -825,19 +966,9 @@
 (define (embedded-jar-ensure-open self)
   (when (embedded-jar-closed? self)
     (zip-throw "java.lang.IllegalStateException" "zip file closed")))
-
-(define (embedded-jar-get-entry self name)
-  (embedded-jar-ensure-open self)
-  (embedded-jar-entry-for self (zfile-entry-arg self "name" name)))
-
-(define (embedded-jar-get-input-stream self entry)
-  (when (jolt-nil? entry) (zip-throw "java.lang.NullPointerException" "entry"))
-  (unless (or (zip-entry? entry) (jar-entry? entry))
-    (zip-class-cast entry "java.util.jar.JarEntry"))
-  (embedded-jar-ensure-open self)
-  (let* ((name (or (hashtable-ref zentry-real-names (zentry-of entry) #f)
-                   (embedded-jar-selected-resource-name self (zentry-name (zentry-of entry)))))
-         (content (embedded-resource-ref name)))
+(define (embedded-jar-entry-for archive name) (jar-get-entry archive name))
+(define (embedded-jar-input-stream-named self name)
+  (let ((content (embedded-resource-ref name)))
     (if (and (not content) (not (embedded-directory? name)))
         jolt-nil
         (let ((stream (make-in-stream
@@ -848,44 +979,6 @@
           (jolt-with-mutex (embedded-jar-mutex self)
             (hashtable-set! (embedded-jar-streams self) stream #t))
           stream))))
-
-(define (embedded-jar-entry-list self names)
-  (map (lambda (name) (embedded-jar-entry-for self name)) names))
-(define (embedded-jar-entries self)
-  (embedded-jar-ensure-open self)
-  (make-jhost "embedded-jar-enumeration"
-              (vector self (embedded-jar-entry-list self (embedded-archive-entry-names)))))
-(define (embedded-jar-lazy-stream self names)
-  (embedded-jar-ensure-open self)
-  (make-stream 'ref
-    (st-lazy (lambda ()
-               (embedded-jar-ensure-open self)
-               (jolt-seq (list->cseq (filter (lambda (e) (not (jolt-nil? e)))
-                                             (embedded-jar-entry-list self (names)))))))))
-(define (embedded-jar-stream self)
-  (embedded-jar-lazy-stream self embedded-archive-entry-names))
-;; JarFile.versionedStream: each entry's base name (a versioned entry above the
-;; jar's version, a malformed version or a bare version directory is dropped),
-;; first occurrence kept, then looked up at the jar's version -- which drops a
-;; name only a version the lookup never reads holds.
-(define (embedded-jar-versioned-names self)
-  (let ((feature (embedded-jar-version-feature self))
-        (seen (make-hashtable string-hash string=?)))
-    (let loop ((names (embedded-archive-entry-names)) (acc '()))
-      (if (null? names)
-          (reverse acc)
-          (let* ((name (car names))
-                 (base (if (embedded-string-prefix? "META-INF/versions/" name)
-                           (let ((part (embedded-jar-versioned-part name)))
-                             (and part (not (string=? (cdr part) "")) (<= (car part) feature) (cdr part)))
-                           name)))
-            (if (and base (not (hashtable-ref seen base #f)))
-                (begin (hashtable-set! seen base #t) (loop (cdr names) (cons base acc)))
-                (loop (cdr names) acc)))))))
-(define (embedded-jar-versioned-stream self)
-  (if (embedded-jar-multi-release? self)
-      (embedded-jar-lazy-stream self (lambda () (embedded-jar-versioned-names self)))
-      (embedded-jar-stream self)))
 
 (register-host-methods! "embedded-jar-enumeration"
   (list
@@ -922,34 +1015,41 @@
   (make-jhost "embedded-jar-file"
               (vector name #f (make-weak-eq-hashtable) (make-mutex)
                       (if (pair? version) (car version) (make-runtime-version (list embedded-jar-base-feature))))))
-(define (embedded-jar-file-arg x)
-  (cond ((string? x) x)
-        ((jfile? x) (jfile-path x))
-        (else #f)))
-(define (embedded-jar-validate-mode x)
-  (let ((mode (zip-int-arg x)))
-    (unless (or (= mode zip-open-read) (= mode (bitwise-ior zip-open-read zip-open-delete)))
-      (zip-throw "java.lang.IllegalArgumentException"
-                 (string-append "Illegal mode: 0x" (number->string mode 16))))))
-(define (embedded-jar-validate-charset x)
-  (cond ((jolt-nil? x) (zip-throw "java.lang.NullPointerException" "charset"))
-        ((not (zip-charset? x)) (zip-class-cast x "java.nio.charset.Charset"))
-        (else #f)))
-(define (embedded-jar-validate-args args)
-  (case (length args)
-    ((1) #t)
-    ((2) (cond ((boolean? (cadr args)) #t)
-               ((zip-long? (cadr args)) (embedded-jar-validate-mode (cadr args)))
-               (else (embedded-jar-validate-charset (cadr args)))))
-    ((3) (if (boolean? (cadr args))
-             (embedded-jar-validate-mode (caddr args))
-             (begin (embedded-jar-validate-mode (cadr args))
-                    (embedded-jar-validate-charset (caddr args)))))
-    ((4) (embedded-jar-validate-mode (caddr args))
-         (unless (and (jhost? (cadddr args)) (string=? (jhost-tag (cadddr args)) "runtime-version"))
-           (zip-class-cast (cadddr args) "java.lang.Runtime$Version")))
-    (else (throw-jvm 'IllegalArgumentException
-                     "No matching ctor found for class java.util.jar.JarFile"))))
+
+;; JarFile(String) | JarFile(String, boolean verify) | JarFile(File) |
+;; JarFile(File, boolean) | JarFile(File, boolean, int mode) |
+;; JarFile(File, boolean, int mode, Runtime.Version): (values path mode version)
+;; as the compiled call resolves them. The mode is checked as ZipFile checks
+;; it, then the version for null; there is no charset constructor.
+(define (jar-file-ctor-args args)
+  (define (no-ctor)
+    (throw-jvm 'IllegalArgumentException "No matching ctor found for class java.util.jar.JarFile"))
+  (define (file-arg x)
+    (cond ((jolt-nil? x) (zip-throw "java.lang.NullPointerException" #f))
+          ((string? x) x)
+          ((jfile? x) (jfile-path x))
+          (else (no-ctor))))
+  (define (verify-arg x) (unless (boolean? x) (no-ctor)))
+  (define (mode-arg x)
+    (unless (zip-long? x) (no-ctor))
+    (let ((mode (zip-int-arg x)))
+      (unless (or (= mode zip-open-read) (= mode (bitwise-ior zip-open-read zip-open-delete)))
+        (zip-throw "java.lang.IllegalArgumentException"
+                   (string-append "Illegal mode: 0x" (number->string mode 16))))
+      mode))
+  (let ((base (make-runtime-version (list embedded-jar-base-feature))))
+    (case (length args)
+      ((1) (values (file-arg (car args)) zip-open-read base))
+      ((2) (verify-arg (cadr args)) (values (file-arg (car args)) zip-open-read base))
+      ((3) (verify-arg (cadr args))
+           (values (file-arg (car args)) (mode-arg (caddr args)) base))
+      ((4) (verify-arg (cadr args))
+           (let ((mode (mode-arg (caddr args))) (version (cadddr args)))
+             (cond ((jolt-nil? version) (zip-throw "java.lang.NullPointerException" #f))
+                   ((not (and (jhost? version) (string=? (jhost-tag version) "runtime-version")))
+                    (no-ctor)))
+             (values (file-arg (car args)) mode (embedded-jar-open-version version))))
+      (else (no-ctor)))))
 
 ;; The version a JarFile opens at: a feature at or below the base reads as the
 ;; base, any other as that feature alone (JarFile's constructor).
@@ -957,16 +1057,11 @@
   (let ((feature (runtime-version-feature version)))
     (make-runtime-version (list (if (<= feature embedded-jar-base-feature) embedded-jar-base-feature feature)))))
 (define (make-jar-file . args)
-  (if (and (pair? args) (string=? (or (embedded-jar-file-arg (car args)) "")
-                                  embedded-archive-name))
-      (begin
-        (embedded-jar-validate-args args)
-        (make-embedded-jar-file embedded-archive-name
-                                (if (= (length args) 4)
-                                    (embedded-jar-open-version (cadddr args))
-                                    (make-runtime-version (list embedded-jar-base-feature)))))
-      (let ((file (apply make-zip-file args)))
-        (make-jhost "jar-file" (jhost-state file)))))
+  (let-values (((path mode version) (jar-file-ctor-args args)))
+    (if (string=? path embedded-archive-name)
+        (make-embedded-jar-file embedded-archive-name version)
+        (let ((file (make-zip-file path (->num mode))))
+          (make-jhost "jar-file" (list->vector (append (vector->list (jhost-state file)) (list version (box #f)))))))))
 
 (define (make-jar-entry . args)
   (let ((entry (apply make-zip-entry args)))
@@ -975,48 +1070,44 @@
 (hashtable-set! jhost-tag->fqn "jar-file" "java.util.jar.JarFile")
 (hashtable-set! jhost-tag->fqn "embedded-jar-file" "java.util.jar.JarFile")
 (hashtable-set! jhost-tag->fqn "jar-entry" "java.util.jar.JarEntry")
-(hashtable-set! host-methods-tbl "jar-file"
-                (hashtable-ref host-methods-tbl "zip-file" #f))
-(let ((methods '()))
-  (let-values (((names fs) (hashtable-entries (hashtable-ref host-methods-tbl "zip-entry" #f))))
-    (vector-for-each (lambda (name f) (set! methods (cons (cons name f) methods))) names fs))
-  (register-host-methods! "jar-entry"
-    (append methods
-            (list
-             (zentry-member "getAttributes"
-                            (lambda (self) (embedded-jar-entry-attributes self (zentry-name (zentry-of self)))))
-             (zentry-member "getCertificates"
-                            (lambda (self) (make-jolt-array (vector) "java.security.cert.Certificate")))
-             (zentry-member "getCodeSigners"
-                            (lambda (self) (make-jolt-array (vector) "java.security.CodeSigner")))
-             (zentry-member "getRealName"
-                            (lambda (self)
-                              (or (hashtable-ref zentry-real-names (zentry-of self) #f)
-                                  (zentry-name (zentry-of self)))))))))
-(register-host-methods! "embedded-jar-file"
+(hashtable-set! jhost-tag->fqn "jar-file-entry" "java.util.jar.JarFile$JarFileEntry")
+;; A JarFile is a ZipFile with the jar's members over it; a JarEntry a ZipEntry
+;; with its own. A JarEntry made by a caller carries no attributes and no
+;; certificates (null on the JDK until a JarFile's verifier fills them, and
+;; nothing here is signed); a JarFileEntry reads its jar's manifest.
+(derive-host-methods! "jar-file" "zip-file" jar-file-members)
+(derive-host-methods! "jar-entry" "zip-entry"
   (list
-   (cons "getEntry" (zip-method "getEntry" '(1) embedded-jar-get-entry))
-   (cons "getJarEntry" (zip-method "getJarEntry" '(1) embedded-jar-get-entry))
-   (cons "getInputStream" (zip-method "getInputStream" '(1) embedded-jar-get-input-stream))
-   (cons "entries" (zip-method "entries" '(0) embedded-jar-entries))
-   (cons "stream" (zip-method "stream" '(0) embedded-jar-stream))
-   (cons "versionedStream" (zip-method "versionedStream" '(0) embedded-jar-versioned-stream))
-   (cons "size" (zip-method "size" '(0)
+   (zentry-member "getAttributes" (lambda (self) jolt-nil))
+   (zentry-member "getCertificates" (lambda (self) jolt-nil))
+   (zentry-member "getCodeSigners" (lambda (self) jolt-nil))
+   (zentry-member "getRealName" (lambda (self) (zentry-name (zentry-of self))))))
+(derive-host-methods! "jar-file-entry" "jar-entry"
+  (list
+   (zentry-member "getAttributes"
                   (lambda (self)
-                    (embedded-jar-ensure-open self)
-                    (->num (length (embedded-archive-entry-names))))))
-   (cons "getName" (zip-method "getName" '(0) embedded-jar-name))
-   (cons "toString" (zip-method "toString" '(0)
-                      (lambda (self) (embedded-jar-ensure-open self) (embedded-jar-name self))))
-   (cons "getComment" (zip-method "getComment" '(0)
-                        (lambda (self) (embedded-jar-ensure-open self) jolt-nil)))
-   (cons "getManifest" (zip-method "getManifest" '(0)
-                        (lambda (self) (embedded-jar-ensure-open self) (embedded-jar-manifest self))))
-   (cons "getVersion" (zip-method "getVersion" '(0)
-                       (lambda (self) (embedded-jar-ensure-open self) (embedded-jar-version self))))
-   (cons "isMultiRelease" (zip-method "isMultiRelease" '(0)
-                           (lambda (self) (embedded-jar-ensure-open self) (embedded-jar-multi-release? self))))
-   (cons "close" (zip-method "close" '(0) embedded-jar-close))))
+                    (let* ((jar (hashtable-ref zentry-jars (zentry-of self) #f))
+                           (manifest (if jar (jar-manifest jar) jolt-nil)))
+                      (if (jolt-nil? manifest)
+                          jolt-nil
+                          (manifest-entry manifest (zentry-name (zentry-of self)))))))
+   (zentry-member "getRealName"
+                  (lambda (self)
+                    (or (hashtable-ref zentry-real-names (zentry-of self) #f)
+                        (zentry-name (zentry-of self)))))))
+(register-host-methods! "embedded-jar-file"
+  (append
+   jar-file-members
+   (list
+    (cons "size" (zip-method "size" '(0)
+                   (lambda (self)
+                     (embedded-jar-ensure-open self)
+                     (->num (length (embedded-archive-entry-names))))))
+    (cons "getName" (zip-method "getName" '(0) embedded-jar-name))
+    (cons "toString" (zip-method "toString" '(0) host-object-tostring))
+    (cons "getComment" (zip-method "getComment" '(0)
+                         (lambda (self) (embedded-jar-ensure-open self) jolt-nil)))
+    (cons "close" (zip-method "close" '(0) embedded-jar-close)))))
 (register-class-statics! "java.util.jar.JarFile"
   (list (cons "MANIFEST_NAME" "META-INF/MANIFEST.MF")
         (cons "baseVersion" (lambda () (make-runtime-version (list embedded-jar-base-feature))))

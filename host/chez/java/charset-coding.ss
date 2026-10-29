@@ -258,6 +258,50 @@
     (bb-pos! out 0)
     out))
 
+(define (charset-decoder-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "charset-decoder")))
+(define (charset-encoder-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "charset-encoder")))
+;; A decoder's malformed-input action is REPORT until onMalformedInput says otherwise.
+(define (decoder-reports-malformed? d)
+  (string=? (coding-error-action-name (decoder-malformed-action d)) "REPORT"))
+;; Text through a charset's REPORTING coder, the one java.nio.file's Files and
+;; a reader or writer built on a CharsetDecoder or CharsetEncoder use: malformed
+;; input is MalformedInputException, and a character the charset cannot hold is
+;; UnmappableCharacterException, each with the JDK's "Input length = N", where
+;; String's own conversions replace them.
+(define (charset-decode-report bv cs-name)
+  (if (and (string=? (charset-canonical-down cs-name) "utf-8") (%utf8-java-plain? bv))
+      (utf8->string bv)
+      (let* ((decoder (make-jhost "charset-decoder" (vector (charset-for-name cs-name) #f #f "\xFFFD;")))
+             (decoded (decoder-decode-all decoder
+                                          (nb-wrap-bytes (na-bv->bytearray bv) 0 (bytevector-length bv)))))
+        (nb-char-string decoded (bb-pos decoded) (bb-limit decoded)))))
+(define (charset-report-malformed n) (coder-result-throw (coder-malformed n)))
+(define (charset-report-unmappable c)
+  ;; the length is the character's UTF-16 units
+  (coder-result-throw (coder-unmappable (if (fx>=? (char->integer c) #x10000) 2 1))))
+(define (charset-encode-report s cs-name)
+  (let* ((name (charset-arg-name cs-name))
+         (cs (charset-canonical-down name)))
+    (io-check-encoding! name)
+    (cond
+      ((member cs '("iso-8859-1" "us-ascii"))
+       (let ((top (if (string=? cs "us-ascii") 127 255)))
+         (string-for-each (lambda (c) (when (fx>? (char->integer c) top) (charset-report-unmappable c))) s)
+         (charset-encode-bv s name)))
+      ;; every Unicode encoding holds every character a string can
+      ((member cs '("utf-8" "utf-16" "utf-16be" "utf-16le" "utf-32" "utf-32be" "utf-32le"))
+       (charset-encode-bv s name))
+      ;; iconv refuses a character its target lacks; find which one, so the
+      ;; length is that character's
+      (else
+       (or (iconv-bytes (string->utf8 s) "UTF-8" name)
+           (begin
+             (string-for-each
+              (lambda (c) (unless (iconv-bytes (string->utf8 (string c)) "UTF-8" name)
+                            (charset-report-unmappable c)))
+              s)
+             (charset-encode-bv s name)))))))
+
 (register-host-methods! "charset-decoder"
   (list
    (cons "decode" (lambda (self in . rest)
