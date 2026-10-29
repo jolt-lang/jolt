@@ -1600,17 +1600,6 @@
            :jvm ":put"
            :jolt "\"Zip64 entries are not supported\""}
    :note "A 4 GiB entry through a stream would take the Zip64 data descriptor as well; corpus rows (java.util.zip / ZipOutputStream) pin the 32-bit shapes."}
-  ;; ZipFile.stream() answers a java.util.stream.Stream on the JVM; jolt has no
-  ;; java.util.stream, so the method is not there and entries() is the way to
-  ;; walk an archive.
-  {:category :host-model
-   :behavior "(.stream zip-file)"
-   :jvm "a Stream of the entries"
-   :jolt "no such method"
-   :check {:expr "(with-open [z (java.util.zip.ZipFile. \"test/chez/fixtures/zip/stored.zip\")] (try (.count (.stream z)) (catch IllegalArgumentException e :no-method)))"
-           :jvm "4"
-           :jolt ":no-method"}
-   :note "entries() enumerates every entry (corpus java.util.zip / ZipFile)."}
   ;; ZipEntry has two one-argument constructors, (String) and (ZipEntry). jolt picks
   ;; one by the argument's runtime value, so a nil takes the String constructor even
   ;; under a ^ZipEntry hint, and its NullPointerException names the other

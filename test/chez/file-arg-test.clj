@@ -42,7 +42,10 @@
 ;; characters on POSIX, so this stays project-relative, as it always was
 (check "posix drive path is relative" (posix "/proj" "C:/a.clj") "/proj/C:/a.clj")
 ;; the prebuilt binary's case: JOLT_PWD unset, so the project dir is "."
-(check "posix dot project dir" (posix "." "a.clj") "./a.clj")
+(check "posix dot project dir" (posix "." "a.clj") "a.clj")
+;; ...and no "./" is added or kept: load-file names the file by its absolute
+;; path, which keeps a "./" as getAbsolutePath does
+(check "posix dot project dir, ./ argument" (posix "." "./a.clj") "a.clj")
 
 ;; --- Windows: every rooted spelling is used as given -------------------------
 ;; This is the bug: all four of these used to come back joined to the project
