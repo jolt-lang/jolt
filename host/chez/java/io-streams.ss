@@ -490,8 +490,13 @@
        (let-values (((c next) (%utf8-java-step bv k end #t)))
          (if c end k))))))
 
-(define (open-java-utf8-input-port bp id)
+;; REPORT? (optional): malformed input is MalformedInputException, as a
+;; reporting CharsetDecoder answers it, rather than U+FFFD. The check costs
+;; nothing on the bulk path for well-formed input -- %utf8-java-plain? is already
+;; asked there -- and only a run it turns down is decoded again, strictly.
+(define (open-java-utf8-input-port bp id . report?)
   (let ((buf (make-bytevector java-utf8-chunk))
+        (report? (and (pair? report?) (car report?)))
         (lo 0)
         (hi 0)
         (src-eof? #f))
@@ -510,6 +515,10 @@
                      (else (set! hi (fx+ hi got)) #t))))))
     (define (step-one! str start o terminal?)
       (let-values (((c next) (%utf8-java-step buf lo hi (not terminal?))))
+        (when (and c report? (fx=? c #xFFFD))
+          (let ((seq (make-bytevector (fx- next lo))))
+            (bytevector-copy! buf lo seq 0 (fx- next lo))
+            (charset-decode-report seq "UTF-8")))
         (and c
              (begin (string-set! str (fx+ start o) (integer->char c))
                     (set! lo next)
@@ -539,7 +548,7 @@
                 (let* ((len (fx- cut lo))
                        (slice (make-bytevector len)))
                   (bytevector-copy! buf lo slice 0 len)
-                  (let* ((s (utf8-bytes->string slice))
+                  (let* ((s (if report? (charset-decode-report slice "UTF-8") (utf8-bytes->string slice)))
                          (n (string-length s)))
                     ;; sa-string-copy-range!, not string-copy!: Chez's takes
                     ;; (from from-start to to-start count) and R7RS's the same
@@ -1312,15 +1321,20 @@
 ;; which is why only make-charset-writer calls this: it records bp so the
 ;; writer's flush reaches it. Flushing bp once per block made every non-UTF-8
 ;; write cost a write(2) per block, 8x the UTF-8 writer's time.
-(define (charset-output-port bp name)
+;;
+;; REPORT? encodes as a CharsetEncoder does by default: a character the charset
+;; cannot hold is UnmappableCharacterException when its block is encoded -- at a
+;; flush or close, as the JDK's StreamEncoder raises it -- rather than "?".
+(define (charset-output-port bp name . report?)
   (io-check-encoding! name)
   (if (io-utf8? name)
       (transcoded-port bp utf8-tx)
-      (let ((enc name) (utf16? (string=? (charset-canonical-down name) "utf-16")))
+      (let ((enc name) (utf16? (string=? (charset-canonical-down name) "utf-16"))
+            (encode (if (and (pair? report?) (car report?)) charset-encode-report charset-encode-bv)))
         (make-custom-textual-output-port "charset-writer"
           (lambda (str start count)
             (when (fx>? count 0)
-              (put-bytevector bp (charset-encode-bv (substring str start (fx+ start count)) enc))
+              (put-bytevector bp (encode (substring str start (fx+ start count)) enc))
               (when utf16? (set! utf16? #f) (set! enc "UTF-16BE")))
             count)
           #f #f
@@ -1330,23 +1344,46 @@
 ;; writer, so a charset the host cannot write closes it again; a stream the
 ;; caller handed in is left open, as the JVM's OutputStreamWriter leaves it.
 (define (make-charset-writer bp enc down own? . cls)
+  (make-reporting-charset-writer bp enc down own? #f (and (pair? cls) (car cls))))
+;; …and one that encodes with REPORT? (charset-output-port).
+(define (make-reporting-charset-writer bp enc down own? report? cls)
   (make-jhost "char-writer"
     (vector (if own?
-                (guard (e (#t (close-port bp) (raise e))) (charset-output-port bp enc))
-                (charset-output-port bp enc))
+                (guard (e (#t (close-port bp) (raise e))) (charset-output-port bp enc report?))
+                (charset-output-port bp enc report?))
             down
             bp
-            (and (pair? cls) (car cls)))))
+            cls)))
 ;; Reading: a one-byte charset decodes as the bytes arrive, so a pipe still
 ;; streams. A multi-byte or stateful one decodes the whole input on the first
 ;; read, through decode-bytevector -- the decoder (String. bytes cs) and slurp
 ;; use -- because a block boundary can fall inside a character, and inside an
 ;; iconv shift state, and only the full input decodes the way the JVM's does.
-(define (charset-input-port bp name id)
+;;
+;; REPORT? decodes as a CharsetDecoder does by default: malformed input is
+;; MalformedInputException at the read that reaches it, where the plain reader
+;; answers U+FFFD.
+(define (charset-input-port bp name id . report?)
   (io-check-encoding! name)
-  (let ((cs (charset-canonical-down name)))
+  (let ((cs (charset-canonical-down name))
+        (report? (and (pair? report?) (car report?))))
     (cond
-      ((string=? cs "utf-8") (open-java-utf8-input-port bp id))
+      ((string=? cs "utf-8") (open-java-utf8-input-port bp id report?))
+      ;; a charset with no streaming reporter here: the whole input, decoded
+      ;; through the reporting CharsetDecoder at the first read
+      ((and report? (not (or (string=? cs "iso-8859-1") (string=? cs "us-ascii"))))
+       (let ((text #f) (pos 0))
+         (make-custom-textual-input-port id
+           (lambda (str start count)
+             (unless text
+               (let ((bv (get-bytevector-all bp)))
+                 (set! text (charset-decode-report (if (eof-object? bv) (make-bytevector 0) bv) name))))
+             (let ((n (fxmin count (fx- (string-length text) pos))))
+               (sa-string-copy-range! str start text pos (fx+ pos n))
+               (set! pos (fx+ pos n))
+               n))
+           #f #f
+           (lambda () (close-port bp)))))
       ((or (string=? cs "iso-8859-1") (string=? cs "us-ascii"))
        (let ((top (if (string=? cs "us-ascii") 127 255))
              (buf (make-bytevector 4096)))
@@ -1358,7 +1395,9 @@
                    0
                    (do ((i 0 (fx+ i 1))) ((fx=? i n) n)
                      (let ((b (bytevector-u8-ref buf i)))
-                       ;; past 127 is not ASCII: U+FFFD, as decode-bytevector answers
+                       ;; past 127 is not ASCII: U+FFFD, as decode-bytevector
+                       ;; answers, or malformed to a reporting decoder
+                       (when (and report? (fx>? b top)) (charset-report-malformed 1))
                        (string-set! str (fx+ start i) (if (fx<=? b top) (integer->char b) #\xFFFD)))))))
            #f #f
            (lambda () (close-port bp)))
@@ -2033,13 +2072,18 @@
     (when (reader-jhost? in)
       (throw-jvm (quote IllegalArgumentException)
                  "InputStreamReader wraps an InputStream, not a Reader (it is already decoded)"))
-    (stream-classed!
-      (make-char-reader (charset-input-port (in-stream-source-port in)
-                                            (if (and (pair? rest) (ctor-charset? (car rest)))
-                                                (charset-arg-name (car rest))
-                                                "UTF-8")
-                                            "InputStreamReader"))
-      "java.io.InputStreamReader")))
+    ;; (InputStreamReader. in decoder) decodes as the CharsetDecoder is set to:
+    ;; REPORT, its default, refuses malformed input, where a charset replaces it.
+    (let ((decoder (and (pair? rest) (charset-decoder-jhost? (car rest)) (car rest))))
+      (stream-classed!
+        (make-char-reader (charset-input-port (in-stream-source-port in)
+                                              (cond (decoder (charset-name (decoder-charset decoder)))
+                                                    ((and (pair? rest) (ctor-charset? (car rest)))
+                                                     (charset-arg-name (car rest)))
+                                                    (else "UTF-8"))
+                                              "InputStreamReader"
+                                              (and decoder (decoder-reports-malformed? decoder))))
+        "java.io.InputStreamReader"))))
 ;; A byte port that hands each encoded block to the stream's OWN write method,
 ;; whatever kind of stream it is — a port-backed out-stream, a PrintStream, or a
 ;; proxy over one. Dispatching rather than writing to the stream's port directly
@@ -2064,11 +2108,15 @@
     (when (writer-jhost? out)
       (throw-jvm (quote IllegalArgumentException)
                  "OutputStreamWriter wraps an OutputStream, not a Writer (it already takes characters)"))
-    (make-charset-writer (out-stream-sink-port out)
-                         (if (and (pair? rest) (ctor-charset? (car rest)))
-                             (charset-arg-name (car rest))
-                             "UTF-8")
-                         out #f "java.io.OutputStreamWriter")))
+    ;; (OutputStreamWriter. out encoder): a CharsetEncoder reports what its
+    ;; charset cannot hold, where a charset writes "?".
+    (let ((encoder (and (pair? rest) (charset-encoder-jhost? (car rest)) (car rest))))
+      (make-reporting-charset-writer (out-stream-sink-port out)
+                                     (cond (encoder (charset-name (vector-ref (jhost-state encoder) 0)))
+                                           ((and (pair? rest) (ctor-charset? (car rest)))
+                                            (charset-arg-name (car rest)))
+                                           (else "UTF-8"))
+                                     out #f (and encoder #t) "java.io.OutputStreamWriter"))))
 ;; BufferedOutputStream is its own stream, as on the JVM: (class x) is
 ;; BufferedOutputStream, and bytes written to it reach the wrapped stream through
 ;; that stream's own write when it flushes, closes or fills its 8192-byte buffer.

@@ -3045,14 +3045,11 @@
           (parameterize ((ldr-verbose? verbose?))
             (k (and (member "reload" flags) #t)))))))
 
-;; A leading ./ is dropped before the path is made absolute: "./x.clj" from /proj
-;; is /proj/x.clj, not /proj/./x.clj.
-(define (ldr-strip-dot-slash p)
-  (if (and (fx>? (string-length p) 2) (string=? (substring p 0 2) "./"))
-      (ldr-strip-dot-slash (substring p 2 (string-length p)))
-      p))
+;; The file is named by its absolute path as Compiler.loadFile names it,
+;; File.getAbsolutePath, which puts user.dir in front and normalizes nothing:
+;; "./x.clj" from /proj is /proj/./x.clj, in *file* and in :file.
 (def-var! "clojure.core" "load-file"
-  (lambda (p) (jolt-load-file (host-fs-path (project-relative (ldr-strip-dot-slash p))))))
+  (lambda (p) (jolt-load-file (host-fs-path (project-relative p)))))
 
 ;; The directory of a namespace's resource path: "clojure.tools.reader-test" ->
 ;; "clojure/tools" (drop the last segment of ns-name->rel). "" for a top-level ns.

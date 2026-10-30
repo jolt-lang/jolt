@@ -34,6 +34,35 @@
         (#{4 6 9 11} m) 30
         :else 31))
 
+;; ChronoField.checkValidValue: a value outside the field's range is a
+;; DateTimeException naming the field and the range, as the JDK words it.
+(defn- date-time-exception [msg]
+  (jolt.host/throwable "java.time.DateTimeException" msg))
+(defn check-field [field lo hi v]
+  (when-not (and (<= lo v) (<= v hi))
+    (throw (date-time-exception (str "Invalid value for " field " (valid values " lo " - " hi "): " v))))
+  v)
+
+;; LocalDate.of's checks: the year, the month and the day each against its
+;; field, then the day against the month (LocalDate.create).
+(defn check-date [y m d]
+  (check-field "Year" -999999999 999999999 y)
+  (check-field "MonthOfYear" 1 12 m)
+  (when-not (and (<= 1 d) (<= d 31))
+    (throw (date-time-exception (str "Invalid value for DayOfMonth (valid values 1 - 28/31): " d))))
+  (when (and (> d 28) (> d (len-of-month y m)))
+    (throw (date-time-exception
+            (if (= d 29)
+              (str "Invalid date 'February 29' as '" y "' is not a leap year")
+              (str "Invalid date '" (nth month-names (dec m)) " " d "'"))))))
+
+;; LocalTime.of's checks, field by field.
+(defn check-time [h m s n]
+  (check-field "HourOfDay" 0 23 h)
+  (check-field "MinuteOfHour" 0 59 m)
+  (check-field "SecondOfMinute" 0 59 s)
+  (check-field "NanoOfSecond" 0 999999999 n))
+
 ;; unit -> fixed nanosecond length; FOREVER has none. month/year and up use the
 ;; average-year estimate, exactly as java.time's ChronoUnit does.
 (def chrono-unit-nanos

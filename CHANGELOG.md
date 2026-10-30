@@ -17,12 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FileSystems/newFileSystem` opens them as a read-only `jar` file system, and
   `(jolt.host/embedded-resource-names)` lists them, so migration scanners such
   as Migratus work inside a binary. `java.util.jar.Manifest`, `Attributes` and
-  `Attributes.Name` read and write as the JDK's do.
+  `Attributes.Name` read and write as the JDK's do. A jar on disk opens as a
+  `JarFile` too, with its manifest, multi-release lookup and
+  `JarFile$JarFileEntry` entries, and `ZipEntry.getTimeLocal`/`setTimeLocal`
+  take a `java.time.LocalDateTime`.
 - **`java.nio.file.Files` dispatches to the path's file system provider.** The
   host file system now answers `readString`, `lines`, `list`, `walk`, `find`,
   `newBufferedReader`, `newBufferedWriter`, `writeString`, `newByteChannel`,
   `mismatch`, `probeContentType`, `getFileStore`, `getFileAttributeView` and
-  `setOwner`; text reads decode strictly, as the JDK's do.
+  `setOwner`. Text goes through the charset's reporting coder, as the JDK's
+  does: malformed input is `MalformedInputException` and a character the
+  charset cannot hold `UnmappableCharacterException`. `lines`, `walk` and
+  `find` read as the stream is consumed, a failure there arriving as
+  `UncheckedIOException`, and a `DirectoryStream` hands out one iterator.
 - **`ArrayDeque` is a ring buffer, as the JDK's is**: both ends O(1), the
   same capacities and growth, nulls refused, and the full `Deque` surface
   (`pollFirst`, `peekLast`, `removeLastOccurrence`, `descendingIterator`, …).
@@ -238,6 +245,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`jolt nrepl-server` says when it can't write its port file**, e.g. a
   `--port-file` into a missing directory. It used to start as if the file had
   been written, leaving the editor nothing to find.
+- **`(URL. context spec)` resolves as the protocol's handler does.** `.` and
+  `..` segments are dropped, a spec starting with `/` replaces the path, and a
+  `jar:` context resolves against its entry, so `(URL. migration
+  "../seed.sql")` reads the jar's `seed.sql`. `URL.toURI` exists.
+- **A jar on the source roots answers resources as the JDK's class loader
+  does**: `(io/resource "migrations")` finds the directory entry
+  `migrations/`, and `.openConnection` on a `jar:` URL is a
+  `JarURLConnection` where it threw "no protocol handler".
+- **Resource URLs from directory and jar roots are percent-encoded** as the
+  JDK's class loader encodes them, so a space, `#`, `;` or non-ASCII character
+  in a root or a name no longer breaks `toURI` or relative resolution, and
+  `getPath` answers the encoded path, as on the JDK. `slurp`, `io/file` and the
+  streams decode it.
+- **`getBytes` in a charset jolt reaches through iconv writes `?` for a
+  character the charset lacks**, as the JDK does. It threw
+  `UnsupportedEncodingException` on Linux and wrote macOS iconv's own spelling
+  (`gal.` for 日 in ISO-8859-2) there.
+- **`InputStreamReader` and `OutputStreamWriter` built over a
+  `CharsetDecoder` or `CharsetEncoder` use it**: a writer over an encoder wrote
+  UTF-8 whatever its charset, and a decoder's REPORT action, its default, now
+  raises on malformed input, as an encoder does on a character its charset
+  cannot hold.
+- **`LocalDate/of`, `LocalTime/of` and `LocalDateTime/of` refuse an
+  out-of-range field** with the JDK's `DateTimeException` where they rolled it
+  over (`(LocalDate/of 2020 13 1)` was 2021-01-01).
+- The deprecated `(String. bytes hibyte)` and `(String. bytes hibyte offset
+  count)` constructors build their chars from the high byte, where they were
+  read as a charset and a slice.
+- `ZipEntry.setLastModifiedTime` keeps the `FileTime` at its own precision,
+  and `ZipFile` has `stream` and Object's `toString`.
 - **`HashMap` and `HashSet` `remove` is O(1)** (jolt-lfm8p). It rebuilt the
   map's insertion-order key list, so one removal from a 20k-entry map cost
   ~112us; it now leaves a stale entry the walk skips, and the list is rebuilt
