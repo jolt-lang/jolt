@@ -482,9 +482,9 @@
                         c))))
     (cons "keys" (lambda (self) (make-ht-enumerator self 'key)))
     (cons "elements" (lambda (self) (make-ht-enumerator self 'value)))
-    (cons "keySet" (lambda (self) (jx-wrap-sync 'set (make-jhost "jx-hashtable-keyset" (vector self)) (ht-mu self))))
-    (cons "values" (lambda (self) (jx-wrap-sync 'coll (make-jhost "jx-hashtable-values" (vector self)) (ht-mu self))))
-    (cons "entrySet" (lambda (self) (jx-wrap-sync 'set (make-jhost "jx-hashtable-entryset" (vector self)) (ht-mu self))))
+    (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (jx-wrap-sync 'set (make-jhost "jx-hashtable-keyset" (vector self)) (ht-mu self))))))
+    (cons "values" (lambda (self) (jutil-view self 1 (lambda () (jx-wrap-sync 'coll (make-jhost "jx-hashtable-values" (vector self)) (ht-mu self))))))
+    (cons "entrySet" (lambda (self) (jutil-view self 2 (lambda () (jx-wrap-sync 'set (make-jhost "jx-hashtable-entryset" (vector self)) (ht-mu self))))))
     (cons "getOrDefault" (lambda (self k d) (with-ht self (let ((v (ht-ref self k))) (if (eq? v cd-absent) d v)))))
     (cons "putIfAbsent" (lambda (self k v)
                           (jxc-npe-if-nil! v)
@@ -1802,8 +1802,7 @@
 ;; the view and picks the node class once
 (define (hm-node-list m)
   (let ((g (hmn-track! m)) (tag (hm-node-tag m)) (t (hm-tbl m)))
-    (map (lambda (k) (make-jhost tag (vector m k (hashtable-ref t k jolt-nil) (hmn-gen* g k) g)))
-         (hm-keys-ordered m))))
+    (hm-keys-ordered-map m (lambda (k) (make-jhost tag (vector m k (hashtable-ref t k jolt-nil) (hmn-gen* g k) g))))))
 (define hmn-absent (list 'absent))
 (define (hmn-attached? st) (= (vector-ref st 3) (hmn-gen* (vector-ref st 4) (vector-ref st 1))))
 (define (hmn-value n)
@@ -1831,9 +1830,10 @@
   ;; projection chosen once
   (case kind
     ((key) (lambda (v) (hm-keys-ordered (hmv-map v))))
-    ((value) (lambda (v) (map cdr (hm-pairs-ordered (hmv-map v)))))
+    ((value) (lambda (v) (let ((t (hm-tbl (hmv-map v))))
+                           (hm-keys-ordered-map (hmv-map v) (lambda (k) (hashtable-ref t k jolt-nil))))))
     (else (lambda (v) (let* ((m (hmv-map v)) (g (hmn-track! m)))
-                        (map (lambda (k) (hm-node* m k g)) (hm-keys-ordered m)))))))
+                        (hm-keys-ordered-map m (lambda (k) (hm-node* m k g))))))))
 (define (hmv-entry-kv e)
   (or (jolt-host-entry e) (and (jolt-map-entry? e) (cons (jolt-nth e 0) (jolt-nth e 1)))))
 (define (hmv-has-entry? m e)
@@ -1928,6 +1928,36 @@
       (for-each (lambda (sfx) (register-modcount! (t sfx) (lambda (v) (hm-mc (hmv-map v)))))
                 '("-keyset" "-values" "-entryset"))))
   hm-families)
+;; (seq (.values m)) and the rest: claimed ahead of the general arms, which the
+;; jx arm (jutil-views.ss) sits behind — a walk past all of them cost a small
+;; map's view seq three times its own work. A miss costs a tag-prefix test
+;; and, for a jx- tag only, one table read. Like the map's own seq, it walks the
+;; view's fail-fast iterator 32 elements at a time.
+;;
+;; The views' tags are the string literals of the methods that make them, so
+;; the tag OBJECTS seen are few: each is remembered by identity the first time
+;; the table names it, and after that the arm answers with an assq rather than
+;; a string hash. Bounded, since a tag read back from an image is a fresh string.
+(define hmv-seq-elems (make-hashtable string-hash string=?))
+(for-each (lambda (f)
+            (for-each (lambda (k) (hashtable-set! hmv-seq-elems (string-append (car f) (car k)) (hmv-elems (cdr k))))
+                      '(("-keyset" . key) ("-values" . value) ("-entryset" . entry))))
+          hm-families)
+(define hmv-seq-seen '())               ; ((tag-object . elems) ...), written under the mutex
+(define hmv-seq-mu (make-mutex))
+(define (hmv-view-elems x)
+  (and (jhost? x)
+       (let ((t (jhost-tag x)))
+         (and (jx-tag? t)
+              (let ((hit (assq t hmv-seq-seen)))
+                (if hit
+                    (cdr hit)
+                    (let ((e (hashtable-ref hmv-seq-elems t #f)))
+                      (when (and e (fx<? (length hmv-seq-seen) 16))
+                        (jolt-with-mutex hmv-seq-mu (set! hmv-seq-seen (cons (cons t e) hmv-seq-seen))))
+                      e)))))))
+(define (hmv-view-mc v) (hm-mc (hmv-map v)))
+(register-seq-arm! hmv-view-elems (lambda (v) (jutil-ff-seq/mc v ((hmv-view-elems v) v) hmv-view-mc)))
 ;; IdentityHashMap compares by reference wherever the JDK's uses ==: replace's
 ;; old value, and equals, which holds a map whose mappings are the same objects
 ;; (an IdentityHashMap's, or any map's entries matched by identity on both key
@@ -1974,9 +2004,11 @@
 ;; the weak and identity maps' own views
 (for-each (lambda (r)
             (register-host-methods! (car r)
-              (list (cons "keySet" (lambda (self) (make-jhost (string-append (cadr r) "-keyset") (vector self))))
-                    (cons "values" (lambda (self) (make-jhost (string-append (cadr r) "-values") (vector self))))
-                    (cons "entrySet" (lambda (self) (make-jhost (string-append (cadr r) "-entryset") (vector self)))))))
+              (let ((ks (string-append (cadr r) "-keyset")) (vs (string-append (cadr r) "-values"))
+                    (es (string-append (cadr r) "-entryset")))
+                (list (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (make-jhost ks (vector self))))))
+                      (cons "values" (lambda (self) (jutil-view self 1 (lambda () (make-jhost vs (vector self))))))
+                      (cons "entrySet" (lambda (self) (jutil-view self 2 (lambda () (make-jhost es (vector self))))))))))
           '(("jx-weak-hashmap" "jx-whm") ("jx-identity-hashmap" "jx-ihm")))
 (register-image-refusal! (apply append (map (lambda (f) (map (lambda (sfx) (string-append (car f) sfx))
                                                              '("-keyset" "-values" "-entryset" "-node" "-key-itr" "-value-itr" "-entry-itr")))
@@ -2123,6 +2155,7 @@
                                    (make-jhost "jx-chm-keyset" (vector self d)))))
         (cons "values" (lambda (self) (make-jhost "jx-chm-values" (vector self))))
         (cons "entrySet" (lambda (self) (make-jhost "jx-chm-entryset" (vector self))))))
+;; a fresh wrapper per call, as Properties' own keySet/values/entrySet make one
 (register-host-methods! "properties"
   (list (cons "keySet" (lambda (self) (make-jhost "jx-props-keyset" (vector self jolt-nil))))
         (cons "values" (lambda (self) (make-jhost "jx-props-values" (vector self))))

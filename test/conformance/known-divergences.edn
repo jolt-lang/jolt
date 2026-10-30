@@ -1735,6 +1735,14 @@
            :jvm ":cme"
            :jolt "[1 2 3]"}
    :note "A jolt seq is realized at its head. Later chunks are read when the walk reaches them, as on the JVM, so a list, set or map changed under doseq raises the same way; reduce walks the collection's iterator, as iter-reduce does."}
+  {:category :host-model
+   :behavior "iterator-seq over the iterator of a Clojure collection (a vector's, a map's, a seq's)"
+   :jvm "the iterator moves on 32 elements per chunk the seq realizes, so a later next, or a second iterator-seq over it, starts after them"
+   :jolt "the iterator hands over the seq it walks as it stands and does not move"
+   :check {:expr "(let [it (.iterator (vec (range 40))) s (iterator-seq it)] (first s) [(.hasNext it) (.next it)])"
+           :jvm "[true 32]"
+           :jolt "[true 0]"}
+   :note "A Clojure collection's iterator is a cursor over an immutable seq, so the seq iterator-seq answers holds the same elements either way. Copying it out 32 at a time would make (count (iterator-seq (.iterator a-list))) linear and reduce over it 2.4x slower to move a cursor only code that mixes the two can see. Iterators of the java.util collections, and any other with hasNext/next, are read through next a chunk at a time, as RT.chunkIteratorSeq does."}
   {:category :integer-box-model
    :behavior "an IdentityHashMap keyed by equal longs"
    :jvm "two keys when they are distinct boxes (outside the Long cache)"

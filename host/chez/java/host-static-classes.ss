@@ -1076,6 +1076,24 @@
                           (map (lambda (k) (cons (hm-hash k) k)) (vector->list (hashtable-keys (hm-tbl self))))))
       (let ((o (hm-ord self)))
         (if (hm-idx? o) (hm-idx-live-keys o) (reverse o)))))
+;; (map f (hm-keys-ordered self)) in one pass: the newest-first key list folds
+;; straight into an oldest-first result, with no reversed copy to map over.
+;; Under the map's lock where hm-keys-ordered takes one.
+(define (hm-keys-ordered-map self f)
+  (define (walk)
+    (if (hm-weak? self)
+        (map f (hm-keys-ordered* self))
+        (let ((o (hm-ord self)))
+          (if (hm-idx? o)
+              (let loop ((cs (hm-idx-cells o)) (acc '()))
+                (cond ((null? cs) acc)
+                      ((cdar cs) (loop (cdr cs) (cons (f (caar cs)) acc)))
+                      (else (loop (cdr cs) acc))))
+              (let loop ((ks o) (acc '()))
+                (if (null? ks) acc (loop (cdr ks) (cons (f (car ks)) acc))))))))
+  (cond ((hm-chm? self) (with-chm self (walk)))
+        ((hm-props? self) (with-props self (walk)))
+        (else (walk))))
 ;; A hashmap-shaped jhost: the HashMap family and java.util.Properties, which is
 ;; a Hashtable with two string-typed accessors on top and so carries the same
 ;; #(table key-order) state. One predicate for every question about that shape —
@@ -1241,9 +1259,9 @@
         (cons "putAll" (lambda (self m) (hm-copy-into-ordered! self m) jolt-nil))
         ;; keySet / values / entrySet are live views (jutil-concurrent.ss), as
         ;; the JDK's HashMap$KeySet / $Values / $EntrySet are
-        (cons "keySet" (lambda (self) (make-jhost "jx-hm-keyset" (vector self))))
-        (cons "values" (lambda (self) (make-jhost "jx-hm-values" (vector self))))
-        (cons "entrySet" (lambda (self) (make-jhost "jx-hm-entryset" (vector self))))))
+        (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (make-jhost "jx-hm-keyset" (vector self))))))
+        (cons "values" (lambda (self) (jutil-view self 1 (lambda () (make-jhost "jx-hm-values" (vector self))))))
+        (cons "entrySet" (lambda (self) (jutil-view self 2 (lambda () (make-jhost "jx-hm-entryset" (vector self))))))))
 (register-host-methods! "hashmap" hashmap-methods)
 (register-host-methods! "jx-weak-hashmap" hashmap-methods)
 (register-host-methods! "jx-identity-hashmap" hashmap-methods)
@@ -1626,6 +1644,13 @@
 (define (make-atomic init kind)
   (make-jhost (atomic-tag-for kind) (vector (box init) (make-mutex) kind)))
 (define (atomic-box self) (vector-ref (jhost-state self) 0))
+;; AtomicInteger and AtomicLong are Numbers, and print-method writes a Number as
+;; its str under pr and print alike: 5, not #object[...]. AtomicBoolean and
+;; AtomicReference are not, and keep the #object form.
+(register-pr-arm! (lambda (x) (and (jhost? x)
+                                   (let ((t (jhost-tag x)))
+                                     (or (string=? t "atomic-long") (string=? t "atomic-integer")))))
+                  (lambda (x) (jolt-num->string (unbox (atomic-box x)))))
 (define (atomic-lock self) (vector-ref (jhost-state self) 1))
 (define (atomic-kind self) (vector-ref (jhost-state self) 2))
 ;; Convert a modeled Java method argument at the signature boundary. Numeric
@@ -1737,10 +1762,8 @@
         (cons "toString" (lambda (self) (jolt-str-render-one (unbox (atomic-box self))))))))
   (for-each (lambda (t) (register-host-methods! t atomic-methods))
             (cons atomic-legacy-tag atomic-tags)))
-;; java.util.Collections/unmodifiable* and synchronized* are views over their
-;; argument (jutil-views.ss); they used to answer the argument itself.
-(register-class-statics! "java.util.Collections"
-  (list (cons "emptyList" (lambda _ (jolt-vector))) (cons "emptyMap" (lambda _ (jolt-hash-map)))))
+;; java.util.Collections/unmodifiable* and synchronized*, and the empty and
+;; fixed collections, are in jutil-views.ss.
 
 ;; Collections/enumeration: an Enumeration over a collection's elements, which
 ;; enumeration-seq and SequenceInputStream drive. Collections/list drains any
@@ -1858,17 +1881,50 @@
 (register-jutil-iterator! "hashset-iterator")
 ;; reduce over a fail-fast collection walks its iterator (seq.ss
 ;; jolt-reduce-iter-hook); a Map is no Iterable and reduces over its seq
+;; The setup is paid per reduce, so it asks no more than it must: an ArrayList
+;; or LinkedList is known by its tag and gets its iterator built directly; any
+;; other collection's iterator method, and its iterator's hasNext and next, are
+;; looked up once per collection tag and remembered by the tag object (a tag is
+;; the literal its constructor passes, so the ones seen are few), for as long
+;; as no host method table changes (host-methods-epoch). Entries are
+;; #(tag epoch iterator #(iterator-tag hasNext next)), the last filled by the
+;; first walk and replaced whole, as host-tostring-last is.
+(define reduce-iter-seen '())
+(define reduce-iter-mu (make-mutex))
+(define (reduce-iter-entry t)
+  (let loop ((es reduce-iter-seen))
+    (cond ((null? es) #f)
+          ((and (eq? (vector-ref (car es) 0) t) (fx=? (vector-ref (car es) 1) host-methods-epoch)) (car es))
+          (else (loop (cdr es))))))
+(define (reduce-iter-learn! x)
+  (and (not (eq? (jutil-coll-kind x) 'map))
+       (let ((m (host-method-ref (jhost-tag x) "iterator")))
+         (and m
+              (let ((e (vector (jhost-tag x) host-methods-epoch m (vector #f #f #f))))
+                (jolt-with-mutex reduce-iter-mu
+                  (set! reduce-iter-seen
+                        (cons e (if (fx<? (length reduce-iter-seen) 32) reduce-iter-seen '()))))
+                e)))))
 (set! jolt-reduce-iter-hook
   (lambda (x)
-    (and (jutil-modcount x)
-         (not (eq? (jutil-coll-kind x) 'map))
-         (host-method-ref (jhost-tag x) "iterator")
-         (let ((it (record-method-dispatch x "iterator" jolt-nil)))
-           (if (al-family? x)
-               ;; ArrayList$Itr / LinkedList$ListItr, stepped directly
-               (lambda () (if (ali-has-next? it) (ali-next it) reduce-iter-done))
-               (let ((has? (iterator-seq-method it "hasNext")) (next (iterator-seq-method it "next")))
-                 (lambda () (if (jolt-truthy? (has? it)) (next it) reduce-iter-done))))))))
+    (and (jutil-modcount-reader x)
+         (if (al-family? x)
+             ;; ArrayList$Itr / LinkedList$ListItr, stepped directly
+             (let ((it (al-iterator x)))
+               (lambda () (if (ali-has-next? it) (ali-next it) reduce-iter-done)))
+             (let ((e (or (reduce-iter-entry (jhost-tag x)) (reduce-iter-learn! x))))
+               (and e
+                    (let* ((it ((vector-ref e 2) x))
+                           (c (let ((c (vector-ref e 3)))
+                                (if (and (jhost? it) (eq? (jhost-tag it) (vector-ref c 0)))
+                                    c
+                                    (let ((c (vector (and (jhost? it) (jhost-tag it))
+                                                     (iterator-seq-method it "hasNext")
+                                                     (iterator-seq-method it "next"))))
+                                      (vector-set! e 3 c)
+                                      c))))
+                           (has? (vector-ref c 1)) (next (vector-ref c 2)))
+                      (lambda () (if (jolt-truthy? (has? it)) (next it) reduce-iter-done)))))))))
 (register-modcount! "hashset" hm-mc)
 (register-modcount! "hashmap" hm-mc)
 (register-modcount! "jx-weak-hashmap" hm-mc)

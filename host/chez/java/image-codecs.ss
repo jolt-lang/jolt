@@ -141,6 +141,20 @@
       (if (null? xs)
           (vector-set! (jhost-state m) 0 (list->vector (reverse ks)))
           (begin (hashtable-set! (jxm-tbl m) (car xs) (cadr xs)) (loop (cddr xs) (cons (car xs) ks)))))))
+;; Collections.emptyList comes back as THE empty list, as the JDK's readResolve
+;; answers EMPTY_LIST; a singleton or copies list as its count and element
+(register-image-codec! "java.util.Collections$CopiesList" '("jx-empty-list" "jx-singleton-list" "jx-copies-list")
+  (lambda (l) (vector (jhost-tag l) (list (jx-copies-n l) (jx-copies-x l))))
+  (lambda (tag) (if (string=? tag "jx-empty-list") jx-the-empty-list (make-jhost tag (vector 0 jolt-nil))))
+  (lambda (l items)
+    (unless (eq? l jx-the-empty-list)
+      (vector-set! (jhost-state l) 0 (car items))
+      (vector-set! (jhost-state l) 1 (cadr items)))))
+;; the empty set and map are one instance each, and come back as it
+(register-image-codec! "java.util.Collections$EmptySet" '("jx-empty-set" "jx-empty-map")
+  (lambda (x) (vector (jhost-tag x) '()))
+  (lambda (tag) (if (string=? tag "jx-empty-set") jx-the-empty-set jx-the-empty-map))
+  (lambda (x items) (void)))
 (register-image-codec! "java.util.KeyValueHolder" '("jx-kvholder")
   (lambda (e) (vector jolt-nil (list (vector-ref (jhost-state e) 0) (vector-ref (jhost-state e) 1))))
   (lambda (h) (make-jhost "jx-kvholder" (vector #f #f)))

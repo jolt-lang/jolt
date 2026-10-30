@@ -94,6 +94,11 @@
     ("jx-mapn" . "(java.util.Map/of :a 1 :b 2)")
     ("jx-map1" . "(java.util.Map/of :a 1)")
     ("jx-kvholder" . "(java.util.Map/entry :k 1)")
+    ("jx-empty-list" . "(java.util.Collections/emptyList)")
+    ("jx-singleton-list" . "(java.util.Collections/singletonList nil)")
+    ("jx-copies-list" . "(java.util.Collections/nCopies 3 :a)")
+    ("jx-empty-set" . "(java.util.Collections/emptySet)")
+    ("jx-empty-map" . "(java.util.Collections/emptyMap)")
     ("jx-vector" . "(doto (java.util.Vector. 3 2) (.add :a) (.add 1) (.add 2) (.add 3))")
     ("jx-stack" . "(doto (java.util.Stack.) (.push 1) (.push :b))")
     ("jx-hashtable" . "(let [h (java.util.Hashtable. 5)] (doseq [i (range 12)] (.put h (str \"k\" i) i)) h)")
@@ -247,6 +252,17 @@
   '("(StringBuilder. \"ab\")" "(StringBuffer. \"cd\")" "(doto (java.util.BitSet. 10) (.set 3) (.set 70))"))
 (ok "a thread is refused naming its class"
     (jolt-truthy? (jolt-invoke (var-deref "user" "image-refuses?") (ev "(Thread. (fn []))"))))
+;; a reify or proxy no var roots: its methods are this process's code
+(for-each
+  (lambda (s)
+    (ok (format "~a is refused naming its class" s)
+        (jolt-truthy? (jolt-invoke (var-deref "user" "image-refuses?") (ev s)))))
+  '("(reify Runnable (run [_]))" "(proxy [Object] [] (toString [] \"p\"))" "(proxy [java.util.AbstractList] [] (get [i] i) (size [] 1))"))
+(ok "a var-rooted reify still travels as its var"
+    (begin
+      (ev "(def image-coverage-rooted (reify Runnable (run [_])))")
+      (ev (string-append "(jolt.host/image-write! \"" tmp "\" image-coverage-rooted)"))
+      (jolt-truthy? (ev (string-append "(identical? image-coverage-rooted (jolt.host/image-read \"" tmp "\"))")))))
 (ok "a collection holding itself restores as one"
     (begin
       (ev (string-append "(let [m (java.util.HashMap.)] (.put m :me m) (jolt.host/image-write! \"" tmp "\" m))"))

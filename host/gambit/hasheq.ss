@@ -399,7 +399,8 @@
     (or (hashtable-ref proc-hasheq-tbl p #f)
         (begin
           (set! proc-hasheq-counter (fx+ proc-hasheq-counter 1))
-          (let ((h (murmur3-hash-long-flat proc-hasheq-counter)))
+          ;; 31 bits, as HotSpot's identity hashes are (the Chez copy says why)
+          (let ((h (bitwise-and (murmur3-hash-long-flat proc-hasheq-counter) #x7fffffff)))
             (hashtable-set! proc-hasheq-tbl p h)
             h)))))
 (define (procedure-hasheq p) (jolt-identity-hasheq p))

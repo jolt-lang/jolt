@@ -167,8 +167,6 @@
     ("Byte" "valueOf" 1 2)
     ("Calendar" "getInstance" 0 1 2)
     ("Class" "forName" 1 2 3)
-    ("Collections" "emptyList" 0)
-    ("Collections" "emptyMap" 0)
     ("Compiler" "eval" 1 2)
     ("CompletableFuture" "allOf" varargs)
     ("CompletableFuture" "anyOf" varargs)
@@ -932,8 +930,16 @@
         (cond ((null? ps) #f)
               (((caar ps) x) (cdar ps))
               (else (loop (cdr ps)))))))
+;; A reify or proxy instance is refused too, unless a var roots it (then it
+;; travels as the var's name, state-image.ss image-external?): its methods are
+;; closures in a table keyed for this process's dispatch, which the walk would
+;; otherwise report as an anonymous #<hashtable> with no class named.
+(define image-reify-refusal
+  "a reify or proxy's methods are code this process compiled; store it in a var, or write the data to rebuild it")
 (define (image-refusal-for x)
-  (and (jhost? x) (hashtable-ref image-refusal-by-tag (jhost-tag x) #f)))
+  (cond ((jhost? x) (hashtable-ref image-refusal-by-tag (jhost-tag x) #f))
+        ((and (jreify? x) (not (proc-name-of x))) image-reify-refusal)
+        (else #f)))
 ;; A layout an older image may hold that this process cannot take: CHECK sees
 ;; the value as read, before anything is rebuilt from it, and answers why it
 ;; cannot be read (the image read then fails naming it) or #f.
