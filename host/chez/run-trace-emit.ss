@@ -339,9 +339,10 @@
 (let ((e (emit-num rt14-src)))
   (gate-check "(14) the restore is spelled once in the fn" (count-sub e "(virtual-register 12)") 1)
   (gate-check "(14) each non-tail site calls it" (count-sub e site-call-head) 4))
-;; a nested fn's sites use the binding of the clause it sits in
+;; a nested fn binds its own: sharing the outer clause's left the calls out of
+;; line in a built program (bench/keyed_lookup 1.15x)
 (let ((e (emit-num "(def _ (fn rt14b [g xs] (g (map (fn [x] (+ 1 (g x))) xs))))")))
-  (gate-check "(14) a nested fn shares the outer clause's restore" (count-sub e "(virtual-register 12)") 1)
+  (gate-check "(14) a nested fn binds its own restore" (count-sub e "(virtual-register 12)") 2)
   (gate-check "(14) ...and its site calls it" (gate-sub? e site-call-head) #t))
 ;; each arity is its own clause, and binds the helper only if it has a site
 (let ((e (emit-num "(def _ (fn rt14c ([g] (+ 1 (g 1))) ([g x] (+ 1 (g x) (g x))) ([g x y] x)))")))
