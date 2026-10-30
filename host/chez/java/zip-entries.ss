@@ -12,7 +12,8 @@
           (mutable mtime))   ; last-modified epoch millis when set by a FileTime, or #f
   (nongenerative jolt-zentry-v1))
 
-(define (zip-entry? x) (and (jhost? x) (string=? (jhost-tag x) "zip-entry")))
+;; A ZipEntry, a JarEntry or a JarFileEntry: one zentry under each class.
+(define (zip-entry? x) (and (jhost? x) (member (jhost-tag x) '("zip-entry" "jar-entry" "jar-file-entry")) #t))
 (define (zentry-of x) (jhost-state x))
 
 ;; --- DOS time (JDK 21 ZipUtils.java) ------------------------------------------
@@ -707,8 +708,12 @@
 ;; string there).
 (define (zip-charset? x) (or (string? x) (and (jhost? x) (string=? (jhost-tag x) "charset"))))
 (define (make-zip-input-stream . args)
+  (make-zip-input-stream* "java.util.zip.ZipInputStream" zin-zip-read args))
+;; The constructor under the class FQN reports, with READ as the port's read!
+;; (JarInputStream builds on it with its own of both).
+(define (make-zip-input-stream* fqn read args)
   (unless (<= 1 (length args) 2)
-    (throw-jvm 'IllegalArgumentException "No matching ctor found for class java.util.zip.ZipInputStream"))
+    (throw-jvm 'IllegalArgumentException (string-append "No matching ctor found for class " fqn)))
   (let* ((in (zin-stream-arg (car args)))
          (cs (if (pair? (cdr args))
                  (zin-codec-arg (cadr args) zip-charset? "java.nio.charset.Charset")
@@ -719,9 +724,9 @@
                       (let ((name (charset-canonical-down (charset-arg-name cs))))
                         (and (not (string=? name "utf-8")) name)))))
     (make-zin-stream
-     (make-zin "java.util.zip.ZipInputStream" (make-pushback-in-stream in 512) (make-inflater #t) #t
+     (make-zin fqn (make-pushback-in-stream in 512) (make-inflater #t) #t
                (na-byte-array 512) 0 #f
-               zin-zip-read zin-zip-available zin-inflate-close
+               read zin-zip-available zin-inflate-close
                (make-zipin #f 0 0 0 (na-byte-array 512) #f coder))))))
 
 ;; read(byte[], off, len): the arguments are cast, then ensureOpen runs, then

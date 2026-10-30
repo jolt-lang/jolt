@@ -3161,6 +3161,9 @@
 ;; ZipOutputStream on the out-stream frame.
 (load "host/chez/java/zip-out-entries.ss")
 
+;; JarInputStream and JarOutputStream on the two zip streams, with the Manifest.
+(load "host/chez/java/jar-streams.ss")
+
 ;; java.lang.ProcessBuilder / Process. After io-streams (make-in-stream /
 ;; make-out-stream) and host-static-methods (all-env-pairs).
 ;; proxy: extends-by-delegation over a concrete host class. After host-static.ss
@@ -3185,6 +3188,11 @@
 ;; thread-local binding stack (dyn-binding.ss) into workers. pmap/pcalls/pvalues
 ;; (overlay, over `future`) light up once future-call exists here.
 (load "host/chez/java/concurrency.ss")
+
+;; Semaphore and ReentrantReadWriteLock on the same wait protocol (jolt-cv-wait),
+;; and AtomicIntegerArray / AtomicLongArray beside the scalar atomics.
+(load "host/chez/java/concurrency-sync.ss")
+(load "host/chez/java/atomic-arrays.ss")
 
 ;; clojure.core.async: real-thread blocking channels + go/go-loop/
 ;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses
