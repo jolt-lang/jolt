@@ -12,7 +12,7 @@
           (mutable mtime))   ; last-modified epoch millis when set by a FileTime, or #f
   (nongenerative jolt-zentry-v1))
 
-(define (zip-entry? x) (and (jhost? x) (string=? (jhost-tag x) "zip-entry")))
+(define-jhost-tag-pred (zip-entry? t) (string=? t "zip-entry"))
 (define (zentry-of x) (jhost-state x))
 
 ;; --- DOS time (JDK 21 ZipUtils.java) ------------------------------------------

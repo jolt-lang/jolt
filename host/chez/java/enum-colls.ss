@@ -183,7 +183,7 @@
 
 ;; ---- EnumMap ------------------------------------------------------------------------
 (define emap-absent (list 'emap-absent))
-(define (emap? x) (and (jhost? x) (string=? (jhost-tag x) "enum-map")))
+(define-jhost-tag-pred (emap? t) (string=? t "enum-map"))
 (define (make-emap info vals) (make-jhost "enum-map" (vector info vals)))
 (define (emap-info m) (vector-ref (jhost-state m) 0))
 (define (emap-vals m) (vector-ref (jhost-state m) 1))

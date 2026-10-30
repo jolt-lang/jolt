@@ -21,7 +21,7 @@
 ;; jhost-tag->fqn): a Stream is a ReferencePipeline, an IntStream an IntPipeline.
 (define stream-tags '(("stream" . ref) ("int-stream" . int) ("long-stream" . long)
                       ("double-stream" . double)))
-(define (stream? x) (and (jhost? x) (assoc (jhost-tag x) stream-tags) #t))
+(define-jhost-tag-pred (stream? t) (and (assoc t stream-tags) #t))
 (define (stream-kind s) (cdr (assoc (jhost-tag s) stream-tags)))
 (define (kind-tag k) (car (find (lambda (p) (eq? (cdr p) k)) stream-tags)))
 ;; state: #(seq consumed? close-handlers source origin ops): source is the

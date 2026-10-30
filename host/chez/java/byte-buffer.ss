@@ -67,7 +67,7 @@
   (make-jhost "byte-buffer" (vector store pos limit off cap -1 order flags array 'byte 'bytes)))
 
 (define (bb? x) (and (jhost? x) (string=? (jhost-tag x) "byte-buffer")))
-(define (nb? x) (and (jhost? x) (member (jhost-tag x) nb-tags) #t))
+(define-jhost-tag-pred (nb? t) (and (member t nb-tags) #t))
 (define-syntax nb-st (syntax-rules () ((_ b) (jhost-state b))))
 (define (bb-backing b) (vector-ref (nb-st b) 0))
 (define (bb-pos b) (vector-ref (nb-st b) 1))

@@ -424,7 +424,7 @@
     (cons "hashCode" (lambda (self) (->num (jolt-identity-hasheq self))))))
 (register-jutil-coll! "arraydeque" 'coll dq-elems)
 (jch-register-supers! "java.util.ArrayDeque" '("java.util.AbstractCollection" "java.util.Deque" "java.lang.Cloneable" "java.io.Serializable"))
-(define (array-deque? x) (and (jhost? x) (string=? (jhost-tag x) "arraydeque")))
+(define-jhost-tag-pred (array-deque? t) (string=? t "arraydeque"))
 (register-seq-arm! array-deque? (lambda (x) (let ((xs (dq-elems x))) (if (null? xs) jolt-nil (list->cseq xs)))))
 (register-count-arm! array-deque? dq-size)
 (let ((ctor (lambda args

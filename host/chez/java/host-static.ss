@@ -367,6 +367,9 @@
     ("linkedlist" "addAll" 1 2)
     ("linkedlist" "toArray" 0 1)
     ("nio-filesystem" "getPath" varargs)
+    ("nio-path" "register" varargs)
+    ("nio-path" "resolve" varargs)
+    ("nio-path" "toRealPath" varargs)
     ("embedded-file-system-provider" "getScheme" 0)
     ("embedded-file-system-provider" "newFileSystem" varargs)
     ("embedded-file-system-provider" "getFileSystem" 1)
@@ -947,6 +950,42 @@
 
 ;; ---- host object ------------------------------------------------------------
 (define-record-type jhost (fields tag (mutable state)) (nongenerative chez-jhost-v1))
+
+;; A question a host object's tag alone answers ("is this an ArrayList?", "which
+;; kind of linked map is it?"), remembered by the tag OBJECT. The arm walks behind
+;; count, get, contains?, seq, hash and = ask a run of these of every host object
+;; that reaches them, and each used to compare strings: a HashMap's count paid a
+;; string=? per arm registered ahead of its own, so every family added to the
+;; front of a walk (ArrayDeque, the fail-fast and concurrent collections) made the
+;; common ones slower. A tag is the literal its constructor passes, so the tags
+;; seen are few and the same object recurs: the last tag answered truthy and the
+;; last two answered #f each cost one eq?.
+;;
+;; Only for a TEST of the tag string alone, against constants: the answer is cached
+;; for the life of the process, so a test reading a table that grows (a registry)
+;; must not use this. Each slot is one (tag . answer) pair published by a single
+;; reference write, so a racing reader sees an old pair or the new one, never half
+;; (jutil-tag-entry's cache in jutil-colls.ss does the same).
+(define (jhost-tag-memo test)
+  (let ((hit '(#f . #f)) (miss1 '(#f . #f)) (miss2 '(#f . #f)))
+    (lambda (x)
+      (and (jhost? x)
+           (let ((t (jhost-tag x)))
+             (let ((h hit))
+               (cond ((eq? (car h) t) (cdr h))
+                     ((eq? (car miss1) t) #f)
+                     ((eq? (car miss2) t) #f)
+                     (else
+                      (let ((a (test t)))
+                        (if a
+                            (set! hit (cons t a))
+                            (begin (set! miss2 miss1) (set! miss1 (cons t #f))))
+                        a)))))))))
+;; (define-jhost-tag-pred (name t) body ...): NAME answers body's value for a host
+;; object whose tag is T, #f for anything else.
+(define-syntax define-jhost-tag-pred
+  (syntax-rules ()
+    ((_ (name t) body ...) (define name (jhost-tag-memo (lambda (t) body ...))))))
 
 ;; record-method-dispatch (records.ss) gets a jhost arm: dispatch (.method obj a*)
 ;; through the tag's method table.

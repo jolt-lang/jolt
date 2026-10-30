@@ -598,7 +598,7 @@
 ;; site-restore).
 (def ^:dynamic *self-wrap* nil)
 ;; Inside a fn, a non-tail call's restore is a call to jolt-site-call, which the
-;; outermost fn's clause binds once (site-restore, emit-fn). Bound to an atom per
+;; fn clause it sits in binds once (site-restore, emit-fn). Bound to an atom per
 ;; clause while that clause emits; set once a site uses the helper.
 (def ^:dynamic *site-call* nil)
 ;; Inside a fn the restore is spelled ONCE per clause, as the procedure
@@ -610,6 +610,12 @@
 ;; ~30 pairs of that per site, repeated in every enclosing lambda's copy. A
 ;; 4,000-fn app's binary grew 32% with it (#1423). Outside any fn there is no
 ;; clause to bind the helper in, and the site keeps the inline form.
+;;
+;; Every clause binds its own, nested fns included. A nested fn's sites once
+;; used the outermost clause's binding, and in a built program cp0 left those
+;; calls in: a closure per site and an out-of-line call, which made
+;; bench/keyed_lookup (a reduce fn per walk) 1.15x slower than 0.8.23. Bound in
+;; the clause, the helper is a known local of the lambda that calls it.
 (def ^:private site-call-helper
   (str "(lambda (_th$) (let ((_ss$ (virtual-register 2)) (_so$ (virtual-register 12)))"
        " (if (pair? _ss$) (set-virtual-register! 12 _ss$))"
@@ -2827,10 +2833,10 @@
                           *letrec-binders* #{}
                           *fnsrc-def-init?* false]
                   (mapv (fn [a]
-                          ;; the outermost fn binds the restore helper in each
-                          ;; clause that has a site; a nested fn's sites use the
-                          ;; binding of the clause they sit in (site-restore)
-                          (if (and (nil? *site-call*) (trace-frames?) (= :chez (target)))
+                          ;; each clause that has a site binds the restore
+                          ;; helper its sites call (site-restore), a nested
+                          ;; fn's clauses their own
+                          (if (and (trace-frames?) (= :chez (target)))
                             (let [used (atom false)
                                   c (binding [*site-call* used] (emit-arity-clause a))]
                               (if @used

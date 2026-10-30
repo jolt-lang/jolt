@@ -827,7 +827,7 @@
                (make-jx-bitset 0 (if (= n 0) 0 (bs-words-for n)) #t)))))
 (register-class-ctor! "BitSet" (lookup-class class-ctors-tbl "java.util.BitSet"))
 ;; = and hash are BitSet.equals / hashCode: a BitSet is a value on the JVM
-(define (jx-bitset? x) (and (jhost? x) (string=? (jhost-tag x) "jx-bitset")))
+(define-jhost-tag-pred (jx-bitset? t) (string=? t "jx-bitset"))
 (register-eq-arm-last! (lambda (a b) (or (jx-bitset? a) (jx-bitset? b)))
   (lambda (a b) (and (jx-bitset? a) (jx-bitset? b) (= (bs-bits a) (bs-bits b)))))
 (register-hash-arm-last! jx-bitset? bs-hash)
@@ -1934,7 +1934,7 @@
 ;; and value); hashCode sums identityHashCode(key) ^ identityHashCode(value).
 ;; Clojure's = asks the left operand, so a persistent or HashMap on the left
 ;; compares as they do, through the identity map's own get.
-(define (ihm? x) (and (jhost? x) (string=? (jhost-tag x) "jx-identity-hashmap")))
+(define-jhost-tag-pred (ihm? t) (string=? t "jx-identity-hashmap"))
 (set! jutil-identity-map? ihm?)
 (define (ihm-contains-mapping? m k v)
   (let ((t (hm-tbl m))) (and (hashtable-contains? t k) (eq? v (hashtable-ref t k jolt-nil)))))
