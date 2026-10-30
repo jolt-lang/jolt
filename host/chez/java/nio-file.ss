@@ -383,6 +383,8 @@
                               (if (string=? r "") jolt-nil (npath-like self r)))))
    (cons "getFileSystem"  (lambda (self) (nio-path-filesystem self)))
    (cons "normalize"      (lambda (self) (npath-like self (npath-normalize-for (npath-w self) (nio-path-str self)))))
+   ;; resolve(other) and resolve(first, more...): each name in turn, a String[]
+   ;; spread as its elements
    (cons "resolve"        (case-lambda
                             ((self other) (if (jolt-array? other)
                                               (fold-left npath-resolve self (ja->list other))
