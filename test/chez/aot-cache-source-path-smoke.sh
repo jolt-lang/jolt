@@ -47,16 +47,24 @@ probe='(require (quote mylib.where) (quote clojure.java.io))
          (println mylib.where/baked)
          (println (some? (clojure.java.io/resource file))))'
 
+# JOLT_AOT_ASYNC=0 on every run. By default a miss hands its .so compile to a
+# detached worker and exits without waiting, so the fasl (b) fills the cache with
+# lands some time AFTER (b) returns. (c) starts at once and hit only when the
+# worker had already finished: true on an idle machine, not always on a loaded CI
+# runner, where (c) then failed "recompiled instead of hitting the cache" with an
+# empty cache dir. In-process, the fasl is on disk when the run exits. This test
+# is about the NAME a cached namespace gets; aot-cache-smoke.sh (z) covers the
+# worker itself.
 # $1 = cwd, $2 = JOLT_AOT_CACHE, rest = extra jolt args before -M
 run_in() {
   dir="$1"; aot="$2"; shift 2
-  (cd "$dir" && JOLT_AOT_CACHE="$aot" JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 \
+  (cd "$dir" && JOLT_AOT_CACHE="$aot" JOLT_AOT_ASYNC=0 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 \
      "$jolt" "$@" -M -e "$probe" 2>&1) || true
 }
 # The same run with the cache's report on stderr, for whether it hit.
 hit_in() {
   dir="$1"; shift
-  (cd "$dir" && JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 JOLT_DEBUG=1 \
+  (cd "$dir" && JOLT_AOT_CACHE=1 JOLT_AOT_ASYNC=0 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 JOLT_DEBUG=1 \
      "$jolt" "$@" -M -e "$probe" 2>&1 >/dev/null) > "$tmp/hit.log"
   grep -c '\[jolt.aot\] hit mylib.where' "$tmp/hit.log" || true
 }
