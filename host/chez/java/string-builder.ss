@@ -147,7 +147,7 @@
     ((_ st* piece*)
      (let* ((st st*) (piece piece*) (pn (string-length piece)))
        (unless (fx=? pn 0)
-         (let ((nn (fx+ (vector-ref st 1) pn)))
+         (let* ((n (vector-ref st 1)) (nn (fx+ n pn)))
            (when (fx>? nn (vector-ref st 7)) (%sb-grow-cap! st nn))
            (vector-set! st 5 (cons piece (vector-ref st 5)))
            (vector-set! st 1 nn)
@@ -196,11 +196,14 @@
   (let ((n (vector-ref st 1)) (sc (vector-ref st 9)))
     (unless (fx=? sc n)
       (let ((fl (vector-ref st 6)) (k (vector-ref st 10)))
+        ;; a short span (a one-char append) inline; a long one by the block scan
         (define (count s from to k)
-          (let loop ((i from) (k k))
-            (if (fx>=? i to)
-                k
-                (loop (fx+ i 1) (if (fx<? (char->integer (string-ref s i)) #x10000) k (fx+ k 1))))))
+          (if (fx<? (fx- to from) 8)
+              (let loop ((i from) (k k))
+                (if (fx>=? i to)
+                    k
+                    (loop (fx+ i 1) (if (fx<? (char->integer (string-ref s i)) #x10000) k (fx+ k 1)))))
+              (fx+ k (u16-count-astral s from to))))
         (let* ((k (if (fx<? sc fl) (count (vector-ref st 0) sc fl k) k))
                (k (let loop ((ps (vector-ref st 5)) (at n) (k k))
                     (if (or (null? ps) (fx<=? at sc))
