@@ -243,6 +243,13 @@
 ;; string, both still true.
 (define u16-slot-a (vector #f 0 #f))
 (define u16-slot-b (vector #f 0 #f))
+;; Behind the two slots, a weak table keeps the entry of every LONG string, so
+;; code that walks three or more long strings in step (nth into each per index)
+;; does not rescan one each time it comes back to it. A short string rescans in
+;; less time than the table's lock costs.
+(define u16-long-entries (make-weak-eq-hashtable))
+(define u16-long-mu (make-mutex))
+(define u16-long-min 256)
 (define (u16-entry s)
   (let ((a u16-slot-a))
     (if (eq? (vector-ref a 0) s)
@@ -250,7 +257,13 @@
         (let ((b u16-slot-b))
           (if (eq? (vector-ref b 0) s)
               (begin (set! u16-slot-b a) (set! u16-slot-a b) b)
-              (let ((e (vector s 0 #f)))
+              (let ((e (if (fx<? (string-length s) u16-long-min)
+                           (vector s 0 #f)
+                           (jolt-with-mutex u16-long-mu
+                             (or (hashtable-ref u16-long-entries s #f)
+                                 (let ((e (vector s 0 #f)))
+                                   (hashtable-set! u16-long-entries s e)
+                                   e))))))
                 (set! u16-slot-b a)
                 (set! u16-slot-a e)
                 e))))))
@@ -325,6 +338,21 @@
     (cond ((fx<? cp #x10000) (string-ref s c))
           ((fx=? (cp->u16 s c) u) (jolt-surrogate (astral-high-unit cp)))
           (else (jolt-surrogate (astral-low-unit cp))))))
+;; The unit at UTF-16 index I as nth/get/seq read it, or #f when I is out of
+;; range (no unit is #f). The same fast path as charAt below.
+(define (u16-ref s i)
+  (and (fixnum? i) (fx>=? i 0)
+       (let ((a u16-slot-a))
+         (if (and (eq? (vector-ref a 0) s) (fx<? i (vector-ref a 1)))
+             (string-ref s i)
+             (and (fx<? i (u16-length s)) (u16-unit-at s i))))))
+;; s's UTF-16 units [b, e) as a list of jolt chars.
+(define (u16-units s b e)
+  (if (u16-clear-upto? (u16-entry s) e)
+      (let loop ((u (fx- e 1)) (acc '()))
+        (if (fx<? u b) acc (loop (fx- u 1) (cons (string-ref s u) acc))))
+      (let loop ((u (fx- e 1)) (acc '()))
+        (if (fx<? u b) acc (loop (fx- u 1) (cons (u16-unit-at s u) acc))))))
 ;; String.charAt. The fast path is the cached entry's clear prefix, where a
 ;; UTF-16 index is the char's own index and the char is below #x10000.
 (define (jolt-char-at s i)
@@ -344,9 +372,9 @@
 ;; leaves half of it in the result, a lone unit, which a jolt string holds as
 ;; U+FFFD (the policy in values.ss).
 (define (u16-substring s b e)
-  (let ((len (u16-length s)))
-    (if (fx=? len (string-length s))
-        (jolt-substr s b e)
+  (if (or (not (fixnum? e)) (u16-clear-upto? (u16-entry s) e))
+      (jolt-substr s b e)   ; text below e has no astral char: the indices agree
+      (let ((len (u16-length s)))
         (begin
           (unless (and (fixnum? b) (fixnum? e) (fx>=? b 0) (fx<=? b e) (fx<=? e len))
             (index-int-check! b) (index-int-check! e)
@@ -386,14 +414,15 @@
 ;; case-lambda, not `. end`: a rest-arg list allocated on every call is most of
 ;; what a one-character (subs txt i (inc i)) costs, and a parser does that per
 ;; input position.
+;; subs counts UTF-16 units, as String.substring does (#1455).
 (define jolt-subs
   (case-lambda
     ((s start)
      (let ((s (jolt-need-string s)))
-       (jolt-substr s (jolt->idx start) (string-length s))))
+       (u16-substring s (jolt->idx start) (jolt-str-u16-length s))))
     ((s start end)
      (let ((s (jolt-need-string s)))
-       (jolt-substr s (jolt->idx start) (jolt->idx end))))))
+       (u16-substring s (jolt->idx start) (jolt->idx end))))))
 
 ;; vec: a pvec from any seqable. A vector comes back as itself minus its
 ;; metadata — clojure.core/vec's (with-meta coll nil) — so it is a copy only when
@@ -408,7 +437,7 @@
      (cond ((eq? (pvec-ent coll) #t) (pvec-with-ent coll #f))
            ((eq? (pvec-meta coll) jolt-nil) coll)
            (else (coll-with-meta coll jolt-nil))))
-    ((string? coll) (apply jolt-vector (string->list coll)))
+    ((string? coll) (apply jolt-vector (u16-units coll 0 (jolt-str-u16-length coll))))
     ;; a source that drives its own reduce (IReduce/IReduceInit deftype or
     ;; reify) builds the vector by reduction, like LazilyPersistentVector.
     ((iface-method coll "reduce" 3) (jolt-into (jolt-vector) coll))

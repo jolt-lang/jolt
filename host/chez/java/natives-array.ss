@@ -660,7 +660,10 @@
     ;; and the source are the same representation, so one string-copy replaces a
     ;; character-at-a-time fill (and, before that, a cons per character plus a
     ;; second walk over the list).
-    ((string? a) (make-jolt-array (string-copy a) 'char))
+    ;; an astral char is two elements, its surrogate units (#1455)
+    ((string? a) (if (fx=? (u16-length a) (string-length a))
+                     (make-jolt-array (string-copy a) 'char)
+                     (make-jolt-array (list->vector (u16-units a 0 (u16-length a))) 'char)))
     ;; (char-array n) — make-string rather than make-vector. This is the whole of
     ;; the ~140x allocation gap: a boxed vector of n characters is n POINTERS the
     ;; collector must trace on every major GC, while a string of n characters is

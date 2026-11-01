@@ -1082,11 +1082,6 @@
            (n (string-length s)))
       (when (or (< r 0) (> r n)) (throw-jvm 'IndexOutOfBoundsException jolt-nil))
       (if (and (u16-split? s i) (= k 0)) i (cp->u16 s r)))))
-;; The string's UTF-16 units as jolt chars: a char below #x10000, else the two
-;; surrogate-unit values of its pair. A list, for the char[] and stream makers.
-(define (u16-units s b e)
-  (let loop ((u (fx- e 1)) (acc '()))
-    (if (fx<? u b) acc (loop (fx- u 1) (cons (u16-unit-at s u) acc)))))
 (define (jolt-str-to-char-array s)
   (if (fx=? (u16-length s) (string-length s))
       (na-char-array s)
@@ -1158,7 +1153,7 @@
 ;; This mirrors the :nilable rule on the struct path: where nil is possible, keep
 ;; the nil-safe form. A LYING hint (a non-string, non-nil receiver) fails here, the
 ;; same contract every other hint-directed path has.
-(define (jolt-str-count s) (if (jolt-nil? s) 0 (string-length s)))
+(define (jolt-str-count s) (if (jolt-nil? s) 0 (jolt-str-u16-length s)))
 (define (jolt-str-nil->empty x) (if (jolt-nil? x) "" x))
 (define (jolt-str-cat2 a b)
   (string-append (jolt-str-nil->empty a) (jolt-str-nil->empty b)))
@@ -1242,8 +1237,8 @@
     ((string=? method "hashCode") (java-string-hash s))
     ;; The 1-arg forms take a Locale, which jolt drops: case mapping here is the
     ;; Unicode default, the same choice String/format makes for its Locale.
-    ((string=? method "toLowerCase") (string-downcase s))
-    ((string=? method "toUpperCase") (string-upcase s))
+    ((string=? method "toLowerCase") (str-lower s))
+    ((string=? method "toUpperCase") (str-upper s))
     ((string=? method "trim") (str-trim s))
     ((string=? method "isEmpty") (fx=? (string-length s) 0))
     ((string=? method "isBlank") (jolt-str-blank? s))
@@ -1370,7 +1365,7 @@
          (slen (string-length s))
          (plen (string-length sep)))
     (if (fx=? plen 0)
-        (map string (string->list s))
+        (map jolt-str (u16-units s 0 (u16-length s)))   ; one per UTF-16 unit
         (let loop ((start 0) (acc '()))
           (let ((i (str-index-of s sep start)))
             (if (fx<? i 0)
@@ -1382,15 +1377,22 @@
 ;; accented Latin ranges included. Chez's own case mappings are the Unicode ones,
 ;; so use them; the ASCII pair above stays for the places that mean ASCII (a
 ;; charset name, a header key) and must not fold a non-ASCII character.
-(define (str-upper s) (string-upcase s))
-(define (str-lower s) (string-downcase s))
+;; Case mapping leaves a cut-off surrogate half alone, as the JVM's does, so an
+;; edge unit (converters.ss) carries over to the result: capitalize's
+;; (upper (subs s 0 1)) of an astral first char still rejoins its other half.
+(define (str-case-edges s out)
+  (let ((e (and edge-units-any? (string-edge-units s))))
+    (if e (string-with-edge-units! out (car e) (cdr e)) out)))
+(define (str-upper s) (str-case-edges s (string-upcase s)))
+(define (str-lower s) (str-case-edges s (string-downcase s)))
 (define (str-reverse-b s) (list->string (reverse (string->list s))))
 
 ;; (str-find needle haystack) -> exact int index of first occurrence, or nil.
 ;; optional third arg: search from that index (the IReader cursors use it so a
 ;; line drain does not re-copy the tail just to search it).
+;; FROM and the answer count UTF-16 units, as count and subs do (#1455).
 (define (str-find needle s . opt)
-  (let ((i (str-index-of s needle (if (pair? opt) (car opt) 0))))
+  (let ((i (jolt-str-u16-index-of s needle (if (pair? opt) (car opt) 0))))
     (if (fx<? i 0) jolt-nil i)))
 ;; (str-last-find needle s from) -> exact int index of the last occurrence that
 ;; STARTS at or before FROM, or nil: String.lastIndexOf(str, from) — a backward
@@ -1399,7 +1401,7 @@
 ;; on every call). A char needle is the one-char string the JVM's char overload
 ;; answers identically for.
 (define (str-last-find needle s from)
-  (let ((i (str-last-index-of-from s (str-needle needle) from)))
+  (let ((i (jolt-str-u16-last-index-of s needle from)))
     (if (fx<? i 0) jolt-nil i)))
 
 ;; --- native one-shots for clojure.string's hot wrappers ----------------------
@@ -1444,11 +1446,11 @@
   (fx>=? (str-index-of-any (str-coerce s) (if (jolt-nil? p) (throw-jvm 'NullPointerException "value") p) 0) 0))
 (define (str-index-of* s v . opt)
   (let* ((s (str-coerce s))
-         (n (string-length s))
+         (n (jolt-str-u16-length s))
          (from (if (pair? opt)
                    (min (max 0 (jnum->exact (car opt))) n)
                    0))
-         (i (str-index-of-any s v from)))
+         (i (jolt-str-u16-index-of s v from)))
     (if (fx<? i 0) jolt-nil i)))
 (define (str-upper-c s) (str-upper (str-coerce s)))
 (define (str-lower-c s) (str-lower (str-coerce s)))
@@ -1463,17 +1465,26 @@
     (let ((s (jolt-seq coll)))
       (if (jolt-nil? s)
           ""
-          (let ((f (jolt-str-render-one (seq-first s)))
+          (let ((f (str-join-piece (seq-first s)))
                 (r (jolt-seq (seq-more s))))
-            (if (jolt-nil? r)
+            (if (and (jolt-nil? r) (string? f))
                 f
-                (str-join-strs
-                 (cons f (let loop ((r r))
-                           (if (jolt-nil? r)
-                               '()
-                               (cons (jolt-str-render-one (seq-first r))
-                                     (loop (jolt-seq (seq-more r)))))))
-                 sep)))))))
+                (let ((ps (cons f (let loop ((r r))
+                                    (if (jolt-nil? r)
+                                        '()
+                                        (cons (str-join-piece (seq-first r))
+                                              (loop (jolt-seq (seq-more r)))))))))
+                  ;; a surrogate unit, or a piece holding half a pair at an edge,
+                  ;; joins through str's pairing joiner (converters.ss, #1455) —
+                  ;; (str/join (seq s)) gives s back whole, as on the JVM
+                  (if (or (exists jsurr? ps) (and edge-units-any? (exists edgy? ps)))
+                      (jolt-str-units
+                       (let loop ((ps ps) (acc '()))
+                         (cond ((null? ps) (reverse acc))
+                               ((or (null? acc) (string=? sep "")) (loop (cdr ps) (cons (car ps) acc)))
+                               (else (loop (cdr ps) (cons (car ps) (cons sep acc)))))))
+                      (str-join-strs ps sep)))))))))
+(define (str-join-piece x) (if (jsurr? x) x (jolt-str-render-one x)))
 
 ;; JVM split semantics over re-split, shared by String.split and Pattern.split:
 ;;   limit > 0   at most `limit` parts, the last left unsplit

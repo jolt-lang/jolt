@@ -1626,8 +1626,8 @@
   (cond ((pmap? coll) (pmap-get coll k d))
         ((pset? coll) (pset-get coll k d))
         ((pvec? coll) (pvec-get coll k d))
-        ((string? coll) (let ((i (num-key-index k)))
-                          (if (and i (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d)))
+        ((string? coll) (let ((i (num-key-index k)))   ; a UTF-16 index (#1455)
+                          (or (and i (u16-ref coll i)) d)))
         (else d)))
 ;; A keyword-invoke SITE's cell: the slot index its key was last found at in
 ;; an array-mode map. Every map one literal builds is record-shaped — the same
@@ -1714,11 +1714,12 @@
               ;; Every other receiver casts the index first, as RT.intCast does.
               ((begin (index-int-check! i0) #f) #f)
               ((jolt-nil? coll) jolt-nil)          ; RT.nth(nil, i) is nil at any index
-              ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i)
+              ;; a string is indexed by UTF-16 unit, as on the JVM (#1455)
+              ((string? coll) (or (u16-ref coll i)
                                   (jolt-throw (jolt-host-throwable "java.lang.StringIndexOutOfBoundsException"
                                                                    (string-append "Index " (number->string i)
                                                                                   " out of bounds for length "
-                                                                                  (number->string (string-length coll)))))))
+                                                                                  (number->string (jolt-str-u16-length coll)))))))
               ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #f jolt-nil))
               ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i)))
               ;; RT.nth reads a CharSequence by charAt once Indexed has missed —
@@ -1736,7 +1737,7 @@
              ;; notFound answers an out-of-range index, not one RT.intCast refuses
              ((begin (index-int-check! i0) #f) #f)
              ((jolt-nil? coll) d)                 ; RT.nth(nil, i, notFound) is notFound
-             ((string? coll) (if (and (fx>=? i 0) (fx<? i (string-length coll))) (string-ref coll i) d))
+             ((string? coll) (or (u16-ref coll i) d))
              ((or (cseq? coll) (empty-list-t? coll)) (seq-nth coll i #t d))
              ((rec-coll-method coll "nth") => (lambda (m) (jolt-invoke m coll i d)))
              ((jrec-charseq-method coll "charAt")
@@ -1784,7 +1785,7 @@
   (cond ((pvec? coll) (pvec-count coll))
         ((pmap? coll) (pmap-cnt coll))
         ((pset? coll) (pset-count coll))
-        ((string? coll) (string-length coll))
+        ((string? coll) (jolt-str-u16-length coll))   ; UTF-16 units, as on the JVM (#1455)
         ((or (jolt-nil? coll) (empty-list-t? coll)) 0)
         ;; A vector-backed cell knows how many elements remain without walking
         ;; them: its backing vector's count less its own index. The JVM says the
@@ -1865,7 +1866,7 @@
         ;; IllegalArgumentException.
         ((string? coll)
          (if (number? k)
-             (let ((j (num-key-index k))) (and (fx>=? j 0) (fx<? j (string-length coll))))
+             (let ((j (num-key-index k))) (and (fx>=? j 0) (fx<? j (jolt-str-u16-length coll))))
              (jolt-throw (jolt-host-throwable
                           "java.lang.IllegalArgumentException"
                           "contains? not supported on type: java.lang.String"))))

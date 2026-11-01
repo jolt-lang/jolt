@@ -1389,8 +1389,18 @@
     (and (>= cp 32) (< cp 127)) (str (char cp))
     :else (str "\\x" (format "%x" cp) ";")))
 
-(defn- chez-str-lit [s]
-  (str "\"" (apply str (map (fn [c] (char-escape (int c))) s)) "\""))
+(defn- chez-str-lit [^String s]
+  ;; By code point: a string's elements are UTF-16 units, and Chez's reader
+  ;; refuses a \x escape that names half a surrogate pair.
+  (let [n (count s)
+        sb (StringBuilder. "\"")]
+    (loop [i 0]
+      (when (< i n)
+        (let [cp (.codePointAt s i)]
+          (.append sb (char-escape cp))
+          (recur (+ i (if (>= cp 0x10000) 2 1))))))
+    (.append sb "\"")
+    (str sb)))
 
 ;; Hoist the VAR CELL a late-bound reference reads through, so the name lookup
 ;; (string-append + string-hash + a hashtable probe, measured at ~102ns) runs once

@@ -650,10 +650,12 @@
       (cseq-vec (pvec-nth-d v i jolt-nil) v i kind)))
 ;; A string's characters. clojure.lang.StringSeq, and the tail is one too.
 ;; Counted, as StringSeq is: the cell knows the characters left from its index.
+;; I is a UTF-16 index and each element one unit, as on the JVM: an astral
+;; character is its two surrogate-unit values (converters.ss, #1455).
 (define (str->seq s i)
-  (let ((n (string-length s)))
+  (let ((n (jolt-str-u16-length s)))
     (if (fx>=? i n) jolt-nil
-        (make-cseqn (string-ref s i) (make-lazy-src lz-str-seq s i) sk-string-seq jolt-nil (fx- n i)))))
+        (make-cseqn (u16-ref s i) (make-lazy-src lz-str-seq s i) sk-string-seq jolt-nil (fx- n i)))))
 ;; ---- seq arms: host types register here instead of set!-wrapping jolt-seq ----
 ;; Arms dispatch newest-registration-first (cons front, walk head-first), matching
 ;; the precedence the set! chains produced. The built-in types stay inline in
@@ -2259,7 +2261,7 @@
        (let ((t (cseq-tail s)))
          (if (and (lazy-src? t) (eq? (lazy-src-fn t) lz-str-seq))
              (let ((str (lazy-src-a t)) (i (lazy-src-b t)))
-               (if (fx>=? n (fx- (string-length str) i))
+               (if (fx>=? n (fx- (jolt-str-u16-length str) i))
                    jolt-empty-list
                    (str->seq str (fx+ i n))))
              (loop (fx- n 1) (jolt-seq (seq-more s))))))
