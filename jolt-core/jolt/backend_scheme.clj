@@ -1389,18 +1389,19 @@
     (and (>= cp 32) (< cp 127)) (str (char cp))
     :else (str "\\x" (format "%x" cp) ";")))
 
-(defn- chez-str-lit [^String s]
+(defn- chez-str-lit [s]
   ;; By code point: a string's elements are UTF-16 units, and Chez's reader
-  ;; refuses a \x escape that names half a surrogate pair.
-  (let [n (count s)
-        sb (StringBuilder. "\"")]
-    (loop [i 0]
-      (when (< i n)
-        (let [cp (.codePointAt s i)]
-          (.append sb (char-escape cp))
-          (recur (+ i (if (>= cp 0x10000) 2 1))))))
-    (.append sb "\"")
-    (str sb)))
+  ;; refuses a \x escape that names half a surrogate pair, so a pair is joined
+  ;; here. Plain seq arithmetic, no String interop: the Gambit host's string
+  ;; methods are a small subset, and this runs there too.
+  (loop [cs (seq s) acc []]
+    (if cs
+      (let [u (int (first cs)) nx (next cs)]
+        (if (and (<= 0xD800 u 0xDBFF) nx (<= 0xDC00 (int (first nx)) 0xDFFF))
+          (recur (next nx) (conj acc (char-escape (+ 0x10000 (* (- u 0xD800) 0x400)
+                                                     (- (int (first nx)) 0xDC00)))))
+          (recur nx (conj acc (char-escape u)))))
+      (str "\"" (apply str acc) "\""))))
 
 ;; Hoist the VAR CELL a late-bound reference reads through, so the name lookup
 ;; (string-append + string-hash + a hashtable probe, measured at ~102ns) runs once
