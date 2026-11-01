@@ -120,14 +120,43 @@
     ;; (str sym) hands back the symbol's own name string — JVM (str x) is
     ;; x.toString(), and core.logic's non-unique lvar equality compares those by
     ;; identity.
-    ((a) (jolt-str-one a))
-    ((a b) (string-append (jolt-str-piece a) (jolt-str-piece b)))
-    ((a b c) (string-append (jolt-str-piece a) (jolt-str-piece b) (jolt-str-piece c)))
+    ((a) (if (jsurr? a) (jolt-str-units (list a)) (jolt-str-one a)))
+    ;; Only a surrogate unit followed by another can make a pair (a string never
+    ;; ends in half of one), so the unit test is on every argument but the last.
+    ((a b) (if (or (jsurr? a) (and edge-units-any? (or (edgy? a) (edgy? b))))
+               (jolt-str-units (list a b))
+               (string-append (jolt-str-piece a) (jolt-str-piece b))))
+    ((a b c) (if (or (jsurr? a) (jsurr? b) (and edge-units-any? (or (edgy? a) (edgy? b) (edgy? c))))
+                 (jolt-str-units (list a b c))
+                 (string-append (jolt-str-piece a) (jolt-str-piece b) (jolt-str-piece c))))
     ((a b c . rest)
-     (let loop ((xs rest) (acc (list (jolt-str-piece c) (jolt-str-piece b) (jolt-str-piece a))))
-       (if (null? xs)
-           (apply string-append (reverse acc))
-           (loop (cdr xs) (cons (jolt-str-piece (car xs)) acc)))))))
+     (if (or (jsurr? a) (jsurr? b) (jsurr? c)
+             (and edge-units-any? (or (edgy? a) (edgy? b) (edgy? c) (exists edgy? rest))))
+         (jolt-str-units (cons a (cons b (cons c rest))))
+         (let loop ((xs rest) (acc (list (jolt-str-piece c) (jolt-str-piece b) (jolt-str-piece a))))
+           (cond
+             ((null? xs) (apply string-append (reverse acc)))
+             ((jsurr? (car xs)) (jolt-str-units (cons a (cons b (cons c rest)))))
+             (else (loop (cdr xs) (cons (jolt-str-piece (car xs)) acc)))))))))
+;; str over arguments among which are surrogate units: a high unit directly
+;; followed by a low one is the astral character they spell; any other unit is
+;; U+FFFD (its str-render, surrogates.ss).
+(define (edgy? x) (and (string? x) (string-edge-units x) #t))
+(define (jolt-str-units xs0)
+  (define xs1 (apply append (map edge-split xs0)))
+  (let loop ((xs xs1) (acc '()))
+    (cond
+      ;; a half still unpaired at either end is remembered, for the next join
+      ((null? xs)
+       (string-with-edge-units!
+        (apply string-append (reverse acc))
+        (and (pair? xs1) (jsurr-low? (car xs1)) (jsurr-unit (car xs1)))
+        (let ((l (and (pair? xs1) (list-ref xs1 (fx- (length xs1) 1)))))
+          (and (jsurr-high? l) (jsurr-unit l)))))
+      ((and (jsurr-high? (car xs)) (pair? (cdr xs)) (jsurr-low? (cadr xs)))
+       (loop (cddr xs)
+             (cons (string (surrogates->char (jsurr-unit (car xs)) (jsurr-unit (cadr xs)))) acc)))
+      (else (loop (cdr xs) (cons (jolt-str-piece (car xs)) acc))))))
 
 ;; jolt indices are flonums; substring etc. need exact ints. A fixnum is already
 ;; one — this sits on the proven-string .charAt/.substring path, so it must not
@@ -142,11 +171,196 @@
   (throw-jvm 'StringIndexOutOfBoundsException
              (string-append "Index " (number->string i) " out of bounds for length "
                             (number->string n))))
+
+;; ---- half a pair at the edge of a string (#1455) -----------------------------
+;; A JVM String can hold a lone surrogate, and a buffered reader makes one
+;; whenever its chunk boundary splits a pair: data.json builds (String. buf 0 63)
+;; with the high unit last, then appends the low unit it reads next to a
+;; StringBuilder seeded with that string. A jolt string cannot hold the unit, so
+;; it holds U+FFFD there, and this table remembers which unit it was, for a
+;; string whose first char is a cut-off LOW unit or whose last is a cut-off HIGH
+;; one. That is the only place a later join can complete a pair. The joiners
+;; (StringBuilder, str, a Writer) consult it, so the split pair comes back whole.
+;; Printed or sent anywhere else, the string is its U+FFFD.
+;;
+;; Only the two producers that cut text by UTF-16 index record here:
+;; u16-substring below and a char[] region (natives-array.ss). The joiners test
+;; edge-units-any? first, so a program that never cuts a pair never looks.
+(define edge-units (make-weak-eq-hashtable))
+(define edge-units-mu (make-mutex))
+(define edge-units-any? #f)
+;; Record LEAD (a low unit, or #f) and TRAIL (a high unit, or #f) for S; S back.
+(define (string-with-edge-units! s lead trail)
+  (when (and (or lead trail) (fx>? (string-length s) 0))
+    (jolt-with-mutex edge-units-mu (hashtable-set! edge-units s (cons lead trail)))
+    (set! edge-units-any? #t))
+  s)
+;; S's (lead . trail) when it has a recorded edge unit, else #f.
+(define (string-edge-units s)
+  (and edge-units-any?
+       (let ((n (string-length s)))
+         (and (fx>? n 0)
+              (or (char=? (string-ref s 0) jolt-replacement-char)
+                  (char=? (string-ref s (fx- n 1)) jolt-replacement-char))
+              (jolt-with-mutex edge-units-mu (hashtable-ref edge-units s #f))))))
+;; X as the pieces a joiner pairs: a string with recorded edge units becomes its
+;; lead unit, its middle and its trail unit; anything else is itself.
+(define (edge-split x)
+  (let ((e (and (string? x) (string-edge-units x))))
+    (if (not e)
+        (list x)
+        (let* ((n (string-length x))
+               (lead (car e))
+               (start (if lead 1 0))
+               (trail (and (cdr e) (fx>? n start) (cdr e)))
+               (end (if trail (fx- n 1) n)))
+          (append (if lead (list (jolt-surrogate lead)) '())
+                  (if (fx<? start end) (list (substring x start end)) '())
+                  (if trail (list (jolt-surrogate trail)) '()))))))
+
+;; ---- the UTF-16 view of a string (#1455) -------------------------------------
+;; java.lang.String's index methods — length, charAt, substring, indexOf … —
+;; answer in UTF-16 code units, as on the JVM, while clojure.core's count, nth,
+;; subs and seq keep code points. That is what lets ported code that walks a
+;; string per unit (data.json's escaper: .length, .charAt, .subSequence) see the
+;; two halves of an astral character where the JVM shows them. The two models
+;; agree on any string with no astral character (code point > #xFFFF), which is
+;; nearly every string. So the question each method asks first is whether
+;; s[0, k) is free of astral chars. When it is, UTF-16 index k IS code-point
+;; index k and nothing is converted.
+;;
+;; Scanning for that on every call would make a .charAt loop quadratic, so the
+;; answer is kept for the last two strings asked about, by identity. An entry is
+;; #(s pre pos). s[0, pre) holds no astral char. pos is #f until a scan meets
+;; one, then the vector of each code point's UTF-16 offset (length n + 1), and
+;; pre stays at that first astral index. A scan runs ahead geometrically, so a
+;; forward loop pays amortized O(1) and takes the fast path in jolt-char-at.
+;; jolt strings are immutable to their callers, so an entry never goes stale.
+;; Racing threads can only lose an entry or see a smaller pre for the same
+;; string, both still true.
+(define u16-slot-a (vector #f 0 #f))
+(define u16-slot-b (vector #f 0 #f))
+(define (u16-entry s)
+  (let ((a u16-slot-a))
+    (if (eq? (vector-ref a 0) s)
+        a
+        (let ((b u16-slot-b))
+          (if (eq? (vector-ref b 0) s)
+              (begin (set! u16-slot-b a) (set! u16-slot-a b) b)
+              (let ((e (vector s 0 #f)))
+                (set! u16-slot-b a)
+                (set! u16-slot-a e)
+                e))))))
+(define (u16-build! e first)
+  (let* ((s (vector-ref e 0)) (n (string-length s)) (pos (make-vector (fx+ n 1) 0)))
+    (do ((c 0 (fx+ c 1))) ((fx=? c first)) (vector-set! pos c c))
+    (let loop ((c first) (u first))
+      (vector-set! pos c u)
+      (when (fx<? c n)
+        (loop (fx+ c 1)
+              (if (fx<? (char->integer (sa-ustring-ref s c)) #x10000) (fx+ u 1) (fx+ u 2)))))
+    (vector-set! e 2 pos)
+    (vector-set! e 1 first)))
+;; Is e's string free of astral chars below K? Extends the known prefix as far as
+;; it has to (and further, geometrically); an astral char found below K builds
+;; the offset table and answers #f. K past the end asks about the whole string.
+(define (u16-clear-upto? e k)
+  (let ((pre (vector-ref e 1)))
+    (cond
+      ((fx<=? k pre) #t)
+      ((vector-ref e 2) #f)
+      (else
+       (let* ((s (vector-ref e 0)) (n (string-length s)))
+         (if (fx>=? pre n)
+             #t
+             (let ((goal (fxmin n (fxmax k (fx+ pre (fxmax pre 64))))))
+               (let loop ((i pre))
+                 (cond
+                   ((fx=? i goal) (vector-set! e 1 i) #t)
+                   ((fx<? (char->integer (sa-ustring-ref s i)) #x10000) (loop (fx+ i 1)))
+                   (else (u16-build! e i) (fx<=? k i)))))))))))
+;; The string's length in UTF-16 units.
+(define (u16-length s)
+  (let ((e (u16-entry s)) (n (string-length s)))
+    (if (u16-clear-upto? e n) n (vector-ref (vector-ref e 2) n))))
+;; The code point holding UTF-16 unit U (the pair's index for either half). An
+;; index past the end stays past it by as much, so a bounds check still fails.
+(define (u16->cp s u)
+  (if (or (not (fixnum? u)) (fx<? u 0))
+      u
+      (let ((e (u16-entry s)))
+        (if (u16-clear-upto? e u)
+            u
+            (let* ((pos (vector-ref e 2)) (n (fx- (vector-length pos) 1)) (len (vector-ref pos n)))
+              (if (fx>=? u len)
+                  (fx+ n (fx- u len))
+                  (let loop ((lo 0) (hi n))   ; pos[lo] <= u < pos[hi]
+                    (if (fx=? (fx+ lo 1) hi)
+                        lo
+                        (let ((mid (fxquotient (fx+ lo hi) 2)))
+                          (if (fx<=? (vector-ref pos mid) u) (loop mid hi) (loop lo mid)))))))))))
+;; Does UTF-16 index U fall between the two halves of a pair?
+(define (u16-split? s u)
+  (and (fixnum? u) (fx>? u 0)
+       (let ((e (u16-entry s)))
+         (and (not (u16-clear-upto? e u))
+              (let* ((pos (vector-ref e 2)) (c (u16->cp s u)))
+                (and (fx<? c (fx- (vector-length pos) 1)) (not (fx=? (vector-ref pos c) u))))))))
+;; The UTF-16 index of code point C (one past the end maps to the length).
+(define (cp->u16 s c)
+  (if (or (not (fixnum? c)) (fx<? c 0))
+      c
+      (let ((e (u16-entry s)))
+        (if (u16-clear-upto? e c)
+            c
+            (let* ((pos (vector-ref e 2)) (n (fx- (vector-length pos) 1)))
+              (if (fx>? c n) (fx+ (vector-ref pos n) (fx- c n)) (vector-ref pos c)))))))
+;; The UTF-16 unit at U as a jolt char: the char itself below #x10000, else the
+;; surrogate-unit value for the half U names. U must be in range.
+(define (u16-unit-at s u)
+  (let* ((c (u16->cp s u)) (cp (char->integer (string-ref s c))))
+    (cond ((fx<? cp #x10000) (string-ref s c))
+          ((fx=? (cp->u16 s c) u) (jolt-surrogate (astral-high-unit cp)))
+          (else (jolt-surrogate (astral-low-unit cp))))))
+;; String.charAt. The fast path is the cached entry's clear prefix, where a
+;; UTF-16 index is the char's own index and the char is below #x10000.
 (define (jolt-char-at s i)
   (let ((i (jolt->idx i)))
-    (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length s)))
-        (string-ref s i)
-        (char-index-oob i (string-length s)))))
+    (if (and (fixnum? i) (fx>=? i 0))
+        (let ((a u16-slot-a))
+          (if (and (eq? (vector-ref a 0) s) (fx<? i (vector-ref a 1)))
+              (string-ref s i)
+              (let ((len (u16-length s)))
+                (if (fx<? i len) (u16-unit-at s i) (char-index-oob i len)))))
+        (char-index-oob i (u16-length s)))))
+;; String.length: the cached entry answers a string known to be clear throughout.
+(define (jolt-str-u16-length s)
+  (let ((a u16-slot-a) (n (string-length s)))
+    (if (and (eq? (vector-ref a 0) s) (fx=? (vector-ref a 1) n)) n (u16-length s))))
+;; String.substring / subSequence over UTF-16 indices. A bound that splits a pair
+;; leaves half of it in the result, a lone unit, which a jolt string holds as
+;; U+FFFD (the policy in values.ss).
+(define (u16-substring s b e)
+  (let ((len (u16-length s)))
+    (if (fx=? len (string-length s))
+        (jolt-substr s b e)
+        (begin
+          (unless (and (fixnum? b) (fixnum? e) (fx>=? b 0) (fx<=? b e) (fx<=? e len))
+            (index-int-check! b) (index-int-check! e)
+            (throw-jvm 'StringIndexOutOfBoundsException
+                       (string-append "begin " (number->string b) ", end " (number->string e)
+                                      ", length " (number->string len))))
+          (let* ((bs (u16-split? s b)) (es (u16-split? s e))
+                 (cb (if bs (fx+ (u16->cp s b) 1) (u16->cp s b)))
+                 (ce (u16->cp s e)))
+            (if (and bs (fx=? b e))
+                ""
+                (string-with-edge-units!
+                 (string-append (if bs jolt-replacement-string "")
+                                (if (fx<? cb ce) (substring s cb ce) "")
+                                (if es jolt-replacement-string ""))
+                 (and bs (astral-low-unit (char->integer (string-ref s (fx- cb 1)))))
+                 (and es (astral-high-unit (char->integer (string-ref s ce)))))))))))
 
 ;; Chez's `substring` walks the span a character at a time; allocating the result
 ;; and asking for the block move is ~3.7x faster for the spans a parser, a reader
@@ -285,6 +499,7 @@
 (define (jolt-double x)
   (cond ((char? x) (exact->inexact (char->integer x)))
         ((number? x) (exact->inexact x))
+        ((jsurr? x) (exact->inexact (jsurr-unit x)))
         ((jfloat? x) (jfloat-fl x))
         (else (jolt-double-slow x))))
 
@@ -415,6 +630,7 @@
 (define (jolt-cast-truncate-slow x) (jolt-num-cast-throw x))
 (define (jolt-checked-cast name lo hi x)
   (let ((n (cond ((char? x) (char->integer x))
+                 ((jsurr? x) (jsurr-unit x))
                  ((and (number? x) (exact? x)) (truncate x))
                  ;; a double range-checks ITSELF (before truncation): (byte
                  ;; 127.000001) throws, (byte 1.1) is 1; NaN casts to 0; an
@@ -460,6 +676,7 @@
     ((flonum? x) (jolt-checked-cast "int" -2147483648 2147483647 x))
     (else
      (let ((n (cond ((char? x) (char->integer x))
+                    ((jsurr? x) (jsurr-unit x))
                     ((and (number? x) (exact? x)) (truncate x))
                     (else (jolt-cast-truncate-slow x)))))
        (if (and (>= n -2147483648) (<= n 2147483647))
@@ -478,16 +695,19 @@
 ;; whose int is 128515 — so the cast has to accept the whole range or it cannot
 ;; rebuild a char the string layer just produced. That is wider than the JVM's
 ;; 16-bit char, which is the project's position when the two models differ: match
-;; where possible, otherwise be a superset. Surrogates are excluded because they
-;; are not scalar values (Chez's integer->char rejects them); they raise the same
-;; IllegalArgumentException as an out-of-range cast rather than a raw Chez error.
+;; where possible, otherwise be a superset. A surrogate is not a scalar value, so
+;; no Chez char holds one; (char #xD83D) is the surrogate code-unit value instead
+;; (values.ss jsurr), which a StringBuilder, str or a Writer pairs with the low
+;; unit after it — the JVM's way of spelling an astral character in chars (#1455).
 (define (jolt-char x)
-  (if (char? x)
-      x
-      (let ((n (jolt-checked-cast "char" 0 #x10FFFF x)))
-        (if (and (>= n #xD800) (<= n #xDFFF))
-            (jolt-cast-range-throw "char" x)
-            (integer->char n)))))
+  (cond
+    ((char? x) x)
+    ((jsurr? x) x)
+    (else
+     (let ((n (jolt-checked-cast "char" 0 #x10FFFF x)))
+       (if (and (>= n #xD800) (<= n #xDFFF))
+           (jolt-surrogate n)
+           (integer->char n))))))
 (def-var! "clojure.core" "char" jolt-char)
 ;; unchecked-long: truncate + wrap to 64 bits (RT.uncheckedLongCast — a float
 ;; infinity saturates, NaN is 0). unchecked-int wraps and sign-folds to 32.
@@ -523,6 +743,7 @@
     ;; int range and needs no fold — see jolt-char on why jolt's are up to
     ;; #x10FFFF rather than the JVM's 16 bits.
     ((char? x) (char->integer x))
+    ((jsurr? x) (jsurr-unit x))
     ((flonum? x)
      ;; double->int clamps like Java
      (if (nan? x) 0

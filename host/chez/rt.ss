@@ -3266,6 +3266,7 @@
 ;; outermost over every earlier extension.
 (load "host/chez/java/bigdec.ss")
 (load "host/chez/float.ss")                       ; java.lang.Float as a value (jfloat)
+(load "host/chez/surrogates.ss")                  ; a UTF-16 surrogate unit as a Character (jsurr)
 
 ;; The library seam for extending / overriding a class jolt already part-shims.
 ;; After every java shim and after bigdec.ss's class-arm wraps, so the class name

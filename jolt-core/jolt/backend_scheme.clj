@@ -92,7 +92,8 @@
 (defn- string-direct-emit [m argc t args]
   (let [a0 (first args) a1 (second args)]
     (cond
-      (= m "length")      (when (= argc 0) (str "(string-length " t ")"))
+      ;; length/indexOf/substring count UTF-16 units, as on the JVM (#1455)
+      (= m "length")      (when (= argc 0) (str "(jolt-str-u16-length " t ")"))
       (= m "toString")    (when (= argc 0) t)
       (= m "isEmpty")     (when (= argc 0) (str "(fx=? (string-length " t ") 0)"))
       (= m "toUpperCase") (when (= argc 0) (str "(string-upcase " t ")"))
@@ -102,14 +103,14 @@
       (= m "charAt")      (when (= argc 1) (str "(jolt-char-at " t " " a0 ")"))
       (= m "indexOf")     (when (or (= argc 1) (= argc 2))
                             (let [from (if (= argc 2) (str "(jolt->idx " a1 ")") "0")]
-                              (str "(str-index-of-any " t " " a0 " " from ")")))
+                              (str "(jolt-str-u16-index-of " t " " a0 " " from ")")))
       (= m "startsWith")  (when (= argc 1) (str "(str-starts-with? " t " " a0 ")"))
       (= m "endsWith")    (when (= argc 1) (str "(str-ends-with? " t " " a0 ")"))
       (= m "contains")    (when (= argc 1)
                             (str "(fx>=? (str-index-of " t " (str-needle " a0 ") 0) 0)"))
       (= m "concat")      (when (= argc 1) (str "(string-append " t " " a0 ")"))
       (= m "substring")   (when (= argc 2)
-                            (str "(jolt-substr " t " (jolt->idx " a0 ") (jolt->idx " a1 "))"))
+                            (str "(jolt-str-u16-substring " t " (jolt->idx " a0 ") (jolt->idx " a1 "))"))
       (= m "replace")     (when (= argc 2)
                              (str "(str-replace-literal " t " (str-needle " a0 ") (str-needle " a1 "))"))
       ;; The rest route to a jolt-str-* native (java/natives-str.ss), which is the
