@@ -7214,13 +7214,16 @@
   {:suite "string-model / codepoint strings" :label "count of astral string" :expected "1" :actual "(count \"😀\")" :portability :common}
   {:suite "string-model / codepoint strings" :label "seq counts codepoints" :expected "2" :actual "(count (seq \"😀x\"))" :portability :common}
   {:suite "string-model / codepoint strings" :label "subs across astral boundary" :expected "\"😀\"" :actual "(subs \"a😀b\" 1 2)" :portability :common}
-  ;; .charAt yields the whole codepoint, so an astral character comes back as one
-  ;; char above 0xFFFF, where the JVM would have handed back a surrogate half.
-  ;; (char that) round-trips rather than throwing — jolt's char spans the Unicode
-  ;; scalar values because its strings are code-point indexed, which is a
-  ;; deliberate superset of the JVM's 16-bit char (see known-divergences). The
-  ;; round trip is pinned in unit.edn, not here, since the JVM throws.
-  {:suite "string-model / codepoint strings" :label "charAt of an astral character is the codepoint" :expected "[128512 1]" :actual "[(int (.charAt \"😀\" 0)) (.length \"😀\")]" :portability :jvm}
+  ;; String's index methods count UTF-16 units, as on the JVM, while count/nth/
+  ;; subs/seq above keep code points (#1455): .charAt hands out a surrogate half
+  ;; as the code-unit value (char n) also makes, and the joiners pair them again.
+  {:suite "string-model / UTF-16 index methods" :label "charAt of an astral character is its high surrogate" :expected "[55357 2]" :actual "[(int (.charAt \"😀\" 0)) (.length \"😀\")]" :portability :jvm}
+  {:suite "string-model / UTF-16 index methods" :label "both halves, and codePointAt at each" :expected "[56832 128512 56832]" :actual "[(int (.charAt \"😀\" 1)) (.codePointAt \"😀\" 0) (.codePointAt \"😀\" 1)]" :portability :jvm}
+  {:suite "string-model / UTF-16 index methods" :label "indexOf and substring count units" :expected "[2 \"😀\" 3 1]" :actual "[(.indexOf \"😀x\" \"x\") (.substring \"a😀b\" 1 3) (.lastIndexOf \"a😀b\" \"b\") (.indexOf \"😀\" (int 0xDE00))]" :portability :jvm}
+  {:suite "string-model / UTF-16 index methods" :label "hashCode and toCharArray are over units" :expected "[1772899 [55357 56832] 2]" :actual "[(.hashCode \"😀\") (mapv int (.toCharArray \"😀\")) (alength (Character/toChars 128512))]" :portability :jvm}
+  {:suite "string-model / UTF-16 index methods" :label "a non-astral string is unchanged" :expected "[3 \\b \"bc\" 1 98]" :actual "[(.length \"abc\") (.charAt \"abc\" 1) (.substring \"abc\" 1) (.indexOf \"abc\" \"b\") (.codePointAt \"abc\" 1)]" :portability :common}
+  {:suite "string-model / surrogate units" :label "a surrogate char is a Character holding its unit" :expected "[true \"java.lang.Character\" 55357 true true 128512]" :actual "(let [h (char 0xD83D)] [(char? h) (.getName (class h)) (int h) (Character/isHighSurrogate h) (Character/isSurrogatePair h (char 0xDE00)) (Character/toCodePoint h (char 0xDE00))])" :portability :jvm}
+  {:suite "string-model / surrogate units" :label "str, StringBuilder and char[] pair a high unit with its low one" :expected "[\"😀\" [2 \"😀\"] \"😀\" \"😀\"]" :actual "(let [h (char 0xD83D) l (char 0xDE00)] [(str h l) (let [sb (StringBuilder.)] (.append sb h) (.append sb l) [(.length sb) (str sb)]) (String. (char-array [h l])) (let [w (java.io.StringWriter.)] (.write w 0xD83D) (.write w 0xDE00) (str w))])" :portability :jvm}
   {:suite "concurrency-model / compare-and-set!" :label "identity mismatch on equal values fails" :expected "false" :actual "(compare-and-set! (atom [1]) [1] [2])" :portability :common}
   ;; Jolt's identity predicate is Chez eq?. A fixnum is an immediate value with
   ;; no separately allocated box, so equal fixnums are necessarily identical;
