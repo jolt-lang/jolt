@@ -593,17 +593,19 @@
                   (let ((ne (%r-jolt-dissoc ext k)))
                     (make-jrec-from-existing coll #f #f
                                 (if (= 0 (jolt-count ne)) jolt-nil ne)))))))))
+;; The record's metadata stays on what dissoc answers — the record, or the map a
+;; field's removal downgrades it to — as defrecord's without does on the JVM.
 (set! jolt-dissoc (lambda (coll . ks)
-  (cond ((jrec-plain? coll) (fold-left jrec-dissoc1 coll ks))
+  (cond ((jrec-plain? coll) (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
         ((jrec-cl coll "without")
          => (lambda (m) (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
-        ((jrec? coll) (fold-left jrec-dissoc1 coll ks))
+        ((jrec? coll) (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
         (else (apply %r-jolt-dissoc coll ks)))))
 (set! jolt-dissoc2
   (lambda (coll k)
-    (cond ((jrec-plain? coll) (jrec-dissoc1 coll k))
+    (cond ((jrec-plain? coll) (meta-carry coll (jrec-dissoc1 coll k)))
           ((jrec-cl coll "without") => (lambda (m) (jolt-invoke m coll k)))
-          ((jrec? coll) (jrec-dissoc1 coll k))
+          ((jrec? coll) (meta-carry coll (jrec-dissoc1 coll k)))
           (else (%r-jolt-dissoc2 coll k)))))
 ;; keys/vals over a jrec read its entry seq (jolt-seq is method-first, so a
 ;; map-like deftype delegates to its Seqable; a defrecord's seq is its fields, so
@@ -652,11 +654,27 @@
                              (if (or (null? ps) (jolt-reduced? acc)) acc
                                  (eloop (cdr ps) (step acc (caar ps) (cdar ps)))))))))
             (else (loop (fx+ i 1) (step acc (vector-ref fkeys i) (jrec-field-ref r i))))))))
-;; conj onto a plain record, the conj arm's rule below
+;; conj onto a record, as defrecord's cons (imap-cons) does it: a map entry or
+;; a vector assocs its first two elements, nil leaves the record as it is, and
+;; anything else seqs into entries assoc'd in turn — any map (a sorted one, a
+;; record), or a seq of entries. A native map folds directly, the same rule. The
+;; plain-record path and the conj arm below both answer through this.
+(define (jrec-conj-entry c e)
+  (cond ((pvec? e) (jolt-assoc1 c (jolt-nth e 0) (jolt-nth e 1)))
+        ((jolt-host-entry e) => (lambda (kv) (jolt-assoc1 c (car kv) (cdr kv))))
+        (else (jolt-throw
+               (jolt-host-throwable
+                "java.lang.ClassCastException"
+                (string-append "class " (guard (x (#t "?")) (jolt-class-name e))
+                               " cannot be cast to class java.util.Map$Entry"))))))
 (define (jrec-plain-conj coll x)
-  (if (pmap? x)
-      (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll)
-      (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
+  (cond ((pmap? x) (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll))
+        ((jolt-nil? x) coll)
+        ((or (pvec? x) (jolt-host-entry x)) (jrec-conj-entry coll x))
+        (else (let loop ((s (jolt-seq x)) (c coll))
+                (if (jolt-nil? s)
+                    c
+                    (loop (jolt-seq (seq-more s)) (jrec-conj-entry c (seq-first s))))))))
 (define (jrec-plain-empty? r)
   (and (fx=? 0 (jrdesc-nfields (jrec-desc r)))
        (let ((ext (jrec-ext r))) (or (jolt-nil? ext) (fx=? 0 (jolt-count ext))))))
@@ -723,12 +741,7 @@
 ;; (registered above but checked after this newer arm), so the guard preserves the
 ;; deftype's collection semantics (flatland.ordered's OrderedSet conjs a scalar).
 (register-conj-arm! (lambda (coll) (and (jrec? coll) (not (jrec-plain? coll)) (not (jrec-cl coll "cons"))))
-  (lambda (coll x)
-    (if (pmap? x)
-        ;; a map folds its entries (JVM parity): (conj record {:k v ...}) merges them.
-        ;; Otherwise x is a [k v] pair / MapEntry — assoc the two elements.
-        (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll)
-        (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))))
+  jrec-plain-conj)
 ;; peek/pop on a deftype implementing IPersistentStack (data.priority-map, which
 ;; core.cache's LRU/LU caches lean on) dispatch to its methods.
 ;; empty? over a jrec: a map-like deftype is empty iff its entry seq is (data
