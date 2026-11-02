@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt nrepl-server --port-file PATH` and `--no-port-file`** (#1415).
+  The bound port goes to PATH, resolved against the caller's directory, or
+  nowhere; either way the server removes the file it wrote when it stops.
+
 - **`jolt.debug`: a throwable's frames with their locals, and a hook before
   the stack unwinds (#1464).** `(jolt.debug/frames t)` returns the frames
   `.getStackTrace` reports, innermost first, as maps of `:fn`, `:file`, `:line`
@@ -168,6 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`future` runs on a pooled executor**, as the JVM's solo executor does,
+  instead of a fresh OS thread per call; a wait spins briefly before parking.
+
 - **`Runtime/version` and `JarFile/runtimeVersion` report 21**, the JDK jolt's
   oracle certifies against, and that version picks a multi-release jar's
   entries. The `java.version` property stays `nil`, as before.
@@ -248,6 +255,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Sorted maps and sets keep their red-black tree in the host**, with
+  vector nodes, so building and updating them is several times faster than in
+  0.8.23. `sorted-map` `assoc` of an `=` value now keeps the existing value only
+  when it is identical, as the JVM's does.
+
 - **The precompiled stdlib runs at user-code speed under `jolt run`.** The
   namespaces a release binary carries as embedded fasls (`jolt.time.*`,
   `clojure.data`, `babashka.fs`, `babashka.process`, `clojure.test`, …) were
@@ -259,6 +271,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build` binaries were not affected. `make stdlibratio` gates the ratio.
 
 ### Fixed
+
+- **On macOS a profiling signal could kill the process with status 128**
+  (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
+  signal, and the shutdown watcher read that as signal 0, exiting without
+  flushing output or running shutdown hooks. It now acts only on a signal from
+  its own set.
+- **`spit` writes in place.** It wrote a temp file and renamed it over the
+  target, which replaced a symlink with a regular file, broke hard links and
+  reset the file mode (a 0600 file came back 0644).
+- **`(group-by f coll)` with a NaN key** threw "persistent!: not a
+  transient"; each NaN now gets its own group, as on the JVM.
+- **`clojure.set/intersection` and `select` drop a NaN member** they were
+  asked to drop, and `disj` of an absent member returns the same set.
+- **Collection metadata survives where the JVM keeps it**: `(into to xform
+  from)` keeps `to`'s meta, `empty` of a sorted coll keeps its meta while
+  `empty` of a seq is a bare `()`, and a `PersistentQueue` takes `with-meta`
+  and `empty`s to a queue.
+- **Java methods on lists, seqs, sorted sets and queues answer as their JVM
+  classes do.** These colls answered almost no interop methods, while vectors,
+  maps and sets answered methods their classes lack (`.contains` on a map,
+  `.valAt` on a set); every builtin coll now has its class family's methods,
+  and the others raise the JVM's "No matching method".
 
 - **`load-string` no longer leaves the caller in the namespace it switched
   to.** `(do (load-string "(ns foo)") *ns*)` answered `foo`; it now answers
