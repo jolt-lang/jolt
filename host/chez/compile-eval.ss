@@ -803,9 +803,21 @@
 ;; *source-path* are what the reference's Compiler.load binds for a reader with
 ;; no path: nil and "NO_SOURCE_FILE". Only the FILE goes: load-string is source,
 ;; and a read error in it keeps the :read-source phase a read-string's lacks.
+;;
+;; A tool that evaluates text it knows the file of (an editor's buffer, an nREPL
+;; load-file with its file-path) passes that path as the second argument, as
+;; Compiler.load takes a source path: the forms then carry it as :file, as a
+;; file load's do (the position a def records, the trace, jolt.profile's
+;; counts), and *file* / *source-path* are the path and its name.
 (define ls-file-cells #f)
-(define (jolt-eval-string s)
+(define (ls-file-name path)
+  (let loop ((i (- (string-length path) 1)))
+    (cond ((< i 0) path)
+          ((char=? (string-ref path i) #\/) (substring path (+ i 1) (string-length path)))
+          (else (loop (- i 1))))))
+(define (jolt-eval-string s . source)
   (let ((end (string-length s))
+        (path (and (pair? source) (string? (car source)) (car source)))
         (drl (guard (_ (#t #f)) data-readers-active)))
     ;; Resolved once the vars exist (a bootstrap context may run this first),
     ;; the way ldr-with-file-vars resolves the loader's; until then no frame.
@@ -824,9 +836,12 @@
     ;; the winder shape pushes a second frame when a fiber resumes inside it.
     (jolt-with-ns-load-vars
       (lambda ()
-        (dyn-with-frame (or ls-file-cells '())
+        (dyn-with-frame (cond ((not ls-file-cells) '())
+                              (path (list (cons (car (car ls-file-cells)) path)
+                                          (cons (car (cadr ls-file-cells)) (ls-file-name path))))
+                              (else ls-file-cells))
           (lambda ()
-            (parameterize ((rdr-source-file #f))
+            (parameterize ((rdr-source-file path))
               ;; rdr-read-top, not rdr-read-form: a stray close delimiter is
               ;; "Unmatched delimiter", raised when the read reaches it, after the
               ;; forms before it have run (Compiler.load). rdr-read-form hands it
@@ -855,9 +870,12 @@
 ;; clojure.main and nREPL do: it binds *ns* once for the session and evaluates
 ;; each entry with jolt.host/eval-string, the same loop without the binding,
 ;; reading *ns* afterwards.
-(define (jolt-load-string s)
-  (jolt-with-ns-bound (lambda () (jolt-eval-string s))))
-(def-var! "clojure.core" "load-string" jolt-load-string)
+(define (jolt-load-string s . source)
+  (jolt-with-ns-bound (lambda () (apply jolt-eval-string s source))))
+;; clojure.core's takes the string alone, as the reference's does; jolt.host's
+;; two take an optional source path (jolt-eval-string above)
+(def-var! "clojure.core" "load-string" (lambda (s) (jolt-load-string s)))
+(def-var! "jolt.host" "load-string" jolt-load-string)
 (def-var! "jolt.host" "eval-string" jolt-eval-string)
 ;; load-reader: read the reader to its end and load that, as load-string does.
 (def-var! "clojure.core" "load-reader"
