@@ -1242,9 +1242,11 @@
   "`unload!` teardown for a source-roots loader: unmap the namespaces this
    loader installed — and only while they are still the ones installed, since
    another context may have replaced them — drop its ownership, and answer how
-   many were unmapped. Definitions already resolved stay live: compiled code
-   holds direct links to the cells, so removing the registry entry stops new
-   name-based loads without pulling anything out from under running code.
+   many were unmapped. Each unmapped name also loses its loaded mark, so a
+   later `require` loads it afresh. Definitions already resolved stay live:
+   compiled code holds direct links to the cells, so removing the registry
+   entry stops new name-based loads without pulling anything out from under
+   running code.
    Never throws: `unload!` reports teardown failures as data."
   [l]
   (let [unmapped (reduce
@@ -1256,6 +1258,10 @@
                             live (find-ns (symbol nm))]
                         (if (and (map? h) (identical? live (:handle h)))
                           (do (remove-ns (symbol nm))
+                              ;; the mark goes with the namespace: a mark left
+                              ;; behind makes every later require a no-op for a
+                              ;; namespace that no longer exists (#1469)
+                              (jolt.host/unmark-loaded! nm)
                               (inc n))
                           n))
                       n))
