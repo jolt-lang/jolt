@@ -425,7 +425,9 @@
   load-file op does, so a namespace switch in it does not reach :ns. :file
   names the code's source path, as nREPL's load-file sends it: its forms carry
   it as :file (the position a def records, the trace) and *file* is that path,
-  as for a file load.
+  as for a file load. :file-name, when the map has the key, is *source-path*
+  (Compiler.load's sourceName, which load-file sends as file-name); without it
+  *source-path* is the path's last segment.
 
   The value is printed inside the eval, under its *out* and its try: what a lazy
   result prints as it is realized is the eval's output, and an error while
@@ -440,7 +442,7 @@
     :ex-class       the `ex` string, \"class java.lang.ArithmeticException\"
     :root-ex-class  the `root-ex` string, the class of the root cause"
   ([code ns-str] (evaluate code ns-str nil))
-  ([code ns-str {on-out :out on-err :err load? :load file :file}]
+  ([code ns-str {on-out :out on-err :err load? :load file :file :as opts}]
    (let [result (atom nil) evaluated (atom false) printed (atom nil)
          err (atom nil) exc (atom nil) failure (atom nil)
          start-ns (or (when (and ns-str (not (str/blank? ns-str)))
@@ -457,13 +459,15 @@
                         ;; forward reference across evals takes a declare.
                         ;; eval-string, not load-string: load-string binds *ns*
                         ;; for its own load, and this eval's switch must reach :ns
-                        (let [ev (fn []
+                        (let [src (when file
+                                    (if (contains? opts :file-name) [file (:file-name opts)] [file]))
+                              ev (fn []
                                    (if load?
                                      ;; a load-file op is a load, as nREPL's is
                                      ;; (Compiler.load): the file's ns form does
                                      ;; not switch the session
-                                     (if file (jolt.host/load-string code file) (load-string code))
-                                     (if file (jolt.host/eval-string code file) (jolt.host/eval-string code))))
+                                     (if src (apply jolt.host/load-string code src) (load-string code))
+                                     (if src (apply jolt.host/eval-string code src) (jolt.host/eval-string code))))
                               v (if-let [w *eval-wrapper*] (w ev) (ev))]
                           (reset! result v)
                           (reset! evaluated true)
@@ -607,7 +611,9 @@
                        :load (= op "load-file")
                        ;; the file's path, which load-file sends, as JVM nREPL
                        ;; compiles it under
-                       :file (when (= op "load-file") (some-> (get request "file-path") wire->))})]
+                       :file (when (= op "load-file") (some-> (get request "file-path") wire->))
+                       ;; and *source-path* is its file-name, nil when it sends none
+                       :file-name (some-> (get request "file-name") wire->)})]
         ;; an error goes out as JVM nREPL sends it: the err->msg text, then the
         ;; classes with eval-error, then done on its own
         (if err

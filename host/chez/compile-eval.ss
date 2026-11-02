@@ -808,7 +808,10 @@
 ;; load-file with its file-path) passes that path as the second argument, as
 ;; Compiler.load takes a source path: the forms then carry it as :file, as a
 ;; file load's do (the position a def records, the trace, jolt.profile's
-;; counts), and *file* / *source-path* are the path and its name.
+;; counts), and *file* / *source-path* are the path and its name. A third
+;; argument is that name, as Compiler.load's sourceName (nREPL's load-file sends
+;; it as file-name): *source-path* is exactly it, nil included. Without one the
+;; name is the path's last segment, as a file load's is.
 (define ls-file-cells #f)
 (define (ls-file-name path)
   (let loop ((i (- (string-length path) 1)))
@@ -818,6 +821,7 @@
 (define (jolt-eval-string s . source)
   (let ((end (string-length s))
         (path (and (pair? source) (string? (car source)) (car source)))
+        (named? (and (pair? source) (pair? (cdr source))))
         (drl (guard (_ (#t #f)) data-readers-active)))
     ;; Resolved once the vars exist (a bootstrap context may run this first),
     ;; the way ldr-with-file-vars resolves the loader's; until then no frame.
@@ -838,7 +842,8 @@
       (lambda ()
         (dyn-with-frame (cond ((not ls-file-cells) '())
                               (path (list (cons (car (car ls-file-cells)) path)
-                                          (cons (car (cadr ls-file-cells)) (ls-file-name path))))
+                                          (cons (car (cadr ls-file-cells))
+                                                (if named? (cadr source) (ls-file-name path)))))
                               (else ls-file-cells))
           (lambda ()
             (parameterize ((rdr-source-file path))
