@@ -112,6 +112,18 @@
     (check "multi-release entry name" (.getEntryName (.openConnection greeting))
            "META-INF/versions/17/greeting.txt"))
   (check "below base version never selected" (io/resource "below7.txt") nil)
+  ;; (URL. context spec) resolves against a resource's entry, as the jar
+  ;; handler does: a sibling, ".." and "." segments dropped, "/" from the root
+  (let [migration (io/resource "migrations/001-create-users.up.sql")]
+    (check "relative resource URL" (str (java.net.URL. (io/resource "plain.txt") "data.bin"))
+           "jar:file:jolt-embedded-resources.jar!/data.bin")
+    (check "relative resource URL with .." (str (java.net.URL. migration "../plain.txt"))
+           "jar:file:jolt-embedded-resources.jar!/plain.txt")
+    (check "relative resource URL from the root" (str (java.net.URL. migration "/plain.txt"))
+           "jar:file:jolt-embedded-resources.jar!/plain.txt")
+    (check "relative resource URL content" (slurp (java.net.URL. migration "../plain.txt"))
+           "embedded resource ok\n")
+    (check "relative resource URL is a URL" (instance? java.net.URL (java.net.URL. migration "x")) true))
   ;; nothing in the archive answers the empty name (a source root on disk may)
   (check "empty resource name" (= "jar" (some-> (io/resource "") .getProtocol)) false)
   (check "runtime version is the modeled Java version"
@@ -149,7 +161,8 @@
         main (.getMainAttributes manifest)]
     (check "archive comment" (.getComment jar) nil)
     (check "archive size" (.size jar) 21)
-    (check "archive string" (.toString jar) "jolt-embedded-resources.jar")
+    ;; ZipFile has no toString of its own in JDK 21: Object's
+    (check "archive string" (.startsWith (.toString jar) "java.util.jar.JarFile@") true)
     (check "entry constructors"
            (mapv #(.getName %)
                  [(java.util.zip.ZipEntry. "x")
@@ -275,14 +288,17 @@
           copy (.clone entry)]
       (check "embedded entry zero time" (.getTime entry) 0)
       (check "embedded entry zero modified" (.toMillis (.getLastModifiedTime entry)) 0)
-      (check "embedded entry local epoch" (.getYear (.getTimeLocal entry)) 1970)
+      ;; the epoch in the local zone: 1969 west of UTC
+      (check "embedded entry local epoch" (contains? #{1969 1970} (.getYear (.getTimeLocal entry))) true)
       (.setTime entry 123456)
       (check "entry time" (.getTime entry) 123456)
       (check "entry local time accessors" [(number? (.getYear (.getTimeLocal entry)))
                                            (number? (.getMonthValue (.getTimeLocal entry)))] [true true])
       (.setTimeLocal entry (java.time.LocalDateTime/of 2020 1 2 3 4 5))
-      (check "entry local time set" (.getTime entry)
-             (.getTimeInMillis (java.util.GregorianCalendar. 2020 0 2 3 4 5)))
+      ;; the DOS fields hold the local time; getTime reads them in the local zone
+      (check "entry local time set"
+             (str (.getTimeLocal (doto (java.util.zip.ZipEntry. "y") (.setTime (.getTime entry)))))
+             "2020-01-02T03:04:05")
       (check "entry local time value" (some? (.getTimeLocal entry)) true)
       (.setLastModifiedTime entry (java.nio.file.attribute.FileTime/fromMillis 1000))
       (.setLastAccessTime entry (java.nio.file.attribute.FileTime/fromMillis 2000))

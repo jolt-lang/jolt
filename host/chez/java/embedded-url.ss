@@ -1,8 +1,20 @@
-;; URLConnection and JarURLConnection over resources baked into the image.
+;; JarURLConnection over a jar: URL -- a resource baked into the image (an
+;; embedded-res), or an entry of a jar on disk (a "url" whose spec is a jar
+;; path, which io/resource answers for a jar on the source roots).
 
-;; The entry a resource URL names, as JarURLConnection.getEntryName answers it.
-(define (embedded-jar-url-entry-name resource) (embedded-res-name resource))
-(define (embedded-jar-file-url) (make-url "file:jolt-embedded-resources.jar"))
+(define (jar-connection-disk? resource) (not (embedded-res? resource)))
+;; The entry a resource URL names, as JarURLConnection.getEntryName answers it:
+;; the text after "!/", decoded; nil for the jar itself.
+(define (embedded-jar-url-entry-name resource)
+  (if (jar-connection-disk? resource)
+      (let ((entry (cdr (jar-path-split (url-spec resource)))))
+        (if (string=? entry "") jolt-nil (uri-decode-lenient entry)))
+      (embedded-res-name resource)))
+(define (jar-connection-jar-path resource) (car (jar-path-split (url-spec resource))))
+(define (embedded-jar-file-url . resource)
+  (if (and (pair? resource) (jar-connection-disk? (car resource)))
+      (make-url (url-canonical (string-append "file:" (jar-connection-jar-path (car resource)))))
+      (make-url "file:jolt-embedded-resources.jar")))
 
 (define (embedded-connection-state self) (jhost-state self))
 (define (embedded-connection-resource self) (vector-ref (embedded-connection-state self) 0))
@@ -20,14 +32,40 @@
 (define (embedded-connection-get self index) (vector-ref (embedded-connection-state self) index))
 
 ;; A jar: URL connection opens its jar at the runtime version, as the JDK's
-;; does; the URL already names the entry that version selected.
+;; does; the URL already names the entry that version selected. One JarFile per
+;; connection, as getJarFile answers the same one each time.
 (define (embedded-connection-archive self)
-  (make-embedded-jar-file embedded-archive-name (jolt-runtime-version)))
-(define (embedded-connection-bytes self) (embedded-res-bytes (embedded-connection-resource self)))
+  (let ((st (embedded-connection-state self)))
+    (or (vector-ref st 11)
+        (let* ((resource (embedded-connection-resource self))
+               (jar (if (jar-connection-disk? resource)
+                        (make-jar-file (file-url->path (jar-connection-jar-path resource))
+                                       #t (->num zip-open-read) (jolt-runtime-version))
+                        (make-embedded-jar-file embedded-archive-name (jolt-runtime-version)))))
+          (vector-set! st 11 jar)
+          jar))))
+;; The entry the URL names, or the JDK's refusal: a jar: URL with no entry has
+;; no stream, and a name the jar does not hold is FileNotFoundException.
+(define (jar-connection-entry self)
+  (let ((name (embedded-jar-url-entry-name (embedded-connection-resource self))))
+    (when (jolt-nil? name) (throw-jvm 'java.io.IOException "no entry name specified"))
+    (let ((entry (embedded-jar-entry-for (embedded-connection-archive self) name)))
+      (when (jolt-nil? entry)
+        (throw-jvm 'java.io.FileNotFoundException
+                   (string-append "JAR entry " name " not found in "
+                                  (record-method-dispatch (embedded-connection-archive self) "getName" jolt-nil))))
+      entry)))
+(define (embedded-connection-bytes self)
+  (let ((resource (embedded-connection-resource self)))
+    (if (jar-connection-disk? resource)
+        (begin (jar-connection-entry self)
+               (or (jar-path-bytes (url-spec resource)) (make-bytevector 0)))
+        (embedded-res-bytes resource))))
 (define (embedded-connection-stream self)
   (make-in-stream (open-bytevector-input-port (embedded-connection-bytes self))))
 (define (embedded-connection-content-type self)
-  (nio-content-type-of (embedded-jar-url-entry-name (embedded-connection-resource self))))
+  (let ((name (embedded-jar-url-entry-name (embedded-connection-resource self))))
+    (if (jolt-nil? name) "content/unknown" (nio-content-type-of name))))
 
 (define (embedded-connection-typed-content self classes)
   (let ((classes (if (jolt-array? classes) (ja->list classes) '())))
@@ -80,11 +118,18 @@
     ((string=? name "getHeaderFieldDate") (list (cadr args)))
     ((string=? name "getHeaderFieldKey") (list jolt-nil))
     ((string=? name "getContent") (list (embedded-connection-typed-content self (and (pair? args) (car args)))))
-    ((string=? name "getPermission") (list (make-jhost "permission" "embedded:read")))
+    ((string=? name "getPermission")
+     (list (make-jhost "permission" (let ((r (embedded-connection-resource self)))
+                                      (if (jar-connection-disk? r)
+                                          (file-url->path (jar-connection-jar-path r))
+                                          "embedded:read")))))
     ((string=? name "getInputStream") (list (embedded-connection-stream self)))
     ((string=? name "getOutputStream")
      (list (throw-jvm 'java.io.IOException "embedded resources are read-only")))
-    ((string=? name "toString") (list (string-append "embedded JarURLConnection for " (embedded-jar-url-entry-name (embedded-connection-resource self)))))
+    ;; URLConnection.toString: the implementation class and the URL
+    ((string=? name "toString")
+     (list (string-append "sun.net.www.protocol.jar.JarURLConnection:"
+                          (jolt-str-render-one (embedded-connection-resource self)))))
     ((string=? name "setDoInput") (list (embedded-connection-set! self 4 (car args))))
     ((string=? name "getDoInput") (list (embedded-connection-get self 4)))
     ((string=? name "setDoOutput") (list (embedded-connection-set! self 5 (car args))))
@@ -104,16 +149,18 @@
        (list (embedded-request-set! self (car args) (append (if old (list old) '()) (list (cadr args)))))))
     ((string=? name "getRequestProperty") (list (or (embedded-request-property self (car args)) jolt-nil)))
     ((string=? name "getRequestProperties") (list (embedded-request-map self)))
-    ((string=? name "getJarFileURL") (list (embedded-jar-file-url)))
+    ((string=? name "getJarFileURL") (list (embedded-jar-file-url (embedded-connection-resource self))))
     ((string=? name "getEntryName") (list (embedded-jar-url-entry-name (embedded-connection-resource self))))
     ((string=? name "getJarFile") (list (embedded-connection-archive self)))
-    ((string=? name "getManifest") (list (embedded-jar-manifest self)))
-    ((string=? name "getJarEntry") (list (embedded-jar-entry-for (embedded-connection-archive self)
-                                                              (embedded-jar-url-entry-name (embedded-connection-resource self)))))
+    ((string=? name "getManifest") (list (jar-manifest (embedded-connection-archive self))))
+    ((string=? name "getJarEntry") (list (jar-connection-entry self)))
     ((string=? name "getAttributes")
-     (list (embedded-jar-entry-attributes self (embedded-jar-url-entry-name (embedded-connection-resource self)))))
-    ((string=? name "getMainAttributes") (list (embedded-jar-main-attributes self)))
-    ((string=? name "getCertificates") (list (make-jolt-array (vector) "java.security.cert.Certificate")))
+     (list (record-method-dispatch (jar-connection-entry self) "getAttributes" jolt-nil)))
+    ((string=? name "getMainAttributes")
+     (list (let ((m (jar-manifest (embedded-connection-archive self))))
+             (if (jolt-nil? m) jolt-nil (manifest-main m)))))
+    ;; nothing here is signed: null, as the JDK answers for an unsigned entry
+    ((string=? name "getCertificates") (list jolt-nil))
     (else #f)))
 
 (hashtable-set! jhost-tag->fqn "embedded-jar-url-connection" "java.net.JarURLConnection")
@@ -141,6 +188,7 @@
 
 (define (embedded-url-open-connection resource)
   ;; resource, connected, connectTimeout, readTimeout, doInput, doOutput,
-  ;; interaction, useCaches, defaultUseCaches, ifModifiedSince, requestProperties
+  ;; interaction, useCaches, defaultUseCaches, ifModifiedSince, requestProperties,
+  ;; the JarFile once opened
   (make-jhost "embedded-jar-url-connection"
-              (vector resource #f 0 0 #t #f #f #f #f 0 '())))
+              (vector resource #f 0 0 #t #f #f #f #f 0 '() #f)))
