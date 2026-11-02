@@ -2533,6 +2533,7 @@
         ((jfile? x) (jio-open-in-file-buffered (jfile-fs x) (jfile-path x)))
         ((and (jolt-array? x) (eq? (jolt-array-kind x) 'byte)) (jio-buffered-in (make-in-stream-markable (open-bytevector-input-port (na-bytearray->bv x)))))
         ((bytevector? x) (jio-buffered-in (make-in-stream-markable (open-bytevector-input-port x))))
+        ((uri-jhost? x) (apply jio-input-stream (uri->url x) opts))
         ((and (jhost? x) (string=? (jhost-tag x) "url"))
          (if (jar-path? (url-spec x))
              (jar-path-stream (url-spec x))
@@ -2570,6 +2571,7 @@
                  "java.io.BufferedOutputStream")))))
         ;; a file: URL writes its target, any other protocol raises (io.ss).
         ((url-jhost? x) (apply jio-output-stream (url-write-path x) rest))
+        ((uri-jhost? x) (apply jio-output-stream (uri->url x) rest))
         ;; System/out and System/err are already byte streams — pass them through,
         ;; the way an out-stream passes through.
         ((and (jhost? x) (text-sink-tag? (jhost-tag x))) x)
@@ -2679,7 +2681,7 @@
                 ((user-out-stream? x)
                  (make-charset-writer (out-stream-sink-port x) enc x #f "java.io.BufferedWriter"))
                 ((user-writer? x) (make-buffered-writer x))
-                ((or (jfile? x) (string? x) (url-jhost? x))
+                ((or (jfile? x) (string? x) (url-jhost? x) (uri-jhost? x))
                  (let ((out (apply jio-output-stream x opts)))
                    (make-charset-writer (out-stream-port out) enc #f #t "java.io.BufferedWriter")))
                 ((socket-value? x) (apply jolt-io-writer (socket-stream x "getOutputStream") opts))

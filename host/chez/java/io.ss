@@ -911,6 +911,51 @@
 (define (jfile->uri-spec p)
   (string-append "file:" (uri-quote-path (file-uri-path (jfile-uri-path p)))))
 (define (jfile->uri p) (uri-parse (jfile->uri-spec p)))
+;; Path.toUri is NOT File.toURI (jolt-lang/jolt#1467). The JDK's default
+;; filesystem has its own builder: on Unix, UnixUriUtils.toUri writes
+;; "file:///" and then the absolute path's bytes, each one outside the RFC 2396
+;; path set (unreserved, ":@&=+$," and ";/") as an uppercase %XX -- so the
+;; authority is present but empty, and non-ASCII is escaped as UTF-8 bytes where
+;; File.toURI leaves it raw. On Windows, WindowsUriSupport keeps File.toURI's
+;; quoting but writes the empty authority too ("file:///C:/a"), and a UNC host
+;; becomes the authority ("file://srv/sh/").
+(define (nio-uri-path-byte-ok? b)
+  (or (and (fx>=? b 97) (fx<=? b 122)) (and (fx>=? b 65) (fx<=? b 90)) (and (fx>=? b 48) (fx<=? b 57))
+      (memv (integer->char b)
+            '(#\- #\_ #\. #\! #\~ #\* #\' #\( #\) #\: #\@ #\& #\= #\+ #\$ #\, #\; #\/))))
+(define (nio-uri-path-encode s)
+  (let ((bv (string->utf8 s)) (out (open-output-string)))
+    (do ((i 0 (fx+ i 1))) ((fx=? i (bytevector-length bv)) (get-output-string out))
+      (let ((b (bytevector-u8-ref bv i)))
+        (if (nio-uri-path-byte-ok? b)
+            (write-char (integer->char b) out)
+            (begin (write-char #\% out) (put-string out (uri-hex2 b))))))))
+;; ABS is absolute, a directory's already ending in its separator.
+(define (nio-path-uri-spec-for windows? abs)
+  (let ((path (file-uri-path-for windows? abs)))
+    (cond ((not windows?) (string-append "file://" (nio-uri-path-encode path)))
+          ((and (>= (string-length path) 4) (string=? (substring path 0 4) "////"))
+           (string-append "file:" (uri-quote-path (substring path 2 (string-length path)))))
+          (else (string-append "file://" (uri-quote-path path))))))
+(define (nio-path->uri windows? p)
+  (uri-parse (nio-path-uri-spec-for windows? (jfile-uri-path p))))
+;; URI.toASCIIString: the string form with every non-ASCII character, NFC
+;; normalized, as its UTF-8 bytes in uppercase %XX (jolt-lang/jolt#1468). ASCII
+;; is untouched -- the URI already quoted what ASCII it cannot hold.
+(define (uri-ascii-string s)
+  (let ((n (string-length s)))
+    (let scan ((i 0))
+      (cond ((fx=? i n) s)
+            ((fx<? (char->integer (string-ref s i)) #x80) (scan (fx+ i 1)))
+            (else
+             (let ((out (open-output-string)))
+               (string-for-each
+                (lambda (c)
+                  (if (fx<? (char->integer c) #x80)
+                      (write-char c out)
+                      (put-string out (uri-percent-encode c))))
+                (string-normalize-nfc s))
+               (get-output-string out)))))))
 ;; File.toURL: the same URL unencoded, as the JDK's (deprecated) toURL spells it.
 (define (jfile->url-spec p)
   (string-append "file:" (file-uri-path (jfile-uri-path p))))
@@ -2938,6 +2983,7 @@
 (define (jolt-slurp src . opts)
   (io-opts-check! opts)
   (cond
+    ((uri-jhost? src) (apply jolt-slurp (uri->url src) opts))
     ;; slurp is a drain of (apply io/reader src opts) on the JVM, so a charset
     ;; other than UTF-8 on a file, path or URL decodes the way io/reader does.
     ;; The arms below read those as UTF-8 text and ignored :encoding.
@@ -2979,6 +3025,10 @@
     (throw-jvm (quote IllegalArgumentException)
                (string-append "Cannot open <" (jolt-pr-str path) "> as a Writer.")))
   (io-opts-check! opts)
+  (if (uri-jhost? path)
+      (apply jolt-spit (uri->url path) content opts)
+      (apply jolt-spit-target path content opts)))
+(define (jolt-spit-target path content . opts)
   (let* ((given (if (url-jhost? path) (url-write-path path) (file-path-of path)))
          (p (project-relative given))
          (enc (io-encoding opts))
@@ -3119,6 +3169,7 @@
                 (host-new "StringReader" (read-file-string (jfile-fs x) (jfile-path x))))
     ((embedded-res? x) (host-new "StringReader" (utf8->string (embedded-res-bytes x))))
     ((url-jhost? x) (host-new "StringReader" (url-content x)))
+    ((uri-jhost? x) (apply jolt-io-reader (uri->url x) opts))
     ((string? x) (let ((p (project-relative x)))
                    (io-note-file-read! p)
                    (host-new "StringReader" (if (jar-path? p) (read-file-string p) (read-file-string p x)))))
@@ -4498,7 +4549,7 @@
   ;; (jolt-6i6). getScheme, getHost and getPort have no raw counterpart on the
   ;; JVM and are unchanged.
   (list (cons "toString" (lambda (u) (uri-field u 'string)))
-        (cons "toASCIIString" (lambda (u) (uri-field u 'string)))
+        (cons "toASCIIString" (lambda (u) (uri-ascii-string (uri-field u 'string))))
         (cons "getScheme" (lambda (u) (uri-field u 'scheme)))
         (cons "getSchemeSpecificPart" (lambda (u) (uri-field u 'dec-ssp)))
         (cons "getRawSchemeSpecificPart" (lambda (u) (uri-field u 'ssp)))
@@ -4514,11 +4565,7 @@
         (cons "getRawQuery" (lambda (u) (uri-field u 'query)))
         (cons "getFragment" (lambda (u) (uri-field u 'dec-fragment)))
         (cons "getRawFragment" (lambda (u) (uri-field u 'fragment)))
-        ;; URI.toURL = new URL(toString()) (JVM); honors a library-registered
-        ;; URL shim like io/as-url does.
-        (cons "toURL" (lambda (u) (let ((ctor (lookup-class class-ctors-tbl "URL")))
-                                    (if ctor (ctor (uri-field u 'string))
-                                        (make-url (uri-field u 'string))))))
+        (cons "toURL" (lambda (u) (uri->url u)))
         (cons "isAbsolute" (lambda (u) (not (jolt-nil? (uri-field u 'scheme)))))
         (cons "isOpaque" (lambda (u) (uri-opaque? u)))
         (cons "resolve" (lambda (u x) (uri-resolve u (uri-arg->uri x))))
@@ -4668,6 +4715,16 @@
 ;; serves explicit (.equals …)); hash matches so a URI works as a map key / set
 ;; member (ring/hiccup compare (URI. "/") values).
 (define-jhost-tag-pred (uri-jhost? t) (string=? t "uri"))
+;; URI.toURL = new URL(toString()) (JVM), refusing a relative URI as the JVM
+;; does; honors a library-registered URL shim like io/as-url does. It is also
+;; how clojure.java.io's IOFactory opens a URI -- slurp, spit, io/reader,
+;; io/writer, io/input-stream and io/output-stream all go through it, which
+;; jolt's openers did not (each refused a URI outright).
+(define (uri->url u)
+  (when (jolt-nil? (uri-field u 'scheme))
+    (throw-jvm (quote IllegalArgumentException) "URI is not absolute"))
+  (let ((ctor (lookup-class class-ctors-tbl "URL")))
+    (if ctor (ctor (uri-field u 'string)) (make-url (uri-field u 'string)))))
 (register-eq-arm! (lambda (a b) (or (uri-jhost? a) (uri-jhost? b)))
                   (lambda (a b) (and (uri-jhost? a) (uri-jhost? b)
                                      (string=? (uri-field a 'string) (uri-field b 'string)))))

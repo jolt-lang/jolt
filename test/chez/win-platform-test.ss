@@ -708,6 +708,13 @@
 (same "uri path: UNC keeps its host"   (file-uri-path-for #t "\\\\srv\\sh\\a")      "////srv/sh/a")
 (same "uri path: posix unchanged"      (file-uri-path-for #f "/a/b\\c")             "/a/b\\c")
 
+;; Path.toUri is not File.toURI (jolt-lang/jolt#1467): the authority is written,
+;; empty for a drive and the host for UNC (WindowsUriSupport), and on POSIX every
+;; byte outside the RFC 2396 path set is escaped (UnixUriUtils), non-ASCII too.
+(same "path uri: drive"                (nio-path-uri-spec-for #t "C:\\Users\\x\\a b.txt") "file:///C:/Users/x/a%20b.txt")
+(same "path uri: UNC host is authority" (nio-path-uri-spec-for #t "\\\\srv\\sh\\a")       "file://srv/sh/a")
+(same "path uri: posix escapes bytes"  (nio-path-uri-spec-for #f "/x/\x00FC; [a].clj")  "file:///x/%C3%BC%20%5Ba%5D.clj")
+
 (same "url->path: JDK spelling"        (file-url->path-for #t "file:/C:/Users/x/a.txt")   "C:/Users/x/a.txt")
 (same "url->path: empty authority"     (file-url->path-for #t "file:///C:/Users/x/a.txt") "C:/Users/x/a.txt")
 (same "url->path: localhost authority" (file-url->path-for #t "file://localhost/C:/a")    "C:/a")

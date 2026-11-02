@@ -2980,22 +2980,32 @@
          ;; somewhere else, so it happens however the body exits.
          ;; Masked at its edges (jolt-wind*, locks.ss), so an interrupt cannot
          ;; skip the restore.
-         (jolt-wind*
-           (lambda () #f)
-           #f
-           (lambda ()
-             (guard (e (else
-                         (unless was-loaded? (ldr-unmark-loaded! name)) ; roll the mark back
-                         (raise e)))
-               (cond
-                 (art (ldr-with-compiled-ns-vars file (lambda () (load (cpath-so-file art)))))
-                 ;; inside a compile, loading from source also emits the artifact
-                 ;; — RT.load's COMPILE_FILES branch, which is what carries a
-                 ;; compile through to the whole load closure.
-                 ((cpath-compiling-dir file)
-                  => (lambda (dir) (cpath-compile-load name file dir)))
-                 (else (aot-load-or-compile name file force?)))))
-           (set-chez-ns! saved))   ; the current ns is thread-local
+         ;; The load runs in a *ns* binding of its own, as Compiler.load pushes
+         ;; one: the file's ns form then writes THIS frame, which pops with the
+         ;; load. Writing the caller's *ns* instead (set-chez-ns! targets the
+         ;; innermost binding) reached through a frame a future, a/thread or go
+         ;; block CONVEYED from its parent — conveyance shares frames — so a
+         ;; require on another thread moved the parent's *ns* mid-file, and the
+         ;; restore below wrote back a value read before the load, clobbering any
+         ;; change the parent made meanwhile (jolt-1gk). With the frame there is
+         ;; nothing to restore. Before *ns* exists (the boot) the parameter is the
+         ;; current ns, thread-local already, and the restore stays.
+         (let ((body
+                (lambda ()
+                  (guard (e (else
+                              (unless was-loaded? (ldr-unmark-loaded! name)) ; roll the mark back
+                              (raise e)))
+                    (cond
+                      (art (ldr-with-compiled-ns-vars file (lambda () (load (cpath-so-file art)))))
+                      ;; inside a compile, loading from source also emits the
+                      ;; artifact — RT.load's COMPILE_FILES branch, which is what
+                      ;; carries a compile through to the whole load closure.
+                      ((cpath-compiling-dir file)
+                       => (lambda (dir) (cpath-compile-load name file dir)))
+                      (else (aot-load-or-compile name file force?)))))))
+           (if star-ns-cell
+               (dyn-with-frame (list (cons star-ns-cell (intern-ns! saved))) body)
+               (jolt-wind* (lambda () #f) #f body (set-chez-ns! saved))))
          ;; the hook feeds `jolt build`, which needs the SOURCE path; an
          ;; artifact-only namespace has none to give.
          (ns-loaded-hook name (or file art))))
