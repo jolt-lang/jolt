@@ -183,6 +183,7 @@ late-bind?
 list-dir
 list?
 load-namespace
+load-string
 locale-name
 machine-type
 make-interrupt
