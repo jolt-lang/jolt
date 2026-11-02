@@ -71,11 +71,16 @@
             (vector-set! (jhost-state self) 0 nv)
             (al-head! self 0))))))
 (define (al-push! self x)
-  (al-bump! self)
-  (al-ensure-tail! self)
-  (let ((n (al-cnt self)))
-    (vector-set! (al-vec self) (fx+ (al-head self) n) x)
-    (al-cnt! self (fx+ n 1))))
+  (al-bump! self)                       ; first: it may replace an old image's state
+  ;; the state read once: an append with room is a store and a count
+  (let* ((st (jhost-state self)) (v (vector-ref st 0)) (n (vector-ref st 1))
+         (i (fx+ (vector-ref st 2) n)))
+    (if (fx<? i (vector-length v))
+        (begin (vector-set! v i x) (vector-set! st 1 (fx+ n 1)))
+        (begin
+          (al-ensure-tail! self)
+          (vector-set! (al-vec self) (fx+ (al-head self) n) x)
+          (al-cnt! self (fx+ n 1))))))
 (define (al-insert-at! self i x)
   (al-bump! self)
   (let ((n (al-cnt self)) (h (al-head self)))
@@ -90,15 +95,15 @@
             (vector-set! v (fx+ h i) x) (al-cnt! self (fx+ n 1)))))))
 (define (al-remove-at! self i)
   (al-bump! self)
-  (let ((n (al-cnt self)) (v (al-vec self)) (h (al-head self)))
+  (let* ((st (jhost-state self)) (v (vector-ref st 0)) (n (vector-ref st 1)) (h (vector-ref st 2)))
     (if (fx=? i 0)
         (begin (vector-set! v h jolt-nil)
-               (al-cnt! self (fx- n 1))
+               (vector-set! st 1 (fx- n 1))
                ;; empty resets head so a drained deque reuses the whole buffer
-               (al-head! self (if (fx=? n 1) 0 (fx+ h 1))))
+               (vector-set! st 2 (if (fx=? n 1) 0 (fx+ h 1))))
         (begin
           (let shift ((j (fx+ h i))) (when (fx<? j (fx+ h (fx- n 1))) (vector-set! v j (vector-ref v (fx+ j 1))) (shift (fx+ j 1))))
-          (vector-set! v (fx+ h (fx- n 1)) jolt-nil) (al-cnt! self (fx- n 1))))))
+          (vector-set! v (fx+ h (fx- n 1)) jolt-nil) (vector-set! st 1 (fx- n 1))))))
 (define (al->list self)                   ; the `count` live elements as a Scheme list
   (let ((v (al-vec self)) (h (al-head self)))
     (let loop ((i (fx- (al-cnt self) 1)) (acc '())) (if (fx<? i 0) acc (loop (fx- i 1) (cons (vector-ref v (fx+ h i)) acc))))))
@@ -421,8 +426,9 @@
     ;; answering whether there was one — for anything else, the overload
     ;; Clojure's reflector picks for a long and for any other argument
     (cons "remove" (lambda (self i)
-                     (if (and (number? i) (exact? i) (integer? i))
-                         (let* ((idx (jnum->exact i)) (old (begin (al-check-index! self idx) (al-ref self idx))))
+                     (if (or (fixnum? i) (and (number? i) (exact? i) (integer? i)))
+                         (let* ((idx (if (fixnum? i) i (jnum->exact i)))
+                                (old (begin (al-check-index! self idx) (al-ref self idx))))
                            (al-remove-at! self idx) old)
                          (let loop ((k 0))
                            (cond ((fx=? k (al-cnt self)) #f)
@@ -517,11 +523,9 @@
 
 ;; ArrayList / LinkedList are Iterable: (seq al) walks the elements (nil if empty),
 ;; so (seq pending-forms) and reduce/into over one work like the JVM.
-(define (al-family? x)
-  (and (jhost? x) (or (string=? (jhost-tag x) "arraylist")
-                       (string=? (jhost-tag x) "linkedlist")
-                       (string=? (jhost-tag x) "arrays-aslist")
-                       (string=? (jhost-tag x) "immutable-list"))))
+(define-jhost-tag-pred (al-family? t)
+  (or (string=? t "arraylist") (string=? t "linkedlist")
+      (string=? t "arrays-aslist") (string=? t "immutable-list")))
 ;; …through its iterator, 32 elements to a chunk, as clojure.lang.RT seqs an
 ;; Iterable (chunkIteratorSeq): the chunks after the first are read when the walk
 ;; reaches them, so a change made meanwhile is a ConcurrentModificationException,
@@ -1130,23 +1134,32 @@
                           (map (lambda (k) (cons (hm-hash k) k)) (vector->list (hashtable-keys (hm-tbl self))))))
       (let ((o (hm-ord self)))
         (if (hm-idx? o) (hm-idx-live-keys o) (reverse o)))))
+;; (map f (hm-keys-ordered self)) in one pass: the newest-first key list folds
+;; straight into an oldest-first result, with no reversed copy to map over.
+;; Under the map's lock where hm-keys-ordered takes one.
+(define (hm-keys-ordered-map self f)
+  (define (walk)
+    (if (hm-weak? self)
+        (map f (hm-keys-ordered* self))
+        (let ((o (hm-ord self)))
+          (if (hm-idx? o)
+              (let loop ((cs (hm-idx-cells o)) (acc '()))
+                (cond ((null? cs) acc)
+                      ((cdar cs) (loop (cdr cs) (cons (f (caar cs)) acc)))
+                      (else (loop (cdr cs) acc))))
+              (let loop ((ks o) (acc '()))
+                (if (null? ks) acc (loop (cdr ks) (cons (f (car ks)) acc))))))))
+  (cond ((hm-chm? self) (with-chm self (walk)))
+        ((hm-props? self) (with-props self (walk)))
+        (else (walk))))
 ;; A hashmap-shaped jhost: the HashMap family and java.util.Properties, which is
 ;; a Hashtable with two string-typed accessors on top and so carries the same
 ;; #(table key-order) state. One predicate for every question about that shape —
 ;; seq, count, contains?, get, copy-into — so a new member of the family cannot
 ;; be map-like through one of them and opaque through another.
-(define (hm-hashmap? x)
-  (and (jhost? x)
-       ;; by the tag's first character first: this answers every count, seq and
-       ;; get arm walk that passes over the family, so a miss costs one compare
-       (let ((t (jhost-tag x)))
-         (and (fx>? (string-length t) 0)
-              (case (string-ref t 0)
-                ((#\h) (string=? t "hashmap"))
-                ((#\p) (string=? t "properties"))
-                ((#\c) (string=? t "chm"))
-                ((#\j) (or (string=? t "jx-weak-hashmap") (string=? t "jx-identity-hashmap")))
-                (else #f))))))
+(define-jhost-tag-pred (hm-hashmap? t)
+  (or (string=? t "hashmap") (string=? t "properties") (string=? t "chm")
+      (string=? t "jx-weak-hashmap") (string=? t "jx-identity-hashmap")))
 (define (hm-copy-into-ordered! self src)  ; copy a jolt map or hashmap, keeping insertion order
   (if (hm-hashmap? src)
       (for-each (lambda (kv)
@@ -1295,9 +1308,9 @@
         (cons "putAll" (lambda (self m) (hm-copy-into-ordered! self m) jolt-nil))
         ;; keySet / values / entrySet are live views (jutil-concurrent.ss), as
         ;; the JDK's HashMap$KeySet / $Values / $EntrySet are
-        (cons "keySet" (lambda (self) (make-jhost "jx-hm-keyset" (vector self))))
-        (cons "values" (lambda (self) (make-jhost "jx-hm-values" (vector self))))
-        (cons "entrySet" (lambda (self) (make-jhost "jx-hm-entryset" (vector self))))))
+        (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (make-jhost "jx-hm-keyset" (vector self))))))
+        (cons "values" (lambda (self) (jutil-view self 1 (lambda () (make-jhost "jx-hm-values" (vector self))))))
+        (cons "entrySet" (lambda (self) (jutil-view self 2 (lambda () (make-jhost "jx-hm-entryset" (vector self))))))))
 (register-host-methods! "hashmap" hashmap-methods)
 (register-host-methods! "jx-weak-hashmap" hashmap-methods)
 (register-host-methods! "jx-identity-hashmap" hashmap-methods)
@@ -1680,6 +1693,13 @@
 (define (make-atomic init kind)
   (make-jhost (atomic-tag-for kind) (vector (box init) (make-mutex) kind)))
 (define (atomic-box self) (vector-ref (jhost-state self) 0))
+;; AtomicInteger and AtomicLong are Numbers, and print-method writes a Number as
+;; its str under pr and print alike: 5, not #object[...]. AtomicBoolean and
+;; AtomicReference are not, and keep the #object form.
+(register-pr-arm! (lambda (x) (and (jhost? x)
+                                   (let ((t (jhost-tag x)))
+                                     (or (string=? t "atomic-long") (string=? t "atomic-integer")))))
+                  (lambda (x) (jolt-num->string (unbox (atomic-box x)))))
 (define (atomic-lock self) (vector-ref (jhost-state self) 1))
 (define (atomic-kind self) (vector-ref (jhost-state self) 2))
 ;; Convert a modeled Java method argument at the signature boundary. Numeric
@@ -1722,6 +1742,23 @@
               (else #f))
             (begin (set-box! (atomic-box self) next) #t)
             #f)))))
+;; updateAndGet / getAndUpdate / accumulateAndGet / getAndAccumulate: F runs
+;; LOCK-FREE in a CAS retry loop (JVM parity), so it may re-enter the same atomic.
+;; atomic-cas! re-normalizes V and N, which keeps every CAS caller behind one
+;; typed boundary; conversion is idempotent.
+(define (atomic-update! self f return-old?)
+  (let loop ((v (unbox (atomic-box self))))
+    (let ((n (atomic-convert self (f v))))
+      (if (atomic-cas! self v n) (if return-old? v n) (loop (unbox (atomic-box self)))))))
+;; The functional interface's method: AtomicInteger takes IntUnaryOperator /
+;; IntBinaryOperator (applyAsInt), AtomicLong the Long pair (applyAsLong), and
+;; AtomicReference UnaryOperator / BinaryOperator (apply). A reify of the
+;; primitive interface has only its own method, so "apply" refused it.
+(define (atomic-fi-method self)
+  (case (atomic-kind self)
+    ((integer) "applyAsInt")
+    ((long) "applyAsLong")
+    (else "apply")))
 (let ((ref-ctor (lambda args
                   (make-atomic (if (pair? args) (car args) jolt-nil) 'reference)))
       (int-ctor (lambda args
@@ -1760,15 +1797,15 @@
                 o)))))
         (cons "compareAndSet" (lambda (self o n) (atomic-cas! self o n)))
         (cons "updateAndGet" (lambda (self f)
-          (let loop ((v (unbox (atomic-box self))))
-            ;; atomic-cas! deliberately re-normalizes V and N. This keeps every
-            ;; CAS caller behind one typed boundary; conversion is idempotent.
-            (let ((n (atomic-convert self (jolt-fi-call f "apply" v))))
-              (if (atomic-cas! self v n) n (loop (unbox (atomic-box self))))))))
+          (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v)) #f)))
         (cons "getAndUpdate" (lambda (self f)
-          (let loop ((v (unbox (atomic-box self))))
-            (let ((n (atomic-convert self (jolt-fi-call f "apply" v))))
-              (if (atomic-cas! self v n) v (loop (unbox (atomic-box self))))))))
+          (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v)) #t)))
+        (cons "accumulateAndGet" (lambda (self x f)
+          (let ((x (atomic-convert self x)))
+            (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v x)) #f))))
+        (cons "getAndAccumulate" (lambda (self x f)
+          (let ((x (atomic-convert self x)))
+            (atomic-update! self (lambda (v) (jolt-fi-call f (atomic-fi-method self) v x)) #t))))
         (cons "incrementAndGet"
           (lambda (self) (atomic-numeric-transition! self 1 #f)))
         (cons "decrementAndGet"
@@ -1791,10 +1828,8 @@
         (cons "toString" (lambda (self) (jolt-str-render-one (unbox (atomic-box self))))))))
   (for-each (lambda (t) (register-host-methods! t atomic-methods))
             (cons atomic-legacy-tag atomic-tags)))
-;; java.util.Collections/unmodifiable* and synchronized* are views over their
-;; argument (jutil-views.ss); they used to answer the argument itself.
-(register-class-statics! "java.util.Collections"
-  (list (cons "emptyList" (lambda _ (jolt-vector))) (cons "emptyMap" (lambda _ (jolt-hash-map)))))
+;; java.util.Collections/unmodifiable* and synchronized*, and the empty and
+;; fixed collections, are in jutil-views.ss.
 
 ;; Collections/enumeration: an Enumeration over a collection's elements, which
 ;; enumeration-seq and SequenceInputStream drive. Collections/list drains any
@@ -1821,13 +1856,7 @@
 
 ;; A mutable set over the same value-keyed hashtable (element -> #t).
 ;; Constructors: () | (capacity) [ignored] | (coll) [copy].
-(define (hs-hashset? x)
-  (and (jhost? x)
-       (let ((t (jhost-tag x)))
-         (and (fx>? (string-length t) 0)
-              (case (string-ref t 0)
-                ((#\h) (string=? t "hashset"))
-                (else #f))))))
+(define-jhost-tag-pred (hs-hashset? t) (string=? t "hashset"))
 (define (hs->list self) (hm-keys-ordered self))
 (define (hs-ctor tag)
   (lambda args
@@ -1912,17 +1941,50 @@
 (register-jutil-iterator! "hashset-iterator")
 ;; reduce over a fail-fast collection walks its iterator (seq.ss
 ;; jolt-reduce-iter-hook); a Map is no Iterable and reduces over its seq
+;; The setup is paid per reduce, so it asks no more than it must: an ArrayList
+;; or LinkedList is known by its tag and gets its iterator built directly; any
+;; other collection's iterator method, and its iterator's hasNext and next, are
+;; looked up once per collection tag and remembered by the tag object (a tag is
+;; the literal its constructor passes, so the ones seen are few), for as long
+;; as no host method table changes (host-methods-epoch). Entries are
+;; #(tag epoch iterator #(iterator-tag hasNext next)), the last filled by the
+;; first walk and replaced whole, as host-tostring-last is.
+(define reduce-iter-seen '())
+(define reduce-iter-mu (make-mutex))
+(define (reduce-iter-entry t)
+  (let loop ((es reduce-iter-seen))
+    (cond ((null? es) #f)
+          ((and (eq? (vector-ref (car es) 0) t) (fx=? (vector-ref (car es) 1) host-methods-epoch)) (car es))
+          (else (loop (cdr es))))))
+(define (reduce-iter-learn! x)
+  (and (not (eq? (jutil-coll-kind x) 'map))
+       (let ((m (host-method-ref (jhost-tag x) "iterator")))
+         (and m
+              (let ((e (vector (jhost-tag x) host-methods-epoch m (vector #f #f #f))))
+                (jolt-with-mutex reduce-iter-mu
+                  (set! reduce-iter-seen
+                        (cons e (if (fx<? (length reduce-iter-seen) 32) reduce-iter-seen '()))))
+                e)))))
 (set! jolt-reduce-iter-hook
   (lambda (x)
-    (and (jutil-modcount x)
-         (not (eq? (jutil-coll-kind x) 'map))
-         (host-method-ref (jhost-tag x) "iterator")
-         (let ((it (record-method-dispatch x "iterator" jolt-nil)))
-           (if (al-family? x)
-               ;; ArrayList$Itr / LinkedList$ListItr, stepped directly
-               (lambda () (if (ali-has-next? it) (ali-next it) reduce-iter-done))
-               (let ((has? (iterator-seq-method it "hasNext")) (next (iterator-seq-method it "next")))
-                 (lambda () (if (jolt-truthy? (has? it)) (next it) reduce-iter-done))))))))
+    (and (jutil-modcount-reader x)
+         (if (al-family? x)
+             ;; ArrayList$Itr / LinkedList$ListItr, stepped directly
+             (let ((it (al-iterator x)))
+               (lambda () (if (ali-has-next? it) (ali-next it) reduce-iter-done)))
+             (let ((e (or (reduce-iter-entry (jhost-tag x)) (reduce-iter-learn! x))))
+               (and e
+                    (let* ((it ((vector-ref e 2) x))
+                           (c (let ((c (vector-ref e 3)))
+                                (if (and (jhost? it) (eq? (jhost-tag it) (vector-ref c 0)))
+                                    c
+                                    (let ((c (vector (and (jhost? it) (jhost-tag it))
+                                                     (iterator-seq-method it "hasNext")
+                                                     (iterator-seq-method it "next"))))
+                                      (vector-set! e 3 c)
+                                      c))))
+                           (has? (vector-ref c 1)) (next (vector-ref c 2)))
+                      (lambda () (if (jolt-truthy? (has? it)) (next it) reduce-iter-done)))))))))
 (register-modcount! "hashset" hm-mc)
 (register-modcount! "hashmap" hm-mc)
 (register-modcount! "jx-weak-hashmap" hm-mc)
@@ -2452,8 +2514,37 @@
           (copy! off out len)
           (cons out (cddr rest))))
       (cons (whole) rest)))
+;; The deprecated String(byte[] ascii, int hibyte [, int offset, int count]):
+;; each char is hibyte's low 8 bits over the byte's, no charset involved. A lone
+;; number after the bytes, or three of them, is this form; two are a slice.
+(define (string-hibyte-form? rest)
+  (and (pair? rest) (number? (car rest))
+       (or (null? (cdr rest))
+           (and (pair? (cdr rest)) (number? (cadr rest))
+                (pair? (cddr rest)) (number? (caddr rest)) (null? (cdddr rest))))))
+(define (string-from-hibyte n copy! whole rest)
+  (let* ((hi (fxsll (fxand (jolt-unchecked-int (car rest)) #xff) 8))
+         (p (bytes-slice-for-string n copy! whole (cdr rest)))
+         (bv (car p))
+         (out (make-string (bytevector-length bv))))
+    (let loop ((i 0))
+      (if (fx=? i (bytevector-length bv))
+          out
+          (let ((c (fxior hi (bytevector-u8-ref bv i))))
+            ;; a surrogate is no Chez char: the lone UTF-16 unit reads as U+FFFD
+            (string-set! out i (if (and (fx>=? c #xD800) (fx<=? c #xDFFF)) #\xFFFD (integer->char c)))
+            (loop (fx+ i 1)))))))
 (define (jolt-new-string x . rest)
-    (cond ((bytevector? x)
+    (cond ((and (string-hibyte-form? rest)
+                (or (bytevector? x) (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte))))
+           (if (bytevector? x)
+               (string-from-hibyte (bytevector-length x)
+                                   (lambda (off out len) (bytevector-copy! x off out 0 len))
+                                   (lambda () x) rest)
+               (string-from-hibyte (ja-len x)
+                                   (lambda (off out len) (ja-bytes->bv! x off out 0 len))
+                                   (lambda () (na-bytearray->bv x)) rest)))
+          ((bytevector? x)
            (let ((p (bytes-slice-for-string (bytevector-length x)
                                             (lambda (off out len) (bytevector-copy! x off out 0 len))
                                             (lambda () x) rest)))
@@ -4035,7 +4126,7 @@
 ;; HttpClient.connectTimeout). Value-equal so (= (Optional/of x) (Optional/of x)).
 (define (jt-optional present? value) (make-jhost "optional" (vector present? value)))
 (define jt-optional-empty (jt-optional #f jolt-nil))
-(define (opt? x) (and (jhost? x) (string=? (jhost-tag x) "optional")))
+(define-jhost-tag-pred (opt? t) (string=? t "optional"))
 (define (opt-present? o) (vector-ref (jhost-state o) 0))
 (define (opt-value o) (vector-ref (jhost-state o) 1))
 (let ((statics (list (cons "of" (lambda (v) (if (jolt-nil? v) (throw-jvm 'NullPointerException "Optional.of(null)") (jt-optional #t v))))
@@ -4372,7 +4463,7 @@
 (register-class-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "charset"))) (lambda (x) "java.nio.charset.Charset"))
 ;; Charset equality, hash and order go by canonical name, as Charset.equals,
 ;; hashCode and compareTo (case-insensitive) do.
-(define (charset-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "charset")))
+(define-jhost-tag-pred (charset-jhost? t) (string=? t "charset"))
 (register-eq-arm! (lambda (a b) (or (charset-jhost? a) (charset-jhost? b)))
                   (lambda (a b) (and (charset-jhost? a) (charset-jhost? b)
                                      (string=? (charset-name a) (charset-name b)))))

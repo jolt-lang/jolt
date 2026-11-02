@@ -466,6 +466,33 @@
 ;; broadcast (jolt-cv-wake!); mu is held at both ends, which is what the count needs.
 ;; A raw condition is for the waits no fiber can reach and no value carries: the
 ;; carriers' idle wait, the timer, the loader, the main queue.
+;;
+;; WAITING WITH INTERRUPTS DISABLED. Chez's condition-wait gives up the thread's
+;; place in a collect rendezvous only when interrupts are ENABLED (thread.c
+;; S_condition_wait: DISABLECOUNT(tc) == 0), as mutex-acquire does (see
+;; jolt-mutex-acquire! above). A thread that blocked here with them disabled
+;; stayed counted as active: a collection requested meanwhile waited for it, and
+;; every thread that reached the rendezvous -- the one that would have signalled
+;; this wait among them -- waited with it. So that wait is cut into slices of
+;; cw-masked-slice, each followed by the collect-safe pause, which deactivates
+;; the thread whatever its disable count and lets a pending collection run. A
+;; slice that ends before the caller's own timeout answers as a wake: every
+;; caller re-checks its condition after one, since condition-wait may wake
+;; spuriously anyway.
+(define cw-masked-slice (make-time 'time-duration 1000000 0))   ; 1ms
+(define cw-wait
+  (case-lambda
+    ((c mu)
+     (if (fx=? 0 (jolt-locks-disable-count))
+         (condition-wait c mu)
+         (begin (condition-wait c mu cw-masked-slice) (jolt-collect-safe-pause) #t)))
+    ((c mu t)
+     (if (fx=? 0 (jolt-locks-disable-count))
+         (condition-wait c mu t)
+         (let* ((sliced? (time<? cw-masked-slice t))
+                (r (condition-wait c mu (if sliced? cw-masked-slice t))))
+           (jolt-collect-safe-pause)
+           (or r sliced?))))))
 (define jolt-condition-wait
   (case-lambda
     ((cv mu)
@@ -475,19 +502,19 @@
      (if (jolt-cv? cv)
          (begin
            (jolt-cv-threads-set! cv (fx+ (jolt-cv-threads cv) 1))
-           (call-with-thread-state 'WAITING (lambda () (condition-wait (jolt-cv-cond cv) mu)))
+           (call-with-thread-state 'WAITING (lambda () (cw-wait (jolt-cv-cond cv) mu)))
            (jolt-cv-threads-set! cv (fx- (jolt-cv-threads cv) 1)))
-         (call-with-thread-state 'WAITING (lambda () (condition-wait cv mu)))))
+         (call-with-thread-state 'WAITING (lambda () (cw-wait cv mu)))))
     ((cv mu abs-time)
      (when (jolt-current-fiber) (jolt-blocking-refuse 'jolt-condition-wait))
      (if (jolt-cv? cv)
          (begin
            (jolt-cv-threads-set! cv (fx+ (jolt-cv-threads cv) 1))
            (let ((r (call-with-thread-state 'TIMED_WAITING
-                      (lambda () (condition-wait (jolt-cv-cond cv) mu abs-time)))))
+                      (lambda () (cw-wait (jolt-cv-cond cv) mu abs-time)))))
              (jolt-cv-threads-set! cv (fx- (jolt-cv-threads cv) 1))
              r))
-         (call-with-thread-state 'TIMED_WAITING (lambda () (condition-wait cv mu abs-time)))))))
+         (call-with-thread-state 'TIMED_WAITING (lambda () (cw-wait cv mu abs-time)))))))
 
 ;; --- the wait beneath the fiber layer ---------------------------------------
 ;; (jolt-stop-the-world-wait cv mu timeout) -> #t signalled | #f timed out
