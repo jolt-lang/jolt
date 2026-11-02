@@ -46,14 +46,13 @@
     (check "directory without trailing slash" (some? (.getResource loader "migrations")) true)
     (check "sibling directory" (some? (.getResource loader "migrations-old/")) true)
     (check "missing directory" (.getResource loader "missing/") nil)
+    ;; JarFile's constructors: no charset, and a mode only after verify
     (doseq [archive [(java.util.jar.JarFile. (java.io.File. "jolt-embedded-resources.jar"))
-                     (java.util.jar.JarFile. "jolt-embedded-resources.jar"
-                                             java.util.zip.ZipFile/OPEN_READ)
-                     (java.util.jar.JarFile. "jolt-embedded-resources.jar"
-                                             java.nio.charset.StandardCharsets/UTF_8)
+                     (java.util.jar.JarFile. "jolt-embedded-resources.jar" true)
                      (java.util.jar.JarFile. (java.io.File. "jolt-embedded-resources.jar")
-                                             java.util.zip.ZipFile/OPEN_READ
-                                             java.nio.charset.StandardCharsets/UTF_8)]]
+                                             true java.util.zip.ZipFile/OPEN_READ)
+                     (java.util.jar.JarFile. (java.io.File. "jolt-embedded-resources.jar")
+                                             true java.util.zip.ZipFile/OPEN_READ (Runtime/version))]]
       (check "constructor archive name" (.getName archive) "jolt-embedded-resources.jar")
       (check "constructor entries" (count (enumeration-seq (.entries archive))) 9)
       (.close archive))

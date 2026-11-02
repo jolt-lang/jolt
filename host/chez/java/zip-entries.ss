@@ -9,10 +9,11 @@
 (define-record-type zentry
   (fields (mutable name) (mutable xdostime) (mutable crc) (mutable size)
           (mutable csize) (mutable method) (mutable extra) (mutable comment)
-          (mutable mtime))   ; last-modified epoch millis when set by a FileTime, or #f
+          (mutable mtime))   ; the last-modified FileTime, at its own precision, or #f
   (nongenerative jolt-zentry-v1))
 
-(define (zip-entry? x) (and (jhost? x) (string=? (jhost-tag x) "zip-entry")))
+;; A ZipEntry, a JarEntry or a JarFileEntry: one zentry under each class.
+(define (zip-entry? x) (and (jhost? x) (member (jhost-tag x) '("zip-entry" "jar-entry" "jar-file-entry")) #t))
 (define (zentry-of x) (jhost-state x))
 
 ;; --- DOS time (JDK 21 ZipUtils.java) ------------------------------------------
@@ -88,15 +89,18 @@
               ((and (= tag #x5455) (>= sz 1))
                (let ((flag (bytevector-u8-ref bv at)))
                  (when (and (not (zero? (bitwise-and flag 1))) (<= (+ at 5) (+ at sz)))
-                   (zentry-mtime-set! e (* 1000 (bytevector-s32-ref bv (+ at 1) (endianness little)))))))
+                   (zentry-mtime-set! e (make-file-time-in (bytevector-s32-ref bv (+ at 1) (endianness little))
+                                                           1000000000)))))
               ((and (= tag #x000a) (>= sz 32))
                (let ((pos (+ at 4)))
                  (when (and (= (bytevector-u16-ref bv pos (endianness little)) 1)
                             (= (bytevector-u16-ref bv (+ pos 2) (endianness little)) 24))
                    (let ((wtime (bytevector-s64-ref bv (+ pos 4) (endianness little))))
                      (unless (= wtime (- (expt 2 63)))
-                       ;; FILETIME: 100 ns since 1601-01-01
-                       (zentry-mtime-set! e (div (- wtime 116444736000000000) 10000))))))))
+                       ;; FILETIME: 100 ns since 1601-01-01, kept in microseconds
+                       ;; as winTimeToFileTime keeps it
+                       (zentry-mtime-set! e (make-file-time-in (- (quotient wtime 10) 11644473600000000)
+                                                               1000))))))))
             (loop (+ at sz))))))
     (zentry-extra-set! e (na-byte-array (bytevector-copy bv)))))
 
@@ -107,7 +111,6 @@
         n
         (loop (fx+ i 1) (fx+ n (if (fx>= (char->integer (string-ref s i)) #x10000) 2 1))))))
 
-(define zentry-local-times (make-weak-eq-hashtable))
 (define zentry-access-times (make-weak-eq-hashtable))
 (define zentry-creation-times (make-weak-eq-hashtable))
 (define zentry-real-names (make-weak-eq-hashtable))
@@ -115,7 +118,7 @@
   (for-each (lambda (table)
               (let ((value (hashtable-ref table source #f)))
                 (when value (hashtable-set! table target value))))
-            (list zentry-local-times zentry-access-times zentry-creation-times zentry-real-names)))
+            (list zentry-access-times zentry-creation-times zentry-real-names zentry-jars)))
 
 ;; ZipEntry(String name): lines 105-111.
 (define (make-zip-entry-named name)
@@ -127,19 +130,26 @@
 ;; ZipEntry(String) | ZipEntry(ZipEntry): lines 105-138. Any other argument
 ;; count, or one argument of another class, has no matching constructor. A nil
 ;; argument takes the String constructor.
+;; Every field and side table of E, in a fresh zentry.
+(define (zentry-copy e)
+  (let ((copy (make-zentry (zentry-name e) (zentry-xdostime e) (zentry-crc e)
+                           (zentry-size e) (zentry-csize e) (zentry-method e)
+                           (zentry-extra e) (zentry-comment e) (zentry-mtime e))))
+    (zentry-copy-side-data! e copy)
+    copy))
 (define (make-zip-entry . args)
   (define (no-ctor)
     (throw-jvm 'IllegalArgumentException "No matching ctor found for class java.util.zip.ZipEntry"))
   (unless (= (length args) 1) (no-ctor))
   (let ((x (car args)))
     (cond
-      ((and (jhost? x) (member (jhost-tag x) '("zip-entry" "jar-entry")))
-       (let* ((e (zentry-of x))
-              (copy (make-jhost "zip-entry"
-                                (make-zentry (zentry-name e) (zentry-xdostime e) (zentry-crc e)
-                                             (zentry-size e) (zentry-csize e) (zentry-method e)
-                                             (zentry-extra e) (zentry-comment e) (zentry-mtime e)))))
-         (zentry-copy-side-data! e (zentry-of copy))
+      ((zip-entry? x)
+       (let ((copy (make-jhost "zip-entry" (zentry-copy (zentry-of x)))))
+         ;; a JarFileEntry's name field is the entry it was read from -- getName
+         ;; answers the name asked for -- and the copy takes the field
+         (when (string=? (jhost-tag x) "jar-file-entry")
+           (let ((real (hashtable-ref zentry-real-names (zentry-of x) #f)))
+             (when real (zentry-name-set! (zentry-of copy) real))))
          copy))
       ((or (string? x) (jolt-nil? x)) (make-zip-entry-named x))
       (else (no-ctor)))))
@@ -159,7 +169,7 @@
 ;; getTime(): the mtime when one was set, else the DOS time, else -1 (lines
 ;; 187-195).
 (define (zentry-time e)
-  (cond ((zentry-mtime e) => (lambda (ms) ms))
+  (cond ((zentry-mtime e) => file-time-ms)
         ((= (zentry-xdostime e) -1) -1)
         (else (zip-xdostime->java (zentry-xdostime e)))))
 ;; setTime(long): lines 160-173. A time the DOS field cannot hold is kept as an
@@ -169,49 +179,63 @@
     (zentry-xdostime-set! e x)
     (zentry-mtime-set! e (if (and (not (= x zip-dostime-before-1980)) (<= ms zip-upper-dostime-bound))
                              #f
-                             ms))))
-(define (embedded-local-date-time-ms ms)
-  (if (= ms -1)
-      jolt-nil
-      (let ((fields (inst-fields ms)))
-        (make-jhost "local-date-time"
-                    (vector (list-ref fields 0) (list-ref fields 1) (list-ref fields 2)
-                            (list-ref fields 3) (list-ref fields 4) (list-ref fields 5)
-                            (* (list-ref fields 6) 1000000))))))
-(register-host-methods! "local-date-time"
-  (list
-   (cons "getYear" (lambda (self) (vector-ref (jhost-state self) 0)))
-   (cons "getMonthValue" (lambda (self) (vector-ref (jhost-state self) 1)))
-   (cons "getDayOfMonth" (lambda (self) (vector-ref (jhost-state self) 2)))
-   (cons "getHour" (lambda (self) (vector-ref (jhost-state self) 3)))
-   (cons "getMinute" (lambda (self) (vector-ref (jhost-state self) 4)))
-   (cons "getSecond" (lambda (self) (vector-ref (jhost-state self) 5)))
-   (cons "getNano" (lambda (self) (vector-ref (jhost-state self) 6)))
-   (cons "toString"
-         (lambda (self)
-           (let ((v (jhost-state self)))
-             (string-append (number->string (vector-ref v 0)) "-"
-                            (string-pad (number->string (vector-ref v 1)) 2 #\0) "-"
-                            (string-pad (number->string (vector-ref v 2)) 2 #\0) "T"
-                            (string-pad (number->string (vector-ref v 3)) 2 #\0) ":"
-                            (string-pad (number->string (vector-ref v 4)) 2 #\0) ":"
-                            (string-pad (number->string (vector-ref v 5)) 2 #\0)))))))
-(define (zentry-local-ms value)
-  (let* ((year (record-method-dispatch value "getYear" jolt-nil))
-         (month (record-method-dispatch value "getMonthValue" jolt-nil))
-         (day (record-method-dispatch value "getDayOfMonth" jolt-nil))
-         (hour (record-method-dispatch value "getHour" jolt-nil))
-         (minute (record-method-dispatch value "getMinute" jolt-nil))
-         (second (record-method-dispatch value "getSecond" jolt-nil))
-         (nano (record-method-dispatch value "getNano" jolt-nil)))
-    (cal-ms (make-jhost "calendar"
-                        (vector #f (vector year (- month 1) day hour minute second nano)
-                                (calendar-arg-zone '()))))))
+                             (make-file-time ms)))))
+;; getTimeLocal (lines 241-258): a java.time.LocalDateTime, built by the
+;; java.time base's own LocalDateTime/of. An mtime is that instant in the local
+;; zone; otherwise the DOS fields are read straight off, as the JDK reads them, so
+;; an entry with no time at all (xdostime -1) is the DateTimeException the JDK's
+;; out-of-range month raises.
+(define (zentry-local-date-time e)
+  (let ((ldt (lambda fields (apply host-static-call "java.time.LocalDateTime" "of" (map ->num fields)))))
+    (cond
+      ((zentry-mtime e)
+       => (lambda (t)
+            (let* ((ns (file-time-ns t))
+                   (d (time-utc->date (make-time 'time-utc (mod ns 1000000000) (div ns 1000000000)))))
+              (ldt (date-year d) (date-month d) (date-day d) (date-hour d) (date-minute d)
+                   (date-second d) (date-nanosecond d)))))
+      (else
+       (let* ((x (zentry-xdostime e))
+              (field (lambda (shift mask) (bitwise-and (bitwise-arithmetic-shift-right x shift) mask)))
+              (ms (bitwise-arithmetic-shift-right x 32)))
+         (ldt (+ (field 25 #x7f) 1980) (field 21 #x0f) (field 16 #x1f) (field 11 #x1f) (field 5 #x3f)
+              (+ (bitwise-and (bitwise-arithmetic-shift-left x 1) #x3e) (quotient ms 1000))
+              (* (remainder ms 1000) 1000000)))))))
+(define (zentry-ldt-field value name) (jnum->exact (record-method-dispatch value name jolt-nil)))
+;; The instant a LocalDateTime is in the local zone, as a FileTime to the
+;; nanosecond: the zone the DOS fields are read and written in
+;; (zip-java->xdostime).
+(define (zentry-local-file-time value)
+  (make-file-time-ns
+   (+ (* 1000000000
+         (time-second
+          (date->time-utc
+           (make-date 0 (zentry-ldt-field value "getSecond") (zentry-ldt-field value "getMinute")
+                      (zentry-ldt-field value "getHour") (zentry-ldt-field value "getDayOfMonth")
+                      (zentry-ldt-field value "getMonthValue") (zentry-ldt-field value "getYear")))))
+      (zentry-ldt-field value "getNano"))))
+;; setTimeLocal (lines 259-283): the DOS fields straight from the local time, the
+;; odd second and the milliseconds above them; an mtime only when the DOS field
+;; cannot hold the year.
 (define (zentry-set-local-time! e value)
-  (let ((ms (zentry-local-ms value)))
-    (hashtable-set! zentry-local-times e value)
-    (zentry-xdostime-set! e (zip-java->xdostime ms))
-    (zentry-mtime-set! e ms)))
+  (let* ((field (lambda (name) (zentry-ldt-field value name)))
+         (year (- (field "getYear") 1980))
+         (x (if (< year 0)
+                zip-dostime-before-1980
+                (+ (bitwise-and (bitwise-ior (bitwise-arithmetic-shift-left year 25)
+                                             (bitwise-arithmetic-shift-left (field "getMonthValue") 21)
+                                             (bitwise-arithmetic-shift-left (field "getDayOfMonth") 16)
+                                             (bitwise-arithmetic-shift-left (field "getHour") 11)
+                                             (bitwise-arithmetic-shift-left (field "getMinute") 5)
+                                             (bitwise-arithmetic-shift-right (field "getSecond") 1))
+                                #xffffffff)
+                   (bitwise-arithmetic-shift-left
+                    (+ (* (bitwise-and (field "getSecond") 1) 1000) (quotient (field "getNano") 1000000))
+                    32)))))
+    (zentry-xdostime-set! e x)
+    (zentry-mtime-set! e (if (and (not (= x zip-dostime-before-1980)) (<= year #x7f))
+                             #f
+                             (zentry-local-file-time value)))))
 (register-host-methods! "zip-entry"
   (list
    (zentry-member "getName" (lambda (self) (zentry-name (zentry-of self))))
@@ -219,8 +243,7 @@
    (zentry-setter "setTime" (lambda (e x) (zentry-set-time! e (zentry-long-arg x))))
    (zentry-member "getTimeLocal"
                   (lambda (self)
-                    (or (hashtable-ref zentry-local-times (zentry-of self) #f)
-                        (embedded-local-date-time-ms (zentry-time (zentry-of self))))))
+                    (zentry-local-date-time (zentry-of self))))
    (zentry-setter "setTimeLocal" zentry-set-local-time!)
    (zentry-member "getLastAccessTime"
                   (lambda (self) (or (hashtable-ref zentry-access-times (zentry-of self) #f) jolt-nil)))
@@ -241,7 +264,7 @@
    (zentry-member "getLastModifiedTime"
                   (lambda (self)
                     (let ((e (zentry-of self)))
-                      (cond ((zentry-mtime e) => make-file-time)
+                      (cond ((zentry-mtime e) => (lambda (t) t))
                             ((= (zentry-xdostime e) -1) jolt-nil)
                             (else (make-file-time (zentry-time e)))))))
    ;; setLastModifiedTime answers the entry (public ZipEntry setLastModifiedTime),
@@ -253,9 +276,8 @@
                        (let ((e (zentry-of self)))
                          (cond ((jolt-nil? t) (zip-throw "java.lang.NullPointerException" "lastModifiedTime"))
                                ((file-time? t)
-                                (let ((ms (file-time-ms t)))
-                                  (zentry-xdostime-set! e (zip-java->xdostime ms))
-                                  (zentry-mtime-set! e ms)))
+                                (zentry-xdostime-set! e (zip-java->xdostime (file-time-ms t)))
+                                (zentry-mtime-set! e t))
                                (else (zip-class-cast t "java.nio.file.attribute.FileTime"))))
                        self)))
    ;; the size, compressed size and CRC-32 setters check as lines 262-330 do
@@ -311,7 +333,7 @@
    ;; a copy whose extra field is a copy (lines 696-705)
    (zentry-member "clone"
                   (lambda (self)
-                    (let* ((copy (make-jhost (jhost-tag self) (jhost-state (make-zip-entry self))))
+                    (let* ((copy (make-jhost (jhost-tag self) (zentry-copy (zentry-of self))))
                            (e (zentry-of copy))
                            (x (zentry-extra e)))
                       (unless (jolt-nil? x)

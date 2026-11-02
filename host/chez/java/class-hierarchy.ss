@@ -391,6 +391,7 @@
             ;; graph models, not by eye.
             "java.util.Queue" "java.util.Deque" "java.util.Map$Entry"
             "java.nio.file.Path" "java.nio.file.PathMatcher" "java.nio.file.Watchable"
+            "java.nio.file.DirectoryStream"
             ;; the typed.clojure rows (probed the same way)
             "java.util.RandomAccess" "java.util.Comparator" "java.util.SequencedCollection"
             ;; the one interface java.util.regex.Matcher implements (#998)
@@ -954,6 +955,7 @@
 (jch-register-supers! "java.util.zip.Deflater" '())
 (jch-register-supers! "java.util.zip.ZipEntry" '("java.lang.Cloneable"))
 (jch-register-supers! "java.util.jar.JarEntry" '("java.util.zip.ZipEntry"))
+(jch-register-supers! "java.util.jar.JarFile$JarFileEntry" '("java.util.jar.JarEntry"))
 (jch-register-supers! "java.util.jar.JarFile" '("java.util.zip.ZipFile"))
 (jch-register-supers! "java.util.jar.Attributes" '("java.util.Map" "java.lang.Cloneable"))
 (jch-register-supers! "java.util.jar.Manifest" '("java.lang.Cloneable"))
@@ -1485,6 +1487,7 @@
 ;; java.io shims report java.io.Reader rather than a subclass.
 (jch-register-supers! "java.nio.file.Path" '("java.lang.Comparable" "java.lang.Iterable" "java.nio.file.Watchable"))
 (jch-register-supers! "java.nio.file.Watchable" '())
+(jch-register-supers! "java.nio.file.DirectoryStream" '("java.io.Closeable" "java.lang.Iterable"))
 (jch-register-supers! "java.nio.file.FileSystem" '())
 (jch-register-supers! "java.nio.file.PathMatcher" '())
 ;; the option interfaces, and the option enums that implement them (declared

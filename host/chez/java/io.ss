@@ -519,7 +519,9 @@
         (let ((d (zipdir-for (file-url->path (car parts)))))
           (if (not d)
               (values #f #f)
-              (let ((ent (hashtable-ref (zipdir-table d) (uri-decode-lenient (cdr parts)) #f)))
+              ;; a directory answers to its name without the "/", as
+              ;; ZipFile.getEntry looks it up
+              (let ((ent (zipdir-lookup d (uri-decode-lenient (cdr parts)))))
                 (if ent (values d ent) (values #f #f))))))))
 ;; A jar path into the image's own archive ("jar:file:jolt-embedded-resources.jar
 ;; !/name", the URL io/resource hands out in a built binary) names an embedded
@@ -1828,19 +1830,155 @@
 ;;   (URL. context spec)             context a URL or nil
 ;;   (URL. context spec handler)
 ;;   (URL. protocol host file)       three strings
-;; A relative spec resolves against the context's directory; an absolute one
-;; ignores the context, as on the JVM.
+;; A relative spec resolves against the context, as the protocol's handler
+;; parses it (URLStreamHandler.parseURL, and the jar handler's own for a jar:
+;; context); an absolute one ignores the context, as on the JVM. The context is
+;; either kind of java.net.URL: a "url" jhost or a resource in the image's
+;; archive.
 (define (url-resolve-spec context spec)
   (if (or (jolt-nil? context) (not context)
           ;; absolute: it carries its own scheme
           (let ((i (proto-colon-index spec))) (and i (> i 0))))
       spec
-      (let* ((base (url-spec context))
-             (cut (let loop ((j (- (string-length base) 1)))
-                    (cond ((< j 0) #f)
-                          ((char=? (string-ref base j) #\/) j)
-                          (else (loop (- j 1)))))))
-        (string-append (if cut (substring base 0 (+ cut 1)) base) spec))))
+      (let* ((base (cond ((url-jhost? context) (url-spec context))
+                         ((embedded-res? context) (embedded-res-url context))
+                         (else (throw-jvm 'ClassCastException
+                                          (string-append "class " (jolt-class-name context)
+                                                         " cannot be cast to class java.net.URL")))))
+             (hash (url-char-index spec #\# 0))
+             (ref (and hash (substring spec (+ hash 1) (string-length spec))))
+             (spec (if hash (substring spec 0 hash) spec))
+             (base-hash (url-char-index base #\# 0))
+             (bare (if base-hash (substring base 0 base-hash) base))
+             (resolved (cond ((and (string=? spec "") ref) bare)       ; a new ref, the rest kept
+                             ((string=? (url-protocol base) "jar") (url-resolve-jar bare spec))
+                             ((string=? spec "") base)                   ; the context, ref and all
+                             (else (url-resolve-hierarchical bare spec)))))
+        (if ref (string-append resolved "#" ref) resolved))))
+(define (url-char-index s c from)
+  (let loop ((i from))
+    (cond ((>= i (string-length s)) #f)
+          ((char=? (string-ref s i) c) i)
+          (else (loop (+ i 1))))))
+(define (url-last-index s c)
+  (let loop ((i (- (string-length s) 1)))
+    (cond ((< i 0) #f) ((char=? (string-ref s i) c) i) (else (loop (- i 1))))))
+(define (url-string-index s sub from)
+  (let ((n (string-length s)) (m (string-length sub)))
+    (let loop ((i from))
+      (cond ((> (+ i m) n) #f)
+            ((string=? (substring s i (+ i m)) sub) i)
+            (else (loop (+ i 1)))))))
+;; The "/" of the last "!/" (the jar handler's indexOfBangSlash), or #f.
+(define (url-bang-slash s)
+  (let loop ((i (- (string-length s) 2)))
+    (cond ((< i 0) #f)
+          ((and (char=? (string-ref s i) #\!) (char=? (string-ref s (+ i 1)) #\/)) (+ i 1))
+          (else (loop (- i 1))))))
+(define (url-ends-with? s suffix)
+  (let ((n (string-length s)) (m (string-length suffix)))
+    (and (>= n m) (string=? (substring s (- n m) n) suffix))))
+;; jar: (the jar handler's parseContextSpec, then ParseUtil.canonizeString over
+;; what follows the "!/"): a spec starting "/" replaces the entry, anything
+;; else is resolved against the entry's directory, and "." and ".." segments go.
+(define (url-resolve-jar base spec)
+  (define (malformed msg) (jolt-throw (jolt-host-throwable "java.net.MalformedURLException" msg)))
+  (let* ((ctx (substring base 4 (string-length base)))
+         (ctx (if (and (> (string-length spec) 0) (char=? (string-ref spec 0) #\/))
+                  (let ((bang (url-bang-slash ctx)))
+                    (unless bang (malformed (string-append "malformed context url:" base ": no !/")))
+                    (substring ctx 0 bang))
+                  (let ((slash (url-last-index ctx #\/)))
+                    (unless slash (malformed (string-append "malformed context url:" base)))
+                    (substring ctx 0 (+ slash 1)))))
+         (file (string-append ctx spec))
+         (bang (or (url-bang-slash file) (malformed "no !/ in spec"))))
+    (string-append "jar:" (substring file 0 bang)
+                   (url-canonize-jar (substring file bang (string-length file))))))
+(define (url-canonize-jar file)
+  (let* ((file (let loop ((file file))
+                 (let ((i (url-string-index file "/../" 0)))
+                   (if (not i)
+                       file
+                       (let ((lim (and (> i 0) (url-last-index (substring file 0 i) #\/))))
+                         (loop (if lim
+                                   (string-append (substring file 0 lim) (substring file (+ i 3) (string-length file)))
+                                   (substring file (+ i 3) (string-length file)))))))))
+         (file (let loop ((file file))
+                 (let ((i (url-string-index file "/./" 0)))
+                   (if i
+                       (loop (string-append (substring file 0 i) (substring file (+ i 2) (string-length file))))
+                       file))))
+         (file (let loop ((file file))
+                 (if (url-ends-with? file "/..")
+                     (let* ((i (url-string-index file "/.." 0))
+                            (lim (and (> i 0) (url-last-index (substring file 0 i) #\/))))
+                       (loop (if lim (substring file 0 (+ lim 1)) (substring file 0 i))))
+                     file))))
+    (if (url-ends-with? file "/.") (substring file 0 (- (string-length file) 1)) file)))
+;; Every other protocol (URLStreamHandler.parseURL): "//" brings its own
+;; authority, a spec starting "/" replaces the path, "?" only the query, and a
+;; relative path joins the context's directory; then "." segments go and each
+;; ".." takes the segment before it, as far as there is one.
+(define (url-resolve-hierarchical base spec)
+  (let* ((colon (url-char-index base #\: 0))
+         (scheme (substring base 0 (+ colon 1)))
+         (rest (substring base (+ colon 1) (string-length base)))
+         (auth-end (if (and (>= (string-length rest) 2) (string=? (substring rest 0 2) "//"))
+                       (let loop ((i 2))
+                         (cond ((>= i (string-length rest)) i)
+                               ((memv (string-ref rest i) '(#\/ #\?)) i)
+                               (else (loop (+ i 1)))))
+                       0))
+         (authority (substring rest 0 auth-end))
+         (rest (substring rest auth-end (string-length rest)))
+         (q (url-char-index rest #\? 0))
+         (base-path (if q (substring rest 0 q) rest))
+         (base-query (and q (substring rest q (string-length rest))))
+         (sq (url-char-index spec #\? 0))
+         (spec-path (if sq (substring spec 0 sq) spec))
+         (spec-query (and sq (substring spec sq (string-length spec)))))
+    (cond
+      ((and (>= (string-length spec) 2) (string=? (substring spec 0 2) "//"))
+       (string-append scheme spec))
+      ;; a query alone keeps the context's directory
+      ((string=? spec-path "")
+       (let ((slash (url-last-index base-path #\/)))
+         (string-append scheme authority (if slash (substring base-path 0 (+ slash 1)) base-path)
+                        (or spec-query base-query ""))))
+      (else
+       (let ((path (if (char=? (string-ref spec-path 0) #\/)
+                       spec-path
+                       (let ((slash (url-last-index base-path #\/)))
+                         (string-append (if slash (substring base-path 0 (+ slash 1))
+                                            (if (string=? authority "") "" "/"))
+                                        spec-path)))))
+         (string-append scheme authority (url-normalize-path path) (or spec-query "")))))))
+(define (url-normalize-path path)
+  (let* ((path (let loop ((path path))
+                 (let ((i (url-string-index path "/./" 0)))
+                   (if i
+                       (loop (string-append (substring path 0 i) (substring path (+ i 2) (string-length path))))
+                       path))))
+         (path (let loop ((path path) (from 0))
+                 (let ((i (url-string-index path "/../" from)))
+                   (if (not i)
+                       path
+                       (let ((lim (and (> i 0) (url-last-index (substring path 0 i) #\/))))
+                         ;; the JDK's test, verbatim: only a "/../" at the very start stays
+                         (if (and lim (not (eqv? (url-string-index path "/../" lim) 0)))
+                             (loop (string-append (substring path 0 lim) (substring path (+ i 3) (string-length path))) 0)
+                             (loop path (+ i 3))))))))
+         (path (let loop ((path path))
+                 (if (url-ends-with? path "/..")
+                     (let* ((i (url-string-index path "/.." 0))
+                            (lim (and (> i 0) (url-last-index (substring path 0 i) #\/))))
+                       (if lim (loop (substring path 0 (+ lim 1))) path))
+                     path)))
+         (path (if (and (> (string-length path) 2) (string=? (substring path 0 2) "./"))
+                   (substring path 2 (string-length path))
+                   path)))
+    (if (url-ends-with? path "/.") (substring path 0 (- (string-length path) 1)) path)))
 (define (proto-colon-index spec)
   (let loop ((j 0))
     (cond ((>= j (string-length spec)) #f)
@@ -1866,8 +2004,12 @@
     (else
      (let* ((context (car args))
             (spec (jolt-str-render-one (cadr args)))
-            (handler (and (>= (length args) 3) (caddr args))))
-       (make-url (url-canonical (url-resolve-spec context spec)) handler)))))
+            (handler (and (>= (length args) 3) (caddr args)))
+            (resolved (url-resolve-spec context spec)))
+       ;; a URL into the image's own archive is the resource it names, as the
+       ;; one-argument form makes it
+       (or (and (not handler) (embedded-jar-path-res resolved))
+           (make-url (url-canonical resolved) handler))))))
 (register-class-ctor! "URL" jolt-make-url)
 (register-class-ctor! "java.net.URL" jolt-make-url)
 ;; (str url) is the spec, like the JVM — without this it renders the opaque
@@ -1890,7 +2032,9 @@
         ;; protocol has no local backing and raises (the JVM would connect or read
         ;; the jar), never empty content.
         (cons "openConnection" (lambda (self . _) (url-open-connection self)))
-        (cons "openStream"     (lambda (self) (url-open-stream self)))))
+        (cons "openStream"     (lambda (self) (url-open-stream self)))
+        ;; URL.toURI: the URI its text parses to
+        (cons "toURI"          (lambda (self) (uri-ctor (url-spec self))))))
 ;; openStream hands back an InputStream, like the JVM (a file: URL there is a
 ;; FileInputStream behind a BufferedInputStream). It used to answer a StringReader
 ;; -- content-correct, but the wrong half of the io hierarchy, so the documented
@@ -1924,10 +2068,12 @@
 ;; through — say so rather than returning something that reads as empty.
 (define (url-open-connection u)
   (let ((h (url-handler u)))
-    (if h
-        (record-method-dispatch h "openConnection" (jolt-list u))
-        (throw-jvm (quote java.io.IOException)
-                   (string-append "no protocol handler for: " (url-spec u))))))
+    (cond
+      (h (record-method-dispatch h "openConnection" (jolt-list u)))
+      ;; a jar: URL is a JarURLConnection onto the jar (embedded-url.ss)
+      ((jar-path? (url-spec u)) (embedded-url-open-connection u))
+      (else (throw-jvm (quote java.io.IOException)
+                       (string-append "no protocol handler for: " (url-spec u)))))))
 ;; (instance? java.net.URL x): the url jhost and an embedded-res (the jar: branch of
 ;; io/resource) both report java.net.URL. records-interop's case-string has no URL
 ;; arm, so answer it here where the two types live.
@@ -3069,8 +3215,14 @@
 ;; against it, which is where this surfaced.) Absolutize against user.dir, the
 ;; base every other filesystem touch uses, dropping a leading "./" so the path
 ;; reads like the JVM's instead of carrying a "/./" segment.
+;; The text is percent-encoded as the class loader's is (ParseUtil.encodePath,
+;; embedded-url-encode): a space, "#", "%", ";", "=" or a non-ASCII character in
+;; the root or the name is escaped, so the URL parses back to the same file and
+;; getPath answers the encoded path, as on the JDK. Every reader of a file: or
+;; jar: URL decodes it (file-url->path, jar-path-entry).
 (define (resource-file-url root nm)
-  (make-url (string-append "file:" (file-uri-path (root-path-abs (string-append root "/" nm))))))
+  (make-url (string-append "file:" (embedded-url-encode
+                                    (file-uri-path (root-path-abs (string-append root "/" nm)))))))
 ;; A path under a source root made absolute for a URL: the roots are spelled as
 ;; deps.edn spells them ("./src", "./lib.jar"), and the JVM's URL for a resource
 ;; carries no "./" segment, so a leading one is dropped before the cwd is put in
@@ -3096,7 +3248,8 @@
         (path-under (current-directory) p))))
 ;; The jar: URL for `nm` inside the jar at root JAR, absolute like the file: one.
 (define (resource-jar-url jar nm)
-  (make-url (make-jar-path (root-path-abs jar) nm)))
+  (make-url (string-append jar-path-prefix (embedded-url-encode (file-uri-path (root-path-abs jar)))
+                           "!/" (embedded-url-encode nm))))
 ;; The candidate for NM on ROOT, as (path-or-#f . url-thunk): a directory root's
 ;; file, or a jar root's entry (loader.ss root-jar-index says which roots are
 ;; jars). The path is what the AOT cache is told about; for a jar it is the
@@ -3106,7 +3259,9 @@
   (let ((d (root-jar-index root)))
     (if d
         (let ((p (make-jar-path (root-path-abs root) nm)))
-          (cons p (and (zipdir-has? d nm) (lambda () (resource-jar-url root nm)))))
+          ;; a directory's entry answers to its name without the "/", as the
+          ;; JDK's JarLoader finds it through JarFile.getJarEntry
+          (cons p (and (zipdir-lookup d nm) (lambda () (resource-jar-url root nm)))))
         (let ((cand (string-append root "/" nm)))
           (cons cand (and (file-exists? cand) (lambda () (resource-file-url root nm))))))))
 

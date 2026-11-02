@@ -625,13 +625,21 @@
             (else (raise e)))
       (thunk))))
 
-;; A directory opens for reading on Linux and only fails at the first read, so
-;; newInputStream handed back a stream that threw later. The JVM checks at open
-;; and reports exactly this message.
+;; A directory opens for reading and fails at the first read, on the JVM as in
+;; POSIX: newInputStream and newByteChannel hand back a stream, and reading it --
+;; readAllBytes, readString, a reader's first line -- is java.io.IOException
+;; "Is a directory", read(2)'s EISDIR, with no path in it. Chez reports that
+;; read as its own i/o error, so the directory never reaches it: its port raises
+;; the JVM's exception instead.
+(define (nio-directory-input-port)
+  (make-custom-binary-input-port "directory"
+    (lambda (bv start count) (throw-jvm 'java.io.IOException "Is a directory"))
+    #f #f #f))
 (define (nio-open-input-port fp . shown)
   (let ((m (if (pair? shown) (car shown) fp)))
-    (when (file-directory? fp) (nio-fs-detail m "Is a directory"))
-    (nio-fs-call fp (lambda () (open-file-input-port fp)) m)))
+    (if (file-directory? fp)
+        (nio-directory-input-port)
+        (nio-fs-call fp (lambda () (open-file-input-port fp)) m))))
 
 (define (nio-size fp . shown)
   (if (not (or (file-exists? fp) (nio-is-symlink? fp)))
@@ -639,8 +647,8 @@
       ;; A directory opens for reading and fstats fine even though READING one
       ;; fails, and Files.size reports a directory's st_size like any other
       ;; entry -- so open it directly here rather than through
-      ;; nio-open-input-port, which is the read path and refuses a directory
-      ;; exactly as the JVM's newInputStream does.
+      ;; nio-open-input-port, which is the read path and stands a directory in
+      ;; for a port that refuses to be read.
       ;;
       ;; Chez's file-length is fstat(2).st_size (S_get_fd_length in new-io.c),
       ;; which is the number the JVM answers, so this needs none of the struct
@@ -899,8 +907,35 @@
     (->path start)))
 
 ;; ---- newDirectoryStream: a closeable, seqable listing of a directory's kids --
-(define (make-dir-stream paths) (make-jhost "dir-stream" paths))  ; state: list of Path
+;; state #(paths iterated? closed?). Like the JDK's, it hands out ONE iterator:
+;; a second, or one after close, is IllegalStateException, and an iterator whose
+;; stream was closed has nothing more. seq goes through the iterator, as it does
+;; over any Iterable.
+(define (make-dir-stream paths) (make-jhost "dir-stream" (vector paths #f #f)))
 (define (dir-stream? x) (and (jhost? x) (string=? (jhost-tag x) "dir-stream")))
+(define (dir-stream-closed? ds) (vector-ref (jhost-state ds) 2))
+(define (dir-stream-iterator ds)
+  (let ((st (jhost-state ds)))
+    (cond ((vector-ref st 2) (throw-jvm 'IllegalStateException "Directory stream is closed"))
+          ((vector-ref st 1) (throw-jvm 'IllegalStateException "Iterator already obtained"))
+          (else (vector-set! st 1 #t)
+                (make-jhost "dir-stream-iterator" (vector ds (vector-ref st 0)))))))
+(define (dir-stream-iterator-more? it)
+  (let ((st (jhost-state it)))
+    (and (pair? (vector-ref st 1)) (not (dir-stream-closed? (vector-ref st 0))))))
+(register-host-methods! "dir-stream"
+  (list (cons "iterator" dir-stream-iterator)
+        (cons "close" (lambda (self) (vector-set! (jhost-state self) 2 #t) jolt-nil))))
+(register-host-methods! "dir-stream-iterator"
+  (list (cons "hasNext" dir-stream-iterator-more?)
+        (cons "next" (lambda (self)
+                       (unless (dir-stream-iterator-more? self) (throw-jvm 'NoSuchElementException jolt-nil))
+                       (let* ((st (jhost-state self)) (rest (vector-ref st 1)))
+                         (vector-set! st 1 (cdr rest))
+                         (car rest))))
+        (cons "remove" (lambda (self) (throw-jvm 'UnsupportedOperationException jolt-nil)))))
+(hashtable-set! jhost-tag->fqn "dir-stream" "java.nio.file.DirectoryStream")
+(hashtable-set! jhost-tag->fqn "dir-stream-iterator" "java.util.Iterator")
 (define (nio-new-directory-stream dir . rest)
   (let* ((base (npath-string-of dir))
          (fp (project-relative base))
@@ -926,7 +961,11 @@
 ;; seq arms, not a set!-wrap of jolt-seq: a wrapper put two record tests in
 ;; front of EVERY seq in the program (a vector's included); an arm is consulted
 ;; only after jolt-seq's own types have missed.
-(register-seq-arm! dir-stream? (lambda (x) (list->cseq (jhost-state x))))
+(register-seq-arm! dir-stream?
+  (lambda (x)
+    ;; takes the stream's one iterator, and with it every path
+    (dir-stream-iterator x)
+    (list->cseq (vector-ref (jhost-state x) 0))))
 (register-seq-arm! nio-path?
   (lambda (x)
     (let ((segs (npath-segs-for (nio-path-windows? x) (nio-path-str x))))
@@ -934,7 +973,7 @@
       (list->cseq (map (lambda (segment) (npath-like x segment))
                        (if (null? segs) '("") segs))))))
 (let ((prev jolt-close))
-  (set! jolt-close (lambda (x) (if (dir-stream? x) jolt-nil (prev x))))
+  (set! jolt-close (lambda (x) (if (dir-stream? x) (begin (vector-set! (jhost-state x) 2 #t) jolt-nil) (prev x))))
   (def-var! "clojure.core" "__close" jolt-close))
 
 ;; register the Files walk/stream ops + the FileVisitResult / FileVisitOption enums.
@@ -2202,15 +2241,10 @@
   (if (and (pair? args) (nio-charset-arg? (car args))) (cdr args) args))
 (define (nio-path-bytes p)
   ((nio-provider-read-bytes (if (nio-path? p) (nio-path-provider p) default-nio-provider)) p))
-;; The JDK reads text with a REPORTING decoder: malformed input raises
-;; MalformedInputException rather than decoding to U+FFFD.
-(define (nio-decode-strict bv cs-name)
-  (if (and (string=? (charset-canonical-down cs-name) "utf-8") (%utf8-java-plain? bv))
-      (utf8->string bv)
-      (let* ((decoder (make-jhost "charset-decoder" (vector (charset-for-name cs-name) #f #f "\xFFFD;")))
-             (decoded (decoder-decode-all decoder
-                                          (nb-wrap-bytes (na-bv->bytearray bv) 0 (bytevector-length bv)))))
-        (nb-char-string decoded (bb-pos decoded) (bb-limit decoded)))))
+;; The JDK reads and writes text with a REPORTING coder: malformed input raises
+;; MalformedInputException rather than decoding to U+FFFD, and a character the
+;; charset cannot hold UnmappableCharacterException rather than writing "?".
+(define (nio-decode-strict bv cs-name) (charset-decode-report bv cs-name))
 ;; BufferedReader.readLine's terminators: "\n", "\r" and "\r\n".
 (define (nio-split-lines s)
   (let ((n (string-length s)))
@@ -2227,18 +2261,101 @@
 (define (nio-files-read-string p . args) (nio-read-text p args))
 (define (nio-files-read-all-lines p . args)
   (make-pvec (list->vector (nio-split-lines (nio-read-text p args)))))
+;; A stream whose elements are read as they are pulled, as Files.lines and walk
+;; are on the JDK: an IOException met then is UncheckedIOException, its cause the
+;; IOException and its message the cause's toString, and any other throwable
+;; passes as it is.
+(define (nio-unchecked-io thunk)
+  (guard (e ((and (jolt-throw-condition? e)
+                  (let ((v (jolt-throw-condition-value e)))
+                    (and (ex-info-map? v) (jch-isa? (ex-info-class v) "java.io.IOException"))))
+             (let ((cause (jolt-throw-condition-value e)))
+               (jolt-throw (jolt-host-throwable "java.io.UncheckedIOException"
+                                                (record-method-dispatch cause "toString" jolt-nil)
+                                                cause)))))
+    (thunk)))
+;; Files.lines: the file opened now -- a missing one is NoSuchFileException at
+;; the call -- and decoded through the charset's reporting decoder as the stream
+;; is consumed, a block at a time; closing the stream closes the file. UTF-8
+;; decodes each block of bytes whole, cut at a character boundary, the way
+;; readString decodes the file.
 (define (nio-files-lines p . args)
-  (make-stream 'ref (list->cseq (nio-split-lines (nio-read-text p args)))))
+  (let* ((in (nio-files-call "newInputStream" p))
+         (bp (stream-byte-port in))
+         (cs (nio-charset-name args))
+         (read-chunk
+          (if (string=? (charset-canonical-down cs) "utf-8")
+              (let ((carry (make-bytevector 0)))
+                (lambda ()
+                  (let ((bv (get-bytevector-n bp 262144)))
+                    (cond
+                      ((and (eof-object? bv) (fx=? (bytevector-length carry) 0)) bv)
+                      ((eof-object? bv)
+                       (let ((last carry)) (set! carry (make-bytevector 0)) (charset-decode-report last "UTF-8")))
+                      (else
+                       (let* ((buf (if (fx=? (bytevector-length carry) 0)
+                                       bv
+                                       (let ((b (make-bytevector (fx+ (bytevector-length carry) (bytevector-length bv)))))
+                                         (bytevector-copy! carry 0 b 0 (bytevector-length carry))
+                                         (bytevector-copy! bv 0 b (bytevector-length carry) (bytevector-length bv))
+                                         b)))
+                              (n (bytevector-length buf))
+                              (cut (%utf8-chunk-boundary buf 0 n))
+                              (head (if (fx=? cut n) buf (let ((h (make-bytevector cut))) (bytevector-copy! buf 0 h 0 cut) h))))
+                         (set! carry (if (fx=? cut n)
+                                         (make-bytevector 0)
+                                         (let ((t (make-bytevector (fx- n cut)))) (bytevector-copy! buf cut t 0 (fx- n cut)) t)))
+                         (charset-decode-report head "UTF-8")))))))
+              (let ((port (charset-input-port bp cs "lines" #t)))
+                (lambda () (get-string-n port 65536)))))
+         (s (make-stream 'ref (nio-chunk-lines read-chunk))))
+    (vector-set! (jhost-state s) 2 (list (lambda () (close-port bp))))
+    s))
+;; The lines of the text READ-CHUNK hands out a block at a time (a string, or
+;; the eof object at the end) as a lazy seq, split as BufferedReader.readLine
+;; splits them ("\n", "\r", "\r\n").
+(define (nio-chunk-lines read-chunk)
+  (define (cells lines tail)          ; LINES newest first, in front of TAIL
+    (fold-left (lambda (rest line) (st-cell line rest)) tail lines))
+  (define (more pending skip-lf?)
+    (st-lazy
+     (lambda ()
+       (let loop ((pending pending) (skip-lf? skip-lf?))
+         (let ((chunk (nio-unchecked-io read-chunk)))
+           (if (eof-object? chunk)
+               (if (string=? pending "") jolt-nil (st-cell pending jolt-nil))
+               (let* ((text (if (string=? pending "") chunk (string-append pending chunk)))
+                      (n (string-length text))
+                      (from (if (and skip-lf? (fx>? n 0) (char=? (string-ref text 0) #\newline)) 1 0)))
+                 (let scan ((i from) (start from) (acc '()))
+                   (cond
+                     ((fx=? i n)
+                      (let ((rest (substring text start n)))
+                        (if (null? acc) (loop rest #f) (cells acc (more rest #f)))))
+                     ((char=? (string-ref text i) #\newline)
+                      (scan (fx+ i 1) (fx+ i 1) (cons (substring text start i) acc)))
+                     ((char=? (string-ref text i) #\return)
+                      (let ((acc (cons (substring text start i) acc)))
+                        (if (fx<? (fx+ i 1) n)
+                            (let ((j (if (char=? (string-ref text (fx+ i 1)) #\newline) (fx+ i 2) (fx+ i 1))))
+                              (scan j j acc))
+                            ;; a "\r" ends the block: a "\n" opening the next is its
+                            (cells acc (more "" #t)))))
+                     (else (scan (fx+ i 1) start acc)))))))))))
+  (more "" #f))
+;; newBufferedReader and newBufferedWriter are the JDK's: a reader over the
+;; charset's newDecoder and a writer over its newEncoder, both REPORTING.
 (define (nio-files-buffered-reader p . args)
   (host-new "BufferedReader"
-            (host-new "InputStreamReader" (nio-files-call "newInputStream" p) (nio-charset-name args))))
+            (host-new "InputStreamReader" (nio-files-call "newInputStream" p)
+                      (record-method-dispatch (charset-for-name (nio-charset-name args)) "newDecoder" jolt-nil))))
 (define (nio-files-buffered-writer p . args)
   (host-new "BufferedWriter"
             (host-new "OutputStreamWriter"
                       (apply nio-files-call "newOutputStream" p (nio-after-charset args))
-                      (nio-charset-name args))))
+                      (record-method-dispatch (charset-for-name (nio-charset-name args)) "newEncoder" jolt-nil))))
 (define (nio-files-write-string p text . args)
-  (let ((bytes (charset-encode-bv (jolt-str-render-one text) (nio-charset-name args))))
+  (let ((bytes (charset-encode-report (jolt-str-render-one text) (nio-charset-name args))))
     (apply nio-files-call "write" p (na-bv->bytearray bytes) (nio-after-charset args))))
 (define (nio-files-mismatch a b)
   (let* ((x (nio-path-bytes a)) (y (nio-path-bytes b))
@@ -2249,33 +2366,50 @@
             (else n)))))
 
 ;; walk / find: pre-order, a directory's children in its directory stream's
-;; order; a link is followed only under FOLLOW_LINKS.
-(define (nio-walk-list start depth opts)
+;; order; a link is followed only under FOLLOW_LINKS. Lazy, as the JDK's
+;; FileTreeIterator is: the start is checked and, being a directory, listed at
+;; the call, and every directory below it is listed when the walk reaches it, an
+;; IOException there arriving as UncheckedIOException (nio-unchecked-io).
+(define (nio-walk-seq start depth opts)
   (let ((link-opts (if (nio-opts-follow? (list->cseq (npath-spread-args opts))) '() (list fvo-nofollow))))
+    ;; PATH at LEVEL as #(path level descend?): descend? when the walk goes below it
+    (define (item path level)
+      (vector path level (and (< level depth) (apply nio-files-call "isDirectory" path link-opts) #t)))
+    ;; the items below a descended directory, in its stream's order
+    (define (children it)
+      (let ((level (+ (vector-ref it 1) 1)))
+        (map (lambda (child) (item child level))
+             (seq->list (jolt-seq (nio-files-call "newDirectoryStream" (vector-ref it 0)))))))
+    ;; STACK is a list of sibling lists still to visit, innermost first. A file's
+    ;; cell is built at once; a directory's listing waits for its rest to be asked for.
+    (define (walk stack)
+      (cond ((null? stack) jolt-nil)
+            ((null? (car stack)) (walk (cdr stack)))
+            (else
+             (let ((it (caar stack)) (rest (cons (cdar stack) (cdr stack))))
+               (st-cell (vector-ref it 0)
+                        (if (vector-ref it 2)
+                            (st-lazy (lambda () (walk (cons (nio-unchecked-io (lambda () (children it))) rest))))
+                            (walk rest)))))))
     (unless (apply nio-files-call "exists" start link-opts)
       (nio-no-such-file (nio-shown start)))
-    (let walk ((path start) (level 0) (acc '()))
-      (let ((acc (cons path acc)))
-        (if (and (< level depth) (apply nio-files-call "isDirectory" path link-opts))
-            (fold-left (lambda (acc child) (walk child (+ level 1) acc))
-                       acc
-                       (seq->list (jolt-seq (nio-files-call "newDirectoryStream" path))))
-            acc)))))
+    (let ((top (item start 0)))
+      (st-cell start (walk (list (if (vector-ref top 2) (children top) '())))))))
 (define (nio-files-list p)
   (make-stream 'ref (jolt-seq (nio-files-call "newDirectoryStream" p))))
 (define (nio-files-walk p . args)
   (let-values (((depth opts) (if (and (pair? args) (number? (car args)))
                                  (values (jnum->exact (car args)) (cdr args))
                                  (values 2147483647 args))))
-    (make-stream 'ref (list->cseq (reverse (nio-walk-list p depth opts))))))
+    (make-stream 'ref (nio-walk-seq p depth opts))))
 (define (nio-files-find p depth predicate . opts)
   (let ((attrs-class (jolt-class-for "java.nio.file.attribute.BasicFileAttributes")))
     (make-stream 'ref
-      (list->cseq
-       (filter (lambda (path)
-                 (jolt-truthy? (jolt-fi-call predicate "test" path
-                                             (nio-files-call "readAttributes" path attrs-class))))
-               (reverse (nio-walk-list p (jnum->exact depth) opts)))))))
+      (st-filter (lambda (path)
+                   (let ((attrs (nio-unchecked-io
+                                 (lambda () (nio-files-call "readAttributes" path attrs-class)))))
+                     (jolt-truthy? (jolt-fi-call predicate "test" path attrs))))
+                 (nio-walk-seq p (jnum->exact depth) opts)))))
 
 (define (nio-content-type-of name)
   (let* ((dot (let loop ((i (- (string-length name) 1)))
