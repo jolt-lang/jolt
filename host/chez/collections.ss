@@ -1567,6 +1567,10 @@
                ;; jolt-seq raises the JVM's own "Don't know how to create ISeq
                ;; from: X" for a value that is not seqable at all.
                (else (conj-map-entries coll x))))
+        ;; a plain defrecord answers from its slots ahead of the arm walk
+        ;; (records-coll.ss jrec-plain?, loaded later — resolved at call time;
+        ;; jrec? first so nothing reaches it before a record can exist)
+        ((and (jrec? coll) (jrec-plain? coll)) (jrec-plain-conj coll x))
         (else (let loop ((as jolt-conj1-arms))
                 (cond ((null? as)
                        (cond ((rec-coll-method coll "cons") => (lambda (m) (jolt-invoke m coll x)))
@@ -1641,7 +1645,25 @@
 ;; another thread is a fixnum either way, so the worst concurrent outcome is a
 ;; miss. A hash-mode map, a record, nil and every other receiver keep jolt-get's
 ;; path, so what the site answers is exactly what jolt-get answers.
-(define (jolt-kw-site) (make-vector 1 0))
+;; Slot 1 is the record half of the site, Clojure's KeywordLookupSite: the
+;; (descriptor . field-slot) a record receiver last answered k from, so a site
+;; that keeps seeing one record type reads the field with one eq? instead of
+;; jolt-get's type cascade and the field-index hashtable. Held as one pair,
+;; replaced whole, so a racing reader never pairs one type's descriptor with
+;; another's slot. Only a defrecord's slot is cached: a record's field-first
+;; lookup is fixed for the life of its descriptor (a redefinition makes a new
+;; descriptor, which misses), while a bare deftype's fields can be masked later
+;; by a valAt it gains (records.ss jrdesc-mask-fields!).
+(define (jolt-kw-site) (make-vector 2 0))
+(define (jolt-kw-rec-get m k site d)
+  (let ((c (if (fx>? (vector-length site) 1) (vector-ref site 1) 0))
+        (desc (jrec-desc m)))
+    (if (and (pair? c) (eq? (car c) desc))
+        (jrec-field-ref m (cdr c))
+        (let ((i (jrec-get-index m k)))
+          (when (and i (fx>? (vector-length site) 1) (jrec-record? m))
+            (vector-set! site 1 (cons desc i)))
+          (if i (jrec-field-ref m i) (jolt-get-dispatch m k d))))))
 (define (jolt-kw-get-site* m k site d)
   (if (pmap? m)
       (let ((root (pmap-root m)))
@@ -1658,7 +1680,7 @@
                            (sa-uvector-set! site 0 j)
                            (sa-uvector-ref root (sa-ufx+ j 1)))
                           (else (lp (sa-ufx+ j 2)))))))))
-      (jolt-get-dispatch m k d)))
+      (if (jrec? m) (jolt-kw-rec-get m k site d) (jolt-get-dispatch m k d))))
 (define jolt-kw-get-site
   (case-lambda
     ((m k site) (jolt-kw-get-site* m k site jolt-nil))
@@ -1821,6 +1843,10 @@
                           (if k (+ m k) (loop (jolt-seq cr) m)))
                         m)))
                  (else (loop (jolt-seq (seq-more s)) (fx+ n 1))))))
+        ;; a plain defrecord answers from its slots ahead of the arm walk
+        ;; (records-coll.ss jrec-plain?, loaded later — resolved at call time;
+        ;; jrec? first so nothing reaches it before a record can exist)
+        ((and (jrec? coll) (jrec-plain? coll)) (jrec-plain-count coll))
         (else (let loop ((as jolt-count-arms))
                 (cond ((null? as) (jolt-count-base coll))
                       (((caar as) coll) ((cdar as) coll))
@@ -1860,6 +1886,10 @@
         ((pset? coll) (pset-contains? coll k))
         ((pvec? coll) (let ((j (vec-key-index k))) (and j (fx>=? j 0) (fx<? j (pvec-count coll)))))
         ((jolt-nil? coll) #f)
+        ;; a plain defrecord answers from its slots ahead of the arm walk
+        ;; (records-coll.ss jrec-plain?, loaded later — resolved at call time;
+        ;; jrec? first so nothing reaches it before a record can exist)
+        ((and (jrec? coll) (jrec-plain? coll)) (jrec-has? coll k))
         ;; a string supports contains? by INDEX only (RT.contains: CharSequence +
         ;; Number key); any other key — or any unsupported type — is the JVM's
         ;; IllegalArgumentException.
@@ -1928,6 +1958,10 @@
         ((string? coll) (fx=? 0 (string-length coll)))
         ((empty-list-t? coll) #t)
         ((cseq? coll) #f)                            ; a cseq is non-empty by construction
+        ;; a plain defrecord answers from its slots ahead of the arm walk
+        ;; (records-coll.ss jrec-plain?, loaded later — resolved at call time;
+        ;; jrec? first so nothing reaches it before a record can exist)
+        ((and (jrec? coll) (jrec-plain? coll)) (jrec-plain-empty? coll))
         ;; arm dispatch before the general seq-based fallback
         (else (let loop ((as jolt-empty-arms))
                 (cond ((null? as) (jolt-nil? (jolt-seq coll)))

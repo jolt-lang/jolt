@@ -130,7 +130,11 @@
 ;;                      (4.66 -> 2.3; the JVM ~1.0). The field read then went
 ;;                      through record-method-dispatch's per-type table, ~40 ns
 ;;                      of every compare; a per-site cache of the receiver's type
-;;                      and slot made it ~14 (2.3 -> 1.65).
+;;                      and slot made it ~14 (2.3 -> 1.65). The REFERENCE then
+;;                      got faster — a record key's hash and = answer from the
+;;                      plain-record paths (#1470), 12.5 -> 9.8 ms here with the
+;;                      EqKey arm unchanged — so the same EqKey cost reads
+;;                      ~2.6, and the ceiling moved with it (3.2 -> 3.8).
 ;;
 ;;   record-eq          = on two records walked every registered equality arm
 ;;                      (the record arm registered first, so it was asked last)
@@ -138,6 +142,20 @@
 ;;                      per compare: ~225 ns against ~36 for two one-element
 ;;                      vectors, and a small map keyed on records scans with =.
 ;;                      The reference is = on two equal vectors (6.8 -> 1.36).
+;;
+;;   record-count       a plain defrecord (one declaring none of the collection
+;;   record-contains    methods) against the array map holding the same three
+;;   record-reduce-kv   entries. Every one of these walked the host's whole arm
+;;   record-into        list — ~17 predicates, one of them 58 ns on its own —
+;;   record-seq         before reaching the record arm, which then looked the
+;;                      type's declared count/containsKey/… up by NAME (several
+;;                      string-keyed lookups per op); reduce-kv and into went
+;;                      through a seq of entries on top. A plain record now
+;;                      answers from its slots ahead of the walk (records-coll.ss
+;;                      jrec-plain?), as a defrecord's generated methods do on
+;;                      the JVM (#1470). Measured on x86_64, 2026-11:
+;;                      count 16.3 -> 2.8, contains 6.6 -> 2.0, reduce-kv
+;;                      20.9 -> 1.8, into 5.95 -> 1.4, seq 4.6 -> 1.2.
 ;;
 ;;   top-level-fn       a fn built in a bare top-level form — every deftype and
 ;;                      defrecord method, every extend-type impl and defmethod —
@@ -401,6 +419,11 @@
 (def ^:private eq-rec-b (->EqRec 7))
 (def ^:private eq-vec-a [7])
 (def ^:private eq-vec-b [7])
+;; a plain record and the map holding the same entries, for the record-* arms
+(defrecord PlainRec [x y z])
+(def ^:private plain-rec (->PlainRec 1 2 3))
+(def ^:private plain-map {:x 1 :y 2 :z 3})
+(def ^:private kv-sum (fn [a k v] (+ a v)))
 ;; one body, built under a def and in a bare top-level form
 (def ^:private kw-map {:a 1 :b 2 :c 3})
 (def ^:private fn-via-def (fn [m] (+ (get m :a) (get m :b) (get m :c))))
@@ -534,13 +557,36 @@
   (judge! "record-key-get"
           #(dotimes [_ 20000] (get rec-key-map rec-probe))
           #(dotimes [_ 20000] (get eq-key-map eq-probe))
-          3.2 4.5)
+          3.8 5.0)
 
   ;; = on two records must cost about what = on two small vectors costs.
   (judge! "record-eq"
           #(dotimes [_ dispatch-n] (= eq-vec-a eq-vec-b))
           #(dotimes [_ dispatch-n] (= eq-rec-a eq-rec-b))
           2.5 4.0)
+
+  ;; The core collection ops on a plain record cost about what they cost on the
+  ;; map holding the same entries.
+  (judge! "record-count"
+          #(dotimes [_ dispatch-n] (count plain-map))
+          #(dotimes [_ dispatch-n] (count plain-rec))
+          5.0 8.0)
+  (judge! "record-contains"
+          #(dotimes [_ dispatch-n] (contains? plain-map :z))
+          #(dotimes [_ dispatch-n] (contains? plain-rec :z))
+          3.5 5.0)
+  (judge! "record-reduce-kv"
+          #(dotimes [_ dispatch-n] (reduce-kv kv-sum 0 plain-map))
+          #(dotimes [_ dispatch-n] (reduce-kv kv-sum 0 plain-rec))
+          3.5 8.0)
+  (judge! "record-into"
+          #(dotimes [_ 20000] (into {} plain-map))
+          #(dotimes [_ 20000] (into {} plain-rec))
+          2.5 4.0)
+  (judge! "record-seq"
+          #(dotimes [_ 20000] (seq plain-map))
+          #(dotimes [_ 20000] (seq plain-rec))
+          2.3 3.5)
 
   ;; The same fn body costs the same whether a def or a bare form built it.
   (judge! "top-level-fn"

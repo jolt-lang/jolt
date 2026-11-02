@@ -3885,4 +3885,10 @@
   ;; iterator answers it, ArrayDeque's included (their tags lacked the jx- prefix
   ;; the registry looks for, so seq and iterator-seq over them threw)
   {:suite "java.util / iterators" :expr "[(seq (.iterator (java.util.ArrayDeque. [1 2]))) (seq (.descendingIterator (java.util.ArrayDeque. [1 2 3]))) (seq (.iterator (java.util.ArrayDeque.))) (let [it (.iterator (java.util.ArrayDeque. [1 2 3]))] (.next it) (seq it))]" :expected "[(1 2) (3 2 1) nil (2 3)]"}
+  ;; A plain defrecord answers the collection ops from its slots, ahead of the
+  ;; arm walk (records-coll.ss jrec-plain?, #1470): the answers are the ones the
+  ;; walk gave, extension keys and reduced included.
+  {:suite "record-fast" :expr "(do (defrecord Rf1 [x y]) (let [r (assoc (->Rf1 1 2) :w 3)] [(count r) (contains? r :w) (contains? r :q) (seq r) (keys r) (vals r) (into {} r)]))" :expected "[3 true false ([:x 1] [:y 2] [:w 3]) (:x :y :w) (1 2 3) {:x 1, :y 2, :w 3}]"}
+  {:suite "record-fast" :expr "(do (defrecord Rf2 [x y]) [(reduce-kv (fn [a k v] (if (= k :y) (reduced v) a)) nil (->Rf2 1 2)) (reduce (fn [a e] (+ a (val e))) 0 (->Rf2 1 2)) (empty? (->Rf2 1 2))])" :expected "[2 3 false]"}
+  {:suite "record-fast" :expr "(do (defrecord Rf3 [x]) [(map->Rf3 {:x 1}) (map->Rf3 {:x 1 :y 2}) (map->Rf3 {}) (Rf3. 1 {:m 1} {:z 9}) (meta (Rf3. 1 {:m 1} nil))])" :expected "[#user.Rf3{:x 1} #user.Rf3{:x 1, :y 2} #user.Rf3{:x nil} #user.Rf3{:x 1, :z 9} {:m 1}]"}
 ]

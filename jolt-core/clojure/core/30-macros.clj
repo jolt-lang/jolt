@@ -1027,10 +1027,14 @@
        (register-record-type! (quote ~name-sym))
        ;; build via the positional ctor for declared fields, then carry any
        ;; remaining keys as extension fields (JVM keeps them on the record).
+       ;; A map holding only field keys — the usual argument — has none, which
+       ;; its count says without the dissoc copy and the fold over what is left.
        (def ~mapf (fn* [~m]
-                    (reduce-kv assoc
-                               (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))
-                               (dissoc ~m ~@(map (fn [f] (keyword (name f))) fields)))))
+                    (let [r# (~arrow ~@(map (fn [f] `(get ~m ~(keyword (name f)))) fields))]
+                      (if (== (count ~m)
+                              (+ 0 ~@(map (fn [f] `(if (contains? ~m ~(keyword (name f))) 1 0)) fields)))
+                        r#
+                        (reduce-kv assoc r# (dissoc ~m ~@(map (fn [f] (keyword (name f))) fields)))))))
        ~@(mapcat (fn [g]
                    (let [proto (protocol-key (first g))
                          names (distinct (map (fn [spec] (name (first spec))) (rest g)))]

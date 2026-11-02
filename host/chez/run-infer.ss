@@ -170,12 +170,16 @@
 ;; every type predicate false — the case table used to fold them the other way
 ;; because it assumed every concrete type is non-nil. These rows fail pre-remint
 ;; (the baked seed still has the old case table) and pass once the seed is reminted.
-(let ((pred-on (var-deref "jolt.passes.types" "pred-on"))
-      (t-nil (keyword #f "nil")))
+;; The third argument answers whether a struct's type tag is a defrecord; no
+;; struct reaches it here.
+(let* ((pred-on0 (var-deref "jolt.passes.types" "pred-on"))
+       (pred-on (lambda (p t) (pred-on0 p t (lambda (tag) #f))))
+       (t-nil (keyword #f "nil")))
   (gate-check "nil? on :nil folds true"      (pred-on "nil?"    t-nil) #t)
   (gate-check "some? on :nil folds false"    (pred-on "some?"   t-nil) #f)
   (gate-check "number? on :nil folds false"  (pred-on "number?" t-nil) #f)
-  (gate-check "record? on :nil folds false"  (pred-on "record?" t-nil) #f))
+  (gate-check "record? on :nil folds false"  (pred-on "record?" t-nil) #f)
+  (gate-check "seq? on :nil folds false"     (pred-on "seq?"    t-nil) #f))
 
 ;; --- loop/fn-self bindings shadow in the inference tenv ----------------------
 ;; A loop var (or a (fn f [] …) self-name) that rebinds a record-typed outer

@@ -324,10 +324,16 @@
 ;; value known only non-nil could be any concrete type), so every predicate is
 ;; unknown on them. nil?/some? fold because every concrete type here is
 ;; provably non-nil.
+;;
+;; record? and seq? on a struct ask WHICH kind of struct: a deftype has a shape
+;; too, and is no record; it may also implement ISeq. Both fold only for a type
+;; DEFREC? (the shape registry's :record flag) says is a defrecord — which is
+;; never a seq, so the (if (seq? m) … m) map destructuring opens with folds away
+;; and the field reads after it stay slot reads.
 (def ^:private fold-preds
-  #{"number?" "string?" "keyword?" "record?" "nil?" "some?"})
+  #{"number?" "string?" "keyword?" "record?" "nil?" "some?" "seq?"})
 (defn- record-t? [t] (and (struct-type? t) (some? (get t :type))))
-(defn- pred-on [pname t]
+(defn- pred-on [pname t defrec?]
   (cond
     (or (= t :any) (= t :truthy)) nil
     ;; a declared ^String/^Keyword proves nothing: the value may be anything
@@ -343,17 +349,28 @@
     (= t :nil) (= pname "nil?")
     ;; a bounded scalar union folds only when every member agrees
     (union-type? t)
-    (let [vs (map (fn [m] (pred-on pname m)) (umembers t))]
+    (let [vs (map (fn [m] (pred-on pname m defrec?)) (umembers t))]
       (if (and (seq vs) (not (nil? (first vs))) (apply = vs)) (first vs) nil))
     :else
     (case pname
       "number?"  (or (= t :num) (= t :double))
       "string?"  (= t :str)
       "keyword?" (= t :kw)
-      "record?"  (record-t? t)
+      "record?"  (and (record-t? t) (defrec? (get t :type)))
+      ;; a defrecord or a scalar is never a seq; anything else may be one
+      "seq?"     (when (or (= t :num) (= t :double) (= t :str) (= t :kw)
+                           (and (record-t? t) (defrec? (get t :type))))
+                   false)
       "nil?"     false
       "some?"    true
       nil)))
+;; Is TAG (a struct's :type) a defrecord? Read off the shape registry, so a tag
+;; with no shape — or one whose shape predates the flag — answers false, which
+;; only declines to fold.
+(defn- defrec-tag-fn [env]
+  (let [shapes (get env :record-shapes)]
+    (fn [tag] (boolean (some (fn [e] (let [s (val e)] (and (= tag (get s :type)) (get s :record))))
+                             shapes)))))
 ;; Side-effect-free node whose evaluation can be dropped when its predicate
 ;; folds away (a wider purity analysis can broaden this later).
 (defn- pure-node? [n] (let [op (get n :op)] (or (= op :const) (= op :local))))
@@ -570,7 +587,7 @@
   when the answer isn't provable or the arg is impure."
   [node fnode cn args tenv env]
   (let [ar (infer (nth args 0) tenv env)
-        v (pred-on cn (ty ar))]
+        v (pred-on cn (ty ar) (defrec-tag-fn env))]
     (if (and (not (nil? v)) (pure-node? (nd ar)))
       [:any {:op :const :val v}]
       [(call-ret-type fnode env) (assoc node :args [(nd ar)])])))
@@ -1093,9 +1110,17 @@
             tr (infer test tenv env)
             nr (if-narrow test tenv env)   ; narrow a local in the proven branch
             thn (infer (get node :then) (nth nr 0) env)
-            els (infer (get node :else) (nth nr 1) env)]
-        [(join (nth thn 0) (nth els 0))
-         (assoc node :test (nth tr 1) :then (nth thn 1) :else (nth els 1))])
+            els (infer (get node :else) (nth nr 1) env)
+            ;; a test the predicate fold settled picks its branch now: the const-fold
+            ;; after inference drops the other one, so its type must not widen the
+            ;; if's. (if (seq? r) (… hash-map …) r) on a proven record is how map
+            ;; destructuring starts, and joining the dead branch's map lost the
+            ;; record type every field read after it needed.
+            tn (nth tr 1)
+            t (if (= :const (get tn :op))
+                (if (let [v (get tn :val)] (or (nil? v) (false? v))) (nth els 0) (nth thn 0))
+                (join (nth thn 0) (nth els 0)))]
+        [t (assoc node :test tn :then (nth thn 1) :else (nth els 1))])
       (= op :do)
       (let [stmts (mapv (fn [s] (nth (infer s tenv env) 1)) (get node :statements))
             r (infer (get node :ret) tenv env)]
