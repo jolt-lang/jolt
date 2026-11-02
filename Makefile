@@ -180,7 +180,7 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
+CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
@@ -819,6 +819,13 @@ ioscaling: testbin
 # a 1x-vs-4x ratio cannot see (see the file's header).
 fastpathratio: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj
+
+# A stdlib fn against the same source compiled from a user file, as a ratio in
+# one process. The embedded stdlib fasls and the seed-embedded namespaces are
+# compiled by paths a user file never takes; build-jolt once captured the fasls
+# with var-cache off (every var ref looked up by name, 2-7x slower).
+stdlibratio: testbin
+	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj
 
 # The 2026-08 sweep's remaining hot-path shapes in one gate: split-with-limit,
 # core.async timeout arming, ArrayDeque/StringTokenizer draining, ns-publics/

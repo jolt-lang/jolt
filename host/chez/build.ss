@@ -1326,11 +1326,13 @@
       (load-namespace "jolt.main")
       (load-namespace "jolt.deps"))
     (set-ns-loaded-hook! (lambda (name file) #f))
-    (let ((ordered (reverse order)))   ; deps complete loading before requirers -> deps-first
+    (let ((ordered (reverse order))   ; deps complete loading before requirers -> deps-first
+          (saved-unit #f))
       (when (null? ordered)
         (error 'bld-emit-cli-aot "no CLI namespace captured for jolt.main — is jolt-core on the source roots?"))
       (dynamic-wind
         (lambda ()
+          (set! saved-unit (ei-save-unit))
           (ei-fresh-unit!)
           ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
           (set-optimize! #t)
@@ -1359,8 +1361,10 @@
             ordered))
         (lambda ()
           (set-optimize! #f)
-          ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
-          (ei-clear-cached!))))))
+          (ei-clear-cached!)
+          ;; back to the caller's unit and its flags: build-jolt captures the
+          ;; stdlib fasls next, under the runtime spine's settings (var-cache on).
+          (ei-restore-unit! saved-unit))))))
 
 ;; --- bundling: native libs + resources --------------------------------------
 ;; A jolt seq of jolt strings -> a Scheme list of Scheme strings.
@@ -2439,6 +2443,7 @@
       ;; optimize/direct-link mode for a later caller.
       (let*-values
           (((core-strs app-strs drop-compiler?)
+            (let ((saved-unit (ei-save-unit)))
             (dynamic-wind
               (lambda ()
                 ;; Create + publish this build's compilation unit FIRST, so every
@@ -2587,7 +2592,11 @@
                 (ei-clear-cached!)
                 ;; the parsed forms the wp walk stashed for this emit walk are
                 ;; done with; a later build re-parses whatever changed.
-                (ei-form-cache-clear!)))))
+                (ei-form-cache-clear!)
+                ;; put the caller's unit back: an in-process build (nREPL) must
+                ;; not leave the session compiling under this build's fresh unit,
+                ;; whose flags are all off (var-cache, source registration).
+                (ei-restore-unit! saved-unit))))))
         (when drop-compiler? (display "jolt build: dropping compiler image (no runtime eval)\n"))
       (ei-mark! "emit app namespaces")
       ;; The emit walk named each file it read (jolt-enter-file!) so a failure

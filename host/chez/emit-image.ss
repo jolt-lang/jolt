@@ -211,6 +211,20 @@
 ;; (flags, gensym, cache-cells, ctor-shapes) and the contagion clone reaches it.
 ;; Guarded for the first re-mint off an older seed (no set-emit-unit! yet).
 (define (ei-publish-unit!) (when (procedure? jolt-set-emit-unit!) (jolt-set-emit-unit! (ei-unit))))
+;; A fresh unit starts with every mode flag off, so a driver that publishes one
+;; for a single emission must put the caller's unit back when it is done.
+;; Leaving the fresh unit published left the rest of the process compiling with
+;; var-cache off: every stdlib fasl build-jolt captured after the CLI AOT
+;; section resolved each var reference by name on every call (~7x a cached
+;; site), and an in-process build (nREPL) did the same to the session's later
+;; compiles. ei-save-unit / ei-restore-unit! bracket ei-fresh-unit!.
+(define jolt-current-emit-unit (var-deref "jolt.backend-scheme" "current-unit"))
+(define (ei-save-unit)
+  (cons ei-unit-box (and (procedure? jolt-current-emit-unit) (jolt-current-emit-unit))))
+(define (ei-restore-unit! saved)
+  (set! ei-unit-box (car saved))
+  (when (and (cdr saved) (procedure? jolt-set-emit-unit!))
+    (jolt-set-emit-unit! (cdr saved))))
 ;; --- whole-program analysis cache for --opt builds ----------------------------
 ;; bld-wp-infer! populates this; ei-compile-form checks it to skip re-analysis.
 (define ei-cached-ir (make-hashtable string-hash string=?))
