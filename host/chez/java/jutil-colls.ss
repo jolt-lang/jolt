@@ -242,6 +242,25 @@
   (let ((f (jutil-modcount-reader x))) (and f (f x))))
 (define (jutil-cme!) (throw-jvm 'ConcurrentModificationException jolt-nil))
 
+;; ---- a map's views, made once ---------------------------------------------------
+;; A HashMap, TreeMap, LinkedHashMap, EnumMap, … hands out ONE keySet, values and
+;; entrySet view and answers it again on every later call (the JDK keeps each in
+;; a field), so (identical? (.keySet m) (.keySet m)) and a values view's
+;; identity equals hold. (jutil-view m slot make) is the view in SLOT of M,
+;; made by MAKE the first time: slot 0 the key set, 1 values, 2 the entry set,
+;; 3 the descending map. The table is an ephemeron one, so a view (which holds
+;; its map) does not keep the map alive; writes take the mutex, reads do not.
+(define jutil-views-tbl (make-ephemeron-eq-hashtable))
+(define jutil-views-mu (make-mutex))
+(define (jutil-view m slot make)
+  (let ((v (hashtable-ref jutil-views-tbl m #f)))
+    (or (and v (vector-ref v slot))
+        (let ((x (make)))
+          (jolt-with-mutex jutil-views-mu
+            (let ((v (or (hashtable-ref jutil-views-tbl m #f)
+                         (let ((v (make-vector 4 #f))) (hashtable-set! jutil-views-tbl m v) v))))
+              (or (vector-ref v slot) (begin (vector-set! v slot x) x))))))))
+
 ;; ---- an Iterator whose remove writes through ---------------------------------------
 ;; (make-jutil-iterator tag items remove! [project]): walks ITEMS, a list taken
 ;; when the iterator is made; next() answers (project item) and remove() hands
@@ -338,8 +357,10 @@
 ;; first chunk now (a jolt seq is realized at its head), each later one when the
 ;; walk reaches it — a ConcurrentModificationException then if COLL's modCount
 ;; has moved since the seq was made, as the iterator's next would raise.
-(define (jutil-ff-seq coll xs)
-  (let* ((mc (jutil-modcount-reader coll)) (e (and mc (mc coll))))
+(define (jutil-ff-seq coll xs) (jutil-ff-seq/mc coll xs (jutil-modcount-reader coll)))
+;; …with the count's reader MC (#f for none) supplied by a caller that knows it
+(define (jutil-ff-seq/mc coll xs mc)
+  (let ((e (and mc (mc coll))))
     ;; 32 cells; the 32nd's tail, when more follow, is read when the walk asks
     ;; for it. Plain cells: (seq coll) is no chunked seq on the JVM (it is the
     ;; LazySeq over RT.chunkIteratorSeq).

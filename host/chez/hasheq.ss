@@ -691,6 +691,10 @@
 (define (jolt-identity-hasheq p)
   (or (hashtable-ref proc-hasheq-tbl p #f)
       (jolt-identity-hasheq/locked p)))
+;; The id for the Nth object: murmured so neighbours spread, and kept to 31
+;; bits, as HotSpot's identity hashes are — System/identityHashCode and the
+;; hash of a fn or a plain deftype are never negative there.
+(define (identity-hash-id n) (fxand (murmur3-hash-long-flat n) #x7fffffff))
 ;; Writers take a spin lock, a box claimed by CAS, and hold it with interrupts
 ;; off. #object printing mints an id for every fresh object it prints (jolt-28we),
 ;; and the mutex with its dynamic-wind cost more than the insert itself. The
@@ -716,7 +720,7 @@
       (let ((h (or (hashtable-ref proc-hasheq-tbl p #f)
                    (begin
                      (set! proc-hasheq-counter (fx+ proc-hasheq-counter 1))
-                     (let ((h (murmur3-hash-long-flat proc-hasheq-counter)))
+                     (let ((h (identity-hash-id proc-hasheq-counter)))
                        (hashtable-set! proc-hasheq-tbl p h)
                        h)))))
         (proc-hasheq-release!)

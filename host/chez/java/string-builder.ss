@@ -470,8 +470,8 @@
 ;; Both tags answer here: every arm below is about the shared store, so asking
 ;; the tag literally at any one of them is how a StringBuffer silently stops
 ;; being countable, seqable or printable while a StringBuilder still is.
-(define (sb-builder-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "string-builder")))
-(define (sb-buffer-jhost? x) (and (jhost? x) (string=? (jhost-tag x) "string-buffer")))
+(define-jhost-tag-pred (sb-builder-jhost? t) (string=? t "string-builder"))
+(define-jhost-tag-pred (sb-buffer-jhost? t) (string=? t "string-buffer"))
 (define (sb-jhost? x) (or (sb-builder-jhost? x) (sb-buffer-jhost? x)))
 (define (sb-class-name x)
   (if (sb-buffer-jhost? x) "java.lang.StringBuffer" "java.lang.StringBuilder"))

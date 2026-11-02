@@ -25,6 +25,28 @@
 ;; StringBuilder one tagged "string-builder" (string-builder.ss).
 (define-record-type jhost (fields tag (mutable state)) (nongenerative gambit-jhost-v1))
 
+;; A question a host object's tag alone answers, remembered by the tag object —
+;; the same helper as host/chez/java/host-static.ss (which explains it); the
+;; shared java/ files (tree-map.ss, byte-buffer.ss, …) define predicates with it.
+(define (jhost-tag-memo test)
+  (let ((hit '(#f . #f)) (miss1 '(#f . #f)) (miss2 '(#f . #f)))
+    (lambda (x)
+      (and (jhost? x)
+           (let ((t (jhost-tag x)))
+             (let ((h hit))
+               (cond ((eq? (car h) t) (cdr h))
+                     ((eq? (car miss1) t) #f)
+                     ((eq? (car miss2) t) #f)
+                     (else
+                      (let ((a (test t)))
+                        (if a
+                            (set! hit (cons t a))
+                            (begin (set! miss2 miss1) (set! miss1 (cons t #f))))
+                        a)))))))))
+(define-syntax define-jhost-tag-pred
+  (syntax-rules ()
+    ((_ (name t) body ...) (define name (jhost-tag-memo (lambda (t) body ...))))))
+
 ;; ---- registries ---------------------------------------------------------------
 ;; class-ctors-tbl / register-class-ctor! are rt-core.ss's (a deftype registers
 ;; its ctor there under its tag); class-statics-tbl / register-class-statics!
