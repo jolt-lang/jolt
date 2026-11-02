@@ -1067,7 +1067,8 @@ threadsafety:
 	@$(CHEZ) --script test/chez/thread-safety-test.ss
 
 # A lock a fiber park takes with interrupts disabled must not stall a collection
-# whose requester holds it (locks.ss jolt-mutex-acquire!). The failure is a hang
+# whose requester holds it (locks.ss jolt-mutex-acquire!), nor may a condition
+# wait made with them disabled (locks.ss jolt-condition-wait). The failure is a hang
 # of the whole process, so the script runs the gate under an outside deadline.
 maskedacquire:
 	@sh host/chez/masked-acquire-gate.sh $(CHEZ)
