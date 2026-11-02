@@ -1009,6 +1009,31 @@ else
   fails=$((fails + 1))
 fi
 
+# A require on another thread does not move this thread's *ns* (jolt-1gk): the
+# loader binds *ns* for the load, so a conveyed frame is never written. The
+# contention case above hit it on some runs; this one pins it every run.
+ni_out="$($jolt run test/chez/require-ns-isolation.clj 2>&1)"
+if printf '%s' "$ni_out" | grep -q 'REQUIRE-NS-ISOLATION OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a require on another thread moved this thread's *ns*"
+  echo "    $(printf '%s' "$ni_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
+# Object.wait's release zeroes the monitor's count BEFORE it frees the word
+# (jolt-are): zeroed after, it could clobber a fast enter's count, and that
+# owner's exit left the monitor held for good. One-key ConcurrentHashMap.merge
+# from four threads hung within a few rounds before the fix.
+mw_out="$($jolt run test/chez/monitor-wait-count.clj 2>&1)"
+if printf '%s' "$mw_out" | grep -q 'MONITOR-WAIT-COUNT OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a monitor wait clobbered the next owner's hold count"
+  echo "    $(printf '%s' "$mw_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # One paren too many must FAIL the file, not truncate it. The loader read forms
 # with the non-top-level reader, which parks on a stray `)` rather than raising,
 # and the loop read a parked position as end of input: everything after the paren

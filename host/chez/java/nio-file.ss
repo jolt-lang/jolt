@@ -84,12 +84,19 @@
 ;; Paths.get(first, more...) — join with the separator, no normalization. The
 ;; varargs `more` arrives as a jolt String[] (from into-array); spread it.
 (define (npath-spread-args args)
-  (apply append (map (lambda (x) (if (jolt-array? x) (ja->list x) (list x))) args)))
+  (cond ((null? args) '())
+        ;; Paths/get's usual shape: one varargs array, most often empty
+        ((and (null? (cdr args)) (jolt-array? (car args))) (ja->list (car args)))
+        (else (apply append (map (lambda (x) (if (jolt-array? x) (ja->list x) (list x))) args)))))
 ;; A joined path keeps the separator the left side is already spelled with
 ;; (java/io.ss path-join-sep), so a native "C:\\Users\\x" gains "\\" and everything
 ;; else gains "/"; a separator the caller already wrote — either kind, on
 ;; Windows — is not doubled.
 (define (npath-join-for windows? parts)
+  (if (and (pair? parts) (null? (cdr parts)))
+      (car parts)                       ; one part is itself, as the fold answers
+      (npath-join-parts windows? parts)))
+(define (npath-join-parts windows? parts)
   (fold-left (lambda (acc p)
                (cond ((string=? p "") acc)
                      ((string=? acc "") p)
@@ -189,15 +196,17 @@
 ;; One place Path and File normalize differently, and it is the JDK's: a UNC root
 ;; alone keeps its trailing separator as a Path ("\\\\srv\\sh\\", what
 ;; WindowsPathParser answers) where java.io.File drops it ("\\\\srv\\sh").
-(define (npath-held-for windows? s . refuse-nul)
-  (let ((n (if (null? refuse-nul)
-               (jolt-path-normalize-for windows? s)
-               (jolt-path-normalize-for/nul windows? s))))
+(define (npath-held-for windows? s) (npath-held-from windows? (jolt-path-normalize-for windows? s)))
+;; …refusing a NUL, as a path the default filesystem parses does
+(define (npath-held-for/nul windows? s)
+  (let ((n (jolt-path-normalize-for/nul windows? s)))
     (when (eq? n 'nul) (npath-refuse-nul windows? s))
-    (if (and windows? (fx>? (string-length n) 2) (string=? (substring n 0 2) "//"))
-        (let ((pp (path-parse #t n)))
-          (if (null? (ppath-segs pp)) (ppath-root pp) n))
-        n)))
+    (npath-held-from windows? n)))
+(define (npath-held-from windows? n)
+  (if (and windows? (fx>? (string-length n) 2) (string=? (substring n 0 2) "//"))
+      (let ((pp (path-parse #t n)))
+        (if (null? (ppath-segs pp)) (ppath-root pp) n))
+      n))
 (define default-nio-filesystem (make-jhost "nio-filesystem" #f))
 
 ;; ---- filesystem providers ------------------------------------------------------
@@ -231,6 +240,8 @@
 ;; accumulated chunks, at the bottom of this file; its Path members a few lines
 ;; below the Path methods.
 (define default-nio-provider
+  ;; nio-fs-windows? and nio-path-render answer the default filesystem with
+  ;; these two directly, without the lookup: change them there too
   (make-nio-provider "file" nio-windows? (lambda (s) (path-native s))
                      (make-hashtable string-hash string=?) (make-hashtable string-hash string=?)
                      #f
@@ -250,7 +261,12 @@
   (if (eq? fs default-nio-filesystem)
       default-nio-provider
       (hashtable-ref nio-fs-providers (jhost-tag fs) default-nio-provider)))
-(define (nio-fs-windows? fs) ((nio-provider-windows? (nio-fs-provider fs))))
+(define (nio-fs-windows? fs)
+  ;; the host filesystem's provider answers nio-windows?: every Path made and
+  ;; parsed asks this, so the default filesystem skips the provider lookup
+  (if (eq? fs default-nio-filesystem)
+      (nio-windows?)
+      ((nio-provider-windows? (nio-fs-provider fs)))))
 
 ;; A path string with a NUL names no file: the JDK's UnixPath (and WindowsPath,
 ;; in its own words) refuses it as it parses, so Paths/get, Path/of, File.toPath
@@ -270,15 +286,18 @@
   (make-jhost "nio-path"
               (cons fs (let ((w? (nio-fs-windows? fs)) (str (if (string? s) s (npath-string-of s))))
                          (if (eq? fs default-nio-filesystem)
-                             (npath-held-for w? str #t)
+                             (npath-held-for/nul w? str)
                              (npath-held-for w? str))))))
 (define (make-nio-path s) (make-nio-path-on default-nio-filesystem s))
-(define (nio-path? x) (and (jhost? x) (string=? (jhost-tag x) "nio-path")))
+(define-jhost-tag-pred (nio-path? t) (string=? t "nio-path"))
 (define (nio-path-str p) (cdr (jhost-state p)))
 (define (nio-path-filesystem p) (car (jhost-state p)))
 (define (nio-path-provider p) (nio-fs-provider (nio-path-filesystem p)))
 (define (nio-path-windows? p) (nio-fs-windows? (nio-path-filesystem p)))
-(define (nio-path-render p) ((nio-provider-render (nio-path-provider p)) (nio-path-str p)))
+(define (nio-path-render p)
+  (if (eq? (nio-path-filesystem p) default-nio-filesystem)
+      (path-native (nio-path-str p))              ; the host provider's render
+      ((nio-provider-render (nio-path-provider p)) (nio-path-str p))))
 (define (npath-like self s) (make-nio-path-on (nio-path-filesystem self) s))
 ;; A Path member only some filesystems answer differently: the provider's own, or
 ;; the host filesystem's.
@@ -343,43 +362,61 @@
                 ((fx=? (bytevector-u8-ref x i) (bytevector-u8-ref y i)) (loop (fx+ i 1)))
                 (else (fx- (bytevector-u8-ref x i) (bytevector-u8-ref y i))))))))
 
-(define (nio-path-method self name rest)   ; -> boxed result, or #f to fall through
-  (let ((s (nio-path-str self))
-        (windows? (nio-path-windows? self)))
-    (cond
-      ((string=? name "toString")      (list (nio-path-render self)))
-      ((string=? name "getFileName")   (list (npath-file-name-on (nio-path-filesystem self) s)))
-      ((string=? name "getParent")     (list (npath-parent-on (nio-path-filesystem self) s)))
-      ((string=? name "getName")       (list (let ((segs (npath-segs-for windows? s)) (i (exact (truncate (car rest)))))
-                                               (npath-like self (list-ref segs i)))))
-      ((string=? name "getNameCount")  (list (length (npath-segs-for windows? s))))
-      ((string=? name "getRoot")       (list (let ((r (npath-root-for windows? s)))
-                                               (if (string=? r "") jolt-nil (npath-like self r)))))
-      ((string=? name "getFileSystem") (list (nio-path-filesystem self)))
-      ((string=? name "normalize")     (list (npath-like self (npath-normalize-for windows? s))))
-      ((string=? name "resolve")       (list (fold-left npath-resolve self (npath-spread-args rest))))
-      ((string=? name "resolveSibling")(list (let ((par (npath-parent-on (nio-path-filesystem self) s)))
-                                               (npath-resolve (if (jolt-nil? par) (npath-like self "") par) (car rest)))))
-      ((string=? name "relativize")    (list (npath-relativize self (car rest))))
-      ((member name '("toAbsolutePath" "toRealPath" "toFile" "toUri" "register"))
-       (list (apply (nio-path-op self name) self rest)))
-      ((string=? name "startsWith")    (list (npath-starts-with self (car rest))))
-      ((string=? name "endsWith")      (list (npath-ends-with self (car rest))))
-      ((string=? name "isAbsolute")    (list (npath-absolute-for? windows? s)))
-      ((string=? name "subpath")       (list (let ((segs (npath-segs-for windows? s))
-                                                   (b (exact (truncate (car rest))))
-                                                   (e (exact (truncate (cadr rest)))))
-                                               (npath-like self (npath-rebuild "" (list-head (list-tail segs b) (- e b)))))))
-      ((string=? name "compareTo")     (list (begin
-                                               (npath-same-provider! self (car rest))
-                                               (npath-compare-for windows? s (nio-path-str (car rest))))))
-      ((string=? name "equals")        (list (and (nio-path? (car rest))
-                                                 (eq? (nio-path-filesystem self) (nio-path-filesystem (car rest)))
-                                                 (string=? s (nio-path-str (car rest))))))
-      ((string=? name "hashCode")      (list (equal-hash (jhost-state self))))
-      ((string=? name "iterator")      (list (list->cseq (map (lambda (segment) (npath-like self segment))
-                                                              (npath-segs-for windows? s)))))
-      (else #f))))
+;; Path's members, a host method table under the "nio-path" tag, so an
+;; unhinted (.toString p) is served by the call site's cache (host-static.ss
+;; jolt-host-site-call*) as every other shim's members are. They were a method
+;; arm that matched the name against each member in turn, which every call
+;; reached through the arms ahead of it with its arguments in a fresh vector:
+;; ~100 ns before the member ran.
+(define (npath-w self) (nio-path-windows? self))
+(register-host-methods! "nio-path"
+  (list
+   (cons "toString"       (lambda (self) (nio-path-render self)))
+   (cons "getFileName"    (lambda (self) (npath-file-name-on (nio-path-filesystem self) (nio-path-str self))))
+   (cons "getParent"      (lambda (self) (npath-parent-on (nio-path-filesystem self) (nio-path-str self))))
+   (cons "getName"        (lambda (self i)
+                            (npath-like self (list-ref (npath-segs-for (npath-w self) (nio-path-str self))
+                                                       (exact (truncate i))))))
+   (cons "getNameCount"   (lambda (self) (length (npath-segs-for (npath-w self) (nio-path-str self)))))
+   (cons "getRoot"        (lambda (self)
+                            (let ((r (npath-root-for (npath-w self) (nio-path-str self))))
+                              (if (string=? r "") jolt-nil (npath-like self r)))))
+   (cons "getFileSystem"  (lambda (self) (nio-path-filesystem self)))
+   (cons "normalize"      (lambda (self) (npath-like self (npath-normalize-for (npath-w self) (nio-path-str self)))))
+   ;; resolve(other) and resolve(first, more...): each name in turn, a String[]
+   ;; spread as its elements
+   (cons "resolve"        (case-lambda
+                            ((self other) (if (jolt-array? other)
+                                              (fold-left npath-resolve self (ja->list other))
+                                              (npath-resolve self other)))
+                            ((self . rest) (fold-left npath-resolve self (npath-spread-args rest)))))
+   (cons "resolveSibling" (lambda (self other)
+                            (let ((par (npath-parent-on (nio-path-filesystem self) (nio-path-str self))))
+                              (npath-resolve (if (jolt-nil? par) (npath-like self "") par) other))))
+   (cons "relativize"     (lambda (self other) (npath-relativize self other)))
+   (cons "toAbsolutePath" (lambda (self) ((nio-path-op self "toAbsolutePath") self)))
+   (cons "toRealPath"     (lambda (self . opts) (apply (nio-path-op self "toRealPath") self opts)))
+   (cons "toFile"         (lambda (self) ((nio-path-op self "toFile") self)))
+   (cons "toUri"          (lambda (self) ((nio-path-op self "toUri") self)))
+   (cons "register"       (lambda (self . args) (apply (nio-path-op self "register") self args)))
+   (cons "startsWith"     (lambda (self other) (npath-starts-with self other)))
+   (cons "endsWith"       (lambda (self other) (npath-ends-with self other)))
+   (cons "isAbsolute"     (lambda (self) (npath-absolute-for? (npath-w self) (nio-path-str self))))
+   (cons "subpath"        (lambda (self b0 e0)
+                            (let ((segs (npath-segs-for (npath-w self) (nio-path-str self)))
+                                  (b (exact (truncate b0))) (e (exact (truncate e0))))
+                              (npath-like self (npath-rebuild "" (list-head (list-tail segs b) (- e b)))))))
+   (cons "compareTo"      (lambda (self other)
+                            (npath-same-provider! self other)
+                            (npath-compare-for (npath-w self) (nio-path-str self) (nio-path-str other))))
+   (cons "equals"         (lambda (self other)
+                            (and (nio-path? other)
+                                 (eq? (nio-path-filesystem self) (nio-path-filesystem other))
+                                 (string=? (nio-path-str self) (nio-path-str other)))))
+   (cons "hashCode"       (lambda (self) (equal-hash (jhost-state self))))
+   (cons "iterator"       (lambda (self)
+                            (list->cseq (map (lambda (segment) (npath-like self segment))
+                                             (npath-segs-for (npath-w self) (nio-path-str self))))))))
 
 ;; The host filesystem's answers to the Path members a provider owns.
 (for-each
@@ -400,8 +437,9 @@
                   ((file-exists? fp) (npath-like self (npath-normalize-for windows? abs)))
                   (else (jolt-throw (jolt-ex-info abs empty-pmap)))))))   ; missing path throws
   (cons "toFile" (lambda (self) (make-jfile (nio-path-str self))))
-  ;; a java.net.URI, as File.toURI answers (io.ss jfile->uri)
-  (cons "toUri" (lambda (self) (jfile->uri (nio-path-str self))))
+  ;; a java.net.URI in the default filesystem's own form, not File.toURI's
+  ;; (io.ss nio-path->uri)
+  (cons "toUri" (lambda (self) (nio-path->uri (nio-path-windows? self) (nio-path-str self))))
   (cons "register" (lambda (self . args)
                      (throw-jvm 'UnsupportedOperationException "watch service is not supported")))))
 
@@ -527,14 +565,6 @@
   (register-class-statics! "FileSystems" fs-statics)
   (register-class-statics! "java.nio.file.FileSystems" fs-statics))
 
-;; nio-path method dispatch (priority above the jfile arm).
-(register-method-arm! arm-priority-nio-path
-  (lambda (obj method-name rest-args)
-    (if (nio-path? obj)
-        (let* ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args)))
-               (r (nio-path-method obj method-name rest)))
-          (if r (car r) (dispatch-miss obj method-name rest)))
-        'pass)))
 
 ;; (str p), value equality + hashing. instance? and (class p) come from the
 ;; jhost-tag->fqn rows for these three tags (class-hierarchy.ss) — the same
@@ -625,13 +655,21 @@
             (else (raise e)))
       (thunk))))
 
-;; A directory opens for reading on Linux and only fails at the first read, so
-;; newInputStream handed back a stream that threw later. The JVM checks at open
-;; and reports exactly this message.
+;; A directory opens for reading and fails at the first read, on the JVM as in
+;; POSIX: newInputStream and newByteChannel hand back a stream, and reading it --
+;; readAllBytes, readString, a reader's first line -- is java.io.IOException
+;; "Is a directory", read(2)'s EISDIR, with no path in it. Chez reports that
+;; read as its own i/o error, so the directory never reaches it: its port raises
+;; the JVM's exception instead.
+(define (nio-directory-input-port)
+  (make-custom-binary-input-port "directory"
+    (lambda (bv start count) (throw-jvm 'java.io.IOException "Is a directory"))
+    #f #f #f))
 (define (nio-open-input-port fp . shown)
   (let ((m (if (pair? shown) (car shown) fp)))
-    (when (file-directory? fp) (nio-fs-detail m "Is a directory"))
-    (nio-fs-call fp (lambda () (open-file-input-port fp)) m)))
+    (if (file-directory? fp)
+        (nio-directory-input-port)
+        (nio-fs-call fp (lambda () (open-file-input-port fp)) m))))
 
 (define (nio-size fp . shown)
   (if (not (or (file-exists? fp) (nio-is-symlink? fp)))
@@ -639,8 +677,8 @@
       ;; A directory opens for reading and fstats fine even though READING one
       ;; fails, and Files.size reports a directory's st_size like any other
       ;; entry -- so open it directly here rather than through
-      ;; nio-open-input-port, which is the read path and refuses a directory
-      ;; exactly as the JVM's newInputStream does.
+      ;; nio-open-input-port, which is the read path and stands a directory in
+      ;; for a port that refuses to be read.
       ;;
       ;; Chez's file-length is fstat(2).st_size (S_get_fd_length in new-io.c),
       ;; which is the number the JVM answers, so this needs none of the struct
@@ -899,8 +937,35 @@
     (->path start)))
 
 ;; ---- newDirectoryStream: a closeable, seqable listing of a directory's kids --
-(define (make-dir-stream paths) (make-jhost "dir-stream" paths))  ; state: list of Path
-(define (dir-stream? x) (and (jhost? x) (string=? (jhost-tag x) "dir-stream")))
+;; state #(paths iterated? closed?). Like the JDK's, it hands out ONE iterator:
+;; a second, or one after close, is IllegalStateException, and an iterator whose
+;; stream was closed has nothing more. seq goes through the iterator, as it does
+;; over any Iterable.
+(define (make-dir-stream paths) (make-jhost "dir-stream" (vector paths #f #f)))
+(define-jhost-tag-pred (dir-stream? t) (string=? t "dir-stream"))
+(define (dir-stream-closed? ds) (vector-ref (jhost-state ds) 2))
+(define (dir-stream-iterator ds)
+  (let ((st (jhost-state ds)))
+    (cond ((vector-ref st 2) (throw-jvm 'IllegalStateException "Directory stream is closed"))
+          ((vector-ref st 1) (throw-jvm 'IllegalStateException "Iterator already obtained"))
+          (else (vector-set! st 1 #t)
+                (make-jhost "dir-stream-iterator" (vector ds (vector-ref st 0)))))))
+(define (dir-stream-iterator-more? it)
+  (let ((st (jhost-state it)))
+    (and (pair? (vector-ref st 1)) (not (dir-stream-closed? (vector-ref st 0))))))
+(register-host-methods! "dir-stream"
+  (list (cons "iterator" dir-stream-iterator)
+        (cons "close" (lambda (self) (vector-set! (jhost-state self) 2 #t) jolt-nil))))
+(register-host-methods! "dir-stream-iterator"
+  (list (cons "hasNext" dir-stream-iterator-more?)
+        (cons "next" (lambda (self)
+                       (unless (dir-stream-iterator-more? self) (throw-jvm 'NoSuchElementException jolt-nil))
+                       (let* ((st (jhost-state self)) (rest (vector-ref st 1)))
+                         (vector-set! st 1 (cdr rest))
+                         (car rest))))
+        (cons "remove" (lambda (self) (throw-jvm 'UnsupportedOperationException jolt-nil)))))
+(hashtable-set! jhost-tag->fqn "dir-stream" "java.nio.file.DirectoryStream")
+(hashtable-set! jhost-tag->fqn "dir-stream-iterator" "java.util.Iterator")
 (define (nio-new-directory-stream dir . rest)
   (let* ((base (npath-string-of dir))
          (fp (project-relative base))
@@ -926,7 +991,11 @@
 ;; seq arms, not a set!-wrap of jolt-seq: a wrapper put two record tests in
 ;; front of EVERY seq in the program (a vector's included); an arm is consulted
 ;; only after jolt-seq's own types have missed.
-(register-seq-arm! dir-stream? (lambda (x) (list->cseq (jhost-state x))))
+(register-seq-arm! dir-stream?
+  (lambda (x)
+    ;; takes the stream's one iterator, and with it every path
+    (dir-stream-iterator x)
+    (list->cseq (vector-ref (jhost-state x) 0))))
 (register-seq-arm! nio-path?
   (lambda (x)
     (let ((segs (npath-segs-for (nio-path-windows? x) (nio-path-str x))))
@@ -934,7 +1003,7 @@
       (list->cseq (map (lambda (segment) (npath-like x segment))
                        (if (null? segs) '("") segs))))))
 (let ((prev jolt-close))
-  (set! jolt-close (lambda (x) (if (dir-stream? x) jolt-nil (prev x))))
+  (set! jolt-close (lambda (x) (if (dir-stream? x) (begin (vector-set! (jhost-state x) 2 #t) jolt-nil) (prev x))))
   (def-var! "clojure.core" "__close" jolt-close))
 
 ;; register the Files walk/stream ops + the FileVisitResult / FileVisitOption enums.
@@ -958,7 +1027,7 @@
 (define (make-file-time-in value scale) (make-jhost "file-time" (cons value scale)))
 (define (make-file-time ms) (make-file-time-in ms 1000000))
 (define (make-file-time-ns ns) (make-file-time-in ns 1))
-(define (file-time? x) (and (jhost? x) (string=? (jhost-tag x) "file-time")))
+(define-jhost-tag-pred (file-time? t) (string=? t "file-time"))
 (define (file-time-parts x)
   (let ((st (jhost-state x))) (if (pair? st) st (cons st 1000000))))
 ;; epoch nanoseconds, exact
@@ -1117,7 +1186,7 @@
 (define posix-bits '(#o400 #o200 #o100 #o40 #o20 #o10 #o4 #o2 #o1))
 (define pfp-constants (map (lambda (nm) (cons nm (make-jhost "posix-perm" nm))) posix-order))
 (define (make-pfp name) (cdr (assoc name pfp-constants)))
-(define (pfp? x) (and (jhost? x) (string=? (jhost-tag x) "posix-perm")))
+(define-jhost-tag-pred (pfp? t) (string=? t "posix-perm"))
 ;; A permission set is a mutable java.util.Set (like the JVM): callers do
 ;; (.add perms OWNER_WRITE) before setPosixFilePermissions.
 (define (make-perm-set elems)
@@ -1811,7 +1880,7 @@
                     (cons (bitwise-and (nio-layout-dev-ref (nio-stat-layout) buf) #xFFFFFFFFFFFFFFFF)
                           (bytevector-u64-ref buf 8 (native-endianness))))
         jolt-nil)))
-(define (file-key? x) (and (jhost? x) (string=? (jhost-tag x) "file-key")))
+(define-jhost-tag-pred (file-key? t) (string=? t "file-key"))
 (define (nio-s64 u) (if (>= u #x8000000000000000) (- u #x10000000000000000) u))
 (define (nio-file-key-string k)
   (let ((dev (car (jhost-state k))) (ino (cdr (jhost-state k))))
@@ -1909,7 +1978,7 @@
 (define (nio-uid->name uid)
   (and c-getpwuid (let ((pw (c-getpwuid uid))) (and (not (= 0 pw)) (nio-cstr-at (sa-foreign-ref 'iptr pw 0))))))
 ;; user-principal values compare and hash by name; getOwner honors NOFOLLOW.
-(define (nio-userprin? x) (and (jhost? x) (string=? (jhost-tag x) "user-principal")))
+(define-jhost-tag-pred (nio-userprin? t) (string=? t "user-principal"))
 (register-eq-arm! (lambda (a b) (and (nio-userprin? a) (nio-userprin? b)))
                   (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
 (register-hash-arm! nio-userprin? (lambda (x) (string-hash (jhost-state x))))
@@ -2202,15 +2271,10 @@
   (if (and (pair? args) (nio-charset-arg? (car args))) (cdr args) args))
 (define (nio-path-bytes p)
   ((nio-provider-read-bytes (if (nio-path? p) (nio-path-provider p) default-nio-provider)) p))
-;; The JDK reads text with a REPORTING decoder: malformed input raises
-;; MalformedInputException rather than decoding to U+FFFD.
-(define (nio-decode-strict bv cs-name)
-  (if (and (string=? (charset-canonical-down cs-name) "utf-8") (%utf8-java-plain? bv))
-      (utf8->string bv)
-      (let* ((decoder (make-jhost "charset-decoder" (vector (charset-for-name cs-name) #f #f "\xFFFD;")))
-             (decoded (decoder-decode-all decoder
-                                          (nb-wrap-bytes (na-bv->bytearray bv) 0 (bytevector-length bv)))))
-        (nb-char-string decoded (bb-pos decoded) (bb-limit decoded)))))
+;; The JDK reads and writes text with a REPORTING coder: malformed input raises
+;; MalformedInputException rather than decoding to U+FFFD, and a character the
+;; charset cannot hold UnmappableCharacterException rather than writing "?".
+(define (nio-decode-strict bv cs-name) (charset-decode-report bv cs-name))
 ;; BufferedReader.readLine's terminators: "\n", "\r" and "\r\n".
 (define (nio-split-lines s)
   (let ((n (string-length s)))
@@ -2227,18 +2291,101 @@
 (define (nio-files-read-string p . args) (nio-read-text p args))
 (define (nio-files-read-all-lines p . args)
   (make-pvec (list->vector (nio-split-lines (nio-read-text p args)))))
+;; A stream whose elements are read as they are pulled, as Files.lines and walk
+;; are on the JDK: an IOException met then is UncheckedIOException, its cause the
+;; IOException and its message the cause's toString, and any other throwable
+;; passes as it is.
+(define (nio-unchecked-io thunk)
+  (guard (e ((and (jolt-throw-condition? e)
+                  (let ((v (jolt-throw-condition-value e)))
+                    (and (ex-info-map? v) (jch-isa? (ex-info-class v) "java.io.IOException"))))
+             (let ((cause (jolt-throw-condition-value e)))
+               (jolt-throw (jolt-host-throwable "java.io.UncheckedIOException"
+                                                (record-method-dispatch cause "toString" jolt-nil)
+                                                cause)))))
+    (thunk)))
+;; Files.lines: the file opened now -- a missing one is NoSuchFileException at
+;; the call -- and decoded through the charset's reporting decoder as the stream
+;; is consumed, a block at a time; closing the stream closes the file. UTF-8
+;; decodes each block of bytes whole, cut at a character boundary, the way
+;; readString decodes the file.
 (define (nio-files-lines p . args)
-  (make-stream 'ref (list->cseq (nio-split-lines (nio-read-text p args)))))
+  (let* ((in (nio-files-call "newInputStream" p))
+         (bp (stream-byte-port in))
+         (cs (nio-charset-name args))
+         (read-chunk
+          (if (string=? (charset-canonical-down cs) "utf-8")
+              (let ((carry (make-bytevector 0)))
+                (lambda ()
+                  (let ((bv (get-bytevector-n bp 262144)))
+                    (cond
+                      ((and (eof-object? bv) (fx=? (bytevector-length carry) 0)) bv)
+                      ((eof-object? bv)
+                       (let ((last carry)) (set! carry (make-bytevector 0)) (charset-decode-report last "UTF-8")))
+                      (else
+                       (let* ((buf (if (fx=? (bytevector-length carry) 0)
+                                       bv
+                                       (let ((b (make-bytevector (fx+ (bytevector-length carry) (bytevector-length bv)))))
+                                         (bytevector-copy! carry 0 b 0 (bytevector-length carry))
+                                         (bytevector-copy! bv 0 b (bytevector-length carry) (bytevector-length bv))
+                                         b)))
+                              (n (bytevector-length buf))
+                              (cut (%utf8-chunk-boundary buf 0 n))
+                              (head (if (fx=? cut n) buf (let ((h (make-bytevector cut))) (bytevector-copy! buf 0 h 0 cut) h))))
+                         (set! carry (if (fx=? cut n)
+                                         (make-bytevector 0)
+                                         (let ((t (make-bytevector (fx- n cut)))) (bytevector-copy! buf cut t 0 (fx- n cut)) t)))
+                         (charset-decode-report head "UTF-8")))))))
+              (let ((port (charset-input-port bp cs "lines" #t)))
+                (lambda () (get-string-n port 65536)))))
+         (s (make-stream 'ref (nio-chunk-lines read-chunk))))
+    (vector-set! (jhost-state s) 2 (list (lambda () (close-port bp))))
+    s))
+;; The lines of the text READ-CHUNK hands out a block at a time (a string, or
+;; the eof object at the end) as a lazy seq, split as BufferedReader.readLine
+;; splits them ("\n", "\r", "\r\n").
+(define (nio-chunk-lines read-chunk)
+  (define (cells lines tail)          ; LINES newest first, in front of TAIL
+    (fold-left (lambda (rest line) (st-cell line rest)) tail lines))
+  (define (more pending skip-lf?)
+    (st-lazy
+     (lambda ()
+       (let loop ((pending pending) (skip-lf? skip-lf?))
+         (let ((chunk (nio-unchecked-io read-chunk)))
+           (if (eof-object? chunk)
+               (if (string=? pending "") jolt-nil (st-cell pending jolt-nil))
+               (let* ((text (if (string=? pending "") chunk (string-append pending chunk)))
+                      (n (string-length text))
+                      (from (if (and skip-lf? (fx>? n 0) (char=? (string-ref text 0) #\newline)) 1 0)))
+                 (let scan ((i from) (start from) (acc '()))
+                   (cond
+                     ((fx=? i n)
+                      (let ((rest (substring text start n)))
+                        (if (null? acc) (loop rest #f) (cells acc (more rest #f)))))
+                     ((char=? (string-ref text i) #\newline)
+                      (scan (fx+ i 1) (fx+ i 1) (cons (substring text start i) acc)))
+                     ((char=? (string-ref text i) #\return)
+                      (let ((acc (cons (substring text start i) acc)))
+                        (if (fx<? (fx+ i 1) n)
+                            (let ((j (if (char=? (string-ref text (fx+ i 1)) #\newline) (fx+ i 2) (fx+ i 1))))
+                              (scan j j acc))
+                            ;; a "\r" ends the block: a "\n" opening the next is its
+                            (cells acc (more "" #t)))))
+                     (else (scan (fx+ i 1) start acc)))))))))))
+  (more "" #f))
+;; newBufferedReader and newBufferedWriter are the JDK's: a reader over the
+;; charset's newDecoder and a writer over its newEncoder, both REPORTING.
 (define (nio-files-buffered-reader p . args)
   (host-new "BufferedReader"
-            (host-new "InputStreamReader" (nio-files-call "newInputStream" p) (nio-charset-name args))))
+            (host-new "InputStreamReader" (nio-files-call "newInputStream" p)
+                      (record-method-dispatch (charset-for-name (nio-charset-name args)) "newDecoder" jolt-nil))))
 (define (nio-files-buffered-writer p . args)
   (host-new "BufferedWriter"
             (host-new "OutputStreamWriter"
                       (apply nio-files-call "newOutputStream" p (nio-after-charset args))
-                      (nio-charset-name args))))
+                      (record-method-dispatch (charset-for-name (nio-charset-name args)) "newEncoder" jolt-nil))))
 (define (nio-files-write-string p text . args)
-  (let ((bytes (charset-encode-bv (jolt-str-render-one text) (nio-charset-name args))))
+  (let ((bytes (charset-encode-report (jolt-str-render-one text) (nio-charset-name args))))
     (apply nio-files-call "write" p (na-bv->bytearray bytes) (nio-after-charset args))))
 (define (nio-files-mismatch a b)
   (let* ((x (nio-path-bytes a)) (y (nio-path-bytes b))
@@ -2249,33 +2396,50 @@
             (else n)))))
 
 ;; walk / find: pre-order, a directory's children in its directory stream's
-;; order; a link is followed only under FOLLOW_LINKS.
-(define (nio-walk-list start depth opts)
+;; order; a link is followed only under FOLLOW_LINKS. Lazy, as the JDK's
+;; FileTreeIterator is: the start is checked and, being a directory, listed at
+;; the call, and every directory below it is listed when the walk reaches it, an
+;; IOException there arriving as UncheckedIOException (nio-unchecked-io).
+(define (nio-walk-seq start depth opts)
   (let ((link-opts (if (nio-opts-follow? (list->cseq (npath-spread-args opts))) '() (list fvo-nofollow))))
+    ;; PATH at LEVEL as #(path level descend?): descend? when the walk goes below it
+    (define (item path level)
+      (vector path level (and (< level depth) (apply nio-files-call "isDirectory" path link-opts) #t)))
+    ;; the items below a descended directory, in its stream's order
+    (define (children it)
+      (let ((level (+ (vector-ref it 1) 1)))
+        (map (lambda (child) (item child level))
+             (seq->list (jolt-seq (nio-files-call "newDirectoryStream" (vector-ref it 0)))))))
+    ;; STACK is a list of sibling lists still to visit, innermost first. A file's
+    ;; cell is built at once; a directory's listing waits for its rest to be asked for.
+    (define (walk stack)
+      (cond ((null? stack) jolt-nil)
+            ((null? (car stack)) (walk (cdr stack)))
+            (else
+             (let ((it (caar stack)) (rest (cons (cdar stack) (cdr stack))))
+               (st-cell (vector-ref it 0)
+                        (if (vector-ref it 2)
+                            (st-lazy (lambda () (walk (cons (nio-unchecked-io (lambda () (children it))) rest))))
+                            (walk rest)))))))
     (unless (apply nio-files-call "exists" start link-opts)
       (nio-no-such-file (nio-shown start)))
-    (let walk ((path start) (level 0) (acc '()))
-      (let ((acc (cons path acc)))
-        (if (and (< level depth) (apply nio-files-call "isDirectory" path link-opts))
-            (fold-left (lambda (acc child) (walk child (+ level 1) acc))
-                       acc
-                       (seq->list (jolt-seq (nio-files-call "newDirectoryStream" path))))
-            acc)))))
+    (let ((top (item start 0)))
+      (st-cell start (walk (list (if (vector-ref top 2) (children top) '())))))))
 (define (nio-files-list p)
   (make-stream 'ref (jolt-seq (nio-files-call "newDirectoryStream" p))))
 (define (nio-files-walk p . args)
   (let-values (((depth opts) (if (and (pair? args) (number? (car args)))
                                  (values (jnum->exact (car args)) (cdr args))
                                  (values 2147483647 args))))
-    (make-stream 'ref (list->cseq (reverse (nio-walk-list p depth opts))))))
+    (make-stream 'ref (nio-walk-seq p depth opts))))
 (define (nio-files-find p depth predicate . opts)
   (let ((attrs-class (jolt-class-for "java.nio.file.attribute.BasicFileAttributes")))
     (make-stream 'ref
-      (list->cseq
-       (filter (lambda (path)
-                 (jolt-truthy? (jolt-fi-call predicate "test" path
-                                             (nio-files-call "readAttributes" path attrs-class))))
-               (reverse (nio-walk-list p (jnum->exact depth) opts)))))))
+      (st-filter (lambda (path)
+                   (let ((attrs (nio-unchecked-io
+                                 (lambda () (nio-files-call "readAttributes" path attrs-class)))))
+                     (jolt-truthy? (jolt-fi-call predicate "test" path attrs))))
+                 (nio-walk-seq p (jnum->exact depth) opts)))))
 
 (define (nio-content-type-of name)
   (let* ((dot (let loop ((i (- (string-length name) 1)))

@@ -280,6 +280,10 @@
 (define (make-eq-hashtable . rest) (make-table test: eq?))
 (define (make-eqv-hashtable . rest) (make-table test: eqv?))
 (define (make-weak-eq-hashtable) (make-table test: eq? weak-keys: #t))
+;; Chez's ephemeron table: a key-weak table whose values may hold their key.
+;; Gambit's weak-keys table is the closest it has; a value that refers back to
+;; its key may keep that entry alive here (jutil-colls.ss's view cache).
+(define (make-ephemeron-eq-hashtable) (make-table test: eq? weak-keys: #t))
 (define (make-hashtable hash-fn equiv) (make-table test: equiv))
 
 (define (hashtable-ref t k d) (table-ref t k d))

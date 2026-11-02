@@ -624,32 +624,44 @@
 (define ldr-assert-cell #f)
 (define ldr-unchecked-cell #f)
 (define ldr-allow-cells (make-hashtable string-hash string=?))
-(define (ldr-with-file-vars path thunk)
+(define (ldr-file-cells-ready?)
   (unless ldr-file-cell
     (set! ldr-file-cell (var-cell-lookup "clojure.core" "*file*"))
     (set! ldr-spath-cell (var-cell-lookup "clojure.core" "*source-path*"))
     (set! ldr-warn-cell (var-cell-lookup "clojure.core" "*warn-on-reflection*"))
     (set! ldr-assert-cell (var-cell-lookup "clojure.core" "*assert*"))
     (set! ldr-unchecked-cell (var-cell-lookup "clojure.core" "*unchecked-math*")))
-  (if (not (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell
-                ldr-unchecked-cell))
-      (thunk)
+  (and ldr-file-cell ldr-spath-cell ldr-warn-cell ldr-assert-cell
+       ldr-unchecked-cell #t))
+;; The *file* / *source-path* half of the frame, for `path` as the loader resolved
+;; it: *file* is the name the source is known by (root-relative for a classpath
+;; namespace, as Compiler.load binds it from RT.load's resource name), and
+;; *source-path* the bare file name. Shared with the compiled entrances
+;; (ldr-with-compiled-ns-vars), so a namespace sees the same *file* whether it
+;; arrived from source or from a cached artifact.
+(define (ldr-file-name-pairs path)
+  (if (not (and path (ldr-file-cells-ready?)))
+      '()
       (let ((name (let loop ((i (- (string-length path) 1)))
                     (cond ((< i 0) path)
                           ((char=? (string-ref path i) #\/)
                            (substring path (+ i 1) (string-length path)))
                           (else (loop (- i 1)))))))
-        (dyn-with-frame
-          (append
-            (list (cons ldr-file-cell (ldr-source-name path))
-                  (cons ldr-spath-cell name)
-                  (cons ldr-warn-cell (var-cell-deref ldr-warn-cell))
-                  (cons ldr-assert-cell (var-cell-deref ldr-assert-cell))
-                  (cons ldr-unchecked-cell (var-cell-deref ldr-unchecked-cell)))
-            ;; *ns*, as RT.load binds it: the file's ns form switches this
-            ;; frame's binding, not the caller's namespace
-            (jolt-ns-binding-pairs))
-          thunk))))
+        (list (cons ldr-file-cell (ldr-source-name path))
+              (cons ldr-spath-cell name)))))
+(define (ldr-with-file-vars path thunk)
+  (if (not (ldr-file-cells-ready?))
+      (thunk)
+      (dyn-with-frame
+        (append
+          (ldr-file-name-pairs path)
+          (list (cons ldr-warn-cell (var-cell-deref ldr-warn-cell))
+                (cons ldr-assert-cell (var-cell-deref ldr-assert-cell))
+                (cons ldr-unchecked-cell (var-cell-deref ldr-unchecked-cell)))
+          ;; *ns*, as RT.load binds it: the file's ns form switches this
+          ;; frame's binding, not the caller's namespace
+          (jolt-ns-binding-pairs))
+        thunk)))
 
 ;; The loader's two compile-from-source entrances -- load-jolt-file* below and
 ;; the AOT capture around it (aot-capture-load) -- each refuse BY NAME in a
@@ -2013,8 +2025,15 @@
 ;; worked when some enclosing file load happened to have the frame up already,
 ;; which is why loading such a namespace from a script looked fine and loading it
 ;; from -e, a REPL, or an nREPL eval did not.
-(define (ldr-with-compiled-ns-vars thunk)
-  (jolt-with-ns-load-vars thunk))
+;;
+;; The frame also carries *file* and *source-path* for the namespace's source
+;; (`file`, #f for an artifact with no source beside it). Without them a cached
+;; namespace's top level read whatever its REQUIRER had bound — a (def here
+;; *file*) named the requiring script on every warm run, and only the first,
+;; cold run named the namespace's own source (#1466).
+(define (ldr-with-compiled-ns-vars file thunk)
+  (dyn-with-frame (append (ldr-file-name-pairs file) (jolt-ns-load-var-pairs))
+                  thunk))
 
 ;; " (msg)" for a diagnostic line, or "" when the message can't be read — the
 ;; jolt.host seam is absent in a bootstrap image, and a diagnostic may not throw.
@@ -2083,7 +2102,7 @@
     (let ((state (guard (e (else 'corrupt))
                    (aot-complete-reset! name)
                    (parameterize ((aot-loading-file file) (jolt-def-capture defs))
-                     (ldr-with-compiled-ns-vars (lambda () (load so))))
+                     (ldr-with-compiled-ns-vars file (lambda () (load so))))
                    (if (aot-complete? name) 'ok 'incomplete))))
       (case state
         ;; loaded — but if the key was computed with an inert ASSUMPTION for a dep
@@ -2105,7 +2124,7 @@
 ;; relative to the binary it ships in. A guard falls back to the caller's source
 ;; path: the bytes are baked (never truncated by a killed write), but a guard
 ;; beats a dead binary. Returns #t when the embedded fasl was loaded, else #f.
- (define (jolt-load-embedded-fasl! name)
+ (define (jolt-load-embedded-fasl! name file)
    (and (not (ldr-source-only?))
         (let ((bv (jolt-embedded-fasl name)))
           (and bv
@@ -2128,7 +2147,7 @@
                                                           (ldr-condition-suffix e)
                                                           ", falling back to source"))
                                  #f))
-                   (ldr-with-compiled-ns-vars
+                   (ldr-with-compiled-ns-vars file
                      (lambda () (load-compiled-from-port (open-bytevector-input-port bv))))
                    (aot-info (string-append "embedded " name))
                    #t))))))
@@ -2148,7 +2167,7 @@
           (ldr-install-file? file)
           (jolt-embedded-fasl name))
      (parameterize ((aot-dep-sink #f) (io-file-read-sink #f))
-       (unless (jolt-load-embedded-fasl! name)
+       (unless (jolt-load-embedded-fasl! name file)
          ;; embedded fasl registered but failed to load: fall back to source.
          (load-jolt-file file))))
     ((and (aot-cache-enabled?) (not force?) (not (ldr-reload-all?))
@@ -2961,22 +2980,32 @@
          ;; somewhere else, so it happens however the body exits.
          ;; Masked at its edges (jolt-wind*, locks.ss), so an interrupt cannot
          ;; skip the restore.
-         (jolt-wind*
-           (lambda () #f)
-           #f
-           (lambda ()
-             (guard (e (else
-                         (unless was-loaded? (ldr-unmark-loaded! name)) ; roll the mark back
-                         (raise e)))
-               (cond
-                 (art (ldr-with-compiled-ns-vars (lambda () (load (cpath-so-file art)))))
-                 ;; inside a compile, loading from source also emits the artifact
-                 ;; — RT.load's COMPILE_FILES branch, which is what carries a
-                 ;; compile through to the whole load closure.
-                 ((cpath-compiling-dir file)
-                  => (lambda (dir) (cpath-compile-load name file dir)))
-                 (else (aot-load-or-compile name file force?)))))
-           (set-chez-ns! saved))   ; the current ns is thread-local
+         ;; The load runs in a *ns* binding of its own, as Compiler.load pushes
+         ;; one: the file's ns form then writes THIS frame, which pops with the
+         ;; load. Writing the caller's *ns* instead (set-chez-ns! targets the
+         ;; innermost binding) reached through a frame a future, a/thread or go
+         ;; block CONVEYED from its parent — conveyance shares frames — so a
+         ;; require on another thread moved the parent's *ns* mid-file, and the
+         ;; restore below wrote back a value read before the load, clobbering any
+         ;; change the parent made meanwhile (jolt-1gk). With the frame there is
+         ;; nothing to restore. Before *ns* exists (the boot) the parameter is the
+         ;; current ns, thread-local already, and the restore stays.
+         (let ((body
+                (lambda ()
+                  (guard (e (else
+                              (unless was-loaded? (ldr-unmark-loaded! name)) ; roll the mark back
+                              (raise e)))
+                    (cond
+                      (art (ldr-with-compiled-ns-vars file (lambda () (load (cpath-so-file art)))))
+                      ;; inside a compile, loading from source also emits the
+                      ;; artifact — RT.load's COMPILE_FILES branch, which is what
+                      ;; carries a compile through to the whole load closure.
+                      ((cpath-compiling-dir file)
+                       => (lambda (dir) (cpath-compile-load name file dir)))
+                      (else (aot-load-or-compile name file force?)))))))
+           (if star-ns-cell
+               (dyn-with-frame (list (cons star-ns-cell (intern-ns! saved))) body)
+               (jolt-wind* (lambda () #f) #f body (set-chez-ns! saved))))
          ;; the hook feeds `jolt build`, which needs the SOURCE path; an
          ;; artifact-only namespace has none to give.
          (ns-loaded-hook name (or file art))))
@@ -3051,14 +3080,11 @@
           (parameterize ((ldr-verbose? verbose?))
             (k (and (member "reload" flags) #t)))))))
 
-;; A leading ./ is dropped before the path is made absolute: "./x.clj" from /proj
-;; is /proj/x.clj, not /proj/./x.clj.
-(define (ldr-strip-dot-slash p)
-  (if (and (fx>? (string-length p) 2) (string=? (substring p 0 2) "./"))
-      (ldr-strip-dot-slash (substring p 2 (string-length p)))
-      p))
+;; The file is named by its absolute path as Compiler.loadFile names it,
+;; File.getAbsolutePath, which puts user.dir in front and normalizes nothing:
+;; "./x.clj" from /proj is /proj/./x.clj, in *file* and in :file.
 (def-var! "clojure.core" "load-file"
-  (lambda (p) (jolt-load-file (host-fs-path (project-relative (ldr-strip-dot-slash p))))))
+  (lambda (p) (jolt-load-file (host-fs-path (project-relative p)))))
 
 ;; The directory of a namespace's resource path: "clojure.tools.reader-test" ->
 ;; "clojure/tools" (drop the last segment of ns-name->rel). "" for a top-level ns.
@@ -3147,6 +3173,12 @@
     (let ((f (find-ns-file (if (string? nm) nm (jolt-str-render-one nm)))))
       (if f f jolt-nil))))
 (def-var! "jolt.host" "load-namespace" (lambda (n) (load-namespace n) jolt-nil))
+;; Drop a namespace's loaded mark from both halves of the loaded set (loaded-ns
+;; and *loaded-libs*). jolt.loader's unload! calls it for each namespace it
+;; unmaps, so the runtime never reports as loaded a name find-ns answers nil for:
+;; a later require loads it again instead of no-op'ing (#1469).
+(def-var! "jolt.host" "unmark-loaded!"
+  (lambda (n) (ldr-unmark-loaded! (jolt-str-render-one n)) jolt-nil))
 ;; The Clojure-facing seam for :jolt/replaces (see ldr-ns-replacements above).
 ;; jolt.deps collects the key and jolt.main calls this once per namespace after
 ;; it resolves the project, before any of the project compiles.
