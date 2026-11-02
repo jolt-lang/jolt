@@ -778,6 +778,9 @@
     ;; a set's seq is RT.keys over its backing map, i.e. an APersistentMap$KeySeq
     ((pset? x) (pmap-view-seq (pset-m x) 1 sk-key-seq))
     ((string? x) (str->seq x 0))
+    ;; a plain defrecord's entries, ahead of the arm walk (records-coll.ss
+    ;; jrec-plain?, loaded later — resolved at call time)
+    ((and (jrec? x) (jrec-plain? x)) (list->cseq (jrec-plain-entries x)))
     (else (let loop ((as jolt-seq-arms))
             (cond ((null? as) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
                                           (string-append "Don't know how to create ISeq from: "
@@ -1932,6 +1935,10 @@
      ;; IReduceInit and its one reduce method takes an init, so driving it from
      ;; here would pass the wrong arity — it seqs instead, as on the JVM.
      (cond
+       ;; a plain defrecord reduces its entries (records-coll.ss jrec-plain?)
+       ((and (jrec? coll) (jrec-plain? coll))
+        (let ((es (jrec-plain-entries coll)))
+          (if (null? es) (jolt-invoke f) (reduce-list f (car es) (cdr es)))))
        ((and (declares-ireduce? coll) (iface-method coll "reduce" 2))
         => (lambda (m) (let ((r (jolt-invoke m coll f)))
                          (if (jolt-reduced? r) (jolt-reduced-val r) r))))
@@ -1948,6 +1955,7 @@
      ;; the reduction, e.g. (reduce f init (reify clojure.lang.IReduceInit
      ;; (reduce [_ f i] ...))) or the same on a deftype.
      (cond
+       ((and (jrec? coll) (jrec-plain? coll)) (reduce-list f init (jrec-plain-entries coll)))
        ((iface-method coll "reduce" 3)
         => (lambda (m) (let ((r (jolt-invoke m coll f init)))
                          (if (jolt-reduced? r) (jolt-reduced-val r) r))))
@@ -1976,6 +1984,7 @@
 ;; like 3-arity reduce.
 (define (into-fold f acc from)
   (cond
+    ((and (jrec? from) (jrec-plain? from)) (reduce-list f acc (jrec-plain-entries from)))
     ((iface-method from "reduce" 3)
      => (lambda (m) (let ((r (jolt-invoke m from f acc)))
                       (if (jolt-reduced? r) (jolt-reduced-val r) r))))
@@ -2005,6 +2014,13 @@
      (meta-carry to
        (let ((t (jolt-transient-new to)))
          (pmap-fold-fwd from (lambda (k v acc) (tmap-put! t k v) acc) #f)
+         (jolt-persistent! t))))
+    ;; ...and a plain record into a map the same way: its slots and extension
+    ;; map straight into the transient, no entry objects (records-coll.ss)
+    ((and (pmap? to) (jrec? from) (jrec-plain? from))
+     (meta-carry to
+       (let ((t (jolt-transient-new to)))
+         (jrec-plain-kv-reduce from (lambda (acc k v) (tmap-put! t k v) acc) #f)
          (jolt-persistent! t))))
     ;; only an editable collection rides the transient path; anything else
     ;; (PersistentQueue, sorted colls, seqs) folds through conj, like RT's
@@ -2093,6 +2109,9 @@
              ((pmap? coll) (pmap-kv-reduce coll f init))
              ((pvec? coll) (vec-kv-reduce coll f init))
              ((jolt-nil? coll) init)
+             ;; a plain defrecord folds its slots, then its extension map, with
+             ;; no entry objects (records-coll.ss, resolved at call time)
+             ((and (jrec? coll) (jrec-plain? coll)) (jrec-plain-kv-reduce coll f init))
              ((jolt-reduce-kv-entries coll)
               => (lambda (es)
                    (let ((step (kv-step f)))

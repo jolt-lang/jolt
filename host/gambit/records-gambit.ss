@@ -288,7 +288,7 @@
 
 (define (make-jrec-from-existing src ov ov-val ext)
   (let ((desc (jrec-desc src)))
-    (case (jrec-nfields src)
+    (case (jrdesc-nfields desc)
       ((0) (make-jrec0 desc ext 0))
       ((1)
        (make-jrec1
@@ -515,6 +515,7 @@
         (kw-fields (keyword #f "fields"))
         (kw-tags (keyword #f "tags"))
         (kw-type (keyword #f "type"))
+        (kw-record (keyword #f "record"))
         (out (jolt-hash-map)))
     (let-values (((ks vs)
                   (jolt-with-mutex
@@ -547,9 +548,11 @@
                 (jolt-assoc
                   out
                   k
-                  (jolt-hash-map kw-fields (apply jolt-vector fields)
-                    kw-tags (apply jolt-vector rtags) kw-type
-                    type-tag))))))
+                  (let ((m (jolt-hash-map kw-fields (apply jolt-vector fields) kw-tags
+                             (apply jolt-vector rtags) kw-type type-tag)))
+                    (if (hashtable-ref chez-record-type-tbl type-tag #f)
+                        (jolt-assoc m kw-record #t)
+                        m)))))))
         ks
         vs))
     out))
@@ -610,9 +613,20 @@
                 (set! chez-protocol-methods-memo (cons gen m))))
             m)))))
 
+(define (jrec-fkey-scan fk k)
+  (let ((n (vector-length fk)))
+    (let loop ((i 0))
+      (cond
+        ((fx=? i n) #f)
+        ((eq? (vector-ref fk i) k) i)
+        (else (loop (fx+ i 1)))))))
+
 (define (jrec-field-index r k)
-  (let ((i (hashtable-ref (jrdesc-index (jrec-desc r)) k #f)))
-    (and i (if (fx<? i 0) (fx- -1 i) i))))
+  (let* ((d (jrec-desc r)) (fk (jrdesc-fkeys d)))
+    (if (fx<=? (vector-length fk) 8)
+        (jrec-fkey-scan fk k)
+        (let ((i (hashtable-ref (jrdesc-index d) k #f)))
+          (and i (if (fx<? i 0) (fx- -1 i) i))))))
 
 (define (jrec-member-field r k)
   (if (jrec-field-index r k)
@@ -629,15 +643,22 @@
             (else (loop (fx+ i 1))))))))
 
 (define (jrec-get-index r k)
-  (let ((i (hashtable-ref (jrdesc-index (jrec-desc r)) k #f)))
-    (and i (fx>=? i 0) i)))
+  (let* ((d (jrec-desc r)) (fk (jrdesc-fkeys d)))
+    (if (and (not jrdesc-masked-any?)
+             (fx<=? (vector-length fk) 8))
+        (jrec-fkey-scan fk k)
+        (let ((i (hashtable-ref (jrdesc-index d) k #f)))
+          (and i (fx>=? i 0) i)))))
 
 (define (chez-type-owns-lookup? tag)
   (and (find-method-any-protocol tag "valAt")
        (not (hashtable-ref chez-record-type-tbl tag #f))
        #t))
 
+(define jrdesc-masked-any? #f)
+
 (define (jrdesc-mask-fields! desc)
+  (set! jrdesc-masked-any? #t)
   (let ((idx (jrdesc-index desc)))
     (vector-for-each
       (lambda (k)
@@ -772,15 +793,18 @@
     (else (jolt=2 ea eb))))
 
 (define (jrec=? a b)
-  (and (or (eq? (jrec-desc a) (jrec-desc b))
-           (string=? (jrec-tag a) (jrec-tag b)))
-       (let ((n (jrec-nfields a)))
-         (and (= n (jrec-nfields b))
-              (let loop ((i 0))
-                (or (= i n)
-                    (and (jolt=2 (jrec-field-ref a i) (jrec-field-ref b i))
-                         (loop (+ i 1)))))))
-       (jrec-ext=? (jrec-ext a) (jrec-ext b))))
+  (let ((da (jrec-desc a)) (db (jrec-desc b)))
+    (and (or (eq? da db)
+             (string=? (jrdesc-tag da) (jrdesc-tag db)))
+         (let ((n (jrdesc-nfields da)))
+           (and (or (eq? da db) (fx=? n (jrdesc-nfields db)))
+                (let loop ((i 0))
+                  (or (fx=? i n)
+                      (and (jolt=2
+                             (jrec-field-ref a i)
+                             (jrec-field-ref b i))
+                           (loop (fx+ i 1)))))))
+         (jrec-ext=? (jrec-ext a) (jrec-ext b)))))
 
 (define jrdesc-class-hash-tbl (make-weak-eq-hashtable))
 
@@ -925,8 +949,14 @@
       "}")))
 
 (define (jrec-equiv=? a b)
-  (let* ((ia (and (jrec? a) (jrdesc-ifc-of a)))
-         (ib (and (jrec? b)
+  (let ((ia (and (jrec? a) (jrdesc-ifc-of a))))
+    (if (and ia (vector-ref ia 14) (jrec? b))
+        (and (or (eq? (jrec-desc a) (jrec-desc b)) (jrec-record? b))
+             (jrec=? a b))
+        (jrec-equiv=?-walk a ia b))))
+
+(define (jrec-equiv=?-walk a ia b)
+  (let* ((ib (and (jrec? b)
                   (if (and ia (eq? (jrec-desc a) (jrec-desc b)))
                       ia
                       (jrdesc-ifc-of b)))))
@@ -988,6 +1018,8 @@
 
 (define (jrec-hasheq-slow x)
   (cond
+    ((jrec-plain? x)
+     (let ((h (jrec-hash x))) (jrec-hasheq-set! x h) h))
     ((jrec-cl x "hasheq") =>
      (lambda (m) (call-declared-hash m x)))
     ((jrec-cl x "hashCode") =>
@@ -1063,17 +1095,41 @@
                    (jch-isa? tag "clojure.lang.MapEquivalence"))
                #t)
           (and (jch-isa? tag "java.util.Set") #t)))
-      (make-weak-eq-hashtable))))
+      (make-weak-eq-hashtable)
+      (and record?
+           (not (jch-isa? tag "java.lang.CharSequence"))
+           (not (exists
+                  (lambda (nm) (find-method-any-protocol tag nm))
+                  jrec-map-method-names)))
+      (hashtable-ref chez-record-dbl-tbl tag #f))))
+
+(define jrdesc-ifc-last (cons #f #f))
 
 (define (jrdesc-ifc-of x)
-  (let* ((d (jrec-desc x)) (c (jrdesc-ifc d)))
-    (if (and c (fx=? (vector-ref c 0) (jrdesc-ifc-epoch)))
-        c
-        (let ((fresh (jrdesc-derive-ifc
-                       d
-                       (jrec-record?-uncached x))))
-          (jrdesc-ifc-set! d fresh)
-          fresh))))
+  (let ((d (jrec-desc x)) (l jrdesc-ifc-last))
+    (if (and (eq? (car l) d)
+             (fx=? (vector-ref (cdr l) 0) (jrdesc-ifc-epoch)))
+        (cdr l)
+        (let ((c (jrdesc-ifc d)))
+          (if (and c (fx=? (vector-ref c 0) (jrdesc-ifc-epoch)))
+              (begin (set! jrdesc-ifc-last (cons d c)) c)
+              (let ((fresh (jrdesc-derive-ifc
+                             d
+                             (jrec-record?-uncached x))))
+                (jrdesc-ifc-set! d fresh)
+                (set! jrdesc-ifc-last (cons d fresh))
+                fresh))))))
+
+(define jrec-map-method-names
+  '("count" "containsKey" "contains" "assoc" "assocEx" "without"
+    "seq" "cons" "empty" "valAt" "get" "entryAt" "equiv"
+    "equals" "hasheq" "hashCode" "kvreduce" "reduce" "iterator"
+    "nth" "peek" "pop" "first" "next" "more" "length" "charAt"
+    "size" "isEmpty" "containsValue" "keySet" "values"
+    "entrySet"))
+
+(define (jrec-plain? x)
+  (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
 
 (define (jrec-method x method)
   (let* ((t (vector-ref (jrdesc-ifc-of x) 7))
@@ -1222,8 +1278,15 @@
      (let ((ext (jrec-ext coll)))
        (if (jolt-nil? ext) 0 (jolt-count ext)))))
 
+(define (jrec-plain-count r)
+  (let ((ext (jrec-ext r)))
+    (fx+ (jrdesc-nfields (jrec-desc r))
+         (if (jolt-nil? ext) 0 (jolt-count ext)))))
+
 (register-count-arm!
-  (lambda (coll) (or (jrec? coll) (jolt-transient? coll)))
+  (lambda (coll)
+    (or (and (jrec? coll) (not (jrec-plain? coll)))
+        (jolt-transient? coll)))
   (lambda (coll)
     (cond
       ((jolt-transient? coll) (t-count coll))
@@ -1258,6 +1321,7 @@
 (register-contains-arm!
   (lambda (coll)
     (and (jrec? coll)
+         (not (jrec-plain? coll))
          (not (jrec-cl coll "containsKey"))
          (not (jrec-cl coll "contains"))))
   (lambda (coll k) (jrec-has? coll k)))
@@ -1299,34 +1363,33 @@
 
 (set! jolt-assoc1
   (lambda (coll k v)
-    (cond
-      ((jrec-cl coll "assoc") =>
-       (lambda (m) (jolt-invoke m coll k v)))
-      ((jrec? coll)
-       (let ((i (and (keyword? k) (jrec-field-index coll k))))
-         (if i
-             (let ((v2 (let ((flags (hashtable-ref
-                                      chez-record-dbl-tbl
-                                      (jrec-tag coll)
-                                      #f)))
-                         (if (and flags
-                                  (fx< i (vector-length flags))
-                                  (vector-ref flags i)
-                                  (number? v)
-                                  (not (flonum? v)))
-                             (exact->inexact v)
-                             v))))
-               (make-jrec-from-existing coll i v2 (jrec-ext coll)))
-             (let ((ext (jrec-ext coll)))
-               (make-jrec-from-existing
-                 coll
-                 #f
-                 #f
-                 (%r-jolt-assoc1
-                   (if (jolt-nil? ext) empty-pmap ext)
-                   k
-                   v))))))
-      (else (%r-jolt-assoc1 coll k v)))))
+    (if (jrec? coll)
+        (let ((ifc (jrdesc-ifc-of coll)))
+          (cond
+            ((and (not (vector-ref ifc 14)) (jrec-cl coll "assoc")) =>
+             (lambda (m) (jolt-invoke m coll k v)))
+            (else
+             (let ((i (and (keyword? k) (jrec-field-index coll k))))
+               (if i
+                   (let ((v2 (let ((flags (vector-ref ifc 15)))
+                               (if (and flags
+                                        (fx< i (vector-length flags))
+                                        (vector-ref flags i)
+                                        (number? v)
+                                        (not (flonum? v)))
+                                   (exact->inexact v)
+                                   v))))
+                     (make-jrec-from-existing coll i v2 (jrec-ext coll)))
+                   (let ((ext (jrec-ext coll)))
+                     (make-jrec-from-existing
+                       coll
+                       #f
+                       #f
+                       (%r-jolt-assoc1
+                         (if (jolt-nil? ext) empty-pmap ext)
+                         k
+                         v))))))))
+        (%r-jolt-assoc1 coll k v))))
 
 (define (jrec->map-without r drop-k)
   (let* ((fkeys (jrdesc-fkeys (jrec-desc r)))
@@ -1370,6 +1433,7 @@
 (set! jolt-dissoc
   (lambda (coll . ks)
     (cond
+      ((jrec-plain? coll) (fold-left jrec-dissoc1 coll ks))
       ((jrec-cl coll "without") =>
        (lambda (m)
          (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
@@ -1379,6 +1443,7 @@
 (set! jolt-dissoc2
   (lambda (coll k)
     (cond
+      ((jrec-plain? coll) (jrec-dissoc1 coll k))
       ((jrec-cl coll "without") =>
        (lambda (m) (jolt-invoke m coll k)))
       ((jrec? coll) (jrec-dissoc1 coll k))
@@ -1396,13 +1461,76 @@
 
 (set! jolt-keys
   (lambda (m)
-    (if (jrec? m) (jrec-seq-col m 0) (%r-jolt-keys m))))
+    (cond
+      ((jrec-plain? m)
+       (list->cseq
+         (jrec-plain-fold m (lambda (k v acc) (cons k acc)))))
+      ((jrec? m) (jrec-seq-col m 0))
+      (else (%r-jolt-keys m)))))
 
 (define %r-jolt-vals jolt-vals)
 
 (set! jolt-vals
   (lambda (m)
-    (if (jrec? m) (jrec-seq-col m 1) (%r-jolt-vals m))))
+    (cond
+      ((jrec-plain? m)
+       (list->cseq
+         (jrec-plain-fold m (lambda (k v acc) (cons v acc)))))
+      ((jrec? m) (jrec-seq-col m 1))
+      (else (%r-jolt-vals m)))))
+
+(define (jrec-plain-fold r step)
+  (let* ((fkeys (jrdesc-fkeys (jrec-desc r)))
+         (ext (jrec-ext r))
+         (tail (if (jolt-nil? ext)
+                   '()
+                   (fold-right
+                     (lambda (p acc) (step (car p) (cdr p) acc))
+                     '()
+                     (jrec-ext-pairs ext)))))
+    (let loop ((i (fx- (vector-length fkeys) 1)) (acc tail))
+      (if (fx<? i 0)
+          acc
+          (loop
+            (fx- i 1)
+            (step (vector-ref fkeys i) (jrec-field-ref r i) acc))))))
+
+(define (jrec-plain-entries r)
+  (jrec-plain-fold
+    r
+    (lambda (k v acc) (cons (make-map-entry k v) acc))))
+
+(define (jrec-plain-kv-reduce r f init)
+  (let* ((step (kv-step f))
+         (fkeys (jrdesc-fkeys (jrec-desc r)))
+         (n (vector-length fkeys)))
+    (let loop ((i 0) (acc init))
+      (cond
+        ((jolt-reduced? acc) acc)
+        ((fx=? i n)
+         (let ((ext (jrec-ext r)))
+           (cond
+             ((jolt-nil? ext) acc)
+             ((pmap? ext) (pmap-kv-reduce ext step acc))
+             (else
+              (let eloop ((ps (jrec-ext-pairs ext)) (acc acc))
+                (if (or (null? ps) (jolt-reduced? acc))
+                    acc
+                    (eloop (cdr ps) (step acc (caar ps) (cdar ps)))))))))
+        (else
+         (loop
+           (fx+ i 1)
+           (step acc (vector-ref fkeys i) (jrec-field-ref r i))))))))
+
+(define (jrec-plain-conj coll x)
+  (if (pmap? x)
+      (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll)
+      (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
+
+(define (jrec-plain-empty? r)
+  (and (fx=? 0 (jrdesc-nfields (jrec-desc r)))
+       (let ((ext (jrec-ext r)))
+         (or (jolt-nil? ext) (fx=? 0 (jolt-count ext))))))
 
 (define (jrec-entry-list r)
   (let* ((fkeys (jrdesc-fkeys (jrec-desc r)))
@@ -1435,7 +1563,7 @@
       (jrec-cl x "charAt"))))
 
 (register-seq-arm!
-  jrec-record?
+  (lambda (x) (and (jrec-record? x) (not (jrec-plain? x))))
   (lambda (x) (list->cseq (jrec-entry-list x))))
 
 (define (jrec-iseq->cseq x)
@@ -1475,14 +1603,17 @@
 
 (register-conj-arm!
   (lambda (coll)
-    (and (jrec? coll) (not (jrec-cl coll "cons"))))
+    (and (jrec? coll)
+         (not (jrec-plain? coll))
+         (not (jrec-cl coll "cons"))))
   (lambda (coll x)
     (if (pmap? x)
         (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll)
         (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))))
 
 (register-empty-arm!
-  jrec-collection?
+  (lambda (coll)
+    (and (jrec-collection? coll) (not (jrec-plain? coll))))
   (lambda (coll) (jolt-nil? (jolt-seq coll))))
 
 (define %r-jolt-peek jolt-peek)
@@ -1963,6 +2094,15 @@
             (jolt-seq (seq-more s))
             (jolt-assoc r (jolt-nth e 0) (jolt-nth e 1)))))))
 
+(define-syntax jrec-fixed-ctor
+  (syntax-rules ()
+    ((_ mk desc co slow (a ...) (i ...))
+     (case-lambda
+       ((a ...)
+        (mk desc jolt-nil 0
+            (if (and co (vector-ref co i)) (jolt-rec-dbl a) a) ...))
+       (args (slow args))))))
+
 (define (make-deftype-ctor name-sym field-kws . rest-args)
   (let* ((tag (string-append
                 (chez-current-ns)
@@ -2003,7 +2143,7 @@
                                   (jolt-rec-dbl a)
                                   a))
                             (loop (cdr as) (+ i 1))))))))
-         (ctor (lambda args
+         (slow (lambda (args)
                  (let ((n (length args)))
                    (cond
                      ((= n nf) (build args))
@@ -2023,7 +2163,40 @@
                           "Wrong number of args ("
                           (jvm-arity-count n)
                           ") passed to: "
-                          ctor-name))))))))
+                          ctor-name)))))))
+         (co (and (exists (lambda (x) x) (vector->list dbl-flags))
+                  (let ((v (make-vector nf #f)))
+                    (do ((i 0 (fx+ i 1)))
+                        ((fx=? i (fxmin nf ndbl)) v)
+                      (vector-set! v i (vector-ref dbl-flags i))))))
+         (ctor (case nf
+                 ((0)
+                  (lambda args
+                    (if (null? args)
+                        (make-jrec0 desc jolt-nil 0)
+                        (slow args))))
+                 ((1) (jrec-fixed-ctor make-jrec1 desc co slow (a0) (0)))
+                 ((2)
+                  (jrec-fixed-ctor make-jrec2 desc co slow (a0 a1) (0 1)))
+                 ((3)
+                  (jrec-fixed-ctor make-jrec3 desc co slow (a0 a1 a2)
+                    (0 1 2)))
+                 ((4)
+                  (jrec-fixed-ctor make-jrec4 desc co slow (a0 a1 a2 a3)
+                    (0 1 2 3)))
+                 ((5)
+                  (jrec-fixed-ctor make-jrec5 desc co slow (a0 a1 a2 a3 a4)
+                    (0 1 2 3 4)))
+                 ((6)
+                  (jrec-fixed-ctor make-jrec6 desc co slow
+                    (a0 a1 a2 a3 a4 a5) (0 1 2 3 4 5)))
+                 ((7)
+                  (jrec-fixed-ctor make-jrec7 desc co slow
+                    (a0 a1 a2 a3 a4 a5 a6) (0 1 2 3 4 5 6)))
+                 ((8)
+                  (jrec-fixed-ctor make-jrec8 desc co slow
+                    (a0 a1 a2 a3 a4 a5 a6 a7) (0 1 2 3 4 5 6 7)))
+                 (else (lambda args (slow args))))))
     (class-ctor-set! tag ctor)
     (when (or (not (hashtable-ref
                      class-ctors-tbl

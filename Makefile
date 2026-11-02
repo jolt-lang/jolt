@@ -184,7 +184,7 @@ CI-GATES := submodules values recordinline corpus unit documented grenadine clis
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap arraybacking largebytesgc largefxgc unitcontext numeric oparity mathfl flonumdisp flarr \
+  protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity mathfl flonumdisp flarr \
   fnform coreproc traceemit traceeval degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
@@ -1220,6 +1220,19 @@ staticsite:
 # is a lazy chunked walk of its trie (test/chez/arraymap-test.ss).
 arraymap:
 	@$(CHEZ) --script test/chez/arraymap-test.ss
+
+# A plain defrecord (no collection methods of its own) answers count, contains?,
+# seq, assoc, reduce-kv, into, = and hash from its slots ahead of the arm walk
+# (records-coll.ss jrec-plain?): which types are plain, that no arm claims one,
+# and that every op answers what the walk did (#1470).
+recfast:
+	@$(CHEZ) --script test/chez/recfast-test.ss
+
+# What an optimizing compile emits for (R. …) and for record?/seq? over a proven
+# record: the inlined ctor, the defrecord-only folds, and map destructuring that
+# keeps reading slots (host/chez/run-recfold.ss, #1470).
+recfold:
+	@$(CHEZ) --script host/chez/run-recfold.ss
 
 # Array backings: which Chez vector type each element kind stores its elements
 # in (fxvector / bytevector / flvector / boxed vector), the fixnum-range

@@ -639,6 +639,21 @@
 ;; ---- the native that handles the analyzer/overlay call ----------------------
 ;; make-deftype-ctor: (name-sym field-kws field-tags field-muts) -> ctor closure.
 ;; The tag is baked at definition time in the type's ns (chez-current-ns).
+;; A record's constructor, at its positional arity: one native allocation
+;; (make-jrecN — desc, no extension map, the hasheq slot unset, then the fields
+;; inline), with a ^double field widened as the field vector path does it. Every
+;; other arity — the JVM's second (fields, __meta, __extmap) constructor, or a
+;; wrong count — goes to SLOW. The variadic ctor this replaces consed a rest
+;; list, measured its length, filled a field vector and applied a per-arity ctor
+;; to it, so (R. …) and the ->R factory outside an optimized build cost 4x the
+;; allocation they exist to perform. CO is a per-field ^double flag vector, or #f
+;; when the type declares none, so an untagged record tests nothing per field.
+(define-syntax jrec-fixed-ctor
+  (syntax-rules ()
+    ((_ mk desc co slow (a ...) (i ...))
+     (case-lambda
+       ((a ...) (mk desc jolt-nil 0 (if (and co (vector-ref co i)) (jolt-rec-dbl a) a) ...))
+       (args (slow args))))))
 (define (make-deftype-ctor name-sym field-kws . rest-args)
   (let* ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
          (kws (seq->list field-kws))
@@ -682,7 +697,7 @@
                                           (if (and (fx< i ndbl) (vector-ref dbl-flags i))
                                               (jolt-rec-dbl a) a))
                              (loop (cdr as) (+ i 1))))))))
-           (ctor (lambda args
+           (slow (lambda (args)
                    (let ((n (length args)))
                      (cond
                        ((= n nf) (build args))
@@ -700,7 +715,27 @@
                        (else
                         (throw-jvm (quote ArityException)
                           (string-append "Wrong number of args (" (jvm-arity-count n)
-                                         ") passed to: " ctor-name))))))))
+                                         ") passed to: " ctor-name)))))))
+           ;; the positional arity, straight to the native per-field-count ctor —
+           ;; see jrec-fixed-ctor
+           (co (and (exists (lambda (x) x) (vector->list dbl-flags))
+                    (let ((v (make-vector nf #f)))
+                      (do ((i 0 (fx+ i 1))) ((fx=? i (fxmin nf ndbl)) v)
+                        (vector-set! v i (vector-ref dbl-flags i))))))
+           (ctor (case nf
+                   ;; not a case-lambda: a 0-arity clause beside a bare rest clause is the
+                   ;; pair Gambit's expander drops the rest parameter of
+                   ;; (backend_scheme.clj emit-fn)
+                   ((0) (lambda args (if (null? args) (make-jrec0 desc jolt-nil 0) (slow args))))
+                   ((1) (jrec-fixed-ctor make-jrec1 desc co slow (a0) (0)))
+                   ((2) (jrec-fixed-ctor make-jrec2 desc co slow (a0 a1) (0 1)))
+                   ((3) (jrec-fixed-ctor make-jrec3 desc co slow (a0 a1 a2) (0 1 2)))
+                   ((4) (jrec-fixed-ctor make-jrec4 desc co slow (a0 a1 a2 a3) (0 1 2 3)))
+                   ((5) (jrec-fixed-ctor make-jrec5 desc co slow (a0 a1 a2 a3 a4) (0 1 2 3 4)))
+                   ((6) (jrec-fixed-ctor make-jrec6 desc co slow (a0 a1 a2 a3 a4 a5) (0 1 2 3 4 5)))
+                   ((7) (jrec-fixed-ctor make-jrec7 desc co slow (a0 a1 a2 a3 a4 a5 a6) (0 1 2 3 4 5 6)))
+                   ((8) (jrec-fixed-ctor make-jrec8 desc co slow (a0 a1 a2 a3 a4 a5 a6 a7) (0 1 2 3 4 5 6 7)))
+                   (else (lambda args (slow args))))))
     ;; Register the ctor under its fully-qualified tag ("ns.Name") — a bare
     ;; (Name. …) in the DEFINING ns is qualified to this by the analyzer, so a
     ;; deftype whose simple name collides with a built-in host class (tools.reader's

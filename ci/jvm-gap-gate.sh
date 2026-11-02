@@ -28,7 +28,9 @@ command -v clojure >/dev/null 2>&1 || { echo "jvm-gap gate: no clojure on PATH" 
 
 # The held rows. A row joins when it is brought inside the ceiling; it leaves
 # only with a reason written beside the change that takes it out.
-HELD="atom-ops watched-swap pool-tasks sorted-set-build int-map-build"
+# record-ops: 2.6x -> 1.1x when a plain record's collection ops stopped walking
+# the host arm list (#1470).
+HELD="atom-ops watched-swap pool-tasks sorted-set-build int-map-build record-ops"
 
 root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 rounds="${JVM_GAP_ROUNDS:-3}"

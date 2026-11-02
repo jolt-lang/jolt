@@ -357,6 +357,11 @@
 ;; separate backend copy. run-passes shares one unit for inference and emit, so it
 ;; is populated before each form's emit.
 (defn- ctor-shapes [] (get @(:config (cur)) :record-shapes))
+;; the shape of the record whose class tag is CLASS ("ns.Name"), or nil — what a
+;; (Name. …) constructor call names, where (->Name …) names the shape's key
+(defn- record-shape-for-class [class]
+  (when (string? class)
+    (some (fn [e] (let [s (val e)] (when (= class (get s :type)) s))) (ctor-shapes))))
 
 ;; Tail-frame tracing (JOLT_TRACE): a TAIL CALL SITE stores its static
 ;; ('ns/fn' . line) pair in the site vreg — one store, no allocation, nothing
@@ -3452,6 +3457,64 @@
        (site-restore (plain-call callee operand-strs))
        :else (plain-call callee operand-strs)))))
 
+;; A record's positional constructor, inlined: the native per-arity ctor
+;; (make-jrecN) applied to the descriptor (a per-site cell after warmup), no
+;; extension map, and one inline slot per field — no var deref, no rest list, no
+;; field vector, no class lookup. S is the record's shape from the unit's
+;; record-shapes ({:fields :tags :type}); ARG-NODES / ARGS the field arguments,
+;; nodes and emitted strings. Shared by (->R …) and (R. …), which construct the
+;; same record.
+(defn- emit-record-ctor [s arg-nodes args]
+  (let [tag (:type s)
+        ;; A ^double field is widened on the way in, exactly as the dispatched
+        ;; ctor does it (make-deftype-ctor's build calls the same jolt-rec-dbl).
+        ;; This used to disqualify the whole inline path — which meant a
+        ;; coordinate record, the shape the ^double machinery exists for, always
+        ;; paid the slow ctor: jolt-invoke, var-deref, rest-list, ctor call,
+        ;; hashtable lookup and a field vector.
+        tags (vec (get s :tags))
+        ;; ...but only over an argument that is not ALREADY a flonum.
+        ;; jolt-rec-dbl is a runtime guard — (number? a) and (not (flonum? a))
+        ;; before exact->inexact — so wrapping it around a proven double makes
+        ;; the ^double DECLARATION cost two type tests per field per
+        ;; construction that the same record without the tag does not pay.
+        ;; Measured: (->Vec3 i (+ i 1) 2.5) in a loop ran 2.3x SLOWER declared
+        ;; ^double than undeclared, all of it here. Extra static type
+        ;; information must never make the emitted code slower than its
+        ;; absence; where it cannot help it has to cost nothing.
+        ;;
+        ;; Proven means: a literal flonum (double? is exact here — a bigdec
+        ;; and a ratio both answer false, and both still need the coercion),
+        ;; or a node the numeric pass typed :double, whose emission is an fl
+        ;; op and so yields a flonum by construction. Anything else keeps the
+        ;; guard: a :long is 64-bit and may be a bignum at runtime, which is
+        ;; exactly what jolt-rec-dbl's exact->inexact handles.
+        proven-double? (fn [nd]
+                         (and (map? nd)
+                              (or (and (= :const (:op nd)) (double? (:val nd)))
+                                  (= :double (:num-kind nd)))))
+        ;; One tag per ARGUMENT (a record may declare fewer tags than the
+        ;; ctor takes), so the three vectors below are the same length and
+        ;; map together. Mapping rather than indexing three vectors apart is
+        ;; the point: it is what makes pairing a field's tag with another
+        ;; field's argument impossible to write.
+        arg-tags (mapv (fn [i] (nth tags i nil)) (range (count arg-nodes)))
+        ;; field-tag: what the FIELD declares. nd: the IR node being passed
+        ;; into it. a: that node already emitted. Only nd can answer a
+        ;; question about the value. Named field-tag, not tag, because `tag`
+        ;; in this scope is the record's TYPE tag, bound above.
+        coerce-arg (fn [field-tag nd a]
+                     (if (and (= "double" field-tag) (not (proven-double? nd)))
+                       (str "(jolt-rec-dbl " a ")") a))
+        cached-desc (cached-tag-desc tag)]
+    (ordered-call arg-nodes args (fn [as]
+                  (let [n (count as)
+                        as (vec (map coerce-arg arg-tags arg-nodes as))]
+                    (if (<= n 8)
+                      (str "(make-jrec" n " " cached-desc " jolt-nil 0"
+                           (when (pos? n) (str " " (str/join " " as))) ")")
+                      (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))")))))))
+
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
@@ -3869,56 +3932,7 @@
          (and (= :var (:op fnode)) shape
               (= (count (get shape :fields)) (count args))
               (<= (count args) 6)))
-       (let [s (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))
-             tag (:type s)
-             ;; A ^double field is widened on the way in, exactly as the dispatched
-             ;; ctor does it (make-deftype-ctor's build calls the same jolt-rec-dbl).
-             ;; This used to disqualify the whole inline path — which meant a
-             ;; coordinate record, the shape the ^double machinery exists for, always
-             ;; paid the slow ctor: jolt-invoke, var-deref, rest-list, ctor call,
-             ;; hashtable lookup and a field vector.
-             tags (vec (get s :tags))
-             ;; ...but only over an argument that is not ALREADY a flonum.
-             ;; jolt-rec-dbl is a runtime guard — (number? a) and (not (flonum? a))
-             ;; before exact->inexact — so wrapping it around a proven double makes
-             ;; the ^double DECLARATION cost two type tests per field per
-             ;; construction that the same record without the tag does not pay.
-             ;; Measured: (->Vec3 i (+ i 1) 2.5) in a loop ran 2.3x SLOWER declared
-             ;; ^double than undeclared, all of it here. Extra static type
-             ;; information must never make the emitted code slower than its
-             ;; absence; where it cannot help it has to cost nothing.
-             ;;
-             ;; Proven means: a literal flonum (double? is exact here — a bigdec
-             ;; and a ratio both answer false, and both still need the coercion),
-             ;; or a node the numeric pass typed :double, whose emission is an fl
-             ;; op and so yields a flonum by construction. Anything else keeps the
-             ;; guard: a :long is 64-bit and may be a bignum at runtime, which is
-             ;; exactly what jolt-rec-dbl's exact->inexact handles.
-             proven-double? (fn [nd]
-                              (and (map? nd)
-                                   (or (and (= :const (:op nd)) (double? (:val nd)))
-                                       (= :double (:num-kind nd)))))
-             ;; One tag per ARGUMENT (a record may declare fewer tags than the
-             ;; ctor takes), so the three vectors below are the same length and
-             ;; map together. Mapping rather than indexing three vectors apart is
-             ;; the point: it is what makes pairing a field's tag with another
-             ;; field's argument impossible to write.
-             arg-tags (mapv (fn [i] (nth tags i nil)) (range (count arg-nodes)))
-             ;; field-tag: what the FIELD declares. nd: the IR node being passed
-             ;; into it. a: that node already emitted. Only nd can answer a
-             ;; question about the value. Named field-tag, not tag, because `tag`
-             ;; in this scope is the record's TYPE tag two lines below.
-             coerce-arg (fn [field-tag nd a]
-                          (if (and (= "double" field-tag) (not (proven-double? nd)))
-                            (str "(jolt-rec-dbl " a ")") a))
-             cached-desc (cached-tag-desc tag)]
-         (order-args (fn [as]
-                       (let [n (count as)
-                             as (vec (map coerce-arg arg-tags arg-nodes as))]
-                         (if (<= n 8)
-                           (str "(make-jrec" n " " cached-desc " jolt-nil 0"
-                                (when (pos? n) (str " " (str/join " " as))) ")")
-                           (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))"))))))
+       (emit-record-ctor (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode))) arg-nodes args)
       ;; a late-bound :var call head can hold a procedure OR a non-applicable
       ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
       ;; jolt-invoke (transparent for a procedure).
@@ -4227,9 +4241,16 @@
                         (chez-str-lit (:class node)) " " (chez-str-lit (:member node)) ")")
                    (str "(host-static-ref " (chez-str-lit (:class node)) " "
                         (chez-str-lit (:member node)) ")"))
-    :host-new (str "(host-new " (chez-str-lit (:class node))
-                   (let [args (map emit (:args node))]
-                     (if (empty? args) "" (str " " (str/join " " args)))) ")")
+    ;; (R. f …) on a record whose shape the unit knows is its positional ctor,
+    ;; the one (->R f …) already inlines — same arity rule. Anything else (a host
+    ;; class, the JVM's (R. f … meta ext) arity) is the runtime's class lookup.
+    :host-new (let [arg-nodes (:args node)
+                    s (record-shape-for-class (:class node))]
+                (if (and s (= (count (get s :fields)) (count arg-nodes)) (<= (count arg-nodes) 6))
+                  (emit-record-ctor s arg-nodes (mapv emit arg-nodes))
+                  (str "(host-new " (chez-str-lit (:class node))
+                       (let [args (map emit arg-nodes)]
+                         (if (empty? args) "" (str " " (str/join " " args)))) ")")))
     ;; the test is non-tail; then/else inherit the if's tail position
     :if (let [test (:test node)
               t (binding [*tail?* false]
