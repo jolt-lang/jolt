@@ -552,6 +552,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `TMPDIR` on the runner's disk, because 26.04's `/tmp` is too small for the
   build gates.
 
+### Performance
+
+- **`count`, `get`, `contains?` and `hash` on java.util collections pay less
+  for dispatch.** Each walks a registry of per-type predicates, and every host
+  type's predicate compared its tag string; they now remember the answer per
+  tag. Against 0.8.23 on macOS arm64: `count` of an ArrayList 41 -> 29 ns, of a
+  HashMap 66 -> 33 ns, of a HashSet 36 -> 28 ns; `hash` of a plain `Object`
+  480 -> 350 ns. ArrayList `add`/`remove` are about a fifth faster.
+- **`java.nio.file.Path` members take the call-site cache** as every other host
+  class's do: `.toString` 125 -> 18 ns, `.resolve` 291 -> 121 ns,
+  `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
+
 ## [0.8.23] - 2026-10-17
 
 Code loaded at the REPL or by `jolt run` can opt into the optimizations a

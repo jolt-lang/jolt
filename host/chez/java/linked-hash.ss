@@ -444,22 +444,16 @@
 ;; its own class and answers through these arms too, rather than through arms of
 ;; its own registered later -- which would be walked ahead of the HashMap
 ;; family's and put a predicate in front of every HashMap get
-;; (test/fastpath_ratio_test.clj hashmap-get).
-(define (lh-kind x)
-  (and (jhost? x)
-       (let ((t (jhost-tag x)))
-         (and (fx>? (string-length t) 3)
-              (case (string-ref t 0)
-                ((#\l) #t)
-                ((#\j) (string=? t "jar-attributes"))
-                (else #f))
-              (cond ((string=? t "linkedhashmap") 'map)
-                    ((string=? t "jar-attributes") 'map)
-                    ((string=? t "lhm-reversed") 'rmap)
-                    ((string=? t "linkedhashset") 'set)
-                    ((string=? t "lhs-reversed") 'set)
-                    ((member t '("lhm-keyset" "lhm-values" "lhm-entryset")) 'view)
-                    (else #f))))))
+;; (test/fastpath_ratio_test.clj hashmap-get). The answer is remembered by tag
+;; (define-jhost-tag-pred, host-static.ss), so a repeat costs one eq?.
+(define-jhost-tag-pred (lh-kind t)
+  (cond ((string=? t "linkedhashmap") 'map)
+        ((string=? t "jar-attributes") 'map)
+        ((string=? t "lhm-reversed") 'rmap)
+        ((string=? t "linkedhashset") 'set)
+        ((string=? t "lhs-reversed") 'set)
+        ((member t '("lhm-keyset" "lhm-values" "lhm-entryset")) 'view)
+        (else #f)))
 (define (lh-seq-elems x)
   (case (lh-kind x)
     ((map) (lhm-entries x))

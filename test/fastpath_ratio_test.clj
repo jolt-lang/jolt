@@ -168,6 +168,24 @@
 ;;                      get on a persistent map, 2026-10: 4.6 on x86_64 Linux,
 ;;                      5.0 on macOS arm64, 6.1 on bionic arm64).
 ;;
+;;   arraylist-count    count / contains? on an ArrayList, HashSet or HashMap
+;;   hashset-count      against the collection's own .size / .containsKey: the
+;;   hashmap-count      ratio is the arm walk ahead of the handler. The 0.8.24
+;;   hashmap-contains   cycle added the fail-fast, concurrent and legacy
+;;                      families ahead of these, each a string compare per
+;;                      call, and count got 1.2-1.3x slower while every answer
+;;                      stayed right; the tag predicates are now remembered by
+;;                      tag (define-jhost-tag-pred). Measured on macOS arm64,
+;;                      2026-10: before 5.1 / 4.4 / 6.9 / 1.80, after 2.9 / 2.5 /
+;;                      3.0 / 1.36 (0.8.23 read 4.3 / 3.3 / 6.1 / 1.31). get
+;;                      against .get moved 1.24 -> 1.49 -> 1.22, too close to
+;;                      its noise under make -j for a row of its own.
+;;
+;;   path-method        an unhinted Path member against an ArrayList's .size.
+;;                      Path's members were a method arm that walked the arms
+;;                      ahead of it and matched the name per call (~10x .size);
+;;                      as a host method table they take the call-site cache.
+;;
 ;;   host-object-pr     pr-str of a java.io.File is the #object fallback: the
 ;;                      print arms, the class name, the str registry, and the
 ;;                      identity hash minted for each fresh object. Against a
@@ -555,6 +573,37 @@
             #(dotimes [_ 200000] (get pm 3))
             #(dotimes [_ 200000] (get hm 3))
             7.0 9.0))
+
+  ;; count / contains? on the common java.util collections, each against the
+  ;; collection's own method doing the same work (.size, .containsKey),
+  ;; so the ratio is the arm walk in front of the handler. Every family whose arm
+  ;; is walked ahead of these adds its predicate to the ratio.
+  (let [al (java.util.ArrayList. (range 64))
+        hs (java.util.HashSet. (range 64))
+        hm (java.util.HashMap. (zipmap (range 64) (range 64)))]
+    (judge! "arraylist-count"
+            #(dotimes [_ 200000] (.size al))
+            #(dotimes [_ 200000] (count al))
+            3.8 5.0)
+    (judge! "hashset-count"
+            #(dotimes [_ 200000] (.size hs))
+            #(dotimes [_ 200000] (count hs))
+            3.4 4.5)
+    (judge! "hashmap-count"
+            #(dotimes [_ 200000] (.size hm))
+            #(dotimes [_ 200000] (count hm))
+            4.0 5.5)
+    (judge! "hashmap-contains"
+            #(dotimes [_ 200000] (.containsKey hm 33))
+            #(dotimes [_ 200000] (contains? hm 33))
+            1.6 2.0)
+    ;; A Path member is a host method like an ArrayList's, served by the call
+    ;; site's cache: getFileSystem reads a field, as size does.
+    (let [p (java.nio.file.Paths/get "/tmp/work" (into-array String []))]
+      (judge! "path-method"
+              #(dotimes [_ 200000] (.size al))
+              #(dotimes [_ 200000] (.getFileSystem p))
+              2.5 4.0)))
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints

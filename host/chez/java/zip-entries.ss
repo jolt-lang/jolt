@@ -13,7 +13,7 @@
   (nongenerative jolt-zentry-v1))
 
 ;; A ZipEntry, a JarEntry or a JarFileEntry: one zentry under each class.
-(define (zip-entry? x) (and (jhost? x) (member (jhost-tag x) '("zip-entry" "jar-entry" "jar-file-entry")) #t))
+(define-jhost-tag-pred (zip-entry? t) (and (member t '("zip-entry" "jar-entry" "jar-file-entry")) #t))
 (define (zentry-of x) (jhost-state x))
 
 ;; --- DOS time (JDK 21 ZipUtils.java) ------------------------------------------
