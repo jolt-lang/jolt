@@ -335,6 +335,9 @@
       (v-make-sub v tag from from-incl to to-incl #f)))
 (define (v-flip v tag)
   (make-tm-view tag (v-root v) (v-lo v) (v-lo-incl v) (v-hi v) (v-hi-incl v) (not (v-desc? v)) #t))
+;; a map's descending view, made once per map as the JDK keeps it in a field
+(define (tm-descending-map v)
+  (jutil-view v 3 (lambda () (v-flip v (tm-map-tag (not (v-desc? v)))))))
 (define (v-retag v tag)
   (make-tm-view tag (v-root v) (v-lo v) (v-lo-incl v) (v-hi v) (v-hi-incl v) (v-desc? v) (v-sub? v)))
 
@@ -357,12 +360,12 @@
   (cond ((not (v-sub? v)) "treemap-entryset")
         ((v-desc? v) "treemap-desc-entryset")
         (else "treemap-asc-entryset")))
-(define (tm-tag-in? x tags) (and (jhost? x) (member (jhost-tag x) tags) #t))
-(define (tm-map? x) (tm-tag-in? x tm-map-tags))
-(define (tm-set? x) (tm-tag-in? x tm-set-tags))
-(define (tm-view? x)
-  (tm-tag-in? x (append '("treemap" "treemap-asc-sub" "treemap-desc-sub" "treeset" "treemap-keyset")
-                        tm-values-tags tm-entryset-tags)))
+(define-jhost-tag-pred (tm-map? t) (and (member t tm-map-tags) #t))
+(define-jhost-tag-pred (tm-set? t) (and (member t tm-set-tags) #t))
+(define-jhost-tag-pred (tm-view? t)
+  (and (or (member t tm-map-tags) (member t tm-set-tags)
+           (member t tm-values-tags) (member t tm-entryset-tags))
+       #t))
 ;; what a view's iteration yields, by what it is
 ;; ---- entries ---------------------------------------------------------------------------
 ;; What iteration hands out is a TreeMap$Entry: a live entry whose setValue
@@ -499,11 +502,16 @@
                                        #f))))
     (cons "clear" (lambda (self) (v-clear! self)))
     (cons "putAll" (lambda (self m) (tm-fill-map! self m) jolt-nil))
-    (cons "keySet" (lambda (self) (tm-key-set self (v-desc? self))))
-    (cons "navigableKeySet" (lambda (self) (tm-key-set self (v-desc? self))))
-    (cons "descendingKeySet" (lambda (self) (tm-key-set self (not (v-desc? self)) #t)))
-    (cons "values" (lambda (self) (v-retag self (tm-values-tag self))))
-    (cons "entrySet" (lambda (self) (v-retag self (tm-entryset-tag self))))
+    ;; keySet IS navigableKeySet on the JDK, one cached view
+    (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (tm-key-set self (v-desc? self))))))
+    (cons "navigableKeySet" (lambda (self) (jutil-view self 0 (lambda () (tm-key-set self (v-desc? self))))))
+    ;; descendingMap().navigableKeySet(), as the JDK answers it: cached on the
+    ;; cached descending map
+    (cons "descendingKeySet" (lambda (self)
+                               (let ((d (tm-descending-map self)))
+                                 (jutil-view d 0 (lambda () (tm-key-set d (v-desc? d)))))))
+    (cons "values" (lambda (self) (jutil-view self 1 (lambda () (v-retag self (tm-values-tag self))))))
+    (cons "entrySet" (lambda (self) (jutil-view self 2 (lambda () (v-retag self (tm-entryset-tag self))))))
     ;; Map's default methods. A key mapped to nil counts as absent, like the
     ;; JDK's; each returns what the JDK's returns (the previous value for
     ;; putIfAbsent, the new one for the compute/merge family).
@@ -581,10 +589,10 @@
                      ((self from to) (v-sub self (tm-map-tag (v-desc? self)) from #t to #f))
                      ((self from fi to ti)
                       (v-sub self (tm-map-tag (v-desc? self)) from (jolt-truthy? fi) to (jolt-truthy? ti)))))
-    (cons "descendingMap" (lambda (self) (v-flip self (tm-map-tag (not (v-desc? self))))))
+    (cons "descendingMap" (lambda (self) (tm-descending-map self)))
     ;; SequencedMap, as NavigableMap answers it: reversed is the descending map,
     ;; and a sorted map has no first or last place to put a key
-    (cons "reversed" (lambda (self) (v-flip self (tm-map-tag (not (v-desc? self))))))
+    (cons "reversed" (lambda (self) (tm-descending-map self)))
     (cons "putFirst" (lambda (self k val) (throw-jvm 'UnsupportedOperationException jolt-nil)))
     (cons "putLast" (lambda (self k val) (throw-jvm 'UnsupportedOperationException jolt-nil)))
     (cons "comparator" (lambda (self) (v-comparator self)))
@@ -666,7 +674,8 @@
 (for-each (lambda (t) (register-host-methods! t treemap-iterator-methods)) tm-iterator-tags)
 (register-iterator-seq-fill! tm-iterator-tags tmi-fill tmi-next)
 ;; (iterator-seq it) / (seq it): what the iterator has not handed out yet
-(register-seq-arm! (lambda (x) (tm-tag-in? x tm-iterator-tags))
+(define-jhost-tag-pred (tm-iterator? t) (and (member t tm-iterator-tags) #t))
+(register-seq-arm! tm-iterator?
                    (lambda (it) (list->cseq (map (tmi-ref it 3) (tmi-ref it 1)))))
 ;; DESC? is a descendingIterator() call, which on the JDK goes through the
 ;; map's descending key set — a sub-map — even on the map itself.
@@ -811,7 +820,7 @@
 ;; Set.contains (RT.get has no Set arm, so get on a TreeSet stays nil).
 (register-get-arm! tm-map?
   (lambda (m k d) (let ((x (v-ref m k))) (if (eq? x tm-absent) d x))))
-(register-contains-arm! (lambda (x) (tm-tag-in? x '("treemap" "treemap-asc-sub" "treemap-desc-sub"
-                                                    "treeset" "treemap-keyset")))
-                        v-contains?)
-(register-contains-arm! (lambda (x) (tm-tag-in? x tm-entryset-tags)) tm-entry-in?)
+(define-jhost-tag-pred (tm-keyed? t) (and (or (member t tm-map-tags) (member t tm-set-tags)) #t))
+(define-jhost-tag-pred (tm-entryset? t) (and (member t tm-entryset-tags) #t))
+(register-contains-arm! tm-keyed? v-contains?)
+(register-contains-arm! tm-entryset? tm-entry-in?)

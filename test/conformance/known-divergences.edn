@@ -147,23 +147,6 @@
            :jvm "\"[true true true]\""
            :jolt "\"[false false false]\""}
    :note "The keys jolt DOES supply are exact: (:doc P) is present only with a docstring, :method-map is identity on the method keywords, :var is the protocol's own var, :sigs is nil for a method-less protocol."}
-  ;; :extend-via-metadata is absent for a different reason from the three above:
-  ;; not "there is nothing to name" but "the rule is not in force". jolt's
-  ;; defprotocol PARSES the option — it has to, to read past it to the method
-  ;; signatures — and then drops it, because protocol-resolve does not consult a
-  ;; value's metadata for an implementation. Recording the key while the dispatch
-  ;; ignores it would be worse than omitting it: a caller testing the key would
-  ;; conclude metadata extension is available and get a no-such-method raise
-  ;; instead. So the key and the behavior are absent together, and they will
-  ;; arrive together. jolt-2j3.
-  {:category :host-model
-   :behavior "(:extend-via-metadata P), and whether metadata on a value can implement a protocol method"
-   :jvm "true, and the metadata implementation is found (direct impls first, then metadata, then extend)"
-   :jolt "nil, and the metadata implementation is not consulted — the call raises"
-   :check {:expr "(defprotocol Pdoc2 :extend-via-metadata true (mdoc2 [this])) (pr-str [(contains? Pdoc2 :extend-via-metadata) (try (mdoc2 (with-meta {} {(symbol (str *ns*) \"mdoc2\") (fn [_] :via-meta)})) (catch IllegalArgumentException e :not-honored))])"
-           :jvm "\"[true :via-meta]\""
-           :jolt "\"[false :not-honored]\""}
-   :note "Both halves move together: implementing metadata extension means setting the key. Pinned jolt-side in unit.edn's defprotocol-value suite."}
   ;; A protocol METHOD's var carries the reference's :arglists, :doc and :protocol
   ;; (corpus "defprotocol / method var" certifies all three). Its :tag names the
   ;; same type on both and differs only in kind: the reference's defprotocol
@@ -1600,17 +1583,6 @@
            :jvm ":put"
            :jolt "\"Zip64 entries are not supported\""}
    :note "A 4 GiB entry through a stream would take the Zip64 data descriptor as well; corpus rows (java.util.zip / ZipOutputStream) pin the 32-bit shapes."}
-  ;; ZipFile.stream() answers a java.util.stream.Stream on the JVM; jolt has no
-  ;; java.util.stream, so the method is not there and entries() is the way to
-  ;; walk an archive.
-  {:category :host-model
-   :behavior "(.stream zip-file)"
-   :jvm "a Stream of the entries"
-   :jolt "no such method"
-   :check {:expr "(with-open [z (java.util.zip.ZipFile. \"test/chez/fixtures/zip/stored.zip\")] (try (.count (.stream z)) (catch IllegalArgumentException e :no-method)))"
-           :jvm "4"
-           :jolt ":no-method"}
-   :note "entries() enumerates every entry (corpus java.util.zip / ZipFile)."}
   ;; ZipEntry has two one-argument constructors, (String) and (ZipEntry). jolt picks
   ;; one by the argument's runtime value, so a nil takes the String constructor even
   ;; under a ^ZipEntry hint, and its NullPointerException names the other
@@ -1735,6 +1707,14 @@
            :jvm ":cme"
            :jolt "[1 2 3]"}
    :note "A jolt seq is realized at its head. Later chunks are read when the walk reaches them, as on the JVM, so a list, set or map changed under doseq raises the same way; reduce walks the collection's iterator, as iter-reduce does."}
+  {:category :host-model
+   :behavior "iterator-seq over the iterator of a Clojure collection (a vector's, a map's, a seq's)"
+   :jvm "the iterator moves on 32 elements per chunk the seq realizes, so a later next, or a second iterator-seq over it, starts after them"
+   :jolt "the iterator hands over the seq it walks as it stands and does not move"
+   :check {:expr "(let [it (.iterator (vec (range 40))) s (iterator-seq it)] (first s) [(.hasNext it) (.next it)])"
+           :jvm "[true 32]"
+           :jolt "[true 0]"}
+   :note "A Clojure collection's iterator is a cursor over an immutable seq, so the seq iterator-seq answers holds the same elements either way. Copying it out 32 at a time would make (count (iterator-seq (.iterator a-list))) linear and reduce over it 2.4x slower to move a cursor only code that mixes the two can see. Iterators of the java.util collections, and any other with hasNext/next, are read through next a chunk at a time, as RT.chunkIteratorSeq does."}
   {:category :integer-box-model
    :behavior "an IdentityHashMap keyed by equal longs"
    :jvm "two keys when they are distinct boxes (outside the Long cache)"

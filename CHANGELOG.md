@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt nrepl-server --port-file PATH` and `--no-port-file`** (#1415).
+  The bound port goes to PATH, resolved against the caller's directory, or
+  nowhere; either way the server removes the file it wrote when it stops.
+
+- **`jolt.nrepl/*eval-wrapper*`, a hook around each nREPL evaluation (#1473).**
+  When bound to a function, `jolt.nrepl/evaluate` calls it with a thunk of the
+  code's evaluation (`eval-string`, or `load-string` for a load) inside its own
+  `try` and `*ns*` binding, so the wrapper sees a throw before `evaluate` turns
+  it into the error reply: a tool can run each evaluation under
+  `jolt.debug/call-with-break-handler`, a timer or a binding of its own. Bound
+  around a session's `clone`, it covers every eval in that session, since
+  jolt-lang/nrepl starts the session's worker with the clone's bindings. Unbound,
+  nothing changes.
 - **A source path for `jolt.host/eval-string` and `jolt.host/load-string`,
   and nREPL's `load-file` `file-path` (#1475).** Each takes an optional
   second argument, the path of the file the text came from, as the reference's
@@ -33,6 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trace leaves out because no def covers it, a defmethod's body or a record's
   method, is named as `jolt.profile` names it (`ns/Type.method`,
   `ns/mm[dispatch]`) when it was compiled under the debug mode.
+- **`java.util.jar.JarInputStream` and `JarOutputStream`.** The input stream
+  reads `META-INF/MANIFEST.MF` when it is the first entry or follows
+  `META-INF/`, and its entries are `JarEntry` values carrying their manifest
+  section; the output stream writes its manifest first and marks the first
+  entry with the JAR magic, byte-compatible with what the JDK writes.
+
+- **`java.util.concurrent.Semaphore` and `locks.ReentrantReadWriteLock`.**
+  Permits and read/write holds, fair and non-fair, timed and interruptible
+  acquires, the queue queries and the JDK's `toString`. Both wait through the
+  same protocol as `CountDownLatch`, so a fiber that waits parks and gives its
+  carrier up.
+- **`java.util.concurrent.atomic.AtomicIntegerArray` and `AtomicLongArray`**,
+  with the update/accumulate members and the memory-order variants.
+  `AtomicInteger`, `AtomicLong` and `AtomicReference` gain `accumulateAndGet`
+  and `getAndAccumulate`.
+
 - **A built binary's resources read as a jar (#1438).** `io/resource` and
   `ClassLoader.getResource(s)` answer `jar:file:jolt-embedded-resources.jar!/…`
   URLs for files and directories, with the JDK's percent-encoding and, in a
@@ -41,12 +70,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FileSystems/newFileSystem` opens them as a read-only `jar` file system, and
   `(jolt.host/embedded-resource-names)` lists them, so migration scanners such
   as Migratus work inside a binary. `java.util.jar.Manifest`, `Attributes` and
-  `Attributes.Name` read and write as the JDK's do.
+  `Attributes.Name` read and write as the JDK's do. A jar on disk opens as a
+  `JarFile` too, with its manifest, multi-release lookup and
+  `JarFile$JarFileEntry` entries, and `ZipEntry.getTimeLocal`/`setTimeLocal`
+  take a `java.time.LocalDateTime`.
 - **`java.nio.file.Files` dispatches to the path's file system provider.** The
   host file system now answers `readString`, `lines`, `list`, `walk`, `find`,
   `newBufferedReader`, `newBufferedWriter`, `writeString`, `newByteChannel`,
   `mismatch`, `probeContentType`, `getFileStore`, `getFileAttributeView` and
-  `setOwner`; text reads decode strictly, as the JDK's do.
+  `setOwner`. Text goes through the charset's reporting coder, as the JDK's
+  does: malformed input is `MalformedInputException` and a character the
+  charset cannot hold `UnmappableCharacterException`. `lines`, `walk` and
+  `find` read as the stream is consumed, a failure there arriving as
+  `UncheckedIOException`, and a `DirectoryStream` hands out one iterator.
 - **`ArrayDeque` is a ring buffer, as the JDK's is**: both ends O(1), the
   same capacities and growth, nulls refused, and the full `Deque` surface
   (`pollFirst`, `peekLast`, `removeLastOccurrence`, `descendingIterator`, …).
@@ -68,7 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(proxy [java.util.AbstractList] [] (get [i] …) (size [] …))` gets the
   class's iterator, contains, indexOf, subList, equality, hashing and printing,
   and so do proxies over `AbstractSet`, `AbstractCollection`, `AbstractQueue`
-  and `AbstractMap` (whose lookups run over the proxy's `entrySet`).
+  and `AbstractMap` (whose lookups run over the proxy's `entrySet`). A super
+  named by an import (`(proxy [AbstractList] …)`) is the class the import
+  names.
 - **`Month`, `DayOfWeek` and `ChronoField` `getDisplayName` answer in the
   locale**, by `TextStyle` for the first two, from the `:date-names` point and a
   new `:field-names` point. jolt-lang/time supplies the locales and `TextStyle`;
@@ -90,6 +128,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through. TreeMap, TreeSet and their key sets answer `SequencedMap` and
   `SequencedCollection` (`reversed`, `getFirst`, `pollLastEntry`, the
   sequenced views), and ArrayList, LinkedList and ArrayDeque answer `reversed`.
+- **`Collections` `sort`, `reverse`, `max`, `min`, `singletonList`, `nCopies`,
+  `emptySet` and `emptyIterator`.** `sort` and `reverse` change the list in
+  place; `emptyList`, `emptySet` and `emptyMap` are the JDK's single read-only
+  instances (`Collections$EmptyList` …), where `emptyList` and `emptyMap` were a
+  persistent vector and map. `ThreadPoolExecutor` answers
+  `getCompletedTaskCount`.
 - **`jolt.profile`, an execution-count profiler (#1421).** It reads Chez's
   `compile-profile` counters back by Clojure file, line and fn: turn on
   `(prof/instrument!)`, load the code, run it, and `(prof/report)` lists the
@@ -149,10 +193,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `StringBuffer` and the java.time values used to fail to write; they
   round-trip with their contents in order and their class, and one that holds
   itself restores as one. A view or entry of another collection, an iterator,
-  a thread, pool or task and an open stream are refused naming their class.
+  a thread, pool or task, an open stream, and a reify or proxy no var holds
+  are refused naming their class.
   `make imagecoverage` fails on a collection shim that does neither.
 
 ### Changed
+
+- **`future` runs on a pooled executor**, as the JVM's solo executor does,
+  instead of a fresh OS thread per call; a wait spins briefly before parking.
 
 - **`Runtime/version` and `JarFile/runtimeVersion` report 21**, the JDK jolt's
   oracle certifies against, and that version picks a multi-release jar's
@@ -169,8 +217,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WeakHashMap` drops an entry whose key nothing else holds, and an
   `IdentityHashMap` matches keys and values by reference.
 - **The JDK's interfaces are known** (every public interface in its java.* and
-  javax.* packages, annotation types included), so a proxy over a JDK class
-  jolt does not model (`java.util.TimerTask`) extends it, and `isInterface`
+  javax.* packages and in the com.sun.* and jdk.* packages it exports, such as
+  `com.sun.net.httpserver.HttpHandler`; annotation types included), so a
+  proxy over a JDK class jolt does not model (`java.util.TimerTask`) extends it, and `isInterface`
   answers for those types.
 - **Images are format 14**: an `ArrayDeque` travels as its ring buffer and a
   list carries its modCount; older images still read, except an old
@@ -178,7 +227,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`iterator-seq` is lazy, as `RT.chunkIteratorSeq` is**: it asks `hasNext`
   when made and pulls 32 elements at a time through `next`, so a list changed
   before the seq is walked throws `ConcurrentModificationException`, and any
-  iterator with `hasNext`/`next` works.
+  iterator with `hasNext`/`next` works. A Clojure collection's own iterator
+  still hands over the seq it walks without moving (known-divergences).
 - **`doseq` walks a chunked seq a chunk at a time**, reading each block where
   the vector holds it, as Clojure's `doseq` does. Over a vector it ran 3.5x a
   list of the same elements; it is now 0.54x what it was (a range 0.63x,
@@ -213,9 +263,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   jolt-lang/time's Locale can print as the JDK's `en_US`.
 - **Every `#object` print carries the identity hash, and a plain deftype prints
   as one**, `#object[user.T 0x1b2c3d4e "user.T@1b2c3d4e"]`, as on the JVM; a
-  defrecord keeps its `#ns.R{…}` form, and a deftype that is a `java.util.Map`
-  prints as a map. `str` of a deftype, a reify or a proxy with no `toString` is
-  `Class@hash`. An array prints with its class quoted. A deftype from an image
+  defrecord keeps its `#ns.R{…}` form, and a deftype that is a `java.util.Map`,
+  `List`, `RandomAccess` list or `Set` prints as a map, `(…)`, `[…]` or `#{…}`
+  under `pr` and as `#object` under `print`, as `print-method` has it.
+  `str` of a deftype, a reify or a proxy with no `toString` is `Class@hash`. An array prints with its class quoted. A deftype from an image
   whose code this process never loaded keeps the field form.
 - **`str` of a `ChronoField` is the JDK's display name** (`NanoOfSecond`,
   `AmPmOfDay`). A project pinned to a jolt-lang/time older than 28d55d62 needs
@@ -232,7 +283,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports and traces still show the file's location in source mode, and the AOT
   cache keys on the name, so a project that moves keeps its cache.
 
+### Performance
+
+- **Sorted maps and sets keep their red-black tree in the host**, with
+  vector nodes, so building and updating them is several times faster than in
+  0.8.23. `sorted-map` `assoc` of an `=` value now keeps the existing value only
+  when it is identical, as the JVM's does.
+
+- **The precompiled stdlib runs at user-code speed under `jolt run`.** The
+  namespaces a release binary carries as embedded fasls (`jolt.time.*`,
+  `clojure.data`, `babashka.fs`, `babashka.process`, `clojure.test`, …) were
+  compiled with var caching off, so every var reference inside them was looked
+  up by name on each call. `jolt.time.util/hmsn->nano` goes from 143 ns to
+  20 ns a call, the same as a copy of it in a user file; `clojure.data/diff`
+  34 µs to 17 µs, `babashka.process/tokenize` 14.8 µs to 9.2 µs. The seven
+  seed-embedded namespaces (`clojure.string`, `clojure.set`, …) and `jolt
+  build` binaries were not affected. `make stdlibratio` gates the ratio.
+
 ### Fixed
+
+- **On macOS a profiling signal could kill the process with status 128**
+  (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
+  signal, and the shutdown watcher read that as signal 0, exiting without
+  flushing output or running shutdown hooks. It now acts only on a signal from
+  its own set.
+- **`spit` writes in place.** It wrote a temp file and renamed it over the
+  target, which replaced a symlink with a regular file, broke hard links and
+  reset the file mode (a 0600 file came back 0644).
+- **`(group-by f coll)` with a NaN key** threw "persistent!: not a
+  transient"; each NaN now gets its own group, as on the JVM.
+- **`clojure.set/intersection` and `select` drop a NaN member** they were
+  asked to drop, and `disj` of an absent member returns the same set.
+- **Collection metadata survives where the JVM keeps it**: `(into to xform
+  from)` keeps `to`'s meta, `empty` of a sorted coll keeps its meta while
+  `empty` of a seq is a bare `()`, and a `PersistentQueue` takes `with-meta`
+  and `empty`s to a queue.
+- **Java methods on lists, seqs, sorted sets and queues answer as their JVM
+  classes do.** These colls answered almost no interop methods, while vectors,
+  maps and sets answered methods their classes lack (`.contains` on a map,
+  `.valAt` on a set); every builtin coll now has its class family's methods,
+  and the others raise the JVM's "No matching method".
 
 - **`load-string` no longer leaves the caller in the namespace it switched
   to.** `(do (load-string "(ns foo)") *ns*)` answered `foo`; it now answers
@@ -242,6 +332,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   op still switch namespace on an `(ns …)` or `in-ns`: each binds `*ns*` for
   the session and reads it after the eval, as clojure.main and nREPL do. The
   nREPL `load-file` op is a load and leaves the session's namespace alone.
+- `AtomicInteger.updateAndGet` and `AtomicLong.getAndUpdate` (and the other
+  update members) refused a reify of `IntUnaryOperator` / `LongUnaryOperator`:
+  they called `apply` instead of `applyAsInt` / `applyAsLong`.
+- `ReentrantLock.toString` adds `[Unlocked]` or `[Locked by thread NAME]`, as the
+  JDK's does.
 - **A `java.io.File` whose path holds a NUL no longer acts on another file.**
   The OS reads a path only up to a NUL, so `(.delete (File. "notes.txt\u0000x"))`
   deleted `notes.txt`, and `exists`, `length`, `list` and the rest answered
@@ -270,6 +365,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`jolt nrepl-server` says when it can't write its port file**, e.g. a
   `--port-file` into a missing directory. It used to start as if the file had
   been written, leaving the editor nothing to find.
+- **`(URL. context spec)` resolves as the protocol's handler does.** `.` and
+  `..` segments are dropped, a spec starting with `/` replaces the path, and a
+  `jar:` context resolves against its entry, so `(URL. migration
+  "../seed.sql")` reads the jar's `seed.sql`. `URL.toURI` exists.
+- **A jar on the source roots answers resources as the JDK's class loader
+  does**: `(io/resource "migrations")` finds the directory entry
+  `migrations/`, and `.openConnection` on a `jar:` URL is a
+  `JarURLConnection` where it threw "no protocol handler".
+- **Resource URLs from directory and jar roots are percent-encoded** as the
+  JDK's class loader encodes them, so a space, `#`, `;` or non-ASCII character
+  in a root or a name no longer breaks `toURI` or relative resolution, and
+  `getPath` answers the encoded path, as on the JDK. `slurp`, `io/file` and the
+  streams decode it.
+- **`getBytes` in a charset jolt reaches through iconv writes `?` for a
+  character the charset lacks**, as the JDK does. It threw
+  `UnsupportedEncodingException` on Linux and wrote macOS iconv's own spelling
+  (`gal.` for 日 in ISO-8859-2) there.
+- **`InputStreamReader` and `OutputStreamWriter` built over a
+  `CharsetDecoder` or `CharsetEncoder` use it**: a writer over an encoder wrote
+  UTF-8 whatever its charset, and a decoder's REPORT action, its default, now
+  raises on malformed input, as an encoder does on a character its charset
+  cannot hold.
+- **`LocalDate/of`, `LocalTime/of` and `LocalDateTime/of` refuse an
+  out-of-range field** with the JDK's `DateTimeException` where they rolled it
+  over (`(LocalDate/of 2020 13 1)` was 2021-01-01).
+- The deprecated `(String. bytes hibyte)` and `(String. bytes hibyte offset
+  count)` constructors build their chars from the high byte, where they were
+  read as a charset and a slice.
+- `ZipEntry.setLastModifiedTime` keeps the `FileTime` at its own precision,
+  and `ZipFile` has `stream` and Object's `toString`.
+- **A map hands out one `keySet`, `values` and `entrySet` view**, as the JDK's
+  keep theirs in a field: `HashMap`, `LinkedHashMap`, `TreeMap` (whose `keySet`
+  is its `navigableKeySet`, and whose `descendingMap` is cached too), `EnumMap`,
+  `Hashtable`, `WeakHashMap` and `IdentityHashMap`. `(identical? (.keySet m)
+  (.keySet m))` is true, and so is `.equals` of a `values` view with itself.
+- **`TimeUnit` conversions saturate at Long's range**:
+  `(.toMicros TimeUnit/DAYS Long/MAX_VALUE)` is `Long/MAX_VALUE`, not a
+  bigint. `TimeUnit/of` names an unmapped `ChronoUnit` as it prints (`Weeks`).
+- **`AtomicInteger` and `AtomicLong` print as numbers** (`5`, not
+  `#object[…]`), as the `Number`s they are. `Thread`, `ReentrantLock`,
+  `CountDownLatch` and `ThreadPoolExecutor` have the JDK's `toString`
+  (`Thread[#1,main,5,main]`, `…@1b2c[Unlocked]`, `…[Count = 1]`,
+  `…[Running, pool size = 0, …]`), and `getActiveCount` no longer counts a
+  worker still starting.
+- **`System/identityHashCode` and the hash of a fn or plain deftype are
+  non-negative 31-bit values**, as HotSpot's are; half of them were negative.
 - **`HashMap` and `HashSet` `remove` is O(1)** (jolt-lfm8p). It rebuilt the
   map's insertion-order key list, so one removal from a 20k-entry map cost
   ~112us; it now leaves a stale entry the walk skips, and the list is rebuilt
@@ -490,6 +631,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on tmpfs, which ubuntu-26.04 runners use for `/tmp`. The test job also runs
   with `TMPDIR` on the runner's disk, because 26.04's `/tmp` is too small for the
   build gates.
+
+### Performance
+
+- **`count`, `get`, `contains?` and `hash` on java.util collections pay less
+  for dispatch.** Each walks a registry of per-type predicates, and every host
+  type's predicate compared its tag string; they now remember the answer per
+  tag. Against 0.8.23 on macOS arm64: `count` of an ArrayList 41 -> 29 ns, of a
+  HashMap 66 -> 33 ns, of a HashSet 36 -> 28 ns; `hash` of a plain `Object`
+  480 -> 350 ns. ArrayList `add`/`remove` are about a fifth faster.
+- **`java.nio.file.Path` members take the call-site cache** as every other host
+  class's do: `.toString` 125 -> 18 ns, `.resolve` 291 -> 121 ns,
+  `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
 
 ## [0.8.23] - 2026-10-17
 

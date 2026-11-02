@@ -1009,6 +1009,31 @@ else
   fails=$((fails + 1))
 fi
 
+# A require on another thread does not move this thread's *ns* (jolt-1gk): the
+# loader binds *ns* for the load, so a conveyed frame is never written. The
+# contention case above hit it on some runs; this one pins it every run.
+ni_out="$($jolt run test/chez/require-ns-isolation.clj 2>&1)"
+if printf '%s' "$ni_out" | grep -q 'REQUIRE-NS-ISOLATION OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a require on another thread moved this thread's *ns*"
+  echo "    $(printf '%s' "$ni_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
+# Object.wait's release zeroes the monitor's count BEFORE it frees the word
+# (jolt-are): zeroed after, it could clobber a fast enter's count, and that
+# owner's exit left the monitor held for good. One-key ConcurrentHashMap.merge
+# from four threads hung within a few rounds before the fix.
+mw_out="$($jolt run test/chez/monitor-wait-count.clj 2>&1)"
+if printf '%s' "$mw_out" | grep -q 'MONITOR-WAIT-COUNT OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a monitor wait clobbered the next owner's hold count"
+  echo "    $(printf '%s' "$mw_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # One paren too many must FAIL the file, not truncate it. The loader read forms
 # with the non-top-level reader, which parks on a stray `)` rather than raising,
 # and the loop read a parked position as end of input: everything after the paren
@@ -2319,6 +2344,13 @@ check '(do (require (quote jolt.nrepl)) (let [e (ex-info "boom" {:a 1})] [(jolt.
 # a reference to nothing. A forward reference across evals takes a declare.
 check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(zqx-undefined 1)" "user") d (jolt.nrepl/evaluate "(defn zqx-f [] zqx-later)" "user") ok (jolt.nrepl/evaluate "(declare zqx-fwd) (defn zqx-g [] zqx-fwd)" "user")] [(:value r) (:err r) (:value d) (some? (:err d)) (:value ok) (:err ok) (some? (resolve (quote user/zqx-undefined)))]))' '[nil "Unable to resolve symbol: zqx-undefined in this context" nil true "#'"'"'user/zqx-g" nil false]'
 check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "eval" "code" "(zqx-undefined 1)" :reply #(swap! sent conj %)}) (mapv #(into (sorted-map) %) @sent)))' '[{"err" "Syntax error compiling at (REPL:1:1).\nUnable to resolve symbol: zqx-undefined in this context\n"} {"ex" "class clojure.lang.Compiler$CompilerException", "root-ex" "class clojure.lang.Compiler$CompilerException", "status" ["eval-error"]} {"status" ["done"]}]'
+# *eval-wrapper*: evaluate calls it with a thunk of the evaluation, for an eval
+# and a load, inside its *ns* binding and its own try, so a throw reaches the
+# wrapper before evaluate catches it (a break handler before the stack unwinds
+# sits there). Unbound, nil, it evaluates directly.
+check '(do (require (quote jolt.nrepl)) (def seen (atom [])) (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (swap! user/seen conj (str *ns*)) (thunk))] [(:value (jolt.nrepl/evaluate "(+ 1 2)" "user")) (:value (jolt.nrepl/evaluate "(+ 2 2)" "user" {:load true})) @user/seen]))' '["3" "4" ["user" "user"]]'
+check '(do (require (quote jolt.nrepl)) (def seen (atom nil)) (let [r (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (try (thunk) (catch Throwable t (reset! user/seen (ex-message t)) (throw t))))] (jolt.nrepl/evaluate "(/ 1 0)" "user"))] [@user/seen (:err r)]))' '["Divide by zero" "Divide by zero"]'
+check '(do (require (quote jolt.nrepl)) (nil? jolt.nrepl/*eval-wrapper*))' 'true'
 # eval-string / load-string with a source path, as Compiler.load takes one: the
 # forms carry it as :file and *file* / *source-path* are the path and its name;
 # without one nothing changes. clojure.core/load-string still takes the string

@@ -141,6 +141,20 @@
   the parent's thread, which is not the one writing."
   nil)
 
+(def ^:dynamic *eval-wrapper*
+  "When bound to a function, `evaluate` calls it with a no-argument thunk that
+  evaluates the code (eval-string, or load-string for a load) and uses what it
+  returns as the value. It runs inside evaluate's own try and *ns* binding, so
+  a throw from the code reaches the wrapper before evaluate catches it: a tool
+  can run the evaluation under jolt.debug/call-with-break-handler, a timer or a
+  binding of its own. Printing the value happens after it returns. nil, the
+  default, evaluates directly.
+
+  A middleware that binds it around a session's clone gives every eval in that
+  session the wrapper, since the session's worker starts with that clone's
+  bindings."
+  nil)
+
 (def ^:private last-backtrace (atom nil))
 (defn last-error-backtrace
   "The backtrace of the exception now in *e (the \"  trace:\" block evaluate
@@ -443,12 +457,14 @@
                         ;; forward reference across evals takes a declare.
                         ;; eval-string, not load-string: load-string binds *ns*
                         ;; for its own load, and this eval's switch must reach :ns
-                        (let [v (if load?
-                                  ;; a load-file op is a load, as nREPL's is
-                                  ;; (Compiler.load): the file's ns form does
-                                  ;; not switch the session
-                                  (if file (jolt.host/load-string code file) (load-string code))
-                                  (if file (jolt.host/eval-string code file) (jolt.host/eval-string code)))]
+                        (let [ev (fn []
+                                   (if load?
+                                     ;; a load-file op is a load, as nREPL's is
+                                     ;; (Compiler.load): the file's ns form does
+                                     ;; not switch the session
+                                     (if file (jolt.host/load-string code file) (load-string code))
+                                     (if file (jolt.host/eval-string code file) (jolt.host/eval-string code))))
+                              v (if-let [w *eval-wrapper*] (w ev) (ev))]
                           (reset! result v)
                           (reset! evaluated true)
                           (vreset! phase :print-eval-result)

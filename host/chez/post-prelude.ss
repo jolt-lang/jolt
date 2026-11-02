@@ -302,6 +302,24 @@
     ("associative?" . "clojure.lang.Associative")
     ("sequential?" . "clojure.lang.Sequential")))
 
+;; seq?: Clojure's is (instance? clojure.lang.ISeq x), so a deftype or reify
+;; declaring ISeq is a seq — instaparse's and data.finger-tree's seq types are,
+;; and (sequence s) / (seq? s) on one answered as if it were a collection. Set on
+;; jolt-seq? itself, not only the var, so the runtime's own callers (sequence,
+;; stream sources, ffi candidate lists) agree with the predicate. A record is
+;; never one: defrecord's IPersistentCollection methods collide with ISeq's.
+(define pp-iseq-name "clojure.lang.ISeq")
+(define %pp-seq? jolt-seq?)
+(set! jolt-seq?
+  (lambda (x)
+    (or (%pp-seq? x)
+        (jrec-iface-pred? x pp-iseq-name)
+        (and (jreify? x)
+             (or (reify-declares-class? (jreify-protos x) pp-iseq-name)
+                 (reify-class-isa? x pp-iseq-name))
+             #t))))
+(def-var! "clojure.core" "seq?" jolt-seq?)
+
 ;; counted?: Clojure's is (instance? clojure.lang.Counted x), and jolt now models
 ;; that interface, so the ONE statement of which things count in O(1) is the class
 ;; graph (java/class-hierarchy.ss) — read here through cseq-counted?, which derives

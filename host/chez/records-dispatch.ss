@@ -1128,7 +1128,6 @@
 (define arm-priority-dotform 30)      ; -field accessor + dot-form method dispatch
 (define arm-priority-date 40)         ; java.util.Date (jinst) method surface
 (define arm-priority-file 41)         ; java.io.File (jfile) methods
-(define arm-priority-nio-path 42)     ; java.nio.file.Path methods (above jfile)
 (define arm-priority-htable 43)       ; tagged htable method registry
 (define arm-priority-host-type 44)    ; jhost/number/string per-type dispatch
 ;; java/concurrency.ss registers clojure.lang.Agent's own methods here rather
@@ -1325,6 +1324,9 @@
 ;; The general entry (proxy, and any caller holding a {name fn} map): the layout
 ;; is built for this call.
 (define (make-reified-delegating methods-map delegate proto-names)
+  (make-reified-delegating/protos methods-map delegate (reify-proto-names proto-names)))
+;; …with PROTOS already interned (a proxy site interns its supers once)
+(define (make-reified-delegating/protos methods-map delegate protos)
   (let* ((ks (seq->list (jolt-keys methods-map)))
          (slots (make-hashtable string-hash string=?))
          (fns (make-vector (length ks))))
@@ -1334,7 +1336,7 @@
           (hashtable-set! slots (if (keyword? p) (keyword-t-name p) p) i)
           (vector-set! fns i (jolt-get methods-map p jolt-nil))
           (loop (cdr ks) (fx+ i 1)))))
-    (make-jreify (cons slots fns) (reify-proto-names proto-names) delegate #f)))
+    (make-jreify (cons slots fns) protos delegate #f)))
 ;; The reify macro's entry: SHAPE is the site's literal [[method-name …]
 ;; [protocol …]], a constant the site's pool binds once, so it is the same object
 ;; for every instance the site builds and its layout is computed once, keyed eq?
@@ -1687,6 +1689,7 @@
 (def-var! "clojure.core" "protocol-dispatch1" (lambda (pn mn obj) (protocol-dispatch1 pn mn obj)))
 (def-var! "clojure.core" "protocol-dispatch2" (lambda (pn mn obj a) (protocol-dispatch2 pn mn obj a)))
 (def-var! "clojure.core" "protocol-dispatch3" (lambda (pn mn obj a b) (protocol-dispatch3 pn mn obj a b)))
+(def-var! "clojure.core" "protocol-resolve-meta" (lambda (pn mn msym obj) (protocol-resolve-meta pn mn msym obj)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)
 ;; extends? asks with the name a class token PRESENTS (.getName: the JVM spelling,

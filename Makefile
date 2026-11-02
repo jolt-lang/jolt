@@ -117,7 +117,7 @@ endif
 
 JOLT-TARGETS-NEEDING-DEPS := \
   aotcacheperf aotcachesmoke aotfingerprint asynctimer buildlibsmoke buildsmoke reprobuildsmoke profilebuildsmoke embeddedresources \
-  aotcachepathsmoke aotcachesourcepathsmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
+  aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink mintgate ffi fibers fiberspoll fieldjoin fieldnum fieldread flarr fnform coreproc grenadine \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body irvalidate statlayout \
@@ -180,14 +180,14 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
+CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
   protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap arraybacking largebytesgc largefxgc unitcontext numeric oparity mathfl flonumdisp flarr \
   fnform coreproc traceemit traceeval degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
-  gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
+  gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
 TEST-GATES := submodules selfhost ci
@@ -403,6 +403,9 @@ fibers:
 	@$(CHEZ) --script test/chez/fibers-monitor-test.ss
 	@$(CHEZ) --script test/chez/fibers-interrupt-test.ss
 	@$(CHEZ) --script test/chez/async-io-thread-test.ss
+	@out="$$($(CHEZ) --script host/chez/cli.ss test/chez/sync-classes-test.clj 2>&1)"; \
+	  if printf '%s' "$$out" | grep -q 'SYNC-CLASSES-TEST OK'; then echo "fibers: sync-classes-test OK"; \
+	  else printf '%s\n' "$$out" | tail -20; echo "fibers: sync-classes-test FAILED"; exit 1; fi
 
 # The one (timeout ms) timer thread (jolt-pe84): a timeout closes on its own
 # deadline however far away the pending ones are, and the thread is forked once.
@@ -820,6 +823,13 @@ ioscaling: testbin
 fastpathratio: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj
 
+# A stdlib fn against the same source compiled from a user file, as a ratio in
+# one process. The embedded stdlib fasls and the seed-embedded namespaces are
+# compiled by paths a user file never takes; build-jolt once captured the fasls
+# with var-cache off (every var ref looked up by name, 2-7x slower).
+stdlibratio: testbin
+	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj
+
 # The 2026-08 sweep's remaining hot-path shapes in one gate: split-with-limit,
 # core.async timeout arming, ArrayDeque/StringTokenizer draining, ns-publics/
 # refer var-table independence, set/intersection smaller-side walk.
@@ -1067,7 +1077,8 @@ threadsafety:
 	@$(CHEZ) --script test/chez/thread-safety-test.ss
 
 # A lock a fiber park takes with interrupts disabled must not stall a collection
-# whose requester holds it (locks.ss jolt-mutex-acquire!). The failure is a hang
+# whose requester holds it (locks.ss jolt-mutex-acquire!), nor may a condition
+# wait made with them disabled (locks.ss jolt-condition-wait). The failure is a hang
 # of the whole process, so the script runs the gate under an outside deadline.
 maskedacquire:
 	@sh host/chez/masked-acquire-gate.sh $(CHEZ)
@@ -2077,6 +2088,12 @@ aotcachepathsmoke: testbin
 # from another directory replayed the first load's ./src/... spelling.
 aotcachesourcepathsmoke: testbin
 	@sh test/chez/aot-cache-source-path-smoke.sh
+
+# Inside a required namespace *file* and *source-path* name its own source, cold
+# or from the AOT cache: the compiled entrances bind them as a source load does,
+# instead of leaving the requirer's binding in place (#1466).
+aotcachestarfilesmoke: testbin
+	@sh test/chez/aot-cache-star-file-smoke.sh
 
 # Perf measurement: cold (recompile) vs warm (cache hit) for a multi-library
 # require. Needs Maven jars locally; NOT in the default ci gate (timing budget).

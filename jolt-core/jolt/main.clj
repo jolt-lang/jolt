@@ -440,7 +440,10 @@
     ;; a ./-prefixed argument is already project-relative: joining it as is
     ;; reported the file as ././x.clj. .\ is the same argument on Windows.
     (or (str/starts-with? x "./")
-        (and windows? (str/starts-with? x ".\\"))) (str dir "/" (subs x 2))
+        (and windows? (str/starts-with? x ".\\"))) (file-arg-for kind windows? dir (subs x 2))
+    ;; with no project directory the path is already the one load-file resolves;
+    ;; a "./" put in front would stay in its name, as getAbsolutePath keeps one
+    (= dir ".") x
     :else (str dir "/" x)))
 
 (defn- file-arg [x]

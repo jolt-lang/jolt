@@ -502,6 +502,14 @@ sessions and interruptible eval, plus the cider-nrepl ops an editor expects
                     cider.nrepl/cider-middleware]}
 ```
 
+A middleware that has to run each evaluation inside something of its own, such
+as a `jolt.debug` break handler or a timer, binds `jolt.nrepl/*eval-wrapper*` to
+a function of a thunk. `evaluate` calls it around the code's evaluation, inside
+its own `try`, so the wrapper sees a throw before `evaluate` turns it into the
+error reply. Bound around a session's `clone`, it covers every eval in that
+session, since jolt-lang/nrepl starts the session's worker with the clone's
+bindings.
+
 See [REPL-Driven Development](https://jolt-lang.github.io/docs/repl-driven-development.html).
 
 ### Linting with clj-kondo
