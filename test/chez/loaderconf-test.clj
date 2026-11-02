@@ -1059,6 +1059,42 @@
     (chk "the unloaded loader is collectable"
          (nil? (.get wr)))))
 
+;; --- 41. unload! takes the loaded marks with the namespaces -----------------
+;; A namespace unload! unmaps must not stay in *loaded-libs*: the mark would make
+;; every later require a silent no-op for a namespace find-ns answers nil for,
+;; and a :reload would rebuild the entry namespace over dependencies nothing
+;; reloads (#1469). The host requires the namespaces first (that is where the
+;; marks come from), a context evicts and reloads them privately, and after the
+;; context's unload! a plain require brings the host's copies back.
+(defcase 41 "unload! drops the loaded marks of what it unmapped; require reloads"
+  (let [d (root-dir "unl-marks")
+        _ (.mkdirs (java.io.File. (str d "/unlm")))
+        _ (write! d "unlm/other.clj" "(ns unlm.other) (defn v [] :other-ok)")
+        _ (write! d "unlm/fp.clj"
+                  "(ns unlm.fp (:require [unlm.other :as other])) (defn f [] (other/v))")
+        roots (vec (host/source-roots))
+        marked? (fn [] (some @@#'clojure.core/*loaded-libs* '[unlm.fp unlm.other]))]
+    (try
+      (host/set-source-roots! (conj roots d))
+      (require 'unlm.fp)
+      (chk "the host's require marked the namespaces" (marked?))
+      (let [ctx (l/classpath [d] {:parent (l/->loader (fn [_] nil))})]
+        (doseq [n ["unlm.fp" "unlm.other"]]
+          (l/load ctx {:kind :ns :name n}))
+        (chk "the context's code runs"
+             (= :other-ok ((val-of (l/resolve ctx {:kind :var :name "unlm.fp/f"})))))
+        (let [report (l/unload! ctx)]
+          (chk "unload! unmapped both namespaces"
+               (= 2 (get-in report [:released :namespaces])))))
+      (chk "the namespaces are gone" (and (nil? (find-ns 'unlm.fp))
+                                          (nil? (find-ns 'unlm.other))))
+      (chk "and so are their loaded marks" (not (marked?)))
+      (require 'unlm.fp)
+      (chk "a later require loads the namespace again" (some? (find-ns 'unlm.fp)))
+      (chk "with its dependencies" (some? (find-ns 'unlm.other)))
+      (chk "and its code runs" (= :other-ok ((resolve 'unlm.fp/f))))
+      (finally (host/set-source-roots! roots)))))
+
 ;; --- runner -----------------------------------------------------------------
 (defn run-case [[n title body]]
   (reset! failures [])

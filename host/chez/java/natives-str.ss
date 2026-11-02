@@ -426,6 +426,14 @@
 ;; block at offsets 0/8/16/24: in pointer, in remaining, out pointer, out
 ;; remaining. Worst case a byte grows to four (UTF-32), plus room for a BOM.
 (define (iconv-bytes bv from to)
+  (let ((r (iconv-convert bv from to))) (and r (car r))))
+;; ...as (bytes . exact?), exact? when iconv reported no irreversible
+;; conversion. iconv refuses a character its target lacks in one of two ways,
+;; and which is the libc's choice: glibc stops with EILSEQ (#f here), Apple's
+;; substitutes something of its own -- "gal." for 日 in ISO-8859-2 -- and counts
+;; it in its return value (exact? #f). Neither is what the JDK writes, so a
+;; caller that cares takes either as "not this way" (charset-encode-iconv).
+(define (iconv-convert bv from to)
   (let ((pcd (iconv-open-cd from to)))
     (and pcd
          (let* ((provider (car pcd))
@@ -445,8 +453,8 @@
                    (sa-foreign-set! 'unsigned-64 cells 8 inlen)
                    (sa-foreign-set! 'void* cells 16 outbuf)
                    (sa-foreign-set! 'unsigned-64 cells 24 outcap)
-                   (and (not (= iconv-size-max
-                                (conv cd cells (+ cells 8) (+ cells 16) (+ cells 24))))
+                   (let ((irreversible (conv cd cells (+ cells 8) (+ cells 16) (+ cells 24))))
+                     (and (not (= iconv-size-max irreversible))
                         ;; Then reset the descriptor to its initial state, which
                         ;; POSIX spells as an iconv with a NULL input. A stateful
                         ;; charset holds a mode, and its closing shift back to
@@ -458,8 +466,8 @@
                                #t)
                         (let* ((n (- outcap (sa-foreign-ref 'unsigned-64 cells 24)))
                                (out (make-bytevector n)))
-                          (do ((i 0 (+ i 1))) ((= i n) out)
-                            (bytevector-u8-set! out i (sa-foreign-ref 'unsigned-8 outbuf i))))))))
+                          (do ((i 0 (+ i 1))) ((= i n) (cons out (= irreversible 0)))
+                            (bytevector-u8-set! out i (sa-foreign-ref 'unsigned-8 outbuf i)))))))))
            (sa-foreign-free inbuf) (sa-foreign-free outbuf) (sa-foreign-free cells)
            (close cd)
            result))))
@@ -950,8 +958,38 @@
         ((or (string=? cs "utf-32be") (string=? cs "utf-32"))
          (string->utf32 s (endianness big)))
         ((string=? cs "utf-32le") (string->utf32 s (endianness little)))
-        (else (or (iconv-bytes (string->utf8 s) "UTF-8" name)
-                  (unsupported-encoding-throw name)))))))
+        (else (charset-encode-iconv s name
+                                    (lambda (c) (or (iconv-bytes (string->utf8 "?") "UTF-8" name)
+                                                    (bytevector 63)))))))))
+;; S in an iconv charset. One conversion when every character maps, which is
+;; nearly always; otherwise each character on its own, and UNMAPPABLE (a
+;; procedure of the character) answers the bytes for one that does not -- the
+;; charset's replacement for String.getBytes, a raise for a reporting encoder.
+;; Apple's ISO-8859-2 and -3 tables go further: they substitute a spelling
+;; ("gal." for 日) and still report the conversion exact. In a one-byte charset
+;; that shows as more bytes than characters, which is checked instead.
+(define (charset-one-byte? name)
+  (let ((cs (charset-canonical-down name)))
+    (exists (lambda (prefix)
+              (and (>= (string-length cs) (string-length prefix))
+                   (string=? (substring cs 0 (string-length prefix)) prefix)))
+            '("iso-8859-" "windows-125" "koi8-"))))
+(define (charset-encode-iconv s name unmappable)
+  ;; the name is only looked at when the byte count is not the character count
+  (let* ((exact (lambda (r n) (and r (cdr r) (or (= (bytevector-length (car r)) n)
+                                                  (not (charset-one-byte? name))))))
+         (whole (iconv-convert (string->utf8 s) "UTF-8" name)))
+    (cond
+      ((exact whole (string-length s)) (car whole))
+      ((not (iconv-known? name)) (unsupported-encoding-throw name))
+      (else
+       (let-values (((out extract) (open-bytevector-output-port)))
+         (string-for-each
+          (lambda (c)
+            (let ((one (iconv-convert (string->utf8 (string c)) "UTF-8" name)))
+              (put-bytevector out (if (exact one 1) (car one) (unmappable c)))))
+          s)
+         (extract))))))
 
 ;; (Object.hashCode parity — jolt-s32, java-string-hash, java-symbol-hash — lives
 ;; in natives-misc.ss: records-dispatch.ss's keyword/symbol .hashCode arms read

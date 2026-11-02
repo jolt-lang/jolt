@@ -184,9 +184,14 @@
                        ((jch-isa? tag "clojure.lang.IPersistentVector") 'vec)
                        ((jch-isa? tag "clojure.lang.IPersistentSet") 'set)
                        ((jch-isa? tag "clojure.lang.IPersistentMap") 'map)
-                       ;; print-method's java.util.Map arm: a deftype that is a
-                       ;; java.util.Map prints as a map, over its entrySet
+                       ;; print-method's java.util arms: a deftype that is a
+                       ;; java.util.Map prints as a map, over its entrySet; a
+                       ;; RandomAccess one as [..] (preferred over List), a List
+                       ;; as (..) and a Set as #{..}, over its seq
                        ((jch-isa? tag "java.util.Map") 'jmap)
+                       ((jch-isa? tag "java.util.RandomAccess") 'jvec)
+                       ((jch-isa? tag "java.util.List") 'jlist)
+                       ((jch-isa? tag "java.util.Set") 'jset)
                        (else #f)))
             (jch-isa? tag "java.lang.CharSequence")
             record?
