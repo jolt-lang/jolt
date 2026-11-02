@@ -408,7 +408,10 @@
   Whatever is left unflushed is sent before this returns, and :out is then empty.
   A future the eval starts inherits the writers, so its output streams too.
   :load true in the map evaluates the code as a load (load-string), as the
-  load-file op does, so a namespace switch in it does not reach :ns.
+  load-file op does, so a namespace switch in it does not reach :ns. :file
+  names the code's source path, as nREPL's load-file sends it: its forms carry
+  it as :file (the position a def records, the trace) and *file* is that path,
+  as for a file load.
 
   The value is printed inside the eval, under its *out* and its try: what a lazy
   result prints as it is realized is the eval's output, and an error while
@@ -423,7 +426,7 @@
     :ex-class       the `ex` string, \"class java.lang.ArithmeticException\"
     :root-ex-class  the `root-ex` string, the class of the root cause"
   ([code ns-str] (evaluate code ns-str nil))
-  ([code ns-str {on-out :out on-err :err load? :load}]
+  ([code ns-str {on-out :out on-err :err load? :load file :file}]
    (let [result (atom nil) evaluated (atom false) printed (atom nil)
          err (atom nil) exc (atom nil) failure (atom nil)
          start-ns (or (when (and ns-str (not (str/blank? ns-str)))
@@ -444,8 +447,8 @@
                                   ;; a load-file op is a load, as nREPL's is
                                   ;; (Compiler.load): the file's ns form does
                                   ;; not switch the session
-                                  (load-string code)
-                                  (jolt.host/eval-string code))]
+                                  (if file (jolt.host/load-string code file) (load-string code))
+                                  (if file (jolt.host/eval-string code file) (jolt.host/eval-string code)))]
                           (reset! result v)
                           (reset! evaluated true)
                           (vreset! phase :print-eval-result)
@@ -585,7 +588,10 @@
             (evaluate code (get request "ns")
                       {:out #(respond request {"out" %})
                        :err #(respond request {"err" %})
-                       :load (= op "load-file")})]
+                       :load (= op "load-file")
+                       ;; the file's path, which load-file sends, as JVM nREPL
+                       ;; compiles it under
+                       :file (when (= op "load-file") (some-> (get request "file-path") wire->))})]
         ;; an error goes out as JVM nREPL sends it: the err->msg text, then the
         ;; classes with eval-error, then done on its own
         (if err
