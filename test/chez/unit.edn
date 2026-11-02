@@ -3506,6 +3506,10 @@
   ;; UTF-16 units to count/first/seq, as on the JVM, and half of one made into a
   ;; string on its own is U+FFFD (the lone-unit policy in known-divergences.edn).
   {:suite "string / surrogate halves" :expr "(let [c (str (char 128169))] [(count c) (int (first c)) (int (second c)) (mapv int (str (first c))) (.length c) (int (.charAt c 1))])" :expected "[2 55357 56489 [65533] 2 56489]"}
+  ;; A half printed, formatted or left in a builder on its own is a lone unit, so
+  ;; U+FFFD in finished text; a with-out-str that ends with a high unit still
+  ;; waiting closes it out rather than leaving it pending for a dead port.
+  {:suite "string / surrogate halves" :expr "[(mapv (partial mapv int) [(print-str (.charAt \"😀\" 0)) (with-out-str (print (.charAt \"😀\" 0))) (with-out-str (print (.charAt \"😀\" 0)) (print \"x\")) (format \"%c|%.2s|\" (.charAt \"😀\" 1) \"a😀\")]) (let [sb (StringBuilder. \"z😀z\")] (.insert sb 2 \"y\") [(.length sb) (mapv int (str sb))]) (let [sb (StringBuilder. \"😀\")] (.setLength sb 1) [(.length sb) (mapv int (str sb))]) (with-out-str (print \"a\") (try (with-out-str (print (.charAt \"😀\" 0)) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (print \"b\"))]" :expected "[[[65533] [65533] [65533 120] [65533 124 97 65533 124]] [5 [122 65533 121 65533 122]] [1 [65533]] \"ab\"]"}
   ;; str of a deftype/record with no toString is Object.toString, as on the
   ;; JVM: "user.Rec@" and the hex of its hashCode, the map hash for a record and
   ;; the identity hash for a deftype. A COLLECTION deftype too: only pr prints it

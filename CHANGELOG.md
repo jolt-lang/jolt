@@ -302,6 +302,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Surrogate halves from `.charAt` in print, `Character`, `format` and
+  StringBuilder edits.** Follow-ups to the UTF-16 indexing change (#1455).
+  `print` of a half printed `#[chez-jsurr-v1 …]`; it now pairs a high half
+  with the low one printed after it, to a port or a Writer under `*out*`.
+  `Character/isWhitespace`, `getType`, `toUpperCase`, `toLowerCase` and
+  `toTitleCase` threw on a half and `isDefined` answered false. `format`
+  rejected a half for `%c`, and width and precision counted code points
+  rather than UTF-16 units. A StringBuilder `setLength`, `setCharAt`,
+  `deleteCharAt`, `delete`, `replace` or `insert` at an index between the
+  two halves of a pair edited the whole character, leaving the wrong length
+  (`setLength 1` on "😀" gave length 0); such an edit now moves one unit, as
+  on the JVM. `count` and `.chars` of a builder counted code points.
+  `.indexOf`/`.lastIndexOf` of `""` from inside a pair answered the next
+  index.
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without

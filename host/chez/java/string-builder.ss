@@ -225,6 +225,63 @@
 (define (%sb-cp st u)
   (%sb-settle! st)
   (if (fx=? (%sb-astral! st) 0) u (u16->cp (%sb-str st) u)))
+
+;; ---- an edit between the halves of a pair ------------------------------------
+;; The edits above work on code points, which is right whenever every index they
+;; are handed falls on a character boundary. An index between the two halves of
+;; an astral character (setLength(1) on "😀", deleteCharAt of either half), a high
+;; unit still waiting for its low one, or a surrogate unit as the new text, is an
+;; edit of single UTF-16 units, which the JVM makes and a code-point buffer
+;; cannot. Those take this path: the whole text as its unit list (a list of chars
+;; and jsurr halves), the JVM's edit made on that list, and the text rebuilt from
+;; it, a high unit followed by a low one being the character they spell. A half
+;; left alone is U+FFFD in the text (the lone-unit policy, values.ss), except a
+;; high unit at the very end, which waits in `hi` for the low one an append may
+;; still bring, as an append of one does. Lengths and indices are therefore the
+;; JVM's after any such edit; only the content of a lone half differs. It copies
+;; the whole text, and it is only taken for an edit that splits a pair.
+(define (%sb-unit-path? st idxs piece)
+  (or (vector-ref st 8)
+      (jsurr? piece)
+      (and (string? piece) edge-units-any? (edgy? piece))
+      (and (fx>? (%sb-astral! st) 0)
+           (let ((s (%sb-str st)))
+             (exists (lambda (u) (u16-split? s u)) idxs)))))
+;; A piece of new text as the units it puts in.
+(define (%sb-piece-units p)
+  (cond ((jsurr? p) (list p))
+        ((char? p) (list p))
+        (else (apply append
+                     (map (lambda (x) (if (string? x) (u16-units x 0 (u16-length x)) (list x)))
+                          (edge-split p))))))
+(define (%sb-unit-list st)
+  (let ((hi (vector-ref st 8)))
+    (vector-set! st 8 #f)
+    (sb-wrote! st)
+    (let* ((s (%sb-str st)) (us (u16-units s 0 (u16-length s))))
+      (if hi (append us (list (jolt-surrogate hi))) us))))
+(define (%sb-set-units! st us)
+  (let loop ((us us) (acc '()))
+    (cond
+      ((or (null? us) (and (jsurr-high? (car us)) (null? (cdr us))))
+       (let* ((s (list->string (reverse acc))) (n (string-length s))
+              (hi (and (pair? us) (jsurr-unit (car us)))))
+         (vector-set! st 0 s)
+         (vector-set! st 1 n)
+         (vector-set! st 5 '())
+         (vector-set! st 6 n)
+         (vector-set! st 8 hi)
+         (%sb-rescan! st)
+         (sb-wrote! st)
+         (%sb-grow-cap! st (%sb-u16-length st))))
+      ((and (jsurr-high? (car us)) (jsurr-low? (cadr us)))
+       (loop (cddr us) (cons (surrogates->char (jsurr-unit (car us)) (jsurr-unit (cadr us))) acc)))
+      ((jsurr? (car us)) (loop (cdr us) (cons jolt-replacement-char acc)))
+      (else (loop (cdr us) (cons (car us) acc))))))
+;; Replace units [s, e) with NEW (a unit list): every unit edit is this one.
+(define (%sb-unit-splice! st s e new)
+  (let ((us (%sb-unit-list st)))
+    (%sb-set-units! st (append (list-head us s) new (list-tail us e)))))
 ;; Replace buf[s, e) with piece, in place: the one primitive insert, delete,
 ;; replace and deleteCharAt are spelled in. The tail moves first (string-copy!
 ;; copies as if through a temporary, so the overlap is safe).
@@ -272,8 +329,8 @@
   (if (vector-ref (jhost-state self) 4) (sb-guarded (st self) (%sb-append! st piece)) (sb-append! self piece)))
 (define (sb-length* self)
   (if (vector-ref (jhost-state self) 4) (sb-guarded (st self) (%sb-u16-length st)) (sb-length self)))
-;; count and seq see the code points, as they do on a String.
-(define (sb-count* self) (string-length (sb-str* self)))
+;; count is length(), in UTF-16 units, as it is on a String.
+(define (sb-count* self) (sb-length* self))
 (define (sb-char-at* self i)
   (if (vector-ref (jhost-state self) 4) (sb-guarded (st self) (%sb-char-at st i)) (sb-char-at self i)))
 
@@ -432,14 +489,19 @@
                              (string-append "String index out of range: " (number->string n))))
                 (guard (st self)
                   ;; n counts UTF-16 units; past the end it pads with NULs
-                  (let* ((u16 (%sb-u16-length st))
-                         (n (if (>= n u16) (+ (vector-ref st 1) (- n u16)) (%sb-cp st n)))
-                         (cur (vector-ref st 1)))
-                    (%sb-ensure! st n)
-                    (when (fx>? n cur)
-                      (let ((buf (vector-ref st 0)))
-                        (do ((i cur (fx+ i 1))) ((fx=? i n)) (string-set! buf i #\nul))))
-                    (%sb-set-length! st n))))
+                  (if (%sb-unit-path? st (list n) #f)
+                      (let ((u16 (%sb-u16-length st)))
+                        (if (< n u16)
+                            (%sb-unit-splice! st n u16 '())
+                            (%sb-unit-splice! st u16 u16 (make-list (- n u16) #\nul))))
+                      (let* ((u16 (%sb-u16-length st))
+                             (n (if (>= n u16) (+ (vector-ref st 1) (- n u16)) (%sb-cp st n)))
+                             (cur (vector-ref st 1)))
+                        (%sb-ensure! st n)
+                        (when (fx>? n cur)
+                          (let ((buf (vector-ref st 0)))
+                            (do ((i cur (fx+ i 1))) ((fx=? i n)) (string-set! buf i #\nul))))
+                        (%sb-set-length! st n)))))
               jolt-nil))
       ;; The read-only index methods are String's, over the builder's text (its
       ;; cached toString): the same UTF-16 indices, the same checks.
@@ -480,47 +542,58 @@
                                                                           (jnum->exact i) (jnum->exact k)))))
       (cons "compareTo" (lambda (self other)
                           (->num (sb-compare (guard (st self) (%sb-str st)) (sb-str* other)))))
+      ;; One unit: an index on either half of a pair edits that half alone.
       (cons "setCharAt" (lambda (self i ch)
-                          (let ((c (string-ref (render-piece ch) 0)))
+                          (let ((c (if (jsurr? ch) ch (string-ref (render-piece ch) 0))))
                             (guard (st self)
                               (let ((i (jnum->exact i)))
                                 (sb-check-index i (%sb-u16-length st))
-                                (let ((i (%sb-cp st i)))
-                                  (%sb-flushed st)
-                                  (string-set! (vector-ref st 0) i c)
-                                  (%sb-rescan! st)
-                                  (sb-wrote! st)))))
+                                (if (%sb-unit-path? st (list i (fx+ i 1)) c)
+                                    (%sb-unit-splice! st i (fx+ i 1) (list c))
+                                    (let ((i (%sb-cp st i)))
+                                      (%sb-flushed st)
+                                      (string-set! (vector-ref st 0) i c)
+                                      (%sb-rescan! st)
+                                      (sb-wrote! st))))))
                           jolt-nil))
       (cons "deleteCharAt" (lambda (self i)
                              (guard (st self)
                                (let ((i (jnum->exact i)))
                                  (sb-check-index i (%sb-u16-length st))
-                                 (let ((i (%sb-cp st i)))
-                                   (%sb-splice! st i (fx+ i 1) ""))))
+                                 (if (%sb-unit-path? st (list i (fx+ i 1)) #f)
+                                     (%sb-unit-splice! st i (fx+ i 1) '())
+                                     (let ((i (%sb-cp st i)))
+                                       (%sb-splice! st i (fx+ i 1) "")))))
                              self))
       ;; delete and replace clamp the end to the length, then check, as the JDK does.
       (cons "delete" (lambda (self start end)
                        (guard (st self)
                          (let* ((n (%sb-u16-length st)) (s (jnum->exact start)) (e (min n (jnum->exact end))))
                            (jvm-range-check 'StringIndexOutOfBoundsException n s e)
-                           (%sb-splice! st (%sb-cp st s) (%sb-cp st e) "")))
+                           (if (%sb-unit-path? st (list s e) #f)
+                               (%sb-unit-splice! st s e '())
+                               (%sb-splice! st (%sb-cp st s) (%sb-cp st e) ""))))
                        self))
       (cons "replace" (lambda (self start end txt)
                         (let ((p (render-piece txt)))
                           (guard (st self)
                             (let* ((n (%sb-u16-length st)) (s (jnum->exact start)) (e (min n (jnum->exact end))))
                               (jvm-range-check 'StringIndexOutOfBoundsException n s e)
-                              (%sb-splice! st (%sb-cp st s) (%sb-cp st e) p))))
+                              (if (%sb-unit-path? st (list s e) p)
+                                  (%sb-unit-splice! st s e (%sb-piece-units p))
+                                  (%sb-splice! st (%sb-cp st s) (%sb-cp st e) p)))))
                         self))
       (cons "insert"
             (let ((ins (lambda (self offset p)
                          (guard (st self)
                            (let ((o (jnum->exact offset)))
                              (sb-check-offset o (%sb-u16-length st))
-                             (let ((o (%sb-cp st o))) (%sb-splice! st o o p))))
+                             (if (%sb-unit-path? st (list o) p)
+                                 (%sb-unit-splice! st o o (%sb-piece-units p))
+                                 (let ((o (%sb-cp st o))) (%sb-splice! st o o p)))))
                          self)))
               (case-lambda
-                ((self offset x) (ins self offset (let ((p (sb-piece x))) (if (jsurr? p) jolt-replacement-string p))))
+                ((self offset x) (ins self offset (sb-piece x)))
                 ((self offset x a b)
                  (ins self offset (sb-piece-range x a b (quote StringIndexOutOfBoundsException)))))))
       ;; .getChars srcBegin srcEnd dst dstBegin — the CharSequence copy-out the

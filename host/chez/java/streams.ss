@@ -440,14 +440,14 @@
                        (if r (jt-optional #t (car r)) jt-optional-empty))))))
 (for-each (lambda (p) (register-host-methods! (car p) (stream-methods))) stream-tags)
 
-;; CharSequence.chars / codePoints: an IntStream of the characters. jolt's
-;; strings hold code points, so the two answer the same. String's arms
-;; (natives-str.ss) and the builders' both come here.
+;; CharSequence.chars / codePoints: an IntStream of the UTF-16 units (chars) or
+;; of the code points. String's arms (natives-str.ss) and the builders' both
+;; come here.
 (define (string->int-stream s)
   (make-stream 'int (list->cseq (map char->integer (string->list s)))))
 (for-each (lambda (tag)
             (register-host-methods! tag
-              (list (cons "chars" (lambda (self) (string->int-stream (sb-str* self))))
+              (list (cons "chars" (lambda (self) (jolt-str-chars-stream (sb-str* self))))
                     (cons "codePoints" (lambda (self) (string->int-stream (sb-str* self)))))))
           '("string-builder" "string-buffer"))
 ;; a stream seqs and reduces like the iterator it is, so (seq s) / (into [] s)

@@ -1064,6 +1064,9 @@
   (let ((from (if (fixnum? from) (fxmax from 0) from)))
     (cond
       ((u16-needle-unit needle) => (lambda (u) (u16-unit-index-of s u from #f)))
+      ;; "" is found at FROM itself, clamped to the length: a UTF-16 index,
+      ;; even one between the halves of a pair
+      ((and (string? needle) (fx=? (string-length needle) 0)) (min (max from 0) (u16-length s)))
       ;; no astral char before FROM: search there, and the match needs no
       ;; conversion unless one lies before it (only that prefix is scanned)
       ((and (fixnum? from) (u16-clear-below? s from))
@@ -1078,6 +1081,8 @@
   (let ((from (if (pair? from) (jolt->idx (car from)) (u16-length s))))
     (cond
       ((u16-needle-unit needle) => (lambda (u) (u16-unit-index-of s u from #t)))
+      ((and (string? needle) (fx=? (string-length needle) 0))
+       (if (< from 0) -1 (min from (u16-length s))))
       ((fx=? (u16-length s) (string-length s))
        (str-last-index-of-from s (str-needle needle) from))
       (else

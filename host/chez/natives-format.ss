@@ -18,7 +18,7 @@
 ;; clause could select it. %c also takes a char.
 (define (fmt-numeric d a f)
   (cond ((jolt-nil? a) "null")
-        ((or (number? a) (and (char? a) (char=? d #\c))) (f a))
+        ((or (number? a) (and (or (char? a) (jsurr? a)) (char=? d #\c))) (f a))
         (else (jolt-throw (jolt-host-throwable "java.util.IllegalFormatConversionException"
                 (string-append (string d) " != " (jolt-class-name a)))))))
 ;; %x / %X / %o are UNSIGNED conversions on the JVM: a negative argument prints the
@@ -260,10 +260,11 @@
           ((and zero-ok? (fmt-flag? flags #\0)) (string-append prefix (make-string (fx- width n) #\0) body suffix))
           (else (string-append (make-string (fx- width n) #\space) prefix body suffix)))))
 ;; pad to width: left-justify with spaces, else right-justify (zero-pad only
-;; where the caller says the conversion takes it)
+;; where the caller says the conversion takes it). Width counts UTF-16 units,
+;; as Formatter does (String.length): an astral char is two of them.
 (define (fmt-pad s flags width zero-ok?)
-  (if (and width (fx<? (string-length s) width))
-      (let ((p (fx- width (string-length s))))
+  (if (and width (fx<? (jolt-str-u16-length s) width))
+      (let ((p (fx- width (jolt-str-u16-length s))))
         (cond ((fmt-flag? flags #\-) (string-append s (make-string p #\space)))
               (else (string-append (make-string p (if (and zero-ok? (fmt-flag? flags #\0)) #\0 #\space)) s))))
       s))
@@ -358,9 +359,10 @@
   (if (fmt-flag? flags #\#)
       (case d ((#\x) "0x") ((#\X) "0X") ((#\o) "0") (else ""))
       ""))
-;; precision TRUNCATES a general conversion's rendering
+;; precision TRUNCATES a general conversion's rendering, to that many UTF-16
+;; units (a cut inside a pair leaves its lone half, U+FFFD here)
 (define (fmt-truncate s prec)
-  (if (and prec (fx<? prec (string-length s))) (substring s 0 prec) s))
+  (if (and prec (fx<? prec (jolt-str-u16-length s))) (u16-substring s 0 prec) s))
 
 ;; %h is Integer.toHexString(arg.hashCode()) — the argument's JAVA hashCode (not
 ;; its Clojure hasheq, which is a different number for a string) as UNSIGNED
@@ -472,7 +474,11 @@
       ((#\B) (fmt-pad (string-upcase (fmt-truncate (if (jolt-truthy? a) "true" "false") prec)) flags width #f))
       ((#\h) (fmt-pad (fmt-truncate (fmt-hash a) prec) flags width #f))
       ((#\H) (fmt-pad (string-upcase (fmt-truncate (fmt-hash a) prec)) flags width #f))
-      ((#\c) (fmt-pad (fmt-numeric d a (lambda (n) (if (char? n) (string n) (string (fmt-code-point n)))))
+      ;; a surrogate unit (a .charAt half) is a char too; on its own it is a
+      ;; lone unit, U+FFFD in finished text
+      ((#\c) (fmt-pad (fmt-numeric d a (lambda (n) (cond ((char? n) (string n))
+                                                         ((jsurr? n) jolt-replacement-string)
+                                                         (else (string (fmt-code-point n))))))
                       flags width #f))
       (else (fmt-unknown-conversion (string d))))))
 
