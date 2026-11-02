@@ -147,23 +147,6 @@
            :jvm "\"[true true true]\""
            :jolt "\"[false false false]\""}
    :note "The keys jolt DOES supply are exact: (:doc P) is present only with a docstring, :method-map is identity on the method keywords, :var is the protocol's own var, :sigs is nil for a method-less protocol."}
-  ;; :extend-via-metadata is absent for a different reason from the three above:
-  ;; not "there is nothing to name" but "the rule is not in force". jolt's
-  ;; defprotocol PARSES the option — it has to, to read past it to the method
-  ;; signatures — and then drops it, because protocol-resolve does not consult a
-  ;; value's metadata for an implementation. Recording the key while the dispatch
-  ;; ignores it would be worse than omitting it: a caller testing the key would
-  ;; conclude metadata extension is available and get a no-such-method raise
-  ;; instead. So the key and the behavior are absent together, and they will
-  ;; arrive together. jolt-2j3.
-  {:category :host-model
-   :behavior "(:extend-via-metadata P), and whether metadata on a value can implement a protocol method"
-   :jvm "true, and the metadata implementation is found (direct impls first, then metadata, then extend)"
-   :jolt "nil, and the metadata implementation is not consulted — the call raises"
-   :check {:expr "(defprotocol Pdoc2 :extend-via-metadata true (mdoc2 [this])) (pr-str [(contains? Pdoc2 :extend-via-metadata) (try (mdoc2 (with-meta {} {(symbol (str *ns*) \"mdoc2\") (fn [_] :via-meta)})) (catch IllegalArgumentException e :not-honored))])"
-           :jvm "\"[true :via-meta]\""
-           :jolt "\"[false :not-honored]\""}
-   :note "Both halves move together: implementing metadata extension means setting the key. Pinned jolt-side in unit.edn's defprotocol-value suite."}
   ;; A protocol METHOD's var carries the reference's :arglists, :doc and :protocol
   ;; (corpus "defprotocol / method var" certifies all three). Its :tag names the
   ;; same type on both and differs only in kind: the reference's defprotocol
