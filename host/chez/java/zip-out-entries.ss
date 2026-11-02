@@ -313,8 +313,11 @@
 
 ;; ZipOutputStream(out) | ZipOutputStream(out, charset): lines 155-172.
 (define (make-zip-output-stream . args)
+  (make-zip-output-stream* "java.util.zip.ZipOutputStream" args))
+;; The constructor under the class FQN reports (JarOutputStream builds on it).
+(define (make-zip-output-stream* fqn args)
   (define (no-ctor)
-    (throw-jvm 'IllegalArgumentException "No matching ctor found for class java.util.zip.ZipOutputStream"))
+    (throw-jvm 'IllegalArgumentException (string-append "No matching ctor found for class " fqn)))
   (unless (<= 1 (length args) 2) (no-ctor))
   (let* ((out (let ((x (car args)))
                 (if (zout-out-fits? x) x (zip-class-cast x "java.io.OutputStream"))))
@@ -328,7 +331,7 @@
                        (let ((name (charset-canonical-down (charset-arg-name cs))))
                          (and (not (string=? name "utf-8")) name))))
            (st (make-zipout '() (make-hashtable string-hash string=?) 0 0 0 #f zip-deflated #f #f coder #f))
-           (z (make-zout "java.util.zip.ZipOutputStream" out (make-deflater -1 #t) #t
+           (z (make-zout fqn out (make-deflater -1 #t) #t
                          (na-byte-array 512) #f #f
                          zout-zip-write zout-zip-finish st))
            (self (make-zout-stream z)))

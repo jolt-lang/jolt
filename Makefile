@@ -403,6 +403,9 @@ fibers:
 	@$(CHEZ) --script test/chez/fibers-monitor-test.ss
 	@$(CHEZ) --script test/chez/fibers-interrupt-test.ss
 	@$(CHEZ) --script test/chez/async-io-thread-test.ss
+	@out="$$($(CHEZ) --script host/chez/cli.ss test/chez/sync-classes-test.clj 2>&1)"; \
+	  if printf '%s' "$$out" | grep -q 'SYNC-CLASSES-TEST OK'; then echo "fibers: sync-classes-test OK"; \
+	  else printf '%s\n' "$$out" | tail -20; echo "fibers: sync-classes-test FAILED"; exit 1; fi
 
 # The one (timeout ms) timer thread (jolt-pe84): a timeout closes on its own
 # deadline however far away the pending ones are, and the thread is forked once.
