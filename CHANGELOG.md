@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The bound port goes to PATH, resolved against the caller's directory, or
   nowhere; either way the server removes the file it wrote when it stops.
 
+- **`jolt.nrepl/*eval-wrapper*`, a hook around each nREPL evaluation (#1473).**
+  When bound to a function, `jolt.nrepl/evaluate` calls it with a thunk of the
+  code's evaluation (`eval-string`, or `load-string` for a load) inside its own
+  `try` and `*ns*` binding, so the wrapper sees a throw before `evaluate` turns
+  it into the error reply: a tool can run each evaluation under
+  `jolt.debug/call-with-break-handler`, a timer or a binding of its own. Bound
+  around a session's `clone`, it covers every eval in that session, since
+  jolt-lang/nrepl starts the session's worker with the clone's bindings. Unbound,
+  nothing changes.
 - **`jolt.debug`: a throwable's frames with their locals, and a hook before
   the stack unwinds (#1464).** `(jolt.debug/frames t)` returns the frames
   `.getStackTrace` reports, innermost first, as maps of `:fn`, `:file`, `:line`
