@@ -400,8 +400,9 @@
                   ((file-exists? fp) (npath-like self (npath-normalize-for windows? abs)))
                   (else (jolt-throw (jolt-ex-info abs empty-pmap)))))))   ; missing path throws
   (cons "toFile" (lambda (self) (make-jfile (nio-path-str self))))
-  ;; a java.net.URI, as File.toURI answers (io.ss jfile->uri)
-  (cons "toUri" (lambda (self) (jfile->uri (nio-path-str self))))
+  ;; a java.net.URI in the default filesystem's own form, not File.toURI's
+  ;; (io.ss nio-path->uri)
+  (cons "toUri" (lambda (self) (nio-path->uri (nio-path-windows? self) (nio-path-str self))))
   (cons "register" (lambda (self . args)
                      (throw-jvm 'UnsupportedOperationException "watch service is not supported")))))
 
