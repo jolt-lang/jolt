@@ -264,17 +264,26 @@
   {:suite "defprotocol / :sigs" :label "a method with neither doc nor tag" :expected "(quote {:tag nil :name m2 :arglists ([this]) :doc nil})" :actual "(do (defprotocol Psig2 :extend-via-metadata true (m2 [this])) (-> Psig2 :sigs :m2))" :portability :common}
   ;; jolt-2j3 — the rest of the reference's protocol map. :doc (only when the
   ;; protocol HAS a docstring, which is what the reference does), :method-map and
-  ;; :var are supplied and pinned here. The keys jolt deliberately does NOT set —
-  ;; :on / :on-interface / :method-builders, which describe the interface
-  ;; defprotocol generates on the JVM and jolt does not, and
-  ;; :extend-via-metadata, whose dispatch rule jolt does not honor — are pinned
-  ;; jolt-side in unit.edn's defprotocol-value suite instead, since a corpus row
-  ;; would just be a certified divergence.
+  ;; :var are supplied and pinned here; :extend-via-metadata (the key and the
+  ;; dispatch rule) in the "protocols / extend-via-metadata" suite below. The
+  ;; keys jolt deliberately does NOT set — :on / :on-interface /
+  ;; :method-builders, which describe the interface defprotocol generates on the
+  ;; JVM and jolt does not — are pinned jolt-side in unit.edn's
+  ;; defprotocol-value suite instead, since a corpus row would just be a
+  ;; certified divergence.
   {:suite "defprotocol / protocol value" :label "the docstring is :doc on the value and on the var, and the key is absent without one" :expected "[\"pdoc\" true false nil]" :actual "(do (defprotocol Pdv1 \"pdoc\" (mdv1 [this])) (defprotocol Pdv2 (mdv2 [this])) [(:doc Pdv1) (= (:doc Pdv1) (:doc (meta (var Pdv1)))) (contains? Pdv2 :doc) (:doc (meta (var Pdv2)))])" :portability :jvm}
   {:suite "defprotocol / protocol value" :label ":method-map maps each method keyword to itself, unmunged, and is {} with no methods" :expected "[true {}]" :actual "(do (defprotocol Pdv3 (mdv3 [this]) (a-b? [this]) (c! [this]) (d* [this])) (defprotocol Pdv3b) [(= (:method-map Pdv3) {:mdv3 :mdv3 :a-b? :a-b? :c! :c! :d* :d*}) (:method-map Pdv3b)])" :portability :jvm}
   {:suite "defprotocol / protocol value" :label ":var is the protocol's own var, and derefs back to the protocol" :expected "[true true true]" :actual "(do (defprotocol Pdv4 (mdv4 [this])) [(= (:var Pdv4) (var Pdv4)) (var? (:var Pdv4)) (= (deref (:var Pdv4)) Pdv4)])" :portability :jvm}
   {:suite "defprotocol / protocol value" :label ":sigs is present but nil for a protocol with no methods" :expected "[true nil true true]" :actual "(do (defprotocol Pdv5) (defprotocol Pdv6 (mdv6 [this])) [(contains? Pdv5 :sigs) (:sigs Pdv5) (map? (:sigs Pdv6)) (contains? Pdv5 :method-map)])" :portability :jvm}
   {:suite "defprotocol / protocol value" :label "a docstring after a leading option is still the docstring" :expected "[\"late\" true true \"md\"]" :actual "(do (defprotocol Pdv7 :extend-via-metadata true \"late\" (mdv7 [this] \"md\")) [(:doc Pdv7) (= (:method-map Pdv7) {:mdv7 :mdv7}) (= (:var Pdv7) (var Pdv7)) (-> Pdv7 :sigs :mdv7 :doc)])" :portability :jvm}
+  ;; jolt-2j3 — :extend-via-metadata: a value implements a protocol method by
+  ;; carrying the method's qualified symbol in its metadata. The reference's
+  ;; order is direct definitions (defrecord/deftype/reify declaring the
+  ;; protocol), then metadata, then extend/extend-type/extend-protocol.
+  {:suite "protocols / extend-via-metadata" :label "the option is recorded on the value, and absent when not given" :expected "[true false]" :actual "(do (defprotocol Pevm1 :extend-via-metadata true (mevm1 [this])) (defprotocol Pevm1b (mevm1b [this])) [(:extend-via-metadata Pevm1) (contains? Pevm1b :extend-via-metadata)])" :portability :common}
+  {:suite "protocols / extend-via-metadata" :label "a value implements a method through its metadata, at every arity, and any IFn serves" :expected "[:via-meta [:n 7] [1 2 3 4] nil]" :actual "(do (defprotocol Pevm2 :extend-via-metadata true (mevm2 [this]) (nevm2 [this a]) (oevm2 [this a b c d])) [(mevm2 (with-meta {} {`mevm2 (fn [_] :via-meta)})) (nevm2 (with-meta [] {`nevm2 (fn [_ a] [:n a])}) 7) (oevm2 (with-meta [] {`oevm2 (fn [_ a b c d] [a b c d])}) 1 2 3 4) (mevm2 (with-meta [] {`mevm2 :k}))])" :portability :common}
+  {:suite "protocols / extend-via-metadata" :label "lookup order: a type's own impl, then metadata, then extend" :expected "[:direct :meta :extended :meta :vec :reify]" :actual "(do (defprotocol Pevm3 :extend-via-metadata true (mevm3 [this])) (defrecord Revm3a [] Pevm3 (mevm3 [_] :direct)) (defrecord Revm3b []) (extend-protocol Pevm3 Revm3b (mevm3 [_] :extended) clojure.lang.IPersistentVector (mevm3 [_] :vec)) (let [mi {`mevm3 (fn [_] :meta)}] [(mevm3 (with-meta (->Revm3a) mi)) (mevm3 (with-meta (->Revm3b) mi)) (mevm3 (->Revm3b)) (mevm3 (with-meta [] mi)) (mevm3 []) (mevm3 (with-meta (reify Pevm3 (mevm3 [_] :reify)) mi))]))" :portability :common}
+  {:suite "protocols / extend-via-metadata" :label "metadata is not consulted without the option, and satisfies? ignores it" :expected "[:not-consulted :no-impl false]" :actual "(do (defprotocol Pevm4 (mevm4 [this])) (defprotocol Pevm4b :extend-via-metadata true (mevm4b [this])) [(try (mevm4 (with-meta [] {`mevm4 (fn [_] 1)})) (catch IllegalArgumentException e :not-consulted)) (try (mevm4b (with-meta [] {})) (catch IllegalArgumentException e :no-impl)) (satisfies? Pevm4b (with-meta [] {`mevm4b (fn [_] 1)}))])" :portability :common}
   ;; ...and the METHOD vars carry what the reference puts on them, which is what
   ;; (doc a-method) prints and what tells tooling the fn belongs to a protocol:
   ;; :arglists, :doc (nil when the method has none), :protocol (the protocol's own

@@ -3786,13 +3786,8 @@
   ;; — so there is no name to report and no Class to hand back.
   {:suite "defprotocol-value" :expr "(do (defprotocol Pu1 \"d\" (mu1 [this])) (sort (keys Pu1)))" :expected "(:doc :method-map :methods :name :sigs :var :jolt/type)"}
   {:suite "defprotocol-value" :expr "(do (defprotocol Pu2 :extend-via-metadata true (mu2 [this])) [(contains? Pu2 :on) (contains? Pu2 :on-interface) (contains? Pu2 :method-builders)])" :expected "[false false false]"}
-  ;; :extend-via-metadata is absent for a different reason: jolt's defprotocol
-  ;; PARSES the option but its dispatch does not consult a value's metadata, so
-  ;; recording the key would advertise a rule that does not hold. These two rows
-  ;; move together — implementing metadata extension means setting the key, and
-  ;; both fail until it does. jolt-2j3.
-  {:suite "defprotocol-value" :expr "(do (defprotocol Pu3 :extend-via-metadata true (mu3 [this])) (contains? Pu3 :extend-via-metadata))" :expected "false"}
-  {:suite "defprotocol-value" :expr "(do (defprotocol Pu4 :extend-via-metadata true (mu4 [this])) (try (mu4 (with-meta {} {(symbol (str *ns*) \"mu4\") (fn [_] :via-meta)})) :honored (catch IllegalArgumentException e :not-honored)))" :expected ":not-honored"}
+  ;; (:extend-via-metadata is supplied and honored; corpus.edn's "protocols /
+  ;; extend-via-metadata" suite certifies it against the reference.)
   ;; the jolt-only keys the overlay itself reads (protocols.ss make-protocol)
   {:suite "defprotocol-value" :expr "(do (defprotocol Pu5 (mu5 [this])) [(:name Pu5) (-> Pu5 :methods :mu5 :name)])" :expected "[user/Pu5 \"mu5\"]"}
   ;; The :jolt/type discriminator is the same keyword every other :jolt/type in the
