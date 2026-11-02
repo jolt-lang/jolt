@@ -293,7 +293,19 @@
 ;; java.lang.Character statics. digit(ch, radix) -> the digit value or -1; ch may
 ;; be a char or an int codepoint (tools.reader passes (int c)), as it may for
 ;; every predicate below; valueOf boxes a char (identity on jolt).
-(define (char->cp x) (if (char? x) (char->integer x) (jnum->exact x)))
+(define (char->cp x)
+  (cond ((char? x) (char->integer x)) ((jsurr? x) (jsurr-unit x)) (else (jnum->exact x))))
+;; A code unit as the jolt char for it: below the surrogates and above them a
+;; char, inside them the surrogate-unit value (values.ss).
+(define (unit->jolt-char u)
+  (if (and (fx>=? u #xD800) (fx<=? u #xDFFF)) (jolt-surrogate u) (integer->char u)))
+;; A jolt char or an int as the unit it is, or #f when it is no 16-bit unit.
+(define (unit-of x)
+  (let ((u (cond ((char? x) (char->integer x)) ((jsurr? x) (jsurr-unit x))
+                 ((number? x) (jnum->exact x)) (else #f))))
+    (and (fixnum? u) (fx>=? u 0) (fx<=? u #xFFFF) u)))
+(define (high-unit? x) (let ((u (unit-of x))) (and u (fx>=? u #xD800) (fx<=? u #xDBFF))))
+(define (low-unit? x) (let ((u (unit-of x))) (and u (fx>=? u #xDC00) (fx<=? u #xDFFF))))
 (define (char-digit-value cp radix)
   (let ((d (cond ((and (fx>=? cp 48) (fx<=? cp 57)) (fx- cp 48))            ; 0-9
                  ((and (fx>=? cp 97) (fx<=? cp 122)) (fx+ 10 (fx- cp 97)))  ; a-z
@@ -305,8 +317,35 @@
 ;; codepoint conversion statics.
 (register-class-statics! "java.lang.Character"
   (list (cons "digit" (lambda (ch radix) (->num (char-digit-value (char->cp ch) (jnum->exact radix)))))
-        (cons "toChars" (lambda (cp) (na-char-array (jolt-vector (integer->char (char->cp cp))))))
-        (cons "valueOf" (lambda (ch) (if (char? ch) ch (integer->char (char->cp ch)))))))
+        ;; an astral code point is two chars on the JVM, its surrogate pair
+        (cons "toChars" (lambda (cp)
+                          (let ((c (char->cp cp)))
+                            (na-char-array
+                             (if (>= c #x10000)
+                                 (jolt-vector (jolt-surrogate (astral-high-unit c))
+                                              (jolt-surrogate (astral-low-unit c)))
+                                 (jolt-vector (unit->jolt-char c)))))))
+        (cons "valueOf" (lambda (ch) (if (or (char? ch) (jsurr? ch)) ch (jolt-char ch))))
+        ;; The UTF-16 surrogate API. A surrogate is a code-unit value here
+        ;; (values.ss jsurr), so these answer as the JDK's do (#1455).
+        (cons "MIN_HIGH_SURROGATE" (jolt-surrogate #xD800))
+        (cons "MAX_HIGH_SURROGATE" (jolt-surrogate #xDBFF))
+        (cons "MIN_LOW_SURROGATE" (jolt-surrogate #xDC00))
+        (cons "MAX_LOW_SURROGATE" (jolt-surrogate #xDFFF))
+        (cons "MIN_SURROGATE" (jolt-surrogate #xD800))
+        (cons "MAX_SURROGATE" (jolt-surrogate #xDFFF))
+        (cons "isHighSurrogate" high-unit?)
+        (cons "isLowSurrogate" low-unit?)
+        (cons "isSurrogatePair" (lambda (h l) (and (high-unit? h) (low-unit? l))))
+        (cons "highSurrogate" (lambda (cp) (jolt-surrogate (astral-high-unit (char->cp cp)))))
+        (cons "lowSurrogate" (lambda (cp) (jolt-surrogate (astral-low-unit (char->cp cp)))))
+        (cons "toCodePoint"
+              (lambda (h l)
+                (->num (+ (* (- (char->cp h) #xD800) #x400) (- (char->cp l) #xDC00) #x10000))))
+        (cons "isBmpCodePoint" (lambda (cp) (let ((c (char->cp cp))) (and (>= c 0) (< c #x10000)))))
+        (cons "isSupplementaryCodePoint"
+              (lambda (cp) (let ((c (char->cp cp))) (and (>= c #x10000) (<= c #x10FFFF)))))
+        (cons "isValidCodePoint" (lambda (cp) (let ((c (char->cp cp))) (and (>= c 0) (<= c #x10FFFF)))))))
 
 ;; java.util.regex.Pattern statics (compile/quote/MULTILINE) are registered once
 ;; in host-static-classes.ss — the flags-aware compile there subsumes the plain
@@ -626,11 +665,14 @@
 ;; these — cognitect aws-api's request signer classifies each UTF-8 byte of a URI
 ;; through isLetterOrDigit — and is negative, so it must not reach integer->char.
 (define (scalar-char x)            ; the char for x, or #f when x is not a scalar value
-  (if (char? x) x
+  (cond
+    ((char? x) x)
+    ((jsurr? x) #f)                 ; a surrogate code unit (values.ss) is no scalar
+    (else
       (let ((cp (jnum->exact x)))
         (and (fixnum? cp) (fx>=? cp 0) (fx<=? cp #x10FFFF)
              (not (and (fx>=? cp #xD800) (fx<=? cp #xDFFF)))
-             (integer->char cp)))))
+             (integer->char cp))))))
 (define (char-category-in? x cats)
   (let ((c (scalar-char x)))
     (and c (memq (char-general-category c) cats) #t)))
@@ -677,32 +719,29 @@
         (cons "isWhitespace" (lambda (c) (let ((cp (char-code c)))
                                            (and (char-whitespace? (integer->char cp))
                                                 (not (fx=? cp #xA0)) (not (fx=? cp #x2007)) (not (fx=? cp #x202F))))))
-        ;; Codepoint bounds, as plain integers. The UTF-16 surrogate API
-        ;; (MIN_HIGH_SURROGATE, highSurrogate/lowSurrogate, toCodePoint, …) is
-        ;; deliberately absent: a surrogate is not a Unicode scalar value, so it is
-        ;; not representable as a char on this host — jolt strings are indexed by
-        ;; codepoint, and there are no surrogate halves to hand back.
+        ;; Codepoint bounds, as plain integers. The UTF-16 surrogate API is in
+        ;; the codepoint-conversion block above.
         (cons "MIN_VALUE" (integer->char 0))
         (cons "MAX_VALUE" (integer->char #xFFFF))
         (cons "MIN_CODE_POINT" (->num 0))
         (cons "MAX_CODE_POINT" (->num #x10FFFF))
         (cons "MIN_SUPPLEMENTARY_CODE_POINT" (->num #x10000))
         (cons "charCount" (lambda (cp) (->num (if (>= (jnum->exact cp) #x10000) 2 1))))
-        ;; codePointAt(seq, index) — the codepoint at `index`. jolt strings are
-        ;; indexed by codepoint, so this is the code of the char sitting there,
-        ;; which is what the JVM answers for every character in the BMP. Above it
-        ;; the JVM's index counts UTF-16 units and an astral character occupies
-        ;; two; that is the :string-model divergence already recorded, not a
-        ;; difference in this method. The char[] overload is accepted too.
-        ;; yaml-parser (yamlstar) classifies each input character through this,
-        ;; and its own non-JVM branches spell it (int (nth input i)).
+        ;; codePointAt(seq, index) — the code point at UTF-16 index `index`, which
+        ;; is what String.codePointAt answers (natives-str.ss jolt-str-code-point-at):
+        ;; a high unit followed by a low one is the pair's code point. The char[]
+        ;; overload reads the array's units the same way. yaml-parser (yamlstar)
+        ;; classifies each input character through this.
         (cons "codePointAt"
               (lambda (s i)
                 (let ((idx (jnum->exact i)))
-                  (->num (char->integer
-                          (if (jolt-array? s)
-                              (ja-ref s idx)
-                              (string-ref (jolt-str-render-one s) idx)))))))
+                  (if (jolt-array? s)
+                      (let ((c (ja-ref s idx)))
+                        (->num
+                         (if (and (jsurr-high? c) (< (+ idx 1) (ja-len s)) (jsurr-low? (ja-ref s (+ idx 1))))
+                             (char->integer (surrogates->char (jsurr-unit c) (jsurr-unit (ja-ref s (+ idx 1)))))
+                             (char->cp c))))
+                      (jolt-str-code-point-at (jolt-str-render-one s) idx)))))
         ;; Character.codePointOf(name) is deliberately absent: it is a lookup in the
         ;; Unicode character-name database, which this host does not carry, and a
         ;; partial ASCII-only table would answer wrongly rather than not at all.
@@ -732,23 +771,26 @@
                               (let ((cp (char->cp c)))
                                 (or (and (>= cp 0) (<= cp 8)) (and (>= cp #xE) (<= cp #x1B))
                                     (and (>= cp #x7F) (<= cp #x9F)))))))
-        (cons "isSurrogate" (lambda (c) (jolt-need-char c) #f))   ; no char here is one
-        (cons "compare" (lambda (a b) (->num (- (char->integer (jolt-need-char a)) (char->integer (jolt-need-char b))))))
-        (cons "hashCode" (lambda (c) (->num (char->integer (jolt-need-char c)))))
+        (cons "isSurrogate" (lambda (c) (jsurr? (jolt-need-char c))))
+        (cons "compare" (lambda (a b) (->num (- (char-or-unit->integer (jolt-need-char a))
+                                                (char-or-unit->integer (jolt-need-char b))))))
+        (cons "hashCode" (lambda (c) (->num (char-or-unit->integer (jolt-need-char c)))))
         (cons "toString"
               (lambda (c)
-                (if (char? c)
-                    (string c)
+                (cond
+                  ((char? c) (string c))
+                  ((jsurr? c) jolt-replacement-string)   ; a lone unit as finished text
+                  (else
                     (let ((ch (scalar-char c)))
                       (if ch
                           (string ch)
                           (throw-jvm 'IllegalArgumentException
                             (string-append "Not a valid Unicode code point: 0x"
-                                           (string-upcase (number->string (jnum->exact c) 16)))))))))
+                                           (string-upcase (number->string (jnum->exact c) 16))))))))))
         ))
 
 ;; A char argument of an overload that takes only a char.
-(define (jolt-need-char x) (if (char? x) x (jolt-cast-throw x "java.lang.Character")))
+(define (jolt-need-char x) (if (or (char? x) (jsurr? x)) x (jolt-cast-throw x "java.lang.Character")))
 ;; A Character case map over a char or an int codepoint (see toUpperCase above).
 (define (char-case-map x f)
   (if (char? x)

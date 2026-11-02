@@ -117,7 +117,7 @@
               (else
                (jolt-throw (jolt-host-throwable "java.lang.NumberFormatException"
                              (java-int-input-msg digits radix))))))))))
-(define (char-code c) (if (char? c) (char->integer c) (jnum->exact c)))
+(define (char-code c) (cond ((char? c) (char->integer c)) ((jsurr? c) (jsurr-unit c)) (else (jnum->exact c))))
 
 ;; Double/parseDouble, Float/parseFloat, Double/valueOf, (Double. s) — the
 ;; floating half of parse-int-or-throw, and the same story: the grammar is

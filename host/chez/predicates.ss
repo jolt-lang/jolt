@@ -28,7 +28,7 @@
   (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)))
 (define (jolt-number? x) (number? x))
 (define (jolt-string? x) (string? x))
-(define (jolt-char-pred? x) (char? x))
+(define (jolt-char-pred? x) (or (char? x) (jsurr? x)))   ; a surrogate unit is a Character too
 ;; JVM-parity number-type predicates over the Chez numeric tower. integer? is the
 ;; INTEGER TYPE (exact integer = Long/BigInt), NOT integer-VALUED: (integer? 3.0)
 ;; is false on the JVM (3.0 is a Double). float? = flonum (double). ratio? = exact

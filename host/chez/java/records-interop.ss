@@ -343,7 +343,7 @@
     ((member tname '("Ratio" "clojure.lang.Ratio")) (and (number? val) (exact? val) (rational? val) (not (integer? val))))
     ((member tname '("String" "java.lang.String" "CharSequence" "java.lang.CharSequence")) (string? val))
     ((member tname '("Boolean" "java.lang.Boolean")) (boolean? val))
-    ((member tname '("Character" "java.lang.Character")) (char? val))
+    ((member tname '("Character" "java.lang.Character")) (or (char? val) (jsurr? val)))
     ((member tname '("Keyword" "clojure.lang.Keyword")) (keyword? val))
     ((member tname '("Symbol" "clojure.lang.Symbol")) (jolt-symbol? val))
     ((member tname '("Atom" "clojure.lang.Atom")) (jolt-atom? val))

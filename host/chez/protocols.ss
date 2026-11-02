@@ -489,7 +489,7 @@
         ((number? obj) (jch-tags "java.lang.Number"))
         ((string? obj) (jch-tags "java.lang.String"))
         ((boolean? obj) (jch-tags "java.lang.Boolean"))
-        ((char? obj) (jch-tags "java.lang.Character"))
+        ((or (char? obj) (jsurr? obj)) (jch-tags "java.lang.Character"))
         ((keyword? obj) (jch-tags "clojure.lang.Keyword"))
         ((jolt-symbol? obj) (jch-tags "clojure.lang.Symbol"))
         ;; a map entry is a flagged pvec — check before plain vectors so its

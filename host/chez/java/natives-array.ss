@@ -313,14 +313,32 @@
        (let ((out (make-string cnt)))
          (sa-string-copy-range! out 0 v off (fx+ off cnt))
          out))
+      ;; A boxed backing may hold surrogate units (a jsurr, or the raw int of
+      ;; one): a high unit and the low one after it are the astral character
+      ;; they spell, and a unit left unpaired is U+FFFD (values.ss).
+      ;; A half left at either END is remembered with the string (converters.ss
+      ;; edge units), so a reader whose chunk split a pair gets it back on the
+      ;; next append.
       (else
-       (let ((out (make-string cnt)))
-         (let loop ((i 0))
-           (if (fx=? i cnt)
-               out
-               (let ((c (ja-ref x (fx+ off i))))
-                 (string-set! out i (if (char? c) c (integer->char (jnum->exact c))))
-                 (loop (fx+ i 1))))))))))
+       (let loop ((i 0) (acc '()) (lead #f) (trail #f))
+         (if (fx=? i cnt)
+             (string-with-edge-units! (list->string (reverse acc)) lead trail)
+             (let ((u (char-elem->unit (ja-ref x (fx+ off i)))))
+               (cond
+                 ((char? u) (loop (fx+ i 1) (cons u acc) lead #f))
+                 ((and (fx<? u #xDC00) (fx<? (fx+ i 1) cnt)
+                       (let ((v (char-elem->unit (ja-ref x (fx+ off i 1)))))
+                         (and (fixnum? v) (fx>=? v #xDC00) v)))
+                  => (lambda (lo) (loop (fx+ i 2) (cons (surrogates->char u lo) acc) lead #f)))
+                 (else (loop (fx+ i 1) (cons jolt-replacement-char acc)
+                             (if (and (fx=? i 0) (fx>=? u #xDC00)) u lead)
+                             (and (fx<? u #xDC00) u)))))))))))
+;; A char[] element as a char, or as the fixnum of the surrogate unit it is.
+(define (char-elem->unit c)
+  (cond ((char? c) c)
+        ((jsurr? c) (jsurr-unit c))
+        (else (let ((n (jnum->exact c)))
+                (if (and (fixnum? n) (fx>=? n #xD800) (fx<=? n #xDFFF)) n (integer->char n))))))
 (define (char-array->string x) (char-array-region x 0 (ja-len x)))
 (define (char-array-chunk x off cnt who)
   (jvm-range-check who (ja-len x) off (+ off cnt))
@@ -499,7 +517,7 @@
         (ja-ref a i))))
 (define (nb-host-char-set! a i c)
   (let ((v (jolt-array-vec a)))
-    (if (and (string? v) (fixnum? i) (fx>=? i 0) (fx<? i (string-length v)))
+    (if (and (string? v) (char? c) (fixnum? i) (fx>=? i 0) (fx<? i (string-length v)))
         (string-set! v i c)
         (ja-set! a i c))))
 (define (nb-host-char-string a)          ; the string a char array holds, or #f
@@ -508,8 +526,7 @@
   (let ((v (jolt-array-vec a)))
     (if (string? v)
         (substring v from to)
-        (let ((s (make-string (fx- to from))))
-          (do ((i from (fx+ i 1))) ((fx=? i to) s) (string-set! s (fx- i from) (ja-ref a i)))))))
+        (char-array-region a from (fx- to from)))))
 (define (nb-host-new-array kind n)
   (make-jolt-array (na-make-backing n kind (case kind ((float double) 0.0) ((char) #\nul) (else 0))) kind))
 
@@ -643,7 +660,10 @@
     ;; and the source are the same representation, so one string-copy replaces a
     ;; character-at-a-time fill (and, before that, a cons per character plus a
     ;; second walk over the list).
-    ((string? a) (make-jolt-array (string-copy a) 'char))
+    ;; an astral char is two elements, its surrogate units (#1455)
+    ((string? a) (if (fx=? (u16-length a) (string-length a))
+                     (make-jolt-array (string-copy a) 'char)
+                     (make-jolt-array (list->vector (u16-units a 0 (u16-length a))) 'char)))
     ;; (char-array n) — make-string rather than make-vector. This is the whole of
     ;; the ~140x allocation gap: a boxed vector of n characters is n POINTERS the
     ;; collector must trace on every major GC, while a string of n characters is
@@ -666,10 +686,17 @@
     ;; na-list->backing's rule: into-array is the lenient door and boxes instead,
     ;; also as before. Routing this through na-list->backing would silently turn
     ;; (char-array [:k]) from an error into a boxed array holding :k.
-    (else (make-jolt-array
-           (list->string (map (lambda (c) (if (char? c) c (integer->char (exact (truncate c)))))
-                              (seq->list (jolt-seq a))))
-           'char))))
+    ;; A surrogate unit (a jsurr, or an int in that range) is a char[] element
+    ;; on the JVM but no Chez char, so an array holding one takes the boxed
+    ;; backing, as ja-set! promotes to for the same store.
+    (else
+     (let ((cs (map (lambda (c) (cond ((char? c) c)
+                                      ((jsurr? c) c)
+                                      (else (jolt-char (exact (truncate c))))))
+                    (seq->list (jolt-seq a)))))
+       (if (for-all char? cs)
+           (make-jolt-array (list->string cs) 'char)
+           (make-jolt-array (list->vector cs) 'char))))))
 ;; Chez bytevector -> jolt byte-array. The inbound half of the raw-bytes seam:
 ;; every producer of a byte-array from raw bytes — .getBytes, stream reads,
 ;; Files/readAllBytes, Base64, FFI — funnels through here. One block copy now

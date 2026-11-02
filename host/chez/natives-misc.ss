@@ -184,11 +184,17 @@
 ;; the java/ tree the Gambit boot excludes.
 (define (jolt-u32 x) (bitwise-and x #xFFFFFFFF))
 (define (jolt-s32 x) (let ((m (jolt-u32 x))) (if (>= m #x80000000) (- m #x100000000) m)))
+;; String.hashCode is over UTF-16 units, so an astral char adds both halves.
 (define (java-string-hash s)
   (let ((n (string-length s)))
     (let loop ((i 0) (h 0))
       (if (fx<? i n)
-          (loop (fx+ i 1) (jolt-s32 (+ (* 31 h) (char->integer (string-ref s i)))))
+          (let ((cp (char->integer (string-ref s i))))
+            (loop (fx+ i 1)
+                  (if (fx<? cp #x10000)
+                      (jolt-s32 (+ (* 31 h) cp))
+                      (jolt-s32 (+ (* 31 (jolt-s32 (+ (* 31 h) (astral-high-unit cp))))
+                                   (astral-low-unit cp))))))
           (jolt-s32 h)))))
 (define (java-hash-combine seed hash)
   (let* ((su (jolt-u32 seed))
