@@ -355,7 +355,7 @@
 ;; opaque tagged-table with its own equality/hash/compare — core needs no arm for it.
 
 ;; java.sql.Date shim values (mk-sql-date jhosts) are equal by kind + epoch-ms.
-(define (time-jhost? x) (and (jhost? x) (member (jhost-tag x) '("sql-date")) #t))
+(define-jhost-tag-pred (time-jhost? t) (string=? t "sql-date"))
 (register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
                   (lambda (a b) (and (time-jhost? a) (time-jhost? b)
                                      (string=? (jhost-tag a) (jhost-tag b))
@@ -544,7 +544,7 @@
 ;; is one immutable cons written in one slot, so a reader on another thread
 ;; sees a whole (second . offset) or the previous one, never a torn mix.
 (define (timezone-of id) (make-jhost "timezone" (vector (if (string? id) id (jolt-str-render-one id)) #f)))
-(define (timezone? x) (and (jhost? x) (string=? (jhost-tag x) "timezone")))
+(define-jhost-tag-pred (timezone? t) (string=? t "timezone"))
 (define (tz-id tz) (if (timezone? tz) (vector-ref (jhost-state tz) 0) (jolt-str-render-one tz)))
 (define (tz-offset-ms tz ms)
   (let ((sec (inst-floor-div (ms->exact ms) 1000)))
