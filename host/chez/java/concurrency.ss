@@ -1876,8 +1876,13 @@
                    (fs (vector-ref m monitor-i-fibers)))
                (vector-set! m monitor-i-waiters
                             (append (vector-ref m monitor-i-waiters) (list w)))
-               (monitor-release-word! m)
+               ;; the count BEFORE the word, as monitor-exit-slow! orders them: a
+               ;; fast enter claims a free word without bk and then writes its own
+               ;; count of 1, so a 0 written after the release could land on top of
+               ;; it, and that owner's exit then took the count to -1 and never
+               ;; freed the word -- every later contender blocked for good (jolt-are)
                (vector-set! m monitor-i-count 0)
+               (monitor-release-word! m)
                (vector-set! m monitor-i-fibers '())
                (jolt-cv-wake! (vector-ref m monitor-i-cv))
                (cons saved fs)))))
