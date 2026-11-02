@@ -200,9 +200,9 @@ is concluded about its size.
 
 **Against the JVM.** `ci/jvm-gap-gate.sh <jolt> [max-ratio] [bench…]` holds a
 few rows against JVM Clojure itself rather than the last release: `atom-ops`,
-`watched-swap`, `pool-tasks`, `sorted-set-build` and `int-map-build`, the paths a
-cross-host comparison found jolt trailing and that were brought inside 2× the
-reference. Same measurement as above (one machine, alternating, min of the
+`watched-swap`, `pool-tasks`, `sorted-set-build`, `int-map-build` and
+`record-ops`, the paths a cross-host comparison found jolt trailing and that
+were brought inside 2× the reference. Same measurement as above (one machine, alternating, min of the
 timed runs), and it fails a row above 2× the JVM. The release workflow runs it
 beside the release gate. A row joins the list when it is brought inside the
 ceiling, and leaves only with a reason.

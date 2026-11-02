@@ -70,6 +70,7 @@
    "binary-trees" "escaping short-lived records: allocation / GC pressure"
    "typed-records" "records with `^double`/`^long`/`^String` field types at construction and every read"
    "typed-records-unhinted" "the same records without field types"
+   "record-ops" "a record used as a map where its type is not inferred: destructure, `assoc`/`update`, `(R. …)`, `count`/`contains?`/`reduce-kv`/`into`/`keys`/`=`/`merge`/`hash`"
    "stm" "ref creation, `dosync` `ref-set`/`alter`, `deref` in a loop"
    "executors" "`java.util.concurrent`: fire-and-forget enqueue, submit/get, growth to 64 blocking tasks, four producers on one pool"
    "compile-forms" "**compiling**, not running: `load-string` of 200 top-level defns and of one `deftest` holding 200 `is` forms"
