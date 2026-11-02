@@ -27,6 +27,39 @@
 ;; A Float as the double it widens to; anything else unchanged.
 (define (jfloat-unbox x) (if (jfloat? x) (jfloat-fl x) x))
 
+;; A UTF-16 SURROGATE CODE UNIT as a value: what (char 0xD83D) is, and what
+;; .charAt hands out for either half of an astral character (#1455). jolt
+;; strings hold code points, so a Chez char cannot be half a pair. A JVM char
+;; can, and two library shapes depend on it. One decodes 👍 one unit
+;; at a time and appends each to a StringBuilder. The other escapes a string per
+;; .charAt unit. So a surrogate exists as a value OUTSIDE a string (char?, a
+;; java.lang.Character, int gives its unit back), and every place that joins
+;; text pairs a high unit with the low unit after it into the one scalar. A unit
+;; left unpaired in finished text is U+FFFD, the replacement the JDK's own UTF-8
+;; encoder writes for one. surrogates.ss registers it with class/pr/str/hash.
+;;
+;; All 2048 are made here, once, so (char n) is always the same object: = and
+;; identical? need no arm, and no two threads can race to intern one.
+(define-record-type jsurr (fields unit) (nongenerative chez-jsurr-v1))
+(define jsurr-units
+  (let ((v (make-vector 2048 #f)))
+    (do ((i 0 (fx+ i 1))) ((fx=? i 2048) v)
+      (vector-set! v i (make-jsurr (fx+ #xD800 i))))))
+(define (jolt-surrogate n) (vector-ref jsurr-units (fx- n #xD800)))
+(define (jsurr-high? x) (and (jsurr? x) (fx<? (jsurr-unit x) #xDC00)))
+(define (jsurr-low? x) (and (jsurr? x) (fx>=? (jsurr-unit x) #xDC00)))
+;; The scalar a high and a low unit (fixnums) spell.
+(define (surrogates->char hi lo)
+  (integer->char (fx+ #x10000 (fx+ (fxarithmetic-shift-left (fx- hi #xD800) 10)
+                                   (fx- lo #xDC00)))))
+;; The two units of an astral character (code point > #xFFFF), as fixnums.
+(define (astral-high-unit cp) (fx+ #xD800 (fxarithmetic-shift-right (fx- cp #x10000) 10)))
+(define (astral-low-unit cp) (fx+ #xDC00 (fxand (fx- cp #x10000) #x3FF)))
+;; A char or a unit as its 16-bit-or-wider code: the int (int c) answers.
+(define (char-or-unit->integer x) (if (char? x) (char->integer x) (jsurr-unit x)))
+(define jolt-replacement-char (integer->char #xFFFD))
+(define jolt-replacement-string (string jolt-replacement-char))
+
 ;; Has a second OS thread ever been started? #f until the first fork-thread
 ;; (lazy-bridge.ss shadows it to flip this), never #f again. The lock-free
 ;; paths that are only unsafe under real concurrency — a lazy node's first

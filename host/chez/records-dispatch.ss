@@ -1689,6 +1689,7 @@
 (def-var! "clojure.core" "protocol-dispatch1" (lambda (pn mn obj) (protocol-dispatch1 pn mn obj)))
 (def-var! "clojure.core" "protocol-dispatch2" (lambda (pn mn obj a) (protocol-dispatch2 pn mn obj a)))
 (def-var! "clojure.core" "protocol-dispatch3" (lambda (pn mn obj a b) (protocol-dispatch3 pn mn obj a b)))
+(def-var! "clojure.core" "protocol-resolve-meta" (lambda (pn mn msym obj) (protocol-resolve-meta pn mn msym obj)))
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 (def-var! "clojure.core" "extenders" extenders)
 ;; extends? asks with the name a class token PRESENTS (.getName: the JVM spelling,

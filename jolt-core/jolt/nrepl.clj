@@ -141,6 +141,20 @@
   the parent's thread, which is not the one writing."
   nil)
 
+(def ^:dynamic *eval-wrapper*
+  "When bound to a function, `evaluate` calls it with a no-argument thunk that
+  evaluates the code (eval-string, or load-string for a load) and uses what it
+  returns as the value. It runs inside evaluate's own try and *ns* binding, so
+  a throw from the code reaches the wrapper before evaluate catches it: a tool
+  can run the evaluation under jolt.debug/call-with-break-handler, a timer or a
+  binding of its own. Printing the value happens after it returns. nil, the
+  default, evaluates directly.
+
+  A middleware that binds it around a session's clone gives every eval in that
+  session the wrapper, since the session's worker starts with that clone's
+  bindings."
+  nil)
+
 (def ^:private last-backtrace (atom nil))
 (defn last-error-backtrace
   "The backtrace of the exception now in *e (the \"  trace:\" block evaluate
@@ -408,7 +422,10 @@
   Whatever is left unflushed is sent before this returns, and :out is then empty.
   A future the eval starts inherits the writers, so its output streams too.
   :load true in the map evaluates the code as a load (load-string), as the
-  load-file op does, so a namespace switch in it does not reach :ns.
+  load-file op does, so a namespace switch in it does not reach :ns. :file
+  names the code's source path, as nREPL's load-file sends it: its forms carry
+  it as :file (the position a def records, the trace) and *file* is that path,
+  as for a file load.
 
   The value is printed inside the eval, under its *out* and its try: what a lazy
   result prints as it is realized is the eval's output, and an error while
@@ -423,7 +440,7 @@
     :ex-class       the `ex` string, \"class java.lang.ArithmeticException\"
     :root-ex-class  the `root-ex` string, the class of the root cause"
   ([code ns-str] (evaluate code ns-str nil))
-  ([code ns-str {on-out :out on-err :err load? :load}]
+  ([code ns-str {on-out :out on-err :err load? :load file :file}]
    (let [result (atom nil) evaluated (atom false) printed (atom nil)
          err (atom nil) exc (atom nil) failure (atom nil)
          start-ns (or (when (and ns-str (not (str/blank? ns-str)))
@@ -440,12 +457,14 @@
                         ;; forward reference across evals takes a declare.
                         ;; eval-string, not load-string: load-string binds *ns*
                         ;; for its own load, and this eval's switch must reach :ns
-                        (let [v (if load?
-                                  ;; a load-file op is a load, as nREPL's is
-                                  ;; (Compiler.load): the file's ns form does
-                                  ;; not switch the session
-                                  (load-string code)
-                                  (jolt.host/eval-string code))]
+                        (let [ev (fn []
+                                   (if load?
+                                     ;; a load-file op is a load, as nREPL's is
+                                     ;; (Compiler.load): the file's ns form does
+                                     ;; not switch the session
+                                     (if file (jolt.host/load-string code file) (load-string code))
+                                     (if file (jolt.host/eval-string code file) (jolt.host/eval-string code))))
+                              v (if-let [w *eval-wrapper*] (w ev) (ev))]
                           (reset! result v)
                           (reset! evaluated true)
                           (vreset! phase :print-eval-result)
@@ -585,7 +604,10 @@
             (evaluate code (get request "ns")
                       {:out #(respond request {"out" %})
                        :err #(respond request {"err" %})
-                       :load (= op "load-file")})]
+                       :load (= op "load-file")
+                       ;; the file's path, which load-file sends, as JVM nREPL
+                       ;; compiles it under
+                       :file (when (= op "load-file") (some-> (get request "file-path") wire->))})]
         ;; an error goes out as JVM nREPL sends it: the err->msg text, then the
         ;; classes with eval-error, then done on its own
         (if err

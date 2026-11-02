@@ -2010,7 +2010,8 @@
     ((number? obj) (jch-tags "java.lang.Number"))
     ((string? obj) (jch-tags "java.lang.String"))
     ((boolean? obj) (jch-tags "java.lang.Boolean"))
-    ((char? obj) (jch-tags "java.lang.Character"))
+    ((or (char? obj) (jsurr? obj))
+     (jch-tags "java.lang.Character"))
     ((keyword? obj) (jch-tags "clojure.lang.Keyword"))
     ((jolt-symbol? obj) (jch-tags "clojure.lang.Symbol"))
     ((jolt-map-entry? obj) (jch-tags "clojure.lang.MapEntry"))
@@ -2524,6 +2525,29 @@
       (protocol-resolve proto-name method-name obj)
       obj
       rest)))
+
+(define (protocol-direct-impl proto-name method-name obj)
+  (cond
+    ((jrec? obj)
+     (let* ((tag (jrdesc-tag (jrec-desc obj)))
+            (ti (hashtable-ref type-registry tag #f))
+            (pi (and ti (hashtable-ref ti proto-name #f))))
+       (and pi
+            (not (extend-impl-table? pi))
+            (hashtable-ref pi method-name #f))))
+    ((jreify? obj)
+     (and (member proto-name (jreify-protos obj))
+          (reify-method-ref obj method-name)))
+    (else #f)))
+
+(define (protocol-resolve-meta proto-name method-name
+         meta-sym obj)
+  (or (protocol-direct-impl proto-name method-name obj)
+      (let ((m (jolt-meta obj)))
+        (and (not (jolt-nil? m))
+             (let ((f (jolt-get m meta-sym)))
+               (and f (not (jolt-nil? f)) f))))
+      (protocol-resolve proto-name method-name obj)))
 
 (define jolt-pic-n 4)
 
@@ -4247,6 +4271,12 @@
   "clojure.core"
   "protocol-dispatch3"
   (lambda (pn mn obj a b) (protocol-dispatch3 pn mn obj a b)))
+
+(def-var!
+  "clojure.core"
+  "protocol-resolve-meta"
+  (lambda (pn mn msym obj)
+    (protocol-resolve-meta pn mn msym obj)))
 
 (def-var! "clojure.core" "satisfies?" jolt-satisfies?)
 

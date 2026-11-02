@@ -489,7 +489,7 @@
         ((number? obj) (jch-tags "java.lang.Number"))
         ((string? obj) (jch-tags "java.lang.String"))
         ((boolean? obj) (jch-tags "java.lang.Boolean"))
-        ((char? obj) (jch-tags "java.lang.Character"))
+        ((or (char? obj) (jsurr? obj)) (jch-tags "java.lang.Character"))
         ((keyword? obj) (jch-tags "clojure.lang.Keyword"))
         ((jolt-symbol? obj) (jch-tags "clojure.lang.Symbol"))
         ;; a map entry is a flagged pvec — check before plain vectors so its
@@ -775,12 +775,12 @@
 ;; docstring" signal, so an assoc, not a fixed key.
 ;;
 ;; The keys the reference has that jolt does NOT set — :on, :on-interface,
-;; :method-builders, :extend-via-metadata — are a deliberate omission, not an
-;; oversight: the first three describe the interface defprotocol generates on
-;; the JVM, and jolt generates none (dispatch is by the receiver's type tag,
-;; protocol-resolve), while :extend-via-metadata would advertise a dispatch rule
-;; jolt does not yet honor. Pinned jolt-side in unit.edn (defprotocol-value) and
-;; written up in the divergence legend; jolt-2j3 tracks metadata extension.
+;; :method-builders — are a deliberate omission, not an oversight: they
+;; describe the interface defprotocol generates on the JVM, and jolt generates
+;; none (dispatch is by the receiver's type tag, protocol-resolve). Pinned
+;; jolt-side in unit.edn (defprotocol-value) and written up in the divergence
+;; legend. defprotocol's leading keyword options (:extend-via-metadata) are
+;; merged onto the value by the macro, not passed here.
 ;;
 ;; Each trailing argument is optional only so a seed minted before it existed
 ;; still loads while it mints the next one: the arity the OLD prelude spells is
@@ -1116,6 +1116,47 @@
 (define (protocol-dispatch proto-name method-name obj rest-args)
   (let ((rest (if (jolt-nil? rest-args) '() (seq->list rest-args))))
     (apply (protocol-resolve proto-name method-name obj) obj rest)))
+
+;; ---- :extend-via-metadata -----------------------------------------------------
+;; A protocol defined with :extend-via-metadata true lets a VALUE implement a
+;; method through its metadata: the key is the method's fully-qualified symbol
+;; (my.ns/foo), the value the implementation. The reference's lookup order is
+;; direct definitions first (a defrecord/deftype/reify that declares the
+;; protocol in its own body — on the JVM, an instance of the generated
+;; interface), then the value's metadata, then external extensions
+;; (extend/extend-type/extend-protocol, which includes a record type extended
+;; after the fact). defprotocol's shims for such a protocol call
+;; protocol-resolve-meta instead of protocol-dispatchN; every other protocol
+;; keeps the plain path and pays nothing for this. The back end's PIC and devirt
+;; only recognize protocol-dispatchN, so they never cache past the metadata
+;; check.
+;;
+;; protocol-direct-impl answers the first step alone: the impl a value's own
+;; type DECLARES for the protocol, or #f. A record type's impl table counts
+;; unless extend alone filled it (extend-impl-table?); a reify counts when the
+;; protocol is one of the reify's own.
+(define (protocol-direct-impl proto-name method-name obj)
+  (cond
+    ((jrec? obj)
+     (let* ((tag (jrdesc-tag (jrec-desc obj)))
+            (ti (hashtable-ref type-registry tag #f))
+            (pi (and ti (hashtable-ref ti proto-name #f))))
+       (and pi (not (extend-impl-table? pi)) (hashtable-ref pi method-name #f))))
+    ((jreify? obj)
+     (and (member proto-name (jreify-protos obj))
+          (reify-method-ref obj method-name)))
+    (else #f)))
+;; The impl for obj under a metadata-extensible protocol, in the reference's
+;; order. meta-sym is the method's qualified symbol. A metadata value need not
+;; be a procedure (any IFn implements the method on the JVM), so the shim
+;; invokes whatever comes back as a Clojure call rather than applying it here.
+(define (protocol-resolve-meta proto-name method-name meta-sym obj)
+  (or (protocol-direct-impl proto-name method-name obj)
+      (let ((m (jolt-meta obj)))
+        (and (not (jolt-nil? m))
+             (let ((f (jolt-get m meta-sym)))
+               (and f (not (jolt-nil? f)) f))))
+      (protocol-resolve proto-name method-name obj)))
 
 ;; ---- per-site polymorphic inline cache (PIC) --------------------------------
 ;; The back end emits, at each protocol call site it recognizes under --opt, a

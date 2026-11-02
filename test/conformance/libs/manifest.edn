@@ -234,12 +234,11 @@
 
   {:name "instaparse"
    :paths ["src" "test"]
-   ;; All five remaining failures are one divergence, in abnf-test's unicode-test:
-   ;; it feeds a parser half of a surrogate pair and expects a parse failure, but a
-   ;; jolt string is indexed by code point, so (str (first "<astral>")) is the whole
-   ;; character and parses. A surrogate half is not a value jolt can hold
-   ;; (:string-model in known-divergences.edn) — nothing to reject.
-   :expect {:tests 28 :pass 9515 :fail 5 :error 0}}
+   ;; Clean since strings index by UTF-16 unit (#1455): abnf-test's unicode-test
+   ;; feeds a parser (str (first "<astral>")), half a surrogate pair, and expects a
+   ;; failure. That is now the lone unit (U+FFFD in a jolt string), which fails to
+   ;; parse as it does on the JVM.
+   :expect {:tests 28 :pass 9520 :fail 0 :error 0}}
 
   {:name "test.chuck"
    ;; resources/ holds the regex grammar its parser slurps through io/resource
@@ -300,14 +299,10 @@
    :deps ["@spec.alpha/src/main/clojure" "@test.check/src/main/clojure"]
    :local-deps ["~time"]
    :timeout 900
-   ;; The residue is one :escape-unicode true case in each of the two APIs, and
-   ;; it is the string model rather than a bug: jolt strings are codepoint-indexed,
-   ;; so .charAt hands data.json's escaper an astral character whole where the JVM
-   ;; hands it a surrogate half, and the escape comes out \u1f603 rather than the
-   ;; \ud83d\ude03 pair. Matching would mean UTF-16 count/nth/char. The
-   ;; :escape-unicode false path used to throw out of (char cp) and no longer does.
-   ;; :string-model, see known-divergences.edn.
-   :expect {:tests 244 :pass 322 :fail 2 :error 0}}
+   ;; Clean since strings index by UTF-16 unit (#1455): .charAt hands the escaper
+   ;; each surrogate half, so an astral character escapes as its \ud83d\ude03 pair,
+   ;; and the reader's per-escape (char 0xD83D) is a unit the StringBuilder pairs.
+   :expect {:tests 244 :pass 324 :fail 0 :error 0}}
 
   {:name "data.zip"
    :paths ["src/main/clojure" "src/test/clojure"]

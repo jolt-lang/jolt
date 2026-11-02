@@ -2344,6 +2344,23 @@ check '(do (require (quote jolt.nrepl)) (let [e (ex-info "boom" {:a 1})] [(jolt.
 # a reference to nothing. A forward reference across evals takes a declare.
 check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(zqx-undefined 1)" "user") d (jolt.nrepl/evaluate "(defn zqx-f [] zqx-later)" "user") ok (jolt.nrepl/evaluate "(declare zqx-fwd) (defn zqx-g [] zqx-fwd)" "user")] [(:value r) (:err r) (:value d) (some? (:err d)) (:value ok) (:err ok) (some? (resolve (quote user/zqx-undefined)))]))' '[nil "Unable to resolve symbol: zqx-undefined in this context" nil true "#'"'"'user/zqx-g" nil false]'
 check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "eval" "code" "(zqx-undefined 1)" :reply #(swap! sent conj %)}) (mapv #(into (sorted-map) %) @sent)))' '[{"err" "Syntax error compiling at (REPL:1:1).\nUnable to resolve symbol: zqx-undefined in this context\n"} {"ex" "class clojure.lang.Compiler$CompilerException", "root-ex" "class clojure.lang.Compiler$CompilerException", "status" ["eval-error"]} {"status" ["done"]}]'
+# *eval-wrapper*: evaluate calls it with a thunk of the evaluation, for an eval
+# and a load, inside its *ns* binding and its own try, so a throw reaches the
+# wrapper before evaluate catches it (a break handler before the stack unwinds
+# sits there). Unbound, nil, it evaluates directly.
+check '(do (require (quote jolt.nrepl)) (def seen (atom [])) (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (swap! user/seen conj (str *ns*)) (thunk))] [(:value (jolt.nrepl/evaluate "(+ 1 2)" "user")) (:value (jolt.nrepl/evaluate "(+ 2 2)" "user" {:load true})) @user/seen]))' '["3" "4" ["user" "user"]]'
+check '(do (require (quote jolt.nrepl)) (def seen (atom nil)) (let [r (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (try (thunk) (catch Throwable t (reset! user/seen (ex-message t)) (throw t))))] (jolt.nrepl/evaluate "(/ 1 0)" "user"))] [@user/seen (:err r)]))' '["Divide by zero" "Divide by zero"]'
+check '(do (require (quote jolt.nrepl)) (nil? jolt.nrepl/*eval-wrapper*))' 'true'
+# eval-string / load-string with a source path, as Compiler.load takes one: the
+# forms carry it as :file and *file* / *source-path* are the path and its name;
+# without one nothing changes. clojure.core/load-string still takes the string
+# alone. evaluate's :file and the load-file op's file-path go the same way.
+check '(do (jolt.host/eval-string "(defn nes-f [] 1)" "/tmp/nes/a.clj") [(:file (meta (var user/nes-f))) (:line (meta (var user/nes-f))) (jolt.host/eval-string "*file*" "/tmp/nes/a.clj") (jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj")])' '["/tmp/nes/a.clj" 1 "/tmp/nes/a.clj" "a.clj"]'
+check '(do (jolt.host/eval-string "(defn nes-g [] 1)") [(nil? (:file (meta (var user/nes-g)))) (nil? (jolt.host/eval-string "*file*"))])' '[true true]'
+check '(do (jolt.host/load-string "(ns nes.b) (defn h [] 2)" "/tmp/nes/b.clj") [(:file (meta (resolve (quote nes.b/h)))) (str *ns*)])' '["/tmp/nes/b.clj" "user"]'
+check '(try (load-string "1" "/tmp/nes/c.clj") :no-throw (catch Throwable _ :arity))' ':arity'
+check '(do (require (quote jolt.nrepl)) (jolt.nrepl/evaluate "(ns nes.d) (defn k [] 3)" "user" {:load true :file "/tmp/nes/d.clj"}) (:file (meta (resolve (quote nes.d/k)))))' '"/tmp/nes/d.clj"'
+check '(do (require (quote jolt.nrepl)) ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "(ns nes.e) (defn m [] 4)" "file-path" "/tmp/nes/e.clj" "file-name" "e.clj" :reply (fn [_])}) (:file (meta (resolve (quote nes.e/m)))))' '"/tmp/nes/e.clj"'
 check '(do (require (quote jolt.nrepl)) (let [stop (with-out-str (def st (jolt.nrepl/start 0 nil {:port-file nil}))) port (:port (meta st)) s (java.net.Socket. "127.0.0.1" (int port)) out (.getOutputStream s) in (.getInputStream s) code "(zqx-undefined 1)" msg (str "d4:code" (count code) ":" code "2:op4:evale") buf (byte-array 4096)] (.write out (.getBytes msg "ISO-8859-1")) (Thread/sleep 500) (let [n (.read in buf) r (String. buf 0 (max 0 n) "ISO-8859-1")] (.close s) (st) [(boolean (re-find #"Syntax error compiling at \(REPL:1:1\)\.\nUnable to resolve symbol: zqx-undefined in this context\n" r)) (boolean (re-find #"2:ex45:class clojure\.lang\.Compiler\$CompilerException" r)) (boolean (re-find #"5:value" r))])))' '[true true false]'
 # The err text is the JVM's: jolt's "(did you mean …?)" stays on :err and the
 # exception's message, and is left out of err->msg.

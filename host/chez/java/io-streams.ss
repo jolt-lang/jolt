@@ -1273,11 +1273,13 @@
 (register-host-methods! "char-writer"
   (list
    (cons "write" (lambda (self x . rest)
-                   (put-string (char-writer-live-port self) (writer-piece-range x rest))
+                   (put-string (char-writer-live-port self) (sink-text self (writer-piece-range x rest)))
                    jolt-nil))
    (cons "append" (lambda (self x . rest)
                     (put-string (char-writer-live-port self)
-                                (if (and (null? rest) (char? x)) (string x) (append-text x rest)))
+                                (if (and (null? rest) (char? x))
+                                    (sink-text self (string x))
+                                    (sink-text self (append-text x rest))))
                     self))
    (cons "newLine" (lambda (self) (put-char (char-writer-live-port self) #\newline) jolt-nil))
    (cons "flush" (lambda (self)
@@ -1681,9 +1683,10 @@
   jolt-nil)
 (register-host-methods! "print-stream"
   (list
-   (cons "print" (lambda (self x) (ps-emit self (writer-piece x))))
+   (cons "print" (lambda (self x) (ps-emit self (sink-text self (writer-piece x)))))
    (cons "println" (lambda (self . xs)
-                     (ps-emit-line self (if (null? xs) "\n" (string-append (writer-piece (car xs)) "\n")))))
+                     (ps-emit-line self (string-append (sink-text self (if (null? xs) "" (writer-piece (car xs))))
+                                                       "\n"))))
    ;; printf and format are the same call, and both answer the stream
    (cons "printf" (lambda (self a . rest)
                     (jvm-format-pieces a rest (lambda (piece) (ps-emit self piece)))

@@ -189,7 +189,7 @@
     ((jolt-atom? x) "clojure.lang.Atom")
     ((jolt-ref? x) "clojure.lang.Ref")
     ((jolt-reduced? x) "clojure.lang.Reduced")
-    ((char? x) "java.lang.Character")
+    ((or (char? x) (jsurr? x)) "java.lang.Character")
     ((regex-t? x) "java.util.regex.Pattern")
     ;; a stateful matcher (re-matcher) is a java.util.regex.Matcher, as the
     ;; record's own comment in regex.ss already said — without this arm it fell

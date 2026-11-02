@@ -135,7 +135,7 @@
 ;; ---- the unhinted interop guard --------------------------------------------
 (let ((e (emit-dl "(def uselen (fn [s] (.length s)))")))
   (gate-check "unhinted .length tests for a string at the site" (gate-sub? e "(string? _ht$") #t)
-  (gate-check "unhinted .length takes the direct form" (gate-sub? e "(string-length _ht$") #t)
+  (gate-check "unhinted .length takes the direct form" (gate-sub? e "(jolt-str-u16-length _ht$") #t)
   (gate-check "unhinted .length keeps the generic slow arm" (gate-sub? e "record-method-dispatch") #t)
   (run-emit e)
   (gate-check "a string receiver answers" (call "uselen" "abcd") 4)

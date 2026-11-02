@@ -99,6 +99,7 @@
 ;; ByteBuffer has no .array, and the typed buffers exist only as views).
 (##include "../chez/java/byte-buffer.ss")
 (##include "../chez/float.ss")  ;; java.lang.Float as a value (jfloat)
+(##include "../chez/surrogates.ss")  ;; a UTF-16 surrogate unit as a Character (jsurr)
 
 ;; ---- G3: the cross-minted compiler on gsi (jolt-mj95.4) ----------------------
 ;;
