@@ -30,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `*file*` and `*source-path*` are the path and its name. Without it
   nothing changes, and `clojure.core/load-string` still takes the string alone.
   `jolt.nrepl/evaluate` takes it as `:file`, and the built-in `load-file` op
-  passes the request's `file-path`, as JVM nREPL compiles under it.
+  passes the request's `file-path`, as JVM nREPL compiles under it. A third
+  argument (`:file-name` to `evaluate`) is the source name `*source-path*`
+  holds, as `Compiler.load` takes one; `load-file` passes the request's
+  `file-name`, so `*source-path*` is nil when it sends none, as on the JVM.
 - **`jolt.debug`: a throwable's frames with their locals, and a hook before
   the stack unwinds (#1464).** `(jolt.debug/frames t)` returns the frames
   `.getStackTrace` reports, innermost first, as maps of `:fn`, `:file`, `:line`
@@ -299,6 +302,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   34 µs to 17 µs, `babashka.process/tokenize` 14.8 µs to 9.2 µs. The seven
   seed-embedded namespaces (`clojure.string`, `clojure.set`, …) and `jolt
   build` binaries were not affected. `make stdlibratio` gates the ratio.
+
+- **`count`, `get`, `contains?` and `hash` on java.util collections pay less
+  for dispatch.** Each walks a registry of per-type predicates, and every host
+  type's predicate compared its tag string; they now remember the answer per
+  tag. Against 0.8.23 on macOS arm64: `count` of an ArrayList 41 -> 29 ns, of a
+  HashMap 66 -> 33 ns, of a HashSet 36 -> 28 ns; `hash` of a plain `Object`
+  480 -> 350 ns. ArrayList `add`/`remove` are about a fifth faster.
+- **`java.nio.file.Path` members take the call-site cache** as every other host
+  class's do: `.toString` 125 -> 18 ns, `.resolve` 291 -> 121 ns,
+  `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
 
 ### Fixed
 
@@ -631,18 +644,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on tmpfs, which ubuntu-26.04 runners use for `/tmp`. The test job also runs
   with `TMPDIR` on the runner's disk, because 26.04's `/tmp` is too small for the
   build gates.
-
-### Performance
-
-- **`count`, `get`, `contains?` and `hash` on java.util collections pay less
-  for dispatch.** Each walks a registry of per-type predicates, and every host
-  type's predicate compared its tag string; they now remember the answer per
-  tag. Against 0.8.23 on macOS arm64: `count` of an ArrayList 41 -> 29 ns, of a
-  HashMap 66 -> 33 ns, of a HashSet 36 -> 28 ns; `hash` of a plain `Object`
-  480 -> 350 ns. ArrayList `add`/`remove` are about a fifth faster.
-- **`java.nio.file.Path` members take the call-site cache** as every other host
-  class's do: `.toString` 125 -> 18 ns, `.resolve` 291 -> 121 ns,
-  `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
 
 ## [0.8.23] - 2026-10-17
 
