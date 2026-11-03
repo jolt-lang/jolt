@@ -553,9 +553,12 @@
         ;; an exact integer wraps (long narrowing); a double SATURATES (Java's
         ;; double->long conversion clamps at the bounds, NaN is 0).
         ((and (number? x) (exact? x)) (jolt-wrap64 (truncate x)))
-        ((flonum? x) (if (nan? x) 0
-                         (jolt-cast-saturate (if (infinite? x) (if (> x 0.0) unc-2^63 (- unc-2^63)) (exact (truncate x)))
-                                             -9223372036854775808 9223372036854775807)))
+        ;; Flonum bounds, so the clamp is flonum-vs-flonum (the exact bounds are
+        ;; bignums on every Chez); an infinity clamps through the same compares.
+        ((flonum? x) (cond ((nan? x) 0)
+                           ((>= x 9223372036854775808.0) 9223372036854775807)
+                           ((<= x -9223372036854775808.0) -9223372036854775808)
+                           (else (exact (truncate x)))))
         (else (jolt-wrap64 (jolt-cast-truncate-slow x)))))
 (define (jolt-unchecked-int x)
   (cond
@@ -570,10 +573,11 @@
     ((char? x) (char->integer x))
     ((jsurr? x) (jsurr-unit x))
     ((flonum? x)
-     ;; double->int clamps like Java
-     (if (nan? x) 0
-         (jolt-cast-saturate (if (infinite? x) (if (> x 0.0) #x80000000 (- #x80000000)) (exact (truncate x)))
-                             -2147483648 2147483647)))
+     ;; double->int clamps like Java; flonum bounds keep the compares cheap
+     (cond ((nan? x) 0)
+           ((>= x 2147483648.0) 2147483647)
+           ((<= x -2147483648.0) -2147483648)
+           (else (exact (truncate x)))))
     (else
      (let ((i (bitwise-and (jolt-unchecked-long x) #xffffffff)))
        (if (>= i #x80000000) (- i #x100000000) i)))))
