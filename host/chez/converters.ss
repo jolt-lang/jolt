@@ -440,18 +440,28 @@
                "java.lang.IllegalArgumentException"
                (string-append "Value out of range for " name ": " (jolt-str x)))))
 (define (jolt-cast-truncate-slow x) (jolt-num-cast-throw x))
-(define (jolt-checked-cast name lo hi x)
-  (let ((n (cond ((char? x) (char->integer x))
-                 ((jsurr? x) (jsurr-unit x))
-                 ((and (number? x) (exact? x)) (truncate x))
-                 ;; a double range-checks ITSELF (before truncation): (byte
-                 ;; 127.000001) throws, (byte 1.1) is 1; NaN casts to 0; an
-                 ;; infinity always fails the compare.
-                 ((flonum? x) (cond ((nan? x) 0)
-                                    ((or (< x lo) (> x hi)) (+ hi 1))
-                                    (else (exact (truncate x)))))
-                 (else (jolt-cast-truncate-slow x)))))
-    (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x))))
+;; The double branch, on its own so its compares stay flonum-vs-flonum. flo/fhi
+;; are the type's bounds as flonums: the exact LONG bounds (+-2^63) are bignums
+;; on every Chez (61-bit fixnums on 64-bit, 30-bit on 32-bit), and a
+;; flonum-vs-bignum compare is generic arithmetic; through this path a (long x)
+;; on a double cost 135 us on the Wii. A double range-checks ITSELF, before
+;; truncation, as RT.longCast(double) does: (byte 127.9) throws, (byte 1.1) is
+;; 1, NaN casts to 0, an infinity fails the compare. For long the upper bound as
+;; a double is 2^63 (2^63-1 is not representable) and an accepted 2^63
+;; saturates to hi, as Java's (long) conversion does.
+(define (jolt-checked-flonum-cast name hi flo fhi x)
+  (cond ((nan? x) 0)
+        ((or (< x flo) (> x fhi)) (jolt-cast-range-throw name x))
+        ((= x fhi) hi)
+        (else (exact (truncate x)))))
+(define (jolt-checked-cast name lo hi flo fhi x)
+  (if (flonum? x)
+      (jolt-checked-flonum-cast name hi flo fhi x)
+      (let ((n (cond ((char? x) (char->integer x))
+                     ((jsurr? x) (jsurr-unit x))
+                     ((and (number? x) (exact? x)) (truncate x))
+                     (else (jolt-cast-truncate-slow x)))))
+        (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x)))))
 ;; A fixnum is what these casts are handed almost every time they are called —
 ;; (long (.length s)), (int i) in a loop — and it is already the answer, so each
 ;; cast checks for one before entering the generic path above. That path is not
@@ -465,14 +475,17 @@
 ;; The bound tests use the fx forms, valid because `fixnum?` has already answered
 ;; and every bound here is itself a fixnum on a 61-bit tower. LONG needs no test
 ;; at all: every Chez fixnum fits a 64-bit long by construction.
+;; A double takes jolt-checked-flonum-cast above, which compares flonums against
+;; flonum bounds; only the exact-integer branch of jolt-checked-cast still meets
+;; the bignum bounds, and it is rarely hit.
 (define (jolt-byte-cast x)
   (if (and (fixnum? x) (fx>=? x -128) (fx<=? x 127))
       x
-      (jolt-checked-cast "byte" -128 127 x)))
+      (jolt-checked-cast "byte" -128 127 -128.0 127.0 x)))
 (define (jolt-short-cast x)
   (if (and (fixnum? x) (fx>=? x -32768) (fx<=? x 32767))
       x
-      (jolt-checked-cast "short" -32768 32767 x)))
+      (jolt-checked-cast "short" -32768 32767 -32768.0 32767.0 x)))
 ;; `int` is the one checked cast whose overflow is NOT an
 ;; IllegalArgumentException. Clojure routes the integer case through
 ;; Numbers.throwIntOverflow, so (int 2147483648) is an ArithmeticException
@@ -485,7 +498,7 @@
 (define (jolt-int-cast x)
   (cond
     ((and (fixnum? x) (fx>=? x -2147483648) (fx<=? x 2147483647)) x)
-    ((flonum? x) (jolt-checked-cast "int" -2147483648 2147483647 x))
+    ((flonum? x) (jolt-checked-cast "int" -2147483648 2147483647 -2147483648.0 2147483647.0 x))
     (else
      (let ((n (cond ((char? x) (char->integer x))
                     ((jsurr? x) (jsurr-unit x))
@@ -497,7 +510,7 @@
 (define (jolt-long-cast x)
   (if (fixnum? x)
       x
-      (jolt-checked-cast "long" -9223372036854775808 9223372036854775807 x)))
+      (jolt-checked-cast "long" -9223372036854775808 9223372036854775807 -9223372036854775808.0 9223372036854775808.0 x)))
 (def-var! "clojure.core" "int" jolt-int-cast)
 (def-var! "clojure.core" "long" jolt-long-cast)
 (def-var! "clojure.core" "byte" jolt-byte-cast)
@@ -516,7 +529,7 @@
     ((char? x) x)
     ((jsurr? x) x)
     (else
-     (let ((n (jolt-checked-cast "char" 0 #x10FFFF x)))
+     (let ((n (jolt-checked-cast "char" 0 #x10FFFF 0.0 1114111.0 x)))
        (if (and (>= n #xD800) (<= n #xDFFF))
            (jolt-surrogate n)
            (integer->char n))))))
