@@ -3,6 +3,9 @@
 ;; EXTEND them to their own types (and for the ones that merely :refer a name, as
 ;; instaparse does with IKVReduce) — not as the path core's own reduce takes.
 ;;
+;; Datafiable and Navigable are :extend-via-metadata, as in the reference: a value
+;; can carry its own datafy/nav under the method symbol in its metadata.
+;;
 ;; reduce and reduce-kv consult these before their native paths when the value's
 ;; type extends one, so a type that participates gets its own implementation.
 (ns clojure.core.protocols)
@@ -23,6 +26,7 @@
   (kv-reduce [amap f init]))
 
 (defprotocol Datafiable
+  :extend-via-metadata true
   (datafy [o] "Return a representation of o as data (default identity)."))
 
 ;; The defaults are what make the "default identity" in those docstrings true:
@@ -36,6 +40,7 @@
   (datafy [x] x))
 
 (defprotocol Navigable
+  :extend-via-metadata true
   (nav [coll k v] "Return v as it exists in coll, navigating if needed."))
 
 (extend-protocol Navigable

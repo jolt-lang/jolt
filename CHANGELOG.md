@@ -30,7 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `*file*` and `*source-path*` are the path and its name. Without it
   nothing changes, and `clojure.core/load-string` still takes the string alone.
   `jolt.nrepl/evaluate` takes it as `:file`, and the built-in `load-file` op
-  passes the request's `file-path`, as JVM nREPL compiles under it.
+  passes the request's `file-path`, as JVM nREPL compiles under it. A third
+  argument (`:file-name` to `evaluate`) is the source name `*source-path*`
+  holds, as `Compiler.load` takes one; `load-file` passes the request's
+  `file-name`, so `*source-path*` is nil when it sends none, as on the JVM.
 - **`jolt.debug`: a throwable's frames with their locals, and a hook before
   the stack unwinds (#1464).** `(jolt.debug/frames t)` returns the frames
   `.getStackTrace` reports, innermost first, as maps of `:fn`, `:file`, `:line`
@@ -285,6 +288,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`map->R` is one pass over the map.** #1479 sped up a map holding only
+  field keys but made one with extension keys 1.2-1.3x slower than 0.8.23; a
+  single fold that skips the field keys is faster in both cases (one extension:
+  215 -> 117 ns, fields only: 118 -> 53 ns, in an `--opt` build). It also takes a
+  `java.util.Map`, as the JVM's does.
+
 - **Sorted maps and sets keep their red-black tree in the host**, with
   vector nodes, so building and updating them is several times faster than in
   0.8.23. `sorted-map` `assoc` of an `=` value now keeps the existing value only
@@ -300,6 +309,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seed-embedded namespaces (`clojure.string`, `clojure.set`, …) and `jolt
   build` binaries were not affected. `make stdlibratio` gates the ratio.
 
+- **`count`, `get`, `contains?` and `hash` on java.util collections pay less
+  for dispatch.** Each walks a registry of per-type predicates, and every host
+  type's predicate compared its tag string; they now remember the answer per
+  tag. Against 0.8.23 on macOS arm64: `count` of an ArrayList 41 -> 29 ns, of a
+  HashMap 66 -> 33 ns, of a HashSet 36 -> 28 ns; `hash` of a plain `Object`
+  480 -> 350 ns. ArrayList `add`/`remove` are about a fifth faster.
+- **`java.nio.file.Path` members take the call-site cache** as every other host
+  class's do: `.toString` 125 -> 18 ns, `.resolve` 291 -> 121 ns,
+  `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
+
 ### Fixed
 
 - **A surrogate unit is a value, and the joiners pair it (#1454).**
@@ -307,7 +326,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `char[]` element and `Character/toChars` are, and `str`, StringBuilder and
   StringBuffer `append`, Writers, `(String. char[])` and `clojure.string/join`
   put a high unit followed by its low one together as the code point. A lone
-  unit in finished text is U+FFFD. data.json reads a `😀` escape
+  unit in finished text is U+FFFD. data.json reads a `\uD83D\uDE00` escape
   as the emoji. `print`, `format "%c"` and `Character`'s classifiers take a
   unit. Strings themselves still index by code point everywhere, `count` and
   `subs` as well as `.length`, `.charAt`, `.substring`, `.indexOf`, a
@@ -315,6 +334,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change (#1472) had moved the String methods to UTF-16 units, which broke code
   that mixes the two, such as an editor handing GTK's code-point offsets to
   `subs`.
+- **`:extend-via-metadata` in built binaries.** An `--opt` build resolved a
+  metadata-extensible protocol's calls from the receiver's type through its
+  inline cache or devirtualization, so the metadata impl was never consulted;
+  those calls now go through the method shim, as under `jolt run`.
+- **`clojure.core.protocols/Datafiable` and `Navigable` are
+  `:extend-via-metadata`,** as in the reference, so `datafy`/`nav` honor an
+  impl in a value's metadata.
+- **`conj` and `dissoc` on records.** `(conj r nil)` added a nil entry and
+  conj or merge of a sorted map threw; conj now follows defrecord's cons (nil
+  is the record, an entry or vector assocs its first two elements, anything
+  else seqs into entries). `dissoc` dropped the record's metadata, whether the
+  key was a field or an extension.
+- **`reduce-kv` with a reduced init** unwrapped it before folding anything.
+  It now does what each reference kvreduce does: an array map, vector, sorted
+  map or record calls `f` with it, a hash map unwraps it, an empty array map,
+  vector or nil returns it still wrapped, and a type's own `kvreduce` gets it
+  and has its answer returned as is.
+
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without
@@ -644,18 +681,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on tmpfs, which ubuntu-26.04 runners use for `/tmp`. The test job also runs
   with `TMPDIR` on the runner's disk, because 26.04's `/tmp` is too small for the
   build gates.
-
-### Performance
-
-- **`count`, `get`, `contains?` and `hash` on java.util collections pay less
-  for dispatch.** Each walks a registry of per-type predicates, and every host
-  type's predicate compared its tag string; they now remember the answer per
-  tag. Against 0.8.23 on macOS arm64: `count` of an ArrayList 41 -> 29 ns, of a
-  HashMap 66 -> 33 ns, of a HashSet 36 -> 28 ns; `hash` of a plain `Object`
-  480 -> 350 ns. ArrayList `add`/`remove` are about a fifth faster.
-- **`java.nio.file.Path` members take the call-site cache** as every other host
-  class's do: `.toString` 125 -> 18 ns, `.resolve` 291 -> 121 ns,
-  `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
 
 ## [0.8.23] - 2026-10-17
 

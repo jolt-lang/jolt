@@ -157,10 +157,13 @@
 (ok "5a. all 8 bodies ran and reached their park" (= 8 (jv-nth r5 0)))
 (ok "5b. all 8 resumed with their own value"
     (jolt=2 (jv-nth r5 1) (jolt-vector 0 10 20 30 40 50 60 70)))
-;; At least the 8 takes; the 8 puts onto a buffered `ready` do not park, and the
-;; helper's own alts!! runs on this thread, not a fiber.
-(ok "5c. the park counter moved by at least 8 (they parked, they did not spin)"
-    (>= (- (jolt-fiber-chan-parks) parks-before) 8))
+;; Bodies 0..6 must have parked on their take: on one carrier, body i+1 only
+;; announced because body i released it. The last body need not park. Once it
+;; announces, this thread may start feeding before it reaches its take, and a
+;; put already waiting on cs[7] is met without a park. The 8 puts onto a
+;; buffered `ready` do not park, and the helper's alts!! runs on this thread.
+(ok "5c. the park counter moved by at least 7 (they parked, they did not spin)"
+    (>= (- (jolt-fiber-chan-parks) parks-before) 7))
 
 ;; --- 6. a throwing body -------------------------------------------------------
 ;; Same contract as a thread-backed body: the channel closes (so a reader gets
