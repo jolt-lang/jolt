@@ -121,26 +121,23 @@
     ;; x.toString(), and core.logic's non-unique lvar equality compares those by
     ;; identity.
     ((a) (if (jsurr? a) (jolt-str-units (list a)) (jolt-str-one a)))
-    ;; A surrogate unit, or a rendered piece that begins or ends with half a
-    ;; pair (an edge unit, recorded only once some text has been cut mid-pair),
-    ;; takes the joiner that pairs them; every other str is the plain append.
-    ((a b) (let ((pa (str-part a)) (pb (str-part b)))
-             (if (or (jsurr? pa) (jsurr? pb) (and edge-units-any? (or (edgy? pa) (edgy? pb))))
-                 (jolt-str-units (list pa pb))
-                 (string-append pa pb))))
-    ((a b c) (let ((pa (str-part a)) (pb (str-part b)) (pc (str-part c)))
-               (if (or (jsurr? pa) (jsurr? pb) (jsurr? pc)
-                       (and edge-units-any? (or (edgy? pa) (edgy? pb) (edgy? pc))))
-                   (jolt-str-units (list pa pb pc))
-                   (string-append pa pb pc))))
+    ;; Only a surrogate unit followed by another can make a pair (a string never
+    ;; ends in half of one), so the unit test is on every argument but the last.
+    ((a b) (if (or (jsurr? a) (and edge-units-any? (or (edgy? a) (edgy? b))))
+               (jolt-str-units (list a b))
+               (string-append (jolt-str-piece a) (jolt-str-piece b))))
+    ((a b c) (if (or (jsurr? a) (jsurr? b) (and edge-units-any? (or (edgy? a) (edgy? b) (edgy? c))))
+                 (jolt-str-units (list a b c))
+                 (string-append (jolt-str-piece a) (jolt-str-piece b) (jolt-str-piece c))))
     ((a b c . rest)
-     (let ((ps (map str-part (cons a (cons b (cons c rest))))))
-       (if (or (exists jsurr? ps) (and edge-units-any? (exists edgy? ps)))
-           (jolt-str-units ps)
-           (apply string-append ps))))))
-;; One argument of str as the joiner sees it: its rendering, or a surrogate unit
-;; kept whole so it can pair.
-(define (str-part v) (cond ((string? v) v) ((jsurr? v) v) (else (jolt-str-one v))))
+     (if (or (jsurr? a) (jsurr? b) (jsurr? c)
+             (and edge-units-any? (or (edgy? a) (edgy? b) (edgy? c) (exists edgy? rest))))
+         (jolt-str-units (cons a (cons b (cons c rest))))
+         (let loop ((xs rest) (acc (list (jolt-str-piece c) (jolt-str-piece b) (jolt-str-piece a))))
+           (cond
+             ((null? xs) (apply string-append (reverse acc)))
+             ((jsurr? (car xs)) (jolt-str-units (cons a (cons b (cons c rest)))))
+             (else (loop (cdr xs) (cons (jolt-str-piece (car xs)) acc)))))))))
 ;; str over arguments among which are surrogate units: a high unit directly
 ;; followed by a low one is the astral character they spell; any other unit is
 ;; U+FFFD (its str-render, surrogates.ss).

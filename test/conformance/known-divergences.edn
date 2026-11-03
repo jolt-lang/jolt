@@ -549,17 +549,18 @@
            :jvm "throws ClassCastException"
            :jolt "97.0"}
    :note "(int \\a) / (long \\a) / (short \\a) / (byte \\a) are 97 on BOTH runtimes; only the float widths differ."}
-  ;; jolt's strings hold Unicode CODE POINTS, and count/nth/first/subs/seq index
-  ;; them, where the JVM's index UTF-16 code units. (char n) follows that model
-  ;; rather than the JVM's 16-bit char: it has to accept the whole scalar-value
-  ;; range or it could not rebuild a char that (first s) just handed out. A
-  ;; superset — every value the JVM accepts still works.
+  ;; jolt's strings are indexed by Unicode CODE POINT where the JVM's are indexed
+  ;; by UTF-16 code unit, and (char n) follows the string model rather than the
+  ;; JVM's 16-bit char: it has to accept the whole scalar-value range or it could
+  ;; not rebuild a char that (first s) just handed out. A superset — every value
+  ;; the JVM accepts still works, and surrogates stay rejected because they are
+  ;; not scalar values.
   ;;
-  ;; String's OWN index methods (.length, .charAt, .substring, .indexOf …) count
-  ;; UTF-16 units as on the JVM, and (char 0xD83D) is a surrogate code-unit value
-  ;; that the joiners pair (#1455), so code that encodes or decodes per unit —
-  ;; data.json's \uXXXX escapes, both ways — behaves as it does on the JVM. The
-  ;; round trip is pinned in unit.edn ("char / code points").
+  ;; The visible consequence is in libraries that hand-encode \uXXXX per char:
+  ;; data.json's :escape-unicode writes \u1f603 for an astral character where the
+  ;; JVM writes the surrogate pair \ud83d\ude03. Matching that would mean adopting
+  ;; UTF-16 semantics for count/nth/char, which is the model choice jolt made the
+  ;; other way. The round trip is pinned in unit.edn ("char / code points").
   {:category :string-model
    :behavior "(char 128515), the code point (first \"<astral>\") yields"
    :jvm "throws IllegalArgumentException — a JVM char is 16 bits"
@@ -568,12 +569,12 @@
            :jvm "throws IllegalArgumentException"
            :jolt "128515"}
    :note "Deliberate superset of the JVM, following jolt's code-point string model."}
-  ;; The same model the other way round: first/nth/seq hand out whole characters,
-  ;; never half a pair. A parser asked to reject a lone surrogate gets none from
-  ;; them — instaparse's abnf unicode-test feeds (str (first "💩")) to a parser
-  ;; for U+1F4A9 and expects a failure, but on jolt that expression IS the whole
-  ;; character, so it parses. Five of its assertions rest on that and are the
-  ;; library's whole residue. (.charAt s 0) is the high half, as on the JVM.
+  ;; The same model the other way round: half of a surrogate pair is not a value
+  ;; jolt can hold, so no operation can produce or match one. A parser asked to
+  ;; reject a lone surrogate has nothing to reject — instaparse's abnf unicode-test
+  ;; feeds (str (first "💩")) to a parser for U+1F4A9 and expects a
+  ;; failure, but on jolt that expression IS the whole character, so it parses.
+  ;; Five of its assertions rest on that and are the library's whole residue.
   ;; Pinned jolt-side in unit.edn ("string / surrogate halves").
   {:category :string-model
    :behavior "indexing into a string holding an astral character"
@@ -583,23 +584,6 @@
            :jvm "2"
            :jolt "1"}
    :note "Inherent to code-point strings: a surrogate half is not a scalar value."}
-  ;; A JVM String can hold an unpaired surrogate; a jolt string holds code
-  ;; points, so it cannot. A lone unit outside a string is a value (char 0xD83D),
-  ;; and a high unit followed by its low one is paired wherever text is joined.
-  ;; A unit left unpaired in finished text becomes U+FFFD, which is what the
-  ;; JDK's own UTF-8 encoder writes for one, so text that leaves the process
-  ;; reads the same either way. A half cut off at a string's END (a substring,
-  ;; or a char[] region, through the middle of a pair) is remembered with that
-  ;; string, so joining it to the other half restores the character (#1455).
-  ;; Pinned jolt-side in unit.edn ("char / surrogate units").
-  {:category :string-model
-   :behavior "a lone surrogate unit made into a String"
-   :jvm "a one-unit String holding \\uD83D"
-   :jolt "\"\\uFFFD\" — the replacement character"
-   :check {:expr "(mapv int (str (char 0xD83D)))"
-           :jvm "[55357]"
-           :jolt "[65533]"}
-   :note "Inherent to code-point strings. Paired units, the only well-formed text, are identical on both."}
   ;; The JVM interns every string literal. jolt shares equal literals only where a
   ;; vfasl image combines the compiled entries (chez-patches/0004, jolt-50zg); a
   ;; form read for eval reads each literal as its own object, and no literal is
@@ -1819,6 +1803,7 @@
    {:suite "string-model / codepoint strings", :label "count of astral string", :category :string-model}
    {:suite "string-model / codepoint strings", :label "seq counts codepoints", :category :string-model}
    {:suite "string-model / codepoint strings", :label "subs across astral boundary", :category :string-model}
+   {:suite "string-model / codepoint strings", :label "charAt of an astral character is the codepoint", :category :string-model}
    {:suite "concurrency-model / compare-and-set!", :label "immediate fixnums have no distinct boxes", :category :concurrency-model}
    ;; (#= evaluates at read time now, gated by *read-eval* — that divergence is
    ;;  gone; the reader / read-eval corpus suite pins the JVM behavior.)

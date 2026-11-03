@@ -122,24 +122,18 @@
 ;; carry their bodies inline (no second call per append) while the locked table
 ;; expands the very same text.
 (define (%sb-materialize! st)
+  (%sb-settle! st)
   (let* ((n (vector-ref st 1)) (pend (vector-ref st 5)) (out (make-string n))
-         (fl (vector-ref st 6)) (hi (vector-ref st 8)))
+         (fl (vector-ref st 6)))
     (sa-string-copy-range! out 0 (vector-ref st 0) 0 fl)
     (%sb-copy-pending! out n pend)
+    (vector-set! st 3 out)
     ;; The joined text stands in for everything before it: nothing writes to out,
     ;; so it is a pending piece like any other, and the next toString copies it as
     ;; one block instead of walking every piece again.
     (vector-set! st 5 (list out))
     (vector-set! st 6 0)
-    ;; A high unit still waiting is a lone half at the end of the String handed
-    ;; out: U+FFFD there, remembered as an edge unit (converters.ss) so a join
-    ;; of that String with the low half completes the pair, as on the JVM. The
-    ;; builder keeps waiting too.
-    (let ((s (if hi
-                 (string-with-edge-units! (string-append out jolt-replacement-string) #f hi)
-                 out)))
-      (vector-set! st 3 s)
-      s)))
+    out))
 (define-syntax %sb-str
   (syntax-rules () ((_ st) (let ((s st)) (or (vector-ref s 3) (%sb-materialize! s))))))
 (define-syntax %sb-push!
@@ -332,11 +326,6 @@
     (throw-jvm 'StringIndexOutOfBoundsException
                (string-append "Range [" (number->string off) ", " (number->string n)
                               ") out of bounds for length " (number->string n)))))
-;; substring/subSequence: AbstractStringBuilder's range check and message, then
-;; String's cut over UTF-16 indices.
-(define (sb-u16-sub cur s e)
-  (jvm-range-check 'StringIndexOutOfBoundsException (u16-length cur) s e)
-  (u16-substring cur s e))
 (define (sb-check-index i n)
   (unless (and (fixnum? i) (fx>=? i 0) (fx<? i n)) (char-index-oob i n)))
 
@@ -443,13 +432,13 @@
       (cons "substring"
             (case-lambda
               ((self start) (let ((cur (guard (st self) (%sb-str st))))
-                              (sb-u16-sub cur (jnum->exact start) (u16-length cur))))
-              ((self start end) (sb-u16-sub (guard (st self) (%sb-str st))
-                                            (jnum->exact start) (jnum->exact end)))))
+                              (u16-substring cur (jnum->exact start) (u16-length cur))))
+              ((self start end) (u16-substring (guard (st self) (%sb-str st))
+                                               (jnum->exact start) (jnum->exact end)))))
       ;; CharSequence.subSequence — AbstractStringBuilder returns substring(a, b),
       ;; i.e. a String, which is itself a CharSequence.
       (cons "subSequence" (lambda (self a b)
-                            (sb-u16-sub (guard (st self) (%sb-str st)) (jnum->exact a) (jnum->exact b))))
+                            (u16-substring (guard (st self) (%sb-str st)) (jnum->exact a) (jnum->exact b))))
       (cons "indexOf"
             (case-lambda
               ((self needle)
