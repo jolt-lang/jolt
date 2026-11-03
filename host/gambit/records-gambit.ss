@@ -1297,7 +1297,12 @@
          (cond
            ((vector-ref ifc 3) (jrec-field-count coll))
            ((vector-ref ifc 4)
-            (jrec-abstract-method-error coll "count"))
+            (if (and (jrec-type-isa?
+                       coll
+                       "clojure.lang.IPersistentCollection")
+                     (not (jrec-type-isa? coll "clojure.lang.Counted")))
+                (jolt-count (jolt-seq coll))
+                (jrec-abstract-method-error coll "count")))
            ((vector-ref ifc 2)
             (jolt-invoke (jrec-charseq-length-method coll) coll))
            (else (jrec-field-count coll))))))))
@@ -1566,35 +1571,56 @@
   (lambda (x) (and (jrec-record? x) (not (jrec-plain? x))))
   (lambda (x) (list->cseq (jrec-entry-list x))))
 
+(define (self-seq-method x name)
+  (cond
+    ((jrec? x) (jrec-cl x name))
+    ((jreify? x) (reify-method-ref x name))
+    (else #f)))
+
 (define (jrec-iseq->cseq x)
-  (let ((first-m (jrec-cl x "first"))
-        (next-m (jrec-cl x "next"))
-        (more-m (jrec-cl x "more")))
-    (define (step s)
-      (jolt-make-lazy-seq
-        (lambda ()
-          (let ((tail (cond
-                        (next-m (jolt-invoke next-m s))
-                        (more-m
-                         (let ((r (jolt-invoke more-m s)))
-                           (if (jolt-nil? (jolt-seq r)) jolt-nil r)))
-                        (else jolt-nil))))
-            (jolt-cons
-              (jolt-invoke first-m s)
-              (if (jolt-nil? tail)
-                  jolt-nil
-                  (if (and (jrec? tail) (eq? (jrec-tag tail) (jrec-tag x)))
-                      (step tail)
-                      (jolt-seq tail))))))))
+  (define (step s first-m next-m more-m)
+    (jolt-make-lazy-seq
+      (lambda ()
+        (let ((tail (cond
+                      (next-m (jolt-invoke next-m s))
+                      (more-m
+                       (let ((r (jolt-invoke more-m s)))
+                         (if (jolt-nil? (jolt-seq r)) jolt-nil r)))
+                      (else jolt-nil))))
+          (jolt-cons
+            (jolt-invoke first-m s)
+            (cond
+              ((jolt-nil? tail) jolt-nil)
+              ((and (jrec? tail)
+                    (jrec? s)
+                    (eq? (jrec-tag tail) (jrec-tag s)))
+               (step tail first-m next-m more-m))
+              ((and (jreify? tail)
+                    (self-seq-method tail "first")
+                    (jolt-seq? tail))
+               (step
+                 tail
+                 (self-seq-method tail "first")
+                 (self-seq-method tail "next")
+                 (self-seq-method tail "more")))
+              (else (jolt-seq tail))))))))
+  (let ((first-m (self-seq-method x "first")))
     (if first-m
-        (jolt-seq (step x))
+        (jolt-seq
+          (step
+            x
+            first-m
+            (self-seq-method x "next")
+            (self-seq-method x "more")))
         (jrec-abstract-method-error x "first"))))
+
+(define (self-seq-arm x)
+  (let ((r (jolt-invoke (self-seq-method x "seq") x)))
+    (if (eq? r x) (jrec-iseq->cseq x) (jolt-seq r))))
 
 (register-seq-arm!
   (lambda (x) (jrec-cl x "seq"))
-  (lambda (x)
-    (let ((r (jolt-invoke (jrec-cl x "seq") x)))
-      (if (eq? r x) (jrec-iseq->cseq x) (jolt-seq r)))))
+  self-seq-arm)
 
 (register-conj-arm!
   (lambda (coll) (jrec-cl coll "cons"))
@@ -3987,6 +4013,10 @@
           (let ((v (record-method-dispatch it "next" jolt-nil)))
             (jolt-cons v (iterator-cursor->seq it)))
           jolt-nil))))
+
+(register-seq-arm!
+  (lambda (x) (and (jreify? x) (reify-method-ref x "seq") #t))
+  self-seq-arm)
 
 (register-seq-arm!
   iface-iterator-cursor

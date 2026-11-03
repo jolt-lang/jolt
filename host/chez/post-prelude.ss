@@ -329,7 +329,8 @@
 (define pp-iseq-name "clojure.lang.ISeq")
 (set! jolt-seq?
   (lambda (x)
-    (or (cseq? x) (empty-list-t? x)          ; predicates.ss's jolt-seq?, inline
+    ;; predicates.ss's and lazy-bridge.ss's jolt-seq?, inline
+    (or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)
         (and (or (jrec? x) (jreify? x))
              (or (jrec-iface-pred? x pp-iseq-name)
                  (reify-iface-pred? x pp-iseq-name))))))
