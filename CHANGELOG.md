@@ -315,6 +315,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The default time zone is the machine's, whatever has loaded.** With `TZ`
+  unset, core answered UTC until jolt.time loaded and registered the
+  machine's zone, so a zone-less `SimpleDateFormat` parse moved by hours
+  depending on whether some `java.time` class had been touched first. Core
+  now reads the zone where libc does (the `/etc/localtime` link, else
+  `/etc/timezone`), so `TimeZone/getDefault`, `SimpleDateFormat`, `Calendar`
+  and the deprecated `Date` getters agree with the JVM. An empty `TZ` is UTC.
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without
