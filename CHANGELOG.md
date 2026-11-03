@@ -314,8 +314,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   StringBuilder's index methods and a Matcher's `.start`/`.end`: an unreleased
   change (#1472) had moved the String methods to UTF-16 units, which broke code
   that mixes the two, such as an editor handing GTK's code-point offsets to
-  `subs`. data.json writing an astral character with `:escape-unicode` stays
-  the documented divergence (#1453).
+  `subs`.
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without
