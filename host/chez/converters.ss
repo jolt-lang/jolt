@@ -113,6 +113,10 @@
 ;; actually writes — build the result in one string-append with no rest list,
 ;; no accumulator and no reverse. The variadic entry keeps its shape. Measured
 ;; 56 ns against string-append's 1 ns for (str s "!") before this.
+;; Is X a surrogate unit (values.ss jsurr)? A string, nearly every str argument,
+;; answers with one inline type test.
+(define-syntax str-unit?
+  (syntax-rules () ((_ x) (let ((v x)) (and (not (string? v)) (jsurr? v))))))
 (define jolt-str
   (case-lambda
     (() "")
@@ -120,22 +124,23 @@
     ;; (str sym) hands back the symbol's own name string — JVM (str x) is
     ;; x.toString(), and core.logic's non-unique lvar equality compares those by
     ;; identity.
-    ((a) (if (jsurr? a) (jolt-str-units (list a)) (jolt-str-one a)))
+    ((a) (jolt-str-one a))                ; a lone unit renders U+FFFD itself
     ;; A surrogate unit argument (a (char 0xD83D)) joins with the one after it:
-    ;; only a unit can start a pair, so the test is on every argument but the last.
-    ((a b) (if (jsurr? a)
+    ;; only a unit can start a pair, so the test is on every argument but the
+    ;; last, behind string? so a string argument pays one inline type test.
+    ((a b) (if (str-unit? a)
                (jolt-str-units (list a b))
                (string-append (jolt-str-piece a) (jolt-str-piece b))))
-    ((a b c) (if (or (jsurr? a) (jsurr? b))
+    ((a b c) (if (or (str-unit? a) (str-unit? b))
                  (jolt-str-units (list a b c))
                  (string-append (jolt-str-piece a) (jolt-str-piece b) (jolt-str-piece c))))
     ((a b c . rest)
-     (if (or (jsurr? a) (jsurr? b) (jsurr? c))
+     (if (or (str-unit? a) (str-unit? b) (str-unit? c))
          (jolt-str-units (cons a (cons b (cons c rest))))
          (let loop ((xs rest) (acc (list (jolt-str-piece c) (jolt-str-piece b) (jolt-str-piece a))))
            (cond
              ((null? xs) (apply string-append (reverse acc)))
-             ((jsurr? (car xs)) (jolt-str-units (cons a (cons b (cons c rest)))))
+             ((str-unit? (car xs)) (jolt-str-units (cons a (cons b (cons c rest)))))
              (else (loop (cdr xs) (cons (jolt-str-piece (car xs)) acc)))))))))
 ;; str over arguments among which are surrogate units: a high unit directly
 ;; followed by a low one is the astral character they spell; any other unit is

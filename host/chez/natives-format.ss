@@ -18,7 +18,7 @@
 ;; clause could select it. %c also takes a char.
 (define (fmt-numeric d a f)
   (cond ((jolt-nil? a) "null")
-        ((or (number? a) (and (char? a) (char=? d #\c))) (f a))
+        ((or (number? a) (and (or (char? a) (jsurr? a)) (char=? d #\c))) (f a))
         (else (jolt-throw (jolt-host-throwable "java.util.IllegalFormatConversionException"
                 (string-append (string d) " != " (jolt-class-name a)))))))
 ;; %x / %X / %o are UNSIGNED conversions on the JVM: a negative argument prints the
@@ -472,7 +472,11 @@
       ((#\B) (fmt-pad (string-upcase (fmt-truncate (if (jolt-truthy? a) "true" "false") prec)) flags width #f))
       ((#\h) (fmt-pad (fmt-truncate (fmt-hash a) prec) flags width #f))
       ((#\H) (fmt-pad (string-upcase (fmt-truncate (fmt-hash a) prec)) flags width #f))
-      ((#\c) (fmt-pad (fmt-numeric d a (lambda (n) (if (char? n) (string n) (string (fmt-code-point n)))))
+      ;; a surrogate unit ((char 0xD83D)) is a char too; on its own it is a
+      ;; lone unit, U+FFFD in finished text
+      ((#\c) (fmt-pad (fmt-numeric d a (lambda (n) (cond ((char? n) (string n))
+                                                         ((jsurr? n) jolt-replacement-string)
+                                                         (else (string (fmt-code-point n))))))
                       flags width #f))
       (else (fmt-unknown-conversion (string d))))))
 

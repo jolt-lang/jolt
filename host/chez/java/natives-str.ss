@@ -1381,17 +1381,33 @@
     (let ((s (jolt-seq coll)))
       (if (jolt-nil? s)
           ""
-          (let ((f (jolt-str-render-one (seq-first s)))
+          (let ((f (seq-first s))
                 (r (jolt-seq (seq-more s))))
-            (if (jolt-nil? r)
-                f
-                (str-join-strs
-                 (cons f (let loop ((r r))
-                           (if (jolt-nil? r)
-                               '()
-                               (cons (jolt-str-render-one (seq-first r))
-                                     (loop (jolt-seq (seq-more r)))))))
-                 sep)))))))
+            (cond
+              ((jsurr? f) (str-join-units s sep))
+              ((jolt-nil? r) (jolt-str-render-one f))
+              (else
+               (let* ((units? #f)
+                      (strs (cons (jolt-str-render-one f)
+                                  (let loop ((r r))
+                                    (if (jolt-nil? r)
+                                        '()
+                                        (let ((x (seq-first r)))
+                                          (when (jsurr? x) (set! units? #t))
+                                          (cons (jolt-str-render-one x)
+                                                (loop (jolt-seq (seq-more r))))))))))
+                 (if units? (str-join-units s sep) (str-join-strs strs sep))))))))))
+;; A join over surrogate units (chars of a char[] given as halves): adjacent
+;; halves, with no separator between them, pair as str's arguments do.
+(define (str-join-units s sep)
+  (jolt-str-units
+   (let loop ((s s) (first? #t))
+     (if (jolt-nil? s)
+         '()
+         (let ((rest (loop (jolt-seq (seq-more s)) #f)))
+           (if (or first? (string=? sep ""))
+               (cons (seq-first s) rest)
+               (cons sep (cons (seq-first s) rest))))))))
 
 ;; JVM split semantics over re-split, shared by String.split and Pattern.split:
 ;;   limit > 0   at most `limit` parts, the last left unsplit

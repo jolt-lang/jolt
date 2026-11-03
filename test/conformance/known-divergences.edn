@@ -20,7 +20,7 @@
   :integer-box-model
   "jolt unifies every integer as one exact-integer type. A Chez fixnum is an immediate identical to the plain integer (no distinct identity to tag, no metadata on numbers), so (byte/short/int n) report Long, not Byte/Short/Integer. Value/arithmetic/equality are correct; a faithful narrow box would crash raw compiled (+ …) or de-optimize all arithmetic. jolt-k9sw",
   :string-model
-  "jolt strings are Chez strings: codepoint-indexed, no UTF-16 surrogate pairs. count/seq/subs/nth index codepoints, so an astral character counts 1 where the JVM counts 2 surrogate units. Substrate-inherent.",
+  "jolt strings are Chez strings: codepoint-indexed, no UTF-16 surrogate pairs. count/seq/subs/nth and String/StringBuilder/CharSequence index methods (.length .charAt .substring .indexOf, Matcher .start/.end) all count code points, so an astral character counts 1 where the JVM counts 2 surrogate units. A surrogate unit exists only as a value: (char 0xD83D), a char[] element, Character/toChars. The joiners (str, StringBuilder/StringBuffer append, Writers, (String. char[]), clojure.string/join) pair a high unit with the low unit after it into the code point; a lone unit in finished text is U+FFFD. Substrate-inherent.",
   :concurrency-model
   "compare-and-set! uses Jolt identical?/Chez eq? identity. Reference values match the JVM, but Chez immediates such as fixnums and characters have no distinct boxes, so their CAS identity cannot reproduce JVM boxing allocation/cache boundaries",
   :upstream-quirk
@@ -553,8 +553,8 @@
   ;; by UTF-16 code unit, and (char n) follows the string model rather than the
   ;; JVM's 16-bit char: it has to accept the whole scalar-value range or it could
   ;; not rebuild a char that (first s) just handed out. A superset — every value
-  ;; the JVM accepts still works, and surrogates stay rejected because they are
-  ;; not scalar values.
+  ;; the JVM accepts still works. A surrogate is not a scalar value, so (char n)
+  ;; of one is the surrogate-unit value (the next entries).
   ;;
   ;; The visible consequence is in libraries that hand-encode \uXXXX per char:
   ;; data.json's :escape-unicode writes \u1f603 for an astral character where the
@@ -569,9 +569,9 @@
            :jvm "throws IllegalArgumentException"
            :jolt "128515"}
    :note "Deliberate superset of the JVM, following jolt's code-point string model."}
-  ;; The same model the other way round: half of a surrogate pair is not a value
-  ;; jolt can hold, so no operation can produce or match one. A parser asked to
-  ;; reject a lone surrogate has nothing to reject — instaparse's abnf unicode-test
+  ;; The same model the other way round: no string holds half of a surrogate
+  ;; pair, so indexing a string never produces one. A parser asked to reject a
+  ;; lone surrogate has nothing to reject — instaparse's abnf unicode-test
   ;; feeds (str (first "💩")) to a parser for U+1F4A9 and expects a
   ;; failure, but on jolt that expression IS the whole character, so it parses.
   ;; Five of its assertions rest on that and are the library's whole residue.
@@ -584,6 +584,31 @@
            :jvm "2"
            :jolt "1"}
    :note "Inherent to code-point strings: a surrogate half is not a scalar value."}
+  ;; Every String and CharSequence index method counts code points too, so
+  ;; ported code that measures with .length and cuts with .substring agrees with
+  ;; count and subs (GTK, and so Jonquil, hand out code-point offsets). #1472 made
+  ;; them count UTF-16 units and broke that; pinned in unit.edn
+  ;; ("string-model / code points").
+  {:category :string-model
+   :behavior ".length, .charAt and .indexOf on a string holding an astral character"
+   :jvm "count UTF-16 units: .length of \"😀abc\" is 5, .charAt 0 is the high surrogate"
+   :jolt "count code points: .length is 4, .charAt 0 is the whole character"
+   :check {:expr "[(.length \"😀abc\") (.indexOf \"😀abc\" \"a\") (int (.charAt \"😀abc\" 0))]"
+           :jvm "[5 2 55357]"
+           :jolt "[4 1 128512]"}
+   :note "One index model for the whole string API, the code point."}
+  ;; A surrogate unit is a value (char 0xD83D) but never part of a string: a
+  ;; joiner pairs it with a low unit after it, and one left alone becomes U+FFFD,
+  ;; what the JDK's UTF-8 encoder writes for it, so text leaving the process reads
+  ;; the same. data.json's \uD83D\uDE00 decoding (#1454) is the pairing case.
+  {:category :string-model
+   :behavior "a lone surrogate unit made into a string"
+   :jvm "a one-unit String holding the surrogate"
+   :jolt "U+FFFD; a high unit followed by a low one pairs into the code point"
+   :check {:expr "[(mapv int (str (char 0xD83D))) (count (str (char 0xD83D) (char 0xDE00)))]"
+           :jvm "[[55357] 2]"
+           :jolt "[[65533] 1]"}
+   :note "A jolt string holds code points; a lone unit has no code point."}
   ;; The JVM interns every string literal. jolt shares equal literals only where a
   ;; vfasl image combines the compiled entries (chez-patches/0004, jolt-50zg); a
   ;; form read for eval reads each literal as its own object, and no literal is

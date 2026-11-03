@@ -588,7 +588,6 @@
 ;; so a plain string write takes no lock.
 (define sink-pending (make-weak-eq-hashtable))
 (define sink-pending-mu (make-mutex))
-(define sink-pending-live 0)
 (define (sink-text sink p)
   (cond
     ((and (string? p) (fx=? sink-pending-live 0)) p)
@@ -609,6 +608,10 @@
              (if hi jolt-replacement-string ""))
             (hi (string (surrogates->char hi (jsurr-unit p))))
             (else jolt-replacement-string))))))
+;; A port-writer's sink is its live port, so stdout and a with-out-str capture
+;; never pair with each other; core print's own writes to the port (printing.ss)
+;; key by it too, so print of each half of a pair puts out the character.
+(set-jolt-port-text! sink-text)
 ;; The bytes a byte[] .write argument carries, with the JVM's 3-arg (off len)
 ;; region applied. Out-of-range ends clamp rather than raise: a stream write is
 ;; not the place to turn a caller's off-by-one into a crash mid-output.
@@ -742,14 +745,14 @@
   (list (cons "write" (lambda (self x . rest)
                         (unless (and (byte-array-arg? x)
                                      (pw-write-bytes! self (byte-array-range x rest)))
-                          (display (sink-text self (writer-piece-range x rest)) (port-writer-port self)))
+                          (let ((p (port-writer-port self))) (display (sink-text p (writer-piece-range x rest)) p)))
                         jolt-nil))
         (cons "append" (lambda (self x . rest)
-                         (display (sink-text self (append-text x rest)) (port-writer-port self)) self))
-        (cons "print" (lambda (self x) (display (sink-text self (writer-piece x)) (port-writer-port self)) jolt-nil))
+                         (let ((p (port-writer-port self))) (display (sink-text p (append-text x rest)) p)) self))
+        (cons "print" (lambda (self x) (let ((p (port-writer-port self))) (display (sink-text p (writer-piece x)) p)) jolt-nil))
         (cons "println" (lambda (self . xs)
                           (let ((p (port-writer-port self)))
-                            (display (sink-text self (if (null? xs) "" (writer-piece (car xs)))) p)
+                            (display (sink-text p (if (null? xs) "" (writer-piece (car xs)))) p)
                             (display "\n" p))
                           jolt-nil))
         (cons "flush" (lambda (self) (flush-output-port (port-writer-port self)) jolt-nil))
@@ -827,7 +830,7 @@
     ;; S may be a surrogate unit (#1455): a builder pairs it itself, and the
     ;; other two through sink-text.
     ((and (jhost? t) (string=? (jhost-tag t) "port-writer"))
-     (display (sink-text t s) (port-writer-port t)))
+     (let ((p (port-writer-port t))) (display (sink-text p s) p)))
     ((jhost? t) (sb-append*! t s))
     (else (jolt-invoke (var-deref "clojure.pprint" "-write") t (sink-text t s)))))
 (define (pw-text! self s)

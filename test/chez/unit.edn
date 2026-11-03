@@ -3484,13 +3484,29 @@
   ;; jolt strings are code-point indexed, so (char n) has to accept the whole
   ;; scalar-value range or it cannot rebuild a char the string layer produced.
   ;; Wider than the JVM's 16-bit char by design, hence a unit row not a corpus
-  ;; one. Surrogates are not scalar values and stay rejected.
-  {:suite "char / code points" :expr "[(int (char 65)) (int (char 128515)) (int (first (str (char 128515)))) (try (char 55296) (catch Exception e (ex-message e))) (try (char 1114112) (catch Exception e (ex-message e)))]" :expected "[65 128515 128515 \"Value out of range for char: 55296\" \"Value out of range for char: 1114112\"]"}
+  ;; one. A surrogate is no scalar value, so (char 55296) is the surrogate-unit
+  ;; value (#1454), a Character whose int is the unit.
+  {:suite "char / code points" :expr "[(int (char 65)) (int (char 128515)) (int (first (str (char 128515)))) (char 55296) (int (char 55296)) (try (char 1114112) (catch Exception e (ex-message e)))]" :expected "[65 128515 128515 \\uD800 55296 \"Value out of range for char: 1114112\"]"}
   ;; The same model seen from the string side: an astral character is ONE element,
   ;; so there is no surrogate half to index out. A JVM string holds two code units
   ;; here, which is why a parser test that expects a lone surrogate to be rejected
   ;; cannot pass — see the :string-model entry in known-divergences.edn.
   {:suite "string / surrogate halves" :expr "(let [c (str (char 128169))] [(count c) (int (first c)) (nil? (second c)) (= c (str (first c)))])" :expected "[1 128169 true true]"}
+  ;; Strings index by code point everywhere: clojure.core and the String,
+  ;; StringBuilder and Matcher index methods agree, so an offset from one is good
+  ;; for the other (Jonquil hands GTK's code-point offsets to subs). #1472 made
+  ;; the methods count UTF-16 units; these pin the model (known-divergences
+  ;; :string-model).
+  {:suite "string-model / code points" :expr "(let [s \"😀abc\"] [(count s) (.length s) (subs s 1) (int (nth s 0)) (int (.charAt s 0)) (.substring s 1) (.indexOf s \"a\") (.lastIndexOf s \"c\") (mapv int (seq s)) (mapv int (vec s)) (clojure.string/index-of s \"b\") (.codePointAt s 0) (.subSequence s 1 3)])" :expected "[4 4 \"abc\" 128512 128512 \"abc\" 1 3 [128512 97 98 99] [128512 97 98 99] 2 128512 \"ab\"]"}
+  {:suite "string-model / code points" :expr "(let [s \"x😀abc\" m (re-matcher #\"a(b)\" s)] [(re-find #\"b\" s) (.find m) (.start m) (.end m) (.start m 1) (subs s (.start m)) (let [m2 (re-matcher #\"😀\" s)] (.find m2) [(.start m2) (.end m2)])])" :expected "[\"b\" true 2 4 3 \"abc\" [1 2]]"}
+  {:suite "string-model / code points" :expr "(let [sb (StringBuilder.)] (.append sb \"😀\") (.append sb \"ab\") [(.length sb) (int (.charAt sb 0)) (.charAt sb 1) (do (.insert sb 1 \"Z\") (str sb)) (do (.deleteCharAt sb 0) [(.length sb) (str sb)]) (.indexOf sb \"b\")])" :expected "[3 128512 \\a \"😀Zab\" [3 \"Zab\"] 2]"}
+  ;; A surrogate unit is a value, never part of a string (#1454): the joiners
+  ;; pair a high unit with the low one after it (data.json decodes a \uD83D\uDE00
+  ;; escape a unit at a time into a StringBuilder), and a unit left alone is
+  ;; U+FFFD (65533).
+  {:suite "string / surrogate units" :expr "(let [h (char 0xD83D) l (char 0xDE00)] [(str h l) (let [sb (StringBuilder.)] (.append sb h) (.append sb l) [(.length sb) (str sb)]) (String. (char-array [h l])) (let [w (java.io.StringWriter.)] (.write w 0xD83D) (.write w 0xDE00) (str w)) (clojure.string/join [h l]) (String. (Character/toChars 128512)) (mapv int (str h)) (mapv int (str l h)) (mapv int (clojure.string/join \",\" [h l]))])" :expected "[\"😀\" [1 \"😀\"] \"😀\" \"😀\" \"😀\" \"😀\" [65533] [65533 65533] [65533 44 65533]]"}
+  ;; A unit as a Character: printed, formatted and classified like one.
+  {:suite "string / surrogate units" :expr "(let [h (char 0xD83D)] [(with-out-str (print h) (print (char 0xDE00))) (mapv int (print-str h)) (mapv int (format \"%c\" h)) (Character/isWhitespace h) (Character/getType h) (Character/isDefined (char 0xDC00)) (int (Character/toUpperCase h)) (Character/isWhitespace (int 0xD83D)) (with-out-str (print \"a\") (try (with-out-str (print h) (throw (ex-info \"x\" {}))) (catch Exception e nil)) (print \"b\"))])" :expected "[\"😀\" [65533] [65533] false 19 true 55357 false \"ab\"]"}
   ;; str of a deftype/record with no toString is Object.toString, as on the
   ;; JVM: "user.Rec@" and the hex of its hashCode, the map hash for a record and
   ;; the identity hash for a deftype. A COLLECTION deftype too: only pr prints it

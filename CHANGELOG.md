@@ -302,6 +302,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A surrogate unit is a value, and the joiners pair it (#1454).**
+  `(char 0xD83D)` used to throw; it is now a `Character` holding the unit, as a
+  `char[]` element and `Character/toChars` are, and `str`, StringBuilder and
+  StringBuffer `append`, Writers, `(String. char[])` and `clojure.string/join`
+  put a high unit followed by its low one together as the code point. A lone
+  unit in finished text is U+FFFD. data.json reads a `😀` escape
+  as the emoji. `print`, `format "%c"` and `Character`'s classifiers take a
+  unit. Strings themselves still index by code point everywhere, `count` and
+  `subs` as well as `.length`, `.charAt`, `.substring`, `.indexOf`, a
+  StringBuilder's index methods and a Matcher's `.start`/`.end`: an unreleased
+  change (#1472) had moved the String methods to UTF-16 units, which broke code
+  that mixes the two, such as an editor handing GTK's code-point offsets to
+  `subs`. data.json writing an astral character with `:escape-unicode` stays
+  the documented divergence (#1453).
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without
