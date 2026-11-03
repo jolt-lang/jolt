@@ -7223,12 +7223,9 @@
   {:suite "charsets / malformed UTF-8" :label "a URI accessor decodes its escape runs through the same decoder" :expected "[[47 97 65533 65533 98] [47 65279 97]]" :actual "[(mapv int (.getPath (java.net.URI. \"/a%C0%AFb\"))) (mapv int (.getPath (java.net.URI. \"/%EF%BB%BFa\")))]" :portability :common}
   {:suite "charsets / malformed UTF-8" :label "slurp of a file: URL agrees with slurp of the path" :expected "[[97 65533 65533 98] [97 65533 65533 98]]" :actual "(let [f (java.io.File/createTempFile \"u8url\" \".bin\")] (with-open [o (clojure.java.io/output-stream f)] (.write o (byte-array [97 -64 -81 98]))) [(mapv int (slurp (.toURL (.toURI f)))) (mapv int (slurp f))])" :portability :common}
   {:suite "charsets / malformed UTF-8" :label "well-formed multibyte text is untouched by any of it" :expected "[\"café 日\" 6 true]" :actual "(let [s (String. (.getBytes \"café 日\" \"UTF-8\") \"UTF-8\")] [s (count s) (= s \"café 日\")])" :portability :common}
-  ;; Every index a program sees counts UTF-16 units, as on the JVM (#1455).
-  {:suite "string-model / UTF-16 units" :label "count of an astral string" :expected "2" :actual "(count \"😀\")" :portability :common}
-  {:suite "string-model / UTF-16 units" :label "seq walks units" :expected "[3 55357 56832 \\x]" :actual "(let [s (seq \"😀x\")] [(count s) (int (first s)) (int (second s)) (nth s 2)])" :portability :jvm}
-  {:suite "string-model / UTF-16 units" :label "subs over an astral character" :expected "[\"😀\" \"b\"]" :actual "[(subs \"a😀b\" 1 3) (subs \"a😀b\" 3)]" :portability :common}
-  {:suite "string-model / UTF-16 units" :label "the units of a string rejoin" :expected "[true true true true]" :actual "(let [s \"a😀b\"] [(= s (apply str (seq s))) (= s (clojure.string/join (seq s))) (= s (String. (char-array s))) (= s (apply str (map str s)))])" :portability :jvm}
-  {:suite "string-model / UTF-16 units" :label "index-of, last-index-of and a Matcher count units" :expected "[3 3 [3 4] \"b\"]" :actual "(let [s \"a😀b\" m (re-matcher #\"b\" s)] (.find m) [(clojure.string/index-of s \"b\") (clojure.string/last-index-of s \"b\") [(.start m) (.end m)] (subs s (.start m))])" :portability :common}
+  {:suite "string-model / codepoint strings" :label "count of astral string" :expected "1" :actual "(count \"😀\")" :portability :common}
+  {:suite "string-model / codepoint strings" :label "seq counts codepoints" :expected "2" :actual "(count (seq \"😀x\"))" :portability :common}
+  {:suite "string-model / codepoint strings" :label "subs across astral boundary" :expected "\"😀\"" :actual "(subs \"a😀b\" 1 2)" :portability :common}
   ;; String's index methods count UTF-16 units, as on the JVM, while count/nth/
   ;; subs/seq above keep code points (#1455): .charAt hands out a surrogate half
   ;; as the code-unit value (char n) also makes, and the joiners pair them again.

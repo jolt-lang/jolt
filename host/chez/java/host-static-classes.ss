@@ -3013,11 +3013,9 @@
                ((string=? method-name "lookingAt") (jolt-matcher-looking-at obj))
                ;; .find() resumes at the scan cursor; .find(from) resets and
                ;; scans from `from`.
-               ;; Matcher indices (find(from), region, start, end) count UTF-16
-               ;; units, as every String index does (#1455).
                ((string=? method-name "find")
                 (if (pair? rest)
-                    (jolt-matcher-find-from obj (matcher-cp obj (jnum->exact (car rest))))
+                    (jolt-matcher-find-from obj (jnum->exact (car rest)))
                     (not (jolt-nil? (jolt-re-find obj)))))
                ((string=? method-name "group") (apply jolt-matcher-group obj rest))
                ((string=? method-name "groupCount") (jolt-matcher-group-count obj))
@@ -3029,10 +3027,9 @@
                ((string=? method-name "replaceFirst")
                 (jolt-matcher-replace obj (car rest) #f))
                ((string=? method-name "region")
-                (jolt-matcher-region obj (matcher-cp obj (jnum->exact (car rest)))
-                                     (matcher-cp obj (jnum->exact (cadr rest)))))
-               ((string=? method-name "regionStart") (matcher-u16 obj (matcher-t-rstart obj)))
-               ((string=? method-name "regionEnd") (matcher-u16 obj (matcher-t-rend obj)))
+                (jolt-matcher-region obj (jnum->exact (car rest)) (jnum->exact (cadr rest))))
+               ((string=? method-name "regionStart") (matcher-t-rstart obj))
+               ((string=? method-name "regionEnd") (matcher-t-rend obj))
                ;; .reset(cs) — a new input on the same pattern — is not modelled;
                ;; only the no-argument reset, which is the one region and
                ;; find(int) are defined in terms of.
@@ -3040,21 +3037,14 @@
                ;; start/end of the last successful find (whole match, or group n)
                ((string=? method-name "start")
                 (let ((mm (matcher-t-last obj)))
-                  (if mm (matcher-u16 obj (irregex-match-start-index mm (if (pair? rest) (jnum->exact (car rest)) 0)))
+                  (if mm (irregex-match-start-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
                       (jolt-matcher-no-match))))
                ((string=? method-name "end")
                 (let ((mm (matcher-t-last obj)))
-                  (if mm (matcher-u16 obj (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0)))
+                  (if mm (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
                       (jolt-matcher-no-match))))
                (else (dispatch-miss obj method-name rest))))
         (else 'pass))))))
-
-;; A Matcher's input is code points underneath; its index methods count UTF-16
-;; units. An unmatched group's -1 stays -1.
-(define (matcher-u16 m i)
-  (let ((s (matcher-t-str m))) (if (and (fixnum? i) (fx>=? i 0) (string? s)) (cp->u16 s i) i)))
-(define (matcher-cp m u)
-  (let ((s (matcher-t-str m))) (if (and (fixnum? u) (string? s)) (u16->cp s u) u)))
 
 ;; ---- def-var! the registry entry points so emit can also reach them ---------
 (def-var! "clojure.core" "host-static-ref" host-static-ref)

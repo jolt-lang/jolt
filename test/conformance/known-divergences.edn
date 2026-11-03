@@ -549,34 +549,40 @@
            :jvm "throws ClassCastException"
            :jolt "97.0"}
    :note "(int \\a) / (long \\a) / (short \\a) / (byte \\a) are 97 on BOTH runtimes; only the float widths differ."}
-  ;; jolt's strings STORE Unicode code points, but every index a program sees
-  ;; counts UTF-16 units, as on the JVM: count, nth, get, first/seq, subs, the
-  ;; String and StringBuilder index methods, clojure.string/index-of and a
-  ;; Matcher's start/end (#1455). Half of an astral character is a surrogate
-  ;; code-unit value, which the joiners pair again. (char n) is still wider than
-  ;; the JVM's 16-bit char: it takes any scalar value, so (char 128515) is the
-  ;; whole character where the JVM refuses it. A superset — every value the JVM
-  ;; accepts still works. Pinned in unit.edn ("char / code points").
+  ;; jolt's strings hold Unicode CODE POINTS, and count/nth/first/subs/seq index
+  ;; them, where the JVM's index UTF-16 code units. (char n) follows that model
+  ;; rather than the JVM's 16-bit char: it has to accept the whole scalar-value
+  ;; range or it could not rebuild a char that (first s) just handed out. A
+  ;; superset — every value the JVM accepts still works.
+  ;;
+  ;; String's OWN index methods (.length, .charAt, .substring, .indexOf …) count
+  ;; UTF-16 units as on the JVM, and (char 0xD83D) is a surrogate code-unit value
+  ;; that the joiners pair (#1455), so code that encodes or decodes per unit —
+  ;; data.json's \uXXXX escapes, both ways — behaves as it does on the JVM. The
+  ;; round trip is pinned in unit.edn ("char / code points").
   {:category :string-model
-   :behavior "(char 128515), a code point above U+FFFF"
+   :behavior "(char 128515), the code point (first \"<astral>\") yields"
    :jvm "throws IllegalArgumentException — a JVM char is 16 bits"
-   :jolt "returns that character, which a string holds as its two UTF-16 units"
-   :check {:expr "(.codePointAt (str (char 128515)) 0)"
+   :jolt "returns that character; (int (first (str (char 128515)))) is 128515 again"
+   :check {:expr "(int (first (str (char 128515))))"
            :jvm "throws IllegalArgumentException"
            :jolt "128515"}
-   :note "Deliberate superset of the JVM."}
-  ;; The regex engine matches over code points, so a match can never start or
-  ;; end between the halves of a pair. An empty pattern matches at each code
-  ;; point, where the JVM's matches at each unit — inside the pair too.
-  ;; Matches and their indices are otherwise the JVM's: start/end count units.
+   :note "Deliberate superset of the JVM, following jolt's code-point string model."}
+  ;; The same model the other way round: first/nth/seq hand out whole characters,
+  ;; never half a pair. A parser asked to reject a lone surrogate gets none from
+  ;; them — instaparse's abnf unicode-test feeds (str (first "💩")) to a parser
+  ;; for U+1F4A9 and expects a failure, but on jolt that expression IS the whole
+  ;; character, so it parses. Five of its assertions rest on that and are the
+  ;; library's whole residue. (.charAt s 0) is the high half, as on the JVM.
+  ;; Pinned jolt-side in unit.edn ("string / surrogate halves").
   {:category :string-model
-   :behavior "(clojure.string/split \"a😀b\" #\"\")"
-   :jvm "four pieces, the pair split between two of them"
-   :jolt "three pieces, the astral character whole"
-   :check {:expr "(count (clojure.string/split \"a😀b\" #\"\"))"
-           :jvm "4"
-           :jolt "3"}
-   :note "Only an empty or lookaround-only match can land between the halves of a pair."}
+   :behavior "indexing into a string holding an astral character"
+   :jvm "(count \"<astral>\") is 2 and (first …) is the high surrogate \\uD83D"
+   :jolt "(count …) is 1, (first …) is the whole character, (second …) is nil"
+   :check {:expr "(count \"😀\")"
+           :jvm "2"
+           :jolt "1"}
+   :note "Inherent to code-point strings: a surrogate half is not a scalar value."}
   ;; A JVM String can hold an unpaired surrogate; a jolt string holds code
   ;; points, so it cannot. A lone unit outside a string is a value (char 0xD83D),
   ;; and a high unit followed by its low one is paired wherever text is joined.
@@ -1810,6 +1816,9 @@
   {:suite "seq-type-model / specialized seq classes", :label "bigint of a small bound is a long here", :category :integer-box-model}
   {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Byte is false", :category :integer-box-model}
     {:suite "integer-box-model / narrow int class collapses to Long", :label "instance? Long is true", :category :integer-box-model}
+   {:suite "string-model / codepoint strings", :label "count of astral string", :category :string-model}
+   {:suite "string-model / codepoint strings", :label "seq counts codepoints", :category :string-model}
+   {:suite "string-model / codepoint strings", :label "subs across astral boundary", :category :string-model}
    {:suite "concurrency-model / compare-and-set!", :label "immediate fixnums have no distinct boxes", :category :concurrency-model}
    ;; (#= evaluates at read time now, gated by *read-eval* — that divergence is
    ;;  gone; the reader / read-eval corpus suite pins the JVM behavior.)
