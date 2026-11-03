@@ -336,7 +336,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixnums alike; the Gambit host gets the name as a shim over
   `##flonum->fixnum`. `bench/num_casts.clj`: `(long d)` 62 ms to 41 ms and
   `(unchecked-long d)` 49 ms to 28 ms for 2M casts on an M1 Pro; on a 32-bit
-  target (Nintendo Wii, `tpb32b`) `(long 123.7)` <before> us to <after> us.
+  target (Nintendo Wii, `tpb32b`) `(long 123.7)` 27.0 us to 6.3 us and
+  `(unchecked-long 123.7)` 23.0 us to 3.1 us.
   No result changes; three corpus rows pin the fixnum edges on both widths.
   Part of #1492.
 
