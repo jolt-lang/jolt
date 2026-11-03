@@ -10,8 +10,8 @@
 ;; compares and then a second exact-vs-bignum check after truncation. On the Wii
 ;; (32-bit, portable bytecode) that was 135 us per (long x) against 26 us for
 ;; (unchecked-long x), and swapping the casts in one program's drawing code took
-;; its frame from 252 ms to 60 ms. The unchecked casts saturated through the
-;; same bignum compares.
+;; its draw from 252 ms to 60 ms. `unchecked-long` saturated through the same
+;; bignum compares.
 ;;
 ;; The doubles come from an array built at run time from the size, spread across
 ;; the int range with fractional parts, so nothing folds at compile time, and
@@ -37,39 +37,39 @@
     (dotimes [i width] (aset a i (- (* i 4194303) 2147483645)))
     a))
 
-(def ^:private doubles (atom nil))
-(def ^:private longs (atom nil))
+(def ^:private dbl-arr (atom nil))
+(def ^:private lng-arr (atom nil))
 
 (defn- long-of-double [n]
-  (let [^doubles a @doubles]
+  (let [^doubles a @dbl-arr]
     (loop [i 0 acc 0]
       (if (< i n)
         (recur (inc i) (+ acc (long (aget a (rem i width)))))
         acc))))
 
 (defn- int-of-double [n]
-  (let [^doubles a @doubles]
+  (let [^doubles a @dbl-arr]
     (loop [i 0 acc 0]
       (if (< i n)
         (recur (inc i) (+ acc (int (aget a (rem i width)))))
         acc))))
 
 (defn- unchecked-long-of-double [n]
-  (let [^doubles a @doubles]
+  (let [^doubles a @dbl-arr]
     (loop [i 0 acc 0]
       (if (< i n)
         (recur (inc i) (+ acc (unchecked-long (aget a (rem i width)))))
         acc))))
 
 (defn- unchecked-int-of-double [n]
-  (let [^doubles a @doubles]
+  (let [^doubles a @dbl-arr]
     (loop [i 0 acc 0]
       (if (< i n)
         (recur (inc i) (+ acc (unchecked-int (aget a (rem i width)))))
         acc))))
 
 (defn- long-of-fixnum [n]
-  (let [^longs a @longs]
+  (let [^longs a @lng-arr]
     (loop [i 0 acc 0]
       (if (< i n)
         (recur (inc i) (+ acc (long (aget a (rem i width)))))
@@ -90,8 +90,8 @@
 
 (defn -main [& args]
   (let [n (if (seq args) (Integer/parseInt (first args)) 2000000)]
-    (reset! doubles (make-doubles n))
-    (reset! longs (make-longs))
+    (reset! dbl-arr (make-doubles n))
+    (reset! lng-arr (make-longs))
     (dotimes [_ 2] (run (quot n 4)))                     ; warmup
     (let [runs 5
           ;; the phase split, for reading by hand; `mean:` below is the row
