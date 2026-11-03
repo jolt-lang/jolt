@@ -1064,11 +1064,7 @@
   (let ((from (if (fixnum? from) (fxmax from 0) from)))
     (cond
       ((u16-needle-unit needle) => (lambda (u) (u16-unit-index-of s u from #f)))
-      ;; no astral char before FROM: search there, and the match needs no
-      ;; conversion unless one lies before it (only that prefix is scanned)
-      ((and (fixnum? from) (u16-clear-below? s from))
-       (let ((r (str-index-of-any s needle from)))
-         (if (or (fx<? r 0) (u16-clear-below? s r)) r (cp->u16 s r))))
+      ((fx=? (u16-length s) (string-length s)) (str-index-of-any s needle from))
       (else
        (let* ((c (u16->cp s from))
               (r (str-index-of-any s needle (if (u16-split? s from) (fx+ c 1) c))))
@@ -1488,8 +1484,9 @@
   (fx>=? (str-index-of-any (str-coerce s) (if (jolt-nil? p) (throw-jvm 'NullPointerException "value") p) 0) 0))
 (define (str-index-of* s v . opt)
   (let* ((s (str-coerce s))
+         (n (jolt-str-u16-length s))
          (from (if (pair? opt)
-                   (min (max 0 (jnum->exact (car opt))) (jolt-str-u16-length s))
+                   (min (max 0 (jnum->exact (car opt))) n)
                    0))
          (i (jolt-str-u16-index-of s v from)))
     (if (fx<? i 0) jolt-nil i)))

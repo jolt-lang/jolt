@@ -289,43 +289,12 @@
        (let* ((s (vector-ref e 0)) (n (string-length s)))
          (if (fx>=? pre n)
              #t
-             (let* ((goal (fxmin n (fxmax k (fx+ pre (fxmax pre 64)))))
-                    (i (u16-first-astral s pre goal)))
-               (if (fx=? i goal)
-                   (begin (vector-set! e 1 i) #t)
-                   (begin (u16-build! e i) (fx<=? k i))))))))))
-;; The index of the first astral char in s[from, to), or TO: the scan behind
-;; every answer here. Eight chars per step, OR'd together, since the loop's own
-;; overhead is most of what a char-at-a-time scan costs (0.6 against 2 ns a char).
-(define-syntax u16-cp (syntax-rules () ((_ s i) (char->integer (sa-ustring-ref s i)))))
-(define (u16-first-astral s from to)
-  (let loop ((i from))
-    (if (fx<=? (sa-ufx+ i 8) to)
-        (if (fx<? (fxior (fxior (u16-cp s i) (u16-cp s (sa-ufx+ i 1)))
-                         (fxior (u16-cp s (sa-ufx+ i 2)) (u16-cp s (sa-ufx+ i 3)))
-                         (fxior (u16-cp s (sa-ufx+ i 4)) (u16-cp s (sa-ufx+ i 5)))
-                         (fxior (u16-cp s (sa-ufx+ i 6)) (u16-cp s (sa-ufx+ i 7))))
-                  #x10000)
-            (loop (sa-ufx+ i 8))
-            (let one ((i i)) (if (fx<? (u16-cp s i) #x10000) (one (sa-ufx+ i 1)) i)))
-        (let one ((i i))
-          (cond ((sa-ufx=? i to) to)
-                ((fx<? (u16-cp s i) #x10000) (one (sa-ufx+ i 1)))
-                (else i))))))
-;; How many astral chars s[from, to) holds.
-(define (u16-count-astral s from to)
-  (let loop ((i (u16-first-astral s from to)) (k 0))
-    (if (fx>=? i to) k (loop (u16-first-astral s (sa-ufx+ i 1) to) (sa-ufx+ k 1)))))
-;; Is s free of astral chars below K?
-;; A short string the cache does not hold is scanned directly: that costs less
-;; than allocating and installing an entry for it, so count, subs or indexOf
-;; over many short strings (keys, tokens, lines) allocate nothing.
-(define u16-short 64)
-(define (u16-clear-below? s k)
-  (let ((a u16-slot-a) (n (string-length s)))
-    (cond ((eq? (sa-uvector-ref a 0) s) (u16-clear-upto? a k))
-          ((fx<? n u16-short) (let ((m (fxmin n (fxmax k 0)))) (fx=? (u16-first-astral s 0 m) m)))
-          (else (u16-clear-upto? (u16-entry s) k)))))
+             (let ((goal (fxmin n (fxmax k (fx+ pre (fxmax pre 64))))))
+               (let loop ((i pre))
+                 (cond
+                   ((fx=? i goal) (vector-set! e 1 i) #t)
+                   ((fx<? (char->integer (sa-ustring-ref s i)) #x10000) (loop (fx+ i 1)))
+                   (else (u16-build! e i) (fx<=? k i)))))))))))
 ;; The string's length in UTF-16 units.
 (define (u16-length s)
   (let ((e (u16-entry s)) (n (string-length s)))
@@ -374,12 +343,12 @@
 (define (u16-ref s i)
   (and (fixnum? i) (fx>=? i 0)
        (let ((a u16-slot-a))
-         (if (and (eq? (sa-uvector-ref a 0) s) (fx<? i (sa-uvector-ref a 1)))
+         (if (and (eq? (vector-ref a 0) s) (fx<? i (vector-ref a 1)))
              (string-ref s i)
              (and (fx<? i (u16-length s)) (u16-unit-at s i))))))
 ;; s's UTF-16 units [b, e) as a list of jolt chars.
 (define (u16-units s b e)
-  (if (u16-clear-below? s e)
+  (if (u16-clear-upto? (u16-entry s) e)
       (let loop ((u (fx- e 1)) (acc '()))
         (if (fx<? u b) acc (loop (fx- u 1) (cons (string-ref s u) acc))))
       (let loop ((u (fx- e 1)) (acc '()))
@@ -390,7 +359,7 @@
   (let ((i (jolt->idx i)))
     (if (and (fixnum? i) (fx>=? i 0))
         (let ((a u16-slot-a))
-          (if (and (eq? (sa-uvector-ref a 0) s) (fx<? i (sa-uvector-ref a 1)))
+          (if (and (eq? (vector-ref a 0) s) (fx<? i (vector-ref a 1)))
               (string-ref s i)
               (let ((len (u16-length s)))
                 (if (fx<? i len) (u16-unit-at s i) (char-index-oob i len)))))
@@ -398,18 +367,12 @@
 ;; String.length: the cached entry answers a string known to be clear throughout.
 (define (jolt-str-u16-length s)
   (let ((a u16-slot-a) (n (string-length s)))
-    (cond ((and (eq? (sa-uvector-ref a 0) s) (fx=? (sa-uvector-ref a 1) n)) n)
-          ((fx<? n u16-short)
-           ;; a short string found clear is remembered, so asking again hits
-           (let ((k (u16-count-astral s 0 n)))
-             (when (fx=? k 0) (set! u16-slot-b a) (set! u16-slot-a (vector s n #f)))
-             (fx+ n k)))
-          (else (u16-length s)))))
+    (if (and (eq? (vector-ref a 0) s) (fx=? (vector-ref a 1) n)) n (u16-length s))))
 ;; String.substring / subSequence over UTF-16 indices. A bound that splits a pair
 ;; leaves half of it in the result, a lone unit, which a jolt string holds as
 ;; U+FFFD (the policy in values.ss).
 (define (u16-substring s b e)
-  (if (or (not (fixnum? e)) (u16-clear-below? s e))
+  (if (or (not (fixnum? e)) (u16-clear-upto? (u16-entry s) e))
       (jolt-substr s b e)   ; text below e has no astral char: the indices agree
       (let ((len (u16-length s)))
         (begin
