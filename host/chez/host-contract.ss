@@ -968,12 +968,25 @@
 ;; name -- a defmulti or defn over it, or a fresh var after ns-unmap -- replaces
 ;; that metadata, so the inference's protocol-method registry entry is only good
 ;; while this holds.
+;;
+;; A method of a protocol defined :extend-via-metadata answers no here either: its
+;; shim consults the receiver's metadata between the type's own impls and extend's
+;; (protocols.ss protocol-resolve-meta), so the receiver's type alone does not
+;; decide the impl, and a PIC or devirtualized resolve in place of the shim would
+;; skip the metadata. The protocol value is read now, through its var, so a
+;; redefinition with or without the option is what the next compile sees.
 (define hc-kw-protocol (keyword #f "protocol"))
+(define hc-kw-extend-via-metadata (keyword #f "extend-via-metadata"))
 (define (hc-protocol-method-var? ctx ns-name nm)
   (let ((c (var-cell-lookup ns-name nm)))
     (if (and c
-             (let ((m (var-cell-meta c)))
-               (and (pmap? m) (jolt-truthy? (jolt-get m hc-kw-protocol jolt-nil)))))
+             (let* ((m (var-cell-meta c))
+                    (pv (and (pmap? m) (jolt-get m hc-kw-protocol jolt-nil))))
+               (and pv (jolt-truthy? pv)
+                    (not (and (var-cell? pv)
+                              (let ((p (var-cell-root pv)))
+                                (and (pmap? p)
+                                     (jolt-truthy? (jolt-get p hc-kw-extend-via-metadata jolt-nil)))))))))
         #t jolt-nil)))
 ;; Is the var dynamic NOW? A direct-linked def can be made dynamic after it ran
 ;; (.setDynamic), and a form compiled after that must read it through the var

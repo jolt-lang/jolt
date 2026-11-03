@@ -157,6 +157,14 @@
 ;;                      count 16.3 -> 2.8, contains 6.6 -> 2.0, reduce-kv
 ;;                      20.9 -> 1.8, into 5.95 -> 1.4, seq 4.6 -> 1.2.
 ;;
+;;   record-map->       map->R of a map holding one key that is not a field,
+;;                      against building the same record positionally and
+;;                      assoc'ing that key. A pre-check for "only field keys"
+;;                      (a count plus a contains? per field) ahead of the old
+;;                      dissoc-copy-and-fold made this 4.1 where it had been
+;;                      2.45; one fold over the map that skips the field keys
+;;                      reads ~1.85 (jolt run, arm64).
+;;
 ;;   top-level-fn       a fn built in a bare top-level form — every deftype and
 ;;                      defrecord method, every extend-type impl and defmethod —
 ;;                      got no constant pool, so each keyword literal in it
@@ -442,6 +450,7 @@
 (def ^:private plain-rec (->PlainRec 1 2 3))
 (def ^:private plain-map {:x 1 :y 2 :z 3})
 (def ^:private kv-sum (fn [a k v] (+ a v)))
+(def ^:private plain-map+ {:x 1 :y 2 :z 3 :w 4})
 ;; one body, built under a def and in a bare top-level form
 (def ^:private kw-map {:a 1 :b 2 :c 3})
 (def ^:private fn-via-def (fn [m] (+ (get m :a) (get m :b) (get m :c))))
@@ -605,6 +614,10 @@
           #(dotimes [_ 20000] (seq plain-map))
           #(dotimes [_ 20000] (seq plain-rec))
           2.3 3.5)
+  (judge! "record-map->"
+          #(dotimes [_ 20000] (assoc (->PlainRec 1 2 3) :w 4))
+          #(dotimes [_ 20000] (map->PlainRec plain-map+))
+          3.0 4.5)
 
   ;; The same fn body costs the same whether a def or a bare form built it.
   (judge! "top-level-fn"
