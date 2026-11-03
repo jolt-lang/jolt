@@ -4825,34 +4825,35 @@
           (when memo (set-cdr! memo h))
           h))))
 (define (uri-hashcode* u)
-  ;; one walk of the state for the components the hash reads
-  (let loop ((st (jhost-state u)) (scheme #f) (ssp #f) (auth #f) (host #f) (ui #f)
-             (port -1) (path #f) (query #f) (frag #f))
-    (if (pair? st)
-        (let ((k (caar st)) (v (uri-c (cdar st))))
-          (case k
-            ((scheme) (loop (cdr st) v ssp auth host ui port path query frag))
-            ((ssp) (loop (cdr st) scheme v auth host ui port path query frag))
-            ((authority) (loop (cdr st) scheme ssp v host ui port path query frag))
-            ((host) (loop (cdr st) scheme ssp auth v ui port path query frag))
-            ((user-info) (loop (cdr st) scheme ssp auth host v port path query frag))
-            ((port) (loop (cdr st) scheme ssp auth host ui (or v -1) path query frag))
-            ((path) (loop (cdr st) scheme ssp auth host ui port v query frag))
-            ((query) (loop (cdr st) scheme ssp auth host ui port path v frag))
-            ((fragment) (loop (cdr st) scheme ssp auth host ui port path query v))
-            (else (loop (cdr st) scheme ssp auth host ui port path query frag))))
-        (let* ((h (uri-hash-ci 0 scheme))
-               (h (uri-hash h frag)))
-          ;; opaque: a scheme and a scheme-specific part not starting with /
-          (if (and scheme ssp (or (fx=? 0 (string-length ssp)) (not (char=? (string-ref ssp 0) #\/))))
-              (uri-hash h ssp)
-              (let* ((h (uri-hash h path))
-                     (h (uri-hash h query)))
-                (if host
-                    (let* ((h (uri-hash h ui))
-                           (h (uri-hash-ci h host)))
-                      (i32 (+ h (* 1949 port))))
-                    (uri-hash h auth))))))))
+  ;; The state is the alist uri-parse-1 builds, in its order; each field is read
+  ;; by stepping down it, and checked by key, so a state in another order (none
+  ;; is built today) falls back to the lookup instead of reading a wrong field.
+  (let* ((st (jhost-state u))
+         (get (lambda (p k) (if (and (pair? p) (eq? (caar p) k)) (uri-c (cdar p)) (uri-c (uri-field u k)))))
+         (s-scheme (and (pair? st) (pair? (cdr st)) (cddr st)))   ; hash, string, scheme
+         (s-ssp (and (pair? s-scheme) (cdr s-scheme)))
+         (s-auth (and (pair? s-ssp) (pair? (cdr s-ssp)) (cddr s-ssp)))
+         (s-host (and (pair? s-auth) (pair? (cdr s-auth)) (cddr s-auth)))
+         (s-ui (and (pair? s-host) (cdr s-host)))
+         (s-port (and (pair? s-ui) (pair? (cdr s-ui)) (cddr s-ui)))
+         (s-path (and (pair? s-port) (cdr s-port)))
+         (s-query (and (pair? s-path) (pair? (cdr s-path)) (cddr s-path)))
+         (s-frag (and (pair? s-query) (pair? (cdr s-query)) (cddr s-query)))
+         (scheme (get s-scheme 'scheme))
+         (ssp (get s-ssp 'ssp))
+         (h (uri-hash (uri-hash-ci 0 scheme) (get s-frag 'fragment))))
+    ;; opaque: a scheme and a scheme-specific part not starting with /
+    (if (and scheme ssp (or (fx=? 0 (string-length ssp)) (not (char=? (string-ref ssp 0) #\/))))
+        (uri-hash h ssp)
+        (let* ((h (uri-hash h (get s-path 'path)))
+               (h (uri-hash h (get s-query 'query)))
+               (host (get s-host 'host)))
+          (if host
+              (let* ((h (uri-hash h (get s-ui 'user-info)))
+                     (h (uri-hash-ci h host))
+                     (port (or (get s-port 'port) -1)))
+                (uri-u32->i32 (fxlogand (fx+ (fxlogand h #xFFFFFFFF) (fxlogand (fx* 1949 port) #xFFFFFFFF)) #xFFFFFFFF)))
+              (uri-hash h (get s-auth 'authority)))))))
 ;; URI.compare / compareIgnoringCase: String.compareTo's own differences, with
 ;; an escape's hex digits compared ignoring case once both strings hold one
 (define (uri-cmp s t)
