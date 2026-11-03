@@ -262,6 +262,9 @@
     "clojure.core/-read-line"
      ;; post-prelude taxonomy wrappers close over the overlay versions
      "clojure.core/ifn?" "clojure.core/seqable?"
+     ;; post-prelude's coll? (deftype and reify collections) closes over the
+     ;; overlay version too
+     "clojure.core/coll?"
      ;; post-prelude's native sequential? closes over the overlay version for
      ;; the exotic-value fallback
      "clojure.core/sequential?"
