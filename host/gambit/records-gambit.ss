@@ -1433,20 +1433,22 @@
 (set! jolt-dissoc
   (lambda (coll . ks)
     (cond
-      ((jrec-plain? coll) (fold-left jrec-dissoc1 coll ks))
+      ((jrec-plain? coll)
+       (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
       ((jrec-cl coll "without") =>
        (lambda (m)
          (fold-left (lambda (c k) (jolt-invoke m c k)) coll ks)))
-      ((jrec? coll) (fold-left jrec-dissoc1 coll ks))
+      ((jrec? coll)
+       (meta-carry coll (fold-left jrec-dissoc1 coll ks)))
       (else (apply %r-jolt-dissoc coll ks)))))
 
 (set! jolt-dissoc2
   (lambda (coll k)
     (cond
-      ((jrec-plain? coll) (jrec-dissoc1 coll k))
+      ((jrec-plain? coll) (meta-carry coll (jrec-dissoc1 coll k)))
       ((jrec-cl coll "without") =>
        (lambda (m) (jolt-invoke m coll k)))
-      ((jrec? coll) (jrec-dissoc1 coll k))
+      ((jrec? coll) (meta-carry coll (jrec-dissoc1 coll k)))
       (else (%r-jolt-dissoc2 coll k)))))
 
 (define (jrec-seq-col m which)
@@ -1522,10 +1524,34 @@
            (fx+ i 1)
            (step acc (vector-ref fkeys i) (jrec-field-ref r i))))))))
 
+(define (jrec-conj-entry c e)
+  (cond
+    ((pvec? e) (jolt-assoc1 c (jolt-nth e 0) (jolt-nth e 1)))
+    ((jolt-host-entry e) =>
+     (lambda (kv) (jolt-assoc1 c (car kv) (cdr kv))))
+    (else
+     (jolt-throw
+       (jolt-host-throwable
+         "java.lang.ClassCastException"
+         (string-append
+           "class "
+           (guard (x (#t "?")) (jolt-class-name e))
+           " cannot be cast to class java.util.Map$Entry"))))))
+
 (define (jrec-plain-conj coll x)
-  (if (pmap? x)
-      (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll)
-      (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1))))
+  (cond
+    ((pmap? x)
+     (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll))
+    ((jolt-nil? x) coll)
+    ((or (pvec? x) (jolt-host-entry x))
+     (jrec-conj-entry coll x))
+    (else
+     (let loop ((s (jolt-seq x)) (c coll))
+       (if (jolt-nil? s)
+           c
+           (loop
+             (jolt-seq (seq-more s))
+             (jrec-conj-entry c (seq-first s))))))))
 
 (define (jrec-plain-empty? r)
   (and (fx=? 0 (jrdesc-nfields (jrec-desc r)))
@@ -1606,10 +1632,7 @@
     (and (jrec? coll)
          (not (jrec-plain? coll))
          (not (jrec-cl coll "cons"))))
-  (lambda (coll x)
-    (if (pmap? x)
-        (pmap-fold-fwd x (lambda (k v c) (jolt-assoc1 c k v)) coll)
-        (jolt-assoc1 coll (jolt-nth x 0) (jolt-nth x 1)))))
+  jrec-plain-conj)
 
 (register-empty-arm!
   (lambda (coll)
