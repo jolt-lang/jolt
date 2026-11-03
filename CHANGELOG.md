@@ -320,6 +320,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the record, an entry or vector assocs its first two elements, anything
   else seqs into entries). `dissoc` dropped the record's metadata, whether the
   key was a field or an extension.
+- **`reduce-kv` with a reduced init** unwrapped it before folding anything.
+  It now does what each reference kvreduce does: an array map, vector, sorted
+  map or record calls `f` with it, a hash map unwraps it, an empty array map,
+  vector or nil returns it still wrapped, and a type's own `kvreduce` gets it
+  and has its answer returned as is.
 
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
