@@ -327,6 +327,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.5x slower than 0.8.23. A string now answers before the wraps and the arms,
   about 2x faster than 0.8.23 for `nth` and 3x for `get`. fastpathratio rows
   `string-nth` and `string-get` hold it there.
+- **A double inside the fixnum range converts with `flonum->fixnum`.** After
+  the flonum-bounds fix below, `long`, `int`, `short`, `byte`, `char`,
+  `unchecked-long` and `unchecked-int` on a double still ended in a generic
+  `exact` of a generic `truncate`. The in-range case now takes Chez's
+  `flonum->fixnum` (truncation toward zero in one primitive), behind a range
+  test with the target's own fixnum limits, so it holds on 61-bit and 30-bit
+  fixnums alike; the Gambit host gets the name as a shim over
+  `##flonum->fixnum`. `bench/num_casts.clj`: `(long d)` 62 ms to 41 ms and
+  `(unchecked-long d)` 49 ms to 28 ms for 2M casts on an M1 Pro; on a 32-bit
+  target (Nintendo Wii, `tpb32b`) `(long 123.7)` <before> us to <after> us.
+  No result changes; three corpus rows pin the fixnum edges on both widths.
+  Part of #1492.
+
 - **`long`, `int`, `short`, `byte` and `char` on a double, and `unchecked-long`
   and `unchecked-int` on a double, range-check against flonum bounds instead
   of bignum ones.** The checked casts compared the flonum against the type's
