@@ -4384,7 +4384,9 @@
       ;; cannot hold an escape, and there is no getRawHost.
       (let ((ssp (substring s ssp-start body-end)))
         (make-jhost "uri"
-          (list (cons 'string s)
+          ;; 'hash memoizes URI.hashCode (uri-hashcode), as the JDK's field does
+          (list (cons 'hash #f)
+                (cons 'string s)
                 (cons 'scheme scheme)
                 (cons 'ssp ssp)
                 (cons 'dec-ssp (uri-decode-keeping-scope-id ssp))
@@ -4571,11 +4573,9 @@
         (cons "resolve" (lambda (u x) (uri-resolve u (uri-arg->uri x))))
         (cons "normalize" (lambda (u) (uri-normalize u)))
         (cons "relativize" (lambda (u x) (uri-relativize u (uri-arg->uri x))))
-        (cons "compareTo" (lambda (u o) (let ((a (uri-field u 'string)) (b (uri-field o 'string)))
-                                          (cond ((string<? a b) -1) ((string=? a b) 0) (else 1)))))
-        (cons "hashCode" (lambda (u) (string-hash (uri-field u 'string))))
-        (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri")
-                                          (string=? (uri-field u 'string) (uri-field o 'string)))))))
+        (cons "compareTo" (lambda (u o) (uri-compare u o)))
+        (cons "hashCode" (lambda (u) (uri-hashcode u)))
+        (cons "equals" (lambda (u o) (and (jhost? o) (string=? (jhost-tag o) "uri") (uri-equals? u o))))))
 
 ;; --- resolve / normalize / relativize: RFC 2396 §5.2, as java.net.URI does it --
 ;; A URI is rebuilt from its RAW components — the substrings the parse produced,
@@ -4711,9 +4711,8 @@
                  1234321)))
 (register-hash-arm! jfile? jfile-hashcode)
 
-;; (= u1 u2) is value equality by string form (the .equals method above only
-;; serves explicit (.equals …)); hash matches so a URI works as a map key / set
-;; member (ring/hiccup compare (URI. "/") values).
+;; (= u1 u2) is URI.equals (uri-equals? below); hash matches so a URI works as a
+;; map key / set member (ring/hiccup compare (URI. "/") values).
 (define-jhost-tag-pred (uri-jhost? t) (string=? t "uri"))
 ;; URI.toURL = new URL(toString()) (JVM), refusing a relative URI as the JVM
 ;; does; honors a library-registered URL shim like io/as-url does. It is also
@@ -4725,10 +4724,197 @@
     (throw-jvm (quote IllegalArgumentException) "URI is not absolute"))
   (let ((ctor (lookup-class class-ctors-tbl "URL")))
     (if ctor (ctor (uri-field u 'string)) (make-url (uri-field u 'string)))))
+;; URI.equals / hashCode / compareTo are java.net.URI's, component by component
+;; over the RAW components, not the string form: the scheme and the host ignore
+;; case, a %XX escape compares its hex digits ignoring case, and an empty
+;; authority is no authority, so file:///x and file:/x -- Path.toUri's form and
+;; File.toURI's -- are one URI. Strings compare as UTF-16 units, as String does.
+;; String.compareTo, which a code-point string answers as UTF-16 units do
+(define (uri-u16 s)
+  (let* ((bv (string->utf16 s 'big)) (n (fxquotient (bytevector-length bv) 2)) (v (make-vector n)))
+    (do ((i 0 (fx+ i 1))) ((fx=? i n) v)
+      (vector-set! v i (bytevector-u16-ref bv (fx* 2 i) 'big)))))
+(define (uri-c x) (if (jolt-nil? x) #f x))
+(define (uri-ascii-lower c) (if (and (fx>=? c 65) (fx<=? c 90)) (fx+ c 32) c))
+(define (uri-ascii-upper c) (if (and (fx>=? c 97) (fx<=? c 122)) (fx- c 32) c))
+(define (uri-char-lower c)
+  (if (and (char>=? c #\A) (char<=? c #\Z)) (integer->char (fx+ (char->integer c) 32)) c))
+;; URI.equal: escapes compare their hex digits ignoring case
+(define (uri-c-equal? s t)
+  (cond ((and (not s) (not t)) #t)
+        ((or (not s) (not t)) #f)
+        ((string=? s t) #t)
+        ((not (fx=? (string-length s) (string-length t))) #f)
+        (else
+         (let ((n (string-length s)))
+           (let loop ((i 0))
+             (cond ((fx>=? i n) #t)
+                   ((char=? (string-ref s i) #\%)
+                    (and (char=? (string-ref t i) #\%)
+                         (fx<? (fx+ i 2) n)
+                         (char=? (uri-char-lower (string-ref s (fx+ i 1))) (uri-char-lower (string-ref t (fx+ i 1))))
+                         (char=? (uri-char-lower (string-ref s (fx+ i 2))) (uri-char-lower (string-ref t (fx+ i 2))))
+                         (loop (fx+ i 3))))
+                   ((char=? (string-ref s i) (string-ref t i)) (loop (fx+ i 1)))
+                   (else #f)))))))
+;; equalIgnoringCase: ASCII letters only, as URI.toLower
+(define (uri-c-equal-ci? s t)
+  (cond ((and (not s) (not t)) #t)
+        ((or (not s) (not t)) #f)
+        ((string=? s t) #t)
+        ((not (fx=? (string-length s) (string-length t))) #f)
+        (else (let ((n (string-length s)))
+                (let loop ((i 0))
+                  (or (fx=? i n)
+                      (and (char=? (uri-char-lower (string-ref s i)) (uri-char-lower (string-ref t i)))
+                           (loop (fx+ i 1)))))))))
+;; Fold code point CP into an unsigned 32-bit String.hashCode accumulator X as
+;; its UTF-16 units; fixnum arithmetic, signed once per component.
+(define-syntax uri-u32-step
+  (syntax-rules () ((_ x c) (fxlogand (fx+ (fx* 31 x) c) #xFFFFFFFF))))
+(define-syntax uri-hash-cp
+  (syntax-rules ()
+    ((_ x0 cp0)
+     (let ((x x0) (cp cp0))
+       (if (fx<? cp #x10000)
+           (uri-u32-step x cp)
+           (let ((c (fx- cp #x10000)))
+             (uri-u32-step (uri-u32-step x (fxior #xD800 (fxsra c 10))) (fxior #xDC00 (fxand c #x3FF)))))))))
+(define (uri-u32->i32 x) (if (fx>=? x #x80000000) (fx- x #x100000000) x))
+(define (uri-port u) (let ((p (uri-field u 'port))) (if (jolt-nil? p) -1 p)))
+(define (uri-equals? a b)
+  (let ((f (lambda (u k) (uri-c (uri-field u k)))))
+    (and (eq? (uri-opaque? a) (uri-opaque? b))
+         (uri-c-equal-ci? (f a 'scheme) (f b 'scheme))
+         (uri-c-equal? (f a 'fragment) (f b 'fragment))
+         (if (uri-opaque? a)
+             (uri-c-equal? (f a 'ssp) (f b 'ssp))
+             (and (uri-c-equal? (f a 'path) (f b 'path))
+                  (uri-c-equal? (f a 'query) (f b 'query))
+                  (cond ((f a 'host)
+                         (and (uri-c-equal? (f a 'user-info) (f b 'user-info))
+                              (uri-c-equal-ci? (f a 'host) (f b 'host))
+                              (= (uri-port a) (uri-port b))))
+                        ((f a 'authority) (uri-c-equal? (f a 'authority) (f b 'authority)))
+                        (else (not (f b 'authority)))))))))
+;; URI.hash / normalizedHash / hashIgnoringCase, in 32-bit int arithmetic
+(define (uri-hash h s)
+  (if (not s)
+      h
+      (let ((n (string-length s)))
+        (let loop ((i 0) (x 0) (esc 0))
+          (if (fx>=? i n)
+              (uri-u32->i32 (fxlogand (fx+ (fx* 127 (fxlogand h #xFFFFFFFF)) x) #xFFFFFFFF))
+              (let ((c (char->integer (string-ref s i))))
+                (cond ((fx>? esc 0) (loop (fx+ i 1) (uri-hash-cp x (uri-ascii-upper c)) (fx- esc 1)))
+                      ((fx=? c 37) (loop (fx+ i 1) (uri-hash-cp x c) 2))  ; %: its hex digits upper-cased
+                      (else (loop (fx+ i 1) (uri-hash-cp x c) 0)))))))))
+;; hashIgnoringCase continues from H itself, not from a fresh accumulator
+(define (uri-hash-ci h s)
+  (if (not s)
+      h
+      (let ((n (string-length s)))
+        (let loop ((i 0) (x (fxlogand h #xFFFFFFFF)))
+          (if (fx=? i n)
+              (uri-u32->i32 x)
+              (loop (fx+ i 1) (uri-hash-cp x (uri-ascii-lower (char->integer (string-ref s i))))))))))
+(define (uri-hashcode u)
+  (let ((memo (assq 'hash (jhost-state u))))
+    (or (and memo (cdr memo))
+        (let ((h (uri-hashcode* u)))
+          (when memo (set-cdr! memo h))
+          h))))
+(define (uri-hashcode* u)
+  ;; one walk of the state for the components the hash reads
+  (let loop ((st (jhost-state u)) (scheme #f) (ssp #f) (auth #f) (host #f) (ui #f)
+             (port -1) (path #f) (query #f) (frag #f))
+    (if (pair? st)
+        (let ((k (caar st)) (v (uri-c (cdar st))))
+          (case k
+            ((scheme) (loop (cdr st) v ssp auth host ui port path query frag))
+            ((ssp) (loop (cdr st) scheme v auth host ui port path query frag))
+            ((authority) (loop (cdr st) scheme ssp v host ui port path query frag))
+            ((host) (loop (cdr st) scheme ssp auth v ui port path query frag))
+            ((user-info) (loop (cdr st) scheme ssp auth host v port path query frag))
+            ((port) (loop (cdr st) scheme ssp auth host ui (or v -1) path query frag))
+            ((path) (loop (cdr st) scheme ssp auth host ui port v query frag))
+            ((query) (loop (cdr st) scheme ssp auth host ui port path v frag))
+            ((fragment) (loop (cdr st) scheme ssp auth host ui port path query v))
+            (else (loop (cdr st) scheme ssp auth host ui port path query frag))))
+        (let* ((h (uri-hash-ci 0 scheme))
+               (h (uri-hash h frag)))
+          ;; opaque: a scheme and a scheme-specific part not starting with /
+          (if (and scheme ssp (or (fx=? 0 (string-length ssp)) (not (char=? (string-ref ssp 0) #\/))))
+              (uri-hash h ssp)
+              (let* ((h (uri-hash h path))
+                     (h (uri-hash h query)))
+                (if host
+                    (let* ((h (uri-hash h ui))
+                           (h (uri-hash-ci h host)))
+                      (i32 (+ h (* 1949 port))))
+                    (uri-hash h auth))))))))
+;; URI.compare / compareIgnoringCase: String.compareTo's own differences, with
+;; an escape's hex digits compared ignoring case once both strings hold one
+(define (uri-cmp s t)
+  (cond ((and (not s) (not t)) 0)
+        ((not t) 1)
+        ((not s) -1)
+        ((string=? s t) 0)
+        (else (let* ((a (uri-u16 s)) (b (uri-u16 t)) (n (min (vector-length a) (vector-length b)))
+                     (esc? (and (memv #\% (string->list s)) (memv #\% (string->list t)) #t))
+                     (at (lambda (v i) (if (fx<? i (vector-length v)) (uri-ascii-lower (vector-ref v i)) 0))))
+                (let loop ((i 0))
+                  (if (fx>=? i n)
+                      (- (vector-length a) (vector-length b))
+                      (let* ((c (vector-ref a i)) (d (vector-ref b i)) (val (- c d)))
+                        (cond ((or (not esc?) (not (fx=? c 37)))
+                               (if (fx=? val 0) (loop (fx+ i 1)) val))
+                              ((not (fx=? val 0)) val)
+                              (else
+                               (let ((v1 (- (at a (fx+ i 1)) (at b (fx+ i 1)))))
+                                 (if (not (fx=? v1 0)) v1
+                                     (let ((v2 (- (at a (fx+ i 2)) (at b (fx+ i 2)))))
+                                       (if (not (fx=? v2 0)) v2 (loop (fx+ i 3)))))))))))))))
+(define (uri-cmp-ci s t)
+  (cond ((and (not s) (not t)) 0)
+        ((not t) 1)
+        ((not s) -1)
+        ((string=? s t) 0)
+        (else (let* ((a (uri-u16 s)) (b (uri-u16 t)) (n (min (vector-length a) (vector-length b))))
+                (let loop ((i 0))
+                  (if (fx=? i n)
+                      (- (vector-length a) (vector-length b))
+                      (let ((c (- (uri-ascii-lower (vector-ref a i)) (uri-ascii-lower (vector-ref b i)))))
+                        (if (fx=? c 0) (loop (fx+ i 1)) c))))))))
+(define (uri-compare a b)
+  (let ((f (lambda (u k) (uri-c (uri-field u k)))))
+    (define (chain . thunks)
+      (let loop ((ts thunks)) (if (null? ts) 0 (let ((c ((car ts)))) (if (eqv? c 0) (loop (cdr ts)) c)))))
+    (chain
+     (lambda () (uri-cmp-ci (f a 'scheme) (f b 'scheme)))
+     (lambda ()
+       (cond ((uri-opaque? a)
+              (if (uri-opaque? b)
+                  (chain (lambda () (uri-cmp (f a 'ssp) (f b 'ssp)))
+                         (lambda () (uri-cmp (f a 'fragment) (f b 'fragment))))
+                  1))
+             ((uri-opaque? b) -1)
+             (else
+              (chain
+               (lambda ()
+                 (if (and (f a 'host) (f b 'host))
+                     (chain (lambda () (uri-cmp (f a 'user-info) (f b 'user-info)))
+                            (lambda () (uri-cmp-ci (f a 'host) (f b 'host)))
+                            (lambda () (- (uri-port a) (uri-port b))))
+                     (uri-cmp (f a 'authority) (f b 'authority))))
+               (lambda () (uri-cmp (f a 'path) (f b 'path)))
+               (lambda () (uri-cmp (f a 'query) (f b 'query)))
+               (lambda () (uri-cmp (f a 'fragment) (f b 'fragment))))))))))
 (register-eq-arm! (lambda (a b) (or (uri-jhost? a) (uri-jhost? b)))
                   (lambda (a b) (and (uri-jhost? a) (uri-jhost? b)
-                                     (string=? (uri-field a 'string) (uri-field b 'string)))))
-(register-hash-arm! uri-jhost? (lambda (x) (string-hash (uri-field x 'string))))
+                                     (or (string=? (uri-field a 'string) (uri-field b 'string))
+                                         (uri-equals? a b)))))
+(register-hash-arm! uri-jhost? uri-hashcode)
 ;; A URL compares by its canonical spec. The JVM's URL.equals also resolves both
 ;; hosts and compares addresses (a blocking DNS lookup inside =); jolt does not,
 ;; so two names for one host stay unequal here.
@@ -4736,12 +4922,9 @@
                   (lambda (a b) (and (url-jhost? a) (url-jhost? b)
                                      (string=? (url-spec a) (url-spec b)))))
 (register-hash-arm! url-jhost? (lambda (x) (java-string-hashcode (url-spec x))))
-;; (compare u1 u2) / (sort uris): URI is Comparable on the JVM, by string form
-;; (its compareTo compares component-wise, which for two well-formed URIs is the
-;; same order as the strings up to the first differing component).
-(register-compare-arm! (lambda (a b) (and (uri-jhost? a) (uri-jhost? b)))
-                       (lambda (a b) (let ((x (uri-field a 'string)) (y (uri-field b 'string)))
-                                       (cond ((string<? x y) -1) ((string=? x y) 0) (else 1)))))
+;; (compare u1 u2) / (sort uris): URI is Comparable on the JVM, component-wise
+;; (uri-compare above).
+(register-compare-arm! (lambda (a b) (and (uri-jhost? a) (uri-jhost? b))) uri-compare)
 ;; str / pr-str of a uri -> its string form.
 (register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "uri")))
                       (lambda (x) (uri-field x 'string)))
