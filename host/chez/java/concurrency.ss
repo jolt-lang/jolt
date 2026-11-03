@@ -176,6 +176,9 @@
 ;; FutureTask cancelled before run() never runs.
 ;; A future runs on the agent system's cached pool on the JVM, so after
 ;; shutdown-agents it is refused.
+;; *ns*'s root, what a thread that conveys nothing reads (RT's CURRENT_NS is
+;; interned with clojure.core as its root; clojure.main binds user over it)
+(define thread-root-ns "clojure.core")
 (define (jolt-future-call thunk)
   (when (jolt-agents-shutdown?)
     (jolt-throw (jolt-host-throwable "java.util.concurrent.RejectedExecutionException" jolt-nil)))
@@ -2331,6 +2334,8 @@
                ;; a snapshot restored here used to make a body read the caller's
                ;; binding where the JVM reads the root.
                (dyn-binding-stack '())
+               ;; and *ns* is its root, clojure.core, not the forking thread's
+               (chez-current-ns-param thread-root-ns)
                ;; surface a thread body's throw like the JVM's default uncaught-
               ;; exception handler; the thread still completes (isAlive/join
               ;; semantics unchanged). Reporting failures are swallowed.
@@ -2647,6 +2652,10 @@
          (r (vector-ref st 0))
          (thunk (lambda ()
                   (*txn* #f)
+                  ;; a fiber starts with its spawner's slice; a Thread starts with
+                  ;; none, virtual or not: no bindings, *ns* at its root
+                  (dyn-binding-stack '())
+                  (chez-current-ns-param thread-root-ns)
                   (guard (e (#t (jolt-thread-uncaught! obj e "Exception in virtual thread:\n")))
                     (when r (jolt-invoke (runnable->thunk r))))
                   jolt-nil)))
@@ -2995,6 +3004,8 @@
     ;; nil gets the same).
     (let* ((worker (lambda ()
                      (*txn* #f)                ; not the creating thread's txn
+                     (dyn-binding-stack '())   ; nor its bindings: a pool thread
+                     (chez-current-ns-param thread-root-ns) ; starts at the roots
                      (rdr-default-modes!)      ; nor the reader modes of a read it forked from
                      (executor-worker-loop st)
                      jolt-nil))

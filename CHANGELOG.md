@@ -317,6 +317,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the same file now that `Path.toUri` writes `file:///`. They compare
   component by component: an empty authority is none, the scheme and host
   ignore case, and an escape's hex digits ignore case.
+- **A started `Thread`, an executor's pool thread and a virtual thread read
+  `*ns*` at its root, `clojure.core`,** as on the JVM, instead of the
+  `user` namespace of the thread that made them. A virtual thread no longer
+  inherits its creator's bindings either. `future`, agents and `bound-fn`
+  still convey the caller's.
 - **A condition wait with interrupts disabled could still stall a
   collection** when the thread requesting it held the waited mutex: the
   sliced wait took the mutex back inside Chez's `condition-wait`, still
