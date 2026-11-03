@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`clojure.data.json` ships with jolt** (#1453). It is data.json 2.5.2 as a
+  built-in namespace, resolved ahead of a project's own copy like
+  `babashka.fs` (`:jolt/replaces [clojure.data.json]` opts out). Writing with
+  `:escape-unicode` now escapes a character above U+FFFF as its surrogate
+  pair, `"👍"`, where upstream's escaper wrote an invalid 5-digit
+  `\u` escape over jolt's code-point strings. The namespace also loads without
+  java.time; `:date-formatter` defaults to nil, meaning ISO_INSTANT.
+
 - **`jolt nrepl-server --port-file PATH` and `--no-port-file`** (#1415).
   The bound port goes to PATH, resolved against the caller's directory, or
   nowhere; either way the server removes the file it wrote when it stops.
