@@ -873,7 +873,13 @@
 (define (jolt-load-run-form w pos thunk)
   (if (not w)
       (thunk)
+      ;; The guard is the nearest handler now, so the loader's, which records
+      ;; where the throw happened before the stack unwinds, never sees it: record
+      ;; it here. A nested load's handler already has (the innermost wins), and
+      ;; jolt-current-source is still this form's: jolt-enter-form! sets it, and a
+      ;; nested load's binding of it has unwound back to that.
       (guard (raw ((ce-wraps? raw)
+                   (jolt-note-throw-source! raw)
                    (jolt-raise-thrown
                      (ce-load-exception raw (let ((s (vector-ref w 0))) (and (string? s) s))
                                         (car pos) (cdr pos)))))
