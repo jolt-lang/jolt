@@ -1030,122 +1030,10 @@
     (if (fx<=? n 0) ""
         (apply string-append
                (let rep ((i n) (a (quote ()))) (if (fx=? i 0) a (rep (fx- i 1) (cons s a))))))))
-;; ---- String's index methods over UTF-16 units (#1455) -------------------------
-;; converters.ss holds the view (u16->cp, cp->u16, u16-split?, u16-substring);
-;; these are the String methods spelled in it. On a string with no astral
-;; character each is the code-point method it always was, after one cached test.
-;;
-;; A needle that is a surrogate unit — a jsurr, or an int in the surrogate range —
-;; finds that half inside an astral character, where the JVM finds it.
-(define (u16-needle-unit x)
-  (cond ((jsurr? x) (jsurr-unit x))
-        ((and (fixnum? x) (fx>=? x #xD800) (fx<=? x #xDFFF)) x)
-        (else #f)))
-(define (u16-unit-index-of s unit from back?)
-  (let ((n (string-length s)) (hi? (fx<? unit #xDC00)))
-    (define (hit c)
-      (let ((cp (char->integer (string-ref s c))))
-        (and (fx>=? cp #x10000)
-             (fx=? unit (if hi? (astral-high-unit cp) (astral-low-unit cp))))))
-    (define (at c) (if hi? (cp->u16 s c) (fx+ (cp->u16 s c) 1)))
-    (if back?
-        (let loop ((c (fxmin (fx- n 1) (u16->cp s from))))
-          (cond ((fx<? c 0) -1)
-                ((and (hit c) (fx<=? (at c) from)) (at c))
-                (else (loop (fx- c 1)))))
-        (let loop ((c (fxmax 0 (u16->cp s from))))
-          (cond ((fx>=? c n) -1)
-                ((and (hit c) (fx>=? (at c) from)) (at c))
-                (else (loop (fx+ c 1))))))))
-;; indexOf(x[, from]): FROM and the answer are UTF-16 indices. A FROM inside a
-;; pair starts at the character after it, since nothing jolt can search for
-;; begins with a low half (the unit needle above aside).
-(define (jolt-str-u16-index-of s needle from)
-  (let ((from (if (fixnum? from) (fxmax from 0) from)))
-    (cond
-      ((u16-needle-unit needle) => (lambda (u) (u16-unit-index-of s u from #f)))
-      ;; no astral char before FROM: search there, and the match needs no
-      ;; conversion unless one lies before it (only that prefix is scanned)
-      ((and (fixnum? from) (u16-clear-below? s from))
-       (let ((r (str-index-of-any s needle from)))
-         (if (or (fx<? r 0) (u16-clear-below? s r)) r (cp->u16 s r))))
-      (else
-       (let* ((c (u16->cp s from))
-              (r (str-index-of-any s needle (if (u16-split? s from) (fx+ c 1) c))))
-         (if (fx<? r 0) r (cp->u16 s r)))))))
-;; lastIndexOf(x[, from]): the last match starting at or before UTF-16 FROM.
-(define (jolt-str-u16-last-index-of s needle . from)
-  (let ((from (if (pair? from) (jolt->idx (car from)) (u16-length s))))
-    (cond
-      ((u16-needle-unit needle) => (lambda (u) (u16-unit-index-of s u from #t)))
-      ((fx=? (u16-length s) (string-length s))
-       (str-last-index-of-from s (str-needle needle) from))
-      (else
-       (let ((r (str-last-index-of-from s (str-needle needle) (u16->cp s from))))
-         (if (fx<? r 0) r (cp->u16 s r)))))))
-(define (jolt-str-last-index-of s needle) (jolt-str-u16-last-index-of s needle))
-;; codePointAt(i): at a high unit followed by its low one, the pair's code point;
-;; at any other unit, that unit — a lone half answers itself, as on the JVM.
-(define (jolt-str-code-point-at s i)
-  (let ((u (jolt-char-at s i)))
-    (if (jsurr? u)
-        (if (jsurr-high? u)
-            (char->integer (string-ref s (u16->cp s (jolt->idx i))))
-            (jsurr-unit u))
-        (char->integer u))))
-;; codePointBefore(i): the pair's code point when i follows a whole pair.
-(define (jolt-str-code-point-before s i)
-  (let* ((i (jolt->idx i)) (len (u16-length s)))
-    (unless (and (fixnum? i) (fx>=? i 1) (fx<=? i len)) (char-index-oob (- i 1) len))
-    (let ((u (jolt-char-at s (fx- i 1))))
-      (cond ((not (jsurr? u)) (char->integer u))
-            ((jsurr-low? u) (char->integer (string-ref s (u16->cp s (fx- i 1)))))
-            (else (jsurr-unit u))))))
-;; codePointCount(b, e): the code points in UTF-16 [b, e); a half pair at either
-;; end counts as one, as the JDK counts an unpaired surrogate.
-(define (jolt-str-code-point-count s b e)
-  (let ((len (u16-length s)))
-    (jvm-range-check 'IndexOutOfBoundsException len b e)
-    (if (fx=? len (string-length s))
-        (- e b)
-        (let* ((bs (u16-split? s b)) (cb (if bs (fx+ (u16->cp s b) 1) (u16->cp s b)))
-               (ce (u16->cp s e)) (es (u16-split? s e)))
-          (if (and bs (fx=? b e))
-              0
-              (+ (if bs 1 0) (max 0 (- ce cb)) (if es 1 0)))))))
-;; offsetByCodePoints(i, k): the UTF-16 index k code points from i.
-(define (jolt-str-offset-by-code-points s i k)
-  (let ((len (u16-length s)))
-    (when (or (< i 0) (> i len)) (throw-jvm 'IndexOutOfBoundsException jolt-nil))
-    (let* ((c (u16->cp s i))
-           (r (cond ((not (u16-split? s i)) (+ c k))
-                    ((> k 0) (+ c k))
-                    (else (+ c k 1))))
-           (n (string-length s)))
-      (when (or (< r 0) (> r n)) (throw-jvm 'IndexOutOfBoundsException jolt-nil))
-      (if (and (u16-split? s i) (= k 0)) i (cp->u16 s r)))))
-(define (jolt-str-to-char-array s)
-  (if (fx=? (u16-length s) (string-length s))
-      (na-char-array s)
-      (na-char-array (list->cseq (u16-units s 0 (u16-length s))))))
-;; String.chars is the UTF-16 units; codePoints stays the code points.
-(define (jolt-str-chars-stream s)
-  (if (fx=? (u16-length s) (string-length s))
-      (string->int-stream s)
-      (make-stream 'int (list->cseq (map char-or-unit->integer (u16-units s 0 (u16-length s)))))))
-;; regionMatches over UTF-16 offsets and length, unit against unit.
-(define (jolt-str-region-matches? s toff other ooff len ic?)
-  (and (fx>=? toff 0) (fx>=? ooff 0)
-       (fx<=? (fx+ toff len) (u16-length s))
-       (fx<=? (fx+ ooff len) (u16-length other))
-       (let loop ((i 0))
-         (or (fx>=? i len)
-             (let ((a (u16-unit-at s (fx+ toff i))) (b (u16-unit-at other (fx+ ooff i))))
-               (and (if (and (char? a) (char? b))
-                        (if ic? (jvm-string-ci=? (string a) (string b)) (char=? a b))
-                        (eq? a b))
-                    (loop (fx+ i 1))))))))
+(define (jolt-str-code-point-at s i) (char->integer (string-ref s (jolt->idx i))))
+(define (jolt-str-last-index-of s needle) (str-last-index-of s (str-needle needle)))
 (define (jolt-str-strip s left? right?) (str-strip s left? right?))
+(define (jolt-str-to-char-array s) (na-char-array s))
 ;; String.intern: one canonical object per content, the JVM's string pool. An
 ;; ephemeron table, because the entry's value is its own key and an ordinary
 ;; weak table would keep every interned string alive through that value. Lookup
@@ -1175,8 +1063,7 @@
 ;; is idempotent, so both callers can hand over whatever they hold.
 (define (jolt-str-split s pat limit)
   (jvm-split-array (str-irx pat) s (if (number? limit) (exact (truncate limit)) 0)))
-(define (jolt-str-sub-sequence s from to) (u16-substring s (jolt->idx from) (jolt->idx to)))
-(define (jolt-str-u16-substring s from to) (u16-substring s from to))
+(define (jolt-str-sub-sequence s from to) (jolt-substr s (jolt->idx from) (jolt->idx to)))
 (define (jolt-str-simple-name s)
   (let ((i (str-last-index-of s "."))) (if (>= i 0) (substring s (+ i 1) (string-length s)) s)))
 
@@ -1195,7 +1082,7 @@
 ;; This mirrors the :nilable rule on the struct path: where nil is possible, keep
 ;; the nil-safe form. A LYING hint (a non-string, non-nil receiver) fails here, the
 ;; same contract every other hint-directed path has.
-(define (jolt-str-count s) (if (jolt-nil? s) 0 (jolt-str-u16-length s)))
+(define (jolt-str-count s) (if (jolt-nil? s) 0 (string-length s)))
 (define (jolt-str-nil->empty x) (if (jolt-nil? x) "" x))
 (define (jolt-str-cat2 a b)
   (string-append (jolt-str-nil->empty a) (jolt-str-nil->empty b)))
@@ -1259,48 +1146,51 @@
     ;; hot-first: length/charAt/indexOf/startsWith dominate library interop
     ;; (honeysql, string codecs); a miss at the bottom of the chain cost ~100ns
     ;; per call in the string arm. Order is behavior-neutral, keep it stable.
-    ((string=? method "length") (jolt-str-u16-length s))   ; UTF-16 units, as on the JVM
+    ((string=? method "length") (string-length s))   ; exact int (= JVM)
     ((string=? method "charAt") (jolt-char-at s (arg 0)))
     ((string=? method "toString") s)
     ((string=? method "indexOf")
-     (jolt-str-u16-index-of s (str-arg (arg 0))
-                            (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0)))
+     (str-index-of-any s (str-arg (arg 0))
+                   (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0)))
     ;; startsWith(prefix) and the JVM's startsWith(prefix, toffset), which asks the
     ;; same question at an offset and is false — not an error — off either end.
     ((string=? method "startsWith")
-     (let* ((p (str-arg (arg 0)))
-            (uoff (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0))
-            (off (cond ((or (not (fixnum? uoff)) (fx<? uoff 0)) -1)
-                       ((u16-split? s uoff) (if (fx=? (string-length p) 0) (u16->cp s uoff) -1))
-                       (else (u16->cp s uoff)))))
+     (let ((p (str-arg (arg 0)))
+           (off (if (fx>? (length rest) 1) (jolt->idx (arg 1)) 0)))
        (and (fx>=? off 0)
             (fx<=? (fx+ off (string-length p)) (string-length s))
             (string=? (substring s off (fx+ off (string-length p))) p))))
     ((string=? method "hashCode") (java-string-hash s))
     ;; The 1-arg forms take a Locale, which jolt drops: case mapping here is the
     ;; Unicode default, the same choice String/format makes for its Locale.
-    ((string=? method "toLowerCase") (str-lower s))
-    ((string=? method "toUpperCase") (str-upper s))
+    ((string=? method "toLowerCase") (string-downcase s))
+    ((string=? method "toUpperCase") (string-upcase s))
     ((string=? method "trim") (str-trim s))
     ((string=? method "isEmpty") (fx=? (string-length s) 0))
     ((string=? method "isBlank") (jolt-str-blank? s))
     ((string=? method "repeat") (jolt-str-repeat s (arg 0)))
     ((string=? method "codePointAt") (jolt-str-code-point-at s (arg 0)))
-    ;; The index methods count UTF-16 units, as on the JVM (#1455); the
-    ;; jolt-str-* procedures above are where each converts.
-    ((string=? method "codePointBefore") (jolt-str-code-point-before s (arg 0)))
+    ((string=? method "codePointBefore")
+     (let ((j (- (jolt->idx (arg 0)) 1)) (n (string-length s)))
+       (unless (and (fixnum? j) (fx>=? j 0) (fx<? j n)) (char-index-oob j n))
+       (char->integer (string-ref s j))))
+    ;; jolt's strings hold code points, so a count or an offset in code points is
+    ;; the same count in chars; the bounds are the JDK's.
     ((string=? method "codePointCount")
-     (jolt-str-code-point-count s (jolt->idx (arg 0)) (jolt->idx (arg 1))))
+     (let ((b (jolt->idx (arg 0))) (e (jolt->idx (arg 1))) (n (string-length s)))
+       (jvm-range-check 'IndexOutOfBoundsException n b e)
+       (- e b)))
     ((string=? method "offsetByCodePoints")
-     (jolt-str-offset-by-code-points s (jolt->idx (arg 0)) (jolt->idx (arg 1))))
-    ((string=? method "chars") (jolt-str-chars-stream s))
-    ((string=? method "codePoints") (string->int-stream s))
+     (let* ((i (jolt->idx (arg 0))) (r (+ i (jolt->idx (arg 1)))) (n (string-length s)))
+       (when (or (< i 0) (> i n) (< r 0) (> r n)) (throw-jvm 'IndexOutOfBoundsException jolt-nil))
+       r))
+    ((or (string=? method "chars") (string=? method "codePoints")) (string->int-stream s))
     ((string=? method "substring")
-     (u16-substring s (jolt->idx (arg 0))
-                    (if (fx>? (length rest) 1) (jolt->idx (arg 1)) (u16-length s))))
+     (jolt-substr s (jolt->idx (arg 0))
+                  (if (fx>? (length rest) 1) (jolt->idx (arg 1)) (string-length s))))
     ((string=? method "lastIndexOf")
      (if (fx>? (length rest) 1)
-         (jolt-str-u16-last-index-of s (arg 0) (arg 1))
+         (str-last-index-of-from s (str-needle (arg 0)) (jolt->idx (arg 1)))
          (jolt-str-last-index-of s (arg 0))))
     ((string=? method "endsWith")
      (let ((p (str-arg (arg 0))) (slen (string-length s)))
@@ -1330,15 +1220,12 @@
             (other (jolt-need-str (arg (fx+ base 1))))
             (ooff (jolt->idx (arg (fx+ base 2))))
             (len (jolt->idx (arg (fx+ base 3)))))
-       (if (not (and (fx=? (u16-length s) (string-length s))
-                     (fx=? (u16-length other) (string-length other))))
-           (jolt-str-region-matches? s toff other ooff len ic?)
        (and (fx>=? toff 0) (fx>=? ooff 0)
             (fx<=? (fx+ toff len) (string-length s))
             (fx<=? (fx+ ooff len) (string-length other))
             (let ((a (substring s toff (fx+ toff len)))
                   (b (substring other ooff (fx+ ooff len))))
-              (if ic? (jvm-string-ci=? a b) (string=? a b)))))))
+              (if ic? (jvm-string-ci=? a b) (string=? a b))))))
     ;; char[] of the string's characters — a real 'char array, the same value
     ;; (char-array s) builds and (String. ca) reads back.
     ((string=? method "toCharArray") (jolt-str-to-char-array s))
@@ -1370,19 +1257,13 @@
     ((string=? method "getSimpleName") (jolt-str-simple-name s))
     ;; .getChars srcBegin srcEnd dst dstBegin — copy s[srcBegin,srcEnd) into the
     ;; char-array dst at dstBegin (used by buffered readers, e.g. data.json).
-    ;; srcBegin/srcEnd are UTF-16 indices and each unit is one element of dst.
     ((string=? method "getChars")
      (let ((src-begin (jolt->idx (arg 0))) (src-end (jolt->idx (arg 1)))
            (dst (arg 2)) (dst-begin (jolt->idx (arg 3))))
-       (if (fx=? (u16-length s) (string-length s))
-           (let loop ((i src-begin) (j dst-begin))
-             (when (fx<? i src-end)
-               (ja-set! dst j (string-ref s i))
-               (loop (fx+ i 1) (fx+ j 1))))
-           (let loop ((i src-begin) (j dst-begin))
-             (when (fx<? i src-end)
-               (ja-set! dst j (u16-unit-at s i))
-               (loop (fx+ i 1) (fx+ j 1))))))
+       (let loop ((i src-begin) (j dst-begin))
+         (when (fx<? i src-end)
+           (ja-set! dst j (string-ref s i))
+           (loop (fx+ i 1) (fx+ j 1)))))
      jolt-nil)
     ((string=? method "subSequence") (jolt-str-sub-sequence s (arg 0) (arg 1)))
     ;; Class.isArray over a class-name string: array classes are "[…" (e.g. "[C").
@@ -1407,7 +1288,7 @@
          (slen (string-length s))
          (plen (string-length sep)))
     (if (fx=? plen 0)
-        (map jolt-str (u16-units s 0 (u16-length s)))   ; one per UTF-16 unit
+        (map string (string->list s))
         (let loop ((start 0) (acc '()))
           (let ((i (str-index-of s sep start)))
             (if (fx<? i 0)
@@ -1419,22 +1300,15 @@
 ;; accented Latin ranges included. Chez's own case mappings are the Unicode ones,
 ;; so use them; the ASCII pair above stays for the places that mean ASCII (a
 ;; charset name, a header key) and must not fold a non-ASCII character.
-;; Case mapping leaves a cut-off surrogate half alone, as the JVM's does, so an
-;; edge unit (converters.ss) carries over to the result: capitalize's
-;; (upper (subs s 0 1)) of an astral first char still rejoins its other half.
-(define (str-case-edges s out)
-  (let ((e (and edge-units-any? (string-edge-units s))))
-    (if e (string-with-edge-units! out (car e) (cdr e)) out)))
-(define (str-upper s) (str-case-edges s (string-upcase s)))
-(define (str-lower s) (str-case-edges s (string-downcase s)))
+(define (str-upper s) (string-upcase s))
+(define (str-lower s) (string-downcase s))
 (define (str-reverse-b s) (list->string (reverse (string->list s))))
 
 ;; (str-find needle haystack) -> exact int index of first occurrence, or nil.
 ;; optional third arg: search from that index (the IReader cursors use it so a
 ;; line drain does not re-copy the tail just to search it).
-;; FROM and the answer count UTF-16 units, as count and subs do (#1455).
 (define (str-find needle s . opt)
-  (let ((i (jolt-str-u16-index-of s needle (if (pair? opt) (car opt) 0))))
+  (let ((i (str-index-of s needle (if (pair? opt) (car opt) 0))))
     (if (fx<? i 0) jolt-nil i)))
 ;; (str-last-find needle s from) -> exact int index of the last occurrence that
 ;; STARTS at or before FROM, or nil: String.lastIndexOf(str, from) — a backward
@@ -1443,7 +1317,7 @@
 ;; on every call). A char needle is the one-char string the JVM's char overload
 ;; answers identically for.
 (define (str-last-find needle s from)
-  (let ((i (jolt-str-u16-last-index-of s needle from)))
+  (let ((i (str-last-index-of-from s (str-needle needle) from)))
     (if (fx<? i 0) jolt-nil i)))
 
 ;; --- native one-shots for clojure.string's hot wrappers ----------------------
@@ -1488,10 +1362,11 @@
   (fx>=? (str-index-of-any (str-coerce s) (if (jolt-nil? p) (throw-jvm 'NullPointerException "value") p) 0) 0))
 (define (str-index-of* s v . opt)
   (let* ((s (str-coerce s))
+         (n (string-length s))
          (from (if (pair? opt)
-                   (min (max 0 (jnum->exact (car opt))) (jolt-str-u16-length s))
+                   (min (max 0 (jnum->exact (car opt))) n)
                    0))
-         (i (jolt-str-u16-index-of s v from)))
+         (i (str-index-of-any s v from)))
     (if (fx<? i 0) jolt-nil i)))
 (define (str-upper-c s) (str-upper (str-coerce s)))
 (define (str-lower-c s) (str-lower (str-coerce s)))
@@ -1506,26 +1381,33 @@
     (let ((s (jolt-seq coll)))
       (if (jolt-nil? s)
           ""
-          (let ((f (str-join-piece (seq-first s)))
+          (let ((f (seq-first s))
                 (r (jolt-seq (seq-more s))))
-            (if (and (jolt-nil? r) (string? f))
-                f
-                (let ((ps (cons f (let loop ((r r))
+            (cond
+              ((jsurr? f) (str-join-units s sep))
+              ((jolt-nil? r) (jolt-str-render-one f))
+              (else
+               (let* ((units? #f)
+                      (strs (cons (jolt-str-render-one f)
+                                  (let loop ((r r))
                                     (if (jolt-nil? r)
                                         '()
-                                        (cons (str-join-piece (seq-first r))
-                                              (loop (jolt-seq (seq-more r)))))))))
-                  ;; a surrogate unit, or a piece holding half a pair at an edge,
-                  ;; joins through str's pairing joiner (converters.ss, #1455) —
-                  ;; (str/join (seq s)) gives s back whole, as on the JVM
-                  (if (or (exists jsurr? ps) (and edge-units-any? (exists edgy? ps)))
-                      (jolt-str-units
-                       (let loop ((ps ps) (acc '()))
-                         (cond ((null? ps) (reverse acc))
-                               ((or (null? acc) (string=? sep "")) (loop (cdr ps) (cons (car ps) acc)))
-                               (else (loop (cdr ps) (cons (car ps) (cons sep acc)))))))
-                      (str-join-strs ps sep)))))))))
-(define (str-join-piece x) (if (jsurr? x) x (jolt-str-render-one x)))
+                                        (let ((x (seq-first r)))
+                                          (when (jsurr? x) (set! units? #t))
+                                          (cons (jolt-str-render-one x)
+                                                (loop (jolt-seq (seq-more r))))))))))
+                 (if units? (str-join-units s sep) (str-join-strs strs sep))))))))))
+;; A join over surrogate units (chars of a char[] given as halves): adjacent
+;; halves, with no separator between them, pair as str's arguments do.
+(define (str-join-units s sep)
+  (jolt-str-units
+   (let loop ((s s) (first? #t))
+     (if (jolt-nil? s)
+         '()
+         (let ((rest (loop (jolt-seq (seq-more s)) #f)))
+           (if (or first? (string=? sep ""))
+               (cons (seq-first s) rest)
+               (cons sep (cons (seq-first s) rest))))))))
 
 ;; JVM split semantics over re-split, shared by String.split and Pattern.split:
 ;;   limit > 0   at most `limit` parts, the last left unsplit

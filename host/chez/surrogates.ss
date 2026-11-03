@@ -2,8 +2,8 @@
 ;; record, values.ss), and the hooks that make it a java.lang.Character.
 ;;
 ;; jolt strings hold code points, so half of a surrogate pair cannot live in
-;; one. It can live outside one, as it does on the JVM: (char 0xD83D) and the
-;; .charAt of either half of an astral character hand one out (#1455). What a
+;; one. It can live outside one, as it does on the JVM: (char 0xD83D), a char[]
+;; element and Character/toChars hand one out (#1454). What a
 ;; program can observe of it, registered with each hook that owns it, as
 ;; float.ss does for java.lang.Float:
 ;;   - char? is true and (class u) is java.lang.Character; (int u) is the unit.

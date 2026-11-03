@@ -113,6 +113,10 @@
 ;; actually writes — build the result in one string-append with no rest list,
 ;; no accumulator and no reverse. The variadic entry keeps its shape. Measured
 ;; 56 ns against string-append's 1 ns for (str s "!") before this.
+;; Is X a surrogate unit (values.ss jsurr)? A string, nearly every str argument,
+;; answers with one inline type test.
+(define-syntax str-unit?
+  (syntax-rules () ((_ x) (let ((v x)) (and (not (string? v)) (jsurr? v))))))
 (define jolt-str
   (case-lambda
     (() "")
@@ -120,42 +124,31 @@
     ;; (str sym) hands back the symbol's own name string — JVM (str x) is
     ;; x.toString(), and core.logic's non-unique lvar equality compares those by
     ;; identity.
-    ((a) (if (jsurr? a) (jolt-str-units (list a)) (jolt-str-one a)))
-    ;; A surrogate unit, or a rendered piece that begins or ends with half a
-    ;; pair (an edge unit, recorded only once some text has been cut mid-pair),
-    ;; takes the joiner that pairs them; every other str is the plain append.
-    ((a b) (let ((pa (str-part a)) (pb (str-part b)))
-             (if (or (jsurr? pa) (jsurr? pb) (and edge-units-any? (or (edgy? pa) (edgy? pb))))
-                 (jolt-str-units (list pa pb))
-                 (string-append pa pb))))
-    ((a b c) (let ((pa (str-part a)) (pb (str-part b)) (pc (str-part c)))
-               (if (or (jsurr? pa) (jsurr? pb) (jsurr? pc)
-                       (and edge-units-any? (or (edgy? pa) (edgy? pb) (edgy? pc))))
-                   (jolt-str-units (list pa pb pc))
-                   (string-append pa pb pc))))
+    ((a) (jolt-str-one a))                ; a lone unit renders U+FFFD itself
+    ;; A surrogate unit argument (a (char 0xD83D)) joins with the one after it:
+    ;; only a unit can start a pair, so the test is on every argument but the
+    ;; last, behind string? so a string argument pays one inline type test.
+    ((a b) (if (str-unit? a)
+               (jolt-str-units (list a b))
+               (string-append (jolt-str-piece a) (jolt-str-piece b))))
+    ((a b c) (if (or (str-unit? a) (str-unit? b))
+                 (jolt-str-units (list a b c))
+                 (string-append (jolt-str-piece a) (jolt-str-piece b) (jolt-str-piece c))))
     ((a b c . rest)
-     (let ((ps (map str-part (cons a (cons b (cons c rest))))))
-       (if (or (exists jsurr? ps) (and edge-units-any? (exists edgy? ps)))
-           (jolt-str-units ps)
-           (apply string-append ps))))))
-;; One argument of str as the joiner sees it: its rendering, or a surrogate unit
-;; kept whole so it can pair.
-(define (str-part v) (cond ((string? v) v) ((jsurr? v) v) (else (jolt-str-one v))))
+     (if (or (str-unit? a) (str-unit? b) (str-unit? c))
+         (jolt-str-units (cons a (cons b (cons c rest))))
+         (let loop ((xs rest) (acc (list (jolt-str-piece c) (jolt-str-piece b) (jolt-str-piece a))))
+           (cond
+             ((null? xs) (apply string-append (reverse acc)))
+             ((str-unit? (car xs)) (jolt-str-units (cons a (cons b (cons c rest)))))
+             (else (loop (cdr xs) (cons (jolt-str-piece (car xs)) acc)))))))))
 ;; str over arguments among which are surrogate units: a high unit directly
 ;; followed by a low one is the astral character they spell; any other unit is
-;; U+FFFD (its str-render, surrogates.ss).
-(define (edgy? x) (and (string? x) (string-edge-units x) #t))
-(define (jolt-str-units xs0)
-  (define xs1 (apply append (map edge-split xs0)))
-  (let loop ((xs xs1) (acc '()))
+;; U+FFFD (its str-render, surrogates.ss), since a jolt string holds code points.
+(define (jolt-str-units xs)
+  (let loop ((xs xs) (acc '()))
     (cond
-      ;; a half still unpaired at either end is remembered, for the next join
-      ((null? xs)
-       (string-with-edge-units!
-        (apply string-append (reverse acc))
-        (and (pair? xs1) (jsurr-low? (car xs1)) (jsurr-unit (car xs1)))
-        (let ((l (and (pair? xs1) (list-ref xs1 (fx- (length xs1) 1)))))
-          (and (jsurr-high? l) (jsurr-unit l)))))
+      ((null? xs) (apply string-append (reverse acc)))
       ((and (jsurr-high? (car xs)) (pair? (cdr xs)) (jsurr-low? (cadr xs)))
        (loop (cddr xs)
              (cons (string (surrogates->char (jsurr-unit (car xs)) (jsurr-unit (cadr xs)))) acc)))
@@ -175,260 +168,11 @@
              (string-append "Index " (number->string i) " out of bounds for length "
                             (number->string n))))
 
-;; ---- half a pair at the edge of a string (#1455) -----------------------------
-;; A JVM String can hold a lone surrogate, and a buffered reader makes one
-;; whenever its chunk boundary splits a pair: data.json builds (String. buf 0 63)
-;; with the high unit last, then appends the low unit it reads next to a
-;; StringBuilder seeded with that string. A jolt string cannot hold the unit, so
-;; it holds U+FFFD there, and this table remembers which unit it was, for a
-;; string whose first char is a cut-off LOW unit or whose last is a cut-off HIGH
-;; one. That is the only place a later join can complete a pair. The joiners
-;; (StringBuilder, str, a Writer) consult it, so the split pair comes back whole.
-;; Printed or sent anywhere else, the string is its U+FFFD.
-;;
-;; Only the two producers that cut text by UTF-16 index record here:
-;; u16-substring below and a char[] region (natives-array.ss). The joiners test
-;; edge-units-any? first, so a program that never cuts a pair never looks.
-(define edge-units (make-weak-eq-hashtable))
-(define edge-units-mu (make-mutex))
-(define edge-units-any? #f)
-;; Record LEAD (a low unit, or #f) and TRAIL (a high unit, or #f) for S; S back.
-(define (string-with-edge-units! s lead trail)
-  (when (and (or lead trail) (fx>? (string-length s) 0))
-    (jolt-with-mutex edge-units-mu (hashtable-set! edge-units s (cons lead trail)))
-    (set! edge-units-any? #t))
-  s)
-;; S's (lead . trail) when it has a recorded edge unit, else #f.
-(define (string-edge-units s)
-  (and edge-units-any?
-       (let ((n (string-length s)))
-         (and (fx>? n 0)
-              (or (char=? (string-ref s 0) jolt-replacement-char)
-                  (char=? (string-ref s (fx- n 1)) jolt-replacement-char))
-              (jolt-with-mutex edge-units-mu (hashtable-ref edge-units s #f))))))
-;; X as the pieces a joiner pairs: a string with recorded edge units becomes its
-;; lead unit, its middle and its trail unit; anything else is itself.
-(define (edge-split x)
-  (let ((e (and (string? x) (string-edge-units x))))
-    (if (not e)
-        (list x)
-        (let* ((n (string-length x))
-               (lead (car e))
-               (start (if lead 1 0))
-               (trail (and (cdr e) (fx>? n start) (cdr e)))
-               (end (if trail (fx- n 1) n)))
-          (append (if lead (list (jolt-surrogate lead)) '())
-                  (if (fx<? start end) (list (substring x start end)) '())
-                  (if trail (list (jolt-surrogate trail)) '()))))))
-
-;; ---- the UTF-16 view of a string (#1455) -------------------------------------
-;; java.lang.String's index methods — length, charAt, substring, indexOf … —
-;; answer in UTF-16 code units, as on the JVM, while clojure.core's count, nth,
-;; subs and seq keep code points. That is what lets ported code that walks a
-;; string per unit (data.json's escaper: .length, .charAt, .subSequence) see the
-;; two halves of an astral character where the JVM shows them. The two models
-;; agree on any string with no astral character (code point > #xFFFF), which is
-;; nearly every string. So the question each method asks first is whether
-;; s[0, k) is free of astral chars. When it is, UTF-16 index k IS code-point
-;; index k and nothing is converted.
-;;
-;; Scanning for that on every call would make a .charAt loop quadratic, so the
-;; answer is kept for the last two strings asked about, by identity. An entry is
-;; #(s pre pos). s[0, pre) holds no astral char. pos is #f until a scan meets
-;; one, then the vector of each code point's UTF-16 offset (length n + 1), and
-;; pre stays at that first astral index. A scan runs ahead geometrically, so a
-;; forward loop pays amortized O(1) and takes the fast path in jolt-char-at.
-;; jolt strings are immutable to their callers, so an entry never goes stale.
-;; Racing threads can only lose an entry or see a smaller pre for the same
-;; string, both still true.
-(define u16-slot-a (vector #f 0 #f))
-(define u16-slot-b (vector #f 0 #f))
-;; Behind the two slots, a weak table keeps the entry of every LONG string, so
-;; code that walks three or more long strings in step (nth into each per index)
-;; does not rescan one each time it comes back to it. A short string rescans in
-;; less time than the table's lock costs.
-(define u16-long-entries (make-weak-eq-hashtable))
-(define u16-long-mu (make-mutex))
-(define u16-long-min 256)
-(define (u16-entry s)
-  (let ((a u16-slot-a))
-    (if (eq? (vector-ref a 0) s)
-        a
-        (let ((b u16-slot-b))
-          (if (eq? (vector-ref b 0) s)
-              (begin (set! u16-slot-b a) (set! u16-slot-a b) b)
-              (let ((e (if (fx<? (string-length s) u16-long-min)
-                           (vector s 0 #f)
-                           (jolt-with-mutex u16-long-mu
-                             (or (hashtable-ref u16-long-entries s #f)
-                                 (let ((e (vector s 0 #f)))
-                                   (hashtable-set! u16-long-entries s e)
-                                   e))))))
-                (set! u16-slot-b a)
-                (set! u16-slot-a e)
-                e))))))
-(define (u16-build! e first)
-  (let* ((s (vector-ref e 0)) (n (string-length s)) (pos (make-vector (fx+ n 1) 0)))
-    (do ((c 0 (fx+ c 1))) ((fx=? c first)) (vector-set! pos c c))
-    (let loop ((c first) (u first))
-      (vector-set! pos c u)
-      (when (fx<? c n)
-        (loop (fx+ c 1)
-              (if (fx<? (char->integer (sa-ustring-ref s c)) #x10000) (fx+ u 1) (fx+ u 2)))))
-    (vector-set! e 2 pos)
-    (vector-set! e 1 first)))
-;; Is e's string free of astral chars below K? Extends the known prefix as far as
-;; it has to (and further, geometrically); an astral char found below K builds
-;; the offset table and answers #f. K past the end asks about the whole string.
-(define (u16-clear-upto? e k)
-  (let ((pre (vector-ref e 1)))
-    (cond
-      ((fx<=? k pre) #t)
-      ((vector-ref e 2) #f)
-      (else
-       (let* ((s (vector-ref e 0)) (n (string-length s)))
-         (if (fx>=? pre n)
-             #t
-             (let* ((goal (fxmin n (fxmax k (fx+ pre (fxmax pre 64)))))
-                    (i (u16-first-astral s pre goal)))
-               (if (fx=? i goal)
-                   (begin (vector-set! e 1 i) #t)
-                   (begin (u16-build! e i) (fx<=? k i))))))))))
-;; The index of the first astral char in s[from, to), or TO: the scan behind
-;; every answer here. Eight chars per step, OR'd together, since the loop's own
-;; overhead is most of what a char-at-a-time scan costs (0.6 against 2 ns a char).
-(define-syntax u16-cp (syntax-rules () ((_ s i) (char->integer (sa-ustring-ref s i)))))
-(define (u16-first-astral s from to)
-  (let loop ((i from))
-    (if (fx<=? (sa-ufx+ i 8) to)
-        (if (fx<? (fxior (fxior (u16-cp s i) (u16-cp s (sa-ufx+ i 1)))
-                         (fxior (u16-cp s (sa-ufx+ i 2)) (u16-cp s (sa-ufx+ i 3)))
-                         (fxior (u16-cp s (sa-ufx+ i 4)) (u16-cp s (sa-ufx+ i 5)))
-                         (fxior (u16-cp s (sa-ufx+ i 6)) (u16-cp s (sa-ufx+ i 7))))
-                  #x10000)
-            (loop (sa-ufx+ i 8))
-            (let one ((i i)) (if (fx<? (u16-cp s i) #x10000) (one (sa-ufx+ i 1)) i)))
-        (let one ((i i))
-          (cond ((sa-ufx=? i to) to)
-                ((fx<? (u16-cp s i) #x10000) (one (sa-ufx+ i 1)))
-                (else i))))))
-;; How many astral chars s[from, to) holds.
-(define (u16-count-astral s from to)
-  (let loop ((i (u16-first-astral s from to)) (k 0))
-    (if (fx>=? i to) k (loop (u16-first-astral s (sa-ufx+ i 1) to) (sa-ufx+ k 1)))))
-;; Is s free of astral chars below K?
-;; A short string the cache does not hold is scanned directly: that costs less
-;; than allocating and installing an entry for it, so count, subs or indexOf
-;; over many short strings (keys, tokens, lines) allocate nothing.
-(define u16-short 64)
-(define (u16-clear-below? s k)
-  (let ((a u16-slot-a) (n (string-length s)))
-    (cond ((eq? (sa-uvector-ref a 0) s) (u16-clear-upto? a k))
-          ((fx<? n u16-short) (let ((m (fxmin n (fxmax k 0)))) (fx=? (u16-first-astral s 0 m) m)))
-          (else (u16-clear-upto? (u16-entry s) k)))))
-;; The string's length in UTF-16 units.
-(define (u16-length s)
-  (let ((e (u16-entry s)) (n (string-length s)))
-    (if (u16-clear-upto? e n) n (vector-ref (vector-ref e 2) n))))
-;; The code point holding UTF-16 unit U (the pair's index for either half). An
-;; index past the end stays past it by as much, so a bounds check still fails.
-(define (u16->cp s u)
-  (if (or (not (fixnum? u)) (fx<? u 0))
-      u
-      (let ((e (u16-entry s)))
-        (if (u16-clear-upto? e u)
-            u
-            (let* ((pos (vector-ref e 2)) (n (fx- (vector-length pos) 1)) (len (vector-ref pos n)))
-              (if (fx>=? u len)
-                  (fx+ n (fx- u len))
-                  (let loop ((lo 0) (hi n))   ; pos[lo] <= u < pos[hi]
-                    (if (fx=? (fx+ lo 1) hi)
-                        lo
-                        (let ((mid (fxquotient (fx+ lo hi) 2)))
-                          (if (fx<=? (vector-ref pos mid) u) (loop mid hi) (loop lo mid)))))))))))
-;; Does UTF-16 index U fall between the two halves of a pair?
-(define (u16-split? s u)
-  (and (fixnum? u) (fx>? u 0)
-       (let ((e (u16-entry s)))
-         (and (not (u16-clear-upto? e u))
-              (let* ((pos (vector-ref e 2)) (c (u16->cp s u)))
-                (and (fx<? c (fx- (vector-length pos) 1)) (not (fx=? (vector-ref pos c) u))))))))
-;; The UTF-16 index of code point C (one past the end maps to the length).
-(define (cp->u16 s c)
-  (if (or (not (fixnum? c)) (fx<? c 0))
-      c
-      (let ((e (u16-entry s)))
-        (if (u16-clear-upto? e c)
-            c
-            (let* ((pos (vector-ref e 2)) (n (fx- (vector-length pos) 1)))
-              (if (fx>? c n) (fx+ (vector-ref pos n) (fx- c n)) (vector-ref pos c)))))))
-;; The UTF-16 unit at U as a jolt char: the char itself below #x10000, else the
-;; surrogate-unit value for the half U names. U must be in range.
-(define (u16-unit-at s u)
-  (let* ((c (u16->cp s u)) (cp (char->integer (string-ref s c))))
-    (cond ((fx<? cp #x10000) (string-ref s c))
-          ((fx=? (cp->u16 s c) u) (jolt-surrogate (astral-high-unit cp)))
-          (else (jolt-surrogate (astral-low-unit cp))))))
-;; The unit at UTF-16 index I as nth/get/seq read it, or #f when I is out of
-;; range (no unit is #f). The same fast path as charAt below.
-(define (u16-ref s i)
-  (and (fixnum? i) (fx>=? i 0)
-       (let ((a u16-slot-a))
-         (if (and (eq? (sa-uvector-ref a 0) s) (fx<? i (sa-uvector-ref a 1)))
-             (string-ref s i)
-             (and (fx<? i (u16-length s)) (u16-unit-at s i))))))
-;; s's UTF-16 units [b, e) as a list of jolt chars.
-(define (u16-units s b e)
-  (if (u16-clear-below? s e)
-      (let loop ((u (fx- e 1)) (acc '()))
-        (if (fx<? u b) acc (loop (fx- u 1) (cons (string-ref s u) acc))))
-      (let loop ((u (fx- e 1)) (acc '()))
-        (if (fx<? u b) acc (loop (fx- u 1) (cons (u16-unit-at s u) acc))))))
-;; String.charAt. The fast path is the cached entry's clear prefix, where a
-;; UTF-16 index is the char's own index and the char is below #x10000.
 (define (jolt-char-at s i)
   (let ((i (jolt->idx i)))
-    (if (and (fixnum? i) (fx>=? i 0))
-        (let ((a u16-slot-a))
-          (if (and (eq? (sa-uvector-ref a 0) s) (fx<? i (sa-uvector-ref a 1)))
-              (string-ref s i)
-              (let ((len (u16-length s)))
-                (if (fx<? i len) (u16-unit-at s i) (char-index-oob i len)))))
-        (char-index-oob i (u16-length s)))))
-;; String.length: the cached entry answers a string known to be clear throughout.
-(define (jolt-str-u16-length s)
-  (let ((a u16-slot-a) (n (string-length s)))
-    (cond ((and (eq? (sa-uvector-ref a 0) s) (fx=? (sa-uvector-ref a 1) n)) n)
-          ((fx<? n u16-short)
-           ;; a short string found clear is remembered, so asking again hits
-           (let ((k (u16-count-astral s 0 n)))
-             (when (fx=? k 0) (set! u16-slot-b a) (set! u16-slot-a (vector s n #f)))
-             (fx+ n k)))
-          (else (u16-length s)))))
-;; String.substring / subSequence over UTF-16 indices. A bound that splits a pair
-;; leaves half of it in the result, a lone unit, which a jolt string holds as
-;; U+FFFD (the policy in values.ss).
-(define (u16-substring s b e)
-  (if (or (not (fixnum? e)) (u16-clear-below? s e))
-      (jolt-substr s b e)   ; text below e has no astral char: the indices agree
-      (let ((len (u16-length s)))
-        (begin
-          (unless (and (fixnum? b) (fixnum? e) (fx>=? b 0) (fx<=? b e) (fx<=? e len))
-            (index-int-check! b) (index-int-check! e)
-            (throw-jvm 'StringIndexOutOfBoundsException
-                       (string-append "begin " (number->string b) ", end " (number->string e)
-                                      ", length " (number->string len))))
-          (let* ((bs (u16-split? s b)) (es (u16-split? s e))
-                 (cb (if bs (fx+ (u16->cp s b) 1) (u16->cp s b)))
-                 (ce (u16->cp s e)))
-            (if (and bs (fx=? b e))
-                ""
-                (string-with-edge-units!
-                 (string-append (if bs jolt-replacement-string "")
-                                (if (fx<? cb ce) (substring s cb ce) "")
-                                (if es jolt-replacement-string ""))
-                 (and bs (astral-low-unit (char->integer (string-ref s (fx- cb 1)))))
-                 (and es (astral-high-unit (char->integer (string-ref s ce)))))))))))
+    (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length s)))
+        (string-ref s i)
+        (char-index-oob i (string-length s)))))
 
 ;; Chez's `substring` walks the span a character at a time; allocating the result
 ;; and asking for the block move is ~3.7x faster for the spans a parser, a reader
@@ -451,15 +195,14 @@
 ;; case-lambda, not `. end`: a rest-arg list allocated on every call is most of
 ;; what a one-character (subs txt i (inc i)) costs, and a parser does that per
 ;; input position.
-;; subs counts UTF-16 units, as String.substring does (#1455).
 (define jolt-subs
   (case-lambda
     ((s start)
      (let ((s (jolt-need-string s)))
-       (u16-substring s (jolt->idx start) (jolt-str-u16-length s))))
+       (jolt-substr s (jolt->idx start) (string-length s))))
     ((s start end)
      (let ((s (jolt-need-string s)))
-       (u16-substring s (jolt->idx start) (jolt->idx end))))))
+       (jolt-substr s (jolt->idx start) (jolt->idx end))))))
 
 ;; vec: a pvec from any seqable. A vector comes back as itself minus its
 ;; metadata — clojure.core/vec's (with-meta coll nil) — so it is a copy only when
@@ -474,7 +217,7 @@
      (cond ((eq? (pvec-ent coll) #t) (pvec-with-ent coll #f))
            ((eq? (pvec-meta coll) jolt-nil) coll)
            (else (coll-with-meta coll jolt-nil))))
-    ((string? coll) (apply jolt-vector (u16-units coll 0 (jolt-str-u16-length coll))))
+    ((string? coll) (apply jolt-vector (string->list coll)))
     ;; a source that drives its own reduce (IReduce/IReduceInit deftype or
     ;; reify) builds the vector by reduction, like LazilyPersistentVector.
     ((iface-method coll "reduce" 3) (jolt-into (jolt-vector) coll))
