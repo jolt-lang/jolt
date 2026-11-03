@@ -726,6 +726,15 @@
 ;; Chez bignum?: an exact integer outside the fixnum range (natives-format.ss).
 (define (bignum? x) (and (exact-integer? x) (not (fixnum? x))))
 
+;; Chez flonum->fixnum: a flonum truncated toward zero, as a fixnum
+;; (converters.ss's jolt-flonum->integer). Gambit's ##flonum->fixnum truncates
+;; the same way (gsc/tests/08-flprim/flconv.scm: 5.6 -> 5, -3.6 -> -3), and
+;; the two fixnum limits are ##max-fixnum / ##min-fixnum, so the lane's bounds
+;; follow the target's fixnum width.
+(define (flonum->fixnum x) (##flonum->fixnum x))
+(define (most-positive-fixnum) ##max-fixnum)
+(define (most-negative-fixnum) ##min-fixnum)
+
 ;; R6RS char-general-category backs the \p{L}-style classes in
 ;; regex-translate.ss. Gambit exposes no Unicode general categories, so such a
 ;; pattern is refused as a syntax error (regex.ss's guard turns this raise into
