@@ -302,6 +302,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`sequential?` answered true for a deftype or reify implementing `ISeq`.**
+  `ISeq` is not `Sequential`; only a type declaring `Sequential` (or an
+  interface extending it) is. A regression from the `seq?` change earlier in
+  this cycle.
+- **A reify implementing `Seqable` or `ISeq` could not be walked.** `seq`,
+  `first`, `into` and friends threw "Don't know how to create ISeq"; they now
+  ask its `seq` method and walk an `ISeq` lazily. `coll?` and `count` answer
+  for such a reify as the JVM does, and `count` of a seq deftype that is not
+  `Counted` walks its seq instead of throwing `AbstractMethodError`.
+  `clojure.lang.IndexedSeq` is modeled, so a type declaring it is `seq?`.
+- **`java.net.URI` equality, `hashCode` and `compareTo` follow the JDK.** They
+  compared the string forms, so `(= (.toUri path) (.toURI file))` was false
+  for the same file now that `Path.toUri` writes `file:///`. They compare
+  component by component: an empty authority is none, the scheme and host
+  ignore case, and an escape's hex digits ignore case.
+- **A condition wait with interrupts disabled could still stall a
+  collection** when the thread requesting it held the waited mutex: the
+  sliced wait took the mutex back inside Chez's `condition-wait`, still
+  counted as active. It now releases the mutex, naps in a collect-safe call
+  and retakes it collect-safely.
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without
