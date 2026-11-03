@@ -2426,14 +2426,61 @@
      (let ((strict? (and (not (jolt-nil? opts))
                          (eq? (jolt-get opts (jolt-keyword "unwritable") jolt-nil)
                               (jolt-keyword "fail")))))
-       (jolt-image-write! path (vector 'jolt-world (image-world-vars ns-list))
-                          (if strict?
-                              jolt-nil
-                              (jolt-hash-map (jolt-keyword "unwritable")
-                                             (jolt-keyword "stub"))))))))
+       (let* ((pairs (image-world-vars ns-list))
+              (rep (jolt-image-write! path (vector 'jolt-world pairs)
+                                      (if strict?
+                                          jolt-nil
+                                          (jolt-hash-map (jolt-keyword "unwritable")
+                                                         (jolt-keyword "stub"))))))
+         ;; each stub names the var it sits in, as jolt.image/stubs does
+         (if strict?
+             rep
+             (jolt-assoc rep (jolt-keyword "stubbed")
+                         (image-world-name-vars (jolt-get rep (jolt-keyword "stubbed") jolt-nil)
+                                                pairs))))))))
+
+;; The var a world path starts in. A world is (vector 'jolt-world pairs), pairs
+;; the ("ns/name" . root) list image-world-vars built, so every path into it
+;; opens "1", then one "cdr" per pair it passes over, then "car" into the pair
+;; the object sits under. That pair's name, or #f for a path of another shape.
+;; PAIRS is that list as a vector. An object two vars share is reached through
+;; the first of them, and this is the var its path runs through.
+(define (image-world-path-var pairs path)
+  (let ((n (string-length path)))
+    ;; the index past step S and its " -> " when S is the step at i, else #f
+    (define (past i s)
+      (let ((e (fx+ i (string-length s))))
+        (and (fx<=? (fx+ e 4) n)
+             (let same ((k 0))
+               (or (fx=? k (string-length s))
+                   (and (char=? (string-ref path (fx+ i k)) (string-ref s k))
+                        (same (fx+ k 1)))))
+             (char=? (string-ref path e) #\space)
+             (char=? (string-ref path (fx+ e 1)) #\-)
+             (char=? (string-ref path (fx+ e 2)) #\>)
+             (char=? (string-ref path (fx+ e 3)) #\space)
+             (fx+ e 4))))
+    (let ((i (past 0 "1")))
+      (and i
+           (let loop ((i i) (k 0))
+             (cond ((past i "cdr") => (lambda (j) (loop j (fx+ k 1))))
+                   ((and (past i "car") (fx<? k (vector-length pairs)))
+                    (car (vector-ref pairs k)))
+                   (else #f)))))))
+
+;; findings (a jolt vector of maps with :path) with :var added from each path
+(define (image-world-name-vars findings pairs)
+  (let ((pv (list->vector pairs)))
+    (let loop ((i (fx- (jolt-count findings) 1)) (acc '()))
+      (if (fx<? i 0)
+          (apply jolt-vector acc)
+          (let* ((m (jolt-nth findings i))
+                 (v (image-world-path-var pv (jolt-get m (jolt-keyword "path") jolt-nil))))
+            (loop (fx- i 1) (cons (if v (jolt-assoc m (jolt-keyword "var") v) m) acc)))))))
 
 (define (jolt-image-scan-world ns-list)
-  (jolt-image-scan (vector 'jolt-world (image-world-vars ns-list))))
+  (let ((pairs (image-world-vars ns-list)))
+    (image-world-name-vars (jolt-image-scan (vector 'jolt-world pairs)) pairs)))
 
 (define (jolt-image-restore-world! path)
   (hashtable-clear! image-restore-stub-tbl)
