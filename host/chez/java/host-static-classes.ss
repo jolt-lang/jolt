@@ -591,9 +591,7 @@
 (define sink-pending-live 0)
 (define (sink-text sink p)
   (cond
-    ((and (string? p) (fx=? sink-pending-live 0) (not (and edge-units-any? (edgy? p)))) p)
-    ((and (string? p) (edgy? p))
-     (apply string-append (map (lambda (x) (sink-text-1 sink x)) (edge-split p))))
+    ((and (string? p) (fx=? sink-pending-live 0)) p)
     (else (sink-text-1 sink p))))
 (define (sink-text-1 sink p)
   (if (and (string? p) (fx=? sink-pending-live 0))
@@ -641,15 +639,15 @@
             (start (min (max 0 (jnum->exact (car rest))) n))
             (end (min n (+ start (max 0 (jnum->exact (cadr rest)))))))
        (char-array-region x start (- end start))))
-    ;; and a String's is over its UTF-16 units, as every CharSequence offset is
+    ;; and a String's is over its characters
     ((and (pair? rest) (pair? (cdr rest)))
      (let* ((s (writer-piece x))
-            (n (if (string? s) (u16-length s) 1))
+            (n (if (string? s) (string-length s) 1))
             (off (max 0 (jnum->exact (car rest))))
             (len (max 0 (jnum->exact (cadr rest))))
             (start (min off n))
             (end (min n (+ start len))))
-       (if (string? s) (u16-substring s start end) s)))
+       (if (string? s) (substring s start end) s)))
     (else (writer-piece x))))
 ;; Same accumulator as StringBuilder, and for the same reason: writing to a
 ;; StringWriter a piece at a time — which is what printStackTrace and every
@@ -837,7 +835,7 @@
     (cond
       ((not (pw-writer? self)) (pw-emit-text t s))
       ((jsurr? s) (record-method-dispatch t "write" (jolt-list (->num (jsurr-unit s)))))
-      (else (record-method-dispatch t "write" (jolt-list s (->num 0) (->num (u16-length s))))))))
+      (else (record-method-dispatch t "write" (jolt-list s (->num 0) (->num (string-length s))))))))
 (define (pw-char! self c)                 ; c: the char's code
   (let ((t (pw-target self)))
     (if (pw-writer? self)
