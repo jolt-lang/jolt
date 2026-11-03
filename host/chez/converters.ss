@@ -500,7 +500,7 @@
 (define (jolt-int-cast x)
   (cond
     ((and (fixnum? x) (fx>=? x -2147483648) (fx<=? x 2147483647)) x)
-    ((flonum? x) (jolt-checked-cast "int" -2147483648 2147483647 -2147483648.0 2147483647.0 x))
+    ((flonum? x) (jolt-checked-flonum-cast "int" 2147483647 -2147483648.0 2147483647.0 x))
     (else
      (let ((n (cond ((char? x) (char->integer x))
                     ((jsurr? x) (jsurr-unit x))
