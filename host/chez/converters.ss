@@ -430,7 +430,9 @@
 (def-var! "clojure.core" "symbol" jolt-symbol-new)
 (def-var! "clojure.core" "gensym" jolt-gensym)
 ;; --- checked narrow casts (RT.byteCast/shortCast/intCast/longCast/charCast) --
-;; One helper carries the JVM ranges: truncate toward zero, then range-check.
+;; Two helpers carry the JVM ranges: an exact operand truncates toward zero,
+;; then range-checks; a double range-checks itself first and then truncates
+;; (jolt-checked-flonum-cast below).
 ;; NaN casts to 0 (Java (long)NaN); an out-of-range value (including a float
 ;; infinity) is IllegalArgumentException "Value out of range for <type>: x".
 ;; A non-numeric operand is the usual ClassCastException. Numeric types outside
@@ -536,7 +538,6 @@
 (def-var! "clojure.core" "char" jolt-char)
 ;; unchecked-long: truncate + wrap to 64 bits (RT.uncheckedLongCast — a float
 ;; infinity saturates, NaN is 0). unchecked-int wraps and sign-folds to 32.
-(define (jolt-cast-saturate n lo hi) (cond ((< n lo) lo) ((> n hi) hi) (else n)))
 ;; Same fixnum-first shape as the checked casts above, and for the same reason —
 ;; see their comment. A fixnum already IS its own 64-bit wrap, so the long form
 ;; returns it untouched; the int form still has to sign-fold a fixnum wider than
