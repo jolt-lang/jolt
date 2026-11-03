@@ -369,7 +369,7 @@
             "clojure.lang.Reversible" "clojure.lang.Indexed" "clojure.lang.Counted"
             "clojure.lang.Named" "clojure.lang.Fn" "clojure.lang.IFn"
             "clojure.lang.IPersistentCollection" "clojure.lang.ISeq"
-            "clojure.lang.IChunkedSeq" "clojure.lang.IChunk"
+            "clojure.lang.IChunkedSeq" "clojure.lang.IChunk" "clojure.lang.IndexedSeq"
             "clojure.lang.IPending" "clojure.lang.IRef" "clojure.lang.IAtom"
             "clojure.lang.IAtom2" "clojure.lang.IBlockingDeref" "clojure.lang.IMapEntry"
             "clojure.lang.Associative" "clojure.lang.ILookup"
@@ -515,6 +515,8 @@
 ;; the interface chunk-first / chunk-rest are the contract of — a chunked seq is a
 ;; Sequential ISeq that can also hand out a whole block at a time
 (jch-register-supers! "clojure.lang.IChunkedSeq" '("clojure.lang.ISeq" "clojure.lang.Sequential"))
+;; an ISeq that knows its position; a deftype or reify declaring it is a seq
+(jch-register-supers! "clojure.lang.IndexedSeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "clojure.lang.Counted"))
 (jch-register-supers! "clojure.lang.Associative" '("clojure.lang.IPersistentCollection" "clojure.lang.ILookup"))
 (jch-register-supers! "clojure.lang.IPersistentStack" '("clojure.lang.IPersistentCollection"))
 (jch-register-supers! "clojure.lang.IPersistentVector" '("clojure.lang.Associative" "clojure.lang.Sequential"

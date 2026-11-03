@@ -289,18 +289,36 @@
 ;; jrec-record?).
 (define (jrec-iface-pred? x iface)
   (and (jrec? x) (not (jrec-record? x)) (jrec-type-isa? x iface) #t))
+;; the same question of a reify: what it declares, or what that extends
+(define (reify-iface-pred? x iface)
+  (and (jreify? x)
+       (or (reify-declares-class? (jreify-protos x) iface) (reify-class-isa? x iface))
+       #t))
 (for-each
   (lambda (p)
     (let ((nm (car p)) (iface (cdr p)))
       (let ((prev (var-deref "clojure.core" nm)))
         (def-var! "clojure.core" nm
           (lambda (x) (if (jrec-iface-pred? x iface) #t (jolt-invoke1 prev x)))))))
-  '(("coll?" . "clojure.lang.IPersistentCollection")
-    ("map?" . "clojure.lang.IPersistentMap")
+  '(("map?" . "clojure.lang.IPersistentMap")
     ("vector?" . "clojure.lang.IPersistentVector")
     ("set?" . "clojure.lang.IPersistentSet")
-    ("associative?" . "clojure.lang.Associative")
-    ("sequential?" . "clojure.lang.Sequential")))
+    ("associative?" . "clojure.lang.Associative")))
+;; count of a reify collection with no count of its own walks its seq, as
+;; RT.countFrom does for an IPersistentCollection that is not Counted
+(register-count-arm!
+  (lambda (c) (and (jreify? c) (not (reify-method-ref c "count"))
+                   (reify-iface-pred? c "clojure.lang.IPersistentCollection")))
+  (lambda (c) (jolt-count (jolt-seq c))))
+;; coll? of a reify too: a reify seq is a collection (ISeq extends
+;; IPersistentCollection), as seq? below says it is a seq
+(let ((prev (var-deref "clojure.core" "coll?")))
+  (def-var! "clojure.core" "coll?"
+    (lambda (x)
+      (if (or (jrec-iface-pred? x "clojure.lang.IPersistentCollection")
+              (reify-iface-pred? x "clojure.lang.IPersistentCollection"))
+          #t
+          (jolt-invoke1 prev x)))))
 
 ;; seq?: Clojure's is (instance? clojure.lang.ISeq x), so a deftype or reify
 ;; declaring ISeq is a seq — instaparse's and data.finger-tree's seq types are,
@@ -309,15 +327,12 @@
 ;; stream sources, ffi candidate lists) agree with the predicate. A record is
 ;; never one: defrecord's IPersistentCollection methods collide with ISeq's.
 (define pp-iseq-name "clojure.lang.ISeq")
-(define %pp-seq? jolt-seq?)
 (set! jolt-seq?
   (lambda (x)
-    (or (%pp-seq? x)
-        (jrec-iface-pred? x pp-iseq-name)
-        (and (jreify? x)
-             (or (reify-declares-class? (jreify-protos x) pp-iseq-name)
-                 (reify-class-isa? x pp-iseq-name))
-             #t))))
+    (or (cseq? x) (empty-list-t? x)          ; predicates.ss's jolt-seq?, inline
+        (and (or (jrec? x) (jreify? x))
+             (or (jrec-iface-pred? x pp-iseq-name)
+                 (reify-iface-pred? x pp-iseq-name))))))
 (def-var! "clojure.core" "seq?" jolt-seq?)
 
 ;; counted?: Clojure's is (instance? clojure.lang.Counted x), and jolt now models
@@ -368,7 +383,10 @@
             ((jolt-lazyseq? x) #t)
             ((empty-list-t? x) #t)
             ((jolt-queue? x) #t)
-            ((jrec-iface-pred? x "clojure.lang.Sequential") #t)
+            ;; a deftype or reify is sequential? only as it is Sequential, which
+            ;; ISeq is not: the overlay's (seq? x) arm would say a seq type is
+            ((jrec? x) (and (not (jrec-record? x)) (jrec-type-isa? x "clojure.lang.Sequential") #t))
+            ((jreify? x) (reify-iface-pred? x "clojure.lang.Sequential"))
             ((or (pmap? x) (pset? x) (string? x) (symbol-t? x) (keyword-t? x)
                  (number? x) (char? x) (boolean? x) (jolt-nil? x) (procedure? x))
              #f)

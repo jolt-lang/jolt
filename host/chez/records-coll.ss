@@ -498,7 +498,14 @@
        (let ((ifc (jrdesc-ifc-of coll)))
          (cond
            ((vector-ref ifc 3) (jrec-field-count coll))
-           ((vector-ref ifc 4) (jrec-abstract-method-error coll "count"))
+           ;; RT.countFrom: an IPersistentCollection that is not Counted is
+           ;; counted by walking its seq; only a declared Counted reaches the
+           ;; missing method
+           ((vector-ref ifc 4)
+            (if (and (jrec-type-isa? coll "clojure.lang.IPersistentCollection")
+                     (not (jrec-type-isa? coll "clojure.lang.Counted")))
+                (jolt-count (jolt-seq coll))
+                (jrec-abstract-method-error coll "count")))
            ;; RT.count reaches CharSequence.length once Counted and
            ;; IPersistentCollection have both missed — a declared `count` above
            ;; therefore outranks `length`, as it does on the JVM.
@@ -695,27 +702,42 @@
 ;; it, and a `more` without a `next` ends on an empty rest. Re-asking the
 ;; answer for its seq, as the general arm below does, would ask forever; and
 ;; only the cseq shape gives count/nth/reduce and the printer their walk.
+;; A reify that is a seq walks the same way (its methods are read through
+;; reify-method-ref, records-dispatch.ss, resolved at call time; its seq arm is
+;; registered there, once jreify? exists).
+(define (self-seq-method x name)
+  (cond ((jrec? x) (jrec-cl x name))
+        ((jreify? x) (reify-method-ref x name))
+        (else #f)))
+;; A reify's methods are closures of the instance, so each cell of a reify seq
+;; reads its own; a deftype's are its type's, read once.
 (define (jrec-iseq->cseq x)
-  (let ((first-m (jrec-cl x "first"))
-        (next-m (jrec-cl x "next"))
-        (more-m (jrec-cl x "more")))
-    (define (step s)
-      (jolt-make-lazy-seq
-        (lambda ()
-          (let ((tail (cond (next-m (jolt-invoke next-m s))
-                            (more-m (let ((r (jolt-invoke more-m s)))
-                                      (if (jolt-nil? (jolt-seq r)) jolt-nil r)))
-                            (else jolt-nil))))
-            (jolt-cons (jolt-invoke first-m s)
-                       (if (jolt-nil? tail) jolt-nil
-                           (if (and (jrec? tail) (eq? (jrec-tag tail) (jrec-tag x)))
-                               (step tail)
-                               (jolt-seq tail))))))))
-    (if first-m (jolt-seq (step x)) (jrec-abstract-method-error x "first"))))
-(register-seq-arm! (lambda (x) (jrec-cl x "seq"))
-  (lambda (x)
-    (let ((r (jolt-invoke (jrec-cl x "seq") x)))
-      (if (eq? r x) (jrec-iseq->cseq x) (jolt-seq r)))))
+  (define (step s first-m next-m more-m)
+    (jolt-make-lazy-seq
+      (lambda ()
+        (let ((tail (cond (next-m (jolt-invoke next-m s))
+                          (more-m (let ((r (jolt-invoke more-m s)))
+                                    (if (jolt-nil? (jolt-seq r)) jolt-nil r)))
+                          (else jolt-nil))))
+          (jolt-cons (jolt-invoke first-m s)
+                     (cond ((jolt-nil? tail) jolt-nil)
+                           ((and (jrec? tail) (jrec? s) (eq? (jrec-tag tail) (jrec-tag s)))
+                            (step tail first-m next-m more-m))
+                           ;; walked here, not through jolt-seq: that would force
+                           ;; the tail's first cell, and its tail's, eagerly
+                           ((and (jreify? tail) (self-seq-method tail "first") (jolt-seq? tail))
+                            (step tail (self-seq-method tail "first")
+                                  (self-seq-method tail "next") (self-seq-method tail "more")))
+                           (else (jolt-seq tail))))))))
+  (let ((first-m (self-seq-method x "first")))
+    (if first-m
+        (jolt-seq (step x first-m (self-seq-method x "next") (self-seq-method x "more")))
+        (jrec-abstract-method-error x "first"))))
+(define (self-seq-arm x)
+  (let ((r (jolt-invoke (self-seq-method x "seq") x)))
+    (if (eq? r x) (jrec-iseq->cseq x) (jolt-seq r))))
+(register-seq-arm! (lambda (x) (jrec-cl x "seq")) self-seq-arm)
+
 (register-conj-arm! (lambda (coll) (jrec-cl coll "cons"))
   (lambda (coll x) (jolt-invoke (jrec-cl coll "cons") coll x)))
 ;; A plain defrecord (no IPersistentCollection.cons of its own) conjs a [k v] pair
