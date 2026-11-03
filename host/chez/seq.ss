@@ -650,18 +650,10 @@
       (cseq-vec (pvec-nth-d v i jolt-nil) v i kind)))
 ;; A string's characters. clojure.lang.StringSeq, and the tail is one too.
 ;; Counted, as StringSeq is: the cell knows the characters left from its index.
-;; I is a UTF-16 index and each element one unit, as on the JVM: an astral
-;; character is its two surrogate-unit values (converters.ss, #1455).
 (define (str->seq s i)
-  (let ((a u16-slot-a) (cn (string-length s)))
-    ;; one cache test per cell: a string known to have no astral char is its
-    ;; own unit sequence
-    (if (and (eq? (sa-uvector-ref a 0) s) (fx=? (sa-uvector-ref a 1) cn))
-        (if (fx>=? i cn) jolt-nil
-            (make-cseqn (string-ref s i) (make-lazy-src lz-str-seq s i) sk-string-seq jolt-nil (fx- cn i)))
-        (let ((n (u16-length s)))
-          (if (fx>=? i n) jolt-nil
-              (make-cseqn (u16-ref s i) (make-lazy-src lz-str-seq s i) sk-string-seq jolt-nil (fx- n i)))))))
+  (let ((n (string-length s)))
+    (if (fx>=? i n) jolt-nil
+        (make-cseqn (string-ref s i) (make-lazy-src lz-str-seq s i) sk-string-seq jolt-nil (fx- n i)))))
 ;; ---- seq arms: host types register here instead of set!-wrapping jolt-seq ----
 ;; Arms dispatch newest-registration-first (cons front, walk head-first), matching
 ;; the precedence the set! chains produced. The built-in types stay inline in
@@ -2104,7 +2096,51 @@
 ;; for anything else. The java layer (java/jutil-colls.ss) set!s this; it is a
 ;; hook rather than a predicate list here because the shims are its to know.
 (define jolt-reduce-kv-entries (lambda (x) #f))
+;; reduce-kv with an init that is already reduced, as each reference kvreduce
+;; treats one: an array map, a vector, a sorted map and a record (its seq walk)
+;; call f with it and test only what f returns; a hash map tests it first and
+;; unwraps it; a type's own kvreduce gets it and is answered as it returns.
+;; Empty, an array map, a vector and nil hand the init back still wrapped, while
+;; a sorted map unwraps it. Off the hot path: jolt-reduce-kv asks once.
+(define (reduce-kv-reduced-init f init coll)
+  (let ((step (kv-step f)))
+    (define (walk-entries s acc)            ; s: a seq of entries, nil when done
+      (if (jolt-nil? s)
+          acc
+          (let* ((e (seq-first s))
+                 (r (step acc (jolt-nth e 0) (jolt-nth e 1))))
+            (if (jolt-reduced? r) (jolt-reduced-val r) (walk-entries (jolt-seq (seq-more s)) r)))))
+    (cond
+      ((jolt-nil? coll) init)
+      ((pmap? coll) (if (pmap-array? coll) (walk-entries (jolt-seq coll) init) (jolt-reduced-val init)))
+      ((pvec? coll)
+       (let ((n (jolt-count coll)))
+         (let loop ((i 0) (acc init))
+           (if (fx>=? i n)
+               acc
+               (let ((r (step acc i (jolt-nth coll i))))
+                 (if (jolt-reduced? r) (jolt-reduced-val r) (loop (fx+ i 1) r)))))))
+      ((htable-sorted-map? coll)
+       (let ((r (walk-entries (jolt-seq coll) init)))
+         (if (jolt-reduced? r) (jolt-reduced-val r) r)))
+      ((iface-method coll "kvreduce" 3) => (lambda (m) (jolt-invoke m coll f init)))
+      ((or (jrec? coll) (jolt-map? coll)) (walk-entries (jolt-seq coll) init))
+      (else (jolt-reduce-kv-walk f init coll)))))
 (define (jolt-reduce-kv f init coll)
+  (if (jolt-reduced? init)
+      (reduce-kv-reduced-init f init coll)
+      (jolt-reduce-kv-walk f init coll)))
+(define (jolt-reduce-kv-walk f init coll)
+  (cond
+    ;; a type's own kvreduce answers as it returns — reduced or not, as the
+    ;; reference's IKVReduce arm hands back .kvreduce's value untouched
+    ((and (not (pmap? coll)) (not (pvec? coll)) (not (jolt-nil? coll))
+          (not (and (jrec? coll) (jrec-plain? coll)))
+          (not (jolt-reduce-kv-entries coll))
+          (iface-method coll "kvreduce" 3))
+     => (lambda (m) (jolt-invoke m coll f init)))
+    (else (jolt-reduce-kv-fold f init coll))))
+(define (jolt-reduce-kv-fold f init coll)
   (let ((r (cond
              ((pmap? coll) (pmap-kv-reduce coll f init))
              ((pvec? coll) (vec-kv-reduce coll f init))
@@ -2286,7 +2322,7 @@
        (let ((t (cseq-tail s)))
          (if (and (lazy-src? t) (eq? (lazy-src-fn t) lz-str-seq))
              (let ((str (lazy-src-a t)) (i (lazy-src-b t)))
-               (if (fx>=? n (fx- (jolt-str-u16-length str) i))
+               (if (fx>=? n (fx- (string-length str) i))
                    jolt-empty-list
                    (str->seq str (fx+ i n))))
              (loop (fx- n 1) (jolt-seq (seq-more s))))))

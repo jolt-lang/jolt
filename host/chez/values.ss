@@ -27,12 +27,12 @@
 ;; A Float as the double it widens to; anything else unchanged.
 (define (jfloat-unbox x) (if (jfloat? x) (jfloat-fl x) x))
 
-;; A UTF-16 SURROGATE CODE UNIT as a value: what (char 0xD83D) is, and what
-;; .charAt hands out for either half of an astral character (#1455). jolt
-;; strings hold code points, so a Chez char cannot be half a pair. A JVM char
-;; can, and two library shapes depend on it. One decodes 👍 one unit
-;; at a time and appends each to a StringBuilder. The other escapes a string per
-;; .charAt unit. So a surrogate exists as a value OUTSIDE a string (char?, a
+;; A UTF-16 SURROGATE CODE UNIT as a value: what (char 0xD83D) is, and what a
+;; char[] holds for each half of an astral character it was given as units
+;; (#1454). jolt strings hold code points and every string index counts them, so
+;; a Chez char cannot be half a pair. A JVM char can, and library code depends on
+;; it: data.json decodes \uD83D\uDE00 one unit at a time and appends each to a
+;; StringBuilder. So a surrogate exists as a value OUTSIDE a string (char?, a
 ;; java.lang.Character, int gives its unit back), and every place that joins
 ;; text pairs a high unit with the low unit after it into the one scalar. A unit
 ;; left unpaired in finished text is U+FFFD, the replacement the JDK's own UTF-8

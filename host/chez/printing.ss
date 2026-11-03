@@ -281,6 +281,24 @@
 ;; redirect, not *out*, defines where text goes (pr-str / print-str rely on it).
 (define jolt-pprint-hook-suppressed (make-thread-parameter #f))
 (define out-cell #f)
+;; What a write to the plain output port puts out. A surrogate unit (values.ss
+;; jsurr) printed on its own is half a character ((print (char 0xD83D)), or
+;; print over the elements of a char[] of units). The port has nowhere to hold
+;; it, so a host with a pairing sink installs one here (host-static-classes.ss
+;; sink-text, keyed by the port as (.write *out* ...) is) that waits for the low
+;; half. Without one, a unit is U+FFFD, what finished jolt text holds for it.
+(define jolt-port-text (lambda (key p) (if (jsurr? p) jolt-replacement-string p)))
+(define (set-jolt-port-text! f) (set! jolt-port-text f))
+;; How many sinks hold a high unit waiting for its low one (the pairing sink
+;; keeps it, host-static-classes.ss). 0 is the "nothing waits anywhere" test, so
+;; a plain string write is a fixnum compare and the port, nothing more.
+(define sink-pending-live 0)
+(define-syntax port-text
+  (syntax-rules ()
+    ((_ s*) (let ((s s*))
+              (if (and (string? s) (fx=? sink-pending-live 0))
+                  s
+                  (jolt-port-text (current-output-port) s))))))
 (define (jolt-write s)
   (cond ((and (not (jolt-nil? jolt-pprint-write-hook))
               (not (jolt-pprint-hook-suppressed))
@@ -305,17 +323,22 @@
                                    (eq? (vector-ref (jhost-state w) 0) 'out)))))
                 w))
          => (lambda (w) (record-method-dispatch w "write" (jolt-list s)) jolt-nil))
-        (else (display s) jolt-nil)))
+        (else (display (port-text s)) jolt-nil)))
 ;; (.append *out* x) — what the reference's print family uses for the space
 ;; between arguments, the newline, and a printed character, so a Writer under
 ;; *out* sees those as appends, separately from each value's write. X is a char or
 ;; a string. Routed exactly like jolt-write; a writer with no append method of
 ;; its own gets write, which is what java.io.Writer.append's default does.
+;; A surrogate unit ((char 0xD83D)) goes to a host writer as itself, for
+;; it to pair with its partner, and to the port through jolt-port-text. A port's
+;; waiting half is keyed by the port itself (what (.write *out* ...) keys by too),
+;; so the capture of a with-out-str and stdout never pair with each other.
 (define (jolt-append x)
   (let ((s (if (char? x) (string x) x)))
     (cond ((and (not (jolt-nil? jolt-pprint-write-hook))
                 (not (jolt-pprint-hook-suppressed))
-                (jolt-truthy? (jolt-invoke jolt-pprint-write-hook s)))
+                (jolt-truthy? (jolt-invoke jolt-pprint-write-hook
+                                           (if (jsurr? s) jolt-replacement-string s))))
            jolt-nil)
           ((let ((w (begin
                       (unless out-cell
@@ -331,9 +354,12 @@
                         (host-method-ref (jhost-tag w) "append")
                         (iface-method w "append" #f))
                     (record-method-dispatch w "append" (jolt-list x))
-                    (record-method-dispatch w "write" (jolt-list s)))
+                    (record-method-dispatch w "write"
+                                            (jolt-list (if (and (jsurr? s) (not (jhost? w)))
+                                                           jolt-replacement-string
+                                                           s))))
                 jolt-nil))
-          (else (display s) jolt-nil))))
+          (else (display (port-text s)) jolt-nil))))
 (def-var! "clojure.core" "__set-pprint-write-hook!"
   (lambda (f) (set! jolt-pprint-write-hook f) jolt-nil))
 ;; clojure.pprint wraps its writing in this so core print routes into the active
@@ -372,7 +398,12 @@
               (jolt-push-thread-bindings (jolt-hash-map cell (var-cell-root cell)))))
           #f
           (lambda () (parameterize ((jolt-pprint-hook-suppressed #t)) (jolt-invoke thunk)))
-          (when cell (jolt-pop-thread-bindings)))))))
+          ;; a high unit still waiting for its low one ends the capture as the
+          ;; lone half it is (U+FFFD) rather than staying pending for a port
+          ;; that is gone, whichever way the body leaves
+          (begin (unless (fx=? sink-pending-live 0)
+                   (display (jolt-port-text (current-output-port) "")))
+                 (when cell (jolt-pop-thread-bindings))))))))
 
 ;; __eprint / __eprintf: stderr seams. Flush each write — like the JVM's
 ;; auto-flushing System.err — so a long-running process (a server that never
