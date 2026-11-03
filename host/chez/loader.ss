@@ -701,7 +701,12 @@
 ;; capture load, instead of re-reading inside the loop.
 (define (load-jolt-file* path src)
   (ldr-need-compiler! path)
-  (let ((end (string-length src)))
+  ;; this load's snippets read the file, not a text eval-string held for it
+  (jolt-eval-source-text-forget! path)
+  (let ((end (string-length src))
+        ;; a load-file's Compiler.load wrap (rt.ss jolt-load-wrap), for this
+        ;; file's own forms only: bound #f below for whatever they load
+        (w (jolt-load-wrap)))
     ;; parameterize (not a bare set!) so a require nested in this file's ns form
     ;; restores path when control returns to the rest of this file.
     (parameterize ((rdr-source-file path)    ; list forms read here carry :file = path
@@ -732,7 +737,8 @@
                    ;; install-owned namespaces leaked: a cacheable one opens its own
                    ;; capture (aot-capture-load) and so already redirected.
                    (jolt-aot-capture (and (equal? path (jolt-aot-capture-file))
-                                          (jolt-aot-capture))))
+                                          (jolt-aot-capture)))
+                   (jolt-load-wrap #f))
       (ldr-with-file-vars path
         (lambda ()
           ;; The failing form's position, recorded before the stack unwinds (an
@@ -753,9 +759,12 @@
               ;; way still looked like a pass. The JVM raises "Unmatched
               ;; delimiter: )" here (jolt-3amm).
               ;; the value of the last form is the load's, as Compiler.load's is
-              (let loop ((i 0) (ord 0) (last jolt-nil))
-                (if (>= i end)
+              ;; pos: the reader's (line . col) at i, kept only for a wrap
+              (let loop ((i0 0) (ord 0) (last jolt-nil) (pos0 '(1 . 1)))
+                (if (>= i0 end)
                     last
+                  (let* ((i (if w (ce-skip-ws src i0 end) i0))
+                         (pos (if w (ce-advance src i0 i (car pos0) (cdr pos0)) pos0)))
                   (let-values (((form j) (rdr-read-top src i end)))
                     (if (<= j i)
                         last
@@ -775,8 +784,8 @@
                       ;; stamps at its call form's ordinal), then bumped. One
                       ;; tail call: an eof placeholder read consumes no ordinal.
                       (if (rdr-eof? form)
-                          (loop j ord last)
-                          (let ((v (begin
+                          (loop j ord last (if w (ce-advance src i j (car pos) (cdr pos)) pos))
+                          (let ((v (jolt-load-run-form w pos (lambda ()
                             (when (getenv "JOLT_TRACE_LOAD")
                               (display "  [load-form] " (current-error-port))
                               (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
@@ -784,8 +793,8 @@
                                              (cons (make-load-frame path ord (chez-current-ns))
                                                    (jolt-load-frames))))
                               (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
-                                                      (chez-current-ns))))))
-                            (loop j (fx+ ord 1) v))))))))))))))
+                                                      (chez-current-ns)))))))
+                            (loop j (fx+ ord 1) v (if w (ce-advance src i j (car pos) (cdr pos)) pos))))))))))))))))
 
 ;; --- AOT / compile cache for required namespaces ----------------------------
 ;; A disk-backed namespace is recompiled from source on EVERY run (load-jolt-file
@@ -3045,7 +3054,9 @@
 ;; The path is absolute, as Compiler.loadFile's is (File.getAbsolutePath), and is
 ;; the file's name too (ldr-source-name).
 (define (jolt-load-file path)
-  (parameterize ((ldr-file-load-path path))
+  ;; load-file is Compiler.load: what a form's run throws leaves as a
+  ;; CompilerException naming this path (compile-eval.ss jolt-load-run-form)
+  (parameterize ((ldr-file-load-path path) (jolt-load-wrap (vector path)))
     (load-jolt-file/restoring-ns path)))
 
 ;; expand-spec: the shared prefix-list expansion (expand-libspec, ns.ss) —

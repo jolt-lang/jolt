@@ -130,8 +130,11 @@
 ;; message/ex-data/cause + a mapped Clojure backtrace come from the shared
 ;; renderer (source-registry.ss); this adds the top-level source location. Under
 ;; JOLT_DIAG=edn the human report is replaced by one EDN diagnostic line.
-(define (jolt-report-uncaught raw)
-  (let ((v (jolt-unwrap-throw raw))
+(define (jolt-report-uncaught raw0)
+  ;; A load-file's CompilerException wrapper reports the throw it wraps, as
+  ;; clojure.main's report names the cause's class, message and frames.
+  (let* ((raw (jolt-load-wrap-origin raw0))
+         (v (jolt-unwrap-throw raw))
         (port (current-error-port)))
     (if (jolt-diag-machine?)
         ;; jolt-pr-readable, not jolt-pr-str: strings must be quoted so the line

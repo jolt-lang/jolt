@@ -1772,7 +1772,9 @@
 
 ;; Render the throwable, then its Clojure backtrace when one maps. The caller adds
 ;; any top-level source location (the runtime cli does; a built binary has none).
-(define (jolt-report-throwable v port)
+(define (jolt-report-throwable v0 port)
+  ;; a load-file's CompilerException reports the throw it wraps (cli-core.ss)
+  (define v (jolt-load-wrap-origin v0))
   (jolt-render-throwable v port)
   (let ((bt (jolt-backtrace-string v)))
     (when bt (display "  trace:\n" port) (display bt port))))
@@ -1830,16 +1832,27 @@
 ;; read error keeps its diagnostic position on its RuntimeException — and
 ;; printing that into its toString broke the text a caller builds from it, the
 ;; ReaderException's message first among them.
+;; A CompilerException's toString is its message alone, then its cause's message
+;; on a line of its own when the cause is an IExceptionInfo.
 (register-str-render! jolt-ex-info-record?
   (lambda (x)
     (let* ((class-name (jolt-ex-info-record-class-name x))
            (msg (jolt-ex-info-record-message x))
            (data (jolt-ex-info-record-data x)))
+      (if (equal? class-name "clojure.lang.Compiler$CompilerException")
+          (let ((c (jolt-ex-info-record-cause x)))
+            (string-append (if (jolt-nil? msg) "" (jolt-str-render-one msg))
+                           (if (and (jolt-ex-info-record? c)
+                                    (member (jolt-ex-info-record-class-name c)
+                                            '("clojure.lang.ExceptionInfo" "clojure.lang.Compiler$CompilerException")))
+                               (string-append "\n" (let ((m (jolt-ex-info-record-message c)))
+                                                      (if (jolt-nil? m) "null" (jolt-str-render-one m))))
+                               "")))
       (string-append class-name
                      (if (jolt-nil? msg) "" (string-append ": " (jolt-str-render-one msg)))
                      (if (or (jolt-nil? data) (not (equal? class-name "clojure.lang.ExceptionInfo")))
                          ""
-                         (string-append " " (jolt-pr-str data)))))))
+                         (string-append " " (jolt-pr-str data))))))))
 
 ;; count on ex-info / host throwable records throws UnsupportedOperationException
 ;; matching JVM: "count not supported on this type: <SimpleClassName>"

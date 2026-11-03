@@ -180,6 +180,12 @@
 ;; without counting columns: the fact is written down rather than encoded in the
 ;; position of a ^. That serves a person and a model equally, and it is what jank
 ;; does — its carets are labelled, not bare.
+;; FILE's text: what eval-string last evaluated under that path (rt.ss
+;; jolt-eval-source-text), else the file on disk.
+(define (diag-source-text file)
+  (or (jolt-eval-source-text file)
+      (read-file-string (jolt-source-location file))))
+
 (define (diag-render-snippet port file line col arg note)
   ;; The CALLER prints the --> location row; this prints only the code beneath
   ;; it. That split is not cosmetic: this whole function is best-effort and does
@@ -188,7 +194,7 @@
   ;; location printed here, an unreadable file silently took the FILENAME down
   ;; with it and the report named nothing at all.
   (guard (e (#t (void)))
-    (let* ((src (read-file-string (jolt-source-location file)))
+    (let* ((src (diag-source-text file))
            (lines (diag-source-lines src))
            (count (vector-length lines)))
       (when (and (fx>=? line 1) (fx<=? line count))
@@ -223,7 +229,7 @@
 ;; be an enormous collection or an infinite seq.
 (define (diag-token-at file line col arg)
   (guard (e (#t #f))
-    (let* ((lines (diag-source-lines (read-file-string (jolt-source-location file))))
+    (let* ((lines (diag-source-lines (diag-source-text file)))
            (n (vector-length lines)))
       (and (fx>=? line 1) (fx<=? line n)
            (let* ((text (vector-ref lines (fx- line 1)))
@@ -239,7 +245,7 @@
 ;; second read of the file to see the code the report is about.
 (define (diag-source-window file line)
   (guard (e (#t #f))
-    (let* ((lines (diag-source-lines (read-file-string (jolt-source-location file))))
+    (let* ((lines (diag-source-lines (diag-source-text file)))
            (n (vector-length lines)))
       (and (fx>=? line 1) (fx<=? line n)
            (let loop ((i (fxmax 1 (fx- line diag-context-lines))) (acc '()))
