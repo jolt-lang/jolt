@@ -288,6 +288,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`nth` and `get` on a string.** Each java.util family added this cycle put
+  another wrap around `nth` and another predicate in front of `get`, and a
+  string reached its answer only after all of them: `nth` was 1.2x and `get`
+  1.5x slower than 0.8.23. A string now answers before the wraps and the arms,
+  about 2x faster than 0.8.23 for `nth` and 3x for `get`. fastpathratio rows
+  `string-nth` and `string-get` hold it there.
 - **`long`, `int`, `short`, `byte` and `char` on a double, and `unchecked-long`
   and `unchecked-int` on a double, range-check against flonum bounds instead
   of bignum ones.** The checked casts compared the flonum against the type's
