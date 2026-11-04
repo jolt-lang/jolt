@@ -108,7 +108,7 @@
          (or (ldr-rel-prefix? rel (ns-name->rel (car ns))) (loop (cdr ns))))))
 ;; Matched as a namespace PREFIX so a child (babashka/process/pprint) travels
 ;; with its parent.
-(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process"))
+(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "clojure/data/json"))
 (define (ldr-builtin-ns-rel? rel)
   (let loop ((bs ldr-builtin-ns-rels))
     (and (pair? bs)
