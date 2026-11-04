@@ -145,6 +145,32 @@ else
   echo "  SKIP: $flat_ss does not exist (run 'make devboot' first); CLI-AOT text assertion not run"
 fi
 
+# (g) the image vanishing between bin/jolt's freshness check and the load. bin/jolt
+# tests flat.so, then cli-devcache.ss loads it a moment later; a parallel
+# `make devboot` used to delete the old image before renaming the new one in, and
+# a run landing in that gap died printing nothing ("failed for target/dev/flat.so:
+# no such file or directory") — aotcachesmoke's case (o) lost its warm run to it
+# on CI. The loader must take source mode instead. Driven in a mirror of the
+# checkout with no target/, so the image this gate shares with every other one
+# is never touched.
+echo "=== (g) devcache entry with the image gone falls back to source ==="
+mirror="$(mktemp -d)"
+for e in "$root"/* "$root"/.[!.]*; do
+  [ -e "$e" ] || continue
+  case "$(basename "$e")" in target|.git) ;; *) ln -s "$e" "$mirror/$(basename "$e")" ;; esac
+done
+chez_g="${JOLT_CHEZ:-$(cat target/dev/flat.chez 2>/dev/null)}"
+gone_out="$( (cd "$mirror" && JOLT_PWD="$mirror" JOLT_QUIET=1 JOLT_VERSION="${JOLT_VERSION:-dev}" \
+              "$chez_g" --script host/chez/cli-devcache.ss -e '(println (+ 1 2))') 2>&1 | tail -1)" || true
+rm -rf "$mirror"
+if [ "$gone_out" = "3" ]; then
+  echo "  PASS: no image at load time ran from source"
+  pass=$((pass + 1))
+else
+  echo "  FAIL: no image at load time: '$gone_out' (expected 3)"
+  fails=$((fails + 1))
+fi
+
 echo ""
 echo "devboot smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]
