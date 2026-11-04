@@ -31,7 +31,8 @@
 ;; --- (2) a namespace whose load THROWS is not left marked loaded ----------
 (spit (str root "/b.clj") "(ns b) (throw (ex-info \"B-BOOM\" {}))")
 (let [e (try (require 'b) (catch :default e (in-ns 'loader-test) e))]
-  (chk "rollback: first load surfaces B-BOOM" (= (ex-message e) "B-BOOM")))
+  ;; as RT.load does: a CompilerException naming b.clj, the throw its cause
+  (chk "rollback: first load surfaces B-BOOM" (= (ex-message (ex-cause e)) "B-BOOM")))
 (chk "rollback: b/v undefined while b throws" (nil? (vof 'b 'v)))
 (spit (str root "/b.clj") "(ns b) (def v :fixed)")
 (require 'b)                                   ; plain require, no :reload

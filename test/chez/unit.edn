@@ -3772,7 +3772,7 @@
   {:suite "pr-on" :expr "(with-out-str (@#'clojure.core/pr-on {:a \"s\"} *out*))" :expected "\"{:a \\\"s\\\"}\""}
   {:suite "pr-on" :expr "(:private (meta #'clojure.core/pr-on))" :expected "true"}
   ;; an imported short name misses with the JDK-provider message, not "Unknown class"
-  {:suite "unknown-class" :expr "(try (load-string \"(ns ucm1 (:import (java.security.cert CertificateFactory))) (CertificateFactory/getInstance \\\"X.509\\\")\") (catch Throwable e (boolean (re-find #\"^No dependency provides java.security.cert.CertificateFactory\" (ex-message e)))))" :expected "true"}
+  {:suite "unknown-class" :expr "(try (load-string \"(ns ucm1 (:import (java.security.cert CertificateFactory))) (CertificateFactory/getInstance \\\"X.509\\\")\") (catch Throwable e (boolean (re-find #\"^No dependency provides java.security.cert.CertificateFactory\" (ex-message (or (ex-cause e) e))))))" :expected "true"}
   ;; jolt-2j3 — the protocol-map keys jolt deliberately does NOT carry. These are
   ;; jolt-side rows, not corpus rows: the reference DOES set every one of them, so
   ;; a corpus row here would only be a certified divergence. What they pin is that

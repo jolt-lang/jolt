@@ -426,7 +426,9 @@
   (let ((captured-or-skip
           (guard (e (else
                       (let ((msg (guard (_ (#t "(unprintable)"))
-                                  (let ((m ((var-deref "jolt.host" "condition-message") e)))
+                                  ;; the throw a load's CompilerException wraps
+                                  (let ((m ((var-deref "jolt.host" "condition-message")
+                                            (jolt-load-wrap-origin e))))
                                     (and (string? m) m)))))
                         (display (string-append "build-jolt: stdlib-fasl FAILED " name ": " msg "\n")
                                  (current-error-port))

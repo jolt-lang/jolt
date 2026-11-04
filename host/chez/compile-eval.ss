@@ -203,7 +203,10 @@
 (define jolt-throw-source (make-thread-parameter #f))
 (define (jolt-note-throw-source! raw)
   (let ((cur (jolt-throw-source)))
-    (unless (and cur (eq? (car cur) raw))
+    ;; a load's CompilerException wrapper keeps the position of the throw it
+    ;; wraps: the report asks for that throw's (jolt-load-wrap-origin)
+    (unless (or (and cur (eq? (car cur) raw))
+                (not (eq? (jolt-load-wrap-origin raw) raw)))
       (jolt-throw-source (cons raw (jolt-current-source))))))
 ;; The position `raw` was thrown at, as a pmap, or #f.
 (define (jolt-throw-source-position raw)
@@ -812,6 +815,84 @@
 ;; argument is that name, as Compiler.load's sourceName (nREPL's load-file sends
 ;; it as file-name): *source-path* is exactly it, nil included. Without one the
 ;; name is the path's last segment, as a file load's is.
+;; --- Compiler.load's CompilerException (rt.ss jolt-load-wrap) ---------------
+;; What a top-level form's run throws leaves the load as a CompilerException:
+;; "Syntax error macroexpanding at ([source:]line:col).", ex-data
+;; {:clojure.error/phase :execution, :line, :column[, :source]}, the throw as
+;; its cause. The position is the reader's before the form, past whitespace and
+;; commas but not comments (Compiler.load's consumeWhitespaces then
+;; LINE_BEFORE). A compile diagnostic (it carries :clojure.error/phase) and a
+;; CompilerException a nested load raised go through as they are.
+(define ce-kw-ref-phase (keyword "clojure.error" "phase"))
+(define ce-kw-ref-line (keyword "clojure.error" "line"))
+(define ce-kw-ref-column (keyword "clojure.error" "column"))
+(define ce-kw-ref-source (keyword "clojure.error" "source"))
+(define ce-kw-execution (keyword #f "execution"))
+(define ce-compiler-exception "clojure.lang.Compiler$CompilerException")
+;; Reader position bookkeeping, incremental so a load stays linear: the
+;; (line . col) at offset TO, given LINE/COL at FROM. \r\n and a lone \r end a
+;; line, as LineNumberingPushbackReader counts them.
+(define (ce-skip-ws s i end)
+  (if (and (fx<? i end)
+           (let ((c (string-ref s i))) (or (char-whitespace? c) (char=? c #\,))))
+      (ce-skip-ws s (fx+ i 1) end)
+      i))
+(define (ce-advance s from to line col)
+  (let loop ((i from) (line line) (col col))
+    (if (fx>=? i to)
+        (cons line col)
+        (let ((c (string-ref s i)))
+          (cond ((char=? c #\newline) (loop (fx+ i 1) (fx+ line 1) 1))
+                ((char=? c #\return)
+                 (if (and (fx<? (fx+ i 1) to) (char=? (string-ref s (fx+ i 1)) #\newline))
+                     (loop (fx+ i 2) (fx+ line 1) 1)
+                     (loop (fx+ i 1) (fx+ line 1) 1)))
+                (else (loop (fx+ i 1) line (fx+ col 1))))))))
+(define (ce-wraps? raw)
+  (and (or (jolt-throw-condition? raw) (serious-condition? raw))
+       (let ((v (jolt-unwrap-throw raw)))
+         (not (and (jolt-ex-info-record? v)
+                   (or (equal? (jolt-ex-info-record-class-name v) ce-compiler-exception)
+                       (let ((d (jolt-ex-info-record-data v)))
+                         (and (pmap? d)
+                              (not (jolt-nil? (jolt-get d ce-kw-ref-phase jolt-nil)))))))))))
+(define (ce-load-exception raw source line col)
+  (let* ((v (jolt-unwrap-throw raw))
+         (msg (string-append "Syntax error macroexpanding at ("
+                             (if source (string-append source ":") "")
+                             (number->string line) ":" (number->string col) ")."))
+         (data (let ((m (jolt-hash-map ce-kw-ref-phase ce-kw-execution
+                                       ce-kw-ref-line line ce-kw-ref-column col)))
+                 (if source (jolt-assoc m ce-kw-ref-source source) m)))
+         (t (jolt-capture-throwable! (make-jolt-ex-info-record ce-compiler-exception msg v data 0))))
+    (jolt-with-mutex jolt-load-wrap-mutex
+      (hashtable-set! jolt-load-wrap-origins t raw))
+    t))
+;; Run one top-level form of a load W (#f, or the #(source) jolt-load-wrap held
+;; when the load started) read at POS (line . col).
+(define (jolt-load-run-form w pos thunk)
+  (if (not w)
+      (thunk)
+      ;; A handler, not a guard: it decides at the raise, before anything
+      ;; unwinds. A guard whose clause declines re-raises by re-entering the
+      ;; body's continuation, and a namespace load refuses to be re-entered (a
+      ;; nested require's CompilerException came back as "Re-entered the load").
+      ;; The wrapper is raised from the handler, so the stack unwinds once, past
+      ;; the whole load, to whoever catches it. This handler is nearer than the
+      ;; loader's, which records where a throw happened, so it records the
+      ;; original here, where jolt-current-source is still this form's; the
+      ;; loader's skips the wrapper.
+      (with-exception-handler
+        (lambda (raw)
+          (if (ce-wraps? raw)
+              (begin
+                (jolt-note-throw-source! raw)
+                (jolt-raise-thrown
+                  (ce-load-exception raw (let ((s (vector-ref w 0))) (and (string? s) s))
+                                     (car pos) (cdr pos))))
+              (raise-continuable raw)))
+        thunk)))
+
 (define ls-file-cells #f)
 (define (ls-file-name path)
   (let loop ((i (- (string-length path) 1)))
@@ -822,6 +903,11 @@
   (let ((end (string-length s))
         (path (and (pair? source) (string? (car source)) (car source)))
         (named? (and (pair? source) (pair? (cdr source))))
+        ;; a load-string's Compiler.load wrap, for this load's own forms only
+        (w (jolt-load-wrap))
+        ;; a diagnostic's snippet in it reads this text, not the file on disk
+        (noted (when (and (pair? source) (string? (car source)))
+             (jolt-eval-source-text-set! (car source) s)))
         (drl (guard (_ (#t #f)) data-readers-active)))
     ;; Resolved once the vars exist (a bootstrap context may run this first),
     ;; the way ldr-with-file-vars resolves the loader's; until then no frame.
@@ -846,22 +932,29 @@
                                                 (if named? (cadr source) (ls-file-name path)))))
                               (else ls-file-cells))
           (lambda ()
-            (parameterize ((rdr-source-file path))
+            (parameterize ((rdr-source-file path) (jolt-load-wrap #f))
               ;; rdr-read-top, not rdr-read-form: a stray close delimiter is
               ;; "Unmatched delimiter", raised when the read reaches it, after the
               ;; forms before it have run (Compiler.load). rdr-read-form hands it
               ;; back unconsumed, and the loop took that for the end of input.
-              (let loop ((i 0) (result jolt-nil))
+              ;; pos is the reader's (line . col) at i, kept only for a wrap.
+              (let loop ((i 0) (result jolt-nil) (pos '(1 . 1)))
                 (if (>= i end)
                     result
-                    (let-values (((form j) (rdr-read-top s i end)))
-                      (if (> j i)
-                          (loop j (if (rdr-eof? form)
+                    (let* ((k (if w (ce-skip-ws s i end) i))
+                           (pos (if w (ce-advance s i k (car pos) (cdr pos)) pos)))
+                      (let-values (((form j) (rdr-read-top s k end)))
+                        (if (> j k)
+                            (loop j
+                                  (if (rdr-eof? form)
                                       result
-                                      (jolt-compile-eval-form
-                                       (if drl (ldr-apply-readers form) form)
-                                       (chez-current-ns))))
-                          result)))))))))))
+                                      ;; data readers run at the read, outside the wrap
+                                      (let ((form (if drl (ldr-apply-readers form) form)))
+                                        (jolt-load-run-form w pos
+                                          (lambda ()
+                                            (jolt-compile-eval-form form (chez-current-ns))))))
+                                  (if w (ce-advance s k j (car pos) (cdr pos)) pos))
+                            result))))))))))))
 
 ;; eval / load-string are FUNCTIONS on the spine (the compiler image is resident
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and
@@ -876,7 +969,10 @@
 ;; each entry with jolt.host/eval-string, the same loop without the binding,
 ;; reading *ns* afterwards.
 (define (jolt-load-string s . source)
-  (jolt-with-ns-bound (lambda () (apply jolt-eval-string s source))))
+  (jolt-with-ns-bound
+    (lambda ()
+      (parameterize ((jolt-load-wrap (vector (and (pair? source) (string? (car source)) (car source)))))
+        (apply jolt-eval-string s source)))))
 ;; clojure.core's takes the string alone, as the reference's does; jolt.host's
 ;; two take an optional source path (jolt-eval-string above)
 (def-var! "clojure.core" "load-string" (lambda (s) (jolt-load-string s)))

@@ -40,6 +40,7 @@ host/chez/rt.ss::jolt-capture-fault!
 host/chez/rt.ss::jolt-capture-throwable!
 host/chez/rt.ss::jolt-host-call
 host/chez/rt.ss::jolt-object-repr
+host/chez/rt.ss::jolt-raise-thrown
 host/chez/rt.ss::jolt-random
 host/chez/rt.ss::jolt-random-bytes
 host/chez/rt.ss::jolt-str-join-sep

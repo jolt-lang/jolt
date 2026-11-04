@@ -71,6 +71,11 @@
 
 (ns concurrent-require)
 
+;; A require that fails raises a CompilerException whose cause is the failure,
+;; as RT.load does on the JVM; the message these properties look for is the cause's.
+(defn- cause-message [e]
+  (str (.getMessage (loop [t e] (if-let [c (ex-cause t)] (recur c) t)))))
+
 (def n-threads 8)
 (def n-distinct 12)
 (def tmp-root (str (System/getProperty "java.io.tmpdir") "/jolt-ldrtest-" (System/currentTimeMillis)))
@@ -217,7 +222,7 @@
           ;; resolved AFTER require returns: property B
           (swap! saw conj (some? (resolve 'ldrtest.target/sentinel)))
           (catch Throwable e
-            (swap! errs conj (str (.getMessage e)))))))
+            (swap! errs conj (cause-message e))))))
     (let [loads (deref @(resolve 'ldrtest.target/counter))
           sentinels @saw]
       (cond-> []
@@ -285,7 +290,7 @@
         run (fn [ns-name]
               (future (while (not @go?) (Thread/sleep 1))
                       (try (require (symbol (str "ldrtest." ns-name))) [:ok nil]
-                           (catch Throwable e [:err (str (.getMessage e))]))))
+                           (catch Throwable e [:err (cause-message e)]))))
         fx (run "x")
         fy (run "y")]
     (reset! go? true)
@@ -399,7 +404,7 @@
         other (do (Thread/sleep 60)
                   (future (try (require 'ldrtest.parky)
                                (some? (resolve 'ldrtest.parky/after))
-                               (catch Throwable e (str (.getMessage e))))))
+                               (catch Throwable e (cause-message e)))))
         [s r] (deref-timeout (future (<!! out)) 15000)
         [s2 r2] (deref-timeout other 15000)]
     (cond-> []
@@ -442,7 +447,7 @@
                      (go-spawn (fn []
                                  (try (require 'ldrtest.sibling)
                                       (if (resolve 'ldrtest.sibling/after) :whole :half)
-                                      (catch Throwable e (str (.getMessage e))))))))
+                                      (catch Throwable e (cause-message e)))))))
         a (ask)
         ;; inside the load and parked by now, not merely queued behind it
         b (do (Thread/sleep 60) (ask))
@@ -469,11 +474,11 @@
 ;; requiring-resolve became a plain require.
 (defn- require-lock-failures []
   (let [b (future (try (require 'ldrtest.rly) :ok
-                       (catch Throwable e (str (.getMessage e)))))
+                       (catch Throwable e (cause-message e))))
         _ (loop [n 0]
             (when (and (not @rl-y-started) (< n 5000)) (Thread/sleep 1) (recur (inc n))))
         a (future (try (some? (requiring-resolve 'ldrtest.rlx/foo))
-                       (catch Throwable e (str (.getMessage e)))))
+                       (catch Throwable e (cause-message e))))
         ;; long enough for A to be waiting on rly, which is where it holds a lock if
         ;; it holds one at all
         _ (Thread/sleep 200)

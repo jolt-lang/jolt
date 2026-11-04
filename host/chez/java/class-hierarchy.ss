@@ -753,6 +753,8 @@
 (jch-register-supers! "java.lang.Exception" '("java.lang.Throwable"))
 (jch-register-supers! "java.lang.RuntimeException" '("java.lang.Exception"))
 (jch-register-supers! "clojure.lang.ExceptionInfo" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
+;; what load-string / load-file raise for a form whose run threw (compile-eval.ss)
+(jch-register-supers! "clojure.lang.Compiler$CompilerException" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
 ;; what a read from a LineNumberingPushbackReader raises (reader.ss
 ;; rdr-reader-exception); only the LispReader one carries ex-data
 (jch-register-supers! "clojure.lang.LispReader$ReaderException" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))

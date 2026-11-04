@@ -393,6 +393,26 @@
              (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
                                  (and (pair? s) s)))
              (raise (cons 'jolt-throw v)))))
+;; rt.ss's raise of an already-made throwable, without a new capture.
+(define (jolt-raise-thrown v) (raise (cons 'jolt-throw v)))
+;; Mirrors of rt.ss's Compiler.load wrap state (compile-eval.ss
+;; jolt-load-run-form): the load about to start, and wrapper -> the raise it
+;; wraps, which the uncaught report and the position record follow.
+(define jolt-load-wrap (make-thread-parameter #f))
+(define jolt-load-wrap-origins (make-weak-eq-hashtable))
+(define jolt-load-wrap-mutex (make-mutex))
+(define (jolt-load-wrap-origin raw)
+  (let ((v (jolt-unwrap-throw raw)))
+    (or (and (jolt-ex-info-record? v)
+             (equal? (jolt-ex-info-record-class-name v) "clojure.lang.Compiler$CompilerException")
+             (jolt-with-mutex jolt-load-wrap-mutex
+               (hashtable-ref jolt-load-wrap-origins v #f)))
+        raw)))
+;; ...and of its per-path evaluated text, which a diagnostic snippet reads.
+(define jolt-eval-source-texts (make-hashtable string-hash string=?))
+(define jolt-eval-text-mutex (make-mutex))
+(define (jolt-eval-source-text-set! path text)
+  (jolt-with-mutex jolt-eval-text-mutex (hashtable-set! jolt-eval-source-texts path text)))
 ;; The same capture for a HOST condition (a fault raised outside jolt-throw:
 ;; car of a non-pair, a bad flvector index). Installed by the cli's run wrapper
 ;; via with-exception-handler, which runs BEFORE the stack unwinds — a guard's
