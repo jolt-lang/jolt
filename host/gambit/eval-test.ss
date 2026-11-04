@@ -278,6 +278,13 @@
              (set! failures (+ failures 1)))
       (printf "  ok     ^double emission carries no #3% (target-prims :gambit)\n")))
 
+;; a cast on a proven double takes the inline window + flonum->fixnum (the
+;; back end's :fl-arg branch); the emitted fl>=?/fl<=? and flonum->fixnum
+;; are prelude-shims names on this host. Edges: the window keeps the cast's
+;; results, out of it the runtime cast still answers.
+(check "(let [f (fn [^double d] (long d)) i (fn [^double d] (int d)) c (fn [^double d] (char d)) u (fn [^double d] (unchecked-int d)) m (fn [t] (try (t) (catch IllegalArgumentException e (ex-message e))))] [(f 2.9) (f -2.9) (f 1.152921504606847E18) (f ##NaN) (i 2147483647.0) (m (fn [] (i 2147483647.9))) (int (c 55295.0)) (int (c 55296.0)) (u 4294967296.5)])"
+       "[2 -2 1152921504606846976 0 2147483647 \"Value out of range for int: 2.1474836479E9\" 55295 55296 2147483647]")
+
 (printf "eval-test: ~a failure(s)\n" failures)
 (if (= failures 0)
     (begin (display "eval-test: PASS — jolt compiles and evaluates on native gsi\n") (exit 0))
