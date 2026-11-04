@@ -827,18 +827,21 @@
 ;; arm. pvec first; pvec-nth!/pvec-nth-d are the same shared reads the base
 ;; definition's own pvec arms call, so semantics move nowhere. pvec is
 ;; disjoint from every type the chain below intercepts (each is its own
-;; record type), so reordering cannot shadow them.
+;; record type), so reordering cannot shadow them. A string goes straight to
+;; the base definition too: none of the wraps between intercepts one, and their
+;; probes were most of what nth on a string cost.
 (set! jolt-nth
   (case-lambda
-    ((c i)   (if (pvec? c)
-                 (pvec-nth! c i)
-                 (if (jolt-array? c) (ja-ref c (exact (na-idx i))) (%na-nth c i))))
+    ((c i)   (cond ((pvec? c) (pvec-nth! c i))
+                   ((string? c) (jolt-nth-base c i))
+                   ((jolt-array? c) (ja-ref c (exact (na-idx i))))
+                   (else (%na-nth c i))))
     ((c i d) (if (pvec? c)
                  (begin (jolt-nth-nil-idx! i) (pvec-nth-cast-d c i d))
-                 (if (jolt-array? c)
+                 (if (string? c) (jolt-nth-base c i d) (if (jolt-array? c)
                      (let ((j (exact (na-idx i))))
                        (if (and (>= j 0) (< j (ja-len c))) (ja-ref c j) (begin (index-int-check! j) d)))
-                     (%na-nth c i d))))))
+                     (%na-nth c i d)))))))
 (def-var! "jolt.host" "array-value?" (lambda (x) (if (jolt-array? x) #t jolt-nil)))
 ;; jolt-get on arrays stays as a set!-wrap rather than register-get-arm! because
 ;; the arm dispatch (collections.ss jolt-get-dispatch) already handles the common

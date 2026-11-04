@@ -194,6 +194,10 @@
 ;;                      get on a persistent map, 2026-10: 4.6 on x86_64 Linux,
 ;;                      5.0 on macOS arm64, 6.1 on bionic arm64).
 ;;
+;;   string-nth         nth / get on a string against the same on a vector: a
+;;   string-get         string answers ahead of jolt-nth's set! wraps and the
+;;                      get arms, so a new host family cannot slow it.
+;;
 ;;   arraylist-count    count / contains? on an ArrayList, HashSet or HashMap
 ;;   hashset-count      against the collection's own .size / .containsKey: the
 ;;   hashmap-count      ratio is the arm walk ahead of the handler. The 0.8.24
@@ -632,6 +636,22 @@
             #(dotimes [_ 200000] (get pm 3))
             #(dotimes [_ 200000] (get hm 3))
             7.0 9.0))
+
+  ;; nth and get on a string against the same on a vector. A string is a
+  ;; core receiver, but nth reached it through every set! wrap around jolt-nth
+  ;; and get through every registered get arm's predicate, so each host family
+  ;; added since made both slower: 1.34 / 2.7 by 0.8.24 against 1.1 / 1.8 at
+  ;; 0.8.23. Both now answer a string before the wraps and the arms (0.56 /
+  ;; 0.66, macOS arm64, 2026-11).
+  (let [s (apply str (repeat 40 "hello world ")) v (vec s)]
+    (judge! "string-nth"
+            #(dotimes [_ 200000] (nth v 300))
+            #(dotimes [_ 200000] (nth s 300))
+            1.0 1.3)
+    (judge! "string-get"
+            #(dotimes [_ 200000] (get v 300))
+            #(dotimes [_ 200000] (get s 300))
+            1.1 1.6))
 
   ;; count / contains? on the common java.util collections, each against the
   ;; collection's own method doing the same work (.size, .containsKey),
