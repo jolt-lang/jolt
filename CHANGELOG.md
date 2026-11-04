@@ -446,15 +446,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/etc/timezone`), so `TimeZone/getDefault`, `SimpleDateFormat`, `Calendar`
   and the deprecated `Date` getters agree with the JVM. An empty `TZ` is UTC.
 - **C arguments past the argument registers land where the callee reads them
-  on arm64 (#1501).** Once the registers were used up, Chez's `foreign-procedure` (and
+  on arm64 and x86_64 (#1501).** Once the registers were used up, Chez's `foreign-procedure` (and
   so `jolt.ffi`) on arm64 macOS packed a struct of 16 bytes or less that isn't
   all floats or all doubles like a scalar, where Apple's ABI gives it 8-byte
   slots, and its padding before a stack argument could go negative (three
   `char`s then a `short`; three floats, a `char`, three floats), so the C
   function read the wrong bytes without any error. On every arm64, a struct over
   16 bytes after the registers, which goes by pointer, failed to compile
-  (`unexpected Triv`). jolt's Chez build carries the fix
-  (`host/chez/chez-patches/0006`), checked by
+  (`unexpected Triv`). On x86_64, a struct on the stack whose size isn't a
+  multiple of 8 (three `char`s, say) overwrote the start of the next argument,
+  so a `char` after it arrived as 0. jolt's Chez build carries both fixes from
+  cisco/ChezScheme#1091 until a Chez release has them
+  (`host/chez/chez-patches/0006` for arm64, `0007` for x86_64), checked by
   `test/chez/ffi-stack-args-test.sh` in the `ffi` gate; a jolt built against a
   stock Chez keeps the old placement.
 

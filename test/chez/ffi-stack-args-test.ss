@@ -1,6 +1,12 @@
 ;; ffi-stack-args-test.ss: foreign-procedure arguments past the argument
-;; registers land where the C ABI puts them on arm64
-;; (host/chez/chez-patches/0006-arm64-stack-arguments.patch).
+;; registers land where the C ABI puts them on arm64 and x86_64
+;; (host/chez/chez-patches/0006-arm64-stack-arguments.patch and
+;; 0007-x86_64-stack-struct-arguments.patch, both from cisco/ChezScheme#1091).
+;;
+;; On x86_64, Chez 10.4.1 copied a struct on the stack in 8/4/2/1-byte loads but
+;; stored each piece as a full word, so a struct whose last slot takes more than
+;; one piece (3, 5, 6, 7, 11, 13, 14 or 15 bytes) overwrote the start of the
+;; next argument's slot: the 3-char row's final char arrived as 0.
 ;;
 ;; Once the registers are used up, Chez 10.4.1 on arm64 Mac OS packed a struct
 ;; of 16 bytes or less that isn't a homogeneous floating-point aggregate like a
