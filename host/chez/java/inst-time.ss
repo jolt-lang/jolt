@@ -711,7 +711,6 @@
   (unless tz-machine-zone-memo
     (set! tz-machine-zone-memo (or (tz-machine-lookup) 'none)))
   (and (string? tz-machine-zone-memo) tz-machine-zone-memo))
-(define (tz-machine-zone) (or (tz-machine-zone-found) "UTC"))
 (tzp-set-machine-zone-source! tz-machine-zone-found)
 ;; TimeZone/setDefault: the process's default from here on, ahead of TZ, as on
 ;; the JVM; (TimeZone/setDefault nil) goes back to the system's.
