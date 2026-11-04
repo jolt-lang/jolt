@@ -313,6 +313,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Printing a host object.** `pr-str` of a `java.io.File` asked every
+  predicate of the pr, pr-str and str arm registries before reaching the
+  `#object` form, and each host family added this cycle lengthened all three
+  walks; with the identity hash it now prints, it was 1.27x slower than 0.8.23.
+  A host object or plain host record now walks only the arms that can claim
+  its type, found on its first print, and the hash renders in one allocation:
+  `pr-str` of a File is 0.72x of 0.8.23, `str` of one 0.6x, and `str` of a
+  StringBuilder 0.25x.
 - **`nth` and `get` on a string.** Each java.util family added this cycle put
   another wrap around `nth` and another predicate in front of `get`, and a
   string reached its answer only after all of them: `nth` was 1.2x and `get`

@@ -3381,6 +3381,12 @@
   {:suite "repl-printer" :expr "\"hi\"" :expected "\"hi\""}
   {:suite "repl-printer" :expr "{:a \"x\" :b \\y}" :expected "{:a \"x\", :b \\y}"}
   {:suite "repl-printer" :expr "(symbol (clojure.string/replace (pr-str (java.io.File. \"/tmp/x\")) #\" 0x[0-9a-f]+\" \"\"))" :expected "#object[java.io.File \"/tmp/x\"]"}
+  ;; The print walks are narrowed per type once a value of it has printed
+  ;; (print-arms-for, host-static.ss). An arm or a print-method registered after
+  ;; that first print still decides the next one: the narrowed walk is cached
+  ;; against the registry list, and a library arm is asked live in every walk.
+  {:suite "print-arm-verdict" :expr "(let [f (java.io.File. \"/jolt-print-arm-probe\") p (fn [x] (and (instance? java.io.File x) (= (.getPath x) \"/jolt-print-arm-probe\"))) before [(.startsWith (pr-str f) \"#object[java.io.File\") (str f)]] (__register-pr! p (fn [x] \"#probe\")) (__register-str! p (fn [x] \"probe-str\")) [before (pr-str f) (str f) (pr-str [f]) (print-str f) (str (java.io.File. \"/tmp\")) (.startsWith (pr-str (java.io.File. \"/tmp\")) \"#object[java.io.File\")])" :expected "[[true \"/jolt-print-arm-probe\"] \"#probe\" \"probe-str\" \"[#probe]\" \"#probe\" \"/tmp\" true]"}
+  {:suite "print-arm-verdict" :expr "(let [c (java.util.zip.CRC32.) before (.startsWith (pr-str c) \"#object[java.util.zip.CRC32\")] (defmethod print-method java.util.zip.CRC32 [x w] (.write w \"#crc\")) [before (pr-str c) (pr-str [c c])])" :expected "[true \"#crc\" \"[#crc #crc]\"]"}
   ;; Identity hashes are minted under a CAS spin lock (hasheq.ss); without its
   ;; acquire/release fences a second thread minted a second id for an object on
   ;; arm64. Eight threads hash the same fresh objects in opposite orders and

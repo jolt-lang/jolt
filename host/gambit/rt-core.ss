@@ -894,6 +894,19 @@
   (reject-fast-type-claim! who pred pr-fast-probes
                            "the printer fast path (see pr-fast-type? in rt.ss)"))
 
+;; The arms of the three print registries — pr-str's (below), pr's (printing.ss)
+;; and str's (converters.ss) — that can claim X, in walk order. A value no arm
+;; claims (every #object) asks every predicate of all three, and each family a
+;; host adds lengthens the walk for all of them. Here the answer is the whole
+;; registry; a host whose values carry a type key narrows it per type
+;; (host-static.ss on Chez). WHICH names the registry: 0 pr-str, 1 pr, 2 str.
+(define print-arms-for (lambda (which arms x) arms))
+(define (set-print-arms-for! f) (set! print-arms-for f))
+;; What a host narrowing the walks must retire its answers on, besides a new arm:
+;; a change to anything an arm's predicate reads (a tag table, jutil-colls.ss).
+(define print-arms-epoch 0)
+(define (print-arms-invalidate!) (set! print-arms-epoch (fx+ print-arms-epoch 1)))
+
 ;; A host shim registers a type's str-style rendering via register-pr-str-arm! (or
 ;; register-pr-arm! in printing.ss for both printers at once) instead of
 ;; set!-wrapping jolt-pr-str. Disjoint types, checked before the base cases.
@@ -918,7 +931,7 @@
 ;; jolt omits it in the print arms it already has.
 (define (jolt-object-content x)
   (or (str-render-by-identity x)
-      (let loop ((rs str-render-registry))
+      (let loop ((rs (print-arms-for 2 str-render-registry x)))
         (cond ((null? rs) #f)
               (((caar rs) x) ((cdar rs) x))
               (else (loop (cdr rs)))))))
@@ -980,7 +993,7 @@
 (define (jolt-pr-str/readable x readable?)
   (if (pr-fast-type? x)
       (jolt-pr-str-base/readable x readable?)
-      (let loop ((as jolt-pr-str-arms))
+      (let loop ((as (print-arms-for 0 jolt-pr-str-arms x)))
         (cond ((null? as) (jolt-pr-str-base/readable x readable?))
               (((caar as) x) ((cdar as) x))
               (else (loop (cdr as)))))))

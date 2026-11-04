@@ -60,7 +60,7 @@
     ((pr-fast-type? v) (jolt-pr-str v))
     ((str-render-by-identity v))
     (else
-     (let loop ((rs str-render-registry))
+     (let loop ((rs (print-arms-for 2 str-render-registry v)))
        (cond
          ((null? rs) (jolt-pr-str v))
          (((caar rs) v) ((cdar rs) v))

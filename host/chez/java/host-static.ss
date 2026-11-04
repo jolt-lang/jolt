@@ -999,6 +999,71 @@
   (syntax-rules ()
     ((_ (name t) body ...) (define name (jhost-tag-memo (lambda (t) body ...))))))
 
+;; The print arm walks (print-arms-for, rt.ss), narrowed per TYPE. A java.io.File
+;; is claimed by no pr or pr-str arm, so pr-str of one asked all ~90 predicates
+;; of the three registries before reaching the #object fallback, and every host
+;; family registered since 0.8.23 added to that. The arms that can claim a type
+;; are found once, by asking each predicate of one value of it, and the walk
+;; then visits only those.
+;;
+;; That is sound for the values whose type decides every runtime arm's answer: a
+;; host object (its tag) and a plain Chez record (its descriptor). The runtime's
+;; arm predicates are record-type tests and tag tests against constants, or read
+;; a tag table whose registration calls print-arms-invalidate!
+;; (register-jutil-coll!). A deftype or defrecord instance and a reify are not
+;; keyed: one descriptor serves many types there, and the arms read per-type and
+;; per-instance state (an enum constant, a reify's toString, a proxy's delegate),
+;; so they walk in full as before. A LIBRARY arm (__register-str!, __register-pr!)
+;; is code this file cannot vouch for, so it is kept in every narrowed walk and
+;; asked live, in its place.
+;;
+;; A narrowed walk is cached against the registry list it came from and the
+;; invalidation epoch: registering an arm conses a new list, so a cached walk
+;; from before it is never used after it.
+(define print-arm-live-preds '())
+(define (print-arm-live! pred) (set! print-arm-live-preds (cons pred print-arm-live-preds)))
+(define (print-arm-key x)
+  (cond ((jhost? x) (jhost-tag x))
+        ((and (record? x) (not (jrec? x)) (not (jreify? x))) (record-rtd x))
+        (else #f)))
+;; key -> #(entry entry entry), one per registry; an entry is
+;; (arms epoch . narrowed). Reads are lock-free (a Chez hashtable survives a
+;; reader racing a writer; writer-vs-writer is what corrupts one), inserts take
+;; the mutex, and an entry is replaced by one reference write. The key asked
+;; last is kept as one (key . slots) pair, so a run of one type skips the table.
+(define print-arms-tbl (make-weak-eq-hashtable))
+(define print-arms-mutex (make-mutex))
+(define print-arms-last (cons #f #f))
+(define (print-arms-slots k)
+  (let ((l print-arms-last))
+    (if (eq? (car l) k)
+        (cdr l)
+        (let ((v (or (hashtable-ref print-arms-tbl k #f)
+                     (jolt-with-mutex print-arms-mutex
+                       (or (hashtable-ref print-arms-tbl k #f)
+                           (let ((v (make-vector 3 #f)))
+                             (hashtable-set! print-arms-tbl k v)
+                             v))))))
+          (set! print-arms-last (cons k v))
+          v))))
+(set-print-arms-for!
+  (lambda (which arms x)
+    (let ((k (print-arm-key x)))
+      (if (not k)
+          arms
+          (let* ((slots (print-arms-slots k))
+                 (e (vector-ref slots which))
+                 (ep print-arms-epoch))
+            (if (and e (eq? (car e) arms) (fx=? (cadr e) ep))
+                (cddr e)
+                (let ((n (filter (lambda (arm)
+                                   (or (memq (car arm) print-arm-live-preds)
+                                       ;; one that raises is left to raise in the walk
+                                       (guard (c (#t #t)) ((car arm) x))))
+                                 arms)))
+                  (vector-set! slots which (cons arms (cons ep n)))
+                  n)))))))
+
 ;; record-method-dispatch (records.ss) gets a jhost arm: dispatch (.method obj a*)
 ;; through the tag's method table.
 (define host-type-arm
