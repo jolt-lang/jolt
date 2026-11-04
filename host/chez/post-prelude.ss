@@ -305,8 +305,9 @@
     ("set?" . "clojure.lang.IPersistentSet")
     ("associative?" . "clojure.lang.Associative")))
 ;; count of a reify collection with no count of its own walks its seq, as
-;; RT.countFrom does for an IPersistentCollection that is not Counted
-(register-count-arm!
+;; RT.countFrom does for an IPersistentCollection that is not Counted. Last in
+;; the arm walk, so no host collection's count passes through it first.
+(register-count-arm-last!
   (lambda (c) (and (jreify? c) (not (reify-method-ref c "count"))
                    (reify-iface-pred? c "clojure.lang.IPersistentCollection")))
   (lambda (c) (jolt-count (jolt-seq c))))
