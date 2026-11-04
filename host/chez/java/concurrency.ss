@@ -1637,13 +1637,19 @@
 ;; section. Here bk is dropped before the caller runs a line of its body, so
 ;; jolt-locks-held is zero inside the section and the section is preemptible.
 (define (monitor-try-enter! m)
-  (let* ((me (monitor-self)) (w (vector-ref m monitor-i-owner)))
-    (cond
-      ((not w) (monitor-claim! m me))
-      ((eq? (monitor-word-id w) me)
-       (vector-set! m monitor-i-count (fx+ 1 (vector-ref m monitor-i-count)))
-       #t)
-      (else #f))))
+  ;; vector-cas! is weak on arm64 (see "the owner word"): a claim of a word
+  ;; that still reads free can fail spuriously, and there is no slow path here
+  ;; to absorb it, so a free lock answered #f now and then. Re-read and retry;
+  ;; only a word someone else holds is a refusal.
+  (let ((me (monitor-self)))
+    (let retry ()
+      (let ((w (vector-ref m monitor-i-owner)))
+        (cond
+          ((not w) (or (monitor-claim! m me) (retry)))
+          ((eq? (monitor-word-id w) me)
+           (vector-set! m monitor-i-count (fx+ 1 (vector-ref m monitor-i-count)))
+           #t)
+          (else #f))))))
 
 ;; The three questions ReentrantLock exposes. All strict eq? against monitor-self,
 ;; NOT monitor-owner?: that predicate's second arm exists so a TERMINAL fiber's own

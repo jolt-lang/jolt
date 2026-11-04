@@ -1034,6 +1034,17 @@ else
   fails=$((fails + 1))
 fi
 
+# tryLock on a free lock never refuses: the claim retries a weak CAS that
+# failed spuriously (arm64) instead of answering false.
+tl_out="$($jolt run test/chez/trylock-free.clj 2>&1)"
+if printf '%s' "$tl_out" | grep -q 'TRYLOCK-FREE OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: tryLock refused a free lock"
+  echo "    $(printf '%s' "$tl_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # One paren too many must FAIL the file, not truncate it. The loader read forms
 # with the non-top-level reader, which parks on a stray `)` rather than raising,
 # and the loop read a parked position as end of input: everything after the paren

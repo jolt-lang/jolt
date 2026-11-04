@@ -345,6 +345,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Date`, one-shot or fixed-delay), `scheduleAtFixedRate`, `cancel` and
   `purge`, with a `TimerTask` proxy's `cancel` and `scheduledExecutionTime`.
   `(java.util.Timer. true)` used to be "No matching ctor".
+- **`ReentrantLock.tryLock` could refuse a free lock on arm64.** The claim is
+  a compare-and-swap that may fail spuriously there, and the try path answered
+  false instead of retrying: about 3 in 5*10^7 uncontended tryLocks on Apple
+  silicon, already in 0.8.23.
 - **A condition wait with interrupts disabled could still stall a
   collection** when the thread requesting it held the waited mutex: the
   sliced wait took the mutex back inside Chez's `condition-wait`, still
