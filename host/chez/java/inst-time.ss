@@ -40,6 +40,11 @@
 
 ;; --- RFC3339 parse: yyyy[-MM[-dd[Thh[:mm[:ss[.fff]]]]]][Z|±hh:mm] -> ms -------
 (define-record-type jinst (fields ms) (nongenerative chez-jinst-v1))
+;; java.sql.Timestamp: a jinst child, so it is a Date everywhere a Date is
+;; asked for (inst?, inst-ms, =, compare, the method surface, #inst printing)
+;; and answers its own class, instance? and toString. Millisecond resolution
+;; like the rest of the date layer.
+(define-record-type jts (parent jinst) (nongenerative chez-jts-v1))
 
 (define (digit? c) (and (char>=? c #\0) (char<=? c #\9)))
 (define (digits-at s i n)               ; n digits from i -> integer, or #f
@@ -349,7 +354,7 @@
 
 ;; #inst is a java.util.Date — (class x) / (type x) report that, not the internal
 ;; :jolt/inst tag (which print-method still dispatches on via __type-tag).
-(register-class-arm! jinst? (lambda (x) "java.util.Date"))
+(register-class-arm! jinst? (lambda (x) (if (jts? x) "java.sql.Timestamp" "java.util.Date")))
 
 ;; java.time.Instant is the jolt-lang/time base (stdlib/jolt/time/instant.clj), an
 ;; opaque tagged-table with its own equality/hash/compare — core needs no arm for it.
@@ -362,9 +367,18 @@
                                      (= (ms-of a) (ms-of b)))))
 (register-hash-arm! time-jhost? (lambda (x) (jolt-hash (ms-of x))))
 
-(define (inst-pr i) (string-append "#inst \"" (inst-rfc3339 i) "\""))
+;; A Timestamp prints its fraction to nanoseconds, as clojure.instant's
+;; print-method for it does (the sub-millisecond digits are zero here).
+(define (inst-pr i)
+  (if (jts? i)
+      (let ((s (inst-rfc3339 i)))   ; ...ss.fff-00:00
+        (string-append "#inst \"" (substring s 0 (- (string-length s) 6)) "000000-00:00\""))
+      (string-append "#inst \"" (inst-rfc3339 i) "\"")))
 (register-pr-arm! jinst? inst-pr)
-(register-str-render! jinst? inst-rfc3339)
+;; str / toString is the JVM's, on the default zone's clock: a Date is
+;; "Fri Mar 24 15:49:00 EST 2006", a Timestamp "2006-03-24 15:49:00.123", a
+;; java.sql.Date "2006-03-24". Only the printed (#inst) form is RFC3339.
+(register-str-render! jinst? (lambda (x) (if (jts? x) (timestamp-string x) (date-string (jinst-ms x)))))
 
 (register-type-arm! jinst? (lambda (x) inst-type-kw))
 
@@ -384,7 +398,8 @@
         ;; java.sql.Date before java.util.Date, so every date went down the
         ;; .toLocalDate branch and blew up.
         ((jinst? val) (cond ((or (string=? full "java.util.Date") (string=? full "Date")) #t)
-                            ((or (string=? tn "Timestamp") (string=? full "java.sql.Date")) #f)
+                            ((string=? tn "Timestamp") (jts? val))
+                            ((string=? full "java.sql.Date") #f)
                             (else 'pass)))
         ;; java.time.Instant is the base library's own type (instance? handled there).
         ;; A java.sql.Date IS a java.util.Date (its superclass), but not a Timestamp.
@@ -449,8 +464,15 @@
                                (* 1000 (+ (* (days-from-civil y mo d) 86400) (* hh 3600) (* mm 60) ss))))))))
 (register-class-ctor! "Date" date-ctor)
 (register-class-ctor! "java.util.Date" date-ctor)
-(register-class-ctor! "Timestamp" date-ctor)
-(register-class-ctor! "java.sql.Timestamp" date-ctor)
+;; (Timestamp. ms), and the deprecated (Timestamp. year-1900 month0 date hrs
+;; min sec nanos), whose nanos keep their milliseconds here.
+(define (timestamp-ctor . args)
+  (let ((ms (jinst-ms (apply date-ctor (if (> (length args) 6) (list-head args 6) args)))))
+    (make-jts (if (> (length args) 6)
+                  (+ ms (quotient (jnum->exact (list-ref args 6)) 1000000))
+                  ms))))
+(register-class-ctor! "Timestamp" timestamp-ctor)
+(register-class-ctor! "java.sql.Timestamp" timestamp-ctor)
 ;; Date/from(Instant) is owned by the base java.time (stdlib/jolt/time/instant.clj):
 ;; it takes a java.time.Instant, so the base — which defines Instant — is loaded
 ;; whenever it is reachable, and it converts through (java.util.Date. ms) back to a
@@ -476,7 +498,12 @@
         (cons "toLocalDate" (lambda (self)
                               (let ((f (date-local-fields (ms-of self))))
                                 (host-static-call "java.time.LocalDate" "of" (list-ref f 0) (list-ref f 1) (list-ref f 2)))))
-        (cons "toString" (lambda (self) (inst-rfc3339 (make-jinst (ms-of self)))))))
+        (cons "toString" (lambda (self) (sql-date-string (ms-of self))))))
+;; A java.sql.Date prints as the #inst it is (it is a java.util.Date).
+(register-pr-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "sql-date")))
+                  (lambda (x) (inst-pr (make-jinst (ms-of x)))))
+(register-str-render! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "sql-date")))
+                      (lambda (x) (sql-date-string (ms-of x))))
 
 ;; java.util.TimeZone: an id, and the offset that id stands for. A custom id —
 ;; GMT+05:30 and the forms around it — is parsed here; a named IANA zone resolves
@@ -543,7 +570,8 @@
 ;; instead of taking the libc probe's mutex and memo table each time; the pair
 ;; is one immutable cons written in one slot, so a reader on another thread
 ;; sees a whole (second . offset) or the previous one, never a torn mix.
-(define (timezone-of id) (make-jhost "timezone" (vector (if (string? id) id (jolt-str-render-one id)) #f)))
+;; state: #(id last-offset last-abbrev); see below for the two caches.
+(define (timezone-of id) (make-jhost "timezone" (vector (if (string? id) id (jolt-str-render-one id)) #f #f)))
 (define-jhost-tag-pred (timezone? t) (string=? t "timezone"))
 (define (tz-id tz) (if (timezone? tz) (vector-ref (jhost-state tz) 0) (jolt-str-render-one tz)))
 (define (tz-offset-ms tz ms)
@@ -639,16 +667,23 @@
 (define (tz-machine-lookup)
   (or (guard (e (#t #f)) (tz-zoneinfo-name (nio-readlink "/etc/localtime")))
       (guard (e (#t #f)) (tz-zoneinfo-name (jfile-realpath "/etc/localtime")))
-      (tz-etc-timezone)
-      "UTC"))
+      (tz-etc-timezone)))
+;; #f until looked up, then the zone's name or 'none.
 (define tz-machine-zone-memo #f)
-(define (tz-machine-zone)
-  (or tz-machine-zone-memo
-      (let ((z (tz-machine-lookup)))
-        (set! tz-machine-zone-memo z)
-        z)))
+;; The machine's zone when the system names one, else #f (tz-primitives.ss
+;; reads this: only a zone found here is known to be the one libc is in).
+(define (tz-machine-zone-found)
+  (unless tz-machine-zone-memo
+    (set! tz-machine-zone-memo (or (tz-machine-lookup) 'none)))
+  (and (string? tz-machine-zone-memo) tz-machine-zone-memo))
+(define (tz-machine-zone) (or (tz-machine-zone-found) "UTC"))
+(tzp-set-machine-zone-source! tz-machine-zone-found)
+;; TimeZone/setDefault: the process's default from here on, ahead of TZ, as on
+;; the JVM; (TimeZone/setDefault nil) goes back to the system's.
+(define tz-default-override #f)
 (define (system-tz-id)
-  (or (tz-env-zone)
+  (or tz-default-override
+      (tz-env-zone)
       (and default-zone-provider
            (let ((z (guard (e (#t #f)) (jolt-invoke default-zone-provider))))
              (and (string? z) (> (string-length z) 0) z)))
@@ -675,8 +710,22 @@
     (cond ((string=? id "Z") "UTC")
           ((member id '("UTC" "GMT" "UT")) id)
           ((tz-custom-offset id) id)
+          ((timezone? zone) (tz-abbrev-cached zone id ms))
           ((tzp-tz-abbrev id (inst-floor-div (exact (truncate ms)) 1000)) => values)
           (else id))))
+;; A zone's short name follows its offset (EST at -05:00, EDT at -04:00), so a
+;; TimeZone keeps the last (offset . name) it answered in slot 2, one immutable
+;; pair like the offset slot, and a Date's toString or a zzz format over many
+;; instants in one season asks libc once.
+(define (tz-abbrev-cached zone id ms)
+  (let* ((st (jhost-state zone))
+         (off (tz-offset-ms zone ms))
+         (last (vector-ref st 2)))
+    (if (and last (eqv? (car last) off))
+        (cdr last)
+        (let ((name (or (tzp-tz-abbrev id (inst-floor-div (exact (truncate ms)) 1000)) id)))
+          (vector-set! st 2 (cons off name))
+          name))))
 ;; A local-clock reading in `zone` (a civil time taken as if it were UTC) to
 ;; the instant it names: subtract the offset, then re-read the offset AT that
 ;; instant so a reading across a DST step lands on the right side of it.
@@ -687,7 +736,8 @@
     (- local o2)))
 (define timezone-statics
   (list (cons "getTimeZone" timezone-of)
-        (cons "getDefault" (lambda () (timezone-of (system-tz-id))))))
+        (cons "getDefault" (lambda () (timezone-of (system-tz-id))))
+        (cons "setDefault" (lambda (tz) (set! tz-default-override (if (jolt-nil? tz) #f (tz-id tz))) jolt-nil))))
 (register-class-statics! "TimeZone" timezone-statics)
 (register-class-statics! "java.util.TimeZone" timezone-statics)
 
@@ -1100,6 +1150,33 @@
 ;; The civil fields of an instant on the default zone's clock.
 (define (date-local-fields ms)
   (inst-fields (+ ms (tz-offset-ms (default-timezone) ms))))
+;; Date.toString: "EEE MMM dd HH:mm:ss zzz yyyy" with English names, on the
+;; default zone.
+(define (date-string ms)
+  (let* ((tz (default-timezone))
+         (f (inst-fields (+ ms (tz-offset-ms tz ms)))))
+    (string-append (vector-ref sdf-root-days (modulo (+ (list-ref f 7) 6) 7)) " "
+                   (vector-ref sdf-root-months (- (list-ref f 1) 1)) " "
+                   (pad2 (list-ref f 2)) " "
+                   (pad2 (list-ref f 3)) ":" (pad2 (list-ref f 4)) ":" (pad2 (list-ref f 5)) " "
+                   (tz-abbrev tz ms) " "
+                   (number->string (list-ref f 0)))))
+;; Timestamp.toString: yyyy-mm-dd hh:mm:ss.f, the fraction's trailing zeros
+;; dropped but at least one digit kept.
+(define (timestamp-string ts)
+  (let* ((ms (jinst-ms ts)) (f (date-local-fields ms))
+         (frac (let loop ((s (pad3 (list-ref f 6))))
+                 (if (and (> (string-length s) 1)
+                          (char=? (string-ref s (- (string-length s) 1)) #\0))
+                     (loop (substring s 0 (- (string-length s) 1)))
+                     s))))
+    (string-append (pad4 (list-ref f 0)) "-" (pad2 (list-ref f 1)) "-" (pad2 (list-ref f 2))
+                   " " (pad2 (list-ref f 3)) ":" (pad2 (list-ref f 4)) ":" (pad2 (list-ref f 5))
+                   "." frac)))
+;; java.sql.Date.toString: yyyy-mm-dd on the default zone.
+(define (sql-date-string ms)
+  (let ((f (date-local-fields ms)))
+    (string-append (pad4 (list-ref f 0)) "-" (pad2 (list-ref f 1)) "-" (pad2 (list-ref f 2)))))
 ;; a jinst's java.util.Date method surface (record-method-dispatch arm).
 (register-method-arm! arm-priority-date
   (lambda (obj method-name rest-args)
@@ -1118,7 +1195,9 @@
              ((string=? method-name "getTimezoneOffset")
               (- (quotient (tz-offset-ms (default-timezone) (jinst-ms obj)) 60000)))
              ((string=? method-name "toInstant") (mk-instant (jinst-ms obj)))
-             ((string=? method-name "toString") (inst-rfc3339 obj))
+             ((and (string=? method-name "getNanos") (jts? obj))
+              (* 1000000 (inst-floor-mod (exact (truncate (jinst-ms obj))) 1000)))
+             ((string=? method-name "toString") (if (jts? obj) (timestamp-string obj) (date-string (jinst-ms obj))))
              ((string=? method-name "equals") (and (pair? (if (jolt-nil? rest-args) '() (seq->list rest-args)))
                                                    (jinst? (car (seq->list rest-args)))
                                                    (= (jinst-ms obj) (jinst-ms (car (seq->list rest-args))))))

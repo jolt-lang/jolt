@@ -947,18 +947,19 @@
            :jvm "true"
            :jolt "false"}
    :note "Inherent to tail calls, not a missing shim. spec's instrument still throws the same conform ExceptionInfo with the same explain-data — only the ::caller annotation is absent. Surfaces in spec.alpha's clojure.test-clojure.instr suite."}
-  ;; clojure.instant's third reader. jolt has one millisecond instant type, so
-  ;; java.sql.Timestamp is java.util.Date and the sub-millisecond digits are gone.
-  ;; The other two readers agree with the JVM exactly, offset zone included
-  ;; (test/chez/instant-test.clj).
+  ;; clojure.instant's third reader. jolt's instants are millisecond-based, so a
+  ;; java.sql.Timestamp keeps its milliseconds and the digits past them are
+  ;; gone. It is its own class, prints as the JVM's (nine fraction digits) and
+  ;; answers .getNanos; the other two readers agree with the JVM exactly, offset
+  ;; zone included (test/chez/instant-test.clj).
   {:category :host-model
    :behavior "(.getNanos (clojure.instant/read-instant-timestamp \"...T13:14:15.123456789Z\"))"
    :jvm "123456789 — Timestamp keeps nanoseconds"
-   :jolt "no .getNanos at all (\"No matching field found: getNanos for class java.util.Date\") — the reader itself parses fine and drops the sub-millisecond digits, which is what the :check measures"
-   :check {:expr "(do (require 'clojure.instant) (pr-str (clojure.instant/read-instant-timestamp \"2020-01-01T13:14:15.123Z\")))"
-           :jvm "\"#inst \\\"2020-01-01T13:14:15.123000000-00:00\\\"\""
-           :jolt "\"#inst \\\"2020-01-01T13:14:15.123-00:00\\\"\""}
-   :note "One instant type, millisecond-based. read-instant-date and read-instant-calendar are exact."}
+   :jolt "123000000 — the reader parses fine and keeps the milliseconds"
+   :check {:expr "(do (require 'clojure.instant) (.getNanos (clojure.instant/read-instant-timestamp \"2020-01-01T13:14:15.123456789Z\")))"
+           :jvm "123456789"
+           :jolt "123000000"}
+   :note "One instant representation, millisecond-based. read-instant-date and read-instant-calendar are exact."}
   ;; No classloaders. This is not a shim gap that could be filled — a classloader
   ;; is a JVM linkage concept, and jolt compiles ahead of time to native code with
   ;; no class-loading step to intercept. Surfaced running kaocha, whose dynapath

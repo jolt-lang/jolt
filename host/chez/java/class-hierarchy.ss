@@ -1476,9 +1476,8 @@
 (jch-register-supers! "java.util.Locale" '())
 (jch-register-supers! "java.util.TimeZone" '())
 ;; #inst / (Date.) classes. java.sql.Date and java.sql.Timestamp are Date
-;; subclasses (jolt's one #inst value reports Date only — see inst-time.ss, which
-;; answers instance? Timestamp #f — so these rows exist for the sql-date shim and
-;; for isa?/supers of the class tokens, not for the #inst value's dispatch tags).
+;; subclasses: the sql-date shim and the jts child of the #inst record report
+;; them, and their dispatch tags walk up to java.util.Date from here.
 (jch-register-supers! "java.util.Date" '("java.lang.Comparable" "java.io.Serializable"))
 (jch-register-supers! "java.sql.Date" '("java.util.Date"))
 (jch-register-supers! "java.sql.Timestamp" '("java.util.Date"))
