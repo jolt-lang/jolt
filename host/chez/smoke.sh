@@ -1380,6 +1380,22 @@ else
   fails=$((fails + 1))
 fi
 
+# clojure.data.json is bundled the same way: jolt's copy escapes a character
+# above U+FFFF as its surrogate pair, which upstream's per-.charAt escaper cannot
+# do over code-point strings. A project pulling org.clojure/data.json in still
+# gets jolt's copy, so the JSON it writes stays valid.
+mkdir -p "$bbshadow/src/clojure/data"
+printf '(ns clojure.data.json)\n(def marker :decoy)\n' > "$bbshadow/src/clojure/data/json.clj"
+djs_out="$(cd "$bbshadow" && JOLT_NO_DEVCACHE=1 "$bbs_jolt" -e '(do (require (quote [clojure.data.json :as j])) [(nil? (resolve (quote clojure.data.json/marker))) (j/write-str (str "a" (char 128077) (char 233)))])' 2>&1 | tail -1)"
+if [ "$djs_out" = '[true "\"a\\ud83d\\udc4d\\u00e9\""]' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: bundled clojure.data.json (shadowed, or an astral char not escaped as a pair)"
+  echo "    want \`[true \"\\\"a\\\\ud83d\\\\udc4d\\\\u00e9\\\"\"]\` got \`$djs_out\`"
+  fails=$((fails + 1))
+fi
+rm -f "$bbshadow/src/clojure/data/json.clj"; rmdir "$bbshadow/src/clojure/data" "$bbshadow/src/clojure" 2>/dev/null
+
 # ...and the escape hatch: a project that DECLARES it supplies the namespace
 # itself gets its own copy, with no supplement interned over it. Without one,
 # "jolt always wins" would be a thing a project could not get out of.

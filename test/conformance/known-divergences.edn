@@ -530,11 +530,10 @@
   ;; the JVM accepts still works. A surrogate is not a scalar value, so (char n)
   ;; of one is the surrogate-unit value (the next entries).
   ;;
-  ;; The visible consequence is in libraries that hand-encode \uXXXX per char:
-  ;; data.json's :escape-unicode writes \u1f603 for an astral character where the
-  ;; JVM writes the surrogate pair \ud83d\ude03. Matching that would mean adopting
-  ;; UTF-16 semantics for count/nth/char, which is the model choice jolt made the
-  ;; other way. The round trip is pinned in unit.edn ("char / code points").
+  ;; The visible consequence is in libraries that hand-encode \uXXXX per char,
+  ;; which see an astral character whole. jolt's bundled clojure.data.json escapes
+  ;; it as its surrogate pair. The round trip is pinned in unit.edn ("char / code
+  ;; points").
   {:category :string-model
    :behavior "(char 128515), the code point (first \"<astral>\") yields"
    :jvm "throws IllegalArgumentException — a JVM char is 16 bits"
