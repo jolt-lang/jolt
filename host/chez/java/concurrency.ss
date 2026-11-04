@@ -2739,6 +2739,154 @@
          (cons "toString" (lambda (self)
            (string-append (host-object-tostring self) "[Count = " (number->string (vector-ref (jhost-state self) 0)) "]")))))
 
+;; --- java.util.Timer / java.util.TimerTask ----------------------------------
+;; One background thread per Timer runs its tasks in due order, as the JDK's
+;; TimerThread does: due times are wall-clock milliseconds, a period > 0 is fixed
+;; rate (the next run is the previous DUE time plus the period) and a period < 0
+;; fixed delay (the next run is when this one started, plus the period). A task
+;; that throws kills the thread and cancels the timer, as on the JVM.
+;;
+;; A TimerTask is a proxy over the abstract class, so its own state -- VIRGIN,
+;; SCHEDULED, EXECUTED or CANCELLED, plus its period and next due time -- lives in
+;; a weak table keyed by the task, and cancel / scheduledExecutionTime are the
+;; class's concrete methods (register-abstract-methods!).
+;; timer state: #(mu cv queue accepting? name daemon?); queue: tasks, due order
+(define timer-serial 0)
+(define timer-serial-mu (make-mutex))
+(define timertask-states (make-weak-eq-hashtable))     ; task -> #(state next period)
+(define timertask-mu (make-mutex))
+(define (timertask-state task)
+  (jolt-with-mutex timertask-mu
+    (or (hashtable-ref timertask-states task #f)
+        (let ((v (vector 'virgin 0 0)))
+          (hashtable-set! timertask-states task v)
+          v))))
+(define (timer-next-name)
+  (jolt-with-mutex timer-serial-mu
+    (let ((n timer-serial)) (set! timer-serial (+ n 1)) (string-append "Timer-" (number->string n)))))
+(define (timer-insert q task ts)
+  (cond ((null? q) (list task))
+        ((< (vector-ref ts 1) (vector-ref (timertask-state (car q)) 1)) (cons task q))
+        (else (cons (car q) (timer-insert (cdr q) task ts)))))
+(define (timer-wait-ms st ms)
+  (jolt-condition-wait (vector-ref st 1) (vector-ref st 0)
+    (make-time 'time-duration (* 1000000 (remainder ms 1000)) (quotient ms 1000))))
+(define (timer-main-loop st)
+  (let loop ()
+    (let ((task
+           (jolt-with-mutex (vector-ref st 0)
+             (let wait ()
+               (cond
+                 ((and (null? (vector-ref st 2)) (vector-ref st 3))
+                  (jolt-condition-wait (vector-ref st 1) (vector-ref st 0)) (wait))
+                 ((null? (vector-ref st 2)) #f)          ; cancelled and drained
+                 (else
+                  (let* ((task (car (vector-ref st 2))) (ts (timertask-state task)))
+                    (if (eq? (vector-ref ts 0) 'cancelled)
+                        (begin (vector-set! st 2 (cdr (vector-ref st 2))) (wait))
+                        (let ((now (now-millis)) (due (vector-ref ts 1)) (period (vector-ref ts 2)))
+                          (if (<= due now)
+                              (begin
+                                (vector-set! st 2 (cdr (vector-ref st 2)))
+                                (if (= period 0)
+                                    (vector-set! ts 0 'executed)
+                                    (begin
+                                      (vector-set! ts 1 (if (< period 0) (- now period) (+ due period)))
+                                      (vector-set! st 2 (timer-insert (vector-ref st 2) task ts))))
+                                task)
+                              (begin (timer-wait-ms st (- due now)) (wait))))))))))))
+      (when task
+        (guard (e (#t (jolt-with-mutex (vector-ref st 0)
+                        (vector-set! st 3 #f)
+                        (vector-set! st 2 '()))
+                      (raise e)))
+          (record-method-dispatch task "run" jolt-nil))
+        (loop)))))
+(define (make-jtimer name daemon?)
+  (let* ((st (vector (make-mutex) (jolt-make-cv) '() #t name daemon?))
+         (timer (make-jhost "timer" st))
+         (t (make-jthread (lambda () (timer-main-loop st) jolt-nil) name)))
+    (vector-set! (jhost-state t) 8 daemon?)
+    ((host-method-ref "user-thread" "start") t)
+    timer))
+(for-each (lambda (nm)
+            (register-class-ctor! nm
+              (lambda args
+                (cond ((null? args) (make-jtimer (timer-next-name) #f))
+                      ((and (null? (cdr args)) (boolean? (car args))) (make-jtimer (timer-next-name) (car args)))
+                      ((and (string? (car args)) (null? (cdr args))) (make-jtimer (car args) #f))
+                      ((and (string? (car args)) (pair? (cdr args)) (boolean? (cadr args)) (null? (cddr args)))
+                       (make-jtimer (car args) (cadr args)))
+                      ((jolt-nil? (car args)) (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" jolt-nil)))
+                      (else (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
+                                                             "No matching ctor found for class java.util.Timer")))))))
+          '("Timer" "java.util.Timer"))
+;; A due time: a delay in ms from now, or a java.util.Date's instant.
+(define (timer-due-of x)
+  (if (number? x)
+      (let ((d (jnum->exact x)))
+        (when (< d 0) (throw-jvm (quote IllegalArgumentException) "Negative delay."))
+        (+ (now-millis) d))
+      (let ((ms (jolt-invoke1 (var-deref "clojure.core" "inst-ms") x)))
+        (when (< ms 0) (throw-jvm (quote IllegalArgumentException) "Illegal execution time."))
+        ms)))
+(define (timer-schedule! self task due period)
+  (let ((st (jhost-state self)))
+    (jolt-with-mutex (vector-ref st 0)
+      (unless (vector-ref st 3)
+        (throw-jvm (quote IllegalStateException) "Timer already cancelled."))
+      (let ((ts (timertask-state task)))
+        (jolt-with-mutex timertask-mu
+          (unless (eq? (vector-ref ts 0) 'virgin)
+            (throw-jvm (quote IllegalStateException) "Task already scheduled or cancelled"))
+          (vector-set! ts 0 'scheduled)
+          (vector-set! ts 1 due)
+          (vector-set! ts 2 period))
+        (vector-set! st 2 (timer-insert (vector-ref st 2) task ts))
+        (jolt-cv-wake! (vector-ref st 1)))))
+  jolt-nil)
+(define (timer-period p)
+  (let ((p (jnum->exact p)))
+    (when (<= p 0) (throw-jvm (quote IllegalArgumentException) "Non-positive period."))
+    p))
+(register-host-methods! "timer"
+  (list (cons "schedule"
+              (lambda (self task when . rest)
+                (if (null? rest)
+                    (timer-schedule! self task (timer-due-of when) 0)
+                    (timer-schedule! self task (timer-due-of when) (- (timer-period (car rest)))))))
+        (cons "scheduleAtFixedRate"
+              (lambda (self task when period)
+                (timer-schedule! self task (timer-due-of when) (timer-period period))))
+        (cons "cancel"
+              (lambda (self)
+                (let ((st (jhost-state self)))
+                  (jolt-with-mutex (vector-ref st 0)
+                    (vector-set! st 3 #f)
+                    (vector-set! st 2 '())
+                    (jolt-cv-wake! (vector-ref st 1))))
+                jolt-nil))
+        (cons "purge"
+              (lambda (self)
+                (let ((st (jhost-state self)))
+                  (jolt-with-mutex (vector-ref st 0)
+                    (let* ((q (vector-ref st 2))
+                           (keep (filter (lambda (t) (not (eq? 'cancelled (vector-ref (timertask-state t) 0)))) q)))
+                      (vector-set! st 2 keep)
+                      (- (length q) (length keep)))))))))
+(register-abstract-methods! "java.util.TimerTask"
+  (list (cons "cancel"
+              (lambda (self)
+                (let ((ts (timertask-state self)))
+                  (jolt-with-mutex timertask-mu
+                    (let ((was (eq? (vector-ref ts 0) 'scheduled)))
+                      (vector-set! ts 0 'cancelled)
+                      was)))))
+        (cons "scheduledExecutionTime"
+              (lambda (self)
+                (let* ((ts (timertask-state self)) (p (vector-ref ts 2)))
+                  (if (< p 0) (+ (vector-ref ts 1) p) (- (vector-ref ts 1) p)))))))
+
 ;; --- java.util.concurrent.ExecutorService / Executors ----------------------
 ;; A real task QUEUE served by a fixed number of worker threads (FIFO). A single
 ;; worker (newSingleThreadExecutor) runs tasks strictly in submission order —

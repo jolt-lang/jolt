@@ -340,7 +340,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*ns*` at its root, `clojure.core`,** as on the JVM, instead of the
   `user` namespace of the thread that made them. A virtual thread no longer
   inherits its creator's bindings either. `future`, agents and `bound-fn`
-  still convey the caller's.
+  still convey the caller's. `(.getRawRoot #'*ns*)` is `clojure.core` too.
+- **`java.util.Timer` exists.** All four constructors, `schedule` (delay or
+  `Date`, one-shot or fixed-delay), `scheduleAtFixedRate`, `cancel` and
+  `purge`, with a `TimerTask` proxy's `cancel` and `scheduledExecutionTime`.
+  `(java.util.Timer. true)` used to be "No matching ctor".
 - **A condition wait with interrupts disabled could still stall a
   collection** when the thread requesting it held the waited mutex: the
   sliced wait took the mutex back inside Chez's `condition-wait`, still

@@ -97,6 +97,18 @@
    :check {:expr "(load-string \"(ns kd-nx2x.ns) (deftype T [a] Object (toString [_] \\\"one\\\")) (defn mk [] (T. 0)) (def before (str (mk))) (deftype T [a] Object (toString [_] \\\"two\\\")) [before (str (mk))]\")"
            :jvm "[\"one\" \"one\"]"
            :jolt "[\"one\" \"two\"]"}}
+  ;; in-ns on a thread with no *ns* binding. The JVM's in-ns is (set! *ns* …),
+  ;; which refuses when *ns* is unbound on the thread. jolt's current ns is a
+  ;; per-thread pointer (multimethods.ss chez-current-ns), so the switch lands
+  ;; on that thread alone and leaks nowhere: a superset kept so code that does
+  ;; its own in-ns on a worker thread keeps working.
+  {:category :host-model
+   :behavior "(in-ns 'x) on a started Thread, where *ns* has no thread binding"
+   :jvm "throws IllegalStateException: Can't change/establish root binding of: *ns* with set"
+   :jolt "switches that thread's current namespace"
+   :check {:expr "(let [p (promise)] (.start (Thread. (fn [] (deliver p (try (in-ns 'kd-unbound-in-ns) (str *ns*) (catch Throwable e (str \"throws \" (.getSimpleName (class e))))))))) (deref p 5000 :timeout))"
+           :jvm "\"throws IllegalStateException\""
+           :jolt "\"kd-unbound-in-ns\""}}
   ;; The scheduled pools (jolt-hgjo). Three class-model details of
   ;; java.util.concurrent.ScheduledThreadPoolExecutor that jolt does not
   ;; reproduce; the schedule methods' behaviour is certified by the corpus rows

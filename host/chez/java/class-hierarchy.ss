@@ -1376,6 +1376,9 @@
 (jch-register-supers! "java.util.concurrent.locks.ReentrantLock"
                       '("java.util.concurrent.locks.Lock" "java.io.Serializable"))
 (jch-register-supers! "java.util.concurrent.CountDownLatch" '())
+(jch-register-supers! "java.util.Timer" '())
+(jch-register-supers! "java.util.TimerTask" '("java.lang.Runnable"))
+(jch-mark-abstract! "java.util.TimerTask")
 ;; AtomicInteger and AtomicLong extend Number on the JVM; AtomicBoolean and
 ;; AtomicReference extend Object. (instance? Number an-atomic) has to tell them
 ;; apart, which is why the four carry four tags.
@@ -1672,6 +1675,7 @@
     ("atomic-reference" . "java.util.concurrent.atomic.AtomicReference")
     ("reentrant-lock" . "java.util.concurrent.locks.ReentrantLock")
     ("count-down-latch" . "java.util.concurrent.CountDownLatch")
+    ("timer" . "java.util.Timer")
     ("random" . "java.util.Random")
     ("splittable-random" . "java.util.SplittableRandom")
     ("securerandom" . "java.security.SecureRandom")
