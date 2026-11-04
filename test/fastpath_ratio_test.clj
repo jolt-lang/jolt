@@ -181,13 +181,12 @@
 ;;                      ratio is the pipe transfer alone (read ~45 -> ~1).
 ;;
 ;; Only the ratios are judged, never the absolute times — a slow shared runner
-;; moves both arms together. Sampling follows io_scaling_test.clj: best-of-N
-;; (minimum, not mean — interference only ever adds time), a ceiling, a
-;; clear-regression threshold that fails on the spot, and up to two re-measures
-;; in the band between them, keeping the lowest, so a scheduler blip cannot fail
-;; the build. A real
-;; regression measures far above the ceiling on every attempt, so re-measuring
-;; costs no power.
+;; moves both arms together. Sampling is best-of-N (minimum, not mean —
+;; interference only ever adds time) against a ceiling, and a row over it is
+;; sampled up to twice more, judging each arm's minimum over all of it, so a
+;; scheduler blip cannot fail the build. A real regression measures above the ceiling on every attempt, so
+;; re-measuring costs no power. The Makefile runs this gate after the rest of
+;; its shard has finished (QUIET-GATES), not beside it under make -j.
 
 ;;   hashmap-get        get on a java.util.HashMap walks the get arms to the
 ;;                      HashMap family's; a shim registering its arm AHEAD of it
@@ -261,22 +260,27 @@
 
 (defn- judge!
   "Measure SLOW-ARM against FAST-ARM and record a failure when the ratio exceeds
-   CEILING. In the band below CLEAR it re-measures up to twice and keeps the
-   lowest reading."
-  [label fast-arm slow-arm ceiling clear]
-  (let [ratio (fn []
-                (let [[f s] (best-of-pair samples fast-arm slow-arm)]
-                  ;; a floor on the denominator: an arm that measures as ~0 would
-                  ;; make any numerator look infinite
-                  (/ s (max f 0.05))))
-        ;; In the band, up to two more readings, and the lowest stands: a burst
-        ;; from a neighbouring gate only ever raises a reading, and a real
-        ;; regression reads high on every one.
-        r (loop [r (ratio) left 2]
-            (if (and (pos? left) (> r ceiling) (< r clear))
-              (do (println (format "  %s: %.2f — in the re-measure band, sampling again" label r))
-                  (recur (min r (ratio)) (dec left)))
-              r))]
+   CEILING. Over the ceiling it samples both arms again, up to twice, and judges
+   the ratio of each arm's minimum over every sample taken."
+  [label fast-arm slow-arm ceiling]
+  (let [;; a floor on the denominator: an arm that measures as ~0 would make
+        ;; any numerator look infinite
+        ratio (fn [[f s]] (/ s (max f 0.05)))
+        ;; Interference only ever adds time to a sample, so each arm's minimum
+        ;; over more samples is a closer reading of that arm's cost, and the
+        ;; ratio of the two minima is what a re-measure refines. The lowest
+        ;; RATIO of separate readings would not be: a burst on the fast arm
+        ;; lowers one, and under load that hid a reverted string-nth fast path
+        ;; (1.33 against a 1.0 ceiling) in one run out of three. No reading is
+        ;; too high to re-measure: one burst put host-object-pr at 6.0 against
+        ;; its 1.9 ceiling, on a binary that reads 1.7.
+        r (loop [[f s] (best-of-pair samples fast-arm slow-arm) left 2]
+            (let [r (ratio [f s])]
+              (if (and (pos? left) (> r ceiling))
+                (let [[f' s'] (best-of-pair samples fast-arm slow-arm)]
+                  (println (format "  %s: %.2f — over the ceiling, sampling again" label r))
+                  (recur [(min f f') (min s s')] (dec left)))
+                r)))]
     (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
                      label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
     (when (> r ceiling)
@@ -302,7 +306,7 @@
 
 (defn- judge-bytes!
   "judge!, for a ratio of heap bytes held rather than of time: deterministic, so
-   no re-measure band."
+   no re-measure."
   [label ref-mk mk ceiling]
   (let [r (/ (double (bytes-held mk)) (max 1 (bytes-held ref-mk)))]
     (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
@@ -476,43 +480,43 @@
 
   ;; Reading a form off a stream must cost about what reading it off a string
   ;; costs. Was ~70x when the drain went per-character through method dispatch.
-  (judge! "reader-vs-string" read-form-from-string read-form-from-stream 8.0 15.0)
+  (judge! "reader-vs-string" read-form-from-string read-form-from-stream 8.0)
 
   ;; The memory-bounded read must not be slower than reading the whole file.
   ;; Was 2.7x when the fill loop went through the checked generic array setter.
-  (judge! "chunked-vs-slurp" slurp-whole drain-chunked 2.0 4.0)
+  (judge! "chunked-vs-slurp" slurp-whole drain-chunked 2.0)
 
   ;; A literal pattern must not reach the regex engine. The reference arm is the
   ;; same split with a literal STRING separator, which never did.
   (judge! "literal-split"
           #(count (str/split payload "\n"))
           #(count (str/split payload #"\n"))
-          3.0 6.0)
+          3.0)
 
   ;; split-lines is #"\r?\n" — not a literal, so it needs its own recognition.
   (judge! "split-lines"
           #(count (str/split crlf-payload "\r\n"))
           #(count (str/split-lines crlf-payload))
-          3.0 6.0)
+          3.0)
 
   ;; A literal replace pattern with a literal replacement, against the same
   ;; function's literal-string arm.
   (judge! "literal-replace"
           #(count (str/replace payload "abc" "xyz"))
           #(count (str/replace payload #"abc" "xyz"))
-          3.0 6.0)
+          3.0)
 
   ;; Reading N small files must not cost wildly more than reading their bytes
   ;; from one file. Guards per-file overhead — a scratch sized to the block
   ;; rather than the input, an eager buffer, a per-open allocation.
-  (judge! "small-file-drain" slurp-many-small-by-path drain-many-small 4.0 9.0)
+  (judge! "small-file-drain" slurp-many-small-by-path drain-many-small 4.0)
 
   ;; Moving bytes through a child's pipe must cost about what moving them through
   ;; a file costs, with the same child spawned on both sides.
   (when-not (= pipe-bytes (pipe-read-arm))
     (swap! failures conj "pipe-read: drained the wrong number of bytes"))
-  (judge! "pipe-read" pipe-read-ref pipe-read-arm 3.0 6.0)
-  (judge! "pipe-write" pipe-write-ref pipe-write-arm 3.0 6.0)
+  (judge! "pipe-read" pipe-read-ref pipe-read-arm 3.0)
+  (judge! "pipe-write" pipe-write-ref pipe-write-arm 3.0)
 
   ;; A char array is backed by a string, so building one from a string and
   ;; reading one back out are block moves — each must cost about what copying
@@ -520,11 +524,11 @@
   (judge! "chars-copy"
           #(count (subs chars-text 0 chars-len))
           #(alength (.toCharArray chars-text))
-          1.5 3.0)
+          1.5)
   (judge! "string-from-chars"
           #(count (subs chars-text 0 chars-len))
           #(count (String. chars-array))
-          1.35 2.5)
+          1.35)
 
   ;; ...and a char array must take half the heap of a long array of the same
   ;; length, because its backing is half as wide and is never traced.
@@ -536,103 +540,103 @@
   (judge! "substring-scan"
           #(str/index-of chars-text absent-char)
           #(str/index-of chars-text absent-str)
-          1.5 3.0)
+          1.5)
 
   ;; Trimming a string that needs no trimming must not copy it: 64x the length
   ;; must not cost 64x the time. A copying trim is linear here.
   (judge! "trim-no-copy"
           #(dotimes [_ 200] (str/trim clean-short))
           #(dotimes [_ 200] (str/trim clean-long))
-          4.0 10.0)
+          4.0)
 
   ;; instance? on a reify or deftype that declares the protocol must cost about
   ;; what calling one of its methods costs.
   (judge! "reify-instance"
           #(dotimes [_ dispatch-n] (dp6 dispatch-reify))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP6 dispatch-reify))
-          4.0 20.0)
+          4.0)
   (judge! "deftype-instance"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP2 dispatch-t))
-          3.0 6.0)
+          3.0)
 
   ;; ...and a miss, on a record and on a number, must too.
   (judge! "instance-miss"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          4.0 10.0)
+          4.0)
   (judge! "number-miss"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 42))
-          4.0 10.0)
+          4.0)
 
   ;; The site cache: cheaper than the protocol call it is measured against.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          0.8 1.1)
+          0.8)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          0.8 1.1)
+          0.8)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"
           #(dotimes [_ dispatch-n] (mk-type 1))
           #(dotimes [_ dispatch-n] (mk-reify 1))
-          3.0 6.0)
+          3.0)
 
   ;; satisfies? on a reify must cost about a protocol call.
   (judge! "satisfies-reify"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (satisfies? DP2 made-reify))
-          3.0 8.0)
+          3.0)
 
   ;; A key with its own equals/hashCode must not cost wildly more to look up
   ;; than a record key.
   (judge! "record-key-get"
           #(dotimes [_ 20000] (get rec-key-map rec-probe))
           #(dotimes [_ 20000] (get eq-key-map eq-probe))
-          3.8 5.0)
+          3.8)
 
   ;; = on two records must cost about what = on two small vectors costs.
   (judge! "record-eq"
           #(dotimes [_ dispatch-n] (= eq-vec-a eq-vec-b))
           #(dotimes [_ dispatch-n] (= eq-rec-a eq-rec-b))
-          2.5 4.0)
+          2.5)
 
   ;; The core collection ops on a plain record cost about what they cost on the
   ;; map holding the same entries.
   (judge! "record-count"
           #(dotimes [_ dispatch-n] (count plain-map))
           #(dotimes [_ dispatch-n] (count plain-rec))
-          5.0 8.0)
+          5.0)
   (judge! "record-contains"
           #(dotimes [_ dispatch-n] (contains? plain-map :z))
           #(dotimes [_ dispatch-n] (contains? plain-rec :z))
-          3.5 5.0)
+          3.5)
   (judge! "record-reduce-kv"
           #(dotimes [_ dispatch-n] (reduce-kv kv-sum 0 plain-map))
           #(dotimes [_ dispatch-n] (reduce-kv kv-sum 0 plain-rec))
-          3.5 8.0)
+          3.5)
   (judge! "record-into"
           #(dotimes [_ 20000] (into {} plain-map))
           #(dotimes [_ 20000] (into {} plain-rec))
-          2.5 4.0)
+          2.5)
   (judge! "record-seq"
           #(dotimes [_ 20000] (seq plain-map))
           #(dotimes [_ 20000] (seq plain-rec))
-          2.3 3.5)
+          2.3)
   (judge! "record-map->"
           #(dotimes [_ 20000] (assoc (->PlainRec 1 2 3) :w 4))
           #(dotimes [_ 20000] (map->PlainRec plain-map+))
-          3.0 4.5)
+          3.0)
 
   ;; The same fn body costs the same whether a def or a bare form built it.
   (judge! "top-level-fn"
           #(dotimes [_ dispatch-n] (fn-via-def kw-map))
           #(dotimes [_ dispatch-n] (fn-via-top kw-map))
-          1.5 2.0)
+          1.5)
 
   ;; get on a java.util.HashMap goes through the get arms; every shim that
   ;; registers one ahead of the HashMap family's adds its predicate to this walk.
@@ -640,7 +644,7 @@
     (judge! "hashmap-get"
             #(dotimes [_ 200000] (get pm 3))
             #(dotimes [_ 200000] (get hm 3))
-            7.0 9.0))
+            7.0))
 
   ;; nth and get on a string against the same on a vector. A string is a
   ;; core receiver, but nth reached it through every set! wrap around jolt-nth
@@ -652,11 +656,11 @@
     (judge! "string-nth"
             #(dotimes [_ 200000] (nth v 300))
             #(dotimes [_ 200000] (nth s 300))
-            1.0 1.3)
+            1.0)
     (judge! "string-get"
             #(dotimes [_ 200000] (get v 300))
             #(dotimes [_ 200000] (get s 300))
-            1.1 1.6))
+            1.1))
 
   ;; count / contains? on the common java.util collections, each against the
   ;; collection's own method doing the same work (.size, .containsKey),
@@ -668,26 +672,26 @@
     (judge! "arraylist-count"
             #(dotimes [_ 200000] (.size al))
             #(dotimes [_ 200000] (count al))
-            3.8 5.0)
+            3.8)
     (judge! "hashset-count"
             #(dotimes [_ 200000] (.size hs))
             #(dotimes [_ 200000] (count hs))
-            3.4 4.5)
+            3.4)
     (judge! "hashmap-count"
             #(dotimes [_ 200000] (.size hm))
             #(dotimes [_ 200000] (count hm))
-            4.0 5.5)
+            4.0)
     (judge! "hashmap-contains"
             #(dotimes [_ 200000] (.containsKey hm 33))
             #(dotimes [_ 200000] (contains? hm 33))
-            1.6 2.0)
+            1.6)
     ;; A Path member is a host method like an ArrayList's, served by the call
     ;; site's cache: getFileSystem reads a field, as size does.
     (let [p (java.nio.file.Paths/get "/tmp/work" (into-array String []))]
       (judge! "path-method"
               #(dotimes [_ 200000] (.size al))
               #(dotimes [_ 200000] (.getFileSystem p))
-              2.5 4.0)))
+              2.5)))
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints
@@ -695,7 +699,7 @@
   (judge! "host-object-pr"
           #(dotimes [_ 20000] (pr-str [1 "a"]))
           #(dotimes [_ 20000] (pr-str (java.io.File. "/tmp")))
-          1.9 2.3)
+          1.9)
 
   (.delete (java.io.File. src-path))
   (.delete (java.io.File. data-path))
