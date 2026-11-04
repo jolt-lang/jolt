@@ -1614,7 +1614,7 @@
   (probe-if-available (lambda () jrec-fast-type-probe)))
 
 (define (get-fast-probes)
-  (append (list (probe-pmap) (probe-pvec) (probe-pset)) (probe-jrecs)))
+  (append (list (probe-pmap) (probe-pvec) (probe-pset) "s") (probe-jrecs)))
 (define (get-arm-reject-fast-type! who pred)
   (reject-fast-type-claim! who pred (get-fast-probes) "the jolt-get fast path"))
 (define jolt-get-arms '())
@@ -1693,6 +1693,9 @@
         ((pvec? coll) (pvec-get coll k d))
         ((pset? coll) (pset-get coll k d))
         ((jrec? coll) (jrec-ref coll k d))
+        ;; a string answers here, not after every registered arm's predicate:
+        ;; no arm may claim one (get-fast-probes), so the order is free
+        ((string? coll) (jolt-get-base coll k d))
         (else (let loop ((as jolt-get-arms))
                 (cond ((null? as) (jolt-get-base coll k d))
                       (((caar as) coll) ((cdar as) coll k d))
@@ -1773,6 +1776,10 @@
              ;; destructure of a set bound nil, and (distinct #{1 2 3}) answered
              ;; (nil 3 2), silently, instead of raising.
              (else (unsupported-on-type "nth" coll)))))))
+;; The definition above, before the set! wraps that later files put around
+;; jolt-nth: the outermost wrap (natives-array.ss) sends a string straight here,
+;; since no wrap in between intercepts one.
+(define jolt-nth-base jolt-nth)
 
 ;; a count is an exact integer (JVM parity: count returns a long). jolt= is
 ;; exactness-aware, so this must be exact to match an exact integer literal:

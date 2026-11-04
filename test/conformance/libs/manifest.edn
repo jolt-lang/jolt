@@ -300,14 +300,9 @@
    :deps ["@spec.alpha/src/main/clojure" "@test.check/src/main/clojure"]
    :local-deps ["~time"]
    :timeout 900
-   ;; The residue is one :escape-unicode true case in each of the two APIs, and
-   ;; it is the string model rather than a bug: jolt strings are codepoint-indexed,
-   ;; so .charAt hands data.json's escaper an astral character whole where the JVM
-   ;; hands it a surrogate half, and the escape comes out \u1f603 rather than the
-   ;; \ud83d\ude03 pair. Matching would mean UTF-16 count/nth/char. The
-   ;; :escape-unicode false path used to throw out of (char cp) and no longer does.
-   ;; :string-model, see known-divergences.edn.
-   :expect {:tests 244 :pass 322 :fail 2 :error 0}}
+   ;; clojure.data.json is a jolt built-in (stdlib/clojure/data/json.clj), so the
+   ;; suite runs against jolt's copy, which escapes astral characters as pairs.
+   :expect {:tests 244 :pass 324 :fail 0 :error 0}}
 
   {:name "data.zip"
    :paths ["src/main/clojure" "src/test/clojure"]

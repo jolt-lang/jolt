@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`clojure.data.json` ships with jolt** (#1453). It is data.json 2.5.2 as a
+  built-in namespace, resolved ahead of a project's own copy like
+  `babashka.fs` (`:jolt/replaces [clojure.data.json]` opts out). Writing with
+  `:escape-unicode` now escapes a character above U+FFFF as its surrogate
+  pair, `"👍"`, where upstream's escaper wrote an invalid 5-digit
+  `\u` escape over jolt's code-point strings. The namespace also loads without
+  java.time; `:date-formatter` defaults to nil, meaning ISO_INSTANT.
+
 - **`jolt nrepl-server --port-file PATH` and `--no-port-file`** (#1415).
   The bound port goes to PATH, resolved against the caller's directory, or
   nowhere; either way the server removes the file it wrote when it stops.
@@ -288,6 +296,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`nth` and `get` on a string.** Each java.util family added this cycle put
+  another wrap around `nth` and another predicate in front of `get`, and a
+  string reached its answer only after all of them: `nth` was 1.2x and `get`
+  1.5x slower than 0.8.23. A string now answers before the wraps and the arms,
+  about 2x faster than 0.8.23 for `nth` and 3x for `get`. fastpathratio rows
+  `string-nth` and `string-get` hold it there.
+- **`long`, `int`, `short`, `byte` and `char` on a double, and `unchecked-long`
+  and `unchecked-int` on a double, range-check against flonum bounds instead
+  of bignum ones.** The checked casts compared the flonum against the type's
+  bounds held as exact integers, and for `long` those (+-2^63) are bignums on
+  every Chez, so each cast paid two flonum-vs-bignum compares and a second
+  exact-vs-bignum check after truncation; `unchecked-long` saturated through the
+  same compares (and `unchecked-int` through exact ones). `bench/num_casts.clj`
+  (new): `(long d)` 398 ms to 62 ms for 2M casts on an M1 Pro,
+  `(unchecked-long d)` 68 ms to 50 ms; on a 32-bit target (Nintendo Wii,
+  `tpb32b`) `(long 123.7)` 135.5 us to 27.0 us. One value changes, to match
+  Clojure's `RT.longCast(double)`: `(long 9.223372036854776E18)` (2^63 as a
+  double) now returns `Long/MAX_VALUE` instead of throwing. Eight new corpus
+  rows pin the boundaries.
+
 - **`map->R` is one pass over the map.** #1479 sped up a map holding only
   field keys but made one with extension keys 1.2-1.3x slower than 0.8.23; a
   single fold that skips the field keys is faster in both cases (one extension:
@@ -354,6 +382,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sliced wait took the mutex back inside Chez's `condition-wait`, still
   counted as active. It now releases the mutex, naps in a collect-safe call
   and retakes it collect-safely.
+- **The default time zone is the machine's, whatever has loaded.** With `TZ`
+  unset, core answered UTC until jolt.time loaded and registered the
+  machine's zone, so a zone-less `SimpleDateFormat` parse moved by hours
+  depending on whether some `java.time` class had been touched first. Core
+  now reads the zone where libc does (the `/etc/localtime` link, else
+  `/etc/timezone`), so `TimeZone/getDefault`, `SimpleDateFormat`, `Calendar`
+  and the deprecated `Date` getters agree with the JVM. An empty `TZ` is UTC.
 - **A surrogate unit is a value, and the joiners pair it (#1454).**
   `(char 0xD83D)` used to throw; it is now a `Character` holding the unit, as a
   `char[]` element and `Character/toChars` are, and `str`, StringBuilder and
