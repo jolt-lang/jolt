@@ -211,7 +211,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   finding's var.** Every entry carries `:var "ns/name"`, as `stubs` already
   did after a restore, so a tool can say which var holds an open port or an
   unfinished future without reading the graph path. An object two vars share
-  is named by the var its `:path` runs through.
+  is named by the var its `:path` runs through, and `stubs` now names that
+  same var (it used to name the last var holding it, beside the first one's
+  path).
 
 ### Changed
 

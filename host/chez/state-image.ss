@@ -2490,7 +2490,7 @@
                     (string-append "image: " path
                                    " is a value image, not a world image — read it with read-image")
                     empty-pmap)))
-    (let ((n 0))
+    (let ((n 0) (pv (list->vector (vector-ref w 1))))
       (for-each
         (lambda (p)
           (let* ((k (car p))
@@ -2506,10 +2506,16 @@
               ;; the read transform; the root binds as-is. Unresolved stubs left
               ;; in the root are recorded with their owning var so
               ;; jolt.image/stubs can list them and resolve-stub! can reach them.
+              ;; The var is the one the stub's :path runs through, as
+              ;; dump-world! named it: a stub two vars share, or one this walk
+              ;; meets only in the second because the first holds it in a
+              ;; rebuilt closure, still names the first.
               (image-walk v (lambda (o pth)
                               (when (image-stub? o)
                                 (hashtable-set! image-restore-stub-tbl
-                                                (image-stub-id o) (cons o k)))))
+                                                (image-stub-id o)
+                                                (cons o (or (image-world-path-var pv (image-stub-path o))
+                                                            k))))))
               (var-root-set! cell v)
               (var-cell-defined?-set! cell #t)
               (set! n (fx+ n 1)))))

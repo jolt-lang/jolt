@@ -1350,7 +1350,7 @@
 ;; :var on the world's own answers. A world's paths start inside its
 ;; (name . root) list, so scan-world and dump-world! name the var each finding
 ;; sits in, and a shared object is named by the first var its path runs
-;; through.
+;; through: the same var jolt.image/stubs lists after a restore.
 (jolt-compile-eval "(def plain 1)" "r12.world")
 (jolt-compile-eval "(def cfg {:name \"app\" :log nil})" "r12.world")
 (var-cell-root-set! (jolt-var "r12.world" "cfg")
@@ -1369,8 +1369,8 @@
 (ok "scan of a plain value has no :var"
     (jolt-nil? (jolt-get (jolt-nth (jolt-image-scan (jolt-hash-map (jolt-keyword "log") stub-port)) 0)
                          (jolt-keyword "var") jolt-nil)))
-;; one port held by two vars: one finding, and scan-world and dump-world!
-;; both name the var its :path runs through
+;; one port held by two vars: one finding, and all three answers name the
+;; var its :path runs through
 (jolt-compile-eval "(def left nil)" "r13.world")
 (jolt-compile-eval "(def right nil)" "r13.world")
 (var-cell-root-set! (jolt-var "r13.world" "left") (jolt-hash-map (jolt-keyword "p") stub-port))
@@ -1386,7 +1386,40 @@
       (if (equal? scan-var "r13.world/left")
           (str-contains? scan-path ":p")
           (and (equal? scan-var "r13.world/right") (not (str-contains? scan-path ":p")))))
-  (ok "dump-world! names the same var as scan-world" (equal? scan-var dump-var)))
+  (ok "dump-world! names the same var as scan-world" (equal? scan-var dump-var))
+  (jolt-image-restore-world! world-tmp)
+  (let ((ss (jolt-image-stubs)))
+    (ok "stubs names the same var after a restore"
+        (and (fx=? 1 (jolt-count ss))
+             (equal? dump-var (jolt-get (jolt-nth ss 0) (jolt-keyword "var") jolt-nil))
+             (equal? (jolt-get st (jolt-keyword "path") jolt-nil)
+                     (jolt-get (jolt-nth ss 0) (jolt-keyword "path") jolt-nil))))))
+;; the same port inside one var's closure and directly in another: the restore
+;; walk doesn't enter the rebuilt closure, so stubs reads the var off the path.
+;; Which var the world lists first follows the var table's hash, so six
+;; namespaces, at least one with the closure first (its path has "free:").
+(let loop ((i 0) (agree? #t) (closure-first? #f))
+  (if (fx=? i 6)
+      (begin
+        (ok "stubs names the var a closure-held stub's path runs through" agree?)
+        (ok "the closure-first case was exercised" closure-first?))
+      (let ((ns (string-append "r14.w" (number->string i))))
+        (jolt-compile-eval "(defn mk [x] {:f (fn [] x)})" ns)
+        (jolt-compile-eval "(def held nil)" ns)
+        (jolt-compile-eval "(def direct nil)" ns)
+        (var-cell-root-set! (jolt-var ns "held")
+          (jolt-invoke (var-cell-root (jolt-var ns "mk")) stub-port))
+        (var-cell-root-set! (jolt-var ns "direct") (jolt-hash-map (jolt-keyword "d") stub-port))
+        (let* ((rep (jolt-image-dump-world! world-tmp (jolt-vector ns)))
+               (st (jolt-nth (jolt-get rep (jolt-keyword "stubbed") jolt-nil) 0)))
+          (jolt-image-restore-world! world-tmp)
+          (let ((ss (jolt-image-stubs)))
+            (loop (fx+ i 1)
+                  (and agree? (fx=? 1 (jolt-count ss))
+                       (equal? (jolt-get st (jolt-keyword "var") jolt-nil)
+                               (jolt-get (jolt-nth ss 0) (jolt-keyword "var") jolt-nil)))
+                  (or closure-first?
+                      (str-contains? (jolt-get st (jolt-keyword "path") jolt-nil) "free:"))))))))
 ;; every finding in a world names its var, whatever the shape it sits in
 (jolt-compile-eval "(def top nil)" "r15.world")
 (jolt-compile-eval "(def inmeta nil)" "r15.world")

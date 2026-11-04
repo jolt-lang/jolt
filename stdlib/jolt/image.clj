@@ -108,7 +108,7 @@
   An open resource is written as a placeholder, and the return value lists
   each one as {:stubbed [{:id :kind :description :path :extra :var}]}, :var
   the \"ns/name\" of the var it sits in (the var its :path runs through, when
-  two vars share it). Pass
+  two vars share it), so `stubs` names the same var after a restore. Pass
   {:unwritable :fail} as OPTS to refuse instead, as `dump!` does."
   ([path] (dump-world! path nil))
   ([path namespaces] (host/image-dump-world! path namespaces))
