@@ -687,7 +687,7 @@
   (let ((c (scalar-char x)))
     (if c
         (cdr (assq (char-general-category c) char-category-types))
-        (let ((cp (jnum->exact x)))   ; not a char: scalar-char answers every char
+        (let ((cp (char->cp x)))   ; a surrogate unit or a non-scalar int
           (if (and (fixnum? cp) (fx>=? cp #xD800) (fx<=? cp #xDFFF)) 19 0)))))
 (register-class-statics! "java.lang.Character"
   (list (cons "TYPE" "char")
@@ -716,9 +716,10 @@
         ;; JVM Character.isWhitespace: Unicode whitespace (so U+2028 line separator
         ;; counts, like the JVM) MINUS the no-break spaces the JVM excludes
         ;; (U+00A0/U+2007/U+202F). char<=?space missed everything above ASCII.
-        (cons "isWhitespace" (lambda (c) (let ((cp (char-code c)))
-                                           (and (char-whitespace? (integer->char cp))
-                                                (not (fx=? cp #xA0)) (not (fx=? cp #x2007)) (not (fx=? cp #x202F))))))
+        ;; A surrogate (a unit, or its int) is no whitespace and no Chez char.
+        (cons "isWhitespace" (lambda (c) (let ((ch (scalar-char c)))
+                                           (and ch (char-whitespace? ch)
+                                                (not (memv (char->integer ch) '(#xA0 #x2007 #x202F)))))))
         ;; Codepoint bounds, as plain integers. The UTF-16 surrogate API is in
         ;; the codepoint-conversion block above.
         (cons "MIN_VALUE" (integer->char 0))
@@ -757,7 +758,8 @@
         (cons "toLowerCase" (lambda (c) (char-case-map c char-downcase)))
         (cons "toTitleCase" (lambda (c) (char-case-map c char-titlecase)))
         (cons "isTitleCase" (lambda (c) (char-category-in? c '(Lt))))
-        (cons "isDefined" (lambda (c) (let ((ch (scalar-char c))) (and ch (not (eq? (char-general-category ch) 'Cn))))))
+        ;; a surrogate is defined: its category is Cs (SURROGATE), not Cn
+        (cons "isDefined" (lambda (c) (not (fx=? (char-type c) 0))))
         (cons "isAlphabetic" (lambda (c) (let ((ch (scalar-char c))) (and ch (char-alphabetic? ch)))))
         (cons "isSpaceChar" (lambda (c) (char-category-in? c '(Zs Zl Zp))))
         (cons "isISOControl" (lambda (c) (let ((cp (char->cp c)))
@@ -793,10 +795,12 @@
 (define (jolt-need-char x) (if (or (char? x) (jsurr? x)) x (jolt-cast-throw x "java.lang.Character")))
 ;; A Character case map over a char or an int codepoint (see toUpperCase above).
 (define (char-case-map x f)
-  (if (char? x)
-      (f x)
-      (let ((ch (scalar-char x)))
-        (->num (if ch (char->integer (f ch)) (jnum->exact x))))))
+  (cond
+    ((char? x) (f x))
+    ((jsurr? x) x)                     ; a surrogate unit maps to itself
+    (else
+     (let ((ch (scalar-char x)))
+       (->num (if ch (char->integer (f ch)) (jnum->exact x)))))))
 
 ;; String/valueOf(Object): "null" for nil, else jolt's str semantics.
 ;; String/format(fmt args…) / (locale fmt args…) -> the clojure.core format engine.
@@ -1172,16 +1176,6 @@
 ;; os.name reflects the actual platform (Chez's machine-type names it): a *osx
 ;; machine is macOS, otherwise Linux. Code that branches on the OS (socket struct
 ;; layout, path handling) needs the truth, not a fixed value.
-;; Optimized: character-by-character scan, no substring allocation per position.
-(define (substring-index needle hay)
-  (let ((nl (string-length needle)) (hl (string-length hay)))
-    (let outer ((i 0))
-      (if (> (+ i nl) hl)
-          #f
-          (let inner ((j 0))
-            (cond ((= j nl) i)
-                  ((char=? (string-ref hay (+ i j)) (string-ref needle j)) (inner (+ j 1)))
-                  (else (outer (+ i 1)))))))))
 (define sys-os-name
   (case (sa-os-family)
     ((macos) "Mac OS X")

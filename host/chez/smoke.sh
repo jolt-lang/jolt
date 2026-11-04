@@ -1703,14 +1703,37 @@ else
   fails=$((fails + 1))
 fi
 
-# Core reads no system file for its default zone: with TZ unset and no provider
-# registered it is UTC on every machine; a provider (jolt.time registers its
-# machine-zone lookup) is consulted before that; TZ wins over both.
-tzdefault_out="$(unset TZ; $jolt -e '[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0)) (do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault))) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))]' 2>&1 | tail -1)"
-if [ "$tzdefault_out" = '["UTC" "00:00 UTC" "Asia/Tokyo" "09:00 JST"]' ]; then
+# The default zone is the machine's, as on the JVM: TZ when set (empty TZ is
+# UTC, as libc reads it), else a registered provider, else the zone the
+# system's /etc/localtime link (or /etc/timezone) names, else UTC. It was UTC
+# here unless jolt.time happened to load first, so a zone-less
+# SimpleDateFormat parse moved by five hours depending on whether some
+# java.time class had been touched. The machine's zone is worked out the way
+# libc finds it, and a run with TZ unset must match one with TZ naming it.
+machine_zone_link="$(readlink /etc/localtime 2>/dev/null)"
+case "$machine_zone_link" in
+  (*/zoneinfo/*) machine_zone="${machine_zone_link##*/zoneinfo/}" ;;
+  (*) if [ -f /etc/timezone ]; then machine_zone="$(tr -d ' \n' < /etc/timezone)"; else machine_zone=UTC; fi ;;
+esac
+tzmachine_expr='[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm zzz Z") (java.util.Date. 1393632000000)) (.getHours (java.util.Date. 1393632000000)) (.get (doto (java.util.Calendar/getInstance) (.setTime (java.util.Date. 1393632000000))) java.util.Calendar/HOUR_OF_DAY) (.getTime (.parse (java.text.SimpleDateFormat. "dd-MM-yyyy HH:mm:ss") "24-03-2006 15:49:00")) (.getTimezoneOffset (java.util.Date. 0))]'
+tzmachine_out="$(unset TZ; $jolt -e "$tzmachine_expr" 2>&1 | tail -1)"
+tzmachine_ref="$(TZ="$machine_zone" $jolt -e "$tzmachine_expr" 2>&1 | tail -1)"
+case "$tzmachine_out" in
+  "[\"$machine_zone\" "*)
+    if [ "$tzmachine_out" = "$tzmachine_ref" ]; then pass=$((pass + 1))
+    else echo "  FAIL: default zone with TZ unset differs from TZ=$machine_zone: $tzmachine_out vs $tzmachine_ref"; fails=$((fails + 1)); fi ;;
+  *) echo "  FAIL: default zone with TZ unset is not the machine's ($machine_zone): $tzmachine_out"; fails=$((fails + 1)) ;;
+esac
+
+# A set but empty TZ is UTC (libc's reading), not the machine's zone; a
+# registered provider answers ahead of the machine lookup, and TZ beats both.
+tzdefault_out="$(TZ= $jolt -e '[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))]' 2>&1 | tail -1)"
+tzprov_out="$(unset TZ; $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) [(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))])' 2>&1 | tail -1)"
+tzprovtz_out="$(TZ=UTC $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault)))' 2>&1 | tail -1)"
+if [ "$tzdefault_out" = '["UTC" "00:00 UTC"]' ] && [ "$tzprov_out" = '["Asia/Tokyo" "09:00 JST"]' ] && [ "$tzprovtz_out" = '"UTC"' ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: default zone without TZ is UTC, then the provider's: $tzdefault_out"
+  echo "  FAIL: empty TZ is UTC, provider over the machine, TZ over both: $tzdefault_out / $tzprov_out / $tzprovtz_out"
   fails=$((fails + 1))
 fi
 
@@ -2377,6 +2400,11 @@ check '(do (jolt.host/load-string "(ns nes.b) (defn h [] 2)" "/tmp/nes/b.clj") [
 check '(try (load-string "1" "/tmp/nes/c.clj") :no-throw (catch Throwable _ :arity))' ':arity'
 check '(do (require (quote jolt.nrepl)) (jolt.nrepl/evaluate "(ns nes.d) (defn k [] 3)" "user" {:load true :file "/tmp/nes/d.clj"}) (:file (meta (resolve (quote nes.d/k)))))' '"/tmp/nes/d.clj"'
 check '(do (require (quote jolt.nrepl)) ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "(ns nes.e) (defn m [] 4)" "file-path" "/tmp/nes/e.clj" "file-name" "e.clj" :reply (fn [_])}) (:file (meta (resolve (quote nes.e/m)))))' '"/tmp/nes/e.clj"'
+# A third argument names the source, as Compiler.load's sourceName: *source-path*
+# is that name, nil included. The load-file op passes the request's file-name, as
+# JVM nREPL does, rather than a name cut from file-path.
+check '[(jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj" "zz.clj") (jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj" nil) (jolt.host/load-string "[*file* *source-path*]" "src/nes/b.clj" "b2.clj")]' '["zz.clj" nil ["src/nes/b.clj" "b2.clj"]]'
+check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "[*file* *source-path*]" "file-path" "src/nes/f.clj" "file-name" "zz.clj" :reply #(swap! sent conj %)}) ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "[*file* *source-path*]" "file-path" "/tmp/nes/g.clj" :reply #(swap! sent conj %)}) (keep #(get % "value") @sent)))' '("[\"src/nes/f.clj\" \"zz.clj\"]" "[\"/tmp/nes/g.clj\" nil]")'
 check '(do (require (quote jolt.nrepl)) (let [stop (with-out-str (def st (jolt.nrepl/start 0 nil {:port-file nil}))) port (:port (meta st)) s (java.net.Socket. "127.0.0.1" (int port)) out (.getOutputStream s) in (.getInputStream s) code "(zqx-undefined 1)" msg (str "d4:code" (count code) ":" code "2:op4:evale") buf (byte-array 4096)] (.write out (.getBytes msg "ISO-8859-1")) (Thread/sleep 500) (let [n (.read in buf) r (String. buf 0 (max 0 n) "ISO-8859-1")] (.close s) (st) [(boolean (re-find #"Syntax error compiling at \(REPL:1:1\)\.\nUnable to resolve symbol: zqx-undefined in this context\n" r)) (boolean (re-find #"2:ex45:class clojure\.lang\.Compiler\$CompilerException" r)) (boolean (re-find #"5:value" r))])))' '[true true false]'
 # The err text is the JVM's: jolt's "(did you mean …?)" stays on :err and the
 # exception's message, and is left out of err->msg.

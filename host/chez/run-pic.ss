@@ -204,4 +204,39 @@
       (gate-check "PIC over eligible impl still uses the PIC path" (gate-sub? e "jolt-pic-empty") #t)
       (gate-check "PIC over eligible impl never emits devirt-resolve-fl" (gate-sub? e "devirt-resolve-fl") #f))))
 
+;; ---- :extend-via-metadata: a call the receiver's type alone cannot answer -------
+;; A protocol defined with :extend-via-metadata true consults the value's metadata
+;; between the type's own impls and extend's, which only its method shim does
+;; (protocol-resolve-meta). An optimizing compile must therefore leave the call to
+;; the shim: neither a PIC nor a devirtualized resolve may stand in for it, or a
+;; built binary answers the extended impl, or a dispatch miss, where the JVM (and
+;; jolt run) answer the metadata's.
+(let* ((set-record-shapes!    (var-deref "jolt.passes.types" "set-record-shapes!"))
+       (set-protocol-methods! (var-deref "jolt.passes.types" "set-protocol-methods!"))
+       (run-passes            (var-deref "jolt.passes" "run-passes")))
+  (define (opt-emit src)
+    (set-optimize! #t)
+    (set-record-shapes! U (chez-record-shapes-map))
+    (set-protocol-methods! U (chez-protocol-methods-map))
+    (let ((r ((var-deref "jolt.backend-scheme" "emit")
+              (run-passes (analyze (make-analyze-ctx "user") (jolt-ce-read src))
+                          (make-analyze-ctx "user") U))))
+      (set-optimize! #f)
+      r))
+  (evals "(defprotocol MP :extend-via-metadata true (mp [x]))")
+  (evals "(defrecord ME [a])")
+  (evals "(extend-protocol MP ME (mp [_] :extended))")
+  (let ((e (opt-emit "(defn mp-any [x] (mp x))")))
+    (gate-check "via-metadata call emits no PIC" (gate-sub? e "jolt-pic") #f)
+    (run-emit e)
+    (gate-check "...and answers a vector's metadata impl"
+                (jolt-final-str (evals "(pr-str (mp-any (with-meta [1] {`mp (fn [_] :meta)})))")) ":meta")
+    (gate-check "...and a record's metadata ahead of extend"
+                (jolt-final-str (evals "(pr-str (mp-any (with-meta (->ME 1) {`mp (fn [_] :meta)})))")) ":meta"))
+  (let ((e (opt-emit "(defn mp-rec [] (mp (with-meta (->ME 1) {`mp (fn [_] :meta)})))")))
+    (gate-check "via-metadata call on a proven record does not devirtualize" (gate-sub? e "devirt-resolve") #f)
+    (run-emit e)
+    (gate-check "...and answers the metadata impl"
+                (jolt-final-str (evals "(pr-str (mp-rec))")) ":meta")))
+
 (gate-summary "pic")
