@@ -211,6 +211,9 @@
                          (cond
                            ((unbox race-stop) (void))
                            ((fx>? (unbox race-gen) seen)
+                            ;; pairs with main's release before the bump: the
+                            ;; target and the zeroed count are read after it
+                            (memory-order-acquire)
                             (let ((g (unbox race-gen)))   ; the round being served
                               (let ((f (unbox race-target)))
                                 (when f (sa-fiber-resume f)))
@@ -234,11 +237,20 @@
     (sa-fiber-run-all)                        ; runs it up to the park
     (set-box! race-target f)
     (set-box! race-done 0)
+    ;; THE BUMP PUBLISHES THE TWO STORES ABOVE, so it goes after a release fence.
+    ;; x86 keeps stores in order and never needed it; arm64 does not, and there a
+    ;; worker could see the new generation and still read the target or the count
+    ;; from the round before. A stale count is a report lost or doubled, so
+    ;; race-done never lands on RACE-N and the await runs out: the Android
+    ;; (bionic) shard's occasional "every round released every resumer" failure,
+    ;; and 1 run in 5 on an M1 Pro with RACE-ROUNDS at 200000.
+    (memory-order-release)
     (set-box! race-gen (fx+ 1 (unbox race-gen)))   ; release all RACE-N at once
     (let await ((n 0))
       (cond ((fx=? RACE-N (unbox race-done)) (void))
             ((fx>? n RACE-AWAIT-LIMIT) (set! race-stuck #t))
             (else (await (fx+ n 1)))))
+    (memory-order-acquire)                    ; the workers' resumes, before rq-length
     (unless (fx=? 1 (rq-length race-c)) (set! race-bad (fx+ race-bad 1)))
     (sa-fiber-run-all)
     (if (eq? 'done (jolt-fiber-state f))
