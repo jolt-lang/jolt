@@ -327,6 +327,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.5x slower than 0.8.23. A string now answers before the wraps and the arms,
   about 2x faster than 0.8.23 for `nth` and 3x for `get`. fastpathratio rows
   `string-nth` and `string-get` hold it there.
+- **A cast on a double the compiler has proven takes an inline fast path.**
+  `long`, `int`, `short`, `byte`, `char`, `unchecked-long` and `unchecked-int`
+  on an operand the numeric pass knows is a double (a `^double` param, an
+  `aget` on `^doubles`, flonum arithmetic) emit a window test and
+  `flonum->fixnum` in place, and call the runtime cast only outside the
+  window: NaN, out-of-range values, the `long` saturation at 2^63 and
+  surrogate or astral chars keep their results and messages. The window
+  bounds are constants the runtime computes at load from its own fixnum
+  limits, so one emitted form is right on 61-bit and 30-bit fixnums.
+  `bench/num_casts.clj`: `(long d)` 41 ms to 18 ms for 2M casts on an M1 Pro,
+  about 2 ms over the same loop on a fixnum; on a 32-bit target (Nintendo
+  Wii, `tpb32b`) `(long x)` in a `^double` fn 6.4 us to 1.1 us. Five corpus
+  rows in typed functions pin the edges. Closes #1492 with #1493.
+
 - **A double inside the fixnum range converts with `flonum->fixnum`.** After
   the flonum-bounds fix below, `long`, `int`, `short`, `byte`, `char`,
   `unchecked-long` and `unchecked-int` on a double still ended in a generic
