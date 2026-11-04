@@ -289,7 +289,9 @@
 
 ;; the sets really do differ — a guard wider than its own fast path would reject
 ;; arms that are perfectly legal
-(ok "get guard allows string"   (not (raises? (lambda () (get-arm-reject-fast-type! 'test string?)))))
+(ok "get guard allows cseq"     (not (raises? (lambda () (get-arm-reject-fast-type! 'test cseq?)))))
+;; get answers a string ahead of its arms, so an arm claiming one is refused
+(ok "get arm rejects string"    (raises? (lambda () (register-get-arm! string? (lambda (c k d) d)))))
 (ok "count guard allows jrec"   (not (raises? (lambda () (count-arm-reject-fast-type! 'test jrec?)))))
 (ok "seq guard allows jrec"     (not (raises? (lambda () (seq-arm-reject-fast-type! 'test jrec?)))))
 ;; compare's nil clauses are single-sided and answer correctly for EVERY type, so
