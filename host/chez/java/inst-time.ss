@@ -581,37 +581,91 @@
                 (> (tz-offset-ms self (ms-of d))
                    (* 1000 (tz-raw-offset-seconds (tz-id self))))))))
 
-;; The default zone: TZ from the process's own environment (a leading colon is
-;; the POSIX file form; a zoneinfo path is read for the zone name it ends in),
-;; else what a registered provider answers, else UTC. Core reads no system file
-;; for this. Which zone a machine is in lives in /etc/localtime or
-;; /etc/timezone, and looking there is I/O the program never asked for and a
-;; layout assumption core does not make; jolt.time knows how to find it (its
-;; ZoneId/systemDefault) and registers that lookup as the provider when it
-;; loads, so with the library present core and java.time name one zone, and
-;; without it a zone-less format is UTC. Not cached: a dumped image must not
-;; bake a build machine's zone in, and this is asked on the way into a format,
-;; not in a loop.
+;; The default zone is the machine's, as the JVM's is: TZ from the process's
+;; own environment (a leading colon is the POSIX file form; a zoneinfo path is
+;; read for the zone name it ends in; set but empty is UTC, which is how libc
+;; reads it), else what a registered provider answers, else the zone the
+;; system's own setting names, else UTC.
+;;
+;; The system setting is read where libc reads it: /etc/localtime is a link
+;; into the tzdata tree on macOS and every mainstream Linux, so one readlink
+;; names the zone; a link chain the single readlink stops short of resolves
+;; through realpath, and Debian derivatives that copy the file instead keep the
+;; name in /etc/timezone. A Windows build has none of these and stays on UTC.
+;;
+;; This used to stop at TZ-or-UTC and leave the machine lookup to jolt.time,
+;; which registered it as the provider when it loaded. That made the default
+;; zone depend on load order: a zone-less SimpleDateFormat parsed in UTC until
+;; some java.time class happened to be touched, and in the machine's zone
+;; after, in one process.
+;;
+;; The machine lookup is remembered for the process, as the JVM's
+;; TimeZone.getDefault is: it costs a readlink, and this is asked on every
+;; deprecated Date getter. It is a plain top-level variable, so it starts empty
+;; in every process (the runtime's top level runs at each boot) and no binary
+;; or dumped image carries a build machine's zone. TZ and the provider are
+;; still asked every time, so setting either later takes effect.
 (define default-zone-provider #f)
 (def-var! "jolt.host" "set-default-zone-provider!"
   (lambda (f) (set! default-zone-provider (if (jolt-nil? f) #f f)) jolt-nil))
+;; The IANA name inside a tzdata path, after its LAST /zoneinfo/: macOS
+;; interposes a versioned directory (/var/db/timezone/tz/2026c.1.0/zoneinfo/…)
+;; and a name may carry its own slashes (America/Argentina/Buenos_Aires).
+(define (tz-zoneinfo-name p)
+  (and (string? p)
+       (let ((n (string-length p)) (m "zoneinfo/"))
+         (let loop ((i (- n 9)))
+           (cond ((< i 0) #f)
+                 ((and (string=? (substring p i (+ i 9)) m)
+                       (or (= i 0) (char=? (string-ref p (- i 1)) #\/)))
+                  (and (< (+ i 9) n) (substring p (+ i 9) n)))
+                 (else (loop (- i 1))))))))
 (define (tz-env-zone)
-  (define (after-zoneinfo p)
-    (let ((i (substring-index "zoneinfo/" p)))
-      (and i (let ((z (substring p (+ i 9) (string-length p))))
-               (and (> (string-length z) 0) z)))))
   (let ((tz (getenv "TZ")))
-    (and tz (> (string-length tz) 0)
-         (let ((tz (if (char=? (string-ref tz 0) #\:) (substring tz 1 (string-length tz)) tz)))
-           (and (> (string-length tz) 0)
-                (if (char=? (string-ref tz 0) #\/) (after-zoneinfo tz) tz))))))
+    (and tz
+         (if (= (string-length tz) 0)
+             "UTC"
+             (let ((tz (if (char=? (string-ref tz 0) #\:) (substring tz 1 (string-length tz)) tz)))
+               (and (> (string-length tz) 0)
+                    (if (char=? (string-ref tz 0) #\/) (tz-zoneinfo-name tz) tz)))))))
+(define (tz-etc-timezone)
+  (guard (e (#t #f))
+    (and (file-regular? "/etc/timezone")
+         (let ((line (call-with-input-file "/etc/timezone" get-line)))
+           (and (string? line)
+                (let* ((s (list->string (filter (lambda (c) (not (char-whitespace? c)))
+                                                (string->list line)))))
+                  (and (> (string-length s) 0) s)))))))
+(define (tz-machine-lookup)
+  (or (guard (e (#t #f)) (tz-zoneinfo-name (nio-readlink "/etc/localtime")))
+      (guard (e (#t #f)) (tz-zoneinfo-name (jfile-realpath "/etc/localtime")))
+      (tz-etc-timezone)
+      "UTC"))
+(define tz-machine-zone-memo #f)
+(define (tz-machine-zone)
+  (or tz-machine-zone-memo
+      (let ((z (tz-machine-lookup)))
+        (set! tz-machine-zone-memo z)
+        z)))
 (define (system-tz-id)
   (or (tz-env-zone)
       (and default-zone-provider
            (let ((z (guard (e (#t #f)) (jolt-invoke default-zone-provider))))
              (and (string? z) (> (string-length z) 0) z)))
-      "UTC"))
-(define (default-timezone) (timezone-of (system-tz-id)))
+      (tz-machine-zone)))
+;; The date layer's own reads of the default zone (the deprecated Date getters,
+;; a zone-less SimpleDateFormat or Calendar) share one TimeZone per id, so its
+;; last-offset slot answers a repeated read of one instant instead of a fresh
+;; zone probing libc again each call. TimeZone/getDefault still hands out a
+;; fresh one, as the JVM's clone does.
+(define default-timezone-memo #f)
+(define (default-timezone)
+  (let ((id (system-tz-id)) (tz default-timezone-memo))
+    (if (and tz (string=? (tz-id tz) id))
+        tz
+        (let ((tz (timezone-of id)))
+          (set! default-timezone-memo tz)
+          tz))))
 ;; The zone's short name at an instant, as SimpleDateFormat's z renders it:
 ;; UTC and GMT are themselves, a custom GMT±hh:mm id is its own name, a named
 ;; zone answers through libc ("EST", "BST"), and a zone libc cannot name
@@ -633,7 +687,7 @@
     (- local o2)))
 (define timezone-statics
   (list (cons "getTimeZone" timezone-of)
-        (cons "getDefault" (lambda () (default-timezone)))))
+        (cons "getDefault" (lambda () (timezone-of (system-tz-id))))))
 (register-class-statics! "TimeZone" timezone-statics)
 (register-class-statics! "java.util.TimeZone" timezone-statics)
 

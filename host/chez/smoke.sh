@@ -1687,14 +1687,37 @@ else
   fails=$((fails + 1))
 fi
 
-# Core reads no system file for its default zone: with TZ unset and no provider
-# registered it is UTC on every machine; a provider (jolt.time registers its
-# machine-zone lookup) is consulted before that; TZ wins over both.
-tzdefault_out="$(unset TZ; $jolt -e '[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0)) (do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault))) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))]' 2>&1 | tail -1)"
-if [ "$tzdefault_out" = '["UTC" "00:00 UTC" "Asia/Tokyo" "09:00 JST"]' ]; then
+# The default zone is the machine's, as on the JVM: TZ when set (empty TZ is
+# UTC, as libc reads it), else a registered provider, else the zone the
+# system's /etc/localtime link (or /etc/timezone) names, else UTC. It was UTC
+# here unless jolt.time happened to load first, so a zone-less
+# SimpleDateFormat parse moved by five hours depending on whether some
+# java.time class had been touched. The machine's zone is worked out the way
+# libc finds it, and a run with TZ unset must match one with TZ naming it.
+machine_zone_link="$(readlink /etc/localtime 2>/dev/null)"
+case "$machine_zone_link" in
+  (*/zoneinfo/*) machine_zone="${machine_zone_link##*/zoneinfo/}" ;;
+  (*) if [ -f /etc/timezone ]; then machine_zone="$(tr -d ' \n' < /etc/timezone)"; else machine_zone=UTC; fi ;;
+esac
+tzmachine_expr='[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm zzz Z") (java.util.Date. 1393632000000)) (.getHours (java.util.Date. 1393632000000)) (.get (doto (java.util.Calendar/getInstance) (.setTime (java.util.Date. 1393632000000))) java.util.Calendar/HOUR_OF_DAY) (.getTime (.parse (java.text.SimpleDateFormat. "dd-MM-yyyy HH:mm:ss") "24-03-2006 15:49:00")) (.getTimezoneOffset (java.util.Date. 0))]'
+tzmachine_out="$(unset TZ; $jolt -e "$tzmachine_expr" 2>&1 | tail -1)"
+tzmachine_ref="$(TZ="$machine_zone" $jolt -e "$tzmachine_expr" 2>&1 | tail -1)"
+case "$tzmachine_out" in
+  "[\"$machine_zone\" "*)
+    if [ "$tzmachine_out" = "$tzmachine_ref" ]; then pass=$((pass + 1))
+    else echo "  FAIL: default zone with TZ unset differs from TZ=$machine_zone: $tzmachine_out vs $tzmachine_ref"; fails=$((fails + 1)); fi ;;
+  *) echo "  FAIL: default zone with TZ unset is not the machine's ($machine_zone): $tzmachine_out"; fails=$((fails + 1)) ;;
+esac
+
+# A set but empty TZ is UTC (libc's reading), not the machine's zone; a
+# registered provider answers ahead of the machine lookup, and TZ beats both.
+tzdefault_out="$(TZ= $jolt -e '[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))]' 2>&1 | tail -1)"
+tzprov_out="$(unset TZ; $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) [(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))])' 2>&1 | tail -1)"
+tzprovtz_out="$(TZ=UTC $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault)))' 2>&1 | tail -1)"
+if [ "$tzdefault_out" = '["UTC" "00:00 UTC"]' ] && [ "$tzprov_out" = '["Asia/Tokyo" "09:00 JST"]' ] && [ "$tzprovtz_out" = '"UTC"' ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: default zone without TZ is UTC, then the provider's: $tzdefault_out"
+  echo "  FAIL: empty TZ is UTC, provider over the machine, TZ over both: $tzdefault_out / $tzprov_out / $tzprovtz_out"
   fails=$((fails + 1))
 fi
 
