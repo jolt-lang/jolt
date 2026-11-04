@@ -787,14 +787,17 @@
                       ;; tail call: an eof placeholder read consumes no ordinal.
                       (if (rdr-eof? form)
                           (loop j ord last (if w (ce-advance src i j (car pos) (cdr pos)) pos))
-                          (let ((v (jolt-load-run-form w pos (lambda ()
+                          ;; data readers run at the read, outside the wrap: a reader fn's throw is a
+                          ;; read error, not the form's run
+                          (let* ((form (if data-readers-active (ldr-apply-readers form) form))
+                                 (v (jolt-load-run-form w pos (lambda ()
                             (when (getenv "JOLT_TRACE_LOAD")
                               (display "  [load-form] " (current-error-port))
                               (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
                             (parameterize ((jolt-load-frames
                                              (cons (make-load-frame path ord (chez-current-ns))
                                                    (jolt-load-frames))))
-                              (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
+                              (jolt-compile-eval-form form
                                                       (chez-current-ns)))))))
                             (loop j (fx+ ord 1) v (if w (ce-advance src i j (car pos) (cdr pos)) pos))))))))))))))))
 

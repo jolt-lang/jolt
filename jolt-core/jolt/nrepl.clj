@@ -367,7 +367,7 @@
            ;; there names it (its file's base name)
            wd (when (= 'clojure.lang.Compiler$CompilerException (:type (first (:via m))))
                 (:data (first (:via m))))
-           t (if (and run-phase? (nil? floc) (:clojure.error/line wd))
+           t (if (and run-phase? (nil? floc) (nil? (:clojure.error/symbol t)) (:clojure.error/line wd))
                (cond-> (assoc t :clojure.error/line (:clojure.error/line wd))
                  (:clojure.error/source wd)
                  (assoc :clojure.error/source (last (str/split (:clojure.error/source wd) #"/"))))

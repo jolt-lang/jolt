@@ -948,11 +948,11 @@
                             (loop j
                                   (if (rdr-eof? form)
                                       result
-                                      (jolt-load-run-form w pos
-                                        (lambda ()
-                                          (jolt-compile-eval-form
-                                           (if drl (ldr-apply-readers form) form)
-                                           (chez-current-ns)))))
+                                      ;; data readers run at the read, outside the wrap
+                                      (let ((form (if drl (ldr-apply-readers form) form)))
+                                        (jolt-load-run-form w pos
+                                          (lambda ()
+                                            (jolt-compile-eval-form form (chez-current-ns))))))
                                   (if w (ce-advance s k j (car pos) (cdr pos)) pos))
                             result))))))))))))
 
