@@ -288,6 +288,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`long`, `int`, `short`, `byte` and `char` on a double, and `unchecked-long`
+  and `unchecked-int` on a double, range-check against flonum bounds instead
+  of bignum ones.** The checked casts compared the flonum against the type's
+  bounds held as exact integers, and for `long` those (+-2^63) are bignums on
+  every Chez, so each cast paid two flonum-vs-bignum compares and a second
+  exact-vs-bignum check after truncation; `unchecked-long` saturated through the
+  same compares (and `unchecked-int` through exact ones). `bench/num_casts.clj`
+  (new): `(long d)` 398 ms to 62 ms for 2M casts on an M1 Pro,
+  `(unchecked-long d)` 68 ms to 50 ms; on a 32-bit target (Nintendo Wii,
+  `tpb32b`) `(long 123.7)` 135.5 us to 27.0 us. One value changes, to match
+  Clojure's `RT.longCast(double)`: `(long 9.223372036854776E18)` (2^63 as a
+  double) now returns `Long/MAX_VALUE` instead of throwing. Eight new corpus
+  rows pin the boundaries.
+
 - **`map->R` is one pass over the map.** #1479 sped up a map holding only
   field keys but made one with extension keys 1.2-1.3x slower than 0.8.23; a
   single fold that skips the field keys is faster in both cases (one extension:
@@ -352,6 +366,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A diagnostic in text evaluated under a source path shows that text**
   (`jolt.host/eval-string`/`load-string` with a path, nREPL `load-file` of an
   unsaved buffer). Its snippet was read from the file on disk.
+- **The default time zone is the machine's, whatever has loaded.** With `TZ`
+  unset, core answered UTC until jolt.time loaded and registered the
+  machine's zone, so a zone-less `SimpleDateFormat` parse moved by hours
+  depending on whether some `java.time` class had been touched first. Core
+  now reads the zone where libc does (the `/etc/localtime` link, else
+  `/etc/timezone`), so `TimeZone/getDefault`, `SimpleDateFormat`, `Calendar`
+  and the deprecated `Date` getters agree with the JVM. An empty `TZ` is UTC.
 - **A surrogate unit is a value, and the joiners pair it (#1454).**
   `(char 0xD83D)` used to throw; it is now a `Character` holding the unit, as a
   `char[]` element and `Character/toChars` are, and `str`, StringBuilder and

@@ -3443,10 +3443,7 @@
   ;; extension point — jolt-lang/time owns java.util.Locale and registers them
   ;; (RFC 0008). These rows register their own ids, proving the seam end to end.
   ;; Expectations read off reference JVM Clojure 1.12.5; 2014-03-01 is a Saturday.
-  ;; Guard: a numeric-only pattern must not move when the name tables do. Not a
-  ;; corpus row — jolt's SimpleDateFormat formats in UTC while the JVM's uses the
-  ;; machine's default zone, so the JVM side of this is machine-dependent and
-  ;; uncertifiable (see the :documented entry in known-divergences).
+  ;; Guard: a numeric-only pattern must not move when the name tables do.
   {:suite "date names" :expr "(.format (doto (java.text.SimpleDateFormat. \"yyyy-MM-dd HH:mm\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000))" :expected "\"2014-03-01 00:00\""}
   {:suite "date names" :expr "(do (jolt.host/register-extension! :date-names \"fr-test\" {:months [\"janvier\" \"février\" \"mars\" \"avril\" \"mai\" \"juin\" \"juillet\" \"août\" \"septembre\" \"octobre\" \"novembre\" \"décembre\"] :months-short [\"janv.\" \"févr.\" \"mars\" \"avr.\" \"mai\" \"juin\" \"juil.\" \"août\" \"sept.\" \"oct.\" \"nov.\" \"déc.\"] :days [\"lundi\" \"mardi\" \"mercredi\" \"jeudi\" \"vendredi\" \"samedi\" \"dimanche\"] :days-short [\"lun.\" \"mar.\" \"mer.\" \"jeu.\" \"ven.\" \"sam.\" \"dim.\"]}) [(.format (doto (java.text.SimpleDateFormat. \"MMMM\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000)) (.format (doto (java.text.SimpleDateFormat. \"EEE\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000)) (.format (doto (java.text.SimpleDateFormat. \"EEEE\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000)) (.format (doto (java.text.SimpleDateFormat. \"yyyy-MM-dd\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000))])" :expected "[\"mars\" \"sam.\" \"samedi\" \"2014-03-01\"]"}
   ;; the ctor renders the locale argument to an id rather than naming a class —
