@@ -339,7 +339,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bench/num_casts.clj`: `(long d)` 41 ms to 18 ms for 2M casts on an M1 Pro,
   about 2 ms over the same loop on a fixnum; on a 32-bit target (Nintendo
   Wii, `tpb32b`) `(long x)` in a `^double` fn 6.4 us to 1.1 us. Five corpus
-  rows in typed functions pin the edges. Closes #1492 with #1493.
+  rows in typed functions pin the edges. `char` now compiles as a cast in
+  every context, as `byte` and `short` already did (a direct call to the
+  runtime cast rather than a var call), and the build's type inference
+  types its result as a char. Closes #1492 with #1493.
 
 - **A double inside the fixnum range converts with `flonum->fixnum`.** After
   the flonum-bounds fix below, `long`, `int`, `short`, `byte`, `char`,

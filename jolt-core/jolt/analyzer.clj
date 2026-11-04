@@ -2212,9 +2212,10 @@
           (= hname "byte")   {:kind :long   :cast-fn "jolt-byte-cast"}
           (= hname "short")  {:kind :long   :cast-fn "jolt-short-cast"}
           ;; char is a cast too, but its answer is not a numeric operand: kind
-          ;; nil, which numeric/an, types.clj's :coerce arm and the back end's
-          ;; cond all read as "no kind". Being a :coerce node is what lets a
-          ;; proven-double operand take the inline window (back end, :fl-arg).
+          ;; nil, which numeric/an and the back end's cond read as "no kind";
+          ;; types.clj's :coerce arm answers :truthy (a char's type) for a cast
+          ;; with no kind, never the operand's type. Being a :coerce node is what
+          ;; lets a proven-double operand take the inline window (:fl-arg).
           (= hname "char")   {:kind nil     :cast-fn "jolt-char"}
           ;; the unchecked casts are casts too: a primitive long/int on the JVM,
           ;; so the result feeds the :long lattice the same way. Their wrap

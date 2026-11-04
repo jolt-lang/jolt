@@ -1562,6 +1562,33 @@ if [ -x "$(dirname "$out")/stray-bin" ]; then
   echo "  FAIL: build produced a binary from a file it could not read"; exit 1
 fi
 
+# (char x) is a :coerce node with no numeric kind (the analyzer's cast table).
+# The types pass, which only a BUILD runs, once answered such a node with its
+# operand's type: (number? (char 97)) folded to true, a char param got a
+# ^double seed from its callers and threw on the first fixnum, and a record
+# field holding a char took the unsafe fl+ (invalid memory reference). jolt run
+# never showed it. The four shapes below are the ones that broke.
+echo "build smoke: a char cast is typed as a char by the build's inference"
+chcast="$(dirname "$out")/chcast"; mkdir -p "$chcast/src/app"
+printf '{}\n' > "$chcast/deps.edn"
+{ echo '(ns app.core)'
+  echo '(defrecord P [c])'
+  echo '(defn f1 [x] (let [c (char x)] [(number? c) (char? c)]))'
+  echo '(defn f2 [^double d] (let [c (char d)] [(number? c) (char? c)]))'
+  echo '(defn kind [x n] (if (pos? n) (kind x (dec n)) (if (char? x) :char :other)))'
+  echo '(defn sumc [p q n] (if (pos? n) (sumc p q (dec n)) (+ (:c p) (:c q))))'
+  echo '(defn -main [& _]'
+  echo '  (println (f1 97) (f2 97.0) (kind (char 97.0) 3)'
+  echo '           (try (sumc (->P (char 99.0)) (->P (char 100.0)) 3) (catch ClassCastException _ :cce))))'
+} > "$chcast/src/app/core.clj"
+JOLT_PWD="$chcast" "$joltabs" build -m app.core -o "$(dirname "$out")/chcast-bin" > /dev/null 2>&1 || { echo "  FAIL: the char-cast app did not build"; exit 1; }
+chcast_out="$(cd /tmp && "$(dirname "$out")/chcast-bin" 2>&1 || true)"
+if [ "$chcast_out" != "[false true] [false true] :char :cce" ]; then
+  echo "  FAIL: a built (char x) is not typed as a char"
+  echo "--- expected ---"; echo "[false true] [false true] :char :cce"
+  echo "--- got ---"; echo "$chcast_out"; exit 1
+fi
+
 # A set literal mixing an auto keyword with a plain one of the same alias text
 # must BUILD. ::o/x and :o/x are distinct, but the require scan reads in scan mode,
 # where an unresolved alias keeps its text, so both read as :o/x — and the
