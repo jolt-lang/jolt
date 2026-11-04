@@ -213,7 +213,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`instance? java.sql.Timestamp`, `.getNanos`) and prints its fraction to
   nine digits; a `java.sql.Date` prints as `#inst` instead of `#object`, and
   equals the `java.util.Date` at its instant. `TimeZone/setDefault` sets the
-  default zone. A zone's offset is remembered over the stretch it holds, so
+  default zone; a provider registered with
+  `jolt.host/set-default-zone-provider!` now answers only where the system
+  names no zone. A zone's offset is remembered over the stretch it holds, so
   reading dates in order (a Date's getters, `SimpleDateFormat`, `str`) asks
   libc once per stretch instead of once per instant.
 

@@ -644,8 +644,11 @@
 ;; The default zone is the machine's, as the JVM's is: TZ from the process's
 ;; own environment (a leading colon is the POSIX file form; a zoneinfo path is
 ;; read for the zone name it ends in; set but empty is UTC, which is how libc
-;; reads it), else what a registered provider answers, else the zone the
-;; system's own setting names, else UTC.
+;; reads it), else the zone the system's own setting names, else what a
+;; registered provider answers, else UTC. TimeZone/setDefault beats all of
+;; them, as on the JVM. The provider is the fallback for a system core cannot
+;; read a zone from; jolt.time registers its own lookup there, which agrees
+;; with core's wherever core finds one, so asking it first only cost a lookup.
 ;;
 ;; The system setting is read where libc reads it: /etc/localtime is a link
 ;; into the tzdata tree on macOS and every mainstream Linux, so one readlink
@@ -716,10 +719,11 @@
 (define (system-tz-id)
   (or tz-default-override
       (tz-env-zone)
+      (tz-machine-zone-found)
       (and default-zone-provider
            (let ((z (guard (e (#t #f)) (jolt-invoke default-zone-provider))))
              (and (string? z) (> (string-length z) 0) z)))
-      (tz-machine-zone)))
+      "UTC"))
 ;; The date layer's own reads of the default zone (the deprecated Date getters,
 ;; a zone-less SimpleDateFormat or Calendar) share one TimeZone per id, so its
 ;; last-offset slot answers a repeated read of one instant instead of a fresh
