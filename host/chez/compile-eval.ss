@@ -873,17 +873,25 @@
 (define (jolt-load-run-form w pos thunk)
   (if (not w)
       (thunk)
-      ;; The guard is the nearest handler now, so the loader's, which records
-      ;; where the throw happened before the stack unwinds, never sees it: record
-      ;; it here. A nested load's handler already has (the innermost wins), and
-      ;; jolt-current-source is still this form's: jolt-enter-form! sets it, and a
-      ;; nested load's binding of it has unwound back to that.
-      (guard (raw ((ce-wraps? raw)
-                   (jolt-note-throw-source! raw)
-                   (jolt-raise-thrown
-                     (ce-load-exception raw (let ((s (vector-ref w 0))) (and (string? s) s))
-                                        (car pos) (cdr pos)))))
-        (thunk))))
+      ;; A handler, not a guard: it decides at the raise, before anything
+      ;; unwinds. A guard whose clause declines re-raises by re-entering the
+      ;; body's continuation, and a namespace load refuses to be re-entered (a
+      ;; nested require's CompilerException came back as "Re-entered the load").
+      ;; The wrapper is raised from the handler, so the stack unwinds once, past
+      ;; the whole load, to whoever catches it. This handler is nearer than the
+      ;; loader's, which records where a throw happened, so it records the
+      ;; original here, where jolt-current-source is still this form's; the
+      ;; loader's skips the wrapper.
+      (with-exception-handler
+        (lambda (raw)
+          (if (ce-wraps? raw)
+              (begin
+                (jolt-note-throw-source! raw)
+                (jolt-raise-thrown
+                  (ce-load-exception raw (let ((s (vector-ref w 0))) (and (string? s) s))
+                                     (car pos) (cdr pos))))
+              (raise-continuable raw)))
+        thunk)))
 
 (define ls-file-cells #f)
 (define (ls-file-name path)

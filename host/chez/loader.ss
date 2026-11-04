@@ -704,9 +704,11 @@
   ;; this load's snippets read the file, not a text eval-string held for it
   (jolt-eval-source-text-forget! path)
   (let ((end (string-length src))
-        ;; a load-file's Compiler.load wrap (rt.ss jolt-load-wrap), for this
-        ;; file's own forms only: bound #f below for whatever they load
-        (w (jolt-load-wrap)))
+        ;; a load-file's or require's Compiler.load wrap (rt.ss jolt-load-wrap),
+        ;; for this file's own forms only: bound #f below for whatever they
+        ;; load. It names the file as *source-path*'s caller sees it: the
+        ;; classpath name for a namespace, the path itself for a load-file.
+        (w (and (jolt-load-wrap) (vector (ldr-source-name path)))))
     ;; parameterize (not a bare set!) so a require nested in this file's ns form
     ;; restores path when control returns to the rest of this file.
     (parameterize ((rdr-source-file path)    ; list forms read here carry :file = path
@@ -2091,6 +2093,13 @@
               (var-cell-dynamic?-set! c #f)
               (var-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c)))))))
       ks was)))
+;; A namespace load from source is RT.load, which is Compiler.load: what a
+;; top-level form's run throws leaves it as a CompilerException naming the file
+;; (compile-eval.ss jolt-load-run-form). A cache hit runs no reader walk to wrap
+;; a form in, but a throw from it is taken for a broken artifact and the
+;; namespace recompiles from source (aot-safe-load-or-recompile), which wraps.
+(define (ldr-wrapping thunk)
+  (parameterize ((jolt-load-wrap (vector #t))) (thunk)))
 (define (aot-safe-load-or-recompile name file source base assumed-now)
   (let ((so (string-append base ".so"))
         (defs (vector name (make-hashtable string-hash string=?))))
@@ -2107,7 +2116,7 @@
       ;; in the same place.
       (aot-undo-captured-defs! defs)
       (let ((ks (force source)))
-        (aot-compile-and-cache name file (cdr ks) (car ks))))
+        (ldr-wrapping (lambda () (aot-compile-and-cache name file (cdr ks) (car ks))))))
     (let ((state (guard (e (else 'corrupt))
                    (aot-complete-reset! name)
                    (parameterize ((aot-loading-file file) (jolt-def-capture defs))
@@ -2178,7 +2187,7 @@
      (parameterize ((aot-dep-sink #f) (io-file-read-sink #f))
        (unless (jolt-load-embedded-fasl! name file)
          ;; embedded fasl registered but failed to load: fall back to source.
-         (load-jolt-file file))))
+         (ldr-wrapping (lambda () (load-jolt-file file))))))
     ((and (aot-cache-enabled?) (not force?) (not (ldr-reload-all?))
           ;; jolt.profile counts code it compiled itself: a cached fasl carries no
           ;; counters, and what an instrumented compile would write to the cache
@@ -2218,12 +2227,13 @@
                     (aot-safe-load-or-recompile name file source base assumed-now)))
            (begin (aot-info (string-append "miss " name))
                   (let ((ks (force source)))
-                    (aot-compile-and-cache name file (cdr ks) (car ks))))))))
+                    (ldr-wrapping (lambda () (aot-compile-and-cache name file (cdr ks) (car ks))))))))))
     (else
      ;; a reload bypasses the cache, and whatever key this process read for the
      ;; namespace before may no longer describe its source
      (when force? (aot-forget-own-key! name))
-     (parameterize ((aot-dep-sink #f) (io-file-read-sink #f)) (load-jolt-file file)))))
+     (parameterize ((aot-dep-sink #f) (io-file-read-sink #f))
+       (ldr-wrapping (lambda () (load-jolt-file file)))))))
 
 ;; Mark a namespace as loaded in both the host hashtable and the *loaded-libs* ref.
 ;; Namespaces defined by the CLI's OWN AOT closure (bld-emit-cli-aot bakes
@@ -3120,7 +3130,7 @@
                     (else (let ((dir (ns-rel-dir (chez-current-ns))))
                             (if (string=? dir "") p (string-append dir "/" p))))))
              (f (resolve-on-roots rel)))
-        (if f (load-jolt-file/restoring-ns f)
+        (if f (ldr-wrapping (lambda () (load-jolt-file/restoring-ns f)))
             (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate resource on source roots: " p)))))
     paths)
   jolt-nil)

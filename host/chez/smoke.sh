@@ -2383,6 +2383,32 @@ check '(do (require (quote jolt.nrepl)) (let [stop (with-out-str (def st (jolt.n
 # snippet, not what the file on disk holds (an editor's unsaved buffer).
 check_loc '(let [f (java.io.File/createTempFile "esnip" ".clj")] (spit f "(ns es)\n\n(defn old-content [] 1)\n") (jolt.host/eval-string "(ns es)\n\n(defn h [] (zqx-snip 1))" (.getPath f)))' ' 3 | (defn h \[\] (zqx-snip 1))'
 check_no '(let [f (java.io.File/createTempFile "esnip" ".clj")] (spit f "(ns es)\n\n(defn old-content [] 1)\n") (jolt.host/eval-string "(ns es)\n\n(defn h [] (zqx-snip 1))" (.getPath f)))' 'old-content'
+# require is RT.load, which wraps the same way, naming the classpath file; a
+# required ns's own failure reaches its requirer's requirer as it is.
+rq="$(mktemp -d)"; mkdir -p "$rq/src/rqa"
+printf '{:paths ["src"]}\n' > "$rq/deps.edn"
+printf '(ns rqa.b)\n\n(/ 1 0)\n' > "$rq/src/rqa/b.clj"
+printf '(ns rqa.c (:require [rqa.b]))\n' > "$rq/src/rqa/c.clj"
+printf '%s\n' '(ns rqa.main (:require [clojure.main]))' '(defn -main [& _]' '  (let [e (try (require (quote rqa.b)) (catch Throwable e e))]' '    (prn [(str (class e)) (ex-message e) (ex-data e) (str (class (ex-cause e))) (str (class (clojure.main/root-cause e)))]))' '  (prn (try (require (quote rqa.b) :reload) (catch ArithmeticException _ :arith) (catch Exception _ :ex))))' > "$rq/src/rqa/main.clj"
+printf '%s\n' '(ns rqa.nest)' '(defn -main [& _] (prn (ex-message (try (require (quote rqa.c)) (catch Throwable e e)))))' > "$rq/src/rqa/nest.clj"
+rq_want='["class clojure.lang.Compiler$CompilerException" "Syntax error macroexpanding at (rqa/b.clj:3:1)." #:clojure.error{:phase :execution, :line 3, :column 1, :source "rqa/b.clj"} "class java.lang.ArithmeticException" "class clojure.lang.Compiler$CompilerException"]
+:ex'
+jx_check "require wraps a form's runtime throw" "$rq_want" \
+         "$(JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.main 2>/dev/null)"
+jx_check "a nested require's wrapper passes through" '"Syntax error macroexpanding at (rqa/b.clj:3:1)."' \
+         "$(JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.nest 2>/dev/null | tail -1)"
+# A namespace the AOT cache holds from a clean load, failing on a later run: the
+# hit throws, the namespace recompiles from source, and that load wraps.
+printf '(ns rqa.env)\n\n(when (System/getenv "RQ_BOOM") (/ 1 0))\n' > "$rq/src/rqa/env.clj"
+printf '%s\n' '(ns rqa.envm)' '(defn -main [& _] (let [e (try (require (quote rqa.env)) :ok (catch Throwable e e))] (prn (if (keyword? e) e [(ex-message e) (str (class (ex-cause e)))]))))' > "$rq/src/rqa/envm.clj"
+jx_check "a clean load fills the cache" ':ok' \
+         "$(JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.envm 2>/dev/null | tail -1)"
+jx_check "a warm hit that throws still wraps" '["Syntax error macroexpanding at (rqa/env.clj:3:1)." "class java.lang.ArithmeticException"]' \
+         "$(RQ_BOOM=1 JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.envm 2>/dev/null | tail -1)"
+rm -rf "$rq"
+# nREPL's err for a load's failure with no frame of the user's names the failing
+# form in the loaded text, from the wrapper: (REPL:2) for line 2 of the string.
+check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "eval" "code" "(load-string \"nil\\n(/ 1 0)\")" :reply #(swap! sent conj %)}) (get (first @sent) "err")))' '"Execution error (ArithmeticException) at (REPL:2).\nDivide by zero\n"'
 # The err text is the JVM's: jolt's "(did you mean …?)" stays on :err and the
 # exception's message, and is left out of err->msg.
 check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(mapp inc [1])" "user")] [(:err-msg r) (boolean (re-find #"did you mean map" (:err r)))]))' '["Syntax error compiling at (REPL:1:1).\nUnable to resolve symbol: mapp in this context\n" true]'
