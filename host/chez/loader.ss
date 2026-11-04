@@ -280,7 +280,9 @@
 ;; file now have no reader. The load's position does not outlive the warning:
 ;; load-jolt-file* unwinds it, so the next error in the process is not reported
 ;; "at" this namespace's failing form.
-(define (ldr-warn-reader-ns-failed! ns-name e readers)
+(define (ldr-warn-reader-ns-failed! ns-name e0 readers)
+  ;; the throw the load's CompilerException wraps, as the uncaught report names it
+  (define e (jolt-load-wrap-origin e0))
   (when (jolt-warnings?)
     (let ((port (current-error-port))
           (msg (guard (_ (#t "(unprintable error)"))

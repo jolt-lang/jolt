@@ -321,17 +321,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`load-string`, `load-reader` and `load-file` raise a
+- **`require`, `load`, `load-string`, `load-reader` and `load-file` raise a
   `Compiler$CompilerException` for what a form's run throws**, as
-  `Compiler.load` does: "Syntax error macroexpanding at ([source:]line:col).",
-  ex-data `{:clojure.error/phase :execution, :line, :column}` (and `:source`
-  for a file), the throw as its cause, at the reader's position before the
-  form. A `(catch ArithmeticException ...)` around `load-string` no longer
-  catches it, as on the JVM. `eval`, `jolt.host/eval-string` and `require` are
-  unchanged, and the uncaught report still names the original throw.
-  `clojure.main/root-cause` stops at the wrapper, so nREPL `load-file` replies
-  `ex`/`root-ex` `Compiler$CompilerException` for a runtime error, as JVM nREPL
-  does.
+  `Compiler.load` and `RT.load` do: "Syntax error macroexpanding at
+  ([source:]line:col).", ex-data `{:clojure.error/phase :execution, :line,
+  :column}` (and `:source`: the classpath file for a namespace, the path for
+  `load-file`), the throw as its cause, at the reader's position before the
+  form. A `(catch ArithmeticException ...)` around a `require` or `load-string`
+  no longer catches it, as on the JVM; read the cause. A nested require's
+  wrapper passes through unchanged. `eval` and `jolt.host/eval-string` are
+  unchanged, and the uncaught report still names the original throw, its
+  location and its trace. `clojure.main/root-cause` stops at the wrapper, so
+  nREPL replies `ex`/`root-ex` `Compiler$CompilerException` for such an error,
+  as JVM nREPL does, and its `err` names the failing form's file and line when
+  no frame does ("at (b.clj:3)" where it said "at (REPL:1)").
 - **A diagnostic in text evaluated under a source path shows that text**
   (`jolt.host/eval-string`/`load-string` with a path, nREPL `load-file` of an
   unsaved buffer). Its snippet was read from the file on disk.
