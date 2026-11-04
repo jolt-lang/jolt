@@ -3286,13 +3286,16 @@
     jolt-nil))
 (def-var! "clojure.core" "__register-str!"
   (lambda (pred render)
-    (register-str-render! (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))
-                          (lambda (x) (seam-invoke1 render x)))
+    (let ((p (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))))
+      ;; asked live in every narrowed print walk (print-arms-for, host-static.ss)
+      (print-arm-live! p)
+      (register-str-render! p (lambda (x) (seam-invoke1 render x))))
     jolt-nil))
 (def-var! "clojure.core" "__register-pr!"
   (lambda (pred render)
-    (register-pr-arm! (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))
-                      (lambda (x) (seam-invoke1 render x)))
+    (let ((p (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))))
+      (print-arm-live! p)
+      (register-pr-arm! p (lambda (x) (seam-invoke1 render x))))
     jolt-nil))
 (def-var! "clojure.core" "__register-compare!"
   (lambda (pred handler)

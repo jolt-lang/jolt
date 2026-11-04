@@ -233,7 +233,7 @@
   (or (and pr-user-method-render (pr-user-method-render x))
       (if (pr-fast-type? x)
           (jolt-pr-readable-base x)
-          (let loop ((as jolt-pr-readable-arms))
+          (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
             (cond ((null? as) (jolt-pr-readable-base x))
                   (((caar as) x) ((cdar as) x))
                   (else (loop (cdr as))))))))
