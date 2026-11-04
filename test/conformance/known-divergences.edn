@@ -947,6 +947,20 @@
            :jvm "true"
            :jolt "false"}
    :note "Inherent to tail calls, not a missing shim. spec's instrument still throws the same conform ExceptionInfo with the same explain-data — only the ::caller annotation is absent. Surfaces in spec.alpha's clojure.test-clojure.instr suite."}
+  ;; Timestamp.equals refuses anything that is not a Timestamp, while
+  ;; Date.equals takes any Date at the same instant, so on the JVM
+  ;; (= date ts) is true and (= ts date) false, and a set or map holding both
+  ;; answers by which one went in first. jolt answers true both ways: = is
+  ;; symmetric for every value, which hash collections rely on.
+  {:category :host-model
+   :behavior "(= (java.sql.Timestamp. 0) (java.util.Date. 0))"
+   :jvm "false — Timestamp.equals takes only a Timestamp, though (= date ts) is true"
+   :jolt "true — the same instant, either way round"
+   :check {:expr "(= (java.sql.Timestamp. 0) (java.util.Date. 0))"
+           :jvm "false"
+           :jolt "true"}
+   :why "the JVM's Timestamp.equals breaks the symmetry Object.equals asks for (its own javadoc says so); jolt's = stays symmetric"
+   :note "(= (java.util.Date. 0) (java.sql.Timestamp. 0)) is true on both. A java.sql.Date and a Date at one instant are equal both ways on both."}
   ;; clojure.instant's third reader. jolt's instants are millisecond-based, so a
   ;; java.sql.Timestamp keeps its milliseconds and the digits past them are
   ;; gone. It is its own class, prints as the JVM's (nine fraction digits) and

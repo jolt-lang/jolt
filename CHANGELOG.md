@@ -211,8 +211,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concatenation in messages. `pr`, `prn`, `print`, `println` and EDN still
   print `#inst "…"`, as on the JVM. A Timestamp is now its own class
   (`instance? java.sql.Timestamp`, `.getNanos`) and prints its fraction to
-  nine digits; a `java.sql.Date` prints as `#inst` instead of `#object`.
-  `TimeZone/setDefault` sets the default zone.
+  nine digits; a `java.sql.Date` prints as `#inst` instead of `#object`, and
+  equals the `java.util.Date` at its instant. `TimeZone/setDefault` sets the
+  default zone. A zone's offset is remembered over the stretch it holds, so
+  reading dates in order (a Date's getters, `SimpleDateFormat`, `str`) asks
+  libc once per stretch instead of once per instant.
 
 - **`future` runs on a pooled executor**, as the JVM's solo executor does,
   instead of a fresh OS thread per call; a wait spins briefly before parking.

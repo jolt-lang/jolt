@@ -342,8 +342,16 @@
           ((jolt=2 k kw-ms) (jinst-ms coll))
           (else d))))
 
-(register-eq-arm! (lambda (a b) (or (jinst? a) (jinst? b)))
-                  (lambda (a b) (and (jinst? a) (jinst? b) (= (jinst-ms a) (jinst-ms b)))))
+;; Every java.util.Date -- a #inst, a Timestamp, a java.sql.Date -- is equal to
+;; another at the same instant, as Date.equals answers. The JVM's
+;; Timestamp.equals refuses a non-Timestamp, which makes (= ts date) false
+;; while (= date ts) is true; jolt keeps = symmetric (hash collections
+;; depend on it), a documented divergence.
+(define (date-value? x) (or (jinst? x) (and (jhost? x) (string=? (jhost-tag x) "sql-date"))))
+(define (date-value-ms x) (if (jinst? x) (jinst-ms x) (vector-ref (jhost-state x) 0)))
+(define (date-values=? a b)
+  (and (date-value? a) (date-value? b) (= (date-value-ms a) (date-value-ms b))))
+(register-eq-arm! (lambda (a b) (or (jinst? a) (jinst? b))) date-values=?)
 
 (register-hash-arm! jinst? (lambda (x) (jolt-hash (jinst-ms x))))
 
@@ -361,10 +369,7 @@
 
 ;; java.sql.Date shim values (mk-sql-date jhosts) are equal by kind + epoch-ms.
 (define-jhost-tag-pred (time-jhost? t) (string=? t "sql-date"))
-(register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b)))
-                  (lambda (a b) (and (time-jhost? a) (time-jhost? b)
-                                     (string=? (jhost-tag a) (jhost-tag b))
-                                     (= (ms-of a) (ms-of b)))))
+(register-eq-arm! (lambda (a b) (or (time-jhost? a) (time-jhost? b))) date-values=?)
 (register-hash-arm! time-jhost? (lambda (x) (jolt-hash (ms-of x))))
 
 ;; A Timestamp prints its fraction to nanoseconds, as clojure.instant's
@@ -564,25 +569,52 @@
         (and a b (min a b)))
       0))
 
-;; state: #(id last), last = (epoch-second . offset-seconds) of the most recent
-;; lookup or #f. A SimpleDateFormat formatting the same instant repeatedly (a
-;; loop over one date, a log line's timestamp) reads its offset off the pair
-;; instead of taking the libc probe's mutex and memo table each time; the pair
-;; is one immutable cons written in one slot, so a reader on another thread
-;; sees a whole (second . offset) or the previous one, never a torn mix.
-;; state: #(id last-offset last-abbrev); see below for the two caches.
+;; state: #(id period last-abbrev). period is #(from to offset) or #f: the
+;; seconds [from, to] over which this zone's offset is known to be `offset`.
+;; A lookup inside it asks libc nothing, so a log line's timestamp, a loop
+;; over dates or a Date's toString pays for the zone once per stretch rather
+;; than per instant. The period is one immutable vector written in one slot,
+;; so a reader on another thread sees a whole period or the previous one.
+;;
+;; It only grows from what was asked. A lookup outside it probes libc once, as
+;; it would anyway; when that instant lies within an hour of the period and
+;; has its offset, the stretch between them is the same offset too, since no
+;; zone changes offset twice within an hour, and the period takes it in. That
+;; is the sequential case, so it then probes one hour further on and, if the
+;; offset still holds, extends to there, and the next instants are hits.
+;; Scattered lookups never pay that second probe: a lookup far from the
+;; period just starts a new one at that instant.
+;; The third slot is the abbreviation cache (tz-abbrev-cached below).
+(define tz-period-reach 3600)
 (define (timezone-of id) (make-jhost "timezone" (vector (if (string? id) id (jolt-str-render-one id)) #f #f)))
 (define-jhost-tag-pred (timezone? t) (string=? t "timezone"))
 (define (tz-id tz) (if (timezone? tz) (vector-ref (jhost-state tz) 0) (jolt-str-render-one tz)))
+(define (tz-period-offset st sec)
+  (let* ((id (vector-ref st 0))
+         (p (vector-ref st 1)))
+    (if (and p (<= (vector-ref p 0) sec) (<= sec (vector-ref p 1)))
+        (vector-ref p 2)
+        (let ((off (tz-offset-seconds id sec)))
+          (vector-set! st 1
+            (cond
+              ((and p (eqv? off (vector-ref p 2))
+                    (> sec (vector-ref p 1)) (<= (- sec (vector-ref p 1)) tz-period-reach))
+               (let ((ahead (+ sec tz-period-reach)))
+                 (vector (vector-ref p 0)
+                         (if (eqv? off (tz-offset-seconds id ahead)) ahead sec)
+                         off)))
+              ((and p (eqv? off (vector-ref p 2))
+                    (< sec (vector-ref p 0)) (<= (- (vector-ref p 0) sec) tz-period-reach))
+               (let ((behind (- sec tz-period-reach)))
+                 (vector (if (eqv? off (tz-offset-seconds id behind)) behind sec)
+                         (vector-ref p 1)
+                         off)))
+              (else (vector sec sec off))))
+          off))))
 (define (tz-offset-ms tz ms)
   (let ((sec (inst-floor-div (ms->exact ms) 1000)))
     (if (timezone? tz)
-        (let* ((st (jhost-state tz)) (last (vector-ref st 1)))
-          (if (and last (eqv? (car last) sec))
-              (* 1000 (cdr last))
-              (let ((off (tz-offset-seconds (vector-ref st 0) sec)))
-                (vector-set! st 1 (cons sec off))
-                (* 1000 off))))
+        (* 1000 (tz-period-offset (jhost-state tz) sec))
         (* 1000 (tz-offset-seconds (tz-id tz) sec)))))
 
 ;; Two TimeZones with one id are equal and hash alike, as on the JVM (the JVM
