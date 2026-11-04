@@ -183,8 +183,9 @@
 ;; Only the ratios are judged, never the absolute times — a slow shared runner
 ;; moves both arms together. Sampling follows io_scaling_test.clj: best-of-N
 ;; (minimum, not mean — interference only ever adds time), a ceiling, a
-;; clear-regression threshold that fails on the spot, and one re-measure in the
-;; band between them so a single scheduler blip cannot fail the build. A real
+;; clear-regression threshold that fails on the spot, and up to two re-measures
+;; in the band between them, keeping the lowest, so a scheduler blip cannot fail
+;; the build. A real
 ;; regression measures far above the ceiling on every attempt, so re-measuring
 ;; costs no power.
 
@@ -256,18 +257,22 @@
 
 (defn- judge!
   "Measure SLOW-ARM against FAST-ARM and record a failure when the ratio exceeds
-   CEILING. Re-measures once in the band below CLEAR, as io_scaling_test.clj does."
+   CEILING. In the band below CLEAR it re-measures up to twice and keeps the
+   lowest reading."
   [label fast-arm slow-arm ceiling clear]
   (let [ratio (fn []
                 (let [[f s] (best-of-pair samples fast-arm slow-arm)]
                   ;; a floor on the denominator: an arm that measures as ~0 would
                   ;; make any numerator look infinite
                   (/ s (max f 0.05))))
-        r1 (ratio)
-        r (if (and (> r1 ceiling) (< r1 clear))
-            (do (println (format "  %s: %.2f — in the re-measure band, sampling again" label r1))
-                (ratio))
-            r1)]
+        ;; In the band, up to two more readings, and the lowest stands: a burst
+        ;; from a neighbouring gate only ever raises a reading, and a real
+        ;; regression reads high on every one.
+        r (loop [r (ratio) left 2]
+            (if (and (pos? left) (> r ceiling) (< r clear))
+              (do (println (format "  %s: %.2f — in the re-measure band, sampling again" label r))
+                  (recur (min r (ratio)) (dec left)))
+              r))]
     (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
                      label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
     (when (> r ceiling)
