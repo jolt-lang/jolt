@@ -1304,6 +1304,12 @@
             (guard (_ (#t #f)) (reporter seconds unreached callbacks message))
             (jolt-eprint message))))))
 
+;; CALL, then the site slot (vreg 2, jolt-vreg-site below) put back as it was
+;; before it: seq.ss's jolt-invoke0..4, for untraced code calling a fn value that
+;; may be traced. The literal 2 compiles to a load and a store.
+(define-syntax jolt-site-kept
+  (syntax-rules ()
+    ((_ call) (let* ((s (virtual-register 2)) (r call)) (set-virtual-register! 2 s) r))))
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
