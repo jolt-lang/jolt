@@ -320,6 +320,7 @@
     ("class" "getMethod" varargs)
     ("class-ctor" "newInstance" varargs)
     ("count-down-latch" "await" 0 2)
+    ("timer" "schedule" 2 3)
     ("executor-service" "awaitTermination" 2)
     ("executor-service" "invokeAll" 1 3)
     ("executor-service" "invokeAny" 1 3)

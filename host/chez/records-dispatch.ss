@@ -1420,6 +1420,9 @@
          (let ((v (record-method-dispatch it "next" jolt-nil)))
            (jolt-cons v (iterator-cursor->seq it)))
          jolt-nil))))
+;; RT.seqFrom asks a Seqable for its seq whatever made it, a reify included
+;; (records-coll.ss self-seq-arm walks one that answers itself, an ISeq)
+(register-seq-arm! (lambda (x) (and (jreify? x) (reify-method-ref x "seq") #t)) self-seq-arm)
 (register-seq-arm! iface-iterator-cursor
                    (lambda (x) (jolt-seq (iterator-cursor->seq x))))
 (register-seq-arm! (lambda (x) (and (iface-iterator-obj x) (not (iface-iterator-cursor x))))

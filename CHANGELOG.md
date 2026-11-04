@@ -374,6 +374,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`sequential?` answered true for a deftype or reify implementing `ISeq`.**
+  `ISeq` is not `Sequential`; only a type declaring `Sequential` (or an
+  interface extending it) is. A regression from the `seq?` change earlier in
+  this cycle.
+- **A reify implementing `Seqable` or `ISeq` could not be walked.** `seq`,
+  `first`, `into` and friends threw "Don't know how to create ISeq"; they now
+  ask its `seq` method and walk an `ISeq` lazily. `coll?` and `count` answer
+  for such a reify as the JVM does, and `count` of a seq deftype that is not
+  `Counted` walks its seq instead of throwing `AbstractMethodError`.
+  `clojure.lang.IndexedSeq` is modeled, so a type declaring it is `seq?`.
+- **`java.net.URI` equality, `hashCode` and `compareTo` follow the JDK.** They
+  compared the string forms, so `(= (.toUri path) (.toURI file))` was false
+  for the same file now that `Path.toUri` writes `file:///`. They compare
+  component by component: an empty authority is none, the scheme and host
+  ignore case, and an escape's hex digits ignore case.
+- **A started `Thread`, an executor's pool thread and a virtual thread read
+  `*ns*` at its root, `clojure.core`,** as on the JVM, instead of the
+  `user` namespace of the thread that made them. A virtual thread no longer
+  inherits its creator's bindings either. `future`, agents and `bound-fn`
+  still convey the caller's. `(.getRawRoot #'*ns*)` is `clojure.core` too.
+- **`java.util.Timer` exists.** All four constructors, `schedule` (delay or
+  `Date`, one-shot or fixed-delay), `scheduleAtFixedRate`, `cancel` and
+  `purge`, with a `TimerTask` proxy's `cancel` and `scheduledExecutionTime`.
+  `(java.util.Timer. true)` used to be "No matching ctor".
+- **`ReentrantLock.tryLock` could refuse a free lock on arm64.** The claim is
+  a compare-and-swap that may fail spuriously there, and the try path answered
+  false instead of retrying: about 3 in 5*10^7 uncontended tryLocks on Apple
+  silicon, already in 0.8.23.
+- **A condition wait with interrupts disabled could still stall a
+  collection** when the thread requesting it held the waited mutex: the
+  sliced wait took the mutex back inside Chez's `condition-wait`, still
+  counted as active. It now releases the mutex, naps in a collect-safe call
+  and retakes it collect-safely.
 - **A caught throw keeps the fn that threw when the call into it went through a
   fn value.** `(defn caught [f] (try (f) (catch Throwable t t)))` called from
   another fn, with `f` tail-calling a fn that divides by zero: `.getStackTrace`
