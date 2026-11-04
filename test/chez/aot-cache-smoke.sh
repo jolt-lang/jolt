@@ -24,6 +24,19 @@ cache="$(mktemp -d)"
 tmp="$(mktemp -d)"
 mkdir -p "$tmp/src/mylib"
 
+# Each run's stdout is judged by its last line, so stderr would only clutter it --
+# but a run that prints NOTHING has lost its whole explanation there. The runs
+# append stderr here instead; a verdict empties it, and a FAIL prints what the
+# case's runs wrote, so the error that ate the output is in the log.
+errlog="$(mktemp)"
+show_stderr() {
+  if [ -s "$errlog" ]; then
+    echo "  stderr of this case's runs (last 30 lines):"
+    tail -30 "$errlog" | sed 's/^/    /'
+  fi
+  : > "$errlog"
+}
+
 # A program that requires a disk-backed ns via add-deps (the real require path)
 # and prints a value computed in it. \$1 = the temp project dir.
 run_prog() {
@@ -31,7 +44,7 @@ run_prog() {
     (require 'jolt.deps)
     (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$1\"}}})
     (require 'mylib.core)
-    (println (mylib.core/answer))" 2>/dev/null | tail -1
+    (println (mylib.core/answer))" 2>>"$errlog" | tail -1
 }
 
 count_cache_files() { find "$cache" -name '*.so' 2>/dev/null | wc -l | tr -d ' '; }
@@ -44,17 +57,17 @@ CLJ
 out_a="$(run_prog "$tmp")"
 n_a="$(count_cache_files)"
 if [ "$out_a" = "42" ] && [ "$n_a" -ge 1 ]; then
-  echo "PASS: (a) cold load output=42, cache files=$n_a"; pass=$((pass+1))
+  echo "PASS: (a) cold load output=42, cache files=$n_a"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (a) cold load output='$out_a' cache files=$n_a (expected output 42, >=1 .so)"; fails=$((fails+1))
+  echo "FAIL: (a) cold load output='$out_a' cache files=$n_a (expected output 42, >=1 .so)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (b) warm load produces identical output (cache hit) ----------------------
 out_b="$(run_prog "$tmp")"
 if [ "$out_b" = "42" ]; then
-  echo "PASS: (b) warm load output=42"; pass=$((pass+1))
+  echo "PASS: (b) warm load output=42"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (b) warm load output='$out_b' (expected 42)"; fails=$((fails+1))
+  echo "FAIL: (b) warm load output='$out_b' (expected 42)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (c) editing source invalidates: recompiles, output reflects the edit -----
@@ -66,9 +79,9 @@ CLJ
 out_c="$(run_prog "$tmp")"
 n_c="$(count_cache_files)"
 if [ "$out_c" = "99" ]; then
-  echo "PASS: (c) after edit output=99"; pass=$((pass+1))
+  echo "PASS: (c) after edit output=99"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (c) after edit output='$out_c' (expected 99 — cache did not invalidate)"; fails=$((fails+1))
+  echo "FAIL: (c) after edit output='$out_c' (expected 99 — cache did not invalidate)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (c2) same-length edit on a realistically-sized source --------------------
@@ -99,26 +112,26 @@ gen_c2() {
 gen_c2 42
 c2_len=$(wc -c < "$c2/src/mylib/core.clj")
 if [ "$c2_len" -lt 4096 ]; then
-  echo "FAIL: (c2) fixture too small: $c2_len bytes (need >=4096)"; fails=$((fails+1))
+  echo "FAIL: (c2) fixture too small: $c2_len bytes (need >=4096)"; fails=$((fails+1)); show_stderr
 else
   sleep 1  # ensure mtime advances
   c2_cold="$(run_prog "$c2")"
   if [ "$c2_cold" != "42" ]; then
-    echo "FAIL: (c2) cold output='$c2_cold' (expected 42)"; fails=$((fails+1))
+    echo "FAIL: (c2) cold output='$c2_cold' (expected 42)"; fails=$((fails+1)); show_stderr
   else
     # length-preserving edit: 42 -> 99
     c2_orig_len=$(wc -c < "$c2/src/mylib/core.clj")
     gen_c2 99
     c2_new_len=$(wc -c < "$c2/src/mylib/core.clj")
     if [ "$c2_orig_len" != "$c2_new_len" ]; then
-      echo "FAIL: (c2) edit changed length: $c2_orig_len -> $c2_new_len (expected equal)"; fails=$((fails+1))
+      echo "FAIL: (c2) edit changed length: $c2_orig_len -> $c2_new_len (expected equal)"; fails=$((fails+1)); show_stderr
     else
       sleep 1
       c2_edit="$(run_prog "$c2")"
       if [ "$c2_edit" = "99" ]; then
-        echo "PASS: (c2) large-fixture edit invalidated, output=99"; pass=$((pass+1))
+        echo "PASS: (c2) large-fixture edit invalidated, output=99"; pass=$((pass+1)); : > "$errlog"
       else
-        echo "FAIL: (c2) after edit output='$c2_edit' (expected 99 — equal-hash sampled stale)"; fails=$((fails+1))
+        echo "FAIL: (c2) after edit output='$c2_edit' (expected 99 — equal-hash sampled stale)"; fails=$((fails+1)); show_stderr
       fi
     fi
   fi
@@ -131,12 +144,12 @@ fi
 case_cold_warm() {
   clabel="$1"; cproj="$2"; cexpr="$3"; cexp="$4"
   cmd="(require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$cproj\"}}}) $cexpr"
-  ccold="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$cmd" 2>/dev/null | tail -1)"
-  cwarm="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$cmd" 2>/dev/null | tail -1)"
+  ccold="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$cmd" 2>>"$errlog" | tail -1)"
+  cwarm="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$cmd" 2>>"$errlog" | tail -1)"
   if [ "$ccold" = "$cexp" ] && [ "$cwarm" = "$cexp" ]; then
-    echo "PASS: ($clabel) cold='$ccold' warm='$cwarm'"; pass=$((pass+1))
+    echo "PASS: ($clabel) cold='$ccold' warm='$cwarm'"; pass=$((pass+1)); : > "$errlog"
   else
-    echo "FAIL: ($clabel) cold='$ccold' warm='$cwarm' (expected '$cexp')"; fails=$((fails+1))
+    echo "FAIL: ($clabel) cold='$ccold' warm='$cwarm' (expected '$cexp')"; fails=$((fails+1)); show_stderr
   fi
 }
 
@@ -201,15 +214,15 @@ hcmd="(require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \
 # cold: populate the cache with the v1 .so
 JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" >/dev/null 2>&1
 # warm (no reload): cache hit → still 42
-warm1="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" 2>/dev/null | tail -1)"
+warm1="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core) (println (proj.core/answer))" 2>>"$errlog" | tail -1)"
 # edit, then :reload — must show the edit despite the stale v1 .so in the cache
 sleep 1
 printf '(ns proj.core)\n(defn answer [] 99)\n' > "$h/src/proj/core.clj"
-reload_out="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core :reload) (println (proj.core/answer))" 2>/dev/null | tail -1)"
+reload_out="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "$hcmd (require 'proj.core :reload) (println (proj.core/answer))" 2>>"$errlog" | tail -1)"
 if [ "$warm1" = "42" ] && [ "$reload_out" = "99" ]; then
-  echo "PASS: (h) warm=$warm1, :reload-after-edit=$reload_out"; pass=$((pass+1))
+  echo "PASS: (h) warm=$warm1, :reload-after-edit=$reload_out"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (h) warm='$warm1' (want 42), :reload-after-edit='$reload_out' (want 99)"; fails=$((fails+1))
+  echo "FAIL: (h) warm='$warm1' (want 42), :reload-after-edit='$reload_out' (want 99)"; fails=$((fails+1)); show_stderr
 fi
 
 # (i) install-owned namespaces (stdlib/jolt-core — embedded in the binary) are
@@ -228,9 +241,9 @@ if [ -n "$chez_bin" ]; then
   rm -rf "$cache_i"
 fi
 if [ "$n_i" = "0" ]; then
-  echo "PASS: (i) install-owned clojure.set produced 0 cache files"; pass=$((pass+1))
+  echo "PASS: (i) install-owned clojure.set produced 0 cache files"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (i) install-owned clojure.set produced $n_i cache files (expected 0)"; fails=$((fails+1))
+  echo "FAIL: (i) install-owned clojure.set produced $n_i cache files (expected 0)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (j) corrupt cache file is recovered, not fatal --------------------------
@@ -242,7 +255,7 @@ printf '(ns mylib.core)\n(defn answer [] 42)\n' > "$j/src/mylib/core.clj"
 jrun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$j\"}}})
-    (require 'mylib.core) (println (mylib.core/answer))" 2>/dev/null | tail -1
+    (require 'mylib.core) (println (mylib.core/answer))" 2>>"$errlog" | tail -1
 }
 # cold: populate
 jrun >/dev/null 2>&1
@@ -251,9 +264,9 @@ find "$cache" -name '*.so' -exec sh -c 'printf "GARBAGE-NOT-FASL" > "$1"' sh {} 
 jout="$(jrun)"
 jso_after="$(count_cache_files)"
 if [ "$jout" = "42" ] && [ "$jso_after" -ge 1 ]; then
-  echo "PASS: (j) corrupt cache recovered, output=42, rebuilt .so"; pass=$((pass+1))
+  echo "PASS: (j) corrupt cache recovered, output=42, rebuilt .so"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (j) corrupt cache: output='$jout' .so-after=$jso_after (expected 42, >=1 rebuilt)"; fails=$((fails+1))
+  echo "FAIL: (j) corrupt cache: output='$jout' .so-after=$jso_after (expected 42, >=1 rebuilt)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (k) two runtimes reporting one version don't share a cache namespace ----
@@ -275,18 +288,18 @@ if [ -n "$chez_bin" ] && [ -x "$kbin" ]; then
   # the binary bakes its version, so read it back and hand it to the source run
   kver="$("$kbin" --version 2>/dev/null | sed 's/^jolt //')"
   k_out_src="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_k" JOLT_VERSION="$kver" JOLT_QUIET=1 \
-    "$chez_bin" --script host/chez/cli.ss -e "$kprog" 2>/dev/null | tail -1)"
+    "$chez_bin" --script host/chez/cli.ss -e "$kprog" 2>>"$errlog" | tail -1)"
   k_out_bin="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_k" JOLT_QUIET=1 \
-    "$kbin" -e "$kprog" 2>/dev/null | tail -1)"
+    "$kbin" -e "$kprog" 2>>"$errlog" | tail -1)"
   n_k="$(find "$cache_k" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
 fi
 rm -rf "$cache_k"
 if [ "$n_k" = "(skipped)" ]; then
   echo "SKIP: (k) needs chez + $kbin (make testbin)"
 elif [ "$n_k" = "2" ] && [ "$k_out_src" = "42" ] && [ "$k_out_bin" = "42" ]; then
-  echo "PASS: (k) source and binary runtimes keyed separately under one version"; pass=$((pass+1))
+  echo "PASS: (k) source and binary runtimes keyed separately under one version"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (k) cache namespaces=$n_k (expected 2), source='$k_out_src' binary='$k_out_bin' (expected 42)"; fails=$((fails+1))
+  echo "FAIL: (k) cache namespaces=$n_k (expected 2), source='$k_out_src' binary='$k_out_bin' (expected 42)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (l) editing a REQUIRED namespace invalidates its consumers ---------------
@@ -300,16 +313,16 @@ printf '(ns dep.core (:require [dep.macros :as m]))\n(defn answer [] (m/tag))\n'
 lrun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'dep/dep {:local/root \"$l\"}}})
-    (require 'dep.core) (println (dep.core/answer))" 2>/dev/null | tail -1
+    (require 'dep.core) (println (dep.core/answer))" 2>>"$errlog" | tail -1
 }
 l_cold="$(lrun)"
 sleep 1
 printf '(ns dep.macros)\n(defmacro tag [] "v2")\n' > "$l/src/dep/macros.clj"
 l_warm="$(lrun)"
 if [ "$l_cold" = "v1" ] && [ "$l_warm" = "v2" ]; then
-  echo "PASS: (l) macro-ns edit invalidated its consumer (v1 -> v2)"; pass=$((pass+1))
+  echo "PASS: (l) macro-ns edit invalidated its consumer (v1 -> v2)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (l) cold='$l_cold' (want v1) after-macro-edit='$l_warm' (want v2)"; fails=$((fails+1))
+  echo "FAIL: (l) cold='$l_cold' (want v1) after-macro-edit='$l_warm' (want v2)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (m) invalidation reaches through a chain, not just direct requires -------
@@ -322,16 +335,16 @@ printf '(ns chain.top (:require [chain.mid :as mid]))\n(defn answer [] (mid/mid-
 mrun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'chain/chain {:local/root \"$m\"}}})
-    (require 'chain.top) (println (chain.top/answer))" 2>/dev/null | tail -1
+    (require 'chain.top) (println (chain.top/answer))" 2>>"$errlog" | tail -1
 }
 m_cold="$(mrun)"
 sleep 1
 printf '(ns chain.low)\n(defmacro tag [] "v2")\n' > "$m/src/chain/low.clj"
 m_warm="$(mrun)"
 if [ "$m_cold" = "v1" ] && [ "$m_warm" = "v2" ]; then
-  echo "PASS: (m) transitive dep edit invalidated the chain (v1 -> v2)"; pass=$((pass+1))
+  echo "PASS: (m) transitive dep edit invalidated the chain (v1 -> v2)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (m) cold='$m_cold' (want v1) after-transitive-edit='$m_warm' (want v2)"; fails=$((fails+1))
+  echo "FAIL: (m) cold='$m_cold' (want v1) after-transitive-edit='$m_warm' (want v2)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (n) superseded runtime generations are pruned ---------------------------
@@ -350,14 +363,14 @@ done
 n_before="$(find "$cache_n" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 out_n="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_n" JOLT_QUIET=1 "$jolt" -e "
   (require 'jolt.deps) (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$k\"}}})
-  (require 'mylib.core) (println (mylib.core/answer))" 2>/dev/null | tail -1)"
+  (require 'mylib.core) (println (mylib.core/answer))" 2>>"$errlog" | tail -1)"
 n_after="$(find "$cache_n" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
 n_live="$(find "$cache_n" -name '*.so' | wc -l | tr -d ' ')"
 rm -rf "$cache_n"
 if [ "$n_before" = "6" ] && [ "$n_after" -le 3 ] && [ "$n_live" -ge 1 ] && [ "$out_n" = "42" ]; then
-  echo "PASS: (n) pruned $n_before generations to $n_after, current one live"; pass=$((pass+1))
+  echo "PASS: (n) pruned $n_before generations to $n_after, current one live"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (n) generations $n_before -> $n_after (want <=3), live .so=$n_live, output='$out_n'"; fails=$((fails+1))
+  echo "FAIL: (n) generations $n_before -> $n_after (want <=3), live .so=$n_live, output='$out_n'"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (o) an artifact holds its OWN namespace, not the ones it requires --------
@@ -389,7 +402,7 @@ cache_o="$(mktemp -d)"
 run_o() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_o" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'olib/olib {:local/root \"$o\"}}})
-    (require 'olib.top) (println (olib.top/probe))" 2>/dev/null | tail -1
+    (require 'olib.top) (println (olib.top/probe))" 2>>"$errlog" | tail -1
 }
 o_cold="$(run_o)"
 o_warm="$(run_o)"
@@ -404,10 +417,10 @@ o_defines="$(grep -o 'in-ns.\{0,200\}' "$o_scm" 2>/dev/null \
              | sed -n 's/.*jolt-symbol #f "\([^"]*\)".*/\1/p' | sort -u | tr '\n' ' ' | sed 's/ $//')"
 rm -rf "$cache_o"
 if [ "$o_cold" = ":overridden" ] && [ "$o_warm" = ":overridden" ] && [ "$o_defines" = "olib.top" ]; then
-  echo "PASS: (o) artifact defines only olib.top; override survives the hit"; pass=$((pass+1))
+  echo "PASS: (o) artifact defines only olib.top; override survives the hit"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (o) cold='$o_cold' warm='$o_warm' (both want :overridden), artifact defines '$o_defines' (want 'olib.top')"
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 
 # --- Phase 5: files read at compile time invalidate their reader --------------
@@ -429,15 +442,15 @@ CLJ
 prun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$p\"}}})
-    (require 'proj.core) (println (proj.core/run))" 2>/dev/null | tail -1
+    (require 'proj.core) (println (proj.core/run))" 2>>"$errlog" | tail -1
 }
 p_cold="$(prun)"
 printf 'v2' > "$p/mig.sql"
 p_warm="$(prun)"
 if [ "$p_cold" = "v1" ] && [ "$p_warm" = "v2" ]; then
-  echo "PASS: (p) slurped file edit invalidated its reader (v1 -> v2)"; pass=$((pass+1))
+  echo "PASS: (p) slurped file edit invalidated its reader (v1 -> v2)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (p) cold='$p_cold' (want v1) after-resource-edit='$p_warm' (want v2)"; fails=$((fails+1))
+  echo "FAIL: (p) cold='$p_cold' (want v1) after-resource-edit='$p_warm' (want v2)"; fails=$((fails+1)); show_stderr
 fi
 
 # (q) io/resource — the classpath spelling, resolved against the source roots
@@ -452,15 +465,15 @@ CLJ
 qrun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$q\"}}})
-    (require 'proj.core) (println (proj.core/run))" 2>/dev/null | tail -1
+    (require 'proj.core) (println (proj.core/run))" 2>>"$errlog" | tail -1
 }
 q_cold="$(qrun)"
 printf 'r2' > "$q/resources/mig.sql"
 q_warm="$(qrun)"
 if [ "$q_cold" = "r1" ] && [ "$q_warm" = "r2" ]; then
-  echo "PASS: (q) io/resource edit invalidated its reader (r1 -> r2)"; pass=$((pass+1))
+  echo "PASS: (q) io/resource edit invalidated its reader (r1 -> r2)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (q) cold='$q_cold' (want r1) after-resource-edit='$q_warm' (want r2)"; fails=$((fails+1))
+  echo "FAIL: (q) cold='$q_cold' (want r1) after-resource-edit='$q_warm' (want r2)"; fails=$((fails+1)); show_stderr
 fi
 
 # (q2) a resource that did not exist yet — adding one (a new migration) has to
@@ -469,15 +482,15 @@ printf '(ns proj.opt (:require [clojure.java.io :as io]))\n(defmacro embed [] (i
 q2run() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$q\"}}})
-    (require 'proj.opt) (println (proj.opt/run))" 2>/dev/null | tail -1
+    (require 'proj.opt) (println (proj.opt/run))" 2>>"$errlog" | tail -1
 }
 q2_cold="$(q2run)"
 printf 'appeared' > "$q/resources/opt.sql"
 q2_warm="$(q2run)"
 if [ "$q2_cold" = "none" ] && [ "$q2_warm" = "appeared" ]; then
-  echo "PASS: (q2) an added resource invalidated the ns that probed for it"; pass=$((pass+1))
+  echo "PASS: (q2) an added resource invalidated the ns that probed for it"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (q2) cold='$q2_cold' (want none) after-add='$q2_warm' (want appeared)"; fails=$((fails+1))
+  echo "FAIL: (q2) cold='$q2_cold' (want none) after-add='$q2_warm' (want appeared)"; fails=$((fails+1)); show_stderr
 fi
 
 # (q3) the same probe through a ClassLoader. RT/baseLoader's getResource is the
@@ -490,15 +503,15 @@ printf '(ns proj.clopt)\n(defmacro embed [] (if-let [u (.getResource (clojure.la
 q3run() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$q\"}}})
-    (require 'proj.clopt) (println (proj.clopt/run))" 2>/dev/null | tail -1
+    (require 'proj.clopt) (println (proj.clopt/run))" 2>>"$errlog" | tail -1
 }
 q3_cold="$(q3run)"
 printf 'appeared' > "$q/resources/clopt.sql"
 q3_warm="$(q3run)"
 if [ "$q3_cold" = "none" ] && [ "$q3_warm" = "appeared" ]; then
-  echo "PASS: (q3) an added resource invalidated the ns that probed the loader"; pass=$((pass+1))
+  echo "PASS: (q3) an added resource invalidated the ns that probed the loader"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (q3) cold='$q3_cold' (want none) after-add='$q3_warm' (want appeared)"; fails=$((fails+1))
+  echo "FAIL: (q3) cold='$q3_cold' (want none) after-add='$q3_warm' (want appeared)"; fails=$((fails+1)); show_stderr
 fi
 
 # (r) the read happens while compiling the CONSUMER (the macro lives one
@@ -517,15 +530,15 @@ CLJ
 rrun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'chain/chain {:local/root \"$r\"}}})
-    (require 'chain.top) (println (chain.top/run))" 2>/dev/null | tail -1
+    (require 'chain.top) (println (chain.top/run))" 2>>"$errlog" | tail -1
 }
 r_cold="$(rrun)"
 printf 'w2' > "$r/mig.sql"
 r_warm="$(rrun)"
 if [ "$r_cold" = "w1" ] && [ "$r_warm" = "w2" ]; then
-  echo "PASS: (r) cross-namespace macro read invalidated the consumer (w1 -> w2)"; pass=$((pass+1))
+  echo "PASS: (r) cross-namespace macro read invalidated the consumer (w1 -> w2)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (r) cold='$r_cold' (want w1) after-resource-edit='$r_warm' (want w2)"; fails=$((fails+1))
+  echo "FAIL: (r) cold='$r_cold' (want w1) after-resource-edit='$r_warm' (want w2)"; fails=$((fails+1)); show_stderr
 fi
 
 # (s) a resource baked into a REQUIRED namespace's own artifact propagates
@@ -545,15 +558,15 @@ CLJ
 srun() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
     (require 'jolt.deps) (jolt.deps/add-deps {:deps {'deep/deep {:local/root \"$s\"}}})
-    (require 'deep.top) (println (deep.top/run))" 2>/dev/null | tail -1
+    (require 'deep.top) (println (deep.top/run))" 2>>"$errlog" | tail -1
 }
 s_cold="$(srun)"
 printf 'd2' > "$s/mig.sql"
 s_warm="$(srun)"
 if [ "$s_cold" = "d1" ] && [ "$s_warm" = "d2" ]; then
-  echo "PASS: (s) a required ns's resource edit reached the chain (d1 -> d2)"; pass=$((pass+1))
+  echo "PASS: (s) a required ns's resource edit reached the chain (d1 -> d2)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (s) cold='$s_cold' (want d1) after-resource-edit='$s_warm' (want d2)"; fails=$((fails+1))
+  echo "FAIL: (s) cold='$s_cold' (want d1) after-resource-edit='$s_warm' (want d2)"; fails=$((fails+1)); show_stderr
 fi
 
 # (t) a namespace that reads nothing writes no resource sidecar — the record is
@@ -561,9 +574,9 @@ fi
 t_res="$(find "$cache" -name 'mylib.core-*.res' 2>/dev/null | wc -l | tr -d ' ')"
 p_res="$(find "$cache" -name 'proj.core-*.res' 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$t_res" = "0" ] && [ "$p_res" -ge 1 ]; then
-  echo "PASS: (t) resource sidecars are per-namespace ($p_res for readers, 0 for mylib.core)"; pass=$((pass+1))
+  echo "PASS: (t) resource sidecars are per-namespace ($p_res for readers, 0 for mylib.core)"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (t) mylib.core sidecars=$t_res (want 0), proj.core sidecars=$p_res (want >=1)"; fails=$((fails+1))
+  echo "FAIL: (t) mylib.core sidecars=$t_res (want 0), proj.core sidecars=$p_res (want >=1)"; fails=$((fails+1)); show_stderr
 fi
 
 # --- (u) a fasl cut at a form boundary is detected, not served ----------------
@@ -600,9 +613,9 @@ else
      && echo "$u_cut" | grep -q '^42$' && echo "$u_cut" | grep -q 'incomplete cache for ulib.core' \
      && echo "$u_heal" | grep -q '^42$' && echo "$u_heal" | grep -q 'hit ulib.core' \
      && ! echo "$u_heal" | grep -q 'incomplete cache'; then
-    echo "PASS: (u) form-boundary-truncated fasl detected, recompiled, healed"; pass=$((pass+1))
+    echo "PASS: (u) form-boundary-truncated fasl detected, recompiled, healed"; pass=$((pass+1)); : > "$errlog"
   else
-    echo "FAIL: (u) marker=$u_marked warm-hit=$(echo "$u_warm" | grep -c 'hit ulib.core') cut-detected=$(echo "$u_cut" | grep -c 'incomplete cache') cut-out=$(echo "$u_cut" | tail -1) heal-hit=$(echo "$u_heal" | grep -c 'hit ulib.core')"; fails=$((fails+1))
+    echo "FAIL: (u) marker=$u_marked warm-hit=$(echo "$u_warm" | grep -c 'hit ulib.core') cut-detected=$(echo "$u_cut" | grep -c 'incomplete cache') cut-out=$(echo "$u_cut" | tail -1) heal-hit=$(echo "$u_heal" | grep -c 'hit ulib.core')"; fails=$((fails+1)); show_stderr
   fi
 fi
 rm -rf "$cache_u"
@@ -645,9 +658,9 @@ if echo "$v_cold" | grep -q '^42$' \
    && ! echo "$v_warm" | grep -q 'corrupt cache for vlib.core' \
    && echo "$v_cold" | grep -q ':leak false' \
    && echo "$v_warm" | grep -q ':leak false'; then
-  echo "PASS: (v) compiler-flag set! namespace hits its cache, set! stays in its own load"; pass=$((pass+1))
+  echo "PASS: (v) compiler-flag set! namespace hits its cache, set! stays in its own load"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (v) warm run: hit=$(echo "$v_warm" | grep -c 'hit vlib.core') corrupt=$(echo "$v_warm" | grep -c 'corrupt cache for vlib.core') out=$(echo "$v_warm" | grep -c '^42$') cold-leak=$(echo "$v_cold" | grep -c ':leak false') warm-leak=$(echo "$v_warm" | grep -c ':leak false')"; fails=$((fails+1))
+  echo "FAIL: (v) warm run: hit=$(echo "$v_warm" | grep -c 'hit vlib.core') corrupt=$(echo "$v_warm" | grep -c 'corrupt cache for vlib.core') out=$(echo "$v_warm" | grep -c '^42$') cold-leak=$(echo "$v_cold" | grep -c ':leak false') warm-leak=$(echo "$v_warm" | grep -c ':leak false')"; fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_v"
 
@@ -680,11 +693,11 @@ e_warm="$(erun || true)"
 if echo "$e_cold" | grep -q ':embedded true 42' \
    && echo "$e_warm" | grep -q ':embedded true 42' \
    && echo "$e_warm" | grep -q 'hit elib.core'; then
-  echo "PASS: (w) an embedded live value round-trips through the fasl"; pass=$((pass+1))
+  echo "PASS: (w) an embedded live value round-trips through the fasl"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (w) cold=$(echo "$e_cold" | grep -c ':embedded true 42') warm=$(echo "$e_warm" | grep -c ':embedded true 42') hit=$(echo "$e_warm" | grep -c 'hit elib.core')"
   echo "$e_warm" | tail -4 | sed 's/^/    /'
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_e" "$elib"
 
@@ -714,10 +727,10 @@ if echo "$x_cold" | grep -q '^1$' && echo "$x_warm" | grep -q '^1$' \
    && echo "$x_edit" | grep -q '^2$' \
    && echo "$x_edit" | grep -q 'hit xapp.core' \
    && echo "$x_edit" | grep -q 'miss xlib.core'; then
-  echo "PASS: (x) inert dep edit recompiles only the dep, consumer hits and sees v2"; pass=$((pass+1))
+  echo "PASS: (x) inert dep edit recompiles only the dep, consumer hits and sees v2"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (x) cold=$(echo "$x_cold" | tail -1) warm=$(echo "$x_warm" | tail -1) edit=$(echo "$x_edit" | tail -1) hit-consumer=$(echo "$x_edit" | grep -c 'hit xapp.core') miss-dep=$(echo "$x_edit" | grep -c 'miss xlib.core')"
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 # the dep gains a macro: the consumer's stored assumption (inert) no longer
 # holds, and the hit must be turned into a recompile rather than served
@@ -725,10 +738,10 @@ printf '(ns xlib.core)\n(defn v [] 2)\n(defmacro m [] :x)\n' > "$xlib/src/xlib/c
 x_gain="$(xrun || true)"
 if echo "$x_gain" | grep -q '^2$' \
    && echo "$x_gain" | grep -q 'stale-assumption cache for xapp.core, recompiling'; then
-  echo "PASS: (y) a dep that gained a macro invalidated the assumed-inert consumer"; pass=$((pass+1))
+  echo "PASS: (y) a dep that gained a macro invalidated the assumed-inert consumer"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (y) after-gain=$(echo "$x_gain" | tail -1) stale=$(echo "$x_gain" | grep -c 'stale-assumption cache for xapp.core')"
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_x" "$xlib"
 
@@ -756,10 +769,10 @@ s_drop="$(srun || true)"
 if echo "$s_warm" | grep -q '^\[2 2\]$' \
    && echo "$s_gain" | grep -q '^\[:shadowed 2\]$' \
    && echo "$s_drop" | grep -q '^threw .*slib.core/w'; then
-  echo "PASS: (x2) a var an inert dep gains or drops reaches its consumer"; pass=$((pass+1))
+  echo "PASS: (x2) a var an inert dep gains or drops reaches its consumer"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (x2) warm=$(echo "$s_warm" | tail -1) gain=$(echo "$s_gain" | tail -1) drop=$(echo "$s_drop" | tail -1)"
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_s" "$slib"
 
@@ -800,10 +813,10 @@ else
      && [ "$z_so" -ge 1 ] \
      && echo "$z_warm" | grep -q '^7$' \
      && echo "$z_warm" | grep -q 'hit alib.core'; then
-    echo "PASS: (z) a default-run miss queued to a worker, later runs hit its fasl"; pass=$((pass+1))
+    echo "PASS: (z) a default-run miss queued to a worker, later runs hit its fasl"; pass=$((pass+1)); : > "$errlog"
   else
     echo "FAIL: (z) cold=$(echo "$z_cold" | tail -1) queued=$(echo "$z_cold" | grep -c 'queued alib.core') so=$z_so warm=$(echo "$z_warm" | tail -1) hit=$(echo "$z_warm" | grep -c 'hit alib.core')"
-    fails=$((fails+1))
+    fails=$((fails+1)); show_stderr
   fi
   cache_z2="$(mktemp -d)"
   z_off="$(zrun_off "$cache_z2" || true)"
@@ -811,10 +824,10 @@ else
   if echo "$z_off" | grep -q '^7$' \
      && ! echo "$z_off" | grep -q 'queued' \
      && [ "$z_off_so" -ge 1 ]; then
-    echo "PASS: (z2) JOLT_AOT_ASYNC=0 compiles in-process and leaves the fasl"; pass=$((pass+1))
+    echo "PASS: (z2) JOLT_AOT_ASYNC=0 compiles in-process and leaves the fasl"; pass=$((pass+1)); : > "$errlog"
   else
     echo "FAIL: (z2) out=$(echo "$z_off" | tail -1) queued=$(echo "$z_off" | grep -c 'queued') so=$z_off_so"
-    fails=$((fails+1))
+    fails=$((fails+1)); show_stderr
   fi
   # A long-running program that misses again after the worker has gone idle:
   # the worker must still be there to take the job (it does not idle out while
@@ -833,10 +846,10 @@ else
   z3_so="$(find "$cache_z3" -name 'alib.late-*.so' | wc -l | tr -d ' ')"
   z3_mf="$(find "$cache_z3" -name 'aot-jobs-*.edn' | wc -l | tr -d ' ')"
   if [ "$z3_so" -ge 1 ] && [ "$z3_mf" -eq 0 ]; then
-    echo "PASS: (z3) a miss after the worker idled still compiles; the manifest is removed"; pass=$((pass+1))
+    echo "PASS: (z3) a miss after the worker idled still compiles; the manifest is removed"; pass=$((pass+1)); : > "$errlog"
   else
     echo "FAIL: (z3) late fasl=$z3_so manifests-left=$z3_mf log=$(cat "$cache_z3"/*/*/aot-jobs-*.log 2>/dev/null | head -3)"
-    fails=$((fails+1))
+    fails=$((fails+1)); show_stderr
   fi
   rm -rf "$cache_z" "$cache_z2" "$cache_z3" "$alib"
 fi
@@ -865,10 +878,10 @@ for aaroot in "$aa" "$aa/exp.jar"; do
   aa_top="$(echo "$aa_warm" | grep -c 'hash exp.top$' || true)"
   if echo "$aa_warm" | grep -q '^5$' && echo "$aa_warm" | grep -q 'hit exp.dep' \
      && [ "$aa_dep" -eq 1 ] && [ "$aa_top" -eq 1 ]; then
-    echo "PASS: (aa) warm run from $(basename "$aaroot") hashes each source once"; pass=$((pass+1))
+    echo "PASS: (aa) warm run from $(basename "$aaroot") hashes each source once"; pass=$((pass+1)); : > "$errlog"
   else
     echo "FAIL: (aa) warm run from $(basename "$aaroot"): out=$(echo "$aa_warm" | tail -1) dep hashed $aa_dep, top hashed $aa_top (want 1 each)"
-    fails=$((fails+1))
+    fails=$((fails+1)); show_stderr
   fi
 done
 # ...and a require reads a jar's entries through one open reader, not one per
@@ -882,9 +895,9 @@ aa_opens="$(JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache_aa" JOLT_QUIET=1 "$jolt" -e 
     (println (- (jolt.host/scheme-eval-string \"zipdir-reader-opens\") before)
              (jolt.host/scheme-eval-string \"(zipdir-scope-readers)\")))" 2>&1 | tail -1)"
 if [ "$aa_opens" = "1 false" ]; then
-  echo "PASS: (aa2) a warm require from a jar opens it once and closes it"; pass=$((pass+1))
+  echo "PASS: (aa2) a warm require from a jar opens it once and closes it"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (aa2) jar reader opens / scope after the require: '$aa_opens' (want '1 false')"; fails=$((fails+1))
+  echo "FAIL: (aa2) jar reader opens / scope after the require: '$aa_opens' (want '1 false')"; fails=$((fails+1)); show_stderr
 fi
 # ...and the scope is the loading thread's alone. A Chez thread starts with its
 # creator's thread-parameter values, so a thread forked by a namespace's top level
@@ -896,9 +909,9 @@ aa_fork="$(JOLT_QUIET=1 "$jolt" -e "
   (require 'jolt.deps) (jolt.deps/add-deps {:deps {'exp/fork {:local/root \"$aa/fork.jar\"}}})
   (require 'exp.fork) (println @exp.fork/seen)" 2>&1 | tail -1)"
 if [ "$aa_fork" = "false" ]; then
-  echo "PASS: (aa3) a thread forked inside a jar require has no reader scope of its own"; pass=$((pass+1))
+  echo "PASS: (aa3) a thread forked inside a jar require has no reader scope of its own"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (aa3) forked thread's reader scope inside a jar require: '$aa_fork' (want 'false')"; fails=$((fails+1))
+  echo "FAIL: (aa3) forked thread's reader scope inside a jar require: '$aa_fork' (want 'false')"; fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_aa"
 
@@ -928,10 +941,10 @@ if echo "$ad_rel" | grep -q '^5$' && echo "$ad_rel" | grep -q 'hit exp.dep' \
    && [ "$(echo "$ad_rel" | grep -c 'hash exp' || true)" -eq 0 ] \
    && echo "$ad_snap" | grep -q '^5$' \
    && [ "$(echo "$ad_snap" | grep -c 'hash exp' || true)" -eq 2 ]; then
-  echo "PASS: (ad) a release jar warm-starts on stat alone; a SNAPSHOT still hashes"; pass=$((pass+1))
+  echo "PASS: (ad) a release jar warm-starts on stat alone; a SNAPSHOT still hashes"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (ad) release: out=$(echo "$ad_rel" | tail -1) hashed=$(echo "$ad_rel" | grep -c 'hash exp' || true) (want 0); snapshot: out=$(echo "$ad_snap" | tail -1) hashed=$(echo "$ad_snap" | grep -c 'hash exp' || true) (want 2)"
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 # the release jar rewritten in place with new content: a new mtime, a new read
 sleep 1
@@ -940,9 +953,9 @@ JOLT_PWD="$aa" JOLT_QUIET=1 "$jolt" run "$root/tools/mkjar.clj" "$ad_m2/exp/exp/
   "exp/dep.clj=$aa/dep6.clj" "exp/top.clj=$aa/src/exp/top.clj" >/dev/null 2>&1 || true
 ad_new="$(adrun 1.0.0)"
 if echo "$ad_new" | grep -q '^6$'; then
-  echo "PASS: (ad2) a release jar rewritten in place is read again"; pass=$((pass+1))
+  echo "PASS: (ad2) a release jar rewritten in place is read again"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (ad2) after rewriting the release jar: out=$(echo "$ad_new" | tail -1) (want 6)"; fails=$((fails+1))
+  echo "FAIL: (ad2) after rewriting the release jar: out=$(echo "$ad_new" | tail -1) (want 6)"; fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_ad" "$ad_m2"
 
@@ -960,9 +973,9 @@ ab_out="$(JOLT_AOT_CACHE=1 JOLT_AOT_ASYNC=0 JOLT_CACHE_DIR="$cache_ab" JOLT_QUIE
   (dosync (alter @#'clojure.core/*loaded-libs* disj 'rl.core))
   (require 'rl.core) (println (rl.core/v))" 2>&1 | tail -2 | tr '\n' ' ')"
 if [ "$ab_out" = "11 22 " ]; then
-  echo "PASS: (ab) an in-process reload after an edit loads the edit"; pass=$((pass+1))
+  echo "PASS: (ab) an in-process reload after an edit loads the edit"; pass=$((pass+1)); : > "$errlog"
 else
-  echo "FAIL: (ab) got '$ab_out' (want '11 22 ')"; fails=$((fails+1))
+  echo "FAIL: (ab) got '$ab_out' (want '11 22 ')"; fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_ab"
 
@@ -991,10 +1004,10 @@ ac_warm="$(acrun)"
 if echo "$ac_warm" | grep -q '^7$' && echo "$ac_warm" | grep -q 'hit rd.plain' \
    && echo "$ac_warm" | grep -q 'hit rd.readers' && echo "$ac_warm" | grep -q 'hit rd.util' \
    && ! echo "$ac_warm" | grep -q 'miss '; then
-  echo "PASS: (ac) a project with data readers hits on its second run"; pass=$((pass+1))
+  echo "PASS: (ac) a project with data readers hits on its second run"; pass=$((pass+1)); : > "$errlog"
 else
   echo "FAIL: (ac) second run: $(echo "$ac_warm" | grep -E 'hit |miss ' | tr '\n' ' ')"
-  fails=$((fails+1))
+  fails=$((fails+1)); show_stderr
 fi
 rm -rf "$cache_ac"
 # ...and two reader namespaces, one requiring the other. The data_readers scan
@@ -1019,10 +1032,10 @@ for ac2_order in a z; do
   ac2_warm="$(ac2run)"
   if echo "$ac2_warm" | grep -q '^7$' && [ "$(echo "$ac2_warm" | grep -c 'hit rn\.' || true)" -eq 4 ] \
      && ! echo "$ac2_warm" | grep -q 'miss '; then
-    echo "PASS: (ac2) nested reader namespaces ($ac2_order) hit on the second run"; pass=$((pass+1))
+    echo "PASS: (ac2) nested reader namespaces ($ac2_order) hit on the second run"; pass=$((pass+1)); : > "$errlog"
   else
     echo "FAIL: (ac2) nested reader namespaces ($ac2_order), second run: $(echo "$ac2_warm" | grep -E 'hit |miss ' | tr '\n' ' ')"
-    fails=$((fails+1))
+    fails=$((fails+1)); show_stderr
   fi
   rm -rf "$cache_ac2"
 done
@@ -1041,7 +1054,7 @@ for ae_mode in truncate unmark; do
   aerun() {
     JOLT_AOT_CACHE=1 JOLT_AOT_ASYNC=0 JOLT_CACHE_DIR="$cache_ae" JOLT_QUIET=1 "$jolt" -e "
       (require 'jolt.deps) (jolt.deps/add-deps {:deps {'ae/ae {:local/root \"$ae\"}}})
-      (require 'shadow-ns) (println (shadow-ns/f))" 2>/dev/null | tail -1
+      (require 'shadow-ns) (println (shadow-ns/f))" 2>>"$errlog" | tail -1
   }
   ae_cold="$(aerun)"
   ae_so="$(find "$cache_ae" -name 'shadow-ns-*.so' | head -1)"
@@ -1059,9 +1072,9 @@ for ae_mode in truncate unmark; do
   if [ "$ae_damaged" = 0 ]; then
     echo "SKIP: (ae) $ae_mode: no artifact to damage (or no chez on PATH)"
   elif [ "$ae_cold" = "1" ] && [ "$ae_recover" = "1" ] && [ "$ae_next" = "1" ]; then
-    echo "PASS: (ae) $ae_mode: recovery recompile resolves get to clojure.core, cache not poisoned"; pass=$((pass+1))
+    echo "PASS: (ae) $ae_mode: recovery recompile resolves get to clojure.core, cache not poisoned"; pass=$((pass+1)); : > "$errlog"
   else
-    echo "FAIL: (ae) $ae_mode: cold='$ae_cold' recover='$ae_recover' next='$ae_next' (expected 1 each)"; fails=$((fails+1))
+    echo "FAIL: (ae) $ae_mode: cold='$ae_cold' recover='$ae_recover' next='$ae_next' (expected 1 each)"; fails=$((fails+1)); show_stderr
   fi
   rm -rf "$cache_ae"
 done
@@ -1094,10 +1107,10 @@ else
     af="$(rorun "$ro/locked/aot-cache")"
     if [ "$af" = "42 0" ] && [ ! -e "$ro/locked/aot-cache" ] \
        && grep -q 'cache off' "$ro/err"; then
-      echo "PASS: (af) uncreatable cache root: output=42, cache off"; pass=$((pass+1))
+      echo "PASS: (af) uncreatable cache root: output=42, cache off"; pass=$((pass+1)); : > "$errlog"
     else
       echo "FAIL: (af) uncreatable cache root: got '$af' (expected '42 0'); stderr:"
-      sed 's/^/  /' "$ro/err" | head -8; fails=$((fails+1))
+      sed 's/^/  /' "$ro/err" | head -8; fails=$((fails+1)); show_stderr
     fi
     # (ag) a populated cache made read-only: a hit is still served, a miss
     # (edited source) still runs, and so does a generation with no v1 at all
@@ -1113,10 +1126,10 @@ else
     ag_nov1="$(rorun "$ro/cache")"
     if [ "$ag_cold" = "42 0" ] && [ "$ag_hit" = "42 0" ] && [ "$ag_hit_seen" = 1 ] \
        && [ "$ag_miss" = "43 0" ] && [ "$ag_nov1" = "43 0" ]; then
-      echo "PASS: (ag) read-only cache: hit served, a miss and an empty generation still run"; pass=$((pass+1))
+      echo "PASS: (ag) read-only cache: hit served, a miss and an empty generation still run"; pass=$((pass+1)); : > "$errlog"
     else
       echo "FAIL: (ag) read-only cache: cold='$ag_cold' hit='$ag_hit' (seen=$ag_hit_seen) miss='$ag_miss' no-v1='$ag_nov1' (expected 42/42/43/43, status 0); last stderr:"
-      sed 's/^/  /' "$ro/err" | head -8; fails=$((fails+1))
+      sed 's/^/  /' "$ro/err" | head -8; fails=$((fails+1)); show_stderr
     fi
   fi
   chmod -R u+w "$ro"
@@ -1128,5 +1141,5 @@ fi
 
 echo ""
 echo "aot-cache smoke: $pass passed, $fails failed"
-rm -rf "$cache" "$tmp"
+rm -rf "$cache" "$tmp" "$errlog"
 [ "$fails" -eq 0 ]

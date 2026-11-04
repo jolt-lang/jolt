@@ -106,8 +106,9 @@
               (put-string out "\n"))
             (gb-collect-paths))
   (close-port out)
-  (when (file-exists? gb-inputs) (delete-file gb-inputs))
-  (rename-file tmp gb-inputs))
+  ;; rename over, never delete-then-rename: a gate reading the list in the gap
+  ;; found it missing (gate-boot.ss)
+  (rename-replace! tmp gb-inputs))
 
 ;; --- 2. compile in a FRESH Chez ---------------------------------------------
 ;; Compile to a temp path and rename into place: a concurrent gate (parallel make
@@ -131,7 +132,6 @@
     (close-port p))
   (bld-system (string-append bld-chez " --script '" cs "'"))
   (when (file-exists? cs) (delete-file cs)))
-(when (file-exists? gb-gate-so) (delete-file gb-gate-so))
-(rename-file gb-gate-so-tmp gb-gate-so)
+(rename-replace! gb-gate-so-tmp gb-gate-so)
 
 (display (string-append "make-gateboot: wrote " gb-gate-so "\n"))

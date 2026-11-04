@@ -61,17 +61,20 @@
                       (substring line (fx+ i 1) (string-length line)))))
           (else (loop (fx+ i 1))))))
 
+;; Never raises: a parallel rebuild can remove the list or an input between the
+;; existence checks and the reads, and a gate that cannot tell is a stale image.
 (define (gate-boot-image-fresh? so inputs)
   (and (file-exists? so) (file-exists? inputs)
-       (call-with-input-file inputs
-         (lambda (p)
-           (let loop ()
-             (let ((line (get-line p)))
-               (cond ((eof-object? line) #t)
-                     ((string=? line "") (loop))
-                     (else
-                      (let ((e (gate-boot-parse-line line)))
-                        (cond ((not e) #f)          ; old format, or malformed
-                              ((not (file-exists? (cdr e))) #f)
-                              ((not (string=? (car e) (gate-boot-hash-string (cdr e)))) #f)
-                              (else (loop))))))))))))
+       (guard (e (#t #f))
+         (call-with-input-file inputs
+           (lambda (p)
+             (let loop ()
+               (let ((line (get-line p)))
+                 (cond ((eof-object? line) #t)
+                       ((string=? line "") (loop))
+                       (else
+                        (let ((e (gate-boot-parse-line line)))
+                          (cond ((not e) #f)          ; old format, or malformed
+                                ((not (file-exists? (cdr e))) #f)
+                                ((not (string=? (car e) (gate-boot-hash-string (cdr e)))) #f)
+                                (else (loop)))))))))))))

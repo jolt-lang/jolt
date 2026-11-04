@@ -179,7 +179,13 @@
     (close-port p))
   (bld-system (string-append bld-chez " --script '" cs "'"))
   (when (file-exists? cs) (delete-file cs)))
-(when (file-exists? jb-flat-so) (delete-file jb-flat-so))
-(rename-file jb-flat-so-tmp jb-flat-so)
+;; rename(2) over the old image, never delete-then-rename: bin/jolt checks
+;; flat.so exists and is fresh, then a moment later cli-devcache.ss loads it, and
+;; a delete landing between the two left it loading nothing ("failed for
+;; target/dev/flat.so: no such file or directory", no output). devbootsmoke
+;; rebuilds the image four times in a parallel `make ci`, so every bin/jolt gate
+;; beside it was exposed. rename-replace! deletes first only on Windows, where a
+;; rename cannot replace a file.
+(rename-replace! jb-flat-so-tmp jb-flat-so)
 
 (display (string-append "make-devboot: wrote " jb-flat-so "\n"))
