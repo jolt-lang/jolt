@@ -1131,6 +1131,7 @@
   (let [from-registry registry-emitted-names
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
                   "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
+                  "jolt-invoke-t0" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke-t3" "jolt-invoke-t4"
                   "var-deref" "list->cseq" "cseq->list"
                   "jolt-rest-seq" "jolt-register-variadic!"
                   "make-jrec" "jrec-field-at" "jrec-field-set!"
@@ -3538,9 +3539,16 @@
         ;; fixed-arity entry point (jolt-invoke0..4) by arg count so the common
         ;; raw-procedure fast path allocates no rest-list; keep variadic jolt-invoke
         ;; for larger arities / apply tails.
+        ;;
+        ;; jolt-invokeN puts the site slot back when the fn value returns (seq.ss):
+        ;; this code may be untraced (clojure.core) and the fn a traced callback,
+        ;; whose tail site would otherwise outlive it. A tail call must stay one,
+        ;; and a traced non-tail call restores the slot itself (site-restore), so
+        ;; both take jolt-invoke-tN, which does not.
         invoke (fn []
                  (let [callee (if (<= (count args) 4)
-                                (str "jolt-invoke" (count args))
+                                (str (if (or tail? (trace-frames?)) "jolt-invoke-t" "jolt-invoke")
+                                     (count args))
                                 "jolt-invoke")]
                    (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
                                  (fn [operands] (emit-call tail? callee operands tl ich)))))]

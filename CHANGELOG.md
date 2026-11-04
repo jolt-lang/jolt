@@ -349,6 +349,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A caught throw keeps the fn that threw when the call into it went through a
+  fn value.** `(defn caught [f] (try (f) (catch Throwable t t)))` called from
+  another fn, with `f` tail-calling a fn that divides by zero: `.getStackTrace`
+  (and `jolt.debug/frames`) left out the thrower and named only the caller. The
+  report second-guessed the site a tail call records against the innermost
+  frame's registered callees, which never name a fn reached through a value.
+  Code that is not traced now puts that site back whenever a fn value it called
+  returns (`jolt-invoke0`..`4`, and the natives' direct callback calls in `map`,
+  `filter`, `reduce` and `reduce-kv`), so a site at a throw always belongs to
+  the call that threw and the guess goes. That also drops the frame a callback
+  left when core threw after it returned: `(into {} (map f xs))` failing on a
+  non-pair named `f` innermost, where it now names the fn that called `into`, as
+  the JVM does. No measurable cost (one load and store per callback).
+
 - **`require`, `load`, `load-string`, `load-reader` and `load-file` raise a
   `Compiler$CompilerException` for what a form's run throws**, as
   `Compiler.load` and `RT.load` do: "Syntax error macroexpanding at

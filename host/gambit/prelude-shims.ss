@@ -775,6 +775,10 @@
     (if (vector? v)
         v
         (let ((v (make-vector 16 0))) (thread-specific-set! t v) v))))
+;; rt.ss's site-slot restore around a callback (seq.ss jolt-invoke0..4). This
+;; target records no frames, so there is no slot to keep: the call alone.
+(define-syntax jolt-site-kept
+  (syntax-rules () ((_ call) call)))
 (define (virtual-register n) (vector-ref (%vreg-slots) n))
 (define (set-virtual-register! n v) (vector-set! (%vreg-slots) n v))
 (define (virtual-register-count) 16)
