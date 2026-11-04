@@ -210,6 +210,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`str` of a `java.util.Date`, `java.sql.Timestamp` or `java.sql.Date` is
+  the JVM's `toString`, on the default zone.** `(str #inst "2020-01-01")` is
+  `"Tue Dec 31 19:00:00 EST 2019"` under America/Toronto (it was
+  `"2020-01-01T00:00:00.000-00:00"`), a Timestamp `"2019-12-31 19:00:00.0"` and
+  a `java.sql.Date` `"2019-12-31"`. This covers every path that stringifies:
+  `.toString`, `format "%s"`, StringBuilder, `clojure.string`, and string
+  concatenation in messages. `pr`, `prn`, `print`, `println` and EDN still
+  print `#inst "…"`, as on the JVM. A Timestamp is now its own class
+  (`instance? java.sql.Timestamp`, `.getNanos`) and prints its fraction to
+  nine digits; a `java.sql.Date` prints as `#inst` instead of `#object`, and
+  equals the `java.util.Date` at its instant. `TimeZone/setDefault` sets the
+  default zone; a provider registered with
+  `jolt.host/set-default-zone-provider!` now answers only where the system
+  names no zone. A zone's offset is remembered over the stretch it holds, so
+  reading dates in order (a Date's getters, `SimpleDateFormat`, `str`) asks
+  libc once per stretch instead of once per instant.
+
 - **`future` runs on a pooled executor**, as the JVM's solo executor does,
   instead of a fresh OS thread per call; a wait spins briefly before parking.
 

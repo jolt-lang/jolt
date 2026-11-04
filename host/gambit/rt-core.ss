@@ -1525,6 +1525,7 @@
 (define (nb-host-char-ref a i) (nb-no-arrays "java.nio CharBuffer array read"))
 (define (nb-host-char-set! a i c) (nb-no-arrays "java.nio CharBuffer array write"))
 (define (jinst? x) #f)
+(define (jts? x) #f)
 (define (jfile? x) #f)
 (define (jbigdec? x) #f)
 
