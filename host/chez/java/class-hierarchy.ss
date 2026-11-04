@@ -755,6 +755,8 @@
 (jch-register-supers! "java.lang.Exception" '("java.lang.Throwable"))
 (jch-register-supers! "java.lang.RuntimeException" '("java.lang.Exception"))
 (jch-register-supers! "clojure.lang.ExceptionInfo" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
+;; what load-string / load-file raise for a form whose run threw (compile-eval.ss)
+(jch-register-supers! "clojure.lang.Compiler$CompilerException" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
 ;; what a read from a LineNumberingPushbackReader raises (reader.ss
 ;; rdr-reader-exception); only the LispReader one carries ex-data
 (jch-register-supers! "clojure.lang.LispReader$ReaderException" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
@@ -1481,9 +1483,8 @@
 (jch-register-supers! "java.util.Locale" '())
 (jch-register-supers! "java.util.TimeZone" '())
 ;; #inst / (Date.) classes. java.sql.Date and java.sql.Timestamp are Date
-;; subclasses (jolt's one #inst value reports Date only — see inst-time.ss, which
-;; answers instance? Timestamp #f — so these rows exist for the sql-date shim and
-;; for isa?/supers of the class tokens, not for the #inst value's dispatch tags).
+;; subclasses: the sql-date shim and the jts child of the #inst record report
+;; them, and their dispatch tags walk up to java.util.Date from here.
 (jch-register-supers! "java.util.Date" '("java.lang.Comparable" "java.io.Serializable"))
 (jch-register-supers! "java.sql.Date" '("java.util.Date"))
 (jch-register-supers! "java.sql.Timestamp" '("java.util.Date"))

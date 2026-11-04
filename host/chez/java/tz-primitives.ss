@@ -112,19 +112,37 @@
       (tzp-unsetenv "TZ"))
   (tzp-tzset))
 
-(define (tzp-offset-probe zone epoch)   ; caller holds tzp-mutex
+;; Is `zone` the one libc is already in? TZ names it, or TZ is unset and it is
+;; the machine's zone as the system names it (inst-time.ss
+;; tz-machine-zone-found, the /etc/localtime libc reads). Then localtime answers for it as is, and the TZ switch -- the two
+;; zone loads that make a probe cost a millisecond -- is skipped. This is the
+;; default zone, which is what a Date's toString and getters ask about.
+;; inst-time.ss, loaded after this file, installs its lookup here.
+(define tzp-machine-zone (lambda () #f))
+(define (tzp-set-machine-zone-source! f) (set! tzp-machine-zone f))
+(define (tzp-zone-current? zone saved)
+  (if saved
+      (string=? saved zone)
+      (let ((m (tzp-machine-zone))) (and m (string=? zone m)))))
+(define (tzp-in-zone zone thunk)          ; caller holds tzp-mutex
   (let ((saved (tzp-getenv "TZ")))
-    (dynamic-wind
-      (lambda ()
-        (tzp-setenv "TZ" zone 1)
-        (tzp-tzset))
-      (lambda ()
-        (let ((tp (sa-foreign-alloc 8)))
-          (sa-foreign-set! 'long tp 0 epoch)
-          (let ((tm (tzp-localtime tp)))
-            (sa-foreign-free tp)
-            (and tm (not (eq? tm 0)) (sa-foreign-ref 'long tm 40)))))
-      (lambda () (tzp-restore-tz! saved)))))
+    (if (tzp-zone-current? zone saved)
+        (thunk)
+        (dynamic-wind
+          (lambda ()
+            (tzp-setenv "TZ" zone 1)
+            (tzp-tzset))
+          thunk
+          (lambda () (tzp-restore-tz! saved))))))
+
+(define (tzp-offset-probe zone epoch)   ; caller holds tzp-mutex
+  (tzp-in-zone zone
+    (lambda ()
+      (let ((tp (sa-foreign-alloc 8)))
+        (sa-foreign-set! 'long tp 0 epoch)
+        (let ((tm (tzp-localtime tp)))
+          (sa-foreign-free tp)
+          (and tm (not (eq? tm 0)) (sa-foreign-ref 'long tm 40)))))))
 
 ;; Memo over that probe. The offset of a zone at an instant is a pure function of
 ;; the two, and the probe is expensive for a reason the restore above introduced:
@@ -189,21 +207,18 @@
 ;; The zone's abbreviation at an instant ("EST", "BST", "JST"): strftime %Z
 ;; under the same TZ switch as the offset probe. #f when libc cannot say.
 (define (tzp-abbrev-probe zone epoch)   ; caller holds tzp-mutex
-  (let ((saved (tzp-getenv "TZ")))
-    (dynamic-wind
-      (lambda () (tzp-setenv "TZ" zone 1) (tzp-tzset))
-      (lambda ()
-        (let ((tp (sa-foreign-alloc 8)) (buf (make-bytevector 32 0)))
-          (sa-foreign-set! 'long tp 0 epoch)
-          (let ((tm (tzp-localtime tp)))
-            (sa-foreign-free tp)
-            (and tm (not (eq? tm 0)) tzp-strftime
-                 (let ((n (tzp-strftime buf 32 "%Z" tm)))
-                   (and (> n 0)
-                        (let ((bv (make-bytevector n)))
-                          (do ((i 0 (+ i 1))) ((= i n) (utf8->string bv))
-                            (bytevector-u8-set! bv i (bytevector-u8-ref buf i))))))))))
-      (lambda () (tzp-restore-tz! saved)))))
+  (tzp-in-zone zone
+    (lambda ()
+      (let ((tp (sa-foreign-alloc 8)) (buf (make-bytevector 32 0)))
+        (sa-foreign-set! 'long tp 0 epoch)
+        (let ((tm (tzp-localtime tp)))
+          (sa-foreign-free tp)
+          (and tm (not (eq? tm 0)) tzp-strftime
+               (let ((n (tzp-strftime buf 32 "%Z" tm)))
+                 (and (> n 0)
+                      (let ((bv (make-bytevector n)))
+                        (do ((i 0 (+ i 1))) ((= i n) (utf8->string bv))
+                          (bytevector-u8-set! bv i (bytevector-u8-ref buf i))))))))))))
 (define (tzp-tz-abbrev zone epoch)
   (and tzp-tz-usable? (jolt-with-mutex tzp-mutex (tzp-abbrev-probe zone epoch))))
 

@@ -77,7 +77,7 @@
 ;; validate a candidate value: a non-nil validator that returns falsey rejects.
 (define (jolt-atom-validate a v)
   (let ((vf (jolt-atom-validator a)))
-    (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf v)))
+    (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke1 vf v)))
       (jolt-iref-state-throw))))
 
 ;; notify each watch (k ref old new), in insertion order (alist is reverse-built,
@@ -86,7 +86,7 @@
   (let ((ws (jolt-atom-watches a)))
     ;; nearly every atom has none, and this runs on every swap!/reset!
     (unless (null? ws)
-      (for-each (lambda (kv) (jolt-invoke (cdr kv) (car kv) a old new))
+      (for-each (lambda (kv) (jolt-invoke4 (cdr kv) (car kv) a old new))
                 (reverse ws)))))
 
 ;; deref reads an atom; it also unwraps a `reduced` (Clojure @(reduced x) => x,
@@ -228,11 +228,11 @@
       (jolt-with-mutex iref-tbl-mu (hashtable-ref iref-validator-tbl r jolt-nil))
       jolt-nil))
 (define (iref-notify r old new)
-  (for-each (lambda (kv) (jolt-invoke (cdr kv) (car kv) r old new))
+  (for-each (lambda (kv) (jolt-invoke4 (cdr kv) (car kv) r old new))
             (reverse (iref-watches-of r))))
 (define (iref-validate r v)
   (let ((vf (iref-validator-of r)))
-    (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf v)))
+    (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke1 vf v)))
       (jolt-iref-state-throw))))
 
 ;; add-watch interns (key . fn) (replacing any existing key, keeping order);
@@ -289,11 +289,11 @@
   (let ((vf (if (jolt-nil? f) jolt-nil f)))
     (cond
       ((jolt-atom? a)
-       (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf (jolt-atom-val a))))
+       (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke1 vf (jolt-atom-val a))))
          (jolt-iref-state-throw))
        (jolt-atom-validator-set! a vf))
       ((iref? a)
-       (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke vf (jolt-deref a))))
+       (when (and (not (jolt-nil? vf)) (jolt-not (jolt-invoke1 vf (jolt-deref a))))
          (jolt-iref-state-throw))
        (jolt-with-mutex iref-tbl-mu
          (iref-tbl-bump!)

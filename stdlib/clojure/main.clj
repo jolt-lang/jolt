@@ -48,18 +48,22 @@
   [fn-name]
   (clojure.lang.Compiler/demunge fn-name))
 
-;; The reference stops at a CompilerException that names a source file. jolt has
-;; no wrapping compiler exception — a compile diagnostic IS the one throwable, and
-;; it is never a cause of something else — so the chain is walked to its end.
+;; The reference stops at a CompilerException whose source is not
+;; "NO_SOURCE_FILE". jolt raises one where Compiler.load does, for what a
+;; load-string / load-file form's run threw; a compile diagnostic is the one
+;; throwable, never a cause, so otherwise the chain is walked to its end.
 (defn root-cause
   "Returns the initial cause of an exception or error by peeling off all of
   its wrappers"
   {:added "1.3"}
   [^Throwable t]
   (loop [cause t]
-    (if-let [cause (ex-cause cause)]
-      (recur cause)
-      cause)))
+    (if (and (= "clojure.lang.Compiler$CompilerException" (.getName (class cause)))
+             (not= "NO_SOURCE_FILE" (:clojure.error/source (ex-data cause))))
+      cause
+      (if-let [nxt (ex-cause cause)]
+        (recur nxt)
+        cause))))
 
 ;;;;;;;;;;;;;;;;;;; end of redundantly copied from clojure.repl to avoid dep ;;;;;;;;;;;;;;
 

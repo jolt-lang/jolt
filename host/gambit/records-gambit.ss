@@ -2108,7 +2108,9 @@
     ((regex-t? obj) (jch-tags "java.util.regex.Pattern"))
     ((matcher-t? obj) (jch-tags "java.util.regex.Matcher"))
     ((juuid? obj) (jch-tags "java.util.UUID"))
-    ((jinst? obj) (jch-tags "java.util.Date"))
+    ((jinst? obj)
+     (jch-tags
+       (if (jts? obj) "java.sql.Timestamp" "java.util.Date")))
     ((jbigdec? obj) (jch-tags "java.math.BigDecimal"))
     ((procedure? obj) (jch-tags "clojure.lang.AFunction"))
     ((jolt-nil? obj) '("nil"))

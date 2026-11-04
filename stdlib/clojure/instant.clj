@@ -10,9 +10,9 @@
 ;;
 ;; Host-model notes:
 ;;
-;;   - `java.sql.Timestamp` is `java.util.Date` on jolt (one instant type,
-;;     millisecond resolution), so `read-instant-timestamp` truncates the
-;;     nanosecond fraction to milliseconds instead of preserving it. It is kept
+;;   - `java.sql.Timestamp` has millisecond resolution on jolt, as every
+;;     instant does, so `read-instant-timestamp` truncates the nanosecond
+;;     fraction to milliseconds instead of preserving it. It is kept
 ;;     as a distinct entry point because libraries bind it into *data-readers*.
 ;;   - `java.util.Calendar` on jolt holds an instant, not an instant plus a zone,
 ;;     so `read-instant-calendar` yields the right point in time but does not
@@ -166,8 +166,8 @@
                            offset-hours offset-minutes)))))
 
 (defn- construct-timestamp
-  "Construct a java.sql.Timestamp. On jolt that is java.util.Date, so the
-  fraction is truncated to milliseconds rather than kept to nanoseconds."
+  "Construct a java.sql.Timestamp. On jolt it has millisecond resolution, so
+  the fraction is truncated to milliseconds rather than kept to nanoseconds."
   [years months days hours minutes seconds nanoseconds
    offset-sign offset-hours offset-minutes]
   (new java.sql.Timestamp

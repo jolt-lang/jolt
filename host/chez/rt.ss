@@ -1304,6 +1304,12 @@
             (guard (_ (#t #f)) (reporter seconds unreached callbacks message))
             (jolt-eprint message))))))
 
+;; CALL, then the site slot (vreg 2, jolt-vreg-site below) put back as it was
+;; before it: seq.ss's jolt-invoke0..4, for untraced code calling a fn value that
+;; may be traced. The literal 2 compiles to a load and a store.
+(define-syntax jolt-site-kept
+  (syntax-rules ()
+    ((_ call) (let* ((s (virtual-register 2)) (r call)) (set-virtual-register! 2 s) r))))
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
@@ -1766,6 +1772,42 @@
 (define (jolt-raise-thrown v)
   (raise (condition (make-message-condition (jolt-throw-message v))
                     (make-jolt-throw-condition v))))
+
+;; Compiler.load's wrap (compile-eval.ss jolt-load-run-form). load-string,
+;; load-reader and load-file are Compiler.load, which raises what a top-level
+;; form's RUN threw as a CompilerException under :execution, the throw as its
+;; cause. jolt-load-wrap is #f, or #(source) for the load about to start: the
+;; load that is entered reads it and binds it #f for its forms, so only that one
+;; load wraps, never a require (RT.load wraps too on the JVM; jolt's require
+;; leaves the throw as it is). Here, not in compile-eval.ss: rt.ss reads it for
+;; the uncaught report in a binary built without the compiler.
+(define jolt-load-wrap (make-thread-parameter #f))
+;; The text eval-string / load-string last evaluated under a source path, by
+;; that path, so a diagnostic's snippet shows what was compiled (an editor's
+;; unsaved buffer) and not the file on disk. A load of the file from disk
+;; forgets it (loader.ss load-jolt-file*): the disk is what that compiled.
+(define jolt-eval-source-texts (make-hashtable string-hash string=?))
+(define jolt-eval-text-mutex (make-mutex))
+(define (jolt-eval-source-text-set! path text)
+  (jolt-with-mutex jolt-eval-text-mutex (hashtable-set! jolt-eval-source-texts path text)))
+(define (jolt-eval-source-text-forget! path)
+  (when (string? path)
+    (jolt-with-mutex jolt-eval-text-mutex (hashtable-delete! jolt-eval-source-texts path))))
+(define (jolt-eval-source-text path)
+  (and (string? path)
+       (jolt-with-mutex jolt-eval-text-mutex (hashtable-ref jolt-eval-source-texts path #f))))
+
+;; wrapper -> the raise it wraps, so the uncaught report and the raise-time
+;; position records describe the throw itself, as clojure.main's report does.
+(define jolt-load-wrap-origins (make-weak-eq-hashtable))
+(define jolt-load-wrap-mutex (make-mutex))
+(define (jolt-load-wrap-origin raw)
+  (let ((v (jolt-unwrap-throw raw)))
+    (or (and (jolt-ex-info-record? v)
+             (equal? (jolt-ex-info-record-class-name v) "clojure.lang.Compiler$CompilerException")
+             (jolt-with-mutex jolt-load-wrap-mutex
+               (hashtable-ref jolt-load-wrap-origins v #f)))
+        raw)))
 ;; A throwable's frames are those of where it was CONSTRUCTED, as the JVM fills
 ;; them in (Throwable's constructor calls fillInStackTrace): one built here and
 ;; never thrown -- handed to a callback, logged, returned as a value -- has its

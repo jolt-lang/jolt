@@ -1276,36 +1276,20 @@
               (else (loop caller (cons (cons caller line) acc)
                           (cons caller seen) (fx+ n 1)))))))))
 
-;; Staleness validation (R2's rule over the walk): the pair's fn must be
-;; absent from the live continuation, and is rejected only on POSITIVE
-;; registered disagreement — the walk unconnected AND the innermost
-;; continuation frame's registered callees naming none of the walked fns.
-;; A returned tail site's residue fails exactly this; a genuine pair behind
-;; a dynamic launcher survives via the no-evidence arm.
+;; Staleness validation (R2's rule over the walk): the pair's fn must be absent
+;; from the live continuation. That is all a throw's pair needs now. It is
+;; residue only if the tail call it records returned and nothing put the slot
+;; back, and every way back into the code that threw puts it back: a traced
+;; non-tail call restores it (backend site-restore), and so does an untraced
+;; one through a fn value (seq.ss jolt-invoke0..4, the callback boundary). The
+;; registered-callee test this used to apply instead rejected the genuine pair
+;; whenever the chain ran through a fn value -- (f) inside a try -- since nothing
+;; registered at the frame's line names the fn the value turned out to be
+;; (jolt-gqtdc), while a callback that returned into core before core threw got
+;; through it whenever the frame's line happened to name that callback.
 (define (jolt-site-valid? pair path connected? cont cont-names)
   (and (pair? pair)
-       (not (hashtable-ref cont-names (car pair) #f))
-       (or connected?
-           (null? cont)
-           ;; Two evidence tiers, because a CATCH context's frame can resolve
-           ;; to an imprecise line (the guard's establishment point): the
-           ;; precise line-keyed callees first, then the fn's callees at ANY
-           ;; line. Reject only when the fn is registered and neither tier
-           ;; names a walked fn — a returned tail site's residue fails exactly
-           ;; that; a genuine chain behind an imprecise line survives the
-           ;; fn-level tier.
-           (let* ((ctx (car cont))
-                  (fnm (srcreg-frame-nm ctx))
-                  (path-hit? (lambda (expected)
-                               (exists (lambda (p) (and (member (car p) expected) #t))
-                                       path)))
-                  (line-callees (jolt-callsite-callees fnm (srcreg-frame-line ctx)))
-                  (fn-callees (jolt-callsite-fn-callees fnm)))
-             (cond
-               ((and line-callees (path-hit? line-callees)) #t)
-               ((and fn-callees (path-hit? fn-callees)) #t)
-               ((or line-callees fn-callees) #f)
-               (else #t))))))
+       (not (hashtable-ref cont-names (car pair) #f))))
 
 ;; The positive half of jolt-site-valid?: the walk connected to a live frame, or
 ;; the innermost live frame's registered callees (at its line, else anywhere in
@@ -1772,7 +1756,9 @@
 
 ;; Render the throwable, then its Clojure backtrace when one maps. The caller adds
 ;; any top-level source location (the runtime cli does; a built binary has none).
-(define (jolt-report-throwable v port)
+(define (jolt-report-throwable v0 port)
+  ;; a load-file's CompilerException reports the throw it wraps (cli-core.ss)
+  (define v (jolt-load-wrap-origin v0))
   (jolt-render-throwable v port)
   (let ((bt (jolt-backtrace-string v)))
     (when bt (display "  trace:\n" port) (display bt port))))
@@ -1830,16 +1816,27 @@
 ;; read error keeps its diagnostic position on its RuntimeException — and
 ;; printing that into its toString broke the text a caller builds from it, the
 ;; ReaderException's message first among them.
+;; A CompilerException's toString is its message alone, then its cause's message
+;; on a line of its own when the cause is an IExceptionInfo.
 (register-str-render! jolt-ex-info-record?
   (lambda (x)
     (let* ((class-name (jolt-ex-info-record-class-name x))
            (msg (jolt-ex-info-record-message x))
            (data (jolt-ex-info-record-data x)))
+      (if (equal? class-name "clojure.lang.Compiler$CompilerException")
+          (let ((c (jolt-ex-info-record-cause x)))
+            (string-append (if (jolt-nil? msg) "" (jolt-str-render-one msg))
+                           (if (and (jolt-ex-info-record? c)
+                                    (member (jolt-ex-info-record-class-name c)
+                                            '("clojure.lang.ExceptionInfo" "clojure.lang.Compiler$CompilerException")))
+                               (string-append "\n" (let ((m (jolt-ex-info-record-message c)))
+                                                      (if (jolt-nil? m) "null" (jolt-str-render-one m))))
+                               "")))
       (string-append class-name
                      (if (jolt-nil? msg) "" (string-append ": " (jolt-str-render-one msg)))
                      (if (or (jolt-nil? data) (not (equal? class-name "clojure.lang.ExceptionInfo")))
                          ""
-                         (string-append " " (jolt-pr-str data)))))))
+                         (string-append " " (jolt-pr-str data))))))))
 
 ;; count on ex-info / host throwable records throws UnsupportedOperationException
 ;; matching JVM: "count not supported on this type: <SimpleClassName>"

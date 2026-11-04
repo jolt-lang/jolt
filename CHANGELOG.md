@@ -210,6 +210,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`str` of a `java.util.Date`, `java.sql.Timestamp` or `java.sql.Date` is
+  the JVM's `toString`, on the default zone.** `(str #inst "2020-01-01")` is
+  `"Tue Dec 31 19:00:00 EST 2019"` under America/Toronto (it was
+  `"2020-01-01T00:00:00.000-00:00"`), a Timestamp `"2019-12-31 19:00:00.0"` and
+  a `java.sql.Date` `"2019-12-31"`. This covers every path that stringifies:
+  `.toString`, `format "%s"`, StringBuilder, `clojure.string`, and string
+  concatenation in messages. `pr`, `prn`, `print`, `println` and EDN still
+  print `#inst "…"`, as on the JVM. A Timestamp is now its own class
+  (`instance? java.sql.Timestamp`, `.getNanos`) and prints its fraction to
+  nine digits; a `java.sql.Date` prints as `#inst` instead of `#object`, and
+  equals the `java.util.Date` at its instant. `TimeZone/setDefault` sets the
+  default zone; a provider registered with
+  `jolt.host/set-default-zone-provider!` now answers only where the system
+  names no zone. A zone's offset is remembered over the stretch it holds, so
+  reading dates in order (a Date's getters, `SimpleDateFormat`, `str`) asks
+  libc once per stretch instead of once per instant.
+
 - **`future` runs on a pooled executor**, as the JVM's solo executor does,
   instead of a fresh OS thread per call; a wait spins briefly before parking.
 
@@ -382,6 +399,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sliced wait took the mutex back inside Chez's `condition-wait`, still
   counted as active. It now releases the mutex, naps in a collect-safe call
   and retakes it collect-safely.
+- **A caught throw keeps the fn that threw when the call into it went through a
+  fn value.** `(defn caught [f] (try (f) (catch Throwable t t)))` called from
+  another fn, with `f` tail-calling a fn that divides by zero: `.getStackTrace`
+  (and `jolt.debug/frames`) left out the thrower and named only the caller. The
+  report second-guessed the site a tail call records against the innermost
+  frame's registered callees, which never name a fn reached through a value.
+  Code that is not traced now puts that site back whenever a fn value it called
+  returns (`jolt-invoke0`..`4`, and the natives' direct callback calls in `map`,
+  `filter`, `reduce` and `reduce-kv`), so a site at a throw always belongs to
+  the call that threw and the guess goes. That also drops the frame a callback
+  left when core threw after it returned: `(into {} (map f xs))` failing on a
+  non-pair named `f` innermost, where it now names the fn that called `into`, as
+  the JVM does. No measurable cost (one load and store per callback).
+
+- **`require`, `load`, `load-string`, `load-reader` and `load-file` raise a
+  `Compiler$CompilerException` for what a form's run throws**, as
+  `Compiler.load` and `RT.load` do: "Syntax error macroexpanding at
+  ([source:]line:col).", ex-data `{:clojure.error/phase :execution, :line,
+  :column}` (and `:source`: the classpath file for a namespace, the path for
+  `load-file`), the throw as its cause, at the reader's position before the
+  form. A `(catch ArithmeticException ...)` around a `require` or `load-string`
+  no longer catches it, as on the JVM; read the cause. A nested require's
+  wrapper passes through unchanged. `eval` and `jolt.host/eval-string` are
+  unchanged, and the uncaught report still names the original throw, its
+  location and its trace. `clojure.main/root-cause` stops at the wrapper, so
+  nREPL replies `ex`/`root-ex` `Compiler$CompilerException` for such an error,
+  as JVM nREPL does, and its `err` names the failing form's file and line when
+  no frame does ("at (b.clj:3)" where it said "at (REPL:1)").
+- **A diagnostic in text evaluated under a source path shows that text**
+  (`jolt.host/eval-string`/`load-string` with a path, nREPL `load-file` of an
+  unsaved buffer). Its snippet was read from the file on disk.
 - **The default time zone is the machine's, whatever has loaded.** With `TZ`
   unset, core answered UTC until jolt.time loaded and registered the
   machine's zone, so a zone-less `SimpleDateFormat` parse moved by hours

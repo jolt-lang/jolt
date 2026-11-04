@@ -470,6 +470,40 @@ expect_match "execution continued past every catch" "$pst" 'DONE'
 # into the logical ones (jolt-mbcm.7). These rows are that parity, so they assert
 # the SAME two frames the `jolt run` rows above do -- if inline attribution
 # regresses, the built binary reports app.tail/-main at line 4 and both fail.
+# A caught throw keeps the fn that threw when the chain into it went through a
+# fn value: (f) inside a try, in a fn called non-tail. mb tail-calls `/`, the
+# anonymous fn tail-calls mb, so neither has a frame; the site pair mb stored is
+# all that names it, and it was dropped because nothing registered at the try's
+# line names mb (jolt-gqtdc). And its mirror: a callback that returned into core
+# code before core threw is NOT a frame of that throw.
+cat > "$work/src/app/faultcatch.clj" <<'EOF'
+(ns app.faultcatch)
+(defn caught [f] (try (f) nil (catch Throwable t t)))
+(defn mb [x]
+  (let [z (+ x 1)]
+    (/ z 0)))
+(defn fr2 [f] (let [t (caught f)] t))
+(defn names [t] (mapv #(str (.getClassName %) ":" (.getLineNumber %)) (.getStackTrace t)))
+(defn cb [x] (inc x))
+(defn into-map [] (into {} (map cb [1 2])))
+(defn validated [x] (inc x))
+(defn swapper [] (swap! (atom 0 :validator neg?) validated))
+(defn -main [& _]
+  (println "top" (names (caught #(mb 1))))
+  (println "nested" (names (fr2 #(mb 1))))
+  (println "residue" (names (caught into-map)))
+  (println "validator" (names (caught swapper))))
+EOF
+echo "trace smoke: a caught throw behind a fn value keeps its thrower; a returned callback is no frame"
+out_fc="$(run_app app.faultcatch)"
+expect_match "faultcatch: top-level catch names mb" "$out_fc" '^top \[app\.faultcatch\$mb:5 '
+expect_match "faultcatch: a catch in a non-tail-called fn names mb first" "$out_fc" '^nested \[app\.faultcatch\$mb:5 '
+expect_match "faultcatch: ...then the fn the try sits in" "$out_fc" '^nested .*app\.faultcatch\$fr2:6'
+expect_match "faultcatch: core's throw after a callback returned starts at its caller" "$out_fc" '^residue \[app\.faultcatch\$into_map:9'
+expect_no_match "faultcatch: ...and the returned callback is not in it" "$out_fc" '^residue .*\$cb:'
+expect_match "faultcatch: a failed validator starts at swap!'s caller" "$out_fc" '^validator \[app\.faultcatch\$swapper:11'
+expect_no_match "faultcatch: ...and the swapped fn is not in it" "$out_fc" '^validator .*\$validated:'
+
 # A built binary names a frame's file by its classpath name (app/tail.clj): it
 # has no source roots to say where that file was, and the name is the same
 # wherever it was built.

@@ -1714,9 +1714,10 @@ else
   fails=$((fails + 1))
 fi
 
-# The default zone is the machine's, as on the JVM: TZ when set (empty TZ is
-# UTC, as libc reads it), else a registered provider, else the zone the
-# system's /etc/localtime link (or /etc/timezone) names, else UTC. It was UTC
+# The default zone is the machine's, as on the JVM: TimeZone/setDefault, else
+# TZ when set (empty TZ is UTC, as libc reads it), else the zone the system's
+# /etc/localtime link (or /etc/timezone) names, else a registered provider,
+# else UTC. It was UTC
 # here unless jolt.time happened to load first, so a zone-less
 # SimpleDateFormat parse moved by five hours depending on whether some
 # java.time class had been touched. The machine's zone is worked out the way
@@ -1724,8 +1725,11 @@ fi
 machine_zone_link="$(readlink /etc/localtime 2>/dev/null)"
 case "$machine_zone_link" in
   (*/zoneinfo/*) machine_zone="${machine_zone_link##*/zoneinfo/}" ;;
-  (*) if [ -f /etc/timezone ]; then machine_zone="$(tr -d ' \n' < /etc/timezone)"; else machine_zone=UTC; fi ;;
+  (*) if [ -f /etc/timezone ]; then machine_zone="$(tr -d ' \n' < /etc/timezone)"; else machine_zone=; fi ;;
 esac
+# with no zone named by the system, core answers a provider's, else UTC
+machine_found="${machine_zone:+yes}"
+machine_zone="${machine_zone:-UTC}"
 tzmachine_expr='[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "yyyy-MM-dd HH:mm zzz Z") (java.util.Date. 1393632000000)) (.getHours (java.util.Date. 1393632000000)) (.get (doto (java.util.Calendar/getInstance) (.setTime (java.util.Date. 1393632000000))) java.util.Calendar/HOUR_OF_DAY) (.getTime (.parse (java.text.SimpleDateFormat. "dd-MM-yyyy HH:mm:ss") "24-03-2006 15:49:00")) (.getTimezoneOffset (java.util.Date. 0))]'
 tzmachine_out="$(unset TZ; $jolt -e "$tzmachine_expr" 2>&1 | tail -1)"
 tzmachine_ref="$(TZ="$machine_zone" $jolt -e "$tzmachine_expr" 2>&1 | tail -1)"
@@ -1736,15 +1740,19 @@ case "$tzmachine_out" in
   *) echo "  FAIL: default zone with TZ unset is not the machine's ($machine_zone): $tzmachine_out"; fails=$((fails + 1)) ;;
 esac
 
-# A set but empty TZ is UTC (libc's reading), not the machine's zone; a
-# registered provider answers ahead of the machine lookup, and TZ beats both.
+# A set but empty TZ is UTC (libc's reading), not the machine's zone. A
+# registered provider answers only where the system names no zone; TZ beats
+# it, and TimeZone/setDefault beats TZ.
 tzdefault_out="$(TZ= $jolt -e '[(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))]' 2>&1 | tail -1)"
-tzprov_out="$(unset TZ; $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) [(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0))])' 2>&1 | tail -1)"
+tzprov_out="$(unset TZ; $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault)))' 2>&1 | tail -1)"
 tzprovtz_out="$(TZ=UTC $jolt -e '(do (jolt.host/set-default-zone-provider! (fn [] "Asia/Tokyo")) (.getID (java.util.TimeZone/getDefault)))' 2>&1 | tail -1)"
-if [ "$tzdefault_out" = '["UTC" "00:00 UTC"]' ] && [ "$tzprov_out" = '["Asia/Tokyo" "09:00 JST"]' ] && [ "$tzprovtz_out" = '"UTC"' ]; then
+tzset_out="$(TZ=UTC $jolt -e '(do (java.util.TimeZone/setDefault (java.util.TimeZone/getTimeZone "Asia/Tokyo")) [(.getID (java.util.TimeZone/getDefault)) (.format (java.text.SimpleDateFormat. "HH:mm zzz") (java.util.Date. 0)) (do (java.util.TimeZone/setDefault nil) (.getID (java.util.TimeZone/getDefault)))])' 2>&1 | tail -1)"
+if [ -n "$machine_found" ]; then tzprov_want="\"$machine_zone\""; else tzprov_want='"Asia/Tokyo"'; fi
+if [ "$tzdefault_out" = '["UTC" "00:00 UTC"]' ] && [ "$tzprov_out" = "$tzprov_want" ] && [ "$tzprovtz_out" = '"UTC"' ] \
+   && [ "$tzset_out" = '["Asia/Tokyo" "09:00 JST" "UTC"]' ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: empty TZ is UTC, provider over the machine, TZ over both: $tzdefault_out / $tzprov_out / $tzprovtz_out"
+  echo "  FAIL: empty TZ is UTC, the machine over a provider, TZ over both, setDefault over TZ: $tzdefault_out / $tzprov_out (want $tzprov_want) / $tzprovtz_out / $tzset_out"
   fails=$((fails + 1))
 fi
 
@@ -2416,7 +2424,49 @@ check '(do (require (quote jolt.nrepl)) ((var jolt.nrepl/built-in-handler) {"op"
 # JVM nREPL does, rather than a name cut from file-path.
 check '[(jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj" "zz.clj") (jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj" nil) (jolt.host/load-string "[*file* *source-path*]" "src/nes/b.clj" "b2.clj")]' '["zz.clj" nil ["src/nes/b.clj" "b2.clj"]]'
 check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "[*file* *source-path*]" "file-path" "src/nes/f.clj" "file-name" "zz.clj" :reply #(swap! sent conj %)}) ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "[*file* *source-path*]" "file-path" "/tmp/nes/g.clj" :reply #(swap! sent conj %)}) (keep #(get % "value") @sent)))' '("[\"src/nes/f.clj\" \"zz.clj\"]" "[\"/tmp/nes/g.clj\" nil]")'
+# Compiler.load wraps what a form's RUN throws in a CompilerException under
+# :execution, at the reader's position before the form (whitespace and commas
+# skipped, comments not), with the throw as its cause: load-string, load-reader
+# and load-file do, eval and eval-string do not. A compile diagnostic and a
+# CompilerException a nested load raised go through as they are.
+check '(try (load-string "nil\n (let [x 0] (/ 1 x))") (catch Throwable e [(str (class e)) (ex-message e) (ex-data e) (str (class (ex-cause e))) (ex-message (ex-cause e))]))' '["class clojure.lang.Compiler$CompilerException" "Syntax error macroexpanding at (2:2)." #:clojure.error{:phase :execution, :line 2, :column 2} "class java.lang.ArithmeticException" "Divide by zero"]'
+check '[(try (load-string "(/ 1 0)") (catch ArithmeticException e :arith) (catch RuntimeException e :rte)) (try (load-string "(/ 1 0)") (catch clojure.lang.Compiler$CompilerException e :ce)) (try (load-string "(/ 1 0)") (catch clojure.lang.ExceptionInfo e :ei) (catch Exception e :ex)) (instance? clojure.lang.IExceptionInfo (try (load-string "(/ 1 0)") (catch Exception e e)))]' '[:rte :ce :ex true]'
+check '[(str (try (load-string "(throw (ex-info \"boom\" {}))") (catch Exception e e))) (str (try (load-string "(/ 1 0)") (catch Exception e e))) (ex-data (try (load-string "\r\n;; c\n,, (/ 1 0)") (catch Exception e e))) (ex-message (try (load-string "1 2 (/ 1 0)") (catch Exception e e)))]' '["Syntax error macroexpanding at (1:1).\nboom" "Syntax error macroexpanding at (1:1)." #:clojure.error{:phase :execution, :line 2, :column 1} "Syntax error macroexpanding at (1:5)."]'
+check '[(try (load-string "(zqx)") (catch Throwable e (:clojure.error/phase (ex-data e)))) (try (eval (quote (/ 1 0))) (catch ArithmeticException e :arith)) (try (jolt.host/eval-string "(/ 1 0)") (catch ArithmeticException e :arith)) (let [e (try (load-string "1\n(load-string \"\\n(/ 1 0)\")") (catch Exception e e))] [(ex-message e) (str (class (ex-cause e)))]) (try (load-string "(ns zz)\n(/ 1 0)") (catch Exception e (str *ns*))) (try (load-reader (java.io.StringReader. "\n(/ 1 0)")) (catch Exception e (ex-message e)))]' '[:compile-syntax-check :arith :arith ["Syntax error macroexpanding at (2:1)." "class java.lang.ArithmeticException"] "user" "Syntax error macroexpanding at (2:1)."]'
+check '(let [f (java.io.File/createTempFile "lfw" ".clj") p (.getAbsolutePath f)] (spit f "(ns lfw)\n(/ 1 0)") (let [e (try (load-file p) (catch Exception e e))] [(= (ex-message e) (str "Syntax error macroexpanding at (" p ":2:1).")) (= p (:clojure.error/source (ex-data e))) (:clojure.error/phase (ex-data e)) (str (class (ex-cause e)))]))' '[true true :execution "class java.lang.ArithmeticException"]'
+check '(do (require (quote clojure.main)) (let [e (try (load-string "nil\n(/ 1 0)") (catch Exception e e))] [(str (class (clojure.main/root-cause e))) (subs (clojure.main/err->msg e) 0 36)]))' '["class clojure.lang.Compiler$CompilerException" "Execution error (ArithmeticException"]'
+check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "(ns nrx.a)\n(defn f [] (/ 1 0))\n(f)" "file-path" "/tmp/nrx/a.clj" "file-name" "a.clj" :reply #(swap! sent conj %)}) (mapv #(into (sorted-map) %) @sent)))' '[{"err" "Execution error (ArithmeticException) at nrx.a/f (a.clj:2).\nDivide by zero\n"} {"ex" "class clojure.lang.Compiler$CompilerException", "root-ex" "class clojure.lang.Compiler$CompilerException", "status" ["eval-error"]} {"status" ["done"]}]'
 check '(do (require (quote jolt.nrepl)) (let [stop (with-out-str (def st (jolt.nrepl/start 0 nil {:port-file nil}))) port (:port (meta st)) s (java.net.Socket. "127.0.0.1" (int port)) out (.getOutputStream s) in (.getInputStream s) code "(zqx-undefined 1)" msg (str "d4:code" (count code) ":" code "2:op4:evale") buf (byte-array 4096)] (.write out (.getBytes msg "ISO-8859-1")) (Thread/sleep 500) (let [n (.read in buf) r (String. buf 0 (max 0 n) "ISO-8859-1")] (.close s) (st) [(boolean (re-find #"Syntax error compiling at \(REPL:1:1\)\.\nUnable to resolve symbol: zqx-undefined in this context\n" r)) (boolean (re-find #"2:ex45:class clojure\.lang\.Compiler\$CompilerException" r)) (boolean (re-find #"5:value" r))])))' '[true true false]'
+# A diagnostic in text evaluated under a source path shows that text in its
+# snippet, not what the file on disk holds (an editor's unsaved buffer).
+check_loc '(let [f (java.io.File/createTempFile "esnip" ".clj")] (spit f "(ns es)\n\n(defn old-content [] 1)\n") (jolt.host/eval-string "(ns es)\n\n(defn h [] (zqx-snip 1))" (.getPath f)))' ' 3 | (defn h \[\] (zqx-snip 1))'
+check_no '(let [f (java.io.File/createTempFile "esnip" ".clj")] (spit f "(ns es)\n\n(defn old-content [] 1)\n") (jolt.host/eval-string "(ns es)\n\n(defn h [] (zqx-snip 1))" (.getPath f)))' 'old-content'
+# require is RT.load, which wraps the same way, naming the classpath file; a
+# required ns's own failure reaches its requirer's requirer as it is.
+rq="$(mktemp -d)"; mkdir -p "$rq/src/rqa"
+printf '{:paths ["src"]}\n' > "$rq/deps.edn"
+printf '(ns rqa.b)\n\n(/ 1 0)\n' > "$rq/src/rqa/b.clj"
+printf '(ns rqa.c (:require [rqa.b]))\n' > "$rq/src/rqa/c.clj"
+printf '%s\n' '(ns rqa.main (:require [clojure.main]))' '(defn -main [& _]' '  (let [e (try (require (quote rqa.b)) (catch Throwable e e))]' '    (prn [(str (class e)) (ex-message e) (ex-data e) (str (class (ex-cause e))) (str (class (clojure.main/root-cause e)))]))' '  (prn (try (require (quote rqa.b) :reload) (catch ArithmeticException _ :arith) (catch Exception _ :ex))))' > "$rq/src/rqa/main.clj"
+printf '%s\n' '(ns rqa.nest)' '(defn -main [& _] (prn (ex-message (try (require (quote rqa.c)) (catch Throwable e e)))))' > "$rq/src/rqa/nest.clj"
+rq_want='["class clojure.lang.Compiler$CompilerException" "Syntax error macroexpanding at (rqa/b.clj:3:1)." #:clojure.error{:phase :execution, :line 3, :column 1, :source "rqa/b.clj"} "class java.lang.ArithmeticException" "class clojure.lang.Compiler$CompilerException"]
+:ex'
+jx_check "require wraps a form's runtime throw" "$rq_want" \
+         "$(JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.main 2>/dev/null)"
+jx_check "a nested require's wrapper passes through" '"Syntax error macroexpanding at (rqa/b.clj:3:1)."' \
+         "$(JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.nest 2>/dev/null | tail -1)"
+# A namespace the AOT cache holds from a clean load, failing on a later run: the
+# hit throws, the namespace recompiles from source, and that load wraps.
+printf '(ns rqa.env)\n\n(when (System/getenv "RQ_BOOM") (/ 1 0))\n' > "$rq/src/rqa/env.clj"
+printf '%s\n' '(ns rqa.envm)' '(defn -main [& _] (let [e (try (require (quote rqa.env)) :ok (catch Throwable e e))] (prn (if (keyword? e) e [(ex-message e) (str (class (ex-cause e)))]))))' > "$rq/src/rqa/envm.clj"
+jx_check "a clean load fills the cache" ':ok' \
+         "$(JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.envm 2>/dev/null | tail -1)"
+jx_check "a warm hit that throws still wraps" '["Syntax error macroexpanding at (rqa/env.clj:3:1)." "class java.lang.ArithmeticException"]' \
+         "$(RQ_BOOM=1 JOLT_CACHE_DIR="$rq/cache" JOLT_PWD="$rq" $jolt run -m rqa.envm 2>/dev/null | tail -1)"
+rm -rf "$rq"
+# nREPL's err for a load's failure with no frame of the user's names the failing
+# form in the loaded text, from the wrapper: (REPL:2) for line 2 of the string.
+check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "eval" "code" "(load-string \"nil\\n(/ 1 0)\")" :reply #(swap! sent conj %)}) (get (first @sent) "err")))' '"Execution error (ArithmeticException) at (REPL:2).\nDivide by zero\n"'
 # The err text is the JVM's: jolt's "(did you mean …?)" stays on :err and the
 # exception's message, and is left out of err->msg.
 check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(mapp inc [1])" "user")] [(:err-msg r) (boolean (re-find #"did you mean map" (:err r)))]))' '["Syntax error compiling at (REPL:1:1).\nUnable to resolve symbol: mapp in this context\n" true]'

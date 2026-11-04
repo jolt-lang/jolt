@@ -280,7 +280,9 @@
 ;; file now have no reader. The load's position does not outlive the warning:
 ;; load-jolt-file* unwinds it, so the next error in the process is not reported
 ;; "at" this namespace's failing form.
-(define (ldr-warn-reader-ns-failed! ns-name e readers)
+(define (ldr-warn-reader-ns-failed! ns-name e0 readers)
+  ;; the throw the load's CompilerException wraps, as the uncaught report names it
+  (define e (jolt-load-wrap-origin e0))
   (when (jolt-warnings?)
     (let ((port (current-error-port))
           (msg (guard (_ (#t "(unprintable error)"))
@@ -701,7 +703,14 @@
 ;; capture load, instead of re-reading inside the loop.
 (define (load-jolt-file* path src)
   (ldr-need-compiler! path)
-  (let ((end (string-length src)))
+  ;; this load's snippets read the file, not a text eval-string held for it
+  (jolt-eval-source-text-forget! path)
+  (let ((end (string-length src))
+        ;; a load-file's or require's Compiler.load wrap (rt.ss jolt-load-wrap),
+        ;; for this file's own forms only: bound #f below for whatever they
+        ;; load. It names the file as *source-path*'s caller sees it: the
+        ;; classpath name for a namespace, the path itself for a load-file.
+        (w (and (jolt-load-wrap) (vector (ldr-source-name path)))))
     ;; parameterize (not a bare set!) so a require nested in this file's ns form
     ;; restores path when control returns to the rest of this file.
     (parameterize ((rdr-source-file path)    ; list forms read here carry :file = path
@@ -732,7 +741,8 @@
                    ;; install-owned namespaces leaked: a cacheable one opens its own
                    ;; capture (aot-capture-load) and so already redirected.
                    (jolt-aot-capture (and (equal? path (jolt-aot-capture-file))
-                                          (jolt-aot-capture))))
+                                          (jolt-aot-capture)))
+                   (jolt-load-wrap #f))
       (ldr-with-file-vars path
         (lambda ()
           ;; The failing form's position, recorded before the stack unwinds (an
@@ -753,9 +763,12 @@
               ;; way still looked like a pass. The JVM raises "Unmatched
               ;; delimiter: )" here (jolt-3amm).
               ;; the value of the last form is the load's, as Compiler.load's is
-              (let loop ((i 0) (ord 0) (last jolt-nil))
-                (if (>= i end)
+              ;; pos: the reader's (line . col) at i, kept only for a wrap
+              (let loop ((i0 0) (ord 0) (last jolt-nil) (pos0 '(1 . 1)))
+                (if (>= i0 end)
                     last
+                  (let* ((i (if w (ce-skip-ws src i0 end) i0))
+                         (pos (if w (ce-advance src i0 i (car pos0) (cdr pos0)) pos0)))
                   (let-values (((form j) (rdr-read-top src i end)))
                     (if (<= j i)
                         last
@@ -775,17 +788,20 @@
                       ;; stamps at its call form's ordinal), then bumped. One
                       ;; tail call: an eof placeholder read consumes no ordinal.
                       (if (rdr-eof? form)
-                          (loop j ord last)
-                          (let ((v (begin
+                          (loop j ord last (if w (ce-advance src i j (car pos) (cdr pos)) pos))
+                          ;; data readers run at the read, outside the wrap: a reader fn's throw is a
+                          ;; read error, not the form's run
+                          (let* ((form (if data-readers-active (ldr-apply-readers form) form))
+                                 (v (jolt-load-run-form w pos (lambda ()
                             (when (getenv "JOLT_TRACE_LOAD")
                               (display "  [load-form] " (current-error-port))
                               (display (jolt-pr-str form) (current-error-port)) (newline (current-error-port)))
                             (parameterize ((jolt-load-frames
                                              (cons (make-load-frame path ord (chez-current-ns))
                                                    (jolt-load-frames))))
-                              (jolt-compile-eval-form (if data-readers-active (ldr-apply-readers form) form)
-                                                      (chez-current-ns))))))
-                            (loop j (fx+ ord 1) v))))))))))))))
+                              (jolt-compile-eval-form form
+                                                      (chez-current-ns)))))))
+                            (loop j (fx+ ord 1) v (if w (ce-advance src i j (car pos) (cdr pos)) pos))))))))))))))))
 
 ;; --- AOT / compile cache for required namespaces ----------------------------
 ;; A disk-backed namespace is recompiled from source on EVERY run (load-jolt-file
@@ -2082,6 +2098,13 @@
               (var-cell-dynamic?-set! c #f)
               (var-root-set! c (make-jolt-var-unbound (var-cell-ns c) (var-cell-name c)))))))
       ks was)))
+;; A namespace load from source is RT.load, which is Compiler.load: what a
+;; top-level form's run throws leaves it as a CompilerException naming the file
+;; (compile-eval.ss jolt-load-run-form). A cache hit runs no reader walk to wrap
+;; a form in, but a throw from it is taken for a broken artifact and the
+;; namespace recompiles from source (aot-safe-load-or-recompile), which wraps.
+(define (ldr-wrapping thunk)
+  (parameterize ((jolt-load-wrap (vector #t))) (thunk)))
 (define (aot-safe-load-or-recompile name file source base assumed-now)
   (let ((so (string-append base ".so"))
         (defs (vector name (make-hashtable string-hash string=?))))
@@ -2098,7 +2121,7 @@
       ;; in the same place.
       (aot-undo-captured-defs! defs)
       (let ((ks (force source)))
-        (aot-compile-and-cache name file (cdr ks) (car ks))))
+        (ldr-wrapping (lambda () (aot-compile-and-cache name file (cdr ks) (car ks))))))
     (let ((state (guard (e (else 'corrupt))
                    (aot-complete-reset! name)
                    (parameterize ((aot-loading-file file) (jolt-def-capture defs))
@@ -2169,7 +2192,7 @@
      (parameterize ((aot-dep-sink #f) (io-file-read-sink #f))
        (unless (jolt-load-embedded-fasl! name file)
          ;; embedded fasl registered but failed to load: fall back to source.
-         (load-jolt-file file))))
+         (ldr-wrapping (lambda () (load-jolt-file file))))))
     ((and (aot-cache-enabled?) (not force?) (not (ldr-reload-all?))
           ;; jolt.profile counts code it compiled itself: a cached fasl carries no
           ;; counters, and what an instrumented compile would write to the cache
@@ -2209,12 +2232,13 @@
                     (aot-safe-load-or-recompile name file source base assumed-now)))
            (begin (aot-info (string-append "miss " name))
                   (let ((ks (force source)))
-                    (aot-compile-and-cache name file (cdr ks) (car ks))))))))
+                    (ldr-wrapping (lambda () (aot-compile-and-cache name file (cdr ks) (car ks))))))))))
     (else
      ;; a reload bypasses the cache, and whatever key this process read for the
      ;; namespace before may no longer describe its source
      (when force? (aot-forget-own-key! name))
-     (parameterize ((aot-dep-sink #f) (io-file-read-sink #f)) (load-jolt-file file)))))
+     (parameterize ((aot-dep-sink #f) (io-file-read-sink #f))
+       (ldr-wrapping (lambda () (load-jolt-file file)))))))
 
 ;; Mark a namespace as loaded in both the host hashtable and the *loaded-libs* ref.
 ;; Namespaces defined by the CLI's OWN AOT closure (bld-emit-cli-aot bakes
@@ -3045,7 +3069,9 @@
 ;; The path is absolute, as Compiler.loadFile's is (File.getAbsolutePath), and is
 ;; the file's name too (ldr-source-name).
 (define (jolt-load-file path)
-  (parameterize ((ldr-file-load-path path))
+  ;; load-file is Compiler.load: what a form's run throws leaves as a
+  ;; CompilerException naming this path (compile-eval.ss jolt-load-run-form)
+  (parameterize ((ldr-file-load-path path) (jolt-load-wrap (vector path)))
     (load-jolt-file/restoring-ns path)))
 
 ;; expand-spec: the shared prefix-list expansion (expand-libspec, ns.ss) —
@@ -3109,7 +3135,7 @@
                     (else (let ((dir (ns-rel-dir (chez-current-ns))))
                             (if (string=? dir "") p (string-append dir "/" p))))))
              (f (resolve-on-roots rel)))
-        (if f (load-jolt-file/restoring-ns f)
+        (if f (ldr-wrapping (lambda () (load-jolt-file/restoring-ns f)))
             (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate resource on source roots: " p)))))
     paths)
   jolt-nil)

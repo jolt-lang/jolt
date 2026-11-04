@@ -1612,8 +1612,8 @@
 ;; takes exactly one argument and a map or keyword takes one or two, so
 ;; jolt-invoke2 answers fewer types than jolt-invoke1 and the rest fall through to
 ;; get their typed ArityException from jolt-invoke, unchanged.
-(define (jolt-invoke0 f) (if (procedure? f) (if (fxlogbit? 0 (procedure-arity-mask f)) (f) (jolt-proc-arity-error f 0)) (jolt-invoke f)))
-(define (jolt-invoke1 f a)
+(define (jolt-invoke-t0 f) (if (procedure? f) (if (fxlogbit? 0 (procedure-arity-mask f)) (f) (jolt-proc-arity-error f 0)) (jolt-invoke f)))
+(define (jolt-invoke-t1 f a)
   (cond
     ((procedure? f) (if (fxlogbit? 1 (procedure-arity-mask f)) (f a) (jolt-proc-arity-error f 1)))
     ((keyword? f) (jolt-get a f))            ; (:k m) -> (get m :k)
@@ -1622,15 +1622,59 @@
     ((pvec? f) (pvec-nth! f (pvec-key-index! a)))  ; (v i) -> nth at (.intValue i)
     ((pset? f) (jolt-get f a))               ; (s x)  -> (get s x)
     (else (jolt-invoke f a))))
-(define (jolt-invoke2 f a b)
+(define (jolt-invoke-t2 f a b)
   (cond
     ((procedure? f) (if (fxlogbit? 2 (procedure-arity-mask f)) (f a b) (jolt-proc-arity-error f 2)))
     ((keyword? f) (jolt-get a f b))          ; (:k m d) -> (get m :k d)
     ((pmap? f) (jolt-get f a b))             ; (m k d)  -> (get m k d)
     ((jolt-symbol? f) (jolt-get a f b))      ; ('s m d) -> (get m 's d)
     (else (jolt-invoke f a b))))
-(define (jolt-invoke3 f a b c) (if (procedure? f) (if (fxlogbit? 3 (procedure-arity-mask f)) (f a b c) (jolt-proc-arity-error f 3)) (jolt-invoke f a b c)))
-(define (jolt-invoke4 f a b c d) (if (procedure? f) (if (fxlogbit? 4 (procedure-arity-mask f)) (f a b c d) (jolt-proc-arity-error f 4)) (jolt-invoke f a b c d)))
+(define (jolt-invoke-t3 f a b c) (if (procedure? f) (if (fxlogbit? 3 (procedure-arity-mask f)) (f a b c) (jolt-proc-arity-error f 3)) (jolt-invoke f a b c)))
+(define (jolt-invoke-t4 f a b c d) (if (procedure? f) (if (fxlogbit? 4 (procedure-arity-mask f)) (f a b c d) (jolt-proc-arity-error f 4)) (jolt-invoke f a b c d)))
+
+;; jolt-invoke0..4: the same calls, from code that is not traced -- clojure.core,
+;; the runtime's own Scheme -- calling a fn value that may be. A traced fn's tail
+;; call stores its site pair in the slot (vreg 2, rt.ss jolt-vreg-site), and it
+;; stands for that fn only while the tail call runs. When the call returns to
+;; untraced code, nothing put the slot back, so a throw the caller raised after it
+;; (into's conj on a callback's value, swap!'s validator) found the returned
+;; callback's pair and either named it as its innermost frame or had to be
+;; second-guessed by the report (jolt-gqtdc). So these put the slot back as it was
+;; when the call returns: one load before the call and one store after
+;; (jolt-site-kept, rt.ss; on a host that records no site it is the call alone). Traced
+;; code's non-tail calls restore it themselves (backend site-restore), and every
+;; emitted call in tail position must stay a tail call, so the back end emits
+;; jolt-invoke-tN there and these only at an untraced non-tail site.
+(define (jolt-invoke0 f)
+  (if (procedure? f)
+      (if (fxlogbit? 0 (procedure-arity-mask f))
+          (jolt-site-kept (f))
+          (jolt-proc-arity-error f 0))
+      (jolt-site-kept (jolt-invoke-t0 f))))
+(define (jolt-invoke1 f a)
+  (if (procedure? f)
+      (if (fxlogbit? 1 (procedure-arity-mask f))
+          (jolt-site-kept (f a))
+          (jolt-proc-arity-error f 1))
+      (jolt-site-kept (jolt-invoke-t1 f a))))
+(define (jolt-invoke2 f a b)
+  (if (procedure? f)
+      (if (fxlogbit? 2 (procedure-arity-mask f))
+          (jolt-site-kept (f a b))
+          (jolt-proc-arity-error f 2))
+      (jolt-site-kept (jolt-invoke-t2 f a b))))
+(define (jolt-invoke3 f a b c)
+  (if (procedure? f)
+      (if (fxlogbit? 3 (procedure-arity-mask f))
+          (jolt-site-kept (f a b c))
+          (jolt-proc-arity-error f 3))
+      (jolt-site-kept (jolt-invoke-t3 f a b c))))
+(define (jolt-invoke4 f a b c d)
+  (if (procedure? f)
+      (if (fxlogbit? 4 (procedure-arity-mask f))
+          (jolt-site-kept (f a b c d))
+          (jolt-proc-arity-error f 4))
+      (jolt-site-kept (jolt-invoke-t4 f a b c d))))
 
 ;; ============================================================================
 ;; chunked-seq accessors — the host side of the Clojure IChunkedSeq contract
@@ -1711,11 +1755,11 @@
     (if (fx<=? (fx+ off len) (vector-length node))
         (let loop ((j 0))
           (if (fx<? j len)
-              (begin (vector-set! out j (g (vector-ref node (fx+ off j)))) (loop (fx+ j 1)))
+              (begin (vector-set! out j (jolt-site-kept (g (vector-ref node (fx+ off j))))) (loop (fx+ j 1)))
               (make-pvec out)))
         (let loop ((j 0))
           (if (fx<? j len)
-              (begin (vector-set! out j (g (pvec-nth-d pv (fx+ i j) jolt-nil))) (loop (fx+ j 1)))
+              (begin (vector-set! out j (jolt-site-kept (g (pvec-nth-d pv (fx+ i j) jolt-nil)))) (loop (fx+ j 1)))
               (make-pvec out))))))
 ;; Returns the kept-elements chunk pvec, or #f when the whole block is rejected
 ;; (so the caller recurses straight into chunk-rest, emitting no empty cell).
@@ -1758,7 +1802,7 @@
        (cseq-chunked (na-chunk-map-first s g) 0
                      (jolt-make-lazy-src lz-map-chunk f s)))
       (else
-       (cseq-lazy (g (seq-first s)) (make-lazy-src lz-map-more f s))))))
+       (cseq-lazy (jolt-site-kept (g (seq-first s))) (make-lazy-src lz-map-more f s))))))
 (define (map-seq* f seqs)              ; multi-collection map; stops at the shortest
   (if (any-nil? seqs) jolt-empty-list
       (cseq-lazy (apply jolt-invoke f (map seq-first seqs))
@@ -1788,8 +1832,8 @@
   ;; common case), wrapped in jolt-truthy?; else jolt-invoke then jolt-truthy?.
   ;; Bound once per call, consulted in both loops below.
   (let ((tp (if (procedure? pred)
-                (lambda (x) (jolt-truthy? (pred x)))
-                (lambda (x) (jolt-truthy? (jolt-invoke pred x))))))
+                (lambda (x) (jolt-truthy? (jolt-site-kept (pred x))))
+                (lambda (x) (jolt-truthy? (jolt-invoke1 pred x))))))
     (cond
       ((jolt-nil? s) jolt-empty-list)         ; empty result is () (see map-seq)
       ((na-chunked-seq? s)
@@ -1861,7 +1905,7 @@
                    (let inner ((j offset) (k i) (acc acc))
                      (cond ((jolt-reduced? acc) acc)
                            ((fx>=? j clen) (outer k acc))
-                           (else (inner (fx+ j 1) (fx+ k 1) (f acc (vector-ref chunk j))))))))))
+                           (else (inner (fx+ j 1) (fx+ k 1) (jolt-site-kept (f acc (vector-ref chunk j)))))))))))
         (let outer ((i start) (acc acc))
           (cond ((jolt-reduced? acc) acc)
                 ((fx>=? i n) acc)
@@ -1871,7 +1915,7 @@
                    (let inner ((j offset) (k i) (acc acc))
                      (cond ((jolt-reduced? acc) acc)
                            ((fx>=? j clen) (outer k acc))
-                           (else (inner (fx+ j 1) (fx+ k 1) (jolt-invoke f acc (vector-ref chunk j)))))))))))))
+                           (else (inner (fx+ j 1) (fx+ k 1) (jolt-invoke2 f acc (vector-ref chunk j)))))))))))))
 (define (reduce-seq f acc s)
   ;; direct? is bound once (a boolean, no allocation) and consulted in the
   ;; non-chunked step so a raw fn steps with (f acc x) instead of jolt-invoke.
@@ -1889,7 +1933,7 @@
            (cond ((jolt-reduced? acc2) (jolt-reduced-val acc2))
                  ((cseq-crest s) (rec acc2 (jolt-seq (cseq-crest s))))
                  (else acc2))))
-        (else (rec (if direct? (f acc (seq-first s)) (jolt-invoke f acc (seq-first s)))
+        (else (rec (if direct? (jolt-site-kept (f acc (seq-first s))) (jolt-invoke2 f acc (seq-first s)))
                    (jolt-seq (seq-more s))))))))
 ;; A host collection that hands its elements out as a list (the java.util views,
 ;; jutil-views.ss) reduces over that list directly rather than through a seq of
@@ -1911,13 +1955,13 @@
           (let ((x (step)))
             (if (eq? x reduce-iter-done)
                 acc
-                (rec (if direct? (f acc x) (jolt-invoke f acc x)))))))))
+                (rec (if direct? (jolt-site-kept (f acc x)) (jolt-invoke2 f acc x)))))))))
 (define (reduce-list f acc xs)
   (let ((direct? (procedure? f)))
     (let rec ((acc acc) (xs xs))
       (cond ((jolt-reduced? acc) (jolt-reduced-val acc))
             ((null? xs) acc)
-            (else (rec (if direct? (f acc (car xs)) (jolt-invoke f acc (car xs))) (cdr xs)))))))
+            (else (rec (if direct? (jolt-site-kept (f acc (car xs))) (jolt-invoke2 f acc (car xs))) (cdr xs)))))))
 (define jolt-reduce
   (case-lambda
     ((f coll)
@@ -2054,7 +2098,7 @@
 ;; kvreduce (the JVM method name is lowercase); any other map-like value (a
 ;; record, a sorted map, a host map arm) folds over its keys, the reference's
 ;; IPersistentMap arm. nil folds to init.
-(define (kv-step f) (if (procedure? f) f (lambda (acc k v) (jolt-invoke f acc k v))))
+(define (kv-step f) (if (procedure? f) (lambda (acc k v) (jolt-site-kept (f acc k v))) (lambda (acc k v) (jolt-invoke3 f acc k v))))
 (define (pmap-kv-reduce m f init)
   (let ((step (kv-step f)) (root (pmap-root m)))
     (if (not (hnode? root))
