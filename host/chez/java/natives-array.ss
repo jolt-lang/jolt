@@ -316,23 +316,18 @@
       ;; A boxed backing may hold surrogate units (a jsurr, or the raw int of
       ;; one): a high unit and the low one after it are the astral character
       ;; they spell, and a unit left unpaired is U+FFFD (values.ss).
-      ;; A half left at either END is remembered with the string (converters.ss
-      ;; edge units), so a reader whose chunk split a pair gets it back on the
-      ;; next append.
       (else
-       (let loop ((i 0) (acc '()) (lead #f) (trail #f))
+       (let loop ((i 0) (acc '()))
          (if (fx=? i cnt)
-             (string-with-edge-units! (list->string (reverse acc)) lead trail)
+             (list->string (reverse acc))
              (let ((u (char-elem->unit (ja-ref x (fx+ off i)))))
                (cond
-                 ((char? u) (loop (fx+ i 1) (cons u acc) lead #f))
+                 ((char? u) (loop (fx+ i 1) (cons u acc)))
                  ((and (fx<? u #xDC00) (fx<? (fx+ i 1) cnt)
                        (let ((v (char-elem->unit (ja-ref x (fx+ off i 1)))))
                          (and (fixnum? v) (fx>=? v #xDC00) v)))
-                  => (lambda (lo) (loop (fx+ i 2) (cons (surrogates->char u lo) acc) lead #f)))
-                 (else (loop (fx+ i 1) (cons jolt-replacement-char acc)
-                             (if (and (fx=? i 0) (fx>=? u #xDC00)) u lead)
-                             (and (fx<? u #xDC00) u)))))))))))
+                  => (lambda (lo) (loop (fx+ i 2) (cons (surrogates->char u lo) acc))))
+                 (else (loop (fx+ i 1) (cons jolt-replacement-char acc)))))))))))
 ;; A char[] element as a char, or as the fixnum of the surrogate unit it is.
 (define (char-elem->unit c)
   (cond ((char? c) c)
@@ -660,10 +655,7 @@
     ;; and the source are the same representation, so one string-copy replaces a
     ;; character-at-a-time fill (and, before that, a cons per character plus a
     ;; second walk over the list).
-    ;; an astral char is two elements, its surrogate units (#1455)
-    ((string? a) (if (fx=? (u16-length a) (string-length a))
-                     (make-jolt-array (string-copy a) 'char)
-                     (make-jolt-array (list->vector (u16-units a 0 (u16-length a))) 'char)))
+    ((string? a) (make-jolt-array (string-copy a) 'char))
     ;; (char-array n) — make-string rather than make-vector. This is the whole of
     ;; the ~140x allocation gap: a boxed vector of n characters is n POINTERS the
     ;; collector must trace on every major GC, while a string of n characters is

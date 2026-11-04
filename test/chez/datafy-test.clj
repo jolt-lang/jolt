@@ -44,6 +44,22 @@
 (check "an untransformed value gets no ::d/obj"
        (::d/obj (meta (d/datafy [1 2]))) nil)
 
+;; --- extension through metadata ----------------------------------------------
+;; Datafiable and Navigable are the reference's two :extend-via-metadata
+;; protocols, so a value can carry its own datafy/nav. Metadata comes ahead of
+;; the Object default (an extension), and a type's own extension stays below it.
+(check "both protocols are metadata-extensible"
+       [(:extend-via-metadata p/Datafiable) (:extend-via-metadata p/Navigable)] [true true])
+(check "datafy through metadata"
+       (d/datafy (with-meta {:a 1} {`p/datafy (fn [_] :datafied)})) :datafied)
+(check "nav through metadata"
+       (d/nav (with-meta {:a 1} {`p/nav (fn [_ k v] [:nav k v])}) :a 1) [:nav :a 1])
+(defrecord Dext [])
+(extend-protocol p/Datafiable Dext (datafy [_] :extended))
+(check "metadata wins over an extended type"
+       [(d/datafy (with-meta (->Dext) {`p/datafy (fn [_] :meta)})) (d/datafy (->Dext))]
+       [:meta :extended])
+
 (if (zero? @failures)
   (println "DATAFY OK")
   (println "DATAFY FAIL:" @failures "failure(s)"))

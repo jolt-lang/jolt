@@ -92,8 +92,7 @@
 (defn- string-direct-emit [m argc t args]
   (let [a0 (first args) a1 (second args)]
     (cond
-      ;; length/indexOf/substring count UTF-16 units, as on the JVM (#1455)
-      (= m "length")      (when (= argc 0) (str "(jolt-str-u16-length " t ")"))
+      (= m "length")      (when (= argc 0) (str "(string-length " t ")"))
       (= m "toString")    (when (= argc 0) t)
       (= m "isEmpty")     (when (= argc 0) (str "(fx=? (string-length " t ") 0)"))
       (= m "toUpperCase") (when (= argc 0) (str "(string-upcase " t ")"))
@@ -103,14 +102,14 @@
       (= m "charAt")      (when (= argc 1) (str "(jolt-char-at " t " " a0 ")"))
       (= m "indexOf")     (when (or (= argc 1) (= argc 2))
                             (let [from (if (= argc 2) (str "(jolt->idx " a1 ")") "0")]
-                              (str "(jolt-str-u16-index-of " t " " a0 " " from ")")))
+                              (str "(str-index-of-any " t " " a0 " " from ")")))
       (= m "startsWith")  (when (= argc 1) (str "(str-starts-with? " t " " a0 ")"))
       (= m "endsWith")    (when (= argc 1) (str "(str-ends-with? " t " " a0 ")"))
       (= m "contains")    (when (= argc 1)
                             (str "(fx>=? (str-index-of " t " (str-needle " a0 ") 0) 0)"))
       (= m "concat")      (when (= argc 1) (str "(string-append " t " " a0 ")"))
       (= m "substring")   (when (= argc 2)
-                            (str "(jolt-str-u16-substring " t " (jolt->idx " a0 ") (jolt->idx " a1 "))"))
+                            (str "(jolt-substr " t " (jolt->idx " a0 ") (jolt->idx " a1 "))"))
       (= m "replace")     (when (= argc 2)
                              (str "(str-replace-literal " t " (str-needle " a0 ") (str-needle " a1 "))"))
       ;; The rest route to a jolt-str-* native (java/natives-str.ss), which is the
@@ -1401,18 +1400,7 @@
     :else (str "\\x" (format "%x" cp) ";")))
 
 (defn- chez-str-lit [s]
-  ;; By code point: a string's elements are UTF-16 units, and Chez's reader
-  ;; refuses a \x escape that names half a surrogate pair, so a pair is joined
-  ;; here. Plain seq arithmetic, no String interop: the Gambit host's string
-  ;; methods are a small subset, and this runs there too.
-  (loop [cs (seq s) acc []]
-    (if cs
-      (let [u (int (first cs)) nx (next cs)]
-        (if (and (<= 0xD800 u 0xDBFF) nx (<= 0xDC00 (int (first nx)) 0xDFFF))
-          (recur (next nx) (conj acc (char-escape (+ 0x10000 (* (- u 0xD800) 0x400)
-                                                     (- (int (first nx)) 0xDC00)))))
-          (recur nx (conj acc (char-escape u)))))
-      (str "\"" (apply str acc) "\""))))
+  (str "\"" (apply str (map (fn [c] (char-escape (int c))) s)) "\""))
 
 ;; Hoist the VAR CELL a late-bound reference reads through, so the name lookup
 ;; (string-append + string-hash + a hashtable probe, measured at ~102ns) runs once
