@@ -459,6 +459,39 @@
   (if (and (fl>= x jolt-fixnum-flo-lo) (fl< x jolt-fixnum-flo-hi))
       (flonum->fixnum x)
       (exact (truncate x))))
+;; The cast windows: for an operand the compiler has PROVEN a double, the back
+;; end emits the cast's window test and flonum->fixnum in place, calling the
+;; cast above only outside the window (NaN fails both compares, so it reaches
+;; the cast and stays 0). Each window is INCLUSIVE and is a subset of what the
+;; cast accepts unchanged AND of what truncates to a fixnum on the running
+;; target, which is why they are computed here, at load, from this target's
+;; own limits: the compiling host's fixnum width is not the target's. The long
+;; window's top is fx-hi minus 255: on 61-bit fixnums 2^60 minus 256 is the
+;; largest double below 2^60 (doubles there are multiples of 256), on 30-bit
+;; fixnums 2^29 minus 256 is 255 values short of the limit, which take the
+;; cast. int clamps to the long window (its bounds exceed 30-bit fixnums);
+;; short and byte fit every width; char stops below the surrogate block, so
+;; a surrogate or astral code point takes jolt-char. A function of the limits,
+;; so numeric-test.ss can check both widths on one host.
+(define (jolt-cast-windows fx-lo fx-hi)
+  (let ((long-lo (fixnum->flonum fx-lo))
+        (long-hi (fixnum->flonum (- fx-hi 255))))
+    (vector long-lo long-hi
+            (flmax -2147483648.0 long-lo) (flmin 2147483647.0 long-hi)
+            -32768.0 32767.0
+            -128.0 127.0
+            0.0 55295.0)))
+(define jolt-cast-window-vector (jolt-cast-windows (most-negative-fixnum) (most-positive-fixnum)))
+(define jolt-cast-lo-long (vector-ref jolt-cast-window-vector 0))
+(define jolt-cast-hi-long (vector-ref jolt-cast-window-vector 1))
+(define jolt-cast-lo-int (vector-ref jolt-cast-window-vector 2))
+(define jolt-cast-hi-int (vector-ref jolt-cast-window-vector 3))
+(define jolt-cast-lo-short (vector-ref jolt-cast-window-vector 4))
+(define jolt-cast-hi-short (vector-ref jolt-cast-window-vector 5))
+(define jolt-cast-lo-byte (vector-ref jolt-cast-window-vector 6))
+(define jolt-cast-hi-byte (vector-ref jolt-cast-window-vector 7))
+(define jolt-cast-lo-char (vector-ref jolt-cast-window-vector 8))
+(define jolt-cast-hi-char (vector-ref jolt-cast-window-vector 9))
 ;; The double branch, on its own so its compares stay flonum-vs-flonum. flo/fhi
 ;; are the type's bounds as flonums: the exact LONG bounds (+-2^63) are bignums
 ;; on every Chez (61-bit fixnums on 64-bit, 30-bit on 32-bit), and a

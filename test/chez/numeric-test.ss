@@ -322,6 +322,23 @@
 ;; runtime helper, so it feeds the numeric lattice like a ^double/^long hint:
 ;; (* (double x) 2.0) emits fl*, (+ (long x) 1) emits jolt-l+.
 
+;; the cast windows (converters.ss jolt-cast-windows): inclusive flonum windows
+;; the lowered casts test before flonum->fixnum, as a function of the fixnum
+;; limits so both widths are checked on this 61-bit host.
+(let ((w (jolt-cast-windows -536870912 536870911)))          ; 30-bit
+  (ok "30-bit long window" (equal? (list (vector-ref w 0) (vector-ref w 1)) '(-536870912.0 536870656.0)))
+  (ok "30-bit int window clamps to the fixnum window" (equal? (list (vector-ref w 2) (vector-ref w 3)) '(-536870912.0 536870656.0)))
+  (ok "30-bit short/byte/char windows" (equal? (list (vector-ref w 4) (vector-ref w 5) (vector-ref w 6) (vector-ref w 7) (vector-ref w 8) (vector-ref w 9)) '(-32768.0 32767.0 -128.0 127.0 0.0 55295.0))))
+(let ((w (jolt-cast-windows -1152921504606846976 1152921504606846975)))  ; 61-bit
+  (ok "61-bit long window" (equal? (list (vector-ref w 0) (vector-ref w 1)) '(-1.152921504606847e18 1.15292150460684672e18)))
+  (ok "61-bit int window is the int range" (equal? (list (vector-ref w 2) (vector-ref w 3)) '(-2147483648.0 2147483647.0))))
+(ok "the load-time constants are this host's windows"
+    (and (= jolt-cast-lo-long (fixnum->flonum (most-negative-fixnum)))
+         (= jolt-cast-hi-long (fixnum->flonum (- (most-positive-fixnum) 255)))
+         (= jolt-cast-hi-int 2147483647.0) (= jolt-cast-hi-char 55295.0)))
+;; every window edge converts: flonum->fixnum must not raise at either end
+(ok "window edges are fixnums" (and (fixnum? (flonum->fixnum jolt-cast-lo-long)) (fixnum? (flonum->fixnum jolt-cast-hi-long))))
+
 ;; (double x) in arithmetic yields fl-ops AND the checked helper.
 (let ((e (emitf "u" "(fn* ([x] (* (double x) 2.0)))")))
   (ok "(double x) operand lowers * to fl*" (has? e "(#3%fl*"))
