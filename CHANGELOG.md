@@ -313,6 +313,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`Arrays/copyOf` and `copyOfRange` block-copy the shared prefix (#1495).**
+  They copied one element at a time through the boxed element accessors, so a
+  64 KB `byte[]` took about 1.2 ms where `byte-array` + `System/arraycopy` took
+  10 us. They now move the prefix through the same block copy `arraycopy` uses:
+  the 64 KB `copyOf` is 12 us, `copyOfRange` 4 us, and a 64 K-element `long[]`
+  `copyOf` 1139 -> 58 us.
+
 - **Printing a host object.** `pr-str` of a `java.io.File` asked every
   predicate of the pr, pr-str and str arm registries before reaching the
   `#object` form, and each host family added this cycle lengthened all three
@@ -373,6 +380,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
 
 ### Fixed
+
+- **`Arrays/copyOfRange` pads past the end and checks its range as the JDK
+  does (#1495).** A `to` past the array's end read past it instead of padding
+  with the kind's zero; `from > to` is now `IllegalArgumentException("from >
+  to")` rather than `NegativeArraySizeException`, and a `from` outside
+  `[0, length]` is `ArrayIndexOutOfBoundsException`.
 
 - **`sequential?` answered true for a deftype or reify implementing `ISeq`.**
   `ISeq` is not `Sequential`; only a type declaring `Sequential` (or an
