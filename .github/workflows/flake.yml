@@ -1,8 +1,20 @@
 name: flake
 
+# A PR branch used to run this twice per push (push + pull_request), and
+# macos-latest is a capacity-constrained pool: when it is short, queued jobs
+# are dropped with "The job was not acquired by Runner of type hosted even
+# after multiple attempts" and show as cancelled 25-50 minutes later, having
+# run no step at all. So branches are checked through their PR only, main on
+# every push, and a newer push to the same PR cancels the queued one instead
+# of competing with it for a runner.
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: flake-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
