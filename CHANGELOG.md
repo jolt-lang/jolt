@@ -294,12 +294,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bounds held as exact integers, and for `long` those (+-2^63) are bignums on
   every Chez, so each cast paid two flonum-vs-bignum compares and a second
   exact-vs-bignum check after truncation; `unchecked-long` saturated through the
-  same compares (and `unchecked-int` through exact ones). `bench/num_casts.clj` (new): `(long d)` 398 ms to 62 ms
-  for 2M casts on an M1 Pro, `(unchecked-long d)` 68 ms to 50 ms; on a 32-bit
-  target (Nintendo Wii, `tpb32b`) `(long 123.7)` 135.5 us to 27.0 us. One
-  value changes, to match Clojure's `RT.longCast(double)`:
-  `(long 9.223372036854776E18)` (2^63 as a double) now returns
-  `Long/MAX_VALUE` instead of throwing. Eight new corpus rows pin the boundaries.
+  same compares (and `unchecked-int` through exact ones). `bench/num_casts.clj`
+  (new): `(long d)` 398 ms to 62 ms for 2M casts on an M1 Pro,
+  `(unchecked-long d)` 68 ms to 50 ms; on a 32-bit target (Nintendo Wii,
+  `tpb32b`) `(long 123.7)` 135.5 us to 27.0 us. One value changes, to match
+  Clojure's `RT.longCast(double)`: `(long 9.223372036854776E18)` (2^63 as a
+  double) now returns `Long/MAX_VALUE` instead of throwing. Eight new corpus
+  rows pin the boundaries.
 
 - **`map->R` is one pass over the map.** #1479 sped up a map holding only
   field keys but made one with extension keys 1.2-1.3x slower than 0.8.23; a
