@@ -393,6 +393,26 @@
              (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
                                  (and (pair? s) s)))
              (raise (cons 'jolt-throw v)))))
+;; rt.ss's raise of an already-made throwable, without a new capture.
+(define (jolt-raise-thrown v) (raise (cons 'jolt-throw v)))
+;; Mirrors of rt.ss's Compiler.load wrap state (compile-eval.ss
+;; jolt-load-run-form): the load about to start, and wrapper -> the raise it
+;; wraps, which the uncaught report and the position record follow.
+(define jolt-load-wrap (make-thread-parameter #f))
+(define jolt-load-wrap-origins (make-weak-eq-hashtable))
+(define jolt-load-wrap-mutex (make-mutex))
+(define (jolt-load-wrap-origin raw)
+  (let ((v (jolt-unwrap-throw raw)))
+    (or (and (jolt-ex-info-record? v)
+             (equal? (jolt-ex-info-record-class-name v) "clojure.lang.Compiler$CompilerException")
+             (jolt-with-mutex jolt-load-wrap-mutex
+               (hashtable-ref jolt-load-wrap-origins v #f)))
+        raw)))
+;; ...and of its per-path evaluated text, which a diagnostic snippet reads.
+(define jolt-eval-source-texts (make-hashtable string-hash string=?))
+(define jolt-eval-text-mutex (make-mutex))
+(define (jolt-eval-source-text-set! path text)
+  (jolt-with-mutex jolt-eval-text-mutex (hashtable-set! jolt-eval-source-texts path text)))
 ;; The same capture for a HOST condition (a fault raised outside jolt-throw:
 ;; car of a non-pair, a bad flvector index). Installed by the cli's run wrapper
 ;; via with-exception-handler, which runs BEFORE the stack unwinds — a guard's
@@ -1267,31 +1287,6 @@
       (cond ((fx<? i 0) found)
             ((jolt-char-by-char-match? s i needle nlen) i)
             (else (loop (fx- i 1) found))))))
-;; The UTF-16 index methods the shared StringBuilder (string-builder.ss) calls,
-;; which Chez defines in java/natives-str.ss. These are the plain conversions
-;; over converters.ss's view; Chez's add the surrogate-unit needles.
-(define (jolt-str-u16-index-of s needle from)
-  (let* ((from (max 0 from))
-         (r (str-index-of s (str-needle needle) (u16->cp s from))))
-    (if (fx<? r 0) r (cp->u16 s r))))
-(define (jolt-str-u16-last-index-of s needle . from)
-  (let* ((n (str-needle needle))
-         (r (if (pair? from)
-                (let ((f (u16->cp s (car from))))
-                  (let loop ((i (fxmin f (fx- (string-length s) (string-length n)))))
-                    (cond ((fx<? i 0) -1)
-                          ((jolt-char-by-char-match? s i n (string-length n)) i)
-                          (else (loop (fx- i 1))))))
-                (str-last-index-of s n))))
-    (if (fx<? r 0) r (cp->u16 s r))))
-(define (jolt-str-code-point-at s i)
-  (let ((u (jolt-char-at s i)))
-    (cond ((char? u) (char->integer u))
-          ((jsurr-high? u) (char->integer (string-ref s (u16->cp s i))))
-          (else (jsurr-unit u)))))
-(define (jolt-str-code-point-before s i) (jolt-str-code-point-at s (u16->cp s (- i 1))))
-(define (jolt-str-code-point-count s b e) (- (u16->cp s e) (u16->cp s b)))
-(define (jolt-str-offset-by-code-points s i k) (cp->u16 s (+ (u16->cp s i) k)))
 (define (str-needle x)
   (cond ((char? x) (string x))
         ((number? x) (string (integer->char (exact (truncate x)))))

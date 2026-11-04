@@ -588,12 +588,9 @@
 ;; so a plain string write takes no lock.
 (define sink-pending (make-weak-eq-hashtable))
 (define sink-pending-mu (make-mutex))
-(define sink-pending-live 0)
 (define (sink-text sink p)
   (cond
-    ((and (string? p) (fx=? sink-pending-live 0) (not (and edge-units-any? (edgy? p)))) p)
-    ((and (string? p) (edgy? p))
-     (apply string-append (map (lambda (x) (sink-text-1 sink x)) (edge-split p))))
+    ((and (string? p) (fx=? sink-pending-live 0)) p)
     (else (sink-text-1 sink p))))
 (define (sink-text-1 sink p)
   (if (and (string? p) (fx=? sink-pending-live 0))
@@ -611,6 +608,10 @@
              (if hi jolt-replacement-string ""))
             (hi (string (surrogates->char hi (jsurr-unit p))))
             (else jolt-replacement-string))))))
+;; A port-writer's sink is its live port, so stdout and a with-out-str capture
+;; never pair with each other; core print's own writes to the port (printing.ss)
+;; key by it too, so print of each half of a pair puts out the character.
+(set-jolt-port-text! sink-text)
 ;; The bytes a byte[] .write argument carries, with the JVM's 3-arg (off len)
 ;; region applied. Out-of-range ends clamp rather than raise: a stream write is
 ;; not the place to turn a caller's off-by-one into a crash mid-output.
@@ -641,15 +642,15 @@
             (start (min (max 0 (jnum->exact (car rest))) n))
             (end (min n (+ start (max 0 (jnum->exact (cadr rest)))))))
        (char-array-region x start (- end start))))
-    ;; and a String's is over its UTF-16 units, as every CharSequence offset is
+    ;; and a String's is over its characters
     ((and (pair? rest) (pair? (cdr rest)))
      (let* ((s (writer-piece x))
-            (n (if (string? s) (u16-length s) 1))
+            (n (if (string? s) (string-length s) 1))
             (off (max 0 (jnum->exact (car rest))))
             (len (max 0 (jnum->exact (cadr rest))))
             (start (min off n))
             (end (min n (+ start len))))
-       (if (string? s) (u16-substring s start end) s)))
+       (if (string? s) (substring s start end) s)))
     (else (writer-piece x))))
 ;; Same accumulator as StringBuilder, and for the same reason: writing to a
 ;; StringWriter a piece at a time — which is what printStackTrace and every
@@ -744,14 +745,14 @@
   (list (cons "write" (lambda (self x . rest)
                         (unless (and (byte-array-arg? x)
                                      (pw-write-bytes! self (byte-array-range x rest)))
-                          (display (sink-text self (writer-piece-range x rest)) (port-writer-port self)))
+                          (let ((p (port-writer-port self))) (display (sink-text p (writer-piece-range x rest)) p)))
                         jolt-nil))
         (cons "append" (lambda (self x . rest)
-                         (display (sink-text self (append-text x rest)) (port-writer-port self)) self))
-        (cons "print" (lambda (self x) (display (sink-text self (writer-piece x)) (port-writer-port self)) jolt-nil))
+                         (let ((p (port-writer-port self))) (display (sink-text p (append-text x rest)) p)) self))
+        (cons "print" (lambda (self x) (let ((p (port-writer-port self))) (display (sink-text p (writer-piece x)) p)) jolt-nil))
         (cons "println" (lambda (self . xs)
                           (let ((p (port-writer-port self)))
-                            (display (sink-text self (if (null? xs) "" (writer-piece (car xs)))) p)
+                            (display (sink-text p (if (null? xs) "" (writer-piece (car xs)))) p)
                             (display "\n" p))
                           jolt-nil))
         (cons "flush" (lambda (self) (flush-output-port (port-writer-port self)) jolt-nil))
@@ -829,7 +830,7 @@
     ;; S may be a surrogate unit (#1455): a builder pairs it itself, and the
     ;; other two through sink-text.
     ((and (jhost? t) (string=? (jhost-tag t) "port-writer"))
-     (display (sink-text t s) (port-writer-port t)))
+     (let ((p (port-writer-port t))) (display (sink-text p s) p)))
     ((jhost? t) (sb-append*! t s))
     (else (jolt-invoke (var-deref "clojure.pprint" "-write") t (sink-text t s)))))
 (define (pw-text! self s)
@@ -837,7 +838,7 @@
     (cond
       ((not (pw-writer? self)) (pw-emit-text t s))
       ((jsurr? s) (record-method-dispatch t "write" (jolt-list (->num (jsurr-unit s)))))
-      (else (record-method-dispatch t "write" (jolt-list s (->num 0) (->num (u16-length s))))))))
+      (else (record-method-dispatch t "write" (jolt-list s (->num 0) (->num (string-length s))))))))
 (define (pw-char! self c)                 ; c: the char's code
   (let ((t (pw-target self)))
     (if (pw-writer? self)
@@ -3013,11 +3014,9 @@
                ((string=? method-name "lookingAt") (jolt-matcher-looking-at obj))
                ;; .find() resumes at the scan cursor; .find(from) resets and
                ;; scans from `from`.
-               ;; Matcher indices (find(from), region, start, end) count UTF-16
-               ;; units, as every String index does (#1455).
                ((string=? method-name "find")
                 (if (pair? rest)
-                    (jolt-matcher-find-from obj (matcher-cp obj (jnum->exact (car rest))))
+                    (jolt-matcher-find-from obj (jnum->exact (car rest)))
                     (not (jolt-nil? (jolt-re-find obj)))))
                ((string=? method-name "group") (apply jolt-matcher-group obj rest))
                ((string=? method-name "groupCount") (jolt-matcher-group-count obj))
@@ -3029,10 +3028,9 @@
                ((string=? method-name "replaceFirst")
                 (jolt-matcher-replace obj (car rest) #f))
                ((string=? method-name "region")
-                (jolt-matcher-region obj (matcher-cp obj (jnum->exact (car rest)))
-                                     (matcher-cp obj (jnum->exact (cadr rest)))))
-               ((string=? method-name "regionStart") (matcher-u16 obj (matcher-t-rstart obj)))
-               ((string=? method-name "regionEnd") (matcher-u16 obj (matcher-t-rend obj)))
+                (jolt-matcher-region obj (jnum->exact (car rest)) (jnum->exact (cadr rest))))
+               ((string=? method-name "regionStart") (matcher-t-rstart obj))
+               ((string=? method-name "regionEnd") (matcher-t-rend obj))
                ;; .reset(cs) — a new input on the same pattern — is not modelled;
                ;; only the no-argument reset, which is the one region and
                ;; find(int) are defined in terms of.
@@ -3040,21 +3038,14 @@
                ;; start/end of the last successful find (whole match, or group n)
                ((string=? method-name "start")
                 (let ((mm (matcher-t-last obj)))
-                  (if mm (matcher-u16 obj (irregex-match-start-index mm (if (pair? rest) (jnum->exact (car rest)) 0)))
+                  (if mm (irregex-match-start-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
                       (jolt-matcher-no-match))))
                ((string=? method-name "end")
                 (let ((mm (matcher-t-last obj)))
-                  (if mm (matcher-u16 obj (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0)))
+                  (if mm (irregex-match-end-index mm (if (pair? rest) (jnum->exact (car rest)) 0))
                       (jolt-matcher-no-match))))
                (else (dispatch-miss obj method-name rest))))
         (else 'pass))))))
-
-;; A Matcher's input is code points underneath; its index methods count UTF-16
-;; units. An unmatched group's -1 stays -1.
-(define (matcher-u16 m i)
-  (let ((s (matcher-t-str m))) (if (and (fixnum? i) (fx>=? i 0) (string? s)) (cp->u16 s i) i)))
-(define (matcher-cp m u)
-  (let ((s (matcher-t-str m))) (if (and (fixnum? u) (string? s)) (u16->cp s u) u)))
 
 ;; ---- def-var! the registry entry points so emit can also reach them ---------
 (def-var! "clojure.core" "host-static-ref" host-static-ref)

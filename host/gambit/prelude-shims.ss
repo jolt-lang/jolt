@@ -496,6 +496,8 @@
 ;; condition here is an error: nothing raises a warning, and Gambit has no
 ;; violation kind distinct from an error.
 (define (error? x) (condition? x))
+;; ...and so every one is serious (compile-eval.ss's load wrap asks).
+(define (serious-condition? x) (condition? x))
 (define (violation? x) #f)
 (define (warning? x) #f)
 ;; Every raise that reaches a handler here is non-continuable, so passing one on
