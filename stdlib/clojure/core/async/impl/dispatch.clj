@@ -22,7 +22,7 @@
              each costs a stack rather than an OS thread. A flow process's loop is
              mostly channel ops, which is exactly this shape.
     :mixed   a real thread, one per task. A :mixed step may block somewhere the
-             runtime cannot see (Thread/sleep, a raw fd, a blocking FFI call), and
+             runtime cannot see (a raw fd, a blocking FFI call), and
              that pins a fiber's carrier; a thread is the escape. One per task and
              not a pool because a flow process's task is its whole lifetime —
              pooling buys no reuse, while a bounded pool silently strands every
