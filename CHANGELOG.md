@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`jolt.profile/instrument!` refuses a mode it does not know.**
+  `(prof/instrument! :nope)` turned the execution counters on, so a misspelled
+  `:debug` instrumented the code for the wrong thing without saying so. It now
+  throws with the mode in `ex-data`. `nil` still turns instrumentation off.
+
 ## [0.8.24] - 2026-11-05
 
 java.util and java.util.concurrent are filled out: the remaining collection

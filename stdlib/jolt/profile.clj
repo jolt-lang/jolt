@@ -74,9 +74,13 @@
   debug locals: code compiled under :debug keeps every fn's params and locals
   visible to its frame, for jolt.debug/frames to read. One mode at a time; code
   already compiled keeps what it was compiled with either way. Returns true;
-  throws when the host cannot instrument."
+  throws on any other mode, or when the host cannot instrument."
   ([] (instrument! true))
   ([mode]
+   (when-not (contains? #{true false nil :counts :debug} mode)
+     (throw (ex-info (str "jolt.profile: unknown instrument! mode " (pr-str mode)
+                          "; expected true, :counts, :debug or false")
+                     {:mode mode})))
    (let [debug? (= mode :debug)]
      (if (host/profile-instrument! (if debug? :debug (boolean mode)))
        true

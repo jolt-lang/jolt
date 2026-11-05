@@ -23,6 +23,15 @@
 (load-file fixture)
 (prof/instrument! false)
 (check "off after instrument! false" (prof/instrumenting?) false)
+;; a mode it does not know names itself, rather than turning the counters on
+(check "instrument! refuses an unknown mode"
+       (try (prof/instrument! :nope) :no-throw (catch Exception e (ex-data e)))
+       {:mode :nope})
+(check "a refused mode leaves instrumentation off" (prof/instrumenting?) false)
+(check "instrument! :counts names the counters"
+       (do (prof/instrument! :counts) (prof/instrument-mode)) :counts)
+(prof/instrument! false)
+(check "instrument! nil is off" (do (prof/instrument! nil) (prof/instrumenting?)) false)
 ;; loading ran each defn form once, but that is top-level code: no fn has run yet
 (check "a loaded fn that never ran has no fn row"
        (fn-row (prof/fn-counts) 'profile-fixture/sum-to) nil)
