@@ -59,8 +59,12 @@
     (not (exists narrow-for '("a6le" "ta6le" "ta6nt" "ta6osx" "arm64le" "tarm64le" "tarm64osx" "arm64ios"
                               "tarm64ios" "rv64le" "trv64le" "la64le" "tla64le" "pb" "tpb" "pb64l" "tpb64l" "tpb64b"))))
 (ok "a native build has no prelude" (string=? "" (parameterize ((bld-target #f)) (bld-cross-compile-prelude))))
+;; a target other than this machine: naming the host itself is not a cross build
 (ok "a 64-bit cross build only loads the xpatch"
-    (string=? "(load \"/pack/xpatch\")\n" (prelude-for "tarm64le")))
+    (string=? "(load \"/pack/xpatch\")\n"
+              (prelude-for (if (string=? bld-machine "tarm64le") "ta6le" "tarm64le"))))
+(ok "the host named as the target is no cross build"
+    (string=? "" (prelude-for bld-machine)))
 (let ((p (prelude-for "tpb32b")))
   (ok "a 32-bit cross build loads the xpatch first"
       (and (> (string-length p) 22) (string=? "(load \"/pack/xpatch\")\n" (substring p 0 22))))
