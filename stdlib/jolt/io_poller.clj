@@ -174,12 +174,8 @@
 ;; not process — an EV_DELETE for an already-closed fd is the common one — as an
 ;; EV_ERROR (#x4000) EVENT in the eventlist rather than failing the call, and
 ;; ev-fd's caller would otherwise treat that error entry as readiness for
-;; whatever socket currently owns the reused fd number. stale-consumes counts
-;; wait-fiber fast-path hits on a ready flag left by a PREVIOUS owner of the fd
-;; (:fds entries are never removed, so a one-read socket leaves ready=true
-;; behind forever).
+;; whatever socket currently owns the reused fd number.
 (def ^:private ev-errors (atom 0))
-(def ^:private stale-consumes (atom 0))
 ;; flags is a u16 at offset 10 and the FFI reads no 16-bit type: read the u32 at
 ;; offset 8 (little-endian: filter in the low half, flags in the high half) and
 ;; test EV_ERROR (#x4000) against the high half.
@@ -254,7 +250,7 @@
 
 ;; -- the poller table ----------------------------------------------------------
 ;; One monitor serializes everything a fiber and the poller thread share:
-;;   :fds      {fd {filt {:waiters [fiber ...] :ready bool}}}   filt = :read|:write
+;;   :fds      {fd {filt {:waiters [fiber ...]}}}   filt = :read|:write
 ;;   :pending  {fd #{filt ...}}  ; registered by a fiber, not yet in the poller's set
 ;;   :pipe     [r w]       ; control pipe — registration wake
 ;;   :kq       n           ; the poller's kqueue / epoll fd
@@ -278,9 +274,6 @@
 ;;   retried, got EAGAIN and re-registered. That is what masked the bug above
 ;;   whenever read traffic happened to arrive, and it is why the hang needs a
 ;;   full-duplex fd whose peer is silent to show itself.
-;;
-;; :ready is per filter for the same reason — a read tombstone must not satisfy a
-;; write wait.
 ;;
 ;; The pending EV_DELETE/EPOLL_CTL_DEL set is NOT here: process-events! hands it
 ;; straight to poller-loop, which carries it in a loop variable to the next
@@ -484,7 +477,7 @@
         (finally (when chbuf (ffi/free chbuf)))))))
 
 (defn- process-events! [evs]
-  ;; under pm: for each (fd, filter) that fired, mark THAT filter ready, collect +
+  ;; under pm: for each (fd, filter) that fired, collect +
   ;; clear THAT filter's waiters, and schedule its delete; the control pipe just
   ;; gets drained. Returns [woken new-deletes], deletes as [fd filt] pairs.
   ;;
@@ -506,8 +499,7 @@
               ;; retire it, or it fires on every round until the fd closes.
               (if (nil? e)
                 (recur (rest evs) (conj dels [fd filt]) woken)
-                (do (swap! state assoc-in [:fds fd filt :ready] true)
-                    (swap! state assoc-in [:fds fd filt :waiters] [])
+                (do (swap! state assoc-in [:fds fd filt :waiters] [])
                     (recur (rest evs) (conj dels [fd filt]) (into woken (:waiters e))))))))))))
 
 (defn- wsapoll-round
@@ -662,22 +654,19 @@
 ;; unrecoverable after the sockets close. Cheap and lock-free on purpose: one
 ;; atom read; the caller is already in a failure path.
 ;;   :pending entries  -> registered, never drained into the kernel set
-;;   ready=false + waiters>0 -> in the kernel set (or add failed silently),
-;;                              event never fired
-;;   ready=true + waiters=0  -> event fired and waiters were collected; the
-;;                              fiber resume was lost after that
+;;   waiters>0 -> in the kernel set (or add failed silently), event never fired
+;;   waiters=0 -> event fired and waiters were collected; if a fiber is still
+;;                parked, the resume was lost after that
 (defn debug-state []
   (let [s @state]
     {:pending (:pending s)
      :waits @waits
      :ev-errors @ev-errors
-     :stale-consumes @stale-consumes
      ;; per fd, per filter — a loss is now attributable to a DIRECTION as well as
      ;; a stage, which is the whole point of printing this from a stress gate
      :fds (into {} (map (fn [[fd per-filt]]
                           [fd (into {} (map (fn [[filt e]]
-                                              [filt {:ready (:ready e)
-                                                     :waiters (count (:waiters e))}])
+                                              [filt {:waiters (count (:waiters e))}])
                                             per-filt))])
                         (:fds s)))}))
 
@@ -751,13 +740,9 @@
   (let [e (get-in @state [:fds fd filt])]
     (cond
       (contains? (:cancelled @state) fd) false
-      (and e (:ready e))
-      (do (swap! stale-consumes inc)
-          (swap! state assoc-in [:fds fd filt :ready] false) false)
       :else
-      (do (swap! state assoc-in [:fds fd filt]
-                 {:waiters (conj (or (:waiters e) []) (jolt.host/current-fiber))
-                  :ready false})
+      (do (swap! state assoc-in [:fds fd filt :waiters]
+                 (conj (or (:waiters e) []) (jolt.host/current-fiber)))
           ;; The guard is per (fd, FILTER). Keyed by fd alone it
           ;; skipped the registration whenever the OTHER direction of
           ;; the same fd was already queued, and that filter then never
