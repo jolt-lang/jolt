@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `jolt.profile/sample!` now reaches threads that were already running when it
+  started. A plain thread or one parked in a wait had no timer event to join at, so
+  a server's existing workers never appeared in the profile.
+
 ## [0.8.24] - 2026-11-05
 
 java.util and java.util.concurrent are filled out: the remaining collection

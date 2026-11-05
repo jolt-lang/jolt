@@ -5,8 +5,8 @@
 ;; interrupt that is (a signal is delivered to the main thread only). A thread
 ;; joins when sampling starts on it, when it is forked while sampling is on,
 ;; and otherwise at its next timer event of any kind — a fiber's quantum, a
-;; run-interruptible poll. A thread already running that has none of those is
-;; not sampled until it does.
+;; run-interruptible poll, the slow watch every thread keeps armed (ticks.ss). A
+;; thread blocked in a wait joins when it wakes and runs.
 ;;
 ;; TIME, NOT TICKS. Ticks count calls and back-edges, and what a tick costs
 ;; varies by orders of magnitude, so a sample every N ticks would weigh a loop of

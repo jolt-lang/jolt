@@ -48,7 +48,31 @@
   (ok "2. the client fired until it cancelled" (fx=? 50 (count)))
   (ok "2. the last demand leaving makes the thread solo again"
       (eq? 0 (jolt-tick-state)))
-  (ok "2. and leaves the timer disarmed" (fx=? 0 (set-timer 0))))
+  (ok "2. and leaves only the watch armed"
+      (let ((rem (set-timer 0)))
+        (set-timer rem)
+        (and (fx>? rem 0) (fx<=? rem jolt-tick-watch-ticks)))))
+(restore-clients!)
+
+;; --- 2b. the watch joins a sampler that started since, and costs nothing else ---
+(let ((joined 0) (old jolt-tick-join-sampling!))
+  (jolt-tick-watch!)
+  (ok "2b. the watch leaves the thread solo" (eq? 0 (jolt-tick-state)))
+  (spin 3000000)
+  (ok "2b. it fires and re-arms itself with sampling off"
+      (let ((rem (set-timer 0)))
+        (set-timer rem)
+        (and (eq? 0 (jolt-tick-state)) (fx>? rem 0))))
+  (jolt-tick-sampling-set! #t (lambda () (set! joined (fx+ joined 1)) (set-timer jolt-tick-watch-ticks)))
+  (spin 3000000)
+  (jolt-tick-sampling-set! #f old)
+  (ok "2b. with sampling on it joins" (fx>? joined 0))
+  (let ((rem (set-timer 0)))
+    (set-timer rem)
+    (ok "2b. a running timer is left alone"
+        (begin (jolt-tick-watch!)
+               (let ((now (set-timer 0))) (set-timer now) (fx<=? now rem))))))
+(set-timer 0)
 (restore-clients!)
 
 ;; --- 3. two clients keep their own cadence ------------------------------------
@@ -69,6 +93,8 @@
 (restore-clients!)
 
 ;; --- 4. off a fiber there is no preempt demand --------------------------------
+;; the timer holds the watch by now, which would carry over as one
+(set-timer 0)
 (jolt-tick-set! jolt-tick-slot-poll 1000000000)
 (ok "4. leaving solo off a fiber takes no preempt demand"
     (not (jolt-tick-demand jolt-tick-slot-preempt)))
