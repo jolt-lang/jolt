@@ -61,8 +61,8 @@
 ;; declares its own HAMT operators through this same form.
 ;;
 ;; The test runs on the COMPILING Chez, which for a native build is the target.
-;; Cross-compiling to a target narrower than the host would have to consult the
-;; target's fixnum width here instead.
+;; A cross build to a narrower target sets JOLT_NARROW_HASH in its compile script
+;; (build.ss bld-cross-compile-prelude).
 ;;
 ;; JOLT_NARROW_HASH=1 in the compiling environment forces the narrow arm on a
 ;; wide machine. That is what makes the generic arms executable under the
