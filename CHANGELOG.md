@@ -425,6 +425,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`jolt build --target` to a 32-bit machine compiled the runtime for the
+  host's fixnum width.** The compile runs on the 64-bit host Chez, so
+  `hasheq.ss`'s `define-width-op` (#801) chose the unsafe `#3%fx` hash arm for a
+  target where an int hash is a bignum, and runtime init failed with
+  "variable murmur3-seed is not bound". Past that, host code's checked fx ops on
+  int-width values (`(fx>=? k -2147483648)`, `(fx- i #x100000000)`) raised
+  "-2147483648 is not a fixnum". For a cross target in the i3/arm32/armv7/
+  ppc32/pb32 families, the generated compile script now sets
+  `JOLT_NARROW_HASH` before `compile-file` and aliases the checked fx operators
+  to their generic counterparts, which agree with them on fixnums. Native builds
+  and 64-bit cross builds generate the same script as before. Found bringing up
+  `tpb32b` (big-endian 32-bit portable bytecode) on a Nintendo Wii, where a
+  cross-built program's output now matches the native macOS build.
 - **`byte`, `short`, `char` and `int` follow both of `RT`'s cast paths.** The JVM
   has one overload for a primitive `double` or `float` and another for a boxed
   number, and they disagree; jolt had one path that was right for neither. A
