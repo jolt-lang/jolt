@@ -1333,6 +1333,28 @@
                 (mapv + @a @b)
                 (mapv (fn [k] (count (filter #(= k %) (map #(mod % 7) (range n))))) (range 7))))))
 
+;; read(b off len) checks its range before it touches the socket, as the JDK's
+;; Objects.checkFromIndexSize does, whether or not a receive buffer is kept: a
+;; negative len must never reach recv as a size_t, and a refused read leaves
+;; the bytes for the next one.
+(with-pair
+  (fn [server client conn]
+    (let [in  (.getInputStream conn)
+          out (.getOutputStream client)
+          buf (byte-array 8)
+          oob (fn [off len]
+                (try (.read in buf off len) :read
+                     (catch IndexOutOfBoundsException e (.getMessage e))))]
+      (.write out (byte-array [1 2 3 4]))
+      (check-eq "a first read fills the kept buffer" (.read in buf 0 8) 4)
+      (.write out (byte-array [5 6 7 8]))
+      (check-eq "read: len past the array" (oob 4 8) "Range [4, 4 + 8) out of bounds for length 8")
+      (check-eq "read: negative off" (oob -1 2) "Range [-1, -1 + 2) out of bounds for length 8")
+      (check-eq "read: negative len" (oob 0 -1) "Range [0, 0 + -1) out of bounds for length 8")
+      (check-eq "read: off past the array, len 0" (oob 100 0) "Range [100, 100 + 0) out of bounds for length 8")
+      (check-eq "a refused read consumes nothing" (.read in buf 0 8) 4)
+      (check-eq "the bytes are the ones sent" (vec (take 4 buf)) [5 6 7 8]))))
+
 (if (empty? @failures)
   (println "SOCKET-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

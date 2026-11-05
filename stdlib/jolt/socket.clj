@@ -720,6 +720,14 @@
       ;; as EOF
       (max 0 (native/available (jolt.host/ref-get self :fd))))))
 
+;; Objects.checkFromIndexSize, before anything else, as the JDK's socket streams
+;; do: a negative len must not reach recv, where it is a huge size_t.
+(defn- check-from-index-size! [b off len]
+  (let [n (alength b)]
+    (when (or (neg? off) (neg? len) (> off (- n len)))
+      (throw (IndexOutOfBoundsException.
+              (str "Range [" off ", " off " + " len ") out of bounds for length " n))))))
+
 ;; One read of up to len bytes into b at off: the count, or -1 at EOF. The
 ;; bytes are block-copied out of the receive buffer (ffi/read-into!).
 (defn- recv-into! [self b off len]
@@ -748,6 +756,7 @@
       (let [len (alength b)]
         (if (zero? len) 0 (recv-into! self b 0 len))))
      ([self b off len]
+      (check-from-index-size! b off len)
       (if (zero? len) 0 (recv-into! self b off len))))
    "available" (fn [self] (socket-available self))
    "close"     (fn [self] (socket-close! (jolt.host/ref-get self :socket)))})
@@ -764,11 +773,7 @@
         (recur (+ off s))))))
 
 (defn- write-bytes! [self bytes off len]
-  ;; Objects.checkFromIndexSize, before anything else, as the JDK's socket stream
-  (let [n (alength bytes)]
-    (when (or (neg? off) (neg? len) (> off (- n len)))
-      (throw (IndexOutOfBoundsException.
-              (str "Range [" off ", " off " + " len ") out of bounds for length " n)))))
+  (check-from-index-size! bytes off len)
   (when (pos? len)
     (ensure-open! self)
     (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc len)]

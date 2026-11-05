@@ -288,6 +288,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A socket read receives into a buffer the socket keeps (#1500).** A read
+  allocated what it asked for and copied what arrived out twice, one element at
+  a time for the second. The socket now keeps one receive buffer, up to 64 KB,
+  until it closes: a 120-byte read into a 64 KB array allocates about 8 KB rather
+  than 72 KB. A read asking for more than 64 KB returns at most 64 KB, as
+  `InputStream` allows.
+
 - **`map->R` is one pass over the map.** #1479 sped up a map holding only
   field keys but made one with extension keys 1.2-1.3x slower than 0.8.23; a
   single fold that skips the field keys is faster in both cases (one extension:
@@ -320,6 +327,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.getFileName` 204 -> 90 ns, and `Paths/get` of one name 61 -> 41 ns.
 
 ### Fixed
+
+- **`InputStream.read(b off len)` on a socket checks its range first.** An
+  `off` or `len` outside the array is `IndexOutOfBoundsException` with the JDK's
+  message, before the socket is touched. It used to consume the bytes and then
+  throw `ArrayIndexOutOfBoundsException`.
 
 - **A surrogate unit is a value, and the joiners pair it (#1454).**
   `(char 0xD83D)` used to throw; it is now a `Character` holding the unit, as a
