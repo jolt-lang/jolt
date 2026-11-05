@@ -348,6 +348,58 @@
 (define (bld-csv-dir) (if (bld-cross?) (bld-target-pack) bld-host-csv-dir))
 ;; The cross xpatch that retargets compile-file / make-boot-file to the target.
 (define (bld-xpatch) (string-append (bld-target-pack) "/xpatch"))
+;; A cross target whose fixnums are narrower than the Java int window (Chez's
+;; 32-bit machines: i3*, arm32*, armv7*, ppc32*, pb32*, threaded or not). The
+;; compile still runs on the 64-bit HOST Chez, so anything that sizes itself off
+;; the compiling machine sees 61-bit fixnums and gets the target wrong.
+(define (bld-narrow-target?)
+  (and (bld-cross?)
+       (let ((m (bld-target)))
+         (or (bld-contains? m "i3") (bld-contains? m "arm32") (bld-contains? m "armv7")
+             (bld-contains? m "ppc32") (bld-contains? m "pb32")))
+       #t))
+;; What a generated compile script runs before compile-file on a cross build:
+;; the target's xpatch, and on a narrow target two adjustments for the host
+;; runtime's 32-bit gaps.
+;;  1. JOLT_NARROW_HASH: hasheq.ss's define-width-op picks the hash engine's
+;;     width at EXPAND time from (fixnum? #xFFFFFFFF) on the compiling Chez,
+;;     which is 64-bit here, so it would select the unsafe #3%fx arm for a target
+;;     where an int hash is a bignum. Runtime init then failed with "variable
+;;     murmur3-seed is not bound". The env var selects the narrow arm.
+;;  2. Checked fx operators -> generic. Host code applies checked fx ops to
+;;     int-width values (`(fx>=? k -2147483648)`, `(fx- i #x100000000)`), which
+;;     raise on a 32-bit target ("fx>=?: -2147483648 is not a fixnum"). Generic
+;;     ops agree with fx ops on fixnums, so this changes nothing that was already
+;;     correct. Explicit #3% primitives are untouched.
+;; Found bringing up tpb32b (Nintendo Wii, big-endian PowerPC).
+(define bld-narrow-fx-aliases
+  '((fx= =) (fx< <) (fx> >) (fx<= <=) (fx>= >=)
+    (fx=? =) (fx<? <) (fx>? >) (fx<=? <=) (fx>=? >=)
+    (fx+ +) (fx- -) (fx* *) (fx1+ 1+) (fx1- 1-)
+    (fxquotient quotient) (fxremainder remainder) (fxmodulo modulo)
+    (fxabs abs) (fxmin min) (fxmax max)
+    (fxzero? zero?) (fxpositive? positive?) (fxnegative? negative?)
+    (fxnonnegative? nonnegative?) (fxnonpositive? nonpositive?)
+    (fxeven? even?) (fxodd? odd?)
+    (fxand bitwise-and) (fxior bitwise-ior) (fxxor bitwise-xor) (fxnot bitwise-not)
+    (fxlogand logand) (fxlogor logor) (fxlogxor logxor) (fxlognot lognot)
+    (fxsll bitwise-arithmetic-shift-left) (fxsra bitwise-arithmetic-shift-right)
+    (fxarithmetic-shift-left bitwise-arithmetic-shift-left)
+    (fxarithmetic-shift-right bitwise-arithmetic-shift-right)))
+(define (bld-cross-compile-prelude)
+  (if (bld-cross?)
+      (string-append
+        "(load " (ei-str-lit (bld-xpatch)) ")\n"
+        (if (bld-narrow-target?)
+            (string-append
+              "(putenv \"JOLT_NARROW_HASH\" \"1\")\n"
+              (fold-left
+                (lambda (acc pr)
+                  (string-append acc "(define-syntax " (symbol->string (car pr))
+                                 " (identifier-syntax " (symbol->string (cadr pr)) "))\n"))
+                "" bld-narrow-fx-aliases))
+            ""))
+      ""))
 
 (define (bld-have-cc?)
   (> (string-length (bld-sh-capture (string-append "command -v " (bld-sh-quote (bld-cc))))) 0))
@@ -4238,7 +4290,7 @@
           ;; cross: the xpatch retargets compile-file / make-boot-file to the
           ;; target machine (ChezScheme/BUILDING, "CROSS COMPILING SCHEME
           ;; PROGRAMS"); the boots below come from the target pack.
-          (if (bld-cross?) (string-append "(load " (ei-str-lit (bld-xpatch)) ")\n") "")
+          (bld-cross-compile-prelude)
           ;; each unit under its own parameters (see build-self-contained): the
           ;; runtime half without inspector information, the app half under the
           ;; mode's row. No kernel prologue here — a fresh Chez has nothing of
@@ -4389,7 +4441,7 @@
           "(import (chezscheme))\n"
           ;; As in build-with-cc, loading the xpatch retargets compile-file and
           ;; make-boot-file for the lifetime of this fresh Chez process.
-          (if (bld-cross?) (string-append "(load " (ei-str-lit (bld-xpatch)) ")\n") "")
+          (bld-cross-compile-prelude)
           (bld-units-compile-forms units mode)
           "(make-boot-file " (ei-str-lit boot) " '()\n  "
           (ei-str-lit (string-append (bld-csv-dir) "/petite.boot")) "\n  "
