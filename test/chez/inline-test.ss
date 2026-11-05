@@ -107,6 +107,22 @@
     (has? (emitf "u" "(fn* ([^double x] (ulong x)))") "(flonum->fixnum"))
 (ok "inlined untyped cast under an untyped caller is not lowered"
     (not (has? (emitf "u" "(fn* ([x] (ulong x)))") "(flonum->fixnum")))
+;; which entry a lowered cast falls back to is the CALLEE's: an untyped param is
+;; boxed at the JVM's call, whatever the caller proves about the argument.
+(ev "(def dbyte (fn* ([^double d] (byte d))))")
+(ev "(def ubyte (fn* ([d] (byte d))))")
+(ev "(def ubyte-copy (fn* ([d] (let* [e d] (byte e)))))")
+(ev "(def ubyte-outer (fn* ([^double d] (ubyte d))))")
+(ok "inlined ^double byte falls back to the primitive entry"
+    (has? (emitf "u" "(fn* ([x] (dbyte x)))") "(jolt-byte-cast-prim "))
+(ok "inlined untyped byte under a ^double caller keeps the fast path"
+    (has? (emitf "u" "(fn* ([^double x] (ubyte x)))") "(flonum->fixnum"))
+(ok "inlined untyped byte under a ^double caller falls back boxed"
+    (not (has? (emitf "u" "(fn* ([^double x] (ubyte x)))") "-prim ")))
+(ok "a let copy of an untyped param stays boxed"
+    (not (has? (emitf "u" "(fn* ([^double x] (ubyte-copy x)))") "-prim ")))
+(ok "boxed survives a second splice"
+    (not (has? (emitf "u" "(fn* ([x] (ubyte-outer x)))") "-prim ")))
 (ok "lowered cast answers: 2.9 -> 2, -2.9 -> -2"
     (equal? '(2 -2) (list (jnum->exact (ev "(dlong 2.9)")) (jnum->exact (ev "(dlong -2.9)")))))
 

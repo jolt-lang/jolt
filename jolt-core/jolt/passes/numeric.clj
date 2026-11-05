@@ -220,11 +220,30 @@
 
 ;; Seed a fn arity's local env from its numeric param hints; an unhinted param
 ;; shadows any same-named outer local to nil.
+;; A cast answers differently on a double the JVM holds primitive and one it holds
+;; boxed (converters.ss), and this pass can prove a double the JVM never unboxes: a
+;; param typed by the whole-program seeds (:wp-seeded), or an untyped param after a
+;; splice (:boxed-param on the substituted node). Such a value keeps the window's
+;; fast path, where the two agree, and the boxed cast outside it. :boxed-locals, in
+;; tenv beside the local kinds, is the set of names holding one.
+(defn- boxed-operand? [n tenv]
+  (or (get n :boxed-param)
+      ;; a keyword read of a proven-flonum field answers an Object on the JVM
+      (= :double (get n :num-read))
+      (and (= :local (get n :op))
+           (contains? (or (get tenv :boxed-locals) #{}) (get n :name)))))
+
+(defn- rebind-boxed [tenv nm boxed?]
+  (let [s (or (get tenv :boxed-locals) #{})]
+    (assoc tenv :boxed-locals (if boxed? (conj s nm) (disj s nm)))))
+
 (defn- arity-env [tenv a]
   (let [nh (into {} (get a :nhints))
         ah (into {} (get a :ahints))
-        pe (reduce (fn [e p] (assoc e p (or (get nh p) (get ah p)))) tenv (get a :params))]
-    (if (get a :rest) (assoc pe (get a :rest) nil) pe)))
+        seeded (or (get a :wp-seeded) #{})
+        pe (reduce (fn [e p] (rebind-boxed (assoc e p (or (get nh p) (get ah p))) p (contains? seeded p)))
+                   tenv (get a :params))]
+    (if (get a :rest) (assoc (rebind-boxed pe (get a :rest) false) (get a :rest) nil) pe)))
 
 (defn- an-invoke
   "Annotate an :invoke with its numeric kind. An arithmetic core op specializes to
@@ -466,12 +485,18 @@
       ;; flag is set from THIS analysis every time, never kept from an earlier
       ;; one, so a body inlined into a new context carries only what that
       ;; context proves. The node's own kind (what it answers) is unchanged.
+      ;; :fl-prim says the JVM holds the operand primitive too, which picks the
+      ;; cast the back end calls: outside the window for a double, always for a
+      ;; float, which has no window (it is a jfloat, not a flonum).
       (= op :coerce)
       (let [ir (an (get node :expr) tenv)
-            node1 (assoc node :expr (nth ir 1))
-            lowered? (and (= :double (nth ir 0))
-                          (contains? lowered-cast-fns (get node :cast-fn)))]
-        [(get node :kind) (if lowered? (assoc node1 :fl-arg true) (dissoc node1 :fl-arg))])
+            k (nth ir 0)
+            node1 (dissoc (assoc node :expr (nth ir 1)) :fl-arg :fl-prim)
+            cast? (contains? lowered-cast-fns (get node :cast-fn))
+            prim? (and cast? (or (= :double k) (= :float k))
+                       (not (boxed-operand? (get node :expr) tenv)))
+            node2 (if (and cast? (= :double k)) (assoc node1 :fl-arg true) node1)]
+        [(get node :kind) (if prim? (assoc node2 :fl-prim true) node2)])
       (= op :invoke) (an-invoke node tenv)
       (= op :let)
       (let [res (reduce (fn [acc b]
@@ -479,7 +504,8 @@
                                 ;; a ^doubles/… let binding's init is a :coerce of the
                                 ;; array kind, which answers that kind like any coerce
                                 ir (an (nth b 1) te)]
-                            [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
+                            [(rebind-boxed (assoc te (nth b 0) (nth ir 0)) (nth b 0) (boxed-operand? (nth b 1) te))
+                             (conj binds [(nth b 0) (nth ir 1)])]))
                         [tenv []] (get node :bindings))
             br (an (get node :body) (nth res 0))]
         [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
@@ -501,7 +527,8 @@
             ;; drive the bounded fixpoint: each seed kind survives only if every
             ;; recur arg in its slot agrees, else the slot demotes to generic.
             lk (loop-kinds names ik (get node :body) tenv)
-            te (reduce (fn [t i] (assoc t (nth names i) (nth lk i))) tenv (range (count names)))]
+            te (reduce (fn [t i] (rebind-boxed (assoc t (nth names i) (nth lk i)) (nth names i) false))
+                       tenv (range (count names)))]
         [nil (assoc node
                     :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)
                     :body (nth (an (get node :body) te) 1))])

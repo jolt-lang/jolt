@@ -198,9 +198,13 @@
                       ;; (no-guard) path. The param hint asserts the
                       ;; arg is a struct; inlining doesn't change that contract.
                       (if r
-                        (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
-                          (assoc r :hint (get node :hint))
-                          r)
+                        (let [r (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
+                                  (assoc r :hint (get node :hint))
+                                  r)]
+                          ;; a second splice keeps what the first one marked
+                          (if (and (get node :boxed-param) (or (= :local (get r :op)) (= :const (get r :op))))
+                            (assoc r :boxed-param true)
+                            r))
                         node))
       ;; :let alpha-renames each binder to a fresh name, threading the extended
       ;; env left-to-right — sequential scope the uniform combinator can't model,
@@ -510,17 +514,24 @@
                                  (if (and ck (= :local (get nd :op)))
                                    (assoc nd :rec-hint ck)
                                    nd)))
+                    ;; An untyped param is boxed at the JVM's call, whatever the
+                    ;; caller proves about its argument; the mark rides on the
+                    ;; substituted node, as rec-hint's does, for a cast on it
+                    ;; (jolt.passes.numeric boxed-operand?). A param the
+                    ;; whole-program seeds typed is untyped in the source.
+                    seeded (or (get stash :wp-seeded) #{})
+                    boxed (fn [nd] (assoc nd :boxed-param true))
                     res (loop [i 0 env {} binds []]
                           (if (< i n)
                             (let [p (nth params i) a (nth args i) k (get nh p)]
                               (cond
-                                k (let [f (fresh p)]
-                                    (recur (inc i) (assoc env p {:op :local :name f})
+                                k (let [f (fresh p) l {:op :local :name f}]
+                                    (recur (inc i) (assoc env p (if (contains? seeded p) (boxed l) l))
                                            (conj binds [f (coerce-node k a)])))
-                                (trivial-arg? a) (recur (inc i) (assoc env p (rec-hint a p)) binds)
+                                (trivial-arg? a) (recur (inc i) (assoc env p (boxed (rec-hint a p))) binds)
                                 :else (let [f (fresh p)]
                                         (recur (inc i)
-                                               (assoc env p (rec-hint {:op :local :name f} p))
+                                               (assoc env p (boxed (rec-hint {:op :local :name f} p)))
                                                (conj binds [f a])))))
                             [env binds]))
                     env (nth res 0)

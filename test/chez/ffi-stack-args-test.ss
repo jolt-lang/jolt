@@ -20,9 +20,9 @@
 ;; its arguments in order, so one argument read from the wrong place changes
 ;; the result.
 ;;
-;; A stock arm64 kernel can't compile the 24-byte row: that one reports and
-;; passes, unless JOLT_REQUIRE_LOCKFREE_CHEZ=1 says the kernel must carry
-;; jolt's patches (CI). Other machines run every row.
+;; A stock kernel reports and passes, unless JOLT_REQUIRE_LOCKFREE_CHEZ=1 says the
+;; kernel must carry jolt's patches (CI): a stock arm64 can't compile the 24-byte
+;; row, and a stock x86_64 delivers the 3-char row's final char as 0.
 ;;
 ;;   sh test/chez/ffi-stack-args-test.sh <chez>
 (import (chezscheme))
@@ -60,16 +60,26 @@
 
 (define three-longs-proc
   (proc-or-condition "stack_three_longs" '(int int int int int int int int (& three_longs) int) 'integer-64))
+(define (three-chars-row-right?)
+  (= ((foreign-procedure "stack_char_three_chars" (int int int int int int int int integer-8 (& three_chars) integer-8) integer-64)
+      1 2 3 4 5 6 7 8 9
+      (make-ftype-pointer three_chars
+        (alloc (ftype-sizeof three_chars)
+               (lambda (p) (foreign-set! 'integer-8 p 0 41) (foreign-set! 'integer-8 p 1 42) (foreign-set! 'integer-8 p 2 43))))
+      44)
+     (fold 1 2 3 4 5 6 7 8 9 41 42 43 44)))
 (define required? (equal? (getenv "JOLT_REQUIRE_LOCKFREE_CHEZ") "1"))
-(define stock? (condition? three-longs-proc))
+(define refuses-big-struct? (condition? three-longs-proc))
 
 (cond
-  [(and stock? (not required?))
+  [(and refuses-big-struct? (not required?))
    (printf "ffi-stack-args: stock Chez kernel (a struct over 16 bytes on the stack: ~a), stack arguments not checked\n"
            (call-with-string-output-port (lambda (p) (display-condition three-longs-proc p))))]
+  [(and (not required?) (not (three-chars-row-right?)))
+   (printf "ffi-stack-args: stock Chez kernel (a char after a struct of three chars arrives wrong), stack arguments not checked\n")]
   [else
-   (ok "a struct over 16 bytes passed by pointer on the stack compiles" (not stock?))
-   (unless stock?
+   (ok "a struct over 16 bytes passed by pointer on the stack compiles" (not refuses-big-struct?))
+   (unless refuses-big-struct?
      (ok "a struct over 16 bytes passed by pointer on the stack, then an int"
          (= (three-longs-proc 1 2 3 4 5 6 7 8
               (make-ftype-pointer three_longs
@@ -89,14 +99,7 @@
            (make-ftype-pointer one_short (alloc (ftype-sizeof one_short) (lambda (p) (foreign-set! 'short p 0 41))))
            43)
           (fold 1 2 3 4 5 6 7 8 9 41 43)))
-   (ok "char, then struct of three chars: the struct in an 8-byte slot"
-       (= ((foreign-procedure "stack_char_three_chars" (int int int int int int int int integer-8 (& three_chars) integer-8) integer-64)
-           1 2 3 4 5 6 7 8 9
-           (make-ftype-pointer three_chars
-             (alloc (ftype-sizeof three_chars)
-                    (lambda (p) (foreign-set! 'integer-8 p 0 41) (foreign-set! 'integer-8 p 1 42) (foreign-set! 'integer-8 p 2 43))))
-           44)
-          (fold 1 2 3 4 5 6 7 8 9 41 42 43 44)))
+   (ok "char, then struct of three chars: the struct in an 8-byte slot" (three-chars-row-right?))
    (ok "three chars, then a short: padding never negative"
        (= ((foreign-procedure "stack_three_chars_short" (int int int int int int int int integer-8 integer-8 integer-8 short int) integer-64)
            1 2 3 4 5 6 7 8 9 10 11 12 13)

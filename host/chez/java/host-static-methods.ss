@@ -495,24 +495,41 @@
         (cons "arraycopy" (lambda (src src-pos dst dst-pos len)
                             (sys-arraycopy src src-pos dst dst-pos len)))))
 
+;; HotSpot's own wording and order (typeArrayKlass/objArrayKlass copy_array), which
+;; names a reference array "object array" whatever its element type.
+(define (arraycopy-label a)
+  (let ((k (jolt-array-kind a)))
+    (if (na-ref-kind? k) "object array" (symbol->string k))))
+(define (arraycopy-store-throw msg)
+  (throw-jvm 'ArrayStoreException (string-append "arraycopy: " msg)))
+(define (arraycopy-range-throw . parts)
+  (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
+                                   (apply string-append "arraycopy: " parts))))
+(define (arraycopy-out-of-bounds what i a)
+  (arraycopy-range-throw what " " (number->string i) " out of bounds for "
+                         (arraycopy-label a) "[" (number->string (ja-len a)) "]"))
 (define (sys-arraycopy src src-pos dst dst-pos len)
   (when (or (jolt-nil? src) (jolt-nil? dst))
     (throw-jvm 'NullPointerException "arraycopy source or destination is nil"))
-  (unless (and (jolt-array? src) (jolt-array? dst))
-    (throw-jvm 'ArrayStoreException "arraycopy operands must be arrays"))
+  (unless (jolt-array? src)
+    (arraycopy-store-throw (string-append "source type " (jolt-class-name src) " is not an array")))
+  (unless (jolt-array? dst)
+    (arraycopy-store-throw (string-append "destination type " (jolt-class-name dst) " is not an array")))
   ;; A copy between different element kinds is the JVM's ArrayStoreException;
   ;; only reference arrays may differ (the JVM then checks each element as it
   ;; stores, which jolt does not — its element store is unchecked, see
   ;; known-divergences :typed-array-store), so two reference kinds are compatible.
   (unless (or (eq? (jolt-array-kind src) (jolt-array-kind dst))
               (and (na-ref-kind? (jolt-array-kind src)) (na-ref-kind? (jolt-array-kind dst))))
-    (throw-jvm 'ArrayStoreException "arraycopy between arrays of different types"))
+    (arraycopy-store-throw (string-append "type mismatch: can not copy " (arraycopy-label src)
+                                          "[] into " (arraycopy-label dst) "[]")))
   (let ((sp (na-idx src-pos)) (dp (na-idx dst-pos)) (n (na-idx len))
         (slen (ja-len src)) (dlen (ja-len dst)))
-    (when (or (negative? sp) (negative? dp) (negative? n)
-              (> (+ sp n) slen) (> (+ dp n) dlen))
-      (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
-                                       "arraycopy: last source index out of bounds")))
+    (cond ((negative? sp) (arraycopy-out-of-bounds "source index" sp src))
+          ((negative? dp) (arraycopy-out-of-bounds "destination index" dp dst))
+          ((negative? n) (arraycopy-range-throw "length " (number->string n) " is negative"))
+          ((> (+ sp n) slen) (arraycopy-out-of-bounds "last source index" (+ sp n) src))
+          ((> (+ dp n) dlen) (arraycopy-out-of-bounds "last destination index" (+ dp n) dst)))
     ;; ja-copy-range! (natives-array.ss) owns the move: a block copy between two
     ;; bytevector, flvector or fxvector backings, and the descending walk when the regions overlap
     ;; forwards inside one array — which is what gives the JVM's "as if the source

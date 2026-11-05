@@ -1137,6 +1137,18 @@
    "jolt-int-cast" "int" "jolt-unchecked-int" "int"
    "jolt-short-cast" "short" "jolt-byte-cast" "byte" "jolt-char" "char"})
 
+;; What a double or float the JVM holds primitive (:fl-prim) calls, where RT's
+;; primitive overload differs from its Object one (converters.ss). The unchecked
+;; casts have no check to differ on.
+(def ^:private cast-prim-entry
+  {"jolt-byte-cast" "jolt-byte-cast-prim" "jolt-short-cast" "jolt-short-cast-prim"
+   "jolt-int-cast" "jolt-int-cast-prim" "jolt-long-cast" "jolt-long-cast-prim"
+   "jolt-char" "jolt-char-prim"})
+(defn- cast-entry [node]
+  (if (:fl-prim node)
+    (get cast-prim-entry (:cast-fn node) (:cast-fn node))
+    (:cast-fn node)))
+
 (def ^:private rt-emitted-names
   (let [from-registry registry-emitted-names
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
@@ -4384,19 +4396,19 @@
                         " (if (and (" (unsafe-prefix) "fl>=? " t " jolt-cast-lo-" s ")"
                         " (" (unsafe-prefix) "fl<=? " t " jolt-cast-hi-" s "))"
                         " " (if (= "jolt-char" (:cast-fn node)) (str "(integer->char " lane ")") lane)
-                        " (" (:cast-fn node) " " t ")))"))
+                        " (" (cast-entry node) " " t ")))"))
                  ;; (long x) and (unchecked-long x) both hand a fixnum back
                  ;; unchanged, and a fixnum is what a loop counter or a char code
                  ;; point is: test it here so the common case is a type check,
                  ;; not a call. The helper still owns every other operand.
                  (contains? #{"jolt-long-cast" "jolt-unchecked-long"} (:cast-fn node))
                  (let [t (fresh-label "_lc$")]
-                   (str "(let ((" t " " e ")) (if (fixnum? " t ") " t " (" (:cast-fn node) " " t ")))"))
+                   (str "(let ((" t " " e ")) (if (fixnum? " t ") " t " (" (cast-entry node) " " t ")))"))
                  ;; a float cast whose value an fl op takes (:fl-unbox, numeric
                  ;; pass) hands it the double it widens to, never building the jfloat
                  (and (:fl-unbox node) (contains? #{"jolt-float" "jolt-unchecked-float"} (:cast-fn node)))
                  (str "(" (:cast-fn node) "->flonum " e ")")
-                 (:cast-fn node) (str "(" (:cast-fn node) " " e ")")
+                 (:cast-fn node) (str "(" (cast-entry node) " " e ")")
                      (= :double (:kind node)) (emit-nhint-coerce :double e)
                      (= :long (:kind node)) (emit-nhint-coerce :long e (boolean (:return? node)))
                      :else e))

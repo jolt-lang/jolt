@@ -285,6 +285,11 @@
 (check "(let [f (fn [^double d] (long d)) i (fn [^double d] (int d)) c (fn [^double d] (char d)) u (fn [^double d] (unchecked-int d)) m (fn [t] (try (t) (catch IllegalArgumentException e (ex-message e))))] [(f 2.9) (f -2.9) (f 1.152921504606847E18) (f ##NaN) (i 2147483647.0) (m (fn [] (i 2147483647.9))) (int (c 55295.0)) (int (c 55296.0)) (u 4294967296.5)])"
        "[2 -2 1152921504606846976 0 2147483647 \"Value out of range for int: 2.1474836479E9\" 55295 55296 2147483647]")
 
+;; outside the window a primitive double takes the cast's -prim entry and a boxed
+;; one the helper: RT's two overloads differ on NaN and on a fractional edge.
+(check "(let [b (fn [^double d] (byte d)) c (fn [^double d] (char d)) m (fn [t] (try (t) (catch IllegalArgumentException e (ex-message e))))] [(m (fn [] (b ##NaN))) (m (fn [] (b 127.9))) (m (fn [] (c ##NaN))) (byte (identity ##NaN)) (byte (identity 127.9)) (m (fn [] (byte (identity ##Inf)))) (m (fn [] (byte (float ##NaN))))])"
+       "[\"Value out of range for byte: NaN\" \"Value out of range for byte: 127.9\" \"Value out of range for char: NaN\" 0 127 \"Value out of range for long: Infinity\" \"Value out of range for byte: NaN\"]")
+
 (printf "eval-test: ~a failure(s)\n" failures)
 (if (= failures 0)
     (begin (display "eval-test: PASS — jolt compiles and evaluates on native gsi\n") (exit 0))

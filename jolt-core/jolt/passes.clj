@@ -107,7 +107,7 @@
     ;; once under a :coerce of its kind, which is how the numeric pass types an
     ;; array local whether it came from a let or a param.
     {:params (:params a) :body (:body a) :nhints (:nhints a) :phints (:phints a)
-     :ahints (:ahints a)
+     :ahints (:ahints a) :wp-seeded (:wp-seeded a)
      :ret (:ret-nhint a)
      ;; the stash-graph edges splice-cycle-member? (inline.clj) walks to refuse
      ;; inlining a recursive cluster; computed once here, on the analyzed body.
@@ -118,7 +118,8 @@
   synthetic ^double hints, so the numeric pass unboxes a hintless fn whose callers
   all pass flonums (the entry coercion jolt->fl is a no-op on a proven
   flonum). Only un-hinted params are added — an explicit hint wins. A no-op unless
-  the closed-world fixpoint typed a param :double (param-num-seeds-for)."
+  the closed-world fixpoint typed a param :double (param-num-seeds-for). :wp-seeded
+  names them, since a cast on one answers as the JVM's boxed cast does (numeric)."
   [unit node]
   (let [seeds (when (= :def (:op node)) (param-num-seeds-for unit (str (:ns node) "/" (:name node))))
         f (:init node)]
@@ -126,7 +127,8 @@
       (let [a (first (:arities f))
             have (into #{} (map first (:nhints a)))
             add (for [[p k] seeds :when (not (have p))] [p k])]
-        (assoc node :init (assoc f :arities [(assoc a :nhints (vec (concat (:nhints a) add)))])))
+        (assoc node :init (assoc f :arities [(assoc a :nhints (vec (concat (:nhints a) add))
+                                                   :wp-seeded (set (map first add)))])))
       node)))
 
 ;; Dev IR validation. When JOLT_IR_VALIDATE is set, run-passes checks the node

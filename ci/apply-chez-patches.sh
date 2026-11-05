@@ -9,12 +9,13 @@
 # the patched one. Idempotent: a patch that is already applied is skipped, so a
 # tree restored from a cache or patched by an earlier step is left alone.
 #
-# The patches change the C kernel and three Scheme sources (s/7.ss,
-# s/inspect.ss, s/vfasl.ss), so the kernel and boot files must come from the
-# same patched build, which configure + make + install from one tree
+# The patches change the C kernel and Scheme sources (s/7.ss, s/inspect.ss,
+# s/vfasl.ss, s/arm64.ss, s/x86_64.ss), so the kernel and boot files must come
+# from the same patched build, which configure + make + install from one tree
 # guarantees. A jolt built against a stock Chez (Homebrew, a distro) still
 # works; it just pays the stock price for collect-safe foreign calls (see the
-# comments in c/thread.c) and keeps a copy of each string literal per form.
+# comments in c/thread.c), keeps a copy of each string literal per form, and
+# keeps stock Chez's placement of C arguments past the registers.
 set -eu
 
 src=${1:?usage: apply-chez-patches.sh <chez-src>}

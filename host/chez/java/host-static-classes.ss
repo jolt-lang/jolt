@@ -3694,22 +3694,19 @@
                                  (out (make-jolt-array (na-make-backing len kind (na-zero-of kind)) kind)))
                             (ja-copy-range! a 0 out 0 (min len (ja-len a)))
                             out)))
-         ;; copyOfRange(a, from, to): from > to is the JVM's IllegalArgumentException
-         ;; ("from > to"), from outside [0, length] its ArrayIndexOutOfBoundsException,
-         ;; and a `to` past the end pads with the kind's zero like copyOf does. It
-         ;; used to read past the end instead of padding.
+         ;; copyOfRange(a, from, to) as the JDK writes it: from > to is its
+         ;; IllegalArgumentException ("from > to"), the copy is arraycopy of what the
+         ;; source has, so a from outside [0, length] raises what arraycopy raises,
+         ;; and a `to` past the end leaves the kind's zero.
          (cons "copyOfRange" (lambda (a from to)
                                (let* ((f (jnum->exact from)) (tt (jnum->exact to))
                                       (alen (ja-len a)) (kind (jolt-array-kind a)))
                                  (when (> f tt)
                                    (throw-jvm 'IllegalArgumentException
                                               (string-append (number->string f) " > " (number->string tt))))
-                                 (when (or (< f 0) (> f alen))
-                                   (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
-                                                                    (number->string f))))
                                  (let* ((len (- tt f))
                                         (out (make-jolt-array (na-make-backing len kind (na-zero-of kind)) kind)))
-                                   (ja-copy-range! a f out 0 (min len (- alen f)))
+                                   (sys-arraycopy a f out 0 (min len (- alen f)))
                                    out))))
          (cons "sort" arrays-sort)
          (cons "deepEquals" (lambda (a b) (objects-deep-equals? a b)))
