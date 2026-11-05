@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ffi/alloc` zeroes in place.** It built a zeroed bytevector the size of the
+  block and copied that over, so a 64 KB allocation took 6.4 us and left 64 KB of
+  garbage on the heap. It now calls `memset`: a 64 KB block takes 1.5 us and a 1 MB
+  block 10 us against 86. Arenas allocate the same way, so they gain it too.
+
 ## [0.8.24] - 2026-11-05
 
 java.util and java.util.concurrent are filled out: the remaining collection
