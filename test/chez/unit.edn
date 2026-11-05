@@ -739,7 +739,8 @@
   {:suite "insttime" :expr "(= #inst \"2020-01-01T00:00:00Z\" #inst \"2020-01-01T00:00:01Z\")" :expected "false"}
   {:suite "insttime" :expr "(get {#inst \"2020-01-01T00:00:00Z\" :v} #inst \"2020-01-01T00:00:00.000Z\")" :expected ":v"}
   {:suite "insttime" :expr "(pr-str #inst \"2020-01-01T00:00:00Z\")" :expected "\"#inst \\\"2020-01-01T00:00:00.000-00:00\\\"\""}
-  {:suite "insttime" :expr "(str #inst \"2020-01-01T00:00:00Z\")" :expected "\"2020-01-01T00:00:00.000-00:00\""}
+  ;; str is Date.toString, on the default zone (pinned here); pr stays #inst
+  {:suite "insttime" :expr "(try (java.util.TimeZone/setDefault (java.util.TimeZone/getTimeZone \"UTC\")) (str #inst \"2020-01-01T00:00:00Z\") (finally (java.util.TimeZone/setDefault nil)))" :expected "\"Wed Jan 01 00:00:00 UTC 2020\""}
   {:suite "insttime" :expr "(uuid? #uuid \"550e8400-e29b-41d4-a716-446655440000\")" :expected "true"}
   {:suite "insttime" :expr "(= #uuid \"550E8400-E29B-41D4-A716-446655440000\" #uuid \"550e8400-e29b-41d4-a716-446655440000\")" :expected "true"}
   {:suite "insttime" :expr "(pr-str #uuid \"550e8400-e29b-41d4-a716-446655440000\")" :expected "\"#uuid \\\"550e8400-e29b-41d4-a716-446655440000\\\"\""}
@@ -881,10 +882,10 @@
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (StringReader. \"k\"))))" :expected "107"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (slurp (io/reader (char-array \"xyz\"))))" :expected "\"xyz\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/reader \"README.md\"))))" :expected "true"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toString (.toURL (io/file \"/tmp/x\"))))" :expected "\"file:/tmp/x\""}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toURI (io/file \"/tmp/x\")))" :expected "#object[java.net.URI \"file:/tmp/x\"]"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (str (.toURI (io/file \"/tmp/x\"))))" :expected "\"file:/tmp/x\""}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (pr-str (.toURI (io/file \"/tmp/x\"))))" :expected "\"#object[java.net.URI \\\"file:/tmp/x\\\"]\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toString (.toURL (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"file:/tmp/jolt-no-such-dir/x\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toURI (io/file \"/tmp/jolt-no-such-dir/x\")))" :expected "#object[java.net.URI \"file:/tmp/jolt-no-such-dir/x\"]"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (str (.toURI (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"file:/tmp/jolt-no-such-dir/x\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (pr-str (.toURI (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"#object[java.net.URI \\\"file:/tmp/jolt-no-such-dir/x\\\"]\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (clojure.string/replace (pr-str (io/file \"/tmp/x\")) #\" 0x[0-9a-f]+\" \"\"))" :expected "\"#object[java.io.File \\\"/tmp/x\\\"]\""}
   {:suite "ioreader" :expr "(clojure.string/replace (pr-str (atom 1)) #\" 0x[0-9a-f]+ \" \" \")" :expected "\"#object[clojure.lang.Atom {:status :ready, :val 1}]\""}
  ;; io/resource has two branches — a source root (a jfile) and an embedded resource
@@ -937,7 +938,7 @@
   ;; strips the scheme. All five must hold before io/resource can return a URL.
   ;; Built against a temp file so nothing here depends on a machine path.
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (let [f (java.io.File/createTempFile \"joltres\" \".txt\")] (spit f \"hello\") (let [u (java.net.URL. (str \"file:\" (.getAbsolutePath f))) r (and (= \"hello\" (slurp u)) (= \"hello\" (slurp (.openStream u))) (= \"hello\" (slurp (io/reader u))) (= \"hello\" (slurp (io/input-stream u))) (= (.getAbsolutePath f) (str (io/file u))))] (.delete f) r)))" :expected "true"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/x\"))))" :expected "\"/tmp/x\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"/tmp/jolt-no-such-dir/x\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getAbsolutePath (io/file \"/a/b\")))" :expected "\"/a/b\""}
   ;; Normalizing &form rebuilds the call form, so its reader metadata has to ride
   ;; along — a macro reading (:line (meta &form)) is how a library reports the
@@ -3380,6 +3381,12 @@
   {:suite "repl-printer" :expr "\"hi\"" :expected "\"hi\""}
   {:suite "repl-printer" :expr "{:a \"x\" :b \\y}" :expected "{:a \"x\", :b \\y}"}
   {:suite "repl-printer" :expr "(symbol (clojure.string/replace (pr-str (java.io.File. \"/tmp/x\")) #\" 0x[0-9a-f]+\" \"\"))" :expected "#object[java.io.File \"/tmp/x\"]"}
+  ;; The print walks are narrowed per type once a value of it has printed
+  ;; (print-arms-for, host-static.ss). An arm or a print-method registered after
+  ;; that first print still decides the next one: the narrowed walk is cached
+  ;; against the registry list, and a library arm is asked live in every walk.
+  {:suite "print-arm-verdict" :expr "(let [f (java.io.File. \"/jolt-print-arm-probe\") p (fn [x] (and (instance? java.io.File x) (= (.getPath x) \"/jolt-print-arm-probe\"))) before [(.startsWith (pr-str f) \"#object[java.io.File\") (str f)]] (__register-pr! p (fn [x] \"#probe\")) (__register-str! p (fn [x] \"probe-str\")) [before (pr-str f) (str f) (pr-str [f]) (print-str f) (str (java.io.File. \"/tmp\")) (.startsWith (pr-str (java.io.File. \"/tmp\")) \"#object[java.io.File\")])" :expected "[[true \"/jolt-print-arm-probe\"] \"#probe\" \"probe-str\" \"[#probe]\" \"#probe\" \"/tmp\" true]"}
+  {:suite "print-arm-verdict" :expr "(let [c (java.util.zip.CRC32.) before (.startsWith (pr-str c) \"#object[java.util.zip.CRC32\")] (defmethod print-method java.util.zip.CRC32 [x w] (.write w \"#crc\")) [before (pr-str c) (pr-str [c c])])" :expected "[true \"#crc\" \"[#crc #crc]\"]"}
   ;; Identity hashes are minted under a CAS spin lock (hasheq.ss); without its
   ;; acquire/release fences a second thread minted a second id for an object on
   ;; arm64. Eight threads hash the same fresh objects in opposite orders and
@@ -3443,10 +3450,7 @@
   ;; extension point — jolt-lang/time owns java.util.Locale and registers them
   ;; (RFC 0008). These rows register their own ids, proving the seam end to end.
   ;; Expectations read off reference JVM Clojure 1.12.5; 2014-03-01 is a Saturday.
-  ;; Guard: a numeric-only pattern must not move when the name tables do. Not a
-  ;; corpus row — jolt's SimpleDateFormat formats in UTC while the JVM's uses the
-  ;; machine's default zone, so the JVM side of this is machine-dependent and
-  ;; uncertifiable (see the :documented entry in known-divergences).
+  ;; Guard: a numeric-only pattern must not move when the name tables do.
   {:suite "date names" :expr "(.format (doto (java.text.SimpleDateFormat. \"yyyy-MM-dd HH:mm\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000))" :expected "\"2014-03-01 00:00\""}
   {:suite "date names" :expr "(do (jolt.host/register-extension! :date-names \"fr-test\" {:months [\"janvier\" \"février\" \"mars\" \"avril\" \"mai\" \"juin\" \"juillet\" \"août\" \"septembre\" \"octobre\" \"novembre\" \"décembre\"] :months-short [\"janv.\" \"févr.\" \"mars\" \"avr.\" \"mai\" \"juin\" \"juil.\" \"août\" \"sept.\" \"oct.\" \"nov.\" \"déc.\"] :days [\"lundi\" \"mardi\" \"mercredi\" \"jeudi\" \"vendredi\" \"samedi\" \"dimanche\"] :days-short [\"lun.\" \"mar.\" \"mer.\" \"jeu.\" \"ven.\" \"sam.\" \"dim.\"]}) [(.format (doto (java.text.SimpleDateFormat. \"MMMM\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000)) (.format (doto (java.text.SimpleDateFormat. \"EEE\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000)) (.format (doto (java.text.SimpleDateFormat. \"EEEE\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000)) (.format (doto (java.text.SimpleDateFormat. \"yyyy-MM-dd\" \"fr-test\") (.setTimeZone (java.util.TimeZone/getTimeZone \"GMT\"))) (java.util.Date. 1393632000000))])" :expected "[\"mars\" \"sam.\" \"samedi\" \"2014-03-01\"]"}
   ;; the ctor renders the locale argument to an id rather than naming a class —
@@ -3775,7 +3779,7 @@
   {:suite "pr-on" :expr "(with-out-str (@#'clojure.core/pr-on {:a \"s\"} *out*))" :expected "\"{:a \\\"s\\\"}\""}
   {:suite "pr-on" :expr "(:private (meta #'clojure.core/pr-on))" :expected "true"}
   ;; an imported short name misses with the JDK-provider message, not "Unknown class"
-  {:suite "unknown-class" :expr "(try (load-string \"(ns ucm1 (:import (java.security.cert CertificateFactory))) (CertificateFactory/getInstance \\\"X.509\\\")\") (catch Throwable e (boolean (re-find #\"^No dependency provides java.security.cert.CertificateFactory\" (ex-message e)))))" :expected "true"}
+  {:suite "unknown-class" :expr "(try (load-string \"(ns ucm1 (:import (java.security.cert CertificateFactory))) (CertificateFactory/getInstance \\\"X.509\\\")\") (catch Throwable e (boolean (re-find #\"^No dependency provides java.security.cert.CertificateFactory\" (ex-message (or (ex-cause e) e))))))" :expected "true"}
   ;; jolt-2j3 — the protocol-map keys jolt deliberately does NOT carry. These are
   ;; jolt-side rows, not corpus rows: the reference DOES set every one of them, so
   ;; a corpus row here would only be a certified divergence. What they pin is that

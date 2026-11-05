@@ -390,14 +390,16 @@
 ;; collapsed h and -h onto one string.
 (define (jolt-identity-hex x) (jolt-hex32 (jolt-identity-hasheq x)))
 ;; Integer.toHexString: N's low 32 bits unsigned, lowercase, no leading zeros.
-;; Filled from the right into one string, which #object printing pays per value.
+;; Sized from the bit length and filled from the right, one allocation: #object
+;; printing pays this per value, and an 8-wide buffer cut down by substring was
+;; two of them and a copy.
 (define (jolt-hex32 h)
-  (let ((buf (make-string 8)))
-    (let loop ((n (bitwise-and h #xffffffff)) (i 8))
-      (let ((i (fx- i 1)))
-        (string-set! buf i (string-ref "0123456789abcdef" (fxremainder n 16)))
-        (let ((m (fxquotient n 16)))
-          (if (fx=? m 0) (substring buf i 8) (loop m i)))))))
+  (let* ((n (bitwise-and h #xffffffff))
+         (len (if (fx=? n 0) 1 (fxsrl (fx+ (fxlength n) 3) 2)))
+         (buf (make-string len)))
+    (let loop ((n n) (i (fx- len 1)))
+      (string-set! buf i (string-ref "0123456789abcdef" (fxand n 15)))
+      (if (fx=? i 0) buf (loop (fxsrl n 4) (fx- i 1))))))
 ;; (str f) of a fn renders JVM-style — "ns$name@hexhash" — so code that parses
 ;; fn identity out of the string (expound's pprint-fn) finds the $-separated
 ;; class name instead of a raw Chez #<procedure> form.

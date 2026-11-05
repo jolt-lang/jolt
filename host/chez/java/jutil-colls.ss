@@ -39,6 +39,10 @@
 (define jutil-colls-tbl (make-hashtable string-hash string=?))
 (define (register-jutil-coll! tag kind elems)
   (hashtable-set! jutil-colls-tbl tag (vector kind elems))
+  ;; the tag may have been asked already and remembered as no collection
+  (set! jutil-tag-cache (cons #f #f))
+  ;; and the print walks narrowed by tag ask jutil-any-kind (host-static.ss)
+  (print-arms-invalidate!)
   (register-host-methods! tag (jutil-object-methods kind)))
 ;; The last tag looked up, as one (tag-object . entry) pair: a pair is published
 ;; by a single reference write, so a racing reader sees the old pair or the new

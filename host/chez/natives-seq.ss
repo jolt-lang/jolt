@@ -144,7 +144,7 @@
 (define (take-while-seq pred s)
   (if (jolt-nil? s) jolt-empty-list
       (let ((x (seq-first s)))
-        (if (jolt-truthy? (jolt-invoke pred x))
+        (if (jolt-truthy? (jolt-invoke1 pred x))
             (cseq-lazy x (make-lazy-src lz-take-while pred s))
             jolt-empty-list))))
 (define jolt-take-while
@@ -153,7 +153,7 @@
     ((pred coll) (jolt-make-lazy-src lz-take-while-top pred coll))))
 (define (drop-while-seq pred coll)
   (let loop ((s (jolt-seq coll)))
-    (if (and (not (jolt-nil? s)) (jolt-truthy? (jolt-invoke pred (seq-first s))))
+    (if (and (not (jolt-nil? s)) (jolt-truthy? (jolt-invoke1 pred (seq-first s))))
         (loop (jolt-seq (seq-more s)))
         (if (jolt-nil? s) jolt-empty-list s))))
 (define jolt-drop-while
@@ -230,7 +230,7 @@
 (define (jolt-comparator-fn cmp)
   (if (or (iface-method cmp "compare" #f) (jhost-compare-method? cmp))
       (lambda (a b) (record-method-dispatch cmp "compare" (jolt-list a b)))
-      (lambda (a b) (jolt-invoke cmp a b))))
+      (lambda (a b) (jolt-invoke2 cmp a b))))
 (def-var! "clojure.core" "__comparator-fn" jolt-comparator-fn)
 
 ;; sort: (sort coll) uses compare; (sort cmp coll) uses cmp, whose result may be
@@ -334,7 +334,7 @@
     ;; a deftype/record implementing clojure.lang.Reversible (rseq) — e.g.
     ;; data.priority-map — drives rseq through its own method.
     ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
-     => (lambda (f) (jolt-invoke f coll)))
+     => (lambda (f) (jolt-invoke1 f coll)))
     (else (jolt-cast-throw coll "clojure.lang.Reversible"))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
 

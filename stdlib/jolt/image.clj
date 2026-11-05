@@ -103,7 +103,13 @@
   namespace-name strings to be explicit.
 
   Runs the before-dump hooks first. Vars holding functions are skipped: the
-  restoring build already has the code."
+  restoring build already has the code.
+
+  An open resource is written as a placeholder, and the return value lists
+  each one as {:stubbed [{:id :kind :description :path :extra :var}]}, :var
+  the \"ns/name\" of the var it sits in (the var its :path runs through, when
+  two vars share it), so `stubs` names the same var after a restore. Pass
+  {:unwritable :fail} as OPTS to refuse instead, as `dump!` does."
   ([path] (dump-world! path nil))
   ([path namespaces] (host/image-dump-world! path namespaces))
   ([path namespaces opts]
@@ -120,7 +126,9 @@
 
 (defn scan-world
   "What `dump-world!` would refuse, without writing anything. Same shape as
-  `scan`. Use it to find the vars holding closures before you try."
+  `scan`, plus :var, the \"ns/name\" of the var each finding sits in; an
+  object two vars share is reported once, under the var its :path runs
+  through. Use it to find the vars holding closures before you try."
   ([] (scan-world nil))
   ([namespaces] (host/image-scan-world namespaces)))
 

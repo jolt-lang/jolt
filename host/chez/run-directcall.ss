@@ -37,6 +37,11 @@
 (define (emit-nodl src) (emit-top-form (numeric-annotate (anode src))))
 (define (run-emit scm) (eval (read (open-input-string scm)) (interaction-environment)))
 (define (ev s) (jolt-compile-eval s "user"))
+;; A var-routed call is jolt-invokeN, or jolt-invoke-tN in tail position or
+;; traced code (seq.ss: the N form puts the trace site slot back on return).
+(define (invoke-sub? e n)
+  (or (gate-sub? e (string-append "jolt-invoke" n))
+      (gate-sub? e (string-append "jolt-invoke-t" n))))
 (define (call name . args) (apply jolt-invoke (var-deref "user" name) args))
 (define (raises? thunk) (guard (e (#t #t)) (thunk) #f))
 
@@ -47,7 +52,7 @@
 (let ((e (emit-dl "(def usetrue (fn [x] (true? x)))")))
   (gate-check "seed call applies the linked jv$ binding" (gate-sub? e "(jv$clojure.core/true? ") #t)
   (gate-check "seed call hoists no root" (gate-sub? e "jolt-seed-root") #f)
-  (gate-check "seed call is a direct application, not jolt-invoke1" (gate-sub? e "jolt-invoke1") #f)
+  (gate-check "seed call is a direct application, not jolt-invoke1" (invoke-sub? e "1") #f)
   (gate-check "seed call does not deref the var cell" (gate-sub? e "var-cell-deref") #f)
   (run-emit e)
   (gate-check "direct seed call answers true" (call "usetrue" #t) #t)
@@ -61,17 +66,17 @@
 ;; its root is hoisted once at load, as before.
 (let ((e (emit-dl "(def usearraymap (fn [k v] (array-map k v)))")))
   (gate-check "an unlinked seed var hoists its root at load" (gate-sub? e "(jolt-seed-root (jolt-var \"clojure.core\" \"array-map\"))") #t)
-  (gate-check "an unlinked seed call is not jolt-invoke2" (gate-sub? e "jolt-invoke2") #f)
+  (gate-check "an unlinked seed call is not jolt-invoke2" (invoke-sub? e "2") #f)
   (run-emit e)
   (gate-check "the hoisted seed call answers" (jolt-get (call "usearraymap" (keyword #f "a") 1) (keyword #f "a") jolt-nil) 1))
 (let ((e (emit-nodl "(def usetrue2 (fn [x] (true? x)))")))
-  (gate-check "off direct-link the site stays var-routed" (gate-sub? e "jolt-invoke1") #t)
+  (gate-check "off direct-link the site stays var-routed" (invoke-sub? e "1") #t)
   (gate-check "off direct-link no root is bound" (gate-sub? e "jolt-seed-root") #f))
 (let ((e (emit-dl "(def wrongarity (fn [x] (true? x 1)))")))
-  (gate-check "a wrong arity keeps jolt-invoke (it owns the ArityException)" (gate-sub? e "jolt-invoke2") #t)
+  (gate-check "a wrong arity keeps jolt-invoke (it owns the ArityException)" (invoke-sub? e "2") #t)
   (gate-check "a wrong arity binds no root" (gate-sub? e "jolt-seed-root") #f))
 (let ((e (emit-dl "(def nonproc (fn [] (*print-length*)))")))
-  (gate-check "a non-procedure root keeps jolt-invoke" (gate-sub? e "jolt-invoke0") #t)
+  (gate-check "a non-procedure root keeps jolt-invoke" (invoke-sub? e "0") #t)
   (gate-check "a non-procedure root binds no root" (gate-sub? e "jolt-seed-root") #f))
 (ev "(defn helper [x] (+ x 1))")
 (let ((e (emit-dl "(def useapp (fn [] (helper 1)))")))
@@ -92,7 +97,7 @@
 (let ((e (emit-dl "(def usederef (fn [a] @a))")))
   (gate-check "@ under direct-link does not call jolt-deref" (gate-sub? e "jolt-deref") #f)
   (gate-check "@ under direct-link hoists deref's root at load" (gate-sub? e "(jolt-seed-root (jolt-var \"clojure.core\" \"deref\"))") #t)
-  (gate-check "@ under direct-link is not var-routed" (gate-sub? e "jolt-invoke1") #f)
+  (gate-check "@ under direct-link is not var-routed" (invoke-sub? e "1") #f)
   ;; The rebind comes FIRST, as a library's does (its top level runs before any
   ;; namespace that requires it loads), and the site loaded after it hoists the
   ;; rebound root. A rebind after the site has loaded is invisible to it, as to
@@ -106,7 +111,7 @@
     (gate-check "...and a site loaded after the restore sees the original" (call "usederef3" (jolt-atom-new 7)) 7)))
 (let ((e (emit-nodl "(def usederef2 (fn [a] @a))")))
   (gate-check "@ off direct-link does not call jolt-deref" (gate-sub? e "jolt-deref") #f)
-  (gate-check "@ off direct-link is var-routed" (gate-sub? e "jolt-invoke1") #t))
+  (gate-check "@ off direct-link is var-routed" (invoke-sub? e "1") #t))
 ;; The same for the other boot-layered natives (49 of them: map? and coll?
 ;; three times, __close four, var-get/with-meta/type/slurp/spit twice, …): each
 ;; is one definition once the image has booted, and direct-calls.

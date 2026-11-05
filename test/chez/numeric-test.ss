@@ -322,6 +322,23 @@
 ;; runtime helper, so it feeds the numeric lattice like a ^double/^long hint:
 ;; (* (double x) 2.0) emits fl*, (+ (long x) 1) emits jolt-l+.
 
+;; the cast windows (converters.ss jolt-cast-windows): inclusive flonum windows
+;; the lowered casts test before flonum->fixnum, as a function of the fixnum
+;; limits so both widths are checked on this 61-bit host.
+(let ((w (jolt-cast-windows -536870912 536870911)))          ; 30-bit
+  (ok "30-bit long window" (equal? (list (vector-ref w 0) (vector-ref w 1)) '(-536870912.0 536870656.0)))
+  (ok "30-bit int window clamps to the fixnum window" (equal? (list (vector-ref w 2) (vector-ref w 3)) '(-536870912.0 536870656.0)))
+  (ok "30-bit short/byte/char windows" (equal? (list (vector-ref w 4) (vector-ref w 5) (vector-ref w 6) (vector-ref w 7) (vector-ref w 8) (vector-ref w 9)) '(-32768.0 32767.0 -128.0 127.0 0.0 55295.0))))
+(let ((w (jolt-cast-windows -1152921504606846976 1152921504606846975)))  ; 61-bit
+  (ok "61-bit long window" (equal? (list (vector-ref w 0) (vector-ref w 1)) '(-1.152921504606847e18 1.15292150460684672e18)))
+  (ok "61-bit int window is the int range" (equal? (list (vector-ref w 2) (vector-ref w 3)) '(-2147483648.0 2147483647.0))))
+(ok "the load-time constants are this host's windows"
+    (and (= jolt-cast-lo-long (fixnum->flonum (most-negative-fixnum)))
+         (= jolt-cast-hi-long (fixnum->flonum (- (most-positive-fixnum) 255)))
+         (= jolt-cast-hi-int 2147483647.0) (= jolt-cast-hi-char 55295.0)))
+;; every window edge converts: flonum->fixnum must not raise at either end
+(ok "window edges are fixnums" (and (fixnum? (flonum->fixnum jolt-cast-lo-long)) (fixnum? (flonum->fixnum jolt-cast-hi-long))))
+
 ;; (double x) in arithmetic yields fl-ops AND the checked helper.
 (let ((e (emitf "u" "(fn* ([x] (* (double x) 2.0)))")))
   (ok "(double x) operand lowers * to fl*" (has? e "(#3%fl*"))
@@ -334,6 +351,26 @@
 (let ((e (emitf "u" "(fn* ([x] (+ (int x) 1)))")))
   (ok "(int x) operand lowers + to jolt-l+" (has? e "(jolt-l+"))
   (ok "(int x) lowers to jolt-int-cast helper" (has? e "(jolt-int-cast")))
+;; a cast on a PROVEN double takes the inline window + flonum->fixnum, with the
+;; runtime cast as the fallback outside the window (PR 2 of #1492).
+(let ((e (emitf "u" "(fn* ([^double x] (long x)))")))
+  (ok "(long ^double) emits the window test" (has? e "jolt-cast-lo-long"))
+  (ok "(long ^double) emits flonum->fixnum" (has? e "(flonum->fixnum"))
+  (ok "(long ^double) keeps the helper as the fallback" (has? e "(jolt-long-cast")))
+(ok "(int ^double) uses the int window" (has? (emitf "u" "(fn* ([^double x] (int x)))") "jolt-cast-hi-int"))
+(ok "(short ^double) uses the short window" (has? (emitf "u" "(fn* ([^double x] (short x)))") "jolt-cast-hi-short"))
+(ok "(byte ^double) uses the byte window" (has? (emitf "u" "(fn* ([^double x] (byte x)))") "jolt-cast-hi-byte"))
+(let ((e (emitf "u" "(fn* ([^double x] (char x)))")))
+  (ok "(char ^double) uses the char window" (has? e "jolt-cast-hi-char"))
+  (ok "(char ^double) builds the char inline" (has? e "(integer->char (flonum->fixnum"))
+  (ok "(char ^double) keeps jolt-char as the fallback" (has? e "(jolt-char")))
+(ok "(unchecked-long ^double) uses the long window" (has? (emitf "u" "(fn* ([^double x] (unchecked-long x)))") "jolt-cast-hi-long"))
+(ok "(unchecked-int ^double) uses the int window" (has? (emitf "u" "(fn* ([^double x] (unchecked-int x)))") "jolt-cast-hi-int"))
+(ok "(long (aget ^doubles)) is lowered" (has? (emitf "u" "(fn* ([^doubles a i] (long (aget a i))))") "(flonum->fixnum"))
+(ok "(long (* ^double 2.0)) is lowered" (has? (emitf "u" "(fn* ([^double x] (long (* x 2.0))))") "(flonum->fixnum"))
+(ok "(long x) on an untyped operand is NOT lowered" (not (has? (emitf "u" "(fn* ([x] (long x)))") "(flonum->fixnum")))
+(ok "(char x) on an untyped operand still calls jolt-char" (has? (emitf "u" "(fn* ([x] (char x)))") "(jolt-char"))
+(ok "(double x) is not touched" (not (has? (emitf "u" "(fn* ([^double x] (double x)))") "(flonum->fixnum")))
 ;; (float x) is double-kind but routes to jolt-float (Float range check).
 (let ((e (emitf "u" "(fn* ([x] (* (float x) 2.0)))")))
   (ok "(float x) operand lowers * to fl*" (has? e "(#3%fl*"))

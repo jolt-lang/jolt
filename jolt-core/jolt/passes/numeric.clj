@@ -444,6 +444,14 @@
                          (vec (rest (reductions (fn [acc p] (or acc p)) (first prim) (rest prim)))))])
           :else [nil node1])))))
 
+;; The casts whose :coerce node takes the inline window fast path when its
+;; operand is a proven double (:fl-arg, read by the back end's :coerce arm; the
+;; window constants are converters.ss's jolt-cast-windows). The same seven
+;; strings as the back end's cast-window-suffix.
+(def ^:private lowered-cast-fns
+  #{"jolt-long-cast" "jolt-int-cast" "jolt-short-cast" "jolt-byte-cast" "jolt-char"
+    "jolt-unchecked-long" "jolt-unchecked-int"})
+
 ;; Returns [kind node'] — kind is :double, :long, or nil.
 (defn- an [node tenv]
   (let [op (get node :op)]
@@ -453,7 +461,17 @@
       ;; over it (and let-bound copies of it) dispatches to the bigdec engine.
       (= op :bigdec) [:bigdec node]
       (= op :local) [(get tenv (get node :name)) node]
-      (= op :coerce) [(get node :kind) (assoc node :expr (nth (an (get node :expr) tenv) 1))]
+      ;; a cast on a PROVEN double: the back end emits the window test and
+      ;; flonum->fixnum in place of the runtime cast's dispatch (:fl-arg). The
+      ;; flag is set from THIS analysis every time, never kept from an earlier
+      ;; one, so a body inlined into a new context carries only what that
+      ;; context proves. The node's own kind (what it answers) is unchanged.
+      (= op :coerce)
+      (let [ir (an (get node :expr) tenv)
+            node1 (assoc node :expr (nth ir 1))
+            lowered? (and (= :double (nth ir 0))
+                          (contains? lowered-cast-fns (get node :cast-fn)))]
+        [(get node :kind) (if lowered? (assoc node1 :fl-arg true) (dissoc node1 :fl-arg))])
       (= op :invoke) (an-invoke node tenv)
       (= op :let)
       (let [res (reduce (fn [acc b]

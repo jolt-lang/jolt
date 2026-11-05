@@ -97,6 +97,18 @@
    :check {:expr "(load-string \"(ns kd-nx2x.ns) (deftype T [a] Object (toString [_] \\\"one\\\")) (defn mk [] (T. 0)) (def before (str (mk))) (deftype T [a] Object (toString [_] \\\"two\\\")) [before (str (mk))]\")"
            :jvm "[\"one\" \"one\"]"
            :jolt "[\"one\" \"two\"]"}}
+  ;; in-ns on a thread with no *ns* binding. The JVM's in-ns is (set! *ns* …),
+  ;; which refuses when *ns* is unbound on the thread. jolt's current ns is a
+  ;; per-thread pointer (multimethods.ss chez-current-ns), so the switch lands
+  ;; on that thread alone and leaks nowhere: a superset kept so code that does
+  ;; its own in-ns on a worker thread keeps working.
+  {:category :host-model
+   :behavior "(in-ns 'x) on a started Thread, where *ns* has no thread binding"
+   :jvm "throws IllegalStateException: Can't change/establish root binding of: *ns* with set"
+   :jolt "switches that thread's current namespace"
+   :check {:expr "(let [p (promise)] (.start (Thread. (fn [] (deliver p (try (in-ns 'kd-unbound-in-ns) (str *ns*) (catch Throwable e (str \"throws \" (.getSimpleName (class e))))))))) (deref p 5000 :timeout))"
+           :jvm "\"throws IllegalStateException\""
+           :jolt "\"kd-unbound-in-ns\""}}
   ;; The scheduled pools (jolt-hgjo). Three class-model details of
   ;; java.util.concurrent.ScheduledThreadPoolExecutor that jolt does not
   ;; reproduce; the schedule methods' behaviour is certified by the corpus rows
@@ -254,19 +266,6 @@
    :check :prose
    :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
    :note "%tp is \"pm\"/\"PM\" and %tr's marker upper case, which is ROOT and en alike; only the month and day names differ."}
-  ;; %t reads its fields on a ZONE, and for a Date / #inst / epoch-ms long that
-  ;; zone is the machine default — so %tF of an instant inherits the default-zone
-  ;; divergence recorded below wholesale: core answers UTC where the JVM answers
-  ;; the machine's zone, and with jolt.time loaded (or TZ set) the two agree. A
-  ;; Calendar carries its own zone, so an explicit-zone Calendar is exact on both
-  ;; and that is the shape the corpus rows use.
-  {:category :host-model
-   :behavior "(format \"%tF %tz\" (java.util.Date. 0) (java.util.Date. 0))"
-   :jvm "the fields on the machine's zone, e.g. \"1969-12-31 -0500\" under America/Toronto"
-   :jolt "the fields on TZ, else the registered provider's zone, else UTC — \"1970-01-01 +0000\" bare"
-   :check :prose
-   :why "the JVM's answer is the machine's default time zone"
-   :note "The same zone the rest of the date layer reads: (format \"%tF\" d) and (.format (SimpleDateFormat. \"yyyy-MM-dd\") d) always agree, pinned in unit.edn."}
   ;; %t's civil fields come from the PROLEPTIC Gregorian calendar with an
   ;; astronomical year, java.time's model and the one jolt's whole date layer
   ;; uses; java.util.Formatter reads them off a java.util.Calendar, which is
@@ -281,19 +280,6 @@
    :check :prose
    :why "the JVM's java.util.Calendar is Julian before 1582 with an era-relative year; jolt's date layer is proleptic Gregorian throughout"
    :note "Pre-existing across the date layer: (.get cal Calendar/YEAR) and SimpleDateFormat \"yyyy\" diverge the same way on the same dates."}
-  ;; The default time zone: the JVM's is the machine's (its own tzdata plus the
-  ;; OS's zone setting). Core reads TZ from its environment and otherwise answers
-  ;; UTC — it reads no system file (/etc/localtime, /etc/timezone) on its own;
-  ;; jolt.time knows how to find the machine's zone and registers it through
-  ;; jolt.host/set-default-zone-provider! when it loads, so with the library the
-  ;; two agree. A corpus row cannot pin it: the JVM side is machine-dependent.
-  {:category :host-model
-   :behavior "(.getID (java.util.TimeZone/getDefault))"
-   :jvm "the machine's zone, e.g. \"America/Toronto\""
-   :jolt "TZ when set, else the registered provider's answer (jolt.time: the machine's zone), else \"UTC\""
-   :check :prose
-   :why "the JVM's answer is the machine's default time zone"
-   :note "Core reads no system file for this by design; a library brings the machine's zone."}
   ;; One iterator representation where the JVM has an inner class per collection
   ;; (PersistentVector$2, PersistentHashMap$2, …). jolt's is a seq walked by
   ;; hasNext/next, which is what clojure.lang.SeqIterator is, so that is the
@@ -556,11 +542,10 @@
   ;; the JVM accepts still works. A surrogate is not a scalar value, so (char n)
   ;; of one is the surrogate-unit value (the next entries).
   ;;
-  ;; The visible consequence is in libraries that hand-encode \uXXXX per char:
-  ;; data.json's :escape-unicode writes \u1f603 for an astral character where the
-  ;; JVM writes the surrogate pair \ud83d\ude03. Matching that would mean adopting
-  ;; UTF-16 semantics for count/nth/char, which is the model choice jolt made the
-  ;; other way. The round trip is pinned in unit.edn ("char / code points").
+  ;; The visible consequence is in libraries that hand-encode \uXXXX per char,
+  ;; which see an astral character whole. jolt's bundled clojure.data.json escapes
+  ;; it as its surrogate pair. The round trip is pinned in unit.edn ("char / code
+  ;; points").
   {:category :string-model
    :behavior "(char 128515), the code point (first \"<astral>\") yields"
    :jvm "throws IllegalArgumentException — a JVM char is 16 bits"
@@ -973,18 +958,33 @@
            :jvm "true"
            :jolt "false"}
    :note "Inherent to tail calls, not a missing shim. spec's instrument still throws the same conform ExceptionInfo with the same explain-data — only the ::caller annotation is absent. Surfaces in spec.alpha's clojure.test-clojure.instr suite."}
-  ;; clojure.instant's third reader. jolt has one millisecond instant type, so
-  ;; java.sql.Timestamp is java.util.Date and the sub-millisecond digits are gone.
-  ;; The other two readers agree with the JVM exactly, offset zone included
-  ;; (test/chez/instant-test.clj).
+  ;; Timestamp.equals refuses anything that is not a Timestamp, while
+  ;; Date.equals takes any Date at the same instant, so on the JVM
+  ;; (= date ts) is true and (= ts date) false, and a set or map holding both
+  ;; answers by which one went in first. jolt answers true both ways: = is
+  ;; symmetric for every value, which hash collections rely on.
+  {:category :host-model
+   :behavior "(= (java.sql.Timestamp. 0) (java.util.Date. 0))"
+   :jvm "false — Timestamp.equals takes only a Timestamp, though (= date ts) is true"
+   :jolt "true — the same instant, either way round"
+   :check {:expr "(= (java.sql.Timestamp. 0) (java.util.Date. 0))"
+           :jvm "false"
+           :jolt "true"}
+   :why "the JVM's Timestamp.equals breaks the symmetry Object.equals asks for (its own javadoc says so); jolt's = stays symmetric"
+   :note "(= (java.util.Date. 0) (java.sql.Timestamp. 0)) is true on both. A java.sql.Date and a Date at one instant are equal both ways on both."}
+  ;; clojure.instant's third reader. jolt's instants are millisecond-based, so a
+  ;; java.sql.Timestamp keeps its milliseconds and the digits past them are
+  ;; gone. It is its own class, prints as the JVM's (nine fraction digits) and
+  ;; answers .getNanos; the other two readers agree with the JVM exactly, offset
+  ;; zone included (test/chez/instant-test.clj).
   {:category :host-model
    :behavior "(.getNanos (clojure.instant/read-instant-timestamp \"...T13:14:15.123456789Z\"))"
    :jvm "123456789 — Timestamp keeps nanoseconds"
-   :jolt "no .getNanos at all (\"No matching field found: getNanos for class java.util.Date\") — the reader itself parses fine and drops the sub-millisecond digits, which is what the :check measures"
-   :check {:expr "(do (require 'clojure.instant) (pr-str (clojure.instant/read-instant-timestamp \"2020-01-01T13:14:15.123Z\")))"
-           :jvm "\"#inst \\\"2020-01-01T13:14:15.123000000-00:00\\\"\""
-           :jolt "\"#inst \\\"2020-01-01T13:14:15.123-00:00\\\"\""}
-   :note "One instant type, millisecond-based. read-instant-date and read-instant-calendar are exact."}
+   :jolt "123000000 — the reader parses fine and keeps the milliseconds"
+   :check {:expr "(do (require 'clojure.instant) (.getNanos (clojure.instant/read-instant-timestamp \"2020-01-01T13:14:15.123456789Z\")))"
+           :jvm "123456789"
+           :jolt "123000000"}
+   :note "One instant representation, millisecond-based. read-instant-date and read-instant-calendar are exact."}
   ;; No classloaders. This is not a shim gap that could be filled — a classloader
   ;; is a JVM linkage concept, and jolt compiles ahead of time to native code with
   ;; no class-loading step to intercept. Surfaced running kaocha, whose dynapath

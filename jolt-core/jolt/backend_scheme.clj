@@ -1127,10 +1127,21 @@
 ;; special-form name emitted as a call head that a user local could shadow —
 ;; MUST be added to the `helpers` set below. The op-registry derivation covers
 ;; registry-driven heads; everything else is enumerated there by emission site.
+;; The casts the :coerce arm lowers on a proven double, each with the suffix
+;; of its window constants (converters.ss: jolt-cast-lo-<s> / jolt-cast-hi-<s>).
+;; The unchecked casts share the checked ones' windows: inside the window the
+;; two agree, and outside it the helper does the saturating. The same seven
+;; strings as jolt.passes.numeric's lowered-cast-fns.
+(def ^:private cast-window-suffix
+  {"jolt-long-cast" "long" "jolt-unchecked-long" "long"
+   "jolt-int-cast" "int" "jolt-unchecked-int" "int"
+   "jolt-short-cast" "short" "jolt-byte-cast" "byte" "jolt-char" "char"})
+
 (def ^:private rt-emitted-names
   (let [from-registry registry-emitted-names
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
                   "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
+                  "jolt-invoke-t0" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke-t3" "jolt-invoke-t4"
                   "var-deref" "list->cseq" "cseq->list"
                   "jolt-rest-seq" "jolt-register-variadic!"
                   "make-jrec" "jrec-field-at" "jrec-field-set!"
@@ -1144,6 +1155,13 @@
                   ;; :fl-coerce contagion widening, whose fixnum->flonum has been
                   ;; emitted bare since before this set existed.
                   "fixnum?" "flonum?" "fixnum->flonum"
+                  ;; the cast fast path on a proven double (the :coerce arm's
+                  ;; :fl-arg branch): its lane and the runtime's window
+                  ;; constants, which the emitted test reads by name
+                  "flonum->fixnum"
+                  "jolt-cast-lo-long" "jolt-cast-hi-long" "jolt-cast-lo-int" "jolt-cast-hi-int"
+                  "jolt-cast-lo-short" "jolt-cast-hi-short" "jolt-cast-lo-byte" "jolt-cast-hi-byte"
+                  "jolt-cast-lo-char" "jolt-cast-hi-char"
                   ;; the trace site-restore around a non-tail call (site-restore,
                   ;; lookup-restore): it reads and writes the site slots and
                   ;; tests the slot's pair. honeysql's (let [pair? ...]) turned
@@ -3538,9 +3556,16 @@
         ;; fixed-arity entry point (jolt-invoke0..4) by arg count so the common
         ;; raw-procedure fast path allocates no rest-list; keep variadic jolt-invoke
         ;; for larger arities / apply tails.
+        ;;
+        ;; jolt-invokeN puts the site slot back when the fn value returns (seq.ss):
+        ;; this code may be untraced (clojure.core) and the fn a traced callback,
+        ;; whose tail site would otherwise outlive it. A tail call must stay one,
+        ;; and a traced non-tail call restores the slot itself (site-restore), so
+        ;; both take jolt-invoke-tN, which does not.
         invoke (fn []
                  (let [callee (if (<= (count args) 4)
-                                (str "jolt-invoke" (count args))
+                                (str (if (or tail? (trace-frames?)) "jolt-invoke-t" "jolt-invoke")
+                                     (count args))
                                 "jolt-invoke")]
                    (ordered-call (cons fnode arg-nodes) (cons (emit fnode) args)
                                  (fn [operands] (emit-call tail? callee operands tl ich)))))]
@@ -4340,9 +4365,26 @@
      ;; emits the checked runtime helper — clojure.core's full JVM semantics —
      ;; NOT the hint coercion (jolt->fl / jolt->fx) a proven typed-param cast uses.
      ;; The 2-arg :coerce (inlined ^double/^long param or return) has no :cast-fn
-     ;; and keeps the hint coercion.
+     ;; and keeps the hint coercion. A cast whose operand the numeric pass has
+     ;; PROVEN a double (:fl-arg) tests the cast's window inline and converts
+     ;; with flonum->fixnum, calling the helper only outside the window: NaN
+     ;; fails both compares and reaches it (stays 0), and out-of-range values,
+     ;; the long saturation at 2^63 and surrogate or astral chars keep their
+     ;; results and messages. The window constants live in the RUNTIME
+     ;; (converters.ss jolt-cast-windows), computed at load from the target's
+     ;; own fixnum limits: the compiling host's fixnum width is not the
+     ;; target's, so no bound is baked in here.
      :coerce (let [e (emit (:expr node))]
                (cond
+                 (and (:fl-arg node) (contains? cast-window-suffix (:cast-fn node)))
+                 (let [t (fresh-label "_fa$")
+                       s (get cast-window-suffix (:cast-fn node))
+                       lane (str "(flonum->fixnum " t ")")]
+                   (str "(let ((" t " " e "))"
+                        " (if (and (" (unsafe-prefix) "fl>=? " t " jolt-cast-lo-" s ")"
+                        " (" (unsafe-prefix) "fl<=? " t " jolt-cast-hi-" s "))"
+                        " " (if (= "jolt-char" (:cast-fn node)) (str "(integer->char " lane ")") lane)
+                        " (" (:cast-fn node) " " t ")))"))
                  ;; (long x) and (unchecked-long x) both hand a fixnum back
                  ;; unchanged, and a fixnum is what a loop counter or a char code
                  ;; point is: test it here so the common case is a type check,

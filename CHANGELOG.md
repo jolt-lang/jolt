@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`clojure.data.json` ships with jolt** (#1453). It is data.json 2.5.2 as a
+  built-in namespace, resolved ahead of a project's own copy like
+  `babashka.fs` (`:jolt/replaces [clojure.data.json]` opts out). Writing with
+  `:escape-unicode` now escapes a character above U+FFFF as its surrogate
+  pair, `"👍"`, where upstream's escaper wrote an invalid 5-digit
+  `\u` escape over jolt's code-point strings. The namespace also loads without
+  java.time; `:date-formatter` defaults to nil, meaning ISO_INSTANT.
+
 - **`jolt nrepl-server --port-file PATH` and `--no-port-file`** (#1415).
   The bound port goes to PATH, resolved against the caller's directory, or
   nowhere; either way the server removes the file it wrote when it stops.
@@ -199,8 +207,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a thread, pool or task, an open stream, and a reify or proxy no var holds
   are refused naming their class.
   `make imagecoverage` fails on a collection shim that does neither.
+- **`jolt.image/scan-world` and `dump-world!`'s `:stubbed` name each
+  finding's var.** Every entry carries `:var "ns/name"`, as `stubs` already
+  did after a restore, so a tool can say which var holds an open port or an
+  unfinished future without reading the graph path. An object two vars share
+  is named by the var its `:path` runs through, and `stubs` now names that
+  same var (it used to name the last var holding it, beside the first one's
+  path).
 
 ### Changed
+
+- **`str` of a `java.util.Date`, `java.sql.Timestamp` or `java.sql.Date` is
+  the JVM's `toString`, on the default zone.** `(str #inst "2020-01-01")` is
+  `"Tue Dec 31 19:00:00 EST 2019"` under America/Toronto (it was
+  `"2020-01-01T00:00:00.000-00:00"`), a Timestamp `"2019-12-31 19:00:00.0"` and
+  a `java.sql.Date` `"2019-12-31"`. This covers every path that stringifies:
+  `.toString`, `format "%s"`, StringBuilder, `clojure.string`, and string
+  concatenation in messages. `pr`, `prn`, `print`, `println` and EDN still
+  print `#inst "…"`, as on the JVM. A Timestamp is now its own class
+  (`instance? java.sql.Timestamp`, `.getNanos`) and prints its fraction to
+  nine digits; a `java.sql.Date` prints as `#inst` instead of `#object`, and
+  equals the `java.util.Date` at its instant. `TimeZone/setDefault` sets the
+  default zone; a provider registered with
+  `jolt.host/set-default-zone-provider!` now answers only where the system
+  names no zone. A zone's offset is remembered over the stretch it holds, so
+  reading dates in order (a Date's getters, `SimpleDateFormat`, `str`) asks
+  libc once per stretch instead of once per instant.
 
 - **`future` runs on a pooled executor**, as the JVM's solo executor does,
   instead of a fresh OS thread per call; a wait spins briefly before parking.
@@ -288,6 +320,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`Arrays/copyOf` and `copyOfRange` block-copy the shared prefix (#1495).**
+  They copied one element at a time through the boxed element accessors, so a
+  64 KB `byte[]` took about 1.2 ms where `byte-array` + `System/arraycopy` took
+  10 us. They now move the prefix through the same block copy `arraycopy` uses:
+  the 64 KB `copyOf` is 12 us, `copyOfRange` 4 us, and a 64 K-element `long[]`
+  `copyOf` 1139 -> 58 us.
+
+- **Printing a host object.** `pr-str` of a `java.io.File` asked every
+  predicate of the pr, pr-str and str arm registries before reaching the
+  `#object` form, and each host family added this cycle lengthened all three
+  walks; with the identity hash it now prints, it was 1.27x slower than 0.8.23.
+  A host object or plain host record now walks only the arms that can claim
+  its type, found on its first print, and the hash renders in one allocation:
+  `pr-str` of a File is 0.72x of 0.8.23, `str` of one 0.6x, and `str` of a
+  StringBuilder 0.25x.
+- **`nth` and `get` on a string.** Each java.util family added this cycle put
+  another wrap around `nth` and another predicate in front of `get`, and a
+  string reached its answer only after all of them: `nth` was 1.2x and `get`
+  1.5x slower than 0.8.23. A string now answers before the wraps and the arms,
+  about 2x faster than 0.8.23 for `nth` and 3x for `get`. fastpathratio rows
+  `string-nth` and `string-get` hold it there.
+- **A cast on a double the compiler has proven takes an inline fast path.**
+  `long`, `int`, `short`, `byte`, `char`, `unchecked-long` and `unchecked-int`
+  on an operand the numeric pass knows is a double (a `^double` param, an
+  `aget` on `^doubles`, flonum arithmetic) emit a window test and
+  `flonum->fixnum` in place, and call the runtime cast only outside the
+  window: NaN, out-of-range values, the `long` saturation at 2^63 and
+  surrogate or astral chars keep their results and messages. The window
+  bounds are constants the runtime computes at load from its own fixnum
+  limits, so one emitted form is right on 61-bit and 30-bit fixnums.
+  `bench/num_casts.clj`: `(long d)` 41 ms to 18 ms for 2M casts on an M1 Pro,
+  about 2 ms over the same loop on a fixnum; on a 32-bit target (Nintendo
+  Wii, `tpb32b`) `(long x)` in a `^double` fn 6.4 us to 1.1 us. Five corpus
+  rows in typed functions pin the edges. `char` now compiles as a cast in
+  every context, as `byte` and `short` already did (a direct call to the
+  runtime cast rather than a var call), and the build's type inference
+  types its result as a char. Closes #1492 with #1493.
+
+- **A double inside the fixnum range converts with `flonum->fixnum`.** After
+  the flonum-bounds fix below, `long`, `int`, `short`, `byte`, `char`,
+  `unchecked-long` and `unchecked-int` on a double still ended in a generic
+  `exact` of a generic `truncate`. The in-range case now takes Chez's
+  `flonum->fixnum` (truncation toward zero in one primitive), behind a range
+  test with the target's own fixnum limits, so it holds on 61-bit and 30-bit
+  fixnums alike; the Gambit host gets the name as a shim over
+  `##flonum->fixnum`. `bench/num_casts.clj`: `(long d)` 62 ms to 41 ms and
+  `(unchecked-long d)` 49 ms to 28 ms for 2M casts on an M1 Pro; on a 32-bit
+  target (Nintendo Wii, `tpb32b`) `(long 123.7)` 27.0 us to 6.3 us and
+  `(unchecked-long 123.7)` 23.0 us to 3.1 us.
+  No result changes; three corpus rows pin the fixnum edges on both widths.
+  Part of #1492.
+
+- **`long`, `int`, `short`, `byte` and `char` on a double, and `unchecked-long`
+  and `unchecked-int` on a double, range-check against flonum bounds instead
+  of bignum ones.** The checked casts compared the flonum against the type's
+  bounds held as exact integers, and for `long` those (+-2^63) are bignums on
+  every Chez, so each cast paid two flonum-vs-bignum compares and a second
+  exact-vs-bignum check after truncation; `unchecked-long` saturated through the
+  same compares (and `unchecked-int` through exact ones). `bench/num_casts.clj`
+  (new): `(long d)` 398 ms to 62 ms for 2M casts on an M1 Pro,
+  `(unchecked-long d)` 68 ms to 50 ms; on a 32-bit target (Nintendo Wii,
+  `tpb32b`) `(long 123.7)` 135.5 us to 27.0 us. One value changes, to match
+  Clojure's `RT.longCast(double)`: `(long 9.223372036854776E18)` (2^63 as a
+  double) now returns `Long/MAX_VALUE` instead of throwing. Eight new corpus
+  rows pin the boundaries.
 - **A socket read receives into a buffer the socket keeps (#1500).** A read
   allocated what it asked for and copied what arrived out twice, one element at
   a time for the second. The socket now keeps one receive buffer, up to 64 KB,
@@ -328,6 +425,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`Arrays/copyOfRange` pads past the end and checks its range as the JDK
+  does (#1495).** A `to` past the array's end read past it instead of padding
+  with the kind's zero; `from > to` is now `IllegalArgumentException("from >
+  to")` rather than `NegativeArraySizeException`, and a `from` outside
+  `[0, length]` is `ArrayIndexOutOfBoundsException`.
+
+- **`sequential?` answered true for a deftype or reify implementing `ISeq`.**
+  `ISeq` is not `Sequential`; only a type declaring `Sequential` (or an
+  interface extending it) is. A regression from the `seq?` change earlier in
+  this cycle.
+- **A reify implementing `Seqable` or `ISeq` could not be walked.** `seq`,
+  `first`, `into` and friends threw "Don't know how to create ISeq"; they now
+  ask its `seq` method and walk an `ISeq` lazily. `coll?` and `count` answer
+  for such a reify as the JVM does, and `count` of a seq deftype that is not
+  `Counted` walks its seq instead of throwing `AbstractMethodError`.
+  `clojure.lang.IndexedSeq` is modeled, so a type declaring it is `seq?`.
+- **`java.net.URI` equality, `hashCode` and `compareTo` follow the JDK.** They
+  compared the string forms, so `(= (.toUri path) (.toURI file))` was false
+  for the same file now that `Path.toUri` writes `file:///`. They compare
+  component by component: an empty authority is none, the scheme and host
+  ignore case, and an escape's hex digits ignore case.
+- **A started `Thread`, an executor's pool thread and a virtual thread read
+  `*ns*` at its root, `clojure.core`,** as on the JVM, instead of the
+  `user` namespace of the thread that made them. A virtual thread no longer
+  inherits its creator's bindings either. `future`, agents and `bound-fn`
+  still convey the caller's. `(.getRawRoot #'*ns*)` is `clojure.core` too.
+- **`java.util.Timer` exists.** All four constructors, `schedule` (delay or
+  `Date`, one-shot or fixed-delay), `scheduleAtFixedRate`, `cancel` and
+  `purge`, with a `TimerTask` proxy's `cancel` and `scheduledExecutionTime`.
+  `(java.util.Timer. true)` used to be "No matching ctor".
+- **`ReentrantLock.tryLock` could refuse a free lock on arm64.** The claim is
+  a compare-and-swap that may fail spuriously there, and the try path answered
+  false instead of retrying: about 3 in 5*10^7 uncontended tryLocks on Apple
+  silicon, already in 0.8.23.
+- **A condition wait with interrupts disabled could still stall a
+  collection** when the thread requesting it held the waited mutex: the
+  sliced wait took the mutex back inside Chez's `condition-wait`, still
+  counted as active. It now releases the mutex, naps in a collect-safe call
+  and retakes it collect-safely.
+- **A caught throw keeps the fn that threw when the call into it went through a
+  fn value.** `(defn caught [f] (try (f) (catch Throwable t t)))` called from
+  another fn, with `f` tail-calling a fn that divides by zero: `.getStackTrace`
+  (and `jolt.debug/frames`) left out the thrower and named only the caller. The
+  report second-guessed the site a tail call records against the innermost
+  frame's registered callees, which never name a fn reached through a value.
+  Code that is not traced now puts that site back whenever a fn value it called
+  returns (`jolt-invoke0`..`4`, and the natives' direct callback calls in `map`,
+  `filter`, `reduce` and `reduce-kv`), so a site at a throw always belongs to
+  the call that threw and the guess goes. That also drops the frame a callback
+  left when core threw after it returned: `(into {} (map f xs))` failing on a
+  non-pair named `f` innermost, where it now names the fn that called `into`, as
+  the JVM does. No measurable cost (one load and store per callback).
+
+- **`require`, `load`, `load-string`, `load-reader` and `load-file` raise a
+  `Compiler$CompilerException` for what a form's run throws**, as
+  `Compiler.load` and `RT.load` do: "Syntax error macroexpanding at
+  ([source:]line:col).", ex-data `{:clojure.error/phase :execution, :line,
+  :column}` (and `:source`: the classpath file for a namespace, the path for
+  `load-file`), the throw as its cause, at the reader's position before the
+  form. A `(catch ArithmeticException ...)` around a `require` or `load-string`
+  no longer catches it, as on the JVM; read the cause. A nested require's
+  wrapper passes through unchanged. `eval` and `jolt.host/eval-string` are
+  unchanged, and the uncaught report still names the original throw, its
+  location and its trace. `clojure.main/root-cause` stops at the wrapper, so
+  nREPL replies `ex`/`root-ex` `Compiler$CompilerException` for such an error,
+  as JVM nREPL does, and its `err` names the failing form's file and line when
+  no frame does ("at (b.clj:3)" where it said "at (REPL:1)").
+- **A diagnostic in text evaluated under a source path shows that text**
+  (`jolt.host/eval-string`/`load-string` with a path, nREPL `load-file` of an
+  unsaved buffer). Its snippet was read from the file on disk.
+- **The default time zone is the machine's, whatever has loaded.** With `TZ`
+  unset, core answered UTC until jolt.time loaded and registered the
+  machine's zone, so a zone-less `SimpleDateFormat` parse moved by hours
+  depending on whether some `java.time` class had been touched first. Core
+  now reads the zone where libc does (the `/etc/localtime` link, else
+  `/etc/timezone`), so `TimeZone/getDefault`, `SimpleDateFormat`, `Calendar`
+  and the deprecated `Date` getters agree with the JVM. An empty `TZ` is UTC.
+- **C arguments past the argument registers land where the callee reads them
+  on arm64 and x86_64 (#1501).** Once the registers were used up, Chez's `foreign-procedure` (and
+  so `jolt.ffi`) on arm64 macOS packed a struct of 16 bytes or less that isn't
+  all floats or all doubles like a scalar, where Apple's ABI gives it 8-byte
+  slots, and its padding before a stack argument could go negative (three
+  `char`s then a `short`; three floats, a `char`, three floats), so the C
+  function read the wrong bytes without any error. On every arm64, a struct over
+  16 bytes after the registers, which goes by pointer, failed to compile
+  (`unexpected Triv`). On x86_64, a struct on the stack whose size isn't a
+  multiple of 8 (three `char`s, say) overwrote the start of the next argument,
+  so a `char` after it arrived as 0. jolt's Chez build carries both fixes from
+  cisco/ChezScheme#1091 until a Chez release has them
+  (`host/chez/chez-patches/0006` for arm64, `0007` for x86_64), checked by
+  `test/chez/ffi-stack-args-test.sh` in the `ffi` gate; a jolt built against a
+  stock Chez keeps the old placement.
 - **`InputStream.read(b off len)` on a socket checks its range first.** An
   `off` or `len` outside the array is `IndexOutOfBoundsException` with the JDK's
   message, before the socket is touched. It used to consume the bytes and then

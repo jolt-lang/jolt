@@ -562,12 +562,12 @@
                '("[Ljava.lang.Object;" "Object"))))
         ;; host value types with a distinct record repr (not jhost-backed): a regex,
         ;; a #uuid, a #inst Date, a BigDecimal — each derives its ancestry from the
-        ;; class graph. A #inst is a java.util.Date (NOT a java.sql.Timestamp — the
-        ;; instance? arm in inst-time.ss agrees).
+        ;; class graph. A #inst is a java.util.Date and a (Timestamp. ms) the jinst
+        ;; child that is a java.sql.Timestamp (the instance? arm in inst-time.ss agrees).
         ((regex-t? obj) (jch-tags "java.util.regex.Pattern"))
         ((matcher-t? obj) (jch-tags "java.util.regex.Matcher"))
         ((juuid? obj) (jch-tags "java.util.UUID"))
-        ((jinst? obj) (jch-tags "java.util.Date"))
+        ((jinst? obj) (jch-tags (if (jts? obj) "java.sql.Timestamp" "java.util.Date")))
         ((jbigdec? obj) (jch-tags "java.math.BigDecimal"))
         ;; a bare procedure (fn) — extend-protocol to clojure.lang.{Fn,IFn,AFn}.
         ((procedure? obj) (jch-tags "clojure.lang.AFunction"))

@@ -361,6 +361,17 @@
                floc (assoc :clojure.error/symbol (:symbol floc))
                (:source floc) (assoc :clojure.error/source (:source floc))
                fline (assoc :clojure.error/line fline))
+           ;; a load's CompilerException (load-string, load-file, require) names
+           ;; the form that failed in the loaded text: with no frame of the
+           ;; user's to say more, that is the place, as the JVM's eval frame
+           ;; there names it (its file's base name)
+           wd (when (= 'clojure.lang.Compiler$CompilerException (:type (first (:via m))))
+                (:data (first (:via m))))
+           t (if (and run-phase? (nil? floc) (nil? (:clojure.error/symbol t)) (:clojure.error/line wd))
+               (cond-> (assoc t :clojure.error/line (:clojure.error/line wd))
+                 (:clojure.error/source wd)
+                 (assoc :clojure.error/source (last (str/split (:clojure.error/source wd) #"/"))))
+               t)
            t (if (and line run-phase? (nil? floc) (nil? (:clojure.error/line t)))
                (assoc t :clojure.error/line line)
                t)]

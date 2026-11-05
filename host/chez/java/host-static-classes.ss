@@ -3286,13 +3286,16 @@
     jolt-nil))
 (def-var! "clojure.core" "__register-str!"
   (lambda (pred render)
-    (register-str-render! (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))
-                          (lambda (x) (seam-invoke1 render x)))
+    (let ((p (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))))
+      ;; asked live in every narrowed print walk (print-arms-for, host-static.ss)
+      (print-arm-live! p)
+      (register-str-render! p (lambda (x) (seam-invoke1 render x))))
     jolt-nil))
 (def-var! "clojure.core" "__register-pr!"
   (lambda (pred render)
-    (register-pr-arm! (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))
-                      (lambda (x) (seam-invoke1 render x)))
+    (let ((p (lambda (x) (jolt-truthy? (seam-invoke1 pred x)))))
+      (print-arm-live! p)
+      (register-pr-arm! p (lambda (x) (seam-invoke1 render x))))
     jolt-nil))
 (def-var! "clojure.core" "__register-compare!"
   (lambda (pred handler)
@@ -3683,17 +3686,31 @@
          ;; The tail past the source is the element kind's ZERO — nil in a
          ;; reference array, #\nul in a char[], false in a boolean[] — not the 0
          ;; every kind used to get regardless.
+         ;; The shared prefix moves through ja-copy-range! (natives-array.ss), the
+         ;; block copy behind System/arraycopy: element by element through
+         ;; ja-ref/ja-set! a 64 KB byte[] took ~1.2 ms, the block move ~10 us.
          (cons "copyOf" (lambda (a n)
                           (let* ((len (jnum->exact n)) (kind (jolt-array-kind a))
                                  (out (make-jolt-array (na-make-backing len kind (na-zero-of kind)) kind)))
-                            (do ((i 0 (fx+ i 1))) ((fx=? i (min len (ja-len a))) out)
-                              (ja-set! out i (ja-ref a i))))))
+                            (ja-copy-range! a 0 out 0 (min len (ja-len a)))
+                            out)))
+         ;; copyOfRange(a, from, to): from > to is the JVM's IllegalArgumentException
+         ;; ("from > to"), from outside [0, length] its ArrayIndexOutOfBoundsException,
+         ;; and a `to` past the end pads with the kind's zero like copyOf does. It
+         ;; used to read past the end instead of padding.
          (cons "copyOfRange" (lambda (a from to)
                                (let* ((f (jnum->exact from)) (tt (jnum->exact to))
-                                      (len (- tt f)) (kind (jolt-array-kind a))
-                                      (out (make-jolt-array (na-make-backing len kind (na-zero-of kind)) kind)))
-                                 (do ((i 0 (fx+ i 1))) ((fx=? i len) out)
-                                   (ja-set! out i (ja-ref a (+ f i)))))))
+                                      (alen (ja-len a)) (kind (jolt-array-kind a)))
+                                 (when (> f tt)
+                                   (throw-jvm 'IllegalArgumentException
+                                              (string-append (number->string f) " > " (number->string tt))))
+                                 (when (or (< f 0) (> f alen))
+                                   (jolt-throw (jolt-host-throwable "java.lang.ArrayIndexOutOfBoundsException"
+                                                                    (number->string f))))
+                                 (let* ((len (- tt f))
+                                        (out (make-jolt-array (na-make-backing len kind (na-zero-of kind)) kind)))
+                                   (ja-copy-range! a f out 0 (min len (- alen f)))
+                                   out))))
          (cons "sort" arrays-sort)
          (cons "deepEquals" (lambda (a b) (objects-deep-equals? a b)))
          ;; Arrays.toString is "[a, b]" — comma-separated element toString, "null"

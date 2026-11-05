@@ -300,14 +300,9 @@
    :deps ["@spec.alpha/src/main/clojure" "@test.check/src/main/clojure"]
    :local-deps ["~time"]
    :timeout 900
-   ;; The residue is one :escape-unicode true case in each of the two APIs, and
-   ;; it is the string model rather than a bug: jolt strings are codepoint-indexed,
-   ;; so .charAt hands data.json's escaper an astral character whole where the JVM
-   ;; hands it a surrogate half, and the escape comes out \u1f603 rather than the
-   ;; \ud83d\ude03 pair. Matching would mean UTF-16 count/nth/char. The
-   ;; :escape-unicode false path used to throw out of (char cp) and no longer does.
-   ;; :string-model, see known-divergences.edn.
-   :expect {:tests 244 :pass 322 :fail 2 :error 0}}
+   ;; clojure.data.json is a jolt built-in (stdlib/clojure/data/json.clj), so the
+   ;; suite runs against jolt's copy, which escapes astral characters as pairs.
+   :expect {:tests 244 :pass 324 :fail 0 :error 0}}
 
   {:name "data.zip"
    :paths ["src/main/clojure" "src/test/clojure"]
@@ -532,13 +527,14 @@
    ;; surface with no jolt equivalent. The 8 failures that went away were
    ;; java.io.File comparing by identity under = rather than by pathname;
    ;; 4 more (446 -> 450) when getCanonicalPath learned to resolve symlinks
-   ;; in 0.7.20.
+   ;; in 0.7.20. 3 more pass (451 -> 454, errors 5 -> 2) on main ahead of 0.8.24,
+   ;; re-recorded so the slack cannot hide a later regression.
    :shims ["!test/conformance/libs/shims/ring-core"]
    ;; commons-fileupload before ring.middleware.multipart-params, which imports
    ;; its classes at load.
    :preload ["jolt.shim.commons-io" "jolt.shim.commons-fileupload"]
    :note "clj-time (Joda) + commons-fileupload are JVM-only; URLClassLoader/jar: URLs are jolt gaps"
-   :expect {:tests 152 :pass 451 :fail 0 :error 5 :load-fail 2}}
+   :expect {:tests 152 :pass 454 :fail 0 :error 2 :load-fail 2}}
 
   {:name "ring-spec"
    :paths ["src" "test"]

@@ -40,12 +40,25 @@
 ;; JOLT_GATEBOOT=1 announces which path was taken, mirroring JOLT_DEVCACHE for
 ;; the bin/jolt image — the only way to tell from the outside, since both paths
 ;; produce identical behavior.
-(if (and (not (gate-boot-narrow-hash?))
-         (gate-boot-image-fresh? "target/dev/gate.so" "target/dev/gate.inputs"))
+;;
+;; The image is OPENED before it is trusted, and a failure anywhere in the
+;; freshness check or the open takes the source arm. make-gateboot deletes the old
+;; image before it rewrites the input list (so a failed compile cannot leave a
+;; stale image reading as fresh), and a parallel `make ci` rebuilds it while other
+;; gates boot: a gate that found it fresh and then loaded it by name a moment
+;; later died on "no such file or directory" when the delete landed between the
+;; two. An open port keeps the image it found readable whatever happens to the
+;; name after.
+(define gate-boot-image-port
+  (and (not (gate-boot-narrow-hash?))
+       (gate-boot-image-fresh? "target/dev/gate.so" "target/dev/gate.inputs")
+       (guard (e (#t #f)) (open-file-input-port "target/dev/gate.so"))))
+(if gate-boot-image-port
     (begin
       (when (let ((m (getenv "JOLT_GATEBOOT"))) (and m (not (string=? m ""))))
         (display "gateboot: using target/dev/gate.so\n" (current-error-port)))
-      (load "target/dev/gate.so"))
+      (load-compiled-from-port gate-boot-image-port)
+      (close-port gate-boot-image-port))
     (begin
       (load "host/chez/scheme-adapter-runtime.ss")  ; before rt.ss: macros + top-levels in rt.ss/java/*.ss call sa-*
       (load "host/chez/rt.ss")

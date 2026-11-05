@@ -369,7 +369,7 @@
             "clojure.lang.Reversible" "clojure.lang.Indexed" "clojure.lang.Counted"
             "clojure.lang.Named" "clojure.lang.Fn" "clojure.lang.IFn"
             "clojure.lang.IPersistentCollection" "clojure.lang.ISeq"
-            "clojure.lang.IChunkedSeq" "clojure.lang.IChunk"
+            "clojure.lang.IChunkedSeq" "clojure.lang.IChunk" "clojure.lang.IndexedSeq"
             "clojure.lang.IPending" "clojure.lang.IRef" "clojure.lang.IAtom"
             "clojure.lang.IAtom2" "clojure.lang.IBlockingDeref" "clojure.lang.IMapEntry"
             "clojure.lang.Associative" "clojure.lang.ILookup"
@@ -515,6 +515,8 @@
 ;; the interface chunk-first / chunk-rest are the contract of — a chunked seq is a
 ;; Sequential ISeq that can also hand out a whole block at a time
 (jch-register-supers! "clojure.lang.IChunkedSeq" '("clojure.lang.ISeq" "clojure.lang.Sequential"))
+;; an ISeq that knows its position; a deftype or reify declaring it is a seq
+(jch-register-supers! "clojure.lang.IndexedSeq" '("clojure.lang.ISeq" "clojure.lang.Sequential" "clojure.lang.Counted"))
 (jch-register-supers! "clojure.lang.Associative" '("clojure.lang.IPersistentCollection" "clojure.lang.ILookup"))
 (jch-register-supers! "clojure.lang.IPersistentStack" '("clojure.lang.IPersistentCollection"))
 (jch-register-supers! "clojure.lang.IPersistentVector" '("clojure.lang.Associative" "clojure.lang.Sequential"
@@ -753,6 +755,8 @@
 (jch-register-supers! "java.lang.Exception" '("java.lang.Throwable"))
 (jch-register-supers! "java.lang.RuntimeException" '("java.lang.Exception"))
 (jch-register-supers! "clojure.lang.ExceptionInfo" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
+;; what load-string / load-file raise for a form whose run threw (compile-eval.ss)
+(jch-register-supers! "clojure.lang.Compiler$CompilerException" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
 ;; what a read from a LineNumberingPushbackReader raises (reader.ss
 ;; rdr-reader-exception); only the LispReader one carries ex-data
 (jch-register-supers! "clojure.lang.LispReader$ReaderException" '("java.lang.RuntimeException" "clojure.lang.IExceptionInfo"))
@@ -1374,6 +1378,9 @@
 (jch-register-supers! "java.util.concurrent.locks.ReentrantLock"
                       '("java.util.concurrent.locks.Lock" "java.io.Serializable"))
 (jch-register-supers! "java.util.concurrent.CountDownLatch" '())
+(jch-register-supers! "java.util.Timer" '())
+(jch-register-supers! "java.util.TimerTask" '("java.lang.Runnable"))
+(jch-mark-abstract! "java.util.TimerTask")
 ;; AtomicInteger and AtomicLong extend Number on the JVM; AtomicBoolean and
 ;; AtomicReference extend Object. (instance? Number an-atomic) has to tell them
 ;; apart, which is why the four carry four tags.
@@ -1476,9 +1483,8 @@
 (jch-register-supers! "java.util.Locale" '())
 (jch-register-supers! "java.util.TimeZone" '())
 ;; #inst / (Date.) classes. java.sql.Date and java.sql.Timestamp are Date
-;; subclasses (jolt's one #inst value reports Date only — see inst-time.ss, which
-;; answers instance? Timestamp #f — so these rows exist for the sql-date shim and
-;; for isa?/supers of the class tokens, not for the #inst value's dispatch tags).
+;; subclasses: the sql-date shim and the jts child of the #inst record report
+;; them, and their dispatch tags walk up to java.util.Date from here.
 (jch-register-supers! "java.util.Date" '("java.lang.Comparable" "java.io.Serializable"))
 (jch-register-supers! "java.sql.Date" '("java.util.Date"))
 (jch-register-supers! "java.sql.Timestamp" '("java.util.Date"))
@@ -1670,6 +1676,7 @@
     ("atomic-reference" . "java.util.concurrent.atomic.AtomicReference")
     ("reentrant-lock" . "java.util.concurrent.locks.ReentrantLock")
     ("count-down-latch" . "java.util.concurrent.CountDownLatch")
+    ("timer" . "java.util.Timer")
     ("random" . "java.util.Random")
     ("splittable-random" . "java.util.SplittableRandom")
     ("securerandom" . "java.security.SecureRandom")

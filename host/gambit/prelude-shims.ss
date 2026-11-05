@@ -496,6 +496,8 @@
 ;; condition here is an error: nothing raises a warning, and Gambit has no
 ;; violation kind distinct from an error.
 (define (error? x) (condition? x))
+;; ...and so every one is serious (compile-eval.ss's load wrap asks).
+(define (serious-condition? x) (condition? x))
 (define (violation? x) #f)
 (define (warning? x) #f)
 ;; Every raise that reaches a handler here is non-continuable, so passing one on
@@ -724,6 +726,17 @@
 ;; Chez bignum?: an exact integer outside the fixnum range (natives-format.ss).
 (define (bignum? x) (and (exact-integer? x) (not (fixnum? x))))
 
+;; Chez flonum->fixnum: a flonum truncated toward zero, as a fixnum
+;; (converters.ss's jolt-flonum->integer). Gambit's ##flonum->fixnum truncates
+;; the same way (gsc/tests/08-flprim/flconv.scm: 5.6 -> 5, -3.6 -> -3) but
+;; does NOT check its range: 2^60 comes back as -2^60 where Chez raises, so
+;; the caller's bounds test is the only guard. The limits come from
+;; ##fixnum-width (61 on a 64-bit host), since Gambit has no most-*-fixnum
+;; and no ##max-fixnum; the lane's bounds then follow the target's width.
+(define (flonum->fixnum x) (##flonum->fixnum x))
+(define (most-positive-fixnum) (- (expt 2 (- (##fixnum-width) 1)) 1))
+(define (most-negative-fixnum) (- (expt 2 (- (##fixnum-width) 1))))
+
 ;; R6RS char-general-category backs the \p{L}-style classes in
 ;; regex-translate.ss. Gambit exposes no Unicode general categories, so such a
 ;; pattern is refused as a syntax error (regex.ss's guard turns this raise into
@@ -773,6 +786,10 @@
     (if (vector? v)
         v
         (let ((v (make-vector 16 0))) (thread-specific-set! t v) v))))
+;; rt.ss's site-slot restore around a callback (seq.ss jolt-invoke0..4). This
+;; target records no frames, so there is no slot to keep: the call alone.
+(define-syntax jolt-site-kept
+  (syntax-rules () ((_ call) call)))
 (define (virtual-register n) (vector-ref (%vreg-slots) n))
 (define (set-virtual-register! n v) (vector-set! (%vreg-slots) n v))
 (define (virtual-register-count) 16)
@@ -922,6 +939,16 @@
 
 (define-syntax fl=?
   (syntax-rules () ((_ a ...) (fl= a ...))))
+;; The other R6RS flonum compares, for the cast fast path the back end emits
+;; on a proven double (fl>=? / fl<=? against the cast's window) and for the
+;; op registry's :dbl compares; Gambit spells them without the ?. These are
+;; PROCEDURES, not syntax like fl=? above: the emitted code reaches them
+;; through jolt-compile-eval's runtime eval, which cannot see a macro the
+;; compiled boot defined.
+(define (fl<? a b) (fl< a b))
+(define (fl>? a b) (fl> a b))
+(define (fl<=? a b) (fl<= a b))
+(define (fl>=? a b) (fl>= a b))
 (define-syntax fx<=?
   (syntax-rules () ((_ a ...) (<= a ...))))
 (define-syntax fx>=?

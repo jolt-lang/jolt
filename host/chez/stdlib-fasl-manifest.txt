@@ -32,6 +32,7 @@ clojure.core.protocols
 clojure.core.rrb-vector
 clojure.core.strint
 clojure.data
+clojure.data.json
 clojure.datafy
 clojure.instant
 clojure.java.browse

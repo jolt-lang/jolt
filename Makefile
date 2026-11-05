@@ -266,11 +266,28 @@ ci:
 bionic-ci:
 	$(call run-gate,bionic-ci,$(CI-GATES))
 
+# Gates that judge a constant-factor timing ratio, run on their own once every
+# other gate of the run has finished. Under make -j they shared a 4-core runner
+# with the rest of the gate list, and a neighbour's burst landing on one arm
+# moved a ratio by 1.5-3x: over 134 CI jobs (2026-11-03..04) fastpathratio put
+# a row over its ceiling in 9, 7 of them x86, with no step change in any row and
+# the same commit's other run passing where there was one. A quiet machine reads
+# well inside every ceiling. A scaling gate (n vs 4n of the same work) is not
+# listed: interference moves both of its arms alike.
+QUIET-GATES := fastpathratio
+# Runs the QUIET-GATES of $(1) one at a time. -j1 takes the sub-make off the
+# jobserver, so nothing else this make started is running beside them.
+define run-quiet
++@$(if $(filter $(QUIET-GATES),$(1)),$(MAKE) --no-print-directory -j1 $(filter $(QUIET-GATES),$(1)),:)
+endef
+
 # The prerequisite-only targets the wrappers drive. Not meant to be run directly:
 # they pass silently, which is the thing the wrappers exist to prevent.
 gate-run-test: $(TEST-GATES)
-gate-run-ci: $(CI-GATES)
-gate-run-bionic-ci: $(CI-GATES)
+gate-run-ci: $(filter-out $(QUIET-GATES),$(CI-GATES))
+	$(call run-quiet,$(CI-GATES))
+gate-run-bionic-ci: $(filter-out $(QUIET-GATES),$(CI-GATES))
+	$(call run-quiet,$(CI-GATES))
 
 # One shard of a gate, so CI can run a gate as parallel jobs. SHARD-SET is test
 # (selfhost plus CI-GATES) or ci (CI-GATES alone, what bionic-ci runs), and
@@ -297,7 +314,8 @@ ci-shard:
 	  echo "        so nothing here is evidence the rest of the shard passes."; \
 	  exit $$st; \
 	fi
-gate-run-ci-shard: $(SHARD-GATES)
+gate-run-ci-shard: $(filter-out $(QUIET-GATES),$(SHARD-GATES))
+	$(call run-quiet,$(SHARD-GATES))
 ci-shard-list:
 	@printf '%s\n' $(SHARD-GATES)
 
@@ -978,6 +996,7 @@ ffi:
 	@sh test/chez/ffi-widths-test.sh "$(CHEZ)"
 	@sh test/chez/ffi-layout-test.sh "$(CHEZ)"
 	@sh test/chez/ffi-aggregate-test.sh "$(CHEZ)"
+	@sh test/chez/ffi-stack-args-test.sh "$(CHEZ)"
 	@bin/jolt run test/chez/jolt-ffi-scoped-test.clj
 	@bin/jolt run test/chez/jolt-ffi-arena-test.clj
 	@bin/jolt run test/chez/jolt-ffi-typed-array-test.clj

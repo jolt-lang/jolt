@@ -393,6 +393,26 @@
              (jolt-throw-sitep (let ((s (virtual-register jolt-vreg-site)))
                                  (and (pair? s) s)))
              (raise (cons 'jolt-throw v)))))
+;; rt.ss's raise of an already-made throwable, without a new capture.
+(define (jolt-raise-thrown v) (raise (cons 'jolt-throw v)))
+;; Mirrors of rt.ss's Compiler.load wrap state (compile-eval.ss
+;; jolt-load-run-form): the load about to start, and wrapper -> the raise it
+;; wraps, which the uncaught report and the position record follow.
+(define jolt-load-wrap (make-thread-parameter #f))
+(define jolt-load-wrap-origins (make-weak-eq-hashtable))
+(define jolt-load-wrap-mutex (make-mutex))
+(define (jolt-load-wrap-origin raw)
+  (let ((v (jolt-unwrap-throw raw)))
+    (or (and (jolt-ex-info-record? v)
+             (equal? (jolt-ex-info-record-class-name v) "clojure.lang.Compiler$CompilerException")
+             (jolt-with-mutex jolt-load-wrap-mutex
+               (hashtable-ref jolt-load-wrap-origins v #f)))
+        raw)))
+;; ...and of its per-path evaluated text, which a diagnostic snippet reads.
+(define jolt-eval-source-texts (make-hashtable string-hash string=?))
+(define jolt-eval-text-mutex (make-mutex))
+(define (jolt-eval-source-text-set! path text)
+  (jolt-with-mutex jolt-eval-text-mutex (hashtable-set! jolt-eval-source-texts path text)))
 ;; The same capture for a HOST condition (a fault raised outside jolt-throw:
 ;; car of a non-pair, a bad flvector index). Installed by the cli's run wrapper
 ;; via with-exception-handler, which runs BEFORE the stack unwinds — a guard's
@@ -874,6 +894,19 @@
   (reject-fast-type-claim! who pred pr-fast-probes
                            "the printer fast path (see pr-fast-type? in rt.ss)"))
 
+;; The arms of the three print registries — pr-str's (below), pr's (printing.ss)
+;; and str's (converters.ss) — that can claim X, in walk order. A value no arm
+;; claims (every #object) asks every predicate of all three, and each family a
+;; host adds lengthens the walk for all of them. Here the answer is the whole
+;; registry; a host whose values carry a type key narrows it per type
+;; (host-static.ss on Chez). WHICH names the registry: 0 pr-str, 1 pr, 2 str.
+(define print-arms-for (lambda (which arms x) arms))
+(define (set-print-arms-for! f) (set! print-arms-for f))
+;; What a host narrowing the walks must retire its answers on, besides a new arm:
+;; a change to anything an arm's predicate reads (a tag table, jutil-colls.ss).
+(define print-arms-epoch 0)
+(define (print-arms-invalidate!) (set! print-arms-epoch (fx+ print-arms-epoch 1)))
+
 ;; A host shim registers a type's str-style rendering via register-pr-str-arm! (or
 ;; register-pr-arm! in printing.ss for both printers at once) instead of
 ;; set!-wrapping jolt-pr-str. Disjoint types, checked before the base cases.
@@ -898,7 +931,7 @@
 ;; jolt omits it in the print arms it already has.
 (define (jolt-object-content x)
   (or (str-render-by-identity x)
-      (let loop ((rs str-render-registry))
+      (let loop ((rs (print-arms-for 2 str-render-registry x)))
         (cond ((null? rs) #f)
               (((caar rs) x) ((cdar rs) x))
               (else (loop (cdr rs)))))))
@@ -960,7 +993,7 @@
 (define (jolt-pr-str/readable x readable?)
   (if (pr-fast-type? x)
       (jolt-pr-str-base/readable x readable?)
-      (let loop ((as jolt-pr-str-arms))
+      (let loop ((as (print-arms-for 0 jolt-pr-str-arms x)))
         (cond ((null? as) (jolt-pr-str-base/readable x readable?))
               (((caar as) x) ((cdar as) x))
               (else (loop (cdr as)))))))
@@ -1505,6 +1538,7 @@
 (define (nb-host-char-ref a i) (nb-no-arrays "java.nio CharBuffer array read"))
 (define (nb-host-char-set! a i c) (nb-no-arrays "java.nio CharBuffer array write"))
 (define (jinst? x) #f)
+(define (jts? x) #f)
 (define (jfile? x) #f)
 (define (jbigdec? x) #f)
 

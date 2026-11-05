@@ -96,6 +96,20 @@
 ;; flonum 25.0 — matching the called fn, not an exact 25.
 (ok "inlined ^double with int args still returns a flonum" (flonum? (ev "((fn* ([] (dwork 3 4))))")))
 
+;; the cast fast path is decided in the CALLER's context after inlining: a typed
+;; body inlined where the argument is untyped still carries its entry coercion
+;; (lowered), and an untyped body inlined under a ^double argument is lowered too.
+(ev "(def dlong (fn* ([^double d] (long d))))")
+(ev "(def ulong (fn* ([d] (long d))))")
+(ok "inlined ^double cast under an untyped caller is lowered through its entry coercion"
+    (has? (emitf "u" "(fn* ([x] (dlong x)))") "(flonum->fixnum"))
+(ok "inlined untyped cast under a ^double caller is lowered"
+    (has? (emitf "u" "(fn* ([^double x] (ulong x)))") "(flonum->fixnum"))
+(ok "inlined untyped cast under an untyped caller is not lowered"
+    (not (has? (emitf "u" "(fn* ([x] (ulong x)))") "(flonum->fixnum")))
+(ok "lowered cast answers: 2.9 -> 2, -2.9 -> -2"
+    (equal? '(2 -2) (list (jnum->exact (ev "(dlong 2.9)")) (jnum->exact (ev "(dlong -2.9)")))))
+
 ;; a ^long fn inlines with long coercion + the checked long ops.
 (ev "(def ^long lsum (fn* ([^long a ^long b] (+ a b))))")
 (let ((e (emitf "u" "(fn* ([] (lsum 3 4)))")))

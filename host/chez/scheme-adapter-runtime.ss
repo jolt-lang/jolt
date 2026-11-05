@@ -1956,6 +1956,24 @@
                  (foreign-procedure __collect_safe "sched_yield" () int))))
       (lambda () 0)))
 
+;; (sa-collect-safe-nap usecs) -> unspecified
+;; A __collect_safe sleep of about USECS microseconds: usleep, or Sleep on
+;; Windows (whole milliseconds, at least one). Like sa-collect-safe-pause it
+;; deactivates the thread whatever its interrupt disable count, so a wait made
+;; with interrupts disabled can pass time without holding up a collection, and
+;; without spinning a core. Degradation: sa-collect-safe-pause (a yield).
+(define sa-collect-safe-nap
+  (or (guard (e (#t #f))
+        (sa-load-shared-object #f)
+        (if (eq? (sa-os-family) 'windows)
+            (and (sa-foreign-entry? "Sleep")
+                 (let ((f (sa-foreign-procedure-runtime "Sleep" '(unsigned-32) 'void #t)))
+                   (lambda (us) (f (max 1 (quotient (+ us 999) 1000))))))
+            (and (sa-foreign-entry? "usleep")
+                 (let ((f (foreign-procedure __collect_safe "usleep" (unsigned-32) int)))
+                   (lambda (us) (f us))))))
+      (lambda (us) (sa-collect-safe-pause))))
+
 
 ;; ---- handler-backed output ports ---------------------------------------------
 ;; (sa-make-output-port name put! put-some! flush! clear! close!) -> port | #f

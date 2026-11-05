@@ -1112,9 +1112,11 @@
 (mark-macro! "clojure.core" "defmacro")
 (def-var! "clojure.core" "alter-meta!" jolt-alter-meta!)
 (def-var! "clojure.core" "reset-meta!" jolt-reset-meta!)
-;; *ns* starts at the user namespace (the current ns for -e user code). in-ns
+;; *ns*'s ROOT is clojure.core, as RT interns it; what a thread reads is its
+;; current ns (multimethods.ss chez-current-ns), user for -e and script code, so
+;; the root is what .getRawRoot answers and nothing reads it otherwise. in-ns
 ;; re-binds it. (ns-name is overridden natively in post-prelude.ss.)
-(def-dynvar! "clojure.core" "*ns*" (intern-ns! "user"))
+(def-dynvar! "clojure.core" "*ns*" (intern-ns! "clojure.core"))
 
 ;; Host seam: bare var-cell lookup (no alias resolution) for the defonce macro
 ;; expansion, which must NOT reference clojure.core/resolve (a tree-shake bail ref).
