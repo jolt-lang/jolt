@@ -834,14 +834,21 @@
 ;; (read-into! ptr arr off n) -> n. Copy n bytes at ptr into arr starting at off
 ;; (the java.io.InputStream/read argument order). Throws rather than writing out
 ;; of bounds — a short read that silently truncated would corrupt the buffer.
+;; The checks shared by the two byte moves, made before anything is copied.
+;; off and n arrive through ffi-byte-index, so one that is not a number reaches
+;; the range error as it is rather than jnum->exact's complaint about it.
+(define (ffi-byte-index x) (if (number? x) (jnum->exact x) x))
+(define (ffi-check-byte-range who arr off n)
+  (unless (and (jolt-array? arr) (eq? (jolt-array-kind arr) 'byte))
+    (jolt-throw (jolt-ex-info (string-append "jolt.ffi/" who ": expected a byte-array")
+                              (jolt-hash-map (jolt-keyword "array") arr))))
+  (let ((cap (ja-len arr)))
+    (unless (ffi-typed-range-ok? off n cap)
+      (ffi-typed-range-error who off n cap))))
+
 (define (ffi-read-into! ptr arr off n)
-  (let* ((n (jnum->exact n)) (off (jnum->exact off)) (p (jnum->exact ptr))
-         (cap (ja-len arr)))
-    (when (or (< off 0) (< n 0) (> (+ off n) cap))
-      (jolt-throw (jolt-ex-info "jolt.ffi/read-into!: range outside the byte-array"
-                                (jolt-hash-map (jolt-keyword "offset") off
-                                               (jolt-keyword "length") n
-                                               (jolt-keyword "capacity") cap))))
+  (let* ((n (ffi-byte-index n)) (off (ffi-byte-index off)) (p (jnum->exact ptr)))
+    (ffi-check-byte-range "read-into!" arr off n)
     (let ((bv (make-bytevector n)))
       (sa-foreign-bytes-ref! p bv n)
       (ja-bv->bytes! bv 0 arr off n)
@@ -849,15 +856,10 @@
 
 (define ffi-write-array
   (case-lambda
-    ((ptr arr) (ffi-write-array ptr arr 0 (ja-len arr)))
+    ((ptr arr) (ffi-write-array ptr arr 0 (if (jolt-array? arr) (ja-len arr) 0)))
     ((ptr arr off n)
-     (let* ((n (jnum->exact n)) (off (jnum->exact off)) (p (jnum->exact ptr))
-            (cap (ja-len arr)))
-       (when (or (< off 0) (< n 0) (> (+ off n) cap))
-         (jolt-throw (jolt-ex-info "jolt.ffi/write-array: range outside the byte-array"
-                                   (jolt-hash-map (jolt-keyword "offset") off
-                                                  (jolt-keyword "length") n
-                                                  (jolt-keyword "capacity") cap))))
+     (let* ((n (ffi-byte-index n)) (off (ffi-byte-index off)) (p (jnum->exact ptr)))
+       (ffi-check-byte-range "write-array" arr off n)
        (let ((bv (make-bytevector n)))
          (ja-bytes->bv! arr off bv 0 n)
          (sa-foreign-bytes-set! p bv n))

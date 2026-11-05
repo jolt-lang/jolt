@@ -241,9 +241,9 @@
       write-array's index-and-count form keep babashka.ffi's argument order:
       position four is a byte offset into the pointer, and an index into the
       array and a count trail it. write-array answers the element count where
-      babashka.ffi answers nil. The byte forms (read-array p n),
-      (write-array p arr off n) and (read-into! p arr off n) are jolt's own; a
-      byte-array where babashka.ffi has the type keyword tells them apart.
+      babashka.ffi answers nil. The byte forms (read-array p n) and
+      (write-array p arr) are jolt's own; a count or a byte-array where
+      babashka.ffi has the type keyword tells them apart.
     - babashka.ffi removed read-bytes and write-bytes in favour of read-array
       and write-array. jolt keeps both under its own meaning: they decode and
       encode UTF-8 strings rather than copy raw octets.
@@ -1175,12 +1175,14 @@
 ;; — and the element loop does the copy instead.
 ;; :string cannot be copied at all — its elements are pointers to bytes
 ;; elsewhere, which a copy cannot follow.
-(def ^:private array-byte-types
-  #{:int8 :i8 :uint8 :u8 :byte :char :bool})
+(defn- byte-type? [t]
+  (case t
+    (:int8 :i8 :uint8 :u8 :byte :char :bool) true
+    false))
 
 (defn- array-carrier [t]
   (cond
-    (contains? array-byte-types t) {:width 1}
+    (byte-type? t) {:width 1}
     (= t :float) {:width 4 :ctor float-array :read-type :float :write-type :float :float? true}
     (= t :double) {:width 8 :ctor double-array :read-type :double :write-type :double :float? true}
     (or (= t :string) (= t :void) (not (keyword? t)))
@@ -1306,10 +1308,14 @@
                           "(write-array p :byte arr 0 index count) writes a slice of a byte-array")
                      {:second a}))))
   ([p t arr off index n]
-   (if (keyword? t)
-     (write-array-typed p t arr off index n)
-     (throw (ex-info "jolt.ffi/write-array: expected (write-array p t arr offset index count)"
-                     {:second t})))))
+   ;; A slice of a byte-array is what the removed (write-array p arr off n)
+   ;; became, so it goes to the primitive here, without another six-argument
+   ;; call: the primitive checks the array and the range itself.
+   (cond
+     (byte-type? t) (jolt.ffi/__write-array (+ p off) arr index (if (nil? n) (count arr) n))
+     (keyword? t) (write-array-typed p t arr off index n)
+     :else (throw (ex-info "jolt.ffi/write-array: expected (write-array p t arr offset index count)"
+                           {:second t})))))
 
 (defn- read-into-typed! [p t arr off index n]
   (let [carrier (array-carrier t)
@@ -1351,10 +1357,12 @@
                           "(read-into! p :byte arr 0 index count) reads a slice into a byte-array")
                      {:second a}))))
   ([p t arr off index n]
-   (if (keyword? t)
-     (read-into-typed! p t arr off index n)
-     (throw (ex-info "jolt.ffi/read-into!: expected (read-into! p t arr offset index count)"
-                     {:second t})))))
+   ;; See write-array: the byte slice goes straight to the primitive.
+   (cond
+     (byte-type? t) (jolt.ffi/__read-into! (+ p off) arr index (if (nil? n) (count arr) n))
+     (keyword? t) (read-into-typed! p t arr off index n)
+     :else (throw (ex-info "jolt.ffi/read-into!: expected (read-into! p t arr offset index count)"
+                           {:second t})))))
 
 (defn read-bytes
   "Decode n octets at pointer p as a string; answers that string.

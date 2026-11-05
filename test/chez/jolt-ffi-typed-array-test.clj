@@ -250,6 +250,61 @@
   (try (ffi/read-into! buf :double dst 0 1 2) (catch Throwable _ nil))
   (check-eq "a refused read-into! writes nothing" (vec dst) [9.0 9.0]))
 
+;; The byte route takes only a byte-array, and refuses before copying. A
+;; write-array of another array's elements used to truncate each to a byte and
+;; report success.
+(ffi/write-array buf (byte-array [7 7 7 7]))
+(doseq [[label arr] [["an int-array" (int-array [1 2])]
+                     ["a double-array" (double-array [1.0 2.0])]
+                     ["a char-array" (char-array 2)]
+                     ["an object-array" (object-array 2)]
+                     ["a vector" [1 2]]
+                     ["nil" nil]]]
+  (check-eq (str "write-array :byte of " label " throws, naming the array")
+            (thrown-data #(ffi/write-array buf :byte arr 0 0 2)) {:array arr})
+  (check-eq (str "read-into! :byte of " label " throws, naming the array")
+            (thrown-data #(ffi/read-into! buf :byte arr 0 0 2)) {:array arr})
+  (check-eq (str "write-array of " label " throws, naming the array")
+            (thrown-data #(ffi/write-array buf arr)) {:array arr}))
+(check-eq "a refused byte write leaves the memory alone"
+          (vec (ffi/read-array buf 4)) [7 7 7 7])
+(let [src (int-array [1 2])]
+  (check-eq "a refused byte read leaves the array alone"
+            [(try (ffi/read-into! buf :byte src 0 0 2) :no-throw (catch Exception _ :threw)) (vec src)]
+            [:threw [1 2]]))
+
+;; A byte range error reads as the wider types' does, whichever form reached it.
+(check-eq "read-into! :byte past the end names the range"
+          (thrown-data #(ffi/read-into! buf :byte (byte-array 2) 0 1 2))
+          {:index 1 :length 2 :capacity 2})
+(check-eq "write-array :byte past the end names the range"
+          (thrown-data #(ffi/write-array buf :byte (byte-array 2) 0 1 2))
+          {:index 1 :length 2 :capacity 2})
+(check-eq "read-into! :byte at a negative index names the range"
+          (thrown-data #(ffi/read-into! buf :byte (byte-array 2) 0 -1 1))
+          {:index -1 :length 1 :capacity 2})
+(check-eq "read-into! :byte with a non-numeric index names the range"
+          (thrown-data #(ffi/read-into! buf :byte (byte-array 2) 0 nil 2))
+          {:index nil :length 2 :capacity 2})
+(check-eq "write-array :byte with a non-numeric count names the range"
+          (thrown-data #(ffi/write-array buf :byte (byte-array 2) 0 0 "x"))
+          {:index 0 :length "x" :capacity 2})
+
+;; A nil count is the whole array on every route, the byte one included.
+(let [dst (byte-array 2) d2 (double-array 1)]
+  (check-eq "read-into! :byte with a nil count fills the array"
+            [(ffi/read-into! buf :byte dst 0 0 nil) (vec dst)] [2 [7 7]])
+  (check-eq "write-array :byte with a nil count writes the array"
+            (ffi/write-array buf :byte (byte-array [7 7]) 0 0 nil) 2)
+  (check-eq "read-into! :double with a nil count fills the array"
+            (ffi/read-into! buf :double d2 0 0 nil) 1))
+
+;; The byte offset into p applies on the byte route as well.
+(ffi/write-array buf (byte-array [1 2 3 4]))
+(let [dst (byte-array 2)]
+  (check-eq "read-into! :byte starts offset bytes into p"
+            [(ffi/read-into! buf :byte dst 2 0 2) (vec dst)] [2 [3 4]]))
+
 ;; a byte-array fills through a one-byte type, a slice through index and count
 (ffi/write-array buf (byte-array [1 -1 3]))
 (let [dst (byte-array 4)]
