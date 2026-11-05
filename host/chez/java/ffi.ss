@@ -834,17 +834,24 @@
 ;; (read-into! ptr arr off n) -> n. Copy n bytes at ptr into arr starting at off
 ;; (the java.io.InputStream/read argument order). Throws rather than writing out
 ;; of bounds — a short read that silently truncated would corrupt the buffer.
-;; The checks shared by the two byte moves, made before anything is copied.
-;; off and n arrive through ffi-byte-index, so one that is not a number reaches
-;; the range error as it is rather than jnum->exact's complaint about it.
-(define (ffi-byte-index x) (if (number? x) (jnum->exact x) x))
-(define (ffi-check-byte-range who arr off n)
-  (unless (and (jolt-array? arr) (eq? (jolt-array-kind arr) 'byte))
-    (jolt-throw (jolt-ex-info (string-append "jolt.ffi/" who ": expected a byte-array")
-                              (jolt-hash-map (jolt-keyword "array") arr))))
-  (let ((cap (ja-len arr)))
-    (unless (ffi-typed-range-ok? off n cap)
-      (ffi-typed-range-error who off n cap))))
+;; The checks shared by the two byte moves, made before anything is copied. These
+;; moves can be as small as a byte, so the ordinary case stays in line: a fixnum
+;; needs no conversion, and one that is not a number at all reaches the range
+;; error as it is rather than jnum->exact's complaint about it.
+(define-syntax ffi-byte-index
+  (syntax-rules ()
+    ((_ x) (cond ((fixnum? x) x) ((number? x) (jnum->exact x)) (else x)))))
+(define (ffi-byte-range-error who arr off n)
+  (if (and (jolt-array? arr) (eq? (jolt-array-kind arr) 'byte))
+      (ffi-typed-range-error who off n (ja-len arr))
+      (jolt-throw (jolt-ex-info (string-append "jolt.ffi/" who ": expected a byte-array")
+                                (jolt-hash-map (jolt-keyword "array") arr)))))
+(define-syntax ffi-check-byte-range
+  (syntax-rules ()
+    ((_ who arr off n)
+     (unless (and (jolt-array? arr) (eq? (jolt-array-kind arr) 'byte)
+                  (ffi-typed-range-ok? off n (ja-len arr)))
+       (ffi-byte-range-error who arr off n)))))
 
 (define (ffi-read-into! ptr arr off n)
   (let* ((n (ffi-byte-index n)) (off (ffi-byte-index off)) (p (jnum->exact ptr)))

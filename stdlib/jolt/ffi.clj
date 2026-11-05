@@ -1312,7 +1312,9 @@
    ;; became, so it goes to the primitive here, without another six-argument
    ;; call: the primitive checks the array and the range itself.
    (cond
-     (byte-type? t) (jolt.ffi/__write-array (+ p off) arr index (if (nil? n) (count arr) n))
+     (or (identical? t :byte) (byte-type? t))
+     (jolt.ffi/__write-array (+ p off) arr index (if (nil? n) (count arr) n))
+
      (keyword? t) (write-array-typed p t arr off index n)
      :else (throw (ex-info "jolt.ffi/write-array: expected (write-array p t arr offset index count)"
                            {:second t})))))
@@ -1359,7 +1361,9 @@
   ([p t arr off index n]
    ;; See write-array: the byte slice goes straight to the primitive.
    (cond
-     (byte-type? t) (jolt.ffi/__read-into! (+ p off) arr index (if (nil? n) (count arr) n))
+     (or (identical? t :byte) (byte-type? t))
+     (jolt.ffi/__read-into! (+ p off) arr index (if (nil? n) (count arr) n))
+
      (keyword? t) (read-into-typed! p t arr off index n)
      :else (throw (ex-info "jolt.ffi/read-into!: expected (read-into! p t arr offset index count)"
                            {:second t})))))
