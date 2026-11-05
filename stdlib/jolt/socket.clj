@@ -313,12 +313,15 @@
      (op-enter! o#)
      (try ~@body (finally (op-leave! o#)))))
 
+(declare drop-recv-buf!)
+
 (defn- close-owner! [owner]
   (let [[first? fd] (locking owner
                       (if (jolt.host/ref-get owner :closed?)
                         [false nil]
                         (do (jolt.host/ref-put! owner :closed? true)
                             [true (claim-release! owner)])))]
+    (when first? (drop-recv-buf! owner))
     (cond
       fd (fd-release! fd)
       first? (poller/cancel! (jolt.host/ref-get owner :fd))))
@@ -635,6 +638,44 @@
 (defn- input-shutdown? [stream]
   (jolt.host/ref-get (jolt.host/ref-get stream :socket) :in-shutdown?))
 
+;; The receive buffer. recv writes into native memory, and allocating `len`
+;; bytes of it per call made a read cost what was ASKED for: a 64 KB array read
+;; for a 120-byte request allocated (zeroed) 64 KB every time. The socket keeps
+;; one buffer instead, grown to the largest read up to RECV-MAX and reused.
+;; A read takes it out of the socket and puts it back after, so two fibers
+;; reading one stream at once never share one (the second allocates its own,
+;; which is freed rather than kept). Close frees the kept buffer; a buffer put
+;; back after close is freed instead. A read asking for more than RECV-MAX
+;; receives at most RECV-MAX, a short read InputStream allows.
+(def ^:private recv-max 65536)
+
+(defn- take-recv-buf! [owner want]
+  ;; answers [ptr size], size >= want
+  (let [[p size] (locking owner
+                   (let [p (jolt.host/ref-get owner :recv-buf)]
+                     (jolt.host/ref-put! owner :recv-buf nil)
+                     [p (jolt.host/ref-get owner :recv-size)]))]
+    (if (and p (>= size want))
+      [p size]
+      (do (when p (ffi/free p))
+          [(ffi/alloc want) want]))))
+
+(defn- return-recv-buf! [owner p size]
+  (when-not (locking owner
+              (when-not (or (jolt.host/ref-get owner :closed?)
+                            (jolt.host/ref-get owner :recv-buf))
+                (jolt.host/ref-put! owner :recv-buf p)
+                (jolt.host/ref-put! owner :recv-size size)
+                true))
+    (ffi/free p)))
+
+(defn- drop-recv-buf! [owner]
+  (when-let [p (locking owner
+                 (let [p (jolt.host/ref-get owner :recv-buf)]
+                   (jolt.host/ref-put! owner :recv-buf nil)
+                   p))]
+    (ffi/free p)))
+
 (defn- do-recv [owner fd buf len]
   ;; n <= 0 answers EOF: recv 0 is orderly shutdown; a negative return (error)
   ;; also reads as EOF. Java throws SocketException there — documented
@@ -651,9 +692,7 @@
         ;; a read parked when shutdownInput landed is woken by it, and may find
         ;; data that arrived meanwhile; the JDK answers EOF there too
         n (if (jolt.host/ref-get owner :in-shutdown?) -1 n)]
-    (if (pos? n)
-      {:n n :bytes (ffi/read-array buf n)}
-      {:n -1 :bytes nil})))
+    (if (pos? n) n -1)))
 
 ;; A stream of a closed socket must not reach its fd: close frees the number,
 ;; and the next socket to open is handed it, so a read would take that socket's
@@ -681,32 +720,44 @@
       ;; as EOF
       (max 0 (native/available (jolt.host/ref-get self :fd))))))
 
+;; Objects.checkFromIndexSize, before anything else, as the JDK's socket streams
+;; do: a negative len must not reach recv, where it is a huge size_t.
+(defn- check-from-index-size! [b off len]
+  (let [n (alength b)]
+    (when (or (neg? off) (neg? len) (> off (- n len)))
+      (throw (IndexOutOfBoundsException.
+              (str "Range [" off ", " off " + " len ") out of bounds for length " n))))))
+
+;; One read of up to len bytes into b at off: the count, or -1 at EOF. The
+;; bytes are block-copied out of the receive buffer (ffi/read-into!).
+(defn- recv-into! [self b off len]
+  (ensure-open! self)
+  (let [owner (jolt.host/ref-get self :socket)
+        want  (min len recv-max)
+        [buf size] (take-recv-buf! owner want)]
+    (try
+      (let [n (do-recv owner (jolt.host/ref-get self :fd) buf want)]
+        (when (pos? n) (ffi/read-into! buf b off n))
+        n)
+      (finally (return-recv-buf! owner buf size)))))
+
 (def ^:private socket-input-stream-methods
   {"read"
    (fn
      ([self]
       (ensure-open! self)
-      (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc 1)]
+      (let [owner (jolt.host/ref-get self :socket)
+            [buf size] (take-recv-buf! owner 1)]
         (try
-          (let [{:keys [n]} (do-recv (jolt.host/ref-get self :socket) fd buf 1)]
+          (let [n (do-recv owner (jolt.host/ref-get self :fd) buf 1)]
             (if (pos? n) (bit-and (ffi/read buf :uint8 0) 0xff) -1))
-          (finally (ffi/free buf)))))
+          (finally (return-recv-buf! owner buf size)))))
      ([self b]
-      (let [fd (jolt.host/ref-get self :fd) len (alength b)]
-        (if (zero? len) 0
-            (let [_ (ensure-open! self) buf (ffi/alloc len)]
-              (try
-                (let [{:keys [n bytes]} (do-recv (jolt.host/ref-get self :socket) fd buf len)]
-                  (if (pos? n) (do (dotimes [i n] (aset b i (nth bytes i))) n) -1))
-                (finally (ffi/free buf)))))))
+      (let [len (alength b)]
+        (if (zero? len) 0 (recv-into! self b 0 len))))
      ([self b off len]
-      (let [fd (jolt.host/ref-get self :fd)]
-        (if (zero? len) 0
-            (let [_ (ensure-open! self) buf (ffi/alloc len)]
-              (try
-                (let [{:keys [n bytes]} (do-recv (jolt.host/ref-get self :socket) fd buf len)]
-                  (if (pos? n) (do (dotimes [i n] (aset b (+ off i) (nth bytes i))) n) -1))
-                (finally (ffi/free buf))))))))
+      (check-from-index-size! b off len)
+      (if (zero? len) 0 (recv-into! self b off len))))
    "available" (fn [self] (socket-available self))
    "close"     (fn [self] (socket-close! (jolt.host/ref-get self :socket)))})
 
@@ -722,11 +773,7 @@
         (recur (+ off s))))))
 
 (defn- write-bytes! [self bytes off len]
-  ;; Objects.checkFromIndexSize, before anything else, as the JDK's socket stream
-  (let [n (alength bytes)]
-    (when (or (neg? off) (neg? len) (> off (- n len)))
-      (throw (IndexOutOfBoundsException.
-              (str "Range [" off ", " off " + " len ") out of bounds for length " n)))))
+  (check-from-index-size! bytes off len)
   (when (pos? len)
     (ensure-open! self)
     (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc len)]

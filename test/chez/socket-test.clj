@@ -1268,6 +1268,93 @@
 (check-eq "every listed interface has an address"
           (every? (fn [ni] (.hasMoreElements (.getInetAddresses ni))) interfaces) true)
 
+;; Reads receive into a native buffer the socket keeps, so the cost of a read
+;; follows the bytes that arrived, not the length asked for. A 120-byte request
+;; read into a 64 KB array allocated the whole 64 KB (plus a copy of what
+;; arrived) on every call before.
+(require '[jolt.profile :as prof])
+(with-pair
+  (fn [server client conn]
+    (let [in  (.getInputStream conn)
+          out (.getOutputStream client)
+          msg (byte-array 120)
+          buf (byte-array 65536)
+          one (fn [] (.write out msg) (.read in buf 0 65536))]
+      (dotimes [_ 50] (one))
+      (let [m (prof/measure (dotimes [_ 200] (one)))]
+        (check-eq "a 120-byte read into 64 KB allocates for what arrived"
+                  (< (quot (:allocated-bytes m) 200) 16384) true)))))
+
+;; A read asking for more than the kept buffer holds still lands its bytes at
+;; the offset, and the whole payload arrives intact across short reads.
+(with-pair
+  (fn [server client conn]
+    (let [n    300000
+          data (byte-array n)
+          _    (dotimes [i n] (aset data i (unchecked-byte (mod i 253))))
+          got  (future
+                 (let [in  (.getInputStream conn)
+                       buf (byte-array (+ n 7))]
+                   (loop [at 7]
+                     (let [r (.read in buf at (- (+ n 7) at))]
+                       (if (pos? r) (recur (+ at r)) [at buf])))))]
+      (.write (.getOutputStream client) data)
+      (.shutdownOutput client)
+      (let [[end buf] @got]
+        (check-eq "big read(b off len): every byte arrived" end (+ n 7))
+        (check-eq "big read(b off len): bytes at the offset"
+                  (java.util.Arrays/equals (java.util.Arrays/copyOfRange buf 7 (+ n 7)) data)
+                  true)))))
+
+;; Two fibers reading one stream at once each get their own receive buffer: no
+;; byte is lost or doubled, though which reader gets which bytes is unordered.
+(with-pair
+  (fn [server client conn]
+    (let [n      400000
+          data   (byte-array n)
+          _      (dotimes [i n] (aset data i (unchecked-byte (mod i 7))))
+          in     (.getInputStream conn)
+          reader (fn [] (let [p (promise)]
+                          (fib/spawn
+                           (fn []
+                             (deliver p
+                                      (let [buf (byte-array 4096)]
+                                        (loop [counts (vec (repeat 7 0))]
+                                          (let [r (.read in buf 0 4096)]
+                                            (if (pos? r)
+                                              (recur (reduce (fn [c i] (update c (aget buf i) inc))
+                                                             counts (range r)))
+                                              counts)))))))
+                          p))
+          a (reader) b (reader)]
+      (.write (.getOutputStream client) data)
+      (.shutdownOutput client)
+      (check-eq "two readers on one stream: every byte read exactly once"
+                (mapv + @a @b)
+                (mapv (fn [k] (count (filter #(= k %) (map #(mod % 7) (range n))))) (range 7))))))
+
+;; read(b off len) checks its range before it touches the socket, as the JDK's
+;; Objects.checkFromIndexSize does, whether or not a receive buffer is kept: a
+;; negative len must never reach recv as a size_t, and a refused read leaves
+;; the bytes for the next one.
+(with-pair
+  (fn [server client conn]
+    (let [in  (.getInputStream conn)
+          out (.getOutputStream client)
+          buf (byte-array 8)
+          oob (fn [off len]
+                (try (.read in buf off len) :read
+                     (catch IndexOutOfBoundsException e (.getMessage e))))]
+      (.write out (byte-array [1 2 3 4]))
+      (check-eq "a first read fills the kept buffer" (.read in buf 0 8) 4)
+      (.write out (byte-array [5 6 7 8]))
+      (check-eq "read: len past the array" (oob 4 8) "Range [4, 4 + 8) out of bounds for length 8")
+      (check-eq "read: negative off" (oob -1 2) "Range [-1, -1 + 2) out of bounds for length 8")
+      (check-eq "read: negative len" (oob 0 -1) "Range [0, 0 + -1) out of bounds for length 8")
+      (check-eq "read: off past the array, len 0" (oob 100 0) "Range [100, 100 + 0) out of bounds for length 8")
+      (check-eq "a refused read consumes nothing" (.read in buf 0 8) 4)
+      (check-eq "the bytes are the ones sent" (vec (take 4 buf)) [5 6 7 8]))))
+
 (if (empty? @failures)
   (println "SOCKET-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

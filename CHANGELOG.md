@@ -385,6 +385,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Clojure's `RT.longCast(double)`: `(long 9.223372036854776E18)` (2^63 as a
   double) now returns `Long/MAX_VALUE` instead of throwing. Eight new corpus
   rows pin the boundaries.
+- **A socket read receives into a buffer the socket keeps (#1500).** A read
+  allocated what it asked for and copied what arrived out twice, one element at
+  a time for the second. The socket now keeps one receive buffer, up to 64 KB,
+  until it closes: a 120-byte read into a 64 KB array allocates about 8 KB rather
+  than 72 KB. A read asking for more than 64 KB returns at most 64 KB, as
+  `InputStream` allows.
 
 - **`map->R` is one pass over the map.** #1479 sped up a map holding only
   field keys but made one with extension keys 1.2-1.3x slower than 0.8.23; a
@@ -511,6 +517,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`host/chez/chez-patches/0006` for arm64, `0007` for x86_64), checked by
   `test/chez/ffi-stack-args-test.sh` in the `ffi` gate; a jolt built against a
   stock Chez keeps the old placement.
+- **`InputStream.read(b off len)` on a socket checks its range first.** An
+  `off` or `len` outside the array is `IndexOutOfBoundsException` with the JDK's
+  message, before the socket is touched. It used to consume the bytes and then
+  throw `ArrayIndexOutOfBoundsException`.
 
 - **A surrogate unit is a value, and the joiners pair it (#1454).**
   `(char 0xD83D)` used to throw; it is now a `Character` holding the unit, as a
