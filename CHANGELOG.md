@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A fiber parking on a socket no longer wakes the poller**. It registers a
+  one-shot kevent or epoll_ctl itself, on kqueue and epoll, so there is no control
+  pipe, no delete to issue later and one poller round per park. A woken fiber's
+  next park also no longer spends a `recv` and a lock on a stale `:ready` flag. A
+  fiber socket round trip on macOS went from about 83 to 55 us. WSAPoll still wakes
+  its round, having no kernel-held set. `jolt.io-poller/debug-state` loses `:ready`,
+  `:ev-errors` and `:stale-consumes`.
+
+### Fixed
+
+- **A fiber waiting on an fd the kernel refuses to watch now returns**. A closed fd
+  parked the fiber forever on kqueue and epoll; the caller's retry now reports what
+  is wrong with the fd, as `wait-thread` already did.
+
 ## [0.8.24] - 2026-11-05
 
 java.util and java.util.concurrent are filled out: the remaining collection

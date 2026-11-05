@@ -896,8 +896,8 @@ else
   # Print every POLLER line, not just the verdict. The case deliberately prints
   # POLLER-DEBUG — jolt.io-poller/debug-state captured BEFORE the round's closes
   # tear the evidence down — to say which stage dropped the wakeup: still :pending
-  # (never drained), waiters parked with no event (kernel set), or ready with no
-  # waiters (resume lost). `tail -1` kept only the verdict and discarded exactly
+  # (never drained), waiters parked with no event (kernel set), or fired with no
+  # waiters left (resume lost). `tail -1` kept only the verdict and discarded exactly
   # that, which is why the first occurrence on record could not be attributed to
   # a stage.
   #
@@ -941,6 +941,17 @@ fi
 # kevent returns as soon as a changelist entry errors and reports only the error, one
 # closed socket stopped every readiness report in the process; on epoll, which has no
 # per-direction delete, retiring one direction of an fd took the other one with it.
+# A park is one wait and one poller round, and a registration made directly with the
+# kernel wakes the direction it should and ends a wait the kernel refuses.
+pd_out="$($jolt run test/chez/poller-direct.clj 2>&1)"
+if printf '%s' "$pd_out" | grep -q 'POLLER-DIRECT OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: poller-direct"
+  printf '%s\n' "$pd_out" | grep "^POLLER" | sed "s/^/    /"
+  fails=$((fails + 1))
+fi
+
 pt_out="$($jolt run test/chez/poller-retirement.clj 2>&1)"
 if printf '%s' "$pt_out" | grep -q 'POLLER-RETIREMENT OK'; then
   pass=$((pass + 1))
