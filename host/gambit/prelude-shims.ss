@@ -939,6 +939,16 @@
 
 (define-syntax fl=?
   (syntax-rules () ((_ a ...) (fl= a ...))))
+;; The other R6RS flonum compares, for the cast fast path the back end emits
+;; on a proven double (fl>=? / fl<=? against the cast's window) and for the
+;; op registry's :dbl compares; Gambit spells them without the ?. These are
+;; PROCEDURES, not syntax like fl=? above: the emitted code reaches them
+;; through jolt-compile-eval's runtime eval, which cannot see a macro the
+;; compiled boot defined.
+(define (fl<? a b) (fl< a b))
+(define (fl>? a b) (fl> a b))
+(define (fl<=? a b) (fl<= a b))
+(define (fl>=? a b) (fl>= a b))
 (define-syntax fx<=?
   (syntax-rules () ((_ a ...) (<= a ...))))
 (define-syntax fx>=?

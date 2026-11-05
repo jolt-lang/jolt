@@ -1269,10 +1269,16 @@
       ;; the node rebuilt around it; the coercion's own kind is what it answers.
       (= op :coerce)
       ;; An array-kind coerce (a ^longs/^objects/... let init) is no number and
-      ;; does not change its value, so it answers what its expr is.
+      ;; does not change its value, so it answers what its expr is. A CAST with
+      ;; no numeric kind (:cast-fn jolt-char, the analyzer's cast table) answers
+      ;; a char's type, :truthy, as a char literal does: answering its operand
+      ;; typed (char 97) :num and (char d) :double, so number? folded to true
+      ;; on a char and a char-holding record field took the unsafe fl ops.
       (let [r (infer (get node :expr) tenv env)
             k (get node :kind)]
-        [(cond (= :double k) :double (= :long k) :num (= :float k) :num :else (nth r 0))
+        [(cond (= :double k) :double (= :long k) :num (= :float k) :num
+               (get node :cast-fn) :truthy
+               :else (nth r 0))
          (assoc node :expr (nth r 1))])
 
       ;; Anything with no arm above. Answering :any is right — this pass has no
