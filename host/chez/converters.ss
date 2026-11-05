@@ -442,6 +442,23 @@
                "java.lang.IllegalArgumentException"
                (string-append "Value out of range for " name ": " (jolt-str x)))))
 (define (jolt-cast-truncate-slow x) (jolt-num-cast-throw x))
+;; A double that has passed its cast's own checks (not NaN, inside the type's
+;; range) still has to become an exact integer, and `exact` of `truncate` is two
+;; generic calls on a flonum: 23 of the 27 us a (long d) still cost on a 32-bit
+;; pb target after the flonum-bounds fix below, 15 of 31 ns on an M1 Pro.
+;; flonum->fixnum truncates toward zero in one primitive, but it raises outside
+;; the fixnum range, so the range test comes first. The upper bound is
+;; EXCLUSIVE: on 61-bit fixnums (fixnum->flonum (most-positive-fixnum)) rounds
+;; up to 2^60, which flonum->fixnum rejects, while every double below 2^60
+;; truncates to a fixnum; on 30-bit fixnums the bound is 2^29 exactly, so the
+;; same test is right on both widths. The Gambit host supplies flonum->fixnum
+;; and the two fixnum limits from prelude-shims.ss.
+(define jolt-fixnum-flo-lo (fixnum->flonum (most-negative-fixnum)))
+(define jolt-fixnum-flo-hi (fl+ (fixnum->flonum (most-positive-fixnum)) 1.0))
+(define (jolt-flonum->integer x)
+  (if (and (fl>= x jolt-fixnum-flo-lo) (fl< x jolt-fixnum-flo-hi))
+      (flonum->fixnum x)
+      (exact (truncate x))))
 ;; The double branch, on its own so its compares stay flonum-vs-flonum. flo/fhi
 ;; are the type's bounds as flonums: the exact LONG bounds (+-2^63) are bignums
 ;; on every Chez (61-bit fixnums on 64-bit, 30-bit on 32-bit), and a
@@ -450,12 +467,13 @@
 ;; truncation, as RT.longCast(double) does: (byte 127.9) throws, (byte 1.1) is
 ;; 1, NaN casts to 0, an infinity fails the compare. For long the upper bound as
 ;; a double is 2^63 (2^63-1 is not representable) and an accepted 2^63
-;; saturates to hi, as Java's (long) conversion does.
+;; saturates to hi, as Java's (long) conversion does. An accepted value then
+;; converts through jolt-flonum->integer above.
 (define (jolt-checked-flonum-cast name hi flo fhi x)
   (cond ((nan? x) 0)
         ((or (< x flo) (> x fhi)) (jolt-cast-range-throw name x))
         ((= x fhi) hi)
-        (else (exact (truncate x)))))
+        (else (jolt-flonum->integer x))))
 (define (jolt-checked-cast name lo hi flo fhi x)
   (if (flonum? x)
       (jolt-checked-flonum-cast name hi flo fhi x)
@@ -559,7 +577,7 @@
         ((flonum? x) (cond ((nan? x) 0)
                            ((>= x 9223372036854775808.0) 9223372036854775807)
                            ((<= x -9223372036854775808.0) -9223372036854775808)
-                           (else (exact (truncate x)))))
+                           (else (jolt-flonum->integer x))))
         (else (jolt-wrap64 (jolt-cast-truncate-slow x)))))
 (define (jolt-unchecked-int x)
   (cond
@@ -578,7 +596,7 @@
      (cond ((nan? x) 0)
            ((>= x 2147483648.0) 2147483647)
            ((<= x -2147483648.0) -2147483648)
-           (else (exact (truncate x)))))
+           (else (jolt-flonum->integer x))))
     (else
      (let ((i (bitwise-and (jolt-unchecked-long x) #xffffffff)))
        (if (>= i #x80000000) (- i #x100000000) i)))))
