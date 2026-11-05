@@ -69,6 +69,28 @@ cat > "$work/src/app/tailredef.clj" <<'EOF'
   (boom 1))
 EOF
 
+# A tail call into host code that calls back, then a throw that is not in tail
+# position. The slot still holds the caller's pair at the throw, and it is neither
+# the innermost frame nor a reason to invent the caller's only tail caller.
+cat > "$work/src/app/hostcb.clj" <<'EOF'
+(ns app.hostcb)
+
+(defn boom []
+  (let [e (ex-info "from boom" {})]
+    (+ 1 (throw e))))
+
+(defn via-host [f]
+  (with-bindings* {} f))
+
+(defn only-tail-caller [f]
+  (via-host f))
+
+(defn -main [& _]
+  (println "before")
+  (via-host boom)
+  (println "after"))
+EOF
+
 run_app() {   # run_app <ns> [env-assignment]; prints combined output
   ( cd "$work" && env $2 "$joltabs" run -m "$1" 2>&1 )
 }
@@ -525,6 +547,12 @@ echo "trace smoke: JOLT_TRACE=0 at build time opts the binary out"
 out_bt0="$("$work/tailbin0" 2>&1)"
 expect_match "untraced build: still reports the message" "$out_bt0" 'Unhandled exception (ArithmeticException): Divide by zero'
 expect_no_match "untraced build: no baked trace frames" "$out_bt0" 'app\.tail/boom (.*:4)'
+
+echo "trace smoke: a non-tail throw under a host callback is its own innermost frame"
+out_cb="$(run_app app.hostcb)"
+first_cb="$(printf '%s\n' "$out_cb" | sed -n '/trace:/{n;p;q;}')"
+expect_match "innermost frame is the throwing fn" "$first_cb" 'app\.hostcb/boom '
+expect_no_match "no frame for a fn that never ran" "$out_cb" 'only-tail-caller'
 
 if [ "$fails" -gt 0 ]; then
   echo "trace smoke: $fails failed, $pass passed"

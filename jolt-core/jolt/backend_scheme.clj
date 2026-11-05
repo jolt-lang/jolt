@@ -4352,7 +4352,17 @@
                  ch (let [c (or (get node :inline-chain) (get (:expr node) :inline-chain))]
                       (when (and (seq c) (every? (fn [x] (marker-safe-fqn? (nth x 0))) c)) c))
                  e (binding [*tail?* false] (emit (:expr node)))
-                 call (emit-call *tail?* "jolt-throw" [e] (or line 0) ch)]
+                 ;; A throw never returns, so its site goes in the slot in any
+                 ;; position, not only a tail one. What the slot holds otherwise is
+                 ;; the tail call that reached this fn, and the reporter would take
+                 ;; that caller for the innermost frame. Outside a named fn there
+                 ;; is no pair to store, so the slot is emptied instead.
+                 call (cond
+                        (not (trace-frames?)) (emit-call *tail?* "jolt-throw" [e] (or line 0) ch)
+                        *trace-site* (sited-tail-call *trace-site* (or line 0) "jolt-throw" [e] ch)
+                        :else (let [t (fresh-label "_tt$")]
+                                (str "(let* ((" t " " e ")) (set-virtual-register! 2 0) "
+                                     (plain-call "jolt-throw" [t]) ")")))]
              ;; A macro-built throw has no :pos — `assert` expands to one, and the
              ;; app.util fixture reaches it through a user macro besides — so a
              ;; site with a chain but no line still emits a marker, with line 0.
