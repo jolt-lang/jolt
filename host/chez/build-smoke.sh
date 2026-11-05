@@ -1589,6 +1589,25 @@ if [ "$chcast_out" != "[false true] [false true] :char :cce" ]; then
   echo "--- got ---"; echo "$chcast_out"; exit 1
 fi
 
+# A build types a hintless param :double when every caller passes a double, and
+# that fact is worth the fast path, but the JVM still boxes such a param: outside
+# the window the cast answers as a boxed one, as `jolt run` of the same code does.
+echo "build smoke: a param seeded :double keeps the boxed cast's answers"
+seedcast="$(dirname "$out")/seedcast"; mkdir -p "$seedcast/src/app"
+printf '{}\n' > "$seedcast/deps.edn"
+{ echo '(ns app.core)'
+  echo '(defn nb [x n] (if (pos? n) (nb x (dec n)) (byte x)))'
+  echo '(defn nc [x n] (if (pos? n) (nc x (dec n)) (let [y x] (int (char y)))))'
+  echo '(defn -main [& _] (println (nb 127.9 3) (nb (/ 0.0 0.0) 3) (nc (/ 0.0 0.0) 3)))'
+} > "$seedcast/src/app/core.clj"
+JOLT_PWD="$seedcast" "$joltabs" build -m app.core -o "$(dirname "$out")/seedcast-bin" > /dev/null 2>&1 || { echo "  FAIL: the seeded-cast app did not build"; exit 1; }
+seedcast_out="$(cd /tmp && "$(dirname "$out")/seedcast-bin" 2>&1 || true)"
+if [ "$seedcast_out" != "127 0 0" ]; then
+  echo "  FAIL: a seeded param's cast answered as a primitive one"
+  echo "--- expected ---"; echo "127 0 0"
+  echo "--- got ---"; echo "$seedcast_out"; exit 1
+fi
+
 # A set literal mixing an auto keyword with a plain one of the same alias text
 # must BUILD. ::o/x and :o/x are distinct, but the require scan reads in scan mode,
 # where an unresolved alias keeps its text, so both read as :o/x — and the

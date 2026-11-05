@@ -430,11 +430,16 @@
 (def-var! "clojure.core" "symbol" jolt-symbol-new)
 (def-var! "clojure.core" "gensym" jolt-gensym)
 ;; --- checked narrow casts (RT.byteCast/shortCast/intCast/longCast/charCast) --
-;; Two helpers carry the JVM ranges: an exact operand truncates toward zero,
-;; then range-checks; a double range-checks itself first and then truncates
-;; (jolt-checked-flonum-cast below).
-;; NaN casts to 0 (Java (long)NaN); an out-of-range value (including a float
-;; infinity) is IllegalArgumentException "Value out of range for <type>: x".
+;; RT has two overloads for a double and they disagree, so jolt has two entries.
+;; RT.byteCast(Object) is what the var and an operand held boxed reach: it goes
+;; through longCast, so NaN is 0, the value truncates BEFORE the narrow check
+;; ((byte (identity 127.9)) is 127) and past a long the message says long. That
+;; is jolt-byte-cast and its siblings. RT.byteCast(double) is what a primitive
+;; operand reaches: it checks the raw value and refuses NaN ((byte 127.9) and
+;; (byte ##NaN) throw). That is jolt-byte-cast-prim and its siblings, which the
+;; back end calls for a double the JVM would hold primitive (:fl-prim, set by
+;; jolt.passes.numeric). An out-of-range value is IllegalArgumentException
+;; "Value out of range for <type>: x"; int and long take NaN as 0 on both.
 ;; A non-numeric operand is the usual ClassCastException. Numeric types outside
 ;; Chez's tower truncate through a hook the shim extends (BigDecimal).
 (define (jolt-cast-range-throw name x)
@@ -497,24 +502,35 @@
 ;; on every Chez (61-bit fixnums on 64-bit, 30-bit on 32-bit), and a
 ;; flonum-vs-bignum compare is generic arithmetic; through this path a (long x)
 ;; on a double cost 135 us on the Wii. A double range-checks ITSELF, before
-;; truncation, as RT.longCast(double) does: (byte 127.9) throws, (byte 1.1) is
-;; 1, NaN casts to 0, an infinity fails the compare. For long the upper bound as
-;; a double is 2^63 (2^63-1 is not representable) and an accepted 2^63
-;; saturates to hi, as Java's (long) conversion does. An accepted value then
-;; converts through jolt-flonum->integer above.
+;; truncation, as RT.longCast(double) and RT.intCast(double) do: NaN casts to 0,
+;; an infinity fails the compare. For long the upper bound as a double is 2^63
+;; (2^63-1 is not representable) and an accepted 2^63 saturates to hi, as Java's
+;; (long) conversion does. An accepted value then converts through
+;; jolt-flonum->integer above.
 (define (jolt-checked-flonum-cast name hi flo fhi x)
   (cond ((nan? x) 0)
         ((or (< x flo) (> x fhi)) (jolt-cast-range-throw name x))
         ((= x fhi) hi)
         (else (jolt-flonum->integer x))))
-(define (jolt-checked-cast name lo hi flo fhi x)
-  (if (flonum? x)
-      (jolt-checked-flonum-cast name hi flo fhi x)
-      (let ((n (cond ((char? x) (char->integer x))
-                     ((jsurr? x) (jsurr-unit x))
-                     ((and (number? x) (exact? x)) (truncate x))
-                     (else (jolt-cast-truncate-slow x)))))
-        (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x)))))
+(define (jolt-long-of-double x)
+  (jolt-checked-flonum-cast "long" 9223372036854775807 -9223372036854775808.0 9223372036854775808.0 x))
+;; RT.byteCast(double) and its short and char siblings: the raw value against the
+;; type's bounds. NaN fails both compares, which is how it throws here and not in
+;; jolt-checked-flonum-cast. RT.byteCast(float) answers the same way, naming the
+;; float rather than the double it widens to.
+(define (jolt-narrow-double-prim name flo fhi x)
+  (let ((d (if (jfloat? x) (jfloat-fl x) x)))
+    (if (and (fl>= d flo) (fl<= d fhi))
+        (jolt-flonum->integer d)
+        (jolt-cast-range-throw name x))))
+(define (jolt-checked-cast name lo hi x)
+  (let ((n (cond ((flonum? x) (jolt-long-of-double x))
+                 ((jfloat? x) (jolt-long-of-double (jfloat-fl x)))
+                 ((char? x) (char->integer x))
+                 ((jsurr? x) (jsurr-unit x))
+                 ((and (number? x) (exact? x)) (truncate x))
+                 (else (jolt-cast-truncate-slow x)))))
+    (if (and (>= n lo) (<= n hi)) n (jolt-cast-range-throw name x))))
 ;; A fixnum is what these casts are handed almost every time they are called —
 ;; (long (.length s)), (int i) in a loop — and it is already the answer, so each
 ;; cast checks for one before entering the generic path above. That path is not
@@ -529,41 +545,61 @@
 ;; and every bound here is itself a fixnum on a 61-bit tower. LONG needs no test
 ;; at all: every Chez fixnum fits a 64-bit long by construction.
 ;; A double takes jolt-checked-flonum-cast above, which compares flonums against
-;; flonum bounds; only the exact-integer branch of jolt-checked-cast still meets
-;; the bignum bounds, and it is rarely hit.
+;; flonum bounds; only an exact operand of jolt-long-cast still meets the bignum
+;; bounds, and it is rarely hit.
 (define (jolt-byte-cast x)
   (if (and (fixnum? x) (fx>=? x -128) (fx<=? x 127))
       x
-      (jolt-checked-cast "byte" -128 127 -128.0 127.0 x)))
+      (jolt-checked-cast "byte" -128 127 x)))
+(define (jolt-byte-cast-prim x) (jolt-narrow-double-prim "byte" -128.0 127.0 x))
 (define (jolt-short-cast x)
   (if (and (fixnum? x) (fx>=? x -32768) (fx<=? x 32767))
       x
-      (jolt-checked-cast "short" -32768 32767 -32768.0 32767.0 x)))
+      (jolt-checked-cast "short" -32768 32767 x)))
+(define (jolt-short-cast-prim x) (jolt-narrow-double-prim "short" -32768.0 32767.0 x))
 ;; `int` is the one checked cast whose overflow is NOT an
 ;; IllegalArgumentException. Clojure routes the integer case through
 ;; Numbers.throwIntOverflow, so (int 2147483648) is an ArithmeticException
 ;; "integer overflow" while (int 2.5e9) keeps the IAE that RT.intCast(double)
 ;; raises for itself. byte/short/long use the IAE for both kinds of input, which
-;; is why only this one needs the split. jolt threw the IAE for both.
+;; is why only this one needs the split. jolt threw the IAE for both. A boxed
+;; double reaches that integer case through longCast, so it splits the same way:
+;; (int (identity 2.5e9)) is the overflow and (int 2.5e9) the IAE.
 (define (jolt-int-overflow-throw)
   (jolt-throw (jolt-host-throwable "java.lang.ArithmeticException"
                                    "integer overflow")))
 (define (jolt-int-cast x)
   (cond
     ((and (fixnum? x) (fx>=? x -2147483648) (fx<=? x 2147483647)) x)
-    ((flonum? x) (jolt-checked-flonum-cast "int" 2147483647 -2147483648.0 2147483647.0 x))
     (else
-     (let ((n (cond ((char? x) (char->integer x))
+     (let ((n (cond ((flonum? x) (jolt-long-of-double x))
+                    ((jfloat? x) (jolt-long-of-double (jfloat-fl x)))
+                    ((char? x) (char->integer x))
                     ((jsurr? x) (jsurr-unit x))
                     ((and (number? x) (exact? x)) (truncate x))
                     (else (jolt-cast-truncate-slow x)))))
        (if (and (>= n -2147483648) (<= n 2147483647))
            n
            (jolt-int-overflow-throw))))))
+(define (jolt-int-cast-prim x)
+  (if (jfloat? x)
+      (let ((d (jfloat-fl x)))
+        (cond ((nan? d) 0)
+              ((or (fl< d -2147483648.0) (fl> d 2147483647.0)) (jolt-cast-range-throw "int" x))
+              (else (jolt-flonum->integer d))))
+      (jolt-checked-flonum-cast "int" 2147483647 -2147483648.0 2147483647.0 x)))
 (define (jolt-long-cast x)
-  (if (fixnum? x)
-      x
-      (jolt-checked-cast "long" -9223372036854775808 9223372036854775807 -9223372036854775808.0 9223372036854775808.0 x)))
+  (cond ((fixnum? x) x)
+        ((flonum? x) (jolt-long-of-double x))
+        (else (jolt-checked-cast "long" -9223372036854775808 9223372036854775807 x))))
+;; A double has one answer on both paths; RT.longCast(float) names the float.
+(define (jolt-long-cast-prim x)
+  (if (jfloat? x)
+      (let ((d (jfloat-fl x)))
+        (cond ((nan? d) 0)
+              ((or (fl< d -9223372036854775808.0) (fl>= d 9223372036854775808.0)) (jolt-cast-range-throw "long" x))
+              (else (jolt-flonum->integer d))))
+      (jolt-long-of-double x)))
 (def-var! "clojure.core" "int" jolt-int-cast)
 (def-var! "clojure.core" "long" jolt-long-cast)
 (def-var! "clojure.core" "byte" jolt-byte-cast)
@@ -577,15 +613,24 @@
 ;; no Chez char holds one; (char #xD83D) is the surrogate code-unit value instead
 ;; (values.ss jsurr), which a StringBuilder, str or a Writer pairs with the low
 ;; unit after it — the JVM's way of spelling an astral character in chars (#1455).
+;; RT.charCast(Object) truncates a boxed double first, so -0.5 is \u0000 and NaN
+;; is too, but says char, not long, when the double is past the range.
+(define (jolt-code-point->char n)
+  (if (and (>= n #xD800) (<= n #xDFFF))
+      (jolt-surrogate n)
+      (integer->char n)))
 (define (jolt-char x)
   (cond
     ((char? x) x)
     ((jsurr? x) x)
-    (else
-     (let ((n (jolt-checked-cast "char" 0 #x10FFFF 0.0 1114111.0 x)))
-       (if (and (>= n #xD800) (<= n #xDFFF))
-           (jolt-surrogate n)
-           (integer->char n))))))
+    ((or (flonum? x) (jfloat? x))
+     (let ((d (if (jfloat? x) (jfloat-fl x) x)))
+       (cond ((nan? d) (integer->char 0))
+             ((or (fl<= d -1.0) (fl>= d 1114112.0)) (jolt-cast-range-throw "char" x))
+             (else (jolt-code-point->char (jolt-flonum->integer d))))))
+    (else (jolt-code-point->char (jolt-checked-cast "char" 0 #x10FFFF x)))))
+(define (jolt-char-prim x)
+  (jolt-code-point->char (jolt-narrow-double-prim "char" 0.0 1114111.0 x)))
 (def-var! "clojure.core" "char" jolt-char)
 ;; unchecked-long: truncate + wrap to 64 bits (RT.uncheckedLongCast — a float
 ;; infinity saturates, NaN is 0). unchecked-int wraps and sign-folds to 32.

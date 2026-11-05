@@ -37,6 +37,50 @@
           (reverse acc)
           (loop (cdr ls) (cons (bld-scan-line! st (car ls)) acc))))))
 
+;; --- the cross compile script's prelude --------------------------------------
+;; A target narrower than the host compiles with the narrow hash arm and generic
+;; ops for the checked fx ones (bld-cross-compile-prelude). Every other build keeps
+;; the script it always had: nothing, or the target's xpatch.
+(define (prelude-for target)
+  (parameterize ((bld-target target) (bld-target-pack "/pack"))
+    (bld-cross-compile-prelude)))
+(define (narrow-for target)
+  (parameterize ((bld-target target) (bld-target-pack "/pack"))
+    (bld-narrow-target?)))
+(define (has-text? s sub)
+  (let ((n (string-length s)) (m (string-length sub)))
+    (let loop ((i 0))
+      (and (<= (+ i m) n)
+           (or (string=? (substring s i (+ i m)) sub) (loop (+ i 1)))))))
+(ok "every 32-bit machine type is narrow"
+    (for-all narrow-for '("i3le" "ti3le" "i3nt" "ti3nt" "i3osx" "ti3osx" "i3fb" "ti3ob" "arm32le" "tarm32le"
+                          "ppc32le" "tppc32le" "pb32l" "tpb32l" "pb32b" "tpb32b")))
+(ok "no 64-bit machine type is narrow"
+    (not (exists narrow-for '("a6le" "ta6le" "ta6nt" "ta6osx" "arm64le" "tarm64le" "tarm64osx" "arm64ios"
+                              "tarm64ios" "rv64le" "trv64le" "la64le" "tla64le" "pb" "tpb" "pb64l" "tpb64l" "tpb64b"))))
+(ok "a native build has no prelude" (string=? "" (parameterize ((bld-target #f)) (bld-cross-compile-prelude))))
+;; a target other than this machine: naming the host itself is not a cross build
+(ok "a 64-bit cross build only loads the xpatch"
+    (string=? "(load \"/pack/xpatch\")\n"
+              (prelude-for (if (string=? bld-machine "tarm64le") "ta6le" "tarm64le"))))
+(ok "the host named as the target is no cross build"
+    (string=? "" (prelude-for bld-machine)))
+(let ((p (prelude-for "tpb32b")))
+  (ok "a 32-bit cross build loads the xpatch first"
+      (and (> (string-length p) 22) (string=? "(load \"/pack/xpatch\")\n" (substring p 0 22))))
+  (ok "a 32-bit cross build sets the narrow hash arm" (has-text? p "(putenv \"JOLT_NARROW_HASH\" \"1\")"))
+  (ok "a 32-bit cross build aliases every listed fx op"
+      (for-all (lambda (pr) (has-text? p (string-append "(define-syntax " (symbol->string (car pr)) " (identifier-syntax "
+                                                        (symbol->string (cadr pr)) "))")))
+               bld-narrow-fx-aliases)))
+;; a misspelled name on either side would only surface on a 32-bit build
+(ok "every alias names real Chez operators"
+    (for-all (lambda (pr) (and (top-level-bound? (car pr) (scheme-environment))
+                               (top-level-bound? (cadr pr) (scheme-environment))))
+             bld-narrow-fx-aliases))
+(ok "every fx op a host file applies to a Java int is aliased"
+    (for-all (lambda (op) (assq op bld-narrow-fx-aliases)) '(fx>=? fx<=? fx<? fx>? fx=? fx- fx+ fxand)))
+
 ;; --- (a) ----------------------------------------------------------------------
 (ok "(a) a complete form, a comment and a blank line are boundaries"
     (equal? (boundaries "(define x 1)" ";; (not code" "") '(#t #t #t)))

@@ -438,6 +438,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and 64-bit cross builds generate the same script as before. Found bringing up
   `tpb32b` (big-endian 32-bit portable bytecode) on a Nintendo Wii, where a
   cross-built program's output now matches the native macOS build.
+- **`byte`, `short`, `char` and `int` follow both of `RT`'s cast paths.** The JVM
+  has one overload for a primitive `double` or `float` and another for a boxed
+  number, and they disagree; jolt had one path that was right for neither. A
+  primitive operand (a literal, `^double`, `aget`, flonum arithmetic) now checks
+  the raw value, so `(byte ##NaN)` and `(byte 127.9)` throw. A boxed one (through
+  `identity`, `apply` or `map`) goes through `longCast` first: `(byte (identity
+  127.9))` is 127, `(byte (identity ##NaN))` is 0, `(char (identity -0.5))` is
+  `\u0000`, `(byte (identity ##Inf))` says "for long" and `(int (identity 2.5e9))`
+  is `integer overflow`. A param that only a build proved a double, or an untyped
+  one after inlining, keeps the boxed answer, as `jolt run` of the same code does.
+- **`System/arraycopy` and `Arrays/copyOfRange` raise HotSpot's messages.**
+  Out-of-range and store errors say what `arraycopy: source index -1 out of bounds
+  for long[3]`, `arraycopy: length -1 is negative` and `arraycopy: type mismatch:
+  can not copy long[] into int[]` say on the JVM, checked in its order.
+  `copyOfRange` now fails as the `arraycopy` inside it does.
+- **`make ffi` passes on a stock x86_64 Chez.** `ffi-stack-args-test` recognized a
+  stock kernel only on arm64; on x86_64 it now reports and passes too, unless
+  `JOLT_REQUIRE_LOCKFREE_CHEZ=1` requires the patches, as CI does.
 
 - **`Arrays/copyOfRange` pads past the end and checks its range as the JDK
   does (#1495).** A `to` past the array's end read past it instead of padding
@@ -567,7 +585,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vector or nil returns it still wrapped, and a type's own `kvreduce` gets it
   and has its answer returned as is.
 
-||||||| parent of f025f587 (jolt build --target: compile for the target's fixnum width on 32-bit machines)
 - **On macOS a profiling signal could kill the process with status 128**
   (#1461). `sigwait` there answers 0 for an interrupted wait without naming a
   signal, and the shutdown watcher read that as signal 0, exiting without

@@ -364,6 +364,17 @@
   (ok "(char ^double) uses the char window" (has? e "jolt-cast-hi-char"))
   (ok "(char ^double) builds the char inline" (has? e "(integer->char (flonum->fixnum"))
   (ok "(char ^double) keeps jolt-char as the fallback" (has? e "(jolt-char")))
+;; outside the window a proven double takes the cast's PRIMITIVE entry, which
+;; refuses NaN for byte/short/char and checks the raw value; an operand the JVM
+;; would hold boxed keeps the helper (the boxed entry).
+(ok "(byte ^double) falls back to the primitive entry" (has? (emitf "u" "(fn* ([^double x] (byte x)))") "(jolt-byte-cast-prim "))
+(ok "(short ^double) falls back to the primitive entry" (has? (emitf "u" "(fn* ([^double x] (short x)))") "(jolt-short-cast-prim "))
+(ok "(int ^double) falls back to the primitive entry" (has? (emitf "u" "(fn* ([^double x] (int x)))") "(jolt-int-cast-prim "))
+(ok "(char ^double) falls back to the primitive entry" (has? (emitf "u" "(fn* ([^double x] (char x)))") "(jolt-char-prim "))
+(ok "(long ^double) falls back to the primitive entry" (has? (emitf "u" "(fn* ([^double x] (long x)))") "(jolt-long-cast-prim "))
+(ok "(unchecked-long ^double) has one entry" (not (has? (emitf "u" "(fn* ([^double x] (unchecked-long x)))") "-prim ")))
+(ok "(byte x) on an untyped operand takes the boxed entry" (not (has? (emitf "u" "(fn* ([x] (byte x)))") "-prim ")))
+(ok "(byte (let [y ^double]) stays primitive" (has? (emitf "u" "(fn* ([^double x] (let* [y x] (byte y))))") "(jolt-byte-cast-prim "))
 (ok "(unchecked-long ^double) uses the long window" (has? (emitf "u" "(fn* ([^double x] (unchecked-long x)))") "jolt-cast-hi-long"))
 (ok "(unchecked-int ^double) uses the int window" (has? (emitf "u" "(fn* ([^double x] (unchecked-int x)))") "jolt-cast-hi-int"))
 (ok "(long (aget ^doubles)) is lowered" (has? (emitf "u" "(fn* ([^doubles a i] (long (aget a i))))") "(flonum->fixnum"))
