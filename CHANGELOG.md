@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.24] - 2026-11-05
+
+java.util and java.util.concurrent are filled out: the remaining collection
+classes, live views, fail-fast iterators, spliterators, `EnumSet`, `Semaphore`
+and `Timer`. Strings index by UTF-16 code unit, as on the JVM.
+`clojure.data.json` ships with jolt. `jolt.debug` shows a throwable's frames
+with their locals, and `jolt.profile` gains a sampling profiler and
+profile-guided builds. `future` runs on a pooled executor, and casts, sorted
+collections and printing a host object are faster.
+
 ### Added
 
 - **`clojure.data.json` ships with jolt** (#1453). It is data.json 2.5.2 as a
@@ -101,9 +111,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the source's characteristics edited by each operation as the JDK's
   flags edit them; `Stream/of` and `Arrays/stream` hand back an
   `ArraySpliterator`.
-- **`make failfastmodel`**: `tools/failfast-model.pl` checks the fail-fast
-  iteration protocol and the deque's ring buffer, with nine broken versions
-  that must be caught.
 - **`java.util.Spliterator`.** Every collection answers `spliterator()` with
   the JDK's class, characteristics, size and comparator: array-backed ones split
   at the midpoint, iterator-backed ones by batches, and `spliteratorUnknownSize`
@@ -256,9 +263,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `com.sun.net.httpserver.HttpHandler`; annotation types included), so a
   proxy over a JDK class jolt does not model (`java.util.TimerTask`) extends it, and `isInterface`
   answers for those types.
-- **Images are format 14**: an `ArrayDeque` travels as its ring buffer and a
-  list carries its modCount; older images still read, except an old
-  `ArrayDeque` holding nil, which is refused by name.
+- **Images are format 14**: they name the defrecord and deftype types they
+  hold, so a process that restores one without having loaded the code knows a
+  record from a deftype. An `ArrayDeque` travels as its ring buffer and a list
+  carries its modCount. Older images still read, except an old `ArrayDeque`
+  holding nil, which is refused by name.
 - **`iterator-seq` is lazy, as `RT.chunkIteratorSeq` is**: it asks `hasNext`
   when made and pulls 32 elements at a time through `next`, so a list changed
   before the seq is walked throws `ConcurrentModificationException`, and any
@@ -279,9 +288,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A proxy's class is the JVM's generated name**
   (`user.proxy$java.lang.Object$ff19274a`), and each `reify` form has a class
   of its own (`user$reify__N`) rather than one shared placeholder.
-- **Images are format 13**: they name the defrecord and deftype types they
-  hold, so a process that restores one without having loaded the code knows a
-  record from a deftype. Older images read as before.
 - **`ConcurrentHashMap` is its own class**: a `ConcurrentMap` that refuses
   null keys and values, whose `keySet`/`values`/`entrySet` are the JDK's
   weakly consistent views (`ConcurrentHashMap$KeySetView` …, and
@@ -453,29 +459,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for long[3]`, `arraycopy: length -1 is negative` and `arraycopy: type mismatch:
   can not copy long[] into int[]` say on the JVM, checked in its order.
   `copyOfRange` now fails as the `arraycopy` inside it does.
-- **`make ffi` passes on a stock x86_64 Chez.** `ffi-stack-args-test` recognized a
-  stock kernel only on arm64; on x86_64 it now reports and passes too, unless
-  `JOLT_REQUIRE_LOCKFREE_CHEZ=1` requires the patches, as CI does.
-
 - **`Arrays/copyOfRange` pads past the end and checks its range as the JDK
   does (#1495).** A `to` past the array's end read past it instead of padding
   with the kind's zero; `from > to` is now `IllegalArgumentException("from >
   to")` rather than `NegativeArraySizeException`, and a `from` outside
   `[0, length]` is `ArrayIndexOutOfBoundsException`.
 
-- **`sequential?` answered true for a deftype or reify implementing `ISeq`.**
-  `ISeq` is not `Sequential`; only a type declaring `Sequential` (or an
-  interface extending it) is. A regression from the `seq?` change earlier in
-  this cycle.
+- **`seq?` answers true for a deftype or reify implementing `ISeq`**, as
+  `(instance? clojure.lang.ISeq x)` does on the JVM, and `(sequence s)` returns
+  such a value rather than seqing it again. A record stays false.
 - **A reify implementing `Seqable` or `ISeq` could not be walked.** `seq`,
   `first`, `into` and friends threw "Don't know how to create ISeq"; they now
   ask its `seq` method and walk an `ISeq` lazily. `coll?` and `count` answer
   for such a reify as the JVM does, and `count` of a seq deftype that is not
   `Counted` walks its seq instead of throwing `AbstractMethodError`.
   `clojure.lang.IndexedSeq` is modeled, so a type declaring it is `seq?`.
+- **A monitor wait could leave the monitor held for good.** `Object.wait`
+  released the owner word before clearing the hold count, so a thread entering
+  at that moment could have its count overwritten and never free the monitor.
+  A `ConcurrentHashMap` `merge` or `compute` on one key from four threads hung
+  within a few rounds.
+- **A `require` on another thread could move the caller's `*ns*`.** `a/thread`
+  conveys its parent's binding frames, and the loader wrote the loaded file's
+  namespace into the parent's frame, so the parent's next top-level form could
+  raise `Unable to resolve symbol`. Each load now has a `*ns*` binding of its
+  own, as `Compiler.load` pushes one.
+- **`*file*` in a namespace loaded from the AOT cache (#1466).** Its top level
+  read its requirer's `*file*` and `*source-path*`; it now reads its own, as on
+  a cold load.
+- **`jolt.loader`'s `unload!` drops its namespaces from `*loaded-libs*`
+  (#1469)**, so a later `require` loads the host's copy instead of doing nothing.
+- **`Path.toUri` is the JDK's own form (#1467)**: `file:///` plus the path's
+  UTF-8 bytes, percent-encoded outside RFC 2396's path set. It was
+  `File.toURI`'s `file:/x/ünï%20cödé.clj`.
+- **`URI.toASCIIString` escapes non-ASCII (#1468)** as NFC-normalized UTF-8; it
+  returned the same string as `toString`.
+- **`slurp`, `spit`, `io/reader`, `io/writer`, `io/input-stream` and
+  `io/output-stream` open a `java.net.URI`** through `.toURL`, as Clojure's
+  `IOFactory` does. They threw `Cannot open`, or for `spit` wrote to a path
+  named by the URI's string. A relative URI is `IllegalArgumentException: URI is
+  not absolute`.
 - **`java.net.URI` equality, `hashCode` and `compareTo` follow the JDK.** They
   compared the string forms, so `(= (.toUri path) (.toURI file))` was false
-  for the same file now that `Path.toUri` writes `file:///`. They compare
+  for the same file, `Path.toUri` writing `file:///`. They compare
   component by component: an empty authority is none, the scheme and host
   ignore case, and an escape's hex digits ignore case.
 - **A started `Thread`, an executor's pool thread and a virtual thread read
@@ -567,10 +593,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   change (#1472) had moved the String methods to UTF-16 units, which broke code
   that mixes the two, such as an editor handing GTK's code-point offsets to
   `subs`.
-- **`:extend-via-metadata` in built binaries.** An `--opt` build resolved a
-  metadata-extensible protocol's calls from the receiver's type through its
-  inline cache or devirtualization, so the metadata impl was never consulted;
-  those calls now go through the method shim, as under `jolt run`.
+- **`defprotocol` honors `:extend-via-metadata`.** It parsed the option and
+  dropped it, so dispatch never read a value's metadata. `(:extend-via-metadata
+  P)` is now true, and a call looks first at the receiver type's own impl, then
+  at the value's metadata under the method's qualified symbol, then at `extend`
+  impls, under `jolt run` and in built binaries. `satisfies?` still ignores
+  metadata, as on the JVM.
 - **`clojure.core.protocols/Datafiable` and `Navigable` are
   `:extend-via-metadata`,** as in the reference, so `datafy`/`nav` honor an
   impl in a value's metadata.
@@ -769,8 +797,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the name an `import` gives them.
 - **A HashMap's `entrySet` is empty, not nil, when the map is**, so `.size` on
   it, and on an unmodifiable or synchronized view of it, no longer throws.
-- **The nrepl `--port-file` smoke row and a `jolt.process` timing row no longer
-  race their deadlines** under CI load.
 - **Enums have `values` and `valueOf` (#1433).** The JDK enums jolt provides
   (`TimeUnit`, `Future$State`, `Thread$State`, `RoundingMode`,
   `Normalizer$Form`, `StandardOpenOption`, `StandardCopyOption`, `LinkOption`,
