@@ -207,6 +207,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a thread, pool or task, an open stream, and a reify or proxy no var holds
   are refused naming their class.
   `make imagecoverage` fails on a collection shim that does neither.
+- **`jolt.image/scan-world` and `dump-world!`'s `:stubbed` name each
+  finding's var.** Every entry carries `:var "ns/name"`, as `stubs` already
+  did after a restore, so a tool can say which var holds an open port or an
+  unfinished future without reading the graph path. An object two vars share
+  is named by the var its `:path` runs through, and `stubs` now names that
+  same var (it used to name the last var holding it, beside the first one's
+  path).
 
 ### Changed
 
