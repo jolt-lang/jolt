@@ -2055,7 +2055,7 @@
   {:suite "interop / StringReader & StringBuilder" :label "PrintWriter over a file writer" :expected "\"hello\\n{:a 1}\\n\"" :actual "(do (require (quote [clojure.java.io :as io])) (let [f (java.io.File/createTempFile \"pwtest\" \".txt\")] (with-open [w (io/writer f)] (binding [*out* (java.io.PrintWriter. w)] (println \"hello\") (prn {:a 1}))) (let [s (slurp f)] (.delete f) s)))" :portability :jvm}
   {:suite "interop / StringReader & StringBuilder" :label "createTempFile wants a prefix of at least three" :expected "\"Prefix string \\\"pw\\\" too short: length must be at least 3\"" :actual "(try (java.io.File/createTempFile \"pw\" \".txt\") (catch IllegalArgumentException e (ex-message e)))" :portability :jvm}
   {:suite "interop / StringReader & StringBuilder" :label "with-open closes shim" :expected "97" :actual "(with-open [r (StringReader. \"a\")] (.read r))" :portability :jvm}
-  {:suite "interop / StringReader & StringBuilder" :label "File.toURL methods read it back" :expected "\"file:/tmp/x\"" :actual "(do (require (quote clojure.java.io)) (.toString (.toURL (clojure.java.io/file \"/tmp/x\"))))" :portability :jvm}
+  {:suite "interop / StringReader & StringBuilder" :label "File.toURL methods read it back" :expected "\"file:/tmp/jolt-no-such-dir/x\"" :actual "(do (require (quote clojure.java.io)) (.toString (.toURL (clojure.java.io/file \"/tmp/jolt-no-such-dir/x\"))))" :portability :jvm}
   ;; io/resource returns a java.net.URL on the JVM (a jar: URL inside the artifact)
   ;; and here too — a file: URL on a source root, a jar:-classed embedded-res from a
   ;; built binary. Both branches class as java.net.URL. Assert shape, not the path:

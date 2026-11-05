@@ -882,10 +882,10 @@
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.read (io/reader (StringReader. \"k\"))))" :expected "107"}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (slurp (io/reader (char-array \"xyz\"))))" :expected "\"xyz\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (string? (slurp (io/reader \"README.md\"))))" :expected "true"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toString (.toURL (io/file \"/tmp/x\"))))" :expected "\"file:/tmp/x\""}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toURI (io/file \"/tmp/x\")))" :expected "#object[java.net.URI \"file:/tmp/x\"]"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (str (.toURI (io/file \"/tmp/x\"))))" :expected "\"file:/tmp/x\""}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (pr-str (.toURI (io/file \"/tmp/x\"))))" :expected "\"#object[java.net.URI \\\"file:/tmp/x\\\"]\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toString (.toURL (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"file:/tmp/jolt-no-such-dir/x\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.toURI (io/file \"/tmp/jolt-no-such-dir/x\")))" :expected "#object[java.net.URI \"file:/tmp/jolt-no-such-dir/x\"]"}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (str (.toURI (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"file:/tmp/jolt-no-such-dir/x\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (pr-str (.toURI (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"#object[java.net.URI \\\"file:/tmp/jolt-no-such-dir/x\\\"]\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (clojure.string/replace (pr-str (io/file \"/tmp/x\")) #\" 0x[0-9a-f]+\" \"\"))" :expected "\"#object[java.io.File \\\"/tmp/x\\\"]\""}
   {:suite "ioreader" :expr "(clojure.string/replace (pr-str (atom 1)) #\" 0x[0-9a-f]+ \" \" \")" :expected "\"#object[clojure.lang.Atom {:status :ready, :val 1}]\""}
  ;; io/resource has two branches — a source root (a jfile) and an embedded resource
@@ -938,7 +938,7 @@
   ;; strips the scheme. All five must hold before io/resource can return a URL.
   ;; Built against a temp file so nothing here depends on a machine path.
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (let [f (java.io.File/createTempFile \"joltres\" \".txt\")] (spit f \"hello\") (let [u (java.net.URL. (str \"file:\" (.getAbsolutePath f))) r (and (= \"hello\" (slurp u)) (= \"hello\" (slurp (.openStream u))) (= \"hello\" (slurp (io/reader u))) (= \"hello\" (slurp (io/input-stream u))) (= (.getAbsolutePath f) (str (io/file u))))] (.delete f) r)))" :expected "true"}
-  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/x\"))))" :expected "\"/tmp/x\""}
+  {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getPath (.toURL (io/file \"/tmp/jolt-no-such-dir/x\"))))" :expected "\"/tmp/jolt-no-such-dir/x\""}
   {:suite "ioreader" :expr "(do (require (quote [clojure.java.io :as io])) (.getAbsolutePath (io/file \"/a/b\")))" :expected "\"/a/b\""}
   ;; Normalizing &form rebuilds the call form, so its reader metadata has to ride
   ;; along — a macro reading (:line (meta &form)) is how a library reports the
