@@ -3058,17 +3058,21 @@
                      (lambda (rp) (open-file-output-port rp (file-options no-fail no-truncate append)
                                                          (buffer-mode block))))
           (lambda (port) (put-bytevector port bytes)))
-        ;; In place, truncating, as the JVM's FileOutputStream does. This used
-        ;; to stage a temp file and rename it over the target, which REPLACED
-        ;; the file rather than writing it: a spit through a symlink turned the
-        ;; link into a regular file and left its target alone, a hard link
-        ;; stopped sharing the data, and the mode was reset from the umask (a
-        ;; 0600 file came back 0644). It also cost four syscalls more than the
-        ;; write, ~250us a spit against ~25us on the JVM.
+        ;; In place, as the JVM's FileOutputStream does: a rename REPLACES the
+        ;; file, which turns a symlink into a regular file, stops a hard link
+        ;; sharing the data and resets the mode. It does not truncate on open,
+        ;; though. Truncating a file with data costs the kernel a free and a
+        ;; reallocation of its blocks (about 70us on Linux on disk, against 6us
+        ;; to overwrite them), so the old tail goes after the write, when there
+        ;; is one. A device or fifo reports length 0 and has no tail.
         (with-port (open-path-guarded given p
-                     (lambda (rp) (open-file-output-port rp (file-options no-fail)
+                     (lambda (rp) (open-file-output-port rp (file-options no-fail no-truncate)
                                                          (buffer-mode block))))
-          (lambda (port) (put-bytevector port bytes))))
+          (lambda (port)
+            (put-bytevector port bytes)
+            (flush-output-port port)
+            (when (> (port-length port) (bytevector-length bytes))
+              (set-port-length! port (bytevector-length bytes))))))
     jolt-nil))
 
 ;; (flush) is (.flush *out*) on the JVM. When *out* holds a real writer — a

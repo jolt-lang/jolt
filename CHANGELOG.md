@@ -620,7 +620,10 @@ collections and printing a host object are faster.
   its own set.
 - **`spit` writes in place.** It wrote a temp file and renamed it over the
   target, which replaced a symlink with a regular file, broke hard links and
-  reset the file mode (a 0600 file came back 0644).
+  reset the file mode (a 0600 file came back 0644). It overwrites the file and
+  cuts any old tail afterwards rather than truncating on open, which is far
+  cheaper on disk: 4000 overwrites of a small file go from 722 ms to 274 ms on
+  macOS.
 - **`(group-by f coll)` with a NaN key** threw "persistent!: not a
   transient"; each NaN now gets its own group, as on the JVM.
 - **`clojure.set/intersection` and `select` drop a NaN member** they were

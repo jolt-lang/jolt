@@ -837,6 +837,14 @@
   ;; symlink to its target, into the data a hard link shares, keeping the mode.
   ;; The temp-and-rename it used to do replaced the file instead — the link came
   ;; back a regular file, the hard link split, and a 0600 file came back 0644.
+  ;; spit overwrites without truncating first, which on disk costs the kernel a
+  ;; free and a reallocation, so the file's tail has to go by other means.
+  {:suite "io" :label "spit cuts the tail of a longer file" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-shrink.txt\")] (spit p \"a long first version\") (spit p \"short\") [(slurp p) (.length (java.io.File. p))])" :expected "[\"short\" 5]"}
+  {:suite "io" :label "spit grows a shorter file" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-grow.txt\")] (spit p \"ab\") (spit p \"abcdefgh\") [(slurp p) (.length (java.io.File. p))])" :expected "[\"abcdefgh\" 8]"}
+  {:suite "io" :label "spit of the same length replaces every byte" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-same.txt\")] (spit p \"aaaa\") (spit p \"bbbb\") (slurp p))" :expected "\"bbbb\""}
+  {:suite "io" :label "spit of nothing empties a file" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-empty.txt\")] (spit p \"content\") (spit p \"\") [(slurp p) (.length (java.io.File. p))])" :expected "[\"\" 0]"}
+  {:suite "io" :label "spit shrinks through an encoding" :expr "(let [p (str (System/getProperty \"java.io.tmpdir\") \"/jolt-io-enc.txt\")] (spit p \"longer text\" :encoding \"UTF-16LE\") (spit p \"x\" :encoding \"UTF-16LE\") (.length (java.io.File. p)))" :expected "2"}
+  {:suite "io" :label "spit writes to a device" :expr "(do (when (= \"/\" java.io.File/separator) (spit \"/dev/null\" \"x\")) :done)" :expected ":done"}
   {:suite "io" :label "spit writes through a symlink" :expr "(do (require (quote [babashka.fs :as fs])) (let [d (str (fs/create-temp-dir)) t (str d \"/target.txt\") l (str d \"/link.txt\")] (spit t \"old\") (fs/create-sym-link l t) (spit l \"new\") [(fs/sym-link? l) (slurp t)]))" :expected "[true \"new\"]"}
   {:suite "io" :label "spit writes into the data a hard link shares" :expr "(do (require (quote [babashka.fs :as fs])) (let [d (str (fs/create-temp-dir)) t (str d \"/target.txt\") h (str d \"/hard.txt\")] (spit t \"old\") (fs/create-link h t) (spit h \"new\") (slurp t)))" :expected "\"new\""}
   {:suite "io" :label "spit keeps the file's mode" :expr "(do (require (quote [babashka.fs :as fs])) (let [p (str (fs/create-temp-dir) \"/secret.txt\")] (spit p \"old\") (fs/set-posix-file-permissions p (fs/str->posix \"rw-------\")) (spit p \"new\") [(fs/posix->str (fs/posix-file-permissions p)) (slurp p)]))" :expected "[\"rw-------\" \"new\"]"}
