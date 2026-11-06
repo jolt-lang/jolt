@@ -129,6 +129,20 @@
   (check "break uses the throwing loop iteration"
          (get (:locals (first @seen)) 'i) 3))
 
+;; The hook sits inside a named fn, whose tail call into it leaves its site pair in
+;; the slot. That caller is erased, not the innermost frame.
+(defn break-wrapper [f] (dbg/with-break-handler (fn [_ fs] (reset! seen fs)) (f)))
+(defn nontail-throw [] (let [e (ex-info "x" {})] (+ 1 (throw e))))
+(defn tail-throw [] (let [e (ex-info "x" {}) y 1] (throw e)))
+(doseq [[label f want] [["a non-tail throw" nontail-throw 'debug-test/nontail-throw]
+                        ["a tail throw" tail-throw 'debug-test/tail-throw]
+                        ["a debug-compiled throw" #((fx "throw-preconstructed") 1)
+                         'debug-fixture/throw-preconstructed]]]
+  (reset! seen nil)
+  (try (break-wrapper f) (catch Exception _ nil))
+  (check (str label " is the innermost frame under a named caller")
+         (:fn (first @seen)) want))
+
 (def order (atom []))
 (try (dbg/with-break-handler (fn [_ _] (swap! order conj :handler))
        (try (throw (ex-info "x" {})) (finally (swap! order conj :finally))))

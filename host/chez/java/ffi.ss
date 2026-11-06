@@ -709,11 +709,12 @@
 ;; ZEROED allocation, in one block move. An arena hands out zeroed memory (as
 ;; babashka.ffi/alloc does), because a struct a caller only partly fills is the
 ;; ordinary case and malloc's leftovers in the rest of it are a C-visible bug
-;; that reproduces only under load. A fresh bytevector is already zero, so the
-;; fill is one sa-foreign-bytes-set!, not a per-byte loop.
+;; that reproduces only under load. The fill is in place: a zeroed bytevector to
+;; copy from would put the block's whole size on the heap as garbage, which for a
+;; 64 KB block was most of the 6 us an alloc took.
 (define (ffi-calloc nbytes)
   (let* ((n (jnum->exact nbytes)) (p (sa-foreign-alloc n)))
-    (when (> n 0) (sa-foreign-bytes-set! p (make-bytevector n 0) n))
+    (when (> n 0) (sa-foreign-zero! p n))
     p))
 (define (ffi-free ptr) (sa-foreign-free (jnum->exact ptr)) jolt-nil)
 ;; --- :bool <-> a one-byte C boolean -----------------------------------------

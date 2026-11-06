@@ -251,6 +251,7 @@ sa-foreign-ref
 sa-foreign-set!
 sa-foreign-bytes-ref!
 sa-foreign-bytes-set!
+sa-foreign-zero!
 sa-foreign-sizeof
 sa-lock-object
 sa-unlock-object

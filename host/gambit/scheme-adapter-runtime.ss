@@ -411,6 +411,8 @@
   (sa-ffi-raise 'sa-foreign-bytes-ref!))
 (define (sa-foreign-bytes-set! addr bv n)
   (sa-ffi-raise 'sa-foreign-bytes-set!))
+(define (sa-foreign-zero! addr n)
+  (sa-ffi-raise 'sa-foreign-zero!))
 
 ;; (sa-foreign-sizeof type) -> exact integer
 ;; Size in bytes of a foreign type. Degradation: raise.

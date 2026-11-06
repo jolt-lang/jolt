@@ -140,6 +140,8 @@
 ;;                                        correct and gives back the ~30ns/byte these exist
 ;;                                        to remove. Never collect-safe: the bytevector
 ;;                                        crosses to C by address.
+;;   sa-foreign-zero!       UNIMPLEMENTED  bytevector-fill! over the same view, or a loop
+;;                                        over sa-foreign-set!.
 ;;   sa-lock-object         UNIMPLEMENTED  may BOTH no-op on a non-moving collector; Guile's
 ;;   sa-unlock-object       UNIMPLEMENTED  Boehm GC is non-moving — no-op candidate;
 ;;                                        must verify (never just one, or it leaks/crashes).
