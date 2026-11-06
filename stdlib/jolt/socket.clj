@@ -737,7 +737,7 @@
         [buf size] (take-recv-buf! owner want)]
     (try
       (let [n (do-recv owner (jolt.host/ref-get self :fd) buf want)]
-        (when (pos? n) (ffi/read-into! buf b off n))
+        (when (pos? n) (ffi/read-into! buf :byte b 0 off n))
         n)
       (finally (return-recv-buf! owner buf size)))))
 
@@ -778,7 +778,7 @@
     (ensure-open! self)
     (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc len)]
       (try
-        (ffi/write-array buf bytes off len)
+        (ffi/write-array buf :byte bytes 0 off len)
         (send-fully! (jolt.host/ref-get self :socket) fd buf len)
         (finally (ffi/free buf))))))
 
