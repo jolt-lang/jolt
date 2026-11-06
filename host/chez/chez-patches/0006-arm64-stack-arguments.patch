@@ -1,3 +1,12 @@
+arm64: repair stack placement of foreign-procedure arguments
+
+Upstream: cisco/ChezScheme#1091, merged 2026-11-05. This is that PR's arm64
+commit, eb6cb62ba1dfe2528f2862e5dda266b6fdbbddbf on cisco/ChezScheme main,
+and applied to v10.4.1 it makes the same change line for line. No Chez
+release has it yet (the newest is v10.4.1), so jolt carries it until the
+first one that does. Delete this file in the change that moves jolt to that
+release; test/chez/ffi-stack-args-test.ss checks the placement either way.
+
 diff --git a/s/arm64.ss b/s/arm64.ss
 index d7dd260b..6cb324f6 100644
 --- a/s/arm64.ss

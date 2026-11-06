@@ -1,3 +1,15 @@
+x86_64: stack struct arguments at their own width, odd sizes repaired
+
+Upstream: cisco/ChezScheme#1091, merged 2026-11-05. This is that PR's two
+x86_64 commits on cisco/ChezScheme main,
+251d3962b42b4f33e7dcbb6be023f4f99da78c24 (store a stack struct's sub-word
+pieces at their own width) and 048879e36460dc831a4737a2f5967fc3d34f42e1
+(foreign call and callable repairs for odd-sized struct arguments), and
+applied to v10.4.1 it makes the same change line for line. No Chez release
+has them yet (the newest is v10.4.1), so jolt carries them until the first
+one that does. Delete this file in the change that moves jolt to that
+release; test/chez/ffi-stack-args-test.ss checks the placement either way.
+
 diff --git a/s/x86_64.ss b/s/x86_64.ss
 index 93225b8..78a0674 100644
 --- a/s/x86_64.ss
