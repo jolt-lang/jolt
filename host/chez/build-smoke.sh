@@ -104,6 +104,34 @@ done
 # throughput lever the perf audit identified) AND run wp-infer — both were opt-in
 # (--direct-link / --opt) before. $out is still the plain release build here.
 
+# A build runs no ns form, but what the form declares about the namespace still
+# reads back, attr-map value evaluated.
+nsmeta_got="$(cd / && "$out" --nsmeta 2>&1 | head -1)"
+nsmeta_want='{:tagged true, :doc "util doc", :owner 2}'
+if [ "$nsmeta_got" != "$nsmeta_want" ]; then
+  echo "  FAIL: namespace metadata in a built binary"
+  echo "--- want ---"; echo "$nsmeta_want"
+  echo "--- got ----"; echo "$nsmeta_got"
+  exit 1
+fi
+
+# And a build refuses the ns a load would refuse, though it never runs one.
+badapp="$(dirname "$out")/badns"
+mkdir -p "$badapp/src"
+echo '{:paths ["src"]}' > "$badapp/deps.edn"
+cat > "$badapp/src/badns.clj" <<'BADNS'
+(ns badns "split " doc " string")
+(defn -main [& _] (println "built"))
+BADNS
+if badout="$(JOLT_PWD="$badapp" "$jolt" build -m badns -o "$badapp/bin" 2>&1)"; then
+  echo "  FAIL: jolt build accepted a malformed ns"
+  exit 1
+fi
+case "$badout" in
+  *"not a reference clause, got: doc"*) ;;
+  *) echo "  FAIL: a malformed ns failed the build with the wrong report:"; echo "$badout"; exit 1 ;;
+esac
+
 # The cross-ns app.core -> app.util/shout reference is direct-linked in the plain
 # release build, not var-routed.
 #

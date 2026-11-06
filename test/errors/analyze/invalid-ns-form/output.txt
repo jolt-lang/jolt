@@ -1,0 +1,6 @@
+error[analyze/invalid-ns-form]: ns input: not a reference clause, got: open. After the name come an optional docstring, an optional attr-map and reference clauses such as (:require ...); an unescaped " in a docstring splits it this way
+  --> ./test/errors/analyze/invalid-ns-form/input.clj:1:1
+   |
+ 1 | (ns input
+   | ^
+exit: 1

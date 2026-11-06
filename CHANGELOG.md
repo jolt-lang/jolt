@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `ns` refuses a malformed form.** After the name it takes an optional
+  docstring, an optional attr-map and reference clauses, as on the JVM, and it used
+  to ignore anything else. An unescaped quote in a docstring splits it into strings
+  and bare symbols, and that loaded silently. So did a typo such as `(:requires ...)`.
+  Both now raise `analyze/invalid-ns-form`, in `jolt build` as well. To check code
+  without loading it, run `jolt tools/ns_audit.clj <dir>` from a jolt checkout.
 - **BREAKING: `ffi/read-into!` and `ffi/write-array` no longer take
   `(p arr off n)`.** In that form `off` was an index into a byte-array; in
   babashka.ffi's order, which every other form of both functions follows,
@@ -34,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A namespace keeps its metadata.** `(meta (find-ns 'x))` was always nil, because
+  `ns` dropped the docstring, the attr-map and metadata on the name. It now answers
+  them as the JVM does, in built binaries too.
+- **`(:refer ...)` and `(:load ...)` in `ns` run.** They were ignored.
 - **A fiber waiting on an fd the kernel refuses to watch now returns**. A closed fd
   parked the fiber forever on kqueue and epoll; the caller's retry now reports what
   is wrong with the fd, as `wait-thread` already did.

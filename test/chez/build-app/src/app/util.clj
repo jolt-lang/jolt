@@ -1,4 +1,4 @@
-(ns app.util
+(ns ^:tagged app.util "util doc" {:owner (clojure.core/inc 1)}
   (:require [clojure.string :as str]))
 
 (defn shout [s]

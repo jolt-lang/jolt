@@ -73,6 +73,11 @@
   a macro over these, so a pattern that reaches the special form directly is one
   the desugarer did not rewrite."
 
+ :analyze/invalid-ns-form
+ "An `ns` form with something other than a symbol as its name, or, after the
+  optional docstring and attr-map, anything but a reference clause. An unescaped
+  quote in a docstring splits the docstring this way."
+
  :analyze/invalid-fn-parameters
  "A `fn*` parameter list that is not a vector of symbols, or a rest parameter
   that is not a symbol."

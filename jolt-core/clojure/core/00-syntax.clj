@@ -103,18 +103,46 @@
 ;; ns is sugar over the namespace-op fns (in-ns/require/use/import/refer-clojure,
 ;; all ctx-capturing clojure.core fns) — matching Clojure, where require is a fn and
 ;; the ns macro expands its clauses into require calls. Each spec is quoted
-;; individually and passed as data; non-list clauses (docstring, attr-map,
-;; :gen-class, …) are ignored. So ns compiles to a plain (do …) of invokes.
+;; individually and passed as data. So ns compiles to a plain (do …) of invokes.
 ;; MUST live in this first tier: the self-hosted analyzer build (triggered while
 ;; 10-seq loads) processes jolt.analyzer's own (ns …) form, so ns has to exist by
 ;; then. Its body resolves fn/map/reduce/cond at EXPANSION time, by which point all
 ;; of 00-syntax has loaded, so using them here is fine.
+;;
+;; After the name comes an optional docstring, an optional attr-map, and reference
+;; clauses, and nothing else. An unescaped quote in a docstring splits it into
+;; strings and bare symbols; those are refused here, as the JVM refuses them.
+;;
+;; A build never runs an ns form. ei-ns-meta-form (emit-image.ss) lifts the
+;; reset-meta! call out of this expansion, so that call is the one place a
+;; namespace's metadata is written, whichever way the namespace loads.
 (defmacro ns [nm & clauses]
   ;; ^{:map} metadata on the ns name reads as a (with-meta sym {...}) form, not an
   ;; annotated symbol. Real libraries put :author/:doc there
-  ;; (clojure.tools.logging), so unwrap to the bare symbol; jolt does not track
-  ;; namespace metadata, so the map is dropped.
-  (let [nm (if (and (seq? nm) (= 'with-meta (first nm))) (second nm) nm)
+  ;; (clojure.tools.logging). It is evaluated, in the new namespace and before
+  ;; clojure.core is referred into it, as the JVM's .resetMeta call is.
+  (let [meta-form? (and (seq? nm) (= 'with-meta (first nm)))
+        name-meta (if meta-form? (nth nm 2) (meta nm))
+        nm (if meta-form? (second nm) nm)
+        _ (if (symbol? nm)
+            nil
+            (throw (ex-info (str "ns: the namespace name must be a symbol, got: " (pr-str nm))
+                            {:jolt.error/kind :analyze/invalid-ns-form
+                             :jolt.error/type :analysis-error})))
+        doc (if (string? (first clauses)) (first clauses) nil)
+        clauses (if doc (rest clauses) clauses)
+        attrs (if (map? (first clauses)) (first clauses) nil)
+        clauses (if attrs (rest clauses) clauses)
+        ns-meta (if doc (assoc (if name-meta name-meta {}) :doc doc) name-meta)
+        ns-meta (if attrs (conj (if ns-meta ns-meta {}) attrs) ns-meta)
+        bad-clause (fn [clause why]
+                     (throw (ex-info
+                              (str "ns " nm ": " why ", got: " (pr-str clause)
+                                   ". After the name come an optional docstring, an optional"
+                                   " attr-map and reference clauses such as (:require ...);"
+                                   " an unescaped \" in a docstring splits it this way")
+                              {:jolt.error/kind :analyze/invalid-ns-form
+                               :jolt.error/type :analysis-error})))
         calls (reduce
                 (fn [acc clause]
                   ;; a reference clause may be a list (:require …) or a vector
@@ -127,18 +155,23 @@
                         (= head :import)  (conj acc `(import ~@(map (fn [s] `(quote ~s)) args)))
                         (= head :refer-clojure)
                           (conj acc `(refer-clojure ~@(map (fn [s] `(quote ~s)) args)))
-                        :else acc))
-                    acc))
+                        (= head :refer)   (conj acc `(refer ~@(map (fn [s] `(quote ~s)) args)))
+                        (= head :load)    (conj acc `(load ~@(map (fn [s] `(quote ~s)) args)))
+                        (= head :gen-class) acc
+                        :else (bad-clause clause "unknown reference clause")))
+                    (bad-clause clause "not a reference clause")))
                 [] clauses)
         ;; no :refer-clojure clause means the default (refer-clojure), as on the
         ;; JVM — it is what makes a later standalone (refer-clojure :exclude …)
         ;; withhold nothing, the names being mapped already (ns.ss).
         ;; (reduce/or, not some/into: this expands before 10-seq has loaded)
-        explicit? (reduce (fn [a c] (or a (and (or (seq? c) (vector? c))
-                                                (= :refer-clojure (first c)))))
+        explicit? (reduce (fn [a c] (or a (= :refer-clojure (first c))))
                           false clauses)
-        default (if (or explicit? (= nm 'clojure.core)) () (list `(refer-clojure)))]
-    `(do (in-ns (quote ~nm)) ~@default ~@calls)))
+        default (if (or explicit? (= nm 'clojure.core)) () (list `(refer-clojure)))
+        set-meta (if ns-meta
+                   (list `(reset-meta! (create-ns (quote ~nm)) ~ns-meta))
+                   ())]
+    `(do (in-ns (quote ~nm)) ~@set-meta ~@default ~@calls)))
 
 ;; import is a MACRO like the JVM's: its specs are never evaluated, so
 ;; (import [java.nio.file Paths]) works bare — under strict resolution the
