@@ -165,6 +165,28 @@ jobs:
   # over the pushed range (push) or the PR's commits and its description (PR).
   # Its own job because it needs history — the test job's checkout is shallow,
   # so origin/main..HEAD is not there to scan — and needs no Chez.
+  clj-kondo:
+    name: clj-kondo
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KONDO_VERSION: 2026.08.04
+      KONDO_SHA256: 25dce55f597cc7f034f6c5f8bf4195128e3efeb3b22710a066fb67b489e70a3b
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install clj-kondo
+        run: |
+          zip="clj-kondo-$KONDO_VERSION-linux-static-amd64.zip"
+          curl -fsSL -o "$RUNNER_TEMP/$zip" \
+            "https://github.com/clj-kondo/clj-kondo/releases/download/v$KONDO_VERSION/$zip"
+          echo "$KONDO_SHA256  $RUNNER_TEMP/$zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/$zip" -d "$RUNNER_TEMP/kondo"
+          echo "$RUNNER_TEMP/kondo" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: make kondocheck
+
   attribution:
     name: No AI attribution in commits
     runs-on: ubuntu-latest

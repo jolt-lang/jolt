@@ -129,7 +129,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   threadsafety maskedacquire ioerrno values wp ci
 
 # Only mark PHONY targets for names that have file system conflicts:
-.PHONY: nsaudit build install test ci bionic-ci ci-shard ci-shard-list gate-run-test gate-run-ci gate-run-bionic-ci gate-run-ci-shard gate-status hooks attributioncheck noticecheck monitormodel \
+.PHONY: nsaudit kondocheck build install test ci bionic-ci ci-shard ci-shard-list gate-run-test gate-run-ci gate-run-bionic-ci gate-run-ci-shard gate-status hooks attributioncheck noticecheck monitormodel \
         gambitcheck gambitkernel gambiteval gambitseed gambitweb gambitprofile \
         gambitgen gambitgencheck gambitseedcheck gambitunbound gambitunbound-regen \
         gambitvars gambitvars-regen gambitstatics gambitstatics-regen gambittwins grenadinecheck \
@@ -617,6 +617,14 @@ noexecsmoke: testbin
 # tools/ns_audit.clj reports the (ns ...) forms ns refuses, without loading them.
 nsaudit: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/ns-audit-check.sh
+
+# clj-kondo over what jolt ships, with tools/clj-kondo-ci.edn. Its own CI job, since
+# the gate list runs where clj-kondo is not installed. jolt-core/clojure is left out:
+# it defines clojure.core, which clj-kondo reads against its own model of the same
+# names, so a deftype method named count reads as a call to core's.
+kondocheck:
+	@clj-kondo --cache false --config tools/clj-kondo-ci.edn --fail-level error \
+	  --lint stdlib jolt-core/jolt tools
 
 # Duplicate native symbol detection (issue #731): a declared :jolt/native that
 # carries its own static copy of another's code — raygui linked against
