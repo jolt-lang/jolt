@@ -129,7 +129,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   threadsafety maskedacquire ioerrno values wp ci
 
 # Only mark PHONY targets for names that have file system conflicts:
-.PHONY: build install test ci bionic-ci ci-shard ci-shard-list gate-run-test gate-run-ci gate-run-bionic-ci gate-run-ci-shard gate-status hooks attributioncheck noticecheck monitormodel \
+.PHONY: nsaudit kondocheck build install test ci bionic-ci ci-shard ci-shard-list gate-run-test gate-run-ci gate-run-bionic-ci gate-run-ci-shard gate-status hooks attributioncheck noticecheck monitormodel \
         gambitcheck gambitkernel gambiteval gambitseed gambitweb gambitprofile \
         gambitgen gambitgencheck gambitseedcheck gambitunbound gambitunbound-regen \
         gambitvars gambitvars-regen gambitstatics gambitstatics-regen gambittwins grenadinecheck \
@@ -180,7 +180,7 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
+CI-GATES := submodules values recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
@@ -613,6 +613,18 @@ zlibnativesmoke: testbin
 # `uname -r`). shelloutcheck is the static half of the same rule.
 noexecsmoke: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/no-external-programs-smoke.sh
+
+# tools/ns_audit.clj reports the (ns ...) forms ns refuses, without loading them.
+nsaudit: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/ns-audit-check.sh
+
+# clj-kondo over what jolt ships, with tools/clj-kondo-ci.edn. Its own CI job, since
+# the gate list runs where clj-kondo is not installed. jolt-core/clojure is left out:
+# it defines clojure.core, which clj-kondo reads against its own model of the same
+# names, so a deftype method named count reads as a call to core's.
+kondocheck:
+	@clj-kondo --cache false --config tools/clj-kondo-ci.edn --fail-level error \
+	  --lint stdlib jolt-core/jolt tools
 
 # Duplicate native symbol detection (issue #731): a declared :jolt/native that
 # carries its own static copy of another's code — raygui linked against

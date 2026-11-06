@@ -1,0 +1,17 @@
+;; clj-kondo settings for `make kondocheck`, which CI runs. An error here fails the
+;; build, so the linters below are off because they fire on code that is correct:
+;;
+;;   :unresolved-symbol        names jolt's host defines, and macro-bound DSLs
+;;   :unexpected-recur         recur inside jolt's own loop-shaped macros
+;;   :not-a-function           the case-like macros in clojure.data.json and
+;;                             clojure.pprint read as calling a character
+;;   :namespace-name-mismatch  stubs that provide another library's namespace
+;;
+;; Every other error-level linter is enforced, and a malformed ns form is promoted
+;; to one. (jolt's own ns refuses those at load; this finds them without loading.)
+{:linters {:unresolved-symbol {:level :off}
+           :unexpected-recur {:level :off}
+           :not-a-function {:level :off}
+           :namespace-name-mismatch {:level :off}
+           :syntax {:level :error}
+           :unknown-ns-option {:level :error}}}

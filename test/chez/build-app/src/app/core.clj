@@ -35,6 +35,9 @@
   ;; native stack trace. Off the normal path, so default output is unchanged.
   (when (= (first args) "--boom")
     (util/mid-boom "not-a-number"))
+  ;; --nsmeta: a build runs no ns form, and the namespace keeps its metadata anyway.
+  (when (= (first args) "--nsmeta")
+    (prn (meta (find-ns 'app.util))))
   ;; --num: call a hintless double fn so build-smoke can assert wp-infer ran in
   ;; the release default build (the fl-op in flat.ss, not this output).
   (when (= (first args) "--num")

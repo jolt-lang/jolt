@@ -90,13 +90,30 @@
                 (loop j (if (rdr-eof? form) acc (cons form acc)))
                 (reverse acc)))))))
 
-;; Is `f` an (ns ...) form? (Its only role in the image is alias registration; we
-;; never emit it — the def-var!s carry explicit ns names.)
+;; Is `f` an (ns ...) form? (Its role in the image is alias registration, plus the
+;; namespace's metadata, below; we never emit it — the def-var!s carry explicit ns
+;; names.)
 (define (ei-ns-form? f)
   (and (cseq? f)
        (let ((items (seq->list f)))
          (and (pair? items) (symbol-t? (car items))
               (string=? (symbol-t-name (car items)) "ns")))))
+
+;; The (reset-meta! ...) call an (ns ...) form expands to, or #f when it declares
+;; no metadata. This is the part of the form an image has to run, since on the JVM
+;; (meta (find-ns 'x)) answers it. Reading it off the expansion leaves the ns macro
+;; the only place that knows the form's grammar, and refuses a malformed ns in a
+;; build as loading it would.
+(define (ei-ns-meta-form f)
+  ;; Expanded in clojure.core, because the namespace being walked may not map `ns`.
+  (let loop ((items (seq->list (hc-expand-1 (make-analyze-ctx "clojure.core") f nr-no-env))))
+    (cond ((null? items) #f)
+          ((and (cseq? (car items))
+                (let ((h (seq->list (car items))))
+                  (and (pair? h) (symbol-t? (car h))
+                       (string=? (symbol-t-name (car h)) "reset-meta!"))))
+           (car items))
+          (else (loop (cdr items))))))
 
 ;; --- parsed top-level forms, shared by a build's two walks -------------------
 ;; `jolt build` reads and parses every app source TWICE: once in build.ss
@@ -363,7 +380,9 @@
               (parameterize ((jolt-form-ordinal ord))
                 (ce-scan-requires! f ns-name)
                 (cond
-                  ((ei-ns-form? f) #f)
+                  ((ei-ns-form? f)
+                   (let ((m (ei-ns-meta-form f)))
+                     (when m (proc ns-name 'form #f m))))
                   ((ce-macro-form? f)
                    ;; macro kind hands proc (fn-form . meta-pmap-or-#f) — the
                    ;; derived :doc/:arglists ride along to the def emission.

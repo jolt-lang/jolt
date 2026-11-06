@@ -265,13 +265,13 @@
   DECLARE THE TAIL and the binding is one compiled call, exactly as a fixed
   signature is:
 
-      (defcfn c-fcntl "fcntl" [:int :int :& :int] :int)
+      (defcfn c-fcntl \"fcntl\" [:int :int :& :int] :int)
 
   LEAVE IT BARE and the binding serves every tail shape, each call reading its
   own tail off the values it is given — the more useful half for the libc
   functions the marker exists for, where the caller's arity varies:
 
-      (defcfn c-open "open" [:string :int :&] :int)
+      (defcfn c-open \"open\" [:string :int :&] :int)
       (c-open path O_RDONLY)          ; empty tail
       (c-open path flags 0644)        ; one-int tail, same binding
 

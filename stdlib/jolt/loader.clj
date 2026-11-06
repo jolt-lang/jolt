@@ -114,7 +114,7 @@
   of a name another context reloads while unrelated code compiles; a name one
   context reloaded is the name the global registry holds. `:class` requests
   have no backend on this host yet. A root may be a directory, a jar, or an
-  embedded root — "embed:<prefix>", a prefix into the runtime's
+  embedded root — \"embed:<prefix>\", a prefix into the runtime's
   embedded-resource table (what deps.edn `:jolt/build {:embed [dirs]}` bakes
   into a binary; see `embedded-root?`); a jar is read in place through its
   central directory, as the global roots read one, and never extracted.
