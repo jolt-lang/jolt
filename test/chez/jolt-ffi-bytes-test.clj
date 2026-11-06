@@ -37,39 +37,39 @@
 
   ;; --- read-into! -----------------------------------------------------------
   (let [dst (byte-array 300)]
-    (check-eq "read-into! returns the octet count" (ffi/read-into! buf dst 20 256) 256)
+    (check-eq "read-into! returns the octet count" (ffi/read-into! buf :byte dst 0 20 256) 256)
     (check-eq "read-into! lands at the offset"
               (seq (java.util.Arrays/copyOfRange dst 20 276)) (seq all-bytes))
     (check-eq "read-into! leaves the prefix alone"
               (seq (java.util.Arrays/copyOfRange dst 0 20)) (repeat 20 0))
     (check-eq "read-into! leaves the suffix alone"
               (seq (java.util.Arrays/copyOfRange dst 276 300)) (repeat 24 0))
-    (check-eq "read-into! of 0 bytes is a no-op" (ffi/read-into! buf dst 0 0) 0))
+    (check-eq "read-into! of 0 bytes is a no-op" (ffi/read-into! buf :byte dst 0 0 0) 0))
 
   ;; a stream read in chunks fills one buffer — the reason read-into! exists
   (let [dst (byte-array 256)]
-    (dotimes [i 4] (ffi/read-into! (+ buf (* i 64)) dst (* i 64) 64))
+    (dotimes [i 4] (ffi/read-into! buf :byte dst (* i 64) (* i 64) 64))
     (check-eq "chunked read-into! reassembles the whole block"
               (seq dst) (seq all-bytes)))
 
   ;; --- bounds ---------------------------------------------------------------
   (check-eq "read-into! past the end throws"
-            (try (ffi/read-into! buf (byte-array 8) 4 8) :no-throw
+            (try (ffi/read-into! buf :byte (byte-array 8) 0 4 8) :no-throw
                  (catch Throwable _ :threw))
             :threw)
   (check-eq "read-into! at a negative offset throws"
-            (try (ffi/read-into! buf (byte-array 8) -1 2) :no-throw
+            (try (ffi/read-into! buf :byte (byte-array 8) 0 -1 2) :no-throw
                  (catch Throwable _ :threw))
             :threw)
   (check-eq "write-array past the end throws"
-            (try (ffi/write-array buf all-bytes 200 100) :no-throw
+            (try (ffi/write-array buf :byte all-bytes 0 200 100) :no-throw
                  (catch Throwable _ :threw))
             :threw)
 
   ;; --- write-array slice ----------------------------------------------------
   (let [zeros (byte-array 512)]
     (ffi/write-array buf zeros)
-    (check-eq "write-array slice returns its length" (ffi/write-array buf all-bytes 250 6) 6)
+    (check-eq "write-array slice returns its length" (ffi/write-array buf :byte all-bytes 0 250 6) 6)
     (check-eq "write-array slice writes exactly that slice"
               (seq (ffi/read-array buf 6))
               (seq (java.util.Arrays/copyOfRange all-bytes 250 256)))

@@ -9,7 +9,7 @@
 
     (try (my.app/run)
       (catch Throwable t (jolt.debug/frames t)))
-    ;; => [{:fn my.app/inner :file \"src/my/app.clj\" :line 4 :locals {x 21 y 42}}
+    ;; => [{:fn my.app/inner :file \"my/app.clj\" :line 4 :locals {x 21 y 42}}
     ;;     {:fn my.app/outer ...} ...]
 
   A frame has every param and local in scope where it was paused when its code

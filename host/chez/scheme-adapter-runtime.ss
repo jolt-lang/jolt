@@ -1009,13 +1009,16 @@
 (define sa-fbytes-probed? #f)
 (define sa-fbytes-in #f)     ; memcpy(bytevector, foreign, n)
 (define sa-fbytes-out #f)    ; memcpy(foreign, bytevector, n)
+(define sa-fbytes-zero #f)   ; memset(foreign, 0, n)
 (define (sa-fbytes-init!)
   (unless sa-fbytes-probed?
     (set! sa-fbytes-probed? #t)                ; probe once, even if it throws
     (guard (e (#t #f))
       (when (foreign-entry? "memcpy")
         (set! sa-fbytes-in (foreign-procedure "memcpy" (u8* void* size_t) void*))
-        (set! sa-fbytes-out (foreign-procedure "memcpy" (void* u8* size_t) void*))))))
+        (set! sa-fbytes-out (foreign-procedure "memcpy" (void* u8* size_t) void*)))
+      (when (foreign-entry? "memset")
+        (set! sa-fbytes-zero (foreign-procedure "memset" (void* int size_t) void*))))))
 
 ;; (sa-foreign-bytes-ref! addr bv n) -> void
 ;; Copy the N octets at foreign address ADDR into BV[0,N). Contract: a
@@ -1042,6 +1045,19 @@
       (let loop ((i 0))
         (when (fx< i n)
           (foreign-set! 'unsigned-8 addr i (bytevector-u8-ref bv i))
+          (loop (fx+ i 1))))))
+
+;; (sa-foreign-zero! addr n) -> void
+;; Clear the N octets at foreign address ADDR. Contract: every octet of the range
+;; reads 0 afterwards, and nothing outside it changes. Degradation: as
+;; sa-foreign-bytes-ref!.
+(define (sa-foreign-zero! addr n)
+  (sa-fbytes-init!)
+  (if sa-fbytes-zero
+      (begin (sa-fbytes-zero addr 0 n) (if #f #f))
+      (let loop ((i 0))
+        (when (fx< i n)
+          (foreign-set! 'unsigned-8 addr i 0)
           (loop (fx+ i 1))))))
 
 ;; (sa-foreign-sizeof type) -> exact integer

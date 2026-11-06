@@ -558,10 +558,10 @@
          (let [p (ffi/alloc a 64)]
            (ffi/write-array p :int32 (int-array [9]) 8)
            (= [0 0 9] (vec (ffi/read-array p :int32 3))))))
-(check "jolt's own byte forms still work"
+(check "a slice of a byte-array writes with a one-byte type"
        (with-open [a (ffi/confined-arena)]
          (let [p (ffi/alloc a 64)]
-           (ffi/write-array p (byte-array [4 5 6]) 0 3)
+           (ffi/write-array p :byte (byte-array [4 5 6]) 0 0 3)
            (= [4 5 6] (vec (ffi/read-array p 3))))))
 (check ":string cannot be copied as an array element"
        (rejects? #(ffi/read-array 4096 :string 1)))

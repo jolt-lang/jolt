@@ -709,11 +709,12 @@
 ;; ZEROED allocation, in one block move. An arena hands out zeroed memory (as
 ;; babashka.ffi/alloc does), because a struct a caller only partly fills is the
 ;; ordinary case and malloc's leftovers in the rest of it are a C-visible bug
-;; that reproduces only under load. A fresh bytevector is already zero, so the
-;; fill is one sa-foreign-bytes-set!, not a per-byte loop.
+;; that reproduces only under load. The fill is in place: a zeroed bytevector to
+;; copy from would put the block's whole size on the heap as garbage, which for a
+;; 64 KB block was most of the 6 us an alloc took.
 (define (ffi-calloc nbytes)
   (let* ((n (jnum->exact nbytes)) (p (sa-foreign-alloc n)))
-    (when (> n 0) (sa-foreign-bytes-set! p (make-bytevector n 0) n))
+    (when (> n 0) (sa-foreign-zero! p n))
     p))
 (define (ffi-free ptr) (sa-foreign-free (jnum->exact ptr)) jolt-nil)
 ;; --- :bool <-> a one-byte C boolean -----------------------------------------
@@ -834,14 +835,28 @@
 ;; (read-into! ptr arr off n) -> n. Copy n bytes at ptr into arr starting at off
 ;; (the java.io.InputStream/read argument order). Throws rather than writing out
 ;; of bounds — a short read that silently truncated would corrupt the buffer.
+;; The checks shared by the two byte moves, made before anything is copied. These
+;; moves can be as small as a byte, so the ordinary case stays in line: a fixnum
+;; needs no conversion, and one that is not a number at all reaches the range
+;; error as it is rather than jnum->exact's complaint about it.
+(define-syntax ffi-byte-index
+  (syntax-rules ()
+    ((_ x) (cond ((fixnum? x) x) ((number? x) (jnum->exact x)) (else x)))))
+(define (ffi-byte-range-error who arr off n)
+  (if (and (jolt-array? arr) (eq? (jolt-array-kind arr) 'byte))
+      (ffi-typed-range-error who off n (ja-len arr))
+      (jolt-throw (jolt-ex-info (string-append "jolt.ffi/" who ": expected a byte-array")
+                                (jolt-hash-map (jolt-keyword "array") arr)))))
+(define-syntax ffi-check-byte-range
+  (syntax-rules ()
+    ((_ who arr off n)
+     (unless (and (jolt-array? arr) (eq? (jolt-array-kind arr) 'byte)
+                  (ffi-typed-range-ok? off n (ja-len arr)))
+       (ffi-byte-range-error who arr off n)))))
+
 (define (ffi-read-into! ptr arr off n)
-  (let* ((n (jnum->exact n)) (off (jnum->exact off)) (p (jnum->exact ptr))
-         (cap (ja-len arr)))
-    (when (or (< off 0) (< n 0) (> (+ off n) cap))
-      (jolt-throw (jolt-ex-info "jolt.ffi/read-into!: range outside the byte-array"
-                                (jolt-hash-map (jolt-keyword "offset") off
-                                               (jolt-keyword "length") n
-                                               (jolt-keyword "capacity") cap))))
+  (let* ((n (ffi-byte-index n)) (off (ffi-byte-index off)) (p (jnum->exact ptr)))
+    (ffi-check-byte-range "read-into!" arr off n)
     (let ((bv (make-bytevector n)))
       (sa-foreign-bytes-ref! p bv n)
       (ja-bv->bytes! bv 0 arr off n)
@@ -849,15 +864,10 @@
 
 (define ffi-write-array
   (case-lambda
-    ((ptr arr) (ffi-write-array ptr arr 0 (ja-len arr)))
+    ((ptr arr) (ffi-write-array ptr arr 0 (if (jolt-array? arr) (ja-len arr) 0)))
     ((ptr arr off n)
-     (let* ((n (jnum->exact n)) (off (jnum->exact off)) (p (jnum->exact ptr))
-            (cap (ja-len arr)))
-       (when (or (< off 0) (< n 0) (> (+ off n) cap))
-         (jolt-throw (jolt-ex-info "jolt.ffi/write-array: range outside the byte-array"
-                                   (jolt-hash-map (jolt-keyword "offset") off
-                                                  (jolt-keyword "length") n
-                                                  (jolt-keyword "capacity") cap))))
+     (let* ((n (ffi-byte-index n)) (off (ffi-byte-index off)) (p (jnum->exact ptr)))
+       (ffi-check-byte-range "write-array" arr off n)
        (let ((bv (make-bytevector n)))
          (ja-bytes->bv! arr off bv 0 n)
          (sa-foreign-bytes-set! p bv n))
@@ -866,9 +876,9 @@
 (def-var! "jolt.ffi" "read-into!" ffi-read-into!)
 (def-var! "jolt.ffi" "write-array" ffi-write-array)
 ;; …and under the reserved names, for the same reason as __read/__write below:
-;; stdlib/jolt/ffi.clj defines read-array and write-array over these to add the
-;; typed forms, so it needs a name for the primitive its own definition has not
-;; taken.
+;; stdlib/jolt/ffi.clj defines read-array, write-array and read-into! over these
+;; to add the typed forms, so it needs a name for the primitive its own
+;; definition has not taken.
 (def-var! "jolt.ffi" "__read-array" ffi-read-array)
 (def-var! "jolt.ffi" "__write-array" ffi-write-array)
 (def-var! "jolt.ffi" "__read-into!" ffi-read-into!)
