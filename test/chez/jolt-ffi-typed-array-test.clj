@@ -250,11 +250,66 @@
   (try (ffi/read-into! buf :double dst 0 1 2) (catch Throwable _ nil))
   (check-eq "a refused read-into! writes nothing" (vec dst) [9.0 9.0]))
 
-;; the byte forms are unchanged, with or without a one-byte type
+;; The byte route takes only a byte-array, and refuses before copying. A
+;; write-array of another array's elements used to truncate each to a byte and
+;; report success.
+(ffi/write-array buf (byte-array [7 7 7 7]))
+(doseq [[label arr] [["an int-array" (int-array [1 2])]
+                     ["a double-array" (double-array [1.0 2.0])]
+                     ["a char-array" (char-array 2)]
+                     ["an object-array" (object-array 2)]
+                     ["a vector" [1 2]]
+                     ["nil" nil]]]
+  (check-eq (str "write-array :byte of " label " throws, naming the array")
+            (thrown-data #(ffi/write-array buf :byte arr 0 0 2)) {:array arr})
+  (check-eq (str "read-into! :byte of " label " throws, naming the array")
+            (thrown-data #(ffi/read-into! buf :byte arr 0 0 2)) {:array arr})
+  (check-eq (str "write-array of " label " throws, naming the array")
+            (thrown-data #(ffi/write-array buf arr)) {:array arr}))
+(check-eq "a refused byte write leaves the memory alone"
+          (vec (ffi/read-array buf 4)) [7 7 7 7])
+(let [src (int-array [1 2])]
+  (check-eq "a refused byte read leaves the array alone"
+            [(try (ffi/read-into! buf :byte src 0 0 2) :no-throw (catch Exception _ :threw)) (vec src)]
+            [:threw [1 2]]))
+
+;; A byte range error reads as the wider types' does, whichever form reached it.
+(check-eq "read-into! :byte past the end names the range"
+          (thrown-data #(ffi/read-into! buf :byte (byte-array 2) 0 1 2))
+          {:index 1 :length 2 :capacity 2})
+(check-eq "write-array :byte past the end names the range"
+          (thrown-data #(ffi/write-array buf :byte (byte-array 2) 0 1 2))
+          {:index 1 :length 2 :capacity 2})
+(check-eq "read-into! :byte at a negative index names the range"
+          (thrown-data #(ffi/read-into! buf :byte (byte-array 2) 0 -1 1))
+          {:index -1 :length 1 :capacity 2})
+(check-eq "read-into! :byte with a non-numeric index names the range"
+          (thrown-data #(ffi/read-into! buf :byte (byte-array 2) 0 nil 2))
+          {:index nil :length 2 :capacity 2})
+(check-eq "write-array :byte with a non-numeric count names the range"
+          (thrown-data #(ffi/write-array buf :byte (byte-array 2) 0 0 "x"))
+          {:index 0 :length "x" :capacity 2})
+
+;; A nil count is the whole array on every route, the byte one included.
+(let [dst (byte-array 2) d2 (double-array 1)]
+  (check-eq "read-into! :byte with a nil count fills the array"
+            [(ffi/read-into! buf :byte dst 0 0 nil) (vec dst)] [2 [7 7]])
+  (check-eq "write-array :byte with a nil count writes the array"
+            (ffi/write-array buf :byte (byte-array [7 7]) 0 0 nil) 2)
+  (check-eq "read-into! :double with a nil count fills the array"
+            (ffi/read-into! buf :double d2 0 0 nil) 1))
+
+;; The byte offset into p applies on the byte route as well.
+(ffi/write-array buf (byte-array [1 2 3 4]))
+(let [dst (byte-array 2)]
+  (check-eq "read-into! :byte starts offset bytes into p"
+            [(ffi/read-into! buf :byte dst 2 0 2) (vec dst)] [2 [3 4]]))
+
+;; a byte-array fills through a one-byte type, a slice through index and count
 (ffi/write-array buf (byte-array [1 -1 3]))
 (let [dst (byte-array 4)]
-  (check-eq "read-into! of bytes still answers n" (ffi/read-into! buf dst 1 3) 3)
-  (check-eq "read-into! of bytes still fills the slice" (vec dst) [0 1 -1 3]))
+  (check-eq "read-into! :byte of a slice answers n" (ffi/read-into! buf :byte dst 0 1 3) 3)
+  (check-eq "read-into! :byte fills the slice, signed" (vec dst) [0 1 -1 3]))
 (let [dst (byte-array 3)]
   (ffi/read-into! buf :uint8 dst 0 0 3)
   (check-eq "read-into! :uint8 is the byte form" (vec dst) [1 -1 3]))
@@ -418,8 +473,18 @@
 (let [dst (byte-array 4)]
   (check-eq "(read-into! p :uint8 arr offset index count) is the byte form's slice"
             [(ffi/read-into! buf :uint8 dst 2 1 2) (vec dst)] [2 [0 12 13 0]]))
-(check-eq "(read-into! p arr off n), jolt's byte form, keeps off as an index into arr"
-          (let [dst (byte-array 4)] (ffi/read-into! buf dst 1 2) (vec dst)) [0 10 11 0])
+;; jolt's (read-into! p arr off n) and (write-array p arr off n), with off an
+;; index into the byte-array, are removed: in babashka.ffi's order position four
+;; is a byte offset into p. The old call raises, naming its replacement, and
+;; reads or writes nothing.
+(let [dst (byte-array 4)]
+  (check-eq "the removed (read-into! p arr off n) raises, naming its replacement"
+            [(try (ffi/read-into! buf dst 1 2) :no-throw (catch Exception e (ex-message e))) (vec dst)]
+            [(str "jolt.ffi/read-into! takes a type before the array: "
+                  "(read-into! p :byte arr 0 index count) reads a slice into a byte-array")
+             [0 0 0 0]])
+  (check-eq "and its replacement reads the same slice"
+            (do (ffi/read-into! buf :byte dst 0 1 2) (vec dst)) [0 10 11 0]))
 (check-eq "read-into! of a range past the end throws before reading"
           (let [dst (double-array [9.0 9.0])]
             [(thrown-data #(ffi/read-into! buf :double dst 0 1 2)) (vec dst)])
@@ -442,8 +507,16 @@
           (try (ffi/write-array buf :double (double-array 3) 0 2) :no-throw
                (catch Throwable _ :threw))
           :threw)
-(check-eq "(write-array p arr off n), jolt's byte form, keeps off as an index into arr"
-          (do (ffi/write-array buf sentinel) (ffi/write-array buf (byte-array [1 2 3 4]) 1 2)
+(check-eq "the removed (write-array p arr off n) raises, naming its replacement"
+          (do (ffi/write-array buf sentinel)
+              [(try (ffi/write-array buf (byte-array [1 2 3 4]) 1 2) :no-throw
+                    (catch Exception e (ex-message e)))
+               (subvec (octets buf 96) 0 3)])
+          [(str "jolt.ffi/write-array takes a type before the array: "
+                "(write-array p :byte arr 0 index count) writes a slice of a byte-array")
+           [-86 -86 -86]])
+(check-eq "and its replacement writes the same slice"
+          (do (ffi/write-array buf sentinel) (ffi/write-array buf :byte (byte-array [1 2 3 4]) 0 1 2)
               (subvec (octets buf 96) 0 3))
           [2 3 -86])
 

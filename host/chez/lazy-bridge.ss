@@ -341,6 +341,8 @@
 (define %ls-orig-fork-thread fork-thread)
 (define (%ls-fork-thread mark-mt? daemon thunk)
   (when mark-mt? (jolt-mark-mt!))
+  ;; a second thread is what can call sample! while this one runs
+  (jolt-tick-watch!)
   (let* ((d (if (eq? daemon 'inherit) (jolt-thread-daemon? (get-thread-id)) (and daemon #t)))
          (_ (unless d (exit-nondaemon-enter!)))
          (t (guard (e (#t (unless d (exit-nondaemon-leave!)) (raise e)))
@@ -351,8 +353,9 @@
                   (*txn* #f)
                   (rdr-default-modes!)
                   (thread-daemon-record! (get-thread-id) d)
-                  ;; a thread forked while the sampler runs is sampled from its start
-                  (when jolt-tick-sampling? (jolt-tick-join-sampling!))
+                  ;; a thread forked while the sampler runs is sampled from its
+                  ;; start, and any other joins from its watch (ticks.ss)
+                  (if jolt-tick-sampling? (jolt-tick-join-sampling!) (jolt-tick-watch!))
                   (let ((id (get-thread-id)))
                     (dynamic-wind
                       (lambda () #f)

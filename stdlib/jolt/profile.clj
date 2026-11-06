@@ -59,11 +59,10 @@
     (prof/sample-report)
     (prof/write-folded \"app.folded\")   ; for flame graph tools
 
-  or for a whole run, JOLT_PROFILE=sample. A thread that was already running
-  when sampling started joins at its next timer event (a fiber quantum, an
-  interruptible eval); one started while sampling is on is sampled from its
-  start. Frames erased by tail calls are not on the stack, and a thread blocked
-  in a wait uses no CPU and is not sampled."
+  or for a whole run, JOLT_PROFILE=sample. A thread started while sampling is on
+  is sampled from its start, and one already running joins within a few milliseconds
+  of CPU time. Frames erased by tail calls are not on the stack, and a
+  thread blocked in a wait uses no CPU and is not sampled."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [jolt.host :as host]))
@@ -74,9 +73,13 @@
   debug locals: code compiled under :debug keeps every fn's params and locals
   visible to its frame, for jolt.debug/frames to read. One mode at a time; code
   already compiled keeps what it was compiled with either way. Returns true;
-  throws when the host cannot instrument."
+  throws on any other mode, or when the host cannot instrument."
   ([] (instrument! true))
   ([mode]
+   (when-not (contains? #{true false nil :counts :debug} mode)
+     (throw (ex-info (str "jolt.profile: unknown instrument! mode " (pr-str mode)
+                          "; expected true, :counts, :debug or false")
+                     {:mode mode})))
    (let [debug? (= mode :debug)]
      (if (host/profile-instrument! (if debug? :debug (boolean mode)))
        true
