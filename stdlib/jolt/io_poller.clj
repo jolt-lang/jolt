@@ -467,7 +467,7 @@
 
 ;; The fd's story ends with its owner: it is about to be closed and nothing is
 ;; using it. Drop every trace of it, so the next owner of the number starts
-;; fresh — a previous owner's ready=true tombstone, or its cancelled mark, would
+;; fresh — a previous owner's cancelled mark would
 ;; otherwise answer the new owner's first wait. Anything still waiting is woken
 ;; as cancel! would, which only matters to an owner that skipped cancel!.
 (defn forget! [fd]
