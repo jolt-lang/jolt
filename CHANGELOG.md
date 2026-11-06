@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`jolt.profile/instrument!` refuses a mode it does not know.**
+  `(prof/instrument! :nope)` turned the execution counters on, so a misspelled
+  `:debug` instrumented the code for the wrong thing without saying so. It now
+  throws with the mode in `ex-data`. `nil` still turns instrumentation off.
 - **`ffi/read-into!` and `ffi/write-array` refuse an array that is not a
   byte-array on the byte route.** `(write-array p :byte (int-array [1 2]) 0 0 2)`
   and `(write-array p (double-array 2))` truncated each element to a byte and
