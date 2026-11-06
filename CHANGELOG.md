@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its handler no longer start with the wrong fn when a throw that is not in tail
   position runs under a host callback. The caller that tail-called the host fn was
   listed as the innermost frame, sometimes with a caller of its own that never ran.
+- A host fault after a caught throw no longer reports the fn that threw as its
+  innermost frame. That fn had already left, but its site was still in the slot.
 
 ## [0.8.24] - 2026-11-05
 

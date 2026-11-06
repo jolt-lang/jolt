@@ -4008,8 +4008,15 @@
 ;; not: it scans the emission for a rewritten park site inside a wind's extent. See
 ;; the invariant note at jolt-sm-park!.
 ;; Both keys optional.
+;;
+;; With tracing on, a catch also puts the site slots back as they were when the
+;; try began. A non-tail call restores them when it returns, but a throw does not
+;; return: what the throw and the calls it left behind stored would stay there, and
+;; the next host fault would report the thrower as its innermost frame.
 (defn- emit-try [node]
-  (let [core (if-let [cs (:catch-sym node)]
+  (let [ts (when (and (:catch-sym node) (trace-frames?)) (fresh-label "_ts$"))
+        to (when ts (fresh-label "_to$"))
+        core (if-let [cs (:catch-sym node)]
                (let [raw (munge-name (:catch-raw-sym node))
                      ;; Snapshot the throwing line BEFORE the handler body runs:
                      ;; the body's own calls move the current line, so by the time
@@ -4021,6 +4028,7 @@
                      cl (when (trace-frames?) (fresh-label "_cl$"))
                      body (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
                                (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
+                               (if ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ") "")
                                "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
                                             ;; debug locals: the handler body is a tail region.
                                             ;; cs is the analyzer's; the user's name is a let
@@ -4032,7 +4040,9 @@
                                (if cl ")" "")
                                "))) "
                                (emit-try-body node) ")")]
-                 body)
+                 (if ts
+                   (str "(let ((" ts " (virtual-register 2)) (" to " (virtual-register 12))) " body ")")
+                   body))
                (emit-try-body node))]
     (if-let [fin (:finally node)]
       ;; The edges are masked against an interrupt's escape. run-interruptible
