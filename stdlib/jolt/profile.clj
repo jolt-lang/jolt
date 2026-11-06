@@ -59,11 +59,10 @@
     (prof/sample-report)
     (prof/write-folded \"app.folded\")   ; for flame graph tools
 
-  or for a whole run, JOLT_PROFILE=sample. A thread that was already running
-  when sampling started joins at its next timer event (a fiber quantum, an
-  interruptible eval); one started while sampling is on is sampled from its
-  start. Frames erased by tail calls are not on the stack, and a thread blocked
-  in a wait uses no CPU and is not sampled."
+  or for a whole run, JOLT_PROFILE=sample. A thread started while sampling is on
+  is sampled from its start, and one already running joins within a few milliseconds
+  of CPU time. Frames erased by tail calls are not on the stack, and a
+  thread blocked in a wait uses no CPU and is not sampled."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [jolt.host :as host]))

@@ -529,6 +529,7 @@
 ;; new thread should join the sampler (host/chez/ticks.ss). Never, here.
 (define jolt-tick-sampling? #f)
 (define (jolt-tick-join-sampling!) (if #f #f))
+(define (jolt-tick-watch!) (if #f #f))
 
 
 ;; ---- continuations tier (capability: continuations) -------------------------

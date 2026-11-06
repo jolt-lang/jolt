@@ -93,6 +93,45 @@
          (boolean (some #(= 'sample-fixture/spin (:fn %)) counts)) true))
 (check "with-sampling stops" (prof/sampling?) false)
 
+;; Threads that exist before sample! join it, whatever they are doing by then.
+;; Each run gives its thread a fn nothing else runs in that run, and sample! drops
+;; the run before it.
+(def cold (resolve 'sample-fixture/cold))
+(defn sampled-fn? [sym] (boolean (row (prof/sample-counts) sym)))
+
+(def stop-spin (atom false))
+(def spinning
+  (doto (Thread. (fn [] (while (not @stop-spin) (cold 200000))))
+    (.setDaemon true) (.start)))
+(Thread/sleep 50)
+(prof/sample! {:interval-ms 1})
+(Thread/sleep 300)
+(prof/stop-sampling!)
+(reset! stop-spin true)
+(.join spinning)
+(check "a thread running flat out when sampling starts joins"
+       (sampled-fn? 'sample-fixture/cold) true)
+
+(def parked-gate (promise))
+(def parked
+  (doto (Thread. (fn [] @parked-gate (hot n)))
+    (.setDaemon true) (.start)))
+(Thread/sleep 50)
+(prof/sample! {:interval-ms 1})
+(deliver parked-gate true)
+(.join parked)
+(prof/stop-sampling!)
+(check "a thread parked when sampling starts joins when it wakes"
+       (sampled-fn? 'sample-fixture/hot) true)
+
+@(future 1)
+(Thread/sleep 50)
+(prof/sample! {:interval-ms 1})
+@(future (driver n))
+(prof/stop-sampling!)
+(check "a pool thread idle when sampling starts joins"
+       (sampled-fn? 'sample-fixture/driver) true)
+
 (if (empty? @failures)
   (println "SAMPLE-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

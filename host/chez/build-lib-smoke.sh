@@ -93,6 +93,7 @@ esac
 # platform's .so/.dylib (jolt#1235), so "$lib" is where it must land.
 echo "build-lib smoke: compiling libadd.core -o $work/libadd -> $lib"
 build_out="$(JOLT_PWD="$app" "$jolt" build --library -m libadd.core -o "$work/libadd" 2>&1)"
+build_rc=$?
 if [ -f "$work/libadd" ]; then
   echo "  FAIL: -o $work/libadd wrote the library with no suffix, want $lib"; exit 1
 fi
@@ -104,7 +105,9 @@ if [ ! -f "$lib" ]; then
   if printf '%s' "$build_out" | grep -qiE 'recompile with .*-fPIC|can not be used when making a shared object|relocation R_'; then
     skip_or_fail "Chez libkernel.a is not position-independent; a shared library needs a PIC kernel (configure Chez with CFLAGS+=-fPIC)"
   fi
-  echo "  FAIL: jolt build --library produced no shared library"
+  # A build killed from outside prints no error, so the status is all there is
+  # to tell it from a failed one (143 is SIGTERM, 137 SIGKILL).
+  echo "  FAIL: jolt build --library produced no shared library (exit $build_rc)"
   printf '%s\n' "$build_out"
   exit 1
 fi

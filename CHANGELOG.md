@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `jolt.profile/sample!` now reaches threads that were already running when it
+  started. A plain thread or one parked in a wait had no timer event to join at, so
+  a server's existing workers never appeared in the profile.
 - **`jolt.profile/instrument!` refuses a mode it does not know.**
   `(prof/instrument! :nope)` turned the execution counters on, so a misspelled
   `:debug` instrumented the code for the wrong thing without saying so. It now
