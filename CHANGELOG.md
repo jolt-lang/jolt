@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `ffi/read-into!` and `ffi/write-array` no longer take
+  `(p arr off n)`.** In that form `off` was an index into a byte-array; in
+  babashka.ffi's order, which every other form of both functions follows,
+  position four is a byte offset into `p`. Unlike `ffi/write`'s move in 0.8.0,
+  this one cannot pass silently: the old call raises, naming its replacement,
+  and reads or writes nothing. Give the type and move the two numbers to the
+  end, so `(read-into! p arr off n)` becomes `(read-into! p :byte arr 0 off n)`
+  and `(write-array p arr off n)` becomes `(write-array p :byte arr 0 off n)`.
+  A pointer offset folded into `p`, as in `(read-into! (+ p k) arr off n)`, can
+  move into the zero: `(read-into! p :byte arr k off n)`. `(write-array p arr)`
+  and `(read-array p n)` are unchanged.
+- **`ffi/alloc` zeroes in place.** It built a zeroed bytevector the size of the
+  block and copied that over, so a 64 KB allocation took 6.4 us and left 64 KB of
+  garbage on the heap. It now calls `memset`: a 64 KB block takes 1.5 us and a 1 MB
+  block 10 us against 86. Arenas allocate the same way, so they gain it too.
 - **A fiber parking on a socket no longer wakes the poller**. It registers a
   one-shot kevent or epoll_ctl itself, on kqueue and epoll, so there is no control
   pipe, no delete to issue later and one poller round per park. A woken fiber's
@@ -22,17 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A fiber waiting on an fd the kernel refuses to watch now returns**. A closed fd
   parked the fiber forever on kqueue and epoll; the caller's retry now reports what
   is wrong with the fd, as `wait-thread` already did.
-- **BREAKING: `ffi/read-into!` and `ffi/write-array` no longer take
-  `(p arr off n)`.** In that form `off` was an index into a byte-array; in
-  babashka.ffi's order, which every other form of both functions follows,
-  position four is a byte offset into `p`. Unlike `ffi/write`'s move in 0.8.0,
-  this one cannot pass silently: the old call raises, naming its replacement,
-  and reads or writes nothing. Give the type and move the two numbers to the
-  end, so `(read-into! p arr off n)` becomes `(read-into! p :byte arr 0 off n)`
-  and `(write-array p arr off n)` becomes `(write-array p :byte arr 0 off n)`.
-  A pointer offset folded into `p`, as in `(read-into! (+ p k) arr off n)`, can
-  move into the zero: `(read-into! p :byte arr k off n)`. `(write-array p arr)`
-  and `(read-array p n)` are unchanged.
 - `jolt.profile/sample!` now reaches threads that were already running when it
   started. A plain thread or one parked in a wait had no timer event to join at, so
   a server's existing workers never appeared in the profile.
@@ -47,10 +51,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error. Both now throw `expected a byte-array` before copying anything, and a
   byte range error carries the same `:index`, `:length` and `:capacity` as the
   wider types.
-- **`ffi/alloc` zeroes in place.** It built a zeroed bytevector the size of the
-  block and copied that over, so a 64 KB allocation took 6.4 us and left 64 KB of
-  garbage on the heap. It now calls `memset`: a 64 KB block takes 1.5 us and a 1 MB
-  block 10 us against 86. Arenas allocate the same way, so they gain it too.
 - An uncaught report's trace and the frames `jolt.debug/with-break-handler` hands
   its handler no longer start with the wrong fn when a throw that is not in tail
   position runs under a host callback. The caller that tail-called the host fn was
