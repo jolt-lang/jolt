@@ -376,5 +376,42 @@
       (let ((lib (ffi-load-system-library "c")))
         (and lib #t))))
 
+;; ffi-calloc zeroes the block in place. It used to build a zeroed bytevector the
+;; block's size and copy that over, so every large allocation also churned the
+;; heap by its own size.
+(define (block-bytes p n)
+  (let loop ((i (- n 1)) (out '()))
+    (if (< i 0) out (loop (- i 1) (cons (foreign-ref 'unsigned-8 p i) out)))))
+(let* ((n 32) (p (foreign-alloc n)))
+  (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i 255))
+  (sa-foreign-zero! (+ p 8) 16)
+  (ok "sa-foreign-zero! clears exactly the range"
+      (equal? (block-bytes p n)
+              (append (make-list 8 255) (make-list 16 0) (make-list 8 255))))
+  (sa-foreign-zero! p 0)
+  (ok "sa-foreign-zero! of nothing touches nothing"
+      (= 255 (foreign-ref 'unsigned-8 p 0)))
+  (foreign-free p))
+(for-each
+  (lambda (n)
+    ;; dirty a block and free it first, so the allocator's reuse can't pass for
+    ;; a zeroed block
+    (let ((dirty (foreign-alloc n)))
+      (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 dirty i 255))
+      (foreign-free dirty))
+    (let ((p (ffi-calloc n)))
+      (ok (format "ffi-calloc ~a answers zeroed memory" n)
+          (for-all zero? (block-bytes p n)))
+      (ffi-free p)))
+  '(1 15 16 4096 65536))
+(let ((quiet (collect-request-handler)))
+  (collect-request-handler void)
+  (let ((before (bytes-allocated)))
+    (do ((i 0 (+ i 1))) ((= i 32)) (ffi-free (ffi-calloc 1048576)))
+    (let ((grew (- (bytes-allocated) before)))
+      (collect-request-handler quiet)
+      (ok (format "ffi-calloc puts no block-sized garbage on the heap (grew ~a)" grew)
+          (< grew 1048576)))))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
