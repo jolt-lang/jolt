@@ -1,7 +1,8 @@
 ;; ffi-stack-args-test.ss: foreign-procedure arguments past the argument
 ;; registers land where the C ABI puts them on arm64 and x86_64
 ;; (host/chez/chez-patches/0006-arm64-stack-arguments.patch and
-;; 0007-x86_64-stack-struct-arguments.patch, both from cisco/ChezScheme#1091).
+;; 0007-x86_64-stack-struct-arguments.patch, both from cisco/ChezScheme#1091,
+;; merged into Chez main 2026-11-05 but in no Chez release yet).
 ;;
 ;; On x86_64, Chez 10.4.1 copied a struct on the stack in 8/4/2/1-byte loads but
 ;; stored each piece as a full word, so a struct whose last slot takes more than
