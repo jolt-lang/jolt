@@ -625,7 +625,7 @@
 ;; SOMEWHERE THE RUNTIME DOES NOT KNOW ABOUT pins its carrier for the duration.
 ;; Channel ops park, and so do jolt.socket's reads and writes and jolt.process's
 ;; subprocess pipe reads and writes (R8: an EAGAIN registers with the io-poller
-;; and parks). Thread/sleep, a blocking read on a raw fd you opened yourself, and
+;; and parks), and Thread/sleep. A blocking read on a raw fd you opened yourself and
 ;; an FFI call that blocks do not — they hold the carrier's OS thread. Use thread
 ;; for those; that is what it is for.
 (defn thread-call
@@ -652,7 +652,7 @@
   parks by capturing its continuation, not by being rewritten.
 
   Use thread instead when the body blocks in a way the runtime cannot see
-  (Thread/sleep, a raw fd read, a blocking FFI call): that pins the fiber's
+  (a raw fd read, a blocking FFI call): that pins the fiber's
   carrier, and a real OS thread is the escape."
   [& body]
   `(thread-call (fn [] ~@body) :io))

@@ -34,6 +34,11 @@
 ;; Same watchdog structure as poller-registration.clj, and for the same reason: a
 ;; lost wakeup here presents as a hang, not a failure, so the MAIN thread does
 ;; nothing but watch a deadline while the workload runs on a spawned thread.
+;;
+;; Registrations are one-shot now, so nothing is retired by a delete any more and
+;; round A's refused delete cannot arise. Both rounds stay: a socket closing as its
+;; read returns, and both directions of one fd parked as the read fires, are still
+;; the shapes that lose wakeups. poller-direct.clj covers the same ground on raw fds.
 (require '[jolt.socket])
 (require '[jolt.io-poller])
 (require '[clojure.core.async :as a])

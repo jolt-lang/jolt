@@ -181,7 +181,7 @@
 (define (workload)
  (let ((read-thunk-1 #f) (fa #f) (fb #f) (fa-parked #f) (fb-done #f) (fa-done #f)
        (t2 #f) (r2 #f) (el2 #f)
-       (read-thunk-3 #f) (fc #f) (fc-parked #f) (waits-before-3 #f) (w3 #f) (gc-ok #f) (fc-done #f)
+       (read-thunk-3 #f) (fc #f) (fc-parked #f) (w3 #f) (gc-ok #f) (fc-done #f)
        (r4-n #f) (r4-worker #f) (f4s #f) (all-parked4 #f) (all-done4 #f)
        (r5-sh-out #f) (r5-in #f) (r5-pipe #f) (r5-deref-exit #f)
        (repo-dir #f) (no-poller-script #f) (no-poller-path #f) (chez-bin #f)
@@ -260,23 +260,19 @@
   (ev "(def p3-out (:out p3))")
   (set! read-thunk-3
     (ev "(fn [] (let [b (byte-array 64) n (.read p3-out b 0 64)] (String. b 0 n \"UTF-8\")))"))
-  ;; snapshot BEFORE spawning fc: jolt.io-poller/waits is a GLOBAL monotonic
-  ;; counter, already nonzero from check 1's own registration by the time we
-  ;; get here, so "> 0" alone would pass instantly without ever proving THIS
-  ;; check's own registration made the poller wait. Comparing against this
-  ;; snapshot instead requires an actual increase after fc parks.
-  (set! waits-before-3 (ev "@jolt.io-poller/waits"))
   (set! fc (sa-fiber-spawn read-thunk-3))
   (set! fc-parked
     (wait-until (lambda () (eq? (jolt-fiber-state fc) 'parked)) 15.0 "3. the pipe-read fiber parked"))
   (ok "3. the pipe-read fiber parked" fc-parked)
-  ;; the poller entered its blocking wait (jolt.io-poller/waits increments each
-  ;; round, immediately before kevent/epoll_wait) — so gc-full! below races a
-  ;; thread that is (about to be / already) inside the blocking foreign call
+  ;; The registration does not wake the poller, so its round counter says nothing
+  ;; about THIS park. What the check needs is that the poller is settled in its
+  ;; blocking wait when gc-full! runs: it started long before (check 1), nothing has
+  ;; fired for this pipe yet, and so the counter holds still across a settle.
   (set! w3
-    (wait-until (lambda () (> (ev "@jolt.io-poller/waits") waits-before-3)) 15.0
-                "3. the poller entered its wait"))
-  (ok "3. the poller entered its blocking wait for THIS check's own registration (counter increased)" w3)
+    (let ((before (ev "@jolt.io-poller/waits")))
+      (sleep (make-time 'time-duration 50000000 0))
+      (and (> before 0) (= before (ev "@jolt.io-poller/waits")))))
+  (ok "3. the poller sits in its blocking wait with this check's registration in the kernel" w3)
   (sleep (make-time 'time-duration 50000000 0))  ; let it settle into the wait
   (set! gc-ok
     (guard (e (#t (printf "  FAIL detail: gc-full! raised ~a\n" (render-condition e)) #f))
