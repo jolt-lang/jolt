@@ -307,6 +307,36 @@
          (if windows? :unsupported "r--r--r--"))
   (when-not windows? (fs/set-posix-file-permissions f "rw-r--r--")))
 
+;; --- Files/move with ATOMIC_MOVE (#1531) ---------------------------------------
+;; One step on every host, so a reader of the target never finds it missing, and an
+;; existing target is replaced whether or not REPLACE_EXISTING is given.
+(let [fa  (into-array java.nio.file.attribute.FileAttribute [])
+      d   (java.nio.file.Files/createTempDirectory "jwa" fa)
+      dst (.resolve d "target")
+      A   (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE])
+      done (atom false)]
+  (spit (str dst) "v0")
+  (let [reader (future (loop [missing 0]
+                         (if @done
+                           missing
+                           (recur (if (java.nio.file.Files/exists dst (into-array java.nio.file.LinkOption []))
+                                    missing
+                                    (inc missing))))))]
+    (dotimes [i 300]
+      (let [tmp (.resolve d (str "tmp-" i))]
+        (spit (str tmp) (str "v" i))
+        (java.nio.file.Files/move tmp dst A)))
+    (reset! done true)
+    (check "an atomic move replaces the target with no gap" @reader 0)
+    (check "the last move's content is there" (slurp (str dst)) "v299"))
+  (check "an atomic move of a missing source names both paths"
+         (try (java.nio.file.Files/move (.resolve d "zz") (.resolve d "b") A)
+              (catch java.nio.file.NoSuchFileException e
+                [(= (.getFile e) (str (.resolve d "zz"))) (= (.getOtherFile e) (str (.resolve d "b")))]))
+         [true true])
+  (java.nio.file.Files/delete dst)
+  (java.nio.file.Files/delete d))
+
 ;; --- the tree the loader and the checks above used deletes cleanly -------------
 (let [src (under "src")]
   (fs/create-dirs src)

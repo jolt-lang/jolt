@@ -219,14 +219,16 @@
        "")))
 
 (define (regex-syntax-error source e)
-  (jolt-throw
-   (jolt-host-throwable "java.util.regex.PatternSyntaxException"
-     (if (java-pattern-error? e)
-         (pattern-syntax-message (java-pattern-error-desc e)
-                                 (java-pattern-error-index e)
-                                 source)
-         (string-append (guard (e2 (#t "Unsupported pattern")) (condition-message-of e))
-                        " near index 0\n" source)))))
+  (let ((desc (if (java-pattern-error? e)
+                  (java-pattern-error-desc e)
+                  (guard (e2 (#t "Unsupported pattern")) (condition-message-of e))))
+        (idx (if (java-pattern-error? e) (java-pattern-error-index e) 0)))
+    (jolt-throw
+     (jolt-host-throwable/detail "java.util.regex.PatternSyntaxException"
+       (if (java-pattern-error? e)
+           (pattern-syntax-message desc idx source)
+           (string-append desc " near index 0\n" source))
+       (vector desc idx source)))))
 
 (define (condition-message-of e)
   (if (and (condition? e) (message-condition? e)) (condition-message e) "Unsupported pattern"))

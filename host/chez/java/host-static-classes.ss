@@ -2690,6 +2690,47 @@
 ;; java.text.ParseException(String s, int errorOffset): unlike the exceptions
 ;; above, its second ctor arg is an int offset (getErrorOffset), not a cause.
 ;; Store the offset in the record's error-offset field (invisible to ex-data).
+;; FileSystemException(file) and (file, other, reason), which every class under it
+;; takes as well. The strings are kept as given (no native path rendering: the
+;; caller wrote them) and the message is built from them as getMessage builds it.
+(define (make-fs-exc-ctor canonical)
+  (lambda args
+    (let* ((str-arg (lambda (x) (and (not (jolt-nil? x)) (jolt-str-render-one x))))
+           (nth-arg (lambda (n) (and (> (length args) n) (str-arg (list-ref args n)))))
+           (file (nth-arg 0)) (other (nth-arg 1)) (reason (nth-arg 2)))
+      (jolt-host-throwable/detail canonical
+        (or (fs-exception-message-for #f file other reason) jolt-nil)
+        (vector file other reason)))))
+(let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+  (vector-for-each
+    (lambda (canonical supers)
+      (when (jch-isa? canonical "java.nio.file.FileSystemException")
+        (register-class-ctor! (jch-last-segment canonical) (make-fs-exc-ctor canonical))
+        (register-class-ctor! canonical (make-fs-exc-ctor canonical))))
+    keys vals))
+
+;; URISyntaxException(input, reason[, index]) and PatternSyntaxException(description,
+;; regex, index): the arguments are not a message and a cause.
+(let ((uri-exc-ctor
+       (lambda (input reason . more)
+         (when (or (jolt-nil? input) (jolt-nil? reason))
+           (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" jolt-nil)))
+         (let ((idx (if (pair? more) (car more) -1)))
+           (when (< idx -1)
+             (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException" jolt-nil)))
+           (jolt-host-throwable/detail "java.net.URISyntaxException"
+             (uri-error-message input (list 'uri-error reason idx))
+             (vector input reason idx)))))
+      (pattern-exc-ctor
+       (lambda (desc regex index)
+         (jolt-host-throwable/detail "java.util.regex.PatternSyntaxException"
+           (pattern-syntax-message desc index (if (jolt-nil? regex) "null" regex))
+           (vector desc index regex)))))
+  (register-class-ctor! "URISyntaxException" uri-exc-ctor)
+  (register-class-ctor! "java.net.URISyntaxException" uri-exc-ctor)
+  (register-class-ctor! "PatternSyntaxException" pattern-exc-ctor)
+  (register-class-ctor! "java.util.regex.PatternSyntaxException" pattern-exc-ctor))
+
 (let ((parse-exc-ctor
        (lambda args
          (let* ((a0 (if (pair? args) (car args) jolt-nil))

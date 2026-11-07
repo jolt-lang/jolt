@@ -625,7 +625,8 @@
 (define (nio-fs-throw cls fp . other+reason)
   (let ((other  (and (pair? other+reason) (car other+reason)))
         (reason (and (pair? other+reason) (pair? (cdr other+reason)) (cadr other+reason))))
-    (jolt-throw (jolt-host-throwable cls (fs-exception-message fp other reason)))))
+    (jolt-throw (jolt-host-throwable/detail cls (or (fs-exception-message fp other reason) jolt-nil)
+                  (vector (and fp (path-native fp)) (and other (path-native other)) reason)))))
 (define (nio-no-such-file fp . other)
   (nio-fs-throw "java.nio.file.NoSuchFileException" fp (and (pair? other) (car other))))
 (define (nio-already-exists fp . other)
@@ -1669,12 +1670,36 @@
 ;; (jolt-lang/jolt#1531). A failure is named from rename's errno through
 ;; translateToIOException with both paths, except EXDEV, which is
 ;; AtomicMoveNotSupportedException rather than a fallback to copy and delete.
-;; Windows binds no rename here and keeps the plain move.
+;; Windows is MoveFileExW replacing the target (win32-move-replacing!, io.ss), named
+;; from the Win32 error as WindowsException.translateToIOException names it. An
+;; antivirus scan of a freshly closed file holds it open for a moment and the move
+;; then answers ERROR_ACCESS_DENIED, so that alone is retried, as rename-replace!
+;; retries it and only while the move could still succeed (jolt-lang/jolt#1263).
 (define nio-EXDEV 18)                       ; the same on macOS and Linux
 (define c-rename
   (and (not (eq? (sa-os-family) 'windows))
        (jolt-foreign-proc-safe "rename" '(string string) 'int)))
+(define (nio-win-atomic-move! s d shown-s shown-d)
+  (let loop ((delays fs-retry-delays-ms))
+    (let ((err (win32-move-replacing! s d)))
+      (cond
+        ((= err 0) (void))
+        ((and (= err 5) (pair? delays) (file-exists? s) (not (file-directory? d)))
+         (sleep (make-time 'time-duration (* (car delays) 1000000) 0))
+         (loop (cdr delays)))
+        ((= err 17)                     ; ERROR_NOT_SAME_DEVICE
+         (nio-fs-throw "java.nio.file.AtomicMoveNotSupportedException" shown-s shown-d
+                       (win32-error-message err)))
+        ((memv err '(2 3)) (nio-no-such-file shown-s shown-d)) ; FILE or PATH_NOT_FOUND
+        ((memv err '(80 183)) (nio-already-exists shown-s shown-d)) ; FILE or ALREADY_EXISTS
+        ((= err 5) (nio-fs-throw "java.nio.file.AccessDeniedException" shown-s shown-d))
+        (else (nio-fs-throw "java.nio.file.FileSystemException" shown-s shown-d
+                            (win32-error-message err)))))))
 (define (nio-atomic-move! s d shown-s shown-d)
+  (if (nio-windows?)
+      (nio-win-atomic-move! s d shown-s shown-d)
+      (nio-posix-atomic-move! s d shown-s shown-d)))
+(define (nio-posix-atomic-move! s d shown-s shown-d)
   (let-values (((r err) (io-call+errno (c-rename s d))))
     (unless (= r 0)
       (if (= err nio-EXDEV)
@@ -1729,7 +1754,7 @@
         (cons "move" (lambda (src dst . opts)
                        (let ((s (nfp src)) (d (nfp dst)))
                          (cond
-                           ((and c-rename (nio-opts-have? opts copt-sym 'atomic-move))
+                           ((nio-opts-have? opts copt-sym 'atomic-move)
                             (nio-atomic-move! s d (nio-shown src) (nio-shown dst))
                             (->path dst))
                            ((string=? s d) (->path dst))
@@ -2531,6 +2556,10 @@
       (nio-copy-foreign src dst opts)
       (apply nio-files-provider-call "copy" src dst opts)))
 (define (nio-files-move src dst . opts)
+  (when (and (nio-foreign-pair? src dst) (nio-opts-have? opts copt-sym 'atomic-move))
+    ;; moving between providers is a copy and a delete, which is not atomic
+    (nio-fs-throw "java.nio.file.AtomicMoveNotSupportedException" #f #f
+                  "Atomic move between providers is not supported"))
   (if (nio-foreign-pair? src dst)
       (begin (nio-copy-foreign src dst opts)
              (nio-files-call "delete" src)

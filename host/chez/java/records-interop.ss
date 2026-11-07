@@ -422,6 +422,30 @@
     (record-method-dispatch target "write" (jolt-list s))
     jolt-nil))
 
+;; The accessors of the classes that keep values apart from their message, by the
+;; slot of the detail vector each one reads. A FileSystemException thrown without
+;; one was built from a message alone, which is its file, as FileSystemException's
+;; one-argument constructor has it.
+(define throwable-detail-accessors
+  '(("FileSystemException" ("getFile" . 0) ("getOtherFile" . 1) ("getReason" . 2))
+    ("URISyntaxException" ("getInput" . 0) ("getReason" . 1) ("getIndex" . 2))
+    ("PatternSyntaxException" ("getDescription" . 0) ("getIndex" . 1) ("getPattern" . 2))))
+(define (throwable-detail-method obj name)
+  (and (jolt-ex-info-record? obj)
+       (let loop ((cs throwable-detail-accessors))
+         (cond
+           ((null? cs) #f)
+           ((and (assoc name (cdar cs))
+                 (exception-isa? (jolt-ex-info-record-class-name obj) (caar cs)))
+            (let ((d (jolt-ex-info-record-error-offset obj)))
+              (list
+               (if (vector? d)
+                   (or (vector-ref d (cdr (assoc name (cdar cs)))) jolt-nil)
+                   (if (string=? name "getFile")
+                       (jolt-ex-info-record-message obj)
+                       jolt-nil)))))
+           (else (loop (cdr cs)))))))
+
 (define (throwable-method obj name args)
   (cond
     ((or (string=? name "getMessage") (string=? name "getLocalizedMessage"))
@@ -433,7 +457,9 @@
     ((string=? name "getNextException") (list jolt-nil))
     ;; java.text.ParseException.getErrorOffset — the int its ctor stashed.
     ((string=? name "getErrorOffset")
-     (list (if (jolt-ex-info-record? obj) (jolt-ex-info-record-error-offset obj) 0)))
+     (list (if (and (jolt-ex-info-record? obj) (fixnum? (jolt-ex-info-record-error-offset obj)))
+               (jolt-ex-info-record-error-offset obj)
+               0)))
     ;; The frames printStackTrace renders, as elements: the ones that map to
     ;; Clojure source, from the continuation the throwable was thrown with
     ;; (source-registry.ss). A tail call leaves no frame to report, so a caller
@@ -448,7 +474,7 @@
      (list (if (pair? args)
                (jolt-throwable-print-to obj (car args))
                (jolt-throwable-print-stack-trace obj (current-error-port)))))
-    (else #f)))
+    (else (throwable-detail-method obj name))))
 
 ;; Broad-catch fallback for catch-clause dispatch (analyze-try desugars
 ;; (catch C e …) to (or (instance? C e) (__catch-broad? "C" e))). A raised value
