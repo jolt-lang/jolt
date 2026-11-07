@@ -12,7 +12,9 @@
 ;; it suppresses BETTER exactly as it suppresses WORSE — inside the band a move is
 ;; a different draw rather than a result, and reads as ok. :drawn-pass is for a
 ;; suite whose assertion count moves with a number it prints: a regex whose group
-;; is that number, added to pass, which is then pinned exactly. :note records why a
+;; is that number, added to pass, which is then pinned exactly. :drawn-fail is a
+;; regex for the report of a failure the draw itself can cause upstream; each match
+;; moves back to pass, and every other failure still counts. :note records why a
 ;; non-zero fail/error count is expected — a host-model divergence, a missing
 ;; JVM-only dependency, or a tracked bug.
 {:libs
@@ -102,8 +104,12 @@
    ;; drawn by rand-int, and asserts once on the main thread per lookup that
    ;; succeeded. So pass is exactly 1314 minus the exceptions it prints, which are
    ;; roughly the threads started before the first non-throwing one: 30 or so, and
-   ;; past 84 about one run in thirty.
+   ;; past 84 about one run in thirty. lookup-or-miss also gives up after ten retries
+   ;; of other threads' failed delays and returns nil (its `(when (< n 10) ...)`), so
+   ;; a thread that lost ten in a row fails the "some value" assertion, about one run
+   ;; in fifty here. That is the library, not the host.
    :drawn-pass "threads with (\\d+) exceptions"
+   :drawn-fail "actual: \\(not \\(= \"some value\" nil\\)\\)"
    :expect {:tests 23 :pass 1314 :fail 0 :error 0}}
 
   {:name "core.memoize"
