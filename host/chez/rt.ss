@@ -355,6 +355,33 @@
            (sa-foreign-procedure-native-error
             __errno (conv ...) name args res))))))
 
+;; Errno comes from the location accessor rather than Chez's native-error
+;; convention above, which needs a literal foreign-procedure whose load-time
+;; relocation aborts the boot where the symbol is absent, as on Windows.
+(define io-errno-loc
+  (or (jolt-foreign-proc-safe "__error" '() 'void*)
+      (jolt-foreign-proc-safe "__errno_location" '() 'void*)
+      (jolt-foreign-proc-safe "__errno" '() 'void*)))
+;; (io-call+errno (c-fn arg ...)) -> (values result errno), errno 0 where this
+;; host has no accessor. For a plain (not collect-safe) libc call whose failure
+;; is told apart by errno. A read after the call has returned is not enough: a
+;; guard allocates, and an allocation, or a collect rendezvous with another
+;; thread, can make libc calls on this thread. Two mkdir races in 2,900 lost
+;; EEXIST that way and reported ENOMEM (jolt-lang/jolt#1529). So the thread's
+;; errno address is taken first, and the call and the read sit inside
+;; disable-interrupts, which holds off the collect request. The arguments must
+;; not be able to raise: nothing here would re-enable interrupts. Same three
+;; accessor spellings process.ss uses: Darwin/BSD, glibc/musl, then bionic.
+(define-syntax io-call+errno
+  (syntax-rules ()
+    ((_ call)
+     (let ((loc (and io-errno-loc (io-errno-loc))))
+       (disable-interrupts)
+       (let* ((r call)
+              (err (if loc (sa-foreign-ref 'int loc 0) 0)))
+         (enable-interrupts)
+         (values r err))))))
+
 ;; --- how many processors can this process use ---------------------------------
 ;; Backs jolt.host/available-processors, which Runtime.availableProcessors and
 ;; pmap's look-ahead window read. Each host is asked the question the JVM asks

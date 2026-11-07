@@ -701,10 +701,12 @@
         (let loop ()
           (if (fx=? (in-left) 0)
               (drain-out!)
-              (let ((r (if cd (conv cd cells (+ cells 8) (+ cells 16) (+ cells 24)) iconv-size-max)))
+              (let-values (((r err) (if cd
+                                        (io-call+errno (conv cd cells (+ cells 8) (+ cells 16) (+ cells 24)))
+                                        (values iconv-size-max 0))))
                 (if (not (= r iconv-size-max))
                     (begin (drain-out!) (loop))
-                    (let ((err (io-errno)))
+                    (begin
                       (drain-out!)
                       (cond
                         ((= err iconv-E2BIG) (loop))

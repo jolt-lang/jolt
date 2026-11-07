@@ -59,15 +59,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two processes starting in the same millisecond picked the same name. The loser of
   `Files/createTempDirectory` failed with `IOException: file exists`, and
   `Files/createTempFile` and `java.io.File/createTempFile` opened it with a create
-  that also succeeds on an existing file, which handed both processes one file. Names are now the prefix, a random
-  64-bit number and the suffix, as on the JVM, and each entry is created
-  exclusively, with a fresh name when one is taken.
+  that also succeeds on an existing file, which handed both processes one file.
+  Names are now the prefix, a random 64-bit number and the suffix, as on the JVM,
+  and each entry is created exclusively, with a fresh name when one is taken.
 - **`Files/createDirectory` reports a lost race as `FileAlreadyExistsException`.**
   It looked for the path before calling `mkdir`, so a directory another process made
   in between came back as a plain `FileSystemException`, and code using the
   directory as a lock read losing it as an I/O error. The class now comes from
   `mkdir`'s own errno, as on the JVM, which also makes a permission failure
   `AccessDeniedException`.
+- **A temp file or a new entry is created with its final permissions.**
+  `Files/createTempFile` made the file with the default mode and then `chmod`ed it
+  to `0600`, so another user could open it in between and go on reading what was
+  written to it. `createFile`, `createDirectory` and `createTempDirectory` had the
+  same window for permissions passed as attributes. The mode now goes in the create
+  call. `createTemp*` also honor a permissions attribute, which they ignored.
+- **`createTemp*` argument and failure handling matches the JVM.** A prefix or suffix
+  that names a parent, such as `../x`, is `IllegalArgumentException` for
+  `Files/createTemp*` instead of creating outside the directory, and
+  `java.io.File/createTempFile` uses only the prefix's last segment. A `nil` suffix to
+  `Files/createTempFile` is `.tmp`. A missing or non-directory parent to
+  `Files/createTempFile` is `NoSuchFileException` or `FileSystemException` rather than
+  `FileNotFoundException` or `IOException` from the open.
+- **`errno` is read where nothing can overwrite it.** Between a libc call and the read,
+  an allocation or a collection could change `errno`, so `createDirectory` could call
+  an existing directory `Cannot allocate memory`. `Files/delete`, `createLink`,
+  `createSymbolicLink`, `getFileStore`, `setOwner`, `toRealPath` and the charset decoder
+  read it the same way and now share one safe read.
 - **`ffi/read-into!` and `ffi/write-array` refuse an array that is not a
   byte-array on the byte route.** `(write-array p :byte (int-array [1 2]) 0 0 2)`
   and `(write-array p (double-array 2))` truncated each element to a byte and

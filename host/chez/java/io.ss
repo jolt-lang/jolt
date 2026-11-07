@@ -997,19 +997,6 @@
 ;;
 ;;   ENOENT / ENOTDIR / EACCES    best-effort path, no error
 ;;   ELOOP / ENAMETOOLONG         java.io.IOException, in strerror's own wording
-;;
-;; Errno comes from the location accessor rather than Chez's native-error
-;; convention, which needs a literal foreign-procedure whose load-time relocation
-;; aborts the boot where the symbol is absent -- exactly the Windows build
-;; realpath is already missing from. Same three spellings process.ss uses:
-;; Darwin/BSD, glibc/musl, then bionic.
-(define io-errno-loc
-  (or (jolt-foreign-proc-safe "__error" '() 'void*)
-      (jolt-foreign-proc-safe "__errno_location" '() 'void*)
-      (jolt-foreign-proc-safe "__errno" '() 'void*)))
-(define (io-errno)
-  (if io-errno-loc (guard (e (#t 0)) (sa-foreign-ref 'int (io-errno-loc) 0)) 0))
-
 ;; macOS values from <sys/errno.h>; Linux from asm-generic/errno.h. The same
 ;; os-family split process.ss uses for EAGAIN and io_poller.clj for EINPROGRESS.
 ;; A wrong value here degrades to today's behavior (no raise) rather than
@@ -1018,34 +1005,43 @@
 (define io-ENAMETOOLONG (if (eq? (sa-os-family) 'macos) 63 36))
 (define io-EEXIST 17)                       ; the same on macOS and Linux
 
-;; mkdir(2) with its own errno. Chez's mkdir raises a bare &i/o-filename for
-;; every failure, so a caller that needed to tell EEXIST apart had to stat first,
-;; and a directory another process made between that stat and the mkdir came
-;; back untyped (jolt-lang/jolt#1529). Answers 0, or the call's errno. Windows
-;; binds no mkdir here: there the failure is looked at afterwards, EEXIST when
-;; the path is present, and Chez's condition otherwise.
-;;
-;; The errno is read with nothing able to set it in between. io-errno after the
-;; call was not enough: its guard allocates, and an allocation, or a collect
-;; rendezvous with another thread, can make libc calls on this thread. Two
-;; races in 2,900 lost EEXIST that way and reported ENOMEM, "Cannot allocate
-;; memory", for a directory that existed. So this thread's errno address is
-;; taken before the call, and the call and the read sit inside
-;; disable-interrupts, which holds off the collect request; between them only
-;; fixnums are made, so nothing allocates.
+;; mkdir(2) and an O_EXCL open(2) with their own errno, each answering 0 or the
+;; errno, and each taking the mode in the call so the entry never exists with a
+;; wider one. Chez's mkdir raises a bare &i/o-filename for every failure, so a
+;; caller that needed to tell EEXIST apart had to stat first, and a directory
+;; another process made between that stat and the mkdir came back untyped
+;; (jolt-lang/jolt#1529). Windows binds neither. There the failure is looked at
+;; through Chez: EEXIST when the name is taken, and its condition otherwise.
 (define c-mkdir
   (and (not (eq? (sa-os-family) 'windows))
        (jolt-foreign-proc-safe "mkdir" '(string int) 'int)))
 (define (io-mkdir p mode)
   (if c-mkdir
-      (let ((loc (and io-errno-loc (io-errno-loc))))
-        (disable-interrupts)
-        (let* ((r (c-mkdir p mode))
-               (err (cond ((= r 0) 0) (loc (sa-foreign-ref 'int loc 0)) (else -1))))
-          (enable-interrupts)
-          err))
+      (let-values (((r err) (io-call+errno (c-mkdir p mode))))
+        (if (= r 0) 0 err))
       (guard (e ((file-exists? p) io-EEXIST))
         (mkdir p mode)
+        0)))
+;; O_WRONLY|O_CREAT|O_EXCL. macOS from <sys/fcntl.h>; Linux from
+;; asm-generic/fcntl.h, which every Linux target Chez builds for uses.
+(define io-O-create-exclusive
+  (case (sa-os-family)
+    ((macos) (fxior 1 #x200 #x800))
+    ((linux) (fxior 1 #x40 #x80))
+    (else #f)))
+;; open is variadic: the convention is what puts mode where its va_list reads it
+(define c-open-exclusive
+  (and io-O-create-exclusive
+       (jolt-foreign-proc-safe (__varargs_after 2) "open" '(string int int) 'int)))
+(define c-close-fd (jolt-foreign-proc-safe "close" '(int) 'int))
+(define (io-create-exclusive p mode)
+  (if (and c-open-exclusive c-close-fd)
+      (let-values (((fd err) (io-call+errno (c-open-exclusive p io-O-create-exclusive mode))))
+        (if (< fd 0)
+            err
+            (begin (c-close-fd fd) 0)))
+      (guard (e ((i/o-file-already-exists-error? e) io-EEXIST))
+        (close-port (open-file-output-port p (file-options)))
         0)))
 
 ;; Temp entries are named and made the JDK's way (TempFileHelper, and
@@ -1058,26 +1054,24 @@
   (string-append prefix
                  (number->string (bytevector-u64-ref (jolt-random-bytes 8) 0 (endianness little)))
                  suffix))
-;; CREATE! makes the entry at its path exclusively, answering #t, or #f when the
-;; name is taken; any other failure it raises. Answers the path it made.
-(define (io-create-temp dir prefix suffix create!)
+;; CREATE! makes the entry at its path exclusively, answering 0 or the errno.
+;; FAILED! raises for any errno but EEXIST. Answers the path it made.
+(define (io-create-temp dir prefix suffix create! failed!)
   (let loop ()
-    (let ((p (string-append dir (io-temp-name prefix suffix))))
-      (if (create! p) p (loop)))))
-;; The exclusive create of a temp FILE: no `no-fail`, so the open is O_EXCL and a
-;; name already taken raises &i/o-file-already-exists.
-(define (io-create-temp-file! p)
-  (guard (e ((i/o-file-already-exists-error? e) #f))
-    (close-port (open-file-output-port p (file-options)))
-    #t))
+    (let* ((p (string-append dir (io-temp-name prefix suffix)))
+           (err (create! p)))
+      (cond ((eqv? err 0) p)
+            ((eqv? err io-EEXIST) (loop))
+            (else (failed! p err))))))
 
 (define (jfile-realpath* p)                 ; -> (values path-or-#f errno)
   (cond
     (c-realpath
      (let ((buf (make-bytevector 4096 0)))
-       (if (= 0 (c-realpath p buf))
-           (values #f (io-errno))
-           (values (jfile-cstr buf) 0))))
+       (let-values (((r err) (io-call+errno (c-realpath p buf))))
+         (if (= 0 r)
+             (values #f err)
+             (values (jfile-cstr buf) 0)))))
     ((win32?) (values (win32-long-path p) 0))
     (else (values #f 0))))
 
@@ -3880,9 +3874,15 @@
                   (else (host-temp-dir))))
          (sfx (if (or (null? (list suffix)) (jolt-nil? suffix)) ".tmp" (jolt-str-render-one suffix))))
     ;; an exclusive create: the truncating open this replaced handed two
-    ;; processes that drew the same name one shared file, and told neither
-    (make-jfile (io-create-temp (string-append d "/") (jolt-str-render-one prefix) sfx
-                                io-create-temp-file!))))
+    ;; processes that drew the same name one shared file, and told neither. The
+    ;; mode is the JDK's here too, 0666 under the umask: only Files/createTemp*
+    ;; is owner-only. The prefix is only its last segment, as TempDirectory has it.
+    (make-jfile (io-create-temp (string-append d "/")
+                                (path-last-segment (jolt-str-render-one prefix)) sfx
+                                (lambda (p) (io-create-exclusive p #o666))
+                                (lambda (p err)
+                                  (throw-jvm 'IOException (or (and c-strerror (c-strerror err))
+                                                              "Unable to create temporary file")))))))
 ;; File.listRoots: the filesystem roots. POSIX has exactly one; Windows has one
 ;; per mounted drive, and answering "/" there named a directory on whichever
 ;; drive the process happened to be on rather than enumerating anything
