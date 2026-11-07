@@ -268,7 +268,8 @@
            (k9 (list-ref ks 9))
            (site (jolt-kw-site))
            (n 2000000)
-           (time-it (lambda (thunk) (let ((t0 (real-time))) (do ((i 0 (fx+ i 1))) ((fx= i n)) (thunk)) (- (real-time) t0))))
+           (thread-ms (lambda () (let ((t (current-time 'time-thread))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000)))))
+           (time-it (lambda (thunk) (let ((t0 (thread-ms))) (do ((i 0 (fx+ i 1))) ((fx= i n)) (thunk)) (- (thread-ms) t0))))
            ;; best of three per arm, alternating: interference (a collection, a
            ;; loaded machine running the rest of the gate) only ever makes an arm
            ;; slower, and one bad sample in the cached arm read as a regression

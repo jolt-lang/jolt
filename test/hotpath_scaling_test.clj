@@ -29,10 +29,16 @@
 ;; Milliseconds as a double, from the nanosecond clock: a row whose small arm
 ;; takes a millisecond or two is otherwise quantized to 1 or 2, and its ratio
 ;; to 5.0 or 10.0 — which is where the timeout row's noise came from.
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression. The work timed here all runs on this
+;; thread, collections included.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+
 (defn- timed [f]
-  (let [t (System/nanoTime)
+  (let [t (cpu-ns)
         v (f)]
-    [(/ (- (System/nanoTime) t) 1e6) v]))
+    [(/ (- (cpu-ns) t) 1e6) v]))
 
 (def ^:private failures (atom 0))
 

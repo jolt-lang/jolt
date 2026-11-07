@@ -20,8 +20,9 @@
 ;; for minutes). An arm's cost is its fastest batch over 5 rounds of a 20ms
 ;; budget each; the arms alternate order every round and each round starts from
 ;; a full collection. A linear rebuild reads ~4 in every batch.
+;; This thread's CPU time, not the wall clock: a preempted sample reads as a regression.
 (define (now-ns)
-  (let ((t (current-time 'time-monotonic)))
+  (let ((t (current-time 'time-thread)))
     (+ (* 1000000000 (time-second t)) (time-nanosecond t))))
 
 (define (timed-batch thunk b)

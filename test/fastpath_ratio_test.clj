@@ -229,13 +229,22 @@
 
 (def ^:private samples 3)
 
-;; nanoTime, not currentTimeMillis: these ratios are judged to two decimals and
-;; the fast arms run in single-digit milliseconds, which a millisecond clock
-;; quantizes badly — and the fast arm is the denominator.
+;; A nanosecond clock, not currentTimeMillis: these ratios are judged to two
+;; decimals and the fast arms run in single-digit milliseconds, which a millisecond
+;; clock quantizes badly — and the fast arm is the denominator.
+;;
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression, which is what the alternating and the
+;; re-measuring below were working around. The pipe rows bind the wall clock back,
+;; since what they compare includes waiting on a child process.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+(defn- wall-ns [] (System/nanoTime))
+(def ^:dynamic *clock* cpu-ns)
 (defn- timed [f]
-  (let [t (System/nanoTime)
+  (let [t (*clock*)
         v (f)]
-    [(/ (- (System/nanoTime) t) 1e6) v]))
+    [(/ (- (*clock*) t) 1e6) v]))
 
 ;; Each sample starts from a fresh collection. An arm that allocates a few MB per
 ;; call (chars-copy builds a 1.5M-character string on both sides) trips a
@@ -515,8 +524,9 @@
   ;; a file costs, with the same child spawned on both sides.
   (when-not (= pipe-bytes (pipe-read-arm))
     (swap! failures conj "pipe-read: drained the wrong number of bytes"))
-  (judge! "pipe-read" pipe-read-ref pipe-read-arm 3.0)
-  (judge! "pipe-write" pipe-write-ref pipe-write-arm 3.0)
+  (binding [*clock* wall-ns]
+    (judge! "pipe-read" pipe-read-ref pipe-read-arm 3.0)
+    (judge! "pipe-write" pipe-write-ref pipe-write-arm 3.0))
 
   ;; A char array is backed by a string, so building one from a string and
   ;; reading one back out are block moves — each must cost about what copying

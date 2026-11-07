@@ -43,10 +43,16 @@
 (def ^:private budget-ns 20000000)        ; 20ms of batches per arm per round
 (def ^:private floor-ns   1000000)        ; a batch must clear 1ms to be timed
 
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression. The work timed here all runs on this
+;; thread, collections included.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+
 (defn- timed [f]
-  (let [t (System/nanoTime)]
+  (let [t (cpu-ns)]
     (f)
-    (- (System/nanoTime) t)))
+    (- (cpu-ns) t)))
 
 (defn- batch-size
   "The smallest power-of-two batch whose single run clears floor-ns, so what gets

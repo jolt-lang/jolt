@@ -67,10 +67,16 @@
 (def ^:private min-rounds 3)
 (def ^:private budget-ns 4e9)
 
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression. The work timed here all runs on this
+;; thread, collections included.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+
 (defn- run-ns [f b]
-  (let [t (System/nanoTime)]
+  (let [t (cpu-ns)]
     (dotimes [_ b] (f))
-    (- (System/nanoTime) t)))
+    (- (cpu-ns) t)))
 
 (defn- batch-size [f]
   (loop [b 1]

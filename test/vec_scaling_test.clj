@@ -18,10 +18,16 @@
 
 (defn- vec-of [n] (into [] (range n)))
 
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression. The work timed here all runs on this
+;; thread, collections included.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+
 (defn- timed [b f]
-  (let [t (System/nanoTime)]
+  (let [t (cpu-ns)]
     (dotimes [_ b] (f))
-    (- (System/nanoTime) t)))
+    (- (cpu-ns) t)))
 
 ;; Timed the way test/complexity_test.clj times its rows. A fixed rep count
 ;; cannot serve both states: 15000 reps put the fixed arms at ~18ms, and put a
