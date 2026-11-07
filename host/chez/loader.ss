@@ -3126,14 +3126,20 @@
 ;; Clojure — (load "common_tests") from clojure.tools.reader-test loads
 ;; clojure/tools/common_tests.clj. Strip the leading slash / try each of
 ;; ldr-source-exts.
+;; The classpath-relative path a load from namespace NS reads, and the file it is.
+;; A build asks too, so that it compiles the file a run would have loaded.
+(define (jolt-load-rel-path ns p)
+  (cond
+    ((and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
+     (substring p 1 (string-length p)))
+    (else (let ((dir (ns-rel-dir ns)))
+            (if (string=? dir "") p (string-append dir "/" p))))))
+(define (jolt-load-target-file ns p)
+  (resolve-on-roots (jolt-load-rel-path ns p)))
 (define (jolt-load . paths)
   (for-each
     (lambda (p)
-      (let* ((rel (cond
-                    ((and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
-                     (substring p 1 (string-length p)))
-                    (else (let ((dir (ns-rel-dir (chez-current-ns))))
-                            (if (string=? dir "") p (string-append dir "/" p))))))
+      (let* ((rel (jolt-load-rel-path (chez-current-ns) p))
              (f (resolve-on-roots rel)))
         (if f (ldr-wrapping (lambda () (load-jolt-file/restoring-ns f)))
             (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate resource on source roots: " p)))))

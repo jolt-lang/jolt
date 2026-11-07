@@ -1434,6 +1434,7 @@
 ;; is a read, not an unbound global on the first `defn`.
 (define jolt-form-ordinal (make-parameter #f))
 (define (var-def-ordinal ns name) 0)
+(define (var-def-visible-in-outer-frames? ns name) #t)
 
 ;; A file path the way a report shows it (compile-eval.ss's diagnostics);
 ;; mirrors host/chez/rt.ss jolt-display-path.

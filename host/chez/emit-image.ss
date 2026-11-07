@@ -99,20 +99,22 @@
          (and (pair? items) (symbol-t? (car items))
               (string=? (symbol-t-name (car items)) "ns")))))
 
-;; The calls in an (ns ...) form's expansion that an image has to run, in order:
-;; the (reset-meta! ...) its metadata makes, since on the JVM (meta (find-ns 'x))
-;; answers it, and each (load ...) from a (:load ...) clause, which defines vars
-;; nothing else would. A (:require ...) is the build's closure scan's business. Reading
+;; The calls in an (ns ...) form's expansion named by one of NAMES, in order. An image
+;; runs no ns form, so it has to make two of them itself: the (reset-meta! ...) its
+;; metadata makes, since on the JVM (meta (find-ns 'x)) answers it, and each (load ...)
+;; from a (:load ...) clause. A (:require ...) is the closure scan's business. Reading
 ;; them off the expansion leaves the ns macro the only place that knows the form's
 ;; grammar, and refuses a malformed ns in a build as loading it would.
-(define (ei-ns-load-forms f)
+(define (ei-ns-calls f names)
   ;; Expanded in clojure.core, because the namespace being walked may not map `ns`.
   (filter (lambda (x)
             (and (cseq? x)
                  (let ((h (seq->list x)))
                    (and (pair? h) (symbol-t? (car h))
-                        (member (symbol-t-name (car h)) '("reset-meta!" "load"))))))
+                        (member (symbol-t-name (car h)) names)))))
           (seq->list (hc-expand-1 (make-analyze-ctx "clojure.core") f nr-no-env))))
+(define (ei-ns-meta-forms f) (ei-ns-calls f '("reset-meta!")))
+(define (ei-ns-load-calls f) (ei-ns-calls f '("load")))
 
 ;; --- parsed top-level forms, shared by a build's two walks -------------------
 ;; `jolt build` reads and parses every app source TWICE: once in build.ss
@@ -356,6 +358,139 @@
                 (or (string=? n "*unchecked-math*")
                     (string=? n "*warn-on-reflection*")))))))
 
+;; --- loaded files ------------------------------------------------------------
+;; (load "x") with literal paths, at a file's top level or as (:load "x") in its ns
+;; form, compiles into the namespace, so a binary needs neither the file nor the
+;; compiler. Each walk visits the loaded file's forms where the load stood, with the
+;; file's own form counter and reader file, as the loader would: that is what the
+;; def-ordinal replay stamped (rt.ss). The enclosing files' positions go along too,
+;; since a var the outer file defines after the load is not visible in the loaded one.
+;;
+;; A file holding an ns form, or an in-ns to another namespace, stays a runtime load:
+;; its forms do not belong to this namespace's unit. So does a path only known at
+;; runtime, and a load that is not at top level.
+
+;; (ns path) -> the file a load of path would read, or #f. The build installs this
+;; (build.ss), so that the seed mint, which has no loader, never needs one.
+(define ei-load-file-resolver (make-parameter (lambda (ns path) #f)))
+(define ei-load-stack (make-parameter '()))   ; files being walked, for a cycle
+(define ei-load-noted (make-hashtable string-hash string=?))
+
+(define (ei-load-symbol? h)
+  (and (symbol-t? h)
+       (string=? (symbol-t-name h) "load")
+       (let ((n (symbol-t-ns h)))
+         (or (not n) (jolt-nil? n) (string=? n "clojure.core")))))
+
+(define (ei-string-literal x)
+  (cond ((string? x) x)
+        ((and (cseq? x)
+              (let ((q (seq->list x)))
+                (and (= (length q) 2) (symbol-t? (car q))
+                     (string=? (symbol-t-name (car q)) "quote")
+                     (string? (cadr q))
+                     (cadr q))))
+         => values)
+        (else #f)))
+
+;; The paths of a (load "a" "b") form, or #f for anything else.
+(define (ei-literal-load-paths f)
+  (and (cseq? f)
+       (let ((items (seq->list f)))
+         (and (pair? items) (pair? (cdr items))
+              (ei-load-symbol? (car items))
+              (let ((paths (map ei-string-literal (cdr items))))
+                (and (for-all values paths) paths))))))
+
+;; (in-ns 'x) -> "x", or #f for any other form. A computed target reads as "".
+(define (ei-in-ns-target f)
+  (and (cseq? f)
+       (let ((items (seq->list f)))
+         (and (= (length items) 2) (symbol-t? (car items))
+              (string=? (symbol-t-name (car items)) "in-ns")
+              (let ((q (cadr items)))
+                (if (cseq? q)
+                    (let ((qi (seq->list q)))
+                      (if (and (= (length qi) 2) (symbol-t? (cadr qi)))
+                          (symbol-t-name (cadr qi))
+                          ""))
+                    ""))))))
+
+(define (ei-load-note! path why)
+  (unless (hashtable-ref ei-load-noted path #f)
+    (hashtable-set! ei-load-noted path #t)
+    (display (string-append "jolt build: note: (load " (ei-str-lit path)
+                            ") stays a runtime load, so the binary needs the file and"
+                            " the compiler: " why "\n")
+             (current-error-port))))
+
+;; (file . forms) for a path this namespace can compile in, else #f.
+(define (ei-loaded-file ns-name path)
+  (let ((file ((ei-load-file-resolver) ns-name path)))
+    (cond
+      ((not file) (ei-load-note! path "the file is not on the source roots") #f)
+      ((member file (ei-load-stack)) (ei-load-note! path "it loads itself") #f)
+      (else
+       (let ((forms (parameterize ((rdr-source-file file))
+                      (ei-read-all-for file (ldr-read-source file)))))
+         (if (for-all (lambda (f)
+                        (and (not (ei-ns-form? f))
+                             (let ((t (ei-in-ns-target f)))
+                               (or (not t) (string=? t ns-name)))))
+                      forms)
+             (cons file forms)
+             (begin (ei-load-note! path "it switches to another namespace") #f)))))))
+
+;; The (file . forms) list a top-level form inlines to, or #f if it is not such a
+;; load. A namespace can define a `load` of its own, so the head has to resolve to
+;; core's.
+(define (ei-inlinable-load ns-name f)
+  (let ((paths (ei-literal-load-paths f)))
+    (and paths
+         (eq? (hc-resolve-cell (make-analyze-ctx ns-name) (car (seq->list f)))
+              (var-cell-lookup "clojure.core" "load"))
+         (let ((files (map (lambda (p) (ei-loaded-file ns-name p)) paths)))
+           (and (for-all values files) files)))))
+
+(define (ei-walk-loaded ns-name lf ord proc)
+  (let ((outer (rdr-source-file)) (file (car lf)))
+    ;; RT.load-parity bracket, as the loader's: a compiler-flag set! in the loaded
+    ;; file ends with it.
+    (dynamic-wind
+      jolt-ns-load-vars-push!
+      (lambda ()
+        (parameterize ((rdr-source-file file)
+                       (ei-load-stack (cons file (ei-load-stack)))
+                       (jolt-form-outer-frames
+                         (cons (cons outer ord) (jolt-form-outer-frames))))
+          (jolt-enter-file! file)
+          (let loop ((forms (cdr lf)) (i 0))
+            (unless (null? forms)
+              ;; the file's (in-ns 'this-ns) has nothing to do in this namespace's unit
+              (unless (ei-in-ns-target (car forms))
+                (ei-walk-form ns-name (car forms) i proc))
+              (loop (cdr forms) (fx+ i 1))))))
+      jolt-ns-load-vars-pop!)
+    (when outer (jolt-enter-file! outer))))
+
+(define (ei-walk-form ns-name f ord proc)
+  (cond
+    ((ei-ns-form? f)
+     (proc f ord)
+     (for-each (lambda (c) (ei-walk-form ns-name c ord proc)) (ei-ns-load-calls f)))
+    ((ei-inlinable-load ns-name f)
+     => (lambda (files)
+          (for-each (lambda (lf) (ei-walk-loaded ns-name lf ord proc)) files)))
+    (else (proc f ord))))
+
+;; Call (proc form ordinal) for each form a namespace's file compiles to, loaded files
+;; included, in the order they would run.
+(define (ei-walk-forms ns-name forms proc)
+  (let loop ((forms forms) (ord 0))
+    (unless (null? forms)
+      (ei-walk-form ns-name (car forms) ord proc)
+      (loop (cdr forms) (fx+ ord 1)))))
+
 (define (ei-for-each-form ns-name src proc)
   (set-chez-ns! ns-name)               ; ::kw resolves against this ns
   (let ((hook (ei-emit-form-hook)))
@@ -365,9 +500,9 @@
     (dynamic-wind
       jolt-ns-load-vars-push!
       (lambda ()
-        (let loop ((forms (ei-read-all-for ns-name src)) (ord 0))
-          (unless (null? forms)
-            (let ((f (if hook (hook (car forms)) (car forms))))
+        (ei-walk-forms ns-name (ei-read-all-for ns-name src)
+          (lambda (form ord)
+            (let ((f (if hook (hook form) form)))
               ;; ord mirrors the loader's per-file top-level form counter
               ;; (load-jolt-file*): every form read, the ns form included, so the
               ;; def-ordinal visibility replay (rt.ss var-def-ordinals) compares
@@ -381,7 +516,7 @@
                 (cond
                   ((ei-ns-form? f)
                    (for-each (lambda (m) (proc ns-name 'form #f m))
-                             (ei-ns-load-forms f)))
+                             (ei-ns-meta-forms f)))
                   ((ce-macro-form? f)
                    ;; macro kind hands proc (fn-form . meta-pmap-or-#f) — the
                    ;; derived :doc/:arglists ride along to the def emission.
@@ -392,8 +527,7 @@
                   (else
                    (when (ei-flag-set-form? f)
                      (jolt-compile-eval-form f ns-name))
-                   (proc ns-name 'form #f f))))
-              (loop (cdr forms) (fx+ ord 1))))))
+                   (proc ns-name 'form #f f))))))))
       jolt-ns-load-vars-pop!)))
 
 ;; Count of forms silently dropped during a guarded emit (a source form that

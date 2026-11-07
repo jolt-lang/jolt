@@ -2429,6 +2429,20 @@
 (define (load-frame-ns f) (vector-ref f 2))
 (define jolt-load-frames (make-parameter '()))
 (define jolt-form-ordinal (make-parameter #f))
+;; While a build walk visits a loaded file: (file . ordinal) of each enclosing file's
+;; form that loaded it. A var an enclosing file defines after that form was not
+;; visible to the loaded file, whatever the loaded file's own counter says.
+(define jolt-form-outer-frames (make-parameter '()))
+(define (var-def-visible-in-outer-frames? ns name)
+  (let ((frames (jolt-form-outer-frames)))
+    (or (null? frames)
+        (jolt-with-mutex var-table-mu
+          (for-all (lambda (fr)
+                     (fx<=? (or (hashtable-ref var-def-ordinals
+                                  (var-def-ordinal-key (car fr) ns name) #f)
+                                0)
+                            (cdr fr)))
+                   frames)))))
 ;; Value-position comparison references compile to the seq.ss chain singletons
 ;; (jolt-lt/gt/le/ge), not to the clojure.core var roots — the roots were later
 ;; re-bound by the checked numeric layer, so def-var! never saw these procs.

@@ -20,6 +20,10 @@
 (load "host/chez/emit-image.ss")
 (load "host/chez/dce.ss")
 
+;; A literal (load "x") compiles into the namespace (emit-image.ss), found where a
+;; runtime load would look.
+(ei-load-file-resolver (lambda (ns path) (jolt-load-target-file ns path)))
+
 ;; --- shell helpers ----------------------------------------------------------
 ;; Every spawn here goes through jolt-with-empty-sigmask, for the reason jolt-sh
 ;; gives (loader.ss): the shutdown signals are blocked on this thread, and a cc
@@ -1043,9 +1047,8 @@
             (lambda ()
            (parameterize ((rdr-source-file (cdr nf)))
              (jolt-enter-file! (cdr nf))   ; so a failure here names the file
-             (let ((ord 0))
-             (for-each
-               (lambda (f)
+             (ei-walk-forms (car nf) (ei-timed "wp: parse" (lambda () (ei-read-all-for (car nf) src)))
+               (lambda (f ord)
                  ;; ord mirrors the loader's and the emit walk's per-file form
                  ;; counter (load-jolt-file* / ei-for-each-form): the
                  ;; def-ordinal visibility replay (rt.ss var-def-ordinals) must
@@ -1066,12 +1069,12 @@
                  ;; form's cached IR by one: a macro's def-var! captured the
                  ;; NEXT def's emission — invalid Scheme under direct-link, a
                  ;; silently corrupted expander before it. Only the ns form is
-                 ;; skipped by BOTH walks, except for the calls the emit walk
-                 ;; compiles out of it (ei-ns-load-forms), which get a
-                 ;; placeholder each too.
+                 ;; skipped by BOTH walks, except for the metadata call the emit
+                 ;; walk compiles out of it (ei-ns-meta-forms), which gets a
+                 ;; placeholder too.
                  (if (ei-ns-form? f)
                    (for-each (lambda (_) (set! per-ns (cons #f per-ns)))
-                             (ei-ns-load-forms f))
+                             (ei-ns-meta-forms f))
                    (if (ce-macro-form? f)
                        (set! per-ns (cons #f per-ns))
                        ;; a form the analyzer rejects here only loses
@@ -1086,9 +1089,7 @@
                          (let ((n (ei-timed "wp: analyze"
                                     (lambda () (jolt-ce-analyze (make-analyze-ctx (car nf)) f)))))
                            (set! nodes (cons n nodes))
-                           (set! per-ns (cons n per-ns))))))
-                 (set! ord (fx+ ord 1))))
-               (ei-timed "wp: parse" (lambda () (ei-read-all-for (car nf) src)))))))
+                           (set! per-ns (cons n per-ns)))))))))))
              jolt-ns-load-vars-pop!)
           (set! ns-nodes (cons (cons (car nf) (reverse per-ns)) ns-nodes))))
       ordered)
@@ -2102,7 +2103,39 @@
              (if (bld-alias-kw-blocked? src i n) #t (loop (+ i 2))))
             (else (loop (+ i 1)))))))
 
+;; The forms of the files FORMS literally load, for the graph's scan: what a loaded
+;; file requires, the namespace requires. Read in scan mode, as the fallback below is,
+;; since the graph's aliases are not there yet. A file it cannot read is left to the
+;; load that reads it for real.
+(define (bld-loaded-scan-forms ns-name forms seen)
+  (let loop ((forms forms) (acc '()) (seen seen))
+    (if (null? forms)
+        (reverse acc)
+        (let* ((f (car forms))
+               (loads (if (ei-ns-form? f)
+                          (guard (e (#t '())) (ei-ns-load-calls f))
+                          (list f)))
+               (paths (apply append (map (lambda (l) (or (ei-literal-load-paths l) '())) loads))))
+          (let each ((ps paths) (acc acc) (seen seen))
+            (if (null? ps)
+                (loop (cdr forms) acc seen)
+                (let ((lf (jolt-load-target-file ns-name (car ps))))
+                  (if (or (not lf) (member lf seen))
+                      (each (cdr ps) acc seen)
+                      (let* ((fs (guard (e (#t '()))
+                                   (parameterize ((rdr-source-file lf) (rdr-scan-mode #t))
+                                     (map rdr-form->data (ei-read-all (ldr-read-source lf))))))
+                             (seen (cons lf seen)))
+                        (each (cdr ps)
+                              (append (reverse (bld-loaded-scan-forms ns-name fs seen))
+                                      (reverse fs) acc)
+                              seen))))))))))
+
 (define (bld-scan-forms ns-name file)
+  (let ((forms (bld-scan-file-forms ns-name file)))
+    (append forms (bld-loaded-scan-forms ns-name forms (list file)))))
+
+(define (bld-scan-file-forms ns-name file)
   (let* ((src (ldr-read-source file))
          ;; The graph's scan is the first of a build's two reads of every source.
          ;; Where the source allows it, read it here in NORMAL mode — the read the

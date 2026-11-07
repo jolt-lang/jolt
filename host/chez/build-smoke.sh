@@ -519,32 +519,86 @@ fi
 # ClassCastException shape as #451 while `jolt run` was fine. Its own fixture —
 # the shared build-app is built ~30 times here, and a top-level (load) changes
 # what every one of those emits.
-echo "build smoke: (:load ...) in an ns form"
-# A build runs no ns form, so the load has to come out of it, or the binary builds
-# and then dies on an unbound var. Like a top-level (load), the binary runs it, and
-# the file it names has to be there.
+echo "build smoke: a loaded file is part of the binary"
+# (load "x") with a literal path, at top level or as (:load "x") in the ns form,
+# compiles into the namespace, so the binary needs neither the file nor the compiler.
 nsl_app="$(dirname "$out")/nsl-app"
-mkdir -p "$nsl_app/src/nsl"
+mkdir -p "$nsl_app/src/nsl/more"
 printf '{:paths ["src"]}\n' > "$nsl_app/deps.edn"
 cat > "$nsl_app/src/nsl/core.clj" <<'NSL_EOF'
 (ns nsl.core "doc" (:load "core_extra"))
+(load "core_top" "more/nested")
+;; defined after the loads: code in the loaded files still means core's
+(defn second [_] :shadow)
 (defn -main [& _]
-  (println "helper:" (extra-helper 4) (:doc (meta (find-ns 'nsl.core)))))
+  (println "helper:" (extra-helper 4) (:doc (meta (find-ns 'nsl.core))))
+  (println "top:" (top-helper) (uses-core-second [1 2]) (later-in-extra))
+  (println "nested:" (nested-helper) (str/upper-case "required by a loaded file") (second [1 2])))
 NSL_EOF
 cat > "$nsl_app/src/nsl/core_extra.clj" <<'NSL_EOF'
 (in-ns 'nsl.core)
 (defn extra-helper [n] (* n 10))
+(defn later-in-extra [] (extra-helper 5))
 NSL_EOF
-if ! JOLT_PWD="$nsl_app" "$jolt" build -m nsl.core -o "$nsl_app/bin" >/dev/null 2>&1; then
-  echo "  FAIL: an app with (:load ...) in its ns did not build"; exit 1
+cat > "$nsl_app/src/nsl/core_top.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(require '[clojure.string :as str])
+(defn top-helper [] (extra-helper 1))
+(defn uses-core-second [c] (second c))
+NSL_EOF
+cat > "$nsl_app/src/nsl/more/nested.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(load "/nsl/more/deep")
+(defn nested-helper [] (deep-helper))
+NSL_EOF
+cat > "$nsl_app/src/nsl/more/deep.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn deep-helper [] :deep)
+NSL_EOF
+nsl_want='helper: 40 doc
+top: 10 2 50
+nested: :deep REQUIRED BY A LOADED FILE :shadow'
+if ! nsl_build="$(JOLT_PWD="$nsl_app" "$jolt" build -m nsl.core -o "$nsl_app/bin" 2>&1)"; then
+  echo "  FAIL: an app with loaded files did not build:"; echo "$nsl_build"; exit 1
 fi
+nsl_run="$(cd "$nsl_app" && JOLT_PWD="$nsl_app" "$joltabs" run -m nsl.core 2>&1)"
+if [ "$nsl_run" != "$nsl_want" ]; then
+  echo "  FAIL: loaded files under jolt run:"; echo "$nsl_run"; exit 1
+fi
+mv "$nsl_app/src" "$nsl_app/src.away"
 nsl_got="$(cd / && "$nsl_app/bin" 2>&1)"
-if [ "$nsl_got" != "helper: 40 doc" ]; then
-  echo "  FAIL: (:load ...) in a built binary: $nsl_got"; exit 1
+mv "$nsl_app/src.away" "$nsl_app/src"
+if [ "$nsl_got" != "$nsl_want" ]; then
+  echo "  FAIL: loaded files in a binary with the source gone:"; echo "$nsl_got"; exit 1
 fi
-nsl_got="$(cd "$nsl_app" && JOLT_PWD="$nsl_app" "$joltabs" run -m nsl.core 2>&1)"
-if [ "$nsl_got" != "helper: 40 doc" ]; then
-  echo "  FAIL: (:load ...) under jolt run: $nsl_got"; exit 1
+case "$nsl_build" in
+  *"dropping compiler image"*) ;;
+  *) echo "  FAIL: a literal (load) kept the compiler in the binary:"; echo "$nsl_build"; exit 1 ;;
+esac
+# A file that switches namespace can't compile into this one, so it stays a runtime
+# load, and the build says so.
+nsr_app="$(dirname "$out")/nsr-app"
+mkdir -p "$nsr_app/src/nsr"
+printf '{:paths ["src"]}\n' > "$nsr_app/deps.edn"
+cat > "$nsr_app/src/nsr/core.clj" <<'NSR_EOF'
+(ns nsr.core)
+(load "other")
+(defn -main [& _] (println "other:" ((resolve 'nsr.elsewhere/f))))
+NSR_EOF
+cat > "$nsr_app/src/nsr/other.clj" <<'NSR_EOF'
+(ns nsr.elsewhere)
+(defn f [] :elsewhere)
+NSR_EOF
+if ! nsr_build="$(JOLT_PWD="$nsr_app" "$jolt" build -m nsr.core -o "$nsr_app/bin" 2>&1)"; then
+  echo "  FAIL: an app loading a file in another namespace did not build:"; echo "$nsr_build"; exit 1
+fi
+case "$nsr_build" in
+  *'(load "other") stays a runtime load'*) ;;
+  *) echo "  FAIL: no note about the runtime load:"; echo "$nsr_build"; exit 1 ;;
+esac
+nsr_got="$(cd "$nsr_app" && JOLT_PWD="$nsr_app" "$nsr_app/bin" 2>&1)"
+if [ "$nsr_got" != "other: :elsewhere" ]; then
+  echo "  FAIL: a runtime load in a binary: $nsr_got"; exit 1
 fi
 
 echo "build smoke: forward reference across a (load) in the same namespace"
@@ -589,7 +643,7 @@ if ! ls "$mfn_cache"/*/*/mf.util-*.so >/dev/null 2>&1; then
   echo "  FAIL: the warm (load) case is vacuous — no AOT artifact for mf.util under $mfn_cache"
   exit 1
 fi
-# the binary runs the (load) itself, so the app source outlives this run
+# the same program under jolt run is the reference
 want_mfn="$(cd "$mfn_app" && JOLT_PWD="$mfn_app" "$joltabs" run -m mf.core 2>&1)"
 for mfn_i in 1 2; do
   got_mfn="$(cd / && "$mfn_out.$mfn_i" 2>&1)"

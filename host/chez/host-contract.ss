@@ -327,7 +327,8 @@
                    ;; (off) outside the build's walks.
                    (let ((cur (jolt-form-ordinal)))
                      (or (not cur)
-                         (fx<=? (var-def-ordinal (chez-actx-cns ctx) nm) cur)))
+                         (and (fx<=? (var-def-ordinal (chez-actx-cns ctx) nm) cur)
+                              (var-def-visible-in-outer-frames? (chez-actx-cns ctx) nm))))
                    c))
             ;; a :refer'd name resolves to its source ns
             (let ((ref (chez-resolve-refer (chez-actx-cns ctx) nm)))
