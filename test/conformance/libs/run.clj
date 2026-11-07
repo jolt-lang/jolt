@@ -37,7 +37,17 @@
       {:tests (parse-long t) :pass (parse-long pa)
        :fail (parse-long f) :error (parse-long e) :load-fail (parse-long lf)})))
 
-(defn- run-lib [{:keys [preload timeout] :as entry}]
+;; :drawn-pass: adds back the assertions a suite skipped because of a count it drew
+;; at random and printed. nil, so the library reads NO-RESULT, when the suite stopped
+;; printing it: without the count the tally can't be compared.
+(defn- add-drawn-pass [tally out drawn-pass]
+  (cond
+    (nil? tally) nil
+    (nil? drawn-pass) tally
+    :else (when-let [[_ n] (re-find (re-pattern drawn-pass) out)]
+            (update tally :pass + (parse-long n)))))
+
+(defn- run-lib [{:keys [preload timeout drawn-pass] :as entry}]
   (let [{:keys [missing no-tests cmd-prefix nses dir env]} (c/plan entry)]
     (cond
       missing {:status :missing-paths :detail missing}
@@ -50,7 +60,8 @@
             r (apply p/sh {:out :string :err :string :dir dir :extra-env env} cmd)
             out (str (:out r) (:err r))]
         (merge {:status :ran :exit (:exit r) :out out :nses nses}
-               (or (parse-total out) {:status :no-result}))))))
+               (or (add-drawn-pass (parse-total out) out drawn-pass)
+                   {:status :no-result}))))))
 
 ;; ---------------------------------------------------------------- reporting
 

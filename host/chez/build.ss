@@ -1066,11 +1066,12 @@
                  ;; form's cached IR by one: a macro's def-var! captured the
                  ;; NEXT def's emission — invalid Scheme under direct-link, a
                  ;; silently corrupted expander before it. Only the ns form is
-                 ;; skipped by BOTH walks, unless it carries metadata: the emit
-                 ;; walk compiles that as a form (ei-ns-meta-form), so it gets
-                 ;; a placeholder too.
+                 ;; skipped by BOTH walks, except for the calls the emit walk
+                 ;; compiles out of it (ei-ns-load-forms), which get a
+                 ;; placeholder each too.
                  (if (ei-ns-form? f)
-                   (when (ei-ns-meta-form f) (set! per-ns (cons #f per-ns)))
+                   (for-each (lambda (_) (set! per-ns (cons #f per-ns)))
+                             (ei-ns-load-forms f))
                    (if (ce-macro-form? f)
                        (set! per-ns (cons #f per-ns))
                        ;; a form the analyzer rejects here only loses

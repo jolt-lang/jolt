@@ -519,6 +519,34 @@ fi
 # ClassCastException shape as #451 while `jolt run` was fine. Its own fixture —
 # the shared build-app is built ~30 times here, and a top-level (load) changes
 # what every one of those emits.
+echo "build smoke: (:load ...) in an ns form"
+# A build runs no ns form, so the load has to come out of it, or the binary builds
+# and then dies on an unbound var. Like a top-level (load), the binary runs it, and
+# the file it names has to be there.
+nsl_app="$(dirname "$out")/nsl-app"
+mkdir -p "$nsl_app/src/nsl"
+printf '{:paths ["src"]}\n' > "$nsl_app/deps.edn"
+cat > "$nsl_app/src/nsl/core.clj" <<'NSL_EOF'
+(ns nsl.core "doc" (:load "core_extra"))
+(defn -main [& _]
+  (println "helper:" (extra-helper 4) (:doc (meta (find-ns 'nsl.core)))))
+NSL_EOF
+cat > "$nsl_app/src/nsl/core_extra.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn extra-helper [n] (* n 10))
+NSL_EOF
+if ! JOLT_PWD="$nsl_app" "$jolt" build -m nsl.core -o "$nsl_app/bin" >/dev/null 2>&1; then
+  echo "  FAIL: an app with (:load ...) in its ns did not build"; exit 1
+fi
+nsl_got="$(cd / && "$nsl_app/bin" 2>&1)"
+if [ "$nsl_got" != "helper: 40 doc" ]; then
+  echo "  FAIL: (:load ...) in a built binary: $nsl_got"; exit 1
+fi
+nsl_got="$(cd "$nsl_app" && JOLT_PWD="$nsl_app" "$joltabs" run -m nsl.core 2>&1)"
+if [ "$nsl_got" != "helper: 40 doc" ]; then
+  echo "  FAIL: (:load ...) under jolt run: $nsl_got"; exit 1
+fi
+
 echo "build smoke: forward reference across a (load) in the same namespace"
 mfn_app="$(mktemp -d)/mfn-app"
 mkdir -p "$mfn_app/src/mf"
