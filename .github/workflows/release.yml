@@ -131,13 +131,13 @@ jobs:
             target: x86_64-linux
             shell: bash
             container-build: quay.io/pypa/manylinux2014_x86_64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-macos
             shell: bash
-          # x86_64-macos is cross-built from the arm64 macos-14 runner (GitHub
+          # x86_64-macos is cross-built from the arm64 macos-15 runner (GitHub
           # retired the Intel runners): `cross: ta6osx` gates the extra Chez-cross
           # + pack steps below, and the binary is smoke-tested via Rosetta 2.
-          - os: macos-14
+          - os: macos-15
             target: x86_64-macos
             shell: bash
             cross: ta6osx
