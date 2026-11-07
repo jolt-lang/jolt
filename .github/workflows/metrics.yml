@@ -1,0 +1,42 @@
+name: metrics
+
+# Report only: this publishes findings and never fails the build.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: metrics-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # pinned: a new release would change what CI runs on
+  JOLT_VERSION: v0.8.24
+  METRICS_SHA: 86ea1002fdec5c2a8c161b6aa56f4f17bcfc1f7d
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hotspots read churn from the git history
+          fetch-depth: 0
+      - name: Install jolt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblz4-1 zlib1g libtinfo6
+          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash -s -- --version "$JOLT_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run jolt-metrics
+        run: |
+          jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
+            -m metrics.cli . metrics-report.md --top 50
+          # the summary stops before the long per-file tables
+          awk '/^## Cleanup candidates/{exit} {print}' metrics-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: metrics-report
+          path: metrics-report.md
