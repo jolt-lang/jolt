@@ -2429,6 +2429,28 @@
 (define (load-frame-ns f) (vector-ref f 2))
 (define jolt-load-frames (make-parameter '()))
 (define jolt-form-ordinal (make-parameter #f))
+;; While a build walk visits a loaded file: #(file ordinal settled later) for each
+;; enclosing file's form that loaded it. A var the enclosing file defines after that
+;; form was not visible to the loaded file, whatever the loaded file's own counter
+;; says. A var that form itself defined has one ordinal however many files it named,
+;; so those are told apart by file: SETTLED ran by now, LATER had not.
+(define jolt-form-outer-frames (make-parameter '()))
+(define (var-def-visible-in-outer-frames? ns name)
+  (let ((frames (jolt-form-outer-frames)))
+    (or (null? frames)
+        (jolt-with-mutex var-table-mu
+          (let ((stamped? (lambda (file)
+                            (hashtable-contains? var-def-ordinals
+                              (var-def-ordinal-key file ns name)))))
+            (for-all (lambda (fr)
+                       (let ((s (hashtable-ref var-def-ordinals
+                                  (var-def-ordinal-key (vector-ref fr 0) ns name) #f))
+                             (ord (vector-ref fr 1)))
+                         (if (and s (not (fx=? s ord)))
+                             (fx<? s ord)
+                             (or (not (exists stamped? (vector-ref fr 3)))
+                                 (exists stamped? (vector-ref fr 2))))))
+                     frames))))))
 ;; Value-position comparison references compile to the seq.ss chain singletons
 ;; (jolt-lt/gt/le/ge), not to the clojure.core var roots — the roots were later
 ;; re-bound by the checked numeric layer, so def-var! never saw these procs.

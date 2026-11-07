@@ -44,6 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ns` dropped the docstring, the attr-map and metadata on the name. It now answers
   them as the JVM does, in built binaries too.
 - **`(:refer ...)` and `(:load ...)` in `ns` run.** They were ignored.
+- **A loaded file is part of a built binary.** `(load "x")` with a literal path, at
+  a file's top level or as `(:load "x")` in `ns`, compiled to a runtime load, so the
+  binary kept the compiler and failed once the source was gone. It now compiles into
+  the namespace. A file that switches to another namespace, a computed path and a
+  load that is not at top level stay runtime loads; a file that switches namespace
+  gets a build note saying so.
+- **Editing a loaded file reaches `jolt run`.** The AOT cache keyed a namespace on
+  its own source, so a macro in a file it `load`s kept its old expansion until the
+  namespace's own file changed.
+- **A failed `delay` can't answer nil to a racing thread.** Forcing read a flag and
+  then the exception, with no ordering between them, so on arm64 a thread could see
+  the flag and not the exception. Deref is one read now, no slower than it was.
 - **A fiber waiting on an fd the kernel refuses to watch now returns**. A closed fd
   parked the fiber forever on kqueue and epoll; the caller's retry now reports what
   is wrong with the fd, as `wait-thread` already did.

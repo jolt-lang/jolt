@@ -60,6 +60,17 @@ the last run drew. test.check (`:tolerance 40`) reading pass=245 against a
 recorded 236 is that case. Above the band the move is real and says so, and every
 library without a `:tolerance` is pinned exactly, so any rise there is `BETTER`.
 
+`:drawn-pass` is the alternative to a tolerance when a suite prints the number
+its assertion count moves with: a regex whose group is that number, added to
+`pass` before the comparison, so `pass` can be pinned exactly. core.cache's
+stampede test is the case, one assertion per lookup that did not throw. A suite
+that stops printing the number reads `NO-RESULT`, which fails the gate.
+
+`:drawn-fail` is a regex for the report of a failure the draw itself can cause in
+the library, on any host: each match moves from `fail` back to `pass`, and every
+other failure still counts. core.cache's `lookup-or-miss` returning nil once it has
+retried ten of other threads' failed delays is the case.
+
 `:expect` is deliberately a tally and not a per-assertion baseline. Some suites
 are order- and environment-sensitive (compliment completes against the live
 runtime, for instance), so pinning individual assertions would be noise. What the
