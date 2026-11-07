@@ -610,7 +610,9 @@
 ;; error themselves. That is a race for the error's NAME only, never for
 ;; correctness: no pre-check here gates a mutation. createFile -- the one place
 ;; where losing the race would cost data -- takes the O_EXCL open instead, which
-;; does raise a typed condition, and stats nothing.
+;; does raise a typed condition, and stats nothing. createDirectory, where the
+;; name IS the answer (a directory made as a lock), calls libc's mkdir and reads
+;; its errno instead (io-mkdir), on every platform but Windows.
 ;; A message names the path AS THE CALLER GAVE IT, as the JDK's does: Files ops
 ;; resolve a relative path against user.dir before touching disk (nfp), and the
 ;; message used that resolved string, so (Files/delete (Paths/get "nope/x"))
@@ -756,26 +758,19 @@
           ((file-directory? fp) (attempt delete-directory #t))
           (else (attempt delete-file #f)))))
 
-(define nio-temp-counter 0)
-(define nio-temp-mutex (make-mutex))
 (define (nio-tmp-dir) (host-temp-dir))
-;; A temp path in `dir` (default the system temp dir), unique across processes
-;; via now-millis + a retry counter, like java.nio.file's createTemp*.
-(define (nio-temp-path dir prefix suffix)
-  (let ((d (let ((d (or dir (nio-tmp-dir))))
-             (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/")))))
-    (let loop ()
-      ;; the increment and the read are ONE step. Read after the release and two
-      ;; threads see the same value, so they build the same path — and the
-      ;; file-exists? retry below does not catch it, since neither has created
-      ;; the file yet and the caller that creates it second clobbers the first.
-      (let* ((n (jolt-with-mutex nio-temp-mutex
-                  (set! nio-temp-counter (+ nio-temp-counter 1))
-                  nio-temp-counter))
-             (full (string-append d (if (string? prefix) prefix "")
-                                  (number->string (now-millis)) "-" (number->string n)
-                                  (if (string? suffix) suffix ""))))
-        (if (file-exists? (project-relative full)) (loop) full)))))
+;; One attempt at a temp entry for createTemp* (io-create-temp names it and
+;; retries): #t when made, #f when another thread or process holds the name.
+;; The directory is made 0700 at mkdir, not after it, so it is never briefly
+;; open to anyone else.
+(define (nio-temp-create! full dir?)
+  (let ((fp (project-relative full)))
+    (if dir?
+        (let ((err (io-mkdir fp #o700)))
+          (cond ((eqv? err 0) #t)
+                ((eqv? err io-EEXIST) #f)
+                (else (nio-errno-throw full #f err))))
+        (io-create-temp-file! fp))))
 
 ;; ---- Files/isHidden ---------------------------------------------------------
 ;; Files.isHidden is implementation-specific, and the JDK answers it per
@@ -847,9 +842,10 @@
          (rest (if has-dir (cdr args) args))
          (prefix (if (and (pair? rest) (string? (car rest))) (car rest) ""))
          (suffix (if (and (not dir?) (pair? rest) (pair? (cdr rest)) (string? (cadr rest))) (cadr rest) ""))
-         (full (nio-temp-path base prefix suffix))
+         (d (let ((d (or base (nio-tmp-dir))))
+              (if (char=? (string-ref d (- (string-length d) 1)) #\/) d (string-append d "/"))))
+         (full (io-create-temp d prefix suffix (lambda (full) (nio-temp-create! full dir?))))
          (fp (project-relative full)))
-    (if dir? (mkdir fp) (close-port (open-file-output-port fp (file-options no-fail))))
     (when c-chmod (c-chmod fp (if dir? #o700 #o600)))
     (make-nio-path full)))
 
@@ -1253,19 +1249,22 @@
 (define nio-ENOENT 2)
 (define nio-EACCES 13)
 (define c-strerror (jolt-foreign-proc-safe "strerror" '(int) 'string))
+;; Throw for errno ERR the way UnixException.translateToIOException does. SHOWN
+;; and OTHER are the message's paths, OTHER #f for a one-path operation.
+(define (nio-errno-throw shown other err)
+  (cond ((= err nio-EEXIST) (nio-already-exists shown other))
+        ((= err nio-ENOENT) (nio-no-such-file shown other))
+        ((= err nio-EACCES)
+         (nio-fs-throw "java.nio.file.AccessDeniedException" shown other))
+        (else
+         (let ((reason (and (> err 0) c-strerror (c-strerror err))))
+           (nio-fs-throw "java.nio.file.FileSystemException" shown other
+                         (if (and reason (= err io-ELOOP))
+                             (string-append reason " or unable to access attributes of symbolic link")
+                             reason))))))
 (define (nio-link-failed link existing shown-link shown-existing err)
   (let ((other (and existing shown-existing)))
-    (cond ((and err (> err 0))
-           (cond ((= err nio-EEXIST) (nio-already-exists shown-link other))
-                 ((= err nio-ENOENT) (nio-no-such-file shown-link other))
-                 ((= err nio-EACCES)
-                  (nio-fs-throw "java.nio.file.AccessDeniedException" shown-link other))
-                 (else
-                  (let ((reason (and c-strerror (c-strerror err))))
-                    (nio-fs-throw "java.nio.file.FileSystemException" shown-link other
-                                  (if (and reason (= err io-ELOOP))
-                                      (string-append reason " or unable to access attributes of symbolic link")
-                                      reason))))))
+    (cond ((and err (> err 0)) (nio-errno-throw shown-link other err))
           ((or (file-exists? link) (nio-is-symlink? link)) (nio-already-exists shown-link other))
           ((or (and existing (not (file-exists? existing)))
                (let ((parent (npath-parent-for (nio-windows?) link)))
@@ -1652,15 +1651,26 @@
        (list
         (cons "createDirectory" (lambda (p . attrs)
                                   (let ((fp (nfp p)))
-                                    ;; mkdir's EEXIST and ENOENT come back untyped, so name them
-                                    ;; here. A non-directory in the way is neither: that is
-                                    ;; ENOTDIR, which nio-fs-call renders as a FileSystemException
-                                    ;; exactly as the JVM does.
-                                    (when (nio-dest-present? fp) (nio-already-exists (nio-shown p)))
-                                    (let ((parent (nio-parent-of fp)))
-                                      (when (and (not (string=? parent "")) (not (file-exists? parent)))
-                                        (nio-no-such-file (nio-shown p))))
-                                    (nio-fs-call fp (lambda () (mkdir fp)) (nio-shown p))
+                                    (if c-mkdir
+                                        ;; the class comes from mkdir's own errno, as the
+                                        ;; JDK's does. A stat before the mkdir named EEXIST
+                                        ;; only for a directory that was already there; one
+                                        ;; another process made between the stat and the
+                                        ;; mkdir came back a plain FileSystemException, so a
+                                        ;; createDirectory used as a lock misread losing it
+                                        ;; (jolt-lang/jolt#1529). ENOTDIR, a non-directory in
+                                        ;; the way above, is a FileSystemException on the JVM
+                                        ;; too.
+                                        (let ((err (io-mkdir fp #o777)))
+                                          (unless (eqv? err 0) (nio-errno-throw (nio-shown p) #f err)))
+                                        ;; Windows: no errno, so EEXIST and ENOENT are named by
+                                        ;; looking first, and Chez's own failure translated.
+                                        (begin
+                                          (when (nio-dest-present? fp) (nio-already-exists (nio-shown p)))
+                                          (let ((parent (nio-parent-of fp)))
+                                            (when (and (not (string=? parent "")) (not (file-exists? parent)))
+                                              (nio-no-such-file (nio-shown p))))
+                                          (nio-fs-call fp (lambda () (mkdir fp)) (nio-shown p))))
                                     (nio-apply-attrs-umask! fp attrs) (->path p))))
         ;; CREATE_NEW's open, for the same reason Files/newOutputStream takes it:
         ;; `no-fail` here made createFile TRUNCATE an existing file and return it.

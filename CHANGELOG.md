@@ -54,6 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(prof/instrument! :nope)` turned the execution counters on, so a misspelled
   `:debug` instrumented the code for the wrong thing without saying so. It now
   throws with the mode in `ex-data`. `nil` still turns instrumentation off.
+- **Temp files and directories no longer collide across processes.** A temp name
+  was the prefix, the current millis and a counter every process started at 1, so
+  two processes starting in the same millisecond picked the same name. The loser of
+  `Files/createTempDirectory` failed with `IOException: file exists`, and
+  `Files/createTempFile` and `java.io.File/createTempFile` opened it with a create
+  that also succeeds on an existing file, which handed both processes one file. Names are now the prefix, a random
+  64-bit number and the suffix, as on the JVM, and each entry is created
+  exclusively, with a fresh name when one is taken.
+- **`Files/createDirectory` reports a lost race as `FileAlreadyExistsException`.**
+  It looked for the path before calling `mkdir`, so a directory another process made
+  in between came back as a plain `FileSystemException`, and code using the
+  directory as a lock read losing it as an I/O error. The class now comes from
+  `mkdir`'s own errno, as on the JVM, which also makes a permission failure
+  `AccessDeniedException`.
 - **`ffi/read-into!` and `ffi/write-array` refuse an array that is not a
   byte-array on the byte route.** `(write-array p :byte (int-array [1 2]) 0 0 2)`
   and `(write-array p (double-array 2))` truncated each element to a byte and

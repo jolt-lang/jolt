@@ -1016,6 +1016,60 @@
 ;; misfiring, and the gate exercises both platforms.
 (define io-ELOOP        (if (eq? (sa-os-family) 'macos) 62 40))
 (define io-ENAMETOOLONG (if (eq? (sa-os-family) 'macos) 63 36))
+(define io-EEXIST 17)                       ; the same on macOS and Linux
+
+;; mkdir(2) with its own errno. Chez's mkdir raises a bare &i/o-filename for
+;; every failure, so a caller that needed to tell EEXIST apart had to stat first,
+;; and a directory another process made between that stat and the mkdir came
+;; back untyped (jolt-lang/jolt#1529). Answers 0, or the call's errno. Windows
+;; binds no mkdir here: there the failure is looked at afterwards, EEXIST when
+;; the path is present, and Chez's condition otherwise.
+;;
+;; The errno is read with nothing able to set it in between. io-errno after the
+;; call was not enough: its guard allocates, and an allocation, or a collect
+;; rendezvous with another thread, can make libc calls on this thread. Two
+;; races in 2,900 lost EEXIST that way and reported ENOMEM, "Cannot allocate
+;; memory", for a directory that existed. So this thread's errno address is
+;; taken before the call, and the call and the read sit inside
+;; disable-interrupts, which holds off the collect request; between them only
+;; fixnums are made, so nothing allocates.
+(define c-mkdir
+  (and (not (eq? (sa-os-family) 'windows))
+       (jolt-foreign-proc-safe "mkdir" '(string int) 'int)))
+(define (io-mkdir p mode)
+  (if c-mkdir
+      (let ((loc (and io-errno-loc (io-errno-loc))))
+        (disable-interrupts)
+        (let* ((r (c-mkdir p mode))
+               (err (cond ((= r 0) 0) (loc (sa-foreign-ref 'int loc 0)) (else -1))))
+          (enable-interrupts)
+          err))
+      (guard (e ((file-exists? p) io-EEXIST))
+        (mkdir p mode)
+        0)))
+
+;; Temp entries are named and made the JDK's way (TempFileHelper, and
+;; File.createTempFile's TempDirectory): prefix + an unsigned random 64-bit
+;; number + suffix, created exclusively, and a name already taken is retried with
+;; a fresh one. Millis plus a per-process counter collided across processes that
+;; started in the same millisecond, and checking the name before creating it left
+;; a window for another process to take it (jolt-lang/jolt#1528).
+(define (io-temp-name prefix suffix)
+  (string-append prefix
+                 (number->string (bytevector-u64-ref (jolt-random-bytes 8) 0 (endianness little)))
+                 suffix))
+;; CREATE! makes the entry at its path exclusively, answering #t, or #f when the
+;; name is taken; any other failure it raises. Answers the path it made.
+(define (io-create-temp dir prefix suffix create!)
+  (let loop ()
+    (let ((p (string-append dir (io-temp-name prefix suffix))))
+      (if (create! p) p (loop)))))
+;; The exclusive create of a temp FILE: no `no-fail`, so the open is O_EXCL and a
+;; name already taken raises &i/o-file-already-exists.
+(define (io-create-temp-file! p)
+  (guard (e ((i/o-file-already-exists-error? e) #f))
+    (close-port (open-file-output-port p (file-options)))
+    #t))
 
 (define (jfile-realpath* p)                 ; -> (values path-or-#f errno)
   (cond
@@ -3815,7 +3869,6 @@
         (else (jolt-make-file a))))
 (register-class-ctor! "File" jolt-file-ctor)
 ;; File statics: the platform separators plus createTempFile / listRoots.
-(define temp-file-counter 0)
 (define (file-create-temp prefix suffix . dir)
   ;; the JVM rejects a prefix under three characters, so a caller that works here
   ;; works there too
@@ -3826,14 +3879,10 @@
   (let* ((d (cond ((pair? dir) (file-path-of (car dir)))
                   (else (host-temp-dir))))
          (sfx (if (or (null? (list suffix)) (jolt-nil? suffix)) ".tmp" (jolt-str-render-one suffix))))
-    (let ((n (jolt-with-mutex io-counter-mutex
-              (set! temp-file-counter (+ temp-file-counter 1))
-              temp-file-counter)))
-    (let loop ((n n))
-      (let ((p (string-append d "/" (jolt-str-render-one prefix)
-                              (number->string (now-millis)) "-" (number->string n) sfx)))
-        (if (file-exists? p) (loop (+ n 1))
-            (begin (close-port (open-output-file p 'truncate)) (make-jfile p))))))))
+    ;; an exclusive create: the truncating open this replaced handed two
+    ;; processes that drew the same name one shared file, and told neither
+    (make-jfile (io-create-temp (string-append d "/") (jolt-str-render-one prefix) sfx
+                                io-create-temp-file!))))
 ;; File.listRoots: the filesystem roots. POSIX has exactly one; Windows has one
 ;; per mounted drive, and answering "/" there named a directory on whichever
 ;; drive the process happened to be on rather than enumerating anything
