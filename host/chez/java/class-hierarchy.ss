@@ -816,6 +816,7 @@
 (jch-register-supers! "java.nio.file.NotDirectoryException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.NotLinkException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.DirectoryNotEmptyException" '("java.nio.file.FileSystemException"))
+(jch-register-supers! "java.nio.file.AtomicMoveNotSupportedException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.FileSystemNotFoundException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.nio.file.FileSystemAlreadyExistsException" '("java.lang.RuntimeException"))
 (jch-register-supers! "java.nio.file.ProviderNotFoundException" '("java.lang.RuntimeException"))
