@@ -1659,6 +1659,28 @@
           (else (loop (nio-parent-of p) (cons p acc))))))
 ;; is the dest present as a link (even broken) or a real file?
 (define (nio-dest-present? d) (or (file-exists? d) (nio-is-symlink? d)))
+
+;; Files.move with ATOMIC_MOVE is one rename(2), as UnixCopyFile.move does: no
+;; existence checks first, REPLACE_EXISTING ignored, and an existing target
+;; replaced in the same step, so a reader of the target sees the old file or the
+;; new one and never neither. The plain move below removes the target and then
+;; renames, which left the path missing in between: a reader polling a file
+;; replaced 3,000 times this way found it gone 36,880 times in 114,525 reads
+;; (jolt-lang/jolt#1531). A failure is named from rename's errno through
+;; translateToIOException with both paths, except EXDEV, which is
+;; AtomicMoveNotSupportedException rather than a fallback to copy and delete.
+;; Windows binds no rename here and keeps the plain move.
+(define nio-EXDEV 18)                       ; the same on macOS and Linux
+(define c-rename
+  (and (not (eq? (sa-os-family) 'windows))
+       (jolt-foreign-proc-safe "rename" '(string string) 'int)))
+(define (nio-atomic-move! s d shown-s shown-d)
+  (let-values (((r err) (io-call+errno (c-rename s d))))
+    (unless (= r 0)
+      (if (= err nio-EXDEV)
+          (nio-fs-throw "java.nio.file.AtomicMoveNotSupportedException" shown-s shown-d
+                        (and c-strerror (c-strerror err)))
+          (nio-errno-throw shown-s shown-d err)))))
 (let ((files-create+move
        (list
         (cons "createDirectory" (lambda (p . attrs)
@@ -1707,6 +1729,9 @@
         (cons "move" (lambda (src dst . opts)
                        (let ((s (nfp src)) (d (nfp dst)))
                          (cond
+                           ((and c-rename (nio-opts-have? opts copt-sym 'atomic-move))
+                            (nio-atomic-move! s d (nio-shown src) (nio-shown dst))
+                            (->path dst))
                            ((string=? s d) (->path dst))
                            ((not (nio-dest-present? s)) (nio-no-such-file (nio-shown src)))
                            ((and (nio-dest-present? d) (not (nio-opts-have? opts copt-sym 'replace-existing)))
