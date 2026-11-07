@@ -16,7 +16,8 @@
 ;;
 ;; Every row is a ratio taken inside this one process, depth n against depth n+3,
 ;; so machine speed cancels. Code size is deterministic and its rows are exact
-;; counts; the time rows are judged on the fastest of interleaved samples.
+;; counts; the time rows are judged on the fastest of interleaved samples of CPU
+;; time.
 ;;
 ;;   chez --script host/chez/run-infer-scaling.ss
 (import (chezscheme))
@@ -38,8 +39,13 @@
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 (define (evals src) (jolt-compile-eval (string-append "(do " src ")") "user"))
 
+;; This thread's CPU time, not the wall clock. A sample here is 4 to 10 ms, under
+;; one timeslice, so on a busy machine wall time reads whatever the scheduler did:
+;; with the gates running in parallel a hinted-fn row read 4.78 on CI against a
+;; usual 2.6, while its CPU time stays within 2.5-2.7 under the same load. Real
+;; work, GC included, still counts.
 (define (now-ns)
-  (let ((t (current-time 'time-monotonic)))
+  (let ((t (current-time 'time-thread)))
     (+ (* (time-second t) 1000000000) (time-nanosecond t))))
 ;; fastest of `rounds` samples of each thunk, sampled alternately, as a ratio
 (define (ratio small big rounds)
