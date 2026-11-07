@@ -42,8 +42,14 @@
     (in-ns here)
     (symbol copy)))
 
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression. The work timed here all runs on this
+;; thread, collections included.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+
 (defn- timed [f]
-  (let [t (System/nanoTime)] (f) (/ (- (System/nanoTime) t) 1e6)))
+  (let [t (cpu-ns)] (f) (/ (- (cpu-ns) t) 1e6)))
 
 ;; Best-of per arm. The arms alternate, and which one goes first alternates
 ;; too, so a neighbour's burst under make -j lands on both; each sample starts

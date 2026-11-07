@@ -24,8 +24,9 @@
 (load "host/chez/seed/image.ss")
 (load "host/chez/compile-eval.ss")
 
+;; This thread's CPU time, not the wall clock: a preempted sample reads as a regression.
 (define (now-ms)
-  (let ((t (current-time 'time-monotonic)))
+  (let ((t (current-time 'time-thread)))
     (+ (* 1000.0 (time-second t)) (/ (time-nanosecond t) 1000000.0))))
 
 (define runs 3)

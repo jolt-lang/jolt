@@ -24,10 +24,16 @@
     (let [c (chunk b)]
       (and (= (count c) n) (= (nth c 0) 0) (= (nth c (dec n)) (dec n))))))
 
+;; This thread's CPU time, not the wall clock: under make -j beside other gates, a
+;; preempted sample reads as a regression. The work timed here all runs on this
+;; thread, collections included.
+(def ^:private thread-mx (java.lang.management.ManagementFactory/getThreadMXBean))
+(defn- cpu-ns [] (.getCurrentThreadCpuTime thread-mx))
+
 (defn- timed [f]
-  (let [t (System/nanoTime)]
+  (let [t (cpu-ns)]
     (f)
-    (/ (- (System/nanoTime) t) 1e6)))
+    (/ (- (cpu-ns) t) 1e6)))
 
 ;; Best of 3 per arm, the samples ALTERNATING arms and each from a fresh
 ;; collection, as hotpath_scaling_test.clj's judge-staged does, so a burst on a

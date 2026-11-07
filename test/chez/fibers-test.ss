@@ -422,11 +422,15 @@
 ;; reads high on both.
 (define old-trip (collect-trip-bytes))
 (collect-trip-bytes 100000000000)          ; no gen-0 during the timed region
+;; This thread's CPU time, not the wall clock: a preempted sample reads as a regression.
+(define (thread-nanos)
+  (let ((t (current-time 'time-thread)))
+    (+ (* 1000000000 (time-second t)) (time-nanosecond t))))
 (define (sw-run-ns depth label)
   (collect (collect-maximum-generation))
-  (let ((t0 (mono-nanos)))
+  (let ((t0 (thread-nanos)))
     (ok label (sw-bench-depth depth))
-    (/ (exact->inexact (- (mono-nanos) t0)) (* 2.0 SW-N SW-M))))
+    (/ (exact->inexact (- (thread-nanos) t0)) (* 2.0 SW-N SW-M))))
 (define (sw-measure)            ; -> (ns at 1 frame . ns at 40 frames)
   (let loop ((i 0) (s #f) (d #f))
     (if (fx=? i 5)

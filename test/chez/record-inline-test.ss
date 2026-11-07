@@ -280,8 +280,9 @@
 (define called-pvec-cnt pvec-cnt)
 (define ratio-iters 1000000)
 (define ratio-rounds 11)
+;; This thread's CPU time, not the wall clock: a preempted sample reads as a regression.
 (define (now-ns)
-  (let ((t (current-time 'time-monotonic)))
+  (let ((t (current-time 'time-thread)))
     (+ (* (time-second t) 1000000000) (time-nanosecond t))))
 (define (sample-ns f x)
   (let ((t0 (now-ns))) (f x) (- (now-ns) t0)))
