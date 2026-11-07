@@ -3141,6 +3141,9 @@
     (lambda (p)
       (let* ((rel (jolt-load-rel-path (chez-current-ns) p))
              (f (resolve-on-roots rel)))
+        ;; The namespace compiling this form expands macros from that file, so it is
+        ;; a file read at compile time like any other: its content moves the AOT key.
+        (when f (io-note-file-read! f))
         (if f (ldr-wrapping (lambda () (load-jolt-file/restoring-ns f)))
             (throw-jvm (quote java.io.FileNotFoundException) (string-append "Could not locate resource on source roots: " p)))))
     paths)

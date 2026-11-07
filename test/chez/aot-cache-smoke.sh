@@ -453,6 +453,48 @@ else
   echo "FAIL: (p) cold='$p_cold' (want v1) after-resource-edit='$p_warm' (want v2)"; fails=$((fails+1)); show_stderr
 fi
 
+# A file a namespace (load)s is compiled into that namespace's artifact as far as
+# anything the artifact expanded from it goes: a macro in the loaded file is baked
+# in, so an edit there has to miss though the namespace's own source is untouched.
+# (p-load): through (:load ...), a top-level (load), and a load inside a loaded file.
+pl="$tmp/pl"; mkdir -p "$pl/src/proj"
+cat > "$pl/src/proj/viaclause.clj" <<CLJ
+(ns proj.viaclause (:load "viaclause_m"))
+(defn run [] (the-macro))
+CLJ
+cat > "$pl/src/proj/viatop.clj" <<CLJ
+(ns proj.viatop)
+(load "viatop_m")
+(defn run [] (the-macro))
+CLJ
+cat > "$pl/src/proj/vianested.clj" <<CLJ
+(ns proj.vianested)
+(load "vianested_outer")
+(defn run [] (the-macro))
+CLJ
+printf "(in-ns 'proj.vianested)\n(load \"vianested_m\")\n" > "$pl/src/proj/vianested_outer.clj"
+plwrite() {
+  for n in viaclause viatop vianested; do
+    printf "(in-ns 'proj.$n)\n(defmacro the-macro [] $1)\n" > "$pl/src/proj/${n}_m.clj"
+  done
+}
+plrun() {
+  JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$cache" JOLT_QUIET=1 "$jolt" -e "
+    (require 'jolt.deps) (jolt.deps/add-deps {:deps {'proj/proj {:local/root \"$pl\"}}})
+    (require 'proj.viaclause 'proj.viatop 'proj.vianested)
+    (println [(proj.viaclause/run) (proj.viatop/run) (proj.vianested/run)])" 2>>"$errlog" | tail -1
+}
+plwrite 1
+pl_cold="$(plrun)"
+pl_warm="$(plrun)"
+plwrite 2
+pl_edit="$(plrun)"
+if [ "$pl_cold" = "[1 1 1]" ] && [ "$pl_warm" = "[1 1 1]" ] && [ "$pl_edit" = "[2 2 2]" ]; then
+  echo "PASS: (p-load) a macro edited in a loaded file invalidated the namespace"; pass=$((pass+1)); : > "$errlog"
+else
+  echo "FAIL: (p-load) cold='$pl_cold' warm='$pl_warm' (want [1 1 1]) after-edit='$pl_edit' (want [2 2 2])"; fails=$((fails+1)); show_stderr
+fi
+
 # (q) io/resource — the classpath spelling, resolved against the source roots
 q="$tmp/q"; mkdir -p "$q/src/proj" "$q/resources"
 printf '{:paths ["src" "resources"]}' > "$q/deps.edn"

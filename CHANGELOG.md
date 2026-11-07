@@ -50,6 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the namespace. A file that switches to another namespace, a computed path and a
   load that is not at top level stay runtime loads; a file that switches namespace
   gets a build note saying so.
+- **Editing a loaded file reaches `jolt run`.** The AOT cache keyed a namespace on
+  its own source, so a macro in a file it `load`s kept its old expansion until the
+  namespace's own file changed.
 - **A fiber waiting on an fd the kernel refuses to watch now returns**. A closed fd
   parked the fiber forever on kqueue and epoll; the caller's retry now reports what
   is wrong with the fd, as `wait-thread` already did.
