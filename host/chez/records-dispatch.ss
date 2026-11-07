@@ -337,6 +337,289 @@
 (define (rd-ref-touch r) (jolt-ensure r) jolt-nil)
 (define (rd-ref-trim-history r) jolt-nil)
 
+;; A deftype/defrecord type token answers the java.lang.Class methods for its tag.
+(define (rd-type-token-method obj tag method-name rest)
+  (let ((hit (and rd-class-method-hook (rd-class-method-hook tag method-name rest))))
+    (if (pair? hit)
+        (car hit)                       ; the hook wraps, so a nil/#f answer is still a hit
+        ;; presented in the JVM spelling of the tag (my_app.core.Foo for
+        ;; a type in my-app.core), as the class token's own methods are
+        (let ((jvm (jch-munge-segments tag)))
+          (cond ((or (string=? method-name "getName") (string=? method-name "getCanonicalName")
+                     (string=? method-name "getTypeName")) jvm)
+                ((string=? method-name "getSimpleName") (last-dot jvm))
+                ((string=? method-name "toString") (string-append "class " jvm))
+                (else (dispatch-miss obj method-name rest)))))))
+
+;; clojure.lang.MultiFn interop on a defmulti value.
+(define (rd-multifn-method obj method-name rest)
+  (cond
+    ;; these mutate the same table defmethod does, so they take the same
+    ;; mutex AND bump the same epoch. The bump was missing outright: a
+    ;; .addMethod left every multifn's dispatch cache stamped current, so a
+    ;; value already resolved through isa? kept its old method for good.
+    ((string=? method-name "addMethod")
+     (jolt-with-mutex mm-tbl-mu
+       (hashtable-set! (jolt-multifn-methods obj) (car rest) (cadr rest))
+       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+     obj)
+    ((string=? method-name "removeMethod")
+     (jolt-with-mutex mm-tbl-mu
+       (hashtable-delete! (jolt-multifn-methods obj) (car rest))
+       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+     obj)
+    ((string=? method-name "getMethod")
+     (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f) jolt-nil))
+    ;; keys AND values in one critical section, like jolt-methods-setup —
+    ;; snapshotting only the keys and reffing each one afterwards let a
+    ;; remove-method landing in between answer #f, and that raw Scheme false
+    ;; went into the returned map as the value for a dispatch value that no
+    ;; longer has a method.
+    ((string=? method-name "getMethodTable")
+     (let* ((tbl (jolt-multifn-methods obj))
+            (kv (jolt-with-mutex mm-tbl-mu
+                  (let-values (((ks vs) (hashtable-entries tbl))) (cons ks vs))))
+            (ks (car kv)) (vs (cdr kv)))
+       (let loop ((i 0) (m (jolt-hash-map)))
+         (if (fx>=? i (vector-length ks))
+             m
+             (loop (fx+ i 1) (jolt-assoc1 m (vector-ref ks i) (vector-ref vs i)))))))
+    ((string=? method-name "toString") (jolt-str-render-one obj))
+    (else (dispatch-miss obj method-name rest))))
+
+;; A defrecord's clojure.lang map-interface methods, through the map fns.
+(define (rd-record-map-method obj method-name rest)
+  (cond
+    ((string=? method-name "valAt")
+     (if (null? (cdr rest)) (jolt-get obj (car rest) jolt-nil) (jolt-get obj (car rest) (cadr rest))))
+    ((string=? method-name "assoc") (jolt-assoc1 obj (car rest) (cadr rest)))
+    ((string=? method-name "without") (jolt-dissoc obj (car rest)))
+    ((string=? method-name "containsKey") (if (jolt-truthy? (jolt-contains? obj (car rest))) #t #f))
+    ((string=? method-name "cons") (jolt-conj1 obj (car rest)))
+    ((string=? method-name "count") (jolt-count obj))
+    ((string=? method-name "seq") (jolt-seq obj))
+    ((string=? method-name "equiv") (if (jolt= obj (car rest)) #t #f))
+    ((string=? method-name "entryAt")
+     (if (jolt-truthy? (jolt-contains? obj (car rest)))
+         (make-map-entry (car rest) (jolt-get obj (car rest) jolt-nil)) jolt-nil))
+    ;; .empty of a record is nil on the JVM
+    (else jolt-nil)))
+
+;; A reify or proxy: its own method, then a proxy's delegate, then an abstract
+;; class's concrete method.
+(define (rd-reify-method obj method-name rest rest-args)
+  (let ((f (reify-method-ref obj method-name))
+        (d (jreify-delegate obj)))
+    (cond
+      (f (invoke-declared-method f obj method-name rest))
+      ;; a proxy forwards what it does not override to the base
+      ;; instance, through the full dispatcher so the delegate gets
+      ;; whatever method resolution its own kind of value has.
+      ;; rest-args, not rest: the dispatcher takes a jolt seq
+      (d (record-method-dispatch d method-name rest-args))
+      ;; a concrete method of an abstract class the reify declares —
+      ;; (proxy [java.io.InputStream] …) inheriting readAllBytes — runs
+      ;; against the reify itself, so its calls back into the
+      ;; abstract method reach the override (the hook below).
+      ((and abstract-class-method-hook (abstract-class-method-hook obj method-name))
+       => (lambda (m) (apply m obj rest)))
+      (else (dispatch-miss obj method-name rest)))))
+
+;; java.util.Iterator over a jolt seq.
+(define (rd-iterator-method obj method-name rest)
+  (cond ((string=? method-name "hasNext") (not (jolt-nil? (jolt-seq (jiterator-cur obj)))))
+        ((string=? method-name "next")
+         (let ((s (jolt-seq (jiterator-cur obj))))
+           (if (jolt-nil? s) (throw-jvm (quote NoSuchElementException) "iterator exhausted")
+               (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
+        ;; Iterator.forEachRemaining(Consumer): drains what is left
+        ((and (string=? method-name "forEachRemaining") (pair? rest))
+         (let loop ()
+           (let ((s (jolt-seq (jiterator-cur obj))))
+             (if (jolt-nil? s)
+                 jolt-nil
+                 (begin (jiterator-cur-set! obj (jolt-rest s))
+                        (jolt-fi-call (car rest) "accept" (jolt-first s))
+                        (loop))))))
+        (else (dispatch-miss obj method-name rest))))
+
+;; clojure.lang.Keyword interop.
+(define (rd-keyword-method obj method-name rest)
+  (cond ((string=? method-name "sym")
+         (jolt-symbol (keyword-t-ns obj) (keyword-t-name obj)))
+        ((string=? method-name "getName") (keyword-t-name obj))
+        ((string=? method-name "getNamespace") (or (keyword-t-ns obj) jolt-nil))
+        ((string=? method-name "toString")
+         (string-append ":" (if (keyword-t-ns obj) (string-append (keyword-t-ns obj) "/") "")
+                        (keyword-t-name obj)))
+        ;; Keyword.hashCode() is sym.hashCode() + 0x9e3779b9 — the JAVA
+        ;; hash of the symbol, not its hasheq. keyword-t-khash is the hasheq
+        ;; (murmur-based), which .hashCode answered with, so a keyword's
+        ;; .hashCode disagreed with the JVM while a symbol's agreed.
+        ((string=? method-name "hashCode")
+         (jolt-s32 (+ (java-symbol-hash (keyword-t-name obj) (keyword-t-ns obj))
+                      #x9e3779b9)))
+        ((string=? method-name "equals") (and (pair? rest) (eq? obj (car rest))))
+        ;; Keyword is an IFn: (.invoke :a m) is (:a m), as the dot-form arm
+        ;; answers it for fns and collections; applyTo likewise.
+        ((string=? method-name "invoke") (apply jolt-invoke obj rest))
+        ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
+         (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+        (else (dispatch-miss obj method-name rest))))
+
+;; clojure.lang.Symbol interop.
+(define (rd-symbol-method obj method-name rest)
+  (cond ((string=? method-name "getName") (symbol-t-name obj))
+        ((string=? method-name "getNamespace") (or (symbol-t-ns obj) jolt-nil))
+        ((string=? method-name "toString")
+         (string-append (if (symbol-t-ns obj) (string-append (symbol-t-ns obj) "/") "")
+                        (symbol-t-name obj)))
+        ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
+        ((string=? method-name "hashCode")
+         (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
+        ((string=? method-name "invoke") (apply jolt-invoke obj rest))
+        ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
+         (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+        (else (dispatch-miss obj method-name rest))))
+
+;; clojure.lang.Namespace interop.
+(define (rd-namespace-method obj method-name rest)
+  (cond ((or (string=? method-name "name") (string=? method-name "getName"))
+         (jolt-symbol #f (jns-name obj)))
+        ((string=? method-name "toString") (jns-name obj))
+        (else (dispatch-miss obj method-name rest))))
+
+;; clojure.lang.Var interop.
+(define (rd-var-method obj method-name rest)
+  (cond ((or (string=? method-name "ns") (string=? method-name "-ns"))
+         (intern-ns! (var-cell-ns obj)))
+        ((or (string=? method-name "sym") (string=? method-name "-sym"))
+         (jolt-symbol #f (var-cell-name obj)))
+        ;; toSymbol is Var's own qualified name — Symbol.intern of ns.name
+        ;; and sym.name. SCI's IVar protocol names it, so an embedder
+        ;; extending IVar to clojure.lang.Var (the extension SCI expects a
+        ;; host to supply, on jolt exactly as on the JVM) can spell it the
+        ;; way it does there.
+        ((string=? method-name "toSymbol")
+         (jolt-symbol (var-cell-ns obj) (var-cell-name obj)))
+        ((string=? method-name "toString") (string-append "#'" (var-cell-ns obj) "/" (var-cell-name obj)))
+        ;; getRawRoot is the ROOT value, past any thread binding — how
+        ;; fully-satisfies' requiring-resolve reads the global
+        ;; clojure.core/*loaded-libs* rather than whatever a load has bound
+        ;; over it. deref would answer the binding.
+        ((string=? method-name "getRawRoot") (var-cell-root obj))
+        ;; Var is an IFn that calls its value.
+        ((string=? method-name "invoke") (apply jolt-invoke obj rest))
+        ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
+         (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+        ;; The rest of Var's surface, each reading the state the clojure.core
+        ;; fn of the same meaning reads: isMacro the cell's macro flag (which
+        ;; alter-meta! keeps in step with meta :macro), isBound hasRoot OR a
+        ;; thread binding (bound?), hasRoot the root alone, isDynamic /
+        ;; isPublic / getTag the meta, deref / get the thread binding then
+        ;; the root — an unbound root answers its Unbound object rather than
+        ;; throwing, as Var.deref does. These used to fall to "No matching
+        ;; field", and typedclojure reads (.isMacro v) at every def it checks.
+        ((string=? method-name "isMacro") (var-cell-macro? obj))
+        ((string=? method-name "isBound") (jolt-var-bound-one? obj))
+        ((string=? method-name "hasRoot") (not (jolt-var-unbound? (var-cell-root obj))))
+        ((string=? method-name "isDynamic") (var-cell-dynamic? obj))
+        ((string=? method-name "isPublic") (not (rd-var-meta-flag? obj "private")))
+        ((string=? method-name "getTag") (rd-var-meta-get obj "tag"))
+        ((or (string=? method-name "deref") (string=? method-name "get")) (var-cell-deref obj))
+        ;; getThreadBinding is the box the innermost thread binding lives in,
+        ;; or nil with none in place — the read deref does before falling
+        ;; back to the root. The box is opaque on the JVM (Var$TBox's thread
+        ;; and val fields are package-private, so .val / .-val raise there
+        ;; too), which leaves nil-vs-not, its class, and the fact that two
+        ;; reads of ONE binding are identical?. vars.ss owns the type,
+        ;; dyn-binding.ss the interning that gives it that identity.
+        ((and (string=? method-name "getThreadBinding") (null? rest))
+         (jolt-var-thread-binding obj))
+        ;; setMacro sets the flag AND meta :macro, the pair alter-meta! keeps
+        ;; together. bindRoot / alterRoot go through alter-var-root so the
+        ;; validator and watches see the change; bindRoot also clears the
+        ;; macro flag, as Var.bindRoot does (a def over a macro un-macros it).
+        ;; setDynamic writes the FLAG and leaves the metadata alone, as the
+        ;; JVM does — the two are separate there, and (:dynamic (meta v))
+        ;; after a bare .setDynamic is nil on both now. It answers the var,
+        ;; and the boolean overload turns the flag off.
+        ((string=? method-name "setDynamic")
+         (var-cell-dynamic?-set! obj (if (pair? rest) (jolt-truthy? (car rest)) #t))
+         obj)
+        ((string=? method-name "setMacro")
+         (var-cell-macro?-set! obj #t)
+         (var-cell-meta-set! obj (jolt-assoc (or (rd-var-meta obj) (jolt-hash-map)) jolt-kw-var-macro #t))
+         jolt-nil)
+        ((string=? method-name "bindRoot")
+         (jolt-alter-var-root obj (lambda (_) (car rest)))
+         (var-cell-macro?-set! obj #f)
+         (let ((m (rd-var-meta obj)))
+           (when m (var-cell-meta-set! obj (jolt-dissoc2 m jolt-kw-var-macro))))
+         jolt-nil)
+        ((string=? method-name "alterRoot")
+         (apply jolt-alter-var-root obj (car rest) (rd-args->list (cadr rest))))
+        ;; unbindRoot puts the root back to the var's Unbound marker — the
+        ;; state a bare (def x) leaves. hasRoot goes false and the root reads
+        ;; back as clojure.lang.Var$Unbound, which is what ns-unmap already
+        ;; writes through the same pair of calls.
+        ((and (string=? method-name "unbindRoot") (null? rest))
+         (var-root-set! obj (make-jolt-var-unbound (var-cell-ns obj) (var-cell-name obj)))
+         jolt-nil)
+        ;; set is Var.set: the innermost THREAD binding and never the root.
+        ;; jolt-set-var! is the one write path already behind the set!
+        ;; special form and var-set — validator first, then the binding
+        ;; lookup — so with no binding in place this throws "Can't
+        ;; change/establish root binding of: x with set", as Var.set does.
+        ((and (string=? method-name "set") (pair? rest))
+         (jolt-set-var! obj (car rest)))
+        ;; fn is (IFn) deref(). IFn is what clojure.core/ifn? answers — a
+        ;; fn, a keyword, a symbol, a map, a set, a vector, a var, a
+        ;; callable host object, a deftype with invoke — so a var holding
+        ;; a keyword hands the keyword back, as on the JVM (fn? alone
+        ;; refused it). The cast is the observable half: anything else
+        ;; reports a ClassCastException naming the value's class rather
+        ;; than handing back a value the caller then fails to invoke.
+        ((and (string=? method-name "fn") (null? rest))
+         (let ((v (var-cell-deref obj)))
+           (if (jolt-truthy? (jolt-invoke1 (var-deref "clojure.core" "ifn?") v))
+               v
+               (jolt-throw
+                (jolt-host-throwable
+                 "java.lang.ClassCastException"
+                 (string-append "class " (guard (c (#t "?")) (jolt-class-name v))
+                                " cannot be cast to class clojure.lang.IFn"))))))
+        (else (dispatch-miss obj method-name rest))))
+
+;; java.lang.Character interop.
+(define (rd-char-method obj method-name rest)
+  (cond ((string=? method-name "toString") (string obj))
+        ((string=? method-name "charValue") obj)
+        ((string=? method-name "hashCode") (char->integer obj))
+        ((string=? method-name "equals") (and (pair? rest) (char? (car rest)) (char=? obj (car rest))))
+        ((string=? method-name "compareTo")
+         (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
+        (else (dispatch-miss obj method-name rest))))
+
+;; A java.util collection mutator on an immutable collection (see the arm in
+;; record-method-dispatch-base).
+(define (rd-coll-mutator-call obj method-name rest)
+  (let ((empty? (jolt-nil? (jolt-seq obj))))
+    (cond
+      ((string=? method-name "removeIf")
+       (if (and (not empty?)
+                (let loop ((s (jolt-seq obj)))
+                  (and (not (jolt-nil? s))
+                       (or (jolt-truthy? (jolt-fi-call (car rest) "test" (seq-first s)))
+                           (loop (jolt-seq (seq-more s)))))))
+           (throw-jvm 'UnsupportedOperationException "")
+           #f))
+      ((not empty?) (throw-jvm 'UnsupportedOperationException ""))
+      ((or (string=? method-name "removeFirst") (string=? method-name "removeLast"))
+       (throw-jvm 'NoSuchElementException ""))
+      ((or (string=? method-name "replaceAll") (string=? method-name "sort")) jolt-nil)
+      (else (throw-jvm 'UnsupportedOperationException "")))))
+
 (define (record-method-dispatch-base obj method-name rest-args)
   (let ((rest (method-rest-args->list rest-args)))
     (cond
@@ -352,54 +635,12 @@
             ;; and a hand-kept list here silently answered fewer. Every Class
             ;; method the table grows is reachable through the token from the
             ;; moment it is added.
-            (let ((hit (and rd-class-method-hook (rd-class-method-hook tag method-name rest))))
-              (if (pair? hit)
-                  (car hit)                       ; the hook wraps, so a nil/#f answer is still a hit
-                  ;; presented in the JVM spelling of the tag (my_app.core.Foo for
-                  ;; a type in my-app.core), as the class token's own methods are
-                  (let ((jvm (jch-munge-segments tag)))
-                    (cond ((or (string=? method-name "getName") (string=? method-name "getCanonicalName")
-                               (string=? method-name "getTypeName")) jvm)
-                          ((string=? method-name "getSimpleName") (last-dot jvm))
-                          ((string=? method-name "toString") (string-append "class " jvm))
-                          (else (dispatch-miss obj method-name rest))))))))
+            (rd-type-token-method obj tag method-name rest)))
       ;; clojure.lang.MultiFn interop on a defmulti value: addMethod/removeMethod/
       ;; getMethod/getMethodTable, the same table (defmethod) fills — schema's
       ;; abstract-map registers dispatch methods by calling .addMethod directly.
       ((jolt-multifn? obj)
-       (cond
-         ;; these mutate the same table defmethod does, so they take the same
-         ;; mutex AND bump the same epoch. The bump was missing outright: a
-         ;; .addMethod left every multifn's dispatch cache stamped current, so a
-         ;; value already resolved through isa? kept its old method for good.
-         ((string=? method-name "addMethod")
-          (jolt-with-mutex mm-tbl-mu
-            (hashtable-set! (jolt-multifn-methods obj) (car rest) (cadr rest))
-            (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-          obj)
-         ((string=? method-name "removeMethod")
-          (jolt-with-mutex mm-tbl-mu
-            (hashtable-delete! (jolt-multifn-methods obj) (car rest))
-            (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-          obj)
-         ((string=? method-name "getMethod")
-          (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f) jolt-nil))
-         ;; keys AND values in one critical section, like jolt-methods-setup —
-         ;; snapshotting only the keys and reffing each one afterwards let a
-         ;; remove-method landing in between answer #f, and that raw Scheme false
-         ;; went into the returned map as the value for a dispatch value that no
-         ;; longer has a method.
-         ((string=? method-name "getMethodTable")
-          (let* ((tbl (jolt-multifn-methods obj))
-                 (kv (jolt-with-mutex mm-tbl-mu
-                       (let-values (((ks vs) (hashtable-entries tbl))) (cons ks vs))))
-                 (ks (car kv)) (vs (cdr kv)))
-            (let loop ((i 0) (m (jolt-hash-map)))
-              (if (fx>=? i (vector-length ks))
-                  m
-                  (loop (fx+ i 1) (jolt-assoc1 m (vector-ref ks i) (vector-ref vs i)))))))
-         ((string=? method-name "toString") (jolt-str-render-one obj))
-         (else (dispatch-miss obj method-name rest))))
+       (rd-multifn-method obj method-name rest))
       ((and (jrec? obj) (jrec-method-arity obj method-name (+ 1 (length rest))))
        => (lambda (f) (invoke-declared-method f obj method-name rest)))
       ;; (.field inst): a deftype/record field read with no matching method.
@@ -417,104 +658,28 @@
       ((and (jrec-record? obj)
             (member method-name '("valAt" "assoc" "without" "containsKey" "cons"
                                   "count" "seq" "equiv" "entryAt" "empty")))
-       (cond
-         ((string=? method-name "valAt")
-          (if (null? (cdr rest)) (jolt-get obj (car rest) jolt-nil) (jolt-get obj (car rest) (cadr rest))))
-         ((string=? method-name "assoc") (jolt-assoc1 obj (car rest) (cadr rest)))
-         ((string=? method-name "without") (jolt-dissoc obj (car rest)))
-         ((string=? method-name "containsKey") (if (jolt-truthy? (jolt-contains? obj (car rest))) #t #f))
-         ((string=? method-name "cons") (jolt-conj1 obj (car rest)))
-         ((string=? method-name "count") (jolt-count obj))
-         ((string=? method-name "seq") (jolt-seq obj))
-         ((string=? method-name "equiv") (if (jolt= obj (car rest)) #t #f))
-         ((string=? method-name "entryAt")
-          (if (jolt-truthy? (jolt-contains? obj (car rest)))
-              (make-map-entry (car rest) (jolt-get obj (car rest) jolt-nil)) jolt-nil))
-         (else jolt-nil)))   ; .empty of a record is nil on the JVM
+       (rd-record-map-method obj method-name rest))
       ((jreify? obj)
        => (lambda (_)
-            (let ((f (reify-method-ref obj method-name))
-                  (d (jreify-delegate obj)))
-              (cond
-                (f (invoke-declared-method f obj method-name rest))
-                ;; a proxy forwards what it does not override to the base
-                ;; instance, through the full dispatcher so the delegate gets
-                ;; whatever method resolution its own kind of value has.
-                ;; rest-args, not rest: the dispatcher takes a jolt seq
-                (d (record-method-dispatch d method-name rest-args))
-                ;; a concrete method of an abstract class the reify declares —
-                ;; (proxy [java.io.InputStream] …) inheriting readAllBytes — runs
-                ;; against the reify itself, so its calls back into the
-                ;; abstract method reach the override (the hook below).
-                ((and abstract-class-method-hook (abstract-class-method-hook obj method-name))
-                 => (lambda (m) (apply m obj rest)))
-                (else (dispatch-miss obj method-name rest))))))
+            (rd-reify-method obj method-name rest rest-args)))
       ;; java.lang.String interop: defined in natives-str.ss, loaded
       ;; after this file (free reference, resolved at call time).
       ((string? obj) (jolt-string-method method-name obj rest))
       ((jiterator? obj)
-       (cond ((string=? method-name "hasNext") (not (jolt-nil? (jolt-seq (jiterator-cur obj)))))
-             ((string=? method-name "next")
-              (let ((s (jolt-seq (jiterator-cur obj))))
-                (if (jolt-nil? s) (throw-jvm (quote NoSuchElementException) "iterator exhausted")
-                    (let ((v (jolt-first s))) (jiterator-cur-set! obj (jolt-rest s)) v))))
-             ;; Iterator.forEachRemaining(Consumer): drains what is left
-             ((and (string=? method-name "forEachRemaining") (pair? rest))
-              (let loop ()
-                (let ((s (jolt-seq (jiterator-cur obj))))
-                  (if (jolt-nil? s)
-                      jolt-nil
-                      (begin (jiterator-cur-set! obj (jolt-rest s))
-                             (jolt-fi-call (car rest) "accept" (jolt-first s))
-                             (loop))))))
-             (else (dispatch-miss obj method-name rest))))
+       (rd-iterator-method obj method-name rest))
       ((string=? method-name "iterator") (make-jiterator (jolt-seq obj)))
       ;; clojure.lang.Keyword interop: a Keyword carries an interned `sym` field
       ;; (the symbol form, ns + name) plus the Named methods. honeysql/reitit read
       ;; (.sym k) on their :clj branch to recover the symbol without the colon.
       ((keyword-t? obj)
-       (cond ((string=? method-name "sym")
-              (jolt-symbol (keyword-t-ns obj) (keyword-t-name obj)))
-             ((string=? method-name "getName") (keyword-t-name obj))
-             ((string=? method-name "getNamespace") (or (keyword-t-ns obj) jolt-nil))
-             ((string=? method-name "toString")
-              (string-append ":" (if (keyword-t-ns obj) (string-append (keyword-t-ns obj) "/") "")
-                             (keyword-t-name obj)))
-             ;; Keyword.hashCode() is sym.hashCode() + 0x9e3779b9 — the JAVA
-             ;; hash of the symbol, not its hasheq. keyword-t-khash is the hasheq
-             ;; (murmur-based), which .hashCode answered with, so a keyword's
-             ;; .hashCode disagreed with the JVM while a symbol's agreed.
-             ((string=? method-name "hashCode")
-              (jolt-s32 (+ (java-symbol-hash (keyword-t-name obj) (keyword-t-ns obj))
-                           #x9e3779b9)))
-             ((string=? method-name "equals") (and (pair? rest) (eq? obj (car rest))))
-             ;; Keyword is an IFn: (.invoke :a m) is (:a m), as the dot-form arm
-             ;; answers it for fns and collections; applyTo likewise.
-             ((string=? method-name "invoke") (apply jolt-invoke obj rest))
-             ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
-              (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
-             (else (dispatch-miss obj method-name rest))))
+       (rd-keyword-method obj method-name rest))
       ;; clojure.lang.Symbol interop: the Named methods + getName/getNamespace.
       ((symbol-t? obj)
-       (cond ((string=? method-name "getName") (symbol-t-name obj))
-             ((string=? method-name "getNamespace") (or (symbol-t-ns obj) jolt-nil))
-             ((string=? method-name "toString")
-              (string-append (if (symbol-t-ns obj) (string-append (symbol-t-ns obj) "/") "")
-                             (symbol-t-name obj)))
-             ((string=? method-name "equals") (and (pair? rest) (jolt=2 obj (car rest))))
-             ((string=? method-name "hashCode")
-              (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
-             ((string=? method-name "invoke") (apply jolt-invoke obj rest))
-             ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
-              (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
-             (else (dispatch-miss obj method-name rest))))
+       (rd-symbol-method obj method-name rest))
       ;; clojure.lang.Namespace: name/getName yield the ns name as a Symbol (JVM:
       ;; Namespace.name is a Symbol). clojure.spec.alpha reads (.name *ns*).
       ((jns? obj)
-       (cond ((or (string=? method-name "name") (string=? method-name "getName"))
-              (jolt-symbol #f (jns-name obj)))
-             ((string=? method-name "toString") (jns-name obj))
-             (else (dispatch-miss obj method-name rest))))
+       (rd-namespace-method obj method-name rest))
       ;; clojure.lang.ARef's watch/validator surface, answered for all four
       ;; watchable reference types at once — atom, var, ref, agent. Each already
       ;; IS an IRef by class ((instance? clojure.lang.IRef a) is true and
@@ -566,105 +731,7 @@
        ;; log its receiver and every gate run over it, jolt and clojure.core and
        ;; the corpus and the lib-conformance suites and the self-host, with no
        ;; hit (jolt-ggd).
-       (cond ((or (string=? method-name "ns") (string=? method-name "-ns"))
-              (intern-ns! (var-cell-ns obj)))
-             ((or (string=? method-name "sym") (string=? method-name "-sym"))
-              (jolt-symbol #f (var-cell-name obj)))
-             ;; toSymbol is Var's own qualified name — Symbol.intern of ns.name
-             ;; and sym.name. SCI's IVar protocol names it, so an embedder
-             ;; extending IVar to clojure.lang.Var (the extension SCI expects a
-             ;; host to supply, on jolt exactly as on the JVM) can spell it the
-             ;; way it does there.
-             ((string=? method-name "toSymbol")
-              (jolt-symbol (var-cell-ns obj) (var-cell-name obj)))
-             ((string=? method-name "toString") (string-append "#'" (var-cell-ns obj) "/" (var-cell-name obj)))
-             ;; getRawRoot is the ROOT value, past any thread binding — how
-             ;; fully-satisfies' requiring-resolve reads the global
-             ;; clojure.core/*loaded-libs* rather than whatever a load has bound
-             ;; over it. deref would answer the binding.
-             ((string=? method-name "getRawRoot") (var-cell-root obj))
-             ;; Var is an IFn that calls its value.
-             ((string=? method-name "invoke") (apply jolt-invoke obj rest))
-             ((and (string=? method-name "applyTo") (pair? rest) (null? (cdr rest)))
-              (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
-             ;; The rest of Var's surface, each reading the state the clojure.core
-             ;; fn of the same meaning reads: isMacro the cell's macro flag (which
-             ;; alter-meta! keeps in step with meta :macro), isBound hasRoot OR a
-             ;; thread binding (bound?), hasRoot the root alone, isDynamic /
-             ;; isPublic / getTag the meta, deref / get the thread binding then
-             ;; the root — an unbound root answers its Unbound object rather than
-             ;; throwing, as Var.deref does. These used to fall to "No matching
-             ;; field", and typedclojure reads (.isMacro v) at every def it checks.
-             ((string=? method-name "isMacro") (var-cell-macro? obj))
-             ((string=? method-name "isBound") (jolt-var-bound-one? obj))
-             ((string=? method-name "hasRoot") (not (jolt-var-unbound? (var-cell-root obj))))
-             ((string=? method-name "isDynamic") (var-cell-dynamic? obj))
-             ((string=? method-name "isPublic") (not (rd-var-meta-flag? obj "private")))
-             ((string=? method-name "getTag") (rd-var-meta-get obj "tag"))
-             ((or (string=? method-name "deref") (string=? method-name "get")) (var-cell-deref obj))
-             ;; getThreadBinding is the box the innermost thread binding lives in,
-             ;; or nil with none in place — the read deref does before falling
-             ;; back to the root. The box is opaque on the JVM (Var$TBox's thread
-             ;; and val fields are package-private, so .val / .-val raise there
-             ;; too), which leaves nil-vs-not, its class, and the fact that two
-             ;; reads of ONE binding are identical?. vars.ss owns the type,
-             ;; dyn-binding.ss the interning that gives it that identity.
-             ((and (string=? method-name "getThreadBinding") (null? rest))
-              (jolt-var-thread-binding obj))
-             ;; setMacro sets the flag AND meta :macro, the pair alter-meta! keeps
-             ;; together. bindRoot / alterRoot go through alter-var-root so the
-             ;; validator and watches see the change; bindRoot also clears the
-             ;; macro flag, as Var.bindRoot does (a def over a macro un-macros it).
-             ;; setDynamic writes the FLAG and leaves the metadata alone, as the
-             ;; JVM does — the two are separate there, and (:dynamic (meta v))
-             ;; after a bare .setDynamic is nil on both now. It answers the var,
-             ;; and the boolean overload turns the flag off.
-             ((string=? method-name "setDynamic")
-              (var-cell-dynamic?-set! obj (if (pair? rest) (jolt-truthy? (car rest)) #t))
-              obj)
-             ((string=? method-name "setMacro")
-              (var-cell-macro?-set! obj #t)
-              (var-cell-meta-set! obj (jolt-assoc (or (rd-var-meta obj) (jolt-hash-map)) jolt-kw-var-macro #t))
-              jolt-nil)
-             ((string=? method-name "bindRoot")
-              (jolt-alter-var-root obj (lambda (_) (car rest)))
-              (var-cell-macro?-set! obj #f)
-              (let ((m (rd-var-meta obj)))
-                (when m (var-cell-meta-set! obj (jolt-dissoc2 m jolt-kw-var-macro))))
-              jolt-nil)
-             ((string=? method-name "alterRoot")
-              (apply jolt-alter-var-root obj (car rest) (rd-args->list (cadr rest))))
-             ;; unbindRoot puts the root back to the var's Unbound marker — the
-             ;; state a bare (def x) leaves. hasRoot goes false and the root reads
-             ;; back as clojure.lang.Var$Unbound, which is what ns-unmap already
-             ;; writes through the same pair of calls.
-             ((and (string=? method-name "unbindRoot") (null? rest))
-              (var-root-set! obj (make-jolt-var-unbound (var-cell-ns obj) (var-cell-name obj)))
-              jolt-nil)
-             ;; set is Var.set: the innermost THREAD binding and never the root.
-             ;; jolt-set-var! is the one write path already behind the set!
-             ;; special form and var-set — validator first, then the binding
-             ;; lookup — so with no binding in place this throws "Can't
-             ;; change/establish root binding of: x with set", as Var.set does.
-             ((and (string=? method-name "set") (pair? rest))
-              (jolt-set-var! obj (car rest)))
-             ;; fn is (IFn) deref(). IFn is what clojure.core/ifn? answers — a
-             ;; fn, a keyword, a symbol, a map, a set, a vector, a var, a
-             ;; callable host object, a deftype with invoke — so a var holding
-             ;; a keyword hands the keyword back, as on the JVM (fn? alone
-             ;; refused it). The cast is the observable half: anything else
-             ;; reports a ClassCastException naming the value's class rather
-             ;; than handing back a value the caller then fails to invoke.
-             ((and (string=? method-name "fn") (null? rest))
-              (let ((v (var-cell-deref obj)))
-                (if (jolt-truthy? (jolt-invoke1 (var-deref "clojure.core" "ifn?") v))
-                    v
-                    (jolt-throw
-                     (jolt-host-throwable
-                      "java.lang.ClassCastException"
-                      (string-append "class " (guard (c (#t "?")) (jolt-class-name v))
-                                     " cannot be cast to class clojure.lang.IFn"))))))
-             (else (dispatch-miss obj method-name rest))))
+       (rd-var-method obj method-name rest))
       ;; java.lang.Throwable interop over a Chez condition. A jolt host error
       ;; (`error`/`assertion-violationf`) raises a Chez condition; Clojure code
       ;; that catches it as a Throwable reads (.getMessage e) / (.toString e).
@@ -676,13 +743,7 @@
              (else (dispatch-miss obj method-name rest))))
       ;; java.lang.Character interop: (.toString \+) -> "+", etc.
       ((char? obj)
-       (cond ((string=? method-name "toString") (string obj))
-             ((string=? method-name "charValue") obj)
-             ((string=? method-name "hashCode") (char->integer obj))
-             ((string=? method-name "equals") (and (pair? rest) (char? (car rest)) (char=? obj (car rest))))
-             ((string=? method-name "compareTo")
-              (let ((o (car rest))) (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
-             (else (dispatch-miss obj method-name rest))))
+       (rd-char-method obj method-name rest))
       ;; java.util.SequencedCollection (JDK 21) over jolt's own persistent
       ;; collections — a vector / list / seq is a java.util.List, which is one.
       ;; A SET is not, sorted or otherwise (see rd-java-list? above), so these
@@ -717,21 +778,7 @@
       ;; false, a match is the refusal. (replaceAll and sort call set() for
       ;; every element and refuse on any non-empty one.)
       ((rd-coll-mutator? obj method-name (length rest))
-       (let ((empty? (jolt-nil? (jolt-seq obj))))
-         (cond
-           ((string=? method-name "removeIf")
-            (if (and (not empty?)
-                     (let loop ((s (jolt-seq obj)))
-                       (and (not (jolt-nil? s))
-                            (or (jolt-truthy? (jolt-fi-call (car rest) "test" (seq-first s)))
-                                (loop (jolt-seq (seq-more s)))))))
-                (throw-jvm 'UnsupportedOperationException "")
-                #f))
-           ((not empty?) (throw-jvm 'UnsupportedOperationException ""))
-           ((or (string=? method-name "removeFirst") (string=? method-name "removeLast"))
-            (throw-jvm 'NoSuchElementException ""))
-           ((or (string=? method-name "replaceAll") (string=? method-name "sort")) jolt-nil)
-           (else (throw-jvm 'UnsupportedOperationException "")))))
+       (rd-coll-mutator-call obj method-name rest))
       ;; universal Object methods on any remaining value (boolean, etc.).
       ((string=? method-name "toString") (jolt-str-render-one obj))
       ;; a seq or list is a java.util.List: List.hashCode (31*h + e.hashCode),
