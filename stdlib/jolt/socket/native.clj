@@ -423,6 +423,20 @@
     [0 0]
     (set-int-option! fd sol-socket so-reuseaddr 1)))
 
+(defn set-reuse-address!
+  "SO_REUSEADDR on or off for a listener's fd, as ServerSocket.setReuseAddress
+  asks before bind; nothing on Windows (set-listener-reuse!). Answers [result
+  error]."
+  [fd on?]
+  (if windows?
+    [0 0]
+    (set-int-option! fd sol-socket so-reuseaddr (if on? 1 0))))
+
+(def listener-reuses?
+  "What a new listener's getReuseAddress answers: set-listener-reuse! turns
+  SO_REUSEADDR on except on Windows."
+  (not windows?))
+
 (defn new-socket
   "A new stream socket of family (af-inet or af-inet6), or throws IOException.
   Initializes Winsock first. The fd is close-on-exec, and on macOS it carries

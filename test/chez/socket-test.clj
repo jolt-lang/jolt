@@ -238,6 +238,42 @@
                  (finally (.close s))))
           :bound)
 
+;; setReuseAddress/getReuseAddress, as the JDK answers them. A port probe turns
+;; SO_REUSEADDR off before a wildcard bind so a port another socket holds on
+;; one address counts as busy (a bb.edn can-bind? did, and threw
+;; IllegalArgumentException: there was no such method). The JDK on macOS lets
+;; the wildcard bind beside a held 127.0.0.1 port when the option is on, and
+;; Linux refuses it either way, so only the reuse-off answer is checked there.
+(check-eq "getReuseAddress is true on a new ServerSocket"
+          (.getReuseAddress (java.net.ServerSocket.)) true)
+(check-eq "setReuseAddress false is what getReuseAddress answers"
+          (let [s (java.net.ServerSocket.)] (.setReuseAddress s false) (try (.getReuseAddress s) (finally (.close s))))
+          false)
+(check-eq "a bound ServerSocket reuses too"
+          (let [s (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))] (try (.getReuseAddress s) (finally (.close s))))
+          true)
+(check-eq "getReuseAddress on a closed ServerSocket"
+          (try (let [s (java.net.ServerSocket.)] (.close s) (.getReuseAddress s))
+               (catch java.net.SocketException e (.getMessage e)))
+          "Socket is closed")
+(check-eq "setReuseAddress on a closed ServerSocket"
+          (try (let [s (java.net.ServerSocket.)] (.close s) (.setReuseAddress s false))
+               (catch java.net.SocketException e (.getMessage e)))
+          "Socket is closed")
+(defn- probe-bind [reuse addr port]
+  (let [s (java.net.ServerSocket.)]
+    (.setReuseAddress s reuse)
+    (try (.bind s (if addr (java.net.InetSocketAddress. addr (int port)) (java.net.InetSocketAddress. (int port)))) :bound
+         (catch java.io.IOException _ :refused)
+         (finally (.close s)))))
+(check-eq "reuse off: a free wildcard port binds" (probe-bind false nil 0) :bound)
+(let [held (java.net.ServerSocket.)]
+  (.bind held (java.net.InetSocketAddress. "127.0.0.1" 0))
+  (let [p (.getLocalPort held)]
+    (check-eq "reuse off: the wildcard refuses a port held on 127.0.0.1" (probe-bind false nil p) :refused)
+    (check-eq "reuse off: 127.0.0.1 refuses it too" (probe-bind false "127.0.0.1" p) :refused))
+  (.close held))
+
 ;; write to a peer-closed socket throws instead of silently dropping — and the
 ;; process must survive it (SIGPIPE guarded via MSG_NOSIGNAL / SO_NOSIGPIPE).
 (let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
