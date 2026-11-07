@@ -1097,6 +1097,19 @@
 (define-record-type jolt-delay (fields thunk (mutable realized?) (mutable value) (mutable exn))
   (nongenerative jolt-delay-v2))
 (define (jolt-make-delay thunk) (make-jolt-delay thunk #f jolt-nil #f))
+;; realized? is the one word a reader needs: #f, or the answer, (value) or #(exn). The
+;; loads of two fields can reorder on arm64, so a reader that went by a flag could see
+;; it set with exn still unset and answer nil for a failed delay. value and exn are
+;; still filled in for the record's layout, which an image holds; #t in this word is a
+;; delay realized by a build older than this one.
+(define (jolt-delay-publish! d word)
+  (when jolt-mt? (memory-order-release))
+  (jolt-delay-realized?-set! d word))
+(define (jolt-delay-answer d w)
+  (cond ((pair? w) (car w))
+        ((vector? w) (raise (vector-ref w 0)))
+        ((jolt-delay-exn d) => raise)
+        (else (jolt-delay-value d))))
 
 ;; How futures, promises, delays and agents print (printing.ss register-deref-print!):
 ;; pending until realized, failed with the throwable a deref would raise, else
@@ -1112,9 +1125,11 @@
   (lambda (p) (if (jolt-promise-delivered? p) (cons "ready" (jolt-promise-value p)) (cons "pending" jolt-nil))))
 (register-deref-print! jolt-delay?
   (lambda (d)
-    (cond ((not (jolt-delay-realized? d)) (cons "pending" jolt-nil))
-          ((jolt-delay-exn d) (cons "failed" (jolt-unwrap-throw (jolt-delay-exn d))))
-          (else (cons "ready" (jolt-delay-value d))))))
+    (let ((w (jolt-delay-realized? d)))
+      (cond ((not w) (cons "pending" jolt-nil))
+            ((if (vector? w) (vector-ref w 0) (and (not (pair? w)) (jolt-delay-exn d)))
+             => (lambda (e) (cons "failed" (jolt-unwrap-throw e))))
+            (else (cons "ready" (if (pair? w) (car w) (jolt-delay-value d))))))))
 (register-deref-print! jolt-agent?
   (lambda (a) (cons (if (jolt-nil? (jolt-agent-err a)) "ready" "failed") (jolt-agent-state a))))
 ;; run the thunk once, like Clojure's Delay: if it throws, cache the exception
@@ -1149,15 +1164,20 @@
 ;; Reentrancy is unchanged in observable terms: a delay whose body derefs itself
 ;; re-enters the monitor, finds realized? #f and recurses, which is what the JVM does
 ;; too (synchronized is reentrant and fn is still non-null).
-(define (jolt-delay-force d)
-  (unless (jolt-delay-realized? d)
+(define (jolt-delay-force-slow d w)
+  (unless w
     (jolt-with-monitor d
       (lambda ()
         (unless (jolt-delay-realized? d)
-          (guard (e (#t (jolt-delay-exn-set! d e) (jolt-delay-realized?-set! d #t)))
-            (jolt-delay-value-set! d (jolt-invoke (jolt-delay-thunk d)))
-            (jolt-delay-realized?-set! d #t))))))
-  (if (jolt-delay-exn d) (raise (jolt-delay-exn d)) (jolt-delay-value d)))
+          (guard (e (#t (jolt-delay-exn-set! d e)
+                        (jolt-delay-publish! d (vector e))))
+            (let ((v (jolt-invoke (jolt-delay-thunk d))))
+              (jolt-delay-value-set! d v)
+              (jolt-delay-publish! d (list v))))))))
+  (jolt-delay-answer d (jolt-delay-realized? d)))
+(define (jolt-delay-force d)
+  (let ((w (jolt-delay-realized? d)))
+    (if (pair? w) (car w) (jolt-delay-force-slow d w))))
 
 ;; --- deref extension --------------------------------------------------------
 ;; Chain the fully-built jolt-deref (atoms/vars/volatiles/reduced) with futures,
@@ -1259,7 +1279,7 @@
 (define (jolt-conc-realized? x)
   (cond ((jolt-future? x) (jolt-future-done? x))
         ((jolt-promise? x) (jolt-promise-delivered? x))
-        ((jolt-delay? x) (jolt-delay-realized? x))
+        ((jolt-delay? x) (and (jolt-delay-realized? x) #t))
         (else #f)))
 
 ;; --- bind into clojure.core -------------------------------------------------

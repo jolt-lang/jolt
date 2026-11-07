@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Editing a loaded file reaches `jolt run`.** The AOT cache keyed a namespace on
   its own source, so a macro in a file it `load`s kept its old expansion until the
   namespace's own file changed.
+- **A failed `delay` can't answer nil to a racing thread.** Forcing read a flag and
+  then the exception, with no ordering between them, so on arm64 a thread could see
+  the flag and not the exception. Deref is one read now, no slower than it was.
 - **A fiber waiting on an fd the kernel refuses to watch now returns**. A closed fd
   parked the fiber forever on kqueue and epoll; the caller's retry now reports what
   is wrong with the fd, as `wait-thread` already did.

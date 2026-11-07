@@ -9170,4 +9170,5 @@
   {:suite "ns / metadata and clause shape", :label "a clause whose head is not a keyword", :expected :throws, :actual "(ns nsbad.f (require 'clojure.string))", :portability :common}
   {:suite "ns / metadata and clause shape", :label "an empty clause", :expected :throws, :actual "(ns nsbad.g ())", :portability :common}
   {:suite "ns / metadata and clause shape", :label "a name that is not a symbol", :expected :throws, :actual "(ns 3)", :portability :common}
+  {:suite "delay / exception memoization", :label "realized? is a boolean, for a value and for a failure, and both keep their answer", :expected "[true true 1 \"x\"]", :actual "(let [d (delay 1) f (delay (throw (ex-info \"x\" {})))] (try @f (catch Exception _ nil)) @d [(true? (realized? d)) (true? (realized? f)) @d (try @f (catch Exception e (ex-message e)))])", :portability :common}
 ]
