@@ -80,6 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory as a lock read losing it as an I/O error. The class now comes from
   `mkdir`'s own errno, as on the JVM, which also makes a permission failure
   `AccessDeniedException`.
+- **`Files/move` with `ATOMIC_MOVE` replaces the target in one step.** It removed
+  the target and then renamed onto it, so a reader could find the file missing in
+  between, which defeats writing a temp file and renaming it over the real one. It
+  is now a single `rename(2)`, as on the JVM: an existing target is replaced with
+  or without `REPLACE_EXISTING`, a move across filesystems throws
+  `AtomicMoveNotSupportedException`, and a failure names both paths with the JDK's
+  class, such as `NoSuchFileException` for a missing parent. Windows still removes
+  the target first.
 - **A temp file or a new entry is created with its final permissions.**
   `Files/createTempFile` made the file with the default mode and then `chmod`ed it
   to `0600`, so another user could open it in between and go on reading what was
