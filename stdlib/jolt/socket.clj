@@ -809,9 +809,12 @@
 
 ;; -- ServerSocket ------------------------------------------------------------
 ;; A new fd of family bound to ip:port and listening, or throw having closed it.
-(defn- open-listener! [family sa len port backlog]
+;; reuse? false clears the SO_REUSEADDR new-fd! set, before the bind, as a
+;; ServerSocket whose setReuseAddress was false binds.
+(defn- open-listener! [family sa len port backlog reuse?]
   (let [fd (new-fd! family)]
     (try
+      (when-not reuse? (native/set-reuse-address! fd false))
       (when (neg? (first (native/c-bind fd sa len)))
         (throw (java.io.IOException. (str "bind failed on port " port))))
       (when (neg? (first (native/c-listen fd backlog)))
@@ -821,9 +824,9 @@
         (native/c-close fd)
         (throw e)))))
 
-(defn- listen-on! [family ip port backlog]
+(defn- listen-on! [family ip port backlog reuse?]
   (let [[sa len] (native/make-sockaddr family ip port)]
-    (try (open-listener! family sa len port backlog)
+    (try (open-listener! family sa len port backlog reuse?)
          (finally (ffi/free sa)))))
 
 (defn- any-local? [inet] (every? zero? (inet-bytes inet)))
@@ -832,15 +835,15 @@
 ;; — what ServerSocket(port) and a null or port-only bind address mean — a
 ;; dual-stack IPv6 socket on ::, as the JDK opens, so IPv6 clients reach it too.
 ;; A host without IPv6 gets the IPv4 wildcard instead. Answers [fd family].
-(defn- bind-listen! [inet port backlog]
+(defn- bind-listen! [inet port backlog reuse?]
   (if (and (not (inet6? inet)) (any-local? inet))
-    (if-let [fd (try (listen-on! native/af-inet6 "::" port backlog)
+    (if-let [fd (try (listen-on! native/af-inet6 "::" port backlog reuse?)
                      (catch java.io.IOException _ nil))]
       [fd native/af-inet6]
-      [(listen-on! native/af-inet "0.0.0.0" port backlog) native/af-inet])
+      [(listen-on! native/af-inet "0.0.0.0" port backlog reuse?) native/af-inet])
     (let [[sa len] (inet-sockaddr inet port)
           fam (inet-family inet)]
-      (try [(open-listener! fam sa len port backlog) fam]
+      (try [(open-listener! fam sa len port backlog reuse?) fam]
            (finally (ffi/free sa))))))
 
 (defn- mark-bound! [self fd family inet port]
@@ -872,7 +875,7 @@
           inet    (if (and (>= (count args) 3) (some? (nth args 2)))
                     (host-arg->inet (nth args 2))
                     (any-local))
-          [fd fam] (bind-listen! inet port backlog)]
+          [fd fam] (bind-listen! inet port backlog native/listener-reuses?)]
       (doto (tt :server-socket "java.net.ServerSocket")
         (jolt.host/ref-put! :closed? false)
         (mark-bound! fd fam inet port)))))
@@ -883,6 +886,11 @@
 ;;
 ;; A failed bind leaves the socket open and unbound, as Java's does: the
 ;; listener is a fresh fd, and only a successful one replaces the socket's.
+;; SO_REUSEADDR as setReuseAddress left it, else what a new listener gets
+(defn- reuse-address? [self]
+  (let [v (jolt.host/ref-get self :reuse-address?)]
+    (if (nil? v) native/listener-reuses? v)))
+
 (defn- server-bind! [self endpoint backlog]
   (when (jolt.host/ref-get self :closed?)
     (throw (java.net.SocketException. "Socket is closed")))
@@ -894,7 +902,7 @@
     (throw (java.net.SocketException. "Unresolved address")))
   (let [inet (if endpoint (jolt.host/ref-get endpoint :addr) (any-local))
         p    (int (if endpoint (jolt.host/ref-get endpoint :port) 0))
-        [fd fam] (bind-listen! inet p backlog)
+        [fd fam] (bind-listen! inet p backlog (reuse-address? self))
         old  (locking self
                (when-not (jolt.host/ref-get self :closed?)
                  (let [o (jolt.host/ref-get self :fd)]
@@ -943,6 +951,24 @@
 
    "setSoTimeout" (fn [self ms] (set-so-timeout! self ms "timeout < 0"))
    "getSoTimeout" get-so-timeout
+
+   ;; SO_REUSEADDR, which a listener gets by default on POSIX as the JDK's do.
+   ;; Turned off before bind, a wildcard bind refuses a port another socket
+   ;; holds on one address, which is how a port probe tells a busy port from a
+   ;; free one. A bound socket's fd takes it too, as Java's does.
+   "setReuseAddress"
+   (fn [self on]
+     (when (jolt.host/ref-get self :closed?)
+       (throw (java.net.SocketException. "Socket is closed")))
+     (jolt.host/ref-put! self :reuse-address? (boolean on))
+     (when-let [fd (jolt.host/ref-get self :fd)]
+       (native/set-reuse-address! fd (boolean on)))
+     nil)
+   "getReuseAddress"
+   (fn [self]
+     (when (jolt.host/ref-get self :closed?)
+       (throw (java.net.SocketException. "Socket is closed")))
+     (reuse-address? self))
 
    "bind"
    (fn
