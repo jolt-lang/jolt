@@ -508,17 +508,6 @@ if [ "$got_warm" != "$want_fwd" ]; then
   echo "--- jolt run -------"; echo "$want_fwd"; exit 1
 fi
 
-# The same in-order rule across a (load) INSIDE a namespace — the multi-file
-# namespace shape (clojure.core's own (load "core_deftype"), a library split
-# over foo.clj + foo_impl.clj). The loaded file's defs land in the enclosing
-# namespace at the ordinal of the form that loaded it, so a reference ABOVE the
-# (load) still belongs to clojure.core and one below gets the ns-local name.
-# The build emits the enclosing file and leaves the (load) to run in the binary,
-# so pass 1 stamped the loaded file's defs under the loaded file alone and the
-# enclosing file's own forward references were ungated: this app built the same
-# ClassCastException shape as #451 while `jolt run` was fine. Its own fixture —
-# the shared build-app is built ~30 times here, and a top-level (load) changes
-# what every one of those emits.
 echo "build smoke: a loaded file is part of the binary"
 # (load "x") with a literal path, at top level or as (:load "x") in the ns form,
 # compiles into the namespace, so the binary needs neither the file nor the compiler.
@@ -526,14 +515,45 @@ nsl_app="$(dirname "$out")/nsl-app"
 mkdir -p "$nsl_app/src/nsl/more"
 printf '{:paths ["src"]}\n' > "$nsl_app/deps.edn"
 cat > "$nsl_app/src/nsl/core.clj" <<'NSL_EOF'
-(ns nsl.core "doc" (:load "core_extra"))
+(ns nsl.core "doc" (:load "core_extra") (:load "clause_uses") (:load "clause_later"))
 (load "core_top" "more/nested")
+(declare sib-declared)
+(load "sib_zero" "sib_uses" "sib_later")
 ;; defined after the loads: code in the loaded files still means core's
 (defn second [_] :shadow)
 (defn -main [& _]
   (println "helper:" (extra-helper 4) (:doc (meta (find-ns 'nsl.core))))
   (println "top:" (top-helper) (uses-core-second [1 2]) (later-in-extra))
-  (println "nested:" (nested-helper) (str/upper-case "required by a loaded file") (second [1 2])))
+  (println "nested:" (nested-helper) (str/upper-case "required by a loaded file") (second [1 2]))
+  (println "siblings:" (sib-uses-first [1 2]) (sib-uses-both) (sib-uses-declared) (first [1 2]) (sib-both))
+  (println "clauses:" (clause-uses-last [1 2]) (last [1 2])))
+NSL_EOF
+# Files named by one load form share the outer file's form ordinal, so what tells
+# them apart is their order: a later sibling's def is not visible to an earlier one,
+# while an earlier sibling's, or one the outer file declared first, stays visible.
+cat > "$nsl_app/src/nsl/sib_zero.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn sib-both [] :zero)
+NSL_EOF
+cat > "$nsl_app/src/nsl/sib_uses.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn sib-uses-first [c] (first c))
+(defn sib-uses-both [] (sib-both))
+(defn sib-uses-declared [] (sib-declared))
+NSL_EOF
+cat > "$nsl_app/src/nsl/sib_later.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn first [_] :shadow-first)
+(defn sib-both [] :later)
+(defn sib-declared [] :declared)
+NSL_EOF
+cat > "$nsl_app/src/nsl/clause_uses.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn clause-uses-last [c] (last c))
+NSL_EOF
+cat > "$nsl_app/src/nsl/clause_later.clj" <<'NSL_EOF'
+(in-ns 'nsl.core)
+(defn last [_] :shadow-last)
 NSL_EOF
 cat > "$nsl_app/src/nsl/core_extra.clj" <<'NSL_EOF'
 (in-ns 'nsl.core)
@@ -557,7 +577,9 @@ cat > "$nsl_app/src/nsl/more/deep.clj" <<'NSL_EOF'
 NSL_EOF
 nsl_want='helper: 40 doc
 top: 10 2 50
-nested: :deep REQUIRED BY A LOADED FILE :shadow'
+nested: :deep REQUIRED BY A LOADED FILE :shadow
+siblings: 1 :later :declared :shadow-first :later
+clauses: 2 :shadow-last'
 if ! nsl_build="$(JOLT_PWD="$nsl_app" "$jolt" build -m nsl.core -o "$nsl_app/bin" 2>&1)"; then
   echo "  FAIL: an app with loaded files did not build:"; echo "$nsl_build"; exit 1
 fi
@@ -581,7 +603,7 @@ nsr_app="$(dirname "$out")/nsr-app"
 mkdir -p "$nsr_app/src/nsr"
 printf '{:paths ["src"]}\n' > "$nsr_app/deps.edn"
 cat > "$nsr_app/src/nsr/core.clj" <<'NSR_EOF'
-(ns nsr.core)
+(ns nsr.core (:require [nsr.sub.core]))
 (load "other")
 (defn -main [& _] (println "other:" ((resolve 'nsr.elsewhere/f))))
 NSR_EOF
@@ -589,18 +611,32 @@ cat > "$nsr_app/src/nsr/other.clj" <<'NSR_EOF'
 (ns nsr.elsewhere)
 (defn f [] :elsewhere)
 NSR_EOF
+mkdir -p "$nsr_app/src/nsr/sub"
+printf '(ns nsr.sub.core)\n(load "other")\n' > "$nsr_app/src/nsr/sub/core.clj"
+printf '(ns nsr.sub.elsewhere)\n' > "$nsr_app/src/nsr/sub/other.clj"
 if ! nsr_build="$(JOLT_PWD="$nsr_app" "$jolt" build -m nsr.core -o "$nsr_app/bin" 2>&1)"; then
   echo "  FAIL: an app loading a file in another namespace did not build:"; echo "$nsr_build"; exit 1
 fi
 case "$nsr_build" in
-  *'(load "other") stays a runtime load'*) ;;
-  *) echo "  FAIL: no note about the runtime load:"; echo "$nsr_build"; exit 1 ;;
+  *'nsr.core, (load "other") stays a runtime load'*'nsr.sub.core, (load "other") stays a runtime load'*) ;;
+  *'nsr.sub.core, (load "other") stays a runtime load'*'nsr.core, (load "other") stays a runtime load'*) ;;
+  *) echo "  FAIL: no note per namespace about the runtime load:"; echo "$nsr_build"; exit 1 ;;
 esac
 nsr_got="$(cd "$nsr_app" && JOLT_PWD="$nsr_app" "$nsr_app/bin" 2>&1)"
 if [ "$nsr_got" != "other: :elsewhere" ]; then
   echo "  FAIL: a runtime load in a binary: $nsr_got"; exit 1
 fi
 
+# The same in-order rule across a (load) INSIDE a namespace — the multi-file
+# namespace shape (clojure.core's own (load "core_deftype"), a library split
+# over foo.clj + foo_impl.clj). The loaded file's defs land in the enclosing
+# namespace at the ordinal of the form that loaded it, so a reference ABOVE the
+# (load) still belongs to clojure.core and one below gets the ns-local name.
+# When pass 1 stamped the loaded file's defs under the loaded file alone, the
+# enclosing file's own forward references were ungated: this app built the same
+# ClassCastException shape as #451 while `jolt run` was fine. Its own fixture —
+# the shared build-app is built ~30 times here, and a top-level (load) changes
+# what every one of those emits.
 echo "build smoke: forward reference across a (load) in the same namespace"
 mfn_app="$(mktemp -d)/mfn-app"
 mkdir -p "$mfn_app/src/mf"

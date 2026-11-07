@@ -416,20 +416,21 @@
                           ""))
                     ""))))))
 
-(define (ei-load-note! path why)
-  (unless (hashtable-ref ei-load-noted path #f)
-    (hashtable-set! ei-load-noted path #t)
-    (display (string-append "jolt build: note: (load " (ei-str-lit path)
+(define (ei-load-note! ns-name path why)
+  (let ((k (string-append ns-name "\x1;" path)))
+  (unless (hashtable-ref ei-load-noted k #f)
+    (hashtable-set! ei-load-noted k #t)
+    (display (string-append "jolt build: note: in " ns-name ", (load " (ei-str-lit path)
                             ") stays a runtime load, so the binary needs the file and"
                             " the compiler: " why "\n")
-             (current-error-port))))
+             (current-error-port)))))
 
 ;; (file . forms) for a path this namespace can compile in, else #f.
 (define (ei-loaded-file ns-name path)
   (let ((file ((ei-load-file-resolver) ns-name path)))
     (cond
-      ((not file) (ei-load-note! path "the file is not on the source roots") #f)
-      ((member file (ei-load-stack)) (ei-load-note! path "it loads itself") #f)
+      ((not file) (ei-load-note! ns-name path "the file is not on the source roots") #f)
+      ((member file (ei-load-stack)) (ei-load-note! ns-name path "it loads itself") #f)
       (else
        (let ((forms (parameterize ((rdr-source-file file))
                       (ei-read-all-for file (ldr-read-source file)))))
@@ -439,7 +440,7 @@
                                (or (not t) (string=? t ns-name)))))
                       forms)
              (cons file forms)
-             (begin (ei-load-note! path "it switches to another namespace") #f)))))))
+             (begin (ei-load-note! ns-name path "it switches to another namespace") #f)))))))
 
 ;; The (file . forms) list a top-level form inlines to, or #f if it is not such a
 ;; load. A namespace can define a `load` of its own, so the head has to resolve to
@@ -452,7 +453,9 @@
          (let ((files (map (lambda (p) (ei-loaded-file ns-name p)) paths)))
            (and (for-all values files) files)))))
 
-(define (ei-walk-loaded ns-name lf ord proc)
+;; SETTLED and LATER: the files of the same load that ran before this one, this one
+;; included, and those still to run. They all stamp the enclosing file at one ordinal.
+(define (ei-walk-loaded ns-name lf ord settled later proc)
   (let ((outer (rdr-source-file)) (file (car lf)))
     ;; RT.load-parity bracket, as the loader's: a compiler-flag set! in the loaded
     ;; file ends with it.
@@ -462,7 +465,7 @@
         (parameterize ((rdr-source-file file)
                        (ei-load-stack (cons file (ei-load-stack)))
                        (jolt-form-outer-frames
-                         (cons (cons outer ord) (jolt-form-outer-frames))))
+                         (cons (vector outer ord settled later) (jolt-form-outer-frames))))
           (jolt-enter-file! file)
           (let loop ((forms (cdr lf)) (i 0))
             (unless (null? forms)
@@ -473,14 +476,30 @@
       jolt-ns-load-vars-pop!)
     (when outer (jolt-enter-file! outer))))
 
+;; The load CALLS of one enclosing form, in order: one for a top-level load, one per
+;; (:load ...) clause for an ns form. A call that does not inline stays a form.
+(define (ei-walk-loads ns-name calls ord proc)
+  (let ((plans (map (lambda (c) (cons c (ei-inlinable-load ns-name c))) calls)))
+    (let next-call ((ps plans) (settled '()))
+      (unless (null? ps)
+        (if (cdar ps)
+            (let ((after (apply append (map (lambda (p) (map car (or (cdr p) '()))) (cdr ps)))))
+              (let next-file ((lfs (cdar ps)) (settled settled))
+                (if (null? lfs)
+                    (next-call (cdr ps) settled)
+                    (let ((settled (cons (caar lfs) settled)))
+                      (ei-walk-loaded ns-name (car lfs) ord settled
+                                      (append (map car (cdr lfs)) after) proc)
+                      (next-file (cdr lfs) settled)))))
+            (begin (proc (caar ps) ord)
+                   (next-call (cdr ps) settled)))))))
+
 (define (ei-walk-form ns-name f ord proc)
   (cond
     ((ei-ns-form? f)
      (proc f ord)
-     (for-each (lambda (c) (ei-walk-form ns-name c ord proc)) (ei-ns-load-calls f)))
-    ((ei-inlinable-load ns-name f)
-     => (lambda (files)
-          (for-each (lambda (lf) (ei-walk-loaded ns-name lf ord proc)) files)))
+     (ei-walk-loads ns-name (ei-ns-load-calls f) ord proc))
+    ((ei-literal-load-paths f) (ei-walk-loads ns-name (list f) ord proc))
     (else (proc f ord))))
 
 ;; Call (proc form ordinal) for each form a namespace's file compiles to, loaded files

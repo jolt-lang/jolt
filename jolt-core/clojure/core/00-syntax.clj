@@ -113,7 +113,7 @@
 ;; clauses, and nothing else. An unescaped quote in a docstring splits it into
 ;; strings and bare symbols; those are refused here, as the JVM refuses them.
 ;;
-;; A build never runs an ns form. ei-ns-load-forms (emit-image.ss) lifts the
+;; A build never runs an ns form. ei-ns-calls (emit-image.ss) lifts the
 ;; reset-meta! and load calls out of this expansion, so these are the one place
 ;; they are made, whichever way the namespace loads.
 (defmacro ns [nm & clauses]
