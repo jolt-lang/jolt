@@ -2341,8 +2341,8 @@
           (for-each (lambda (p) (put-string out (string-append "\n    " (car p) " " (cdr p)))) pairs)
           (put-string out "))\n"))))))
 
-(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? allow-dynamic library? includes)
-  (ei-profile-init!)
+;; The includes each need a file to emit (build-binary).
+(define (bld-check-includes! includes)
   ;; --include NS / :jolt/build {:include […]} — namespaces the app reaches
   ;; only through a runtime lookup (requiring-resolve) and the source scan
   ;; cannot see. Each must have a file to emit: a typo fails the build here,
@@ -2353,17 +2353,24 @@
     (lambda (n)
       (unless (find-ns-file n)
         (error 'jolt-build (string-append "cannot include " n " — no source file on the roots"))))
-    includes)
-  ;; Windows executables carry .exe; normalize here so the append-payload and
-  ;; cc paths agree and the shell can run the result. A library keeps whatever
-  ;; suffix -o gave it (never rewritten to .exe), but a bare `-o libadd` gets the
-  ;; target's .so/.dylib/.dll appended (jolt#1235) — otherwise the file and its
-  ;; @rpath install name carry no suffix and -ladd style linking cannot find it.
-  (let ((out-path (cond ((and (bld-tgt-nt?) (not library?) (not (bld-suffix? out-path ".exe")))
-                         (string-append out-path ".exe"))
-                        ((and library? (not (bld-has-extension? out-path)))
-                         (string-append out-path (bld-library-suffix)))
-                        (else out-path))))
+    includes))
+
+;; Windows executables carry .exe; normalize here so the append-payload and
+;; cc paths agree and the shell can run the result. A library keeps whatever
+;; suffix -o gave it (never rewritten to .exe), but a bare `-o libadd` gets the
+;; target's .so/.dylib/.dll appended (jolt#1235) — otherwise the file and its
+;; @rpath install name carry no suffix and -ladd style linking cannot find it.
+(define (bld-output-path out-path library?)
+  (cond ((and (bld-tgt-nt?) (not library?) (not (bld-suffix? out-path ".exe")))
+         (string-append out-path ".exe"))
+        ((and library? (not (bld-has-extension? out-path)))
+         (string-append out-path (bld-library-suffix)))
+        (else out-path)))
+
+;; What a build needs before it starts: compatible flags, a toolchain where the
+;; link spawns one, a C compiler for :static natives (whose symbols are preloaded
+;; here, into the .build dir).
+(define (bld-check-build-preconditions! out-path mode natives library?)
   ;; The self-contained path (jolt-embedded-bytes "stub/launcher") needs no csv
   ;; kernel files, no Chez, no cc — only the legacy cc path does. A --library build
   ;; always takes build-shared, any cross build takes a spawned cc path, and
@@ -2422,7 +2429,227 @@
     ;; Preload static archives' symbols into this process so step 1's foreign-
     ;; procedure evals resolve; the .build dir must exist first.
     (bld-mkdir-p (string-append out-path ".build"))
-    (bld-preload-static-natives! natives (string-append out-path ".build")))
+    (bld-preload-static-natives! natives (string-append out-path ".build"))))
+
+;; flat.ss before the app forms: natives, embedded resources, data readers, roots
+(define (bld-emit-app-prologue! out natives embed-dirs ext-roots ordered)
+  (bld-emit-startup-profile-mark! out "app image begin")
+  (put-string out "\n;; === native libraries (required) ===\n")
+  (bld-emit-natives out natives 'required)
+  (bld-emit-startup-profile-mark! out "required native libraries")
+   (put-string out "\n;; === embedded resources ===\n")
+   (bld-emit-embeds out embed-dirs ext-roots (map car ordered))
+    (bld-emit-data-readers out)
+   ;; set-source-roots!* (not the scanning set-source-roots!): data readers
+   ;; are baked just above, and re-scanning would eagerly reload reader
+   ;; namespaces via jolt-compile-eval-form — dropped by a tree-shaken binary.
+   ;; Not the dependency roots: they are absolute paths into this
+   ;; machine's checkouts, which let a resource the binary did not carry
+   ;; resolve here and fail on every other machine (#1232). Their files
+   ;; are embedded above.
+   (put-string out (string-append
+                     "(set-source-roots!* (list "
+                     (let ((deps (bld-dep-roots ext-roots embed-dirs)))
+                       (fold-left (lambda (s r) (if (member r deps) s (string-append s (ei-str-lit r) " "))) ""
+                                  (get-source-roots)))
+                     "))\n"))
+  (bld-emit-startup-profile-mark! out "embedded resources and source roots")
+  ;; Pre-register every app namespace in ns-registry BEFORE any app form
+  ;; runs, so a boot-time (require 'x) of an AOT'd namespace no-ops (the
+  ;; loader's ns-registry arm) instead of hunting for absent source. Needed
+  ;; when a namespace requires a later one at load time — e.g.
+  ;; babashka.process conditionally requires babashka.process.pprint, which
+  ;; defines no vars of its own (only a defmethod) so ns-has-vars? can't
+  ;; vouch for it and its own (ns) form hasn't run yet.
+  (put-string out "\n;; === app namespace pre-registration ===\n")
+  ;; The marks matter as much as the interning: the image is about to
+  ;; define every one of these namespaces and run its top-level forms
+  ;; (jolt-app-init!), so a runtime require of one must dedup to a
+  ;; no-op. Unmarked, the loader reads the source from the embedded
+  ;; roots again and re-evaluates the namespace IN PLACE — re-running
+  ;; side effects and re-binding forward references against the
+  ;; now-populated var table (the reload window #451's emit-walk fix
+  ;; does not cover, since this load is not the emit walk). The CLI AOT
+  ;; emit marks jolt.main/jolt.deps for exactly this reason
+  ;; (bld-emit-cli-aot).
+  (for-each
+    (lambda (p)
+      (put-string out (string-append "(intern-ns! " (ei-str-lit (car p)) ")\n"))
+      (put-string out (string-append "(ldr-mark-loaded! " (ei-str-lit (car p)) ")\n")))
+    ordered)
+  (bld-emit-startup-profile-mark! out "app namespace registration"))
+
+;; flat.ss after the app forms: the launcher that scheme-start runs
+(define (bld-emit-launcher! out entry-ns mode natives ext-roots library?)
+  ;; The launcher runs as Chez's scheme-start (so argv reaches -main —
+  ;; top-level boot forms run during heap build, before args are set), and
+  ;; suppresses the interactive greeting. It resets source roots to the
+  ;; app's resource dirs resolved against JOLT_PWD (or cwd) so a runtime
+  ;; io/resource that wasn't embedded still resolves next to the binary.
+  (put-string out "\n;; === launcher ===\n")
+  (put-string out "(suppress-greeting #t)\n")
+  ;; The collector policy (rt.ss jolt-install-gc-policy!): a nursery sized
+  ;; by the time collection takes, from 16MB up (JOLT_GC_TRIP_BYTES pins
+  ;; it), and a heap ceiling, so a built app fails with an
+  ;; OutOfMemoryError carrying a stack rather than being SIGKILLed by the
+  ;; kernel with nothing to read. Same as jolt's own launcher, and the
+  ;; ceiling the JVM's MaxRAMPercentage default.
+  (put-string out "(jolt-install-gc-policy!)\n")
+  ;; And the stack depth limit (rt.ss jolt-install-stack-limit!): a runaway
+  ;; recursion throws StackOverflowError instead of growing the heap.
+  (put-string out "(jolt-install-stack-limit!)\n")
+  (put-string out "(scheme-start\n  (lambda args\n")
+  (bld-emit-startup-profile-mark! out "scheme-start begin")
+  ;; Shutdown hooks (`:shutdown` on a jolt.process, jolt.host/
+  ;; add-shutdown-hook) run from Chez's exit-handler, which is a THREAD
+  ;; parameter — so the wrapper has to be installed on the thread that
+  ;; calls (exit), and for an app that is this one. Installed before the
+  ;; guard so the (exit 1) an uncaught throw takes runs the hooks too.
+  ;; The CLI's own twin of this is at the top of jolt-cli-run — including
+  ;; the arm, which has to run on THIS thread (the primordial) and before
+  ;; any app top-level form can start a thread of its own: it is what makes
+  ;; ^C and `kill` run the hooks and exit 128+signal, whichever thread the
+  ;; app registered them from. A library build has no thread of its own to
+  ;; arm; its host process owns both of these.
+  (unless library? (put-string out "    (jolt-install-exit-handler!)\n"))
+  (unless library? (put-string out "    (jolt-arm-shutdown!)\n"))
+  ;; JOLT_PROFILE=sample: the sampler needs only the runtime, so a built
+  ;; app can be profiled as it ships (sampler.ss). After the exit handler,
+  ;; since the report is a shutdown hook.
+  (unless library? (put-string out "    (jolt-sample-init-from-env!)\n"))
+  ;; --profile-gen: the block counts go to a file as the binary exits.
+  ;; Every build emits the call, not just that one: the launcher is a
+  ;; unit, and --profile-use needs its text to be what --profile-gen
+  ;; compiled. A binary with no counters writes nothing.
+  (unless library?
+    (put-string out (string-append "    (jolt-block-profile-at-exit! " (ei-str-lit mode) ")\n")))
+  ;; The prologue (optional native loads + source-root setup) and the -main
+  ;; call (or library export publish) run under one guard so a throw in
+  ;; either surfaces as jolt-report-throwable + a non-zero exit/return
+  ;; instead of Chez's opaque dump — the prologue previously ran before any
+  ;; guard. A library returns 1 (so Sscheme_start returns non-zero to its
+  ;; caller); an executable exits 1.
+  (put-string out
+    (string-append
+      "    (guard (v (#t (jolt-report-throwable v (current-error-port))"
+      (if library? " 1))\n" " (exit 1)))\n")))
+  ;; The app's own top-level forms, first thing inside the guard: past
+  ;; Sbuild_heap (so a thread they spawn can actually run) but still
+  ;; before the optional natives and the runtime source-root reset, which
+  ;; is the order they ran in when they lived in the boot file. Being
+  ;; inside the guard is a bonus — a throw from an app top-level form used
+  ;; to escape as Chez's opaque dump, and now reports like any other.
+  (put-string out "      (jolt-app-init!)\n")
+  (bld-emit-natives out natives 'optional)
+   (put-string out (string-append
+                      "      (let ((base (or (getenv \"JOLT_PWD\") \".\")))\n"
+                      "        (set-source-roots!*\n"
+                      "          (append (map (lambda (r) (string-append base \"/\" r)) (list "
+                     (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
+                     "))\n"
+                     "                  " (ldr-install-roots-str) ")))\n"))
+  (bld-emit-startup-profile-mark! out "scheme-start setup")
+  (if library?
+      (put-string out (bld-library-launcher-body))
+      (put-string out (string-append
+                    ;; Call -main only if the entry namespace defines one;
+                    ;; a script ns (top-level side effects, no -main) has
+                    ;; already run its forms at heap build, so invoking a nil
+                    ;; -main would crash ("nil cannot be cast to IFn") — just
+                    ;; exit cleanly instead.
+                    "      (let ((maincell (var-cell-lookup " (ei-str-lit entry-ns) " \"-main\")))\n"
+                    ;; Loading the app left the current ns at the entry ns; reset
+                    ;; it to `user` before -main, matching clojure.main (*ns* is
+                    ;; `user` when a `-m` -main runs, so a runtime resolve of an
+                    ;; aliased symbol behaves the same as on the JVM / interpreted
+                    ;; jolt, not off the entry ns's alias table).
+                    "        (set-chez-ns! \"user\")\n"
+                    ;; The same host-fault capture the cli's run path has
+                    ;; (cli-core.ss jolt-cli-run): a raw Chez condition gets
+                    ;; its k/marks/site stashed BEFORE the unwind, so a
+                    ;; traced binary maps the fault to fn + line. jolt
+                    ;; throws skip it (jolt-capture-fault! tests) and
+                    ;; raise-continuable preserves warning semantics.
+                    ;; -main is user code running after the load, so it
+                    ;; gets the compiler-flag frame clojure.main's -m gives it
+                    ;; (dyn-binding.ss jolt-with-ns-load-vars; run-ns does the
+                    ;; same for the interpreted CLI).
+                    "        (when (and maincell (var-cell-defined? maincell))\n"
+                    "          (with-exception-handler\n"
+                    "            (lambda (c) (when (serious-condition? c) (jolt-capture-fault! c)) (raise-continuable c))\n"
+                    "            (lambda ()\n"
+                    "              (jolt-with-ns-load-vars\n"
+                    "                (lambda ()\n"
+                    "                  (let ((jolt-main-result (apply jolt-invoke (var-cell-root maincell) args)))\n"
+                    "                    " (bld-startup-profile-form "entry -main") "\n"
+                    "                    jolt-main-result))))))))\n"
+                    ;; as the CLI: a non-daemon Thread the program started
+                    ;; keeps the process alive until it finishes
+                    "    (jolt-await-user-threads!)\n"
+                    "    (exit 0)))\n"))))
+
+(define (bld-link! entry-ns out-path mode natives library? drop-compiler? builddir units boot boot-h main-c)
+  ;; 4. compile -> boot -> link. Two paths, chosen by whether this process
+  ;; carries the bundled Chez boots + launcher stub:
+  ;;  - SELF-CONTAINED (the distributed jolt, jolt-eaj): compile-file +
+  ;;    make-boot-file run IN PROCESS (the compiler is resident — jolt is
+  ;;    built from scheme.boot), then the boot is appended to a copy of the
+  ;;    embedded stub. No external Chez, no cc. The appended boot has no
+  ;;    Mach-O/PE/ELF structure of its own, so a strict signature check
+  ;;    (codesign --verify --strict on macOS) correctly refuses it.
+  ;;  - CC-LINKED (dev bin/jolt, any --target cross-compile, or --signable
+  ;;    from a jolt without the kernel): spawn a fresh Chez for compile-file/
+  ;;    make-boot-file, then xxd the boot into a C array and cc-link against
+  ;;    libkernel.a. Produces a structurally complete binary a strict
+  ;;    signature check accepts. Kept so `make buildsmoke` still exercises
+  ;;    the cc path even when run from a self-contained jolt.
+  ;;  - EMBEDDED-KERNEL CC (--signable from a self-contained jolt): the
+  ;;    in-process compile of the first path, the C-array link of the
+  ;;    second, against the kernel this jolt carries — cc, but no Chez.
+  (cond
+    ;; Cross-compiling (--target) always takes a spawned cc path: the
+    ;; self-contained in-process compile can't load a target xpatch, and the
+    ;; xpatch retargets make-boot-file for the whole spawned process.
+    ((and (bld-cross?) library?)
+     (build-shared entry-ns out-path mode builddir units boot boot-h ""))
+    ((bld-cross?)
+     (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c
+                    "" (and drop-compiler? (not (bld-tgt-nt?)))))
+    (library?
+     (build-shared entry-ns out-path mode builddir units boot boot-h
+                   (bld-native-link-flags natives)))
+    ;; --signable: same-machine executable, but the caller wants a
+    ;; structurally complete (and therefore strictly signable) binary
+    ;; even though this jolt carries the embedded stub. Checked before
+    ;; the stub branch below so it wins regardless of which jolt is
+    ;; running it from.
+    ;; A self-contained jolt compiles in process and links against the
+    ;; kernel it carries (jolt#1255): no Chez install, just cc.
+    ((and (bld-signable) (bld-embedded-kernel?))
+     (build-self-contained-cc entry-ns out-path mode builddir units boot boot-h main-c
+                              (bld-native-link-flags natives)
+                              (and drop-compiler? (not bld-nt?))))
+    ((bld-signable)
+     (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c
+                    (bld-native-link-flags natives)
+                    (and drop-compiler? (not bld-nt?))))
+    ;; petite-only is POSIX-only: on Windows jolt-foreign-proc-safe still
+    ;; evals its foreign-procedure forms (fasl relocations abort the boot
+    ;; there), and eval needs the compiler boot resident.
+    ((jolt-embedded-bytes "stub/launcher")
+     (build-self-contained entry-ns out-path mode builddir units boot
+                           (bld-native-link-flags natives)
+                           (and drop-compiler? (not bld-nt?))))
+    (else
+     (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c
+                    (bld-native-link-flags natives)
+                    (and drop-compiler? (not bld-nt?))))))
+
+(define (build-binary entry-ns out-path mode natives embed-dirs ext-roots direct-link? tree-shake? allow-dynamic library? includes)
+  (ei-profile-init!)
+  (bld-check-includes! includes)
+  (let ((out-path (bld-output-path out-path library?)))
+  (bld-check-build-preconditions! out-path mode natives library?)
    ;; 1. record app namespaces in dependency order as they finish loading.
    (let ((app-order '()) (app-ns-sizes #f))
      (set-ns-loaded-hook!
@@ -2757,51 +2984,7 @@
           ;; foreign-procedure evals (a library's defcfn) and (slurp (io/resource …))
           ;; reads. So the libraries must be loaded and resources resolvable by the
           ;; time those forms run, not later in the scheme-start launcher.
-          (bld-emit-startup-profile-mark! out "app image begin")
-          (put-string out "\n;; === native libraries (required) ===\n")
-          (bld-emit-natives out natives 'required)
-          (bld-emit-startup-profile-mark! out "required native libraries")
-           (put-string out "\n;; === embedded resources ===\n")
-           (bld-emit-embeds out embed-dirs ext-roots (map car ordered))
-            (bld-emit-data-readers out)
-           ;; set-source-roots!* (not the scanning set-source-roots!): data readers
-           ;; are baked just above, and re-scanning would eagerly reload reader
-           ;; namespaces via jolt-compile-eval-form — dropped by a tree-shaken binary.
-           ;; Not the dependency roots: they are absolute paths into this
-           ;; machine's checkouts, which let a resource the binary did not carry
-           ;; resolve here and fail on every other machine (#1232). Their files
-           ;; are embedded above.
-           (put-string out (string-append
-                             "(set-source-roots!* (list "
-                             (let ((deps (bld-dep-roots ext-roots embed-dirs)))
-                               (fold-left (lambda (s r) (if (member r deps) s (string-append s (ei-str-lit r) " "))) ""
-                                          (get-source-roots)))
-                             "))\n"))
-          (bld-emit-startup-profile-mark! out "embedded resources and source roots")
-          ;; Pre-register every app namespace in ns-registry BEFORE any app form
-          ;; runs, so a boot-time (require 'x) of an AOT'd namespace no-ops (the
-          ;; loader's ns-registry arm) instead of hunting for absent source. Needed
-          ;; when a namespace requires a later one at load time — e.g.
-          ;; babashka.process conditionally requires babashka.process.pprint, which
-          ;; defines no vars of its own (only a defmethod) so ns-has-vars? can't
-          ;; vouch for it and its own (ns) form hasn't run yet.
-          (put-string out "\n;; === app namespace pre-registration ===\n")
-          ;; The marks matter as much as the interning: the image is about to
-          ;; define every one of these namespaces and run its top-level forms
-          ;; (jolt-app-init!), so a runtime require of one must dedup to a
-          ;; no-op. Unmarked, the loader reads the source from the embedded
-          ;; roots again and re-evaluates the namespace IN PLACE — re-running
-          ;; side effects and re-binding forward references against the
-          ;; now-populated var table (the reload window #451's emit-walk fix
-          ;; does not cover, since this load is not the emit walk). The CLI AOT
-          ;; emit marks jolt.main/jolt.deps for exactly this reason
-          ;; (bld-emit-cli-aot).
-          (for-each
-            (lambda (p)
-              (put-string out (string-append "(intern-ns! " (ei-str-lit (car p)) ")\n"))
-              (put-string out (string-append "(ldr-mark-loaded! " (ei-str-lit (car p)) ")\n")))
-            ordered)
-          (bld-emit-startup-profile-mark! out "app namespace registration")
+          (bld-emit-app-prologue! out natives embed-dirs ext-roots ordered)
           ;; The app's forms are DECLARED here and RUN from the launcher — see
           ;; bld-defer-app-strs. The profile mark rides along into the init body,
           ;; so "app namespaces begin" still brackets the work rather than the
@@ -2829,169 +3012,10 @@
               (put-string out ";; app init entry + launcher\n"))
             (bld-emit-app-init-main out names
                                     (list (bld-startup-profile-form "app namespaces begin"))))
-          ;; The launcher runs as Chez's scheme-start (so argv reaches -main —
-          ;; top-level boot forms run during heap build, before args are set), and
-          ;; suppresses the interactive greeting. It resets source roots to the
-          ;; app's resource dirs resolved against JOLT_PWD (or cwd) so a runtime
-          ;; io/resource that wasn't embedded still resolves next to the binary.
-          (put-string out "\n;; === launcher ===\n")
-          (put-string out "(suppress-greeting #t)\n")
-          ;; The collector policy (rt.ss jolt-install-gc-policy!): a nursery sized
-          ;; by the time collection takes, from 16MB up (JOLT_GC_TRIP_BYTES pins
-          ;; it), and a heap ceiling, so a built app fails with an
-          ;; OutOfMemoryError carrying a stack rather than being SIGKILLed by the
-          ;; kernel with nothing to read. Same as jolt's own launcher, and the
-          ;; ceiling the JVM's MaxRAMPercentage default.
-          (put-string out "(jolt-install-gc-policy!)\n")
-          ;; And the stack depth limit (rt.ss jolt-install-stack-limit!): a runaway
-          ;; recursion throws StackOverflowError instead of growing the heap.
-          (put-string out "(jolt-install-stack-limit!)\n")
-          (put-string out "(scheme-start\n  (lambda args\n")
-          (bld-emit-startup-profile-mark! out "scheme-start begin")
-          ;; Shutdown hooks (`:shutdown` on a jolt.process, jolt.host/
-          ;; add-shutdown-hook) run from Chez's exit-handler, which is a THREAD
-          ;; parameter — so the wrapper has to be installed on the thread that
-          ;; calls (exit), and for an app that is this one. Installed before the
-          ;; guard so the (exit 1) an uncaught throw takes runs the hooks too.
-          ;; The CLI's own twin of this is at the top of jolt-cli-run — including
-          ;; the arm, which has to run on THIS thread (the primordial) and before
-          ;; any app top-level form can start a thread of its own: it is what makes
-          ;; ^C and `kill` run the hooks and exit 128+signal, whichever thread the
-          ;; app registered them from. A library build has no thread of its own to
-          ;; arm; its host process owns both of these.
-          (unless library? (put-string out "    (jolt-install-exit-handler!)\n"))
-          (unless library? (put-string out "    (jolt-arm-shutdown!)\n"))
-          ;; JOLT_PROFILE=sample: the sampler needs only the runtime, so a built
-          ;; app can be profiled as it ships (sampler.ss). After the exit handler,
-          ;; since the report is a shutdown hook.
-          (unless library? (put-string out "    (jolt-sample-init-from-env!)\n"))
-          ;; --profile-gen: the block counts go to a file as the binary exits.
-          ;; Every build emits the call, not just that one: the launcher is a
-          ;; unit, and --profile-use needs its text to be what --profile-gen
-          ;; compiled. A binary with no counters writes nothing.
-          (unless library?
-            (put-string out (string-append "    (jolt-block-profile-at-exit! " (ei-str-lit mode) ")\n")))
-          ;; The prologue (optional native loads + source-root setup) and the -main
-          ;; call (or library export publish) run under one guard so a throw in
-          ;; either surfaces as jolt-report-throwable + a non-zero exit/return
-          ;; instead of Chez's opaque dump — the prologue previously ran before any
-          ;; guard. A library returns 1 (so Sscheme_start returns non-zero to its
-          ;; caller); an executable exits 1.
-          (put-string out
-            (string-append
-              "    (guard (v (#t (jolt-report-throwable v (current-error-port))"
-              (if library? " 1))\n" " (exit 1)))\n")))
-          ;; The app's own top-level forms, first thing inside the guard: past
-          ;; Sbuild_heap (so a thread they spawn can actually run) but still
-          ;; before the optional natives and the runtime source-root reset, which
-          ;; is the order they ran in when they lived in the boot file. Being
-          ;; inside the guard is a bonus — a throw from an app top-level form used
-          ;; to escape as Chez's opaque dump, and now reports like any other.
-          (put-string out "      (jolt-app-init!)\n")
-          (bld-emit-natives out natives 'optional)
-           (put-string out (string-append
-                              "      (let ((base (or (getenv \"JOLT_PWD\") \".\")))\n"
-                              "        (set-source-roots!*\n"
-                              "          (append (map (lambda (r) (string-append base \"/\" r)) (list "
-                             (fold-left (lambda (s r) (string-append s (ei-str-lit r) " ")) "" (bld-strs ext-roots))
-                             "))\n"
-                             "                  " (ldr-install-roots-str) ")))\n"))
-          (bld-emit-startup-profile-mark! out "scheme-start setup")
-          (if library?
-              (put-string out (bld-library-launcher-body))
-              (put-string out (string-append
-                            ;; Call -main only if the entry namespace defines one;
-                            ;; a script ns (top-level side effects, no -main) has
-                            ;; already run its forms at heap build, so invoking a nil
-                            ;; -main would crash ("nil cannot be cast to IFn") — just
-                            ;; exit cleanly instead.
-                            "      (let ((maincell (var-cell-lookup " (ei-str-lit entry-ns) " \"-main\")))\n"
-                            ;; Loading the app left the current ns at the entry ns; reset
-                            ;; it to `user` before -main, matching clojure.main (*ns* is
-                            ;; `user` when a `-m` -main runs, so a runtime resolve of an
-                            ;; aliased symbol behaves the same as on the JVM / interpreted
-                            ;; jolt, not off the entry ns's alias table).
-                            "        (set-chez-ns! \"user\")\n"
-                            ;; The same host-fault capture the cli's run path has
-                            ;; (cli-core.ss jolt-cli-run): a raw Chez condition gets
-                            ;; its k/marks/site stashed BEFORE the unwind, so a
-                            ;; traced binary maps the fault to fn + line. jolt
-                            ;; throws skip it (jolt-capture-fault! tests) and
-                            ;; raise-continuable preserves warning semantics.
-                            ;; -main is user code running after the load, so it
-                            ;; gets the compiler-flag frame clojure.main's -m gives it
-                            ;; (dyn-binding.ss jolt-with-ns-load-vars; run-ns does the
-                            ;; same for the interpreted CLI).
-                            "        (when (and maincell (var-cell-defined? maincell))\n"
-                            "          (with-exception-handler\n"
-                            "            (lambda (c) (when (serious-condition? c) (jolt-capture-fault! c)) (raise-continuable c))\n"
-                            "            (lambda ()\n"
-                            "              (jolt-with-ns-load-vars\n"
-                            "                (lambda ()\n"
-                            "                  (let ((jolt-main-result (apply jolt-invoke (var-cell-root maincell) args)))\n"
-                            "                    " (bld-startup-profile-form "entry -main") "\n"
-                            "                    jolt-main-result))))))))\n"
-                            ;; as the CLI: a non-daemon Thread the program started
-                            ;; keeps the process alive until it finishes
-                            "    (jolt-await-user-threads!)\n"
-                            "    (exit 0)))\n")))
+          (bld-emit-launcher! out entry-ns mode natives ext-roots library?)
           (close-port out))
         (ei-mark! "write flat.ss")
-        ;; 4. compile -> boot -> link. Two paths, chosen by whether this process
-        ;; carries the bundled Chez boots + launcher stub:
-        ;;  - SELF-CONTAINED (the distributed jolt, jolt-eaj): compile-file +
-        ;;    make-boot-file run IN PROCESS (the compiler is resident — jolt is
-        ;;    built from scheme.boot), then the boot is appended to a copy of the
-        ;;    embedded stub. No external Chez, no cc. The appended boot has no
-        ;;    Mach-O/PE/ELF structure of its own, so a strict signature check
-        ;;    (codesign --verify --strict on macOS) correctly refuses it.
-        ;;  - CC-LINKED (dev bin/jolt, any --target cross-compile, or --signable
-        ;;    from a jolt without the kernel): spawn a fresh Chez for compile-file/
-        ;;    make-boot-file, then xxd the boot into a C array and cc-link against
-        ;;    libkernel.a. Produces a structurally complete binary a strict
-        ;;    signature check accepts. Kept so `make buildsmoke` still exercises
-        ;;    the cc path even when run from a self-contained jolt.
-        ;;  - EMBEDDED-KERNEL CC (--signable from a self-contained jolt): the
-        ;;    in-process compile of the first path, the C-array link of the
-        ;;    second, against the kernel this jolt carries — cc, but no Chez.
-        (cond
-          ;; Cross-compiling (--target) always takes a spawned cc path: the
-          ;; self-contained in-process compile can't load a target xpatch, and the
-          ;; xpatch retargets make-boot-file for the whole spawned process.
-          ((and (bld-cross?) library?)
-           (build-shared entry-ns out-path mode builddir units boot boot-h ""))
-          ((bld-cross?)
-           (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c
-                          "" (and drop-compiler? (not (bld-tgt-nt?)))))
-          (library?
-           (build-shared entry-ns out-path mode builddir units boot boot-h
-                         (bld-native-link-flags natives)))
-          ;; --signable: same-machine executable, but the caller wants a
-          ;; structurally complete (and therefore strictly signable) binary
-          ;; even though this jolt carries the embedded stub. Checked before
-          ;; the stub branch below so it wins regardless of which jolt is
-          ;; running it from.
-          ;; A self-contained jolt compiles in process and links against the
-          ;; kernel it carries (jolt#1255): no Chez install, just cc.
-          ((and (bld-signable) (bld-embedded-kernel?))
-           (build-self-contained-cc entry-ns out-path mode builddir units boot boot-h main-c
-                                    (bld-native-link-flags natives)
-                                    (and drop-compiler? (not bld-nt?))))
-          ((bld-signable)
-           (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c
-                          (bld-native-link-flags natives)
-                          (and drop-compiler? (not bld-nt?))))
-          ;; petite-only is POSIX-only: on Windows jolt-foreign-proc-safe still
-          ;; evals its foreign-procedure forms (fasl relocations abort the boot
-          ;; there), and eval needs the compiler boot resident.
-          ((jolt-embedded-bytes "stub/launcher")
-           (build-self-contained entry-ns out-path mode builddir units boot
-                                 (bld-native-link-flags natives)
-                                 (and drop-compiler? (not bld-nt?))))
-          (else
-           (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c
-                          (bld-native-link-flags natives)
-                          (and drop-compiler? (not bld-nt?)))))
+        (bld-link! entry-ns out-path mode natives library? drop-compiler? builddir units boot boot-h main-c)
         ;; 5. what the linker kept is only known from the output: a {:lib}
         ;; native has to supply the symbols the app binds
         (bld-check-lib-native-symbols! natives app-strs out-path)))))))
