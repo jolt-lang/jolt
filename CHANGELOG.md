@@ -110,8 +110,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now a single `rename(2)`, as on the JVM: an existing target is replaced with
   or without `REPLACE_EXISTING`, a move across filesystems throws
   `AtomicMoveNotSupportedException`, and a failure names both paths with the JDK's
-  class, such as `NoSuchFileException` for a missing parent. Windows still removes
-  the target first.
+  class, such as `NoSuchFileException` for a missing parent. Windows does the same
+  with `MoveFileExW`. A move between filesystem providers refuses `ATOMIC_MOVE`
+  rather than copying and deleting.
+- **Exception accessors.** `FileSystemException` and its subclasses have `getFile`,
+  `getOtherFile` and `getReason`, `URISyntaxException` has `getInput`, `getReason` and
+  `getIndex`, and `PatternSyntaxException` has `getDescription`, `getIndex` and
+  `getPattern`. Their constructors take the JDK's arguments, where the second was
+  read as a cause and the message came out wrong.
 - **A temp file or a new entry is created with its final permissions.**
   `Files/createTempFile` made the file with the default mode and then `chmod`ed it
   to `0600`, so another user could open it in between and go on reading what was

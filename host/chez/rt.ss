@@ -1428,7 +1428,9 @@
 ;; Equality: identity (records default to identity equality — (= e e2) false,
 ;; (= e e) true, matching the JVM where ExceptionInfo does NOT implement
 ;; equals). get / keyword lookup: MISS (record is NOT ILookup).
-;; error-offset stores ParseException.getErrorOffset (0 when not set).
+;; error-offset stores ParseException.getErrorOffset (0 when not set), or for the
+;; classes that keep several values apart from their message a vector of them
+;; (jolt-host-throwable/detail). Its name is image surface.
 ;; capture is (k . site): the continuation and site pair where the throwable was
 ;; constructed (jolt-capture-throwable!), which its stack trace is read from, or
 ;; #f. A field and not a side table: it costs a store, where a table shared across
@@ -1909,6 +1911,14 @@
 ;; ex-message all reflect the real type.
 ;; java.text.ParseException carries an int error offset (getErrorOffset). Stored
 ;; in the record's error-offset field.
+;; A throwable with what its accessors answer: FileSystemException's #(file other
+;; reason), URISyntaxException's #(input reason index) and PatternSyntaxException's
+;; #(description index pattern), read by throwable-detail-method (records-interop.ss).
+(define (jolt-host-throwable/detail class-name msg detail)
+  (let ((t (jolt-host-throwable class-name msg)))
+    (jolt-ex-info-record-error-offset-set! t detail)
+    t))
+
 (define (jolt-host-throwable class-name msg . more)
   (jolt-capture-throwable!
     (make-jolt-ex-info-record class-name msg

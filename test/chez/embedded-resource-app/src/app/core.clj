@@ -157,6 +157,15 @@
                                (make-array String 0))
         content "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);\n"]
     (check "root exists" (java.nio.file.Files/exists root) true)
+    (check "an atomic move between providers is refused"
+           (let [local (java.nio.file.Files/createTempFile "atomic" ".txt" (make-array java.nio.file.attribute.FileAttribute 0))]
+             (try
+               (java.nio.file.Files/move path local
+                 (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+               (catch java.nio.file.AtomicMoveNotSupportedException e
+                 [(.getMessage e) (.getFile e)])
+               (finally (java.nio.file.Files/deleteIfExists local))))
+           ["Atomic move between providers is not supported" nil])
     (check "directory exists" (java.nio.file.Files/exists dir) true)
     (check "file exists" (java.nio.file.Files/exists path) true)
     (check "missing exists" (java.nio.file.Files/exists missing) false)

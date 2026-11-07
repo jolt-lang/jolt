@@ -92,10 +92,13 @@
 ;; ": reason" after either, as FileSystemException.getMessage builds it. Only the
 ;; paths are rendered natively; the reason is strerror's text, and flipping the
 ;; whole string would turn "Input/output error" into "Input\output error".
+;; With neither path the message is the reason alone, or #f without one.
 (define (fs-exception-message-for windows? file other reason)
-  (string-append (path-native-for windows? file)
-                 (if other (string-append " -> " (path-native-for windows? other)) "")
-                 (if reason (string-append ": " reason) "")))
+  (if (or file other)
+      (string-append (if file (path-native-for windows? file) "")
+                     (if other (string-append " -> " (path-native-for windows? other)) "")
+                     (if reason (string-append ": " reason) ""))
+      reason))
 (define (fs-exception-message file other reason)
   (fs-exception-message-for (eq? (sa-os-family) 'windows) file other reason))
 
@@ -1376,6 +1379,42 @@
          (win32-with-wstr link
            (lambda (l) (win32-with-wstr existing
                          (lambda (e) (not (= 0 (f l e 0))))))))))
+
+;; Files.move with ATOMIC_MOVE on Windows: MoveFileExW replacing the target, in one
+;; step, as WindowsFileCopy.move does. Chez's rename-file is _wrename, which refuses
+;; an existing target. Answers 0, or the Win32 error, read with interrupts off so a
+;; collect rendezvous cannot overwrite it first (io-call+errno, rt.ss).
+(define win32-MOVEFILE-REPLACE-EXISTING 1)
+(define-win32-proc win32-move-file-ex-w
+  "kernel32.dll" "MoveFileExW" (void* void* unsigned-32) int)
+(define-win32-proc win32-get-last-error
+  "kernel32.dll" "GetLastError" () unsigned-32)
+(define (win32-move-replacing! from to)
+  (let ((move (win32-move-file-ex-w)) (last-error (win32-get-last-error)))
+    (win32-with-wstr from
+      (lambda (f)
+        (win32-with-wstr to
+          (lambda (t)
+            (disable-interrupts)
+            (let ((err (if (= 0 (move f t win32-MOVEFILE-REPLACE-EXISTING)) (last-error) 0)))
+              (enable-interrupts)
+              err)))))))
+;; FormatMessageW's text for a Win32 error, which is what the JDK reports it as.
+(define-win32-proc win32-format-message-w
+  "kernel32.dll" "FormatMessageW" (unsigned-32 void* unsigned-32 unsigned-32 u8* unsigned-32 void*) unsigned-32)
+(define (win32-error-message err)
+  (let* ((f (win32-format-message-w))
+         (buf (make-bytevector 1024 0))
+         ;; FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS
+         (n (if f (f #x1200 0 err 0 buf 512 0) 0)))
+    (if (> n 0)
+        (let ((s (utf16->string (let ((b (make-bytevector (* 2 n)))) (bytevector-copy! buf 0 b 0 (* 2 n)) b)
+                                (endianness little))))
+          (let loop ((k (string-length s)))
+            (if (and (> k 0) (char-whitespace? (string-ref s (- k 1))))
+                (loop (- k 1))
+                (substring s 0 k))))
+        (string-append "Windows error " (number->string err)))))
 
 ;; The three times of PATH as a vector #(creation access write) of epoch
 ;; NANOSECONDS (100ns resolution), or #f. WIN32_FILE_ATTRIBUTE_DATA is the
@@ -4465,7 +4504,8 @@
 (define (uri-parse s . opt)
   (let ((r (apply uri-parse-either s opt)))
     (if (uri-error? r)
-        (jolt-throw (jolt-host-throwable "java.net.URISyntaxException" (uri-error-message s r)))
+        (jolt-throw (jolt-host-throwable/detail "java.net.URISyntaxException" (uri-error-message s r)
+                                                (vector s (cadr r) (caddr r))))
         r)))
 ;; Percent-encode what is illegal in a URI path. File.toURI is new URI(scheme,
 ;; host, path, fragment) on the JVM, which QUOTES rather than rejects, so a file
@@ -4554,8 +4594,9 @@
 ;; the parser turns the missing "/" into a nonsense authority.
 (define (uri-check-path! composed scheme path)
   (when (and scheme path (> (string-length path) 0) (not (char=? (string-ref path 0) #\/)))
-    (jolt-throw (jolt-host-throwable "java.net.URISyntaxException"
-                  (string-append "Relative path in absolute URI: " composed)))))
+    (jolt-throw (jolt-host-throwable/detail "java.net.URISyntaxException"
+                  (string-append "Relative path in absolute URI: " composed)
+                  (vector composed "Relative path in absolute URI" -1)))))
 ;; a nil component is absent, not the string "nil"
 (define (uri-arg x) (if (or (jolt-nil? x) (not x)) #f (jolt-str-render-one x)))
 (define (uri-port-arg x) (if (jolt-nil? x) -1 (jnum->exact x)))
