@@ -435,7 +435,7 @@
                  (rp (nio-realpath fp)))
             (cond (rp (npath-like self rp))
                   ((file-exists? fp) (npath-like self (npath-normalize-for windows? abs)))
-                  (else (jolt-throw (jolt-ex-info abs empty-pmap)))))))   ; missing path throws
+                  (else (nio-no-such-file s))))))
   (cons "toFile" (lambda (self) (make-jfile (nio-path-str self))))
   ;; a java.net.URI in the default filesystem's own form, not File.toURI's
   ;; (io.ss nio-path->uri)

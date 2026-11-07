@@ -26,7 +26,7 @@
   :upstream-quirk
   "reference Clojure's own inconsistency, not a substrate limit. LazySeq.reify() returns a MUTABLE (new ArrayList(this)) where ASeq.reify() wraps it in Collections.unmodifiableList, so java.util.List's DEFAULT sort and replaceAll — both of which go through listIterator() — mutate a throwaway copy and silently succeed on a lazy seq while refusing on every other seq. jolt refuses on all of them. Reproducing it would mean reproducing a missing wrapper whose only observable is that nothing happens.",
   :restrictive
-  "the JVM supports something jolt does not: mark/reset replay over a non-seekable stream, a Zip64 entry in a ZipInputStream. The narrow direction, so it is NOT a superset — code relying on the JVM capability has no counterpart here",
+  "the JVM supports something jolt does not: mark/reset on System.in, a Zip64 entry in a ZipInputStream. The narrow direction, so it is NOT a superset — code relying on the JVM capability has no counterpart here",
   :permissive
   "jolt succeeds where the JVM throws, on operations with one reasonable meaning: count works on eduction, keys on a vector of pairs. A superset: portable JVM code behaves identically.",
   :namespace-model
@@ -499,23 +499,17 @@
   ;; is allowlisted in run-corpus.ss, so this is prose here rather than a keyed
   ;; entry: keyed entries are rows whose :expected departs from the JVM, and this
   ;; row's does not.
-  ;; The JVM's mark/reset provider is BufferedInputStream: wrapping ANY stream
-  ;; answers markSupported true, replaying from its buffer on reset. jolt marks
-  ;; via port positions, so the wrapper is markable only where the port can
-  ;; seek (file, bytevector) — over a socket/pipe/stdin it stays the wrapped
-  ;; stream and answers false, and reset throws IOException instead of
-  ;; silently rewinding wrong. System.in is such a BufferedInputStream on the
-  ;; JVM, so (.markSupported System/in) is true there and false here. jolt's
-  ;; markable reset with no prior mark seeks to 0 (the BAIS default) where a
-  ;; JVM BufferedInputStream would throw "Resetting to invalid mark" —
-  ;; lenient in the same direction the shim tier already goes.
+  ;; System.in is a BufferedInputStream on the JVM, so it marks. Here it is the
+  ;; one port on fd 0 that *in* and read-line share, and a replay buffer in front
+  ;; of it would take bytes they expect to see. Wrapping it in a
+  ;; BufferedInputStream of your own marks as usual.
   {:category :restrictive
-   :behavior "(.markSupported (BufferedInputStream. <non-seekable>)) / System/in"
-   :jvm "true — BufferedInputStream buffers and replays on reset"
-   :jolt "false — no replay layer; mark/reset honoured only where the port seeks"
+   :behavior "(.markSupported System/in)"
+   :jvm "true"
+   :jolt "false; reset throws IOException rather than rewinding wrong"
    :check :prose
    :why "needs a non-seekable stream (process stdin), which the gate does not control"
-   :note "Corpus rows cover the agreeing cases (file, ByteArrayInputStream, PipedInputStream, FileInputStream); unit rows pin System/in answering false without crashing."}
+   :note "Unit rows pin System/in answering false without crashing."}
   ;; *in* reads its source a line at a time (__stdin-read-line), so a
   ;; BufferedReader over it, which fills with one read of up to 8192 chars,
   ;; takes one line where the JVM's takes everything the pipe already holds.

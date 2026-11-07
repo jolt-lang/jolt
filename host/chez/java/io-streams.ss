@@ -45,6 +45,13 @@
   (make-jhost "in-stream" (vector port (and (pair? opt) (eq? (car opt) 'markable)) 0)))
 (define (in-stream-markable? self) (vector-ref (jhost-state self) 1))
 (define (make-in-stream-markable port) (make-in-stream port 'markable))
+;; A BufferedInputStream has no mark until mark is called, where a
+;; ByteArrayInputStream starts with one at 0. #f in the mark slot says so.
+(define (no-mark-yet! s) (vector-set! (jhost-state s) 2 #f) s)
+;; The buffer of a BufferedInputStream over a stream that cannot seek, in the
+;; markable slot in place of #t.
+(define (in-stream-replay self)
+  (let ((m (vector-ref (jhost-state self) 1))) (and (procedure? m) m)))
 (define (in-stream? x) (and (jhost? x) (string=? (jhost-tag x) "in-stream")))
 ;; The JDK class a stream or reader was made as. One tag serves every byte
 ;; input stream (and one every output stream, one every port-backed Reader), so
@@ -156,6 +163,9 @@
   (let ((port (in-stream-live-port self))
         (p (piped-pipe self)))
     (cond
+      ;; a buffered stream's unread bytes, then the wrapped stream's own count
+      ((in-stream-replay self)
+       => (lambda (replay) (+ (port-buffered port) (replay 'available port #f))))
       ;; a pushback stream: what its port holds — the pushed-back bytes and any
       ;; block already pulled from the wrapped stream — plus the wrapped
       ;; stream's own count, asked through ITS available (a proxy's included)
@@ -359,14 +369,23 @@
    ;; mark/reset only where the source declares support (make-in-stream). The
    ;; JVM throws from reset() on a stream that does not support it; answering a
    ;; silent no-op there let a caller believe it had rewound.
-   (cons "mark" (lambda (self . _)
-                  (when (in-stream-markable? self)
-                    (vector-set! (jhost-state self) 2 (port-position (in-stream-port self))))
+   (cons "mark" (lambda (self . args)
+                  (cond ((in-stream-replay self)
+                         => (lambda (replay)
+                              (replay 'mark (in-stream-port self)
+                                      (if (pair? args) (jnum->exact (car args)) 0))))
+                        ((in-stream-markable? self)
+                         (vector-set! (jhost-state self) 2 (port-position (in-stream-port self)))))
                   jolt-nil))
    (cons "reset" (lambda (self)
                    (unless (in-stream-markable? self)
                      (io-throw "mark/reset not supported"))
-                   (set-port-position! (in-stream-port self) (vector-ref (jhost-state self) 2))
+                   (let ((port (in-stream-live-port self)))
+                     (cond ((in-stream-replay self)
+                            => (lambda (replay) (replay 'reset port #f)))
+                           ((vector-ref (jhost-state self) 2)
+                            => (lambda (at) (set-port-position! port at)))
+                           (else (io-throw "Resetting to invalid mark"))))
                    jolt-nil))
    (cons "markSupported" (lambda (self) (if (in-stream-markable? self) #t #f)))
    (cons "toString" host-object-tostring)))
@@ -2174,18 +2193,78 @@
                       (apply make-reader-adapter inner size)
                       inner)))))
           '("BufferedReader" "java.io.BufferedReader"))
-;; BufferedInputStream is the JVM's mark/reset provider: wrapping ANY stream
-;; makes markSupported true there. jolt honours that when the underlying port
-;; can actually seek (file, bytevector) — a fresh markable jhost over the SAME
-;; port, so close propagates both ways like the JVM's. Over a port that cannot
-;; seek (socket, pipe, stdin) the JVM would replay from its buffer; jolt has no
-;; replay layer, so the wrapper stays the wrapped stream and markSupported
-;; stays false — the honest answer, and a known divergence (reset throws
-;; instead of silently rewinding wrong). See known-divergences.edn.
-;; Over a port that cannot seek it is a stream of its own over the same port
-;; (not markable), so it still reports BufferedInputStream and closing it closes
-;; what it wraps; over a stream the program wrote, it reads through that
-;; stream's own read.
+;; --- java.io.BufferedInputStream over a stream that cannot seek ---------------
+;; A port that seeks can rewind itself. Anything else (a proxy, a pipe, a socket,
+;; a process's output) needs the bytes kept, which is what the JDK's class is for:
+;; it marks whatever it wraps.
+;;
+;; LOG holds the stream's bytes from BASE to END and POS is the next one to hand
+;; out. With no mark, each refill replaces the block, so an unmarked stream holds
+;; one block however much passes through it. With a mark, refills append from the
+;; mark on, until the kept bytes reach the limit and need another refill, when the
+;; JDK drops the mark: a stream that marks and never resets costs a bound, not the
+;; whole body.
+;;
+;; A mark can land inside what the port has already taken from LOG. That is safe
+;; because the port refills only when its buffer is empty, so everything it holds
+;; came from the block now in LOG.
+(define buffered-block-size 8192)
+(define (port-seeks? p)
+  ;; by trying: a port over a socket answers #t to both predicates and then raises
+  ;; ESPIPE from port-position (port-remaining)
+  (and (port? p)
+       (port-has-port-position? p)
+       (port-has-set-port-position!? p)
+       (guard (_ (#t #f)) (port-position p) #t)))
+(define (make-replay-in-stream inner)
+  (let ((log (make-bytevector 0)) (base 0) (end 0) (pos 0) (mark-at #f) (limit 0))
+    (define (refill!)
+      (when (and mark-at (>= (- end mark-at) limit)) (set! mark-at #f))
+      (unless mark-at (set! base end))
+      (let ((want (if mark-at
+                      (min buffered-block-size (- limit (- end mark-at)))
+                      buffered-block-size))
+            (held (- end base)))
+        (when (> (+ held want) (bytevector-length log))
+          (let ((grown (make-bytevector (max (+ held want) (* 2 (bytevector-length log))))))
+            (bytevector-copy! log 0 grown 0 held)
+            (set! log grown)))
+        (set! end (+ end (stream-read-into! inner log held want)))))
+    (let ((port
+           (port-ready-probe!
+            (make-custom-binary-input-port
+             "buffered-stream"
+             (lambda (bv start count)
+               (when (= pos end) (refill!))
+               (let ((n (min count (- end pos))))
+                 (bytevector-copy! log (- pos base) bv start n)
+                 (set! pos (+ pos n))
+                 n))
+             (lambda () pos)
+             (lambda (at) (set! pos at))
+             (lambda () (record-method-dispatch inner "close" jolt-nil)))
+            (lambda ()
+              (or (< pos end)
+                  (> (jnum->exact (record-method-dispatch inner "available" jolt-nil)) 0))))))
+      (make-jhost "in-stream"
+        (vector port
+                (lambda (op port arg)
+                  (case op
+                    ((mark)
+                     (let ((at (port-position port)))
+                       (bytevector-copy! log (- at base) log 0 (- end at))
+                       (set! base at)
+                       (set! mark-at at)
+                       (set! limit (max arg buffered-block-size))))
+                    ((reset)
+                     (unless mark-at (io-throw "Resetting to invalid mark"))
+                     (set-port-position! port mark-at))
+                    ((available)
+                     (+ (- end pos)
+                        (jnum->exact (record-method-dispatch inner "available" jolt-nil))))))
+                0)))))
+;; Over a port that seeks, a fresh markable stream over the SAME port, so close
+;; reaches both like the JVM's.
 (for-each (lambda (n)
             (register-class-ctor! n
               (lambda (inner . _)
@@ -2193,14 +2272,12 @@
                   ((in-stream? inner)
                    (let ((p (vector-ref (jhost-state inner) 0)))
                      (stream-classed!
-                       (if (and (port? p)
-                                (port-has-port-position? p)
-                                (port-has-set-port-position!? p))
-                           (make-in-stream-markable p)
-                           (make-in-stream p))
+                       (if (port-seeks? p)
+                           (no-mark-yet! (make-in-stream-markable p))
+                           (make-replay-in-stream inner))
                        "java.io.BufferedInputStream")))
                   ((user-in-stream? inner)
-                   (stream-classed! (make-in-stream (in-stream-source-port inner))
+                   (stream-classed! (make-replay-in-stream inner)
                                     "java.io.BufferedInputStream"))
                   (else inner)))))
           '("BufferedInputStream" "java.io.BufferedInputStream"))
@@ -2529,7 +2606,7 @@
 ;; they are made markable the way the BufferedInputStream ctor makes them.
 (define (jio-open-in-file-buffered fs-path given)
   (jio-buffered-in (make-in-stream-markable (in-stream-port (jio-open-in-file fs-path given)))))
-(define (jio-buffered-in s) (stream-classed! s "java.io.BufferedInputStream"))
+(define (jio-buffered-in s) (stream-classed! (no-mark-yet! s) "java.io.BufferedInputStream"))
 (define (jio-input-stream x . opts)
   (io-opts-check! opts)
   (cond ((or (in-stream? x) (user-in-stream? x)) x)

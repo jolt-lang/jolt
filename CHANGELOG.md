@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `BufferedInputStream` marks over any stream, as the JDK's does. Over a proxy,
+  pipe, socket or process stream it answered `markSupported` false and `reset`
+  threw, which failed every `Content-Encoding: deflate` response in
+  `babashka.http-client`. `reset` before any `mark` now throws
+  `Resetting to invalid mark`, and a mark read past its limit is dropped.
+- `Path.toRealPath` of a missing path throws `NoSuchFileException`, not `ex-info`.
+
 - **A refused bind is a `java.net.BindException`.** The class didn't exist and a
   bind failed with `IOException: bind failed on port N`, so a port probe catching
   `BindException` got an error instead of an answer. It now carries the OS's reason
