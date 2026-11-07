@@ -510,6 +510,21 @@
    :check :prose
    :why "needs a non-seekable stream (process stdin), which the gate does not control"
    :note "Unit rows pin System/in answering false without crashing."}
+  ;; jolt.socket's options, against JDK 21's Net and jdk.net.ExtendedSocketOptions.
+  {:category :permissive
+   :behavior "(.setOption socket StandardSocketOptions/SO_RCVBUF 8192)"
+   :jvm "throws ClassCastException on a Long: the option's type is Integer, so it needs (int 8192)"
+   :jolt "accepts it: an int and a long are one integer here"
+   :check :prose
+   :why "the gate would need a live socket"
+   :note "A superset: code that passes (int n) behaves the same on both."}
+  {:category :restrictive
+   :behavior "(.supportedOptions socket)"
+   :jvm "also lists jdk.net's TCP_KEEPIDLE, TCP_KEEPINTERVAL and TCP_KEEPCOUNT"
+   :jolt "the java.net.StandardSocketOptions only"
+   :check :prose
+   :why "jdk.net.ExtendedSocketOptions is not modelled, so there is nothing to name the options by"
+   :note "SO_KEEPALIVE itself works."}
   ;; *in* reads its source a line at a time (__stdin-read-line), so a
   ;; BufferedReader over it, which fills with one read of up to 8192 chars,
   ;; takes one line where the JVM's takes everything the pipe already holds.
