@@ -80,6 +80,7 @@
 ;; bind means. With java.net.preferIPv6Addresses false, the JDK's default, it is
 ;; the Inet4Address 0.0.0.0, named "0.0.0.0".
 (defn- any-local [] (make-inet "0.0.0.0" [0 0 0 0]))
+(defn- any-local? [inet] (every? zero? (inet-bytes inet)))
 (defn- loopback [] (make-inet "localhost" [127 0 0 1]))
 
 ;; -- literals (the JDK's IPAddressUtil) --
@@ -264,10 +265,6 @@
 
 (defn- new-fd! [family]
   (let [fd (native/new-socket family)]
-    ;; SO_REUSEADDR on POSIX, as the JDK sets it; nothing on Windows, where the
-    ;; option means sharing a live listener and the JDK binds exclusively, so a
-    ;; busy port is a BindException there (native/set-listener-reuse!)
-    (native/set-listener-reuse! fd)
     ;; every v6 socket is dual-stack, as the JDK's are
     (when (= family native/af-inet6) (native/set-dual-stack! fd))
     (poller/nonblock! fd)
@@ -333,6 +330,21 @@
   (when (jolt.host/ref-get owner :closed?)
     (throw (java.net.SocketException. msg))))
 
+;; The exception a failed socket call raises, from its errno, as the JDK's
+;; handleSocketError picks it. Winsock has its own wording for most of these, so
+;; the one a port probe's caller is most likely to print is spelled out.
+(defn- socket-failure [e]
+  (let [msg (if (= e native/eaddrinuse)
+              "Address already in use"
+              (native/error-message e))]
+    (cond
+      (contains? #{native/eaddrinuse native/eaddrnotavail native/eacces} e)
+      (java.net.BindException. msg)
+      (contains? #{native/econnrefused native/etimedout native/enotconn} e)
+      (java.net.ConnectException. msg)
+      (= e native/ehostunreach) (java.net.NoRouteToHostException. msg)
+      :else (java.net.SocketException. msg))))
+
 (defn- connect-fd! [owner fd inet port deadline]
   ;; connect fd to the InetAddress inet; frees the sockaddr either way.
   ;; The fd is O_NONBLOCK (fibers R8), so connect answers EINPROGRESS; wait for
@@ -362,11 +374,23 @@
     (cond
       (zero? e) nil
       (= e native/econnrefused) (throw (java.net.ConnectException. "Connection refused"))
+      (pos? e) (throw (socket-failure e))
       :else (throw (java.io.IOException.
                     (str "connect failed: "
                          (let [h (jolt.host/ref-get inet :host)]
                            (if (str/blank? h) (jolt.host/ref-get inet :address) h))
                          ":" port))))))
+
+;; bind(2) of fd, one of family, to inet:port, the wildcard of its own family when
+;; inet is the wildcard.
+(defn- bind-fd! [fd family inet port]
+  (let [[sa len] (if (any-local? inet)
+                   (native/make-sockaddr family (if (= family native/af-inet6) "::" "0.0.0.0") port)
+                   (inet-sockaddr inet port))]
+    (try
+      (let [[r e] (native/c-bind fd sa len)]
+        (when (neg? r) (throw (socket-failure e))))
+      (finally (ffi/free sa)))))
 
 ;; -- Socket ------------------------------------------------------------------
 (declare make-isa inet-address->str)
@@ -385,12 +409,22 @@
 
 ;; The JDK picks a socket's family when it connects or binds, from the address;
 ;; an unconnected Socket or unbound ServerSocket starts with an IPv4 fd here and
-;; trades it for one of the address's family when that is different. Nothing
-;; has been set on the fd that the swap would lose: socket options this class
-;; has are kept on the object and applied per call.
+;; trades it for one of the address's family when that is different. What was
+;; set on the fd survives because options are also kept on the object, and a
+;; wildcard bind, which has no family of its own, moves to the new fd with them.
+;; A bind to one address does have a family: the swap would lose it, so that fd
+;; stays and the kernel answers the mismatch.
+(declare replay-options!)
+
 (defn- ensure-family! [self family]
-  (when-not (= family (jolt.host/ref-get self :family))
+  (when-not (or (= family (jolt.host/ref-get self :family))
+                (and (jolt.host/ref-get self :bound?)
+                     (not (jolt.host/ref-get self :wildcard-bound?))))
     (let [nfd (new-fd! family)
+          _   (replay-options! self nfd family)
+          _   (when (jolt.host/ref-get self :bound?)
+                (try (bind-fd! nfd family (any-local) (jolt.host/ref-get self :local-port))
+                     (catch :default e (native/c-close nfd) (throw e))))
           old (locking self
                 (when-not (jolt.host/ref-get self :closed?)
                   (let [o (jolt.host/ref-get self :fd)]
@@ -516,10 +550,210 @@
 ;; Socket.getLocalAddress: the wildcard until connected, and again once closed,
 ;; when the JDK can no longer ask the socket
 (defn- socket-local-address [self]
-  (or (when (and (jolt.host/ref-get self :connected?)
+  (or (when (and (or (jolt.host/ref-get self :connected?)
+                     (jolt.host/ref-get self :bound?))
                  (not (jolt.host/ref-get self :closed?)))
         (jolt.host/ref-get self :local-inet))
       (any-local)))
+
+;; -- socket options ----------------------------------------------------------
+;; An option is set on the fd and kept on the object, because the fd is not
+;; final: a Socket trades it when it connects to the other family, and a
+;; ServerSocket's listener is a fresh one made at bind. What is read back is the
+;; kernel's answer, so an accepted socket reports what it inherited.
+(defn- int-option [family k]
+  (case k
+    :keep-alive    [native/sol-socket native/so-keepalive]
+    :no-delay      [native/ipproto-tcp native/tcp-nodelay]
+    :oob-inline    [native/sol-socket native/so-oobinline]
+    :rcvbuf        [native/sol-socket native/so-rcvbuf]
+    :sndbuf        [native/sol-socket native/so-sndbuf]
+    :reuse-address [native/sol-socket native/so-reuseaddr]
+    :reuse-port    [native/sol-socket native/so-reuseport]
+    :tos           (if (= family native/af-inet6)
+                     [native/ipproto-ipv6 native/ipv6-tclass]
+                     [native/ipproto-ip native/ip-tos])))
+
+;; A boolean argument: the JDK's primitive parameter refuses nil.
+(defn- flag [on]
+  (when (nil? on) (throw (NullPointerException.)))
+  (boolean on))
+
+;; The buffer sizes are hints, as their javadoc says: below 1024 is raised to it as
+;; the JDK does, and a size the kernel won't take (over kern.ipc.maxsockbuf on
+;; macOS, say) leaves the one it has rather than failing.
+(defn- write-option! [fd family k v]
+  (case k
+    (:rcvbuf :sndbuf)
+    (let [[level opt] (int-option family k)]
+      (native/set-int-option! fd level opt (max v 1024))
+      [0 0])
+    :linger        (native/set-linger! fd v)
+    ;; nothing on Windows, where the option means sharing a live listener and
+    ;; the JDK binds exclusively
+    :reuse-address (native/set-reuse-address! fd v)
+    (let [[level opt] (int-option family k)]
+      (native/set-int-option! fd level opt (cond (true? v) 1 (false? v) 0 :else v)))))
+
+(defn- replay-options! [self fd family]
+  (doseq [[k v] (jolt.host/ref-get self :options)]
+    (write-option! fd family k v)))
+
+(defn- set-option! [self k v]
+  (ensure-socket-open! self)
+  (with-op self
+    (let [[r e] (write-option! (jolt.host/ref-get self :fd) (jolt.host/ref-get self :family) k v)]
+      (when (neg? r) (throw (socket-failure e)))
+      (locking self
+        (jolt.host/ref-put! self :options (assoc (jolt.host/ref-get self :options) k v)))))
+  nil)
+
+(defn- get-option [self k]
+  (ensure-socket-open! self)
+  (with-op self
+    (let [fd (jolt.host/ref-get self :fd)
+          v  (if (= k :linger)
+               (native/get-linger fd)
+               (let [[level opt] (int-option (jolt.host/ref-get self :family) k)]
+                 (native/get-int-option fd level opt)))]
+      (when (nil? v) (throw (java.net.SocketException. "getsockopt failed")))
+      v)))
+
+(defn- get-flag [self k] (pos? (get-option self k)))
+
+;; SO_REUSEADDR as it was set, else what this kind of socket starts with: a
+;; ServerSocket's has no listener to ask until it is bound, and Windows never
+;; sets the option at all.
+(defn- server-reuse-address? [self]
+  (ensure-socket-open! self)
+  (let [o (jolt.host/ref-get self :options)]
+    (if (contains? o :reuse-address) (:reuse-address o) native/listener-reuses?)))
+
+(defn- socket-reuse-address? [self]
+  (ensure-socket-open! self)
+  (if native/listener-reuses?
+    (get-flag self :reuse-address)
+    (boolean (:reuse-address (jolt.host/ref-get self :options)))))
+
+(defn- check-buffer-size! [n msg]
+  (when-not (pos? n) (throw (IllegalArgumentException. msg))))
+
+;; An option as java.net.StandardSocketOptions names it. Its :key is what the
+;; table above takes, and the sets say which sockets support it. The JDK also
+;; lists jdk.net's TCP_KEEPIDLE, TCP_KEEPINTERVAL and TCP_KEEPCOUNT here; those
+;; are not standard options and there is no class to name them with.
+(defn- socket-option [nm type k kinds]
+  (doto (tt :socket-option "java.net.StandardSocketOptions$StdSocketOption")
+    (jolt.host/ref-put! :name nm)
+    (jolt.host/ref-put! :type type)
+    (jolt.host/ref-put! :key k)
+    (jolt.host/ref-put! :kinds kinds)))
+
+(def ^:private standard-socket-options
+  (let [both #{:socket :server-socket} sock #{:socket}
+        reuse-port (if native/so-reuseport both #{})]
+    {"IP_MULTICAST_IF"   (socket-option "IP_MULTICAST_IF" java.net.NetworkInterface nil #{})
+     "IP_MULTICAST_LOOP" (socket-option "IP_MULTICAST_LOOP" Boolean nil #{})
+     "IP_MULTICAST_TTL"  (socket-option "IP_MULTICAST_TTL" Integer nil #{})
+     "SO_BROADCAST"      (socket-option "SO_BROADCAST" Boolean nil #{})
+     "IP_TOS"            (socket-option "IP_TOS" Integer :tos both)
+     "SO_KEEPALIVE"      (socket-option "SO_KEEPALIVE" Boolean :keep-alive sock)
+     "SO_LINGER"         (socket-option "SO_LINGER" Integer :linger sock)
+     "SO_RCVBUF"         (socket-option "SO_RCVBUF" Integer :rcvbuf both)
+     "SO_REUSEADDR"      (socket-option "SO_REUSEADDR" Boolean :reuse-address both)
+     "SO_REUSEPORT"      (socket-option "SO_REUSEPORT" Boolean :reuse-port reuse-port)
+     "SO_SNDBUF"         (socket-option "SO_SNDBUF" Integer :sndbuf sock)
+     "TCP_NODELAY"       (socket-option "TCP_NODELAY" Boolean :no-delay sock)}))
+
+(def ^:private socket-option-methods
+  {"name"     (fn [self] (jolt.host/ref-get self :name))
+   "type"     (fn [self] (jolt.host/ref-get self :type))
+   "toString" (fn [self] (jolt.host/ref-get self :name))})
+
+;; The option's :key once it is known this socket supports it, in the JDK's order:
+;; null first, then unsupported, and only then a closed socket.
+(defn- supported-option-key [self o]
+  (when (nil? o) (throw (NullPointerException.)))
+  (let [kind (jolt.host/ref-get self :jolt/type)
+        k    (jolt.host/ref-get o :key)]
+    (when-not (and k (contains? (jolt.host/ref-get o :kinds) kind))
+      (throw (UnsupportedOperationException. (str "'" (str o) "' not supported"))))
+    (ensure-socket-open! self)
+    k))
+
+(defn- check-option-value! [o k v]
+  (let [bool? (contains? #{:keep-alive :no-delay :reuse-address :reuse-port} k)]
+    (when-not (if bool? (boolean? v) (int? v))
+      (throw (IllegalArgumentException.
+              (str "Invalid value '" (if (nil? v) "null" v) "'"))))
+    (when (and (contains? #{:rcvbuf :sndbuf} k) (neg? v))
+      (throw (IllegalArgumentException. "Invalid send/receive buffer size")))
+    (when (and (= k :tos) (not (<= 0 v 255)))
+      (throw (IllegalArgumentException. "Invalid IP_TOS value")))))
+
+(defn- option-value [self k]
+  (cond
+    (= k :reuse-address) (if (= :server-socket (jolt.host/ref-get self :jolt/type))
+                           (server-reuse-address? self)
+                           (socket-reuse-address? self))
+    (contains? #{:keep-alive :no-delay :reuse-port} k) (get-flag self k)
+    :else (get-option self k)))
+
+(def ^:private option-accessors
+  {"getOption"
+   (fn [self o] (option-value self (supported-option-key self o)))
+   "setOption"
+   (fn [self o v]
+     (let [k (supported-option-key self o)]
+       (check-option-value! o k v)
+       (set-option! self k (if (= k :linger) (if (neg? v) -1 (min v 65535)) v))
+       self))
+   "supportedOptions"
+   (fn [self]
+     (let [kind (jolt.host/ref-get self :jolt/type)]
+       (into #{} (filter #(contains? (jolt.host/ref-get % :kinds) kind))
+             (vals standard-socket-options))))
+   "setPerformancePreferences" (fn [self connection-time latency bandwidth] nil)
+   "getChannel" (fn [self] nil)})
+
+(defn- socket-bind! [self endpoint]
+  (ensure-socket-open! self)
+  (when (or (jolt.host/ref-get self :bound?) (jolt.host/ref-get self :connected?))
+    (throw (java.net.SocketException. "Already bound")))
+  (when (and endpoint (not= :inet-socket-address (jolt.host/ref-get endpoint :jolt/type)))
+    (throw (IllegalArgumentException. "Unsupported address type")))
+  (when (and endpoint (nil? (jolt.host/ref-get endpoint :addr)))
+    (throw (java.net.SocketException. "Unresolved address")))
+  (let [inet (if endpoint (jolt.host/ref-get endpoint :addr) (any-local))
+        port (int (if endpoint (jolt.host/ref-get endpoint :port) 0))
+        wild? (any-local? inet)]
+    (with-op self
+      (when-not wild? (ensure-family! self (inet-family inet)))
+      (let [fd (jolt.host/ref-get self :fd)]
+        (bind-fd! fd (jolt.host/ref-get self :family) inet port)
+        (jolt.host/ref-put! self :bound? true)
+        (jolt.host/ref-put! self :wildcard-bound? wild?)
+        (jolt.host/ref-put! self :local-port (local-port fd))
+        ;; the wildcard has no name to read back, and the JDK shows it as itself
+        (jolt.host/ref-put! self :local-inet (if wild? (any-local) (local-inet fd))))))
+  nil)
+
+(declare io-call)
+
+(defn- send-urgent! [self b]
+  (ensure-socket-open! self)
+  (when-not (jolt.host/ref-get self :connected?)
+    (throw (java.net.SocketException. "Not connected")))
+  (with-op self
+    (let [fd (jolt.host/ref-get self :fd) buf (ffi/alloc 1)]
+      (try
+        (ffi/write buf :uint8 (bit-and (int b) 0xff))
+        (when-not (pos? (io-call self
+                                 #(native/c-send fd buf 1 (bit-or native/msg-oob native/msg-nosignal))
+                                 fd :write))
+          (throw (java.net.SocketException. "Broken pipe")))
+        (finally (ffi/free buf)))))
+  nil)
 
 (def ^:private socket-methods
   {"connect"
@@ -527,8 +761,43 @@
      ([self endpoint] (socket-connect! self endpoint 0))
      ([self endpoint timeout] (socket-connect! self endpoint (int timeout))))
 
+   "bind" socket-bind!
+
    "setSoTimeout" (fn [self ms] (set-so-timeout! self ms "timeout can't be negative"))
    "getSoTimeout" get-so-timeout
+
+   "setReuseAddress" (fn [self on] (set-option! self :reuse-address (flag on)))
+   "getReuseAddress" socket-reuse-address?
+   "setTcpNoDelay"   (fn [self on] (set-option! self :no-delay (flag on)))
+   "getTcpNoDelay"   (fn [self] (get-flag self :no-delay))
+   "setKeepAlive"    (fn [self on] (set-option! self :keep-alive (flag on)))
+   "getKeepAlive"    (fn [self] (get-flag self :keep-alive))
+   "setOOBInline"    (fn [self on] (set-option! self :oob-inline (flag on)))
+   "getOOBInline"    (fn [self] (get-flag self :oob-inline))
+   "setSoLinger"
+   (fn [self on secs]
+     (ensure-socket-open! self)
+     (when (and on (neg? secs))
+       (throw (IllegalArgumentException. "invalid value for SO_LINGER")))
+     (set-option! self :linger (if on (min secs 65535) -1)))
+   "getSoLinger"     (fn [self] (get-option self :linger))
+   "setReceiveBufferSize"
+   (fn [self n]
+     (check-buffer-size! n "invalid receive size")
+     (set-option! self :rcvbuf n))
+   "getReceiveBufferSize" (fn [self] (get-option self :rcvbuf))
+   "setSendBufferSize"
+   (fn [self n]
+     (check-buffer-size! n "negative send size")
+     (set-option! self :sndbuf n))
+   "getSendBufferSize" (fn [self] (get-option self :sndbuf))
+   "setTrafficClass"
+   (fn [self tc]
+     (when-not (<= 0 tc 255)
+       (throw (IllegalArgumentException. "tc is not in range 0 -- 255")))
+     (set-option! self :tos tc))
+   "getTrafficClass" (fn [self] (get-option self :tos))
+   "sendUrgentData"  send-urgent!
 
    "getInputStream"
    (fn [self]
@@ -561,7 +830,8 @@
    "isOutputShutdown" (fn [self] (boolean (jolt.host/ref-get self :out-shutdown?)))
    "isConnected"  (fn [self] (boolean (jolt.host/ref-get self :connected?)))
    "isClosed"     (fn [self] (boolean (jolt.host/ref-get self :closed?)))
-   "isBound"      (fn [self] (boolean (jolt.host/ref-get self :connected?)))
+   "isBound"      (fn [self] (boolean (or (jolt.host/ref-get self :bound?)
+                                          (jolt.host/ref-get self :connected?))))
    ;; -1 until connected, as Java answers for an unbound socket. Never asked of
    ;; the fd: once closed its number may be another socket's.
    "getLocalPort" (fn [self] (or (jolt.host/ref-get self :local-port) -1))
@@ -581,7 +851,7 @@
 
    "getLocalSocketAddress"
    (fn [self]
-     (when (jolt.host/ref-get self :connected?)
+     (when (or (jolt.host/ref-get self :connected?) (jolt.host/ref-get self :bound?))
        (make-isa nil (socket-local-address self)
                  (or (jolt.host/ref-get self :local-port) 0))))})
 
@@ -623,6 +893,8 @@
             :else
             (do
               (when (neg? r) (raise-if-closed! owner closed-msg))
+              (when (and (neg? r) (= wait-kind :read) (= e native/econnreset))
+                (throw (java.net.SocketException. "Connection reset")))
               ;; A negative return that is neither retryable nor a wait is where a
               ;; socket read turns into EOF (do-recv below), and the caller then
               ;; sees a closed connection with no reason attached. It is the one
@@ -677,14 +949,9 @@
     (ffi/free p)))
 
 (defn- do-recv [owner fd buf len]
-  ;; n <= 0 answers EOF: recv 0 is orderly shutdown; a negative return (error)
-  ;; also reads as EOF. Java throws SocketException there — documented
-  ;; divergence. What is left of the error is a CHOICE, not a limitation:
-  ;; io-call classifies a captured errno and returns only the syscall result,
-  ;; so a reset arrives here as -1 with nothing attached. Retryable errnos are
-  ;; already gone by this point — io-call loops on EINTR and waits out EAGAIN
-  ;; — so every negative n here is terminal. Narrowing that to SocketException
-  ;; on ECONNRESET means widening io-call's contract to hand the errno back.
+  ;; n <= 0 answers EOF: recv 0 is orderly shutdown. A reset has already raised
+  ;; in io-call, as Java's does, and retryable errnos are gone by this point, so
+  ;; a negative n here is some other terminal failure, which also reads as EOF.
   (let [n (if (jolt.host/ref-get owner :in-shutdown?)
             -1
             (io-call owner #(native/c-recv fd buf len 0) fd :read
@@ -809,41 +1076,46 @@
 
 ;; -- ServerSocket ------------------------------------------------------------
 ;; A new fd of family bound to ip:port and listening, or throw having closed it.
-;; reuse? false clears the SO_REUSEADDR new-fd! set, before the bind, as a
-;; ServerSocket whose setReuseAddress was false binds.
-(defn- open-listener! [family sa len port backlog reuse?]
+;; A listener gets SO_REUSEADDR unless options say otherwise, as the JDK's does on
+;; POSIX, so a port in TIME_WAIT can be rebound; every other option set on the
+;; ServerSocket before bind reaches this fd here.
+(defn- open-listener! [family sa len backlog options]
   (let [fd (new-fd! family)]
     (try
-      (when-not reuse? (native/set-reuse-address! fd false))
-      (when (neg? (first (native/c-bind fd sa len)))
-        (throw (java.io.IOException. (str "bind failed on port " port))))
-      (when (neg? (first (native/c-listen fd backlog)))
-        (throw (java.io.IOException. "listen() failed")))
+      (doseq [[k v] (merge {:reuse-address true} options)]
+        (write-option! fd family k v))
+      (let [[r e] (native/c-bind fd sa len)]
+        (when (neg? r) (throw (socket-failure e))))
+      (let [[r e] (native/c-listen fd backlog)]
+        (when (neg? r) (throw (socket-failure e))))
       fd
       (catch :default e
         (native/c-close fd)
         (throw e)))))
 
-(defn- listen-on! [family ip port backlog reuse?]
+(defn- listen-on! [family ip port backlog options]
   (let [[sa len] (native/make-sockaddr family ip port)]
-    (try (open-listener! family sa len port backlog reuse?)
+    (try (open-listener! family sa len backlog options)
          (finally (ffi/free sa)))))
-
-(defn- any-local? [inet] (every? zero? (inet-bytes inet)))
 
 ;; A listening fd for inet:port: one of inet's family, or for the IPv4 wildcard
 ;; — what ServerSocket(port) and a null or port-only bind address mean — a
 ;; dual-stack IPv6 socket on ::, as the JDK opens, so IPv6 clients reach it too.
-;; A host without IPv6 gets the IPv4 wildcard instead. Answers [fd family].
-(defn- bind-listen! [inet port backlog reuse?]
+;; A host without IPv6 gets the IPv4 wildcard instead, but a port that is taken is
+;; an answer rather than a missing family: falling back would bind 0.0.0.0 beside
+;; a socket holding the port on ::1, and call a busy port free. Answers [fd family].
+(defn- bind-listen! [inet port backlog options]
   (if (and (not (inet6? inet)) (any-local? inet))
-    (if-let [fd (try (listen-on! native/af-inet6 "::" port backlog reuse?)
+    (if-let [fd (try (listen-on! native/af-inet6 "::" port backlog options)
+                     (catch java.net.BindException e
+                       (when (= "Address already in use" (.getMessage e)) (throw e))
+                       nil)
                      (catch java.io.IOException _ nil))]
       [fd native/af-inet6]
-      [(listen-on! native/af-inet "0.0.0.0" port backlog reuse?) native/af-inet])
+      [(listen-on! native/af-inet "0.0.0.0" port backlog options) native/af-inet])
     (let [[sa len] (inet-sockaddr inet port)
           fam (inet-family inet)]
-      (try [(open-listener! fam sa len port backlog reuse?) fam]
+      (try [(open-listener! fam sa len backlog options) fam]
            (finally (ffi/free sa))))))
 
 (defn- mark-bound! [self fd family inet port]
@@ -875,7 +1147,7 @@
           inet    (if (and (>= (count args) 3) (some? (nth args 2)))
                     (host-arg->inet (nth args 2))
                     (any-local))
-          [fd fam] (bind-listen! inet port backlog native/listener-reuses?)]
+          [fd fam] (bind-listen! inet port backlog nil)]
       (doto (tt :server-socket "java.net.ServerSocket")
         (jolt.host/ref-put! :closed? false)
         (mark-bound! fd fam inet port)))))
@@ -886,11 +1158,6 @@
 ;;
 ;; A failed bind leaves the socket open and unbound, as Java's does: the
 ;; listener is a fresh fd, and only a successful one replaces the socket's.
-;; SO_REUSEADDR as setReuseAddress left it, else what a new listener gets
-(defn- reuse-address? [self]
-  (let [v (jolt.host/ref-get self :reuse-address?)]
-    (if (nil? v) native/listener-reuses? v)))
-
 (defn- server-bind! [self endpoint backlog]
   (when (jolt.host/ref-get self :closed?)
     (throw (java.net.SocketException. "Socket is closed")))
@@ -902,7 +1169,7 @@
     (throw (java.net.SocketException. "Unresolved address")))
   (let [inet (if endpoint (jolt.host/ref-get endpoint :addr) (any-local))
         p    (int (if endpoint (jolt.host/ref-get endpoint :port) 0))
-        [fd fam] (bind-listen! inet p backlog (reuse-address? self))
+        [fd fam] (bind-listen! inet p backlog (jolt.host/ref-get self :options))
         old  (locking self
                (when-not (jolt.host/ref-get self :closed?)
                  (let [o (jolt.host/ref-get self :fd)]
@@ -956,19 +1223,13 @@
    ;; Turned off before bind, a wildcard bind refuses a port another socket
    ;; holds on one address, which is how a port probe tells a busy port from a
    ;; free one. A bound socket's fd takes it too, as Java's does.
-   "setReuseAddress"
-   (fn [self on]
-     (when (jolt.host/ref-get self :closed?)
-       (throw (java.net.SocketException. "Socket is closed")))
-     (jolt.host/ref-put! self :reuse-address? (boolean on))
-     (when-let [fd (jolt.host/ref-get self :fd)]
-       (native/set-reuse-address! fd (boolean on)))
-     nil)
-   "getReuseAddress"
-   (fn [self]
-     (when (jolt.host/ref-get self :closed?)
-       (throw (java.net.SocketException. "Socket is closed")))
-     (reuse-address? self))
+   "setReuseAddress" (fn [self on] (set-option! self :reuse-address (flag on)))
+   "getReuseAddress" server-reuse-address?
+   "setReceiveBufferSize"
+   (fn [self n]
+     (check-buffer-size! n "negative receive size")
+     (set-option! self :rcvbuf n))
+   "getReceiveBufferSize" (fn [self] (get-option self :rcvbuf))
 
    "bind"
    (fn
@@ -992,6 +1253,7 @@
                       (or (jolt.host/ref-get self :port) 0)
                       -1))
    "toString"     server->str})
+
 
 ;; -- host identity: local host + network interfaces ---------------------------
 
@@ -1338,6 +1600,7 @@
 
 (def ^:private tag->classes
   {:socket               #{"Socket" "java.net.Socket"}
+   :socket-option        #{"SocketOption" "java.net.SocketOption"}
    :server-socket        #{"ServerSocket" "java.net.ServerSocket"}
    :socket-input-stream  #{"InputStream" "java.io.InputStream"}
    :socket-output-stream #{"OutputStream" "java.io.OutputStream"}
@@ -1352,6 +1615,7 @@
 (def ^:private tag->render
   {:socket              socket->str
    :server-socket       server->str
+   :socket-option       (fn [o] (jolt.host/ref-get o :name))
    :inet-socket-address isa->str
    :inet-address        inet-address->str
    :interface-address   ia->str
@@ -1361,10 +1625,13 @@
 
 (defn register-all! []
   (when (compare-and-set! registered? false true)
-    (clojure.core/__register-class-methods! :socket socket-methods)
+    (clojure.core/__register-class-methods! :socket (merge socket-methods option-accessors))
+    (clojure.core/__register-class-methods! :socket-option socket-option-methods)
+    (clojure.core/__register-class-statics! "StandardSocketOptions" standard-socket-options)
+    (clojure.core/__register-class-statics! "java.net.StandardSocketOptions" standard-socket-options)
     (clojure.core/__register-class-methods! :socket-input-stream socket-input-stream-methods)
     (clojure.core/__register-class-methods! :socket-output-stream socket-output-stream-methods)
-    (clojure.core/__register-class-methods! :server-socket server-socket-methods)
+    (clojure.core/__register-class-methods! :server-socket (merge server-socket-methods option-accessors))
     (clojure.core/__register-class-methods! :inet-socket-address inet-socket-address-methods)
     (clojure.core/__register-class-methods! :inet-address inet-address-methods)
     (clojure.core/__register-class-methods! :network-interface network-interface-methods)

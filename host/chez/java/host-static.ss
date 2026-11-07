@@ -1388,7 +1388,8 @@
             '("java.net.InetAddress" "java.net.Inet4Address"
               "java.net.Inet6Address" "java.net.InterfaceAddress"
               "java.net.NetworkInterface" "java.net.Socket"
-              "java.net.ServerSocket" "java.net.InetSocketAddress"))
+              "java.net.ServerSocket" "java.net.InetSocketAddress"
+              "java.net.StandardSocketOptions"))
            (box #f))))
 (define lib-class-providers core-class-providers)
 

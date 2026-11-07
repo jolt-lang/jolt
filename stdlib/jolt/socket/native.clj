@@ -74,6 +74,17 @@
      ;; port; the BSDs allow the bind but do not balance; Windows has none.
      :so-reuseport   (case os :macos 0x200 :windows nil 15)
      :so-error       (if bsd? 0x1007 4)
+     :so-keepalive   (if bsd? 8 9)
+     :so-oobinline   (if bsd? 0x100 10)
+     :so-rcvbuf      (if bsd? 0x1002 8)
+     :so-sndbuf      (if bsd? 0x1001 7)
+     ;; the plain option everywhere, as the JDK uses it: macOS counts it in clock
+     ;; ticks and has SO_LINGER_SEC for seconds, which overflows its short at 327
+     :so-linger      (if bsd? 0x80 13)
+     :ipproto-ip     0
+     :ip-tos         (if bsd? 3 1)
+     :ipv6-tclass    (case os :macos 36 :windows 39 67)
+     :msg-oob        1
      :so-sndtimeo    (if bsd? 0x1005 21)
      :so-rcvtimeo    (if bsd? 0x1006 20)
      :so-nosigpipe   (when mac? 0x1022)
@@ -110,6 +121,9 @@
      :enotconn       (case os :macos 57 :windows 10057 107)
      :eaddrinuse     (case os :macos 48 :windows 10048 98)
      :eaddrnotavail  (case os :macos 49 :windows 10049 99)
+     :eacces         (if win? 10013 13)
+     :etimedout      (case os :macos 60 :windows 10060 110)
+     :ehostunreach   (case os :macos 65 :windows 10065 113)
      ;; whether accept() hands the new socket the listener's non-blocking mode:
      ;; the BSDs and Winsock do, Linux does not
      :accept-inherits-nonblocking? bsd?
@@ -133,6 +147,15 @@
 (def so-sndtimeo    (:so-sndtimeo consts))
 (def so-rcvtimeo    (:so-rcvtimeo consts))
 (def so-nosigpipe   (:so-nosigpipe consts))
+(def so-keepalive   (:so-keepalive consts))
+(def so-oobinline   (:so-oobinline consts))
+(def so-rcvbuf      (:so-rcvbuf consts))
+(def so-sndbuf      (:so-sndbuf consts))
+(def so-linger      (:so-linger consts))
+(def ipproto-ip     (:ipproto-ip consts))
+(def ip-tos         (:ip-tos consts))
+(def ipv6-tclass    (:ipv6-tclass consts))
+(def msg-oob        (:msg-oob consts))
 (def ipproto-ipv6   (:ipproto-ipv6 consts))
 (def ipproto-tcp    (:ipproto-tcp consts))
 (def tcp-nodelay    (:tcp-nodelay consts))
@@ -159,6 +182,9 @@
 (def enotconn       (:enotconn consts))
 (def eaddrinuse     (:eaddrinuse consts))
 (def eaddrnotavail  (:eaddrnotavail consts))
+(def eacces         (:eacces consts))
+(def etimedout      (:etimedout consts))
+(def ehostunreach   (:ehostunreach consts))
 
 (def accept-inherits-nonblocking?
   "Whether accept() on a non-blocking listener answers a non-blocking socket:
@@ -223,7 +249,8 @@
       {:blocking true :capture-native-error true})
     (ffi/defcfn c-send  "send" [:int :pointer :int :int] :int
       {:blocking true :capture-native-error true})
-    (ffi/defcfn c-close "closesocket" [:int] :int {:capture-native-error true})
+    ;; :blocking because a close with SO_LINGER set can wait for the peer
+    (ffi/defcfn c-close "closesocket" [:int] :int {:blocking true :capture-native-error true})
     (ffi/defcfn c-accept "accept" [:int :pointer :pointer] :int
       {:blocking true :capture-native-error true})
     (ffi/defcfn c-poll  "WSAPoll" [:pointer :uint :int] :int
@@ -236,7 +263,8 @@
       {:blocking true :capture-native-error true})
     (ffi/defcfn c-send  "send" [:int :pointer :size_t :int] :ssize_t
       {:blocking true :capture-native-error true})
-    (ffi/defcfn c-close "close" [:int] :int {:capture-native-error true})
+    ;; :blocking because a close with SO_LINGER set can wait for the peer
+    (ffi/defcfn c-close "close" [:int] :int {:blocking true :capture-native-error true})
     ;; Linux accepts close-on-exec in one call, so a process spawned on another
     ;; thread never sees the connection; macOS has no accept4 and guard-accepted!
     ;; sets it after
@@ -326,6 +354,32 @@
     (try
       (let [[r _] (c-getsockopt fd level opt p lenp)]
         (when-not (neg? r) (ffi/read p :int 0)))
+      (finally (ffi/free p) (ffi/free lenp)))))
+
+(def ^:private linger-layout
+  "struct linger's two fields: ints on POSIX, u_shorts on Windows."
+  (if windows? [:uint16 2] [:int 4]))
+
+(defn set-linger!
+  "SO_LINGER: wait up to secs on close, or off when secs is negative. Answers
+  [result error]."
+  [fd secs]
+  (let [[t w] linger-layout p (ffi/alloc (* 2 w))]
+    (try
+      (ffi/write p t (if (neg? secs) 0 1) 0)
+      (ffi/write p t (max secs 0) w)
+      (c-setsockopt fd sol-socket so-linger p (* 2 w))
+      (finally (ffi/free p)))))
+
+(defn get-linger
+  "SO_LINGER's timeout in seconds, -1 when off, or nil when the call fails."
+  [fd]
+  (let [[t w] linger-layout p (ffi/alloc (* 2 w)) lenp (int-cell (* 2 w))]
+    (try
+      (let [[r _] (c-getsockopt fd sol-socket so-linger p lenp)]
+        (when-not (neg? r)
+;; masked because macOS keeps it in a short: 65535 comes back as -1
+          (if (zero? (ffi/read p t 0)) -1 (bit-and (ffi/read p t w) 0xffff))))
       (finally (ffi/free p) (ffi/free lenp)))))
 
 (defn pending-error
