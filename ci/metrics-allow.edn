@@ -1,0 +1,17 @@
+;; Unused code jolt-metrics reports that stays on purpose (ci/metrics-gate.clj).
+;; Each entry says why: the tool can't see var-deref from Scheme, #' lookups, or
+;; a require kept for what loading it does.
+{:unused-requires
+ [{:path "jolt-core/jolt/passes.clj" :lib "jolt.passes.types"
+   :why "re-exported by :refer so the back end imports only jolt.passes (see its docstring)"}
+  {:path "stdlib/clojure/core/async/flow/impl.clj" :lib "clojure.core.async.flow.impl.graph"
+   :why "upstream core.async's own require; impl.clj names the Graph class it defines"}
+  {:path "test/chez/ns-audit/good/host.cljc" :lib "clojure.set"
+   :why "ns-audit fixture"}
+  {:path "test/chez/ns-audit/good/plain.clj" :lib "clojure.string"
+   :why "ns-audit fixture"}]
+ :unused-private
+ [{:path "jolt-core/clojure/core/22-coll.clj" :name "serialized-require"
+   :why "clojure.core's private, kept for code that reaches #'clojure.core/serialized-require"}
+  {:path "jolt-core/clojure/core/50-io.clj" :name "lift-ns"
+   :why "clojure.pprint calls #'clojure.core/lift-ns"}]}

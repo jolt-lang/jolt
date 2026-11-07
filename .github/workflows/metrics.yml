@@ -1,6 +1,7 @@
 name: metrics
 
-# Report only: this publishes findings and never fails the build.
+# Publishes the findings as a report. The one thing that fails the build is
+# unused code beyond ci/metrics-allow.edn (ci/metrics-gate.clj).
 on:
   push:
     branches: [main]
@@ -36,7 +37,13 @@ jobs:
             -m metrics.cli . metrics-report.md --top 50
           # the summary stops before the long per-file tables
           awk '/^## Cleanup candidates/{exit} {print}' metrics-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Check for unused code
+        run: |
+          jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
+            -m metrics.cli . metrics-report.edn --format edn
+          jolt ci/metrics-gate.clj metrics-report.edn ci/metrics-allow.edn
       - uses: actions/upload-artifact@v6
+        if: always()
         with:
           name: metrics-report
           path: metrics-report.md
