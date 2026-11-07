@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`ServerSocket.setReuseAddress` and `getReuseAddress`.** Neither existed, so
+  a port probe that turns `SO_REUSEADDR` off before a wildcard bind, to count a
+  port another socket holds on one address as busy, threw
+  `IllegalArgumentException: No matching method setReuseAddress`. A listener
+  still gets the option by default on POSIX, as the JDK's does, and
+  `getReuseAddress` answers `true` for it; turned off before `bind`, the wildcard
+  bind refuses such a port, as on the JVM. Both throw `SocketException: Socket is
+  closed` on a closed socket.
 - **A namespace keeps its metadata.** `(meta (find-ns 'x))` was always nil, because
   `ns` dropped the docstring, the attr-map and metadata on the name. It now answers
   them as the JVM does, in built binaries too.
