@@ -462,6 +462,11 @@
     (make-jolt-ex-info-record class-name msg
                               (if (null? more) jolt-nil (car more))
                               jolt-nil 0)))
+;; A throwable with what its accessors answer, as in rt.ss.
+(define (jolt-host-throwable/detail class-name msg detail)
+  (let ((t (jolt-host-throwable class-name msg)))
+    (jolt-ex-info-record-error-offset-set! t detail)
+    t))
 ;; Chez records where a throwable was constructed, for its stack trace (rt.ss).
 ;; This target keeps no frames (a throwable's trace is empty here), so there is
 ;; nothing to capture and the throwable is returned as made.
