@@ -40,6 +40,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A refused bind is a `java.net.BindException`.** The class didn't exist and a
+  bind failed with `IOException: bind failed on port N`, so a port probe catching
+  `BindException` got an error instead of an answer. It now carries the OS's reason
+  (`Address already in use`), and other socket failures take the class the JDK
+  gives them, such as `NoRouteToHostException`.
+- **A wildcard bind no longer calls a port held on `::1` free.** Any failure binding
+  `::` fell back to `0.0.0.0`, which succeeded beside the holder. The fallback is now
+  only for a host without IPv6.
+- **A connection reset raises.** A read of a reset connection answered end of stream.
+  It now throws `SocketException: Connection reset`, as on the JVM.
+- **`Socket` and `ServerSocket` options.** `Socket` gains `bind`, `sendUrgentData` and
+  the get and set pairs for `ReuseAddress`, `TcpNoDelay`, `KeepAlive`, `SoLinger`,
+  `OOBInline`, `TrafficClass` and the buffer sizes; both gain `setOption`, `getOption`
+  and `supportedOptions` with `java.net.StandardSocketOptions`. An option set before
+  a connect or a bind reaches the socket that ends up in use. A client socket no
+  longer gets `SO_REUSEADDR`, which only a listener has by default.
 - **`ServerSocket.setReuseAddress` and `getReuseAddress`.** Neither existed, so
   a port probe that turns `SO_REUSEADDR` off before a wildcard bind, to count a
   port another socket holds on one address as busy, threw

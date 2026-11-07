@@ -274,6 +274,193 @@
     (check-eq "reuse off: 127.0.0.1 refuses it too" (probe-bind false "127.0.0.1" p) :refused))
   (.close held))
 
+;; A refused bind is a java.net.BindException with the OS's reason, as the JDK's
+;; is, so a probe that catches it sees a busy port rather than an error.
+(let [busy (fn [f] (try (f) :bound (catch java.net.BindException e (.getMessage e))))
+      held (java.net.ServerSocket. 0 50 (java.net.InetAddress/getByName "127.0.0.1"))
+      p    (.getLocalPort held)]
+  (check-eq "ServerSocket ctor on a busy port"
+            (busy #(.close (java.net.ServerSocket. p 50 (java.net.InetAddress/getByName "127.0.0.1"))))
+            "Address already in use")
+  (check-eq "ServerSocket.bind on a busy port"
+            (busy #(let [s (java.net.ServerSocket.)]
+                     (try (.bind s (java.net.InetSocketAddress. "127.0.0.1" p)) (finally (.close s)))))
+            "Address already in use")
+  (check-eq "Socket.bind on a busy port"
+            (busy #(let [s (java.net.Socket.)]
+                     (try (.bind s (java.net.InetSocketAddress. "127.0.0.1" p)) (finally (.close s)))))
+            "Address already in use")
+  (check-eq "BindException is a SocketException" (isa? java.net.BindException java.net.SocketException) true)
+  (.close held))
+
+;; The wildcard must not treat a port held on ::1 as free by falling back to
+;; 0.0.0.0, which is exactly what a port probe with reuse off asks about.
+(let [held (try (let [s (java.net.ServerSocket.)]
+                  (.setReuseAddress s false)
+                  (.bind s (java.net.InetSocketAddress. "::1" 0))
+                  s)
+                (catch java.io.IOException _ nil))]
+  (when held
+    (check-eq "reuse off: the wildcard refuses a port held on ::1"
+              (probe-bind false nil (.getLocalPort held)) :refused)
+    (.close held)))
+
+;; The option accessors, with the JDK's arguments checks and closed-socket text.
+(let [s (java.net.Socket.)]
+  (check-eq "a new Socket's options"
+            [(.getTcpNoDelay s) (.getKeepAlive s) (.getOOBInline s) (.getSoLinger s) (.getReuseAddress s) (.getTrafficClass s)]
+            [false false false -1 false 0])
+  (.setTcpNoDelay s true) (.setKeepAlive s true) (.setOOBInline s true)
+  (.setSoLinger s true 7) (.setReuseAddress s true) (.setTrafficClass s 16)
+  (check-eq "set options read back"
+            [(.getTcpNoDelay s) (.getKeepAlive s) (.getOOBInline s) (.getSoLinger s) (.getReuseAddress s) (.getTrafficClass s)]
+            [true true true 7 true 16])
+  (.setSoLinger s false 3)
+  (check-eq "setSoLinger false turns it off" (.getSoLinger s) -1)
+  (.setSoLinger s true 70000)
+  (check-eq "setSoLinger clamps at 65535" (.getSoLinger s) 65535)
+  (.setReceiveBufferSize s 65536) (.setSendBufferSize s 65536)
+  (check-eq "buffer sizes are at least what was asked"
+            [(>= (.getReceiveBufferSize s) 65536) (>= (.getSendBufferSize s) 65536)] [true true])
+  (let [iae (fn [f] (try (f) :ok (catch IllegalArgumentException e (.getMessage e))))]
+    (check-eq "setSoLinger negative" (iae #(.setSoLinger s true -1)) "invalid value for SO_LINGER")
+    (check-eq "setReceiveBufferSize 0" (iae #(.setReceiveBufferSize s 0)) "invalid receive size")
+    (check-eq "setSendBufferSize 0" (iae #(.setSendBufferSize s 0)) "negative send size")
+    (check-eq "setTrafficClass 256" (iae #(.setTrafficClass s 256)) "tc is not in range 0 -- 255")
+    (check-eq "ServerSocket.setReceiveBufferSize 0"
+              (iae #(.setReceiveBufferSize (java.net.ServerSocket.) 0)) "negative receive size"))
+  (check-eq "getChannel is nil" (.getChannel s) nil)
+  (check-eq "setPerformancePreferences is nil" (.setPerformancePreferences s 1 2 3) nil)
+  (.close s)
+  (doseq [[nm f] {"getTcpNoDelay" #(.getTcpNoDelay %) "setTcpNoDelay" #(.setTcpNoDelay % true)
+                  "getKeepAlive" #(.getKeepAlive %) "setSoLinger" #(.setSoLinger % true 1)
+                  "getReceiveBufferSize" #(.getReceiveBufferSize %) "setTrafficClass" #(.setTrafficClass % 8)
+                  "getReuseAddress" #(.getReuseAddress %) "sendUrgentData" #(.sendUrgentData % 1)
+                  "bind" #(.bind % nil)
+                  "getOption" #(.getOption % java.net.StandardSocketOptions/TCP_NODELAY)}]
+    (check-eq (str nm " on a closed Socket")
+              (try (f s) :ok (catch java.net.SocketException e (.getMessage e)))
+              "Socket is closed")))
+
+;; An option set on an unconnected Socket survives the fd the connect trades it
+;; for, and one set on an unbound ServerSocket reaches the listener bind makes.
+(let [v6 (try (java.net.ServerSocket. 0 50 (java.net.InetAddress/getByName "::1"))
+              (catch java.io.IOException _ nil))]
+  (when v6
+    (let [c (java.net.Socket.)]
+      (.setTcpNoDelay c true)
+      (.setKeepAlive c true)
+      (.connect c (.getLocalSocketAddress v6))
+      (check-eq "options survive the family swap" [(.getTcpNoDelay c) (.getKeepAlive c)] [true true])
+      (.close (.accept v6))
+      (.close c))
+    (.close v6)))
+(let [s (java.net.ServerSocket.)]
+  (.setReceiveBufferSize s 65536)
+  (.bind s (java.net.InetSocketAddress. "127.0.0.1" 0))
+  (check-eq "SO_RCVBUF set before bind reaches the listener" (>= (.getReceiveBufferSize s) 65536) true)
+  (.close s))
+
+;; SO_REUSEADDR is the listener's: a client socket starts without it, as the JDK's
+;; does, and an accepted one reports what it inherited.
+(let [srv (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
+      c   (java.net.Socket. (java.net.InetAddress/getLoopbackAddress) (.getLocalPort srv))
+      a   (.accept srv)]
+  (check-eq "a connected client has no SO_REUSEADDR" (.getReuseAddress c) false)
+  (.setTcpNoDelay c true)
+  (check-eq "TCP_NODELAY is per socket" [(.getTcpNoDelay c) (.getTcpNoDelay a)] [true false])
+  (.setOOBInline a true)
+  (.sendUrgentData c 65)
+  (check-eq "urgent data reads inline" (.read (.getInputStream a)) 65)
+  (.setSoLinger c true 0)
+  (.close c)
+  (check-eq "a linger of 0 resets the connection"
+            (try (.read (.getInputStream a)) (catch java.net.SocketException e (.getMessage e)))
+            "Connection reset")
+  (.close a)
+  (.close srv))
+(check-eq "sendUrgentData unconnected"
+          (try (.sendUrgentData (java.net.Socket.) 1) (catch java.net.SocketException e (.getMessage e)))
+          "Not connected")
+
+(check-eq "a boolean setter refuses nil"
+          (try (.setReuseAddress (java.net.ServerSocket.) nil) (catch NullPointerException _ :npe))
+          :npe)
+(let [s (java.net.Socket.)]
+  (.setOption s java.net.StandardSocketOptions/SO_RCVBUF 0)
+  (.setReceiveBufferSize s 2147483647)
+  (check-eq "a buffer size is a hint" (pos? (.getReceiveBufferSize s)) true)
+  (.close s))
+
+;; Socket.bind, then connect from that port.
+(let [srv (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
+      c   (java.net.Socket.)]
+  (.setReuseAddress c true)
+  (.bind c (java.net.InetSocketAddress. "127.0.0.1" 0))
+  (let [lp (.getLocalPort c)]
+    (check-eq "a bound Socket"
+              [(.isBound c) (.isConnected c) (pos? lp) (str (.getLocalAddress c)) (str c) (.getReuseAddress c)]
+              [true false true "/127.0.0.1" "Socket[unconnected]" true])
+    (check-eq "binding twice"
+              (try (.bind c (java.net.InetSocketAddress. "127.0.0.1" 0))
+                   (catch java.net.SocketException e (.getMessage e)))
+              "Already bound")
+    (.connect c (.getLocalSocketAddress srv))
+    (check-eq "the connect keeps the bound port" [(.getLocalPort c) (.isConnected c)] [lp true])
+    (.close (.accept srv))
+    (.close c)
+    (check-eq "a closed bound Socket's local address is the wildcard"
+              (str (.getLocalAddress c)) "0.0.0.0/0.0.0.0"))
+  (.close srv))
+(let [c (java.net.Socket.)]
+  (.bind c nil)
+  (check-eq "bind nil is an ephemeral wildcard"
+            [(.isBound c) (.isConnected c) (pos? (.getLocalPort c)) (str (.getLocalAddress c))]
+            [true false true "0.0.0.0/0.0.0.0"])
+  (.close c))
+(check-eq "bind to an unresolved address"
+          (try (.bind (java.net.Socket.) (java.net.InetSocketAddress/createUnresolved "nope" 0))
+               (catch java.net.SocketException e (.getMessage e)))
+          "Unresolved address")
+
+;; java.net.StandardSocketOptions and the three calls that take one.
+(let [o java.net.StandardSocketOptions/SO_RCVBUF s (java.net.Socket.)]
+  (check-eq "an option's name, str and type" [(.name o) (str o) (.type o)] ["SO_RCVBUF" "SO_RCVBUF" Integer])
+  (check-eq "an option is a SocketOption" (instance? java.net.SocketOption o) true)
+  (check-eq "setOption answers the socket"
+            (identical? s (.setOption s java.net.StandardSocketOptions/TCP_NODELAY true)) true)
+  (check-eq "getOption" (.getOption s java.net.StandardSocketOptions/TCP_NODELAY) true)
+  (.setOption s java.net.StandardSocketOptions/SO_LINGER 5)
+  (check-eq "getOption SO_LINGER" (.getOption s java.net.StandardSocketOptions/SO_LINGER) 5)
+  (.setOption s java.net.StandardSocketOptions/SO_LINGER -1)
+  (check-eq "SO_LINGER negative is off" (.getOption s java.net.StandardSocketOptions/SO_LINGER) -1)
+  (let [iae (fn [f] (try (f) :ok (catch IllegalArgumentException e (.getMessage e))))]
+    (check-eq "SO_RCVBUF negative" (iae #(.setOption s o -1)) "Invalid send/receive buffer size")
+    (check-eq "IP_TOS out of range" (iae #(.setOption s java.net.StandardSocketOptions/IP_TOS 300)) "Invalid IP_TOS value")
+    (check-eq "wrong value type" (iae #(.setOption s java.net.StandardSocketOptions/SO_REUSEADDR "x")) "Invalid value 'x'")
+    (check-eq "nil value" (iae #(.setOption s java.net.StandardSocketOptions/SO_REUSEADDR nil)) "Invalid value 'null'"))
+  (check-eq "a null option" (try (.getOption s nil) (catch NullPointerException _ :npe)) :npe)
+  (check-eq "Socket's supported options include"
+            (every? (set (map str (.supportedOptions s))) ["IP_TOS" "SO_KEEPALIVE" "SO_LINGER" "SO_RCVBUF" "SO_REUSEADDR" "SO_SNDBUF" "TCP_NODELAY"])
+            true)
+  (.close s)
+  (check-eq "getOption on a closed Socket"
+            (try (.getOption s java.net.StandardSocketOptions/TCP_NODELAY)
+                 (catch java.net.SocketException e (.getMessage e)))
+            "Socket is closed"))
+(let [s (java.net.ServerSocket.)]
+  (check-eq "ServerSocket options"
+            [(.getOption s java.net.StandardSocketOptions/SO_REUSEADDR) (pos? (.getOption s java.net.StandardSocketOptions/SO_RCVBUF))]
+            [true true])
+  (check-eq "ServerSocket has no TCP_NODELAY"
+            (try (.getOption s java.net.StandardSocketOptions/TCP_NODELAY)
+                 (catch UnsupportedOperationException e (.getMessage e)))
+            "'TCP_NODELAY' not supported")
+  (check-eq "ServerSocket's supported options"
+            (every? (set (map str (.supportedOptions s))) ["IP_TOS" "SO_RCVBUF" "SO_REUSEADDR"])
+            true)
+  (.close s))
+
 ;; write to a peer-closed socket throws instead of silently dropping — and the
 ;; process must survive it (SIGPIPE guarded via MSG_NOSIGNAL / SO_NOSIGPIPE).
 (let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
