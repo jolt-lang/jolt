@@ -2,7 +2,7 @@
   "Duration (seconds + nanos) and Period (years/months/days). The TemporalAmount
   operations that apply an amount to a temporal (addTo/subtractFrom, get, getUnits)
   are added with the generic temporal machinery."
-  (:require [jolt.time.impl :as impl :refer [civil-from-days days-from-civil]]
+  (:require [jolt.time.impl :as impl :refer [civil-from-days]]
             [jolt.time.util :as u]
             [jolt.time.enums :as e]
             [jolt.time.local :as l]))

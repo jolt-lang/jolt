@@ -22,7 +22,6 @@
             [clojure.java.io :as io]
             [jolt.ffi :as ffi]
             [jolt.socket.native :as native]
-            [jolt.analyzer :as ana]
             [clojure.main :as main]))
 
 ;; --- sockets (loopback server) ---------------------------------------------

@@ -12,9 +12,9 @@
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
             [jolt.passes.types.lattice :refer
-             [velem selem sfields vec-type? set-type? struct-type? mk-vec mk-set
-              mk-struct union-cap scalar-t? union-type? umembers union-of merge-fields
-              join-t join type-depth cap struct-safe? field-type type-shape
+             [velem vec-type? struct-type? mk-vec mk-set
+              mk-struct union-type? umembers
+              join-t join type-depth cap struct-safe? field-type
               mark-struct truthy-type? num-ret-fns vector-ret-fns
               str-ret-fns string-ns-ret-fns nilable? strip-nilable
               interop-ret-type decl decl-of erase-decl]]))

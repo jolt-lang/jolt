@@ -19,16 +19,6 @@ collecting its stdout"}
 (def ^:dynamic *sh-dir* nil)
 (def ^:dynamic *sh-env* nil)
 
-(defn- aconcat
-  "Concatenates arrays of given type."
-  [type & xs]
-  (let [target (make-array type (apply + (map count xs)))]
-    (loop [i 0 idx 0]
-      (when-let [a (nth xs i nil)]
-        (System/arraycopy a 0 target idx (count a))
-        (recur (inc i) (+ idx (count a)))))
-    target))
-
 (defn- parse-args
   "Takes a seq of ' arg1 arg2 ... argN :k1 v1 :k2 v2 ... :kM vM' and returns
    a map containing a key :cmd mapped to a vector of args, and keys for each
