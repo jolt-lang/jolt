@@ -4,10 +4,10 @@
 ;; Nothing measured either until v0.8.6, and both were broken at once.
 ;;
 ;; SHAPE. Chez's compile is quadratic in the size of one lexical scope, and jolt
-;; hands it a def's whole constant pool as one wrapping let*. That is still true
-;; and is jolt-wt6v: this arm measures ~4.3 where linear is 4.0, and the residue
-;; is real rather than noise. What the ceiling pins is that it does not get
-;; WORSE — it is a complexity guard, not a claim that the complexity is linear.
+;; hands it a def's whole constant pool in a few flat let layers (it was one let*,
+;; one scope per binding, until pool-layers). That residue is jolt-wt6v: this arm
+;; measures ~1.2 where linear is 1.0, and it is real rather than noise. The ceiling is a guard against gross growth, not a
+;; claim that the complexity is linear; poolshape pins the pool's shape exactly.
 ;;
 ;; Keying the pool by form identity (what Compiler.registerConstant does with its
 ;; IdentityHashMap) cut the CONSTANT and not the class: clojure.test/is names the
@@ -97,26 +97,38 @@
           (recur (inc i) (min t1 x) (min t4 y) (+ spent (* x b1) (* y b4))))))))
 
 ;; --- shape -----------------------------------------------------------------
+;; The same statements compiled as one fn body against the same statements split
+;; across `factor` fn bodies of n1 each: the same source, the same total work and
+;; allocation, so linear reads 1.0 and quadratic in one scope reads `factor`.
+;;
+;; It used to compare n1 statements against factor*n1 (linear 4.0, quadratic 16,
+;; ceiling 7.0). Its 4x arm is the bigger, memory-heavier compile, and on a busy CI
+;; runner that arm slowed more than the small one even in CPU time: readings ran
+;; 4.5-10.3 for one binary and failed #1543 at 10.28 then 8.48. Comparing equal
+;; work cancels most of that: under 40 spinners locally it read 1.18-1.35. Not all
+;; of it, though. The one-body arm is still the bigger single compile, and its
+;; first CI run read 2.42 then 1.63 on a healthy tree.
+;;
 ;; Both arms sit in the same regime, and small: CI runs the suite as
 ;; `make -j$(nproc) test`, so a gate that hogs a core for seconds starves the
-;; other timing gates beside it. 50 -> 200 measures ~110ms and ~555ms.
+;; other timing gates beside it. 4 x 50 statements against 200 measures ~555ms an arm.
 (def ^:private n1 50)
 (def ^:private factor 4)
-;; Linear measures 4.0, quadratic 16. Measured 4.3-4.4 at this sizing on both
-;; sides of the pool change, so the line goes at 7.0: well clear of a loaded
-;; machine, and less than half way to quadratic. It read 6.2-6.9 locally and
-;; failed on CI once a bare top-level fn got a constant pool: the pool was one
-;; let*, which Chez compiles quadratically, and this arm IS a bare top-level fn.
-;; Emitting the pool as flat let layers (backend_scheme.clj pool-layers) put it
-;; back at 4.7-5.0.
-(def ^:private max-shape 7.0)
+;; It reads ~1.2 at this sizing, which is jolt-wt6v: Chez's compile is quadratic in
+;; the size of one lexical scope, and a def's constant pool lands in one. The
+;; regression that emitted a bare top-level fn's pool as one let* read 1.55-1.72
+;; here, inside CI's noise, so no timing ceiling can tell it from a healthy run;
+;; poolshape (test/chez/pool-shape-test.ss) pins that one by the emitted nesting
+;; instead. This ceiling only catches gross growth: compile time quadratic in one
+;; body reads `factor`, 4.0.
+(def ^:private max-shape 3.0)
 
 (defn- is-forms [n] (body n (fn [i] (str "(clojure.test/is (= " i " " i "))"))))
 
 (defn- shape-ratio []
-  (let [a (is-forms n1)
-        b (is-forms (* n1 factor))]
-    (paired #(compile! a) #(compile! b) factor)))
+  (let [split (str "(do " (apply str (repeat factor (is-forms n1))) ")")
+        one   (is-forms (* n1 factor))]
+    (paired #(compile! split) #(compile! one) 1)))
 
 ;; --- per-quoted-form overhead ----------------------------------------------
 ;; Same statement count, same shape, one arm quoting and one constructing. A
@@ -150,7 +162,7 @@
   (println "compile-scaling:")
   (let [ok (reduce (fn [acc [label f mx]] (and (check label f mx) acc))
                    true
-                   [["shape 1x->4x" shape-ratio max-shape]
+                   [["shape 1 body/4" shape-ratio max-shape]
                     ["quoted/plain" quoted-ratio max-quoted]])]
     (println (if ok "compile-scaling: passed" "compile-scaling: FAILED"))
     (System/exit (if ok 0 1))))
