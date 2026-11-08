@@ -2356,7 +2356,17 @@
                    _ (when mbox (reset! mbox mprev))
                    ebox *expansion-box*
                    prev (when ebox @ebox)
-                   _ (when ebox (reset! ebox [(form-sym-name head) form]))
+                   ;; fn, let, loop and letfn expand to their own special form
+                   ;; (fn → fn*) around the code the user wrote, and Clojure
+                   ;; documents them AS special forms. A diagnostic on that fn*
+                   ;; is about the user's form, so no expansion is recorded and
+                   ;; the report says nothing about "expanding the `fn` macro".
+                   ;; An enclosing user macro's record stays in force.
+                   own-sf? (and (form-list? expanded)
+                                (form-sym? (first (form-elements expanded)))
+                                (= (str (form-sym-name head) "*")
+                                   (form-sym-name (first (form-elements expanded)))))
+                   _ (when (and ebox (not own-sf?)) (reset! ebox [(form-sym-name head) form]))
                    node (analyze ctx expanded env)
                    _ (when ebox (reset! ebox prev))
                    p (form-position form)]

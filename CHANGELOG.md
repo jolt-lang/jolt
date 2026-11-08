@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An error in a `fn`, `let`, `loop` or `letfn` form no longer carries the note
+  "raised while expanding the `fn` macro". Those macros only rename the form to
+  its special form, so the error is in the code as written. When a user macro
+  generates the form, the note now names that macro instead of `fn`.
 - `BufferedInputStream` marks over any stream, as the JDK's does. Over a proxy,
   pipe, socket or process stream it answered `markSupported` false and `reset`
   threw, which failed every `Content-Encoding: deflate` response in
