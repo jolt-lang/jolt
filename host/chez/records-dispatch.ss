@@ -846,9 +846,13 @@
     (if d
         (apply d obj args)
         (let ((f (and class-ext-fallback-hook (class-ext-fallback-hook obj method-name))))
-          (if f
-              (apply jolt-invoke f obj args)
-              (no-method-throw method-name obj (length args)))))))
+          (cond
+            (f (apply jolt-invoke f obj args))
+            ;; a method a host shim that loads on first reference adds to a class
+            ;; already here (lazy-shims.ss): load it and dispatch again
+            ((lazy-shims-method! method-name)
+             (record-method-dispatch obj method-name (apply jolt-vector args)))
+            (else (no-method-throw method-name obj (length args))))))))
 
 ;; The end of the dispatch chain. A method call on nil is the JVM's
 ;; NullPointerException; anything else is its IllegalArgumentException ("No
@@ -1093,7 +1097,7 @@
     ;; branch and is mis-read as a missing :iterator key (nil). Some libraries
     ;; (e.g. malli's -vmap) iterate a map this way.
     ((string=? name "iterator") (list (make-jiterator (jolt-seq obj))))
-    ;; (.spliterator coll): the host builds it (jutil-concurrent.ss on Chez)
+    ;; (.spliterator coll): the host builds it (jutil-coll-views.ss on Chez)
     ((and (string=? name "spliterator") persistent-spliterator-hook) (list (persistent-spliterator-hook obj)))
     ;; (.reduce coll f) is clojure.lang.IReduce's, (.reduce coll f init)
     ;; IReduceInit's, and which builtins have them is their class's answer

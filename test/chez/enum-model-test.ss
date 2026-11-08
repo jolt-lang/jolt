@@ -17,6 +17,9 @@
 ;;   chez --script test/chez/enum-model-test.ss
 (import (chezscheme))
 (load "host/chez/gate-boot.ss")
+;; this audits the whole registry, so the host shims that load on first reference
+;; (lazy-shims.ss) load now, as they would in a boot that had them all
+(lazy-shims-load-all!)
 
 (define total 0) (define fails 0)
 (define (ok name pred)

@@ -726,6 +726,17 @@
        ;; path — leave it alone rather than prefixing "./".
        (if (string=? base ".") p (path-under base p))))))
 
+;; The cwd a child process starts in: a JVM child inherits user.dir (the user's
+;; cwd), but jolt's OS cwd is the repo root its launcher cd'd to — the user's
+;; logical cwd is JOLT_PWD. So default the child to JOLT_PWD and resolve a
+;; relative :dir against it (project-relative), matching ProcessBuilder.directory
+;; semantics. Shared by java.lang.ProcessBuilder (process.ss) and jolt.host/sh
+;; (loader.ss).
+(define (proc-effective-dir dir)
+  (if dir
+      (project-relative dir)
+      (let ((pwd (getenv "JOLT_PWD"))) (and pwd (> (string-length pwd) 0) pwd))))
+
 ;; (io/file path) / (io/file parent child) — join children with "/". The File
 ;; keeps the path AS GIVEN (like the JVM: new File("rel").getPath() is "rel");
 ;; a relative path resolves against JOLT_PWD only when the filesystem is touched

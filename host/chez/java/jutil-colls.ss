@@ -87,7 +87,7 @@
     (else x)))
 (define (jutil-plain x) (if (jutil-equiv-coll? x) (jutil-coll->persistent x) x))
 ;; An IdentityHashMap compares by reference, which the plain copies below would
-;; lose: its own rule answers (jutil-concurrent.ss sets this).
+;; lose: its own rule answers (jutil-coll-views.ss sets this).
 (define jutil-identity-map? (lambda (x) #f))
 (define (jutil-equals? a b)
   (cond ((or (jutil-identity-map? a) (jutil-identity-map? b)) (jolt=2 a b))

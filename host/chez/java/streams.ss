@@ -27,7 +27,7 @@
 ;; state: #(seq consumed? close-handlers source origin ops): source is the
 ;; collection a Collection.stream() came from, whose own spliterator a head
 ;; stream hands back. origin and ops describe the pipeline for Stream.spliterator
-;; (jutil-concurrent.ss): origin is what the head was made from — (coll . c),
+;; (jutil-coll-views.ss): origin is what the head was made from — (coll . c),
 ;; (array . n), (range . n), (iterate), (generate) or #f — and ops the
 ;; intermediate operations since, newest first, each a symbol or (op . arg).
 (define (make-stream kind seq) (make-jhost (kind-tag kind) (vector seq #f '() #f #f '())))

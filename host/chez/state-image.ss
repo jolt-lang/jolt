@@ -2084,6 +2084,9 @@
                                                              (image-hosted-kind x)
                                                              " in this build to restore it")
                                               empty-pmap)))
+                  ;; the codec's kind is its class: one whose host shim loads on
+                  ;; first reference (lazy-shims.ss) loads before it is rebuilt
+                  (lazy-shims-class! (image-hosted-kind x))
                   (let ((v ((image-codec-make c) (walk (vector-ref data 0) (cons "header" path)))))
                     (hashtable-set! memo x v)
                     ((image-codec-fill! c) v (walk (vector-ref data 1) (cons "items" path)))
