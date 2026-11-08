@@ -87,7 +87,7 @@
   ;; The JVM picks the overload from the call's static types; jolt dispatches a
   ;; method by name and argument count only, so the first declared clause answers
   ;; every call of that count and the macros drop the later one
-  ;; (add-method-clause, 30-macros.clj). Picking by type would need parameter
+  ;; (merge-method-specs, 30-macros.clj). Picking by type would need parameter
   ;; types jolt does not carry at the call.
   {:category :host-model
    :behavior "a deftype method overloaded by parameter type at one arity"

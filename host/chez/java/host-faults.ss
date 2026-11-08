@@ -154,6 +154,11 @@
           (let ((t (jolt-host-throwable (fault-class c) (fault-message c))))
             (hashtable-set! fault-throwables c t)
             (hashtable-set! fault-conditions t c)
+            ;; The thread is now handling t, raised where c was: a catch that
+            ;; does not match rethrows it, and jolt-throw keeps this capture
+            ;; for a rethrow rather than starting the trace at the catch.
+            (when (continuation-condition? c)
+              (jolt-throw-cont (cons t (condition-continuation c))))
             t)))))
 
 (set! jolt-fault->throwable jolt-fault-throwable)

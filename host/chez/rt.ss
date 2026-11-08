@@ -1793,11 +1793,21 @@
   ;; which only the throw has. The throwable's OWN trace keeps the capture made
   ;; when it was constructed (jolt-remember-throw! does not overwrite it), which is
   ;; what the JVM's getStackTrace answers with.
-  (call/cc (lambda (k)
-             (jolt-throw-cont (cons v k))
-             (jolt-throw-sitep (jolt-site-snapshot))
-             (jolt-remember-throw! v k (jolt-throw-sitep))
-             (jolt-raise-thrown v))))
+  ;;
+  ;; A throw of the value this thread is still handling is a rethrow -- the catch
+  ;; whose clauses did not match it, or a handler's own (throw e) -- and keeps the
+  ;; first raise's capture and site. The rethrow's continuation starts in the
+  ;; catching fn: the frames between it and the raise are gone, and the report
+  ;; would begin at the catch. A handler that completes clears the slot
+  ;; (jolt-catch-complete!), so a later throw of the same value is a new throw.
+  (let ((tc (jolt-throw-cont)))
+    (if (and (pair? tc) (eq? (car tc) v))
+        (jolt-raise-thrown v)
+        (call/cc (lambda (k)
+                   (jolt-throw-cont (cons v k))
+                   (jolt-throw-sitep (jolt-site-snapshot))
+                   (jolt-remember-throw! v k (jolt-throw-sitep))
+                   (jolt-raise-thrown v))))))
 (define (jolt-raise-thrown v)
   (raise (condition (make-message-condition (jolt-throw-message v))
                     (make-jolt-throw-condition v))))
