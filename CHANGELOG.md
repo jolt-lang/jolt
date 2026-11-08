@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.25] - 2026-11-08
+
+A release that holds code to the JVM's rules where jolt used to accept it
+quietly: overlapping `fn` arities, a malformed `ns` form and a method declared
+twice in a type now fail to compile, and the old byte-index form of
+`ffi/read-into!` and `ffi/write-array` raises. To check a project's `ns` forms
+without loading it, run `jolt tools/ns_audit.clj <dir>` from a jolt checkout.
+jolt-lang/time before v0.0.13 has a malformed `ns` docstring and no longer loads.
+Sockets gain the JDK's options and exceptions, `java.nio.file` creation and
+moves handle races and failures as the JDK does, and the arm64 macOS binary
+runs on macOS 11 and later.
+
 ### Changed
 
 - **BREAKING: `deftype`, `defrecord` and `reify` refuse a method declared twice.**
@@ -218,8 +230,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`seq` on an array is lazy, as `ArraySeq` is (#1548).** It copied the whole
   array into a list first, about 100 bytes per element, so `(first big-array)`
   or `(take 4 bytes)` on a large array exhausted the heap or overflowed the
-  stack. Elements are now read on demand, so a later `aset` shows through a
-  seq that has not reached that index yet, as on the JVM.
+  stack. Elements are now read on demand, including the first, so an `aset`
+  after `(seq a)` shows through, as on the JVM, and `reduce` or `into` over an
+  array's seq walks the array directly, about 2.5x faster than in 0.8.24.
 - **`clojure.java.io/copy` honors `:encoding`.** A byte source copied to a
   Writer always decoded as UTF-8, and a char source copied to a byte sink always
   encoded as UTF-8. `clojure.java.shell/sh` passes `:out-enc` through `copy`, so
@@ -230,7 +243,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   construction syntax can only be used when *read-eval* == true`. EDN reading
   is unchanged.
 
-- **The arm64 macOS binary starts on macOS 11 again.** The native link took the
+- **The arm64 macOS binary starts on macOS 11.** The native link took the
   build runner's OS as its minimum, so 0.8.24's binary needed macOS 14 and
   refused to start on anything older. It is pinned to 11, as the Intel build
   already was, and the release checks it.
