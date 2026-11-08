@@ -24,3 +24,5 @@ test/_*.janet
 host/gambit/boot-*.ss
 .jolt/
 /remint.log
+metrics-report.md
+metrics-report.edn

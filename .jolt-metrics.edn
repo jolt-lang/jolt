@@ -1,0 +1,23 @@
+{:exclude ["vendor/**"
+           "target/**"
+           "build/**"
+           ;; pinned irregex copies
+           "host/chez/regex-anchor-sre-upstream.scm"
+           "host/chez/regex-dfa-upstream.scm"
+           ;; generated
+           "host/gambit/records-gambit.ss"
+           "host/chez/seed/**"
+           "host/gambit/seed/**"
+           ;; fixtures that aren't meant to read as normal source
+           "test/errors/read/**"
+           "test/chez/ns-audit/bad/**"
+           "test/chez/readermacro-app/**"]
+ ;; measured, but not queued or called unused
+ :test-paths ["test" "bench" "ci"]
+ ;; public API, called from outside the repo, so never reported as unused
+ :api-namespaces ["clojure.*" "jolt.fibers" "jolt.image" "jolt.io-poller" "jolt.loader"
+                  "jolt.nrepl" "jolt.parser.*" "jolt.profile" "jolt.reader" "jolt.time.*"]
+ ;; clojure.core's shards, which have no ns form for a namespace glob to match, and
+ ;; the stubs of SCI's host modules, whose vars sci.impl.namespaces names
+ :api-paths ["jolt-core/clojure/core" "stdlib/clojure/sci/host_stubs.clj"
+             "stdlib/clojure/sci/lang_stubs.clj"]}
