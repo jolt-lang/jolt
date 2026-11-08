@@ -9,7 +9,7 @@
 ;; (unsafe-prefix), which are bare on a target without one. A head munge-name
 ;; leaves unchanged fails unless it is in `allowed` below, and an `allowed`
 ;; entry that no longer occurs fails too, so the exceptions cannot go stale.
-(require '[clojure.string :as str] '[clojure.walk :as walk])
+(require '[clojure.walk :as walk])
 
 (def path "jolt-core/jolt/backend_scheme.clj")
 (def src (slurp path))

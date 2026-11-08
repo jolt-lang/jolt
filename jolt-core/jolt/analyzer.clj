@@ -37,9 +37,9 @@
                                form-macro? form-expand-1 resolve-global resolvable-names
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                form-syntax-quote-expand
-                               record-type? record-ctor-key deftype-ctor-class form-position form-line late-bind?
+                               record-type? record-ctor-key deftype-ctor-class form-position form-line
                                resolve-class-hint host-class-name? ns-shaped-name? namespace-for
-                               jolt-class-for embed-plan ctx-for-ns]]))
+                               embed-plan ctx-for-ns]]))
 
 (declare analyze)
 ;; the quote arm reaches it well before its definition (it needs analyze itself)

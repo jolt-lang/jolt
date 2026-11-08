@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its round, having no kernel-held set. `jolt.io-poller/debug-state` loses `:ready`,
   `:ev-errors` and `:stale-consumes`.
 
+### Removed
+
+- `jolt.loader/url-search`, an unused alias of `jolt.loader/classpath`, and
+  `jolt.winsock/windows-host?`, which nothing called. Use `classpath`.
+
 ### Fixed
 
 - `BufferedInputStream` marks over any stream, as the JDK's does. Over a proxy,

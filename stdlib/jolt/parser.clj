@@ -7,7 +7,7 @@
   (:refer-clojure :exclude [apply])
   (:require
    [jolt.parser.combinators :refer [spaces]]
-   [jolt.parser.monad :as m :refer [>>=]]
+   [jolt.parser.monad :as m]
    [jolt.parser.position :refer [augment-location parse-exception]]))
 
 (defn apply

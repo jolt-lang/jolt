@@ -6,7 +6,7 @@
 (ns jolt.parser.combinators
   (:require
    [jolt.parser.basic :refer [match from-re]]
-   [jolt.parser.monad :as m :refer [>>=]]
+   [jolt.parser.monad :as m]
    [jolt.parser.collections :refer [join]]))
 
 (defn and-then
