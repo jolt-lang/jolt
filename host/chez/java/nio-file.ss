@@ -2669,11 +2669,14 @@
 (define nio-mime-types-cache (make-hashtable string-hash string=?))
 (define nio-mime-types-mutex (make-mutex))
 (define (nio-mime-types path)
-  (with-mutex nio-mime-types-mutex
-    (or (hashtable-ref nio-mime-types-cache path #f)
-        (let ((h (nio-mime-types-load path)))
-          (hashtable-set! nio-mime-types-cache path h)
-          h))))
+  ;; The file is read outside the lock, so a slow read holds up no other prober
+  ;; and nothing blocks while preemption is refused. Two threads that both miss
+  ;; read it twice; the first table stored is the one every later probe uses.
+  (or (jolt-with-mutex nio-mime-types-mutex (hashtable-ref nio-mime-types-cache path #f))
+      (let ((h (nio-mime-types-load path)))
+        (jolt-with-mutex nio-mime-types-mutex
+          (or (hashtable-ref nio-mime-types-cache path #f)
+              (begin (hashtable-set! nio-mime-types-cache path h) h))))))
 ;; The extension starts after the FIRST dot and, unmatched, gives way to the
 ;; rest after the next: x.tar.gz tries "tar.gz", then "gz"; .bashrc is "bashrc".
 (define (nio-mime-types-type path name)
