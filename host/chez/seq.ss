@@ -859,7 +859,9 @@
       ;; is a StringSeq on the JVM, not a LazySeq, and there is no laziness to
       ;; protect here — no side effect and no unbounded work can hide behind a
       ;; string-ref. Below the forced? arm so the common path pays nothing.
-      ((fx=? (cseq-kind s) sk-string-seq)
+      ;; An array's seq (ArraySeq) is the same: its tail is an index step.
+      ((let ((k (cseq-kind s)))
+         (or (fx=? k sk-string-seq) (and (fx>=? k sk-array-seq) (fx<=? k sk-array-char))))
        (let ((m (seq-more s))) (if (jolt-nil? m) jolt-empty-list m)))
       ;; the lazyseq forces to a seq (cseq | nil); an empty realized lazyseq is
       ;; still a sequence value, printing "()" (see lazy-bridge.ss), so (rest s)
