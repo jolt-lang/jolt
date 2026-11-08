@@ -188,7 +188,7 @@ CI-GATES := submodules values recordinline corpus nsaudit unit documented grenad
   fnform poolshape coreproc traceemit traceeval degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
-  systemstreams closedstdout stderrsplit userdirpaths utf8decode \
+  systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
 TEST-GATES := submodules selfhost ci
 
@@ -2118,6 +2118,12 @@ stderrsplit:
 # directory, so it is a script rather than a unit row.
 userdirpaths:
 	@sh test/chez/user-dir-paths-smoke.sh
+
+# Files/probeContentType reads ~/.mime.types before the JDK's own table, the
+# way the JDK's default detector does (#1554). HOME is read once per process,
+# so it drives bin/jolt with a scratch HOME rather than being a unit row.
+mimetypes:
+	@sh test/chez/mime-types-smoke.sh
 
 # Smoke test: clojure.core/compile writes artifacts under *compile-path* and a
 # later PROCESS loads them — including with the source removed, which is the point
