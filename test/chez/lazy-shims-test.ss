@@ -128,7 +128,10 @@
 ;; (java.lang.ProcessBuilder. cmd). The record's constructor is registered under
 ;; its short name, and a class lookup falls back to the short name; the JDK class's
 ;; exact name must be tried — loading its file — before that fallback, as it was
-;; when the file was part of the boot. A fresh boot, so process.ss is still out.
+;; when the file was part of the boot. And the record must not take the short name
+;; while the file is still out, or a bare (ProcessBuilder. cmd) in any other ns
+;; builds the record. The bare one runs first: loading process.ss re-registers the
+;; short name and would hide it. A fresh boot, so process.ss is still out.
 (define child2 (string-append (host-temp-dir) "/jolt-lazy-shims-pb-" (number->string (get-process-id)) ".ss"))
 (define out2 (string-append child2 ".out"))
 (call-with-output-file child2
@@ -136,16 +139,21 @@
     (write '(import (chezscheme)) o)
     (write '(load "host/chez/gate-boot.ss") o)
     (write `(call-with-output-file ,out2
-              (lambda (p) (display (jolt-compile-eval
-                                     "(do (ns lazy.pb) (defrecord ProcessBuilder [pb opts prev]) (.getName (class (java.lang.ProcessBuilder. [\"echo\"]))))"
-                                     "user")
-                                   p))
+              (lambda (p)
+                (jolt-compile-eval "(do (ns lazy.pb) (defrecord ProcessBuilder [pb opts prev]))" "user")
+                (display (jolt-compile-eval
+                           "(do (in-ns 'user) (.getName (class (ProcessBuilder. [\"echo\"]))))" "user")
+                         p)
+                (display " " p)
+                (display (jolt-compile-eval
+                           "(do (in-ns 'lazy.pb) (.getName (class (java.lang.ProcessBuilder. [\"echo\"]))))" "user")
+                         p))
               'replace)
            o))
   'replace)
-(ok "5a. (java.lang.ProcessBuilder. cmd) beside a ProcessBuilder record builds the JDK's"
+(ok "5a. beside a ProcessBuilder record, a bare (ProcessBuilder. cmd) elsewhere and (java.lang.ProcessBuilder. cmd) build the JDK's"
     (and (= 0 (system (string-append "'" (chez-exe) "' --script '" child2 "' >/dev/null 2>&1")))
-         (equal? "java.lang.ProcessBuilder" (call-with-input-file out2 get-string-all))))
+         (equal? "java.lang.ProcessBuilder java.lang.ProcessBuilder" (call-with-input-file out2 get-string-all))))
 (guard (e (#t #f)) (delete-file child2) (delete-file out2))
 
 (printf "\nlazy-shims: ~a/~a passed\n" (- total fails) total)
