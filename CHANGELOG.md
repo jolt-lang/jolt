@@ -63,6 +63,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `babashka.http-client`. `reset` before any `mark` now throws
   `Resetting to invalid mark`, and a mark read past its limit is dropped.
 - `Path.toRealPath` of a missing path throws `NoSuchFileException`, not `ex-info`.
+- **`Files/createDirectories` throws when it can't make the directory.** Under a
+  read-only parent it returned the path and made nothing. It now throws what the
+  JDK does, `AccessDeniedException` naming the first directory it couldn't create.
+  A regular file in the way is `FileSystemException: <path>: Not a directory`, where
+  it was `FileAlreadyExistsException`. Losing a race to another process making the
+  same directory is still not an error.
+- **`File.mkdirs` answers false for a directory that already exists**, as on the
+  JVM. It answered true.
+- **`clojure.java.io/copy` from a `char[]` copies its characters.** It wrote the
+  array's printed form, `#object["[C" ...]`. A byte destination gets them encoded
+  under `:encoding`, UTF-8 by default.
+- **An array's seq reads the array on `first`.** It read each element when the seq
+  cell was made, so an `aset` after `(seq a)` and before `(first s)` went unseen.
+  `reduce` and `into` over an array seq now walk the array directly and run about
+  2.5x faster.
 
 - **A refused bind is a `java.net.BindException`.** The class didn't exist and a
   bind failed with `IOException: bind failed on port N`, so a port probe catching
