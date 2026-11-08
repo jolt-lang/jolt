@@ -4,10 +4,10 @@
 ;; Nothing measured either until v0.8.6, and both were broken at once.
 ;;
 ;; SHAPE. Chez's compile is quadratic in the size of one lexical scope, and jolt
-;; hands it a def's whole constant pool as one wrapping let*. That is still true
-;; and is jolt-wt6v: this arm measures ~1.2 where linear is 1.0, and the residue
-;; is real rather than noise. What the ceiling pins is that it does not get
-;; WORSE — it is a complexity guard, not a claim that the complexity is linear.
+;; hands it a def's whole constant pool in a few flat let layers (it was one let*,
+;; one scope per binding, until pool-layers). That residue is jolt-wt6v: this arm
+;; measures ~1.2 where linear is 1.0, and it is real rather than noise. The ceiling is a guard against gross growth, not a
+;; claim that the complexity is linear; poolshape pins the pool's shape exactly.
 ;;
 ;; Keying the pool by form identity (what Compiler.registerConstant does with its
 ;; IdentityHashMap) cut the CONSTANT and not the class: clojure.test/is names the
@@ -105,8 +105,9 @@
 ;; ceiling 7.0). Its 4x arm is the bigger, memory-heavier compile, and on a busy CI
 ;; runner that arm slowed more than the small one even in CPU time: readings ran
 ;; 4.5-10.3 for one binary and failed #1543 at 10.28 then 8.48. Comparing equal
-;; work cancels that, since whatever slows the one-body arm slows the split arm too.
-;; Under 40 spinners locally it read 1.18-1.35.
+;; work cancels most of that: under 40 spinners locally it read 1.18-1.35. Not all
+;; of it, though. The one-body arm is still the bigger single compile, and its
+;; first CI run read 2.42 then 1.63 on a healthy tree.
 ;;
 ;; Both arms sit in the same regime, and small: CI runs the suite as
 ;; `make -j$(nproc) test`, so a gate that hogs a core for seconds starves the
@@ -114,11 +115,13 @@
 (def ^:private n1 50)
 (def ^:private factor 4)
 ;; It reads ~1.2 at this sizing, which is jolt-wt6v: Chez's compile is quadratic in
-;; the size of one lexical scope, and a def's constant pool lands in one. What the
-;; ceiling pins is that this does not get WORSE. The regression that emitted a bare
-;; top-level fn's pool as one let* read 6.2-6.9 on the old scale, 1.55-1.72 on this
-;; one, which 1.6 mostly catches and 7.0 did not.
-(def ^:private max-shape 1.6)
+;; the size of one lexical scope, and a def's constant pool lands in one. The
+;; regression that emitted a bare top-level fn's pool as one let* read 1.55-1.72
+;; here, inside CI's noise, so no timing ceiling can tell it from a healthy run;
+;; poolshape (test/chez/pool-shape-test.ss) pins that one by the emitted nesting
+;; instead. This ceiling only catches gross growth: compile time quadratic in one
+;; body reads `factor`, 4.0.
+(def ^:private max-shape 3.0)
 
 (defn- is-forms [n] (body n (fn [i] (str "(clojure.test/is (= " i " " i "))"))))
 
