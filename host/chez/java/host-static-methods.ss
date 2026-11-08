@@ -1103,8 +1103,9 @@
        (or (hashtable-ref class-statics-tbl nm #f)
            (hashtable-ref class-ctors-tbl nm #f)
            ;; a class whose host shim loads on first reference: forName is one
-           ;; (reflection on the Class reads the registries it fills)
-           (lazy-shims-class! nm)
+           ;; (reflection on the Class reads the registries it fills), and one
+           ;; this program does not carry is a ClassNotFoundException
+           (lazy-shims-class-for-name! nm)
            (jch-known-exact? nm))))
 (define (forname-qualified? nm)
   (let loop ((i 0))
