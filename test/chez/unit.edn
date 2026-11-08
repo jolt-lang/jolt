@@ -2393,6 +2393,13 @@
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def rpt (atom false)) (defmethod t/report :fail [m] (reset! rpt true)) (t/deftest t2 (t/is (= 1 2))) (t/run-tests) @rpt)" :expected "true"}
   ;; clojure.test — interned (:test meta) tests run inside :once fixtures
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def st (atom 0)) (t/use-fixtures :once (fn [f] (swap! st inc) (f))) (intern 'user 'itest (fn [] (t/is (= @st 1)))) (alter-meta! (var itest) assoc :test @(var itest)) (t/run-tests 'user) @st)" :expected "1"}
+  ;; io/copy honors :encoding both ways: it decodes a byte source into a Writer
+  ;; and encodes a char source into a byte sink. It used to ignore it, so
+  ;; (sh ... :out-enc "ISO-8859-1") decoded as UTF-8 and lost bytes to U+FFFD.
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [ba (byte-array [-23 65 -1]) w (java.io.StringWriter.)] (io/copy (java.io.ByteArrayInputStream. ba) w :encoding \"ISO-8859-1\") (let [s (.toString w) b (java.io.ByteArrayOutputStream.)] (io/copy s b :encoding \"ISO-8859-1\") [(count s) (mapv int s) (vec (.toByteArray b))])))" :expected "[3 [233 65 255] [-23 65 -1]]"}
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f (java.io.File/createTempFile \"jcp\" \".txt\") w (java.io.StringWriter.)] (io/copy \"é\" f :encoding \"ISO-8859-1\") (io/copy f w :encoding \"ISO-8859-1\") (let [r [(.length f) (.toString w)]] (.delete f) r)))" :expected "[1 \"é\"]"}
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [b (java.io.ByteArrayOutputStream.)] (io/copy (java.io.StringReader. \"é\") b :encoding \"UTF-16BE\") (vec (.toByteArray b))))" :expected "[0 -23]"}
+  {:suite "io" :expr "(do (require '[clojure.java.shell :as sh]) (let [r (sh/sh \"printf\" \"\\\\351\\\\377A\" :out-enc \"ISO-8859-1\")] [(count (:out r)) (mapv int (:out r))]))" :expected "[3 [233 255 65]]"}
   ;; Stage A — binary io/copy File→File preserves bytes
   {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :expected "[255 254 0 65]"}
   ;; Stage A — File.delete on non-empty directory returns false
