@@ -1,0 +1,8 @@
+error[analyze/duplicate-method]: Duplicate method name "area" with signature "()Ljava.lang.Object;" in class file input/Square
+  --> ./test/errors/analyze/duplicate-method/input.clj:5:1
+   |
+ 3 | (defprotocol Shape (area [s]))
+ 4 | 
+ 5 | (deftype Square [n]
+   | ^
+exit: 1
