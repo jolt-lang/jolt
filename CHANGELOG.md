@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: a multi-arity `fn` whose arities overlap no longer compiles.** Two
+  variadic arities, two fixed arities of the same count, or a fixed arity with more
+  params than the variadic one now raise `analyze/invalid-fn-arities` with the JVM's
+  message. They used to compile, and the first matching clause ran every call, so
+  `([a & r] ...) ([a b c & r] ...)` never reached its second clause. A first clause
+  that delegated to the second looped at full CPU with no error.
 - **BREAKING: `ns` refuses a malformed form.** After the name it takes an optional
   docstring, an optional attr-map and reference clauses, as on the JVM, and it used
   to ignore anything else. An unescaped quote in a docstring splits it into strings

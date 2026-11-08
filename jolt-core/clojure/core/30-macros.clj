@@ -427,6 +427,20 @@
   (loop [b (seq body)]
     (if (and b (keyword? (first b))) (recur (nnext b)) b)))
 
+;; deftype, defrecord and reify merge every method body sharing a NAME into one
+;; multi-arity fn, which dispatches by argument count alone. The JVM also tells
+;; same-name, same-count methods apart by parameter TYPE -- gvec's Vec has
+;; Collection's (remove [_ o]) and List's (remove [_ ^int i]) -- and jolt cannot:
+;; the first declared clause answers every call of that count (known-divergences
+;; :host-model). The later clause is dropped here, where that choice is made,
+;; rather than emitted as a second same-arity clause the analyzer rightly rejects
+;; in a hand-written fn*.
+(defn- add-method-clause [clauses clause]
+  (let [n (count (first clause))]
+    (if (some (fn [c] (= n (count (first c)))) clauses)
+      clauses
+      (conj clauses clause))))
+
 (defn- group-by-head [items]
   ;; nil is a valid extension head (extend-protocol P ... nil (m [x] ...)).
   (reduce (fn [acc x]
@@ -632,7 +646,7 @@
         ;; and satisfies? by protocol both hold.
         by-name (reduce (fn [m spec]
                           (let [nm (name (first spec))]
-                            (assoc m nm (conj (get m nm []) (mk-clause spec)))))
+                            (assoc m nm (add-method-clause (get m nm []) (mk-clause spec)))))
                         {} (mapcat rest groups))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
@@ -993,7 +1007,7 @@
           (let [k (keyword (name (first x)))
                 clause `(~(nth x 1) ~@(drop 2 x))]
             (recur (rest items) protos
-                   (assoc methods k (conj (get methods k []) clause))
+                   (assoc methods k (add-method-clause (get methods k []) clause))
                    (if (contains? methods k) order (conj order k)))))))))
 
 (defmacro defrecord [name-sym fields & body]
@@ -1039,7 +1053,7 @@
         ;; deftype's by-name).
         by-name (reduce (fn [m spec]
                           (let [nm (name (first spec))]
-                            (assoc m nm (conj (get m nm []) (mk-clause spec)))))
+                            (assoc m nm (add-method-clause (get m nm []) (mk-clause spec)))))
                         {} (mapcat rest groups))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
