@@ -63,9 +63,16 @@
         (embedded-res-bytes resource))))
 (define (embedded-connection-stream self)
   (make-in-stream (open-bytevector-input-port (embedded-connection-bytes self))))
+;; JarURLConnection.getContentType: guessContentTypeFromName over the entry's
+;; name, and content/unknown when that has no answer — never null. (The JDK
+;; first sniffs the entry's leading bytes, guessContentTypeFromStream, which is
+;; not modelled.)
 (define (embedded-connection-content-type self)
   (let ((name (embedded-jar-url-entry-name (embedded-connection-resource self))))
-    (if (jolt-nil? name) "content/unknown" (nio-content-type-of name))))
+    (if (jolt-nil? name)
+        "content/unknown"
+        (let ((t (nio-content-type-of name)))
+          (if (jolt-nil? t) "content/unknown" t)))))
 
 (define (embedded-connection-typed-content self classes)
   (let ((classes (if (jolt-array? classes) (ja->list classes) '())))

@@ -95,6 +95,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `babashka.http-client`. `reset` before any `mark` now throws
   `Resetting to invalid mark`, and a mark read past its limit is dropped.
 - `Path.toRealPath` of a missing path throws `NoSuchFileException`, not `ex-info`.
+- **`Files/probeContentType` types a file the way the JDK does (#1554).** It knew
+  22 extensions of its own, and typed `.md`, `.csv` and `.clj` as
+  `text/plain`. It now asks `~/.mime.types`, then `/etc/mime.types` (Linux and
+  the BSDs), then the JDK's own table of 132 extensions, matching OpenJDK 21 on
+  3,036 names: `.md` is `text/markdown`, `.csv` is `text/csv`, `.webp` is
+  `image/webp`, and a name nothing knows answers nil. macOS's system type lookup
+  and the Windows registry are not modelled, so there the JDK's table answers.
+  An embedded resource whose name the table doesn't know has the content type
+  `content/unknown`, as `JarURLConnection` reports it, rather than nil.
 
 - **A refused bind is a `java.net.BindException`.** The class didn't exist and a
   bind failed with `IOException: bind failed on port N`, so a port probe catching
