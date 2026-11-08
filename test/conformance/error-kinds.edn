@@ -82,6 +82,11 @@
  "A `fn*` parameter list that is not a vector of symbols, or a rest parameter
   that is not a symbol."
 
+ :analyze/invalid-fn-arities
+ "A multi-arity `fn*` whose clauses cannot be told apart by argument count: more
+  than one variadic clause, two fixed clauses of the same count, or a fixed clause
+  taking more arguments than the variadic clause requires."
+
  :analyze/invalid-if
  "An `if` with fewer than two or more than three arguments."
 

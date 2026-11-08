@@ -1014,6 +1014,34 @@
          (= "fn*" (form-sym-name h))
          (let [m (form-sym-meta h)] (or (nil? m) (zero? (count m)))))))
 
+;; A multi-arity fn's clauses must be distinguishable by argument count, as the
+;; JVM's FnExpr.parse requires: one variadic clause at most, no two fixed clauses
+;; of the same count, and no fixed clause taking more than the variadic one's
+;; required count. Same checks and the same order as the JVM: per clause in
+;; declaration order, then the fixed-above-variadic rule. Accepting a second
+;; variadic clause was not harmless -- dispatch takes the first clause that
+;; accepts the count, so ([a & r] ...) ([a b c & r] ...) never reaches the second,
+;; and a first clause that delegates to the second loops forever.
+(defn- check-fn-arities [arities]
+  (let [[variadic fixed]
+        (reduce (fn [[variadic fixed] a]
+                  (let [n (count (:params a))]
+                    (cond
+                      (:rest a)
+                      (if variadic
+                        (analysis-error :analyze/invalid-fn-arities
+                                        "Can't have more than 1 variadic overload")
+                        [n fixed])
+                      (contains? fixed n)
+                      (analysis-error :analyze/invalid-fn-arities
+                                      "Can't have 2 overloads with same arity")
+                      :else [variadic (conj fixed n)])))
+                [nil #{}] arities)]
+    (when (and variadic (some #(> % variadic) fixed))
+      (analysis-error :analyze/invalid-fn-arities
+                      "Can't have fixed arity function with more params than variadic function"))
+    arities))
+
 (defn- analyze-fn [ctx form items env]
   (let [named (form-sym? (nth items 1))
         fn-name (when named (form-sym-name (nth items 1)))
@@ -1025,10 +1053,15 @@
                                                          env fn-name)])
                (form-list? first*)
                (fn-node fn-name
-                        (mapv (fn [clause]
-                                (let [cl (vec (form-elements clause))]
-                                  (analyze-arity-with-ret ctx (first cl) (rest cl) env fn-name)))
-                              rest-items))
+                        (check-fn-arities
+                         (mapv (fn [clause]
+                                 (when-not (form-list? clause)
+                                   (analysis-error :analyze/invalid-fn-parameters
+                                                   (str "fn* clause " (pr-str clause)
+                                                        " should be a list of a parameter vector and a body")))
+                                 (let [cl (vec (form-elements clause))]
+                                   (analyze-arity-with-ret ctx (first cl) (rest cl) env fn-name)))
+                               rest-items)))
                :else (analysis-error :analyze/invalid-fn-parameters
                                      "Parameter declaration should be a vector"))
         ;; :src-form is the original post-expansion (fn* params body…) form —

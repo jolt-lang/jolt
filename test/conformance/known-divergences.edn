@@ -82,6 +82,21 @@
   ;; (protocols.ss protocol-resolve), so there is no name to report and no Class
   ;; to hand back. Reporting a name for a class that does not exist would just
   ;; move the failure from a nil key to a ClassNotFoundException.
+  ;; deftype/defrecord/reify methods overloaded by parameter TYPE at one arity:
+  ;; gvec's Vec has Collection's (remove [_ o]) and List's (remove [_ ^int i]).
+  ;; The JVM picks the overload from the call's static types; jolt dispatches a
+  ;; method by name and argument count only, so the first declared clause answers
+  ;; every call of that count and the macros drop the later one
+  ;; (add-method-clause, 30-macros.clj). Picking by type would need parameter
+  ;; types jolt does not carry at the call.
+  {:category :host-model
+   :behavior "a deftype method overloaded by parameter type at one arity"
+   :jvm "picks the overload from the argument's static type"
+   :jolt "the first declared overload answers every call of that arity"
+   :check {:expr "(load-string \"(deftype KdOv [] java.util.List (^boolean remove [_ ^Object o] false) (^Object remove [_ ^int i] :index)) [(.remove ^java.util.List (KdOv.) \\\"x\\\") (.remove ^java.util.List (KdOv.) (int 0))]\")"
+           :jvm "[false :index]"
+           :jolt "[false false]"}
+   :note "Verified against Clojure 1.12.6 on JDK 27."}
   ;; Redefining a deftype replaces the TYPE, not just the name (jolt-nx2x). On the
   ;; JVM each deftype form is a fresh class: code compiled against the first keeps
   ;; constructing it, and its instances keep its methods. jolt keys a type's
