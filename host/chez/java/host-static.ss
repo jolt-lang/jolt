@@ -79,15 +79,16 @@
 ;; registered is still free to be declared — nothing has claimed it — and a
 ;; registration that just landed must not make itself the reason.
 (define (runtime-provides-class? name)
-  (let ((short (short-class-name name)))
-    (and (or (hashtable-ref host-class-statics-tbl name #f)
-             (hashtable-ref host-class-statics-tbl short #f)
-             (hashtable-ref host-class-ctors-tbl name #f)
-             (hashtable-ref host-class-ctors-tbl short #f)
-             ;; one a host shim registers when it loads, which has not happened yet
-             (lazy-shims-provides? name)
-             (lazy-shims-provides? short))
-         #t)))
+  (or (runtime-provides-spelling? name)
+      (runtime-provides-spelling? (short-class-name name))))
+;; The same for one spelling exactly — what register-class-provider! asks of each
+;; spelling of a claim.
+(define (runtime-provides-spelling? c)
+  (and (or (hashtable-ref host-class-statics-tbl c #f)
+           (hashtable-ref host-class-ctors-tbl c #f)
+           ;; one a host shim registers when it loads, which may not have happened
+           (lazy-shims-provides? c))
+       #t))
 
 ;; ---- arity, before the member runs ------------------------------------------
 ;; The JVM resolves a call by its ARITY before it runs anything: an extra trailing
@@ -1539,8 +1540,12 @@
 ;; exists to provide.
 (define (register-class-provider! install-ns coordinate classes)
   (let* ((cs (class-spellings classes))
+         ;; the live tables, and runtime-provides-spelling? for a class a host shim
+         ;; registers when it loads (lazy-shims.ss), which may not have happened
+         ;; yet: whether the claim stands must not depend on that
          (taken? (lambda (c) (or (hashtable-ref class-statics-tbl c #f)
-                                 (hashtable-ref class-ctors-tbl c #f))))
+                                 (hashtable-ref class-ctors-tbl c #f)
+                                 (runtime-provides-spelling? c))))
          ;; the fully-qualified spellings the runtime provides, as declared
          (stale (filter (lambda (c) (taken? c)) classes))
          (kept (filter (lambda (c) (not (taken? c))) cs)))

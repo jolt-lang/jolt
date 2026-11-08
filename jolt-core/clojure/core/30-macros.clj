@@ -427,20 +427,6 @@
   (loop [b (seq body)]
     (if (and b (keyword? (first b))) (recur (nnext b)) b)))
 
-;; deftype, defrecord and reify merge every method body sharing a NAME into one
-;; multi-arity fn, which dispatches by argument count alone. The JVM also tells
-;; same-name, same-count methods apart by parameter TYPE -- gvec's Vec has
-;; Collection's (remove [_ o]) and List's (remove [_ ^int i]) -- and jolt cannot:
-;; the first declared clause answers every call of that count (known-divergences
-;; :host-model). The later clause is dropped here, where that choice is made,
-;; rather than emitted as a second same-arity clause the analyzer rightly rejects
-;; in a hand-written fn*.
-(defn- add-method-clause [clauses clause]
-  (let [n (count (first clause))]
-    (if (some (fn [c] (= n (count (first c)))) clauses)
-      clauses
-      (conj clauses clause))))
-
 (defn- group-by-head [items]
   ;; nil is a valid extension head (extend-protocol P ... nil (m [x] ...)).
   (reduce (fn [acc x]
@@ -448,6 +434,79 @@
               (conj acc [x])
               (conj (pop acc) (conj (peek acc) x))))
           [] items))
+
+;; deftype, defrecord and reify read their specs as the reference's parse-impls
+;; does: into a map from each interface or protocol head, as written, to the
+;; methods after it. A head named twice keeps the LAST run of methods, in the
+;; first one's place, and the earlier run is gone, every method of it.
+(defn- impl-groups [items]
+  (reduce (fn [acc g]
+            (let [i (loop [i 0]
+                      (cond (= i (count acc)) nil
+                            (= (first (nth acc i)) (first g)) i
+                            :else (recur (inc i))))]
+              (if i (assoc acc i g) (conj acc g))))
+          [] (group-by-head items)))
+
+;; The descriptor a class file gives a method parameter or return of this hint, as
+;; the JVM's ClassFormatError prints it: a primitive's letter, else the class with
+;; dots. No hint is Object.
+(defn- method-type-descriptor [tag]
+  (let [t (when tag (str tag))
+        prims {"long" "J" "double" "D" "int" "I" "boolean" "Z" "float" "F"
+               "short" "S" "byte" "B" "char" "C" "void" "V"}]
+    (cond
+      (nil? t) "Ljava.lang.Object;"
+      (get prims t) (get prims t)
+      (some #{\.} t) (str "L" t ";")
+      :else (str "Ljava.lang." t ";"))))
+
+;; A method's parameter descriptors, the receiver left out.
+(defn- method-param-descriptors [argv]
+  (apply str (map (fn [p] (method-type-descriptor (:tag (meta p)))) (rest argv))))
+
+;; deftype, defrecord and reify merge every method body sharing a NAME into one
+;; multi-arity fn, which dispatches by argument count alone. Two methods of one
+;; name, arity and parameter types are one method declared twice, which the JVM
+;; refuses when it loads the class (ClassFormatError); jolt refuses it with the
+;; JVM's message as the macro expands. Two that differ in a parameter's TYPE are
+;; overloads the JVM tells apart -- gvec's Vec has Collection's (remove [_ o])
+;; and List's (remove [_ ^int i]) -- and jolt cannot: the first declared answers
+;; every call of that count (known-divergences :host-model), and the later one is
+;; dropped here rather than emitted as a second same-arity clause the analyzer
+;; rejects in a hand-written fn*.
+;;
+;; specs are method specs, (name [params] body*); the result maps each name to
+;; the specs kept for it, in order. class-file names the class as the JVM's
+;; message does.
+(defn- merge-method-specs [class-file specs]
+  (reduce (fn [m spec]
+            (let [nm (name (first spec))
+                  argv (nth spec 1)
+                  prev (get m nm [])
+                  same-count (filter (fn [s] (= (count (nth s 1)) (count argv))) prev)
+                  sig (method-param-descriptors argv)]
+              (cond
+                (empty? same-count) (assoc m nm (conj prev spec))
+                (some (fn [s] (= sig (method-param-descriptors (nth s 1)))) same-count)
+                (throw (ex-info (str "Duplicate method name \"" nm "\" with signature \"("
+                                     sig ")"
+                                     (method-type-descriptor
+                                       (or (:tag (meta (first spec)))
+                                           (get {"toString" "String" "hashCode" "int"
+                                                 "equals" "boolean"} nm)))
+                                     "\" in class file " class-file)
+                                {:jolt.error/kind :analyze/duplicate-method
+                                 :jolt.error/type :analysis-error}))
+                :else m)))
+          {} specs))
+
+;; The class file a deftype in the current namespace is written to, as the JVM's
+;; message names it: the namespace munged into a package path, the type's name as
+;; written.
+(defn- type-class-file [tname]
+  (str (apply str (map (fn [c] (cond (= c \-) \_ (= c \.) \/ :else c)) (str *ns*)))
+       "/" (name tname)))
 
 ;; clojure.core/maybe-destructured, for deftype/defrecord method params: a param
 ;; that is not a symbol becomes a gensym, destructured in a let the caller wraps
@@ -636,7 +695,7 @@
                           mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
                           mbody (underscore-rebind (nth spec 1) raw mbody)]
                       (list argv (list* 'clojure.core/let binds mbody))))
-        groups (group-by-head (drop-type-opts body))
+        groups (impl-groups (drop-type-opts body))
         ;; merge clauses by method NAME across ALL protocols into one multi-arity
         ;; fn, so a name appearing in two interfaces with different arities
         ;; (data.priority-map's seq is in Seqable [this] AND Sorted [this asc])
@@ -644,10 +703,8 @@
         ;; (Within one protocol, distinct arities like Indexed's nth merge the same
         ;; way.) Each (protocol, name) registers the merged fn, so dispatch by name
         ;; and satisfies? by protocol both hold.
-        by-name (reduce (fn [m spec]
-                          (let [nm (name (first spec))]
-                            (assoc m nm (add-method-clause (get m nm []) (mk-clause spec)))))
-                        {} (mapcat rest groups))]
+        by-name (reduce-kv (fn [m nm specs] (assoc m nm (mapv mk-clause specs)))
+                           {} (merge-method-specs (type-class-file tname) (mapcat rest groups)))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
        (def ~arrow ~tname)
@@ -953,8 +1010,17 @@
       `(jolt.host/make-thread-local (fn [] ~@(when init (nnext init)))
                                     ~(= (name (first supers)) "InheritableThreadLocal")))
     ;; group the flattened specs by method name, so several arities of one method
-    ;; become one multi-arity fn — the same shape reify builds.
-    (loop [specs (seq (apply concat (map proxy-arity-specs methods)))
+    ;; become one multi-arity fn — the same shape reify builds. Several arities
+    ;; go in ONE spec, (m ([a] ...) ([a b] ...)); a name given two specs is
+    ;; refused as the reference's proxy refuses it.
+    (loop [specs (do (reduce (fn [seen m]
+                               (let [nm (name (first m))]
+                                 (if (contains? seen nm)
+                                   (throw (new IllegalArgumentException
+                                               (str "Method '" nm "' redefined")))
+                                   (conj seen nm))))
+                             #{} methods)
+                     (seq (apply concat (map proxy-arity-specs methods))))
            clauses {} order []]
       (if (empty? specs)
         ;; the defining ns names the generated class (proxy-name), as on the JVM
@@ -984,31 +1050,31 @@
   ;; to make-reified so (instance? Proto r)/satisfies? recognise all of them.
   ;; Several bodies for the same method name are distinct arities (clojure.spec
   ;; reifies (specize* [s]) and (specize* [s _])): group them into one multi-arity
-  ;; fn so dispatch picks the clause by arg count.
-  (loop [items (seq forms) protos [] methods {} order []]
-    (if (empty? items)
-      ;; the third element names the class: ns$reify__N, one per reify form, as
-      ;; the JVM generates one class per form (its name also carries the
-      ;; enclosing fn and an eval counter, which jolt cannot reproduce). N comes
-      ;; from where the form sits (file, line, column), so a form compiled into
-      ;; the AOT cache and one expanded fresh in a later process can never share
-      ;; a name; a form with no position takes a gensym, below the position range
-      `(make-reified-at
-         [[~@(map name order)] [~@(map protocol-key protos)]
-          ~(str (apply str (map (fn [c] (if (= c \-) \_ c)) (str *ns*))) "$"
-                (let [{:keys [line column]} (meta &form)]
-                  (if line
-                    (str "reify__" (+ 1000000000 (mod (hash [*file* line column]) 1000000000)))
-                    (gensym "reify__"))))]
-         ~@(map (fn [k] `(fn ~@(get methods k))) order))
-      (let [x (first items)]
-        (if (symbol? x)
-          (recur (rest items) (conj protos x) methods order)
-          (let [k (keyword (name (first x)))
-                clause `(~(nth x 1) ~@(drop 2 x))]
-            (recur (rest items) protos
-                   (assoc methods k (add-method-clause (get methods k []) clause))
-                   (if (contains? methods k) order (conj order k)))))))))
+  ;; fn so dispatch picks the clause by arg count. A protocol named twice keeps
+  ;; its last run of methods (impl-groups), and one method declared twice is
+  ;; refused (merge-method-specs).
+  ;;
+  ;; The third element of the shape names the class: ns$reify__N, one per reify
+  ;; form, as the JVM generates one class per form (its name also carries the
+  ;; enclosing fn and an eval counter, which jolt cannot reproduce). N comes from
+  ;; where the form sits (file, line, column), so a form compiled into the AOT
+  ;; cache and one expanded fresh in a later process can never share a name; a
+  ;; form with no position takes a gensym, below the position range
+  (let [cls (str (apply str (map (fn [c] (if (= c \-) \_ c)) (str *ns*))) "$"
+                 (let [{:keys [line column]} (meta &form)]
+                   (if line
+                     (str "reify__" (+ 1000000000 (mod (hash [*file* line column]) 1000000000)))
+                     (gensym "reify__"))))
+        ;; methods before any protocol name sit under a nil head
+        groups (impl-groups (if (or (empty? forms) (symbol? (first forms))) forms (cons nil forms)))
+        protos (remove nil? (map first groups))
+        specs (mapcat rest groups)
+        methods (merge-method-specs cls specs)
+        order (distinct (map (fn [x] (name (first x))) specs))]
+    `(make-reified-at
+       [[~@order] [~@(map protocol-key protos)] ~cls]
+       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(nth x 1) ~@(drop 2 x))) (get methods k))))
+              order))))
 
 (defmacro defrecord [name-sym fields & body]
   (let [tn (name name-sym)
@@ -1048,13 +1114,11 @@
                           mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
                           mbody (underscore-rebind (nth spec 1) raw mbody)]
                       (list hinted (list* 'clojure.core/let binds mbody))))
-        groups (group-by-head (drop-type-opts body))
+        groups (impl-groups (drop-type-opts body))
         ;; merge clauses by name across protocols into one multi-arity fn (see
         ;; deftype's by-name).
-        by-name (reduce (fn [m spec]
-                          (let [nm (name (first spec))]
-                            (assoc m nm (add-method-clause (get m nm []) (mk-clause spec)))))
-                        {} (mapcat rest groups))]
+        by-name (reduce-kv (fn [m nm specs] (assoc m nm (mapv mk-clause specs)))
+                           {} (merge-method-specs (type-class-file name-sym) (mapcat rest groups)))]
     `(do
        ;; deftype already defines ->name (= the ctor); no (name. …) interop needed,
        ;; so defrecord compiles too. map->name builds via that ctor.

@@ -1,0 +1,7 @@
+Unhandled exception (ArrayIndexOutOfBoundsException): Index 5 out of bounds for length 2
+  at ./test/errors/runtime/host-fault-through-catch/input.clj:8:1
+  trace:
+    input/inner (./test/errors/runtime/host-fault-through-catch/input.clj:4)
+    input/mid (./test/errors/runtime/host-fault-through-catch/input.clj:5)
+    input/outer (./test/errors/runtime/host-fault-through-catch/input.clj:6)
+exit: 1

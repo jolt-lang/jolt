@@ -1,0 +1,5 @@
+Unhandled exception (ArithmeticException): Divide by zero
+  at ./test/errors/runtime/fault-after-caught-tail-throw/input.clj:13:1
+  trace:
+    input/fault (./test/errors/runtime/fault-after-caught-tail-throw/input.clj:11)
+exit: 1

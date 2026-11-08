@@ -87,6 +87,11 @@
   than one variadic clause, two fixed clauses of the same count, or a fixed clause
   taking more arguments than the variadic clause requires."
 
+ :analyze/duplicate-method
+ "A `deftype`, `defrecord` or `reify` that declares one method twice: the same
+  name, argument count and parameter type hints, in one protocol or across two.
+  The JVM refuses the class with a ClassFormatError; the message is its."
+
  :analyze/invalid-if
  "An `if` with fewer than two or more than three arguments."
 

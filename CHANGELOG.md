@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `deftype`, `defrecord` and `reify` refuse a method declared twice.**
+  Two methods with the same name, argument count and parameter hints, in one
+  protocol or across two, now raise `analyze/duplicate-method` with the JVM's
+  ClassFormatError message. One of them used to be dropped without a word.
+  A protocol named twice in one form keeps only its last run of methods, as on
+  the JVM; it used to merge both runs. `extend-type` and `extend-protocol` still
+  take the last of two same-arity methods, as the JVM does. `proxy` refuses a
+  method name given in two specs with the JVM's "Method 'm' redefined", where it
+  used to merge them or fail with a `fn` arity error.
 - **BREAKING: a multi-arity `fn` whose arities overlap no longer compiles.** Two
   variadic arities, two fixed arities of the same count, or a fixed arity with more
   params than the variadic one now raise `analyze/invalid-fn-arities` with the JVM's
@@ -51,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An uncaught report keeps the frames of a throw that passed through a catch.**
+  When no catch clause matched, the rethrow started the trace at the catching fn,
+  so a host fault or a runtime throw such as divide by zero lost the fns between
+  the catch and the fault. A handler's own `(throw e)` had the same problem. The
+  rethrow now keeps the first raise's frames.
 - An error in a `fn`, `let`, `loop` or `letfn` form no longer carries the note
   "raised while expanding the `fn` macro". Those macros only rename the form to
   its special form, so the error is in the code as written. When a user macro
@@ -74,10 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`clojure.java.io/copy` from a `char[]` copies its characters.** It wrote the
   array's printed form, `#object["[C" ...]`. A byte destination gets them encoded
   under `:encoding`, UTF-8 by default.
-- **An array's seq reads the array on `first`.** It read each element when the seq
-  cell was made, so an `aset` after `(seq a)` and before `(first s)` went unseen.
-  `reduce` and `into` over an array seq now walk the array directly and run about
-  2.5x faster.
+- **`Files/probeContentType` types a file the way the JDK does (#1554).** It knew
+  22 extensions of its own, and typed `.md`, `.csv` and `.clj` as
+  `text/plain`. It now asks `~/.mime.types`, then `/etc/mime.types` (Linux and
+  the BSDs), then the JDK's own table of 132 extensions, matching OpenJDK 21 on
+  3,036 names: `.md` is `text/markdown`, `.csv` is `text/csv`, `.webp` is
+  `image/webp`, and a name nothing knows answers nil. macOS's system type lookup
+  and the Windows registry are not modelled, so there the JDK's table answers.
+  An embedded resource whose name the table doesn't know has the content type
+  `content/unknown`, as `JarURLConnection` reports it, rather than nil.
 
 - **A refused bind is a `java.net.BindException`.** The class didn't exist and a
   bind failed with `IOException: bind failed on port N`, so a port probe catching
