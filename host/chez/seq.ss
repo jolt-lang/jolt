@@ -82,7 +82,9 @@
 (define sk-repeat       14)   ; (range start end 0), which repeats start forever
 ;; An array's seq, one flavor per element type — the JVM has a distinct ArraySeq
 ;; subclass per primitive (ArraySeq$ArraySeq_int …) and the plain ArraySeq for an
-;; object array. natives-array.ss maps a jolt-array's `kind` onto these.
+;; object array. A cell of these holds its element: a sort's result (RT.sort is an
+;; ArraySeq over a fresh array), and an array seq in an image dumped before
+;; sk-array-cells-* below, which are what an array's own seq is made of now.
 (define sk-array-seq    15)   ; Object[]
 (define sk-array-int    16)
 (define sk-array-long   17)
@@ -93,9 +95,20 @@
 (define sk-array-byte   22)
 (define sk-array-char   23)
 (define sk-cycle        24)   ; (cycle coll): clojure.lang.Cycle
+;; An array's own seq, whose cells head with the array and read it on first
+;; (cseq-first): the same flavors in the same order, each sk-array-* + 10.
+(define sk-array-cells-seq    25)
+(define sk-array-cells-int    26)
+(define sk-array-cells-long   27)
+(define sk-array-cells-short  28)
+(define sk-array-cells-double 29)
+(define sk-array-cells-float  30)
+(define sk-array-cells-bool   31)
+(define sk-array-cells-byte   32)
+(define sk-array-cells-char   33)
 ;; How many there are — the java layer sizes its kind-indexed tables from this,
 ;; so adding a flavor above needs no second edit to keep them in step.
-(define sk-count        25)
+(define sk-count        34)
 
 ;; The cseq record (head tail kind meta, chez-cseq-v8) and its vector-backed
 ;; subtype cseqv (+ cvec ci crest) are defined in values.ss with the other collection layouts, ahead of every
@@ -357,7 +370,31 @@
         (if (fx>=? i1 (pvec-count v))
             jolt-nil
             (make-cseqv (pvec-nth-d v i1 jolt-nil) #f (cseq-kind s) jolt-nil v i1 #f)))))
-(define (seq-first s) (cseq-head s))
+;; An array's own seq (natives-array.ss arr->seq) is a cell of one of the
+;; sk-array-cells kinds above, and its head is the ARRAY, not an element: first
+;; reads the array at the cell's index (the array's length less the cell's
+;; count) every time, as ArraySeq.first() reads array[i]. Holding the element
+;; read it when the cell was made, so an aset between (seq a) and (first s) went
+;; unseen. The kinds are their own because a cell of sk-array-seq..sk-array-char
+;; holds an element: a sort's result, and an array seq in an image dumped before
+;; this. The test is two compares on a field the cell already has.
+;; natives-array.ss installs the read, and reduce-seq hands the rest of such a seq
+;; to array-cells-reduce, a loop over the array with no cells, as ArraySeq.reduce
+;; is. Gambit makes no array seqs.
+(define array-cells-read (lambda (arr cnt) (error 'seq-first "no array seqs on this host")))
+(define array-cells-reduce (lambda (f acc arr cnt) (error 'reduce "no array seqs on this host")))
+(define (set-array-cells-ops! read reduce) (set! array-cells-read read) (set! array-cells-reduce reduce))
+(unless (and (= sk-array-cells-seq 25) (= sk-array-cells-char 33))
+  (error 'seq.ss "array-cells-kind?'s kind range is stale"))
+(define-syntax array-cells-kind?
+  (syntax-rules () ((_ k) (let ((x k)) (and (fx>=? x 25) (fx<=? x 33))))))
+(define-syntax cseq-first
+  (syntax-rules ()
+    ((_ e) (let ((s e))
+             (if (array-cells-kind? (cseq-kind s))
+                 (array-cells-read (cseq-head s) (cseqn-cnt s))
+                 (cseq-head s))))))
+(define (seq-first s) (cseq-first s))
 ;; --- forcing once, without a mutex per cell -----------------------------------
 ;; Reading a cell needs no lock (seq-tail-realized?, above). What still needs
 ;; exclusion is running a tail thunk exactly once when two forcers (threads, or
@@ -825,7 +862,7 @@
   (set! jolt-first-arms (cons (cons pred handler) jolt-first-arms)))
 (define (jolt-first x)
   (cond
-    ((cseq? x) (cseq-head x))
+    ((cseq? x) (cseq-first x))
     ((pvec? x) (if (fx>? (pvec-cnt x) 0) (pvec-nth-in-range x 0) jolt-nil))
     ((jolt-nil? x) jolt-nil)
     (else (let loop ((as jolt-first-arms))
@@ -861,7 +898,7 @@
       ;; string-ref. Below the forced? arm so the common path pays nothing.
       ;; An array's seq (ArraySeq) is the same: its tail is an index step.
       ((let ((k (cseq-kind s)))
-         (or (fx=? k sk-string-seq) (and (fx>=? k sk-array-seq) (fx<=? k sk-array-char))))
+         (or (fx=? k sk-string-seq) (and (fx>=? k sk-array-cells-seq) (fx<=? k sk-array-cells-char))))
        (let ((m (seq-more s))) (if (jolt-nil? m) jolt-empty-list m)))
       ;; the lazyseq forces to a seq (cseq | nil); an empty realized lazyseq is
       ;; still a sequence value, printing "()" (see lazy-bridge.ss), so (rest s)
@@ -1935,7 +1972,10 @@
            (cond ((jolt-reduced? acc2) (jolt-reduced-val acc2))
                  ((cseq-crest s) (rec acc2 (jolt-seq (cseq-crest s))))
                  (else acc2))))
-        (else (rec (if direct? (jolt-site-kept (f acc (seq-first s))) (jolt-invoke2 f acc (seq-first s)))
+        ;; an array's seq reduces the rest of its array in place (seq-first above)
+        ((array-cells-kind? (cseq-kind s))
+         (array-cells-reduce f acc (cseq-head s) (cseqn-cnt s)))
+        (else (rec (if direct? (jolt-site-kept (f acc (cseq-head s))) (jolt-invoke2 f acc (cseq-head s)))
                    (jolt-seq (seq-more s))))))))
 ;; A host collection that hands its elements out as a list (the java.util views,
 ;; jutil-views.ss) reduces over that list directly rather than through a seq of

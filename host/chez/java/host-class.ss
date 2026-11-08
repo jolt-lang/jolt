@@ -130,6 +130,9 @@
     (vector-set! v sk-array-bool    "clojure.lang.ArraySeq$ArraySeq_boolean")
     (vector-set! v sk-array-byte    "clojure.lang.ArraySeq$ArraySeq_byte")
     (vector-set! v sk-array-char    "clojure.lang.ArraySeq$ArraySeq_char")
+    ;; an array's own seq: the same class as the element-holding flavor
+    (do ((k sk-array-seq (fx+ k 1))) ((fx>? k sk-array-char))
+      (vector-set! v (fx+ k (fx- sk-array-cells-seq sk-array-seq)) (vector-ref v k)))
     v))
 ;; One vector-ref. This sits on the protocol-dispatch path for every seq argument,
 ;; which is why the flavor is a fixnum index and not a name to be looked up.
