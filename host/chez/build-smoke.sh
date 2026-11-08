@@ -2241,4 +2241,36 @@ for dl in "" "--direct-link"; do
 done
 rm -rf "$sh_d"
 
-echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + jolt-ext + vendored-fs + petite-only-fs + vendored-process + petite-only-process + ffi-clj-layer + petite-only-ffi + declare-only-var + install-owned-order + split-provider-order + embedded-value + sdeps-before-build + source-mode-driver + build-error-location + compile-error-position + scan-alias-set + as-alias + flat-split + runtime-cache + unit-cache + boot-modes + compiler-verdict + gzip-round-trip + signable + include + dep-resources + emitted-head-defs)"
+# --- a host shim the build left out (lazy-shims.ss) ---------------------------
+# Class/forName of a class whose shim the build did not link is the JVM's
+# ClassNotFoundException, an Exception, so feature detection falls back; a
+# constructor compiled against such a class is NoClassDefFoundError. A class the
+# source names is linked and works.
+ls_d="$(mktemp -d)"; mkdir -p "$ls_d/src/ls"
+cat > "$ls_d/src/ls/core.clj" <<'LS_EOF'
+(ns ls.core)
+(defn probe [nm]
+  (try (.getName (Class/forName nm))
+       (catch Exception e
+         (str "fallback " (.getName (class e)) " " (boolean (re-find #":import" (.getMessage e)))))))
+(defn -main [& _]
+  (println (probe (str "java.util." "St" "ack")))
+  (println (probe (str "java.util.concurrent." "Sema" "phore")))
+  (println (.size (doto (java.util.ArrayDeque.) (.add 1)))))
+LS_EOF
+if ! JOLT_PWD="$ls_d" "$jolt" build -m ls.core -o "$ls_d/bin" >"$ls_d/build.log" 2>&1; then
+  echo "  FAIL: lazy-shim app build"; tail -5 "$ls_d/build.log"; exit 1
+fi
+got_ls="$("$ls_d/bin" 2>&1)"
+want_ls='fallback java.lang.ClassNotFoundException true
+fallback java.lang.ClassNotFoundException true
+1'
+if [ "$got_ls" != "$want_ls" ]; then
+  echo "  FAIL: a left-out host shim"
+  echo "--- want ---"; echo "$want_ls"
+  echo "--- got ----"; echo "$got_ls"
+  exit 1
+fi
+rm -rf "$ls_d"
+
+echo "build smoke: passed (release + optimized + direct-link + tree-shake + compiler+core shake + data-reader + no-main + optional-native + deps-opt + cljc-cond + jolt-ext + vendored-fs + petite-only-fs + vendored-process + petite-only-process + ffi-clj-layer + petite-only-ffi + declare-only-var + install-owned-order + split-provider-order + embedded-value + sdeps-before-build + source-mode-driver + build-error-location + compile-error-position + scan-alias-set + as-alias + flat-split + runtime-cache + unit-cache + boot-modes + compiler-verdict + gzip-round-trip + signable + include + dep-resources + emitted-head-defs + lazy-shim-absent)"

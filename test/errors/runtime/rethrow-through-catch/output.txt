@@ -1,0 +1,7 @@
+Unhandled exception (ArithmeticException): Divide by zero
+  at ./test/errors/runtime/rethrow-through-catch/input.clj:8:1
+  trace:
+    input/inner (./test/errors/runtime/rethrow-through-catch/input.clj:4)
+    input/mid (./test/errors/runtime/rethrow-through-catch/input.clj:5)
+    input/outer (./test/errors/runtime/rethrow-through-catch/input.clj:6)
+exit: 1

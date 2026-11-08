@@ -37,6 +37,14 @@
 (ok "1e. runtime-provides-class? answers for a lazy class" (runtime-provides-class? "java.util.concurrent.Semaphore"))
 (ok "1f. host-class-registered? too (the analyzer's is-it-a-class)" (host-class-registered? "java.util.PriorityQueue"))
 (ok "1g. still nothing loaded" (null? (loaded)))
+;; a library's :jolt/provides claim on a class a lazy file provides is dropped, as
+;; it is for a class the boot registers: which implementation answers must not
+;; depend on whether the file has loaded yet
+(register-class-provider! "lazy.skiplist.install" #f '("java.util.concurrent.ConcurrentSkipListMap"))
+(ok "1h. a :jolt/provides claim on an unloaded lazy class is dropped"
+    (and (not (lib-provider-for "java.util.concurrent.ConcurrentSkipListMap"))
+         (not (lib-provider-for "ConcurrentSkipListMap"))))
+(ok "1i. ...without loading it" (null? (loaded)))
 
 ;; ---- 2. each kind of reference loads its file, and only its file ----------------
 (ok "2a. a constructor: (java.util.ArrayDeque.)"
@@ -122,6 +130,50 @@
                     (and (has "zz.lazy.Absent") (has "lazy-shims-test/absent.ss") (has ":import"))))))))
 (ok "4b. ...and stays pending, so the next reference says the same"
     (eq? 'pending (cdr (assoc "lazy-shims-test/absent.ss" (lazy-shims-status)))))
+;; Class/forName of a class that is not there is a ClassNotFoundException on the
+;; JVM, an Exception, so feature detection (try (Class/forName x) (catch Exception
+;; _ fallback)) falls back. A constructor is the NoClassDefFoundError above.
+(define (forname-absent expr)
+  (ev (string-append "(try " expr " :no-error (catch Exception e [(.getName (class e)) (.getMessage e)]))")))
+(define (has-all? m needles)
+  (and (string? m)
+       (for-all (lambda (needle)
+                  (let loop ((i 0)) (and (<= (+ i (string-length needle)) (string-length m))
+                                         (or (string=? (substring m i (+ i (string-length needle))) needle)
+                                             (loop (+ i 1))))))
+                needles)))
+(ok "4c. Class/forName of a class whose shim is absent raises ClassNotFoundException, keeping the hint"
+    (let ((r (forname-absent "(Class/forName (str \"zz.lazy.\" \"Absent\"))")))
+      (and (pvec? r)
+           (equal? (pvec-nth-d r 0 #f) "java.lang.ClassNotFoundException")
+           (has-all? (pvec-nth-d r 1 "") '("zz.lazy.Absent" ":import")))))
+(ok "4d. ...and so does clojure.lang.RT/classForName"
+    (let ((r (forname-absent "(clojure.lang.RT/classForName (str \"zz.lazy.\" \"Absent\"))")))
+      (and (pvec? r) (equal? (pvec-nth-d r 0 #f) "java.lang.ClassNotFoundException"))))
+(ok "4e. the constructor is still a NoClassDefFoundError after a forName"
+    (let ((r (ev "(try (zz.lazy.Absent.) :no-error (catch Throwable e (.getName (class e))))")))
+      (equal? r "java.lang.NoClassDefFoundError")))
+
+;; ---- 4'. a load another thread finished between a lookup and its trigger ---------
+;; A lookup that misses and then finds the unit loaded may have looked before the
+;; load landed (or, on arm64, before its writes were visible here): the first time
+;; a thread finds a unit loaded, the trigger says look again; after that, a miss is
+;; real. lazy-shim-inlined! stands in for the other thread's finished load.
+(lazy-shims-index! '(("lazy-shims-test/done.ss" (classes "zz.lazy.Done"))))
+(lazy-load "lazy-shims-test/done.ss")
+(lazy-shim-inlined! "lazy-shims-test/done.ss")
+(ok "4f. a thread's first sight of a unit loaded elsewhere answers look-again"
+    (eq? #t (lazy-shims-class! "zz.lazy.Done")))
+(ok "4g. ...and the next miss is a real one" (not (lazy-shims-class! "zz.lazy.Done")))
+(lazy-shims-index! '(("lazy-shims-test/done2.ss" (classes "zz.lazy.Done2"))))
+(lazy-load "lazy-shims-test/done2.ss")
+(lazy-shim-inlined! "lazy-shims-test/done2.ss")
+(ok "4h. each thread gets its own first sight: another thread's does not count here"
+    (let ((m (make-mutex)) (c (make-condition)) (r 'unset))
+      (fork-thread (lambda () (let ((v (lazy-shims-class! "zz.lazy.Done2")))
+                                (with-mutex m (set! r v) (condition-broadcast c)))))
+      (with-mutex m (let loop () (when (eq? r 'unset) (condition-wait c m) (loop))))
+      (and (eq? r #t) (eq? #t (lazy-shims-class! "zz.lazy.Done2")))))
 
 ;; ---- 5. a record sharing a lazy class's short name ---------------------------------
 ;; babashka.process defines a ProcessBuilder record and builds the JDK's with
