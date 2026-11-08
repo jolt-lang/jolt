@@ -2393,6 +2393,10 @@
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def rpt (atom false)) (defmethod t/report :fail [m] (reset! rpt true)) (t/deftest t2 (t/is (= 1 2))) (t/run-tests) @rpt)" :expected "true"}
   ;; clojure.test — interned (:test meta) tests run inside :once fixtures
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def st (atom 0)) (t/use-fixtures :once (fn [f] (swap! st inc) (f))) (intern 'user 'itest (fn [] (t/is (= @st 1)))) (alter-meta! (var itest) assoc :test @(var itest)) (t/run-tests 'user) @st)" :expected "1"}
+  ;; A record literal calls the type's factory, so under *read-eval* false the
+  ;; reader refuses it as the JVM's CtorReader does, even with map->T loaded.
+  ;; It used to call map->T / ->T at read time.
+  {:suite "reader / read-eval" :expr "(do (defrecord RevBaz [a]) (let [n (atom 0) _ (alter-var-root (var map->RevBaz) (fn [f] (fn [m] (swap! n inc) (f m)))) err (fn [s] (try (binding [*read-eval* false] (read-string s)) (catch Exception e [(.getName (class e)) (ex-message e)])))] [(err \"#user.RevBaz{:a 1}\") (err \"#user.RevBaz[1]\") @n (:a (binding [*read-eval* true] (read-string \"#user.RevBaz[2]\")))]))" :expected "[[\"java.lang.RuntimeException\" \"Record construction syntax can only be used when *read-eval* == true\"] [\"java.lang.RuntimeException\" \"Record construction syntax can only be used when *read-eval* == true\"] 0 2]"}
   ;; io/copy honors :encoding both ways: it decodes a byte source into a Writer
   ;; and encodes a char source into a byte sink. It used to ignore it, so
   ;; (sh ... :out-enc "ISO-8859-1") decoded as UTF-8 and lost bytes to U+FFFD.
