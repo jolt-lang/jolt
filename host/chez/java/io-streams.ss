@@ -2835,12 +2835,22 @@
         ((and (htable? input) (jolt-truthy? (jolt-ref-get input (keyword "jolt" "input-stream"))))
          (drain-byte-stream input))
         (else #f)))
-(define (input-text input)
-  (cond ((string? input) input)
-        ((or (char-reader? input) (reader-jhost? input)) (drain-reader input))
-        ((jfile? input) (jolt-slurp input))
-        ((input-bytes input) => (lambda (bv) (decode-bytevector bv '())))
-        (else (jolt-str-render-one input))))
+;; INPUT as text. ENC (a charset name, UTF-8 when absent) decodes a byte
+;; source, as io/copy's :encoding does on the JVM: (copy in-stream writer
+;; :encoding "ISO-8859-1") reads one char per byte. A char source has no bytes
+;; to decode, so ENC does not touch it.
+(define (input-text input . enc)
+  (let ((enc (if (null? enc) '() enc)))
+    (cond ((string? input) input)
+          ((or (char-reader? input) (reader-jhost? input)) (drain-reader input))
+          ((jfile? input) (apply jolt-slurp input (if (null? enc) '() (list io-kw-encoding (car enc)))))
+          ((input-bytes input) => (lambda (bv) (decode-bytevector bv enc)))
+          (else (jolt-str-render-one input)))))
+;; INPUT's text encoded under ENC: what a char source becomes on its way to a
+;; byte sink, io/copy's (copy reader out-stream :encoding enc).
+(define (input-text-bytes input enc)
+  (let ((text (input-text input enc)))
+    (if (io-utf8? enc) (string->utf8 text) (charset-encode-bv text enc))))
 ;; A byte STREAM source as a binary input port to read a chunk at a time, with
 ;; the thunk that releases it, or #f for a source that is not a stream (a byte
 ;; array, a string, a shim table — those are already in memory). A jolt
@@ -2864,36 +2874,43 @@
           total
           (begin (sink! bv) (loop (+ total (bytevector-length bv))))))))
 ;; INPUT's bytes into SINK! a chunk at a time when it is a stream, else its
-;; bytes (or its text's UTF-8) whole; the byte count.
-(define (copy-bytes-into! input sink!)
+;; bytes (or its text encoded under ENC, UTF-8 by default) whole; the byte count.
+(define (copy-bytes-into! input sink! . enc)
   (let-values (((port release!) (stream-source-port input)))
     (if port
         (dynamic-wind (lambda () #f)
                       (lambda () (copy-port-chunks! port sink!))
                       release!)
-        (let ((bv (or (input-bytes input) (string->utf8 (input-text input)))))
+        (let ((bv (or (input-bytes input)
+                      (input-text-bytes input (if (null? enc) "UTF-8" (car enc))))))
           (sink! bv)
           (bytevector-length bv)))))
+;; OPTS is io.clj's :encoding (and :buffer-size, which has nothing to size
+;; here): the charset that decodes a byte source into a Writer and encodes a
+;; char source into a byte sink. It used to be ignored, so (sh ... :out-enc
+;; "ISO-8859-1") still decoded as UTF-8 and miscounted bytes.
 (define (jio-copy input output . opts)
+  (io-opts-check! opts)
+  (let ((enc (io-encoding opts)))
   (cond
     ((out-stream? output)
-     (copy-bytes-into! input (lambda (bv) (put-bytevector (out-stream-port output) bv))))
-    ((char-writer? output) (put-string (char-writer-port output) (input-text input)))
+     (copy-bytes-into! input (lambda (bv) (put-bytevector (out-stream-port output) bv)) enc))
+    ((char-writer? output) (put-string (char-writer-port output) (input-text input enc)))
     ;; A PrintStream is a java.io.OutputStream, so a byte source reaches it byte
     ;; for byte — (io/copy System/in System/out) is the cat. The other text sinks
     ;; are java.io.Writers and take characters, as they do on the JVM.
     ((print-stream? output)
      (let ((bv (input-bytes input)))
        (record-method-dispatch output "write"
-         (list->cseq (list (if bv (na-bv->bytearray bv) (input-text input)))))))
+         (list->cseq (list (if bv (na-bv->bytearray bv) (input-text input enc)))))))
     ((and (jhost? output) (text-sink-tag? (jhost-tag output)))
-     (record-method-dispatch output "write" (list->cseq (list (input-text input)))))
+     (record-method-dispatch output "write" (list->cseq (list (input-text input enc)))))
     ;; a reify/proxy OutputStream takes bytes through write(byte[],int,int), as
     ;; the JVM's copy loop hands them; a reify/proxy Writer takes the text
     ((user-out-stream? output)
-     (copy-bytes-into! input (lambda (bv) (user-out-stream-write! output bv))))
+     (copy-bytes-into! input (lambda (bv) (user-out-stream-write! output bv)) enc))
     ((user-writer? output)
-     (record-method-dispatch output "write" (list->cseq (list (input-text input)))))
+     (record-method-dispatch output "write" (list->cseq (list (input-text input enc)))))
     ((or (jfile? output) (string? output))
      ;; a string INPUT is its characters (io/copy's text source), never a filename
      (let-values (((src release!) (if (string? input) (values #f #f) (stream-source-port input))))
@@ -2908,15 +2925,15 @@
           => (lambda (bv)
                (with-port (open-file-output-port (path-of output) (file-options no-fail) (buffer-mode block))
                  (lambda (port) (put-bytevector port bv)))))
-         (else (jolt-spit output (input-text input))))))
+         (else (jolt-spit output (input-text input enc) io-kw-encoding enc)))))
     ;; a byte-output-stream shim (a host tagged-table with :jolt/output-stream,
     ;; e.g. http-client's ByteArrayOutputStream): write through its .write method,
     ;; byte-exact for a byte source.
     ((and (htable? output) (jolt-truthy? (jolt-ref-get output (keyword "jolt" "output-stream"))))
      (let ((bv (input-bytes input)))
        (record-method-dispatch output "write"
-         (list->cseq (list (if bv (na-bv->bytearray bv) (input-text input)))))))
-    (else (throw-jvm (quote IllegalArgumentException) "io/copy: unsupported output type")))
+         (list->cseq (list (if bv (na-bv->bytearray bv) (input-text input enc)))))))
+    (else (throw-jvm (quote IllegalArgumentException) "io/copy: unsupported output type"))))
   jolt-nil)
 (def-var! "clojure.java.io" "copy" jio-copy)
 

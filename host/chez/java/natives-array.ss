@@ -817,8 +817,20 @@
 
 ;; --- extend the collection dispatchers to see a jolt-array ------------------
 (register-count-arm! jolt-array? (lambda (c) (ja-len c)))
-(register-seq-arm! jolt-array?
-  (lambda (c) (list->cseq/k (ja->list c) (na-seq-kind c))))
+;; An array's seq is clojure.lang.ArraySeq: O(1) to make, each element read on
+;; demand, counted from its index. Walking the whole backing into a list first
+;; made (first big-array) or (take 4 bytes) allocate ~100 bytes per element of
+;; the array (#1548). Same shape as str->seq (seq.ss); the tail is one more
+;; ArraySeq of the same flavor, and reading through ja-ref means a later aset is
+;; seen by a seq not yet walked past it, as the JVM's is.
+(define (arr->seq a i)
+  (let ((n (ja-len a)))
+    (if (fx>=? i n) jolt-nil
+        (make-cseqn (ja-ref a i) (make-lazy-src lz-array-seq a i)
+                    (na-seq-kind a) jolt-nil (fx- n i)))))
+(define lz-array-seq
+  (register-lazy-src! 'array-seq (lambda (a i) (arr->seq a (fx+ i 1)))))
+(register-seq-arm! jolt-array? (lambda (c) (arr->seq c 0)))
 (define %na-nth jolt-nth)
 ;; RT.nth tests Indexed first and returns; this is the OUTERMOST jolt-nth
 ;; wrapper (natives-array loads last of the set! chain), so a pvec receiver

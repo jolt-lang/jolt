@@ -15,6 +15,11 @@
   {:suite "large-fx" :expr "(let [a (double-array 70000 1.5) b (aclone a)] (aset b 69999 2.5) (System/gc) [(aget a 69999) (aget b 69999) (java.util.Arrays/equals a b)])" :expected "[1.5 2.5 false]"}
   {:suite "large-fx" :expr "(let [a (int-array (range 70000))] (System/gc) [(aget a 0) (aget a 69999) (alength (java.util.Arrays/copyOf a 80000))])" :expected "[0 69999 80000]"}
   {:suite "large-fx" :expr "(let [a (long-array 70000)] (aset a 1 Long/MAX_VALUE) (System/gc) [(aget a 0) (aget a 1) (alength a)])" :expected "[0 9223372036854775807 70000]"}
+  ;; An array's seq is ArraySeq, lazy over the array (#1548): each element read on
+  ;; demand, so a seq not yet walked past an index sees a later aset there, and
+  ;; its rest is another ArraySeq of the same flavor.
+  {:suite "array-seq" :expr "(let [a (int-array [1 2 3 4 5]) s (seq a)] (aset a 2 99) [(vec s) (class s) (class (rest s)) (class (next s)) (rest (seq (int-array [1]))) (count (rest s)) (counted? (next s))])" :expected "[[1 2 99 4 5] clojure.lang.ArraySeq$ArraySeq_int clojure.lang.ArraySeq$ArraySeq_int clojure.lang.ArraySeq$ArraySeq_int () 4 true]"}
+  {:suite "array-seq" :expr "[(seq (double-array [1.5 2])) (map class (seq (float-array [1 2]))) (seq (char-array \"hi\")) (seq (boolean-array 2)) (seq (object-array [:a nil])) (seq (int-array 0)) (drop 3 (long-array [1 2 3 4 5])) (reduce + (byte-array [1 2 3]))]" :expected "[(1.5 2.0) (java.lang.Float java.lang.Float) (\\h \\i) (false false) (:a nil) nil (4 5) 6]"}
   {:suite "fnsrc-naming" :expr "(let [ctx (jolt.host/ctx-for-ns \"app.core\") e (fn [f] (jolt.backend-scheme/emit-top-form (jolt.analyzer/analyze ctx f (@#'jolt.analyzer/empty-env)))) ids (fn [s] (set (re-seq #\"jfn\\$[A-Za-z0-9_$./]*\" s))) a (ids (e (quote (defmacro m1 [x] ((fn [] 1)))))) b (ids (e (quote (defmacro m2 [x] ((fn [] 2))))))] (and (seq a) (seq b) (empty? (clojure.set/intersection a b))))" :expected "true"}
   {:suite "fnsrc-naming" :expr "(let [ctx (jolt.host/ctx-for-ns \"app.core\") s (jolt.backend-scheme/emit-top-form (jolt.analyzer/analyze ctx (quote (defmacro mm [x] ((fn [] 1)))) (@#'jolt.analyzer/empty-env)))] (boolean (re-find #\"jfn\\$app\\.core/mm\\$\" s)))" :expected "true"}
   {:suite "securerandom" :expr "(let [r (java.security.SecureRandom.)] (int? (.nextInt r)))" :expected "true"}
@@ -2393,6 +2398,17 @@
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def rpt (atom false)) (defmethod t/report :fail [m] (reset! rpt true)) (t/deftest t2 (t/is (= 1 2))) (t/run-tests) @rpt)" :expected "true"}
   ;; clojure.test — interned (:test meta) tests run inside :once fixtures
   {:suite "clojure.test" :expr "(do (require '[clojure.test :as t]) (t/reset-report!) (def st (atom 0)) (t/use-fixtures :once (fn [f] (swap! st inc) (f))) (intern 'user 'itest (fn [] (t/is (= @st 1)))) (alter-meta! (var itest) assoc :test @(var itest)) (t/run-tests 'user) @st)" :expected "1"}
+  ;; A record literal calls the type's factory, so under *read-eval* false the
+  ;; reader refuses it as the JVM's CtorReader does, even with map->T loaded.
+  ;; It used to call map->T / ->T at read time.
+  {:suite "reader / read-eval" :expr "(do (defrecord RevBaz [a]) (let [n (atom 0) _ (alter-var-root (var map->RevBaz) (fn [f] (fn [m] (swap! n inc) (f m)))) err (fn [s] (try (binding [*read-eval* false] (read-string s)) (catch Exception e [(.getName (class e)) (ex-message e)])))] [(err \"#user.RevBaz{:a 1}\") (err \"#user.RevBaz[1]\") @n (:a (binding [*read-eval* true] (read-string \"#user.RevBaz[2]\")))]))" :expected "[[\"java.lang.RuntimeException\" \"Record construction syntax can only be used when *read-eval* == true\"] [\"java.lang.RuntimeException\" \"Record construction syntax can only be used when *read-eval* == true\"] 0 2]"}
+  ;; io/copy honors :encoding both ways: it decodes a byte source into a Writer
+  ;; and encodes a char source into a byte sink. It used to ignore it, so
+  ;; (sh ... :out-enc "ISO-8859-1") decoded as UTF-8 and lost bytes to U+FFFD.
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [ba (byte-array [-23 65 -1]) w (java.io.StringWriter.)] (io/copy (java.io.ByteArrayInputStream. ba) w :encoding \"ISO-8859-1\") (let [s (.toString w) b (java.io.ByteArrayOutputStream.)] (io/copy s b :encoding \"ISO-8859-1\") [(count s) (mapv int s) (vec (.toByteArray b))])))" :expected "[3 [233 65 255] [-23 65 -1]]"}
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f (java.io.File/createTempFile \"jcp\" \".txt\") w (java.io.StringWriter.)] (io/copy \"é\" f :encoding \"ISO-8859-1\") (io/copy f w :encoding \"ISO-8859-1\") (let [r [(.length f) (.toString w)]] (.delete f) r)))" :expected "[1 \"é\"]"}
+  {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [b (java.io.ByteArrayOutputStream.)] (io/copy (java.io.StringReader. \"é\") b :encoding \"UTF-16BE\") (vec (.toByteArray b))))" :expected "[0 -23]"}
+  {:suite "io" :expr "(do (require '[clojure.java.shell :as sh]) (let [r (sh/sh \"printf\" \"\\\\351\\\\377A\" :out-enc \"ISO-8859-1\")] [(count (:out r)) (mapv int (:out r))]))" :expected "[3 [233 255 65]]"}
   ;; Stage A — binary io/copy File→File preserves bytes
   {:suite "io" :expr "(do (require '[clojure.java.io :as io]) (let [f1 (java.io.File/createTempFile \"jcp\" \".bin\") f2 (java.io.File/createTempFile \"jcp\" \".bin\")] (io/copy (byte-array [255 254 0 65]) f1) (io/copy f1 f2) (let [in (java.io.FileInputStream. f2) ba (byte-array 4) _ (.read in ba) result (mapv #(bit-and % 0xFF) (vec ba))] (.close in) (.delete f1) (.delete f2) result)))" :expected "[255 254 0 65]"}
   ;; Stage A — File.delete on non-empty directory returns false
