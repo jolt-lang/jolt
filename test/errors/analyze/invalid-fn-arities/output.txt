@@ -1,8 +1,8 @@
 error[analyze/invalid-fn-arities]: Can't have more than 1 variadic overload
-  --> ./test/errors/analyze/invalid-fn-arities/input.clj:3:1
+  --> ./test/errors/analyze/invalid-fn-arities/input.clj:5:3
    |
- 1 | (ns input)
- 2 | 
  3 | (defn f
-   | ^
+ 4 |   ([a & r] a)
+ 5 |   ([a b c & r] c))
+   |   ^^^^^^^^^^^^^^^
 exit: 1

@@ -1022,24 +1022,34 @@
 ;; variadic clause was not harmless -- dispatch takes the first clause that
 ;; accepts the count, so ([a & r] ...) ([a b c & r] ...) never reaches the second,
 ;; and a first clause that delegates to the second loops forever.
-(defn- check-fn-arities [arities]
-  (let [[variadic fixed]
-        (reduce (fn [[variadic fixed] a]
+(defn- check-fn-arities [clauses arities]
+  ;; Each error points at the clause that broke the rule, as the recur check
+  ;; points at the recur: the clause is the code the user wrote, where the fn
+  ;; form may be a macro's (defn's, or fn's own fn*) and pointing there drew a
+  ;; note blaming the macro. The reference reports the fn's position instead.
+  (let [arity-error (fn [clause msg]
+                      (throw (ex-info msg (diagnostic-data :analyze/invalid-fn-arities
+                                                           (or (form-position clause)
+                                                               (current-form-position))
+                                                           nil))))
+        [variadic fixed]
+        (reduce (fn [[variadic fixed] [clause a]]
                   (let [n (count (:params a))]
                     (cond
                       (:rest a)
                       (if variadic
-                        (analysis-error :analyze/invalid-fn-arities
-                                        "Can't have more than 1 variadic overload")
+                        (arity-error clause "Can't have more than 1 variadic overload")
                         [n fixed])
                       (contains? fixed n)
-                      (analysis-error :analyze/invalid-fn-arities
-                                      "Can't have 2 overloads with same arity")
+                      (arity-error clause "Can't have 2 overloads with same arity")
                       :else [variadic (conj fixed n)])))
-                [nil #{}] arities)]
-    (when (and variadic (some #(> % variadic) fixed))
-      (analysis-error :analyze/invalid-fn-arities
-                      "Can't have fixed arity function with more params than variadic function"))
+                [nil #{}] (map vector clauses arities))]
+    (when-let [clause (and variadic
+                           (some (fn [[clause a]]
+                                   (when (and (not (:rest a)) (> (count (:params a)) variadic))
+                                     clause))
+                                 (map vector clauses arities)))]
+      (arity-error clause "Can't have fixed arity function with more params than variadic function"))
     arities))
 
 (defn- analyze-fn [ctx form items env]
@@ -1054,6 +1064,7 @@
                (form-list? first*)
                (fn-node fn-name
                         (check-fn-arities
+                         rest-items
                          (mapv (fn [clause]
                                  (when-not (form-list? clause)
                                    (analysis-error :analyze/invalid-fn-parameters
@@ -2356,7 +2367,18 @@
                    _ (when mbox (reset! mbox mprev))
                    ebox *expansion-box*
                    prev (when ebox @ebox)
-                   _ (when ebox (reset! ebox [(form-sym-name head) form]))
+                   ;; fn, let, loop and letfn expand to their own special form
+                   ;; (fn → fn*) around the code the user wrote, and Clojure
+                   ;; documents them AS special forms. A diagnostic on that fn*
+                   ;; is about the user's form, so no expansion is recorded and
+                   ;; the report says nothing about "expanding the `fn` macro".
+                   ;; An enclosing user macro's record stays in force. Keyed on
+                   ;; the resolved core macro, not on the foo → foo* shape: a
+                   ;; user macro expanding to its own foo* keeps its note.
+                   own-sf? (contains? '#{clojure.core/fn clojure.core/let
+                                         clojure.core/loop clojure.core/letfn}
+                                      (macro-symbol ctx head))
+                   _ (when (and ebox (not own-sf?)) (reset! ebox [(form-sym-name head) form]))
                    node (analyze ctx expanded env)
                    _ (when ebox (reset! ebox prev))
                    p (form-position form)]
