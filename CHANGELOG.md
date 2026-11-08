@@ -212,9 +212,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused to start on anything older. It is pinned to 11, as the Intel build
   already was, and the release checks it.
 - **A Nix-built jolt gets the patched Chez.** The flake built on stock nixpkgs
-  Chez without jolt's kernel patches, so foreign calls with arguments past the
-  registers could receive them in the wrong stack slots, and `:blocking` calls
-  paid the stock collect-safe price.
+  Chez without jolt's kernel patches, so a struct argument passed on the stack
+  to a foreign function could land in the wrong slot, and `:blocking` calls paid
+  the stock collect-safe price.
 
 ## [0.8.24] - 2026-11-05
 
