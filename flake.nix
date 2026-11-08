@@ -145,47 +145,49 @@
         };
       });
 
-      devShells = forAllSystems (pkgs:
+      devShells = forAllSystems (
+        pkgs:
         let
           chez = patchedChez pkgs;
         in
         {
-        default = pkgs.mkShell {
-          packages = [
-            # Required by makeplus/makes during Makefile initialization.
-            pkgs.bash
-            pkgs.which
-            chez
-            pkgs.stdenv.cc
-            pkgs.gnumake
-            pkgs.pkg-config
-            pkgs.xxd
+          default = pkgs.mkShell {
+            packages = [
+              # Required by makeplus/makes during Makefile initialization.
+              pkgs.bash
+              pkgs.which
+              chez
+              pkgs.stdenv.cc
+              pkgs.gnumake
+              pkgs.pkg-config
+              pkgs.xxd
 
-            # Jolt deps.edn support
-            pkgs.git
-            pkgs.openssl
+              # Jolt deps.edn support
+              pkgs.git
+              pkgs.openssl
 
-            # Chez/Jolt native-link dependencies
-            pkgs.lz4
-            pkgs.zlib
-            pkgs.ncurses
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.libuuid ]
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ];
+              # Chez/Jolt native-link dependencies
+              pkgs.lz4
+              pkgs.zlib
+              pkgs.ncurses
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.libuuid ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ];
 
-          # Make uses this locked source-only input instead of cloning makes.
-          M = makes;
-          JOLT_CHEZ = "${chez}/bin/scheme";
-          CHEZ = "${chez}/bin/scheme";
-          JOLT_OPENSSL_LIBDIR = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
+            # Make uses this locked source-only input instead of cloning makes.
+            M = makes;
+            JOLT_CHEZ = "${chez}/bin/scheme";
+            CHEZ = "${chez}/bin/scheme";
+            JOLT_OPENSSL_LIBDIR = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
 
-          shellHook = ''
-            echo "Jolt development environment"
-            printf 'Chez: '
-            printf '(display (scheme-version)) (newline)\n' | scheme -q
-          '';
-        };
-      });
+            shellHook = ''
+              echo "Jolt development environment"
+              printf 'Chez: '
+              printf '(display (scheme-version)) (newline)\n' | scheme -q
+            '';
+          };
+        }
+      );
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
