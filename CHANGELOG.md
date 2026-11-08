@@ -49,6 +49,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `jolt.loader/url-search`, an unused alias of `jolt.loader/classpath`, and
   `jolt.winsock/windows-host?`, which nothing called. Use `classpath`.
 
+### Performance
+
+- **Rarely used host classes load on first use (#1517).** 0.8.24 loaded about
+  1.3 MB more runtime at boot, which cost Linux roughly 10 ms per start. Seven host shims
+  most programs never touch now load on first use: `Vector`, `Stack`,
+  `Hashtable`, `BitSet`, `PriorityQueue` and the `java.util.concurrent`
+  collections, `ArrayDeque`, `EnumSet`/`EnumMap`, `Semaphore` and
+  `ReentrantReadWriteLock`, the atomic arrays, `java.util.zip`'s gzip streams
+  and `ProcessBuilder`. `instance?` and `isa?` answer without loading them, and
+  `jolt build` only includes the ones an app names. A computed class name that
+  reaches one left out raises `NoClassDefFoundError` suggesting an `:import`.
+
+  ```
+  x86_64 Linux     before   after
+  jolt -e nil      205 ms   200 ms   (RSS 116 -> 107 MB)
+  built hello app  130 ms   125 ms
+  ```
+
 ### Fixed
 
 - An error in a `fn`, `let`, `loop` or `letfn` form no longer carries the note
@@ -173,6 +191,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed as the innermost frame, sometimes with a caller of its own that never ran.
 - A host fault after a caught throw no longer reports the fn that threw as its
   innermost frame. That fn had already left, but its site was still in the slot.
+
+- **`seq` on an array is lazy, as `ArraySeq` is (#1548).** It copied the whole
+  array into a list first, about 100 bytes per element, so `(first big-array)`
+  or `(take 4 bytes)` on a large array exhausted the heap or overflowed the
+  stack. Elements are now read on demand, so a later `aset` shows through a
+  seq that has not reached that index yet, as on the JVM.
+- **`clojure.java.io/copy` honors `:encoding`.** A byte source copied to a
+  Writer always decoded as UTF-8, and a char source copied to a byte sink always
+  encoded as UTF-8. `clojure.java.shell/sh` passes `:out-enc` through `copy`, so
+  `(sh ... :out-enc "ISO-8859-1")` turned every non-UTF-8 byte into U+FFFD.
+- **Record literals refuse to run under `*read-eval*` false.** `#my.ns.Rec{...}`
+  and `#my.ns.Rec[...]` call the record's factory at read time, and jolt called
+  it even when `*read-eval*` was false. They now throw the JVM's `Record
+  construction syntax can only be used when *read-eval* == true`. EDN reading
+  is unchanged.
+
+- **The arm64 macOS binary starts on macOS 11 again.** The native link took the
+  build runner's OS as its minimum, so 0.8.24's binary needed macOS 14 and
+  refused to start on anything older. It is pinned to 11, as the Intel build
+  already was, and the release checks it.
+- **A Nix-built jolt gets the patched Chez.** The flake built on stock nixpkgs
+  Chez without jolt's kernel patches, so foreign calls with arguments past the
+  registers could receive them in the wrong stack slots, and `:blocking` calls
+  paid the stock collect-safe price.
 
 ## [0.8.24] - 2026-11-05
 

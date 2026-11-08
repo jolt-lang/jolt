@@ -1053,16 +1053,6 @@
            :jvm ":present"
            :jolt ":absent"}
    :note "Runtime.totalMemory/freeMemory/maxMemory ARE present over Chez's collector accounting. What is missing is the rest of JMX. Affects criterium's benchmark reporting, not its timing."}
-  ;; A recv error reads as EOF: io-call classifies the captured errno itself and
-  ;; returns only the syscall result, so ECONNRESET reaches the read side as a
-  ;; bare -1 with no way to raise Java's SocketException for it.
-  {:category :host-model
-   :behavior "(.read (.getInputStream socket)) on a reset connection — requires (require 'jolt.socket)"
-   :jvm "throws java.net.SocketException (\"Connection reset\")"
-   :jolt "-1 (EOF)"
-   :check :prose
-   :why "needs a live TCP peer that resets the connection"
-   :note "errno IS captured atomically per syscall; io-call just consumes it for retry classification instead of returning it, so error and orderly shutdown collapse to EOF. Writes DO throw (send's return distinguishes); only the read side is permissive."}
   ;; java.net's address-family preferences are fixed at the JDK's defaults. The
   ;; JVM reads java.net.preferIPv6Addresses and java.net.preferIPv4Stack once, at
   ;; startup, from -D flags; jolt has no such flags to read them from, and answers
