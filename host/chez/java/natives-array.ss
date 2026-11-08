@@ -821,15 +821,33 @@
 ;; demand, counted from its index. Walking the whole backing into a list first
 ;; made (first big-array) or (take 4 bytes) allocate ~100 bytes per element of
 ;; the array (#1548). Same shape as str->seq (seq.ss); the tail is one more
-;; ArraySeq of the same flavor, and reading through ja-ref means a later aset is
-;; seen by a seq not yet walked past it, as the JVM's is.
+;; ArraySeq of the same flavor. A cell's head is the array itself, under an
+;; sk-array-cells kind: cseq-first (seq.ss) reads the array on every first, at the
+;; length less the cell's count, so a later aset is seen by any cell at that index,
+;; as the JVM's is.
 (define (arr->seq a i)
   (let ((n (ja-len a)))
     (if (fx>=? i n) jolt-nil
-        (make-cseqn (ja-ref a i) (make-lazy-src lz-array-seq a i)
-                    (na-seq-kind a) jolt-nil (fx- n i)))))
+        (make-cseqn a (make-lazy-src lz-array-seq a i) (na-cells-kind a) jolt-nil (fx- n i)))))
+(define (na-cells-kind a) (fx+ (na-seq-kind a) (fx- sk-array-cells-seq sk-array-seq)))
 (define lz-array-seq
   (register-lazy-src! 'array-seq (lambda (a i) (arr->seq a (fx+ i 1)))))
+(define (array-cells-index a cnt) (fx- (ja-len a) cnt))
+;; reduce over an array seq from the cell with CNT left: the elements straight off
+;; the array, reduced honored and unwrapped, as reduce-seq's own loop does
+(define (array-seq-reduce f acc a cnt)
+  (let ((direct? (procedure? f)))
+    (let rec ((acc acc) (i (array-cells-index a cnt)))
+      (cond ((jolt-reduced? acc) (jolt-reduced-val acc))
+            ((fx>=? i (ja-len a)) acc)
+            (else (let ((x (ja-ref a i)))
+                    (rec (if direct? (jolt-site-kept (f acc x)) (jolt-invoke2 f acc x)) (fx+ i 1))))))))
+;; first's read: in range by construction (a cell's count is 1..length), so the
+;; backing is read once and indexed without ja-ref's bounds check
+(define (array-cells-first a cnt)
+  (let* ((v (jolt-array-vec a)) (x (ja-backing-ref v (fx- (ja-backing-len v) cnt))))
+    (if (flonum? x) (na-fl-elem a x) x)))
+(set-array-cells-ops! array-cells-first array-seq-reduce)
 (register-seq-arm! jolt-array? (lambda (c) (arr->seq c 0)))
 (define %na-nth jolt-nth)
 ;; RT.nth tests Indexed first and returns; this is the OUTERMOST jolt-nth

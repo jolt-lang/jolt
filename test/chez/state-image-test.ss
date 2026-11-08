@@ -209,6 +209,10 @@
      "(do (aset $rt 1 3) (vec $rt))"                         "[9223372036854775807 3]")
 (rtu "byte-array is writable" "(byte-array 2)"
      "(do (aset $rt 0 200) (vec $rt))"                       "[-56 0]")
+;; an array seq's cells name their array (seq.ss array-head) and read it on first:
+;; a restored one still reads the restored array, the one it travelled with
+(rtu "array seq" "(let [a (int-array [1 2 3]) s (seq a)] (next s) [a s])"
+     "(do (aset (first $rt) 1 8) [(vec (second $rt)) (count (rest (second $rt)))])" "[[1 8 3] 2]")
 (rtu "StringBuilder" "(StringBuilder. \"ab\")"
      "(do (.append $rt \"c\") (str $rt))"                    "\"abc\"")
 

@@ -2838,11 +2838,13 @@
 ;; INPUT as text. ENC (a charset name, UTF-8 when absent) decodes a byte
 ;; source, as io/copy's :encoding does on the JVM: (copy in-stream writer
 ;; :encoding "ISO-8859-1") reads one char per byte. A char source has no bytes
-;; to decode, so ENC does not touch it.
+;; to decode, so ENC does not touch it. A char[] is a char source too: it fell
+;; through to the printed form, so (io/copy (char-array "ab") w) wrote "#object[...]".
 (define (input-text input . enc)
   (let ((enc (if (null? enc) '() enc)))
     (cond ((string? input) input)
           ((or (char-reader? input) (reader-jhost? input)) (drain-reader input))
+          ((char-array-arg? input) (char-array->string input))
           ((jfile? input) (apply jolt-slurp input (if (null? enc) '() (list io-kw-encoding (car enc)))))
           ((input-bytes input) => (lambda (bv) (decode-bytevector bv enc)))
           (else (jolt-str-render-one input)))))

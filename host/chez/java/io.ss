@@ -2314,7 +2314,9 @@
       ((string=? name "isHidden")       (list (let ((nm (path-last-segment p)))
                                                 (if (and (> (string-length nm) 0) (char=? (string-ref nm 0) #\.)) #t #f))))
       ((string=? name "mkdir")          (list (guard (e (#t #f)) (and (not (file-exists? fp)) (begin (mkdir fp) #t)))))
-      ((string=? name "mkdirs")         (list (if (mkdirs! fp) #t #f)))
+      ;; File.mkdirs is true only when it made the directory: one already there
+      ;; is false, as exists() short-circuits it on the JVM.
+      ((string=? name "mkdirs")         (list (if (and (not (file-exists? fp)) (mkdirs! fp)) #t #f)))
       ((string=? name "delete")         (list (if (delete-path! fp) #t #f)))
       ((string=? name "deleteOnExit")   (list jolt-nil))
       ((string=? name "setReadable")    (list (jfile-set-permission! fp 4 args)))

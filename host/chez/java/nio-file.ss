@@ -1649,15 +1649,53 @@
 (define (nio-parent-of fp)
   (let loop ((i (- (string-length fp) 1)))
     (cond ((< i 0) "") ((char=? (string-ref fp i) #\/) (substring fp 0 i)) (else (loop (- i 1))))))
-(define (nio-blocking-ancestor fp)   ; nearest existing ancestor that is not a directory
-  (let loop ((p (nio-parent-of fp)))
-    (cond ((or (string=? p "") (string=? p "/")) #f)
-          ((file-exists? p) (and (not (file-directory? p)) p))
-          (else (loop (nio-parent-of p))))))
-(define (nio-missing-ancestors fp)   ; the not-yet-existing path chain, shallowest first
-  (let loop ((p fp) (acc '()))
-    (cond ((or (string=? p "") (string=? p "/") (file-exists? p)) acc)
-          (else (loop (nio-parent-of p) (cons p acc))))))
+;; Files.createDirectories, as the JDK writes it. One mkdir of the target first:
+;; success, or EEXIST on what is now a directory, is the answer, and EEXIST on
+;; anything else is FileAlreadyExistsException naming the path as given. Any
+;; other failure climbs to the nearest ancestor that exists -- access(2), where
+;; ENOENT means keep climbing and any other errno is raised for that ancestor --
+;; and makes each name below it in turn, raising whatever the first one that
+;; fails raised. Those paths are absolute, as the JDK's are after toAbsolutePath.
+;; mkdirs! here swallowed every error, so a read-only parent answered success
+;; with nothing made, and a regular file in the way was FileAlreadyExists where
+;; the JDK reports mkdir's ENOTDIR. EEXIST on a directory is fine at every step,
+;; so losing a race to make one is not an error.
+(define (nio-try-mkdir fp attrs)     ; 0 or mkdir's errno; Windows' other failure is -1
+  (let ((mode (nio-attrs-mode attrs #o777)))
+    (if c-mkdir
+        (io-mkdir fp mode)
+        (guard (e (#t (if (file-exists? fp) io-EEXIST -1))) (mkdir fp mode) 0))))
+(define (nio-mkdir-checked! fp shown attrs)   ; the JDK's createAndCheckIsDirectory
+  (let ((err (nio-try-mkdir fp attrs)))
+    (cond ((eqv? err 0) (nio-apply-attrs-umask! fp attrs))
+          ((and (eqv? err io-EEXIST) (file-directory? fp)) (void))
+          ((eqv? err -1) (nio-fs-call fp (lambda () (mkdir fp)) shown))
+          (else (nio-errno-throw shown #f err)))))
+(define (nio-access-errno p)          ; checkAccess: 0, or the errno it failed with
+  (if (and c-access (not (nio-windows?)))
+      (let-values (((r err) (io-call+errno (c-access p 0))))
+        (if (= r 0) 0 err))
+      (if (file-exists? p) 0 nio-ENOENT)))
+(define (nio-up p)                    ; parent directory, "/" above "/x", "" above a root
+  (let ((q (nio-parent-of p)))
+    (if (and (string=? q "") (fx>? (string-length p) 1) (char=? (string-ref p 0) #\/)) "/" q)))
+(define (nio-create-directories! fp shown attrs)
+  (let ((err (nio-try-mkdir fp attrs)))
+    (cond
+      ((eqv? err 0) (nio-apply-attrs-umask! fp attrs))
+      ((eqv? err io-EEXIST) (unless (file-directory? fp) (nio-already-exists shown)))
+      (else
+       (let ((top (let loop ((q (nio-up fp)))
+                    (cond ((string=? q "")
+                           (nio-fs-throw "java.nio.file.FileSystemException" fp #f
+                                         "Unable to determine if root directory exists"))
+                          (else (let ((e (nio-access-errno q)))
+                                  (cond ((eqv? e 0) q)
+                                        ((eqv? e nio-ENOENT) (loop (nio-up q)))
+                                        (else (nio-errno-throw q #f e)))))))))
+         (for-each (lambda (d) (nio-mkdir-checked! d d attrs))
+                   (let loop ((q fp) (acc '()))
+                     (if (or (string=? q top) (string=? q "")) acc (loop (nio-up q) (cons q acc))))))))))
 ;; is the dest present as a link (even broken) or a real file?
 (define (nio-dest-present? d) (or (file-exists? d) (nio-is-symlink? d)))
 
@@ -1739,17 +1777,7 @@
                                  (unless (eqv? err 0) (nio-errno-throw (nio-shown p) #f err)))
                                (nio-apply-attrs-umask! fp attrs) (->path p))))
         (cons "createDirectories" (lambda (p . attrs)
-                                    (let ((fp (nfp p)))
-                                      ;; an existing directory is a no-op; anything else in the
-                                      ;; way -- at the target or above it -- is the JVM's
-                                      ;; FileAlreadyExistsException, named for what blocks
-                                      (when (and (file-exists? fp) (not (file-directory? fp)))
-                                        (nio-already-exists (nio-shown p)))
-                                      (let ((blocked (nio-blocking-ancestor fp)))
-                                        (when blocked (nio-already-exists blocked)))
-                                      (let ((missing (nio-missing-ancestors fp)))
-                                        (nio-fs-call fp (lambda () (mkdirs! fp)))
-                                        (for-each (lambda (d) (nio-apply-attrs-umask! d attrs)) missing)))
+                                    (nio-create-directories! (nfp p) (nio-shown p) attrs)
                                     (->path p)))
         (cons "move" (lambda (src dst . opts)
                        (let ((s (nfp src)) (d (nfp dst)))
