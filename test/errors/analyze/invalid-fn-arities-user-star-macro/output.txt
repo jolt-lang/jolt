@@ -1,0 +1,9 @@
+error[analyze/invalid-fn-arities]: Can't have 2 overloads with same arity
+  --> ./test/errors/analyze/invalid-fn-arities-user-star-macro/input.clj:6:8
+   |
+ 4 | (defmacro wrap [] `(wrap* (fn ([a#] a#) ([b#] b#))))
+ 5 | 
+ 6 | (def g (wrap))
+   |        ^^^^^^
+   = note: raised while expanding the `wrap` macro
+exit: 1
