@@ -36,6 +36,11 @@
    "flatten-empties" [1 #(first (flatten (concat (repeat N []) [[1]])))]
    "interleave-drop" [(quot N 2) #(first (drop N (interleave (range (inc N)) (range (inc N)))))]
    "lazy-returns-lazy" [:done #(let [f (fn f [n] (lazy-seq (if (pos? n) (f (dec n)) (list :done))))] (first (f N)))]
+   ;; An array's seq is lazy (ArraySeq): taking from a big one must not walk it
+   ;; whole into a list first, ~100 bytes an element (#1548).
+   "array-take"      [[0 0 0 0] #(vec (take 4 (byte-array (* 10 N))))]
+   "array-first"     [0 #(first (long-array (* 3 N)))]
+   "array-map"       [[1 1] #(vec (take 2 (map inc (int-array (* 3 N)))))]
    "cons-after-skip" [N #(let [f (fn f [xs] (lazy-seq (when-let [s (seq xs)] (if (= (first s) N) (cons (first s) nil) (f (rest s))))))] (first (f (range (inc N)))))]})
 
 (defn -main [& [only]]

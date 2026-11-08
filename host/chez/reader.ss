@@ -1586,6 +1586,12 @@
        (let-values (((tok j) (rdr-read-token s i end)))
          (let-values (((form k) (rdr-read-form s j end)))
            (when (rdr-eof? form) (rdr-eof-error s j "EOF while reading"))
+           ;; A record literal runs the type's factory, so it is code execution
+           ;; at read time and the JVM's CtorReader refuses it under
+           ;; *read-eval* false, as #= is refused above. Without this, a read
+           ;; that promised not to run the source called a loaded ns/map->T.
+           (when (and (rdr-record-tag? tok) (not (rdr-edn-mode)) (not (rdr-read-eval?)))
+             (rdr-error s i "Record construction syntax can only be used when *read-eval* == true"))
            (if (rdr-record-tag? tok)       ; #ns.Type{..}/[..] record literal
                (values (rdr-record-ctor-form tok form) k)
                (values (rdr-make-tagged (keyword #f (string-append "#" tok)) form) k))))))))
