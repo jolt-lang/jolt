@@ -284,14 +284,9 @@
             (map (lambda (p) (proc-sh-quote (string-append (car p) "=" (cdr p)))) pairs))
           " "))))
 
-;; The child's cwd: a JVM child inherits user.dir (the user's cwd), but jolt's OS
-;; cwd is the repo root its launcher cd'd to — the user's logical cwd is JOLT_PWD.
-;; So default the child to JOLT_PWD and resolve a relative :dir against it (like
-;; io.ss project-relative), matching ProcessBuilder.directory semantics.
-(define (proc-effective-dir dir)
-  (if dir
-      (project-relative dir)
-      (let ((pwd (getenv "JOLT_PWD"))) (and pwd (> (string-length pwd) 0) pwd))))
+;; The child's cwd is proc-effective-dir (io.ss): JOLT_PWD, or a relative :dir
+;; resolved against it. It lives there because loader.ss's jolt.host/sh asks it
+;; too, and this file loads on first reference (lazy-shims.ss).
 
 (define (proc-build-shell-command st)
   (let* ((cmd     (proc-pb-cmd st))

@@ -180,7 +180,7 @@
   (lambda (v items) (for-each (lambda (x) (al-push! (vec-al v) x)) items)))
 (register-image-codec! "java.util.Hashtable" '("jx-hashtable")
   (lambda (h) (vector (vector (vector-length (ht-buckets h)) (ht-lf h))
-                      (codec-kvs (map (lambda (e) (cons (he-key e) (he-val e))) (with-ht h (ht-entry-list h))))))
+                      (codec-kvs (map (lambda (e) (cons (he-key e) (he-val e))) (ht-entry-list/locked h)))))
   (lambda (hd) (make-jx-hashtable (vector-ref hd 0) (vector-ref hd 1)))
   (lambda (h items)
     (let loop ((xs items) (acc '()))

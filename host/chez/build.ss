@@ -746,6 +746,87 @@
                            (if (char=? (string-ref s i) #\") i (scan (+ i 1)))))))
              (and q2 (substring s 7 q2)))))))
 
+;; (lazy-load "PATH") lines: a host shim that loads on first reference
+;; (lazy-shims.ss). Same rules as bld-load-path — a single-line top-level form
+;; with a string literal — so a call that merely mentions lazy-load is not one.
+(define (bld-lazy-load-path line)
+  (let ((s (let trim ((i 0) (n (string-length line)))
+             (if (and (< i n) (memv (string-ref line i) '(#\space #\tab)))
+                 (trim (+ i 1) n)
+                 (if (< i n) (substring line i n) "")))))
+    (and (>= (string-length s) 13)                ; "(lazy-load \"" minimum
+         (string=? (substring s 0 11) "(lazy-load ")
+         (char=? (string-ref s 11) #\")
+         (let ((end (string-length s)))
+           (let ((q2 (let scan ((i 12))
+                       (if (>= i end) #f
+                           (if (char=? (string-ref s i) #\") i (scan (+ i 1)))))))
+             (and q2 (substring s 12 q2)))))))
+
+;; What a (lazy-load "PATH") line becomes in what the build emits:
+;;   'source   — itself: a dev image (make-devboot.ss) loads the file from the
+;;               checkout on first reference, as a source boot does;
+;;   'binary   — (lazy-load "PATH" 'built): the jolt binary, which carries the
+;;               file as an embedded fasl (build-jolt.ss) and has no checkout;
+;;   a procedure of PATH — a `jolt build` program: the file inlined where the form
+;;               stood when it answers #t (the program names something the file
+;;               provides, bld-lazy-shims-for-app), else the 'built form, which
+;;               reports the class as left out if anything reaches it.
+(define bld-lazy-shims-mode 'source)
+(define (bld-emit-lazy-load! path out depth)
+  (let ((include? (and (procedure? bld-lazy-shims-mode) (bld-lazy-shims-mode path))))
+    (cond
+      (include?
+       (bld-inline-line (string-append "(load \"" path "\")") out depth)
+       (let ((l (string-append "(lazy-shim-inlined! \"" path "\")\n")))
+         (put-string out l)
+         (bld-segment-count! out (string-length l))))
+      (else
+       (let ((l (if (eq? bld-lazy-shims-mode 'source)
+                    (string-append "(lazy-load \"" path "\")\n")
+                    (string-append "(lazy-load \"" path "\" 'built)\n"))))
+         (put-string out l)
+         (bld-segment-count! out (string-length l)))))))
+
+;; The lazy files a `jolt build` program carries: every one when it keeps the
+;; compiler (it can eval anything), else those whose triggers — a class, a static
+;; member, a method name (lazy-shims-index.ss) — appear as a string literal in the
+;; program's emitted code, which is how the back end spells every class and member
+;; reference. The runtime's own code reaches no lazy class by name
+;; (tools/lazy-shims-gen.ss rule "eager-name"), so the program's code is the whole
+;; question.
+(define (bld-lazy-shims-for-app app-strs keep-all?)
+  (if keep-all?
+      (lambda (path) #t)
+      (let ((lits (make-hashtable string-hash string=?)))
+        (for-each (lambda (s) (bld-string-literals! s lits)) app-strs)
+        (lambda (path)
+          (let ((row (hashtable-ref lazy-shim-index-tbl path #f)))
+            (or (not row)          ; a file the index does not know: keep it
+                (exists (lambda (n) (hashtable-ref lits n #f))
+                        (append (lazy-shim-row-field row 'classes)
+                                (map cadr (lazy-shim-row-field row 'statics))
+                                (lazy-shim-row-field row 'methods)))))))))
+;; Every string literal in Scheme source text S, into table H. Enough of the
+;; reader for emitted code: "…" with \ escapes, #\c characters skipped, ; comments.
+(define (bld-string-literals! s h)
+  (let ((n (string-length s)))
+    (let loop ((i 0))
+      (when (< i n)
+        (let ((c (string-ref s i)))
+          (cond
+            ((and (char=? c #\#) (< (+ i 1) n) (char=? (string-ref s (+ i 1)) #\\)) (loop (+ i 3)))
+            ((char=? c #\;) (let skip ((j i)) (if (or (>= j n) (char=? (string-ref s j) #\newline)) (loop j) (skip (+ j 1)))))
+            ((char=? c #\")
+             (let str ((j (+ i 1)) (esc #f))
+               (cond ((>= j n) (loop j))
+                     ((char=? (string-ref s j) #\\) (str (+ j 2) #t))
+                     ((char=? (string-ref s j) #\")
+                      (unless esc (hashtable-set! h (substring s (+ i 1) j) #t))
+                      (loop (+ j 1)))
+                     (else (str (+ j 1) esc)))))
+            (else (loop (+ i 1)))))))))
+
 ;; runtime source for PATH: from the binary's embedded store if present (a
 ;; self-contained jolt building an app, with no jolt checkout on disk), else read
 ;; from disk (running from a source checkout). build-jolt embeds every runtime
@@ -877,23 +958,26 @@
 ;; Emit one line to OUT, recursively inlining a `(load ...)` of a repo file.
 (define (bld-inline-line line out depth)
   (when (> depth 50) (error 'jolt-build "load nesting too deep"))
-  (let ((p (bld-load-path line)))
-    (if p
-        (let ((st (bld-make-form-state)))
-          ;; a full segment ends at the first top-level boundary, not the file's end
-          (for-each (lambda (l)
-                      (bld-inline-line l out (+ depth 1))
-                      (when (bld-scan-line! st l) (bld-segment-break! out)))
-                    (bld-file-lines p))
-          (unless (bld-form-state-clean? st)
-            (error 'jolt-build "lost track of top-level forms (segment breaks) in" p st))
-          (when bld-profile-inline?
-            (bld-emit-startup-profile-mark! out (string-append "inlined " p)))
-          ;; the end of an inlined file is a top-level boundary (the profile
-          ;; mark above relies on the same)
-          (bld-segment-break! out))
-        (begin (put-string out line) (put-string out "\n")
-               (bld-segment-count! out (+ (string-length line) 1))))))
+  (let ((p (bld-load-path line)) (lp (bld-lazy-load-path line)))
+    (cond
+      (lp (bld-emit-lazy-load! lp out depth))
+      (p
+       (let ((st (bld-make-form-state)))
+         ;; a full segment ends at the first top-level boundary, not the file's end
+         (for-each (lambda (l)
+                     (bld-inline-line l out (+ depth 1))
+                     (when (bld-scan-line! st l) (bld-segment-break! out)))
+                   (bld-file-lines p))
+         (unless (bld-form-state-clean? st)
+           (error 'jolt-build "lost track of top-level forms (segment breaks) in" p st))
+         (when bld-profile-inline?
+           (bld-emit-startup-profile-mark! out (string-append "inlined " p)))
+         ;; the end of an inlined file is a top-level boundary (the profile
+         ;; mark above relies on the same)
+         (bld-segment-break! out)))
+      (else
+       (put-string out line) (put-string out "\n")
+       (bld-segment-count! out (+ (string-length line) 1))))))
 
 ;; Inline the runtime manifest, dispatching on the manifest tags. core-strs (the
 ;; shaken clojure.core defs, or #f) replaces the 'prelude blob; drop-compiler? (a
@@ -2966,6 +3050,9 @@
         ;; 3. flat source = runtime + app + launcher. When split, runtime.ss holds
         ;; the runtime half and flat.ss holds everything the app contributes; the
         ;; two are compiled separately and loaded into the boot in that order.
+        ;; the host shims that load on first reference: inlined when the program
+        ;; names what they provide, left out otherwise (bld-lazy-shims-for-app)
+        (set! bld-lazy-shims-mode (bld-lazy-shims-for-app app-strs (not drop-compiler?)))
         (when split?
           (let ((out (open-output-file rt-ss 'replace)))
             ;; No mode in the content: the runtime half compiles under ONE fixed
@@ -2978,6 +3065,7 @@
           (if split?
               (put-string out ";; app half — the runtime half is compiled separately (runtime.ss)\n")
               (bld-emit-runtime out drop-compiler? core-strs))
+          (set! bld-lazy-shims-mode 'source)
           ;; Load native libs, bake embedded resources, and point source roots at
           ;; the build-time app roots — all BEFORE the app forms. The app's
           ;; top-level forms run at binary startup (Sbuild_heap), and they include

@@ -1,6 +1,5 @@
 ;; enum-colls.ss — java.util.EnumSet and java.util.EnumMap over the enum model
-;; (java/enums.ss), and Comparators$NaturalOrderComparator declared as the enum
-;; it is on the JDK.
+;; (java/enums.ss).
 ;;
 ;; Both hold one slot per constant of their element (key) enum, indexed by
 ;; ordinal, so iteration is ordinal order and membership is one table lookup.
@@ -15,9 +14,6 @@
 ;; values and entrySet are live views over the map.
 ;;
 ;; Loaded after jutil-colls.ss and tree-map.ss.
-
-(register-enum-class! "java.util.Comparators$NaturalOrderComparator"
-  (list (cons "INSTANCE" tm-natural-order)))
 
 ;; ---- the element universe ---------------------------------------------------------
 (define (ecoll-class-info cls)

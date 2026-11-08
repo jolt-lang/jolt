@@ -3183,6 +3183,12 @@
 ;; record-method-dispatch (records.ss) and reuses natives-str helpers (str-trim,
 ;; ascii-string-down, re-split, str-split-drop-trailing) + the regex-t accessors.
 (load "host/chez/java/java-parse.ss")           ; Long/parseLong & co: the NumberFormatException family (shared)
+;; Host shims that load on first reference rather than with the boot: rt.ss names
+;; them (lazy-load "PATH") below, and the index says what each one registers so a
+;; miss on any of it loads the file (#1517). Ahead of host-static.ss, whose lookups
+;; ask it.
+(load "host/chez/lazy-shims.ss")
+(load "host/chez/lazy-shims-index.ss")
 (load "host/chez/java/host-static.ss")          ; registries + jhost + the emit entry points
 (load "host/chez/java/enums.ss")                ; the enum model every enum shim declares through
 (load "host/chez/java/string-builder.ss")       ; StringBuilder/StringBuffer over jhost (shared)
@@ -3191,7 +3197,13 @@
 (load "host/chez/java/class-model.ss")          ; java.lang.Class values + the class model core reads (shared)
 (load "host/chez/java/jutil-colls.ss")         ; java.util Map/Set/List shims to =, hash, pr, str (shared)
 (load "host/chez/java/tree-map.ss")            ; TreeMap / TreeSet + Comparator objects (shared)
-(load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
+;; Comparators$NaturalOrderComparator is an enum on the JDK, and Comparator/naturalOrder
+;; answers its one constant. Declared here rather than in tree-map.ss, which Gambit
+;; includes without the enum model, or enum-colls.ss, which loads on first reference
+;; and would re-class a comparator the boot already hands out.
+(register-enum-class! "java.util.Comparators$NaturalOrderComparator"
+  (list (cons "INSTANCE" tm-natural-order)))
+(lazy-load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
 (load "host/chez/java/linked-hash.ss")          ; LinkedHashMap / LinkedHashSet
 (load "host/chez/java/host-static-classes.ss")  ; instantiable host object classes
 ;; clojure.math and the IEEE 754 bit patterns (dbl->bits, flt->bits, ...).
@@ -3259,10 +3271,13 @@
 ;; Collections.unmodifiable* / synchronized* views and List/Set/Map.of — after
 ;; coll-defaults.ss, whose inherited members the views reach through.
 (load "host/chez/java/jutil-views.ss")
+;; The views and spliterators the boot's own collections answer through: HashMap's
+;; keySet / values / entrySet, List.reversed(), SequencedMap's views, Spliterator.
+(load "host/chez/java/jutil-coll-views.ss")
 ;; Vector, Stack, Hashtable, BitSet, PriorityQueue and the java.util.concurrent
 ;; collections, over the jx registry jutil-views.ss keeps.
-(load "host/chez/java/jutil-concurrent.ss")
-(load "host/chez/java/array-deque.ss")        ; java.util.ArrayDeque, a ring buffer
+(lazy-load "host/chez/java/jutil-concurrent.ss")
+(lazy-load "host/chez/java/array-deque.ss")        ; java.util.ArrayDeque, a ring buffer
 
 ;; java.io byte/char streams (FileInputStream/…/ByteArrayOutputStream/Buffered*)
 ;; over Chez ports. After io.ss (extends its slurp/__close/reader-jhost?) and
@@ -3293,7 +3308,7 @@
 (load "host/chez/java/zip-out-streams.ss")
 
 ;; GZIPInputStream and GZIPOutputStream on those frames.
-(load "host/chez/java/zip-gzip.ss")
+(lazy-load "host/chez/java/zip-gzip.ss")
 
 ;; ZipEntry, and ZipInputStream on the in-stream frame.
 (load "host/chez/java/zip-entries.ss")
@@ -3322,7 +3337,7 @@
 ;; (host-new + the ctor table it probes), records-interop.ss (instance-check) and
 ;; io-streams.ss, so a proxy over a stream class finds its constructor.
 (load "host/chez/java/proxy.ss")
-(load "host/chez/java/process.ss")
+(lazy-load "host/chez/java/process.ss")
 
 ;; clojure.lang.PersistentQueue: a functional queue + EMPTY static.
 ;; Chains seq/count/empty?/peek/pop/conj/sequential?/class/instance?/printer, so
@@ -3343,8 +3358,8 @@
 
 ;; Semaphore and ReentrantReadWriteLock on the same wait protocol (jolt-cv-wait),
 ;; and AtomicIntegerArray / AtomicLongArray beside the scalar atomics.
-(load "host/chez/java/concurrency-sync.ss")
-(load "host/chez/java/atomic-arrays.ss")
+(lazy-load "host/chez/java/concurrency-sync.ss")
+(lazy-load "host/chez/java/atomic-arrays.ss")
 
 ;; clojure.core.async: real-thread blocking channels + go/go-loop/
 ;; thread macros, def-var!'d into clojure.core.async. After concurrency.ss (reuses

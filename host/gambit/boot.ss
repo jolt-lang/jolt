@@ -60,6 +60,10 @@
 (##include "../chez/multimethods.ss")
 (##include "../chez/java/jdk-interfaces.ss")
 (##include "../chez/java/class-hierarchy.ss")
+;; Gambit has no host shims that load on first reference, so the Chez lazy-shims.ss
+;; hooks the records layer asks (an unloaded class's ctor or method) answer #f.
+(define (lazy-shims-provides? name) #f)
+(define (lazy-shims-method! name) #f)
 (##include "records-gambit.ss")  ;; GENERATED from records.ss (make gambitgen) — phase wall, see gen-records.ss
 (##include "../chez/java/records-interop.ss")
 (##include "../chez/natives-meta.ss")

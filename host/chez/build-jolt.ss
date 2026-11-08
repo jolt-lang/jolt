@@ -166,11 +166,28 @@
       (when (and path (not (hashtable-ref seen path #f)))
         (hashtable-set! seen path #t)
         (set! order (cons path order))
-        (for-each (lambda (l) (walk (bld-load-path l))) (bld-file-lines path))))
+        ;; a (lazy-load "…") file is inlined into a program that names it, so
+        ;; build reads it like any other
+        (for-each (lambda (l) (walk (or (bld-load-path l) (bld-lazy-load-path l))))
+                  (bld-file-lines path))))
     (for-each (lambda (entry) (when (string? entry) (walk (bld-load-path entry))))
               bld-runtime-manifest)
     (for-each (lambda (kv) (walk (bld-load-path (cdr kv)))) bld-tagged-loads)
     (reverse order)))
+
+;; The (lazy-load "…") files of the runtime, in the order rt.ss declares them.
+;; jolt itself carries each one as a fasl in the stdlib blob, named "lazy:PATH"
+;; (lazy-shims.ss lazy-shim-load-code!), compiled beside the stdlib namespaces.
+(define (jb-collect-lazy-paths)
+  (let ((all (jb-collect-load-paths)))
+    (let loop ((ps all) (acc '()))
+      (if (null? ps)
+          (reverse acc)
+          (loop (cdr ps)
+                (append (reverse (filter values (map bld-lazy-load-path (bld-file-lines (car ps))))) acc))))))
+(define (jb-lazy-fasl-name path) (string-append "lazy:" path))
+(define (jb-lazy-fasl-name? name)
+  (and (> (string-length name) 5) (string=? (substring name 0 5) "lazy:")))
 
 (define (jb-emit-runtime-embeds out)
   (for-each (lambda (path) (jb-blob-add! path (read-file-string path)))
@@ -479,6 +496,13 @@
                      (set! skips (cons (cons name (cdr r)) skips))))))))
         (jb-stdlib-candidates))
       (set-ns-loaded-hook! (lambda (name file) #f)))
+    ;; the lazy host shims compile from their own source: they are Scheme already
+    (for-each
+      (lambda (path)
+        (let ((so (string-append jb-stdlib-dir "/" (jb-sanitize (jb-lazy-fasl-name path)) ".so")))
+          (set! order (cons (cons (jb-lazy-fasl-name path) so) order))
+          (set! to-compile (cons (cons path so) to-compile))))
+      (jb-collect-lazy-paths))
     (jb-write-stdlib-compile-script! (reverse to-compile))
     (values (reverse order) (reverse skips)
             ;; the captured Scheme is what the fasls are compiled from, so its
@@ -502,7 +526,8 @@
 ;; the Scheme they compile from goes in here, and a stdlib change still moves it.
 (define (jb-emit-stdlib-fasls! out)
   (define-values (embedded skips scm-hash) (jb-compile-stdlib-fasls!))
-  (jb-stdlib-manifest-check! (append (map car embedded) (map car skips)))
+  (jb-stdlib-manifest-check! (append (filter (lambda (n) (not (jb-lazy-fasl-name? n))) (map car embedded))
+                                     (map car skips)))
   (set! jb-stdlib-index (map car embedded))
   (set! jb-stdlib-sos embedded)
   (put-string out "\n;; === embedded stdlib fasls (per-namespace, in one C-array blob) ===\n")
@@ -569,7 +594,8 @@
 ;; Filesystem-safe form of an ns name for per-ns .scm/.so under the build dir.
 (define (jb-sanitize name)
   (list->string
-    (map (lambda (c) (cond ((char=? c #\.) #\_) ((char=? c #\/) #\_) (else c)))
+    ;; ':' too: a lazy shim's entry is "lazy:PATH", and Windows refuses a ':' in a name
+    (map (lambda (c) (cond ((char=? c #\.) #\_) ((char=? c #\/) #\_) ((char=? c #\:) #\_) (else c)))
          (string->list name))))
 
 (display "build-jolt: emitting flat source\n")
@@ -581,7 +607,10 @@
   (put-string out (string-append ";; === baked version ===\n(define jolt-baked-version-early "
                                  (ei-str-lit jb-version) ")\n"))
   ;; full runtime + compiler image: keep the compiler (jolt evals at runtime).
+  ;; Its lazy host shims stay lazy, read from the embedded fasls (lazy-shims.ss).
+  (set! bld-lazy-shims-mode 'binary)
   (bld-emit-runtime out #f #f)
+  (set! bld-lazy-shims-mode 'source)
   ;; The build subsystem (build.ss + emit-image.ss + dce.ss, fully inlined) and the
   ;; runtime .ss source embeds it reads are needed ONLY by `jolt build`. As eager
   ;; top-level forms they cost ~45ms at EVERY startup (build.ss defines ~18ms, the

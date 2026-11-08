@@ -1077,7 +1077,7 @@
           (id? (make-eq-hashtable))
           (else (make-hashtable hm-hash jolt=2)))))
 ;; A removal detaches what was handed out for the key (an entrySet node keeps
-;; the value it last saw, as the JDK's removed Node does); jutil-concurrent.ss
+;; the value it last saw, as the JDK's removed Node does); jutil-coll-views.ss
 ;; installs the hook once a map has handed one out.
 (define hm-detach-hook #f)
 (define (hm-drop-key! self k)
@@ -1307,7 +1307,7 @@
                           m)))
         (cons "clear" (lambda (self) (hm-clear! self) jolt-nil))
         (cons "putAll" (lambda (self m) (hm-copy-into-ordered! self m) jolt-nil))
-        ;; keySet / values / entrySet are live views (jutil-concurrent.ss), as
+        ;; keySet / values / entrySet are live views (jutil-coll-views.ss), as
         ;; the JDK's HashMap$KeySet / $Values / $EntrySet are
         (cons "keySet" (lambda (self) (jutil-view self 0 (lambda () (make-jhost "jx-hm-keyset" (vector self))))))
         (cons "values" (lambda (self) (jutil-view self 1 (lambda () (make-jhost "jx-hm-values" (vector self))))))
@@ -1457,7 +1457,7 @@
 
 ;; java.util.concurrent.ConcurrentHashMap — the HashMap shim's storage under a
 ;; tag of its own, so it is its own class: a ConcurrentMap, refusing null keys
-;; and values, whose views are weakly consistent (jutil-concurrent.ss).
+;; and values, whose views are weakly consistent (jutil-coll-views.ss).
 ;; (get a-chm k) reads the map (clojure.core/get).
 ;;
 ;; Every write, and every walk of the key order, holds the map's private monitor
@@ -2004,7 +2004,7 @@
 ;; A Map seqs through its entrySet's iterator on the JVM (RT.seq), so a seq
 ;; yields the map's own live entries (HashMap$Node, ConcurrentHashMap$MapEntry
 ;; ...), as a LinkedHashMap's already does, not detached MapEntry pairs
-;; (jolt-12zv0). The entrySet views (jutil-concurrent.ss) build them from the
+;; (jolt-12zv0). The entrySet views (jutil-coll-views.ss) build them from the
 ;; key order, never back through here.
 (define (hm-seq-entries self)
   (let ((t (jhost-tag self)))
@@ -3494,6 +3494,7 @@
   (make-jolt-array (list->vector (seq->list (jolt-seq (class-constructor-list cls))))
                    "java.lang.reflect.Constructor"))
 (define (class-constructor-list cls)
+  (lazy-shims-class! (jclass-name cls))
   (let* ((nm (jclass-name cls))
          (dbl (hashtable-ref chez-record-dbl-tbl nm #f)))
     (cond

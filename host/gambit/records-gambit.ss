@@ -2249,14 +2249,16 @@
                     (a0 a1 a2 a3 a4 a5 a6 a7) (0 1 2 3 4 5 6 7)))
                  (else (lambda args (slow args))))))
     (class-ctor-set! tag ctor)
-    (when (or (not (hashtable-ref
-                     class-ctors-tbl
+    (when (and (not (lazy-shims-provides?
+                      (symbol-t-name name-sym)))
+               (or (not (hashtable-ref
+                          class-ctors-tbl
+                          (symbol-t-name name-sym)
+                          #f))
+                   (hashtable-ref
+                     chez-simple-name-tag
                      (symbol-t-name name-sym)
-                     #f))
-              (hashtable-ref
-                chez-simple-name-tag
-                (symbol-t-name name-sym)
-                #f))
+                     #f)))
       (class-ctor-set! (symbol-t-name name-sym) ctor))
     (jolt-with-mutex
       rec-tbl-mu
@@ -3444,9 +3446,14 @@
         (apply d obj args)
         (let ((f (and class-ext-fallback-hook
                       (class-ext-fallback-hook obj method-name))))
-          (if f
-              (apply jolt-invoke f obj args)
-              (no-method-throw method-name obj (length args)))))))
+          (cond
+            (f (apply jolt-invoke f obj args))
+            ((lazy-shims-method! method-name)
+             (record-method-dispatch
+               obj
+               method-name
+               (apply jolt-vector args)))
+            (else (no-method-throw method-name obj (length args))))))))
 
 (define (no-method-throw method-name obj . maybe-argc)
   (let* ((argc (if (null? maybe-argc) 0 (car maybe-argc)))

@@ -1281,6 +1281,8 @@
 ;; procedure as well as the name, and pairing them here is one table walk instead
 ;; of a walk plus a lookup per hit.
 (define (class-static-members cls want-methods?)
+  ;; reflection reads the registries a lazy host shim fills when it loads
+  (lazy-shims-class! cls)
   (let ((h (lookup-class class-statics-tbl cls)))
     (if (not h) '()
         (let-values (((ks vs) (hashtable-entries h)))
@@ -1469,6 +1471,7 @@
 ;; tag -> (proto -> (method-name -> fn)); a name declared by two protocols
 ;; surfaces once per declaration, as it does on the JVM for two interfaces.
 (define (class-method-array cls)
+  (lazy-shims-class! (jclass-name cls))
   (let* ((nm (jclass-name cls))
          (fqn (jch-fqn-of-simple nm))
          (ti (or (hashtable-ref type-registry nm #f)

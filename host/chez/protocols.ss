@@ -745,8 +745,12 @@
     ;; files — BUT never clobber a built-in host class of the same simple name (an
     ;; unrelated ns's bare (Name. …) must still reach the built-in). A prior deftype
     ;; (tracked in chez-simple-name-tag) is fine to overwrite (last def wins / redef).
-    (when (or (not (hashtable-ref class-ctors-tbl (symbol-t-name name-sym) #f))
-              (hashtable-ref chez-simple-name-tag (symbol-t-name name-sym) #f))
+    ;; A host class whose shim loads on first reference (lazy-shims.ss) counts as
+    ;; built in although its ctor is not in the table yet: babashka.process's
+    ;; ProcessBuilder record must not take a bare (ProcessBuilder. cmd) elsewhere.
+    (when (and (not (lazy-shims-provides? (symbol-t-name name-sym)))
+               (or (not (hashtable-ref class-ctors-tbl (symbol-t-name name-sym) #f))
+                   (hashtable-ref chez-simple-name-tag (symbol-t-name name-sym) #f)))
       (class-ctor-set! (symbol-t-name name-sym) ctor))
     ;; index the tag so a cross-ns extend-protocol resolves the bare type name.
     (jolt-with-mutex rec-tbl-mu

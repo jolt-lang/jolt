@@ -1102,6 +1102,9 @@
   (and (forname-qualified? nm)
        (or (hashtable-ref class-statics-tbl nm #f)
            (hashtable-ref class-ctors-tbl nm #f)
+           ;; a class whose host shim loads on first reference: forName is one
+           ;; (reflection on the Class reads the registries it fills)
+           (lazy-shims-class! nm)
            (jch-known-exact? nm))))
 (define (forname-qualified? nm)
   (let loop ((i 0))
