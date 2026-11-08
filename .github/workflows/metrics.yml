@@ -1,0 +1,49 @@
+name: metrics
+
+# Publishes the findings as a report. The one thing that fails the build is
+# unused code beyond ci/metrics-allow.edn (ci/metrics-gate.clj).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: metrics-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # pinned: a new release would change what CI runs on
+  JOLT_VERSION: v0.8.24
+  METRICS_SHA: c23aec7f5071c60b6ba9be61dd93afa3583a375f
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hotspots read churn from the git history
+          fetch-depth: 0
+      - name: Install jolt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y liblz4-1 zlib1g libtinfo6
+          curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash -s -- --version "$JOLT_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run jolt-metrics
+        run: |
+          jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
+            -m metrics.cli . metrics-report.md --top 50
+          # the summary stops before the long per-file tables
+          awk '/^## Cleanup candidates/{exit} {print}' metrics-report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Check for unused code
+        run: |
+          jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
+            -m metrics.cli . metrics-report.edn --format edn
+          jolt ci/metrics-gate.clj metrics-report.edn ci/metrics-allow.edn
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: metrics-report
+          path: metrics-report.md

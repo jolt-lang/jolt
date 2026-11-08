@@ -66,14 +66,6 @@
     (when-let [v (get (tasks-of tasks) sym)]
       (if (map? v) (assoc v :name sym) {:name sym :task v}))))
 
-(defn overrides-builtin?
-  "Does the project declare a task by this name that asks to shadow the jolt
-  command of the same name? babashka's :override-builtin, verbatim: a task only
-  displaces a built-in command when it says so, so adding a `run` or `path`
-  task cannot silently break the CLI."
-  [tasks name]
-  (boolean (:override-builtin (entry tasks name))))
-
 ;; --- the task namespace ------------------------------------------------------
 
 (defn- eval-body [form]

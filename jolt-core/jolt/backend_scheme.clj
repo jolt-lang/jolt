@@ -19,8 +19,7 @@
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
-            [jolt.ir :as ir]
-            [clojure.set :as set]))
+            [jolt.ir :as ir]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to

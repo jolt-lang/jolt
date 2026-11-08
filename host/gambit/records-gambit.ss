@@ -3027,66 +3027,317 @@
 
 (define (rd-ref-trim-history r) jolt-nil)
 
+(define (rd-type-token-method obj tag method-name rest)
+  (let ((hit (and rd-class-method-hook
+                  (rd-class-method-hook tag method-name rest))))
+    (if (pair? hit)
+        (car hit)
+        (let ((jvm (jch-munge-segments tag)))
+          (cond
+            ((or (string=? method-name "getName")
+                 (string=? method-name "getCanonicalName")
+                 (string=? method-name "getTypeName"))
+             jvm)
+            ((string=? method-name "getSimpleName") (last-dot jvm))
+            ((string=? method-name "toString")
+             (string-append "class " jvm))
+            (else (dispatch-miss obj method-name rest)))))))
+
+(define (rd-multifn-method obj method-name rest)
+  (cond
+    ((string=? method-name "addMethod")
+     (jolt-with-mutex
+       mm-tbl-mu
+       (hashtable-set!
+         (jolt-multifn-methods obj)
+         (car rest)
+         (cadr rest))
+       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+     obj)
+    ((string=? method-name "removeMethod")
+     (jolt-with-mutex
+       mm-tbl-mu
+       (hashtable-delete! (jolt-multifn-methods obj) (car rest))
+       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+     obj)
+    ((string=? method-name "getMethod")
+     (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f)
+         jolt-nil))
+    ((string=? method-name "getMethodTable")
+     (let* ((tbl (jolt-multifn-methods obj))
+            (kv (jolt-with-mutex
+                  mm-tbl-mu
+                  (let-values (((ks vs) (hashtable-entries tbl)))
+                    (cons ks vs))))
+            (ks (car kv))
+            (vs (cdr kv)))
+       (let loop ((i 0) (m (jolt-hash-map)))
+         (if (fx>=? i (vector-length ks))
+             m
+             (loop
+               (fx+ i 1)
+               (jolt-assoc1 m (vector-ref ks i) (vector-ref vs i)))))))
+    ((string=? method-name "toString")
+     (jolt-str-render-one obj))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-record-map-method obj method-name rest)
+  (cond
+    ((string=? method-name "valAt")
+     (if (null? (cdr rest))
+         (jolt-get obj (car rest) jolt-nil)
+         (jolt-get obj (car rest) (cadr rest))))
+    ((string=? method-name "assoc")
+     (jolt-assoc1 obj (car rest) (cadr rest)))
+    ((string=? method-name "without")
+     (jolt-dissoc obj (car rest)))
+    ((string=? method-name "containsKey")
+     (if (jolt-truthy? (jolt-contains? obj (car rest))) #t #f))
+    ((string=? method-name "cons") (jolt-conj1 obj (car rest)))
+    ((string=? method-name "count") (jolt-count obj))
+    ((string=? method-name "seq") (jolt-seq obj))
+    ((string=? method-name "equiv")
+     (if (jolt= obj (car rest)) #t #f))
+    ((string=? method-name "entryAt")
+     (if (jolt-truthy? (jolt-contains? obj (car rest)))
+         (make-map-entry
+           (car rest)
+           (jolt-get obj (car rest) jolt-nil))
+         jolt-nil))
+    (else jolt-nil)))
+
+(define (rd-reify-method obj method-name rest rest-args)
+  (let ((f (reify-method-ref obj method-name))
+        (d (jreify-delegate obj)))
+    (cond
+      (f (invoke-declared-method f obj method-name rest))
+      (d (record-method-dispatch d method-name rest-args))
+      ((and abstract-class-method-hook
+            (abstract-class-method-hook obj method-name)) =>
+       (lambda (m) (apply m obj rest)))
+      (else (dispatch-miss obj method-name rest)))))
+
+(define (rd-iterator-method obj method-name rest)
+  (cond
+    ((string=? method-name "hasNext")
+     (not (jolt-nil? (jolt-seq (jiterator-cur obj)))))
+    ((string=? method-name "next")
+     (let ((s (jolt-seq (jiterator-cur obj))))
+       (if (jolt-nil? s)
+           (throw-jvm 'NoSuchElementException "iterator exhausted")
+           (let ((v (jolt-first s)))
+             (jiterator-cur-set! obj (jolt-rest s))
+             v))))
+    ((and (string=? method-name "forEachRemaining")
+          (pair? rest))
+     (let loop ()
+       (let ((s (jolt-seq (jiterator-cur obj))))
+         (if (jolt-nil? s)
+             jolt-nil
+             (begin
+               (jiterator-cur-set! obj (jolt-rest s))
+               (jolt-fi-call (car rest) "accept" (jolt-first s))
+               (loop))))))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-keyword-method obj method-name rest)
+  (cond
+    ((string=? method-name "sym")
+     (jolt-symbol (keyword-t-ns obj) (keyword-t-name obj)))
+    ((string=? method-name "getName") (keyword-t-name obj))
+    ((string=? method-name "getNamespace")
+     (or (keyword-t-ns obj) jolt-nil))
+    ((string=? method-name "toString")
+     (string-append
+       ":"
+       (if (keyword-t-ns obj)
+           (string-append (keyword-t-ns obj) "/")
+           "")
+       (keyword-t-name obj)))
+    ((string=? method-name "hashCode")
+     (jolt-s32
+       (+ (java-symbol-hash
+            (keyword-t-name obj)
+            (keyword-t-ns obj))
+          2654435769)))
+    ((string=? method-name "equals")
+     (and (pair? rest) (eq? obj (car rest))))
+    ((string=? method-name "invoke")
+     (apply jolt-invoke obj rest))
+    ((and (string=? method-name "applyTo")
+          (pair? rest)
+          (null? (cdr rest)))
+     (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-symbol-method obj method-name rest)
+  (cond
+    ((string=? method-name "getName") (symbol-t-name obj))
+    ((string=? method-name "getNamespace")
+     (or (symbol-t-ns obj) jolt-nil))
+    ((string=? method-name "toString")
+     (string-append
+       (if (symbol-t-ns obj)
+           (string-append (symbol-t-ns obj) "/")
+           "")
+       (symbol-t-name obj)))
+    ((string=? method-name "equals")
+     (and (pair? rest) (jolt=2 obj (car rest))))
+    ((string=? method-name "hashCode")
+     (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
+    ((string=? method-name "invoke")
+     (apply jolt-invoke obj rest))
+    ((and (string=? method-name "applyTo")
+          (pair? rest)
+          (null? (cdr rest)))
+     (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-namespace-method obj method-name rest)
+  (cond
+    ((or (string=? method-name "name")
+         (string=? method-name "getName"))
+     (jolt-symbol #f (jns-name obj)))
+    ((string=? method-name "toString") (jns-name obj))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-var-method obj method-name rest)
+  (cond
+    ((or (string=? method-name "ns")
+         (string=? method-name "-ns"))
+     (intern-ns! (var-cell-ns obj)))
+    ((or (string=? method-name "sym")
+         (string=? method-name "-sym"))
+     (jolt-symbol #f (var-cell-name obj)))
+    ((string=? method-name "toSymbol")
+     (jolt-symbol (var-cell-ns obj) (var-cell-name obj)))
+    ((string=? method-name "toString")
+     (string-append
+       "#'"
+       (var-cell-ns obj)
+       "/"
+       (var-cell-name obj)))
+    ((string=? method-name "getRawRoot") (var-cell-root obj))
+    ((string=? method-name "invoke")
+     (apply jolt-invoke obj rest))
+    ((and (string=? method-name "applyTo")
+          (pair? rest)
+          (null? (cdr rest)))
+     (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
+    ((string=? method-name "isMacro") (var-cell-macro? obj))
+    ((string=? method-name "isBound") (jolt-var-bound-one? obj))
+    ((string=? method-name "hasRoot")
+     (not (jolt-var-unbound? (var-cell-root obj))))
+    ((string=? method-name "isDynamic") (var-cell-dynamic? obj))
+    ((string=? method-name "isPublic")
+     (not (rd-var-meta-flag? obj "private")))
+    ((string=? method-name "getTag")
+     (rd-var-meta-get obj "tag"))
+    ((or (string=? method-name "deref")
+         (string=? method-name "get"))
+     (var-cell-deref obj))
+    ((and (string=? method-name "getThreadBinding")
+          (null? rest))
+     (jolt-var-thread-binding obj))
+    ((string=? method-name "setDynamic")
+     (var-cell-dynamic?-set!
+       obj
+       (if (pair? rest) (jolt-truthy? (car rest)) #t))
+     obj)
+    ((string=? method-name "setMacro")
+     (var-cell-macro?-set! obj #t)
+     (var-cell-meta-set!
+       obj
+       (jolt-assoc
+         (or (rd-var-meta obj) (jolt-hash-map))
+         jolt-kw-var-macro
+         #t))
+     jolt-nil)
+    ((string=? method-name "bindRoot")
+     (jolt-alter-var-root obj (lambda (_) (car rest)))
+     (var-cell-macro?-set! obj #f)
+     (let ((m (rd-var-meta obj)))
+       (when m
+         (var-cell-meta-set!
+           obj
+           (jolt-dissoc2 m jolt-kw-var-macro))))
+     jolt-nil)
+    ((string=? method-name "alterRoot")
+     (apply
+       jolt-alter-var-root
+       obj
+       (car rest)
+       (rd-args->list (cadr rest))))
+    ((and (string=? method-name "unbindRoot") (null? rest))
+     (var-root-set!
+       obj
+       (make-jolt-var-unbound
+         (var-cell-ns obj)
+         (var-cell-name obj)))
+     jolt-nil)
+    ((and (string=? method-name "set") (pair? rest))
+     (jolt-set-var! obj (car rest)))
+    ((and (string=? method-name "fn") (null? rest))
+     (let ((v (var-cell-deref obj)))
+       (if (jolt-truthy?
+             (jolt-invoke1 (var-deref "clojure.core" "ifn?") v))
+           v
+           (jolt-throw
+             (jolt-host-throwable
+               "java.lang.ClassCastException"
+               (string-append
+                 "class "
+                 (guard (c (#t "?")) (jolt-class-name v))
+                 " cannot be cast to class clojure.lang.IFn"))))))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-char-method obj method-name rest)
+  (cond
+    ((string=? method-name "toString") (string obj))
+    ((string=? method-name "charValue") obj)
+    ((string=? method-name "hashCode") (char->integer obj))
+    ((string=? method-name "equals")
+     (and (pair? rest)
+          (char? (car rest))
+          (char=? obj (car rest))))
+    ((string=? method-name "compareTo")
+     (let ((o (car rest)))
+       (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
+    (else (dispatch-miss obj method-name rest))))
+
+(define (rd-coll-mutator-call obj method-name rest)
+  (let ((empty? (jolt-nil? (jolt-seq obj))))
+    (cond
+      ((string=? method-name "removeIf")
+       (if (and (not empty?)
+                (let loop ((s (jolt-seq obj)))
+                  (and (not (jolt-nil? s))
+                       (or (jolt-truthy?
+                             (jolt-fi-call
+                               (car rest)
+                               "test"
+                               (seq-first s)))
+                           (loop (jolt-seq (seq-more s)))))))
+           (throw-jvm 'UnsupportedOperationException "")
+           #f))
+      ((not empty?) (throw-jvm 'UnsupportedOperationException ""))
+      ((or (string=? method-name "removeFirst")
+           (string=? method-name "removeLast"))
+       (throw-jvm 'NoSuchElementException ""))
+      ((or (string=? method-name "replaceAll")
+           (string=? method-name "sort"))
+       jolt-nil)
+      (else (throw-jvm 'UnsupportedOperationException "")))))
+
 (define (record-method-dispatch-base obj method-name
          rest-args)
   (let ((rest (method-rest-args->list rest-args)))
     (cond
       ((and (procedure? obj) (deftype-ctor-tag obj)) =>
        (lambda (tag)
-         (let ((hit (and rd-class-method-hook
-                         (rd-class-method-hook tag method-name rest))))
-           (if (pair? hit)
-               (car hit)
-               (let ((jvm (jch-munge-segments tag)))
-                 (cond
-                   ((or (string=? method-name "getName")
-                        (string=? method-name "getCanonicalName")
-                        (string=? method-name "getTypeName"))
-                    jvm)
-                   ((string=? method-name "getSimpleName") (last-dot jvm))
-                   ((string=? method-name "toString")
-                    (string-append "class " jvm))
-                   (else (dispatch-miss obj method-name rest))))))))
+         (rd-type-token-method obj tag method-name rest)))
       ((jolt-multifn? obj)
-       (cond
-         ((string=? method-name "addMethod")
-          (jolt-with-mutex
-            mm-tbl-mu
-            (hashtable-set!
-              (jolt-multifn-methods obj)
-              (car rest)
-              (cadr rest))
-            (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-          obj)
-         ((string=? method-name "removeMethod")
-          (jolt-with-mutex
-            mm-tbl-mu
-            (hashtable-delete! (jolt-multifn-methods obj) (car rest))
-            (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
-          obj)
-         ((string=? method-name "getMethod")
-          (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f)
-              jolt-nil))
-         ((string=? method-name "getMethodTable")
-          (let* ((tbl (jolt-multifn-methods obj))
-                 (kv (jolt-with-mutex
-                       mm-tbl-mu
-                       (let-values (((ks vs) (hashtable-entries tbl)))
-                         (cons ks vs))))
-                 (ks (car kv))
-                 (vs (cdr kv)))
-            (let loop ((i 0) (m (jolt-hash-map)))
-              (if (fx>=? i (vector-length ks))
-                  m
-                  (loop
-                    (fx+ i 1)
-                    (jolt-assoc1
-                      m
-                      (vector-ref ks i)
-                      (vector-ref vs i)))))))
-         ((string=? method-name "toString")
-          (jolt-str-render-one obj))
-         (else (dispatch-miss obj method-name rest))))
+       (rd-multifn-method obj method-name rest))
       ((and (jrec? obj)
             (jrec-method-arity obj method-name (+ 1 (length rest)))) =>
        (lambda (f)
@@ -3100,123 +3351,17 @@
               method-name
               '("valAt" "assoc" "without" "containsKey" "cons" "count"
                  "seq" "equiv" "entryAt" "empty")))
-       (cond
-         ((string=? method-name "valAt")
-          (if (null? (cdr rest))
-              (jolt-get obj (car rest) jolt-nil)
-              (jolt-get obj (car rest) (cadr rest))))
-         ((string=? method-name "assoc")
-          (jolt-assoc1 obj (car rest) (cadr rest)))
-         ((string=? method-name "without")
-          (jolt-dissoc obj (car rest)))
-         ((string=? method-name "containsKey")
-          (if (jolt-truthy? (jolt-contains? obj (car rest))) #t #f))
-         ((string=? method-name "cons") (jolt-conj1 obj (car rest)))
-         ((string=? method-name "count") (jolt-count obj))
-         ((string=? method-name "seq") (jolt-seq obj))
-         ((string=? method-name "equiv")
-          (if (jolt= obj (car rest)) #t #f))
-         ((string=? method-name "entryAt")
-          (if (jolt-truthy? (jolt-contains? obj (car rest)))
-              (make-map-entry
-                (car rest)
-                (jolt-get obj (car rest) jolt-nil))
-              jolt-nil))
-         (else jolt-nil)))
+       (rd-record-map-method obj method-name rest))
       ((jreify? obj) =>
        (lambda (_)
-         (let ((f (reify-method-ref obj method-name))
-               (d (jreify-delegate obj)))
-           (cond
-             (f (invoke-declared-method f obj method-name rest))
-             (d (record-method-dispatch d method-name rest-args))
-             ((and abstract-class-method-hook
-                   (abstract-class-method-hook obj method-name)) =>
-              (lambda (m) (apply m obj rest)))
-             (else (dispatch-miss obj method-name rest))))))
+         (rd-reify-method obj method-name rest rest-args)))
       ((string? obj) (jolt-string-method method-name obj rest))
-      ((jiterator? obj)
-       (cond
-         ((string=? method-name "hasNext")
-          (not (jolt-nil? (jolt-seq (jiterator-cur obj)))))
-         ((string=? method-name "next")
-          (let ((s (jolt-seq (jiterator-cur obj))))
-            (if (jolt-nil? s)
-                (throw-jvm 'NoSuchElementException "iterator exhausted")
-                (let ((v (jolt-first s)))
-                  (jiterator-cur-set! obj (jolt-rest s))
-                  v))))
-         ((and (string=? method-name "forEachRemaining")
-               (pair? rest))
-          (let loop ()
-            (let ((s (jolt-seq (jiterator-cur obj))))
-              (if (jolt-nil? s)
-                  jolt-nil
-                  (begin
-                    (jiterator-cur-set! obj (jolt-rest s))
-                    (jolt-fi-call (car rest) "accept" (jolt-first s))
-                    (loop))))))
-         (else (dispatch-miss obj method-name rest))))
+      ((jiterator? obj) (rd-iterator-method obj method-name rest))
       ((string=? method-name "iterator")
        (make-jiterator (jolt-seq obj)))
-      ((keyword-t? obj)
-       (cond
-         ((string=? method-name "sym")
-          (jolt-symbol (keyword-t-ns obj) (keyword-t-name obj)))
-         ((string=? method-name "getName") (keyword-t-name obj))
-         ((string=? method-name "getNamespace")
-          (or (keyword-t-ns obj) jolt-nil))
-         ((string=? method-name "toString")
-          (string-append
-            ":"
-            (if (keyword-t-ns obj)
-                (string-append (keyword-t-ns obj) "/")
-                "")
-            (keyword-t-name obj)))
-         ((string=? method-name "hashCode")
-          (jolt-s32
-            (+ (java-symbol-hash
-                 (keyword-t-name obj)
-                 (keyword-t-ns obj))
-               2654435769)))
-         ((string=? method-name "equals")
-          (and (pair? rest) (eq? obj (car rest))))
-         ((string=? method-name "invoke")
-          (apply jolt-invoke obj rest))
-         ((and (string=? method-name "applyTo")
-               (pair? rest)
-               (null? (cdr rest)))
-          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
-         (else (dispatch-miss obj method-name rest))))
-      ((symbol-t? obj)
-       (cond
-         ((string=? method-name "getName") (symbol-t-name obj))
-         ((string=? method-name "getNamespace")
-          (or (symbol-t-ns obj) jolt-nil))
-         ((string=? method-name "toString")
-          (string-append
-            (if (symbol-t-ns obj)
-                (string-append (symbol-t-ns obj) "/")
-                "")
-            (symbol-t-name obj)))
-         ((string=? method-name "equals")
-          (and (pair? rest) (jolt=2 obj (car rest))))
-         ((string=? method-name "hashCode")
-          (java-symbol-hash (symbol-t-name obj) (symbol-t-ns obj)))
-         ((string=? method-name "invoke")
-          (apply jolt-invoke obj rest))
-         ((and (string=? method-name "applyTo")
-               (pair? rest)
-               (null? (cdr rest)))
-          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
-         (else (dispatch-miss obj method-name rest))))
-      ((jns? obj)
-       (cond
-         ((or (string=? method-name "name")
-              (string=? method-name "getName"))
-          (jolt-symbol #f (jns-name obj)))
-         ((string=? method-name "toString") (jns-name obj))
-         (else (dispatch-miss obj method-name rest))))
+      ((keyword-t? obj) (rd-keyword-method obj method-name rest))
+      ((symbol-t? obj) (rd-symbol-method obj method-name rest))
+      ((jns? obj) (rd-namespace-method obj method-name rest))
       ((and (jolt-iref-watchable? obj)
             (rd-iref-method method-name (length rest))) =>
        (lambda (f) (apply f obj rest)))
@@ -3233,112 +3378,12 @@
       ((and (rd-derefable? obj)
             (rd-ideref-method obj method-name (length rest))) =>
        (lambda (f) (apply f obj rest)))
-      ((var-cell? obj)
-       (cond
-         ((or (string=? method-name "ns")
-              (string=? method-name "-ns"))
-          (intern-ns! (var-cell-ns obj)))
-         ((or (string=? method-name "sym")
-              (string=? method-name "-sym"))
-          (jolt-symbol #f (var-cell-name obj)))
-         ((string=? method-name "toSymbol")
-          (jolt-symbol (var-cell-ns obj) (var-cell-name obj)))
-         ((string=? method-name "toString")
-          (string-append
-            "#'"
-            (var-cell-ns obj)
-            "/"
-            (var-cell-name obj)))
-         ((string=? method-name "getRawRoot") (var-cell-root obj))
-         ((string=? method-name "invoke")
-          (apply jolt-invoke obj rest))
-         ((and (string=? method-name "applyTo")
-               (pair? rest)
-               (null? (cdr rest)))
-          (apply jolt-invoke obj (seq->list (jolt-seq (car rest)))))
-         ((string=? method-name "isMacro") (var-cell-macro? obj))
-         ((string=? method-name "isBound") (jolt-var-bound-one? obj))
-         ((string=? method-name "hasRoot")
-          (not (jolt-var-unbound? (var-cell-root obj))))
-         ((string=? method-name "isDynamic") (var-cell-dynamic? obj))
-         ((string=? method-name "isPublic")
-          (not (rd-var-meta-flag? obj "private")))
-         ((string=? method-name "getTag")
-          (rd-var-meta-get obj "tag"))
-         ((or (string=? method-name "deref")
-              (string=? method-name "get"))
-          (var-cell-deref obj))
-         ((and (string=? method-name "getThreadBinding")
-               (null? rest))
-          (jolt-var-thread-binding obj))
-         ((string=? method-name "setDynamic")
-          (var-cell-dynamic?-set!
-            obj
-            (if (pair? rest) (jolt-truthy? (car rest)) #t))
-          obj)
-         ((string=? method-name "setMacro")
-          (var-cell-macro?-set! obj #t)
-          (var-cell-meta-set!
-            obj
-            (jolt-assoc
-              (or (rd-var-meta obj) (jolt-hash-map))
-              jolt-kw-var-macro
-              #t))
-          jolt-nil)
-         ((string=? method-name "bindRoot")
-          (jolt-alter-var-root obj (lambda (_) (car rest)))
-          (var-cell-macro?-set! obj #f)
-          (let ((m (rd-var-meta obj)))
-            (when m
-              (var-cell-meta-set!
-                obj
-                (jolt-dissoc2 m jolt-kw-var-macro))))
-          jolt-nil)
-         ((string=? method-name "alterRoot")
-          (apply
-            jolt-alter-var-root
-            obj
-            (car rest)
-            (rd-args->list (cadr rest))))
-         ((and (string=? method-name "unbindRoot") (null? rest))
-          (var-root-set!
-            obj
-            (make-jolt-var-unbound
-              (var-cell-ns obj)
-              (var-cell-name obj)))
-          jolt-nil)
-         ((and (string=? method-name "set") (pair? rest))
-          (jolt-set-var! obj (car rest)))
-         ((and (string=? method-name "fn") (null? rest))
-          (let ((v (var-cell-deref obj)))
-            (if (jolt-truthy?
-                  (jolt-invoke1 (var-deref "clojure.core" "ifn?") v))
-                v
-                (jolt-throw
-                  (jolt-host-throwable
-                    "java.lang.ClassCastException"
-                    (string-append
-                      "class "
-                      (guard (c (#t "?")) (jolt-class-name v))
-                      " cannot be cast to class clojure.lang.IFn"))))))
-         (else (dispatch-miss obj method-name rest))))
+      ((var-cell? obj) (rd-var-method obj method-name rest))
       ((condition? obj)
        (cond
          ((throwable-method obj method-name rest) => car)
          (else (dispatch-miss obj method-name rest))))
-      ((char? obj)
-       (cond
-         ((string=? method-name "toString") (string obj))
-         ((string=? method-name "charValue") obj)
-         ((string=? method-name "hashCode") (char->integer obj))
-         ((string=? method-name "equals")
-          (and (pair? rest)
-               (char? (car rest))
-               (char=? obj (car rest))))
-         ((string=? method-name "compareTo")
-          (let ((o (car rest)))
-            (cond ((char<? obj o) -1) ((char>? obj o) 1) (else 0))))
-         (else (dispatch-miss obj method-name rest))))
+      ((char? obj) (rd-char-method obj method-name rest))
       ((and (string=? method-name "getFirst") (rd-java-list? obj))
        (let ((s (jolt-seq obj)))
          (if (jolt-nil? s)
@@ -3354,28 +3399,7 @@
              (apply jolt-vector items)
              (list->cseq items))))
       ((rd-coll-mutator? obj method-name (length rest))
-       (let ((empty? (jolt-nil? (jolt-seq obj))))
-         (cond
-           ((string=? method-name "removeIf")
-            (if (and (not empty?)
-                     (let loop ((s (jolt-seq obj)))
-                       (and (not (jolt-nil? s))
-                            (or (jolt-truthy?
-                                  (jolt-fi-call
-                                    (car rest)
-                                    "test"
-                                    (seq-first s)))
-                                (loop (jolt-seq (seq-more s)))))))
-                (throw-jvm 'UnsupportedOperationException "")
-                #f))
-           ((not empty?) (throw-jvm 'UnsupportedOperationException ""))
-           ((or (string=? method-name "removeFirst")
-                (string=? method-name "removeLast"))
-            (throw-jvm 'NoSuchElementException ""))
-           ((or (string=? method-name "replaceAll")
-                (string=? method-name "sort"))
-            jolt-nil)
-           (else (throw-jvm 'UnsupportedOperationException "")))))
+       (rd-coll-mutator-call obj method-name rest))
       ((string=? method-name "toString")
        (jolt-str-render-one obj))
       ((string=? method-name "hashCode")

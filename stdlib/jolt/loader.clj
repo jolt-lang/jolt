@@ -1905,12 +1905,6 @@
   ([roots] (classpath roots nil))
   ([roots opts] (roots-loader roots opts)))
 
-(defn url-search
-  "The URLClassLoader analogue — `classpath` under the name the delegate table
-   uses."
-  ([roots] (classpath roots))
-  ([roots opts] (classpath roots opts)))
-
 ;; ─── Classloader facade ────────────────────────────────────────────────────
 ;; The host view of a loader (`as-classloader`): a jolt tagged table carrying
 ;; the loader, with java.lang.ClassLoader's resource methods registered against

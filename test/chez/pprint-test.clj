@@ -11,7 +11,7 @@
 ;; cases (Java interop, platform-newlines, *math-context*) are intentionally absent;
 ;; see the final commit message for the residual-corner enumeration.
 (ns pprint-gate
-  (:require [clojure.pprint :refer [cl-format pprint]]))
+  (:require [clojure.pprint :refer [cl-format]]))
 
 (defmacro cf [fmt args]
   ;; wrap so a throw on an unimplemented directive is recorded, not fatal

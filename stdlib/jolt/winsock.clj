@@ -60,8 +60,3 @@
   Returns true. Throws IOException if WSAStartup itself fails."
   []
   @started)
-
-(defn windows-host?
-  "True on a Windows host — the one platform test the socket callers share."
-  []
-  windows?)

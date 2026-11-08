@@ -196,7 +196,6 @@
 ;; tuple and reads a field by bare index. A struct type from a JOIN or from
 ;; field-access inference has no :shape (incomplete: the full key set isn't
 ;; proven), so it keeps the dynamic path — never a bare index.
-(defn type-shape [t] (get t :shape))
 ;; tag a node (any expression, not just a :local) so the back end can specialize
 ;; a lookup whose SUBJECT is that node — this is what makes nested access work:
 ;; (:direction ray) is tagged struct, so (:r (:direction ray)) drops its guard.
