@@ -281,7 +281,8 @@
          "a fiber cannot leave the CPU while its carrier holds a counted lock ("
          (number->string n)
          " held). Commit under the lock and switch outside it — jolt-lock-wait,"
-         " host/chez/locks.ss.")))))
+         " host/chez/locks.ss. A foreign callback's body counts as one (java/ffi.ss"
+         " jolt-ffi-callable-body), so a callback that C calls on a fiber cannot park.")))))
 
 ;; The same check, made where a wait BEGINS rather than where it switches. A park
 ;; is a sequence: commit (mark the fiber parked or ready, enqueue it, register it

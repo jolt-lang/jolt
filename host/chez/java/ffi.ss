@@ -1435,6 +1435,33 @@
   (let retry ()
     (let ((n (unbox jolt-ffi-callbacks-active)))
       (unless (box-cas! jolt-ffi-callbacks-active n (fx- n 1)) (retry)))))
+;; A callback's body runs as a counted-lock region (host/chez/locks.ss), so a
+;; fiber cannot leave the CPU while C frames sit under it. The C function that
+;; called back (qsort, OpenSSL's servername callback, a GTK signal) is on the
+;; carrier thread's stack below the callback, and a fiber's continuation is
+;; captured with that stack. Preempting it there let another fiber call into C
+;; on the same thread and reuse the frames, so the first fiber's return through
+;; them raised `attempt to return to stale foreign context` (40 of 50 fibers
+;; sorting with a Clojure qsort comparator, at the default quantum). With the
+;; count up the preempt handler defers, as it does for any lock (fibers.ss), and
+;; a park inside a callback raises jolt-locks-assert-none!'s error instead of
+;; corrupting the stack. A callback is expected to be short, like a lock region.
+;; The count is per thread, so a callback on a foreign or plain thread costs one
+;; register write each way and changes nothing else. The dynamic-wind drops it
+;; again if the body escapes by a raise.
+;; SYNTAX: (jolt-ffi-callable-body proc (argtype ...)) -> a procedure of as
+;; many arguments, one per argtype.
+(define-syntax jolt-ffi-callable-body
+  (syntax-rules ()
+    ((_ proc (t ...)) (jolt-ffi-callable-body proc (t ...) ()))
+    ((_ proc () (p ...))
+     (let ((f proc))
+       (lambda (p ...)
+         (dynamic-wind
+           (lambda () (jolt-locks-enter!))
+           (lambda () (f p ...))
+           (lambda () (jolt-locks-exit!))))))
+    ((_ proc (t0 t1 ...) (p ...)) (jolt-ffi-callable-body proc (t1 ...) (p ... x)))))
 (define (ffi-free-callable addr)
   (let* ((a (jnum->exact addr))
          (co (jolt-with-mutex ffi-tbl-mu
