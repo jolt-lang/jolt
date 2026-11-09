@@ -15,7 +15,8 @@ twice in a type now fail to compile, and the old byte-index form of
 `ffi/read-into!` and `ffi/write-array` raises. To check a project's `ns` forms
 without loading it, run `jolt tools/ns_audit.clj <dir>` from a jolt checkout.
 jolt-lang/time before v0.0.13 has a malformed `ns` docstring and no longer loads.
-Sockets gain the JDK's options and exceptions, `java.nio.file` creation and
+A foreign callback that parks on a fiber now raises instead of sometimes
+corrupting the stack. Sockets gain the JDK's options and exceptions, `java.nio.file` creation and
 moves handle races and failures as the JDK does, and the arm64 macOS binary
 runs on macOS 11 and later.
 
