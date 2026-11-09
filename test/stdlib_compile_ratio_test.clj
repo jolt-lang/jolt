@@ -18,7 +18,11 @@
 ;; Each arm loads a verbatim copy of the stdlib namespace's source under another
 ;; name through load-string (the runtime spine every user file goes through) and
 ;; times the stdlib fn against the copy's, same arguments, samples alternating,
-;; best of N. Fixed, every ratio reads ~1.0.
+;; best of N. Fixed, every ratio reads ~1.0. A reading over the ceiling is
+;; sampled up to twice more, judging each arm's minimum over every sample, and
+;; the Makefile runs this gate after the rest of its shard (QUIET-GATES), as it
+;; does fastpathratio: beside the shard a neighbour's burst put blank? at 1.74
+;; on a commit whose rerun read 0.95.
 (ns stdlib-compile-ratio-test
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
@@ -65,7 +69,7 @@
 
 (def ^:private failures (atom []))
 
-(defn- judge! [label ns-sym fname n call ceiling clear]
+(defn- judge! [label ns-sym fname n call ceiling]
   (let [cns (copy-ns! ns-sym)
         sf @(ns-resolve ns-sym fname)
         uf @(ns-resolve cns fname)
@@ -79,11 +83,16 @@
                 (let [[s u] (best-of-pair stdlib-arm user-arm)]
                   (swap! best (fn [[s0 u0]] [(min s0 s) (min u0 u)]))
                   (let [[s u] @best] (/ s (max u 0.05)))))
-        r1 (ratio)
-        r (if (and (> r1 ceiling) (< r1 clear))
-            (do (println (format "  %s: %.2f — in the re-measure band, sampling again" label r1))
-                (ratio))
-            r1)
+        ;; over the ceiling, up to two more rounds, as fastpathratio does: a
+        ;; burst from outside the process can sit on one arm for a whole round
+        ;; (blank? read 1.74 twice in one CI process, 0.95 on its rerun), and a
+        ;; real regression reads high on every round, so re-measuring costs the
+        ;; gate no power. No reading is too high to re-measure.
+        r (loop [r (ratio) left 2]
+            (if (and (pos? left) (> r ceiling))
+              (do (println (format "  %s: %.2f — over the ceiling, sampling again" label r))
+                  (recur (ratio) (dec left)))
+              r))
         [sb ub] @best]
     (println (format "  %-30s stdlib/user %5.2f  (%.1f / %.1f ms, ceiling %.1f)%s"
                      label r sb ub ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
@@ -93,13 +102,13 @@
 (defn -main [& _]
   (println "stdlib fn vs the same source compiled from user code:")
   ;; embedded-fasl namespaces (build-jolt's stdlib capture)
-  (judge! "jolt.time.util/hmsn->nano" 'jolt.time.util 'hmsn->nano 400000 #(% 1 2 3 4) 1.4 3.0)
-  (judge! "jolt.time.util/iso-time-str" 'jolt.time.util 'iso-time-str 40000 #(% 45296789000000) 1.4 3.0)
-  (judge! "clojure.data/diff" 'clojure.data 'diff 20000 #(% {:a 1 :b [1 2]} {:a 2 :b [1 3]}) 1.3 2.0)
-  (judge! "babashka.process/tokenize" 'babashka.process 'tokenize 20000 #(% "ls -la \"a b\" c") 1.3 2.0)
+  (judge! "jolt.time.util/hmsn->nano" 'jolt.time.util 'hmsn->nano 400000 #(% 1 2 3 4) 1.4)
+  (judge! "jolt.time.util/iso-time-str" 'jolt.time.util 'iso-time-str 40000 #(% 45296789000000) 1.4)
+  (judge! "clojure.data/diff" 'clojure.data 'diff 20000 #(% {:a 1 :b [1 2]} {:a 2 :b [1 3]}) 1.3)
+  (judge! "babashka.process/tokenize" 'babashka.process 'tokenize 20000 #(% "ls -la \"a b\" c") 1.3)
   ;; seed-embedded namespaces (compiled into the image by the mint)
-  (judge! "clojure.set/union" 'clojure.set 'union 200000 #(% #{1 2} #{3}) 1.3 2.0)
-  (judge! "clojure.string/blank?" 'clojure.string 'blank? 400000 #(% "  x ") 1.3 2.0)
+  (judge! "clojure.set/union" 'clojure.set 'union 200000 #(% #{1 2} #{3}) 1.3)
+  (judge! "clojure.string/blank?" 'clojure.string 'blank? 400000 #(% "  x ") 1.3)
   (if (seq @failures)
     (do (println "\nFAIL — stdlib code compiles worse than user code:")
         (doseq [f @failures] (println "  -" f))
