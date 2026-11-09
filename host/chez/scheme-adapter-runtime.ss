@@ -935,10 +935,13 @@
 ;; jolt-ffi-register-callable! so the collector neither moves nor reclaims the
 ;; callable while C may call through it. Contract: build a foreign callable
 ;; around a Scheme procedure for a statically-known signature. Degradation:
-;; none — a target expands this to its native foreign-callable form.
+;; none — a target expands this to its native foreign-callable form. The
+;; procedure is wrapped by jolt-ffi-callable-body (java/ffi.ss), which holds off
+;; fiber preemption while C frames are on the stack; the macro is resolved where
+;; a callable is made, by which time ffi.ss has loaded.
 (define-syntax sa-foreign-callable
   (syntax-rules ()
-    ((_ proc args res) (foreign-callable proc args res))))
+    ((_ proc args res) (foreign-callable (jolt-ffi-callable-body proc args) args res))))
 
 ;; (sa-foreign-callable-collect-safe proc args res) -> foreign callable
 ;; SYNTAX: like sa-foreign-callable, but the callable entry uses the
@@ -950,7 +953,7 @@
 ;; nonrecoverable memory fault instead of an exception.
 (define-syntax sa-foreign-callable-collect-safe
   (syntax-rules ()
-    ((_ proc args res) (foreign-callable __collect_safe proc args res))))
+    ((_ proc args res) (foreign-callable __collect_safe (jolt-ffi-callable-body proc args) args res))))
 
 ;; (sa-foreign-procedure-runtime name args res blocking?) -> foreign procedure | #f
 ;; Construct a foreign procedure from a RUNTIME-known signature under the
