@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
+- **`Executors/newVirtualThreadPerTaskExecutor` runs each task on its own
+  virtual thread.** It was a cached pool of daemon OS threads, so a task saw
+  `(.isVirtual (Thread/currentThread))` false, tasks shared threads, and every
+  blocked task held an OS thread. Each task now starts a fresh fiber, as on the
+  JVM. `close`, `shutdown`, `shutdownNow` (which interrupts running tasks) and
+  `awaitTermination` work as before, and an executor that is never closed still
+  doesn't keep the process alive.
+- **`ExecutorService.invokeAny` answers the first task to finish.** It waited
+  on the tasks in list order, so a slow first task was the answer even when a
+  later one had already succeeded.
 
 ## [0.8.25] - 2026-11-08
 

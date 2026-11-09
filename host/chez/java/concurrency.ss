@@ -3081,8 +3081,7 @@
 ;; the behaviour every pool here has had, so it stays.
 ;;
 ;; newCachedThreadPool is core 0, max unbounded, keep-alive 60s — the JVM's own
-;; (0, Integer.MAX_VALUE, 60L, SECONDS), and newVirtualThreadPerTaskExecutor gets
-;; the same pool.
+;; (0, Integer.MAX_VALUE, 60L, SECONDS).
 ;;
 ;; WHEN A THREAD IS CREATED is the part worth stating exactly, because the JVM
 ;; expresses it through a data structure jolt does not have. There, a cached pool
@@ -3107,7 +3106,7 @@
                                   '() #f 0
                                   (and (pair? spec) (car spec) #t)
                                   (and (pair? spec) (pair? (cdr spec)) (cadr spec))
-                                  '() #f #f 0))))
+                                  '() #f #f 0 #f))))
     (let ((st (jhost-state self)))
       ;; The core workers, eagerly. Above core, a worker appears when a task
       ;; arrives with nobody idle to take it, and not before: a cached pool that
@@ -3118,9 +3117,42 @@
             (executor-spawn-worker! st))
           (spawn (fx- k 1))))
       self)))
-;; newCachedThreadPool / newVirtualThreadPerTaskExecutor. SPEC as make-executor*.
+;; newCachedThreadPool, and the CompletableFuture async pool. SPEC as make-executor*.
 (define (make-cached-executor . spec)
   (apply make-executor* "executor-service" 0 executor-unbounded-workers cached-pool-keep-alive-ms #f spec))
+;; newVirtualThreadPerTaskExecutor: no pool at all, as on the JVM, where it is
+;; newThreadPerTaskExecutor over Thread.ofVirtual().factory(). Slot 22 set routes
+;; executor-enqueue! to executor-start-task-thread!, which starts a fresh virtual
+;; thread (a fiber) per task; live-workers (st 4) counts the tasks still running,
+;; so shutdown, isTerminated, awaitTermination and close read it as they read a
+;; pool's workers, and slot 18 holds their interrupt boxes for shutdownNow.
+(define (make-virtual-thread-executor)
+  (let ((ex (make-executor* "executor-service" 0 executor-unbounded-workers #f #f #t)))
+    (vector-set! (jhost-state ex) 22 #t)
+    ex))
+;; Start JOB on its own virtual thread. Called with the queue mutex RELEASED and
+;; the task already counted in st 4, and its interrupt box already in st 18:
+;; both under the hold that checked the shutdown flag, so a shutdownNow after the
+;; submit returns always finds the task to interrupt, and awaitTermination never
+;; reads zero while a task it accepted has not started yet. The count comes off
+;; with a guard and not a dynamic-wind, which a fiber's park would run.
+(define (executor-start-task-thread! st t)
+  (let* ((tst (jhost-state t))
+         (ibox (vector-ref tst 4))
+         (job (vector-ref tst 0))
+         (finish! (lambda ()
+                    (executor-task-done! st)
+                    (jolt-with-mutex (vector-ref st 2)
+                      (vector-set! st 18 (remq ibox (vector-ref st 18)))
+                      (vector-set! st 4 (fx- (vector-ref st 4) 1))
+                      (jolt-cv-wake! (vector-ref st 11))))))
+    (vector-set! tst 0 (lambda ()
+                         (guard (e (#t (finish!) (raise e))) (job))
+                         (finish!)
+                         jolt-nil))
+    (vector-set! tst 5 #t)
+    (guard (e (#t (finish!) (raise e)))
+      (start-virtual-thread! t))))
 ;; newScheduledThreadPool / newSingleThreadScheduledExecutor / the
 ;; ScheduledThreadPoolExecutor ctor: a fixed pool (the JVM's grows to
 ;; Integer.MAX_VALUE on paper and never does in practice, its queue being
@@ -3505,9 +3537,14 @@
                "task rejected from executor: it is shut down")))
 (define (executor-enqueue! self job)
   (let* ((st (jhost-state self))
+         (vt (and (vector-ref st 22) (unstarted-virtual-thread job "")))
          (action (jolt-with-mutex (vector-ref st 2)
                    (cond
                      ((vector-ref st 0) 'reject)
+                     (vt
+                      (vector-set! st 4 (fx+ (vector-ref st 4) 1))
+                      (vector-set! st 18 (cons (vector-ref (jhost-state vt) 4) (vector-ref st 18)))
+                      'thread)
                      (else
                       (let ((q (unbox (vector-ref st 1))))
                         (set-cdr! q (cons job (cdr q))))
@@ -3567,6 +3604,7 @@
     ;; through a lock region it does not need to hold.
     (case action
       ((spawn) (executor-spawn-worker! st))
+      ((thread) (executor-start-task-thread! st vt))
       ((reject) (executor-reject-task! st))
       (else (void)))))
 (let ((single (lambda args (make-executor* "executor-service" 1 1 #f #f #f (thread-factory-in args))))
@@ -3580,28 +3618,21 @@
       (scheduled-single (lambda args (make-scheduled-executor 1 #f (thread-factory-in args))))
       (scheduled-fixed  (lambda (n . args)
                           (make-scheduled-executor (max 1 (jnum->exact n)) #f (thread-factory-in args))))
-      ;; cached / virtual-thread-per-task: the two factories that are UNBOUNDED on
-      ;; the JVM. A cached pool is (0, Integer.MAX_VALUE, 60s, SynchronousQueue)
-      ;; there, and a virtual thread per task is a thread per task with no pool at
-      ;; all; both answer a burst of n concurrent tasks with n carriers. These were
-      ;; one fixed 32-worker pool, which meant task 33 of a burst did not start
+      ;; cached: UNBOUNDED on the JVM, (0, Integer.MAX_VALUE, 60s,
+      ;; SynchronousQueue), so a burst of n concurrent tasks gets n threads. This
+      ;; was one fixed 32-worker pool, which meant task 33 of a burst did not start
       ;; until an earlier one finished — invisible while tasks are short, and a
       ;; deadlock when they are not: 32 tasks that block waiting for the 33rd (a
       ;; fan-out whose children hand results back through a channel, say) never let
-      ;; it run. Growing on demand takes that ceiling away.
-      ;;
-      ;; A grown worker is REUSED for a later task and retired after 60s idle, so a
-      ;; steady stream of short tasks costs a thread or two rather than one per
-      ;; task, and a burst that has passed does not leave its threads behind. That
-      ;; is exactly a cached pool; for the virtual-thread executor it is a
-      ;; substitution — a pooled thread for a fresh virtual one, which nothing here
-      ;; can tell apart, since jolt has no thread-locals and a task's identity is
-      ;; its own.
+      ;; it run. Growing on demand takes that ceiling away. A grown worker is
+      ;; REUSED for a later task and retired after 60s idle.
       (cached (lambda args (make-cached-executor #f (thread-factory-in args))))
-      ;; ...whose workers are daemons, as every virtual thread is: a script that
-      ;; never closes the executor exits when it returns, not 60s after its last
-      ;; task.
-      (vcached (lambda _ (make-cached-executor #t)))
+      ;; virtual thread per task: a fresh virtual thread (a fiber) for every task,
+      ;; no pool (make-virtual-thread-executor). It used to be the cached pool
+      ;; with daemon workers, so a task saw (.isVirtual (Thread/currentThread))
+      ;; false and every blocked task held an OS thread. Fibers are daemons, so a
+      ;; script that never closes the executor still exits when it returns.
+      (vcached (lambda _ (make-virtual-thread-executor)))
       ;; newWorkStealingPool is NOT one of those and stays a fixed pool: a
       ;; ForkJoinPool is sized at availableProcessors, because work stealing is for
       ;; CPU-bound tasks that would only contend if there were more of them than
@@ -3684,33 +3715,62 @@
             (apply jolt-vector futs))))
         ;; invokeAny answers the first task that succeeded, skipping the ones that
         ;; threw, and raises only when every one of them failed (the JVM re-raises
-        ;; the last failure as an ExecutionException, which is what j-future-get
-        ;; already builds). An empty task list is IllegalArgumentException there.
-        ;; Every OTHER task is CANCELLED once one has succeeded, as the JVM does:
-        ;; a caller relies on that to stop work whose answer it no longer needs,
-        ;; and jolt used to leave them all running. The deadline (when given) is
-        ;; the whole call's — nothing having succeeded by then is TimeoutException,
-        ;; not a late answer.
+        ;; the last failure as an ExecutionException). An empty task list is
+        ;; IllegalArgumentException there. Every OTHER task is CANCELLED once one
+        ;; has succeeded, as the JVM does: a caller relies on that to stop work
+        ;; whose answer it no longer needs. The deadline (when given) is the whole
+        ;; call's — nothing having succeeded by then is TimeoutException, not a
+        ;; late answer.
+        ;;
+        ;; FIRST means first to FINISH, which is what the JVM's
+        ;; ExecutorCompletionService gives it: each task reports its outcome to one
+        ;; shared queue as it ends, and the wait takes from that. This used to wait
+        ;; on the futures in list order, so a slow first task was the answer even
+        ;; when a later one had long since succeeded.
         (cons "invokeAny" (lambda (self tasks . timeout)
           (let ((ts (executor-task-list tasks))
                 (deadline (let ((ms (tu-args->ms timeout))) (and ms (ms->deadline-millis ms)))))
             (when (null? ts)
               (throw-jvm (quote IllegalArgumentException) "tasks is empty"))
-            (let* ((all (executor-submit-all self ts))
-                   (cancel-rest! (lambda (fs) (for-each (lambda (f) (j-future-cancel! f #t)) fs))))
-              (let loop ((futs all) (err #f))
-                (if (null? futs)
-                    (raise err)                       ; every task failed
-                    (let ((r (guard (e (#t (cons 'err e)))
-                               (cons 'ok (j-future-get-until (car futs) deadline
-                                                             (lambda () j-future-timed-out))))))
-                      (cond ((and (eq? (car r) 'ok) (eq? (cdr r) j-future-timed-out))
-                             (cancel-rest! all)
+            (let* ((mu (make-mutex))
+                   (cv (jolt-make-cv))
+                   (outcomes (cons '() '()))      ; (out . in), as the executor queue
+                   (report! (lambda (r)
+                              (jolt-with-mutex mu
+                                (set-cdr! outcomes (cons r (cdr outcomes)))
+                                (jolt-cv-wake! cv))))
+                   (wrap (lambda (t)
+                           (let ((thunk (runnable->thunk t)))
+                             (lambda ()
+                               (let ((r (guard (e (#t (cons 'err e)))
+                                          (cons 'ok (jolt-invoke thunk)))))
+                                 (report! r)
+                                 (if (eq? (car r) 'ok) (cdr r) (raise (cdr r))))))))
+                   (all (executor-submit-all self (map wrap ts)))
+                   (cancel-all! (lambda () (for-each (lambda (f) (j-future-cancel! f #t)) all)))
+                   (next! (lambda ()
+                            (jolt-cv-wait-interruptibly "ExecutorService.invokeAny" mu cv deadline
+                              (lambda (timed-out?)
+                                (when (null? (car outcomes))
+                                  (set-car! outcomes (reverse (cdr outcomes)))
+                                  (set-cdr! outcomes '()))
+                                (cond ((pair? (car outcomes))
+                                       (let ((r (caar outcomes)))
+                                         (set-car! outcomes (cdar outcomes))
+                                         r))
+                                      (timed-out? #f)
+                                      (else jolt-cv-again)))))))
+              (let loop ((left (length all)) (err #f))
+                (if (fx=? left 0)
+                    (jolt-throw (task-execution-exception err))   ; every task failed
+                    (let ((r (next!)))
+                      (cond ((not r)
+                             (cancel-all!)
                              (jolt-throw (jolt-host-throwable
                                           "java.util.concurrent.TimeoutException"
                                           "timed out waiting for a task")))
-                            ((eq? (car r) 'ok) (cancel-rest! (cdr futs)) (cdr r))
-                            (else (loop (cdr futs) (cdr r)))))))))))
+                            ((eq? (car r) 'ok) (cancel-all!) (cdr r))
+                            (else (loop (fx- left 1) (cdr r)))))))))))
         (cons "shutdown" (lambda (self) (executor-shutdown! (jhost-state self)) jolt-nil))
         (cons "shutdownNow" (lambda (self) (executor-shutdown-now! (jhost-state self))))
         ;; ThreadPoolExecutor.allowCoreThreadTimeOut: core workers retire after the
