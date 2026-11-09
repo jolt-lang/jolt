@@ -90,6 +90,16 @@ runs on macOS 11 and later.
 
 ### Fixed
 
+- **A fiber is no longer preempted inside a foreign callback.** While C was
+  calling back into jolt (a `qsort` comparator, a TLS library's callback), the
+  preempt timer could switch the fiber out with the C frames still on the
+  carrier thread's stack. Another fiber then called into C on the same thread
+  over them, and the first one's return failed with `attempt to return to stale
+  foreign context`: 40 of 50 fibers sorting through a Clojure comparator, at the
+  default quantum. A callback's body now counts as a lock region, so preemption
+  waits until it returns. **A callback that parks on a fiber now raises** (the
+  counted-lock error, which now names callbacks), where it used to work only
+  while no other fiber on that carrier entered C in the meantime.
 - **An uncaught report keeps the frames of a throw that passed through a catch.**
   When no catch clause matched, the rethrow started the trace at the catching fn,
   so a host fault or a runtime throw such as divide by zero lost the fns between
