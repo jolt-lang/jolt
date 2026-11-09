@@ -606,13 +606,26 @@
     (binding [*ns* (create-ns 'user)] (refer-clojure)))
   "user")
 
+(defn- explicit-ns
+  "The ns the request names, nil when it names none. A blank one counts as none."
+  [request]
+  (let [n (get request "ns")]
+    (when (and (string? n) (not (str/blank? n))) n)))
+
+(defn- session-ns-name
+  "Where an eval of session `sid` starts that names no ns: the session's ns, or
+  user for a session-less eval. A session whose ns has since been removed starts
+  in user too, not in whatever *ns* the server thread has."
+  [sid]
+  (let [n (get @session-nses sid)]
+    (if (and n (find-ns (symbol n))) n (user-ns-name))))
+
 (defn- built-in-handler [request]
   (let [op (get request "op")
         sid (get request "session")]
     (cond
       (= op "clone")    (let [id (new-session)]
-                          (swap! session-nses assoc id
-                                 (or (get @session-nses sid) (user-ns-name)))
+                          (swap! session-nses assoc id (session-ns-name sid))
                           (respond request {"new-session" id "status" ["done"]}))
       (= op "close")    (do (swap! session-nses dissoc sid)
                             (respond request {"status" ["session-closed" "done"]}))
@@ -629,15 +642,20 @@
                                                        (get request "symbol"))
                                                    (get request "ns"))
                         "status" ["done"]})
+      ;; an ns the request names that does not exist: no eval, as JVM nREPL
+      ;; answers it, rather than running the code wherever *ns* happens to be
+      (and (or (= op "eval") (= op "load-file"))
+           (explicit-ns request)
+           (not (find-ns (symbol (explicit-ns request)))))
+      (respond request {"ns" (explicit-ns request)
+                        "status" ["error" "namespace-not-found" "done"]})
       (or (= op "eval") (= op "load-file"))
       (let [code (wire-> (if (= op "load-file") (get request "file") (get request "code")))
             ;; output goes out as it is printed, each flush its own `out` (or
             ;; `err`) message, ahead of the value
-            req-ns (get request "ns")
+            req-ns (explicit-ns request)
             {:keys [value ns err err-msg ex-class root-ex-class]}
-            (evaluate code (if (and req-ns (not (str/blank? req-ns)))
-                             req-ns
-                             (or (get @session-nses sid) (user-ns-name)))
+            (evaluate code (or req-ns (session-ns-name sid))
                       {:out #(respond request {"out" %})
                        :err #(respond request {"err" %})
                        :load (= op "load-file")
@@ -647,8 +665,10 @@
                        ;; and *source-path* is its file-name, nil when it sends none
                        :file-name (some-> (get request "file-name") wire->)})]
         ;; a known session keeps where the eval left it (a load-file's ns form
-        ;; does not move it: evaluate reports the starting ns for a load)
-        (when (contains? @session-nses sid)
+        ;; does not move it: evaluate reports the starting ns for a load). An
+        ;; eval that named its ns leaves the session where it was, as JVM
+        ;; nREPL restores the session's *ns* after one.
+        (when (and (nil? req-ns) (contains? @session-nses sid))
           (swap! session-nses assoc sid ns))
         ;; an error goes out as JVM nREPL sends it: the err->msg text, then the
         ;; classes with eval-error, then done on its own
