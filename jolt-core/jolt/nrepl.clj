@@ -592,11 +592,30 @@
                (entry candidate "namespace")))))))
 
 ;; --- built-in handler ------------------------------------------------------
+;; The built-in handler's sessions are light: a cloned session keeps only its
+;; current namespace, so an (ns foo) in one eval is where the session's next
+;; eval starts, as on JVM nREPL. Session middleware replaces all of this.
+(def ^:private session-nses (atom {}))   ;; session id -> ns name
+
+(defn- user-ns-name
+  "\"user\", created with clojure.core referred when the process has none. A
+  new session (and a session-less eval) starts there, as on JVM nREPL, not in
+  whatever *ns* the server's threads were started under."
+  []
+  (when-not (find-ns 'user)
+    (binding [*ns* (create-ns 'user)] (refer-clojure)))
+  "user")
+
 (defn- built-in-handler [request]
-  (let [op (get request "op")]
+  (let [op (get request "op")
+        sid (get request "session")]
     (cond
-      (= op "clone")    (respond request {"new-session" (new-session) "status" ["done"]})
-      (= op "close")    (respond request {"status" ["session-closed" "done"]})
+      (= op "clone")    (let [id (new-session)]
+                          (swap! session-nses assoc id
+                                 (or (get @session-nses sid) (user-ns-name)))
+                          (respond request {"new-session" id "status" ["done"]}))
+      (= op "close")    (do (swap! session-nses dissoc sid)
+                            (respond request {"status" ["session-closed" "done"]}))
       (= op "describe") (respond request {"status" ["done"]
                                           "versions" (merge {"jolt-nrepl" {"major" 0 "minor" 1}
                                                              "jolt" {"version-string" (jolt.host/jolt-version)}}
@@ -614,8 +633,11 @@
       (let [code (wire-> (if (= op "load-file") (get request "file") (get request "code")))
             ;; output goes out as it is printed, each flush its own `out` (or
             ;; `err`) message, ahead of the value
+            req-ns (get request "ns")
             {:keys [value ns err err-msg ex-class root-ex-class]}
-            (evaluate code (get request "ns")
+            (evaluate code (if (and req-ns (not (str/blank? req-ns)))
+                             req-ns
+                             (or (get @session-nses sid) (user-ns-name)))
                       {:out #(respond request {"out" %})
                        :err #(respond request {"err" %})
                        :load (= op "load-file")
@@ -624,6 +646,10 @@
                        :file (when (= op "load-file") (some-> (get request "file-path") wire->))
                        ;; and *source-path* is its file-name, nil when it sends none
                        :file-name (some-> (get request "file-name") wire->)})]
+        ;; a known session keeps where the eval left it (a load-file's ns form
+        ;; does not move it: evaluate reports the starting ns for a load)
+        (when (contains? @session-nses sid)
+          (swap! session-nses assoc sid ns))
         ;; an error goes out as JVM nREPL sends it: the err->msg text, then the
         ;; classes with eval-error, then done on its own
         (if err
