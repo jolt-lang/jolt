@@ -5323,6 +5323,9 @@
 ;; a hook does, so ^C and `kill` delete them too, but it does not mark the
 ;; process multi-threaded: deleting a path touches no jolt value.
 (define jolt-delete-on-exit-paths (box '()))
+;; the same paths as a set, so a program registering a temp file per iteration
+;; pays O(1) per call, not a walk of the list (the JDK's LinkedHashSet)
+(define jolt-delete-on-exit-seen (make-hashtable string-hash string=?))
 ;; set as the deletions start, DeleteOnExitHook's `files = null`
 (define jolt-delete-on-exit-taken (box #f))
 
@@ -5330,7 +5333,8 @@
   (let ((late? (jolt-with-mutex jolt-shutdown-mutex
                  (or (unbox jolt-delete-on-exit-taken)
                      (begin
-                       (unless (member path (unbox jolt-delete-on-exit-paths))
+                       (unless (hashtable-contains? jolt-delete-on-exit-seen path)
+                         (hashtable-set! jolt-delete-on-exit-seen path #t)
                          (set-box! jolt-delete-on-exit-paths
                                    (cons path (unbox jolt-delete-on-exit-paths))))
                        #f)))))
