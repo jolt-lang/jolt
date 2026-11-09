@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
+  nothing, so a program that relied on it left its temp files behind, decrypted
+  PEM keys included. Paths now go on every exit that runs the shutdown hooks
+  (a normal end, `System/exit`, SIGTERM), right after those hooks, as on the
+  JVM. The order is the reverse of registration and each path goes once,
+  so a directory registered before the files in it is deleted after them.
+  Anything `File.delete` can't remove, such as a directory that still has files
+  in it, is skipped.
+
 ## [0.8.25] - 2026-11-08
 
 A release that holds code to the JVM's rules where jolt used to accept it

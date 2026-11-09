@@ -2318,7 +2318,8 @@
       ;; is false, as exists() short-circuits it on the JVM.
       ((string=? name "mkdirs")         (list (if (and (not (file-exists? fp)) (mkdirs! fp)) #t #f)))
       ((string=? name "delete")         (list (if (delete-path! fp) #t #f)))
-      ((string=? name "deleteOnExit")   (list jolt-nil))
+      ((string=? name "deleteOnExit")   ; a NUL path is skipped, as isInvalid() does
+       (list (if (jfile-nul? fp) jolt-nil (jolt-delete-on-exit! (jfile-abs fp)))))
       ((string=? name "setReadable")    (list (jfile-set-permission! fp 4 args)))
       ((string=? name "setWritable")    (list (jfile-set-permission! fp 2 args)))
       ((string=? name "setExecutable")  (list (jfile-set-permission! fp 1 args)))

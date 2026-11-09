@@ -5309,6 +5309,37 @@
       (set-box! jolt-shutdown-hooks after)
       (not (= (length before) (length after))))))
 
+;; java.io.File.deleteOnExit: the paths to delete once the hooks have run, most
+;; recently registered first. That is the JDK's DeleteOnExitHook, a
+;; LinkedHashSet walked in reverse: a path registered twice keeps its first
+;; place and is deleted once, and a directory registered before the files in it
+;; goes after them, by which time it is empty. Deletion is File.delete's, so a
+;; directory that is still not empty, or a path already gone, is skipped
+;; silently. It runs after the program's hooks, as the JDK's slot for it comes
+;; after theirs, so a hook can still read a file it registered, or register one.
+;;
+;; Paths are stored absolute, resolved at registration as the JVM resolves them
+;; against a user.dir that never changes. Registering arms the exit paths like
+;; a hook does, so ^C and `kill` delete them too, but it does not mark the
+;; process multi-threaded: deleting a path touches no jolt value.
+(define jolt-delete-on-exit-paths (box '()))
+;; set as the deletions start, DeleteOnExitHook's `files = null`
+(define jolt-delete-on-exit-taken (box #f))
+
+(define (jolt-delete-on-exit! path)
+  (let ((late? (jolt-with-mutex jolt-shutdown-mutex
+                 (or (unbox jolt-delete-on-exit-taken)
+                     (begin
+                       (unless (member path (unbox jolt-delete-on-exit-paths))
+                         (set-box! jolt-delete-on-exit-paths
+                                   (cons path (unbox jolt-delete-on-exit-paths))))
+                       #f)))))
+    ;; DeleteOnExitHook.add once its own hook has started. A program's hook
+    ;; still runs before that, so a path it registers is deleted with the rest.
+    (when late? (throw-jvm 'IllegalStateException "Shutdown in progress")))
+  (jolt-arm-shutdown!)
+  jolt-nil)
+
 ;; Runs the hooks exactly once per process, whichever exit path gets here first.
 ;; The once-flag is flipped under the mutex together with taking the list, so a
 ;; SIGTERM landing while the main thread is already exiting cannot run them twice.
@@ -5318,7 +5349,11 @@
                       (begin (set-box! jolt-shutdown-ran #t)
                              (reverse (unbox jolt-shutdown-hooks)))))))
     (when hooks
-      (for-each (lambda (e) (guard (_ (#t #f)) ((cdr e)))) hooks)))
+      (for-each (lambda (e) (guard (_ (#t #f)) ((cdr e)))) hooks)
+      (for-each (lambda (p) (guard (_ (#t #f)) (delete-path! p)))
+                (jolt-with-mutex jolt-shutdown-mutex
+                  (set-box! jolt-delete-on-exit-taken #t)
+                  (unbox jolt-delete-on-exit-paths)))))
   jolt-nil)
 
 ;; The Runnable a java.lang.Thread was constructed with, or #f (Thread() with no
