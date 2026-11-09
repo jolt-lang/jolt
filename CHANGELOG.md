@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
+  the class graph, so a batch failure jolt-lang/db raises slipped past
+  `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no
+  constructor. It now extends `SQLException` and takes the JDK's constructors,
+  with `getUpdateCounts` and `getLargeUpdateCounts` handing out copies of the
+  counts. `SQLException`'s own constructors read their second string as the
+  SQLState, not a cause, and `getSQLState` and `getErrorCode` answer.
+
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,
