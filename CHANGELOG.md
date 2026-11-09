@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A broken `:jolt/provides` library names its own load error.** Once a
+  provider's install namespace failed to load, every later reference to its
+  classes said "see the earlier error from jolt.time", but when the first
+  failure had been caught (tick reaches jolt.time through a require a caller
+  may wrap in `try`) that error was never printed. The message now carries the
+  first line of the original error.
+
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,
