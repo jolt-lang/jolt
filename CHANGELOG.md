@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `:jolt/native` spec can name the task that builds it.** `{:name "ents"
+  :darwin ["native/libflecs_ents.dylib"] :linux [...] :build "native"}` names
+  a task in the declaring library's own deps.edn. When the library's declared
+  file is missing, jolt runs `jolt run native` in the library's root, saying on
+  stderr what it is building and where, then loads the result. A library with a
+  C shim now works as a plain git dep: before, its gitlib checkout held only the
+  sources and startup failed with "required native library ents not found".
+  The task runs at most once per process, and a lock in the library's root
+  makes a second jolt process wait for the first build instead of building
+  into the same checkout. `jolt build` builds a missing `:static` archive the
+  same way. A failed build names the library, the task, the directory and the
+  exit status. `JOLT_NATIVE_BUILD=0` turns this off, and the missing-library
+  error then names the task that would build it. The project's own library is
+  still left to its tasks, as before. Older jolt ignores `:build`, so a
+  library can add it now.
+
 ### Fixed
 
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
