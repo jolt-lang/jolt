@@ -272,9 +272,11 @@ bionic-ci:
 # moved a ratio by 1.5-3x: over 134 CI jobs (2026-11-03..04) fastpathratio put
 # a row over its ceiling in 9, 7 of them x86, with no step change in any row and
 # the same commit's other run passing where there was one. A quiet machine reads
-# well inside every ceiling. A scaling gate (n vs 4n of the same work) is not
+# well inside every ceiling. stdlibratio is the same kind of gate and failed
+# the same way beside its shard (clojure.string/blank? 1.74 against 1.3, the same
+# commit's rerun 0.95; jolt-h1d). A scaling gate (n vs 4n of the same work) is not
 # listed: interference moves both of its arms alike.
-QUIET-GATES := fastpathratio
+QUIET-GATES := fastpathratio stdlibratio
 # Runs the QUIET-GATES of $(1) one at a time. -j1 takes the sub-make off the
 # jobserver, so nothing else this make started is running beside them.
 define run-quiet
@@ -857,7 +859,8 @@ fastpathratio: testbin
 # A stdlib fn against the same source compiled from a user file, as a ratio in
 # one process. The embedded stdlib fasls and the seed-embedded namespaces are
 # compiled by paths a user file never takes; build-jolt once captured the fasls
-# with var-cache off (every var ref looked up by name, 2-7x slower).
+# with var-cache off (every var ref looked up by name, 2-7x slower). A
+# QUIET-GATE: CI runs it after the rest of its shard, not beside it.
 stdlibratio: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/stdlib_compile_ratio_test.clj
 
