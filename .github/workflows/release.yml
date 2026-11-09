@@ -392,6 +392,11 @@ jobs:
         env:
           # Bake the version into the binary: the tag, or meta's describe string.
           JOLT_VERSION: ${{ needs.meta.outputs.version }}
+          # minos for the native arm64 link: build.ss passes no version flag on a
+          # native build, so clang takes the runner's OS (14.0 on macos-14, 15.0
+          # on macos-15) and the binary refuses to start on anything older. The
+          # cross row pins it through JOLT_TARGET_ARCH_FLAG instead.
+          MACOSX_DEPLOYMENT_TARGET: ${{ runner.os == 'macOS' && '11.0' || '' }}
 
       - name: Inspect the binary (Windows)
         if: runner.os == 'Windows'
@@ -426,6 +431,15 @@ jobs:
             zbad="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' \
                    | grep -Ei 'lz4|libz\.' || true)"
             bad="$(printf '%s\n%s' "$bad" "$zbad" | sed '/^$/d')"
+            # The binary must load on every macOS the release supports (11+),
+            # not just the runner's: v0.8.24 shipped minos 14.0, and the
+            # macos-15 runner raised it to 15.0.
+            minos="$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+            echo "minos $minos"
+            if [ "$minos" != "11.0" ]; then
+              echo "::error::$bin has minos $minos; it must be 11.0"
+              exit 1
+            fi
           else
             readelf -d "$bin" | grep NEEDED || true
             # STATIC_DEPS bakes in lz4, zlib, ncurses and tinfo, so the binary

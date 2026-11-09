@@ -24,9 +24,29 @@
         "aarch64-darwin"
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      # nixpkgs' Chez with jolt's kernel patches (host/chez/chez-patches, in
+      # name order, as ci/apply-chez-patches.sh applies them for the release
+      # builds). Without them a Nix-built jolt keeps stock Chez's placement of
+      # foreign-call arguments past the registers, which upstream has fixed
+      # but not released, and pays the stock price for collect-safe calls.
+      # The patches are cut against v10.4.1, the version nixpkgs packages.
+      patchedChez =
+        pkgs:
+        pkgs.chez.overrideAttrs (old: {
+          patches =
+            (old.patches or [ ])
+            ++ map (f: ./host/chez/chez-patches + "/${f}") (
+              builtins.sort builtins.lessThan (
+                builtins.filter (f: pkgs.lib.hasSuffix ".patch" f) (
+                  builtins.attrNames (builtins.readDir ./host/chez/chez-patches)
+                )
+              )
+            );
+        });
       mkJolt =
         pkgs:
         let
+          chez = patchedChez pkgs;
           version = self.shortRev or "dev";
           runtimePath = pkgs.lib.makeBinPath [
             pkgs.git
@@ -41,7 +61,7 @@
 
           strictDeps = true;
           nativeBuildInputs = [
-            pkgs.chez
+            chez
             pkgs.makeWrapper
             pkgs.pkg-config
             pkgs.xxd
@@ -125,43 +145,49 @@
         };
       });
 
-      devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShell {
-          packages = [
-            # Required by makeplus/makes during Makefile initialization.
-            pkgs.bash
-            pkgs.which
-            pkgs.chez
-            pkgs.stdenv.cc
-            pkgs.gnumake
-            pkgs.pkg-config
-            pkgs.xxd
+      devShells = forAllSystems (
+        pkgs:
+        let
+          chez = patchedChez pkgs;
+        in
+        {
+          default = pkgs.mkShell {
+            packages = [
+              # Required by makeplus/makes during Makefile initialization.
+              pkgs.bash
+              pkgs.which
+              chez
+              pkgs.stdenv.cc
+              pkgs.gnumake
+              pkgs.pkg-config
+              pkgs.xxd
 
-            # Jolt deps.edn support
-            pkgs.git
-            pkgs.openssl
+              # Jolt deps.edn support
+              pkgs.git
+              pkgs.openssl
 
-            # Chez/Jolt native-link dependencies
-            pkgs.lz4
-            pkgs.zlib
-            pkgs.ncurses
-          ]
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.libuuid ]
-          ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ];
+              # Chez/Jolt native-link dependencies
+              pkgs.lz4
+              pkgs.zlib
+              pkgs.ncurses
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.libuuid ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ];
 
-          # Make uses this locked source-only input instead of cloning makes.
-          M = makes;
-          JOLT_CHEZ = "${pkgs.chez}/bin/scheme";
-          CHEZ = "${pkgs.chez}/bin/scheme";
-          JOLT_OPENSSL_LIBDIR = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
+            # Make uses this locked source-only input instead of cloning makes.
+            M = makes;
+            JOLT_CHEZ = "${chez}/bin/scheme";
+            CHEZ = "${chez}/bin/scheme";
+            JOLT_OPENSSL_LIBDIR = pkgs.lib.makeLibraryPath [ pkgs.openssl ];
 
-          shellHook = ''
-            echo "Jolt development environment"
-            printf 'Chez: '
-            printf '(display (scheme-version)) (newline)\n' | scheme -q
-          '';
-        };
-      });
+            shellHook = ''
+              echo "Jolt development environment"
+              printf 'Chez: '
+              printf '(display (scheme-version)) (newline)\n' | scheme -q
+            '';
+          };
+        }
+      );
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };

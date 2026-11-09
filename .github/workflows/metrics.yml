@@ -14,7 +14,7 @@ concurrency:
 env:
   # pinned: a new release would change what CI runs on
   JOLT_VERSION: v0.8.24
-  METRICS_SHA: c23aec7f5071c60b6ba9be61dd93afa3583a375f
+  METRICS_SHA: 5f36452d3b998f3ccb3b078c0433098d5312fe8a
 
 jobs:
   report:
