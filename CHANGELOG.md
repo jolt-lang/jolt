@@ -243,7 +243,8 @@ runs on macOS 11 and later.
   or `(take 4 bytes)` on a large array exhausted the heap or overflowed the
   stack. Elements are now read on demand, including the first, so an `aset`
   after `(seq a)` shows through, as on the JVM, and `reduce` or `into` over an
-  array's seq walks the array directly, about 2.5x faster than in 0.8.24.
+  array's seq walks the array directly: over a million ints, `reduce` is about
+  3x faster than in 0.8.24 and `into` about 1.6x.
 - **`clojure.java.io/copy` honors `:encoding`.** A byte source copied to a
   Writer always decoded as UTF-8, and a char source copied to a byte sink always
   encoded as UTF-8. `clojure.java.shell/sh` passes `:out-enc` through `copy`, so
