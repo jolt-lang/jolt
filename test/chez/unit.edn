@@ -232,8 +232,10 @@
   {:suite "exinfo" :expr "(instance? RuntimeException (InterruptedException. \"x\"))" :expected "false"}
   {:suite "exinfo" :expr "(.getMessage (RuntimeException. \"boom\"))" :expected "\"boom\""}
   {:suite "exinfo" :expr "(ex-message (RuntimeException. \"boom\"))" :expected "\"boom\""}
-  {:suite "errors" :expr "(try (clojure.string/no-such-fn 1) (catch Throwable e (ex-message e)))" :expected "\"No such var: clojure.string/no-such-fn\""}
-  {:suite "errors" :expr "(do (require (quote [clojure.string :as s])) (try (s/no-such-fn 1) (catch Throwable e (ex-message e))))" :expected "\"No such var: s/no-such-fn\""}
+  ;; a var the loaded namespace lacks is a compile error, as on the JVM, so the
+  ;; try has to be around the compile (eval), not the call
+  {:suite "errors" :expr "(try (eval (quote (clojure.string/no-such-fn 1))) (catch Throwable e (ex-message e)))" :expected "\"No such var: clojure.string/no-such-fn\""}
+  {:suite "errors" :expr "(do (require (quote [clojure.string :as s])) (try (eval (quote (fn [] (s/no-such-fn 1)))) (catch Throwable e (ex-message e))))" :expected "\"No such var: s/no-such-fn\""}
   {:suite "errors" :expr "(try (Nope/whatever 1) (catch Throwable e (ex-message e)))" :expected "\"Unknown class Nope\""}
   ;; A hyphen munges to an underscore in a JVM package name, so a record literal or
   ;; a (munge (str *ns*)) lookup names the class my_app.core.Foo where jolt calls it

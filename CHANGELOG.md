@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A var missing from a loaded namespace is a compile error, `No such var:
+  s/nope`.** It compiled to a class static call and failed only when it ran.
+  Written through an alias, the alias was then looked up in whatever namespace
+  was current at the call, so `(s/nope 1)` in the `-main` that `jolt -m` runs
+  reported "Unknown class s". As on the JVM, the reference is now rejected when
+  the form compiles, through an alias or by the namespace's full name, wherever
+  code runs right after it compiles (loading a file, `require`, `eval`, `-e`, the
+  REPLs). `jolt.host` stays late-bound, since which of its vars exist depends on
+  the host files a boot loaded. Code that names a var of another namespace
+  before that namespace defines it now needs a `declare` there, as on the JVM.
+
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,

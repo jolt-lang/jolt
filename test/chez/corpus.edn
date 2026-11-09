@@ -7150,6 +7150,12 @@
   {:suite "analyze / unknown alias" :label "an unregistered alias as a call head in a fn body is a compile error" :expected :throws :actual "(fn [] (zzs6/join \",\" [1 2]))" :portability :common}
   {:suite "analyze / unknown alias" :label "an unregistered alias as a value in a fn body is a compile error" :expected :throws :actual "(fn [] zzs7/join)" :portability :common}
   {:suite "analyze / unknown alias" :label "a lowercase record name is still a class for a static call" :expected "1" :actual "(do (defrecord zzs8rec [x]) (:x (zzs8rec/create {:x 1})))" :portability :common}
+  ;; A var the loaded namespace lacks is a compile error (Compiler.resolveIn), not a
+  ;; class static: through an alias the static was looked up against *ns* at run
+  ;; time, so (s/nope 1) in a -main reported "Unknown class s".
+  {:suite "analyze / no such var" :label "a missing var through an alias in a fn body is a compile error" :expected :throws :actual "(do (require '[clojure.string :as zzv1]) (fn [] (zzv1/nope 1)))" :portability :common}
+  {:suite "analyze / no such var" :label "a missing var through an alias as a value is a compile error" :expected :throws :actual "(do (require '[clojure.string :as zzv2]) (fn [] zzv2/nope))" :portability :common}
+  {:suite "analyze / no such var" :label "a missing var in a loaded namespace named in full is a compile error" :expected :throws :actual "(fn [] (clojure.string/nope 1))" :portability :common}
   {:suite "ns / ns-unmap refer-all name" :label "ns-unmap removes refer-all name from resolve" :expected "nil" :actual "(do (require '[clojure.set :refer :all]) (ns-unmap *ns* 'union) (resolve 'union))" :portability :common}  {:suite "reader / EOF errors" :label "trailing backslash in string is a positioned EOF error" :expected ":eof" :actual "(try (read-string \"\\\"ab\\\\\") (catch Exception e (if (re-find #\"EOF\" (.getMessage e)) :eof :other)))" :portability :common}
   {:suite "reader / syntax-quote resolution" :label "core-default name qualifies to clojure.core" :expected "'(quote clojure.core/map)" :actual "(read-string \"`map\")" :portability :common}
   {:suite "reader / syntax-quote resolution" :label "core macro name qualifies to clojure.core" :expected "'(quote clojure.core/when)" :actual "(read-string \"`when\")" :portability :common}

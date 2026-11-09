@@ -180,6 +180,7 @@ jolt-class-for
 jolt-version
 jrec-method?
 late-bind?
+late-bound-namespace?
 list-dir
 list?
 load-namespace
