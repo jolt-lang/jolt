@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`java.time.Month/from` and `java.time.DayOfWeek/from` exist.** They were
+  missing, so tick's `(t/month date)` and `(t/day-of-week date)` raised "No
+  matching field or method". They read the field off any temporal that has it
+  through its own `get`, so a ZonedDateTime or OffsetDateTime from
+  jolt-lang/time works too, and a temporal without it is the JDK's
+  `DateTimeException`. `MonthDay`, `Month` and `DayOfWeek` now answer
+  `isSupported`, `get` and `getLong`, and a field a temporal does not have is
+  `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
+  than an `ExceptionInfo`.
+
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,
