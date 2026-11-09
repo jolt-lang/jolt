@@ -390,6 +390,41 @@
                                         "  (println \"MAIN\"))")]))]
   (check-eq "a removed shutdown hook does not run" (str/split-lines out) ["MAIN"]))
 
+;; --- File.deleteOnExit ---------------------------------------------------------
+;; Was a silent no-op: it answered nil and left every path behind, which leaves a
+;; decrypted PEM key in $TMPDIR after each run of a program that relies on it.
+;; The JDK deletes in reverse order of registration, once per path, after the
+;; program's own hooks, and skips what File.delete can't remove. So a directory
+;; registered before its file goes, one registered after its file is still
+;; non-empty when its turn comes and stays, and a hook can read a registered
+;; file and register one more.
+(let [root (str (fs/create-temp-dir {:prefix "jp-doe-"}))
+      script (str root "/doe.clj")
+      _ (spit script
+              (str "(let [[mode root] *command-line-args*"
+                   "      f (fn [& p] (java.io.File. (clojure.string/join \"/\" (cons root p))))"
+                   "      d1 (f mode \"d1\") a (f mode \"d1\" \"a.pem\")"
+                   "      d2 (f mode \"d2\") b (f mode \"d2\" \"b\")"
+                   "      late (f mode \"late\")]"
+                   "  (.mkdirs d1) (.mkdirs d2)"
+                   "  (.deleteOnExit d1) (spit a \"x\") (.deleteOnExit a) (.deleteOnExit a)"
+                   "  (spit b \"y\") (.deleteOnExit b) (.deleteOnExit d2)"
+                   "  (spit late \"z\")"
+                   "  (.addShutdownHook (Runtime/getRuntime)"
+                   "    (Thread. (fn [] (println (slurp a)) (.deleteOnExit late))))"
+                   "  (println (.deleteOnExit (java.io.File. \"\\u0000bad\")))"
+                   "  (when (= mode \"exit\") (System/exit 0)))"))
+      left (fn [mode] (vec (for [p ["d1" "d1/a.pem" "d2" "d2/b" "late"]
+                                 :when (fs/exists? (str root "/" mode "/" p))]
+                             p)))]
+  (doseq [mode ["return" "exit"]]
+    (let [r (sh [jolt-bin script mode root] {:err :string})]
+      (check-eq (str "deleteOnExit: the program and its hook run (" mode ")")
+                [(:exit r) (str/split-lines (:out r))] [0 ["nil" "x"]])
+      (check-eq (str "deleteOnExit: reverse order, once, after the hooks (" mode ")")
+                (left mode) ["d2"])))
+  (fs/delete-tree root))
+
 ;; Is a pid still alive? `kill -0` is the portable answer (exit 0 = alive). Run
 ;; through `sh` so it is the shell BUILTIN: a standalone kill(1) is not on every
 ;; Linux image, and ProcessBuilder.start rejects a program it cannot resolve.
