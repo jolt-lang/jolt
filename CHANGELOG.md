@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The built-in nREPL server starts evals in `user`, and sessions keep their
+  namespace.** An eval that sent no `ns` ran in whatever namespace the server
+  thread was started under, which under `jolt nrepl-server` is `clojure.core`,
+  so a client's first `def` went into `clojure.core`. A cloned session also
+  forgot an `(ns foo)` by its next eval. New sessions and session-less evals
+  now start in `user`, as on JVM nREPL. A cloned session keeps the namespace
+  its last eval ended in, and a clone of it starts there too. Session-less evals
+  that the jolt-lang/nrepl session middleware passes through are fixed by the
+  same change.
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks
