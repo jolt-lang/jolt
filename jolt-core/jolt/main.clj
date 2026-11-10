@@ -340,6 +340,51 @@
                                   (when (and buildable? (not dir))
                                     " (a task may build it)"))))))))))))))
 
+;; --- a dependency's natives load on its first require ------------------------
+;; A dependency's :jolt/native libraries are not opened at startup. Each spec
+;; carries the source roots of the dependency that declared it (deps.clj
+;; resolve-deps), and the loader opens it the first time a namespace is read
+;; off one of them, before that namespace's code runs (loader.ss
+;; ldr-natives-for-file!). A program that never requires the dependency never
+;; opens its library: ring-chez-adapter's hello-world no longer loads OpenSSL
+;; because jolt.crypto is on the roots.
+;;
+;; These still load at startup: a :process spec (the process's own symbols),
+;; the project's own (no :jolt.deps/paths), one a dependency marks :eager
+;; because its C must be there before any of its namespaces loads, and any spec
+;; a cpcache entry from an older jolt recorded without roots.
+(defn- deferred-native? [spec]
+  (boolean (and (seq (:jolt.deps/paths spec))
+                (not (:process spec))
+                (not (:eager spec)))))
+
+;; A dependency's natives failing at first require name the dependency and the
+;; namespace that triggered the load, since the failure no longer happens at
+;; startup where "the project's natives" was all the context there was.
+(defn- load-dependency-natives! [specs strict? base ns]
+  (try
+    (load-natives! specs strict? base)
+    (catch clojure.lang.ExceptionInfo e
+      (if-let [spec (:native (ex-data e))]
+        (throw (ex-info (str (ex-message e)
+                             " (declared by dependency " (or (:jolt.deps/lib spec) "?")
+                             (when ns (str ", loaded on first require of " ns))
+                             ")")
+                        (assoc (ex-data e) :ns (some-> ns str))
+                        e))
+        (throw e)))))
+
+;; Load what has to be there now, and hand each dependency's natives to the
+;; loader under the source roots that load them. Specs sharing a set of roots
+;; (one dependency's) go in one group, in declaration order.
+(defn- load-project-natives! [natives strict? base]
+  (load-natives! (vec (remove deferred-native? natives)) strict? base)
+  (let [deferred (filter deferred-native? natives)]
+    (doseq [roots (distinct (map :jolt.deps/paths deferred))]
+      (let [specs (vec (filter #(= roots (:jolt.deps/paths %)) deferred))]
+        (jolt.host/defer-natives! roots
+                                  (fn [ns] (load-dependency-natives! specs strict? base ns)))))))
+
 ;; Install the :jolt/provides declarations a resolved project collected (RFC 0014).
 ;; An entry is [install-ns lib class ...]; lib is nil for the project's own.
 (defn- register-class-providers! [provides]
@@ -378,7 +423,7 @@
    (register-ns-replacements! replaces)
    ;; project-dir is absent from a cpcache entry written by an older jolt; JOLT_PWD
    ;; is where the user invoked us, which is the same directory in the common case.
-   (load-natives! natives strict? (or project-dir (jolt.host/getenv "JOLT_PWD")))))
+   (load-project-natives! natives strict? (or project-dir (jolt.host/getenv "JOLT_PWD")))))
 
 ;; Aliases selected by a leading -A:… — bound around the re-dispatch so every
 ;; command that resolves the project (run/path/build/repl/nrepl/task, and a
@@ -1143,8 +1188,18 @@
              (cond
                (:process spec) ["process"]
                static          (into ["static"] static)
-               :else           (into [(if (:optional spec) "opt" "req")]
-                                     (native-candidates spec plat base))))))))
+               :else
+               (let [load (into [(if (:optional spec) "opt" "req")]
+                                (native-candidates spec plat base))]
+                 ;; a dependency's library is loaded by the binary only when the
+                 ;; binary carries one of that dependency's namespaces: the
+                 ;; driver drops the entry otherwise (build.ss
+                 ;; bld-natives-for-closure), as a run never opens it
+                 (if (deferred-native? spec)
+                   (-> ["dep" (str (count (:jolt.deps/paths spec)))]
+                       (into (:jolt.deps/paths spec))
+                       (into load))
+                   load))))))))
 
 ;; Say which :jolt/native libraries the built binary will still dlopen. A
 ;; `jolt build` is otherwise self-contained — the Clojure, the runtime and every
@@ -1157,8 +1212,11 @@
 ;; normal case and there is nothing to fix. It names what the binary needs so the
 ;; person shipping it knows, and points at the key that would link it in.
 (defn- report-runtime-natives! [encoded natives dynamic?]
-  (let [dyn (->> (map vector encoded natives)
-                 (filter (fn [[e _]] (#{"req" "opt"} (first e))))
+  (let [kind (fn [e] (if (= "dep" (first e))
+                       (nth e (+ 2 (parse-long (second e))))
+                       (first e)))
+        dyn (->> (map vector encoded natives)
+                 (filter (fn [[e _]] (#{"req" "opt"} (kind e))))
                  vec)]
     (when (seq dyn)
       (binding [*out* *err*]
@@ -1171,9 +1229,13 @@
                         " (--dynamic was passed):"
                         "; declare :static {:archive \"…\"} to link one in:")))
         (doseq [[e spec] dyn]
-          (println (str "  " (or (:name spec) "?")
-                        (when (= "opt" (first e)) " (optional)")
-                        " — " (str/join ", " (rest e)))))))))
+          (let [load (if (= "dep" (first e)) (drop (+ 2 (parse-long (second e))) e) e)]
+            (println (str "  " (or (:name spec) "?")
+                          (when (= "opt" (first load)) " (optional)")
+                          (when (= "dep" (first e))
+                            (str " (if the binary carries a namespace of "
+                                 (or (:jolt.deps/lib spec) "its dependency") ")"))
+                          " — " (str/join ", " (rest load))))))))))
 
 (defn- profile-use-files
   "The files after each --profile-use in ARGS, up to the next flag."

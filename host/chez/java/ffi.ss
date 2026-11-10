@@ -601,8 +601,21 @@
 ;; the address (positive integer) of the first hit, or #f when no handle has it
 ;; — the emitter then falls back to global name resolution. #f on Windows (no
 ;; registered handles).
+;;
+;; A symbol nothing loaded defines may be in a dependency's library that has not
+;; loaded yet: those load on the first require of one of the dependency's
+;; namespaces (loader.ss ldr-natives-for-file!), and an app can bind a library a
+;; dependency ships without requiring any of them. So before answering #f, a
+;; symbol the process cannot resolve globally either loads the pending ones and
+;; looks again. A libc symbol resolves globally and never gets this far.
 (define (jolt-ffi-dlsym-native sym)
-  (let ((rs (jolt-ffi-native-resolvers sym)))
+  (let ((rs (let ((rs (jolt-ffi-native-resolvers sym)))
+              (if (and (null? rs)
+                       (fx> ldr-natives-pending 0)
+                       (not (sa-foreign-entry? sym))
+                       (ldr-natives-load-all!))
+                  (jolt-ffi-native-resolvers sym)
+                  rs))))
     (cond
       ((null? rs) #f)
       (else

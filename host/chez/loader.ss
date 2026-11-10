@@ -2989,6 +2989,88 @@
 
 ;; The load itself, run by the one thread that claimed it (never concurrently for
 ;; a given name, and never re-entered for it on this thread).
+;; --- a dependency's :jolt/native libraries, loaded on first require ----------
+;; jolt.main loads the project's own natives at startup and hands each
+;; dependency's here with the source roots that dependency contributes. The
+;; group loads the first time a namespace is read off one of those roots, before
+;; that namespace's code runs, so a library the program never requires a
+;; namespace of is never opened (jolt-816). A built binary decides the same
+;; thing at build time instead: it emits a dependency's loads only when the
+;; binary carries one of its namespaces (build.ss bld-natives-for-closure).
+;;
+;; A group is #(state thunk roots): state 'pending, 'running or 'done. The
+;; thunk runs under ldr-natives-mu, which a Chez mutex makes recursive, so a
+;; second thread requiring from the same dependency waits for the first to
+;; finish loading rather than running ahead of it, and the loading thread
+;; reaching another of the dependency's namespaces does not deadlock on itself
+;; ('running is skipped). A thunk that raises leaves its group 'pending, so the
+;; next require from that dependency reports the same failure again instead of
+;; carrying on without the library.
+(define ldr-natives-mu (make-mutex))
+(define ldr-native-groups '())        ; newest first; read without the mutex
+(define ldr-natives-pending 0)        ; groups not yet 'done — the fast path
+
+(define (ldr-defer-natives! roots thunk)
+  (jolt-with-mutex ldr-natives-mu
+    (set! ldr-native-groups (cons (vector 'pending thunk roots) ldr-native-groups))
+    (set! ldr-natives-pending (fx+ ldr-natives-pending 1))))
+
+;; Is LOC a file under ROOT? A root is an absolute directory; Windows paths may
+;; arrive with either separator.
+(define (ldr-under-root? loc root)
+  (let ((n (string-length root)))
+    (and (fx> (string-length loc) n)
+         (string=? (substring loc 0 n) root)
+         (memv (string-ref loc n) '(#\/ #\\))
+         #t)))
+
+(define (ldr-run-native-group! g ns)
+  (when (eq? (vector-ref g 0) 'pending)
+    (vector-set! g 0 'running)
+    (guard (e (#t (vector-set! g 0 'pending) (raise e)))
+      ((vector-ref g 1) ns))
+    (vector-set! g 0 'done)
+    (set! ldr-natives-pending (fx- ldr-natives-pending 1))))
+
+;; Load the pending groups whose roots hold LOC, for namespace NS.
+(define (ldr-natives-for-file! loc ns)
+  (when (and (fx> ldr-natives-pending 0) (string? loc))
+    ;; 'running counts: another thread loading the group is one this thread
+    ;; has to wait for, which taking the mutex does
+    (let ((hits (filter (lambda (g)
+                          (and (not (eq? (vector-ref g 0) 'done))
+                               (exists (lambda (r) (ldr-under-root? loc r)) (vector-ref g 2))))
+                        ldr-native-groups)))
+      (when (pair? hits)
+        (jolt-with-mutex ldr-natives-mu
+          (for-each (lambda (g) (ldr-run-native-group! g ns)) (reverse hits)))))))
+
+;; Every pending group, for a foreign symbol nothing loaded defines (ffi.ss
+;; jolt-ffi-dlsym-native): an app may bind a library a dependency ships without
+;; ever requiring a namespace of that dependency. A group that fails here stays
+;; pending and says so when its own namespace is required; answers whether any
+;; group loaded.
+(define (ldr-natives-load-all!)
+  (and (fx> ldr-natives-pending 0)
+       (let ((before ldr-natives-pending))
+         (jolt-with-mutex ldr-natives-mu
+           (for-each (lambda (g) (guard (e (#t #f)) (ldr-run-native-group! g jolt-nil)))
+                     (reverse ldr-native-groups)))
+         (fx< ldr-natives-pending before))))
+
+(def-var! "jolt.host" "defer-natives!"
+  (lambda (roots thunk)
+    (ldr-defer-natives! (map jolt-str-render-one (seq->list roots))
+                        (lambda (ns) (jolt-invoke thunk ns)))
+    jolt-nil))
+;; The source roots whose natives have not loaded yet, for a test to ask.
+(def-var! "jolt.host" "pending-native-roots"
+  (lambda ()
+    (make-pvec
+     (list->vector
+      (apply append (map (lambda (g) (if (eq? (vector-ref g 0) 'done) '() (vector-ref g 2)))
+                         (reverse ldr-native-groups)))))))
+
 (define (ldr-load-body name force? was-loaded?)
   ;; A compiled artifact on the roots wins over the source, like RT.load
   ;; preferring a .class to its .clj. :reload does NOT bypass it, also like the
@@ -2998,6 +3080,8 @@
          (art (cpath-find-artifact name)))
     (cond
       ((or art file)
+       ;; a dependency's natives, before any of its code runs
+       (ldr-natives-for-file! (or file art) name)
        (when (ldr-verbose?)
          (display (string-append "Loading " name " from " (or art file) "\n")
                   (current-error-port)))

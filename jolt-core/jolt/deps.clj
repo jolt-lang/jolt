@@ -1016,7 +1016,8 @@
       [:process (:name spec)]
       [:native (or (:name spec)
                    (let [paths (vec (sort (mapcat cands native-platform-keys)))]
-                     (if (seq paths) paths (dissoc spec :jolt.deps/root))))])))
+                     (if (seq paths) paths (dissoc spec :jolt.deps/root :jolt.deps/lib
+                                                   :jolt.deps/paths))))])))
 
 ;; Reconcile two declarations of the same library instead of dropping the second.
 ;; dedup-by is winner-takes-all, and the project's own specs come first — so an
@@ -1038,6 +1039,18 @@
           a
           native-platform-keys))
 
+(defn- lazy-native? [spec] (boolean (and (seq (:jolt.deps/paths spec)) (not (:eager spec)))))
+
+;; The source roots whose first require loads a reconciled spec. One shared
+;; object declared by two dependencies is loaded by whichever is required first
+;; — the union of their roots — and a declaration that has to be there at
+;; startup (the project's own, or :eager) makes the whole spec eager.
+(defn- overlay-native-roots [a b]
+  (if (and (lazy-native? a) (lazy-native? b))
+    (assoc a :jolt.deps/paths (vec (distinct (concat (:jolt.deps/paths a)
+                                                     (:jolt.deps/paths b)))))
+    (dissoc a :jolt.deps/paths)))
+
 (defn- reconcile-natives
   "dedup-by native-key, but folding each dropped spec's unclaimed platform keys
   into the one that kept the identity. First-inclusion order is preserved."
@@ -1046,7 +1059,9 @@
         (reduce (fn [[order by-key] spec]
                   (let [k (native-key spec)]
                     (if (contains? by-key k)
-                      [order (assoc by-key k (overlay-native (get by-key k) spec))]
+                      [order (assoc by-key k (overlay-native-roots
+                                              (overlay-native (get by-key k) spec)
+                                              spec))]
                       [(conj order k) (assoc by-key k spec)])))
                 [[] {}] specs)]
     (mapv by-key order)))
@@ -1141,9 +1156,17 @@
         ;; relative path was being resolved against the APP's directory, and a
         ;; :static archive not at all — it went to `cc` verbatim and resolved
         ;; against whatever the build's cwd happened to be (jolt-9a8).
-        :natives (vec (mapcat (fn [{:keys [edn root]}]
-                                (map #(assoc % :jolt.deps/root root)
-                                     (:jolt/native edn)))
+        ;;
+        ;; It also carries the dependency's SOURCE roots and its coordinate: a
+        ;; dependency's natives load when the first namespace from one of those
+        ;; roots is required, not at startup (jolt.main apply-project!), and a
+        ;; library that is missing then names the dependency that declared it.
+        :natives (vec (mapcat (fn [{:keys [edn root manifest lib]}]
+                                (let [paths (when (= manifest :deps-edn)
+                                              (mapv #(abspath root %) (or (:paths edn) ["src"])))]
+                                  (map #(cond-> (assoc % :jolt.deps/root root :jolt.deps/lib (str lib))
+                                          (seq paths) (assoc :jolt.deps/paths paths))
+                                       (:jolt/native edn))))
                               infos))
         ;; The defs each dep vouches never resolve vars at runtime in a built
         ;; binary (:jolt/tree-shake {:allow-dynamic […]}). A LIBRARY is the
@@ -1957,7 +1980,8 @@
        (jolt.host/set-source-roots! (into current added)))
      (when (seq natives)
        (info "added deps declare :jolt/native libraries (not auto-loaded): "
-             (pr-str (mapv #(dissoc % :jolt.deps/root :jolt.deps/roots)
+             (pr-str (mapv #(dissoc % :jolt.deps/root :jolt.deps/roots
+                                    :jolt.deps/lib :jolt.deps/paths)
                            (reconcile-natives natives)))))
      added)))
 

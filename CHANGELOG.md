@@ -25,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still left to its tasks, as before. Older jolt ignores `:build`, so a
   library can add it now.
 
+### Changed
+
+- **A dependency's `:jolt/native` libraries load on first require, not at
+  startup.** A library declared by a dependency is opened the first time a
+  namespace from that dependency is required, before that namespace's code
+  runs. A program that never requires the dependency never opens it: a
+  ring-chez-adapter hello-world no longer loads OpenSSL because `jolt.crypto`
+  is on the roots. A missing library now fails at that require, and the error
+  names the library, the dependency and the namespace. `:optional` libraries
+  stay silent. A `:build` task runs at the same point. These still load at
+  startup: the project's own natives, `:process` specs, and any spec a
+  dependency marks `:eager true` because its C has to be there before any of
+  its namespaces load. A foreign symbol that nothing loaded defines loads the
+  pending libraries and looks again, so an app that binds a dependency's
+  library itself still finds it. `jolt build` links `:static` archives as
+  before. It loads a dependency's shared library at startup only when the
+  binary carries one of that dependency's namespaces, and otherwise only when
+  that fallback asks for it.
+
 ### Fixed
 
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
