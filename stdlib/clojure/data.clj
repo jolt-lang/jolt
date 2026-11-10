@@ -68,7 +68,8 @@
     (sequential? x) :sequential
     :else :atom))
 
-(defn- diff-similar [a b]
+;; public, as the reference's Diff protocol method is
+(defn diff-similar [a b]
   ((case (equality-partition a)
      :atom atom-diff
      :set diff-set

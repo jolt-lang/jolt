@@ -27,6 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A reference to a var a loaded namespace lacks stops that namespace from
+  loading.** Since such a reference is a compile error, as on the JVM (see
+  Fixed), code that names a var only on a path that rarely runs, such as
+  `(catch Exception e (clojure.repl/pst e))`, no longer loads if jolt lacks the
+  var, where before it loaded and failed only if that path ran. To keep real
+  code loading, jolt now has the reference vars such code names:
+  `clojure.repl/pst`, `root-cause`, `stack-element-str`, `source-fn` (nil, as
+  the JVM answers when it cannot find the source) and `source` ("Source not
+  found"); `clojure.java.io/make-reader`, `make-writer`, `make-input-stream`
+  and `make-output-stream`, which open what `reader`, `writer`, `input-stream`
+  and `output-stream` open, and the `IOFactory` and `Coercions` protocols, which
+  can be named and extended but which those fns do not consult;
+  `clojure.test/file-position`; `clojure.data/diff-similar`;
+  `clojure.core.protocols/iterator-reduce!`; and in `clojure.core`, `await1`,
+  `proxy-name`, `print-ctor`, `primitives-classnames`, `with-loading-context`,
+  `gen-class` and `gen-interface` (both expand to nil, as `gen-class` does on
+  the JVM when not compiling ahead of time), and `resultset-seq`,
+  `find-protocol-impl`, `-cache-protocol-fn`, `method-sig` and
+  `add-classpath`, which throw UnsupportedOperationException when called.
+
 - **A dependency's `:jolt/native` libraries load on first require, not at
   startup.** A library declared by a dependency is opened the first time a
   namespace from that dependency is required, before that namespace's code
@@ -106,11 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Written through an alias, the alias was then looked up in whatever namespace
   was current at the call, so `(s/nope 1)` in the `-main` that `jolt -m` runs
   reported "Unknown class s". As on the JVM, the reference is now rejected when
-  the form compiles, through an alias or by the namespace's full name, wherever
-  code runs right after it compiles (loading a file, `require`, `eval`, `-e`, the
-  REPLs). `jolt.host` stays late-bound, since which of its vars exist depends on
-  the host files a boot loaded. Code that names a var of another namespace
-  before that namespace defines it now needs a `declare` there, as on the JVM.
+  the form compiles, wherever code runs right after it compiles (loading a file,
+  `require`, `eval`, `-e`, the REPLs). That holds for a call with arguments or
+  without (`(s/nope)`), for `(s/new …)`, and for the var named as a value,
+  whether the namespace is written as an alias or in full; a call with no
+  arguments into a namespace that is not loaded, `(no.such.ns/nope)`, is
+  likewise the compile-time "No such namespace". `jolt.host` stays late-bound,
+  since which of its vars exist depends on the host files a boot loaded. Code
+  that names a var of another namespace before that namespace defines it now
+  needs a `declare` there, as on the JVM.
 
 - **`System/mapLibraryName` exists.** It was missing, so
   `(System/mapLibraryName "ffitest")` raised "No matching field or method".

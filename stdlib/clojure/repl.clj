@@ -6,16 +6,46 @@
 ; Jolt Standard Library: clojure.repl
 ; Partial port from Clojure 1.12's clojure.repl: the special-form documentation
 ; data (special-doc-map / special-doc) and the metadata-driven interactive fns
-; (doc, find-doc, apropos, dir) plus demunge. source and pst are not provided — image-baked
-; vars carry no :file, so there is no source text to point at.
+; (doc, find-doc, apropos, dir) plus demunge, and the stack-trace fns (pst,
+; root-cause, stack-element-str). source-fn answers nil, the JVM's answer for a
+; var whose source file it cannot find, and source prints "Source not found":
+; image-baked vars carry no :file, so there is no source text to point at.
 
 (ns clojure.repl)
+
+;; Compiler.demunge's CHAR_MAP, inverted. A built binary carries no compiler
+;; image, so clojure.lang.Compiler/demunge is not there to ask, and the frames it
+;; reports name their fns the JVM way (app.core$_main): demunge answers from this
+;; table then.
+(def ^:private demunge-names
+  {"COLON" ":" "PLUS" "+" "GT" ">" "LT" "<" "EQ" "=" "TILDE" "~" "BANG" "!"
+   "CIRCA" "@" "SHARP" "#" "SINGLEQUOTE" "'" "DOUBLEQUOTE" "\"" "PERCENT" "%"
+   "CARET" "^" "AMPERSAND" "&" "STAR" "*" "BAR" "|" "LBRACE" "{" "RBRACE" "}"
+   "LBRACK" "[" "RBRACK" "]" "SLASH" "/" "BSLASH" "\\" "QMARK" "?"})
+
+(defn- demunge-by-table [fn-name]
+  (let [s (.replace fn-name "$" "/")
+        n (count s)
+        sb (StringBuilder.)]
+    (loop [i 0]
+      (if (< i n)
+        (let [c (.charAt s i)]
+          (if (= c \_)
+            (let [j (.indexOf s "_" (inc i))
+                  ch (when (pos? j) (get demunge-names (subs s (inc i) j)))]
+              (if ch
+                (do (.append sb ch) (recur (inc j)))
+                (do (.append sb "-") (recur (inc i)))))
+            (do (.append sb c) (recur (inc i)))))
+        (str sb)))))
 
 (defn demunge
   "Given a string representation of a fn class,
   as in a stack trace element, returns a readable version."
   [fn-name]
-  (clojure.lang.Compiler/demunge fn-name))
+  (try
+    (clojure.lang.Compiler/demunge fn-name)
+    (catch Throwable _ (demunge-by-table fn-name))))
 
 (def ^:private special-doc-map
   '{. {:url "java_interop#dot"
@@ -159,3 +189,81 @@ str-or-pattern."
   [nsname]
   `(doseq [v# (dir-fn '~nsname)]
      (println v#)))
+
+(defn source-fn
+  "Returns a string of the source code for the given symbol, if it can
+  find it.  This requires that the symbol resolve to a Var defined in
+  a namespace for which the .clj is in the classpath.  Returns nil if
+  it can't find the source.  For most REPL usage, 'source' is more
+  convenient.
+
+  Jolt keeps no source text for a var, so this always returns nil, the
+  answer the JVM gives when the source file cannot be found.
+
+  Example: (source-fn 'filter)"
+  [x]
+  nil)
+
+(defmacro source
+  "Prints the source code for the given symbol, if it can find it.
+  This requires that the symbol resolve to a Var defined in a
+  namespace for which the .clj is in the classpath.
+
+  Example: (source filter)"
+  [n]
+  `(println (or (source-fn '~n) (str "Source not found"))))
+
+;; The reference stops at a CompilerException that names a source file; jolt's
+;; compile errors carry their position as ex-data instead, so the walk is the
+;; plain cause chain.
+(defn root-cause
+  "Returns the initial cause of an exception or error by peeling off all of
+  its wrappers"
+  {:added "1.3"}
+  [t]
+  (loop [cause t]
+    (if-let [cause' (.getCause cause)]
+      (recur cause')
+      cause)))
+
+(defn stack-element-str
+  "Returns a (possibly unmunged) string representation of a StackTraceElement"
+  {:added "1.3"}
+  [el]
+  (let [file (.getFileName el)
+        clojure-fn? (and file (or (.endsWith file ".clj") (.endsWith file ".cljc")
+                                  (= file "NO_SOURCE_FILE")))]
+    (str (if clojure-fn?
+           (demunge (.getClassName el))
+           (str (.getClassName el) "." (.getMethodName el)))
+         " (" (.getFileName el) ":" (.getLineNumber el) ")")))
+
+(defn pst
+  "Prints a stack trace of the exception, to the depth requested. If none supplied, uses the root cause of the
+  most recent repl exception (*e), and a depth of 12."
+  {:added "1.3"}
+  ([] (pst 12))
+  ([e-or-depth]
+   (if (instance? Throwable e-or-depth)
+     (pst e-or-depth 12)
+     (when-let [e *e]
+       (pst (root-cause e) e-or-depth))))
+  ([e depth]
+   (binding [*out* *err*]
+     (when (#{:read-source :macro-syntax-check :macroexpansion :compile-syntax-check :compilation}
+            (-> e ex-data :clojure.error/phase))
+       (println "Note: The following stack trace applies to the reader or compiler, your code was not executed."))
+     (println (str (-> e class .getSimpleName) " "
+                   (.getMessage e)
+                   (when-let [info (ex-data e)] (str " " (pr-str info)))))
+     (let [st (.getStackTrace e)
+           cause (.getCause e)]
+       (doseq [el (take depth
+                        (remove #(#{"clojure.lang.RestFn" "clojure.lang.AFn"} (.getClassName %))
+                                st))]
+         (println (str \tab (stack-element-str el))))
+       (when cause
+         (println "Caused by:")
+         (pst cause (min depth
+                         (+ 2 (- (count st)
+                                 (count (.getStackTrace cause)))))))))))
