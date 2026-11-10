@@ -128,6 +128,152 @@
              (str " — tried this platform's conventional names " (pr-str cands))
              "")))))
 
+;; --- building a missing :jolt/native library --------------------------------
+;; A spec may name the task that produces it: {:name "ents" :darwin [...] :build
+;; "native"}, where "native" is a task in the DECLARING library's own deps.edn.
+;; A library with a C shim reached as a plain git dep then works without the
+;; consumer cloning it and running the task by hand: the checkout under
+;; ~/.jolt/gitlibs holds the sources and nothing else ever built them.
+;;
+;; The build is a child `jolt run <task>` in the library's root. Each [root task]
+;; runs at most once per process (several specs may share one task); a lock
+;; directory in the root keeps two processes from building into the same
+;; checkout at once, the loser waiting and then retrying the load. Roots being
+;; built by an ancestor process travel in JOLT_NATIVE_BUILDING, so the build
+;; task's own process (which applies the same project) never starts another
+;; build of it — and never waits on the lock its parent holds.
+(def ^:private native-builds (atom {}))   ; [root task] -> {:status n} | {:error s}
+
+(def ^:private native-building-env "JOLT_NATIVE_BUILDING")
+
+(defn- native-build-off? [] (= "0" (jolt.host/getenv "JOLT_NATIVE_BUILD")))
+
+(defn- canonical-dir [d] (.getCanonicalPath (java.io.File. ^String d)))
+
+(defn- native-build-dir [spec base]
+  (when-let [d (or (:jolt.deps/root spec) base)] (canonical-dir d)))
+
+(defn- ancestor-building? [dir]
+  (let [v (jolt.host/getenv native-building-env)]
+    (boolean (and v (some #{dir} (str/split v #"\n"))))))
+
+;; The jolt to run the task with: bin/jolt exports JOLT_EXE, a built jolt binary
+;; knows its own path, and an installed jolt is on PATH.
+(defn- jolt-exe []
+  (or (jolt.host/getenv "JOLT_EXE") (jolt.host/self-exe) "jolt"))
+
+;; Run the task, its stdout copied to our stderr: the build is not the program's
+;; output, and `jolt -M:app > out` must not capture a compiler's chatter.
+(defn- spawn-native-build! [nm dir task]
+  (binding [*out* *err*]
+    (println (str "jolt: building native library " nm
+                  " (task " task " in " dir ")"))
+    (flush))
+  (try
+    (let [pb (java.lang.ProcessBuilder. ^java.util.List [(jolt-exe) "run" task])
+          env (.environment pb)
+          prev (jolt.host/getenv native-building-env)]
+      (.directory pb (java.io.File. ^String dir))
+      (.put env "JOLT_PWD" dir)
+      (.put env native-building-env (if prev (str prev "\n" dir) dir))
+      (.redirectError pb java.lang.ProcessBuilder$Redirect/INHERIT)
+      (let [p (.start pb)
+            in (.getInputStream p)
+            buf (byte-array 8192)]
+        (loop []
+          (let [n (.read in buf)]
+            (when (pos? n) (.write System/err buf 0 n) (recur))))
+        (.flush System/err)
+        {:status (.waitFor p)}))
+    (catch Exception e
+      {:error (str "could not run " (jolt-exe) ": " (ex-message e))})))
+
+;; A lock older than this is a build that died without cleaning up (killed, or
+;; the machine went down mid-compile), not one still running.
+(def ^:private native-lock-stale-ms (* 30 60 1000))
+
+;; Take DIR's build lock, waiting while another process holds it. Answers true
+;; when it had to wait — the other process has probably built the library, so
+;; the caller tries the load again before building anything itself.
+(defn- acquire-native-lock! [^java.io.File lock nm]
+  (loop [waited? false, said? false, vanished 0]
+    (cond
+      (.mkdir lock) waited?
+
+      ;; Gone between the mkdir and this check: its holder just released it,
+      ;; so try again, as a waiter (its build may have just produced the
+      ;; library). Only a lock that never appears (an unwritable or missing
+      ;; dir) is an error.
+      (not (.exists lock))
+      (if (< vanished 50)
+        (recur true said? (inc vanished))
+        (throw (ex-info (str "cannot create " (.getPath lock)) {})))
+
+      (> (- (System/currentTimeMillis) (.lastModified lock)) native-lock-stale-ms)
+      (do (.delete lock) (recur waited? said? vanished))
+
+      :else
+      (do (when-not said?
+            (binding [*out* *err*]
+              (println (str "jolt: waiting for another jolt building " nm
+                            " (" (.getPath lock) ")"))))
+          (Thread/sleep 200)
+          (recur true true vanished)))))
+
+;; Build SPEC's library with its :build task, then try LOAD! again. Answers
+;; [hit result], result being the build's {:status n} / {:error s}.
+(defn- build-native! [spec dir load!]
+  (let [task (str (:build spec))
+        nm (or (:name spec) task)
+        k [dir task]]
+    (if-let [r (get @native-builds k)]
+      [(load!) r]
+      (let [lock (java.io.File. (str dir "/.jolt-native-build.lock"))
+            waited? (try (acquire-native-lock! lock nm)
+                         (catch Exception e {:error (ex-message e)}))]
+        (if (map? waited?)
+          [nil waited?]
+          (try
+            (or (when waited? (when-let [h (load!)] [h {:status 0}]))
+                (let [r (spawn-native-build! nm dir task)]
+                  (swap! native-builds assoc k r)
+                  [(load!) r]))
+            (finally (.delete lock))))))))
+
+;; Build a missing library whose spec names its task — except the project's own
+;; library under a task (strict? false): the task being run may BE that build,
+;; or one that must not trigger it (a clean), and a task that needs the library
+;; can :depends on its build. DIR is the spec's build dir, nil when it has no
+;; :build or nothing is missing.
+(defn- auto-build-native? [dir strict? base]
+  (boolean (and dir
+                (not (native-build-off?))
+                (not (ancestor-building? dir))
+                (or strict? (not= dir (some-> base canonical-dir))))))
+
+;; What the missing-library message adds about the :build task, if anything.
+(defn- native-build-note [spec dir result cands]
+  (when-let [task (:build spec)]
+    (let [where (str "task " task " in " dir)]
+      (cond
+        (:error result)
+        (str "; building it failed: " (:error result) " (" where ")")
+
+        (and result (not (zero? (:status result))))
+        (str "; building it failed: " where " exited with status " (:status result))
+
+        (and result (seq cands) (jolt.ffi/load-failure-note cands))
+        (str " (built by " where ")")
+
+        result
+        (str "; " where " ran but did not produce it")
+
+        (native-build-off?)
+        (str "; " where " builds it (auto-build is off: JOLT_NATIVE_BUILD=0)")
+
+        :else
+        (str "; " where " builds it")))))
+
 ;; strict? false lets a MISSING required library through with a warning instead of
 ;; an error. A task is the one command that may be what PRODUCES the library it
 ;; is declared alongside: a project whose native/ holds C sources and whose
@@ -160,25 +306,45 @@
                 ;; process-global namespace) rather than depending on global
                 ;; foreign-entry search order. load-native returns #t on success
                 ;; (a handle, or Windows-global), #f when no candidate opens.
-                hit (some #(when (jolt.ffi/load-native %) %) cands)]
+                load! #(some (fn [c] (when (jolt.ffi/load-native c) c)) cands)
+                hit (load!)
+                ;; a task may build a library it declared candidates for, but
+                ;; not one already on disk that failed to load. A :static
+                ;; spec's declared shared object is built the same way; only a
+                ;; missing one stays silent below.
+                buildable? (and (nil? hit)
+                                (not (:optional spec))
+                                (seq (native-declared spec plat))
+                                (nil? (jolt.ffi/load-failure-note cands)))
+                dir (when (and buildable? (:build spec)) (native-build-dir spec base))
+                [hit result] (if (auto-build-native? dir strict? base)
+                               (build-native! spec dir load!)
+                               [hit nil])
+                required? (and (nil? hit) (not (:optional spec)) (not (:static spec)))]
             ;; A :static spec has no runtime shared object (it's linked into a
             ;; built binary), so an interpreted `run`/`repl` has nothing to load —
             ;; skip it rather than fail. Its foreign calls only resolve in a static
             ;; build; document a dynamic candidate too to use it under `run`.
-            (when (and (nil? hit) (not (:optional spec)) (not (:static spec)))
-              (let [msg (native-missing-msg spec plat cands)
-                    ;; a task may build a library it declared candidates for,
-                    ;; but not one already on disk that failed to load
-                    buildable? (and (seq (native-declared spec plat))
-                                    (nil? (jolt.ffi/load-failure-note cands)))]
-                (if strict?
+            (when required?
+              (let [msg (str (native-missing-msg spec plat cands)
+                             (when dir (native-build-note spec dir result cands)))]
+                (cond
+                  strict?
                   (throw (ex-info msg {:native spec}))
+
+                  ;; the task an auto-build started: its parent already said
+                  ;; what is being built, and the library is missing by design
+                  (and dir (ancestor-building? dir))
+                  nil
+
+                  :else
                   (binding [*out* *err*]
                     ;; a task may still BUILD a library it declared candidates
                     ;; for; it cannot build one this platform was never told
                     ;; the name of.
                     (println (str "warning: " msg
-                                  (when buildable? " (a task may build it)"))))))))))))))
+                                  (when (and buildable? (not dir))
+                                    " (a task may build it)"))))))))))))))
 
 ;; Install the :jolt/provides declarations a resolved project collected (RFC 0014).
 ;; An entry is [install-ns lib class ...]; lib is nil for the project's own.
@@ -927,6 +1093,27 @@
                                        "")]
         :else        nil))))
 
+;; `jolt build` links a :static archive into the binary, and the run-time load
+;; in load-natives! never looks at it, so a missing archive whose spec names a
+;; :build task is built here. One the task does not produce fails with what was
+;; run rather than as a linker error about a missing file.
+(defn- build-static-archives! [natives base]
+  (let [plat (current-platform)]
+    (doseq [spec natives
+            :when (and (:build spec) (not (:optional spec)) (not (:process spec)))]
+      (let [[kind archive] (static-link-spec spec plat base)
+            present #(when (jolt.host/file-exists? archive) archive)]
+        (when (and (= "archive" kind) (not (present)))
+          (let [dir (native-build-dir spec base)
+                [hit result] (if (auto-build-native? dir true base)
+                               (build-native! spec dir present)
+                               [nil nil])]
+            (when-not hit
+              (throw (ex-info (str "static archive " archive " for :jolt/native "
+                                   (or (:name spec) "?") " not found"
+                                   (native-build-note spec dir result []))
+                              {:native spec})))))))))
+
 ;; Encode a deps.edn :jolt/native spec for the build launcher, resolving the
 ;; current platform's candidate list now (the binary runs on this OS). Each entry
 ;; becomes a vector the launcher (build.ss) reads:
@@ -1069,6 +1256,11 @@
             ;; binary by default; --dynamic (or deps.edn :jolt/build {:dynamic-natives
             ;; true}) keeps the old behavior — load a shared object at runtime.
             dynamic-natives? (boolean (or (some #{"--dynamic"} flag-args) (:dynamic-natives build)))
+            ;; a :static archive a dependency's :build task produces is built
+            ;; now, before the linker is handed a path to nothing (not when
+            ;; cross-compiling: the task builds for this host)
+            _ (when-not (or dynamic-natives? (:target opts))
+                (build-static-archives! (:natives resolved) (or (:project-dir resolved) pdir)))
             natives (encode-natives (:natives resolved) dynamic-natives?
                                     (or (:project-dir resolved) pdir)
                                     (:target opts)

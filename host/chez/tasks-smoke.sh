@@ -78,6 +78,107 @@ out="$(inbb "$NAT" -M:go)"
 case "$out" in *"$NAT/native/libnope."*) r=yes ;; *) r="no: $out" ;; esac
 check "a relative :jolt/native path resolves against the project" "yes" "$r"
 
+# --- a dependency's :jolt/native :build task ----------------------------------
+# test/chez/tasks/nativebuild: `lib` compiles native/jbt.c in its `native` task
+# and names that task in its spec's :build; `app` depends on it by :local/root
+# and does nothing else. Each case runs on a fresh copy, the state a gitlib
+# checkout is in the first time an app uses it.
+if command -v "${CC:-cc}" >/dev/null 2>&1; then
+NB="$root/test/chez/tasks/nativebuild"
+fresh() { rm -rf "$tmp/nb"; mkdir -p "$tmp/nb"; cp -R "$NB/." "$tmp/nb/"; }
+builds() { if [ -f "$tmp/nb/lib/native/builds.log" ]; then wc -l < "$tmp/nb/lib/native/builds.log" | tr -d ' '; else echo 0; fi; }
+
+fresh
+out="$(inbb "$tmp/nb/app" -M:go)"; s=$?
+case "$out" in *"answer 42"*) r=yes ;; *) r="no: $out" ;; esac
+check "a dependency's missing native library is built by its :build task" "yes" "$r"
+check "...and the run exits 0" "0" "$s"
+case "$out" in *"building native library jbt (task native in "*"/nb/lib)"*) r=yes ;; *) r="no: $out" ;; esac
+check "...having said what it built and where" "yes" "$r"
+check "...running the task once" "1" "$(builds)"
+case "$out" in *warning:*) r="no: $out" ;; *) r=yes ;; esac
+check "...whose own process does not warn about the library it is building" "yes" "$r"
+out="$(inbb "$tmp/nb/app" -M:go)"
+case "$out" in "answer 42") r=yes ;; *) r="no: $out" ;; esac
+check "a second run loads the built library without building" "yes" "$r"
+check "...so the task ran once in all" "1" "$(builds)"
+[ -d "$tmp/nb/lib/.jolt-native-build.lock" ] && r=left || r=gone
+check "...and the build lock is released" "gone" "$r"
+
+# the build's own stdout is not the program's output
+fresh
+out="$(JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" -M:go 2>/dev/null)"
+check "the build's output goes to stderr, not stdout" "answer 42" "$out"
+
+# a consumer TASK builds a dependency's library too (only the project's own
+# library is left to the project's tasks)
+fresh
+out="$(inbb "$tmp/nb/app" go)"
+case "$out" in *"answer 42"*) r=yes ;; *) r="no: $out" ;; esac
+check "a task in the consumer builds a dependency's library" "yes" "$r"
+
+# the build task, run in the library itself, does not start a build of its own
+fresh
+out="$(inbb "$tmp/nb/lib" native)"; s=$?
+check "the library's own build task runs once, without recursing" "0 1" "$s $(builds)"
+case "$out" in *"building native library"*) r="no: $out" ;; *) r=yes ;; esac
+check "...and does not build its library first" "yes" "$r"
+
+# JOLT_NATIVE_BUILD=0 turns it off, and the error says how it would be built
+fresh
+out="$(export JOLT_NATIVE_BUILD=0; inbb "$tmp/nb/app" -M:go)"; s=$?
+check "JOLT_NATIVE_BUILD=0 builds nothing" "0" "$(builds)"
+check "...and the run fails" "1" "$([ "$s" = 0 ] && echo 0 || echo 1)"
+case "$out" in *"required native library jbt not found"*"task native in "*"/nb/lib builds it (auto-build is off: JOLT_NATIVE_BUILD=0)"*) r=yes ;; *) r="no: $out" ;; esac
+check "...naming the task that would build it" "yes" "$r"
+
+# a failed build names the library, the task, the dir and the exit status
+fresh
+out="$(export JBT_BUILD_FAIL=1; inbb "$tmp/nb/app" -M:go)"; s=$?
+check "a failed build fails the run" "1" "$([ "$s" = 0 ] && echo 0 || echo 1)"
+case "$out" in *"required native library jbt not found"*"building it failed: task native in "*"/nb/lib exited with status 3"*) r=yes ;; *) r="no: $out" ;; esac
+check "...naming the library, the task, the dir and the status" "yes" "$r"
+
+# two specs naming the same task run it once per process
+fresh
+sed 's/:build  "native"}]/:build  "native"} {:name "jbt2" :darwin ["native\/libjbt2.dylib"] :linux ["native\/libjbt2.so"] :build "native"}]/' \
+  "$NB/lib/deps.edn" > "$tmp/nb/lib/deps.edn"
+out="$(inbb "$tmp/nb/app" -M:go)"
+check "a task several specs name runs once per process" "1" "$(builds)"
+case "$out" in *"required native library jbt2 not found"*"task native in "*"/nb/lib ran but did not produce it"*) r=yes ;; *) r="no: $out" ;; esac
+check "...and a spec it did not produce says so" "yes" "$r"
+
+# two processes racing to build the same checkout: one builds, one waits
+fresh
+JBT_BUILD_SLEEP_MS=1500 JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" -M:go > "$tmp/nb-a.out" 2>&1 &
+pa=$!
+JBT_BUILD_SLEEP_MS=1500 JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" -M:go > "$tmp/nb-b.out" 2>&1
+wait $pa
+case "$(cat "$tmp/nb-a.out") $(cat "$tmp/nb-b.out")" in *"answer 42"*"answer 42"*) r=yes ;; *) r="no: $(cat "$tmp/nb-a.out" "$tmp/nb-b.out")" ;; esac
+check "two processes needing the same build both run" "yes" "$r"
+check "...and the task ran once" "1" "$(builds)"
+
+# `jolt build` builds it too, and the binary loads what was built
+fresh
+out="$(JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" build -m app.go -o "$tmp/nb-app" 2>&1)"; s=$?
+check "jolt build builds a dependency's missing library" "0 1" "$s $(builds)"
+[ "$s" = 0 ] || echo "$out" >&2
+out="$("$tmp/nb-app" 2>&1)"
+check "...and the binary loads it" "answer 42" "$out"
+
+# ...and a :static archive the task produces, which only `jolt build` reads
+fresh
+sed 's/:linux  \["native\/libjbt.so"\]/:static {:archive "native\/libjbt.a"}/; s/:darwin \["native\/libjbt.dylib"\]//' \
+  "$NB/lib/deps.edn" > "$tmp/nb/lib/deps.edn"
+out="$(export JBT_STATIC=1; JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" build -m app.go -o "$tmp/nb-static" 2>&1)"; s=$?
+check "jolt build builds a missing :static archive" "0 1" "$s $(builds)"
+[ "$s" = 0 ] || echo "$out" >&2
+out="$("$tmp/nb-static" 2>&1)"
+check "...and links it into the binary" "answer 42" "$out"
+else
+  echo "  (skipped :build cases: no C compiler)" >&2
+fi
+
 # --- bb.edn task bodies ------------------------------------------------------
 
 # a code body runs, with :init's def and the global :requires alias in scope,

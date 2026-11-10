@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `:jolt/native` spec can name the task that builds it.** `{:name "ents"
+  :darwin ["native/libflecs_ents.dylib"] :linux [...] :build "native"}` names
+  a task in the declaring library's own deps.edn. When the library's declared
+  file is missing, jolt runs `jolt run native` in the library's root, saying on
+  stderr what it is building and where, then loads the result. A library with a
+  C shim now works as a plain git dep: before, its gitlib checkout held only the
+  sources and startup failed with "required native library ents not found".
+  The task runs at most once per process, and a lock in the library's root
+  makes a second jolt process wait for the first build instead of building
+  into the same checkout. `jolt build` builds a missing `:static` archive the
+  same way. A failed build names the library, the task, the directory and the
+  exit status. `JOLT_NATIVE_BUILD=0` turns this off, and the missing-library
+  error then names the task that would build it. The project's own library is
+  still left to its tasks, as before. Older jolt ignores `:build`, so a
+  library can add it now.
+
 ### Fixed
+
+- **A var missing from a loaded namespace is a compile error, `No such var:
+  s/nope`.** It compiled to a class static call and failed only when it ran.
+  Written through an alias, the alias was then looked up in whatever namespace
+  was current at the call, so `(s/nope 1)` in the `-main` that `jolt -m` runs
+  reported "Unknown class s". As on the JVM, the reference is now rejected when
+  the form compiles, through an alias or by the namespace's full name, wherever
+  code runs right after it compiles (loading a file, `require`, `eval`, `-e`, the
+  REPLs). `jolt.host` stays late-bound, since which of its vars exist depends on
+  the host files a boot loaded. Code that names a var of another namespace
+  before that namespace defines it now needs a `declare` there, as on the JVM.
 
 - **`System/mapLibraryName` exists.** It was missing, so
   `(System/mapLibraryName "ffitest")` raised "No matching field or method".
@@ -69,6 +98,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
+
+- **`Executors/newVirtualThreadPerTaskExecutor` runs each task on its own
+  virtual thread.** It was a cached pool of daemon OS threads, so a task saw
+  `(.isVirtual (Thread/currentThread))` false, tasks shared threads, and every
+  blocked task held an OS thread. Each task now starts a fresh fiber, as on the
+  JVM. `close`, `shutdown`, `shutdownNow` (which interrupts running tasks) and
+  `awaitTermination` work as before, and an executor that is never closed still
+  doesn't keep the process alive.
+
+- **`ExecutorService.invokeAny` answers the first task to finish.** It waited
+  on the tasks in list order, so a slow first task was the answer even when a
+  later one had already succeeded.
+
 - **Intel Macs install the prebuilt binary.** Every release ships
   `jolt-vX-x86_64-macos.tar.gz`, but the install script refused Intel macOS,
   the release job bumped only the arm64 and Linux urls in the Homebrew
