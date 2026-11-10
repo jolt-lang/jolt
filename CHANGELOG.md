@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`Executors/newVirtualThreadPerTaskExecutor` reports the JVM's class.**
+  Its class was `java.util.concurrent.ThreadPoolExecutor`, so
+  `(instance? ThreadPoolExecutor ex)` was true only on jolt; it is now
+  `java.util.concurrent.ThreadPerTaskExecutor`, an `ExecutorService` but not a
+  `ThreadPoolExecutor`. Every `ExecutorService` is now also an
+  `AutoCloseable`, as since JDK 19. `invokeAny`'s `TimeoutException` carries
+  no message, as on the JVM, instead of "timed out waiting for a task".
+
 - **`intern` and `Var/find` see a required built-in namespace straight away.**
   Namespaces baked into the image are registered lazily, and both checked the
   namespace registry directly instead of going through the lookup `find-ns`

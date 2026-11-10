@@ -1340,8 +1340,9 @@
 ;; value nothing to construct or call.
 (jch-register-supers! "java.util.concurrent.Executor" '())
 (jch-mark-interface! "java.util.concurrent.Executor")
+;; AutoCloseable since JDK 19 (close() waits for the tasks).
 (jch-register-supers! "java.util.concurrent.ExecutorService"
-                      '("java.util.concurrent.Executor"))
+                      '("java.util.concurrent.Executor" "java.lang.AutoCloseable"))
 (jch-mark-interface! "java.util.concurrent.ExecutorService")
 (jch-register-supers! "java.util.concurrent.AbstractExecutorService"
                       '("java.util.concurrent.ExecutorService" "java.util.concurrent.Executor"))
@@ -1380,6 +1381,10 @@
 (jch-register-supers! "java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask"
                       '("java.util.concurrent.FutureTask"
                         "java.util.concurrent.RunnableScheduledFuture"))
+;; newVirtualThreadPerTaskExecutor's class: package-private, an ExecutorService
+;; (so AutoCloseable) but neither a ThreadPoolExecutor nor an AbstractExecutorService.
+(jch-register-supers! "java.util.concurrent.ThreadPerTaskExecutor"
+                      '("java.util.concurrent.ExecutorService"))
 ;; CompletableFuture (concurrency.ss): a Future and a CompletionStage, and the
 ;; enum its state() answers. delayedExecutor's Executor is a nested class.
 (jch-register-supers! "java.util.concurrent.CompletionStage" '())
@@ -1549,6 +1554,7 @@
     ;; submit returns is a FutureTask — the same class the "future-task" tag
     ;; models, which is why two tags share one FQN here (as the writer tags do).
     ("executor-service" . "java.util.concurrent.ThreadPoolExecutor")
+    ("vthread-executor" . "java.util.concurrent.ThreadPerTaskExecutor")
     ("j-future" . "java.util.concurrent.FutureTask")
     ("scheduled-executor" . "java.util.concurrent.ScheduledThreadPoolExecutor")
     ("scheduled-future" . "java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask")
