@@ -786,10 +786,17 @@
     (and (not (and own (var-cell-defined? own)))
          (let* ((ref (chez-resolve-refer cns nm))
                 (c (cond (ref (var-cell-lookup (car ref) (cdr ref)))
+                         ;; not chez-core-refer-cell: it keeps ns / in-ns visible
+                         ;; whatever the ns excluded (the compiler resolves them
+                         ;; specially), but an excluded ns is unmapped all the same
+                         ;; and sci.core's own (def ns ...) replaces nothing
                          ((and (or (string=? cns "user")
                                    (hashtable-ref ns-core-exclude-table cns #f))
-                               (ns-reference-core-public? nm))
-                          (chez-core-refer-cell cns nm))
+                               (ns-reference-core-public? nm)
+                               (not (chez-core-excluded? cns nm))
+                               (not (eq? (hashtable-ref ns-refer-table (cons cns nm) #f)
+                                         'unmapped)))
+                          (var-cell-lookup "clojure.core" nm))
                          (else #f))))
            (and c (var-cell-defined? c)
                 (not (string=? (var-cell-ns c) cns))
