@@ -81,12 +81,12 @@ held "a pool never shut down holds the process" \
 held "a cached pool's idle worker lingers" \
   '(let [ex (java.util.concurrent.Executors/newCachedThreadPool)] (.get (.submit ex ^Callable (fn [] 1))) (println :x))'
 # ...but a virtual-thread executor never shut down does not: virtual threads are
-# daemons (it lingered 60s, as the cached pool it is built on)
+# daemons, and so are the fibers it runs its tasks on
 ends "a virtual-thread executor never shut down does not hold the process" 0 ":x" \
   '(let [ex (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor)] (.get (.submit ex ^Callable (fn [] 1))) (println :x))'
 ends_without "a virtual-thread executor's pending task is abandoned" ":done" \
   '(.submit (java.util.concurrent.Executors/newVirtualThreadPerTaskExecutor) ^Runnable (fn [] (Thread/sleep 3000) (println :done)))'
-held"a non-daemon thread blocked forever hangs" '(.start (Thread. (fn [] @(promise))))'
+held "a non-daemon thread blocked forever hangs" '(.start (Thread. (fn [] @(promise))))'
 ends "shutdown-agents ends the linger" 0 ":x" '(deref (future 1)) (send (agent 0) inc) (shutdown-agents) (println :x)'
 
 # -- daemon threads never hold it -----------------------------------------------
