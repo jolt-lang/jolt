@@ -27,6 +27,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
+  the class graph, so a batch failure jolt-lang/db raises slipped past
+  `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no
+  constructor. It now extends `SQLException` and takes the JDK's constructors,
+  with `getUpdateCounts` and `getLargeUpdateCounts` handing out copies of the
+  counts. `SQLException`'s own constructors read their second string as the
+  SQLState, not a cause, and `getSQLState` and `getErrorCode` answer.
+
+- **`java.time.Month/from` and `java.time.DayOfWeek/from` exist.** They were
+  missing, so tick's `(t/month date)` and `(t/day-of-week date)` raised "No
+  matching field or method". They read the field off any temporal that has it
+  through its own `get`, so a ZonedDateTime or OffsetDateTime from
+  jolt-lang/time works too, and a temporal without it is the JDK's
+  `DateTimeException`. `MonthDay`, `Month` and `DayOfWeek` now answer
+  `isSupported`, `get` and `getLong`, and a field a temporal does not have is
+  `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
+  than an `ExceptionInfo`.
+
+- **A broken `:jolt/provides` library names its own load error.** Once a
+  provider's install namespace failed to load, every later reference to its
+  classes said "see the earlier error from jolt.time", but when the first
+  failure had been caught (tick reaches jolt.time through a require a caller
+  may wrap in `try`) that error was never printed. The message now carries the
+  first line of the original error.
+
+- **`File.createNewFile` is one exclusive create.** It checked whether the path
+  existed and then opened it with truncate, so two processes racing to create
+  the same file could both get true, which breaks it as a lock. A dangling
+  symlink also answered true by creating the file it pointed to. It now opens
+  with O_EXCL semantics and answers false for any existing path, symlinks
+  included, as on the JVM.
+
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,
@@ -39,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moving the session, an `ns` that does not exist answers
   `namespace-not-found` instead of running the code in `clojure.core`, and a
   session whose namespace was removed starts its next eval in `user`.
+
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks
@@ -47,6 +80,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
+
+- **`Executors/newVirtualThreadPerTaskExecutor` runs each task on its own
+  virtual thread.** It was a cached pool of daemon OS threads, so a task saw
+  `(.isVirtual (Thread/currentThread))` false, tasks shared threads, and every
+  blocked task held an OS thread. Each task now starts a fresh fiber, as on the
+  JVM. `close`, `shutdown`, `shutdownNow` (which interrupts running tasks) and
+  `awaitTermination` work as before, and an executor that is never closed still
+  doesn't keep the process alive.
+
+- **`ExecutorService.invokeAny` answers the first task to finish.** It waited
+  on the tasks in list order, so a slow first task was the answer even when a
+  later one had already succeeded.
+
+- **Intel Macs install the prebuilt binary.** Every release ships
+  `jolt-vX-x86_64-macos.tar.gz`, but the install script refused Intel macOS,
+  the release job bumped only the arm64 and Linux urls in the Homebrew
+  formula, and the README sent Intel Macs to build from source. The install
+  script now downloads the Intel tarball, the tap bump rewrites its url and
+  sha256 too (once the formula has an `on_intel` block; until then it warns
+  and bumps the other two), and the README lists both macOS binaries at
+  macOS 11+.
 
 ## [0.8.25] - 2026-11-08
 
