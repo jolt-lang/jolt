@@ -1,0 +1,8 @@
+error[analyze/no-such-var]: No such var: s/nope
+  --> ./test/errors/analyze/no-such-var/input.clj:7:3
+   |
+ 5 | ;; file loads, as on the JVM, not "Unknown class s" when -main finally runs.
+ 6 | (defn -main []
+ 7 |   (s/nope 1))
+   |   ^^^^^^^^^^
+exit: 1
