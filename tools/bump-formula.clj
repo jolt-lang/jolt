@@ -27,12 +27,20 @@
     (do (binding [*out* *err*] (println "usage: bump-formula.clj FORMULA.rb BASE-URL VERSION MAC-SHA LINUX-SHA INTEL-MAC-SHA"))
         (System/exit 2))
     (let [before (slurp path)
-          after (-> before
-                    (str/replace "joltc" "jolt")
-                    (bump base ver "aarch64-macos" mac)
-                    (bump base ver "x86_64-linux" lin)
-                    (bump base ver "x86_64-macos" intel-mac))]
-      (doseq [[target sha] [["aarch64-macos" mac] ["x86_64-linux" lin] ["x86_64-macos" intel-mac]]]
+          ;; x86_64-macos is bumped only once the formula has an url line for
+          ;; it: a tap that predates the Intel tarball keeps releasing instead of
+          ;; failing the job, with a warning to add the on_intel block.
+          intel? (re-find #"url \"[^\"]*x86_64-macos\.tar\.gz\"" before)
+          targets (cond-> [["aarch64-macos" mac] ["x86_64-linux" lin]]
+                    intel? (conj ["x86_64-macos" intel-mac]))
+          after (reduce (fn [s [target sha]] (bump s base ver target sha))
+                        (str/replace before "joltc" "jolt")
+                        targets)]
+      (when-not intel?
+        (binding [*out* *err*]
+          (println (str "bump-formula.clj: warning: " path " has no x86_64-macos url line; "
+                        "add an on_macos/on_intel block to ship the Intel tarball"))))
+      (doseq [[target sha] targets]
         (when-not (str/includes? after (str "jolt-" ver "-" target ".tar.gz\"\n"))
           (binding [*out* *err*] (println (str "bump-formula.clj: no url line for " target " in " path)))
           (System/exit 1))
