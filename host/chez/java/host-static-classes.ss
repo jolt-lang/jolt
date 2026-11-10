@@ -3635,7 +3635,7 @@
 (register-class-statics! "clojure.lang.Var"
   (list (cons "find" (lambda (sym)
           (let ((sns (symbol-t-ns sym)))
-            (if (and (string? sns) (not (hashtable-ref ns-registry sns #f)))
+            (if (and (string? sns) (not (ns-lookup sns)))
                 (throw-jvm (quote IllegalArgumentException) (string-append "No such namespace: " sns))
                 (jolt-find-var sym)))))
         ;; Var.intern is NOT clojure.core/intern: the two-argument overload takes a

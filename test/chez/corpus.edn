@@ -3122,6 +3122,9 @@
   {:suite "namespaces / designators" :label "a nil namespace designator is a NullPointerException, as on the JVM" :expected "[:npe :npe :npe]" :actual "[(try (find-ns nil) (catch NullPointerException _ :npe)) (try (the-ns nil) (catch NullPointerException _ :npe)) (try (ns-name nil) (catch NullPointerException _ :npe))]" :portability :common}
   {:suite "namespaces / designators" :label "a designator that is not a symbol is a failed cast to Symbol" :expected "true" :actual "(try (ns-name 42) false (catch ClassCastException _ true))" :portability :common}
   {:suite "namespaces / designators" :label "a symbol naming no namespace reports which one" :expected "\"No namespace: nope.nope found\"" :actual "(try (ns-name 'nope.nope) (catch Exception e (ex-message e)))" :portability :common}
+  {:suite "namespaces / designators" :label "intern into a required namespace no find-ns has touched" :expected "\"#'clojure.set/zz\"" :actual "(do (require 'clojure.set) (str (intern 'clojure.set 'zz 1)))" :portability :jvm}
+  {:suite "namespaces / designators" :label "intern into a missing namespace is a plain Exception naming it" :expected "[false \"No namespace: no.such.ns.zgw found\"]" :actual "(try (intern 'no.such.ns.zgw 'v 1) (catch Exception e [(instance? clojure.lang.ExceptionInfo e) (ex-message e)]))" :portability :jvm}
+  {:suite "namespaces / designators" :label "Var/find in a required namespace no find-ns has touched" :expected "\"#'clojure.set/union\"" :actual "(do (require 'clojure.set) (str (clojure.lang.Var/find 'clojure.set/union)))" :portability :jvm}
   {:suite "namespaces / def & vars" :label "def + deref" :expected "5" :actual "(do (def x 5) x)" :portability :common}
   {:suite "namespaces / def & vars" :label "def returns var" :expected "true" :actual "(var? (def y 1))" :portability :common}
   {:suite "namespaces / def & vars" :label "declare then def" :expected "2" :actual "(do (declare z) (def z 2) z)" :portability :common}
