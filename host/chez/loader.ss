@@ -1359,6 +1359,11 @@
                 (loop done (fx+ idle 1))))))))
 (def-var! "jolt.host" "aot-compile-worker"
   (lambda (manifest) (aot-compile-worker (jolt-str-render-one manifest)) jolt-nil))
+;; The jolt executable this process is, when it is one: a built jolt binary
+;; answers its own path. nil in source mode (a plain Chez runs the CLI, and
+;; bin/jolt exports JOLT_EXE instead) — the caller falls back to `jolt` on PATH.
+(def-var! "jolt.host" "self-exe"
+  (lambda () (or (and jolt-standalone-binary (aot-self-exe)) jolt-nil)))
 
 ;; --- dependency closure ------------------------------------------------------
 ;; A namespace's fasl bakes in what its dependencies contributed at compile time —

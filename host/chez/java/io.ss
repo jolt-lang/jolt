@@ -2329,8 +2329,12 @@
                (set-file-mtime-millis! fp (exact (floor (car args)))))))
       ((string=? name "createNewFile")
        (jfile-nul-free! fp)
-       (list (if (file-exists? fp) #f
-                 (guard (e (#t #f)) (close-port (open-output-file fp 'truncate)) #t))))
+       ;; one exclusive create, as the JVM's O_CREAT|O_EXCL: empty file-options
+       ;; fail when the path exists (a dangling symlink included). Checking
+       ;; file-exists? first let two racing callers both answer true, and
+       ;; followed a dangling symlink to create its target.
+       (list (guard (e (#t #f))
+               (close-port (open-file-output-port fp (file-options))) #t)))
       ((string=? name "renameTo")
        (list (let ((dst (jfile-fs (car args))))
                (and (not (jfile-nul? dst)) (guard (e (#t #f)) (rename-file fp dst) #t)))))

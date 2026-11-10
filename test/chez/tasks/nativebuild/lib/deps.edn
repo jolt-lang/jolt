@@ -1,0 +1,29 @@
+;; A library whose shared object is compiled from the C beside it. :build names
+;; the task in THIS file that produces the artifact, so a consumer that reaches
+;; the library as a plain dependency gets it built on first use. The smoke copies
+;; this tree to a temp dir; native/libjbt.* is never checked in.
+{:paths ["src"]
+
+ :jolt/native [{:name "jbt"
+                :darwin ["native/libjbt.dylib"]
+                :linux  ["native/libjbt.so"]
+                :build  "native"}]
+
+ :tasks {native {:doc "compile native/jbt.c"
+                 :task (let [mac? (re-find #"(?i)mac" (System/getProperty "os.name"))
+                             cc (or (System/getenv "CC") "cc")]
+                         ;; one line per run, so the smoke can count them
+                         (spit "native/builds.log" "built\n" :append true)
+                         (when (System/getenv "JBT_BUILD_FAIL")
+                           (System/exit 3))
+                         (when-let [ms (System/getenv "JBT_BUILD_SLEEP_MS")]
+                           (Thread/sleep (parse-long ms)))
+                         (cond
+                           ;; the :static case: an archive to link into a binary
+                           (System/getenv "JBT_STATIC")
+                           (do (shell cc "-c" "-fPIC" "-o" "native/jbt.o" "native/jbt.c")
+                               (shell "ar" "rcs" "native/libjbt.a" "native/jbt.o"))
+                           mac?
+                           (shell cc "-dynamiclib" "-o" "native/libjbt.dylib" "native/jbt.c")
+                           :else
+                           (shell cc "-shared" "-fPIC" "-o" "native/libjbt.so" "native/jbt.c")))}}}

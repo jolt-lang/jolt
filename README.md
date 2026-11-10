@@ -47,9 +47,9 @@ Machine-readable index for coding agents: [`llms.txt`](llms.txt).
 ## Install
 
 Prebuilt binaries are self-contained (runtime, compiler, stdlib) for **Linux
-x86_64** (glibc 2.17+), **macOS arm64** (14+), **Windows x86_64** and **Android
-arm64** under Termux (`pkg install ncurses libuuid libiconv`). Anything else
-(Intel Mac, musl/Alpine) — [build from source](CONTRIBUTING.md#build-from-source).
+x86_64** (glibc 2.17+), **macOS arm64 and x86_64** (11+), **Windows x86_64** and
+**Android arm64** under Termux (`pkg install ncurses libuuid libiconv`). Anything
+else (musl/Alpine) — [build from source](CONTRIBUTING.md#build-from-source).
 
 With Homebrew:
 
