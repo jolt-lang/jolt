@@ -871,6 +871,7 @@
 (jch-register-supers! "java.lang.CloneNotSupportedException" '("java.lang.Exception"))
 (jch-register-supers! "java.util.concurrent.CancellationException" '("java.lang.IllegalStateException"))
 (jch-register-supers! "java.sql.SQLException" '("java.lang.Exception"))
+(jch-register-supers! "java.sql.BatchUpdateException" '("java.sql.SQLException"))
 (jch-register-supers! "java.lang.LinkageError" '("java.lang.Error"))
 (jch-register-supers! "java.lang.ClassCircularityError" '("java.lang.LinkageError"))
 (jch-register-supers! "java.lang.IncompatibleClassChangeError" '("java.lang.LinkageError"))

@@ -429,7 +429,19 @@
 (define throwable-detail-accessors
   '(("FileSystemException" ("getFile" . 0) ("getOtherFile" . 1) ("getReason" . 2))
     ("URISyntaxException" ("getInput" . 0) ("getReason" . 1) ("getIndex" . 2))
-    ("PatternSyntaxException" ("getDescription" . 0) ("getIndex" . 1) ("getPattern" . 2))))
+    ("PatternSyntaxException" ("getDescription" . 0) ("getIndex" . 1) ("getPattern" . 2))
+    ("java.sql.BatchUpdateException" ("getUpdateCounts" . 2) ("getLargeUpdateCounts" . 2))
+    ("java.sql.SQLException" ("getSQLState" . 0) ("getErrorCode" . 1))))
+;; What an accessor answers for a throwable built without a detail vector (one
+;; raised through jolt.host/throwable with just a message).
+(define (throwable-detail-default name obj)
+  (cond ((string=? name "getFile") (jolt-ex-info-record-message obj))
+        ((string=? name "getErrorCode") 0)
+        (else jolt-nil)))
+;; The value an accessor hands out of a slot. A stored array is copied per call
+;; (getUpdateCounts copies on the JVM); the arrays are a later file's, so
+;; host-static-classes.ss installs the copy alongside the ctor that stores them.
+(define throwable-detail-value (lambda (name v) v))
 (define (throwable-detail-method obj name)
   (and (jolt-ex-info-record? obj)
        (let loop ((cs throwable-detail-accessors))
@@ -440,10 +452,8 @@
             (let ((d (jolt-ex-info-record-error-offset obj)))
               (list
                (if (vector? d)
-                   (or (vector-ref d (cdr (assoc name (cdar cs)))) jolt-nil)
-                   (if (string=? name "getFile")
-                       (jolt-ex-info-record-message obj)
-                       jolt-nil)))))
+                   (throwable-detail-value name (or (vector-ref d (cdr (assoc name (cdar cs)))) jolt-nil))
+                   (throwable-detail-default name obj)))))
            (else (loop (cdr cs)))))))
 
 (define (throwable-method obj name args)
