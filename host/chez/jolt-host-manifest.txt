@@ -262,6 +262,7 @@ scheme-eval-string
 scheme-proc
 scheme-version
 seed-callable?
+self-exe
 set-default-zone-provider!
 set-dispatch-macro!
 set-field!

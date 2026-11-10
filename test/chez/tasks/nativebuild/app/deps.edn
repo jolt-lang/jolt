@@ -1,0 +1,5 @@
+;; A consumer that names the library as a plain dependency and nothing else.
+{:paths ["src"]
+ :deps {jbt/jbt {:local/root "../lib"}}
+ :aliases {:go {:main-opts ["-m" "app.go"]}}
+ :tasks {go {:task (do (require 'app.go) ((resolve 'app.go/-main)))}}}

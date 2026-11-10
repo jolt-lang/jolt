@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `:jolt/native` spec can name the task that builds it.** `{:name "ents"
+  :darwin ["native/libflecs_ents.dylib"] :linux [...] :build "native"}` names
+  a task in the declaring library's own deps.edn. When the library's declared
+  file is missing, jolt runs `jolt run native` in the library's root, saying on
+  stderr what it is building and where, then loads the result. A library with a
+  C shim now works as a plain git dep: before, its gitlib checkout held only the
+  sources and startup failed with "required native library ents not found".
+  The task runs at most once per process, and a lock in the library's root
+  makes a second jolt process wait for the first build instead of building
+  into the same checkout. `jolt build` builds a missing `:static` archive the
+  same way. A failed build names the library, the task, the directory and the
+  exit status. `JOLT_NATIVE_BUILD=0` turns this off, and the missing-library
+  error then names the task that would build it. The project's own library is
+  still left to its tasks, as before. Older jolt ignores `:build`, so a
+  library can add it now.
+
 ### Fixed
 
 - **A var missing from a loaded namespace is a compile error, `No such var:
@@ -73,6 +91,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
+
+- **`Executors/newVirtualThreadPerTaskExecutor` runs each task on its own
+  virtual thread.** It was a cached pool of daemon OS threads, so a task saw
+  `(.isVirtual (Thread/currentThread))` false, tasks shared threads, and every
+  blocked task held an OS thread. Each task now starts a fresh fiber, as on the
+  JVM. `close`, `shutdown`, `shutdownNow` (which interrupts running tasks) and
+  `awaitTermination` work as before, and an executor that is never closed still
+  doesn't keep the process alive.
+
+- **`ExecutorService.invokeAny` answers the first task to finish.** It waited
+  on the tasks in list order, so a slow first task was the answer even when a
+  later one had already succeeded.
+
+- **Intel Macs install the prebuilt binary.** Every release ships
+  `jolt-vX-x86_64-macos.tar.gz`, but the install script refused Intel macOS,
+  the release job bumped only the arm64 and Linux urls in the Homebrew
+  formula, and the README sent Intel Macs to build from source. The install
+  script now downloads the Intel tarball, the tap bump rewrites its url and
+  sha256 too (once the formula has an `on_intel` block; until then it warns
+  and bumps the other two), and the README lists both macOS binaries at
+  macOS 11+.
 
 ## [0.8.25] - 2026-11-08
 
