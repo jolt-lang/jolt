@@ -1080,6 +1080,7 @@ jobs:
             echo "VER=$ver"
             echo "MAC_SHA=$(sha "jolt-${ver}-aarch64-macos.tar.gz")"
             echo "LIN_SHA=$(sha "jolt-${ver}-x86_64-linux.tar.gz")"
+            echo "INTEL_MAC_SHA=$(sha "jolt-${ver}-x86_64-macos.tar.gz")"
           } >> "$GITHUB_ENV"
 
       - name: Checkout tap
@@ -1120,7 +1121,7 @@ jobs:
         run: |
           set -euo pipefail
           base="https://github.com/${{ github.repository }}/releases/download/${VER}"
-          ./jolt-rel run jolt/tools/bump-formula.clj tap/Formula/jolt.rb "$base" "$VER" "$MAC_SHA" "$LIN_SHA"
+          ./jolt-rel run jolt/tools/bump-formula.clj tap/Formula/jolt.rb "$base" "$VER" "$MAC_SHA" "$LIN_SHA" "$INTEL_MAC_SHA"
           cd tap
           git config user.name "jolt-release[bot]"
           git config user.email "jolt-release@users.noreply.github.com"

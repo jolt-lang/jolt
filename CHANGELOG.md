@@ -62,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
+- **Intel Macs install the prebuilt binary.** Every release ships
+  `jolt-vX-x86_64-macos.tar.gz`, but the install script refused Intel macOS,
+  the release job bumped only the arm64 and Linux urls in the Homebrew
+  formula, and the README sent Intel Macs to build from source. The install
+  script now downloads the Intel tarball, the tap bump rewrites its url and
+  sha256 too (once the formula has an `on_intel` block; until then it warns
+  and bumps the other two), and the README lists both macOS binaries at
+  macOS 11+.
 
 ## [0.8.25] - 2026-11-08
 
