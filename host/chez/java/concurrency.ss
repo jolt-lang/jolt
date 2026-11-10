@@ -3739,15 +3739,33 @@
                               (jolt-with-mutex mu
                                 (set-cdr! outcomes (cons r (cdr outcomes)))
                                 (jolt-cv-wake! cv))))
-                   (wrap (lambda (t)
+                   ;; An outcome carries its task's index, so a success cancels
+                   ;; only the OTHER futures: the winner reports before its own
+                   ;; future settles, and cancelling it in that gap would mark it
+                   ;; cancelled and interrupt its runner.
+                   (wrap (lambda (t i)
                            (let ((thunk (runnable->thunk t)))
                              (lambda ()
                                (let ((r (guard (e (#t (cons 'err e)))
                                           (cons 'ok (jolt-invoke thunk)))))
-                                 (report! r)
+                                 (report! (cons i r))
                                  (if (eq? (car r) 'ok) (cdr r) (raise (cdr r))))))))
-                   (all (executor-submit-all self (map wrap ts)))
-                   (cancel-all! (lambda () (for-each (lambda (f) (j-future-cancel! f #t)) all)))
+                   (submitted '())
+                   (cancel-all! (lambda (keep)
+                                  (let loop ((fs submitted) (i (fx- (length submitted) 1)))
+                                    (unless (null? fs)
+                                      (unless (eqv? i keep) (j-future-cancel! (car fs) #t))
+                                      (loop (cdr fs) (fx- i 1))))))
+                   ;; Every exit cancels what was submitted, as the JDK's
+                   ;; doInvokeAny does in a finally: a rejection partway through
+                   ;; the submits, or an interrupt of the waiting caller, used to
+                   ;; leave the tasks running.
+                   (all (guard (e (#t (cancel-all! #f) (raise e)))
+                          (let loop ((ts ts) (i 0))
+                            (unless (null? ts)
+                              (set! submitted (cons (executor-submit self (wrap (car ts) i)) submitted))
+                              (loop (cdr ts) (fx+ i 1))))
+                          submitted))
                    (next! (lambda ()
                             (jolt-cv-wait-interruptibly "ExecutorService.invokeAny" mu cv deadline
                               (lambda (timed-out?)
@@ -3760,17 +3778,17 @@
                                          r))
                                       (timed-out? #f)
                                       (else jolt-cv-again)))))))
-              (let loop ((left (length all)) (err #f))
-                (if (fx=? left 0)
-                    (jolt-throw (task-execution-exception err))   ; every task failed
-                    (let ((r (next!)))
-                      (cond ((not r)
-                             (cancel-all!)
-                             (jolt-throw (jolt-host-throwable
-                                          "java.util.concurrent.TimeoutException"
-                                          "timed out waiting for a task")))
-                            ((eq? (car r) 'ok) (cancel-all!) (cdr r))
-                            (else (loop (fx- left 1) (cdr r)))))))))))
+              (guard (e (#t (cancel-all! #f) (raise e)))
+                (let loop ((left (length all)) (err #f))
+                  (if (fx=? left 0)
+                      (jolt-throw (task-execution-exception err))   ; every task failed
+                      (let ((o (next!)))
+                        (cond ((not o)
+                               (jolt-throw (jolt-host-throwable
+                                            "java.util.concurrent.TimeoutException"
+                                            "timed out waiting for a task")))
+                              ((eq? (cadr o) 'ok) (cancel-all! (car o)) (cddr o))
+                              (else (loop (fx- left 1) (cddr o))))))))))))
         (cons "shutdown" (lambda (self) (executor-shutdown! (jhost-state self)) jolt-nil))
         (cons "shutdownNow" (lambda (self) (executor-shutdown-now! (jhost-state self))))
         ;; ThreadPoolExecutor.allowCoreThreadTimeOut: core workers retire after the
