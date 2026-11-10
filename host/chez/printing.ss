@@ -299,6 +299,66 @@
               (if (and (string? s) (fx=? sink-pending-live 0))
                   s
                   (jolt-port-text (current-output-port) s))))))
+;; A with-out-str capture is a port-writer whose state is #(port cap): PORT is the
+;; capture's string port, the current Chez port of the thread that opened it, and
+;; CAP is #(remote-box pending-box port). Only that thread ever puts into the
+;; string port. Another thread the *out* binding was conveyed to (a future, an agent, a
+;; pmap or executor worker, a fiber on another carrier) cannot share it — a Chez
+;; string port is not thread-safe, and concurrent puts corrupt it — so it writes
+;; through the REMOTE port instead: unbuffered, each put pushed onto PENDING with
+;; a CAS. The owner moves pending text into the string port before its own next
+;; write and before the capture is read, so a write that happened before (a
+;; deref'd future's print) comes out before what the owner prints after it, and
+;; the owner's own writes stay a plain string-port put.
+(define (make-capture port) (vector (box #f) (box '()) port))
+(define (capture-push! cap s)
+  (let ((b (vector-ref cap 1)))
+    (let loop ()
+      (let ((old (unbox b)))
+        (unless (sa-box-cas! b old (cons s old)) (loop))))))
+(define (capture-drain! cap port)
+  (let ((b (vector-ref cap 1)))
+    (let loop ()
+      (let ((old (unbox b)))
+        (cond ((null? old) (void))
+              ((sa-box-cas! b old '())
+               (for-each (lambda (s) (display s port)) (reverse old)))
+              (else (loop)))))))
+(define (capture-remote-port cap)
+  (let ((b (vector-ref cap 0)))
+    (or (unbox b)
+        (let ((p (or (sa-make-output-port "with-out-str"
+                       (lambda (c) (capture-push! cap (string c)))
+                       (lambda (s start count) (capture-push! cap (substring s start (fx+ start count))) count)
+                       void void void)
+                     ;; a host with no handler ports (CONTRACT.txt) shares the
+                     ;; string port itself: sequential writes still land, only
+                     ;; truly concurrent ones are unprotected there
+                     (vector-ref cap 2))))
+          ;; two threads racing here make one port each; the first CAS wins and
+          ;; both use that one
+          (if (sa-box-cas! b #f p) p (unbox b))))))
+;; The port a port-writer's state resolves to on THIS thread (host-static-classes.ss
+;; port-writer-port handles the symbolic ones): a capture's string port on its own
+;; thread, with pending text moved in first, its remote port anywhere else.
+(define (capture-writer-port st)
+  (let ((p (vector-ref st 0)) (cap (vector-ref st 1)))
+    (if (eq? p (current-output-port))
+        (begin (capture-drain! cap p) p)
+        (capture-remote-port cap))))
+;; A port-writer whose text goes to this thread's current Chez port, so `display`
+;; reaches it directly: the root *out* ('out, resolved live) and a capture on the
+;; thread that opened it. A capture seen from any other thread goes through the
+;; writer's own write, which resolves the remote port.
+(define-syntax out-port-writer?
+  (syntax-rules ()
+    ((_ w*) (let ((w w*))
+              (and (string=? (jhost-tag w) "port-writer")
+                   (let* ((st (jhost-state w)) (p (vector-ref st 0)))
+                     (or (eq? p 'out)
+                         (and (eq? p (current-output-port))
+                              (fx> (vector-length st) 1)
+                              (begin (capture-drain! (vector-ref st 1) p) #t)))))))))
 (define (jolt-write s)
   (cond ((and (not (jolt-nil? jolt-pprint-write-hook))
               (not (jolt-pprint-hook-suppressed))
@@ -318,9 +378,7 @@
                       (set! out-cell (jolt-var "clojure.core" "*out*")))
                     (var-cell-deref out-cell))))
            (and (or (iface-method w "write" #f)
-                    (and (jhost? w)
-                         (not (and (string=? (jhost-tag w) "port-writer")
-                                   (eq? (vector-ref (jhost-state w) 0) 'out)))))
+                    (and (jhost? w) (not (out-port-writer? w))))
                 w))
          => (lambda (w) (record-method-dispatch w "write" (jolt-list s)) jolt-nil))
         (else (display (port-text s)) jolt-nil)))
@@ -345,9 +403,7 @@
                         (set! out-cell (jolt-var "clojure.core" "*out*")))
                       (var-cell-deref out-cell))))
              (and (or (iface-method w "write" #f)
-                      (and (jhost? w)
-                           (not (and (string=? (jhost-tag w) "port-writer")
-                                     (eq? (vector-ref (jhost-state w) 0) 'out)))))
+                      (and (jhost? w) (not (out-port-writer? w))))
                   w))
            => (lambda (w)
                 (if (if (jhost? w)
@@ -378,9 +434,14 @@
 ;; (binding [*out* some-writer] …) in force, and jolt-write then sends the text to
 ;; that writer instead of the capture:
 ;;   (binding [*out* sw] (with-out-str (print "x")))  ; JVM: "x", sw empty
-;; So push a *out* binding of our own, to the var's ROOT — the default stdout
-;; port-writer, whose port resolves live to (current-output-port) and therefore
-;; follows the redirect. Both mechanisms then point at the string port.
+;; So push a *out* binding of our own: a port-writer over the capture port
+;; itself. Both mechanisms then point at the capture.
+;;
+;; The binding names the PORT, not 'out (the root's live (current-output-port)):
+;; binding conveyance carries *out* to a future, agent, pmap or executor task, and
+;; (current-output-port) there is that worker thread's own port — stdout, or for a
+;; pool thread forked inside an earlier capture, that capture's dead port.
+;;   (with-out-str @(future (print "X")))  ; JVM: "X" every time, not just once
 ;;
 ;; Pushing a real binding rather than suppressing the *out* branch outright is
 ;; what keeps an INNER rebinding working: (with-out-str (binding [*out* sw] …))
@@ -389,19 +450,25 @@
 (define (jolt-with-out-str thunk)
   (with-output-to-string
     (lambda ()
-      (let ((cell (var-cell-lookup "clojure.core" "*out*")))
+      (let ((cell (var-cell-lookup "clojure.core" "*out*"))
+            (cap (make-capture (current-output-port))))
         ;; masked at its edges (jolt-wind*, locks.ss): an interrupt's escape
         ;; before the pop left *out* bound to this dead string port
         (jolt-wind*
           (lambda ()
             (when cell
-              (jolt-push-thread-bindings (jolt-hash-map cell (var-cell-root cell)))))
+              (jolt-push-thread-bindings
+                (jolt-hash-map cell (make-jhost "port-writer"
+                                                (vector (current-output-port) cap))))))
           #f
           (lambda () (parameterize ((jolt-pprint-hook-suppressed #t)) (jolt-invoke thunk)))
           ;; a high unit still waiting for its low one ends the capture as the
           ;; lone half it is (U+FFFD) rather than staying pending for a port
           ;; that is gone, whichever way the body leaves
-          (begin (unless (fx=? sink-pending-live 0)
+          ;; what other threads wrote and the owner has not moved in yet goes in
+          ;; before the capture is read
+          (begin (capture-drain! cap (current-output-port))
+                 (unless (fx=? sink-pending-live 0)
                    (display (jolt-port-text (current-output-port) "")))
                  (when cell (jolt-pop-thread-bindings))))))))
 

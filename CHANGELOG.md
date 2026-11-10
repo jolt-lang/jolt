@@ -40,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.core.rrb-vector`, `jolt.fs`, `jolt.ffi` and a few others) now exclude
   them, as their JVM counterparts do.
 
+- **Output printed on a future, agent or pool thread reaches the enclosing
+  `with-out-str`.** `(with-out-str @(future (print "X")))` captured "X" only
+  when the future landed on a freshly started pool worker; on a reused one the
+  text went to stdout or was lost, and a worker started inside a capture kept
+  writing its later root `*out*` output into that finished capture. The capture
+  now binds `*out*` to a writer over its own port, so every thread the binding
+  conveys to (future, agent, pmap, executors, core.async `thread`, fibers,
+  `bound-fn` threads) writes into it, threads writing at once neither lose nor
+  corrupt text, and a new thread starts on the process streams rather than
+  whatever port its creator had redirected to.
+
+
 - **A var missing from a loaded namespace is a compile error, `No such var:
   s/nope`.** It compiled to a class static call and failed only when it ran.
   Written through an alias, the alias was then looked up in whatever namespace

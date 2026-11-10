@@ -597,6 +597,15 @@
 ;; (class a-fn) — both shared files, both unbound here until this mirror.
 (define proc-name-mu (make-mutex))
 (define (proc-name-of v) (jolt-with-mutex proc-name-mu (hashtable-ref proc-name-tbl v #f)))
+;; Chez's console ports are the process streams, whatever current-output-port
+;; has been rebound to. lazy-bridge.ss resets a forked thread's current ports to
+;; them, so a thread forked inside a with-out-str does not keep the capture's
+;; port. Gambit has no such builtins: the ports current when the boot loads are
+;; the process's stdout and stderr, and they stand in for them.
+(define jolt-boot-output-port (current-output-port))
+(define jolt-boot-error-port (current-error-port))
+(define (console-output-port) jolt-boot-output-port)
+(define (console-error-port) jolt-boot-error-port)
 (define var-redefined-set (make-hashtable string-hash string=?))
 (define (var-redefined? ns name)
   (hashtable-contains? var-redefined-set (string-append ns "/" name)))

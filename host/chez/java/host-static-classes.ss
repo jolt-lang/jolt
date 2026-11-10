@@ -697,11 +697,14 @@
 (define port-writer-stdout (current-output-port))
 (define port-writer-stderr (current-error-port))
 (define (port-writer-port self)
-  (let ((p (vector-ref (jhost-state self) 0)))
+  (let* ((st (jhost-state self)) (p (vector-ref st 0)))
     (cond ((eq? p 'out) (current-output-port))
           ((eq? p 'err) (current-error-port))
           ((eq? p 'stdout) port-writer-stdout)
           ((eq? p 'stderr) port-writer-stderr)
+          ;; a with-out-str capture (printing.ss): its string port on the thread
+          ;; that opened it, a thread-safe remote port anywhere else
+          ((fx> (vector-length st) 1) (capture-writer-port st))
           (else p))))
 
 ;; The process streams also have a BYTE path. System/out and System/err are
