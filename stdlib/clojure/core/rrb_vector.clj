@@ -22,7 +22,8 @@
 ;; resolves a Prefix/member qualified symbol only against actual namespaces —
 ;; an :as alias is treated as a class and fails with "Unknown class". This
 ;; matches how the rest of jolt-core references jolt.host.
-(ns clojure.core.rrb-vector)
+(ns clojure.core.rrb-vector
+  (:refer-clojure :exclude [vector vector-of vec subvec]))
 
 (defn catvec
   "Concatenates the given vectors in logarithmic time."
@@ -68,12 +69,12 @@
   Divergence: jolt has no unboxed typed vector, so elements are coerced where a
   cast exists and stored in a plain (object) vector. See the namespace docstring."
   ([t] [])
-  ([t x1] (vec (map (coerce-for t) [x1])))
-  ([t x1 x2] (vec (map (coerce-for t) [x1 x2])))
-  ([t x1 x2 x3] (vec (map (coerce-for t) [x1 x2 x3])))
-  ([t x1 x2 x3 x4] (vec (map (coerce-for t) [x1 x2 x3 x4])))
+  ([t x1] (clojure.core/vec (map (coerce-for t) [x1])))
+  ([t x1 x2] (clojure.core/vec (map (coerce-for t) [x1 x2])))
+  ([t x1 x2 x3] (clojure.core/vec (map (coerce-for t) [x1 x2 x3])))
+  ([t x1 x2 x3 x4] (clojure.core/vec (map (coerce-for t) [x1 x2 x3 x4])))
   ([t x1 x2 x3 x4 & xn]
-   (vec (map (coerce-for t) (list* x1 x2 x3 x4 xn)))))
+   (clojure.core/vec (map (coerce-for t) (list* x1 x2 x3 x4 xn)))))
 
 (defn vec
   "Returns a vector containing the contents of coll.

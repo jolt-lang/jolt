@@ -1178,6 +1178,32 @@ else
   rm -rf "$ro"
 fi
 
+# --- (ah) a def replacing a clojure.core refer warns on a hit too ------------
+# The warning is printed while the def is analyzed, and a hit analyzes nothing:
+# the captured Scheme carries the line, so a warm load prints what the cold one
+# did (the JVM prints it on every load, AOT class or source).
+rw="$(mktemp -d)"
+mkdir -p "$rw/src/mylib"
+printf '(ns mylib.core)\n(defn vals [] 7)\n(defn answer [] (vals))\n' > "$rw/src/mylib/core.clj"
+rwrun() {
+  JOLT_AOT_CACHE=1 JOLT_AOT_ASYNC=0 JOLT_CACHE_DIR="$rw/cache" JOLT_QUIET=1 "$jolt" -e "
+    (require 'jolt.deps)
+    (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$rw\"}}})
+    (require 'mylib.core)
+    (println (mylib.core/answer))" 2>&1
+}
+rw_want="WARNING: vals already refers to: #'clojure.core/vals in namespace: mylib.core, being replaced by: #'mylib.core/vals
+7"
+rw_cold="$(rwrun)"
+rw_files="$(find "$rw/cache" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')"
+rw_warm="$(rwrun)"
+if [ "$rw_cold" = "$rw_want" ] && [ "$rw_files" -ge 1 ] && [ "$rw_warm" = "$rw_want" ]; then
+  echo "PASS: (ah) refer-replacement warning on a cold load and on a hit"; pass=$((pass+1)); : > "$errlog"
+else
+  echo "FAIL: (ah) refer-replacement warning: cold='$rw_cold' warm='$rw_warm' cache files=$rw_files"; fails=$((fails+1)); show_stderr
+fi
+rm -rf "$rw"
+
 # Phase 4 (cold-vs-warm speedup) lives in aot-cache-perf.sh — a timing
 # measurement doesn't belong in this deterministic correctness gate.
 

@@ -49,6 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
+  in a namespace that refers `clojure.core/vals` (or a name another namespace's
+  `:refer` brought in) printed nothing; jolt now prints Clojure's
+  `WARNING: vals already refers to: #'clojure.core/vals in namespace: a.core,
+  being replaced by: #'a.core/vals` on `*err*`, for `def`, `defn`, `defmacro`,
+  `declare`, `defmulti` and `intern`, including when the namespace loads from
+  the AOT cache. Nothing is printed for a name the namespace excluded with
+  `:refer-clojure :exclude`, for its own var redefined, or for one of the names
+  jolt's `clojure.core` adds beyond the reference's. jolt's own namespaces that
+  shadowed core names (`clojure.zip`, `clojure.edn`, `clojure.core.async`,
+  `clojure.core.rrb-vector`, `jolt.fs`, `jolt.ffi` and a few others) now exclude
+  them, as their JVM counterparts do.
+
 - **Output printed on a future, agent or pool thread reaches the enclosing
   `with-out-str`.** `(with-out-str @(future (print "X")))` captured "X" only
   when the future landed on a freshly started pool worker; on a reused one the
@@ -59,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bound-fn` threads) writes into it, threads writing at once neither lose nor
   corrupt text, and a new thread starts on the process streams rather than
   whatever port its creator had redirected to.
+
 
 - **A var missing from a loaded namespace is a compile error, `No such var:
   s/nope`.** It compiled to a class static call and failed only when it ran.

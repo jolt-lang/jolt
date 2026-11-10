@@ -1,0 +1,3 @@
+WARNING: vals already refers to: #'clojure.core/vals in namespace: input, being replaced by: #'input/vals
+vals 1 (:a)
+exit: 0

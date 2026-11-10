@@ -1,4 +1,4 @@
-(ns debug-fixture)
+(ns debug-fixture (:refer-clojure :exclude [destructure]))
 
 (defn inner [x]
   (let [y (* x 2)]

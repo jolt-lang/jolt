@@ -21,7 +21,7 @@
 ;; SOFTWARE.
 
 (ns jolt.infix.math.core
-  (:refer-clojure :exclude [rand])
+  (:refer-clojure :exclude [rand abs])
   (:require
    [jolt.infix.math :refer [defunary defbinary]]))
 

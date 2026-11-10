@@ -40,6 +40,15 @@
 ;; namespace's artifact, because the artifact already re-runs the require that
 ;; pulls it in. See load-jolt-file* for what leaked before this existed.
 (define jolt-aot-capture-file (make-thread-parameter #f))
+;; A def that replaces a refer warns at analysis (host-contract.ss hc-intern!);
+;; the captured Scheme carries the same line so a cached load prints it too.
+(set-hc-replacement-recorder!
+  (lambda (msg)
+    (let ((cap (jolt-aot-capture)))
+      (when cap
+        (put-string cap "(ns-err-println ")
+        (write msg cap)
+        (put-string cap ")\n")))))
 
 ;; clojure.lang.Compiler/LINE and /COLUMN — derefable cells (Vars on the JVM)
 ;; holding the line/column of the form being compiled. Macros read @Compiler/LINE

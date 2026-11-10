@@ -688,7 +688,18 @@
       (var-table-cells))
     (list->cseq acc)))
 
+;; A def interns its name at analysis, as the JVM's DefExpr does, so this is where
+;; replacing a refer warns (ns.ss ns-check-replacement!). A cached load of the
+;; namespace runs the emitted Scheme without analyzing it, so while the loader is
+;; capturing that Scheme the warning goes into it too, ahead of the def's own code
+;; — the cached load then prints what the source load printed, at the same point.
+;; The capture lives in compile-eval.ss, which installs the recorder; without it
+;; (no loader cache) the warning is only printed.
+(define hc-replacement-recorder #f)
+(define (set-hc-replacement-recorder! f) (set! hc-replacement-recorder f))
 (define (hc-intern! ctx ns-name nm)
+  (let ((msg (ns-check-replacement! ns-name nm)))
+    (when (and msg hc-replacement-recorder) (hc-replacement-recorder msg)))
   (hc-mint-walked! ns-name nm)
   (declare-var! ns-name nm)
   jolt-nil)

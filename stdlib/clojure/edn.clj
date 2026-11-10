@@ -2,7 +2,8 @@
 ;; clojure.core/read-string (which parses, never evaluates — safe for EDN), and
 ;; adds the opts-map arity with :eof plus nil/blank-input handling.
 (ns clojure.edn
-  "Reading EDN data.")
+  "Reading EDN data."
+  (:refer-clojure :exclude [read read-string]))
 
 ;; The reader yields set literals as a FORM ({:jolt/type :jolt/set :value [...]})
 ;; rather than a constructed set, so build the actual values, recursing into

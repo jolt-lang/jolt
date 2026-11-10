@@ -11,7 +11,7 @@
 ;; Native print is not involved: this ns defines its own print/pr/prn
 ;; that route through (-write *out* ...).
 (ns clojure.pprint
-  (:refer-clojure :exclude [deftype print pr prn])
+  (:refer-clojure :exclude [deftype print pr prn float?])
   (:require [clojure.walk]))
 
 ;;======================================================================

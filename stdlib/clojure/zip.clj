@@ -7,7 +7,8 @@
 ;; reference indexes a loc with (loc 0)/(loc 1); Jolt uses (nth loc ...) because a
 ;; metadata-bearing vector is not currently invocable as a fn.
 (ns clojure.zip
-  "Functional hierarchical zipper, with navigation, editing, and enumeration.")
+  "Functional hierarchical zipper, with navigation, editing, and enumeration."
+  (:refer-clojure :exclude (replace remove next)))
 
 (defn zipper
   "Creates a new zipper structure. branch? is a fn that, given a node, returns

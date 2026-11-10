@@ -434,8 +434,13 @@ done
 # (kmet's proxy code is this exact shape; jolt-lang/jolt#451). fwd-first pins
 # the same for a second core fn, and fwd-late pins the complementary half: a
 # caller AFTER the redefs must get the ns-local fns in BOTH modes.
+# Those redefs replace core refers, so `jolt run` also prints the JVM's "already
+# refers to" warnings while it compiles them; the built binary compiled them at
+# build time and does not repeat them (jolt-xfhjz). The `jolt run` side of each
+# binary-vs-run comparison drops those lines.
+strip_refer_warnings() { grep -v '^WARNING: .* already refers to: '; }
 got_fwd="$(cd / && "$out" --fwdref 2>&1)"
-want_fwd="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --fwdref 2>&1)"
+want_fwd="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --fwdref 2>&1 | strip_refer_warnings)"
 if [ "$got_fwd" != "$want_fwd" ]; then
   echo "  FAIL: forward-reference resolution diverges between the binary and jolt run"
   echo "--- binary ----"; echo "$got_fwd"
@@ -458,7 +463,7 @@ done
 # extension loader requires host namespaces at startup). --rerequire pins both
 # the stamp identity and that call against the in-order run.
 got_rr="$(cd / && "$out" --rerequire 2>&1)"
-want_rr="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --rerequire 2>&1)"
+want_rr="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --rerequire 2>&1 | strip_refer_warnings)"
 if [ "$got_rr" != "$want_rr" ]; then
   echo "  FAIL: a runtime require of an image namespace re-evaluates it"
   echo "--- binary ----"; echo "$got_rr"
@@ -583,7 +588,7 @@ clauses: 2 :shadow-last'
 if ! nsl_build="$(JOLT_PWD="$nsl_app" "$jolt" build -m nsl.core -o "$nsl_app/bin" 2>&1)"; then
   echo "  FAIL: an app with loaded files did not build:"; echo "$nsl_build"; exit 1
 fi
-nsl_run="$(cd "$nsl_app" && JOLT_PWD="$nsl_app" "$joltabs" run -m nsl.core 2>&1)"
+nsl_run="$(cd "$nsl_app" && JOLT_PWD="$nsl_app" "$joltabs" run -m nsl.core 2>&1 | strip_refer_warnings)"
 if [ "$nsl_run" != "$nsl_want" ]; then
   echo "  FAIL: loaded files under jolt run:"; echo "$nsl_run"; exit 1
 fi
@@ -680,7 +685,7 @@ if ! ls "$mfn_cache"/*/*/mf.util-*.so >/dev/null 2>&1; then
   exit 1
 fi
 # the same program under jolt run is the reference
-want_mfn="$(cd "$mfn_app" && JOLT_PWD="$mfn_app" "$joltabs" run -m mf.core 2>&1)"
+want_mfn="$(cd "$mfn_app" && JOLT_PWD="$mfn_app" "$joltabs" run -m mf.core 2>&1 | strip_refer_warnings)"
 for mfn_i in 1 2; do
   got_mfn="$(cd / && "$mfn_out.$mfn_i" 2>&1)"
   if [ "$got_mfn" != "$want_mfn" ]; then
@@ -716,7 +721,7 @@ rm -rf "$(dirname "$mfn_app")"
 # Compared against `jolt run` because the bug is a DIVERGENCE between the two,
 # then against the literal so the two cannot agree on a shared failure.
 got_dt="$(cd / && "$out" --dtlookup 2>&1)"
-want_dt="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --dtlookup 2>&1)"
+want_dt="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --dtlookup 2>&1 | strip_refer_warnings)"
 if [ "$got_dt" != "$want_dt" ]; then
   echo "  FAIL: a deftype's declared valAt does not answer the same as under jolt run"
   echo "--- binary ----"; echo "$got_dt"
@@ -731,7 +736,7 @@ done
 
 fasl="$(dirname "$out")/closure.fasl"
 got_cl="$(cd / && "$out" --closure "$fasl" 2>&1)"
-want_cl="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --closure "$fasl" 2>&1)"
+want_cl="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --closure "$fasl" 2>&1 | strip_refer_warnings)"
 if [ "$got_cl" != "$want_cl" ]; then
   echo "  FAIL: a spliced callee's closure does not travel the same as under jolt run"
   echo "--- binary ----"; echo "$got_cl"

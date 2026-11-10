@@ -6,7 +6,8 @@
             [jolt.time.enums :as e]
             [jolt.time.local :as l]
             [jolt.time.amount :as a]
-            [jolt.time.temporal :as t]))
+            [jolt.time.temporal :as t])
+  (:refer-clojure :exclude [inst?]))
 
 (def ^:private nps u/nanos-per-sec)
 

@@ -26,7 +26,7 @@
    [jolt.parser.monad :as m]
    [jolt.parser.position :refer [strip-location]]
    [jolt.parser.basic :refer :all]
-   [jolt.parser.combinators :refer :all]))
+   [jolt.parser.combinators :refer :all :exclude [alpha-num digit letter]]))
 
 ; expression ::= term { addop term }.
 ; term ::= factor { mulop factor }.

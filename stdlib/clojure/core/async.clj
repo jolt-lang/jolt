@@ -21,7 +21,7 @@
 ;; superset of the JVM model (no fixed thread pool, no pending-op limit).
 
 (ns clojure.core.async
-  (:refer-clojure :exclude [reduce transduce into merge map take partition partition-by])
+  (:refer-clojure :exclude [reduce transduce into merge map take partition partition-by bounded-count])
   ;; The port protocol the macros and any ported caller ask about, loaded here so
   ;; a bare (require 'clojure.core.async) installs it — upstream's ns form lists
   ;; it the same way. It requires nothing back, so there is no cycle.
