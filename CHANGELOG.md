@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.26] - 2026-11-10
+
+A release that makes dependency native libraries lazy and buildable: a
+`:jolt/native` library opens on the first require of its dependency rather than
+at startup, and a spec can name the task that builds it, so a library with a C
+shim works as a plain git dep. A reference to a var missing from a loaded
+namespace is now a compile error, `No such var`, as on the JVM, and a `def`
+that shadows a referred var prints the JVM's warning. Output from futures and
+pool threads reaches `with-out-str`, `System/exit` off the main thread runs the
+shutdown hooks, and virtual-thread executors, `invokeAny`, the java.time `from`
+methods and the `SQLException` family match the JDK. Intel Macs install the
+prebuilt binary.
+
 ### Added
 
 - **A `:jolt/native` spec can name the task that builds it.** `{:name "ents"
@@ -24,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error then names the task that would build it. The project's own library is
   still left to its tasks, as before. Older jolt ignores `:build`, so a
   library can add it now.
+  A build that is killed mid-way does not block the next run: the lock records
+  its holder's pid and host, and a waiter breaks it when that process is gone
+  or has stopped refreshing it. The task's stdin is closed, so a task that
+  reads stdin sees end-of-file.
 
 ### Changed
 
@@ -46,7 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the JVM when not compiling ahead of time), and `resultset-seq`,
   `find-protocol-impl`, `-cache-protocol-fn`, `method-sig` and
   `add-classpath`, which throw UnsupportedOperationException when called.
-
 - **A dependency's `:jolt/native` libraries load on first require, not at
   startup.** A library declared by a dependency is opened the first time a
   namespace from that dependency is required, before that namespace's code
@@ -64,9 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   links against one a dependency provides (a `DT_NEEDED` on it) no longer finds
   it already open at startup; that dependency's spec needs `:eager true`, or the
   project restates the spec. `jolt build` links `:static` archives as
-  before. It loads a dependency's shared library at startup only when the
-  binary carries one of that dependency's namespaces, and otherwise only when
-  that fallback asks for it.
+  before, and runs the `:build` task of any dependency library the binary may
+  load whose file is missing, failing with the library and the task named.
+  When a binding's symbol is still missing because a pending library did not
+  load, the "no entry" error names that library and why it failed.
 
 ### Fixed
 
@@ -78,7 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cause chained. `Instant/from` no longer accepts a local date or date-time,
   which have no instant. A `get` of a field on a temporal type with no field
   table throws UnsupportedTemporalTypeException instead of an ex-info.
-
 - **`Executors/newVirtualThreadPerTaskExecutor` reports the JVM's class.**
   Its class was `java.util.concurrent.ThreadPoolExecutor`, so
   `(instance? ThreadPoolExecutor ex)` was true only on jolt; it is now
@@ -86,7 +102,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ThreadPoolExecutor`. Every `ExecutorService` is now also an
   `AutoCloseable`, as since JDK 19. `invokeAny`'s `TimeoutException` carries
   no message, as on the JVM, instead of "timed out waiting for a task".
-
 - **`intern` and `Var/find` see a required built-in namespace straight away.**
   Namespaces baked into the image are registered lazily, and both checked the
   namespace registry directly instead of going through the lookup `find-ns`
@@ -96,43 +111,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `find-ns` on it. Every existence check now shares one lookup. `intern` into a
   namespace that really is missing now throws a plain `Exception`, as on the JVM,
   rather than an `ex-info`.
-
-- **A native library build that was killed no longer blocks the next run for
-  half an hour.** The lock that keeps two jolt processes from building a
-  dependency's `:jolt/native` library at once was released only when the build
-  finished, so Ctrl-C, `kill -9` or a crash mid-build left
-  `.jolt-native-build.lock` behind, and every later run printed "waiting for
-  another jolt building ..." and hung until the lock was 30 minutes old. The
-  holder now records its pid and host in the lock and refreshes it every few
-  seconds; a waiter breaks the lock at once when that pid is gone on the same
-  host, or when it has not been refreshed for a minute, and the waiting
-  message names the lock to delete by hand. The build task's stdin is also
-  closed now, so a task that reads stdin sees end-of-file instead of hanging
-  on a pipe nothing writes to.
 - **`System/exit` from a thread other than the main one runs the shutdown hooks.**
   It ended the process straight away, so hooks registered with
   `Runtime.addShutdownHook` did not run and `deleteOnExit` paths were left behind
   when a future, a `Thread` or a pool worker called it. They run now, once, as
   on the JVM. If two threads exit at the same time, the second waits for the
   hooks to finish and the first caller's status is the process's.
-- **`jolt build` builds a dependency's missing shared library again.** Since
-  dependency libraries load on first require, the build only built one when
-  the binary carried a namespace of that dependency. A binary that binds the
-  library's symbols itself built, exited 0, and died at its first call with
-  `foreign-procedure: no entry for "jbt_answer"`. `jolt build` now runs the
-  `:build` task of every non-optional dependency library the binary may load
-  whose declared file is missing, and fails naming the library and the task if
-  that does not produce it. When a binding's symbol is still missing because a
-  pending dependency library did not load, the "no entry" error now names that
-  library and why it failed. The build's runtime-library report no longer
-  claims the binary carries a namespace of the dependency it was unsure of.
-- **Looking up a symbol no longer loads, and builds, every pending dependency
-  library.** `(ffi/find-symbol "some_optional_symbol")` that nothing defined
-  opened every dependency library not yet required, running its `:build` task
-  if it had one, before answering nil. An optional-symbol probe undid the lazy
-  loading. `ffi/find-symbol` and `ffi/dlsym-native` now look only at what is
-  loaded. The fallback that loads pending libraries is kept for the first call
-  of a `defcfn`, which would otherwise fail with "no entry".
 - **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
   in a namespace that refers `clojure.core/vals` (or a name another namespace's
   `:refer` brought in) printed nothing; jolt now prints Clojure's
@@ -145,7 +129,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shadowed core names (`clojure.zip`, `clojure.edn`, `clojure.core.async`,
   `clojure.core.rrb-vector`, `jolt.fs`, `jolt.ffi` and a few others) now exclude
   them, as their JVM counterparts do.
-
 - **Output printed on a future, agent or pool thread reaches the enclosing
   `with-out-str`.** `(with-out-str @(future (print "X")))` captured "X" only
   when the future landed on a freshly started pool worker; on a reused one the
@@ -156,17 +139,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `bound-fn` threads) writes into it, threads writing at once neither lose nor
   corrupt text, and a new thread starts on the process streams rather than
   whatever port its creator had redirected to.
-
-- **On the Gambit backend a `def` that shadows a `clojure.core` name compiles
-  again, and the shadowing warning prints once on a cached load.** Printing the
-  new refer-replacement warning dispatched `write` on the default `*err*`, which
-  has no host methods on Gambit, so `(defn vals [] 1)` failed to compile there;
-  the warning now goes straight to the error port when `*err*` is a process
-  stream, as `print` does for `*out*`. And a def made by an `eval` the
-  namespace's body runs printed its warning twice when the namespace loaded
-  from the AOT cache: the cache now records only the loader's own forms, not
-  what a form's `eval` analyzes while it runs.
-
 - **A var missing from a loaded namespace is a compile error, `No such var:
   s/nope`.** It compiled to a class static call and failed only when it ran.
   Written through an alias, the alias was then looked up in whatever namespace
@@ -181,14 +153,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   since which of its vars exist depends on the host files a boot loaded. Code
   that names a var of another namespace before that namespace defines it now
   needs a `declare` there, as on the JVM.
-
 - **`System/mapLibraryName` exists.** It was missing, so
   `(System/mapLibraryName "ffitest")` raised "No matching field or method".
   It answers the platform's shared-library file name from the same OS family
   `os.name` uses: `libffitest.dylib` on macOS, `libffitest.so` on Linux and
   Android, `ffitest.dll` on Windows. A nil name is a `NullPointerException`
   with no message, as on the JVM.
-
 - **The rest of the `java.sql.SQLException` family exists.** `SQLWarning`,
   `SQLTimeoutException`, `SQLIntegrityConstraintViolationException`,
   `SQLSyntaxErrorException` and the other transient, non-transient and
@@ -203,7 +173,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `getUpdateCounts` and `getLargeUpdateCounts` handing out copies of the
   counts. `SQLException`'s own constructors read their second string as the
   SQLState, not a cause, and `getSQLState` and `getErrorCode` answer.
-
 - **`java.time.Month/from` and `java.time.DayOfWeek/from` exist.** They were
   missing, so tick's `(t/month date)` and `(t/day-of-week date)` raised "No
   matching field or method". They read the field off any temporal that has it
@@ -213,7 +182,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `isSupported`, `get` and `getLong`, and a field a temporal does not have is
   `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
   than an `ExceptionInfo`.
-
 - **A broken `:jolt/provides` library names its own load error.** Once a
   provider's install namespace failed to load, every later reference to its
   classes said "see the earlier error from jolt.time", but when the first
@@ -222,7 +190,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first line of the original error, and when that error wraps another (a
   top-level throw arrives as "Syntax error macroexpanding at ...") the root
   cause's class and message after it.
-
 - **`File.createNewFile` is one exclusive create.** It checked whether the path
   existed and then opened it with truncate, so two processes racing to create
   the same file could both get true, which breaks it as a lock. A dangling
@@ -232,7 +199,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory or no permission, throws `IOException` with the system's message
   ("No such file or directory", "Permission denied") as the JVM does, rather
   than answering false.
-
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,
@@ -245,7 +211,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moving the session, an `ns` that does not exist answers
   `namespace-not-found` instead of running the code in `clojure.core`, and a
   session whose namespace was removed starts its next eval in `user`.
-
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks
@@ -255,7 +220,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
-
 - **`Executors/newVirtualThreadPerTaskExecutor` runs each task on its own
   virtual thread.** It was a cached pool of daemon OS threads, so a task saw
   `(.isVirtual (Thread/currentThread))` false, tasks shared threads, and every
@@ -263,11 +227,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JVM. `close`, `shutdown`, `shutdownNow` (which interrupts running tasks) and
   `awaitTermination` work as before, and an executor that is never closed still
   doesn't keep the process alive.
-
 - **`ExecutorService.invokeAny` answers the first task to finish.** It waited
   on the tasks in list order, so a slow first task was the answer even when a
   later one had already succeeded.
-
 - **Intel Macs install the prebuilt binary.** Every release ships
   `jolt-vX-x86_64-macos.tar.gz`, but the install script refused Intel macOS,
   the release job bumped only the arm64 and Linux urls in the Homebrew
