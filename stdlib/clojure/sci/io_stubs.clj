@@ -3,7 +3,10 @@
 ; thread-local *out* binding). Jolt has native I/O, so we provide just the names
 ; that sci.impl.namespaces references when building the clojure.core binding map,
 ; backed by Jolt's native equivalents. (Only references symbols Jolt defines.)
-(ns sci.impl.io)
+(ns sci.impl.io
+  (:refer-clojure :exclude [newline flush pr prn print println pr-str prn-str print-str
+                            println-str printf print-simple read-line with-out-str
+                            with-in-str]))
 
 (def out (atom nil))
 (def in (atom nil))

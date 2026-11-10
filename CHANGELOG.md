@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
+  in a namespace that refers `clojure.core/vals` (or a name another namespace's
+  `:refer` brought in) printed nothing; jolt now prints Clojure's
+  `WARNING: vals already refers to: #'clojure.core/vals in namespace: a.core,
+  being replaced by: #'a.core/vals` on `*err*`, for `def`, `defn`, `defmacro`,
+  `declare`, `defmulti` and `intern`, including when the namespace loads from
+  the AOT cache. Nothing is printed for a name the namespace excluded with
+  `:refer-clojure :exclude`, for its own var redefined, or for one of the names
+  jolt's `clojure.core` adds beyond the reference's. jolt's own namespaces that
+  shadowed core names (`clojure.zip`, `clojure.edn`, `clojure.core.async`,
+  `clojure.core.rrb-vector`, `jolt.fs`, `jolt.ffi` and a few others) now exclude
+  them, as their JVM counterparts do.
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,

@@ -294,7 +294,8 @@
   _Bool promotes to int in a variadic call. Neither form combines with :blocking
   (a varargs convention and __collect_safe cannot both be emitted), and the bare
   form additionally takes no by-value aggregate — its tail is compiled at the
-  call, where an ftype the binding declared is not available.")
+  call, where an ftype the binding declared is not available."
+  (:refer-clojure :exclude [with-open read]))
 
 ;; The primitives this namespace is built over are the host's, reached by their
 ;; reserved __ names: alloc, read, write, sizeof, string->ptr, copy, read-array,

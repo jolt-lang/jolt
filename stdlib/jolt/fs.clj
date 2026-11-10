@@ -7,7 +7,8 @@
   Path-valued results are java.nio.file.Path values. See
   https://github.com/babashka/fs for the API of each function."
   (:require [babashka.fs]
-            [jolt.util :refer [import-vars]]))
+            [jolt.util :refer [import-vars]])
+  (:refer-clojure :exclude [exists? slurp spit]))
 
 ;; The whole surface, zip/unzip/gzip/gunzip included: they run on the runtime's
 ;; java.util.zip (host/chez/java/zip-*.ss), which every jolt binary carries.

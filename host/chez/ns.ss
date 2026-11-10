@@ -759,6 +759,185 @@
         (hashtable-keys var-table)))
     n))
 
+;; --- Namespace.checkReplacement ---------------------------------------------
+;; Interning a name the namespace currently maps to ANOTHER namespace's var — a
+;; clojure.core name through the implicit refer, or a name a refer / use brought
+;; in — replaces that mapping and says so on *err*:
+;;   WARNING: vals already refers to: #'clojure.core/vals in namespace: a.core,
+;;   being replaced by: #'a.core/vals
+;; Clojure 1.12 warns for every such var, core or not (the old IllegalStateException
+;; for a non-core refer is gone). Nothing is printed when the name is the
+;; namespace's own var already (a second def), when it maps to nothing (a
+;; :refer-clojure :exclude, an ns-unmap, a bare in-ns namespace that never ran
+;; refer-clojure), or inside clojure.core itself.
+;;
+;; The var `nm` maps to in `cns` when that mapping is a refer of another
+;; namespace's var, else #f. Read in the order every resolver reads: the ns's own
+;; interns, its refers, then the implicit clojure.core refer — which only exists
+;; once refer-clojure has run in the namespace (the ns macro always runs it), or in
+;; user, which the runtime refers clojure.core into at startup.
+;;
+;; jolt's clojure.core publishes several hundred names the reference's does not
+;; (its own seams and helpers: atom?, __import, ...). A library defining one of
+;; those replaces nothing on the JVM, so the implicit-refer arm only counts the
+;; reference's public names (ns-reference-core-publics below).
+(define (ns-replaced-refer cns nm)
+  (let ((own (var-cell-lookup cns nm)))
+    (and (not (and own (var-cell-defined? own)))
+         (let* ((ref (chez-resolve-refer cns nm))
+                (c (cond (ref (var-cell-lookup (car ref) (cdr ref)))
+                         ((and (or (string=? cns "user")
+                                   (hashtable-ref ns-core-exclude-table cns #f))
+                               (ns-reference-core-public? nm))
+                          (chez-core-refer-cell cns nm))
+                         (else #f))))
+           (and c (var-cell-defined? c)
+                (not (string=? (var-cell-ns c) cns))
+                c)))))
+(define (ns-refer-replace-message cns nm old)
+  (string-append "WARNING: " nm " already refers to: #'" (var-cell-ns old) "/"
+                 (var-cell-name old) " in namespace: " cns
+                 ", being replaced by: #'" cns "/" nm))
+;; One line on *err*, as RT.errPrintWriter().println does: through whatever writer
+;; *err* holds, so a (binding [*err* w] ...) captures it.
+(define (ns-err-println s)
+  (let ((w (var-cell-deref (jolt-var "clojure.core" "*err*"))))
+    (record-method-dispatch w "write" (jolt-list (string-append s "\n")))
+    ;; and flushed: errPrintWriter's PrintWriter autoflushes on println
+    (when (if (jhost? w) (host-method-ref (jhost-tag w) "flush") (iface-method w "flush" #f))
+      (record-method-dispatch w "flush" (jolt-list)))
+    jolt-nil))
+;; Warn when interning nm into cns replaces a refer. Returns the message printed,
+;; or #f, so the compiler can also record it for a cached load to replay.
+(define (ns-check-replacement! cns nm)
+  (let ((old (ns-replaced-refer cns nm)))
+    (and old
+         (let ((msg (ns-refer-replace-message cns nm old)))
+           (ns-err-println msg)
+           msg))))
+;; The public names of the reference clojure.core: (keys (ns-publics 'clojure.core))
+;; on Clojure 1.12.6. Kept as data and only made a table the first time a def
+;; shadows a core name, so startup pays nothing for it.
+(define ns-reference-core-public-names
+  '(
+    "*" "*'" "*1" "*2" "*3" "*agent*" "*allow-unresolved-vars*" "*assert*"
+    "*clojure-version*" "*command-line-args*" "*compile-files*" "*compile-path*"
+    "*compiler-options*" "*data-readers*" "*default-data-reader-fn*" "*e" "*err*"
+    "*file*" "*flush-on-newline*" "*fn-loader*" "*in*" "*math-context*" "*ns*"
+    "*out*" "*print-dup*" "*print-length*" "*print-level*" "*print-meta*"
+    "*print-namespace-maps*" "*print-readably*" "*read-eval*" "*reader-resolver*"
+    "*repl*" "*source-path*" "*suppress-read*" "*unchecked-math*"
+    "*use-context-classloader*" "*verbose-defrecords*" "*warn-on-reflection*" "+"
+    "+'" "-" "-'" "->" "->>" "->ArrayChunk" "->Eduction" "->Vec" "->VecNode"
+    "->VecSeq" "-cache-protocol-fn" "-reset-methods" ".." "/" "<" "<=" "=" "==" ">"
+    ">=" "EMPTY-NODE" "Inst" "NaN?" "PrintWriter-on" "StackTraceElement->vec"
+    "Throwable->map" "abs" "accessor" "aclone" "add-classpath" "add-tap" "add-watch"
+    "agent" "agent-error" "agent-errors" "aget" "alength" "alias" "all-ns" "alter"
+    "alter-meta!" "alter-var-root" "amap" "ancestors" "and" "any?" "apply" "areduce"
+    "array-map" "as->" "aset" "aset-boolean" "aset-byte" "aset-char" "aset-double"
+    "aset-float" "aset-int" "aset-long" "aset-short" "assert" "assoc" "assoc!"
+    "assoc-in" "associative?" "atom" "await" "await-for" "await1" "bases" "bean"
+    "bigdec" "bigint" "biginteger" "binding" "bit-and" "bit-and-not" "bit-clear"
+    "bit-flip" "bit-not" "bit-or" "bit-set" "bit-shift-left" "bit-shift-right"
+    "bit-test" "bit-xor" "boolean" "boolean-array" "boolean?" "booleans" "bound-fn"
+    "bound-fn*" "bound?" "bounded-count" "butlast" "byte" "byte-array" "bytes"
+    "bytes?" "case" "cast" "cat" "char" "char-array" "char-escape-string"
+    "char-name-string" "char?" "chars" "chunk" "chunk-append" "chunk-buffer"
+    "chunk-cons" "chunk-first" "chunk-next" "chunk-rest" "chunked-seq?" "class"
+    "class?" "clear-agent-errors" "clojure-version" "coll?" "comment" "commute"
+    "comp" "comparator" "compare" "compare-and-set!" "compile" "complement"
+    "completing" "concat" "cond" "cond->" "cond->>" "condp" "conj" "conj!" "cons"
+    "constantly" "construct-proxy" "contains?" "count" "counted?" "create-ns"
+    "create-struct" "cycle" "dec" "dec'" "decimal?" "declare" "dedupe"
+    "default-data-readers" "definline" "definterface" "defmacro" "defmethod"
+    "defmulti" "defn" "defn-" "defonce" "defprotocol" "defrecord" "defstruct"
+    "deftype" "delay" "delay?" "deliver" "denominator" "deref" "derive"
+    "descendants" "destructure" "disj" "disj!" "dissoc" "dissoc!" "distinct"
+    "distinct?" "doall" "dorun" "doseq" "dosync" "dotimes" "doto" "double"
+    "double-array" "double?" "doubles" "drop" "drop-last" "drop-while" "eduction"
+    "empty" "empty?" "ensure" "ensure-reduced" "enumeration-seq" "error-handler"
+    "error-mode" "eval" "even?" "every-pred" "every?" "ex-cause" "ex-data" "ex-info"
+    "ex-message" "extend" "extend-protocol" "extend-type" "extenders" "extends?"
+    "false?" "ffirst" "file-seq" "filter" "filterv" "find" "find-keyword" "find-ns"
+    "find-protocol-impl" "find-protocol-method" "find-var" "first" "flatten" "float"
+    "float-array" "float?" "floats" "flush" "fn" "fn?" "fnext" "fnil" "for" "force"
+    "format" "frequencies" "future" "future-call" "future-cancel"
+    "future-cancelled?" "future-done?" "future?" "gen-class" "gen-interface"
+    "gensym" "get" "get-in" "get-method" "get-proxy-class" "get-thread-bindings"
+    "get-validator" "group-by" "halt-when" "hash" "hash-combine" "hash-map"
+    "hash-ordered-coll" "hash-set" "hash-unordered-coll" "ident?" "identical?"
+    "identity" "if-let" "if-not" "if-some" "ifn?" "import" "in-ns" "inc" "inc'"
+    "indexed?" "infinite?" "init-proxy" "inst-ms" "inst-ms*" "inst?" "instance?"
+    "int" "int-array" "int?" "integer?" "interleave" "intern" "interpose" "into"
+    "into-array" "ints" "io!" "isa?" "iterate" "iteration" "iterator-seq" "juxt"
+    "keep" "keep-indexed" "key" "keys" "keyword" "keyword?" "last" "lazy-cat"
+    "lazy-seq" "let" "letfn" "line-seq" "list" "list*" "list?" "load" "load-file"
+    "load-reader" "load-string" "loaded-libs" "locking" "long" "long-array" "longs"
+    "loop" "macroexpand" "macroexpand-1" "make-array" "make-hierarchy" "map"
+    "map-entry?" "map-indexed" "map?" "mapcat" "mapv" "max" "max-key" "memfn"
+    "memoize" "merge" "merge-with" "meta" "method-sig" "methods" "min" "min-key"
+    "mix-collection-hash" "mod" "munge" "name" "namespace" "namespace-munge"
+    "nat-int?" "neg-int?" "neg?" "newline" "next" "nfirst" "nil?" "nnext" "not"
+    "not-any?" "not-empty" "not-every?" "not=" "ns" "ns-aliases" "ns-imports"
+    "ns-interns" "ns-map" "ns-name" "ns-publics" "ns-refers" "ns-resolve"
+    "ns-unalias" "ns-unmap" "nth" "nthnext" "nthrest" "num" "number?" "numerator"
+    "object-array" "odd?" "or" "parents" "parse-boolean" "parse-double" "parse-long"
+    "parse-uuid" "partial" "partition" "partition-all" "partition-by" "partitionv"
+    "partitionv-all" "pcalls" "peek" "persistent!" "pmap" "pop" "pop!"
+    "pop-thread-bindings" "pos-int?" "pos?" "pr" "pr-str" "prefer-method" "prefers"
+    "primitives-classnames" "print" "print-ctor" "print-dup" "print-method"
+    "print-simple" "print-str" "printf" "println" "println-str" "prn" "prn-str"
+    "promise" "proxy" "proxy-call-with-super" "proxy-mappings" "proxy-name"
+    "proxy-super" "push-thread-bindings" "pvalues" "qualified-ident?"
+    "qualified-keyword?" "qualified-symbol?" "quot" "rand" "rand-int" "rand-nth"
+    "random-sample" "random-uuid" "range" "ratio?" "rational?" "rationalize"
+    "re-find" "re-groups" "re-matcher" "re-matches" "re-pattern" "re-seq" "read"
+    "read+string" "read-line" "read-string" "reader-conditional"
+    "reader-conditional?" "realized?" "record?" "reduce" "reduce-kv" "reduced"
+    "reduced?" "reductions" "ref" "ref-history-count" "ref-max-history"
+    "ref-min-history" "ref-set" "refer" "refer-clojure" "reify"
+    "release-pending-sends" "rem" "remove" "remove-all-methods" "remove-method"
+    "remove-ns" "remove-tap" "remove-watch" "repeat" "repeatedly" "replace"
+    "replicate" "require" "requiring-resolve" "reset!" "reset-meta!" "reset-vals!"
+    "resolve" "rest" "restart-agent" "resultset-seq" "reverse" "reversible?" "rseq"
+    "rsubseq" "run!" "satisfies?" "second" "select-keys" "send" "send-off"
+    "send-via" "seq" "seq-to-map-for-destructuring" "seq?" "seqable?" "seque"
+    "sequence" "sequential?" "set" "set-agent-send-executor!"
+    "set-agent-send-off-executor!" "set-error-handler!" "set-error-mode!"
+    "set-validator!" "set?" "short" "short-array" "shorts" "shuffle"
+    "shutdown-agents" "simple-ident?" "simple-keyword?" "simple-symbol?" "slurp"
+    "some" "some->" "some->>" "some-fn" "some?" "sort" "sort-by" "sorted-map"
+    "sorted-map-by" "sorted-set" "sorted-set-by" "sorted?" "special-symbol?" "spit"
+    "split-at" "split-with" "splitv-at" "str" "stream-into!" "stream-reduce!"
+    "stream-seq!" "stream-transduce!" "string?" "struct" "struct-map" "subs"
+    "subseq" "subvec" "supers" "swap!" "swap-vals!" "symbol" "symbol?" "sync"
+    "tagged-literal" "tagged-literal?" "take" "take-last" "take-nth" "take-while"
+    "tap>" "test" "the-ns" "thread-bound?" "time" "to-array" "to-array-2d"
+    "trampoline" "transduce" "transient" "tree-seq" "true?" "type" "unchecked-add"
+    "unchecked-add-int" "unchecked-byte" "unchecked-char" "unchecked-dec"
+    "unchecked-dec-int" "unchecked-divide-int" "unchecked-double" "unchecked-float"
+    "unchecked-inc" "unchecked-inc-int" "unchecked-int" "unchecked-long"
+    "unchecked-multiply" "unchecked-multiply-int" "unchecked-negate"
+    "unchecked-negate-int" "unchecked-remainder-int" "unchecked-short"
+    "unchecked-subtract" "unchecked-subtract-int" "underive" "unquote"
+    "unquote-splicing" "unreduced" "unsigned-bit-shift-right" "update" "update-in"
+    "update-keys" "update-proxy" "update-vals" "uri?" "use" "uuid?" "val" "vals"
+    "var-get" "var-set" "var?" "vary-meta" "vec" "vector" "vector-of" "vector?"
+    "volatile!" "volatile?" "vreset!" "vswap!" "when" "when-first" "when-let"
+    "when-not" "when-some" "while" "with-bindings" "with-bindings*" "with-in-str"
+    "with-loading-context" "with-local-vars" "with-meta" "with-open" "with-out-str"
+    "with-precision" "with-redefs" "with-redefs-fn" "xml-seq" "zero?" "zipmap"
+    ))
+(define ns-reference-core-public-table #f)
+(define (ns-reference-core-public? nm)
+  (let ((t (or ns-reference-core-public-table
+               (let ((t (make-hashtable string-hash string=?)))
+                 (for-each (lambda (n) (hashtable-set! t n #t)) ns-reference-core-public-names)
+                 ;; a racing first use builds an equal table; either one serves
+                 (set! ns-reference-core-public-table t)
+                 t))))
+    (hashtable-ref t nm #f)))
+
 ;; intern: create/set a var ns/sym to val (or an unbound cell). Returns the var.
 ;; The symbol's metadata becomes the var's metadata (Var.setMeta), and a truthy
 ;; :macro marks the var as a macro so later-compiled forms expand it.
@@ -767,6 +946,7 @@
     ;; the namespace must exist (Namespace.find), like the JVM's intern
     (unless (hashtable-ref ns-registry nm #f)
       (jolt-throw (jolt-ex-info (string-append "No namespace: " nm " found") empty-pmap)))
+    (ns-check-replacement! nm s)
     (let ((cell (if (pair? vopt) (def-var! nm s (car vopt)) (declare-var! nm s)))
           (m (jolt-meta sym)))
       (unless (jolt-nil? m)

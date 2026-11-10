@@ -18,12 +18,12 @@
 (defn reader-resolver [& _] nil)
 (defn suppress-read [& _] nil)
 
-(ns sci.impl.read)
+(ns sci.impl.read (:refer-clojure :exclude [read read-string]))
 (defn read [& _] nil)
 (defn read-string [& _] nil)
 (defn source-logging-reader [& _] nil)
 
-(ns sci.impl.load)
+(ns sci.impl.load (:refer-clojure :exclude [load-string load-reader]))
 (defn load-string [& _] nil)
 (defn load-reader [& _] nil)
 (defn add-loaded-lib [& _] nil)
@@ -33,17 +33,17 @@
 (defn eval-require-global [& _] nil)
 (defn eval-use [& _] nil)
 
-(ns sci.impl.macroexpand)
+(ns sci.impl.macroexpand (:refer-clojure :exclude [macroexpand macroexpand-1]))
 (defn macroexpand [& _] nil)
 (defn macroexpand-1 [& _] nil)
 
 (ns sci.impl.resolve)
 (defn resolve-symbol [& _] nil)
 
-(ns sci.impl.proxy)
+(ns sci.impl.proxy (:refer-clojure :exclude [proxy]))
 (defn proxy [& _] nil)
 (defn proxy* [& _] nil)
 
-(ns sci.impl.reify)
+(ns sci.impl.reify (:refer-clojure :exclude [reify]))
 (defn reify [& _] nil)
 (defn reify* [& _] nil)
