@@ -688,8 +688,8 @@
 ;; `string` position is the single hole in the boundary's type checking, and what
 ;; falls through it lands on precisely the value C reads as "absent": a `when`
 ;; that did not fire, a predicate result, a `boolean` of a missing key, silently
-;; becomes NULL. jolt.ffi has no :bool type, so no false ever belongs here — nil
-;; is how NULL is spelled. Naming the whole non-string set in one jolt-level error
+;; becomes NULL. A boolean belongs in a :bool position, never here — nil is how
+;; NULL is spelled. Naming the whole non-string set in one jolt-level error
 ;; also beats Chez's "invalid foreign-procedure argument #[...]" for the rest.
 ;;
 ;; c->jolt needs no such check: its input comes from Chez, which hands back a
