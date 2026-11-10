@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`System/exit` from a thread other than the main one runs the shutdown hooks.**
+  It ended the process straight away, so hooks registered with
+  `Runtime.addShutdownHook` did not run and `deleteOnExit` paths were left behind
+  when a future, a `Thread` or a pool worker called it. They run now, once, as
+  on the JVM. If two threads exit at the same time, the second waits for the
+  hooks to finish and the first caller's status is the process's.
+
 - **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
   in a namespace that refers `clojure.core/vals` (or a name another namespace's
   `:refer` brought in) printed nothing; jolt now prints Clojure's
@@ -115,14 +122,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classes said "see the earlier error from jolt.time", but when the first
   failure had been caught (tick reaches jolt.time through a require a caller
   may wrap in `try`) that error was never printed. The message now carries the
-  first line of the original error.
+  first line of the original error, and when that error wraps another (a
+  top-level throw arrives as "Syntax error macroexpanding at ...") the root
+  cause's class and message after it.
 
 - **`File.createNewFile` is one exclusive create.** It checked whether the path
   existed and then opened it with truncate, so two processes racing to create
   the same file could both get true, which breaks it as a lock. A dangling
   symlink also answered true by creating the file it pointed to. It now opens
   with O_EXCL semantics and answers false for any existing path, symlinks
-  included, as on the JVM.
+  included, as on the JVM. Any other failure, such as a missing parent
+  directory or no permission, throws `IOException` with the system's message
+  ("No such file or directory", "Permission denied") as the JVM does, rather
+  than answering false.
 
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
@@ -140,8 +152,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks
-  (a normal end, `System/exit`, SIGTERM), right after those hooks, as on the
-  JVM. The order is the reverse of registration and each path goes once,
+  (a normal end, `System/exit` from any thread, SIGTERM), right after those
+  hooks, as on the JVM. The empty path, `(File. "")`, registers nothing, as the
+  JVM's names nothing it would delete. The order is the reverse of registration and each path goes once,
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.

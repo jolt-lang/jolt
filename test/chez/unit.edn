@@ -2754,6 +2754,10 @@
   ;; existence and then opened with truncate, so two racing callers could both
   ;; answer true, and a dangling symlink answered true by creating its target.
   {:suite "io-error-paths" :expr "(let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-cnf-\" (System/nanoTime)) p #(java.nio.file.Paths/get % (make-array String 0))] (.mkdirs (java.io.File. d)) (java.nio.file.Files/createSymbolicLink (p (str d \"/link\")) (p (str d \"/target\")) (make-array java.nio.file.attribute.FileAttribute 0)) (let [r [(.createNewFile (java.io.File. (str d \"/link\"))) (.exists (java.io.File. (str d \"/target\"))) (.createNewFile (java.io.File. (str d \"/f\"))) (.createNewFile (java.io.File. (str d \"/f\")))]] (doseq [n [\"link\" \"target\" \"f\"]] (.delete (java.io.File. (str d \"/\" n)))) (.delete (java.io.File. d)) r))" :expected "[false false true false]"}
+  ;; Only a taken name is false. Every other failure is the IOException
+  ;; UnixFileSystem.createFileExclusively throws, strerror's text its message: it
+  ;; answered false for all of them, which told a caller the file was there.
+  {:suite "io-error-paths" :expr "(let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-cnf-err-\" (System/nanoTime)) m (fn [f] (try (f) (catch java.io.IOException e (.getMessage e))))] (.mkdirs (java.io.File. d)) (spit (str d \"/file\") \"x\") (let [r [(m #(.createNewFile (java.io.File. (str d \"/absent/x\")))) (m #(.createNewFile (java.io.File. (str d \"/file/x\")))) (m #(.createNewFile (java.io.File. \"\"))) (m #(.createNewFile (java.io.File. d)))]] (.delete (java.io.File. (str d \"/file\"))) (.delete (java.io.File. d)) r))" :expected "[\"No such file or directory\" \"Not a directory\" \"No such file or directory\" false]"}
   ;; readAttributes honors NOFOLLOW_LINKS in both forms, like getAttribute: a
   ;; link read as itself is a link, sized by its target string, with its own
   ;; mtime and file key. It described the target and never said isSymbolicLink.
