@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `getUpdateCounts` and `getLargeUpdateCounts` handing out copies of the
   counts. `SQLException`'s own constructors read their second string as the
   SQLState, not a cause, and `getSQLState` and `getErrorCode` answer.
+
 - **`File.createNewFile` is one exclusive create.** It checked whether the path
   existed and then opened it with truncate, so two processes racing to create
   the same file could both get true, which breaks it as a lock. A dangling
@@ -35,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moving the session, an `ns` that does not exist answers
   `namespace-not-found` instead of running the code in `clojure.core`, and a
   session whose namespace was removed starts its next eval in `user`.
+
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks
