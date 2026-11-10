@@ -359,8 +359,11 @@
                   ;; it went into a dead string. A JVM thread inherits no output
                   ;; redirect: its root *out* is the process stream, and a
                   ;; capture reaches it only through a conveyed *out* binding.
-                  (current-output-port (console-output-port))
-                  (current-error-port (console-error-port))
+                  ;; parameterize, not assignment: a Gambit child shares its
+                  ;; parent's parameter bindings, so assigning here would
+                  ;; repoint the PARENT's capture at the console.
+                  (parameterize ((current-output-port (console-output-port))
+                                 (current-error-port (console-error-port)))
                   (thread-daemon-record! (get-thread-id) d)
                   ;; a thread forked while the sampler runs is sampled from its
                   ;; start, and any other joins from its watch (ticks.ss)
@@ -383,7 +386,7 @@
                         (jolt-thread-exit-hook id)
                         (jolt-with-mutex live-threads-mutex
                           (hashtable-delete! thread-daemons id))
-                        (unless d (exit-nondaemon-leave!)))))))))))
+                        (unless d (exit-nondaemon-leave!))))))))))))
          (id (sa-thread-id-of t)))
     (when id
       (jolt-with-mutex live-threads-mutex
