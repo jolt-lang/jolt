@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`java.time.Month/from` and `java.time.DayOfWeek/from` exist.** They were
+  missing, so tick's `(t/month date)` and `(t/day-of-week date)` raised "No
+  matching field or method". They read the field off any temporal that has it
+  through its own `get`, so a ZonedDateTime or OffsetDateTime from
+  jolt-lang/time works too, and a temporal without it is the JDK's
+  `DateTimeException`. `MonthDay`, `Month` and `DayOfWeek` now answer
+  `isSupported`, `get` and `getLong`, and a field a temporal does not have is
+  `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
+  than an `ExceptionInfo`.
+
 - **A broken `:jolt/provides` library names its own load error.** Once a
   provider's install namespace failed to load, every later reference to its
   classes said "see the earlier error from jolt.time", but when the first
