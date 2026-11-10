@@ -96,10 +96,15 @@
    "ofEpochSecond" (fn ([s] (instant (* (u/->long s) nps)))
                        ([s nano] (instant (+ (* (u/->long s) nps) (u/->long nano)))))
    "parse"        (fn [s & _] (instant (parse-iso-instant (str s))))
-   "from"         (fn [t] (condp = (impl/type-of t)
-                            :jolt.time/instant t
-                            :jolt.time/local-date-time (instant (* (l/ldt->ms t) 1000000))
-                            (instant (* (a/temporal-nanos t) 1) )))
+   ;; the JDK reads INSTANT_SECONDS and NANO_OF_SECOND: a local date/time has
+   ;; no instant, so it is the DateTimeException with get's miss as the cause
+   "from"         (fn [t] (cond
+                            (nil? t) (l/from-dte! "Instant" t)
+                            (= :jolt.time/instant (impl/type-of t)) t
+                            :else
+                            (try (instant (+ (* (.getLong t java.time.temporal.ChronoField/INSTANT_SECONDS) nps)
+                                             (.get t java.time.temporal.ChronoField/NANO_OF_SECOND)))
+                                 (catch java.time.DateTimeException e (l/from-dte! "Instant" t e)))))
    "EPOCH"        (instant 0)
    "MIN"          (instant (* (impl/days-from-civil -999999999 1 1) 86400 nps))
    "MAX"          (instant (+ (* (impl/days-from-civil 999999999 12 31) 86400 nps) (* 86399 nps) 999999999))})

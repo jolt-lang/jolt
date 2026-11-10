@@ -158,7 +158,7 @@
       :jolt.time/month (if (= f "MONTH_OF_YEAR") (e/month-val t) (unsupported-field! f))
       :jolt.time/day-of-week (if (= f "DAY_OF_WEEK") (e/dow-val t) (unsupported-field! f))
       (if-let [g (get @get-field-fns (tof t))] (g t f)
-        (throw (ex-info "get(field): unsupported temporal" {:t t}))))))
+        (unsupported-field! f)))))
 
 (defn with-field [t field v]
   (let [f (u/upper field)]
@@ -316,6 +316,24 @@
                                          (str "Unable to obtain " what " from TemporalAccessor: "
                                               t " of type " (.getName (class t)))
                                          ex)))))))
+;; Year/from, YearMonth/from and MonthDay/from: the same shape, reading each of
+;; their fields off the temporal through its get.
+(defn- fields-from [what kind fields ctor]
+  (fn [t]
+    (cond
+      (nil? t) (throw (jolt.host/throwable "java.lang.NullPointerException" "temporal"))
+      (and (impl/jt? t) (= kind (tof t))) t
+      :else
+      (try (apply ctor (mapv #(.get t (e/chrono-field %)) fields))
+           (catch java.time.DateTimeException ex
+             (l/from-dte! what t ex))))))
+(doseq [n ["Year" "java.time.Year"]]
+  (__register-class-statics! n {"from" (fields-from "Year" :jolt.time/year ["YEAR"] y/year)}))
+(doseq [n ["YearMonth" "java.time.YearMonth"]]
+  (__register-class-statics! n {"from" (fields-from "YearMonth" :jolt.time/year-month ["YEAR" "MONTH_OF_YEAR"] y/year-month)}))
+(doseq [n ["MonthDay" "java.time.MonthDay"]]
+  (__register-class-statics! n {"from" (fields-from "MonthDay" :jolt.time/month-day ["MONTH_OF_YEAR" "DAY_OF_MONTH"] y/month-day)}))
+
 (doseq [n ["Month" "java.time.Month"]]
   (__register-class-statics! n {"from" (enum-from "Month" :jolt.time/month "MONTH_OF_YEAR" e/month)}))
 (doseq [n ["DayOfWeek" "java.time.DayOfWeek"]]

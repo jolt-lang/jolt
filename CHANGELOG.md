@@ -70,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The java.time `from` methods match the JDK.** `Year/from`, `YearMonth/from`
+  and `MonthDay/from` exist, reading their fields off any temporal. `LocalDate/from`,
+  `LocalTime/from`, `LocalDateTime/from` and `Instant/from` throw the JDK's
+  `NullPointerException` "temporal" on nil and its DateTimeException "Unable to
+  obtain X from TemporalAccessor: <obj> of type <class>" otherwise, with the
+  cause chained. `Instant/from` no longer accepts a local date or date-time,
+  which have no instant. A `get` of a field on a temporal type with no field
+  table throws UnsupportedTemporalTypeException instead of an ex-info.
+
 - **A native library build that was killed no longer blocks the next run for
   half an hour.** The lock that keeps two jolt processes from building a
   dependency's `:jolt/native` library at once was released only when the build
