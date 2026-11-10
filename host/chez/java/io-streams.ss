@@ -2939,6 +2939,43 @@
   jolt-nil)
 (def-var! "clojure.java.io" "copy" jio-copy)
 
+;; --- clojure.java.io: the IOFactory/Coercions surface ---------------------------
+;; The reference spells reader/writer/input-stream/output-stream as calls to the
+;; IOFactory protocol's make-* fns, which take the options as a MAP. Here the
+;; four are host fns that dispatch on the source themselves, so each make-* fn
+;; calls its own through the var (natives-array.ss rebinds "reader" later) with
+;; the map spread back to keyword arguments. IOFactory and Coercions are the
+;; protocol values, so code that names or extends them loads; the io fns do not
+;; consult an extension (known-divergences.edn).
+(define (jio-opts->list opts)
+  (if (jolt-nil? opts)
+      '()
+      (seq->list (jolt-invoke (var-deref "clojure.core" "apply")
+                              (var-deref "clojure.core" "concat") opts))))
+(define (jio-make-via name)
+  (lambda (x opts)
+    (apply jolt-invoke (var-deref "clojure.java.io" name) x (jio-opts->list opts))))
+(def-var! "clojure.java.io" "make-reader" (jio-make-via "reader"))
+(def-var! "clojure.java.io" "make-writer" (jio-make-via "writer"))
+(def-var! "clojure.java.io" "make-input-stream" (jio-make-via "input-stream"))
+(def-var! "clojure.java.io" "make-output-stream" (jio-make-via "output-stream"))
+(define (jio-protocol-value name methods)
+  (let ((kw (lambda (n) (keyword #f n))))
+    (jolt-hash-map
+      (keyword "jolt" "type") (keyword "jolt" "protocol")
+      (kw "name") (jolt-symbol "clojure.java.io" name)
+      (kw "methods") (jolt-hash-map-build
+                       (apply append (map (lambda (m) (list (kw m) (jolt-hash-map (kw "name") m))) methods)))
+      (kw "sigs") (jolt-hash-map-build
+                    (apply append (map (lambda (m) (list (kw m) (jolt-hash-map (kw "name") (jolt-symbol #f m)))) methods)))
+      (kw "method-map") (jolt-hash-map-build
+                          (apply append (map (lambda (m) (list (kw m) (kw m))) methods))))))
+(def-var! "clojure.java.io" "IOFactory"
+  (jio-protocol-value "IOFactory" '("make-reader" "make-writer" "make-input-stream" "make-output-stream")))
+(def-var! "clojure.java.io" "Coercions"
+  (jio-protocol-value "Coercions" '("as-file" "as-url")))
+
+
 ;; --- instance? for the java.io stream taxonomy ------------------------------
 (register-class-arm! in-stream?
   (lambda (x) (cond ((stream-class x))

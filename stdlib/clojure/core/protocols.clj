@@ -46,3 +46,20 @@
 (extend-protocol Navigable
   Object
   (nav [_ _ x] x))
+
+(defn iterator-reduce!
+  "Reduces the remaining elements of a java.util.Iterator with f, as
+  coll-reduce does a collection: with no val, the first element is the
+  initial value, and (f) is the result when there is none."
+  ([iter f]
+   (if (.hasNext iter)
+     (iterator-reduce! iter f (.next iter))
+     (f)))
+  ([iter f val]
+   (loop [ret val]
+     (if (.hasNext iter)
+       (let [ret (f ret (.next iter))]
+         (if (reduced? ret)
+           @ret
+           (recur ret)))
+       ret))))

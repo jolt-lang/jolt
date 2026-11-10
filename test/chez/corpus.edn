@@ -7171,6 +7171,16 @@
   {:suite "analyze / no such var" :label "a missing var through an alias in a fn body is a compile error" :expected :throws :actual "(do (require '[clojure.string :as zzv1]) (fn [] (zzv1/nope 1)))" :portability :common}
   {:suite "analyze / no such var" :label "a missing var through an alias as a value is a compile error" :expected :throws :actual "(do (require '[clojure.string :as zzv2]) (fn [] zzv2/nope))" :portability :common}
   {:suite "analyze / no such var" :label "a missing var in a loaded namespace named in full is a compile error" :expected :throws :actual "(fn [] (clojure.string/nope 1))" :portability :common}
+  ;; ...with no arguments too: (ns/name) with no args was read as a static field
+  ;; or no-arg method of a class named by the alias, "Unknown class s" at run time
+  {:suite "analyze / no such var" :label "a missing var called with no args through an alias is a compile error" :expected :throws :actual "(do (require '[clojure.string :as zzv3]) (fn [] (zzv3/nope)))" :portability :common}
+  {:suite "analyze / no such var" :label "a missing var called with no args by the full namespace name is a compile error" :expected :throws :actual "(fn [] (clojure.string/nope))" :portability :common}
+  {:suite "analyze / no such var" :label "a no-arg call into an unloaded namespace is a compile error" :expected :throws :actual "(fn [] (no.such.ns/nope))" :portability :common}
+  {:suite "analyze / no such var" :label "Name/new on an alias is a compile error, not a constructor" :expected :throws :actual "(do (require '[clojure.string :as zzv4]) (fn [] (zzv4/new 1)))" :portability :common}
+  {:suite "analyze / no such var" :label "a no-arg static method still compiles" :expected "true" :actual "(fn? (fn [] (System/currentTimeMillis)))" :portability :common}
+  {:suite "analyze / no such var" :label "a no-arg static on a fully qualified class still compiles" :expected "true" :actual "(fn? (fn [] (java.time.Instant/now)))" :portability :common}
+  {:suite "analyze / no such var" :label "Name/new on a lowercase record still constructs" :expected "1" :actual "(do (defrecord zzv5rec [x]) (:x (zzv5rec/new 1)))" :portability :common}
+  {:suite "analyze / no such var" :label "a no-arg call to a var defined in the namespace still compiles" :expected "\"\"" :actual "(do (require '[clojure.string :as zzv6]) ((fn [] (zzv6/trim \"\"))))" :portability :common}
   {:suite "ns / ns-unmap refer-all name" :label "ns-unmap removes refer-all name from resolve" :expected "nil" :actual "(do (require '[clojure.set :refer :all]) (ns-unmap *ns* 'union) (resolve 'union))" :portability :common}  {:suite "reader / EOF errors" :label "trailing backslash in string is a positioned EOF error" :expected ":eof" :actual "(try (read-string \"\\\"ab\\\\\") (catch Exception e (if (re-find #\"EOF\" (.getMessage e)) :eof :other)))" :portability :common}
   {:suite "reader / syntax-quote resolution" :label "core-default name qualifies to clojure.core" :expected "'(quote clojure.core/map)" :actual "(read-string \"`map\")" :portability :common}
   {:suite "reader / syntax-quote resolution" :label "core macro name qualifies to clojure.core" :expected "'(quote clojure.core/when)" :actual "(read-string \"`when\")" :portability :common}
