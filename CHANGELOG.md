@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `isSupported`, `get` and `getLong`, and a field a temporal does not have is
   `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
   than an `ExceptionInfo`.
+- **`File.createNewFile` is one exclusive create.** It checked whether the path
+  existed and then opened it with truncate, so two processes racing to create
+  the same file could both get true, which breaks it as a lock. A dangling
+  symlink also answered true by creating the file it pointed to. It now opens
+  with O_EXCL semantics and answers false for any existing path, symlinks
+  included, as on the JVM.
 
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
