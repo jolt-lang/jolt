@@ -5425,18 +5425,40 @@
 ;; Runs the hooks exactly once per process, whichever exit path gets here first.
 ;; The once-flag is flipped under the mutex together with taking the list, so a
 ;; SIGTERM landing while the main thread is already exiting cannot run them twice.
+;; jolt-shutdown-ran holds the id of the thread running them.
+;;
+;; A second thread that gets here while they are running WAITS, as the JVM blocks
+;; a second System.exit caller: answering at once let it end the process with the
+;; hooks half run and the deleteOnExit paths still there, under its own status
+;; rather than the first caller's. Every caller ends the process once this
+;; returns, so the runner is about to; the waiter gives it a moment to, and only
+;; then goes on to end the process itself, so a runner that somehow does not end
+;; it cannot hang the process forever. The runner's own thread re-entering — a
+;; hook calling System/exit, which on the JVM blocks forever — returns at once.
+(define jolt-shutdown-done (box #f))
 (define (jolt-run-shutdown-hooks!)
-  (let ((hooks (jolt-with-mutex jolt-shutdown-mutex
-                 (and (not (unbox jolt-shutdown-ran))
-                      (begin (set-box! jolt-shutdown-ran #t)
-                             (reverse (unbox jolt-shutdown-hooks)))))))
-    (when hooks
-      (for-each (lambda (e) (guard (_ (#t #f)) ((cdr e)))) hooks)
-      (for-each (lambda (p) (guard (_ (#t #f)) (delete-path! p)))
-                (jolt-with-mutex jolt-shutdown-mutex
-                  (set-box! jolt-delete-on-exit-taken #t)
-                  (unbox jolt-delete-on-exit-paths)))))
+  (let* ((me (get-thread-id))
+         (hooks (jolt-with-mutex jolt-shutdown-mutex
+                  (and (not (unbox jolt-shutdown-ran))
+                       (begin (set-box! jolt-shutdown-ran me)
+                              (reverse (unbox jolt-shutdown-hooks)))))))
+    (if hooks
+        (begin
+          (for-each (lambda (e) (guard (_ (#t #f)) ((cdr e)))) hooks)
+          (for-each (lambda (p) (guard (_ (#t #f)) (delete-path! p)))
+                    (jolt-with-mutex jolt-shutdown-mutex
+                      (set-box! jolt-delete-on-exit-taken #t)
+                      (unbox jolt-delete-on-exit-paths)))
+          (set-box! jolt-shutdown-done #t))
+        (unless (eqv? (unbox jolt-shutdown-ran) me)
+          ;; polled, not a condition wait: this is the process ending, and a
+          ;; fiber's carrier may be the caller
+          (let ((tick (make-time 'time-duration 10000000 0)))
+            (let wait () (unless (unbox jolt-shutdown-done) (sleep tick) (wait)))
+            (let grace ((n 0)) (when (fx<? n 500) (sleep tick) (grace (fx+ n 1))))))))
   jolt-nil)
+;; rt.ss's jolt-exit-process is defined before this file loads
+(set-box! jolt-exit-shutdown-runner jolt-run-shutdown-hooks!)
 
 ;; The Runnable a java.lang.Thread was constructed with, or #f (Thread() with no
 ;; target is legal). A shutdown hook is registered AS a Thread — that is the JVM's

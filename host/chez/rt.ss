@@ -296,16 +296,27 @@
 ;; handlers buy nothing here and can deadlock. Skipping the unwind is right on its
 ;; own terms too — the JVM does not run finally blocks on System.exit either.
 ;;
+;; The shutdown hooks and deleteOnExit paths run first on that path too, as the
+;; JVM runs them for System.exit from any thread: the boot thread's exit reaches
+;; them through the exit handler concurrency.ss installs, and this one calls the
+;; runner directly. It lives in a box because concurrency.ss loads after this
+;; file. The runner is once per process, and a thread that arrives while another
+;; is running the hooks waits for them (jolt-run-shutdown-hooks!), so two threads
+;; exiting at once neither run them twice nor cut them short.
+;;
 ;; jolt-foreign-proc-safe answers #f where the entry does not resolve, and then
 ;; this is exactly what it was before: an exit that only the boot thread can act
 ;; on. Nothing depends on the hard path existing, so a host without _exit degrades
 ;; rather than failing to boot.
 (define jolt-boot-thread-id (get-thread-id))
 (define jolt-c-exit (jolt-foreign-proc-safe "_exit" '(int) 'void))
+(define jolt-exit-shutdown-runner (box #f))
 (define (jolt-exit-process code)
   (if (or (eqv? (get-thread-id) jolt-boot-thread-id) (not jolt-c-exit))
       (exit code)
       (begin
+        (let ((run-hooks (unbox jolt-exit-shutdown-runner)))
+          (when run-hooks (guard (_ (#t #f)) (run-hooks))))
         (guard (_ (#t #f)) (flush-output-port (current-output-port)))
         (guard (_ (#t #f)) (flush-output-port (current-error-port)))
         (jolt-c-exit code))))

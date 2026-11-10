@@ -524,6 +524,17 @@ case "$out" in
   *"undefined-helper-var"*) check "broken provider names its own load error" ok ok ;;
   *) check "broken provider names its own load error" "message naming undefined-helper-var" "$(printf '%s' "$out" | head -1)" ;;
 esac
+# A provider that throws as it loads reaches the latch as the CompilerException
+# the throw arrives in, "Syntax error macroexpanding at (jolt/time.clj:7:1)." —
+# the form, not what went wrong. The root cause's class and message follow it,
+# and the period that would have ended up as ".)" is dropped.
+out="$(run -A:timethrows run -m appzonebroken)"
+case "$out" in
+  *"(jolt.time: Syntax error macroexpanding at (jolt/time.clj:7:1), caused by java.lang.RuntimeException: boom-rte). This is not a missing dependency.")
+    check "a provider that throws names the root cause" ok ok ;;
+  *) check "a provider that throws names the root cause" \
+       "message ending with the RuntimeException's class and message" "$(printf '%s' "$out" | head -1)" ;;
+esac
 
 # org.clojure/clojure is intrinsic here — jolt IS Clojure — but on the JVM that
 # artifact depends on spec.alpha and core.specs.alpha, so a project declaring only

@@ -2318,8 +2318,14 @@
       ;; is false, as exists() short-circuits it on the JVM.
       ((string=? name "mkdirs")         (list (if (and (not (file-exists? fp)) (mkdirs! fp)) #t #f)))
       ((string=? name "delete")         (list (if (delete-path! fp) #t #f)))
-      ((string=? name "deleteOnExit")   ; a NUL path is skipped, as isInvalid() does
-       (list (if (jfile-nul? fp) jolt-nil (jolt-delete-on-exit! (jfile-abs fp)))))
+      ;; A NUL path is skipped, as isInvalid() does. So is the empty path: the
+      ;; JDK registers "" itself, which names nothing to delete, where jfile-abs
+      ;; would have turned it into user.dir and removed the working directory
+      ;; at exit whenever it happened to be empty.
+      ((string=? name "deleteOnExit")
+       (list (if (or (jfile-nul? fp) (= (string-length fp) 0))
+                 jolt-nil
+                 (jolt-delete-on-exit! (jfile-abs fp)))))
       ((string=? name "setReadable")    (list (jfile-set-permission! fp 4 args)))
       ((string=? name "setWritable")    (list (jfile-set-permission! fp 2 args)))
       ((string=? name "setExecutable")  (list (jfile-set-permission! fp 1 args)))
@@ -2332,9 +2338,18 @@
        ;; one exclusive create, as the JVM's O_CREAT|O_EXCL: empty file-options
        ;; fail when the path exists (a dangling symlink included). Checking
        ;; file-exists? first let two racing callers both answer true, and
-       ;; followed a dangling symlink to create its target.
-       (list (guard (e (#t #f))
-               (close-port (open-file-output-port fp (file-options))) #t)))
+       ;; followed a dangling symlink to create its target. Only EEXIST is
+       ;; false: any other failure (a missing parent, no permission, a parent
+       ;; that is a file) is the IOException UnixFileSystem.createFileExclusively
+       ;; throws, with strerror's text as its message.
+       (list (let ((err (guard (e ((i/o-error? e) e)) (io-create-exclusive fp #o666))))
+               (cond ((eqv? err 0) #t)
+                     ((eqv? err io-EEXIST) #f)
+                     (else
+                      (throw-jvm 'IOException
+                                 (cond ((and (fixnum? err) c-strerror) (c-strerror err))
+                                       ((condition? err) (condition->message-string err))
+                                       (else "Unable to create file"))))))))
       ((string=? name "renameTo")
        (list (let ((dst (jfile-fs (car args))))
                (and (not (jfile-nul? dst)) (guard (e (#t #f)) (rename-file fp dst) #t)))))
