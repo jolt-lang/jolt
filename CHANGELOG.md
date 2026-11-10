@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`Executors/newVirtualThreadPerTaskExecutor` reports the JVM's class.**
+  Its class was `java.util.concurrent.ThreadPoolExecutor`, so
+  `(instance? ThreadPoolExecutor ex)` was true only on jolt; it is now
+  `java.util.concurrent.ThreadPerTaskExecutor`, an `ExecutorService` but not a
+  `ThreadPoolExecutor`. Every `ExecutorService` is now also an
+  `AutoCloseable`, as since JDK 19. `invokeAny`'s `TimeoutException` carries
+  no message, as on the JVM, instead of "timed out waiting for a task".
+
 - **A native library build that was killed no longer blocks the next run for
   half an hour.** The lock that keeps two jolt processes from building a
   dependency's `:jolt/native` library at once was released only when the build
