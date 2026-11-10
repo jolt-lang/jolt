@@ -352,6 +352,15 @@
                 (lambda ()
                   (*txn* #f)
                   (rdr-default-modes!)
+                  ;; Chez thread parameters are copied at fork, so a thread
+                  ;; forked inside a with-out-str (a pool worker started by the
+                  ;; first future of a capture) kept that capture's port as its
+                  ;; current port for good, and every later root *out* print on
+                  ;; it went into a dead string. A JVM thread inherits no output
+                  ;; redirect: its root *out* is the process stream, and a
+                  ;; capture reaches it only through a conveyed *out* binding.
+                  (current-output-port (console-output-port))
+                  (current-error-port (console-error-port))
                   (thread-daemon-record! (get-thread-id) d)
                   ;; a thread forked while the sampler runs is sampled from its
                   ;; start, and any other joins from its watch (ticks.ss)
