@@ -39,6 +39,7 @@
                                form-syntax-quote-expand
                                record-type? record-ctor-key deftype-ctor-class form-position form-line
                                resolve-class-hint host-class-name? ns-shaped-name? namespace-for
+                               late-bound-namespace?
                                embed-plan ctx-for-ns]]))
 
 (declare analyze)
@@ -2158,8 +2159,15 @@
              ;; "No such namespace" (Compiler.resolveIn) at COMPILE time — which is
              ;; where a forgotten `require` or a typo in the ns half belongs.
              ;;
-             ;; A LOADED namespace merely missing the var stays on the host-static
-             ;; arm, and deliberately. jolt-core and stdlib reach their host contract
+             ;; A LOADED namespace merely missing the var is the JVM's compile-time
+             ;; "No such var" when the form runs as soon as it compiles (load,
+             ;; require, eval: jolt.host/late-bound-namespace?). Left to the static
+             ;; arm, the ns half was looked up again when the call RAN, against
+             ;; whatever *ns* was current then, so an alias in a -main read as a
+             ;; class: `(s/nope 1)` reported "Unknown class s".
+             ;;
+             ;; Everywhere else it stays on the host-static arm, and deliberately.
+             ;; jolt-core and stdlib reach their host contract
              ;; this way on purpose — several hundred `jolt.host/…` references, and
              ;; jolt.ffi's and jolt.time's — and which vars exist depends on which host
              ;; files the current boot loaded: jolt.main names jolt.host/build-library
@@ -2179,13 +2187,24 @@
              ;; A registered class wins over the shape: (defrecord point [x]) makes
              ;; `point/create` a static call however lowercase the name, as the
              ;; JVM's macroexpand1 finds the class before resolveIn ever runs.
-             (if (and (ns-shaped-name? ns) (not (namespace-for ctx ns)) (not (host-class-name? ns)))
-               (analysis-error :analyze/unknown-namespace
-                (str "No such namespace: " ns)
-                {:jolt.error/symbol (str ns "/" nm)
-                 :jolt.error/namespace ns
-                 :jolt.error/ns (compile-ns ctx)})
-               (host-static ns nm))))
+             (let [target (namespace-for ctx ns)]
+               (cond
+                 (host-class-name? ns) (host-static ns nm)
+                 (and (ns-shaped-name? ns) (not target))
+                   (analysis-error :analyze/unknown-namespace
+                    (str "No such namespace: " ns)
+                    {:jolt.error/symbol (str ns "/" nm)
+                     :jolt.error/namespace ns
+                     :jolt.error/ns (compile-ns ctx)})
+                 (and target (not (late-bound-namespace? ctx target)) (not (allow-unresolved-vars?)))
+                   (analysis-error :analyze/no-such-var
+                    (str "No such var: " ns "/" nm)
+                    {:jolt.error/symbol (str ns "/" nm)
+                     :jolt.error/namespace target
+                     :jolt.error/ns (compile-ns ctx)})
+                 ;; late-bound: an alias is lexical, so it is resolved here, and
+                 ;; the miss at the call names the namespace whatever *ns* is then
+                 :else (host-static (or target ns) nm)))))
       :else (let [r (resolve-global ctx form)]
               (case (:kind r)
                 ;; :num-ret (a ^double/^long declared return) rides on the var node so

@@ -116,7 +116,7 @@
               "NANO_OF_SECOND"  (u/floor-mod (inst-nanos x) nps)
               "MILLI_OF_SECOND" (u/floor-div (u/floor-mod (inst-nanos x) nps) 1000000)
               "MICRO_OF_SECOND" (u/floor-div (u/floor-mod (inst-nanos x) nps) 1000)
-              (throw (ex-info (str "Instant has no field " f) {})))))
+              (t/unsupported-field! f))))
 
 ;; the deferred LocalDateTime.toInstant (UTC): now that Instant exists
 (__register-class-methods! :jolt.time/local-date-time

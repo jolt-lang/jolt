@@ -517,6 +517,13 @@ case "$out" in
     check "broken provider is not reported as missing" "no missing-provider wording" "$(printf '%s' "$out" | head -1)" ;;
   *) check "broken provider is not reported as missing" ok ok ;;
 esac
+# "See the earlier error" pointed at nothing when the first miss was caught
+# (tick reaches jolt.time through a require that a caller may catch), so the
+# second miss carries the original error itself.
+case "$out" in
+  *"undefined-helper-var"*) check "broken provider names its own load error" ok ok ;;
+  *) check "broken provider names its own load error" "message naming undefined-helper-var" "$(printf '%s' "$out" | head -1)" ;;
+esac
 
 # org.clojure/clojure is intrinsic here — jolt IS Clojure — but on the JVM that
 # artifact depends on spec.alpha and core.specs.alpha, so a project declaring only

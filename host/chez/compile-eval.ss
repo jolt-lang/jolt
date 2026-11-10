@@ -522,7 +522,8 @@
 ;; the aliases in force are the ones earlier forms registered by RUNNING.
 (define (jolt-analyze-emit-form form ns)
   (let* ((ctx (make-analyze-ctx ns))
-         (node (jolt-ce-analyze ctx form)))
+         ;; the form runs as soon as it compiles (hc-late-bound-namespace?)
+         (node (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))
     (jolt-lint-node! node)
     (if (hc-compiler-direct-linking?)
         (jolt-direct-link-emit node ctx)

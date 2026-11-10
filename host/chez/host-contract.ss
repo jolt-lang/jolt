@@ -613,6 +613,23 @@
   (let ((target (or (chez-resolve-alias (chez-actx-cns ctx) nm) nm)))
     (and (chez-ns-exists? target) target)))
 
+;; Does a reference to a var the LOADED namespace `target` lacks stay late-bound?
+;; Only where a var can still arrive before the code runs. A form compiled to run
+;; at once (jolt-analyze-emit-form: load, require, eval, -e, the REPLs) runs
+;; after every form it depends on has, so a missing var is the JVM's compile-time
+;; "No such var" (Compiler.resolveIn), and the reference must not fall through
+;; to a class static: written through an alias, that static was resolved against
+;; whatever *ns* was current when it RAN, so `(s/nope 1)` in a -main reported
+;; "Unknown class s". The walks that analyze without running (the seed mint, build
+;; inference) compile against a world where the var may come later, and keep the
+;; late binding the miss then reports at the call. So does jolt.host in every
+;; walk: which of its vars exist depends on the host files a boot loaded, and its
+;; guard is the static one (jolt-host-manifest.txt).
+(define hc-compiling-to-run (make-thread-parameter #f))
+(define (hc-late-bound-namespace? ctx target)
+  (or (not (hc-compiling-to-run))
+      (string=? target "jolt.host")))
+
 (define (hc-resolve-global ctx sym)
   (let* ((nm (symbol-t-name sym))
          (cell (hc-resolve-cell ctx sym)))
@@ -1265,6 +1282,7 @@
   (def-var! "jolt.host" "host-class-name?" hc-host-class-name?)
   (def-var! "jolt.host" "ns-shaped-name?" hc-ns-shaped-name?)
   (def-var! "jolt.host" "namespace-for" hc-namespace-for)
+  (def-var! "jolt.host" "late-bound-namespace?" hc-late-bound-namespace?)
   (def-var! "jolt.host" "host-intern!" hc-intern!)
   (def-var! "jolt.host" "form-syntax-quote-lower" hc-syntax-quote-lower)
   (def-var! "jolt.host" "form-syntax-quote-expand" hc-sq-expand-all)
