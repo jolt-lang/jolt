@@ -44,6 +44,7 @@ current-memory-bytes
 current-source-position
 debug-call-with-break
 debug-frames
+defer-natives!
 deftype-ctor-class
 delete-file!
 delete-tree!
@@ -205,6 +206,7 @@ namespace-for
 ns-shaped-name?
 ns-source
 park-until-interrupt
+pending-native-roots
 pop
 profile-clear!
 profile-defs
