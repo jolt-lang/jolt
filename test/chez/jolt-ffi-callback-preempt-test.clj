@@ -8,7 +8,8 @@
 ;; preempt handler defers, and a park inside a callback raises in jolt's words.
 ;; Run: bin/jolt run test/chez/jolt-ffi-callback-preempt-test.clj, or `make ffi`;
 ;; exits nonzero on a failure, and prints "JOLT-FFI-CALLBACK-PREEMPT-TEST OK".
-(ns jolt-ffi-callback-preempt-test)
+(ns jolt-ffi-callback-preempt-test
+  (:refer-clojure :exclude [sorted?]))
 
 (require '[jolt.ffi :as ffi] '[jolt.fibers :as f])
 
