@@ -290,6 +290,22 @@
 (check "(let [b (fn [^double d] (byte d)) c (fn [^double d] (char d)) m (fn [t] (try (t) (catch IllegalArgumentException e (ex-message e))))] [(m (fn [] (b ##NaN))) (m (fn [] (b 127.9))) (m (fn [] (c ##NaN))) (byte (identity ##NaN)) (byte (identity 127.9)) (m (fn [] (byte (identity ##Inf)))) (m (fn [] (byte (float ##NaN))))])"
        "[\"Value out of range for byte: NaN\" \"Value out of range for byte: 127.9\" \"Value out of range for char: NaN\" 0 127 \"Value out of range for long: Infinity\" \"Value out of range for byte: NaN\"]")
 
+;; a def that shadows a clojure.core name compiles, and warns on stderr the way
+;; the JVM does. The warning goes through *err*, whose default is a port-writer
+;; jhost with no host methods on this target: dispatching write on it threw, so
+;; every such def failed to compile here (ns.ss ns-err-println).
+(let* ((ep (open-output-string))
+       (v (parameterize ((current-error-port ep))
+            (guard (e (#t "THREW"))
+              (jolt-pr-readable (jolt-compile-eval "(defn vals [] 1)" "user")))))
+       (err (get-output-string ep))
+       (want "WARNING: vals already refers to: #'clojure.core/vals in namespace: user, being replaced by: #'user/vals\n"))
+  (if (and (string=? v "#'user/vals") (string=? err want))
+      (printf "  ok     (defn vals [] 1) => ~a, warned on stderr\n" v)
+      (begin (printf "  FAIL   (defn vals [] 1): got ~s with stderr ~s\n" v err)
+             (set! failures (+ failures 1)))))
+(check "(vals)" "1")
+
 (printf "eval-test: ~a failure(s)\n" failures)
 (if (= failures 0)
     (begin (display "eval-test: PASS — jolt compiles and evaluates on native gsi\n") (exit 0))

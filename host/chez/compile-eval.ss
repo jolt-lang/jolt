@@ -788,9 +788,20 @@
        ;; the run is a root as much as the compile was: expanding the form ran
        ;; macros, whose tail sites would otherwise be what a throw here reports.
        (jolt-site-reset!)
-       (if (jolt-ce-trace-frames?)
-           (jolt-eval-with-source scm form (or outer form) ns)
-           (eval (read (open-input-string scm)) (interaction-environment)))))))
+       ;; The run is replayed as itself: a cached load runs SCM, so whatever SCM
+       ;; does when it runs — an (eval '(def keys 1)) in the ns body, a
+       ;; load-string — happens again there on its own. Capture is off for the
+       ;; run, so that work is not ALSO teed in after this form (twice on a warm
+       ;; load: the def ran twice and a refer-replacement warning printed
+       ;; twice). An eval a macro does while this form is ANALYZED stays
+       ;; captured: SCM does not repeat it.
+       (let ((run (lambda ()
+                    (if (jolt-ce-trace-frames?)
+                        (jolt-eval-with-source scm form (or outer form) ns)
+                        (eval (read (open-input-string scm)) (interaction-environment))))))
+         (if cap
+             (parameterize ((jolt-aot-capture #f)) (run))
+             (run)))))))
 
 ;; Source string -> value (read one form, compile + eval on Chez, in the
 ;; top-level environment where rt.ss's runtime procedures live).
