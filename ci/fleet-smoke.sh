@@ -28,7 +28,14 @@ case "$jolt" in
    *) jolt="$(cd "$(dirname "$jolt")" && pwd)/$(basename "$jolt")" ;;
 esac
 [ -x "$jolt" ] || { echo "fleet-smoke: $jolt is not executable"; exit 2; }
-PATH="$(dirname "$jolt"):$PATH"
+# A shim directory holding only a `jolt` symlink. Putting the binary's own
+# directory on PATH is not enough: in the release workspace the binary is
+# `jolt-bin`, so `jolt` missed it and found the checkout DIRECTORY named jolt,
+# which dash reports as "jolt: Permission denied".
+binshim="$(mktemp -d)"
+trap 'rm -rf "$binshim"' EXIT
+ln -s "$jolt" "$binshim/jolt"
+PATH="$binshim:$PATH"
 export PATH
 
 cd "$dir"
