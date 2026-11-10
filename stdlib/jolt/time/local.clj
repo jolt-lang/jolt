@@ -138,9 +138,15 @@
 ;; carries the needed fields, DateTimeException otherwise. Core knows the core
 ;; value types; the jolt-lang/time library re-registers these with the
 ;; zoned/offset types added (same layering as the formatter-aware parse).
-(defn- from-dte! [what x]
-  (throw (jolt.host/throwable "java.time.DateTimeException"
-                              (str "Unable to obtain " what " from TemporalAccessor: " (pr-str x)))))
+(defn from-dte!
+  ([what x] (from-dte! what x nil))
+  ([what x cause]
+   (if (nil? x)
+     (throw (jolt.host/throwable "java.lang.NullPointerException" "temporal"))
+     (throw (jolt.host/throwable "java.time.DateTimeException"
+                                 (str "Unable to obtain " what " from TemporalAccessor: "
+                                      x " of type " (.getName (class x)))
+                                 cause)))))
 (declare ldt? ldt-epoch-day ldt-nod)
 
 (statics! ["LocalDate" "java.time.LocalDate"]
@@ -322,7 +328,12 @@
    "ofEpochSecond" (fn [secs nano _off]
                      (let [es (u/->long secs)]
                        (local-dt (u/floor-div es 86400) (+ (* (u/floor-mod es 86400) nps) (u/->long nano)))))
-   "from"    (fn [x] (if (ldt? x) x (from-dte! "LocalDateTime" x)))
+   ;; the JDK's LocalDate.from then LocalTime.from, the first miss as the cause
+   "from"    (fn [x] (cond (ldt? x) x
+                           (nil? x) (from-dte! "LocalDateTime" x)
+                           :else
+                           (try (local-dt (ld-epoch-day (LocalDate/from x)) (lt-nano-of-day (LocalTime/from x)))
+                                (catch java.time.DateTimeException e (from-dte! "LocalDateTime" x e)))))
    "parse"   (fn [s & _] (let [d (str s) t (.indexOf d "T")]
                            (local-dt (parse-iso-date (subs d 0 t)) (u/parse-hms->nano (subs d (inc t))))))
    "now"     (fn [& args] (let [ms (impl/clock-millis (first args))] (local-dt (u/floor-div ms 86400000) (* (u/floor-mod ms 86400000) 1000000))))

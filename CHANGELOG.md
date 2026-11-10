@@ -70,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The java.time `from` methods match the JDK.** `Year/from`, `YearMonth/from`
+  and `MonthDay/from` exist, reading their fields off any temporal. `LocalDate/from`,
+  `LocalTime/from`, `LocalDateTime/from` and `Instant/from` throw the JDK's
+  `NullPointerException` "temporal" on nil and its DateTimeException "Unable to
+  obtain X from TemporalAccessor: <obj> of type <class>" otherwise, with the
+  cause chained. `Instant/from` no longer accepts a local date or date-time,
+  which have no instant. A `get` of a field on a temporal type with no field
+  table throws UnsupportedTemporalTypeException instead of an ex-info.
+
 - **`Executors/newVirtualThreadPerTaskExecutor` reports the JVM's class.**
   Its class was `java.util.concurrent.ThreadPoolExecutor`, so
   `(instance? ThreadPoolExecutor ex)` was true only on jolt; it is now
