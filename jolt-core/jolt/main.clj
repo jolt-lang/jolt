@@ -180,6 +180,10 @@
       (let [p (.start pb)
             in (.getInputStream p)
             buf (byte-array 8192)]
+        ;; nothing is ever written to the task: close its stdin, so one that
+        ;; reads it (a prompt, a tool that defaults to stdin) sees EOF instead
+        ;; of waiting forever on a pipe no one writes to
+        (.close (.getOutputStream p))
         (loop []
           (let [n (.read in buf)]
             (when (pos? n) (.write System/err buf 0 n) (recur))))
@@ -188,37 +192,120 @@
     (catch Exception e
       {:error (str "could not run " (jolt-exe) ": " (ex-message e))})))
 
-;; A lock older than this is a build that died without cleaning up (killed, or
-;; the machine went down mid-compile), not one still running.
-(def ^:private native-lock-stale-ms (* 30 60 1000))
+;; The build lock is a directory (mkdir is the atomic create-if-absent) holding
+;; an `owner` file: "<pid> <host> <nonce>". Its holder touches the directory
+;; every few seconds while the build runs, so a lock is stale once its holder is
+;; dead on this host, or once its mtime stops moving — a build killed by Ctrl-C,
+;; kill -9 or a crash (which never reaches the `finally` that releases it) costs
+;; the next run a moment, not a wait.
+(def ^:private native-lock-heartbeat-ms 5000)
+(def ^:private native-lock-stale-ms 60000)
+
+(def ^:private native-lock-host
+  (delay (try (str (.getHostName (java.net.InetAddress/getLocalHost)))
+              (catch Exception _ "unknown"))))
+
+(defn- native-lock-owner-file ^java.io.File [^java.io.File lock]
+  (java.io.File. lock "owner"))
+
+;; [pid host token] from LOCK's owner file, nil when it has none (not written
+;; yet, a lock an older jolt took, or one gone since).
+(defn- native-lock-owner [^java.io.File lock]
+  (try (let [s (str/trim (slurp (native-lock-owner-file lock)))
+             [pid host] (str/split s #" ")]
+         (when-let [pid (and pid (parse-long pid))] [pid host s]))
+       (catch Exception _ nil)))
+
+(defn- pid-alive? [pid]
+  (try (.isPresent (java.lang.ProcessHandle/of pid))
+       (catch Exception _ true)))
+
+;; Why LOCK is stale, or nil while its holder may still be building.
+(defn- native-lock-stale [^java.io.File lock owner]
+  (let [[pid host] owner]
+    (cond
+      (and pid (= host @native-lock-host) (not (pid-alive? pid)))
+      (str "its holder, pid " pid ", is gone")
+
+      (> (- (System/currentTimeMillis) (.lastModified lock)) native-lock-stale-ms)
+      "it has not been refreshed for a minute")))
+
+(defn- delete-native-lock! [^java.io.File lock]
+  (.delete (native-lock-owner-file lock))
+  (.delete lock))
+
+;; Break a stale LOCK. It is renamed aside first, so of two waiters that both
+;; judged it stale only one takes it; and the one that did checks it took the
+;; lock it judged (same owner line), putting back a fresh lock some other process
+;; took in between rather than deleting it.
+(defn- break-native-lock! [^java.io.File lock owner]
+  (let [aside (java.io.File. (str (.getPath lock) ".stale-"
+                                  (.pid (java.lang.ProcessHandle/current)) "-"
+                                  (System/nanoTime)))]
+    (when (.renameTo lock aside)
+      (if (= (nth owner 2 nil) (nth (native-lock-owner aside) 2 nil))
+        (delete-native-lock! aside)
+        (when-not (.renameTo aside lock) (delete-native-lock! aside))))))
 
 ;; Take DIR's build lock, waiting while another process holds it. Answers true
 ;; when it had to wait — the other process has probably built the library, so
 ;; the caller tries the load again before building anything itself.
 (defn- acquire-native-lock! [^java.io.File lock nm]
   (loop [waited? false, said? false, vanished 0]
-    (cond
-      (.mkdir lock) waited?
+    (if (.mkdir lock)
+      waited?
+      (let [owner (native-lock-owner lock)]
+        (cond
+          ;; Gone between the mkdir and this check: its holder just released
+          ;; it, so try again, as a waiter (its build may have just produced
+          ;; the library). Only a lock that never appears (an unwritable or
+          ;; missing dir) is an error.
+          (not (.exists lock))
+          (if (< vanished 50)
+            (recur true said? (inc vanished))
+            (throw (ex-info (str "cannot create " (.getPath lock)) {})))
 
-      ;; Gone between the mkdir and this check: its holder just released it,
-      ;; so try again, as a waiter (its build may have just produced the
-      ;; library). Only a lock that never appears (an unwritable or missing
-      ;; dir) is an error.
-      (not (.exists lock))
-      (if (< vanished 50)
-        (recur true said? (inc vanished))
-        (throw (ex-info (str "cannot create " (.getPath lock)) {})))
+          :else
+          (if-let [why (native-lock-stale lock owner)]
+            (do (binding [*out* *err*]
+                  (println (str "jolt: removing a stale native build lock for " nm
+                                " (" why "): " (.getPath lock))))
+                (break-native-lock! lock owner)
+                (recur waited? said? vanished))
+            (do (when-not said?
+                  (binding [*out* *err*]
+                    (println (str "jolt: waiting for another jolt building " nm
+                                  (when-let [pid (first owner)] (str " (pid " pid ")"))
+                                  "; if no build is running, delete "
+                                  (.getPath lock)))))
+                (Thread/sleep 200)
+                (recur true true vanished))))))))
 
-      (> (- (System/currentTimeMillis) (.lastModified lock)) native-lock-stale-ms)
-      (do (.delete lock) (recur waited? said? vanished))
-
-      :else
-      (do (when-not said?
-            (binding [*out* *err*]
-              (println (str "jolt: waiting for another jolt building " nm
-                            " (" (.getPath lock) ")"))))
-          (Thread/sleep 200)
-          (recur true true vanished)))))
+;; Record this process as LOCK's holder and keep its mtime fresh until the
+;; answered fn is called, which stops the heartbeat and releases the lock — only
+;; if it is still ours (a waiter may have judged it stale and broken it).
+(defn- hold-native-lock! [^java.io.File lock]
+  (let [line (str (.pid (java.lang.ProcessHandle/current)) " " @native-lock-host
+                  " " (System/nanoTime))
+        _ (try (spit (native-lock-owner-file lock) line) (catch Exception _ nil))
+        stop (atom false)
+        beat (doto (Thread.
+                    ^Runnable
+                    (fn []
+                      (loop []
+                        (when-not @stop
+                          (try (Thread/sleep native-lock-heartbeat-ms)
+                               (catch InterruptedException _ nil))
+                          (when-not @stop
+                            (.setLastModified lock (System/currentTimeMillis)))
+                          (recur)))))
+               (.setDaemon true)
+               (.start))]
+    (fn []
+      (reset! stop true)
+      (.interrupt beat)
+      (when (= line (nth (native-lock-owner lock) 2 nil))
+        (delete-native-lock! lock)))))
 
 ;; Build SPEC's library with its :build task, then try LOAD! again. Answers
 ;; [hit result], result being the build's {:status n} / {:error s}.
@@ -233,12 +320,13 @@
                          (catch Exception e {:error (ex-message e)}))]
         (if (map? waited?)
           [nil waited?]
-          (try
-            (or (when waited? (when-let [h (load!)] [h {:status 0}]))
-                (let [r (spawn-native-build! nm dir task)]
-                  (swap! native-builds assoc k r)
-                  [(load!) r]))
-            (finally (.delete lock))))))))
+          (let [release! (hold-native-lock! lock)]
+            (try
+              (or (when waited? (when-let [h (load!)] [h {:status 0}]))
+                  (let [r (spawn-native-build! nm dir task)]
+                    (swap! native-builds assoc k r)
+                    [(load!) r]))
+              (finally (release!)))))))))
 
 ;; Build a missing library whose spec names its task — except the project's own
 ;; library under a task (strict? false): the task being run may BE that build,

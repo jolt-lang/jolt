@@ -49,6 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A native library build that was killed no longer blocks the next run for
+  half an hour.** The lock that keeps two jolt processes from building a
+  dependency's `:jolt/native` library at once was released only when the build
+  finished, so Ctrl-C, `kill -9` or a crash mid-build left
+  `.jolt-native-build.lock` behind, and every later run printed "waiting for
+  another jolt building ..." and hung until the lock was 30 minutes old. The
+  holder now records its pid and host in the lock and refreshes it every few
+  seconds; a waiter breaks the lock at once when that pid is gone on the same
+  host, or when it has not been refreshed for a minute, and the waiting
+  message names the lock to delete by hand. The build task's stdin is also
+  closed now, so a task that reads stdin sees end-of-file instead of hanging
+  on a pipe nothing writes to.
+
 - **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
   in a namespace that refers `clojure.core/vals` (or a name another namespace's
   `:refer` brought in) printed nothing; jolt now prints Clojure's
