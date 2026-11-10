@@ -26,7 +26,15 @@
   (if (or (nil? intel-mac) (seq more))
     (do (binding [*out* *err*] (println "usage: bump-formula.clj FORMULA.rb BASE-URL VERSION MAC-SHA LINUX-SHA INTEL-MAC-SHA"))
         (System/exit 2))
-    (let [before (slurp path)
+    (let [_ (doseq [[target sha] [["aarch64-macos" mac] ["x86_64-linux" lin] ["x86_64-macos" intel-mac]]]
+              ;; An empty or truncated sha (a failed .sha256 download inside a
+              ;; $(...) the workflow's set -e does not see) would be written
+              ;; into the tap as is.
+              (when-not (re-matches #"[0-9a-f]{64}" sha)
+                (binding [*out* *err*]
+                  (println (str "bump-formula.clj: " target " sha256 is not 64 hex digits: \"" sha "\"")))
+                (System/exit 1)))
+          before (slurp path)
           ;; x86_64-macos is bumped only once the formula has an url line for
           ;; it: a tap that predates the Intel tarball keeps releasing instead of
           ;; failing the job, with a warning to add the on_intel block.

@@ -166,6 +166,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sha256 too (once the formula has an `on_intel` block; until then it warns
   and bumps the other two), and the README lists both macOS binaries at
   macOS 11+.
+- **The install script picks the arm64 binary from a Rosetta shell.** On an
+  Apple Silicon Mac, a terminal running under Rosetta reports `x86_64`, so the
+  script installed the Intel build, which runs translated and cannot load the
+  arm64 Homebrew libraries under `/opt/homebrew`. It now checks
+  `sysctl.proc_translated` and installs the arm64 build. The tap bump also
+  rejects any sha256 that isn't 64 hex digits, so a failed `.sha256` download
+  can no longer write `sha256 ""` into the formula.
 
 ## [0.8.25] - 2026-11-08
 

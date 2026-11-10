@@ -96,6 +96,13 @@ case "$(uname -m)" in
     aarch64|arm64)  arch=aarch64 ;;
     *) >&2 echo "Unsupported architecture: $(uname -m)."; exit 1 ;;
 esac
+# A shell running under Rosetta on Apple Silicon reports x86_64; the arm64
+# build is the one that runs natively and can dlopen the arm64 Homebrew dylibs
+# under /opt/homebrew.
+if [[ "$platform" == "macos" && "$arch" == "x86_64" \
+      && "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+    arch=aarch64
+fi
 
 target="${arch}-${platform}"
 case "$target" in
