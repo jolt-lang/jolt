@@ -1785,6 +1785,12 @@ hooks:
 # JAVA_CMD unset, look for the pinned JDK in the usual places (Homebrew, the
 # Linux jvm directory, macOS java_home) and hand it to the launcher; certify.clj
 # still refuses whatever JDK actually runs if it is not the pinned one.
+# The reference JVM renders locale-dependent text (zone names in SimpleDateFormat,
+# say) for its default locale, which it takes from the machine: on an en_AU Mac
+# "zzz" prints GMT-05:00 where en_US prints EST. Pin the locale the corpus was
+# recorded in, so certify gives the same verdict on every machine.
+CERTIFY_JVM_OPTS = -J-Duser.language=en -J-Duser.country=US
+
 certify:
 	@if command -v clojure >/dev/null 2>&1; then \
 		v=$$(sed -n 's/^ :clojure-version "\([^"]*\)".*/\1/p' test/conformance/profile.edn); \
@@ -1803,8 +1809,8 @@ certify:
 			if [ -n "$$JAVA_CMD" ]; then echo "certify: JAVA_CMD=$$JAVA_CMD (profile pins JDK $$jdk)"; export JAVA_CMD; fi; \
 		fi; \
 		deps="{:deps {org.clojure/clojure {:mvn/version \"$$v\"}}}"; \
-		clojure -Sdeps "$$deps" -M test/conformance/certify.clj --self-test && \
-		clojure -Sdeps "$$deps" -M test/conformance/certify.clj; \
+		clojure $(CERTIFY_JVM_OPTS) -Sdeps "$$deps" -M test/conformance/certify.clj --self-test && \
+		clojure $(CERTIFY_JVM_OPTS) -Sdeps "$$deps" -M test/conformance/certify.clj; \
 	else \
 		echo "certify: clojure not on PATH — skipped"; \
 	fi
