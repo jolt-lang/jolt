@@ -477,6 +477,17 @@
         ;; decide whether to emit ANSI, and a nil means "not a tty".
         (cons "console" (lambda _ jolt-nil))
         (cons "lineSeparator" (lambda _ "\n"))
+        ;; System.mapLibraryName: the platform's shared-library file name, decided
+        ;; from the same OS family as os.name. nil is a NullPointerException with
+        ;; no message, as the JVM's native throws it.
+        (cons "mapLibraryName"
+              (lambda (name)
+                (if (jolt-nil? name)
+                    (throw-jvm 'NullPointerException jolt-nil)
+                    (case (sa-os-family)
+                      ((macos) (string-append "lib" name ".dylib"))
+                      ((windows) (string-append name ".dll"))
+                      (else (string-append "lib" name ".so"))))))
         ;; identityHashCode is the object's own hash, not its contents' —
         ;; equal-hash answers one constant for every procedure and hashes a
         ;; collection structurally, so two distinct fns (and two equal vectors)

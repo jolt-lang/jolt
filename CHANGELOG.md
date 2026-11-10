@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`System/mapLibraryName` exists.** It was missing, so
+  `(System/mapLibraryName "ffitest")` raised "No matching field or method".
+  It answers the platform's shared-library file name from the same OS family
+  `os.name` uses: `libffitest.dylib` on macOS, `libffitest.so` on Linux and
+  Android, `ffitest.dll` on Windows. A nil name is a `NullPointerException`
+  with no message, as on the JVM.
+
 - **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
   the class graph, so a batch failure jolt-lang/db raises slipped past
   `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no

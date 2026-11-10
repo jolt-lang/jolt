@@ -2588,6 +2588,9 @@
   {:suite "getenv" :expr "(= (get (System/getenv) \"HOME\") (System/getenv \"HOME\"))" :expected "true"}
   ;; Stage C — setProperty visible in getProperties
   {:suite "sysprops" :expr "(do (System/setProperty \"zz.k\" \"v\") (get (System/getProperties) \"zz.k\"))" :expected "\"v\""}
+  ;; System/mapLibraryName: lib<name>.dylib on macOS, lib<name>.so elsewhere, <name>.dll on Windows
+  {:suite "sysprops" :expr "(= (System/mapLibraryName \"ffitest\") (case (System/getProperty \"os.name\") \"Mac OS X\" \"libffitest.dylib\" \"Windows\" \"ffitest.dll\" \"libffitest.so\"))" :expected "true"}
+  {:suite "sysprops" :expr "(try (System/mapLibraryName nil) (catch NullPointerException e (str \"NPE:\" (.getMessage e))))" :expected "\"NPE:\""}
   ;; PersistentTreeMap.assoc keeps the map only when the value is the IDENTICAL
   ;; object (found.val() == val); an `=` one is stored. Comparing with `=` kept
   ;; [1] where the JVM stores the list it was handed.

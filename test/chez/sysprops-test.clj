@@ -47,6 +47,17 @@
   (System/clearProperty "os.arch")
   (check-eq "clearProperty restores the builtin" (System/getProperty "os.arch") orig))
 
+;; System/mapLibraryName follows os.name, and nil is a NullPointerException
+(check-eq "mapLibraryName names the platform's library"
+          (System/mapLibraryName "ffitest")
+          (case (System/getProperty "os.name")
+            "Mac OS X" "libffitest.dylib"
+            "Windows" "ffitest.dll"
+            "libffitest.so"))
+(check-eq "mapLibraryName of nil is a NullPointerException"
+          (try (System/mapLibraryName nil) (catch NullPointerException _ :npe))
+          :npe)
+
 ;; deliberate nils stay nil (documented divergence, not an accident)
 (check-eq "java.version is nil" (System/getProperty "java.version") nil)
 (check-eq "an unknown key is nil" (System/getProperty "no.such.property") nil)
