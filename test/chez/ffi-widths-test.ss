@@ -123,6 +123,49 @@
 (ok "bool results come back as true and false"
     (equal? '(#t #f) (list (ev "(r-bool-true)") (ev "(r-bool-false)"))))
 
+;; Only the low byte of a _Bool register is defined, so a :bool result must read
+;; that byte and nothing above it. The witnesses return 0x100 and 0x101; :int
+;; over the same symbol shows the garbage is really there.
+(for-each
+ ev
+ '("(def r-dirty-false (jolt.ffi/__cfn \"jolt_w_return_dirty_false\" [] :bool))"
+   "(def r-dirty-true (jolt.ffi/__cfn \"jolt_w_return_dirty_true\" [] :bool))"
+   "(def r-dirty-false-int (jolt.ffi/__cfn \"jolt_w_return_dirty_false\" [] :int))"
+   "(def bool-struct-layout (jolt.ffi/__layout [:struct [[:a :int32] [:flag :bool] [:other :bool] [:b :int32]]]))"
+   "(def sizeof-bool-struct (jolt.ffi/__cfn \"jolt_w_sizeof_bool_struct\" [] :size_t))"
+   "(def offsetof-bool-other (jolt.ffi/__cfn \"jolt_w_offsetof_bool_other\" [] :size_t))"
+   "(def bool-struct-flags (jolt.ffi/__cfn \"jolt_w_bool_struct_flags\" [[:by-value [:struct [[:a :int32] [:flag :bool] [:other :bool] [:b :int32]]]]] :int64))"
+   "(def make-bool-struct (jolt.ffi/__cfn \"jolt_w_make_bool_struct\" [:bool] [:by-value [:struct [[:a :int32] [:flag :bool] [:other :bool] [:b :int32]]]]))"
+   "(def sum-promoted-bools (jolt.ffi/__cfn \"jolt_w_sum_promoted_bools\" [:int :varargs :bool :bool :bool] :int64))"))
+(ok "an int-sized read of the dirty witness sees the upper bits"
+    (= 256 (jnum->exact (ev "(r-dirty-false-int)"))))
+(ok "bool results read only the low byte"
+    (equal? '(#f #t) (list (ev "(r-dirty-false)") (ev "(r-dirty-true)"))))
+
+;; A _Bool struct field is one byte at one-byte alignment, as C lays it out, and
+;; travels by value in both directions.
+(ok "bool struct fields match C's size and offsets"
+    (and (= (jnum->exact (ev "(sizeof-bool-struct)"))
+            (jnum->exact (ev "(:size bool-struct-layout)")))
+         (= (jnum->exact (ev "(offsetof-bool-other)"))
+            (jnum->exact (ev "(get (:jolt.ffi/offsets bool-struct-layout) [:other])")))))
+(ev "(defn bool-struct-call [flag other] (let [p (jolt.ffi/alloc (:size bool-struct-layout)) o (:jolt.ffi/offsets bool-struct-layout)] (try (jolt.ffi/write p :bool flag (get o [:flag])) (jolt.ffi/write p :bool other (get o [:other])) (bool-struct-flags p) (finally (jolt.ffi/free p)))))")
+(ok "by-value struct bool fields reach C"
+    (equal? '(10 1 11 0)
+            (map (lambda (source) (jnum->exact (ev source)))
+                 '("(bool-struct-call true nil)" "(bool-struct-call false :yes)"
+                   "(bool-struct-call 0 1)" "(bool-struct-call nil false)"))))
+(ev "(defn bool-struct-made [flag field] (let [p (jolt.ffi/alloc (:size bool-struct-layout))] (try (make-bool-struct p flag) (jolt.ffi/read p :bool (get (:jolt.ffi/offsets bool-struct-layout) [field])) (finally (jolt.ffi/free p)))))")
+(ok "by-value struct bool fields come back as booleans"
+    (equal? '(#t #f #f #t)
+            (map (lambda (source) (ev source))
+                 '("(bool-struct-made true :flag)" "(bool-struct-made true :other)"
+                   "(bool-struct-made nil :flag)" "(bool-struct-made nil :other)"))))
+
+;; C promotes a _Bool passed through `...` to int, and va_arg reads an int.
+(ok "variadic bools arrive promoted to int"
+    (= 101 (jnum->exact (ev "(sum-promoted-bools 3 true nil :yes)"))))
+
 (ok "exact native arguments preserve boundaries"
     (equal? '(-128 -32768 65535 -2147483648 4294967295)
             (map (lambda (source) (jnum->exact (ev source)))
@@ -186,6 +229,11 @@
    "(def call-bool (jolt.ffi/__cfn \"jolt_w_call_bool\" [:pointer] :int64))"))
 (ok "C-invoked bool callbacks convert both directions"
     (= 1 (jnum->exact (ev "(call-bool cb-bool)"))))
+;; C passes 0x100 to the same callable: the low byte says false, so `not`
+;; answers true and C reads a 1 back.
+(ev "(def call-bool-dirty (jolt.ffi/__cfn \"jolt_w_call_bool_dirty\" [:pointer] :int64))")
+(ok "bool callback arguments read only the low byte"
+    (= 1 (jnum->exact (ev "(call-bool-dirty cb-bool)"))))
 (ev "(jolt.ffi/free-callable cb-bool)")
 (ok "C-invoked exact-width callbacks preserve boundaries"
     (equal? '(-128 -32768 65535 -2147483648 4294967295)
