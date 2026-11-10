@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `getUpdateCounts` and `getLargeUpdateCounts` handing out copies of the
   counts. `SQLException`'s own constructors read their second string as the
   SQLState, not a cause, and `getSQLState` and `getErrorCode` answer.
+- **`File.createNewFile` is one exclusive create.** It checked whether the path
+  existed and then opened it with truncate, so two processes racing to create
+  the same file could both get true, which breaks it as a lock. A dangling
+  symlink also answered true by creating the file it pointed to. It now opens
+  with O_EXCL semantics and answers false for any existing path, symlinks
+  included, as on the JVM.
 
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
