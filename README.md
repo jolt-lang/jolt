@@ -398,6 +398,11 @@ and dependency trees are not acquired. Explicitly declared
 `org.clojure/spec.alpha` and `org.clojure/core.specs.alpha` dependencies remain
 ordinary dependencies.
 
+A dependency's `:jolt/native` libraries load on the first require of one of
+that dependency's namespaces, not at startup, so `ffi/loaded?` on a
+dependency's `:optional` library answers false until then. A dependency whose C
+must be loaded before any of its namespaces marks the spec `:eager true`.
+
 Code can acquire and import dependencies while it runs with the portable
 `clojurestar.deps/require-deps` macro:
 

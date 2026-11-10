@@ -602,26 +602,11 @@
 ;; — the emitter then falls back to global name resolution. #f on Windows (no
 ;; registered handles).
 ;;
-;; A symbol nothing loaded defines may be in a dependency's library that has not
-;; loaded yet: those load on the first require of one of the dependency's
-;; namespaces (loader.ss ldr-natives-for-file!), and an app can bind a library a
-;; dependency ships without requiring any of them. So before answering #f, a
-;; symbol the process cannot resolve globally either loads the pending ones and
-;; looks again. A libc symbol resolves globally and never gets this far.
-;;
-;; The pending table is the loader's, reached by name: gates load this file
-;; without loader.ss, and there nothing is pending.
-(define (ffi-load-pending-natives!)
-  (let ((load-all (sa-baked-global 'ldr-natives-load-all!)))
-    (and load-all (load-all))))
-
-(define (jolt-ffi-dlsym-native sym)
-  (let ((rs (let ((rs (jolt-ffi-native-resolvers sym)))
-              (if (and (null? rs)
-                       (not (sa-foreign-entry? sym))
-                       (ffi-load-pending-natives!))
-                  (jolt-ffi-native-resolvers sym)
-                  rs))))
+;; This is the probe: it looks only at what is loaded, and is what
+;; ffi/find-symbol and ffi/dlsym-native answer with. A binding's first call goes
+;; through jolt-ffi-dlsym-native below, which may also load pending libraries.
+(define (ffi-dlsym-loaded sym)
+  (let ((rs (jolt-ffi-native-resolvers sym)))
     (cond
       ((null? rs) #f)
       (else
@@ -631,6 +616,43 @@
          (let ((defs (jolt-ffi-native-definers sym)))
            (when (pair? (cdr defs)) (ffi-report-duplicate! sym defs))))
        (cdar rs)))))
+
+;; The address a defcfn's first call binds SYM to, or #f for the emitter's
+;; global-name fallback.
+;;
+;; A symbol nothing loaded defines may be in a dependency's library that has not
+;; loaded yet: those load on the first require of one of the dependency's
+;; namespaces (loader.ss ldr-natives-for-file!), and an app can bind a library a
+;; dependency ships without requiring any of them. So before answering #f, a
+;; symbol the process cannot resolve globally either loads the pending ones and
+;; looks again. A libc symbol resolves globally and never gets this far, and a
+;; probe (ffi-dlsym-loaded) never does: only a call that would otherwise fail
+;; with "no entry" pays for opening the pending libraries.
+;;
+;; When the symbol is still missing and a pending library failed to load on the
+;; way, the call fails here naming that library, rather than with Chez's bare
+;; "no entry", which said nothing of the library a built binary could not open.
+;;
+;; The pending table is the loader's, reached by name: gates load this file
+;; without loader.ss, and there nothing is pending.
+(define (jolt-ffi-dlsym-native sym)
+  (or (ffi-dlsym-loaded sym)
+      (and (not (sa-foreign-entry? sym))
+           (let ((load-all (sa-baked-global 'ldr-natives-load-all!)))
+             (and load-all
+                  (begin (load-all) #t)
+                  (or (ffi-dlsym-loaded sym)
+                      (let* ((failures (sa-baked-global 'ldr-natives-fallback-failures))
+                             (msgs (if failures (failures) '())))
+                        (when (and (pair? msgs) (not (sa-foreign-entry? sym)))
+                          (error 'foreign-procedure "~a"
+                                 (apply string-append
+                                        "no entry for \"" sym "\" — a dependency's native library that may define it did not load: "
+                                        (let loop ((ms msgs))
+                                          (cond ((null? ms) '())
+                                                ((null? (cdr ms)) (list (car ms)))
+                                                (else (cons (car ms) (cons "; " (loop (cdr ms))))))))))
+                        #f)))))))
 
 ;; jolt.ffi/defining-libraries: one declared native per DISTINCT definition of
 ;; `sym`, in declaration order — the diagnostic to reach for when a native call
@@ -1535,10 +1557,17 @@
         (cond
           ((null? cs)
            (unless optional?
-             (let ((note (ffi-load-failure-note cands)))
+             ;; the candidates go in the message: a raised list renders as an
+             ;; opaque object once it reaches a jolt error
+             (let ((note (ffi-load-failure-note cands))
+                   (tried (apply string-append
+                                 (let loop ((cs cands))
+                                   (cond ((null? cs) '())
+                                         ((null? (cdr cs)) (list (car cs)))
+                                         (else (cons (car cs) (cons ", " (loop (cdr cs))))))))))
                (if note
-                   (error 'jolt-build (string-append "required native library did not load — " note) cands)
-                   (error 'jolt-build "required native library not found" cands))))
+                   (error 'jolt-build "~a" (string-append "required native library did not load — " note))
+                   (error 'jolt-build "~a" (string-append "required native library not found — tried " tried)))))
            #f)
           ;; RTLD_LOCAL + register; #t when it took (handle or Windows-global).
           ((jolt-ffi-load-native (car cs)) #t)
@@ -1560,7 +1589,7 @@
   (case-lambda
     ((sym)
      (let* ((n (ffi-str-arg "symbol" sym))
-            (a (jolt-ffi-dlsym-native n)))
+            (a (ffi-dlsym-loaded n)))
        (cond
          (a a)
          ((guard (e (#t #f)) (sa-foreign-entry? n)) (sa-foreign-entry-address n))
@@ -1694,7 +1723,7 @@
                                             (jolt-keyword "callbacks") callbacks
                                             (jolt-keyword "message") message))))
       (and (not (jolt-nil? seconds)) seconds))))
-(def-var! "jolt.ffi" "dlsym-native" jolt-ffi-dlsym-native)
+(def-var! "jolt.ffi" "dlsym-native" ffi-dlsym-loaded)
 (def-var! "jolt.ffi" "load-system-library" ffi-load-system-library)
 ;; jolt.main/load-natives! reads it to build the fallback candidates for a spec
 ;; that names a library but declares nothing for the running platform (#989).

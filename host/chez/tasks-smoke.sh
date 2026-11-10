@@ -260,23 +260,54 @@ out="$(export JOLT_NATIVE_BUILD=0; inbb "$tmp/nb/lib" -e '(println :ran)')"
 case "$out" in *":ran"*) r="no: $out" ;; *"required native library jbt not found"*) r=yes ;; *) r="no: $out" ;; esac
 check "the project's own native still loads at startup" "yes" "$r"
 
-# a foreign symbol nothing loaded defines loads the pending natives
-inbb "$tmp/nb/app" -M:go >/dev/null
+# a foreign symbol nothing loaded defines loads the pending natives, building
+# the library on a fresh checkout as its first require would
+fresh
 out="$(inbb "$tmp/nb/app" -m app.direct)"
-check "binding a dependency's symbol directly loads its native" "direct 42" "$out"
+case "$out" in *"building native library jbt"*"direct 42") r=yes ;; *) r="no: $out" ;; esac
+check "binding a dependency's symbol directly loads its native" "yes" "$r"
+check "...building it once" "1" "$(builds)"
 
-# a binary carries a dependency's load only with one of its namespaces
+# ...and when it cannot load, the call's "no entry" names the library
+fresh
+out="$(export JOLT_NATIVE_BUILD=0; inbb "$tmp/nb/app" -m app.direct)"
+case "$out" in *'no entry for "jbt_answer"'*"required native library jbt not found"*) r=yes ;; *) r="no: $out" ;; esac
+check "...and a library that cannot load is named in the call's error" "yes" "$r"
+
+# a probe for a symbol nothing defines opens no pending library
+fresh
+out="$(inbb "$tmp/nb/app" -m app.probe)"
+check "ffi/find-symbol of a missing symbol leaves the dependency pending" "probe nil 1" "$out"
+check "...and builds nothing" "0" "$(builds)"
+
+# a binary carries a dependency's load only with one of its namespaces. The
+# build still builds the library, since the binary may bind its symbols.
 fresh
 out="$(JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" build -m app.plain -o "$tmp/nb-plain" 2>&1)"; s=$?
-check "jolt build of an app requiring nothing of the dependency builds nothing" "0 0" "$s $(builds)"
+check "jolt build of an app requiring nothing of the dependency builds its library" "0 1" "$s $(builds)"
 [ "$s" = 0 ] || echo "$out" >&2
 out="$("$tmp/nb-plain" 2>&1)"
 check "...and its binary starts without the library" "plain []" "$out"
-inbb "$tmp/nb/app" -M:go >/dev/null
+
+# a binary binding the symbol directly, from a fresh checkout: nothing but the
+# build itself produces the library
+fresh
 out="$(JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" build -m app.direct -o "$tmp/nb-direct" 2>&1)"; s=$?
+check "jolt build of an app binding a dependency's symbol builds its library" "0 1" "$s $(builds)"
 [ "$s" = 0 ] || echo "$out" >&2
 out="$("$tmp/nb-direct" 2>&1)"
-check "...and a binary binding its symbol directly still finds it" "direct 42" "$out"
+check "...and the binary finds the symbol" "direct 42" "$out"
+rm -f "$tmp/nb/lib/native/libjbt.so" "$tmp/nb/lib/native/libjbt.dylib"
+out="$("$tmp/nb-direct" 2>&1)"
+case "$out" in *'no entry for "jbt_answer"'*"required native library"*"libjbt"*) r=yes ;; *) r="no: $out" ;; esac
+check "...and without the library, its error names it" "yes" "$r"
+
+# a JOLT_NATIVE_BUILD=0 build of it fails, naming the library and the task
+fresh
+out="$(export JOLT_NATIVE_BUILD=0; JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" build -m app.direct -o "$tmp/nb-direct" 2>&1)"; s=$?
+check "jolt build with a dependency's library missing and auto-build off fails" "1" "$([ "$s" = 0 ] && echo 0 || echo 1)"
+case "$out" in *"required native library jbt not found"*"auto-build is off"*"(declared by dependency jbt/jbt)"*) r=yes ;; *) r="no: $out" ;; esac
+check "...naming the library, the task and the dependency" "yes" "$r"
 else
   echo "  (skipped :build cases: no C compiler)" >&2
 fi
