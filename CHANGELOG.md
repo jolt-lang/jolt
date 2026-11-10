@@ -73,6 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupt text, and a new thread starts on the process streams rather than
   whatever port its creator had redirected to.
 
+- **On the Gambit backend a `def` that shadows a `clojure.core` name compiles
+  again, and the shadowing warning prints once on a cached load.** Printing the
+  new refer-replacement warning dispatched `write` on the default `*err*`, which
+  has no host methods on Gambit, so `(defn vals [] 1)` failed to compile there;
+  the warning now goes straight to the error port when `*err*` is a process
+  stream, as `print` does for `*out*`. And a def made by an `eval` the
+  namespace's body runs printed its warning twice when the namespace loaded
+  from the AOT cache: the cache now records only the loader's own forms, not
+  what a form's `eval` analyzes while it runs.
 
 - **A var missing from a loaded namespace is a compile error, `No such var:
   s/nope`.** It compiled to a class static call and failed only when it ran.
