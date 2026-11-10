@@ -2998,8 +2998,9 @@
 ;; with no roots, for the foreign-symbol fallback below (build.ss
 ;; bld-natives-for-closure).
 ;;
-;; A group is #(state thunk roots fallback-tried?): state 'pending, 'running
-;; or 'done. The
+;; A group is #(state thunk roots fallback-tried? fallback-failure): state
+;; 'pending, 'running or 'done; fallback-failure is the message of the load the
+;; foreign-symbol fallback tried and that failed, or #f. The
 ;; thunk runs under ldr-natives-mu, which a Chez mutex makes recursive, so a
 ;; second thread requiring from the same dependency waits for the first to
 ;; finish loading rather than running ahead of it, and the loading thread
@@ -3013,7 +3014,7 @@
 
 (define (ldr-defer-natives! roots thunk)
   (jolt-with-mutex ldr-natives-mu
-    (set! ldr-native-groups (cons (vector 'pending thunk roots #f) ldr-native-groups))
+    (set! ldr-native-groups (cons (vector 'pending thunk roots #f #f) ldr-native-groups))
     (set! ldr-natives-pending (fx+ ldr-natives-pending 1))))
 
 ;; Is LOC a file under ROOT? A root is an absolute directory; Windows paths may
@@ -3048,14 +3049,17 @@
 
 ;; Every pending group, for a foreign symbol nothing loaded defines (ffi.ss
 ;; jolt-ffi-dlsym-native): an app may bind a library a dependency ships without
-;; ever requiring a namespace of that dependency. A group that fails here stays
-;; pending and says so when its own namespace is required; answers whether any
-;; group loaded.
+;; ever requiring a namespace of that dependency. Only a defcfn's first CALL
+;; gets here — the call would otherwise fail with "no entry" — never a probe
+;; (ffi/find-symbol, ffi/dlsym-native), so a program that looks for an optional
+;; symbol does not open, or build, every dependency's library to answer nil.
+;; A group that fails here stays pending, says so when its own namespace is
+;; required, and keeps its failure (slot 4) for the "no entry" error to name
+;; (ldr-natives-fallback-failures); answers whether any group loaded.
 ;;
-;; Each group gets ONE such try (slot 3): a symbol that is simply missing (an
-;; optional one ffi/find-symbol probes for, a defcfn whose symbol no library
-;; has) would otherwise rerun every failed group, its :build task included, on
-;; every miss and every call.
+;; Each group gets ONE such try (slot 3): a defcfn whose symbol no library has
+;; would otherwise rerun every failed group, its :build task included, on every
+;; call.
 (define (ldr-natives-load-all!)
   (and (fx> ldr-natives-pending 0)
        (let ((before ldr-natives-pending))
@@ -3063,9 +3067,21 @@
            (for-each (lambda (g)
                        (unless (vector-ref g 3)
                          (vector-set! g 3 #t)
-                         (guard (e (#t #f)) (ldr-run-native-group! g jolt-nil))))
+                         (guard (e (#t (vector-set! g 4 (ldr-native-failure-message e))))
+                           (ldr-run-native-group! g jolt-nil))))
                      (reverse ldr-native-groups)))
          (fx< ldr-natives-pending before))))
+
+(define (ldr-native-failure-message e)
+  (let ((m (guard (_ (#t #f)) (jolt-throwable-message e))))
+    (if (string? m) m (with-output-to-string (lambda () (display e))))))
+
+;; The messages of the groups the fallback tried and could not load, oldest
+;; first: the libraries a "no entry" for a symbol might have come from.
+(define (ldr-natives-fallback-failures)
+  (filter string?
+          (map (lambda (g) (and (not (eq? (vector-ref g 0) 'done)) (vector-ref g 4)))
+               (reverse ldr-native-groups))))
 
 (def-var! "jolt.host" "defer-natives!"
   (lambda (roots thunk)

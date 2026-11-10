@@ -37,9 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stay silent. A `:build` task runs at the same point. These still load at
   startup: the project's own natives, `:process` specs, and any spec a
   dependency marks `:eager true` because its C has to be there before any of
-  its namespaces load. A foreign symbol that nothing loaded defines loads the
-  pending libraries and looks again, once per library, so an app that binds a
-  dependency's library itself still finds it. A library the project ships that
+  its namespaces load. The first call of a binding to a foreign symbol that
+  nothing loaded defines loads the pending libraries and looks again, once per
+  library, so an app that binds a dependency's library itself still finds it.
+  A probe (`ffi/find-symbol`) does not. A library the project ships that
   links against one a dependency provides (a `DT_NEEDED` on it) no longer finds
   it already open at startup; that dependency's spec needs `:eager true`, or the
   project restates the spec. `jolt build` links `:static` archives as
@@ -49,6 +50,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`jolt build` builds a dependency's missing shared library again.** Since
+  dependency libraries load on first require, the build only built one when
+  the binary carried a namespace of that dependency. A binary that binds the
+  library's symbols itself built, exited 0, and died at its first call with
+  `foreign-procedure: no entry for "jbt_answer"`. `jolt build` now runs the
+  `:build` task of every non-optional dependency library the binary may load
+  whose declared file is missing, and fails naming the library and the task if
+  that does not produce it. When a binding's symbol is still missing because a
+  pending dependency library did not load, the "no entry" error now names that
+  library and why it failed. The build's runtime-library report no longer
+  claims the binary carries a namespace of the dependency it was unsure of.
+- **Looking up a symbol no longer loads, and builds, every pending dependency
+  library.** `(ffi/find-symbol "some_optional_symbol")` that nothing defined
+  opened every dependency library not yet required, running its `:build` task
+  if it had one, before answering nil. An optional-symbol probe undid the lazy
+  loading. `ffi/find-symbol` and `ffi/dlsym-native` now look only at what is
+  loaded. The fallback that loads pending libraries is kept for the first call
+  of a `defcfn`, which would otherwise fail with "no entry".
 - **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
   in a namespace that refers `clojure.core/vals` (or a name another namespace's
   `:refer` brought in) printed nothing; jolt now prints Clojure's

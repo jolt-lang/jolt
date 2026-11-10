@@ -1159,6 +1159,36 @@
                                    (native-build-note spec dir result []))
                               {:native spec})))))))))
 
+;; `jolt build` builds a dependency's missing shared library too. A run builds
+;; it at the first require of one of the dependency's namespaces, but the build
+;; process only requires what the binary carries, and a binary that binds the
+;; library's symbols without carrying any of the dependency's namespaces still
+;; loads it, at the first such call (build.ss bld-natives-for-closure). That
+;; binary would ship pointing at a file nothing ever built. Which symbols the app
+;; binds is not known here, so every dependency library the binary may load at
+;; runtime (an encoded "dep" entry) is built if its declared file is missing.
+;; Only a candidate naming a path is looked for on disk: a bare soname is the
+;; system's to find, and a task cannot be said to have produced it.
+(defn- build-dependency-libraries! [encoded natives base]
+  (let [plat (current-platform)]
+    (doseq [[e spec] (map vector encoded natives)
+            :when (and (= "dep" (first e)) (:build spec) (not (:optional spec)))]
+      (let [cands (filterv #(or (str/includes? % "/") (str/includes? % "\\"))
+                           (mapv #(native-candidate (native-root spec plat base) %)
+                                 (native-declared spec plat)))
+            present #(some (fn [c] (when (jolt.host/file-exists? c) c)) cands)]
+        (when (and (seq cands) (not (present)))
+          (let [dir (native-build-dir spec base)
+                [hit result] (if (auto-build-native? dir true base)
+                               (build-native! spec dir present)
+                               [nil nil])]
+            (when-not hit
+              (throw (ex-info (str (native-missing-msg spec plat cands)
+                                   (native-build-note spec dir result cands)
+                                   " (declared by dependency "
+                                   (or (:jolt.deps/lib spec) "?") ")")
+                              {:native spec})))))))))
+
 ;; Encode a deps.edn :jolt/native spec for the build launcher, resolving the
 ;; current platform's candidate list now (the binary runs on this OS). Each entry
 ;; becomes a vector the launcher (build.ss) reads:
@@ -1239,8 +1269,9 @@
             (println (str "  " (or (:name spec) "?")
                           (when (= "opt" (first load)) " (optional)")
                           (when (= "dep" (first e))
-                            (str " (if the binary carries a namespace of "
-                                 (or (:jolt.deps/lib spec) "its dependency") ")"))
+                            (str " (declared by " (or (:jolt.deps/lib spec) "a dependency")
+                                 "; loaded at startup if the binary carries one of its"
+                                 " namespaces, else at the first call that needs it)"))
                           " — " (str/join ", " (rest load))))))))))
 
 (defn- profile-use-files
@@ -1327,6 +1358,11 @@
                                     (or (:project-dir resolved) pdir)
                                     (:target opts)
                                     (or (:target-pack opts) (System/getenv "JOLT_TARGET_PACK")))
+            ;; ...and so is a dependency's shared library (not when
+            ;; cross-compiling, for the same reason)
+            _ (when-not (:target opts)
+                (build-dependency-libraries! natives (:natives resolved)
+                                             (or (:project-dir resolved) pdir)))
             _ (report-runtime-natives! natives (:natives resolved) dynamic-natives?)
             ;; closed-world direct-linking is the release default: ON for release and
             ;; optimized (the throughput lever), OFF for --dev. --no-direct-link (or
