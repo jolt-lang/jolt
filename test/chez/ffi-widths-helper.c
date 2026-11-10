@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdarg.h>
 
 #ifdef _WIN32
 #define JOLT_WIDTHS_EXPORT __declspec(dllexport)
@@ -56,6 +57,45 @@ typedef bool (*jolt_w_bool_callback)(bool);
 /* 10 * f(true) + f(false), so one number reports both directions. */
 JOLT_WIDTHS_EXPORT int64_t jolt_w_call_bool(jolt_w_bool_callback callback) {
   return (callback(true) ? 10 : 0) + (callback(false) ? 1 : 0);
+}
+
+/* The ABI only defines the LOW byte of a _Bool in a register (x86-64 SysV:
+   %al, AArch64: the low byte of w0), so a callee may leave anything above it.
+   A compiler returning a real `bool` zeroes those bits anyway, so these return
+   int and are BOUND as :bool: 0x100 is false with bit 8 set, 0x101 is true.
+   An int-sized read answers 256 and 257, both truthy. */
+JOLT_WIDTHS_EXPORT int jolt_w_return_dirty_false(void) { return 0x100; }
+JOLT_WIDTHS_EXPORT int jolt_w_return_dirty_true(void) { return 0x101; }
+
+/* The same garbage in the other direction: C hands a :bool callback a register
+   whose low byte says false and whose upper bits do not. */
+typedef int (*jolt_w_int_callback)(int);
+JOLT_WIDTHS_EXPORT int64_t jolt_w_call_bool_dirty(jolt_w_int_callback callback) {
+  return (callback(0x100) & 0xff) ? 1 : 0;
+}
+
+/* _Bool fields in a by-value struct: one byte each, packed between the ints. */
+typedef struct { int32_t a; bool flag; bool other; int32_t b; } jolt_w_bool_struct;
+JOLT_WIDTHS_EXPORT size_t jolt_w_sizeof_bool_struct(void) { return sizeof(jolt_w_bool_struct); }
+JOLT_WIDTHS_EXPORT size_t jolt_w_offsetof_bool_other(void) {
+  return offsetof(jolt_w_bool_struct, other);
+}
+JOLT_WIDTHS_EXPORT int64_t jolt_w_bool_struct_flags(jolt_w_bool_struct s) {
+  return (s.flag ? 10 : 0) + (s.other ? 1 : 0);
+}
+JOLT_WIDTHS_EXPORT jolt_w_bool_struct jolt_w_make_bool_struct(bool flag) {
+  jolt_w_bool_struct s = {7, flag, !flag, 9};
+  return s;
+}
+
+/* A _Bool passed through `...` is promoted to int, so va_arg reads an int. */
+JOLT_WIDTHS_EXPORT int64_t jolt_w_sum_promoted_bools(int n, ...) {
+  va_list ap;
+  int64_t sum = 0;
+  va_start(ap, n);
+  for (int i = 0; i < n; i++) sum = sum * 10 + va_arg(ap, int);
+  va_end(ap);
+  return sum;
 }
 
 /* :float and :double take a java.lang.Float from jolt as well as a double.

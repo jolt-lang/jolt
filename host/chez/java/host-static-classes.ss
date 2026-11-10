@@ -2742,6 +2742,59 @@
   (register-class-ctor! "ParseException" parse-exc-ctor)
   (register-class-ctor! "java.text.ParseException" parse-exc-ctor))
 
+;; java.sql.SQLException(reason, SQLState, vendorCode, cause), every prefix of
+;; it, and (cause) alone: the second string is the SQLState, not a cause, which
+;; the generic ctor above took it for. BatchUpdateException puts its int[]
+;; update counts after the vendor code ((counts) and (counts, cause) too) and
+;; keeps a copy of them, as the JDK does. A ctor given only a cause takes the
+;; cause's toString as its message. The detail vector is what
+;; throwable-detail-accessors (records-interop.ss) reads: SQLState, vendor
+;; code, counts.
+(define (make-sql-exc-ctor canonical)
+  (let ((batch? (jch-isa? canonical "java.sql.BatchUpdateException")))
+    (lambda args
+      (let*-values (((head counts tail)
+                     (let split ((as args) (acc '()))
+                       (cond ((null? as) (values (reverse acc) #f '()))
+                             ((and batch? (jolt-array? (car as)))
+                              (values (reverse acc) (car as) (cdr as)))
+                             (else (split (cdr as) (cons (car as) acc))))))
+                    ((head cause)
+                     (let ((all (if counts (append head tail) head)))
+                       (if (and (pair? all) (ex-info-map? (list-ref all (fx- (length all) 1))))
+                           (values (list-head all (fx- (length all) 1)) (list-ref all (fx- (length all) 1)))
+                           (values all jolt-nil))))
+                    ((given? reason)
+                     (if (pair? head) (values #t (car head)) (values #f jolt-nil))))
+        (let* ((rest (if given? (cdr head) '()))
+               (state (if (pair? rest) (car rest) jolt-nil))
+               (code (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 0))
+               (msg (cond (given? (if (or (string? reason) (jolt-nil? reason))
+                                      reason
+                                      (jolt-str-render-one reason)))
+                          ((jolt-nil? cause) jolt-nil)
+                          (else (jolt-str-render-one cause))))
+               (t (jolt-host-throwable canonical msg cause)))
+          (jolt-ex-info-record-error-offset-set! t
+            (vector state code (if counts
+                                   (make-jolt-array (ja-copy counts) (jolt-array-kind counts))
+                                   jolt-nil)))
+          t)))))
+;; getUpdateCounts hands out a copy of the stored counts each call, and
+;; getLargeUpdateCounts the same counts widened to a long[].
+(set! throwable-detail-value
+  (lambda (name v)
+    (cond ((not (jolt-array? v)) v)
+          ((string=? name "getLargeUpdateCounts") (make-jolt-array (ja-copy v) 'long))
+          (else (make-jolt-array (ja-copy v) (jolt-array-kind v))))))
+(let-values (((keys vals) (hashtable-entries jvm-class-parents)))
+  (vector-for-each
+    (lambda (canonical supers)
+      (when (jch-isa? canonical "java.sql.SQLException")
+        (register-class-ctor! (jch-last-segment canonical) (make-sql-exc-ctor canonical))
+        (register-class-ctor! canonical (make-sql-exc-ctor canonical))))
+    keys vals))
+
 ;; ---- URLEncoder / URLDecoder (www-form-urlencoded) --------------------------
 ;; Both honour the charset argument, which they used to ignore and always encode
 ;; UTF-8 — so (URLEncoder/encode "\u3044" "Shift_JIS") is %82%A2, not %E3%81%84.

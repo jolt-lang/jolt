@@ -110,6 +110,13 @@
 
 ;; --- get / with field --------------------------------------------------------
 (declare get-field supports-field?)
+
+;; A field the temporal does not have: the JDK's UnsupportedTemporalTypeException,
+;; naming the field by its toString (Unsupported field: HourOfDay), from every
+;; temporal's get. F is the field's constant name.
+(defn unsupported-field! [f]
+  (throw (jolt.host/throwable "java.time.temporal.UnsupportedTemporalTypeException"
+                              (str "Unsupported field: " (e/chrono-field f)))))
 (defonce get-field-fns (atom {}))
 (defn register-get-field! [type-kw f] (swap! get-field-fns assoc type-kw f))
 
@@ -123,7 +130,7 @@
          "ALIGNED_WEEK_OF_MONTH" (inc (quot (dec d) 7))
          "ALIGNED_DAY_OF_WEEK_IN_YEAR" (inc (mod (dec (l/ld-day-of-year ed)) 7))
          "ALIGNED_WEEK_OF_YEAR" (inc (quot (dec (l/ld-day-of-year ed)) 7))
-         (throw (ex-info (str "LocalDate has no field " f) {})))))
+         (unsupported-field! f))))
 
 (defn- time-field [nod f]
   (let [h (l/lt-hour nod) mi (l/lt-minute nod) s (l/lt-second nod) na (l/lt-nano nod)]
@@ -133,7 +140,7 @@
          "MILLI_OF_SECOND" (quot na 1000000) "MICRO_OF_SECOND" (quot na 1000)
          "CLOCK_HOUR_OF_DAY" (if (zero? h) 24 h) "HOUR_OF_AMPM" (mod h 12)
          "CLOCK_HOUR_OF_AMPM" (let [x (mod h 12)] (if (zero? x) 12 x)) "AMPM_OF_DAY" (quot h 12)
-         (throw (ex-info (str "LocalTime has no field " f) {})))))
+         (unsupported-field! f))))
 
 (defn get-field [t field]
   (let [f (u/upper field)]
@@ -142,11 +149,14 @@
       TIME (time-field (l/lt-nano-of-day t) f)
       DT (if (supports-field? (l/ldt-date t) f) (date-field (l/ldt-date t) f) (time-field (l/ldt-nod t) f))
       :jolt.time/year (let [yr (y/year-val t)] (case f "YEAR" yr "YEAR_OF_ERA" (if (>= yr 1) yr (- 1 yr)) "ERA" (if (>= yr 1) 1 0)
-                                                     (throw (ex-info (str "Year has no field " f) {}))))
+                                                     (unsupported-field! f)))
       :jolt.time/year-month (let [yr (y/ym-year t) m (y/ym-month t)]
                               (case f "YEAR" yr "MONTH_OF_YEAR" m "PROLEPTIC_MONTH" (+ (* yr 12) (dec m))
                                    "YEAR_OF_ERA" (if (>= yr 1) yr (- 1 yr)) "ERA" (if (>= yr 1) 1 0)
-                                   (throw (ex-info (str "YearMonth has no field " f) {}))))
+                                   (unsupported-field! f)))
+      :jolt.time/month-day (case f "MONTH_OF_YEAR" (y/md-month t) "DAY_OF_MONTH" (y/md-day t) (unsupported-field! f))
+      :jolt.time/month (if (= f "MONTH_OF_YEAR") (e/month-val t) (unsupported-field! f))
+      :jolt.time/day-of-week (if (= f "DAY_OF_WEEK") (e/dow-val t) (unsupported-field! f))
       (if-let [g (get @get-field-fns (tof t))] (g t f)
         (throw (ex-info "get(field): unsupported temporal" {:t t}))))))
 
@@ -184,6 +194,9 @@
       DT (or (contains? date-fields f) (contains? time-fields f))
       :jolt.time/year (contains? #{"YEAR" "YEAR_OF_ERA" "ERA"} f)
       :jolt.time/year-month (contains? #{"YEAR" "MONTH_OF_YEAR" "PROLEPTIC_MONTH" "YEAR_OF_ERA" "ERA"} f)
+      :jolt.time/month-day (contains? #{"MONTH_OF_YEAR" "DAY_OF_MONTH"} f)
+      :jolt.time/month (= f "MONTH_OF_YEAR")
+      :jolt.time/day-of-week (= f "DAY_OF_WEEK")
       :jolt.time/instant (contains? #{"INSTANT_SECONDS" "NANO_OF_SECOND" "MICRO_OF_SECOND" "MILLI_OF_SECOND"} f)
       false)))
 (defn supports-unit? [t unit]
@@ -283,8 +296,30 @@
 
 (doseq [tk [:jolt.time/local-date :jolt.time/local-time :jolt.time/local-date-time]]
   (__register-class-methods! tk generic-methods))
-(doseq [tk [:jolt.time/year :jolt.time/year-month]]
+(doseq [tk [:jolt.time/year :jolt.time/year-month :jolt.time/month-day
+            :jolt.time/month :jolt.time/day-of-week]]
   (__register-class-methods! tk field-only))
+
+;; Month/from and DayOfWeek/from: the constant itself, or the field read off any
+;; temporal through its own get, so a type a library adds (ZonedDateTime,
+;; OffsetDateTime) answers as soon as it answers get. A temporal without the
+;; field is the JDK's DateTimeException, with get's exception as its cause.
+(defn- enum-from [what kind field ctor]
+  (fn [t]
+    (cond
+      (nil? t) (throw (jolt.host/throwable "java.lang.NullPointerException" "temporal"))
+      (and (impl/jt? t) (= kind (tof t))) t
+      :else
+      (try (ctor (.get t (e/chrono-field field)))
+           (catch java.time.DateTimeException ex
+             (throw (jolt.host/throwable "java.time.DateTimeException"
+                                         (str "Unable to obtain " what " from TemporalAccessor: "
+                                              t " of type " (.getName (class t)))
+                                         ex)))))))
+(doseq [n ["Month" "java.time.Month"]]
+  (__register-class-statics! n {"from" (enum-from "Month" :jolt.time/month "MONTH_OF_YEAR" e/month)}))
+(doseq [n ["DayOfWeek" "java.time.DayOfWeek"]]
+  (__register-class-statics! n {"from" (enum-from "DayOfWeek" :jolt.time/day-of-week "DAY_OF_WEEK" e/dow)}))
 
 ;; --- wire the field/unit/amount types into the machinery ---------------------
 (__register-class-methods! :jolt.time/chrono-unit
