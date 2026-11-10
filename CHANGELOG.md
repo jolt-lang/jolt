@@ -38,8 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   startup: the project's own natives, `:process` specs, and any spec a
   dependency marks `:eager true` because its C has to be there before any of
   its namespaces load. A foreign symbol that nothing loaded defines loads the
-  pending libraries and looks again, so an app that binds a dependency's
-  library itself still finds it. `jolt build` links `:static` archives as
+  pending libraries and looks again, once per library, so an app that binds a
+  dependency's library itself still finds it. A library the project ships that
+  links against one a dependency provides (a `DT_NEEDED` on it) no longer finds
+  it already open at startup; that dependency's spec needs `:eager true`, or the
+  project restates the spec. `jolt build` links `:static` archives as
   before. It loads a dependency's shared library at startup only when the
   binary carries one of that dependency's namespaces, and otherwise only when
   that fallback asks for it.

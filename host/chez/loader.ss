@@ -2998,7 +2998,8 @@
 ;; with no roots, for the foreign-symbol fallback below (build.ss
 ;; bld-natives-for-closure).
 ;;
-;; A group is #(state thunk roots): state 'pending, 'running or 'done. The
+;; A group is #(state thunk roots fallback-tried?): state 'pending, 'running
+;; or 'done. The
 ;; thunk runs under ldr-natives-mu, which a Chez mutex makes recursive, so a
 ;; second thread requiring from the same dependency waits for the first to
 ;; finish loading rather than running ahead of it, and the loading thread
@@ -3012,7 +3013,7 @@
 
 (define (ldr-defer-natives! roots thunk)
   (jolt-with-mutex ldr-natives-mu
-    (set! ldr-native-groups (cons (vector 'pending thunk roots) ldr-native-groups))
+    (set! ldr-native-groups (cons (vector 'pending thunk roots #f) ldr-native-groups))
     (set! ldr-natives-pending (fx+ ldr-natives-pending 1))))
 
 ;; Is LOC a file under ROOT? A root is an absolute directory; Windows paths may
@@ -3050,11 +3051,19 @@
 ;; ever requiring a namespace of that dependency. A group that fails here stays
 ;; pending and says so when its own namespace is required; answers whether any
 ;; group loaded.
+;;
+;; Each group gets ONE such try (slot 3): a symbol that is simply missing (an
+;; optional one ffi/find-symbol probes for, a defcfn whose symbol no library
+;; has) would otherwise rerun every failed group, its :build task included, on
+;; every miss and every call.
 (define (ldr-natives-load-all!)
   (and (fx> ldr-natives-pending 0)
        (let ((before ldr-natives-pending))
          (jolt-with-mutex ldr-natives-mu
-           (for-each (lambda (g) (guard (e (#t #f)) (ldr-run-native-group! g jolt-nil)))
+           (for-each (lambda (g)
+                       (unless (vector-ref g 3)
+                         (vector-set! g 3 #t)
+                         (guard (e (#t #f)) (ldr-run-native-group! g jolt-nil))))
                      (reverse ldr-native-groups)))
          (fx< ldr-natives-pending before))))
 
