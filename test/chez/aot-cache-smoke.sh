@@ -1204,6 +1204,35 @@ else
 fi
 rm -rf "$rw"
 
+# --- (ai) a def made by an eval the ns body runs warns once on a hit ---------
+# A hit runs the captured Scheme, which re-runs the (eval ...), and that eval
+# analyzes its def and warns as it did cold. Only the loader's own forms are
+# captured: the eval's analysis used to be teed in too, so a hit printed the
+# warning twice (and ran the def twice). A def an eval makes while a MACRO
+# expands is different — the captured Scheme does not repeat it — so that one
+# is still captured: mylib.core/made exists on the hit.
+re="$(mktemp -d)"
+mkdir -p "$re/src/mylib"
+printf '(ns mylib.core)\n(eval (quote (def keys 1)))\n(defmacro mk [] (eval (quote (def made 5))) nil)\n(mk)\n(defn answer [] 7)\n' > "$re/src/mylib/core.clj"
+rerun() {
+  JOLT_AOT_CACHE=1 JOLT_AOT_ASYNC=0 JOLT_CACHE_DIR="$re/cache" JOLT_QUIET=1 "$jolt" -e "
+    (require 'jolt.deps)
+    (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$re\"}}})
+    (require 'mylib.core)
+    (println (mylib.core/answer) mylib.core/keys mylib.core/made)" 2>&1
+}
+re_want="WARNING: keys already refers to: #'clojure.core/keys in namespace: mylib.core, being replaced by: #'mylib.core/keys
+7 1 5"
+re_cold="$(rerun)"
+re_files="$(find "$re/cache" -name '*.so' 2>/dev/null | wc -l | tr -d ' ')"
+re_warm="$(rerun)"
+if [ "$re_cold" = "$re_want" ] && [ "$re_files" -ge 1 ] && [ "$re_warm" = "$re_want" ]; then
+  echo "PASS: (ai) an eval'd def warns once on a cold load and on a hit"; pass=$((pass+1)); : > "$errlog"
+else
+  echo "FAIL: (ai) eval'd def warning: cold='$re_cold' warm='$re_warm' cache files=$re_files"; fails=$((fails+1)); show_stderr
+fi
+rm -rf "$re"
+
 # Phase 4 (cold-vs-warm speedup) lives in aot-cache-perf.sh — a timing
 # measurement doesn't belong in this deterministic correctness gate.
 

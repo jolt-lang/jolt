@@ -49,13 +49,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A native library build that was killed no longer blocks the next run for
+  half an hour.** The lock that keeps two jolt processes from building a
+  dependency's `:jolt/native` library at once was released only when the build
+  finished, so Ctrl-C, `kill -9` or a crash mid-build left
+  `.jolt-native-build.lock` behind, and every later run printed "waiting for
+  another jolt building ..." and hung until the lock was 30 minutes old. The
+  holder now records its pid and host in the lock and refreshes it every few
+  seconds; a waiter breaks the lock at once when that pid is gone on the same
+  host, or when it has not been refreshed for a minute, and the waiting
+  message names the lock to delete by hand. The build task's stdin is also
+  closed now, so a task that reads stdin sees end-of-file instead of hanging
+  on a pipe nothing writes to.
 - **`System/exit` from a thread other than the main one runs the shutdown hooks.**
   It ended the process straight away, so hooks registered with
   `Runtime.addShutdownHook` did not run and `deleteOnExit` paths were left behind
   when a future, a `Thread` or a pool worker called it. They run now, once, as
   on the JVM. If two threads exit at the same time, the second waits for the
   hooks to finish and the first caller's status is the process's.
-
 - **A `def` that shadows a referred var warns, as on the JVM.** Defining `vals`
   in a namespace that refers `clojure.core/vals` (or a name another namespace's
   `:refer` brought in) printed nothing; jolt now prints Clojure's
@@ -80,6 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupt text, and a new thread starts on the process streams rather than
   whatever port its creator had redirected to.
 
+- **On the Gambit backend a `def` that shadows a `clojure.core` name compiles
+  again, and the shadowing warning prints once on a cached load.** Printing the
+  new refer-replacement warning dispatched `write` on the default `*err*`, which
+  has no host methods on Gambit, so `(defn vals [] 1)` failed to compile there;
+  the warning now goes straight to the error port when `*err*` is a process
+  stream, as `print` does for `*out*`. And a def made by an `eval` the
+  namespace's body runs printed its warning twice when the namespace loaded
+  from the AOT cache: the cache now records only the loader's own forms, not
+  what a form's `eval` analyzes while it runs.
 
 - **A var missing from a loaded namespace is a compile error, `No such var:
   s/nope`.** It compiled to a class static call and failed only when it ran.
@@ -99,6 +119,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Android, `ffitest.dll` on Windows. A nil name is a `NullPointerException`
   with no message, as on the JVM.
 
+- **The rest of the `java.sql.SQLException` family exists.** `SQLWarning`,
+  `SQLTimeoutException`, `SQLIntegrityConstraintViolationException`,
+  `SQLSyntaxErrorException` and the other transient, non-transient and
+  recoverable subclasses JDBC drivers throw were unknown classes, so a
+  `(catch java.sql.SQLIntegrityConstraintViolationException e …)` did not
+  resolve. They now sit in the JDK hierarchy and take `SQLException`'s
+  constructors and accessors.
 - **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
   the class graph, so a batch failure jolt-lang/db raises slipped past
   `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no
@@ -179,6 +206,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sha256 too (once the formula has an `on_intel` block; until then it warns
   and bumps the other two), and the README lists both macOS binaries at
   macOS 11+.
+- **The install script picks the arm64 binary from a Rosetta shell.** On an
+  Apple Silicon Mac, a terminal running under Rosetta reports `x86_64`, so the
+  script installed the Intel build, which runs translated and cannot load the
+  arm64 Homebrew libraries under `/opt/homebrew`. It now checks
+  `sysctl.proc_translated` and installs the arm64 build. The tap bump also
+  rejects any sha256 that isn't 64 hex digits, so a failed `.sha256` download
+  can no longer write `sha256 ""` into the formula.
 
 ## [0.8.25] - 2026-11-08
 
