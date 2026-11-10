@@ -196,15 +196,21 @@
 ;; when it had to wait — the other process has probably built the library, so
 ;; the caller tries the load again before building anything itself.
 (defn- acquire-native-lock! [^java.io.File lock nm]
-  (loop [waited? false, said? false]
+  (loop [waited? false, said? false, vanished 0]
     (cond
       (.mkdir lock) waited?
 
+      ;; Gone between the mkdir and this check: its holder just released it,
+      ;; so try again, as a waiter (its build may have just produced the
+      ;; library). Only a lock that never appears (an unwritable or missing
+      ;; dir) is an error.
       (not (.exists lock))
-      (throw (ex-info (str "cannot create " (.getPath lock)) {}))
+      (if (< vanished 50)
+        (recur true said? (inc vanished))
+        (throw (ex-info (str "cannot create " (.getPath lock)) {})))
 
       (> (- (System/currentTimeMillis) (.lastModified lock)) native-lock-stale-ms)
-      (do (.delete lock) (recur waited? said?))
+      (do (.delete lock) (recur waited? said? vanished))
 
       :else
       (do (when-not said?
@@ -212,7 +218,7 @@
               (println (str "jolt: waiting for another jolt building " nm
                             " (" (.getPath lock) ")"))))
           (Thread/sleep 200)
-          (recur true true)))))
+          (recur true true vanished)))))
 
 ;; Build SPEC's library with its :build task, then try LOAD! again. Answers
 ;; [hit result], result being the build's {:status n} / {:error s}.
