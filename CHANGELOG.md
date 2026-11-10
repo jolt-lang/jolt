@@ -101,6 +101,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Android, `ffitest.dll` on Windows. A nil name is a `NullPointerException`
   with no message, as on the JVM.
 
+- **The rest of the `java.sql.SQLException` family exists.** `SQLWarning`,
+  `SQLTimeoutException`, `SQLIntegrityConstraintViolationException`,
+  `SQLSyntaxErrorException` and the other transient, non-transient and
+  recoverable subclasses JDBC drivers throw were unknown classes, so a
+  `(catch java.sql.SQLIntegrityConstraintViolationException e …)` did not
+  resolve. They now sit in the JDK hierarchy and take `SQLException`'s
+  constructors and accessors.
 - **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
   the class graph, so a batch failure jolt-lang/db raises slipped past
   `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no
