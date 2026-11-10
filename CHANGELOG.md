@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
   than an `ExceptionInfo`.
 
+- **A broken `:jolt/provides` library names its own load error.** Once a
+  provider's install namespace failed to load, every later reference to its
+  classes said "see the earlier error from jolt.time", but when the first
+  failure had been caught (tick reaches jolt.time through a require a caller
+  may wrap in `try`) that error was never printed. The message now carries the
+  first line of the original error.
+
 - **`File.createNewFile` is one exclusive create.** It checked whether the path
   existed and then opened it with truncate, so two processes racing to create
   the same file could both get true, which breaks it as a lock. A dangling
