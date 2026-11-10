@@ -53,6 +53,11 @@
 #     holding the stale txn record, so a job calling ref-set outside a txn
 #     silently wrote into the dead log (never committed) instead of throwing
 #     IllegalStateException like the JVM.
+#   - current-output-port / current-error-port: the lazy-bridge.ss fork resets
+#     both to the console ports, the same explicit-clear shape as *txn*. A
+#     thread forked inside a with-out-str would otherwise keep the capture's
+#     port for good; a capture reaches another thread only through the *out*
+#     binding conveyed to it.
 # A parameter used with the OPPOSITE assumption (fresh default per thread,
 # worked around the inheritance — thread-interrupt-cell in
 # host-static-methods.ss, random-seeded? in rt.ss, *agent-nested* in
