@@ -3127,7 +3127,7 @@
 ;; so shutdown, isTerminated, awaitTermination and close read it as they read a
 ;; pool's workers, and slot 18 holds their interrupt boxes for shutdownNow.
 (define (make-virtual-thread-executor)
-  (let ((ex (make-executor* "executor-service" 0 executor-unbounded-workers #f #f #t)))
+  (let ((ex (make-executor* "vthread-executor" 0 executor-unbounded-workers #f #f #t)))
     (vector-set! (jhost-state ex) 22 #t)
     ex))
 ;; Start JOB on its own virtual thread. Called with the queue mutex RELEASED and
@@ -3786,7 +3786,7 @@
                         (cond ((not o)
                                (jolt-throw (jolt-host-throwable
                                             "java.util.concurrent.TimeoutException"
-                                            "timed out waiting for a task")))
+                                            jolt-nil)))   ; the JVM's carries no message
                               ((eq? (cadr o) 'ok) (cancel-all! (car o)) (cddr o))
                               (else (loop (fx- left 1) (cddr o))))))))))))
         (cons "shutdown" (lambda (self) (executor-shutdown! (jhost-state self)) jolt-nil))
@@ -4320,6 +4320,11 @@
   (unless (and (number? period) (> period 0))
     (throw-jvm (quote IllegalArgumentException) jolt-nil))
   (* sign (max 1 (tu->ms period unit))))
+;; The virtual-thread-per-task executor is the same state vector as a pool's
+;; (slot 22 set), so it shares the executor-service table; the tag differs only
+;; for the class it reports: java.util.concurrent.ThreadPerTaskExecutor, which is
+;; an ExecutorService but NOT a ThreadPoolExecutor.
+(alias-host-methods! "vthread-executor" "executor-service")
 (derive-host-methods! "scheduled-executor" "executor-service"
   (list (cons "schedule" (lambda (self task delay unit)
           (executor-schedule! self task delay unit 0)))

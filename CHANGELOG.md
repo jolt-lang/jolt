@@ -79,6 +79,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which have no instant. A `get` of a field on a temporal type with no field
   table throws UnsupportedTemporalTypeException instead of an ex-info.
 
+- **`Executors/newVirtualThreadPerTaskExecutor` reports the JVM's class.**
+  Its class was `java.util.concurrent.ThreadPoolExecutor`, so
+  `(instance? ThreadPoolExecutor ex)` was true only on jolt; it is now
+  `java.util.concurrent.ThreadPerTaskExecutor`, an `ExecutorService` but not a
+  `ThreadPoolExecutor`. Every `ExecutorService` is now also an
+  `AutoCloseable`, as since JDK 19. `invokeAny`'s `TimeoutException` carries
+  no message, as on the JVM, instead of "timed out waiting for a task".
+
+- **`intern` and `Var/find` see a required built-in namespace straight away.**
+  Namespaces baked into the image are registered lazily, and both checked the
+  namespace registry directly instead of going through the lookup `find-ns`
+  uses, so `(require 'clojure.set) (intern 'clojure.set 'zz 1)` threw
+  "No namespace: clojure.set found" (and `(clojure.lang.Var/find
+  'clojure.set/union)` "No such namespace") until something happened to call
+  `find-ns` on it. Every existence check now shares one lookup. `intern` into a
+  namespace that really is missing now throws a plain `Exception`, as on the JVM,
+  rather than an `ex-info`.
+
 - **A native library build that was killed no longer blocks the next run for
   half an hour.** The lock that keeps two jolt processes from building a
   dependency's `:jolt/native` library at once was released only when the build

@@ -423,16 +423,23 @@
 (define (chez-ns-exists? nm)
   (and (string? nm) (or (and (hashtable-ref ns-registry nm #f) #t) (ns-has-vars? nm) #f)))
 
+;; The ONE namespace lookup by name string: the jns for NM, or #f. Image (and
+;; seed) namespaces are registered lazily -- their vars are in the var table from
+;; boot, but no jns sits in ns-registry until something asks for one -- so a
+;; lookup that probes ns-registry alone misses a namespace that is plainly loaded:
+;; (require 'clojure.set) (intern 'clojure.set 'zz 1) said "No namespace:
+;; clojure.set found" until a find-ns happened to materialize it. Every "does this
+;; namespace exist" check that wants the jns goes through here.
+(define (ns-lookup nm)
+  ;; the deferral answers BEFORE the registry, not after it: a jns object for
+  ;; the name may already exist because something described one of its vars
+  ;; (see ns-undefer!), and that is not the namespace being there.
+  (and (not (ns-deferred? nm))
+       (or (hashtable-ref ns-registry nm #f)
+           (and (ns-has-vars? nm) (intern-ns! nm)))))
+
 (define (jolt-find-ns desig)
-  (let ((nm (ns-desig->name desig)))
-    ;; the deferral answers BEFORE the registry, not after it: a jns object for
-    ;; the name may already exist because something described one of its vars
-    ;; (see ns-undefer!), and that is not the namespace being there.
-    (if (ns-deferred? nm)
-        jolt-nil
-        (or (hashtable-ref ns-registry nm #f)
-            (and (ns-has-vars? nm) (intern-ns! nm))
-            jolt-nil))))
+  (or (ns-lookup (ns-desig->name desig)) jolt-nil))
 
 (define (jolt-the-ns desig)
   (if (jns? desig) desig
@@ -964,9 +971,11 @@
 ;; :macro marks the var as a macro so later-compiled forms expand it.
 (define (jolt-intern ns-desig sym . vopt)
   (let ((nm (ns-desig->name ns-desig)) (s (symbol-t-name sym)))
-    ;; the namespace must exist (Namespace.find), like the JVM's intern
-    (unless (hashtable-ref ns-registry nm #f)
-      (jolt-throw (jolt-ex-info (string-append "No namespace: " nm " found") empty-pmap)))
+    ;; the namespace must exist (the-ns), like the JVM's intern -- found the way
+    ;; find-ns finds it, so a required image namespace counts before anything
+    ;; has materialized its jns. The JVM's throw is a plain Exception.
+    (unless (ns-lookup nm)
+      (throw-jvm (quote Exception) (string-append "No namespace: " nm " found")))
     (ns-check-replacement! nm s)
     (let ((cell (if (pair? vopt) (def-var! nm s (car vopt)) (declare-var! nm s)))
           (m (jolt-meta sym)))
