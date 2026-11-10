@@ -162,10 +162,6 @@ failing the query, so `jolt -A:test:dev -Spath` and `jolt -Spath -M:test` both
 answer. Under `-Scp` the deps.edn is still read — aliases, `:main-opts` and
 tasks work — but nothing is expanded, so a shared library declared by a
 *dependency* is not loaded (the project's own `:jolt/native` still is).
-Otherwise a dependency's `:jolt/native` libraries load on the first require of
-one of that dependency's namespaces, not at startup, so `ffi/loaded?` on a
-dependency's `:optional` library answers false until then. A dependency whose C
-must be loaded before any of its namespaces marks the spec `:eager true`.
 `-Sforce`, `-Sthreads`, and `-Jopt` are accepted and ignored: no classpath
 cache to force, serial fetching, no JVM to pass options to.
 
@@ -401,6 +397,11 @@ those libraries are terminal when encountered transitively: their artifacts
 and dependency trees are not acquired. Explicitly declared
 `org.clojure/spec.alpha` and `org.clojure/core.specs.alpha` dependencies remain
 ordinary dependencies.
+
+A dependency's `:jolt/native` libraries load on the first require of one of
+that dependency's namespaces, not at startup, so `ffi/loaded?` on a
+dependency's `:optional` library answers false until then. A dependency whose C
+must be loaded before any of its namespaces marks the spec `:eager true`.
 
 Code can acquire and import dependencies while it runs with the portable
 `clojurestar.deps/require-deps` macro:
