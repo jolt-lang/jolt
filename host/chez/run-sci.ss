@@ -1,7 +1,7 @@
 ;; run-sci.ss — SCI conformance: load borkdude/sci's own source (vendor/sci) through
 ;; jolt and require its forms to compile+eval. A real-world Clojure-compatibility
 ;; stress test. Floor-gated like the corpus: a regression below the floor (or the
-;; count today, 412/434) fails. Raise the floor as host gaps close.
+;; count today, 411/434) fails. Raise the floor as host gaps close.
 ;;
 ;; The tail is this gate's own load-order, not a host gap. load-order below is a
 ;; CURATED SUBSET in a fixed sequence, so a reference across it can land before its
@@ -42,8 +42,15 @@
 ;; could never run. A form that runs as soon as it compiles reports "No such var"
 ;; now, as on the JVM, and the five are counted.
 ;;
+;; 412 -> 411 is that alias move again, for a call with NO arguments: protocols.cljc's
+;; `(store/get-ctx)` names sci.ctx-store through an :as its failed ns form never
+;; registered. A no-arg qualified call took the static-member arm, which read the
+;; alias as a class and compiled; it now checks the namespace as every other
+;; reference does, and is "No such namespace: store" at compile time, as on the
+;; JVM. One form whose only unresolvable reference was such a call is counted.
+;;
 ;;   chez --script host/chez/run-sci.ss
-;;   JOLT_SCI_FLOOR=N    override the floor (default 412)
+;;   JOLT_SCI_FLOOR=N    override the floor (default 411)
 ;;   SCI_VERBOSE=1       print each failing form's error
 (import (chezscheme))
 
@@ -128,7 +135,7 @@
   load-order)
 
 (printf "\nSCI load: ~a/~a forms ok (~a fail)\n" total-ok (+ total-ok total-fail) total-fail)
-(define floor (let ((s (getenv "JOLT_SCI_FLOOR"))) (if s (string->number s) 412)))
+(define floor (let ((s (getenv "JOLT_SCI_FLOOR"))) (if s (string->number s) 411)))
 (when (< total-ok floor)
   (printf "REGRESSION: ~a forms loaded < floor ~a\n" total-ok floor))
 (flush-output-port)

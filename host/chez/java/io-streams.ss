@@ -2947,11 +2947,12 @@
 ;; the map spread back to keyword arguments. IOFactory and Coercions are the
 ;; protocol values, so code that names or extends them loads; the io fns do not
 ;; consult an extension (known-divergences.edn).
+;; the map spread back to k1 v1 k2 v2 ..., folded here rather than through
+;; clojure.core's apply/concat, which a tree-shaken app may not keep
 (define (jio-opts->list opts)
   (if (jolt-nil? opts)
       '()
-      (seq->list (jolt-invoke (var-deref "clojure.core" "apply")
-                              (var-deref "clojure.core" "concat") opts))))
+      (reverse (jolt-reduce-kv (lambda (acc k v) (cons v (cons k acc))) '() opts))))
 (define (jio-make-via name)
   (lambda (x opts)
     (apply jolt-invoke (var-deref "clojure.java.io" name) x (jio-opts->list opts))))
