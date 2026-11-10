@@ -608,12 +608,18 @@
 ;; dependency ships without requiring any of them. So before answering #f, a
 ;; symbol the process cannot resolve globally either loads the pending ones and
 ;; looks again. A libc symbol resolves globally and never gets this far.
+;;
+;; The pending table is the loader's, reached by name: gates load this file
+;; without loader.ss, and there nothing is pending.
+(define (ffi-load-pending-natives!)
+  (let ((load-all (sa-baked-global 'ldr-natives-load-all!)))
+    (and load-all (load-all))))
+
 (define (jolt-ffi-dlsym-native sym)
   (let ((rs (let ((rs (jolt-ffi-native-resolvers sym)))
               (if (and (null? rs)
-                       (fx> ldr-natives-pending 0)
                        (not (sa-foreign-entry? sym))
-                       (ldr-natives-load-all!))
+                       (ffi-load-pending-natives!))
                   (jolt-ffi-native-resolvers sym)
                   rs))))
     (cond

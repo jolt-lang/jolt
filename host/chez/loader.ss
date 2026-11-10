@@ -2987,16 +2987,16 @@
             (unless (or finished? was-loaded?) (ldr-unmark-loaded! name))
             (ldr-end-load! name)))))))
 
-;; The load itself, run by the one thread that claimed it (never concurrently for
-;; a given name, and never re-entered for it on this thread).
 ;; --- a dependency's :jolt/native libraries, loaded on first require ----------
 ;; jolt.main loads the project's own natives at startup and hands each
 ;; dependency's here with the source roots that dependency contributes. The
 ;; group loads the first time a namespace is read off one of those roots, before
 ;; that namespace's code runs, so a library the program never requires a
 ;; namespace of is never opened (jolt-816). A built binary decides the same
-;; thing at build time instead: it emits a dependency's loads only when the
-;; binary carries one of its namespaces (build.ss bld-natives-for-closure).
+;; thing at build time instead: it loads a dependency's library at startup only
+;; when the binary carries one of its namespaces, and otherwise registers it here
+;; with no roots, for the foreign-symbol fallback below (build.ss
+;; bld-natives-for-closure).
 ;;
 ;; A group is #(state thunk roots): state 'pending, 'running or 'done. The
 ;; thunk runs under ldr-natives-mu, which a Chez mutex makes recursive, so a
@@ -3071,6 +3071,8 @@
       (apply append (map (lambda (g) (if (eq? (vector-ref g 0) 'done) '() (vector-ref g 2)))
                          (reverse ldr-native-groups)))))))
 
+;; The load itself, run by the one thread that claimed it (never concurrently for
+;; a given name, and never re-entered for it on this thread).
 (define (ldr-load-body name force? was-loaded?)
   ;; A compiled artifact on the roots wins over the source, like RT.load
   ;; preferring a .class to its .clj. :reload does NOT bypass it, also like the

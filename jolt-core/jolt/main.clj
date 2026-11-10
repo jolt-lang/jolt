@@ -1191,10 +1191,10 @@
                :else
                (let [load (into [(if (:optional spec) "opt" "req")]
                                 (native-candidates spec plat base))]
-                 ;; a dependency's library is loaded by the binary only when the
-                 ;; binary carries one of that dependency's namespaces: the
-                 ;; driver drops the entry otherwise (build.ss
-                 ;; bld-natives-for-closure), as a run never opens it
+                 ;; a binary loads a dependency's library at startup only when
+                 ;; it carries one of that dependency's namespaces, and
+                 ;; otherwise only if a foreign symbol nothing loaded defines
+                 ;; asks for it (build.ss bld-natives-for-closure), as a run does
                  (if (deferred-native? spec)
                    (-> ["dep" (str (count (:jolt.deps/paths spec)))]
                        (into (:jolt.deps/paths spec))
