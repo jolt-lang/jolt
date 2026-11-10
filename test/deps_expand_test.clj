@@ -395,6 +395,31 @@
        (count (reconcile [{:name "a" :linux ["liba.so"]}
                           {:name "b" :windows ["b.dll"]}]))))
 
+;; A dependency's spec carries its source roots, and loads on the first require
+;; of a namespace from them (jolt.main load-project-natives!). One library two
+;; dependencies declare loads with whichever is required first; one the project
+;; declares itself, or a dependency marks :eager, loads at startup.
+(let [reconcile (var jolt.deps/reconcile-natives)
+      native-key (var jolt.deps/native-key)
+      a {:name "ssl" :linux ["libssl.so.3"] :jolt.deps/root "/a"
+         :jolt.deps/lib "x/a" :jolt.deps/paths ["/a/src"]}
+      b {:name "ssl" :linux ["libssl.so.3"] :jolt.deps/root "/b"
+         :jolt.deps/lib "x/b" :jolt.deps/paths ["/b/src" "/b/resources"]}]
+  (is= "a library two dependencies declare loads from either's roots"
+       ["/a/src" "/b/src" "/b/resources"]
+       (:jolt.deps/paths (first (reconcile [a b]))))
+  (is= "...and is one load" 1 (count (reconcile [a b])))
+  (is= "the project declaring it keeps it eager"
+       nil
+       (:jolt.deps/paths (first (reconcile [{:name "ssl" :linux ["libssl.so.3"]
+                                             :jolt.deps/root "/app"}
+                                            a]))))
+  (is= "a dependency marking it :eager makes it eager"
+       nil
+       (:jolt.deps/paths (first (reconcile [a (assoc b :eager true)]))))
+  (is= "the dependency's roots and coordinate are not part of the identity" 1
+       (count (distinct (map native-key [(dissoc a :name :linux) (dissoc b :name :linux)])))))
+
 ;;;; :jolt/tree-shake {:allow-dynamic […]} → "ns/name" strings
 
 (let [allow-dynamic-entries (var jolt.deps/allow-dynamic-entries)]

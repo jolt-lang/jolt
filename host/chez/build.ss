@@ -1524,6 +1524,35 @@
 ;; launcher, where guard catches a missing lib (the defcfn's foreign-procedure is
 ;; only resolved when the closure is first called, so the defining form can
 ;; evaluate before the library is loaded).
+;; A dependency's dynamic native arrives as ["dep" n root… kind cand…]: the
+;; dependency's n source roots, then the load. A run opens it on the first
+;; require of a namespace from those roots (loader.ss ldr-natives-for-file!).
+;; Every namespace a binary carries runs at startup, so the build's answer is
+;; whether it carries one at all: keep the load when a namespace in ORDERED
+;; (name . file) was read off one of the roots. Otherwise it becomes
+;; ["deferred" kind cand…], which the binary registers as a pending group with
+;; no roots — never opened at startup, and opened only if the app calls a
+;; foreign symbol nothing loaded defines (ffi.ss jolt-ffi-dlsym-native), the
+;; same fallback a run has. Everything else passes through unchanged.
+(define (bld-natives-for-closure natives ordered)
+  (define (carried? roots)
+    (exists (lambda (p)
+              (and (string? (cdr p))
+                   (exists (lambda (r) (ldr-under-root? (cdr p) r)) roots)))
+            ordered))
+  (make-pvec
+   (list->vector
+    (map (lambda (entry)
+           (let ((parts (bld-strs entry)))
+             (if (string=? (car parts) "dep")
+                 (let* ((n (string->number (cadr parts)))
+                        (roots (list-head (cddr parts) n))
+                        (load (list-tail (cddr parts) n)))
+                   (make-pvec (list->vector
+                               (if (carried? roots) load (cons "deferred" load)))))
+                 entry)))
+         (seq->list natives)))))
+
 (define (bld-emit-natives out natives which)
   (for-each
     (lambda (entry)
@@ -1535,7 +1564,14 @@
           ((and (eq? which 'required) (string=? kind "req"))
            (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #f #f)\n")))
           ((and (eq? which 'optional) (string=? kind "opt"))
-           (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #t #f)\n"))))))
+           (put-string out (string-append "(jolt-build-load-native (list " cand-lits ") #t #f)\n")))
+          ;; a dependency library the binary carries no namespace of
+          ;; (bld-natives-for-closure): cands is (kind cand…)
+          ((and (eq? which 'required) (string=? kind "deferred"))
+           (let ((lits (fold-left (lambda (s c) (string-append s (ei-str-lit c) " ")) "" (cdr cands))))
+             (put-string out (string-append "(ldr-defer-natives! '() (lambda (ns) (jolt-build-load-native (list "
+                                            lits ") " (if (string=? (car cands) "opt") "#t" "#f")
+                                            " #f)))\n")))))))
     (seq->list natives)))
 
 ;; The "static" natives' link forms, each once. The same archive named by two
@@ -2826,6 +2862,7 @@
        (when (null? ordered)
          (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                            " — is it on the source roots?")))
+       (set! natives (bld-natives-for-closure natives ordered))
       ;; 2. emit each app namespace. Every mode but dev runs the inference +
       ;; record-shape setup passes and the inline + flatten + scalar-replace
       ;; fixpoint (set-optimize! below; inlining follows direct-link); release
