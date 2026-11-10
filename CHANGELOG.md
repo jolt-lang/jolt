@@ -27,6 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A reference to a var a loaded namespace lacks stops that namespace from
+  loading.** Since such a reference is a compile error, as on the JVM (see
+  Fixed), code that names a var only on a path that rarely runs, such as
+  `(catch Exception e (clojure.repl/pst e))`, no longer loads if jolt lacks the
+  var, where before it loaded and failed only if that path ran. To keep real
+  code loading, jolt now has the reference vars such code names:
+  `clojure.repl/pst`, `root-cause`, `stack-element-str`, `source-fn` (nil, as
+  the JVM answers when it cannot find the source) and `source` ("Source not
+  found"); `clojure.java.io/make-reader`, `make-writer`, `make-input-stream`
+  and `make-output-stream`, which open what `reader`, `writer`, `input-stream`
+  and `output-stream` open, and the `IOFactory` and `Coercions` protocols, which
+  can be named and extended but which those fns do not consult;
+  `clojure.test/file-position`; `clojure.data/diff-similar`;
+  `clojure.core.protocols/iterator-reduce!`; and in `clojure.core`, `await1`,
+  `proxy-name`, `print-ctor`, `primitives-classnames`, `with-loading-context`,
+  `gen-class` and `gen-interface` (both expand to nil, as `gen-class` does on
+  the JVM when not compiling ahead of time), and `resultset-seq`,
+  `find-protocol-impl`, `-cache-protocol-fn`, `method-sig` and
+  `add-classpath`, which throw UnsupportedOperationException when called.
+
 - **A dependency's `:jolt/native` libraries load on first require, not at
   startup.** A library declared by a dependency is opened the first time a
   namespace from that dependency is required, before that namespace's code
@@ -50,6 +70,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A native library build that was killed no longer blocks the next run for
+  half an hour.** The lock that keeps two jolt processes from building a
+  dependency's `:jolt/native` library at once was released only when the build
+  finished, so Ctrl-C, `kill -9` or a crash mid-build left
+  `.jolt-native-build.lock` behind, and every later run printed "waiting for
+  another jolt building ..." and hung until the lock was 30 minutes old. The
+  holder now records its pid and host in the lock and refreshes it every few
+  seconds; a waiter breaks the lock at once when that pid is gone on the same
+  host, or when it has not been refreshed for a minute, and the waiting
+  message names the lock to delete by hand. The build task's stdin is also
+  closed now, so a task that reads stdin sees end-of-file instead of hanging
+  on a pipe nothing writes to.
+- **`System/exit` from a thread other than the main one runs the shutdown hooks.**
+  It ended the process straight away, so hooks registered with
+  `Runtime.addShutdownHook` did not run and `deleteOnExit` paths were left behind
+  when a future, a `Thread` or a pool worker called it. They run now, once, as
+  on the JVM. If two threads exit at the same time, the second waits for the
+  hooks to finish and the first caller's status is the process's.
 - **`jolt build` builds a dependency's missing shared library again.** Since
   dependency libraries load on first require, the build only built one when
   the binary carried a namespace of that dependency. A binary that binds the
@@ -92,17 +130,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupt text, and a new thread starts on the process streams rather than
   whatever port its creator had redirected to.
 
+- **On the Gambit backend a `def` that shadows a `clojure.core` name compiles
+  again, and the shadowing warning prints once on a cached load.** Printing the
+  new refer-replacement warning dispatched `write` on the default `*err*`, which
+  has no host methods on Gambit, so `(defn vals [] 1)` failed to compile there;
+  the warning now goes straight to the error port when `*err*` is a process
+  stream, as `print` does for `*out*`. And a def made by an `eval` the
+  namespace's body runs printed its warning twice when the namespace loaded
+  from the AOT cache: the cache now records only the loader's own forms, not
+  what a form's `eval` analyzes while it runs.
 
 - **A var missing from a loaded namespace is a compile error, `No such var:
   s/nope`.** It compiled to a class static call and failed only when it ran.
   Written through an alias, the alias was then looked up in whatever namespace
   was current at the call, so `(s/nope 1)` in the `-main` that `jolt -m` runs
   reported "Unknown class s". As on the JVM, the reference is now rejected when
-  the form compiles, through an alias or by the namespace's full name, wherever
-  code runs right after it compiles (loading a file, `require`, `eval`, `-e`, the
-  REPLs). `jolt.host` stays late-bound, since which of its vars exist depends on
-  the host files a boot loaded. Code that names a var of another namespace
-  before that namespace defines it now needs a `declare` there, as on the JVM.
+  the form compiles, wherever code runs right after it compiles (loading a file,
+  `require`, `eval`, `-e`, the REPLs). That holds for a call with arguments or
+  without (`(s/nope)`), for `(s/new …)`, and for the var named as a value,
+  whether the namespace is written as an alias or in full; a call with no
+  arguments into a namespace that is not loaded, `(no.such.ns/nope)`, is
+  likewise the compile-time "No such namespace". `jolt.host` stays late-bound,
+  since which of its vars exist depends on the host files a boot loaded. Code
+  that names a var of another namespace before that namespace defines it now
+  needs a `declare` there, as on the JVM.
 
 - **`System/mapLibraryName` exists.** It was missing, so
   `(System/mapLibraryName "ffitest")` raised "No matching field or method".
@@ -111,6 +162,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Android, `ffitest.dll` on Windows. A nil name is a `NullPointerException`
   with no message, as on the JVM.
 
+- **The rest of the `java.sql.SQLException` family exists.** `SQLWarning`,
+  `SQLTimeoutException`, `SQLIntegrityConstraintViolationException`,
+  `SQLSyntaxErrorException` and the other transient, non-transient and
+  recoverable subclasses JDBC drivers throw were unknown classes, so a
+  `(catch java.sql.SQLIntegrityConstraintViolationException e …)` did not
+  resolve. They now sit in the JDK hierarchy and take `SQLException`'s
+  constructors and accessors.
 - **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
   the class graph, so a batch failure jolt-lang/db raises slipped past
   `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no
@@ -134,14 +192,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   classes said "see the earlier error from jolt.time", but when the first
   failure had been caught (tick reaches jolt.time through a require a caller
   may wrap in `try`) that error was never printed. The message now carries the
-  first line of the original error.
+  first line of the original error, and when that error wraps another (a
+  top-level throw arrives as "Syntax error macroexpanding at ...") the root
+  cause's class and message after it.
 
 - **`File.createNewFile` is one exclusive create.** It checked whether the path
   existed and then opened it with truncate, so two processes racing to create
   the same file could both get true, which breaks it as a lock. A dangling
   symlink also answered true by creating the file it pointed to. It now opens
   with O_EXCL semantics and answers false for any existing path, symlinks
-  included, as on the JVM.
+  included, as on the JVM. Any other failure, such as a missing parent
+  directory or no permission, throws `IOException` with the system's message
+  ("No such file or directory", "Permission denied") as the JVM does, rather
+  than answering false.
 
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
@@ -159,8 +222,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks
-  (a normal end, `System/exit`, SIGTERM), right after those hooks, as on the
-  JVM. The order is the reverse of registration and each path goes once,
+  (a normal end, `System/exit` from any thread, SIGTERM), right after those
+  hooks, as on the JVM. The empty path, `(File. "")`, registers nothing, as the
+  JVM's names nothing it would delete. The order is the reverse of registration and each path goes once,
   so a directory registered before the files in it is deleted after them.
   Anything `File.delete` can't remove, such as a directory that still has files
   in it, is skipped.
@@ -185,6 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sha256 too (once the formula has an `on_intel` block; until then it warns
   and bumps the other two), and the README lists both macOS binaries at
   macOS 11+.
+- **The install script picks the arm64 binary from a Rosetta shell.** On an
+  Apple Silicon Mac, a terminal running under Rosetta reports `x86_64`, so the
+  script installed the Intel build, which runs translated and cannot load the
+  arm64 Homebrew libraries under `/opt/homebrew`. It now checks
+  `sysctl.proc_translated` and installs the arm64 build. The tap bump also
+  rejects any sha256 that isn't 64 hex digits, so a failed `.sha256` download
+  can no longer write `sha256 ""` into the formula.
 
 ## [0.8.25] - 2026-11-08
 

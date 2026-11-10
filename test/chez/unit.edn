@@ -236,6 +236,10 @@
   ;; try has to be around the compile (eval), not the call
   {:suite "errors" :expr "(try (eval (quote (clojure.string/no-such-fn 1))) (catch Throwable e (ex-message e)))" :expected "\"No such var: clojure.string/no-such-fn\""}
   {:suite "errors" :expr "(do (require (quote [clojure.string :as s])) (try (eval (quote (fn [] (s/no-such-fn 1)))) (catch Throwable e (ex-message e))))" :expected "\"No such var: s/no-such-fn\""}
+  {:suite "errors" :expr "(try (eval (quote (fn [] (clojure.string/no-such-fn)))) (catch Throwable e (ex-message e)))" :expected "\"No such var: clojure.string/no-such-fn\""}
+  {:suite "errors" :expr "(do (require (quote [clojure.string :as s])) (try (eval (quote (fn [] (s/no-such-fn)))) (catch Throwable e (ex-message e))))" :expected "\"No such var: s/no-such-fn\""}
+  {:suite "errors" :expr "(do (require (quote [clojure.string :as s])) (try (eval (quote (fn [] (s/new 1)))) (catch Throwable e (ex-message e))))" :expected "\"No such var: s/new\""}
+  {:suite "errors" :expr "(try (eval (quote (fn [] (no.such.ns/nope)))) (catch Throwable e (ex-message e)))" :expected "\"No such namespace: no.such.ns\""}
   {:suite "errors" :expr "(try (Nope/whatever 1) (catch Throwable e (ex-message e)))" :expected "\"Unknown class Nope\""}
   ;; A hyphen munges to an underscore in a JVM package name, so a record literal or
   ;; a (munge (str *ns*)) lookup names the class my_app.core.Foo where jolt calls it
@@ -2547,13 +2551,18 @@
  ;; naa9 — JVM-only macro vars absent on jolt
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'import))" :expected "true"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (:macro (meta (resolve 'import))))" :expected "true"}
- {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-class))" :expected "false"}
- {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-interface))" :expected "false"}
+ ;; gen-class, gen-interface and with-loading-context exist so code naming them
+ ;; loads: the first two expand to nil (gen-class does nothing on the JVM when
+ ;; not compiling ahead of time), the third runs its body.
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-class))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(nil? (gen-class :name zzgc.Foo))" :expected "true"}
+ {:suite "naa9-jvm-only-macros" :expr "(with-loading-context 1 2)" :expected "2"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'gen-interface))" :expected "true"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'proxy-super))" :expected "true"}
  ;; proxy-super is a macro here, like the JVM's — see the proxy-super case above.
  {:suite "naa9-jvm-only-macros" :expr "(boolean (:macro (meta (resolve 'proxy-super))))" :expected "true"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'when-class))" :expected "false"}
- {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'with-loading-context))" :expected "false"}
+ {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'with-loading-context))" :expected "true"}
  {:suite "naa9-jvm-only-macros" :expr "(some? (resolve 'add-doc-and-meta))" :expected "false"}
  ;; assert-args moved out of the JVM-only set: ported (see the assert-args suite)
  ;; because macro-heavy libraries reach it as @#'clojure.core/assert-args. It is
@@ -2754,6 +2763,10 @@
   ;; existence and then opened with truncate, so two racing callers could both
   ;; answer true, and a dangling symlink answered true by creating its target.
   {:suite "io-error-paths" :expr "(let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-cnf-\" (System/nanoTime)) p #(java.nio.file.Paths/get % (make-array String 0))] (.mkdirs (java.io.File. d)) (java.nio.file.Files/createSymbolicLink (p (str d \"/link\")) (p (str d \"/target\")) (make-array java.nio.file.attribute.FileAttribute 0)) (let [r [(.createNewFile (java.io.File. (str d \"/link\"))) (.exists (java.io.File. (str d \"/target\"))) (.createNewFile (java.io.File. (str d \"/f\"))) (.createNewFile (java.io.File. (str d \"/f\")))]] (doseq [n [\"link\" \"target\" \"f\"]] (.delete (java.io.File. (str d \"/\" n)))) (.delete (java.io.File. d)) r))" :expected "[false false true false]"}
+  ;; Only a taken name is false. Every other failure is the IOException
+  ;; UnixFileSystem.createFileExclusively throws, strerror's text its message: it
+  ;; answered false for all of them, which told a caller the file was there.
+  {:suite "io-error-paths" :expr "(let [d (str (System/getProperty \"java.io.tmpdir\") \"/jolt-cnf-err-\" (System/nanoTime)) m (fn [f] (try (f) (catch java.io.IOException e (.getMessage e))))] (.mkdirs (java.io.File. d)) (spit (str d \"/file\") \"x\") (let [r [(m #(.createNewFile (java.io.File. (str d \"/absent/x\")))) (m #(.createNewFile (java.io.File. (str d \"/file/x\")))) (m #(.createNewFile (java.io.File. \"\"))) (m #(.createNewFile (java.io.File. d)))]] (.delete (java.io.File. (str d \"/file\"))) (.delete (java.io.File. d)) r))" :expected "[\"No such file or directory\" \"Not a directory\" \"No such file or directory\" false]"}
   ;; readAttributes honors NOFOLLOW_LINKS in both forms, like getAttribute: a
   ;; link read as itself is a link, sized by its target string, with its own
   ;; mtime and file key. It described the target and never said isSymbolicLink.

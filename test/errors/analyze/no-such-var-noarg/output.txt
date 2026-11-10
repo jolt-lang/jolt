@@ -1,0 +1,8 @@
+error[analyze/no-such-var]: No such var: s/nope
+  --> ./test/errors/analyze/no-such-var-noarg/input.clj:8:3
+   |
+ 6 | ;; (s/nope 1), as on the JVM.
+ 7 | (defn -main []
+ 8 |   (s/nope))
+   |   ^^^^^^^^
+exit: 1

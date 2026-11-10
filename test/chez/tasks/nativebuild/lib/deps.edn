@@ -18,6 +18,9 @@
                            (System/exit 3))
                          (when-let [ms (System/getenv "JBT_BUILD_SLEEP_MS")]
                            (Thread/sleep (parse-long ms)))
+                         ;; a build that reads its stdin must see EOF
+                         (when (System/getenv "JBT_BUILD_READ_STDIN")
+                           (slurp *in*))
                          (cond
                            ;; the :static case: an archive to link into a binary
                            (System/getenv "JBT_STATIC")

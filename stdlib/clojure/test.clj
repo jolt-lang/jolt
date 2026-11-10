@@ -120,6 +120,20 @@
                      (if (= "\\" java.io.File/separator) (or (str/last-index-of f "\\") -1) -1))]
           (if (neg? i) f (subs f (inc i))))))))
 
+(defn file-position
+  "Returns a vector [filename line-number] for the nth call up the
+  stack.
+
+  Deprecated in 1.2: The information needed for test reporting is
+  now on :file and :line keys in the result map. Jolt's stack traces
+  may hold fewer frames than the JVM's, and a frame it lacks reads
+  [nil nil]."
+  {:added "1.0"
+   :deprecated "1.2"}
+  [n]
+  (let [s (nth (.getStackTrace (new java.lang.Throwable)) n nil)]
+    [(when s (.getFileName s)) (when s (.getLineNumber s))]))
+
 (defn testing-vars-str
   "Returns a string representation of the current test: the names in
   *testing-vars* as a list, then the source file and line of the assertion."

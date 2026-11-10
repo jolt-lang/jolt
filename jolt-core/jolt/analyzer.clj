@@ -2116,6 +2116,36 @@
                   (list (symbol "clojure.lang.Reflector" "invokeInstanceMethod")
                         t (subs mname 1) (list (symbol "clojure.core" "to-array") a)))))))))
 
+;; The namespace half of a qualified, non-var `ns/nm` that the host-static and
+;; ctor arms may take as a class: `ns` itself, or, where a miss stays late-bound,
+;; the namespace an alias names (an alias is lexical, so it is resolved here, and
+;; the miss at the call names the namespace whatever *ns* is then). Raises the
+;; JVM's compile-time errors (Compiler.resolveIn) instead when `ns` cannot be a
+;; class: "No such namespace" for a namespace-shaped name that names nothing
+;; loaded, "No such var" for an alias or loaded namespace that lacks the var. The
+;; symbol arm and the zero-arg (ns/nm) and (ns/new …) call arms share it, so
+;; `(s/nope)` is the same compile error as `(s/nope 1)` and `s/nope`.
+;; A registered class wins over the shape: (defrecord point [x]) makes
+;; `point/create` a static call however lowercase the name, as the JVM's
+;; macroexpand1 finds the class before resolveIn ever runs.
+(defn- static-class-ns [ctx ns nm]
+  (let [target (namespace-for ctx ns)]
+    (cond
+      (host-class-name? ns) ns
+      (and (ns-shaped-name? ns) (not target))
+        (analysis-error :analyze/unknown-namespace
+         (str "No such namespace: " ns)
+         {:jolt.error/symbol (str ns "/" nm)
+          :jolt.error/namespace ns
+          :jolt.error/ns (compile-ns ctx)})
+      (and target (not (late-bound-namespace? ctx target)) (not (allow-unresolved-vars?)))
+        (analysis-error :analyze/no-such-var
+         (str "No such var: " ns "/" nm)
+         {:jolt.error/symbol (str ns "/" nm)
+          :jolt.error/namespace target
+          :jolt.error/ns (compile-ns ctx)})
+      :else (or target ns))))
+
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
@@ -2184,27 +2214,8 @@
              ;; rejects a namespace-shaped host-static in the minted seed, and
              ;; `make seeddefs` asserts every var the seed defines survives the load.
              ;;
-             ;; A registered class wins over the shape: (defrecord point [x]) makes
-             ;; `point/create` a static call however lowercase the name, as the
-             ;; JVM's macroexpand1 finds the class before resolveIn ever runs.
-             (let [target (namespace-for ctx ns)]
-               (cond
-                 (host-class-name? ns) (host-static ns nm)
-                 (and (ns-shaped-name? ns) (not target))
-                   (analysis-error :analyze/unknown-namespace
-                    (str "No such namespace: " ns)
-                    {:jolt.error/symbol (str ns "/" nm)
-                     :jolt.error/namespace ns
-                     :jolt.error/ns (compile-ns ctx)})
-                 (and target (not (late-bound-namespace? ctx target)) (not (allow-unresolved-vars?)))
-                   (analysis-error :analyze/no-such-var
-                    (str "No such var: " ns "/" nm)
-                    {:jolt.error/symbol (str ns "/" nm)
-                     :jolt.error/namespace target
-                     :jolt.error/ns (compile-ns ctx)})
-                 ;; late-bound: an alias is lexical, so it is resolved here, and
-                 ;; the miss at the call names the namespace whatever *ns* is then
-                 :else (host-static (or target ns) nm)))))
+             ;; static-class-ns draws both lines.
+             (host-static (static-class-ns ctx ns nm) nm)))
       :else (let [r (resolve-global ctx form)]
               (case (:kind r)
                 ;; :num-ret (a ^double/^long declared return) rides on the var node so
@@ -2459,7 +2470,14 @@
           (and (form-sym? head) (form-sym-ns head) (not shadowed)
                (= "new" (form-sym-name head))
                (not= :var (:kind (resolve-global ctx head))))
-            (analyze-ctor ctx (form-sym-ns head) (rest items) env)
+            ;; an alias or loaded namespace is not a class: (s/new 1) is the JVM's
+            ;; compile-time "No such var: s/new", not "No matching ctor found for
+            ;; class s" when it runs. A deftype reached through its namespace or an
+            ;; alias (other.ns/Point. spelled other.ns.Point/new) is a class.
+            (let [cns (form-sym-ns head)]
+              (when-not (deftype-ctor-class ctx cns)
+                (static-class-ns ctx cns "new"))
+              (analyze-ctor ctx cns (rest items) env))
           ;; (Class/.method target arg*) — qualified instance method call (Clojure 1.12).
           ;; The class part is a type hint; dispatch on the first arg's runtime type.
           (and (form-sym? head) (form-sym-ns head)
@@ -2476,8 +2494,12 @@
           (and (form-sym? head) (form-sym-ns head) (not shadowed)
                (empty? (rest items))
                (not= :var (:kind (resolve-global ctx head))))
+            ;; ...and a head whose ns half is an alias or a loaded namespace is a
+            ;; var reference, so (s/nope) is "No such var: s/nope" at compile time
+            ;; as (s/nope 1) is, not "Unknown class s" when it runs.
             (invoke (var-ref "jolt.host" "static-member")
-                    [(const (form-sym-ns head)) (const (form-sym-name head))])
+                    [(const (static-class-ns ctx (form-sym-ns head) (form-sym-name head)))
+                     (const (form-sym-name head))])
           cast (let [node (coerce-node (:kind cast) (analyze ctx (second items) env)
                                        (:cast-fn cast))
                      p (form-position form)]

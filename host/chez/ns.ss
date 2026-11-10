@@ -807,12 +807,26 @@
                  ", being replaced by: #'" cns "/" nm))
 ;; One line on *err*, as RT.errPrintWriter().println does: through whatever writer
 ;; *err* holds, so a (binding [*err* w] ...) captures it.
+;; The process streams take the port path, as jolt-write (printing.ss) does for
+;; *out*: the default *err* is a port-writer jhost, and Gambit registers no host
+;; methods for one (it has no host-static-classes.ss), so dispatching write on it
+;; threw there and failed every def that shadows a core name. Only a writer that
+;; was bound in — a StringWriter, a reify, a with-out-str capture seen from
+;; another thread — goes through its write method.
 (define (ns-err-println s)
-  (let ((w (var-cell-deref (jolt-var "clojure.core" "*err*"))))
-    (record-method-dispatch w "write" (jolt-list (string-append s "\n")))
-    ;; and flushed: errPrintWriter's PrintWriter autoflushes on println
-    (when (if (jhost? w) (host-method-ref (jhost-tag w) "flush") (iface-method w "flush" #f))
-      (record-method-dispatch w "flush" (jolt-list)))
+  (let ((w (var-cell-deref (jolt-var "clojure.core" "*err*")))
+        (line (string-append s "\n")))
+    (cond ((and (jhost? w) (string=? (jhost-tag w) "port-writer")
+                (memq (vector-ref (jhost-state w) 0) '(err stderr)))
+           (jolt-eprint line))
+          ((and (jhost? w) (out-port-writer? w))
+           (display line)
+           (flush-output-port (current-output-port)))
+          (else
+           (record-method-dispatch w "write" (jolt-list line))
+           ;; and flushed: errPrintWriter's PrintWriter autoflushes on println
+           (when (if (jhost? w) (host-method-ref (jhost-tag w) "flush") (iface-method w "flush" #f))
+             (record-method-dispatch w "flush" (jolt-list)))))
     jolt-nil))
 ;; Warn when interning nm into cns replaces a refer. Returns the message printed,
 ;; or #f, so the compiler can also record it for a cached load to replay.

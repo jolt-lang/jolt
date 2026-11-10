@@ -158,6 +158,63 @@ case "$(cat "$tmp/nb-a.out") $(cat "$tmp/nb-b.out")" in *"answer 42"*"answer 42"
 check "two processes needing the same build both run" "yes" "$r"
 check "...and the task ran once" "1" "$(builds)"
 
+# A build killed before it could release the lock (Ctrl-C, kill -9, a crash)
+# leaves .jolt-native-build.lock behind. Its holder recorded its pid and kept
+# the lock's mtime fresh while it lived, so the next run sees it is dead and
+# carries on at once, instead of waiting out a 30-minute staleness window.
+# `bounded` runs a command with a watchdog that kills it and everything under
+# it, so a regression fails rather than hanging the smoke.
+killtree() { for c in $(pgrep -P "$1"); do killtree "$c"; done; kill -9 "$1" 2>/dev/null; }
+bounded() { # secs cmd...
+  secs="$1"; shift
+  "$@" & bp=$!
+  ( sleep "$secs"; killtree $bp ) >/dev/null 2>&1 & bw=$!
+  wait $bp; bs=$?
+  kill $bw 2>/dev/null; wait $bw 2>/dev/null
+  return $bs
+}
+# The build is killed the way Ctrl-C kills it: the jolt holding the lock and
+# the task it is running, together, mid-build.
+fresh
+JBT_BUILD_SLEEP_MS=6000 JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" -M:go > "$tmp/nb-a.out" 2>&1 &
+pa=$!
+n=0; while [ ! -f "$tmp/nb/lib/native/builds.log" ] && [ $n -lt 200 ]; do sleep 0.1; n=$((n+1)); done
+kill -KILL $pa $(pgrep -P $pa) 2>/dev/null; wait $pa 2>/dev/null
+[ -d "$tmp/nb/lib/.jolt-native-build.lock" ] && r=left || r=gone
+check "a build interrupted mid-run leaves its lock behind" "left" "$r"
+t0=$(date +%s)
+out="$(bounded 30 inbb "$tmp/nb/app" -M:go)"; s=$?
+t1=$(date +%s)
+case "$out" in *"stale native build lock for jbt (its holder, pid "*" is gone)"*"answer 42") r=yes ;; *) r="no: $out" ;; esac
+check "the next run breaks the dead build's lock and builds" "yes" "$r"
+check "...promptly" "yes" "$([ $((t1-t0)) -lt 20 ] && echo yes || echo "no: $((t1-t0))s")"
+[ -d "$tmp/nb/lib/.jolt-native-build.lock" ] && r=left || r=gone
+check "...releasing the lock it took" "gone" "$r"
+
+# a lock with no holder recorded (an older jolt's) is stale once its mtime is
+# a minute old
+fresh
+mkdir "$tmp/nb/lib/.jolt-native-build.lock"
+touch -t 200001010000 "$tmp/nb/lib/.jolt-native-build.lock"
+out="$(bounded 30 inbb "$tmp/nb/app" -M:go)"
+case "$out" in *"stale native build lock for jbt (it has not been refreshed for a minute)"*"answer 42") r=yes ;; *) r="no: $out" ;; esac
+check "a lock that stopped being refreshed is broken" "yes" "$r"
+
+# a live holder's lock is waited on, and the wait names the lock to delete
+fresh
+mkdir "$tmp/nb/lib/.jolt-native-build.lock"
+( sleep 2; rm -rf "$tmp/nb/lib/.jolt-native-build.lock" ) &
+out="$(bounded 30 inbb "$tmp/nb/app" -M:go)"
+wait
+case "$out" in *"waiting for another jolt building jbt; if no build is running, delete "*"/nb/lib/.jolt-native-build.lock"*"answer 42") r=yes ;; *) r="no: $out" ;; esac
+check "a held lock is waited on, naming the path to delete" "yes" "$r"
+
+# the build task's stdin is closed, so a task that reads it does not hang
+fresh
+out="$(export JBT_BUILD_READ_STDIN=1; bounded 30 inbb "$tmp/nb/app" -M:go)"
+case "$out" in *"answer 42") r=yes ;; *) r="no: $out" ;; esac
+check "a build task that reads stdin sees EOF" "yes" "$r"
+
 # `jolt build` builds it too, and the binary loads what was built
 fresh
 out="$(JOLT_PWD="$tmp/nb/app" JOLT_QUIET=1 "$JOLT" build -m app.go -o "$tmp/nb-app" 2>&1)"; s=$?

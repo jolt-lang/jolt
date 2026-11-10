@@ -425,6 +425,41 @@
                 (left mode) ["d2"])))
   (fs/delete-tree root))
 
+;; System/exit from a thread other than the main one ends the process through
+;; _exit, which skipped the hooks and the deleteOnExit paths: the JVM runs both
+;; whichever thread asks it to exit. "both" exits from a future and from the
+;; main thread together, the hook slow enough that the second caller arrives
+;; while it runs: the hooks run once and finish, and the first caller's status
+;; is the process's, as the JVM blocks the second caller.
+(let [root (str (fs/create-temp-dir {:prefix "jp-exit-off-main-"}))
+      script (str root "/exit.clj")
+      _ (spit script
+              (str "(let [[mode dir] *command-line-args*"
+                   "      f (java.io.File. dir \"doomed\")]"
+                   "  (.mkdirs (java.io.File. dir)) (spit f \"x\") (.deleteOnExit f)"
+                   "  (.addShutdownHook (Runtime/getRuntime)"
+                   "    (Thread. (fn [] (Thread/sleep 200) (println \"HOOK\"))))"
+                   "  (case mode"
+                   "    \"future\" @(future (System/exit 3))"
+                   "    \"thread\" (doto (Thread. (fn [] (System/exit 4))) .start .join)"
+                   "    \"both\" (do (future (System/exit 5)) (Thread/sleep 50) (System/exit 6))))"))]
+  (doseq [[mode code] [["future" 3] ["thread" 4] ["both" 5]]]
+    (let [dir (str root "/" mode)
+          r (sh [jolt-bin script mode dir] {:err :string})]
+      (check-eq (str "System/exit off the main thread runs the hooks once (" mode ")")
+                [(:exit r) (str/split-lines (:out r))] [code ["HOOK"]])
+      (check-eq (str "System/exit off the main thread deletes deleteOnExit paths (" mode ")")
+                (fs/exists? (str dir "/doomed")) false)))
+  (fs/delete-tree root))
+
+;; File("").deleteOnExit registers "" on the JDK, which names nothing; resolving
+;; it to user.dir first deleted the working directory at exit when it was empty.
+(let [root (str (fs/create-temp-dir {:prefix "jp-doe-empty-"}))
+      r (sh [jolt-bin "-e" "(println (.deleteOnExit (java.io.File. \"\")))"] {:dir root :err :string})]
+  (check-eq "deleteOnExit of the empty path leaves the working directory"
+            [(:out r) (fs/exists? root)] ["nil\n" true])
+  (fs/delete-tree root))
+
 ;; Is a pid still alive? `kill -0` is the portable answer (exit 0 = alive). Run
 ;; through `sh` so it is the shell BUILTIN: a standalone kill(1) is not on every
 ;; Linux image, and ProcessBuilder.start rejects a program it cannot resolve.

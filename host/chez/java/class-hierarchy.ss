@@ -872,6 +872,23 @@
 (jch-register-supers! "java.util.concurrent.CancellationException" '("java.lang.IllegalStateException"))
 (jch-register-supers! "java.sql.SQLException" '("java.lang.Exception"))
 (jch-register-supers! "java.sql.BatchUpdateException" '("java.sql.SQLException"))
+;; The rest of the java.sql.SQLException family JDBC drivers throw (next.jdbc
+;; code catches these by name). Every one takes SQLException's
+;; (reason, SQLState, vendorCode, cause) ctors, which host-static-classes.ss
+;; registers for everything that is-a SQLException.
+(jch-register-supers! "java.sql.SQLWarning" '("java.sql.SQLException"))
+(jch-register-supers! "java.sql.SQLTransientException" '("java.sql.SQLException"))
+(jch-register-supers! "java.sql.SQLNonTransientException" '("java.sql.SQLException"))
+(jch-register-supers! "java.sql.SQLRecoverableException" '("java.sql.SQLException"))
+(jch-register-supers! "java.sql.SQLTimeoutException" '("java.sql.SQLTransientException"))
+(jch-register-supers! "java.sql.SQLTransactionRollbackException" '("java.sql.SQLTransientException"))
+(jch-register-supers! "java.sql.SQLTransientConnectionException" '("java.sql.SQLTransientException"))
+(jch-register-supers! "java.sql.SQLNonTransientConnectionException" '("java.sql.SQLNonTransientException"))
+(jch-register-supers! "java.sql.SQLDataException" '("java.sql.SQLNonTransientException"))
+(jch-register-supers! "java.sql.SQLFeatureNotSupportedException" '("java.sql.SQLNonTransientException"))
+(jch-register-supers! "java.sql.SQLIntegrityConstraintViolationException" '("java.sql.SQLNonTransientException"))
+(jch-register-supers! "java.sql.SQLInvalidAuthorizationSpecException" '("java.sql.SQLNonTransientException"))
+(jch-register-supers! "java.sql.SQLSyntaxErrorException" '("java.sql.SQLNonTransientException"))
 (jch-register-supers! "java.lang.LinkageError" '("java.lang.Error"))
 (jch-register-supers! "java.lang.ClassCircularityError" '("java.lang.LinkageError"))
 (jch-register-supers! "java.lang.IncompatibleClassChangeError" '("java.lang.LinkageError"))

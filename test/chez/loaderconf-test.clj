@@ -1044,7 +1044,9 @@
                   "(ns libev) (defn v [] :evicted)")
         ctx (l/classpath [d] {:parent (l/isolated)})]
     (l/eval-in ctx "script.stale"
-               "(defn late [] (require '[libev :as e]) (e/v))")
+               ;; resolved at run time: libev is not loaded when late compiles,
+               ;; so a literal (e/v) would be "No such namespace" (as on the JVM)
+               "(defn late [] (require '[libev :as e]) ((resolve 'libev/v)))")
     (let [late (val-of (l/resolve ctx {:kind :var :name "script.stale/late"}))
           wr (java.lang.ref.WeakReference. ctx)]
       (l/unload! ctx)

@@ -535,3 +535,64 @@
 
 (defn inst-ms [inst] (inst-ms* inst))
 (defn inst? [x] (satisfies? Inst x))
+
+;; The rest of the reference clojure.core's public surface that code names, often
+;; on a path that rarely runs ((catch … (resultset-seq rs))). Since a reference
+;; to a var a namespace lacks is a compile error, as on the JVM, a missing one
+;; kept a whole namespace from loading; each now exists, and does what the
+;; reference does where jolt can, else throws when CALLED.
+;; Integer/toHexString: the hash's 32-bit two's complement in lowercase hex.
+;; Spelled out, since the Gambit seed has no Integer statics.
+(defn- hex32 [h]
+  (let [digits "0123456789abcdef"]
+    (loop [n (bit-and h 0xffffffff) acc ()]
+      (let [acc (cons (nth digits (rem n 16)) acc)
+            n (quot n 16)]
+        (if (zero? n) (apply str acc) (recur n acc))))))
+(defn proxy-name
+  {:tag String}
+  [super interfaces]
+  (let [inames (into (sorted-set) (map #(.getName %) interfaces))]
+    (apply str (.replace (str *ns*) \- \_) ".proxy"
+      (interleave (repeat "$")
+        (concat
+          [(.getName super)]
+          (map #(subs % (inc (.lastIndexOf % "."))) inames)
+          [(hex32 (hash inames))])))))
+(defn await1 [a]
+  (await a)
+  a)
+(defn print-ctor [o print-args w]
+  (.write w "#=(")
+  (.write w (.getName (class o)))
+  (.write w ". ")
+  (print-args o w)
+  (.write w ")"))
+;; Keyed by the primitive classes, which Float/TYPE and the rest name; the
+;; Gambit seed has no TYPE statics, so the classes come from the interner they
+;; are promoted through (class-model.ss).
+(def primitives-classnames
+  {(jolt.host/jolt-class-for "float") "Float/TYPE"
+   (jolt.host/jolt-class-for "int") "Integer/TYPE"
+   (jolt.host/jolt-class-for "long") "Long/TYPE"
+   (jolt.host/jolt-class-for "boolean") "Boolean/TYPE"
+   (jolt.host/jolt-class-for "char") "Character/TYPE"
+   (jolt.host/jolt-class-for "double") "Double/TYPE"
+   (jolt.host/jolt-class-for "byte") "Byte/TYPE"
+   (jolt.host/jolt-class-for "short") "Short/TYPE"})
+;; Not compiling ahead of time, the JVM's gen-class does nothing, and jolt never
+;; compiles to classes. gen-interface defines a JVM interface, which jolt has no
+;; use for either (definterface binds a marker), so it too expands to nil.
+(defmacro gen-class [& options] nil)
+(defmacro gen-interface [& options] nil)
+;; There is no context classloader to bind: the body runs as it is.
+(defmacro with-loading-context [& body]
+  `((fn loading# [] ~@body)))
+(defn resultset-seq [rs] (throw (UnsupportedOperationException. "resultset-seq: not supported in Jolt")))
+(defn find-protocol-impl [protocol x] (throw (UnsupportedOperationException. "find-protocol-impl: not supported in Jolt")))
+(defn -cache-protocol-fn [pf x c interf] (throw (UnsupportedOperationException. "-cache-protocol-fn: not supported in Jolt")))
+(defn method-sig [meth] (throw (UnsupportedOperationException. "method-sig: not supported in Jolt")))
+(defn add-classpath
+  {:deprecated "1.1"}
+  [url]
+  (throw (UnsupportedOperationException. "add-classpath: not supported in Jolt")))
