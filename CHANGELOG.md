@@ -20,6 +20,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host files a boot loaded. Code that names a var of another namespace
   before that namespace defines it now needs a `declare` there, as on the JVM.
 
+- **`java.sql.BatchUpdateException` is a `SQLException`.** It was missing from
+  the class graph, so a batch failure jolt-lang/db raises slipped past
+  `(catch java.sql.SQLException _)`, and `(BatchUpdateException. …)` had no
+  constructor. It now extends `SQLException` and takes the JDK's constructors,
+  with `getUpdateCounts` and `getLargeUpdateCounts` handing out copies of the
+  counts. `SQLException`'s own constructors read their second string as the
+  SQLState, not a cause, and `getSQLState` and `getErrorCode` answer.
+
+- **`java.time.Month/from` and `java.time.DayOfWeek/from` exist.** They were
+  missing, so tick's `(t/month date)` and `(t/day-of-week date)` raised "No
+  matching field or method". They read the field off any temporal that has it
+  through its own `get`, so a ZonedDateTime or OffsetDateTime from
+  jolt-lang/time works too, and a temporal without it is the JDK's
+  `DateTimeException`. `MonthDay`, `Month` and `DayOfWeek` now answer
+  `isSupported`, `get` and `getLong`, and a field a temporal does not have is
+  `UnsupportedTemporalTypeException` ("Unsupported field: HourOfDay") rather
+  than an `ExceptionInfo`.
+
+- **A broken `:jolt/provides` library names its own load error.** Once a
+  provider's install namespace failed to load, every later reference to its
+  classes said "see the earlier error from jolt.time", but when the first
+  failure had been caught (tick reaches jolt.time through a require a caller
+  may wrap in `try`) that error was never printed. The message now carries the
+  first line of the original error.
+
+- **`File.createNewFile` is one exclusive create.** It checked whether the path
+  existed and then opened it with truncate, so two processes racing to create
+  the same file could both get true, which breaks it as a lock. A dangling
+  symlink also answered true by creating the file it pointed to. It now opens
+  with O_EXCL semantics and answers false for any existing path, symlinks
+  included, as on the JVM.
+
 - **The built-in nREPL server starts evals in `user`, and sessions keep their
   namespace.** An eval that sent no `ns` ran in whatever namespace the server
   thread was started under, which under `jolt nrepl-server` is `clojure.core`,
@@ -32,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moving the session, an `ns` that does not exist answers
   `namespace-not-found` instead of running the code in `clojure.core`, and a
   session whose namespace was removed starts its next eval in `user`.
+
 - **`File.deleteOnExit` deletes its paths at exit.** It answered nil and deleted
   nothing, so a program that relied on it left its temp files behind, decrypted
   PEM keys included. Paths now go on every exit that runs the shutdown hooks

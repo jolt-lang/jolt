@@ -1599,7 +1599,9 @@
        ;; Either half is a reason for the caller to look again, so the answer is
        ;; their OR: a class can become resolvable through a replay alone.
        (let* ((loaded (and (find-ns-file (vector-ref p 0))
-                           (begin (guard (c (#t (set-box! (vector-ref p 3) 'failed)
+                           (begin (guard (c (#t (jolt-with-mutex lib-claims-mu
+                                                  (hashtable-set! lib-provider-failures p c)
+                                                  (set-box! (vector-ref p 3) 'failed))
                                                 (lib-replay-deferred! p)
                                                 (raise c)))
                                     ;; the mark comes from load-namespace* itself
@@ -1740,10 +1742,36 @@
 ;; class unregistered exactly like an undeclared dependency does — but the fix is
 ;; the opposite one. Telling someone to add a dependency their deps.edn already
 ;; declares sends them the wrong way, so say which case it is.
-(define (provider-load-failed-message class coordinate install-ns)
-  (string-append class " is provided by the " coordinate " library, which is on "
-                 "the source roots but failed to load — see the earlier error "
-                 "from " install-ns ". This is not a missing dependency."))
+;;
+;; The load error itself travels with the message. The latch is one-shot, so this
+;; message is what every LATER miss reports, and the first miss's error is often
+;; caught on the way: tick reaches jolt.time through a require a caller may wrap
+;; in try. "See the earlier error" then pointed at nothing anyone saw.
+(define lib-provider-failures (make-weak-eq-hashtable))
+
+(define (provider-failure-text c)
+  (let ((m (cond ((jolt-ex-info-record? c)
+                  (let ((m (jolt-ex-info-record-message c)))
+                    (and (not (jolt-nil? m)) (jolt-str-render-one m))))
+                 ((condition? c) (condition->message-string c))
+                 (else #f))))
+    (and (string? m)
+         (let* ((n (string-length m))
+                (end (let loop ((i 0))
+                       (cond ((= i n) n)
+                             ((char=? (string-ref m i) #\newline) i)
+                             (else (loop (+ i 1))))))
+                (line (substring m 0 end)))
+           (and (not (string=? line "")) line)))))
+
+(define (provider-load-failed-message class coordinate install-ns cause)
+  (let ((why (and cause (provider-failure-text cause))))
+    (string-append class " is provided by the " coordinate " library, which is on "
+                   "the source roots but failed to load"
+                   (if why
+                       (string-append " (" install-ns ": " why ")")
+                       (string-append " — see the earlier error from " install-ns))
+                   ". This is not a missing dependency.")))
 
 ;; A JDK-shaped name jolt has no implementation for. The message does NOT name a
 ;; library: which one supplies java.sql or java.time is not the runtime's to say,
@@ -1794,7 +1822,9 @@
      => (lambda (_)
           (let ((p (lib-provider-for class)))
             (provider-load-failed-message class (or (vector-ref p 1) "declared")
-                                          (vector-ref p 0)))))
+                                          (vector-ref p 0)
+                                          (jolt-with-mutex lib-claims-mu
+                                            (hashtable-ref lib-provider-failures p #f))))))
     ((jdk-class-name? class)
      (string-append "No dependency provides " class
                     " — a concrete implementation of the JDK classes must be "
