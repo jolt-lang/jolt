@@ -288,6 +288,7 @@
     ("System" "gc" 0)
     ("System" "getProperty" 1 2)
     ("System" "lineSeparator" 0)
+    ("System" "mapLibraryName" 1)
     ("System" "runFinalization" 0)
     ("Thread" "interrupted" 0)
     ("Thread" "sleep" 1 2)
