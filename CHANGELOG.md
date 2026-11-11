@@ -14,19 +14,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new `compatibility/` source root, kept apart from `stdlib/` for namespaces
   jolt carries only so code from another runtime loads unchanged. It is
   written over the bundled `clojure.data.json` and resolved ahead of a
-  project's copy in the same way, because real cheshire wraps Jackson. It covers cheshire's
-  public API: `parse-string`, `parse-string-strict`, `parse-stream`,
-  `parse-stream-strict`, `parsed-seq`, `generate-string`, `generate-stream`,
-  `create-pretty-printer`, `default-pretty-print-options`, and the `encode`
-  and `decode` names. Its output matches cheshire's, checked against
-  babashka's: keyword keys keep their namespace, a ratio is written as a
-  double, NaN and the infinities as strings, a `java.util.Date` through
+  project's copy in the same way, because real cheshire wraps Jackson. It
+  covers cheshire's public API: `parse-string`, `parse-string-strict`,
+  `parse-stream`, `parse-stream-strict`, `parsed-seq`, `generate-string`,
+  `generate-stream`, `create-pretty-printer`, `default-pretty-print-options`,
+  and the `encode` and `decode` names. Its output matches cheshire's, checked
+  against babashka's: keyword keys keep their namespace, a ratio is written as
+  a double, NaN and the infinities as strings, a `java.util.Date` through
   `:date-format` in UTC, a byte array as base64, `:escape-non-ascii` as
   uppercase `\u` escapes with surrogate pairs, and `:pretty` in Jackson's
   default layout and its options. A top-level array from `parse-string` is a
   lazy seq, and blank input parses to nil. Custom encoders
   (`cheshire.generate`), factory options and the Smile and CBOR formats are
   left out, and a value with no JSON form throws, as it does in cheshire.
+
+### Fixed
+
+- **The macOS release binaries get an optimized Chez kernel again.** The
+  release workflow built Chez with `./configure ... CFLAGS="-mmacosx-version-min=11.0"`,
+  and Chez's configure adds its own flags (`-arch arm64 -O2`) only when CFLAGS
+  isn't given, so since 0.8.21 the kernel in the macOS binaries (the
+  collector, the fasl reader, the C runtime) was built at `-O0`. Both macOS rows
+  now pass `CFLAGS+=`. Measured on two patched Chez 10.4.1 builds linked into
+  jolt: `jolt -e nil` 0.215 s with the old flags vs 0.164 s, a full collection
+  2 to 3 times faster, allocation-heavy code 10 to 30% faster; compiled Clojure
+  code itself runs the same. The Chez cache keys are bumped so the old builds
+  aren't reused.
 
 ## [0.8.26] - 2026-11-10
 
