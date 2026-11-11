@@ -132,10 +132,12 @@
 (defn escape
   [s cmap]
   (when (nil? s) (throw (new NullPointerException "s")))
-  (apply str
-    (map (fn [ch]
-           (if-let [rep (cmap ch)] rep (str ch)))
-         s)))
+  (if (string? s)
+    (str-escape-by s cmap)
+    (apply str
+      (map (fn [ch]
+             (if-let [rep (cmap ch)] rep (str ch)))
+           s))))
 
 (defn index-of
   "0-based index of the first occurrence of value in s, or nil."

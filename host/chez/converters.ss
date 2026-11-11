@@ -192,6 +192,25 @@
         d)
       (begin (index-int-check! start) (index-int-check! end) (substring s start end))))
 
+;; clojure.string/escape. Invoke cmap once per character, but keep each run
+;; of unchanged text as one piece. Joining the raw replacements with str's
+;; renderer also lets adjacent surrogate Character values form a pair.
+(define (str-escape-by input cmap)
+  (let* ((s (jolt-need-string input)) (n (string-length s)))
+    (define (save-span start end pieces)
+      (if (fx=? start end) pieces (cons (substring s start end) pieces)))
+    (let loop ((i 0) (start 0) (pieces '()))
+      (if (fx=? i n)
+          (if (null? pieces)
+              (string-copy s)
+              (let ((parts (reverse (save-span start n pieces))))
+                (if (for-all string? parts) (apply string-append parts) (jolt-str-units parts))))
+          (let ((rep (jolt-invoke1 cmap (string-ref s i))) (next (fx+ i 1)))
+            (if (jolt-truthy? rep)
+                (loop next next (cons rep (save-span start i pieces)))
+                (loop next start pieces)))))))
+(def-var! "clojure.core" "str-escape-by" str-escape-by)
+
 ;; case-lambda, not `. end`: a rest-arg list allocated on every call is most of
 ;; what a one-character (subs txt i (inc i)) costs, and a parser does that per
 ;; input position.
