@@ -108,8 +108,8 @@ the locally provisioned Makes toolchain.
 ## Architecture
 
 A small Chez runtime (`host/chez/*.ss`: value model, persistent collections, seqs,
-vars/namespaces, host interop) hosts a portable Clojure overlay split across two
-source roots by *when* they load:
+vars/namespaces, host interop) hosts a portable Clojure overlay. The first two
+source roots below are split by *when* they load:
 
 - **`jolt-core/`** is baked into the seed — the compiler (`jolt-core/jolt/`:
   reader/analyzer/IR/backend, plus `jolt.main`/`jolt.deps`) and `clojure.core` in
@@ -119,6 +119,10 @@ source roots by *when* they load:
   standard library (`clojure.string`/`set`/`walk`/`edn`/`pprint`/…) plus the
   `jolt.ffi` host library. Editing most of these needs no re-mint; the seven
   listed in `ei-prelude-ns-files` are the exception (see below).
+- **`compatibility/`** loads like `stdlib/`, but holds namespaces jolt carries
+  only so code written for another runtime runs unchanged, such as
+  `cheshire.core` for babashka scripts. They aren't part of the language, so
+  they stay out of `stdlib/`.
 
 `bin/jolt` loads the checked-in seed and the spine, then compiles and evaluates on
 Chez (read → analyze → IR → emit → eval). `host/chez/bootstrap.ss` rebuilds that

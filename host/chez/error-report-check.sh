@@ -43,9 +43,10 @@
 #     answer "which driver ran" instead of "what does the report say" — so an
 #     absolute case path is rewritten back to the relative form. Everything after
 #     the prefix, "././" included, survives.
-#   - A frame inside jolt's own sources (jolt-core/, host/, stdlib/) has its line
-#     number replaced with LINE. Otherwise every unrelated edit to main.clj would
-#     rewrite golden files across the suite, which is how a gate stops being read.
+#   - A frame inside jolt's own sources (jolt-core/, host/, stdlib/,
+#     compatibility/) has its line number replaced with LINE. Otherwise every
+#     unrelated edit to main.clj would rewrite golden files across the suite,
+#     which is how a gate stops being read.
 #   - An absolute repo path, the home directory, and a temp directory are
 #     rewritten to <root>, ~ and <tmp>. None should appear at all; they are
 #     normalized rather than trusted not to.
@@ -119,7 +120,8 @@ normalize() {
     -e "$home_rule" \
     -e 's#\(jolt-core/[A-Za-z0-9_/.-]*\):[0-9][0-9]*#\1:LINE#g' \
     -e 's#\(host/[A-Za-z0-9_/.-]*\):[0-9][0-9]*#\1:LINE#g' \
-    -e 's#\(stdlib/[A-Za-z0-9_/.-]*\):[0-9][0-9]*#\1:LINE#g'
+    -e 's#\(stdlib/[A-Za-z0-9_/.-]*\):[0-9][0-9]*#\1:LINE#g' \
+    -e 's#\(compatibility/[A-Za-z0-9_/.-]*\):[0-9][0-9]*#\1:LINE#g'
 }
 
 # Run one case, emitting its normalized report plus the exit status.

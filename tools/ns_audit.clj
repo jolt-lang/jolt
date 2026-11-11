@@ -1,6 +1,6 @@
 ;; Report the (ns ...) forms that jolt's ns macro refuses, without loading them.
 ;;
-;;   jolt tools/ns_audit.clj [DIR-OR-FILE ...]     (default: stdlib jolt-core)
+;;   jolt tools/ns_audit.clj [DIR-OR-FILE ...]     (default: stdlib compatibility jolt-core)
 ;;
 ;; An unescaped quote in an ns docstring splits it into strings and bare symbols,
 ;; and the file still reads. This finds that, and every other shape ns refuses, in
@@ -73,7 +73,7 @@
               :else (recur seen-ns? found))))))))
 
 (defn -main [& roots]
-  (let [files (mapcat source-files (or (seq roots) ["stdlib" "jolt-core"]))
+  (let [files (mapcat source-files (or (seq roots) ["stdlib" "compatibility" "jolt-core"]))
         findings (doall (mapcat audit-file files))]
     (doseq [finding findings] (println finding))
     (println (str "ns-audit: " (count files) " files, " (count findings) " findings"))

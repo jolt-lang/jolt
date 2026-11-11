@@ -1418,6 +1418,22 @@ else
 fi
 rm -f "$bbshadow/src/clojure/data/json.clj"; rmdir "$bbshadow/src/clojure/data" "$bbshadow/src/clojure" 2>/dev/null
 
+# cheshire.core is bundled too, over that data.json, for babashka scripts that
+# name it: real cheshire wraps Jackson, so a project's copy could never load.
+# Its writer keeps a keyword key's namespace, as cheshire does, where data.json
+# writes {:a/b 1} as {"b":1}.
+mkdir -p "$bbshadow/src/cheshire"
+printf '(ns cheshire.core)\n(def marker :decoy)\n' > "$bbshadow/src/cheshire/core.clj"
+chs_out="$(cd "$bbshadow" && JOLT_NO_DEVCACHE=1 "$bbs_jolt" -e '(do (require (quote [cheshire.core :as c])) [(nil? (resolve (quote cheshire.core/marker))) (c/generate-string {:a/b [1 1/2]}) (c/parse-string "{\"k\":[1]}" true)])' 2>&1 | tail -1)"
+if [ "$chs_out" = '[true "{\"a/b\":[1,0.5]}" {:k [1]}]' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: bundled cheshire.core (shadowed, or not cheshire's output)"
+  echo "    want \`[true \"{\\\"a/b\\\":[1,0.5]}\" {:k [1]}]\` got \`$chs_out\`"
+  fails=$((fails + 1))
+fi
+rm -f "$bbshadow/src/cheshire/core.clj"; rmdir "$bbshadow/src/cheshire" 2>/dev/null
+
 # ...and the escape hatch: a project that DECLARES it supplies the namespace
 # itself gets its own copy, with no supplement interned over it. Without one,
 # "jolt always wins" would be a thing a project could not get out of.

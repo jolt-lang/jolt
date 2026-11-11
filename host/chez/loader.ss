@@ -38,8 +38,11 @@
 ;; namespace wins, on disk (resolve-on-roots) and in a built binary (build-jolt.ss
 ;; bakes first-wins to match). Grenadine ships host adapters alongside its portable
 ;; core, one of them named jolt.deps, so jolt-core has to precede it.
+;; compatibility holds namespaces jolt carries only so code written for another
+;; runtime loads unchanged (cheshire.core, which babashka bundles). It is a root
+;; of its own so the language's standard library stays separate from them.
 (define ldr-install-roots
-  '("jolt-core" "stdlib" "vendor/fs/src" "vendor/process/src" "vendor/cli/src"
+  '("jolt-core" "stdlib" "compatibility" "vendor/fs/src" "vendor/process/src" "vendor/cli/src"
     "vendor/grenadine/src"
     ;; the four namespaces grenadine generates instead of committing — see
     ;; vendor/grenadine-generated/README.md
@@ -108,7 +111,7 @@
          (or (ldr-rel-prefix? rel (ns-name->rel (car ns))) (loop (cdr ns))))))
 ;; Matched as a namespace PREFIX so a child (babashka/process/pprint) travels
 ;; with its parent.
-(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "clojure/data/json"))
+(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "cheshire/core" "clojure/data/json"))
 (define (ldr-builtin-ns-rel? rel)
   (let loop ((bs ldr-builtin-ns-rels))
     (and (pair? bs)

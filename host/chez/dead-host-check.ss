@@ -59,7 +59,7 @@
       (gs-string-suffix? ".edn" path) (gs-string-suffix? ".txt" path)
       (string=? path "Makefile")))
 
-(define reference-roots '("host" "jolt-core" "stdlib" "test" "bench" "tools" "ci" "bin" "img"))
+(define reference-roots '("host" "jolt-core" "stdlib" "compatibility" "test" "bench" "tools" "ci" "bin" "img"))
 
 ;; latin-1, not utf-8: this walks every file under the reference roots and a
 ;; stray non-utf-8 byte in one of them must not abort the gate. Byte-for-char is

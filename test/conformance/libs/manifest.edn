@@ -361,13 +361,12 @@
    ;; a real dependency, not a source path, so its :jolt/native libcrypto is loaded.
    :deps ["@data.json/src/main/clojure"]
    :local-deps ["~time" "~crypto"]
-   ;; core_test does (:require [cheshire.core :refer :all]). Selmer's own source
-   ;; resolves cheshire -> data.json -> jsonista at load and is fine on data.json,
-   ;; but the test names cheshire outright, and real cheshire wraps Jackson. The
-   ;; shim supplies the cheshire names over data.json.
+   ;; core_test does (:require [cheshire.core :refer :all]), and Selmer's own
+   ;; source probes cheshire -> data.json -> jsonista at load. Both get jolt's
+   ;; built-in cheshire.core (compatibility/), so no shim is attached for it.
    ;; selmer.benchmark is excluded from the run but core_test requires it at top
    ;; level and reads its `user` var, so it still has to compile — hence criterium.
-   :shims ["!test/conformance/libs/shims/cheshire" "!test/conformance/libs/shims/criterium"]
+   :shims ["!test/conformance/libs/shims/criterium"]
    :exclude-nses ["selmer.benchmark"]
    ;; StringEscapeUtils is not referenced anywhere in the suite, so no commons-lang
    ;; shim is attached.

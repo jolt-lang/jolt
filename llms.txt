@@ -54,6 +54,8 @@ and on a stale entry.
 - `jolt-core/clojure/core/NN-*.clj`: `clojure.core`, in dependency-ordered tiers.
   Baked into the seed.
 - `stdlib/`: the rest of the standard library, loaded off the source roots.
+- `compatibility/`: namespaces carried so code written for another runtime
+  loads unchanged (`cheshire.core` for babashka scripts). Loaded like `stdlib/`.
 - `test/`: `test/chez/corpus.edn` is the host-neutral conformance corpus (expected
   values sourced from reference JVM Clojure); `test/conformance/` holds the spec,
   the JVM oracle, and the divergence registry.
