@@ -90,6 +90,47 @@
 (defn macro-of [n] (get-in *model* [:macros (:mac n)]))
 (defn sum [xs] (reduce add 0 xs))
 
+;; Reference semantics for the method pool. Keep Java dispatch and path APIs
+;; out of these computations so a faulty shim can disagree with the model.
+(defn crc32 [bytes]
+  (let [step (fn [crc byte]
+               (loop [v (bit-xor crc (bit-and byte 255)) bits 8]
+                 (if (zero? bits) v
+                     (recur (bit-xor (bit-shift-right v 1) (if (odd? v) 0xedb88320 0))
+                            (dec bits)))))]
+    (bit-xor 0xffffffff (reduce step 0xffffffff bytes))))
+
+(defn api-result [method x salt]
+  (let [digits (str x) suffix (str salt) digit (str (mod salt 10))
+        text-code (fn [s] (reduce (fn [h c] (norm (+ (* 31 h) (int c)))) 0 s))]
+    (case method
+      "jvm/math/abs" (abs (- x salt))
+      "jvm/math/min" (min x salt)
+      "jvm/math/max" (max x salt)
+      "jvm/math/floor-mod" (mod (- salt x) (inc salt))
+      "jvm/long/bit-count" (loop [n x ones 0]
+                             (if (zero? n) ones (recur (quot n 2) (+ ones (mod n 2)))))
+      "jvm/long/parse-long" (+ (* x (reduce * (repeat (count suffix) 10))) salt)
+      "jvm/string/length" (+ (count digits) (count suffix))
+      "jvm/string/index-of" (or (first (keep-indexed #(when (= (str %2) digit) %1) digits)) -1)
+      "jvm/string/last-index-of" (or (last (keep-indexed #(when (= (str %2) digit) %1) digits)) -1)
+      "jvm/string/starts-with" (if (= (str (first digits)) digit) 1 0)
+      "jvm/string/ends-with" (if (= (str (last digits)) digit) 1 0)
+      "jvm/string-builder/reverse" (text-code (reverse (str x salt)))
+      "jvm/byte-buffer/get-short" (let [shift (* 8 (- 2 (mod salt 3)))
+                                        unsigned (bit-and 65535 (bit-shift-right x shift))]
+                                    (if (< unsigned 32768) unsigned (- unsigned 65536)))
+      "jvm/byte-buffer/flip" (+ 6 x salt)
+      "jvm/array-deque/remove-first" (+ (* 31 salt) x)
+      "jvm/array-list/get" (if (even? x) x salt)
+      "jvm/duration/to-millis" (+ (* 1000 x) salt)
+      "jvm/instant/plus-seconds" (+ x salt)
+      ("jvm/uuid/least-significant-bits" "jvm/atomic-long/add-and-get") (- x salt)
+      "jvm/crc32/update" (crc32 [x salt])
+      ("babashka/fs/file-name" "babashka/fs/extension" "babashka/fs/strip-ext") (text-code (str x "-" salt))
+      "babashka/fs/parent" (text-code (str "dir" x))
+      "babashka/fs/normalize" (text-code (str "p" x)))))
+
 (defn ev [n env]
   (let [e #(ev % env)]
     (case (:op n)
@@ -175,6 +216,9 @@
       :index-of (or (str/index-of (e (:s n)) (:sub n)) (:d n))
       :compare (let [order (compare (e (:a n)) (e (:b n)))]
                  (cond (neg? order) 1 (pos? order) 3 :else 2))
+      :api-call (let [x (add (lookup env (:input n)) (e (:x n)))]
+                  (add x (api-result (:method n) x (:salt n))))
+      ;; Older standalone projects carry the original four-method operation.
       :java-mix (let [salt (:salt n)
                       magnitude (abs (- (e (:x n)) salt))
                       suffix (str salt)
@@ -271,7 +315,7 @@
   (reduce (fn [v k] (norm (+ (* 31 v) (call-fn k [v] {})))) x kernels))
 
 (defn expected [model input iterations]
-  (when-not (and (= 3 (:format model)) (seq (:workers model)))
+  (when-not (and (#{3 4} (:format model)) (seq (:workers model)))
     (throw (ex-info "Unsupported or empty generated-project model" {})))
   (when-not (and (integer? input) (<= 0 input (dec modulus))
                  (integer? iterations) (<= 1 iterations 1000000))

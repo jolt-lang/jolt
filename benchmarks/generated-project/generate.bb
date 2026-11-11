@@ -5,15 +5,20 @@
             [clojure.string :as str]))
 
 (def kit (fs/parent (fs/absolutize *file*)))
+(load-file (str (fs/path kit "features.bb")))
+(alias 'features 'generated-project.features)
 (def modulus 1000003)
 (def common-ns "workload.common")
-(def defaults {:seed 1 :lines 5000 :namespace-lines 400})
+(def defaults {:seed 1 :lines 5000 :namespace-lines 400 :categories (vec features/leaves)})
 (def help
   "Usage: bb benchmarks/generated-project/generate.bb OUTPUT-DIR [OPTIONS]
 
   --seed N             Signed 64-bit seed (default 1)
   --lines N            Approximate nonblank source lines, e.g. 5k, 200k, 800k (default 5k)
   --namespace-lines N  Approximate lines per worker namespace (default 400; minimum 200)
+  --only A,B           Enable these categories or subtrees (default all)
+  --exclude A,B        Disable these categories or subtrees after --only
+  --list-categories    List supported category paths
   --help               Show this help
 
 OUTPUT-DIR must be absent or empty. Generation requires only Babashka.
@@ -35,8 +40,12 @@ and a timing and checksum runner for Jolt, JVM Clojure and Babashka.")
             (throw (ex-info "--lines must be 1000..10000000" {})))
           (when-not (<= 200 (:namespace-lines options) 20000)
             (throw (ex-info "--namespace-lines must be 200..20000" {})))
-          options)
+          (assoc (dissoc options :only :exclude) :categories (features/selection (:only options) (:exclude options))))
       (= arg "--help") {:help true}
+      (= arg "--list-categories") {:list-categories true}
+      (#{"--only" "--exclude"} arg)
+      (let [selectors (mapv str/trim (str/split (or (first more) "") #"," -1))]
+        (recur (rest more) (update options (keyword (subs arg 2)) (fnil into []) selectors)))
       (#{"--seed" "--lines" "--namespace-lines"} arg)
       (let [v ((if (= arg "--seed") parse-long size-number) (or (first more) ""))]
         (when-not v (throw (ex-info (str "Invalid or missing value for " arg) {})))
@@ -601,9 +610,11 @@ object number string run main tag" #"\s+"))))
     (= t :fn1) (gf1 gc (max 0 d))
     (= t :fn2) (gf2 gc (max 0 d))
     (or (<= d 0) (neg? @(:budget gc))) (leaf gc t)
-    :else (let [table (tables (if (vector? t) :rec t))
+    :else (let [table (get (:tables gc) (if (vector? t) :rec t))
                 choices (filterv (fn [[_ _ req]] (ok? gc req)) table)]
-            (gen-op gc t (weighted (rnd gc) (map (fn [[op w]] [op w]) choices)) d))))
+            (if (seq choices)
+              (gen-op gc t (weighted (rnd gc) (map (fn [[op w]] [op w]) choices)) d)
+              (leaf gc t)))))
 
 ;;; Rendering an expression node to code. Equivalent spellings are chosen
 ;;; here; the oracle never sees them.
@@ -672,7 +683,9 @@ object number string run main tag" #"\s+"))))
       :get (let [m (r (:m n)) kk (keyword (:k n))]
              (case (s 3) 0 (L 'get m kk (:d n)) 1 (L kk m (:d n)) 2 (L m kk (:d n))))
       :field (L (keyword (:f n)) (r (:x n)))
-      :java-mix (L (C rc "java-mix") (r (:x n)) (:salt n))
+      :api-call (let [v 'api-value]
+                  (L 'let (bvec [[v (L add (y (:input n)) (r (:x n)))]])
+                     (L add v (L (symbol "api" (str (features/call-name (:method n)))) v (:salt n)))))
       :call (apply list (gref rc (:fn n)) (map r (:args n)))
       :invoke (let [f (r (:f n)) x (r (:x n))]
                 (case (s 3) 0 (L f x) 1 (L 'apply f [x]) 2 (L (C rc "pipeline") x [f])))
@@ -919,7 +932,7 @@ object number string run main tag" #"\s+"))))
 
 (defn gc-for [S b mode & {:keys [scope calls max-loops budget call-budget]}]
   (let [rng (:rng S)
-        gc {:rng rng :W (:W S) :names (:names b) :ns (:ns b) :scope (or scope {}) :loops 0
+        gc {:rng rng :W (:W S) :tables (:tables S) :names (:names b) :ns (:ns b) :scope (or scope {}) :loops 0
             :max-loops (or max-loops (if (= mode :kernel) 2 1))
             :calls (vec calls) :dispatch? (not= mode :impl) :vis @(:vis b) :macs (:macs b)
             :keys (:keys b) :budget (atom (or budget 20)) :call-budget (atom (or call-budget 1000))}]
@@ -1119,7 +1132,7 @@ object number string run main tag" #"\s+"))))
                        :variadic (let [ps (vec (repeatedly (between rng 1 2) fresh)) r (fresh) rv (fresh)]
                                    [{:params ps :rest r :rv rv :body (body {:int ps :vec [rv]})}]))
              macro (when (= shape :calc) (get-in b [:macs :defcalc]))
-             waste-arity (when (and (= shape :multi) (chance rng 0.5))
+             waste-arity (when (and ((:enabled S) "load/unused") (= shape :multi) (chance rng 0.5))
                            (let [ps (repeatedly (+ 2 (count (:params (peek arities)))) #(symbol (fresh)))]
                              [(vec ps) (apply list 'str (marker! S b :arity :arity) ps)]))]
          (swap! (:W S) assoc-in [:fns ref] (cond-> {:arities arities} macro (assoc :macro macro)))
@@ -1132,48 +1145,94 @@ object number string run main tag" #"\s+"))))
     (swap! (:waste-trees S) conj body)
     (emit! b (L 'defn (symbol nm) [(symbol x)] (L 'if (L '= (symbol x) -1) (marker! S b :kernel :kernel) (rf (rc-of S b) body))))))
 
+(defn unused-defs! [S b api calls dep-infos multi]
+  (let [rng (:rng S) W (:W S) nsname (:ns b) y symbol
+        tbl (fresh! rng (:names b) :var)
+        _ (emit! b (L 'def (y tbl) (mapf [[:marker (marker! S b :table :helper)] [:rows [[1 2 3] [4 5 (rint rng 997)]]]])))
+        _ (let [x (y (fresh! rng (:names b) :var))]
+            (emit! b (L 'defn (y (fresh! rng (:names b) :var)) [x] (L 'str (marker! S b :helper :helper) (L :rows (y tbl)) x))))
+        _ (when ((:enabled S) "dispatch/protocols")
+            (let [R (fresh! rng (:names b) :type) f (y (fresh! rng (:names b) :var)) z (y (fresh! rng (:names b) :var))]
+              (emit! b (L 'defrecord (y R) [f] (C (:rc b) "CallableRecord")
+                          (L 'call-record ['_ z] (L 'str (marker! S b :record :record) f z))))))
+        wo (let [nm (fresh! rng (:names b) :var) x (fresh! rng (:names b) :var)
+                 body (int-body S b :kernel (between rng 2 4) :scope {:int [x]} :calls calls :budget (between rng 10 25))]
+             (swap! (:waste-trees S) conj body)
+             (emit! b (L 'defn (y nm) [(y x)] (L 'if (L '= (y x) -1) (marker! S b :wasteonly :waste-only) (rf (rc-of S b) body))))
+             nm)
+        chain (let [nm (fresh! rng (:names b) :var) x (y (fresh! rng (:names b) :var))
+                    fref (when (seq api) (pick rng api))
+                    dep-chain (some->> (seq (keep :chain dep-infos)) (pick rng))]
+                (emit! b (L 'defn (y nm) [x]
+                        (apply list 'str (marker! S b :chain :chain) (L (y wo) x)
+                               (concat (when dep-chain [(L (gref (:rc b) dep-chain) x)])
+                                       (when fref
+                                         [(apply list (gref (:rc b) fref) (repeat (:n (first (fn-arities @W fref))) x))])))))
+                [nsname nm])
+        _ (when-let [mm (some->> (seq (concat (when multi [multi]) (mapcat :multis dep-infos))) (pick rng))]
+            (let [tag (str nsname "/" (fresh! rng (:names b) :var)) a (y (fresh! rng (:names b) :var))]
+              (emit! b (L 'defmethod (gref (:rc b) mm) (tagf (:rc b) tag) ['_ a '_] (L 'str (marker! S b :method :defmethod) a)))))]
+    chain))
+
+(defn worker-file [b imports methods]
+  (let [file (file-entry-of b :worker)
+        body (:source file)
+        requires (concat (when (str/includes? body "str/") '[[clojure.string :as str]])
+                         (when (str/includes? body "set/") '[[clojure.set :as set]])
+                         (when (seq methods) '[[workload.api :as api]])
+                         (for [ns imports] [(symbol ns) :as (symbol (get-in b [:rc :alias ns]))]))
+        header (L 'ns (symbol (:ns b)) (apply list :require requires))]
+    (assoc file :source (str (text header) "\n\n" body))))
+
 (defn worker! [S idx dep-ids macro-ns target]
   (let [rng (:rng S) W (:W S)
         nsname (str "workload." (fresh! rng (:global S) :ns))
         dep-infos (mapv #(nth @(:infos S) %) dep-ids)
-        tmp (atom #{})
-        alias-of (into {common-ns (fresh! rng tmp :var) (:ns macro-ns) (fresh! rng tmp :var)}
-                       (map (fn [di] [(:ns di) (fresh! rng tmp :var)]) dep-infos))
+        enabled (:enabled S)
+        protocols? (enabled "dispatch/protocols")
+        unused? (enabled "load/unused")
+        ;; A worker's ranking is stable across category changes. Sampling its
+        ;; methods and salts never advances the Clojure expression generator.
+        api-rng (java.util.Random. (.nextLong ^java.util.Random (:api-rng S)))
+        method-count (between api-rng 2 4)
+        ranked (shuffled api-rng (keys features/calls))
+        methods (vec (take method-count (filter enabled ranked)))
+        imports (concat [common-ns] (when macro-ns [(:ns macro-ns)]) (map :ns dep-infos))
+        tmp (atom #{"api" "str" "set"})
+        alias-of (into {} (for [ns imports] [ns (fresh! rng tmp :var)]))
         b (merge (builder S nsname alias-of)
                  {:tag idx :macs (:macs macro-ns) :vis (atom nil)})
         _ (swap! (:names b) into @tmp)
         b (assoc b :keys (vec (repeatedly 12 #(fresh! rng (:names b) :var))))
         y symbol]
-    (emit! b (L 'ns (y nsname)
-                (apply list :require '[clojure.string :as str] '[clojure.set :as set]
-                       (map (fn [ns] [(y ns) :as (y (alias-of ns))]) (concat [common-ns (:ns macro-ns)] (map :ns dep-infos))))))
     (reset! (:vis b) {:protos (vec (mapcat :protos dep-infos)) :records (vec (mapcat :records dep-infos))
                       :types (vec (mapcat :types dep-infos)) :multis (vec (mapcat :multis dep-infos))
-                      :dyns (vec (concat [[common-ns "*knob*"]] (mapcat :dyns dep-infos)))})
-    (let [dyn (when (chance rng 0.5)
+                      :dyns (vec (concat (when (enabled "core/state") [[common-ns "*knob*"]]) (mapcat :dyns dep-infos)))})
+    (let [dyn (when (and (enabled "core/state") (chance rng 0.5))
                 (let [v (fresh! rng (:names b) :dyn) ref [nsname v] d (rint rng 997)]
                   (swap! W assoc-in [:dyns ref] d)
                   (emit! b (L 'def (raw "^:dynamic") (y v) d))
                   (swap! (:vis b) update :dyns conj ref)
                   ref))
-          own-protos (vec (repeatedly (between rng 1 2) #(protocol! S b false)))
-          waste-proto (protocol! S b true)
+          own-protos (when protocols? (vec (repeatedly (between rng 1 2) #(protocol! S b false))))
+          waste-proto (when (and unused? protocols?) (protocol! S b true))
           _ (swap! (:vis b) update :protos into own-protos)
           visible-protos (:protos @(:vis b))
-          records (vec (for [i (range (between rng 1 2))]
+          records (vec (for [i (range (if protocols? (between rng 1 2) 0))]
                          (let [r (record! S b (sample rng (between rng 1 (min 2 (count visible-protos))) visible-protos)
                                           (when (zero? i) waste-proto))]
                            (swap! (:vis b) update :records conj r)
                            r)))
-          type (when (chance rng 0.5) (let [t (deftype! S b)] (swap! (:vis b) update :types conj t) t))
-          multi (when (chance rng 0.6) (let [m (multi! S b)] (swap! (:vis b) update :multis conj m) m))
+          type (when (and protocols? (chance rng 0.5)) (let [t (deftype! S b)] (swap! (:vis b) update :types conj t) t))
+          multi (when (and (enabled "dispatch/multimethods") (or (zero? idx) (chance rng 0.6))) (let [m (multi! S b)] (swap! (:vis b) update :multis conj m) m))
           _ (extend-deps! S b dep-infos own-protos)
           wm (first (get-in @W [:protocols waste-proto :methods]))
-          _ (let [ps (repeatedly (first (:arities wm)) #(y (fresh! rng (:names b) :var))) this (y (fresh! rng (:names b) :var))]
-              (emit! b (L 'extend-protocol (y (second waste-proto)) 'String
-                          (L (y (:name wm)) (vec (cons this ps)) (L 'str (marker! S b :ext :extension) this)))))
-          helpers (helpers! S b)
-          api (api! S b helpers)
+          _ (when wm
+              (let [ps (repeatedly (first (:arities wm)) #(y (fresh! rng (:names b) :var))) this (y (fresh! rng (:names b) :var))]
+                (emit! b (L 'extend-protocol (y (second waste-proto)) 'String
+                            (L (y (:name wm)) (vec (cons this ps)) (L 'str (marker! S b :ext :extension) this))))))
+          helpers (when (enabled "core/functions") (helpers! S b))
+          api (when (enabled "core/functions") (api! S b helpers))
           aliases (vec (for [_ (range (rint rng 3)) :let [deps-api (vec (mapcat :api dep-infos))] :when (seq deps-api)]
                          (let [a (fresh! rng (:names b) :var) target (pick rng deps-api)]
                            (swap! W assoc-in [:aliases [nsname a]] target)
@@ -1181,46 +1240,26 @@ object number string run main tag" #"\s+"))))
                            [nsname a])))
           calls (vec (concat api helpers aliases (mapcat :api dep-infos)))
           kernels (loop [ks []]
-                    (if (and (>= (count ks) 2) (>= (+ @(:lines b) 40) target))
+                    (if (and (>= (count ks) (max 2 (count methods))) (>= (+ @(:lines b) 40) target))
                       ks
                       (let [nm (fresh! rng (:names b) :var) x (fresh! rng (:names b) :var) ref [nsname nm]
                             macro (when (chance rng 0.15) (get-in b [:macs :defcalc]))
                             expr (int-body S b :kernel (between rng 3 5) :scope {:int [x]} :calls calls :budget (between rng 18 45))
-                            ;; Exercise the shared Java API on every worker's live path.
-                            body (if (empty? ks) {:op :java-mix :x expr :salt (between rng 1 997)} expr)]
+                            body (if (seq methods)
+                                   {:op :api-call :method (nth methods (mod (count ks) (count methods)))
+                                    :input x :x expr :salt (between api-rng 1 997)}
+                                   expr)]
                         (swap! W assoc-in [:fns ref] (cond-> {:arities [{:params [x] :body body}]} macro (assoc :macro macro)))
                         (emit! b (fn-form (rc-of S b) nm [{:params [x] :body body}] :macro macro))
-                        (when (= 2 (mod (count ks) 3)) (waste-kernel! S b calls))
+                        (when (and unused? (= 2 (mod (count ks) 3))) (waste-kernel! S b calls))
                         (recur (conj ks ref)))))
           _ (let [x (y (fresh! rng (:names b) :var))]
               (emit! b (L 'defn 'run [x] (L (C (:rc b) "fold") x (mapv (comp y second) kernels)))))
-          ;; Unused code that stays in the loaded namespace.
-          tbl (fresh! rng (:names b) :var)
-          _ (emit! b (L 'def (y tbl) (mapf [[:marker (marker! S b :table :helper)] [:rows [[1 2 3] [4 5 (rint rng 997)]]]])))
-          _ (let [x (y (fresh! rng (:names b) :var))]
-              (emit! b (L 'defn (y (fresh! rng (:names b) :var)) [x] (L 'str (marker! S b :helper :helper) (L :rows (y tbl)) x))))
-          _ (let [R (fresh! rng (:names b) :type) f (y (fresh! rng (:names b) :var)) z (y (fresh! rng (:names b) :var))]
-              (emit! b (L 'defrecord (y R) [f] (C (:rc b) "CallableRecord") (L 'call-record ['_ z] (L 'str (marker! S b :record :record) f z)))))
-          wo (let [nm (fresh! rng (:names b) :var) x (fresh! rng (:names b) :var)
-                   body (int-body S b :kernel (between rng 2 4) :scope {:int [x]} :calls calls :budget (between rng 10 25))]
-               (swap! (:waste-trees S) conj body)
-               (emit! b (L 'defn (y nm) [(y x)] (L 'if (L '= (y x) -1) (marker! S b :wasteonly :waste-only) (rf (rc-of S b) body))))
-               nm)
-          chain (let [nm (fresh! rng (:names b) :var) x (y (fresh! rng (:names b) :var))
-                      [fref ar] (let [f (pick rng api)] [f (first (fn-arities @W f))])
-                      dep-chain (some->> (seq (keep :chain dep-infos)) (pick rng))]
-                  (emit! b (L 'defn (y nm) [x]
-                              (apply list 'str (marker! S b :chain :chain) (L (y wo) x)
-                                     (concat (when dep-chain [(L (gref (:rc b) dep-chain) x)])
-                                             [(apply list (gref (:rc b) fref) (repeat (:n ar) x))]))))
-                  [nsname nm])
-          _ (when-let [mm (some->> (seq (concat (when multi [multi]) (mapcat :multis dep-infos))) (pick rng))]
-              (let [tag (str nsname "/" (fresh! rng (:names b) :var)) a (y (fresh! rng (:names b) :var))]
-                (emit! b (L 'defmethod (gref (:rc b) mm) (tagf (:rc b) tag) ['_ a '_] (L 'str (marker! S b :method :defmethod) a)))))]
-      (swap! W update :workers conj {:ns nsname :kernels kernels})
+          chain (when unused? (unused-defs! S b api calls dep-infos multi))]
+      (swap! W update :workers conj {:ns nsname :kernels kernels :api-methods methods})
       (swap! (:infos S) conj {:ns nsname :protos own-protos :records records :types (if type [type] [])
                               :multis (if multi [multi] []) :dyns (if dyn [dyn] []) :api api :chain chain})
-      (file-entry-of b :worker))))
+      (worker-file b imports methods))))
 
 ;;; Ordinary Clojure macro namespaces loaded through :require.
 
@@ -1231,7 +1270,7 @@ object number string run main tag" #"\s+"))))
         nm (into {} (for [k (conj macro-kinds :wrap :unused1 :unused2)] [k (fresh! rng names :var)]))
         salt (between rng 1 991) k (between rng 2 31)
         b {:ns ns :tag "M"}
-        m1 (marker! S b :macro :macro) m2 (marker! S b :macro :macro)
+        unused? ((:enabled S) "load/unused")
         src (str
              "(ns " ns ")\n\n"
              "(defn " (nm :wrap) " [form]\n  (list 'workload.common/norm form))\n\n"
@@ -1247,8 +1286,9 @@ object number string run main tag" #"\s+"))))
              "(defmacro " (nm :defproto) " [pname & sigs]\n  `(defprotocol ~pname ~@sigs))\n\n"
              "(defmacro " (nm :defshape) " [rname fields & impls]\n  `(defrecord ~rname ~fields ~@impls))\n\n"
              "(defmacro " (nm :defdispatch) " [mname]\n  `(defmulti ~mname (fn [tag# & _#] tag#)))\n\n"
-             "(defmacro " (nm :unused1) " [x]\n  `(str " (pr-str m1) " ~x))\n\n"
-             "(defmacro " (nm :unused2) " [& xs]\n  `(vector " (pr-str m2) " ~@xs))\n")]
+             (when unused?
+               (str "(defmacro " (nm :unused1) " [x]\n  `(str " (pr-str (marker! S b :macro :macro)) " ~x))\n\n"
+                    "(defmacro " (nm :unused2) " [& xs]\n  `(vector " (pr-str (marker! S b :macro :macro)) " ~@xs))\n")))]
     (swap! (:W S) update :macros merge
            (into {} (for [kk macro-kinds] [[ns (nm kk)] {:kind kk :salt salt :k k}])))
     {:ns ns :macs (into {} (for [kk macro-kinds] [kk [ns (nm kk)]]))
@@ -1261,19 +1301,16 @@ object number string run main tag" #"\s+"))))
     (emit! b '(ns workload.common))
     (emit! b (L 'def 'modulus modulus))
     (emit! b '(defn norm [x] (mod x modulus)))
-    (emit! b '(defprotocol Accumulator (advance [acc x]) (read-acc [acc k fallback])))
-    (emit! b '(defprotocol CallableRecord (call-record [record x])))
-    (emit! b '(defn java-mix [x salt]
-                (let [suffix (str salt)
-                      digits (str (Math/abs (long (- x salt))) suffix)]
-                  (norm (+ (Long/parseLong digits) (.length digits) (.indexOf digits suffix))))))
+    (when ((:enabled S) "dispatch/protocols")
+      (emit! b '(defprotocol Accumulator (advance [acc x]) (read-acc [acc k fallback])))
+      (emit! b '(defprotocol CallableRecord (call-record [record x]))))
     (emit! b '(defn add ([a] a) ([a b] (norm (+ a b)))))
     (emit! b '(defn clip [s n] (subs s 0 (min n (count s)))))
     (emit! b '(defn unfold [f x] (lazy-seq (cons x (unfold f (f x))))))
     (emit! b '(defn pipeline [x fs] (reduce (fn [v f] (f v)) x fs)))
     (emit! b '(defn fold [x fs] (reduce (fn [v f] (norm (+ (* 31 v) (f v)))) x fs)))
-    (emit! b (L 'def (raw "^:dynamic") '*knob* 7))
-    (dotimes [_ 2]
+    (when ((:enabled S) "core/state") (emit! b (L 'def (raw "^:dynamic") '*knob* 7)))
+    (dotimes [_ (if ((:enabled S) "load/unused") 2 0)]
       (let [nm (symbol (fresh! rng (:names b) :var))]
         (emit! b (L 'defn nm '[x] (L 'str (marker! S b :common :common) (L 'norm 'x))))))
     (file-entry-of b :support)))
@@ -1288,10 +1325,12 @@ object number string run main tag" #"\s+"))))
         P (symbol (fresh! rng (:names b) :type)) R (symbol (fresh! rng (:names b) :type))]
     (emit! b (L 'ns (symbol ns) (L :require [(symbol common-ns) :as (symbol c)])))
     (emit! b (L 'def tbl (mapf [[:marker (marker! S b :table cat)] [:values (vec (repeatedly 5 #(rint rng 997)))]])))
-    (emit! b (L 'defprotocol P (L m '[this])))
-    (emit! b (L 'defrecord R [fld] P (L m '[_] (L 'str (marker! S b :record cat) fld))))
+    (when ((:enabled S) "dispatch/protocols")
+      (emit! b (L 'defprotocol P (L m '[this])))
+      (emit! b (L 'defrecord R [fld] P (L m '[_] (L 'str (marker! S b :record cat) fld)))))
     (emit! b (L 'defn f1 [x] (L 'reduce (symbol c "add") x (L :values tbl))))
-    (emit! b (L 'defn f2 [x] (L 'str (marker! S b :helper cat) (L f1 x) (L m (L (symbol (str "->" R)) x)))))
+    (emit! b (L 'defn f2 [x] (apply list 'str (marker! S b :helper cat) (L f1 x)
+                                    (when ((:enabled S) "dispatch/protocols") [(L m (L (symbol (str "->" R)) x))]))))
     (file-entry-of b role)))
 
 (defn group-file [S gid worker-nss idle]
@@ -1300,7 +1339,7 @@ object number string run main tag" #"\s+"))))
     (emit! b (L 'ns (symbol (:ns b))
                 (apply list :require [(symbol common-ns) :as 'c]
                        (concat (map (fn [[ns a]] [(symbol ns) :as (symbol a)]) aliases)
-                               [[(symbol idle) :as 'idle]]))))
+                               (when idle [[(symbol idle) :as 'idle]])))))
     (emit! b (L 'defn 'run '[x] (L 'c/pipeline 'x (mapv (fn [[_ a]] (symbol a "run")) aliases))))
     (file-entry-of b :group)))
 
@@ -1324,8 +1363,16 @@ object number string run main tag" #"\s+"))))
     (emit! b '(defn -main [& args] (println (apply run (arguments args)))))
     (file-entry-of b :entry)))
 
-(defn project [{:keys [seed lines namespace-lines]}]
-  (let [S {:rng (java.util.Random. seed) :W (atom (new-world)) :global (atom #{"g" "main" "common"})
+(defn api-file [methods]
+  {:path "src/workload/api.clj" :role :api :ns "workload.api"
+   :source (str (str/join "\n\n" (map text (features/api-forms methods))) "\n")})
+
+(defn project [{:keys [seed lines namespace-lines categories] :or {categories features/leaves}}]
+  (let [enabled (set categories)
+        ops (into #{} (mapcat features/expression-groups) categories)
+        S {:rng (java.util.Random. seed) :W (atom (new-world)) :global (atom #{"g" "main" "common" "api"})
+           :enabled enabled :api-rng (java.util.Random. seed)
+           :tables (into {} (for [[t rows] tables] [t (filterv #(ops (first %)) rows)]))
            :infos (atom []) :markers (atom []) :marker-id (atom 0) :waste-trees (atom [])}
         rng (:rng S)
         common (common-file S)]
@@ -1338,14 +1385,18 @@ object number string run main tag" #"\s+"))))
           (let [ids (partition-all 16 (map :ns @(:infos S)))
                 extra (vec (apply concat
                                   (map-indexed (fn [gid nss]
-                                                 (let [idle (side-ns! S :idle)]
-                                                   [idle (group-file S gid nss (:ns idle)) (side-ns! S :orphan)]))
+                                                 (if (enabled "load/unused")
+                                                   (let [idle (side-ns! S :idle)]
+                                                     [idle (group-file S gid nss (:ns idle)) (side-ns! S :orphan)])
+                                                   [(group-file S gid nss nil)]))
                                                ids)))
-                files (-> files (into extra) (conj (main-file S (count ids))))
+                api-ids (into (sorted-set) (mapcat :api-methods) (:workers @(:W S)))
+                files (cond-> (-> files (into extra) (conj (main-file S (count ids))))
+                        (seq api-ids) (conj (api-file api-ids)))
                 W @(:W S)]
-             {:model (-> W (dissoc :mm-tags) (assoc :format 3 :seed seed :modulus modulus))
+             {:model (-> W (dissoc :mm-tags) (assoc :format 4 :seed seed :modulus modulus))
              :files files :markers @(:markers S) :waste-trees @(:waste-trees S)})
-          (let [new-macro (when (zero? (mod n 8)) (macro-ns! S))
+          (let [new-macro (when (and (enabled "syntax/macros") (zero? (mod n 8))) (macro-ns! S))
                 macro (or new-macro macro)
                 available (range (quot (inc n) 2))
                 deps (vec (sort (take (min (count available) (inc (rint rng 3))) (shuffled rng available))))
@@ -1389,25 +1440,35 @@ object number string run main tag" #"\s+"))))
   (str "# Generated Clojure workload\n\n"
        "Seed " seed ", target " lines " nonblank lines, " namespace-lines " per worker.\n"
        "Generated " (:code-lines manifest) " lines across " (:worker-namespaces manifest) " workers.\n\n"
-       "From this project directory, compare Jolt, JVM Clojure and Babashka:\n\n"
+       "The manifest records the enabled categories, each worker's methods and their call-site counts.\n\n"
+       "From this project directory, compare Jolt, JVM Clojure and Babashka.\n\n"
        "```sh\nbb run.bb . 42 3\n```\n\n"
-       "To run individual implementations or the reference model:\n\n"
-       "```sh\njolt -m workload.main 42 3\nclojure -M -m workload.main 42 3\n"
+       "For a warmed benchmark, add `--warmup 3 --samples 7` to the runner command.\n\n"
+       "Individual implementations and the reference model can also run directly.\n\n"
+       "```sh\njolt -m workload.main 42 3\nclojure -Srepro -M"
+       (when (:jvm-deps manifest) ":bench-jvm") " -m workload.main 42 3\n"
        "bb -cp src -m workload.main 42 3\nbb oracle.bb 42 3\n```\n"
        "\nThe arguments are input and iterations, both defaulting to 1.\n"))
 
 (defn generate! [{:keys [output] :as options}]
-  (let [root (fs/absolutize output)]
+  (let [options (merge defaults options)
+        root (fs/absolutize output)]
     (when (and (fs/exists? root)
                (or (not (fs/directory? root)) (seq (fs/list-dir root))))
       (throw (ex-info "Output directory must be absent or empty; nothing was overwritten" {:output output})))
     (let [{:keys [files model markers waste-trees]} (project options)
           sources (map :source files)
           metrics (source-metrics sources)
+          worker-methods (into (sorted-map) (map (juxt :ns :api-methods)) (:workers model))
+          jvm-deps (when (some #(features/subtree? "babashka/fs" %) (mapcat val worker-methods))
+                     features/fs-dependency)
           manifest (merge
-                    {:format 3 :generator-options (dissoc options :output)
+                    {:format 4 :generator-options (dissoc options :output)
+                     :worker-api-methods worker-methods :jvm-deps jvm-deps
+                     :api-call-sites (into (sorted-map)
+                                           (frequencies (keep :method (mapcat node-seq (live-trees model)))))
                      :generator-sha256 (into (sorted-map)
-                                             (for [file ["generate.bb" "oracle.bb" "run.bb" "measure.clj"]]
+                                             (for [file ["generate.bb" "features.bb" "oracle.bb" "run.bb" "measure.clj"]]
                                                [file (sha256 (slurp (fs/file kit file)))]))
                      :worker-namespaces (count (:workers model))
                      :source-namespaces (count files)
@@ -1425,7 +1486,8 @@ object number string run main tag" #"\s+"))))
       (write-file! root "manifest.edn" (edn-text manifest))
       (doseq [file ["oracle.bb" "run.bb" "measure.clj" "LICENSE"]]
         (write-file! root file (slurp (fs/file kit file))))
-      (write-file! root "deps.edn" "{:paths [\"src\"]}\n")
+      (write-file! root "deps.edn" (edn-text (cond-> {:paths ["src"]}
+                                               jvm-deps (assoc :aliases {:bench-jvm {:extra-deps jvm-deps}}))))
       (write-file! root ".gitignore" ".cpcache/\n.jolt/\n")
       (write-file! root "README.md" (generated-readme options manifest))
       manifest)))
@@ -1433,14 +1495,17 @@ object number string run main tag" #"\s+"))))
 (defn main [args]
   (try
     (let [options (parse-options args)]
-      (if (:help options) (println help)
-          (let [manifest (generate! options)]
-            (println (format "Generated %d nonblank lines (%d physical, %d bytes, %d top-level forms), %d worker namespaces in %s"
-                             (:code-lines manifest) (:physical-lines manifest) (:bytes manifest)
-                             (:top-level-forms manifest) (:worker-namespaces manifest) (:output options)))
-            (println (format "Distinct normalized lines: %d (ratio %s). Waste markers: %s. See README.md and manifest.edn."
-                             (:distinct-normalized-lines manifest) (:distinct-line-ratio manifest)
-                             (pr-str (:waste-expectations manifest)))))))
+      (cond
+        (:help options) (println help)
+        (:list-categories options) (doseq [category features/leaves] (println category))
+        :else
+        (let [manifest (generate! options)]
+          (println (format "Generated %d nonblank lines (%d physical, %d bytes, %d top-level forms), %d worker namespaces in %s"
+                           (:code-lines manifest) (:physical-lines manifest) (:bytes manifest)
+                           (:top-level-forms manifest) (:worker-namespaces manifest) (:output options)))
+          (println (format "Distinct normalized lines: %d (ratio %s). Waste markers: %s. See README.md and manifest.edn."
+                           (:distinct-normalized-lines manifest) (:distinct-line-ratio manifest)
+                           (pr-str (:waste-expectations manifest)))))))
     (catch Exception e
       (binding [*out* *err*] (println (str "generate: " (ex-message e))))
       (System/exit 1))))

@@ -1,12 +1,15 @@
 (require '[workload.main :as workload])
 
-;; The runner stops its startup/load clock before releasing the workload.
+;; Load once. The parent stops its startup clock before sending the first run.
 (let [[input iterations] (workload/arguments *command-line-args*)]
   (println "workload-ready")
   (flush)
-  (when-not (= "run" (read-line))
-    (throw (ex-info "Expected run signal from the benchmark runner" {})))
-  (let [start (System/nanoTime)
-        checksum (workload/run input iterations)
-        elapsed (- (System/nanoTime) start)]
-    (prn [checksum elapsed])))
+  (loop []
+    (when-let [signal (read-line)]
+      (when-not (= "run" signal) (throw (ex-info "Unknown benchmark runner signal" {})))
+      (let [start (System/nanoTime)
+            checksum (workload/run input iterations)
+            elapsed (- (System/nanoTime) start)]
+        (prn [checksum elapsed])
+        (flush))
+      (recur))))
