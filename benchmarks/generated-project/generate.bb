@@ -9,10 +9,11 @@
 (alias 'features 'generated-project.features)
 (load-file (str (fs/path kit "collection-profiles.bb")))
 (alias 'coll-profiles 'generated-project.collection-profiles)
-(def all-leaves (into features/leaves (keys coll-profiles/operations)))
+(def all-leaves (into (conj features/leaves "event-index") (keys coll-profiles/operations)))
 (def modulus 1000003)
 (def common-ns "workload.common")
 (def defaults {:seed 1 :lines 5000 :namespace-lines 400 :categories (vec features/leaves)})
+(def event-defaults {:seed 1 :event-count 1000 :revisit-percent 75})
 (def help
   "Usage: bb benchmarks/generated-project/generate.bb OUTPUT-DIR [OPTIONS]
 
@@ -20,6 +21,8 @@
   --lines N            Approximate nonblank source lines, e.g. 5k, 200k, 800k (default 5k)
   --namespace-lines N  Approximate lines per worker namespace (default 400; minimum 200)
   --collection-sizes Ns  Generate an operation-by-size suite at comma-separated element counts
+  --event-index N      Generate N ingest events, N updates and N queries
+  --revisit-percent P  Percent of updates targeting previously ingested accounts (default 75)
   --only A,B           Enable these categories or subtrees (default all)
   --exclude A,B        Disable these categories or subtrees after --only
   --list-categories    List supported category paths
@@ -44,13 +47,31 @@ and a timing and checksum runner for Jolt, JVM Clojure and Babashka.")
             (throw (ex-info "--lines must be 1000..10000000" {})))
           (when-not (<= 200 (:namespace-lines options) 20000)
             (throw (ex-info "--namespace-lines must be 200..20000" {})))
-          (let [{:keys [only exclude collection-sizes]} options
+          (let [{:keys [only exclude collection-sizes event-count revisit-percent]} options
                 matrix? (or collection-sizes (some #(features/subtree? "collections" %) only))
                 catalog (if matrix? (keys coll-profiles/operations) features/leaves)]
-            (cond-> (assoc (dissoc options :only :exclude) :categories (features/selection catalog all-leaves only exclude))
-              matrix? (assoc :collection-sizes (or collection-sizes coll-profiles/sizes)))))
+            (cond
+              (or event-count (some #{"event-index"} only))
+              (let [selected (features/selection all-leaves all-leaves (or (seq only) ["event-index"]) exclude)]
+                (when (or matrix? (not= ["event-index"] selected))
+                  (throw (ex-info "Select event-index on its own to run ingest, update and query together" {})))
+                (merge event-defaults options))
+              revisit-percent (throw (ex-info "--revisit-percent requires an event-index workload" {}))
+              :else
+              (cond-> (assoc (dissoc options :only :exclude) :categories (features/selection catalog all-leaves only exclude))
+                matrix? (assoc :collection-sizes (or collection-sizes coll-profiles/sizes))))))
       (= arg "--help") {:help true}
       (= arg "--list-categories") {:list-categories true}
+      (= arg "--event-index")
+      (let [n (size-number (first more))]
+        (when-not (and n (<= 1 n 1000000))
+          (throw (ex-info "--event-index requires an event count in 1..1000000" {})))
+        (recur (rest more) (assoc options :event-count n)))
+      (= arg "--revisit-percent")
+      (let [p (parse-long (or (first more) ""))]
+        (when-not (and p (<= 0 p 100))
+          (throw (ex-info "--revisit-percent requires an integer in 0..100" {})))
+        (recur (rest more) (assoc options :revisit-percent p)))
       (= arg "--collection-sizes")
       (let [sizes (mapv size-number (str/split (or (first more) "") #"," -1))]
         (when-not (every? #(and % (<= 1 % 1000000)) sizes)
@@ -1500,13 +1521,48 @@ object number string run main tag" #"\s+"))))
     (write-file! root "README.md" (generated-readme options manifest))
     manifest))
 
-(defn generate! [{:keys [output collection-sizes] :as options}]
+(defn event-fixture [seed n revisit-percent]
+  (let [rng (java.util.Random. seed)
+        revisits (quot (* n revisit-percent) 100)
+        account-count (- (* 2 n) revisits)
+        account (fn [id] (str "account-" id))
+        event (fn [id owner] {:id id :account (account owner) :amount (between rng -1000 1000)})
+        ingest (mapv event (range n) (shuffled rng (range n)))
+        updates (mapv (fn [id slot]
+                        ;; Draw once per slot so changing the revisit rate preserves the amounts.
+                        (let [existing (rint rng n)]
+                          (event id (if (< slot revisits) existing (+ n (- slot revisits))))))
+                      (range n (* 2 n)) (shuffled rng (range n)))]
+    {:ingest ingest
+     :updates updates
+     :queries (mapv (fn [i] (account (if (= 3 (mod i 4))
+                                       (+ account-count (rint rng n))
+                                       (rint rng account-count))))
+                    (range n))}))
+
+(defn generate-events! [root {:keys [seed event-count revisit-percent]}]
+  (let [manifest {:format :event-index-v1 :seed seed :event-count event-count :revisit-percent revisit-percent}]
+    (write-file! root "manifest.edn" (edn-text manifest))
+    (write-file! root "events.edn" (pr-str (event-fixture seed event-count revisit-percent)))
+    (write-file! root "deps.edn" "{:paths [\"src\"]}\n")
+    (doseq [[from to] [["event_index.clj" "src/workload/event_index.clj"]
+                       ["event-measure.clj" "measure.clj"] ["event-oracle.bb" "oracle.bb"] ["run.bb" "run.bb"]]]
+      (write-file! root to (slurp (fs/file kit from))))
+    (write-file! root "README.md"
+                 (str "# Generated event index\n\nSeed " seed ", " event-count " events per stage, "
+                      revisit-percent "% revisits in the update batch.\n\n"
+                      "```sh\nbb run.bb . --warmup 2 --samples 5 --csv samples.csv\n```\n\n"
+                      "Each run times ingest, update and query and verifies the complete final index and ordered answers.\n"))
+    manifest))
+
+(defn generate! [{:keys [output collection-sizes event-count] :as options}]
   (let [root (fs/absolutize output)]
     (when (and (fs/exists? root) (or (not (fs/directory? root)) (seq (fs/list-dir root))))
       (throw (ex-info "Output directory must be absent or empty; nothing was overwritten" {:output output})))
-    (if collection-sizes
-      (coll-profiles/generate! kit root (merge {:seed 1 :categories (keys coll-profiles/operations)} options))
-      (generate-mixed! root (merge defaults options)))))
+    (cond
+      event-count (generate-events! root (merge event-defaults options))
+      collection-sizes (coll-profiles/generate! kit root (merge {:seed 1 :categories (keys coll-profiles/operations)} options))
+      :else (generate-mixed! root (merge defaults options)))))
 
 (defn main [args]
   (try
@@ -1515,6 +1571,9 @@ object number string run main tag" #"\s+"))))
         (:help options) (println help)
         (:list-categories options) (doseq [category all-leaves]
                                      (println category))
+        (:event-count options)
+        (let [manifest (generate! options)]
+          (println (:event-count manifest) "events per stage in" (:output options)))
         (:collection-sizes options)
         (let [manifest (generate! options)]
           (println (count (:profiles manifest)) "collection profiles in" (:output options)))

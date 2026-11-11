@@ -15,7 +15,7 @@ bb "$kit/run.bb" "$kit/out/mixed" 42 3
 Use `--list-categories` to see every leaf. Both `--only` and `--exclude` accept
 comma-separated paths and can be repeated. A parent selects all its
 descendants. The default mixed-source workload enables all mixed-source categories.
-Use the collection-size mode below for focused data-structure measurements. Exclusions apply last.
+The event-index and collection-size modes below generate dedicated workloads. Exclusions apply last.
 
 ```sh
 bb "$kit/generate.bb" --list-categories
@@ -42,7 +42,7 @@ worker index across category choices. Changing categories can change worker
 counts and code shapes. Categories select generated definitions and operations.
 Their implementations still use ordinary Clojure. For example, a sequence
 operation can take a vector literal and a protocol implementation can use a
-volatile. Every profile includes function calls and checksum arithmetic.
+volatile. Every mixed-source profile includes function calls and checksum arithmetic.
 
 The Java pool covers numeric and string methods, string builders, collections,
 byte buffers, time, UUIDs, atomic longs and CRC32. Candidates come from
@@ -56,6 +56,43 @@ CLI needs that dependency cached or available from Clojars on its first run.
 To fetch it before measuring startup, run `clojure -Srepro -P -M:bench-jvm`
 inside the generated project.
 The filesystem workloads manipulate path components in memory.
+
+## Measure an event index
+
+Build an account index from a batch of events, apply a second batch to that
+index, then look up accounts in the updated index. Each event is a map with
+`:account`, `:id`, and a signed `:amount`. The index keeps the event count,
+total amount, and most recent event ID for each account.
+
+```sh
+kit=benchmarks/generated-project
+project="$kit/out/events"
+bb "$kit/generate.bb" "$project" --event-index 10k --seed 42 --revisit-percent 75
+bb "$kit/run.bb" "$project" --warmup 10 --samples 7 --launches 3 --csv "$project/samples.csv"
+```
+
+`--event-index N` sets the number of records **per stage**, from 1 to
+1,000,000. `--only event-index` defaults to 1,000. Ingest visits each initial
+account once. Exactly `floor(N × revisit-percent / 100)` updates revisit those
+accounts, sampled with replacement. Each remaining update introduces a new
+account. The percentage ranges from 0 to 100 and defaults to 75. Changing it
+preserves the ingest batch and update amounts for the same seed and size. Every fourth
+query misses. The other queries draw from the final account population. The
+seed fixes both event batches and the ordered query vector in `events.edn`.
+
+Each warmup and measured sample starts with an empty index and runs the three
+stages consecutively. The runner reports elapsed milliseconds per stage on
+Jolt, JVM Clojure, and Babashka. Fixture loading, oracle work, and validation
+fall outside all three timers. The Babashka oracle groups the complete event
+history by account to calculate the expected index and ordered query answers.
+Each runtime checks the entire map and result vector, including missing
+accounts, after every sample. Either mismatch fails the run. The CSV has one
+row per stage, runtime, and launch, with `OK` in the `check` column when the
+batch passes.
+
+![Seed 42 event-index timings in milliseconds per 10,000 items. JVM Clojure had the lowest median in all three stages. Jolt updated the index in 4.92 ms and Babashka in 6.61 ms.](results/2026-11-10-seed42-event-index.png)
+
+All 153 warmup and measured runs matched the oracle. [Per-launch samples](results/2026-11-10-seed42-event-index-samples.csv)
 
 ## Measure collection operations by size
 

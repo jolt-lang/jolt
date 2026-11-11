@@ -57,6 +57,24 @@
   (assert (= (methods 42 ["jvm"]) (methods 42 ["jvm" "core/control"])))
   (assert (not= (methods 42 ["jvm"]) (methods 43 ["jvm"]))))
 
+(let [n 17
+      fixture (gen/event-fixture -8 n 75)]
+  (assert (= fixture (gen/event-fixture -8 n 75)))
+  (assert (not= fixture (gen/event-fixture 42 n 75)))
+  (assert (= 1000 (:event-count (gen/parse-options ["out" "--only" "event-index"]))))
+  (doseq [percent [0 75 100]
+          :let [{:keys [ingest updates queries]} (gen/event-fixture -8 n percent)
+                initial (set (map :account ingest))
+                revisits (quot (* n percent) 100)
+                final (into initial (map :account) updates)]]
+    (assert (= [n n n] (mapv count [ingest updates queries])))
+    (assert (= (:ingest fixture) ingest))
+    (assert (= (mapv :amount (:updates fixture)) (mapv :amount updates)))
+    (assert (= n (count initial)))
+    (assert (= revisits (count (filter initial (map :account updates)))))
+    (assert (= (- (* 2 n) revisits) (count final)))
+    (assert (= (quot n 4) (count (remove final queries))))))
+
 (fs/with-temp-dir [tmp {}]
   (let [a (fs/path tmp "first project")
         b (fs/path tmp "second project")
@@ -123,8 +141,37 @@
       (spit source (str/replace (slurp source) "(peek (conj base k))" "(inc k)"))
       (let [{:keys [err exit]} (compare-project other "--warmup" "1")]
         (assert (and (pos? exit) (= 3 (count (re-seq #"MISMATCH on run 1" err)))) err))))
+  (let [dir (fs/path tmp "event index")
+        manifest (generate dir "--event-index" "8" "--seed" "-8" "--revisit-percent" "50")
+        csv (fs/file tmp "events.csv")
+        run-events (fn [& options]
+                     (apply process/shell {:dir (str dir) :out :string :err :string :continue true}
+                            "bb" "run.bb" "." "--warmup" "1" "--samples" "2" options))
+        {:keys [exit err]} (run-events "--csv" (str csv))
+        rows (map #(str/split % #",") (rest (str/split-lines (slurp csv))))]
+    (assert (= {:format :event-index-v1 :seed -8 :event-count 8 :revisit-percent 50} manifest))
+    (assert (zero? exit) err)
+    (assert (= (frequencies (map #(subvec % 1 3) rows))
+               (into {} (for [runtime ["Jolt" "JVM Clojure" "Babashka"] stage ["ingest" "update" "query"]]
+                          [[runtime (str "event-index/" stage)] 1]))))
+    (doseq [row rows]
+      (assert (= ["8" "8" "OK"] (subvec row 3 6)))
+      (assert (= 10 (count row)))
+      (assert (every? #(<= 0 (parse-double %)) (subvec row 8))))
+    ;; An extra, never-queried account leaves every query answer unchanged.
+    ;; Reversing the answers preserves the index and the multiset of answers.
+    (let [file (fs/file dir "src/workload/event_index.clj")
+          source (slurp file)]
+      (doseq [[original corrupt mismatch]
+              [["(reduce apply-event index events)" "(assoc (reduce apply-event index events) :unexpected {})" "index-mismatch"]
+               ["(mapv #(get index %) accounts)" "(mapv #(get index %) (reverse accounts))" "query-mismatch"]]]
+        (spit file (str/replace source original corrupt))
+        (let [{:keys [exit err]} (run-events)]
+          (assert (pos? exit))
+          (doseq [runtime ["Jolt" "JVM Clojure" "Babashka"]]
+            (assert (str/includes? err (str runtime " failed: MISMATCH on run 1 " mismatch)) err))))))
   (let [dir (fs/path tmp "typo")
         result (process/shell {:continue true :err :string} "bb" (str (fs/path kit "generate.bb"))
                               (str dir) "--only" "jvm/typo")]
     (assert (and (pos? (:exit result)) (str/includes? (:err result) "Unknown category") (not (fs/exists? dir))))))
-(println "Method pool, collection sizes, category selection, timing and checksum checks passed.")
+(println "Method pool, collection sizes, event index, category selection, timing and oracle checks passed.")
