@@ -256,7 +256,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/chez-mac
-          key: chez-${{ matrix.os }}-v10.4.1-min11-${{ hashFiles('host/chez/chez-patches/*.patch') }}
+          key: chez-${{ matrix.os }}-v10.4.1-min11-o2-${{ hashFiles('host/chez/chez-patches/*.patch') }}
 
       - name: Build Chez Scheme from source (macOS)
         if: runner.os == 'macOS' && steps.cache-chez-mac.outputs.cache-hit != 'true'
@@ -267,8 +267,11 @@ jobs:
           cd /tmp/chez-src
           # minos, as the cross row pins it: the kernel is linked into the
           # shipped binary, which must load on Macs older than the runner.
+          # CFLAGS+=, not CFLAGS=: configure adds its own flags (-arch arm64
+          # -O2) only when CFLAGS isn't given, so CFLAGS= built the kernel
+          # (GC, fasl reader, C runtime) at -O0.
           ./configure --installprefix="$HOME/chez-mac" --threads --disable-x11 \
-            CFLAGS="-mmacosx-version-min=11.0"
+            CFLAGS+="-mmacosx-version-min=11.0"
           make -j"$(sysctl -n hw.ncpu)"
           make install
 
@@ -355,7 +358,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/chez-cross
-          key: chez-cross-v10.4.1-tarm64osx-${{ matrix.cross }}-v1-${{ hashFiles('host/chez/chez-patches/*.patch') }}
+          key: chez-cross-v10.4.1-tarm64osx-${{ matrix.cross }}-v2-${{ hashFiles('host/chez/chez-patches/*.patch') }}
 
       - name: Build ${{ matrix.cross }} boots/xpatch + cross kernel
         if: matrix.cross && steps.cache-chez-cross.outputs.cache-hit != 'true'
@@ -367,9 +370,10 @@ jobs:
           ./configure -m=tarm64osx && make -j"$(sysctl -n hw.ncpu)"
           make bootquick XM=${{ matrix.cross }}
           # minos: pin -mmacosx-version-min in the kernel AND the final link, or
-          # the binary won't load on Macs older than the runner's OS.
+          # the binary won't load on Macs older than the runner's OS. CFLAGS+=
+          # keeps configure's own -O2 (CFLAGS= replaced it, so -O0).
           ./configure --cross --force -m=${{ matrix.cross }} \
-            CFLAGS="-arch x86_64 -mmacosx-version-min=11.0" CC_FOR_BUILD=cc
+            CFLAGS+="-arch x86_64 -mmacosx-version-min=11.0" CC_FOR_BUILD=cc
           make -j"$(sysctl -n hw.ncpu)"
 
       - name: Assemble target pack + set cross env
