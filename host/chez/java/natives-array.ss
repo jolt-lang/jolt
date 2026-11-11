@@ -32,6 +32,12 @@
 ;; which the class tags of an array need on every host.
 (define (na-array-class-name arr) (na-kind-class-name (jolt-array-kind arr)))
 
+;; An array has no toString of its own, so str is Object.toString: the class name
+;; and the identity hash ("[J@1b6d3586"). With no str arm it fell through to the
+;; printer and came back as the whole #object[...] form.
+(register-str-render! jolt-array?
+  (lambda (a) (string-append (na-array-class-name a) "@" (jolt-identity-hex a))))
+
 
 ;; …and the matching seq flavor. The JVM gives an array's seq its own class per
 ;; element type (ArraySeq$ArraySeq_int for an int[], plain ArraySeq for an
