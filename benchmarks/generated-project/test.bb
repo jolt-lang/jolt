@@ -57,6 +57,12 @@
   (assert (= (methods 42 ["jvm"]) (methods 42 ["jvm" "core/control"])))
   (assert (not= (methods 42 ["jvm"]) (methods 43 ["jvm"]))))
 
+;; A core name raw-word can spell has to be reserved on every runtime alike, or
+;; the same seed generates different programs (see core-words in generate.bb).
+(let [missing (remove (set gen/core-words)
+                      (filter gen/spellable? (map str (keys (ns-publics 'clojure.core)))))]
+  (assert (empty? missing) (str "add to core-words in generate.bb: " (vec (sort missing)))))
+
 (fs/with-temp-dir [tmp {}]
   (let [a (fs/path tmp "first project")
         b (fs/path tmp "second project")

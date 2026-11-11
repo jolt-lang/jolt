@@ -68,6 +68,19 @@ and a timing and checksum runner for Jolt, JVM Clojure and Babashka.")
         (let [j (rint rng (inc i))]
           (recur (assoc v i (v j) j (v i)) (dec i))))))
 (defn sample [rng n xs] (vec (take n (shuffled rng xs))))
+;; A map literal as JVM Clojure builds it. Past 8 entries its reader makes a hash
+;; map, so the values run, and the keys later print, in hash order rather than
+;; source order. Jolt's reader keeps source order at any size, so on Jolt the
+;; same seed drew in a different order and generated a different program, and
+;; model.edn and manifest.edn printed their keys differently. Wrap a literal of
+;; more than 8 entries whose values draw from rng, or whose keys get printed.
+(defmacro jvm-order [m]
+  (let [hashed? (> (count m) 8)
+        ks (vec (keys (if hashed? (apply hash-map (apply concat m)) m)))
+        vs (mapv (fn [_] (gensym "v")) ks)]
+    ;; hash-map, not a literal: a literal is an array map again on Jolt
+    `(let [~@(interleave vs (map #(get m %) ks))]
+       (~(if hashed? `hash-map `array-map) ~@(interleave ks vs)))))
 (defn weighted [rng pairs]
   (let [r (rint rng (reduce + (map second pairs)))]
     (loop [[[x w] & more] pairs acc 0]
@@ -80,9 +93,19 @@ and a timing and checksum runner for Jolt, JVM Clojure and Babashka.")
              "br" "dr" "kl" "st" "tr" "sk" "pl" "gr"])
 (def vowels ["a" "e" "i" "o" "u" "a" "o" "ai" "ei" "ou"])
 (def codas ["" "" "" "" "n" "r" "l" "s" "m" "k"])
+;; Whether raw-word, or a hyphenated pair of them, can produce s.
+(def spellable-re
+  (let [alt #(str "(?:" (str/join "|" (sort-by (comp - count) (remove str/blank? (distinct %)))) ")")
+        word (str "(?:" (alt onsets) (alt vowels) (alt codas) "?){2,3}")]
+    (re-pattern (str word "(?:-" word ")?"))))
+(defn spellable? [s] (boolean (re-matches spellable-re s)))
+(def core-words
+  ["bases" "dedupe" "deliver" "derive" "dorun" "dotimes" "doto" "filter" "future"
+   "merge" "meta" "munge" "name" "random-sample" "range" "refer" "remove" "resolve"
+   "reverse" "some" "take" "time"])
 (def reserved
   (into #{} (concat
-             (map str (keys (ns-publics 'clojure.core)))
+             core-words
              (str/split "def if do let quote var fn loop recur throw try catch finally new set! this
 nil true false js goog cljs clj module require exports process global window document console
 arguments eval undefined null delete void with yield case default export import super static
@@ -237,8 +260,8 @@ object number string run main tag" #"\s+"))))
 ;;; same data. Global entities are [namespace name] pairs.
 
 (defn new-world []
-  {:fns {} :aliases {} :protocols {} :records {} :impls {} :types {} :methods {}
-   :parents {} :dyns {[common-ns "*knob*"] 7} :macros {} :mm-tags {} :workers []})
+  (jvm-order {:fns {} :aliases {} :protocols {} :records {} :impls {} :types {} :methods {}
+   :parents {} :dyns {[common-ns "*knob*"] 7} :macros {} :mm-tags {} :workers []}))
 
 (defn node-seq [x]
   (filter #(and (map? %) (:op %))
@@ -482,7 +505,7 @@ object number string run main tag" #"\s+"))))
               {:op :loop :lim lim :n (I) :init (I) :acc acc :i i
                :body (gx (-> in (with-local :int acc) (with-local :int i)) :int (k))})
       :letfn (let [[f g np vp] (names 4) bg (with-local in :int vp)]
-               {:op :letfn :f f :g g :np np :vp vp :n (I) :init (I) :b1 (gx bg :int (k)) :b2 (gx bg :int (k))})
+               (jvm-order {:op :letfn :f f :g g :np np :vp vp :n (I) :init (I) :b1 (gx bg :int (k)) :b2 (gx bg :int (k))}))
       :reduce (let [[acc x tmp] (names 3)]
                 {:op :reduce :v (V) :init (I) :acc acc :x x :tmp tmp :style (rint rng 4)
                  :body (gx (-> in (with-local :int acc) (with-local :int x)) :int (k))})
@@ -496,17 +519,17 @@ object number string run main tag" #"\s+"))))
       :for (let [[x j y] (names 3) two? (chance rng 0.5)
                  g1 (cond-> (with-local in :int x) two? (with-local :int j))
                  g2 (with-local g1 :int y)]
-             {:op :for :x x :v (V) :j (when two? j) :n (between rng 1 3) :y y
-              :ye (gx g1 :int (k)) :test (gtest g2 (k)) :body (gx g2 :int (k))})
+             (jvm-order {:op :for :x x :v (V) :j (when two? j) :n (between rng 1 3) :y y
+              :ye (gx g1 :int (k)) :test (gtest g2 (k)) :body (gx g2 :int (k))}))
       :watch (let [[evs st acc x] (names 4)]
-               {:op :watch :evs evs :st st :wk (a-key gc) :acc acc :x x :v (V) :init (I)
-                :body (gx (-> in (with-local :int acc) (with-local :int x)) :int (k))})
+               (jvm-order {:op :watch :evs evs :st st :wk (a-key gc) :acc acc :x x :v (V) :init (I)
+                :body (gx (-> in (with-local :int acc) (with-local :int x)) :int (k))}))
       :delay (let [[cnt dl] (names 2)] {:op :delay :cnt cnt :dl dl :e (I) :k (between rng 1 31)})
       :binding {:op :binding :var (pick rng (get-in gc [:vis :dyns])) :val (I) :body (I)}
       :try (let [[hits res e nm] (names 4)]
-             {:op :try :hits hits :res res :e e :name nm :ek (a-key gc) :msg (raw-word rng)
+             (jvm-order {:op :try :hits hits :res res :e e :name nm :ek (a-key gc) :msg (raw-word rng)
               :msglen (chance rng 0.5) :test (T) :v (I) :then (I)
-              :cbody (gx (with-local gc :int nm) :int (k))})
+              :cbody (gx (with-local gc :int nm) :int (k))}))
       :proto (let [[P m ar rt] (pick rng (proto-options gc))]
                {:op :proto :p P :m m :recv (gx gc rt (k)) :args (ints ar)})
       :satisfies (let [[P R] (pick rng (sat-options gc))]
@@ -519,8 +542,8 @@ object number string run main tag" #"\s+"))))
              {:op :isa :tags (sample rng (min (count all) (between rng 2 3)) all) :i (I)
               :parent (pick rng all) :then (I) :else (I)})
       :acc (let [[acc x] (names 2)]
-             {:op :acc :t (pick rng (get-in gc [:vis :types])) :acc acc :x x :style (rint rng 3)
-              :a (I) :b (I) :v (V) :proj (pick rng [:total :step :missing]) :mk (a-key gc) :d (n997)})
+             (jvm-order {:op :acc :t (pick rng (get-in gc [:vis :types])) :acc acc :x x :style (rint rng 3)
+              :a (I) :b (I) :v (V) :proj (pick rng [:total :step :missing]) :mk (a-key gc) :d (n997)}))
       :rinvoke (let [R (pick rng (invocable gc))] {:op :rinvoke :r (gx gc [:rec R] (k)) :x (I)})
       :index-of {:op :index-of :s (S) :sub (pick rng (concat vowels ["k" "r" "n" "la" "or"])) :d (n997)}
       :compare (let [kind (pick rng [:str :kw :int])] {:op :compare :a (gx gc kind (k)) :b (gx gc kind (k))})
@@ -1463,7 +1486,7 @@ object number string run main tag" #"\s+"))))
           jvm-deps (when (some #(features/subtree? "babashka/fs" %) (mapcat val worker-methods))
                      features/fs-dependency)
           manifest (merge
-                    {:format 4 :generator-options (dissoc options :output)
+                    (jvm-order {:format 4 :generator-options (dissoc options :output)
                      :worker-api-methods worker-methods :jvm-deps jvm-deps
                      :api-call-sites (into (sorted-map)
                                            (frequencies (keep :method (mapcat node-seq (live-trees model)))))
@@ -1479,7 +1502,7 @@ object number string run main tag" #"\s+"))))
                      :files (mapv (fn [{:keys [source] :as file}]
                                     (-> file (dissoc :source)
                                         (assoc :sha256 (sha256 source) :code-lines (code-lines source)
-                                               :bytes (count (.getBytes ^String source "UTF-8"))))) files)}
+                                               :bytes (count (.getBytes ^String source "UTF-8"))))) files)})
                     metrics)]
       (doseq [{:keys [path source]} files] (write-file! root path source))
       (write-file! root "model.edn" (str (pr-str model) "\n"))
