@@ -104,6 +104,8 @@ startup/load, and every measured execution in milliseconds. Startup repeats
 on rows from the same process. Divide elapsed time by calls for point
 operations, or by calls × size for time per input element on traversals and builds.
 
+The recorded seed-42 sweep includes all 120 profiles. [Results and comparison chart](results/2026-11-10-seed42-collection-sizes.md)
+
 ## Reproduce and time a run
 
 The generation seed selects the program. `--lines` targets a nonblank source
