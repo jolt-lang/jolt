@@ -63,7 +63,7 @@
     (spit (fs/file root "manifest.edn") (str (pr-str model) "\n"))
     (spit (fs/file root "deps.edn") "{:paths [\"src\"]}\n")
     (doseq [[from to] [["collection-measure.clj" "measure.clj"] ["collection-oracle.bb" "oracle.bb"]
-                       ["run.bb" "run.bb"] ["LICENSE" "LICENSE"]]]
+                       ["run.bb" "run.bb"]]]
       (fs/copy (fs/path kit from) (fs/path root to)))
     (spit (fs/file root "README.md")
           (str "# Generated collection workloads\n\nSeed " seed ", sizes " (str/join ", " collection-sizes)

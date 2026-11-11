@@ -144,4 +144,4 @@ determinism and checksum checks.
 
 The generator and oracle are adapted from
 [light-cljs](https://github.com/isaksky/light-cljs/tree/5ed076d3230ec89be432b5d4c9156f9ee34d298c/benchmarks/generated-project)
-under the [MIT license](LICENSE).
+under the MIT license. The [oracle source](oracle.bb) carries the upstream notice.

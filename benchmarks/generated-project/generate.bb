@@ -1492,7 +1492,7 @@ object number string run main tag" #"\s+"))))
     (doseq [{:keys [path source]} files] (write-file! root path source))
     (write-file! root "model.edn" (str (pr-str model) "\n"))
     (write-file! root "manifest.edn" (edn-text manifest))
-    (doseq [file ["oracle.bb" "run.bb" "measure.clj" "LICENSE"]]
+    (doseq [file ["oracle.bb" "run.bb" "measure.clj"]]
       (write-file! root file (slurp (fs/file kit file))))
     (write-file! root "deps.edn" (edn-text (cond-> {:paths ["src"]}
                                              jvm-deps (assoc :aliases {:bench-jvm {:extra-deps jvm-deps}}))))
