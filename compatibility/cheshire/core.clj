@@ -1,3 +1,11 @@
+;; cheshire.core for jolt, implementing the public API of cheshire
+;; (github.com/dakrone/cheshire): its names, arities, options and
+;; pretty-printer defaults, with output checked against cheshire's own.
+;; Written over clojure.data.json, without Jackson.
+;;
+;; cheshire is Copyright (c) 2011 Matthew Lee Hinman, under the MIT License
+;; (licenses/MIT-cheshire.txt).
+
 (ns cheshire.core
   "cheshire's public API, for scripts written for babashka, which bundles
   cheshire. Parsing goes through jolt's built-in clojure.data.json, and

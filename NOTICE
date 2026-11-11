@@ -88,6 +88,14 @@ Clojure
   jolt-core/clojure/core/30-macros.clj jolt-core/clojure/core/50-io.clj
   jolt-core/clojure/core/60-gvec.clj jolt-core/clojure/core/90-docs.clj
 
+cheshire
+  https://github.com/dakrone/cheshire
+  Copyright (c) 2011 Matthew Lee Hinman
+  MIT License: licenses/MIT-cheshire.txt
+  compatibility/cheshire/core.clj implements cheshire's public API (its
+  names, arities, options and pretty-printer defaults) and matches its
+  output. It is written over clojure.data.json, with no Jackson.
+
 ClojureScript
   https://github.com/clojure/clojurescript
   Copyright (c) Rich Hickey and contributors

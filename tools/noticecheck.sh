@@ -33,7 +33,7 @@ for lic in licenses/*; do
 done
 
 has_copyright() { grep -qiE 'copyright|\(c\)' "$1"; }
-for p in $(grep -oE '(jolt-core|stdlib|host)/[A-Za-z0-9_./-]+' NOTICE | sed 's/[.,]$//' | sort -u); do
+for p in $(grep -oE '(jolt-core|stdlib|compatibility|host)/[A-Za-z0-9_./-]+' NOTICE | sed 's/[.,]$//' | sort -u); do
   p=${p%/}
   if [ -d "$p" ]; then
     # a directory NOTICE names is derived throughout: every file says so
