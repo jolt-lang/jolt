@@ -95,7 +95,7 @@
 ;; image.
 (load "host/chez/loader.ss")
 (hashtable-delete! loaded-ns "jolt.ffi")
-(set-source-roots!* '("jolt-core" "stdlib" "vendor/fs/src" "vendor/process/src" "vendor/cli/src" "vendor/grenadine/src"
+(set-source-roots!* '("jolt-core" "stdlib" "compatibility" "vendor/fs/src" "vendor/process/src" "vendor/cli/src" "vendor/grenadine/src"
                       "vendor/grenadine-generated"))
 (load "host/chez/java/ffi.ss")
 
@@ -375,7 +375,7 @@
     "(load \"host/chez/gate-boot.ss\")\n"
     "(load \"host/chez/loader.ss\")\n"
     "(hashtable-delete! loaded-ns \"jolt.ffi\")\n"
-    "(set-source-roots!* '(\"jolt-core\" \"stdlib\" \"vendor/fs/src\" \"vendor/process/src\" \"vendor/cli/src\" \"vendor/grenadine/src\"\n"
+    "(set-source-roots!* '(\"jolt-core\" \"stdlib\" \"compatibility\" \"vendor/fs/src\" \"vendor/process/src\" \"vendor/cli/src\" \"vendor/grenadine/src\"\n"
     "                      \"vendor/grenadine-generated\"))\n"
     "(load \"host/chez/java/ffi.ss\")\n"
     "(define (ev s) (jolt-compile-eval s \"user\"))\n"

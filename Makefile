@@ -520,7 +520,7 @@ documented-record:
 # buildlibsmoke` slower with the prerequisite than without it. The staleness
 # check covers the same inputs build-jolt.ss embeds: the runtime .ss files, the
 # install roots, and the launcher stub. JOLT_FORCE_TESTBIN=1 rebuilds anyway.
-TESTBIN-INPUTS := host/chez jolt-core stdlib vendor/fs/src vendor/process/src vendor/cli/src vendor/grenadine/src vendor/grenadine-generated vendor/irregex
+TESTBIN-INPUTS := host/chez jolt-core stdlib compatibility vendor/fs/src vendor/process/src vendor/cli/src vendor/grenadine/src vendor/grenadine-generated vendor/irregex
 testbin:
 	@if [ -n "$${JOLT_FORCE_TESTBIN:-}" ] || [ ! -x target/release/jolt ] || \
 	   [ -n "$$(find $(TESTBIN-INPUTS) -type f -newer target/release/jolt -print -quit 2>/dev/null)" ]; then \
@@ -635,7 +635,7 @@ nsaudit: testbin
 # names, so a deftype method named count reads as a call to core's.
 kondocheck:
 	@clj-kondo --cache false --config tools/clj-kondo-ci.edn --fail-level error \
-	  --lint stdlib jolt-core/jolt tools
+	  --lint stdlib compatibility jolt-core/jolt tools
 
 # Duplicate native symbol detection (issue #731): a declared :jolt/native that
 # carries its own static copy of another's code — raygui linked against

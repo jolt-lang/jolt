@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cheshire.core` ships with jolt** (#1604), for babashka scripts and
+  `bb.edn` tasks that name it, since babashka bundles cheshire. It lives in a
+  new `compatibility/` source root, kept apart from `stdlib/` for namespaces
+  jolt carries only so code from another runtime loads unchanged. It is
+  written over the bundled `clojure.data.json` and resolved ahead of a
+  project's copy in the same way, because real cheshire wraps Jackson. It
+  covers cheshire's public API: `parse-string`, `parse-string-strict`,
+  `parse-stream`, `parse-stream-strict`, `parsed-seq`, `generate-string`,
+  `generate-stream`, `create-pretty-printer`, `default-pretty-print-options`,
+  and the `encode` and `decode` names. Its output matches cheshire's, checked
+  against babashka's: keyword keys keep their namespace, a ratio is written as
+  a double, NaN and the infinities as strings, a `java.util.Date` through
+  `:date-format` in UTC, a byte array as base64, `:escape-non-ascii` as
+  uppercase `\u` escapes with surrogate pairs, and `:pretty` in Jackson's
+  default layout and its options. A top-level array from `parse-string` is a
+  lazy seq, and blank input parses to nil. Custom encoders
+  (`cheshire.generate`), factory options and the Smile and CBOR formats are
+  left out, and a value with no JSON form throws, as it does in cheshire.
+
 ### Fixed
 
 - **The macOS release binaries get an optimized Chez kernel again.** The

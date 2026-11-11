@@ -60,7 +60,7 @@ grep -oE '^[{ ]*:[a-z]+/[a-z-]+' "$reg" | tr -d '{ ' | LC_ALL=C sort -u > "$tmp/
 # with no arguments when its input is empty, and a bare `grep PATTERN` then reads
 # stdin and hangs the gate.
 {
-  find jolt-core stdlib tools \( -name '*.clj' -o -name '*.cljc' \) \
+  find jolt-core stdlib compatibility tools \( -name '*.clj' -o -name '*.cljc' \) \
     -exec sed 's/;;.*//' {} + 2>/dev/null \
     | grep -ohE ':(analyze|read|runtime|ffi|codegen|aot)/[a-z-]+' 
   find host -name '*.ss' -not -path '*/seed/*' \

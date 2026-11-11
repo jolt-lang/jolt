@@ -35,4 +35,10 @@
   {:path "jolt-core/jolt/backend_scheme.clj" :name "set-debug-locals!"
    :why "var-deref from host/chez"}
   {:path "jolt-core/jolt/backend_scheme.clj" :name "seed-fnsrc-ns-counter!"
-   :why "var-deref from host/chez/build.ss"}]}
+   :why "var-deref from host/chez/build.ss"}
+  {:path "compatibility/cheshire/core.clj" :name "parse-string-strict"
+   :why "cheshire's public API, for scripts that call it; nothing in jolt does"}
+  {:path "compatibility/cheshire/core.clj" :name "parse-stream-strict"
+   :why "cheshire's public API, for scripts that call it; nothing in jolt does"}
+  {:path "compatibility/cheshire/core.clj" :name "parsed-seq"
+   :why "cheshire's public API, for scripts that call it; nothing in jolt does"}]}

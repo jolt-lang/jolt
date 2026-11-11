@@ -499,7 +499,7 @@
                         (violate! "eager-ref" (car ld) (format "~a names ~a" f s))))
                     (cdr ld)))
         lazy-defs)))
-  (append (clj-files "jolt-core") (clj-files "stdlib")))
+  (append (clj-files "jolt-core") (clj-files "stdlib") (clj-files "compatibility")))
 
 ;; ---- objects of a lazy tag made elsewhere -----------------------------------------------
 ;; A file that builds an object of a lazy file's tag hands out a value whose
