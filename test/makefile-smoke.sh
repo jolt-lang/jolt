@@ -243,6 +243,14 @@ check_provision_fallback() {  local bin out
       echo "$out" >&2
       exit 1
     }
+  elif [ "$(uname -s)" = Darwin ]; then
+    # macOS builds the provisioned Chez with the host cc (#1601), and the same
+    # driver links the binary, so JOLT_CC is the cc on PATH, never a bundle's.
+    grep -Fx "joltcc-env=$(command -v cc)" <<<"$out" >/dev/null || {
+      echo "macOS JOLT_CC is not the host cc:" >&2
+      echo "$out" >&2
+      exit 1
+    }
   else
     grep -E "^joltcc-env=${root_dir%/}/gcc-[0-9.-]+/bin/gcc$" <<<"$out" >/dev/null || {
       echo "provisioning armed but JOLT_CC not pinned to the provisioned GCC:" >&2

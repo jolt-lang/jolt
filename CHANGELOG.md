@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2 to 3 times faster, allocation-heavy code 10 to 30% faster; compiled Clojure
   code itself runs the same. The Chez cache keys are bumped so the old builds
   aren't reused.
+- `make build` works on a Mac with no Chez Scheme on `PATH`. The Chez that
+  makes provisions was compiled with xPack GCC 14.2.0-1, whose fixed
+  `<stdio.h>` fails against current macOS SDKs, so the build stopped at Chez's
+  first file. On macOS that Chez is now built and jolt linked with the host
+  `cc`, as the release workflow does, and a macOS job in `tests.yml` builds
+  this way (#1601).
 
 ## [0.8.26] - 2026-11-10
 

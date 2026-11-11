@@ -161,6 +161,27 @@ jobs:
     steps:
       - run: test "${{ needs.android-gate.result }}" = success
 
+  # `make build` on a Mac with no Chez on PATH, so makes provisions Chez 10.4.1
+  # and the Makefile builds it with the host cc (#1601: xPack GCC 14.2.0-1's
+  # <stdio.h> fails against current SDKs). No other job builds this path.
+  macos-provisioned:
+    name: macOS build, provisioned Chez
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: No Chez on PATH
+        run: |
+          for n in chez chezscheme scheme; do
+            if command -v "$n"; then echo "::error::$n is on PATH"; exit 1; fi
+          done
+      - name: Build
+        run: make build
+      - name: Run
+        run: ./target/release/jolt -e '(println (+ 1 2))'
+
   # No AI-assistant attribution in what a push or PR adds: tools/attributioncheck.sh
   # over the pushed range (push) or the PR's commits and its description (PR).
   # Its own job because it needs history — the test job's checkout is shallow,
