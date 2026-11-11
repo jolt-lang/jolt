@@ -73,18 +73,22 @@
 (defn subtree? [parent leaf]
   (or (= parent leaf) (str/starts-with? leaf (str parent "/"))))
 
-(defn expand [selectors]
-  (into #{} (mapcat (fn [selector]
-                      (let [matches (filter #(subtree? selector %) leaves)]
-                        (when (empty? matches)
-                          (throw (ex-info (str "Unknown category '" selector "' (see --list-categories)") {})))
-                        matches)))
-        selectors))
+(defn expand
+  ([selectors] (expand leaves selectors))
+  ([catalog selectors]
+   (into #{} (mapcat (fn [selector]
+                       (let [matches (filter #(subtree? selector %) catalog)]
+                         (when (empty? matches)
+                           (throw (ex-info (str "Unknown category '" selector "' (see --list-categories)") {})))
+                         matches)))
+         selectors)))
 
-(defn selection [only exclude]
-  (let [included (if (seq only) (expand only) leaves)
-        excluded (expand exclude)]
-    (vec (remove excluded (sort included)))))
+(defn selection
+  ([only exclude] (selection leaves leaves only exclude))
+  ([catalog all-leaves only exclude]
+   (let [included (if (seq only) (expand catalog only) catalog)
+         excluded (expand all-leaves exclude)]
+     (vec (remove excluded (sort included))))))
 
 (defn call-name [id] (symbol (str/replace id "/" "-")))
 

@@ -90,8 +90,41 @@
       (assert (every? empty? ((juxt :protocols :methods :macros) model)))
       (assert (empty? (:waste-markers manifest)))
       (let [{:keys [exit err]} (compare-project dir)] (assert (zero? exit) err))))
+  (let [dir (fs/path tmp "collection suite")
+        other (fs/path tmp "subset")
+        matrix (generate dir "--seed" "-8" "--collection-sizes" "1,9,33")
+        subset (generate other "--seed" "-8" "--only" "collections/vector"
+                         "--exclude" "collections/vector/pop" "--collection-sizes" "33")
+        wanted (filterv #(and (= 33 (:size %)) (str/starts-with? (:op %) "collections/vector/")
+                              (not= "collections/vector/pop" (:op %))) (:profiles matrix))
+        csv (fs/file tmp "samples.csv")]
+    (assert (= wanted (:profiles subset)))
+    (assert (= (* 3 (count generated-project.collection-profiles/operations)) (count (:profiles matrix))))
+    (doseq [{:keys [size offset stride]} (:profiles matrix)]
+      (assert (= (set (range size)) (set (map #(mod (+ offset (* % stride)) size) (range size))))))
+    ;; Exercise a wrap around the probes as well as a traversal larger than
+    ;; the work budget. Check all rows reached all runtimes and both launches.
+    (let [{:keys [exit err out]} (process/shell {:out :string :err :string :continue true}
+                               "bb" (str (fs/path kit "run.bb")) (str dir) "19" "21"
+                               "--samples" "2" "--warmup" "1" "--launches" "2" "--csv" (str csv))
+          rows (map #(str/split % #",") (rest (str/split-lines (slurp csv))))
+          keys-seen (frequencies (map #(subvec % 0 4) rows))]
+      (assert (zero? exit) err)
+      (assert (str/includes? out "Jolt/JVM"))
+      (assert (= (count rows) (count keys-seen) (* 6 (count (:profiles matrix)))))
+      (doseq [{:keys [op size]} (:profiles matrix)
+              launch ["1" "2"] runtime ["Jolt" "JVM Clojure" "Babashka"]]
+        (assert (= 1 (keys-seen [launch runtime op (str size)]))))
+      (doseq [row rows]
+        (assert (= 10 (count row)))
+        (when (= "collections/vector/reduce" (row 2))
+          (assert (= (max 1 (quot 21 (parse-long (row 3)))) (parse-long (row 4)))))))
+    (let [source (fs/file other "src/workload/collections.clj")]
+      (spit source (str/replace (slurp source) "(peek (conj base k))" "(inc k)"))
+      (let [{:keys [err exit]} (compare-project other "--warmup" "1")]
+        (assert (and (pos? exit) (= 3 (count (re-seq #"MISMATCH on run 1" err)))) err))))
   (let [dir (fs/path tmp "typo")
         result (process/shell {:continue true :err :string} "bb" (str (fs/path kit "generate.bb"))
                               (str dir) "--only" "jvm/typo")]
     (assert (and (pos? (:exit result)) (str/includes? (:err result) "Unknown category") (not (fs/exists? dir))))))
-(println "Method pool, category selection, timing and checksum checks passed.")
+(println "Method pool, collection sizes, category selection, timing and checksum checks passed.")

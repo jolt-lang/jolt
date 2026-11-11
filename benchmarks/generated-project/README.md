@@ -14,7 +14,8 @@ bb "$kit/run.bb" "$kit/out/mixed" 42 3
 
 Use `--list-categories` to see every leaf. Both `--only` and `--exclude` accept
 comma-separated paths and can be repeated. A parent selects all its
-descendants. The default enables all categories. Exclusions apply last.
+descendants. The default mixed-source workload enables all mixed-source categories.
+Use the collection-size mode below for focused data-structure measurements. Exclusions apply last.
 
 ```sh
 bb "$kit/generate.bb" --list-categories
@@ -55,6 +56,53 @@ CLI needs that dependency cached or available from Clojars on its first run.
 To fetch it before measuring startup, run `clojure -Srepro -P -M:bench-jvm`
 inside the generated project.
 The filesystem workloads manipulate path components in memory.
+
+## Measure collection operations by size
+
+Generate a suite of persistent maps, vectors, and sets. The suite measures every
+selected operation at every requested element count. Each pair has a separate
+timing and an independently computed checksum. From the repository root run
+
+```sh
+kit="$PWD/benchmarks/generated-project"
+project="$(mktemp -d)/collections"
+bb "$kit/generate.bb" "$project" --seed 42 --collection-sizes 8,9,32,33,1024,32768
+(cd "$project" && clojure -Srepro -P -M)
+bb "$kit/run.bb" "$project" 42 65536 --warmup 10 --samples 7 --launches 3 --csv "$project/samples.csv"
+```
+
+Select one operation or a subtree with, for example, `--only collections/map/get-hit`
+or `--only collections/vector,collections/set --exclude collections/vector/pop`.
+Selecting `collections` or a descendant implies this mode and defaults to the
+six sizes above. Explicit sizes range from 1 to 1,000,000 elements. The seed
+sets the starting position and a stride coprime to the collection size, so a
+full cycle probes every key or index exactly once.
+
+| Family | Measured operations |
+| --- | --- |
+| Map | Hit and miss lookup, replacement, insertion, removal, `reduce-kv`, transient build |
+| Vector | Indexed read and replacement, append, pop, reduce, transient build |
+| Set | Hit and miss membership, insertion, removal, reduce, transient build |
+| Control | Read the same probe array and accumulate its entries |
+
+The positional arguments for this mode are the input offset and the work
+budget (defaults 1 and 32,768). Point operations perform exactly that many
+calls. Traversals and builds perform `max(1, quot(budget, size))` complete
+calls. Each profile prepares integer keys, source collections, and probes
+before warmup. Persistent writes start from the same immutable root and read
+the result back. Transient builds start empty and include `persistent!` and a
+probe of the resulting collection. The generated source shows the exact
+expression for each row.
+
+Each launch starts one fresh process per runtime. All profiles execute in that
+process, with a seeded shuffle of profile order for each launch and a rotation
+of runtime order. The runner finishes with a side-by-side table of the three
+execution medians and Jolt’s elapsed-time ratio to each peer. Startup/load
+stops at the readiness marker before any
+profile prepares its fixtures. The CSV records calls per batch, checksum,
+startup/load, and every measured execution in milliseconds. Startup repeats
+on rows from the same process. Divide elapsed time by calls for point
+operations, or by calls × size for time per input element on traversals and builds.
 
 ## Reproduce and time a run
 

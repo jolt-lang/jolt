@@ -7,6 +7,9 @@
 (def kit (fs/parent (fs/absolutize *file*)))
 (load-file (str (fs/path kit "features.bb")))
 (alias 'features 'generated-project.features)
+(load-file (str (fs/path kit "collection-profiles.bb")))
+(alias 'coll-profiles 'generated-project.collection-profiles)
+(def all-leaves (into features/leaves (keys coll-profiles/operations)))
 (def modulus 1000003)
 (def common-ns "workload.common")
 (def defaults {:seed 1 :lines 5000 :namespace-lines 400 :categories (vec features/leaves)})
@@ -16,6 +19,7 @@
   --seed N             Signed 64-bit seed (default 1)
   --lines N            Approximate nonblank source lines, e.g. 5k, 200k, 800k (default 5k)
   --namespace-lines N  Approximate lines per worker namespace (default 400; minimum 200)
+  --collection-sizes Ns  Generate an operation-by-size suite at comma-separated element counts
   --only A,B           Enable these categories or subtrees (default all)
   --exclude A,B        Disable these categories or subtrees after --only
   --list-categories    List supported category paths
@@ -40,9 +44,18 @@ and a timing and checksum runner for Jolt, JVM Clojure and Babashka.")
             (throw (ex-info "--lines must be 1000..10000000" {})))
           (when-not (<= 200 (:namespace-lines options) 20000)
             (throw (ex-info "--namespace-lines must be 200..20000" {})))
-          (assoc (dissoc options :only :exclude) :categories (features/selection (:only options) (:exclude options))))
+          (let [{:keys [only exclude collection-sizes]} options
+                matrix? (or collection-sizes (some #(features/subtree? "collections" %) only))
+                catalog (if matrix? (keys coll-profiles/operations) features/leaves)]
+            (cond-> (assoc (dissoc options :only :exclude) :categories (features/selection catalog all-leaves only exclude))
+              matrix? (assoc :collection-sizes (or collection-sizes coll-profiles/sizes)))))
       (= arg "--help") {:help true}
       (= arg "--list-categories") {:list-categories true}
+      (= arg "--collection-sizes")
+      (let [sizes (mapv size-number (str/split (or (first more) "") #"," -1))]
+        (when-not (every? #(and % (<= 1 % 1000000)) sizes)
+          (throw (ex-info "Collection sizes must be comma-separated integers in 1..1000000" {})))
+        (recur (rest more) (assoc options :collection-sizes (vec (distinct sizes)))))
       (#{"--only" "--exclude"} arg)
       (let [selectors (mapv str/trim (str/split (or (first more) "") #"," -1))]
         (recur (rest more) (update options (keyword (subs arg 2)) (fnil into []) selectors)))
@@ -1450,54 +1463,61 @@ object number string run main tag" #"\s+"))))
        "bb -cp src -m workload.main 42 3\nbb oracle.bb 42 3\n```\n"
        "\nThe arguments are input and iterations, both defaulting to 1.\n"))
 
-(defn generate! [{:keys [output] :as options}]
-  (let [options (merge defaults options)
-        root (fs/absolutize output)]
-    (when (and (fs/exists? root)
-               (or (not (fs/directory? root)) (seq (fs/list-dir root))))
+(defn generate-mixed! [root options]
+  (let [{:keys [files model markers waste-trees]} (project options)
+        sources (map :source files)
+        metrics (source-metrics sources)
+        worker-methods (into (sorted-map) (map (juxt :ns :api-methods)) (:workers model))
+        jvm-deps (when (some #(features/subtree? "babashka/fs" %) (mapcat val worker-methods))
+                   features/fs-dependency)
+        manifest (merge
+                  {:format 4 :generator-options (dissoc options :output)
+                   :worker-api-methods worker-methods :jvm-deps jvm-deps
+                   :api-call-sites (into (sorted-map)
+                                         (frequencies (keep :method (mapcat node-seq (live-trees model)))))
+                   :generator-sha256 (into (sorted-map)
+                                           (for [file ["generate.bb" "features.bb" "oracle.bb" "run.bb" "measure.clj"]]
+                                             [file (sha256 (slurp (fs/file kit file)))]))
+                   :worker-namespaces (count (:workers model))
+                   :source-namespaces (count files)
+                   :physical-lines (reduce + (map #(count (str/split-lines %)) sources))
+                   :operation-counts {:live (op-counts (live-trees model)) :waste (op-counts waste-trees)}
+                   :waste-expectations (into (sorted-map) (frequencies (map :expect markers)))
+                   :waste-markers markers
+                   :files (mapv (fn [{:keys [source] :as file}]
+                                  (-> file (dissoc :source)
+                                      (assoc :sha256 (sha256 source) :code-lines (code-lines source)
+                                             :bytes (count (.getBytes ^String source "UTF-8"))))) files)}
+                  metrics)]
+    (doseq [{:keys [path source]} files] (write-file! root path source))
+    (write-file! root "model.edn" (str (pr-str model) "\n"))
+    (write-file! root "manifest.edn" (edn-text manifest))
+    (doseq [file ["oracle.bb" "run.bb" "measure.clj" "LICENSE"]]
+      (write-file! root file (slurp (fs/file kit file))))
+    (write-file! root "deps.edn" (edn-text (cond-> {:paths ["src"]}
+                                             jvm-deps (assoc :aliases {:bench-jvm {:extra-deps jvm-deps}}))))
+    (write-file! root ".gitignore" ".cpcache/\n.jolt/\n")
+    (write-file! root "README.md" (generated-readme options manifest))
+    manifest))
+
+(defn generate! [{:keys [output collection-sizes] :as options}]
+  (let [root (fs/absolutize output)]
+    (when (and (fs/exists? root) (or (not (fs/directory? root)) (seq (fs/list-dir root))))
       (throw (ex-info "Output directory must be absent or empty; nothing was overwritten" {:output output})))
-    (let [{:keys [files model markers waste-trees]} (project options)
-          sources (map :source files)
-          metrics (source-metrics sources)
-          worker-methods (into (sorted-map) (map (juxt :ns :api-methods)) (:workers model))
-          jvm-deps (when (some #(features/subtree? "babashka/fs" %) (mapcat val worker-methods))
-                     features/fs-dependency)
-          manifest (merge
-                    {:format 4 :generator-options (dissoc options :output)
-                     :worker-api-methods worker-methods :jvm-deps jvm-deps
-                     :api-call-sites (into (sorted-map)
-                                           (frequencies (keep :method (mapcat node-seq (live-trees model)))))
-                     :generator-sha256 (into (sorted-map)
-                                             (for [file ["generate.bb" "features.bb" "oracle.bb" "run.bb" "measure.clj"]]
-                                               [file (sha256 (slurp (fs/file kit file)))]))
-                     :worker-namespaces (count (:workers model))
-                     :source-namespaces (count files)
-                     :physical-lines (reduce + (map #(count (str/split-lines %)) sources))
-                     :operation-counts {:live (op-counts (live-trees model)) :waste (op-counts waste-trees)}
-                     :waste-expectations (into (sorted-map) (frequencies (map :expect markers)))
-                     :waste-markers markers
-                     :files (mapv (fn [{:keys [source] :as file}]
-                                    (-> file (dissoc :source)
-                                        (assoc :sha256 (sha256 source) :code-lines (code-lines source)
-                                               :bytes (count (.getBytes ^String source "UTF-8"))))) files)}
-                    metrics)]
-      (doseq [{:keys [path source]} files] (write-file! root path source))
-      (write-file! root "model.edn" (str (pr-str model) "\n"))
-      (write-file! root "manifest.edn" (edn-text manifest))
-      (doseq [file ["oracle.bb" "run.bb" "measure.clj" "LICENSE"]]
-        (write-file! root file (slurp (fs/file kit file))))
-      (write-file! root "deps.edn" (edn-text (cond-> {:paths ["src"]}
-                                               jvm-deps (assoc :aliases {:bench-jvm {:extra-deps jvm-deps}}))))
-      (write-file! root ".gitignore" ".cpcache/\n.jolt/\n")
-      (write-file! root "README.md" (generated-readme options manifest))
-      manifest)))
+    (if collection-sizes
+      (coll-profiles/generate! kit root (merge {:seed 1 :categories (keys coll-profiles/operations)} options))
+      (generate-mixed! root (merge defaults options)))))
 
 (defn main [args]
   (try
     (let [options (parse-options args)]
       (cond
         (:help options) (println help)
-        (:list-categories options) (doseq [category features/leaves] (println category))
+        (:list-categories options) (doseq [category all-leaves]
+                                     (println category))
+        (:collection-sizes options)
+        (let [manifest (generate! options)]
+          (println (count (:profiles manifest)) "collection profiles in" (:output options)))
         :else
         (let [manifest (generate! options)]
           (println (format "Generated %d nonblank lines (%d physical, %d bytes, %d top-level forms), %d worker namespaces in %s"
