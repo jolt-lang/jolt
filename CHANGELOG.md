@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The macOS release binaries get an optimized Chez kernel again.** The
+  release workflow built Chez with `./configure ... CFLAGS="-mmacosx-version-min=11.0"`,
+  and Chez's configure adds its own flags (`-arch arm64 -O2`) only when CFLAGS
+  isn't given, so since 0.8.21 the kernel in the macOS binaries (the
+  collector, the fasl reader, the C runtime) was built at `-O0`. Both macOS rows
+  now pass `CFLAGS+=`. Measured on two patched Chez 10.4.1 builds linked into
+  jolt: `jolt -e nil` 0.215 s with the old flags vs 0.164 s, a full collection
+  2 to 3 times faster, allocation-heavy code 10 to 30% faster; compiled Clojure
+  code itself runs the same. The Chez cache keys are bumped so the old builds
+  aren't reused.
 - `make build` works on a Mac with no Chez Scheme on `PATH`. The Chez that
   makes provisions was compiled with xPack GCC 14.2.0-1, whose fixed
   `<stdio.h>` fails against current macOS SDKs, so the build stopped at Chez's
