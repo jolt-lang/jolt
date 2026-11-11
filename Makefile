@@ -74,6 +74,14 @@ $(CHEZSCHEME):
 SHELL-DEPS += $(CHEZSCHEME)
 JOLT-CHEZ := $(CHEZSCHEME)
 else
+# On macOS the provisioned Chez is built with the host compiler, Apple's
+# clang, as release.yml builds it. xPack GCC 14.2.0-1's fixed <stdio.h> doesn't
+# compile against current macOS SDKs (#1601), so gcc.mk is marked loaded
+# and never fetched; GCC names cc for chezscheme.mk's CC= and for JOLT_CC.
+ifeq (macos,$(OS-NAME))
+GCC-LOADED := true
+GCC := $(shell command -v cc)
+endif
 include $M/chezscheme.mk
 JOLT-CHEZ := $(CHEZSCHEME)
 endif
@@ -107,11 +115,12 @@ CHEZSCHEME-LIB-DIRS := \
   $(LOCAL-TMP)/$(CHEZSCHEME-DIR)/pb/lz4/lib \
   $(LOCAL-TMP)/$(CHEZSCHEME-DIR)/pb/zlib
 export LIBRARY_PATH := $(subst $(space),:,$(strip $(CHEZSCHEME-LIB-DIRS)))$(if $(LIBRARY_PATH),:$(LIBRARY_PATH))
-# The provisioned GCC built Chez, so the same driver links the standalone
-# binary: gcc.mk puts the bundle's bin FIRST on the exported PATH, but the
-# bundle ships no `cc`, so a bare cc falls through to the distro driver and
-# pairs it with the bundle's older as/ld (#788: gcc 16 .base64 into pre-2.43
-# gas). build.ss bld-cc reads JOLT_CC. A command-line JOLT_CC=... still wins.
+# The provisioned GCC (on macOS, the host cc) built Chez, so the same driver
+# links the standalone binary: gcc.mk puts the bundle's bin FIRST on the
+# exported PATH, but the bundle ships no `cc`, so a bare cc falls through to
+# the distro driver and pairs it with the bundle's older as/ld (#788: gcc 16
+# .base64 into pre-2.43 gas). build.ss bld-cc reads JOLT_CC. A command-line
+# JOLT_CC=... still wins.
 export JOLT_CC := $(GCC)
 endif
 
