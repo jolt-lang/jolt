@@ -1,4 +1,4 @@
-#!/usr/bin/env bb
+#!/usr/bin/env jolt
 (ns generated-project.runner
   (:require [babashka.fs :as fs]
             [babashka.process :as process]
@@ -6,7 +6,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]))
 
-(def usage "Usage: bb run.bb PROJECT [INPUT [ITERATIONS]] [--warmup N] [--samples N]")
+(def usage "Usage: jolt run.bb PROJECT [INPUT [ITERATIONS]] [--warmup N] [--samples N]")
 
 (defn options [[dir & args]]
   (when-not dir (throw (ex-info usage {})))
@@ -65,7 +65,7 @@
   (let [{:keys [dir args warmup samples] :as opts} (options argv)
         dir (str (fs/canonicalize dir))
         expected (parse-long (.trim (:out (apply process/shell {:dir dir :out :string}
-                                                 "bb" "oracle.bb" args))))]
+                                                 "jolt" "oracle.bb" args))))]
     (when-not (integer? expected) (throw (ex-info "Oracle did not return an integer" {})))
     (println "Oracle checksum" expected)
     (printf "Warmups %d, measured samples %d per process%n" warmup samples)

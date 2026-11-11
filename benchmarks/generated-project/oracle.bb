@@ -1,4 +1,4 @@
-#!/usr/bin/env bb
+#!/usr/bin/env jolt
 (ns generated-project.oracle
   "Evaluates model.edn without loading or invoking the generated Clojure source."
   (:require [babashka.fs :as fs]
@@ -326,13 +326,17 @@
 
 (defn main [args]
   (when (> (count args) 2)
-    (throw (ex-info "Usage: bb oracle.bb [INPUT=1 [ITERATIONS=1]]" {})))
+    (throw (ex-info "Usage: jolt oracle.bb [INPUT=1 [ITERATIONS=1]]" {})))
   (let [dir (fs/parent (fs/absolutize *file*))
         model (edn/read-string (slurp (fs/file dir "model.edn")))
         input (if (first args) (parse-long (first args)) 1)
         iterations (if (second args) (parse-long (second args)) 1)]
     (println (expected model input iterations))))
 
-(when (= (fs/absolutize *file*)
-         (some-> (System/getProperty "babashka.file") fs/absolutize))
+;; Run as a script, not loaded by test.bb. bb names the script being run in
+;; babashka.file, and jolt in jolt.file. A jolt older than jolt.file names
+;; neither, so the script runs unless test.bb has marked the load.
+(when (if-let [running (or (System/getProperty "jolt.file") (System/getProperty "babashka.file"))]
+        (= (fs/absolutize *file*) (fs/absolutize running))
+        (not (System/getProperty "generated-project.loading")))
   (main *command-line-args*))

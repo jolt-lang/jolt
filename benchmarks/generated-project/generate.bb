@@ -1,6 +1,7 @@
-#!/usr/bin/env bb
+#!/usr/bin/env jolt
 (ns generated-project.generate
   (:require [babashka.fs :as fs]
+            [babashka.process :as process]
             [clojure.pprint :as pprint]
             [clojure.string :as str]))
 
@@ -11,7 +12,7 @@
 (def common-ns "workload.common")
 (def defaults {:seed 1 :lines 5000 :namespace-lines 400 :categories (vec features/leaves)})
 (def help
-  "Usage: bb benchmarks/generated-project/generate.bb OUTPUT-DIR [OPTIONS]
+  "Usage: jolt benchmarks/generated-project/generate.bb OUTPUT-DIR [OPTIONS]
 
   --seed N             Signed 64-bit seed (default 1)
   --lines N            Approximate nonblank source lines, e.g. 5k, 200k, 800k (default 5k)
@@ -93,6 +94,12 @@ and a timing and checksum runner for Jolt, JVM Clojure and Babashka.")
              "br" "dr" "kl" "st" "tr" "sk" "pl" "gr"])
 (def vowels ["a" "e" "i" "o" "u" "a" "o" "ai" "ei" "ou"])
 (def codas ["" "" "" "" "n" "r" "l" "s" "m" "k"])
+;; The clojure.core names raw-word can spell, frozen rather than read from
+;; (ns-publics 'clojure.core). Each runtime's core holds a different set, and a
+;; name reserved on one runtime but not another makes fresh! draw again there,
+;; so the same seed generated different programs on Jolt and Babashka. This is
+;; the union of those names in JVM Clojure 1.12, Babashka and Jolt. test.bb
+;; checks that the running runtime adds none.
 ;; Whether raw-word, or a hyphenated pair of them, can produce s.
 (def spellable-re
   (let [alt #(str "(?:" (str/join "|" (sort-by (comp - count) (remove str/blank? (distinct %)))) ")")
@@ -1437,9 +1444,15 @@ object number string run main tag" #"\s+"))))
     (fs/create-dirs (fs/parent file))
     (spit (str file) text)))
 (defn edn-text [value] (with-out-str (pprint/pprint value)))
+;; Jolt ships no MessageDigest of its own. A library provides it (RFC 0014), and
+;; openssl gives the same digest without making the kit depend on one.
 (defn sha256 [text]
-  (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
-    (apply str (map #(format "%02x" %) (.digest digest (.getBytes text "UTF-8"))))))
+  (if (System/getProperty "jolt.version")
+    (last (str/split (str/trim (:out (process/shell {:in text :out :string}
+                                                    "openssl" "dgst" "-sha256")))
+                     #"\s+"))
+    (let [digest (java.security.MessageDigest/getInstance "SHA-256")]
+      (apply str (map #(format "%02x" %) (.digest digest (.getBytes text "UTF-8")))))))
 
 (defn op-counts [trees]
   (->> (mapcat node-seq trees) (map :op) frequencies (into (sorted-map))))
@@ -1465,12 +1478,12 @@ object number string run main tag" #"\s+"))))
        "Generated " (:code-lines manifest) " lines across " (:worker-namespaces manifest) " workers.\n\n"
        "The manifest records the enabled categories, each worker's methods and their call-site counts.\n\n"
        "From this project directory, compare Jolt, JVM Clojure and Babashka.\n\n"
-       "```sh\nbb run.bb . 42 3\n```\n\n"
+       "```sh\njolt run.bb . 42 3\n```\n\n"
        "For a warmed benchmark, add `--warmup 3 --samples 7` to the runner command.\n\n"
        "Individual implementations and the reference model can also run directly.\n\n"
        "```sh\njolt -m workload.main 42 3\nclojure -Srepro -M"
        (when (:jvm-deps manifest) ":bench-jvm") " -m workload.main 42 3\n"
-       "bb -cp src -m workload.main 42 3\nbb oracle.bb 42 3\n```\n"
+       "bb -cp src -m workload.main 42 3\njolt oracle.bb 42 3\n```\n"
        "\nThe arguments are input and iterations, both defaulting to 1.\n"))
 
 (defn generate! [{:keys [output] :as options}]
@@ -1533,6 +1546,10 @@ object number string run main tag" #"\s+"))))
       (binding [*out* *err*] (println (str "generate: " (ex-message e))))
       (System/exit 1))))
 
-(when (= (fs/absolutize *file*)
-         (some-> (System/getProperty "babashka.file") fs/absolutize))
+;; Run as a script, not loaded by test.bb. bb names the script being run in
+;; babashka.file, and jolt in jolt.file. A jolt older than jolt.file names
+;; neither, so the script runs unless test.bb has marked the load.
+(when (if-let [running (or (System/getProperty "jolt.file") (System/getProperty "babashka.file"))]
+        (= (fs/absolutize *file*) (fs/absolutize running))
+        (not (System/getProperty "generated-project.loading")))
   (main *command-line-args*))

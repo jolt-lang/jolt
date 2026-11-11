@@ -1,4 +1,4 @@
-#!/usr/bin/env bb
+#!/usr/bin/env jolt
 (ns generated-project.test
   (:require [babashka.fs :as fs]
             [babashka.process :as process]
@@ -6,6 +6,9 @@
             [clojure.string :as str]))
 
 (def kit (fs/parent (fs/absolutize *file*)))
+;; Loaded for their functions; their entry points must not run (see the guard
+;; at the end of each).
+(System/setProperty "generated-project.loading" "true")
 (load-file (str (fs/path kit "generate.bb")))
 (load-file (str (fs/path kit "oracle.bb")))
 (alias 'gen 'generated-project.generate)
@@ -13,7 +16,7 @@
 (alias 'oracle 'generated-project.oracle)
 
 (defn generate [dir & args]
-  (apply process/shell {:out :string} "bb" (str (fs/path kit "generate.bb")) (str dir) args)
+  (apply process/shell {:out :string} "jolt" (str (fs/path kit "generate.bb")) (str dir) args)
   (edn/read-string (slurp (fs/file dir "manifest.edn"))))
 
 (defn files [root]
@@ -22,7 +25,7 @@
 
 (defn compare-project [project & options]
   (apply process/shell {:dir (str project) :out :string :err :string :continue true}
-         "bb" "run.bb" "." "42" "3" options))
+         "jolt" "run.bb" "." "42" "3" options))
 
 (defn check-pool [dir]
   ;; Call every emitted method directly. A random workload is deliberately
@@ -97,7 +100,7 @@
       (assert (empty? (:waste-markers manifest)))
       (let [{:keys [exit err]} (compare-project dir)] (assert (zero? exit) err))))
   (let [dir (fs/path tmp "typo")
-        result (process/shell {:continue true :err :string} "bb" (str (fs/path kit "generate.bb"))
+        result (process/shell {:continue true :err :string} "jolt" (str (fs/path kit "generate.bb"))
                               (str dir) "--only" "jvm/typo")]
     (assert (and (pos? (:exit result)) (str/includes? (:err result) "Unknown category") (not (fs/exists? dir))))))
 (println "Method pool, category selection, timing and checksum checks passed.")

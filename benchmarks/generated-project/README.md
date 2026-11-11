@@ -1,13 +1,15 @@
 # Seeded Clojure workloads
 
 Generate one project and run the same source on Jolt, JVM Clojure and Babashka.
-Install `jolt`, the `clojure` CLI (Clojure 1.11+) and `bb` on `PATH`.
+Install `jolt`, the `clojure` CLI (Clojure 1.11+) and `bb` on `PATH`. The kit's
+scripts run on Jolt, which needs `openssl` for the manifest's SHA-256 hashes,
+and still run on Babashka with `bb` in place of `jolt`.
 From the repository root, run
 
 ```sh
 kit=benchmarks/generated-project
-bb "$kit/generate.bb" "$kit/out/mixed" --seed 42 --lines 5k
-bb "$kit/run.bb" "$kit/out/mixed" 42 3
+jolt "$kit/generate.bb" "$kit/out/mixed" --seed 42 --lines 5k
+jolt "$kit/run.bb" "$kit/out/mixed" 42 3
 ```
 
 ## Select a workload
@@ -17,11 +19,11 @@ comma-separated paths and can be repeated. A parent selects all its
 descendants. The default enables all categories. Exclusions apply last.
 
 ```sh
-bb "$kit/generate.bb" --list-categories
-bb "$kit/generate.bb" "$kit/out/buffers" --seed 42 --lines 5k --only jvm/byte-buffer
-bb "$kit/generate.bb" "$kit/out/fs" --seed 42 --lines 5k --only babashka/fs --exclude babashka/fs/normalize
-bb "$kit/generate.bb" "$kit/out/dispatch" --seed 42 --lines 5k --only dispatch,core/collections
-bb "$kit/generate.bb" "$kit/out/no-interop" --seed 42 --lines 5k --exclude jvm,babashka
+jolt "$kit/generate.bb" --list-categories
+jolt "$kit/generate.bb" "$kit/out/buffers" --seed 42 --lines 5k --only jvm/byte-buffer
+jolt "$kit/generate.bb" "$kit/out/fs" --seed 42 --lines 5k --only babashka/fs --exclude babashka/fs/normalize
+jolt "$kit/generate.bb" "$kit/out/dispatch" --seed 42 --lines 5k --only dispatch,core/collections
+jolt "$kit/generate.bb" "$kit/out/no-interop" --seed 42 --lines 5k --exclude jvm,babashka
 ```
 
 | Category | What it selects |
@@ -58,15 +60,17 @@ The filesystem workloads manipulate path components in memory.
 
 ## Reproduce and time a run
 
-The generation seed selects the program. `--lines` targets a nonblank source
-line count, and `--namespace-lines` controls the approximate size of a worker.
+The generation seed selects the program, and the same seed and options
+generate the same files whether Jolt or Babashka runs the generator.
+`--lines` targets a nonblank source line count, and `--namespace-lines`
+controls the approximate size of a worker.
 Generate into an empty or absent directory. Git ignores projects under
 `out/`. In `manifest.edn`, `:generator-options` records the resolved
 categories and seed, `:worker-api-methods` lists each worker's choices, and
 `:api-call-sites` counts the generated call sites for each method.
 
 ```sh
-bb "$kit/run.bb" "$kit/out/buffers" 7 100 --warmup 3 --samples 7
+jolt "$kit/run.bb" "$kit/out/buffers" 7 100 --warmup 3 --samples 7
 ```
 
 Here `7` is the initial input and `100` is the number of passes through the
@@ -89,7 +93,7 @@ for independent startup samples. Existing runtime and filesystem caches
 affect startup, and the first execution can include JIT compilation.
 
 Each generated project's README gives its standalone launch commands. Run
-`bb benchmarks/generated-project/test.bb` for the pool, selection, timing,
+`jolt benchmarks/generated-project/test.bb` for the pool, selection, timing,
 determinism and checksum checks.
 
 The generator and oracle are adapted from
