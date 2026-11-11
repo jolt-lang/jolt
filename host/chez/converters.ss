@@ -209,7 +209,7 @@
             (if (jolt-truthy? rep)
                 (loop next next (cons rep (save-span start i pieces)))
                 (loop next start pieces)))))))
-(def-var! "clojure.core" "str-escape-by" str-escape-by)
+(def-var! "clojure.core" "__str-escape-by" str-escape-by)
 
 ;; case-lambda, not `. end`: a rest-arg list allocated on every call is most of
 ;; what a one-character (subs txt i (inc i)) costs, and a parser does that per

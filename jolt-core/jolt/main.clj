@@ -786,10 +786,18 @@
 ;; the four cannot drift apart. The file may open with a `#!/usr/bin/env jolt`
 ;; line: the reader takes `#!` as a comment to end of line, the way Clojure's does,
 ;; so an executable script needs nothing else to be readable as a program.
+;;
+;; The jolt.file property holds the script's absolute path, as babashka.file does
+;; under bb, so a file can tell being run from being loaded by another script:
+;; (= (fs/absolutize *file*) (some-> (System/getProperty "jolt.file") fs/absolutize))
+;; Standard input has no path, so it leaves the property unset.
 (defn- run-script! [path args]
   (push-thread-bindings
     {#'clojure.core/*command-line-args* (seq (drop-end-of-options args))})
-  (load-file (file-arg path))
+  (let [f (file-arg path)]
+    (when-not (= "-" path)
+      (System/setProperty "jolt.file" (.getAbsolutePath (java.io.File. f))))
+    (load-file f))
   nil)
 
 ;; Does a bare argv token name a file to run (rather than a deps.edn task)? A "-"

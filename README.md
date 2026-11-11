@@ -269,7 +269,9 @@ symlink to a checkout's `bin/jolt`. (Windows has no kernel shebang, so there
 `jolt script` is how a script runs.) Arguments after the script are `*command-line-args*` — the first
 standalone `--` ends option parsing — `*file*` is the script, stdin is left for
 the program to read, and `(System/exit n)` sets the process's exit status (an
-uncaught exception exits 1). An `(ns …)` form with `:require`s is fine, and when
+uncaught exception exits 1). The `jolt.file` system property holds the script's
+absolute path, as `babashka.file` does under bb, so a file another script may
+`load-file` can run its entry point only when it is the one being run. An `(ns …)` form with `:require`s is fine, and when
 the directory has a `deps.edn` the script sees the project's paths and
 dependencies, like any other run.
 

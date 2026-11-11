@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error then names the task that would build it. The project's own library is
   still left to its tasks, as before. Older jolt ignores `:build`, so a
   library can add it now.
+- **A script can tell being run from being loaded.** Running a file sets the
+  `jolt.file` system property to its absolute path, as babashka sets
+  `babashka.file`, so a script that a second one may `load-file` can guard its
+  entry point with `(= (fs/absolutize *file*) (some-> (System/getProperty
+  "jolt.file") fs/absolutize))`. The property names the file given on the
+  command line, so a file that script loads sees another path. A program read
+  from standard input, or run with `-e`, leaves it unset.
 
 ### Changed
 
