@@ -50,6 +50,21 @@
   are not supported. A fixed aggregate may precede the variadic marker, but
   aggregate variadic arguments and aggregate-return-plus-varargs are rejected.
 
+  (stack-args-correct?) says whether this Chez puts arguments past the
+  argument registers where C reads them. Chez 10.4.1 gets some wrong once the
+  registers are used up (cisco/ChezScheme#1091). On arm64 macOS it packs a
+  struct of 16 bytes or less like a scalar unless it is all floats or all
+  doubles, and on any arm64 it can't compile a struct over 16 bytes there. On
+  x86_64 a struct of 3, 5, 6, 7, 11, 13, 14 or 15 bytes overwrites the start
+  of the argument after it. jolt's release binaries carry a patched Chez, but a
+  jolt built over a system Chez runs without the patch and looks the same. The answer is true or
+  false, probed once per process, or nil where jolt can't tell (another
+  machine, a pb build, or a binary without the compiler). A library that passes
+  structs by value can refuse a signature only where it would be misplaced:
+
+      (when (false? (ffi/stack-args-correct?))
+        (refuse-stack-struct-signatures!))
+
   LAYOUTS. (layout [:struct [[field type] ...]]) compiles a literal descriptor
   to ABI layout data. Fields may use [:array element-type positive-count];
   arrays may hold fixed-size scalars, nested structs or unions, or other fixed

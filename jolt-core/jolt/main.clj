@@ -1031,6 +1031,30 @@
        (catch :default _ nil))
   (repl-session))
 
+(defn- repl-load-error
+  "The report for a load's CompilerException, or nil for any other throw. A
+  form that throws while a load runs it (a require, load-file, load-string)
+  leaves the load wrapped, as Compiler.load does: \"Syntax error macroexpanding
+  at (file:line:col).\", :clojure.error/phase :execution, the throw as its
+  cause. That message names neither the cause nor what went wrong, so the REPL
+  reports it as clojure.main's does: an execution error naming the cause's
+  class and the form's position, then the cause's message on its own line.
+  Like clojure.main/ex-str, a plain Exception or RuntimeException goes unnamed.
+  The position is the wrapper's own, path and column included, as the -e
+  report gives it, since no frame of jolt's names an eval fn the way the
+  JVM's does."
+  [e]
+  (let [d (ex-data e)
+        c (ex-cause e)]
+    (when (and c (= :execution (:clojure.error/phase d)))
+      (str "Execution error"
+           (let [n (.getSimpleName (class c))]
+             (when-not (#{"Exception" "RuntimeException"} n) (str " (" n ")")))
+           " at ("
+           (when-let [s (:clojure.error/source d)] (str s ":"))
+           (:clojure.error/line d) ":" (:clojure.error/column d) ").\n"
+           (or (ex-message c) (pr-str c))))))
+
 (defn- repl-session []
   ;; REPL-driven development: trace by default so an uncaught error in evaluated
   ;; code shows a tail-frame backtrace, no JOLT_TRACE needed (JOLT_TRACE=0 opts out).
@@ -1070,19 +1094,10 @@
                      ;; off the line the terminal echoed ^C on
                      (when interrupted? (println))
                      (println "error:" (or (when interrupted? "Evaluation interrupted")
+                                           (repl-load-error e)
                                            (ex-message e)
                                            (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
                                            (pr-str e)))
-                     ;; A load's CompilerException only names where the form
-                     ;; was; what it ran into is its cause, which the JVM REPL
-                     ;; prints and jolt -e does too.
-                     (when-let [c (and (not interrupted?)
-                                       (= :execution (:clojure.error/phase (ex-data e)))
-                                       (ex-cause e))]
-                       (let [root (loop [c c] (if-let [n (ex-cause c)] (recur n) c))]
-                         (println (or (ex-message root) (pr-str root)))
-                         (when-let [d (ex-data root)]
-                           (println "  ex-data:" (pr-str d)))))
                      (when-let [bt (and (not interrupted?) (jolt.host/backtrace-string))]
                        (print bt)))))
             (recur read-entry)))))))

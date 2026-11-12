@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same results. A reducer also works with core `reduce`, `into` and
   `transduce`.
 
+- **`jolt.ffi/stack-args-correct?` says whether foreign calls put arguments
+  past the registers where C reads them** (#1629). Chez 10.4.1 misplaces some
+  of them, structs above all (cisco/ChezScheme#1091), and jolt's release builds
+  carry the fix as chez-patches 0006 and 0007. A jolt built over a system Chez
+  runs without them, and nothing about the binary said which it was, so a
+  library binding structs by value had to refuse every affected signature
+  everywhere. It now asks once per process: true or false, or nil where jolt
+  can't tell. The answer comes from Chez's code generator rather than from the
+  build, so a Chez release with the fix answers true with no patch.
+
 ### Changed
 
 - **A task body's `*command-line-args*` keeps every `--`, as babashka's does**
@@ -83,11 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--include clojure.core.async` or `:jolt/build {:include
   [clojure.core.async]}`. A binary that requires core.async in an `ns` form,
   or includes it, is unchanged.
-- **The REPL prints what a load threw, not only where** (#1627). A throw
-  while a namespace loads reaches the REPL as the load's CompilerException,
-  whose message is just `Syntax error macroexpanding at (file:line:col).`.
-  The REPL now prints the root cause's message and its `ex-data` under that
-  line, as the JVM REPL and `jolt -e` do.
 - **A top-level `#?` with no branch for jolt is skipped, not read as end of
   input** (#1624). `(read-string {:read-cond :allow} "#?(:cljs 2) x")` and a
   `read` from a reader threw "EOF while reading" where the JVM skips the
@@ -151,6 +156,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PersistentHashSet`, `PersistentTreeMap` and `PersistentTreeSet` each have
   `EMPTY`, the empty collection of that class: `[]`, `{}`, `(hash-map)`, `#{}`,
   `(sorted-map)` and `(sorted-set)`.
+- **The REPL reports what a load threw, not only where** (#1627). When a
+  form throws while `require`, `load-file` or `load-string` runs it, the load
+  is wrapped as on the JVM ("Syntax error macroexpanding at
+  (rg/boom.clj:2:1)."), and that wrapper was all the REPL printed. A library
+  that checks its environment at load and throws a descriptive `ex-info` lost
+  its message. The REPL now reports it as clojure.main's does, naming the
+  cause's class at the form's position, with its message on the next line:
+  `error: Execution error (ExceptionInfo) at (rg/boom.clj:2:1).`, then `the
+  real reason`. Other errors print as before, and `*e` is still the wrapper.
 
 ## [0.8.26] - 2026-11-10
 

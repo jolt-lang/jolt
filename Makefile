@@ -82,6 +82,12 @@ ifeq (macos,$(OS-NAME))
 GCC-LOADED := true
 GCC := $(shell command -v cc)
 endif
+# chezscheme.mk takes a system Chez of the pinned version too, unless told not
+# to: with JOLT_SYSTEM_CHEZ= (empty) the pinned Chez is provisioned whatever
+# is on PATH, as that switch promises.
+ifneq (1,$(JOLT_SYSTEM_CHEZ))
+CHEZSCHEME-USE-SYSTEM := 0
+endif
 include $M/chezscheme.mk
 JOLT-CHEZ := $(CHEZSCHEME)
 endif

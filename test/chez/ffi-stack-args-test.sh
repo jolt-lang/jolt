@@ -33,4 +33,17 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) "$CC_BIN" -std=c11 -shared -o "$SO" "$C" ;;
   *) "$CC_BIN" -std=c11 -shared -fPIC -o "$SO" "$C" ;;
 esac || { echo "cc failed to build $C" >&2; exit 1; }
-JOLT_FFI_STACK_ARGS_HELPER=$SO "$CHEZ" --script test/chez/ffi-stack-args-test.ss
+JOLT_FFI_STACK_ARGS_HELPER=$SO "$CHEZ" --script test/chez/ffi-stack-args-test.ss > "$OUT/report" || {
+  cat "$OUT/report"; exit 1; }
+cat "$OUT/report"
+
+# jolt.ffi/stack-args-correct? (#1629) has to agree with what the C witness just
+# saw: false where it reported a stock kernel, true where the rows ran and passed.
+if grep -q '^ffi-stack-args: stock Chez kernel' "$OUT/report"; then want=false; else want=true; fi
+got=$(JOLT_CHEZ=$CHEZ bin/jolt -e '(print (jolt.ffi/stack-args-correct?))') || exit 1
+if [ "$got" != "$want" ]; then
+  echo "FAIL: jolt.ffi/stack-args-correct? answered $got, the C witness says $want" >&2
+  exit 1
+fi
+echo "PASS: jolt.ffi/stack-args-correct? answers $got, as the C witness does"
+rm -f "$OUT/report"
