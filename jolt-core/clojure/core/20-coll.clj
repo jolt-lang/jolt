@@ -183,43 +183,52 @@
 (defn some [pred coll]
   (reduce (fn [_ x] (let [v (pred x)] (if v (reduced v) nil))) nil coll))
 
+;; some-fn's returned fns, one per predicate count — the reference's unrolled
+;; shape, so each arity tests its predicates in the same order.
+(defn- some-fn1 [p]
+  (fn sp1
+    ([] nil)
+    ([x] (p x))
+    ([x y] (or (p x) (p y)))
+    ([x y z] (or (p x) (p y) (p z)))
+    ([x y z & args] (or (sp1 x y z)
+                        (some p args)))))
+
+(defn- some-fn2 [p1 p2]
+  (fn sp2
+    ([] nil)
+    ([x] (or (p1 x) (p2 x)))
+    ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
+    ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
+    ([x y z & args] (or (sp2 x y z)
+                        (some (fn [q] (or (p1 q) (p2 q))) args)))))
+
+(defn- some-fn3 [p1 p2 p3]
+  (fn sp3
+    ([] nil)
+    ([x] (or (p1 x) (p2 x) (p3 x)))
+    ([x y] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y)))
+    ([x y z] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y) (p1 z) (p2 z) (p3 z)))
+    ([x y z & args] (or (sp3 x y z)
+                        (some (fn [q] (or (p1 q) (p2 q) (p3 q))) args)))))
+
+(defn- some-fnn [ps]
+  (fn spn
+    ([] nil)
+    ([x] (some (fn [p] (p x)) ps))
+    ([x y] (or (spn x) (spn y)))
+    ([x y z] (or (spn x) (spn y) (spn z)))
+    ([x y z & args] (or (spn x y z)
+                        (some (fn [p] (some p args)) ps)))))
+
 ;; Reference arities: at least one predicate ((some-fn) is an arity error), and
 ;; the returned fn chains with or — a no-match result is the last predicate's
 ;; own falsy value (false stays false, not nil).
 (defn some-fn
-  ([p]
-   (fn sp1
-     ([] nil)
-     ([x] (p x))
-     ([x y] (or (p x) (p y)))
-     ([x y z] (or (p x) (p y) (p z)))
-     ([x y z & args] (or (sp1 x y z)
-                         (some p args)))))
-  ([p1 p2]
-   (fn sp2
-     ([] nil)
-     ([x] (or (p1 x) (p2 x)))
-     ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
-     ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
-     ([x y z & args] (or (sp2 x y z)
-                         (some (fn [q] (or (p1 q) (p2 q))) args)))))
-  ([p1 p2 p3]
-   (fn sp3
-     ([] nil)
-     ([x] (or (p1 x) (p2 x) (p3 x)))
-     ([x y] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y)))
-     ([x y z] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y) (p1 z) (p2 z) (p3 z)))
-     ([x y z & args] (or (sp3 x y z)
-                         (some (fn [q] (or (p1 q) (p2 q) (p3 q))) args)))))
-  ([p1 p2 p3 & ps]
-   (let [ps (cons p1 (cons p2 (cons p3 ps)))]
-     (fn spn
-       ([] nil)
-       ([x] (some (fn [p] (p x)) ps))
-       ([x y] (or (spn x) (spn y)))
-       ([x y z] (or (spn x) (spn y) (spn z)))
-       ([x y z & args] (or (spn x y z)
-                           (some (fn [p] (some p args)) ps)))))))
+  ([p] (some-fn1 p))
+  ([p1 p2] (some-fn2 p1 p2))
+  ([p1 p2 p3] (some-fn3 p1 p2 p3))
+  ([p1 p2 p3 & ps] (some-fnn (cons p1 (cons p2 (cons p3 ps))))))
 
 (defn not-any? [pred coll] (not (some pred coll)))
 
