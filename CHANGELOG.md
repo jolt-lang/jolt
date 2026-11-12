@@ -53,6 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same results. A reducer also works with core `reduce`, `into` and
   `transduce`.
 
+- **`jolt.ffi/stack-args-correct?` says whether foreign calls put arguments
+  past the registers where C reads them** (#1629). Chez 10.4.1 misplaces some
+  of them, structs above all (cisco/ChezScheme#1091), and jolt's release builds
+  carry the fix as chez-patches 0006 and 0007. A jolt built over a system Chez
+  runs without them, and nothing about the binary said which it was, so a
+  library binding structs by value had to refuse every affected signature
+  everywhere. It now asks once per process: true or false, or nil where jolt
+  can't tell. The answer comes from Chez's code generator rather than from the
+  build, so a Chez release with the fix answers true with no patch.
+
 ### Changed
 
 - **A task body's `*command-line-args*` keeps every `--`, as babashka's does**

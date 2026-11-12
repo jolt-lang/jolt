@@ -1773,3 +1773,75 @@
 (def-var! "jolt.ffi" "__string->ptr" ffi-string->ptr)
 (def-var! "jolt.ffi" "__utf8-length" ffi-utf8-length)
 (def-var! "jolt.ffi" "__byte-buffer" ffi-byte-buffer)
+
+;; --- foreign calls: arguments past the registers -------------------------------
+;; (jolt.ffi/stack-args-correct?) answers whether this Chez puts foreign-procedure
+;; arguments past the argument registers where C reads them. Chez 10.4.1 doesn't
+;; always (cisco/ChezScheme#1091, merged into Chez main 2026-11-05 and in no
+;; release yet). jolt carries the repair as chez-patches 0006 (arm64) and 0007
+;; (x86_64), but a jolt built over a system Chez (JOLT_SYSTEM_CHEZ=1, the
+;; default) runs without them, and neither `jolt --version` nor (scheme-version)
+;; differs. So this asks the code generator itself, once per process:
+;;
+;; - arm64: a struct over 16 bytes on the stack, then an int. Chez 10.4.1 can't
+;;   compile that ("unexpected Triv") and the repaired back end can. The other
+;;   arm64 repair, Apple packing a small non-HFA struct like a scalar, came in
+;;   the same change, so this one signature answers for both.
+;; - x86_64: a char, a struct of three chars and a char on the stack, through a
+;;   foreign-callable, so no C library is needed. Chez 10.4.1 stores the
+;;   struct's last piece as a full word, which overwrites the start of the next
+;;   slot, and the callee reads the final char as 0.
+;;
+;; #t or #f, or nil where this jolt can't tell: another machine, a pb build, or
+;; a binary without the compiler (petite can't build the probe). A Chez release
+;; that has #1091 answers #t with no patch at all, so the answer outlives
+;; 0006/0007 and #1526.
+(define (ffi-probe-compiles? form) (guard (e (#t #f)) (eval form) #t))
+
+(define (ffi-stack-args-arm64)
+  (cond
+    ((not (ffi-probe-compiles?
+           '(foreign-procedure 0 (int int int int int int int int integer-64 int) integer-64)))
+     jolt-nil)
+    (else
+     (ffi-probe-compiles?
+      '(let ()
+         (define-ftype jolt-probe-s24 (struct (a integer-64) (b integer-64) (c integer-64)))
+         (foreign-procedure 0 (int int int int int int int int (& jolt-probe-s24) int) integer-64))))))
+
+(define (ffi-stack-args-x86-64)
+  (guard (e (#t jolt-nil))
+    ((eval
+      '(lambda ()
+         (define-ftype jolt-probe-c3 (struct (a integer-8) (b integer-8) (c integer-8)))
+         (let* ((cb (foreign-callable
+                     (lambda (a b c d e f g h i s j)
+                       (and (= i 9) (= j 44)
+                            (= (ftype-ref jolt-probe-c3 (a) s) 41)
+                            (= (ftype-ref jolt-probe-c3 (b) s) 42)
+                            (= (ftype-ref jolt-probe-c3 (c) s) 43)))
+                     (int int int int int int int int integer-8 (& jolt-probe-c3) integer-8)
+                     boolean))
+                (_ (lock-object cb))
+                (call (foreign-procedure (foreign-callable-entry-point cb)
+                        (int int int int int int int int integer-8 (& jolt-probe-c3) integer-8)
+                        boolean))
+                (p (foreign-alloc 3)))
+           (foreign-set! 'integer-8 p 0 41)
+           (foreign-set! 'integer-8 p 1 42)
+           (foreign-set! 'integer-8 p 2 43)
+           (let ((ok (call 1 2 3 4 5 6 7 8 9 (make-ftype-pointer jolt-probe-c3 p) 44)))
+             (foreign-free p)
+             (unlock-object cb)
+             ok)))))))
+
+(define ffi-stack-args-answer 'unprobed)
+(define (ffi-stack-args-correct?)
+  (when (eq? ffi-stack-args-answer 'unprobed)
+    (set! ffi-stack-args-answer
+      (case (sa-arch-for-tag (sa-host-tag))
+        ((arm64) (ffi-stack-args-arm64))
+        ((x86-64) (ffi-stack-args-x86-64))
+        (else jolt-nil))))
+  ffi-stack-args-answer)
+(def-var! "jolt.ffi" "stack-args-correct?" ffi-stack-args-correct?)
