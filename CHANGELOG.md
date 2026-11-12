@@ -75,6 +75,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A built binary's runtime `(require 'clojure.core.async)` fails loudly
+  when the build left out the core.async overlay** (#1628). The boot's 36
+  channel primitives make the namespace exist in every binary, so the require
+  marked that partial namespace loaded and returned. Callers then died far
+  away on `No such var: async/alts!!`. It now throws and names the fix,
+  `--include clojure.core.async` or `:jolt/build {:include
+  [clojure.core.async]}`. A binary that requires core.async in an `ns` form,
+  or includes it, is unchanged.
+- **The REPL prints what a load threw, not only where** (#1627). A throw
+  while a namespace loads reaches the REPL as the load's CompilerException,
+  whose message is just `Syntax error macroexpanding at (file:line:col).`.
+  The REPL now prints the root cause's message and its `ex-data` under that
+  line, as the JVM REPL and `jolt -e` do.
 - **A top-level `#?` with no branch for jolt is skipped, not read as end of
   input** (#1624). `(read-string {:read-cond :allow} "#?(:cljs 2) x")` and a
   `read` from a reader threw "EOF while reading" where the JVM skips the

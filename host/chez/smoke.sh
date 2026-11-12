@@ -735,6 +735,17 @@ else
   echo "  FAIL: an (ns foo) REPL entry should switch the session, a load-string should not (got \`$repl_nsf\`)"
   fails=$((fails + 1))
 fi
+# A throw while a load runs reaches the REPL as the load's CompilerException,
+# whose message is only the position; the REPL prints the cause's message and
+# ex-data under it, as the JVM REPL and jolt -e do (#1627).
+repl_cause="$(printf '(load-string "(throw (ex-info \\"the real reason\\" {:k 1}))")\n' | $jolt repl 2>/dev/null)"
+if printf '%s' "$repl_cause" | grep -q '^the real reason$' \
+   && printf '%s' "$repl_cause" | grep -qF '  ex-data: {:k 1}'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: the REPL should print a load error's cause and its ex-data (got \`$repl_cause\`)"
+  fails=$((fails + 1))
+fi
 e_nsf="$($jolt -e '(ns foo) (println *ns*)' 2>/dev/null | tail -1)"
 if [ "$e_nsf" = "foo" ]; then
   pass=$((pass + 1))

@@ -474,6 +474,24 @@ if ! printf '%s' "$got_rr" | grep -qF 're-require same-stamp: true'; then
   echo "--- got ----"; echo "$got_rr"; exit 1
 fi
 
+# A runtime require of clojure.core.async in a binary that never included its
+# overlay: the boot's channel primitives make the namespace exist, so the loader
+# used to mark that partial namespace loaded and return, leaving alts!!, mult,
+# pipeline… missing until some caller died on "No such var" (#1628). It must
+# fail at the require and name the fix; `jolt run`, with the source roots, loads
+# the whole namespace.
+got_ar="$(cd / && "$out" --async-require 2>&1)"
+if ! printf '%s' "$got_ar" | grep -qF 'async-require threw:' \
+   || ! printf '%s' "$got_ar" | grep -qF -- '--include clojure.core.async'; then
+  echo "  FAIL: a runtime require of an un-included clojure.core.async should name --include"
+  echo "--- got ----"; echo "$got_ar"; exit 1
+fi
+got_ar_run="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.core --async-require 2>&1)"
+if ! printf '%s' "$got_ar_run" | grep -qF 'async-require alts!!: true'; then
+  echo "  FAIL: jolt run should load the whole clojure.core.async on a runtime require"
+  echo "--- got ----"; echo "$got_ar_run"; exit 1
+fi
+
 # ...and the same with a WARM AOT cache, which is how a user meets this: the
 # cache is on by default in a built jolt, and the report that opened this said
 # "jolt run works fine once aot kicks in". A cached namespace loads from its

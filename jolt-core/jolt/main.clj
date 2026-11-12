@@ -1073,6 +1073,16 @@
                                            (ex-message e)
                                            (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
                                            (pr-str e)))
+                     ;; A load's CompilerException only names where the form
+                     ;; was; what it ran into is its cause, which the JVM REPL
+                     ;; prints and jolt -e does too.
+                     (when-let [c (and (not interrupted?)
+                                       (= :execution (:clojure.error/phase (ex-data e)))
+                                       (ex-cause e))]
+                       (let [root (loop [c c] (if-let [n (ex-cause c)] (recur n) c))]
+                         (println (or (ex-message root) (pr-str root)))
+                         (when-let [d (ex-data root)]
+                           (println "  ex-data:" (pr-str d)))))
                      (when-let [bt (and (not interrupted?) (jolt.host/backtrace-string))]
                        (print bt)))))
             (recur read-entry)))))))

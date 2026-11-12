@@ -131,6 +131,15 @@
       (require 'app.embedded)
       (println "re-require same-stamp:" (identical? stamp emb/loaded-stamp))
       (println "re-require fwd-get:  " (apply emb/fwd-get [{"K" 41} "K"]))))
+  ;; --async-require: the boot's channel primitives make clojure.core.async
+  ;; exist in every binary, but its Clojure API is the stdlib overlay, which
+  ;; this app never includes. A runtime require used to mark the 36-var
+  ;; primitive namespace loaded, and callers died later on "No such var:
+  ;; async/alts!!" (#1628); it must name the missing --include instead.
+  (when (= (first args) "--async-require")
+    (try (require 'clojure.core.async)
+         (println "async-require alts!!:" (contains? (ns-publics 'clojure.core.async) 'alts!!))
+         (catch Exception e (println "async-require threw:" (ex-message e)))))
   ;; --fwdref: a symbol compiled BEFORE a same-ns redefinition must resolve to
   ;; the clojure.core var in the built binary too — the emit walk re-analyzes
   ;; against the fully-loaded process where app.util/get already exists, and
