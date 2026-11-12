@@ -1285,6 +1285,13 @@
 ;; changes back, so reading it without the monitor mutex can only keep a cell one
 ;; prune longer, never drop a live one. Skips if another prune is running.
 (define (jolt-fiber-live-prune!)
+  ;; The flag is reset at the end with no wind, so the walk must not be a place a
+  ;; fiber can leave: a preemption here resumes through jolt-fiber-check-interrupt!,
+  ;; and an interrupt or kill raised there would leave the flag set for good (no
+  ;; prune again, the chain growing by a cell per spawn). Counting as a held lock
+  ;; makes the tick handler defer instead of switching; the walk itself is plain
+  ;; list surgery that cannot raise, so enter and exit always pair.
+  (jolt-locks-enter!)
   (when (box-cas! jolt-fiber-live-pruning #f #t)
     (memory-order-acquire)
     (let ((head (unbox jolt-fiber-live-head)))
@@ -1299,7 +1306,8 @@
               (set-box! jolt-fiber-live-finishes 0)
               (set-box! jolt-fiber-live-kept kept)))))
     (memory-order-release)
-    (set-box! jolt-fiber-live-pruning #f)))
+    (set-box! jolt-fiber-live-pruning #f))
+  (jolt-locks-exit!))
 
 ;; (jolt-fiber-live) -> list of fibers, a snapshot. Read under the monitor mutex,
 ;; which jolt-fiber-finish! holds to publish the terminal state, so a fiber

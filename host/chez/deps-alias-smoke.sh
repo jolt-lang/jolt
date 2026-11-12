@@ -474,6 +474,10 @@ case "$out" in
   *) check "add-deps refuses a second provider for a class" "a conflict naming both claimants" \
            "$(printf '%s' "$out" | tail -2)" ;;
 esac
+# A refused add-deps changes nothing: the library's roots stay off the loader,
+# so its namespaces don't half-load with its classes unregistered.
+out="$(runfull -A:prov -e "(try (jolt.deps/add-deps '{:deps {local/provrival {:local/root \"$tmp/provrival\"}}}) (catch Throwable _)) (prn (boolean (some #(clojure.string/includes? % \"provrival\") (jolt.host/source-roots))))")"
+check "a refused add-deps adds no roots" false "$(printf '%s' "$out" | tail -1)"
 
 # A provider reached from ANOTHER provider's install namespace is still its own
 # (jolt#926). provnest declares javax.crypto.Cipher and requires provinner.install,

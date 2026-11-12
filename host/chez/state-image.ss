@@ -1584,10 +1584,11 @@
                             ;; on the read side a rekey verdict means the
                             ;; placement is stale: rebuild in this process
                             (if (or dirty rekey (not (eq? wm m)))
-                                (let ((nx (apply jolt-hash-map
-                                                 (apply append
-                                                        (map (lambda (e) (list (car e) (cdr e)))
-                                                             (reverse entries))))))
+                                (let ((nx (coll-unshared
+                                            (apply jolt-hash-map
+                                                   (apply append
+                                                          (map (lambda (e) (list (car e) (cdr e)))
+                                                               (reverse entries)))))))
                                   (hashtable-set! memo x nx)
                                   (image-carry-meta! nx wm)
                                   nx)
@@ -1635,7 +1636,7 @@
                                   (image-carry-meta! r wm)
                                   r)
                             (if (or dirty rekey (not (eq? wm m)))
-                                (let ((nx (pset-from-pairs (reverse pairs))))
+                                (let ((nx (coll-unshared (pset-from-pairs (reverse pairs)))))
                                   (hashtable-set! memo x nx)
                                   (image-carry-meta! nx wm)
                                   nx)
@@ -1721,7 +1722,7 @@
                                      (wm (if (eq? m jolt-nil) m (walk m (cons "<meta>" path)))))
                                 (or (hashtable-ref memo x #f)
                                     (if (or dirty (not (eq? wm m)))
-                                        (let ((nx (apply jolt-vector (reverse items))))
+                                        (let ((nx (coll-unshared (apply jolt-vector (reverse items)))))
                                           (hashtable-set! memo x nx)
                                           (image-carry-meta! nx wm)
                                           nx)

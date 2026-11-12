@@ -102,14 +102,25 @@
         (else #f)))
 ;; Fill the slot of an instance nobody else holds yet (see the header). The
 ;; callers: coll-with-meta's copy below, and state-image.ss's rebuilt objects.
+(define (coll-shared-empty? x)
+  (or (eq? x empty-pvec) (eq? x empty-pmap) (eq? x empty-pmap-hash)
+      (eq? x empty-pset) (eq? x jolt-empty-list)))
 (define (coll-meta-set! x m)
-  (cond ((pvec? x) (pvec-meta-set! x m))
+  (cond ((coll-shared-empty? x)
+         ;; [], {}, #{} and () are each one object every holder shares, so a
+         ;; write here would give every empty collection in the process this meta
+         (error 'coll-meta-set! "the shared empty collection is never fresh" x))
+        ((pvec? x) (pvec-meta-set! x m))
         ((pmap? x) (pmap-meta-set! x m))
         ((pset? x) (pset-meta-set! x m))
         ((cseq? x) (cseq-meta-set! x m))
         ((empty-list-t? x) (empty-list-t-meta-set! x m))
         ((jolt-lazyseq? x) (jolt-lazyseq-meta-set! x m))
         (else (error 'coll-meta-set! "not a collection with a meta slot" x))))
+;; X, or a fresh copy of it when it is one of the shared empties, for a caller
+;; that is about to write its meta slot (the image walker's rebuilds).
+(define (coll-unshared x)
+  (if (coll-shared-empty? x) (coll-with-meta x jolt-nil) x))
 ;; A fresh copy of X carrying M — the withMeta constructors. The copy shares the
 ;; structure (trie, slot vector, cell head and tail) and the cached hasheq (meta
 ;; does not hash): one allocation, no traversal.
@@ -199,13 +210,16 @@
 (define (fn-meta-target x) (or (fn-meta-target-of x) x))
 (define (fn-meta-wrap f)
   (let* ((t (fn-meta-target f))
+         ;; through the checked invokes, so a wrong count is the original's
+         ;; ArityException ("Wrong number of args (1) passed to: user/f"), not
+         ;; Chez's raw message about the wrapper
          (w (case-lambda
-              (() (t))
-              ((a) (t a))
-              ((a b) (t a b))
-              ((a b c) (t a b c))
-              ((a b c d) (t a b c d))
-              (args (apply t args)))))
+              (() (jolt-invoke-t0 t))
+              ((a) (jolt-invoke-t1 t a))
+              ((a b) (jolt-invoke-t2 t a b))
+              ((a b c) (jolt-invoke-t3 t a b c))
+              ((a b c d) (jolt-invoke-t4 t a b c d))
+              (args (apply jolt-invoke t args)))))
     (jolt-with-mutex fn-meta-mu (hashtable-set! fn-meta-targets w t))
     w))
 

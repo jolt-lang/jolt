@@ -2230,8 +2230,16 @@
         (parameterize ((rdr-read-features
                          (if (jolt-nil? fs)
                              '()
-                             (map (lambda (k) (if (keyword? k) (keyword-t-name k) (jolt-str k)))
-                                  (seq->list (jolt-seq fs)))))
+                             ;; a branch's feature is a plain keyword
+                             ;; (rdr-feature?), and the JVM compares features
+                             ;; by equality, so only a plain keyword can match
+                             (let loop ((ks (seq->list (jolt-seq fs))) (acc '()))
+                               (cond
+                                 ((null? ks) acc)
+                                 ((and (keyword? (car ks))
+                                       (let ((n (keyword-t-ns (car ks)))) (or (not n) (jolt-nil? n))))
+                                  (loop (cdr ks) (cons (keyword-t-name (car ks)) acc)))
+                                 (else (loop (cdr ks) acc))))))
                        (rdr-read-cond-preserve (eq? rc rdr-kw-preserve)))
           (thunk)))
       (thunk)))

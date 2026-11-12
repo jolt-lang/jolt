@@ -97,7 +97,7 @@
 
   That pointer carries no RECORDED size (see `size`): reinterpret it where copy
   or clone needs one. `write` names the member, as a pair —
-  (write p curl-msg {:msg 1 :easy nil :data [:result 0]}) — since the members
+  (write p curl-msg {:msg 1 :easy ffi/null :data [:result 0]}) — since the members
   overlap and writing them all would leave only the last. A union is not passed
   BY VALUE in a signature, alone or inside a struct: which member is live is the
   program's knowledge rather than the type's, and the register classification

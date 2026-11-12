@@ -1316,8 +1316,13 @@
        (if (and (< (+ i 1) end) (char=? (string-ref src (+ i 1)) #\{))
            (let ((close (str-scan-char src #\} (+ i 2) end)))
              (if close
+                 ;; a lone surrogate is its bare code point, as \u gives it
+                 ;; (see below); past U+10FFFF is the JVM's error
                  (let ((v (parse-hex src (+ i 2) close)))
-                   (values (integer->char v) (+ close 1)))
+                   (cond
+                     ((> v #x10FFFF) (java-re-error "Hexadecimal codepoint is too big" close))
+                     ((and (<= #xD800 v) (<= v #xDFFF)) (values v (+ close 1)))
+                     (else (values (integer->char v) (+ close 1)))))
                  (values #\x i)))
            (if (and (< (+ i 2) end) (hex-value (string-ref src (+ i 1)))
                     (hex-value (string-ref src (+ i 2))))
