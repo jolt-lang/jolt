@@ -720,9 +720,14 @@
           (cons "clojure.pprint" "stdlib/clojure/pprint.clj")
           (cons "clojure.repl" "stdlib/clojure/repl.clj")
           (cons "clojure.main" "stdlib/clojure/main.clj")
-          ;; LAST: the generated :doc/:arglists shard fills what the sources
+          ;; LAST: the generated :doc/:arglists shards fill what the sources
           ;; above did not declare, for every image ns (tools/gen-core-docs.sh).
-          (cons "clojure.core" "jolt-core/clojure/core/90-docs.clj"))))
+          ;; 90-docs defines attach-core-doc-meta!, so it leads; the generator
+          ;; prints the shard range to keep this list in step with.
+          (cons "clojure.core" "jolt-core/clojure/core/90-docs.clj")
+          (cons "clojure.core" "jolt-core/clojure/core/91-docs.clj")
+          (cons "clojure.core" "jolt-core/clojure/core/92-docs.clj")
+          (cons "clojure.core" "jolt-core/clojure/core/93-docs.clj"))))
 
 ;; Join a list of form strings with "\n", no trailing newline.
 (define (ei-join forms)

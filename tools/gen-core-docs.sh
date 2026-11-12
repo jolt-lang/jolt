@@ -1,6 +1,6 @@
 #!/bin/sh
-# Regenerate jolt-core/clojure/core/90-docs.clj (reference :doc/:arglists for the
-# image-baked namespaces) from a JVM Clojure's own var metadata.
+# Regenerate jolt-core/clojure/core/9N-docs.clj (reference :doc/:arglists for the
+# image-baked namespaces, sharded 90-docs.clj, 91-docs.clj, ...) from a JVM Clojure's own var metadata.
 #
 #   tools/gen-core-docs.sh [path-to-jolt]
 #
@@ -22,4 +22,4 @@ trap 'rm -f "$INV"' EXIT
 "$JOLT" -e '(prn (into {} (map (fn [n] [n (vec (sort (map name (keys (ns-interns (symbol n))))))]) ["clojure.core" "clojure.string" "clojure.walk" "clojure.template" "clojure.edn" "clojure.set" "clojure.pprint" "clojure.repl" "clojure.java.io"])))' > "$INV"
 
 java -cp "$CLOJURE_JAR:$SPEC_JAR:$CORE_SPECS_JAR" clojure.main \
-  tools/gen-core-docs.clj "$INV" jolt-core/clojure/core/90-docs.clj
+  tools/gen-core-docs.clj "$INV" jolt-core/clojure/core
