@@ -1947,20 +1947,27 @@
 
 ;; The :jolt/provides rows this process has handed to the runtime. A project's
 ;; resolved deps install theirs at launch and every add-deps call adds its own,
-;; so a row is installed once however many times its library is added: a second
+;; so a class is claimed once however many times its library is added: a second
 ;; claim on a class the first one's install namespace already registered would be
 ;; dropped as one "this jolt provides", with a warning about a stale library.
+;; Tracked per [install-ns class], not per row, because the runtime judges each
+;; class: a re-add under another coordinate, or a newer version declaring one
+;; more class, is a different row that must still claim only what is new.
 (defonce ^:private installed-provides (atom []))
 
 (defn install-class-providers!
   "Hand :jolt/provides rows (RFC 0014), as host-class-providers returns them, to
   the runtime so a reference to a provided class autoloads its install
-  namespace. Rows already installed in this process are skipped, and the rest
-  are checked together with them, so a library added later can't claim a class
-  that another one already provides."
+  namespace. Classes an install namespace already claimed in this process are
+  skipped, and the new rows are checked together with the installed ones, so a
+  library added later can't claim a class that another one already provides."
   [entries]
   (let [seen @installed-provides
-        fresh (vec (remove (set seen) (distinct entries)))]
+        claimed (set (for [[install-ns _ & classes] seen, c classes] [install-ns c]))
+        fresh (keep (fn [[install-ns lib & classes]]
+                      (when-let [cs (seq (remove #(claimed [install-ns %]) classes))]
+                        (into [install-ns lib] cs)))
+                    (distinct entries))]
     (when (seq fresh)
       (host-class-providers (concat seen fresh))
       (doseq [[install-ns lib & classes] fresh]

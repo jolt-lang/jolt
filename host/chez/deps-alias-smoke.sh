@@ -457,6 +457,11 @@ check "add-deps installs the added library's :jolt/provides" '"claimer-sig:RSA"'
 out="$(runwarn -A:prov -e "(jolt.deps/add-deps '{:deps {local/provclaim {:local/root \"../provclaim\"}}}) (prn (java.security.Signature/getInstance \"RSA\")) (jolt.deps/add-deps '{:deps {local/provclaim {:local/root \"../provclaim\"}}}) (prn :done)")"
 check "re-adding a resolved provider claims nothing twice" '"claimer-sig:RSA" :done' \
       "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+# The runtime judges each class, so the same install namespace re-added under
+# another coordinate must not re-claim what it already registered either.
+out="$(runwarn -A:prov -e "(prn (java.security.Signature/getInstance \"RSA\")) (jolt.deps/add-deps '{:deps {other/provclaim {:local/root \"../provclaim\"}}}) (prn :done)")"
+check "re-adding a provider under another coordinate claims nothing twice" '"claimer-sig:RSA" :done' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
 # ...and the one-provider-per-class rule covers what add-deps brings in: a
 # library claiming a class the project's deps already provide is refused, naming
 # both claimants.
