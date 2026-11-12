@@ -107,50 +107,56 @@
   [fa fb]
   (reduce (fn [m k] (assoc m k (join-t (get fa k) (get fb k))))
           {} (distinct (concat (keys fa) (keys fb)))))
+;; :nil is the type of a literal nil. With a struct it forms a NILABLE struct —
+;; field reads still bare-index (jrec-field-at falls back to jolt-get on nil), but
+;; some?/nil? won't fold and a guard narrows it back to non-nil. With anything
+;; else it widens to :any (nil is not a safe scalar/vec — no fl/fx, no bare elem).
+;; `o` is the other (non-:nil) side of the join.
+(defn- join-with-nil [o]
+  (cond (= o :nil) :nil
+        (struct-type? o) (assoc o :nilable true)
+        :else :any))
+(defn- join-structs [a b]
+  (let [same-rec? (and (get a :type) (= (get a :type) (get b :type))
+                       (= (get a :shape) (get b :shape)))
+        merged (mk-struct (if same-rec?
+                            (merge-fields-same-record (sfields a) (sfields b))
+                            (merge-fields (sfields a) (sfields b))))
+        ;; joining two values of the SAME complete shape / record type preserves
+        ;; it — the merged struct has the same key set. Different shapes/types
+        ;; (or an incomplete side) drop it, as the layout is no longer proven.
+        merged (if (and (get a :shape) (= (get a :shape) (get b :shape)))
+                 (assoc merged :shape (get a :shape)) merged)
+        merged (if (and (get a :type) (= (get a :type) (get b :type)))
+                 (assoc merged :type (get a :type)) merged)
+        ;; nilability is contagious: a nilable side makes the join nilable.
+        merged (if (or (get a :nilable) (get b :nilable))
+                 (assoc merged :nilable true) merged)]
+    merged))
+;; differing kinds: form a scalar union when both sides reduce to scalars
+;; (or scalar unions); anything compound on either side stays :any
+(defn- scalar-members [t]
+  (cond (union-type? t) (umembers t) (scalar-t? t) #{t} :else nil))
+(defn- join-scalars [a b]
+  (let [ma (scalar-members a)
+        mb (scalar-members b)]
+    (if (and ma mb) (union-of (reduce conj ma mb)) :any)))
 (defn join-t [a b]
   (cond
     (= a b) a
     (nil? a) b
     (nil? b) a
-    ;; :nil is the type of a literal nil. With a struct it forms a NILABLE struct —
-    ;; field reads still bare-index (jrec-field-at falls back to jolt-get on nil), but
-    ;; some?/nil? won't fold and a guard narrows it back to non-nil. With anything
-    ;; else it widens to :any (nil is not a safe scalar/vec — no fl/fx, no bare elem).
-    (or (= a :nil) (= b :nil))
-      (let [o (if (= a :nil) b a)]
-        (cond (= o :nil) :nil
-              (struct-type? o) (assoc o :nilable true)
-              :else :any))
+    (or (= a :nil) (= b :nil)) (join-with-nil (if (= a :nil) b a))
     ;; :double is a flonum refinement of :num: two doubles stay :double (caught by
     ;; = above), but a double joined with anything else loses the flonum guarantee
     ;; and widens to :num before joining — so a param is :double only when EVERY
     ;; contributing value is a flonum, which is what makes the hintless fl-op sound.
     (or (= a :double) (= b :double))
       (join-t (if (= a :double) :num a) (if (= b :double) :num b))
-    (and (struct-type? a) (struct-type? b))
-      (let [same-rec? (and (get a :type) (= (get a :type) (get b :type))
-                           (= (get a :shape) (get b :shape)))
-            merged (mk-struct (if same-rec?
-                                (merge-fields-same-record (sfields a) (sfields b))
-                                (merge-fields (sfields a) (sfields b))))
-            ;; joining two values of the SAME complete shape / record type preserves
-            ;; it — the merged struct has the same key set. Different shapes/types
-            ;; (or an incomplete side) drop it, as the layout is no longer proven.
-            merged (if (and (get a :shape) (= (get a :shape) (get b :shape)))
-                     (assoc merged :shape (get a :shape)) merged)
-            merged (if (and (get a :type) (= (get a :type) (get b :type)))
-                     (assoc merged :type (get a :type)) merged)
-            ;; nilability is contagious: a nilable side makes the join nilable.
-            merged (if (or (get a :nilable) (get b :nilable))
-                     (assoc merged :nilable true) merged)]
-        merged)
+    (and (struct-type? a) (struct-type? b)) (join-structs a b)
     (and (vec-type? a) (vec-type? b)) (mk-vec (join-t (velem a) (velem b)))
     (and (set-type? a) (set-type? b)) (mk-set (join-t (selem a) (selem b)))
-    ;; differing kinds: form a scalar union when both sides reduce to scalars
-    ;; (or scalar unions); anything compound on either side stays :any
-    :else (let [ma (cond (union-type? a) (umembers a) (scalar-t? a) #{a} :else nil)
-                mb (cond (union-type? b) (umembers b) (scalar-t? b) #{b} :else nil)]
-            (if (and ma mb) (union-of (reduce conj ma mb)) :any))))
+    :else (join-scalars a b)))
 (defn join [a b] (join-t a b))
 ;; depth cap (RFC 0005): truncate a type below depth d to :any, so recursive data
 ;; can't make an infinite type and the inter-procedural fixpoint stays finite.

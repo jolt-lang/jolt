@@ -21,8 +21,8 @@
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
                                        param-seeds-for param-num-seeds-for
-                                       reinfer-inline-method-bodies
-                                       guard-declared-records]]))
+                                       reinfer-inline-method-bodies]]
+            [jolt.passes.types.narrow :refer [guard-declared-records]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
@@ -167,6 +167,73 @@
   (run! (fn [p] (println (str "IR-VALIDATE [" phase "] " p)))
         (jolt.ir/tree-problems node)))
 
+;; A ^Record hint the program wrote becomes a type test around the hinted
+;; body (types/narrow.clj guard-declared-records): the inference that follows trusts
+;; only what the test proves. Before the stash, so a spliced copy carries the
+;; test with it. The dev path never types a hint, so it keeps the plain body.
+(defn- prepare-node [node ctx]
+  (let [node (if (or (inline-enabled? ctx) (inference-enabled? ctx))
+               (guard-declared-records node (record-shapes ctx))
+               node)]
+    (if (and (inline-enabled? ctx) (= :def (:op node)) (inline-eligible? ctx node))
+      (stamp-site-consts ctx node)
+      node)))
+
+;; stash an inline-eligible defn so later call sites can splice it (closed-world
+;; optimization only). Done before optimizing, from the analyzed node.
+;;
+;; A def that is NOT eligible clears the entry rather than leaving it alone. The
+;; stash table is process-global and shared across compilations on purpose (that
+;; is what makes cross-namespace splicing work), so "no stash written" is not the
+;; same as "no stash": a previous compilation in this process — the pass gates
+;; compile many small programs in one — can have left one under the same fqn, and
+;; a refusal that only declines to overwrite would splice it. Storing nil is the
+;; removal: inline-ir hands it back as nil and try-inline treats that as no stash.
+(defn- stash-def! [ctx node]
+  (when (and (inline-enabled? ctx) (= :def (:op node)))
+    (pt :stash (fn [] (stash-inline! ctx (:ns node) (:name node)
+                                     (when (inline-eligible? ctx node) (stash-of node)))))))
+
+;; The inference tail both optimizing modes share, over the already-optimized node.
+(defn- infer-optimized [unit opt]
+  ;; a top-level def whose params the whole-program fixpoint typed gets
+  ;; reinferred with those seeds (record types flow in from its callers);
+  ;; everything else takes the ordinary per-form inference.
+  (let [seeds (when (= :def (:op opt)) (param-seeds-for unit (str (:ns opt) "/" (:name opt))))
+        ir1 (pt :pm-bodies (fn [] (reinfer-inline-method-bodies unit opt)))
+        ir2 (pt :infer (fn [] (if seeds (reinfer-def unit ir1 seeds) (run-inference unit ir1))))]
+    ;; a final const-fold after inference propagates any predicate folded to a
+    ;; constant, collapsing the `if` it gates to the taken branch; then inject
+    ;; any whole-program :double param hints for the numeric pass.
+    (pt :nhints (fn [] (inject-wp-nhints unit (const-fold ir2))))))
+
+;; Full inline + inference (optimize + direct-link).
+(defn- optimize-inline [node ctx unit]
+  ;; install the record-ctor shapes ONCE on the unit — the inline record fold and
+  ;; the back end's direct-ctor emit read it from there (jolt.op-registry holds the
+  ;; unit pointer), no separate registries. Protocol methods for devirtualization.
+  (let [_ (pt :setup (fn [] (set-record-shapes! unit (record-shapes ctx))
+                             (set-protocol-methods! unit (protocol-methods ctx))
+                             (begin-growth-budget! node)))
+        opt (pt :inline (fn [] (loop [i 0 n (const-fold node)]
+                                (reset! (:dirty unit) false)
+                                (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
+                                  (if (and @(:dirty unit) (< i inline-fixpoint-cap))
+                                    (recur (inc i) n2)
+                                    (do (when (and wp-trace? (pos? i))
+                                          (println (str "[inline] " (:ns node) "/" (:name node) " rounds " (inc i))))
+                                        n2))))))
+        _ (pt :growth (fn [] (end-growth-budget!)))]
+    (infer-optimized unit opt)))
+
+;; Inference mode (release/optimize without direct-link): inference without
+;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.
+(defn- optimize-inference [node ctx unit]
+  (let [_ (pt :setup (fn [] (set-record-shapes! unit (record-shapes ctx))
+                             (set-protocol-methods! unit (protocol-methods ctx))))
+        opt (pt :fold (fn [] (const-fold node)))]
+    (infer-optimized unit opt)))
+
 (defn run-passes
   "All passes, in order. The back end applies this to every analyzed form.
 
@@ -212,72 +279,13 @@
   ;; they must be the same object, or the record fold + inline fixpoint silently
   ;; degrade. build/emit-image and the gates all publish then pass the same unit.
   (when ir-validate? (report-ir! "analyze" node))
-  ;; A ^Record hint the program wrote becomes a type test around the hinted
-  ;; body (types.clj guard-declared-records): the inference that follows trusts
-  ;; only what the test proves. Before the stash, so a spliced copy carries the
-  ;; test with it. The dev path never types a hint, so it keeps the plain body.
-  (let [node (if (or (inline-enabled? ctx) (inference-enabled? ctx))
-               (guard-declared-records node (record-shapes ctx))
-               node)
-        node (if (and (inline-enabled? ctx) (= :def (:op node)) (inline-eligible? ctx node))
-               (stamp-site-consts ctx node)
-               node)]
-  ;; stash an inline-eligible defn so later call sites can splice it (closed-world
-  ;; optimization only). Done before optimizing, from the analyzed node.
-  ;;
-  ;; A def that is NOT eligible clears the entry rather than leaving it alone. The
-  ;; stash table is process-global and shared across compilations on purpose (that
-  ;; is what makes cross-namespace splicing work), so "no stash written" is not the
-  ;; same as "no stash": a previous compilation in this process — the pass gates
-  ;; compile many small programs in one — can have left one under the same fqn, and
-  ;; a refusal that only declines to overwrite would splice it. Storing nil is the
-  ;; removal: inline-ir hands it back as nil and try-inline treats that as no stash.
-  (when (and (inline-enabled? ctx) (= :def (:op node)))
-    (pt :stash (fn [] (stash-inline! ctx (:ns node) (:name node)
-                                     (when (inline-eligible? ctx node) (stash-of node))))))
-  (let [ir (cond
-      ;; Full inline + inference (optimize + direct-link)
-      (inline-enabled? ctx)
-      ;; install the record-ctor shapes ONCE on the unit — the inline record fold and
-      ;; the back end's direct-ctor emit read it from there (jolt.op-registry holds the
-      ;; unit pointer), no separate registries. Protocol methods for devirtualization.
-      (let [_ (pt :setup (fn [] (set-record-shapes! unit (record-shapes ctx))
-                                 (set-protocol-methods! unit (protocol-methods ctx))
-                                 (begin-growth-budget! node)))
-            opt (pt :inline (fn [] (loop [i 0 n (const-fold node)]
-                                    (reset! (:dirty unit) false)
-                                    (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
-                                      (if (and @(:dirty unit) (< i inline-fixpoint-cap))
-                                        (recur (inc i) n2)
-                                        (do (when (and wp-trace? (pos? i))
-                                              (println (str "[inline] " (:ns node) "/" (:name node) " rounds " (inc i))))
-                                            n2))))))
-            _ (pt :growth (fn [] (end-growth-budget!)))
-            ;; a top-level def whose params the whole-program fixpoint typed gets
-            ;; reinferred with those seeds (record types flow in from its callers);
-            ;; everything else takes the ordinary per-form inference.
-            seeds (when (= :def (:op opt)) (param-seeds-for unit (str (:ns opt) "/" (:name opt))))
-            ir1 (pt :pm-bodies (fn [] (reinfer-inline-method-bodies unit opt)))
-            ir2 (pt :infer (fn [] (if seeds (reinfer-def unit ir1 seeds) (run-inference unit ir1))))]
-        ;; a final const-fold after inference propagates any predicate folded to a
-        ;; constant, collapsing the `if` it gates to the taken branch; then inject
-        ;; any whole-program :double param hints for the numeric pass.
-        (pt :nhints (fn [] (inject-wp-nhints unit (const-fold ir2)))))
-
-      ;; Inference mode (release/optimize without direct-link): inference without
-      ;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.
-      (inference-enabled? ctx)
-      (let [_ (pt :setup (fn [] (set-record-shapes! unit (record-shapes ctx))
-                                 (set-protocol-methods! unit (protocol-methods ctx))))
-            opt (pt :fold (fn [] (const-fold node)))
-            seeds (when (= :def (:op opt)) (param-seeds-for unit (str (:ns opt) "/" (:name opt))))
-            ir1 (pt :pm-bodies (fn [] (reinfer-inline-method-bodies unit opt)))
-            ir2 (pt :infer (fn [] (if seeds (reinfer-def unit ir1 seeds) (run-inference unit ir1))))]
-        (pt :nhints (fn [] (inject-wp-nhints unit (const-fold ir2)))))
-
-      ;; Dev/normal: const-fold + numeric only
-      :else
-      (pt :fold (fn [] (const-fold node))))
-        result (pt :numeric (fn [] (numeric/annotate ir)))]
-    (when ir-validate? (report-ir! "passes" result))
-    result))))
+  (let [node (prepare-node node ctx)]
+    (stash-def! ctx node)
+    (let [ir (cond
+               (inline-enabled? ctx) (optimize-inline node ctx unit)
+               (inference-enabled? ctx) (optimize-inference node ctx unit)
+               ;; Dev/normal: const-fold + numeric only
+               :else (pt :fold (fn [] (const-fold node))))
+          result (pt :numeric (fn [] (numeric/annotate ir)))]
+      (when ir-validate? (report-ir! "passes" result))
+      result))))

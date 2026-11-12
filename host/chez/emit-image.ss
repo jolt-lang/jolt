@@ -686,6 +686,8 @@
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
         (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
         (cons "jolt.passes.types.check" "jolt-core/jolt/passes/types/check.clj")
+        (cons "jolt.passes.types.records" "jolt-core/jolt/passes/types/records.clj")
+        (cons "jolt.passes.types.narrow" "jolt-core/jolt/passes/types/narrow.clj")
         (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")
         (cons "jolt.passes" "jolt-core/jolt/passes.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
