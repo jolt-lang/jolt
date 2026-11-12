@@ -181,6 +181,31 @@
 ;; a jrec shares its internal structure with the source (one allocation, no
 ;; traversal). host-table.ss extends this to a sorted collection's table. A
 ;; procedure can't be copied meaningfully — keyed in place.
+;; A fn given metadata is a NEW fn that calls the original, as AFunction.withMeta
+;; returns a RestFn over `this` on the JVM: the original keeps its own metadata,
+;; so (with-meta f m) neither changes f nor what any other holder of f reads. The
+;; wrapper answers f's arities (an arity wrapper over f's mask), and its data is
+;; a fn-meta-of naming f, so a wrapper of a wrapper calls f directly and a state
+;; image writes the wrapper as f plus its metadata (state-image.ss).
+(define-record-type fn-meta-of (fields target) (nongenerative jolt-fn-meta-of-v1))
+(define (fn-meta-wrapper? x)
+  (and (procedure? x) (wrapper-procedure? x)
+       (fn-meta-of? (wrapper-procedure-data x))))
+(define (fn-meta-target x)
+  (if (fn-meta-wrapper? x) (fn-meta-of-target (wrapper-procedure-data x)) x))
+(define (fn-meta-wrap f)
+  (let ((t (fn-meta-target f)))
+    (make-arity-wrapper-procedure
+      (case-lambda
+        (() (t))
+        ((a) (t a))
+        ((a b) (t a b))
+        ((a b c) (t a b c))
+        ((a b c d) (t a b c d))
+        (args (apply t args)))
+      (procedure-arity-mask t)
+      (make-fn-meta-of t))))
+
 (define (meta-copy x)
   (cond
     ((jrec? x) (make-jrec-from-existing x #f #f (jrec-ext x)))
@@ -188,7 +213,8 @@
     ;; identity, so attaching meta leaves the original's meta untouched. Every
     ;; Clojure reify implements IObj.
     ((jreify? x) (make-jreify (jreify-methods x) (jreify-protos x) (jreify-delegate x) (jreify-cname x)))
-    (else x)))                          ; procedure
+    ((procedure? x) (fn-meta-wrap x))
+    (else x)))
 
 ;; Obj.withMeta returns `this` when the metadata is unchanged, and the JVM
 ;; compares it by IDENTITY, not by =: (with-meta v (meta v)) is v, and so is

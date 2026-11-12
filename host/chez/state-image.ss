@@ -429,6 +429,14 @@
   (fields kind cmp-fn entries)
   (nongenerative image-sorted-v1))
 
+;; A fn given metadata (natives-meta.ss fn-meta-wrap): a host closure over the
+;; original, which has no name or source of its own to write. It travels as the
+;; original, walked like any fn (fn-ref, source record, or refusal), and restore
+;; wraps that again; its metadata rides in the side table like any fn's.
+(define-record-type image-fnmeta
+  (fields target)
+  (nongenerative image-fnmeta-v1))
+
 ;; A hash container whose KEY subtree reaches a procedure. Its trie placement
 ;; is computed from procedure identity hasheqs, which are per-process
 ;; (hasheq.ss proc-hasheq-tbl) — travel it raw and every lookup in the
@@ -1228,6 +1236,22 @@
                                empty-pmap)))
                           (else (hashtable-set! memo x #t)
                                 (report! x path (image-report-disposition mode))))))
+                     ;; a fn given metadata writes as its original, rewrapped on
+                     ;; restore (image-fnmeta above)
+                     ((and restore? (image-fnmeta? x))
+                      (let ((w (fn-meta-wrap (walk (image-fnmeta-target x) (cons "fn" path)))))
+                        (hashtable-set! memo x w)
+                        (image-meta-copy! x w)
+                        w))
+                     ((and (not restore?) (fn-meta-wrapper? x))
+                      (if rebuild?
+                          (let ((r (make-image-fnmeta (walk (fn-meta-target x) (cons "fn" path)))))
+                            (hashtable-set! memo x r)
+                            (image-meta-copy! x r)
+                            r)
+                          (begin (hashtable-set! memo x #t)
+                                 (walk (fn-meta-target x) (cons "fn" path))
+                                 #t)))
                      ;; a named fn stays in place: the fn-ref external restores
                      ;; it as the live fn (cheaper than source, no form needed).
                      ;; On the READ side a procedure IS an already-restored

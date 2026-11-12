@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2 to 3 times faster, allocation-heavy code 10 to 30% faster; compiled Clojure
   code itself runs the same. The Chez cache keys are bumped so the old builds
   aren't reused.
+- **`with-meta` and `vary-meta` on a fn return a new fn** (#1616), as
+  `AFunction.withMeta` does on the JVM. They used to set the metadata on the fn
+  itself and return it, so every holder of that fn saw it and a later
+  `with-meta` overwrote an earlier one: `(with-meta + {:a 1})` gave
+  `clojure.core/+` itself that metadata, and following `:original` back from
+  `(vary-meta f assoc :original f)` looped forever. The new fn calls the
+  original, takes the same arities, and travels through a state image as the
+  original plus its own metadata.
 - `make build` works on a Mac with no Chez Scheme on `PATH`. The Chez that
   makes provisions was compiled with xPack GCC 14.2.0-1, whose fixed
   `<stdio.h>` fails against current macOS SDKs, so the build stopped at Chez's
