@@ -183,28 +183,31 @@
 ;; procedure can't be copied meaningfully — keyed in place.
 ;; A fn given metadata is a NEW fn that calls the original, as AFunction.withMeta
 ;; returns a RestFn over `this` on the JVM: the original keeps its own metadata,
-;; so (with-meta f m) neither changes f nor what any other holder of f reads. The
-;; wrapper answers f's arities (an arity wrapper over f's mask), and its data is
-;; a fn-meta-of naming f, so a wrapper of a wrapper calls f directly and a state
-;; image writes the wrapper as f plus its metadata (state-image.ss).
-(define-record-type fn-meta-of (fields target) (nongenerative jolt-fn-meta-of-v1))
-(define (fn-meta-wrapper? x)
-  (and (procedure? x) (wrapper-procedure? x)
-       (fn-meta-of? (wrapper-procedure-data x))))
-(define (fn-meta-target x)
-  (if (fn-meta-wrapper? x) (fn-meta-of-target (wrapper-procedure-data x)) x))
+;; so (with-meta f m) neither changes f nor what any other holder of f reads.
+;; Each wrapper is recorded against its original in a weak table, so a wrapper
+;; of a wrapper calls the original directly and a state image writes the wrapper
+;; as the original plus its metadata (state-image.ss). A call with the wrong
+;; number of arguments goes through and the original raises its ArityException,
+;; as the JVM's wrapper hands it to the original's applyTo. The table is plain
+;; R6RS (no Chez wrapper procedures), so the Gambit target runs this as is.
+(define fn-meta-targets (make-weak-eq-hashtable))
+(define fn-meta-mu (make-mutex))
+(define (fn-meta-target-of x)
+  (and (procedure? x)
+       (jolt-with-mutex fn-meta-mu (hashtable-ref fn-meta-targets x #f))))
+(define (fn-meta-wrapper? x) (and (fn-meta-target-of x) #t))
+(define (fn-meta-target x) (or (fn-meta-target-of x) x))
 (define (fn-meta-wrap f)
-  (let ((t (fn-meta-target f)))
-    (make-arity-wrapper-procedure
-      (case-lambda
-        (() (t))
-        ((a) (t a))
-        ((a b) (t a b))
-        ((a b c) (t a b c))
-        ((a b c d) (t a b c d))
-        (args (apply t args)))
-      (procedure-arity-mask t)
-      (make-fn-meta-of t))))
+  (let* ((t (fn-meta-target f))
+         (w (case-lambda
+              (() (t))
+              ((a) (t a))
+              ((a b) (t a b))
+              ((a b c) (t a b c))
+              ((a b c d) (t a b c d))
+              (args (apply t args)))))
+    (jolt-with-mutex fn-meta-mu (hashtable-set! fn-meta-targets w t))
+    w))
 
 (define (meta-copy x)
   (cond
