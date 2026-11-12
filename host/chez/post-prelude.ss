@@ -181,10 +181,14 @@
            (let-values (((form found? text) (host-reader-read stream #f #f #t)))
              form)
            (jolt-invoke ov-read stream)))
+      ;; :features and :read-cond hold for the read (reader.ss
+      ;; rdr-call-with-read-opts); the overlay's arity binds them itself
       ((opts stream)
        (if (reader-jhost? stream)
            (let* ((eof? (host-read-eof-opt? opts kw-eof)))
-             (let-values (((form found? text) (host-reader-read stream #f #f (not eof?))))
+             (let-values (((form found? text)
+                           (rdr-call-with-read-opts opts
+                             (lambda () (host-reader-read stream #f #f (not eof?))))))
                (if found? form (jolt-get opts kw-eof))))
            (jolt-invoke ov-read opts stream)))
       ((stream e? ev)
@@ -216,9 +220,11 @@
       (() (jolt-invoke (var-deref "clojure.core" "read+string") (var-deref "clojure.core" "*in*")))
       ((stream) (jolt-invoke (var-deref "clojure.core" "read+string") stream #t jolt-nil))
       ((opts stream)
-       (if (and (pmap? opts) (jolt-contains? opts kw-eof))
-           (jolt-invoke (var-deref "clojure.core" "read+string") stream #f (jolt-get opts kw-eof))
-           (jolt-invoke (var-deref "clojure.core" "read+string") stream #t jolt-nil)))
+       (rdr-call-with-read-opts opts
+         (lambda ()
+           (if (and (pmap? opts) (jolt-contains? opts kw-eof))
+               (jolt-invoke (var-deref "clojure.core" "read+string") stream #f (jolt-get opts kw-eof))
+               (jolt-invoke (var-deref "clojure.core" "read+string") stream #t jolt-nil)))))
       ((stream e? ev recursive?)
        (jolt-invoke (var-deref "clojure.core" "read+string") stream e? ev))
       ;; the text is the reference's (.trim (.getString stream)): what the read

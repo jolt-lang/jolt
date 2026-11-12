@@ -134,6 +134,10 @@
 ;; :jolt/provides needs, because the first form READ is what consults it.
 (def-var! "jolt.host" "add-reader-features!" nr-reader-features-add!)
 (def-var! "clojure.core" "reader-conditional" nr-reader-conditional)
+;; read and read+string's opts arity: their :features and :read-cond in force for
+;; the read (reader.ss rdr-call-with-read-opts)
+(def-var! "jolt.host" "call-with-read-opts"
+  (lambda (opts f) (rdr-call-with-read-opts opts (lambda () (jolt-invoke f)))))
 (def-var! "clojure.core" "macroexpand-1" nr-macroexpand-1)
 (def-var! "clojure.core" "__macroexpand-env" nr-macroexpand-env)
 

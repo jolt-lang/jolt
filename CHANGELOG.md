@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`read-string`, `read` and `read+string` honor `:features` and
+  `:read-cond :preserve`** (#1620), as the JVM reader does. `:features` adds
+  platforms for that read, so `(read-string {:read-cond :allow :features
+  #{:cljs}} "#?(:cljs 2 :clj 1)")` is 2 and a tool reading `.cljc` source for
+  another platform takes that platform's branch. `:read-cond :preserve` reads
+  each `#?` and `#?@` as a `reader-conditional` instead of resolving it. Both
+  used to be accepted and ignored.
 - **`jolt.fibers/fibers` lists the fibers that haven't finished** (#1606),
   across the default pool and named ones, so a tool can show what's running
   (an IDE's process view, an nREPL op) without wrapping `spawn`. Wrapping it

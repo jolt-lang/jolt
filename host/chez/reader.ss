@@ -1100,9 +1100,19 @@
 ;; avoids on babashka — LazilyPersistentVector, PersistentArrayMap/createWithCheck,
 ;; Util/hashCombine, java.nio's DirectoryStream, reflection — jolt shims.
 (define rdr-features '("jolt" "clj" "default"))
+;; The two read options a caller can pass read-string or read, as the JVM's
+;; reader takes them (rdr-call-with-read-opts below). :features adds names to
+;; the platform's for that one read, so a tool reading .cljc source for another
+;; platform can take that platform's branch: #?(:cljs 2 :clj 1) with #{:cljs}
+;; reads 2, as it does on the JVM, since the first branch whose feature is on
+;; wins. :read-cond :preserve hands each #? and #?@ back unresolved, as a
+;; reader-conditional of its list.
+(define rdr-read-features (make-thread-parameter '()))
+(define rdr-read-cond-preserve (make-thread-parameter #f))
 (define (rdr-feature? kw)
   (and (keyword? kw) (jolt-nil? (let ((n (keyword-t-ns kw))) (if n n jolt-nil)))
-       (and (member (keyword-t-name kw) rdr-features) #t)))
+       (let ((name (keyword-t-name kw)))
+         (and (or (member name rdr-features) (member name (rdr-read-features))) #t))))
 (define rdr-reserved-features (list (keyword #f "else") (keyword #f "none")))
 ;; LispReader.ConditionalReader: the body is a LIST, found after an optional @
 ;; and whitespace, and a feature that matches must be followed by its form. A
@@ -1117,6 +1127,8 @@
     (unless (char=? (string-ref s start) #\()
       (rdr-error s start "read-cond body must be a list"))
     (let-values (((form j) (rdr-read-form s start end)))
+      (if (rdr-read-cond-preserve)
+          (values (make-jolt-reader-conditional-record (rdr-form->data form) splice) j)
       (let ((items (seq->list form)))
         (let loop ((xs items))
           (cond ((null? xs) (values rdr-eof j))  ; no match -> discard
@@ -1142,7 +1154,7 @@
                                        (else (list v))))
                                j))
                      (values (cadr xs) j)))
-                (else (loop (cddr xs)))))))))
+                (else (loop (cddr xs))))))))))
 
 (define (rdr-string-rindex-char str c)
   (let loop ((i (- (string-length str) 1)))
@@ -2195,20 +2207,38 @@
          (lambda ()
            (let-values (((form j) (rdr-read-top s 0 (string-length s))))
              (if (rdr-eof? form) (keyword "jolt" "reader-eof") form)))))))
+;; Run THUNK with an opts map's :features and :read-cond in force for the reads
+;; it makes: :features (keywords, added to the platform's) and :read-cond
+;; :preserve. :read-cond :allow, or none, resolves #? as every read here does;
+;; jolt reads a #? without :read-cond too, where the JVM refuses it.
+(define rdr-kw-features (keyword #f "features"))
+(define rdr-kw-read-cond (keyword #f "read-cond"))
+(define rdr-kw-preserve (keyword #f "preserve"))
+(define (rdr-call-with-read-opts opts thunk)
+  (if (pmap? opts)
+      (let ((fs (jolt-get opts rdr-kw-features))
+            (rc (jolt-get opts rdr-kw-read-cond)))
+        (parameterize ((rdr-read-features
+                         (if (jolt-nil? fs)
+                             '()
+                             (map (lambda (k) (if (keyword? k) (keyword-t-name k) (jolt-str k)))
+                                  (seq->list (jolt-seq fs)))))
+                       (rdr-read-cond-preserve (eq? rc rdr-kw-preserve)))
+          (thunk)))
+      (thunk)))
 ;; read-string: the 1-arity returns nil at end of input (the documented seed
 ;; wart, src 18); the (opts s) arity is the reference's, where :eof sets the
-;; end-of-input value and its ABSENCE makes end of input an error. :read-cond and
-;; :features are accepted and ignored: jolt's reader always resolves #?
-;; conditionals, against the fixed host feature set {:jolt :clj :default} (see
-;; rdr-features), so a reader-conditional string reads the same either way.
-;; malli's generator-ast suite calls this arity.
+;; end-of-input value and its ABSENCE makes end of input an error, and :features
+;; and :read-cond apply as rdr-call-with-read-opts says. malli's generator-ast
+;; suite calls this arity.
 (define rdr-kw-eof (keyword #f "eof"))
 (define jolt-read-string
   (case-lambda
     ((s) (let ((form (jolt-read-form-raw s)))
            (if (jolt-nil? form) form (rdr-form->data form))))
     ((opts s)
-     (let ((form (if (jolt-nil? s) rdr-eof (rdr-read-top-data s))))
+     (let ((form (if (jolt-nil? s) rdr-eof
+                     (rdr-call-with-read-opts opts (lambda () (rdr-read-top-data s))))))
        (cond ((not (rdr-eof? form)) (rdr-form->data form))
              ((and (pmap? opts) (jolt-contains? opts rdr-kw-eof))
               (jolt-get opts rdr-kw-eof))

@@ -280,10 +280,12 @@
 
   The 2-arity is Clojure's opts-map form, (read opts stream): an :eof key in
   opts is the value returned at end of input, and its ABSENCE (not a nil value)
-  is what makes EOF throw. The remaining opts keys the JVM reads — :read-cond,
-  :features, :readers — are the reader's, not this function's; jolt's reader
-  resolves conditionals and tags itself, so they are accepted and ignored.
-  The 4-arity's recursive? flag is likewise the JVM reader's own bookkeeping."
+  is what makes EOF throw. :features is a set of keywords added to the
+  platform's (:jolt, :clj) when choosing a #? branch, and :read-cond :preserve
+  reads each #? and #?@ as a reader-conditional instead of resolving it. A #?
+  read with no :read-cond resolves, where the JVM refuses it. :readers is
+  accepted and ignored. The 4-arity's recursive? flag is the JVM reader's own
+  bookkeeping."
   ([] (read *in*))
   ([stream]
    (let [v (-read-form stream)]
@@ -291,7 +293,7 @@
        (-read-eof stream)
        v)))
   ([opts stream]
-   (let [v (-read-form stream)]
+   (let [v (jolt.host/call-with-read-opts opts (fn [] (-read-form stream)))]
      (if (= v reader-eof)
        (if (contains? opts :eof)
          (get opts :eof)
