@@ -3152,6 +3152,19 @@
          ;; the hook feeds `jolt build`, which needs the SOURCE path; an
          ;; artifact-only namespace has none to give.
          (ns-loaded-hook name (or file art))))
+      ;; clojure.core.async with no overlay source and no overlay baked in: the
+      ;; boot's native channel primitives make the namespace exist, but its
+      ;; Clojure API (alts!, mult, pipeline, …) is the overlay. A built binary
+      ;; that never included it would otherwise mark this partial namespace
+      ;; loaded, and code fails far away with "No such var: async/alts!!".
+      ((and (string=? name "clojure.core.async")
+            (not (var-cell-lookup name "alts!!")))
+       (throw-jvm (quote java.io.FileNotFoundException)
+         (string-append
+          "clojure.core.async's Clojure API (alts!, mult, pipeline, …) is not in"
+          " this build, only its channel primitives; build with --include"
+          " clojure.core.async, or add :jolt/build {:include [clojure.core.async]}"
+          " to deps.edn")))
       ;; No source file but the namespace exists in memory (AOT'd into a built
       ;; binary): it's already defined — mark loaded and move on.
       ((ns-has-vars? name)
