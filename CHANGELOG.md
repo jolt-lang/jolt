@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first file. On macOS that Chez is now built and jolt linked with the host
   `cc`, as the release workflow does, and a macOS job in `tests.yml` builds
   this way (#1601).
+- **`[]` is one shared empty vector, as on the JVM** (#1612), so
+  `(identical? [] [])` and `(identical? [] (pop [1]))` are true, the way they
+  already were for `{}`, `#{}` and `()`. Code that checks `(identical? acc [])`
+  to tell an untouched accumulator from one that received something now takes
+  the same branch it does on the JVM. `(vector)`, an empty `subvec` and `empty`
+  of a vector give that same one, and a vector built by `vec` or `filterv` is
+  still a fresh one, as the JVM's is.
 - **`jolt.deps/add-deps` installs the added libraries' `:jolt/provides`**
   (#1600). It added their source roots and nothing else, so a class one of
   them provides failed with "No dependency provides ..." until the script

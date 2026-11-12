@@ -210,18 +210,21 @@
 ;; takes LazilyPersistentVector.create's path there and answers a plain
 ;; PersistentVector of the two slots. The entry is a pvec of kind #t here, and
 ;; used to come back as itself — still a MapEntry to `class` and `instance?`.
+;; A vec built from a non-vector is a fresh one even when empty, as
+;; LazilyPersistentVector.create's is on the JVM, so only the literal [] and
+;; (vector) are the shared empty vector: (identical? (vec nil) []) is false there.
 (define (jolt-vec coll)
   (cond
-    ((jolt-nil? coll) (jolt-vector))
+    ((jolt-nil? coll) (make-pvec (vector)))
     ((pvec? coll)
      (cond ((eq? (pvec-ent coll) #t) (pvec-with-ent coll #f))
            ((eq? (pvec-meta coll) jolt-nil) coll)
            (else (coll-with-meta coll jolt-nil))))
-    ((string? coll) (apply jolt-vector (string->list coll)))
+    ((string? coll) (make-pvec (list->vector (string->list coll))))
     ;; a source that drives its own reduce (IReduce/IReduceInit deftype or
     ;; reify) builds the vector by reduction, like LazilyPersistentVector.
-    ((iface-method coll "reduce" 3) (jolt-into (jolt-vector) coll))
-    (else (apply jolt-vector (seq->list coll)))))
+    ((iface-method coll "reduce" 3) (jolt-into (make-pvec (vector)) coll))
+    (else (make-pvec (list->vector (seq->list coll))))))
 
 (define (jolt-keyword . args)
   (cond

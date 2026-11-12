@@ -442,9 +442,12 @@
 ;; The small arities build the backing vector directly: a vector literal with a
 ;; non-constant element ([k v], [x y z]) compiles to a call here, and the
 ;; variadic form paid a rest list, its length and a copy out of it for each one.
+;; No elements is the one shared empty vector, as the JVM's PersistentVector.EMPTY
+;; is: the literal [] compiles to (jolt-vector), so (identical? [] []) and
+;; (identical? [] (pop [1])) hold, as they already do for {}, #{} and ().
 (define jolt-vector
   (case-lambda
-    (() (make-pvec (vector)))
+    (() empty-pvec)
     ((a) (make-pvec (vector a)))
     ((a b) (make-pvec (vector a b)))
     ((a b c) (make-pvec (vector a b c)))
