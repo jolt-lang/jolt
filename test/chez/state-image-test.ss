@@ -358,6 +358,19 @@
     (string-append "(:m (meta (jolt.host/image-read \"" tmp "\")))")
     "1")
 
+;; a fn given metadata is a wrapper over the original (natives-meta.ss
+;; fn-meta-wrap): it writes as the original and comes back wrapped again, with
+;; its own metadata, and the original's stays its own
+(ev "(defn img-fm-dbl [x] (* 2 x))")
+(ev (string-append "(jolt.host/image-write! \"" tmp "\""
+                   " [(with-meta img-fm-dbl {:a 1}) (vary-meta (fn [x] (+ x 100)) assoc :b 2)"
+                   "  (vary-meta img-fm-dbl assoc :original img-fm-dbl)])"))
+(is "a fn with metadata round-trips as a new fn over its original"
+    (string-append "(let [[n a o] (jolt.host/image-read \"" tmp "\")]"
+                   " [(n 4) (meta n) (a 1) (meta a) (identical? img-fm-dbl (:original (meta o)))"
+                   " (meta img-fm-dbl) (identical? n img-fm-dbl)])")
+    "[8 {:a 1} 101 {:b 2} true nil false]")
+
 (is "scan of a natural sorted map is empty"
     "(count (jolt.host/image-scan (sorted-map :b 2 :a 1)))"
     "0")
