@@ -690,6 +690,15 @@
         (cons "jolt.passes.types.narrow" "jolt-core/jolt/passes/types/narrow.clj")
         (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")
         (cons "jolt.passes" "jolt-core/jolt/passes.clj")
+        (cons "jolt.backend-scheme.names" "jolt-core/jolt/backend_scheme/names.clj")
+        (cons "jolt.backend-scheme.session" "jolt-core/jolt/backend_scheme/session.clj")
+        (cons "jolt.backend-scheme.hoist" "jolt-core/jolt/backend_scheme/hoist.clj")
+        (cons "jolt.backend-scheme.calls" "jolt-core/jolt/backend_scheme/calls.clj")
+        (cons "jolt.backend-scheme.literals" "jolt-core/jolt/backend_scheme/literals.clj")
+        (cons "jolt.backend-scheme.once" "jolt-core/jolt/backend_scheme/once.clj")
+        (cons "jolt.backend-scheme.fnsrc" "jolt-core/jolt/backend_scheme/fnsrc.clj")
+        (cons "jolt.backend-scheme.ffi" "jolt-core/jolt/backend_scheme/ffi.clj")
+        (cons "jolt.backend-scheme.interop" "jolt-core/jolt/backend_scheme/interop.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
 
 ;; The clojure.core tiers + stdlib namespaces, in load order.

@@ -8,7 +8,8 @@
 # jolt-identical? — has to exist as a same-named FUNCTION in the interaction
 # environment, or the first eval'd use raises "Unbound variable". The set is
 # derived, not remembered: the :call names of jolt-core/jolt/op_registry.clj and
-# the numeric op names backend_scheme.clj emits (its jolt-l* / jolt-n* tables),
+# the numeric op names the back end emits (its jolt-l* / jolt-n* tables, in
+# backend_scheme.clj and backend_scheme/*.clj),
 # intersected with the names host/chez/*.ss and the Gambit kernel define as
 # syntax. identical? was in the registry and not in eval-fns.ss, and
 # (identical? a b) died in every eval'd row while the gates stayed green.
@@ -18,7 +19,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
 {
   grep -oE ':call "[^"]+"' jolt-core/jolt/op_registry.clj | sed 's/:call "//; s/"$//'
-  grep -oE '"jolt-[ln]-?[^" ]*"' jolt-core/jolt/backend_scheme.clj | tr -d '"'
+  grep -ohE '"jolt-[ln]-?[^" ]*"' jolt-core/jolt/backend_scheme.clj jolt-core/jolt/backend_scheme/*.clj | tr -d '"'
 } | LC_ALL=C sort -u > "$tmp/heads"
 
 grep -ohE '^\(define-syntax [^ )]+' host/chez/*.ss host/gambit/rt-core.ss host/gambit/hasheq.ss host/gambit/records-gambit.ss \
