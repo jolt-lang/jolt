@@ -166,6 +166,21 @@
             [(listed? spawned) (listed? pooled)] [false false])
   (fib/shutdown! p))
 
+;; enough finished fibers to set off the registry's lazy prune (it runs once the
+;; finishes since the last one pass 4096): a fiber still parked survives it, and
+;; none of the finished ones are listed after it.
+(let [gate (a/chan)
+      parked (fib/spawn (fn [] (a/<!! gate)))
+      done (mapv (fn [_] (fib/spawn (fn [] :ok))) (range 5000))]
+  (run! fib/join done)
+  (fib/join (fib/spawn (fn [] :after)))   ; a spawn past the threshold prunes
+  (let [listed (set (fib/fibers))]
+    (check-eq "a parked fiber survives the prune" (contains? listed parked) true)
+    (check-eq "no finished fiber is listed after the prune"
+              (some #(contains? listed %) done) nil))
+  (a/close! gate)
+  (fib/join parked))
+
 ;; the knobs
 (check-eq "carrier-count is positive" (pos? (fib/carrier-count)) true)
 (check-eq "preempt-ticks is positive" (pos? (fib/preempt-ticks)) true)

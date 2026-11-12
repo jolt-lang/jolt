@@ -1236,24 +1236,85 @@
 ;; --- the live fibers (jolt#1606) ---------------------------------------------
 ;; Every fiber that has been spawned and not finished, whoever spawned it:
 ;; jolt.fibers/spawn, a pool, io-thread, a :fiber go block, a flow process. They
-;; all come through jolt-fiber-spawn-on*, which adds the fiber, and they all end
-;; in jolt-fiber-finish!, which drops it under the mutex it already holds to
-;; publish the terminal state. So a fiber listed is one whose state was not yet
-;; terminal, and the spawn path pays one lock, the same one finish takes.
+;; all come through jolt-fiber-spawn-on*, which pushes the fiber here.
 ;;
-;; Weak, so the table never keeps a fiber alive. A parked fiber that nothing
-;; else references (waiting on a channel nobody holds any more) can never be
-;; resumed, and it goes when the collector finds it, as it would without the
-;; table.
-(define jolt-fiber-live-tbl (make-weak-eq-hashtable))
+;; A chain of weak pairs, newest first, so it never keeps a fiber alive: a parked
+;; fiber nothing else references (waiting on a channel nobody holds any more) can
+;; never be resumed, and it goes when the collector finds it, as it would without
+;; the list. Spawn is hot, so the push is one CAS on the head and nothing else; a
+;; mutex there (dynamic-wind and all) cost spawn 2.4x. Finish does nothing here.
+;; Finish only bumps a count, inside the monitor mutex it already holds. Cells
+;; whose fiber is terminal or collected are unlinked lazily by a prune that runs
+;; once the finishes since the last one outnumber what it kept, so its walk is
+;; paid for by garbage it finds: amortized O(1) a finish, and the chain stays
+;; within a constant factor of the live set. A fiber collected while parked never
+;; finishes, so pushes past eight times what was kept prune too; that backstop is
+;; rare enough that a spawn storm of parked fibers never walks the chain.
+;;
+;; The prune only ever rewrites the cdr of a cell it reached from a snapshot of
+;; the head, and never unlinks that first cell, so a concurrent push (which only
+;; touches the head box) is never lost, and a concurrent reader walks either the
+;; old link or the new one, both of which reach every live cell. Two prunes are
+;; kept apart by a CAS flag rather than a mutex: Chez mutexes are recursive per
+;; OS thread, and two fibers on one carrier would both get in.
+(define jolt-fiber-live-head (box '()))
+(define jolt-fiber-live-pushes (box 0))      ; since the last prune; racy, a hint
+(define jolt-fiber-live-finishes (box 0))    ; since the last prune; a hint
+(define jolt-fiber-live-kept (box 0))        ; what the last prune kept
+(define jolt-fiber-live-pruning (box #f))
+
+(define (jolt-fiber-terminal? f)
+  (let ((st (jolt-fiber-state f))) (or (eq? st 'done) (eq? st 'dead))))
+
 (define (jolt-fiber-live-add! f)
-  (jolt-with-mutex jolt-fiber-monitor-mu
-    (eq-hashtable-set! jolt-fiber-live-tbl f #t)))
-;; (jolt-fiber-live) -> list of fibers, a snapshot. A fiber in it may finish
-;; before the caller looks at it, so state is the caller's to read.
+  (let ((cell (weak-cons f '())))
+    (let push ()
+      (let ((old (unbox jolt-fiber-live-head)))
+        (set-cdr! cell old)
+        ;; the cell's fields are written before another thread can reach it
+        (memory-order-release)
+        (unless (box-cas! jolt-fiber-live-head old cell) (push)))))
+  (let ((n (fx+ (unbox jolt-fiber-live-pushes) 1))
+        (kept (unbox jolt-fiber-live-kept)))
+    (set-box! jolt-fiber-live-pushes n)
+    (when (or (fx> (unbox jolt-fiber-live-finishes) (fxmax 4096 kept))
+              (fx> n (fxmax 65536 (fx* 8 kept))))
+      (jolt-fiber-live-prune!))))
+
+;; Unlink the cells whose fiber finished or was collected. A terminal state never
+;; changes back, so reading it without the monitor mutex can only keep a cell one
+;; prune longer, never drop a live one. Skips if another prune is running.
+(define (jolt-fiber-live-prune!)
+  (when (box-cas! jolt-fiber-live-pruning #f #t)
+    (memory-order-acquire)
+    (let ((head (unbox jolt-fiber-live-head)))
+      (let loop ((prev head) (kept 1))
+        (if (and (pair? prev) (pair? (cdr prev)))
+            (let* ((c (cdr prev)) (f (car c)))
+              (if (or (bwp-object? f) (jolt-fiber-terminal? f))
+                  (begin (set-cdr! prev (cdr c)) (loop prev kept))
+                  (loop c (fx+ kept 1))))
+            (begin
+              (set-box! jolt-fiber-live-pushes 0)
+              (set-box! jolt-fiber-live-finishes 0)
+              (set-box! jolt-fiber-live-kept kept)))))
+    (memory-order-release)
+    (set-box! jolt-fiber-live-pruning #f)))
+
+;; (jolt-fiber-live) -> list of fibers, a snapshot. Read under the monitor mutex,
+;; which jolt-fiber-finish! holds to publish the terminal state, so a fiber
+;; listed is one whose state was not terminal when the snapshot was taken. It
+;; may finish before the caller looks at it, so state is the caller's to read.
 (define (jolt-fiber-live)
+  (jolt-fiber-live-prune!)
   (jolt-with-mutex jolt-fiber-monitor-mu
-    (vector->list (hashtable-keys jolt-fiber-live-tbl))))
+    (memory-order-acquire)
+    (let loop ((c (unbox jolt-fiber-live-head)) (acc '()))
+      (if (pair? c)
+          (let ((f (car c)))
+            (loop (cdr c)
+                  (if (or (bwp-object? f) (jolt-fiber-terminal? f)) acc (cons f acc))))
+          acc))))
 
 ;; (jolt-fiber-monitor! f proc) -> void. Register PROC on fiber F.
 ;;
@@ -1316,7 +1377,8 @@
   (let ((ms (jolt-with-mutex jolt-fiber-monitor-mu
               (when err (jolt-fiber-error-set! f err))
               (jolt-fiber-state-set! f state)
-              (eq-hashtable-delete! jolt-fiber-live-tbl f)
+              (set-box! jolt-fiber-live-finishes
+                        (fx+ (unbox jolt-fiber-live-finishes) 1))
               (let ((ms (jolt-fiber-monitors f)))
                 (jolt-fiber-monitors-set! f '())
                 ms))))
