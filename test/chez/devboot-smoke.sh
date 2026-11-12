@@ -171,6 +171,42 @@ else
   fails=$((fails + 1))
 fi
 
+# (h) a direct bin/jolt invocation reaches the Chez make recorded by another
+# path. make records its Chez with the directory resolved physically (pwd -P);
+# bin/jolt used to compare that string to `command -v`, so a Chez reached through
+# a symlinked directory (merged /usr, Homebrew, Nix profiles) read as a different
+# Chez and every run took source mode right after `make devboot`. Also covers no
+# JOLT_CHEZ at all (a plain shell, not make), where bin/jolt must find the Chez
+# make used before any other candidate.
+echo "=== (h) devcache used when the recorded Chez is reached by another path ==="
+recorded="$(cat target/dev/flat.chez 2>/dev/null)"
+if [ -n "$recorded" ] && [ -x "$recorded" ]; then
+  linkdir="$(mktemp -d)"
+  ln -s "$(dirname "$recorded")" "$linkdir/bin"
+  alias_chez="$linkdir/bin/$(basename "$recorded")"
+  out="$(JOLT_CHEZ="$alias_chez" JOLT_DEVCACHE=1 $jolt -e "(+ 1 2)" 2>&1)" || true
+  if echo "$out" | grep -q "devcache:"; then
+    echo "  PASS: JOLT_CHEZ through a symlinked dir used the cache"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL: JOLT_CHEZ through a symlinked dir took source mode"
+    echo "    output: $out"
+    fails=$((fails + 1))
+  fi
+  out="$(env -u JOLT_CHEZ PATH="$linkdir/bin:$PATH" JOLT_DEVCACHE=1 $jolt -e "(+ 1 2)" 2>&1)" || true
+  if echo "$out" | grep -q "devcache:"; then
+    echo "  PASS: no JOLT_CHEZ used the cache"
+    pass=$((pass + 1))
+  else
+    echo "  FAIL: no JOLT_CHEZ took source mode"
+    echo "    output: $out"
+    fails=$((fails + 1))
+  fi
+  rm -rf "$linkdir"
+else
+  echo "  SKIP: target/dev/flat.chez names no executable Chez"
+fi
+
 echo ""
 echo "devboot smoke: $pass passed, $fails failed"
 [ "$fails" -eq 0 ]
