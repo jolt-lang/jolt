@@ -138,6 +138,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PersistentHashSet`, `PersistentTreeMap` and `PersistentTreeSet` each have
   `EMPTY`, the empty collection of that class: `[]`, `{}`, `(hash-map)`, `#{}`,
   `(sorted-map)` and `(sorted-set)`.
+- **The REPL reports what a load threw, not only where** (#1627). When a
+  form throws while `require`, `load-file` or `load-string` runs it, the load
+  is wrapped as on the JVM ("Syntax error macroexpanding at
+  (rg/boom.clj:2:1)."), and that wrapper was all the REPL printed. A library
+  that checks its environment at load and throws a descriptive `ex-info` lost
+  its message. The REPL now reports it as clojure.main's does, naming the
+  cause's class at the form's position, with its message on the next line:
+  `error: Execution error (ExceptionInfo) at (rg/boom.clj:2:1).`, then `the
+  real reason`. Other errors print as before, and `*e` is still the wrapper.
 
 ## [0.8.26] - 2026-11-10
 
