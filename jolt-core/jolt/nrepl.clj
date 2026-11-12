@@ -84,29 +84,50 @@
     (nil? v)     "0:"
     :else        (let [w (->wire (str v))] (str (count w) ":" w))))
 
-;; decode one value from `s` at index `i` -> [value next-index], or nil if the
-;; buffer doesn't yet hold a complete value.
+;; Each decoder reads one value from `s` at index `i` -> [value next-index], or
+;; nil if the buffer doesn't yet hold a complete value.
+(declare bdecode)
+
+(defn- bdecode-int [s i]
+  (let [e (str/index-of s "e" i)]
+    (when e [(parse-long (subs s (inc i) e)) (inc e)])))
+
+(defn- bdecode-list [s i]
+  (loop [j (inc i) acc []]
+    (cond (>= j (count s)) nil
+          (= (nth s j) \e) [acc (inc j)]
+          :else (when-let [[v next-j] (bdecode s j)]
+                  (recur next-j (conj acc v))))))
+
+(defn- bdecode-entry
+  "One dict entry at `j`: [key value next-index], the key decoded from the wire."
+  [s j]
+  (when-let [[k after-k] (bdecode s j)]
+    (when-let [[v after-v] (bdecode s after-k)]
+      [(wire-> k) v after-v])))
+
+(defn- bdecode-dict [s i]
+  (loop [j (inc i) acc {}]
+    (cond (>= j (count s)) nil
+          (= (nth s j) \e) [acc (inc j)]
+          :else (when-let [[k v next-j] (bdecode-entry s j)]
+                  (recur next-j (assoc acc k v))))))
+
+;; string: <len>:<bytes>
+(defn- bdecode-string [s i]
+  (let [colon (str/index-of s ":" i)]
+    (when colon
+      (let [n (parse-long (subs s i colon)) start (inc colon) end (+ start n)]
+        (when (<= end (count s)) [(subs s start end) end])))))
+
 (defn- bdecode [s i]
   (when (< i (count s))
     (let [c (nth s i)]
       (cond
-        (= c \i) (let [e (str/index-of s "e" i)]
-                   (when e [(parse-long (subs s (inc i) e)) (inc e)]))
-        (= c \l) (loop [j (inc i) acc []]
-                   (cond (>= j (count s)) nil
-                         (= (nth s j) \e) [acc (inc j)]
-                         :else (let [r (bdecode s j)] (when r (recur (second r) (conj acc (first r)))))))
-        (= c \d) (loop [j (inc i) acc {}]
-                   (cond (>= j (count s)) nil
-                         (= (nth s j) \e) [acc (inc j)]
-                         :else (let [k (bdecode s j)]
-                                 (when k (let [val (bdecode s (second k))]
-                                           (when val (recur (second val) (assoc acc (wire-> (first k)) (first val)))))))))
-        (and (char? c) (>= (int c) 48) (<= (int c) 57))   ; string: <len>:<bytes>
-        (let [colon (str/index-of s ":" i)]
-          (when colon
-            (let [n (parse-long (subs s i colon)) start (inc colon) end (+ start n)]
-              (when (<= end (count s)) [(subs s start end) end]))))
+        (= c \i) (bdecode-int s i)
+        (= c \l) (bdecode-list s i)
+        (= c \d) (bdecode-dict s i)
+        (and (char? c) (>= (int c) 48) (<= (int c) 57)) (bdecode-string s i)
         :else nil))))
 
 ;; --- public seam for middleware --------------------------------------------
@@ -303,6 +324,68 @@
            cause-type where ".\n" (if (nil? cause) "null" cause) "\n"))
     (main/ex-str t)))
 
+(defn- cut-trace
+  "Throwable->map's M with its :trace cut where `evaluate` began. With no frame
+  of evaluate's in it, the OUTER frames (outer-frames) are dropped from its end
+  instead."
+  [m outer]
+  (update m :trace
+          (fn [tr]
+            (let [[fs more] (split-with #(not (eval-boundary? (first %))) tr)]
+              (if (and outer (empty? more))
+                (drop-last-while outer fs)
+                (vec fs))))))
+
+(defn- jvm-worded
+  "Triage T of M adjusted to read as the JVM's for jolt's own diagnostics."
+  [t m]
+  (let [;; a jolt diagnostic is the throwable itself, where the JVM's
+        ;; CompilerException wraps a RuntimeException, which ex-str leaves
+        ;; unnamed. Removing the class instead renders "Syntax error ()".
+        t (if (and (syntax-phases (:clojure.error/phase t))
+                   (:jolt.error/kind (:data (last (:via m)))))
+            (assoc t :clojure.error/class 'java.lang.RuntimeException)
+            t)
+        ;; the cause as the JVM words it: jolt's "(did you mean …?)" is a
+        ;; suffix on the same message, kept on ex-message and :err
+        d (:data (last (:via m)))]
+    (if (and (= :analyze/unresolved-symbol (:jolt.error/kind d)) (:jolt.error/symbol d))
+      (assoc t :clojure.error/cause
+             (str "Unable to resolve symbol: " (:jolt.error/symbol d) " in this context"))
+      t)))
+
+(defn- at-frame
+  "Triage T located at FLOC, the frame-location of the error's innermost user
+  frame."
+  [t floc]
+  (let [;; a frame with no line: the line its fn was defined on, which is
+        ;; where the JVM's frame points for a one-line fn. Not the running
+        ;; top-level form's, which is the call site
+        fline (or (:line floc)
+                  (try (some-> (resolve (:symbol floc)) meta :line)
+                       (catch :default _ nil)))]
+    (cond-> (assoc t :clojure.error/symbol (:symbol floc))
+      (:source floc) (assoc :clojure.error/source (:source floc))
+      fline (assoc :clojure.error/line fline))))
+
+;; a load's CompilerException (load-string, load-file, require) names
+;; the form that failed in the loaded text: with no frame of the
+;; user's to say more, that is the place, as the JVM's eval frame
+;; there names it (its file's base name)
+(defn- at-loaded-form [t m]
+  (let [wd (when (= 'clojure.lang.Compiler$CompilerException (:type (first (:via m))))
+             (:data (first (:via m))))]
+    (if (and (nil? (:clojure.error/symbol t)) (:clojure.error/line wd))
+      (cond-> (assoc t :clojure.error/line (:clojure.error/line wd))
+        (:clojure.error/source wd)
+        (assoc :clojure.error/source (last (str/split (:clojure.error/source wd) #"/"))))
+      t)))
+
+(defn- at-eval-line [t line]
+  (if (and line (nil? (:clojure.error/line t)))
+    (assoc t :clojure.error/line line)
+    t))
+
 (defn err->msg
   "The text JVM nREPL sends as `err` for an eval error: clojure.main/err->msg's
   phase and location line, then the root cause's message, ending in a newline.
@@ -323,58 +406,17 @@
   ([e] (err->msg e nil))
   ([e {:keys [phase frame line outer]}]
    (try
-     (let [m (Throwable->map e)
-           m (cond-> (update m :trace
-                             (fn [tr]
-                               (let [[fs more] (split-with #(not (eval-boundary? (first %))) tr)]
-                                 (if (and outer (empty? more))
-                                   (drop-last-while outer fs)
-                                   (vec fs)))))
+     (let [m (cond-> (cut-trace (Throwable->map e) outer)
                phase (assoc :phase phase))
-           t (main/ex-triage m)
-           ;; a jolt diagnostic is the throwable itself, where the JVM's
-           ;; CompilerException wraps a RuntimeException, which ex-str leaves
-           ;; unnamed. Removing the class instead renders "Syntax error ()".
-           t (if (and (syntax-phases (:clojure.error/phase t))
-                      (:jolt.error/kind (:data (last (:via m)))))
-               (assoc t :clojure.error/class 'java.lang.RuntimeException)
-               t)
-           ;; the cause as the JVM words it: jolt's "(did you mean …?)" is a
-           ;; suffix on the same message, kept on ex-message and :err
-           d (:data (last (:via m)))
-           t (if (and (= :analyze/unresolved-symbol (:jolt.error/kind d)) (:jolt.error/symbol d))
-               (assoc t :clojure.error/cause
-                      (str "Unable to resolve symbol: " (:jolt.error/symbol d) " in this context"))
-               t)
+           t (jvm-worded (main/ex-triage m) m)
            run-phase? (#{:execution :print-eval-result} (:clojure.error/phase t))
            floc (when (and frame run-phase? (nil? (:clojure.error/symbol t)))
-                  (frame-location frame))
-           ;; a frame with no line: the line its fn was defined on, which is
-           ;; where the JVM's frame points for a one-line fn. Not the running
-           ;; top-level form's, which is the call site
-           fline (or (:line floc)
-                     (when floc
-                       (try (some-> (resolve (:symbol floc)) meta :line)
-                            (catch :default _ nil))))
-           t (cond-> t
-               floc (assoc :clojure.error/symbol (:symbol floc))
-               (:source floc) (assoc :clojure.error/source (:source floc))
-               fline (assoc :clojure.error/line fline))
-           ;; a load's CompilerException (load-string, load-file, require) names
-           ;; the form that failed in the loaded text: with no frame of the
-           ;; user's to say more, that is the place, as the JVM's eval frame
-           ;; there names it (its file's base name)
-           wd (when (= 'clojure.lang.Compiler$CompilerException (:type (first (:via m))))
-                (:data (first (:via m))))
-           t (if (and run-phase? (nil? floc) (nil? (:clojure.error/symbol t)) (:clojure.error/line wd))
-               (cond-> (assoc t :clojure.error/line (:clojure.error/line wd))
-                 (:clojure.error/source wd)
-                 (assoc :clojure.error/source (last (str/split (:clojure.error/source wd) #"/"))))
-               t)
-           t (if (and line run-phase? (nil? floc) (nil? (:clojure.error/line t)))
-               (assoc t :clojure.error/line line)
-               t)]
-       (render-triage t))
+                  (frame-location frame))]
+       (render-triage
+        (cond
+          floc (at-frame t floc)
+          run-phase? (at-eval-line (at-loaded-form t m) line)
+          :else t)))
      (catch :default _ (str (err-msg e) "\n")))))
 
 (defn- ex-class-strings
@@ -417,6 +459,60 @@
       (flush [] (emit!))
       (close [] (emit!)))))
 
+(defn- start-ns
+  "The namespace an eval of `ns-str` starts in: that loaded ns, else *ns*."
+  [ns-str]
+  (or (when (and ns-str (not (str/blank? ns-str)))
+        (find-ns (symbol ns-str)))
+      *ns*))
+
+(defn- eval-failure
+  "What `evaluate` records when evaluating (or, at PHASE :print-eval-result,
+  printing) throws E: {:exc :err :failure :backtrace}. OUTER is outer-frames,
+  taken where E was caught. Read there, too, while the thread still says which
+  form of the eval'd text was running."
+  [e phase outer]
+  (let [frames (eval-frames e (= phase :print-eval-result) outer)
+        bt (when (seq frames)
+             (str "  trace:\n" (str/join "\n" frames) "\n"))
+        pos (jolt.host/current-source-position)]
+    {:exc e
+     :backtrace bt
+     :failure {:phase phase :frame (first (filter user-frame? frames))
+               :line (:line pos) :outer outer}
+     :err (str (err-msg e) (when bt (str "\n" bt)))}))
+
+;; the REPL history vars, like clojure.main's REPL and every other nREPL
+;; server: an editor session can reach for *1 or (ex-data *e) after an error,
+;; and tooling (a stacktrace op) reads *e to find the last exception. These
+;; are process-wide roots — an nREPL server has no outer REPL loop whose
+;; thread bindings would shadow them.
+;; *1 moves once the code evaluated, before its value is printed, as on JVM
+;; nREPL: a value whose printing failed is still *1.
+;; *e (and the backtrace beside it) survives a later successful eval, like
+;; every REPL's does
+(defn- record-history! [{:keys [evaluated result exc]}]
+  (when evaluated
+    (alter-var-root #'*3 (constantly *2))
+    (alter-var-root #'*2 (constantly *1))
+    (alter-var-root #'*1 (constantly result)))
+  (when exc
+    (alter-var-root #'*e (constantly exc))))
+
+(defn- eval-result
+  "`evaluate`'s answer from the eval's recorded state and its captured OUT."
+  [{:keys [err printed ns-after exc failure]} out]
+  (cond-> {:value (when (nil? err) printed)
+           :out out
+           :ns ns-after
+           :err err}
+    exc (merge (let [{:keys [phase]} failure
+                     [ex root] (ex-class-strings exc (or phase (:clojure.error/phase (ex-data exc))))]
+                 {:ex exc
+                  :err-msg (err->msg exc failure)
+                  :ex-class ex
+                  :root-ex-class root}))))
+
 (defn evaluate
   "Evaluate `code` (optionally in loaded ns `ns-str`). Returns
   {:value .. :out .. :ns .. :err ..}. As JVM nREPL's eval does, it binds *ns*
@@ -453,15 +549,14 @@
     :root-ex-class  the `root-ex` string, the class of the root cause"
   ([code ns-str] (evaluate code ns-str nil))
   ([code ns-str {on-out :out on-err :err load? :load file :file :as opts}]
-   (let [result (atom nil) evaluated (atom false) printed (atom nil)
-         err (atom nil) exc (atom nil) failure (atom nil)
-         start-ns (or (when (and ns-str (not (str/blank? ns-str)))
-                        (find-ns (symbol ns-str)))
-                      *ns*)
-         ns-after (atom (str (ns-name start-ns)))
+   (let [eval-ns (start-ns ns-str)
+         state (atom {:ns-after (str (ns-name eval-ns))})
+         ;; the code's source path as eval-string / load-string take it
+         src (when file
+               (if (contains? opts :file-name) [file (:file-name opts)] [file]))
          run (fn []
                (binding [*capturing-thread* (Thread/currentThread)
-                         *ns* start-ns]
+                         *ns* eval-ns]
                  (let [phase (volatile! nil)]
                    (try
                         ;; strict, as clojure.main's REPL and `jolt repl`: an
@@ -469,9 +564,7 @@
                         ;; forward reference across evals takes a declare.
                         ;; eval-string, not load-string: load-string binds *ns*
                         ;; for its own load, and this eval's switch must reach :ns
-                        (let [src (when file
-                                    (if (contains? opts :file-name) [file (:file-name opts)] [file]))
-                              ev (fn []
+                        (let [ev (fn []
                                    (if load?
                                      ;; a load-file op is a load, as nREPL's is
                                      ;; (Compiler.load): the file's ns form does
@@ -479,27 +572,17 @@
                                      (if src (apply jolt.host/load-string code src) (load-string code))
                                      (if src (apply jolt.host/eval-string code src) (jolt.host/eval-string code))))
                               v (if-let [w *eval-wrapper*] (w ev) (ev))]
-                          (reset! result v)
-                          (reset! evaluated true)
+                          (swap! state assoc :result v :evaluated true)
                           (vreset! phase :print-eval-result)
-                          (reset! printed (pr-str v)))
+                          (swap! state assoc :printed (pr-str v)))
                         (catch :default e
-                          ;; read here, while the thread still says which form
-                          ;; of the eval'd text was running
-                          ;; and the stack below this handler is evaluate's own
+                          ;; the stack below this handler is evaluate's own
                           ;; and its caller's: taken here, only when an eval fails,
                           ;; since a stack walk per eval was most of its cost
-                          (let [outer (outer-frames)
-                                frames (eval-frames e (= @phase :print-eval-result) outer)
-                                bt (when (seq frames)
-                                     (str "  trace:\n" (str/join "\n" frames) "\n"))
-                                pos (jolt.host/current-source-position)]
-                            (reset! exc e)
-                            (reset! last-backtrace bt)
-                            (reset! failure {:phase @phase :frame (first (filter user-frame? frames))
-                                             :line (:line pos) :outer outer})
-                            (reset! err (str (err-msg e) (when bt (str "\n" bt))))))
-                        (finally (reset! ns-after (str (ns-name *ns*))))))))
+                          (let [f (eval-failure e @phase (outer-frames))]
+                            (reset! last-backtrace (:backtrace f))
+                            (swap! state merge (dissoc f :backtrace))))
+                        (finally (swap! state assoc :ns-after (str (ns-name *ns*))))))))
          out (if on-out
                (let [ow (chunk-writer on-out)
                      ew (when on-err (chunk-writer on-err))]
@@ -508,32 +591,8 @@
                       (finally (.flush ow) (when ew (.flush ew))))
                  "")
                (with-out-str (run)))]
-     ;; the REPL history vars, like clojure.main's REPL and every other nREPL
-     ;; server: an editor session can reach for *1 or (ex-data *e) after an error,
-     ;; and tooling (a stacktrace op) reads *e to find the last exception. These
-     ;; are process-wide roots — an nREPL server has no outer REPL loop whose
-     ;; thread bindings would shadow them.
-     ;; *1 moves once the code evaluated, before its value is printed, as on JVM
-     ;; nREPL: a value whose printing failed is still *1.
-     ;; *e (and the backtrace beside it) survives a later successful eval, like
-     ;; every REPL's does
-     (when @evaluated
-       (alter-var-root #'*3 (constantly *2))
-       (alter-var-root #'*2 (constantly *1))
-       (alter-var-root #'*1 (constantly @result)))
-     (when @exc
-       (alter-var-root #'*e (constantly @exc)))
-     (cond-> {:value (when (nil? @err) @printed)
-              :out out
-              :ns @ns-after
-              :err @err}
-       @exc (merge (let [e @exc
-                         {:keys [phase] :as f} @failure
-                         [ex root] (ex-class-strings e (or phase (:clojure.error/phase (ex-data e))))]
-                     {:ex e
-                      :err-msg (err->msg e f)
-                      :ex-class ex
-                      :root-ex-class root}))))))
+     (record-history! @state)
+     (eval-result @state out))))
 
 ;; ops middleware advertise via describe (built-ins + any a library registers).
 (def ^:private extra-ops (atom #{}))
@@ -695,29 +754,111 @@
   ;; first listed middleware is outermost.
   (reduce (fn [h mw] (mw h)) built-in-handler (reverse middleware)))
 
+(defn- conn-replier
+  "For a connection's FD: a fn of a request MSG answering its :reply, which adds
+  the request's id and session to a response and sends it under the one LOCK."
+  [fd lock]
+  (fn [msg]
+    (let [id (get msg "id") session (or (get msg "session") "none")]
+      (fn [m]
+        (locking lock
+          (send-str fd (bencode (cond-> m id (assoc "id" id)
+                                        session (assoc "session" session)))))))))
+
+(defn- dispatch-message [handler reply-for msg]
+  (when (map? msg)
+    (try (handler (assoc msg :reply (reply-for msg)))
+         (catch :default e (println "nrepl handler error:" (err-msg e))))))
+
+(defn- dispatch-buffered
+  "Hand every complete message at the front of BUF to the handler; answer what
+  is left, the start of a message still arriving."
+  [buf handler reply-for]
+  (loop [b buf]
+    (let [r (bdecode b 0)]
+      (if (nil? r)
+        b
+        (do (dispatch-message handler reply-for (first r))
+            (recur (subs b (second r))))))))
+
 (defn- handle-conn [fd handler]
   ;; one send lock per connection: eval/session middleware reply from other
   ;; threads, so sends must not interleave.
-  (let [lock (Object.)
-        reply-for (fn [msg]
-                    (let [id (get msg "id") session (or (get msg "session") "none")]
-                      (fn [m]
-                        (locking lock
-                          (send-str fd (bencode (cond-> m id (assoc "id" id)
-                                                        session (assoc "session" session))))))))]
+  (let [reply-for (conn-replier fd (Object.))]
     (loop [buf ""]
       (let [chunk (recv-str fd)]
         (if (nil? chunk)
           (native/c-close fd)
-          (let [rest-buf (loop [b (str buf chunk)]
-                           (let [r (bdecode b 0)]
-                             (if (nil? r) b
-                                 (do (when (map? (first r))
-                                       (let [msg (first r)]
-                                         (try (handler (assoc msg :reply (reply-for msg)))
-                                              (catch :default e (println "nrepl handler error:" (err-msg e))))))
-                                     (recur (subs b (second r)))))))]
-            (recur rest-buf)))))))
+          (recur (dispatch-buffered (str buf chunk) handler reply-for)))))))
+
+(defn- write-port-file
+  "Write PORT to the file REQUESTED names and answer its absolute path, or nil
+  (with a warning) when the write fails."
+  [requested port]
+  ;; absolute, so the delete hits the file spit wrote: spit resolves a
+  ;; relative path against the started-from directory, delete-file!
+  ;; against the process's (bin/jolt cd's to the repo root). nil when the
+  ;; write fails, so stop never deletes a file it did not write; the
+  ;; server still starts, but says the editor won't find it that way.
+  (let [port-file (.getAbsolutePath (io/file requested))]
+    (try (spit port-file (str port)) port-file
+         (catch :default e
+           (binding [*out* *err*]
+             (println (str ";; could not write " requested ": " (ex-message e))))
+           nil))))
+
+(defn- serve-conn!
+  "Start the thread that serves accepted connection CONN."
+  [conn handler]
+  ;; macOS and Windows hand the listener's non-blocking
+  ;; mode down; the connection is read blocking
+  (native/set-blocking! conn true)
+  (native/guard-accepted! conn)
+  (.start
+   (Thread.
+    (bound-fn []
+      (try (handle-conn conn handler)
+           (catch :default e
+             (println "nrepl conn error:" (err-msg e))
+             (native/c-close conn)))))))
+
+(defn- accept-loop
+  "Accept connections on the non-blocking listen socket FD until STOPPED, in
+  poll slices, then close FD."
+  [fd stopped handler]
+  ;; the loop owns the fd: it closes it on the way out, so the
+  ;; number is never freed while an accept() may still use it,
+  ;; and a loop that dies (Thread. failing, say) frees the port
+  (try
+    (loop []
+      (when-not @stopped
+        (let [[conn e] (native/c-accept fd ffi/null ffi/null)]
+          (cond
+            (>= conn 0) (serve-conn! conn handler)
+            (native/eagain? e)
+            ;; a failing poll answers at once; wait the slice anyway
+            (when (neg? (native/poll-one fd native/pollin accept-poll-ms))
+              (Thread/sleep accept-poll-ms))
+            (native/eintr? e) nil
+            ;; anything else (EMFILE, say) persists until something is
+            ;; released; do not spin on it
+            :else (Thread/sleep accept-poll-ms))
+          (recur))))
+    (finally (native/c-close fd))))
+
+(defn- stopper
+  "start's stop fn for the server whose accept loop runs on ACCEPTOR."
+  [stopped acceptor port-file]
+  (fn stop []
+    (when (compare-and-set! stopped false true)
+      ;; the loop closes the fd as it leaves, within a slice; the join is
+      ;; what makes the port free when stop returns
+      (try (.join acceptor (* 20 accept-poll-ms))
+           ;; delete-file!, not the raw Chez delete-file this used to call:
+           ;; that one RAISES when the file is already gone, so a stop after
+           ;; someone cleaned the port file up threw out of the shutdown path.
+           (finally (when port-file (jolt.host/delete-file! port-file)))))
+    nil))
 
 (defn start
   "Start the nREPL server on `port` (loopback only; 0 asks the OS for any free
@@ -755,78 +896,24 @@
          ;; port 0 asks the kernel for any free port; getsockname says which
          port (let [bound (native/local-port fd)] (if (pos? bound) bound port))
          requested (if (contains? opts :port-file) (:port-file opts) ".nrepl-port")
-         ;; absolute, so the delete hits the file spit wrote: spit resolves a
-         ;; relative path against the started-from directory, delete-file!
-         ;; against the process's (bin/jolt cd's to the repo root). nil when the
-         ;; write fails, so stop never deletes a file it did not write; the
-         ;; server still starts, but says the editor won't find it that way.
-         port-file (when requested
-                     (let [port-file (.getAbsolutePath (io/file requested))]
-                       (try (spit port-file (str port)) port-file
-                            (catch :default e
-                              (binding [*out* *err*]
-                                (println (str ";; could not write " requested ": " (ex-message e))))
-                              nil))))
+         port-file (when requested (write-port-file requested port))
          stopped (atom false)]
      (println (str "jolt " (jolt.host/jolt-version) " nREPL server started on port "
                    port " (127.0.0.1)"
                    (when port-file (str " — " requested " written"))))
      (when (seq middleware) (println (str ";; middleware: " (str/join " " middleware))))
      (println ";; connect your editor; ^C to stop")
-      ;; Plain threads, not futures: the server is not on the agent pool, so an
-      ;; eval'd (shutdown-agents) — the usual last form of a -main — must not
-      ;; leave the next accept unable to start its connection.
-      ;;
-      ;; The listen fd is non-blocking and the loop waits in poll slices, looking
-      ;; at `stopped` between them. A stop used to close the fd under a blocked
-      ;; accept(): Linux does not wake an accept for that, so the thread stayed
-      ;; in it holding a freed fd NUMBER, and the next socket the process opened
-      ;; could be accepted on. The loop leaves within a slice instead, and stop
-      ;; closes the fd once it has.
-      (let [acceptor
-            (Thread.
-             (bound-fn []
-               ;; the loop owns the fd: it closes it on the way out, so the
-               ;; number is never freed while an accept() may still use it,
-               ;; and a loop that dies (Thread. failing, say) frees the port
-               (try
-                 (loop []
-                   (when-not @stopped
-                     (let [[conn e] (native/c-accept fd ffi/null ffi/null)]
-                       (cond
-                         (>= conn 0)
-                         (do
-                           ;; macOS and Windows hand the listener's non-blocking
-                           ;; mode down; the connection is read blocking
-                           (native/set-blocking! conn true)
-                           (native/guard-accepted! conn)
-                           (.start
-                            (Thread.
-                             (bound-fn []
-                               (try (handle-conn conn handler)
-                                    (catch :default e
-                                      (println "nrepl conn error:" (err-msg e))
-                                      (native/c-close conn)))))))
-                         (native/eagain? e)
-                         ;; a failing poll answers at once; wait the slice anyway
-                         (when (neg? (native/poll-one fd native/pollin accept-poll-ms))
-                           (Thread/sleep accept-poll-ms))
-                         (native/eintr? e) nil
-                         ;; anything else (EMFILE, say) persists until something is
-                         ;; released; do not spin on it
-                         :else (Thread/sleep accept-poll-ms))
-                       (recur))))
-               (finally (native/c-close fd)))))]
-        (.start acceptor)
-      (with-meta
-       (fn stop []
-         (when (compare-and-set! stopped false true)
-           ;; the loop closes the fd as it leaves, within a slice; the join is
-           ;; what makes the port free when stop returns
-           (try (.join acceptor (* 20 accept-poll-ms))
-                ;; delete-file!, not the raw Chez delete-file this used to call:
-                ;; that one RAISES when the file is already gone, so a stop after
-                ;; someone cleaned the port file up threw out of the shutdown path.
-                (finally (when port-file (jolt.host/delete-file! port-file)))))
-         nil)
-       {:port port :port-file port-file})))))
+     ;; Plain threads, not futures: the server is not on the agent pool, so an
+     ;; eval'd (shutdown-agents) — the usual last form of a -main — must not
+     ;; leave the next accept unable to start its connection.
+     ;;
+     ;; The listen fd is non-blocking and the loop waits in poll slices, looking
+     ;; at `stopped` between them. A stop used to close the fd under a blocked
+     ;; accept(): Linux does not wake an accept for that, so the thread stayed
+     ;; in it holding a freed fd NUMBER, and the next socket the process opened
+     ;; could be accepted on. The loop leaves within a slice instead, and stop
+     ;; closes the fd once it has.
+     (let [acceptor (Thread. (bound-fn [] (accept-loop fd stopped handler)))]
+       (.start acceptor)
+       (with-meta (stopper stopped acceptor port-file)
+                  {:port port :port-file port-file})))))
