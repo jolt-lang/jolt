@@ -675,6 +675,11 @@
 (define ei-compiler-ns-files
   (list (cons "jolt.op-registry" "jolt-core/jolt/op_registry.clj")
         (cons "jolt.ir" "jolt-core/jolt/ir.clj")
+        (cons "jolt.analyzer.diagnostics" "jolt-core/jolt/analyzer/diagnostics.clj")
+        (cons "jolt.analyzer.hints" "jolt-core/jolt/analyzer/hints.clj")
+        (cons "jolt.analyzer.tree" "jolt-core/jolt/analyzer/tree.clj")
+        (cons "jolt.analyzer.ffi" "jolt-core/jolt/analyzer/ffi.clj")
+        (cons "jolt.analyzer.interop" "jolt-core/jolt/analyzer/interop.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
         (cons "jolt.passes.numeric" "jolt-core/jolt/passes/numeric.clj")

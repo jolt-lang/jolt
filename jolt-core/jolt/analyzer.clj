@@ -1,8 +1,11 @@
 (ns jolt.analyzer
   "Portable Clojure analyzer: reader form -> host-neutral IR (see jolt.ir).
 
-  Depends only on the host contract (jolt.host) and IR
-  constructors (jolt.ir). The contract fns are referred unqualified
+  Depends only on the host contract (jolt.host), IR
+  constructors (jolt.ir) and its own leaf namespaces — jolt.analyzer.diagnostics
+  (positions and kinded errors), .hints (type hints, param parsing), .tree (walks
+  over analyzed IR), .ffi (literal jolt.ffi forms) and .interop (host member and
+  class names), none of which call back into `analyze`. The contract fns are referred unqualified
   (host form predicates are `form-*` to avoid colliding with clojure.core), so the
   bootstrap can compile this namespace via its plain :var path. ctx is an opaque
   host handle threaded to the contract fns; the analyzer never inspects it.
@@ -17,7 +20,7 @@
   (:require [jolt.ir :refer [const local var-ref the-var host-ref if-node do-node invoke
                              coerce-node
                              def-node let-node fn-node vector-node map-node set-node
-                             quote-node throw-node host-static host-new reduce-ir-children]]
+                             quote-node throw-node host-static host-new]]
             [jolt.host :refer [form-sym? form-sym-name form-sym-ns form-list?
                                form-vec? form-map? form-set?
                                form-literal? form-keyword? form-elements form-vec-items
@@ -33,14 +36,27 @@
                                form-var-value? form-var-value-ns form-var-value-name
                                form-class-value? form-class-value-name
                                form-tagged? form-tag-name
-                               unchecked-math? allow-unresolved-vars? invoke-rewriter
-                               form-macro? form-expand-1 resolve-global resolvable-names
+                               unchecked-math? allow-unresolved-vars?
+                               form-macro? form-expand-1 resolve-global
                                form-sym-meta form-coll-meta host-intern! form-syntax-quote-lower
                                form-syntax-quote-expand
-                               record-type? record-ctor-key deftype-ctor-class form-position form-line
-                               resolve-class-hint host-class-name? ns-shaped-name? namespace-for
-                               late-bound-namespace?
-                               embed-plan ctx-for-ns]]))
+                               deftype-ctor-class form-position form-line
+                               resolve-class-hint host-class-name?
+                               embed-plan ctx-for-ns]]
+            [jolt.analyzer.diagnostics :refer [*positioned-form-box* *expansion-box*
+                                               *macro-run-box* analysis-error
+                                               resolve-error as-analysis-diagnostic]]
+            [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
+                                         init-proves-hint add-hint tag->nkind ahint-of
+                                         with-ret-nhint fi-tag-class fi-adapt-form
+                                         parse-params strip-arglist-meta arglist-ret-nkind
+                                         str-target-type kw-target-type sb-target-type]]
+            [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
+            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn]]
+            [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
+                                           array-class-dims array-class-name
+                                           method-value-form static-class-ns
+                                           unchecked-arith num-cast invoke-rewrite]]))
 
 (declare analyze)
 ;; the quote arm reaches it well before its definition (it needs analyze itself)
@@ -83,167 +99,6 @@
   [n]
   (reset! gensym-counter n))
 
-;; The innermost list form currently being analyzed that carries reader position
-;; metadata — what a diagnostic raised anywhere below it should name. Without it
-;; the only position available to the reporter is the one the LOADER records per
-;; TOP-LEVEL form, so an unresolved symbol 280 lines inside a defn reported the
-;; defn's own first line.
-;;
-;; The form is stored, not its position map: hc-form-position allocates, and this
-;; is written for every positioned list form the analyzer walks, whereas the map is
-;; wanted only if something actually throws. analyze-list saves and restores it
-;; around its children so a completed sibling subtree cannot leave a deeper
-;; position behind; the reference compiler does the same thing by pushing thread
-;; bindings of LINE/COLUMN in analyzeSeq, which is strictly more expensive.
-;;
-;; Only forms that HAVE a line are recorded, so descending through a macro-built
-;; form (which carries none) keeps the nearest enclosing real position rather than
-;; erasing it.
-;;
-;; The box is per COMPILATION, bound by `analyze` below, not one atom for the
-;; process. Shared, two threads compiling at once overwrote each other between the
-;; save and the restore, and a diagnostic from one namespace reported a line from
-;; whatever the other thread happened to be analyzing. The var holds the box rather
-;; than the form so the hot path stays what it was — one atom write per positioned
-;; form, not a thread-binding push per form, which is the cost the reference
-;; compiler pays to bind LINE/COLUMN in analyzeSeq.
-(def ^:dynamic *positioned-form-box* nil)
-
-;; The innermost macro expansion currently being analyzed, as [macro-name form],
-;; or nil. A diagnostic raised inside expanded code names the MACRO CALL — the
-;; expansion has no position of its own — which leaves the reader looking at a
-;; form that is correct as written, with no hint that the error came from code
-;; the macro generated. Recording which macro was expanding turns that into a
-;; note: "expanded from (my-def ...)".
-;;
-;; Stored like the position box, and for the same reason: written per expansion,
-;; read only when something throws.
-(def ^:dynamic *expansion-box* nil)
-
-;; The macro whose expander is RUNNING, as [qualified-symbol head-as-written
-;; form], or nil between runs. Distinct from the expansion box, which covers analysis of what
-;; a macro returned: this one covers the macro function's own execution, which
-;; is the one window the reference compiler files under a different PHASE
-;; (:macro-syntax-check / :macroexpansion, naming the macro) from everything
-;; the analyzer itself raises (:compile-syntax-check). Set before the expander
-;; is applied and cleared after, so a throw out of the expander leaves the
-;; macro's name in the box for the diagnostic to read.
-(def ^:dynamic *macro-run-box* nil)
-
-;; The position a diagnostic should carry: the innermost positioned form's, or nil
-;; when nothing under analysis had reader metadata (a macro-built form, or a form
-;; handed straight to eval). nil box means nothing is under analysis on this thread.
-(defn current-form-position []
-  (let [f (when *positioned-form-box* @*positioned-form-box*)]
-    (when (some? f) (form-position f))))
-
-;; Raise a compile-time diagnostic. Two things this fixes over the bare string it
-;; replaces — (throw (str "jolt/uncompilable: " why)):
-;;
-;; It is a real THROWABLE. A program that caught a compile error got a Scheme
-;; string: (class e) answered String, (ex-message e) nil, (instance? Exception e)
-;; false. The message survived only because the uncaught reporter pr-str'd the raw
-;; value, so the report looked right while nothing could read it.
-;;
-;; It carries a KIND — a namespaced keyword registered in
-;; test/conformance/error-kinds.edn, gated by `make errorkinds` — so tooling and
-;; the reporter can key on the error rather than parse its prose, and so the
-;; wording can be improved without breaking either.
-;;
-;; :type stays :analysis-error for the reporter, which already keys on it to drop
-;; the analyzer's own recursion from the trace.
-;; The diagnostic keys are namespaced and FLAT — :jolt.error/kind beside
-;; :jolt.error/line, not a nested map under one key. Namespacing is what keeps
-;; jolt's metadata from colliding with the thrower's own ex-data, which this
-;; preserves; nesting would have been solving a problem the namespace already
-;; solves. The reference spells its own the same way (:clojure.error/line).
-(defn- current-expansion []
-  (when *expansion-box* @*expansion-box*))
-
-(defn- current-macro-run []
-  (when *macro-run-box* @*macro-run-box*))
-
-;; How the reference spells :clojure.error/symbol for a throw out of a macro's
-;; run depends on WHOSE complaint it is. Its own check on the macro's arguments
-;; (the spec check, checkSpecs) names the VAR — clojure.core/let for a bare
-;; `let`; anything the expander itself threw names the head AS WRITTEN — mm,
-;; u/mm, user/mm — the op of the form being expanded. jolt's kinded
-;; diagnostics out of let/defn/fn's own argument checks are the counterpart of
-;; the first; the :analyze/internal-failure kind is exactly "the expander
-;; threw something else" (as-analysis-diagnostic), and gets the second.
-(defn- macro-run-symbol [run kind]
-  (if (= kind :analyze/internal-failure) (second run) (first run)))
-
-;; The reference compiler's phase for what E raised. Everything the analyzer
-;; says about a form is :compile-syntax-check. What a macro's own run raised is
-;; :macro-syntax-check when it is the kind of complaint a macro makes about its
-;; arguments — the classes Compiler.macroexpand1 files there: IllegalArgument,
-;; IllegalState, ExceptionInfo and a bare Exception — and :macroexpansion for
-;; anything else escaping the expander. The analyzer's own diagnostics
-;; (analysis-error, E nil) never come out of a running expander: a macro that
-;; re-enters the analyzer gets a fresh macro-run box (see analyze).
-(defn- error-phase [e]
-  (if (current-macro-run)
-    (if (or (nil? e)
-            (instance? IllegalArgumentException e)
-            (instance? IllegalStateException e)
-            (instance? clojure.lang.ExceptionInfo e)
-            (= (class e) Exception))
-      :macro-syntax-check
-      :macroexpansion)
-    :compile-syntax-check))
-
-;; The reference's own keys ride beside jolt's, so a JVM-portable reader of a
-;; compile error — clojure.main/ex-triage and everything built on it (REPL
-;; :caught hooks, test runners, editor middleware) — finds the phase and
-;; position under the names it already knows. The two spellings differ in
-;; one respect: the reference WRAPS the cause in a CompilerException carrying
-;; these keys, where jolt raises the one positioned throwable, with the cause
-;; as ITS cause (as-analysis-diagnostic); so ex-triage reads the phase off the
-;; top of the chain and the class/message off its end, on both.
-;; :clojure.error/source is the file when the position has one and absent
-;; otherwise, the reference's shape for a form read with no path.
-(defn- reference-error-keys [m pos e kind]
-  (let [run (current-macro-run)]
-    (cond-> (assoc m :clojure.error/phase (error-phase e))
-      (:file pos) (assoc :clojure.error/source (:file pos))
-      (:line pos) (assoc :clojure.error/line (:line pos))
-      (:column pos) (assoc :clojure.error/column (:column pos))
-      run (assoc :clojure.error/symbol (macro-run-symbol run kind)))))
-
-(defn- diagnostic-data
-  ([kind pos extra] (diagnostic-data kind pos extra nil))
-  ([kind pos extra e]
-  (let [exp (current-expansion)]
-    (cond-> (reference-error-keys (or extra {}) pos e kind)
-      true (assoc :jolt.error/kind kind :jolt.error/type :analysis-error)
-      ;; Name the macro ONLY when the position being reported is the macro call
-      ;; itself. That is exactly the case where the failing form was GENERATED —
-      ;; it has no position of its own, so the innermost positioned form is the
-      ;; call — and exactly the case where the reader is otherwise left staring
-      ;; at a line that is correct as written.
-      ;;
-      ;; When the user's own form is what failed, it has its own position and is
-      ;; not the call, so no note: (if) inside a defn body is the user's `if`,
-      ;; not something defn generated, even though it is analyzed inside defn's
-      ;; expansion. Without this test every diagnostic in ordinary code was
-      ;; labelled "expanding the `defn` macro", which is noise.
-      ;; Compared by POSITION, not object identity: a macro that builds its
-      ;; expansion with syntax-quote propagates the call site's line onto the
-      ;; generated form, so the form being reported is a different object that
-      ;; nonetheless sits exactly where the call does. Identity said "not the
-      ;; call" and dropped the note on the very case it exists for.
-      (and exp (= pos (form-position (second exp))))
-      (assoc :jolt.error/macro (first exp))
-      (:line pos) (assoc :jolt.error/line (:line pos))
-      (:column pos) (assoc :jolt.error/column (:column pos))
-      (:file pos) (assoc :jolt.error/file (:file pos))))))
-
-(defn- analysis-error
-  ([kind msg] (analysis-error kind msg nil))
-  ([kind msg extra]
-   (throw (ex-info msg (diagnostic-data kind (current-form-position) extra)))))
-
 (defn- empty-env [] {:locals #{} :hints {}})
 (defn- local? [env nm] (contains? (:locals env) nm))
 ;; A new binding of a name forgets what was known about the one it shadows: its
@@ -281,294 +136,6 @@
   ([env name arity prims]
    (-> env (assoc :recur name :recur-arity arity :recur-prims prims) (dissoc :recur-blocked))))
 
-;; --- the JVM's primitive boolean loop locals --------------------------------
-;; The reference compiler gives a loop local the JVM type of its init, and a local
-;; whose init is a primitive boolean -- (nil? x), (= a b), (< a b), (zero? n),
-;; (instance? C x), (boolean x) all inline to one -- rejects a recur argument that
-;; is not also a primitive boolean: "recur arg for primitive local: x is not
-;; matching primitive, had: java.lang.Boolean, needed: boolean" for a literal
-;; false. (A long or double local is re-analyzed boxed instead; only these fail.)
-;; jolt has no primitive locals and ran such a loop. It now refuses exactly where
-;; the JVM certainly does: the local's init is one of those inlines, and the
-;; argument is certainly not a primitive boolean -- a literal, or a call to a var
-;; that does not inline to one, which the JVM always types as an Object. Anything
-;; it cannot type the same way (a host call, a branch) is let through, so this
-;; never refuses a loop the JVM compiles.
-(def ^:private jvm-boolean-inlines
-  {"nil?" 1 "zero?" 1 "pos?" 1 "neg?" 1 "boolean" 1
-   "identical?" 2 "=" 2 "==" 2 "<" 2 "<=" 2 ">" 2 ">=" 2})
-(defn- jvm-boolean-prim? [node env]
-  (case (:op node)
-    :local (= :boolean (get (:jprims env) (:name node)))
-    :invoke (let [f (:fn node)]
-              (and (= :var (:op f)) (= "clojure.core" (str (:ns f)))
-                   (let [nm (str (:name f)) n (count (:args node))]
-                     (or (= n (get jvm-boolean-inlines nm))
-                         ;; (instance? C x) with a class as written: an InstanceOfExpr
-                         (and (= "instance-check" nm) (= 2 n)
-                              (= :var (:op (first (:args node)))))))))
-    false))
-;; The JVM class of an expression as the reference compiler types it -- "boolean"
-;; for a primitive boolean, :null for a nil literal (typed, but with no class) --
-;; or nil when jolt cannot type it the same way (a host call, a local it has no
-;; JVM type for). Only what decides a recur into a primitive boolean local.
-(defn- jvm-class [node env]
-  (if (jvm-boolean-prim? node env)
-    "boolean"
-    (case (:op node)
-      :const (let [v (:val node)]
-               (cond (nil? v) :null
-                     (boolean? v) "java.lang.Boolean"
-                     (int? v) "long"
-                     (double? v) "double"
-                     (string? v) "java.lang.String"
-                     (keyword? v) "clojure.lang.Keyword"
-                     (char? v) "java.lang.Character"
-                     :else nil))
-      ;; a call to a var that does not inline to a primitive: an Object, or the
-      ;; var's :tag
-      :invoke (let [f (:fn node)]
-                (when (= :var (:op f))
-                  (let [tag (some-> (find-var (symbol (str (:ns f)) (str (:name f)))) meta :tag)]
-                    (cond (nil? tag) "Object"
-                          ;; the reference evaluates a tag written in a metadata
-                          ;; map, so core's are classes: (defn not {:tag Boolean})
-                          (class? tag) (.getName tag)
-                          (and (symbol? tag) (nil? (namespace tag))
-                               (contains? #{"Boolean" "String" "Long" "Object" "Number" "Integer"} (name tag)))
-                          (str "java.lang." (name tag))
-                          :else (str tag)))))
-      ;; IfExpr: typed when both branches are and agree, or one is nil and the
-      ;; other not primitive; reported as the then branch's class, else the else's
-      :if (let [t (jvm-class (:then node) env) e (jvm-class (:else node) env)]
-            (when (and t e)
-              (cond (= t e) t
-                    (and (= t :null) (not (contains? #{"boolean" "long" "double"} e))) e
-                    (and (= e :null) (not (contains? #{"boolean" "long" "double"} t))) t
-                    ;; branches that disagree leave the if untyped: an Object
-                    :else "Object")))
-      nil)))
-;; The class the reference reports for an argument that is certainly NOT a
-;; primitive boolean, or nil when it is one or cannot be typed as the JVM would.
-;; A nil literal is left alone: the reference's own message has no class for it.
-(defn- jvm-non-boolean-class [node env]
-  (let [c (jvm-class node env)]
-    (when (and (string? c) (not= c "boolean")) c)))
-
-;; Type hints. The reader keeps ^hint metadata on the binding symbol.
-;; Two hints resolve to the :struct fast path (a constant-keyword lookup skips
-;; the :jolt/type guard and emits a bare get): ^:struct (a plain struct/record
-;; map) and ^TypeName where TypeName is a defrecord/deftype (its instances are
-;; tagged :jolt/deftype, not :jolt/type, so a raw get is correct). ^String
-;; resolves to :str (the :host-call direct string-native path, str-target-type
-;; below), and ^clojure.lang.Keyword to :kw (the keyword arm of the same path).
-;; Every other hint (^long, ...) parses and is ignored, as before.
-;;
-;; Both new values are inert to the struct machinery: every consumer that ACTS on
-;; a hint equality-checks :struct (backend_scheme.clj's field-access and 1-arg
-;; lookup sites). The one consumer that does not is passes/inline.clj, which
-;; tests truthiness — but only to copy a hint from an inlined call onto the local
-;; it was bound to, which is propagation, not interpretation, and is what a :str
-;; or :kw hint wants anyway.
-(defn- str-tag? [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (or (= s "String") (= s "java.lang.String"))))
-(defn- kw-tag? [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (or (= s "Keyword") (= s "clojure.lang.Keyword"))))
-;; :sb is StringBuilder and :sbuf StringBuffer. Both take the direct-emit path,
-;; but a StringBuffer is synchronized, as on the JDK, so its direct forms are the
-;; locking primitives (sb-append*! / sb-str* ...) where a StringBuilder's are the
-;; unsynchronized ones.
-(defn- sb-tag? [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (or (= s "StringBuilder") (= s "java.lang.StringBuilder"))))
-(defn- sbuf-tag? [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (or (= s "StringBuffer") (= s "java.lang.StringBuffer"))))
-(defn- hint-of [ctx sym]
-  (let [m (form-sym-meta sym)]
-    (cond
-      (nil? m) nil
-      (get m :struct) :struct
-      :else (let [t (get m :tag)]
-              (cond (and t (record-type? ctx t)) :struct
-                    (str-tag? t) :str
-                    (kw-tag? t) :kw
-                    (sb-tag? t) :sb
-                    (sbuf-tag? t) :sbuf
-                    :else nil)))))
-
-;; A hint the INIT proves rather than the programmer writes. (StringBuilder.) can
-;; only ever produce a StringBuilder, so a local bound directly to one is proven
-;; :sb with nothing in the source — which matters because nobody writes
-;; ^StringBuilder on `(let [sb (StringBuilder.)] …)`, and that let is how every
-;; string-building loop in Clojure is shaped (honeysql's join, data.json's reader,
-;; clojure.pprint). Deliberately just the direct case: a constructor call in the
-;; binding position, no flow analysis, no reassignment to worry about since a let
-;; local is immutable.
-(defn- init-proves-hint [init]
-  (when (= :host-new (get init :op))
-    (cond (sb-tag? (get init :class)) :sb
-          (sbuf-tag? (get init :class)) :sbuf)))
-(defn- add-hint [env nm h]
-  (if h (assoc env :hints (assoc (:hints env) nm h)) env))
-
-;; The resolved record ctor-key ("ns/->Name") for a ^Type param hint, or nil.
-;; Unlike hint-of (which collapses any record hint to the coarse :struct guard-
-;; skip marker), this carries the SPECIFIC record type — cross-namespace aware —
-;; so the inference can seed the param's type and read its fields shaped/typed,
-;; not just :any (the lever for a typed multi-namespace program without whole-
-;; program inference).
-;; A ^Record tag on a parameter -> the record's ctor key, else nil.
-(defn- phint-of [ctx sym]
-  (let [m (form-sym-meta sym)]
-    (when m (let [t (get m :tag)] (when t (record-ctor-key ctx t))))))
-;; ...and whether that hint is a PROOF: only the `this` defrecord puts on an
-;; inline method is (dispatch reaches the method with nothing else). A hint the
-;; program wrote is a declaration -- Clojure's (:x p) answers a map's :x whatever
-;; p is hinted -- so it must not type the param on its own.
-(defn- phint-proven? [sym]
-  (let [m (form-sym-meta sym)] (and m (true? (get m :jolt/proven)))))
-
-;; A ^long / ^double tag -> :long / :double, else nil. The tag is a string on the
-;; data reader; tolerate a symbol from macroexpansion too.
-(defn- tag->nkind [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (cond (= s "double") :double (= s "long") :long :else nil)))
-
-;; A primitive numeric hint on a BINDING symbol. Drives the fl*/fx* fast path
-;; (jolt.passes.numeric).
-;;
-;; ^int joins ^long here, and only here. jolt has no 32-bit integer — an int and a
-;; long are the same value — so a ^int binding is a fixnum promise exactly as a
-;; ^long one is, and honouring it lights up ported JVM code (60-gvec.clj is written
-;; entirely in ^int indices) that until now paid generic arithmetic for a hint the
-;; compiler dropped. The RETURN path (tag->nkind, used by with-ret-nhint and
-;; arglist-ret-nkind) deliberately does NOT take it: a ^int return would coerce
-;; through jolt->fx-ret and WRAP to 64 bits, and a wrap is a value change, where a
-;; parameter coercion only refuses a value that was never an int to begin with.
-;;
-;; Divergence: reference Clojure supports only long and double primitive
-;; parameters, so ^int on a param is an inert type tag there and coerces nothing.
-;; Here it range-checks (and refuses a char, per RT.longCast(Object)). Recorded in
-;; test/conformance/known-divergences.edn.
-(defn- tag->pnkind [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (if (= s "int") :long (tag->nkind t))))
-(defn- nhint-of [ctx sym]
-  (let [m (form-sym-meta sym)] (when m (tag->pnkind (get m :tag)))))
-
-;; A primitive ARRAY hint on a param. Drives the aget/aset fast paths
-;; (jolt.passes.numeric):
-;;
-;;   :doubles  the UNBOXED flvector-ref/-set! path — a double array's backing
-;;             is a Chez flvector, so an element reads back a proven :double.
-;;   :floats   the same flvector path, but an element is a Float: it reads back
-;;             :float (the double an fl op takes, a jfloat anywhere else) and a
-;;             store rounds to single precision.
-;;   :longs :ints :bytes :objects
-;;             the kind's own backing (fxvector/bytevector/vector) read direct, but
-;;             no result type (it can widen past a fixnum) and no jolt-nth walk.
-(defn- tag->akind [t]
-  (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (cond (= s "doubles") :doubles (= s "floats") :floats
-          (= s "longs") :longs (= s "ints") :ints
-          (= s "bytes") :bytes (= s "objects") :objects
-          :else nil)))
-(defn- ahint-of [ctx sym]
-  (let [m (form-sym-meta sym)] (when m (tag->akind (get m :tag)))))
-
-;; A PRIMITIVE tag jolt parses and then acts on nowhere. The hint surface is
-;; invisible from the source — ^double is a load-bearing contract and ^float is
-;; decoration, and the two look identical — so the JOLT_CHECK lint reports these,
-;; and jolt.passes.types turns each into a located warning.
-;;
-;; Only primitives and primitive arrays. A tag like ^Object, ^java.util.List or
-;; ^clojure.lang.IFn is inert on the JVM too — it is documentation, the programmer
-;; knows it, and reporting it would bury the real finding in noise. A ^Foo naming a
-;; record that is not registered is excluded for a different reason: the record can
-;; be defined later or in another namespace, so "unknown here" is not "wrong".
-(def ^:private inert-prim-tags
-  #{"float" "boolean" "char" "byte" "short"
-    "chars" "booleans" "shorts"})
-(defn- dead-hint-of [ctx sym]
-  (let [m (form-sym-meta sym)
-        t (when m (get m :tag))
-        s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (when (and s (contains? inert-prim-tags s)) s)))
-
-;; Push a numeric return hint (from ^double/^long on a defn's name) onto each arity
-;; of its fn, so the back end coerces the body's value to that kind on return —
-;; making the hint a contract a caller's arithmetic can trust.
-(defn- with-ret-nhint [node kind]
-  (if (and kind (= :fn (:op node)))
-    (assoc node :arities (mapv (fn [a] (if (:ret-nhint a) a (assoc a :ret-nhint kind)))
-                               (:arities node)))
-    node))
-
-;; `recur` rebinds and jumps, so it may only appear where its value IS the value
-;; of the enclosing target. Anywhere else the surrounding expression is silently
-;; discarded: (loop [i 0] (+ 1 (recur (inc i)))) looped forever here and never
-;; applied the (+ 1 ...), where the reference refuses to compile it.
-;;
-;; Checked as a pass over the ANALYZED tree rather than threaded through the
-;; analyze-* arms, because tail position is a property of the tree and threading
-;; it would put a separate rule in every arm — where one wrong rule REJECTS VALID
-;; CODE, which is worse than the permissiveness it replaces. Here the default is
-;; "children are not tail", so an op this does not name can only be restrictive
-;; about a recur nested inside it, never wrong about one in tail position.
-;;
-;; Only three ops pass tail position down: an `if` to its branches, a `do` to its
-;; last form, a `let` to its body. Every other construct that admits a recur in
-;; tail position — case, cond, when, or, and, letfn — is a macro over exactly
-;; these, so it needs no rule of its own.
-;;
-;; NOT the back end's tail-transparent-ops (backend_scheme.clj), which is a
-;; larger set answering a different question. That one asks "may a tail call sit
-;; under this node", so it also names :invoke, :throw and :host-call — the ops
-;; that read *tail?* themselves to decide whether to store a frame site — and
-;; :loop, whose own body is where its self-call is tail. Widening this set to
-;; match it would put a recur back in an argument position: (loop [] (f (recur)))
-;; is exactly what an :invoke entry here would re-admit.
-;;
-;; :fn and :loop are their OWN recur targets: their bodies are checked when those
-;; bodies are analyzed, so descending into them here would check them twice
-;; against the wrong target. A loop's binding INITS still belong to the enclosing
-;; target, though, and are checked as non-tail.
-(defn- check-recur-tails!
-  ([node] (check-recur-tails! node true))
-  ([node tail?]
-   (when (some? node)
-     (let [op (:op node)]
-       (cond
-         (= op :recur)
-           (do (when-not tail?
-                 ;; The recur's OWN position, carried on the node, because this
-                 ;; pass runs after the body is analyzed — the position box has
-                 ;; been restored by then and names the enclosing loop/fn instead.
-                 ;; The reference points at the recur (pos.clj:6:12, not the loop
-                 ;; on 4:3) and so should this.
-                 (throw (ex-info "Can only recur from tail position"
-                                 (diagnostic-data :analyze/invalid-recur
-                                                  (:pos node) nil))))
-               (doseq [a (:args node)] (check-recur-tails! a false)))
-         (= op :fn) nil
-         (= op :loop)
-           (doseq [b (:bindings node)] (check-recur-tails! (nth b 1) false))
-         (= op :if)
-           (do (check-recur-tails! (:test node) false)
-               (check-recur-tails! (:then node) tail?)
-               (check-recur-tails! (:else node) tail?))
-         (= op :do)
-           (do (doseq [s (:statements node)] (check-recur-tails! s false))
-               (check-recur-tails! (:ret node) tail?))
-         (= op :let)
-           (do (doseq [b (:bindings node)] (check-recur-tails! (nth b 1) false))
-               (check-recur-tails! (:body node) tail?))
-         :else
-           (reduce-ir-children (fn [_ c] (check-recur-tails! c false)) nil node))))))
-
 (defn- analyze-seq [ctx forms env]
   (let [v (mapv #(analyze ctx % env) forms)
         n (count v)]
@@ -576,109 +143,6 @@
       (zero? n) (const nil)
       (= 1 n) (first v)
       :else (do-node (subvec v 0 (dec n)) (peek v)))))
-
-;; ---- functional-interface coercion of a hinted let binding (Clojure 1.12) ---
-;; (let [^java.util.function.Predicate p even?] (.test p 2)): a binding hinted
-;; with a functional interface adapts a fn init to that interface, as the JVM's
-;; FISupport.maybeEmitFIAdapter does — only when the value is an IFn and not
-;; already an instance of the interface. The adapter's method returns the fn's
-;; result converted to the method's return type the way the JVM's FnInvokers do:
-;; a boolean return is a Boolean CAST, a numeric one the RT cast (2.7 -> 2).
-;; Runnable, Callable and Comparator are absent: a fn already is one of each.
-;; Each entry: interface -> [method arity return].
-(def ^:private fi-interfaces
-  {"java.util.function.Function" ["apply" 1 :obj]
-   "java.util.function.BiFunction" ["apply" 2 :obj]
-   "java.util.function.UnaryOperator" ["apply" 1 :obj]
-   "java.util.function.BinaryOperator" ["apply" 2 :obj]
-   "java.util.function.IntFunction" ["apply" 1 :obj]
-   "java.util.function.LongFunction" ["apply" 1 :obj]
-   "java.util.function.DoubleFunction" ["apply" 1 :obj]
-   "java.util.function.Predicate" ["test" 1 :bool]
-   "java.util.function.BiPredicate" ["test" 2 :bool]
-   "java.util.function.IntPredicate" ["test" 1 :bool]
-   "java.util.function.LongPredicate" ["test" 1 :bool]
-   "java.util.function.DoublePredicate" ["test" 1 :bool]
-   "java.util.function.Consumer" ["accept" 1 :void]
-   "java.util.function.BiConsumer" ["accept" 2 :void]
-   "java.util.function.IntConsumer" ["accept" 1 :void]
-   "java.util.function.LongConsumer" ["accept" 1 :void]
-   "java.util.function.DoubleConsumer" ["accept" 1 :void]
-   "java.util.function.ObjIntConsumer" ["accept" 2 :void]
-   "java.util.function.ObjLongConsumer" ["accept" 2 :void]
-   "java.util.function.ObjDoubleConsumer" ["accept" 2 :void]
-   "java.util.function.Supplier" ["get" 0 :obj]
-   "java.util.function.BooleanSupplier" ["getAsBoolean" 0 :bool]
-   "java.util.function.IntSupplier" ["getAsInt" 0 :int]
-   "java.util.function.LongSupplier" ["getAsLong" 0 :long]
-   "java.util.function.DoubleSupplier" ["getAsDouble" 0 :double]
-   "java.util.function.ToIntFunction" ["applyAsInt" 1 :int]
-   "java.util.function.ToLongFunction" ["applyAsLong" 1 :long]
-   "java.util.function.ToDoubleFunction" ["applyAsDouble" 1 :double]
-   "java.util.function.ToIntBiFunction" ["applyAsInt" 2 :int]
-   "java.util.function.ToLongBiFunction" ["applyAsLong" 2 :long]
-   "java.util.function.ToDoubleBiFunction" ["applyAsDouble" 2 :double]
-   "java.util.function.IntUnaryOperator" ["applyAsInt" 1 :int]
-   "java.util.function.LongUnaryOperator" ["applyAsLong" 1 :long]
-   "java.util.function.DoubleUnaryOperator" ["applyAsDouble" 1 :double]
-   "java.util.function.IntBinaryOperator" ["applyAsInt" 2 :int]
-   "java.util.function.LongBinaryOperator" ["applyAsLong" 2 :long]
-   "java.util.function.DoubleBinaryOperator" ["applyAsDouble" 2 :double]
-   "java.util.function.IntToLongFunction" ["applyAsLong" 1 :long]
-   "java.util.function.IntToDoubleFunction" ["applyAsDouble" 1 :double]
-   "java.util.function.LongToIntFunction" ["applyAsInt" 1 :int]
-   "java.util.function.LongToDoubleFunction" ["applyAsDouble" 1 :double]
-   "java.util.function.DoubleToIntFunction" ["applyAsInt" 1 :int]
-   "java.util.function.DoubleToLongFunction" ["applyAsLong" 1 :long]
-   "java.io.FileFilter" ["accept" 1 :bool]
-   "java.io.FilenameFilter" ["accept" 2 :bool]})
-
-;; The functional interface a binding's ^tag names, as its FQN, or nil. The tag is
-;; written the way any class is: fully qualified, or a name an :import maps.
-(defn- fi-tag-class [ctx bsym]
-  (let [tag (get (form-sym-meta bsym) :tag)
-        nm (cond (form-sym? tag) (if (form-sym-ns tag) nil (form-sym-name tag))
-                 (string? tag) tag
-                 :else nil)]
-    (when nm
-      (if (contains? fi-interfaces nm)
-        nm
-        (let [r (resolve-global ctx (symbol nm))
-              fqn (if (= :class (:kind r)) (:name r) (resolve-class-hint nm))]
-          (when (contains? fi-interfaces fqn) fqn))))))
-
-(defn- fi-adapt-form [fqn init]
-  (let [[mname arity ret] (get fi-interfaces fqn)
-        v (symbol "fi__value")
-        ps (mapv #(symbol (str "a" % "__fi")) (range arity))
-        call (apply list v ps)
-        r (symbol "fi__ret")
-        ;; a primitive return unboxes the fn's answer, so nil is the JVM's
-        ;; NullPointerException before any conversion
-        unbox (fn [conv]
-                (list 'let* [r call]
-                      (list 'if (list (symbol "clojure.core" "nil?") r)
-                            (list 'throw (list 'new (symbol "java.lang.NullPointerException")))
-                            (conv r))))
-        body (case ret
-               ;; the JVM CASTS to Boolean (no truthiness): a non-boolean raises
-               :bool (unbox #(list (symbol "clojure.core" "cast") (symbol "java.lang.Boolean") %))
-               :int (unbox #(list (symbol "clojure.core" "int") %))
-               :long (unbox #(list (symbol "clojure.core" "long") %))
-               :double (unbox #(list (symbol "clojure.core" "double") %))
-               :void (list 'do call nil)
-               call)
-        iface (symbol fqn)]
-    ;; An IFn that is not already an instance gets the adapter; anything else is
-    ;; checked by the cast the JVM's checkcast is — nil and an instance pass, any
-    ;; other value is a ClassCastException.
-    (list 'let* [v init]
-          (list 'if (list 'if (list (symbol "clojure.core" "ifn?") v)
-                          (list 'if (list (symbol "clojure.core" "instance?") iface v) false true)
-                          false)
-                (list (symbol "clojure.core" "reify") iface
-                      (list (symbol mname) (into [(symbol "fi__this")] ps) body))
-                (list (symbol "clojure.core" "cast") iface v)))))
 
 (defn- binding-vector
   "The binding vector of a (let*|loop*|letfn* [...] body*) form, as a Clojure vector."
@@ -725,37 +189,6 @@
                              e))
                  (conj pairs [nm init]))))
       [pairs env])))
-
-(defn- parse-params [ctx pvec]
-  ;; :hints is a vector of [name hint] pairs (vector, not a map, so the caller
-  ;; folds it with a plain reduce — no reduce-over-map in the kernel subset).
-  ;; :phints is the parallel vector of [name ctor-key] for PROVEN record param
-  ;; hints, carrying the specific type for the inference to seed; :uphints is the
-  ;; same for the hints a program wrote, which the optimizing passes turn into a
-  ;; type test on the param (jolt.passes.types guard-declared-records).
-  (loop [i 0 fixed [] rest-name nil hints [] phints [] uphints [] nhints [] ahints [] dhints []]
-    (if (< i (count pvec))
-      (let [p (nth pvec i)]
-        (when-not (form-sym? p)
-          (analysis-error :analyze/invalid-fn-parameters
-                          "Bad parameter, expected symbol"))
-        (if (= "&" (form-sym-name p))
-          (let [r (nth pvec (inc i))]
-            (when-not (form-sym? r)
-              (analysis-error :analyze/invalid-fn-parameters
-                              "Bad rest parameter, expected symbol"))
-            (recur (+ i 2) fixed (form-sym-name r) hints phints uphints nhints ahints dhints))
-          (let [nm (form-sym-name p) h (hint-of ctx p) ph (phint-of ctx p)
-                nh (nhint-of ctx p) ah (ahint-of ctx p) dh (dead-hint-of ctx p)]
-            (recur (inc i) (conj fixed nm) rest-name
-                   (if h (conj hints [nm h]) hints)
-                   (if (and ph (phint-proven? p)) (conj phints [nm ph]) phints)
-                   (if (and ph (not (phint-proven? p))) (conj uphints [nm ph]) uphints)
-                   (if nh (conj nhints [nm nh]) nhints)
-                   (if ah (conj ahints [nm ah]) ahints)
-                   (if dh (conj dhints [nm dh]) dhints)))))
-      {:fixed fixed :rest rest-name :hints hints :phints phints :uphints uphints :nhints nhints
-       :ahints ahints :dhints dhints})))
 
 ;; Clojure lets a later param shadow an earlier same-named one (a macro expander
 ;; uses _ for both its &form and &env slots, so its param list is (_ _ …)); the
@@ -892,127 +325,12 @@
     ;; but keeps a fixed arity a nil-free struct rather than a phm.
     (if rst (assoc arity :rest rst) arity)))
 
-;; A reader that lowers ^meta on a collection to a runtime (with-meta <coll> <meta>)
-;; form (the Chez data reader) wraps an arglist vector carrying a return-type hint
-;; (^bytes [b] / ^String [x y]). Unwrap to the underlying vector so fn parsing sees
-;; the params — the hint is ignored at runtime. Only the (with-meta <vec> _) shape
-;; matches, so a real arity clause (head is a vector) and a
-;; meta-on-vector arglist pass through unchanged.
-(defn- strip-arglist-meta [form]
-  (if (form-list? form)
-    (let [es (vec (form-elements form))]
-      (if (and (= 3 (count es))
-               (form-sym? (first es))
-               (= "with-meta" (form-sym-name (first es)))
-               (form-vec? (nth es 1)))
-        (nth es 1)
-        form))
-    form))
-
-;; A ^long/^double on the ARGLIST VECTOR declares that arity's primitive return
-;; type — (fn ^long [x] x) and (defn f ^long [x] x) both mean it, and the
-;; reference honors both. jolt read the tag only off a defn's NAME, so the
-;; arglist spelling was dropped and ((fn ^long [x] x) 18446744073709551616N)
-;; answered 2^64 where the reference answers 0. strip-arglist-meta above throws
-;; the hint away for parsing, which is right — the params are what fn parsing
-;; needs — but the kind has to be read off the ORIGINAL form first.
-;;
-;; Both reader shapes are covered: the vector carries its metadata directly, and
-;; a reader that lowers ^meta on a collection to (with-meta <vec> <meta>) puts it
-;; in the third element. A non-numeric tag (^String [x]) still yields nil, so
-;; class hints on an arglist stay ignored exactly as before.
-(defn- arglist-ret-nkind [form]
-  (let [m (cond
-            (form-vec? form) (form-coll-meta form)
-            (form-list? form)
-            (let [es (vec (form-elements form))]
-              (when (and (= 3 (count es))
-                         (form-sym? (first es))
-                         (= "with-meta" (form-sym-name (first es)))
-                         (form-vec? (nth es 1)))
-                (nth es 2)))
-            :else nil)]
-    (when (map? m) (tag->nkind (get m :tag)))))
-
 ;; analyze-arity over the stripped params, with the arglist's own return hint
 ;; attached. An explicit :ret-nhint already on the arity wins.
 (defn- analyze-arity-with-ret [ctx params-form body env fn-name]
   (let [a (analyze-arity ctx (strip-arglist-meta params-form) body env fn-name)
         k (arglist-ret-nkind params-form)]
     (if (and k (not (:ret-nhint a))) (assoc a :ret-nhint k) a)))
-
-;; The ORIGINAL (pre-munge) names of the locals a fn literal references that are
-;; bound OUTSIDE it — its image-registration free-name list. Computed by walking
-;; the analyzed arities with the LEXICAL environment (a set of in-scope names):
-;; a :local not in the set is free; a binding form extends the set only for the
-;; scope it covers, and a binding's init is walked BEFORE its own name binds
-;; ((let [y y] …) reports the outer y). A nested :fn's body IS descended, with
-;; its own params/rest/self-name added: the outer literal's :src-form textually
-;; contains the nested one, so restore evaluates the whole outer form with the
-;; outer's free names bound, and a name free only inside the nested literal must
-;; be in the outer's list or it would resolve to a same-named global at eval.
-;; Sorted so the registration is stable across builds.
-;;
-;; A nested :fn is READ, not descended. analyze-fn runs bottom-up, so a nested
-;; literal already carries the answer for its own subtree: :free-names is exactly
-;; the names it references that nothing inside it binds, which is what descending
-;; would recompute. Filtering that list against the enclosing scope gives the same
-;; set — a name is this literal's iff the nested one leaves it free AND nothing out
-;; here binds it — and it costs the nested list rather than the nested subtree.
-;;
-;; Descending was quadratic, and it was the analyzer's whole cost on nested
-;; literals: every literal walked its entire subtree, so a chain of N of them
-;; walked O(N^2) nodes. The CPS pass in clojure.core.async builds that chain (one
-;; closure per park site) and 240 sites spent 1.4 s here. Reading takes it to 30 ms.
-;; A node with no :free-names (one a pass built, rather than analyze-fn) is
-;; descended as before, so the fallback cannot silently drop a capture.
-(defn- fn-free-names [arities fn-name]
-  (let [refs (atom #{})
-        ;; each arity's params bind only in that arity: (fn ([x] y) ([y] y))
-        ;; references y free in the first arity even though the second binds it
-        arity-own (fn [a] (into (set (if (:rest a) (conj (:params a) (:rest a)) (:params a)))
-                                (when fn-name [fn-name])))]
-    (letfn [(walk [n bound]
-              (let [op (:op n)]
-                (cond
-                  (= op :local) (when-not (contains? bound (:name n))
-                                  (swap! refs conj (:name n)))
-                  (= op :fn)
-                  (if-let [inner (:free-names n)]
-                    (doseq [nm inner]
-                      (when-not (contains? bound nm) (swap! refs conj nm)))
-                    (doseq [a (:arities n)]
-                      (walk (:body a)
-                            (into (if (:name n) (conj bound (:name n)) bound)
-                                  (if (:rest a) (conj (:params a) (:rest a)) (:params a))))))
-                  (or (= op :let) (= op :loop))
-                  ;; letrec (letfn, and the state-machine loops core.async's CPS
-                  ;; transform builds from it) binds EVERY name across EVERY init,
-                  ;; including the init's own. Walking those inits with only the
-                  ;; earlier names bound — which is right for let* and loop, where
-                  ;; an init sees only what precedes it — reports a letrec binding
-                  ;; as free in its own init. That over-approximates :free-names,
-                  ;; and a name the literal itself binds has no captured value to
-                  ;; recover, so the closure refuses at dump for a variable that
-                  ;; was never a capture.
-                  (if (:letrec n)
-                    (let [b* (into bound (map first (:bindings n)))]
-                      (doseq [b (:bindings n)] (walk (second b) b*))
-                      (walk (:body n) b*))
-                    (let [b* (reduce (fn [b [nm init]]
-                                       (walk init b)
-                                       (conj b nm))
-                                     bound (:bindings n))]
-                      (walk (:body n) b*)))
-                  (= op :try)
-                  (do (walk (:body n) bound)
-                      (when (:catch-body n)
-                        (walk (:catch-body n) (if (:catch-sym n) (conj bound (:catch-sym n)) bound)))
-                      (when (:finally n) (walk (:finally n) bound)))
-                  :else
-                  (reduce-ir-children (fn [acc c] (walk c bound) acc) nil n))))]
-      (doseq [a arities] (walk (:body a) (arity-own a)))
-      (vec (sort @refs)))))
 
 ;; Is the form's own head already the bare, meta-free symbol fn*? Then the form IS
 ;; what :src-form rebuilds and the rebuild can be skipped — see analyze-fn.
@@ -1022,44 +340,6 @@
          (nil? (form-sym-ns h))
          (= "fn*" (form-sym-name h))
          (let [m (form-sym-meta h)] (or (nil? m) (zero? (count m)))))))
-
-;; A multi-arity fn's clauses must be distinguishable by argument count, as the
-;; JVM's FnExpr.parse requires: one variadic clause at most, no two fixed clauses
-;; of the same count, and no fixed clause taking more than the variadic one's
-;; required count. Same checks and the same order as the JVM: per clause in
-;; declaration order, then the fixed-above-variadic rule. Accepting a second
-;; variadic clause was not harmless -- dispatch takes the first clause that
-;; accepts the count, so ([a & r] ...) ([a b c & r] ...) never reaches the second,
-;; and a first clause that delegates to the second loops forever.
-(defn- check-fn-arities [clauses arities]
-  ;; Each error points at the clause that broke the rule, as the recur check
-  ;; points at the recur: the clause is the code the user wrote, where the fn
-  ;; form may be a macro's (defn's, or fn's own fn*) and pointing there drew a
-  ;; note blaming the macro. The reference reports the fn's position instead.
-  (let [arity-error (fn [clause msg]
-                      (throw (ex-info msg (diagnostic-data :analyze/invalid-fn-arities
-                                                           (or (form-position clause)
-                                                               (current-form-position))
-                                                           nil))))
-        [variadic fixed]
-        (reduce (fn [[variadic fixed] [clause a]]
-                  (let [n (count (:params a))]
-                    (cond
-                      (:rest a)
-                      (if variadic
-                        (arity-error clause "Can't have more than 1 variadic overload")
-                        [n fixed])
-                      (contains? fixed n)
-                      (arity-error clause "Can't have 2 overloads with same arity")
-                      :else [variadic (conj fixed n)])))
-                [nil #{}] (map vector clauses arities))]
-    (when-let [clause (and variadic
-                           (some (fn [[clause a]]
-                                   (when (and (not (:rest a)) (> (count (:params a)) variadic))
-                                     clause))
-                                 (map vector clauses arities)))]
-      (arity-error clause "Can't have fixed arity function with more params than variadic function"))
-    arities))
 
 (defn- analyze-fn [ctx form items env]
   (let [named (form-sym? (nth items 1))
@@ -1114,42 +394,65 @@
 ;; clause matches any thrown value unconditionally.
 (def ^:private catch-all-names #{"Throwable" "java.lang.Throwable" "Object" "java.lang.Object"})
 
+;; Fold one try clause into {:body :catches :finally :finally?}.
+;; Clause ordering, like the JVM: body exprs, then catches, then at most one
+;; finally which must be last. Enforced eagerly (plain throw) so a misplaced
+;; clause is a compile error rather than a silently-relocated body form.
+(defn- add-try-clause [acc c]
+  (let [head (when (form-list? c) (first (vec (form-elements c))))
+        hname (when (and head (form-sym? head)) (form-sym-name head))]
+    (when (:finally? acc)
+      (analysis-error :analyze/invalid-try
+                      "finally clause must be last in try expression"))
+    (cond
+      (= hname "catch")
+        (let [cl (vec (form-elements c))]
+          ;; (catch class binding body*) — binding (3rd elem) MUST be a symbol.
+          ;; Validate eagerly (plain throw, NOT uncompilable, so it's a real
+          ;; error rather than a compile->interpret punt) instead of letting
+          ;; form-sym-name crash on a non-symbol.
+          (when (or (< (count cl) 3) (not (form-sym? (nth cl 2))))
+            (analysis-error :analyze/invalid-try
+                          "Unable to parse catch clause; expected (catch class binding body*)"))
+          (update acc :catches conj cl))
+      (= hname "finally")
+        (assoc acc :finally? true :finally (rest (vec (form-elements c))))
+      :else
+        (do
+          ;; a body expr after a catch is illegal — only catch/finally may follow.
+          (when (seq (:catches acc))
+            (analysis-error :analyze/invalid-try
+                  "Only catch or finally clause can follow catch in try expression"))
+          (update acc :body conj c)))))
+
+;; The catch clauses as ONE form over the caught value `evar`: a nested-if chain
+;; testing each clause's class in order, re-throwing when none matches.
+(defn- catch-dispatch-form [evar catches]
+  (reduce
+    (fn [else cl]
+      (let [cform (nth cl 1)
+            bindsym (nth cl 2)
+            bodyf (drop 3 cl)
+            ;; clojure.core-qualified: a ns that excludes (or
+            ;; :only-omits) let/or/instance? and defines its
+            ;; own must still get core's here (jolt#1095).
+            letform (cons 'clojure.core/let (cons (vector bindsym evar) bodyf))
+            fullname (when (form-sym? cform) (form-sym-name cform))
+            catch-all? (or (not (form-sym? cform))
+                           (contains? catch-all-names fullname))]
+        (if catch-all?
+          letform
+          (list 'if (list 'clojure.core/or
+                          (list 'clojure.core/instance? cform evar)
+                          (list 'clojure.core/__catch-broad? fullname evar))
+                letform else))))
+    (list 'throw evar)
+    (reverse catches)))
+
 (defn- analyze-try [ctx items env]
-  (let [clauses (rest items)
-        body (atom [])
-        catches (atom [])           ; ordered vector of (catch class binding body*) clauses
-        finally-body (atom nil)
-        seen-finally? (atom false)]
-    (doseq [c clauses]
-      (let [head (when (form-list? c) (first (vec (form-elements c))))
-            hname (when (and head (form-sym? head)) (form-sym-name head))]
-        ;; Clause ordering, like the JVM: body exprs, then catches, then at most one
-        ;; finally which must be last. Enforced eagerly (plain throw) so a misplaced
-        ;; clause is a compile error rather than a silently-relocated body form.
-        (when @seen-finally?
-          (analysis-error :analyze/invalid-try
-                          "finally clause must be last in try expression"))
-        (cond
-          (= hname "catch")
-            (let [cl (vec (form-elements c))]
-              ;; (catch class binding body*) — binding (3rd elem) MUST be a symbol.
-              ;; Validate eagerly (plain throw, NOT uncompilable, so it's a real
-              ;; error rather than a compile->interpret punt) instead of letting
-              ;; form-sym-name crash on a non-symbol.
-              (when (or (< (count cl) 3) (not (form-sym? (nth cl 2))))
-                (analysis-error :analyze/invalid-try
-                              "Unable to parse catch clause; expected (catch class binding body*)"))
-              (swap! catches conj cl))
-          (= hname "finally")
-            (do (reset! seen-finally? true)
-                (reset! finally-body (rest (vec (form-elements c)))))
-          :else
-            (do
-              ;; a body expr after a catch is illegal — only catch/finally may follow.
-              (when (seq @catches)
-                (analysis-error :analyze/invalid-try
-                      "Only catch or finally clause can follow catch in try expression"))
-              (swap! body conj c)))))
+  (let [parts (reduce add-try-clause
+                      {:body [] :catches [] :finally nil :finally? false}
+                      (rest items))]
     ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
     ;; them to ONE guard binding a fresh local, then a nested-if chain testing each
     ;; clause's class with (instance? C e) — which respects the exception supertype
@@ -1172,39 +475,18 @@
     ;; finally is not a tail position in the first place and reports as such.
     (let [benv (assoc env :recur-blocked :try)
           tenv (assoc env :recur-blocked :non-tail)
-          n {:op :try :body (analyze-seq ctx @body benv)}
-          n (if (seq @catches)
+          n {:op :try :body (analyze-seq ctx (:body parts) benv)}
+          n (if (seq (:catches parts))
               (let [evar-name (gen-name "catch")
                     raw-name (gen-name "catch-raw")
-                    evar (symbol evar-name)
-                    dispatch
-                    (reduce
-                      (fn [else cl]
-                        (let [cform (nth cl 1)
-                              bindsym (nth cl 2)
-                              bodyf (drop 3 cl)
-                              ;; clojure.core-qualified: a ns that excludes (or
-                              ;; :only-omits) let/or/instance? and defines its
-                              ;; own must still get core's here (jolt#1095).
-                              letform (cons 'clojure.core/let (cons (vector bindsym evar) bodyf))
-                              fullname (when (form-sym? cform) (form-sym-name cform))
-                              catch-all? (or (not (form-sym? cform))
-                                             (contains? catch-all-names fullname))]
-                          (if catch-all?
-                            letform
-                            (list 'if (list 'clojure.core/or
-                                            (list 'clojure.core/instance? cform evar)
-                                            (list 'clojure.core/__catch-broad? fullname evar))
-                                  letform else))))
-                      (list 'throw evar)
-                      (reverse @catches))]
+                    evar (symbol evar-name)]
                 (assoc n :catch-sym evar-name
                          :catch-raw-sym raw-name
-                         :catch-body (analyze-seq ctx (list dispatch)
+                         :catch-body (analyze-seq ctx (list (catch-dispatch-form evar (:catches parts)))
                                                   (add-locals tenv [evar-name]))))
               n)
-          n (if @finally-body
-              (assoc n :finally (analyze-seq ctx @finally-body tenv))
+          n (if (:finally parts)
+              (assoc n :finally (analyze-seq ctx (:finally parts) tenv))
               n)]
       n)))
 
@@ -1225,12 +507,6 @@
                     (range n))]
     {:op :let :letrec true :bindings binds
      :body (analyze-seq ctx (drop 2 items) env*)}))
-
-;; A `.-field` head: `(.-field target)` is field access (the dash signals field
-;; access to the host-call dispatcher). Defined above analyze-special so its set!
-;; arm and analyze-list both reach it without a forward reference.
-(defn- field-head? [nm]
-  (and (> (count nm) 2) (= ".-" (subs nm 0 2))))
 
 ;; Clojure evaluates def metadata values as expressions: ^{:k (f)} stores the
 ;; result of (f), ^{:a some-fn} stores the fn value. Build an IR map that evaluates
@@ -1340,6 +616,40 @@
               me (def-meta-expr ctx node-meta env)]
           (if me (assoc node :meta-expr me) node))))))
 
+(defn- analyze-set-member [ctx ti thead val-node env]
+  (cond
+    ;; (set! (.-field obj) v) and (set! (.field obj) v) both set an instance
+    ;; field in Clojure; accept either. The "." static-field head is handled
+    ;; by the next arm (it isn't a .-/.name field head).
+    (and (> (count thead) 1) (= \. (first thead)))
+    {:op :set-field :obj (analyze ctx (nth ti 1) env)
+     :field (if (field-head? thead) (subs thead 2) (subs thead 1)) :val val-node}
+    ;; (set! (. Class member) val) — a host static-field set. clojure.spec.alpha
+    ;; toggles clojure.lang.RT/checkSpecAsserts this way. Lowered to a runtime
+    ;; jolt.host/set-static-field! call (the read side is a :host-static ref).
+    (and (= thead ".") (>= (count ti) 3) (form-sym? (nth ti 1)) (form-sym? (nth ti 2))
+         (= :class (:kind (resolve-global ctx (nth ti 1)))))
+    (invoke (var-ref "jolt.host" "set-static-field!")
+            [(const (:name (resolve-global ctx (nth ti 1))))
+             (const (form-sym-name (nth ti 2))) val-node])
+    ;; (set! (. obj -field) val) and (set! (. obj field) val) — the two-part
+    ;; spelling of the instance-field set above; a deftype method writes its
+    ;; mutable fields as (set! (. this -field) v). After the static arm, so a
+    ;; class name in the object position still means a static field.
+    (and (= thead ".") (= 3 (count ti)) (form-sym? (nth ti 2)))
+    (let [mname (form-sym-name (nth ti 2))]
+      {:op :set-field :obj (analyze ctx (nth ti 1) env)
+       :field (if (= \- (first mname)) (subs mname 1) mname) :val val-node})
+    :else (analysis-error :analyze/invalid-set "Invalid assignment target")))
+
+(defn- analyze-set-var [ctx target val-node env]
+  (when (local? env (form-sym-name target))
+    (analysis-error :analyze/invalid-set
+                    (str "Cannot assign to non-mutable: " (form-sym-name target))))
+  (let [r (resolve-global ctx target)]
+    (when-not (= :var (:kind r)) (analysis-error :analyze/invalid-set "Invalid assignment target"))
+    {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
+
 ;; (set! (.-field obj) v) mutates a deftype instance field in place; (set! *var* v)
 ;; sets the var's innermost thread binding through jolt.host/set-var! — Var.set,
 ;; which throws when there is none rather than establishing a root. A local target
@@ -1353,34 +663,8 @@
         thead (when (and ti (pos? (count ti)) (form-sym? (first ti)))
                 (form-sym-name (first ti)))]
     (cond
-      ;; (set! (.-field obj) v) and (set! (.field obj) v) both set an instance
-      ;; field in Clojure; accept either. The "." static-field head is handled
-      ;; by the next arm (it isn't a .-/.name field head).
-      (and thead (> (count thead) 1) (= \. (first thead)))
-      {:op :set-field :obj (analyze ctx (nth ti 1) env)
-       :field (if (field-head? thead) (subs thead 2) (subs thead 1)) :val val-node}
-      ;; (set! (. Class member) val) — a host static-field set. clojure.spec.alpha
-      ;; toggles clojure.lang.RT/checkSpecAsserts this way. Lowered to a runtime
-      ;; jolt.host/set-static-field! call (the read side is a :host-static ref).
-      (and (= thead ".") (>= (count ti) 3) (form-sym? (nth ti 1)) (form-sym? (nth ti 2))
-           (= :class (:kind (resolve-global ctx (nth ti 1)))))
-      (invoke (var-ref "jolt.host" "set-static-field!")
-              [(const (:name (resolve-global ctx (nth ti 1))))
-               (const (form-sym-name (nth ti 2))) val-node])
-      ;; (set! (. obj -field) val) and (set! (. obj field) val) — the two-part
-      ;; spelling of the instance-field set above; a deftype method writes its
-      ;; mutable fields as (set! (. this -field) v). After the static arm, so a
-      ;; class name in the object position still means a static field.
-      (and (= thead ".") (= 3 (count ti)) (form-sym? (nth ti 2)))
-      (let [mname (form-sym-name (nth ti 2))]
-        {:op :set-field :obj (analyze ctx (nth ti 1) env)
-         :field (if (= \- (first mname)) (subs mname 1) mname) :val val-node})
-      (form-sym? target)
-      (do (when (local? env (form-sym-name target)) (analysis-error :analyze/invalid-set
-                                (str "Cannot assign to non-mutable: " (form-sym-name target))))
-          (let [r (resolve-global ctx target)]
-            (when-not (= :var (:kind r)) (analysis-error :analyze/invalid-set "Invalid assignment target"))
-            {:op :set-var :the-var (the-var (:ns r) (:name r)) :val val-node}))
+      thead (analyze-set-member ctx ti thead val-node env)
+      (form-sym? target) (analyze-set-var ctx target val-node env)
       :else (analysis-error :analyze/invalid-set "Invalid assignment target"))))
 
 ;; (monitor-enter x) / (monitor-exit x) — the raw monitor ops, lowered to the same
@@ -1603,63 +887,6 @@
     (analysis-error :analyze/unsupported-special-form
                     (str "Unsupported special form: " op))))
 
-;; Host interop method call. `(.method target arg*)` — a head that
-;; starts with "." but not ".-" (field access stays punted). Analyzes to a
-;; :host-call node; the Chez back end lowers it to a jolt-host-call dispatch.
-(defn- method-head? [nm]
-  (and (> (count nm) 1)
-       (= "." (subs nm 0 1))
-       (not (= "-" (subs nm 1 2)))     ; .-field is field access
-       (not (= "." (subs nm 1 2)))))   ; .. is the threading macro, not .method
-
-;; The compile-time proof that a :host-call's target is a string, driving the
-;; backend's direct string-native emission (no record-method-dispatch walk, no
-;; jolt-vector rest-args). Three sources: the target's own ^String tag, a ^String
-;; let/param binding the target reads through (:hint :str from hint-of), and a
-;; string literal. NOT inferred types — this is the hint seam; widening it to the
-;; :str lattice value is the follow-up.
-(defn- str-target-type [raw target]
-  (when (or (and (form-sym? raw) (str-tag? (get (form-sym-meta raw) :tag)))
-            (= :str (:hint target))
-            (and (= :const (:op target)) (string? (:val target))))
-    :str))
-
-;; Same seam for keywords. Sources mirror str-target-type: the ^Keyword tag, a
-;; :kw-hinted binding, or a keyword literal. honeysql's
-;; (.sym ^clojure.lang.Keyword k) is the shape this was written for and jolt
-;; reaches it: honeysql orders its conditional #?(:bb … :clj (.sym …)) with :bb
-;; first at all three sites, and jolt stopped matching :bb in #893. See
-;; keyword-direct-emit.
-(defn- kw-target-type [raw target]
-  (when (or (and (form-sym? raw) (kw-tag? (get (form-sym-meta raw) :tag)))
-            (= :kw (:hint target))
-            (and (= :const (:op target)) (keyword? (:val target))))
-    :kw))
-
-;; And for StringBuilder, the one that pays for itself the most: a jhost method
-;; call is the most expensive interop shape jolt has — the tag's method table is
-;; found by hashing the tag STRING, the method by hashing its name, the rest args
-;; arrive as a jolt-vector and are converted back to a list for `apply`, and the
-;; shim lambda takes them as a further rest list. Measured 270 ns for a 0-arg
-;; StringBuilder method and 500 ns for (.append sb "a"), against 20 ns on the JVM.
-;; Sources are the ^StringBuilder tag and a :sb-hinted binding — which
-;; init-proves-hint supplies for (let [sb (StringBuilder.)] …) with nothing written
-;; in the source. Both give an IDENTIFIER as the emitted target, which sb-direct-emit
-;; requires: its append arm splices the target twice, once to append and once to
-;; return (the JVM's fluent contract).
-;;
-;; A constructor directly in target position, (.append (StringBuilder.) x), is
-;; deliberately NOT a source even though it proves the type just as well. It is an
-;; expression, so the second splice would run it again and append to a fresh
-;; builder — the gate caught exactly that, answering "" for
-;; (.toString (.append (StringBuilder.) "lit")). Binding the target to a temporary
-;; here would fix it, but nothing writes that shape and the generic path already
-;; handles it correctly.
-(defn- sb-target-type [raw target]
-  (let [tag (when (form-sym? raw) (get (form-sym-meta raw) :tag))]
-    (cond (or (sb-tag? tag) (= :sb (:hint target))) :sb
-          (or (sbuf-tag? tag) (= :sbuf (:hint target))) :sbuf)))
-
 ;; The list form's source position on a node, when the reader recorded one —
 ;; the same stamp an :invoke carries. A host call in tail position stores it as
 ;; its trace site (backend sited host call), and it is what a report names when
@@ -1682,13 +909,6 @@
       (kw-target-type raw target) (assoc :target-type :kw)
       (sb-target-type raw target) (assoc :target-type (sb-target-type raw target)))))
 
-;; A constructor head: `Class.` — a symbol ending in "." (but not the member
-;; access `.method` / `..` forms). `(Class. args*)` builds an instance.
-(defn- ctor-head? [nm]
-  (and (> (count nm) 1)
-       (= "." (subs nm (dec (count nm)) (count nm)))
-       (not (= "." (subs nm 0 1)))))
-
 ;; `(Class. args*)` and `(new Class args*)` -> a :host-new node carrying the class
 ;; token and the analyzed args. The Chez back end lowers it to a runtime
 ;; constructor dispatch.
@@ -1699,212 +919,6 @@
   ;; still reaches java.io.PushbackReader.
   (host-new (or (deftype-ctor-class ctx class) class)
             (mapv #(analyze ctx % env) args)))
-
-;; Literal, data-only layout descriptors. Keep the analyzer representation free
-;; of reader objects so it survives self-hosting and can be embedded in the IR.
-(def ^:private ffi-layout-scalars
-  #{"int" "uint" "int8" "i8" "uint8" "u8" "byte" "char" "bool"
-    "int16" "short" "uint16" "ushort" "int32" "uint32"
-    "long" "ulong" "int64" "uint64" "size_t" "ssize_t" "iptr" "uptr"
-    "double" "float" "pointer" "void*"})
-
-(declare analyze-ffi-layout-type)
-
-(defn- ffi-layout-form-kind [form]
-  (when (form-vec? form)
-    (let [parts (vec (form-vec-items form))
-          head (first parts)]
-      (when (and (form-keyword? head) (nil? (namespace head)))
-        (name head)))))
-
-;; A struct and a union differ only in how the ABI lays the members out, so one
-;; analyzer reads both and the :ffi-kind it answers is what the back end turns
-;; into Chez's (struct ...) or (union ...) ftype. Everything downstream — offsets,
-;; size, alignment, field paths — is computed by the SAME ftype machinery, so a
-;; union needs no arithmetic of its own here.
-(defn- analyze-ffi-layout-aggregate [form]
-  (let [kind (ffi-layout-form-kind form)
-        kind (when (or (= "struct" kind) (= "union" kind)) kind)]
-    (when-not (form-vec? form)
-      (analysis-error :ffi/invalid-layout (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
-                  "or [:union [[field type] ...]], got " (pr-str form))))
-    (let [parts (vec (form-vec-items form))]
-      (when-not (and kind (= 2 (count parts)) (form-vec? (nth parts 1)))
-        (analysis-error :ffi/invalid-layout (str "jolt.ffi layout descriptor must be [:struct [[field type] ...]] "
-                    "or [:union [[field type] ...]], got " (pr-str form))))
-      (let [field-forms (vec (form-vec-items (nth parts 1)))]
-        (when (empty? field-forms)
-          (analysis-error :ffi/invalid-layout (str "jolt.ffi " kind " descriptor must contain at least one field")))
-        (loop [remaining field-forms names #{} fields []]
-          (if (empty? remaining)
-            {:ffi-kind (if (= "union" kind) :union :struct) :fields fields}
-            (let [field (first remaining)]
-              (when-not (form-vec? field)
-                (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field must be [keyword type], got "
-                            (pr-str field))))
-              (let [fp (vec (form-vec-items field))]
-                (when-not (= 2 (count fp))
-                  (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field must be [keyword type], got "
-                              (pr-str field))))
-                (let [field-name (nth fp 0)]
-                  (when-not (and (form-keyword? field-name)
-                                 (nil? (namespace field-name)))
-                    (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field name must be an unqualified keyword, got "
-                                (pr-str field-name))))
-                  (let [nm (name field-name)]
-                    (when (contains? names nm)
-                      (analysis-error :ffi/invalid-field (str "jolt.ffi " kind " field names must be unique; duplicate :" nm)))
-                    (recur (rest remaining)
-                           (conj names nm)
-                           (conj fields {:name nm
-                                         :type (analyze-ffi-layout-type (nth fp 1))}))))))))))))
-
-(defn- analyze-ffi-layout-array [form]
-  (let [parts (vec (form-vec-items form))]
-    (when-not (= 3 (count parts))
-      (analysis-error :ffi/invalid-array (str "jolt.ffi array descriptor must be [:array element-type positive-count], got "
-                  (pr-str form))))
-    (let [count (nth parts 2)]
-      (when-not (and (integer? count) (pos? count))
-        (analysis-error :ffi/invalid-array (str "jolt.ffi array count must be a positive integer literal, got "
-                    (pr-str count))))
-      {:ffi-kind :array
-       :count count
-       :type (analyze-ffi-layout-type (nth parts 1))})))
-
-(defn- analyze-ffi-layout-type [form]
-  (cond
-    (form-keyword? form)
-    (let [n (name form)]
-      (when-not (and (nil? (namespace form)) (contains? ffi-layout-scalars n))
-        (analysis-error :ffi/invalid-type (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
-                    (pr-str form))))
-      n)
-
-    (form-vec? form)
-    (case (ffi-layout-form-kind form)
-      "struct" (analyze-ffi-layout-aggregate form)
-      "union" (analyze-ffi-layout-aggregate form)
-      "array" (analyze-ffi-layout-array form)
-      (analysis-error :ffi/invalid-type (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
-                  (pr-str form))))
-
-    :else
-    (analysis-error :ffi/invalid-type (str "jolt.ffi struct field type must be a fixed-size scalar, nested struct or union, or fixed array; got "
-                (pr-str form)))))
-
-(defn- analyze-ffi-layout [items]
-  (when-not (= 2 (count items))
-    (analysis-error :ffi/invalid-layout "jolt.ffi/layout expects one literal struct or union descriptor"))
-  {:op :ffi-layout :layout (analyze-ffi-layout-aggregate (nth items 1))})
-
-(defn- ffi-by-value-form? [form]
-  (when (form-vec? form)
-    (let [parts (vec (form-vec-items form))]
-      (and (= 2 (count parts))
-           (form-keyword? (nth parts 0))
-           (nil? (namespace (nth parts 0)))
-           (= "by-value" (name (nth parts 0)))))))
-
-;; A union has no by-value ABI a caller can rely on: which member is live is the
-;; program's knowledge, not the type's, and the register classification of the
-;; bytes differs by which one it is. babashka.ffi refuses it in a signature for
-;; the same reason. So a union reaches C as a :pointer, alone or as a member of
-;; a struct that would otherwise travel by value.
-(defn- ffi-layout-holds-union? [type]
-  (cond
-    (string? type) false
-    (= :union (:ffi-kind type)) true
-    (= :struct (:ffi-kind type))
-      (boolean (some (fn [f] (ffi-layout-holds-union? (:type f))) (:fields type)))
-    (= :array (:ffi-kind type)) (ffi-layout-holds-union? (:type type))
-    :else false))
-
-(defn- analyze-ffi-signature-type [form position]
-  (cond
-    (form-keyword? form) (name form)
-    (ffi-by-value-form? form)
-      (let [parts (vec (form-vec-items form))
-            analyzed (analyze-ffi-layout-aggregate (nth parts 1))]
-        (when (ffi-layout-holds-union? analyzed)
-          (analysis-error :ffi/invalid-type (str "jolt.ffi " position
-                      " type: a union is not passed by value, alone or inside a struct"
-                      " — declare :pointer and read the member you know applies")))
-        {:ffi-kind :by-value
-         :type analyzed})
-    :else
-      (analysis-error :ffi/invalid-type (str "jolt.ffi " position
-                  " type must be a keyword or [:by-value [:struct ...]], got "
-                  (pr-str form)))))
-
-;; jolt.ffi/__cfn: the low-level foreign-function form a jolt library
-;; uses (via the jolt.ffi/foreign-fn macro) to bind native code. Shape:
-;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype)             ; non-blocking
-;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype :blocking)   ; may block
-;;   (jolt.ffi/__cfn "c_symbol" [:argtype ...] :rettype {opts})      ; options map
-;; The C symbol is a string literal and the types are literal keywords, read here
-;; at compile time; the Chez back end lowers it to a real `foreign-procedure`
-;; (typed marshaling, no runtime eval). A :blocking call is emitted __collect_safe
-;; so it deactivates the thread for the call — a blocking call (accept/recv/...)
-;; must not pin the stop-the-world collector. A leaf IR node.
-;;
-;; Normalize the optional form to the two literal Boolean flags understood by
-;; the back end. Direct __cfn calls and the public macros share this fail-closed
-;; validation: keys must be unqualified keywords, values literal Booleans, and
-;; unknown keys are rejected rather than ignored.
-(defn- ffi-option
-  ([]
-   {:blocking false :capture-native-error false})
-  ([opt]
-   (cond
-     (and (form-keyword? opt)
-          (nil? (namespace opt))
-          (= "blocking" (name opt)))
-     {:blocking true :capture-native-error false}
-
-     (form-map? opt)
-     (reduce
-       (fn [res pr]
-         (let [k (nth pr 0) v (nth pr 1)]
-           (when-not (and (form-keyword? k) (nil? (namespace k)))
-             (analysis-error :ffi/invalid-option (str "jolt.ffi: option key must be an unqualified keyword, got: " k)))
-           (let [kn (name k)]
-             (when-not (or (= kn "blocking") (= kn "capture-native-error"))
-               (analysis-error :ffi/invalid-option (str "jolt.ffi: unknown option :" kn)))
-             (when-not (or (true? v) (false? v))
-               (analysis-error :ffi/invalid-option (str "jolt.ffi: option :" kn
-                           " must be a literal Boolean, got: " v)))
-             (assoc res
-                    (if (= kn "blocking") :blocking :capture-native-error)
-                    v))))
-       {:blocking false :capture-native-error false}
-       (form-map-pairs opt))
-
-     :else
-     (analysis-error :ffi/invalid-option (str "jolt.ffi: option must be :blocking or an options map, got: " opt)))))
-
-(defn- analyze-ffi-fn [ctx items env]
-  (when-not (<= 4 (count items) 5)
-    (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-fn expects "
-                "(foreign-fn \"sym\" [argtypes] rettype [:blocking | {opts}])")))
-  (let [rettype (analyze-ffi-signature-type (nth items 3) "return")
-        opt (if (= 5 (count items))
-              (ffi-option (nth items 4))
-              (ffi-option))
-        blocking (:blocking opt)
-        capture (:capture-native-error opt)]
-    (when (and capture (= rettype "void"))
-      (analysis-error :ffi/invalid-option (str "jolt.ffi: :capture-native-error is not supported for :void "
-                  "(no stable native result to pair with the error code)")))
-    (when (and capture (map? rettype))
-      (analysis-error :ffi/invalid-option "jolt.ffi: :capture-native-error is not supported for by-value returns"))
-    {:op :ffi-fn
-     :csym (nth items 1)
-     :argtypes (mapv #(analyze-ffi-signature-type % "argument")
-                     (form-vec-items (nth items 2)))
-     :rettype rettype
-     :blocking blocking
-     :capture-native-error capture}))
 
 ;; jolt.ffi/__ccallable: the foreign-CALLBACK form (via the jolt.ffi/foreign-callable
 ;; macro) — the inverse of __cfn. It wraps a jolt fn as a C-callable function
@@ -2044,331 +1058,332 @@
              (= "clojure.core" (:ns r)) (= "instance?" (:name r)))
     (var-ref "clojure.core" "instance-check")))
 
-;; --- unresolved-symbol diagnostics ("did you mean?") ------------------------
-;; A Carp-inspired touch: when a bare symbol doesn't resolve, offer the closest
-;; in-scope names by Levenshtein distance instead of a bare "unable to resolve".
+;; A symbol that resolved to a var: the var's node, unless it names a macro or a
+;; private var of another namespace.
+(defn- var-symbol-node [ctx form r]
+  (or (macro-value-fn ctx form r)
+      (do (deny-private form r false)
+          (deny-macro-value ctx form r)
+          (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r))))))
 
-;; Levenshtein edit distance over two strings, computed on char vectors (jolt's
-;; strings are codepoint-modeled, so index via vec, not nth-on-string). Only ever
-;; called on the error path, so the O(la*lb) DP is fine.
-(defn- edit-distance [sa sb]
-  (let [a (vec sa) b (vec sb) la (count a) lb (count b)]
-    (cond
-      (zero? la) lb
-      (zero? lb) la
-      :else
-      (loop [i 1 prev (vec (range (inc lb)))]
-        (if (> i la)
-          (peek prev)
-          (let [ca (nth a (dec i))
-                row (reduce
-                      (fn [cur j]
-                        (let [cost (if (= ca (nth b (dec j))) 0 1)]
-                          (conj cur (min (inc (peek cur))          ; insertion
-                                         (inc (nth prev j))        ; deletion
-                                         (+ cost (nth prev (dec j))))))) ; substitution
-                      [i]
-                      (range 1 (inc lb)))]
-            (recur (inc i) row)))))))
+(defn- analyze-qualified-symbol [ctx form nm ns env]
+  (cond
+    ;; Qualified instance method (Clojure 1.12) used as a value: a fn of the
+    ;; target and the method's arguments.
+    (and (> (count nm) 1) (= "." (subs nm 0 1)))
+      (analyze ctx (method-value-form ns nm (get (form-sym-meta form) :param-tags)) env)
+    ;; `Class/new` used as a value — a fn over the constructor — unless the ns
+    ;; half is a namespace that really has a var named `new`.
+    (and (= nm "new") (not= :var (:kind (resolve-global ctx form))))
+      (analyze ctx (method-value-form ns nm (get (form-sym-meta form) :param-tags)) env)
+    ;; `Component/N` — an array class symbol (Clojure 1.12): the Class object,
+    ;; as any class symbol evaluates to.
+    (and (array-class-dims nm) (not= :var (:kind (resolve-global ctx form))))
+      (let [cn (array-class-name ctx ns (array-class-dims nm))]
+        (if cn
+          (invoke (var-ref "jolt.host" "jolt-class-for") [(const cn)])
+          ;; the reference's ClassNotFoundException, which the position box
+          ;; (as-analysis-diagnostic) carries as the cause of the positioned
+          ;; compile error, as a CompilerException carries it on the JVM
+          (throw (ClassNotFoundException. (str "Unable to resolve component classname: " ns)))))
+    :else
+    (let [r (resolve-global ctx form)]
+      (if (= :var (:kind r))
+        (var-symbol-node ctx form r)
+        ;; A non-var qualified ref `Class/member` is a host class static
+        ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
+        ;; lowers it to a runtime static dispatch.
+        ;;
+        ;; ...but a namespace-shaped ns that is not loaded AT ALL cannot be a
+        ;; class either, and reporting it as one is how `(no.such.ns/foo 1)`
+        ;; came back "Unknown class no.such.ns" from inside the call, naming a
+        ;; class the program never mentioned. resolve-global cannot draw the
+        ;; line itself: it answers :unresolved for `Math/sqrt` and for
+        ;; `no.such.ns/foo` alike, because looking the name up and finding
+        ;; nothing is all it can say. So check the shape, and report the JVM's
+        ;; "No such namespace" (Compiler.resolveIn) at COMPILE time — which is
+        ;; where a forgotten `require` or a typo in the ns half belongs.
+        ;;
+        ;; A LOADED namespace merely missing the var is the JVM's compile-time
+        ;; "No such var" when the form runs as soon as it compiles (load,
+        ;; require, eval: jolt.host/late-bound-namespace?). Left to the static
+        ;; arm, the ns half was looked up again when the call RAN, against
+        ;; whatever *ns* was current then, so an alias in a -main read as a
+        ;; class: `(s/nope 1)` reported "Unknown class s".
+        ;;
+        ;; Everywhere else it stays on the host-static arm, and deliberately.
+        ;; jolt-core and stdlib reach their host contract
+        ;; this way on purpose — several hundred `jolt.host/…` references, and
+        ;; jolt.ffi's and jolt.time's — and which vars exist depends on which host
+        ;; files the current boot loaded: jolt.main names jolt.host/build-library
+        ;; in a world where build.ss may not be loaded and the call cannot run.
+        ;; Late binding is the point there, so the compile-time guard for that
+        ;; namespace is a STATIC one (jolt-host-manifest.txt, pinned against
+        ;; both the def-var! sites and every jolt-core reference by
+        ;; manifestcheck), and the miss reports at the call, correctly, through
+        ;; static-miss-message's live-namespace arm: "No such var: ns/name",
+        ;; not "Unknown class".
+        ;;
+        ;; jolt#879 was in this second group — jolt.host loaded, `getenv` not
+        ;; yet — so it is the seed's own gates that hold it: manifestcheck
+        ;; rejects a namespace-shaped host-static in the minted seed, and
+        ;; `make seeddefs` asserts every var the seed defines survives the load.
+        ;;
+        ;; static-class-ns draws both lines.
+        (host-static (static-class-ns ctx ns nm) nm)))))
 
-;; Distance a candidate may be from the typed name to count as a "did you mean":
-;; scales with length so a 2-char name can't match everything, and a longer name
-;; tolerates a couple of typos.
-(defn- suggest-threshold [n]
-  (cond (<= n 3) 1 (<= n 6) 2 :else 3))
-
-;; Up to 3 candidate names closest to nm within the threshold, nearest first,
-;; ties broken alphabetically for a stable message.
-(defn- suggestions-for [nm candidates]
-  (let [thr (suggest-threshold (count nm))
-        scored (filter (fn [p] (<= (second p) thr))
-                       (map (fn [c] [c (edit-distance nm c)])
-                            (remove #(= % nm) (distinct candidates))))
-        ordered (sort (fn [a b]
-                        (if (= (second a) (second b))
-                          (compare (first a) (first b))
-                          (compare (second a) (second b))))
-                      scored)]
-    (mapv first (take 3 ordered))))
-
-;; The names an unresolved symbol is matched against: everything resolvable from
-;; the compile ns (its own interns + clojure.core's publics, via the host) plus
-;; the lexical locals in scope.
-(defn- candidate-pool [ctx env]
-  (concat (seq (resolvable-names ctx)) (seq (:locals env))))
-
-;; Throw the structured "unable to resolve symbol" diagnostic. The human message
-;; keeps the JVM wording (with any suggestions appended); the ex-data carries a
-;; machine-readable :jolt.error/* keys the CLI reporter emits as EDN under
-;; JOLT_DIAG=edn, so editors/tools get the symbol, suggestions, and ns as data.
-;; :line/:column/:file come from the innermost enclosing positioned form, so the
-;; report names where the unknown name is WRITTEN. The reporter otherwise falls
-;; back to the loader's per-top-level-form position, which in a long defn is its
-;; opening line and says nothing about the offending expression.
-(defn- resolve-error [ctx nm env]
-  (let [sugg (suggestions-for nm (candidate-pool ctx env))
-        base (str "Unable to resolve symbol: " nm " in this context")
-        msg (if (seq sugg)
-              (str base " (did you mean " (apply str (interpose ", " sugg)) "?)")
-              base)
-        extra {:jolt.error/symbol nm
-               :jolt.error/suggestions (vec sugg)
-               :jolt.error/ns (compile-ns ctx)}]
-    (throw (ex-info msg (diagnostic-data :analyze/unresolved-symbol
-                                         (current-form-position) extra)))))
-
-;; ---- Clojure 1.12 qualified methods and array class symbols ----------------
-;; The JVM descriptor letter of each primitive an array class symbol may name
-;; (long/2 is long[][], "[[J").
-(def ^:private array-prim-letters
-  {"boolean" "Z" "byte" "B" "char" "C" "short" "S" "int" "I" "long" "J"
-   "float" "F" "double" "D"})
-
-;; `Component/N` names an N-dimensional array class (Compiler.maybeArrayClass):
-;; a qualified symbol whose name is ONE digit 1-9.
-(defn- array-class-dims [nm]
-  (when (and (= 1 (count nm)) (contains? #{"1" "2" "3" "4" "5" "6" "7" "8" "9"} nm))
-    (parse-long nm)))
-
-;; The JVM name of the array class `cname/dims` names — "[[J" for long/2,
-;; "[Ljava.lang.String;" for String/1 — or nil when cname is no class. The
-;; component resolves the way a class symbol does: a primitive, an auto-imported
-;; or :import-ed class, a deftype, or a fully-qualified name.
-(defn- array-class-name [ctx cname dims]
-  (let [prefix (apply str (repeat dims "["))
-        letter (get array-prim-letters cname)]
-    (if letter
-      (str prefix letter)
-      (let [r (resolve-global ctx (symbol cname))
-            fqn (cond (= :class (:kind r)) (:name r)
-                      (resolve-class-hint cname) (resolve-class-hint cname)
-                      (host-class-name? cname) cname
-                      :else nil)]
-        (when fqn (str prefix "L" fqn ";"))))))
-
-;; Fresh parameter names for a synthesized method-value fn. The `__qm` suffix
-;; keeps them out of the way of any name the method's class symbol could use.
-(defn- qm-params [n] (mapv #(symbol (str "p" % "__qm")) (range n)))
-
-;; `Class/new` and `Class/.method` in VALUE position (Clojure 1.12 method values)
-;; are fns. With :param-tags (^[long String] Foo/.bar) the arity is known, so the
-;; fn calls the member directly; without them the fn is variadic and reaches the
-;; member reflectively, which is what the JVM compiles an unresolved method value
-;; to. The forms are analyzed like any written fn.
-(defn- method-value-form [cname mname ptags]
-  (let [csym (symbol cname)
-        ctor? (= mname "new")
-        n (when (vector? ptags) (count ptags))]
-    (if n
-      (let [ps (qm-params n)]
-        (if ctor?
-          (list 'fn* ps (apply list 'new csym ps))
-          (let [t (symbol "target__qm")]
-            (list 'fn* (into [t] ps) (apply list '. t (symbol (subs mname 1)) ps)))))
-      (let [a (symbol "args__qm")]
-        (if ctor?
-          (list 'fn* ['& a]
-                (list (symbol "clojure.lang.Reflector" "invokeConstructor")
-                      csym (list (symbol "clojure.core" "to-array") a)))
-          (let [t (symbol "target__qm")]
-            (list 'fn* [t '& a]
-                  (list (symbol "clojure.lang.Reflector" "invokeInstanceMethod")
-                        t (subs mname 1) (list (symbol "clojure.core" "to-array") a)))))))))
-
-;; The namespace half of a qualified, non-var `ns/nm` that the host-static and
-;; ctor arms may take as a class: `ns` itself, or, where a miss stays late-bound,
-;; the namespace an alias names (an alias is lexical, so it is resolved here, and
-;; the miss at the call names the namespace whatever *ns* is then). Raises the
-;; JVM's compile-time errors (Compiler.resolveIn) instead when `ns` cannot be a
-;; class: "No such namespace" for a namespace-shaped name that names nothing
-;; loaded, "No such var" for an alias or loaded namespace that lacks the var. The
-;; symbol arm and the zero-arg (ns/nm) and (ns/new …) call arms share it, so
-;; `(s/nope)` is the same compile error as `(s/nope 1)` and `s/nope`.
-;; A registered class wins over the shape: (defrecord point [x]) makes
-;; `point/create` a static call however lowercase the name, as the JVM's
-;; macroexpand1 finds the class before resolveIn ever runs.
-(defn- static-class-ns [ctx ns nm]
-  (let [target (namespace-for ctx ns)]
-    (cond
-      (host-class-name? ns) ns
-      (and (ns-shaped-name? ns) (not target))
-        (analysis-error :analyze/unknown-namespace
-         (str "No such namespace: " ns)
-         {:jolt.error/symbol (str ns "/" nm)
-          :jolt.error/namespace ns
-          :jolt.error/ns (compile-ns ctx)})
-      (and target (not (late-bound-namespace? ctx target)) (not (allow-unresolved-vars?)))
-        (analysis-error :analyze/no-such-var
-         (str "No such var: " ns "/" nm)
-         {:jolt.error/symbol (str ns "/" nm)
-          :jolt.error/namespace target
-          :jolt.error/ns (compile-ns ctx)})
-      :else (or target ns))))
+(defn- analyze-global-symbol [ctx form nm env]
+  (let [r (resolve-global ctx form)]
+    (case (:kind r)
+      ;; :num-ret (a ^double/^long declared return) rides on the var node so
+      ;; jolt.passes.numeric types a call to it (an accumulator over the result).
+      :var (var-symbol-node ctx form r)
+      :host (host-ref (:name r))
+      ;; a class-name symbol (java.util.Map) self-evaluates to an interned
+      ;; Class object via the runtime interner, so (= (class x) java.util.Date),
+      ;; identity, and defmethod dispatch keys are all stable.
+      :class (invoke (var-ref "jolt.host" "jolt-class-for") [(const (:name r))])
+      ;; :unresolved — throw "Unable to resolve symbol", matching JVM
+      ;; Clojure, wherever the symbol appears: at the compilation-unit
+      ;; top level AND inside a scope (fn / loop / let body). The check
+      ;; used to stop at the first enclosing scope, which turned a typo
+      ;; in a nested body into a late-bound var whose unbound root then
+      ;; blew up at runtime on whichever reference was used first —
+      ;; naming a symbol that wasn't even the misspelled one.
+      ;; Legitimate forward references are unaffected: declare and
+      ;; (def name) intern a resolvable cell, so they resolve as :var,
+      ;; as do the clojure.core primitives the host declares up front.
+      ;; clojure.core/*allow-unresolved-vars* — the JVM's
+      ;; RT.ALLOW_UNRESOLVED_VARS, read here the way Compiler.resolveIn
+      ;; reads it — late-binds the name instead, for a program that
+      ;; binds it itself. jolt's REPLs do not: nREPL, `jolt repl` and
+      ;; -e are strict like the JVM's, and a name that arrives in a
+      ;; later eval needs a declare.
+      (if (allow-unresolved-vars?)
+        (var-ref (compile-ns ctx) nm)
+        (resolve-error ctx nm env)))))
 
 (defn- analyze-symbol [ctx form env]
   (let [nm (form-sym-name form) ns (form-sym-ns form)]
     (cond
       (and (nil? ns) (local? env nm))
         (let [h (get (:hints env) nm)] (if h (assoc (local nm) :hint h) (local nm)))
-      ;; Qualified instance method (Clojure 1.12) used as a value: a fn of the
-      ;; target and the method's arguments.
-      (and ns (> (count nm) 1) (= "." (subs nm 0 1)))
-        (analyze ctx (method-value-form ns nm (get (form-sym-meta form) :param-tags)) env)
-      ;; `Class/new` used as a value — a fn over the constructor — unless the ns
-      ;; half is a namespace that really has a var named `new`.
-      (and ns (= nm "new") (not= :var (:kind (resolve-global ctx form))))
-        (analyze ctx (method-value-form ns nm (get (form-sym-meta form) :param-tags)) env)
-      ;; `Component/N` — an array class symbol (Clojure 1.12): the Class object,
-      ;; as any class symbol evaluates to.
-      (and ns (array-class-dims nm) (not= :var (:kind (resolve-global ctx form))))
-        (let [cn (array-class-name ctx ns (array-class-dims nm))]
-          (if cn
-            (invoke (var-ref "jolt.host" "jolt-class-for") [(const cn)])
-            ;; the reference's ClassNotFoundException, which the position box
-            ;; (as-analysis-diagnostic) carries as the cause of the positioned
-            ;; compile error, as a CompilerException carries it on the JVM
-            (throw (ClassNotFoundException. (str "Unable to resolve component classname: " ns)))))
-      ns (let [r (resolve-global ctx form)]
-           (if (= :var (:kind r))
-             (or (macro-value-fn ctx form r)
-                 (do (deny-private form r false)
-                     (deny-macro-value ctx form r)
-                     (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))))
-             ;; A non-var qualified ref `Class/member` is a host class static
-             ;; (Math/sqrt, Long/MAX_VALUE, System/getenv). The Chez back end
-             ;; lowers it to a runtime static dispatch.
-             ;;
-             ;; ...but a namespace-shaped ns that is not loaded AT ALL cannot be a
-             ;; class either, and reporting it as one is how `(no.such.ns/foo 1)`
-             ;; came back "Unknown class no.such.ns" from inside the call, naming a
-             ;; class the program never mentioned. resolve-global cannot draw the
-             ;; line itself: it answers :unresolved for `Math/sqrt` and for
-             ;; `no.such.ns/foo` alike, because looking the name up and finding
-             ;; nothing is all it can say. So check the shape, and report the JVM's
-             ;; "No such namespace" (Compiler.resolveIn) at COMPILE time — which is
-             ;; where a forgotten `require` or a typo in the ns half belongs.
-             ;;
-             ;; A LOADED namespace merely missing the var is the JVM's compile-time
-             ;; "No such var" when the form runs as soon as it compiles (load,
-             ;; require, eval: jolt.host/late-bound-namespace?). Left to the static
-             ;; arm, the ns half was looked up again when the call RAN, against
-             ;; whatever *ns* was current then, so an alias in a -main read as a
-             ;; class: `(s/nope 1)` reported "Unknown class s".
-             ;;
-             ;; Everywhere else it stays on the host-static arm, and deliberately.
-             ;; jolt-core and stdlib reach their host contract
-             ;; this way on purpose — several hundred `jolt.host/…` references, and
-             ;; jolt.ffi's and jolt.time's — and which vars exist depends on which host
-             ;; files the current boot loaded: jolt.main names jolt.host/build-library
-             ;; in a world where build.ss may not be loaded and the call cannot run.
-             ;; Late binding is the point there, so the compile-time guard for that
-             ;; namespace is a STATIC one (jolt-host-manifest.txt, pinned against
-             ;; both the def-var! sites and every jolt-core reference by
-             ;; manifestcheck), and the miss reports at the call, correctly, through
-             ;; static-miss-message's live-namespace arm: "No such var: ns/name",
-             ;; not "Unknown class".
-             ;;
-             ;; jolt#879 was in this second group — jolt.host loaded, `getenv` not
-             ;; yet — so it is the seed's own gates that hold it: manifestcheck
-             ;; rejects a namespace-shaped host-static in the minted seed, and
-             ;; `make seeddefs` asserts every var the seed defines survives the load.
-             ;;
-             ;; static-class-ns draws both lines.
-             (host-static (static-class-ns ctx ns nm) nm)))
-      :else (let [r (resolve-global ctx form)]
-              (case (:kind r)
-                ;; :num-ret (a ^double/^long declared return) rides on the var node so
-                ;; jolt.passes.numeric types a call to it (an accumulator over the result).
-                :var (or (macro-value-fn ctx form r)
-                         (do (deny-private form r false)
-                             (deny-macro-value ctx form r)
-                             (cond-> (var-ref (:ns r) (:name r)) (:num-ret r) (assoc :num-ret (:num-ret r)))))
-                :host (host-ref (:name r))
-                ;; a class-name symbol (java.util.Map) self-evaluates to an interned
-                ;; Class object via the runtime interner, so (= (class x) java.util.Date),
-                ;; identity, and defmethod dispatch keys are all stable.
-                :class (invoke (var-ref "jolt.host" "jolt-class-for") [(const (:name r))])
-                ;; :unresolved — throw "Unable to resolve symbol", matching JVM
-                ;; Clojure, wherever the symbol appears: at the compilation-unit
-                ;; top level AND inside a scope (fn / loop / let body). The check
-                ;; used to stop at the first enclosing scope, which turned a typo
-                ;; in a nested body into a late-bound var whose unbound root then
-                ;; blew up at runtime on whichever reference was used first —
-                ;; naming a symbol that wasn't even the misspelled one.
-                ;; Legitimate forward references are unaffected: declare and
-                ;; (def name) intern a resolvable cell, so they resolve as :var,
-                ;; as do the clojure.core primitives the host declares up front.
-                ;; clojure.core/*allow-unresolved-vars* — the JVM's
-                ;; RT.ALLOW_UNRESOLVED_VARS, read here the way Compiler.resolveIn
-                ;; reads it — late-binds the name instead, for a program that
-                ;; binds it itself. jolt's REPLs do not: nREPL, `jolt repl` and
-                ;; -e are strict like the JVM's, and a name that arrives in a
-                ;; later eval needs a declare.
-                (if (allow-unresolved-vars?)
-                  (var-ref (compile-ns ctx) nm)
-                  (resolve-error ctx nm env)))))))
+      ns (analyze-qualified-symbol ctx form nm ns env)
+      :else (analyze-global-symbol ctx form nm env))))
 
-;; The wrapping unchecked-* name a core arithmetic op rewrites to under
-;; *unchecked-math*, or nil. n is the full item count (head + args); unary - is a
-;; negate.
-(defn- unchecked-arith [hname n]
+;; The special form a call head names, or nil. A special-form head may arrive
+;; clojure.core-qualified: syntax-quote namespace-qualifies a macro like `letfn`
+;; to `clojure.core/letfn` (matching Clojure, where it is a macro), so a
+;; macro-emitted (clojure.core/letfn …) must still dispatch to the special form.
+;; A `qualified-only` head is the reverse: bare, it is just a name.
+(defn- special-form-name [head hname]
+  (or (when-not (contains? qualified-only hname) hname)
+      (when (and (form-sym? head)
+                 (= "clojure.core" (form-sym-ns head))
+                 (contains? handled (form-sym-name head)))
+        (form-sym-name head))))
+
+;; Does this head actually resolve to the clojure.core var it is named
+;; after? `shadowed` sees only LOCALS, so it cannot answer that: a
+;; namespace-level (defn byte …) or (defn + …) owns the name in call
+;; position, with or without :refer-clojure :exclude, and rewriting
+;; such a call to a cast or an unchecked op calls the wrong function.
+;;
+;; This is the test backend_scheme/native-op already makes on the
+;; resolved :var node before lowering first/aset/+ to a primitive, so
+;; the two lowering layers now agree about who owns a name — and a
+;; user-defined `first` and a user-defined `double` behave alike. A
+;; head written clojure.core/-qualified (syntax-quote emits those)
+;; names its ns outright and needs no lookup.
+;;
+;; Called only once unchecked-arith / num-cast have matched a name AND
+;; an arity, so an ordinary call — every other list head in the
+;; program — never pays for the resolution.
+(defn- core-head? [ctx head]
+  (or (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
+      (let [r (resolve-global ctx head)]
+        (and (= :var (:kind r)) (= "clojure.core" (:ns r))))))
+
+;; The name a core op is called by, for the unchecked-math and cast rewrites:
+;; the op may arrive bare (+) or clojure.core-qualified (clojure.core/*), the
+;; latter from a macro's syntax-quote — both must rewrite. A shadowed bare head
+;; is the local's, not core's.
+(defn- core-op-name [head hname shadowed]
+  (cond (and hname (not shadowed)) hname
+        (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
+        (form-sym-name head)))
+
+;; What `rewrite` (unchecked-arith or num-cast) answers for the call, or nil when
+;; it names no such op at this arity or the head is not core's.
+(defn- core-rewrite [ctx head opn rewrite n]
+  (let [r (when opn (rewrite opn n))]
+    (when (and r (core-head? ctx head)) r)))
+
+;; Stamp the form's source offset onto a top-level def so the back end can
+;; register it (jv$ns/name -> source) for native stack traces.
+(defn- stamp-def [ctx env form node]
+  (let [p (form-position form)]
+    (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node)))
+
+;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
+;; source offset onto the resulting def, since the macro builds a fresh
+;; (def …) with no metadata. So the back end can register fn defs.
+;; The box covers ANALYSIS of the expansion, not the macro function's
+;; own run: an error the macro itself raises (destructure rejecting a
+;; binding vector, defn rejecting a clause) is about code the user
+;; WROTE, and naming the macro there would tell them their own `let`
+;; is the problem.
+;; The RUN of the expander is marked separately (macro-run box): a
+;; throw out of it is filed under the reference's macro phases and
+;; names the macro, which is a different thing from the note above.
+(defn- analyze-macro-call [ctx head form env]
+  (let* [_ (deny-private head (resolve-global ctx head) true)
+         mbox *macro-run-box*
+         mprev (when mbox @mbox)
+         _ (when mbox (reset! mbox [(macro-symbol ctx head) head form]))
+         expanded (form-expand-1 ctx form (amp-env-map env))
+         _ (when mbox (reset! mbox mprev))
+         ebox *expansion-box*
+         prev (when ebox @ebox)
+         ;; fn, let, loop and letfn expand to their own special form
+         ;; (fn → fn*) around the code the user wrote, and Clojure
+         ;; documents them AS special forms. A diagnostic on that fn*
+         ;; is about the user's form, so no expansion is recorded and
+         ;; the report says nothing about "expanding the `fn` macro".
+         ;; An enclosing user macro's record stays in force. Keyed on
+         ;; the resolved core macro, not on the foo → foo* shape: a
+         ;; user macro expanding to its own foo* keeps its note.
+         own-sf? (contains? '#{clojure.core/fn clojure.core/let
+                               clojure.core/loop clojure.core/letfn}
+                            (macro-symbol ctx head))
+         _ (when (and ebox (not own-sf?)) (reset! ebox [(form-sym-name head) form]))
+         node (analyze ctx expanded env)
+         _ (when ebox (reset! ebox prev))]
+    (stamp-def ctx env form node)))
+
+;; The jolt.ffi special form a head names: always emitted fully-qualified by
+;; the jolt.ffi macros, so aliases resolve.
+(defn- ffi-form-name [head]
+  (when (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
+             (contains? #{"__cfn" "__layout" "__ccallable"} (form-sym-name head)))
+    (form-sym-name head)))
+
+(defn- analyze-ffi-form [ctx fname items env]
+  (case fname
+    ;; jolt.ffi/__cfn — the foreign-function special form (the jolt.ffi/foreign-fn
+    ;; macro).
+    "__cfn" (analyze-ffi-fn ctx items env)
+    ;; jolt.ffi/layout expands to this literal-only leaf. The back end
+    ;; asks Chez for the actual ABI size, alignment and offsets.
+    "__layout" (analyze-ffi-layout items)
+    ;; jolt.ffi/__ccallable — the foreign-callback special form (the fn is a
+    ;; child expression, analyzed here).
+    "__ccallable" (analyze-ffi-callable ctx items env)))
+
+;; Interop through an unqualified, unshadowed head, or nil when the head is no
+;; interop form.
+(defn- analyze-bare-interop [ctx hname form items env]
   (cond
-    (= hname "+") "unchecked-add"
-    (= hname "*") "unchecked-multiply"
-    (= hname "-") (if (= n 2) "unchecked-negate" "unchecked-subtract")
-    (= hname "inc") "unchecked-inc"
-    (= hname "dec") "unchecked-dec"
+    (method-head? hname)
+      (stamp-pos (analyze-host-call ctx hname items env) form)
+    ;; (Class. args*) — trailing-dot constructor sugar.
+    (ctor-head? hname)
+      (analyze-ctor ctx (subs hname 0 (dec (count hname))) (rest items) env)
+    ;; (new Class args*) — explicit constructor.
+    (and (= hname "new") (>= (count items) 2) (form-sym? (nth items 1)))
+      (analyze-ctor ctx (form-sym-name (nth items 1)) (drop 2 items) env)
+    ;; (. target member arg*) — the `.` special form.
+    (= hname ".")
+      (stamp-pos (analyze-dot ctx items env) form)
+    ;; (.-field target) — field-access head.
+    (field-head? hname)
+      (stamp-pos (analyze-field ctx hname items env) form)
+    (form-special? hname)
+      (analysis-error :analyze/unsupported-special-form
+                       (str "Unsupported special form: " hname))
     :else nil))
 
-;; A clojure.core numeric cast (double/long/int/float/byte/short of one arg)
-;; becomes a :coerce node carrying the checked runtime helper, so it feeds the
-;; numeric lattice like a ^double/^long hint: (* (double x) 2.0) emits fl*. The
-;; helper preserves clojure.core's full JVM semantics (checked, not bare
-;; jolt->fl). float -> its own :float kind (a jfloat, which an arithmetic op
-;; takes as the double it widens to: jolt.passes.numeric); int ->
-;; long-kind (Jolt's integer-box model), routing to jolt-int-cast so the JVM int
-;; range is still enforced. Returns {:kind .. :cast-fn ..} or nil. n is the full
-;; item count (head + args).
-(defn- num-cast [hname n]
-  (when (= n 2)
-    (cond (= hname "double") {:kind :double :cast-fn "jolt-double"}
-          (= hname "long")   {:kind :long   :cast-fn "jolt-long-cast"}
-          (= hname "int")    {:kind :long   :cast-fn "jolt-int-cast"}
-          (= hname "float")  {:kind :float  :cast-fn "jolt-float"}
-          ;; byte/short narrow to a RANGE, so their answer is a fixnum on every
-          ;; tower jolt has (jolt-checked-cast returns a value inside [lo,hi] or
-          ;; throws) — :long, the same kind `int` takes, and for the same reason.
-          ;; Being in this table is what keeps (byte v) from costing more than the
-          ;; store it feeds: outside it, a var-deref + jolt-invoke1 wrap
-          ;; jolt-byte-cast's two fixnum compares for 17.9ns an element, in exactly
-          ;; the shape every byte-filling loop is written in.
-          (= hname "byte")   {:kind :long   :cast-fn "jolt-byte-cast"}
-          (= hname "short")  {:kind :long   :cast-fn "jolt-short-cast"}
-          ;; char is a cast too, but its answer is not a numeric operand: kind
-          ;; nil, which numeric/an and the back end's cond read as "no kind";
-          ;; types.clj's :coerce arm answers :truthy (a char's type) for a cast
-          ;; with no kind, never the operand's type. Being a :coerce node is what
-          ;; lets a proven-double operand take the inline window (:fl-arg).
-          (= hname "char")   {:kind nil     :cast-fn "jolt-char"}
-          ;; the unchecked casts are casts too: a primitive long/int on the JVM,
-          ;; so the result feeds the :long lattice the same way. Their wrap
-          ;; result can be a bignum past the 61-bit fixnum, which is the case
-          ;; every :long consumer already guards (the jolt-l* fixnum? tests) —
-          ;; the same reason a ^long param is admitted. Before this they were
-          ;; ordinary var calls and left every loop counter they fed untyped.
-          (= hname "unchecked-long") {:kind :long :cast-fn "jolt-unchecked-long"}
-          (= hname "unchecked-int")  {:kind :long :cast-fn "jolt-unchecked-int"}
-          (= hname "unchecked-float") {:kind :float :cast-fn "jolt-unchecked-float"})))
+;; Interop through a namespace-qualified head, or nil when the head is no
+;; interop form (a call through a var).
+(defn- analyze-qualified-interop [ctx head form items env]
+  (let [n (form-sym-name head)
+        cns (form-sym-ns head)]
+    (cond
+      ;; (ns/Name. args*) — a QUALIFIED trailing-dot constructor (a cross-ns or
+      ;; aliased deftype, e.g. sci.impl.types/Reified.). hname is nil for a
+      ;; namespaced head, so the bare ctor-head? arm never sees it;
+      ;; reconstruct the "ns/Name" class and let analyze-ctor resolve it.
+      (and (> (count n) 1) (= "." (subs n (dec (count n)))))
+        (analyze-ctor ctx (str cns "/" (subs n 0 (dec (count n)))) (rest items) env)
+      ;; (Class/new arg*) — the qualified constructor (Clojure 1.12), the same
+      ;; call as (Class. arg*). A namespace with a var named `new` keeps its call.
+      (and (= "new" n) (not= :var (:kind (resolve-global ctx head))))
+        ;; an alias or loaded namespace is not a class: (s/new 1) is the JVM's
+        ;; compile-time "No such var: s/new", not "No matching ctor found for
+        ;; class s" when it runs. A deftype reached through its namespace or an
+        ;; alias (other.ns/Point. spelled other.ns.Point/new) is a class.
+        (do (when-not (deftype-ctor-class ctx cns)
+              (static-class-ns ctx cns "new"))
+            (analyze-ctor ctx cns (rest items) env))
+      ;; (Class/.method target arg*) — qualified instance method call (Clojure 1.12).
+      ;; The class part is a type hint; dispatch on the first arg's runtime type.
+      (and (> (count n) 1) (= "." (subs n 0 1)))
+        (stamp-pos (analyze-host-call ctx n items env) form)
+      ;; (Class/MEMBER) with no arguments carries the same ambiguity that
+      ;; (. Class MEMBER) does, and Clojure reads it as a static field when one
+      ;; exists: (Math/PI), (Integer/MAX_VALUE) and (Locale/US) all evaluate to
+      ;; the field. Resolve it at runtime through the same seam the dot form
+      ;; uses, instead of invoking whatever the member holds, which failed
+      ;; outright when that was a value rather than a no-arg method. A var head
+      ;; is excluded so a zero-arg (some.ns/f) call is untouched.
+      (and (empty? (rest items))
+           (not= :var (:kind (resolve-global ctx head))))
+        ;; ...and a head whose ns half is an alias or a loaded namespace is a
+        ;; var reference, so (s/nope) is "No such var: s/nope" at compile time
+        ;; as (s/nope 1) is, not "Unknown class s" when it runs.
+        (invoke (var-ref "jolt.host" "static-member")
+                [(const (static-class-ns ctx cns n))
+                 (const n)])
+      :else nil)))
 
-;; The compile-time hook over calls through a var (jolt.host/invoke-rewriter,
-;; nil unless something bound jolt.host/*invoke-rewrite*): (f var-ns var-name
-;; form) answers the form to analyze instead, or nil. Resolved only when a hook
-;; is bound, so an ordinary call pays one deref, never a resolution.
-(defn- invoke-rewrite [ctx head form]
-  (when-let [f (invoke-rewriter)]
-    (let [r (resolve-global ctx head)]
-      (when (= :var (:kind r))
-        (f (:ns r) (:name r) form)))))
+;; A clojure.core numeric cast (bare or clojure.core/-qualified, the latter from
+;; syntax-quote) becomes a checked :coerce node.
+(defn- analyze-cast [ctx cast form items env]
+  (let [node (coerce-node (:kind cast) (analyze ctx (second items) env)
+                          (:cast-fn cast))
+        p (form-position form)]
+    (if p (assoc node :pos p) node)))
+
+(defn- analyze-invoke [ctx head form items env shadowed]
+  ;; a call through a var the compile-time hook rewrites (jolt.host/
+  ;; *invoke-rewrite*, bound by jolt.loader around a context's
+  ;; source): the head is a symbol, not a local, and resolves to a
+  ;; var, and the replacement analyzes as if written here. Last, so
+  ;; a macro-emitted (clojure.core/require …) is seen and a special
+  ;; form never is.
+  (if-let [rw (and (form-sym? head) (not shadowed)
+                   (invoke-rewrite ctx head form))]
+    (analyze ctx rw env)
+    ;; stamp the list form's source offset onto the :invoke
+    ;; so the success checker can report file:line:col. nil when the
+    ;; reader did not record it (synthetic/macro-built forms).
+    ;; qualified heads only: an unqualified one resolves again in
+    ;; analyze-symbol, which applies the same check.
+    (let [_ (when (and (form-sym? head) (form-sym-ns head))
+              (deny-private head (resolve-global ctx head) true))
+          n (invoke (analyze ctx head env)
+                    (mapv #(analyze ctx % env) (rest items)))
+          p (form-position form)]
+      (if p (assoc n :pos p) n))))
+
+;; Interop by the head's shape, or nil when it is an ordinary call. Only for a
+;; head no local shadows.
+(defn- analyze-interop [ctx head hname form items env]
+  (cond
+    hname (analyze-bare-interop ctx hname form items env)
+    (and (form-sym? head) (form-sym-ns head))
+      (analyze-qualified-interop ctx head form items env)
+    :else nil))
 
 (defn- analyze-list* [ctx form env]
   (let [items (vec (form-elements form))]
@@ -2376,56 +1391,15 @@
       (quote-node form)
       (let [head (first items)
             hname (when (and (form-sym? head) (nil? (form-sym-ns head))) (form-sym-name head))
-            ;; a special-form head may arrive clojure.core-qualified: syntax-quote
-            ;; namespace-qualifies a macro like `letfn` to `clojure.core/letfn`
-            ;; (matching Clojure, where it is a macro), so a macro-emitted
-            ;; (clojure.core/letfn …) must still dispatch to the special form.
-            ;; A `qualified-only` head is the reverse: bare, it is just a name.
-            sf-name (or (when-not (contains? qualified-only hname) hname)
-                        (when (and (form-sym? head)
-                                   (= "clojure.core" (form-sym-ns head))
-                                   (contains? handled (form-sym-name head)))
-                          (form-sym-name head)))
+            sf-name (special-form-name head hname)
             shadowed (and hname (local? env hname))
-            ;; Does this head actually resolve to the clojure.core var it is named
-            ;; after? `shadowed` sees only LOCALS, so it cannot answer that: a
-            ;; namespace-level (defn byte …) or (defn + …) owns the name in call
-            ;; position, with or without :refer-clojure :exclude, and rewriting
-            ;; such a call to a cast or an unchecked op calls the wrong function.
-            ;;
-            ;; This is the test backend_scheme/native-op already makes on the
-            ;; resolved :var node before lowering first/aset/+ to a primitive, so
-            ;; the two lowering layers now agree about who owns a name — and a
-            ;; user-defined `first` and a user-defined `double` behave alike. A
-            ;; head written clojure.core/-qualified (syntax-quote emits those)
-            ;; names its ns outright and needs no lookup.
-            ;;
-            ;; Called only once unchecked-arith / num-cast have matched a name AND
-            ;; an arity, so an ordinary call — every other list head in the
-            ;; program — never pays for the resolution.
-            core-head?
-            (fn []
-              (or (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
-                  (let [r (resolve-global ctx head)]
-                    (and (= :var (:kind r)) (= "clojure.core" (:ns r))))))
+            opn (core-op-name head hname shadowed)
             ;; under *unchecked-math*, a core +/-/*/inc/dec becomes its wrapping
-            ;; unchecked-* (computed once; nil when off or not such an op). The op
-            ;; may arrive bare (+) or clojure.core-qualified (clojure.core/*), the
-            ;; latter from a macro's syntax-quote — both must wrap.
+            ;; unchecked-* (computed once; nil when off or not such an op).
             unm (when (unchecked-math?)
-                  (let [opn (cond (and hname (not shadowed)) hname
-                                  (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
-                                  (form-sym-name head))
-                        u (when opn (unchecked-arith opn (count items)))]
-                    (when (and u (core-head?)) u)))
-            ;; a clojure.core numeric cast (bare or clojure.core/-qualified, the
-            ;; latter from syntax-quote) becomes a checked :coerce node. qn mirrors
-            ;; unm's opn so (clojure.core/double x) specializes too.
-            cast (let [qn (cond (and hname (not shadowed)) hname
-                                (and (form-sym? head) (= "clojure.core" (form-sym-ns head)))
-                                (form-sym-name head))
-                       c (when qn (num-cast qn (count items)))]
-                   (when (and c (core-head?)) c))]
+                  (core-rewrite ctx head opn unchecked-arith (count items)))
+            ;; a clojure.core numeric cast becomes a checked :coerce node.
+            cast (core-rewrite ctx head opn num-cast (count items))]
         (cond
           ;; *unchecked-math* rewrite, before macro/special dispatch (these are
           ;; ordinary core fns). The unchecked-* form re-analyzes normally.
@@ -2437,153 +1411,19 @@
           ;; macro `def`/`and`/`or` (clojure.spec.alpha) keeps the special form `def`.
           (and (form-sym? head) (not shadowed)
                (not (contains? handled sf-name)) (form-macro? ctx head))
-            ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
-            ;; source offset onto the resulting def, since the macro builds a fresh
-            ;; (def …) with no metadata. So the back end can register fn defs.
-            ;; The box covers ANALYSIS of the expansion, not the macro function's
-            ;; own run: an error the macro itself raises (destructure rejecting a
-            ;; binding vector, defn rejecting a clause) is about code the user
-            ;; WROTE, and naming the macro there would tell them their own `let`
-            ;; is the problem.
-            ;; The RUN of the expander is marked separately (macro-run box): a
-            ;; throw out of it is filed under the reference's macro phases and
-            ;; names the macro, which is a different thing from the note above.
-            (let* [_ (deny-private head (resolve-global ctx head) true)
-                   mbox *macro-run-box*
-                   mprev (when mbox @mbox)
-                   _ (when mbox (reset! mbox [(macro-symbol ctx head) head form]))
-                   expanded (form-expand-1 ctx form (amp-env-map env))
-                   _ (when mbox (reset! mbox mprev))
-                   ebox *expansion-box*
-                   prev (when ebox @ebox)
-                   ;; fn, let, loop and letfn expand to their own special form
-                   ;; (fn → fn*) around the code the user wrote, and Clojure
-                   ;; documents them AS special forms. A diagnostic on that fn*
-                   ;; is about the user's form, so no expansion is recorded and
-                   ;; the report says nothing about "expanding the `fn` macro".
-                   ;; An enclosing user macro's record stays in force. Keyed on
-                   ;; the resolved core macro, not on the foo → foo* shape: a
-                   ;; user macro expanding to its own foo* keeps its note.
-                   own-sf? (contains? '#{clojure.core/fn clojure.core/let
-                                         clojure.core/loop clojure.core/letfn}
-                                      (macro-symbol ctx head))
-                   _ (when (and ebox (not own-sf?)) (reset! ebox [(form-sym-name head) form]))
-                   node (analyze ctx expanded env)
-                   _ (when ebox (reset! ebox prev))
-                   p (form-position form)]
-              (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
-          ;; jolt.ffi/__cfn — the foreign-function special form (always emitted
-          ;; fully-qualified by the jolt.ffi/foreign-fn macro, so aliases resolve).
-          (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
-               (= "__cfn" (form-sym-name head)))
-            (analyze-ffi-fn ctx items env)
-          ;; jolt.ffi/layout expands to this literal-only leaf. The back end
-          ;; asks Chez for the actual ABI size, alignment and offsets.
-          (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
-               (= "__layout" (form-sym-name head)))
-            (analyze-ffi-layout items)
-          ;; jolt.ffi/__ccallable — the foreign-callback special form (the fn is a
-          ;; child expression, analyzed here).
-          (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
-               (= "__ccallable" (form-sym-name head)))
-            (analyze-ffi-callable ctx items env)
+            (analyze-macro-call ctx head form env)
+          (ffi-form-name head)
+            (analyze-ffi-form ctx (ffi-form-name head) items env)
           ;; special-form heads are NOT shadowable (unlike macros): a local named
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.
           (and sf-name (contains? handled sf-name))
-            ;; stamp the form's source offset onto a top-level def so the back end
-            ;; can register it (jv$ns/name -> source) for native stack traces.
-            (let [node (analyze-special ctx sf-name form items env)
-                  p (form-position form)]
-              (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node))
-          (and hname (not shadowed) (method-head? hname))
-            (stamp-pos (analyze-host-call ctx hname items env) form)
-          ;; (Class. args*) — trailing-dot constructor sugar.
-          (and hname (not shadowed) (ctor-head? hname))
-            (analyze-ctor ctx (subs hname 0 (dec (count hname))) (rest items) env)
-          ;; (new Class args*) — explicit constructor.
-          (and (= hname "new") (not shadowed) (>= (count items) 2)
-               (form-sym? (nth items 1)))
-            (analyze-ctor ctx (form-sym-name (nth items 1)) (drop 2 items) env)
-          ;; (. target member arg*) — the `.` special form.
-          (and (= hname ".") (not shadowed))
-            (stamp-pos (analyze-dot ctx items env) form)
-          ;; (.-field target) — field-access head.
-          (and hname (not shadowed) (field-head? hname))
-            (stamp-pos (analyze-field ctx hname items env) form)
-          (and hname (not shadowed) (form-special? hname))
-            (analysis-error :analyze/unsupported-special-form
-                             (str "Unsupported special form: " hname))
-          ;; (ns/Name. args*) — a QUALIFIED trailing-dot constructor (a cross-ns or
-          ;; aliased deftype, e.g. sci.impl.types/Reified.). hname is nil for a
-          ;; namespaced head, so the bare ctor-head? arm above never sees it;
-          ;; reconstruct the "ns/Name" class and let analyze-ctor resolve it.
-          (and (form-sym? head) (form-sym-ns head) (not shadowed)
-               (let [n (form-sym-name head)]
-                 (and (> (count n) 1) (= "." (subs n (dec (count n)))))))
-            (let [n (form-sym-name head)]
-              (analyze-ctor ctx (str (form-sym-ns head) "/" (subs n 0 (dec (count n))))
-                            (rest items) env))
-          ;; (Class/new arg*) — the qualified constructor (Clojure 1.12), the same
-          ;; call as (Class. arg*). A namespace with a var named `new` keeps its call.
-          (and (form-sym? head) (form-sym-ns head) (not shadowed)
-               (= "new" (form-sym-name head))
-               (not= :var (:kind (resolve-global ctx head))))
-            ;; an alias or loaded namespace is not a class: (s/new 1) is the JVM's
-            ;; compile-time "No such var: s/new", not "No matching ctor found for
-            ;; class s" when it runs. A deftype reached through its namespace or an
-            ;; alias (other.ns/Point. spelled other.ns.Point/new) is a class.
-            (let [cns (form-sym-ns head)]
-              (when-not (deftype-ctor-class ctx cns)
-                (static-class-ns ctx cns "new"))
-              (analyze-ctor ctx cns (rest items) env))
-          ;; (Class/.method target arg*) — qualified instance method call (Clojure 1.12).
-          ;; The class part is a type hint; dispatch on the first arg's runtime type.
-          (and (form-sym? head) (form-sym-ns head)
-               (let [n (form-sym-name head)]
-                 (and (> (count n) 1) (= "." (subs n 0 1)))))
-            (stamp-pos (analyze-host-call ctx (form-sym-name head) items env) form)
-          ;; (Class/MEMBER) with no arguments carries the same ambiguity that
-          ;; (. Class MEMBER) does, and Clojure reads it as a static field when one
-          ;; exists: (Math/PI), (Integer/MAX_VALUE) and (Locale/US) all evaluate to
-          ;; the field. Resolve it at runtime through the same seam the dot form
-          ;; uses, instead of invoking whatever the member holds, which failed
-          ;; outright when that was a value rather than a no-arg method. A var head
-          ;; is excluded so a zero-arg (some.ns/f) call is untouched.
-          (and (form-sym? head) (form-sym-ns head) (not shadowed)
-               (empty? (rest items))
-               (not= :var (:kind (resolve-global ctx head))))
-            ;; ...and a head whose ns half is an alias or a loaded namespace is a
-            ;; var reference, so (s/nope) is "No such var: s/nope" at compile time
-            ;; as (s/nope 1) is, not "Unknown class s" when it runs.
-            (invoke (var-ref "jolt.host" "static-member")
-                    [(const (static-class-ns ctx (form-sym-ns head) (form-sym-name head)))
-                     (const (form-sym-name head))])
-          cast (let [node (coerce-node (:kind cast) (analyze ctx (second items) env)
-                                       (:cast-fn cast))
-                     p (form-position form)]
-                 (if p (assoc node :pos p) node))
+            (stamp-def ctx env form (analyze-special ctx sf-name form items env))
           :else
-            ;; a call through a var the compile-time hook rewrites (jolt.host/
-            ;; *invoke-rewrite*, bound by jolt.loader around a context's
-            ;; source): the head is a symbol, not a local, and resolves to a
-            ;; var, and the replacement analyzes as if written here. Last, so
-            ;; a macro-emitted (clojure.core/require …) is seen and a special
-            ;; form never is.
-            (if-let [rw (and (form-sym? head) (not shadowed)
-                             (invoke-rewrite ctx head form))]
-              (analyze ctx rw env)
-              ;; stamp the list form's source offset onto the :invoke
-              ;; so the success checker can report file:line:col. nil when the
-              ;; reader did not record it (synthetic/macro-built forms).
-              ;; qualified heads only: an unqualified one resolves again in
-              ;; analyze-symbol, which applies the same check.
-              (let [_ (when (and (form-sym? head) (form-sym-ns head))
-                        (deny-private head (resolve-global ctx head) true))
-                    n (invoke (analyze ctx head env)
-                              (mapv #(analyze ctx % env) (rest items)))
-                    p (form-position form)]
-                (if p (assoc n :pos p) n))))))))
+            (or (when-not shadowed (analyze-interop ctx head hname form items env))
+                (if cast
+                  (analyze-cast ctx cast form items env)
+                  (analyze-invoke ctx head form items env shadowed))))))))
 
 ;; Record `form` as the innermost positioned form while its children are analyzed,
 ;; then put back whatever was there, so a completed sibling subtree cannot leave a
@@ -2610,70 +1450,6 @@
     (if (nil? m)
       node
       (invoke (var-ref "clojure.core" "with-meta") [node (analyze ctx m env)]))))
-
-;; Anything raised while analyzing a form is a COMPILE-time failure, and the
-;; reporter can only tell — and only knows where to point — when the throw carries
-;; a :jolt.error/kind. With one it names the innermost positioned form and drops the
-;; analyzer's own recursion from the trace; without one it falls back to the
-;; LOADER's per-top-level-form position and prints thirty lines of jolt internals.
-;; resolve-error was the only thing that built one, so every other compile failure
-;; — an uncompilable form, a destructuring pattern the desugarer rejects, a macro
-;; that threw while expanding — reported the top-level form's opening line over a
-;; trace naming nothing the reader can act on.
-;;
-;; Attaching it here, at the one entry every top-level analysis goes through, costs
-;; a single try per top-level form and covers all of them. A throw that already
-;; carries a POSITIONED kind passes through untouched: it knows where it failed.
-(defn- throw-message [e]
-  (cond (string? e) e
-        ;; an ex-info reports as its message alone; anything else keeps the
-        ;; "java.lang.Foo: msg" text the reporter would have printed for it
-        (some? (ex-data e)) (ex-message e)
-        :else (str e)))
-
-;; No position to add (a macro-built form, or a form handed straight to eval) means
-;; nothing to improve on for a throw that is not yet a diagnostic, so leave it
-;; exactly as it was rather than trading its trace for a diagnostic that says no
-;; more than the fallback already does.
-;; The rebuilt ex-info keeps the ORIGINAL ex-data and adds the :jolt.error/* keys.
-;; Replacing it outright discarded whatever the thrower attached: a macro that
-;; raised (ex-info "m" {:orig true}) reported no :orig at all, and any library
-;; that hangs explain-data or a error code off its compile-time throw lost it the
-;; moment the form was analyzed. The position and kind are jolt's to add, not the
-;; thrower's data to overwrite.
-;; It also keeps the ORIGINAL THROWABLE, as its cause. The reference's
-;; CompilerException wraps what the macro threw, so the class survives: a
-;; ClassCastException out of an expander is still one at the end of the cause
-;; chain, and clojure.main/ex-triage names it (and its bare message) from
-;; there. Folded into the message alone, as this used to do, it read back as an
-;; ExceptionInfo whose cause line was "java.lang.ClassCastException: msg". A
-;; kinded diagnostic rebuilt only to gain its position keeps its own cause
-;; rather than becoming one: it IS the throwable, not a wrapper around it.
-(defn- as-analysis-diagnostic [e]
-  (let [pos (current-form-position)
-        orig (ex-data e)
-        kind (when (map? orig) (:jolt.error/kind orig))]
-    (cond
-      ;; Already positioned: it knows where it happened better than the box does.
-      (and kind (:jolt.error/line orig)) e
-      ;; A diagnostic with a KIND but no position. Raised from a macro — the
-      ;; `let`/`loop` destructurer and `defn`'s clause check are clojure.core code
-      ;; and cannot reach the analyzer's position box — so it names the error but
-      ;; not the place. Filling the position in here is what the box is for; the
-      ;; earlier "already a diagnostic, leave it alone" test skipped these
-      ;; entirely, and (defn f [] (let [a 1 b] a)) reported the DEFN's line 3
-      ;; where the reference names the let on line 4. Its own kind is kept.
-      ;; Rebuilt even with no position to add: it is a diagnostic already (the
-      ;; reporter shows no trace for one either way), and the phase and the
-      ;; macro it came out of are worth carrying on their own.
-      kind (ex-info (throw-message e) (diagnostic-data kind pos orig e) (ex-cause e))
-      (nil? pos) e
-      ;; No diagnostic at all: anything else raised while analyzing. Keep the
-      ;; thrower's ex-data and add the position beside it.
-      :else (ex-info (throw-message e)
-                     (diagnostic-data :analyze/internal-failure pos
-                                      (when (map? orig) orig) e)
-                     (when (instance? Throwable e) e)))))
 
 ;; A live value a macro put in its expansion, rendered as code that rebuilds it.
 ;; embed-plan (state-image.ss) answers with the image writer's verdict:
@@ -2729,6 +1505,67 @@
                     "syntax. Return a form that BUILDS the value instead of the "
                     "value itself, or store it in a var and splice the var.")))))))
 
+;; Any form that is not a literal, symbol or collection: a reader literal the
+;; compiler builds a leaf for, or a live value a macro put in its expansion.
+(defn- analyze-leaf [ctx form env]
+  (cond
+    ;; regex literal #"…" -> a :regex IR node (leaf). The Chez back end emits a
+    ;; jolt-regex value over the vendored irregex.
+    (form-regex? form) {:op :regex :source (form-regex-source form)}
+    ;; #inst / #uuid literals -> :inst / :uuid IR leaves. The Chez back
+    ;; end emits a runtime inst/uuid value (host/chez/java/inst-time.ss).
+    (form-inst? form) {:op :inst :source (form-inst-source form)}
+    (form-uuid? form) {:op :uuid :source (form-uuid-source form)}
+    ;; bigdecimal literal (1.5M) -> a :bigdec leaf; the back end emits a runtime
+    ;; jbigdec built from the numeric text.
+    (form-bigdec? form) {:op :bigdec :source (form-bigdec-source form)}
+    ;; a live bigdec/inst/uuid VALUE embedded in a form handed to eval (read via
+    ;; read-string, or an evaluated literal spliced by a macro) -> the same leaf as
+    ;; the tagged literal, rebuilt from the value's canonical string. Without this
+    ;; an embedded 1M / #inst / #uuid value died as "unsupported form".
+    (form-bigdec-value? form) {:op :bigdec :source (form-bigdec-value-source form)}
+    ;; a Float has no literal, so a live one embeds as the cast that makes it
+    (form-float-value? form)
+    (analyze ctx (list (symbol "clojure.core" "float") (form-float-value-double form)) env)
+    (form-inst-value? form) {:op :inst :source (form-inst-value-source form)}
+    (form-uuid-value? form) {:op :uuid :source (form-uuid-value-source form)}
+    ;; a live namespace value spliced into a form (~*ns* in a macro) -> a
+    ;; :the-ns leaf the back end reconstructs by name at the call site.
+    (form-ns-value? form) {:op :the-ns :name (form-ns-value-name form)}
+    ;; a live Var value spliced into a form (a macro that resolves a var and
+    ;; splices it, e.g. core.contracts' defcurry-from) -> a :the-var reference,
+    ;; same as (var ns/name); the back end emits (jolt-var ns name).
+    (form-var-value? form) (the-var (form-var-value-ns form) (form-var-value-name form))
+    ;; a live Class value spliced the same way — resolve returns the class for
+    ;; a class mapping, so `~(resolve sym) lands one in the expansion. It
+    ;; compiles to the interner call the class symbol itself compiles to.
+    (form-class-value? form) (invoke (var-ref "jolt.host" "jolt-class-for")
+                                     [(const (form-class-value-name form))])
+    ;; Any other #tag form is one no reader function was found for — the four
+    ;; above are the whole set the compiler builds a leaf for, and a registered
+    ;; data reader is applied before the form reaches here (loader.ss
+    ;; ldr-apply-readers). Name the tag, the way the JVM's reader does; the
+    ;; generic "unsupported form" pointed at nothing to fix.
+    (form-tagged? form) (analysis-error :read/invalid-data-reader
+                                        (str "No reader function for tag "
+                                             (form-tag-name form)))
+    ;; ...and anything else is a live VALUE a macro put in the form it returned,
+    ;; not a syntax error: every shape the reader can produce is handled above,
+    ;; so what is left came from evaluation. Clojure's compiler falls through to
+    ;; ConstantExpr here and the value simply IS the constant — verified on the
+    ;; 1.12.5 oracle, AOT included. jolt compiles to Scheme TEXT, so it cannot
+    ;; spell the value and has to rebuild it instead. sci's copy-var reaches
+    ;; this with a macro var's root (jolt-l7tq).
+    ;;
+    ;; How to rebuild it is exactly the question the image writer answers, so
+    ;; this reads that same verdict (state-image.ss image-proc-verdict) through
+    ;; embed-plan rather than a second copy of the rules: the image scan side,
+    ;; the image dump side and the compiler now agree by construction about
+    ;; which fns can be rebuilt from source. Both shapes it can return emit as
+    ;; ordinary self-contained code, so an embedded value travels into an AOT
+    ;; fasl and a built binary and does not need a process-local side table.
+    :else (embedded-value ctx form env)))
+
 (defn analyze
   ([ctx form]
    ;; One position box per compilation, over the catch too — as-analysis-diagnostic
@@ -2769,59 +1606,4 @@
      (form-set? form) (with-coll-meta ctx form env
                         (set-node (mapv #(analyze ctx % env) (form-set-items form))))
      (form-list? form) (analyze-list ctx form env)
-     ;; regex literal #"…" -> a :regex IR node (leaf). The Chez back end emits a
-     ;; jolt-regex value over the vendored irregex.
-     (form-regex? form) {:op :regex :source (form-regex-source form)}
-     ;; #inst / #uuid literals -> :inst / :uuid IR leaves. The Chez back
-     ;; end emits a runtime inst/uuid value (host/chez/java/inst-time.ss).
-     (form-inst? form) {:op :inst :source (form-inst-source form)}
-     (form-uuid? form) {:op :uuid :source (form-uuid-source form)}
-     ;; bigdecimal literal (1.5M) -> a :bigdec leaf; the back end emits a runtime
-     ;; jbigdec built from the numeric text.
-     (form-bigdec? form) {:op :bigdec :source (form-bigdec-source form)}
-     ;; a live bigdec/inst/uuid VALUE embedded in a form handed to eval (read via
-     ;; read-string, or an evaluated literal spliced by a macro) -> the same leaf as
-     ;; the tagged literal, rebuilt from the value's canonical string. Without this
-     ;; an embedded 1M / #inst / #uuid value died as "unsupported form".
-     (form-bigdec-value? form) {:op :bigdec :source (form-bigdec-value-source form)}
-     ;; a Float has no literal, so a live one embeds as the cast that makes it
-     (form-float-value? form)
-     (analyze ctx (list (symbol "clojure.core" "float") (form-float-value-double form)) env)
-     (form-inst-value? form) {:op :inst :source (form-inst-value-source form)}
-     (form-uuid-value? form) {:op :uuid :source (form-uuid-value-source form)}
-     ;; a live namespace value spliced into a form (~*ns* in a macro) -> a
-     ;; :the-ns leaf the back end reconstructs by name at the call site.
-     (form-ns-value? form) {:op :the-ns :name (form-ns-value-name form)}
-     ;; a live Var value spliced into a form (a macro that resolves a var and
-     ;; splices it, e.g. core.contracts' defcurry-from) -> a :the-var reference,
-     ;; same as (var ns/name); the back end emits (jolt-var ns name).
-     (form-var-value? form) (the-var (form-var-value-ns form) (form-var-value-name form))
-     ;; a live Class value spliced the same way — resolve returns the class for
-     ;; a class mapping, so `~(resolve sym) lands one in the expansion. It
-     ;; compiles to the interner call the class symbol itself compiles to.
-     (form-class-value? form) (invoke (var-ref "jolt.host" "jolt-class-for")
-                                      [(const (form-class-value-name form))])
-     ;; Any other #tag form is one no reader function was found for — the four
-     ;; above are the whole set the compiler builds a leaf for, and a registered
-     ;; data reader is applied before the form reaches here (loader.ss
-     ;; ldr-apply-readers). Name the tag, the way the JVM's reader does; the
-     ;; generic "unsupported form" pointed at nothing to fix.
-     (form-tagged? form) (analysis-error :read/invalid-data-reader
-                                         (str "No reader function for tag "
-                                              (form-tag-name form)))
-     ;; ...and anything else is a live VALUE a macro put in the form it returned,
-     ;; not a syntax error: every shape the reader can produce is handled above,
-     ;; so what is left came from evaluation. Clojure's compiler falls through to
-     ;; ConstantExpr here and the value simply IS the constant — verified on the
-     ;; 1.12.5 oracle, AOT included. jolt compiles to Scheme TEXT, so it cannot
-     ;; spell the value and has to rebuild it instead. sci's copy-var reaches
-     ;; this with a macro var's root (jolt-l7tq).
-     ;;
-     ;; How to rebuild it is exactly the question the image writer answers, so
-     ;; this reads that same verdict (state-image.ss image-proc-verdict) through
-     ;; embed-plan rather than a second copy of the rules: the image scan side,
-     ;; the image dump side and the compiler now agree by construction about
-     ;; which fns can be rebuilt from source. Both shapes it can return emit as
-     ;; ordinary self-contained code, so an embedded value travels into an AOT
-     ;; fasl and a built binary and does not need a process-local side table.
-     :else (embedded-value ctx form env))))
+     :else (analyze-leaf ctx form env))))
