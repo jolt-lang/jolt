@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:cmd` task gets the same list, and babashka.cli already reads a `--` there
   as the end of options. A `:main-opts` task is unchanged, because `-m`
   consumes a leading `--` the way `bb -m` does.
+- **A lone surrogate in a regex compiles, to match nothing** (#1611).
+  `(re-pattern "[\\uD800-\\uDBFF]")` threw a PatternSyntaxException, so a
+  namespace ported from the JVM with a regex literal that guards a surrogate
+  pair failed to load. A jolt string holds code points and can never contain a
+  lone surrogate, so the pattern now compiles and matches exactly what it
+  would on the JVM against any jolt string: as an atom or a class member it
+  matches nothing, and a class range drops the surrogate block. A surrogate
+  pair still reads as the one code point it encodes.
 
 ### Fixed
 

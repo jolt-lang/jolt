@@ -458,11 +458,14 @@
     ("😀*" #f)
     ("😀😀)" "Unmatched closing ')' near index 1\n😀😀)\n ^")
     ("a\t😀(" "Unclosed group near index 4\na\t😀(\n \t  ^")
+    ;; a lone surrogate compiles, as on the JVM, to match nothing: no jolt
+    ;; string can hold one (#1611). It used to be refused here.
+    ("\\ud83d" #f) ("[\\ud83d-\\ude00]" #f) ("[a\\uD800]" #f) ("[^\\uD800-\\uDFFF]" #f)
+    ;; but a range out of order is still the JVM's error, surrogates or not
+    ("[\\uDBFF-\\uD800]" "Illegal character range near index 13\n[\\uDBFF-\\uD800]\n             ^")
     ;; ── jolt's own refusals of patterns the JVM compiles (known-divergences.edn) ──
     ("\\N{NULL}" "\\N{name} is unsupported on jolt (no Unicode character name table) near index 1\n\\N{NULL}\n ^")
     ("\\X" "\\X (extended grapheme cluster) is unsupported on jolt near index 1\n\\X\n ^")
-    ("\\ud83d" "a lone surrogate is unsupported on jolt (strings hold code points, not UTF-16 units) near index 5\n\\ud83d\n     ^")
-    ("[\\ud83d-\\ude00]" "a lone surrogate is unsupported on jolt (strings hold code points, not UTF-16 units) near index 6\n[\\ud83d-\\ude00]\n      ^")
     ("\\p{InGreek}" "\\p{InGreek} is unsupported on jolt (no Unicode block table for it) near index 10\n\\p{InGreek}\n          ^")
     ("\\p{IsLatin}" "\\p{IsLatin} is unsupported on jolt (no Unicode script or property table for it) near index 10\n\\p{IsLatin}\n          ^")
     ))
