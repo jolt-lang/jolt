@@ -28,6 +28,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`cheshire.generate`), factory options and the Smile and CBOR formats are
   left out, and a value with no JSON form throws, as it does in cheshire.
 
+### Changed
+
+- **A task body's `*command-line-args*` keeps every `--`, as babashka's does**
+  (#1603). `jolt <task> -- a` used to drop the first standalone `--`, so a
+  `bb.edn` task that splits its arguments on `"--"` never found one under jolt.
+  Now `jolt args -- a -b` gives `("--" "a" "-b")`, the same as `bb args -- a -b`.
+  This is a breaking change for a task written against the old rule. Such a
+  task now sees an extra `"--"` and should skip it itself. An `:exec-fn` or
+  `:cmd` task gets the same list, and babashka.cli already reads a `--` there
+  as the end of options. A `:main-opts` task is unchanged, because `-m`
+  consumes a leading `--` the way `bb -m` does.
+
 ### Fixed
 
 - **`str` of a Java array is `Class@hash` again.** `(str (long-array 1))` and

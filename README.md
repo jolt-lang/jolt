@@ -353,7 +353,10 @@ word gets you.
 jolt's task runner is modelled on [babashka's tasks](https://book.babashka.org/#tasks):
 it reads the same `:tasks` map, with the same `:depends`, `:requires`, `:init`,
 `:enter` and `:leave` semantics, and its `:exec-fn` / `:cmd` dispatch is adapted
-from babashka's implementation (see [NOTICE](NOTICE)).
+from babashka's implementation (see [NOTICE](NOTICE)). A task body sees the
+arguments after the task name as `*command-line-args*`, exactly as they were
+typed. jolt reads no options of its own after the task name, so a `--` there is
+the task's, and it's kept the way babashka keeps it.
 
 A `bb.edn` (or `deps.edn`) `:tasks` entry normally holds a body to run. An entry
 that names an `:exec-fn` instead — or a `:cmd` tree of them — has its arguments

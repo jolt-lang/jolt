@@ -1105,13 +1105,13 @@
         ((requiring-resolve 'jolt.tasks/run-task!)
          {:tasks (:tasks resolved)
           :name name
-          ;; :args verbatim — a :main-opts task hands them to run-ns, which is the
-          ;; one end-of-options point for every ns entry form and consumes the
-          ;; leading "--" itself. :app-args is the same list with it consumed, for
-          ;; the *command-line-args* a code body sees. Dropping it in both places
-          ;; would eat a second standalone "--" that is the program's own data.
+          ;; the argv after the task name, verbatim. A code body sees it as
+          ;; *command-line-args* with every "--" kept, as babashka hands a task
+          ;; its argv (jolt#1603): jolt parses no options after the task name, so
+          ;; a "--" there is the task's to read. A :main-opts task hands the list
+          ;; to run-ns, the end-of-options point for every ns entry form, which
+          ;; consumes a leading "--" the way `bb -m` does.
           :args (vec more)
-          :app-args (vec (drop-end-of-options more))
           :parallel parallel?
           :run-main-opts apply-main-opts})))))
 
