@@ -78,6 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   library the project already resolved claims nothing twice, and a library
   claiming a class another dependency already provides is refused with both
   named, as `deps.edn` resolution does.
+- **The `clojure.lang.Persistent*/EMPTY` fields are all there** (#1614).
+  Only `PersistentList/EMPTY` and `PersistentQueue/EMPTY` used to answer, so a
+  `.cljc` library seeding a rebuilt collection with
+  `clojure.lang.PersistentHashMap/EMPTY` in a `:clj` branch failed to run. Now
+  `PersistentVector`, `PersistentArrayMap`, `PersistentHashMap`,
+  `PersistentHashSet`, `PersistentTreeMap` and `PersistentTreeSet` each have
+  `EMPTY`, the empty collection of that class: `[]`, `{}`, `(hash-map)`, `#{}`,
+  `(sorted-map)` and `(sorted-set)`.
 
 ## [0.8.26] - 2026-11-10
 

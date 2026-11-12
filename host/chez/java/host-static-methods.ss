@@ -1158,6 +1158,23 @@
 (register-class-statics! "clojure.lang.Util" util-extra-statics)
 (register-class-statics! "PersistentList" (list (cons "EMPTY" jolt-empty-list)))
 (register-class-statics! "clojure.lang.PersistentList" (list (cons "EMPTY" jolt-empty-list)))
+;; The other Persistent*/EMPTY fields, which .cljc libraries use in :clj branches
+;; as the seed of a rebuilt collection. Each is the value its literal or
+;; constructor gives, so PersistentVector/EMPTY is [] and PersistentArrayMap/EMPTY
+;; is {}, and each prints and answers class as on the JVM. The sorted pair waits
+;; for the overlay that defines sorted-map (see make-static-deferred).
+(for-each
+  (lambda (p)
+    (register-class-statics! (car p) (list (cons "EMPTY" (cdr p))))
+    (register-class-statics! (string-append "clojure.lang." (car p)) (list (cons "EMPTY" (cdr p)))))
+  (list (cons "PersistentVector" empty-pvec)
+        (cons "PersistentArrayMap" empty-pmap)
+        (cons "PersistentHashMap" (jolt-hash-map-fn))
+        (cons "PersistentHashSet" empty-pset)
+        (cons "PersistentTreeMap"
+              (make-static-deferred (lambda () (jolt-invoke (var-deref "clojure.core" "sorted-map")))))
+        (cons "PersistentTreeSet"
+              (make-static-deferred (lambda () (jolt-invoke (var-deref "clojure.core" "sorted-set")))))))
 (register-class-ctor! "SeqIterator" (lambda (s) (make-jiterator (jolt-seq s))))
 (register-class-ctor! "clojure.lang.SeqIterator" (lambda (s) (make-jiterator (jolt-seq s))))
 (register-class-statics! "RT"
