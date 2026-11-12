@@ -26,6 +26,7 @@ bytes-allocated
 call-cc
 call-on-main-thread
 call-on-main-thread-async
+call-with-read-opts
 callable-host?
 catvec
 chez-number-literal
