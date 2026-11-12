@@ -735,6 +735,26 @@ else
   echo "  FAIL: an (ns foo) REPL entry should switch the session, a load-string should not (got \`$repl_nsf\`)"
   fails=$((fails + 1))
 fi
+# A throw while a require loads a namespace leaves the load's CompilerException
+# ("Syntax error macroexpanding at ..."), with the throw as its cause. The REPL
+# reports the cause's class and message under the form's position, as
+# clojure.main's REPL does, instead of the wrapper's message alone (#1627).
+rle="$(mktemp -d)"; mkdir -p "$rle/src/rle"
+printf '{:paths ["src"]}\n' > "$rle/deps.edn"
+printf '(ns rle.boom)\n(throw (ex-info "the real reason" {:k 1}))\n' > "$rle/src/rle/boom.clj"
+repl_le="$(printf "(require 'rle.boom)\n(load-string \"(/ 1 0)\")\n(throw (ex-info \"plain\" {}))\n" \
+  | JOLT_PWD="$rle" JOLT_TRACE=0 $jolt repl 2>/dev/null)"
+if printf '%s\n' "$repl_le" | grep -qx 'user=> error: Execution error (ExceptionInfo) at (rle/boom.clj:2:1).' \
+   && printf '%s\n' "$repl_le" | grep -qx 'the real reason' \
+   && printf '%s\n' "$repl_le" | grep -qx 'user=> error: Execution error (ArithmeticException) at (1:1).' \
+   && printf '%s\n' "$repl_le" | grep -qx 'Divide by zero' \
+   && printf '%s\n' "$repl_le" | grep -qx 'user=> error: plain'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a load error at the REPL should report its cause (got \`$repl_le\`)"
+  fails=$((fails + 1))
+fi
+rm -rf "$rle"
 e_nsf="$($jolt -e '(ns foo) (println *ns*)' 2>/dev/null | tail -1)"
 if [ "$e_nsf" = "foo" ]; then
   pass=$((pass + 1))
