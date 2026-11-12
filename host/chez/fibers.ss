@@ -730,6 +730,8 @@
             c #f '() 0 #f #f 0 #f ibox #f #f #f #f)))
     (when ibox (jolt-fiber-own-ibox! f ibox))
     (when before-run (before-run f))
+    ;; listed before it can run, so it can't finish (and be unlisted) first
+    (jolt-fiber-live-add! f)
     (jolt-fiber-enqueue! c f)
     f))
 
@@ -1231,6 +1233,28 @@
 ;; never while a monitor runs.
 (define jolt-fiber-monitor-mu (make-mutex))
 
+;; --- the live fibers (jolt#1606) ---------------------------------------------
+;; Every fiber that has been spawned and not finished, whoever spawned it:
+;; jolt.fibers/spawn, a pool, io-thread, a :fiber go block, a flow process. They
+;; all come through jolt-fiber-spawn-on*, which adds the fiber, and they all end
+;; in jolt-fiber-finish!, which drops it under the mutex it already holds to
+;; publish the terminal state. So a fiber listed is one whose state was not yet
+;; terminal, and the spawn path pays one lock, the same one finish takes.
+;;
+;; Weak, so the table never keeps a fiber alive. A parked fiber that nothing
+;; else references (waiting on a channel nobody holds any more) can never be
+;; resumed, and it goes when the collector finds it, as it would without the
+;; table.
+(define jolt-fiber-live-tbl (make-weak-eq-hashtable))
+(define (jolt-fiber-live-add! f)
+  (jolt-with-mutex jolt-fiber-monitor-mu
+    (eq-hashtable-set! jolt-fiber-live-tbl f #t)))
+;; (jolt-fiber-live) -> list of fibers, a snapshot. A fiber in it may finish
+;; before the caller looks at it, so state is the caller's to read.
+(define (jolt-fiber-live)
+  (jolt-with-mutex jolt-fiber-monitor-mu
+    (vector->list (hashtable-keys jolt-fiber-live-tbl))))
+
 ;; (jolt-fiber-monitor! f proc) -> void. Register PROC on fiber F.
 ;;
 ;; The FIBER-level primitive. clojure.core.async's go-monitor does not come
@@ -1292,6 +1316,7 @@
   (let ((ms (jolt-with-mutex jolt-fiber-monitor-mu
               (when err (jolt-fiber-error-set! f err))
               (jolt-fiber-state-set! f state)
+              (eq-hashtable-delete! jolt-fiber-live-tbl f)
               (let ((ms (jolt-fiber-monitors f)))
                 (jolt-fiber-monitors-set! f '())
                 ms))))

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt.fibers/fibers` lists the fibers that haven't finished** (#1606),
+  across the default pool and named ones, so a tool can show what's running
+  (an IDE's process view, an nREPL op) without wrapping `spawn`. Wrapping it
+  missed core.async's own fibers, because `io-thread`, a `:fiber` go block and
+  a flow process never go through `spawn`, and it missed any fiber spawned
+  before the wrapper went in. `state`, `interrupt!` and `kill!` work on each one.
+  The list holds fibers weakly, and the spawn path takes one more lock, the one
+  a fiber's completion already takes.
 - **`cheshire.core` ships with jolt** (#1604), for babashka scripts and
   `bb.edn` tasks that name it, since babashka bundles cheshire. It lives in a
   new `compatibility/` source root, kept apart from `stdlib/` for namespaces

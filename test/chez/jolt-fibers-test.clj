@@ -139,6 +139,33 @@
   (a/>!! ch :through-the-channel)
   (check-eq "channel take inside spawn" (fib/join f) :through-the-channel))
 
+;; fibers lists every fiber that hasn't finished, whoever spawned it (jolt#1606):
+;; one from spawn, one from io-thread (which never goes through spawn), one in a
+;; named pool, and the caller's own; and none of them once they've finished.
+(let [gate (a/chan)
+      p (fib/pool {:name :listing :size 1})
+      spawned (fib/spawn (fn [] (a/<!! gate)))
+      pooled (fib/spawn (fn [] (a/<!! gate)) {:pool p})
+      io-self (promise)
+      io-ch (a/io-thread (deliver io-self (fib/current-fiber)) (a/<!! gate))
+      io-fib (a/<!! (a/io-thread (fib/current-fiber)))   ; a finished one
+      inner (fib/join (fib/spawn (fn [] (let [me (fib/current-fiber)]
+                                          (boolean (some #(identical? me %) (fib/fibers)))))))
+      listed? (fn [f] (boolean (some #(identical? f %) (fib/fibers))))]
+  (check-eq "fibers returns a vector" (vector? (fib/fibers)) true)
+  (check-eq "fibers lists a spawned fiber" (listed? spawned) true)
+  (check-eq "fibers lists a pool's fiber" (listed? pooled) true)
+  (check-eq "fibers lists the caller's own" inner true)
+  (check-eq "fibers lists an io-thread body" (listed? @io-self) true)
+  ;; its channel has the value before the fiber finishes, so join first
+  (fib/join io-fib)
+  (check-eq "a finished io-thread fiber is not listed" (listed? io-fib) false)
+  (a/close! gate)
+  (fib/join spawned) (fib/join pooled) (a/<!! io-ch)
+  (check-eq "finished fibers drop out"
+            [(listed? spawned) (listed? pooled)] [false false])
+  (fib/shutdown! p))
+
 ;; the knobs
 (check-eq "carrier-count is positive" (pos? (fib/carrier-count)) true)
 (check-eq "preempt-ticks is positive" (pos? (fib/preempt-ticks)) true)
