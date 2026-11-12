@@ -1470,15 +1470,16 @@
            :jvm "\"héllo\""
            :jolt "\"h\""}
    :note "Without the flag both answer \"h\": \\w is ASCII on the JVM by default too. The Unicode CATEGORY names (\\p{L}, \\p{Nd} …) are Unicode on both regardless of the flag."}
-  ;; Four java.util.regex escapes the JVM compiles and jolt refuses at
+  ;; Three java.util.regex escapes the JVM compiles and jolt refuses at
   ;; re-pattern, as a PatternSyntaxException whose message says why. Each
   ;; needs a table the substrate does not carry: \N{NAME} the Unicode character
-  ;; names, \X the grapheme-cluster rules, \p{IsScript} / \p{InBlock} the
+  ;; names, \X the grapheme-cluster rules, and \p{IsScript} / \p{InBlock} the
   ;; script and block tables (every general category, category group, POSIX,
-  ;; java* and binary-property name IS supported), and a lone surrogate a
-  ;; UTF-16 string model (a PAIR, \uD83D\uDE00, is read as the one code point
-  ;; it encodes, like the JVM). Refused rather than approximated: before the
-  ;; syntax validator, \N{NULL} and \X quietly matched the letters N and X.
+  ;; java* and binary-property name IS supported). Refused rather than
+  ;; approximated: before the syntax validator, \N{NULL} and \X quietly matched
+  ;; the letters N and X. A lone surrogate was a fourth until #1611; it now
+  ;; compiles to match nothing, which is exact over jolt strings (the entry
+  ;; after these).
   {:category :restrictive
    :behavior "(re-find (re-pattern \"\\\\N{SPACE}\") \" \")"
    :jvm "\" \" — \\N{NAME} is the named code point"
@@ -1503,11 +1504,11 @@
   {:category :string-model
    :behavior "(let [p (re-pattern \"\\\\uD83D\")] (boolean (re-find p (str (char 0xD83D)))))"
    :jvm "true — a lone high surrogate is a char, in a pattern and in a string (it does not match INSIDE a pair: against \"😀\" the JVM answers false too)"
-   :jolt "throws PatternSyntaxException at re-pattern — a jolt string holds code points, so there is no such unit to match"
+   :jolt "false — the pattern compiles and matches nothing, because a jolt string holds code points and can never contain a lone surrogate: (str (char 0xD83D)) is \"\uFFFD\" here"
    :check {:expr "(let [p (re-pattern \"\\\\uD83D\")] (boolean (re-find p (str (char 0xD83D)))))"
            :jvm "true"
-           :jolt "throws PatternSyntaxException"}
-   :note "The surrogate PAIR spelling is not a divergence: (re-find (re-pattern \"\\\\uD83D\\\\uDE00\") \"😀\") answers \"😀\" on both."}
+           :jolt "false"}
+   :note "The divergence is the string model's, not the regex's: a lone surrogate in a pattern, as an atom, a class member or a range endpoint, matches exactly what it matches on the JVM against any string jolt can hold, which is nothing, and a range takes the surrogate block out ([\\uD800-\\uDBFF] is empty). Until #1611 it was refused at re-pattern, which kept a namespace whose regex literal guards a surrogate pair from loading. The surrogate PAIR spelling is not a divergence: (re-find (re-pattern \"\\\\uD83D\\\\uDE00\") \"😀\") answers \"😀\" on both."}
   ;; A compile diagnostic is an ExceptionInfo here, carrying its :jolt.error/kind
   ;; and position (and the reference's :clojure.error/* keys beside them); the
   ;; reference raises a CompilerException — itself a RuntimeException — whose

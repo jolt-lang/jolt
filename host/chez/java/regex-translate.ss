@@ -1328,9 +1328,12 @@
       ;; \uXXXX. The JVM reads a high surrogate followed by \u + a low surrogate
       ;; as the one supplementary code point they encode (Pattern.u()), which is
       ;; how a pattern spells an emoji in Java source. A lone surrogate is a
-      ;; legal Java char but not a Chez one — a jolt string cannot hold it — so
-      ;; it is refused (known-divergences.edn), not silently read as something
-      ;; else.
+      ;; legal Java char but not a Chez one, and a jolt string, which holds code
+      ;; points, can never contain one. So it comes back as its bare code point
+      ;; (an integer, not a char), and the callers make it match nothing:
+      ;; jr-unit->sre outside a class, maybe-cc-range inside one. That is
+      ;; exact over jolt strings, and it lets ported code that guards with
+      ;; #"[\uD800-\uDBFF]" load (#1611).
       ((#\u)
        (let ((cp (parse-uxxxx src (+ i 1) end)))
          (if (not cp)
@@ -1344,8 +1347,7 @@
                  ((and cp2 (<= #xDC00 cp2) (<= cp2 #xDFFF))
                   (values (integer->char (+ #x10000 (* (- cp #xD800) #x400) (- cp2 #xDC00)))
                           (+ i 11)))
-                 ((and (<= #xD800 cp) (<= cp #xDFFF))
-                  (java-re-error "a lone surrogate is unsupported on jolt (strings hold code points, not UTF-16 units)" (+ i 4)))
+                 ((and (<= #xD800 cp) (<= cp #xDFFF)) (values cp (+ i 5)))
                  (else (values (integer->char cp) (+ i 5))))))))
       (else (values #f i)))))
 
@@ -1493,7 +1495,14 @@
                (values #\k (+ i 1))))
           (else
            (let-values (((v j) (parse-escape-shared src i end flags)))
-             (if v (values v j) (values c (+ i 1)))))))))
+             (if v (values (jr-unit->sre v) j) (values c (+ i 1)))))))))
+
+;; The empty character set: matches nothing, and unlike (or) it is a set, so a
+;; class can complement or intersect it.
+(define jr-no-char-sre '(""))
+;; A lone surrogate escape answers its code point (parse-escape-shared); no jolt
+;; string holds one, so as an atom or a class member it matches nothing.
+(define (jr-unit->sre v) (if (fixnum? v) jr-no-char-sre v))
 
 (define (parse-prop prefix src i end)
   ;; i points at p/P; next char is either { (braced) or property name (brace-less)
@@ -1602,8 +1611,29 @@
             (error 'java-pattern->sre "range out of order in character class" src))
            ((and (char? atom) (char? end-atom))
             (cont i3 (cons `(/ ,atom ,end-atom) members)))
-           (else (cont (+ i 1) (cons #\- (cons atom members)))))))
-      (cont i (cons atom members))))
+           ;; an endpoint is a lone surrogate's code point: the range is the
+           ;; same code points with D800-DFFF taken out, which on jolt strings
+           ;; is exactly what it matches. [\uD800-\uDBFF] is then empty.
+           ((and (jr-unit-cp atom) (jr-unit-cp end-atom))
+            (let ((a (jr-unit-cp atom)) (b (jr-unit-cp end-atom)))
+              (when (> a b)
+                (error 'java-pattern->sre "range out of order in character class" src))
+              (cont i3 (cons (jr-cp-range-sre a b) members))))
+           (else (cont (+ i 1) (cons #\- (cons (jr-unit->sre atom) members)))))))
+      (cont i (cons (jr-unit->sre atom) members))))
+
+;; A class member's code point when it is a single unit (a char, or a lone
+;; surrogate's integer), else #f.
+(define (jr-unit-cp x)
+  (cond ((char? x) (char->integer x)) ((fixnum? x) x) (else #f)))
+;; The code points a..b without the surrogate block, as an SRE char set.
+(define (jr-cp-range-sre a b)
+  (let ((lo (and (< a #xD800) `(/ ,(integer->char a) ,(integer->char (min b #xD7FF)))))
+        (hi (and (> b #xDFFF) `(/ ,(integer->char (max a #xE000)) ,(integer->char b)))))
+    (cond ((and lo hi) `(or ,lo ,hi))
+          (lo lo)
+          (hi hi)
+          (else jr-no-char-sre))))
 
 (define (parse-cc-atom src i end flags)
   (let ((c (string-ref src i)))
