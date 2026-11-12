@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lazy seq, and blank input parses to nil. Custom encoders
   (`cheshire.generate`), factory options and the Smile and CBOR formats are
   left out, and a value with no JSON form throws, as it does in cheshire.
+- **`clojure.core.reducers` ships with jolt** (#1615), as it does with
+  Clojure, so a `.cljc` library that requires it in a `:clj` branch loads
+  without a new dependency. It's a port of Clojure's namespace: `reduce`,
+  `fold`, `foldcat`, `cat`, `append!`, `monoid`, `reducer`, `folder`, the
+  `CollFold` protocol, and `map`, `mapcat`, `filter`, `remove`, `flatten`,
+  `take`, `take-while` and `drop` with their curried forms. `fold` runs its
+  pieces one after the other rather than on a fork/join pool, but it splits a
+  vector into the same pieces the JVM does, so `fold` and `foldcat` give the
+  same results. A reducer also works with core `reduce`, `into` and
+  `transduce`.
 
 ### Changed
 

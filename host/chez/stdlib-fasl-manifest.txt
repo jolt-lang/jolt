@@ -30,6 +30,7 @@ clojure.core.async.impl.dispatch
 clojure.core.async.impl.protocols
 clojure.core.async.lab
 clojure.core.protocols
+clojure.core.reducers
 clojure.core.rrb-vector
 clojure.core.strint
 clojure.data
