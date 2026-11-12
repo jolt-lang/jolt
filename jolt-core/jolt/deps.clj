@@ -31,32 +31,15 @@
             [grenadine.require-deps :as required]
             [grenadine.version :as grenadine.version]
             [jolt.deps.edn :as dedn]
+            [jolt.deps.declarations :as decl]
             [jolt.deps.ext :as ext]
+            [jolt.deps.git :as git]
+            [jolt.deps.io :refer [getenv file-exists? mkdirs! rm-f mv! tmp-dir warn
+                                  sanitize]]
             [jolt.mvn-http :as http]))
 
 (defonce ^:private required-state
   (atom {:coordinates {} :namespaces {}}))
-
-;; --- small host seams -------------------------------------------------------
-;; An env var set to the empty string reads as UNSET — `FOO= cmd` is the usual
-;; way to clear a variable for one command, and treating "" as a value would
-;; turn that into "set to nothing".
-(defn- getenv [n] (let [v (jolt.host/getenv n)] (when-not (str/blank? v) v)))
-(defn- file-exists? [p] (jolt.host/file-exists? p))
-(defn- sh [cmd] (jolt.host/sh cmd))           ; exit code, inherits stdout/stderr
-
-;; The filesystem seams. These used to be shell commands (`mkdir -p`, `mv`,
-;; `rm -f`, `rm -rf`, `test -nt`, `find`), which is a POSIX assumption jolt.host/sh
-;; does not carry: on Windows it runs the string through cmd.exe, where `mkdir -p
-;; a/b` creates a directory named `-p` and the rest are not commands at all. Every
-;; one of these is now a filesystem call, so the only subprocess left in this
-;; namespace is the one real external program, git. A jar is never extracted:
-;; the loader reads it in place (jolt.host/zip-archive?, zip-entry-names).
-(defn- mkdirs! [p] (jolt.host/mkdirs! p))     ; mkdir -p; true if p ends up a dir
-(defn- rm-f [p] (jolt.host/delete-file! p))   ; absent is success
-(defn- rm-rf [p] (jolt.host/delete-tree! p))
-(defn- mv! [from to] (jolt.host/rename-file! from to))
-(defn- touch! [p] (spit p ""))                ; the markers are all empty files
 
 ;; The directory a path names, as File.getCanonicalPath answers it: "." and ".."
 ;; folded and symlinks resolved. A :local/root is identified by this, not by its
@@ -79,56 +62,6 @@
                      (find-file p pred)))
                 entries)))))
 
-(defn- tmp-dir
-  "A directory for scratch files. /tmp is not universal — Windows has no such
-  path, and %TEMP% is where a temporary file goes there."
-  []
-  (let [d (or (getenv "TMPDIR") (getenv "TEMP") (getenv "TMP") "/tmp")]
-    (str/replace d #"[/\\]+$" "")))
-
-(defn- sh-out*
-  "Run a shell command, capturing stdout and stderr separately:
-  {:exit n :out s :err s}. Captures through temp files (jolt.host/sh inherits
-  stdio), which is also how a command's output gets discarded portably — there
-  is no /dev/null to redirect to everywhere jolt runs."
-  [cmd]
-  (let [stamp (str (System/currentTimeMillis) "-" (rand-int 100000))
-        out-f (str (tmp-dir) "/jolt-deps-" stamp ".out")
-        err-f (str (tmp-dir) "/jolt-deps-" stamp ".err")
-        code (sh (str cmd " > " (pr-str out-f) " 2> " (pr-str err-f)))
-        read-f (fn [p] (when (file-exists? p) (str/trim (slurp p))))
-        r {:exit code :out (read-f out-f) :err (read-f err-f)}]
-    (rm-f out-f)
-    (rm-f err-f)
-    r))
-
-(defn- warn [& xs] (binding [*out* *err*] (println (str "[jolt.deps] " (apply str xs)))))
-
-;; --- retrying the network steps ---------------------------------------------
-;; A git command that talks to a remote fails transiently more often than not — a
-;; reset, a rate limit, a DNS blip — and the cost of finding out is one more
-;; round trip. The HTTPS fetch already works this way (jolt/mvn_http.clj); these
-;; are the git-side equivalents, and they matter for the same reason: a flake
-;; here fails a whole build, and a release with it.
-(def ^:private net-attempts 3)
-;; Deliberately short, same reasoning as the fetch's: this sits in front of a
-;; developer waiting on a build, and the failures it covers clear in well under a
-;; second. A long backoff trades a rare recovery for a guaranteed stall on the
-;; genuinely-unreachable case.
-(def ^:private net-backoff-ms [200 600])
-
-(defn- with-net-retries
-  "Call ATTEMPT until `ok?` accepts its result, at most net-attempts times, with
-  a short backoff between. Returns the LAST result either way — still a failing
-  one when the cap is reached, so the caller reports the failure it actually got
-  rather than treating the cap as a different kind of answer."
-  [ok? attempt]
-  (loop [n 1]
-    (let [r (attempt)]
-      (if (or (ok? r) (>= n net-attempts))
-        r
-        (do (when-let [ms (nth net-backoff-ms (dec n) nil)] (Thread/sleep ms))
-            (recur (inc n)))))))
 ;; Progress / informational lines (fetching, using-cache, skipping, added-natives)
 ;; print only when JOLT_DEBUG is set — otherwise a routine run (e.g. a ys-generated
 ;; program pulling a native-declaring lib) barfs them on every invocation. Genuine
@@ -260,199 +193,20 @@
 (defn- abspath [dir p]
   (abspath-for (windows?) dir p))
 
-;; --- git cache --------------------------------------------------------------
-;; jolt's own clone cache. $GITLIBS (the tools.gitlibs location knob) is
-;; respected for WHERE the cache lives — under a jolt/ subdir so tools.gitlibs'
-;; own _repos/ and libs/ namespaces are never written to. JOLT_GITLIBS_DIR
-;; pins an exact directory.
-(defn- gitlibs-dir
-  ([] (gitlibs-dir (getenv "JOLT_GITLIBS_DIR")
-                   (getenv "GRENADINE_GITLIBS_DIR")
-                   (getenv "GITLIBS")
-                   (getenv "HOME")))
-  ([jolt-cache grenadine-cache gitlibs home]
-   (or jolt-cache
-       (when grenadine-cache (str grenadine-cache "/jolt"))
-       (when gitlibs (str gitlibs "/jolt"))
-       (str (or home ".") "/.jolt/gitlibs"))))
-
-(defn- alnum? [c]
-  (let [n (int c)]
-    (or (and (>= n 48) (<= n 57))     ; 0-9
-        (and (>= n 65) (<= n 90))     ; A-Z
-        (and (>= n 97) (<= n 122))))) ; a-z
-(defn- sanitize [s]
-  (str/join (map (fn [c] (if (or (alnum? c) (= c \.) (= c \-)) c \_)) (seq s))))
-
-(defn- gitlibs-shared-checkout
-  "An existing tools.gitlibs checkout for lib@sha ($GITLIBS or ~/.gitlibs,
-  layout libs/<group>/<name>/<sha>) — reused read-only when the JVM toolchain
-  already fetched this dep. jolt never writes there: tools.gitlibs keeps its
-  own bookkeeping (_repos bare clones + worktrees) that a foreign writer could
-  corrupt, so jolt's own fetches go to its cache below."
-  [lib sha]
-  (when (and lib (namespace lib))
-    (let [base (or (getenv "GRENADINE_GITLIBS_DIR")
-                   (getenv "GITLIBS")
-                   (str (or (getenv "HOME") ".") "/.gitlibs"))
-          dir (str base "/libs/" (namespace lib) "/" (name lib) "/" sha)]
-      (when (file-exists? dir) dir))))
-
-(defn- full-sha? [s] (and (string? s) (= 40 (count s)) (re-matches #"[0-9a-f]+" s)))
-
-(defn- git-coord
-  "A git coordinate with tools.deps' legacy spellings folded into the namespaced
-  keys. deps.edn files in the wild still write :sha and :tag — malli pins
-  spec-alpha2 as {:git/url … :sha …} — and tools.deps accepts both, so a
-  coordinate that resolves there has to resolve here. The namespaced key wins if
-  both are somehow present."
-  [coord]
-  (cond-> coord
-    (and (:sha coord) (not (:git/sha coord))) (assoc :git/sha (:sha coord))
-    (and (:tag coord) (not (:git/tag coord))) (assoc :git/tag (:tag coord))))
-
-(defn- resolve-git-tag
-  "Resolve a tag via git ls-remote to [commit-sha tag-object-sha]. An annotated
-  tag carries both: the peeled ^{} ref is the commit it points at, the unpeeled
-  ref is the tag object itself. A deps.edn may pin EITHER — `git ls-remote`
-  prints the tag object for refs/tags/X, so that is what a coordinate written
-  from its output holds (cognitect-labs/test-runner v0.5.0 is one), and
-  tools.deps accepts both. tag-object-sha is nil for a lightweight tag, where
-  the two coincide. Cached under the gitlibs dir as one line of two tokens —
-  the commit, then the tag object or \"-\" when there is none. A one-token file
-  is what an older jolt wrote, which recorded only the commit; it is re-resolved
-  rather than trusted, so a coordinate pinning the tag object is not rejected
-  off a cache that predates knowing about it."
-  [url tag]
-  (let [cache (str (gitlibs-dir) "/tags/" (sanitize url) "/" (sanitize tag))]
-    (if-let [cached (when (file-exists? cache)
-                      (let [[commit obj] (str/split (str/trim (slurp cache)) #"\s+")]
-                        (when obj [commit (when (not= obj "-") obj)])))]
-      cached
-      ;; "the tag is not there" and "we could not go look" are different answers.
-      ;; Collapsing them reported a transient ls-remote failure — a reset, a rate
-      ;; limit, an unreachable host — as a tag that does not exist, which sends
-      ;; the reader to the repository and the pin instead of to the fetch. (The
-      ;; v0.7.7 release failed this way against a tag two weeks old.) Same
-      ;; distinction the Maven path makes below, and for the same reason.
-      (let [{:keys [exit out err]}
-            (with-net-retries #(zero? (:exit %))
-              #(sh-out* (str "git ls-remote " (pr-str url) " "
-                             (pr-str (str "refs/tags/" tag)) " "
-                             (pr-str (str "refs/tags/" tag "^{}")))))]
-        (when-not (zero? exit)
-          (throw (ex-info (str "git dep: could not list " url " (git ls-remote exited "
-                               exit " after " net-attempts " attempts"
-                               (when-not (str/blank? err)
-                                 (str ": " (first (str/split-lines err))))
-                               ")")
-                          {:type :jolt.deps/git-ls-remote-failed
-                           :url url :tag tag :exit exit :err err :attempts net-attempts})))
-        (let [lines (str/split-lines (or out ""))
-              parse (fn [suffix]
-                      (some (fn [l] (let [[sha ref] (str/split l #"\s+")]
-                                      (when (and ref (str/ends-with? ref suffix)) sha)))
-                            lines))
-              peeled (parse "^{}")
-              obj (parse (str "refs/tags/" tag))
-              commit (or peeled obj)
-              obj (when (and peeled obj (not= peeled obj)) obj)]
-          (when commit
-            (mkdirs! (str (gitlibs-dir) "/tags/" (sanitize url)))
-            (spit cache (str commit " " (or obj "-")))
-            [commit obj]))))))
-
-(defn- resolve-git-sha
-  "The full commit sha a git coordinate pins: a full :git/sha as-is; with a
-  :git/tag, a short (prefix) sha is completed from the tag's commit and a full
-  sha is verified against it — like tools.deps, a tag alone doesn't pin."
-  [coord url {:git/keys [sha tag] :as spec}]
-  (cond
-    (and sha (full-sha? sha) (not tag)) sha
-    (and tag sha)
-    (let [[tag-sha obj-sha]
-          (or (resolve-git-tag url tag)
-              (throw (ex-info (str "git dep " coord ": tag " tag " not found in " url)
-                              {:coord coord :spec spec})))]
-      ;; Either sha an annotated tag carries pins it, as in tools.deps. What gets
-      ;; checked out is always the commit.
-      (if (or (str/starts-with? tag-sha sha)
-              (and obj-sha (str/starts-with? obj-sha sha)))
-        tag-sha
-        (throw (ex-info (str "git dep " coord ": :git/sha " sha " does not match tag "
-                             tag " (" tag-sha
-                             (when obj-sha (str ", tag object " obj-sha)) ")")
-                        {:coord coord :spec spec :tag-sha tag-sha
-                         :tag-object-sha obj-sha}))))
-    (full-sha? sha) sha
-    :else
-    (throw (ex-info
-             (str "git dep " coord " needs :git/sha — the full commit sha, or a "
-                  "prefix of it alongside :git/tag"
-                  (when (and tag (not sha)) " (a :git/tag alone doesn't pin a commit)") ".")
-             {:coord coord :spec spec}))))
-
-(defn- checkout-complete?
-  "Does `dir` hold a finished checkout? jolt publishes a checkout by moving a
-  fully populated staging dir into place and marks it with `.jolt-git-ok`, so
-  anything jolt wrote there is complete. A checkout an older jolt cloned in
-  place carries no marker, and its `.git` stands in — which still rejects the
-  empty directory an interrupted in-place clone left behind. That leftover is
-  why this check exists: git only cleans up a clone directory it created itself,
-  the in-place clone pre-created it with mkdir -p, and a plain existence test
-  then read the empty remains as a valid checkout. The dep resolved to nothing
-  on every later run, and the failure surfaced much later as `Could not locate`
-  on one of its namespaces."
-  [dir]
-  (or (file-exists? (str dir "/.jolt-git-ok"))
-      (file-exists? (str dir "/.git"))))
-
-(defn- fetch-git!
-  "Clone url@sha under `repo-dir` and return the checkout dir. The work happens
-  in a staging dir beside it (same filesystem, so publishing is a rename) and
-  any failure removes it: the cache only ever holds finished checkouts. The
-  staging name carries a nonce so two jolt processes fetching the same dep at
-  once don't clone over each other."
-  [url sha repo-dir]
-  (let [dir (str repo-dir "/" sha)
-        stage (str repo-dir "/.part-" sha "-" (System/currentTimeMillis) "-" (rand-int 100000))
-        scrub #(rm-rf stage)
-        fail (fn [msg data] (scrub) (throw (ex-info msg (merge {:url url :sha sha} data))))]
-    (info "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
-    (mkdirs! repo-dir)
-    ;; the clone talks to the remote, so it gets the same bounded retry the tag
-    ;; listing does — scrubbing first, since a failed clone leaves a partial
-    ;; staging dir that the next attempt would refuse to clone into.
-    (when-not (zero? (with-net-retries zero? (fn [] (scrub) (sh (str "git clone --quiet " (pr-str url) " " (pr-str stage))))))
-      (fail (str "git clone failed after " net-attempts " attempts: " url) nil))
-    ;; local, so no retry: the objects are already in the staging clone.
-    (when-not (zero? (sh (str "git -C " (pr-str stage) " checkout --quiet " (pr-str sha))))
-      (fail (str "git checkout failed: " sha " in " url) nil))
-    ;; submodules are pinned in the checkout; pull them if the dep uses any. This
-    ;; one fetches too, and is idempotent, so it retries in place.
-    (when-not (zero? (with-net-retries zero? #(sh (str "git -C " (pr-str stage) " submodule update --init --recursive --quiet"))))
-      (fail (str "git submodule update failed after " net-attempts " attempts for " url) nil))
-    (touch! (str stage "/.jolt-git-ok"))
-    (if (checkout-complete? dir)
-      (do (scrub) dir)                    ; another process published it first
-      (do
-        ;; clears the incomplete remains of an interrupted in-place clone
-        (rm-rf dir)
-        (when-not (mv! stage dir)
-          (fail (str "git checkout could not be moved into the cache: " dir) {:dir dir}))
-        dir))))
-
+;; --- git checkouts ------------------------------------------------------------
+;; The cache, tag resolution and the clone itself live in jolt.deps.git.
 (defn- ensure-git
   "Return a checkout dir for url@sha: jolt's cached checkout when complete, else
   an existing tools.gitlibs checkout for `lib`, else a fresh clone into jolt's
   cache."
   [lib url sha]
-  (let [repo-dir (str (gitlibs-dir) "/" (sanitize url))
+  (let [repo-dir (str (git/gitlibs-dir) "/" (sanitize url))
         dir (str repo-dir "/" sha)]
-    (if (checkout-complete? dir)
+    (if (git/checkout-complete? dir)
       dir
-      (or (gitlibs-shared-checkout lib sha)
-          (fetch-git! url sha repo-dir)))))
+      (or (git/gitlibs-shared-checkout lib sha)
+          (do (info "fetching " url " @ " (subs sha 0 (min 12 (count sha))))
+              (git/fetch-git! url sha repo-dir))))))
 
 ;; --- maven cache ------------------------------------------------------------
 ;; jolt has no JVM, but a Clojure library's Maven JAR carries its .clj/.cljc/.cljs
@@ -591,6 +345,49 @@
                             (str jar " is not a whole zip archive (a cut download, or not a jar); delete it to fetch again"))
         nil)))
 
+(defn- repo-failure
+  "Why REPO's fetch result R failed, for the unresolvable message — nil when the
+  repo simply answered that it has no such artifact."
+  [repo r]
+  (when-not (= :not-found (:outcome r))
+    (str repo " — "
+         (or (:error r)
+             (when (:status r) (str "HTTP " (:status r)))
+             (name (:outcome r))))))
+
+(defn- download-maven-jar
+  "Fetch the jar at URL-PATH (relative to a repository) into JAR under DIR,
+  trying each of *mvn-repos* in turn, and answer its path — or nil after
+  recording coord@version as unresolvable."
+  [coord version dir url-path jar]
+  ;; ERRORS carries the repos that failed for a reason OTHER than "no such
+  ;; artifact". Every repo answering 404 is a real "not found" and says so;
+  ;; a reset or a 503 is not, and reporting it as absent sent people
+  ;; looking for a dependency that was published years ago. Either way the
+  ;; dep is unresolvable and resolution will abort — the distinction is
+  ;; what the message says, and whether a retry was even attempted.
+  (loop [repos *mvn-repos* errors []]
+    (if (empty? repos)
+      (do (note-unresolvable!
+           coord version
+           (if (seq errors)
+             ;; a reset, a 503, a TLS failure: the repos never told us
+             ;; whether they have it, so do not claim they said no
+             (str "could not be fetched: " (str/join "; " errors))
+             (str "not found in any repository (tried "
+                  (str/join ", " *mvn-repos*) ")")))
+          nil)
+      (let [repo (first repos)
+            _ (mkdirs! dir)
+            r (http/fetch* (str repo "/" url-path) jar)]
+        (if (= :ok (:outcome r))
+          (do (info "fetching " coord " " version)
+              (archive-or-note! jar coord version))
+          (recur (rest repos)
+                 (if-let [failure (repo-failure repo r)]
+                   (conj errors failure)
+                   errors)))))))
+
 (defn- ensure-maven
   "Ensure coord@version's JAR is in the local Maven repository (reusing one the
   JVM toolchain already fetched; downloading from Clojars then Central when
@@ -610,36 +407,7 @@
     (if (file-exists? jar)
       (do (when-not legacy (info "using " jar-name " from the local Maven repository"))
           (archive-or-note! jar coord version))
-      ;; ERRORS carries the repos that failed for a reason OTHER than "no such
-      ;; artifact". Every repo answering 404 is a real "not found" and says so;
-      ;; a reset or a 503 is not, and reporting it as absent sent people
-      ;; looking for a dependency that was published years ago. Either way the
-      ;; dep is unresolvable and resolution will abort — the distinction is
-      ;; what the message says, and whether a retry was even attempted.
-      (loop [repos *mvn-repos* errors []]
-        (if (empty? repos)
-          (do (note-unresolvable!
-               coord version
-               (if (seq errors)
-                 ;; a reset, a 503, a TLS failure: the repos never told us
-                 ;; whether they have it, so do not claim they said no
-                 (str "could not be fetched: " (str/join "; " errors))
-                 (str "not found in any repository (tried "
-                      (str/join ", " *mvn-repos*) ")")))
-              nil)
-          (let [repo (first repos)
-                _ (mkdirs! dir)
-                r (http/fetch* (str repo "/" vdir-rel "/" jar-name) jar)]
-            (if (= :ok (:outcome r))
-              (do (info "fetching " coord " " version)
-                  (archive-or-note! jar coord version))
-              (recur (rest repos)
-                     (if (= :not-found (:outcome r))
-                       errors
-                       (conj errors (str repo " — "
-                                         (or (:error r)
-                                             (when (:status r) (str "HTTP " (:status r)))
-                                             (name (:outcome r))))))))))))))
+      (download-maven-jar coord version dir (str vdir-rel "/" jar-name) jar))))
 
 (defn- raw-pom-deps-from
   "Transitive deps read from a pom.xml — as a deps map so the expansion walks
@@ -667,37 +435,6 @@
                            (not (and (= g "org.clojure") (= a "clojure")))
                            (re-matches #"[0-9A-Za-z.\-]+" v))]
             [(symbol g a) {:mvn/version v}]))))))
-
-;; --- git URL inference ------------------------------------------------------
-;; tools.deps lets a git coordinate omit :git/url when the lib name encodes a
-;; known host: `io.github.OWNER/REPO` resolves to https://github.com/OWNER/REPO.git,
-;; and similarly for GitLab, Bitbucket, and Sourcehut. jolt honors the same
-;; convention so a deps.edn copied from a tools.deps project resolves unchanged.
-;; See https://clojure.org/reference/deps_edn#deps_git.
-(def ^:private git-url-hosts
-  ;; [namespace-prefix  url-prefix  url-suffix] — the URL is
-  ;; url-prefix + OWNER + "/" + REPO + url-suffix, where OWNER is the coordinate
-  ;; namespace with its host prefix stripped and REPO is the coordinate name.
-  [["io.github."    "https://github.com/"    ".git"]
-   ["com.github."   "https://github.com/"    ".git"]
-   ["io.gitlab."    "https://gitlab.com/"    ".git"]
-   ["com.gitlab."   "https://gitlab.com/"    ".git"]
-   ["io.bitbucket."  "https://bitbucket.org/" ".git"]
-   ["org.bitbucket." "https://bitbucket.org/" ".git"]
-   ;; Sourcehut lib names carry the leading ~ in the owner, e.g. ht.sr.~owner/repo,
-   ;; so stripping "ht.sr." leaves "~owner" and no .git suffix is used.
-   ["ht.sr."        "https://git.sr.ht/"     ""]])
-
-(defn- infer-git-url
-  "The git clone URL a coordinate's lib name implies via the tools.deps host
-  convention (io.github.OWNER/REPO -> https://github.com/OWNER/REPO.git), or nil
-  when the namespace names no known host."
-  [coord]
-  (when-let [ns (namespace coord)]
-    (some (fn [[prefix url-prefix url-suffix]]
-            (when (str/starts-with? ns prefix)
-              (str url-prefix (subs ns (count prefix)) "/" (name coord) url-suffix)))
-          git-url-hosts)))
 
 (defn- jar-root?
   "Is `root` a jar rather than a directory? The loader reads a .jar/.zip root
@@ -850,7 +587,7 @@
 (defmethod ext/coord-type-keys :local [_] #{:local/root})
 
 (defmethod ext/dep-id :mvn [_ coord] (select-keys coord [:mvn/version]))
-(defmethod ext/dep-id :git [_ coord] (select-keys (git-coord coord) [:git/url :git/sha :git/tag]))
+(defmethod ext/dep-id :git [_ coord] (select-keys (git/git-coord coord) [:git/url :git/sha :git/tag]))
 (defmethod ext/dep-id :local [_ coord] {:local/root (canonical-path (:local/root coord))})
 
 ;; What names a version in the dependency tree: the Maven version, the git tag
@@ -858,7 +595,7 @@
 ;; prints it), the directory for a local root.
 (defmethod ext/coord-summary :mvn [lib coord] (str lib " " (:mvn/version coord)))
 (defmethod ext/coord-summary :git [lib coord]
-  (let [coord (git-coord coord)
+  (let [coord (git/git-coord coord)
         sha (:git/sha coord)]
     (str lib " " (or (:git/tag coord)
                      (when sha (subs sha 0 (min 7 (count sha))))))))
@@ -887,14 +624,14 @@
 (defn- git-info [lib coord]
   (memoized [:info lib (ext/dep-id lib coord)]
     (fn []
-      (let [coord (git-coord coord)
-            url (or (:git/url coord) (infer-git-url lib)
+      (let [coord (git/git-coord coord)
+            url (or (:git/url coord) (git/infer-git-url lib)
                     (throw (ex-info
                              (str "git dep " lib " has no :git/url and none could be inferred "
                                   "from its lib name. Add :git/url, or name the coordinate after "
                                   "its host, e.g. io.github.OWNER/REPO for a GitHub repo.")
                              {:lib lib :coord coord})))
-            sha (resolve-git-sha lib url coord)
+            sha (git/resolve-git-sha lib url coord)
             checkout (ensure-git lib url sha)
             root (if-let [r (:deps/root coord)] (str checkout "/" r) checkout)]
         (assoc (manifest-info root) :sha sha :url url :checkout checkout)))))
@@ -944,20 +681,14 @@
    (:mvn/version x)
    (:mvn/version y)))
 
-;; sh-out* rather than sh: this asks a question whose "no" arrives as both a
-;; non-zero exit and a message on stderr, and the 2>/dev/null that used to
-;; silence it is a POSIX path, not a portable way to discard output.
-(defn- git-ancestor? [dir a b]
-  (zero? (:exit (sh-out* (str "git -C " (pr-str dir) " merge-base --is-ancestor " a " " b)))))
-
 (defmethod ext/compare-versions [:git :git] [lib x y]
   (let [xi (git-info lib x) yi (git-info lib y)
         xs (:sha xi) ys (:sha yi)]
     (cond
       (= xs ys) 0
       :else
-      (let [in (fn [dir] (cond (git-ancestor? dir xs ys) -1
-                               (git-ancestor? dir ys xs) 1))]
+      (let [in (fn [dir] (cond (git/git-ancestor? dir xs ys) -1
+                               (git/git-ancestor? dir ys xs) 1))]
         (or (in (:checkout xi)) (in (:checkout yi))
             (throw (ex-info (str "No known ancestor relationship between git versions for " lib)
                             {:lib lib :x x :y y})))))))
@@ -995,98 +726,116 @@
                       (if (contains? seen k) [seen acc] [(conj seen k) (conj acc x)])))
                   [#{} []] xs)))
 
-;; The platform keys a :jolt/native spec declares its candidates under: exactly
-;; the values main.clj's current-platform selects with, so the identity below
-;; reads the same keys the loader does. It listed :win, which current-platform
-;; never produces, so on Windows a spec that declared candidates only under
-;; :windows keyed on nothing at all (jolt-ajd).
-(def ^:private native-platform-keys [:darwin :linux :windows])
+(defn- absolutize-coords
+  "An :override-deps / :default-deps map with each :local/root made absolute
+  against BASE-DIR; nil stays nil."
+  [coords base-dir]
+  (some->> coords (map (fn [[l c]] [l (absolutize-local c base-dir)])) (into {})))
 
-(defn- native-key
-  "Identity of a :jolt/native spec. A :process lib (the running process's own
-  symbols, e.g. libc) keys on that flag; a file lib on its :name, else on its
-  platform candidate paths — two deps naming the same lib reconcile to one load.
-  A spec with neither a :name nor a candidate under any platform key (it declares
-  only :static, or only a key no platform selects) keys on its own shape, minus
-  the declaring root: distinct specs stay distinct instead of collapsing to one
-  under dedup-by, and two deps declaring the same lib still reconcile."
-  [spec]
-  (letfn [(cands [k] (let [v (get spec k)] (cond (string? v) [v] (sequential? v) (vec v) :else [])))]
-    (if (:process spec)
-      [:process (:name spec)]
-      [:native (or (:name spec)
-                   (let [paths (vec (sort (mapcat cands native-platform-keys)))]
-                     (if (seq paths) paths (dissoc spec :jolt.deps/root :jolt.deps/lib
-                                                   :jolt.deps/paths))))])))
+(defn- expand
+  "Run the tools.deps expansion engine over the TOP entries with jolt's
+  coordinate extensions."
+  [top override-deps default-deps trace?]
+  (expander/expand-deps
+   top
+   {:coord-id ext/dep-id
+    :coord-deps ext/coord-deps
+    :compare-versions ext/compare-versions
+    :known-coordinate? known-coord?
+    :base-lib base-lib
+    :override-deps override-deps
+    :default-deps default-deps
+    :trace? trace?
+    :on-warning expansion-warning}))
 
-;; Reconcile two declarations of the same library instead of dropping the second.
-;; dedup-by is winner-takes-all, and the project's own specs come first — so an
-;; app that only wanted to ADD the :windows candidates a dependency is missing
-;; had to restate that dependency's :darwin and :linux lists verbatim, or break
-;; those platforms instead (jolt-lang/jolt#989). The winner still wins every key
-;; it declares; a later spec only fills in the platform keys the winner is
-;; silent about, and the root those filled-in candidates resolve against travels
-;; with them, so a dependency's relative "native/libfoo.so" still resolves
-;; against that dependency rather than against whoever won the identity.
-(defn- overlay-native [a b]
-  (reduce (fn [acc k]
-            (if (or (contains? acc k) (not (contains? b k)))
-              acc
-              (let [acc (assoc acc k (get b k))]
-                (if-let [r (:jolt.deps/root b)]
-                  (assoc acc :jolt.deps/roots (assoc (:jolt.deps/roots acc) k r))
-                  acc))))
-          a
-          native-platform-keys))
+(defn- selected-infos
+  "The coord-info of every selected library that procured a root, in ORDER,
+  each tagged with its :lib."
+  [libmap order]
+  (keep (fn [lib]
+          (when-let [coord (get libmap lib)]
+            (let [info (ext/coord-info lib coord)]
+              (when (:root info) (assoc info :lib lib)))))
+        order))
 
-(defn- lazy-native? [spec] (boolean (and (seq (:jolt.deps/paths spec)) (not (:eager spec)))))
+(defn- deps-edn-roots
+  "The absolute source roots a deps.edn at ROOT declares (:paths, else src)."
+  [root edn]
+  (map #(abspath root %) (or (:paths edn) ["src"])))
 
-;; The source roots whose first require loads a reconciled spec. One shared
-;; object declared by two dependencies is loaded by whichever is required first
-;; — the union of their roots — and a declaration that has to be there at
-;; startup (the project's own, or :eager) makes the whole spec eager.
-(defn- overlay-native-roots [a b]
-  (if (and (lazy-native? a) (lazy-native? b))
-    (assoc a :jolt.deps/paths (vec (distinct (concat (:jolt.deps/paths a)
-                                                     (:jolt.deps/paths b)))))
-    (dissoc a :jolt.deps/paths)))
+(defn- info-roots [{:keys [root manifest edn]}]
+  (if (= manifest :deps-edn)
+    (deps-edn-roots root edn)
+    [root]))
 
-(defn- reconcile-natives
-  "dedup-by native-key, but folding each dropped spec's unclaimed platform keys
-  into the one that kept the identity. First-inclusion order is preserved."
-  [specs]
-  (let [[order by-key]
-        (reduce (fn [[order by-key] spec]
-                  (let [k (native-key spec)]
-                    (if (contains? by-key k)
-                      [order (assoc by-key k (overlay-native-roots
-                                              (overlay-native (get by-key k) spec)
-                                              spec))]
-                      [(conj order k) (assoc by-key k spec)])))
-                [[] {}] specs)]
-    (mapv by-key order)))
+(defn- info-natives
+  "A library's :jolt/native specs, each tagged with the root that declared it,
+  the library, and — for a deps.edn library — its source roots."
+  [{:keys [edn root manifest lib]}]
+  (let [paths (when (= manifest :deps-edn)
+                (vec (deps-edn-roots root edn)))]
+    (map #(cond-> (assoc % :jolt.deps/root root :jolt.deps/lib (str lib))
+            (seq paths) (assoc :jolt.deps/paths paths))
+         (:jolt/native edn))))
 
-(defn- provides-entries
-  "A deps.edn :jolt/provides map as provider-table rows: [install-ns lib class ...].
-  lib is the declaring dependency's coordinate, or nil for the project's own."
-  [edn lib]
-  ;; Both names are stringified here: the coordinate is a symbol in deps.edn and
-  ;; the runtime string-appends it into the "declared but failed to load"
-  ;; message. nil stays nil — it means jolt's own, which has no coordinate.
-  (map (fn [[install-ns classes]]
-         (into [(str install-ns) (when lib (str lib))] (map str classes)))
-       (:jolt/provides edn)))
+(defn- release-root
+  "LIB's root when its selected coordinate is a Maven release (not a SNAPSHOT)."
+  [libmap {:keys [lib root]}]
+  (let [v (:mvn/version (get libmap lib))]
+    (when (and (string? v) (not (str/ends-with? v "-SNAPSHOT")))
+      root)))
 
-(defn- allow-dynamic-entries
-  "The defs a deps.edn vouches never resolve vars at runtime in a built binary
-  — :jolt/tree-shake {:allow-dynamic [ns/name …]} — as \"ns/name\" strings, the
-  shape the build driver's bail scan (dce.ss) keys on. Symbols are the
-  documented form; a string is taken as written. Nothing else is validated
-  here: an entry that names no def is inert, and the bail diagnostic prints the
-  exact key for the sites that remain, so a misspelling corrects itself on the
-  next build rather than needing a checker of its own."
-  [edn]
-  (mapv str (:allow-dynamic (:jolt/tree-shake edn))))
+(defn- resolution
+  "resolve-deps' answer, collected from the selected libraries' INFOS."
+  [infos libmap expansion graph]
+  {:roots (vec (mapcat info-roots infos))
+   ;; Each spec carries the ROOT of the deps.edn that declared it. A
+   ;; :jolt/native path is written relative to its own project ("native/
+   ;; libfoo.so" is what a build task produces beside the sources), and
+   ;; without the root there is nothing to resolve it against: a dependency's
+   ;; relative path was being resolved against the APP's directory, and a
+   ;; :static archive not at all — it went to `cc` verbatim and resolved
+   ;; against whatever the build's cwd happened to be (jolt-9a8).
+   ;;
+   ;; It also carries the dependency's SOURCE roots and its coordinate: a
+   ;; dependency's natives load when the first namespace from one of those
+   ;; roots is required, not at startup (jolt.main apply-project!), and a
+   ;; library that is missing then names the dependency that declared it.
+   :natives (vec (mapcat info-natives infos))
+   ;; The defs each dep vouches never resolve vars at runtime in a built
+   ;; binary (:jolt/tree-shake {:allow-dynamic […]}). A LIBRARY is the
+   ;; natural declarer — spec.alpha knows its `res` only qualifies a symbol
+   ;; for a description and its `dynaload` sits behind a delay — and it
+   ;; ships the list once for every app that uses it, the way :jolt/native
+   ;; ships a shared library.
+   :allow-dynamic (vec (mapcat (fn [{:keys [edn]}] (decl/allow-dynamic-entries edn)) infos))
+   ;; Each dep's declared jolt floor, as [lib version] — checked by
+   ;; resolve-project against the running runtime. A LIBRARY is the common
+   ;; declarer: it knows which jolt its FFI bindings or host shims need, and
+   ;; the app that pulls it in does not.
+   :min-versions (vec (keep (fn [{:keys [lib edn]}]
+                              (when-let [v (:jolt/min-version edn)] [lib v]))
+                            infos))
+   ;; Host classes each dep declares it provides (RFC 0014), as
+   ;; [install-ns lib class-name …]. A library knows which java.* classes
+   ;; its shim installs; the runtime must not, or core ends up naming
+   ;; specific libraries to decide what to autoload on a class miss.
+   :provides (vec (mapcat (fn [{:keys [lib edn]}] (decl/provides-entries edn lib)) infos))
+   ;; libs whose deps.edn declares :deps/prep-lib — jolt runs no prep
+   ;; steps, so their compiled/generated assets will be missing; the
+   ;; caller warns with the lib names.
+   :prep (vec (keep (fn [{:keys [lib edn]}] (when (:deps/prep-lib edn) lib)) infos))
+   ;; The roots that are Maven RELEASE artifacts: a released version is
+   ;; never republished under the same path, so the loader may key its
+   ;; entries by the jar's stat instead of reading them on every start. A
+   ;; SNAPSHOT is republished in place and is left out.
+   :immutable-roots (vec (keep #(release-root libmap %) infos))
+   :libs libmap
+   :trace (:trace expansion)
+   ;; The edges -Sgraph renders. Their labels come from :libs above, which
+   ;; is the mediated map — a library reached through two parents is
+   ;; labelled with the version that won.
+   :graph graph})
 
 (defn resolve-deps
   "Expand a deps map through the tools.deps expansion engine, then collect the
@@ -1113,22 +862,10 @@
    (binding [*procure-memo* (or *procure-memo* (atom {}))
              *unresolvable* (or *unresolvable* (atom []))
              *jvm-deps* (if (contains? opts :jvm-deps?) (boolean jvm-deps?) *jvm-deps*)]
-     (let [abs #(absolutize-local % base-dir)
-           top (filter-deps deps base-dir)
-           override-deps (some->> override-deps (map (fn [[l c]] [l (abs c)])) (into {}))
-           default-deps (some->> default-deps (map (fn [[l c]] [l (abs c)])) (into {}))
-           expansion
-           (expander/expand-deps
-            top
-            {:coord-id ext/dep-id
-             :coord-deps ext/coord-deps
-             :compare-versions ext/compare-versions
-             :known-coordinate? known-coord?
-             :base-lib base-lib
-             :override-deps override-deps
-             :default-deps default-deps
-             :trace? trace?
-             :on-warning expansion-warning})
+     (let [top (filter-deps deps base-dir)
+           override-deps (absolutize-coords override-deps base-dir)
+           default-deps (absolutize-coords default-deps base-dir)
+           expansion (expand top override-deps default-deps trace?)
            libmap (:libs expansion)
            ;; The SELECTED-edge graph -Sgraph renders: parent -> child over the
            ;; coordinates that won, which is a different question from :trace,
@@ -1138,74 +875,9 @@
            graph (when graph?
                    ((requiring-resolve 'grenadine.tree/dependency-graph)
                     top libmap ext/coord-deps))
-           infos (keep (fn [lib]
-                         (when-let [coord (get libmap lib)]
-                           (let [info (ext/coord-info lib coord)]
-                             (when (:root info) (assoc info :lib lib)))))
-                       (:order expansion))]
+           infos (selected-infos libmap (:order expansion))]
        (when outermost? (fail-unresolvable!))
-       {:roots (vec (mapcat (fn [{:keys [root manifest edn]}]
-                              (if (= manifest :deps-edn)
-                                (map #(abspath root %) (or (:paths edn) ["src"]))
-                                [root]))
-                            infos))
-        ;; Each spec carries the ROOT of the deps.edn that declared it. A
-        ;; :jolt/native path is written relative to its own project ("native/
-        ;; libfoo.so" is what a build task produces beside the sources), and
-        ;; without the root there is nothing to resolve it against: a dependency's
-        ;; relative path was being resolved against the APP's directory, and a
-        ;; :static archive not at all — it went to `cc` verbatim and resolved
-        ;; against whatever the build's cwd happened to be (jolt-9a8).
-        ;;
-        ;; It also carries the dependency's SOURCE roots and its coordinate: a
-        ;; dependency's natives load when the first namespace from one of those
-        ;; roots is required, not at startup (jolt.main apply-project!), and a
-        ;; library that is missing then names the dependency that declared it.
-        :natives (vec (mapcat (fn [{:keys [edn root manifest lib]}]
-                                (let [paths (when (= manifest :deps-edn)
-                                              (mapv #(abspath root %) (or (:paths edn) ["src"])))]
-                                  (map #(cond-> (assoc % :jolt.deps/root root :jolt.deps/lib (str lib))
-                                          (seq paths) (assoc :jolt.deps/paths paths))
-                                       (:jolt/native edn))))
-                              infos))
-        ;; The defs each dep vouches never resolve vars at runtime in a built
-        ;; binary (:jolt/tree-shake {:allow-dynamic […]}). A LIBRARY is the
-        ;; natural declarer — spec.alpha knows its `res` only qualifies a symbol
-        ;; for a description and its `dynaload` sits behind a delay — and it
-        ;; ships the list once for every app that uses it, the way :jolt/native
-        ;; ships a shared library.
-        :allow-dynamic (vec (mapcat (fn [{:keys [edn]}] (allow-dynamic-entries edn)) infos))
-        ;; Each dep's declared jolt floor, as [lib version] — checked by
-        ;; resolve-project against the running runtime. A LIBRARY is the common
-        ;; declarer: it knows which jolt its FFI bindings or host shims need, and
-        ;; the app that pulls it in does not.
-        :min-versions (vec (keep (fn [{:keys [lib edn]}]
-                                   (when-let [v (:jolt/min-version edn)] [lib v]))
-                                 infos))
-        ;; Host classes each dep declares it provides (RFC 0014), as
-        ;; [install-ns lib class-name …]. A library knows which java.* classes
-        ;; its shim installs; the runtime must not, or core ends up naming
-        ;; specific libraries to decide what to autoload on a class miss.
-        :provides (vec (mapcat (fn [{:keys [lib edn]}] (provides-entries edn lib)) infos))
-        ;; libs whose deps.edn declares :deps/prep-lib — jolt runs no prep
-        ;; steps, so their compiled/generated assets will be missing; the
-        ;; caller warns with the lib names.
-        :prep (vec (keep (fn [{:keys [lib edn]}] (when (:deps/prep-lib edn) lib)) infos))
-        ;; The roots that are Maven RELEASE artifacts: a released version is
-        ;; never republished under the same path, so the loader may key its
-        ;; entries by the jar's stat instead of reading them on every start. A
-        ;; SNAPSHOT is republished in place and is left out.
-        :immutable-roots (vec (keep (fn [{:keys [lib root]}]
-                                      (let [v (:mvn/version (get libmap lib))]
-                                        (when (and (string? v) (not (str/ends-with? v "-SNAPSHOT")))
-                                          root)))
-                                    infos))
-        :libs libmap
-        :trace (:trace expansion)
-        ;; The edges -Sgraph renders. Their labels come from :libs above, which
-        ;; is the mediated map — a library reached through two parents is
-        ;; labelled with the version that won.
-        :graph graph})))))
+       (resolution infos libmap expansion graph))))))
 
 ;; --- resolved-roots cache (.jolt/cpcache) -----------------------------------
 ;; tools.deps calls this .cpcache: the resolved classpath keyed on a content
@@ -1303,36 +975,6 @@
             :jolt/required wanted
             :jolt/required-by who
             :jolt/unmet (vec unmet)}])))))
-
-(defn- host-class-providers
-  "Reconcile the :jolt/provides declarations (RFC 0014) into the provider table
-  the runtime autoloads from, as [install-ns lib class-name ...].
-
-  Two dependencies claiming the same host class is refused rather than resolved.
-  Whichever won would decide what `java.sql.Connection` MEANS for the whole
-  program, and the loser's shim would be half-installed — registered for the
-  classes nobody else claimed and silently absent for the rest. That is the
-  shape of bug this table exists to stop being possible, so it is an error at
-  resolve time, where both claimants can be named.
-
-  Entries are [install-ns lib class ...]; lib is nil for the project's own."
-  [entries]
-  (let [claims (reduce (fn [acc [install-ns lib & classes]]
-                         (reduce (fn [a c] (update a c (fnil conj #{}) [install-ns lib]))
-                                 acc classes))
-                       {} entries)
-        conflicts (filter (fn [[_ owners]] (< 1 (count (set (map first owners)))))
-                          claims)]
-    (when (seq conflicts)
-      (let [[c owners] (first (sort-by key conflicts))
-            who (fn [[install-ns lib]] (str (or lib "this project") " (" install-ns ")"))]
-        (throw (ex-info
-                (str "two dependencies both claim to provide the host class " c
-                     ": " (str/join " and " (sort (map who owners)))
-                     ". A host class can have one provider; drop one of them.")
-                {:jolt/class c
-                 :jolt/claimed-by (vec (sort (map who owners)))}))))
-    (vec (distinct entries))))
 
 (defn- check-min-versions!
   "Refuse to run when the project, or any dependency, declares a jolt floor the
@@ -1435,7 +1077,7 @@
        ;; GRENADINE_MAVEN_REPOSITORY) must
        ;; not share an entry whose cached roots point into the old location —
        ;; the old paths usually still exist, so validation alone won't miss.
-       "|" (gitlibs-dir)
+       "|" (git/gitlibs-dir)
        "|" (or (getenv "JOLT_MVNLIBS") "")
        "|" (or (getenv "JOLT_MAVEN_REPOSITORY") "")
        "|" (or (getenv "GRENADINE_MAVEN_REPOSITORY") "")
@@ -1736,6 +1378,152 @@
             (pr-str (vec (keys (:pods m))))))
     m))
 
+(defn- read-project-edns
+  "The project files resolve-project reads, merged: {:edn the merged deps.edn
+  chain, :bb-edn the project's bb.edn, :bb-extra the bb.edn whose paths/deps
+  join this resolution (a task run beside a deps.edn), else nil}."
+  [project-dir extra-edn repro? tasks?]
+  (let [deps-edn (read-deps-file (str project-dir "/deps.edn"))
+        bb-edn (read-bb-file (str project-dir "/bb.edn"))
+        ;; with no deps.edn, bb.edn stands in as the project config
+        project-edn (or deps-edn bb-edn)
+        ;; …and when there is one, bb.edn's own paths/deps are additional, and
+        ;; only for a task run. Its paths go LAST (after the project's own), so
+        ;; a script root can never shadow the app's namespaces.
+        bb-extra (when (and tasks? deps-edn bb-edn) bb-edn)
+        user-edn (when-not (or repro? (getenv "JOLT_NO_USER_DEPS"))
+                   (try (read-deps-file (user-deps-path))
+                        (catch :default e (warn (ex-message e)) nil)))]
+    {:edn (dedn/merge-edns [user-edn project-edn (some-> extra-edn dedn/canonicalize)])
+     :bb-edn bb-edn
+     :bb-extra bb-extra}))
+
+;; An alias the merged chain doesn't declare is skipped with a warning,
+;; the tools.deps behavior verbatim ("WARNING: Specified aliases are
+;; undeclared and are not being used"): loud enough that a typo'd alias
+;; doesn't run the program without its deps and fail somewhere far
+;; away, but not fatal — an editor sends a fixed alias set (Calva asks
+;; for `-A:test:dev -Spath`) and a project that declares only some of
+;; them still has a classpath, and a program, to give it.
+(defn- warn-undeclared-aliases! [edn alias-kws]
+  (let [missing (distinct (remove #(get-in edn [:aliases %]) alias-kws))]
+    (when (seq missing)
+      (warn "Specified aliases are undeclared and are not being used: "
+            (pr-str (vec missing))))))
+
+;; Path order matches the clj CLI: the selected aliases' :extra-paths
+;; come FIRST (in alias-selection order), then the project's :paths —
+;; or an alias's :replace-paths, which :extra-paths still precedes.
+;; `clojure -A:t -Spath` prints `test src`, not `src test`, and the
+;; order is load-bearing: the loader takes the first root that has the
+;; namespace, so a -A:dev extra path shadows the project's own copy
+;; rather than being shadowed by it.
+;; tool mode (-T): the project's own paths and deps are replaced —
+;; the tool's alias supplies its own (clj CLI tool-basis defaults
+;; :replace-paths ["."] :replace-deps {}).
+(defn- project-paths-for [edn argmap bb-extra tool?]
+  (concat (:extra-paths argmap)
+          (or (:replace-paths argmap) (:paths argmap)
+              (if tool? ["."] (or (:paths edn) ["src"])))
+          ;; last: a task run's bb.edn paths (see read-bb-file)
+          (:paths bb-extra)))
+
+(defn- project-deps-for [edn argmap bb-extra tool?]
+  (merge (or (:replace-deps argmap) (:deps argmap)
+             (if tool? {} (:deps edn)))
+         (:deps bb-extra)
+         (:extra-deps argmap)))
+
+(defn- check-resolved-project!
+  "The checks that need the resolution in hand: every :jolt/min-version floor,
+  and a warning for deps whose :deps/prep-lib steps jolt does not run."
+  [edn dep-min-versions prep-libs]
+  ;; The floor is checked AFTER resolution, so a dep's own declaration is
+  ;; in hand — a library is the natural declarer, since it knows which
+  ;; jolt its bindings need and the app pulling it in does not. The
+  ;; project's own declaration is checked here too, and is what an app
+  ;; uses to pin the runtime it was written against.
+  (check-min-versions!
+   (concat (when-let [v (:jolt/min-version edn)] [[nil v]])
+           dep-min-versions))
+  (when (seq prep-libs)
+    (warn "deps declare :deps/prep-lib steps jolt does not run "
+          "(their compiled/generated assets will be missing): "
+          (str/join ", " prep-libs))))
+
+(defn- project-resolution
+  "resolve-project's answer, from the project's own config (PROJECT) and its
+  dependency resolution (DEPS, resolve-deps' answer; nil under :cp)."
+  [project-dir cp
+   {:keys [edn bb-edn argmap project-paths project-roots]}
+   {dep-roots :roots dep-natives :natives dep-provides :provides
+    dep-immutable-roots :immutable-roots dep-trace :trace dep-graph :graph
+    dep-libs :libs dep-allow-dynamic :allow-dynamic}]
+  ;; reconcile: the project's own roots/natives + every dep's, deduped once.
+  ;; With :cp the given roots ARE the answer — they replace the project's own
+  ;; paths too, like the clj CLI, where -Scp is the whole classpath.
+  {:roots (dedup-by identity (or cp (concat project-roots dep-roots)))
+   ;; with :cp nothing was resolved, so nothing is known to be a release
+   :immutable-roots (if cp [] (vec dep-immutable-roots))
+   :main-opts (:main-opts argmap)
+   ;; the combined alias args map — the CLI's -X/-T read :exec-fn /
+   ;; :exec-args / :ns-default / :ns-aliases from it.
+   :argmap argmap
+   ;; the project's own paths (relative to project-dir) and absolute resource
+   ;; roots, plus its :jolt/build options — `jolt build` uses these to bundle
+   ;; resources into / alongside a standalone binary.
+   :project-dir project-dir
+   :project-paths (vec project-paths)
+   :project-roots (vec project-roots)
+   :build (:jolt/build edn)
+   :embed-dirs (mapv #(abspath project-dir %) (:embed (:jolt/build edn)))
+   ;; :tasks from both files, bb.edn last — a name in both is babashka's.
+   ;; (When bb.edn IS the project config the second merge is a no-op.)
+   :tasks (not-empty (merge (:tasks edn) (:tasks bb-edn)))
+   ;; the project's own specs are rooted at the project, the deps' at their own
+   ;; deps.edn's directory (resolve-deps attached those). Reconciled by
+   ;; native-key, which does not read the root — two deps naming the same lib
+   ;; still reconcile to one load, keeping the first one's root, and each
+   ;; platform key the first is silent about is filled in from the others
+   ;; along with the root it was declared under.
+   :natives (decl/reconcile-natives
+              (concat (map #(assoc % :jolt.deps/root project-dir)
+                           (:jolt/native edn))
+                      dep-natives))
+   ;; the project's own vouched-for defs first, then every dep's, deduped —
+   ;; `jolt build --tree-shake` hands the union to the bail scan. The
+   ;; project's list is where an app allows a site in a library that has
+   ;; not shipped its own list yet.
+   :allow-dynamic (dedup-by identity
+                            (concat (decl/allow-dynamic-entries edn) dep-allow-dynamic))
+   ;; declared host-class providers (RFC 0014), the project's own first: a
+   ;; project may supply a class itself rather than take a library's.
+   :provides (decl/host-class-providers (concat (decl/provides-entries edn nil) dep-provides))
+   ;; :jolt/replaces — namespaces jolt provides as a host built-in
+   ;; (babashka.fs, babashka.process) that THIS project supplies itself, so
+   ;; its copy resolves ahead of jolt's.
+   ;; The PROJECT's only: a library that took a built-in over would decide
+   ;; what the namespace means for every other library in the program, which
+   ;; is what host-class-providers already refuses for classes.
+   :replaces (mapv str (:jolt/replaces edn))
+   ;; :jolt/features — extra reader-conditional keys this project wants read,
+   ;; on top of jolt's own {:jolt :clj :default}. Additive: it cannot remove
+   ;; one. The PROJECT's only, for the same reason :jolt/replaces is — the
+   ;; feature set decides which branch EVERY library in the program is read
+   ;; through, so a dependency must not get to change it under the project.
+   :features (mapv #(if (keyword? %) (name %) (str %)) (:jolt/features edn))
+   ;; the expansion trace, when it was asked for (-Stree renders it)
+   :trace dep-trace
+   ;; the selected-edge graph and its coordinates (-Sgraph renders these),
+   ;; with the repositories the resolution used — -Soutdated asks those for
+   ;; a newer version, and *mvn-repos* is bound only around the expansion.
+   :graph dep-graph
+   :libs dep-libs
+   :mvn-repos (mvn-repo-urls edn)
+   ;; nREPL middleware a library contributes (jolt.nrepl composes them over its
+   ;; built-in handler) — symbols resolving to a middleware fn or a vector of them.
+   :nrepl-middleware (:nrepl/middleware edn)})
+
 (defn resolve-project
   "Resolve `project-dir`'s deps.edn with the selected alias keywords. Returns
   {:roots [...] :main-opts [...] :tasks {...} :natives [...] :allow-dynamic [...]};
@@ -1771,146 +1559,32 @@
   ([project-dir alias-kws] (resolve-project project-dir alias-kws nil))
   ([project-dir alias-kws extra-edn] (resolve-project project-dir alias-kws extra-edn nil))
   ([project-dir alias-kws extra-edn {:keys [tool? repro? trace? graph? cp tasks?]}]
-   (let [deps-edn (read-deps-file (str project-dir "/deps.edn"))
-         bb-edn (read-bb-file (str project-dir "/bb.edn"))
-         ;; with no deps.edn, bb.edn stands in as the project config
-         project-edn (or deps-edn bb-edn)
-         ;; …and when there is one, bb.edn's own paths/deps are additional, and
-         ;; only for a task run. Its paths go LAST (after the project's own), so
-         ;; a script root can never shadow the app's namespaces.
-         bb-extra (when (and tasks? deps-edn bb-edn) bb-edn)
-         user-edn (when-not (or repro? (getenv "JOLT_NO_USER_DEPS"))
-                    (try (read-deps-file (user-deps-path))
-                         (catch :default e (warn (ex-message e)) nil)))
-         edn (dedn/merge-edns [user-edn project-edn (some-> extra-edn dedn/canonicalize)])
+   (let [{:keys [edn bb-extra] :as edns} (read-project-edns project-dir extra-edn repro? tasks?)
          argmap (dedn/combine-aliases edn alias-kws)
-         ;; An alias the merged chain doesn't declare is skipped with a warning,
-         ;; the tools.deps behavior verbatim ("WARNING: Specified aliases are
-         ;; undeclared and are not being used"): loud enough that a typo'd alias
-         ;; doesn't run the program without its deps and fail somewhere far
-         ;; away, but not fatal — an editor sends a fixed alias set (Calva asks
-         ;; for `-A:test:dev -Spath`) and a project that declares only some of
-         ;; them still has a classpath, and a program, to give it.
-         _ (let [missing (distinct (remove #(get-in edn [:aliases %]) alias-kws))]
-             (when (seq missing)
-               (warn "Specified aliases are undeclared and are not being used: "
-                     (pr-str (vec missing)))))
-         main-opts (:main-opts argmap)
-         ;; Path order matches the clj CLI: the selected aliases' :extra-paths
-         ;; come FIRST (in alias-selection order), then the project's :paths —
-         ;; or an alias's :replace-paths, which :extra-paths still precedes.
-         ;; `clojure -A:t -Spath` prints `test src`, not `src test`, and the
-         ;; order is load-bearing: the loader takes the first root that has the
-         ;; namespace, so a -A:dev extra path shadows the project's own copy
-         ;; rather than being shadowed by it.
-         ;; tool mode (-T): the project's own paths and deps are replaced —
-         ;; the tool's alias supplies its own (clj CLI tool-basis defaults
-         ;; :replace-paths ["."] :replace-deps {}).
-         project-paths (concat (:extra-paths argmap)
-                               (or (:replace-paths argmap) (:paths argmap)
-                                   (if tool? ["."] (or (:paths edn) ["src"])))
-                               ;; last: a task run's bb.edn paths (see read-bb-file)
-                               (:paths bb-extra))
+         _ (warn-undeclared-aliases! edn alias-kws)
+         project-paths (project-paths-for edn argmap bb-extra tool?)
          project-roots (map #(abspath project-dir %) project-paths)
-         all-deps (merge (or (:replace-deps argmap) (:deps argmap)
-                             (if tool? {} (:deps edn)))
-                         (:deps bb-extra)
-                         (:extra-deps argmap))
-          ;; :cp (the CLI's -Scp) supplies the roots outright, so the dependency
-          ;; graph is never expanded and nothing is fetched. The deps.edn chain is
-          ;; still read and the aliases still combine — that is only file reads,
-          ;; and an alias's :main-opts / :exec-fn and the project's :tasks come
-          ;; from there. tools.deps' --skip-cp draws the line in the same place:
-          ;; the merged edn and argmap, without calc-basis.
-          {dep-roots :roots dep-natives :natives dep-provides :provides
-           dep-immutable-roots :immutable-roots
-           prep-libs :prep dep-trace :trace dep-graph :graph dep-libs :libs
-           dep-min-versions :min-versions dep-allow-dynamic :allow-dynamic}
-          (when-not cp
-            (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
-                                         (abspath project-dir r))
-                      *mvn-repos* (mvn-repo-urls edn)]
-              (resolve-deps-cached project-dir all-deps alias-kws repro?
-                                   {:override-deps (:override-deps argmap)
-                                    :default-deps (:default-deps argmap)
-                                    :trace? trace?
-                                    :graph? graph?})))
-         ;; The floor is checked AFTER resolution, so a dep's own declaration is
-         ;; in hand — a library is the natural declarer, since it knows which
-         ;; jolt its bindings need and the app pulling it in does not. The
-         ;; project's own declaration is checked here too, and is what an app
-         ;; uses to pin the runtime it was written against.
-         _ (check-min-versions!
-            (concat (when-let [v (:jolt/min-version edn)] [[nil v]])
-                    dep-min-versions))
-         _ (when (seq prep-libs)
-             (warn "deps declare :deps/prep-lib steps jolt does not run "
-                   "(their compiled/generated assets will be missing): "
-                   (str/join ", " prep-libs)))]
-     ;; reconcile: the project's own roots/natives + every dep's, deduped once.
-     ;; With :cp the given roots ARE the answer — they replace the project's own
-     ;; paths too, like the clj CLI, where -Scp is the whole classpath.
-     {:roots (dedup-by identity (or cp (concat project-roots dep-roots)))
-      ;; with :cp nothing was resolved, so nothing is known to be a release
-      :immutable-roots (if cp [] (vec dep-immutable-roots))
-      :main-opts main-opts
-      ;; the combined alias args map — the CLI's -X/-T read :exec-fn /
-      ;; :exec-args / :ns-default / :ns-aliases from it.
-      :argmap argmap
-      ;; the project's own paths (relative to project-dir) and absolute resource
-      ;; roots, plus its :jolt/build options — `jolt build` uses these to bundle
-      ;; resources into / alongside a standalone binary.
-      :project-dir project-dir
-      :project-paths (vec project-paths)
-      :project-roots (vec project-roots)
-      :build (:jolt/build edn)
-      :embed-dirs (mapv #(abspath project-dir %) (:embed (:jolt/build edn)))
-      ;; :tasks from both files, bb.edn last — a name in both is babashka's.
-      ;; (When bb.edn IS the project config the second merge is a no-op.)
-      :tasks (not-empty (merge (:tasks edn) (:tasks bb-edn)))
-      ;; the project's own specs are rooted at the project, the deps' at their own
-      ;; deps.edn's directory (resolve-deps attached those). Reconciled by
-      ;; native-key, which does not read the root — two deps naming the same lib
-      ;; still reconcile to one load, keeping the first one's root, and each
-      ;; platform key the first is silent about is filled in from the others
-      ;; along with the root it was declared under.
-      :natives (reconcile-natives
-                 (concat (map #(assoc % :jolt.deps/root project-dir)
-                              (:jolt/native edn))
-                         dep-natives))
-      ;; the project's own vouched-for defs first, then every dep's, deduped —
-      ;; `jolt build --tree-shake` hands the union to the bail scan. The
-      ;; project's list is where an app allows a site in a library that has
-      ;; not shipped its own list yet.
-      :allow-dynamic (dedup-by identity
-                               (concat (allow-dynamic-entries edn) dep-allow-dynamic))
-      ;; declared host-class providers (RFC 0014), the project's own first: a
-      ;; project may supply a class itself rather than take a library's.
-      :provides (host-class-providers (concat (provides-entries edn nil) dep-provides))
-      ;; :jolt/replaces — namespaces jolt provides as a host built-in
-      ;; (babashka.fs, babashka.process) that THIS project supplies itself, so
-      ;; its copy resolves ahead of jolt's.
-      ;; The PROJECT's only: a library that took a built-in over would decide
-      ;; what the namespace means for every other library in the program, which
-      ;; is what host-class-providers already refuses for classes.
-      :replaces (mapv str (:jolt/replaces edn))
-      ;; :jolt/features — extra reader-conditional keys this project wants read,
-      ;; on top of jolt's own {:jolt :clj :default}. Additive: it cannot remove
-      ;; one. The PROJECT's only, for the same reason :jolt/replaces is — the
-      ;; feature set decides which branch EVERY library in the program is read
-      ;; through, so a dependency must not get to change it under the project.
-      :features (mapv #(if (keyword? %) (name %) (str %)) (:jolt/features edn))
-      ;; the expansion trace, when it was asked for (-Stree renders it)
-      :trace dep-trace
-      ;; the selected-edge graph and its coordinates (-Sgraph renders these),
-      ;; with the repositories the resolution used — -Soutdated asks those for
-      ;; a newer version, and *mvn-repos* is bound only around the expansion.
-      :graph dep-graph
-      :libs dep-libs
-      :mvn-repos (mvn-repo-urls edn)
-      ;; nREPL middleware a library contributes (jolt.nrepl composes them over its
-      ;; built-in handler) — symbols resolving to a middleware fn or a vector of them.
-      :nrepl-middleware (:nrepl/middleware edn)})))
+         all-deps (project-deps-for edn argmap bb-extra tool?)
+         ;; :cp (the CLI's -Scp) supplies the roots outright, so the dependency
+         ;; graph is never expanded and nothing is fetched. The deps.edn chain is
+         ;; still read and the aliases still combine — that is only file reads,
+         ;; and an alias's :main-opts / :exec-fn and the project's :tasks come
+         ;; from there. tools.deps' --skip-cp draws the line in the same place:
+         ;; the merged edn and argmap, without calc-basis.
+         deps (when-not cp
+                (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo edn)]
+                                             (abspath project-dir r))
+                          *mvn-repos* (mvn-repo-urls edn)]
+                  (resolve-deps-cached project-dir all-deps alias-kws repro?
+                                       {:override-deps (:override-deps argmap)
+                                        :default-deps (:default-deps argmap)
+                                        :trace? trace?
+                                        :graph? graph?})))]
+     (check-resolved-project! edn (:min-versions deps) (:prep deps))
+     (project-resolution project-dir cp
+                         (assoc edns :argmap argmap :project-paths project-paths
+                                     :project-roots project-roots)
+                         deps))))
 
 (defn project-tasks
   "The project's :tasks map — deps.edn's and bb.edn's merged, bb.edn last —
@@ -1941,7 +1615,7 @@
       :config-files (vec (concat (when (and (not repro?) (file-exists? user)) [user])
                                  (when (file-exists? project) [project])
                                  (when (file-exists? bb) [bb])))
-      :gitlibs-dir (gitlibs-dir)
+      :gitlibs-dir (git/gitlibs-dir)
       :mvn-local-repo (m2-repo-dir)
       :repro repro?})))
 
@@ -1967,7 +1641,7 @@
                              (into [install-ns lib] cs)))
                          (distinct entries)))]
     (when (seq fresh)
-      (host-class-providers (concat seen fresh)))
+      (decl/host-class-providers (concat seen fresh)))
     fresh))
 
 (defn- register-class-providers! [fresh]
@@ -2023,7 +1697,7 @@
          ;; checked before anything changes, so a refused claim leaves the
          ;; loader as it was rather than the library's roots added and its
          ;; classes unregistered
-         fresh (fresh-class-providers (host-class-providers provides))]
+         fresh (fresh-class-providers (decl/host-class-providers provides))]
      (jolt.host/add-immutable-roots! immutable-roots)
      (when (seq added)
        (jolt.host/set-source-roots! (into current added)))
@@ -2034,13 +1708,13 @@
        (info "added deps declare :jolt/native libraries (not auto-loaded): "
              (pr-str (mapv #(dissoc % :jolt.deps/root :jolt.deps/roots
                                     :jolt.deps/lib :jolt.deps/paths)
-                           (reconcile-natives natives)))))
+                           (decl/reconcile-natives natives)))))
      added)))
 
 (defn- required-host
   []
   {:home-dir #(getenv "HOME")
-   :gitlibs-dir gitlibs-dir
+   :gitlibs-dir git/gitlibs-dir
    :file-exists? file-exists?
    :mkdirs! #(do (mkdirs! %) nil)
    :delete! #(do (rm-f %) nil)
