@@ -103,14 +103,16 @@
    (folder coll
            (fn [f1]
              ;; a reduced from the inner reduction must stop the outer one too,
-             ;; so it is wrapped again to survive the inner reduce's unwrapping
-             (let [f1 (fn
-                        ([ret v] (let [x (f1 ret v)] (if (reduced? x) (reduced x) x)))
-                        ([ret k v] (let [x (f1 ret k v)] (if (reduced? x) (reduced x) x))))]
+             ;; so it is wrapped again to survive the inner reduce's unwrapping.
+             ;; Clojure's source shadows f1 with this, so its [] arity calls a fn
+             ;; with no 0-arity; here [] calls the f1 it was given.
+             (let [f1* (fn
+                         ([ret v] (let [x (f1 ret v)] (if (reduced? x) (reduced x) x)))
+                         ([ret k v] (let [x (f1 ret k v)] (if (reduced? x) (reduced x) x))))]
                (fn
                  ([] (f1))
-                 ([ret v] (reduce f1 ret (f v)))
-                 ([ret k v] (reduce f1 ret (f k v)))))))))
+                 ([ret v] (reduce f1* ret (f v)))
+                 ([ret k v] (reduce f1* ret (f k v)))))))))
 
 (defn filter
   "Retains values in the reduction of coll for which (pred val)
@@ -194,7 +196,7 @@
 
 (extend-protocol CollFold
   nil
-  (coll-fold [coll n combinef reducef] (combinef))
+  (coll-fold [_coll _n combinef _reducef] (combinef))
 
   Object
   (coll-fold [coll n combinef reducef]
