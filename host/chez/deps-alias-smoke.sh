@@ -450,7 +450,7 @@ cat > "$tmp/addprov/probe.clj" <<EOF
 (prn (try (java.security.Signature/getInstance "RSA") (catch Throwable e (ex-message e))))
 EOF
 check "add-deps installs the added library's :jolt/provides" '"claimer-sig:RSA"' \
-      "$(cd "$tmp/addprov" && JOLT_PWD="$tmp/addprov" JOLT_QUIET=1 "$JOLT" probe.clj 2>&1 | tail -1)"
+      "$(JOLT_PWD="$tmp/addprov" JOLT_QUIET=1 "$JOLT" "$tmp/addprov/probe.clj" 2>&1 | tail -1)"
 # Adding a library the project already resolved must not claim its classes a
 # second time: once provclaim.install has registered Signature, a fresh claim
 # reads as one on a class "this jolt provides" and warns about a stale library.
