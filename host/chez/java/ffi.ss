@@ -1725,12 +1725,12 @@
       (and (not (jolt-nil? seconds)) seconds))))
 (def-var! "jolt.ffi" "dlsym-native" ffi-dlsym-loaded)
 (def-var! "jolt.ffi" "load-system-library" ffi-load-system-library)
-;; jolt.main/load-natives! reads it to build the fallback candidates for a spec
+;; jolt.main.natives/load-natives! reads it to build the fallback candidates for a spec
 ;; that names a library but declares nothing for the running platform (#989).
 (def-var! "jolt.ffi" "system-library-candidates"
   (lambda (n) (list->cseq (ffi-system-library-candidates
                            (ffi-str-arg "system-library-candidates name" n)))))
-;; jolt.main/load-natives! appends it to a missing-library report, so a
+;; jolt.main.natives/load-natives! appends it to a missing-library report, so a
 ;; candidate that is on disk but failed to load is not reported as not found.
 (def-var! "jolt.ffi" "load-failure-note"
   (lambda (cands)

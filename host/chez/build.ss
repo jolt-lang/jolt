@@ -1750,7 +1750,7 @@
 
 ;; Does a ("lib" name libdir) static form resolve for the link that will use it?
 ;; An :optional native given as :static {:lib …} is only handed to the linker
-;; when it does (jolt.main/encode-natives asks), so a host without the library
+;; when it does (jolt.main.natives/encode-natives asks), so a host without the library
 ;; builds and loads it at runtime instead of failing the whole link. The probe
 ;; links a trivial program with the same fragment bld-one-static-link emits —
 ;; -Bstatic included on ELF, so a lib with only a .so is a miss there too, as it

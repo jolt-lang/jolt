@@ -396,7 +396,7 @@
                           {:name "b" :windows ["b.dll"]}]))))
 
 ;; A dependency's spec carries its source roots, and loads on the first require
-;; of a namespace from them (jolt.main load-project-natives!). One library two
+;; of a namespace from them (jolt.main.natives load-project-natives!). One library two
 ;; dependencies declare loads with whichever is required first; one the project
 ;; declares itself, or a dependency marks :eager, loads at startup.
 (let [reconcile (var jolt.deps/reconcile-natives)
