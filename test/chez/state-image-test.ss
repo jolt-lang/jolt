@@ -371,6 +371,22 @@
                    " (meta img-fm-dbl) (identical? n img-fm-dbl)])")
     "[8 {:a 1} 101 {:b 2} true nil false]")
 
+;; an empty collection whose meta changes in the walk (it holds a fn) is
+;; rebuilt; the rebuild must be a fresh instance, never the shared [] / {} / #{},
+;; or writing the meta onto it gives every empty collection in the process that
+;; meta, on the dump side and again on the read side
+(ev (string-append "(jolt.host/image-write! \"" tmp "\""
+                   " [(with-meta [] {:f (fn [x] (inc x))}) (with-meta {} {:f (fn [x] x)})"
+                   "  (with-meta #{} {:f (fn [x] x)})])"))
+(is "dumping an empty collection with fn meta leaves the shared empties bare"
+    "[(meta []) (meta (vector)) (meta (pop [1])) (meta {}) (meta (hash-map)) (meta #{}) (meta (hash-set))]"
+    "[nil nil nil nil nil nil nil]")
+(is "reading it back leaves the shared empties bare and the read values carry their meta"
+    (string-append "(let [[v m s] (jolt.host/image-read \"" tmp "\")]"
+                   " [((:f (meta v)) 1) (fn? (:f (meta m))) (fn? (:f (meta s)))"
+                   " (meta []) (meta (vector)) (meta {}) (meta #{}) (identical? v [])])")
+    "[2 true true nil nil nil nil false]")
+
 (is "scan of a natural sorted map is empty"
     "(count (jolt.host/image-scan (sorted-map :b 2 :a 1)))"
     "0")

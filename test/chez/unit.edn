@@ -3692,6 +3692,11 @@
   {:suite "rrb-vector" :expr "(do (require '[clojure.core.rrb-vector :as rrb]) (= (rrb/vector-of :long 1 2 3) [1 2 3]))" :expected "true"}
   {:suite "rrb-vector" :expr "(do (require '[clojure.core.rrb-vector :as rrb]) (= (map type (rrb/vector-of :double 1 2 3)) (repeat 3 Double)))" :expected "true"}
   {:suite "rrb-vector" :expr "(do (require '[clojure.core.rrb-vector :as rrb]) (= (rrb/vector-of :long) []))" :expected "true"}
+  ;; cheshire.core edge cases, checked against cheshire 6.0.0's source: a nil
+  ;; reader is nil (cheshire wraps both in (when rdr ...)), and an :indentation
+  ;; that is neither a number nor a string falls back to two spaces.
+  {:suite "cheshire.core" :label "parse-stream and parsed-seq of a nil reader are nil" :expr "(require (quote [cheshire.core :as c])) [(c/parse-stream nil) (c/parsed-seq nil) (c/parse-stream-strict nil)]" :expected "[nil nil nil]"}
+  {:suite "cheshire.core" :label "an :indentation that is not a number or string indents two spaces" :expr "(require (quote [cheshire.core :as c])) (= (c/generate-string {:a [1]} {:pretty {:indentation nil}}) (c/generate-string {:a [1]} {:pretty true}))" :expected "true"}
   ;; clojure.core.reducers: the sequential port. Each :expected was checked
   ;; against Clojure 1.12.3, whose reducers this namespace follows.
   {:suite "clojure.core.reducers" :label "map, filter and remove transform the reduction" :expr "(require (quote [clojure.core.reducers :as r])) [(into [] (r/map inc [1 2 3])) (into [] (r/filter odd? (range 10))) (into [] (r/remove odd? (range 6)))]" :expected "[[2 3 4] [1 3 5 7 9] [0 2 4]]"}

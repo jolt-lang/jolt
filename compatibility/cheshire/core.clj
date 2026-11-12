@@ -106,14 +106,16 @@
   ([rdr] (parse-stream rdr nil nil))
   ([rdr key-fn] (parse-stream rdr key-fn nil))
   ([rdr key-fn array-coerce-fn]
-   (parse* rdr key-fn array-coerce-fn false)))
+   (when rdr
+     (parse* rdr key-fn array-coerce-fn false))))
 
 (defn parse-stream-strict
   "parse-stream, with a top-level array as a vector."
   ([rdr] (parse-stream-strict rdr nil nil))
   ([rdr key-fn] (parse-stream-strict rdr key-fn nil))
   ([rdr key-fn array-coerce-fn]
-   (parse* rdr key-fn array-coerce-fn true)))
+   (when rdr
+     (parse* rdr key-fn array-coerce-fn true))))
 
 (defn parsed-seq
   "A lazy seq of the JSON values read one after another from a
@@ -121,13 +123,14 @@
   ([reader] (parsed-seq reader nil nil))
   ([reader key-fn] (parsed-seq reader key-fn nil))
   ([reader key-fn array-coerce-fn]
-   (let [r (pushback reader)
-         kf (key-fn->f key-fn)]
-     ((fn step []
-        (lazy-seq
-         (let [v (read-one r)]
-           (when-not (identical? v eof)
-             (cons (finish v kf array-coerce-fn true) (step))))))))))
+   (when reader
+     (let [r (pushback reader)
+           kf (key-fn->f key-fn)]
+       ((fn step []
+          (lazy-seq
+           (let [v (read-one r)]
+             (when-not (identical? v eof)
+               (cons (finish v kf array-coerce-fn true) (step)))))))))))
 
 ;; --- pretty printing ----------------------------------------------------------
 
@@ -150,7 +153,9 @@
         ind (:indentation o)]
     (assoc o
            ::pretty-printer true
-           :indentation (if (number? ind) (apply str (repeat ind \space)) (str ind)))))
+           :indentation (cond (number? ind) (apply str (repeat ind \space))
+                              (string? ind) ind
+                              :else "  "))))
 
 (defn- pretty-printer [pretty]
   (cond (and (map? pretty) (::pretty-printer pretty)) pretty

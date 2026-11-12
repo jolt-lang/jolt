@@ -1955,6 +1955,28 @@
 ;; more class, is a different row that must still claim only what is new.
 (defonce ^:private installed-provides (atom []))
 
+(defn- fresh-class-providers
+  "The :jolt/provides rows in ENTRIES this process hasn't installed yet, checked
+  together with the installed ones. Throws, changing nothing, when one would give
+  a class a second provider."
+  [entries]
+  (let [seen @installed-provides
+        claimed (set (for [[install-ns _ & classes] seen, c classes] [install-ns c]))
+        fresh (vec (keep (fn [[install-ns lib & classes]]
+                           (when-let [cs (seq (remove #(claimed [install-ns %]) classes))]
+                             (into [install-ns lib] cs)))
+                         (distinct entries)))]
+    (when (seq fresh)
+      (host-class-providers (concat seen fresh)))
+    fresh))
+
+(defn- register-class-providers! [fresh]
+  (doseq [[install-ns lib & classes] fresh]
+    (jolt.host/register-class-provider! install-ns lib (vec classes)))
+  (when (seq fresh)
+    (swap! installed-provides into fresh))
+  nil)
+
 (defn install-class-providers!
   "Hand :jolt/provides rows (RFC 0014), as host-class-providers returns them, to
   the runtime so a reference to a provided class autoloads its install
@@ -1962,18 +1984,7 @@
   skipped, and the new rows are checked together with the installed ones, so a
   library added later can't claim a class that another one already provides."
   [entries]
-  (let [seen @installed-provides
-        claimed (set (for [[install-ns _ & classes] seen, c classes] [install-ns c]))
-        fresh (keep (fn [[install-ns lib & classes]]
-                      (when-let [cs (seq (remove #(claimed [install-ns %]) classes))]
-                        (into [install-ns lib] cs)))
-                    (distinct entries))]
-    (when (seq fresh)
-      (host-class-providers (concat seen fresh))
-      (doseq [[install-ns lib & classes] fresh]
-        (jolt.host/register-class-provider! install-ns lib (vec classes)))
-      (swap! installed-provides into fresh))
-    nil))
+  (register-class-providers! (fresh-class-providers entries)))
 
 (defn add-deps
   "Resolve an inline deps map and add the resulting source roots to the loader,
@@ -2008,13 +2019,17 @@
                                       (abspath base r))]
            (resolve-deps deps base))
          current (vec (jolt.host/source-roots))
-         added (vec (remove (set current) (dedup-by identity roots)))]
+         added (vec (remove (set current) (dedup-by identity roots)))
+         ;; checked before anything changes, so a refused claim leaves the
+         ;; loader as it was rather than the library's roots added and its
+         ;; classes unregistered
+         fresh (fresh-class-providers (host-class-providers provides))]
      (jolt.host/add-immutable-roots! immutable-roots)
      (when (seq added)
        (jolt.host/set-source-roots! (into current added)))
      ;; after the roots, so the install namespace a class reference loads is
      ;; already findable
-     (install-class-providers! (host-class-providers provides))
+     (register-class-providers! fresh)
      (when (seq natives)
        (info "added deps declare :jolt/native libraries (not auto-loaded): "
              (pr-str (mapv #(dissoc % :jolt.deps/root :jolt.deps/roots
