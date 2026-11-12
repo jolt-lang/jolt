@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.27] - 2026-11-12
+
+A release for code arriving from babashka and the JVM: `cheshire.core` and
+`clojure.core.reducers` ship with jolt, `read-string` honors `:features` and
+`:read-cond :preserve`, a task's arguments keep every `--` as babashka's do,
+and `[]`, `with-meta` on a fn, `reduce` over an `IReduce` and the
+`Persistent*/EMPTY` statics behave as on the JVM. The macOS binaries get an
+optimized Chez kernel again, and `jolt.fibers/fibers` lists the running fibers.
+
 ### Added
 
 - **`read-string`, `read` and `read+string` honor `:features` and
