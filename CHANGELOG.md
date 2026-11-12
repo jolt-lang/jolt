@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`str` of a Java array is `Class@hash` again.** `(str (long-array 1))` and
   `.toString` on any array returned the whole `#object["[J" 0x… "[J@…"]`
   print form instead of `[J@…`, as the JVM's `Object.toString` gives.
+- **`reduce` hands back a `Reduced` that an `IReduce`'s own `reduce` returns**
+  (#1613), as the JVM's `reduce` does, where jolt unwrapped it. A transducer
+  step that runs an inner `reduce` over such a collection can now return that
+  `Reduced` and stop the outer reduction, rather than the outer one carrying on
+  with the unwrapped value. Both `IReduceInit`'s `reduce` and `IReduce`'s
+  no-init one pass it through.
 
 - **The macOS release binaries get an optimized Chez kernel again.** The
   release workflow built Chez with `./configure ... CFLAGS="-mmacosx-version-min=11.0"`,
