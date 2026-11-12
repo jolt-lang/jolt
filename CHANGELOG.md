@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first file. On macOS that Chez is now built and jolt linked with the host
   `cc`, as the release workflow does, and a macOS job in `tests.yml` builds
   this way (#1601).
+- **`jolt.deps/add-deps` installs the added libraries' `:jolt/provides`**
+  (#1600). It added their source roots and nothing else, so a class one of
+  them provides failed with "No dependency provides ..." until the script
+  required the install namespace by hand, although the same library worked
+  from `deps.edn`. Now a class reference autoloads it on both paths. Adding a
+  library the project already resolved claims nothing twice, and a library
+  claiming a class another dependency already provides is refused with both
+  named, as `deps.edn` resolution does.
 
 ## [0.8.26] - 2026-11-10
 

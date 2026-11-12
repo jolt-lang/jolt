@@ -1945,6 +1945,36 @@
       :mvn-local-repo (m2-repo-dir)
       :repro repro?})))
 
+;; The :jolt/provides rows this process has handed to the runtime. A project's
+;; resolved deps install theirs at launch and every add-deps call adds its own,
+;; so a class is claimed once however many times its library is added: a second
+;; claim on a class the first one's install namespace already registered would be
+;; dropped as one "this jolt provides", with a warning about a stale library.
+;; Tracked per [install-ns class], not per row, because the runtime judges each
+;; class: a re-add under another coordinate, or a newer version declaring one
+;; more class, is a different row that must still claim only what is new.
+(defonce ^:private installed-provides (atom []))
+
+(defn install-class-providers!
+  "Hand :jolt/provides rows (RFC 0014), as host-class-providers returns them, to
+  the runtime so a reference to a provided class autoloads its install
+  namespace. Classes an install namespace already claimed in this process are
+  skipped, and the new rows are checked together with the installed ones, so a
+  library added later can't claim a class that another one already provides."
+  [entries]
+  (let [seen @installed-provides
+        claimed (set (for [[install-ns _ & classes] seen, c classes] [install-ns c]))
+        fresh (keep (fn [[install-ns lib & classes]]
+                      (when-let [cs (seq (remove #(claimed [install-ns %]) classes))]
+                        (into [install-ns lib] cs)))
+                    (distinct entries))]
+    (when (seq fresh)
+      (host-class-providers (concat seen fresh))
+      (doseq [[install-ns lib & classes] fresh]
+        (jolt.host/register-class-provider! install-ns lib (vec classes)))
+      (swap! installed-provides into fresh))
+    nil))
+
 (defn add-deps
   "Resolve an inline deps map and add the resulting source roots to the loader,
   so a following `require` can load them — the programmatic twin of a deps.edn
@@ -1962,6 +1992,10 @@
   namespace the runtime already resolves. Returns the vector of roots added
   (empty when everything was already on the roots).
 
+  The added libraries' :jolt/provides declarations are installed, as a
+  project's are at launch, so a class one of them provides autoloads its
+  install namespace on first reference.
+
   :jolt/native declarations carried by added deps are NOT auto-loaded (that is
   a project-launch concern — see jolt.main); a warning names them so the
   caller can load via jolt.ffi. The second arity accepts an options map for
@@ -1969,7 +2003,7 @@
   ([deps-map] (add-deps deps-map nil))
   ([{:keys [deps] :as m} _opts]
    (let [base (or (getenv "JOLT_PWD") ".")
-         {:keys [roots natives immutable-roots]}
+         {:keys [roots natives immutable-roots provides]}
          (binding [*mvn-local-repo* (when-let [r (:mvn/local-repo m)]
                                       (abspath base r))]
            (resolve-deps deps base))
@@ -1978,6 +2012,9 @@
      (jolt.host/add-immutable-roots! immutable-roots)
      (when (seq added)
        (jolt.host/set-source-roots! (into current added)))
+     ;; after the roots, so the install namespace a class reference loads is
+     ;; already findable
+     (install-class-providers! (host-class-providers provides))
      (when (seq natives)
        (info "added deps declare :jolt/native libraries (not auto-loaded): "
              (pr-str (mapv #(dissoc % :jolt.deps/root :jolt.deps/roots
