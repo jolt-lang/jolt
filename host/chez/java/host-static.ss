@@ -1906,6 +1906,26 @@
 ;; field may legitimately hold a falsy value (Boolean/FALSE is #f), so absence
 ;; cannot be read off a #f result.
 (define host-static-miss (list 'host-static-miss))
+;; A static FIELD whose value can only be made once clojure.core has loaded:
+;; PersistentTreeMap/EMPTY is (sorted-map), and the sorted collections are minted
+;; by the overlay (25-sorted.clj), which runs after this file. The registry holds
+;; the thunk, and the first read runs it and keeps the answer, so every read
+;; after that is the same object, as a JVM static final is. Two threads racing
+;; the first read each run it; the CAS keeps one answer and both return that.
+(define-record-type (static-deferred make-static-deferred* static-deferred?)
+  (fields thunk cell) (nongenerative jolt-static-deferred-v1))
+(define (make-static-deferred thunk) (make-static-deferred* thunk (box #f)))
+(define (static-deferred-force d)
+  (let* ((b (static-deferred-cell d)) (v (unbox b)))
+    (if v
+        (begin (memory-order-acquire) v)
+        (let ((nv ((static-deferred-thunk d))))
+          ;; publish nv's fields before the box points at it (arm64)
+          (memory-order-release)
+          (box-cas! b #f nv)
+          (memory-order-acquire)
+          (unbox b)))))
+(define (static-value v) (if (static-deferred? v) (static-deferred-force v) v))
 (define (host-static-ref class member)
   (let ((cell (mutable-static-cell class member #f)))
     (if cell
@@ -1914,7 +1934,7 @@
           (if h
               (let ((v (hashtable-ref h member host-static-miss)))
                 (cond
-                  ((not (eq? v host-static-miss)) v)
+                  ((not (eq? v host-static-miss)) (static-value v))
                   ;; a member a lazy host shim adds to this class (Runtime/getRuntime)
                   ((lazy-shims-static! class member) (host-static-ref class member))
                   (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching field or method: " class "/" member)))))
@@ -1974,7 +1994,7 @@
         (let ((h (lookup-class class-statics-tbl class)))
           (if h
               (let ((v (hashtable-ref h member host-static-miss)))
-                (if (eq? v host-static-miss) (values #f #f) (values 'val v)))
+                (if (eq? v host-static-miss) (values #f #f) (values 'val (static-value v))))
               (values #f #f))))))
 
 (define (host-static-ref-site site class member)

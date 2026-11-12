@@ -289,6 +289,9 @@
     ;; and navigates it with subseq / rsubseq and the comparison fns they test with
     "clojure.core/sorted-map-by" "clojure.core/subseq" "clojure.core/rsubseq"
     "clojure.core/<" "clojure.core/<=" "clojure.core/>" "clojure.core/>="
+    ;; PersistentTreeMap/EMPTY and PersistentTreeSet/EMPTY (host-static-methods.ss)
+    ;; make their value with these, by name, on first read
+    "clojure.core/sorted-map" "clojure.core/sorted-set"
     ;; FileTime.from(Instant) (nio-file.ss) reads the Instant's epoch millis
     ;; through inst-ms, so fs/set-last-modified-time with an Instant needs it
     "clojure.core/inst-ms"))
