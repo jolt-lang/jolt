@@ -38,37 +38,39 @@
 ;; shadowing logic.
 ;; ---------------------------------------------------------------------------
 
-(defn- safe-op? [op]
-  ;; ops an inline-eligible body may contain. The criterion is what the SPLICER
-  ;; can handle, not purity: subst walks children through map-ir-children and
-  ;; special-cases only :local (substitution) and :let (alpha-renames its
-  ;; binders), so any op that binds no names is safe however it is spelled and
-  ;; whether or not it can throw (:invoke and :throw are here already).
-  ;;
-  ;; :try and :def stay out — a winder and a definition, neither of which the
-  ;; splicer has a case for, so a body containing one is rejected by body-size
-  ;; below and never inlined or alpha-renamed.
-  ;;
-  ;; :fn, :loop and :recur BIND names, and subst/body-closed? below have explicit
-  ;; cases for them (see subst's :fn and :loop arms). :recur additionally needs
-  ;; recur-bound? — a recur that targets the inlined fn's OWN arity has no target
-  ;; once spliced, so safe-op? alone cannot admit it.
-  ;;
-  ;; The literal leaves and the interop arg-only forms were missing rather than
-  ;; refused. Measured while building a real project (grenadine) under --opt, a
-  ;; :regex literal alone blocked 538 splice attempts and :host-new another 56 —
-  ;; a fn was disqualified for containing #"..." Everything added here is either
-  ;; a leaf (no child nodes at all) or carries only :args/:target, both of which
-  ;; map-ir-children and reduce-ir-children already recurse.
-  (or (= op :const) (= op :local) (= op :var) (= op :host) (= op :the-var)
-      (= op :quote) (= op :if) (= op :do) (= op :let) (= op :invoke)
-      (= op :map) (= op :vector) (= op :set) (= op :throw) (= op :coerce)
-      ;; literal leaves, like :const
-      (= op :regex) (= op :inst) (= op :uuid) (= op :bigdec)
-      ;; interop: a leaf, and two arg-only call forms (:host is already above)
-      (= op :host-static) (= op :host-new) (= op :host-call)
-      ;; binders — see subst/body-closed?/recur-bound? below
-      (= op :fn) (= op :loop) (= op :recur)))
+;; ops an inline-eligible body may contain. The criterion is what the SPLICER
+;; can handle, not purity: subst walks children through map-ir-children and
+;; special-cases only :local (substitution) and :let (alpha-renames its
+;; binders), so any op that binds no names is safe however it is spelled and
+;; whether or not it can throw (:invoke and :throw are here already).
+;;
+;; :try and :def stay out — a winder and a definition, neither of which the
+;; splicer has a case for, so a body containing one is rejected by body-size
+;; below and never inlined or alpha-renamed.
+;;
+;; :fn, :loop and :recur BIND names, and subst/body-closed? below have explicit
+;; cases for them (see subst's :fn and :loop arms). :recur additionally needs
+;; recur-bound? — a recur that targets the inlined fn's OWN arity has no target
+;; once spliced, so safe-op? alone cannot admit it.
+;;
+;; The literal leaves and the interop arg-only forms were missing rather than
+;; refused. Measured while building a real project (grenadine) under --opt, a
+;; :regex literal alone blocked 538 splice attempts and :host-new another 56 —
+;; a fn was disqualified for containing #"..." Everything added here is either
+;; a leaf (no child nodes at all) or carries only :args/:target, both of which
+;; map-ir-children and reduce-ir-children already recurse.
+(def ^:private safe-ops
+  #{:const :local :var :host :the-var
+    :quote :if :do :let :invoke
+    :map :vector :set :throw :coerce
+    ;; literal leaves, like :const
+    :regex :inst :uuid :bigdec
+    ;; interop: a leaf, and two arg-only call forms (:host is already above)
+    :host-static :host-new :host-call
+    ;; binders — see subst/body-closed?/recur-bound? below
+    :fn :loop :recur})
+
+(defn- safe-op? [op] (contains? safe-ops op))
 
 (defn- recur-bound?
   "True if every :recur in node is enclosed by a :loop or :fn WITHIN node, so its
@@ -178,6 +180,127 @@
           []
           frees))
 
+(declare subst)
+
+(defn- subst-local [node env]
+  (let [r (get env (get node :name))]
+    ;; carry the param's ^:struct hint onto a let-bound fresh
+    ;; local, so lookups inside the inlined body keep the bare
+    ;; (no-guard) path. The param hint asserts the
+    ;; arg is a struct; inlining doesn't change that contract.
+    (if r
+      (let [r (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
+                (assoc r :hint (get node :hint))
+                r)]
+        ;; a second splice keeps what the first one marked
+        (if (and (get node :boxed-param) (or (= :local (get r :op)) (= :const (get r :op))))
+          (assoc r :boxed-param true)
+          r))
+      node)))
+
+;; :let alpha-renames each binder to a fresh name, threading the extended
+;; env left-to-right — sequential scope the uniform combinator can't model,
+;; so it stays explicit. :loop binds exactly like :let and its :recur travels
+;; with it, so it gets the same sequential alpha-rename.
+(defn- subst-bindings [node env cns]
+  (let [res (reduce (fn [acc b]
+                      (let [e (nth acc 0)
+                            binds (nth acc 1)
+                            nm (nth b 0)
+                            init (subst (nth b 1) e cns)
+                            f (fresh nm)]
+                        [(assoc e nm {:op :local :name f}) (conj binds [f init])]))
+                    [env []]
+                    (get node :bindings))]
+    (assoc node :bindings (nth res 1) :body (subst (get node :body) (nth res 0) cns))))
+
+(defn- renamed [e nm] (get (get e nm) :name))
+
+(defn- subst-arity
+  "One arity of a spliced fn literal: its params (and :rest) alpha-renamed in
+  order, its body substituted under them."
+  [a env cns]
+  (let [names (if (get a :rest)
+                (conj (vec (get a :params)) (get a :rest))
+                (vec (get a :params)))
+        e (reduce (fn [e nm] (assoc e nm {:op :local :name (fresh nm)}))
+                  env names)
+        ;; :phints/:nhints/:ahints are vectors of [param value]
+        ;; keyed BY PARAM NAME; rekey them or the numeric and
+        ;; record-type passes look up names that no longer exist.
+        rekey (fn [k]
+                (when-let [hs (get a k)]
+                  (mapv (fn [pr] [(renamed e (nth pr 0)) (nth pr 1)]) hs)))
+        a (assoc a
+                 :params (mapv (fn [nm] (renamed e nm)) (get a :params))
+                 :body (subst (get a :body) e cns))
+        a (if (get a :rest) (assoc a :rest (renamed e (get a :rest))) a)
+        a (reduce (fn [a k] (if-let [v (rekey k)] (assoc a k v) a))
+                  a [:phints :nhints :ahints])]
+    a))
+
+;; :src-form and :free-names are what the image rebuilds a travelling
+;; closure from (analyzer analyze-fn, backend emit-fn/fnsrc-flush,
+;; state-image image-eval-fnsrc): compile (fn* [free-names…] src-form)
+;; in the defining ns and apply it to the values recovered from the
+;; live closure by those same names.
+;;
+;; The SOURCE survives a splice untouched — a copy computes what the
+;; callee's text says, that is the whole point. What does not survive
+;; is the assumption that a free name is also the live variable's
+;; name: the splice renamed the callee's binders and may have
+;; substituted a caller local or a constant. So the registration
+;; carries the source names AND, separately, what each one became
+;; (spliced-captures) — the wrapper is still built from the source
+;; names, and only the value lookup follows the copy.
+;;
+;; :src-ns for the same reason: the form is the callee's text and
+;; resolves in the callee's namespace, which is not the one this copy
+;; is being emitted into.
+;;
+;; Composes: a copy already spliced once carries :live-names, and
+;; those — not the source names — are what this substitution renames
+;; again. A constant entry has no name to look up and passes through.
+(defn- respliced-registration
+  "node's image registration after a splice; outer is the env outside the fn
+  literal, which its free names resolve through."
+  [node outer cns]
+  (let [caps (when (get node :src-form)
+               (spliced-captures (or (get node :live-names) (get node :free-names))
+                                 outer))]
+    (cond
+      (nil? (get node :src-form)) node
+      ;; a capture the splice turned into something neither recoverable nor
+      ;; constant: drop the registration rather than rebuild from a name that
+      ;; no longer means anything. A name the inspector cannot report binds
+      ;; jolt-nil, so that would surface as a wrong value long after the
+      ;; restore; unregistered refuses at dump instead.
+      (nil? caps) (dissoc node :src-form :free-names :live-names :src-ns)
+      :else (assoc node :live-names caps :src-ns (or (get node :src-ns) cns)))))
+
+;; :fn — each arity's params (and :rest) bind within that arity, and a
+;; named fn binds its own name across all of them. All are alpha-renamed,
+;; for the reason the :let arm is: a param that merely SHADOWED the name in
+;; env would still let the substituted argument be captured. (defn callee
+;; [a] (map (fn [y] (+ a y)) xs)) inlined at (let [y 10] (callee y)) puts
+;; the caller's `y` inside a fn that binds `y`, and shadowing alone turns
+;; (+ a y) into (+ y y).
+;;
+;; A named inner fn is renamed too, and its emitted procedure — hence its
+;; backtrace frame — is then `foo__ilN` rather than `foo`. That is the
+;; cosmetic price of the same hygiene; an anonymous fn (the common case)
+;; has no name to change.
+(defn- subst-fn [node env cns]
+  (let [;; the env OUTSIDE this literal — what its free names resolve
+        ;; through. Captured before the self-name shadows anything.
+        outer env
+        self (get node :name)
+        env (if self (assoc env self {:op :local :name (fresh self)}) env)
+        arities (mapv (fn [a] (subst-arity a env cns)) (get node :arities))
+        node (assoc node :arities arities)
+        node (if self (assoc node :name (renamed env self)) node)]
+    (respliced-registration node outer cns)))
+
 (defn- subst
   "Substitute locals in node per env (a map name -> replacement IR node), and
   alpha-rename every inner :let binder to a globally fresh name (so the spliced
@@ -188,127 +311,14 @@
 
   cns is the namespace the body was WRITTEN in — the callee's, not the call
   site's. Threaded rather than read off the node because only a fn literal needs
-  it, and it needs it for the image registration (see the :fn arm)."
+  it, and it needs it for the image registration (see subst-fn)."
   [node env cns]
   (let [op (get node :op)]
     (cond
-      (= op :local) (let [r (get env (get node :name))]
-                      ;; carry the param's ^:struct hint onto a let-bound fresh
-                      ;; local, so lookups inside the inlined body keep the bare
-                      ;; (no-guard) path. The param hint asserts the
-                      ;; arg is a struct; inlining doesn't change that contract.
-                      (if r
-                        (let [r (if (and (= :local (get r :op)) (get node :hint) (not (get r :hint)))
-                                  (assoc r :hint (get node :hint))
-                                  r)]
-                          ;; a second splice keeps what the first one marked
-                          (if (and (get node :boxed-param) (or (= :local (get r :op)) (= :const (get r :op))))
-                            (assoc r :boxed-param true)
-                            r))
-                        node))
-      ;; :let alpha-renames each binder to a fresh name, threading the extended
-      ;; env left-to-right — sequential scope the uniform combinator can't model,
-      ;; so it stays explicit.
-      (= op :let)
-      (let [res (reduce (fn [acc b]
-                          (let [e (nth acc 0)
-                                binds (nth acc 1)
-                                nm (nth b 0)
-                                init (subst (nth b 1) e cns)
-                                f (fresh nm)]
-                            [(assoc e nm {:op :local :name f}) (conj binds [f init])]))
-                        [env []]
-                        (get node :bindings))]
-        (assoc node :bindings (nth res 1) :body (subst (get node :body) (nth res 0) cns)))
-      ;; :loop binds exactly like :let and its :recur travels with it, so it gets
-      ;; the same sequential alpha-rename.
-      (= op :loop)
-      (let [res (reduce (fn [acc b]
-                          (let [e (nth acc 0)
-                                binds (nth acc 1)
-                                nm (nth b 0)
-                                init (subst (nth b 1) e cns)
-                                f (fresh nm)]
-                            [(assoc e nm {:op :local :name f}) (conj binds [f init])]))
-                        [env []]
-                        (get node :bindings))]
-        (assoc node :bindings (nth res 1) :body (subst (get node :body) (nth res 0) cns)))
-      ;; :fn — each arity's params (and :rest) bind within that arity, and a
-      ;; named fn binds its own name across all of them. All are alpha-renamed,
-      ;; for the reason the :let arm is: a param that merely SHADOWED the name in
-      ;; env would still let the substituted argument be captured. (defn callee
-      ;; [a] (map (fn [y] (+ a y)) xs)) inlined at (let [y 10] (callee y)) puts
-      ;; the caller's `y` inside a fn that binds `y`, and shadowing alone turns
-      ;; (+ a y) into (+ y y).
-      ;;
-      ;; A named inner fn is renamed too, and its emitted procedure — hence its
-      ;; backtrace frame — is then `foo__ilN` rather than `foo`. That is the
-      ;; cosmetic price of the same hygiene; an anonymous fn (the common case)
-      ;; has no name to change.
-      (= op :fn)
-      (let [;; the env OUTSIDE this literal — what its free names resolve
-            ;; through. Captured before the self-name shadows anything.
-            outer env
-            self (get node :name)
-            env (if self (assoc env self {:op :local :name (fresh self)}) env)
-            ren (fn [e nm] (get (get e nm) :name))
-            arities
-            (mapv (fn [a]
-                    (let [names (if (get a :rest)
-                                  (conj (vec (get a :params)) (get a :rest))
-                                  (vec (get a :params)))
-                          e (reduce (fn [e nm] (assoc e nm {:op :local :name (fresh nm)}))
-                                    env names)
-                          ;; :phints/:nhints/:ahints are vectors of [param value]
-                          ;; keyed BY PARAM NAME; rekey them or the numeric and
-                          ;; record-type passes look up names that no longer exist.
-                          rekey (fn [k]
-                                  (when-let [hs (get a k)]
-                                    (mapv (fn [pr] [(ren e (nth pr 0)) (nth pr 1)]) hs)))
-                          a (assoc a
-                                   :params (mapv (fn [nm] (ren e nm)) (get a :params))
-                                   :body (subst (get a :body) e cns))
-                          a (if (get a :rest) (assoc a :rest (ren e (get a :rest))) a)
-                          a (reduce (fn [a k] (if-let [v (rekey k)] (assoc a k v) a))
-                                    a [:phints :nhints :ahints])]
-                      a))
-                  (get node :arities))
-            node (assoc node :arities arities)
-            node (if self (assoc node :name (ren env self)) node)
-            ;; :src-form and :free-names are what the image rebuilds a travelling
-            ;; closure from (analyzer analyze-fn, backend emit-fn/fnsrc-flush,
-            ;; state-image image-eval-fnsrc): compile (fn* [free-names…] src-form)
-            ;; in the defining ns and apply it to the values recovered from the
-            ;; live closure by those same names.
-            ;;
-            ;; The SOURCE survives a splice untouched — a copy computes what the
-            ;; callee's text says, that is the whole point. What does not survive
-            ;; is the assumption that a free name is also the live variable's
-            ;; name: the splice renamed the callee's binders and may have
-            ;; substituted a caller local or a constant. So the registration
-            ;; carries the source names AND, separately, what each one became
-            ;; (spliced-captures) — the wrapper is still built from the source
-            ;; names, and only the value lookup follows the copy.
-            ;;
-            ;; :src-ns for the same reason: the form is the callee's text and
-            ;; resolves in the callee's namespace, which is not the one this copy
-            ;; is being emitted into.
-            ;;
-            ;; Composes: a copy already spliced once carries :live-names, and
-            ;; those — not the source names — are what this substitution renames
-            ;; again. A constant entry has no name to look up and passes through.
-            caps (when (get node :src-form)
-                   (spliced-captures (or (get node :live-names) (get node :free-names))
-                                     outer))]
-        (cond
-          (nil? (get node :src-form)) node
-          ;; a capture the splice turned into something neither recoverable nor
-          ;; constant: drop the registration rather than rebuild from a name that
-          ;; no longer means anything. A name the inspector cannot report binds
-          ;; jolt-nil, so that would surface as a wrong value long after the
-          ;; restore; unregistered refuses at dump instead.
-          (nil? caps) (dissoc node :src-form :free-names :live-names :src-ns)
-          :else (assoc node :live-names caps :src-ns (or (get node :src-ns) cns))))
+      (= op :local) (subst-local node env)
+      (= op :let) (subst-bindings node env cns)
+      (= op :loop) (subst-bindings node env cns)
+      (= op :fn) (subst-fn node env cns)
       ;; every other op substitutes env uniformly into its children.
       :else (map-ir-children (fn [c] (subst c env cns)) node))))
 
@@ -460,110 +470,129 @@
                          (conj seen e))))
         false))))
 
+(defn- spliceable?
+  "Can the stashed body of callee f splice at a call with these args?"
+  [stash f args ctx]
+  (let [params (get stash :params)
+        body (get stash :body)]
+    (and (= (count params) (count args))
+         (<= (body-size body) inline-budget)
+         (growth-fits? (growth-of body args))
+         (body-closed? body (reduce conj #{} params))
+         ;; a recur targeting the callee's own arity has no target
+         ;; once the body leaves it
+         (recur-bound? body false)
+         ;; cheapest checks first; the graph walk only runs on a
+         ;; stash that would otherwise splice.
+         (not (splice-cycle-member? ctx (get f :ns) (get f :name))))))
+
+(defn- param-hint-map
+  "[param value] hint pairs as a param name -> value map."
+  [pairs]
+  (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1))) {} pairs))
+
+;; trivial args (local/const) substitute straight in (copy
+;; propagation); the rest get a fresh local bound once in a
+;; wrapping let, so they evaluate exactly once in source order.
+;; A ^double/^long param always binds (no copy-prop) so its
+;; entry coercion runs — preserving the called fn's semantics.
+;; An array-hinted one binds the same way: its coerce emits
+;; nothing, but it is what types the local for aget/aset.
+;; A ^Record param is a DECLARATION, not an inferred fact: it
+;; types the param whether or not the caller's argument type
+;; could be inferred (types.clj seeds an arity from :phints for
+;; exactly the open-world case). A spliced body has no arity to
+;; carry it, so the declared type rides on the substituted
+;; :local instead — every reference to the param is one of these
+;; nodes, so it reaches nested fns and let bodies alike, and it
+;; survives flatten-lets and scalar-replace rearranging the
+;; bindings around it. Dropping it made a spliced (:x p) fall
+;; back to jolt-get where the callee's own body bare-indexed.
+(defn- bind-args
+  "Map each param to what the spliced body reads for it. Returns [env binds]:
+  env for subst, binds for the wrapping let (in source order)."
+  [stash args]
+  (let [params (get stash :params)
+        n (count params)
+        ;; param name -> declared ^double/^long or array kind; both
+        ;; bind under a :coerce of that kind
+        nh (param-hint-map (concat (get stash :nhints) (get stash :ahints)))
+        ;; declared ^Record param hints, param name -> ctor-key
+        ph (param-hint-map (get stash :phints))
+        rec-hint (fn [nd p]
+                   (let [ck (get ph p)]
+                     ;; only a :local carries it — a constant argument
+                     ;; is not a record whatever the callee declared
+                     (if (and ck (= :local (get nd :op)))
+                       (assoc nd :rec-hint ck)
+                       nd)))
+        ;; An untyped param is boxed at the JVM's call, whatever the
+        ;; caller proves about its argument; the mark rides on the
+        ;; substituted node, as rec-hint's does, for a cast on it
+        ;; (jolt.passes.numeric boxed-operand?). A param the
+        ;; whole-program seeds typed is untyped in the source.
+        seeded (or (get stash :wp-seeded) #{})
+        boxed (fn [nd] (assoc nd :boxed-param true))]
+    (loop [i 0 env {} binds []]
+      (if (< i n)
+        (let [p (nth params i) a (nth args i) k (get nh p)]
+          (cond
+            k (let [f (fresh p) l {:op :local :name f}]
+                (recur (inc i) (assoc env p (if (contains? seeded p) (boxed l) l))
+                       (conj binds [f (coerce-node k a)])))
+            (trivial-arg? a) (recur (inc i) (assoc env p (boxed (rec-hint a p))) binds)
+            :else (let [f (fresh p)]
+                    (recur (inc i)
+                           (assoc env p (boxed (rec-hint {:op :local :name f} p)))
+                           (conj binds [f a])))))
+        [env binds]))))
+
+(defn- splice-call
+  "Splice callee f's stashed body at the :invoke node: the alpha-renamed body
+  under a let binding the args that cannot be copy-propagated."
+  [node ctx f stash]
+  (let [body (get stash :body)
+        ret (get stash :ret)
+        args (get node :args)
+        res (bind-args stash args)
+        env (nth res 0)
+        binds (nth res 1)
+        ;; stamp before substituting — see stamp-inline
+        rbody0 (subst (stamp-inline body
+                                    (str (get f :ns) "/" (get f :name))
+                                    (let [p (get node :pos)]
+                                      (when (map? p) (get p :line)))
+                                    (get node :inline-chain))
+                      env
+                      (get f :ns))
+        ;; preserve the fn's ^double/^long return coercion -- as a
+        ;; RETURN coercion, which for ^long truncates a bignum to its
+        ;; low 64 bits and saturates a flonum where a param's raises
+        ;; (emit-arity-clause, jolt->fx-ret).
+        rbody (if ret (assoc (coerce-node ret rbody0) :return? true) rbody0)]
+    (mark!)
+    (charge-growth! (growth-of body args))
+    ;; Tell the host this callee's body was actually copied somewhere.
+    ;; The tree-shake graph roots the set: with every call site spliced
+    ;; there is no reference left to the callee's def, so the shake
+    ;; would drop it — along with the (jolt-register-source! …) its
+    ;; record carries, which is what names an inlined frame in a
+    ;; backtrace (jolt-o13s). Recorded at the SPLICE, so a stashed fn
+    ;; nobody spliced still shakes away.
+    (mark-spliced! ctx (get f :ns) (get f :name))
+    (if (= 0 (count binds))
+      rbody
+      {:op :let :bindings binds :body rbody})))
+
 (defn- try-inline
   "node is an :invoke whose children are already inlined. If its :fn is a var
   with a stashed, in-budget, arity-matching inline body, return the spliced
   let; else node."
   [node ctx]
-  (let [f (get node :fn)]
-    (if (= :var (get f :op))
-      (let [stash (inline-ir ctx (get f :ns) (get f :name))]
-        (if stash
-          (let [params (get stash :params)
-                body (get stash :body)
-                ;; param name -> declared ^double/^long or array kind; both
-                ;; bind under a :coerce of that kind
-                nh (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
-                           {} (concat (get stash :nhints) (get stash :ahints)))
-                ;; declared ^Record param hints, param name -> ctor-key
-                ph (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1))) {} (get stash :phints))
-                ret (get stash :ret)
-                args (get node :args)]
-            (if (and (= (count params) (count args))
-                     (<= (body-size body) inline-budget)
-                     (growth-fits? (growth-of body args))
-                     (body-closed? body (reduce conj #{} params))
-                     ;; a recur targeting the callee's own arity has no target
-                     ;; once the body leaves it
-                     (recur-bound? body false)
-                     ;; cheapest checks first; the graph walk only runs on a
-                     ;; stash that would otherwise splice.
-                     (not (splice-cycle-member? ctx (get f :ns) (get f :name))))
-              (let [n (count params)
-                    ;; trivial args (local/const) substitute straight in (copy
-                    ;; propagation); the rest get a fresh local bound once in a
-                    ;; wrapping let, so they evaluate exactly once in source order.
-                    ;; A ^double/^long param always binds (no copy-prop) so its
-                    ;; entry coercion runs — preserving the called fn's semantics.
-                    ;; An array-hinted one binds the same way: its coerce emits
-                    ;; nothing, but it is what types the local for aget/aset.
-                    ;; A ^Record param is a DECLARATION, not an inferred fact: it
-                    ;; types the param whether or not the caller's argument type
-                    ;; could be inferred (types.clj seeds an arity from :phints for
-                    ;; exactly the open-world case). A spliced body has no arity to
-                    ;; carry it, so the declared type rides on the substituted
-                    ;; :local instead — every reference to the param is one of these
-                    ;; nodes, so it reaches nested fns and let bodies alike, and it
-                    ;; survives flatten-lets and scalar-replace rearranging the
-                    ;; bindings around it. Dropping it made a spliced (:x p) fall
-                    ;; back to jolt-get where the callee's own body bare-indexed.
-                    rec-hint (fn [nd p]
-                               (let [ck (get ph p)]
-                                 ;; only a :local carries it — a constant argument
-                                 ;; is not a record whatever the callee declared
-                                 (if (and ck (= :local (get nd :op)))
-                                   (assoc nd :rec-hint ck)
-                                   nd)))
-                    ;; An untyped param is boxed at the JVM's call, whatever the
-                    ;; caller proves about its argument; the mark rides on the
-                    ;; substituted node, as rec-hint's does, for a cast on it
-                    ;; (jolt.passes.numeric boxed-operand?). A param the
-                    ;; whole-program seeds typed is untyped in the source.
-                    seeded (or (get stash :wp-seeded) #{})
-                    boxed (fn [nd] (assoc nd :boxed-param true))
-                    res (loop [i 0 env {} binds []]
-                          (if (< i n)
-                            (let [p (nth params i) a (nth args i) k (get nh p)]
-                              (cond
-                                k (let [f (fresh p) l {:op :local :name f}]
-                                    (recur (inc i) (assoc env p (if (contains? seeded p) (boxed l) l))
-                                           (conj binds [f (coerce-node k a)])))
-                                (trivial-arg? a) (recur (inc i) (assoc env p (boxed (rec-hint a p))) binds)
-                                :else (let [f (fresh p)]
-                                        (recur (inc i)
-                                               (assoc env p (boxed (rec-hint {:op :local :name f} p)))
-                                               (conj binds [f a])))))
-                            [env binds]))
-                    env (nth res 0)
-                    binds (nth res 1)
-                    ;; stamp before substituting — see stamp-inline
-                    rbody0 (subst (stamp-inline body
-                                                (str (get f :ns) "/" (get f :name))
-                                                (let [p (get node :pos)]
-                                                  (when (map? p) (get p :line)))
-                                                (get node :inline-chain))
-                                  env
-                                  (get f :ns))
-                    ;; preserve the fn's ^double/^long return coercion -- as a
-                    ;; RETURN coercion, which for ^long truncates a bignum to its
-                    ;; low 64 bits and saturates a flonum where a param's raises
-                    ;; (emit-arity-clause, jolt->fx-ret).
-                    rbody (if ret (assoc (coerce-node ret rbody0) :return? true) rbody0)]
-                (mark!)
-                (charge-growth! (growth-of body args))
-                ;; Tell the host this callee's body was actually copied somewhere.
-                ;; The tree-shake graph roots the set: with every call site spliced
-                ;; there is no reference left to the callee's def, so the shake
-                ;; would drop it — along with the (jolt-register-source! …) its
-                ;; record carries, which is what names an inlined frame in a
-                ;; backtrace (jolt-o13s). Recorded at the SPLICE, so a stashed fn
-                ;; nobody spliced still shakes away.
-                (mark-spliced! ctx (get f :ns) (get f :name))
-                (if (= 0 (count binds))
-                  rbody
-                  {:op :let :bindings binds :body rbody}))
-              node))
-          node))
+  (let [f (get node :fn)
+        stash (when (= :var (get f :op)) (inline-ir ctx (get f :ns) (get f :name)))]
+    (if (and stash (spliceable? stash f (get node :args) ctx))
+      (splice-call node ctx f stash)
       node)))
 
 (defn inline-node
@@ -1042,6 +1071,56 @@
               node))))
       node)))
 
+(defn- relocatable?
+  "Can init move to the reads of nm in the tail bindings and body? Not when a
+  later binding rebinds a local init reads, or a read sits where moving init
+  would change what it computes (relocation-blocked?)."
+  [init nm tail body]
+  (let [fv (local-names init)]
+    (and (not (some (fn [bb] (contains? fv (nth bb 0))) tail))
+         (not (some (fn [bb] (relocation-blocked? (nth bb 1) nm fv)) tail))
+         (not (relocation-blocked? body nm fv)))))
+
+(defn- foldable-struct-binding?
+  "Is binding b — followed by the bindings in tail, then body — a non-escaping
+  foldable struct source that elim-let-structs can drop?"
+  [b tail body]
+  (let [nm (nth b 0) init (nth b 1)
+        ;; a map's unread values are DISCARDED when the binding is dropped (must
+        ;; be total); a record requires every field be read (lookups-all-fields?
+        ;; below), so its args are all relocated, not discarded — pure is enough.
+        ismap (and (= :map (get init :op)) (const-key-map? init) (all-vals-total? init))
+        rs (when (not ismap) (ctor-shape init))
+        isrec (and rs (ctor-all-args-pure? init))]
+    (and (or ismap isrec)
+         (not (any-binding-named? tail nm))
+         (not (inits-escape? tail nm))
+         (not (local-escapes? body nm))
+         (relocatable? init nm tail body)
+         (or ismap
+             (lookups-all-fields?
+               (conj (mapv (fn [bb] (nth bb 1)) tail) body)
+               nm (get rs :fields))))))
+
+(defn- elim-struct-binding
+  "Drop binding i of node's let, substituting its field reads into the later
+  bindings and the body."
+  [node i]
+  (let [binds (get node :bindings) n (count binds) body (get node :body)
+        b (nth binds i) nm (nth b 0) init (nth b 1)
+        tail0 (subvec binds (inc i) n)
+        hz (hoist-allocating init nm (conj (mapv (fn [bb] (nth bb 1)) tail0) body))
+        hoisted (nth hz 1)
+        head (reduce conj (subvec binds 0 i) (nth hz 0))
+        tail (mapv (fn [bb] [(nth bb 0) (subst-lookup (nth bb 1) nm init hoisted)])
+                   tail0)
+        newbinds (reduce conj head tail)
+        newbody (subst-lookup body nm init hoisted)]
+    (mark!)
+    (if (= 0 (count newbinds))
+      newbody
+      (assoc node :bindings newbinds :body newbody))))
+
 (defn- elim-let-structs
   "(b) Drop the first non-escaping let binding whose init is a foldable struct
   source — a pure const-key map literal or a pure record ctor — substituting its
@@ -1052,42 +1131,9 @@
   (let [binds (get node :bindings) n (count binds) body (get node :body)]
     (loop [i 0]
       (if (< i n)
-        (let [b (nth binds i) nm (nth b 0) init (nth b 1)
-              ;; a map's unread values are DISCARDED when the binding is dropped (must
-              ;; be total); a record requires every field be read (lookups-all-fields?
-              ;; below), so its args are all relocated, not discarded — pure is enough.
-              ismap (and (= :map (get init :op)) (const-key-map? init) (all-vals-total? init))
-              rs (when (not ismap) (ctor-shape init))
-              isrec (and rs (ctor-all-args-pure? init))]
-          (if (and (or ismap isrec)
-                   (not (any-binding-named? (subvec binds (inc i) n) nm))
-                   (not (loop [j (inc i)]
-                          (if (< j n)
-                            (if (local-escapes? (nth (nth binds j) 1) nm) true (recur (inc j)))
-                            false)))
-                   (not (local-escapes? body nm))
-                   (let [fv (local-names init)
-                         tail (subvec binds (inc i) n)]
-                     (and (not (some (fn [bb] (contains? fv (nth bb 0))) tail))
-                          (not (some (fn [bb] (relocation-blocked? (nth bb 1) nm fv)) tail))
-                          (not (relocation-blocked? body nm fv))))
-                   (or ismap
-                       (lookups-all-fields?
-                         (conj (mapv (fn [bb] (nth bb 1)) (subvec binds (inc i) n)) body)
-                         nm (get rs :fields))))
-            (let [tail0 (subvec binds (inc i) n)
-                  hz (hoist-allocating init nm (conj (mapv (fn [bb] (nth bb 1)) tail0) body))
-                  hoisted (nth hz 1)
-                  head (reduce conj (subvec binds 0 i) (nth hz 0))
-                  tail (mapv (fn [bb] [(nth bb 0) (subst-lookup (nth bb 1) nm init hoisted)])
-                             tail0)
-                  newbinds (reduce conj head tail)
-                  newbody (subst-lookup body nm init hoisted)]
-              (mark!)
-              (if (= 0 (count newbinds))
-                newbody
-                (assoc node :bindings newbinds :body newbody)))
-            (recur (inc i))))
+        (if (foldable-struct-binding? (nth binds i) (subvec binds (inc i) n) body)
+          (elim-struct-binding node i)
+          (recur (inc i)))
         node))))
 
 (defn scalar-replace
