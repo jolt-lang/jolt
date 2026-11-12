@@ -30,8 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   jolt carries only so code from another runtime loads unchanged. It is
   written over the bundled `clojure.data.json` and resolved ahead of a
   project's copy in the same way, because real cheshire wraps Jackson. It
-  covers cheshire's public API: `parse-string`, `parse-string-strict`,
-  `parse-stream`, `parse-stream-strict`, `parsed-seq`, `generate-string`,
+  covers cheshire's parsing and generation API: `parse-string`,
+  `parse-string-strict`, `parse-stream`, `parse-stream-strict`, `parsed-seq`, `generate-string`,
   `generate-stream`, `create-pretty-printer`, `default-pretty-print-options`,
   and the `encode` and `decode` names. Its output matches cheshire's, checked
   against babashka's: keyword keys keep their namespace, a ratio is written as
@@ -52,7 +52,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vector into the same pieces the JVM does, so `fold` and `foldcat` give the
   same results. A reducer also works with core `reduce`, `into` and
   `transduce`.
-
 - **`jolt.ffi/stack-args-correct?` says whether foreign calls put arguments
   past the registers where C reads them** (#1629). Chez 10.4.1 misplaces some
   of them, structs above all (cisco/ChezScheme#1091), and jolt's release builds
@@ -62,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everywhere. It now asks once per process: true or false, or nil where jolt
   can't tell. The answer comes from Chez's code generator rather than from the
   build, so a Chez release with the fix answers true with no patch.
+- **The `clojure.lang.Persistent*/EMPTY` fields are all there** (#1614).
+  Only `PersistentList/EMPTY` and `PersistentQueue/EMPTY` used to answer, so a
+  `.cljc` library seeding a rebuilt collection with
+  `clojure.lang.PersistentHashMap/EMPTY` in a `:clj` branch failed to run. Now
+  `PersistentVector`, `PersistentArrayMap`, `PersistentHashMap`,
+  `PersistentHashSet`, `PersistentTreeMap` and `PersistentTreeSet` each have
+  `EMPTY`, the empty collection of that class: `[]`, `{}`, `(hash-map)`, `#{}`,
+  `(sorted-map)` and `(sorted-set)`.
 
 ### Changed
 
@@ -80,8 +87,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pair failed to load. A jolt string holds code points and can never contain a
   lone surrogate, so the pattern now compiles and matches exactly what it
   would on the JVM against any jolt string: as an atom or a class member it
-  matches nothing, and a class range drops the surrogate block. A surrogate
-  pair still reads as the one code point it encodes.
+  matches nothing, and a class range drops the surrogate block. That holds
+  for `\uD800` and `\x{D800}` alike. A surrogate pair still reads as the one
+  code point it encodes.
+- **`[]` is one shared empty vector, as on the JVM** (#1612), so
+  `(identical? [] [])` and `(identical? [] (pop [1]))` are true, the way they
+  already were for `{}`, `#{}` and `()`. Code that checks `(identical? acc [])`
+  to tell an untouched accumulator from one that received something now takes
+  the same branch it does on the JVM. `(vector)`, an empty `subvec` and `empty`
+  of a vector give that same one, and a vector built by `vec` or `filterv` is
+  still a fresh one, as the JVM's is.
 
 ### Fixed
 
@@ -108,7 +123,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Reduced` and stop the outer reduction, rather than the outer one carrying on
   with the unwrapped value. Both `IReduceInit`'s `reduce` and `IReduce`'s
   no-init one pass it through.
-
 - **The macOS release binaries get an optimized Chez kernel again.** The
   release workflow built Chez with `./configure ... CFLAGS="-mmacosx-version-min=11.0"`,
   and Chez's configure adds its own flags (`-arch arm64 -O2`) only when CFLAGS
@@ -133,13 +147,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first file. On macOS that Chez is now built and jolt linked with the host
   `cc`, as the release workflow does, and a macOS job in `tests.yml` builds
   this way (#1601).
-- **`[]` is one shared empty vector, as on the JVM** (#1612), so
-  `(identical? [] [])` and `(identical? [] (pop [1]))` are true, the way they
-  already were for `{}`, `#{}` and `()`. Code that checks `(identical? acc [])`
-  to tell an untouched accumulator from one that received something now takes
-  the same branch it does on the JVM. `(vector)`, an empty `subvec` and `empty`
-  of a vector give that same one, and a vector built by `vec` or `filterv` is
-  still a fresh one, as the JVM's is.
 - **`jolt.deps/add-deps` installs the added libraries' `:jolt/provides`**
   (#1600). It added their source roots and nothing else, so a class one of
   them provides failed with "No dependency provides ..." until the script
@@ -147,16 +154,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `deps.edn`. Now a class reference autoloads it on both paths. Adding a
   library the project already resolved claims nothing twice, and a library
   claiming a class another dependency already provides is refused with both
-  named, as `deps.edn` resolution does.
-- **The `clojure.lang.Persistent*/EMPTY` fields are all there** (#1614).
-  Only `PersistentList/EMPTY` and `PersistentQueue/EMPTY` used to answer, so a
-  `.cljc` library seeding a rebuilt collection with
-  `clojure.lang.PersistentHashMap/EMPTY` in a `:clj` branch failed to run. Now
-  `PersistentVector`, `PersistentArrayMap`, `PersistentHashMap`,
-  `PersistentHashSet`, `PersistentTreeMap` and `PersistentTreeSet` each have
-  `EMPTY`, the empty collection of that class: `[]`, `{}`, `(hash-map)`, `#{}`,
-  `(sorted-map)` and `(sorted-set)`.
-- **The REPL reports what a load threw, not only where** (#1627). When a
+  named, as `deps.edn` resolution does, before any of its source roots are
+  added.
+- **Writing a state image no longer gives every `{}` or `#{}` metadata.** When
+  an empty map or set whose metadata held a fn went into `jolt.image/dump!`,
+  the dump rebuilt it as the shared empty collection and wrote the metadata
+  onto that, so every `{}` in the process carried it (and a later `(meta {})`
+  could fail to compile), and reading the image did the same in the reading
+  process. The rebuild is a fresh collection now, for `[]` as well, and writing
+  metadata onto a shared empty collection is refused outright.
+- `make build JOLT_SYSTEM_CHEZ=` provisions the pinned Chez even when a Chez
+  of the same version is on `PATH`, as the switch promises (#1631). It used to
+  take the system one anyway.
+- **The REPL reports what a load threw, not only where** (#1633). When a
   form throws while `require`, `load-file` or `load-string` runs it, the load
   is wrapped as on the JVM ("Syntax error macroexpanding at
   (rg/boom.clj:2:1)."), and that wrapper was all the REPL printed. A library
