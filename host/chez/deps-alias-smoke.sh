@@ -441,6 +441,35 @@ check "a provider that never loads releases what it held" \
       "squatter-mac:HmacSHA256 squatter-kpg:RSA" \
       "$(runall -A:prov run -m appprovgone | tr '\n' ' ' | sed 's/ $//')"
 
+# A library that comes in through jolt.deps/add-deps brings its :jolt/provides
+# along, the same as one in deps.edn (jolt#1600). From a directory with no
+# deps.edn, the class autoloads provclaim.install on first reference.
+mkdir -p "$tmp/addprov"
+cat > "$tmp/addprov/probe.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provclaim {:local/root "$root/test/chez/deps-alias/provclaim"}}})
+(prn (try (java.security.Signature/getInstance "RSA") (catch Throwable e (ex-message e))))
+EOF
+check "add-deps installs the added library's :jolt/provides" '"claimer-sig:RSA"' \
+      "$(cd "$tmp/addprov" && JOLT_PWD="$tmp/addprov" JOLT_QUIET=1 "$JOLT" probe.clj 2>&1 | tail -1)"
+# Adding a library the project already resolved must not claim its classes a
+# second time: once provclaim.install has registered Signature, a fresh claim
+# reads as one on a class "this jolt provides" and warns about a stale library.
+out="$(runwarn -A:prov -e "(jolt.deps/add-deps '{:deps {local/provclaim {:local/root \"../provclaim\"}}}) (prn (java.security.Signature/getInstance \"RSA\")) (jolt.deps/add-deps '{:deps {local/provclaim {:local/root \"../provclaim\"}}}) (prn :done)")"
+check "re-adding a resolved provider claims nothing twice" '"claimer-sig:RSA" :done' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+# ...and the one-provider-per-class rule covers what add-deps brings in: a
+# library claiming a class the project's deps already provide is refused, naming
+# both claimants.
+mkdir -p "$tmp/provrival/src"
+printf '{:paths ["src"] :jolt/provides {provrival.install ["java.security.Signature"]}}\n' > "$tmp/provrival/deps.edn"
+out="$(runfull -A:prov -e "(try (jolt.deps/add-deps '{:deps {local/provrival {:local/root \"$tmp/provrival\"}}}) (catch Throwable e (println (ex-message e))))")"
+case "$out" in
+  *"both claim to provide the host class java.security.Signature"*"local/provclaim"*"local/provrival"*)
+    check "add-deps refuses a second provider for a class" ok ok ;;
+  *) check "add-deps refuses a second provider for a class" "a conflict naming both claimants" \
+           "$(printf '%s' "$out" | tail -2)" ;;
+esac
+
 # A provider reached from ANOTHER provider's install namespace is still its own
 # (jolt#926). provnest declares javax.crypto.Cipher and requires provinner.install,
 # which declares and registers java.security.KeyFactory. Marking the whole load

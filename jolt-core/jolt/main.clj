@@ -481,9 +481,10 @@
 
 ;; Install the :jolt/provides declarations a resolved project collected (RFC 0014).
 ;; An entry is [install-ns lib class ...]; lib is nil for the project's own.
+;; jolt.deps records them, so a later add-deps of the same library doesn't claim
+;; the classes a second time.
 (defn- register-class-providers! [provides]
-  (doseq [[install-ns lib & classes] provides]
-    (jolt.host/register-class-provider! install-ns lib (vec classes))))
+  (deps/install-class-providers! provides))
 
 ;; Install the project's :jolt/replaces declarations: namespaces jolt provides as
 ;; a host built-in that this project supplies itself. Like the providers above,
