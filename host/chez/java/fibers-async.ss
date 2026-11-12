@@ -454,6 +454,10 @@
     (jolt-fiber-monitor! fib
       (lambda (err) (jolt-invoke cb (if err (jolt-unwrap-throw err) jolt-nil))))
     jolt-nil))
+;; Every fiber not yet finished, across the default pool and named ones, as a
+;; seq, or nil for none (fibers.ss jolt-fiber-live).
+(def-var! "jolt.host" "fiber-live"
+  (lambda () (list->cseq (jolt-fiber-live))))
 (def-var! "jolt.host" "fiber-state"
   (lambda (fib) (jolt-keyword (symbol->string (jolt-fiber-state fib)))))
 ;; Meaningful only once the fiber is terminal — join reads it from inside the

@@ -24,6 +24,9 @@
 ;;   - kill! is interrupt! that no catch can swallow: the fiber escapes to the
 ;;     edge of its outermost unmasked region, or its entry, running only its
 ;;     finally blocks on the way.
+;;   - fibers lists every fiber that hasn't finished, whoever spawned it, so
+;;     a tool can show what's running without wrapping spawn (core.async's
+;;     io-thread and :fiber go blocks never go through spawn).
 ;;   - interrupt! makes another fiber raise a throwable wherever it is: at its
 ;;     next park, yield or preemption, or at once if it is parked. That is an
 ;;     asynchronous exception, a different thing from Thread.interrupt, which
@@ -150,6 +153,17 @@
   to be resumed), :done (completed), or :dead (its body threw)."
   [fib]
   (jolt.host/fiber-state fib))
+
+(defn fibers
+  "The fibers that haven't finished yet, as a vector: every one spawned by
+  spawn, into a pool, or by core.async (io-thread, a go block on the :fiber
+  backend, a flow process), the caller's own included. A snapshot, so a fiber
+  in it may finish before you look at it; state, interrupt! and kill! work on
+  each the same as on a handle you kept. The list holds the fibers weakly, so
+  a parked fiber nothing else can reach (one waiting on a channel nobody holds)
+  can drop out of it once the collector runs."
+  []
+  (vec (jolt.host/fiber-live)))
 
 (defn monitor!
   "Call (cb err) exactly once when fib finishes: err is nil for a clean
