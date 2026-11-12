@@ -88,58 +88,60 @@
 ;; One deliberate edge divergence: a nil/non-string prefix on startsWith/endsWith
 ;; routes to str-starts-with?/str-ends-with?, which throw the JVM's NPE/CCE
 ;; instead of the generic arm's Scheme type error.
-(defn- string-direct-emit [m argc t args]
-  (let [a0 (first args) a1 (second args)]
-    (cond
-      (= m "length")      (when (= argc 0) (str "(string-length " t ")"))
-      (= m "toString")    (when (= argc 0) t)
-      (= m "isEmpty")     (when (= argc 0) (str "(fx=? (string-length " t ") 0)"))
-      (= m "toUpperCase") (when (= argc 0) (str "(string-upcase " t ")"))
-      (= m "toLowerCase") (when (= argc 0) (str "(string-downcase " t ")"))
-      (= m "trim")        (when (= argc 0) (str "(str-trim " t ")"))
-      (= m "hashCode")    (when (= argc 0) (str "(java-string-hash " t ")"))
-      (= m "charAt")      (when (= argc 1) (str "(jolt-char-at " t " " a0 ")"))
-      (= m "indexOf")     (when (or (= argc 1) (= argc 2))
-                            (let [from (if (= argc 2) (str "(jolt->idx " a1 ")") "0")]
-                              (str "(str-index-of-any " t " " a0 " " from ")")))
-      (= m "startsWith")  (when (= argc 1) (str "(str-starts-with? " t " " a0 ")"))
-      (= m "endsWith")    (when (= argc 1) (str "(str-ends-with? " t " " a0 ")"))
-      (= m "contains")    (when (= argc 1)
-                            (str "(fx>=? (str-index-of " t " (str-needle " a0 ") 0) 0)"))
-      (= m "concat")      (when (= argc 1) (str "(string-append " t " " a0 ")"))
-      (= m "substring")   (when (= argc 2)
-                            (str "(jolt-substr " t " (jolt->idx " a0 ") (jolt->idx " a1 "))"))
-      (= m "replace")     (when (= argc 2)
-                             (str "(str-replace-literal " t " (str-needle " a0 ") (str-needle " a1 "))"))
-      ;; The rest route to a jolt-str-* native (java/natives-str.ss), which is the
-      ;; SAME procedure the generic jolt-string-method arm calls — so the hinted
-      ;; and unhinted paths cannot drift, and each argument is spliced exactly
-      ;; once (they are raw expressions here, not temporaries: a second splice
-      ;; would evaluate the argument twice).
-      (= m "equals")               (when (= argc 1) (str "(jolt-str-equals? " t " " a0 ")"))
-      (= m "equalsIgnoreCase")     (when (= argc 1) (str "(jolt-str-equals-ci? " t " " a0 ")"))
-      (= m "compareTo")            (when (= argc 1) (str "(jolt-str-compare " t " " a0 ")"))
-      (= m "compareToIgnoreCase")  (when (= argc 1) (str "(jolt-str-compare-ci " t " " a0 ")"))
-      (= m "isBlank")              (when (= argc 0) (str "(jolt-str-blank? " t ")"))
-      (= m "repeat")               (when (= argc 1) (str "(jolt-str-repeat " t " " a0 ")"))
-      (= m "codePointAt")          (when (= argc 1) (str "(jolt-str-code-point-at " t " " a0 ")"))
-      (= m "lastIndexOf")          (when (= argc 1) (str "(jolt-str-last-index-of " t " " a0 ")"))
-      (= m "strip")                (when (= argc 0) (str "(jolt-str-strip " t " #t #t)"))
-      (= m "stripLeading")         (when (= argc 0) (str "(jolt-str-strip " t " #t #f)"))
-      (= m "stripTrailing")        (when (= argc 0) (str "(jolt-str-strip " t " #f #t)"))
-      (= m "toCharArray")          (when (= argc 0) (str "(jolt-str-to-char-array " t ")"))
-      (= m "getBytes")             (cond (= argc 0) (str "(jolt-str-get-bytes " t " \"utf-8\")")
-                                         (= argc 1) (str "(jolt-str-get-bytes " t " " a0 ")")
-                                         :else nil)
-      (= m "matches")              (when (= argc 1) (str "(jolt-str-matches? " t " " a0 ")"))
-      (= m "replaceAll")           (when (= argc 2) (str "(jolt-str-replace-all " t " " a0 " " a1 ")"))
-      (= m "replaceFirst")         (when (= argc 2) (str "(jolt-str-replace-first " t " " a0 " " a1 ")"))
-      (= m "split")                (cond (= argc 1) (str "(jolt-str-split " t " " a0 " 0)")
-                                         (= argc 2) (str "(jolt-str-split " t " " a0 " " a1 ")")
-                                         :else nil)
-      (= m "subSequence")          (when (= argc 2) (str "(jolt-str-sub-sequence " t " " a0 " " a1 ")"))
-      (= m "intern")               (when (= argc 0) (str "(jolt-str-intern " t ")"))
-      :else nil)))
+;;
+;; The table maps method -> argument count -> a fn of the emitted target and
+;; arguments. Each argument is spliced exactly once (they are raw expressions
+;; here, not temporaries: a second splice would evaluate the argument twice).
+;; The jolt-str-* natives (java/natives-str.ss) are the SAME procedures the
+;; generic jolt-string-method arm calls, so the hinted and unhinted paths cannot
+;; drift.
+(def ^:private string-direct-forms
+  {"length"              {0 (fn [t] (str "(string-length " t ")"))}
+   "toString"            {0 (fn [t] t)}
+   "isEmpty"             {0 (fn [t] (str "(fx=? (string-length " t ") 0)"))}
+   "toUpperCase"         {0 (fn [t] (str "(string-upcase " t ")"))}
+   "toLowerCase"         {0 (fn [t] (str "(string-downcase " t ")"))}
+   "trim"                {0 (fn [t] (str "(str-trim " t ")"))}
+   "hashCode"            {0 (fn [t] (str "(java-string-hash " t ")"))}
+   "charAt"              {1 (fn [t a] (str "(jolt-char-at " t " " a ")"))}
+   "indexOf"             {1 (fn [t a] (str "(str-index-of-any " t " " a " 0)"))
+                          2 (fn [t a from] (str "(str-index-of-any " t " " a " (jolt->idx " from "))"))}
+   "startsWith"          {1 (fn [t a] (str "(str-starts-with? " t " " a ")"))}
+   "endsWith"            {1 (fn [t a] (str "(str-ends-with? " t " " a ")"))}
+   "contains"            {1 (fn [t a] (str "(fx>=? (str-index-of " t " (str-needle " a ") 0) 0)"))}
+   "concat"              {1 (fn [t a] (str "(string-append " t " " a ")"))}
+   "substring"           {2 (fn [t a b] (str "(jolt-substr " t " (jolt->idx " a ") (jolt->idx " b "))"))}
+   "replace"             {2 (fn [t a b] (str "(str-replace-literal " t " (str-needle " a ") (str-needle " b "))"))}
+   "equals"              {1 (fn [t a] (str "(jolt-str-equals? " t " " a ")"))}
+   "equalsIgnoreCase"    {1 (fn [t a] (str "(jolt-str-equals-ci? " t " " a ")"))}
+   "compareTo"           {1 (fn [t a] (str "(jolt-str-compare " t " " a ")"))}
+   "compareToIgnoreCase" {1 (fn [t a] (str "(jolt-str-compare-ci " t " " a ")"))}
+   "isBlank"             {0 (fn [t] (str "(jolt-str-blank? " t ")"))}
+   "repeat"              {1 (fn [t a] (str "(jolt-str-repeat " t " " a ")"))}
+   "codePointAt"         {1 (fn [t a] (str "(jolt-str-code-point-at " t " " a ")"))}
+   "lastIndexOf"         {1 (fn [t a] (str "(jolt-str-last-index-of " t " " a ")"))}
+   "strip"               {0 (fn [t] (str "(jolt-str-strip " t " #t #t)"))}
+   "stripLeading"        {0 (fn [t] (str "(jolt-str-strip " t " #t #f)"))}
+   "stripTrailing"       {0 (fn [t] (str "(jolt-str-strip " t " #f #t)"))}
+   "toCharArray"         {0 (fn [t] (str "(jolt-str-to-char-array " t ")"))}
+   "getBytes"            {0 (fn [t] (str "(jolt-str-get-bytes " t " \"utf-8\")"))
+                          1 (fn [t a] (str "(jolt-str-get-bytes " t " " a ")"))}
+   "matches"             {1 (fn [t a] (str "(jolt-str-matches? " t " " a ")"))}
+   "replaceAll"          {2 (fn [t a b] (str "(jolt-str-replace-all " t " " a " " b ")"))}
+   "replaceFirst"        {2 (fn [t a b] (str "(jolt-str-replace-first " t " " a " " b ")"))}
+   "split"               {1 (fn [t a] (str "(jolt-str-split " t " " a " 0)"))
+                          2 (fn [t a b] (str "(jolt-str-split " t " " a " " b ")"))}
+   "subSequence"         {2 (fn [t a b] (str "(jolt-str-sub-sequence " t " " a " " b ")"))}
+   "intern"              {0 (fn [t] (str "(jolt-str-intern " t ")"))}})
+
+;; The emitted form for method m applied to target t and the emitted args, from
+;; one of the tables above; nil when the table has no form for that arity.
+(defn- direct-form [table m t args]
+  (when-let [emit-form (get (get table m) (count args))]
+    (apply emit-form t args)))
+
+(defn- string-direct-emit [m t args]
+  (direct-form string-direct-forms m t args))
 
 ;; Direct emission for (.m target …) whose target is PROVEN a keyword
 ;; (:target-type :kw, from a ^clojure.lang.Keyword hint or a keyword literal).
@@ -161,19 +163,16 @@
 ;; honeysql orders its conditional #?(:bb … :clj (.sym ^Keyword k)) with :bb
 ;; first at all three of its .sym sites, and jolt stopped matching :bb in #893.
 ;; Also fires for code that writes .sym unconditionally or puts :clj first.
-(defn- keyword-direct-emit [m argc t args]
-  (let [a0 (first args)]
-    (cond
-      (= m "sym")          (when (= argc 0)
-                             (str "(jolt-symbol (keyword-t-ns " t ") (keyword-t-name " t "))"))
-      (= m "getName")      (when (= argc 0) (str "(keyword-t-name " t ")"))
-      (= m "getNamespace") (when (= argc 0) (str "(or (keyword-t-ns " t ") jolt-nil)"))
-      (= m "toString")     (when (= argc 0)
-                             (str "(string-append \":\" (if (keyword-t-ns " t ") (string-append (keyword-t-ns " t ") \"/\") \"\") (keyword-t-name " t "))"))
-      (= m "hashCode")     (when (= argc 0)
-                             (str "(jolt-s32 (+ (java-symbol-hash (keyword-t-name " t ") (keyword-t-ns " t ")) #x9e3779b9))"))
-      (= m "equals")       (when (= argc 1) (str "(eq? " t " " a0 ")"))
-      :else nil)))
+(def ^:private keyword-direct-forms
+  {"sym"          {0 (fn [t] (str "(jolt-symbol (keyword-t-ns " t ") (keyword-t-name " t "))"))}
+   "getName"      {0 (fn [t] (str "(keyword-t-name " t ")"))}
+   "getNamespace" {0 (fn [t] (str "(or (keyword-t-ns " t ") jolt-nil)"))}
+   "toString"     {0 (fn [t] (str "(string-append \":\" (if (keyword-t-ns " t ") (string-append (keyword-t-ns " t ") \"/\") \"\") (keyword-t-name " t "))"))}
+   "hashCode"     {0 (fn [t] (str "(jolt-s32 (+ (java-symbol-hash (keyword-t-name " t ") (keyword-t-ns " t ")) #x9e3779b9))"))}
+   "equals"       {1 (fn [t a] (str "(eq? " t " " a ")"))}})
+
+(defn- keyword-direct-emit [m t args]
+  (direct-form keyword-direct-forms m t args))
 
 ;; Direct emission for (.m target …) whose target is PROVEN a StringBuilder
 ;; (:target-type :sb — a ^StringBuilder tag, a local bound to (StringBuilder.),
@@ -2041,6 +2040,48 @@
 (defn- ffi-by-value? [type]
   (and (map? type) (= :by-value (:ffi-kind type))))
 
+;; Marshaling across the C boundary, one fn per direction, shared by foreign
+;; procedures (jolt calls C) and callables (C calls jolt) with the roles swapped.
+;;
+;; jolt -> C. A :string wraps so jolt's nil reaches C as a null char*: Chez's
+;; `string` type already accepts #f for that, it just does not know jolt's nil,
+;; and raised "invalid foreign-procedure argument" on the sentinel. Plenty of C
+;; treats NULL as a real argument (setlocale queries, rlLoadShaderCode's default
+;; vertex shader), and binding those as :pointer to get NULL through loses the
+;; string marshaling on that parameter. :bool is one byte on the wire and jolt
+;; truthiness decides it, so nil and false send 0 and everything else sends 1.
+;; (float x) is a boxed java.lang.Float, and a Chez float or double position
+;; takes only a flonum.
+(defn- ffi-jolt->c [type expr]
+  (cond
+    (= "string" type) (str "(jolt-ffi-string->c " expr ")")
+    (= "bool" type) (str "(jolt-ffi-bool->c " expr ")")
+    (#{"float" "double"} type) (str "(jolt-ffi-float->c " expr ")")
+    :else expr))
+
+;; C -> jolt. Chez hands back #f for a NULL char*, which is Scheme's false, not
+;; jolt's nil (getenv of an unset name returned false to Clojure before this). A
+;; C float reaches Clojure on the JVM as a java.lang.Float; Chez hands over the
+;; single-precision flonum, so it is boxed as it is (the constructor, not a
+;; helper: one call less). A double is already a jolt double.
+(defn- ffi-c->jolt [type expr]
+  (cond
+    (= "string" type) (str "(jolt-ffi-c->string " expr ")")
+    (= "bool" type) (str "(jolt-ffi-c->bool " expr ")")
+    (= "float" type) (str "(make-jfloat " expr ")")
+    :else expr))
+
+;; A :capture-native-error binding's procedure returns two values, the result and
+;; the errno/GetLastError captured right after the call; jolt sees them as a
+;; [result native-error] vector.
+(defn- ffi-capture-result [rettype call]
+  (str "(call-with-values (lambda () " call ")"
+       " (lambda (result native-error)"
+       " (jolt-vector " (ffi-c->jolt rettype "result") " native-error)))"))
+
+(defn- ffi-params [n]
+  (mapv (fn [i] (str "a" i)) (range n)))
+
 ;; The BARE marker — [:string :int :&], babashka.ffi's form where no types follow
 ;; and each call's tail is inferred from the values it is given. A
 ;; foreign-procedure's types are fixed when it is compiled, so this cannot be one
@@ -2061,41 +2102,25 @@
 ;; The arms and the general path agree on the cache key by construction — the
 ;; arity-specialized lookups are the same base-3 fold, unrolled.
 (defn- emit-ffi-bare-varargs-fn [node vi]
-  (let [at (:argtypes node)
-        fixed (subvec at 0 vi)
+  (let [fixed (subvec (:argtypes node) 0 vi)
         n (count fixed)
-        params (mapv (fn [i] (str "a" i)) (range n))
+        params (ffi-params n)
         rettype (:rettype node)
         capture (:capture-native-error node)
         cache-name (fresh-label "jolt_ffi_varargs")
         tail-name (fresh-label "jolt_ffi_tail")
         ;; The fixed arguments convert exactly as they do in a declared-tail
         ;; binding; only the tail is inferred.
-        native-args
-        (mapv (fn [i param]
-                (cond
-                  (= "string" (nth fixed i)) (str "(jolt-ffi-string->c " param ")")
-                  (= "bool" (nth fixed i)) (str "(jolt-ffi-bool->c " param ")")
-                  (#{"float" "double"} (nth fixed i)) (str "(jolt-ffi-float->c " param ")")
-                  :else param))
-              (range n) params)
+        native-args (mapv ffi-jolt->c fixed params)
         fixed-args (if (seq native-args) (str " " (str/join " " native-args)) "")
         cache (str "(jolt-ffi-varargs-cache " (chez-str-lit (:csym node))
                    " (quote (" (str/join " " (map ffi-type->chez fixed)) ")) "
                    "(quote " (ffi-type->chez rettype) ") " n " "
                    (if capture "#t" "#f") ")")
-        convert (fn [expr]
-                  (cond
-                    (= "string" rettype) (str "(jolt-ffi-c->string " expr ")")
-                    (= "bool" rettype) (str "(jolt-ffi-c->bool " expr ")")
-                    (= "float" rettype) (str "(make-jfloat " expr ")")
-                    :else expr))
         wrap (fn [call]
                (if capture
-                 (str "(call-with-values (lambda () " call ")"
-                      " (lambda (result native-error)"
-                      " (jolt-vector " (convert "result") " native-error)))")
-                 (convert call)))
+                 (ffi-capture-result rettype call)
+                 (ffi-c->jolt rettype call)))
         ;; tail names t1..tk for the specialized arms
         tvars (fn [k] (mapv (fn [i] (str tail-name "_" (inc i))) (range k)))
         arm (fn [k]
@@ -2115,33 +2140,28 @@
     (str "(let ((" cache-name " " cache ")) "
          "(case-lambda " (str/join " " (map arm (range 4))) " " rest-arm "))")))
 
-(defn- emit-ffi-fn [node]
-  ;; A "varargs" marker in the argtype vector declares the binding variadic and
-  ;; marks the FIXED/VARIADIC boundary: types before it are the named
-  ;; parameters, types after it are the concrete variadic arguments this
-  ;; binding always passes. The call is emitted with Chez's (__varargs_after n)
-  ;; convention (n = the fixed-arg count = the marker's index), so the variadic
-  ;; arguments travel where the callee's va_list reads them — Apple arm64
-  ;; passes variadic args on the stack, and a fixed-arity binding silently
-  ;; corrupts them (fcntl, ioctl, open). C requires a named parameter before
-  ;; the ellipsis, so a leading marker is rejected. Only supported on the
-  ;; non-blocking path: __collect_safe cannot combine with a varargs convention.
-  ;;
-  ;; :& is babashka.ffi's spelling of the same marker and means the same thing
-  ;; here, so a signature written for either FFI declares the same call. The one
-  ;; half of that convention jolt does not have is the BARE marker — babashka's
-  ;; [:string :int :&], where each call infers its own tail from the values —
-  ;; because a foreign-procedure's types are fixed when it is compiled, and there
-  ;; is nothing to compile a new one from at the call. That shape is rejected by
-  ;; name rather than through "unknown foreign type", see below.
+;; A "varargs" marker in the argtype vector declares the binding variadic and
+;; marks the FIXED/VARIADIC boundary: types before it are the named parameters,
+;; types after it are the concrete variadic arguments this binding always passes.
+;; The call is emitted with Chez's (__varargs_after n) convention (n = the
+;; fixed-arg count = the marker's index), so the variadic arguments travel where
+;; the callee's va_list reads them — Apple arm64 passes variadic args on the
+;; stack, and a fixed-arity binding silently corrupts them (fcntl, ioctl, open).
+;;
+;; :& is babashka.ffi's spelling of the same marker and means the same thing
+;; here, so a signature written for either FFI declares the same call.
+(defn- ffi-varargs-index [argtypes]
+  (first (keep-indexed (fn [i type] (when (or (= type "varargs") (= type "&")) i))
+                       argtypes)))
+
+;; Every shape emit-ffi-fn cannot compile, refused with a message that names the
+;; option and the position rather than surfacing Chez's own error from inside the
+;; foreign-procedure macro.
+(defn- check-ffi-signature! [node vi]
   (let [at (:argtypes node)
-        varargs-marker? (fn [type] (or (= type "varargs") (= type "&")))
-        vi (first (keep-indexed (fn [i type] (when (varargs-marker? type) i)) at))
         marker (when vi (str ":" (nth at vi)))
-        ;; No types after the marker: babashka.ffi's bare form, which infers each
-        ;; call's tail rather than declaring one.
-        bare? (and vi (= vi (dec (count at))))
-        ret-aggregate? (ffi-by-value? (:rettype node))]
+        bare? (and vi (= vi (dec (count at))))]
+    ;; C requires a named parameter before the ellipsis.
     (when (and vi (zero? vi))
       (throw (ex-info (str "jolt.ffi: " marker " needs at least one fixed argtype before it")
                       {:argtypes at})))
@@ -2151,6 +2171,7 @@
                            " argument needs an ftype the binding declared. Declare the tail"
                            " after the marker.")
                       {:argtypes at})))
+    ;; __collect_safe cannot combine with a varargs convention.
     (when (and vi (:blocking node))
       (throw (ex-info (str "jolt.ffi: " marker " cannot combine with :blocking")
                       {:argtypes at})))
@@ -2164,162 +2185,160 @@
     ;; behind a call that pinned the collector (issue #973), so name the
     ;; argument and what to pass instead. A string RESULT is fine: it is built
     ;; after the thread is active again.
-    (when (:blocking node)
-      (when-let [i (first (keep-indexed (fn [i type] (when (= "string" type) i)) at))]
-        (throw (ex-info (str "jolt.ffi: :blocking cannot combine with a :string argument"
-                             " (argument " i " of \"" (:csym node) "\") — the collector may"
-                             " move the string while the deactivated thread is inside C."
-                             " Pass a :pointer instead: jolt.ffi/string->ptr, or an"
-                             " arena-owned string, released once the call returns.")
-                        {:argtypes at :argument i}))))
-    (when (and vi ret-aggregate?)
+    (when-let [i (and (:blocking node)
+                      (first (keep-indexed (fn [i type] (when (= "string" type) i)) at)))]
+      (throw (ex-info (str "jolt.ffi: :blocking cannot combine with a :string argument"
+                           " (argument " i " of \"" (:csym node) "\") — the collector may"
+                           " move the string while the deactivated thread is inside C."
+                           " Pass a :pointer instead: jolt.ffi/string->ptr, or an"
+                           " arena-owned string, released once the call returns.")
+                      {:argtypes at :argument i})))
+    (when (and vi (ffi-by-value? (:rettype node)))
       (throw (ex-info (str "jolt.ffi: aggregate returns cannot combine with " marker)
                       {:argtypes at})))
     (when (and vi (some ffi-by-value? (subvec at (inc vi))))
       (throw (ex-info "jolt.ffi: aggregate variadic arguments are not supported"
-                      {:argtypes at})))
-    (if bare?
+                      {:argtypes at})))))
+
+;; A by-value aggregate travels as the address of jolt-owned memory, viewed
+;; through the ftype the binding declares for it.
+(defn- ffi-aggregate-pointer [param type-name role]
+  (str "(let ((address (jnum->exact " param "))) "
+       "(if (= address 0) "
+       "(throw-jvm 'NullPointerException "
+       (chez-str-lit (str "jolt.ffi: null by-value " role " pointer")) ") "
+       "(make-ftype-pointer " type-name " address)))"))
+
+;; The expression that yields the binding's foreign procedure, resolved on first
+;; call and cached in the binding's `p`.
+;;
+;; Resolution order is the same for every binding, variadic or not: a declared
+;; :jolt/native's own dlopen handle first, the process-global table second. A
+;; scalar-varargs binding used to skip the scoped branch, which meant a variadic
+;; symbol in a library loaded with load-library could not be bound AT ALL --
+;; RTLD_LOCAL keeps it out of the global table, so the name found nothing and the
+;; call raised "no entry". curl_easy_setopt is that case. The address+convention
+;; form this emits is the one the aggregate C witness already covers on each
+;; target ABI.
+(defn- ffi-procedure-expr [node vi signature]
+  (let [csym (chez-str-lit (:csym node))
+        capture (:capture-native-error node)
+        blocking (:blocking node)
+        conv (if vi (str " (__varargs_after " vi ")") "")
+        capture-conv (cond
+                       blocking "__collect_safe"
+                       ;; The outer wrapper already adds one list. A compound
+                       ;; convention needs one more so the adapter receives
+                       ;; (__varargs_after n) as one datum rather than two
+                       ;; flat convention arguments.
+                       vi (str "(__varargs_after " vi ")")
+                       :else "")
+        by-name (if capture
+                  (str "(jolt-ffi-native-error-procedure (" capture-conv ") "
+                       csym signature ")")
+                  (str "(" (if blocking
+                              "sa-foreign-procedure-blocking "
+                              "sa-foreign-procedure ")
+                       conv " " csym signature ")"))
+        scoped (str "(let ((a (jolt-ffi-dlsym-native " csym "))) "
+                    "(and a "
+                    (if capture
+                      (str "(jolt-ffi-native-error-procedure (" capture-conv ") a"
+                           signature ")")
+                      (str "(foreign-procedure"
+                           (when blocking " __collect_safe")
+                           (when vi conv)
+                           " a" signature ")"))
+                    "))")]
+    (str "(or p (begin (set! p (or " scoped " " by-name ")) p))")))
+
+;; A binding with a declared argument tail (or none): one foreign procedure,
+;; wrapped in a lambda that marshals each argument and the result. By-value
+;; aggregates get an ftype each, defined once around the lambda; an aggregate
+;; RESULT is written into a caller-supplied destination passed ahead of the
+;; arguments, and that destination is what the call returns.
+(defn- ffi-aggregate-args
+  "Index -> {:name :type} for each by-value aggregate argument, each with a fresh
+  ftype name."
+  [types]
+  (->> types
+       (map-indexed (fn [i type]
+                      (when (ffi-by-value? type)
+                        [i {:name (fresh-label "jolt_ffi_arg") :type (:type type)}])))
+       (remove nil?)
+       (into (sorted-map))))
+
+;; The Chez signature: each argument's foreign type, an aggregate as a pointer to
+;; its ftype, then the result's.
+(defn- ffi-signature [types aggregates emitted-return]
+  (let [emitted-types (map-indexed (fn [i type]
+                                     (if-let [entry (get aggregates i)]
+                                       (str "(& " (:name entry) ")")
+                                       (ffi-type->chez type)))
+                                   types)]
+    (str " (" (str/join " " emitted-types) ") " emitted-return)))
+
+;; The define-ftype forms for the aggregates a binding passes or returns.
+(defn- ffi-ftype-defs [aggregates return-name rettype]
+  (concat
+   (map (fn [entry]
+          (str "(define-ftype " (:name entry) " "
+               (emit-ffi-layout-ftype (:type entry)) ")"))
+        (vals aggregates))
+   (when return-name
+     [(str "(define-ftype " return-name " "
+           (emit-ffi-layout-ftype (:type rettype)) ")")])))
+
+(defn- emit-ffi-fixed-fn [node vi]
+  (let [at (:argtypes node)
+        rettype (:rettype node)
+        ret-aggregate? (ffi-by-value? rettype)
+        types (if vi (vec (concat (subvec at 0 vi) (subvec at (inc vi)))) at)
+        params (ffi-params (count types))
+        return-param (when ret-aggregate? "destination")
+        aggregates (ffi-aggregate-args types)
+        return-name (when ret-aggregate? (fresh-label "jolt_ffi_return"))
+        signature (ffi-signature types aggregates
+                                 (if ret-aggregate?
+                                   (str "(& " return-name ")")
+                                   (ffi-type->chez rettype)))
+        native-args (vec (map-indexed
+                          (fn [i param]
+                            (if-let [entry (get aggregates i)]
+                              (ffi-aggregate-pointer param (:name entry) "aggregate")
+                              (ffi-jolt->c (nth types i) param)))
+                          params))
+        call-args (if ret-aggregate?
+                    (into [(ffi-aggregate-pointer return-param return-name "return destination")]
+                          native-args)
+                    native-args)
+        call (str "(" (ffi-procedure-expr node vi signature)
+                  (when (seq call-args) (str " " (str/join " " call-args))) ")")
+        body (cond
+               (:capture-native-error node) (ffi-capture-result rettype call)
+               ret-aggregate? (str "(begin " call " " return-param ")")
+               :else (ffi-c->jolt rettype call))
+        wrapper-params (if return-param (cons return-param params) params)
+        binding (str "(let ((p #f)) (lambda (" (str/join " " wrapper-params) ") " body "))")
+        ftypes (ffi-ftype-defs aggregates return-name rettype)]
+    (if (seq ftypes)
+      (str "(let () " (str/join " " ftypes) " " binding ")")
+      binding)))
+
+;; jolt.ffi/__fn -> the binding's lambda. The one half of the babashka.ffi varargs
+;; convention a declared tail cannot express is the BARE marker, [:string :int :&],
+;; where each call infers its own tail from the values, since a
+;; foreign-procedure's types are fixed when it is compiled; that shape gets a
+;; per-binding cache of procedures instead (emit-ffi-bare-varargs-fn). Only the
+;; non-blocking path takes a varargs marker: __collect_safe cannot combine with a
+;; varargs convention.
+(defn- emit-ffi-fn [node]
+  (let [at (:argtypes node)
+        vi (ffi-varargs-index at)]
+    (check-ffi-signature! node vi)
+    (if (and vi (= vi (dec (count at))))
       (emit-ffi-bare-varargs-fn node vi)
-      (let [types (if vi (vec (concat (subvec at 0 vi) (subvec at (inc vi)))) at)
-            n (count types)
-            params (mapv (fn [i] (str "a" i)) (range n))
-            return-param (when ret-aggregate? "destination")
-            wrapper-params (if return-param (cons return-param params) params)
-            aggregates
-            (->> types
-                 (map-indexed (fn [i type]
-                                (when (ffi-by-value? type)
-                                  {:index i :name (fresh-label "jolt_ffi_arg")
-                                   :type (:type type)})))
-                 (remove nil?)
-                 vec)
-            aggregate-by-index (into {} (map (fn [entry] [(:index entry) entry]) aggregates))
-            return-name (when ret-aggregate? (fresh-label "jolt_ffi_return"))
-            emitted-types
-            (mapv (fn [i type]
-                    (if-let [entry (get aggregate-by-index i)]
-                      (str "(& " (:name entry) ")")
-                      (ffi-type->chez type)))
-                  (range n) types)
-            emitted-return (if ret-aggregate?
-                             (str "(& " return-name ")")
-                             (ffi-type->chez (:rettype node)))
-            pointer-check
-            (fn [param type-name role]
-              (str "(let ((address (jnum->exact " param "))) "
-                   "(if (= address 0) "
-                   "(throw-jvm 'NullPointerException "
-                   (chez-str-lit (str "jolt.ffi: null by-value " role " pointer")) ") "
-                   "(make-ftype-pointer " type-name " address)))"))
-            ;; A :string argument is wrapped so jolt's nil reaches C as a null
-            ;; char*. Chez's `string` type already accepts #f for that; it just
-            ;; does not know jolt's nil, and raised "invalid foreign-procedure
-            ;; argument" on the sentinel. Plenty of C treats NULL as a real
-            ;; argument (setlocale queries, rlLoadShaderCode's default vertex
-            ;; shader), and binding those as :pointer to get NULL through loses
-            ;; the string marshaling on that parameter.
-            native-args
-            (mapv (fn [i param]
-                    (cond
-                      (get aggregate-by-index i)
-                      (pointer-check param (:name (get aggregate-by-index i)) "aggregate")
-
-                      (= "string" (nth types i))
-                      (str "(jolt-ffi-string->c " param ")")
-
-                      ;; :bool is one byte on the wire; jolt truthiness decides it,
-                      ;; so nil and false send 0 and everything else sends 1.
-                      (= "bool" (nth types i))
-                      (str "(jolt-ffi-bool->c " param ")")
-
-                      ;; (float x) is a boxed java.lang.Float; a Chez float or
-                      ;; double position takes only a flonum.
-                      (#{"float" "double"} (nth types i))
-                      (str "(jolt-ffi-float->c " param ")")
-
-                      :else param))
-                  (range n) params)
-            native-destination (when ret-aggregate?
-                                 (pointer-check return-param return-name "return destination"))
-            conv (if vi (str " (__varargs_after " vi ")") "")
-            signature (str " (" (str/join " " emitted-types) ") " emitted-return)
-            csym (chez-str-lit (:csym node))
-            capture (:capture-native-error node)
-            capture-conv (cond
-                           (:blocking node) "__collect_safe"
-                           ;; The outer wrapper already adds one list. A compound
-                           ;; convention needs one more so the adapter receives
-                           ;; (__varargs_after n) as one datum rather than two
-                           ;; flat convention arguments.
-                           vi (str "(__varargs_after " vi ")")
-                           :else "")
-            fp (if capture
-                 (str "(jolt-ffi-native-error-procedure (" capture-conv ") "
-                      csym signature ")")
-                 (str "(" (if (:blocking node)
-                             "sa-foreign-procedure-blocking "
-                             "sa-foreign-procedure ")
-                      conv " " csym signature ")"))
-            ;; Resolution order is the same for every binding, variadic or not:
-            ;; a declared :jolt/native's own dlopen handle first, the
-            ;; process-global table second. A scalar-varargs binding used to skip
-            ;; the scoped branch, which meant a variadic symbol in a library
-            ;; loaded with load-library could not be bound AT ALL -- RTLD_LOCAL
-            ;; keeps it out of the global table, so the name found nothing and
-            ;; the call raised "no entry". curl_easy_setopt is that case. The
-            ;; address+convention form this emits is the one the aggregate C
-            ;; witness already covers on each target ABI.
-            scoped (str "(let ((a (jolt-ffi-dlsym-native " csym "))) "
-                        "(and a "
-                        (if capture
-                          (str "(jolt-ffi-native-error-procedure (" capture-conv ") a"
-                               signature ")")
-                          (str "(foreign-procedure"
-                               (when (:blocking node) " __collect_safe")
-                               (when vi conv)
-                               " a" signature ")"))
-                        "))")
-            proc (str "(or p (begin (set! p (or " scoped " " fp ")) p))")
-            call-args (if ret-aggregate? (into [native-destination] native-args) native-args)
-            call (str "(" proc
-                      (when (seq call-args) (str " " (str/join " " call-args))) ")")
-            ;; The return direction is the same boundary: Chez hands back #f for a
-            ;; NULL char*, which is Scheme's false, not jolt's nil. getenv of an
-            ;; unset name returned false to Clojure before this.
-            body (cond
-                   capture
-                   (str "(call-with-values (lambda () " call ")"
-                        " (lambda (result native-error)"
-                        " (jolt-vector "
-                        (cond
-                          (= "string" (:rettype node)) "(jolt-ffi-c->string result)"
-                          (= "bool" (:rettype node)) "(jolt-ffi-c->bool result)"
-                          (= "float" (:rettype node)) "(make-jfloat result)"
-                          :else "result")
-                        " native-error)))")
-
-                   ret-aggregate? (str "(begin " call " " return-param ")")
-                   (= "string" (:rettype node)) (str "(jolt-ffi-c->string " call ")")
-                   (= "bool" (:rettype node)) (str "(jolt-ffi-c->bool " call ")")
-                   ;; A C float reaches Clojure on the JVM as a java.lang.Float.
-                   ;; Chez hands over the single-precision flonum, so it is boxed
-                   ;; as it is (the constructor, not a helper: one call less).
-                   (= "float" (:rettype node)) (str "(make-jfloat " call ")")
-                   :else call)
-            binding (str "(let ((p #f)) (lambda (" (str/join " " wrapper-params) ") " body "))")]
-        (if (or (seq aggregates) ret-aggregate?)
-          (str "(let () "
-               (str/join " "
-                         (concat
-                          (map (fn [entry]
-                                 (str "(define-ftype " (:name entry) " "
-                                      (emit-ffi-layout-ftype (:type entry)) ")"))
-                               aggregates)
-                          (when ret-aggregate?
-                            [(str "(define-ftype " return-name " "
-                                  (emit-ffi-layout-ftype (:type (:rettype node))) ")")])))
-               " " binding ")")
-          binding)))))
+      (emit-ffi-fixed-fn node vi))))
 
 ;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
 ;; locked + registered (jolt-ffi-register-callable!, host/chez/java/ffi.ss) so the
@@ -2369,22 +2388,12 @@
           ;; body so it is evaluated once, at callable-construction time, not on
           ;; every call C makes through the entry point.
           (let [fname (fresh-label "jolt_ffi_cb")
-                params (mapv (fn [i] (str "a" i)) (range (count argtypes)))
-                args (mapv (fn [param type]
-                             (cond
-                               (= "string" type) (str "(jolt-ffi-c->string " param ")")
-                               (= "bool" type) (str "(jolt-ffi-c->bool " param ")")
-                               (= "float" type) (str "(make-jfloat " param ")")
-                               :else param))
-                           params argtypes)
+                params (ffi-params (count argtypes))
+                args (mapv (fn [param type] (ffi-c->jolt type param)) params argtypes)
                 invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]
             (str "(let ((" fname " " (emit (:fn node)) ")) "
                  "(lambda (" (str/join " " params) ") "
-                 (cond
-                   (= "string" rettype) (str "(jolt-ffi-string->c " invoke ")")
-                   (= "bool" rettype) (str "(jolt-ffi-bool->c " invoke ")")
-                   (#{"float" "double"} rettype) (str "(jolt-ffi-float->c " invoke ")")
-                   :else invoke)
+                 (ffi-jolt->c rettype invoke)
                  "))")))
         ;; A :collect-safe callable counts itself in and out (java/ffi.ss
         ;; jolt-ffi-callback-enter!/exit!, a CAS each) so a collection stalled
@@ -4214,9 +4223,9 @@
         args (or (:sited-args node) (map emit (:args node)))
         direct (when chez?
                  (or (when (= :str (:target-type node))
-                       (string-direct-emit m (count args) t args))
+                       (string-direct-emit m t args))
                      (when (= :kw (:target-type node))
-                       (keyword-direct-emit m (count args) t args))
+                       (keyword-direct-emit m t args))
                      (when (= :sb (:target-type node))
                        (sb-direct-emit m (count args) t args false))
                      (when (= :sbuf (:target-type node))
@@ -4246,8 +4255,8 @@
       chez?
       (let [tt (fresh-label "_ht$")
             as (mapv (fn [_] (fresh-label "_ha$")) args)
-            sd (string-direct-emit m (count as) tt as)
-            kd (keyword-direct-emit m (count as) tt as)
+            sd (string-direct-emit m tt as)
+            kd (keyword-direct-emit m tt as)
             generic (or (host-site-emit tt m as)
                         (str "(record-method-dispatch " tt " " (chez-str-lit m)
                              " (jolt-vector" (if (empty? as) "" (str " " (str/join " " as))) "))"))]

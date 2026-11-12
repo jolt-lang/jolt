@@ -680,6 +680,14 @@
                       (list (symbol mname) (into [(symbol "fi__this")] ps) body))
                 (list (symbol "clojure.core" "cast") iface v)))))
 
+(defn- binding-vector
+  "The binding vector of a (let*|loop*|letfn* [...] body*) form, as a Clojure vector."
+  [items]
+  (let [bvec (nth items 1 nil)]
+    (when-not (form-vec? bvec)
+      (analysis-error :analyze/invalid-binding "Bad binding form, expected vector"))
+    (vec (form-vec-items bvec))))
+
 (defn- analyze-bindings [ctx bvec env]
   ;; Checked BEFORE the walk, because the walk reads pairs: an odd vector sent
   ;; (nth bvec (inc i)) past the end and the user got the raw fault that came
@@ -1207,7 +1215,7 @@
 ;; locals. Emitted as a :let flagged :letrec so the back end lowers it to
 ;; `letrec*`; the interpreter's shared mutable env gives the same semantics.
 (defn- analyze-letfn* [ctx items env]
-  (let [bvec  (vec (form-vec-items (nth items 1)))
+  (let [bvec  (binding-vector items)
         n     (quot (count bvec) 2)
         names (mapv (fn [i] (form-sym-name (nth bvec (* 2 i)))) (range n))
         env*  (add-locals env names)
@@ -1278,6 +1286,13 @@
     (if pos (assoc node :pos pos) node)))
 
 (defn- analyze-def [ctx items env]
+  ;; The reference's arity rule: a docstring may sit between name and value, so
+  ;; four elements are allowed only when the third is a string.
+  (let [n (count items)]
+    (when (< n 2)
+      (analysis-error :analyze/invalid-def "Too few arguments to def"))
+    (when (or (> n 4) (and (= n 4) (not (string? (nth items 2)))))
+      (analysis-error :analyze/invalid-def "Too many arguments to def")))
   (let [name-sym (nth items 1)]
     ;; ^{:map} metadata reads as (def (with-meta name m) v): the metadata is a
     ;; runtime expression, so the interpreter evaluates the whole def.
@@ -1330,6 +1345,8 @@
 ;; which throws when there is none rather than establishing a root. A local target
 ;; (jolt binds fields immutably) or any other shape is uncompilable.
 (defn- analyze-set! [ctx items env]
+  (when-not (= 3 (count items))
+    (analysis-error :analyze/invalid-set "Malformed assignment, expecting (set! target val)"))
   (let [target (nth items 1)
         val-node (analyze ctx (nth items 2) env)
         ti (when (form-list? target) (vec (form-elements target)))
@@ -1375,172 +1392,214 @@
             (str "Wrong number of args (" (dec (count items)) ") passed to: " op)))
   (invoke (var-ref "jolt.host" op) [(analyze ctx (nth items 1) env)]))
 
+;; The special forms below each get a function of their own, so analyze-special
+;; reads as the dispatch table it is. Each checks its form's SHAPE before reading
+;; it: an (nth items i) past the end, or form-vec-items over a symbol, surfaced as
+;; :analyze/internal-failure with a raw IndexOutOfBounds or "Don't know how to
+;; create ISeq" for (throw), (def), (let* x 1) and (set!). The messages are the
+;; reference compiler's own.
+
+;; A quoted collection keeps its USER metadata (rewrite-clj coerces
+;; '^:x (4 5 6) and expects the meta back). A list form is the one thing the
+;; reader stamps with :line/:column/:file, and that is its own bookkeeping
+;; rather than data, so it comes back off — but only there: on a vector, map,
+;; set or symbol the only possible source of a position key is the program
+;; that wrote it. The kept metadata is part of the literal, so quote it.
+(defn- analyze-quote [ctx items env]
+  (when-not (= 2 (count items))
+    (analysis-error :analyze/invalid-arity
+                    (str "Wrong number of args (" (dec (count items)) ") passed to quote")))
+  (let [qf (second items)
+        m (form-coll-meta qf)
+        m (when (map? m)
+            (let [u (if (form-list? qf) (dissoc m :line :column :file) m)]
+              (when (seq u) u)))]
+    ;; Quoting a live VALUE a macro spliced is the value — (quote 5) is
+    ;; 5, and (quote <fn>) is that fn — so it rebuilds the same way an
+    ;; unquoted one does rather than going to the quoted-data emitter,
+    ;; which can only render what has reader syntax. embed-plan answers
+    ;; nil for every ordinary form, so this asks one question instead of
+    ;; restating the list of shapes analyze already recognizes.
+    (if-let [plan (embed-plan qf)]
+      (embedded-plan-node ctx plan env)
+      (if (nil? m)
+        (quote-node qf)
+        (invoke (var-ref "clojure.core" "with-meta")
+                [(quote-node qf) (quote-node m)])))))
+
+;; 2 or 3 argument forms only (spec 03-special-forms X1)
+(defn- analyze-if [ctx items env]
+  (when (or (< (count items) 3) (> (count items) 4))
+    (analysis-error :analyze/invalid-if
+                    (if (< (count items) 3)
+                      "Too few arguments to if"
+                      "Too many arguments to if")))
+  (if-node (analyze ctx (nth items 1) env)
+           (analyze ctx (nth items 2) env)
+           (if (> (count items) 3)
+             (analyze ctx (nth items 3) env)
+             (const nil))))
+
+(defn- analyze-throw [ctx items env]
+  (case (count items)
+    1 (analysis-error :analyze/invalid-throw
+                      "Too few arguments to throw, throw expects a single Throwable instance")
+    2 (throw-node (analyze ctx (nth items 1) env))
+    (analysis-error :analyze/invalid-throw
+                    "Too many arguments to throw, throw expects a single Throwable instance")))
+
+(defn- analyze-let* [ctx items env]
+  (let [[pairs env*] (analyze-bindings ctx (binding-vector items) env)]
+    (let-node pairs (analyze-seq ctx (drop 2 items) env*))))
+
+(defn- analyze-loop* [ctx items env]
+  (let [bvec (binding-vector items)
+        rname (gen-name "loop")
+        [pairs env*] (analyze-bindings ctx bvec env)
+        body-env (assoc (with-recur env* rname (quot (count bvec) 2)
+                                    (mapv (fn [[nm _]] (get (:jprims env*) nm)) pairs))
+                        :recur-locals (mapv first pairs))
+        ;; The other recur-target root (see analyze-arity): a recur
+        ;; against THIS loop may only sit in tail position of its body.
+        body-node (analyze-seq ctx (drop 2 items) body-env)]
+    (check-recur-tails! body-node)
+    {:op :loop :bindings pairs :body body-node}))
+
+;; A recur onto a ^boolean loop local must pass something that can be a boolean;
+;; the reference rejects a provably non-boolean argument at compile time.
+(defn- check-recur-prims! [env args]
+  (doseq [[i prim] (map-indexed vector (:recur-prims env))
+          :when (= :boolean prim)
+          :let [had (jvm-non-boolean-class (nth args i) env)]
+          :when had]
+    (analysis-error :analyze/invalid-recur
+                    (str " recur arg for primitive local: "
+                         (nth (:recur-locals env) i)
+                         " is not matching primitive, had: " had
+                         ", needed: boolean"))))
+
+(defn- analyze-recur [ctx form items env]
+  (let [arity (:recur-arity env)
+        n (dec (count items))]
+    (when-not (:recur env)
+      (analysis-error :analyze/invalid-recur
+                      "Cannot recur here: no enclosing loop or fn"))
+    ;; A target exists but a `try` stands between here and it. Reported
+    ;; before the arity check because the arity is beside the point when
+    ;; the recur cannot happen at all, and with the reference's own two
+    ;; messages: a try body may not be recurred ACROSS, while a catch or
+    ;; finally is not a tail position to begin with.
+    (case (:recur-blocked env)
+      :try (analysis-error :analyze/invalid-recur "Cannot recur across try")
+      :non-tail (analysis-error :analyze/invalid-recur
+                                "Can only recur from tail position")
+      nil)
+    (when (and arity (not= n arity))
+      (analysis-error :analyze/invalid-recur
+                      (str "Mismatched argument count to recur, expected: " arity
+                           " args, got: " n)))
+    ;; Carry the recur's own source position: the tail-position check is
+    ;; a pass over the finished tree, long after the position box has
+    ;; moved on, so the node is the only thing that still knows where
+    ;; this recur was written. nil for a macro-built recur with no
+    ;; reader metadata, which falls back to the enclosing form.
+    (let [args (mapv #(analyze ctx % env) (rest items))
+          _ (check-recur-prims! env args)
+          node {:op :recur :args args}
+          p (form-position form)]
+      (if p (assoc node :pos p) node))))
+
+;; (var sym): the var itself, resolved at compile time. A non-symbol
+;; argument and an unresolvable symbol are distinct errors; the latter uses
+;; the reference wording. Note (var String) succeeds where the JVM refuses:
+;; jolt holds imported classes in vars, so the symbol resolves as :var.
+(defn- analyze-var [ctx items]
+  (let [sym (second items)]
+    (when-not (form-sym? sym)
+      (analysis-error :analyze/invalid-var-reference
+                      (str "The argument to `var` must be a symbol, got: " (pr-str sym))))
+    (let [r (resolve-global ctx sym)]
+      (if (= :var (:kind r))
+        (the-var (:ns r) (:name r))
+        (analysis-error :analyze/unresolved-var
+                        (str "Unable to resolve var: "
+                             (if-let [ns (form-sym-ns sym)] (str ns "/") "")
+                             (form-sym-name sym) " in this context"))))))
+
+;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
+;; produced by a macro like (when … (defmacro …)). Lower it the way the spine
+;; does: def the expander fn, then mark the var a macro at runtime so later
+;; forms expand it. Strip a leading docstring / attr-map, as defmacro allows.
+(defn- analyze-defmacro [ctx items env]
+  (let [name-sym (nth items 1)
+        nm (form-sym-name name-sym)
+        cur (compile-ns ctx)
+        after (drop 2 items)
+        [after doc] (if (string? (first after)) [(rest after) (first after)] [after nil])
+        [after attr] (if (form-map? (first after)) [(rest after) (first after)] [after nil])
+        ;; …and a TRAILING attr-map, which defn takes too (the JVM's
+        ;; defmacro hands it the whole fdecl, that map included). It
+        ;; used to run through the arity lowering, becoming a bogus
+        ;; ([&form &env]) clause and a [:k 1] entry in :arglists.
+        [after trail] (macro-trail-attr after)
+        ;; build (fn params body…) and analyze it through the fn MACRO
+        ;; so a destructuring macro arglist desugars (the fn* primitive
+        ;; would not), then def it and mark the var a macro. Head with
+        ;; the QUALIFIED clojure.core/fn so it resolves to the real fn
+        ;; macro even when the macro being defined is `fn` (schema/s/fn)
+        ;; or the ns excluded it.
+        fn-form (cons (symbol "clojure.core" "fn") (macro-fn-arities after))
+        ;; var meta like defn: ^meta on the name, docstring, attr-map, arglists
+        arglists (cond (empty? after) nil          ; (defmacro m) declares none
+                       (form-list? (first after)) (map first after)
+                       :else (list (first after)))
+        ;; the derived arglists is a DEFAULT: an explicit :arglists in
+        ;; the attr-map (or on the name) overrides it, as defn allows.
+        ;; Merging it last instead silently discarded the user's value.
+        ;; Precedence is DEFN'S, because on the JVM this form becomes a
+        ;; defn: name metadata < the derived arglists < docstring <
+        ;; leading attr-map < trailing attr-map. So ^{:arglists …} on
+        ;; the NAME does not override (the JVM ignores it there),
+        ;; {:arglists …} in an attr-map does, and an attr-map's :doc
+        ;; beats the docstring — which is what jolt's own defn already
+        ;; did while this arm had the docstring winning.
+        base (merge (or (form-sym-meta name-sym) {})
+                    (if arglists {:arglists arglists} {})
+                    (if doc {:doc doc} {})
+                    (or attr {})
+                    (or trail {}))
+        meta-expr (def-meta-expr ctx base env)]
+    (host-intern! ctx cur nm)
+    (merge {:op :defmacro :ns cur :name nm
+            :fn (analyze ctx fn-form env)}
+           (if meta-expr {:meta-expr meta-expr} {:meta base}))))
+
 (defn- analyze-special [ctx op form items env]
   (case op
-    ;; A quoted collection keeps its USER metadata (rewrite-clj coerces
-    ;; '^:x (4 5 6) and expects the meta back). A list form is the one thing the
-    ;; reader stamps with :line/:column/:file, and that is its own bookkeeping
-    ;; rather than data, so it comes back off — but only there: on a vector, map,
-    ;; set or symbol the only possible source of a position key is the program
-    ;; that wrote it. The kept metadata is part of the literal, so quote it.
-    "quote" (let [qf (second items)
-                  m (form-coll-meta qf)
-                  m (when (map? m)
-                      (let [u (if (form-list? qf) (dissoc m :line :column :file) m)]
-                        (when (seq u) u)))]
-              ;; Quoting a live VALUE a macro spliced is the value — (quote 5) is
-              ;; 5, and (quote <fn>) is that fn — so it rebuilds the same way an
-              ;; unquoted one does rather than going to the quoted-data emitter,
-              ;; which can only render what has reader syntax. embed-plan answers
-              ;; nil for every ordinary form, so this asks one question instead of
-              ;; restating the list of shapes analyze already recognizes.
-              (if-let [plan (embed-plan qf)]
-                (embedded-plan-node ctx plan env)
-                (if (nil? m)
-                  (quote-node qf)
-                  (invoke (var-ref "clojure.core" "with-meta")
-                          [(quote-node qf) (quote-node m)]))))
-    "if" (do
-           ;; 2 or 3 argument forms only (spec 03-special-forms X1)
-           (when (or (< (count items) 3) (> (count items) 4))
-             (analysis-error :analyze/invalid-if
-                             (if (< (count items) 3)
-                               "Too few arguments to if"
-                               "Too many arguments to if")))
-           (if-node (analyze ctx (nth items 1) env)
-                    (analyze ctx (nth items 2) env)
-                    (if (> (count items) 3)
-                      (analyze ctx (nth items 3) env)
-                      (const nil))))
-    "do" (analyze-seq ctx (rest items) env)
-    "throw" (throw-node (analyze ctx (nth items 1) env))
-    "def" (analyze-def ctx items env)
-    "let*" (let [bvec (vec (form-vec-items (nth items 1)))
-                 r (analyze-bindings ctx bvec env)]
-             (let-node (first r) (analyze-seq ctx (drop 2 items) (second r))))
-    "loop*" (let [bvec (vec (form-vec-items (nth items 1)))
-                  rname (gen-name "loop")
-                  r (analyze-bindings ctx bvec env)
-                  env** (assoc (with-recur (second r) rname (quot (count bvec) 2)
-                                           (mapv (fn [[nm _]] (get (:jprims (second r)) nm)) (first r)))
-                               :recur-locals (mapv first (first r)))
-                  ;; The other recur-target root (see analyze-arity): a recur
-                  ;; against THIS loop may only sit in tail position of its body.
-                  body-node (analyze-seq ctx (drop 2 items) env**)
-                  _ (check-recur-tails! body-node)]
-              {:op :loop :bindings (first r) :body body-node})
-    "recur" (let [rt (:recur env)
-                  arity (:recur-arity env)
-                  n (dec (count items))]
-              (when-not rt (analysis-error :analyze/invalid-recur
-                                           "Cannot recur here: no enclosing loop or fn"))
-              ;; A target exists but a `try` stands between here and it. Reported
-              ;; before the arity check because the arity is beside the point when
-              ;; the recur cannot happen at all, and with the reference's own two
-              ;; messages: a try body may not be recurred ACROSS, while a catch or
-              ;; finally is not a tail position to begin with.
-              (case (:recur-blocked env)
-                :try (analysis-error :analyze/invalid-recur "Cannot recur across try")
-                :non-tail (analysis-error :analyze/invalid-recur
-                                          "Can only recur from tail position")
-                nil)
-              (when (and arity (not= n arity))
-                (analysis-error :analyze/invalid-recur
-                                (str "Mismatched argument count to recur, expected: " arity
-                                     " args, got: " n)))
-              ;; Carry the recur's own source position: the tail-position check is
-              ;; a pass over the finished tree, long after the position box has
-              ;; moved on, so the node is the only thing that still knows where
-              ;; this recur was written. nil for a macro-built recur with no
-              ;; reader metadata, which falls back to the enclosing form.
-              (let [node {:op :recur
-                          :args (mapv #(analyze ctx % env) (rest items))}
-                    _ (when-let [prims (:recur-prims env)]
-                        (dotimes [i (count prims)]
-                          (when (= :boolean (nth prims i))
-                            (when-let [had (jvm-non-boolean-class (nth (:args node) i) env)]
-                              (analysis-error :analyze/invalid-recur
-                                              (str " recur arg for primitive local: "
-                                                   (nth (:recur-locals env) i)
-                                                   " is not matching primitive, had: " had
-                                                   ", needed: boolean"))))))
-                    p (form-position form)]
-                (if p (assoc node :pos p) node)))
-    "try" (analyze-try ctx items env)
+    "quote"         (analyze-quote ctx items env)
+    "if"            (analyze-if ctx items env)
+    "do"            (analyze-seq ctx (rest items) env)
+    "throw"         (analyze-throw ctx items env)
+    "def"           (analyze-def ctx items env)
+    "let*"          (analyze-let* ctx items env)
+    "loop*"         (analyze-loop* ctx items env)
+    "recur"         (analyze-recur ctx form items env)
+    "try"           (analyze-try ctx items env)
     ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
     ;; is a macro over the same jolt.host per-object monitor. Libraries that
     ;; expand their own locking macro rather than calling clojure.core/locking
     ;; emit these directly (borkdude/dynaload does, under malli), so lower them
     ;; to that seam instead of punting. Like the JVM, both yield nil.
     "monitor-enter" (analyze-monitor-op ctx items env "monitor-enter")
-    "monitor-exit" (analyze-monitor-op ctx items env "monitor-exit")
-    "letfn*" (analyze-letfn* ctx items env)
-    "fn*" (analyze-fn ctx form items env)
+    "monitor-exit"  (analyze-monitor-op ctx items env "monitor-exit")
+    "letfn*"        (analyze-letfn* ctx items env)
+    "fn*"           (analyze-fn ctx form items env)
     ;; Lower the backtick to construction code (zero runtime cost), then analyze
     ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.
-    "syntax-quote" (analyze ctx (form-syntax-quote-lower ctx (second items)) env)
-    ;; (var sym): the var itself, resolved at compile time. A non-symbol
-    ;; argument and an unresolvable symbol are distinct errors; the latter uses
-    ;; the reference wording. Note (var String) succeeds where the JVM refuses:
-    ;; jolt holds imported classes in vars, so the symbol resolves as :var.
-    "var" (let [sym (second items)]
-            (if-not (form-sym? sym)
-              (analysis-error :analyze/invalid-var-reference
-                              (str "The argument to `var` must be a symbol, got: " (pr-str sym)))
-              (let [r (resolve-global ctx sym)]
-                (if (= :var (:kind r))
-                  (the-var (:ns r) (:name r))
-                  (analysis-error :analyze/unresolved-var
-                                  (str "Unable to resolve var: "
-                                     (if-let [ns (form-sym-ns sym)] (str ns "/") "")
-                                     (form-sym-name sym) " in this context"))))))
-    ;; A defmacro that is not top-level (the spine intercepts those) — e.g. one
-    ;; produced by a macro like (when … (defmacro …)). Lower it the way the spine
-    ;; does: def the expander fn, then mark the var a macro at runtime so later
-    ;; forms expand it. Strip a leading docstring / attr-map, as defmacro allows.
-    "defmacro" (let [name-sym (nth items 1)
-                     nm (form-sym-name name-sym)
-                     cur (compile-ns ctx)
-                     after (drop 2 items)
-                     [after doc] (if (string? (first after)) [(rest after) (first after)] [after nil])
-                     [after attr] (if (form-map? (first after)) [(rest after) (first after)] [after nil])
-                     ;; …and a TRAILING attr-map, which defn takes too (the JVM's
-                     ;; defmacro hands it the whole fdecl, that map included). It
-                     ;; used to run through the arity lowering, becoming a bogus
-                     ;; ([&form &env]) clause and a [:k 1] entry in :arglists.
-                     [after trail] (macro-trail-attr after)
-                     ;; build (fn params body…) and analyze it through the fn MACRO
-                     ;; so a destructuring macro arglist desugars (the fn* primitive
-                     ;; would not), then def it and mark the var a macro. Head with
-                     ;; the QUALIFIED clojure.core/fn so it resolves to the real fn
-                     ;; macro even when the macro being defined is `fn` (schema/s/fn)
-                     ;; or the ns excluded it.
-                     fn-form (cons (symbol "clojure.core" "fn") (macro-fn-arities after))
-                     ;; var meta like defn: ^meta on the name, docstring, attr-map, arglists
-                     arglists (cond (empty? after) nil          ; (defmacro m) declares none
-                                    (form-list? (first after)) (map first after)
-                                    :else (list (first after)))
-                     ;; the derived arglists is a DEFAULT: an explicit :arglists in
-                     ;; the attr-map (or on the name) overrides it, as defn allows.
-                     ;; Merging it last instead silently discarded the user's value.
-                     ;; Precedence is DEFN'S, because on the JVM this form becomes a
-                     ;; defn: name metadata < the derived arglists < docstring <
-                     ;; leading attr-map < trailing attr-map. So ^{:arglists …} on
-                     ;; the NAME does not override (the JVM ignores it there),
-                     ;; {:arglists …} in an attr-map does, and an attr-map's :doc
-                     ;; beats the docstring — which is what jolt's own defn already
-                     ;; did while this arm had the docstring winning.
-                     base (merge (or (form-sym-meta name-sym) {})
-                                 (if arglists {:arglists arglists} {})
-                                 (if doc {:doc doc} {})
-                                 (or attr {})
-                                 (or trail {}))
-                     meta-expr (def-meta-expr ctx base env)]
-                 (host-intern! ctx cur nm)
-                 (merge {:op :defmacro :ns cur :name nm
-                         :fn (analyze ctx fn-form env)}
-                        (if meta-expr {:meta-expr meta-expr} {:meta base})))
-    "set!" (analyze-set! ctx items env)
+    "syntax-quote"  (analyze ctx (form-syntax-quote-lower ctx (second items)) env)
+    "var"           (analyze-var ctx items)
+    "defmacro"      (analyze-defmacro ctx items env)
+    "set!"          (analyze-set! ctx items env)
     (analysis-error :analyze/unsupported-special-form
                     (str "Unsupported special form: " op))))
 

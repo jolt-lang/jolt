@@ -8,9 +8,8 @@
                           (RFC 0006) + the inter-procedural driver API.
 
   run-passes (below) is the single entry the back end applies to every analyzed
-  form. The driver/checker fns the back end looks up by name (check-form,
-  infer-body, reinfer-def, set-rtenv!, take-diags!, …) are re-exported here via
-  :refer, so jolt.passes stays the only namespace the back end imports.
+  form. The host reaches the driver/checker fns (check-form, wp-infer!,
+  take-diags!, …) in jolt.passes.types directly, by var name.
 
   Portable Clojure: kernel-tier fns + seed primitives only."
   (:require [jolt.host :refer [inline-enabled? inference-enabled? record-shapes protocol-methods stash-inline! var-redefined?
@@ -19,15 +18,11 @@
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
                                         begin-growth-budget! end-growth-budget!]]
-             [jolt.passes.types :refer [run-inference
-                                         check-form infer-body reinfer-def
-                                         set-rtenv! set-vtypes!
-                                        set-record-shapes! set-protocol-methods!
-                                        reset-escapes! collected-escapes
-                                        wp-infer! param-seeds-for param-num-seeds-for
-                                        set-check-mode! take-diags!
-                                        reinfer-inline-method-bodies
-                                        guard-declared-records]]))
+            [jolt.passes.types :refer [run-inference reinfer-def
+                                       set-record-shapes! set-protocol-methods!
+                                       param-seeds-for param-num-seeds-for
+                                       reinfer-inline-method-bodies
+                                       guard-declared-records]]))
 
 ;; Cap on inline -> flatten -> scalar-replace -> const-fold iterations. Each pass
 ;; sets `dirty` when it rewrote something; the loop stops at a clean pass or here.
