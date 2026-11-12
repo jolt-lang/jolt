@@ -2017,9 +2017,11 @@
        ((and (jrec? coll) (jrec-plain? coll))
         (let ((es (jrec-plain-entries coll)))
           (if (null? es) (jolt-invoke f) (reduce-list f (car es) (cdr es)))))
+       ;; The method's answer is reduce's, a Reduced included, as the JVM's
+       ;; (.reduce ^IReduce coll f) hands it back: a transducer step running an
+       ;; inner reduce relies on that Reduced reaching the outer reduction.
        ((and (declares-ireduce? coll) (iface-method coll "reduce" 2))
-        => (lambda (m) (let ((r (jolt-invoke m coll f)))
-                         (if (jolt-reduced? r) (jolt-reduced-val r) r))))
+        => (lambda (m) (jolt-invoke m coll f)))
        ((and jolt-reduce-iter-hook (jolt-reduce-iter-hook coll))
         => (lambda (step) (let ((x (step)))
                             (if (eq? x reduce-iter-done) (jolt-invoke f) (reduce-iterator f x step)))))
@@ -2031,12 +2033,12 @@
     ((f init coll)
      ;; IReduceInit: a deftype/record OR reify with its own `reduce` method drives
      ;; the reduction, e.g. (reduce f init (reify clojure.lang.IReduceInit
-     ;; (reduce [_ f i] ...))) or the same on a deftype.
+     ;; (reduce [_ f i] ...))) or the same on a deftype. Its answer, a Reduced
+     ;; included, is reduce's, as with IReduce above.
      (cond
        ((and (jrec? coll) (jrec-plain? coll)) (reduce-list f init (jrec-plain-entries coll)))
        ((iface-method coll "reduce" 3)
-        => (lambda (m) (let ((r (jolt-invoke m coll f init)))
-                         (if (jolt-reduced? r) (jolt-reduced-val r) r))))
+        => (lambda (m) (jolt-invoke m coll f init)))
        ((and jolt-reduce-iter-hook (jolt-reduce-iter-hook coll)) => (lambda (it) (reduce-iterator f init it)))
        ((and jolt-reduce-elems-hook (jolt-reduce-elems-hook coll)) => (lambda (xs) (reduce-list f init xs)))
        (else (reduce-seq f init (jolt-seq coll)))))))
