@@ -84,7 +84,8 @@ Clojure
   stdlib/clojure/string.clj stdlib/clojure/test.clj stdlib/clojure/zip.clj
   stdlib/clojure/data.clj stdlib/clojure/datafy.clj stdlib/clojure/stacktrace.clj
   stdlib/clojure/java/shell.clj stdlib/clojure/java/javadoc.clj
-  stdlib/clojure/java/browse.clj jolt-core/clojure/core/20-coll.clj
+  stdlib/clojure/java/browse.clj stdlib/clojure/core/reducers.clj
+  jolt-core/clojure/core/20-coll.clj
   jolt-core/clojure/core/30-macros.clj jolt-core/clojure/core/50-io.clj
   jolt-core/clojure/core/60-gvec.clj jolt-core/clojure/core/90-docs.clj
 

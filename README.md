@@ -171,7 +171,8 @@ Jolt targets Clojure semantics but runs on Chez, not the JVM. Most portable
 Clojure runs unchanged — persistent collections (32-way-trie vectors, HAMT
 maps/sets, RRB vectors), the numeric tower (exact integers, bignums, ratios,
 doubles, `BigDecimal` with `M` literals and `with-precision`), lazy and infinite
-sequences, transducers, destructuring, multimethods with hierarchies,
+sequences, transducers, `clojure.core.reducers` (whose `fold` runs
+sequentially), destructuring, multimethods with hierarchies,
 protocols/records (`deftype`/`defrecord`/`reify`/`extend-protocol`), metadata,
 namespaces, atoms, refs/STM (`ref`/`dosync`/`alter`/`commute`),
 `future`/`promise`/`agent`/`pmap`, `clojure.core.async` (and `.flow`), runtime
