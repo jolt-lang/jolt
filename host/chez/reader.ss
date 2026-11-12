@@ -1573,8 +1573,17 @@
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
          (when (rdr-eof? form) (rdr-eof-error s i "EOF while reading"))
          (values (jolt-compile-eval-form form (chez-current-ns)) j)))
-      ((char=? c #\?)                    ; #?(...) / #?@(...) reader conditional
-       (rdr-read-reader-cond s (+ i 1) end))
+      ;; #?(...) / #?@(...) reader conditional. One with no branch for this
+      ;; platform reads as nothing, so the read goes on to the next form, as #_
+      ;; does above: LispReader's ConditionalReader answers its no-op marker and
+      ;; every caller reads again. Answering end of input instead ended a
+      ;; top-level read there: (read-string {:read-cond :allow} "#?(:cljs 2) x")
+      ;; threw EOF where the JVM reads x. A collection already skipped it.
+      ((char=? c #\?)
+       (let-values (((form j) (rdr-read-reader-cond s (+ i 1) end)))
+         (if (rdr-eof? form)
+             (rdr-read-form s j end)
+             (values form j))))
       ((char=? c #\:)                    ; #:ns{...} namespaced map literal
        (rdr-read-ns-map s (+ i 1) end))
       ;; a registered reader macro (see the table above). EDN has a closed

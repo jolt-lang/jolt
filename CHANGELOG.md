@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A top-level `#?` with no branch for jolt is skipped, not read as end of
+  input** (#1624). `(read-string {:read-cond :allow} "#?(:cljs 2) x")` and a
+  `read` from a reader threw "EOF while reading" where the JVM skips the
+  conditional and reads `x`, so a tool reading a `.cljc` file form by form
+  stopped at the first `#?(:cljs ...)`. It now reads on to the next form, as
+  `#_` does and as it already did inside a collection.
 - **`str` of a Java array is `Class@hash` again.** `(str (long-array 1))` and
   `.toString` on any array returned the whole `#object["[J" 0x… "[J@…"]`
   print form instead of `[J@…`, as the JVM's `Object.toString` gives.
