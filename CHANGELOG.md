@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Malformed special forms report the reference compiler's error.**
+  `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
+  `(letfn* x 1)` failed inside the analyzer and surfaced as
+  `analyze/internal-failure` with a raw `IndexOutOfBoundsException` or
+  "Don't know how to create ISeq", and `(quote a b)`, `(throw x y)`,
+  `(def a 1 2)` and `(set! a 1 2)` were silently accepted. Each now raises the
+  JVM's message ("Too few arguments to throw, …", "Bad binding form, expected
+  vector", "Malformed assignment, expecting (set! target val)", …) under a
+  registered diagnostic kind, including the new `:analyze/invalid-throw`.
+- **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
+  `Object[]`.
+- **`jolt build` checks every option before building native libraries.** An
+  invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
+  with no target pack, was reported only after the static archives and
+  dependency libraries had been compiled.
+
 ## [0.8.27] - 2026-11-12
 
 A release for code arriving from babashka and the JVM: `cheshire.core` and
