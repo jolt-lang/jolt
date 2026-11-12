@@ -353,10 +353,14 @@ check "*command-line-args*" 'enter args
 args: ("a" "b")
 leave args' "$(inbb "$BB" args a b)"
 
-# the first standalone "--" ends option parsing; a later one is program data
-check "*command-line-args* consumes one --" 'enter args
-args: ("a" "--" "b")
+# every "--" reaches a task body, as under babashka: jolt parses no options
+# after the task name, so the task reads its own (jolt#1603)
+check "*command-line-args* keeps --" 'enter args
+args: ("--" "a" "--" "b")
 leave args' "$(inbb "$BB" args -- a -- b)"
+check "*command-line-args* keeps a -- after an arg" 'enter args
+args: ("a" "--" "b")
+leave args' "$(inbb "$BB" args a -- b)"
 
 # babashka.tasks/shell is referred into the task namespace
 check "shell" "enter echo

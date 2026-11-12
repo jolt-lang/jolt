@@ -488,7 +488,7 @@
                    (let [v (thunk)]
                      (when-let [h (:leave tasks)] (eval-body h))
                      v)))}
-     (:cli tasks) dep-nodes (vec (:app-args ctx)))))
+     (:cli tasks) dep-nodes (vec (:args ctx)))))
 
 (defn- run-one! [ctx sym target?]
   (let [tasks (:tasks ctx)
@@ -589,18 +589,17 @@
 
 (defn run-task!
   "Run one task tree. `ctx` is
-  {:tasks :name :args :app-args :run-main-opts :parallel} — :args is the argv
-  after the task name verbatim (what a :main-opts task forwards), :app-args the
-  same with a leading \"--\" consumed (what a code body sees as
-  *command-line-args*).
+  {:tasks :name :args :run-main-opts :parallel} — :args is the argv after the
+  task name verbatim. A code body sees it as *command-line-args* with every
+  \"--\" kept, as babashka does, and a :main-opts task forwards it.
 
   A failed subprocess exits with ITS status and prints nothing further — the
   child already reported, and a jolt stack trace over it would only bury that.
   Every other exception propagates to the CLI's uncaught handler."
-  [{:keys [tasks name app-args] :as ctx}]
+  [{:keys [tasks name args] :as ctx}]
   (let [ctx (assoc ctx :ran (atom {}) :prepare (delay (prepare-ns! tasks)))]
     (reset! current-ctx ctx)
-    (binding [*command-line-args* (seq app-args)]
+    (binding [*command-line-args* (seq args)]
       (try
         (check-depends-acyclic! tasks name)
         (ensure-run! ctx (symbol name) true)
