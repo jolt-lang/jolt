@@ -750,6 +750,60 @@
       (if (= nm (nth names i)) true (recur (inc i)))
       false)))
 
+(declare local-escapes?)
+
+(defn- any-escapes-from?
+  "Does nm escape in any of nodes from index start on?"
+  [nodes start nm]
+  (loop [i start]
+    (if (< i (count nodes))
+      (if (local-escapes? (nth nodes i) nm) true (recur (inc i)))
+      false)))
+
+(defn- any-escapes? [nodes nm]
+  (any-escapes-from? nodes 0 nm))
+
+(defn- inits-escape? [binds nm]
+  (loop [i 0]
+    (if (< i (count binds))
+      (if (local-escapes? (nth (nth binds i) 1) nm) true (recur (inc i)))
+      false)))
+
+;; let and loop: a rebinding of nm bails (safe; inlined names are unique),
+;; otherwise every init and the body are scanned.
+(defn- bindings-escape? [node nm]
+  (let [binds (get node :bindings)]
+    (or (any-binding-named? binds nm)
+        (inits-escape? binds nm)
+        (local-escapes? (get node :body) nm))))
+
+(defn- map-pairs-escape? [pairs nm]
+  (loop [i 0]
+    (if (< i (count pairs))
+      (if (or (local-escapes? (nth (nth pairs i) 0) nm)
+              (local-escapes? (nth (nth pairs i) 1) nm))
+        true
+        (recur (inc i)))
+      false)))
+
+;; a param (or rest) shadowing nm hides ours in that arity
+(defn- arity-escapes? [ar nm]
+  (or (any-name? (get ar :params) nm)
+      (= nm (get ar :rest))
+      (local-escapes? (get ar :body) nm)))
+
+(defn- some-arity-escapes? [arities nm]
+  (loop [i 0]
+    (if (< i (count arities))
+      (if (arity-escapes? (nth arities i) nm) true (recur (inc i)))
+      false)))
+
+(defn- try-escapes? [node nm]
+  (or (local-escapes? (get node :body) nm)
+      (let [cb (get node :catch-body)]
+        (and cb (not (= nm (get node :catch-sym))) (local-escapes? cb nm)))
+      (let [f (get node :finally)] (and f (local-escapes? f nm)))))
+
 (defn- local-escapes?
   "Does local nm escape in node — i.e. is it used anywhere other than as the
   subject of a constant-keyword lookup? Precise over straight-line expression
@@ -761,90 +815,32 @@
   inspect node shape beyond child purity — folding an unhandled op over its
   children would under-report escape and is unsound for scalar replacement."
   [node nm]
-  (let [op (get node :op)
-        k (lookup-key node nm)]
-    (cond
-      ;; an ok lookup of nm: nm itself is consumed; still scan any extra args
-      ;; (a get default could reference nm), never the subject local at arg 0.
-      k (let [args (get node :args)]
-          (if (> (count args) 1)
-            (loop [i 1]
-              (if (< i (count args))
-                (if (local-escapes? (nth args i) nm) true (recur (inc i)))
-                false))
-            false))
-      (= op :local) (= nm (get node :name))
-      (= op :const) false
-      (= op :var) false
-      (= op :host) false
-      (= op :the-var) false
-      (= op :quote) false
-      (= op :if) (or (local-escapes? (get node :test) nm)
-                     (local-escapes? (get node :then) nm)
-                     (local-escapes? (get node :else) nm))
-      (= op :do) (or (loop [i 0 ss (get node :statements)]
-                       (if (< i (count ss))
-                         (if (local-escapes? (nth ss i) nm) true (recur (inc i) ss))
-                         false))
-                     (local-escapes? (get node :ret) nm))
-      (= op :throw) (local-escapes? (get node :expr) nm)
-      (= op :invoke) (or (local-escapes? (get node :fn) nm)
-                         (loop [i 0 as (get node :args)]
-                           (if (< i (count as))
-                             (if (local-escapes? (nth as i) nm) true (recur (inc i) as))
-                             false)))
-      (= op :vector) (loop [i 0 xs (get node :items)]
-                       (if (< i (count xs))
-                         (if (local-escapes? (nth xs i) nm) true (recur (inc i) xs))
-                         false))
-      (= op :set) (loop [i 0 xs (get node :items)]
-                    (if (< i (count xs))
-                      (if (local-escapes? (nth xs i) nm) true (recur (inc i) xs))
-                      false))
-      (= op :map) (loop [i 0 ps (get node :pairs)]
-                    (if (< i (count ps))
-                      (if (or (local-escapes? (nth (nth ps i) 0) nm)
-                              (local-escapes? (nth (nth ps i) 1) nm))
-                        true (recur (inc i) ps))
-                      false))
-      (= op :let) (let [binds (get node :bindings)]
-                    (if (any-binding-named? binds nm)
-                      true ;; nm rebound here — bail (safe; inlined names are unique)
-                      (or (loop [i 0]
-                            (if (< i (count binds))
-                              (if (local-escapes? (nth (nth binds i) 1) nm) true (recur (inc i)))
-                              false))
-                          (local-escapes? (get node :body) nm))))
+  (if (lookup-key node nm)
+    ;; an ok lookup of nm: nm itself is consumed; still scan any extra args
+    ;; (a get default could reference nm), never the subject local at arg 0.
+    (any-escapes-from? (get node :args) 1 nm)
+    (case (get node :op)
+      :local (= nm (get node :name))
+      (:const :var :host :the-var :quote) false
+      :if (or (local-escapes? (get node :test) nm)
+              (local-escapes? (get node :then) nm)
+              (local-escapes? (get node :else) nm))
+      :do (or (any-escapes? (get node :statements) nm)
+              (local-escapes? (get node :ret) nm))
+      :throw (local-escapes? (get node :expr) nm)
+      :invoke (or (local-escapes? (get node :fn) nm)
+                  (any-escapes? (get node :args) nm))
+      (:vector :set) (any-escapes? (get node :items) nm)
+      :map (map-pairs-escape? (get node :pairs) nm)
+      (:let :loop) (bindings-escape? node nm)
       ;; recur binds nothing — its args are ordinary expressions (this is the
       ;; common loop-body tail; treating it as a blanket escape would block
       ;; scalar replacement in every loop).
-      (= op :recur) (loop [i 0 as (get node :args)]
-                      (if (< i (count as))
-                        (if (local-escapes? (nth as i) nm) true (recur (inc i) as))
-                        false))
-      (= op :loop) (let [binds (get node :bindings)]
-                     (if (any-binding-named? binds nm)
-                       true
-                       (or (loop [i 0]
-                             (if (< i (count binds))
-                               (if (local-escapes? (nth (nth binds i) 1) nm) true (recur (inc i)))
-                               false))
-                           (local-escapes? (get node :body) nm))))
-      (= op :fn) (loop [i 0 ars (get node :arities)]
-                   (if (< i (count ars))
-                     (let [ar (nth ars i)
-                           ps (get ar :params)]
-                       ;; a param (or rest) shadowing nm hides ours in that arity
-                       (if (or (any-name? ps nm) (= nm (get ar :rest)))
-                         true
-                         (if (local-escapes? (get ar :body) nm) true (recur (inc i) ars))))
-                     false))
-      (= op :try) (or (local-escapes? (get node :body) nm)
-                      (let [cb (get node :catch-body)]
-                        (and cb (not (= nm (get node :catch-sym))) (local-escapes? cb nm)))
-                      (let [f (get node :finally)] (and f (local-escapes? f nm))))
-      (= op :def) (local-escapes? (get node :init) nm)
-      :else true)))
+      :recur (any-escapes? (get node :args) nm)
+      :fn (some-arity-escapes? (get node :arities) nm)
+      :try (try-escapes? node nm)
+      :def (local-escapes? (get node :init) nm)
+      true)))
 
 ;; --- record constructors as foldable struct sources -------------------------
 ;; A record ctor (->Rec a b ..) is a positional struct: the registry maps its
