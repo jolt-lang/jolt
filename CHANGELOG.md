@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`str` of a Java array is `Class@hash` again.** `(str (long-array 1))` and
+  `.toString` on any array returned the whole `#object["[J" 0x… "[J@…"]`
+  print form instead of `[J@…`, as the JVM's `Object.toString` gives.
+
 - **The macOS release binaries get an optimized Chez kernel again.** The
   release workflow built Chez with `./configure ... CFLAGS="-mmacosx-version-min=11.0"`,
   and Chez's configure adds its own flags (`-arch arm64 -O2`) only when CFLAGS
