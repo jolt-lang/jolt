@@ -559,28 +559,26 @@
 ;; lookup (measured: a 12-char key 47 ns vs 5.8 ns, a 48-char key 109 ns).
 ;; Keywords and symbols do not need this — they carry their hash in the record
 ;; (keyword-t-khash, symbol-t-khash) — but a Chez string cannot hold a field, so
-;; a table it is. The car of the pair is vestigial: it held the symbol cache and
-;; is kept so the vreg's shape does not change under a running image.
+;; strings use a weak identity table. Hashing a string must leave it collectible
+;; even when it is also a key in a WeakHashMap.
 ;;
-;; The tables are per THREAD, not shared. A Chez hashtable is not thread-safe,
-;; and these are written on every cache MISS from whatever thread is hashing, so
-;; sharing them means unsynchronized concurrent mutation — which corrupts the
-;; table's internals and surfaces later as a fault inside the collector, never as
-;; an error naming the table. Serializing them instead would put a mutex on the
-;; hottest read path in the collection layer.
+;; Each thread owns its table because Chez hashtables allow no concurrent
+;; mutation. This also keeps locking off the lookup path.
 ;;
-;; A virtual register holds this thread's pair of tables (slot 5, registered in
-;; rt.ss's allocation comment): a vreg read is ~2 ns against ~33 ns for a
-;; thread-parameter, and a freshly forked thread starts every slot at fixnum 0,
-;; which is what "not allocated yet" means here.
+;; Virtual register 5 holds (admission buckets . hash table). A vreg read
+;; costs ~2 ns against ~33 ns for a thread-parameter. A freshly forked thread
+;; starts every slot at fixnum 0 and allocates its table on first use.
 (define jolt-vreg-hasheq-caches 5)
+(define string-hasheq-buckets 2048)
+;; A 2,048-key scan shares the admitted table with live keys from startup.
+;; Leave room for both to keep Chez's identity-bucket chains short on hits.
+(define string-hasheq-table-size-hint 8192)
+(define string-hasheq-collision-budget 32)
 
 (define (hasheq-caches)
   (let ((c (virtual-register jolt-vreg-hasheq-caches)))
     (if (eq? c 0)
-        ;; both weak: the string cache must not keep a string alive (a
-        ;; WeakHashMap keyed by a string would never lose the entry)
-        (let ((v (cons (make-weak-eq-hashtable) (make-weak-eq-hashtable))))
+        (let ((v (cons #f (make-weak-eq-hashtable string-hasheq-table-size-hint))))
           (set-virtual-register! jolt-vreg-hasheq-caches v)
           v)
         c)))
@@ -632,24 +630,45 @@
 
 ;; The JVM caches String.hashCode in the object; jolt strings are plain Chez
 ;; strings with nowhere to put it, so they use the per-thread table above.
-;;
-;; The table is BOUNDED and STRONG, not weak, for the reason the symbol cache
-;; left weak tables (see symbol-hasheq): a string hashed once and dropped — a
-;; substring cut for one map lookup, a key built by str — misses, is inserted,
-;; and is then an entry every collection must trace and clear. Eight threads
-;; hashing fresh strings ran 12x slower per thread than one under that churn.
-;; A hot working set of keys stays far below the cap; a miss-heavy workload
-;; clears and refills, amortized O(1), and gives the collector nothing to scan.
-(define string-hasheq-cap 2048)
 (define (compute-string-hasheq s)
   (murmur3-hash-int (java-string-hashcode s)))
 
+;; Each bucket holds two weak candidates. Give the first time to recur on a
+;; later scan while the second slot tracks the most recent collider. Rotate
+;; the first after repeated misses so a live, idle key cannot pin it forever.
+(define (string-hasheq-admit! cache s h)
+  (let* ((buckets (if (vector? (car cache))
+                      (car cache)
+                      ;; Also handles an older image's miss budget in the car.
+                      (let ((v (make-vector string-hasheq-buckets #f)))
+                        (set-car! cache v)
+                        v)))
+         (i (bitwise-and h (fx- string-hasheq-buckets 1)))
+         (bucket (vector-ref buckets i)))
+    (if bucket
+        (let* ((first (car bucket)) (recent (cdr bucket))
+               (match (cond ((eq? s first) bucket)
+                            ((eq? s (car recent)) recent)
+                            (else #f))))
+          (if match
+              (begin
+                (hashtable-set! (cdr cache) s h)
+                (set-car! match #f))
+              (let ((remaining (cdr recent)))
+                (if (and (string? first) (fixnum? remaining) (fx>? remaining 1))
+                    (begin
+                      (set-car! recent s)
+                      (set-cdr! recent (fx- remaining 1)))
+                    (begin
+                      (set-car! bucket s)
+                      (set-cdr! recent string-hasheq-collision-budget))))))
+        (vector-set! buckets i (weak-cons s (weak-cons #f string-hasheq-collision-budget))))))
+
 (define (string-hasheq s)
-  (let ((t (cdr (hasheq-caches))))
-    (or (hashtable-ref t s #f)
+  (let ((cache (hasheq-caches)))
+    (or (hashtable-ref (cdr cache) s #f)
         (let ((h (compute-string-hasheq s)))
-          (when (fx>=? (hashtable-size t) string-hasheq-cap) (hashtable-clear! t))
-          (hashtable-set! t s h)
+          (string-hasheq-admit! cache s h)
           h))))
 
 ;; ============================================================================
