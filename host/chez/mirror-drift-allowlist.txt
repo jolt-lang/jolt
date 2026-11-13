@@ -24,7 +24,7 @@ host/chez/hasheq.ss::jolt-identity-hasheq/locked
 host/chez/hasheq.ss::murmur3-fmix
 host/chez/hasheq.ss::murmur3-hash-int
 host/chez/hasheq.ss::murmur3-hash-long
-host/chez/hasheq.ss::murmur3-hash-long-flat
+host/chez/hasheq.ss::murmur3-hash-fixnum-u32
 host/chez/hasheq.ss::murmur3-hash-unencoded-chars
 host/chez/hasheq.ss::murmur3-mix-h1
 host/chez/hasheq.ss::pvec-hasheq-cached

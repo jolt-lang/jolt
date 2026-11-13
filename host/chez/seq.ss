@@ -2036,6 +2036,8 @@
      ;; (reduce [_ f i] ...))) or the same on a deftype. Its answer, a Reduced
      ;; included, is reduce's, as with IReduce above.
      (cond
+       ((and (pvec? coll) (eq? f jolt-conj!) (transient-pvec-inserter init))
+        => (lambda (insert!) (insert! init coll)))
        ((and (jrec? coll) (jrec-plain? coll)) (reduce-list f init (jrec-plain-entries coll)))
        ((iface-method coll "reduce" 3)
         => (lambda (m) (jolt-invoke m coll f init)))

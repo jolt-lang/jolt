@@ -11,8 +11,8 @@
 ;;         persistent ops on it. A source that fits in one tail chunk is
 ;;         copied into the buffer outright (base #f).
 ;;   map : an EDITABLE HAMT (collections.ss enode) sharing the source map's root
-;;         — a write claims each node on its path once and then mutates in
-;;         place, so persistent! only has to freeze the claimed spine. An
+;;         — short updates to a populated trie copy persistent paths. Longer
+;;         runs claim nodes and mutate them in place. An
 ;;         array-mode map rides a k/v slot buffer instead; see below.
 ;;   set : the same editable HAMT, each element stored as both key and value, so
 ;;         a lookup answers with the stored element (which carries the metadata)
@@ -26,15 +26,14 @@
 ;; this record, not a pvec), which group-by relies on. Loaded after collections.ss
 ;; (persistent ops + key-hash) and converters.ss.
 
-;; A transient MAP has two modes, and `buf` says which: an editable HAMT root
-;; (an enode, or the source's hnode until the first write claims it) means
-;; HASH mode; anything else is the k/v slot buffer of ARRAY mode — the source
-;; map's slots copied with spare capacity, TransientArrayMap's Object[]. (The
+;; A transient MAP has two modes, and `buf` says which: a HAMT root (an enode
+;; or a compact hnode) means HASH mode; anything else is the k/v slot buffer
+;; of ARRAY mode, copied from the source with spare capacity. (The
 ;; test is on the node types, never vector?: a target may represent records
 ;; as vectors.) In both `n` is the entry count (array mode uses slots 0 .. 2n-1). A
 ;; transient SET is always hash mode, like PersistentHashSet. For a vector `n`
-;; is the element count and `ord` the base pvec (or #f); `ord` is unused by the
-;; other kinds.
+;; is the element count and `ord` the base pvec (or #f). A hash transient uses
+;; `ord` for the remaining compact edits, or #f for editable nodes.
 ;;
 ;; Array mode promotes to hash mode when a new key would grow the map past its
 ;; CAPACITY — TransientArrayMap's rule: max(8 entries, the source map's size),
@@ -49,6 +48,11 @@
   (nongenerative jolt-transient-v3))
 
 (define tvec-min-cap 8)
+;; A few compact copies avoid expanding and freezing a 32-slot spine for short
+;; updates. Bound their cost on long runs. Builds from empty start editable.
+(define thash-compact-edits 8)
+(define (thash-new kind root n)
+  (make-jolt-transient kind root n #t (and (fx>? n 0) thash-compact-edits)))
 
 (define (jolt-transient-new coll)
   (cond
@@ -63,10 +67,10 @@
      ;; The source's mode rides along. An array-mode map's slots are copied
      ;; into a buffer of max(16, its own length) slots and it comes back an
      ;; array map; a hash-mode map hands its ROOT straight over — nothing is
-     ;; copied here, the first write into a node claims it.
+     ;; copied until the first edit.
      (let ((root (pmap-root coll)))
        (if (hnode? root)
-           (make-jolt-transient 'map root (pmap-cnt coll) #t #f)
+           (thash-new 'map root (pmap-cnt coll))
            (let* ((len (vector-length root))
                   (buf (make-vector (fxmax (fx* 2 array-map-limit) len) #f)))
              (sa-vector-copy-range! buf 0 root 0 len)
@@ -77,7 +81,7 @@
     ;; conj! of an equal element keeps the stored key while overwriting the
     ;; value — which is what enode-assoc!'s leaf replace does.
     ((pset? coll)
-     (make-jolt-transient 'set (pmap-root (pset-m coll)) (pset-count coll) #t #f))
+     (thash-new 'set (pmap-root (pset-m coll)) (pset-count coll)))
     ;; a deftype implementing clojure.lang.IEditableCollection.asTransient
     ;; (flatland's OrderedMap/OrderedSet) returns its OWN transient type, which
     ;; drives its declared ITransient* methods — not the copy-on-write wrapper.
@@ -96,19 +100,62 @@
                   (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
                                  " cannot be cast to class clojure.lang.IEditableCollection"))))))
 
-;; --- hash mode: write straight into the editable HAMT ------------------------
-;; Claim the root on the way in; every node below is claimed as the write
-;; descends through it (enode-assoc!).
+(define-syntax thash-count-add!
+  (syntax-rules ()
+    ((_ t delta) (jolt-transient-n-set! t (fx+ (jolt-transient-n t) delta)))))
+
+;; A user equality/hash method may edit this transient. Rebase on its current
+;; root in that case, retaining callback results keyed by stored-key identity.
+;; A collision bucket can compare several keys before one of them reenters.
+(define (thash-edit-compact! t root h k v put?)
+  (let ((compared '()) (hashed '()))
+    (let retry ((root root) (old-comparisons '()) (old-hashes '()))
+      (define (same? stored probe)
+        (let ((hit (assq stored old-comparisons)))
+          (if hit (cdr hit)
+              (let ((answer (jolt=2 stored probe)))
+                (set! compared (cons (cons stored answer) compared))
+                answer))))
+      (define (stored-hash stored)
+        (let ((hit (assq stored old-hashes)))
+          (if hit (cdr hit)
+              (let ((answer (key-hash stored)))
+                (set! hashed (cons (cons stored answer) hashed))
+                answer))))
+      (let* ((changed (box #f))
+             (next (if put? (node-assoc-by root 0 h k v changed same? stored-hash)
+                       (node-dissoc-by root 0 h k changed same?)))
+             (current (jolt-transient-buf t)))
+        (if (eq? root current)
+            (let ((left (jolt-transient-ord t)))
+              (jolt-transient-buf-set! t next)
+              (jolt-transient-ord-set! t (and left (fx>? left 1) (fx- left 1)))
+              (when (unbox changed) (thash-count-add! t (if put? 1 -1))))
+            ;; Nested writes may have exhausted the compact budget. Snapshot
+            ;; that edited spine so a further callback also changes the root.
+            (let ((latest (enode-freeze current)))
+              (jolt-transient-buf-set! t latest)
+              (retry latest compared hashed)))))))
+
 (define (thash-put! t k v)
-  (let ((root (enode-claim (jolt-transient-buf t))) (added (box #f)))
-    (jolt-transient-buf-set! t root)
-    (enode-assoc! root 0 (key-hash k) k v added)
-    (when (unbox added) (jolt-transient-n-set! t (fx+ (jolt-transient-n t) 1)))))
+  (let* ((h (key-hash k)) (root (jolt-transient-buf t)))
+    (cond
+      ((enode? root)
+       (when (enode-assoc! root 0 h k v) (thash-count-add! t 1)))
+      ((jolt-transient-ord t) (thash-edit-compact! t root h k v #t))
+      (else
+       (let ((editable (hnode->enode root)))
+         (jolt-transient-buf-set! t editable)
+         (when (enode-assoc! editable 0 h k v) (thash-count-add! t 1)))))))
+
 (define (thash-del! t k)
-  (let ((root (enode-claim (jolt-transient-buf t))) (removed (box #f)))
-    (jolt-transient-buf-set! t root)
-    (enode-dissoc! root 0 (key-hash k) k removed)
-    (when (unbox removed) (jolt-transient-n-set! t (fx- (jolt-transient-n t) 1)))))
+  (let* ((h (key-hash k)) (root (jolt-transient-buf t)))
+    (if (jolt-transient-ord t)
+        (thash-edit-compact! t root h k #f #f)
+        (let ((editable (enode-claim root)) (removed (box #f)))
+          (jolt-transient-buf-set! t editable)
+          (enode-dissoc! editable 0 h k removed)
+          (when (unbox removed) (thash-count-add! t -1))))))
 (define (thash-get t k d) (enode-get (jolt-transient-buf t) 0 (key-hash k) k d))
 
 ;; --- array mode, and the one-way promotion out of it -------------------------
@@ -120,11 +167,11 @@
 ;; entry count, the keys are distinct already
 (define (tmap-promote! t)
   (let ((buf (jolt-transient-buf t)) (len (fx* 2 (jolt-transient-n t)))
-        (root (enode-empty)) (added (box #f)))
+        (root (enode-empty)))
     (let loop ((i 0))
       (when (fx<? i len)
         (let ((k (vector-ref buf i)))
-          (enode-assoc! root 0 (key-hash k) k (vector-ref buf (fx+ i 1)) added))
+          (enode-assoc! root 0 (key-hash k) k (vector-ref buf (fx+ i 1))))
         (loop (fx+ i 2))))
     (jolt-transient-buf-set! t root)))
 
@@ -230,6 +277,16 @@
     (tvec-ensure! t (fx+ (fx- cnt off) 1))
     (vector-set! (jolt-transient-buf t) (fx- cnt off) x)
     (jolt-transient-n-set! t (fx+ cnt 1))))
+
+;; (reduce conj! t v) appends every element of a persistent vector. Keep the
+;; shared base in place and reserve space once after the already buffered tail.
+(define (tvec-append-pvec! t v)
+  (let* ((cnt (jolt-transient-n t)) (used (fx- cnt (tvec-off t))) (n (pvec-cnt v)))
+    (tvec-ensure! t (fx+ used n))
+    (pvec-copy-into! (jolt-transient-buf t) used v)
+    (jolt-transient-n-set! t (fx+ cnt n))
+    t))
+
 (define (tvec-assoc1! t i x)
   (let ((i (pvec-key-index! i)) (cnt (jolt-transient-n t)) (off (tvec-off t)))
     (cond ((and (fixnum? i) (fx>=? i 0) (fx<? i off))
@@ -264,12 +321,45 @@
   (cond
     ((jolt-nil? x) #t)
     ;; a vector is one entry, so it must be a pair — the persistent conj's rule
-    ((pvec? x) (if (fx=? 2 (pvec-count x))
-                   (tmap-put! t (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil))
-                   (throw-jvm 'IllegalArgumentException "Vector arg to map conj must be a pair")))
+    ((pvec? x)
+     (unless (fx=? 2 (pvec-count x))
+       (throw-jvm 'IllegalArgumentException "Vector arg to map conj must be a pair"))
+     (let ((tail (pvec-tail x)))
+       (if (fx=? 2 (vector-length tail))
+           (tmap-put! t (vector-ref tail 0) (vector-ref tail 1))
+           (tmap-put! t (pvec-nth-in-range x 0) (pvec-nth-in-range x 1)))))
     ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
     ((jolt-host-entry x) => (lambda (kv) (tmap-put! t (car kv) (cdr kv))))
     (else (throw-jvm (quote IllegalArgumentException) "conj!: a transient map takes a map entry or a map"))))
+
+(define-syntax define-pvec-inserter
+  (syntax-rules ()
+    ((_ (name t v x) insert!)
+     (define (name t v)
+       (let ((n (pvec-cnt v)))
+         (let outer ((i 0))
+           (if (fx=? i n) t
+               (let-values (((leaf off) (pv-leaf-for v i)))
+                 (let* ((run (fxmin (fx- n i) (fx- (vector-length leaf) off)))
+                        (end (fx+ off run)))
+                   (let inner ((j off))
+                     (if (fx=? j end)
+                         (outer (fx+ i run))
+                         (let ((x (vector-ref leaf j)))
+                           ;; User hash/equality code can retire t during a write.
+                           (jolt-site-kept (begin (jolt-trans-check t "conj!") insert!))
+                           (inner (fx+ j 1))))))))))))))
+
+(define-pvec-inserter (tmap-conj-pvec! t v x) (tmap-conj-entry! t x))
+(define-pvec-inserter (tset-conj-pvec! t v x) (thash-put! t x x))
+
+(define (transient-pvec-inserter t)
+  (and (jolt-transient? t) (jolt-transient-active t)
+       (case (jolt-transient-kind t)
+         ((vec) tvec-append-pvec!)
+         ((map) tmap-conj-pvec!)
+         ((set) tset-conj-pvec!)
+         (else #f))))
 
 ;; (conj!) -> fresh transient vector; (conj! coll) -> the 1-arity transducer-
 ;; completion identity (JVM: no transient check). (conj! t x ...) mutates t.

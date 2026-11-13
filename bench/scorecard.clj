@@ -85,6 +85,8 @@
    "pool-tasks" "64 small tasks fanned out and joined, onto a warm fixed pool of 8 and through `future`"
    "sorted-set-build" "sorted sets built by `into` (scrambled longs, strings), `conj` in order, and `disj` of half"
    "int-map-build" "long-keyed hash maps built by `into {}`, `assoc`, transient `assoc!` and `zipmap`, then a `get` of every key"
+   "transient-builds" "`(reduce conj! (transient coll) v)` from a 32k vector into a vector, a map (from pairs) and a set"
+   "transient-edits" "one replacement, one removal and two replacements through `transient`/`persistent!` on a 32k-entry map"
    "string-hash" "`hash` of strings: a reused 2,048-string set, a reused 50k-string set, and strings hashed once"
    "startup" "a built hello-world, whole process from exec to exit, best of {{startup-reps}} (JVM: `java -cp … clojure.main -m hello`)"})
 

@@ -35,6 +35,78 @@
 (ok "lone key throws"        (guard (e (#t #t)) (ev "(persistent! (assoc! (transient {}) :a))") #f))
 (ok "use after persistent!"  (guard (e (#t #t)) (ev "(let [t (transient [])] (persistent! t) (conj! t 1))") #f))
 
+(is "vector reduction appends a relaxed slice after a based transient's buffer"
+    "(let [v (vec (range 1100)) src (subvec v 17 1089) base (subvec v 100 201)
+           t (conj! (transient base) :tail) r (reduce conj! t src)]
+       (and (identical? t r)
+            (= (persistent! (assoc! r 102 :edit))
+               (vec (concat base [:tail :edit] (range 18 1089))))
+            (= src (vec (range 17 1089)))))"
+    "true")
+(is "vector reduction accepts an empty source on a retired transient"
+    "(let [t (transient [])] (persistent! t) (identical? t (reduce conj! t [])))" "true")
+(is "vector reduction rejects a write to a retired transient"
+    "(let [t (transient [:a])] (persistent! t)
+       (try (reduce conj! t [:b]) false (catch IllegalAccessError _ true)))" "true")
+(is "custom reducer on a vector can stop before the last leaf"
+    "(persistent! (reduce (fn [t x] (if (= x 3) (reduced t) (conj! t x)))
+                          (transient [:a]) (vec (range 64))))" "[:a 0 1 2]")
+(is "map reduction keeps prior entries when a later pair is malformed"
+    "(let [t (transient {})]
+       (try (reduce conj! t [nil [:a false] {:b 2} [:bad] [:late 3]])
+            false
+            (catch IllegalArgumentException _ (= (persistent! t) {:a false :b 2}))))"
+    "true")
+(is "map and set reductions consume exactly the relaxed slice"
+    "(let [xs (subvec (vec (range 2000)) 17 1093)
+           pairs (subvec (mapv (fn [k] [k (inc k)]) (range 2000)) 17 1093)]
+       (and (= (set xs) (persistent! (reduce conj! (transient #{}) xs)))
+            (= (zipmap xs (map inc xs)) (persistent! (reduce conj! (transient {}) pairs)))))"
+    "true")
+(is "a hash callback can retire a transient before the next leaf element"
+    "(do (deftype RetiringKey [t] clojure.lang.IHashEq (hasheq [_] (persistent! t) 0))
+         (let [t (transient #{})]
+           (try (reduce conj! t [(RetiringKey. t) :late]) false
+                (catch IllegalAccessError _ true))))"
+    "true")
+(is "reentrant compact edits retain nested writes and call equals once per stored key"
+    "(do (deftype EditOnEquals [id action]
+           Object (hashCode [_] 42)
+           (equals [_ o]
+             (when (instance? EditOnEquals o) (when-let [f @action] (f id)))
+             (and (instance? EditOnEquals o) (= id (.-id ^EditOnEquals o)))))
+         (every? true?
+           (for [put? [true false] collision? [true false] writes [1 12]]
+             (let [action (atom nil) seen (atom #{}) k (EditOnEquals. 1 action)
+                   probe (EditOnEquals. 1 action) m (zipmap (range 64) (range 64))
+                   src (assoc (if collision? (assoc m (EditOnEquals. 0 action) :other) m) k :old)
+                   t (transient src)]
+               (reset! action (fn [id]
+                                (when (contains? @seen id) (throw (ex-info \"replayed equals\" {})))
+                                (swap! seen conj id)
+                                (when (= id 1) (dotimes [i writes] (assoc! t (+ 1000 i) i)))))
+               (if put? (assoc! t probe :new) (dissoc! t probe))
+               (reset! action nil)
+               (let [result (persistent! t)
+                     expected (merge (if put? (assoc src k :new) (dissoc src k))
+                                     (zipmap (range 1000 (+ 1000 writes)) (range writes)))]
+                 (and (contains? @seen 1) (= :old (get src k)) (not (contains? src 1000))
+                      (= (count expected) (count result)) (= expected result)))))))"
+    "true")
+
+(is "a stored key can edit the transient when rehashed to split a leaf"
+    "(do (deftype HashOnSplit [id h action]
+           Object (equals [_ o] (and (instance? HashOnSplit o) (= id (.-id ^HashOnSplit o))))
+           clojure.lang.IHashEq (hasheq [_] (when-let [f @action] (f)) h))
+         (let [action (atom nil) calls (atom 0) k (HashOnSplit. 0 0 action)
+               other (HashOnSplit. 1 1024 (atom nil)) src (hash-set k) t (transient src)]
+           (reset! action #(if (= 1 (swap! calls inc)) (conj! t :nested)
+                               (throw (ex-info \"replayed hash\" {}))))
+           (conj! t other)
+           (reset! action nil)
+           (and (= 1 @calls) (= #{k} src) (= #{k other :nested} (persistent! t)))))"
+    "true")
+
 ;; --- one-way promotion: a transient that grew past the array limit and shrank
 ;; back comes down a HASH map (JVM TransientArrayMap promotes on the way up and
 ;; never returns; jolt used to decide lazily from the final count).
@@ -79,6 +151,18 @@
     "true")
 (is "dissoc! collapses bucket"
     "(let [t (reduce (fn [t s] (assoc! t s s)) (transient {}) (concat (map (fn [i] (str \"k\" i)) (range 50)) [\"Aa\" \"BB\"])) _ (dissoc! t \"Aa\") m (persistent! t)] (and (= 51 (count m)) (= \"BB\" (get m \"BB\")) (nil? (get m \"Aa\"))))"
+    "true")
+
+(is "packed map order and counts survive transient removals and replacements"
+    "(let [ks (vec (concat (range 1024) [nil false \"Aa\" \"BB\"]))
+           source (zipmap ks ks)
+           removed (vec (take-nth 3 ks))
+           t (reduce dissoc! (transient source) removed)
+           pairs (mapv (fn [k] [k false]) (reverse ks))
+           result (persistent! (reduce conj! t pairs))
+           expected (reduce conj (apply dissoc source removed) pairs)]
+       (and (= source (zipmap ks ks)) (= (count ks) (count result))
+            (= (vec expected) (vec result)) (= expected result)))"
     "true")
 
 ;; --- linear, not quadratic: 200k builds finish near-instantly ---------------
