@@ -11,8 +11,8 @@
 ;;         persistent ops on it. A source that fits in one tail chunk is
 ;;         copied into the buffer outright (base #f).
 ;;   map : an EDITABLE HAMT (collections.ss enode) sharing the source map's root
-;;         — a write claims each node on its path once and then mutates in
-;;         place, so persistent! only has to freeze the claimed spine. An
+;;         — the first edit to a populated trie copies one persistent path.
+;;         Further writes claim nodes and mutate in place. An
 ;;         array-mode map rides a k/v slot buffer instead; see below.
 ;;   set : the same editable HAMT, each element stored as both key and value, so
 ;;         a lookup answers with the stored element (which carries the metadata)
@@ -26,15 +26,15 @@
 ;; this record, not a pvec), which group-by relies on. Loaded after collections.ss
 ;; (persistent ops + key-hash) and converters.ss.
 
-;; A transient MAP has two modes, and `buf` says which: an editable HAMT root
-;; (an enode, or the source's hnode until the first write claims it) means
-;; HASH mode; anything else is the k/v slot buffer of ARRAY mode — the source
+;; A transient MAP has two modes, and `buf` says which: a HAMT root (an enode
+;; or a compact hnode) means HASH mode; anything else is the k/v slot buffer
+;; of ARRAY mode — the source
 ;; map's slots copied with spare capacity, TransientArrayMap's Object[]. (The
 ;; test is on the node types, never vector?: a target may represent records
 ;; as vectors.) In both `n` is the entry count (array mode uses slots 0 .. 2n-1). A
 ;; transient SET is always hash mode, like PersistentHashSet. For a vector `n`
-;; is the element count and `ord` the base pvec (or #f); `ord` is unused by the
-;; other kinds.
+;; is the element count and `ord` the base pvec (or #f). A hash transient uses
+;; `ord` to request a compact first edit when created from a populated trie.
 ;;
 ;; Array mode promotes to hash mode when a new key would grow the map past its
 ;; CAPACITY — TransientArrayMap's rule: max(8 entries, the source map's size),
@@ -63,10 +63,10 @@
      ;; The source's mode rides along. An array-mode map's slots are copied
      ;; into a buffer of max(16, its own length) slots and it comes back an
      ;; array map; a hash-mode map hands its ROOT straight over — nothing is
-     ;; copied here, the first write into a node claims it.
+     ;; copied until the first edit.
      (let ((root (pmap-root coll)))
        (if (hnode? root)
-           (make-jolt-transient 'map root (pmap-cnt coll) #t #f)
+           (make-jolt-transient 'map root (pmap-cnt coll) #t (fx>? (pmap-cnt coll) 0))
            (let* ((len (vector-length root))
                   (buf (make-vector (fxmax (fx* 2 array-map-limit) len) #f)))
              (sa-vector-copy-range! buf 0 root 0 len)
@@ -77,7 +77,7 @@
     ;; conj! of an equal element keeps the stored key while overwriting the
     ;; value — which is what enode-assoc!'s leaf replace does.
     ((pset? coll)
-     (make-jolt-transient 'set (pmap-root (pset-m coll)) (pset-count coll) #t #f))
+     (make-jolt-transient 'set (pmap-root (pset-m coll)) (pset-count coll) #t (fx>? (pset-count coll) 0)))
     ;; a deftype implementing clojure.lang.IEditableCollection.asTransient
     ;; (flatland's OrderedMap/OrderedSet) returns its OWN transient type, which
     ;; drives its declared ITransient* methods — not the copy-on-write wrapper.
@@ -96,19 +96,46 @@
                   (string-append "class " (guard (e (#t "?")) (jolt-class-name coll))
                                  " cannot be cast to class clojure.lang.IEditableCollection"))))))
 
-;; --- hash mode: write straight into the editable HAMT ------------------------
-;; Claim the root on the way in; every node below is claimed as the write
-;; descends through it (enode-assoc!).
-(define (thash-put! t k v)
-  (let ((root (enode-claim (jolt-transient-buf t))))
-    (jolt-transient-buf-set! t root)
-    (when (enode-assoc! root 0 (key-hash k) k v)
-      (jolt-transient-n-set! t (fx+ (jolt-transient-n t) 1)))))
-(define (thash-del! t k)
-  (let ((root (enode-claim (jolt-transient-buf t))) (removed (box #f)))
-    (jolt-transient-buf-set! t root)
-    (enode-dissoc! root 0 (key-hash k) k removed)
-    (when (unbox removed) (jolt-transient-n-set! t (fx- (jolt-transient-n t) 1)))))
+(define-syntax thash-count-add!
+  (syntax-rules ()
+    ((_ t delta) (jolt-transient-n-set! t (fx+ (jolt-transient-n t) delta)))))
+
+;; One persistent path copy needs no freeze. After the first write, subsequent
+;; edits use the usual editable trie. Empty builds enter that path immediately.
+(define (thash-edit-compact! t root h k v put?)
+  (let* ((changed (box #f))
+         (next (if put? (node-assoc root 0 h k v changed) (node-dissoc root 0 h k changed))))
+    (cond
+      ;; A user equality/hash method may have edited t during the traversal.
+      ;; Apply the outer edit to its current root, retaining the computed hash.
+      ((not (eq? root (jolt-transient-buf t)))
+       (if put? (thash-put-hashed! t h k v) (thash-del-hashed! t h k)))
+      (else
+       (jolt-transient-buf-set! t next)
+       (jolt-transient-ord-set! t #f)
+       (when (unbox changed) (thash-count-add! t (if put? 1 -1)))))))
+
+(define (thash-put-hashed! t h k v)
+  (let ((root (jolt-transient-buf t)))
+    (cond
+      ((enode? root)
+       (when (enode-assoc! root 0 h k v) (thash-count-add! t 1)))
+      ((jolt-transient-ord t) (thash-edit-compact! t root h k v #t))
+      (else
+       (let ((editable (hnode->enode root)))
+         (jolt-transient-buf-set! t editable)
+         (when (enode-assoc! editable 0 h k v) (thash-count-add! t 1)))))))
+(define (thash-put! t k v) (thash-put-hashed! t (key-hash k) k v))
+
+(define (thash-del-hashed! t h k)
+  (let ((root (jolt-transient-buf t)))
+    (if (jolt-transient-ord t)
+        (thash-edit-compact! t root h k #f #f)
+        (let ((editable (enode-claim root)) (removed (box #f)))
+          (jolt-transient-buf-set! t editable)
+          (enode-dissoc! editable 0 h k removed)
+          (when (unbox removed) (thash-count-add! t -1))))))
+(define (thash-del! t k) (thash-del-hashed! t (key-hash k) k))
 (define (thash-get t k d) (enode-get (jolt-transient-buf t) 0 (key-hash k) k d))
 
 ;; --- array mode, and the one-way promotion out of it -------------------------

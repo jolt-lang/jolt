@@ -69,6 +69,22 @@
            (try (reduce conj! t [(RetiringKey. t) :late]) false
                 (catch IllegalAccessError _ true))))"
     "true")
+(is "a single edit keeps a nested edit made by an equal key"
+    "(do (deftype EditOnEquals [id action]
+           Object (hashCode [_] 42)
+           (equals [_ o]
+             (when-let [f @action] (reset! action nil) (f))
+             (and (instance? EditOnEquals o) (= id (.-id ^EditOnEquals o)))))
+         (every? (fn [put?]
+                   (let [action (atom nil) k (EditOnEquals. 1 action) probe (EditOnEquals. 1 action)
+                         src (assoc (zipmap (range 64) (range 64)) k :old) t (transient src)]
+                     (reset! action #(assoc! t :nested false))
+                     (if put? (assoc! t probe :new) (dissoc! t probe))
+                     (and (nil? @action) (= :old (get src k))
+                          (= (persistent! t) (assoc (if put? (assoc src k :new) (dissoc src k))
+                                                    :nested false)))))
+                 [true false]))"
+    "true")
 
 ;; --- one-way promotion: a transient that grew past the array limit and shrank
 ;; back comes down a HASH map (JVM TransientArrayMap promotes on the way up and
