@@ -100,9 +100,58 @@
     nil
     `(if ~(first clauses) ~(nth clauses 1) (cond ~@(drop 2 clauses)))))
 
+;; import is a MACRO like the JVM's: its specs are never evaluated, so
+;; (import [java.nio.file Paths]) works bare — under strict resolution the
+;; old function-import analyzed java.nio.file as a value and threw. Specs
+;; arriving already quoted (the ns macro below quotes its clause args) are
+;; passed through, mirroring clojure.core/import's quote-unwrap. The runtime
+;; work happens in __import (host/chez/java/natives-str.ss).
+(defmacro import [& specs]
+  `(clojure.core/__import
+     ~@(map (fn [s] (if (and (seq? s) (= 'quote (first s))) s (list 'quote s)))
+            specs)))
+
+;; Threading: a list form threads x in as the first (->) or last (->>) arg; a bare
+;; symbol becomes (form x). Iterative, so ONE expansion step yields the whole
+;; chain: a consumer that reads a single macroexpand-1 (tools.analyzer, a linter)
+;; gets the threaded shape, where a recursive definition would hand back another
+;; (-> ...) and only agree after a full macroexpand. A threaded step keeps its own
+;; form's metadata, so a fault inside the chain reports that step's line and not
+;; the whole chain's; a bare symbol has no form of its own and inherits the call's.
+;; loop*/recur, not loop: the loop macro is defined further down this file.
+(defmacro -> [x & forms]
+  (loop* [x x
+          forms (seq forms)]
+    (if forms
+      (let* [form (first forms)
+             threaded (if (seq? form)
+                        (with-meta `(~(first form) ~x ~@(rest form)) (meta form))
+                        `(~form ~x))]
+        (recur threaded (next forms)))
+      x)))
+
+(defmacro ->> [x & forms]
+  (loop* [x x
+          forms (seq forms)]
+    (if forms
+      (let* [form (first forms)
+             threaded (if (seq? form)
+                        (with-meta `(~(first form) ~@(rest form) ~x) (meta form))
+                        `(~form ~x))]
+        (recur threaded (next forms)))
+      x)))
+
+;; Forward declaration interns unbound vars (Clojure semantics). The interpreter
+;; resolves forward refs lazily either way, but the COMPILER classifies globals at
+;; compile time: without the var, a declared name that collides with a host root
+;; binding (parse, hash, …) would compile to the host fn instead of the var.
+(defmacro declare [& syms]
+  `(do ~@(map (fn* [s] `(def ~(with-meta s (assoc (meta s) :declared true)))) syms)))
+
 ;; ns's helpers: fn*/let* like the rest of this file above the let/fn macros.
-;; pr-str is not declared until above destructure (the declare macro is defined
-;; there); like ns's own body, these resolve it when they run, after 20-coll.
+;; pr-str (20-coll) builds the error messages here and in destructure below.
+(declare pr-str)
+
 (def ^:private ns-bad-clause
   (fn* ns-bad-clause [nm clause why]
     (throw (ex-info
@@ -186,54 +235,6 @@
                    ())]
     `(do (in-ns (quote ~nm)) ~@set-meta ~@default ~@calls)))
 
-;; import is a MACRO like the JVM's: its specs are never evaluated, so
-;; (import [java.nio.file Paths]) works bare — under strict resolution the
-;; old function-import analyzed java.nio.file as a value and threw. Specs
-;; arriving already quoted (the ns macro above quotes its clause args) are
-;; passed through, mirroring clojure.core/import's quote-unwrap. The runtime
-;; work happens in __import (host/chez/java/natives-str.ss).
-(defmacro import [& specs]
-  `(clojure.core/__import
-     ~@(map (fn [s] (if (and (seq? s) (= 'quote (first s))) s (list 'quote s)))
-            specs)))
-
-;; Threading: a list form threads x in as the first (->) or last (->>) arg; a bare
-;; symbol becomes (form x). Iterative, so ONE expansion step yields the whole
-;; chain: a consumer that reads a single macroexpand-1 (tools.analyzer, a linter)
-;; gets the threaded shape, where a recursive definition would hand back another
-;; (-> ...) and only agree after a full macroexpand. A threaded step keeps its own
-;; form's metadata, so a fault inside the chain reports that step's line and not
-;; the whole chain's; a bare symbol has no form of its own and inherits the call's.
-;; loop*/recur, not loop: the loop macro is defined further down this file.
-(defmacro -> [x & forms]
-  (loop* [x x
-          forms (seq forms)]
-    (if forms
-      (let* [form (first forms)
-             threaded (if (seq? form)
-                        (with-meta `(~(first form) ~x ~@(rest form)) (meta form))
-                        `(~form ~x))]
-        (recur threaded (next forms)))
-      x)))
-
-(defmacro ->> [x & forms]
-  (loop* [x x
-          forms (seq forms)]
-    (if forms
-      (let* [form (first forms)
-             threaded (if (seq? form)
-                        (with-meta `(~(first form) ~@(rest form) ~x) (meta form))
-                        `(~form ~x))]
-        (recur threaded (next forms)))
-      x)))
-
-;; Forward declaration interns unbound vars (Clojure semantics). The interpreter
-;; resolves forward refs lazily either way, but the COMPILER classifies globals at
-;; compile time: without the var, a declared name that collides with a host root
-;; binding (parse, hash, …) would compile to the host fn instead of the var.
-(defmacro declare [& syms]
-  `(do ~@(map (fn* [s] `(def ~(with-meta s (assoc (meta s) :declared true)))) syms)))
-
 ;; letfn is a macro over the letfn* special form, matching Clojure: each
 ;; (name [params] body*) spec becomes a name + a (fn name [params] body*) binding.
 ;; So (macroexpand-1 '(letfn …)) yields the letfn* form macroexpansion tooling
@@ -252,10 +253,9 @@
 ;; let/loop/fn, so expanding its own body can't recurse back into destructure.
 ;; Note map? is true for symbol structs too, so the symbol? clause must come first.
 ;; def+fn* (not defn) because the defn macro is not defined until later in the tier.
-;; pr-str (20-coll) builds its error messages.
+;; pr-str (declared above ns) builds its error messages.
 ;; The destructure-* helpers below are its pieces, one per pattern shape; each
 ;; appends bindings to the vector acc and returns it.
-(declare pr-str)
 (declare ^:private destructure-binding)
 
 (def ^:private destructure-amp?
@@ -685,7 +685,8 @@
 ;; what `doc` and every arglists-driven tool show. The trigger is &form in
 ;; FIRST position, which is what the reference keys on. Guarded on length:
 ;; a lone [&form] is an IndexOutOfBoundsException there (subvec 2..1), a
-;; crash rather than a shape worth reproducing.
+;; crash rather than a shape worth reproducing. subvec is the kernel tier's.
+(declare subvec)
 (def ^:private defn-declared-params
   (fn defn-declared-params [pv]
     (if (and (vector? pv) (> (count pv) 1) (= (first pv) '&form))
@@ -842,7 +843,9 @@
 ;; code point, and a `case` over characters — the way Clojure spells a
 ;; scanner state machine — was paying a generic `=` call per arm per
 ;; input character.
-(defn- case-ident-const? [c] (or (keyword? c) (char? c) (nil? c) (true? c) (false? c)))
+;; (identical? true c) is true? — defined in 22-coll, after this tier.
+(defn- case-ident-const? [c]
+  (or (keyword? c) (char? c) (nil? c) (identical? true c) (identical? false c)))
 (defn- case-const-test [g c]
   (if (case-ident-const? c)
     `(identical? ~g ~c)
@@ -891,7 +894,7 @@
 ;; already makes inline.
 (defn- case-table-const? [c]
   (or (keyword? c) (string? c) (symbol? c) (char? c) (nil? c)
-      (true? c) (false? c) (integer? c)))
+      (identical? true c) (identical? false c) (integer? c)))
 (defn- case-table? [consts]
   (let [nconst (count consts)]
     (and ;; where the lookup starts paying (measured, 10k dispatches,
