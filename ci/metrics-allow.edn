@@ -2,9 +2,7 @@
 ;; Each entry says why: the tool can't see var-deref from Scheme, #' lookups, or
 ;; a require kept for what loading it does.
 {:unused-requires
- [{:path "jolt-core/jolt/passes.clj" :lib "jolt.passes.types"
-   :why "re-exported by :refer so the back end imports only jolt.passes (see its docstring)"}
-  {:path "stdlib/clojure/core/async/flow/impl.clj" :lib "clojure.core.async.flow.impl.graph"
+ [{:path "stdlib/clojure/core/async/flow/impl.clj" :lib "clojure.core.async.flow.impl.graph"
    :why "upstream core.async's own require; impl.clj names the Graph class it defines"}
   {:path "test/chez/ns-audit/good/host.cljc" :lib "clojure.set"
    :why "ns-audit fixture"}
