@@ -570,11 +570,15 @@
 ;; starts every slot at fixnum 0 and allocates its table on first use.
 (define jolt-vreg-hasheq-caches 5)
 (define string-hasheq-buckets 2048)
+;; A 2,048-key scan shares the admitted table with live keys from startup.
+;; Leave room for both to keep Chez's identity-bucket chains short on hits.
+(define string-hasheq-table-size-hint 8192)
+(define string-hasheq-collision-budget 32)
 
 (define (hasheq-caches)
   (let ((c (virtual-register jolt-vreg-hasheq-caches)))
     (if (eq? c 0)
-        (let ((v (cons #f (make-weak-eq-hashtable))))
+        (let ((v (cons #f (make-weak-eq-hashtable string-hasheq-table-size-hint))))
           (set-virtual-register! jolt-vreg-hasheq-caches v)
           v)
         c)))
@@ -626,14 +630,12 @@
 
 ;; The JVM caches String.hashCode in the object; jolt strings are plain Chez
 ;; strings with nowhere to put it, so they use the per-thread table above.
-;;
 (define (compute-string-hasheq s)
   (murmur3-hash-int (java-string-hashcode s)))
 
-;; Remember first sightings in reusable weak slots. Each bucket keeps one
-;; candidate until reuse or collection, plus the most recent colliding string.
-;; This lets a cyclic scan promote keys over successive passes, and a new hot
-;; string can still qualify when the first slot holds a live but idle key.
+;; Each bucket holds two weak candidates. Give the first time to recur on a
+;; later scan while the second slot tracks the most recent collider. Rotate
+;; the first after repeated misses so a live, idle key cannot pin it forever.
 (define (string-hasheq-admit! cache s h)
   (let* ((buckets (if (vector? (car cache))
                       (car cache)
@@ -652,9 +654,15 @@
               (begin
                 (hashtable-set! (cdr cache) s h)
                 (set-car! match #f))
-              ;; An empty or collected first slot is available again.
-              (set-car! (if (string? first) recent bucket) s)))
-        (vector-set! buckets i (weak-cons s (weak-cons #f #f))))))
+              (let ((remaining (cdr recent)))
+                (if (and (string? first) (fixnum? remaining) (fx>? remaining 1))
+                    (begin
+                      (set-car! recent s)
+                      (set-cdr! recent (fx- remaining 1)))
+                    (begin
+                      (set-car! bucket s)
+                      (set-cdr! recent string-hasheq-collision-budget))))))
+        (vector-set! buckets i (weak-cons s (weak-cons #f string-hasheq-collision-budget))))))
 
 (define (string-hasheq s)
   (let ((cache (hasheq-caches)))

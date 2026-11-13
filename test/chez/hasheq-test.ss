@@ -280,6 +280,20 @@
       (= (compute-string-hasheq recent) (string-hasheq recent)))
   (keep-live once))
 
+;; A live but idle first candidate must eventually give way to two other
+;; strings that alternate in its bucket. Equal copies guarantee a collision.
+(set-virtual-register! jolt-vreg-hasheq-caches 0)
+(let* ((table (cdr (hasheq-caches)))
+       (idle (string-copy "idle"))
+       (a (string-copy idle))
+       (b (string-copy idle)))
+  (string-hasheq idle)
+  (do ((i 0 (+ i 1))) ((= i 128)) (string-hasheq a) (string-hasheq b))
+  (ok "reused colliders are admitted past an idle first candidate"
+      (and (hashtable-contains? table a) (hashtable-contains? table b)))
+  (ok "the single-use collider stays out of the hash table"
+      (not (hashtable-contains? table idle))))
+
 ;; Keep the cache live while dropping the strings. Exercise
 ;; both a candidate and an admitted key across a full collection.
 (set-virtual-register! jolt-vreg-hasheq-caches 0)
