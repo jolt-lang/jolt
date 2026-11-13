@@ -20,6 +20,10 @@
 ;;   e. a non-PIC archive in the set is skipped with the warning it always got,
 ;;      and does not take the others' build-time resolution down with it (Linux
 ;;      with a -no-pie capable cc only: arm64 macOS has no non-PIC code).
+;;   f. macOS: the link searches the directories of the libraries the Chez
+;;      executable itself links. A Nix Chez links lz4/zlib/ncurses/libiconv out
+;;      of /nix/store, none of it on the linker's default path, so -llz4 and then
+;;      -lz did not resolve. OS libraries and @rpath entries add nothing.
 ;;
 ;;   chez --script test/chez/build-natives-test.ss
 (import (chezscheme))
@@ -99,6 +103,33 @@
                 (and (bld-contains? out "is not position-independent")
                      (bld-contains? out "plnopic")))
             (ok "(e) the PIC archive beside it still resolves" (eqv? (entry-value "jolt_pl_more") 9)))))))
+
+(when bld-osx?
+  (let ((bin (string-append work "/fbin"))
+        (path (getenv "PATH")))
+    (bld-mkdir-p bin)
+    (let ((p (open-output-file (string-append bin "/otool") 'replace)))
+      (put-string p "#!/bin/sh\n\
+cat <<'EOF'\n\
+$2:\n\
+\t/nix/store/aaa-lz4-1.10.0-lib/lib/liblz4.1.dylib (compatibility version 1.0.0)\n\
+\t/nix/store/bbb-zlib-1.3.1/lib/libz.dylib (compatibility version 1.0.0)\n\
+\t/nix/store/bbb-zlib-1.3.1/lib/libz.1.dylib (compatibility version 1.0.0)\n\
+\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n\
+\t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0)\n\
+\t@rpath/libfoo.dylib (compatibility version 1.0.0)\n\
+EOF\n")
+      (close-port p))
+    (sh (string-append "chmod +x '" bin "/otool'"))
+    (putenv "PATH" (string-append bin ":" path))
+    (let ((flags (bld-osx-chez-lib-dir-flags)))
+      (putenv "PATH" path)
+      (ok "(f) -L for each non-OS library directory the Chez executable links, once each"
+          (string=? flags "-L'/nix/store/aaa-lz4-1.10.0-lib/lib' -L'/nix/store/bbb-zlib-1.3.1/lib' "))
+      (ok "(f) the -L flags lead the macOS link libraries"
+          (let ((libs (bld-link-libs)))
+            (and (>= (string-length libs) (string-length flags))
+                 (string=? (substring libs 0 (string-length flags)) flags)))))))
 
 (sh (string-append "rm -rf '" work "'"))
 (printf "\nbuild natives: ~a passed, ~a failed\n" (- total fails) fails)

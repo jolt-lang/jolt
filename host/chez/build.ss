@@ -517,6 +517,30 @@
               (string-append pc " -llz4")
               "-llz4")))))
 
+;; -L flags for the directories of the shared libraries the Chez executable itself
+;; links, outside the OS's own (/usr/lib, /System). A Chez built against
+;; libraries that are not on the linker's default path — Nix's, whose lz4, zlib,
+;; ncurses and libiconv all live under /nix/store and none next to the kernel —
+;; left every -l below unresolvable: "library 'lz4' not found", then, with lz4
+;; installed, "library not found for -lz". The executable already names the
+;; libraries its kernel was built against, so ask it. A Chez that vendors its
+;; archives (Homebrew's, the provisioned one) links only OS libraries and gets
+;; nothing here.
+(define bld-osx-chez-lib-dir-flags
+  (let ((flags #f))
+    (lambda ()
+      (unless flags
+        (set! flags
+          (let ((f (bld-sh-capture
+                     (string-append "otool -L \"$(command -v " (bld-sh-quote bld-chez) ")\""
+                       " 2>/dev/null | awk 'NR > 1 { print $1 }'"
+                       " | sed -n 's|/[^/]*$||p'"
+                       " | grep -v -e '^/usr/lib' -e '^/System/' -e '^@' | sort -u"
+                       ;; one line, each flag followed by a space
+                       " | sed \"s|.*|-L'&'|\" | tr '\\n' ' '"))))
+            f)))
+      flags)))
+
 ;; The link fragment for one of the kernel's compression libraries: the archive's
 ;; path when one is reachable, else -l<lib>. WARN? says whether the fallback is
 ;; worth a word. It always is for lz4, which no OS ships, and on Linux for zlib;
@@ -574,6 +598,7 @@
     ;; genuinely part of macOS.
     (bld-osx?
      (string-append
+       (bld-osx-chez-lib-dir-flags)
        (bld-compression-lib "lz4" #t)
        (bld-compression-lib "z" #f)
        "-lncurses -framework Foundation -liconv -lm"))
