@@ -1103,11 +1103,21 @@
     (number->string
       (fold-left (lambda (h n) (aot-hash-mix h (aot-content-hash n))) 19 names)
       16)))
+;; A sidecar written whole or not at all: to a file of this process's own, then
+;; renamed over the sidecar, so another process reading it sees the old file or
+;; the new one. Writing in place ('replace deletes the file first) let a reader
+;; that had just seen the file exist find it gone, and two processes compiling
+;; the same namespace ended one of them with a FileNotFoundException.
+(define (aot-write-sidecar! path write!)
+  (let ((tmp (string-append path ".part" (number->string (get-process-id)))))
+    (guard (e (else (guard (e2 (#t #f)) (delete-file tmp #f)) #f))
+      (let ((out (open-output-file tmp 'replace)))
+        (write! out)
+        (close-port out))
+      (rename-replace! tmp path))))
 (define (aot-write-ct! base relevant? surface)
-  (guard (e (else #f))
-    (let ((out (open-output-file (aot-ct-sidecar base) 'replace)))
-      (put-string out (if relevant? "1\n" (string-append "0 " surface "\n")))
-      (close-port out))))
+  (aot-write-sidecar! (aot-ct-sidecar base)
+    (lambda (out) (put-string out (if relevant? "1\n" (string-append "0 " surface "\n"))))))
 ;; The compile-time state of a namespace, keyed by its CURRENT source hash:
 ;;   a string — inert: its artifact says it defines nothing a consumer's compile
 ;;              bakes in beyond its var names; the string is their digest
@@ -1122,9 +1132,11 @@
                (v (if (not own)
                       'unknown
                       (let ((p (aot-ct-sidecar (aot-base-for-own name own))))
+                        ;; gone between the check and the read (another
+                        ;; process's cache upkeep): as if never written
                         (if (not (file-exists? p))
                             'unknown
-                            (let ((s (read-file-string p)))
+                            (let ((s (guard (e (else "")) (read-file-string p))))
                               (cond
                                 ((and (fx>? (string-length s) 0)
                                       (char=? #\1 (string-ref s 0)))
@@ -1148,13 +1160,12 @@
 ;; sidecars.
 (define (aot-cti-sidecar base) (string-append base ".cti"))
 (define (aot-write-cti! base pairs)
-  (guard (e (else #f))
-    (let ((out (open-output-file (aot-cti-sidecar base) 'replace)))
+  (aot-write-sidecar! (aot-cti-sidecar base)
+    (lambda (out)
       (for-each (lambda (pr)
                   (put-string out (car pr)) (put-string out " ")
                   (put-string out (cdr pr)) (put-string out "\n"))
-                (sort (lambda (a b) (string<? (car a) (car b))) pairs))
-      (close-port out))))
+                (sort (lambda (a b) (string<? (car a) (car b))) pairs)))))
 ;; The recorded .cti as an alist dep → surface.
 (define aot-assumed-memo (make-hashtable string-hash string=?))
 (define (aot-assumed-inert name own)
