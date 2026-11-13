@@ -1454,6 +1454,26 @@ else
 fi
 rm -f "$bbshadow/src/cheshire/core.clj"; rmdir "$bbshadow/src/cheshire" 2>/dev/null
 
+# bencode.core is bundled as well, since babashka bundles nrepl/bencode: a bare
+# script that speaks nREPL's wire format requires it with no deps.edn. Unlike
+# cheshire it is the library's own file, so a project that declares
+# nrepl/bencode keeps its own copy and nothing here shadows it.
+bnc_dir="$(mktemp -d)"
+printf '%s\n' "(require '[bencode.core :as b])" \
+  '(let [o (java.io.ByteArrayOutputStream.)]' \
+  '  (b/write-bencode o {"op" "eval" :id 7})' \
+  '  (let [m (b/read-bencode (java.io.PushbackInputStream. (java.io.ByteArrayInputStream. (.toByteArray o))))]' \
+  '    (println (String. (.toByteArray o) "UTF-8") (get m "id") (String. (get m "op") "UTF-8"))))' > "$bnc_dir/client.clj"
+bnc_out="$(cd "$bnc_dir" && JOLT_NO_DEVCACHE=1 "$bbs_jolt" client.clj 2>&1 | tail -1)"
+if [ "$bnc_out" = 'd2:idi7e2:op4:evale 7 eval' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a bare script requiring bencode.core"
+  echo "    want \`d2:idi7e2:op4:evale 7 eval\` got \`$bnc_out\`"
+  fails=$((fails + 1))
+fi
+rm -rf "$bnc_dir"
+
 # ...and the escape hatch: a project that DECLARES it supplies the namespace
 # itself gets its own copy, with no supplement interned over it. Without one,
 # "jolt always wins" would be a thing a project could not get out of.
