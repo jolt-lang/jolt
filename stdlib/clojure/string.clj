@@ -133,7 +133,7 @@
   [s cmap]
   (when (nil? s) (throw (new NullPointerException "s")))
   (if (string? s)
-    (str-escape-by s cmap)
+    (__str-escape-by s cmap)
     (apply str
       (map (fn [ch]
              (if-let [rep (cmap ch)] rep (str ch)))
