@@ -4,480 +4,12 @@
   which hands it the raw argv; the project directory is JOLT_PWD (the user's cwd
   before the launcher cd'd to the jolt repo)."
   (:require [jolt.deps :as deps]
+            [jolt.main.natives :as natives]
             [clojure.string :as str]))
 
 (defn- project-dir [] (or (jolt.host/getenv "JOLT_PWD") "."))
 
 (defn- version [] (jolt.host/jolt-version))
-
-;; The key a :jolt/native spec's candidates are read under. These three
-;; spellings are the whole set — jolt.deps/native-platform-keys, which builds a
-;; spec's dedup identity, must list the same ones.
-(defn- current-platform []
-  (let [os (str/lower-case (or (System/getProperty "os.name") ""))]
-    (cond (str/includes? os "mac") :darwin
-          (str/includes? os "win") :windows
-          :else :linux)))
-
-;; Load a library's declared native shared objects (deps.edn :jolt/native) before
-;; its Clojure is required, so its foreign-fn bindings resolve. Each entry is a
-;; map: {:name "sqlite3" :darwin ["libsqlite3.0.dylib" ...] :linux ["libsqlite3.so.0" ...]}
-;; with optional :optional (missing is fine — a feature-gated dep) and :process
-;; (use the running process's symbols, e.g. libc sockets — no external file).
-;; A :jolt/native candidate that names a PATH — it has a separator — is relative
-;; to the project, not to the current directory. dlopen draws the same line:
-;; a name with no separator is searched for, a name with one is used as given.
-;; Without this, a project that keeps its shared library beside its sources
-;; ("native/libfoo.so", which is what a build task produces) loaded only when
-;; jolt happened to be run from the project root: `bin/jolt` exports JOLT_PWD and
-;; then cd's to its own tree, so the path resolved against the wrong directory
-;; and the library read as missing.
-;; A leading backslash is rooted for the same reason "/" is: "\\server\share\x.dll"
-;; (UNC) and "\Windows\System32\x.dll" (rooted on the current drive) are paths the
-;; OS resolves, and joining either to a project directory produces one nothing
-;; can open. That matters now that the Windows fallback COMPOSES candidates from
-;; the loader's own search directories — a UNC entry on PATH would otherwise
-;; come back as "C:/proj/\\srv\share\bin/libcrypto-3-x64.dll".
-(defn- path-rooted? [p]
-  (or (str/starts-with? p "/")
-      (str/starts-with? p "\\")
-      (boolean (re-find #"^[A-Za-z]:" p))))
-
-(defn- native-candidate [base c]
-  (if (and base
-           (or (str/includes? c "/") (str/includes? c "\\"))
-           (not (path-rooted? c)))
-    (str base "/" c)
-    c))
-
-;; The base a spec's relative paths resolve against: the deps.edn that DECLARED
-;; it (jolt.deps attaches the root), falling back to the project for a spec that
-;; carries none — a stale cpcache entry, or a caller that built the map itself.
-;; Without this a dependency's "native/libfoo.so" resolved against the APP's
-;; directory, where it is not. A RECONCILED spec (jolt.deps folds two
-;; declarations of the same :name into one) carries a per-platform-key root for
-;; every key it took from the other declaration, so those candidates still
-;; resolve against the deps.edn that wrote them.
-(defn- native-root [spec plat base]
-  (or (get (:jolt.deps/roots spec) plat) (:jolt.deps/root spec) base))
-
-;; A BUILD-TIME path (a :static archive, a -L directory) relative to that root.
-;; Unlike native-candidate this prefixes a bare filename too: those paths are
-;; handed to the linker, which reads "libfoo.a" as a file in the current
-;; directory rather than a name to search for — dlopen's rule, which
-;; native-candidate implements, is the opposite and must not change.
-(defn- native-build-path [base p]
-  (if (and base
-           (not (str/blank? p))
-           (not (path-rooted? p)))
-    (str base "/" p)
-    p))
-
-;; Does NAME read as a library name — the thing a platform has a conventional
-;; spelling of? A :jolt/native :name is free text ("libc (POSIX sockets)"), and
-;; deriving "libc (POSIX sockets).dll" from one would put noise in the
-;; diagnostic and dlopen nothing.
-(defn- library-name? [n]
-  (and (string? n) (seq n) (re-matches #"[A-Za-z0-9_.+-]+" n)))
-
-;; The candidates SPEC itself declares for PLAT — one string or a list of them.
-(defn- native-declared [spec plat]
-  (let [c (get spec plat)] (if (string? c) [c] (vec c))))
-
-;; The candidates to try for SPEC on PLAT, in order. A spec that declares the
-;; platform's key is taken at its word. One that declares none — every
-;; :darwin/:linux library on Windows, which is all of jolt-lang/crypto and
-;; jolt-lang/http-client — used to yield the empty list, so nothing was dlopen'd
-;; and the failure still read "not found" about a search that never happened
-;; (jolt-lang/jolt#989). Fall back to the platform's conventional spellings of
-;; the :name, which is what load-system-library would have tried; on Windows
-;; that includes the version-suffixed files (libcrypto-3-x64.dll) the OS loader
-;; cannot reach from a bare name.
-(defn- native-candidates [spec plat base]
-  (let [declared (native-declared spec plat)
-        raw (if (seq declared)
-              declared
-              (when (library-name? (:name spec))
-                (vec (jolt.ffi/system-library-candidates (:name spec)))))]
-    (mapv #(native-candidate (native-root spec plat base) %) raw)))
-
-;; What to say when nothing loaded. "tried []" was the tell for a spec with no
-;; key for this platform, and it read as a missing library — it named no search
-;; because none happened, and "(a task may build it)" pointed at a build for a
-;; file that is already on disk. Say which keys the spec DOES declare instead.
-;; A candidate that IS on disk but failed to load (a DLL whose own dependency is
-;; missing, #1127) is named with the loader's reason rather than reported as
-;; not found.
-(defn- native-missing-msg [spec plat cands]
-  (let [nm (or (:name spec) (first cands) "?")
-        declared-keys (filterv #(contains? spec %) [:darwin :linux :windows])
-        note (when (seq cands) (jolt.ffi/load-failure-note cands))]
-    (cond
-      note
-      (str "required native library " nm " did not load — " note)
-
-      (seq (native-declared spec plat))
-      (str "required native library " nm " not found — tried " (pr-str cands)
-           " for " (name plat))
-
-      :else
-      (str "required native library " nm " has no " plat " candidates"
-           (when (seq declared-keys)
-             (str " (declares " (str/join ", " declared-keys) ")"))
-           (if (seq cands)
-             (str " — tried this platform's conventional names " (pr-str cands))
-             "")))))
-
-;; --- building a missing :jolt/native library --------------------------------
-;; A spec may name the task that produces it: {:name "ents" :darwin [...] :build
-;; "native"}, where "native" is a task in the DECLARING library's own deps.edn.
-;; A library with a C shim reached as a plain git dep then works without the
-;; consumer cloning it and running the task by hand: the checkout under
-;; ~/.jolt/gitlibs holds the sources and nothing else ever built them.
-;;
-;; The build is a child `jolt run <task>` in the library's root. Each [root task]
-;; runs at most once per process (several specs may share one task); a lock
-;; directory in the root keeps two processes from building into the same
-;; checkout at once, the loser waiting and then retrying the load. Roots being
-;; built by an ancestor process travel in JOLT_NATIVE_BUILDING, so the build
-;; task's own process (which applies the same project) never starts another
-;; build of it — and never waits on the lock its parent holds.
-(def ^:private native-builds (atom {}))   ; [root task] -> {:status n} | {:error s}
-
-(def ^:private native-building-env "JOLT_NATIVE_BUILDING")
-
-(defn- native-build-off? [] (= "0" (jolt.host/getenv "JOLT_NATIVE_BUILD")))
-
-(defn- canonical-dir [d] (.getCanonicalPath (java.io.File. ^String d)))
-
-(defn- native-build-dir [spec base]
-  (when-let [d (or (:jolt.deps/root spec) base)] (canonical-dir d)))
-
-(defn- ancestor-building? [dir]
-  (let [v (jolt.host/getenv native-building-env)]
-    (boolean (and v (some #{dir} (str/split v #"\n"))))))
-
-;; The jolt to run the task with: bin/jolt exports JOLT_EXE, a built jolt binary
-;; knows its own path, and an installed jolt is on PATH.
-(defn- jolt-exe []
-  (or (jolt.host/getenv "JOLT_EXE") (jolt.host/self-exe) "jolt"))
-
-;; Run the task, its stdout copied to our stderr: the build is not the program's
-;; output, and `jolt -M:app > out` must not capture a compiler's chatter.
-(defn- spawn-native-build! [nm dir task]
-  (binding [*out* *err*]
-    (println (str "jolt: building native library " nm
-                  " (task " task " in " dir ")"))
-    (flush))
-  (try
-    (let [pb (java.lang.ProcessBuilder. ^java.util.List [(jolt-exe) "run" task])
-          env (.environment pb)
-          prev (jolt.host/getenv native-building-env)]
-      (.directory pb (java.io.File. ^String dir))
-      (.put env "JOLT_PWD" dir)
-      (.put env native-building-env (if prev (str prev "\n" dir) dir))
-      (.redirectError pb java.lang.ProcessBuilder$Redirect/INHERIT)
-      (let [p (.start pb)
-            in (.getInputStream p)
-            buf (byte-array 8192)]
-        ;; nothing is ever written to the task: close its stdin, so one that
-        ;; reads it (a prompt, a tool that defaults to stdin) sees EOF instead
-        ;; of waiting forever on a pipe no one writes to
-        (.close (.getOutputStream p))
-        (loop []
-          (let [n (.read in buf)]
-            (when (pos? n) (.write System/err buf 0 n) (recur))))
-        (.flush System/err)
-        {:status (.waitFor p)}))
-    (catch Exception e
-      {:error (str "could not run " (jolt-exe) ": " (ex-message e))})))
-
-;; The build lock is a directory (mkdir is the atomic create-if-absent) holding
-;; an `owner` file: "<pid> <host> <nonce>". Its holder touches the directory
-;; every few seconds while the build runs, so a lock is stale once its holder is
-;; dead on this host, or once its mtime stops moving — a build killed by Ctrl-C,
-;; kill -9 or a crash (which never reaches the `finally` that releases it) costs
-;; the next run a moment, not a wait.
-(def ^:private native-lock-heartbeat-ms 5000)
-(def ^:private native-lock-stale-ms 60000)
-
-(def ^:private native-lock-host
-  (delay (try (str (.getHostName (java.net.InetAddress/getLocalHost)))
-              (catch Exception _ "unknown"))))
-
-(defn- native-lock-owner-file ^java.io.File [^java.io.File lock]
-  (java.io.File. lock "owner"))
-
-;; [pid host token] from LOCK's owner file, nil when it has none (not written
-;; yet, a lock an older jolt took, or one gone since).
-(defn- native-lock-owner [^java.io.File lock]
-  (try (let [s (str/trim (slurp (native-lock-owner-file lock)))
-             [pid host] (str/split s #" ")]
-         (when-let [pid (and pid (parse-long pid))] [pid host s]))
-       (catch Exception _ nil)))
-
-(defn- pid-alive? [pid]
-  (try (.isPresent (java.lang.ProcessHandle/of pid))
-       (catch Exception _ true)))
-
-;; Why LOCK is stale, or nil while its holder may still be building.
-(defn- native-lock-stale [^java.io.File lock owner]
-  (let [[pid host] owner]
-    (cond
-      (and pid (= host @native-lock-host) (not (pid-alive? pid)))
-      (str "its holder, pid " pid ", is gone")
-
-      (> (- (System/currentTimeMillis) (.lastModified lock)) native-lock-stale-ms)
-      "it has not been refreshed for a minute")))
-
-(defn- delete-native-lock! [^java.io.File lock]
-  (.delete (native-lock-owner-file lock))
-  (.delete lock))
-
-;; Break a stale LOCK. It is renamed aside first, so of two waiters that both
-;; judged it stale only one takes it; and the one that did checks it took the
-;; lock it judged (same owner line), putting back a fresh lock some other process
-;; took in between rather than deleting it.
-(defn- break-native-lock! [^java.io.File lock owner]
-  (let [aside (java.io.File. (str (.getPath lock) ".stale-"
-                                  (.pid (java.lang.ProcessHandle/current)) "-"
-                                  (System/nanoTime)))]
-    (when (.renameTo lock aside)
-      (if (= (nth owner 2 nil) (nth (native-lock-owner aside) 2 nil))
-        (delete-native-lock! aside)
-        (when-not (.renameTo aside lock) (delete-native-lock! aside))))))
-
-;; Take DIR's build lock, waiting while another process holds it. Answers true
-;; when it had to wait — the other process has probably built the library, so
-;; the caller tries the load again before building anything itself.
-(defn- acquire-native-lock! [^java.io.File lock nm]
-  (loop [waited? false, said? false, vanished 0]
-    (if (.mkdir lock)
-      waited?
-      (let [owner (native-lock-owner lock)]
-        (cond
-          ;; Gone between the mkdir and this check: its holder just released
-          ;; it, so try again, as a waiter (its build may have just produced
-          ;; the library). Only a lock that never appears (an unwritable or
-          ;; missing dir) is an error.
-          (not (.exists lock))
-          (if (< vanished 50)
-            (recur true said? (inc vanished))
-            (throw (ex-info (str "cannot create " (.getPath lock)) {})))
-
-          :else
-          (if-let [why (native-lock-stale lock owner)]
-            (do (binding [*out* *err*]
-                  (println (str "jolt: removing a stale native build lock for " nm
-                                " (" why "): " (.getPath lock))))
-                (break-native-lock! lock owner)
-                (recur waited? said? vanished))
-            (do (when-not said?
-                  (binding [*out* *err*]
-                    (println (str "jolt: waiting for another jolt building " nm
-                                  (when-let [pid (first owner)] (str " (pid " pid ")"))
-                                  "; if no build is running, delete "
-                                  (.getPath lock)))))
-                (Thread/sleep 200)
-                (recur true true vanished))))))))
-
-;; Record this process as LOCK's holder and keep its mtime fresh until the
-;; answered fn is called, which stops the heartbeat and releases the lock — only
-;; if it is still ours (a waiter may have judged it stale and broken it).
-(defn- hold-native-lock! [^java.io.File lock]
-  (let [line (str (.pid (java.lang.ProcessHandle/current)) " " @native-lock-host
-                  " " (System/nanoTime))
-        _ (try (spit (native-lock-owner-file lock) line) (catch Exception _ nil))
-        stop (atom false)
-        beat (doto (Thread.
-                    ^Runnable
-                    (fn []
-                      (loop []
-                        (when-not @stop
-                          (try (Thread/sleep native-lock-heartbeat-ms)
-                               (catch InterruptedException _ nil))
-                          (when-not @stop
-                            (.setLastModified lock (System/currentTimeMillis)))
-                          (recur)))))
-               (.setDaemon true)
-               (.start))]
-    (fn []
-      (reset! stop true)
-      (.interrupt beat)
-      (when (= line (nth (native-lock-owner lock) 2 nil))
-        (delete-native-lock! lock)))))
-
-;; Build SPEC's library with its :build task, then try LOAD! again. Answers
-;; [hit result], result being the build's {:status n} / {:error s}.
-(defn- build-native! [spec dir load!]
-  (let [task (str (:build spec))
-        nm (or (:name spec) task)
-        k [dir task]]
-    (if-let [r (get @native-builds k)]
-      [(load!) r]
-      (let [lock (java.io.File. (str dir "/.jolt-native-build.lock"))
-            waited? (try (acquire-native-lock! lock nm)
-                         (catch Exception e {:error (ex-message e)}))]
-        (if (map? waited?)
-          [nil waited?]
-          (let [release! (hold-native-lock! lock)]
-            (try
-              (or (when waited? (when-let [h (load!)] [h {:status 0}]))
-                  (let [r (spawn-native-build! nm dir task)]
-                    (swap! native-builds assoc k r)
-                    [(load!) r]))
-              (finally (release!)))))))))
-
-;; Build a missing library whose spec names its task — except the project's own
-;; library under a task (strict? false): the task being run may BE that build,
-;; or one that must not trigger it (a clean), and a task that needs the library
-;; can :depends on its build. DIR is the spec's build dir, nil when it has no
-;; :build or nothing is missing.
-(defn- auto-build-native? [dir strict? base]
-  (boolean (and dir
-                (not (native-build-off?))
-                (not (ancestor-building? dir))
-                (or strict? (not= dir (some-> base canonical-dir))))))
-
-;; What the missing-library message adds about the :build task, if anything.
-(defn- native-build-note [spec dir result cands]
-  (when-let [task (:build spec)]
-    (let [where (str "task " task " in " dir)]
-      (cond
-        (:error result)
-        (str "; building it failed: " (:error result) " (" where ")")
-
-        (and result (not (zero? (:status result))))
-        (str "; building it failed: " where " exited with status " (:status result))
-
-        (and result (seq cands) (jolt.ffi/load-failure-note cands))
-        (str " (built by " where ")")
-
-        result
-        (str "; " where " ran but did not produce it")
-
-        (native-build-off?)
-        (str "; " where " builds it (auto-build is off: JOLT_NATIVE_BUILD=0)")
-
-        :else
-        (str "; " where " builds it")))))
-
-;; strict? false lets a MISSING required library through with a warning instead of
-;; an error. A task is the one command that may be what PRODUCES the library it
-;; is declared alongside: a project whose native/ holds C sources and whose
-;; :jolt/native names the .so/.dylib built from them could not run its own build
-;; task, because applying the project loaded the natives first and the artifact
-;; was not there yet. Any task that actually needs the library still fails on
-;; use, and the warning names what was missing either way.
-(defn- load-natives!
-  ([natives] (load-natives! natives true))
-  ([natives strict?] (load-natives! natives strict? nil))
-  ([natives strict? base]
-  (when (seq natives)
-    (let [plat (current-platform)]
-      (doseq [spec natives]
-        (if (:process spec)
-          (jolt.ffi/load-library)
-          (let [;; a :static spec's conventional names are not derived here: its
-                ;; symbols come from its archive (preloaded by `jolt build`,
-                ;; linked into the binary), and a same-named shared object the
-                ;; loader happens to find is a different library — it answered
-                ;; the build's calls in the archive's place, and for "crypto"
-                ;; on macOS it is Apple's libcrypto.dylib, which aborts the
-                ;; process. Candidates the spec DECLARES are still loaded.
-                cands (if (:static spec)
-                        (mapv #(native-candidate (native-root spec plat base) %)
-                              (native-declared spec plat))
-                        (native-candidates spec plat base))
-                ;; Load the native RTLD_LOCAL and register its handle, so the
-                ;; spec's defcfns resolve from the handle (isolated from the
-                ;; process-global namespace) rather than depending on global
-                ;; foreign-entry search order. load-native returns #t on success
-                ;; (a handle, or Windows-global), #f when no candidate opens.
-                load! #(some (fn [c] (when (jolt.ffi/load-native c) c)) cands)
-                hit (load!)
-                ;; a task may build a library it declared candidates for, but
-                ;; not one already on disk that failed to load. A :static
-                ;; spec's declared shared object is built the same way; only a
-                ;; missing one stays silent below.
-                buildable? (and (nil? hit)
-                                (not (:optional spec))
-                                (seq (native-declared spec plat))
-                                (nil? (jolt.ffi/load-failure-note cands)))
-                dir (when (and buildable? (:build spec)) (native-build-dir spec base))
-                [hit result] (if (auto-build-native? dir strict? base)
-                               (build-native! spec dir load!)
-                               [hit nil])
-                required? (and (nil? hit) (not (:optional spec)) (not (:static spec)))]
-            ;; A :static spec has no runtime shared object (it's linked into a
-            ;; built binary), so an interpreted `run`/`repl` has nothing to load —
-            ;; skip it rather than fail. Its foreign calls only resolve in a static
-            ;; build; document a dynamic candidate too to use it under `run`.
-            (when required?
-              (let [msg (str (native-missing-msg spec plat cands)
-                             (when dir (native-build-note spec dir result cands)))]
-                (cond
-                  strict?
-                  (throw (ex-info msg {:native spec}))
-
-                  ;; the task an auto-build started: its parent already said
-                  ;; what is being built, and the library is missing by design
-                  (and dir (ancestor-building? dir))
-                  nil
-
-                  :else
-                  (binding [*out* *err*]
-                    ;; a task may still BUILD a library it declared candidates
-                    ;; for; it cannot build one this platform was never told
-                    ;; the name of.
-                    (println (str "warning: " msg
-                                  (when (and buildable? (not dir))
-                                    " (a task may build it)"))))))))))))))
-
-;; --- a dependency's natives load on its first require ------------------------
-;; A dependency's :jolt/native libraries are not opened at startup. Each spec
-;; carries the source roots of the dependency that declared it (deps.clj
-;; resolve-deps), and the loader opens it the first time a namespace is read
-;; off one of them, before that namespace's code runs (loader.ss
-;; ldr-natives-for-file!). A program that never requires the dependency never
-;; opens its library: ring-chez-adapter's hello-world no longer loads OpenSSL
-;; because jolt.crypto is on the roots.
-;;
-;; These still load at startup: a :process spec (the process's own symbols),
-;; the project's own (no :jolt.deps/paths), one a dependency marks :eager
-;; because its C must be there before any of its namespaces loads, and any spec
-;; a cpcache entry from an older jolt recorded without roots.
-(defn- deferred-native? [spec]
-  (boolean (and (seq (:jolt.deps/paths spec))
-                (not (:process spec))
-                (not (:eager spec)))))
-
-;; A dependency's natives failing at first require name the dependency and the
-;; namespace that triggered the load, since the failure no longer happens at
-;; startup where "the project's natives" was all the context there was.
-(defn- load-dependency-natives! [specs strict? base ns]
-  (try
-    (load-natives! specs strict? base)
-    (catch clojure.lang.ExceptionInfo e
-      (if-let [spec (:native (ex-data e))]
-        (throw (ex-info (str (ex-message e)
-                             " (declared by dependency " (or (:jolt.deps/lib spec) "?")
-                             (when ns (str ", loaded on first require of " ns))
-                             ")")
-                        (assoc (ex-data e) :ns (some-> ns str))
-                        e))
-        (throw e)))))
-
-;; Load what has to be there now, and hand each dependency's natives to the
-;; loader under the source roots that load them. Specs sharing a set of roots
-;; (one dependency's) go in one group, in declaration order.
-(defn- load-project-natives! [natives strict? base]
-  (load-natives! (vec (remove deferred-native? natives)) strict? base)
-  (let [deferred (filter deferred-native? natives)]
-    (doseq [roots (distinct (map :jolt.deps/paths deferred))]
-      (let [specs (vec (filter #(= roots (:jolt.deps/paths %)) deferred))]
-        (jolt.host/defer-natives! roots
-                                  (fn [ns] (load-dependency-natives! specs strict? base ns)))))))
 
 ;; Install the :jolt/provides declarations a resolved project collected (RFC 0014).
 ;; An entry is [install-ns lib class ...]; lib is nil for the project's own.
@@ -518,7 +50,7 @@
    (register-ns-replacements! replaces)
    ;; project-dir is absent from a cpcache entry written by an older jolt; JOLT_PWD
    ;; is where the user invoked us, which is the same directory in the common case.
-   (load-project-natives! natives strict? (or project-dir (jolt.host/getenv "JOLT_PWD")))))
+   (natives/load-project-natives! natives strict? (or project-dir (jolt.host/getenv "JOLT_PWD")))))
 
 ;; Aliases selected by a leading -A:… — bound around the re-dispatch so every
 ;; command that resolves the project (run/path/build/repl/nrepl/task, and a
@@ -747,7 +279,7 @@
     :else (str dir "/" x)))
 
 (defn- file-arg [x]
-  (file-arg-for (deps/path-kind x) (= :windows (current-platform)) (project-dir) x))
+  (file-arg-for (deps/path-kind x) (= :windows (natives/current-platform)) (project-dir) x))
 
 ;; main-opts is a vector like ["-m" "app.core"] or ["-e" "(prn :hi)"] (optionally
 ;; with trailing args). The user-supplied extra args are appended, so an alias's
@@ -949,6 +481,29 @@
   (binding [*cli-tool?* true]
     (cmd-X arg more)))
 
+(defn- repl-literal-step
+  "One character inside a string or regex literal (STATE says which): a
+  backslash skips the character it escapes, a quote returns to code."
+  [i depth c state]
+  (cond
+    (= c \\) [(+ i 2) depth state]            ; escaped char
+    (= c \") [(inc i) depth :code]
+    :else    [(inc i) depth state]))
+
+(defn- repl-code-step
+  "One character of code in `s` at `i`: answers the next [i depth state]."
+  [s i depth c]
+  (cond
+    (= c \;)        [(inc i) depth :comment]
+    (= c \\)        [(+ i 2) depth :code]     ; char literal: \(
+    (= c \")        [(inc i) depth :string]
+    (= c \#)        (if (= (get s (inc i)) \")
+                      [(+ i 2) depth :regex]   ; consume the #" together
+                      [(inc i) depth :code])
+    (#{\( \[ \{} c) [(inc i) (inc depth) :code]
+    (#{\) \] \}} c) [(inc i) (dec depth) :code]
+    :else           [(inc i) depth :code]))
+
 (defn- repl-form-complete?
   "True when `s` has balanced ()/[]/{}, no open string/char/regex, and at most
   a trailing comment past the last form. Drives the REPL's read-until-complete
@@ -958,28 +513,13 @@
     (loop [i 0 depth 0 state :code]               ; state: :code :string :regex :comment
       (if (>= i n)
         (and (<= depth 0) (#{:code :comment} state))
-        (let [c (get s i)]
-          (case state
-            :code    (cond
-                       (= c \;)        (recur (inc i) depth :comment)
-                       (= c \\)        (recur (+ i 2) depth :code)     ; char literal: \(
-                       (= c \")        (recur (inc i) depth :string)
-                       (= c \#)        (if (= (get s (inc i)) \")
-                                         (recur (+ i 2) depth :regex)   ; consume the #" together
-                                         (recur (inc i) depth :code))
-                       (#{\( \[ \{} c) (recur (inc i) (inc depth) :code)
-                       (#{\) \] \}} c) (recur (inc i) (dec depth) :code)
-                       :else           (recur (inc i) depth :code))
-            :string  (cond
-                       (= c \\) (recur (+ i 2) depth :string)          ; escaped char
-                       (= c \") (recur (inc i) depth :code)
-                       :else    (recur (inc i) depth :string))
-            :regex   (cond
-                       (= c \\) (recur (+ i 2) depth :regex)
-                       (= c \") (recur (inc i) depth :code)
-                       :else    (recur (inc i) depth :regex))
-            :comment (recur (inc i) depth
-                            (if (#{\newline \return} c) :code :comment))))))))
+        (let [c (get s i)
+              [i depth state]
+              (case state
+                :code    (repl-code-step s i depth c)
+                (:string :regex) (repl-literal-step i depth c state)
+                :comment [(inc i) depth (if (#{\newline \return} c) :code :comment)])]
+          (recur i depth state))))))
 
 (defn- repl-read-form []
   ;; Read lines — printing a secondary prompt for continuations — until the
@@ -1055,6 +595,44 @@
            (:clojure.error/line d) ":" (:clojure.error/column d) ").\n"
            (or (ex-message c) (pr-str c))))))
 
+(defn- repl-quit?
+  "Is the entry :repl/quit or :exit? Either ends the session — a reliable
+  gesture that works in any terminal, unlike ^D (some terminals/editors don't
+  deliver it as EOF)."
+  [form]
+  (#{:repl/quit :exit} (try (read-string form) (catch :default _ nil))))
+
+(defn- repl-print-value!
+  "Shift the result history (*1 *2 *3) and print V."
+  [v token]
+  (var-set #'clojure.core/*3 *2)
+  (var-set #'clojure.core/*2 *1)
+  (var-set #'clojure.core/*1 v)
+  ;; the body caught the interrupt and returned
+  (when (jolt.host/interrupted? token) (println))
+  (println (pr-str v)))
+
+(defn- repl-print-error!
+  "Set *e and report E, with the backtrace unless ^C interrupted the entry."
+  [e token]
+  (var-set #'clojure.core/*e e)
+  (let [interrupted? (jolt.host/interrupted? token)]
+    ;; off the line the terminal echoed ^C on
+    (when interrupted? (println))
+    (println "error:" (or (when interrupted? "Evaluation interrupted")
+                          (repl-load-error e)
+                          (ex-message e)
+                          (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
+                          (pr-str e)))
+    (when-let [bt (and (not interrupted?) (jolt.host/backtrace-string))]
+      (print bt))))
+
+(defn- repl-eval-entry! [form]
+  (let [token (jolt.host/make-interrupt)]
+    (try (repl-print-value! (repl-eval form token) token)
+         (catch :default e
+           (repl-print-error! e token)))))
+
 (defn- repl-session []
   ;; REPL-driven development: trace by default so an uncaught error in evaluated
   ;; code shows a tail-frame backtrace, no JOLT_TRACE needed (JOLT_TRACE=0 opts out).
@@ -1071,36 +649,15 @@
   (loop [read-entry (repl-entry-reader)]
     (let [form (read-entry)]
       (when form
-        ;; :repl/quit / :exit exit the loop — a reliable gesture that works in any
-        ;; terminal, unlike ^D (some terminals/editors don't deliver it as EOF).
         (cond
-          (#{:repl/quit :exit} (try (read-string form) (catch :default _ nil)))
+          (repl-quit? form)
           nil
           ;; an entry the editor submitted blank, or abandoned with ^C
           (str/blank? form)
           (recur read-entry)
           :else
-          (let [token (jolt.host/make-interrupt)]
-            (try (let [v (repl-eval form token)]
-                   (var-set #'clojure.core/*3 *2)
-                   (var-set #'clojure.core/*2 *1)
-                   (var-set #'clojure.core/*1 v)
-                   ;; the body caught the interrupt and returned
-                   (when (jolt.host/interrupted? token) (println))
-                   (println (pr-str v)))
-                 (catch :default e
-                   (var-set #'clojure.core/*e e)
-                   (let [interrupted? (jolt.host/interrupted? token)]
-                     ;; off the line the terminal echoed ^C on
-                     (when interrupted? (println))
-                     (println "error:" (or (when interrupted? "Evaluation interrupted")
-                                           (repl-load-error e)
-                                           (ex-message e)
-                                           (try ((resolve 'jolt.host/condition-message) e) (catch :default _ nil))
-                                           (pr-str e)))
-                     (when-let [bt (and (not interrupted?) (jolt.host/backtrace-string))]
-                       (print bt)))))
-            (recur read-entry)))))))
+          (do (repl-eval-entry! form)
+              (recur read-entry)))))))
 
 ;; A bb.edn / deps.edn :tasks entry. The semantics live in jolt.tasks — required
 ;; here only when a task actually runs, so the CLI's startup closure (and the
@@ -1117,7 +674,7 @@
     (when (nil? task)
       (throw (ex-info (str "unknown command or task: " name " (see 'jolt tasks')")
                       {:name name})))
-    ;; tolerant: see load-natives! — the task may be the build step for a
+    ;; tolerant: see natives/load-natives! — the task may be the build step for a
     ;; :jolt/native library that does not exist yet
     (apply-project! resolved false)
     ;; babashka's exit rule, not clojure.main's: bb's future and agent threads are
@@ -1231,162 +788,6 @@
  ;; stays var-routed automatically. --no-direct-link (or deps.edn :jolt/build
  ;; {:direct-link false}) opts back out to dynamic var routing; --dev stays dynamically
  ;; linked. --direct-link is kept as a now-redundant alias.
-;; The static-link description of a :jolt/native spec for this platform, or nil.
-;; :static may be flat ({:archive "…"} / {:lib "z" :libdir "…"}) or per-platform
-;; ({:darwin {…} :linux {…}}). Returns a vector build.ss reads and wraps in the
-;; platform's force-load flags: ["archive" abspath] or ["lib" name libdir].
-(defn- static-link-spec [spec plat base]
-  (when-let [s (:static spec)]
-    (let [p (get s plat)
-          s (if (map? p) p s)
-          ;; relative to the deps.edn that declared it, not to the build's cwd:
-          ;; a dependency ships its archive beside its own sources, and even the
-          ;; project's own "native/libfoo.a" only worked when the build happened
-          ;; to run from the project dir — which bin/jolt, which cd's to the jolt
-          ;; tree, never does (jolt-9a8).
-          root (native-root spec plat base)]
-      (cond
-        (:archive s) ["archive" (native-build-path root (:archive s))]
-        (:lib s)     ["lib" (:lib s) (if-let [d (:libdir s)]
-                                       (native-build-path root d)
-                                       "")]
-        :else        nil))))
-
-;; `jolt build` links a :static archive into the binary, and the run-time load
-;; in load-natives! never looks at it, so a missing archive whose spec names a
-;; :build task is built here. One the task does not produce fails with what was
-;; run rather than as a linker error about a missing file.
-(defn- build-static-archives! [natives base]
-  (let [plat (current-platform)]
-    (doseq [spec natives
-            :when (and (:build spec) (not (:optional spec)) (not (:process spec)))]
-      (let [[kind archive] (static-link-spec spec plat base)
-            present #(when (jolt.host/file-exists? archive) archive)]
-        (when (and (= "archive" kind) (not (present)))
-          (let [dir (native-build-dir spec base)
-                [hit result] (if (auto-build-native? dir true base)
-                               (build-native! spec dir present)
-                               [nil nil])]
-            (when-not hit
-              (throw (ex-info (str "static archive " archive " for :jolt/native "
-                                   (or (:name spec) "?") " not found"
-                                   (native-build-note spec dir result []))
-                              {:native spec})))))))))
-
-;; `jolt build` builds a dependency's missing shared library too. A run builds
-;; it at the first require of one of the dependency's namespaces, but the build
-;; process only requires what the binary carries, and a binary that binds the
-;; library's symbols without carrying any of the dependency's namespaces still
-;; loads it, at the first such call (build.ss bld-natives-for-closure). That
-;; binary would ship pointing at a file nothing ever built. Which symbols the app
-;; binds is not known here, so every dependency library the binary may load at
-;; runtime (an encoded "dep" entry) is built if its declared file is missing.
-;; Only a candidate naming a path is looked for on disk: a bare soname is the
-;; system's to find, and a task cannot be said to have produced it.
-(defn- build-dependency-libraries! [encoded natives base]
-  (let [plat (current-platform)]
-    (doseq [[e spec] (map vector encoded natives)
-            :when (and (= "dep" (first e)) (:build spec) (not (:optional spec)))]
-      (let [cands (filterv #(or (str/includes? % "/") (str/includes? % "\\"))
-                           (mapv #(native-candidate (native-root spec plat base) %)
-                                 (native-declared spec plat)))
-            present #(some (fn [c] (when (jolt.host/file-exists? c) c)) cands)]
-        (when (and (seq cands) (not (present)))
-          (let [dir (native-build-dir spec base)
-                [hit result] (if (auto-build-native? dir true base)
-                               (build-native! spec dir present)
-                               [nil nil])]
-            (when-not hit
-              (throw (ex-info (str (native-missing-msg spec plat cands)
-                                   (native-build-note spec dir result cands)
-                                   " (declared by dependency "
-                                   (or (:jolt.deps/lib spec) "?") ")")
-                              {:native spec})))))))))
-
-;; Encode a deps.edn :jolt/native spec for the build launcher, resolving the
-;; current platform's candidate list now (the binary runs on this OS). Each entry
-;; becomes a vector the launcher (build.ss) reads:
-;;   ["process"]            — the running binary's own symbols (libc)
-;;   ["static" form …]      — the lib's archive, cc-linked into the binary; its
-;;                            symbols load from the process (default when :static
-;;                            is present and --dynamic wasn't passed)
-;;   ["req"|"opt" cand…]    — load a shared object at runtime, trying each in turn
-;; dynamic? forces the runtime path for every lib (the --dynamic build flag).
-;;
-;; An :optional spec whose :static archive is not on disk is loaded at runtime
-;; like any other optional native, rather than handed to the linker, which fails
-;; the whole build on the missing file: optional means the app runs without it,
-;; and a tree that never built the optional archive is the common case.
-;; The same holds for a :static {:lib "name"}: the linker resolves -lname, and
-;; a host without that library fails the link just as surely. The build probes
-;; it (jolt.host/build-lib-links?, a try-link cached per lib) for optional specs
-;; only, so a build with no optional {:lib} native never runs the probe.
-(defn- unlinkable-optional-static? [spec static target target-pack]
-  (and (:optional spec)
-       (case (first static)
-         "archive" (not (jolt.host/file-exists? (second static)))
-         "lib"     (not (jolt.host/build-lib-links? (nth static 1) (nth static 2)
-                                                    target target-pack))
-         false)))
-
-(defn- encode-natives [natives dynamic? base target target-pack]
-  (let [plat (current-platform)]
-    (vec (for [spec natives]
-           (let [static (and (not dynamic?) (static-link-spec spec plat base))
-                 static (when-not (unlinkable-optional-static? spec static target target-pack)
-                          static)]
-             (cond
-               (:process spec) ["process"]
-               static          (into ["static"] static)
-               :else
-               (let [load (into [(if (:optional spec) "opt" "req")]
-                                (native-candidates spec plat base))]
-                 ;; a binary loads a dependency's library at startup only when
-                 ;; it carries one of that dependency's namespaces, and
-                 ;; otherwise only if a foreign symbol nothing loaded defines
-                 ;; asks for it (build.ss bld-natives-for-closure), as a run does
-                 (if (deferred-native? spec)
-                   (-> ["dep" (str (count (:jolt.deps/paths spec)))]
-                       (into (:jolt.deps/paths spec))
-                       (into load))
-                   load))))))))
-
-;; Say which :jolt/native libraries the built binary will still dlopen. A
-;; `jolt build` is otherwise self-contained — the Clojure, the runtime and every
-;; :static archive are IN the file — so a lib that stayed dynamic is the one
-;; reason the binary is not the single dependency-free artifact a static build
-;; is taken to be, and nothing said so (jolt-9a8). Silence here read as "there is
-;; nothing left to ship", which was wrong exactly when it mattered.
-;;
-;; Not a warning: a system lib the OS resolves by soname (libc, libcrypto) is the
-;; normal case and there is nothing to fix. It names what the binary needs so the
-;; person shipping it knows, and points at the key that would link it in.
-(defn- report-runtime-natives! [encoded natives dynamic?]
-  (let [kind (fn [e] (if (= "dep" (first e))
-                       (nth e (+ 2 (parse-long (second e))))
-                       (first e)))
-        dyn (->> (map vector encoded natives)
-                 (filter (fn [[e _]] (#{"req" "opt"} (kind e))))
-                 vec)]
-    (when (seq dyn)
-      (binding [*out* *err*]
-        (println (str "jolt build: " (count dyn) " :jolt/native "
-                      (if (= 1 (count dyn)) "library is" "libraries are")
-                      " loaded at runtime — the binary needs "
-                      (if (= 1 (count dyn)) "it" "them")
-                      " on the host"
-                      (if dynamic?
-                        " (--dynamic was passed):"
-                        "; declare :static {:archive \"…\"} to link one in:")))
-        (doseq [[e spec] dyn]
-          (let [load (if (= "dep" (first e)) (drop (+ 2 (parse-long (second e))) e) e)]
-            (println (str "  " (or (:name spec) "?")
-                          (when (= "opt" (first load)) " (optional)")
-                          (when (= "dep" (first e))
-                            (str " (declared by " (or (:jolt.deps/lib spec) "a dependency")
-                                 "; loaded at startup if the binary carries one of its"
-                                 " namespaces, else at the first call that needs it)"))
-                          " — " (str/join ", " (rest load))))))))))
 
 (defn- profile-use-files
   "The files after each --profile-use in ARGS, up to the next flag."
@@ -1399,209 +800,243 @@
         (recur rest-a (into acc fs)))
       :else (recur (rest a) acc))))
 
+;; Flags of `jolt build` that consume the next argument, and the key its value
+;; lands under in parse-build-args' result. --boot's value is read from the flag
+;; args by build-boot-mode instead (it needs the alias rules there); it is
+;; consumed here so a bare `build --boot small` does not read `small` as the
+;; entry namespace.
+(def ^:private build-value-flags
+  {"-m" :entry
+   "-o" :out
+   ;; cross-compilation: --target <machine> [--target-pack <dir>]
+   "--target" :target
+   "--target-pack" :target-pack
+   "--boot" nil})
+
+(defn- parse-build-args
+  "The entry namespace, -o, --target, --target-pack and --include values from a
+  `jolt build` command line. Flags are recognized only before `--`; the first
+  other argument is the entry unless -m names one."
+  [args]
+  (loop [a args, opts {:includes []}, end-opts? false]
+    (let [cur (first a)]
+      (cond
+        (empty? a) opts
+        end-opts? (recur (rest a) (update opts :entry #(or % cur)) true)
+        (= "--" cur) (recur (rest a) opts true)
+        (contains? build-value-flags cur)
+        (recur (drop 2 a)
+               (if-let [k (get build-value-flags cur)] (assoc opts k (second a)) opts)
+               false)
+        ;; --profile-use takes every file after it, so a shell glob over several
+        ;; runs' dumps works (profile-use-files)
+        (= "--profile-use" cur)
+        (recur (drop-while #(not (str/starts-with? % "-")) (rest a)) opts false)
+        ;; --include takes a value too, and repeats; deps.edn
+        ;; :jolt/build {:include [ns …]} is read alongside it (build-include-names).
+        (= "--include" cur)
+        (let [v (second a)]
+          (when (or (nil? v) (str/starts-with? v "-"))
+            (throw (ex-info "--include needs a namespace name" {:include v})))
+          (recur (drop 2 a) (update opts :includes conj v) false))
+        (str/starts-with? cur "-") (recur (rest a) opts false)
+        :else (recur (rest a) (update opts :entry #(or % cur)) false)))))
+
+(defn- as-vector
+  "A deps.edn value that may be given as one item or a collection of them."
+  [v]
+  (cond (nil? v) [] (sequential? v) (vec v) :else [v]))
+
+(defn- build-mode [flag-args build]
+  (cond (some #{"--opt"} flag-args) "optimized"
+        (some #{"--dev"} flag-args) "dev"
+        (:opt build)                "optimized"
+        :else                       "release"))
+
+;; Output paths resolve against the project dir (JOLT_PWD), not the CLI's
+;; cwd — bin/jolt cd's to the jolt repo, so a bare relative path would land
+;; there. Default output is cargo-style under target/: --dev -> target/debug,
+;; release/--opt -> target/release, the binary named after the project dir
+;; (falling back to the entry's first segment). The <name>.build scratch dir
+;; the driver creates sits next to it, so it lands under the same target dir.
+;; An explicit -o is honored: absolute as-is, relative against the project.
+(defn- build-output-path [pdir entry mode out]
+  (let [;; the project dir's own name; "." (JOLT_PWD unset, the built binary
+        ;; started in the project) resolves to the directory it stands for
+        seg (.getName (java.io.File. pdir))
+        seg (if (or (str/blank? seg) (= "." seg))
+              (.getName (.getCanonicalFile (java.io.File. pdir)))
+              seg)
+        proj (if (str/blank? seg) (first (str/split entry #"\.")) seg)]
+    (cond
+      (nil? out) (str pdir "/target/" (if (= mode "dev") "debug" "release") "/" proj)
+      (natives/path-rooted? out) out
+      :else (str pdir "/" out))))
+
+;; How the boot image is encoded (jolt-lang/jolt#886), ordered from
+;; fastest-to-start to smallest-on-disk:
+;;   fast   vfasl + LZ4   the default
+;;   small  vfasl + gzip  ~a third smaller than a plain boot, and
+;;                        still faster to start than one
+;;   plain  no vfasl      the boot 0.8.4 produced
+;; --no-vfasl is the spelling #886 asked for and stays as an alias for
+;; `--boot plain`. Precedence, resolved here and nowhere else so there
+;; is one rule: CLI > deps.edn > environment > default, and WITHIN
+;; each of those the explicit --boot spelling beats the alias. The
+;; other order looks harmless and is not: a script that adds
+;; `--boot small` without dropping the `--no-vfasl` it already had is
+;; exactly the migration #886 is on, and it would silently keep the
+;; larger, slower `plain` boot it was trying to leave.
+;;
+;; A BLANK environment variable reads as unset, the way bin/jolt
+;; already treats JOLT_NO_DEVCACHE. CI exports an empty value for a
+;; matrix leg that did not fill one in, and that must neither fail the
+;; build (JOLT_BOOT= hit the validation below with an empty string)
+;; nor quietly change it (JOLT_NO_VFASL= forced plain).
+(defn- build-boot-mode [flag-args build]
+  (let [env (fn [k] (let [v (System/getenv k)]
+                      (when-not (str/blank? v) v)))
+        tail (drop-while #(not= "--boot" %) flag-args)
+        cli (when (seq tail)
+              (let [v (second tail)]
+                (when (or (nil? v) (str/starts-with? v "-"))
+                  (throw (ex-info "--boot needs a value: fast, small or plain" {})))
+                v))
+        v (or cli
+              (when (some #{"--no-vfasl"} flag-args) "plain")
+              (some-> (:boot build) name)
+              (when (:no-vfasl build) "plain")
+              (env "JOLT_BOOT")
+              (when (env "JOLT_NO_VFASL") "plain")
+              "fast")]
+    (when-not (#{"fast" "small" "plain"} v)
+      (throw (ex-info (str "--boot must be fast, small or plain (got " v ")")
+                      {:boot v})))
+    v))
+
+;; Namespaces to bake besides the require closure — deps.edn
+;; :jolt/build {:include […]}, unioned with --include NS: names the
+;; static scan cannot see, reached only by a runtime
+;; requiring-resolve (a plugin loader). Symbols or strings; the
+;; driver fails the build on a name with no source file, rather
+;; than silently baking nothing.
+(defn- build-include-names [cli-includes build]
+  (into [] (comp (map str) (remove str/blank?) (distinct))
+        (concat cli-includes (as-vector (:include build)))))
+
+;; Dependency-root files NOT to bake into the binary — deps.edn
+;; :jolt/build {:exclude-resources [glob …]}, matched against the
+;; name io/resource asks for: a file no jolt program reads (a
+;; ClojureScript externs `*.ext.js`) that a dependency ships anyway.
+;; The project's only, like :embed.
+(defn- build-exclude-resources [build]
+  (let [globs (as-vector (:exclude-resources build))]
+    (doseq [p globs]
+      (when-not (and (string? p) (not (str/blank? p)))
+        (throw (ex-info (str ":exclude-resources takes glob strings (got " (pr-str p) ")")
+                        {:exclude-resources p}))))
+    (vec (distinct globs))))
+
+;; --profile-gen builds a binary that writes Chez block counts as it
+;; exits; --profile-use FILE... builds with them (RFC 0015 part 2).
+;; Passed to the driver as "gen" or the files, resolved like -o.
+(defn- build-profile [flag-args pdir]
+  (let [gen? (boolean (some #{"--profile-gen"} flag-args))
+        use? (boolean (some #{"--profile-use"} flag-args))
+        files (mapv #(if (natives/path-rooted? %) % (str pdir "/" %))
+                    (profile-use-files flag-args))]
+    (cond
+      (and gen? (or (seq files) use?))
+      (throw (ex-info "--profile-gen and --profile-use are two builds: generate first, then use" {}))
+      gen? "gen"
+      use? (do (when (empty? files)
+                 (throw (ex-info "--profile-use needs the profile files a --profile-gen binary wrote" {})))
+               (doseq [f files]
+                 (when-not (.exists (java.io.File. f))
+                   (throw (ex-info (str "--profile-use: no profile file " f) {:file f}))))
+               files)
+      :else nil)))
+
+(defn- build-options
+  "Everything `jolt build` decides from its command line and deps.edn's
+  :jolt/build, validated before any native library is built."
+  [more {:keys [build] :as resolved}]
+  (let [opts (parse-build-args more)
+        entry (:entry opts)
+        ;; flags are only recognized before the end-of-options marker
+        flag-args (take-while #(not= "--" %) more)
+        mode (build-mode flag-args build)
+        pdir (project-dir)
+        _ (when (nil? entry)
+            (throw (ex-info "build needs an entry: -m NS" {})))
+        ;; cross-compilation (--target <machine>): the output binary is for a
+        ;; different Chez machine. Needs a prepared target pack (--target-pack
+        ;; DIR or $JOLT_TARGET_PACK) — see tools/cross-compile/README.md.
+        target (:target opts)
+        target-pack (or (:target-pack opts) (System/getenv "JOLT_TARGET_PACK"))]
+    {:entry entry
+     :out (build-output-path pdir entry mode (:out opts))
+     :mode mode
+     :pdir pdir
+     :target target
+     :target-pack target-pack
+     ;; :jolt/native libs with a :static archive are cc-linked into the
+     ;; binary by default; --dynamic (or deps.edn :jolt/build {:dynamic-natives
+     ;; true}) keeps the old behavior — load a shared object at runtime.
+     :dynamic-natives? (boolean (or (some #{"--dynamic"} flag-args) (:dynamic-natives build)))
+     ;; closed-world direct-linking is the release default: ON for release and
+     ;; optimized (the throughput lever), OFF for --dev. --no-direct-link (or
+     ;; deps.edn :jolt/build {:direct-link false}) opts back out; --direct-link
+     ;; is a now-redundant alias. ^:redef/^:dynamic defs always stay var-routed.
+     :direct-link? (and (not= mode "dev")
+                        (not (or (some #{"--no-direct-link"} flag-args)
+                                 (false? (:direct-link build)))))
+     ;; closed world (drop every def not reachable from -main, core included):
+     ;; --closed-world, or --tree-shake as it was first named, or deps.edn
+     ;; :jolt/build {:closed-world true} / {:tree-shake true}.
+     :tree-shake? (boolean (or (some #{"--closed-world" "--tree-shake"} flag-args)
+                               (:closed-world build) (:tree-shake build)))
+     :boot-mode (build-boot-mode flag-args build)
+     ;; defs the project and its deps vouch never resolve vars at runtime
+     ;; in the built binary (deps.edn :jolt/tree-shake {:allow-dynamic […]},
+     ;; unioned by resolve-project): the shake skips them in its bail scan
+     ;; instead of keeping everything. Every build reads it: the compiler
+     ;; verdict (dce-needs-compiler?) runs the same bail scan, so a vouched
+     ;; resolve no longer keeps the compiler resident. A vouched eval still
+     ;; bails: the compiler image is direct-linked against the whole core
+     ;; and cannot run over a shaken one (dce.ss dce-bail-scan).
+     :allow-dynamic (vec (:allow-dynamic resolved))
+     :include-names (build-include-names (:includes opts) build)
+     :exclude-resources (build-exclude-resources build)
+     ;; a shared library (callable from C/C++/Rust via jolt_library_init +
+     ;; jolt_lookup) instead of an executable: --library.
+     :library? (boolean (some #{"--library"} flag-args))
+     ;; --signable: an ordinary, same-machine executable build still
+     ;; produces a structurally complete (and therefore strictly
+     ;; signable) binary by cc-linking the boot in as a C array (against
+     ;; this jolt's own embedded kernel when it carries one), rather than
+     ;; appending the boot image past its embedded launcher stub. A
+     ;; self-contained jolt's default output has most of its bytes
+     ;; outside its own Mach-O/PE/ELF image, which a strict signature
+     ;; check (codesign --verify --strict on macOS) correctly refuses.
+     ;; No effect on --library (build-shared is always signable) or on
+     ;; a --target build (already forced onto this path).
+     :signable? (boolean (some #{"--signable"} flag-args))
+     :profile (build-profile flag-args pdir)}))
+
 (defn- cmd-build [more]
-  (let [{:keys [project-paths embed-dirs build] :as resolved}
-        (resolve-current)]
+  (let [{:keys [project-paths embed-dirs] :as resolved} (resolve-current)]
     (apply-project! resolved)
-    (let [opts (loop [a more, entry nil, out nil, target nil, tpack nil, includes [], end-opts? false]
-                 (let [cur (first a)]
-                   (cond
-                     (empty? a)                              {:entry entry :out out :target target :target-pack tpack :includes includes}
-                     (and (not end-opts?) (= "--" cur))      (recur (rest a) entry out target tpack includes true)
-                     (and (not end-opts?) (= "-m" cur))      (recur (drop 2 a) (second a) out target tpack includes false)
-                     (and (not end-opts?) (= "-o" cur))      (recur (drop 2 a) entry (second a) target tpack includes false)
-                     ;; cross-compilation: --target <machine> [--target-pack <dir>]
-                     (and (not end-opts?) (= "--target" cur))      (recur (drop 2 a) entry out (second a) tpack includes false)
-                     (and (not end-opts?) (= "--target-pack" cur)) (recur (drop 2 a) entry out target (second a) includes false)
-                     ;; --boot takes a value; skip both so a bare `build --boot small`
-                     ;; does not read `small` as the entry namespace.
-                     (and (not end-opts?) (= "--boot" cur))        (recur (drop 2 a) entry out target tpack includes false)
-                     ;; --profile-use takes every file after it, so a shell glob
-                     ;; over several runs' dumps works (profile-use-files)
-                     (and (not end-opts?) (= "--profile-use" cur))
-                     (recur (drop-while #(not (str/starts-with? % "-")) (rest a)) entry out target tpack includes false)
-                     ;; --include takes a value too, and repeats; deps.edn
-                     ;; :jolt/build {:include [ns …]} is read alongside it below.
-                     (and (not end-opts?) (= "--include" cur))
-                     (let [v (second a)]
-                       (when (or (nil? v) (str/starts-with? v "-"))
-                         (throw (ex-info "--include needs a namespace name" {:include v})))
-                       (recur (drop 2 a) entry out target tpack (conj includes v) false))
-                     (and (not end-opts?) (str/starts-with? cur "-")) (recur (rest a) entry out target tpack includes false)
-                     :else                                   (recur (rest a) (or entry cur) out target tpack includes end-opts?))))
-          entry (:entry opts)
-          cli-includes (:includes opts)
-          ;; flags are only recognized before the end-of-options marker
-          flag-args (take-while #(not= "--" %) more)
-          mode  (cond (some #{"--opt"} flag-args) "optimized"
-                      (some #{"--dev"} flag-args) "dev"
-                      (:opt build)                "optimized"
-                      :else                       "release")]
-      (when (nil? entry)
-        (throw (ex-info "build needs an entry: -m NS" {})))
-      ;; Output paths resolve against the project dir (JOLT_PWD), not the CLI's
-      ;; cwd — bin/jolt cd's to the jolt repo, so a bare relative path would land
-      ;; there. Default output is cargo-style under target/: --dev -> target/debug,
-      ;; release/--opt -> target/release, the binary named after the project dir
-      ;; (falling back to the entry's first segment). The <name>.build scratch dir
-      ;; the driver creates sits next to it, so it lands under the same target dir.
-      ;; An explicit -o is honored: absolute as-is, relative against the project.
-      (let [pdir (project-dir)
-            ;; the project dir's own name; "." (JOLT_PWD unset, the built binary
-            ;; started in the project) resolves to the directory it stands for
-            proj (let [seg (.getName (java.io.File. pdir))
-                       seg (if (or (str/blank? seg) (= "." seg))
-                             (.getName (.getCanonicalFile (java.io.File. pdir)))
-                             seg)]
-                   (if (str/blank? seg) (first (str/split entry #"\.")) seg))
-            out (let [o (:out opts)]
-                  (cond
-                    (nil? o) (str pdir "/target/" (if (= mode "dev") "debug" "release") "/" proj)
-                    (path-rooted? o) o
-                    :else (str pdir "/" o)))
-            ;; :jolt/native libs with a :static archive are cc-linked into the
-            ;; binary by default; --dynamic (or deps.edn :jolt/build {:dynamic-natives
-            ;; true}) keeps the old behavior — load a shared object at runtime.
-            dynamic-natives? (boolean (or (some #{"--dynamic"} flag-args) (:dynamic-natives build)))
-            ;; a :static archive a dependency's :build task produces is built
-            ;; now, before the linker is handed a path to nothing (not when
-            ;; cross-compiling: the task builds for this host)
-            _ (when-not (or dynamic-natives? (:target opts))
-                (build-static-archives! (:natives resolved) (or (:project-dir resolved) pdir)))
-            natives (encode-natives (:natives resolved) dynamic-natives?
-                                    (or (:project-dir resolved) pdir)
-                                    (:target opts)
-                                    (or (:target-pack opts) (System/getenv "JOLT_TARGET_PACK")))
-            ;; ...and so is a dependency's shared library (not when
-            ;; cross-compiling, for the same reason)
-            _ (when-not (:target opts)
-                (build-dependency-libraries! natives (:natives resolved)
-                                             (or (:project-dir resolved) pdir)))
-            _ (report-runtime-natives! natives (:natives resolved) dynamic-natives?)
-            ;; closed-world direct-linking is the release default: ON for release and
-            ;; optimized (the throughput lever), OFF for --dev. --no-direct-link (or
-            ;; deps.edn :jolt/build {:direct-link false}) opts back out; --direct-link
-            ;; is a now-redundant alias. ^:redef/^:dynamic defs always stay var-routed.
-            no-dl?       (or (some #{"--no-direct-link"} flag-args) (false? (:direct-link build)))
-            direct-link? (and (not (= mode "dev")) (not no-dl?))
-            ;; closed world (drop every def not reachable from -main, core included):
-            ;; --closed-world, or --tree-shake as it was first named, or deps.edn
-            ;; :jolt/build {:closed-world true} / {:tree-shake true}.
-            tree-shake? (boolean (or (some #{"--closed-world" "--tree-shake"} flag-args)
-                                     (:closed-world build) (:tree-shake build)))
-            ;; how the boot image is encoded (jolt-lang/jolt#886), ordered from
-            ;; fastest-to-start to smallest-on-disk:
-            ;;   fast   vfasl + LZ4   the default
-            ;;   small  vfasl + gzip  ~a third smaller than a plain boot, and
-            ;;                        still faster to start than one
-            ;;   plain  no vfasl      the boot 0.8.4 produced
-            ;; --no-vfasl is the spelling #886 asked for and stays as an alias for
-            ;; `--boot plain`. Precedence, resolved here and nowhere else so there
-            ;; is one rule: CLI > deps.edn > environment > default, and WITHIN
-            ;; each of those the explicit --boot spelling beats the alias. The
-            ;; other order looks harmless and is not: a script that adds
-            ;; `--boot small` without dropping the `--no-vfasl` it already had is
-            ;; exactly the migration #886 is on, and it would silently keep the
-            ;; larger, slower `plain` boot it was trying to leave.
-            ;;
-            ;; A BLANK environment variable reads as unset, the way bin/jolt
-            ;; already treats JOLT_NO_DEVCACHE. CI exports an empty value for a
-            ;; matrix leg that did not fill one in, and that must neither fail the
-            ;; build (JOLT_BOOT= hit the validation below with an empty string)
-            ;; nor quietly change it (JOLT_NO_VFASL= forced plain).
-            boot-mode (let [env (fn [k] (let [v (System/getenv k)]
-                                          (when-not (str/blank? v) v)))
-                            tail (drop-while #(not= "--boot" %) flag-args)
-                            cli (when (seq tail)
-                                  (let [v (second tail)]
-                                    (when (or (nil? v) (str/starts-with? v "-"))
-                                      (throw (ex-info "--boot needs a value: fast, small or plain" {})))
-                                    v))
-                            v (or cli
-                                  (when (some #{"--no-vfasl"} flag-args) "plain")
-                                  (some-> (:boot build) name)
-                                  (when (:no-vfasl build) "plain")
-                                  (env "JOLT_BOOT")
-                                  (when (env "JOLT_NO_VFASL") "plain")
-                                  "fast")]
-                        (when-not (#{"fast" "small" "plain"} v)
-                          (throw (ex-info (str "--boot must be fast, small or plain (got " v ")")
-                                          {:boot v})))
-                        v)
-            ;; defs the project and its deps vouch never resolve vars at runtime
-            ;; in the built binary (deps.edn :jolt/tree-shake {:allow-dynamic […]},
-            ;; unioned by resolve-project): the shake skips them in its bail scan
-            ;; instead of keeping everything. Every build reads it: the compiler
-            ;; verdict (dce-needs-compiler?) runs the same bail scan, so a vouched
-            ;; resolve no longer keeps the compiler resident. A vouched eval still
-            ;; bails: the compiler image is direct-linked against the whole core
-            ;; and cannot run over a shaken one (dce.ss dce-bail-scan).
-            allow-dynamic (vec (:allow-dynamic resolved))
-            ;; namespaces to bake besides the require closure — deps.edn
-            ;; :jolt/build {:include […]}, unioned with --include NS: names the
-            ;; static scan cannot see, reached only by a runtime
-            ;; requiring-resolve (a plugin loader). Symbols or strings; the
-            ;; driver fails the build on a name with no source file, rather
-            ;; than silently baking nothing.
-            include-names (into [] (comp (map str) (remove str/blank?) (distinct))
-                                (concat cli-includes
-                                        (let [v (:include build)]
-                                          (cond (nil? v) []
-                                                (sequential? v) v
-                                                :else [v]))))
-            ;; dependency-root files NOT to bake into the binary — deps.edn
-            ;; :jolt/build {:exclude-resources [glob …]}, matched against the
-            ;; name io/resource asks for: a file no jolt program reads (a
-            ;; ClojureScript externs `*.ext.js`) that a dependency ships anyway.
-            ;; The project's only, like :embed.
-            exclude-resources (let [v (:exclude-resources build)
-                                    v (cond (nil? v) [] (sequential? v) v :else [v])]
-                                (doseq [p v]
-                                  (when-not (and (string? p) (not (str/blank? p)))
-                                    (throw (ex-info (str ":exclude-resources takes glob strings (got " (pr-str p) ")")
-                                                    {:exclude-resources p}))))
-                                (vec (distinct v)))
-            ;; a shared library (callable from C/C++/Rust via jolt_library_init +
-            ;; jolt_lookup) instead of an executable: --library.
-            library? (some #{"--library"} flag-args)
-            ;; cross-compilation (--target <machine>): the output binary is for a
-            ;; different Chez machine. Needs a prepared target pack (--target-pack
-            ;; DIR or $JOLT_TARGET_PACK) — see tools/cross-compile/README.md.
-            target (:target opts)
-            target-pack (or (:target-pack opts) (System/getenv "JOLT_TARGET_PACK"))
-            ;; --signable: an ordinary, same-machine executable build still
-            ;; produces a structurally complete (and therefore strictly
-            ;; signable) binary by cc-linking the boot in as a C array (against
-            ;; this jolt's own embedded kernel when it carries one), rather than
-            ;; appending the boot image past its embedded launcher stub. A
-            ;; self-contained jolt's default output has most of its bytes
-            ;; outside its own Mach-O/PE/ELF image, which a strict signature
-            ;; check (codesign --verify --strict on macOS) correctly refuses.
-            ;; No effect on --library (build-shared is always signable) or on
-            ;; a --target build (already forced onto this path).
-            signable? (boolean (some #{"--signable"} flag-args))
-            ;; --profile-gen builds a binary that writes Chez block counts as it
-            ;; exits; --profile-use FILE... builds with them (RFC 0015 part 2).
-            ;; Passed to the driver as "gen" or the files, resolved like -o.
-            profile-gen? (boolean (some #{"--profile-gen"} flag-args))
-            profile-files (mapv #(if (path-rooted? %) % (str pdir "/" %))
-                                (profile-use-files flag-args))
-            profile (cond
-                      (and profile-gen? (or (seq profile-files) (some #{"--profile-use"} flag-args)))
-                      (throw (ex-info "--profile-gen and --profile-use are two builds: generate first, then use" {}))
-                      profile-gen? "gen"
-                      (some #{"--profile-use"} flag-args)
-                      (do (when (empty? profile-files)
-                            (throw (ex-info "--profile-use needs the profile files a --profile-gen binary wrote" {})))
-                          (doseq [f profile-files]
-                            (when-not (.exists (java.io.File. f))
-                              (throw (ex-info (str "--profile-use: no profile file " f) {:file f}))))
-                          profile-files)
-                      :else nil)]
-        (when (and target (nil? target-pack))
-          (throw (ex-info "--target needs a target pack: --target-pack DIR (or $JOLT_TARGET_PACK)" {:target target})))
-        ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
-        ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
+    (let [{:keys [entry out mode target target-pack boot-mode allow-dynamic
+                  include-names exclude-resources profile direct-link? tree-shake?
+                  library? signable?]
+           :as opts} (build-options more resolved)]
+      (when (and target (nil? target-pack))
+        (throw (ex-info "--target needs a target pack: --target-pack DIR (or $JOLT_TARGET_PACK)"
+                        {:target target})))
+      ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
+      ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
+      (let [natives (natives/build-natives resolved opts)]
         (if library?
           (jolt.host/build-library entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode allow-dynamic nil include-names exclude-resources profile)
           (jolt.host/build-binary entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode allow-dynamic signable? include-names exclude-resources profile))))))
@@ -1792,6 +1227,90 @@
   {"-Spath" :path, "-Stree" :tree, "-Sgraph" :graph, "-Soutdated" :outdated,
    "-Strace" :trace-file, "-Sdescribe" :describe, "-P" :prepare})
 
+;; The -S/-J options that change how the REST of the command line runs: each
+;; binds its setting and re-dispatches what follows it.
+(def ^:private context-options #{"-Srepro" "-Scp" "-Sverbose" "-Sforce" "-Sthreads"})
+
+(defn- run-with-context-option [cmd more]
+  (case cmd
+    ;; -Srepro — resolve from the project deps.edn alone, ignoring the user
+    ;; one, so a build is reproducible on a machine with a different
+    ;; ~/.clojure/deps.edn. (JOLT_NO_USER_DEPS does the same by environment.)
+    "-Srepro"
+    (binding [*cli-repro?* true] (apply -main more))
+
+    ;; -Scp CP — run against these source roots and expand no dependencies.
+    ;; The deps.edn chain is still read (aliases, :main-opts, :tasks), so a
+    ;; recorded classpath can drive a run offline: -Scp "$(jolt -Spath)".
+    "-Scp"
+    (let [[cp & rest-args] more]
+      (when (nil? cp) (throw (ex-info "-Scp needs a classpath argument" {})))
+      (binding [*cli-cp* (vec (remove str/blank? (str/split cp #":")))]
+        (apply -main rest-args)))
+
+    ;; -Sverbose — say where the resolution reads from and fetches into, then
+    ;; run it with the progress lines on (the JOLT_DEBUG stream, for one run).
+    "-Sverbose"
+    (binding [deps/*verbose* true]
+      (print-verbose-env)
+      (apply -main more))
+
+    ;; Accepted and ignored, so tooling that always passes them still works:
+    ;; jolt computes its roots on every run (there is no classpath cache to
+    ;; force or bypass), fetches serially, and has no JVM to pass options to.
+    "-Sforce"   (apply -main more)
+    "-Sthreads" (apply -main (rest more))))
+
+(defn- run-command
+  "Runs CMD: a built-in command, a main option, a file, or else a task."
+  [cmd more]
+  (case cmd
+    "run"          (cmd-run more)
+    "repl"         (repl)
+    "nrepl-server" (nrepl more)
+    "path"         (cmd-path)
+    "tasks"        (cmd-tasks)
+    "completions"  (cmd-completions more)
+    "build"        (cmd-build more)
+    ;; -Sdeps '<edn>' — an extra deps.edn map merged last into the chain,
+    ;; bound around the re-dispatch of the remaining argv.
+    "-Sdeps"
+    (let [[edn-str & rest-args] more]
+      (when (nil? edn-str) (throw (ex-info "-Sdeps needs an edn map argument" {})))
+      (binding [*cli-extra-edn* (clojure.core/read-string edn-str)]
+        (apply -main rest-args)))
+    ;; -e EXPR [args] / - [args] — evaluate with the project resolved. The
+    ;; launcher (cli-core.ss) short-circuits these when the project dir has no
+    ;; deps.edn (nothing to resolve, and it skips loading jolt.main); a project,
+    ;; or a leading -Sdeps/-A, lands here instead so the expression sees the
+    ;; project's paths, deps, and native libs. Both paths evaluate through the
+    ;; same jolt.host/run-expr-string.
+    "-e"
+    (do (apply-project! (resolve-current))
+        (eval-expr-string (first more) (rest more) true))
+    "-"
+    (do (apply-project! (resolve-current))
+        (eval-expr-string "-" more false))
+    "-m"           (cmd-run (cons "-m" more))
+    ("-f" "--file") (cmd-run (cons cmd more))
+    (cond
+      (str/starts-with? cmd "-M") (cmd-M cmd more)
+      (str/starts-with? cmd "-A") (cmd-A cmd more)
+      (str/starts-with? cmd "-X") (cmd-X cmd more)
+      (str/starts-with? cmd "-T") (cmd-T cmd more)
+      ;; An -S option jolt doesn't have. Falling through would report it as an
+      ;; unknown task, which reads like a typo in the deps.edn rather than an
+      ;; option this CLI doesn't carry.
+      (str/starts-with? cmd "-S")
+      (throw (ex-info (str "unsupported option: " cmd " (jolt has -Sdeps, -Scp, -Spath,"
+                           " -Stree, -Strace, -Sdescribe, -Srepro, -Sverbose,"
+                           " -Sforce, -Sthreads)")
+                      {:option cmd}))
+      ;; a bare FILE (or "-" for stdin) runs it, `run` optional — like bb; a
+      ;; non-file token falls through to a bb.edn/deps.edn :tasks lookup.
+      (run-file-arg? cmd) (cmd-run (cons cmd more))
+      :else (run-task cmd more false))))
+
 (defn -main [& args]
   (let [[cmd & more] args]
     (cond
@@ -1810,33 +1329,7 @@
       ;; bare `jolt` starts a REPL, like bb/clj
       (nil? cmd)                         (repl)
 
-      ;; -Srepro — resolve from the project deps.edn alone, ignoring the user
-      ;; one, so a build is reproducible on a machine with a different
-      ;; ~/.clojure/deps.edn. (JOLT_NO_USER_DEPS does the same by environment.)
-      (= cmd "-Srepro")
-      (binding [*cli-repro?* true] (apply -main more))
-
-      ;; -Scp CP — run against these source roots and expand no dependencies.
-      ;; The deps.edn chain is still read (aliases, :main-opts, :tasks), so a
-      ;; recorded classpath can drive a run offline: -Scp "$(jolt -Spath)".
-      (= cmd "-Scp")
-      (let [[cp & rest-args] more]
-        (when (nil? cp) (throw (ex-info "-Scp needs a classpath argument" {})))
-        (binding [*cli-cp* (vec (remove str/blank? (str/split cp #":")))]
-          (apply -main rest-args)))
-
-      ;; -Sverbose — say where the resolution reads from and fetches into, then
-      ;; run it with the progress lines on (the JOLT_DEBUG stream, for one run).
-      (= cmd "-Sverbose")
-      (binding [deps/*verbose* true]
-        (print-verbose-env)
-        (apply -main more))
-
-      ;; Accepted and ignored, so tooling that always passes them still works:
-      ;; jolt computes its roots on every run (there is no classpath cache to
-      ;; force or bypass), fetches serially, and has no JVM to pass options to.
-      (= cmd "-Sforce")                  (apply -main more)
-      (= cmd "-Sthreads")                (apply -main (rest more))
+      (context-options cmd)              (run-with-context-option cmd more)
       (str/starts-with? cmd "-J")        (apply -main more)
 
       (#{"help" "--help" "-h"} cmd)      (usage)
@@ -1861,47 +1354,4 @@
       (and (builtin-commands cmd) (#{"-h" "--help"} (first more)))
       (command-usage cmd)
 
-      (= cmd "run")                      (cmd-run more)
-      (= cmd "repl")                     (repl)
-      (= cmd "nrepl-server")             (nrepl more)
-      (= cmd "path")                     (cmd-path)
-      (= cmd "tasks")                    (cmd-tasks)
-      (= cmd "completions")              (cmd-completions more)
-      ;; -Sdeps '<edn>' — an extra deps.edn map merged last into the chain,
-      ;; bound around the re-dispatch of the remaining argv.
-      (= cmd "-Sdeps")
-      (let [[edn-str & rest-args] more]
-        (when (nil? edn-str) (throw (ex-info "-Sdeps needs an edn map argument" {})))
-        (binding [*cli-extra-edn* (clojure.core/read-string edn-str)]
-          (apply -main rest-args)))
-      ;; -e EXPR [args] / - [args] — evaluate with the project resolved. The
-      ;; launcher (cli-core.ss) short-circuits these when the project dir has no
-      ;; deps.edn (nothing to resolve, and it skips loading jolt.main); a project,
-      ;; or a leading -Sdeps/-A, lands here instead so the expression sees the
-      ;; project's paths, deps, and native libs. Both paths evaluate through the
-      ;; same jolt.host/run-expr-string.
-      (= cmd "-e")
-      (do (apply-project! (resolve-current))
-          (eval-expr-string (first more) (rest more) true))
-      (= cmd "-")
-      (do (apply-project! (resolve-current))
-          (eval-expr-string "-" more false))
-      (str/starts-with? cmd "-M")        (cmd-M cmd more)
-      (str/starts-with? cmd "-A")        (cmd-A cmd more)
-      (str/starts-with? cmd "-X")        (cmd-X cmd more)
-      (str/starts-with? cmd "-T")        (cmd-T cmd more)
-      (= cmd "-m")                       (cmd-run (cons "-m" more))
-      (#{"-f" "--file"} cmd)             (cmd-run (cons cmd more))
-      (= cmd "build")                    (cmd-build more)
-      ;; An -S option jolt doesn't have. Falling through would report it as an
-      ;; unknown task, which reads like a typo in the deps.edn rather than an
-      ;; option this CLI doesn't carry.
-      (str/starts-with? cmd "-S")
-      (throw (ex-info (str "unsupported option: " cmd " (jolt has -Sdeps, -Scp, -Spath,"
-                           " -Stree, -Strace, -Sdescribe, -Srepro, -Sverbose,"
-                           " -Sforce, -Sthreads)")
-                      {:option cmd}))
-      ;; a bare FILE (or "-" for stdin) runs it, `run` optional — like bb; a
-      ;; non-file token falls through to a bb.edn/deps.edn :tasks lookup.
-      (run-file-arg? cmd)                (cmd-run (cons cmd more))
-      :else                              (run-task cmd more false))))
+      :else                              (run-command cmd more))))

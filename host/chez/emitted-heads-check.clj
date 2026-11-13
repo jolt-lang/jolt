@@ -4,15 +4,22 @@
 ;; emission site added without a matching entry let (let [pair? true] ...) or
 ;; (let [fx+ 1] (try 1 (finally nil))) call the local instead of the runtime.
 ;;
-;; This reads backend_scheme.clj with the reader, takes every string literal,
+;; This reads backend_scheme.clj and the namespaces split out of it
+;; (backend_scheme/*.clj) with the reader, takes every string literal,
 ;; and collects each "(head" in them, plus the heads spliced after
 ;; (unsafe-prefix), which are bare on a target without one. A head munge-name
 ;; leaves unchanged fails unless it is in `allowed` below, and an `allowed`
 ;; entry that no longer occurs fails too, so the exceptions cannot go stale.
-(require '[clojure.walk :as walk])
+(require '[clojure.walk :as walk]
+         '[clojure.string :as str])
 
-(def path "jolt-core/jolt/backend_scheme.clj")
-(def src (slurp path))
+(def paths
+  (cons "jolt-core/jolt/backend_scheme.clj"
+        (sort (map str (filter #(.endsWith (str %) ".clj")
+                               (file-seq (java.io.File. "jolt-core/jolt/backend_scheme")))))))
+(def src (str/join "\n" (map slurp paths)))
+;; where rt-emitted-names lives
+(def path "jolt-core/jolt/backend_scheme/names.clj")
 
 ;; Heads that are not runtime procedures or syntax a local could shadow.
 (def allowed

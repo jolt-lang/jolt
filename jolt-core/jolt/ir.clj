@@ -310,54 +310,62 @@
                          (loop [j 0 v []]
                            (if (= j i) (conj v c) (recur (inc j) (conj v (nth coll j))))))))))))
 
+;; Each op's child NODE positions, in traversal order, as [key shape] pairs. The
+;; order is the order f sees the children, which a side-effecting walk observes.
+;;   :node      one child node
+;;   :opt       one child node, visited only when PRESENT: :init and :meta-expr
+;;              on a :def, :catch-body and :finally on a :try. Assoc'ing them
+;;              nil-when-absent would turn the node into a phm (jolt's
+;;              nil-valued-key representation) and force backend densification —
+;;              so we preserve the node's shape and never introduce a nil key.
+;;   :nodes     a vector of child nodes (:args/:items/:statements)
+;;   :pairs     a :map node's [k v] pairs, both halves nodes
+;;   :bindings  [name init] pairs; only the init is a node
+;;   :arities   a :fn's arities; each arity's :body is the node
+;; :const :local :var :host :host-static :the-var :quote — no child nodes, so no
+;; entry.
+(def ^:private ir-child-layout
+  {:if [[:test :node] [:then :node] [:else :node]]
+   :do [[:statements :nodes] [:ret :node]]
+   :throw [[:expr :node]]
+   :coerce [[:expr :node]]
+   :set-var [[:val :node]]
+   :set-field [[:obj :node] [:val :node]]
+   :defmacro [[:fn :node]]
+   :ffi-callable [[:fn :node]]
+   :invoke [[:fn :node] [:args :nodes]]
+   :vector [[:items :nodes]]
+   :set [[:items :nodes]]
+   :map [[:pairs :pairs]]
+   :let [[:bindings :bindings] [:body :node]]
+   :loop [[:bindings :bindings] [:body :node]]
+   :recur [[:args :nodes]]
+   :fn [[:arities :arities]]
+   :def [[:init :opt] [:meta-expr :opt]]
+   :host-call [[:target :node] [:args :nodes]]
+   :host-new [[:args :nodes]]
+   :try [[:body :node] [:catch-body :opt] [:finally :opt]]})
+
+;; f over one child position of the given shape (see ir-child-layout).
+(defn- map-ir-child [f shape v]
+  (cond
+    (= shape :nodes) (mapv-ir f v)
+    (= shape :pairs) (mapv-ir (fn [pr] [(f (nth pr 0)) (f (nth pr 1))]) v)
+    (= shape :bindings) (mapv-ir (fn [b] [(nth b 0) (f (nth b 1))]) v)
+    (= shape :arities) (mapv-ir (fn [a] (assoc-ir a [:body (f (get a :body))])) v)
+    :else (f v)))
+
 (defn map-ir-children [f node]
-  (let [op (get node :op)]
-    (cond
-      (= op :if)     (assoc-ir node [:test (f (get node :test))
-                                     :then (f (get node :then))
-                                     :else (f (get node :else))])
-      (= op :do)     (assoc-ir node [:statements (mapv-ir f (get node :statements))
-                                     :ret (f (get node :ret))])
-      (= op :throw)  (assoc-ir node [:expr (f (get node :expr))])
-      (= op :coerce) (assoc-ir node [:expr (f (get node :expr))])
-      (= op :set-var) (assoc-ir node [:val (f (get node :val))])
-      (= op :set-field) (assoc-ir node [:obj (f (get node :obj)) :val (f (get node :val))])
-      (= op :defmacro) (assoc-ir node [:fn (f (get node :fn))])
-      (= op :ffi-callable) (assoc-ir node [:fn (f (get node :fn))])
-      (= op :invoke) (assoc-ir node [:fn (f (get node :fn))
-                                     :args (mapv-ir f (get node :args))])
-      (= op :vector) (assoc-ir node [:items (mapv-ir f (get node :items))])
-      (= op :set)    (assoc-ir node [:items (mapv-ir f (get node :items))])
-      (= op :map)    (assoc-ir node [:pairs (mapv-ir (fn [pr] [(f (nth pr 0)) (f (nth pr 1))])
-                                                     (get node :pairs))])
-      (= op :let)    (assoc-ir node [:bindings (mapv-ir (fn [b] [(nth b 0) (f (nth b 1))])
-                                                        (get node :bindings))
-                                     :body (f (get node :body))])
-      (= op :loop)   (assoc-ir node [:bindings (mapv-ir (fn [b] [(nth b 0) (f (nth b 1))])
-                                                        (get node :bindings))
-                                     :body (f (get node :body))])
-      (= op :recur)  (assoc-ir node [:args (mapv-ir f (get node :args))])
-      (= op :fn)     (assoc-ir node [:arities (mapv-ir (fn [a] (assoc-ir a [:body (f (get a :body))]))
-                                                       (get node :arities))])
-      (= op :def)    (let [kvs (if (get node :init) [:init (f (get node :init))] [])
-                           kvs (if (get node :meta-expr)
-                                 (conj kvs :meta-expr (f (get node :meta-expr)))
-                                 kvs)]
-                       (assoc-ir node kvs))
-      (= op :host-call) (assoc-ir node [:target (f (get node :target))
-                                        :args (mapv-ir f (get node :args))])
-      (= op :host-new) (assoc-ir node [:args (mapv-ir f (get node :args))])
-      ;; :catch-body / :finally are optional; recurse them only when PRESENT.
-      ;; Assoc'ing them nil-when-absent would turn the node into a phm (jolt's
-      ;; nil-valued-key representation) and force backend densification — so we
-      ;; preserve the node's shape and never introduce a nil key.
-      (= op :try)
-      (let [kvs [:body (f (get node :body))]
-            kvs (if (get node :catch-body) (conj kvs :catch-body (f (get node :catch-body))) kvs)
-            kvs (if (get node :finally) (conj kvs :finally (f (get node :finally))) kvs)]
-        (assoc-ir node kvs))
-      ;; :const :local :var :host :host-static :the-var :quote — no child nodes
-      :else node)))
+  (let [layout (get ir-child-layout (get node :op))]
+    (if (nil? layout)
+      node
+      (loop [i 0 kvs []]
+        (if (>= i (count layout))
+          (assoc-ir node kvs)
+          (let [slot (nth layout i) k (nth slot 0) shape (nth slot 1) v (get node k)]
+            (if (and (= shape :opt) (not v))
+              (recur (inc i) kvs)
+              (recur (inc i) (conj kvs k (map-ir-child f shape v))))))))))
 
 ;; The read-only companion to map-ir-children: fold f over node's child IR nodes,
 ;; left to right, threading acc — same single-sourced child layout, so a read-only
@@ -365,36 +373,25 @@
 ;; unknown op, or a leaf, folds over no children and returns acc unchanged). Skips
 ;; the same non-node positions map-ir-children does (binding NAMES, fn :params/
 ;; :rest, :op/:ns/:name/:val). f is (acc child) -> acc.
+(defn- reduce-ir-child [f acc shape v]
+  (cond
+    (= shape :nodes) (reduce f acc v)
+    (= shape :pairs) (reduce (fn [a pr] (f (f a (nth pr 0)) (nth pr 1))) acc v)
+    (= shape :bindings) (reduce (fn [a b] (f a (nth b 1))) acc v)
+    (= shape :arities) (reduce (fn [a ar] (f a (get ar :body))) acc v)
+    :else (f acc v)))
+
+;; leaves and any op with no child nodes have no layout and fold to acc
 (defn reduce-ir-children [f acc node]
-  (let [op (get node :op)]
-    (cond
-      (= op :if) (f (f (f acc (get node :test)) (get node :then)) (get node :else))
-      (= op :do) (f (reduce f acc (get node :statements)) (get node :ret))
-      (= op :throw) (f acc (get node :expr))
-      (= op :coerce) (f acc (get node :expr))
-      (= op :set-var) (f acc (get node :val))
-      (= op :set-field) (f (f acc (get node :obj)) (get node :val))
-      (= op :defmacro) (f acc (get node :fn))
-      (= op :ffi-callable) (f acc (get node :fn))
-      (= op :invoke) (reduce f (f acc (get node :fn)) (get node :args))
-      (= op :vector) (reduce f acc (get node :items))
-      (= op :set) (reduce f acc (get node :items))
-      (= op :map) (reduce (fn [a pr] (f (f a (nth pr 0)) (nth pr 1))) acc (get node :pairs))
-      (= op :let) (f (reduce (fn [a b] (f a (nth b 1))) acc (get node :bindings)) (get node :body))
-      (= op :loop) (f (reduce (fn [a b] (f a (nth b 1))) acc (get node :bindings)) (get node :body))
-      (= op :recur) (reduce f acc (get node :args))
-      (= op :fn) (reduce (fn [a ar] (f a (get ar :body))) acc (get node :arities))
-      (= op :def) (let [a (if (get node :init) (f acc (get node :init)) acc)]
-                    (if (get node :meta-expr) (f a (get node :meta-expr)) a))
-      (= op :host-call) (reduce f (f acc (get node :target)) (get node :args))
-      (= op :host-new) (reduce f acc (get node :args))
-      (= op :try)
-      (let [a (f acc (get node :body))
-            a (if (get node :catch-body) (f a (get node :catch-body)) a)
-            a (if (get node :finally) (f a (get node :finally)) a)]
-        a)
-      ;; leaves and any op with no child nodes
-      :else acc)))
+  (let [layout (get ir-child-layout (get node :op))]
+    (loop [i 0 acc acc]
+      (if (>= i (count layout))
+        acc
+        (let [slot (nth layout i) shape (nth slot 1) v (get node (nth slot 0))]
+          (recur (inc i)
+                 (if (and (= shape :opt) (not v))
+                   acc
+                   (reduce-ir-child f acc shape v))))))))
 
 ;; All schema problems in the tree rooted at node, via reduce-ir-children (so an
 ;; unknown op — which recurses over no children — is still reported for itself).

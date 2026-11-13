@@ -12,12 +12,16 @@
             [jolt.passes.types.check :refer
              [not-callable? type-name check-invoke register-user-fn!]]
             [jolt.passes.types.lattice :refer
-             [velem vec-type? struct-type? mk-vec mk-set
-              mk-struct union-type? umembers
+             [velem vec-type? mk-vec mk-set mk-struct
               join-t join type-depth cap struct-safe? field-type
               mark-struct truthy-type? num-ret-fns vector-ret-fns
-              str-ret-fns string-ns-ret-fns nilable? strip-nilable
-              interop-ret-type decl decl-of erase-decl]]))
+              str-ret-fns string-ns-ret-fns nilable?
+              interop-ret-type decl decl-of erase-decl]]
+            [jolt.passes.types.records :refer
+             [*field-type-box* record-type-from-entry record-t? map->-self-for-record?
+              join-ctor-args derive-field-types shallow-field-type shallow-field-type-rich]]
+            [jolt.passes.types.narrow :refer
+             [fold-preds defrec-tag-fn pure-node? if-narrow]]))
 
 ;; --- engine state ------------------------------------------------------------
 ;; The walk threads an immutable `env` (mk-env) instead of reading scattered
@@ -143,19 +147,6 @@
      :diags (atom []) :calls (atom []) :checking-set (atom #{}) :diag-memo (atom {})
      :escapes (:escapes unit) :user-sigs (:user-sigs unit) :unit unit}))
 
-;; inferred record field types: ctor-key "ns/->Name" -> {field-kw -> type}. Each
-;; field's type is the CLOSED join of its ctor-argument types across every reachable
-;; (->Ctor ...) site, derived by wp-infer! A field every ctor site fills with a
-;; flonum -> :double (reads unbox); a record-or-nil field -> nilable record (guarded
-;; reads narrow to the direct accessor); a conflicting/escaping/mutable field is
-;; absent here (reads :any). Consulted by record-type-from-entry for UNTAGGED fields.
-;; The field-types atom the walk reads for an UNTAGGED record field. Bound per
-;; read context to the unit's lean :field-types (the default) or its rich
-;; :rich-field-types (while contagion-specialize-arity runs). field-type-from-tag
-;; reads it; unbound (nil) it reads no inferred types, so a missed binding site
-;; only widens a field to :any (a perf, not a correctness, effect).
-(def ^:dynamic *field-type-box* nil)
-
 ;; clone-resolving devirt sites whose contagion clone returns :double (unit
 ;; :clone-double-ret). Populated by the backend contagion pre-pass (contagion-prepass!)
 ;; AFTER wp-infer!; empty outside a whole-program build. infer-call consults it at a
@@ -166,25 +157,6 @@
   (swap! (:clone-double-ret unit) conj (str type-tag "|" proto "|" method)))
 (defn- clone-double-ret? [unit type-tag proto method]
   (contains? @(:clone-double-ret unit) (str type-tag "|" proto "|" method)))
-
-;; simple record name from a ctor-key "ns/->Name".
-(defn- ctor-simple-name [ctor-key]
-  (let [i (.indexOf ^String ctor-key "/->")]
-    (if (>= i 0) (.substring ^String ctor-key (+ i 3)) ctor-key)))
-;; defrecord emits a map->Name fn whose body is the (->Name (get m :f) ...) site —
-;; the untyped-map ctor path. Its positional ->Name call is excluded from the direct
-;; join (a map->Name call demotes the record instead, via wp-field-demote-box), so a
-;; never-called map->Name can't poison every field to :any.
-(defn- map->-self-for-record? [self-name ctor-key]
-  (and self-name (.startsWith ^String self-name "map->")
-       (= (.substring ^String self-name 5) (ctor-simple-name ctor-key))))
-;; join one ctor site's positional arg types into the per-pass accumulator.
-(defn- join-ctor-args [joins ctor-key fields argtypes]
-  (let [cur (or (get joins ctor-key) (vec (repeat (count fields) nil)))]
-    (assoc joins ctor-key
-           (vec (for [i (range (count cur))]
-                  (let [c (nth cur i) a (nth argtypes i nil)]
-                    (cond (nil? c) a (nil? a) c :else (join c a))))))))
 
 ;; While the pass walks ONE node, record-ctor-site! captures that node's ctor-site
 ;; ops (in walk order) instead of folding them into the unit accumulator: the
@@ -200,48 +172,13 @@
 (defn- record-ctor-demote! [env ck]
   (swap! (if *wp-node-cells* (nth *wp-node-cells* 1) (:wp-field-demote (:unit env))) conj ck))
 
-;; build a record's struct TYPE from its registry entry, resolving each field's
-;; declared type hint against `shapes` ("ns/->Name" -> entry). A field tagged with
-;; a record type (its ctor-key) recurses, so a Vec3 stored in a Ray field reads
-;; back as Vec3 — not :any — which is what lets nested-record code prove its reads.
-;; Depth-bounded so a self/cyclic-referencing record type can't loop.
-(declare record-type-from-entry)
-;; the type a field reads back as. A declared coercible ^double hint always wins
-;; (the ctor coerces the arg to a flonum). A declared ^Record hint recurses. An
-;; UNTAGGED field takes the inferred ctor-arg join from the unit lean field types (or :any).
-;;
-;; The scalar tags arrive already normalized by chez-resolve-field-tag
-;; (host/chez/records.ss): "double", "num" (which is also where ^long lands),
-;; "str" and "kw". A tag that is none of those is a record type name to recurse
-;; into. The point of "str"/"kw" is that a field read now carries its declared
-;; type to the interop path — (.length (:nm p)) on a ^String field emits the
-;; string native with no runtime string? test. Declared, not proven: the
-;; constructor doesn't check the value, so nothing else trusts it (lattice decl).
-(defn- field-type-from-tag [tag depth shapes ctor-key field-kw]
-  (cond
-    (<= depth 0) :any
-    (= tag "double") :double
-    (= tag "num") :num
-    (= tag "str") (decl :str)
-    (= tag "kw") (decl :kw)
-    (some? tag) (let [e (get shapes tag)]
-                  (if e (record-type-from-entry e tag depth shapes) :any))
-    :else (let [box *field-type-box*
-                inf (when box (get-in @box [ctor-key field-kw]))]
-            (if inf inf :any))))
-(defn- record-type-from-entry [rs ctor-key depth shapes]
-  (let [fields (get rs :fields)
-        tags (get rs :tags)
-        fmap (reduce (fn [m i]
-                       (let [fw (nth fields i)]
-                         (assoc m fw (field-type-from-tag (when tags (nth tags i))
-                                                           (dec depth) shapes ctor-key fw))))
-                     {} (range (count fields)))]
-    (assoc (mk-struct fmap) :shape (vec fields) :type (get rs :type))))
-
 ;; fns that RETURN an element of their (first) collection arg, so a lookup on the
 ;; result of (rand-nth coll-of-structs) etc. types as the element.
 (def ^:private elem-fns #{"rand-nth" "first" "peek" "last" "nth" "fnext" "second"})
+
+;; Predicate folding lives in jolt.passes.types.narrow; the host's run-infer gate
+;; still reaches pred-on by name in this namespace.
+(def ^:private pred-on jolt.passes.types.narrow/pred-on)
 
 ;; defined after infer but referenced from it (the rest of the checker lives in
 ;; jolt.passes.types.check, required above)
@@ -258,47 +195,56 @@
     (when (and pm (some? (protocol-method-var? nil (get fnode :ns) (get fnode :name))))
       pm)))
 
-(defn- call-ret-type [fnode env]
-  (let [op (get fnode :op)
-        shapes (get env :record-shapes)]
+;; The declared return type of a library fn, by bare name.
+;; Every table here is keyed by BARE NAME, so which
+;; namespace the name came from has to gate the lookup
+;; rather than being checked inside it — clojure.core
+;; and clojure.string share names whose return types
+;; differ (core/replace is polymorphic, string/replace
+;; is always a string; core/reverse answers a seq,
+;; string/reverse a string). One `case` per ns keeps a
+;; name from ever being read against another ns's
+;; table, which a shared `nm` plus per-arm ns tests
+;; only achieves by there happening to be no overlap.
+(defn- library-ret-type [fnode]
+  (let [nm (get fnode :name)]
+    (case (get fnode :ns)
+      "clojure.core"
+      (cond (nil? nm) :any
+            (contains? num-ret-fns nm) :num
+            (contains? vector-ret-fns nm) (mk-vec :any)
+            (contains? str-ret-fns nm) :str
+            :else :any)
+      "clojure.string"
+      (if (contains? string-ns-ret-fns nm) :str :any)
+      :any)))
+
+;; a protocol-method call types as its impls' joined return
+;; (monomorphic): so (:ray (scatter m ..)) reads off a Ray. nil when unknown.
+(defn- protocol-ret-type [fnode env]
+  (let [pm (protocol-method-of env fnode)
+        pmr (when pm (get @(:pm-rets (:unit env)) (str (nth pm 0) "/" (nth pm 1))))]
+    (when (and pmr (not= pmr :any)) pmr)))
+
+;; a user fn whose return type the fixpoint has estimated
+(defn- var-call-ret-type [fnode env]
+  (let [shapes (get env :record-shapes)
+        rs (get shapes (var-key fnode))
+        r (when-not rs (get (get env :rtenv) (var-key fnode)))]
     (cond
-      ;; a user fn whose return type the fixpoint has estimated
-      (= op :var) (let [rs (get shapes (var-key fnode))]
-                    (if rs
-                      ;; record ctor -> struct of declared shape; :shape
-                      ;; is the DECLARED field order the back end indexes by, :type
-                      ;; the record tag (devirt), and field types come from the
-                       ;; declared hints so nested records stay typed
-                       (record-type-from-entry rs (var-key fnode) type-depth shapes)
-                      (let [r (get (get env :rtenv) (var-key fnode))]
-                        (if r r
-                          ;; a protocol-method call types as its impls' joined return
-                          ;; (monomorphic): so (:ray (scatter m ..)) reads off a Ray.
-                          (let [pm (protocol-method-of env fnode)
-                                pmr (when pm (get @(:pm-rets (:unit env)) (str (nth pm 0) "/" (nth pm 1))))]
-                            (if (and pmr (not= pmr :any))
-                              pmr
-                              ;; Every table here is keyed by BARE NAME, so which
-                              ;; namespace the name came from has to gate the lookup
-                              ;; rather than being checked inside it — clojure.core
-                              ;; and clojure.string share names whose return types
-                              ;; differ (core/replace is polymorphic, string/replace
-                              ;; is always a string; core/reverse answers a seq,
-                              ;; string/reverse a string). One `case` per ns keeps a
-                              ;; name from ever being read against another ns's
-                              ;; table, which a shared `nm` plus per-arm ns tests
-                              ;; only achieves by there happening to be no overlap.
-                              (let [nm (get fnode :name)]
-                                (case (get fnode :ns)
-                                  "clojure.core"
-                                  (cond (nil? nm) :any
-                                        (contains? num-ret-fns nm) :num
-                                        (contains? vector-ret-fns nm) (mk-vec :any)
-                                        (contains? str-ret-fns nm) :str
-                                        :else :any)
-                                  "clojure.string"
-                                  (if (contains? string-ns-ret-fns nm) :str :any)
-                                  :any))))))))
+      ;; record ctor -> struct of declared shape; :shape
+      ;; is the DECLARED field order the back end indexes by, :type
+      ;; the record tag (devirt), and field types come from the
+      ;; declared hints so nested records stay typed
+      rs (record-type-from-entry rs (var-key fnode) type-depth shapes)
+      r r
+      :else (let [pr (protocol-ret-type fnode env)]
+              (if pr pr (library-ret-type fnode))))))
+
+(defn- call-ret-type [fnode env]
+  (let [op (get fnode :op)]
+    (cond
+      (= op :var) (var-call-ret-type fnode env)
       (= op :host) (let [nm (get fnode :name)]
                     (cond (contains? num-ret-fns nm) :num
                            (contains? vector-ret-fns nm) (mk-vec :any)
@@ -315,167 +261,6 @@
       (let [r (get (get env :rtenv) (get env :self-key))] (if r r :any))
       :else :any)))
 
-;; Predicate folding: a type predicate whose argument's type is
-;; PROVEN folds to a compile-time boolean. Only the precise tags are folded —
-;; :num/:str/:kw mean exactly that scalar, and a record carries its defrecord
-;; :type tag. NOT folded: vector?/set?/map?, because the :vec tag conflates a
-;; real vector with a range/seq (so vector? could be wrong) — left for when the
-;; lattice distinguishes them. :any and :truthy carry no structural info (a
-;; value known only non-nil could be any concrete type), so every predicate is
-;; unknown on them. nil?/some? fold because every concrete type here is
-;; provably non-nil.
-;;
-;; record? and seq? on a struct ask WHICH kind of struct: a deftype has a shape
-;; too, and is no record; it may also implement ISeq. Both fold only for a type
-;; DEFREC? (the shape registry's :record flag) says is a defrecord — which is
-;; never a seq, so the (if (seq? m) … m) map destructuring opens with folds away
-;; and the field reads after it stay slot reads.
-(def ^:private fold-preds
-  #{"number?" "string?" "keyword?" "record?" "nil?" "some?" "seq?"})
-(defn- record-t? [t] (and (struct-type? t) (some? (get t :type))))
-(defn- pred-on [pname t defrec?]
-  (cond
-    (or (= t :any) (= t :truthy)) nil
-    ;; a declared ^String/^Keyword proves nothing: the value may be anything
-    (some? (decl-of t)) nil
-    ;; a nilable struct might be nil — nil?/some?/record? can't be proven, so the
-    ;; runtime guard must stay (this is what makes the narrowing sound).
-    (nilable? t) nil
-    ;; a provably-nil operand (a nil const initializer reaches the case table
-    ;; because :any/:truthy/nilable?/union? all miss it): nil? is true, some? and
-    ;; every type predicate are false. Without this arm the case table below folds
-    ;; nil?->false / some?->true — the wrong constants, since it assumes every
-    ;; concrete type is non-nil.
-    (= t :nil) (= pname "nil?")
-    ;; a bounded scalar union folds only when every member agrees
-    (union-type? t)
-    (let [vs (map (fn [m] (pred-on pname m defrec?)) (umembers t))]
-      (if (and (seq vs) (not (nil? (first vs))) (apply = vs)) (first vs) nil))
-    :else
-    (case pname
-      "number?"  (or (= t :num) (= t :double))
-      "string?"  (= t :str)
-      "keyword?" (= t :kw)
-      "record?"  (and (record-t? t) (defrec? (get t :type)))
-      ;; a defrecord or a scalar is never a seq; anything else may be one
-      "seq?"     (when (or (= t :num) (= t :double) (= t :str) (= t :kw)
-                           (and (record-t? t) (defrec? (get t :type))))
-                   false)
-      "nil?"     false
-      "some?"    true
-      nil)))
-;; Is TAG (a struct's :type) a defrecord? Read off the shape registry, so a tag
-;; with no shape — or one whose shape predates the flag — answers false, which
-;; only declines to fold.
-(defn- defrec-tag-fn [env]
-  (let [shapes (get env :record-shapes)]
-    (fn [tag] (boolean (some (fn [e] (let [s (val e)] (and (= tag (get s :type)) (get s :record))))
-                             shapes)))))
-;; Side-effect-free node whose evaluation can be dropped when its predicate
-;; folds away (a wider purity analysis can broaden this later).
-(defn- pure-node? [n] (let [op (get n :op)] (or (= op :const) (= op :local))))
-
-;; Flow-sensitive nil narrowing: in (if (some? x) ..) / (if x ..) / (if (nil? x) ..)
-;; a nilable-struct local x is proven non-nil in one branch, so its field reads
-;; bare-index and unbox there. Only a nilable local narrows — nothing else changes.
-(defn- test-local [test pred-name]
-  (when (= :invoke (get test :op))
-    (let [f (get test :fn) args (get test :args)]
-      (when (and (= :var (get f :op)) (= "clojure.core" (get f :ns))
-                 (= pred-name (get f :name))
-                 (= 1 (count args)) (= :local (get (nth args 0) :op)))
-        (get (nth args 0) :name)))))
-(defn- narrow-nonnil [tenv nm]
-  (let [t (get tenv nm)] (if (nilable? t) (assoc tenv nm (strip-nilable t)) tenv)))
-;; --- declared ^Record params ------------------------------------------------
-;; A ^Record hint the program wrote (:uphints) is a declaration, not a proof:
-;; Clojure's (:x p), record? and nil? look at the value whatever p is hinted, and
-;; a caller may pass a map, nil or another record. Seeding the param with the
-;; record type made (:x p) a fixed-slot read with no check, which crashed the
-;; binary on anything else. So the optimizing passes wrap a hinted arity's body
-;; in a test of the param's record type:
-;;
-;;   (if (jolt.host/rec-type? p "app.core.Point") body plain-body)
-;;
-;; The then-branch PROVES p is that record (if-narrow), so it keeps the bare slot
-;; reads, devirtualized protocol calls and ^double field arithmetic the hint was
-;; there for; the else-branch is the plain body (below). When inference
-;; already proves the argument (a whole-program seed, a spliced call with a
-;; constructed record), the test folds to true and const-fold drops the copy.
-;; The guard args are [local tag ...]; :rec-guard holds the ctor key of each pair
-;; by position. Names are read from the args, not stored, because the inline
-;; splicer substitutes them.
-(def ^:private rec-guard-var {:op :var :ns "jolt.host" :name "rec-type?"})
-(defn- rec-guard-pairs [test]
-  (when (and (= :invoke (get test :op)) (some? (get test :rec-guard)))
-    (let [args (get test :args) cks (get test :rec-guard)]
-      (mapv (fn [i] [(nth args (* 2 i)) (get (nth args (inc (* 2 i))) :val) (nth cks i)])
-            (range (count cks))))))
-(defn- strip-uphints
-  "node with every arity's :uphints dropped: the body jolt run compiles, where a
-  declared hint types nothing."
-  [node]
-  (let [node (map-ir-children strip-uphints node)]
-    (if (= :fn (get node :op))
-      (assoc node :arities (mapv (fn [a] (dissoc a :uphints)) (get node :arities)))
-      node)))
-;; The else-branch is that plain body, not a second guarded copy. It is the
-;; fallback for a value the hint was wrong about, and it answers what jolt run
-;; does. Guarding the hinted fns nested in it as well put every nested guard in
-;; both branches of every enclosing one, so a nest of hinted fns emitted
-;; 2^depth copies of the innermost body. With the else-branch plain, each level
-;; adds one guarded copy and one plain copy of what is below it.
-(defn guard-declared-records
-  "Replace each arity's :uphints with a record-type test around its body (see
-  above). `shapes` is the ctor-key -> record shape registry; a hint whose record
-  the build doesn't know is dropped, leaving the param untyped."
-  [node shapes]
-  (let [orig node
-        node (map-ir-children (fn [c] (guard-declared-records c shapes)) node)]
-    (if (= :fn (get node :op))
-      (assoc node :arities
-             (mapv (fn [a oa]
-                     (let [uh (get a :uphints)]
-                       (if (nil? uh)
-                         a
-                         (let [pairs (reduce (fn [acc pr] (if (some? (get shapes (nth pr 1))) (conj acc pr) acc))
-                                             [] uh)
-                               a (dissoc a :uphints)]
-                           (if (empty? pairs)
-                             a
-                             (assoc a :body
-                                    {:op :if
-                                     :test {:op :invoke :fn rec-guard-var
-                                            :args (reduce (fn [acc pr]
-                                                            (conj acc {:op :local :name (nth pr 0)}
-                                                                  {:op :const :val (get (get shapes (nth pr 1)) :type)}))
-                                                          [] pairs)
-                                            :rec-guard (mapv (fn [pr] (nth pr 1)) pairs)}
-                                     :then (get a :body)
-                                     :else (strip-uphints (get oa :body))}))))))
-                   (get node :arities) (get orig :arities)))
-      node)))
-
-(declare record-type-from-entry)
-;; [then-tenv else-tenv] for an `if` whose test narrows a nilable local, or is a
-;; declared-record guard (each tested local is that record in the then-branch).
-(defn- if-narrow [test tenv env]
-  (let [somev (test-local test "some?")
-        nilv (test-local test "nil?")
-        rg (rec-guard-pairs test)]
-    (cond
-      (= :local (get test :op)) [(narrow-nonnil tenv (get test :name)) tenv]
-      somev [(narrow-nonnil tenv somev) tenv]
-      nilv [tenv (narrow-nonnil tenv nilv)]
-      rg (let [shapes (get env :record-shapes)]
-           [(reduce (fn [te g]
-                      (let [x (nth g 0) ck (nth g 2) ent (get shapes ck)]
-                        (if (and ent (= :local (get x :op)))
-                          (assoc te (get x :name) (record-type-from-entry ent ck type-depth shapes))
-                          te)))
-                    tenv rg)
-            tenv])
-      :else [tenv tenv])))
 
 (declare infer)
 
@@ -878,22 +663,22 @@
       (and (= cn "str") (= n 3) all-str?) "jolt-str-cat3"
       :else nil)))
 
-(defn- infer-call
-  "Everything else: type the args, collect the call (var callee) for whole-program
-  inference, run the success-type check, and use the declared/estimated return type.
-  range produces a numeric vector; an element-returning fn over a typed vector
-  yields the element type. A protocol-method call whose receiver (arg 0) is a known
-  record type is annotated [type-tag proto method] for devirtualization — the back
-  end looks up the impl at emit time and calls it directly, skipping the registry
-  dispatch (~19x cheaper)."
-  [node fnode iscall-var cn args n tenv env]
-  (let [fr (when (not iscall-var) (infer fnode tenv env))
-        fnode' (if iscall-var fnode (nd fr))
-        ;; the callee's value type: a var's from vtypes (a fn is :truthy, a def
-        ;; carries its inferred type), else the inferred type of the callee expr
-        callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (ty fr))
-        ares (mapv (fn [a] (infer a tenv env)) args)]
-    (when iscall-var
+(defn- call-shape
+  "An :invoke node split once into the parts the call patterns dispatch on: the
+  callee node, whether it is a var (:var?), its clojure.core name (:cn, else nil),
+  and the args and their count."
+  [node]
+  (let [fnode (get node :fn)
+        iscall-var (= :var (get fnode :op))
+        args (get node :args)]
+    {:node node :fnode fnode :var? iscall-var
+     :cn (when (and iscall-var (= "clojure.core" (get fnode :ns))) (get fnode :name))
+     :args args :n (count args)}))
+
+;; Collect this call's arg types for whole-program param inference.
+(defn- collect-call-types! [c ares env]
+  (let [fnode (:fnode c) args (:args c)]
+    (when (:var? c)
       ;; a `defn` recurses through its own VAR, so a self-recursion is a var-call
       ;; here (not the :local case below). When the callee is the enclosing def,
       ;; drop same-position pass-through args so threading a param straight through
@@ -914,89 +699,143 @@
     (when (and *collect-self-rec?* (= :local (get fnode :op)) (get env :self-key)
                (= (get fnode :name) (get env :self-name)))
       (swap! (get env :calls) conj
-             [(get env :self-key) (self-rec-argtys args ares (get env :self-params))]))
+             [(get env :self-key) (self-rec-argtys args ares (get env :self-params))]))))
+
+;; success-type check at this call, reusing the arg types just computed (jolt
+;; audit): core error domains always, user-fn domains in strict mode.
+(defn- check-call! [c ares callee-t env]
+  (when (get env :checking?)
+    (let [ats (mapv (fn [r] (ty r)) ares) pos (get (:node c) :pos) cn (:cn c)]
+      (when cn (check-invoke cn (:args c) ats pos env))
+      (when (not-callable? callee-t)
+        (swap! (get env :diags) conj
+               {:op :call :type (type-name callee-t) :pos pos
+                :msg (str "cannot call " (type-name callee-t) " as a function")}))
+      (when (and (get env :strict?) (:var? c))
+        (let [k (var-key (:fnode c)) usig (get @(get env :user-sigs) k)]
+          (when usig (check-user-call k usig ats pos env)))))))
+
+;; [type-tag proto method] when a protocol-method call `pm` can devirtualize, else nil.
+;; Only a PROVEN-NON-NIL receiver devirtualizes. devirt resolves the impl
+;; by the static tag and a direct-link site caches it, so a nilable receiver
+;; would apply the record's impl to nil — where the JVM raises
+;; IllegalArgumentException ("No implementation of method ... for class:
+;; nil"). A nilable receiver keeps the PIC, which resolves per receiver; a
+;; guard (some?/nil?) narrows it back to non-nil and devirt fires again.
+(defn- devirt-target [pm n ares]
+  (let [rtype (when (and pm (pos? n))
+                (let [rt0 (ty (nth ares 0))]
+                  (when-not (nilable? rt0) (get rt0 :type))))]
+    (when rtype [rtype (nth pm 0) (nth pm 1)])))
+
+(defn- call-result-type [c ares maybe-dbl env]
+  (let [cn (:cn c)]
+    (cond
+      (= cn "range") (mk-vec :num)
+      (and cn (contains? elem-fns cn) (> (:n c) 0))
+      (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
+      ;; flonum arithmetic yields a flonum — flows :double into a callee
+      ;; param (and into the fixpoint's return type) so hintless double
+      ;; code unboxes.
+      maybe-dbl :double
+      :else (call-ret-type (:fnode c) env))))
+
+;; When dbl-arith? proves :double, wrap non-double operands in coerce
+;; :double nodes so the numeric pass sees :double and emits fl-ops.
+(defn- coerce-dbl-args [ares args]
+  (mapv (fn [r a]
+          (let [t (ty r)]
+            (cond (int-lit-node? a)
+                  (assoc a :val (double (get a :val)))
+                  (= t :num) (coerce-node :double (nd r))
+                  (= t :long) (coerce-node :double (nd r))
+                  :else (nd r))))
+        ares args))
+
+;; stamp the rewritten call with what the back end reads: a :double read, the
+;; devirt target, and the string primitive a proven-string call lowers to.
+(defn- annotate-call-node [c ares node rt maybe-dbl devirt]
+  (let [rt1 (if (and (= rt :double) (not maybe-dbl))
+              (assoc node :num-read :double) node)
+        rt2 (if devirt
+              (assoc rt1 :devirt-type (nth devirt 0) :devirt-proto (nth devirt 1)
+                         :devirt-method (nth devirt 2))
+              rt1)
+        prim (when (:var? c) (str-prim-op (:cn c) (:n c) ares))]
+    (if prim (assoc rt2 :prim-op prim) rt2)))
+
+(defn- infer-call
+  "Everything else: type the args, collect the call (var callee) for whole-program
+  inference, run the success-type check, and use the declared/estimated return type.
+  range produces a numeric vector; an element-returning fn over a typed vector
+  yields the element type. A protocol-method call whose receiver (arg 0) is a known
+  record type is annotated [type-tag proto method] for devirtualization — the back
+  end looks up the impl at emit time and calls it directly, skipping the registry
+  dispatch (~19x cheaper). `c` is the call-shape of the node."
+  [c tenv env]
+  (let [node (:node c) fnode (:fnode c) iscall-var (:var? c) args (:args c)
+        fr (when (not iscall-var) (infer fnode tenv env))
+        fnode' (if iscall-var fnode (nd fr))
+        ;; the callee's value type: a var's from vtypes (a fn is :truthy, a def
+        ;; carries its inferred type), else the inferred type of the callee expr
+        callee-t (if iscall-var (get (get env :vtypes) (var-key fnode)) (ty fr))
+        ares (mapv (fn [a] (infer a tenv env)) args)]
+    (collect-call-types! c ares env)
     ;; collect ctor-site arg types for field-type inference (wp fixpoint's final pass)
     (when (and iscall-var @(:collecting-fields? (:unit env)))
       (record-ctor-site! fnode args ares env))
-    ;; success-type check at this call, reusing the arg types just computed (jolt
-    ;; audit): core error domains always, user-fn domains in strict mode.
-    (when (get env :checking?)
-      (let [ats (mapv (fn [r] (ty r)) ares) pos (get node :pos)]
-        (when cn (check-invoke cn args ats pos env))
-        (when (not-callable? callee-t)
-          (swap! (get env :diags) conj
-                 {:op :call :type (type-name callee-t) :pos pos
-                  :msg (str "cannot call " (type-name callee-t) " as a function")}))
-        (when (and (get env :strict?) iscall-var)
-          (let [k (var-key fnode) usig (get @(get env :user-sigs) k)]
-            (when usig (check-user-call k usig ats pos env))))))
-       (let [pm (and iscall-var (protocol-method-of env fnode))
-            ;; Only a PROVEN-NON-NIL receiver devirtualizes. devirt resolves the impl
-            ;; by the static tag and a direct-link site caches it, so a nilable receiver
-            ;; would apply the record's impl to nil — where the JVM raises
-            ;; IllegalArgumentException ("No implementation of method ... for class:
-            ;; nil"). A nilable receiver keeps the PIC, which resolves per receiver; a
-            ;; guard (some?/nil?) narrows it back to non-nil and devirt fires again.
-            rtype (when (and pm (pos? n))
-                    (let [rt0 (ty (nth ares 0))]
-                      (when-not (nilable? rt0) (get rt0 :type))))
-            ;; Annotate EVERY recognized protocol call with :proto/:method so the back
-            ;; end can build a per-site inline cache even at a megamorphic site (where
-            ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
-            ;; site additionally carries :devirt-type and takes the faster devirt path.
-            base (if pm
-                   (assoc node :proto (nth pm 0) :method (nth pm 1)
-                                :fn fnode' :args (mapv (fn [r] (nd r)) ares))
-                   (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))]
-          (let [maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
-                rt (cond
-                   (= cn "range") (mk-vec :num)
-                   (and cn (contains? elem-fns cn) (> n 0))
-                   (let [a0 (ty (nth ares 0))] (if (vec-type? a0) (velem a0) :any))
-                   ;; flonum arithmetic yields a flonum — flows :double into a callee
-                   ;; param (and into the fixpoint's return type) so hintless double
-                   ;; code unboxes.
-                   maybe-dbl :double
-                   :else (call-ret-type fnode env))
-              ;; When dbl-arith? proves :double, wrap non-double operands in coerce
-              ;; :double nodes so the numeric pass sees :double and emits fl-ops.
-              base* (if maybe-dbl
-                      (let [coerced (mapv (fn [r a]
-                                           (let [t (ty r)]
-                                             (cond (int-lit-node? a)
-                                                   (assoc a :val (double (get a :val)))
-                                                   (= t :num) (coerce-node :double (nd r))
-                                                   (= t :long) (coerce-node :double (nd r))
-                                                   :else (nd r))))
-                                         ares args)]
-                        (assoc base :args coerced))
-                      base)]
-           (let [;; a devirt site whose contagion clone returns :double types its
-                 ;; return :double per-site — so a caller accumulator add over it
-                 ;; fires dbl-arith? and lowers to fl+. global pm-rets is untouched;
-                 ;; PIC/megamorphic sites (no rtype) never reach here.
-                 devirt-double? (and rtype pm
-                                     (clone-double-ret? (:unit env) rtype (nth pm 0) (nth pm 1)))
-                 rt* (if devirt-double? :double rt)
-                 rt1 (if (and (= rt* :double) (not maybe-dbl))
-                       (assoc base* :num-read :double) base*)
-                 rt2 (if rtype
-                       (assoc rt1 :devirt-type rtype :devirt-proto (nth pm 0) :devirt-method (nth pm 1))
-                       rt1)
-                 prim (when iscall-var (str-prim-op cn n ares))
-                 rt3 (if prim (assoc rt2 :prim-op prim) rt2)]
-             [rt* rt3])))))
+    (check-call! c ares callee-t env)
+    (let [pm (and iscall-var (protocol-method-of env fnode))
+          devirt (devirt-target pm (:n c) ares)
+          ;; Annotate EVERY recognized protocol call with :proto/:method so the back
+          ;; end can build a per-site inline cache even at a megamorphic site (where
+          ;; the receiver joins to :any and devirt below doesn't fire). A monomorphic
+          ;; site additionally carries :devirt-type and takes the faster devirt path.
+          base (if pm
+                 (assoc node :proto (nth pm 0) :method (nth pm 1)
+                              :fn fnode' :args (mapv (fn [r] (nd r)) ares))
+                 (assoc node :fn fnode' :args (mapv (fn [r] (nd r)) ares)))
+          cn (:cn c)
+          maybe-dbl (and cn (contains? dbl-arith-ops cn) (dbl-arith? ares args))
+          rt (call-result-type c ares maybe-dbl env)
+          base* (if maybe-dbl (assoc base :args (coerce-dbl-args ares args)) base)
+          ;; a devirt site whose contagion clone returns :double types its
+          ;; return :double per-site — so a caller accumulator add over it
+          ;; fires dbl-arith? and lowers to fl+. global pm-rets is untouched;
+          ;; PIC/megamorphic sites (no rtype) never reach here.
+          devirt-double? (and devirt
+                              (clone-double-ret? (:unit env) (nth devirt 0) (nth devirt 1) (nth devirt 2)))
+          rt* (if devirt-double? :double rt)]
+      [rt* (annotate-call-node c ares base* rt* maybe-dbl devirt)])))
+
+(defn- pred-fold-call? [c]
+  (and (:var? c) (contains? fold-preds (:cn c)) (= (:n c) 1)))
+;; the arity bounds below keep an over-arity call off the fixed-shape
+;; helpers: each rebuilds :args from the operand positions it knows, so a
+;; call carrying more would come back truncated. The generic call path
+;; infers every argument and leaves the (already-invalid) arity alone for
+;; the runtime to report.
+(defn- get-lookup-call? [c]
+  (let [n (:n c) args (:args c)]
+    (and (get-callee? (:fnode c)) (>= n 2) (<= n 3)
+         (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))))
+(defn- reduce-hof-call? [c]
+  (let [n (:n c)]
+    (and (= (:cn c) "reduce") (>= n 2) (<= n 3) (= :fn (get (nth (:args c) 0) :op)))))
+(defn- seq-hof-call? [c]
+  (let [cn (:cn c)]
+    (and cn (get hof-table cn) (>= (:n c) 2) (= :fn (get (nth (:args c) 0) :op)))))
 
 (defn- infer-invoke
   "Split the callee/args once and dispatch by callee shape to a pattern helper."
   [node tenv env]
-  (let [fnode (get node :fn)
-        iscall-var (= :var (get fnode :op))
-        cn (when (and iscall-var (= "clojure.core" (get fnode :ns))) (get fnode :name))
-        args (get node :args)
-        n (count args)]
+  (let [c (call-shape node)
+        fnode (:fnode c)
+        cn (:cn c)
+        args (:args c)
+        n (:n c)]
     (cond
-      (and iscall-var (contains? fold-preds cn) (= n 1))
+      (pred-fold-call? c)
       (infer-pred-fold node fnode cn args tenv env)
 
       (some? (get node :rec-guard))
@@ -1005,291 +844,313 @@
       (and (kw-callee? fnode) (>= n 1) (<= n 2))
       (infer-kw-lookup node fnode args n tenv env)
 
-      ;; the arity bounds below keep an over-arity call off the fixed-shape
-      ;; helpers: each rebuilds :args from the operand positions it knows, so a
-      ;; call carrying more would come back truncated. The generic call path
-      ;; infers every argument and leaves the (already-invalid) arity alone for
-      ;; the runtime to report.
-      (and (get-callee? fnode) (>= n 2) (<= n 3)
-           (= :const (get (nth args 1) :op)) (keyword? (get (nth args 1) :val)))
+      (get-lookup-call? c)
       (infer-get-lookup node args n tenv env)
 
-      (and (= cn "reduce") (>= n 2) (<= n 3) (= :fn (get (nth args 0) :op)))
+      (reduce-hof-call? c)
       (infer-reduce-hof node args n tenv env)
 
-      (and cn (get hof-table cn) (>= n 2) (= :fn (get (nth args 0) :op)))
+      (seq-hof-call? c)
       (infer-seq-hof node cn args tenv env)
 
       (and (or (= cn "conj") (= cn "into")) (>= n 1))
       (infer-conj-into node fnode cn args n tenv env)
 
       :else
-      (infer-call node fnode iscall-var cn args n tenv env))))
+      (infer-call c tenv env))))
+
+;; --- per-op arms of `infer` --------------------------------------------------
+;; Each returns [type node'] like infer itself, which dispatches on :op to them.
+
+(defn- const-type [v]
+  (cond (and (number? v) (float? v)) :double   ; a flonum literal is :double
+        (number? v) :num
+        (string? v) :str
+        (keyword? v) :kw
+        (nil? v) :nil        ; a record|nil branch types as a nilable record
+        (= false v) :any     ; false is not struct-eligible
+        :else :truthy))                  ; true, char, ... -> non-nil
+
+;; The type a :local reads as when inference has nothing (t0 nil or :any).
+;; :rec-hint is a DECLARED ^Record type the splicer moved off a
+;; callee arity onto the local that replaced the param (inline.clj
+;; try-inline). It fills in only where inference has nothing — the
+;; inferred type is at least as precise, and the arity seed it stands
+;; in for is a fallback too (types.clj reinfer-def).
+(defn- local-hint-type [node t0 env]
+  (let [ck (get node :rec-hint)
+        ent (when ck (get (get env :record-shapes) ck))]
+    (cond
+      ent (record-type-from-entry ent ck type-depth (get env :record-shapes))
+      ;; a DECLARED ^String / ^Keyword hint, which the analyzer put on
+      ;; this reference (hint-of). The interop emit has always trusted
+      ;; it — it is what stamps :target-type — and the lattice carries
+      ;; it as declared, so a let-bound copy reaches the `.method` path
+      ;; too. Not as :str/:kw: a hint proves nothing about the value,
+      ;; so string?/nil? mustn't fold on it, nor count/str lower to
+      ;; the string natives (lattice decl). Fills in only where
+      ;; inference has nothing, exactly as :rec-hint above does.
+      ;;
+      ;; :struct and :sb are deliberately absent: a :struct hint is
+      ;; consumed by mark-struct/:shape at the lookup sites and has no
+      ;; scalar to name here, and the lattice has no StringBuilder type.
+      (= :str (get node :hint)) (decl :str)
+      (= :kw (get node :hint)) (decl :kw)
+      :else (if t0 t0 :any))))
+
+(defn- infer-local [node tenv env]
+  (let [t0 (get tenv (get node :name))
+        t (if (or (nil? t0) (= :any t0)) (local-hint-type node t0 env) t0)]
+    [t
+     (cond
+       ;; mark-struct, not a hand-rolled :hint/:shape pair: it also carries
+       ;; :nilable, and :shape without :nilable is exactly the shape the back end
+       ;; reads as "proven non-nil, take the direct slot accessor". A lookup site
+       ;; re-marks its own subject, so this annotation is superseded there — but
+       ;; the two must not be able to drift.
+       (struct-safe? t) (mark-struct node t)
+       :else node)]))
+
+(defn- infer-map [node tenv env]
+  (let [pairs (get node :pairs)
+        res (mapv (fn [pr]
+                    (let [kr (infer (nth pr 0) tenv env)
+                          vr (infer (nth pr 1) tenv env)]
+                      [(nth kr 1) (nth vr 1) (nth vr 0) (get (nth pr 0) :val)]))
+                  pairs)
+        struct? (and (> (count res) 0)
+                     (every? (fn [pr] (scalar-const? (nth pr 0))) pairs)
+                     (every? (fn [r] (truthy-type? (nth r 2))) res))
+        base (when struct?
+               (cap (mk-struct (reduce (fn [m r] (assoc m (nth r 3) (nth r 2))) {} res)) type-depth))
+        t (if base base :any)
+        node' (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))]
+    [t node']))
+
+;; a vector or set literal: its element type is the join of its items' types.
+(defn- infer-items [node tenv env mk]
+  (let [irs (mapv (fn [x] (infer x tenv env)) (get node :items))
+        ets (mapv (fn [r] (nth r 0)) irs)
+        el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
+    [(cap (mk el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))]))
+
+(defn- infer-if [node tenv env]
+  (let [test (get node :test)
+        tr (infer test tenv env)
+        nr (if-narrow test tenv env)   ; narrow a local in the proven branch
+        thn (infer (get node :then) (nth nr 0) env)
+        els (infer (get node :else) (nth nr 1) env)
+        ;; a test the predicate fold settled picks its branch now: the const-fold
+        ;; after inference drops the other one, so its type must not widen the
+        ;; if's. (if (seq? r) (… hash-map …) r) on a proven record is how map
+        ;; destructuring starts, and joining the dead branch's map lost the
+        ;; record type every field read after it needed.
+        tn (nth tr 1)
+        t (if (= :const (get tn :op))
+            (if (let [v (get tn :val)] (or (nil? v) (false? v))) (nth els 0) (nth thn 0))
+            (join (nth thn 0) (nth els 0)))]
+    [t (assoc node :test tn :then (nth thn 1) :else (nth els 1))]))
+
+(defn- infer-do [node tenv env]
+  (let [stmts (mapv (fn [s] (nth (infer s tenv env) 1)) (get node :statements))
+        r (infer (get node :ret) tenv env)]
+    [(nth r 0) (assoc node :statements stmts :ret (nth r 1))]))
+
+;; a :var reached HERE is in value position (an arg, a let init, ...), not
+;; a call head — so the fn it names escapes and its params can't be inferred.
+;; Its VALUE type comes from vtypes (a fn is :truthy, a def carries its
+;; inferred type); unknown -> :any.
+(defn- infer-var-value [node env]
+  (swap! (get env :escapes) conj (var-key node))
+  [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
+
+(defn- infer-let [node tenv env]
+  (let [res (reduce (fn [acc b]
+                      (let [te (nth acc 0) binds (nth acc 1)
+                            ir (infer (nth b 1) te env)]
+                        [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
+                    [tenv []] (get node :bindings))
+        br (infer (get node :body) (nth res 0) env)]
+    [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
+
+(defn- infer-recur [node tenv env]
+  (let [ares (mapv (fn [a] (infer a tenv env)) (get node :args))]
+    ;; a recur that targets the enclosing loop hands its arg types to that
+    ;; loop's fixpoint (infer-loop)
+    (when (and (get env :in-loop?) (get env :loop-recurs))
+      (swap! (get env :loop-recurs) conj (mapv (fn [r] (ty r)) ares)))
+    ;; a fn-level recur (not inside a loop) rebinds the enclosing fn's params,
+    ;; so its args constrain them like a self-call — collect under the fn key.
+    (when (and *collect-self-rec?* (not (get env :in-loop?)) (get env :self-key))
+      (swap! (get env :calls) conj
+             [(get env :self-key) (self-rec-argtys (get node :args) ares (get env :self-params))]))
+    [:any (assoc node :args (mapv (fn [r] (nd r)) ares))]))
+
+;; one arity of a fn literal: its params shadow the enclosing tenv (see infer-fn).
+(defn- infer-fn-arity [a node self tenv env fenv]
+  (let [shapes (get env :record-shapes)
+        phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
+                    {} (get a :phints))
+        pe (reduce (fn [e p]
+                     (assoc e p
+                            (let [ent (get shapes (get phm p))]
+                              (if ent (record-type-from-entry ent (get phm p) type-depth shapes) :any))))
+                   tenv (get a :params))
+        pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
+        ;; a (fn f [] …) self-reference shadows any
+        ;; same-named outer local — bind it :any (a fn's
+        ;; own type is opaque to the lattice), else it
+        ;; inherits the outer local's type.
+        pe (if self (assoc pe self :any) pe)
+        _ (when (get env :checking?) (report-dead-hints! a node env))]
+    (assoc a :body (nth (infer (get a :body) pe fenv) 1))))
+
+;; a closure inherits the enclosing tenv so CAPTURED locals keep their
+;; types (e.g. a reduce closure that calls (f captured-struct ...)). Its own
+;; params shadow to :any UNLESS a param carries a ^Record declared hint
+;; (:phints, name -> ctor-key) — then seed it to that record type so field
+;; reads off it bare-index per-form, not only under whole-program. This is
+;; what makes a protocol method's `this` (hinted by defrecord/extend-type)
+;; read its fields without the runtime tag guard.
+(defn- infer-fn [node tenv env]
+  ;; a nested closure resets the self/loop context: its own recur/self-call
+  ;; targets IT, not the enclosing whole-program def, so it must not collect
+  ;; into that def's param key.
+  (let [fenv (assoc env :self-name nil :self-key nil :self-params nil :in-loop? false
+                    :loop-recurs nil)
+        self (get node :name)
+        ;; A ^:once fn (a lazy-seq thunk) gives up its captures as it runs --
+        ;; the JVM nulls them, and the back end empties the closure's box --
+        ;; so a body that threw and runs again sees them nil. Whatever their
+        ;; type outside, inside they may be nil, or (nil? v) folds to false
+        ;; and the rerun takes the wrong branch. :free-names absent (a node a
+        ;; pass built) widens every enclosing local.
+        tenv (if (get node :once)
+               (reduce (fn [e k] (if (contains? e k) (assoc e k (join-t :nil (get e k))) e))
+                       tenv (or (get node :free-names) (keys tenv)))
+               tenv)]
+    [:any (assoc node :arities
+                 (mapv (fn [a] (infer-fn-arity a node self tenv env fenv))
+                       (get node :arities)))]))
+
+(defn- infer-def [node tenv env]
+  (when (get env :checking?) (register-user-fn! node env))
+  (let [nm (get node :name)
+        ;; a defrecord emits (def map->Name (fn [m] (->Name (get m :f) ...)))
+        ;; whose body is the untyped-map ctor path. Mark it so record-ctor-site!
+        ;; skips that template site (a CALLED/escaped map->Name demotes the
+        ;; record separately — see record-ctor-site!/derive-field-types), else a
+        ;; never-called map-> would poison every field to :any.
+        env' (if (and nm (.startsWith ^String nm "map->"))
+               (let [ck (str (get node :ns) "/->" (.substring ^String nm 5))
+                     shapes (get env :record-shapes)]
+                 (if (contains? shapes ck) (assoc env :map->-ctor-key ck) env))
+               env)]
+    [:any (let [n (assoc node :init (nth (infer (get node :init) tenv env') 1))]
+            ;; evaluated metadata is code too (a :test fn): infer it like the init
+            (if-let [me (get node :meta-expr)]
+              (assoc n :meta-expr (nth (infer me tenv env) 1))
+              n))]))
+
+(defn- infer-try [node tenv env]
+  (let [n (assoc node :body (nth (infer (get node :body) tenv env) 1))
+        n (if (get node :catch-body) (assoc n :catch-body (nth (infer (get node :catch-body) tenv env) 1)) n)
+        n (if (get node :finally) (assoc n :finally (nth (infer (get node :finally) tenv env) 1)) n)]
+    [:any n]))
+
+;; interop: infer the children (the default arm skips whole subtrees), and
+;; stamp :target-type :str when the target PROVES a string — a local typed
+;; :str by tenv, a str-ret call (str/name/subs/clojure.string fns), or a
+;; param typed :str by the whole-program fixpoint. The back end then emits
+;; the string native directly.
+;;
+;; Only when the analyzer stamped NOTHING. A hint is a user contract
+;; inference won't second-guess, and the two stamps are not
+;; interchangeable: `toString` and `hashCode` are in both the string and
+;; the keyword emit table, so overwriting a :kw stamp with :str would emit
+;; the string body for a keyword target — `(.toString k)` becoming the
+;; identity instead of ":ns/name". Only reachable via a hint that is
+;; already wrong, but "adds, never removes" has to be what the code does,
+;; not just what it says.
+;;
+;; The stamp is also what the call's own ANSWER type is read off
+;; (interop-ret-type): once the receiver is proven, the method name settles
+;; what comes back, so (.trim s) types :str and (.length s) types :num
+;; instead of the :any every interop result used to be. That is what lets a
+;; chain — (.toUpperCase (.trim s)), or a let-bound (.substring s 1 2) —
+;; prove its own receiver and drop the runtime string? test, and what puts
+;; an interop result into the arithmetic the surrounding code does with it.
+;; Unproven receiver, or a method not in the table, stays :any.
+(defn- infer-host-call [node tenv env]
+  (let [tr (infer (get node :target) tenv env)
+        ars (mapv (fn [a] (infer a tenv env)) (get node :args))
+        n (assoc node :target (nth tr 1) :args (mapv (fn [r] (nth r 1)) ars))
+        tt (nth tr 0)
+        n (if (some? (get n :target-type))
+            n
+            (cond (or (= :str tt) (= :str (decl-of tt))) (assoc n :target-type :str)
+                  (or (= :kw tt) (= :kw (decl-of tt))) (assoc n :target-type :kw)
+                  :else n))
+        rt (interop-ret-type (get n :target-type) (get n :method))]
+    [(if rt rt :any) n]))
+
+;; The inline pass wraps a spliced body in :coerce to preserve the callee's
+;; ^double/^long return coercion (passes/inline.clj, `rbody`). Without an arm
+;; here that wrapper fell to :else, which answers :any and returns the node
+;; UNWALKED — so nothing inside a spliced return-hinted fn was ever
+;; annotated. Every record field read in such a body degraded from a slot
+;; read to jolt-get and its arithmetic from the fl ops to the generic ones,
+;; which made declaring ^double on a fn's return roughly halve the speed of
+;; its inlined copies. A hint must never cost, so the body is inferred and
+;; the node rebuilt around it; the coercion's own kind is what it answers.
+;;
+;; An array-kind coerce (a ^longs/^objects/... let init) is no number and
+;; does not change its value, so it answers what its expr is. A CAST with
+;; no numeric kind (:cast-fn jolt-char, the analyzer's cast table) answers
+;; a char's type, :truthy, as a char literal does: answering its operand
+;; typed (char 97) :num and (char d) :double, so number? folded to true
+;; on a char and a char-holding record field took the unsafe fl ops.
+(defn- infer-coerce [node tenv env]
+  (let [r (infer (get node :expr) tenv env)
+        k (get node :kind)]
+    [(cond (= :double k) :double (= :long k) :num (= :float k) :num
+           (get node :cast-fn) :truthy
+           :else (nth r 0))
+     (assoc node :expr (nth r 1))]))
 
 (defn- infer
   "Returns [type node'] — the inferred type of node and node with struct-safe
   :local references annotated :hint :struct. tenv maps in-scope local names to
   inferred types; env carries the inference config and this run's accumulators."
   [node tenv env]
-  (let [op (get node :op)]
-    (cond
-      (= op :const)
-      [(let [v (get node :val)]
-         (cond (and (number? v) (float? v)) :double   ; a flonum literal is :double
-               (number? v) :num
-               (string? v) :str
-               (keyword? v) :kw
-               (nil? v) :nil        ; a record|nil branch types as a nilable record
-               (= false v) :any     ; false is not struct-eligible
-               :else :truthy))                  ; true, char, ... -> non-nil
-       node]
-      (= op :local)
-      (let [t0 (get tenv (get node :name))
-            ;; :rec-hint is a DECLARED ^Record type the splicer moved off a
-            ;; callee arity onto the local that replaced the param (inline.clj
-            ;; try-inline). It fills in only where inference has nothing — the
-            ;; inferred type is at least as precise, and the arity seed it stands
-            ;; in for is a fallback too (types.clj reinfer-def).
-            t (if (or (nil? t0) (= :any t0))
-                (let [ck (get node :rec-hint)
-                      ent (when ck (get (get env :record-shapes) ck))]
-                  (cond
-                    ent (record-type-from-entry ent ck type-depth (get env :record-shapes))
-                    ;; a DECLARED ^String / ^Keyword hint, which the analyzer put on
-                    ;; this reference (hint-of). The interop emit has always trusted
-                    ;; it — it is what stamps :target-type — and the lattice carries
-                    ;; it as declared, so a let-bound copy reaches the `.method` path
-                    ;; too. Not as :str/:kw: a hint proves nothing about the value,
-                    ;; so string?/nil? mustn't fold on it, nor count/str lower to
-                    ;; the string natives (lattice decl). Fills in only where
-                    ;; inference has nothing, exactly as :rec-hint above does.
-                    ;;
-                    ;; :struct and :sb are deliberately absent: a :struct hint is
-                    ;; consumed by mark-struct/:shape at the lookup sites and has no
-                    ;; scalar to name here, and the lattice has no StringBuilder type.
-                    (= :str (get node :hint)) (decl :str)
-                    (= :kw (get node :hint)) (decl :kw)
-                    :else (if t0 t0 :any)))
-                t0)]
-        [t
-         (cond
-           ;; mark-struct, not a hand-rolled :hint/:shape pair: it also carries
-           ;; :nilable, and :shape without :nilable is exactly the shape the back end
-           ;; reads as "proven non-nil, take the direct slot accessor". A lookup site
-           ;; re-marks its own subject, so this annotation is superseded there — but
-           ;; the two must not be able to drift.
-           (struct-safe? t) (mark-struct node t)
-           :else node)])
-      (= op :map)
-      (let [pairs (get node :pairs)
-            res (mapv (fn [pr]
-                        (let [kr (infer (nth pr 0) tenv env)
-                              vr (infer (nth pr 1) tenv env)]
-                          [(nth kr 1) (nth vr 1) (nth vr 0) (get (nth pr 0) :val)]))
-                      pairs)
-            struct? (and (> (count res) 0)
-                         (every? (fn [pr] (scalar-const? (nth pr 0))) pairs)
-                         (every? (fn [r] (truthy-type? (nth r 2))) res))
-            base (when struct?
-                   (cap (mk-struct (reduce (fn [m r] (assoc m (nth r 3) (nth r 2))) {} res)) type-depth))
-            t (if base base :any)
-            node' (assoc node :pairs (mapv (fn [r] [(nth r 0) (nth r 1)]) res))]
-        [t node'])
-      (= op :vector)
-      (let [irs (mapv (fn [x] (infer x tenv env)) (get node :items))
-            ets (mapv (fn [r] (nth r 0)) irs)
-            el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
-        [(cap (mk-vec el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
-      (= op :set)
-      (let [irs (mapv (fn [x] (infer x tenv env)) (get node :items))
-            ets (mapv (fn [r] (nth r 0)) irs)
-            el (if (empty? ets) :any (reduce join (first ets) (rest ets)))]
-        [(cap (mk-set el) type-depth) (assoc node :items (mapv (fn [r] (nth r 1)) irs))])
-      (= op :if)
-      (let [test (get node :test)
-            tr (infer test tenv env)
-            nr (if-narrow test tenv env)   ; narrow a local in the proven branch
-            thn (infer (get node :then) (nth nr 0) env)
-            els (infer (get node :else) (nth nr 1) env)
-            ;; a test the predicate fold settled picks its branch now: the const-fold
-            ;; after inference drops the other one, so its type must not widen the
-            ;; if's. (if (seq? r) (… hash-map …) r) on a proven record is how map
-            ;; destructuring starts, and joining the dead branch's map lost the
-            ;; record type every field read after it needed.
-            tn (nth tr 1)
-            t (if (= :const (get tn :op))
-                (if (let [v (get tn :val)] (or (nil? v) (false? v))) (nth els 0) (nth thn 0))
-                (join (nth thn 0) (nth els 0)))]
-        [t (assoc node :test tn :then (nth thn 1) :else (nth els 1))])
-      (= op :do)
-      (let [stmts (mapv (fn [s] (nth (infer s tenv env) 1)) (get node :statements))
-            r (infer (get node :ret) tenv env)]
-        [(nth r 0) (assoc node :statements stmts :ret (nth r 1))])
-      (= op :throw)
-      [:any (assoc node :expr (nth (infer (get node :expr) tenv env) 1))]
-      ;; a :var reached HERE is in value position (an arg, a let init, ...), not
-      ;; a call head — so the fn it names escapes and its params can't be inferred.
-      ;; Its VALUE type comes from vtypes (a fn is :truthy, a def carries its
-      ;; inferred type); unknown -> :any.
-      (= op :var) (do (swap! (get env :escapes) conj (var-key node))
-                      [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
-      (= op :invoke) (infer-invoke node tenv env)
-      (= op :let)
-      (let [res (reduce (fn [acc b]
-                          (let [te (nth acc 0) binds (nth acc 1)
-                                ir (infer (nth b 1) te env)]
-                            [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
-                        [tenv []] (get node :bindings))
-            br (infer (get node :body) (nth res 0) env)]
-        [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
-      (= op :loop)
-      (infer-loop node tenv env)
-      (= op :recur)
-      (let [ares (mapv (fn [a] (infer a tenv env)) (get node :args))]
-        ;; a recur that targets the enclosing loop hands its arg types to that
-        ;; loop's fixpoint (infer-loop)
-        (when (and (get env :in-loop?) (get env :loop-recurs))
-          (swap! (get env :loop-recurs) conj (mapv (fn [r] (ty r)) ares)))
-        ;; a fn-level recur (not inside a loop) rebinds the enclosing fn's params,
-        ;; so its args constrain them like a self-call — collect under the fn key.
-        (when (and *collect-self-rec?* (not (get env :in-loop?)) (get env :self-key))
-          (swap! (get env :calls) conj
-                 [(get env :self-key) (self-rec-argtys (get node :args) ares (get env :self-params))]))
-        [:any (assoc node :args (mapv (fn [r] (nd r)) ares))])
-      (= op :fn)
-      ;; a closure inherits the enclosing tenv so CAPTURED locals keep their
-      ;; types (e.g. a reduce closure that calls (f captured-struct ...)). Its own
-      ;; params shadow to :any UNLESS a param carries a ^Record declared hint
-      ;; (:phints, name -> ctor-key) — then seed it to that record type so field
-      ;; reads off it bare-index per-form, not only under whole-program. This is
-      ;; what makes a protocol method's `this` (hinted by defrecord/extend-type)
-      ;; read its fields without the runtime tag guard.
-      ;; a nested closure resets the self/loop context: its own recur/self-call
-      ;; targets IT, not the enclosing whole-program def, so it must not collect
-      ;; into that def's param key.
-      (let [fenv (assoc env :self-name nil :self-key nil :self-params nil :in-loop? false
-                        :loop-recurs nil)
-            self (get node :name)
-            ;; A ^:once fn (a lazy-seq thunk) gives up its captures as it runs --
-            ;; the JVM nulls them, and the back end empties the closure's box --
-            ;; so a body that threw and runs again sees them nil. Whatever their
-            ;; type outside, inside they may be nil, or (nil? v) folds to false
-            ;; and the rerun takes the wrong branch. :free-names absent (a node a
-            ;; pass built) widens every enclosing local.
-            tenv (if (get node :once)
-                   (reduce (fn [e k] (if (contains? e k) (assoc e k (join-t :nil (get e k))) e))
-                           tenv (or (get node :free-names) (keys tenv)))
-                   tenv)]
-        [:any (assoc node :arities
-                     (mapv (fn [a]
-                             (let [shapes (get env :record-shapes)
-                                   phm (reduce (fn [m pr] (assoc m (nth pr 0) (nth pr 1)))
-                                               {} (get a :phints))
-                                   pe (reduce (fn [e p]
-                                                (assoc e p
-                                                       (let [ent (get shapes (get phm p))]
-                                                         (if ent (record-type-from-entry ent (get phm p) type-depth shapes) :any))))
-                                              tenv (get a :params))
-                                   pe (if (get a :rest) (assoc pe (get a :rest) :any) pe)
-                                   ;; a (fn f [] …) self-reference shadows any
-                                   ;; same-named outer local — bind it :any (a fn's
-                                   ;; own type is opaque to the lattice), else it
-                                   ;; inherits the outer local's type.
-                                   pe (if self (assoc pe self :any) pe)
-                                   _ (when (get env :checking?) (report-dead-hints! a node env))]
-                               (assoc a :body (nth (infer (get a :body) pe fenv) 1))))
-                           (get node :arities)))])
-       (= op :def)
-       (do (when (get env :checking?) (register-user-fn! node env))
-           (let [nm (get node :name)
-                 ;; a defrecord emits (def map->Name (fn [m] (->Name (get m :f) ...)))
-                 ;; whose body is the untyped-map ctor path. Mark it so record-ctor-site!
-                 ;; skips that template site (a CALLED/escaped map->Name demotes the
-                 ;; record separately — see record-ctor-site!/derive-field-types), else a
-                 ;; never-called map-> would poison every field to :any.
-                 env' (if (and nm (.startsWith ^String nm "map->"))
-                        (let [ck (str (get node :ns) "/->" (.substring ^String nm 5))
-                              shapes (get env :record-shapes)]
-                          (if (contains? shapes ck) (assoc env :map->-ctor-key ck) env))
-                        env)]
-             [:any (let [n (assoc node :init (nth (infer (get node :init) tenv env') 1))]
-                     ;; evaluated metadata is code too (a :test fn): infer it like the init
-                     (if-let [me (get node :meta-expr)]
-                       (assoc n :meta-expr (nth (infer me tenv env) 1))
-                       n))]))
-      (= op :try)
-      (let [n (assoc node :body (nth (infer (get node :body) tenv env) 1))
-            n (if (get node :catch-body) (assoc n :catch-body (nth (infer (get node :catch-body) tenv env) 1)) n)
-            n (if (get node :finally) (assoc n :finally (nth (infer (get node :finally) tenv env) 1)) n)]
-        [:any n])
-      (= op :host-call)
-      ;; interop: infer the children (the default arm skips whole subtrees), and
-      ;; stamp :target-type :str when the target PROVES a string — a local typed
-      ;; :str by tenv, a str-ret call (str/name/subs/clojure.string fns), or a
-      ;; param typed :str by the whole-program fixpoint. The back end then emits
-      ;; the string native directly.
-      ;;
-      ;; Only when the analyzer stamped NOTHING. A hint is a user contract
-      ;; inference won't second-guess, and the two stamps are not
-      ;; interchangeable: `toString` and `hashCode` are in both the string and
-      ;; the keyword emit table, so overwriting a :kw stamp with :str would emit
-      ;; the string body for a keyword target — `(.toString k)` becoming the
-      ;; identity instead of ":ns/name". Only reachable via a hint that is
-      ;; already wrong, but "adds, never removes" has to be what the code does,
-      ;; not just what it says.
-      ;;
-      ;; The stamp is also what the call's own ANSWER type is read off
-      ;; (interop-ret-type): once the receiver is proven, the method name settles
-      ;; what comes back, so (.trim s) types :str and (.length s) types :num
-      ;; instead of the :any every interop result used to be. That is what lets a
-      ;; chain — (.toUpperCase (.trim s)), or a let-bound (.substring s 1 2) —
-      ;; prove its own receiver and drop the runtime string? test, and what puts
-      ;; an interop result into the arithmetic the surrounding code does with it.
-      ;; Unproven receiver, or a method not in the table, stays :any.
-      (let [tr (infer (get node :target) tenv env)
-            ars (mapv (fn [a] (infer a tenv env)) (get node :args))
-            n (assoc node :target (nth tr 1) :args (mapv (fn [r] (nth r 1)) ars))
-            tt (nth tr 0)
-            n (if (some? (get n :target-type))
-                n
-                (cond (or (= :str tt) (= :str (decl-of tt))) (assoc n :target-type :str)
-                      (or (= :kw tt) (= :kw (decl-of tt))) (assoc n :target-type :kw)
-                      :else n))
-            rt (interop-ret-type (get n :target-type) (get n :method))]
-        [(if rt rt :any) n])
-
-      ;; The inline pass wraps a spliced body in :coerce to preserve the callee's
-      ;; ^double/^long return coercion (passes/inline.clj, `rbody`). Without an arm
-      ;; here that wrapper fell to :else, which answers :any and returns the node
-      ;; UNWALKED — so nothing inside a spliced return-hinted fn was ever
-      ;; annotated. Every record field read in such a body degraded from a slot
-      ;; read to jolt-get and its arithmetic from the fl ops to the generic ones,
-      ;; which made declaring ^double on a fn's return roughly halve the speed of
-      ;; its inlined copies. A hint must never cost, so the body is inferred and
-      ;; the node rebuilt around it; the coercion's own kind is what it answers.
-      (= op :coerce)
-      ;; An array-kind coerce (a ^longs/^objects/... let init) is no number and
-      ;; does not change its value, so it answers what its expr is. A CAST with
-      ;; no numeric kind (:cast-fn jolt-char, the analyzer's cast table) answers
-      ;; a char's type, :truthy, as a char literal does: answering its operand
-      ;; typed (char 97) :num and (char d) :double, so number? folded to true
-      ;; on a char and a char-holding record field took the unsafe fl ops.
-      (let [r (infer (get node :expr) tenv env)
-            k (get node :kind)]
-        [(cond (= :double k) :double (= :long k) :num (= :float k) :num
-               (get node :cast-fn) :truthy
-               :else (nth r 0))
-         (assoc node :expr (nth r 1))])
-
-      ;; Anything with no arm above. Answering :any is right — this pass has no
-      ;; opinion on the node's own type — but the node must still be WALKED, or
-      ;; nothing inside it is annotated and every record read and every numeric op
-      ;; in the subtree silently degrades to the generic path. That is not
-      ;; hypothetical: it is what :coerce did before the arm above existed, and
-      ;; :set-var, :set-field, :defmacro, :ffi-callable and :host-new all carry
-      ;; child nodes and still land here. A missing arm should cost this pass its
-      ;; opinion about one node, never the annotation of a whole subtree.
-      :else [:any (map-ir-children (fn [c] (nth (infer c tenv env) 1)) node)])))
+  (case (get node :op)
+    :const [(const-type (get node :val)) node]
+    :local (infer-local node tenv env)
+    :map (infer-map node tenv env)
+    :vector (infer-items node tenv env mk-vec)
+    :set (infer-items node tenv env mk-set)
+    :if (infer-if node tenv env)
+    :do (infer-do node tenv env)
+    :throw [:any (assoc node :expr (nth (infer (get node :expr) tenv env) 1))]
+    :var (infer-var-value node env)
+    :invoke (infer-invoke node tenv env)
+    :let (infer-let node tenv env)
+    :loop (infer-loop node tenv env)
+    :recur (infer-recur node tenv env)
+    :fn (infer-fn node tenv env)
+    :def (infer-def node tenv env)
+    :try (infer-try node tenv env)
+    :host-call (infer-host-call node tenv env)
+    :coerce (infer-coerce node tenv env)
+    ;; Anything with no arm above. Answering :any is right — this pass has no
+    ;; opinion on the node's own type — but the node must still be WALKED, or
+    ;; nothing inside it is annotated and every record read and every numeric op
+    ;; in the subtree silently degrades to the generic path. That is not
+    ;; hypothetical: it is what :coerce did before the arm above existed, and
+    ;; :set-var, :set-field, :defmacro, :ffi-callable and :host-new all carry
+    ;; child nodes and still land here. A missing arm should cost this pass its
+    ;; opinion about one node, never the annotation of a whole subtree.
+    [:any (map-ir-children (fn [c] (nth (infer c tenv env) 1)) node)]))
 
 (defn- infer-top [node env] (nth (infer node {} env) 1))
 
@@ -1499,6 +1360,28 @@
         (let [ctor-key (key (first matches))]
           (record-type-from-entry (get shapes ctor-key) ctor-key type-depth shapes))))))
 
+(defn- reinfer-impl-registration
+  "The register-(inline-)method invoke `n` with every arity of its fn re-inferred
+  under param 0 (the receiver) seeded as the record type, or nil when `n` is no
+  such registration or its type name is no known record."
+  [unit n]
+  (when-some [[type-name _ _ fnn] (register-impl-invoke? n)]
+    (when (seq (get fnn :arities))
+      (let [rtype (inline-impl-receiver-type unit type-name
+                     (get (first (get fnn :arities)) :params))
+            env (mk-env unit false false)
+            args (:args n)]
+        (when rtype
+          ;; re-infer every arity with param 0 seeded as record type
+          (let [annotated (mapv (fn [arity]
+                                  (let [params (get arity :params)
+                                        tenv (if (seq params)
+                                               {(first params) rtype} {})]
+                                    (assoc arity :body
+                                           (nth (infer (get arity :body) tenv env) 1))))
+                                (get fnn :arities))]
+            (assoc n :args (assoc args 3 (assoc fnn :arities annotated)))))))))
+
 (defn reinfer-inline-method-bodies
   "Walk node and re-infer the fn bodies of register-inline-method and
   register-method invocations with param 0 (the receiver) seeded as the
@@ -1511,27 +1394,10 @@
   ;; the receiver-type build + body infer read the unit's lean field types, so an
   ;; untagged record field a ctor site fills with a flonum reads :double and unboxes.
   (binding [*field-type-box* (:field-types unit)]
-   (let [walk (fn walk [n]
-               (if-some [[type-name _ _ fnn] (register-impl-invoke? n)]
-                 (if (seq (get fnn :arities))
-                   (let [rtype (inline-impl-receiver-type unit type-name
-                                  (get (first (get fnn :arities)) :params))
-                         env (mk-env unit false false)
-                         args (:args n)]
-                     (if rtype
-                       ;; re-infer every arity with param 0 seeded as record type
-                       (let [annotated (mapv (fn [arity]
-                                               (let [params (get arity :params)
-                                                     tenv (if (seq params)
-                                                            {(first params) rtype} {})]
-                                                 (assoc arity :body
-                                                        (nth (infer (get arity :body) tenv env) 1))))
-                                             (get fnn :arities))]
-                         (assoc n :args (assoc args 3 (assoc fnn :arities annotated))))
-                       (map-ir-children walk n)))
-                   (map-ir-children walk n))
-                 (map-ir-children walk n)))]
-    (walk node))))
+    (let [walk (fn walk [n]
+                 (let [r (reinfer-impl-registration unit n)]
+                   (if r r (map-ir-children walk n))))]
+      (walk node))))
 
 ;; count :coerce :double nodes anywhere in a subtree (reduce-ir-children is one
 ;; level, so walk it). Used to tell whether contagion added a coercion the shared
@@ -1697,6 +1563,57 @@
 ;; all-node pass's outputs; it just stops re-walking the part of the graph the
 ;; last pass already settled, which is where the Jacobi iteration's redundant
 ;; work lives (a change reaches one more level of the call graph per pass).
+(defn- wp-skippable?
+  "Whether a node whose last walk recorded `old` can skip this pass: its seeds and
+  every return type its walk read are unchanged since."
+  [old seeds rets]
+  (and (not wp-memo-off?) old (= seeds (:seeds old))
+       (every? (fn [d] (= (get rets d) (get (:vals old) d))) (:deps old))))
+
+;; fold one node's walk outputs (fresh or recorded) into the pass accumulator:
+;; its return type under its key `rk` (nil for a non-specializable node) and its
+;; calls' arg types into the callees' param slots. `counter` is :walked/:skipped.
+(defn- wp-contribute [acc spec rk ret calls counter]
+  (-> acc
+      (update counter inc)
+      (cond-> rk (assoc-in [:rets rk] ret))
+      (update :ptypes wp-accum spec calls)))
+
+;; type one node: a specializable def `s` under its param seeds, anything else
+;; only to harvest its call sites and escapes. Its ctor-site ops land in `cells`.
+(defn- wp-walk-node [unit node s k seeds cells]
+  (binding [*wp-node-cells* cells]
+    (if s
+      (infer-body unit (:body s) (zipmap (:params s) seeds) (:name s) k (:params s))
+      (infer-body unit node {}))))
+
+;; the memo entry a fresh walk `r` of a node leaves for the next pass.
+(defn- wp-memo-entry [old rets rk seeds r cells]
+  (let [calls (nth r 2)
+        deps (cond-> (into (or (:deps old) (sorted-set)) (wp-call-keys calls))
+               rk (conj rk))]
+    {:deps deps
+     :vals (reduce (fn [m d] (assoc m d (get rets d))) {} deps)
+     :seeds seeds :ret (when rk (nth r 0)) :calls calls
+     :join-ops @(nth cells 0) :demotes @(nth cells 1)}))
+
+;; one node's step of wp-pass. ctx is {:unit :spec :ptypes :rets}.
+(defn- wp-pass-node [ctx acc i node]
+  (let [spec (:spec ctx) rets (:rets ctx)
+        k (when (= :def (get node :op)) (str (get node :ns) "/" (get node :name)))
+        s (and k (get spec k))
+        seeds (when s (get (:ptypes ctx) k))
+        rk (when s k)
+        old (nth (:memo acc) i)]
+    (if (wp-skippable? old seeds rets)
+      (wp-contribute acc spec rk (:ret old) (:calls old) :skipped)
+      (let [cells (when-not wp-memo-off? [(atom []) (atom [])])
+            r (wp-walk-node (:unit ctx) node s k seeds cells)
+            acc (wp-contribute acc spec rk (nth r 0) (nth r 2) :walked)]
+        (if wp-memo-off?
+          acc
+          (assoc-in acc [:memo i] (wp-memo-entry old rets rk seeds r cells)))))))
+
 (defn- wp-pass [unit nodes spec ks ptypes rets memo]
   ;; the unmemoized pass writes the unit accumulator as it walks (the pre-memo
   ;; pas), so each pass starts it empty; the memoized pass leaves the accumulator
@@ -1704,45 +1621,11 @@
   (when wp-memo-off?
     (reset! (:wp-field-joins unit) {})
     (reset! (:wp-field-demote unit) #{}))
-  (let [pass
+  (let [ctx {:unit unit :spec spec :ptypes ptypes :rets rets}]
     (reduce
-      (fn [acc [i node]]
-        (let [k (when (= :def (get node :op)) (str (get node :ns) "/" (get node :name)))
-              s (and k (get spec k))
-              seeds (when s (get ptypes k))
-              old (nth (:memo acc) i)
-              skip? (and (not wp-memo-off?) old (= seeds (:seeds old))
-                         (every? (fn [d] (= (get rets d) (get (:vals old) d))) (:deps old)))]
-          (if skip?
-            (-> acc
-                (update :skipped inc)
-                (cond-> s (assoc-in [:rets k] (:ret old)))
-                (update :ptypes wp-accum spec (:calls old)))
-            (let [cells (when-not wp-memo-off? [(atom []) (atom [])])
-                  r (binding [*wp-node-cells* cells]
-                      (if s
-                        (infer-body unit (:body s) (zipmap (:params s) seeds) (:name s) k (:params s))
-                        (infer-body unit node {})))
-                  calls (nth r 2)]
-              (if wp-memo-off?
-                (-> acc
-                    (update :walked inc)
-                    (cond-> s (assoc-in [:rets k] (nth r 0)))
-                    (update :ptypes wp-accum spec calls))
-                (let [deps (cond-> (into (or (:deps old) (sorted-set)) (wp-call-keys calls))
-                             s (conj k))]
-                  (-> acc
-                      (update :walked inc)
-                      (cond-> s (assoc-in [:rets k] (nth r 0)))
-                      (update :ptypes wp-accum spec calls)
-                      (assoc-in [:memo i]
-                                {:deps deps
-                                 :vals (reduce (fn [m d] (assoc m d (get rets d))) {} deps)
-                                 :seeds seeds :ret (when s (nth r 0)) :calls calls
-                                 :join-ops @(nth cells 0) :demotes @(nth cells 1)}))))))))
+      (fn [acc [i node]] (wp-pass-node ctx acc i node))
       {:rets {} :ptypes (wp-empty-ptypes spec ks) :memo memo :walked 0 :skipped 0}
-      (map-indexed vector nodes))]
-    pass))
+      (map-indexed vector nodes))))
 
 ;; install the ctor ops the param fixpoint's last pass recorded for each node.
 ;; A node's ops are from its last walk; a node the last pass skipped had its
@@ -1758,45 +1641,6 @@
       (doseq [[vk fields ats] (:join-ops m)]
         (swap! (:wp-field-joins unit) join-ctor-args vk fields ats))
       (doseq [ck (:demotes m)] (swap! (:wp-field-demote unit) conj ck)))))
-
-;; fold a pass's positional ctor-arg joins into a {ctor-key {field-kw type}} map,
-;; dropping demoted/escaped records (their fields read :any) and :any/conflicting
-;; fields (the sound default — a conflicting join unboxes nothing). Field types are
-;; projected to a SHALLOW form (type + shape + nilable, no nested :struct) — a deep
-;; nilable-Node would embed Node (which re-embeds nilable-Node), deepening each
-;; fixpoint round and never value-equaling, so the field-type loop wouldn't converge.
-;; The shallow form is stable and all the read/mark machinery needs (it keys off
-;; :type/:shape/:nilable, not nested fields — a nilable struct's subfields read :any).
-(defn- shallow-field-type [t]
-  (cond
-    ;; Option B: only a genuine all-flonum ctor-arg join unboxes. A :num (integer/
-    ;; mixed) join reads :any, so flonum arithmetic over it stays generic — dbl
-    ;; contagion is reserved for :double fields (the all-flonum->:double spec).
-    (= t :double) t
-    (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
-                       (if (nilable? t) (assoc base :nilable true) base))
-    :else :any))
-;; the rich variant keeps :num, so a specialized clone's :num field reads type :num
-;; and dbl-arith? contagions them beside a proven :double operand (the invariant).
-;; Feeds the rich field types only; never the shared path.
-(defn- shallow-field-type-rich [t]
-  (cond
-    (or (= t :double) (= t :num)) t
-    (struct-type? t) (let [base {:type (get t :type) :struct {} :shape (get t :shape)}]
-                       (if (nilable? t) (assoc base :nilable true) base))
-    :else :any))
-(defn- derive-field-types [unit joins demoted escaped shallow]
-  (reduce-kv
-    (fn [m ctor-key argts]
-      (if (or (contains? demoted ctor-key) (contains? escaped ctor-key))
-        m
-        (let [fields (get-in @(:config unit) [:record-shapes ctor-key :fields])]
-          (reduce (fn [m2 i]
-                    (let [fw (nth fields i nil) t (nth argts i nil)]
-                      (if (and fw t (not= t :any))
-                        (assoc-in m2 [ctor-key fw] (shallow t)) m2)))
-                  m (range (count argts))))))
-    {} joins))
 
 ;; iterate ptypes/rets to a fixpoint with back-edge collection on or off. Returns
 ;; [converged? ptypes rets] so the caller can chain one phase into the next.
@@ -1856,6 +1700,66 @@
         main (wp-iterate unit nodes spec ks (nth primed 1) (nth primed 2) true)]
     [(nth main 0) (nth main 1) (nth main 3)]))
 
+(defn- wp-pick-seeds
+  "def-key -> {param-name -> type} for each specializable def's params whose
+  converged type satisfies keep?."
+  [spec ks seed-ptypes keep?]
+  (reduce (fn [m k]
+            (let [s (get spec k)
+                  pm (reduce (fn [pm pr]
+                               (let [nm (nth pr 0) t (nth pr 1)]
+                                 (if (and t (keep? t)) (assoc pm nm t) pm)))
+                             {} (map vector (:params s) (get seed-ptypes k)))]
+              (if (seq pm) (assoc m k pm) m)))
+          {} ks))
+
+;; One round of wp-infer!'s outer field-type loop: run the (converging) param
+;; fixpoint with `ftypes` installed as the lean field types, then derive the field
+;; types from the converged pass's ctor-site joins. Returns {:param-converged?
+;; :ft-stable? :sound? :ptypes :ftypes :rich-ftypes}.
+(defn- wp-field-round [unit nodes spec ks ftypes]
+  (reset! (:field-types unit) ftypes)
+  (let [[param-converged? new-ptypes ctor-memo] (wp-param-fixpoint unit nodes spec ks)
+        _ (when-not wp-memo-off? (wp-replay-ctor-ops! unit ctor-memo))
+        escaped (set (collected-escapes unit))
+        new-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type)
+        new-rich-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type-rich)
+        ft-stable? (= new-ftypes ftypes)]
+    {:param-converged? param-converged? :ft-stable? ft-stable?
+     :sound? (and param-converged? ft-stable?)
+     :ptypes new-ptypes :ftypes new-ftypes :rich-ftypes new-rich-ftypes}))
+
+;; Install the outcome of the last field round on the unit; answers sound?.
+(defn- wp-install-result! [unit nodes spec ks round]
+  (let [sound? (:sound? round)
+        new-ptypes (:ptypes round)
+        seed-ptypes (if sound?
+                      new-ptypes
+                      (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
+                              new-ptypes ks))]
+    (reset! (:field-types unit) (if sound? (:ftypes round) {}))
+    (reset! (:rich-field-types unit) (if sound? (:rich-ftypes round) {}))
+    ;; re-derive the protocol-method return types now that field types
+    ;; are known: an impl body that reads a field unboxes once the field
+    ;; proves :double, so its joined return (the callers' pm-ret)
+    ;; tightens from :any/:num to :double — that's what unboxes the caller.
+    (when sound? (collect-pm-rets! unit nodes))
+    ;; build both seed maps from the same converged ptypes: the
+    ;; structural one (struct/vec, drives reinfer-def's field-read/
+    ;; devirt) excludes :double; the numeric one keeps only :double.
+    ;; A NILABLE record param is kept, and carries its :nilable flag all
+    ;; the way through: its layout is proven, so field reads bare-index
+    ;; via the nil-safe jrec-field-at (no keyword hash, no generic
+    ;; dispatch) while a nil receiver still falls back to jolt-get. This
+    ;; is the recursive-descent shape — a walker fed both a proven record
+    ;; and its own nilable child field joins to record-or-nil, which is
+    ;; exactly what a tree walk looks like. Nothing downstream may treat
+    ;; it as non-nil: the direct accessor, some?/nil? folding, and devirt
+    ;; all gate on (not (nilable? t)).
+    (reset! (:wp-seeds unit) (wp-pick-seeds spec ks seed-ptypes (fn [t] (and (not= t :any) (not= t :double)))))
+    (reset! (:wp-num-seeds unit) (wp-pick-seeds spec ks seed-ptypes (fn [t] (= t :double))))
+    sound?))
+
 (defn wp-infer!
   "Run the closed-world param-type fixpoint over the unit's analyzed top-level
   nodes and stash the resulting per-def seed maps (read via param-seeds-for).
@@ -1880,54 +1784,13 @@
       ;; trust the result — otherwise we widen every param to :any and drop field
       ;; types (a pre-fixpoint is more specific than the truth, so unsound to seed).
       (loop [ft-iter 0 ftypes {}]
-        (reset! (:field-types unit) ftypes)
-        (let [[param-converged? new-ptypes ctor-memo] (wp-param-fixpoint unit nodes spec ks)
-              _ (when-not wp-memo-off? (wp-replay-ctor-ops! unit ctor-memo))
-              escaped (set (collected-escapes unit))
-               new-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type)
-               new-rich-ftypes (derive-field-types unit @(:wp-field-joins unit) @(:wp-field-demote unit) escaped shallow-field-type-rich)
-               ft-stable? (= new-ftypes ftypes)
-              sound? (and param-converged? ft-stable?)]
+        (let [round (wp-field-round unit nodes spec ks ftypes)]
           (when wp-trace?
-            (println (str "[wp] field round " ft-iter " params-converged? " param-converged?
-                          " fields-stable? " ft-stable? " field-types " (count new-ftypes))))
-          (if (or sound? (>= ft-iter 8))
-            (let [seed-ptypes (if sound?
-                                new-ptypes
-                                (reduce (fn [m k] (assoc m k (vec (repeat (count (get m k)) :any))))
-                                        new-ptypes ks))
-                  _ (reset! (:field-types unit) (if sound? new-ftypes {}))
-                  _ (reset! (:rich-field-types unit) (if sound? new-rich-ftypes {}))
-                  ;; re-derive the protocol-method return types now that field types
-                  ;; are known: an impl body that reads a field unboxes once the field
-                  ;; proves :double, so its joined return (the callers' pm-ret)
-                  ;; tightens from :any/:num to :double — that's what unboxes the caller.
-                  _ (when sound? (collect-pm-rets! unit nodes))
-                  ;; build both seed maps from the same converged ptypes: the
-                  ;; structural one (struct/vec, drives reinfer-def's field-read/
-                  ;; devirt) excludes :double; the numeric one keeps only :double.
-                  ;; A NILABLE record param is kept, and carries its :nilable flag all
-                  ;; the way through: its layout is proven, so field reads bare-index
-                  ;; via the nil-safe jrec-field-at (no keyword hash, no generic
-                  ;; dispatch) while a nil receiver still falls back to jolt-get. This
-                  ;; is the recursive-descent shape — a walker fed both a proven record
-                  ;; and its own nilable child field joins to record-or-nil, which is
-                  ;; exactly what a tree walk looks like. Nothing downstream may treat
-                  ;; it as non-nil: the direct accessor, some?/nil? folding, and devirt
-                  ;; all gate on (not (nilable? t)).
-                  pick (fn [keep?]
-                         (reduce (fn [m k]
-                                   (let [s (get spec k)
-                                         pm (reduce (fn [pm pr]
-                                                      (let [nm (nth pr 0) t (nth pr 1)]
-                                                        (if (and t (keep? t)) (assoc pm nm t) pm)))
-                                                    {} (map vector (:params s) (get seed-ptypes k)))]
-                                     (if (seq pm) (assoc m k pm) m)))
-                                 {} ks))]
-              (reset! (:wp-seeds unit) (pick (fn [t] (and (not= t :any) (not= t :double)))))
-              (reset! (:wp-num-seeds unit) (pick (fn [t] (= t :double))))
-              sound?)
-            (recur (inc ft-iter) new-ftypes))))
+            (println (str "[wp] field round " ft-iter " params-converged? " (:param-converged? round)
+                          " fields-stable? " (:ft-stable? round) " field-types " (count (:ftypes round)))))
+          (if (or (:sound? round) (>= ft-iter 8))
+            (wp-install-result! unit nodes spec ks round)
+            (recur (inc ft-iter) (:ftypes round)))))
       (finally (reset! (:collecting-fields? unit) false))))))
 
 ;; Piggyback checking (jolt audit). In direct-link mode infer-top already runs

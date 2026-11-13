@@ -675,14 +675,31 @@
 (define ei-compiler-ns-files
   (list (cons "jolt.op-registry" "jolt-core/jolt/op_registry.clj")
         (cons "jolt.ir" "jolt-core/jolt/ir.clj")
+        (cons "jolt.analyzer.diagnostics" "jolt-core/jolt/analyzer/diagnostics.clj")
+        (cons "jolt.analyzer.hints" "jolt-core/jolt/analyzer/hints.clj")
+        (cons "jolt.analyzer.tree" "jolt-core/jolt/analyzer/tree.clj")
+        (cons "jolt.analyzer.ffi" "jolt-core/jolt/analyzer/ffi.clj")
+        (cons "jolt.analyzer.interop" "jolt-core/jolt/analyzer/interop.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")
         (cons "jolt.passes.numeric" "jolt-core/jolt/passes/numeric.clj")
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
         (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
         (cons "jolt.passes.types.check" "jolt-core/jolt/passes/types/check.clj")
+        (cons "jolt.passes.types.records" "jolt-core/jolt/passes/types/records.clj")
+        (cons "jolt.passes.types.narrow" "jolt-core/jolt/passes/types/narrow.clj")
         (cons "jolt.passes.types" "jolt-core/jolt/passes/types.clj")
         (cons "jolt.passes" "jolt-core/jolt/passes.clj")
+        (cons "jolt.backend-scheme.names" "jolt-core/jolt/backend_scheme/names.clj")
+        (cons "jolt.backend-scheme.session" "jolt-core/jolt/backend_scheme/session.clj")
+        (cons "jolt.backend-scheme.hoist" "jolt-core/jolt/backend_scheme/hoist.clj")
+        (cons "jolt.backend-scheme.calls" "jolt-core/jolt/backend_scheme/calls.clj")
+        (cons "jolt.backend-scheme.literals" "jolt-core/jolt/backend_scheme/literals.clj")
+        (cons "jolt.backend-scheme.once" "jolt-core/jolt/backend_scheme/once.clj")
+        (cons "jolt.backend-scheme.fnsrc" "jolt-core/jolt/backend_scheme/fnsrc.clj")
+        (cons "jolt.backend-scheme.ffi" "jolt-core/jolt/backend_scheme/ffi.clj")
+        (cons "jolt.backend-scheme.interop" "jolt-core/jolt/backend_scheme/interop.clj")
+        (cons "jolt.backend-scheme.lambda" "jolt-core/jolt/backend_scheme/lambda.clj")
         (cons "jolt.backend-scheme" "jolt-core/jolt/backend_scheme.clj")))
 
 ;; The clojure.core tiers + stdlib namespaces, in load order.
@@ -703,9 +720,14 @@
           (cons "clojure.pprint" "stdlib/clojure/pprint.clj")
           (cons "clojure.repl" "stdlib/clojure/repl.clj")
           (cons "clojure.main" "stdlib/clojure/main.clj")
-          ;; LAST: the generated :doc/:arglists shard fills what the sources
+          ;; LAST: the generated :doc/:arglists shards fill what the sources
           ;; above did not declare, for every image ns (tools/gen-core-docs.sh).
-          (cons "clojure.core" "jolt-core/clojure/core/90-docs.clj"))))
+          ;; 90-docs defines attach-core-doc-meta!, so it leads; the generator
+          ;; prints the shard range to keep this list in step with.
+          (cons "clojure.core" "jolt-core/clojure/core/90-docs.clj")
+          (cons "clojure.core" "jolt-core/clojure/core/91-docs.clj")
+          (cons "clojure.core" "jolt-core/clojure/core/92-docs.clj")
+          (cons "clojure.core" "jolt-core/clojure/core/93-docs.clj"))))
 
 ;; Join a list of form strings with "\n", no trailing newline.
 (define (ei-join forms)

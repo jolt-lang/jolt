@@ -90,6 +90,52 @@
                     (do (aset buf (+ off i) (char c)) (recur (inc i)))))
                 i)))))))
 
+;; The string reader's reads, over its cursor pos and line-start pair (see
+;; __string-reader). Each answers what the matching IReader op returns.
+(defn- string-read-line [s pos line-start closed]
+  ;; \n, \r and \r\n all end a line, and none of them is part of it —
+  ;; java.io.BufferedReader's rule, which the host seam owns so this
+  ;; reader and the port-backed ones cannot disagree about CRLF input.
+  (reader-open! closed)
+  (line-start! line-start true)
+  (let [r (__string-line-from s @pos)]
+    (when-not (nil? r)
+      (reset! pos (nth r 1))
+      (nth r 0))))
+
+(defn- string-read-form [s pos line-start closed numbering]
+  (reader-open! closed)
+  (let [r (__parse-next-numbered s @pos numbering #(reset! pos %))]
+    (if (nil? r)
+      (do (line-start! line-start true) reader-eof)
+      (do (reset! pos (nth r 1))
+          (line-start! line-start false)
+          (nth r 0)))))
+
+(defn- string-read+string [s pos line-start closed numbering eof-error? eof-value]
+  (reader-open! closed)
+  (let [p @pos
+        r (__parse-next-numbered s p numbering #(reset! pos %))]
+    (if (nil? r)
+      (do (line-start! line-start true)
+          (reset! pos (count s))
+          (if eof-error?
+            (__read-eof s numbering)
+            [eof-value ""]))
+      (do (reset! pos (nth r 1))
+          (line-start! line-start false)
+          [(nth r 0) (__jtrim (subs s p (nth r 1)))]))))
+
+(defn- string-read-char [s pos line-start closed]
+  (reader-open! closed)
+  (let [p @pos]
+    (if (< p (count s))
+      (let [c (int (get s p))]
+        (reset! pos (inc p))
+        (line-start! line-start (or (= c 10) (= c 13)))
+        c)
+      (do (line-start! line-start true) -1))))
+
 (defn __string-reader
   "A reader over string s (the with-in-str expansion calls this)."
   [s]
@@ -99,47 +145,12 @@
         more? (fn [] (< @pos (count s)))
         numbering (__numbering)]
     (reify IReader
-      (-read-line [_]
-        ;; \n, \r and \r\n all end a line, and none of them is part of it —
-        ;; java.io.BufferedReader's rule, which the host seam owns so this
-        ;; reader and the port-backed ones cannot disagree about CRLF input.
-        (reader-open! closed)
-        (line-start! line-start true)
-        (let [r (__string-line-from s @pos)]
-          (when-not (nil? r)
-            (reset! pos (nth r 1))
-            (nth r 0))))
-      (-read-form [_]
-        (reader-open! closed)
-        (let [r (__parse-next-numbered s @pos numbering #(reset! pos %))]
-          (if (nil? r)
-            (do (line-start! line-start true) reader-eof)
-            (do (reset! pos (nth r 1))
-                (line-start! line-start false)
-                (nth r 0)))))
+      (-read-line [_] (string-read-line s pos line-start closed))
+      (-read-form [_] (string-read-form s pos line-start closed numbering))
       (-read+string [_ eof-error? eof-value]
-        (reader-open! closed)
-        (let [p @pos
-              r (__parse-next-numbered s p numbering #(reset! pos %))]
-          (if (nil? r)
-            (do (line-start! line-start true)
-                (reset! pos (count s))
-                (if eof-error?
-                  (__read-eof s numbering)
-                  [eof-value ""]))
-            (do (reset! pos (nth r 1))
-                (line-start! line-start false)
-                [(nth r 0) (__jtrim (subs s p (nth r 1)))]))))
+        (string-read+string s pos line-start closed numbering eof-error? eof-value))
       (-read-eof [_] (__read-eof s numbering))
-      (-read-char [_]
-        (reader-open! closed)
-        (let [p @pos]
-          (if (< p (count s))
-            (let [c (int (get s p))]
-              (reset! pos (inc p))
-              (line-start! line-start (or (= c 10) (= c 13)))
-              c)
-            (do (line-start! line-start true) -1))))
+      (-read-char [_] (string-read-char s pos line-start closed))
       (-unread-char [_ _c]
         (swap! pos (fn [p] (if (pos? p) (dec p) p)))
         (line-start-undo! line-start)
@@ -388,6 +399,15 @@
     (symbol nil (name named))
     (keyword nil (name named))))
 
+(defn- lifted-ns
+  "The namespace map m stays lifted under once key k is seen, given ns, the one
+  lifted so far (nil before the first key); nil when k cannot be lifted."
+  [ns k]
+  (when (qualified-ident? k)
+    (if ns
+      (when (= ns (namespace k)) ns)
+      (namespace k))))
+
 (defn- lift-ns
   "Returns [lifted-ns lifted-kvs] or nil if m can't be lifted."
   [m]
@@ -396,12 +416,8 @@
            [[k v :as entry] & entries] (seq m)
            kvs []]
       (if entry
-        (when (qualified-ident? k)
-          (if ns
-            (when (= ns (namespace k))
-              (recur ns entries (conj kvs [(strip-ns k) v])))
-            (when-let [new-ns (namespace k)]
-              (recur new-ns entries (conj kvs [(strip-ns k) v])))))
+        (when-let [ns (lifted-ns ns k)]
+          (recur ns entries (conj kvs [(strip-ns k) v])))
         [ns kvs]))))
 
 ;; An Eduction prints as the seq it yields — (2 3 4), not the deftype's fields.

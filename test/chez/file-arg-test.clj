@@ -75,7 +75,7 @@
 ;; drive prefix left the backslash spellings joined to a project directory, and
 ;; the Windows fallback now COMPOSES candidates out of PATH entries, which on a
 ;; domain-joined host can be UNC.
-(def native-candidate @#'jolt.main/native-candidate)
+(def native-candidate @#'jolt.main.natives/native-candidate)
 
 (check "a bare name is searched for, not joined"
        (native-candidate "C:/proj" "crypto.dll") "crypto.dll")
@@ -95,7 +95,7 @@
        "\\Windows\\System32/libcrypto-3-x64.dll")
 ;; the build-time half draws the same line, and additionally joins a bare name:
 ;; the linker reads "libfoo.a" as a file here, not as a name to search for
-(def native-build-path @#'jolt.main/native-build-path)
+(def native-build-path @#'jolt.main.natives/native-build-path)
 (check "a bare archive joins" (native-build-path "/dep" "libfoo.a") "/dep/libfoo.a")
 (check "a UNC libdir is left alone"
        (native-build-path "C:/proj" "\\\\srv\\share\\lib") "\\\\srv\\share\\lib")
