@@ -2539,7 +2539,12 @@
             (string-set! out i (if (and (fx>=? c #xD800) (fx<=? c #xDFFF)) #\xFFFD (integer->char c)))
             (loop (fx+ i 1)))))))
 (define (jolt-new-string x . rest)
-    (cond ((and (string-hibyte-form? rest)
+    (cond ;; every String constructor that takes an argument throws on a null one
+          ;; (char[], byte[], String, StringBuilder alike); only the JDK's message
+          ;; names the overload, and nothing at run time says which one was meant.
+          ;; It used to fall through to jolt-str-render-one and answer "".
+          ((jolt-nil? x) (throw-jvm 'NullPointerException "Cannot construct a String from null"))
+          ((and (string-hibyte-form? rest)
                 (or (bytevector? x) (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte))))
            (if (bytevector? x)
                (string-from-hibyte (bytevector-length x)
@@ -2573,9 +2578,9 @@
           ;; laid out the way the result needs them, and nothing is walked. The
           ;; vector arm below it is the same copy against the older boxed
           ;; backing (a promoted array, or one restored from an image written
-          ;; before the string backing); anything else — a slice the caller got
-          ;; wrong — keeps the checked ja-ref path, which raises the JVM's own
-          ;; exception at the offending index.
+          ;; before the string backing). A slice outside the array is rejected
+          ;; first, by String's own range check, so the ja-ref loop at the end
+          ;; only sees an in-range slice of some other backing.
           ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))
            (let* ((v (jolt-array-vec x))
                   (n (ja-len x))
@@ -2583,6 +2588,16 @@
                   (cnt (if (pair? rest) (jnum->exact (cadr rest)) n))
                   (ok? (and (fixnum? off) (fixnum? cnt)
                             (fx>=? off 0) (fx>=? cnt 0) (fx<=? (fx+ off cnt) n))))
+             ;; String's own range check (checkBoundsOffCount) runs before any
+             ;; character is read, with the same exception and message as the
+             ;; byte[] slice above. A slice outside the array used to read as far
+             ;; as it could: a negative offset with a zero count answered "", and
+             ;; an overrun raised ArrayIndexOutOfBounds from the copy.
+             (unless ok?
+               (throw-jvm 'StringIndexOutOfBoundsException
+                          (string-append "Range [" (number->string off) ", " (number->string off)
+                                         " + " (number->string cnt) ") out of bounds for length "
+                                         (number->string n))))
              (cond
                ;; NOT substring: Chez's substring is ~2.2x slower than an
                ;; explicit copy of the same bytes (measured on 8.1M characters,
