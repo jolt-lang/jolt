@@ -5,54 +5,62 @@ where Jolt took longer than both Babashka and JVM Clojure. A release build of
 `origin/main` at `ef8dd3e9` reproduced all 15. All 2,754 warmup and measured
 batches passed the arithmetic checksum. [Original measurements](https://github.com/jolt-lang/jolt/blob/af74d25e599c649834edfb6c68a94c6a5160a1fd/benchmarks/generated-project/results/2026-11-10-seed42-collection-sizes.md)
 
-## Single edits to an existing map
+## Short edits to an existing map
 
-The first write to a transient of a populated hash map or set now uses one
-persistent trie path copy. A subsequent write switches to editable nodes.
-A single edit followed by `persistent!` avoids expanding and repacking that
-path. Builds from an empty collection use editable nodes from the start.
+A transient created from a populated hash map or set copies compact trie paths
+for its first eight writes. Longer runs then claim editable nodes. Builds from
+empty enter editable mode immediately. If a key callback changes the transient
+during a compact edit, the operation applies to the latest root and reuses the
+comparisons and hashes it already obtained.
 
-Each timed operation creates a transient from the same map, replaces or deletes
-one existing integer key, then persists the result and reads its count. Each
-launch runs four warmups and seven timed batches of 8,192 edits. The table shows
-the median of five process medians, with launch order rotated among the three
-release binaries. The eight-entry map uses the array representation.
-[Single-edit timing and allocation](single-edit-medians.csv)
+Each timed operation creates a transient from the same map, edits existing
+integer keys, calls `persistent!` and reads the result count. The table gives
+nanoseconds for the entire operation, including both replacements or all eight
+where indicated. Each release ran five launches in rotating order, with four
+warmups and seven measured batches of 8,192 operations per launch. Each cell
+is the median of the five process medians. The eight-entry map uses array mode.
+[Edit timings and allocations](single-edit-medians.csv)
 
-| Map size | Edit | Main (`ef8dd3e9`), ns | Before (`2d944e93`), ns | Fixed, ns |
+| Map size | Operation | Main (`ef8dd3e9`), ns | Before (`2d944e93`), ns | Fixed, ns |
 | ---: | --- | ---: | ---: | ---: |
-| 8 | Replace | 137 | 129 | 128 |
-| 8 | Delete | 156 | 150 | 157 |
-| 1,024 | Replace | 656 | 801 | 207 |
-| 1,024 | Delete | 669 | 780 | 228 |
-| 32,768 | Replace | 1,019 | 1,217 | 251 |
-| 32,768 | Delete | 1,011 | 1,240 | 276 |
+| 8 | Replace | 146 | 143 | 145 |
+| 8 | Delete | 138 | 137 | 135 |
+| 1,024 | Replace | 664 | 782 | 202 |
+| 1,024 | Delete | 673 | 790 | 227 |
+| 32,768 | Replace | 1,003 | 1,253 | 259 |
+| 32,768 | Delete | 1,039 | 1,213 | 281 |
+| 32,768 | Replace the same key twice | 1,080 | 1,321 | 448 |
+| 32,768 | Replace two distinct keys | 1,639 | 2,055 | 446 |
+| 32,768 | Replace eight distinct keys | 5,447 | 6,696 | 1,501 |
 
-At 32,768 entries, allocation fell from 2,167 to 1,068 bytes per replacement
-and from 2,157 to 1,043 bytes per deletion compared with the preceding branch
-commit. The original three-runtime bulk suite checked 2,754 batches per binary.
-All six sizes retained the gains over main. At nine elements the fixed set
-median was 36.1 ns/element, up from 34.5 on the preceding commit. The other
-five set medians and all six map medians were lower. An isolated repeat of the
-nine-element set kernel with 65,536 builds per batch and five alternating
-launches measured 33.5 ns/element before and 32.4 after. All figures below are
-Jolt ns/element from the fresh sweeps. [Bulk benchmark samples](single-edit-bulk-samples.csv)
+The original review workload also ran across six rotating launches per binary.
+Replacing the same key twice on the 32,768-entry map took 1,062 ns on main,
+1,410 ns on the reviewed commit (`96f95c26`) and 383 ns on the fix. This
+separate control used five warmups and seven measured batches per launch.
+
+The original three-runtime bulk suite checked 2,754 warmup and timed batches
+per binary. All checksums matched. The table gives Jolt nanoseconds per input
+element from the median of three process medians. [Bulk benchmark samples](single-edit-bulk-samples.csv)
 
 | Elements | Map, main / before / fixed | Set, main / before / fixed | Vector, main / before / fixed |
 | ---: | ---: | ---: | ---: |
-| 8 | 41.0 / 25.4 / 24.3 | 64.1 / 36.3 / 33.6 | 23.5 / 9.1 / 9.1 |
-| 9 | 81.2 / 48.3 / 46.2 | 61.4 / 34.5 / 36.1 | 27.2 / 11.2 / 11.4 |
-| 32 | 92.4 / 50.6 / 46.5 | 74.0 / 40.6 / 39.4 | 18.5 / 3.6 / 3.6 |
-| 33 | 92.7 / 50.2 / 49.4 | 75.6 / 43.6 / 39.1 | 22.6 / 6.3 / 6.1 |
-| 1,024 | 113.8 / 55.1 / 53.0 | 94.7 / 47.5 / 44.3 | 16.3 / 2.6 / 2.5 |
-| 32,768 | 149.7 / 77.3 / 74.0 | 132.9 / 66.1 / 65.5 | 15.8 / 2.3 / 2.2 |
+| 8 | 39.0 / 23.3 / 23.1 | 61.2 / 33.7 / 32.6 | 22.7 / 8.3 / 9.0 |
+| 9 | 77.0 / 45.5 / 45.6 | 58.1 / 33.6 / 32.0 | 26.1 / 10.5 / 10.7 |
+| 32 | 89.1 / 48.6 / 45.0 | 70.0 / 39.8 / 37.7 | 18.1 / 3.3 / 3.5 |
+| 33 | 89.7 / 50.4 / 45.9 | 71.5 / 40.9 / 39.1 | 21.2 / 6.3 / 5.7 |
+| 1,024 | 106.7 / 53.3 / 52.2 | 90.7 / 45.4 / 43.0 | 15.5 / 2.3 / 2.5 |
+| 32,768 | 141.1 / 78.0 / 79.8 | 125.4 / 66.6 / 67.0 | 15.1 / 2.2 / 2.1 |
 
-The optimized AOT suite (`NO_JVM=1 bench/run.sh`) ran all 51 workloads and
-the startup benchmark on both the preceding branch commit and the fixed binary.
-The largest candidate/before ratio was 1.036 for `int-map-build` (44.2 to
-45.8 ms), within the suite's documented run-to-run variation. Three isolated
-launches per binary measured medians of 44.7 ms before and 45.1 ms after.
-The pinned historical vector probe reproduced 15.7 ns/element for `reduce conj!`.
+An isolated vector-build repeat used five alternating launches of `2d944e93`
+and the fix. At eight elements the medians were 8.84 and 8.81 ns/element,
+and at 1,024 elements they were 2.14 and 2.10 ns/element.
+
+The optimized AOT suite ran all 51 workloads and the startup benchmark on
+`ef8dd3e9` and the fix. The `transients` workload went from 99.0 to 69.0 ms,
+and `int-map-build` from 62.3 to 44.3 ms. Only `pool-tasks` exceeded the
+suite's 1.07× noise threshold (2,318.9 to 2,966.8 ms). The isolated gate
+alternated five runs per binary and measured 2,613.7 to 2,735.8 ms, or 1.05×.
+The pinned historical vector probe measured 15.0 ns/element for `reduce conj!` on this run.
 
 ## Follow-up experiments on 40584f39
 
@@ -210,20 +218,25 @@ mode. These profiles cover builds from empty with distinct integers.
 ## Reproduce
 
 Run from the branch checkout with `bb`, `clojure` and the Jolt build
-dependencies. Build the historical baseline at its exact revision in a detached
-worktree. Initialize its submodules as described in [CONTRIBUTING.md](../../CONTRIBUTING.md).
+dependencies. Build the pinned baseline and the revision before the compact-edit
+optimization in detached worktrees, including their submodules.
+[Build prerequisites](../../CONTRIBUTING.md)
 
 ```sh
+set -eu
 root="$PWD"
 work=$(mktemp -d)
-git worktree add --detach "$work/baseline" ef8dd3e9903d2cb8f211b3ecfc88bafb006e37e4
-git -C "$work/baseline" submodule update --init --recursive
-make -C "$work/baseline" jolt-release
+build_revision() {
+  git -C "$root" worktree add --detach "$work/$1" "$2"
+  git -C "$work/$1" submodule update --init --recursive
+  make -C "$work/$1" jolt-release
+}
+build_revision main ef8dd3e9903d2cb8f211b3ecfc88bafb006e37e4
+build_revision before 2d944e93982f7c626a53c2c4b5e797aa0deff4ce
 make -C "$root" jolt-release
-baseline="$work/baseline/target/release/jolt"
+baseline="$work/main/target/release/jolt"
+before="$work/before/target/release/jolt"
 candidate="$root/target/release/jolt"
-"$baseline" --version
-"$candidate" --version
 
 git archive af74d25e benchmarks/generated-project | tar -x -C "$work"
 kit="$work/benchmarks/generated-project"
@@ -233,12 +246,15 @@ cd "$work/suite"
 clojure -Srepro -P -M
 ```
 
-The three-runtime runner finds Jolt on `PATH`. Give each release its own path
-and cache. For the single-edit benchmark, invoke the binary directly. To compare
-against the branch immediately before the single-edit fix, build `2d944e93`
-in its own worktree using the same steps.
+The bulk runner finds Jolt on `PATH`. The edit runner invokes each binary by
+path and writes `$work/single-edit-medians.csv` in the checked-in format. It
+rotates main, before and fixed over five launches per binary, including the
+two- and eight-replacement cases. The multiple-write timings are per complete
+transient/persistent round trip.
 
 ```sh
+sh "$root/bench/transient-builds/run-edits.sh" "$baseline" "$before" "$candidate" "$work"
+
 run_bulk() (
   binary=$1
   version=$2
@@ -246,22 +262,9 @@ run_bulk() (
   bb run.bb . 42 256 --samples 1
   bb run.bb . 42 65536 --warmup 10 --samples 7 --launches 3 --csv "$work/$version-builds.csv"
 )
-run_bulk "$baseline" baseline
-run_bulk "$candidate" candidate
-
-run_edit() {
-  JOLT_CACHE_DIR="$work/cache-$2" "$1" "$root/bench/transient-builds/single-edit.clj" \
-    > "$work/$2-edit-$3.txt"
-}
-for launch in 1 2 3 4 5; do
-  if [ $((launch % 2)) -eq 1 ]; then
-    run_edit "$baseline" baseline "$launch"
-    run_edit "$candidate" candidate "$launch"
-  else
-    run_edit "$candidate" candidate "$launch"
-    run_edit "$baseline" baseline "$launch"
-  fi
-done
+run_bulk "$baseline" main
+run_bulk "$before" before
+run_bulk "$candidate" fixed
 ```
 
 The historical vector controls and CPU profile use the probe script from this
@@ -271,20 +274,30 @@ The profiler samples each kernel separately at 1 ms.
 
 ```sh
 for launch in 1 2 3; do
-  JOLT_CACHE_DIR="$work/cache-baseline" "$baseline" "$root/bench/transient-builds/probe.clj" vector \
+  JOLT_CACHE_DIR="$work/cache-main" "$baseline" "$root/bench/transient-builds/probe.clj" vector \
     > "$work/vector-$launch.csv"
 done
-JOLT_CACHE_DIR="$work/cache-baseline" "$baseline" "$root/bench/transient-builds/probe.clj" profile
+JOLT_CACHE_DIR="$work/cache-main" "$baseline" "$root/bench/transient-builds/probe.clj" profile
 ```
 
-To repeat the isolated map/set timing and allocation measurements, invoke each
-experiment's release binary from the same suite directory. The argument rotates
-the sizes between launches. After benchmarking, remove the temporary baseline
-worktree, including its generated build products. The samples remain under `$work`.
+For isolated map/set timings, run the same probe against each binary in the
+generated suite directory. The launch argument rotates the order of the sizes.
+The full optimized AOT suite runs from the repository root.
 
 ```sh
-for launch in 0 1 2; do
-  JOLT_CACHE_DIR="$work/cache-candidate" "$candidate" "$root/bench/transient-builds/compare.clj" "$launch"
+for version in main before fixed; do
+  case "$version" in
+    main) binary=$baseline ;;
+    before) binary=$before ;;
+    fixed) binary=$candidate ;;
+  esac
+  for launch in 0 1 2; do
+    JOLT_CACHE_DIR="$work/cache-$version" "$binary" "$root/bench/transient-builds/compare.clj" "$launch" > "$work/$version-compare-$launch.txt"
+  done
 done
-git -C "$root" worktree remove --force "$work/baseline"
+cd "$root"
+NO_JVM=1 JOLT_BIN="$baseline" sh bench/run.sh > "$work/main-aot.log"
+NO_JVM=1 JOLT_BIN="$candidate" sh bench/run.sh > "$work/fixed-aot.log"
+git worktree remove --force "$work/main"
+git worktree remove --force "$work/before"
 ```

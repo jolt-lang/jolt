@@ -868,33 +868,44 @@
 (define (chunk h shift) (hamt-chunk h shift))
 
 ;; jolt= alist ops (for hash-collision buckets)
-(define (assoc-jolt k al) (cond ((null? al) #f) ((jolt= (caar al) k) (car al)) (else (assoc-jolt k (cdr al)))))
+(define (assoc-by same? k al)
+  (cond ((null? al) #f)
+        ((same? (caar al) k) (car al))
+        (else (assoc-by same? k (cdr al)))))
+(define (assoc-jolt k al) (assoc-by jolt=2 k al))
 ;; Replacing a key's value KEEPS the key already stored, dropping the equal one
 ;; assoc was handed (JVM PersistentHashMap.assoc only clones the value slot). The
 ;; two are jolt=, but only the stored one carries the metadata that seq/keys/find
 ;; hand back.
-(define (alist-replace k v al) (if (jolt= (caar al) k) (cons (cons (caar al) v) (cdr al)) (cons (car al) (alist-replace k v (cdr al)))))
-(define (alist-remove k al) (cond ((null? al) '()) ((jolt= (caar al) k) (cdr al)) (else (cons (car al) (alist-remove k (cdr al))))))
+(define (alist-replace entry v al)
+  (if (eq? (car al) entry) (cons (cons (car entry) v) (cdr al))
+      (cons (car al) (alist-replace entry v (cdr al)))))
+(define (alist-remove entry al)
+  (if (eq? (car al) entry) (cdr al)
+      (cons (car al) (alist-remove entry (cdr al)))))
 
 ;; split two leaves that collided at `shift` into a subtree (or hcoll if the
 ;; full hashes are equal / the hash is exhausted).
 (define (split-leaf shift ek ev h k v)
-  (let ((eh (key-hash ek)))
-    (if (or (fx>? shift max-shift) (hamt=? eh h))
-        (make-hcoll h (list (cons ek ev) (cons k v)))
-        (let ((ei (hamt-chunk eh shift)) (ni (hamt-chunk h shift)))
-          (if (fx=? ei ni)
-              (make-hnode (hamt-sll 1 ei) (vector (split-leaf (fx+ shift 5) ek ev h k v)))
-              (let ((eb (hamt-sll 1 ei)) (nb (hamt-sll 1 ni)))
-                (if (fx<? ei ni)
-                    (make-hnode (hamt-ior eb nb) (vector (cons ek ev) (cons k v)))
-                    (make-hnode (hamt-ior eb nb) (vector (cons k v) (cons ek ev))))))))))
+  (split-hashed-leaves shift (key-hash ek) ek ev h k v))
+(define (split-hashed-leaves shift eh ek ev h k v)
+  (if (or (fx>? shift max-shift) (hamt=? eh h))
+      (make-hcoll h (list (cons ek ev) (cons k v)))
+      (let ((ei (hamt-chunk eh shift)) (ni (hamt-chunk h shift)))
+        (if (fx=? ei ni)
+            (make-hnode (hamt-sll 1 ei) (vector (split-hashed-leaves (fx+ shift 5) eh ek ev h k v)))
+            (let ((eb (hamt-sll 1 ei)) (nb (hamt-sll 1 ni)))
+              (if (fx<? ei ni)
+                  (make-hnode (hamt-ior eb nb) (vector (cons ek ev) (cons k v)))
+                  (make-hnode (hamt-ior eb nb) (vector (cons k v) (cons ek ev)))))))))
 
 ;; Answers the node ITSELF when the key is present with that very value — the
 ;; reference's `if(val == valOrNode) return this` — so pmap-assoc can hand the
 ;; caller's map back untouched (the eq? test at the root), the way both
 ;; PersistentArrayMap.assoc and PersistentHashMap.assoc do.
 (define (node-assoc node shift h k v added)
+  (node-assoc-by node shift h k v added jolt=2 key-hash))
+(define (node-assoc-by node shift h k v added same? stored-hash)
   (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
     (if (hamt=? 0 (hamt-and bm bit))
         (begin (set-box! added #t)
@@ -902,20 +913,22 @@
         (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
           (cond
             ((hnode? child)
-             (let ((nc (node-assoc child (fx+ shift 5) h k v added)))
+             (let ((nc (node-assoc-by child (fx+ shift 5) h k v added same? stored-hash)))
                (if (eq? nc child) node (make-hnode bm (vec-set arr i nc)))))
             ((hcoll? child)
-             (let* ((al (hcoll-alist child)) (p (assoc-jolt k al)))
+             (let* ((al (hcoll-alist child)) (p (assoc-by same? k al)))
                (cond ((not p)
                       (set-box! added #t)
                       (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (append al (list (cons k v)))))))
                      ((eq? (cdr p) v) node)
-                     (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (alist-replace k v al))))))))
+                     (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (alist-replace p v al))))))))
             ;; replace: the leaf keeps ITS key, not the equal one handed in
-            ((jolt= (car child) k)
+            ((same? (car child) k)
              (if (eq? (cdr child) v) node (make-hnode bm (vec-set arr i (cons (car child) v)))))
             (else (set-box! added #t)
-                  (make-hnode bm (vec-set arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v)))))))))
+                  (let ((sub (split-hashed-leaves (fx+ shift 5) (stored-hash (car child))
+                                                  (car child) (cdr child) h k v)))
+                    (make-hnode bm (vec-set arr i sub)))))))))
 
 (define (node-get node shift h k default)
   (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)))
@@ -939,6 +952,8 @@
                 (else #f))))))
 
 (define (node-dissoc node shift h k removed)
+  (node-dissoc-by node shift h k removed jolt=2))
+(define (node-dissoc-by node shift h k removed same?)
   (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
     (if (hamt=? 0 (hamt-and bm bit)) node
         (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
@@ -948,19 +963,19 @@
             ;; place, emptied branches pile up at the front of a map drained in
             ;; iteration order, and every later seq/first has to step over them.
             ((hnode? child)
-             (let ((nc (node-dissoc child (fx+ shift 5) h k removed)))
+             (let ((nc (node-dissoc-by child (fx+ shift 5) h k removed same?)))
                (cond ((eq? nc child) node)
                      ((hamt=? 0 (hnode-bm nc)) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
                      (else (make-hnode bm (vec-set arr i nc))))))
             ((hcoll? child)
-             (if (assoc-jolt k (hcoll-alist child))
-                 (begin (set-box! removed #t)
-                        (let ((nal (alist-remove k (hcoll-alist child))))
-                          (cond ((null? nal) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
-                                ((null? (cdr nal)) (make-hnode bm (vec-set arr i (car nal))))   ; collapse to leaf
-                                (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) nal)))))))
-                 node))
-            ((jolt= (car child) k)
+             (let ((entry (assoc-by same? k (hcoll-alist child))))
+               (if (not entry) node
+                   (let ((nal (alist-remove entry (hcoll-alist child))))
+                     (set-box! removed #t)
+                     (cond ((null? nal) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
+                           ((null? (cdr nal)) (make-hnode bm (vec-set arr i (car nal)))) ; collapse to leaf
+                           (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) nal)))))))))
+            ((same? (car child) k)
              (set-box! removed #t) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
             (else node))))))
 
@@ -1043,7 +1058,7 @@
        (let* ((al (hcoll-alist child)) (existing (assoc-jolt k al)))
          (vector-set! arr i
            (make-hcoll (hcoll-hash child)
-             (if existing (alist-replace k v al) (append al (list (cons k v))))))
+             (if existing (alist-replace existing v al) (append al (list (cons k v))))))
          (not existing)))
       ;; The leaf may be shared with the source. Preserve its stored key.
       ((jolt= (car child) k) (vector-set! arr i (cons (car child) v)) #f)
@@ -1065,12 +1080,13 @@
          (enode-dissoc! c (fx+ shift 5) h k removed)
          (when (hamt=? 0 (enode-bm c)) (drop-slot!))))
       ((hcoll? child)
-       (when (assoc-jolt k (hcoll-alist child))
-         (set-box! removed #t)
-         (let ((al (alist-remove k (hcoll-alist child))))
-           (cond ((null? al) (drop-slot!))
-                 ((null? (cdr al)) (vector-set! arr i (car al)))
-                 (else (vector-set! arr i (make-hcoll (hcoll-hash child) al)))))))
+       (let ((entry (assoc-jolt k (hcoll-alist child))))
+         (when entry
+           (set-box! removed #t)
+           (let ((al (alist-remove entry (hcoll-alist child))))
+             (cond ((null? al) (drop-slot!))
+                   ((null? (cdr al)) (vector-set! arr i (car al)))
+                   (else (vector-set! arr i (make-hcoll (hcoll-hash child) al))))))))
       ((jolt= (car child) k) (set-box! removed #t) (drop-slot!)))))
 
 ;; Reads work over a MIXED tree: the part the transient has written to is

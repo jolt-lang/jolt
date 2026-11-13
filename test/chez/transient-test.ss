@@ -69,21 +69,42 @@
            (try (reduce conj! t [(RetiringKey. t) :late]) false
                 (catch IllegalAccessError _ true))))"
     "true")
-(is "a single edit keeps a nested edit made by an equal key"
+(is "reentrant compact edits retain nested writes and call equals once per stored key"
     "(do (deftype EditOnEquals [id action]
            Object (hashCode [_] 42)
            (equals [_ o]
-             (when-let [f @action] (reset! action nil) (f))
+             (when (instance? EditOnEquals o) (when-let [f @action] (f id)))
              (and (instance? EditOnEquals o) (= id (.-id ^EditOnEquals o)))))
-         (every? (fn [put?]
-                   (let [action (atom nil) k (EditOnEquals. 1 action) probe (EditOnEquals. 1 action)
-                         src (assoc (zipmap (range 64) (range 64)) k :old) t (transient src)]
-                     (reset! action #(assoc! t :nested false))
-                     (if put? (assoc! t probe :new) (dissoc! t probe))
-                     (and (nil? @action) (= :old (get src k))
-                          (= (persistent! t) (assoc (if put? (assoc src k :new) (dissoc src k))
-                                                    :nested false)))))
-                 [true false]))"
+         (every? true?
+           (for [put? [true false] collision? [true false] writes [1 12]]
+             (let [action (atom nil) seen (atom #{}) k (EditOnEquals. 1 action)
+                   probe (EditOnEquals. 1 action) m (zipmap (range 64) (range 64))
+                   src (assoc (if collision? (assoc m (EditOnEquals. 0 action) :other) m) k :old)
+                   t (transient src)]
+               (reset! action (fn [id]
+                                (when (contains? @seen id) (throw (ex-info \"replayed equals\" {})))
+                                (swap! seen conj id)
+                                (when (= id 1) (dotimes [i writes] (assoc! t (+ 1000 i) i)))))
+               (if put? (assoc! t probe :new) (dissoc! t probe))
+               (reset! action nil)
+               (let [result (persistent! t)
+                     expected (merge (if put? (assoc src k :new) (dissoc src k))
+                                     (zipmap (range 1000 (+ 1000 writes)) (range writes)))]
+                 (and (contains? @seen 1) (= :old (get src k)) (not (contains? src 1000))
+                      (= (count expected) (count result)) (= expected result)))))))"
+    "true")
+
+(is "a stored key can edit the transient when rehashed to split a leaf"
+    "(do (deftype HashOnSplit [id h action]
+           Object (equals [_ o] (and (instance? HashOnSplit o) (= id (.-id ^HashOnSplit o))))
+           clojure.lang.IHashEq (hasheq [_] (when-let [f @action] (f)) h))
+         (let [action (atom nil) calls (atom 0) k (HashOnSplit. 0 0 action)
+               other (HashOnSplit. 1 1024 (atom nil)) src (hash-set k) t (transient src)]
+           (reset! action #(if (= 1 (swap! calls inc)) (conj! t :nested)
+                               (throw (ex-info \"replayed hash\" {}))))
+           (conj! t other)
+           (reset! action nil)
+           (and (= 1 @calls) (= #{k} src) (= #{k other :nested} (persistent! t)))))"
     "true")
 
 ;; --- one-way promotion: a transient that grew past the array limit and shrank
