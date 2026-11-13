@@ -263,6 +263,34 @@
   (ok "get by a with-meta copy"
       (eqv? 42 (jolt-get m (symbol-t-with-meta (jolt-symbol #f "select") jolt-nil) jolt-nil))))
 
+;; Count actual misses so the capacity boundary can be tested without a timer.
+(set-virtual-register! jolt-vreg-hasheq-caches 0)
+(let* ((table (cdr (hasheq-caches)))
+       (keys (map number->string (iota (+ string-hasheq-cap 1))))
+       (other-keys (map string-copy keys)))
+  (define (scan strings)
+    (let ((misses 0))
+      (for-each (lambda (s)
+                  (unless (hashtable-contains? table s)
+                    (set! misses (+ misses 1)))
+                  (string-hasheq s))
+                strings)
+      misses))
+  (scan (cdr keys)) ; fill the cache and keep its keys live
+  (ok "a repeatedly hashed overflow string is cached within 512 misses"
+      (<= (scan (make-list string-hasheq-cap (car keys))) 512))
+  (scan keys)
+  (ok "one extra string preserves most cache hits on the next pass"
+      (< (scan keys) (div string-hasheq-cap 8)))
+  (ok "string cache stays bounded" (<= (hashtable-size table) string-hasheq-cap))
+  (scan other-keys)
+  (scan other-keys)
+  (ok "a different working set warms up while the old keys are still live"
+      (< (scan other-keys) (div string-hasheq-cap 8)))
+  (ok "the old working set gives way to the new one"
+      (< (length (filter (lambda (s) (hashtable-contains? table s)) keys))
+         (div string-hasheq-cap 8))))
+
 (printf "\nhasheq-test: ~a checks, ~a failure(s)\n" total fails)
 (if (zero? fails)
     (begin (printf "hasheq-test: PASS — hash values pinned to JVM Clojure\n") (exit 0))
