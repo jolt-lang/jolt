@@ -23,7 +23,8 @@
 ;;   f. macOS: the link searches the directories of the libraries the Chez
 ;;      executable itself links. A Nix Chez links lz4/zlib/ncurses/libiconv out
 ;;      of /nix/store, none of it on the linker's default path, so -llz4 and then
-;;      -lz did not resolve. OS libraries and @rpath entries add nothing.
+;;      -lz did not resolve. OS libraries and @rpath entries add nothing, and
+;;      Nix's chez is a wrapper script, so the binary it execs is what answers.
 ;;
 ;;   chez --script test/chez/build-natives-test.ss
 (import (chezscheme))
@@ -105,11 +106,20 @@
             (ok "(e) the PIC archive beside it still resolves" (eqv? (entry-value "jolt_pl_more") 9)))))))
 
 (when bld-osx?
-  (let ((bin (string-append work "/fbin"))
-        (path (getenv "PATH")))
+  (let* ((bin (string-append work "/fbin"))
+         (path (getenv "PATH"))
+         (real (string-append bin "/chez.real"))
+         (shell (string-append bin "/bash.real"))
+         (wrapper (string-append bin "/chez"))
+         (spit (lambda (f text)
+                 (let ((p (open-output-file f 'replace))) (put-string p text) (close-port p))))
+         (want "-L'/nix/store/aaa-lz4-1.10.0-lib/lib' -L'/nix/store/bbb-zlib-1.3.1/lib' "))
     (bld-mkdir-p bin)
-    (let ((p (open-output-file (string-append bin "/otool") 'replace)))
-      (put-string p "#!/bin/sh\n\
+    ;; A stand-in otool: files named *.real are Mach-O, anything else is not.
+    (spit (string-append bin "/otool")
+      "#!/bin/sh\n\
+case \"$2\" in *.real) ;; *) echo \"$2: is not an object file\"; exit 1 ;; esac\n\
+[ \"$1\" = -h ] && { echo 'Mach header'; exit 0; }\n\
 cat <<'EOF'\n\
 $2:\n\
 \t/nix/store/aaa-lz4-1.10.0-lib/lib/liblz4.1.dylib (compatibility version 1.0.0)\n\
@@ -119,17 +129,26 @@ $2:\n\
 \t/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation (compatibility version 300.0.0)\n\
 \t@rpath/libfoo.dylib (compatibility version 1.0.0)\n\
 EOF\n")
-      (close-port p))
-    (sh (string-append "chmod +x '" bin "/otool'"))
+    (spit real "")
+    (spit shell "")
+    ;; makeWrapper's shape: the #! names a Mach-O shell, the exec line the binary.
+    (spit wrapper (string-append "#!" shell "\n\
+export SCHEMEHEAPDIRS='" bin "'\n\
+exec -a \"$0\" \"" real "\"  \"$@\"\n"))
+    (sh (string-append "chmod +x '" bin "/otool' '" wrapper "' '" real "'"))
     (putenv "PATH" (string-append bin ":" path))
-    (let ((flags (bld-osx-chez-lib-dir-flags)))
+    (let ((direct (bld-osx-lib-dir-flags real))
+          (wrapped (bld-osx-lib-dir-flags wrapper))
+          (cached (bld-osx-chez-lib-dir-flags))
+          (libs (bld-link-libs)))
       (putenv "PATH" path)
       (ok "(f) -L for each non-OS library directory the Chez executable links, once each"
-          (string=? flags "-L'/nix/store/aaa-lz4-1.10.0-lib/lib' -L'/nix/store/bbb-zlib-1.3.1/lib' "))
+          (string=? direct want))
+      (ok "(f) a wrapper script answers for the binary it execs, not its #! shell"
+          (string=? wrapped want))
       (ok "(f) the -L flags lead the macOS link libraries"
-          (let ((libs (bld-link-libs)))
-            (and (>= (string-length libs) (string-length flags))
-                 (string=? (substring libs 0 (string-length flags)) flags)))))))
+          (and (>= (string-length libs) (string-length cached))
+               (string=? (substring libs 0 (string-length cached)) cached))))))
 
 (sh (string-append "rm -rf '" work "'"))
 (printf "\nbuild natives: ~a passed, ~a failed\n" (- total fails) fails)
