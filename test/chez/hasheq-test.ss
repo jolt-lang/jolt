@@ -101,6 +101,15 @@
 (eqv-ok "(hasheq -1)"  (jolt-hasheq -1)  1651860712)
 (eqv-ok "(hasheq 100)" (jolt-hasheq 100) -970256272)
 
+;; JVM Murmur3.hashLong goldens on either side of the two common high words.
+(for-each
+ (lambda (p)
+   (let ((k (car p)) (h (cdr p)))
+     (eqv-ok (format "hasheq ~a" k) (jolt-hasheq k) h)
+     (eqv-ok (format "HAMT hash ~a" k) (key-hash k) (bitwise-and h #xffffffff))))
+ '((-4294967297 . -284799838) (-4294967296 . -805887626) (-4294967295 . -173965278)
+   (4294967295 . 689913327) (4294967296 . 987256456) (4294967297 . 953780890)))
+
 ;; --- 4b. the COLD arms: doubles, longs past int32, bignums past int64 --------
 ;; These reach u32 with a NON-FIXNUM — murmur3-hash-long's bignum arm masks a
 ;; 64-bit value, and double-hasheq feeds it a double's raw bits — which is why u32

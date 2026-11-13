@@ -231,9 +231,6 @@
     (vector-set! (jolt-transient-buf t) (fx- cnt off) x)
     (jolt-transient-n-set! t (fx+ cnt 1))))
 
-(define (tvec-live? t)
-  (and (jolt-transient? t) (eq? (jolt-transient-kind t) 'vec) (jolt-transient-active t)))
-
 ;; (reduce conj! t v) appends every element of a persistent vector. Keep the
 ;; shared base in place and reserve space once after the already buffered tail.
 (define (tvec-append-pvec! t v)
@@ -287,6 +284,35 @@
     ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
     ((jolt-host-entry x) => (lambda (kv) (tmap-put! t (car kv) (cdr kv))))
     (else (throw-jvm (quote IllegalArgumentException) "conj!: a transient map takes a map entry or a map"))))
+
+(define-syntax define-pvec-inserter
+  (syntax-rules ()
+    ((_ (name t v x) insert!)
+     (define (name t v)
+       (let ((n (pvec-cnt v)))
+         (let outer ((i 0))
+           (if (fx=? i n) t
+               (let-values (((leaf off) (pv-leaf-for v i)))
+                 (let* ((run (fxmin (fx- n i) (fx- (vector-length leaf) off)))
+                        (end (fx+ off run)))
+                   (let inner ((j off))
+                     (if (fx=? j end)
+                         (outer (fx+ i run))
+                         (let ((x (vector-ref leaf j)))
+                           ;; User hash/equality code can retire t during a write.
+                           (jolt-site-kept (begin (jolt-trans-check t "conj!") insert!))
+                           (inner (fx+ j 1))))))))))))))
+
+(define-pvec-inserter (tmap-conj-pvec! t v x) (tmap-conj-entry! t x))
+(define-pvec-inserter (tset-conj-pvec! t v x) (thash-put! t x x))
+
+(define (transient-pvec-inserter t)
+  (and (jolt-transient? t) (jolt-transient-active t)
+       (case (jolt-transient-kind t)
+         ((vec) tvec-append-pvec!)
+         ((map) tmap-conj-pvec!)
+         ((set) tset-conj-pvec!)
+         (else #f))))
 
 ;; (conj!) -> fresh transient vector; (conj! coll) -> the 1-arity transducer-
 ;; completion identity (JVM: no transient check). (conj! t x ...) mutates t.

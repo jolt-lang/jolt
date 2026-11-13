@@ -27,7 +27,8 @@
 ;; procedures the rest of the host actually calls from here (verified against
 ;; call sites, not guessed). A target must reimplement exactly these:
 ;;   jolt-hasheq                    entry point: fast paths + arms + fallback
-;;   murmur3-hash-long-flat         fixnum hashing (collections.ss key-hash)
+;;   murmur3-hash-long-flat         signed fixnum hash
+;;   murmur3-hash-fixnum-u32        unsigned fixnum hash for HAMT keys
 ;;   murmur3-hash-int               int hashing (java/host-static-methods.ss)
 ;;   murmur3-hash-long              long/bignum-in-range hashing
 ;;   murmur3-hash-unencoded-chars   string-char hashing (host-static-methods)
@@ -277,34 +278,23 @@
                       (h1 (mul32 h1 #xc2b2ae35)))
                  (hash-fxxor h1 (urs32 h1 16))))))
 
-;; ---------------------------------------------------------------------------
-;; Flat-inlined murmur3-hash-int for int32-range fixnums.
-;; Every intermediate < 2^49 (well within Chez 61-bit fixnums).
-;; NO calls to murmur3-mix-k1/murmur3-mix-h1/murmur3-fmix —
-;; the mix logic is hand-expanded as a single let* chain of fx ops.
-;; mul32/rotl32/add32/i32 are small leaf helpers (fixnum-pure, one expression).
-;; ---------------------------------------------------------------------------
-;; ---------------------------------------------------------------------------
-;; Flat-inlined murmur3-hash-long for fixnums wider than int32.
-;; Same hand-inlined mix logic as above, applied to two 32-bit halves;
-;; the second half chains through the h1 from the first half.
-;; Cold bignum path kept below in murmur3-hash-long.
-;; ---------------------------------------------------------------------------
-(define (murmur3-hash-long-flat input)
-  ;; input: fixnum. Java Long.hasheq: (int)(input ^ (input >>> 32))
-  ;; If 0 → return 0; otherwise murmur3-hash-long with count=8.
-  ;; Every step is taken modulo 2^32, where signed and unsigned agree, so the
-  ;; chain keeps its values unsigned and sign-extends once at the end: the same
-  ;; answer as mixK1/mixH1/fmix over signed ints, without renormalizing between
-  ;; steps (8 ns against 27 with the branch-free i32 at every step).
+;; Murmur3.hashLong mixes the low and high words, then finalizes with length 8.
+;; The high word of small integers is zero or all ones, so its mix is constant.
+(define murmur3-mixed-high-minus-one
+  (mulu32 (rotlu32 (mulu32 #xffffffff murmur3-C1) 15) murmur3-C2))
+
+;; The HAMT consumes the unsigned hash. Clojure hash sign-extends it below.
+(define (murmur3-hash-fixnum-u32 input)
   (if (hash-fx=? input 0) 0
       (let* ((low (u32 input))
-             (high (u32 (bitwise-arithmetic-shift-right input 32)))
+             (high (hash-fxsra input 32))
              ;; --- mixK1(low), mixH1(seed = 0, k1) ---
              (k1 (mulu32 (rotlu32 (mulu32 low murmur3-C1) 15) murmur3-C2))
              (h1 (addu32 (mulu32 (rotlu32 k1 13) 5) #xe6546b64))
              ;; --- mixK1(high), mixH1(h1, k1) ---
-             (k1 (mulu32 (rotlu32 (mulu32 high murmur3-C1) 15) murmur3-C2))
+             (k1 (cond ((hash-fx=? high 0) 0)
+                       ((hash-fx=? high -1) murmur3-mixed-high-minus-one)
+                       (else (mulu32 (rotlu32 (mulu32 (u32 high) murmur3-C1) 15) murmur3-C2))))
              (h1 (addu32 (mulu32 (rotlu32 (hash-fxxor h1 k1) 13) 5) #xe6546b64))
              ;; --- fmix(h1, 8) ---
              (h1 (hash-fxxor h1 8))
@@ -313,7 +303,9 @@
              (h1 (hash-fxxor h1 (hash-fxsrl h1 13)))
              (h1 (mulu32 h1 #xc2b2ae35))
              (h1 (hash-fxxor h1 (hash-fxsrl h1 16))))
-        (i32 h1))))
+        h1)))
+(define (murmur3-hash-long-flat input)
+  (i32 (murmur3-hash-fixnum-u32 input)))
 
 ;; Legacy entry points — kept for cold paths (strings, bignums).
 ;; The hot fixnum path in jolt-hasheq and key-hash calls the flat versions above.

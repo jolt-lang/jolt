@@ -5,7 +5,59 @@ where Jolt took longer than both Babashka and JVM Clojure. A release build of
 `origin/main` at `ef8dd3e9` reproduced all 15. All 2,754 warmup and measured
 batches passed the arithmetic checksum. [Original measurements](https://github.com/jolt-lang/jolt/blob/af74d25e599c649834edfb6c68a94c6a5160a1fd/benchmarks/generated-project/results/2026-11-10-seed42-collection-sizes.md)
 
-## Runtime fix
+## Follow-up experiments on 40584f39
+
+Walking the input vector's leaves directly and specializing fixnum key hashing
+reduced map and set build times at all six original sizes. These tables compare
+release binaries on the same machine. Each cell in the first three columns is
+the median time before → after in ns per input element. The last two columns
+are set times from the final three-runtime sweep. Both sweeps checked all
+2,754 warmup and timed batches. [Three-runtime samples](experiment-build-samples.csv)
+
+| Elements | Vector | Map | Set | Babashka set | JVM set |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 8.9 → 8.9 | 31.9 → 22.9 | 50.7 → 36.6 | 39.8 | 24.7 |
+| 9 | 10.8 → 11.5 | 60.1 → 46.5 | 48.3 → 34.9 | 38.2 | 23.7 |
+| 32 | 3.6 → 3.6 | 66.6 → 49.8 | 58.5 → 41.0 | 51.6 | 40.7 |
+| 33 | 6.2 → 6.3 | 68.4 → 51.8 | 59.5 → 42.9 | 51.4 | 42.6 |
+| 1,024 | 2.4 → 2.6 | 69.1 → 55.6 | 62.8 → 47.9 | 62.5 | 45.1 |
+| 32,768 | 2.1 → 2.3 | 96.4 → 78.3 | 84.4 → 70.7 | 84.1 | 74.3 |
+
+The vector-only control alternated five launches of each binary, using the
+same vector kernel with a 524,288-element budget, seven warmups and eleven
+timed samples. Median changes were within 0.11 ns/element at each size.
+At 32,768 elements the vector median went from 2.05 to 2.14 ns/element.
+
+The direct loop selects the map or set insertion operation once per reduction.
+It still validates each map entry and checks transient liveness before each
+write, including after user-defined hash or equality code runs. Integer keys
+feed the HAMT an unsigned Murmur3 hash directly. The high 32-bit word of
+integers between −2³² and 2³²−1 has one of two constant mixes. Signed Clojure
+hashes and unsigned HAMT hashes matched the JVM on 1,000,013 inputs in both the
+wide and forced-narrow Chez paths. Native Gambit matched on a 10,013-input subset.
+
+We also built each change independently. The two sparse-node variants used
+persistent `node-assoc` on an immutable child while its slot count was below
+four or eight. This avoids expanding that child and repacking it at
+`persistent!`, but another write into the child then copies compact arrays.
+The table shows set times in ns/element with the same generated workload, ten
+warmups and seven samples in each of three launches. [Per-process medians and allocation](experiment-medians.csv)
+
+| Elements | Baseline | Direct loop | Fixnum hash | Compact < 4 | Compact < 8 | Loop + hash |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 50.2 | 43.8 | 42.8 | 51.0 | 50.4 | 34.9 |
+| 32 | 58.6 | 49.7 | 48.5 | 55.1 | 55.0 | 40.2 |
+| 512 | 58.6 | 53.5 | 48.5 | 63.3 | 73.2 | 41.6 |
+| 1,024 | 63.4 | 56.9 | 53.3 | 65.1 | 69.2 | 46.7 |
+| 16,384 | 72.7 | 66.1 | 61.9 | 81.4 | 95.7 | 57.3 |
+| 32,768 | 83.3 | 80.4 | 75.3 | 85.2 | 95.7 | 69.8 |
+
+At 32 elements both thresholds reduced set allocation from 102.0 to 79.5
+bytes/element. At 16,384 elements it rose from 80.4 to 93.0 and 145.9,
+respectively. Maps showed the same reversal, so the runtime keeps the existing
+expansion policy. These workloads build from empty with distinct integer keys.
+
+## First runtime fix at 40584f39
 
 With the runtime change, every measured build took less time on Jolt. The
 table gives before → after in ns per element on the original workloads.
@@ -135,3 +187,13 @@ The vector controls use 16 builds per sample, ten warmups per variant, then
 seven timed rounds with rotating variant order. The sampling run exercises
 the original kernels separately with a 1 ms CPU sampling interval and two
 probes per batch. It collected 1,233 vector, 1,442 map and 1,592 set samples.
+
+To repeat the isolated timing and allocation measurements, invoke each candidate
+release binary from the generated suite directory. The script checks each
+checksum, varies the probes, and rotates the order of sizes between launches.
+
+```sh
+for launch in 0 1 2; do
+  jolt "$root/bench/transient-builds/compare.clj" "$launch"
+done
+```

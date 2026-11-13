@@ -1,14 +1,15 @@
 ;; JVM-compatible hash engine for Jolt — Gambit target (native gsi), safe ops.
 ;;
 ;; Safe-ops port of host/chez/hasheq.ss (PSL R10 target-owned file): the SAME
-;; exported 14-procedure surface, the SAME murmur3 constants and algorithm,
+;; exported procedures, the SAME murmur3 constants and algorithm,
 ;; expressed with plain R7RS/Gambit arithmetic (bitwise-and masks, arithmetic-
 ;; shift) instead of Chez's #3% fixnum tricks. Correctness first, tuning never
 ;; (demo target).
 ;;
-;; The 14 exported procedures (the rest of the host calls exactly these):
+;; The exported procedures (the rest of the host calls exactly these):
 ;;   jolt-hasheq                    entry point: fast paths + arms + fallback
-;;   murmur3-hash-long-flat         fixnum hashing (collections.ss key-hash)
+;;   murmur3-hash-long-flat         signed fixnum hash
+;;   murmur3-hash-fixnum-u32        unsigned fixnum hash for HAMT keys
 ;;   murmur3-hash-int               int hashing (java/host-static-methods.ss)
 ;;   murmur3-hash-long              long/bignum-in-range hashing
 ;;   murmur3-hash-unencoded-chars   string-char hashing (host-static-methods)
@@ -133,15 +134,21 @@
 (define-syntax addu32
   (syntax-rules ()
     ((_ a b) (u32 (+ a b)))))
-(define (murmur3-hash-long-flat input)
+(define murmur3-mixed-high-minus-one
+  (mulu32 (rotlu32 (mulu32 #xffffffff murmur3-C1) 15) murmur3-C2))
+
+;; The HAMT consumes the unsigned hash. Clojure hash sign-extends it below.
+(define (murmur3-hash-fixnum-u32 input)
   (if (= input 0) 0
       (let* ((low (u32 input))
-             (high (u32 (arithmetic-shift input -32)))
+             (high (arithmetic-shift input -32))
              ;; --- mixK1(low), mixH1(seed = 0, k1) ---
              (k1 (mulu32 (rotlu32 (mulu32 low murmur3-C1) 15) murmur3-C2))
              (h1 (addu32 (mulu32 (rotlu32 k1 13) 5) #xe6546b64))
              ;; --- mixK1(high), mixH1(h1, k1) ---
-             (k1 (mulu32 (rotlu32 (mulu32 high murmur3-C1) 15) murmur3-C2))
+             (k1 (cond ((= high 0) 0)
+                       ((= high -1) murmur3-mixed-high-minus-one)
+                       (else (mulu32 (rotlu32 (mulu32 (u32 high) murmur3-C1) 15) murmur3-C2))))
              (h1 (addu32 (mulu32 (rotlu32 (bitwise-xor h1 k1) 13) 5) #xe6546b64))
              ;; --- fmix(h1, 8) ---
              (h1 (bitwise-xor h1 8))
@@ -149,7 +156,9 @@
              (h1 (mulu32 h1 #x85ebca6b))
              (h1 (bitwise-xor h1 (arithmetic-shift h1 -13)))
              (h1 (mulu32 h1 #xc2b2ae35)))
-        (i32 (bitwise-xor h1 (arithmetic-shift h1 -16))))))
+        (bitwise-xor h1 (arithmetic-shift h1 -16)))))
+(define (murmur3-hash-long-flat input)
+  (i32 (murmur3-hash-fixnum-u32 input)))
 
 ;; murmur3-hash-int for int32-range values (Java Murmur3.hashInt, count=4).
 (define (murmur3-hash-int input)

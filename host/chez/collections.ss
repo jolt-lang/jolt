@@ -851,11 +851,10 @@
 ;; on a 32-bit machine an ORDINARY int hash is a bignum too, so the test is not
 ;; the only thing keeping fxand off a non-fixnum there.
 (define (key-hash k)
-  ;; jolt-hasheq now has a flat-inlined fixnum fast path (murmur3-hash-long-flat)
-  ;; and a keyword cached-field read — no re-dispatch needed here.
-  ;; Mask to unsigned 32 bits for the HAMT's fx ops.
-  (let ((h (jolt-hasheq k)))
-    (if (fixnum? h) (hamt-and h hmask) (bitwise-and h hmask))))
+  (if (fixnum? k)
+      (murmur3-hash-fixnum-u32 k)
+      (let ((h (jolt-hasheq k)))
+        (if (fixnum? h) (hamt-and h hmask) (bitwise-and h hmask)))))
 ;; Macros: every level of every lookup, insert and removal runs all four, and
 ;; as procedures they were four out-of-line calls a level -- most of a set
 ;; lookup's cost once the key is hashed (a cache-resident two-level lookup took

@@ -51,6 +51,24 @@
 (is "custom reducer on a vector can stop before the last leaf"
     "(persistent! (reduce (fn [t x] (if (= x 3) (reduced t) (conj! t x)))
                           (transient [:a]) (vec (range 64))))" "[:a 0 1 2]")
+(is "map reduction keeps prior entries when a later pair is malformed"
+    "(let [t (transient {})]
+       (try (reduce conj! t [nil [:a false] {:b 2} [:bad] [:late 3]])
+            false
+            (catch IllegalArgumentException _ (= (persistent! t) {:a false :b 2}))))"
+    "true")
+(is "map and set reductions consume exactly the relaxed slice"
+    "(let [xs (subvec (vec (range 2000)) 17 1093)
+           pairs (subvec (mapv (fn [k] [k (inc k)]) (range 2000)) 17 1093)]
+       (and (= (set xs) (persistent! (reduce conj! (transient #{}) xs)))
+            (= (zipmap xs (map inc xs)) (persistent! (reduce conj! (transient {}) pairs)))))"
+    "true")
+(is "a hash callback can retire a transient before the next leaf element"
+    "(do (deftype RetiringKey [t] clojure.lang.IHashEq (hasheq [_] (persistent! t) 0))
+         (let [t (transient #{})]
+           (try (reduce conj! t [(RetiringKey. t) :late]) false
+                (catch IllegalAccessError _ true))))"
+    "true")
 
 ;; --- one-way promotion: a transient that grew past the array limit and shrank
 ;; back comes down a HASH map (JVM TransientArrayMap promotes on the way up and
