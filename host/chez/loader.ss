@@ -1112,7 +1112,10 @@
   (let ((tmp (string-append path ".part" (number->string (get-process-id)))))
     (guard (e (else (guard (e2 (#t #f)) (delete-file tmp #f)) #f))
       (let ((out (open-output-file tmp 'replace)))
-        (write! out)
+        ;; closed on a failed write too, or the .part stays open (and, on
+        ;; Windows, undeletable)
+        (guard (e (else (close-port out) (raise e)))
+          (write! out))
         (close-port out))
       (rename-replace! tmp path))))
 (define (aot-write-ct! base relevant? surface)
