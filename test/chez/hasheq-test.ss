@@ -263,33 +263,44 @@
   (ok "get by a with-meta copy"
       (eqv? 42 (jolt-get m (symbol-t-with-meta (jolt-symbol #f "select") jolt-nil) jolt-nil))))
 
-;; Count actual misses so the capacity boundary can be tested without a timer.
 (set-virtual-register! jolt-vreg-hasheq-caches 0)
 (let* ((table (cdr (hasheq-caches)))
-       (keys (map number->string (iota (+ string-hasheq-cap 1))))
-       (other-keys (map string-copy keys)))
-  (define (scan strings)
-    (let ((misses 0))
-      (for-each (lambda (s)
-                  (unless (hashtable-contains? table s)
-                    (set! misses (+ misses 1)))
-                  (string-hasheq s))
-                strings)
-      misses))
-  (scan (cdr keys)) ; fill the cache and keep its keys live
-  (ok "a repeatedly hashed overflow string is cached within 512 misses"
-      (<= (scan (make-list string-hasheq-cap (car keys))) 512))
-  (scan keys)
-  (ok "one extra string preserves most cache hits on the next pass"
-      (< (scan keys) (div string-hasheq-cap 8)))
-  (ok "string cache stays bounded" (<= (hashtable-size table) string-hasheq-cap))
-  (scan other-keys)
-  (scan other-keys)
-  (ok "a different working set warms up while the old keys are still live"
-      (< (scan other-keys) (div string-hasheq-cap 8)))
-  (ok "the old working set gives way to the new one"
-      (< (length (filter (lambda (s) (hashtable-contains? table s)) keys))
-         (div string-hasheq-cap 8))))
+       (first (string-copy "account"))
+       (recent (string-copy first))
+       (once (string-copy first)))
+  (for-each string-hasheq (list first once recent))
+  (ok "equal strings with distinct identities each count as a first sighting"
+      (zero? (hashtable-size table)))
+  (string-hasheq recent)
+  (ok "a repeated colliding string is admitted" (hashtable-contains? table recent))
+  (string-hasheq first)
+  (ok "the original candidate survives collisions"
+      (and (hashtable-contains? table first) (= 2 (hashtable-size table))))
+  (ok "the admitted hash matches a fresh computation"
+      (= (compute-string-hasheq recent) (string-hasheq recent)))
+  (keep-live once))
+
+;; Keep the cache live while dropping the strings. Exercise
+;; both a candidate and an admitted key across a full collection.
+(set-virtual-register! jolt-vreg-hasheq-caches 0)
+(let* ((table (cdr (hasheq-caches)))
+       (witnesses
+        (let ((once (string-copy "candidate")) (twice (string-copy "admitted")))
+          (for-each string-hasheq (list twice twice once))
+          (ok "only the reused key is admitted" (= 1 (hashtable-size table)))
+          (list (weak-cons once #f) (weak-cons twice #f)))))
+  (collect (collect-maximum-generation))
+  (ok "both admission slots and cache entries release their keys"
+      (and (for-all (lambda (p) (bwp-object? (car p))) witnesses)
+           (zero? (hashtable-size table)))))
+
+(set-virtual-register! jolt-vreg-hasheq-caches 0)
+(let ((keys (map number->string (iota 10000))) (table (cdr (hasheq-caches))))
+  (for-each string-hasheq keys)
+  (ok "one scan of distinct strings creates no hash entries" (zero? (hashtable-size table)))
+  (do ((n 0 (+ n 1))) ((= n 16)) (for-each string-hasheq keys))
+  (ok "repeated scans admit nearly all 10,000 live keys" (> (hashtable-size table) 9900))
+  (keep-live keys))
 
 (printf "\nhasheq-test: ~a checks, ~a failure(s)\n" total fails)
 (if (zero? fails)

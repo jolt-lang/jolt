@@ -565,17 +565,16 @@
 ;; Each thread owns its table because Chez hashtables allow no concurrent
 ;; mutation. This also keeps locking off the lookup path.
 ;;
-;; Virtual register 5 holds (remaining overflow misses . table). A vreg read
+;; Virtual register 5 holds (admission buckets . hash table). A vreg read
 ;; costs ~2 ns against ~33 ns for a thread-parameter. A freshly forked thread
 ;; starts every slot at fixnum 0 and allocates its table on first use.
 (define jolt-vreg-hasheq-caches 5)
-(define string-hasheq-cap 2048)
-(define string-hasheq-miss-budget 512)
+(define string-hasheq-buckets 2048)
 
 (define (hasheq-caches)
   (let ((c (virtual-register jolt-vreg-hasheq-caches)))
     (if (eq? c 0)
-        (let ((v (cons string-hasheq-miss-budget (make-weak-eq-hashtable))))
+        (let ((v (cons #f (make-weak-eq-hashtable))))
           (set-virtual-register! jolt-vreg-hasheq-caches v)
           v)
         c)))
@@ -628,26 +627,40 @@
 ;; The JVM caches String.hashCode in the object; jolt strings are plain Chez
 ;; strings with nowhere to put it, so they use the per-thread table above.
 ;;
-;; Bound the number of weak entries a stream of fresh strings adds to GC work.
-;; Clearing on the first overflow makes a cyclic scan of cap + 1 keys miss on
-;; every lookup. Let occasional misses bypass the full table, but limit how many
-;; hashes a new hot key must recompute before it can enter the cache.
 (define (compute-string-hasheq s)
   (murmur3-hash-int (java-string-hashcode s)))
 
+;; Remember first sightings in reusable weak slots. Each bucket keeps one
+;; candidate until reuse or collection, plus the most recent colliding string.
+;; This lets a cyclic scan promote keys over successive passes, and a new hot
+;; string can still qualify when the first slot holds a live but idle key.
+(define (string-hasheq-admit! cache s h)
+  (let* ((buckets (if (vector? (car cache))
+                      (car cache)
+                      ;; Also handles an older image's miss budget in the car.
+                      (let ((v (make-vector string-hasheq-buckets #f)))
+                        (set-car! cache v)
+                        v)))
+         (i (bitwise-and h (fx- string-hasheq-buckets 1)))
+         (bucket (vector-ref buckets i)))
+    (if bucket
+        (let* ((first (car bucket)) (recent (cdr bucket))
+               (match (cond ((eq? s first) bucket)
+                            ((eq? s (car recent)) recent)
+                            (else #f))))
+          (if match
+              (begin
+                (hashtable-set! (cdr cache) s h)
+                (set-car! match #f))
+              ;; An empty or collected first slot is available again.
+              (set-car! (if (string? first) recent bucket) s)))
+        (vector-set! buckets i (weak-cons s (weak-cons #f #f))))))
+
 (define (string-hasheq s)
-  (let* ((cache (hasheq-caches)) (t (cdr cache)))
-    (or (hashtable-ref t s #f)
-        (let ((h (compute-string-hasheq s)) (remaining (car cache)))
-          (cond
-            ((fx<? (hashtable-size t) string-hasheq-cap) (hashtable-set! t s h))
-            ((and (fixnum? remaining) (fx>? remaining 1))
-             (set-car! cache (fx- remaining 1)))
-            ;; Older images held a symbol table in the car. Initialize on refill.
-            (else
-             (hashtable-clear! t)
-             (set-car! cache string-hasheq-miss-budget)
-             (hashtable-set! t s h)))
+  (let ((cache (hasheq-caches)))
+    (or (hashtable-ref (cdr cache) s #f)
+        (let ((h (compute-string-hasheq s)))
+          (string-hasheq-admit! cache s h)
           h))))
 
 ;; ============================================================================
