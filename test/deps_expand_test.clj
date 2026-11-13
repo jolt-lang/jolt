@@ -304,7 +304,7 @@
 
 ;;;; :jolt/native dedup identity
 
-(let [native-key (var jolt.deps/native-key)
+(let [native-key (var jolt.deps.declarations/native-key)
       dedup-by (var jolt.deps/dedup-by)]
   ;; The keys a spec's candidates are declared under are the ones
   ;; current-platform selects with. native-key read :win, which it never
@@ -353,7 +353,7 @@
 ;; had to restate that dependency's :darwin and :linux lists verbatim — and a
 ;; windows-only project entry deduped the dependency away and broke the other
 ;; two platforms instead (jolt-lang/jolt#989). reconcile-natives overlays.
-(let [reconcile (var jolt.deps/reconcile-natives)]
+(let [reconcile (var jolt.deps.declarations/reconcile-natives)]
   (let [project {:name "z" :windows ["zlib1.dll"] :jolt.deps/root "/app"}
         dep     {:name "z" :linux ["libz.so.1"] :darwin ["libz.dylib"]
                  :jolt.deps/root "/dep"}]
@@ -371,7 +371,7 @@
 ;; The root travels with the candidates it belongs to. Without it a dependency's
 ;; relative "native/libfoo.so" would resolve against whichever deps.edn won the
 ;; identity, which is exactly the directory it is not in.
-(let [reconcile (var jolt.deps/reconcile-natives)]
+(let [reconcile (var jolt.deps.declarations/reconcile-natives)]
   (is= "an overlaid key carries the declaring root"
        {:linux "/dep"}
        (:jolt.deps/roots
@@ -399,8 +399,8 @@
 ;; of a namespace from them (jolt.main.natives load-project-natives!). One library two
 ;; dependencies declare loads with whichever is required first; one the project
 ;; declares itself, or a dependency marks :eager, loads at startup.
-(let [reconcile (var jolt.deps/reconcile-natives)
-      native-key (var jolt.deps/native-key)
+(let [reconcile (var jolt.deps.declarations/reconcile-natives)
+      native-key (var jolt.deps.declarations/native-key)
       a {:name "ssl" :linux ["libssl.so.3"] :jolt.deps/root "/a"
          :jolt.deps/lib "x/a" :jolt.deps/paths ["/a/src"]}
       b {:name "ssl" :linux ["libssl.so.3"] :jolt.deps/root "/b"
@@ -422,7 +422,7 @@
 
 ;;;; :jolt/tree-shake {:allow-dynamic […]} → "ns/name" strings
 
-(let [allow-dynamic-entries (var jolt.deps/allow-dynamic-entries)]
+(let [allow-dynamic-entries (var jolt.deps.declarations/allow-dynamic-entries)]
   ;; The list travels to the Scheme build driver as strings — the shape
   ;; dce-bail-scan keys its allow set on — so a symbol is rendered as written.
   (is= "symbols render as ns/name strings"
