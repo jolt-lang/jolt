@@ -766,10 +766,7 @@
       (when (fx<? i cnt)
         (let-values (((chunk off) (pv-leaf-for p i)))
           (let ((run (fxmin (fx- (vector-length chunk) off) (fx- cnt i))))
-            (let cp ((j 0))
-              (when (fx<? j run)
-                (vector-set! out (fx+ at (fx+ i j)) (vector-ref chunk (fx+ off j)))
-                (cp (fx+ j 1))))
+            (sa-vector-copy-range! out (fx+ at i) chunk off (fx+ off run))
             (loop (fx+ i run))))))))
 
 ;; O(log n) structural concatenation
@@ -1002,97 +999,80 @@
 ;; transients can never share one. The immutable node functions above therefore
 ;; never see an enode, and nothing on the persistent map path changes.
 ;;
-;; `arr` carries SLACK — (vector-length arr) >= (hamt-popcount bm) — so an insert
-;; that fits shifts the tail right in place instead of reallocating.
-(define-record-type enode (fields (mutable bm) (mutable arr)) (nongenerative chez-enode-v1))
-(define enode-slack 4)
-(define enode-max 32)                   ; a bitmap node holds at most 32 slots
+;; Editable nodes have one slot per five-bit hash fragment. A free slot holds
+;; #f. Every child is a node, a collision bucket or a (key . value) pair,
+;; including entries with false or nil keys and values. The bitmap is kept
+;; for the compact persistent node produced at freeze.
+(define-record-type enode (fields (mutable bm) arr) (nongenerative chez-enode-v2))
+(define enode-width 32)
 
-(define (enode-used nd) (hamt-popcount (enode-bm nd)))
+(define (enode-empty) (make-enode 0 (make-vector enode-width #f)))
 
-;; Claim a node: an enode is already ours; an hnode is copied once, with room to
-;; grow. Its CHILDREN and its (k . v) leaves stay shared with the source — see
-;; enode-assoc!'s leaf case.
+;; With low = bits - 1, (low & ~bits) has a one in every position
+;; below the lowest occupied slot. Its population count is that slot's index.
+;; (bits & low) then clears the slot for the next iteration.
+(define-syntax hamt-lowest-slot
+  (syntax-rules () ((_ bits low) (hamt-popcount (hamt-and low (hamt-not bits))))))
+
+;; Expand the source's packed children into their hash slots. Only this
+;; node's array is copied. Its children remain shared until the next write.
 (define (hnode->enode nd)
-  (let* ((arr (hnode-arr nd)) (used (vector-length arr))
-         (buf (make-vector (fxmin enode-max (fx+ used enode-slack)) #f)))
-    (let loop ((i 0)) (when (fx<? i used) (vector-set! buf i (vector-ref arr i)) (loop (fx+ i 1))))
-    (make-enode (hnode-bm nd) buf)))
+  (let ((bm (hnode-bm nd)) (src (hnode-arr nd)) (out (make-vector enode-width #f)))
+    (let loop ((bits bm) (j 0))
+      (unless (hamt=? 0 bits)
+        (let ((below (hamt-sub bits 1)))
+          (vector-set! out (hamt-lowest-slot bits below) (vector-ref src j))
+          (loop (hamt-and bits below) (fx+ j 1)))))
+    (make-enode bm out)))
 (define (enode-claim nd) (if (enode? nd) nd (hnode->enode nd)))
 
-;; insert x at slot i, shifting the tail right; grows the array when full.
-(define (enode-insert! nd i x)
-  (let* ((used (enode-used nd)) (arr0 (enode-arr nd))
-         (arr (if (fx<? used (vector-length arr0))
-                  arr0
-                  (let ((w (make-vector (fxmin enode-max (fx+ (fx* used 2) enode-slack)) #f)))
-                    (let loop ((j 0)) (when (fx<? j used) (vector-set! w j (vector-ref arr0 j)) (loop (fx+ j 1))))
-                    (enode-arr-set! nd w)
-                    w))))
-    (let loop ((j used)) (when (fx>? j i) (vector-set! arr j (vector-ref arr (fx- j 1))) (loop (fx- j 1))))
-    (vector-set! arr i x)))
-
-;; remove slot i, shifting the tail left. Call BEFORE clearing the bit, so that
-;; (enode-used nd) still counts the slot being dropped.
-(define (enode-remove! nd i)
-  (let ((used (enode-used nd)) (arr (enode-arr nd)))
-    (let loop ((j i)) (when (fx<? j (fx- used 1)) (vector-set! arr j (vector-ref arr (fx+ j 1))) (loop (fx+ j 1))))
-    (vector-set! arr (fx- used 1) #f)))
-
-;; `nd` must already be claimed. Mutates in place; `added` is boxed like
-;; node-assoc's so the transient can keep its count.
-(define (enode-assoc! nd shift h k v added)
-  (let ((bit (hamt-bitpos h shift)) (bm (enode-bm nd)))
-    (if (hamt=? 0 (hamt-and bm bit))
-        (begin (set-box! added #t)
-               (enode-insert! nd (hamt-arr-index bm bit) (cons k v))
-               (enode-bm-set! nd (hamt-ior bm bit)))
-        (let* ((i (hamt-arr-index bm bit)) (arr (enode-arr nd)) (child (vector-ref arr i)))
-          (cond
-            ((enode? child) (enode-assoc! child (fx+ shift 5) h k v added))
-            ((hnode? child)
-             (let ((c (hnode->enode child)))
-               (vector-set! arr i c)
-               (enode-assoc! c (fx+ shift 5) h k v added)))
-            ;; collisions are rare, so the bucket stays immutable and is replaced
-            ((hcoll? child)
-             (let ((al (hcoll-alist child)))
-               (if (assoc-jolt k al)
-                   (vector-set! arr i (make-hcoll (hcoll-hash child) (alist-replace k v al)))
-                   (begin (set-box! added #t)
-                          (vector-set! arr i (make-hcoll (hcoll-hash child) (append al (list (cons k v)))))))))
-            ;; Replace: cons a FRESH pair. A claimed node's array is a shallow
-            ;; copy, so this leaf is very likely the source map's own pair —
-            ;; set-cdr! here would rewrite a value inside the persistent map the
-            ;; transient was built from. Keeps the STORED key, like node-assoc.
-            ((jolt= (car child) k) (vector-set! arr i (cons (car child) v)))
-            (else (set-box! added #t)
-                  (vector-set! arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v))))))))
+;; The caller owns nd. Return #t when this write adds a key.
+(define (enode-assoc! nd shift h k v)
+  (let* ((i (hamt-chunk h shift)) (arr (enode-arr nd)) (child (vector-ref arr i)))
+    (cond
+      ((not child)
+       (vector-set! arr i (cons k v))
+       (enode-bm-set! nd (hamt-ior (enode-bm nd) (hamt-sll 1 i)))
+       #t)
+      ((enode? child) (enode-assoc! child (fx+ shift 5) h k v))
+      ((hnode? child)
+       (let ((c (hnode->enode child)))
+         (vector-set! arr i c)
+         (enode-assoc! c (fx+ shift 5) h k v)))
+      ;; collisions are rare, so the bucket stays immutable and is replaced
+      ((hcoll? child)
+       (let* ((al (hcoll-alist child)) (existing (assoc-jolt k al)))
+         (vector-set! arr i
+           (make-hcoll (hcoll-hash child)
+             (if existing (alist-replace k v al) (append al (list (cons k v))))))
+         (not existing)))
+      ;; The leaf may be shared with the source. Preserve its stored key.
+      ((jolt= (car child) k) (vector-set! arr i (cons (car child) v)) #f)
+      (else
+       (vector-set! arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v))
+       #t))))
 
 ;; Mirrors node-dissoc, including dropping an interior node the removal empties.
 (define (enode-dissoc! nd shift h k removed)
-  (let ((bit (hamt-bitpos h shift)) (bm (enode-bm nd)))
-    (unless (hamt=? 0 (hamt-and bm bit))
-      (let* ((i (hamt-arr-index bm bit)) (arr (enode-arr nd)) (child (vector-ref arr i)))
-        (cond
-          ((or (enode? child) (hnode? child))
-           (let ((c (enode-claim child)))
-             (vector-set! arr i c)
-             (enode-dissoc! c (fx+ shift 5) h k removed)
-             (when (hamt=? 0 (enode-bm c))
-               (enode-remove! nd i)
-               (enode-bm-set! nd (hamt-and bm (hamt-not bit))))))
-          ((hcoll? child)
-           (when (assoc-jolt k (hcoll-alist child))
-             (set-box! removed #t)
-             (let ((nal (alist-remove k (hcoll-alist child))))
-               (cond ((null? nal) (enode-remove! nd i) (enode-bm-set! nd (hamt-and bm (hamt-not bit))))
-                     ((null? (cdr nal)) (vector-set! arr i (car nal)))   ; collapse to leaf
-                     (else (vector-set! arr i (make-hcoll (hcoll-hash child) nal)))))))
-          ((jolt= (car child) k)
-           (set-box! removed #t)
-           (enode-remove! nd i)
-           (enode-bm-set! nd (hamt-and bm (hamt-not bit)))))))))
+  (let* ((i (hamt-chunk h shift)) (arr (enode-arr nd)) (child (vector-ref arr i)))
+    (define (drop-slot!)
+      (vector-set! arr i #f)
+      (enode-bm-set! nd (hamt-and (enode-bm nd) (hamt-not (hamt-sll 1 i)))))
+    (cond
+      ((not child) #f)
+      ((or (enode? child) (hnode? child))
+       (let ((c (enode-claim child)))
+         (vector-set! arr i c)
+         (enode-dissoc! c (fx+ shift 5) h k removed)
+         (when (hamt=? 0 (enode-bm c)) (drop-slot!))))
+      ((hcoll? child)
+       (when (assoc-jolt k (hcoll-alist child))
+         (set-box! removed #t)
+         (let ((al (alist-remove k (hcoll-alist child))))
+           (cond ((null? al) (drop-slot!))
+                 ((null? (cdr al)) (vector-set! arr i (car al)))
+                 (else (vector-set! arr i (make-hcoll (hcoll-hash child) al)))))))
+      ((jolt= (car child) k) (set-box! removed #t) (drop-slot!)))))
 
 ;; Reads work over a MIXED tree: the part the transient has written to is
 ;; enodes, everything else is still the source map's hnodes. This is on the hot
@@ -1102,14 +1082,12 @@
 ;; unclaimed subtree hands off to node-get, which carries no enode tests at all.
 (define (enode-get nd shift h k default)
   (if (enode? nd)
-      (let ((bit (hamt-bitpos h shift)) (bm (enode-bm nd)))
-        (if (hamt=? 0 (hamt-and bm bit))
-            default
-            (let ((child (vector-ref (enode-arr nd) (hamt-arr-index bm bit))))
-              (cond ((pair? child) (if (jolt= (car child) k) (cdr child) default))
-                    ((enode? child) (enode-get child (fx+ shift 5) h k default))
-                    ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
-                    (else (node-get child (fx+ shift 5) h k default))))))
+      (let ((child (vector-ref (enode-arr nd) (hamt-chunk h shift))))
+        (cond ((pair? child) (if (jolt= (car child) k) (cdr child) default))
+              ((not child) default)
+              ((enode? child) (enode-get child (fx+ shift 5) h k default))
+              ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
+              (else (node-get child (fx+ shift 5) h k default))))
       (node-get nd shift h k default)))
 
 ;; Freeze an edited tree: every enode becomes an hnode whose array is trimmed to
@@ -1118,15 +1096,15 @@
 ;; map the transient started from. Cost is O(claimed nodes), not O(entries).
 (define (enode-freeze nd)
   (if (enode? nd)
-      (let* ((used (enode-used nd)) (arr (enode-arr nd)) (out (make-vector used)))
-        (let loop ((i 0))
-          (if (fx<? i used)
-              (begin (vector-set! out i (enode-freeze (vector-ref arr i)))
-                     (loop (fx+ i 1)))
-              (make-hnode (enode-bm nd) out))))
+      (let* ((bm (enode-bm nd)) (used (hamt-popcount bm))
+             (arr (enode-arr nd)) (out (make-vector used)))
+        (let loop ((bits bm) (j 0))
+          (if (hamt=? 0 bits)
+              (make-hnode bm out)
+              (let* ((below (hamt-sub bits 1)) (slot (hamt-lowest-slot bits below)))
+                (vector-set! out j (enode-freeze (vector-ref arr slot)))
+                (loop (hamt-and bits below) (fx+ j 1))))))
       nd))
-
-(define (enode-empty) (make-enode 0 (make-vector enode-slack #f)))
 
 ;; ============================================================================
 ;; persistent map / set over the HAMT

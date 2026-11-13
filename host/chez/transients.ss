@@ -100,10 +100,10 @@
 ;; Claim the root on the way in; every node below is claimed as the write
 ;; descends through it (enode-assoc!).
 (define (thash-put! t k v)
-  (let ((root (enode-claim (jolt-transient-buf t))) (added (box #f)))
+  (let ((root (enode-claim (jolt-transient-buf t))))
     (jolt-transient-buf-set! t root)
-    (enode-assoc! root 0 (key-hash k) k v added)
-    (when (unbox added) (jolt-transient-n-set! t (fx+ (jolt-transient-n t) 1)))))
+    (when (enode-assoc! root 0 (key-hash k) k v)
+      (jolt-transient-n-set! t (fx+ (jolt-transient-n t) 1)))))
 (define (thash-del! t k)
   (let ((root (enode-claim (jolt-transient-buf t))) (removed (box #f)))
     (jolt-transient-buf-set! t root)
@@ -120,11 +120,11 @@
 ;; entry count, the keys are distinct already
 (define (tmap-promote! t)
   (let ((buf (jolt-transient-buf t)) (len (fx* 2 (jolt-transient-n t)))
-        (root (enode-empty)) (added (box #f)))
+        (root (enode-empty)))
     (let loop ((i 0))
       (when (fx<? i len)
         (let ((k (vector-ref buf i)))
-          (enode-assoc! root 0 (key-hash k) k (vector-ref buf (fx+ i 1)) added))
+          (enode-assoc! root 0 (key-hash k) k (vector-ref buf (fx+ i 1))))
         (loop (fx+ i 2))))
     (jolt-transient-buf-set! t root)))
 
@@ -230,6 +230,19 @@
     (tvec-ensure! t (fx+ (fx- cnt off) 1))
     (vector-set! (jolt-transient-buf t) (fx- cnt off) x)
     (jolt-transient-n-set! t (fx+ cnt 1))))
+
+(define (tvec-live? t)
+  (and (jolt-transient? t) (eq? (jolt-transient-kind t) 'vec) (jolt-transient-active t)))
+
+;; (reduce conj! t v) appends every element of a persistent vector. Keep the
+;; shared base in place and reserve space once after the already buffered tail.
+(define (tvec-append-pvec! t v)
+  (let* ((cnt (jolt-transient-n t)) (used (fx- cnt (tvec-off t))) (n (pvec-cnt v)))
+    (tvec-ensure! t (fx+ used n))
+    (pvec-copy-into! (jolt-transient-buf t) used v)
+    (jolt-transient-n-set! t (fx+ cnt n))
+    t))
+
 (define (tvec-assoc1! t i x)
   (let ((i (pvec-key-index! i)) (cnt (jolt-transient-n t)) (off (tvec-off t)))
     (cond ((and (fixnum? i) (fx>=? i 0) (fx<? i off))
@@ -264,9 +277,13 @@
   (cond
     ((jolt-nil? x) #t)
     ;; a vector is one entry, so it must be a pair — the persistent conj's rule
-    ((pvec? x) (if (fx=? 2 (pvec-count x))
-                   (tmap-put! t (pvec-nth-d x 0 jolt-nil) (pvec-nth-d x 1 jolt-nil))
-                   (throw-jvm 'IllegalArgumentException "Vector arg to map conj must be a pair")))
+    ((pvec? x)
+     (unless (fx=? 2 (pvec-count x))
+       (throw-jvm 'IllegalArgumentException "Vector arg to map conj must be a pair"))
+     (let ((tail (pvec-tail x)))
+       (if (fx=? 2 (vector-length tail))
+           (tmap-put! t (vector-ref tail 0) (vector-ref tail 1))
+           (tmap-put! t (pvec-nth-in-range x 0) (pvec-nth-in-range x 1)))))
     ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
     ((jolt-host-entry x) => (lambda (kv) (tmap-put! t (car kv) (cdr kv))))
     (else (throw-jvm (quote IllegalArgumentException) "conj!: a transient map takes a map entry or a map"))))

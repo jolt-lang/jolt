@@ -5,7 +5,33 @@ where Jolt took longer than both Babashka and JVM Clojure. A release build of
 `origin/main` at `ef8dd3e9` reproduced all 15. All 2,754 warmup and measured
 batches passed the arithmetic checksum. [Original measurements](https://github.com/jolt-lang/jolt/blob/af74d25e599c649834edfb6c68a94c6a5160a1fd/benchmarks/generated-project/results/2026-11-10-seed42-collection-sizes.md)
 
-## What reproduces
+## Runtime fix
+
+With the runtime change, every measured build took less time on Jolt. The
+table gives before → after in ns per element on the original workloads.
+
+| Elements | Vector | Map | Set |
+| ---: | ---: | ---: | ---: |
+| 8 | 23.4 → 9.2 | 40.5 → 32.7 | 63.5 → 52.2 |
+| 9 | 27.3 → 11.4 | 79.8 → 61.8 | 60.8 → 50.1 |
+| 32 | 18.3 → 3.6 | 91.0 → 68.9 | 73.7 → 60.4 |
+| 33 | 22.8 → 6.4 | 92.2 → 71.0 | 74.7 → 62.5 |
+| 1,024 | 16.2 → 2.5 | 112.3 → 72.2 | 94.8 → 64.6 |
+| 32,768 | 15.7 → 2.3 | 141.4 → 99.4 | 124.5 → 90.5 |
+
+A three-argument `reduce` with the built-in `conj!`, a live vector transient
+and a persistent vector source now reserves destination space once and copies
+each source leaf. Maps and sets use 32 hash-indexed slots per editable trie node,
+so inserting a key takes no slot shifts. Freezing packs just the occupied slots
+in hash order. Sparse editable nodes can use more space while the transient is
+live. The persistent representation stays compact.
+
+The fixed binary ran the same three-runtime sweep with the original oracle.
+All 2,754 batches matched. Jolt's vector median was lowest at every size. The
+six set medians still trailed both peers, with gaps to Babashka of 0.4 and
+2.0 ns per element at the two largest sizes. [Fixed build samples](fixed-build-samples.csv)
+
+## Baseline at ef8dd3e9
 
 Each cell gives **Jolt / Babashka / JVM Clojure** in nanoseconds per input
 element. The timed operation reduces `conj!` over a prebuilt vector into a
@@ -30,7 +56,7 @@ Each process ran 10 warmups and seven timed samples per profile, with
 the process medians divided by the actual number of elements built.
 [Raw samples](build-samples.csv)
 
-## Where Jolt spends the time
+## Where the baseline spent the time
 
 At 32,768 elements, 93–94% of sampled CPU time was in the vector reduction
 that feeds the destination. The same source traversal drives all three

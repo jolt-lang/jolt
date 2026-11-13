@@ -35,6 +35,23 @@
 (ok "lone key throws"        (guard (e (#t #t)) (ev "(persistent! (assoc! (transient {}) :a))") #f))
 (ok "use after persistent!"  (guard (e (#t #t)) (ev "(let [t (transient [])] (persistent! t) (conj! t 1))") #f))
 
+(is "vector reduction appends a relaxed slice after a based transient's buffer"
+    "(let [v (vec (range 1100)) src (subvec v 17 1089) base (subvec v 100 201)
+           t (conj! (transient base) :tail) r (reduce conj! t src)]
+       (and (identical? t r)
+            (= (persistent! (assoc! r 102 :edit))
+               (vec (concat base [:tail :edit] (range 18 1089))))
+            (= src (vec (range 17 1089)))))"
+    "true")
+(is "vector reduction accepts an empty source on a retired transient"
+    "(let [t (transient [])] (persistent! t) (identical? t (reduce conj! t [])))" "true")
+(is "vector reduction rejects a write to a retired transient"
+    "(let [t (transient [:a])] (persistent! t)
+       (try (reduce conj! t [:b]) false (catch IllegalAccessError _ true)))" "true")
+(is "custom reducer on a vector can stop before the last leaf"
+    "(persistent! (reduce (fn [t x] (if (= x 3) (reduced t) (conj! t x)))
+                          (transient [:a]) (vec (range 64))))" "[:a 0 1 2]")
+
 ;; --- one-way promotion: a transient that grew past the array limit and shrank
 ;; back comes down a HASH map (JVM TransientArrayMap promotes on the way up and
 ;; never returns; jolt used to decide lazily from the final count).
@@ -79,6 +96,18 @@
     "true")
 (is "dissoc! collapses bucket"
     "(let [t (reduce (fn [t s] (assoc! t s s)) (transient {}) (concat (map (fn [i] (str \"k\" i)) (range 50)) [\"Aa\" \"BB\"])) _ (dissoc! t \"Aa\") m (persistent! t)] (and (= 51 (count m)) (= \"BB\" (get m \"BB\")) (nil? (get m \"Aa\"))))"
+    "true")
+
+(is "packed map order and counts survive transient removals and replacements"
+    "(let [ks (vec (concat (range 1024) [nil false \"Aa\" \"BB\"]))
+           source (zipmap ks ks)
+           removed (vec (take-nth 3 ks))
+           t (reduce dissoc! (transient source) removed)
+           pairs (mapv (fn [k] [k false]) (reverse ks))
+           result (persistent! (reduce conj! t pairs))
+           expected (reduce conj (apply dissoc source removed) pairs)]
+       (and (= source (zipmap ks ks)) (= (count ks) (count result))
+            (= (vec expected) (vec result)) (= expected result)))"
     "true")
 
 ;; --- linear, not quadratic: 200k builds finish near-instantly ---------------
