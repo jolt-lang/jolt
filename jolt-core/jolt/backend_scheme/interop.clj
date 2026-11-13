@@ -167,6 +167,46 @@
          " " t " " (chez-str-lit m)
          (apply str (map #(str " " %) args)) ")")))
 
+;; The direct form for a receiver the analyzer proved a string, keyword, string
+;; builder or string buffer (:target-type), or nil.
+(defn- proven-receiver-emit [node m t args]
+  (case (:target-type node)
+    :str (string-direct-emit m t args)
+    :kw (keyword-direct-emit m t args)
+    :sb (sb-direct-emit m (count args) t args false)
+    :sbuf (sb-direct-emit m (count args) t args true)
+    nil))
+
+;; The generic path: the receiver's own record or reify method.
+(defn- method-dispatch-emit [t m args]
+  (str "(record-method-dispatch " t " " (chez-str-lit m)
+       " (jolt-vector" (if (empty? args) "" (str " " (str/join " " args))) "))"))
+
+;; An UNPROVEN receiver whose method has a string or keyword
+;; direct form: test the receiver's type at the site and take
+;; that form, with the generic dispatch as the slow arm — the
+;; same open-code-the-fast-case shape the bit ops use. Strings
+;; and keywords are what library code calls .length/.charAt/
+;; .getName on without a hint, and the generic walk cost
+;; 60-135 ns per call against 3-11 for the direct form. The
+;; receiver and args are bound once, in order, so nothing is
+;; evaluated twice and the direct forms may splice `t` freely.
+;; A receiver of any other type behaves exactly as before.
+(defn- unproven-receiver-emit [m t args]
+  (let [tt (fresh-label "_ht$")
+        as (mapv (fn [_] (fresh-label "_ha$")) args)
+        sd (string-direct-emit m tt as)
+        kd (keyword-direct-emit m tt as)
+        generic (or (host-site-emit tt m as) (method-dispatch-emit tt m as))]
+    (if (or sd kd)
+      (str "(let* ((" tt " " t ")"
+           (apply str (map (fn [a e] (str " (" a " " e ")")) as args))
+           ") (cond"
+           (when sd (str " ((string? " tt ") " sd ")"))
+           (when kd (str " ((keyword-t? " tt ") " kd ")"))
+           " (else " generic ")))")
+      (or (host-site-emit t m args) (method-dispatch-emit t m args)))))
+
 ;; EMIT lowers the receiver and arguments when the node does not carry them
 ;; already bound (the back end's own emit: this namespace sits below it).
 (defn host-call-emit [emit node]
@@ -174,15 +214,7 @@
         chez? (not= :gambit (target))
         t (or (:sited-target node) (emit (:target node)))
         args (or (:sited-args node) (map emit (:args node)))
-        direct (when chez?
-                 (or (when (= :str (:target-type node))
-                       (string-direct-emit m t args))
-                     (when (= :kw (:target-type node))
-                       (keyword-direct-emit m t args))
-                     (when (= :sb (:target-type node))
-                       (sb-direct-emit m (count args) t args false))
-                     (when (= :sbuf (:target-type node))
-                       (sb-direct-emit m (count args) t args true))))]
+        direct (when chez? (proven-receiver-emit node m t args))]
     (cond
       direct direct
       (supported-host-methods m)
@@ -195,35 +227,7 @@
            *const-pool* (var-cache?))
       (str "(jrec-field-site-ref " (hoist-const-per-site "(jrec-field-site-make)") " "
            t " " (chez-str-lit m) ")")
-      ;; An UNPROVEN receiver whose method has a string or keyword
-      ;; direct form: test the receiver's type at the site and take
-      ;; that form, with the generic dispatch as the slow arm — the
-      ;; same open-code-the-fast-case shape the bit ops use. Strings
-      ;; and keywords are what library code calls .length/.charAt/
-      ;; .getName on without a hint, and the generic walk cost
-      ;; 60-135 ns per call against 3-11 for the direct form. The
-      ;; receiver and args are bound once, in order, so nothing is
-      ;; evaluated twice and the direct forms may splice `t` freely.
-      ;; A receiver of any other type behaves exactly as before.
-      chez?
-      (let [tt (fresh-label "_ht$")
-            as (mapv (fn [_] (fresh-label "_ha$")) args)
-            sd (string-direct-emit m tt as)
-            kd (keyword-direct-emit m tt as)
-            generic (or (host-site-emit tt m as)
-                        (str "(record-method-dispatch " tt " " (chez-str-lit m)
-                             " (jolt-vector" (if (empty? as) "" (str " " (str/join " " as))) "))"))]
-        (if (or sd kd)
-          (str "(let* ((" tt " " t ")"
-               (apply str (map (fn [a e] (str " (" a " " e ")")) as args))
-               ") (cond"
-               (when sd (str " ((string? " tt ") " sd ")"))
-               (when kd (str " ((keyword-t? " tt ") " kd ")"))
-               " (else " generic ")))")
-          (or (host-site-emit t m args)
-              (str "(record-method-dispatch " t " " (chez-str-lit m)
-                   " (jolt-vector" (if (empty? args) "" (str " " (str/join " " args))) "))"))))
-      :else
-      (str "(record-method-dispatch " t " " (chez-str-lit m)
-           " (jolt-vector" (if (empty? args) "" (str " " (str/join " " args))) "))"))))
+      chez? (unproven-receiver-emit m t args)
+      :else (method-dispatch-emit t m args))))
+
 

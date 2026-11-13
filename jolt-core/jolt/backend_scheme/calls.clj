@@ -166,67 +166,75 @@
 ;; ops run is redundant there — emit the per-site unsafe #3% variant. There is no
 ;; matching unsafe variant for ^long +/-/*: a ^long is 64-bit and a Chez fixnum is
 ;; 61, so those map to the widening jolt-l+/-/* rather than any fx op.
+;; The one-operand ops with a form of their own, by [kind name]: each a fn of
+;; the emitted operand.
+;; inc/dec tolerate a 64-bit operand (jolt-l-inc/dec fall back past fixnum range);
+;; unchecked-inc/dec wrap (Java long). Neither can use the raising fx1+/fx1-.
+;; On a proven flonum the unchecked forms are the plain flonum ops: they
+;; wrap only longs (jolt-uncinc on 1.5 is 2.5, exactly what fl+ says).
+(def ^:private numeric-unary-forms
+  {[:double "inc"] (fn [a] (str "(" (unsafe-prefix) "fl+ " a " 1.0)"))
+   [:double "dec"] (fn [a] (str "(" (unsafe-prefix) "fl- " a " 1.0)"))
+   [:long "inc"] (fn [a] (str "(jolt-l-inc " a ")"))
+   [:long "dec"] (fn [a] (str "(jolt-l-dec " a ")"))
+   [:long "unchecked-inc"] (fn [a] (str "(jolt-uncinc " a ")"))
+   [:long "unchecked-dec"] (fn [a] (str "(jolt-uncdec " a ")"))
+   [:long "unchecked-negate"] (fn [a] (str "(jolt-uncneg " a ")"))
+   [:double "unchecked-inc"] (fn [a] (str "(" (unsafe-prefix) "fl+ " a " 1.0)"))
+   [:double "unchecked-dec"] (fn [a] (str "(" (unsafe-prefix) "fl- " a " 1.0)"))
+   [:double "unchecked-negate"] (fn [a] (str "(" (unsafe-prefix) "fl- " a ")"))})
+
+;; Every other op, through dbl-ops / lng-ops / bd-ops at any operand count.
+(defn- emit-numeric-op [kind nm args order-args]
+  (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))
+        op (if (= kind :double) (str (unsafe-prefix) op) op)]
+    (cond
+      (and (contains? #{"<" "<=" ">" ">=" "==" "="} nm) (> (count args) 2))
+      ;; a chained comparison (<= a b c) means (and (<= a b) (<= b c)); the fast
+      ;; binary op is 2-ary, so expand rather than pass 3+ args to it. order-args
+      ;; binds each operand to a temp once, so reusing a temp across pairs is safe.
+      (order-args (fn [as]
+        (str "(and " (str/join " " (map (fn [pair] (str "(" op " " (first pair) " " (second pair) ")"))
+                                        (partition 2 1 as))) ")")))
+      ;; Every fast-path op is BINARY — jolt-l+ and friends are 2-arg macros (3
+      ;; operands is a syntax error at expansion, not a runtime one) and the
+      ;; unchecked ops are 2-arg procs — while +/-/*/min/max are variadic. Lower N
+      ;; operands as a left fold of the binary op, which is also the reference
+      ;; semantics: (+ a b c) is (+ (+ a b) c), so each step overflow-checks
+      ;; separately rather than one check over the whole sum. Each operand still
+      ;; appears exactly once and in source order, so this is safe whether or not
+      ;; order-args bound them to temps.
+      (> (count args) 2)
+      (order-args (fn [as]
+        (reduce (fn [acc a] (str "(" op " " acc " " a ")")) (first as) (rest as))))
+      ;; The other end: ONE operand. (+ x)/(* x)/(min x)/(max x) ARE x, and a
+      ;; binary op has no 1-operand form to splice it into. A specialized operand
+      ;; is already coerced (^long -> fixnum, ^double -> flonum), so unlike the
+      ;; generic jolt-add there is nothing left to type-check either. `-` and `/`
+      ;; are NOT identities here — they negate and reciprocate — and every
+      ;; fast-path op spells those out, so they keep their call.
+      ;; unchecked-add/-multiply are identities the same way: jolt's overlay folds
+      ;; them over any arity ((apply unchecked-add [x]) => x), so the inline path
+      ;; has to agree with it — a 2-arg proc handed one operand is an arity error.
+      (and (= 1 (count args))
+           (contains? #{"+" "*" "min" "max" "unchecked-add" "unchecked-multiply"} nm))
+      (first args)
+      ;; unchecked-subtract at one operand negates, matching both `-` and jolt's
+      ;; own overlay ((apply unchecked-subtract [x]) => -x). jolt-uncsub2 has no
+      ;; unary form, so subtract from zero — which wraps identically. On a
+      ;; proven flonum it is fl-'s own unary negation (a fixnum 0 is not a
+      ;; flonum, and negating keeps -0.0 where 0.0 - x would not).
+      (and (= 1 (count args)) (= "unchecked-subtract" nm))
+      (order-args (fn [as] (if (= kind :double)
+                             (str "(" op " " (first as) ")")
+                             (str "(" op " 0 " (first as) ")"))))
+      :else
+      (order-args (fn [as] (str "(" op " " (str/join " " as) ")"))))))
+
 (defn emit-numeric [kind nm args order-args]
-  (cond
-    (and (= kind :double) (= nm "inc")) (str "(" (unsafe-prefix) "fl+ " (first args) " 1.0)")
-    (and (= kind :double) (= nm "dec")) (str "(" (unsafe-prefix) "fl- " (first args) " 1.0)")
-    ;; inc/dec tolerate a 64-bit operand (jolt-l-inc/dec fall back past fixnum range);
-    ;; unchecked-inc/dec wrap (Java long). Neither can use the raising fx1+/fx1-.
-    (and (= kind :long) (= nm "inc")) (str "(jolt-l-inc " (first args) ")")
-    (and (= kind :long) (= nm "dec")) (str "(jolt-l-dec " (first args) ")")
-    (and (= kind :long) (= nm "unchecked-inc")) (str "(jolt-uncinc " (first args) ")")
-    (and (= kind :long) (= nm "unchecked-dec")) (str "(jolt-uncdec " (first args) ")")
-    (and (= kind :long) (= nm "unchecked-negate")) (str "(jolt-uncneg " (first args) ")")
-    ;; on a proven flonum the unchecked forms are the plain flonum ops: they
-    ;; wrap only longs (jolt-uncinc on 1.5 is 2.5, exactly what fl+ says).
-    (and (= kind :double) (= nm "unchecked-inc")) (str "(" (unsafe-prefix) "fl+ " (first args) " 1.0)")
-    (and (= kind :double) (= nm "unchecked-dec")) (str "(" (unsafe-prefix) "fl- " (first args) " 1.0)")
-    (and (= kind :double) (= nm "unchecked-negate")) (str "(" (unsafe-prefix) "fl- " (first args) ")")
-    :else
-    (let [op (case kind :double (dbl-ops nm) :long (lng-ops nm) :bigdec (bd-ops nm))
-          op (if (= kind :double) (str (unsafe-prefix) op) op)]
-      (cond
-        (and (contains? #{"<" "<=" ">" ">=" "==" "="} nm) (> (count args) 2))
-        ;; a chained comparison (<= a b c) means (and (<= a b) (<= b c)); the fast
-        ;; binary op is 2-ary, so expand rather than pass 3+ args to it. order-args
-        ;; binds each operand to a temp once, so reusing a temp across pairs is safe.
-        (order-args (fn [as]
-          (str "(and " (str/join " " (map (fn [pair] (str "(" op " " (first pair) " " (second pair) ")"))
-                                          (partition 2 1 as))) ")")))
-        ;; Every fast-path op is BINARY — jolt-l+ and friends are 2-arg macros (3
-        ;; operands is a syntax error at expansion, not a runtime one) and the
-        ;; unchecked ops are 2-arg procs — while +/-/*/min/max are variadic. Lower N
-        ;; operands as a left fold of the binary op, which is also the reference
-        ;; semantics: (+ a b c) is (+ (+ a b) c), so each step overflow-checks
-        ;; separately rather than one check over the whole sum. Each operand still
-        ;; appears exactly once and in source order, so this is safe whether or not
-        ;; order-args bound them to temps.
-        (> (count args) 2)
-        (order-args (fn [as]
-          (reduce (fn [acc a] (str "(" op " " acc " " a ")")) (first as) (rest as))))
-        ;; The other end: ONE operand. (+ x)/(* x)/(min x)/(max x) ARE x, and a
-        ;; binary op has no 1-operand form to splice it into. A specialized operand
-        ;; is already coerced (^long -> fixnum, ^double -> flonum), so unlike the
-        ;; generic jolt-add there is nothing left to type-check either. `-` and `/`
-        ;; are NOT identities here — they negate and reciprocate — and every
-        ;; fast-path op spells those out, so they keep their call.
-        ;; unchecked-add/-multiply are identities the same way: jolt's overlay folds
-        ;; them over any arity ((apply unchecked-add [x]) => x), so the inline path
-        ;; has to agree with it — a 2-arg proc handed one operand is an arity error.
-        (and (= 1 (count args))
-             (contains? #{"+" "*" "min" "max" "unchecked-add" "unchecked-multiply"} nm))
-        (first args)
-        ;; unchecked-subtract at one operand negates, matching both `-` and jolt's
-        ;; own overlay ((apply unchecked-subtract [x]) => -x). jolt-uncsub2 has no
-        ;; unary form, so subtract from zero — which wraps identically. On a
-        ;; proven flonum it is fl-'s own unary negation (a fixnum 0 is not a
-        ;; flonum, and negating keeps -0.0 where 0.0 - x would not).
-        (and (= 1 (count args)) (= "unchecked-subtract" nm))
-        (order-args (fn [as] (if (= kind :double)
-                               (str "(" op " " (first as) ")")
-                               (str "(" op " 0 " (first as) ")"))))
-        :else
-        (order-args (fn [as] (str "(" op " " (str/join " " as) ")")))))))
+  (if-let [unary (get numeric-unary-forms [kind nm])]
+    (unary (first args))
+    (emit-numeric-op kind nm args order-args)))
 
 ;; slot of a declared field key in a record's field-order shape, or nil.
 (defn struct-field-index [shape kw]

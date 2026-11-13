@@ -139,61 +139,63 @@
     :else
     (throw (ex-info "jolt.ffi: invalid analyzed layout type" {:type type}))))
 
-(defn emit-ffi-layout [node]
+;; A (jolt-hash-map …) over the "key value" text RENDER gives each entry, an
+;; entry it answers nil for left out.
+(defn- emit-layout-map [render entries]
+  (str "(jolt-hash-map " (str/join " " (keep render entries)) ")"))
+
+;; Each entry's byte offset, read off a pointer at address 0 to the layout's ftype.
+(defn- emit-layout-offsets [type-name entries]
+  (let [base (str "(make-ftype-pointer " type-name " 0)")]
+    (emit-layout-map
+     (fn [entry]
+       (str (emit-layout-path (:path entry)) " "
+            "(ftype-pointer-address (ftype-&ref " type-name " ("
+            (str/join " " (:emitted-path entry)) ") " base "))"))
+     entries)))
+
+;; The scalar type of each entry that has one.
+(defn- emit-layout-types [entries]
+  (emit-layout-map
+   (fn [entry]
+     (when (string? (:type entry))
+       (str (emit-layout-path (:path entry)) " "
+            "(keyword #f " (chez-str-lit (:type entry)) ")")))
+   entries))
+
+;; The define-ftype forms the layout's metadata is computed with: the layout
+;; itself, a struct that puts it after one byte (its alignment is the offset it
+;; lands at), and one per array element type (its stride is the element's size).
+(defn- emit-layout-ftypes [type-name align-name layout arrays]
+  (str "(define-ftype " type-name " " (emit-ffi-layout-ftype layout) ") "
+       "(define-ftype " align-name " (struct [prefix unsigned-8] [value " type-name "])) "
+       (str/join
+        " "
+        (map (fn [entry]
+               (str "(define-ftype " (:element-name entry) " "
+                    (emit-ffi-layout-ftype (:element-type entry)) ")"))
+             arrays))
+       (when (seq arrays) " ")))
+
+(defn- emit-ffi-layout [node]
   (let [layout (:layout node)
         type-name (fresh-label "jolt_ffi_layout")
         align-name (fresh-label "jolt_ffi_layout_align")
         entries (vec (ffi-layout-entries layout))
         arrays (mapv #(assoc % :element-name (fresh-label "jolt_ffi_layout_element"))
                      (ffi-layout-array-entries layout))
-        base (str "(make-ftype-pointer " type-name " 0)")
-        offsets
-        (str "(jolt-hash-map "
-             (str/join
-              " "
-              (map (fn [entry]
-                     (str (emit-layout-path (:path entry)) " "
-                          "(ftype-pointer-address (ftype-&ref " type-name " ("
-                          (str/join " " (:emitted-path entry)) ") " base "))"))
-                   entries))
-             ")")
-        types
-        (str "(jolt-hash-map "
-             (str/join
-              " "
-              (keep (fn [entry]
-                      (when (string? (:type entry))
-                        (str (emit-layout-path (:path entry)) " "
-                             "(keyword #f " (chez-str-lit (:type entry)) ")")))
-                    entries))
-             ")")
+        offsets (emit-layout-offsets type-name entries)
+        types (emit-layout-types entries)
         array-counts
-        (str "(jolt-hash-map "
-             (str/join
-              " "
-              (map (fn [entry]
-                     (str (emit-layout-path (:path entry)) " " (:count entry)))
-                   arrays))
-             ")")
+        (emit-layout-map (fn [entry] (str (emit-layout-path (:path entry)) " " (:count entry)))
+                         arrays)
         array-strides
-        (str "(jolt-hash-map "
-             (str/join
-              " "
-              (map (fn [entry]
-                     (str (emit-layout-path (:path entry))
-                          " (ftype-sizeof " (:element-name entry) ")"))
-                   arrays))
-             ")")]
+        (emit-layout-map (fn [entry]
+                           (str (emit-layout-path (:path entry))
+                                " (ftype-sizeof " (:element-name entry) ")"))
+                         arrays)]
     (str "(let () "
-         "(define-ftype " type-name " " (emit-ffi-layout-ftype layout) ") "
-         "(define-ftype " align-name " (struct [prefix unsigned-8] [value " type-name "])) "
-         (str/join
-          " "
-          (map (fn [entry]
-                 (str "(define-ftype " (:element-name entry) " "
-                      (emit-ffi-layout-ftype (:element-type entry)) ")"))
-               arrays))
-         (when (seq arrays) " ")
+         (emit-layout-ftypes type-name align-name layout arrays)
          "(jolt-hash-map "
          "(keyword \"jolt.ffi\" \"layout\") #t "
          "(keyword #f \"descriptor\") " (emit-layout-descriptor layout) " "
@@ -501,7 +503,7 @@
 ;; per-binding cache of procedures instead (emit-ffi-bare-varargs-fn). Only the
 ;; non-blocking path takes a varargs marker: __collect_safe cannot combine with a
 ;; varargs convention.
-(defn emit-ffi-fn [node]
+(defn- emit-ffi-fn [node]
   (let [at (:argtypes node)
         vi (ffi-varargs-index at)]
     (check-ffi-signature! node vi)
@@ -529,7 +531,7 @@
 ;; :float position or a :double result; every other callable reaches
 ;; sa-foreign-callable exactly as before. EMIT lowers the wrapped fn node (the
 ;; back end's own emit: this namespace sits below it).
-(defn emit-ffi-callable [emit node]
+(defn- emit-ffi-callable [emit node]
   ;; The mirror of the :blocking/:string rule in emit-ffi-fn, with the direction
   ;; swapped: on a __collect_safe CALLABLE it is the string RESULT Chez refuses,
   ;; because the callable hands C that string's address as it deactivates the
@@ -596,3 +598,9 @@
          " (" (str/join " " (map ffi-type->chez argtypes)) ") "
          (ffi-type->chez rettype) "))")))
 
+;; The three jolt.ffi IR ops. EMIT lowers a callable's wrapped fn.
+(defn emit-ffi-node [emit node]
+  (case (:op node)
+    :ffi-layout (emit-ffi-layout node)
+    :ffi-fn (emit-ffi-fn node)
+    :ffi-callable (emit-ffi-callable emit node)))

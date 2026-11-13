@@ -48,29 +48,39 @@
 
 ;; The captures in CAPS a node reads, outside any rebinding of them, including
 ;; through nested fns (whose own params hide names too).
+(declare once-cap-uses)
+
+;; A nested fn: each arity's params, rest param and the fn's own name hide the
+;; captures they rebind, for that arity's body.
+(defn- once-fn-cap-uses [node caps]
+  (reduce (fn [acc a]
+            (let [hidden (cond-> (set (:params a)) (:rest a) (conj (:rest a))
+                           (:name node) (conj (:name node)))]
+              (into acc (once-cap-uses (:body a) (reduce disj caps hidden)))))
+          #{} (:arities node)))
+
+;; let/loop: each init sees the captures the names bound before it leave visible
+;; (a letrec's init, none of the group's names), and the body sees what all of
+;; them leave.
+(defn- once-binding-cap-uses [node caps]
+  (let [letrec? (:letrec node)
+        names (map first (:bindings node))
+        all-caps (reduce disj caps names)]
+    (loop [bs (:bindings node) cs (if letrec? all-caps caps) acc #{}]
+      (if (empty? bs)
+        (into acc (once-cap-uses (:body node) all-caps))
+        (let [[nm init] (first bs)]
+          (recur (rest bs) (if letrec? cs (disj cs nm))
+                 (into acc (once-cap-uses init cs))))))))
+
 (defn- once-cap-uses [node caps]
   (if (empty? caps)
     #{}
-    (let [op (:op node)]
-      (cond
-        (= op :local) (if (contains? caps (:name node)) #{(:name node)} #{})
-        (= op :fn)
-        (reduce (fn [acc a]
-                  (let [hidden (cond-> (set (:params a)) (:rest a) (conj (:rest a))
-                                 (:name node) (conj (:name node)))]
-                    (into acc (once-cap-uses (:body a) (reduce disj caps hidden)))))
-                #{} (:arities node))
-        (or (= op :let) (= op :loop))
-        (let [letrec? (:letrec node)
-              names (map first (:bindings node))
-              all-caps (reduce disj caps names)]
-          (loop [bs (:bindings node) cs (if letrec? all-caps caps) acc #{}]
-            (if (empty? bs)
-              (into acc (once-cap-uses (:body node) all-caps))
-              (let [[nm init] (first bs)]
-                (recur (rest bs) (if letrec? cs (disj cs nm))
-                       (into acc (once-cap-uses init cs)))))))
-        :else (ir/reduce-ir-children (fn [acc c] (into acc (once-cap-uses c caps))) #{} node)))))
+    (case (:op node)
+      :local (if (contains? caps (:name node)) #{(:name node)} #{})
+      :fn (once-fn-cap-uses node caps)
+      (:let :loop) (once-binding-cap-uses node caps)
+      (ir/reduce-ir-children (fn [acc c] (into acc (once-cap-uses c caps))) #{} node))))
 
 ;; Does the body loop back to the fn's own head (a recur outside any loop or
 ;; nested fn)? Then the whole body is a loop.
@@ -94,58 +104,72 @@
       (let [[n l] (once-mark (nth nodes i) caps live)]
         (recur (dec i) l (cons n acc))))))
 
+(defn- once-mark-local [node caps live]
+  (let [nm (:name node)]
+    (if (contains? caps nm)
+      [(if (contains? live nm) node (mark-clear node #{nm})) (conj live nm)]
+      [node live])))
+
+;; Both branches start from what is live after the if; the test sees the union.
+(defn- once-mark-if [node caps live]
+  (let [[t lt] (once-mark (:then node) caps live)
+        [e le] (once-mark (:else node) caps live)
+        [c lc] (once-mark (:test node) caps (into lt le))]
+    [(assoc node :test c :then t :else e) lc]))
+
+;; The scope each init of BS sees: the names bound before it are hidden (all of
+;; them, for a letrec, whose inits see BODY-CAPS).
+(defn- once-init-scopes [bs caps body-caps letrec?]
+  (if letrec?
+    (vec (repeat (count bs) body-caps))
+    (loop [bs bs cs caps acc []]
+      (if (empty? bs) acc
+          (recur (rest bs) (disj cs (first (first bs))) (conj acc cs))))))
+
+(defn- once-mark-binding [node caps live]
+  (let [bs (:bindings node)
+        names (map first bs)
+        body-caps (reduce disj caps names)
+        ;; a loop's body runs again: what it reads is live all through it
+        body-live (if (= (:op node) :loop) (into live (once-cap-uses (:body node) body-caps)) live)
+        [body lb] (once-mark (:body node) body-caps body-live)
+        scopes (once-init-scopes bs caps body-caps (:letrec node))
+        [inits l] (loop [i (dec (count bs)) live lb acc ()]
+                    (if (neg? i)
+                      [(vec acc) live]
+                      (let [[n l] (once-mark (second (nth bs i)) (nth scopes i) live)]
+                        (recur (dec i) l (cons n acc)))))]
+    [(assoc node :bindings (mapv (fn [b init] [(first b) init]) bs inits) :body body) l]))
+
+;; A catch or finally may run after a throw anywhere in the body, so what they
+;; read is live all through it.
+(defn- once-mark-try [node caps live]
+  (let [[f lf] (if (:finally node) (once-mark (:finally node) caps live) [nil live])
+        [c lc] (if (:catch-body node) (once-mark (:catch-body node) caps lf) [nil lf])
+        [b lb] (once-mark (:body node) caps (into lf lc))
+        n (assoc node :body b)
+        n (if f (assoc n :finally f) n)
+        n (if c (assoc n :catch-body c) n)]
+    [n lb]))
+
+;; Any other node evaluates its children in order.
+(defn- once-mark-children [node caps live]
+  (let [kids (ir/reduce-ir-children conj [] node)
+        [kids' l] (once-mark-seq kids caps live)
+        i (atom -1)]
+    [(ir/map-ir-children (fn [_] (nth kids' (swap! i inc))) node) l]))
+
 (defn- once-mark [node caps live]
   (if (empty? caps)
     [node live]
-    (let [op (:op node)]
-      (cond
-        (= op :local)
-        (let [nm (:name node)]
-          (if (contains? caps nm)
-            [(if (contains? live nm) node (mark-clear node #{nm})) (conj live nm)]
-            [node live]))
-        (= op :fn)
-        (let [used (once-cap-uses node caps)]
-          [(mark-clear node (remove live used)) (into live used)])
-        (= op :if)
-        (let [[t lt] (once-mark (:then node) caps live)
-              [e le] (once-mark (:else node) caps live)
-              [c lc] (once-mark (:test node) caps (into lt le))]
-          [(assoc node :test c :then t :else e) lc])
-        (or (= op :let) (= op :loop))
-        (let [letrec? (:letrec node)
-              bs (:bindings node)
-              names (map first bs)
-              body-caps (reduce disj caps names)
-              ;; a loop's body runs again: what it reads is live all through it
-              body-live (if (= op :loop) (into live (once-cap-uses (:body node) body-caps)) live)
-              [body lb] (once-mark (:body node) body-caps body-live)
-              ;; the scope each init sees: the names bound before it are hidden
-              ;; (all of them, for a letrec)
-              scopes (if letrec?
-                       (vec (repeat (count bs) body-caps))
-                       (loop [bs bs cs caps acc []]
-                         (if (empty? bs) acc
-                             (recur (rest bs) (disj cs (first (first bs))) (conj acc cs)))))
-              [inits l] (loop [i (dec (count bs)) live lb acc ()]
-                          (if (neg? i)
-                            [(vec acc) live]
-                            (let [[n l] (once-mark (second (nth bs i)) (nth scopes i) live)]
-                              (recur (dec i) l (cons n acc)))))]
-          [(assoc node :bindings (mapv (fn [b init] [(first b) init]) bs inits) :body body) l])
-        (= op :try)
-        (let [[f lf] (if (:finally node) (once-mark (:finally node) caps live) [nil live])
-              [c lc] (if (:catch-body node) (once-mark (:catch-body node) caps lf) [nil lf])
-              [b lb] (once-mark (:body node) caps (into lf lc))
-              n (assoc node :body b)
-              n (if f (assoc n :finally f) n)
-              n (if c (assoc n :catch-body c) n)]
-          [n lb])
-        :else
-        (let [kids (ir/reduce-ir-children conj [] node)
-              [kids' l] (once-mark-seq kids caps live)
-              i (atom -1)]
-          [(ir/map-ir-children (fn [_] (nth kids' (swap! i inc))) node) l])))))
+    (case (:op node)
+      :local (once-mark-local node caps live)
+      :fn (let [used (once-cap-uses node caps)]
+            [(mark-clear node (remove live used)) (into live used)])
+      :if (once-mark-if node caps live)
+      (:let :loop) (once-mark-binding node caps live)
+      :try (once-mark-try node caps live)
+      (once-mark-children node caps live))))
 
 (defn once-last-uses [body cap-names]
   (let [caps (set cap-names)]

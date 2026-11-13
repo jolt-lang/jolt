@@ -6,12 +6,7 @@
   rebuild a live closure as code."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list?
-                     form-vec? form-map? form-set? form-char? form-literal?
-                     form-elements form-vec-items form-map-pairs form-set-items
-                     form-regex? form-regex-source form-inst? form-inst-source
-                     form-uuid? form-uuid-source form-bigdec? form-bigdec-source
-                     form-class-value?]]
+             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value?]]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-chars munge-name]]
             [jolt.backend-scheme.session :refer [fresh-label]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
@@ -66,18 +61,10 @@
 ;; one into a namespace or def name. With `$` as the separator, ns "a$" + def
 ;; "c" and ns "a" + def "$c" both spelled jfn$a$$$c$0, and the second
 ;; registration silently replaced the first.
-(def ^:private fnsrc-ns-counters (atom {}))
+;; The build seeds a namespace's counter through
+;; jolt.backend-scheme/seed-fnsrc-ns-counter!.
+(def fnsrc-ns-counters (atom {}))
 
-(defn seed-fnsrc-ns-counter!
-  "Start namespace ns's anon-literal counter at n. The build does this as it
-  emits each namespace: the counter otherwise carries whatever the in-process
-  load of that namespace used — a source load consumes names, a cached one does
-  not — and a namespace's emitted text must not depend on which it was, since
-  the build caches one compiled unit per namespace on its text (#1059). The
-  build seeds far above zero so a built binary's own runtime evaluation, whose
-  counters start at 0, cannot reuse a baked name."
-  [ns n]
-  (swap! fnsrc-ns-counters assoc (str ns) n))
 (defn fnsrc-name []
   (str "jfn$" (munge-chars *fnsrc-ns*) "/"
        (if *fnsrc-def* (munge-chars *fnsrc-def*) "")
@@ -156,29 +143,29 @@
 (defn- fnsrc-src-items [items] (str/join " " (map fnsrc-src items)))
 (defn- fnsrc-src-map-value [m]
   (str "{" (str/join " " (sort (map (fn [k] (str (fnsrc-src k) " " (fnsrc-src (get m k)))) (keys m)))) "}"))
-(defn fnsrc-src [form]
+(defn- fnsrc-src-sym [form]
+  (let [m (form-sym-meta form) sns (form-sym-ns form) nm (form-sym-name form)
+        s (if sns (str sns "/" nm) nm)]
+    ;; the meta map renders like any map: a reader-built one in source order
+    ;; (which is how emit-quoted carries it), a plain value sorted
+    (if (and m (pos? (count m)))
+      (str "^" (fnsrc-src m) " " s)
+      s)))
+
+;; The reader forms the reader builds from a source string, nil for any other.
+(defn- fnsrc-src-sourced [form]
   (cond
-    (form-char? form) (pr-str form)
-    (form-literal? form) (pr-str form)
-    (form-sym? form)
-    (let [m (form-sym-meta form) sns (form-sym-ns form) nm (form-sym-name form)
-          s (if sns (str sns "/" nm) nm)]
-      ;; the meta map renders like any map: a reader-built one in source order
-      ;; (which is how emit-quoted carries it), a plain value sorted
-      (if (and m (pos? (count m)))
-        (str "^" (fnsrc-src m) " " s)
-        s))
-    (form-set? form) (str "#{" (str/join " " (sort (map fnsrc-src (form-set-items form)))) "}")
-    (form-list? form) (str "(" (fnsrc-src-items (form-elements form)) ")")
-    (form-vec? form) (str "[" (fnsrc-src-items (form-vec-items form)) "]")
-    (form-map? form)
-    (str "{" (str/join " " (map (fn [p] (str (fnsrc-src (nth p 0)) " " (fnsrc-src (nth p 1))))
-                                (form-map-pairs form))) "}")
     (form-regex? form) (str "#\"" (form-regex-source form) "\"")
     (form-inst? form) (str "#inst " (pr-str (form-inst-source form)))
     (form-class-value? form) (throw (ex-info "fnsrc-src: a class value has no reader syntax" {}))
     (form-uuid? form) (str "#uuid " (pr-str (form-uuid-source form)))
     (form-bigdec? form) (str (form-bigdec-source form) "M")
+    :else nil))
+
+;; Plain jolt values, after the reader forms: a tagged literal first, since it
+;; is a map too.
+(defn- fnsrc-src-value [form]
+  (cond
     (and (map? form) (= :jolt/tagged (get form :jolt/type)))
     (str "#" (jolt.host/form-tag-name form) " " (fnsrc-src (get form :form)))
     (map? form) (fnsrc-src-map-value form)
@@ -186,6 +173,18 @@
     (set? form) (str "#{" (str/join " " (sort (map fnsrc-src form))) "}")
     (seq? form) (str "(" (fnsrc-src-items form) ")")
     :else (throw (ex-info (str "fnsrc-src: no source rendering for " (pr-str form)) {}))))
+
+(defn fnsrc-src [form]
+  (cond
+    (or (form-char? form) (form-literal? form)) (pr-str form)
+    (form-sym? form) (fnsrc-src-sym form)
+    (form-set? form) (str "#{" (str/join " " (sort (map fnsrc-src (form-set-items form)))) "}")
+    (form-list? form) (str "(" (fnsrc-src-items (form-elements form)) ")")
+    (form-vec? form) (str "[" (fnsrc-src-items (form-vec-items form)) "]")
+    (form-map? form)
+    (str "{" (str/join " " (map (fn [p] (str (fnsrc-src (nth p 0)) " " (fnsrc-src (nth p 1))))
+                                (form-map-pairs form))) "}")
+    :else (or (fnsrc-src-sourced form) (fnsrc-src-value form))))
 
 ;; A registration's form argument as text, (image-fn-form-src "..."), or nil when
 ;; the form has no rendering that reads back to the same construction -- checked

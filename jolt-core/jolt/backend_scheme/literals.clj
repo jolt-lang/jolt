@@ -5,12 +5,7 @@
   quote pool is bound."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list?
-                     form-vec? form-map? form-set? form-char? form-literal?
-                     form-elements form-vec-items form-map-pairs form-set-items
-                     form-char-code form-regex? form-regex-source form-inst?
-                     form-inst-source form-uuid? form-uuid-source form-bigdec?
-                     form-bigdec-source form-class-value? form-class-value-name]]
+             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-char-code form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value? form-class-value-name]]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.hoist :refer [hoist-const]]))
 
@@ -132,38 +127,29 @@
   (let [pairs (binding [*quote-pool* nil]
                 (vec (sort (map (fn [k] (str (emit-quoted k) " " (emit-quoted (get m k)))) (keys m)))))]
     (q-intern (str "(jolt-hash-map " (str/join " " pairs) ")"))))
-;; emit-quoted reconstructs both raw reader forms (from :quote) AND plain jolt
-;; values (def/symbol :meta). Reader forms are walked via the jolt.host form-*
-;; contract; the native-predicate branches below catch genuine jolt collection
-;; VALUES. The form-* branches come first so a reader form (a host-native struct/
-;; array that a native predicate might also match) is always handled as a form.
-(defn emit-quoted [form]
+;; A quoted symbol, carrying its reader metadata (^:foo bar) so (meta 'x) sees it.
+(defn- emit-quoted-sym [form]
+  (let [m (form-sym-meta form) sns (form-sym-ns form) nm (form-sym-name form)]
+    (q-intern
+     (if (and m (pos? (count m)))
+       (str "(jolt-symbol/meta " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) " "
+            (emit-quoted m) ")")
+       (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")")))))
+
+;; sort items by emitted text: a set has no source order, and host-hash order
+;; is not stable across Chez versions (jolt-8479) — so the items are emitted
+;; unpooled, or the sort would be over binding names handed out in that same
+;; unstable order. See the pool comment above.
+(defn- emit-quoted-set [items]
+  (q-intern (str "(jolt-hash-set "
+                 (str/join " " (binding [*quote-pool* nil]
+                                 (vec (sort (map emit-quoted items)))))
+                 ")")))
+
+;; The reader forms whose value the reader builds from a source string. None
+;; is interned: each is a construction from its own literal text.
+(defn- emit-quoted-sourced [form]
   (cond
-    (form-char? form) (emit-const form)
-    (form-literal? form) (emit-const form)
-    (form-sym? form)
-    (let [m (form-sym-meta form) sns (form-sym-ns form) nm (form-sym-name form)]
-      (q-intern
-       (if (and m (pos? (count m)))
-         ;; carry reader metadata (^:foo bar) onto the quoted symbol so (meta 'x) sees it
-         (str "(jolt-symbol/meta " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) " "
-              (emit-quoted m) ")")
-         (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")"))))
-    ;; sort items by emitted text: a set has no source order, and host-hash order
-    ;; is not stable across Chez versions (jolt-8479) — so the items are emitted
-    ;; unpooled, or the sort would be over binding names handed out in that same
-    ;; unstable order. See the pool comment above.
-    (form-set? form)
-    (q-intern (str "(jolt-hash-set "
-                   (str/join " " (binding [*quote-pool* nil]
-                                   (vec (sort (map emit-quoted (form-set-items form))))))
-                   ")"))
-    ;; a fn literal is a list, so this is the only branch that has to ask
-    (form-list? form)
-    (or (q-shared-name form)
-        (q-intern (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")))
-    (form-vec? form) (q-intern (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")"))
-    (form-map? form) (emit-quoted-map (form-map-pairs form))
     ;; a quoted #"…" regex value -> reconstruct it (same as the :regex IR leaf).
     (form-regex? form) (str "(jolt-regex " (chez-str-lit (form-regex-source form)) ")")
     ;; quoted #inst / #uuid literals construct their value, like the JVM reader
@@ -179,26 +165,49 @@
     ;; (first '[1.5M]) was an opaque object printing as #bigdec "1.5", = to
     ;; nothing, and (eval '(+ 1.5M 1)) could not compile it.
     (form-bigdec? form) (str "(jolt-bigdec-from-string " (chez-str-lit (form-bigdec-source form)) ")")
-    ;; a quoted custom #tag with no registered reader -> a tagged-literal value
-    ;; (Clojure's reader builds a TaggedLiteral), not the raw reader map. The tag is
-    ;; stored as a :#name keyword; strip the leading # to the bare symbol.
-    ;; stored as a :#name / :#ns/name keyword; form-tag-name is the tag as written,
-    ;; and a qualified one is a QUALIFIED symbol (a quoted #foo/bar used to come
-    ;; back as the bare symbol named "foo/bar").
-    (and (map? form) (= :jolt/tagged (get form :jolt/type)))
-    (let [tag (jolt.host/form-tag-name form)
-          i (str/index-of tag "/")
-          tns (when i (subs tag 0 i))
-          tn (if i (subs tag (inc i)) tag)]
-      (q-intern (str "(jolt-tagged-literal (jolt-symbol " (if tns (chez-str-lit tns) "#f") " "
-                     (chez-str-lit tn) ") " (emit-quoted (get form :form)) ")")))
-    ;; plain jolt VALUES (metadata maps and anything nested in them)
+    :else nil))
+
+;; a quoted custom #tag with no registered reader -> a tagged-literal value
+;; (Clojure's reader builds a TaggedLiteral), not the raw reader map. The tag is
+;; stored as a :#name keyword; strip the leading # to the bare symbol.
+;; stored as a :#name / :#ns/name keyword; form-tag-name is the tag as written,
+;; and a qualified one is a QUALIFIED symbol (a quoted #foo/bar used to come
+;; back as the bare symbol named "foo/bar").
+(defn- emit-quoted-tagged [form]
+  (let [tag (jolt.host/form-tag-name form)
+        i (str/index-of tag "/")
+        tns (when i (subs tag 0 i))
+        tn (if i (subs tag (inc i)) tag)]
+    (q-intern (str "(jolt-tagged-literal (jolt-symbol " (if tns (chez-str-lit tns) "#f") " "
+                   (chez-str-lit tn) ") " (emit-quoted (get form :form)) ")"))))
+
+;; plain jolt VALUES (metadata maps and anything nested in them), after the
+;; reader forms: a tagged literal first, since it is a map too.
+(defn- emit-quoted-value [form]
+  (cond
+    (and (map? form) (= :jolt/tagged (get form :jolt/type))) (emit-quoted-tagged form)
     (map? form) (emit-quoted-map-value form)
     (vector? form) (q-intern (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")"))
-    (set? form) (q-intern (str "(jolt-hash-set "
-                               (str/join " " (binding [*quote-pool* nil]
-                                               (vec (sort (map emit-quoted form)))))
-                               ")"))
+    (set? form) (emit-quoted-set form)
     (seq? form) (q-intern (str "(jolt-list " (str/join " " (map emit-quoted form)) ")"))
     :else (throw (ex-info (str "emit-quoted: unsupported quoted form " (pr-str form)) {}))))
+
+;; emit-quoted reconstructs both raw reader forms (from :quote) AND plain jolt
+;; values (def/symbol :meta). Reader forms are walked via the jolt.host form-*
+;; contract; the native-predicate branches (emit-quoted-value) catch genuine
+;; jolt collection VALUES. The form-* branches come first so a reader form (a
+;; host-native struct/array that a native predicate might also match) is always
+;; handled as a form.
+(defn emit-quoted [form]
+  (cond
+    (or (form-char? form) (form-literal? form)) (emit-const form)
+    (form-sym? form) (emit-quoted-sym form)
+    (form-set? form) (emit-quoted-set (form-set-items form))
+    ;; a fn literal is a list, so this is the only branch that has to ask
+    (form-list? form)
+    (or (q-shared-name form)
+        (q-intern (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")))
+    (form-vec? form) (q-intern (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")"))
+    (form-map? form) (emit-quoted-map (form-map-pairs form))
+    :else (or (emit-quoted-sourced form) (emit-quoted-value form))))
 
