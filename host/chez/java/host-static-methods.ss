@@ -741,13 +741,13 @@
         (cons "MATH_SYMBOL" (->num 25)) (cons "CURRENCY_SYMBOL" (->num 26))
         (cons "MODIFIER_SYMBOL" (->num 27)) (cons "OTHER_SYMBOL" (->num 28))
         (cons "INITIAL_QUOTE_PUNCTUATION" (->num 29)) (cons "FINAL_QUOTE_PUNCTUATION" (->num 30))
-        ;; JVM Character.isWhitespace: Unicode whitespace (so U+2028 line separator
-        ;; counts, like the JVM) MINUS the no-break spaces the JVM excludes
-        ;; (U+00A0/U+2007/U+202F). char<=?space missed everything above ASCII.
+        ;; JVM Character.isWhitespace: java-whitespace? (natives-str.ss), the one
+        ;; test clojure.string's trim and blank? use too. It is Unicode whitespace
+        ;; (so U+2028 line separator counts, like the JVM) minus the no-break
+        ;; spaces and NEL, plus the four information separators U+001C..U+001F.
         ;; A surrogate (a unit, or its int) is no whitespace and no Chez char.
         (cons "isWhitespace" (lambda (c) (let ((ch (scalar-char c)))
-                                           (and ch (char-whitespace? ch)
-                                                (not (memv (char->integer ch) '(#xA0 #x2007 #x202F)))))))
+                                           (and ch (java-whitespace? ch)))))
         ;; Codepoint bounds, as plain integers. The UTF-16 surrogate API is in
         ;; the codepoint-conversion block above.
         (cons "MIN_VALUE" (integer->char 0))

@@ -206,11 +206,14 @@
 (register-class-statics! "Long"
   (list (cons "parseLong" (lambda (s . r) (parse-int-or-throw s (if (null? r) 10 (jnum->exact (car r))) "long")))))
 ;; JVM Character.isWhitespace: Unicode whitespace MINUS the no-break spaces the
-;; JVM excludes (U+00A0/U+2007/U+202F).
+;; JVM excludes (U+00A0/U+2007/U+202F) and NEL (U+0085, a control character to
+;; Java), PLUS the four information separators U+001C..U+001F.
 (register-class-statics! "Character"
   (list (cons "isWhitespace" (lambda (c) (let ((cp (char-code c)))
-                                           (and (char-whitespace? (integer->char cp))
-                                                (not (fx=? cp #xA0)) (not (fx=? cp #x2007)) (not (fx=? cp #x202F))))))))
+                                           (or (and (fx>=? cp #x1C) (fx<=? cp #x1F))
+                                               (and (char-whitespace? (integer->char cp))
+                                                    (not (fx=? cp #xA0)) (not (fx=? cp #x2007)) (not (fx=? cp #x202F))
+                                                    (not (fx=? cp #x85)))))))))
 ;; String.join(delim, elems) — elems as a collection or spread as varargs
 (register-class-statics! "String"
   (list (cons "join" (lambda (delim . parts)
