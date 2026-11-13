@@ -1,7 +1,15 @@
-;; Unused code jolt-metrics reports that stays on purpose (ci/metrics-gate.clj).
-;; Each entry says why: the tool can't see var-deref from Scheme, #' lookups, or
-;; a require kept for what loading it does.
-{:unused-requires
+;; What ci/metrics-gate.clj holds the jolt-metrics report to.
+;;
+;; :critical-free — path prefixes where any CRITICAL finding (a function over the
+;; cyclomatic/cognitive/lines/nesting/params limits, or a file over 1000 source
+;; lines) or a file jolt-metrics cannot read fails the build. Add a tree here
+;; once its criticals are cleared; there is no per-finding allowlist for these.
+;;
+;; The rest is unused code that stays on purpose. Each entry says why: the tool
+;; can't see var-deref from Scheme, #' lookups, or a require kept for what
+;; loading it does.
+{:critical-free ["jolt-core/"]
+ :unused-requires
  [{:path "stdlib/clojure/core/async/flow/impl.clj" :lib "clojure.core.async.flow.impl.graph"
    :why "upstream core.async's own require; impl.clj names the Graph class it defines"}
   {:path "test/chez/ns-audit/good/host.cljc" :lib "clojure.set"
