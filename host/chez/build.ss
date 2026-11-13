@@ -517,6 +517,39 @@
               (string-append pc " -llz4")
               "-llz4")))))
 
+;; -L flags for the directories of the shared libraries the Chez executable itself
+;; links, outside the OS's own (/usr/lib, /System). A Chez built against
+;; libraries that are not on the linker's default path — Nix's, whose lz4, zlib,
+;; ncurses and libiconv all live under /nix/store and none next to the kernel —
+;; left every -l below unresolvable: "library 'lz4' not found", then, with lz4
+;; installed, "library not found for -lz". The executable already names the
+;; libraries its kernel was built against, so ask it (or, when it is a wrapper
+;; script, the binary the script runs). A Chez that vendors its
+;; archives (Homebrew's, the provisioned one) links only OS libraries and gets
+;; nothing here.
+(define (bld-osx-lib-dir-flags exe)
+  (bld-sh-capture
+    (string-append
+      "e=\"$(command -v " (bld-sh-quote exe) ")\"; "
+      ;; Nix's chez is a bash wrapper (makeWrapper) that execs the real binary:
+      ;; otool answers "is not an object file" for the script, so take the last
+      ;; Mach-O file the script names, past its #! line (the shell is one too).
+      "if ! otool -h \"$e\" 2>/dev/null | grep -q 'Mach header'; then "
+      "e=\"$(sed 1d \"$e\" 2>/dev/null | grep -o \"/[^\\\"' ]*\" | while read -r p; do "
+      "[ -f \"$p\" ] && otool -h \"$p\" 2>/dev/null | grep -q 'Mach header' && echo \"$p\"; "
+      "done | tail -n 1)\"; fi; "
+      "[ -n \"$e\" ] && otool -L \"$e\" 2>/dev/null | awk 'NR > 1 { print $1 }'"
+      " | sed -n 's|/[^/]*$||p'"
+      " | grep -v -e '^/usr/lib' -e '^/System/' -e '^@' | sort -u"
+      ;; one line, each flag followed by a space
+      " | sed \"s|.*|-L'&'|\" | tr '\\n' ' '")))
+
+(define bld-osx-chez-lib-dir-flags
+  (let ((flags #f))
+    (lambda ()
+      (unless flags (set! flags (bld-osx-lib-dir-flags bld-chez)))
+      flags)))
+
 ;; The link fragment for one of the kernel's compression libraries: the archive's
 ;; path when one is reachable, else -l<lib>. WARN? says whether the fallback is
 ;; worth a word. It always is for lz4, which no OS ships, and on Linux for zlib;
@@ -574,6 +607,7 @@
     ;; genuinely part of macOS.
     (bld-osx?
      (string-append
+       (bld-osx-chez-lib-dir-flags)
        (bld-compression-lib "lz4" #t)
        (bld-compression-lib "z" #f)
        "-lncurses -framework Foundation -liconv -lm"))
