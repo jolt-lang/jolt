@@ -312,6 +312,18 @@
 (ok "path under a directory" (string=? (path-under "/a" "src") "/a/src"))
 (ok "path under a drive root" (string=? (path-under "C:\\" "src") "C:\\src"))
 
+;; The File operations used by babashka.fs on a relative name must work
+;; without consulting user.dir. Count lookups so the check is independent of
+;; the host's cwd lookup cost.
+(let ((saved jolt-user-dir) (lookups 0) (f (make-jfile "dir/file.edn")))
+  (set! jolt-user-dir (lambda () (set! lookups (+ lookups 1)) (saved)))
+  (ok "relative File.getName" (equal? (jfile-method f "getName" '()) '("file.edn")))
+  (ok "relative File.toPath" (string=? (nio-path-str (car (jfile-method f "toPath" '()))) "dir/file.edn"))
+  (ok "lexical File operations skip user.dir" (zero? lookups))
+  (jfile-method f "getAbsolutePath" '())
+  (ok "absolute File path consults user.dir" (> lookups 0))
+  (set! jolt-user-dir saved))
+
 (if (> fails 0)
     (begin (printf "WIN-PATH FAILURES: ~a of ~a\n" fails total) (exit 1))
     (printf "WIN-PATH OK (~a checks)\n" total))

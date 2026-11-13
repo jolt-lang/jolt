@@ -100,83 +100,10 @@
     nil
     `(if ~(first clauses) ~(nth clauses 1) (cond ~@(drop 2 clauses)))))
 
-;; ns is sugar over the namespace-op fns (in-ns/require/use/import/refer-clojure,
-;; all ctx-capturing clojure.core fns) — matching Clojure, where require is a fn and
-;; the ns macro expands its clauses into require calls. Each spec is quoted
-;; individually and passed as data. So ns compiles to a plain (do …) of invokes.
-;; MUST live in this first tier: the self-hosted analyzer build (triggered while
-;; 10-seq loads) processes jolt.analyzer's own (ns …) form, so ns has to exist by
-;; then. Its body resolves fn/map/reduce/cond at EXPANSION time, by which point all
-;; of 00-syntax has loaded, so using them here is fine.
-;;
-;; After the name comes an optional docstring, an optional attr-map, and reference
-;; clauses, and nothing else. An unescaped quote in a docstring splits it into
-;; strings and bare symbols; those are refused here, as the JVM refuses them.
-;;
-;; A build never runs an ns form. ei-ns-calls (emit-image.ss) lifts the
-;; reset-meta! and load calls out of this expansion, so these are the one place
-;; they are made, whichever way the namespace loads.
-(defmacro ns [nm & clauses]
-  ;; ^{:map} metadata on the ns name reads as a (with-meta sym {...}) form, not an
-  ;; annotated symbol. Real libraries put :author/:doc there
-  ;; (clojure.tools.logging). It is evaluated, in the new namespace and before
-  ;; clojure.core is referred into it, as the JVM's .resetMeta call is.
-  (let [meta-form? (and (seq? nm) (= 'with-meta (first nm)))
-        name-meta (if meta-form? (nth nm 2) (meta nm))
-        nm (if meta-form? (second nm) nm)
-        _ (if (symbol? nm)
-            nil
-            (throw (ex-info (str "ns: the namespace name must be a symbol, got: " (pr-str nm))
-                            {:jolt.error/kind :analyze/invalid-ns-form
-                             :jolt.error/type :analysis-error})))
-        doc (if (string? (first clauses)) (first clauses) nil)
-        clauses (if doc (rest clauses) clauses)
-        attrs (if (map? (first clauses)) (first clauses) nil)
-        clauses (if attrs (rest clauses) clauses)
-        ns-meta (if doc (assoc (if name-meta name-meta {}) :doc doc) name-meta)
-        ns-meta (if attrs (conj (if ns-meta ns-meta {}) attrs) ns-meta)
-        bad-clause (fn [clause why]
-                     (throw (ex-info
-                              (str "ns " nm ": " why ", got: " (pr-str clause)
-                                   ". After the name come an optional docstring, an optional"
-                                   " attr-map and reference clauses such as (:require ...);"
-                                   " an unescaped \" in a docstring splits it this way")
-                              {:jolt.error/kind :analyze/invalid-ns-form
-                               :jolt.error/type :analysis-error})))
-        calls (reduce
-                (fn [acc clause]
-                  ;; a reference clause may be a list (:require …) or a vector
-                  ;; [:require …]; Clojure accepts both, dispatching on (first clause).
-                  (if (or (seq? clause) (vector? clause))
-                    (let [head (first clause) args (rest clause)]
-                      (cond
-                        (= head :require) (conj acc `(require ~@(map (fn [s] `(quote ~s)) args)))
-                        (= head :use)     (conj acc `(use ~@(map (fn [s] `(quote ~s)) args)))
-                        (= head :import)  (conj acc `(import ~@(map (fn [s] `(quote ~s)) args)))
-                        (= head :refer-clojure)
-                          (conj acc `(refer-clojure ~@(map (fn [s] `(quote ~s)) args)))
-                        (= head :refer)   (conj acc `(refer ~@(map (fn [s] `(quote ~s)) args)))
-                        (= head :load)    (conj acc `(load ~@(map (fn [s] `(quote ~s)) args)))
-                        (= head :gen-class) acc
-                        :else (bad-clause clause "unknown reference clause")))
-                    (bad-clause clause "not a reference clause")))
-                [] clauses)
-        ;; no :refer-clojure clause means the default (refer-clojure), as on the
-        ;; JVM — it is what makes a later standalone (refer-clojure :exclude …)
-        ;; withhold nothing, the names being mapped already (ns.ss).
-        ;; (reduce/or, not some/into: this expands before 10-seq has loaded)
-        explicit? (reduce (fn [a c] (or a (= :refer-clojure (first c))))
-                          false clauses)
-        default (if (or explicit? (= nm 'clojure.core)) () (list `(refer-clojure)))
-        set-meta (if ns-meta
-                   (list `(reset-meta! (create-ns (quote ~nm)) ~ns-meta))
-                   ())]
-    `(do (in-ns (quote ~nm)) ~@set-meta ~@default ~@calls)))
-
 ;; import is a MACRO like the JVM's: its specs are never evaluated, so
 ;; (import [java.nio.file Paths]) works bare — under strict resolution the
 ;; old function-import analyzed java.nio.file as a value and threw. Specs
-;; arriving already quoted (the ns macro above quotes its clause args) are
+;; arriving already quoted (the ns macro below quotes its clause args) are
 ;; passed through, mirroring clojure.core/import's quote-unwrap. The runtime
 ;; work happens in __import (host/chez/java/natives-str.ss).
 (defmacro import [& specs]
@@ -221,6 +148,93 @@
 (defmacro declare [& syms]
   `(do ~@(map (fn* [s] `(def ~(with-meta s (assoc (meta s) :declared true)))) syms)))
 
+;; ns's helpers: fn*/let* like the rest of this file above the let/fn macros.
+;; pr-str (20-coll) builds the error messages here and in destructure below.
+(declare pr-str)
+
+(def ^:private ns-bad-clause
+  (fn* ns-bad-clause [nm clause why]
+    (throw (ex-info
+             (str "ns " nm ": " why ", got: " (pr-str clause)
+                  ". After the name come an optional docstring, an optional"
+                  " attr-map and reference clauses such as (:require ...);"
+                  " an unescaped \" in a docstring splits it this way")
+             {:jolt.error/kind :analyze/invalid-ns-form
+              :jolt.error/type :analysis-error}))))
+
+;; one reference clause appended to acc as its namespace-op call, each spec
+;; quoted. A reference clause may be a list (:require …) or a vector
+;; [:require …]; Clojure accepts both, dispatching on (first clause).
+(def ^:private ns-clause-calls
+  (fn* ns-clause-calls [nm acc clause]
+    (if (or (seq? clause) (vector? clause))
+      (let* [head (first clause)
+             args (map (fn* [s] `(quote ~s)) (rest clause))]
+        (cond
+          (= head :require) (conj acc `(require ~@args))
+          (= head :use)     (conj acc `(use ~@args))
+          (= head :import)  (conj acc `(import ~@args))
+          (= head :refer-clojure) (conj acc `(refer-clojure ~@args))
+          (= head :refer)   (conj acc `(refer ~@args))
+          (= head :load)    (conj acc `(load ~@args))
+          (= head :gen-class) acc
+          :else (ns-bad-clause nm clause "unknown reference clause")))
+      (ns-bad-clause nm clause "not a reference clause"))))
+
+;; the namespace metadata: the name's own, then the docstring, then the attr-map.
+(def ^:private ns-metadata
+  (fn* ns-metadata [name-meta doc attrs]
+    (let* [m (if doc (assoc (if name-meta name-meta {}) :doc doc) name-meta)]
+      (if attrs (conj (if m m {}) attrs) m))))
+
+
+;; ns is sugar over the namespace-op fns (in-ns/require/use/import/refer-clojure,
+;; all ctx-capturing clojure.core fns) — matching Clojure, where require is a fn and
+;; the ns macro expands its clauses into require calls. Each spec is quoted
+;; individually and passed as data. So ns compiles to a plain (do …) of invokes.
+;; MUST live in this first tier: the self-hosted analyzer build (triggered while
+;; 10-seq loads) processes jolt.analyzer's own (ns …) form, so ns has to exist by
+;; then. Its body resolves fn/map/reduce/cond at EXPANSION time, by which point all
+;; of 00-syntax has loaded, so using them here is fine.
+;;
+;; After the name comes an optional docstring, an optional attr-map, and reference
+;; clauses, and nothing else. An unescaped quote in a docstring splits it into
+;; strings and bare symbols; those are refused here, as the JVM refuses them.
+;;
+;; A build never runs an ns form. ei-ns-calls (emit-image.ss) lifts the
+;; reset-meta! and load calls out of this expansion, so these are the one place
+;; they are made, whichever way the namespace loads.
+(defmacro ns [nm & clauses]
+  ;; ^{:map} metadata on the ns name reads as a (with-meta sym {...}) form, not an
+  ;; annotated symbol. Real libraries put :author/:doc there
+  ;; (clojure.tools.logging). It is evaluated, in the new namespace and before
+  ;; clojure.core is referred into it, as the JVM's .resetMeta call is.
+  (let [meta-form? (and (seq? nm) (= 'with-meta (first nm)))
+        name-meta (if meta-form? (nth nm 2) (meta nm))
+        nm (if meta-form? (second nm) nm)
+        _ (if (symbol? nm)
+            nil
+            (throw (ex-info (str "ns: the namespace name must be a symbol, got: " (pr-str nm))
+                            {:jolt.error/kind :analyze/invalid-ns-form
+                             :jolt.error/type :analysis-error})))
+        doc (if (string? (first clauses)) (first clauses) nil)
+        clauses (if doc (rest clauses) clauses)
+        attrs (if (map? (first clauses)) (first clauses) nil)
+        clauses (if attrs (rest clauses) clauses)
+        ns-meta (ns-metadata name-meta doc attrs)
+        calls (reduce (fn [acc clause] (ns-clause-calls nm acc clause)) [] clauses)
+        ;; no :refer-clojure clause means the default (refer-clojure), as on the
+        ;; JVM — it is what makes a later standalone (refer-clojure :exclude …)
+        ;; withhold nothing, the names being mapped already (ns.ss).
+        ;; (reduce/or, not some/into: this expands before 10-seq has loaded)
+        explicit? (reduce (fn [a c] (or a (= :refer-clojure (first c))))
+                          false clauses)
+        default (if (or explicit? (= nm 'clojure.core)) () (list `(refer-clojure)))
+        set-meta (if ns-meta
+                   (list `(reset-meta! (create-ns (quote ~nm)) ~ns-meta))
+                   ())]
+    `(do (in-ns (quote ~nm)) ~@set-meta ~@default ~@calls)))
+
 ;; letfn is a macro over the letfn* special form, matching Clojure: each
 ;; (name [params] body*) spec becomes a name + a (fn name [params] body*) binding.
 ;; So (macroexpand-1 '(letfn …)) yields the letfn* form macroexpansion tooling
@@ -239,230 +253,274 @@
 ;; let/loop/fn, so expanding its own body can't recurse back into destructure.
 ;; Note map? is true for symbol structs too, so the symbol? clause must come first.
 ;; def+fn* (not defn) because the defn macro is not defined until later in the tier.
-;; pr-str (20-coll) builds its error messages.
-(declare pr-str)
+;; pr-str (declared above ns) builds its error messages.
+;; The destructure-* helpers below are its pieces, one per pattern shape; each
+;; appends bindings to the vector acc and returns it.
+(declare ^:private destructure-binding)
+
+(def ^:private destructure-amp?
+  (fn* destructure-amp? [x] (and (symbol? x) (= "&" (name x)))))
+
+;; a vector pattern without &: element idx binds (nth g idx nil); :as binds g.
+(def ^:private destructure-indexed
+  (fn* destructure-indexed [pat g i idx a]
+    (if (< i (count pat))
+      (let* [elem (nth pat i)]
+        (if (= elem :as)
+          (destructure-indexed pat g (+ i 2) idx (destructure-binding (nth pat (inc i)) g a))
+          (destructure-indexed pat g (inc i) (inc idx)
+                               (destructure-binding elem `(nth ~g ~idx nil) a))))
+      a)))
+
+;; a pattern with & walks (seq v) via first/next like the
+;; JVM, so a map (or any non-indexed seqable) destructures
+;; positionally through its seq — nth on it would not.
+;; gs holds the seq still to walk; & binds it whole.
+(def ^:private destructure-seq-walk
+  (fn* destructure-seq-walk [pat g gs i a]
+    (if (< i (count pat))
+      (let* [elem (nth pat i)]
+        (cond
+          (destructure-amp? elem)
+            (destructure-seq-walk pat g gs (+ i 2) (destructure-binding (nth pat (inc i)) gs a))
+          (= elem :as)
+            (destructure-seq-walk pat g gs (+ i 2) (destructure-binding (nth pat (inc i)) g a))
+          :else
+            (let* [gf (symbol (str (gensym)))
+                   a2 (conj (conj a gf) `(first ~gs))
+                   a3 (conj (conj a2 gs) `(next ~gs))]
+              (destructure-seq-walk pat g gs (inc i) (destructure-binding elem gf a3)))))
+      a)))
+
+(def ^:private destructure-vector
+  (fn* destructure-vector [pat init acc]
+    (let* [g (symbol (str (gensym)))
+           has-amp (reduce (fn* [st x] (if st st (destructure-amp? x))) false pat)
+           gs (symbol (str (gensym)))]
+      (if has-amp
+        (destructure-seq-walk pat g gs 0 (conj (conj (conj (conj acc g) init) gs) `(seq ~g)))
+        (destructure-indexed pat g 0 0 (conj (conj acc g) init))))))
+
+;; kwargs: a map pattern may bind against the seq rest of a fn
+;; — (& {:keys [...]}) — a seq of alternating k/v args, optionally
+;; with a trailing map (Clojure 1.11: (f :a 1 {:b 2}) merges the
+;; map over the pairs). An odd count means the last arg is that
+;; trailing map — except for a LONE element, which is the whole
+;; value: (f {:a 1}) passes the map itself, and the JVM takes that
+;; element as the map whatever it is, so a stray (f 1 :a) looks
+;; keys up in a keyword and answers nil instead of throwing
+;; (#909). Only a seq is coerced, like destmap*'s (seq? gmap): a
+;; vector init destructures as itself, never as pairs. g holds
+;; init once; gm is the coerced map every lookup (and :as) reads
+;; from.
+(def ^:private destructure-coerce-map
+  (fn* destructure-coerce-map [g]
+    `(if (seq? ~g)
+       (if (next ~g)
+         (if (odd? (count ~g))
+           (merge (apply hash-map (butlast ~g)) (last ~g))
+           (apply hash-map ~g))
+         (if (seq ~g) (first ~g) (hash-map)))
+       ~g)))
+
+;; A map pattern's helpers share m, its context: {:pat :gm :gignore :defaults
+;; :select}. gm is the coerced map, gignore the throwaway local for a checked
+;; key that binds nothing, defaults the :or map.
+(def ^:private destructure-has-default?
+  (fn* destructure-has-default? [defaults k] (and defaults (contains? defaults k))))
+
+;; init form reading key bk for binding form bb; a checked (!)
+;; directive uses req! (throw on missing). An :or default applies
+;; when the local name (binding-style :or) or the key itself
+;; (key-style :or) has one; a default for a required key errors.
+(def ^:private destructure-map-lookup
+  (fn* destructure-map-lookup [m bb bk req?]
+    (let* [gm (get m :gm)
+           defaults (get m :defaults)
+           ident (or (symbol? bb) (keyword? bb))
+           local (if ident (symbol (name bb)) bb)
+           ld? (and ident (destructure-has-default? defaults local))
+           kd? (destructure-has-default? defaults bk)]
+      (cond
+        (and ld? kd?)
+          (throw (new Exception (str "Multiple :or defaults for same key: " (pr-str bk))))
+        (or ld? kd?)
+          (if req?
+            (throw (new Exception (str "Can't supply default value for required key: " (pr-str bk))))
+            `(get ~gm ~bk ~(get defaults (if ld? local bk))))
+        req? `(req! ~gm ~bk)
+        :else `(get ~gm ~bk)))))
+
+;; bind bb (a plain ident, a throwaway gignore, or a nested
+;; pattern) to key bk. :or default expressions are inlined
+;; as get's not-found arg (eager, JVM-exact).
+(def ^:private destructure-map-bind
+  (fn* destructure-map-bind [m a bb bk req?]
+    (let* [bv (destructure-map-lookup m bb bk req?)]
+      (if (or (symbol? bb) (keyword? bb))
+        ;; carry a type hint / metadata onto the local, like
+        ;; the reference's localize (drops only the namespace).
+        (conj (conj a (with-meta (symbol (name bb)) (meta bb))) bv)
+        (destructure-binding bb bv a)))))
+
+;; a directive name -> its lookup key. dnsp (a qualified :ns/keys)
+;; takes precedence over a bare name's own namespace.
+(def ^:private destructure-directive-key
+  (fn* destructure-directive-key [kind dnsp s]
+    (let* [nsp (or dnsp (namespace s)) nm (name s)]
+      (cond
+        (= kind :kw)  (keyword (if nsp (str nsp "/" nm) nm))
+        (= kind :sym) `(quote ~(symbol nsp nm))
+        :else nm))))
+
+;; one name bb of a directive, before or after its &. st is [acc sel b->k].
+(def ^:private destructure-directive-name
+  (fn* destructure-directive-name [m st bb kind dnsp req? preamp?]
+    (let* [_ (if (and (not preamp?) (symbol? bb))
+               (throw (new IllegalArgumentException
+                        (str "'" bb "' - binding symbols can only appear before '&', use keys after"))))
+           a    (nth st 0)
+           sel  (nth st 1)
+           b->k (nth st 2)
+           bk   (if preamp? (destructure-directive-key kind dnsp bb) bb)
+           a2   (if (or preamp? req?)
+                  (destructure-map-bind m a (if preamp? bb (get m :gignore)) bk req?)
+                  a)
+           b->k2 (if preamp? (assoc b->k (symbol (name bb)) bk) b->k)]
+      [a2 (conj sel bk) b->k2])))
+
+;; walk one directive's name list. Names before & bind and are
+;; transformed to keys; names after & are the keys themselves
+;; (a bare symbol there is an error — quote it for :syms), used
+;; to declare :select membership and, for a checked directive, to
+;; enforce the key. st is [acc sel b->k].
+(def ^:private destructure-directive
+  (fn* destructure-directive [m st names kind dnsp req? preamp?]
+    (if (seq names)
+      (let* [bb (first names)]
+        (if (destructure-amp? bb)
+          (if preamp?
+            (destructure-directive m st (next names) kind dnsp req? false)
+            (throw (new IllegalArgumentException "& can only appear once in a directive")))
+          (destructure-directive m (destructure-directive-name m st bb kind dnsp req? preamp?)
+                                 (next names) kind dnsp req? preamp?)))
+      st)))
+
+;; a keyword key is a directive: split :keys/:syms/:strs from its
+;; ! (checked) suffix. Returns [kind req?].
+(def ^:private destructure-directive-kind
+  (fn* destructure-directive-kind [dir]
+    (let* [nm (name dir)
+           n  (count nm)
+           req? (and (> n 0) (= "!" (subs nm (dec n) n)))
+           b  (if req? (subs nm 0 (dec n)) nm)]
+      (cond
+        (= b "keys") [:kw req?]
+        (= b "syms") [:sym req?]
+        (= b "strs") [:str req?]
+        :else (throw (new Exception (str "Unsupported map directive: " dir)))))))
+
+;; a direct binding {bb key}. Under an active :select, a
+;; nested map subselects: give it a :select if it lacks
+;; one, and thread its selected submap up through subm.
+(def ^:private destructure-direct-entry
+  (fn* destructure-direct-entry [m st k]
+    (let* [subm    (nth st 3)
+           bk      (get (get m :pat) k)
+           subsel? (and (get m :select) (map? k))
+           k2      (if (or (not subsel?) (get k :select))
+                     k
+                     (assoc k :select (symbol (str (gensym)))))
+           subm2   (if subsel? (assoc subm bk (get k2 :select)) subm)
+           b->k2   (if (symbol? k2) (assoc (nth st 2) k2 bk) (nth st 2))]
+      [(destructure-map-bind m (nth st 0) k2 bk false) (conj (nth st 1) bk) b->k2 subm2])))
+
+;; process one entry key. st is [acc sel b->k subm], where subm
+;; maps a nested-map key to its :select var (for deep :select).
+(def ^:private destructure-map-entry
+  (fn* destructure-map-entry [m st k]
+    (if (keyword? k)
+      (let* [dk (destructure-directive-kind k)
+             r  (destructure-directive m [(nth st 0) (nth st 1) (nth st 2)] (get (get m :pat) k)
+                                       (nth dk 0) (namespace k) (nth dk 1) true)]
+        [(nth r 0) (nth r 1) (nth r 2) (nth st 3)])
+      (destructure-direct-entry m st k))))
+
+;; the pattern's binding entries: every key but the :or/:as/:select/:defaults options
+(def ^:private destructure-entry-keys
+  (fn* destructure-entry-keys [pat]
+    (reduce (fn* [ks k]
+              (if (or (= k :or) (= k :as) (= k :select) (= k :defaults))
+                ks (conj ks k)))
+            [] (keys pat))))
+
+;; resolve each :or key to the actual map key: a binding symbol
+;; maps through b->k; a key-style :or entry is the key itself.
+(def ^:private destructure-default-pairs
+  (fn* destructure-default-pairs [or-keys b->k]
+    (reduce (fn* [ps k]
+              (let* [rk (if (symbol? k) (get b->k k) k)
+                     ls (if (symbol? k) k (symbol (name k)))]
+                (if (nil? rk) ps (conj (conj ps rk) ls))))
+            [] or-keys)))
+
+;; :select binds a map of the selected keys — the source map with
+;; missing keys filled from the defaults and nested submaps
+;; replaced by their own selections (CLJ-2964).
+(def ^:private destructure-selection
+  (fn* destructure-selection [gm mmg dm-pairs sel subm]
+    (let* [subm-pairs (reduce (fn* [ps k] (conj (conj ps k) (get subm k))) [] (keys subm))]
+      `(let* [~mmg (merge (some-vals (select-keys (hash-map ~@dm-pairs)
+                                                  (hash-set ~@sel)))
+                          ~gm
+                          (some-vals (hash-map ~@subm-pairs)))]
+         (if ~mmg (select-keys ~mmg (hash-set ~@sel)) nil)))))
+
+(def ^:private destructure-map
+  (fn* destructure-map [pat init acc]
+    (let* [g       (symbol (str (gensym)))
+           gm      (symbol (str (gensym)))
+           gignore (symbol (str (gensym)))
+           defaults    (get pat :or)
+           defaults-as (get pat :defaults)
+           ;; :defaults binds a map of the resolved :or defaults, so it
+           ;; requires :or (CLJ-2966).
+           _ (if (and defaults-as (not defaults))
+               (throw (new IllegalArgumentException "Can't specify :defaults without :or")))
+           select (get pat :select)
+           as-sym (get pat :as)
+           acc-m (conj (conj (conj (conj acc g) init) gm) (destructure-coerce-map g))
+           base  (if as-sym (conj (conj acc-m as-sym) gm) acc-m)
+           m {:pat pat :gm gm :gignore gignore :defaults defaults :select select}
+           st1 (reduce (fn* [st k] (destructure-map-entry m st k))
+                       [base [] {} {}] (destructure-entry-keys pat))
+           acc-e (nth st1 0)
+           dm-pairs (destructure-default-pairs (if defaults (keys defaults) []) (nth st1 2))
+           mmg (symbol (str (gensym)))
+           acc-sel (if select
+                     (conj (conj acc-e select)
+                           (destructure-selection gm mmg dm-pairs (nth st1 1) (nth st1 3)))
+                     acc-e)]
+      (if defaults-as
+        (conj (conj acc-sel defaults-as) `(hash-map ~@dm-pairs))
+        acc-sel))))
+
+(def ^:private destructure-binding
+  (fn* destructure-binding [pat init acc]
+    (cond
+      ;; CLJ-2954: & is reserved for destructuring rest, never a binding.
+      (destructure-amp? pat) (throw (new IllegalArgumentException "Can't use & as a local binding"))
+      (symbol? pat) (conj (conj acc pat) init)
+      (vector? pat) (destructure-vector pat init acc)
+      (map? pat) (destructure-map pat init acc)
+      :else (throw (IllegalArgumentException. (str "unsupported destructuring pattern: " (pr-str pat)))))))
+
 (def destructure
  (fn* destructure [bindings]
-  (let* [amp? (fn* [x] (and (symbol? x) (= "&" (name x))))
-         proc
-           (fn* proc [pat init acc]
-             (cond
-               ;; CLJ-2954: & is reserved for destructuring rest, never a binding.
-               (amp? pat) (throw (new IllegalArgumentException "Can't use & as a local binding"))
-               (symbol? pat) (conj (conj acc pat) init)
-               (vector? pat)
-                 (let* [g (symbol (str (gensym)))
-                        n (count pat)
-                        has-amp (reduce (fn* [st x] (if st st (amp? x))) false pat)
-                        vloop
-                          (fn* vloop [i idx a]
-                            (if (< i n)
-                              (let* [elem (nth pat i)]
-                                (cond
-                                  (amp? elem)
-                                    (vloop (+ i 2) idx (proc (nth pat (inc i)) `(nthnext ~g ~idx) a))
-                                  (= elem :as)
-                                    (vloop (+ i 2) idx (proc (nth pat (inc i)) g a))
-                                  :else
-                                    (vloop (inc i) (inc idx) (proc elem `(nth ~g ~idx nil) a))))
-                              a))
-                        ;; a pattern with & walks (seq v) via first/next like the
-                        ;; JVM, so a map (or any non-indexed seqable) destructures
-                        ;; positionally through its seq — nth on it would not.
-                        gs (symbol (str (gensym)))
-                        sloop
-                          (fn* sloop [i a]
-                            (if (< i n)
-                              (let* [elem (nth pat i)]
-                                (cond
-                                  (amp? elem)
-                                    (sloop (+ i 2) (proc (nth pat (inc i)) gs a))
-                                  (= elem :as)
-                                    (sloop (+ i 2) (proc (nth pat (inc i)) g a))
-                                  :else
-                                    (let* [gf (symbol (str (gensym)))
-                                           a2 (conj (conj a gf) `(first ~gs))
-                                           a3 (conj (conj a2 gs) `(next ~gs))]
-                                      (sloop (inc i) (proc elem gf a3)))))
-                              a))]
-                   (if has-amp
-                     (sloop 0 (conj (conj (conj (conj acc g) init) gs) `(seq ~g)))
-                     (vloop 0 0 (conj (conj acc g) init))))
-               (map? pat)
-                 (let* [g       (symbol (str (gensym)))
-                        gm      (symbol (str (gensym)))
-                        gignore (symbol (str (gensym)))
-                        defaults    (get pat :or)
-                        defaults-as (get pat :defaults)
-                        ;; :defaults binds a map of the resolved :or defaults, so it
-                        ;; requires :or (CLJ-2966).
-                        _ (if (and defaults-as (not defaults))
-                            (throw (new IllegalArgumentException "Can't specify :defaults without :or")))
-                        select (get pat :select)
-                        as-sym (get pat :as)
-                        or-keys (if defaults (keys defaults) [])
-                        ;; kwargs: a map pattern may bind against the seq rest of a fn
-                        ;; — (& {:keys [...]}) — a seq of alternating k/v args, optionally
-                        ;; with a trailing map (Clojure 1.11: (f :a 1 {:b 2}) merges the
-                        ;; map over the pairs). An odd count means the last arg is that
-                        ;; trailing map — except for a LONE element, which is the whole
-                        ;; value: (f {:a 1}) passes the map itself, and the JVM takes that
-                        ;; element as the map whatever it is, so a stray (f 1 :a) looks
-                        ;; keys up in a keyword and answers nil instead of throwing
-                        ;; (#909). Only a seq is coerced, like destmap*'s (seq? gmap): a
-                        ;; vector init destructures as itself, never as pairs. g holds
-                        ;; init once; gm is the coerced map every lookup (and :as) reads
-                        ;; from.
-                        coerce `(if (seq? ~g)
-                                  (if (next ~g)
-                                    (if (odd? (count ~g))
-                                      (merge (apply hash-map (butlast ~g)) (last ~g))
-                                      (apply hash-map ~g))
-                                    (if (seq ~g) (first ~g) (hash-map)))
-                                  ~g)
-                        acc-m (conj (conj (conj (conj acc g) init) gm) coerce)
-                        base  (if as-sym (conj (conj acc-m as-sym) gm) acc-m)
-                        has-def? (fn* [k] (and defaults (contains? defaults k)))
-                        ;; init form reading key bk for binding form bb; a checked (!)
-                        ;; directive uses req! (throw on missing). An :or default applies
-                        ;; when the local name (binding-style :or) or the key itself
-                        ;; (key-style :or) has one; a default for a required key errors.
-                        getter
-                          (fn* [bb bk req?]
-                            (let* [ident (or (symbol? bb) (keyword? bb))
-                                   local (if ident (symbol (name bb)) bb)
-                                   ld? (and ident (has-def? local))
-                                   kd? (has-def? bk)]
-                              (cond
-                                (and ld? kd?)
-                                  (throw (new Exception (str "Multiple :or defaults for same key: " (pr-str bk))))
-                                (or ld? kd?)
-                                  (if req?
-                                    (throw (new Exception (str "Can't supply default value for required key: " (pr-str bk))))
-                                    `(get ~gm ~bk ~(get defaults (if ld? local bk))))
-                                req? `(req! ~gm ~bk)
-                                :else `(get ~gm ~bk))))
-                        ;; bind bb (a plain ident, a throwaway gignore, or a nested
-                        ;; pattern) to key bk. :or default expressions are inlined
-                        ;; as get's not-found arg (eager, JVM-exact).
-                        push1
-                          (fn* [a bb bk req?]
-                            (let* [bv (getter bb bk req?)]
-                              (if (or (symbol? bb) (keyword? bb))
-                                ;; carry a type hint / metadata onto the local, like
-                                ;; the reference's localize (drops only the namespace).
-                                (conj (conj a (with-meta (symbol (name bb)) (meta bb))) bv)
-                                (proc bb bv a))))
-                        ;; a directive name -> its lookup key. dnsp (a qualified :ns/keys)
-                        ;; takes precedence over a bare name's own namespace.
-                        mk-key
-                          (fn* [kind dnsp s]
-                            (let* [nsp (or dnsp (namespace s)) nm (name s)]
-                              (cond
-                                (= kind :kw)  (keyword (if nsp (str nsp "/" nm) nm))
-                                (= kind :sym) `(quote ~(symbol nsp nm))
-                                :else nm)))
-                        ;; walk one directive's name list. Names before & bind and are
-                        ;; transformed to keys; names after & are the keys themselves
-                        ;; (a bare symbol there is an error — quote it for :syms), used
-                        ;; to declare :select membership and, for a checked directive, to
-                        ;; enforce the key. st is [acc sel b->k].
-                        do-dir
-                          (fn* do-dir [st names kind dnsp req? preamp?]
-                            (if (seq names)
-                              (let* [bb (first names)]
-                                (if (amp? bb)
-                                  (if preamp?
-                                    (do-dir st (next names) kind dnsp req? false)
-                                    (throw (new IllegalArgumentException "& can only appear once in a directive")))
-                                  (let* [_ (if (and (not preamp?) (symbol? bb))
-                                             (throw (new IllegalArgumentException
-                                                      (str "'" bb "' - binding symbols can only appear before '&', use keys after"))))
-                                         a    (nth st 0)
-                                         sel  (nth st 1)
-                                         b->k (nth st 2)
-                                         bk   (if preamp? (mk-key kind dnsp bb) bb)
-                                         a2   (if (or preamp? req?)
-                                                (push1 a (if preamp? bb gignore) bk req?)
-                                                a)
-                                         b->k2 (if preamp? (assoc b->k (symbol (name bb)) bk) b->k)]
-                                    (do-dir [a2 (conj sel bk) b->k2] (next names) kind dnsp req? preamp?))))
-                              st))
-                        ;; a keyword key is a directive: split :keys/:syms/:strs from its
-                        ;; ! (checked) suffix. Returns [kind req?].
-                        dir-kind
-                          (fn* [dir]
-                            (let* [nm (name dir)
-                                   n  (count nm)
-                                   req? (and (> n 0) (= "!" (subs nm (dec n) n)))
-                                   b  (if req? (subs nm 0 (dec n)) nm)]
-                              (cond
-                                (= b "keys") [:kw req?]
-                                (= b "syms") [:sym req?]
-                                (= b "strs") [:str req?]
-                                :else (throw (new Exception (str "Unsupported map directive: " dir))))))
-                        ;; process one entry key. st is [acc sel b->k subm], where subm
-                        ;; maps a nested-map key to its :select var (for deep :select).
-                        do-entry
-                          (fn* [st k]
-                            (let* [a    (nth st 0)
-                                   sel  (nth st 1)
-                                   b->k (nth st 2)
-                                   subm (nth st 3)]
-                              (if (keyword? k)
-                                (let* [dk   (dir-kind k)
-                                       kind (nth dk 0)
-                                       req? (nth dk 1)
-                                       r    (do-dir [a sel b->k] (get pat k) kind (namespace k) req? true)]
-                                  [(nth r 0) (nth r 1) (nth r 2) subm])
-                                ;; a direct binding {bb key}. Under an active :select, a
-                                ;; nested map subselects: give it a :select if it lacks
-                                ;; one, and thread its selected submap up through subm.
-                                (let* [bk      (get pat k)
-                                       subsel? (and select (map? k))
-                                       k2      (if (or (not subsel?) (get k :select))
-                                                 k
-                                                 (assoc k :select (symbol (str (gensym)))))
-                                       subm2   (if subsel? (assoc subm bk (get k2 :select)) subm)
-                                       b->k2   (if (symbol? k2) (assoc b->k k2 bk) b->k)]
-                                  [(push1 a k2 bk false) (conj sel bk) b->k2 subm2]))))
-                        entry-keys (reduce (fn* [ks k]
-                                             (if (or (= k :or) (= k :as) (= k :select) (= k :defaults))
-                                               ks (conj ks k)))
-                                           [] (keys pat))
-                        st1  (reduce do-entry [base [] {} {}] entry-keys)
-                        acc-e (nth st1 0)
-                        sel   (nth st1 1)
-                        b->k  (nth st1 2)
-                        subm  (nth st1 3)
-                        ;; resolve each :or key to the actual map key: a binding symbol
-                        ;; maps through b->k; a key-style :or entry is the key itself.
-                        dm-pairs (reduce (fn* [ps k]
-                                            (let* [rk (if (symbol? k) (get b->k k) k)
-                                                   ls (if (symbol? k) k (symbol (name k)))]
-                                              (if (nil? rk) ps (conj (conj ps rk) ls))))
-                                          [] or-keys)
-                        subm-pairs (reduce (fn* [ps k] (conj (conj ps k) (get subm k))) [] (keys subm))
-                        mmg (symbol (str (gensym)))
-                        ;; :select binds a map of the selected keys — the source map with
-                        ;; missing keys filled from the defaults and nested submaps
-                        ;; replaced by their own selections (CLJ-2964).
-                        acc-sel (if select
-                                  (conj (conj acc-e select)
-                                        `(let* [~mmg (merge (some-vals (select-keys (hash-map ~@dm-pairs)
-                                                                                    (hash-set ~@sel)))
-                                                            ~gm
-                                                            (some-vals (hash-map ~@subm-pairs)))]
-                                           (if ~mmg (select-keys ~mmg (hash-set ~@sel)) nil)))
-                                  acc-e)]
-                   (if defaults-as
-                     (conj (conj acc-sel defaults-as) `(hash-map ~@dm-pairs))
-                     acc-sel))
-               :else (throw (IllegalArgumentException. (str "unsupported destructuring pattern: " (pr-str pat))))))
-         ploop
+  (let* [ploop
            (fn* ploop [i acc]
              (if (< i (count bindings))
-               (ploop (+ i 2) (proc (nth bindings i) (nth bindings (inc i)) acc))
+               (ploop (+ i 2) (destructure-binding (nth bindings i) (nth bindings (inc i)) acc))
                acc))]
     ;; Checked before the walk, which steps in twos and reads (nth bindings
     ;; (inc i)): an odd vector ran off the end and the user got the raw fault
@@ -512,84 +570,180 @@
 ;; fn: desugar destructuring params to plain symbols + a body let (matching
 ;; Clojure's maybe-destructured), so fn* only ever sees plain params (the compiler's
 ;; analyze-fn requires that). Plain params pass through untouched. Handles an
-;; optional name and single- or multi-arity. md/mk are fn* (not fn) to avoid a cycle.
-;; md walks a param seq, replacing non-symbol patterns with gensyms and recording
-;; [pattern gensym] let-bindings; mk turns one arity (params . body) into a rewritten
-;; arity. Output: single arity splices the arity's elements straight into fn*; multi
-;; arity splices the rewritten clauses.
+;; optional name and single- or multi-arity. Its helpers are fn* (not fn) to avoid
+;; a cycle. fn-params walks a param seq, replacing non-symbol patterns with gensyms
+;; and recording [pattern gensym] let-bindings; fn-arity turns one arity
+;; (params . body) into a rewritten arity. Output: single arity splices the arity's
+;; elements straight into fn*; multi arity splices the rewritten clauses.
+
+;; a return-type hint (defn f ^bytes [x] ...) reaches us as a
+;; (with-meta [x] {:tag ...}) FORM in params position — unwrap it
+;; (the hint means nothing on jolt; ring-codec carries several).
+(def ^:private fn-unhint
+  (fn* fn-unhint [x]
+    (if (if (seq? x) (= 'with-meta (first x)) false)
+      (nth x 1)
+      x)))
+
+;; a :pre/:post conditions map (a leading map when the body has more forms
+;; after it) becomes assertions: pre before the body, then — ONLY when
+;; there are :post conditions — bind % to the result, assert them, return
+;; %. (map? is a native, so this is tier-safe; the assert/map calls only
+;; run when a conditions map is actually present.)
+;;
+;; The % binding is what :post needs and what a :pre-only fn must not pay:
+;; wrapping the body in (let [% (do body)] %) puts the body in a binding
+;; INIT, which is not tail position, so a tail `recur` inside a :pre-only
+;; fn was rejected — malli's validate-times is one, and eight of its test
+;; namespaces stopped loading. The reference emits the wrapper only for
+;; :post, and this now matches it.
+;;
+;; Tail CALLS were never affected, measured rather than assumed: 3e6 deep
+;; self-calls through the var run at baseline RSS with the wrapper and
+;; without it, because the back end collapses (let [% X] %) to X. Only
+;; `recur`, which the analyzer checks on the pre-collapse tree, saw it.
+(def ^:private fn-wrap-conditions
+  (fn* fn-wrap-conditions [body]
+    (if (if (map? (first body)) (next body) false)
+      (let [conds (first body)
+            real (next body)
+            mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))
+            posts (get conds :post)]
+        (if (seq posts)
+          `(~@(mka (get conds :pre))
+            (let [~'% (do ~@real)]
+              ~@(mka posts)
+              ~'%))
+          `(~@(mka (get conds :pre)) ~@real)))
+      body)))
+
+(def ^:private fn-params
+  (fn* fn-params [ps nps lets]
+    (if (seq ps)
+      (if (symbol? (first ps))
+        (fn-params (next ps) (conj nps (first ps)) lets)
+        ;; a bare (gensym) returns a host symbol the destructurer rejects;
+        ;; round-trip through str for a jolt symbol.
+        (let [g (symbol (str (gensym)))]
+          (fn-params (next ps) (conj nps g) (conj (conj lets (first ps)) g))))
+      [nps lets])))
+
+(def ^:private fn-arity
+  (fn* fn-arity [sig]
+    (let [ps (fn-unhint (first sig))
+          hinted (not (= ps (first sig)))
+          r (fn-params (seq ps) [] [])
+          raw-body (rest sig)
+          body (fn-wrap-conditions raw-body)
+          conds? (not (= body raw-body))]
+      (if (if (empty? (nth r 1)) (if (not hinted) (not conds?) false) false)
+        sig
+        ;; build the params/let vectors via [~@..] so they are tuple forms
+        ;; (the accumulators are plain seqs, the wrong representation).
+        ;; A hinted-but-undestructured arity also rebuilds, to shed the
+        ;; with-meta wrapper without changing the clause representation.
+        (let [pv `[~@(nth r 0)]
+              lv `[~@(nth r 1)]]
+          (if (empty? (nth r 1))
+            `(~pv ~@body)
+            `(~pv (let ~lv ~@body))))))))
+
 (defmacro fn [& raw]
   (let [nm (if (symbol? (first raw)) (first raw) nil)
-        aftn (if nm (next raw) raw)
-        ;; a return-type hint (defn f ^bytes [x] ...) reaches us as a
-        ;; (with-meta [x] {:tag ...}) FORM in params position — unwrap it
-        ;; (the hint means nothing on jolt; ring-codec carries several).
-        unhint (fn* [x]
-                 (if (if (seq? x) (= 'with-meta (first x)) false)
-                   (nth x 1)
-                   x))
-        ;; a :pre/:post conditions map (a leading map when the body has more forms
-        ;; after it) becomes assertions: pre before the body, then — ONLY when
-        ;; there are :post conditions — bind % to the result, assert them, return
-        ;; %. (map? is a native, so this is tier-safe; the assert/map calls only
-        ;; run when a conditions map is actually present.)
-        ;;
-        ;; The % binding is what :post needs and what a :pre-only fn must not pay:
-        ;; wrapping the body in (let [% (do body)] %) puts the body in a binding
-        ;; INIT, which is not tail position, so a tail `recur` inside a :pre-only
-        ;; fn was rejected — malli's validate-times is one, and eight of its test
-        ;; namespaces stopped loading. The reference emits the wrapper only for
-        ;; :post, and this now matches it.
-        ;;
-        ;; Tail CALLS were never affected, measured rather than assumed: 3e6 deep
-        ;; self-calls through the var run at baseline RSS with the wrapper and
-        ;; without it, because the back end collapses (let [% X] %) to X. Only
-        ;; `recur`, which the analyzer checks on the pre-collapse tree, saw it.
-        wrap-conds
-          (fn* [body]
-            (if (if (map? (first body)) (next body) false)
-              (let [conds (first body)
-                    real (next body)
-                    mka (fn* [cs] (map (fn* [c] `(assert ~c)) cs))
-                    posts (get conds :post)]
-                (if (seq posts)
-                  `(~@(mka (get conds :pre))
-                    (let [~'% (do ~@real)]
-                      ~@(mka posts)
-                      ~'%))
-                  `(~@(mka (get conds :pre)) ~@real)))
-              body))
-        md (fn* go [ps nps lets]
-             (if (seq ps)
-               (if (symbol? (first ps))
-                 (go (next ps) (conj nps (first ps)) lets)
-                 ;; a bare (gensym) returns a host symbol the destructurer rejects;
-                 ;; round-trip through str for a jolt symbol.
-                 (let [g (symbol (str (gensym)))]
-                   (go (next ps) (conj nps g) (conj (conj lets (first ps)) g))))
-               [nps lets]))
-        mk (fn* [sig]
-             (let [ps (unhint (first sig))
-                   hinted (not (= ps (first sig)))
-                   r (md (seq ps) [] [])
-                   raw-body (rest sig)
-                   body (wrap-conds raw-body)
-                   conds? (not (= body raw-body))]
-               (if (if (empty? (nth r 1)) (if (not hinted) (not conds?) false) false)
-                 sig
-                 ;; build the params/let vectors via [~@..] so they are tuple forms
-                 ;; (the accumulators are plain seqs, the wrong representation).
-                 ;; A hinted-but-undestructured arity also rebuilds, to shed the
-                 ;; with-meta wrapper without changing the clause representation.
-                 (let [pv `[~@(nth r 0)]
-                       lv `[~@(nth r 1)]]
-                   (if (empty? (nth r 1))
-                     `(~pv ~@body)
-                     `(~pv (let ~lv ~@body)))))))]
-    (if (vector? (unhint (first aftn)))
-      (let [a (mk aftn)]
+        aftn (if nm (next raw) raw)]
+    (if (vector? (fn-unhint (first aftn)))
+      (let [a (fn-arity aftn)]
         (if nm `(fn* ~nm ~@a) `(fn* ~@a)))
-      (let [as (vec (map mk aftn))]
+      (let [as (vec (map fn-arity aftn))]
         (if nm `(fn* ~nm ~@as) `(fn* ~@as))))))
+
+;; defn's helpers. defn lives in the earliest tier, so they (like its macro body)
+;; may only use primitives available before the seq/coll tiers — conj (which
+;; merges a map onto a map), assoc, meta, with-meta — not merge/last/butlast.
+
+;; A TRAILING attr-map after the arity clauses — (defn f ([x] …) ([x y] …)
+;; {:k v}) — also merges into the var metadata. Only a clause-list body
+;; can carry one: the JVM wraps a single-arity `[params] body` into one
+;; clause before it looks at the last form, which is why
+;; (defn f [x] {:a 1}) is a map-returning body and not an attr-map.
+;; malli's instrument suite declares its :malli/schema this way.
+(def ^:private defn-trailing-attr-map
+  (fn defn-trailing-attr-map [body]
+    (let [trail (when (not (vector? (first body)))
+                  (loop [cs body prev nil]
+                    (if (seq cs) (recur (rest cs) (first cs)) prev)))]
+      (when (and trail (map? trail) (not (symbol? trail))) trail))))
+
+(def ^:private defn-drop-last
+  (fn defn-drop-last [body]
+    (loop [cs body acc []]
+      (if (next cs) (recur (rest cs) (conj acc (first cs))) (seq acc)))))
+
+;; A macro's two implicit params are elided, as the JVM's `sigs` elides
+;; them: a defmacro expands to a defn whose params are
+;; [&form &env & declared], and the var still reports the declared ones —
+;; what `doc` and every arglists-driven tool show. The trigger is &form in
+;; FIRST position, which is what the reference keys on. Guarded on length:
+;; a lone [&form] is an IndexOutOfBoundsException there (subvec 2..1), a
+;; crash rather than a shape worth reproducing. subvec is the kernel tier's.
+(declare subvec)
+(def ^:private defn-declared-params
+  (fn defn-declared-params [pv]
+    (if (and (vector? pv) (> (count pv) 1) (= (first pv) '&form))
+      (subvec pv 2)
+      pv)))
+
+;; Past the single-arity `[params] body*` shape, every remaining form must
+;; be a `([params] body*)` clause. Checked here because the arglists walk
+;; below reaches straight into each one with (first (first cs)): given
+;; (defn f 5 6) that is (first 5), and the user got the raw cast back —
+;; "Don't know how to create ISeq from: java.lang.Long" as the compile
+;; error for their defn. The reference reports this through
+;; clojure.core.specs.alpha; jolt has no core specs, so it says so itself.
+;; Only `assert`-tier primitives are available this early in the prelude.
+(def ^:private defn-check-clauses
+  (fn defn-check-clauses [body]
+    (when (not (vector? (first body)))
+      (loop [cs body]
+        (if (seq cs)
+          (let [c (first cs)]
+            (if (if (seq? c) (vector? (first c)) false)
+              (recur (rest cs))
+              (throw (ex-info (str "Parameter declaration " (pr-str c)
+                                   " should be a vector")
+                              {:jolt.error/kind :analyze/invalid-fn-parameters
+                               :jolt.error/type :analysis-error}))))
+          nil)))))
+
+;; :arglists — the parameter vectors as written (single arity: the one
+;; vector; multi-arity: each clause's), attached to the var like Clojure so
+;; doc/spec/expound tools can read it. tier-0 primitives only (loop, not
+;; map/reduce, which load later).
+(def ^:private defn-arglists
+  (fn defn-arglists [body]
+    (if (vector? (first body))
+      (list (defn-declared-params (first body)))
+      (loop [cs body acc []]
+        (if (seq cs)
+          (recur (rest cs) (conj acc (defn-declared-params (first (first cs)))))
+          (seq acc))))))
+
+;; precedence, matching the JVM's conj order: name metadata < the derived
+;; :arglists < docstring < leading attr-map < trailing attr-map. So an
+;; explicit {:arglists '([x])} in an attr-map wins, while ^{:arglists …} on
+;; the NAME does not — the JVM ignores it there — and a :doc key in either
+;; attr-map overrides the docstring (the JVM conj'es the attr-maps onto
+;; {:doc docstring}, so they are what wins).
+;; :arglists is QUOTED in the expansion like the JVM's
+;; (def ^{:arglists (quote ([x]))} f …): def-meta-expr strips one quote
+;; layer either way, but a consumer that EVALUATES the def-name meta
+;; (tools.analyzer, typedclojure) read the bare ([x]) as a call of [x].
+(def ^:private defn-var-meta
+  (fn defn-var-meta [name-meta arglists docstring attr-map trail-attr]
+    (let [m2 (if arglists (assoc (if name-meta name-meta {}) :arglists (list 'quote arglists)) name-meta)
+          m3 (if docstring (assoc (if m2 m2 {}) :doc docstring) m2)
+          m4 (if attr-map (conj (if m3 m3 {}) attr-map) m3)]
+      (if trail-attr (conj (if m4 m4 {}) trail-attr) m4))))
 
 ;; defn: drop an optional leading docstring and attr-map, then (def name (fn ...)).
 ;; Emits the fn MACRO (not the fn* primitive) so destructuring params desugar — fn*
@@ -599,9 +753,6 @@
 ;; vector + body or a sequence of ([params] body) clauses, so no arity branching is
 ;; needed. (map? is true for symbol forms too, so guard the attr-map with symbol?.)
 ;; Defined before fresh-sym below, which is a defn-.
-;; defn lives in the earliest tier, so its macro body may only use primitives
-;; available before the seq/coll tiers — conj (which merges a map onto a map),
-;; assoc, meta, with-meta — not merge/last/butlast.
 (defmacro defn [fn-name & body]
   (let [docstring (when (and (seq body) (string? (first body))) (first body))
         body (if docstring (rest body) body)
@@ -612,77 +763,13 @@
         attr-map (when (and (seq body) (next body) (map? (first body)) (not (symbol? (first body))))
                    (first body))
         body (if attr-map (rest body) body)
-        ;; A TRAILING attr-map after the arity clauses — (defn f ([x] …) ([x y] …)
-        ;; {:k v}) — also merges into the var metadata. Only a clause-list body
-        ;; can carry one: the JVM wraps a single-arity `[params] body` into one
-        ;; clause before it looks at the last form, which is why
-        ;; (defn f [x] {:a 1}) is a map-returning body and not an attr-map.
-        ;; malli's instrument suite declares its :malli/schema this way.
-        trail (when (not (vector? (first body)))
-                (loop [cs body prev nil]
-                  (if (seq cs) (recur (rest cs) (first cs)) prev)))
-        trail-attr (when (and trail (map? trail) (not (symbol? trail))) trail)
-        body (if trail-attr
-               (loop [cs body acc []]
-                 (if (next cs) (recur (rest cs) (conj acc (first cs))) (seq acc)))
-               body)
+        trail-attr (defn-trailing-attr-map body)
+        body (if trail-attr (defn-drop-last body) body)
         ;; the bare name + any ^{:map} metadata the reader attached to it.
         fn-only-name (if (symbol? fn-name) fn-name (first (rest fn-name)))
-        name-meta (meta fn-only-name)
-        ;; :arglists — the parameter vectors as written (single arity: the one
-        ;; vector; multi-arity: each clause's), attached to the var like Clojure so
-        ;; doc/spec/expound tools can read it. tier-0 primitives only (loop, not
-        ;; map/reduce, which load later). QUOTED in the expansion like the JVM's
-        ;; (def ^{:arglists (quote ([x]))} f …): def-meta-expr strips one quote
-        ;; layer either way, but a consumer that EVALUATES the def-name meta
-        ;; (tools.analyzer, typedclojure) read the bare ([x]) as a call of [x].
-        ;; A macro's two implicit params are elided, as the JVM's `sigs` elides
-        ;; them: a defmacro expands to a defn whose params are
-        ;; [&form &env & declared], and the var still reports the declared ones —
-        ;; what `doc` and every arglists-driven tool show. The trigger is &form in
-        ;; FIRST position, which is what the reference keys on. Guarded on length:
-        ;; a lone [&form] is an IndexOutOfBoundsException there (subvec 2..1), a
-        ;; crash rather than a shape worth reproducing.
-        declared-params (fn [pv]
-                          (if (and (vector? pv) (> (count pv) 1) (= (first pv) '&form))
-                            (subvec pv 2)
-                            pv))
-        ;; Past the single-arity `[params] body*` shape, every remaining form must
-        ;; be a `([params] body*)` clause. Checked here because the arglists walk
-        ;; below reaches straight into each one with (first (first cs)): given
-        ;; (defn f 5 6) that is (first 5), and the user got the raw cast back —
-        ;; "Don't know how to create ISeq from: java.lang.Long" as the compile
-        ;; error for their defn. The reference reports this through
-        ;; clojure.core.specs.alpha; jolt has no core specs, so it says so itself.
-        ;; Only `assert`-tier primitives are available this early in the prelude.
-        _ (when (not (vector? (first body)))
-            (loop [cs body]
-              (if (seq cs)
-                (let [c (first cs)]
-                  (if (if (seq? c) (vector? (first c)) false)
-                    (recur (rest cs))
-                    (throw (ex-info (str "Parameter declaration " (pr-str c)
-                                         " should be a vector")
-                                    {:jolt.error/kind :analyze/invalid-fn-parameters
-                                     :jolt.error/type :analysis-error}))))
-                nil)))
-        arglists (if (vector? (first body))
-                   (list (declared-params (first body)))
-                   (loop [cs body acc []]
-                     (if (seq cs)
-                       (recur (rest cs) (conj acc (declared-params (first (first cs)))))
-                       (seq acc))))
-        ;; precedence, matching the JVM's conj order: name metadata < the derived
-        ;; :arglists < docstring < leading attr-map < trailing attr-map. So an
-        ;; explicit {:arglists '([x])} in an attr-map wins, while ^{:arglists …} on
-        ;; the NAME does not — the JVM ignores it there — and a :doc key in either
-        ;; attr-map overrides the docstring (the JVM conj'es the attr-maps onto
-        ;; {:doc docstring}, so they are what wins).
-        m1 name-meta
-        m2 (if arglists (assoc (if m1 m1 {}) :arglists (list 'quote arglists)) m1)
-        m3 (if docstring (assoc (if m2 m2 {}) :doc docstring) m2)
-        m4 (if attr-map (conj (if m3 m3 {}) attr-map) m3)
-        meta-map (if trail-attr (conj (if m4 m4 {}) trail-attr) m4)]
+        _ (defn-check-clauses body)
+        meta-map (defn-var-meta (meta fn-only-name) (defn-arglists body)
+                                docstring attr-map trail-attr)]
     ;; pass the name through to fn: the compiled fn's host name carries it, so
     ;; stack traces read app.deep/level3 instead of a gensym. All metadata
     ;; (docstring + attr-map + the name's own + :arglists) is attached to the def
@@ -733,125 +820,140 @@
 ;; Test constants are NOT evaluated — symbols, lists, and composite literals
 ;; (vectors/maps/sets) are quoted so their elements aren't resolved as code; a
 ;; LIST in test position is an or-group of constants, while a vector/map/set is
-;; a single literal constant.
+;; a single literal constant. The case-* helpers below build it; g is the local
+;; holding the dispatch value.
+
+;; Quote symbols, lists, and composite literals (vector/map/set) so their
+;; elements aren't resolved as code. A reader tagged literal (#bigdec/#inst/
+;; #uuid/#regex, e.g. 4.0M) is represented as a pmap, so exclude it from the
+;; map? arm — it must flow to the back end as its constant, not be quoted as
+;; map data.
+(defn- case-tagged? [c] (and (map? c) (= (:jolt/type c) :jolt/tagged)))
+(defn- case-const [c]
+  (if (and (or (symbol? c) (seq? c) (vector? c) (map? c) (set? c))
+           (not (case-tagged? c)))
+    `(quote ~c) c))
+
+;; a keyword, char, nil, true or false constant is compared by identity: a
+;; keyword is interned (and re-interned on image restore), and identical?
+;; is an inline native op where = is a call. That is what the reference
+;; does for these too (its case hashes then compares identity). Symbols,
+;; strings and numbers keep = — a symbol is not interned here.
+;; A CHAR is an immediate on the host, so identity IS equality for every
+;; code point, and a `case` over characters — the way Clojure spells a
+;; scanner state machine — was paying a generic `=` call per arm per
+;; input character.
+;; (identical? true c) is true? — defined in 22-coll, after this tier.
+(defn- case-ident-const? [c]
+  (or (keyword? c) (char? c) (nil? c) (identical? true c) (identical? false c)))
+(defn- case-const-test [g c]
+  (if (case-ident-const? c)
+    `(identical? ~g ~c)
+    `(= ~g ~(case-const c))))
+(defn- case-test [g c]
+  (if (seq? c)
+    `(or ~@(map (fn [c] (case-const-test g c)) c))
+    (case-const-test g c)))
+
+;; Collect test constants pairwise (so a trailing unpaired default is
+;; excluded), flattening list/or-group tests into individual constants.
+;; seed-only fns (reduce/conj/first/rest/drop/empty?/seq?) — analyzer.clj
+;; uses case during its own build, before some/distinct load.
+(defn- case-constants [cls acc]
+  (if (or (empty? cls) (empty? (rest cls)))
+    acc
+    (let [t (first cls)
+          acc (if (seq? t) (reduce conj acc t) (conj acc t))]
+      (case-constants (drop 2 cls) acc))))
+
+;; first duplicate constant, wrapped in [x] (so a duplicate nil is detected);
+;; nil = none. Clojure rejects duplicate case constants at compile time.
+(defn- case-first-dup [items seen]
+  (if (empty? items)
+    nil
+    (let [x (first items)]
+      (if (reduce (fn [f s] (or f (= s x))) false seen)
+        [x]
+        (case-first-dup (rest items) (conj seen x))))))
+
+;; Table dispatch, from 9 or 16 constants (below): ONE lookup in a quoted
+;; constant map from test constant to clause index, then a binary search
+;; over the index — O(log n) fixnum compares where the chain below is n
+;; generic = calls. The reference gets O(1) from a tableswitch over the
+;; hashes; this is the same contract, hash then equality, because a map
+;; lookup IS hasheq then =.
+;;
+;; Only for constants whose map lookup provably agrees with the chain's =
+;; (and the JVM): strings, symbols, keywords, chars, nil, booleans and
+;; integers. Not floats — -0.0 and 0.0 are = with different hashes, and
+;; ##NaN — and not ratios, decimals, collections or tagged/regex literals;
+;; a case holding any of those keeps the chain. The quoted map is a
+;; constant, hoisted and built once per def (backend hoist-const-for).
+;; An all-keyword case stays below 65 constants: up to there the quoted
+;; map is an array map, whose scan is the same identity compares the chain
+;; already makes inline.
+(defn- case-table-const? [c]
+  (or (keyword? c) (string? c) (symbol? c) (char? c) (nil? c)
+      (identical? true c) (identical? false c) (integer? c)))
+(defn- case-table? [consts]
+  (let [nconst (count consts)]
+    (and ;; where the lookup starts paying (measured, 10k dispatches,
+         ;; first vs last arm): a string or symbol arm is a generic =
+         ;; call of ~12 ns, so a table of ~50 ns wins from 9 constants
+         ;; (at 8 the quoted map is an array map, a scan like the
+         ;; chain); an integer arm is cheaper and takes 16.
+         (>= nconst (if (reduce (fn [a c] (or a (string? c) (symbol? c))) false consts) 9 16))
+         (reduce (fn [ok c] (and ok (case-table-const? c))) true consts)
+         (or (> nconst 64)
+             (not (reduce (fn [ok c] (and ok (case-ident-const? c))) true consts))))))
+
+;; no clause matched and no default — Clojure throws
+;; IllegalArgumentException here (catchable by class).
+(defn- case-no-match [g]
+  `(throw (new IllegalArgumentException (str "No matching clause: " ~g))))
+
+;; [constant->index map, bodies]: clause i's constants map to i; the
+;; default (or the no-match throw) is the last body, the lookup's
+;; not-found index.
+(defn- case-table [g cls i m bodies]
+  (if (or (empty? cls) (empty? (rest cls)))
+    [m (conj bodies (if (empty? cls) (case-no-match g) (first cls)))]
+    (let [t (first cls)
+          m (if (seq? t) (reduce (fn [m c] (assoc m c i)) m t) (assoc m t i))]
+      (case-table g (drop 2 cls) (inc i) m (conj bodies (nth cls 1))))))
+
+;; bodies lo..hi, i known to be in that range: no equality test at a leaf.
+(defn- case-bsearch [ix bodies lo hi]
+  (if (= lo hi)
+    (nth bodies lo)
+    (let [mid (quot (+ lo hi) 2)]
+      `(if (< ~ix ~(inc mid))
+         ~(case-bsearch ix bodies lo mid)
+         ~(case-bsearch ix bodies (inc mid) hi)))))
+
+(defn- case-dispatch-table [g expr clauses]
+  (let [tb (case-table g clauses 0 {} [])
+        bodies (nth tb 1)
+        n (dec (count bodies))
+        ix (fresh-sym)]
+    `(let* [~g ~expr
+            ~ix (get (quote ~(nth tb 0)) ~g ~n)]
+       ~(case-bsearch ix bodies 0 n))))
+
+(defn- case-chain [g cls]
+  (cond
+    (empty? cls) (case-no-match g)
+    (empty? (rest cls)) (first cls)
+    :else `(if ~(case-test g (first cls)) ~(nth cls 1) ~(case-chain g (drop 2 cls)))))
+
 (defmacro case [expr & clauses]
   (let [g (fresh-sym)
-        ;; Quote symbols, lists, and composite literals (vector/map/set) so their
-        ;; elements aren't resolved as code. A reader tagged literal (#bigdec/#inst/
-        ;; #uuid/#regex, e.g. 4.0M) is represented as a pmap, so exclude it from the
-        ;; map? arm — it must flow to the back end as its constant, not be quoted as
-        ;; map data.
-        tagged? (fn [c] (and (map? c) (= (:jolt/type c) :jolt/tagged)))
-        mk-const (fn [c] (if (and (or (symbol? c) (seq? c) (vector? c) (map? c) (set? c))
-                                  (not (tagged? c)))
-                           `(quote ~c) c))
-        ;; a keyword, char, nil, true or false constant is compared by identity: a
-        ;; keyword is interned (and re-interned on image restore), and identical?
-        ;; is an inline native op where = is a call. That is what the reference
-        ;; does for these too (its case hashes then compares identity). Symbols,
-        ;; strings and numbers keep = — a symbol is not interned here.
-        ;; A CHAR is an immediate on the host, so identity IS equality for every
-        ;; code point, and a `case` over characters — the way Clojure spells a
-        ;; scanner state machine — was paying a generic `=` call per arm per
-        ;; input character.
-        ident-const? (fn [c] (or (keyword? c) (char? c) (nil? c) (true? c) (false? c)))
-        mk-test1 (fn [c]
-                   (if (ident-const? c)
-                     `(identical? ~g ~c)
-                     `(= ~g ~(mk-const c))))
-        mk-test (fn [c]
-                  (if (seq? c)
-                    `(or ~@(map mk-test1 c))
-                    (mk-test1 c)))
-        ;; Collect test constants pairwise (so a trailing unpaired default is
-        ;; excluded), flattening list/or-group tests into individual constants.
-        ;; seed-only fns (reduce/conj/first/rest/drop/empty?/seq?) — analyzer.clj
-        ;; uses case during its own build, before some/distinct load.
-        collect (fn* collect [cls acc]
-                  (if (or (empty? cls) (empty? (rest cls)))
-                    acc
-                    (let [t (first cls)
-                          acc (if (seq? t) (reduce conj acc t) (conj acc t))]
-                      (collect (drop 2 cls) acc))))
-        ;; first duplicate constant, wrapped in [x] (so a duplicate nil is detected);
-        ;; nil = none. Clojure rejects duplicate case constants at compile time.
-        first-dup (fn* fd [items seen]
-                    (if (empty? items)
-                      nil
-                      (let [x (first items)]
-                        (if (reduce (fn [f s] (or f (= s x))) false seen)
-                          [x]
-                          (fd (rest items) (conj seen x))))))
-        consts (collect clauses [])
-        dup (first-dup consts [])
-        ;; Table dispatch, from 9 or 16 constants (below): ONE lookup in a quoted
-        ;; constant map from test constant to clause index, then a binary search
-        ;; over the index — O(log n) fixnum compares where the chain below is n
-        ;; generic = calls. The reference gets O(1) from a tableswitch over the
-        ;; hashes; this is the same contract, hash then equality, because a map
-        ;; lookup IS hasheq then =.
-        ;;
-        ;; Only for constants whose map lookup provably agrees with the chain's =
-        ;; (and the JVM): strings, symbols, keywords, chars, nil, booleans and
-        ;; integers. Not floats — -0.0 and 0.0 are = with different hashes, and
-        ;; ##NaN — and not ratios, decimals, collections or tagged/regex literals;
-        ;; a case holding any of those keeps the chain. The quoted map is a
-        ;; constant, hoisted and built once per def (backend hoist-const-for).
-        ;; An all-keyword case stays below 65 constants: up to there the quoted
-        ;; map is an array map, whose scan is the same identity compares the chain
-        ;; already makes inline.
-        table-const? (fn [c] (or (keyword? c) (string? c) (symbol? c) (char? c) (nil? c)
-                                 (true? c) (false? c) (integer? c)))
-        nconst (count consts)
-        table? (and (nil? dup)
-                    ;; where the lookup starts paying (measured, 10k dispatches,
-                    ;; first vs last arm): a string or symbol arm is a generic =
-                    ;; call of ~12 ns, so a table of ~50 ns wins from 9 constants
-                    ;; (at 8 the quoted map is an array map, a scan like the
-                    ;; chain); an integer arm is cheaper and takes 16.
-                    (>= nconst (if (reduce (fn [a c] (or a (string? c) (symbol? c))) false consts) 9 16))
-                    (reduce (fn [ok c] (and ok (table-const? c))) true consts)
-                    (or (> nconst 64)
-                        (not (reduce (fn [ok c] (and ok (ident-const? c))) true consts))))
-        ;; [constant->index map, bodies]: clause i's constants map to i; the
-        ;; default (or the no-match throw) is the last body, the lookup's
-        ;; not-found index.
-        table (fn* tbl [cls i m bodies]
-                (if (or (empty? cls) (empty? (rest cls)))
-                  [m (conj bodies
-                           (if (empty? cls)
-                             `(throw (new IllegalArgumentException (str "No matching clause: " ~g)))
-                             (first cls)))]
-                  (let [t (first cls)
-                        m (if (seq? t) (reduce (fn [m c] (assoc m c i)) m t) (assoc m t i))]
-                    (tbl (drop 2 cls) (inc i) m (conj bodies (nth cls 1))))))
-        ;; bodies lo..hi, i known to be in that range: no equality test at a leaf.
-        bsearch (fn* bs [ix bodies lo hi]
-                  (if (= lo hi)
-                    (nth bodies lo)
-                    (let [mid (quot (+ lo hi) 2)]
-                      `(if (< ~ix ~(inc mid))
-                         ~(bs ix bodies lo mid)
-                         ~(bs ix bodies (inc mid) hi)))))
-        build (fn build [cls]
-                (if (empty? cls)
-                  ;; no clause matched and no default — Clojure throws
-                  ;; IllegalArgumentException here (catchable by class).
-                  `(throw (new IllegalArgumentException (str "No matching clause: " ~g)))
-                  (if (empty? (rest cls))
-                    (first cls)
-                    `(if ~(mk-test (first cls)) ~(nth cls 1) ~(build (drop 2 cls))))))]
-    (if dup
-      (throw (IllegalArgumentException. (str "Duplicate case test constant: " (first dup))))
-      (if table?
-        (let [tb (table clauses 0 {} [])
-              bodies (nth tb 1)
-              n (dec (count bodies))
-              ix (fresh-sym)]
-          `(let* [~g ~expr
-                  ~ix (get (quote ~(nth tb 0)) ~g ~n)]
-             ~(bsearch ix bodies 0 n)))
-        `(let* [~g ~expr] ~(build clauses))))))
+        consts (case-constants clauses [])
+        dup (case-first-dup consts [])]
+    (cond
+      dup (throw (IllegalArgumentException. (str "Duplicate case test constant: " (first dup))))
+      (case-table? consts) (case-dispatch-table g expr clauses)
+      :else `(let* [~g ~expr] ~(case-chain g clauses)))))
 
 ;; for/doseq share these. for-parse-groups turns a binding vector into groups
 ;; [bind coll mods], mods a vector of [kw form] in SOURCE ORDER.
@@ -900,74 +1002,97 @@
 ;; at a time otherwise) -- so it is emitted as that, and runs on the native map.
 (defn- for-bad-keyword [k]
   (throw (IllegalArgumentException. (str "Invalid 'for' keyword " k))))
+
+;; one element's modifier chain inside a for step fn, in source order: :let
+;; binds, :while ends the group (a nil from the step), :when skips the element
+;; with the form skip. finish is a thunk for the form that yields the element,
+;; called only once the whole chain has been walked.
+(defn- for-mod-chain [ms skip finish]
+  (if (seq ms)
+    (let [m (first ms) k (nth m 0) v (nth m 1) etc (rest ms)]
+      (cond
+        (= k :let) `(let ~v ~(for-mod-chain etc skip finish))
+        (= k :while) `(when ~v ~(for-mod-chain etc skip finish))
+        (= k :when) `(if ~v ~(for-mod-chain etc skip finish) ~skip)
+        :else (for-bad-keyword k)))
+    (finish)))
+
+(declare ^:private for-step-fn)
+
+;; an outer group's element: concat the inner group's seq over this element
+;; onto the step over the rest, or skip the element when that seq is empty.
+(defn- for-nested-yield [groups body gi giter gxs]
+  `(let [iterys# ~(for-step-fn groups body (inc gi))
+         fs# (seq (iterys# ~(nth (nth groups (inc gi)) 1)))]
+     (if fs#
+       (concat fs# (~giter (rest ~gxs)))
+       (recur (rest ~gxs)))))
+
+;; one chunk of the innermost group: fill a chunk buffer gb from the chunk
+;; (cmods is an element's modifier chain, which appends it) and chunk-cons it
+;; onto the step over the chunk rest -- or onto nil once a :while has ended it.
+(defn- for-chunk [bind giter gxs gi2 gb cmods]
+  `(let [c# (chunk-first ~gxs)
+         size# (count c#)
+         ~gb (chunk-buffer size#)]
+     (if (loop [~gi2 0]
+           (if (< ~gi2 size#)
+             (let [~bind (nth c# ~gi2)]
+               ~cmods)
+             true))
+       (chunk-cons (chunk ~gb) (~giter (chunk-rest ~gxs)))
+       (chunk-cons (chunk ~gb) nil))))
+
+;; the innermost group's step over a seq that may be chunked: a chunk is
+;; filled into a chunk buffer and chunk-consed onto the step over the chunk
+;; rest; any other seq conses one element at a time (do-mod is its chain).
+(defn- for-chunked-step-fn [bind body mods giter gxs do-mod]
+  (let [gi2 (gensym "i__")
+        gb (gensym "b__")
+        cmods (for-mod-chain mods `(recur (inc ~gi2))
+                             (fn [] `(do (chunk-append ~gb ~body)
+                                         (recur (inc ~gi2)))))]
+    `(fn ~giter [~gxs]
+       (lazy-seq
+         (loop [~gxs ~gxs]
+           (when-let [~gxs (seq ~gxs)]
+             (if (chunked-seq? ~gxs)
+               ~(for-chunk bind giter gxs gi2 gb cmods)
+               (let [~bind (first ~gxs)]
+                 ~(do-mod)))))))))
+
+;; the step fn for binding group gi: from a seq to the lazy seq of body values
+;; over it and the groups after it.
+(defn- for-step-fn [groups body gi]
+  (let [g (nth groups gi)
+        bind (nth g 0)
+        mods (nth g 2)
+        next? (< (inc gi) (count groups))
+        giter (gensym "iter__")
+        gxs (gensym "s__")
+        do-mod (fn []
+                 (for-mod-chain mods `(recur (rest ~gxs))
+                                (fn []
+                                  (if next?
+                                    (for-nested-yield groups body gi giter gxs)
+                                    `(cons ~body (~giter (rest ~gxs)))))))]
+    (cond
+      next?
+      `(fn ~giter [~gxs]
+         (lazy-seq
+           (loop [~gxs ~gxs]
+             (when-first [~bind ~gxs]
+               ~(do-mod)))))
+      (empty? mods)
+      `(fn ~giter [~gxs] (map (fn [~bind] ~body) ~gxs))
+      :else
+      (for-chunked-step-fn bind body mods giter gxs do-mod))))
+
 (defmacro for [bindings body]
   (if (< (count bindings) 2)
     body
-    (let [groups (for-parse-groups bindings 0 [])
-          ngroups (count groups)
-          emit-bind
-          (fn emit-bind [gi]
-            (let [g (nth groups gi)
-                  bind (nth g 0)
-                  mods (nth g 2)
-                  next? (< (inc gi) ngroups)
-                  giter (gensym "iter__")
-                  gxs (gensym "s__")
-                  do-mod (fn do-mod [ms]
-                           (if (seq ms)
-                             (let [m (first ms) k (nth m 0) v (nth m 1) etc (rest ms)]
-                               (cond
-                                 (= k :let) `(let ~v ~(do-mod etc))
-                                 (= k :while) `(when ~v ~(do-mod etc))
-                                 (= k :when) `(if ~v ~(do-mod etc) (recur (rest ~gxs)))
-                                 :else (for-bad-keyword k)))
-                             (if next?
-                               `(let [iterys# ~(emit-bind (inc gi))
-                                      fs# (seq (iterys# ~(nth (nth groups (inc gi)) 1)))]
-                                  (if fs#
-                                    (concat fs# (~giter (rest ~gxs)))
-                                    (recur (rest ~gxs))))
-                               `(cons ~body (~giter (rest ~gxs))))))]
-              (cond
-                next?
-                `(fn ~giter [~gxs]
-                   (lazy-seq
-                     (loop [~gxs ~gxs]
-                       (when-first [~bind ~gxs]
-                         ~(do-mod mods)))))
-                (empty? mods)
-                `(fn ~giter [~gxs] (map (fn [~bind] ~body) ~gxs))
-                :else
-                (let [gi2 (gensym "i__")
-                      gb (gensym "b__")
-                      do-cmod (fn do-cmod [ms]
-                                (if (seq ms)
-                                  (let [m (first ms) k (nth m 0) v (nth m 1) etc (rest ms)]
-                                    (cond
-                                      (= k :let) `(let ~v ~(do-cmod etc))
-                                      (= k :while) `(when ~v ~(do-cmod etc))
-                                      (= k :when) `(if ~v ~(do-cmod etc) (recur (inc ~gi2)))
-                                      :else (for-bad-keyword k)))
-                                  `(do (chunk-append ~gb ~body)
-                                       (recur (inc ~gi2)))))]
-                  `(fn ~giter [~gxs]
-                     (lazy-seq
-                       (loop [~gxs ~gxs]
-                         (when-let [~gxs (seq ~gxs)]
-                           (if (chunked-seq? ~gxs)
-                             (let [c# (chunk-first ~gxs)
-                                   size# (count c#)
-                                   ~gb (chunk-buffer size#)]
-                               (if (loop [~gi2 0]
-                                     (if (< ~gi2 size#)
-                                       (let [~bind (nth c# ~gi2)]
-                                         ~(do-cmod mods))
-                                       true))
-                                 (chunk-cons (chunk ~gb) (~giter (chunk-rest ~gxs)))
-                                 (chunk-cons (chunk ~gb) nil)))
-                             (let [~bind (first ~gxs)]
-                               ~(do-mod mods)))))))))))]
-      `(let [iter# ~(emit-bind 0)]
+    (let [groups (for-parse-groups bindings 0 [])]
+      `(let [iter# ~(for-step-fn groups body 0)]
          (iter# ~(nth (nth groups 0) 1))))))
 
 ;; doseq runs body for side effects across the bindings in constant space,
@@ -991,37 +1116,48 @@
 ;; short list 10%. The body is written out twice per group, once per loop, as
 ;; the reference's is: a doseq nested in a doseq's body doubles per level (the
 ;; gate in corpus "doseq / chunked" holds the growth to the reference's).
+
+;; the block loop over chunk cv of seq cell sv: true when the block is done,
+;; nil when a :while stopped the walk.
+(defn- doseq-chunk-loop [sv cv iv ev bind mods k-form]
+  (let [in-chunk `(recur (unchecked-inc ~iv))]
+    `(let [~ev (__chunk-end ~sv)]
+       (loop [~iv (__chunk-start ~sv)]
+         (if (< ~iv ~ev)
+           (let [~bind (__chunk-nth ~cv ~iv)]
+             ~(comprehension-chain mods `(do ~k-form ~in-chunk) in-chunk nil))
+           true)))))
+
+;; the plain first/next loop from seq cell sv. It is entered with a cell the
+;; outer loop already found non-nil, so it tests each next, not ps.
+(defn- doseq-plain-loop [sv ps nx bind mods k-form]
+  (let [plain-next `(let [~nx (next ~ps)] (when ~nx (recur ~nx)))]
+    `(loop [~ps ~sv]
+       (let [~bind (first ~ps)]
+         ~(comprehension-chain mods `(do ~k-form ~plain-next) plain-next nil)))))
+
+;; the walk for binding group idx, with the groups after it nested in its body
+(defn- doseq-group [groups idx body]
+  (let [g (nth groups idx)
+        bind (nth g 0)
+        mods (nth g 2)
+        k-form (if (= idx (dec (count groups)))
+                 `(do ~@body nil)
+                 (doseq-group groups (inc idx) body))
+        sv (fresh-sym) cv (fresh-sym) iv (fresh-sym) ev (fresh-sym) ps (fresh-sym)
+        nx (fresh-sym)]
+    `(loop [~sv (seq ~(nth g 1))]
+       (when ~sv
+         (let [~cv (__chunk-vec ~sv)]
+           (if ~cv
+             (when ~(doseq-chunk-loop sv cv iv ev bind mods k-form)
+               (recur (seq (__chunk-after ~sv))))
+             ~(doseq-plain-loop sv ps nx bind mods k-form)))))))
+
 (defmacro doseq [bindings & body]
-  (let [build (fn build [idx groups]
-                (let [g (nth groups idx)
-                      my-bind (nth g 0)
-                      my-coll (nth g 1)
-                      my-mods (nth g 2)
-                      is-last (= idx (dec (count groups)))
-                      k-form (if is-last `(do ~@body nil) (build (inc idx) groups))
-                      sv (fresh-sym) cv (fresh-sym) iv (fresh-sym) ev (fresh-sym) ps (fresh-sym)
-                      nx (fresh-sym)
-                      in-chunk `(recur (unchecked-inc ~iv))
-                      ;; the plain loop is entered with a cell the outer loop
-                      ;; already found non-nil, so it tests each next, not ps
-                      plain-next `(let [~nx (next ~ps)] (when ~nx (recur ~nx)))]
-                  `(loop [~sv (seq ~my-coll)]
-                     (when ~sv
-                       (let [~cv (__chunk-vec ~sv)]
-                         (if ~cv
-                           (when (let [~ev (__chunk-end ~sv)]
-                                   (loop [~iv (__chunk-start ~sv)]
-                                     (if (< ~iv ~ev)
-                                       (let [~my-bind (__chunk-nth ~cv ~iv)]
-                                         ~(comprehension-chain my-mods `(do ~k-form ~in-chunk) in-chunk nil))
-                                       true)))
-                             (recur (seq (__chunk-after ~sv))))
-                           (loop [~ps ~sv]
-                             (let [~my-bind (first ~ps)]
-                               ~(comprehension-chain my-mods `(do ~k-form ~plain-next) plain-next nil)))))))))]
-    (if (>= (count bindings) 2)
-      `(do ~(build 0 (for-parse-groups bindings 0 [])) nil)
-      `(do ~@body nil))))
+  (if (>= (count bindings) 2)
+    `(do ~(doseq-group (for-parse-groups bindings 0 []) 0 body) nil)
+    `(do ~@body nil)))
 
 ;; when-let must live in this (early) tier, not 30-macros with its if-let/if-some/
 ;; when-some siblings: 20-coll uses it (not-empty), and 20-coll loads before 30. The

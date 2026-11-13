@@ -542,6 +542,170 @@
     (map? x) (vec (mapcat pattern-syms (vals x)))
     :else []))
 
+;; deftype's own reader-meta strip: the reader yields a (with-meta sym m) form
+;; for e.g. (deftype ^{:doc …} Foo …), so (name …) must see the bare symbol.
+(defn- strip-with-meta-form [x]
+  (if (and (seq? x) (symbol? (first x)) (= "with-meta" (name (first x))))
+    (second x) x))
+
+;; per-field TYPE HINT: ^Vec3 origin -> "Vec3" (a record type
+;; name), ^:num x -> "num", else nil. Lets the inference know a field's
+;; exact type up front, so reading it back carries that type (not :any) —
+;; the key to fast nested-record code.
+(defn- deftype-field-tag [f]
+  (let [mt (meta f)]
+    (cond (and mt (:tag mt)) (name (:tag mt))   ; symbol or string -> string
+          (and mt (:num mt)) "num"
+          :else nil)))
+
+;; per-field MUTABILITY: ^:unsynchronized-mutable / ^:volatile-
+;; mutable marks a field set!-able. A type with any mutable field opts out
+;; of the immutable shape-rec layout and uses the mutable table form, so
+;; set! can mutate it (the ctor reads this vector).
+(defn- deftype-field-mutable? [f]
+  (let [mt (meta f)]
+    (if (and mt (or (:unsynchronized-mutable mt)
+                    (:volatile-mutable mt)))
+      true false)))
+
+;; The name of a non-empty list form's symbol head, else nil.
+(defn- form-head-name [form]
+  (when (and (seq? form) (seq form) (symbol? (first form)))
+    (name (first form))))
+
+;; True when x names a mutable field no local shadows.
+(defn- live-field? [mutable? shadowed x]
+  (and (symbol? x) (mutable? x) (not (contains? shadowed x))))
+
+;; rewrite a method body: (set! mut-field v) -> an in-place (.-field inst)
+;; write, and a READ of a mutable field -> (.-field inst) so it observes the
+;; live value after a set! (the double-checked-locking idiom re-reads a field
+;; after taking a lock). Immutable fields stay let-bound (captured once is
+;; correct and cheaper). Tracks lexical shadowing through let/loop/fn/letfn so
+;; a same-named local wins over a field. mutable? tests a symbol for a mutable
+;; field of the type being defined.
+(declare rewrite-field-access)
+
+;; let/loop-style vector-binding forms: rewrite inits, then shadow the
+;; bound names in the body.
+(defn- rewrite-binding-form [mutable? inst shadowed form]
+  (let [rw (fn [sh x] (rewrite-field-access mutable? inst sh x))
+        bv (second form) n (count bv)
+        bv' (loop [i 0 acc []]
+              (if (< i n)
+                (recur (+ i 2)
+                       (let [a (conj acc (nth bv i))]
+                         (if (< (inc i) n) (conj a (rw shadowed (nth bv (inc i)))) a)))
+                acc))
+        sh (loop [i 0 acc shadowed]
+             (if (< i n)
+               (recur (+ i 2) (if (symbol? (nth bv i)) (conj acc (nth bv i)) acc))
+               acc))]
+    (cons (first form) (cons bv' (map (fn [x] (rw sh x)) (drop 2 form))))))
+
+;; fn/fn*: shadow each arity's params in its body.
+(defn- rewrite-fn-form [mutable? inst shadowed form]
+  (let [head (first form) tail (rest form)
+        named? (and (seq tail) (symbol? (first tail)))
+        fname (when named? (first tail))
+        arts (if named? (rest tail) tail)
+        psyms (fn [pv] (loop [p (seq pv) acc shadowed]
+                         (if p
+                           (recur (next p)
+                                  (if (and (symbol? (first p)) (not= (name (first p)) "&"))
+                                    (conj acc (first p)) acc))
+                           acc)))
+        do-art (fn [ar] (cons (first ar) (map (fn [x] (rewrite-field-access mutable? inst (psyms (first ar)) x))
+                                              (rest ar))))
+        arts' (if (vector? (first arts)) (do-art arts) (map do-art arts))]
+    (concat (list head) (when named? (list fname)) arts')))
+
+(defn- rewrite-field-access [mutable? inst shadowed form]
+  (let [rw (fn [x] (rewrite-field-access mutable? inst shadowed x))
+        h (form-head-name form)]
+    (cond
+      (and (= "set!" h) (live-field? mutable? shadowed (second form)))
+      (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
+            (rw (nth form 2)))
+      (and (contains? #{"let" "let*" "loop" "binding" "when-let" "if-let"
+                        "when-some" "if-some"} h)
+           (vector? (second form)))
+      (rewrite-binding-form mutable? inst shadowed form)
+      (contains? #{"fn" "fn*"} h)
+      (rewrite-fn-form mutable? inst shadowed form)
+      ;; (. obj member args*) / (. obj (method args*)): the member position
+      ;; names a field or method, it is not a value — rewrite the object and
+      ;; argument positions only. Without this a member named like a mutable
+      ;; field ((. this v)) had its member symbol rewritten into a field
+      ;; read, producing (. this (.-v this)).
+      (and (= "." h) (>= (count form) 3) (symbol? (nth form 2)))
+      (concat (list (first form) (rw (second form)) (nth form 2))
+              (map rw (drop 3 form)))
+      (and (= "." h) (= 3 (count form)) (seq? (nth form 2)) (symbol? (first (nth form 2))))
+      (list (first form) (rw (second form))
+            (cons (first (nth form 2))
+                  (map rw (rest (nth form 2)))))
+      ;; a bare read of a mutable field -> live field access
+      (live-field? mutable? shadowed form)
+      (list (symbol (str ".-" (name form))) inst)
+      (seq? form) (map rw form)
+      (vector? form) (mapv rw form)
+      :else form)))
+
+;; build one method clause (argv + field-bound body) from a method spec.
+;; The clause is DATA, not a syntax-quote: a body that is itself a syntax-
+;; quote would have its ~unquotes consumed a level early if re-spliced.
+(defn- deftype-method-clause [fields mutable? spec]
+  ;; fresh-name each _ param so two _ params don't collide on the
+  ;; field binds / live-read instance (see defrecord's mk-clause).
+  (let [raw (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
+        dp (destructured-params raw)
+        argv (nth dp 0)
+        dlets (nth dp 1)
+        inst (first argv)
+        ;; A method param shadows a same-named field (Clojure
+        ;; semantics): don't let-bind a field the param already
+        ;; provides, and treat those params as shadowing so a
+        ;; mutable field's live-read rewrite doesn't override them.
+        ;; A destructured param's own bindings shadow too — hence
+        ;; the destructuring let sits INSIDE the field binds.
+        dsyms (vec (mapcat pattern-syms dlets))
+        shadowed (set (concat argv dsyms))
+        pnames (set (map name shadowed))
+        ;; let-bind only immutable fields; mutable ones are read live
+        ;; via rewrite-field-access so a set! within the method is observed.
+        ;; The read is the DECLARED-SLOT one, not get: a type
+        ;; declaring clojure.lang.ILookup answers get through its
+        ;; own valAt, so binding fields with get would re-enter
+        ;; that valAt on every method entry — including valAt's
+        ;; own — and never come back. It is also the cheaper read
+        ;; (straight to the slot, no type cascade).
+        binds (vec (mapcat (fn [f] [f (list (symbol "clojure.core" "__deftype-field")
+                                            inst (keyword (name f)))])
+                           (filter (fn [f] (and (not (mutable? f))
+                                                (not (contains? pnames (name f)))))
+                                   fields)))
+        mbody (map (fn [bf] (rewrite-field-access mutable? inst shadowed bf)) (drop 2 spec))
+        mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
+        mbody (underscore-rebind (nth spec 1) raw mbody)]
+    (list argv (list* 'clojure.core/let binds mbody))))
+
+;; inline impls register for dispatch but are NOT extenders of the
+;; protocol (the JVM compiles them into the class) — register-inline-method,
+;; not extend-type. One registration per protocol group, then one per method
+;; name in it, each the merged fn by-name holds for that name.
+(declare distinct) ; 40-lazy.clj; a defmacro body may reach ahead, a defn may not
+(defn- inline-impl-registrations [tname by-name groups]
+  (mapcat (fn [g]
+            (let [proto (protocol-key (first g))
+                  names (distinct (map (fn [spec] (name (first spec))) (rest g)))]
+              (cons `(register-inline-protocol! ~(name tname) ~proto)
+                    (map (fn [nm]
+                           `(register-inline-method ~(name tname) ~proto ~nm
+                                                    (fn ~@(get by-name nm))))
+                         names))))
+          groups))
+
 ;; deftype is sugar over make-deftype-ctor (a ctx-capturing clojure.core fn that
 ;; bakes the ns-qualified type tag at def time) plus extend-type for any inline
 ;; protocol methods — so it compiles as a plain (do …). Each method body sees the
@@ -553,148 +717,21 @@
   `(def ~name (create-struct ~@keys)))
 
 (defmacro deftype [tname fields & body]
-  ;; strip ^meta off the type name and fields (the reader yields a (with-meta sym m)
-  ;; form for e.g. (deftype ^{:doc …} Foo …)), so (name …) sees a bare symbol.
-  (let [unwrap (fn [x] (if (and (seq? x) (symbol? (first x)) (= "with-meta" (name (first x))))
-                         (second x) x))
-        tname (unwrap tname)
-        fields (map unwrap fields)
+  ;; strip ^meta off the type name and fields, so (name …) sees a bare symbol.
+  (let [tname (strip-with-meta-form tname)
+        fields (map strip-with-meta-form fields)
         arrow (symbol (str "->" (name tname)))
         ;; a seq of field keywords; spliced into a vector LITERAL below ([~@…]) so
         ;; the analyzer sees a vector form, not a runtime pvec value.
         field-kws (map (fn [f] (keyword (name f))) fields)
-        ;; per-field TYPE HINT: ^Vec3 origin -> "Vec3" (a record type
-        ;; name), ^:num x -> "num", else nil. Lets the inference know a field's
-        ;; exact type up front, so reading it back carries that type (not :any) —
-        ;; the key to fast nested-record code. Spliced as a vector literal too.
-        field-tags (map (fn [f] (let [mt (meta f)]
-                                  (cond (and mt (:tag mt)) (name (:tag mt))   ; symbol or string -> string
-                                        (and mt (:num mt)) "num"
-                                        :else nil)))
-                        fields)
-        ;; per-field MUTABILITY: ^:unsynchronized-mutable / ^:volatile-
-        ;; mutable marks a field set!-able. A type with any mutable field opts out
-        ;; of the immutable shape-rec layout and uses the mutable table form, so
-        ;; set! can mutate it (the ctor reads this vector). Spliced as a literal.
-        field-muts (map (fn [f] (let [mt (meta f)]
-                                  (if (and mt (or (:unsynchronized-mutable mt)
-                                                  (:volatile-mutable mt)))
-                                    true false)))
-                        fields)
+        ;; field hints and mutability, spliced as vector literals too.
+        field-tags (map deftype-field-tag fields)
+        field-muts (map deftype-field-mutable? fields)
         ;; mutable field symbols (^:unsynchronized-mutable / ^:volatile-mutable):
         ;; (set! field v) in a method body lowers to (set! (.-field inst) v), the
         ;; in-place field write the analyzer compiles to jolt-set-field!.
         mutable-syms (map first (filter second (map vector fields field-muts)))
         mutable? (fn [s] (boolean (some (fn [m] (= m s)) mutable-syms)))
-        ;; rewrite a method body: (set! mut-field v) -> an in-place (.-field inst)
-        ;; write, and a READ of a mutable field -> (.-field inst) so it observes the
-        ;; live value after a set! (the double-checked-locking idiom re-reads a field
-        ;; after taking a lock). Immutable fields stay let-bound (captured once is
-        ;; correct and cheaper). Tracks lexical shadowing through let/loop/fn/letfn so
-        ;; a same-named local wins over a field.
-        rewrite-body
-        (fn rw [inst shadowed form]
-          (cond
-            (and (seq? form) (seq form) (symbol? (first form))
-                 (= "set!" (name (first form)))
-                 (symbol? (second form)) (mutable? (second form))
-                 (not (contains? shadowed (second form))))
-            (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
-                  (rw inst shadowed (nth form 2)))
-            ;; let/loop-style vector-binding forms: rewrite inits, then shadow the
-            ;; bound names in the body.
-            (and (seq? form) (seq form) (symbol? (first form))
-                 (contains? #{"let" "let*" "loop" "binding" "when-let" "if-let"
-                              "when-some" "if-some"} (name (first form)))
-                 (vector? (second form)))
-            (let [bv (second form) n (count bv)
-                  bv' (loop [i 0 acc []]
-                        (if (< i n)
-                          (recur (+ i 2)
-                                 (let [a (conj acc (nth bv i))]
-                                   (if (< (inc i) n) (conj a (rw inst shadowed (nth bv (inc i)))) a)))
-                          acc))
-                  sh (loop [i 0 acc shadowed]
-                       (if (< i n)
-                         (recur (+ i 2) (if (symbol? (nth bv i)) (conj acc (nth bv i)) acc))
-                         acc))]
-              (cons (first form) (cons bv' (map (fn [x] (rw inst sh x)) (drop 2 form)))))
-            ;; fn/fn*: shadow each arity's params in its body.
-            (and (seq? form) (seq form) (symbol? (first form))
-                 (contains? #{"fn" "fn*"} (name (first form))))
-            (let [head (first form) tail (rest form)
-                  named? (and (seq tail) (symbol? (first tail)))
-                  fname (when named? (first tail))
-                  arts (if named? (rest tail) tail)
-                  psyms (fn [pv] (loop [p (seq pv) acc shadowed]
-                                   (if p
-                                     (recur (next p)
-                                            (if (and (symbol? (first p)) (not= (name (first p)) "&"))
-                                              (conj acc (first p)) acc))
-                                     acc)))
-                  do-art (fn [ar] (cons (first ar) (map (fn [x] (rw inst (psyms (first ar)) x)) (rest ar))))
-                  arts' (if (vector? (first arts)) (do-art arts) (map do-art arts))]
-              (concat (list head) (when named? (list fname)) arts'))
-            ;; (. obj member args*) / (. obj (method args*)): the member position
-            ;; names a field or method, it is not a value — rewrite the object and
-            ;; argument positions only. Without this a member named like a mutable
-            ;; field ((. this v)) had its member symbol rewritten into a field
-            ;; read, producing (. this (.-v this)).
-            (and (seq? form) (seq form) (symbol? (first form)) (= "." (name (first form)))
-                 (>= (count form) 3) (symbol? (nth form 2)))
-            (concat (list (first form) (rw inst shadowed (second form)) (nth form 2))
-                    (map (fn [x] (rw inst shadowed x)) (drop 3 form)))
-            (and (seq? form) (seq form) (symbol? (first form)) (= "." (name (first form)))
-                 (= 3 (count form)) (seq? (nth form 2)) (symbol? (first (nth form 2))))
-            (list (first form) (rw inst shadowed (second form))
-                  (cons (first (nth form 2))
-                        (map (fn [x] (rw inst shadowed x)) (rest (nth form 2)))))
-            ;; a bare read of a mutable field -> live field access
-            (and (symbol? form) (mutable? form) (not (contains? shadowed form)))
-            (list (symbol (str ".-" (name form))) inst)
-            (seq? form) (map (fn [x] (rw inst shadowed x)) form)
-            (vector? form) (mapv (fn [x] (rw inst shadowed x)) form)
-            :else form))
-        ;; inline impls register for dispatch but are NOT extenders of the
-        ;; protocol (the JVM compiles them into the class) — register-inline-method,
-        ;; not extend-type.
-        ;; build one method clause (argv + field-bound body) from a method spec.
-        ;; The clause is DATA, not a syntax-quote: a body that is itself a syntax-
-        ;; quote would have its ~unquotes consumed a level early if re-spliced.
-        mk-clause (fn [spec]
-                    ;; fresh-name each _ param so two _ params don't collide on the
-                    ;; field binds / live-read instance (see defrecord's mk-clause).
-                    (let [raw (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
-                          dp (destructured-params raw)
-                          argv (nth dp 0)
-                          dlets (nth dp 1)
-                          inst (first argv)
-                          ;; A method param shadows a same-named field (Clojure
-                          ;; semantics): don't let-bind a field the param already
-                          ;; provides, and treat those params as shadowing so a
-                          ;; mutable field's live-read rewrite doesn't override them.
-                          ;; A destructured param's own bindings shadow too — hence
-                          ;; the destructuring let sits INSIDE the field binds.
-                          dsyms (vec (mapcat pattern-syms dlets))
-                          shadowed (set (concat argv dsyms))
-                          pnames (set (map name shadowed))
-                          ;; let-bind only immutable fields; mutable ones are read live
-                          ;; via rewrite-body so a set! within the method is observed.
-                          ;; The read is the DECLARED-SLOT one, not get: a type
-                          ;; declaring clojure.lang.ILookup answers get through its
-                          ;; own valAt, so binding fields with get would re-enter
-                          ;; that valAt on every method entry — including valAt's
-                          ;; own — and never come back. It is also the cheaper read
-                          ;; (straight to the slot, no type cascade).
-                          binds (vec (mapcat (fn [f] [f (list (symbol "clojure.core" "__deftype-field")
-                                                              inst (keyword (name f)))])
-                                             (filter (fn [f] (and (not (mutable? f))
-                                                                  (not (contains? pnames (name f)))))
-                                                     fields)))
-                          mbody (map (fn [bf] (rewrite-body inst shadowed bf)) (drop 2 spec))
-                          mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
-                          mbody (underscore-rebind (nth spec 1) raw mbody)]
-                      (list argv (list* 'clojure.core/let binds mbody))))
         groups (impl-groups (drop-type-opts body))
         ;; merge clauses by method NAME across ALL protocols into one multi-arity
         ;; fn, so a name appearing in two interfaces with different arities
@@ -703,20 +740,14 @@
         ;; (Within one protocol, distinct arities like Indexed's nth merge the same
         ;; way.) Each (protocol, name) registers the merged fn, so dispatch by name
         ;; and satisfies? by protocol both hold.
-        by-name (reduce-kv (fn [m nm specs] (assoc m nm (mapv mk-clause specs)))
+        by-name (reduce-kv (fn [m nm specs]
+                             (assoc m nm (mapv (fn [spec] (deftype-method-clause fields mutable? spec))
+                                               specs)))
                            {} (merge-method-specs (type-class-file tname) (mapcat rest groups)))]
     `(do
        (def ~tname (make-deftype-ctor (quote ~tname) [~@field-kws] [~@field-tags] [~@field-muts]))
        (def ~arrow ~tname)
-       ~@(mapcat (fn [g]
-                   (let [proto (protocol-key (first g))
-                         names (distinct (map (fn [spec] (name (first spec))) (rest g)))]
-                     (cons `(register-inline-protocol! ~(name tname) ~proto)
-                           (map (fn [nm]
-                                  `(register-inline-method ~(name tname) ~proto ~nm
-                                                           (fn ~@(get by-name nm))))
-                                names))))
-                 groups)
+       ~@(inline-impl-registrations tname by-name groups)
        ~tname)))
 
 ;; The protocol value is built by make-protocol (a fn call) rather than an embedded
@@ -753,18 +784,91 @@
 ;; own var) and the name's ^hint as :tag — so (doc a-method) prints a signature
 ;; and tooling can tell a protocol method from a plain fn. See the method
 ;; emission below.
+;; Clojure's defprotocol takes an optional docstring and leading keyword
+;; options (:extend-via-metadata true, honeysql uses it) before the method
+;; signatures. The docstring is kept (it is :doc on the value and on the var);
+;; the options are collected into a map merged onto the value. A string
+;; anywhere in the leading run is the docstring and the last one wins, which
+;; is what the JVM's assoc-in-a-loop parse does. Returns [doc sigs opts].
+(defn- parse-protocol-head [sigs]
+  (loop [d nil o {} s sigs]
+    (cond
+      (string? (first s))  (recur (first s) o (rest s))
+      (keyword? (first s)) (recur d (assoc o (first s) (second s)) (rest (rest s)))
+      :else [d s o])))
+
+;; The value's :sigs map, keyed by method keyword (see the comment above).
+(defn- protocol-sigs-map [sigs]
+  (reduce (fn [m sig]
+            (let [mname (first sig)
+                  args (rest sig)
+                  doc (when (string? (last args)) (last args))]
+              (assoc m (keyword (name mname))
+                     {:tag (:tag (meta mname))
+                      :name (with-meta mname nil)
+                      :arglists (apply list (filter vector? args))
+                      :doc doc})))
+          {} sigs))
+
+;; one fn clause per declared arity. The protocol/method NAMES pass as
+;; strings so the body compiles as a plain invoke (not symbol-as-var). The
+;; common 1/2/3-param arities call positional protocol-dispatchN, which
+;; applies the impl directly — no rest-list cons; 4+ params fall back to the
+;; variadic protocol-dispatch with a vector of the extra args. pn is the
+;; protocol key, mn the method's name and msym its qualified symbol.
+(defn- protocol-dispatch-clause [pn mn msym via-meta? argv]
+  (let [ps (mapv (fn [_] (fresh-sym)) argv)
+        n (count ps)
+        obj (first ps)]
+    (cond
+      via-meta? (list ps (list* (list 'clojure.core/protocol-resolve-meta pn mn (list 'quote msym) obj) ps))
+      (= n 1) (list ps (list 'clojure.core/protocol-dispatch1 pn mn obj))
+      (= n 2) (list ps (list 'clojure.core/protocol-dispatch2 pn mn obj (nth ps 1)))
+      (= n 3) (list ps (list 'clojure.core/protocol-dispatch3 pn mn obj (nth ps 1) (nth ps 2)))
+      :else   (list ps (list 'clojure.core/protocol-dispatch pn mn obj (vec (rest ps)))))))
+
+;; The def of one protocol method sig: its dispatch fn under the var metadata
+;; the reference gives it.
+(defn- protocol-method-def [pname pkey via-meta? sig]
+  (let [pn pkey
+        mnm (first sig)
+        mn (name mnm)
+        arglists (filter vector? (rest sig))
+        mdoc (let [args (rest sig)] (when (string? (last args)) (last args)))
+        ;; the method var's metadata, as the reference sets it:
+        ;; :arglists and :doc (present with a nil value when the
+        ;; method has no docstring, as there), :tag, and :protocol
+        ;; — the protocol's own var, which is what tells tooling a
+        ;; method belongs to a protocol at all. Without these
+        ;; (doc a-method) printed a bare name and no arglists.
+        ;; The values are QUOTED forms: def evaluates the symbol's
+        ;; metadata map, and the arglists' `this` is a symbol, not a
+        ;; reference. :tag is NOT set here — it is the method name's
+        ;; own ^hint, which def already reads and resolves to a Class,
+        ;; the value both hosts put on (defn ^String f ..). The
+        ;; reference's defprotocol keeps a resolved SYMBOL instead;
+        ;; that one difference is a documented divergence.
+        mmeta (assoc (meta mnm)
+                     :doc mdoc
+                     :arglists (list 'quote (when (seq arglists)
+                                              (apply list arglists)))
+                     :protocol (list 'var pname))
+        ;; the method's qualified symbol, the key a value's
+        ;; metadata implements it under
+        msym (symbol (str *ns*) mn)]
+    (if (seq arglists)
+      `(def ~(with-meta mnm mmeta)
+         (fn* ~@(map (fn [argv] (protocol-dispatch-clause pn mn msym via-meta? argv)) arglists)))
+      (if via-meta?
+        `(def ~(with-meta mnm mmeta)
+           (fn* [this# & rest#]
+             (apply (protocol-resolve-meta ~pn ~mn (quote ~msym) this#) this# rest#)))
+        `(def ~(with-meta mnm mmeta)
+           (fn* [this# & rest#] (protocol-dispatch ~pn ~mn this# rest#)))))))
+
 (defmacro defprotocol [pname & sigs]
-  ;; Clojure's defprotocol takes an optional docstring and leading keyword
-  ;; options (:extend-via-metadata true, honeysql uses it) before the method
-  ;; signatures. The docstring is kept (it is :doc on the value and on the var);
-  ;; the options are collected into a map merged onto the value. A string
-  ;; anywhere in the leading run is the docstring and the last one wins, which
-  ;; is what the JVM's assoc-in-a-loop parse does.
-  (let [parsed (loop [d nil o {} s sigs]
-                 (cond
-                   (string? (first s))  (recur (first s) o (rest s))
-                   (keyword? (first s)) (recur d (assoc o (first s) (second s)) (rest (rest s)))
-                   :else [d s o]))
+  ;; the docstring and leading options (see parse-protocol-head)
+  (let [parsed (parse-protocol-head sigs)
         pdoc (first parsed)
         sigs (second parsed)
         popts (nth parsed 2)
@@ -778,16 +882,7 @@
                              (let [k (keyword (name (first sig)))]
                                (assoc m k k)))
                            {} sigs)
-        sigs-map (reduce (fn [m sig]
-                           (let [mname (first sig)
-                                 args (rest sig)
-                                 doc (when (string? (last args)) (last args))]
-                             (assoc m (keyword (name mname))
-                                    {:tag (:tag (meta mname))
-                                     :name (with-meta mname nil)
-                                     :arglists (apply list (filter vector? args))
-                                     :doc doc})))
-                         {} sigs)
+        sigs-map (protocol-sigs-map sigs)
         ;; the protocol's identity: this namespace plus the name (see protocol-key).
         ;; Baked here so the value, the dispatch shims and every later impl
         ;; registration all key on one string.
@@ -805,57 +900,7 @@
        ;; register method var-keys for devirtualization; the inference
        ;; reads this (via infer-unit!) to resolve a protocol call on a known record
        (register-protocol-methods! ~pkey [~@(map (fn [s] (name (first s))) sigs)])
-       ;; one fn clause per declared arity. The protocol/method NAMES pass as
-       ;; strings so the body compiles as a plain invoke (not symbol-as-var). The
-       ;; common 1/2/3-param arities call positional protocol-dispatchN, which
-       ;; applies the impl directly — no rest-list cons; 4+ params fall back to the
-       ;; variadic protocol-dispatch with a vector of the extra args.
-       ~@(map (fn [sig]
-                (let [pn pkey
-                      mnm (first sig)
-                      mn (name mnm)
-                      arglists (filter vector? (rest sig))
-                      mdoc (let [args (rest sig)] (when (string? (last args)) (last args)))
-                      ;; the method var's metadata, as the reference sets it:
-                      ;; :arglists and :doc (present with a nil value when the
-                      ;; method has no docstring, as there), :tag, and :protocol
-                      ;; — the protocol's own var, which is what tells tooling a
-                      ;; method belongs to a protocol at all. Without these
-                      ;; (doc a-method) printed a bare name and no arglists.
-                      ;; The values are QUOTED forms: def evaluates the symbol's
-                      ;; metadata map, and the arglists' `this` is a symbol, not a
-                      ;; reference. :tag is NOT set here — it is the method name's
-                      ;; own ^hint, which def already reads and resolves to a Class,
-                      ;; the value both hosts put on (defn ^String f ..). The
-                      ;; reference's defprotocol keeps a resolved SYMBOL instead;
-                      ;; that one difference is a documented divergence.
-                      mmeta (assoc (meta mnm)
-                                   :doc mdoc
-                                   :arglists (list 'quote (when (seq arglists)
-                                                            (apply list arglists)))
-                                   :protocol (list 'var pname))
-                      ;; the method's qualified symbol, the key a value's
-                      ;; metadata implements it under
-                      msym (symbol (str *ns*) mn)
-                      clause (fn [argv]
-                               (let [ps (mapv (fn [_] (fresh-sym)) argv)
-                                     n (count ps)
-                                     obj (first ps)]
-                                 (cond
-                                   via-meta? (list ps (list* (list 'clojure.core/protocol-resolve-meta pn mn (list 'quote msym) obj) ps))
-                                   (= n 1) (list ps (list 'clojure.core/protocol-dispatch1 pn mn obj))
-                                   (= n 2) (list ps (list 'clojure.core/protocol-dispatch2 pn mn obj (nth ps 1)))
-                                   (= n 3) (list ps (list 'clojure.core/protocol-dispatch3 pn mn obj (nth ps 1) (nth ps 2)))
-                                   :else   (list ps (list 'clojure.core/protocol-dispatch pn mn obj (vec (rest ps)))))))]
-                  (if (seq arglists)
-                    `(def ~(with-meta mnm mmeta) (fn* ~@(map clause arglists)))
-                    (if via-meta?
-                      `(def ~(with-meta mnm mmeta)
-                         (fn* [this# & rest#]
-                           (apply (protocol-resolve-meta ~pn ~mn (quote ~msym) this#) this# rest#)))
-                      `(def ~(with-meta mnm mmeta)
-                         (fn* [this# & rest#] (protocol-dispatch ~pn ~mn this# rest#)))))))
-              sigs))))
+       ~@(map (fn [sig] (protocol-method-def pname pkey via-meta? sig)) sigs))))
 
 ;; Member threading: (.. x f g) => (. (. x f) g); a parenthesized member
 ;; carries args. Canonical Clojure shape, single-arity defmacro.

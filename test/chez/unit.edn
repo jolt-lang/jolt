@@ -1262,6 +1262,7 @@
   ;; String[], like the JVM — vec it to compare. Pattern.split used to answer a seq
   ;; where String.split answered a vector; both are a real array now.
   {:suite "javastatic" :expr "(vec (.split (Pattern/compile \",\") \"a,b,c\"))" :expected "[\"a\" \"b\" \"c\"]"}
+  {:suite "javastatic" :expr "[(class (.split \"a,b\" \",\")) (class (.split (Pattern/compile \",\") \"a,b\"))]" :expected "[java.lang.String/1 java.lang.String/1]"}
   {:suite "javastatic" :expr "(do (require '[clojure.string :as s]) (s/replace \"a1b2\" (Pattern/compile \"[0-9]\") \"\"))" :expected "\"ab\""}
   {:suite "javastatic" :expr "(boolean (re-find (Pattern/compile \"^x\" Pattern/MULTILINE) \"y\\nx\"))" :expected "true"}
   {:suite "javastatic" :expr "(boolean (re-find (re-pattern (Pattern/quote \"a.c\")) \"za.cy\"))" :expected "true"}
@@ -2929,16 +2930,16 @@
   {:suite "min-version" :label "a runtime that names no version is never refused" :expected "true" :expr "(do (require 'jolt.deps) (and (= [] (@#'jolt.deps/version-parts \"dev\")) (@#'jolt.deps/version< \"dev\" \"0.0.1\")))"}
   {:suite "min-version" :label "JOLT_SKIP_MIN_VERSION is not consulted per-call but per-process" :expected "true" :expr "(do (require 'jolt.deps) (fn? @#'jolt.deps/check-min-versions!))"}
   {:suite "m2-repo" :label ":mvn/local-repo, JOLT_MAVEN_REPOSITORY, GRENADINE_MAVEN_REPOSITORY, HOME/.m2 precedence" :expected "true" :expr "(do (require 'jolt.deps) (let [m2 @#'jolt.deps/m2-repo-dir] (and (= \"/cfg\" (m2 \"/cfg\" \"/j\" \"/g\" \"/h\" \".\")) (= \"/j\" (m2 nil \"/j\" \"/g\" \"/h\" \".\")) (= \"/g\" (m2 nil nil \"/g\" \"/h\" \".\")) (= \"/h/.m2/repository\" (m2 nil nil nil \"/h\" \".\")))))"}
-  {:suite "gitlibs-cache" :label "JOLT_GITLIBS_DIR, GRENADINE_GITLIBS_DIR, GITLIBS, HOME precedence" :expected "true" :expr "(do (require 'jolt.deps) (let [cache @#'jolt.deps/gitlibs-dir] (and (= \"/j\" (cache \"/j\" \"/g\" \"/t\" \"/h\")) (= \"/g/jolt\" (cache nil \"/g\" \"/t\" \"/h\")) (= \"/t/jolt\" (cache nil nil \"/t\" \"/h\")) (= \"/h/.jolt/gitlibs\" (cache nil nil nil \"/h\")))))"}
-  {:suite "gitlibs-cache" :label "require-deps host exposes the effective Jolt Gitlibs directory" :expected "true" :expr "(do (require 'jolt.deps) (= (@#'jolt.deps/gitlibs-dir) ((:gitlibs-dir (@#'jolt.deps/required-host)))))"}
+  {:suite "gitlibs-cache" :label "JOLT_GITLIBS_DIR, GRENADINE_GITLIBS_DIR, GITLIBS, HOME precedence" :expected "true" :expr "(do (require 'jolt.deps) (let [cache @#'jolt.deps.git/gitlibs-dir] (and (= \"/j\" (cache \"/j\" \"/g\" \"/t\" \"/h\")) (= \"/g/jolt\" (cache nil \"/g\" \"/t\" \"/h\")) (= \"/t/jolt\" (cache nil nil \"/t\" \"/h\")) (= \"/h/.jolt/gitlibs\" (cache nil nil nil \"/h\")))))"}
+  {:suite "gitlibs-cache" :label "require-deps host exposes the effective Jolt Gitlibs directory" :expected "true" :expr "(do (require 'jolt.deps) (= (@#'jolt.deps.git/gitlibs-dir) ((:gitlibs-dir (@#'jolt.deps/required-host)))))"}
   {:suite "gitlibs-cache" :label "require-deps host filesystem works under a caller namespace binding" :expected "true" :expr "(do (require 'jolt.deps) (let [caller (or (find-ns 'required-host-caller) (create-ns 'required-host-caller)) root (str (System/getProperty \"java.io.tmpdir\") \"/required-host-\" (System/currentTimeMillis)) source (str root \"/source\") target (str root \"/target\")] (try (binding [*ns* caller] (let [host (@#'jolt.deps/required-host)] ((:mkdirs! host) root) (spit source \"ok\") ((:atomic-move! host) source target) (and (= \"ok\" (slurp target)) (do ((:delete! host) target) (not (jolt.host/file-exists? target)))))) (finally (jolt.host/delete-tree! root)))))"}
-  {:suite "git-url-inference" :label "io.github.OWNER/REPO -> github https .git" :expected "\"https://github.com/paintparty/lasertag.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'io.github.paintparty/lasertag))"}
-  {:suite "git-url-inference" :label "com.github.OWNER/REPO -> github" :expected "\"https://github.com/seancorfield/next.jdbc.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'com.github.seancorfield/next.jdbc))"}
-  {:suite "git-url-inference" :label "io.gitlab.OWNER/REPO -> gitlab" :expected "\"https://gitlab.com/owner/repo.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'io.gitlab.owner/repo))"}
-  {:suite "git-url-inference" :label "org.bitbucket.OWNER/REPO -> bitbucket" :expected "\"https://bitbucket.org/owner/repo.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'org.bitbucket.owner/repo))"}
-  {:suite "git-url-inference" :label "ht.sr.~OWNER/REPO -> sourcehut, no .git suffix" :expected "\"https://git.sr.ht/~owner/repo\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url (symbol \"ht.sr.~owner\" \"repo\")))"}
-  {:suite "git-url-inference" :label "unknown host namespace -> nil" :expected "" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'org.clojure/data.json))"}
-  {:suite "git-url-inference" :label "non-namespaced coordinate -> nil" :expected "" :expr "(do (require 'jolt.deps) (@#'jolt.deps/infer-git-url 'lasertag))"}
+  {:suite "git-url-inference" :label "io.github.OWNER/REPO -> github https .git" :expected "\"https://github.com/paintparty/lasertag.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url 'io.github.paintparty/lasertag))"}
+  {:suite "git-url-inference" :label "com.github.OWNER/REPO -> github" :expected "\"https://github.com/seancorfield/next.jdbc.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url 'com.github.seancorfield/next.jdbc))"}
+  {:suite "git-url-inference" :label "io.gitlab.OWNER/REPO -> gitlab" :expected "\"https://gitlab.com/owner/repo.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url 'io.gitlab.owner/repo))"}
+  {:suite "git-url-inference" :label "org.bitbucket.OWNER/REPO -> bitbucket" :expected "\"https://bitbucket.org/owner/repo.git\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url 'org.bitbucket.owner/repo))"}
+  {:suite "git-url-inference" :label "ht.sr.~OWNER/REPO -> sourcehut, no .git suffix" :expected "\"https://git.sr.ht/~owner/repo\"" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url (symbol \"ht.sr.~owner\" \"repo\")))"}
+  {:suite "git-url-inference" :label "unknown host namespace -> nil" :expected "" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url 'org.clojure/data.json))"}
+  {:suite "git-url-inference" :label "non-namespaced coordinate -> nil" :expected "" :expr "(do (require 'jolt.deps) (@#'jolt.deps.git/infer-git-url 'lasertag))"}
   {:suite "git-url-inference" :label "io.github.* with :mvn/version is a Maven dep, not git" :expected ":mvn" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (jolt.deps.ext/coord-type {:mvn/version \"1.0.0\"}))"}
   {:suite "git-url-inference" :label ":git/sha alone marks a git coordinate" :expected ":git" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (jolt.deps.ext/coord-type {:git/sha \"abc\"}))"}
   {:suite "git-url-inference" :label ":local/root marks a local coordinate" :expected ":local" :expr "(do (require 'jolt.deps) (require 'jolt.deps.ext) (jolt.deps.ext/coord-type {:local/root \"../x\"}))"}
@@ -3908,6 +3909,18 @@
   ;; Throwable->map lifts the phase to the top, where ex-triage reads it
   {:suite "error-phase" :expr "(:phase (Throwable->map (try (load-string \"zzz\") (catch Throwable e e))))" :expected ":compile-syntax-check"}
   {:suite "error-phase" :expr "(contains? (Throwable->map (ex-info \"plain\" {})) :phase)" :expected "false"}
+  ;; A malformed special form reports the reference message, not the
+  ;; IndexOutOfBounds or ISeq fault its arm hit reading past the form.
+  {:suite "error-phase" :expr "(try (load-string \"(throw)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Too few arguments to throw, throw expects a single Throwable instance\" :analyze/invalid-throw]"}
+  {:suite "error-phase" :expr "(try (load-string \"(throw 1 2)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Too many arguments to throw, throw expects a single Throwable instance\" :analyze/invalid-throw]"}
+  {:suite "error-phase" :expr "(try (load-string \"(quote a b)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Wrong number of args (2) passed to quote\" :analyze/invalid-arity]"}
+  {:suite "error-phase" :expr "(try (load-string \"(let* x 1)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Bad binding form, expected vector\" :analyze/invalid-binding]"}
+  {:suite "error-phase" :expr "(try (load-string \"(loop* x 1)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Bad binding form, expected vector\" :analyze/invalid-binding]"}
+  {:suite "error-phase" :expr "(try (load-string \"(letfn* x 1)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Bad binding form, expected vector\" :analyze/invalid-binding]"}
+  {:suite "error-phase" :expr "(try (load-string \"(def)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Too few arguments to def\" :analyze/invalid-def]"}
+  {:suite "error-phase" :expr "(try (load-string \"(def a 1 2)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Too many arguments to def\" :analyze/invalid-def]"}
+  {:suite "error-phase" :expr "(try (load-string \"(set! a)\") (catch Throwable e [(ex-message e) (:jolt.error/kind (ex-data e))]))" :expected "[\"Malformed assignment, expecting (set! target val)\" :analyze/invalid-set]"}
+  {:suite "error-phase" :expr "(do (def docd-def \"its doc\" 1) [docd-def (:doc (meta (var docd-def)))])" :expected "[1 \"its doc\"]"}
   ;; ...and clojure.main renders each phase from a real jolt error
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (clojure.main/err->msg (try (load-string \"(defn f []\\n  (let [a 1]\\n    zzz))\") (catch Throwable e e))))" :expected "\"Syntax error (ExceptionInfo) compiling at (REPL:2:3).\\nUnable to resolve symbol: zzz in this context\\n\""}
   ;; a read-string that fails at run time is the program's execution error (the

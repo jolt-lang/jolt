@@ -66,12 +66,14 @@
  "A map literal with an odd number of forms, so some key has no value."
 
  :analyze/invalid-def
- "A `def` whose first argument is not a symbol."
+ "A `def` whose first argument is not a symbol, or one with too few or too many
+  arguments: a name, then an optional docstring and an optional value."
 
  :analyze/invalid-binding
- "A `let*`/`loop*` binding whose left-hand side is not a symbol. Destructuring is
-  a macro over these, so a pattern that reaches the special form directly is one
-  the desugarer did not rewrite."
+ "A `let*`/`loop*`/`letfn*` whose bindings are not a vector of pairs, or a
+  binding whose left-hand side is not a symbol. Destructuring is a macro over
+  these, so a pattern that reaches the special form directly is one the desugarer
+  did not rewrite."
 
  :analyze/invalid-ns-form
  "An `ns` form with something other than a symbol as its name, or, after the
@@ -103,9 +105,13 @@
  "A `recur` that cannot reach its target: no enclosing loop or fn, the wrong
   argument count, across a `try`, or outside tail position."
 
+ :analyze/invalid-throw
+ "A `throw` with no argument, or with more than one."
+
  :analyze/invalid-set
- "A `set!` whose target is not an assignable place — a local, a non-var, or a
-  form that is neither a symbol nor a field access."
+ "A `set!` that is not (set! target val), or whose target is not an assignable
+  place — a local, a non-var, or a form that is neither a symbol nor a field
+  access."
 
  :analyze/invalid-var-reference
  "A `var` special form whose argument is not a symbol."

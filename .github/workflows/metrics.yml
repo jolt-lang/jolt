@@ -1,7 +1,8 @@
 name: metrics
 
-# Publishes the findings as a report. The one thing that fails the build is
-# unused code beyond ci/metrics-allow.edn (ci/metrics-gate.clj).
+# Publishes the findings as a report, and fails the build (ci/metrics-gate.clj) on
+# a critical finding under a path ci/metrics-allow.edn holds critical-free, or on
+# unused code beyond that file's allowlist.
 on:
   push:
     branches: [main]
@@ -12,9 +13,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  # pinned: a new release would change what CI runs on
-  JOLT_VERSION: v0.8.24
-  METRICS_SHA: 5f36452d3b998f3ccb3b078c0433098d5312fe8a
+  # pinned: a new release would change what CI runs on. jolt-metrics declares
+  # :jolt/min-version, so a METRICS_SHA bump may need a JOLT_VERSION bump too.
+  JOLT_VERSION: v0.8.27
+  METRICS_SHA: 3e13e1f1b86e7ba2db3f28125279864ef7ff0818
 
 jobs:
   report:
@@ -37,7 +39,7 @@ jobs:
             -m metrics.cli . metrics-report.md --top 50
           # the summary stops before the long per-file tables
           awk '/^## Cleanup candidates/{exit} {print}' metrics-report.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Check for unused code
+      - name: Check for critical findings and unused code
         run: |
           jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
             -m metrics.cli . metrics-report.edn --format edn

@@ -1433,10 +1433,12 @@
 ;; nth-able and destructurable here exactly as an array is on the JVM. The two
 ;; methods used to disagree about the surrogate for it: String.split returned a
 ;; VECTOR and Pattern.split a SEQ, so the same split printed two different ways and
-;; compared equal to a vector through one and not the other. (natives-array.ss loads
-;; after this file; the reference resolves when the method runs.)
+;; compared equal to a vector through one and not the other. Its kind is the
+;; String component class, so (class (.split s ",")) is String[] as on the JVM
+;; rather than Object[]. (natives-array.ss loads after this file; the reference
+;; resolves when the method runs.)
 (define (jvm-split-array irx s limit)
-  (make-jolt-array (na-list->backing (jvm-split irx s limit) 'object) 'object))
+  (make-jolt-array (list->vector (jvm-split irx s limit)) "java.lang.String"))
 
 ;; re-split's semantics over a literal separator: interior AND trailing empty
 ;; strings kept, a positive limit capping the parts with the tail left unsplit.

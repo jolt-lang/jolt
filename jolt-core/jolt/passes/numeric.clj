@@ -245,6 +245,232 @@
                    tenv (get a :params))]
     (if (get a :rest) (assoc (rebind-boxed pe (get a :rest) false) (get a :rest) nil) pe)))
 
+;; An operand that is a proven :long or a fixnum-range integer literal: what the
+;; fx arms (and an inline flvector index) accept. r is an [kind node] pair.
+(defn- fixnum-operand? [r]
+  (let [nd (nth r 1)]
+    (or (= :long (nth r 0))
+        (and (int-lit? nd) (fixnum-lit? (get nd :val))))))
+
+;; java.lang.Math over proven flonum operands -> native Chez flonum op, result
+;; typed :double (so it doesn't de-opt the surrounding arithmetic). Requires at
+;; least one genuine :double operand (so (Math/abs 5) keeps its int result) and
+;; every other operand a :double, a :long (widened to flonum — JVM widens a long
+;; arg to these double-returning overloads too), or an integer literal.
+(defn- math-fl-invoke [node1 math-op ars n]
+  (when (and math-op (= (nth math-op 1) n)
+             (some (fn [r] (= :double (nth r 0))) ars)
+             (every? (fn [r] (let [k (nth r 0)]
+                               (or (= k :double) (= k :long) (int-lit? (nth r 1))))) ars))
+    (let [args' (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
+                               (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
+                                     (= k :long) (assoc nd :fl-coerce true)
+                                     :else nd)))
+                      ars)]
+      [:double (assoc node1 :args args' :fl-op (nth math-op 0))])))
+
+;; java.lang.Math over proven fixnum operands -> the jolt-l-* fixnum macro,
+;; result typed :long so it doesn't de-opt the surrounding integer arithmetic.
+;; Mirrors the flonum clause above: at least one genuine :long operand (so
+;; (Math/abs 5) keeps its generic result) and every other operand a :long or a
+;; fixnum-range integer literal. A bignum literal is excluded for the reason
+;; the :long arithmetic path excludes it — the fx arm takes fixnums only.
+(defn- math-lng-invoke [node1 math-lng ars n]
+  (when (and math-lng (= (nth math-lng 1) n)
+             (some (fn [r] (= :long (nth r 0))) ars)
+             (every? fixnum-operand? ars))
+    [:long (assoc node1 :lng-op (nth math-lng 0))]))
+
+(defn- math-invoke
+  "A java.lang.Math call lowered to a native flonum or fixnum op, or nil."
+  [fnode node1 ars n]
+  (when (and (= :host-static (get fnode :op)) (= "Math" (get fnode :class)))
+    (or (math-fl-invoke node1 (get math-fl-ops (get fnode :member)) ars n)
+        (math-lng-invoke node1 (get math-lng-ops (get fnode :member)) ars n))))
+
+;; (aget ^doubles-array i) -> unboxed flvector read, result proven :double, so
+;; the surrounding arithmetic unboxes to fl*/fl+. A PROVEN-:long (or fixnum-
+;; literal) index is tagged :fl-idx-long so the back end emits (flvector-ref
+;; (jolt-array-vec A) I) INLINE — keeping the value unboxed across the procedure
+;; boundary instead of boxing at the jolt-flaget call. An unproven index keeps
+;; (jolt-flaget A I), which owns the fixnum?/na-idx coercion.
+;; A ^floats read is the same flvector read typed :float (:fl-float): an fl
+;; op takes the double, anything else gets the Float (the back end).
+(defn- fl-aget [node1 ars]
+  (let [fl? (= :floats (nth (nth ars 0) 0))]
+    [(if fl? :float :double)
+     (cond-> (assoc node1 :fl-aget true)
+       fl? (assoc :fl-float true)
+       (fixnum-operand? (nth ars 1)) (assoc :fl-idx-long true))]))
+
+;; (aset ^doubles-array i v) -> unboxed flvector-set!; returns the stored value
+;; (:double), so an accumulator over the aset result types too. A proven-:long
+;; (or fixnum-literal) index tags :fl-idx-long and a proven-:double value tags
+;; :fl-val-double; when BOTH hold the back end emits (flvector-set! ...) inline
+;; (returning the stored value — JVM contract). Otherwise it keeps (jolt-flaset
+;; ...), which owns exact->inexact for an int / non-double value.
+;; ^floats stores the same way, rounded to single precision, and answers the
+;; Float (:fl-float). A :float value (a (float x) cast) stores the double it
+;; holds, unboxed like any :float operand.
+(defn- fl-aset [node1 ars]
+  (let [vkind (nth (nth ars 2) 0)
+        fl? (= :floats (nth (nth ars 0) 0))]
+    [(if fl? :float :double)
+     (cond-> (assoc node1 :fl-aset true)
+       fl? (assoc :fl-float true)
+       (fixnum-operand? (nth ars 1))
+       (assoc :fl-idx-long true)
+       (or (= vkind :double) (= vkind :float))
+       (assoc :fl-val-double true)
+       (= vkind :float)
+       (update :args (fn [as] (assoc as 2 (assoc (nth as 2) :fl-unbox true)))))]))
+
+(defn- array-invoke
+  "An aget/aset on a hinted array, lowered to its direct read or write, or nil."
+  [nm n node1 ars]
+  (let [akind (when (pos? n) (nth (nth ars 0) 0))]
+    (cond
+      (and (= nm "aget") (= n 2) (contains? #{:doubles :floats} akind))
+      (fl-aget node1 ars)
+      ;; (aget ^longs/^ints/^bytes/^objects a i) -> the direct backing read
+      ;; (jolt-vaget), skipping jolt-nth's index nil-check, coercion and
+      ;; pvec/string/cseq/record dispatch walk. NO result kind: an int/long array
+      ;; widens past the fixnum range, so an element is not provably a fixnum.
+      (and (= nm "aget") (= n 2) (contains? boxed-akinds akind))
+      [nil (assoc node1 :v-aget true)]
+      ;; (aset ^longs/^ints/^objects a i v) -> the direct backing write, returning
+      ;; the stored value (JVM contract). ^bytes has its own clause below rather
+      ;; than joining this one: it is the one kind that NARROWS at the store, and
+      ;; jolt-vaset answers its argument, not what was stored.
+      (and (= nm "aset") (= n 3) (contains? boxed-aset-kinds akind))
+      [nil (assoc node1 :v-aset true)]
+      ;; (aset ^bytes a i v) -> jolt-baset, which stores an in-range fixnum into
+      ;; the bytevector directly and hands everything else (a flonum, a bignum, an
+      ;; out-of-range value, a boxed backing, a lying hint) to the generic seam
+      ;; that narrows it.
+      ;;
+      ;; NO result kind, for the reason :v-aget has none: the stored byte IS a
+      ;; fixnum when the array really is one, but a lying ^bytes hint reaches the
+      ;; generic seam, which answers whatever that array's kind holds — so an
+      ;; element is not provably a fixnum and the surrounding arithmetic must not
+      ;; be told it is.
+      (and (= nm "aset") (= n 3) (= :bytes akind))
+      [nil (assoc node1 :b-aset true)]
+      (and (= nm "aset") (= n 3) (contains? #{:doubles :floats} akind))
+      (fl-aset node1 ars)
+      :else nil)))
+
+(defn- core-kind-invoke
+  "The kind of a clojure.core call that answers one without being lowered, or nil."
+  [nm n node1 ars]
+  (cond
+    ;; a bitwise and/or/xor of :long operands is a long: (bit-and i 1023)
+    ;; indexes an array inline. Only the KIND; the back end keeps its own
+    ;; fixnum fast path, since a :long may still be past the fixnum range.
+    (and (contains? #{"bit-and" "bit-or" "bit-xor"} nm) (>= n 2)
+         (every? fixnum-operand? ars))
+    [:long node1]
+    (and (contains? array-ctor-kinds nm)
+         (contains? (nth (get array-ctor-kinds nm) 1) n))
+    [(nth (get array-ctor-kinds nm) 0) node1]
+    :else nil))
+
+;; per-operand class: :double / :long / :bigdec (typed), :wild (a
+;; fixnum-range integer literal, valid in any kind), :wild-big (a bignum
+;; integer literal — valid for :double/:bigdec, but NOT :long: the fx ops
+;; take only fixnums, so a bignum literal operand blocks :long), or :no.
+(defn- operand-class [r]
+  (let [k (nth r 0) nd (nth r 1)]
+    (cond (= k :double) :double
+          (= k :long) :long
+          (= k :float) :float
+          (= k :bigdec) :bigdec
+          (int-lit? nd) (if (fixnum-lit? (get nd :val)) :wild :wild-big)
+          :else :no)))
+
+(defn- flonum-class? [c] (or (= c :double) (= c :float)))
+
+;; double specialization. Operands are :double, :long (a proven fixnum,
+;; widened to flonum — JVM long->double widening == fixnum->flonum, so this
+;; is value-neutral), :wild (an integer literal coerced to flonum), or a
+;; bigdec LITERAL — double contagion: (+ 1.5M 2.0) => 3.5 Double, the bigdec
+;; contributing its double value. A :float operand (a (float x) cast, a
+;; jfloat) widens to the double it holds, as the JVM widens a primitive
+;; float, so it joins too: the back end unboxes it (:fl-unbox) and a cast
+;; in operand position never builds the jfloat at all. A let-bound bigdec (kind :bigdec, not a
+;; literal) can't be turned into a compile-time flonum, so it de-opts to the
+;; generic bigdec-aware op. min/max return the ORIGINAL operand and `=` is
+;; exactness-aware (0 != 0.0), so int/bigdec-literal/:long contagion is
+;; blocked for those — every operand must be pure :double (a :long widened
+;; to flonum would also change exactness there). fl< and friends compare
+;; numerically, so coercing stays sound.
+(defn- dbl-operands? [nm cls argnodes]
+  (and (some flonum-class? cls)
+       (every? (fn [[c nd]] (or (= c :double) (= c :long) (= c :float) (= c :wild) (= c :wild-big)
+                                (and (= c :bigdec) (bigdec-lit? nd))))
+               (map vector cls argnodes))
+       (or (not (contains? #{"min" "max" "="} nm))
+           (every? (fn [c] (= c :double)) cls))))
+
+;; coerce integer-literal and bigdec-literal operands to a flonum const, and
+;; tag a :long operand so the back end wraps it in (fixnum->flonum ...) — so
+;; fl-ops only ever see flonums (an exact int, a fixnum, or a jbigdec record
+;; would crash fl+). The :long contract guarantees a fixnum, so the coercion
+;; is sound (the #3%fl per-site-unsafe proof obligation still holds).
+(defn- dbl-invoke [ds node1 cls argnodes]
+  (let [args' (mapv (fn [[c nd]] (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
+                                       (bigdec-lit? nd) (bigdec-lit->flonum nd)
+                                       (= c :long) (assoc nd :fl-coerce true)
+                                       (= c :float) (assoc nd :fl-unbox true)
+                                       :else nd))
+                    (map vector cls argnodes))]
+    [(propagate ds) (assoc node1 :args args' :num-kind :double)]))
+
+;; :long needs every operand a fixnum-range literal (:wild) or a :long
+;; (the fx ops take only fixnums; a bignum literal would crash fx+).
+(defn- long-operands? [cls]
+  (and (some (fn [c] (= c :long)) cls)
+       (every? (fn [c] (or (= c :wild) (= c :long))) cls)))
+
+;; :bigdec tolerates any integer literal (:wild or :wild-big).
+(defn- bigdec-operands? [cls]
+  (and (some (fn [c] (= c :bigdec)) cls)
+       (every? (fn [c] (or (= c :wild) (= c :wild-big) (= c :bigdec))) cls)))
+
+;; Division the fl op did not take still has to pick the JVM's overload
+;; per step: a step with a primitive double or float operand divides as
+;; IEEE does, where divide(Object, Object) raises on a zero divisor.
+;; (/ a b c) is (/ (/ a b) c), and a primitive step answers a primitive
+;; double, so a step is primitive once any operand up to it is.
+;; :div-prim is that per-step vector; the back end emits jolt-div2-prim
+;; for a true step and jolt-div2 for the rest.
+(defn- div-prim-invoke [node1 cls]
+  (let [prim (mapv flonum-class? cls)]
+    [nil (assoc node1 :div-prim
+                (vec (rest (reductions (fn [acc p] (or acc p)) (first prim) (rest prim)))))]))
+
+(defn- arith-invoke
+  "Specialize a clojure.core arithmetic/comparison call to the one kind every
+  operand shares (:double, :long or :bigdec)."
+  [nm n node1 ars argnodes]
+  (let [cls (mapv operand-class ars)
+        ds (dbl-spec nm n)
+        ls (lng-spec nm n)
+        bs (bd-spec nm n)]
+    (cond
+      (and ds (pos? n) (dbl-operands? nm cls argnodes))
+      (dbl-invoke ds node1 cls argnodes)
+      (and ls (pos? n) (long-operands? cls))
+      [(propagate ls) (assoc node1 :num-kind :long)]
+      ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
+      ;; runtime). A flonum operand blocks this (double contagion) and falls
+      ;; through to the generic op.
+      (and bs (pos? n) (bigdec-operands? cls))
+      [(propagate bs) (assoc node1 :num-kind :bigdec)]
+      (and (= nm "/") (>= n 2) (some flonum-class? cls))
+      (div-prim-invoke node1 cls)
+      :else [nil node1])))
+
 (defn- an-invoke
   "Annotate an :invoke with its numeric kind. An arithmetic core op specializes to
   the Chez fl*/fx* op only when every operand is the same kind (:double or :long),
@@ -255,9 +481,6 @@
   (let [fnode (get node :fn)
         nm (when (and (= :var (get fnode :op)) (= "clojure.core" (get fnode :ns)))
              (get fnode :name))
-        math-static? (and (= :host-static (get fnode :op)) (= "Math" (get fnode :class)))
-        math-op (when math-static? (get math-fl-ops (get fnode :member)))
-        math-lng (when math-static? (get math-lng-ops (get fnode :member)))
         fnode' (nth (an fnode tenv) 1)
         ars (mapv (fn [a] (an a tenv)) (get node :args))
         argnodes (mapv (fn [r] (nth r 1)) ars)
@@ -280,188 +503,10 @@
       (get fnode :num-ret)
       (let [k (get fnode :num-ret)]
         [k (if (or (= k :double) (= k :float)) (assoc node1 :num-ret-guard k) node1)])
-      ;; java.lang.Math over proven flonum operands -> native Chez flonum op, result
-      ;; typed :double (so it doesn't de-opt the surrounding arithmetic). Requires at
-      ;; least one genuine :double operand (so (Math/abs 5) keeps its int result) and
-      ;; every other operand a :double, a :long (widened to flonum — JVM widens a long
-      ;; arg to these double-returning overloads too), or an integer literal.
-      (and math-op (= (nth math-op 1) n)
-           (some (fn [r] (= :double (nth r 0))) ars)
-           (every? (fn [r] (let [k (nth r 0)]
-                             (or (= k :double) (= k :long) (int-lit? (nth r 1))))) ars))
-      (let [args' (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
-                                 (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
-                                       (= k :long) (assoc nd :fl-coerce true)
-                                       :else nd)))
-                        ars)]
-        [:double (assoc node1 :args args' :fl-op (nth math-op 0))])
-      ;; java.lang.Math over proven fixnum operands -> the jolt-l-* fixnum macro,
-      ;; result typed :long so it doesn't de-opt the surrounding integer arithmetic.
-      ;; Mirrors the flonum clause above: at least one genuine :long operand (so
-      ;; (Math/abs 5) keeps its generic result) and every other operand a :long or a
-      ;; fixnum-range integer literal. A bignum literal is excluded for the reason
-      ;; the :long arithmetic path excludes it — the fx arm takes fixnums only.
-      (and math-lng (= (nth math-lng 1) n)
-           (some (fn [r] (= :long (nth r 0))) ars)
-           (every? (fn [r] (let [k (nth r 0) nd (nth r 1)]
-                             (or (= k :long)
-                                 (and (int-lit? nd) (fixnum-lit? (get nd :val))))))
-                   ars))
-      [:long (assoc node1 :lng-op (nth math-lng 0))]
-      ;; (aget ^doubles-array i) -> unboxed flvector read, result proven :double, so
-      ;; the surrounding arithmetic unboxes to fl*/fl+. A PROVEN-:long (or fixnum-
-      ;; literal) index is tagged :fl-idx-long so the back end emits (flvector-ref
-      ;; (jolt-array-vec A) I) INLINE — keeping the value unboxed across the procedure
-      ;; boundary instead of boxing at the jolt-flaget call. An unproven index keeps
-      ;; (jolt-flaget A I), which owns the fixnum?/na-idx coercion.
-      ;; A ^floats read is the same flvector read typed :float (:fl-float): an fl
-      ;; op takes the double, anything else gets the Float (the back end).
-      (and (= nm "aget") (= n 2) (contains? #{:doubles :floats} (nth (nth ars 0) 0)))
-      (let [ikind (nth (nth ars 1) 0) inode (nth (nth ars 1) 1)
-            fl? (= :floats (nth (nth ars 0) 0))]
-        [(if fl? :float :double)
-         (cond-> (assoc node1 :fl-aget true)
-                   fl? (assoc :fl-float true)
-                   (or (= ikind :long)
-                       (and (int-lit? inode) (fixnum-lit? (get inode :val))))
-                   (assoc :fl-idx-long true))])
-      ;; (aget ^longs/^ints/^bytes/^objects a i) -> the direct backing read
-      ;; (jolt-vaget), skipping jolt-nth's index nil-check, coercion and
-      ;; pvec/string/cseq/record dispatch walk. NO result kind: an int/long array
-      ;; widens past the fixnum range, so an element is not provably a fixnum.
-      (and (= nm "aget") (= n 2) (contains? boxed-akinds (nth (nth ars 0) 0)))
-      [nil (assoc node1 :v-aget true)]
-      ;; (aset ^longs/^ints/^objects a i v) -> the direct backing write, returning
-      ;; the stored value (JVM contract). ^bytes has its own clause below rather
-      ;; than joining this one: it is the one kind that NARROWS at the store, and
-      ;; jolt-vaset answers its argument, not what was stored.
-      (and (= nm "aset") (= n 3) (contains? boxed-aset-kinds (nth (nth ars 0) 0)))
-      [nil (assoc node1 :v-aset true)]
-      ;; (aset ^bytes a i v) -> jolt-baset, which stores an in-range fixnum into
-      ;; the bytevector directly and hands everything else (a flonum, a bignum, an
-      ;; out-of-range value, a boxed backing, a lying hint) to the generic seam
-      ;; that narrows it.
-      ;;
-      ;; NO result kind, for the reason :v-aget has none: the stored byte IS a
-      ;; fixnum when the array really is one, but a lying ^bytes hint reaches the
-      ;; generic seam, which answers whatever that array's kind holds — so an
-      ;; element is not provably a fixnum and the surrounding arithmetic must not
-      ;; be told it is.
-      (and (= nm "aset") (= n 3) (= :bytes (nth (nth ars 0) 0)))
-      [nil (assoc node1 :b-aset true)]
-      ;; (aset ^doubles-array i v) -> unboxed flvector-set!; returns the stored value
-      ;; (:double), so an accumulator over the aset result types too. A proven-:long
-      ;; (or fixnum-literal) index tags :fl-idx-long and a proven-:double value tags
-      ;; :fl-val-double; when BOTH hold the back end emits (flvector-set! ...) inline
-      ;; (returning the stored value — JVM contract). Otherwise it keeps (jolt-flaset
-      ;; ...), which owns exact->inexact for an int / non-double value.
-      ;; ^floats stores the same way, rounded to single precision, and answers the
-      ;; Float (:fl-float). A :float value (a (float x) cast) stores the double it
-      ;; holds, unboxed like any :float operand.
-      (and (= nm "aset") (= n 3) (contains? #{:doubles :floats} (nth (nth ars 0) 0)))
-      (let [ikind (nth (nth ars 1) 0) inode (nth (nth ars 1) 1)
-            vkind (nth (nth ars 2) 0)
-            fl? (= :floats (nth (nth ars 0) 0))]
-        [(if fl? :float :double)
-         (cond-> (assoc node1 :fl-aset true)
-                   fl? (assoc :fl-float true)
-                   (or (= ikind :long)
-                       (and (int-lit? inode) (fixnum-lit? (get inode :val))))
-                   (assoc :fl-idx-long true)
-                   (or (= vkind :double) (= vkind :float))
-                   (assoc :fl-val-double true)
-                   (= vkind :float)
-                   (update :args (fn [as] (assoc as 2 (assoc (nth as 2) :fl-unbox true)))))])
-      ;; a bitwise and/or/xor of :long operands is a long: (bit-and i 1023)
-      ;; indexes an array inline. Only the KIND; the back end keeps its own
-      ;; fixnum fast path, since a :long may still be past the fixnum range.
-      (and nm (contains? #{"bit-and" "bit-or" "bit-xor"} nm) (>= n 2)
-           (every? (fn [r] (or (= :long (nth r 0))
-                               (and (int-lit? (nth r 1)) (fixnum-lit? (get (nth r 1) :val)))))
-                   ars))
-      [:long node1]
-      (and nm (contains? array-ctor-kinds nm)
-           (contains? (nth (get array-ctor-kinds nm) 1) n))
-      [(nth (get array-ctor-kinds nm) 0) node1]
-      (nil? nm) [nil node1]
-      :else
-       (let [;; per-operand class: :double / :long / :bigdec (typed), :wild (a
-             ;; fixnum-range integer literal, valid in any kind), :wild-big (a bignum
-             ;; integer literal — valid for :double/:bigdec, but NOT :long: the fx ops
-             ;; take only fixnums, so a bignum literal operand blocks :long), or :no.
-             cls (mapv (fn [r] (let [k (nth r 0) nd (nth r 1)]
-                                 (cond (= k :double) :double
-                                       (= k :long) :long
-                                       (= k :float) :float
-                                       (= k :bigdec) :bigdec
-                                       (int-lit? nd) (if (fixnum-lit? (get nd :val)) :wild :wild-big)
-                                       :else :no)))
-                       ars)
-            ;; :long needs every operand a fixnum-range literal (:wild) or a :long
-            ;; (the fx ops take only fixnums; a bignum literal would crash fx+).
-            long-ok? (and (pos? n)
-                          (some (fn [c] (= c :long)) cls)
-                          (every? (fn [c] (or (= c :wild) (= c :long))) cls))
-            ;; :bigdec tolerates any integer literal (:wild or :wild-big).
-            bd-ok? (and (pos? n)
-                        (some (fn [c] (= c :bigdec)) cls)
-                        (every? (fn [c] (or (= c :wild) (= c :wild-big) (= c :bigdec))) cls))
-            ds (dbl-spec nm n)
-            ls (lng-spec nm n)
-            bs (bd-spec nm n)]
-        (cond
-           ;; double specialization. Operands are :double, :long (a proven fixnum,
-           ;; widened to flonum — JVM long->double widening == fixnum->flonum, so this
-           ;; is value-neutral), :wild (an integer literal coerced to flonum), or a
-           ;; bigdec LITERAL — double contagion: (+ 1.5M 2.0) => 3.5 Double, the bigdec
-           ;; contributing its double value. A :float operand (a (float x) cast, a
-           ;; jfloat) widens to the double it holds, as the JVM widens a primitive
-           ;; float, so it joins too: the back end unboxes it (:fl-unbox) and a cast
-           ;; in operand position never builds the jfloat at all. A let-bound bigdec (kind :bigdec, not a
-           ;; literal) can't be turned into a compile-time flonum, so it de-opts to the
-           ;; generic bigdec-aware op. min/max return the ORIGINAL operand and `=` is
-           ;; exactness-aware (0 != 0.0), so int/bigdec-literal/:long contagion is
-           ;; blocked for those — every operand must be pure :double (a :long widened
-           ;; to flonum would also change exactness there). fl< and friends compare
-           ;; numerically, so coercing stays sound.
-           (and ds (pos? n)
-                (some (fn [c] (or (= c :double) (= c :float))) cls)
-                (every? (fn [[c nd]] (or (= c :double) (= c :long) (= c :float) (= c :wild) (= c :wild-big)
-                                         (and (= c :bigdec) (bigdec-lit? nd))))
-                        (map vector cls argnodes))
-                (or (not (contains? #{"min" "max" "="} nm))
-                    (every? (fn [c] (= c :double)) cls)))
-           ;; coerce integer-literal and bigdec-literal operands to a flonum const, and
-           ;; tag a :long operand so the back end wraps it in (fixnum->flonum ...) — so
-           ;; fl-ops only ever see flonums (an exact int, a fixnum, or a jbigdec record
-           ;; would crash fl+). The :long contract guarantees a fixnum, so the coercion
-           ;; is sound (the #3%fl per-site-unsafe proof obligation still holds).
-           (let [args' (mapv (fn [[c nd]] (cond (int-lit? nd) (assoc nd :val (double (get nd :val)))
-                                                (bigdec-lit? nd) (bigdec-lit->flonum nd)
-                                                (= c :long) (assoc nd :fl-coerce true)
-                                                (= c :float) (assoc nd :fl-unbox true)
-                                                :else nd))
-                             (map vector cls argnodes))]
-             [(propagate ds) (assoc node1 :args args' :num-kind :double)])
-           (and ls long-ok?)
-           [(propagate ls) (assoc node1 :num-kind :long)]
-           ;; bigdec: every operand a bigdec (integer literals allowed, coerced at
-           ;; runtime). A flonum operand blocks this (double contagion) and falls
-           ;; through to the generic op.
-           (and bs bd-ok?)
-            [(propagate bs) (assoc node1 :num-kind :bigdec)]
-           ;; Division the fl op did not take still has to pick the JVM's overload
-           ;; per step: a step with a primitive double or float operand divides as
-           ;; IEEE does, where divide(Object, Object) raises on a zero divisor.
-           ;; (/ a b c) is (/ (/ a b) c), and a primitive step answers a primitive
-           ;; double, so a step is primitive once any operand up to it is.
-           ;; :div-prim is that per-step vector; the back end emits jolt-div2-prim
-           ;; for a true step and jolt-div2 for the rest.
-           (and (= nm "/") (>= n 2) (some (fn [c] (or (= c :double) (= c :float))) cls))
-           (let [prim (mapv (fn [c] (or (= c :double) (= c :float))) cls)]
-             [nil (assoc node1 :div-prim
-                         (vec (rest (reductions (fn [acc p] (or acc p)) (first prim) (rest prim)))))])
-          :else [nil node1])))))
+      (nil? nm) (or (math-invoke fnode node1 ars n) [nil node1])
+      :else (or (array-invoke nm n node1 ars)
+                (core-kind-invoke nm n node1 ars)
+                (arith-invoke nm n node1 ars argnodes)))))
 
 ;; The casts whose :coerce node takes the inline window fast path when its
 ;; operand is a proven double (:fl-arg, read by the back end's :coerce arm; the
@@ -470,6 +515,92 @@
 (def ^:private lowered-cast-fns
   #{"jolt-long-cast" "jolt-int-cast" "jolt-short-cast" "jolt-byte-cast" "jolt-char"
     "jolt-unchecked-long" "jolt-unchecked-int"})
+
+;; a cast on a PROVEN double: the back end emits the window test and
+;; flonum->fixnum in place of the runtime cast's dispatch (:fl-arg). The
+;; flag is set from THIS analysis every time, never kept from an earlier
+;; one, so a body inlined into a new context carries only what that
+;; context proves. The node's own kind (what it answers) is unchanged.
+;; :fl-prim says the JVM holds the operand primitive too, which picks the
+;; cast the back end calls: outside the window for a double, always for a
+;; float, which has no window (it is a jfloat, not a flonum).
+(defn- an-coerce [node tenv]
+  (let [ir (an (get node :expr) tenv)
+        k (nth ir 0)
+        node1 (dissoc (assoc node :expr (nth ir 1)) :fl-arg :fl-prim)
+        cast? (contains? lowered-cast-fns (get node :cast-fn))
+        prim? (and cast? (or (= :double k) (= :float k))
+                   (not (boxed-operand? (get node :expr) tenv)))
+        node2 (if (and cast? (= :double k)) (assoc node1 :fl-arg true) node1)]
+    [(get node :kind) (if prim? (assoc node2 :fl-prim true) node2)]))
+
+(defn- an-let [node tenv]
+  (let [res (reduce (fn [acc b]
+                      (let [te (nth acc 0) binds (nth acc 1)
+                            ;; a ^doubles/… let binding's init is a :coerce of the
+                            ;; array kind, which answers that kind like any coerce
+                            ir (an (nth b 1) te)]
+                        [(rebind-boxed (assoc te (nth b 0) (nth ir 0)) (nth b 0) (boxed-operand? (nth b 1) te))
+                         (conj binds [(nth b 0) (nth ir 1)])]))
+                    [tenv []] (get node :bindings))
+        br (an (get node :body) (nth res 0))]
+    [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
+
+;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
+(defn- an-loop [node tenv]
+  (let [binds (get node :bindings)
+        names (mapv (fn [b] (nth b 0)) binds)
+        ik (mapv (fn [b]
+                   (let [init (nth b 1) k (nth (an init tenv) 0)]
+                     ;; seed each var with its init kind, OR :long for an
+                     ;; integer-literal init that fits the fixnum range (JVM loop
+                     ;; semantics — a literal-init loop var is a primitive long, so
+                     ;; the fx/jolt-l ops raise on overflow rather than promoting).
+                     ;; The bounded fixpoint below demotes a slot whose recur arg
+                     ;; doesn't agree, and a literal past the range stays generic.
+                     (or k (when (and (int-lit? init) (fixnum-lit? (get init :val))) :long))))
+                 binds)
+        ;; drive the bounded fixpoint: each seed kind survives only if every
+        ;; recur arg in its slot agrees, else the slot demotes to generic.
+        lk (loop-kinds names ik (get node :body) tenv)
+        te (reduce (fn [t i] (rebind-boxed (assoc t (nth names i) (nth lk i)) (nth names i) false))
+                   tenv (range (count names)))]
+    [nil (assoc node
+                :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)
+                :body (nth (an (get node :body) te) 1))]))
+
+(defn- an-if [node tenv]
+  (let [tr (an (get node :test) tenv)
+        thn (an (get node :then) tenv)
+        els (an (get node :else) tenv)
+        tk (nth thn 0) ek (nth els 0)]
+    [(if (= tk ek) tk nil)
+     (assoc node :test (nth tr 1) :then (nth thn 1) :else (nth els 1))]))
+
+(defn- an-do [node tenv]
+  (let [stmts (mapv (fn [s] (nth (an s tenv) 1)) (get node :statements))
+        r (an (get node :ret) tenv)]
+    [(nth r 0) (assoc node :statements stmts :ret (nth r 1))]))
+
+;; bind the self-name too (a (fn f [] …) reference shadows any same-named
+;; outer local), mirroring jolt.passes.types — else it inherits the outer
+;; kind and arithmetic over the fn mis-specializes.
+(defn- an-fn [node tenv]
+  (let [self (get node :name)]
+    [nil (assoc node :arities
+                (mapv (fn [a]
+                        (let [e (arity-env tenv a)
+                              e (if self (assoc e self nil) e)]
+                          (assoc a :body (nth (an (get a :body) e) 1))))
+                      (get node :arities)))]))
+
+;; the evaluated metadata too: a fn in it (clojure.test's :test body) is
+;; code like the init, and left unanalyzed its arithmetic stayed generic
+(defn- an-def [node tenv]
+  [nil (let [n (assoc node :init (nth (an (get node :init) tenv) 1))]
+         (if-let [me (get node :meta-expr)]
+           (assoc n :meta-expr (nth (an me tenv) 1))
+           n))])
 
 ;; Returns [kind node'] — kind is :double, :long, or nil.
 (defn- an [node tenv]
@@ -480,86 +611,15 @@
       ;; over it (and let-bound copies of it) dispatches to the bigdec engine.
       (= op :bigdec) [:bigdec node]
       (= op :local) [(get tenv (get node :name)) node]
-      ;; a cast on a PROVEN double: the back end emits the window test and
-      ;; flonum->fixnum in place of the runtime cast's dispatch (:fl-arg). The
-      ;; flag is set from THIS analysis every time, never kept from an earlier
-      ;; one, so a body inlined into a new context carries only what that
-      ;; context proves. The node's own kind (what it answers) is unchanged.
-      ;; :fl-prim says the JVM holds the operand primitive too, which picks the
-      ;; cast the back end calls: outside the window for a double, always for a
-      ;; float, which has no window (it is a jfloat, not a flonum).
-      (= op :coerce)
-      (let [ir (an (get node :expr) tenv)
-            k (nth ir 0)
-            node1 (dissoc (assoc node :expr (nth ir 1)) :fl-arg :fl-prim)
-            cast? (contains? lowered-cast-fns (get node :cast-fn))
-            prim? (and cast? (or (= :double k) (= :float k))
-                       (not (boxed-operand? (get node :expr) tenv)))
-            node2 (if (and cast? (= :double k)) (assoc node1 :fl-arg true) node1)]
-        [(get node :kind) (if prim? (assoc node2 :fl-prim true) node2)])
+      (= op :coerce) (an-coerce node tenv)
       (= op :invoke) (an-invoke node tenv)
-      (= op :let)
-      (let [res (reduce (fn [acc b]
-                          (let [te (nth acc 0) binds (nth acc 1)
-                                ;; a ^doubles/… let binding's init is a :coerce of the
-                                ;; array kind, which answers that kind like any coerce
-                                ir (an (nth b 1) te)]
-                            [(rebind-boxed (assoc te (nth b 0) (nth ir 0)) (nth b 0) (boxed-operand? (nth b 1) te))
-                             (conj binds [(nth b 0) (nth ir 1)])]))
-                        [tenv []] (get node :bindings))
-            br (an (get node :body) (nth res 0))]
-        [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))])
+      (= op :let) (an-let node tenv)
       (and *kind-probe?* (or (= op :loop) (= op :fn))) [nil node]
-      (= op :loop)
-      ;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
-      (let [binds (get node :bindings)
-            names (mapv (fn [b] (nth b 0)) binds)
-            ik (mapv (fn [b]
-                       (let [init (nth b 1) k (nth (an init tenv) 0)]
-                         ;; seed each var with its init kind, OR :long for an
-                         ;; integer-literal init that fits the fixnum range (JVM loop
-                         ;; semantics — a literal-init loop var is a primitive long, so
-                         ;; the fx/jolt-l ops raise on overflow rather than promoting).
-                         ;; The bounded fixpoint below demotes a slot whose recur arg
-                         ;; doesn't agree, and a literal past the range stays generic.
-                         (or k (when (and (int-lit? init) (fixnum-lit? (get init :val))) :long))))
-                     binds)
-            ;; drive the bounded fixpoint: each seed kind survives only if every
-            ;; recur arg in its slot agrees, else the slot demotes to generic.
-            lk (loop-kinds names ik (get node :body) tenv)
-            te (reduce (fn [t i] (rebind-boxed (assoc t (nth names i) (nth lk i)) (nth names i) false))
-                       tenv (range (count names)))]
-        [nil (assoc node
-                    :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)
-                    :body (nth (an (get node :body) te) 1))])
-      (= op :if)
-      (let [tr (an (get node :test) tenv)
-            thn (an (get node :then) tenv)
-            els (an (get node :else) tenv)
-            tk (nth thn 0) ek (nth els 0)]
-        [(if (= tk ek) tk nil)
-         (assoc node :test (nth tr 1) :then (nth thn 1) :else (nth els 1))])
-      (= op :do)
-      (let [stmts (mapv (fn [s] (nth (an s tenv) 1)) (get node :statements))
-            r (an (get node :ret) tenv)]
-        [(nth r 0) (assoc node :statements stmts :ret (nth r 1))])
-      (= op :fn)
-      ;; bind the self-name too (a (fn f [] …) reference shadows any same-named
-      ;; outer local), mirroring jolt.passes.types — else it inherits the outer
-      ;; kind and arithmetic over the fn mis-specializes.
-      (let [self (get node :name)]
-        [nil (assoc node :arities
-                    (mapv (fn [a]
-                            (let [e (arity-env tenv a)
-                                  e (if self (assoc e self nil) e)]
-                              (assoc a :body (nth (an (get a :body) e) 1))))
-                          (get node :arities)))])
-      ;; the evaluated metadata too: a fn in it (clojure.test's :test body) is
-      ;; code like the init, and left unanalyzed its arithmetic stayed generic
-      (= op :def) [nil (let [n (assoc node :init (nth (an (get node :init) tenv) 1))]
-                         (if-let [me (get node :meta-expr)]
-                           (assoc n :meta-expr (nth (an me tenv) 1))
-                           n))]
+      (= op :loop) (an-loop node tenv)
+      (= op :if) (an-if node tenv)
+      (= op :do) (an-do node tenv)
+      (= op :fn) (an-fn node tenv)
+      (= op :def) (an-def node tenv)
       ;; a proven-receiver interop call answering a fixnum is a :long operand, so
       ;; (+ (.length s) 1) lowers to the fx path rather than generic jolt-n+.
       (= op :host-call)

@@ -1519,7 +1519,7 @@
 (define jolt-vreg-outer-site 12) ; the pair a non-tail call moved out of jolt-vreg-site
 (define jolt-vreg-current-fiber 0)  ; fibers.ss: the running fiber record, or 0 (fixnum) when not on a fiber
 ;; slot 1: fibers.ss jolt-vreg-park-unwinding — a park escape is unwinding this carrier
-;; slot 5: hasheq.ss jolt-vreg-hasheq-caches — this thread's (symbol . string) hasheq tables
+;; slot 5: hasheq.ss jolt-vreg-hasheq-caches — this thread's string hash cache and weak admission buckets
 ;; slot 7: locks.ss jolt-vreg-locks — how many locks this carrier holds; the
 ;;   scheduler refuses to preempt a fiber while it is non-zero
 ;; slot 6: fibers.ss jolt-vreg-fiber-winder-base — the winder chain this carrier
