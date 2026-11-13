@@ -2280,25 +2280,43 @@
 
 ;; --- File method surface (record-method-dispatch arm) -----------------------
 (define (jfile-method f name args)        ; -> boxed result, or #f to fall through
-  (let ((p (jfile-path f))               ; the path as given (display methods)
-        (fp (jfile-fs f)))               ; JOLT_PWD-resolved on-disk path (FS methods)
+  ;; Lexical methods use the held path. Resolving a relative name here would
+  ;; ask for the process cwd even for getName or a conversion to a NIO Path.
+  (let ((p (jfile-path f)))
     (cond
       ((string=? name "getPath")        (list (path-native p)))
       ((string=? name "getName")        (list (path-last-segment p)))
       ((string=? name "toString")       (list (path-native p)))
+      ((string=? name "toPath")         (list (make-nio-path p)))
+      ((string=? name "isAbsolute")     (list (if (jfile-path-absolute? p) #t #f)))
+      ((string=? name "getParentFile")
+       (list (let ((parent (jfile-parent-path p)))
+               (if parent (make-jfile parent) jolt-nil))))
+      ((string=? name "getParent")
+       (list (let ((parent (jfile-parent-path p))) (if parent (path-native parent) jolt-nil))))
+      ((string=? name "compareTo")
+       (unless (jfile? (car args))
+         (throw-jvm 'ClassCastException
+                    (string-append "class " (jolt-class-name (car args))
+                                   " cannot be cast to class java.io.File")))
+       (list (->num (jfile-compare-for (win32?) p (jfile-path (car args))))))
+      ((string=? name "equals")         (list (and (jfile? (car args)) (string=? p (jfile-path (car args))))))
+      ((string=? name "hashCode")       (list (jfile-hashcode f)))
+      (else (jfile-resolved-method p name args)))))
+
+(define (jfile-resolved-method p name args)
+  (let ((fp (project-relative p)))
+    (cond
       ((string=? name "getAbsolutePath")(list (path-native (jolt-path-normalize (jfile-abs fp)))))
       ((string=? name "getCanonicalPath")(list (path-native (jfile-canonical fp))))
       ;; File.toURI returns a java.net.URI (JVM), not a String.
       ((string=? name "toURI")          (list (jfile->uri fp)))
       ((string=? name "toURL")          (list (make-url (jfile->url-spec fp))))
-      ;; a method that asks the file system, on a path holding a NUL
-      ;; (jfile-invalid-answers); the path-only methods above skip the lookup
       ((and (jfile-nul? fp) (hashtable-contains? jfile-invalid-answers name))
        (list (hashtable-ref jfile-invalid-answers name #f)))
       ((string=? name "exists")         (list (if (file-exists? fp) #t #f)))
       ((string=? name "isDirectory")    (list (if (file-directory? fp) #t #f)))
       ((string=? name "isFile")         (list (if (and (file-exists? fp) (not (file-directory? fp))) #t #f)))
-      ((string=? name "isAbsolute")     (list (if (jfile-path-absolute? p) #t #f)))
       ;; listFiles builds each child from the path AS GIVEN (new File(this, name)
       ;; on the JVM), so a File made from a relative path lists relative children.
       ((string=? name "listFiles")
@@ -2353,22 +2371,8 @@
       ((string=? name "renameTo")
        (list (let ((dst (jfile-fs (car args))))
                (and (not (jfile-nul? dst)) (guard (e (#t #f)) (rename-file fp dst) #t)))))
-      ((string=? name "getParentFile")
-       (list (let ((parent (jfile-parent-path p)))
-               (if parent (make-jfile parent) jolt-nil))))
-      ((string=? name "toPath")           (list (make-nio-path p)))  ; -> java.nio.file.Path (nio-file.ss)
       ((string=? name "getAbsoluteFile")  (list (make-jfile (jfile-abs fp))))
       ((string=? name "getCanonicalFile") (list (make-jfile (jfile-canonical fp))))
-      ((string=? name "compareTo")
-       (unless (jfile? (car args))
-         (throw-jvm 'ClassCastException
-                    (string-append "class " (jolt-class-name (car args))
-                                   " cannot be cast to class java.io.File")))
-       (list (->num (jfile-compare-for (win32?) p (jfile-path (car args))))))
-      ((string=? name "equals")         (list (and (jfile? (car args)) (string=? p (jfile-path (car args))))))
-      ((string=? name "hashCode")       (list (jfile-hashcode f)))
-      ((string=? name "getParent")
-       (list (let ((parent (jfile-parent-path p))) (if parent (path-native parent) jolt-nil))))
       (else #f))))
 
 (register-method-arm! arm-priority-file
