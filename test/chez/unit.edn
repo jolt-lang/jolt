@@ -4114,4 +4114,17 @@
   {:suite "print-conveyance", :label "a capture nested in a future, and the owner's writes around a worker's stay in order", :expr "(frequencies (repeatedly 100 (fn [] [(with-out-str @(future (print (with-out-str @(future (print \"in\"))) \"out\"))) (with-out-str (print \"a\") @(future (print \"b\")) (print \"c\"))])))", :expected "{[\"in out\" \"abc\"] 100}"}
   {:suite "print-conveyance", :label "threads printing into one capture at once lose and corrupt nothing", :expr "(let [s (with-out-str (let [fs (doall (repeatedly 6 (fn [] (future (dotimes [_ 1000] (print \"ab\"))))))] (dotimes [_ 1000] (print \"ab\")) (run! deref fs)))] [(count s) (= s (apply str (repeat 7000 \"ab\")))])", :expected "[14000 true]"}
   {:suite "print-conveyance", :label "a worker forked inside a capture writes its root *out* to the process stream, not to that dead capture", :expr "(do (require (quote jolt.scheme)) (with-out-str (run! deref (doall (repeatedly 12 (fn [] (future (Thread/sleep 30))))))) (frequencies (map deref (doall (repeatedly 24 (fn [] (future (Thread/sleep 10) (jolt.scheme/eval-string \"(eq? (current-output-port) (console-output-port))\"))))))))", :expected "{true 24}"}
+  {:suite "sequence" :label "sequence two colls" :expr "(sequence (map vector) [1 2] [3 4])" :expected "([1 3] [2 4])"}
+  {:suite "sequence" :label "sequence three colls, unequal lengths stop at the shortest" :expr "(sequence (map vector) [1 2 3] [4 5] [6 7 8])" :expected "([1 4 6] [2 5 7])"}
+  {:suite "sequence" :label "sequence multi-coll with a numeric step fn" :expr "(sequence (map +) [1 2 3] [10 20])" :expected "(11 22)"}
+  {:suite "sequence" :label "sequence an empty coll gives ()" :expr "(sequence (map vector) [] [1 2])" :expected "()"}
+  {:suite "sequence" :label "sequence nil coll gives ()" :expr "(sequence (map vector) [1] nil)" :expected "()"}
+  {:suite "sequence" :label "sequence is lazy over infinite inputs" :expr "(first (sequence (map vector) (range) (range)))" :expected "[0 0]"}
+  {:suite "sequence" :label "sequence lazy prefix of infinite inputs" :expr "(take 3 (sequence (map vector) (range) (range)))" :expected "([0 0] [1 1] [2 2])"}
+  {:suite "sequence" :label "sequence early termination via take in the xform" :expr "(sequence (comp (map vector) (take 2)) (range) (range) (range))" :expected "([0 0 0] [1 1 1])"}
+  {:suite "sequence" :label "sequence stateful xform completion runs" :expr "(sequence (comp (map vector) (partition-all 2)) [1 2 3] [4 5 6])" :expected "([[1 4] [2 5]] [[3 6]])"}
+  {:suite "sequence" :label "sequence 1-arity still works" :expr "(sequence [1 2])" :expected "(1 2)"}
+  {:suite "sequence" :label "sequence 1-arity nil gives ()" :expr "(sequence nil)" :expected "()"}
+  {:suite "sequence" :label "sequence xform and one coll still works" :expr "(sequence (map inc) [1 2 3])" :expected "(2 3 4)"}
+  {:suite "sequence" :label "sequence xform and one empty coll gives ()" :expr "(sequence (map inc) [])" :expected "()"}
 ]
