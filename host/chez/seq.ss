@@ -1413,11 +1413,9 @@
   (cond ((null? xs) 0) ((null? (cdr xs)) (jolt-uncneg (car xs))) (else (fold-left jolt-uncsub2 (car xs) (cdr xs)))))
 (define (jolt-unchecked-div a b) (quotient (jolt-wrap64 a) (jolt-wrap64 b)))
 (define (jolt-unchecked-rem a b) (remainder (jolt-wrap64 a) (jolt-wrap64 b)))
-;; The -int family wraps to a signed 32-bit int instead of 64. Each op has a fixed
-;; arity (the JVM's are fixed-arity static methods) and a fixnum fast path that
-;; folds the exact result to 32 bits in place: no rest list, no apply, no 64-bit
-;; wrap first. Any other operand (a flonum, a char, a bignum long, a ratio) takes
-;; the long op and then the generic int cast, which is what these vars always did.
+;; The -int family wraps to a signed 32-bit int. Each op has a fixed arity and a
+;; fixnum fast path that folds the exact result to 32 bits in place. Any other
+;; operand (flonum, char, bignum long, ratio) takes the long op, then the int cast.
 (define (unc-i32 r)
   (let ((m (if (fixnum? r) (fxand r #xffffffff) (bitwise-and r #xffffffff))))
     (if (fx>=? m #x80000000) (fx- m #x100000000) m)))
@@ -1429,10 +1427,9 @@
   (if (and (fixnum? a) (fixnum? b))
       (unc-i32 (- a b))
       (jolt-unchecked-int (jolt-uncsub2 a b))))
-;; Two int-range factors can have a product past the 61-bit fixnum range, and a
-;; bignum product costs an allocation. The low 32 bits of x*y only need y's low
-;; 16 bits times x, plus the low 16 bits of x times y's high part shifted up, and
-;; every partial product there stays a fixnum.
+;; Two int-range factors can overflow a fixnum product. The low 32 bits of x*y
+;; only need x*(y low 16) plus ((x*(y high)) low 16) shifted up, and every
+;; partial product stays a fixnum.
 (define (jolt-uncmuli2 a b)
   (if (and (fixnum? a) (fixnum? b))
       (if (and (fx>=? a -2147483648) (fx<=? a 2147483647)
@@ -1447,8 +1444,8 @@
   (if (fixnum? x) (unc-i32 (- x 1)) (jolt-unchecked-int (jolt-uncdec x))))
 (define (jolt-uncnegi x)
   (if (fixnum? x) (unc-i32 (- x)) (jolt-unchecked-int (jolt-uncneg x))))
-;; A zero divisor takes the slow path, which raises. Integer/MIN_VALUE / -1 is
-;; 2^31 here and folds back to MIN_VALUE, as the JVM's int overflow does.
+;; A zero divisor takes the slow path, which raises. MIN_VALUE / -1 is 2^31 here
+;; and folds back to MIN_VALUE, as on the JVM.
 (define (jolt-uncdivi2 a b)
   (if (and (fixnum? a) (fixnum? b) (not (eq? b 0)))
       (unc-i32 (quotient a b))

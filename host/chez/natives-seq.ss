@@ -343,9 +343,7 @@
 ;; The -int variants are INT-width: they wrap at 32 bits, not 64. Aliasing them to
 ;; the long ops let a value climb past 2^31 and then blow up at the next (int x) —
 ;; instaparse's hash mixing (unchecked-multiply-int in a loop) is exactly that
-;; shape. Each is a fixed-arity helper from seq.ss, like the JVM's static methods,
-;; so a call through the var costs no rest list and the compiler lowers a direct
-;; call to the same helper (op_registry.clj).
+;; shape. Each is a fixed-arity helper from seq.ss, which op_registry.clj lowers to.
 (let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
   (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" jolt-uncaddi2)
   (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" jolt-uncsubi2)

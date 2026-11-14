@@ -120,11 +120,9 @@
                          :dbl-contagion? true :num-result? true :num-args? true}
    "unchecked-negate"   {:call "jolt-uncneg" :arity #(= % 1)
                          :dbl-contagion? true :num-result? true :num-args? true}
-   ;; The -int family wraps to 32 bits. The JVM's are fixed-arity static methods,
-   ;; so a call at any other arity is not lowered and still raises an arity error
-   ;; through the var. The result is an int-range integer whatever the operands,
-   ;; so there is no :dbl and no contagion. :lng takes a proven-long pair to the
-   ;; same helper and types the result :long.
+   ;; The -int family wraps to 32 bits. Fixed arity only, as on the JVM: any
+   ;; other arity isn't lowered and raises through the var. The result is always
+   ;; an int-range integer, so no :dbl and no contagion.
    "unchecked-add-int"       {:call "jolt-uncaddi2" :arity #(= % 2) :lng "jolt-uncaddi2"
                               :num-result? true}
    "unchecked-subtract-int"  {:call "jolt-uncsubi2" :arity #(= % 2) :lng "jolt-uncsubi2"
