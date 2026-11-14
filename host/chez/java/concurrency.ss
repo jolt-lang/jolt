@@ -1391,9 +1391,10 @@
 ;; A contender WAITS, and how it waits depends on what it is. A fiber parks on the
 ;; monitor's own waiter list and the release resumes it — never a condition-wait,
 ;; which would block the carrier that may be the very thing the holder needs in order
-;; to reach its release. A thread waits on the condition variable. Both are woken by
-;; the release, and neither can lose a wakeup, because the registration happens under
-;; the bookkeeping lock that the release also takes.
+;; to reach its release. A thread waits on the condition variable. A release resumes
+;; every parked fiber and signals one waiting thread, and neither kind can lose a
+;; wakeup, because the registration happens under the bookkeeping lock that the
+;; release also takes.
 ;;
 ;; WHERE THE FIBER'S SWITCH HAPPENS, and why it is not inside bk (jolt-dfuo). The
 ;; fiber registers itself and commits to 'parked under bk, and then bk is RELEASED and
@@ -1477,8 +1478,11 @@
 ;; CAS me -> #f, with no bk and no wake. What makes the exit safe without bk is
 ;; that "somebody is waiting" lives in the SAME word: a contender, under bk and
 ;; before it waits, swaps owner X for (monitor-contended X), so the owner's
-;; me -> #f CAS fails and it takes the slow exit, which frees the word and wakes
-;; the waiters under bk. A waiter cannot be missed, because it marks the word
+;; me -> #f CAS fails and it takes the slow exit, which frees the word and signals
+;; one waiting thread under bk. That thread stays counted until it holds bk again,
+;; and a slow claim made while others are counted takes the word already marked, so
+;; the next exit goes slow and signals the next one. A waiter cannot be missed,
+;; because it marks the word
 ;; before it waits and the slow exit needs the bk the waiter holds until its wait
 ;; releases it; no store-load fence is needed, because both sides agree through
 ;; one CAS'd location.
@@ -1486,7 +1490,7 @@
 ;; Model-checked in tools/monitor-model.pl (`make monitormodel`; every interleaving
 ;; of three contexts, no spurious wakeups so a lost one cannot be rescued by a
 ;; retry): mutual exclusion, no deadlock, every waiter can leave its wait and is
-;; always covered by the contended mark or a pending broadcast, and with two
+;; always covered by the contended mark or a pending signal, and with two
 ;; contexts each can always re-enter. The mutant whose fast exit frees a contended
 ;; word leaves a waiter uncovered, and the run fails if the model stops seeing it.
 ;; Change the protocol here, change the model there.

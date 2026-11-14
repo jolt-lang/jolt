@@ -1090,6 +1090,18 @@ else
   fails=$((fails + 1))
 fi
 
+# The same hand-off with four threads and eight fibers queued on one monitor
+# together (jolt#1654): the claim reads the thread count and the fiber list
+# together to decide whether to mark the word, and this is the case that mixes them.
+mtf_out="$($jolt run test/chez/monitor-threads-fibers.clj 2>&1)"
+if printf '%s' "$mtf_out" | grep -q 'MONITOR-THREADS-FIBERS OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a monitor shared by threads and fibers lost a waiter or an increment"
+  echo "    $(printf '%s' "$mtf_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # One paren too many must FAIL the file, not truncate it. The loader read forms
 # with the non-top-level reader, which parks on a stray `)` rather than raising,
 # and the loop read a parked position as end of input: everything after the paren
