@@ -279,9 +279,16 @@
       (string-cb (emitted-for "(jolt.ffi/__ccallable identity [:string] :string)")))
   (ok "a foreign-fn without :string emits no string conversion"
       (and (not (contains-str? scalar-fn "jolt-ffi-string->c"))
+           (not (contains-str? scalar-fn "jolt-ffi-string-arg"))
+           (not (contains-str? scalar-fn "keep-live"))
            (not (contains-str? scalar-fn "jolt-ffi-c->string"))))
+  ;; A foreign-fn's :string ARGUMENT goes out as an immobile u8* copy the call
+  ;; keeps live (issue #1661), never as Chez's movable `string` type; its
+  ;; :string result still comes back through jolt-ffi-c->string.
   (ok "a foreign-fn with :string converts out on the arg and in on the result"
-      (and (contains-str? string-fn "jolt-ffi-string->c")
+      (and (contains-str? string-fn "jolt-ffi-string-arg")
+           (contains-str? string-fn "(u8*)")
+           (contains-str? string-fn "keep-live")
            (contains-str? string-fn "jolt-ffi-c->string")))
   (ok "a callable without :string emits no wrapper lambda"
       (and (not (contains-str? scalar-cb "jolt-ffi-string->c"))
