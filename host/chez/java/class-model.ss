@@ -165,13 +165,11 @@
               obj)))))
 (def-var! "jolt.host" "jolt-class-for" jolt-class-for)
 
-;; The per-site cache a class-name symbol in code compiles to (the back end's
-;; class-for-site-call?): the token jolt-class-for answered, under the drop epoch
-;; it answered in. A name's token changes only when the hook below drops it, and
-;; the drop bumps the epoch, so a cached token is current while the epochs match.
-;; The epoch is read BEFORE the lookup, so a drop racing the lookup leaves an
-;; entry that is already stale. The pair is published whole behind a release, as
-;; jolt-instance-site publishes its state.
+;; Per-site cache for a class-name symbol: the token jolt-class-for answered,
+;; with the drop epoch it answered in. The hook below bumps the epoch whenever it
+;; drops a token, so the cached one is current while the epochs match. The epoch
+;; is read BEFORE the lookup so a racing drop leaves an already-stale entry; the
+;; pair is published whole behind a release, as jolt-instance-site does.
 (define jolt-class-for-drop-epoch 0)
 (define (jolt-class-for-site-make) (box #f))
 (define (jolt-class-for-site site name)

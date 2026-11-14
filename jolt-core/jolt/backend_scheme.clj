@@ -668,26 +668,19 @@
        (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "instance-check" (:name fnode))
        (= 2 (count arg-nodes))))
 
-;; A class-name symbol (java.util.Map, or a deftype's my.ns.Point) evaluates to
-;; (jolt.host/jolt-class-for "name"), and the token that answers is the same one
-;; on every evaluation: the interner only ever adds a name, or drops one a late
-;; deftype registration has overtaken. So the site keeps the token it got
-;; (class-model.ss jolt-class-for-site) and asks again only after a drop. Without
-;; it every evaluation hashed the name into the interner's string table, which
-;; was most of an (instance? my.ns.Point x)'s cost: tools.reader's
-;; indexing-reader? asks up to five of them per form it reads.
+;; A class-name symbol evaluates to (jolt.host/jolt-class-for "name"), whose token
+;; changes only when a late deftype registration drops it. So the site keeps the
+;; token and asks again only after a drop (class-model.ss jolt-class-for-site).
 (defn- class-for-site-call? [fnode arg-nodes]
   (and *const-pool* (var-cache?)
        (= :var (:op fnode)) (= "jolt.host" (:ns fnode)) (= "jolt-class-for" (:name fnode))
        (= 1 (count arg-nodes))
        (= :const (:op (first arg-nodes))) (string? (:val (first arg-nodes)))))
 
-;; A deftype method binds each immutable field with (__deftype-field this :f) on
-;; every entry, and jrec-field finds the slot by scanning the type's field keys.
-;; The receiver is nearly always the one type the method belongs to, so the site
-;; keeps the slot it found against that type's descriptor (records.ss
-;; jrec-own-field) and reads it directly while the descriptor matches. tools.reader's
-;; reader types bind two or three fields per character read.
+;; A deftype method binds each immutable field with (__deftype-field this :f),
+;; and jrec-field scans the type's field keys for it. The receiver is nearly
+;; always the method's own type, so the site keeps the slot against that type's
+;; descriptor (records.ss jrec-own-field).
 (defn- deftype-field-site-call? [fnode arg-nodes]
   (and *const-pool* (var-cache?)
        (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "__deftype-field" (:name fnode))
@@ -1172,18 +1165,14 @@
 ;; non-top-level defmacro.
 (defn- emit-var-form [node]
   (case (:op node)
-    ;; (var x): inside a def the cell is hoisted, into the same binding a read
-    ;; of x shares (hoist-var-cell), so a binding form's (var *x*) is one load
-    ;; rather than jolt-var's string-append and table probe on every entry.
-    ;; tools.reader binds *read-delim* once per collection it reads.
+    ;; Inside a def the var cell is hoisted into the binding a read of x shares
+    ;; (hoist-var-cell), so (var *x*) in a binding form is one load.
     :the-var (let [lookup (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")]
                (if (and (var-cache?) *const-pool*) (hoist-const lookup) lookup))
     ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
-    ;; Inside a def the site keeps the slot it resolved (records.ss
-    ;; jolt-set-own-field!), so a mutable field's set! in a method body skips the
-    ;; member-name resolution after its first run.
+    ;; Inside a def the site keeps the resolved slot (records.ss jolt-set-own-field!).
     :set-field (let [kw (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))]
                  (if (and (var-cache?) *const-pool*)
                    (str "(jolt-set-own-field! " (hoist-const-per-site "(jrec-field-site-make)") " "
