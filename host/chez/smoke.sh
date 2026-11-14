@@ -1704,6 +1704,23 @@ else
   fails=$((fails + 1))
 fi
 
+# Class enumeration (#1663) — jolt.host/class-names and all-classes: every
+# modeled class by canonical name, later registrations included, no lazy shim
+# loaded. Self-checks, one marker.
+enum_out="$($jolt run test/chez/class-enum-test.clj 2>&1)"
+if printf '%s' "$enum_out" | grep -q 'CLASS-ENUM-TEST OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: class enumeration"
+  if printf '%s\n' "$enum_out" | grep -q '^FAIL'; then
+    printf '%s\n' "$enum_out" | grep '^FAIL' | head -5 | sed 's/^/    /'
+  elif [ -n "$enum_out" ]; then
+    echo "    (no verdict; last check reached was:)"
+    printf '%s\n' "$enum_out" | tail -3 | sed 's/^/    /'
+  fi
+  fails=$((fails + 1))
+fi
+
 # Class reflection — getSuperclass/getInterfaces/isAssignableFrom/isInterface
 # over the jch graph, and the static-miss fallback to Class instance methods
 # (JVM Clojure's (.getName String) shape). Self-checks, one marker.
