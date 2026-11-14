@@ -134,9 +134,8 @@
                    (or (null? xs) (apply = xs)))))
           ((numeric? (car ys)) (all-num? (cdr ys)))
           (else (throw-jvm (quote ClassCastException) "== requires numbers"))))))
-;; The two-argument call the compiler emits for == when it hasn't proven the
-;; operand types. Two fixnums or two flonums answer directly, with no rest list;
-;; every other pair takes the full jolt-num-equiv semantics above.
+;; Two-arg == when operand types aren't proven: fixnum and flonum pairs answer
+;; directly, everything else goes to jolt-num-equiv above.
 (define (jolt-num-equiv2 a b)
   (cond ((and (fixnum? a) (fixnum? b)) (fx=? a b))
         ((and (flonum? a) (flonum? b)) (fl=? a b))
