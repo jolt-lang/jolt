@@ -68,7 +68,11 @@
           :dbl "fl>=?" :lng "jolt-l>=" :bd "jbd-ge?" :pure? true :foldable? true}
    "="   {:call "jolt=" :bool? true :arity #(>= % 2)
           :fixed {2 "jolt=2"} :dbl "fl=?" :lng "jolt-l=" :pure? true :foldable? true}
-   "=="  {:dbl "fl=?" :lng "jolt-l="}  ; numeric-only, not a native op
+   ;; jolt-num-equiv2 answers two fixnums or two flonums directly and hands every
+   ;; other pair to the variadic jolt-num-equiv, so the tower, BigDecimal, NaN and
+   ;; non-number cases keep their one definition.
+   "=="  {:call "jolt-num-equiv" :bool? true :fixed {2 "jolt-num-equiv2"}
+          :dbl "fl=?" :lng "jolt-l="}
    "not=" {:pure? true}                ; not a native op; pure classifier only
    "inc" {:call "jolt-n-inc" :value "jolt-inc" :arity #(= % 1)
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`(== x 7)` on operands the compiler can't type costs 2.6 ns, down from
+  37.5 ns** (#1650). The call went through the var to the variadic
+  `jolt-num-equiv`, which builds a rest list and an inner procedure each time.
+  `==` now lowers to `jolt-num-equiv2`, which answers two fixnums or two flonums
+  directly and hands every other pair, including the ratio, BigDecimal, NaN and
+  non-number cases, to the same `jolt-num-equiv` as before, so results and
+  exceptions are unchanged.
+
 ### Fixed
 
 - **Malformed special forms report the reference compiler's error.**
