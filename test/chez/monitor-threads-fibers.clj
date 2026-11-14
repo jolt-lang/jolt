@@ -1,17 +1,8 @@
-;; test/chez/monitor-threads-fibers.clj: one monitor contended by SEVERAL threads and
-;; by fibers at the same time (jolt#1654). Run through jolt from host/chez/smoke.sh.
-;;
-;; A monitor release resumes every parked fiber and signals ONE waiting thread
-;; (host/chez/java/concurrency.ss), and a slow claim made while other threads are
-;; still counted takes the word marked, so the next release signals the next thread.
-;; monitor-contention.clj has one thread among the fibers, and with a single
-;; thread waiter a signal and a broadcast behave alike. This case has four threads
-;; queued together with the fibers, which is where the thread count and the fiber
-;; list are read together to decide whether a claim marks the word.
-;;
-;; The counter is a plain array element, so a lost increment is a lost exclusion,
-;; and every result is read against a deadline, so a stranded waiter is a named
-;; failure instead of a hang (smoke.sh's per-case cap still backs that up).
+;; Four threads and eight fibers contend for one monitor (jolt#1654). With a single
+;; waiter a signal and a broadcast look alike, so this is the case that proves the
+;; release hands off to the next thread while fibers are also queued. The counter
+;; is a plain array element, so a lost increment is a lost exclusion, and results
+;; are read against a deadline so a stranded waiter fails instead of hanging.
 (require '[clojure.core.async :as a])
 
 (alter-var-root #'clojure.core.async/*fiber-carrier-count* (constantly 8))
@@ -25,10 +16,8 @@
 (def o (Object.))
 (def counter (int-array 1))
 
-;; The section spins while it holds the monitor, so the other contenders actually
-;; queue on it. A bare increment is over before anyone waits, and with nobody
-;; queued a signal and a broadcast are the same thing, so the case would pass a
-;; broken hand-off. Spinning rather than sleeping, because a sleeping fiber parks.
+;; Spin while holding the monitor so the others queue on it. Not a sleep, because a
+;; sleeping fiber parks.
 (defn- spin [n] (loop [i 0] (when (< i n) (recur (inc i)))))
 
 (defn- bump! []

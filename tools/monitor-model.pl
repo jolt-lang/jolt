@@ -8,8 +8,8 @@
 %
 %   idle      fast enter: CAS free -> own(T), else go take bk
 %   lock      take bk
-%   check     (bk held) free -> claim it, already marked cont(T) when another
-%             context is waiting or signalled; own(X) -> mark cont(X) and wait;
+%   check     (bk held) free -> claim it (as cont(T) if others wait or are
+%             signalled); own(X) -> mark cont(X) and wait;
 %             cont(X) -> wait; mine -> reentrant (not modelled: owner-only)
 %   waitnow   condition-wait: join the wait set and release bk atomically
 %   woken     after the signal, take bk and decide again
@@ -26,10 +26,9 @@
 % every waiter is covered by the contended mark or a pending signal,
 % only a context on its way out ever holds a word it is not running under, and
 % (with two contexts) each context can always get back into the critical section.
-% Two mutants must be caught: a model that passes its mutant proves nothing.
-% The first frees a CONTENDED word on the fast exit, the bug the contended mark
-% exists to prevent. The second claims a free word unmarked while others still
-% wait, which with a one-waiter signal leaves them for an exit that never wakes.
+% Two mutants must be caught (a model that passes its mutant proves nothing): one
+% frees a CONTENDED word on the fast exit, the other claims a free word unmarked
+% while others still wait, so no later exit signals them.
 
 :- dynamic mutant/0.
 :- dynamic mutant_claim/0.
@@ -61,9 +60,8 @@ step(S, T, S2) :- pc(S,T,exitslow), S = s(_,T,[],Ps), setpc(s(free,none,[],Ps), 
 step(S, T, S2) :- pc(S,T,exitslow), S = s(_,T,C,Ps), C \== [], member(X, C), ord_del_element(C, X, C1),
                   setnth(Ps, X, woken, Ps1), setpc(s(free,none,C1,Ps1), T, idle, S2).
 
-% The slow claim marks the word when another context is in the wait set or has
-% been signalled and not yet retaken bk: the runtime reads both as the entry
-% condition's thread count, which a signalled waiter leaves only once it holds bk.
+% The slow claim marks the word when another context waits or is signalled and
+% hasn't retaken bk (the runtime's cv thread count covers both).
 claim_word(s(_,_,C,Ps), T, cont(T)) :- \+ mutant_claim, others_waiting(C, Ps, T), !.
 claim_word(_, T, own(T)).
 others_waiting(C, _, _) :- C \== [], !.
@@ -89,8 +87,8 @@ mutex_violation(R) :- member(S, R), in_crit(S, A), in_crit(S, B), A < B.
 deadlock(R) :- member(S, R), \+ next(S, _).
 wrong_owner(R) :- member(S, R), S = s(W,_,_,_), (W = own(X) ; W = cont(X)), \+ exiting(S, X).
 % Every waiter is covered: while the wait set is non-empty the word is marked
-% contended, or a slow exit (which will signal) is already under way, or a
-% signalled context, or one deciding under bk, is about to mark it. A waiter
+% contended, or a slow exit (which will signal) is under way, or a signalled or
+% deciding context is about to mark it. A waiter
 % outside that is one whose wake depends on luck — some later context happening
 % to release through the slow path — which is what a lost wakeup is.
 uncovered_waiter(R) :-

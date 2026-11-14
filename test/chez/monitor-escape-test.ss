@@ -110,11 +110,9 @@
            (lambda (m) (jolt-call-with-monitor m (lambda () 'body)))
            free?))
 
-;; 3b. Contended with a second waiter. A release signals ONE waiting thread
-;; (monitor-wake-entry!), so whoever claims next must leave the word marked for
-;; the waiter still behind it, and an escape swept across this thread's enter,
-;; body and exit must not take that wake away. The other waiter must finish
-;; within its deadline on every tick.
+;; 3b. Contended with a second waiter. A release signals one thread, so an escape
+;; across this thread's enter, body and exit must not eat the wake the second
+;; waiter needs. It must finish within its deadline on every tick.
 (define second-waiter-done? #f)
 (define (hold-with-second-waiter m)
   (let ((mu (make-mutex)) (cv (make-condition)) (stage 0) (v-done #f))

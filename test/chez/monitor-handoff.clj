@@ -1,17 +1,8 @@
-;; A monitor release wakes ONE waiting thread, and the owner it hands to marks
-;; the word so that its own release wakes the next (jolt#1654,
-;; host/chez/java/concurrency.ss "the release wakes one thread"). A broken hand-off
-;; does not fail, it strands a waiter with the monitor free, so every round here
-;; runs under a deadline and a stranded waiter is a timeout rather than a hang.
-;;
-;;   jolt run test/chez/monitor-handoff.clj   (from smoke.sh)
-;;
-;; Rounds, each repeated: many futures through a ReentrantLock and through
-;; `locking`, with the section held across a sleep so the waiters pile up; the
-;; same with reentrant holds; timed tryLock and lockInterruptibly contending
-;; with plain .lock waiters, one of them interrupted; and Object.wait/notify on a
-;; monitor that other threads are also entering. Counters are plain array
-;; elements, so a lost increment is a lost exclusion.
+;; A monitor release signals one waiting thread, and the owner it hands to must
+;; wake the next (jolt#1654). A broken hand-off strands a waiter with the monitor
+;; free, so every round runs under a deadline and fails instead of hanging.
+;; Counters are plain array elements, so a lost increment is a lost exclusion.
+;; Sections spin or sleep briefly so the waiters pile up.
 (import '(java.util.concurrent.locks ReentrantLock)
         '(java.util.concurrent TimeUnit))
 
@@ -69,9 +60,8 @@
           (.isLocked lk) (fail! "reentrant: still locked"))))
 
 (defn mixed-acquire-round []
-  ;; A holder keeps the lock while plain waiters, timed tryLocks and an
-  ;; interruptible acquire queue behind it. A short tryLock must give up, the
-  ;; interrupted acquire must throw, and everyone else must get the lock.
+  ;; Waiters queue behind a holder: a short tryLock gives up, the interrupted
+  ;; acquire throws, everyone else gets the lock.
   (let [lk (ReentrantLock.) held (promise) release (promise) cell (long-array 1)
         holder (future (.lock lk) (deliver held true) @release (.unlock lk))
         _ @held
@@ -99,8 +89,7 @@
             (.isLocked lk) (fail! "mixed: still locked")))))
 
 (defn wait-notify-round []
-  ;; Object.wait releases the monitor (one signal to the entry set) while other
-  ;; threads keep entering it; every waiter is notified and every entrant gets in.
+  ;; Object.wait releases the monitor while other threads keep entering it.
   (let [o (Object.) ready (atom 0) go (atom false) cell (long-array 1)
         waiters (doall (for [_ (range 8)]
                          (future (locking o

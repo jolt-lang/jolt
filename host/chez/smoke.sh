@@ -1076,11 +1076,8 @@ else
   fails=$((fails + 1))
 fi
 
-# A monitor release wakes ONE waiting thread, and the owner it hands to marks the
-# word so its own release wakes the next (jolt#1654). A broken hand-off strands a
-# waiter with the monitor free, so every round runs under a deadline: crowds of
-# futures through ReentrantLock and `locking`, reentrant holds, timed tryLock and
-# lockInterruptibly among plain waiters, and Object.wait beside entering threads.
+# Monitor hand-off (jolt#1654): a release signals one thread, so a stranded waiter
+# shows as a deadline failure.
 mh_out="$($jolt run test/chez/monitor-handoff.clj 2>&1)"
 if printf '%s' "$mh_out" | grep -q 'MONITOR-HANDOFF OK'; then
   pass=$((pass + 1))
@@ -1090,9 +1087,7 @@ else
   fails=$((fails + 1))
 fi
 
-# The same hand-off with four threads and eight fibers queued on one monitor
-# together (jolt#1654): the claim reads the thread count and the fiber list
-# together to decide whether to mark the word, and this is the case that mixes them.
+# The same hand-off with threads and fibers queued on one monitor together.
 mtf_out="$($jolt run test/chez/monitor-threads-fibers.clj 2>&1)"
 if printf '%s' "$mtf_out" | grep -q 'MONITOR-THREADS-FIBERS OK'; then
   pass=$((pass + 1))

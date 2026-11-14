@@ -1392,9 +1392,8 @@
 ;; monitor's own waiter list and the release resumes it — never a condition-wait,
 ;; which would block the carrier that may be the very thing the holder needs in order
 ;; to reach its release. A thread waits on the condition variable. A release resumes
-;; every parked fiber and signals one waiting thread, and neither kind can lose a
-;; wakeup, because the registration happens under the bookkeeping lock that the
-;; release also takes.
+;; every parked fiber and signals one thread. Neither can lose a wakeup, because the
+;; registration happens under the bookkeeping lock that the release also takes.
 ;;
 ;; WHERE THE FIBER'S SWITCH HAPPENS, and why it is not inside bk (jolt-dfuo). The
 ;; fiber registers itself and commits to 'parked under bk, and then bk is RELEASED and
@@ -1479,10 +1478,7 @@
 ;; that "somebody is waiting" lives in the SAME word: a contender, under bk and
 ;; before it waits, swaps owner X for (monitor-contended X), so the owner's
 ;; me -> #f CAS fails and it takes the slow exit, which frees the word and signals
-;; one waiting thread under bk. That thread stays counted until it holds bk again,
-;; and a slow claim made while others are counted takes the word already marked, so
-;; the next exit goes slow and signals the next one. A waiter cannot be missed,
-;; because it marks the word
+;; one waiting thread under bk. A waiter cannot be missed, because it marks the word
 ;; before it waits and the slow exit needs the bk the waiter holds until its wait
 ;; releases it; no store-load fence is needed, because both sides agree through
 ;; one CAS'd location.
@@ -1515,19 +1511,12 @@
          (vector-set! m monitor-i-box (current-os-thread-box))
          (vector-set! m monitor-i-count 1)
          #t)))
-;; THE RELEASE WAKES ONE THREAD. A release used to broadcast to every thread
-;; blocked on the entry condition, and all of them but one took bk, found the
-;; word taken again and went back to sleep. With 400 futures queued behind a
-;; ReentrantLock held across a file append, that was 53518 returns from the wait
-;; for 400 acquires (jolt#1654). So the release signals one thread, and the duty
-;; to wake the next one travels with the monitor: a slow-path claim made while
-;; other contenders still wait takes the word already marked contended
-;; (monitor-claim-slow!), so that owner's exit takes the slow path and signals the
-;; next. A signalled thread stays in the condition's count until it holds bk
-;; again, so a context that claims ahead of it marks the word too, and a fast
-;; claim (no bk) can only find a free word while a signal is pending or nobody
-;; waits: the signalled thread then marks whatever owner it finds. Fibers are
-;; still all resumed, as before, and each retakes the decision from the top.
+;; THE RELEASE SIGNALS ONE THREAD (jolt#1654), so the duty to wake the next one
+;; travels with the monitor: a slow claim made while other contenders wait takes the
+;; word already marked contended (monitor-claim-slow!), and that owner's exit then
+;; signals the next. A signalled thread stays counted until it holds bk, so a claim
+;; made ahead of it marks the word too. Fibers are all resumed and each retakes the
+;; decision from the top.
 ;;
 ;; Call with bk held.
 (define (monitor-entry-waiters? m)
@@ -1537,8 +1526,8 @@
   (if (monitor-entry-waiters? m)
       (monitor-claim-as! m (make-monitor-contended me))
       (monitor-claim! m me)))
-;; Wake the entry set once the word is free (bk held): one thread, as above. The
-;; fibers are the caller's to resume, outside bk.
+;; Signal one entry thread once the word is free (bk held). The caller resumes the
+;; fibers outside bk.
 (define (monitor-wake-entry! m)
   (jolt-cv-signal-one! (vector-ref m monitor-i-cv)))
 
@@ -1614,13 +1603,9 @@
         (begin
           ;; BLOCKED, as the JVM reports a thread entering a monitor; a
           ;; ReentrantLock's acquire says WAITING instead (thread-enter-state)
-          ;; A release signals ONE waiter (monitor-wake-entry!), so a waiter that
-          ;; left this wait by an escape could take with it the only wake the
-          ;; others were going to get. None can: the wait runs inside
-          ;; jolt-lock-wait's hold of bk, a counted lock, and the escapes
-          ;; (run-interruptible's, a fiber interrupt) hold off until the count is
-          ;; zero, by which time this waiter holds the monitor or waits again
-          ;; (monitor-escape-test.ss, case 3b).
+          ;; An escape out of this wait must not eat the only wake: the wait holds
+          ;; bk as a counted lock, and escapes hold off until the count is zero,
+          ;; when this waiter owns the monitor or waits again (monitor-escape-test.ss 3b).
           (call-with-thread-state (thread-enter-state)
             (lambda ()
               (jolt-condition-wait (vector-ref m monitor-i-cv) (vector-ref m monitor-i-bk))))
@@ -1762,11 +1747,11 @@
        (unless (jolt-carrier-head (jolt-fiber-carrier f))
          (sleep nap))))))
 
-;; The fiber waiters are taken and cleared under bk so no resume is delivered
-;; twice, and they are woken OUTSIDE it: sa-fiber-resume takes the carrier's
-;; run-queue mutex, and keeping the two apart means this path closes no cycle at all
-;; rather than relying on that mutex being last in the order. The thread waiters get
-;; one signal, not a broadcast; see "the release wakes one thread" above.
+;; The waiters are taken and cleared under bk so no resume is delivered twice, and
+;; they are woken OUTSIDE it: sa-fiber-resume takes the carrier's run-queue mutex,
+;; and keeping the two apart means this path closes no cycle at all rather than
+;; relying on that mutex being last in the order. Threads get one signal (see "THE
+;; RELEASE SIGNALS ONE THREAD").
 ;;
 ;; MASKED? is the release a masked enter pairs with: the caller raised the
 ;; counted-lock depth before it, and this drops it once the monitor is released —
