@@ -94,7 +94,7 @@
 ;; aset clauses in an-invoke).
 (def ^:private boxed-akinds #{:longs :ints :bytes :objects})
 (def ^:private boxed-aset-kinds #{:longs :ints :objects})
-;; Every kind jolt-valength reads the length of: the boxed kinds plus the flonum ones
+;; Kinds jolt-valength reads the length of
 (def ^:private length-akinds (conj boxed-akinds :doubles :floats))
 ;; The array a core constructor answers is that kind of array, hint or not:
 ;; (let [a (double-array n)] (aget a i)) read through jolt-nth / jolt-aset3 and
@@ -340,11 +340,9 @@
       ;; widens past the fixnum range, so an element is not provably a fixnum.
       (and (= nm "aget") (= n 2) (contains? boxed-akinds akind))
       [nil (assoc node1 :v-aget true)]
-      ;; (alength ^doubles/^floats/^longs/^ints/^bytes/^objects a) -> the backing's
-      ;; own length (jolt-valength), skipping jolt-count's dispatch walk. A real
-      ;; array's length is always a fixnum, so the result is :long and a loop test
-      ;; (< i (alength a)) stays unboxed. A lying hint still gets jolt-alength's
-      ;; answer for nil (the NPE) or a collection (its count).
+      ;; (alength a) -> jolt-valength, skipping jolt-count's dispatch walk. A real
+      ;; array's length is a fixnum, so the result is :long and a loop test stays
+      ;; unboxed. A lying hint still gets jolt-alength's answer.
       (and (= nm "alength") (= n 1) (contains? length-akinds akind))
       [:long (assoc node1 :v-alength true)]
       ;; (aset ^longs/^ints/^objects a i v) -> the direct backing write, returning

@@ -189,10 +189,8 @@
         ((jolt-nil? a)
          (throw-jvm 'NullPointerException "Cannot read the array length because the array is null"))
         (else (jolt-count a))))
-;; (alength a) on a hinted ^longs/^ints/^bytes/^objects/^doubles/^floats local
-;; (the numeric pass's :v-alength). The same answer as jolt-alength, so a lying
-;; hint (nil, a vector) keeps its NPE and its generic count. The hint is what lets
-;; the pass type the result :long: a real array's length is a fixnum.
+;; (alength a) on a hinted array (the numeric pass's :v-alength). Same answer as
+;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and generic count.
 (define (jolt-valength a)
   (if (jolt-array? a) (ja-len a) (jolt-alength a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM

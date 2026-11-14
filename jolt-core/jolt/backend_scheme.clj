@@ -730,8 +730,7 @@
       ;; skipping jolt-nth's dispatch walk, which the call already gets.
       (:v-aget node) (order-args (fn [as] (emit-call tail? "jolt-vaget" as tl ich)))
       (:v-aset node) (order-args (fn [as] (emit-call tail? "jolt-vaset" as tl ich)))
-      ;; (alength ^longs/^ints/^bytes/^objects/^doubles/^floats a): the backing's
-      ;; own length, answering a fixnum (the pass types it :long).
+      ;; (alength a) on a hinted array: the backing's own length, a fixnum.
       (:v-alength node) (order-args (fn [as] (emit-call tail? "jolt-valength" as tl ich)))
       ;; (aset ^bytes a i v): the store's own helper, because the byte kind narrows
       ;; to signed 8 bits and must answer what it stored — jolt-vaset answers its
