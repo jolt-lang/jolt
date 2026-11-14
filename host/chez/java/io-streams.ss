@@ -2625,11 +2625,9 @@
 (define (jio-open-in-file-buffered fs-path given)
   (jio-buffered-in (make-in-stream-markable (in-stream-port (jio-open-in-file fs-path given)))))
 (define (jio-buffered-in s) (stream-classed! (no-mark-yet! s) "java.io.BufferedInputStream"))
-;; An IOFactory impl that extend registered for X's type (or a host tag it
-;; inherits), as the reference's protocol dispatch would find it. The io fns
-;; are host fns that dispatch on the source themselves, so each calls this only
-;; where it would otherwise raise "Cannot open". OPTS is the keyword-argument
-;; list the fn received; the impl takes it as a map, as the protocol's do.
+;; An IOFactory impl that extend registered for X's type or an inherited host
+;; tag. The io fns dispatch on the source themselves, so each calls this only
+;; where it would otherwise raise "Cannot open". The impl takes OPTS as a map.
 (define (jio-extension x method)
   (or (and (jrec? x) (find-protocol-method (jrdesc-tag (jrec-desc x)) "IOFactory" method))
       (let loop ((tags (value-host-tags x)))
@@ -2964,7 +2962,7 @@
 ;; calls its own through the var (natives-array.ss rebinds "reader" later) with
 ;; the map spread back to keyword arguments. IOFactory and Coercions are the
 ;; protocol values, so code that names or extends them loads. The io fns consult
-;; an extension only for a source they do not open themselves (jio-extended).
+;; an extension only for a source they don't open themselves.
 ;; the map spread back to k1 v1 k2 v2 ..., folded here rather than through
 ;; clojure.core's apply/concat, which a tree-shaken app may not keep
 (define (jio-opts->list opts)
@@ -2991,11 +2989,9 @@
                           (apply append (map (lambda (m) (list (kw m) (kw m))) methods))))))
 (def-var! "clojure.java.io" "IOFactory"
   (jio-protocol-value "IOFactory" '("make-reader" "make-writer" "make-input-stream" "make-output-stream")))
-;; default-streams-impl: the Object impl the reference extends IOFactory with, and
-;; what a library assocs its own stream fns onto. make-reader and make-writer
-;; open through the source's own make-input-stream / make-output-stream (an
-;; extension's if it has one, else the io fns'), so an impl that overrides only
-;; the stream side gets a reader or writer for free. The stream fns refuse.
+;; default-streams-impl: the reference's Object impl of IOFactory. make-reader and
+;; make-writer open through the source's own stream fn (an extension's if any),
+;; so an impl that overrides only the stream side gets a reader and writer free.
 (define (jio-default-open x opts method var-name)
   (let ((f (jio-extension x method)))
     (if f
