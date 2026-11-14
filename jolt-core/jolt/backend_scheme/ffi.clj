@@ -230,13 +230,9 @@
     (#{"float" "double"} type) (str "(jolt-ffi-float->c " expr ")")
     :else expr))
 
-;; A foreign-fn's :string ARGUMENT, as opposed to every other :string position
-;; (a result, or a callable's argument or result). It travels as u8*: the
-;; octets go into an immobile bytevector that jolt-ffi-string-arg builds
-;; (host/chez/java/ffi.ss), where Chez's own `string` type would copy them into
-;; a heap bytevector the collector is free to move. A C function that calls back
-;; into jolt while it still holds the pointer (a GTK signal, a comparator) lets a
-;; collection run, and before this the text C read was whatever had replaced it.
+;; A foreign-fn's :string ARGUMENT travels as u8*, an immobile copy built by
+;; jolt-ffi-string-arg (host/chez/java/ffi.ss), so a callback that collects can't
+;; move it while C holds the pointer. Results and callable positions are unchanged.
 (defn- ffi-arg-type->chez [type]
   (if (= "string" type) "u8*" (ffi-type->chez type)))
 
@@ -244,17 +240,12 @@
   (str "(jolt-ffi-string-arg " expr ")"))
 
 ;; Each :string argument is bound to its converted bytevector ahead of the call
-;; (the param name is reused, so the call reads the same), and kept live until C
-;; returns. An immobile object is still reclaimed once nothing refers to it, and
-;; the address C was given does not count as a reference, so without the
-;; keep-live a collection inside a callback could free the octets outright. A
-;; :capture-native-error call answers two values, which pass through unchanged.
+;; and kept live until C returns: the address C holds doesn't count as a
+;; reference. A :capture-native-error call answers two values, passed through.
 (defn- ffi-kept-call [call names two-values?]
   (if (empty? names)
     call
     (let [keeps (str/join " " (map (fn [n] (str "(keep-live " n ")")) names))]
-      ;; `result` and `native-error` are binders over emitted text only, the
-      ;; names ffi-capture-result already uses.
       (if two-values?
         (str "(call-with-values (lambda () " call ")"
              " (lambda (result native-error) " keeps " (values result native-error)))")
@@ -308,9 +299,7 @@
 ;;
 ;; The arms and the general path agree on the cache key by construction — the
 ;; arity-specialized lookups are the same base-3 fold, unrolled.
-;; The pieces every arm of a bare :& binding shares, computed once per binding:
-;; the fixed arguments already converted (a :string one bound ahead and kept
-;; live, see ffi-kept-call), and how a call's result comes back.
+;; What every arm of a bare :& binding shares, computed once per binding.
 (defn- ffi-varargs-context [node vi]
   (let [fixed (subvec (:argtypes node) 0 vi)
         params (ffi-params (count fixed))
@@ -328,9 +317,8 @@
      :cache-name (fresh-label "jolt_ffi_varargs")
      :tail-name (fresh-label "jolt_ffi_tail")}))
 
-;; One arm's body: bind the fixed :string arguments, then the arm's own
-;; marshalled tail, make the call with every one of them kept live, and convert
-;; the result.
+;; One arm's body: bind the fixed :string arguments and the marshalled tail, call
+;; with all of them kept live, convert the result.
 (defn- ffi-varargs-arm-body [cx tail-bindings call kept]
   (ffi-bind-converted
    (mapv (fn [param] [param (ffi-string-arg param)]) (:string-params cx))
@@ -341,10 +329,8 @@
         (ffi-capture-result (:rettype cx) kept-call)
         (ffi-c->jolt (:rettype cx) kept-call))))))
 
-;; An arity-specialized arm for a tail of K values. A string in the tail
-;; marshals to an immobile bytevector the same way, so every marshalled tail
-;; value is bound and kept live: which of them is a string is only known at the
-;; call.
+;; An arm for a tail of K values. Every marshalled tail value is kept live, since
+;; which one is a string is only known at the call.
 (defn- ffi-varargs-arm [cx k]
   (let [ts (mapv (fn [i] (str (:tail-name cx) "_" (inc i))) (range k))
         cs (mapv (fn [t] (str t "_c")) ts)]
@@ -360,8 +346,7 @@
           cs)
          ")")))
 
-;; The general arm, for a tail longer than three: the marshalled tail list is
-;; bound and kept live, then spread with apply.
+;; The arm for a tail longer than three.
 (defn- ffi-varargs-rest-arm [cx]
   (let [tail-name (:tail-name cx)
         tail-c (str tail-name "_c")]
@@ -546,8 +531,6 @@
                                  (if ret-aggregate?
                                    (str "(& " return-name ")")
                                    (ffi-type->chez rettype)))
-        ;; A :string argument is converted ahead of the call, into the same
-        ;; name, and kept live across it (ffi-kept-call).
         string-params (vec (keep-indexed (fn [i param]
                                            (when (= "string" (nth types i)) param))
                                          params))

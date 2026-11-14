@@ -1,14 +1,7 @@
-;; A :string argument stays where C was told it is for the whole call, even when
-;; C calls back into jolt and the callback collects. Chez's `string` foreign type
-;; copies the text into an ordinary heap bytevector, so a collection inside the
-;; callback could move it and C read whatever replaced it: through a GTK signal
-;; emitted before the text is copied, that was "invalid memory reference", a GTK
-;; abort on invalid UTF-8, or the wrong text in the buffer. A :string argument now
-;; travels as an immobile copy the call keeps live (jolt-ffi-string-arg,
-;; host/chez/java/ffi.ss). bsearch hands its key to the comparator on every
-;; step, so the comparator can read back the pointer C holds.
-;; Run: bin/jolt run test/chez/jolt-ffi-string-arg-test.clj, or `make ffi`;
-;; exits nonzero on a failure, and prints "JOLT-FFI-STRING-ARG-TEST OK".
+;; A :string argument must not move while C holds it, even when C calls back into
+;; jolt and the callback collects. bsearch hands its key to the comparator on
+;; every step, so the comparator can read back the pointer C holds.
+;; Run: bin/jolt run test/chez/jolt-ffi-string-arg-test.clj, or `make ffi`.
 (ns jolt-ffi-string-arg-test)
 
 (require '[jolt.ffi :as ffi])
@@ -27,9 +20,8 @@
 (def garbage (atom nil))
 (def seen (atom []))
 
-;; Collect, then allocate enough that the young generation turns over, then read
-;; the key through the pointer C passed. The comparator always answers 1, so
-;; bsearch walks the whole of its log2 steps over the eight-element table.
+;; Collect and allocate, then read the key through the pointer C passed. The
+;; comparator always answers 1, so bsearch walks every step.
 (def reading-comparator
   (ffi/foreign-callable
    (fn [key _element]
