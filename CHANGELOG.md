@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
+- **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).
+  It was Chez's `string` type, a heap copy the collector could move, so a C
+  function that called back into jolt before it was done with the text (a GTK
+  signal emitted ahead of the copy, a `bsearch` comparator) read moved memory
+  once the callback collected. It now travels as an immobile copy kept alive
+  for the call, which adds about 30 ns to each `:string` argument.
 - **`jolt build` checks every option before building native libraries.** An
   invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
   with no target pack, was reported only after the static archives and

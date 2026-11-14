@@ -42,6 +42,14 @@
   it means what it says.) Every other non-string is rejected too, which the
   other foreign types already did on their own.
 
+  A :string argument is copied, as UTF-8 with its NUL, into memory the
+  collector does not move, and the copy stays alive until C returns. So a C
+  function that calls back into jolt before it is done with the text (a GTK
+  signal emitted ahead of the copy, a bsearch comparator) still reads what it
+  was given, even when the callback collects. The copy is gone once the call
+  returns, so C must not keep the pointer: pass a :pointer from string->ptr,
+  or an arena-owned string, when it does.
+
   A struct passed or returned by value uses the same literal descriptor as
   layout, wrapped in [:by-value descriptor]. An argument value is a non-null
   caller-owned pointer to the struct bytes. An aggregate-returning callable takes

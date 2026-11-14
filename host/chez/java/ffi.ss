@@ -743,6 +743,35 @@
                                         " — NULL is spelled nil")))))
 (define (jolt-ffi-c->string x) (if x x jolt-nil))
 
+;; A foreign-fn's :string ARGUMENT, which travels as u8*, not as Chez's `string`.
+;; Chez converts a `string` argument into an ordinary heap bytevector and passes
+;; its address, so C holds a pointer into memory the collector may move. Nothing
+;; collects while C runs on its own, but a C function that calls back into jolt
+;; before it is done with the pointer (a GTK signal emitted before the text is
+;; copied, bsearch's comparator, sqlite3_exec's row callback) gives the collector
+;; its chance, and C then reads whatever sits at the old address.
+;;
+;; So the octets go into an IMMOBILE bytevector, which the collector never moves,
+;; with the NUL C expects. The emitted call keeps it live until C returns (the
+;; keep-live in emit-ffi-fixed-fn, jolt/backend_scheme/ffi.clj): an immobile
+;; object is still reclaimed once nothing refers to it, and C's copy of the
+;; address does not count. Nothing has to be freed or unlocked afterwards, so a
+;; callback that throws out through C leaks nothing either.
+;;
+;; The checks are jolt-ffi-string->c's, for the same reasons. A callable's
+;; :string RESULT still goes through that one: C receives it as Chez's `string`,
+;; which the callable converts on its way out.
+(define (jolt-ffi-string-arg x)
+  (cond ((string? x)
+         (let* ((bv (string->utf8 x))
+                (n (bytevector-length bv))
+                (out (make-immobile-bytevector (fx+ n 1))))
+           (bytevector-copy! bv 0 out 0 n)
+           (bytevector-u8-set! out n 0)
+           out))
+        ((jolt-nil? x) #f)
+        (else (jolt-ffi-string->c x))))
+
 ;; --- foreign memory ----------------------------------------------------------
 ;; alloc returns a pointer (integer address). The caller frees it. read/write take
 ;; a type keyword and an optional byte offset.
@@ -1278,9 +1307,10 @@
                  "jolt.ffi: a bare :& tail takes an integer, pointer, boolean, nil,"
                  " floating-point number, ratio or string; got " (jolt-pr-str v))))))
 
-;; The Chez foreign type each carrier declares.
+;; The Chez foreign type each carrier declares. A string travels as u8*, an
+;; immobile copy the emitted call keeps live (jolt-ffi-string-arg above).
 (define (ffi-varargs-carrier-type c)
-  (cond ((fx=? c 0) 'integer-64) ((fx=? c 1) 'double) (else 'string)))
+  (cond ((fx=? c 0) 'integer-64) ((fx=? c 1) 'double) (else 'u8*)))
 
 ;; One fixnum standing for the whole tail shape, folded base-3 from a seed of 1
 ;; so that tails of DIFFERENT LENGTHS cannot collide (0 shapes => 1, one-int =>
@@ -1301,7 +1331,7 @@
 ;; SAME list when nothing changed, and a variadic call allocates nothing beyond
 ;; the rest argument the lambda already built.
 (define (ffi-varargs-plain? v)
-  (or (flonum? v) (string? v) (and (number? v) (exact? v) (integer? v))))
+  (or (flonum? v) (and (number? v) (exact? v) (integer? v))))
 
 (define (ffi-varargs-marshal v)
   (cond
@@ -1310,7 +1340,7 @@
     ((fixnum? v) v)
     ((flonum? v) v)
     ((jfloat? v) (jfloat-fl v))
-    ((string? v) v)
+    ((string? v) (jolt-ffi-string-arg v))
     ((jolt-nil? v) 0)
     ((eq? v #t) 1)
     ((eq? v #f) 0)
