@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The `unchecked-*-int` family is 3 to 8 times faster.** `unchecked-add-int`,
+  `-subtract-int`, `-multiply-int`, `-divide-int`, `-remainder-int`, `-inc-int`,
+  `-dec-int` and `-negate-int` were rest-argument closures around the 64-bit
+  op, so each call paid a var call, a rest list and an `apply`. They are now
+  fixed-arity runtime helpers that fold to 32 bits in place, and the compiler
+  lowers a direct call to them. Per iteration, `unchecked-add-int`
+  went from 23.5 ns to 2.8 ns, `unchecked-inc-int` from 14.7 ns to 2.3 ns,
+  `unchecked-multiply-int` from 27.8 ns to 5.7 ns, and a hinted `areduce` from
+  18.1 ns to 5.9 ns an element, because it steps with `unchecked-inc-int`
+  (#1647). The vars now take the JVM's arities, so `(apply unchecked-add-int
+  [1 2 3])` raises an `ArityException` where it used to answer 6.
+
 ### Fixed
 
 - **Malformed special forms report the reference compiler's error.**

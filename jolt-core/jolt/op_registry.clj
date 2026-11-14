@@ -120,6 +120,24 @@
                          :dbl-contagion? true :num-result? true :num-args? true}
    "unchecked-negate"   {:call "jolt-uncneg" :arity #(= % 1)
                          :dbl-contagion? true :num-result? true :num-args? true}
+   ;; The -int family wraps to 32 bits. The JVM's are fixed-arity static methods,
+   ;; so a call at any other arity is not lowered and still raises an arity error
+   ;; through the var. The result is an int-range integer whatever the operands,
+   ;; so there is no :dbl and no contagion. :lng takes a proven-long pair to the
+   ;; same helper and types the result :long.
+   "unchecked-add-int"       {:call "jolt-uncaddi2" :arity #(= % 2) :lng "jolt-uncaddi2"
+                              :num-result? true}
+   "unchecked-subtract-int"  {:call "jolt-uncsubi2" :arity #(= % 2) :lng "jolt-uncsubi2"
+                              :num-result? true}
+   "unchecked-multiply-int"  {:call "jolt-uncmuli2" :arity #(= % 2) :lng "jolt-uncmuli2"
+                              :num-result? true}
+   "unchecked-divide-int"    {:call "jolt-uncdivi2" :arity #(= % 2) :lng "jolt-uncdivi2"
+                              :num-result? true}
+   "unchecked-remainder-int" {:call "jolt-uncremi2" :arity #(= % 2) :lng "jolt-uncremi2"
+                              :num-result? true}
+   "unchecked-inc-int"       {:call "jolt-uncinci" :arity #(= % 1) :num-result? true}
+   "unchecked-dec-int"       {:call "jolt-uncdeci" :arity #(= % 1) :num-result? true}
+   "unchecked-negate-int"    {:call "jolt-uncnegi" :arity #(= % 1) :num-result? true}
    ;; collections
    "vector"      {:call "jolt-vector"}
    "hash-map"    {:call "jolt-hash-map-fn"}
