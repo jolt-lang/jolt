@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`=` on two different characters is about 3.7 times faster.** `(= c \a)` on a
+  character that isn't `\a` took 13.2 ns, because `jolt=2` tried every
+  collection, procedure and record clause before it reached the scalar one.
+  It now answers two characters directly, at 3.6 ns (#1651).
+
 ### Fixed
 
 - **Malformed special forms report the reference compiler's error.**
