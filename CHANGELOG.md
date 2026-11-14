@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`alength` is about 4.5x faster.** A hinted `(alength a)` and an unhinted one
+  cost 19.9 ns and 20.0 ns per loop iteration because both went through the generic
+  `jolt-count`, and they now cost 4.5 ns and 4.8 ns, next to 4.1 ns for a hinted
+  `aget`. The numeric pass lowers `alength` on a `^doubles`, `^floats`, `^longs`,
+  `^ints`, `^bytes` or `^objects` array to `jolt-valength` and types the result
+  `:long`, and `jolt-alength` itself now checks for an array first. `nil` still
+  raises the NullPointerException, and `count` on an array is unchanged
+  (19.1 ns). (#1648)
+
 ### Fixed
 
 - **Malformed special forms report the reference compiler's error.**
