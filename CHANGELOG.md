@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **`extend-type` and `extend-protocol` no longer rebuild the class-name tables
+  after every new record.** Each protocol registration asked whether the type
+  name was a JVM spelling of a record in a dashed namespace (`rf.def_two.R3`),
+  and the lookup rebuilt Jolt's class-name tables, sized by every modeled class,
+  whenever a class had been registered since the previous one. A JVM spelling always
+  contains an underscore, so a name without one now skips the lookup. A
+  generated 200k-line project with 1,106 records and 1,070 `extend-*` forms
+  loads from the AOT cache in 1.9 s instead of 2.6 s.
+
 ### Fixed
 
 - **Malformed special forms report the reference compiler's error.**

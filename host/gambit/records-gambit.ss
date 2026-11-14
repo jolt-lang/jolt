@@ -2405,8 +2405,14 @@
         (let ((pi (hashtable-ref ti proto-name #f)))
           (when pi (hashtable-set! pi extend-mark #t)))))))
 
+(define (jch-string-has-underscore? s)
+  (let loop ((i (fx- (string-length s) 1)))
+    (and (fx>=? i 0)
+         (or (char=? (string-ref s i) #\_) (loop (fx- i 1))))))
+
 (define (deftype-tag-for-jvm-name type-name)
-  (and (not (hashtable-ref chez-deftype-tag-set type-name #f))
+  (and (jch-string-has-underscore? type-name)
+       (not (hashtable-ref chez-deftype-tag-set type-name #f))
        (let ((c (jch-registered-name type-name)))
          (and c
               (not (string=? c type-name))
