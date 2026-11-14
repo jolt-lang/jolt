@@ -1,7 +1,5 @@
-;; bencode.core, as babashka bundles it: nrepl/bencode 1.2.0
-;; (https://github.com/nrepl/bencode), carried here so a babashka script that
-;; requires bencode.core loads under jolt. Everything below this header is the
-;; upstream file, unchanged. NOTICE names the license.
+;; nrepl/bencode 1.2.0 (https://github.com/nrepl/bencode), unchanged below this
+;; header. See NOTICE.
 ;;
 ;; Copyright (c) Meikel Brandmeyer, Oleksandr Yakushev. All rights reserved.
 ;; The use and distribution terms for this software are covered by the

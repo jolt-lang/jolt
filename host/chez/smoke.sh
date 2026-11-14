@@ -1454,10 +1454,8 @@ else
 fi
 rm -f "$bbshadow/src/cheshire/core.clj"; rmdir "$bbshadow/src/cheshire" 2>/dev/null
 
-# bencode.core is bundled as well, since babashka bundles nrepl/bencode: a bare
-# script that speaks nREPL's wire format requires it with no deps.edn. Unlike
-# cheshire it is the library's own file, so a project that declares
-# nrepl/bencode keeps its own copy and nothing here shadows it.
+# bencode.core is bundled like babashka does. It's the library's own file, so a
+# project declaring nrepl/bencode keeps its own copy.
 bnc_dir="$(mktemp -d)"
 printf '%s\n' "(require '[bencode.core :as b])" \
   '(let [o (java.io.ByteArrayOutputStream.)]' \
