@@ -174,13 +174,10 @@
                (loop (vector-ref (rrbnode-children node) k) (fx- level pv-bits) sub)))
             (else (loop (vector-ref node (fxand (fxsra i level) pv-mask))
                         (fx- level pv-bits) i)))))))
-;; The element at index i, which lies in the trie (below the tail offset): the
-;; descent of pv-leaf-for ending in the read itself, so no leaf and offset come
-;; back as two values. A dense node is a plain vector and is tested first, so the
-;; common level costs one tag check. The shift and mask are written as the
-;; literals pv-bits and pv-mask hold (5 and 31): read as top-level variables they
-;; are reloaded on every pass of this loop, and that was 2 ns of a 1000-element
-;; read. A relaxed (rrbnode) level is exactly pv-leaf-for's.
+;; The element at index i below the tail offset: pv-leaf-for's descent ending in
+;; the read, so no leaf and offset come back as two values. The shift and mask
+;; are the literals pv-bits and pv-mask hold (5 and 31), so the loop doesn't
+;; reload them as top-level variables. The relaxed level is pv-leaf-for's.
 (define (pv-trie-ref p i)
   (let loop ((node (pvec-root p)) (level (pvec-shift p)) (i i))
     (cond

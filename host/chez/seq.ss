@@ -1696,8 +1696,8 @@
      (if (fxlogbit? 1 (procedure-arity-mask f))
          (jolt-site-kept (f a))
          (jolt-proc-arity-error f 1)))
-    ;; (v i) with an in-range fixnum index reads and cannot throw or call out,
-    ;; so it skips the site bookkeeping and jolt-invoke-t1's type walk
+    ;; (v i) with an in-range fixnum index can't throw or call out, so it skips
+    ;; the site bookkeeping
     ((and (pvec? f) (fixnum? a) (fx>=? a 0) (fx<? a (pvec-cnt f)))
      (pvec-nth-in-range f a))
     (else (jolt-site-kept (jolt-invoke-t1 f a)))))

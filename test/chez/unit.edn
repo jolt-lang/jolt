@@ -3693,8 +3693,7 @@
   {:suite "rrb-vector" :expr "(do (require '[clojure.core.rrb-vector :as rrb]) (= (rrb/vector-of :long 1 2 3) [1 2 3]))" :expected "true"}
   {:suite "rrb-vector" :expr "(do (require '[clojure.core.rrb-vector :as rrb]) (= (map type (rrb/vector-of :double 1 2 3)) (repeat 3 Double)))" :expected "true"}
   {:suite "rrb-vector" :expr "(do (require '[clojure.core.rrb-vector :as rrb]) (= (rrb/vector-of :long) []))" :expected "true"}
-  ;; Indexed reads of a vector: nth, get and (v i) share one trie read, and an
-  ;; in-range fixnum index skips the generic dispatch. Expected values are the JVM's.
+  ;; Indexed reads of a vector (nth, get, (v i)); expected values are the JVM's.
   {:suite "vector-indexed-read" :label "vector reads at the tail, a trie leaf and the last element of a 32-element vector" :expr "(let [v (vec (range 32))] [(nth v 0) (nth v 16) (nth v 0) (nth v 31) (get v 0) (get v 16) (get v 31) (v 0) (v 16) (v 31)])" :expected "[0 16 0 31 0 16 31 0 16 31]"}
   {:suite "vector-indexed-read" :label "vector reads at the tail, a trie leaf and the last element of a 1056-element vector" :expr "(let [v (vec (range 1056))] [(nth v 0) (nth v 528) (nth v 1023) (nth v 1055) (get v 0) (get v 528) (get v 1055) (v 0) (v 528) (v 1055)])" :expected "[0 528 1023 1055 0 528 1055 0 528 1055]"}
   {:suite "vector-indexed-read" :label "vector reads at the tail, a trie leaf and the last element of a 33000-element vector" :expr "(let [v (vec (range 33000))] [(nth v 0) (nth v 16500) (nth v 32967) (nth v 32999) (get v 0) (get v 16500) (get v 32999) (v 0) (v 16500) (v 32999)])" :expected "[0 16500 32967 32999 0 16500 32999 0 16500 32999]"}

@@ -886,13 +886,10 @@
 ;; itself has a count-arm registry) so arrays get the same nth semantics without
 ;; re-entering the get arm loop. This is the documented fast-path exception.
 (define %na-get jolt-get)
-;; The outermost jolt-get wrapper, so a map, vector or string receiver is
-;; answered here and pays neither the array probe nor the call into the wrapped
-;; definition. pmap-fast-get, pvec-get and jolt-get-base are what that
-;; definition's own pmap, pvec and string arms call (jolt-get-dispatch), and no
-;; other wrapper sits between the two. All three are in get-fast-probes, so no
-;; registered get arm may claim one. The string arm keeps a string's get ahead of
-;; the map and vector tests' cost too (fastpathratio's string-get row).
+;; The outermost jolt-get wrapper: map, vector and string receivers are answered
+;; here, calling what the wrapped definition's own arms call (jolt-get-dispatch).
+;; All three callees are in get-fast-probes, so no registered get arm may claim
+;; one of those types.
 (set! jolt-get
   (case-lambda
     ((c k)   (cond ((pmap? c) (pmap-fast-get c k jolt-nil))
