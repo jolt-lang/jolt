@@ -308,69 +308,81 @@
 ;;
 ;; The arms and the general path agree on the cache key by construction — the
 ;; arity-specialized lookups are the same base-3 fold, unrolled.
-(defn- emit-ffi-bare-varargs-fn [node vi]
+;; The pieces every arm of a bare :& binding shares, computed once per binding:
+;; the fixed arguments already converted (a :string one bound ahead and kept
+;; live, see ffi-kept-call), and how a call's result comes back.
+(defn- ffi-varargs-context [node vi]
   (let [fixed (subvec (:argtypes node) 0 vi)
-        n (count fixed)
-        params (ffi-params n)
-        rettype (:rettype node)
-        capture (:capture-native-error node)
-        cache-name (fresh-label "jolt_ffi_varargs")
-        tail-name (fresh-label "jolt_ffi_tail")
-        ;; The fixed arguments convert exactly as they do in a declared-tail
-        ;; binding, a :string one included (bound ahead and kept live, see
-        ;; ffi-kept-call); only the tail is inferred.
+        params (ffi-params (count fixed))
         string-params (vec (keep-indexed (fn [i param]
                                            (when (= "string" (nth fixed i)) param))
                                          params))
         native-args (mapv (fn [type param] (if (= "string" type) param (ffi-jolt->c type param)))
-                          fixed params)
-        fixed-args (if (seq native-args) (str " " (str/join " " native-args)) "")
-        bind-fixed (fn [body]
-                     (ffi-bind-converted
-                      (mapv (fn [param] [param (ffi-string-arg param)]) string-params)
-                      body))
+                          fixed params)]
+    {:fixed fixed
+     :params params
+     :string-params string-params
+     :fixed-args (if (seq native-args) (str " " (str/join " " native-args)) "")
+     :capture (boolean (:capture-native-error node))
+     :rettype (:rettype node)
+     :cache-name (fresh-label "jolt_ffi_varargs")
+     :tail-name (fresh-label "jolt_ffi_tail")}))
+
+;; One arm's body: bind the fixed :string arguments, then the arm's own
+;; marshalled tail, make the call with every one of them kept live, and convert
+;; the result.
+(defn- ffi-varargs-arm-body [cx tail-bindings call kept]
+  (ffi-bind-converted
+   (mapv (fn [param] [param (ffi-string-arg param)]) (:string-params cx))
+   (ffi-bind-converted
+    tail-bindings
+    (let [kept-call (ffi-kept-call call (into (:string-params cx) kept) (:capture cx))]
+      (if (:capture cx)
+        (ffi-capture-result (:rettype cx) kept-call)
+        (ffi-c->jolt (:rettype cx) kept-call))))))
+
+;; An arity-specialized arm for a tail of K values. A string in the tail
+;; marshals to an immobile bytevector the same way, so every marshalled tail
+;; value is bound and kept live: which of them is a string is only known at the
+;; call.
+(defn- ffi-varargs-arm [cx k]
+  (let [ts (mapv (fn [i] (str (:tail-name cx) "_" (inc i))) (range k))
+        cs (mapv (fn [t] (str t "_c")) ts)]
+    (str "((" (str/join " " (concat (:params cx) ts)) ") "
+         (ffi-varargs-arm-body
+          cx
+          (mapv (fn [t c] [c (str "(jolt-ffi-varargs-arg " t ")")]) ts cs)
+          (str "((jolt-ffi-varargs-proc" k " " (:cache-name cx)
+               (when (seq ts) (str " " (str/join " " ts))) ")"
+               (:fixed-args cx)
+               (str/join "" (map (fn [c] (str " " c)) cs))
+               ")")
+          cs)
+         ")")))
+
+;; The general arm, for a tail longer than three: the marshalled tail list is
+;; bound and kept live, then spread with apply.
+(defn- ffi-varargs-rest-arm [cx]
+  (let [tail-name (:tail-name cx)
+        tail-c (str tail-name "_c")]
+    (str "((" (str/join " " (:params cx)) " . " tail-name ") "
+         (ffi-varargs-arm-body
+          cx
+          [[tail-c (str "(jolt-ffi-varargs-tail " tail-name ")")]]
+          (str "(apply (jolt-ffi-varargs-procedure " (:cache-name cx) " " tail-name ")"
+               (:fixed-args cx) " " tail-c ")")
+          [tail-c])
+         ")")))
+
+(defn- emit-ffi-bare-varargs-fn [node vi]
+  (let [cx (ffi-varargs-context node vi)
         cache (str "(jolt-ffi-varargs-cache " (chez-str-lit (:csym node))
-                   " (quote (" (str/join " " (map ffi-arg-type->chez fixed)) ")) "
-                   "(quote " (ffi-type->chez rettype) ") " n " "
-                   (if capture "#t" "#f") ")")
-        wrap (fn [call]
-               (if capture
-                 (ffi-capture-result rettype call)
-                 (ffi-c->jolt rettype call)))
-        ;; tail names t1..tk for the specialized arms
-        tvars (fn [k] (mapv (fn [i] (str tail-name "_" (inc i))) (range k)))
-        ;; A string in the tail marshals to an immobile bytevector the same way,
-        ;; so every marshalled tail value is bound and kept live: which of them
-        ;; is a string is only known at the call.
-        arm (fn [k]
-              (let [ts (tvars k)
-                    cs (mapv (fn [t] (str t "_c")) ts)]
-                (str "((" (str/join " " (concat params ts)) ") "
-                     (bind-fixed
-                      (ffi-bind-converted
-                       (mapv (fn [t c] [c (str "(jolt-ffi-varargs-arg " t ")")]) ts cs)
-                       (wrap (ffi-kept-call
-                              (str "((jolt-ffi-varargs-proc" k " " cache-name
-                                   (when (seq ts) (str " " (str/join " " ts))) ")"
-                                   fixed-args
-                                   (str/join "" (map (fn [c] (str " " c)) cs))
-                                   ")")
-                              (into string-params cs)
-                              (boolean capture)))))
-                     ")")))
-        tail-c (str tail-name "_c")
-        rest-arm (str "((" (str/join " " params) " . " tail-name ") "
-                      (bind-fixed
-                       (ffi-bind-converted
-                        [[tail-c (str "(jolt-ffi-varargs-tail " tail-name ")")]]
-                        (wrap (ffi-kept-call
-                               (str "(apply (jolt-ffi-varargs-procedure " cache-name " " tail-name ")"
-                                    fixed-args " " tail-c ")")
-                               (conj string-params tail-c)
-                               (boolean capture)))))
-                      ")")]
-    (str "(let ((" cache-name " " cache ")) "
-         "(case-lambda " (str/join " " (map arm (range 4))) " " rest-arm "))")))
+                   " (quote (" (str/join " " (map ffi-arg-type->chez (:fixed cx))) ")) "
+                   "(quote " (ffi-type->chez (:rettype cx)) ") " (count (:fixed cx)) " "
+                   (if (:capture cx) "#t" "#f") ")")]
+    (str "(let ((" (:cache-name cx) " " cache ")) "
+         "(case-lambda " (str/join " " (map (fn [k] (ffi-varargs-arm cx k)) (range 4)))
+         " " (ffi-varargs-rest-arm cx) "))")))
 
 ;; A "varargs" marker in the argtype vector declares the binding variadic and
 ;; marks the FIXED/VARIADIC boundary: types before it are the named parameters,
