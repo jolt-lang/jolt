@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `set!` of a mutable field and a method's read of its own fields, the
   `(var *x*)` that every `binding` expands to (267 to 145 ns for a `binding`),
   and `hash` of a character (103 to 17 ns, so a character-set lookup is 27 ns
-  instead of 112). `clojure.tools.reader/read-string` of a 50-byte form is about
-  20% faster and `rewrite-clj.parser/parse-string` about 24%. Both are still
-  several times slower than on the JVM.
+  instead of 112). On a built binary with a warm cache,
+  `clojure.tools.reader/read-string` of a 50-byte form is about 17% faster and
+  `rewrite-clj.parser/parse-string` about 22%. Both are still several times
+  slower than on the JVM.
 
 ### Fixed
 
