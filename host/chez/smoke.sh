@@ -1076,6 +1076,20 @@ else
   fails=$((fails + 1))
 fi
 
+# A monitor release wakes ONE waiting thread, and the owner it hands to marks the
+# word so its own release wakes the next (jolt#1654). A broken hand-off strands a
+# waiter with the monitor free, so every round runs under a deadline: crowds of
+# futures through ReentrantLock and `locking`, reentrant holds, timed tryLock and
+# lockInterruptibly among plain waiters, and Object.wait beside entering threads.
+mh_out="$($jolt run test/chez/monitor-handoff.clj 2>&1)"
+if printf '%s' "$mh_out" | grep -q 'MONITOR-HANDOFF OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a monitor release stranded a waiting thread"
+  echo "    $(printf '%s' "$mh_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # One paren too many must FAIL the file, not truncate it. The loader read forms
 # with the non-top-level reader, which parks on a stray `)` rather than raising,
 # and the loop read a parked position as end of input: everything after the paren

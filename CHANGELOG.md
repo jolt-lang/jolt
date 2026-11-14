@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Threads queued on a contended `ReentrantLock` or `locking` monitor no longer
+  all wake on every release** (#1654). A release broadcast to every waiting
+  thread, so 400 futures appending a line to a file under one lock returned from
+  their wait 53518 times and took 236-247ms (median). A release now wakes one
+  waiter, and the thread that takes the lock wakes the next. The same run returns
+  399 times and takes 44-51ms, against 32-36ms for the 400 appends made in a loop
+  on one thread.
+
 ### Fixed
 
 - **Malformed special forms report the reference compiler's error.**

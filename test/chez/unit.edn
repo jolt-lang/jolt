@@ -2532,6 +2532,11 @@
   {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) [(.tryLock l) (.getHoldCount l)])" :expected "[true 2]"}
   ;; Stage D — ReentrantLock.getHoldCount
   {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.)] (.lock l) [(.getHoldCount l) (.isLocked l) (.isHeldByCurrentThread l)])" :expected "[1 true true]"}
+  ;; jolt#1654 — a release wakes one waiting thread and the new owner wakes the next:
+  ;; sixteen futures queued behind a held lock all get through, one at a time
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.) c (long-array 1) fs (doall (for [_ (range 16)] (future (.lock l) (try (let [v (aget c 0)] (Thread/sleep 1) (aset c 0 (inc v))) (finally (.unlock l)))))) r (mapv #(deref % 10000 :timeout) fs)] [(aget c 0) (some #{:timeout} r) (.isLocked l)])" :expected "[16 nil false]"}
+  {:suite "concurrency" :expr "(let [o (Object.) c (long-array 1) fs (doall (for [_ (range 16)] (future (locking o (let [v (aget c 0)] (Thread/sleep 1) (aset c 0 (inc v))))))) r (mapv #(deref % 10000 :timeout) fs)] [(aget c 0) (some #{:timeout} r)])" :expected "[16 nil]"}
+  {:suite "concurrency" :expr "(let [l (java.util.concurrent.locks.ReentrantLock.) c (long-array 1) fs (doall (for [_ (range 8)] (future (.lock l) (try (.lock l) (try (let [v (aget c 0) h (.getHoldCount l)] (Thread/sleep 1) (aset c 0 (inc v)) h) (finally (.unlock l))) (finally (.unlock l)))))) r (mapv #(deref % 10000 :timeout) fs)] [(aget c 0) (distinct r) (.isLocked l)])" :expected "[8 (2) false]"}
   ;; Stage D — thread interrupt flag propagation
   {:suite "concurrency" :expr "(let [t (Thread/currentThread)] (.interrupt t) [(.isInterrupted t) (Thread/interrupted)])" :expected "[true true]"}
   ;; Stage D — Thread.interrupted clears the flag

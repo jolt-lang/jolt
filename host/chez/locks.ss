@@ -639,7 +639,9 @@
 ;; The narrow counterpart of jolt-cv-wake!, for a condition that carries a QUEUE of
 ;; interchangeable items to a crowd of interchangeable waiters: one item arrives,
 ;; one waiter can take it, and any of them will do. The executor's task condition is
-;; that and is the only one in the runtime (java/concurrency.ss).
+;; that (java/concurrency.ss). The object monitor's entry condition is the other
+;; user: one release frees the monitor for one contender, and the protocol around
+;; it (monitor-claim-slow! there) makes the new owner signal the next.
 ;;
 ;; The two preconditions, both of which that condition meets and neither of which
 ;; the caller can be trusted to remember, so they are stated where the call is:

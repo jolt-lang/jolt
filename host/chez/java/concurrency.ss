@@ -1468,7 +1468,7 @@
 ;; 11 restores every condition as a jolt-cv. A raw entry condition here came back
 ;; from such an image as a jolt-cv and the first contended exit's broadcast raised.
 ;; Its fibers are in the fibers slot, not on the cv, so a wake of it only reaches
-;; the blocked threads -- and skips the broadcast when there are none.
+;; the blocked threads -- and skips the signal when there are none.
 (define (make-monitor)
   (vector (make-mutex) #f 0 (jolt-make-cv) '() #f (jolt-make-cv) '()))
 
@@ -1502,13 +1502,42 @@
 (define (monitor-word-id w) (if (monitor-contended? w) (monitor-contended-id w) w))
 (define (monitor-owner-id m) (monitor-word-id (vector-ref m monitor-i-owner)))
 ;; Take a free word for me: CAS #f -> me, then the owner's own fields.
-(define (monitor-claim! m me)
-  (and (vector-cas! m monitor-i-owner #f me)
+(define (monitor-claim! m me) (monitor-claim-as! m me))
+;; WORD is me, or me wrapped in monitor-contended (monitor-claim-slow!).
+(define (monitor-claim-as! m word)
+  (and (vector-cas! m monitor-i-owner #f word)
        (begin
          (memory-order-acquire)
          (vector-set! m monitor-i-box (current-os-thread-box))
          (vector-set! m monitor-i-count 1)
          #t)))
+;; THE RELEASE WAKES ONE THREAD. A release used to broadcast to every thread
+;; blocked on the entry condition, and all of them but one took bk, found the
+;; word taken again and went back to sleep. With 400 futures queued behind a
+;; ReentrantLock held across a file append, that was 53518 returns from the wait
+;; for 400 acquires (jolt#1654). So the release signals one thread, and the duty
+;; to wake the next one travels with the monitor: a slow-path claim made while
+;; other contenders still wait takes the word already marked contended
+;; (monitor-claim-slow!), so that owner's exit takes the slow path and signals the
+;; next. A signalled thread stays in the condition's count until it holds bk
+;; again, so a context that claims ahead of it marks the word too, and a fast
+;; claim (no bk) can only find a free word while a signal is pending or nobody
+;; waits: the signalled thread then marks whatever owner it finds. Fibers are
+;; still all resumed, as before, and each retakes the decision from the top.
+;;
+;; Call with bk held.
+(define (monitor-entry-waiters? m)
+  (or (fx>? (jolt-cv-threads (vector-ref m monitor-i-cv)) 0)
+      (pair? (vector-ref m monitor-i-fibers))))
+(define (monitor-claim-slow! m me)
+  (if (monitor-entry-waiters? m)
+      (monitor-claim-as! m (make-monitor-contended me))
+      (monitor-claim! m me)))
+;; Wake the entry set once the word is free (bk held): one thread, as above. The
+;; fibers are the caller's to resume, outside bk.
+(define (monitor-wake-entry! m)
+  (jolt-cv-signal-one! (vector-ref m monitor-i-cv)))
+
 ;; Free the word outright (bk held): the slow exit and Object.wait's release.
 (define (monitor-release-word! m)
   (vector-set! m monitor-i-box #f)
@@ -1581,6 +1610,13 @@
         (begin
           ;; BLOCKED, as the JVM reports a thread entering a monitor; a
           ;; ReentrantLock's acquire says WAITING instead (thread-enter-state)
+          ;; A release signals ONE waiter (monitor-wake-entry!), so a waiter that
+          ;; left this wait by an escape could take with it the only wake the
+          ;; others were going to get. None can: the wait runs inside
+          ;; jolt-lock-wait's hold of bk, a counted lock, and the escapes
+          ;; (run-interruptible's, a fiber interrupt) hold off until the count is
+          ;; zero, by which time this waiter holds the monitor or waits again
+          ;; (monitor-escape-test.ss, case 3b).
           (call-with-thread-state (thread-enter-state)
             (lambda ()
               (jolt-condition-wait (vector-ref m monitor-i-cv) (vector-ref m monitor-i-bk))))
@@ -1629,7 +1665,7 @@
           (cond
             ((not w)
              (jolt-locks-enter!)
-             (if (monitor-claim! m me) #f (begin (jolt-locks-exit!) (loop))))
+             (if (monitor-claim-slow! m me) #f (begin (jolt-locks-exit!) (loop))))
             ((eq? (monitor-word-id w) me)
              (jolt-locks-enter!)
              (vector-set! m monitor-i-count (fx+ 1 (vector-ref m monitor-i-count)))
@@ -1722,12 +1758,11 @@
        (unless (jolt-carrier-head (jolt-fiber-carrier f))
          (sleep nap))))))
 
-;; The waiters are taken and cleared under bk so no resume is delivered twice, and
-;; they are woken OUTSIDE it: sa-fiber-resume takes the carrier's run-queue mutex,
-;; and keeping the two apart means this path closes no cycle at all rather than
-;; relying on that mutex being last in the order. Broadcast and not signal, for
-;; loader.ss's reason: the waiters re-check a condition that will be true for exactly
-;; one of them.
+;; The fiber waiters are taken and cleared under bk so no resume is delivered
+;; twice, and they are woken OUTSIDE it: sa-fiber-resume takes the carrier's
+;; run-queue mutex, and keeping the two apart means this path closes no cycle at all
+;; rather than relying on that mutex being last in the order. The thread waiters get
+;; one signal, not a broadcast; see "the release wakes one thread" above.
 ;;
 ;; MASKED? is the release a masked enter pairs with: the caller raised the
 ;; counted-lock depth before it, and this drops it once the monitor is released —
@@ -1757,7 +1792,7 @@
                (let ((fs (vector-ref m monitor-i-fibers)))
                  (monitor-release-word! m)
                  (vector-set! m monitor-i-fibers '())
-                 (jolt-cv-wake! (vector-ref m monitor-i-cv))
+                 (monitor-wake-entry! m)
                  fs)
                '()))))
     (for-each sa-fiber-resume wake)))
@@ -1913,7 +1948,7 @@
                (vector-set! m monitor-i-count 0)
                (monitor-release-word! m)
                (vector-set! m monitor-i-fibers '())
-               (jolt-cv-wake! (vector-ref m monitor-i-cv))
+               (monitor-wake-entry! m)
                (cons saved fs)))))
     (for-each sa-fiber-resume (cdr r))
     (car r)))
