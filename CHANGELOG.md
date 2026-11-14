@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
   with no target pack, was reported only after the static archives and
   dependency libraries had been compiled.
+- **`clojure.java.io/default-streams-impl` exists, and the io fns consult a
+  type extended with it.** Libraries extend `IOFactory` to their own types with
+  `(assoc io/default-streams-impl :make-input-stream f)`, and muuntaja failed to
+  load for want of the var (#1665). It holds the four `make-*` fns, the stream
+  ones refusing with the JVM's "Cannot open <x> as an InputStream." and the
+  reader and writer opening through them. `reader`, `writer`, `input-stream`
+  and `output-stream` now call an extension's fn for a source they do not open
+  themselves.
 
 ## [0.8.27] - 2026-11-12
 
