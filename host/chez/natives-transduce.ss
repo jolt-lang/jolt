@@ -38,8 +38,7 @@
 ;; returns at once. Honors `reduced` (stop pulling) and runs the 1-arg completion to
 ;; flush a stateful xform (partition-all / dedupe / a trailing partition).
 ;; SRC is one collection, or with MULTI? a list of them. The single source keeps
-;; its own loop, so the common (sequence xform coll) pays nothing for the lockstep
-;; walk's per-element lists.
+;; its own loop so it doesn't pay for the lockstep walk's per-element lists.
 (define (sequence-xf xform src0 multi?)
   (let* ((buf (box '()))                  ; emitted values for the current step, reversed
          (rf (case-lambda
@@ -62,8 +61,7 @@
                  (begin (jolt-invoke xrf acc) (loop src acc #t))   ; complete -> flush
                  (loop (seq-more s) (jolt-invoke xrf acc (seq-first s)) completed))))
           (else
-           ;; several sources, stepped in lockstep; the first one to run dry
-           ;; completes the whole thing, so the shortest collection wins.
+           ;; lockstep: the first source to run dry completes the whole thing
            (let ((ss (map jolt-seq src)))
              (if (let any-dry ((l ss)) (and (pair? l) (or (jolt-nil? (car l)) (any-dry (cdr l)))))
                  (begin (jolt-invoke xrf acc) (loop src acc #t))   ; complete -> flush
@@ -95,7 +93,6 @@
                 (let ((s (jolt-seq coll)))
                   (if (jolt-nil? s) jolt-empty-list s))))
     ((xform coll) (sequence-xf xform coll #f))
-    ;; (sequence xform coll & colls): the xform's step fn takes one arg per coll.
     ((xform coll . colls) (sequence-xf xform (cons coll colls) #t))))
 
 (def-var! "clojure.core" "sequence" jolt-sequence)
