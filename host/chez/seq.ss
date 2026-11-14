@@ -1691,11 +1691,16 @@
           (jolt-proc-arity-error f 0))
       (jolt-site-kept (jolt-invoke-t0 f))))
 (define (jolt-invoke1 f a)
-  (if (procedure? f)
-      (if (fxlogbit? 1 (procedure-arity-mask f))
-          (jolt-site-kept (f a))
-          (jolt-proc-arity-error f 1))
-      (jolt-site-kept (jolt-invoke-t1 f a))))
+  (cond
+    ((procedure? f)
+     (if (fxlogbit? 1 (procedure-arity-mask f))
+         (jolt-site-kept (f a))
+         (jolt-proc-arity-error f 1)))
+    ;; (v i) with an in-range fixnum index reads and cannot throw or call out,
+    ;; so it skips the site bookkeeping and jolt-invoke-t1's type walk
+    ((and (pvec? f) (fixnum? a) (fx>=? a 0) (fx<? a (pvec-cnt f)))
+     (pvec-nth-in-range f a))
+    (else (jolt-site-kept (jolt-invoke-t1 f a)))))
 (define (jolt-invoke2 f a b)
   (if (procedure? f)
       (if (fxlogbit? 2 (procedure-arity-mask f))

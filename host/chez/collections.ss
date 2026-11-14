@@ -174,6 +174,24 @@
                (loop (vector-ref (rrbnode-children node) k) (fx- level pv-bits) sub)))
             (else (loop (vector-ref node (fxand (fxsra i level) pv-mask))
                         (fx- level pv-bits) i)))))))
+;; The element at index i, which lies in the trie (below the tail offset): the
+;; descent of pv-leaf-for ending in the read itself, so no leaf and offset come
+;; back as two values. A dense node is a plain vector and is tested first, so the
+;; common level costs one tag check. The shift and mask are written as the
+;; literals pv-bits and pv-mask hold (5 and 31): read as top-level variables they
+;; are reloaded on every pass of this loop, and that was 2 ns of a 1000-element
+;; read. A relaxed (rrbnode) level is exactly pv-leaf-for's.
+(define (pv-trie-ref p i)
+  (let loop ((node (pvec-root p)) (level (pvec-shift p)) (i i))
+    (cond
+      ((fx=? level 0) (vector-ref node (fxand i 31)))
+      ((vector? node) (loop (vector-ref node (fxand (fxsra i level) 31)) (fx- level 5) i))
+      (else
+       (let* ((i (fxand i (fx- (fxsll 1 (fx+ level pv-bits)) 1)))
+              (sizes (rrbnode-sizes node))
+              (k (rrb-find-child sizes i))
+              (sub (if (fx=? k 0) i (fx- i (vector-ref sizes (fx- k 1))))))
+         (loop (vector-ref (rrbnode-children node) k) (fx- level pv-bits) sub))))))
 ;; the 32-chunk Scheme vector holding index i (the tail or a trie leaf)
 (define (pv-chunk-for p i)
   (let-values (((chunk off) (pv-leaf-for p i))) chunk))
@@ -245,7 +263,7 @@
   (let* ((tail (pvec-tail p)) (tailoff (fx- (pvec-cnt p) (vector-length tail))))
     (if (fx>=? i tailoff)
         (vector-ref tail (fx- i tailoff))
-        (let-values (((chunk off) (pv-leaf-for p i))) (vector-ref chunk off)))))
+        (pv-trie-ref p i))))
 (define (pvec-nth! p i)
   (if (jolt-nil? i)
       (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))

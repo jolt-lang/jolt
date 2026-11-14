@@ -886,10 +886,20 @@
 ;; itself has a count-arm registry) so arrays get the same nth semantics without
 ;; re-entering the get arm loop. This is the documented fast-path exception.
 (define %na-get jolt-get)
+;; The outermost jolt-get wrapper, so a map or vector receiver is answered here
+;; and pays neither the array probe nor the call into the wrapped definition.
+;; pmap-fast-get and pvec-get are what that definition's own pmap and pvec arms
+;; call, and no other wrapper sits between the two.
 (set! jolt-get
   (case-lambda
-    ((c k)   (if (jolt-array? c) (ja-get c k jolt-nil) (%na-get c k)))
-    ((c k d) (if (jolt-array? c) (ja-get c k d) (%na-get c k d)))))
+    ((c k)   (cond ((pmap? c) (pmap-fast-get c k jolt-nil))
+                   ((pvec? c) (pvec-get c k jolt-nil))
+                   ((jolt-array? c) (ja-get c k jolt-nil))
+                   (else (%na-get c k))))
+    ((c k d) (cond ((pmap? c) (pmap-fast-get c k d))
+                   ((pvec? c) (pvec-get c k d))
+                   ((jolt-array? c) (ja-get c k d))
+                   (else (%na-get c k d))))))
 ;; get on an array is RT.getFrom's: any Number key, by intValue; anything else
 ;; is the default.
 (define (ja-get c k d)
