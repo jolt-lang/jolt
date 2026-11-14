@@ -741,10 +741,8 @@
         (cons "MATH_SYMBOL" (->num 25)) (cons "CURRENCY_SYMBOL" (->num 26))
         (cons "MODIFIER_SYMBOL" (->num 27)) (cons "OTHER_SYMBOL" (->num 28))
         (cons "INITIAL_QUOTE_PUNCTUATION" (->num 29)) (cons "FINAL_QUOTE_PUNCTUATION" (->num 30))
-        ;; JVM Character.isWhitespace: java-whitespace? (natives-str.ss), the one
-        ;; test clojure.string's trim and blank? use too. It is Unicode whitespace
-        ;; (so U+2028 line separator counts, like the JVM) minus the no-break
-        ;; spaces and NEL, plus the four information separators U+001C..U+001F.
+        ;; JVM Character.isWhitespace: java-whitespace? (natives-str.ss), shared with
+        ;; clojure.string's trim and blank?.
         ;; A surrogate (a unit, or its int) is no whitespace and no Chez char.
         (cons "isWhitespace" (lambda (c) (let ((ch (scalar-char c)))
                                            (and ch (java-whitespace? ch)))))
