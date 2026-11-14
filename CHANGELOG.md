@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Custom test assertions keep their failure locations.** Stack reads inside
+  `binding` and `try/finally` retain the enclosing function's source frame,
+  and macro-generated calls inherit their source line. `matcher-combinators`
+  failures now identify the assertion's file and line, including in compiled
+  test runners.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as

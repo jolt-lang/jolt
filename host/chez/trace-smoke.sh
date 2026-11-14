@@ -566,6 +566,47 @@ expect_match "built: and its caller at the call site" "$out_bt" 'app\.tail/-main
 out_rd="$("$work/tailredefbin" 2>&1)"
 expect_match "built: a ^:redef callee keeps its own frame at its line" "$out_rd" 'app\.tailredef/boom (app/tailredef\.clj:4)'
 expect_match "built: and its caller at the call site" "$out_rd" 'app\.tailredef/-main (app/tailredef\.clj:8)'
+# A custom assertion reads its own stack before do-report. Keep the test body's
+# frame through is's binding, including the catch path, and register a built
+# deftest's source even when its def is nested in a macro-generated do.
+cat > "$work/src/app/stacklocation.clj" <<'EOF'
+(ns app.stacklocation
+  (:require [clojure.test :as t] [clojure.string :as str]))
+(defn ^:redef location []
+  (let [s (first (drop-while
+                  #(let [c (.getClassName %)]
+                     (or (str/starts-with? c "java.lang.")
+                         (str/starts-with? c "app.stacklocation$location")))
+                  (.getStackTrace (Thread/currentThread))))]
+    {:file (when s (.getFileName s)) :line (when s (.getLineNumber s))}))
+(defmethod t/assert-expr 'stack-location? [_ form]
+  (let [r `(t/do-report (assoc (location) :type :fail
+                             :expected-line ~(:line (meta form))))]
+    (if (second form)
+      ;; Match thrown-match?'s arity branch: its inlined do-report must not
+      ;; become the source location of the following guard continuation.
+      `(if (not (= 2 2))
+         (t/do-report {:type :fail})
+         (try (throw (ex-info "mismatch" {})) (catch Exception e# ~r)))
+      r)))
+(t/deftest captures
+  (t/is (stack-location?))
+  (t/is (stack-location? :caught)))
+(defn -main [& _]
+  (let [reports (atom [])]
+    (binding [t/report (fn [m] (when (= :fail (:type m)) (swap! reports conj m)))]
+      (t/test-var #'captures))
+    (println "STACK-LOCATION"
+             (mapv (fn [r] [(= "stacklocation.clj" (:file r))
+                            (= (:expected-line r) (:line r))]) @reports))))
+EOF
+echo "trace smoke: custom assertion locations in a source and built test runner"
+out_sl="$(run_app app.stacklocation)"
+expect_match "source: custom assertions name their file and exact lines" "$out_sl" 'STACK-LOCATION \[\[true true\] \[true true\]\]'
+( cd "$work" && "$joltabs" build -m app.stacklocation -o stacklocationbin >/dev/null 2>&1 )
+out_slb="$("$work/stacklocationbin" 2>&1)"
+expect_match "built: custom assertions name their file and exact lines" "$out_slb" 'STACK-LOCATION \[\[true true\] \[true true\]\]'
+
 echo "trace smoke: JOLT_TRACE=0 at build time opts the binary out"
 ( cd "$work" && env JOLT_TRACE=0 "$joltabs" build -m app.tail -o tailbin0 >/dev/null 2>&1 )
 out_bt0="$("$work/tailbin0" 2>&1)"

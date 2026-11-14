@@ -303,6 +303,57 @@
      ["stack_trace_test$tail_into_host" "stack_trace_test$calls_tail_into_host"]
      "a tail call into a throwing host fn keeps the erased frame")
 
+;; --- custom assertions inside binding / try-finally ----------------------------
+;; matcher-combinators reads Thread.getStackTrace before it calls do-report,
+;; dropping its own helper frames. A binding's unnamed dynamic-wind thunk used
+;; to erase the test body's frame; macro-generated calls also had no line.
+(defn- assertion-location []
+  (let [s (first (drop-while
+                  (fn [e]
+                    (let [c (.getClassName e)]
+                      (or (str/starts-with? c "java.lang.")
+                          (str/starts-with? c "stack_trace_test$assertion_location"))))
+                  (.getStackTrace (Thread/currentThread))))]
+    {:file (when s (.getFileName s))
+     :line (when s (.getLineNumber s))
+     :class (when s (.getClassName s))}))
+
+(defmethod clojure.test/assert-expr 'stack-location? [_ form]
+  (let [report `(clojure.test/do-report
+                 (assoc (assertion-location) :type :fail
+                        :expected-line ~(:line (meta form))))]
+    (if (second form)
+      `(try (throw (ex-info "mismatch" {})) (catch Exception e# ~report))
+      report)))
+
+(clojure.test/deftest ^:private custom-stack-locations
+  (clojure.test/is (stack-location?))
+  (clojure.test/is (stack-location? :caught)))
+(let [reports (atom [])]
+  (binding [clojure.test/report (fn [m] (when (= :fail (:type m)) (swap! reports conj m)))]
+    (clojure.test/test-var #'custom-stack-locations))
+  (ok= (count @reports) 2 "both custom assertion failure paths read their stack")
+  (doseq [r @reports]
+    (ok= (:file r) "stack-trace-test.clj" "a custom assertion names its test file")
+    (ok= (:line r) (:expected-line r) "a custom assertion names its exact source line")
+    (ok= (:class r) "stack_trace_test$custom_stack_locations$fn__0"
+         "the first caller outside the helper is the test body")))
+
+;; Naming a finally thunk must leave self-calls bound to the original fn.
+(defn- bound-recursive [n]
+  (binding [*print-length* n]
+    (if (pos? n) (bound-recursive (dec n)) *print-length*)))
+(ok= (bound-recursive 3) 0 "self-calls inside binding still call the original fn")
+
+(def ^:private finally-stack (atom nil))
+(defn- reads-in-finally []
+  (try :body
+       (finally (reset! finally-stack (here)))))
+(reads-in-finally)
+(ok= (take 2 (mapv first (own-frames @finally-stack)))
+     ["stack_trace_test$here" "stack_trace_test$reads_in_finally"]
+     "a finally callback keeps the enclosing fn's frame")
+
 (let [n @passes f @fails]
   (doseq [m f] (println "stack-trace FAIL " m))
   (println "STACK-TRACE-RESULT pass" n "fail" (count f))
