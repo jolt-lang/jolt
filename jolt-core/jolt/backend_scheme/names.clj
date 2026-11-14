@@ -147,6 +147,7 @@
                   ;; site, each with the constructor its hoisted cell calls
                   "jolt-once-tag" "jolt-once-clear!" "host-static-ref-site" "host-static-proc-site" "host-static-site-make"
                   "jolt-instance-site" "jolt-instance-site-make"
+                  "jolt-class-for-site" "jolt-class-for-site-make"
                   ;; record/reify protocol-method dispatch (:host-call fallback
                   ;; for any .method not in supported-host-methods).
                   "record-method-dispatch"
@@ -203,7 +204,7 @@
                   ;; runtime helpers emitted bare at boxed-float, record-field,
                   ;; PIC, ffi, def, and image sites.
                   "make-jfloat" "jfloat?" "jfloat-fl" "jfloat-unbox" "jnum->exact"
-                  "jrec-field-site-make" "jrec-field-site-ref" "jrec-pic-desc" "jrec?" "jrec-desc"
+                  "jrec-field-site-make" "jrec-field-site-ref" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec?" "jrec-desc"
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"

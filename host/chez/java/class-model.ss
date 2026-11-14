@@ -165,6 +165,25 @@
               obj)))))
 (def-var! "jolt.host" "jolt-class-for" jolt-class-for)
 
+;; The per-site cache a class-name symbol in code compiles to (the back end's
+;; class-for-site-call?): the token jolt-class-for answered, under the drop epoch
+;; it answered in. A name's token changes only when the hook below drops it, and
+;; the drop bumps the epoch, so a cached token is current while the epochs match.
+;; The epoch is read BEFORE the lookup, so a drop racing the lookup leaves an
+;; entry that is already stale. The pair is published whole behind a release, as
+;; jolt-instance-site publishes its state.
+(define jolt-class-for-drop-epoch 0)
+(define (jolt-class-for-site-make) (box #f))
+(define (jolt-class-for-site site name)
+  (let ((c (unbox site)))
+    (if (and c (fx= (car c) jolt-class-for-drop-epoch))
+        (cdr c)
+        (let* ((epoch jolt-class-for-drop-epoch)
+               (tok (jolt-class-for name)))
+          (memory-order-release)
+          (set-box! site (cons epoch tok))
+          tok))))
+
 ;; Long/TYPE and its eight siblings are the primitive CLASSES, not their names.
 ;; They are declared beside the rest of each wrapper's statics
 ;; (host-static-methods.ss), which loads before the interner exists, so they are
@@ -193,7 +212,8 @@
         (jolt-with-mutex hsc-mu
           (let ((tok (hashtable-ref jolt-class-for-tbl m #f)))
             (when (and tok (not (string=? (jclass-name tok) name)))
-              (hashtable-delete! jolt-class-for-tbl m))))))))
+              (hashtable-delete! jolt-class-for-tbl m)
+              (set! jolt-class-for-drop-epoch (fx+ jolt-class-for-drop-epoch 1)))))))))
 
 (define (class-key x)
   (cond ((jclass? x) (jclass-name x))

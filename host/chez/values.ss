@@ -697,7 +697,7 @@
 ;; rt.ss loads after this file. Every arm registers later still.
 (define (hash-fast-probes)
   (append
-   (list jolt-nil (keyword #f "k") (jolt-symbol #f "s") 0 "s"
+   (list jolt-nil (keyword #f "k") (jolt-symbol #f "s") 0 "s" #\c
          ;; as in eq-fast-probes: every type jolt-hash / jolt-hasheq answers
          ;; ahead of the walk, sets included. Procedures hash by identity
          ;; (procedure-hasheq, hasheq.ss) ahead of the walk too.
@@ -740,6 +740,7 @@
         ((symbol-t? x) (jolt-hasheq x))
         ((fixnum? x) (jolt-hasheq x))
         ((string? x) (jolt-hasheq x))
+        ((char? x) (jolt-hasheq x))
         ;; identity hasheq (hasheq.ss loads later; resolved at call time), in
         ;; hash-fast-probes so no arm may claim a procedure.
         ((procedure? x) (jolt-hasheq x))

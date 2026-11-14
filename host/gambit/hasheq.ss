@@ -470,6 +470,8 @@
     ;; Fixnum: all fixnums use hashLong (count=8) matching JVM's Long.hasheq.
     ((fixnum? x) (murmur3-hash-long-flat x))
     ((string? x) (string-hasheq x))
+    ;; A character ahead of the walk too, as on Chez: it is in hash-fast-probes.
+    ((char? x) (char->integer x))
     ;; A procedure hashes by identity, ahead of the arm walk as on Chez: a
     ;; deftype token's seeded hash (deftype-ctor-tag-set!) is read here.
     ((procedure? x) (procedure-hasheq x))
