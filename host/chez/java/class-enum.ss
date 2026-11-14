@@ -1,32 +1,13 @@
-;; class-enum.ss — every class the runtime models, by its canonical JVM name
-;; (#1663): jolt.host/class-names and jolt.host/all-classes, what babashka's
-;; babashka.classes/all-classes answers, for an SCI host building its class map
-;; or an editor completing class names.
-;;
-;; No one table holds that set, so this reads every place a class is modeled:
-;;   - the class graph (class-hierarchy.ss): each row, and each super a row
-;;     names (clojure.lang.Seqable, clojure.lang.IMeta, ... are supers with no
-;;     row of their own, yet instance? and isa? answer for them);
-;;   - the statics and constructor registries (host-static.ss): classes such
-;;     as java.util.Collections, java.nio.file.Files or java.net.URL that have
-;;     no graph row;
-;;   - the host tags' FQNs (jhost-tag->fqn): java.nio.file.WatchKey and other
-;;     classes known only as the class of some value;
-;;   - the lazy-shim index (lazy-shims.ss): a class a lazy file registers is
-;;     listed whether or not the file has loaded, and listing never loads it.
-;; The registries hold short aliases beside the canonical names (a class
-;; registered as "System" is also "java.lang.System"), so a name is kept only
-;; in its canonical spelling: one with a dot, in the spelling Class.getName
-;; answers (jclass-jvm-name: a deftype in a dashed namespace is registered as
-;; rf.def-two.R3 and named rf.def_two.R3). A short name is the alias of a
-;; canonical one that is listed anyway. A reify's class (ns$reify__<n>) is
-;; left out: it has no name a caller could ask for, and one appears for every
-;; reify form a program evaluates.
-;;
-;; Each call reads the tables as they are then, so a class a deftype, a
-;; defrecord or a library registers later is there on the next call. The graph
-;; is scanned under jch-cache-mutex, as every whole-table scan of it is; the
-;; registries follow their own rule, lock-free reads beside one writer.
+;; jolt.host/class-names and all-classes (#1663): every class the runtime
+;; models, by canonical JVM name, as babashka.classes/all-classes answers.
+;; No one table holds that set, so this reads the class graph (rows and the
+;; supers they name), the statics and constructor registries, the host tags'
+;; FQNs, and the lazy-shim index (listing never loads a shim).
+;; Registries also hold short aliases ("System"), so only dotted names are
+;; kept, in Class.getName spelling (jclass-jvm-name). A reify's class is left
+;; out: it has no name a caller could ask for.
+;; Each call reads the tables as they are then. The graph scan holds
+;; jch-cache-mutex, like every whole-table scan of it.
 
 (define (class-enum-keys t)
   (let-values (((ks vs) (hashtable-entries t))) (vector->list ks)))

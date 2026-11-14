@@ -1,8 +1,5 @@
-;; jolt.host/class-names and jolt.host/all-classes (#1663): every class the
-;; runtime models, by canonical JVM name, as babashka.classes/all-classes
-;; answers on babashka.
-;; Run: bin/jolt run test/chez/class-enum-test.clj (smoke.sh greps for
-;; "CLASS-ENUM-TEST OK").
+;; jolt.host/class-names and all-classes (#1663). Run: bin/jolt run
+;; test/chez/class-enum-test.clj (smoke.sh greps for "CLASS-ENUM-TEST OK").
 (ns class-enum-test
   (:require [jolt.host :as h]
             [jolt.scheme :as scheme]))

@@ -1704,9 +1704,7 @@ else
   fails=$((fails + 1))
 fi
 
-# Class enumeration (#1663) — jolt.host/class-names and all-classes: every
-# modeled class by canonical name, later registrations included, no lazy shim
-# loaded. Self-checks, one marker.
+# Class enumeration (#1663): jolt.host/class-names and all-classes.
 enum_out="$($jolt run test/chez/class-enum-test.clj 2>&1)"
 if printf '%s' "$enum_out" | grep -q 'CLASS-ENUM-TEST OK'; then
   pass=$((pass + 1))
