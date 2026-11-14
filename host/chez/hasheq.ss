@@ -821,6 +821,12 @@
     ;; matching JVM's Long.hasheq.
     ((fixnum? x) (murmur3-hash-long-flat x))
     ((string? x) (string-hasheq x))
+    ;; Characters too: a reader's char-set lookups ((contains? ws-chars c),
+    ;; rewrite-clj's boundary sets) hash one per character read, and walking
+    ;; the arm registries to reach the fallback's identical clause cost ~100 ns
+    ;; against a keyword's 12. A char is in hash-fast-probes, so no arm may
+    ;; claim one. Character.hashCode = (int) charValue.
+    ((char? x) (char->integer x))
     ;; Collections sit up here for the same reason symbols do, and the cost they
     ;; were paying is worse: a collection reached the fallback only after walking
     ;; BOTH registries (jolt-hasheq-arms, then jolt-hash-arms), and a map or set

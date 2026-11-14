@@ -202,10 +202,15 @@
     (raises? (lambda () (register-eq-arm! (lambda (a b) (and (flonum? a) (flonum? b)))
                                           (lambda (a b) #t)))))
 
-;; hash's fast path is NARROWER than the printer's: chars, flonums and bignums all
-;; reach the arms, so the hash guard must let them through
-(ok "hash guard allows char"   (not (raises? (lambda () (hash-arm-reject-fast-type! 'test char?)))))
+;; hash's fast path is NARROWER than the printer's: flonums and bignums reach the
+;; arms, so the hash guard must let them through
 (ok "hash guard allows flonum" (not (raises? (lambda () (hash-arm-reject-fast-type! 'test flonum?)))))
+;; Chars moved ONTO the hash fast path (#1646), as symbols did below: a reader's
+;; character-set lookups hash one per character, and the arm walk was most of
+;; that. A char-claiming hash arm would now be silently skipped, so the guard
+;; rejects it. This is the inverse of the "allows char" row it replaces; if chars
+;; come back off the fast path it has to flip back.
+(ok "hash guard now rejects char" (raises? (lambda () (hash-arm-reject-fast-type! 'test char?))))
 (ok "pr guard still rejects char" (raises? (lambda () (pr-arm-reject-fast-type! 'test char?))))
 
 ;; Symbols moved ONTO the hash fast path (values.ss jolt-hash, hasheq.ss

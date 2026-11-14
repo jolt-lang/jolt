@@ -710,7 +710,12 @@
   (if (jrec? inst)
       (let ((i (let ((k2 (and (keyword-t? k) (jrec-member-field inst k))))
                  (and k2 (jrec-field-index inst k2)))))
-        (if i (let* ((flags (hashtable-ref chez-record-dbl-tbl (jrec-tag inst) #f))
+        ;; the flags come from the descriptor's derived vector (slot 15,
+        ;; jrdesc-ifc-of), which caches this same chez-record-dbl-tbl entry.
+        ;; Probing the string-keyed table hashed the type's tag on every set!,
+        ;; and a mutable-field deftype like tools.reader's StringReader sets one
+        ;; per character read.
+        (if i (let* ((flags (vector-ref (jrdesc-ifc-of inst) 15))
                      ;; a ^double field stays a flonum across set!, like the ctor —
                      ;; keeps a later field read sound to unbox.
                      (v2 (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
@@ -725,6 +730,27 @@
             (and kn (string=? kn "__methodImplCache")))
           v
           (throw-jvm (quote IllegalArgumentException) "set! of a field on a non-record"))))
+;; (set! field v) at a site that keeps the slot jolt-set-field! resolved, against
+;; the receiver's descriptor; a descriptor's field keys never change (each
+;; deftype evaluation makes a new one), so a receiver with that descriptor has
+;; that slot. The ^double coercion is still read per call, from the descriptor's
+;; derived vector, exactly as jolt-set-field! reads it. Any other receiver takes
+;; jolt-set-field!, which also owns every error.
+(define (jolt-set-own-field! site inst k v)
+  (let ((c (unbox site)))
+    (if (and c (jrec? inst) (eq? (jrec-desc inst) (car c)))
+        (let* ((i (cdr c))
+               (flags (vector-ref (jrdesc-ifc-of inst) 15))
+               (v2 (if (and flags (fx< i (vector-length flags)) (vector-ref flags i)
+                            (number? v) (not (flonum? v)))
+                       (exact->inexact v) v)))
+          (jrec-field-set! inst i v2) v2)
+        (let ((r (jolt-set-field! inst k v)))
+          ;; jolt-set-field! returned, so inst is a jrec and k named a slot
+          (when (and (jrec? inst) (keyword-t? k))
+            (let ((k2 (jrec-member-field inst k)))
+              (when k2 (set-box! site (cons (jrec-desc inst) (jrec-field-index inst k2))))))
+          r))))
 (define (jrec-ext=? ea eb)
   (cond ((and (jolt-nil? ea) (jolt-nil? eb)) #t)
         ((or (jolt-nil? ea) (jolt-nil? eb)) #f)
