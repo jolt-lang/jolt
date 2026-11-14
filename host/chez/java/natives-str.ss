@@ -1036,9 +1036,7 @@
 (define (jolt-str-last-index-of s needle) (str-last-index-of s (str-needle needle)))
 (define (jolt-str-strip s left? right?) (str-strip s left? right?))
 (define (jolt-str-to-char-array s)
-  ;; A ^String-hinted (.toCharArray s) lands here directly. na-char-array reads
-  ;; nil as an empty seq, so a nil s answered an empty array; on the JVM it is the
-  ;; same NullPointerException the unhinted call already raises.
+  ;; na-char-array reads nil as an empty seq, but the JVM throws NPE here.
   (if (jolt-nil? s)
       (throw-jvm 'NullPointerException "Cannot invoke \"toCharArray\" because the target is null")
       (na-char-array s)))
