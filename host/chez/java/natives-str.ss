@@ -94,9 +94,11 @@
 ;; is String.trim, str-triml / str-trimr / str-trim* back clojure.string.
 ;; U+001C..U+001F (the file/group/record/unit separators) are whitespace to Java but
 ;; carry no Unicode White_Space property, so char-whitespace? alone misses them.
+;; U+0085 (NEL) has White_Space but is a control character to Java, so it's out.
+;; Character/isWhitespace uses this too.
 (define (java-whitespace? c)
   (let ((cp (char->integer c)))
-    (cond ((or (fx=? cp #xA0) (fx=? cp #x2007) (fx=? cp #x202F)) #f)
+    (cond ((or (fx=? cp #xA0) (fx=? cp #x2007) (fx=? cp #x202F) (fx=? cp #x85)) #f)
           ((and (fx>=? cp #x1C) (fx<=? cp #x1F)) #t)
           (else (char-whitespace? c)))))
 
