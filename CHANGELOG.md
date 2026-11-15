@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt.host/class-names` and `jolt.host/all-classes` list every class
+  jolt models**, as `babashka.classes/all-classes` does on babashka (#1663).
+  `class-names` is a sorted vector of canonical names, spelled as
+  `Class.getName` spells them; `all-classes` is the same list as `Class`
+  objects. The list reads the class graph (its rows and the supers they
+  name), the statics and constructor registries, the host tags' classes and
+  the lazy-shim index, so `java.util.Collections`, `java.net.URL`,
+  `java.nio.file.WatchKey` and a lazy shim's classes are there, and listing
+  loads no shim. Short aliases such as `System` and a `reify`'s class are
+  left out. Each call reads the tables as they are, so a class a `deftype`,
+  `defrecord` or `register-class-supers!` adds later is in the next one.
 - **`bencode.core` ships with jolt**, for babashka scripts that name it, since
   babashka bundles nrepl/bencode. A bare script that speaks nREPL's wire
   format, such as a small client that drives a running REPL, used to stop at
