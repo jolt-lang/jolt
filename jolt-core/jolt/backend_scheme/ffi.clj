@@ -336,6 +336,13 @@
     (when (and vi (zero? vi))
       (throw (ex-info (str "jolt.ffi: " marker " needs at least one fixed argtype before it")
                       {:argtypes at})))
+    ;; A bare tail is compiled per call shape into a cache keyed by the binding's
+    ;; C symbol; a function-pointer binding has no symbol, and its address can
+    ;; change from call to call, so it declares its tail.
+    (when (and bare? (:pointer-call node))
+      (throw (ex-info (str "jolt.ffi/pointer-fn: a bare " marker " is not supported through a"
+                           " function pointer — declare the variadic tail after the marker")
+                      {:argtypes at})))
     (when (and bare? (some ffi-by-value? (subvec at 0 vi)))
       (throw (ex-info (str "jolt.ffi: a fixed by-value aggregate cannot combine with a bare "
                            marker " — the tail is compiled at the call, and an aggregate"
@@ -359,7 +366,11 @@
     (when-let [i (and (:blocking node)
                       (first (keep-indexed (fn [i type] (when (= "string" type) i)) at)))]
       (throw (ex-info (str "jolt.ffi: :blocking cannot combine with a :string argument"
-                           " (argument " i " of \"" (:csym node) "\") — the collector may"
+                           " (argument " i " of "
+                           (if (:pointer-call node)
+                             "a function-pointer binding"
+                             (str "\"" (:csym node) "\""))
+                           ") — the collector may"
                            " move the string while the deactivated thread is inside C."
                            " Pass a :pointer instead: jolt.ffi/string->ptr, or an"
                            " arena-owned string, released once the call returns.")
@@ -391,7 +402,7 @@
 ;; call raised "no entry". curl_easy_setopt is that case. The address+convention
 ;; form this emits is the one the aggregate C witness already covers on each
 ;; target ABI.
-(defn- ffi-procedure-expr [node vi signature]
+(defn- ffi-named-procedure-expr [node vi signature]
   (let [csym (chez-str-lit (:csym node))
         capture (:capture-native-error node)
         blocking (:blocking node)
@@ -422,6 +433,32 @@
                            " a" signature ")"))
                     "))")]
     (str "(or p (begin (set! p (or " scoped " " by-name ")) p))")))
+
+;; jolt.ffi/pointer-fn: the procedure is built against the address in the
+;; binding's first argument, on every call. A pointer-held callback can differ
+;; from one call to the next (each GhosttyClipboardRead carries its own reply),
+;; so there is no `p` to cache it in. The signature is compiled once with the
+;; binding; per call this is the address check and a closure over the address
+;; (about 15ns more than a named call on an arm64 Mac). It uses the adapter
+;; syntaxes a named binding does. The gambit target never reaches here
+;; (emit-ffi-fn).
+(defn- ffi-pointer-procedure-expr [node vi signature]
+  (let [entry "(jolt-ffi-function-pointer function-pointer)"
+        conv (if vi (str " (__varargs_after " vi ")") "")]
+    (cond
+      (:capture-native-error node)
+        (str "(jolt-ffi-native-error-procedure ("
+             (cond (:blocking node) "__collect_safe"
+                   vi (str "(__varargs_after " vi ")")
+                   :else "")
+             ") " entry signature ")")
+      (:blocking node) (str "(sa-foreign-procedure-blocking " entry signature ")")
+      :else (str "(sa-foreign-procedure" conv " " entry signature ")"))))
+
+(defn- ffi-procedure-expr [node vi signature]
+  (if (:pointer-call node)
+    (ffi-pointer-procedure-expr node vi signature)
+    (ffi-named-procedure-expr node vi signature)))
 
 ;; A binding with a declared argument tail (or none): one foreign procedure,
 ;; wrapped in a lambda that marshals each argument and the result. By-value
@@ -490,7 +527,11 @@
                ret-aggregate? (str "(begin " call " " return-param ")")
                :else (ffi-c->jolt rettype call))
         wrapper-params (if return-param (cons return-param params) params)
-        binding (str "(let ((p #f)) (lambda (" (str/join " " wrapper-params) ") " body "))")
+        ;; A function-pointer binding takes the pointer first, ahead of an
+        ;; aggregate result's destination, and caches no procedure.
+        binding (if (:pointer-call node)
+                  (str "(lambda (" (str/join " " (cons "function-pointer" wrapper-params)) ") " body ")")
+                  (str "(let ((p #f)) (lambda (" (str/join " " wrapper-params) ") " body "))"))
         ftypes (ffi-ftype-defs aggregates return-name rettype)]
     (if (seq ftypes)
       (str "(let () " (str/join " " ftypes) " " binding ")")
@@ -507,9 +548,16 @@
   (let [at (:argtypes node)
         vi (ffi-varargs-index at)]
     (check-ffi-signature! node vi)
-    (if (and vi (= vi (dec (count at))))
-      (emit-ffi-bare-varargs-fn node vi)
-      (emit-ffi-fixed-fn node vi))))
+    (cond
+      ;; gambit has no ffi tier, and its eval sees none of the sa-foreign-*
+      ;; syntaxes, so a pointer call there would die on an unbound global. The
+      ;; binding still defines; calling it raises in words that say why.
+      (and (:pointer-call node) (= :gambit (target)))
+        (str "(lambda args (throw-jvm 'UnsupportedOperationException "
+             (chez-str-lit "jolt.ffi/pointer-fn: ffi is unsupported on the gambit target")
+             "))")
+      (and vi (= vi (dec (count at)))) (emit-ffi-bare-varargs-fn node vi)
+      :else (emit-ffi-fixed-fn node vi))))
 
 ;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
 ;; locked + registered (jolt-ffi-register-callable!, host/chez/java/ffi.ss) so the

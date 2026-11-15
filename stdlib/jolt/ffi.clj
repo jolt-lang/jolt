@@ -209,7 +209,9 @@
   a non-void scalar result. foreign-callable is the inverse — it wraps a jolt fn
   as a C-callable function pointer so C can call back into jolt (e.g. GTK signal
   handlers); free-callable releases it, and `callback` is the arena-owned form
-  that needs no explicit release.
+  that needs no explicit release. pointer-fn calls the other way through a
+  pointer: given a signature it answers a fn that takes a C function pointer
+  first, for a function a library exposes only as a struct's callback slot.
 
   BABASHKA.FFI COMPATIBILITY. This namespace is a name-for-name, semantics-for-
   semantics match of babashka.ffi wherever one substrate can match the other, so
@@ -232,8 +234,9 @@
       pointer? answers true for any non-negative integer, because that is all a
       pointer is here.
     - cfn/foreign-fn is a MACRO: Chez's foreign-procedure needs its types at
-      compile time. Computed argtypes and a function-pointer target are not
-      available, and the library-scoped 4-argument cfn raises rather than
+      compile time. Computed argtypes are not available, a function-pointer
+      target goes through pointer-fn (the pointer is its call's first
+      argument), and the library-scoped 4-argument cfn raises rather than
       silently searching everything — jolt already resolves a declared native's
       symbols through its own handle (see TWO LIBRARIES above).
     - `callback` is likewise a macro, and takes jolt's :collect-safe option.
@@ -1611,7 +1614,9 @@
 ;; call and not an interpreter. The consequences are worth naming, because they
 ;; are what a shim in either direction runs into:
 ;;   - argtypes must be a literal vector; a computed signature has nowhere to go.
-;;   - the target must be a literal C symbol name, not a function pointer.
+;;   - the target must be a literal C symbol name. A C function reached only
+;;     through a pointer (a callback slot in a struct the library hands over)
+;;     is called with pointer-fn below, which takes the same signature.
 ;;   - the 4-argument library-scoped form raises. jolt already resolves a
 ;;     declared native's symbols through its OWN dlopen handle, ahead of the
 ;;     global namespace, which is the guarantee the library argument buys in
@@ -1628,6 +1633,43 @@
       (throw (ex-info "jolt.ffi/cfn: the first argument must be a literal C symbol name. A library-scoped (cfn lib sym argtypes rettype) has no jolt equivalent: a declared :jolt/native already resolves its own symbols through its own handle."
                       {:args args})))
     (cfn-form (nth args 0) (nth args 1) (nth args 2) (vec (drop 3 args)) "cfn")))
+
+;; pointer-fn: cfn's signature with no C symbol. It evaluates to a jolt fn whose
+;; FIRST argument is the C function pointer to call, and whose remaining
+;; arguments are the signature's, marshalled exactly as cfn marshals them:
+;;
+;;   ;; typedef void (*reply_fn)(const Read*, const Reply*);
+;;   (def call-reply (ffi/pointer-fn [:pointer :pointer] :void))
+;;   (call-reply (ffi/read read-ptr :pointer reply-offset) read-ptr reply-ptr)
+;;
+;; This is the way into a function a library exports by POINTER only, a callback
+;; slot in a struct it hands over: GhosttyClipboardRead's reply, a writer's
+;; write. The signature is a compile-time literal for the reason cfn's is; the
+;; pointer is a runtime value, any jolt.ffi pointer (what ffi/read p :pointer and
+;; ffi/foreign-callable answer). A NULL pointer, or nil, raises
+;; NullPointerException instead of calling address zero.
+;;
+;; The trailing :blocking or options map, :bool, the float widths and
+;; [:by-value [:struct ...]] arguments and results all mean what they mean for
+;; cfn. A by-value RESULT takes its destination pointer second, after the
+;; function pointer. A declared variadic tail (:& followed by types) works; a
+;; BARE :& is refused, since its per-shape cache is keyed by a C symbol.
+;;
+;; Nothing is cached between calls: the foreign procedure is built against each
+;; call's pointer, so one binding serves every pointer of that C type.
+(defmacro pointer-fn [argtypes rettype & args]
+  (let [n (count args)]
+    (cond
+      (zero? n)
+      (list 'jolt.ffi/__cfn-pointer argtypes rettype)
+
+      (and (= n 1) (or (= (first args) :blocking) (map? (first args))))
+      (list 'jolt.ffi/__cfn-pointer argtypes rettype (first args))
+
+      :else
+      (throw (ex-info (str "jolt.ffi/pointer-fn: trailing option must be "
+                           ":blocking or an options map; got " (vec args))
+                      {:jolt/ffi-option args})))))
 
 ;; (defcfn name docstring? attr-map? "c_symbol" [argtypes] rettype
 ;;         [:blocking | {opts}]? [raw-name & fn-tail]?)

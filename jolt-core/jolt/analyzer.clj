@@ -52,7 +52,7 @@
                                          parse-params strip-arglist-meta arglist-ret-nkind
                                          str-target-type kw-target-type sb-target-type]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
-            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn]]
+            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn]]
             [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
                                            method-value-form static-class-ns
@@ -1265,7 +1265,7 @@
 ;; the jolt.ffi macros, so aliases resolve.
 (defn- ffi-form-name [head]
   (when (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
-             (contains? #{"__cfn" "__layout" "__ccallable"} (form-sym-name head)))
+             (contains? #{"__cfn" "__cfn-pointer" "__layout" "__ccallable"} (form-sym-name head)))
     (form-sym-name head)))
 
 (defn- analyze-ffi-form [ctx fname items env]
@@ -1273,6 +1273,9 @@
     ;; jolt.ffi/__cfn — the foreign-function special form (the jolt.ffi/foreign-fn
     ;; macro).
     "__cfn" (analyze-ffi-fn ctx items env)
+    ;; jolt.ffi/__cfn-pointer — the same signature called through a C function
+    ;; pointer passed as the binding's first argument (jolt.ffi/pointer-fn).
+    "__cfn-pointer" (analyze-ffi-pointer-fn ctx items env)
     ;; jolt.ffi/layout expands to this literal-only leaf. The back end
     ;; asks Chez for the actual ABI size, alignment and offsets.
     "__layout" (analyze-ffi-layout items)

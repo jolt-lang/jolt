@@ -654,6 +654,16 @@
                                                 (else (cons (car ms) (cons "; " (loop (cdr ms))))))))))
                         #f)))))))
 
+;; jolt.ffi/pointer-fn: the address a call through a C function pointer jumps
+;; to (backend ffi-pointer-procedure-expr emits this ahead of each call). A NULL
+;; pointer, or jolt nil standing for one, raises here rather than letting the
+;; call branch to address zero and take the process down with it.
+(define (jolt-ffi-function-pointer ptr)
+  (let ((address (if (jolt-nil? ptr) 0 (jnum->exact ptr))))
+    (if (eqv? address 0)
+        (throw-jvm 'NullPointerException "jolt.ffi: null C function pointer")
+        address)))
+
 ;; jolt.ffi/defining-libraries: one declared native per DISTINCT definition of
 ;; `sym`, in declaration order — the diagnostic to reach for when a native call
 ;; returns something impossible and nothing has raised. A correctly linked set

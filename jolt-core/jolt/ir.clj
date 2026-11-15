@@ -149,7 +149,8 @@
 ;; :set-field    :obj :field :val                 :obj :val
 ;; :defmacro     :ns :name :fn                     :fn
 ;; :ffi-layout   :layout                           —
-;; :ffi-fn       :csym :argtypes :rettype         —
+;; :ffi-fn       :csym :argtypes :rettype         —   (:pointer-call: csym nil,
+;;                                                     the C fn pointer is arg 0)
 ;; :ffi-callable :fn :argtypes :rettype           :fn
 ;; :regex        :source                          —
 ;; :inst         :source                          —

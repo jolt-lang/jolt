@@ -32,6 +32,7 @@
 (def my-layout (ffi/layout [:struct [[:x :int] [:y :int]]]))
 (def bound-cfn (ffi/cfn "strlen" [:string] :size_t))
 (def bound-foreign-fn (ffi/foreign-fn "strlen" [:string] :size_t))
+(def bound-pointer-fn (ffi/pointer-fn [:pointer :pointer] :void))
 
 (defn on-click [x y] (+ x y))
 (def click-callable (ffi/foreign-callable on-click [:pointer :pointer] :void))

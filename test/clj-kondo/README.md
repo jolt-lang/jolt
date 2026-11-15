@@ -21,13 +21,13 @@ finding anywhere in the "right arity" section or the macro definitions
 above it:
 
 ```
-kondo_fixture.clj:88:22: error: kondo-fixture/c-strlen is called with 2 args but expects 1
-kondo_fixture.clj:89:24: error: kondo-fixture/safe-strlen is called with 0 args but expects 1
-kondo_fixture.clj:90:33: error: kondo-fixture/c-fcntl is called with 2 args but expects 3
-kondo_fixture.clj:91:35: error: kondo-fixture/c-fcntl is called with 4 args but expects 3
-kondo_fixture.clj:92:29: error: kondo-fixture/c-bare-snprintf is called with 2 args but expects 3 or more
-kondo_fixture.clj:93:22: error: kondo-fixture/multi-wrapper is called with 0 args but expects 1 or 2
-kondo_fixture.clj:94:24: error: kondo-fixture/multi-wrapper is called with 3 args but expects 1 or 2
+kondo_fixture.clj:89:22: error: kondo-fixture/c-strlen is called with 2 args but expects 1
+kondo_fixture.clj:90:24: error: kondo-fixture/safe-strlen is called with 0 args but expects 1
+kondo_fixture.clj:91:33: error: kondo-fixture/c-fcntl is called with 2 args but expects 3
+kondo_fixture.clj:92:35: error: kondo-fixture/c-fcntl is called with 4 args but expects 3
+kondo_fixture.clj:93:29: error: kondo-fixture/c-bare-snprintf is called with 2 args but expects 3 or more
+kondo_fixture.clj:94:22: error: kondo-fixture/multi-wrapper is called with 0 args but expects 1 or 2
+kondo_fixture.clj:95:24: error: kondo-fixture/multi-wrapper is called with 3 args but expects 1 or 2
 linting took Nms, errors: 7, warnings: 0
 ```
 
@@ -42,6 +42,6 @@ map, `:blocking`, an options map, the raw-binding wrapper in both its
 single- and multi-arity forms, and both the declared-tail and bare forms
 of the `:varargs`/`:&` marker), plus `layout`, `with-arena`, `with-alloc`,
 `with-out`, `with-layout`, `with-c-string`, `with-c-string-array`, `cfn`,
-`foreign-fn`, `foreign-callable`, `callback` and `export!`, which is every public
+`foreign-fn`, `pointer-fn`, `foreign-callable`, `callback` and `export!`, which is every public
 macro in `stdlib/jolt/ffi.clj` except the errno accessors, which are plain
 `defcfn`s already covered by the shapes above.
