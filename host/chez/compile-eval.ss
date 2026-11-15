@@ -362,12 +362,12 @@
 ;; twice. Everything outside a named phase (startup after this init, the program's
 ;; own run) lands in `other`, so the phases sum to the total.
 ;;
-;; expand, compile and execute are the three parts of one Chez `eval`: current-expand
-;; is wrapped to time the expander, and Chez's $compile-backend to time the call of
-;; the code it produced; the rest of the eval is the compile. Both wrappers charge
-;; only inside the `compile` phase, so the in-process .so compile and Chez's own
-;; evals elsewhere keep their caller's phase. A form simple enough for Chez to
-;; interpret (compile-interpret-simple) runs inside `compile`.
+;; expand, compile and execute are the three parts of one `eval`: the adapter
+;; (sa-time-compile-parts!) wraps the target's expander and the call of the code
+;; its compile produced; the rest of the eval is the compile. Both wrappers charge
+;; only inside the `compile` phase, so the in-process .so compile and evals
+;; elsewhere keep their caller's phase. On Chez a form simple enough for its
+;; interpreter shortcut (compile-interpret-simple) runs inside `compile`.
 ;;
 ;; Main thread only: the thread that called init owns the clock, and a phase entered
 ;; on any other thread is not charged. The process's cold load is single-threaded.
@@ -417,20 +417,12 @@
       (set! jp-thread (get-thread-id))
       (set! jp-start (jp-now))
       (set! jp-mark jp-start)
-      (let ((expand0 (current-expand)))
-        (current-expand
-          (lambda args
-            (if (and (eq? jp-phase 'compile) (jp-mine?))
-                (jp-run 'expand (lambda () (apply expand0 args)))
-                (apply expand0 args)))))
-      (let ((backend0 (#%$top-level-value '$compile-backend)))
-        (#%$set-top-level-value! '$compile-backend
-          (lambda (x)
-            (let ((run (backend0 x)))
-              (lambda ()
-                (if (and (eq? jp-phase 'compile) (jp-mine?))
-                    (jp-run 'execute run)
-                    (run))))))))))
+      (let ((inside (lambda (p)
+                      (lambda (thunk)
+                        (if (and (eq? jp-phase 'compile) (jp-mine?))
+                            (jp-run p thunk)
+                            (thunk))))))
+        (sa-time-compile-parts! (inside 'expand) (inside 'execute))))))
 (define (jolt-phase-times-report!)
   (when (jp-mine?)
     (jp-switch! jp-phase)

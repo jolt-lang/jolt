@@ -227,7 +227,12 @@ above on stderr at exit.
   so a nested `require` lands in its own phases instead of being counted again
   in its requirer's `execute`. `expand` and `execute` come from wrapping Chez's
   `current-expand` and `$compile-backend` (installed only when the variable is
-  set, and charging only inside jolt's `compile` phase). Main thread only. Off,
+  set, and charging only inside jolt's `compile` phase). The wrapping lives in
+  the adapter as `sa-time-compile-parts!` (`host/chez/scheme-adapter-runtime.ss`,
+  listed in `host/scheme-adapter/CONTRACT.txt`; Gambit's adapter answers #f),
+  since the portability gate keeps `#%$` primitives out of compile-eval.ss. The
+  baselines above were taken with the same two wrappers installed from
+  compile-eval.ss, before that move. Main thread only. Off,
   each site is one flag test and a closure; enabled from
   `jolt-trace-init-from-env!`, which both entrypoints call at run time.
 - `host/chez/loader.ss`: the loader's phases (clj-read, loader, cache-load,

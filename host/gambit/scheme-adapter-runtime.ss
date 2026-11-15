@@ -510,6 +510,8 @@
 (define (sa-profile-instrument! on?) (not on?))
 (define (sa-profile-instrumenting?) #f)
 (define (sa-profile-compile thunk) (thunk))
+;; no expander/backend hook to time: JOLT_PHASE_TIMES keeps expand and run in compile
+(define (sa-time-compile-parts! expand-wrap run-wrap) #f)
 (define (sa-profile-counts) '())
 (define (sa-profile-release!) '())
 ;; no block counters, so no build here can be profile-guided

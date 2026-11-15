@@ -348,6 +348,11 @@ sa-fasl-read
 # file before it compiles, #f when none covers its current text. Permitted
 # degradation: dump answers 0 and load-unit #f, which the build reports as a
 # profile that does not fit.
+# (sa-time-compile-parts! expand-wrap run-wrap) wraps, process-wide, every
+# expansion and every call of freshly compiled code in (wrap thunk), for
+# JOLT_PHASE_TIMES. Permitted degradation: #f, and the compile phase then holds
+# both.
+sa-time-compile-parts!
 sa-block-profile-dump!
 sa-block-profile-tag
 sa-block-profile-load-unit!

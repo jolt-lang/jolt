@@ -1804,6 +1804,24 @@
       (parameterize ((compile-profile (and sa-profile-on? 'source))) (thunk))
       (thunk)))
 
+;; (sa-time-compile-parts! expand-wrap run-wrap) -> #t | #f
+;; JOLT_PHASE_TIMES (compile-eval.ss) splits each runtime eval into the target's
+;; expand, its compile, and the call of the code the compile produced. From now
+;; on, process-wide, every expansion runs as (expand-wrap thunk) and every call of
+;; freshly compiled code as (run-wrap thunk); each wrapper returns its thunk's
+;; values. On Chez: current-expand, and $compile-backend, whose result `compile`
+;; calls to run the form (a form simple enough for Chez's interpreter shortcut
+;; never reaches it). Contract: #t when installed. Degradation: #f — the compile
+;; phase then also holds the expand and the run.
+(define (sa-time-compile-parts! expand-wrap run-wrap)
+  (guard (e (#t #f))
+    (let ((expand0 (current-expand))
+          (backend0 (#%$top-level-value '$compile-backend)))
+      (current-expand (lambda args (expand-wrap (lambda () (apply expand0 args)))))
+      (#%$set-top-level-value! '$compile-backend
+        (lambda (x) (let ((run (backend0 x))) (lambda () (run-wrap run)))))
+      #t)))
+
 ;; One profile-dump entry as #(source-name start end count), or #f for a counter
 ;; on code that was never annotated (it carries no name).
 (define (sa-profile-entry p)
