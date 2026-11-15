@@ -84,6 +84,22 @@
        (ev (binding [f8 (fn [_] :bound)] (g8 1))))
   (chk "later dynamic binding restores the root" :root (ev (g8 1))))
 
+;; Operator capture precedes argument effects even for a var made dynamic
+;; after its caller was compiled. A late handler lookup cannot choose it again.
+(ev (defn eager-f [x] [:root x])
+    (defn eager-binding-g []
+      (eager-f (do (var-set #'eager-f (fn [x] [:changed-binding x])) 7)))
+    (defn eager-root-g []
+      (eager-f (do (alter-var-root #'eager-f
+                                  (constantly (fn [x] [:changed-root x]))) 7))))
+(when-not dl
+  (.setDynamic #'eager-f)
+  (chk "late dynamic callee is captured before var-set argument" [:bound 7]
+       (ev (binding [eager-f (fn [x] [:bound x])] (eager-binding-g))))
+  ;; The binding above leaves dyn-bound? true after its frame has gone.
+  (chk "formerly-bound callee is captured before root-write argument" [:root 7]
+       (ev (eager-root-g))))
+
 (ev (declare unbound-call)
     (defn g-unbound [] (unbound-call 1)))
 (chk "unbound callee class" 'java.lang.IllegalStateException (try-call #(ev (g-unbound))))
