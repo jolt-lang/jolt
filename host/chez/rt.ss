@@ -3227,6 +3227,8 @@
 (lazy-load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
 (load "host/chez/java/linked-hash.ss")          ; LinkedHashMap / LinkedHashSet
 (load "host/chez/java/host-static-classes.ss")  ; instantiable host object classes
+;; jolt.host/class-names and all-classes (#1663): reads the tables loaded above.
+(load "host/chez/java/class-enum.ss")
 ;; clojure.math and the IEEE 754 bit patterns (dbl->bits, flt->bits, ...).
 ;; Self-contained; ahead of byte-buffer.ss, which encodes floats with them.
 (load "host/chez/java/math.ss")

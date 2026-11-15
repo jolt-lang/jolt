@@ -20,6 +20,7 @@ babashka.fs
 babashka.process
 babashka.process.pprint
 babashka.tasks
+bencode.core
 cheshire.core
 clojure.core.async
 clojure.core.async.flow

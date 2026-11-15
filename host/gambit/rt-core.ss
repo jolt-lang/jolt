@@ -958,6 +958,8 @@
 ;; Chez): the count of any array-like, nil refused — post-prelude names it.
 (define (jolt-alength a)
   (if (jolt-nil? a) (error 'alength "null") (jolt-count a)))
+;; the hinted alength the numeric pass emits (natives-array.ss)
+(define (jolt-valength a) (jolt-alength a))
 ;; Every value printed this way carries its identity hash, as the JVM's
 ;; print-object writes (System/identityHashCode o) for any object (jolt-28we).
 (define (jolt-object-repr x readable?)

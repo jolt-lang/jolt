@@ -185,9 +185,14 @@
 ;; empty message is CORRECT for the NoSuchElementException sites elsewhere — the
 ;; JVM's is genuinely null there — so this is not a blanket rule.
 (define (jolt-alength a)
-  (if (jolt-nil? a)
-      (throw-jvm 'NullPointerException "Cannot read the array length because the array is null")
-      (jolt-count a)))
+  (cond ((jolt-array? a) (ja-len a))
+        ((jolt-nil? a)
+         (throw-jvm 'NullPointerException "Cannot read the array length because the array is null"))
+        (else (jolt-count a))))
+;; (alength a) on a hinted array (the numeric pass's :v-alength). Same answer as
+;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and generic count.
+(define (jolt-valength a)
+  (if (jolt-array? a) (ja-len a) (jolt-alength a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM
 ;; exception with the JVM message. The proven ^doubles fast path (jolt-flaget/
 ;; jolt-flaset below) and the unboxed jolt-vaget/jolt-vaset skip this pre-check —
