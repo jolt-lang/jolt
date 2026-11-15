@@ -939,8 +939,12 @@
 ;; procedure is wrapped by jolt-ffi-callable-body (java/ffi.ss), which holds off
 ;; fiber preemption while C frames are on the stack; the macro is resolved where
 ;; a callable is made, by which time ffi.ss has loaded.
+;; A by-value aggregate result, (& ftype), gives the procedure one argument
+;; more than ARGS lists: the destination to fill comes first.
 (define-syntax sa-foreign-callable
-  (syntax-rules ()
+  (syntax-rules (&)
+    ((_ proc (arg ...) (& ft))
+     (foreign-callable (jolt-ffi-callable-body proc ((& ft) arg ...)) (arg ...) (& ft)))
     ((_ proc args res) (foreign-callable (jolt-ffi-callable-body proc args) args res))))
 
 ;; (sa-foreign-callable-collect-safe proc args res) -> foreign callable
@@ -952,7 +956,9 @@
 ;; activate the thread before any Scheme runs; without it the process takes a
 ;; nonrecoverable memory fault instead of an exception.
 (define-syntax sa-foreign-callable-collect-safe
-  (syntax-rules ()
+  (syntax-rules (&)
+    ((_ proc (arg ...) (& ft))
+     (foreign-callable __collect_safe (jolt-ffi-callable-body proc ((& ft) arg ...)) (arg ...) (& ft)))
     ((_ proc args res) (foreign-callable __collect_safe (jolt-ffi-callable-body proc args) args res))))
 
 ;; (sa-foreign-procedure-runtime name args res blocking?) -> foreign procedure | #f

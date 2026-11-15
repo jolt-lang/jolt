@@ -52,7 +52,8 @@
                                          parse-params strip-arglist-meta arglist-ret-nkind
                                          str-target-type kw-target-type sb-target-type]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
-            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn]]
+            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn
+                                       analyze-ffi-signature-type]]
             [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
                                            method-value-form static-class-ns
@@ -933,13 +934,15 @@
 ;; it to a locked `foreign-callable` and returns its entry-point address (a jolt
 ;; pointer). :collect-safe is required when the callback can arrive on a thread
 ;; that is not ACTIVE: one the runtime never started, or one in a :blocking call.
+;; A type may be [:by-value [:struct ...]], read as foreign-fn reads it.
 (defn- analyze-ffi-callable [ctx items env]
   (when-not (<= 4 (count items) 5)
     (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-callable expects (foreign-callable f [argtypes] rettype [:collect-safe])")))
   {:op :ffi-callable
    :fn (analyze ctx (nth items 1) env)
-   :argtypes (mapv name (form-vec-items (nth items 2)))
-   :rettype (name (nth items 3))
+   :argtypes (mapv #(analyze-ffi-signature-type % "callback argument")
+                   (form-vec-items (nth items 2)))
+   :rettype (analyze-ffi-signature-type (nth items 3) "callback return")
    :collect-safe (and (= 5 (count items)) (= "collect-safe" (name (nth items 4))))})
 
 ;; The `.` special form: `(. target member arg*)` — member access / method call.

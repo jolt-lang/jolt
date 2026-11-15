@@ -76,10 +76,12 @@
     (rejects? (string-append "(jolt.ffi/__cfn \"x\" [:int :varargs " date "] :int)")))
 (ok "aggregate return plus varargs rejects"
     (rejects? (string-append "(jolt.ffi/__cfn \"x\" [:int :varargs :int] " date ")")))
-(ok "aggregate callback rejects"
-    (rejects? (string-append "(jolt.ffi/__ccallable identity [" date "] :int)")))
-(ok "aggregate callback return rejects"
-    (rejects? (string-append "(jolt.ffi/__ccallable identity [] " date ")")))
+(ok "aggregate callback argument builds"
+    (jolt-truthy? (ev (string-append "(let [p (jolt.ffi/__ccallable (fn [d] 0) [" date "] :int)] (try (pos? p) (finally (jolt.ffi/free-callable p))))"))))
+(ok "aggregate callback return builds"
+    (jolt-truthy? (ev (string-append "(let [p (jolt.ffi/__ccallable (fn [d] nil) [] " date ")] (try (pos? p) (finally (jolt.ffi/free-callable p))))"))))
+(ok "union callback argument rejects"
+    (rejects? "(jolt.ffi/__ccallable identity [[:by-value [:union [[:i :int32]]]]] :int)"))
 
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

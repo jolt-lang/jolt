@@ -46,8 +46,9 @@
   layout, wrapped in [:by-value descriptor]. An argument value is a non-null
   caller-owned pointer to the struct bytes. An aggregate-returning callable takes
   a non-null caller-owned destination pointer as its first Jolt argument, writes
-  the C return there, and returns that pointer. Aggregate callbacks and exports
-  are not supported. A fixed aggregate may precede the variadic marker, but
+  the C return there, and returns that pointer. A callback (foreign-callable,
+  callback, export!) takes the same descriptors with the roles swapped: see
+  foreign-callable. A fixed aggregate may precede the variadic marker, but
   aggregate variadic arguments and aggregate-return-plus-varargs are rejected.
 
   (stack-args-correct?) says whether this Chez puts arguments past the
@@ -1771,6 +1772,38 @@
 ;; A :collect-safe callback cannot RETURN :string (it hands C an address as it
 ;; deactivates); return a :pointer. A :string ARGUMENT is fine — C owns those
 ;; bytes. The restriction is the mirror of :blocking's, which is on arguments.
+;;
+;; STRUCTS BY VALUE. An argument or the result may be [:by-value [:struct ...]],
+;; the descriptor foreign-fn takes. For a by-value ARGUMENT the fn receives a
+;; pointer to the bytes C passed. That memory is C's: it is valid only until
+;; the callback returns, so read what you need (read-field, read with the
+;; layout) before returning, and copy it if it must outlive the call. Nothing is
+;; copied for you. A by-value RESULT works like foreign-fn's with the roles
+;; swapped: the fn receives a pointer to C's destination as its FIRST argument,
+;; ahead of the arguments C passed, writes the struct there, and whatever it
+;; returns is ignored. It is valid for the same duration. This holds for
+;; :collect-safe, callback and export! too. A union is not passed by value, alone
+;; or inside a struct, in a callback any more than in foreign-fn. On the gambit
+;; target, which has no ffi tier, making a by-value callback raises
+;; UnsupportedOperationException.
+;;
+;; libghostty-vt's paste reader takes two structs by value,
+;; bool read_clipboard(void *userdata, GhosttyString mime, GhosttyWriter writer):
+;;   (def string-layout (ffi/layout [:struct [[:ptr :pointer] [:len :size_t]]]))
+;;   (ffi/foreign-callable
+;;     (fn [userdata mime writer]
+;;       (let [text (ffi/read-bytes (ffi/read-field mime string-layout :ptr)
+;;                                  (ffi/read-field mime string-layout :len))]
+;;         (boolean (seq text))))
+;;     [:pointer
+;;      [:by-value [:struct [[:ptr :pointer] [:len :size_t]]]]
+;;      [:by-value [:struct [[:write :pointer] [:userdata :pointer]]]]]
+;;     :bool)
+;; and a callback returning a struct writes it through the first argument:
+;;   (ffi/foreign-callable
+;;     (fn [dest year] (ffi/write-field dest date-layout :year year))
+;;     [:int32]
+;;     [:by-value [:struct [[:year :int32] [:month :uint8] [:day :uint8]]]])
 ;;   (g-signal-connect button "clicked"
 ;;                     (ffi/foreign-callable on-click [:pointer :pointer] :void :collect-safe)
 ;;                     (ffi/null))
