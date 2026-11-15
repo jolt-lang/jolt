@@ -1164,7 +1164,8 @@
 ;; Compile the Scheme source file SRC to the native object SO under PROFILE:
 ;; #f = target defaults, or an alist with TARGET-NEUTRAL keys
 ;; (optimize . 0..3), (inspector-info . bool), (source-info . bool),
-;; (compressed . bool), (block-profile . bool). The Chez impl parameterizes
+;; (compressed . bool), (block-profile . bool), and optional
+;; (return-point-info . bool). The Chez impl parameterizes
 ;; optimize-level / generate-inspector-information /
 ;; generate-procedure-source-information / fasl-compressed, and compile-profile
 ;; to 'block when block-profile is true (the counters --profile-gen builds
@@ -1178,14 +1179,52 @@
 (define (sa-compile-file src so profile)
   (if profile
       (let ((pv (lambda (k) (cdr (assq k profile)))))
-        (parameterize ((optimize-level (pv 'optimize))
-                       (generate-inspector-information (pv 'inspector-info))
-                       (generate-procedure-source-information (pv 'source-info))
-                       (fasl-compressed (pv 'compressed))
-                       (compile-profile (let ((b (assq 'block-profile profile)))
-                                          (and b (cdr b) 'block))))
-          (compile-file src so)))
-      (compile-file src so)))
+        (define (run)
+          (parameterize ((optimize-level (pv 'optimize))
+                         (generate-inspector-information (pv 'inspector-info))
+                         (generate-procedure-source-information (pv 'source-info))
+                         (fasl-compressed (pv 'compressed))
+                         (compile-profile (let ((b (assq 'block-profile profile)))
+                                            (and b (cdr b) 'block))))
+            (compile-file src so)))
+        (if sa-return-point-sources
+            (parameterize ((sa-return-point-sources
+                            (let ((p (assq 'return-point-info profile))) (and p (cdr p)))))
+              (run))
+            (run)))
+      (sa-source-info-compile (lambda () (compile-file src so))
+                             (or (jolt-debug-locals-instrumenting?)
+                                 (chez-ns-exists? "jolt.debug")))))
+
+;; Patch 0015 is probed while the adapter is compiled; stock keeps its
+;; existing compile parameters. Full inspector data takes priority when named
+;; locals are needed. JOLT_SOURCE_INFO=source opts into the research mode;
+;; full remains the default, and off supplies the no-inspector comparison.
+(define-syntax sa-return-point-source-parameter
+  (if (guard (c (#t #f))
+        (procedure? (eval 'generate-return-point-source-information)))
+      (syntax-rules () ((_) generate-return-point-source-information))
+      (syntax-rules () ((_) #f))))
+(define sa-return-point-sources (sa-return-point-source-parameter))
+(define (sa-source-info-mode)
+  (and sa-return-point-sources
+       (let ((v (getenv "JOLT_SOURCE_INFO")))
+         (cond ((equal? v "source") 'source)
+               ((equal? v "off") 'off)
+               (else 'full)))))
+(define (sa-source-info-cache-tag)
+  (case (sa-source-info-mode)
+    ((source) "-rs") ((full) "-rif") ((off) "-rio") (else "")))
+;; Run a runtime compile with return-point and procedure sources only. A debug
+;; compile explicitly requests names; the unpatched path is unchanged.
+(define (sa-source-info-compile thunk names?)
+  (let ((mode (sa-source-info-mode)))
+    (if mode
+        (parameterize ((generate-inspector-information (or names? (eq? mode 'full)))
+                       (generate-procedure-source-information (or names? (not (eq? mode 'off))))
+                       (sa-return-point-sources (and (not names?) (eq? mode 'source))))
+          (thunk))
+        (thunk))))
 
 ;; ---- block profiles (capability: profile) -----------------------------------
 ;; A build compiled with (block-profile . #t) counts every basic block; the

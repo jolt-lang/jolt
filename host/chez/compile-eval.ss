@@ -548,7 +548,12 @@
                        sfd 0))
                     (lambda (a p) a))))))
     (sa-profile-compile
-      (lambda () (jolt-phase-call 'compile (lambda () (eval ann (interaction-environment))))))))
+      (lambda ()
+        (sa-source-info-compile
+          (lambda () (jolt-phase-call 'compile (lambda () (eval ann (interaction-environment)))))
+          (or (jolt-debug-locals-instrumenting?)
+              ;; jolt.debug also reads live names from ordinary frames.
+              (chez-ns-exists? "jolt.debug")))))))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.

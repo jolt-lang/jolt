@@ -314,6 +314,13 @@ interaction-environment
 # clean jolt-level error, not a Scheme backtrace.
 sa-baked-global
 sa-compile-file
+
+# Optional return-point source information (Chez patch 0015). Stock targets
+# retain their existing compile policy. Runtime eval and the AOT compiler use
+# source-only data only when opted in, unless debug locals require names.
+sa-source-info-compile
+sa-source-info-cache-tag
+sa-source-info-mode
 sa-make-boot-file
 #
 # tier: capability-image

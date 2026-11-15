@@ -3248,8 +3248,8 @@
     (close-port out)))
 
 ;; Per-mode Chez compile parameters for the APP half of a binary (the app and
-;; its libraries). "release" keeps inspector + proc-source information ON:
-;; Chez records a frame's return-point source only as inspector information,
+;; its libraries). "release" keeps frame and procedure source information.
+;; Stock Chez records a frame's return-point source only as inspector information,
 ;; and the reporter resolves that offset through the marker table to recover
 ;; the spliced chain a frame sits in and the exact line — the `step-boom` /
 ;; `app.util/inner-boom` frames the build smoke's --innerfn case pins vanish
@@ -3258,6 +3258,8 @@
 ;; half; "dev" has no entry (Chez defaults: optimize-level 2, inspector ON,
 ;; proc-source ON, fasl uncompressed — full debuggability). Single table
 ;; referenced by both the script-string builder and the in-process compile.
+;; Patch 0015 can replace the release row with source-only data when requested
+;; by JOLT_SOURCE_INFO=source. Dev retains the full inspector for named locals.
 ;;
 ;; The RUNTIME half never uses this table — see bld-runtime-chez-params.
 ;;
@@ -3312,7 +3314,20 @@
 
 ;; The app half's parameters for MODE, or #f for a mode with no row (dev).
 (define (bld-mode-params mode)
-  (let ((row (assoc mode bld-chez-params))) (and row (cdr row))))
+  (let ((row (assoc mode bld-chez-params))
+        (sources (sa-source-info-mode)))
+    (and row
+         (if (and sources (string=? mode "release"))
+             (cons (list 'generate-return-point-source-information (eq? sources 'source))
+               (map (lambda (p)
+                      (cond
+                        ((eq? (car p) 'generate-inspector-information)
+                         (list (car p) (eq? sources 'full)))
+                        ((eq? (car p) 'generate-procedure-source-information)
+                         (list (car p) (not (eq? sources 'off))))
+                        (else p)))
+                    (cdr row)))
+             (cdr row)))))
 
 ;; A `(compile-file SRC SO)` form for a spawned Chez, under PARAMS when given.
 (define (bld-compile-file-form params src so)
@@ -3399,7 +3414,9 @@
               (inspector-info . ,(pv 'generate-inspector-information))
               (source-info . ,(pv 'generate-procedure-source-information))
               (compressed . ,(pv 'fasl-compressed))
-              (block-profile . ,(bld-profile-gen?))))))
+              (block-profile . ,(bld-profile-gen?))
+              (return-point-info . ,(let ((p (assq 'generate-return-point-source-information params)))
+                                     (and p (cadr p))))))))
       (sa-compile-file src so #f)))
 
 ;; --- profile-guided builds (RFC 0015 part 2, tier 1) ---------------------------
@@ -3556,7 +3573,8 @@
 ;; with different bundled kernels share this directory. Identical source text
 ;; under a newer kernel must miss.
 (define (bld-runtime-cache-path body)
-  (let ((keyed (string-append (scheme-version) " " (sa-host-tag) "\n"
+  (let ((keyed (string-append (scheme-version) " " (sa-host-tag)
+                              (sa-source-info-cache-tag) "\n"
                               (bld-params-bindings bld-runtime-chez-params "\n")
                               (bld-profile-tag) body)))
     (string-append (bld-runtime-cache-dir) "/runtime-"

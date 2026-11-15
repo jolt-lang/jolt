@@ -64,6 +64,7 @@ make-boot-file
 optimize-level
 generate-inspector-information
 generate-procedure-source-information
+generate-return-point-source-information
 fasl-compressed
 top-level-value
 set-top-level-value!

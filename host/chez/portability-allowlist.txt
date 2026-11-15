@@ -24,6 +24,7 @@ host/chez/scheme-adapter-runtime.ss foreign-procedure
 host/chez/scheme-adapter-runtime.ss foreign-ref
 host/chez/scheme-adapter-runtime.ss foreign-set!
 host/chez/scheme-adapter-runtime.ss foreign-sizeof
+host/chez/scheme-adapter-runtime.ss generate-return-point-source-information
 host/chez/scheme-adapter-runtime.ss inspect/object
 host/chez/scheme-adapter-runtime.ss load-shared-object
 host/chez/scheme-adapter-runtime.ss lock-object

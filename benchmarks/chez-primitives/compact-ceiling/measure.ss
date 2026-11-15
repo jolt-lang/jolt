@@ -7,7 +7,7 @@
 ;;
 ;; Run from the repo root (build-boot.ss loads by relative path):
 ;;   chez --script benchmarks/chez-primitives/compact-ceiling/measure.ss \
-;;        LABEL SRCDIR OUTDIR INSPECTOR(#t|#f) RUNS
+;;        LABEL SRCDIR OUTDIR INSPECTOR(#t|#f|source) RUNS
 ;;
 ;; Prints one line per run and a summary line:
 ;;   LABEL ii=#t files=N fail=F real_ms=MEDIAN cpu_ms=MEDIAN (runs) so_bytes=B
@@ -20,7 +20,27 @@
 (define label (list-ref args 0))
 (define srcdir (list-ref args 1))
 (define outdir (list-ref args 2))
-(define ii (string=? (list-ref args 3) "#t"))
+(define mode (list-ref args 3))
+(define ii (string=? mode "#t"))
+(define rp (guard (e (#t #f)) (eval 'generate-return-point-source-information)))
+(when (and (string=? mode "source") (not rp))
+  (error 'measure "source mode requires Chez patch 0015"))
+(when rp (rp (string=? mode "source")))
+;; $uncprep runs outside CC_PASS_TIMING. Time its calls separately when asked;
+;; use nanoseconds because most individual calls take less than a millisecond.
+(define uncprep-calls 0)
+(define uncprep-ns 0)
+(define (thread-ns)
+  (let ((t (current-time 'time-thread)))
+    (+ (* (time-second t) 1000000000) (time-nanosecond t))))
+(when (getenv "CC_UNCPREP_TIMING")
+  (let ((original (#%$top-level-value '$uncprep)))
+    (#%$set-top-level-value! '$uncprep
+      (lambda args
+        (let* ((start (thread-ns)) (result (apply original args)))
+          (set! uncprep-ns (+ uncprep-ns (- (thread-ns) start)))
+          (set! uncprep-calls (+ uncprep-calls 1))
+          result)))))
 (define runs (string->number (list-ref args 4)))
 
 (define (scm? f) (let ((n (string-length f))) (and (> n 4) (string=? (substring f (- n 4) n) ".scm"))))
@@ -58,6 +78,9 @@
 ;; slows the compile; for finding where the time goes, not for the table)
 (when (getenv "CC_PASS_TIMING")
   (parameterize ((current-output-port (current-error-port))) (#%$print-pass-stats)))
+(when (getenv "CC_UNCPREP_TIMING")
+  (fprintf (current-error-port) "uncprep: calls=~a cpu_ms=~a\n"
+           uncprep-calls (/ uncprep-ns 1000000.0)))
 (printf "~a ii=~a files=~a fail=~a real_ms=~a cpu_ms=~a ~s so_bytes=~a\n"
         label ii (length files) fails (median (map car results)) (median (map cdr results))
         (map car results)

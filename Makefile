@@ -1088,6 +1088,7 @@ rrbscaling:
 # behaviour the format assumes (machine-independence, what fasl refuses).
 stateimage:
 	@$(CHEZ) --script test/chez/state-image-test.ss
+	@$(CHEZ) --script test/chez/source-info-test.ss
 
 # Inference / success-type checking: drive jolt.passes.types directly and assert
 # diagnostic counts + collected calls/escapes (the optimization pass the other

@@ -926,7 +926,8 @@
           (if jolt-trace-on? "-tr" ""))
       ;; JOLT_FASL_INTERN in effect (values.ss): its fasls quote keywords
       (if keyword-fasl-intern-on? "-fi" "")
-      (aot-exp-tag "JOLT_CLJ_CALL" "-cc") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl"))))
+      (aot-exp-tag "JOLT_CLJ_CALL" "-cc") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl")
+      (sa-source-info-cache-tag))))
 ;; The var-call experiments' emit (compile-eval.ss jolt-clj-call-init-from-env!):
 ;; "" when VAR is unset or empty, else PREFIX and its value.
 (define (aot-exp-tag var prefix)
@@ -2248,6 +2249,10 @@
           (not (sa-profile-instrumenting?))
           ;; ...and jolt.profile's :debug mode keeps locals that cached code lacks
           (not (jolt-debug-locals-instrumenting?))
+          ;; A debugger also reads live names in ordinary frames. Source-only
+          ;; fasls have none; compile from source after jolt.debug is required.
+          (not (and (memq (sa-source-info-mode) '(source off))
+                    (chez-ns-exists? "jolt.debug")))
           (or (not (ldr-source-only?)) (ldr-build-aot-cache?))
           (not (ldr-install-file? file))
           ;; no fingerprint = we can't tell this runtime from another one, so

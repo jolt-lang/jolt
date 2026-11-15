@@ -516,6 +516,9 @@
 (define (sa-profile-instrument! on?) (not on?))
 (define (sa-profile-instrumenting?) #f)
 (define (sa-profile-compile thunk) (thunk))
+(define (sa-source-info-compile thunk names?) (thunk))
+(define (sa-source-info-cache-tag) "")
+(define (sa-source-info-mode) #f)
 ;; no expander/backend hook to time: JOLT_PHASE_TIMES keeps expand and run in compile
 (define (sa-time-compile-parts! expand-wrap run-wrap) #f)
 (define (sa-profile-counts) '())

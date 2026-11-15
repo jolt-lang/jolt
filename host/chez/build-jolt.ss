@@ -414,6 +414,7 @@
           "(optimize-level " (if jb-release? "2" "0") ")\n"
           "(generate-inspector-information " (jb-bool (not jb-release?)) ")\n"
           "(generate-procedure-source-information " (jb-bool (not jb-release?)) ")\n"
+        (if (sa-source-info-mode) "(generate-return-point-source-information #f)\n" "")
           "(debug-on-exception " (jb-bool (not jb-release?)) ")\n"
           "(fasl-compressed " (jb-bool jb-release?) ")\n"
           (apply string-append
@@ -814,6 +815,7 @@
         "(optimize-level " (if jb-release? "2" "0") ")\n"
         "(generate-inspector-information " (jb-bool (not jb-release?)) ")\n"
         "(generate-procedure-source-information " (jb-bool (not jb-release?)) ")\n"
+        (if (sa-source-info-mode) "(generate-return-point-source-information #f)\n" "")
         "(debug-on-exception " (jb-bool (not jb-release?)) ")\n"
         "(fasl-compressed " (jb-bool jb-release?) ")\n"
         "(compile-file " (ei-str-lit jb-flat-ss) " " (ei-str-lit jb-flat-so) ")\n"
