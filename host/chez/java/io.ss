@@ -3104,6 +3104,19 @@
               (unless first? (put-char out #\newline))
               (put-string out line)
               (loop #f)))))))
+;; The coercion error clojure.java.io raises for a value it cannot open. io.clj
+;; extends IOFactory to nil with a make-reader/make-writer that refuse it by
+;; name, while every other non-source reaches Object's impl, whose make-reader
+;; and make-writer open through make-input-stream / make-output-stream, which
+;; refuse. So (io/reader nil) says "as a Reader." and (io/reader 5), (slurp :k)
+;; and (spit {} "x") say "as an InputStream." / "as an OutputStream.".
+(define (io-cannot-open x reader?)
+  (throw-jvm (quote IllegalArgumentException)
+             (string-append "Cannot open <" (jolt-pr-str x) "> as "
+                            (cond ((and reader? (jolt-nil? x)) "a Reader.")
+                                  (reader? "an InputStream.")
+                                  ((jolt-nil? x) "a Writer.")
+                                  (else "an OutputStream.")))))
 (define (jolt-slurp src . opts)
   (io-opts-check! opts)
   (cond
@@ -3136,7 +3149,7 @@
                      (if (jar-path? fp)
                          (slurp-path fp)
                          (slurp-path fp (if (file-url-string? src) (file-url->path src) src)))))
-    (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str src) "> as a Reader.")))))
+    (else (io-cannot-open src #t))))
 
 (define io-counter-mutex (make-mutex))
 (define (jolt-spit path content . opts)
@@ -3146,8 +3159,7 @@
   ;; coercion error io/writer raises. nil used to render as "" and write a temp
   ;; file into the working directory before failing to rename it.
   (unless (or (string? path) (jfile? path) (jhost? path))
-    (throw-jvm (quote IllegalArgumentException)
-               (string-append "Cannot open <" (jolt-pr-str path) "> as a Writer.")))
+    (io-cannot-open path #f))
   (io-opts-check! opts)
   (if (uri-jhost? path)
       (apply jolt-spit (uri->url path) content opts)
@@ -3304,8 +3316,7 @@
     ;; anything else is not a source, and quietly rendering it would read as empty
     ;; content — (io/reader nil) used to hand back a reader over "" rather than say
     ;; so. Same coercion error the JVM raises, and the same one io/writer raises.
-    (else (throw-jvm (quote IllegalArgumentException)
-                     (string-append "Cannot open <" (jolt-pr-str x) "> as a Reader.")))))
+    (else (io-cannot-open x #t))))
 
 ;; --- clojure.java.io/writer: an existing StringWriter passes through. Every
 ;; other arm -- a File, a path, a URL, a byte stream -- is io-streams.ss's, which
@@ -3314,7 +3325,7 @@
 (define (jolt-io-writer x . opts)
   (cond
     ((and (jhost? x) (string=? (jhost-tag x) "writer")) x)
-    (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as a Writer.")))))
+    (else (io-cannot-open x #f))))
 
 ;; --- clojure.java.io ns -----------------------------------------------------
 ;; io/file is NOT the File constructor. It puts every child through

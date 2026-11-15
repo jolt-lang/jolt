@@ -1182,7 +1182,7 @@
 ;; cell's unbound root is never deref'd. host/chez/manifest-check.sh fails CI if
 ;; this list drifts from native-ops.
 (define hc-native-op-names
-  '("+" "-" "*" "/" "<" ">" "<=" ">=" "=" "inc" "dec" "not" "min" "max"
+  '("+" "-" "*" "/" "<" ">" "<=" ">=" "=" "==" "inc" "dec" "not" "min" "max"
     "mod" "rem" "quot" "vector" "hash-map" "hash-set" "conj" "get" "nth" "count"
     "assoc" "dissoc" "contains?" "find" "empty?" "peek" "pop" "first" "rest" "next" "seq"
     "cons" "list" "reverse" "last" "map" "filter" "remove" "reduce" "reduce-kv" "into" "concat"
@@ -1200,7 +1200,10 @@
     "bit-and" "bit-or" "bit-xor" "bit-not"
     "bit-shift-left" "bit-shift-right" "unsigned-bit-shift-right"
     "unchecked-add" "unchecked-subtract" "unchecked-multiply"
-    "unchecked-inc" "unchecked-dec" "unchecked-negate"))
+    "unchecked-inc" "unchecked-dec" "unchecked-negate"
+    "unchecked-add-int" "unchecked-subtract-int" "unchecked-multiply-int"
+    "unchecked-divide-int" "unchecked-remainder-int"
+    "unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"))
 (for-each (lambda (nm) (declare-var! "clojure.core" nm)) hc-native-op-names)
 ;; A ^:private one of these (doseq's __chunk-* walk helpers) is plumbing a core
 ;; macro's expansion calls from the user's namespace: the back end lowers the

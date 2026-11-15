@@ -68,7 +68,8 @@
           :dbl "fl>=?" :lng "jolt-l>=" :bd "jbd-ge?" :pure? true :foldable? true}
    "="   {:call "jolt=" :bool? true :arity #(>= % 2)
           :fixed {2 "jolt=2"} :dbl "fl=?" :lng "jolt-l=" :pure? true :foldable? true}
-   "=="  {:dbl "fl=?" :lng "jolt-l="}  ; numeric-only, not a native op
+   "=="  {:call "jolt-num-equiv" :bool? true :fixed {2 "jolt-num-equiv2"}
+          :dbl "fl=?" :lng "jolt-l="}
    "not=" {:pure? true}                ; not a native op; pure classifier only
    "inc" {:call "jolt-n-inc" :value "jolt-inc" :arity #(= % 1)
           :dbl-contagion? true :num-result? true :num-args? true :pure? true :foldable? true}
@@ -120,6 +121,22 @@
                          :dbl-contagion? true :num-result? true :num-args? true}
    "unchecked-negate"   {:call "jolt-uncneg" :arity #(= % 1)
                          :dbl-contagion? true :num-result? true :num-args? true}
+   ;; The -int family wraps to 32 bits. Fixed arity only, as on the JVM: any
+   ;; other arity isn't lowered and raises through the var. The result is always
+   ;; an int-range integer, so no :dbl and no contagion.
+   "unchecked-add-int"       {:call "jolt-uncaddi2" :arity #(= % 2) :lng "jolt-uncaddi2"
+                              :num-result? true}
+   "unchecked-subtract-int"  {:call "jolt-uncsubi2" :arity #(= % 2) :lng "jolt-uncsubi2"
+                              :num-result? true}
+   "unchecked-multiply-int"  {:call "jolt-uncmuli2" :arity #(= % 2) :lng "jolt-uncmuli2"
+                              :num-result? true}
+   "unchecked-divide-int"    {:call "jolt-uncdivi2" :arity #(= % 2) :lng "jolt-uncdivi2"
+                              :num-result? true}
+   "unchecked-remainder-int" {:call "jolt-uncremi2" :arity #(= % 2) :lng "jolt-uncremi2"
+                              :num-result? true}
+   "unchecked-inc-int"       {:call "jolt-uncinci" :arity #(= % 1) :num-result? true}
+   "unchecked-dec-int"       {:call "jolt-uncdeci" :arity #(= % 1) :num-result? true}
+   "unchecked-negate-int"    {:call "jolt-uncnegi" :arity #(= % 1) :num-result? true}
    ;; collections
    "vector"      {:call "jolt-vector"}
    "hash-map"    {:call "jolt-hash-map-fn"}
