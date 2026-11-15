@@ -10,7 +10,7 @@
              :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
                      *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
                      *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
-                     debug-locals? fresh-label site-call-helper target trace-frames?]]
+                     debug-locals? fresh-label site-call-helper target trace-emit trace-frames?]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
             [jolt.backend-scheme.fnsrc
@@ -170,7 +170,7 @@
 ;; One arity clause [params body]. Each clause that has a site binds the restore
 ;; helper its sites call (site-restore), a nested fn's clauses their own.
 (defn- emit-site-clause [emit a]
-  (if (and (trace-frames?) (= :chez (target)))
+  (if (and (trace-frames?) (= :chez (target)) (nil? @trace-emit))
     (let [used (atom false)
           c (binding [*site-call* used] (emit-arity-clause emit a))]
       (if @used

@@ -12,7 +12,7 @@
             [jolt.backend-scheme.session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
                      clone-site? ctor-shapes fresh-label marker-safe-fqn?
-                     note-tail-call! trace-frames? unsafe-prefix var-cache?]]
+                     note-tail-call! trace-emit trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
              :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
                      hoist-const-per-site]]))
@@ -315,17 +315,26 @@
 ;; returned to untraced code (a core HOF) was reported as the innermost frame of
 ;; the next callback's throw. The pair is still the nearest erased caller from
 ;; further out, which the reporter reads from the outer slot as a gap bridge.
+(defn- site-restore-default [call]
+  (if *site-call*
+    (do (reset! *site-call* true)
+        (str "(jolt-site-call (lambda () " call "))"))
+    (let [sv (fresh-label "_ss$") so (fresh-label "_so$") rv (fresh-label "_sr$")]
+      (str "(let ((" sv " (virtual-register 2)) (" so " (virtual-register 12)))"
+           " (if (pair? " sv ") (set-virtual-register! 12 " sv "))"
+           " (set-virtual-register! 2 0)"
+           " (let ((" rv " " call ")) (set-virtual-register! 2 " sv ")"
+           " (set-virtual-register! 12 " so ") " rv "))"))))
+;; JOLT_TRACE_EMIT (session trace-emit) picks another spelling of the one-argument
+;; form for the trace-emitter experiment; unset, it is site-restore-default.
 (defn site-restore
   ([call]
-   (if *site-call*
-     (do (reset! *site-call* true)
-         (str "(jolt-site-call (lambda () " call "))"))
-     (let [sv (fresh-label "_ss$") so (fresh-label "_so$") rv (fresh-label "_sr$")]
-       (str "(let ((" sv " (virtual-register 2)) (" so " (virtual-register 12)))"
-            " (if (pair? " sv ") (set-virtual-register! 12 " sv "))"
-            " (set-virtual-register! 2 0)"
-            " (let ((" rv " " call ")) (set-virtual-register! 2 " sv ")"
-            " (set-virtual-register! 12 " so ") " rv "))"))))
+   (case @trace-emit
+     nil (site-restore-default call)
+     "global" (str "(jolt-site-call (lambda () " call "))")
+     "macro" (str "(jolt-site-inline " call ")")
+     "inline" (binding [*site-call* nil] (site-restore-default call))
+     "norestore" call))
   ([call rd wr]
    (let [sv (fresh-label "_ss$") rv (fresh-label "_sr$")]
      (str "(let ((" sv " " rd ")) (let ((" rv " " call ")) (" wr " " sv ") " rv "))"))))

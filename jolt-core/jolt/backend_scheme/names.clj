@@ -123,8 +123,9 @@
                   ;; lookup-restore): it reads and writes the site slots and
                   ;; tests the slot's pair. honeysql's (let [pair? ...]) turned
                   ;; that test into a call to its boolean. jolt-site-call is the
-                  ;; local a clause binds the restore to (site-call-helper).
-                  "pair?" "virtual-register" "set-virtual-register!" "jolt-site-call"
+                  ;; local a clause binds the restore to (site-call-helper);
+                  ;; jolt-site-inline the JOLT_TRACE_EMIT=macro head (rt.ss).
+                  "pair?" "virtual-register" "set-virtual-register!" "jolt-site-call" "jolt-site-inline"
                   "fxand" "fxior" "fxxor" "fxnot"
                   "jolt-register-source!" "jolt-proto-epoch"
                   ;; --- bare heads emitted at sites the registry doesn't cover ---

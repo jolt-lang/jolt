@@ -1575,6 +1575,22 @@
 ;; (jolt-throw-sitep), and the reporter still validates it against the callsite
 ;; table before splicing: code compiled untraced (the seed) restores nothing.
 (define (jolt-site! p) (set-virtual-register! jolt-vreg-site p))
+;; The trace-emitter experiment's two non-default spellings of a non-tail call's
+;; restore (JOLT_TRACE_EMIT, backend_scheme site-restore); the default emission
+;; spells the restore out in the emitted text and uses neither. "global" calls
+;; this procedure with the call as a thunk; "macro" wraps the call in the macro,
+;; which expands to the same inline restore the default emits outside a fn.
+(define (jolt-site-call th)
+  (let ((s (virtual-register 2)) (o (virtual-register 12)))
+    (if (pair? s) (set-virtual-register! 12 s))
+    (set-virtual-register! 2 0)
+    (let ((r (th))) (set-virtual-register! 2 s) (set-virtual-register! 12 o) r)))
+(define-syntax jolt-site-inline
+  (syntax-rules ()
+    ((_ call) (let ((s (virtual-register 2)) (o (virtual-register 12)))
+                (if (pair? s) (set-virtual-register! 12 s))
+                (set-virtual-register! 2 0)
+                (let ((r call)) (set-virtual-register! 2 s) (set-virtual-register! 12 o) r)))))
 ;; A non-tail call moves the slot's pair to jolt-vreg-outer-site and clears the
 ;; slot while it runs (backend_scheme site-restore): a throw inside it has no
 ;; innermost pair, only the nearest erased caller from further out. The snapshot

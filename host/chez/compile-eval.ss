@@ -320,6 +320,13 @@
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
       (when (procedure? stf) (stf #t)))
+    ;; Trace-emitter experiment: JOLT_TRACE_EMIT=global|macro|inline|norestore
+    ;; respells a non-tail call's site restore (session.clj trace-emit). Unset,
+    ;; nothing is called and the emission is the default.
+    (let ((m (getenv "JOLT_TRACE_EMIT")))
+      (when (and m (> (string-length m) 0))
+        (let ((ste (var-deref "jolt.backend-scheme.session" "set-trace-emit!")))
+          (when (procedure? ste) (ste m)))))
     (jolt-trace-enable!)))
 ;; Exposed so the REPL / nREPL entrypoints (jolt.main, jolt.nrepl) can turn tracing
 ;; on for REPL-driven development without the user setting JOLT_TRACE. Because the

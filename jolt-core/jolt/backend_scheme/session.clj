@@ -306,6 +306,17 @@
        " (if (pair? _ss$) (set-virtual-register! 12 _ss$))"
        " (set-virtual-register! 2 0)"
        " (let ((_sr$ (_th$))) (set-virtual-register! 2 _ss$) (set-virtual-register! 12 _so$) _sr$)))"))
+;; Experiment knob (JOLT_TRACE_EMIT, read by compile-eval.ss jolt-enable-trace!):
+;; how a non-tail call's site restore is spelled. nil, the default, is the
+;; per-clause helper above and the inline form outside fns; nothing else changes
+;; unless the variable names a mode. "global": every site calls the runtime's
+;; top-level jolt-site-call procedure with a thunk (rt.ss). "macro": every site
+;; is (jolt-site-inline call), a runtime macro that expands to the inline
+;; restore. "inline": the inline form everywhere (the pre-#1423 shape).
+;; "norestore": no restore at all, the cost ceiling; NOT trace-identical.
+(def trace-emit (atom nil))
+(defn set-trace-emit! [m]
+  (reset! trace-emit (when (contains? #{"global" "macro" "inline" "norestore"} m) m)))
 ;; A tail call that may run a jolt fn disqualifies the enclosing fn.
 (defn note-tail-call! [tail?]
   (when (and tail? *self-wrap*) (reset! (:unsafe *self-wrap*) true)))
