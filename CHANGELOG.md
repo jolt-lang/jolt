@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads no shim. Short aliases such as `System` and a `reify`'s class are
   left out. Each call reads the tables as they are, so a class a `deftype`,
   `defrecord` or `register-class-supers!` adds later is in the next one.
+- **`bencode.core` ships with jolt**, for babashka scripts that name it, since
+  babashka bundles nrepl/bencode. A bare script that speaks nREPL's wire
+  format, such as a small client that drives a running REPL, used to stop at
+  its `require` with "Could not locate bencode/core.jolt". The namespace is
+  nrepl/bencode 1.2.0's own file, in `compatibility/` beside `cheshire.core`,
+  so `read-bencode`, `write-bencode`, `read-netstring` and `write-netstring`
+  behave as the library does. A project that declares `nrepl/bencode` itself
+  still loads its own copy.
 
 ### Fixed
 
@@ -34,10 +42,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
+- **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).
+  It was Chez's `string` type, a heap copy the collector could move, so a C
+  function that called back into jolt before it was done with the text (a GTK
+  signal emitted ahead of the copy, a `bsearch` comparator) read moved memory
+  once the callback collected. It now travels as an immobile copy kept alive
+  for the call, which adds about 30 ns to each `:string` argument.
 - **`jolt build` checks every option before building native libraries.** An
   invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
   with no target pack, was reported only after the static archives and
   dependency libraries had been compiled.
+- **A `char[]` slice and a null argument to `String.` throw as on the JVM**
+  (#1657). `(String. chars offset count)` now runs String's range check before
+  reading, so a negative offset with a zero count no longer answers `""`, and an
+  overrun is a `StringIndexOutOfBoundsException` with the JDK's message instead
+  of an `ArrayIndexOutOfBoundsException`. `(String. nil)` and `.toCharArray` on a
+  nil `^String` parameter are a `NullPointerException`, where they answered
+  `""` and an empty array.
 
 ## [0.8.27] - 2026-11-12
 
