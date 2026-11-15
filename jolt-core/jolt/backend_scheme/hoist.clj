@@ -544,14 +544,6 @@
     ;; accessors are ordinary procedures; #3%$record-ref performs the raw loads.
     (str "(if (" (unsafe-prefix) "$record-ref " cell " 6)"
          " (var-cell-deref " cell ") (" (unsafe-prefix) "$record-ref " cell " 2))")))
-;; One distinct proxy per cached var binding. The common path still reads the
-;; visible root; only a late-bound dynamic value reaches the shared handler.
-;; The caller uses this only when argument evaluation has no observable effects.
-(defn hoist-var-call-proxy [ns nm]
-  (let [proxy (hoist-const (str "(jolt-var-call-target " (chez-str-lit ns) " " (chez-str-lit nm) ")"))
-        cell (str "(" (unsafe-prefix) "$record-ref " proxy " 0)")]
-    (str "(if (" (unsafe-prefix) "$record-ref " cell " 6) " proxy
-         " (" (unsafe-prefix) "$record-ref " cell " 2))")))
 ;; A direct-linked SEED var: the def binds the var's root procedure once, at
 ;; load (jolt-seed-root checks it is one), and the site calls it like any Scheme
 ;; procedure. Only where jolt.host/seed-callable? said so — see emit-invoke.

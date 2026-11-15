@@ -95,10 +95,6 @@
     (and (>= e 1)
          (>= (+ e (count (filter order-sensitive-read? nodes))) 2))))
 
-;; Native var calls reuse the ordering rule: deferred proxy resolution is
-;; valid only when argument effects cannot change an eager operator capture.
-(defn call-needs-order? [nodes] (needs-order? nodes))
-
 ;; Build a call from operand strings, forcing left-to-right evaluation when
 ;; needed. `nodes`/`strs` are the operands (parallel); `build` receives the
 ;; operand strings to splice (temps when wrapped, raw otherwise) and returns the

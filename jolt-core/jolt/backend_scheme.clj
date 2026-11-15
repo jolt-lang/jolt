@@ -32,14 +32,14 @@
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
-                     hoist-const-per-site hoist-seed-root hoist-var-cell hoist-var-call-root hoist-var-call-proxy site-const
+                     hoist-const-per-site hoist-seed-root hoist-var-cell hoist-var-call-root site-const
                      unique-keyword-key-literal? with-const-data kdata-coll kdata-coll?]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
                      emit-rec-type-check emit-record-ctor ifn-kind lookup-restore
-                     native-op call-needs-order? node-inline-chain ordered-call plain-call
+                     native-op node-inline-chain ordered-call plain-call
                      site-literal site-restore sited-tail-call stdlib-var?
                      struct-field-index]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
@@ -509,9 +509,7 @@
         native? (and @session/native-var-call? (= :var (:op fnode))
                      (not (var-dynamic? nil (:ns fnode) (:name fnode))))
         target (if (and native? (var-cache?) *const-pool*)
-                 (if (call-needs-order? (cons fnode (:arg-nodes c)))
-                   (hoist-var-call-root (:ns fnode) (:name fnode))
-                   (hoist-var-call-proxy (:ns fnode) (:name fnode)))
+                 (hoist-var-call-root (:ns fnode) (:name fnode))
                  (emit fnode))
         t? (or (:tail? c) (trace-frames?))
         callee (if (<= (count args) 4)
