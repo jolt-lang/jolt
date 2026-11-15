@@ -212,7 +212,9 @@
                   "def-var-linked!" "amap-slots->pmap"
                   "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"
                   ;; JOLT_CONST_DATA's per-form table (hoist.clj with-const-data)
-                  "intern-constants!"}]
+                  "intern-constants!"
+                  ;; JOLT_FASL_INTERN's quoted keywords and table (hoist.clj)
+                  "jolt-kw-lit" "jolt-kd-lit"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an

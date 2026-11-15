@@ -1,0 +1,76 @@
+diff --git a/c/fasl.c b/c/fasl.c
+index 4ffbd53..f574a79 100644
+--- a/c/fasl.c
++++ b/c/fasl.c
+@@ -225,6 +225,7 @@ static double doublein(faslFile f);
+ static iptr stringin(ptr *pstrbuf, iptr start, faslFile f);
+ static void faslin(ptr tc, ptr *x, ptr t, ptr *pstrbuf, faslFile f);
+ static void fasl_record(ptr tc, ptr *x, ptr t, ptr *pstrbuf, faslFile f, iptr size);
++static void fasl_intern_record(ptr *x);
+ static IBOOL rtd_equiv(ptr x, ptr y);
+ static IBOOL rtd_extras_equiv(ptr x, ptr y);
+ static IBOOL equalp(ptr x, ptr y);
+@@ -286,6 +287,8 @@ void S_fasl_init(void) {
+         S_G.base_rtd = Sfalse;
+         S_protect(&S_G.rtd_key);
+         S_G.rtd_key = S_intern((const unsigned char *)"*rtd*");
++        S_protect(&S_G.fasl_intern_key);
++        S_G.fasl_intern_key = S_intern((const unsigned char *)"$fasl-intern");
+         S_protect(&S_G.eq_symbol);
+         S_G.eq_symbol = S_intern((const unsigned char *)"eq");
+         S_protect(&S_G.eq_ht_rtd);
+@@ -998,6 +1001,7 @@ static void faslin(ptr tc, ptr *x, ptr t, ptr *pstrbuf, faslFile f) {
+         case fasl_type_record: {
+             iptr size = sizein(f);
+             fasl_record(tc, x, t, pstrbuf, f, size);
++            fasl_intern_record(x);
+             return;
+         }
+         case fasl_type_eq_hashtable: {
+@@ -1282,6 +1286,34 @@ static void faslin(ptr tc, ptr *x, ptr t, ptr *pstrbuf, faslFile f) {
+ #else
+ # define unknown 3
+ #endif
++/* A record whose type's uid has a $fasl-intern property is interned as it is
++   read, the way an rtd is by its uid: its first field must be a symbol, and
++   the record is replaced by the one on that symbol's $fasl-intern property,
++   or becomes that property when there is none yet. A runtime that interns its
++   own objects (a language's keywords) puts each one there, so a quoted
++   constant in compiled code loads as the object the runtime already has. */
++static void fasl_intern_record(ptr *x) {
++  ptr rec = *x, uid, key, ls;
++
++  uid = RECORDDESCUID(RECORDINSTTYPE(rec));
++  if (!Ssymbolp(uid)) return;
++  for (ls = SYMSPLIST(uid); ls != Snil; ls = Scdr(Scdr(ls)))
++    if (Scar(ls) == S_G.fasl_intern_key) break;
++  if (ls == Snil) return;
++
++  key = RECORDINSTIT(rec, 0);
++  if (!Ssymbolp(key)) return;
++  tc_mutex_acquire();
++  for (ls = SYMSPLIST(key); ls != Snil; ls = Scdr(Scdr(ls)))
++    if (Scar(ls) == S_G.fasl_intern_key) {
++      *x = Scar(Scdr(ls));
++      break;
++    }
++  if (ls == Snil)
++    SETSYMSPLIST(key, Scons(S_G.fasl_intern_key, Scons(rec, SYMSPLIST(key))));
++  tc_mutex_release();
++}
++
+ static void fasl_record(ptr tc, ptr *x, ptr t, ptr *pstrbuf, faslFile f, iptr size) {
+   iptr n; uptr addr; ptr p; UINT padty;
+ 
+diff --git a/c/globals.h b/c/globals.h
+index eb2965c..1c1809d 100644
+--- a/c/globals.h
++++ b/c/globals.h
+@@ -169,6 +169,7 @@ EXTERN struct S_G_struct {
+   /* fasl.c */
+     ptr base_rtd;
+     ptr rtd_key;
++    ptr fasl_intern_key;
+     ptr eq_symbol;
+     ptr eq_ht_rtd;
+     ptr symbol_symbol;
