@@ -765,6 +765,8 @@
                      '("petite.boot" "scheme.boot"))
            (let* ((tmp (string-append build-boot-inputs "." pid ".tmp"))
                   (out (open-output-file tmp 'replace)))
+             (put-string out (or (gate-boot-toolchain-line) "chez-unknown"))
+             (put-string out "\n")
              (for-each (lambda (p) (put-string out (string-append (gate-boot-hash-string p) " " p "\n")))
                        (reverse order))
              (close-port out)

@@ -27,8 +27,9 @@
   ;; any value, "" included, as define-width-op reads it
   (not (getenv "JOLT_NARROW_HASH")))
 
-;; The inputs list also hashes the host Chez's boot files, so a different or
-;; rebuilt Chez reads as stale. The guard covers a Chez the list cannot see (a
+;; The receipt identifies the selected executable and native capabilities, and
+;; hashes the host Chez's boot files, so a different or rebuilt Chez reads stale.
+;; The guard covers a Chez the list cannot see (a
 ;; JOLT_CHEZ_CSV that names another install): its fasl is refused at the
 ;; header, before any of it runs, and the source loads take over.
 (if (and (build-boot-cacheable?)

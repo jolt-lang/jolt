@@ -85,6 +85,12 @@
         (set! order (cons path order))
         (for-each (lambda (l) (walk (bld-load-path l))) (bld-file-lines path))))
     (for-each (lambda (entry) (walk (bld-load-path (gb-entry-line entry)))) gb-entries)
+    ;; Match build-boot: recompiling Chez in place can change its compiler while
+    ;; leaving the selected executable and its public capabilities unchanged.
+    (for-each (lambda (b)
+                (let ((p (string-append bld-host-csv-dir "/" b)))
+                  (when (file-exists? p) (set! order (cons p order)))))
+              '("petite.boot" "scheme.boot"))
     (reverse order)))
 ;; Written via tmp+rename like the .so: a gate checking freshness concurrently
 ;; (parallel make) must never read a half-written list and conclude from the
@@ -95,6 +101,10 @@
 (when (file-exists? gb-gate-so) (delete-file gb-gate-so))
 (let* ((tmp (string-append gb-inputs "." gb-pid ".tmp"))
        (out (open-output-file tmp 'replace)))
+  ;; The running Chez also supplies bld-chez's isolated compiler (JOLT_CHEZ).
+  ;; Version alone cannot distinguish stock from patched capability expansions.
+  (put-string out (or (gate-boot-toolchain-line) "chez-unknown"))
+  (put-string out "\n")
   ;; "<hash> <path>": the freshness question is whether an input still has the
   ;; content that went into the image, which mtime cannot answer (see
   ;; gate-boot-fresh.ss). Hashed with that file's own function, loaded below, so

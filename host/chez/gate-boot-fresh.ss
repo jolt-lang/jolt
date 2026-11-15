@@ -6,10 +6,11 @@
 ;; no longer on disk, the one genuinely dangerous failure mode of the boot cache.
 ;; test/chez/gateboot-smoke.sh drives it over synthetic input lists.
 ;;
-;; SO is fresh when it exists and every input listed in INPUTS still has the
-;; CONTENT it had when the image was built. Each line is "<hash> <path>".
-;; Anything unclear — no image, no list, a listed file deleted, a line in the old
-;; bare-path format — is NOT fresh, so the caller falls back to source.
+;; SO is fresh when its compiler identity matches this Chez and every input in
+;; INPUTS still has the CONTENT it had when the image was built. The first line
+;; identifies the compiler; remaining lines are "<hash> <path>". Anything unclear
+;; — no image/list, a legacy identity-free list, a deleted input, an old bare-path
+;; line — is NOT fresh, so the caller falls back to source.
 ;;
 ;; The comparison was mtime: is the image newer than every input. That is not the
 ;; question. It answers "was the image written after this file was last touched",
@@ -29,6 +30,48 @@
 ;; Standalone script: self-load the runtime adapter for sa-file-mtime-ms. A
 ;; second load by gate-boot.ss is a harmless redefinition.
 (load "host/chez/scheme-adapter-runtime.ss")
+
+;; Resolve a bare command the same way build.ss's bld-exe-dir does, before the
+;; build helpers exist here. A supplied path needs no shell. Quote the command
+;; name as data: JOLT_CHEZ names one executable, never a shell command line.
+(define (gate-boot-executable-path exe)
+  (let ((parent (path-parent exe)))
+    (if (and parent (not (string=? parent "")))
+        (and (file-exists? exe) exe)
+        (let ((quoted (string-append "'"
+                        (apply string-append
+                          (map (lambda (c) (if (char=? c #\') "'\\''" (string c)))
+                               (string->list exe))) "'")))
+          (let-values (((to-child from-child err pid)
+                        (sa-run-process (string-append "command -v " quoted " 2>/dev/null")
+                                        (native-transcoder))))
+            (close-port to-child)
+            (let ((path (get-line from-child)))
+              (close-port from-child)
+              (close-port err)
+              (and (string? path) (file-exists? path) path)))))))
+
+;; Probe the native compiler, not the adapter variables captured in gate.so.
+;; Stock and patched Chez can have the same version and machine type while
+;; expanding the adapter's capability macros differently. JOLT_CHEZ is the
+;; selected executable passed by make/build-jolt; its path and bytes distinguish
+;; installations even when they expose the same capabilities. The writers also
+;; hash its boot files, as build-boot already did. An undiscoverable executable
+;; cannot establish an identity, so its image is never considered fresh.
+(define (gate-boot-toolchain-line)
+  (define (supports? form)
+    (guard (e (#t #f)) (eval form) #t))
+  (let* ((selected (getenv "JOLT_CHEZ"))
+         (exe (and selected (not (string=? selected ""))
+                   (gate-boot-executable-path selected))))
+    (and exe
+         (format "chez-v1 ~s"
+           (list exe (gate-boot-hash-string exe) (scheme-version) (machine-type)
+                 (supports? '($primitive $jolt-site-call))
+                 (supports? '($primitive $clj-call))
+                 (supports? '($primitive $call-error-handler))
+                 (guard (e (#t #f))
+                   (procedure? (eval 'generate-return-point-source-information))))))))
 
 ;; FNV-1a 32-bit over the file's BYTES. Bytes, not characters: an input can be
 ;; any encoding, and decoding one as text to hash it would raise on the first
@@ -68,13 +111,16 @@
        (guard (e (#t #f))
          (call-with-input-file inputs
            (lambda (p)
-             (let loop ()
-               (let ((line (get-line p)))
-                 (cond ((eof-object? line) #t)
-                       ((string=? line "") (loop))
-                       (else
-                        (let ((e (gate-boot-parse-line line)))
-                          (cond ((not e) #f)          ; old format, or malformed
-                                ((not (file-exists? (cdr e))) #f)
-                                ((not (string=? (car e) (gate-boot-hash-string (cdr e)))) #f)
-                                (else (loop)))))))))))))
+             (let ((identity (get-line p)) (current (gate-boot-toolchain-line)))
+               (and current (string? identity)
+                    (string=? identity current)
+                    (let loop ()
+                      (let ((line (get-line p)))
+                        (cond ((eof-object? line) #t)
+                              ((string=? line "") (loop))
+                              (else
+                               (let ((e (gate-boot-parse-line line)))
+                                 (cond ((not e) #f) ; old format, or malformed
+                                       ((not (file-exists? (cdr e))) #f)
+                                       ((not (string=? (car e) (gate-boot-hash-string (cdr e)))) #f)
+                                       (else (loop)))))))))))))))

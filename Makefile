@@ -2088,7 +2088,7 @@ devboot: submodules
 # Precompile the gate boot preamble to target/dev/gate.so so a pass gate boots in
 # ~0.2s instead of ~1.5s (it spends nearly all of that loading the same six
 # runtime files from Chez source). Opt-in like devboot: gate-boot.ss uses the
-# image when it is present and newer than every input, and loads from source
+# image when its Chez identity and source contents match, and loads from source
 # otherwise, so nothing depends on this target and CI is unaffected. Worth it
 # when iterating on one pass gate; `make ci` runs them in parallel anyway.
 gateboot: submodules
