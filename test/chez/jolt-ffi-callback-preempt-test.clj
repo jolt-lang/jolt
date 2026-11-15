@@ -11,7 +11,7 @@
 (ns jolt-ffi-callback-preempt-test
   (:refer-clojure :exclude [sorted?]))
 
-(require '[jolt.ffi :as ffi] '[jolt.fibers :as f])
+(require '[jolt.ffi :as ffi] '[jolt.fibers :as f] '[jolt.scheme :as scm])
 
 (def failures (atom []))
 
@@ -71,6 +71,30 @@
                       (Thread/sleep 2)
                       [r :parked]))
           [:caught :parked])
+
+;; The callback entry mask preserves the caller's interrupt depth on both
+;; normal and exceptional exits, including an already masked caller. Cover both
+;; adapter spellings: collect-safe callbacks have the same boundary obligation.
+(let [raise? (atom false)
+      cmp (fn [a b] (if @raise? (throw (ex-info "depth-check" {}))
+                       (compare (ffi/read a :int) (ffi/read b :int))))
+      ordinary (ffi/foreign-callable cmp [:pointer :pointer] :int)
+      collect-safe (ffi/foreign-callable cmp [:pointer :pointer] :int :collect-safe)]
+  (doseq [cb [ordinary collect-safe] masked? [false true]]
+    (when masked? (scm/call "disable-interrupts"))
+    (try
+      (let [depth (scm/call "sa-disable-count")]
+        (doseq [throws? [false true]]
+          (reset! raise? throws?)
+          (let [b (descending 4)
+                result (try (c-qsort b 4 4 cb) :returned (catch Throwable _ :caught))]
+            (ffi/free b)
+            (check-eq "callback normal/raise result" result (if throws? :caught :returned))
+            (check-eq "callback preserves incoming interrupt depth"
+                      (scm/call "sa-disable-count") depth))))
+      (finally (when masked? (scm/call "enable-interrupts")))))
+  (ffi/free-callable ordinary)
+  (ffi/free-callable collect-safe))
 
 ;; Preemption still works outside callbacks: two spinning fibers on a one-carrier
 ;; pool both make progress after each made a callback.

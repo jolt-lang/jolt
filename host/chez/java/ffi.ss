@@ -1487,9 +1487,13 @@
 ;; count up the preempt handler defers, as it does for any lock (fibers.ss), and
 ;; a park inside a callback raises jolt-locks-assert-none!'s error instead of
 ;; corrupting the stack. A callback is expected to be short, like a lock region.
-;; The count is per thread, so a callback on a foreign or plain thread costs one
-;; register write each way and changes nothing else. The dynamic-wind drops it
-;; again if the body escapes by a raise.
+;; The count is per thread, including callbacks on foreign or plain threads.
+;; The dynamic-wind drops it again if the body escapes by a raise.
+;; The adapter's __disable_interrupts convention masks the first and last Chez
+;; callback safepoints. Enter the lock before balancing its extra disable; on a
+;; normal return mask again before dropping the lock, and Chez balances it with
+;; a no-event enable after the last safepoint. A raise skips both that normal
+;; disable and Chez's return wrapper, leaving the incoming disable depth intact.
 ;; SYNTAX: (jolt-ffi-callable-body proc (argtype ...)) -> a procedure of as
 ;; many arguments, one per argtype.
 (define-syntax jolt-ffi-callable-body
@@ -1499,8 +1503,8 @@
      (let ((f proc))
        (lambda (p ...)
          (dynamic-wind
-           (lambda () (jolt-locks-enter!))
-           (lambda () (f p ...))
+           (lambda () (jolt-locks-enter!) (enable-interrupts))
+           (lambda () (let ((r (f p ...))) (disable-interrupts) r))
            (lambda () (jolt-locks-exit!))))))
     ((_ proc (t0 t1 ...) (p ...)) (jolt-ffi-callable-body proc (t1 ...) (p ... x)))))
 (define (ffi-free-callable addr)
