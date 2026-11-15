@@ -7,16 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<<<<<<< HEAD
-### Changed
-
-- **Indexed reads of a persistent vector are about a third faster.** On a
-  1000-element vector `(nth v i)` went from 16.8 to 11.9 ns, `(get v i)` from
-  19.4 to 12.3 ns and `(v i)` from 22.9 to 18.1 ns per read. Most of the time was
-  the trie read, which returned the leaf and the offset as two values, so it now
-  ends in the element read itself. `get` and `(v i)` also answer an in-range
-  vector index before the array probe and the generic invoke walk (#1652).
-=======
 ### Added
 
 - **`jolt.host/class-names` and `jolt.host/all-classes` list every class
@@ -71,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:long`, and `jolt-alength` itself now checks for an array first. `nil` still
   raises the NullPointerException, and `count` on an array is unchanged
   (19.1 ns). (#1648)
+- **Indexed reads of a persistent vector are about a third faster.** On a
+  1000-element vector `(nth v i)` went from 16.8 to 11.9 ns, `(get v i)` from
+  19.4 to 12.3 ns and `(v i)` from 22.9 to 18.1 ns per read. Most of the time was
+  the trie read, which returned the leaf and the offset as two values, so it now
+  ends in the element read itself. `get` and `(v i)` also answer an in-range
+  vector index before the array probe and the generic invoke walk (#1652).
 
 ### Performance
 
@@ -82,7 +78,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains an underscore, so a name without one now skips the lookup. A
   generated 200k-line project with 1,106 records and 1,070 `extend-*` forms
   loads from the AOT cache in 1.9 s instead of 2.6 s.
->>>>>>> origin/main
 
 ### Fixed
 
