@@ -208,7 +208,9 @@
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"
-                  "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"}]
+                  "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"
+                  ;; JOLT_CONST_DATA's per-form table (hoist.clj with-const-data)
+                  "intern-constants!"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an
