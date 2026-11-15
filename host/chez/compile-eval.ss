@@ -318,6 +318,12 @@
 (define (jolt-const-data-env?)
   (let ((e (getenv "JOLT_CONST_DATA")))
     (and e (not (string=? e "")) (not (string=? e "0")))))
+;; Also at load, for the gate scripts that load this file from source and never
+;; call jolt-trace-init-from-env! (run-corpus.ss and friends), so a gate can be
+;; run with the variant on. A built jolt loads this with the variable unset.
+(when (jolt-const-data-env?)
+  (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
+    (when (procedure? scd) (scd (getenv "JOLT_CONST_DATA")))))
 ;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
 ;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
 ;; JOLT_TRACE is a falsey value, so JOLT_TRACE=0 / off / no disables it in dev mode.
@@ -358,10 +364,11 @@
   (jolt-phase-times-init-from-env!)
   ;; JOLT_CONST_DATA=1 (or =bind): emit each top-level form's keyword/symbol
   ;; literals as one quoted table (backend hoist.clj with-const-data). An
-  ;; experiment, off by default.
-  (when (jolt-const-data-env?)
-    (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
-      (when (procedure? scd) (scd (getenv "JOLT_CONST_DATA")))))
+  ;; experiment, off by default. Set either way, so a value the load-time check
+  ;; above baked into a binary built with the variable set is the run's again.
+  (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
+    (when (procedure? scd)
+      (scd (and (jolt-const-data-env?) (getenv "JOLT_CONST_DATA")))))
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (jolt-enable-trace!)))
 
