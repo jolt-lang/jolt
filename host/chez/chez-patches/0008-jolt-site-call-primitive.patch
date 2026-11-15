@@ -1,0 +1,63 @@
+diff --git a/s/cpnanopass.ss b/s/cpnanopass.ss
+index 7c7851b..b3338c0 100644
+--- a/s/cpnanopass.ss
++++ b/s/cpnanopass.ss
+@@ -1248,6 +1248,29 @@
+            [(non/none)
+             ;; Push attachment; `body` has been adjusted to pop
+             `(seq (attachment-set push ,e1) ,body)])]
++        [(call ,info ,mdcl ,pr
++               (case-lambda ,info2 (clause () ,interface ,[body 'non/none -> body])))
++         (guard (and (eq? (primref-name pr) '$jolt-site-call)
++                     (= interface 0)))
++         ;; Jolt's call-site trace restore around a non-tail call, open-coded
++         ;; here so the passes before this one see a single call: virtual
++         ;; register 2 (the site slot) is cleared for the call, a site pair in
++         ;; it is handed to virtual register 12, and both are put back after.
++         (let ([s (make-tmp 'ss)] [o (make-tmp 'so)] [r (make-tmp 'sr)])
++           `(let ([,s ,(%primcall #f #f virtual-register (quote 2))]
++                  [,o ,(%primcall #f #f virtual-register (quote 12))])
++              (seq
++               (if ,(%primcall #f #f pair? ,s)
++                   ,(%primcall #f #f set-virtual-register! (quote 12) ,s)
++                   (quote ,(void)))
++               (seq
++                ,(%primcall #f #f set-virtual-register! (quote 2) (quote 0))
++                (let ([,r ,body])
++                  (seq
++                   ,(%primcall #f #f set-virtual-register! (quote 2) ,s)
++                   (seq
++                    ,(%primcall #f #f set-virtual-register! (quote 12) ,o)
++                    ,(return mode r))))))))]
+         [(call ,info ,mdcl ,pr ,[e1 'non/none -> e1]
+                (case-lambda ,info2 (clause (,x) ,interface ,[body])))
+          (guard (and (eq? (primref-name pr) '$call-getting-continuation-attachment)
+diff --git a/s/primdata.ss b/s/primdata.ss
+index 87700c8..2c2c673 100644
+--- a/s/primdata.ss
++++ b/s/primdata.ss
+@@ -1915,6 +1915,7 @@
+   ($call-getting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-setting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-in-continuation [sig [(ptr procedure) -> (ptr ...)] [(ptr ptr procedure) -> (ptr ...)]] [flags])
++  ($jolt-site-call [sig [(procedure) -> (ptr ...)]] [flags])
+   ($char-grapheme-step [sig [(char fixnum) -> (boolean fixnum)]] [flags])
+   ($char-grapheme-other-state [flags true])
+   ($check-heap-errors [flags single-valued])
+diff --git a/s/prims.ss b/s/prims.ss
+index bd23224..9dd0558 100644
+--- a/s/prims.ss
++++ b/s/prims.ss
+@@ -605,6 +605,12 @@
+       ($oops who "~s is not a procedure" p))
+     (#3%$call-setting-continuation-attachment v (lambda () (p)))))
+ 
++(define-who $jolt-site-call
++  (lambda (p)
++    (unless (procedure? p)
++      ($oops who "~s is not a procedure" p))
++    (#3%$jolt-site-call (lambda () (p)))))
++
+ (define-who $call-getting-continuation-attachment
+   (lambda (default-val p)
+     (unless (procedure? p)
