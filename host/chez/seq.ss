@@ -1718,9 +1718,12 @@
 ;; JOLT_CLJ_CALL=prim: the same call as one Chez primitive, $clj-call, which a
 ;; Chez carrying host/chez/chez-patches/0010 open-codes late (cpnanopass), so the
 ;; passes before it see one call. Chosen when the adapter is compiled
-;; (sa-clj-call); a Chez without the primitive gets jolt-clj-call above.
+;; (sa-clj-call); a Chez without the primitive gets today's call, jolt-invoke-tN,
+;; so stock Chez compiles what the default emission compiles. (The inline
+;; expansion was the fallback first; its application carries no source, so an
+;; AOT-compiled non-tail caller reported its fn's line, not the call's.)
 (define-syntax jolt-clj-call-prim
-  (syntax-rules () ((_ f a ...) (sa-clj-call (jolt-clj-call f a ...) f a ...))))
+  (syntax-rules () ((_ f a ...) (sa-clj-call (jolt-clj-call-slow f a ...) f a ...))))
 (sa-clj-call-handler-set! jolt-invoke)
 (define-syntax jolt-clj-call-kept-prim
   (syntax-rules () ((_ f a ...) (jolt-site-kept (jolt-clj-call-prim f a ...)))))

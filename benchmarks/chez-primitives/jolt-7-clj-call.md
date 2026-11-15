@@ -6,7 +6,11 @@ compile time, `.so` size and run time? Three variants (four spellings) against
 the default, on stock Chez 10.4.1, Jolt's patched Chez (0001-0007, `p7`) and
 that Chez plus this pellet's patch 0010 (`p10`). Generated Clojure 200k project,
 machine and checksum (374878) as in `jolt-1-harness.md`; `exp/chez-primitives`
-7f66478c plus this pellet's commits.
+7f66478c plus this pellet's commits. The timings use p10 = 0001-0007 + 0010;
+after rebasing onto 0008 and 0009 (ad2b0852) 0010 still applies cleanly on top
+of 0001-0009 (`ci/apply-chez-patches.sh` on a fresh v10.4.1 clone), that Chez
+builds (`--threads`), has both `$jolt-site-call` and `$clj-call`, and passes
+the correctness runs below.
 
 ## What a call through a var is today
 
@@ -34,7 +38,7 @@ generation gets a `-cc<mode>` / `-dl<mode>` suffix.
 | `JOLT_CLJ_CALL=extract` (variant 1, Racket CS's spelling) | `(jolt-clj-call-x f a ...)` = `((let ((g f)) (if (and (procedure? g) (fxlogbit? n (procedure-arity-mask g))) g (jolt-clj-callable g))) a ...)`: the test only picks what to apply, one call site, no temporaries | seq.ss |
 | `JOLT_DIRECT_LINK=link` (variant 2) | the back end's existing direct linking (what `jolt build` sets) turned on for the runtime spine: app defs bind `jv$ns/name` with `def-var-linked!`, app calls apply it, seed calls apply a hoisted root. No inline pass, no inference | compile-eval.ss |
 | `JOLT_DIRECT_LINK=full` (variant 2, as at the REPL) | `*compiler-options* {:direct-linking true}` for the run: linking plus the inline pass and inference | compile-eval.ss |
-| `JOLT_CLJ_CALL=prim` (variant 3) | `(jolt-clj-call-prim f a ...)` → `(#%$clj-call f a ...)` where the Chez has the primitive, else the `inline` expansion | seq.ss, scheme-adapter-runtime.ss `sa-clj-call` |
+| `JOLT_CLJ_CALL=prim` (variant 3) | `(jolt-clj-call-prim f a ...)` → `(#%$clj-call f a ...)` where the Chez has the primitive; without it the emitter emits the default call (see below) | seq.ss, scheme-adapter-runtime.ss `sa-clj-call`, compile-eval.ss |
 
 The ordering `let*` the emitter adds when an operand's effect could be observed
 is kept in every variant; the deref stays a `var-cell-deref` call. Untraced and
@@ -60,9 +64,15 @@ or the closure's for an arity-wrapper procedure, exactly what
 otherwise call the top-level value of `$clj-call-handler` with `f` first. Jolt
 registers `jolt-invoke` there (seq.ss, through the adapter), which does what
 `jolt-invoke-tN` does for every non-procedure and raises the same
-ArityException for a wrong arity. Stock Chez and p7 get the `inline` expansion:
-`sa-clj-call` checks `($primitive $clj-call)` when the adapter is compiled, as
-0008's `sa-jolt-site-call` does.
+ArityException for a wrong arity. `sa-clj-call` checks `($primitive
+$clj-call)` when the adapter is compiled, as 0008's `sa-jolt-site-call` does.
+
+Without the primitive, `prim` now emits exactly the default call:
+compile-eval.ss makes the same check at load and leaves the knob off, so the
+`.scm` is byte-identical to the default's (checked with `cmp`). The timings
+below for stock and p7 `prim` were taken with the first fallback, the `inline`
+expansion, which broke stack-trace lines (Correctness); they stand for
+`inline`, not for today's fallback, which costs what default costs.
 
 ### Racket CS and applicable structs
 
@@ -209,17 +219,57 @@ stops holding a procedure is applied as one (ClassCastException where Clojure
 dispatches the new value), a clojure.core var the runtime defined is read once
 per def, and under `full` an inlined body is frozen, as on the JVM. That fits
 a cache build of a finished program or an opt-in at the REPL, not the open
-world `jolt run` promises by default. Two things to fix before using it on the
-runtime path: the `full` failure (jolt-9) and the run-to-run variation in
-whether a REPL caller links. The `.so` growth (+16%) is worth finding: a
-setter that does not need its own closure per def would recover it.
+world `jolt run` promises by default. Three things to fix before using it on the
+runtime path: the `full` failure (jolt-9), the run-to-run variation in
+whether a REPL caller links, and the stack traces: a linked call is a plain
+application with no tail-site store, so tracesmoke loses 10 frame and line
+assertions under `link` (Correctness). The `.so` growth (+16%) is worth
+finding: a setter that does not need its own closure per def would recover it.
 
 **Not variant 1** (either spelling): slower to compile, larger, and 4% at run
-time. **Not variant 3 for compile time**: +14% compile and +6% `.so`; it is the
+time; `inline` also breaks stack-trace lines. **Not variant 3 for compile time**: +14% compile and +6% `.so`; it is the
 best open-world option for run time (`mfib` -19%, warm -4%) and the only one
 that keeps every semantic, so it is worth keeping in mind if open-world call
 speed matters more than compile time, but it does not serve this group's
 question.
+
+## Correctness
+
+`make corpus`, `make tracesmoke` and `make errorreport` with each knob set
+(stock Chez, and the rebuilt p10 = 0001-0010 for `prim`, `CHEZ=` / `JOLT_BIN=`
+pointing at it). The filtered gate (every `make test` target but gambit* and
+certify, then fastpathratio and stdlibratio) passes with the knobs off.
+
+| | corpus | tracesmoke | errorreport |
+|---|---|---|---|
+| default, stock and p10 | 7664/7674 (the 10 allowlisted) | 82 passed | 52 passed |
+| `inline` | 7664/7674 | **6 failed**, 76 passed | 52 passed |
+| `extract` | 7664/7674 | 82 passed | 52 passed |
+| `link` | **7654/7677, 8 new divergences, 5 new crashes** | **10 failed**, 72 passed | 52 passed |
+| `prim`, p10 (the primitive) | 7664/7674 | 82 passed | 52 passed |
+| `prim`, stock (now the default call) | 7664/7674 | 82 passed | 52 passed |
+
+- **`inline` loses call-site lines.** A non-tail call through a var reports
+  its caller at the fn's `defn` line instead of the call's line
+  (`app.deep/-main (deep.clj:6)` for a call on line 7), and a frame the
+  two-level spine test recovers from the outer rib (`dive`) is missing. The
+  application the macro builds is nested in a `let` and `if`, not the
+  expansion's outer form, and the frame's line comes from the source the call
+  carries; `extract`, whose expansion IS the application, and `$clj-call`,
+  one primitive call, keep the line. The first `prim` fallback, the same
+  expansion behind one more macro, kept it when compiled in-process but lost
+  it from the AOT cache, and even today's `jolt-invoke-t1` behind those two
+  macro layers lost it; hence the fallback now leaves the knob off instead.
+- **`link` fails the corpus** where a name is reused across cases in the one
+  corpus session: a case that `defmulti`s a name an earlier case `defn`'d
+  gets the earlier fn's answer (`dispatch on value` returns 2) or a
+  ClassCastException for applying the multimethod (`multimethod`, `methods`,
+  `get-method`, `remove-method`, ...; a three-line file, `defn f` then
+  `defmulti f`, reproduces the exception), the documented closed-world
+  behaviour, and `with-redefs` of `deref` does not reach a caller
+  whose `deref` was hoisted (`jolt-seed-root`). Its tracesmoke failures are
+  frames and lines a linked call does not record (no tail-site store): `-main`
+  at its call site, a `try`-wrapped caller, a mutual tail chain, `hop`/`dive`.
 
 ## Semantics
 
@@ -227,10 +277,11 @@ question.
 compiles it) passes in the open world, under `inline`, `extract` and `prim`
 (stock and p10, tracing on and off) and under `link`:
 
-- `inline`, `extract`, `prim` change nothing observable: a `defn`,
+- `inline`, `extract`, `prim` keep the call's semantics: a `defn`,
   `alter-var-root` or `with-redefs` of the callee reaches the caller; keywords,
   maps and multimethods in vars are called as IFns; a wrong arity is the same
-  ArityException with the same message.
+  ArityException with the same message. `inline` does change stack traces
+  (Correctness).
 - `link`: redefinition still reaches linked callers (the def is linked through
   `def-var-linked!`, whose setter writes every root write through to the `jv$`
   binding), as do `alter-var-root` and `with-redefs`; `^:redef` and

@@ -344,10 +344,16 @@
 ;; inference), =full binds *compiler-options* {:direct-linking true} for the run
 ;; (linking, inlining and inference, as at the REPL). loader.ss aot-trace-tag
 ;; names both in the cache generation.
+;; =prim on a Chez without $clj-call (chez-patches/0010) emits the default call,
+;; so stock Chez compiles exactly today's code.
+(define jolt-clj-call-prim? (guard (c (#t #f)) (eval '($primitive $clj-call)) #t))
 (define (jolt-clj-call-init-from-env!)
   (let ((m (getenv "JOLT_CLJ_CALL"))
         (scc (var-deref "jolt.backend-scheme.session" "set-clj-call!")))
-    (when (procedure? scc) (scc (and m (> (string-length m) 0) m))))
+    (when (procedure? scc)
+      (scc (and m (> (string-length m) 0)
+                (not (and (string=? m "prim") (not jolt-clj-call-prim?)))
+                m))))
   (let ((m (getenv "JOLT_DIRECT_LINK")))
     (cond
       ((and m (string=? m "link"))
