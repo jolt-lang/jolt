@@ -1007,6 +1007,76 @@
             [(count err) (str/includes? err "Broken pipe")])
           [100000 false])
 
+;; sun.misc.Signal (#1679). The CLI claims USR1, USR2 and WINCH at entry along
+;; with the shutdown three, so the watcher's answer covers them too; a signal
+;; nobody takes (PROF) is still not one of its own.
+(let [answer (fn [r n]
+               (scm/eval-string (str "(let ([b (sa-foreign-alloc 4)])"
+                                     " (sa-foreign-set! 'int b 0 " n ")"
+                                     " (let ([s (jolt-sigwait-signal " r " b)]) (sa-foreign-free b) s))")))
+      num (fn [nm] (scm/eval-string (str "(jolt-signal-number \"" nm "\")")))]
+  (check-eq "sigwait answer: USR1, USR2 and WINCH are the watcher's under the CLI"
+            [(answer 0 (num "USR1")) (answer 0 (num "USR2")) (answer 0 (num "WINCH"))]
+            [(num "USR1") (num "USR2") (num "WINCH")])
+  (check-eq "sigwait answer: PROF is still outside the set" (answer 0 (num "PROF")) false))
+
+;; A program's handler runs on a daemon thread named "SIG<NAME> handler", for a
+;; signal from outside and for its own Signal/raise; SIG_IGN drops USR1, WINCH's
+;; default ignores it, and a handler for INT replaces the shutdown it would be.
+;; The process lives through all of them, and SIGTERM still runs the hooks.
+(let [readyf (str (fs/create-temp-file {:prefix "jp-signal-" :suffix ".txt"}))
+      logf   (str (fs/create-temp-file {:prefix "jp-signal-log-" :suffix ".txt"}))
+      hookf  (str (fs/create-temp-file {:prefix "jp-signal-hook-" :suffix ".txt"}))
+      prog (str "(import '[sun.misc Signal SignalHandler])"
+                "(defn note [& xs] (locking *ns* (spit \"" logf "\" (str (apply str xs) \"\\n\") :append true)))"
+                "(Signal/handle (Signal. \"USR2\")"
+                "  (reify SignalHandler (handle [_ s]"
+                "    (note (.getName s) \" \" (.getName (Thread/currentThread)) \" \" (.isDaemon (Thread/currentThread))))))"
+                "(Signal/handle (Signal. \"INT\") (reify SignalHandler (handle [_ s] (note \"INT\"))))"
+                "(Signal/handle (Signal. \"USR1\") SignalHandler/SIG_IGN)"
+                "(.addShutdownHook (Runtime/getRuntime) (Thread. (fn [] (spit \"" hookf "\" \"RAN\"))))"
+                "(Signal/raise (Signal. \"USR2\"))"
+                "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
+      proc (process [jolt-bin "-e" prog] {:out :string :err :string})
+      pid (.pid (:proc proc))
+      lines #(set (str/split-lines (slurp logf)))]
+  (loop [n 0]
+    (when (and (< n 200) (str/blank? (slurp readyf)))
+      (Thread/sleep 50)
+      (recur (inc n))))
+  (doseq [s ["USR2" "WINCH" "USR1" "INT"]]
+    (sh ["sh" "-c" (str "kill -" s " " pid)])
+    (Thread/sleep 300))
+  (check-eq "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread"
+            (contains? (lines) "USR2 SIGUSR2 handler true") true)
+  (check-eq "an INT handler runs in place of the shutdown" (contains? (lines) "INT") true)
+  (check-eq "USR2, WINCH, an ignored USR1 and a handled INT leave it running" (p/alive? proc) true)
+  (sh ["sh" "-c" (str "kill -TERM " pid)])
+  (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+  (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+  (check-eq "SIGTERM still runs the hooks alongside signal handlers" (slurp hookf) "RAN")
+  (check-eq "and exits 128+SIGTERM" (:exit @proc) 143)
+  (doseq [f [readyf logf hookf]] (fs/delete-if-exists f)))
+
+;; With no handler, USR1 keeps its default: the process ends by the signal, its
+;; hooks unrun, as the JVM's does (exit 138 = 128+SIGUSR1 on Linux).
+(let [readyf (str (fs/create-temp-file {:prefix "jp-usr1-" :suffix ".txt"}))
+      hookf  (str (fs/create-temp-file {:prefix "jp-usr1-hook-" :suffix ".txt"}))
+      prog (str "(.addShutdownHook (Runtime/getRuntime) (Thread. (fn [] (spit \"" hookf "\" \"RAN\"))))"
+                "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
+      proc (process [jolt-bin "-e" prog] {:out :string :err :string})
+      usr1 (scm/eval-string "(jolt-signal-number \"USR1\")")]
+  (loop [n 0]
+    (when (and (< n 200) (str/blank? (slurp readyf)))
+      (Thread/sleep 50)
+      (recur (inc n))))
+  (sh ["sh" "-c" (str "kill -USR1 " (.pid (:proc proc)))])
+  (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+  (check-eq "an unhandled USR1 ends the process" (p/alive? proc) false)
+  (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+  (check-eq "by the signal, hooks unrun" [(:exit @proc) (slurp hookf)] [(+ 128 usr1) ""])
+  (doseq [f [readyf hookf]] (fs/delete-if-exists f)))
+
 (if (empty? @failures)
   (println "PROCESS-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

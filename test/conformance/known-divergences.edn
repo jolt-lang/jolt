@@ -540,6 +540,29 @@
    :check :prose
    :why "jdk.net.ExtendedSocketOptions is not modelled, so there is nothing to name the options by"
    :note "SO_KEEPALIVE itself works."}
+  ;; sun.misc.Signal (#1679). jolt's shutdown watcher takes HUP, INT and TERM, and
+  ;; under the CLI or a built binary USR1, USR2 and WINCH (concurrency.ss).
+  {:category :restrictive
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"ALRM\") handler), and PIPE, CHLD, CONT, TSTP, the other signals outside HUP INT TERM USR1 USR2 WINCH"
+   :jvm "accepts the handler"
+   :jolt "throws IllegalArgumentException \"Signal not supported by jolt: SIGALRM\""
+   :check :prose
+   :why "a handler needs the signal blocked in every thread from startup; jolt claims only these six, and job-control and child signals have runtime meanings it keeps"
+   :note "QUIT, KILL, STOP, FPE, SEGV and ILL are refused on both, with the JVM's message. A jolt built as a library claims only HUP, INT and TERM, so a USR1/USR2/WINCH handler is refused there too."}
+  {:category :host-model
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") h), the first time, for INT, TERM, HUP or USR2"
+   :jvm "returns the JVM's own handler for the signal (a Signal$SunMiscHandler wrapping its shutdown or VM handler)"
+   :jolt "returns SignalHandler/SIG_DFL"
+   :check :prose
+   :why "the shutdown jolt runs for INT, TERM and HUP is the default action rather than a handler object"
+   :note "Handing the returned value back to handle restores the shutdown on both."}
+  {:category :host-model
+   :behavior "an unhandled SIGUSR2 sent to the process"
+   :jvm "nothing: HotSpot uses USR2 internally and drops a stray one"
+   :jolt "the OS default: the process ends with status 140"
+   :check :prose
+   :why "jolt has no internal use for USR2, so its default is the platform's"
+   :note "An unhandled USR1 ends both (138), and WINCH is ignored by both."}
   ;; *in* reads its source a line at a time (__stdin-read-line), so a
   ;; BufferedReader over it, which fills with one read of up to 8192 chars,
   ;; takes one line where the JVM's takes everything the pipe already holds.
