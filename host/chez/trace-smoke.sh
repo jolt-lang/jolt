@@ -245,6 +245,69 @@ out_ts="$(run_app app.tailstale)"
 expect_match "mutual-tail: the thrower is named" "$out_ts" 'app\.tailstale/thrower'
 expect_no_match "mutual-tail: ping left the trace" "$out_ts" 'app\.tailstale/ping'
 expect_no_match "mutual-tail: pong left the trace" "$out_ts" 'app\.tailstale/pong'
+# A frame location and its return point are reused after a call returns. The
+# same leaf is entered again through one non-tail call site in a recursive loop;
+# its old tail caller must not become a frame of the new invocation.
+cat > "$work/src/app/framereuse.clj" <<'EOF'
+(ns app.framereuse)
+(defn leaf [fail?]
+  (if fail?
+    (+ 1 (/ 1 0))
+    1))
+(defn returned [fail?] (leaf fail?))
+(defn -main [& _]
+  (println
+    (loop [second? false]
+      (let [f (if second? leaf returned)
+            r (f second?)]
+        (if second? r (recur true))))))
+EOF
+echo "trace smoke: same-depth reentry cannot revive a returned tail caller"
+out_fr="$(run_app app.framereuse)"
+expect_match "frame reuse: the reentered leaf throws at its own line" "$out_fr" 'app\.framereuse/leaf (.*src/app/framereuse\.clj:4)'
+expect_no_match "frame reuse: its returned tail caller stays absent" "$out_fr" 'app\.framereuse/returned'
+
+# Validating the last pair cannot recover an outer dynamic tail edge after
+# an inner non-tail call overwrote it and returned. Keep both halves explicit:
+# the live bridge survives, and the returned inner tail caller stays absent.
+cat > "$work/src/app/frameouter.clj" <<'EOF'
+(ns app.frameouter)
+(defn inner [f] (f))
+(defn body []
+  (inner #(identity 1))
+  (+ 1 (/ 1 0)))
+(defn bridge [f] (f))
+(defn -main [& _]
+  (println (bridge body)))
+EOF
+echo "trace smoke: an inner returned tail chain preserves its outer dynamic caller"
+out_fouter="$(run_app app.frameouter)"
+expect_match "outer mark: the live dynamic tail caller survives" "$out_fouter" 'app\.frameouter/bridge (.*src/app/frameouter\.clj:6)'
+expect_match "outer mark: the faulting body survives" "$out_fouter" 'app\.frameouter/body (.*src/app/frameouter\.clj:5)'
+expect_no_match "outer mark: the returned inner tail caller stays absent" "$out_fouter" 'app\.frameouter/inner'
+
+# Non-tail recursion crosses Chez stack-segment boundaries while the bridge's
+# tail chain is live. A mark that cannot follow that movement may be dropped;
+# it must never name the unrelated invocation that returned before the chain.
+cat > "$work/src/app/frameoverflow.clj" <<'EOF'
+(ns app.frameoverflow)
+(defn leaf [x] x)
+(defn returned [] (leaf :done))
+(defn descend [n]
+  (if (zero? n)
+    (+ 1 (/ 1 0))
+    (inc (descend (dec n)))))
+(defn bridge [] (descend 12000))
+(defn -main [& _]
+  (returned)
+  (println (bridge)))
+EOF
+echo "trace smoke: a live tail chain crossing stack segments invents no returned frame"
+out_fo="$(run_app app.frameoverflow)"
+expect_match "frame overflow: the live recursive frame owns the fault" "$out_fo" 'app\.frameoverflow/descend (.*src/app/frameoverflow\.clj:6)'
+expect_no_match "frame overflow: the returned invocation stays absent" "$out_fo" 'app\.frameoverflow/returned'
+expect_no_match "frame overflow: its returned callee stays absent" "$out_fo" 'app\.frameoverflow/leaf'
+
 # the positive dual: a NON-TAIL entry into a mutual tail chain that throws mid-
 # chain — the hops between the entry and the throw must appear, with their lines.
 cat > "$work/src/app/tailchain.clj" <<'EOF'
