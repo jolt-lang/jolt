@@ -758,10 +758,7 @@
                               (jrec-member-field inst k))))
                  (and k2 (jrec-field-index inst k2)))))
         (if i
-            (let* ((flags (hashtable-ref
-                            chez-record-dbl-tbl
-                            (jrec-tag inst)
-                            #f))
+            (let* ((flags (vector-ref (jrdesc-ifc-of inst) 15))
                    (v2 (if (and flags
                                 (fx< i (vector-length flags))
                                 (vector-ref flags i)
@@ -785,6 +782,29 @@
           (throw-jvm
             'IllegalArgumentException
             "set! of a field on a non-record"))))
+
+(define (jolt-set-own-field! site inst k v)
+  (let ((c (unbox site)))
+    (if (and c (jrec? inst) (eq? (jrec-desc inst) (car c)))
+        (let* ((i (cdr c))
+               (flags (vector-ref (jrdesc-ifc-of inst) 15))
+               (v2 (if (and flags
+                            (fx< i (vector-length flags))
+                            (vector-ref flags i)
+                            (number? v)
+                            (not (flonum? v)))
+                       (exact->inexact v)
+                       v)))
+          (jrec-field-set! inst i v2)
+          v2)
+        (let ((r (jolt-set-field! inst k v)))
+          (when (and (jrec? inst) (keyword-t? k))
+            (let ((k2 (jrec-member-field inst k)))
+              (when k2
+                (set-box!
+                  site
+                  (cons (jrec-desc inst) (jrec-field-index inst k2))))))
+          r))))
 
 (define (jrec-ext=? ea eb)
   (cond
@@ -3816,6 +3836,19 @@
              (if (eq? r 'pass) (loop (cdr as)) r)))))))
 
 (define (jrec-field-site-make) (box #f))
+
+(define (jrec-own-field site obj k)
+  (let ((c (unbox site)))
+    (if (and c (jrec? obj) (eq? (jrec-desc obj) (car c)))
+        (jrec-field-ref obj (cdr c))
+        (let ((slot (and (jrec? obj)
+                         (not (eq? k jolt-deftype-kw))
+                         (jrec-field-index obj k))))
+          (if slot
+              (begin
+                (set-box! site (cons (jrec-desc obj) slot))
+                (jrec-field-ref obj slot))
+              (jrec-field obj k))))))
 
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))

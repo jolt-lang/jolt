@@ -1231,6 +1231,19 @@
 ;; is not a declared field, an extend-class! override at the head of the arms —
 ;; takes record-method-dispatch exactly as the site did before.
 (define (jrec-field-site-make) (box #f))
+;; (__deftype-field this :f) with a per-site cache: the slot jrec-field found,
+;; keyed on the descriptor. A descriptor's field keys never change, so the slot
+;; holds while the receiver has that descriptor. Any other receiver takes
+;; jrec-field, which also answers :jolt/deftype and extension-map keys.
+(define (jrec-own-field site obj k)
+  (let ((c (unbox site)))
+    (if (and c (jrec? obj) (eq? (jrec-desc obj) (car c)))
+        (jrec-field-ref obj (cdr c))
+        (let ((slot (and (jrec? obj) (not (eq? k jolt-deftype-kw)) (jrec-field-index obj k))))
+          (if slot
+              (begin (set-box! site (cons (jrec-desc obj) slot))
+                     (jrec-field-ref obj slot))
+              (jrec-field obj k))))))
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))
     (if (and c (jrec? obj) (eq? (jrec-desc obj) (car c))

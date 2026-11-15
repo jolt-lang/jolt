@@ -47,4 +47,8 @@
   {:path "compatibility/cheshire/core.clj" :name "parse-stream-strict"
    :why "cheshire's public API, for scripts that call it; nothing in jolt does"}
   {:path "compatibility/cheshire/core.clj" :name "parsed-seq"
-   :why "cheshire's public API, for scripts that call it; nothing in jolt does"}]}
+   :why "cheshire's public API, for scripts that call it; nothing in jolt does"}
+  {:path "compatibility/bencode/core.clj" :name "read-netstring"
+   :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}
+  {:path "compatibility/bencode/core.clj" :name "write-netstring"
+   :why "nrepl/bencode's public API, for scripts that call it; nothing in jolt does"}]}
