@@ -82,16 +82,19 @@
                      (set! dropping #f))
                    (if dropping acc (jolt-invoke2 rf acc x))))))))
 ;; (mapcat f) transducer: map f, then splice (cat) f's result into rf, honoring a
-;; mid-splice `reduced`.
+;; mid-splice `reduced`. The JVM's is (comp (map f) cat), so like map's its step
+;; takes several inputs: (sequence (mapcat list) [1 2] [3 4]) is (1 3 2 4).
 (define (td-mapcat f)
   (lambda (rf)
+    (define (splice acc r)
+      (let loop ((acc acc) (xs (seq->list (jolt-seq r))))
+        (if (or (null? xs) (jolt-reduced? acc)) acc
+            (loop (jolt-invoke2 rf acc (car xs)) (cdr xs)))))
     (case-lambda
       (() (jolt-invoke rf))
       ((acc) (jolt-invoke1 rf acc))
-      ((acc x) (let loop ((acc acc)
-                          (xs (seq->list (jolt-seq (jolt-invoke1 f x)))))
-                 (if (or (null? xs) (jolt-reduced? acc)) acc
-                     (loop (jolt-invoke2 rf acc (car xs)) (cdr xs))))))))
+      ((acc x) (splice acc (jolt-invoke1 f x)))
+      ((acc x . xs) (splice acc (apply jolt-invoke f x xs))))))
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
 (define (into-xform to xform from)

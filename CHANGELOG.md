@@ -96,6 +96,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reader and writer opening through them. `reader`, `writer`, `input-stream`,
   `output-stream`, `slurp` and `spit` now call an extension's fn for a source
   they do not open themselves.
+- **`(sequence xform coll & colls)` takes several collections.** The
+  multi-collection arity threw an `ArityException`, which stopped
+  meander/epsilon from loading. The xform's step function now receives one
+  argument per collection, the walk ends at the shortest one, and the result
+  stays lazy and is `()` when empty (#1664). A `(mapcat f)` xform
+  takes several inputs per step too, as `(comp (map f) cat)` does on the JVM.
 
 ## [0.8.27] - 2026-11-12
 
