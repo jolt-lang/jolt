@@ -346,17 +346,13 @@
 ;; The -int variants are INT-width: they wrap at 32 bits, not 64. Aliasing them to
 ;; the long ops let a value climb past 2^31 and then blow up at the next (int x) —
 ;; instaparse's hash mixing (unchecked-multiply-int in a loop) is exactly that
-;; shape. jolt-unchecked-int does the wrap-and-sign-fold, so each -int op is its
-;; long counterpart folded back to 32 bits, which is what the JVM's int overflow is.
-(let ((d! (lambda (n v) (def-var! "clojure.core" n v)))
-      (as-int (lambda (f) (lambda args (jolt-unchecked-int (apply f args))))))
-  (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" (as-int jolt-unchecked-add))
-  (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" (as-int jolt-unchecked-sub))
-  (d! "unchecked-multiply" jolt-unchecked-mul)   (d! "unchecked-multiply-int" (as-int jolt-unchecked-mul))
-  (d! "unchecked-negate" jolt-uncneg)            (d! "unchecked-negate-int" (as-int jolt-uncneg))
-  (d! "unchecked-inc" jolt-uncinc)               (d! "unchecked-inc-int" (as-int jolt-uncinc))
-  (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" (as-int jolt-uncdec))
-  ;; quotient/remainder of two ints is already in range; the fold is a no-op except
-  ;; at Integer/MIN_VALUE / -1, where the JVM also wraps back to MIN_VALUE.
-  (d! "unchecked-divide-int" (as-int jolt-unchecked-div))
-  (d! "unchecked-remainder-int" (as-int jolt-unchecked-rem)))
+;; shape. Each is a fixed-arity helper from seq.ss, which op_registry.clj lowers to.
+(let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
+  (d! "unchecked-add" jolt-unchecked-add)        (d! "unchecked-add-int" jolt-uncaddi2)
+  (d! "unchecked-subtract" jolt-unchecked-sub)   (d! "unchecked-subtract-int" jolt-uncsubi2)
+  (d! "unchecked-multiply" jolt-unchecked-mul)   (d! "unchecked-multiply-int" jolt-uncmuli2)
+  (d! "unchecked-negate" jolt-uncneg)            (d! "unchecked-negate-int" jolt-uncnegi)
+  (d! "unchecked-inc" jolt-uncinc)               (d! "unchecked-inc-int" jolt-uncinci)
+  (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" jolt-uncdeci)
+  (d! "unchecked-divide-int" jolt-uncdivi2)
+  (d! "unchecked-remainder-int" jolt-uncremi2))
