@@ -4194,4 +4194,7 @@
   {:suite "sequence" :label "sequence 1-arity nil gives ()" :expr "(sequence nil)" :expected "()"}
   {:suite "sequence" :label "sequence xform and one coll still works" :expr "(sequence (map inc) [1 2 3])" :expected "(2 3 4)"}
   {:suite "sequence" :label "sequence xform and one empty coll gives ()" :expr "(sequence (map inc) [])" :expected "()"}
+  {:suite "sequence" :label "a mapcat xform takes one item from each coll" :expr "(sequence (mapcat list) [1 2] [3 4])" :expected "(1 3 2 4)"}
+  {:suite "sequence" :label "a mapcat xform over infinite colls stops at take" :expr "(sequence (comp (mapcat vector) (take 3)) (range) (range 10 20))" :expected "(0 10 1)"}
+  {:suite "sequence" :label "a three-coll mapcat xform, an empty result spliced as nothing" :expr "(sequence (mapcat (fn [a b c] (repeat a [b c]))) [1 0 2] [:x :y :z] \"abc\")" :expected "([:x \\a] [:z \\c] [:z \\c])"}
 ]
