@@ -28,6 +28,7 @@
 (define (so-of f) (string-append outdir "/" (substring f 0 (- (string-length f) 4)) ".so"))
 (define (file-size p) (let* ((ip (open-file-input-port p)) (n (port-length ip))) (close-port ip) n))
 
+(when (getenv "CC_PASS_TIMING") (#%$enable-pass-timing #t))
 (define fails 0)
 (define (one-run)
   (set! fails 0)
@@ -53,6 +54,10 @@
           (printf "  ~a run ~a: real ~a ms, cpu ~a ms\n" label (+ i 1) (car r) (cdr r))
           (loop (+ i 1) (cons r acc))))))
 (define (median xs) (let ((s (list-sort < xs))) (list-ref s (quotient (length s) 2))))
+;; CC_PASS_TIMING=1: Chez's per-pass compiler timings over all runs (to stderr,
+;; slows the compile; for finding where the time goes, not for the table)
+(when (getenv "CC_PASS_TIMING")
+  (parameterize ((current-output-port (current-error-port))) (#%$print-pass-stats)))
 (printf "~a ii=~a files=~a fail=~a real_ms=~a cpu_ms=~a ~s so_bytes=~a\n"
         label ii (length files) fails (median (map car results)) (median (map cdr results))
         (map car results)
