@@ -541,16 +541,24 @@
    :why "jdk.net.ExtendedSocketOptions is not modelled, so there is nothing to name the options by"
    :note "SO_KEEPALIVE itself works."}
   ;; sun.misc.Signal (#1679). jolt's shutdown watcher takes HUP, INT and TERM, and
-  ;; under the CLI or a built binary USR1, USR2 and WINCH (concurrency.ss).
+  ;; under the CLI or a built binary every other signal but TTIN, TTOU, PROF,
+  ;; VTALRM and the faults (concurrency.ss).
   {:category :restrictive
-   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"ALRM\") handler), and PIPE, CHLD, CONT, TSTP, the other signals outside HUP INT TERM USR1 USR2 WINCH"
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"TTIN\") handler), and TTOU, PROF, VTALRM; BUS"
    :jvm "accepts the handler"
-   :jolt "throws IllegalArgumentException \"Signal not supported by jolt: SIGALRM\""
+   :jolt "throws IllegalArgumentException: \"Signal not supported by jolt: SIGTTIN\" (TTIN, TTOU, PROF, VTALRM), \"Signal already used by VM or OS: SIGBUS\""
    :check :prose
-   :why "a handler needs the signal blocked in every thread from startup; jolt claims only these six, and job-control and child signals have runtime meanings it keeps"
-   :note "QUIT, KILL, STOP, FPE, SEGV and ILL are refused on both, with the JVM's message. A jolt built as a library claims only HUP, INT and TERM, so a USR1/USR2/WINCH handler is refused there too."}
+   :why "a handler needs the signal blocked in every thread from startup. Blocked, TTIN and TTOU change what the terminal does to a background job (EIO instead of a stop), and PROF and VTALRM are CPU timers that must reach the running thread. Chez handles BUS as a fault."
+   :note "QUIT, KILL, STOP, FPE, SEGV and ILL are refused on both, with the JVM's message. A jolt built as a library claims only HUP, INT and TERM, so a handler for any other signal is refused there."}
   {:category :host-model
-   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") h), the first time, for INT, TERM, HUP or USR2"
+   :behavior "a PIPE or XFSZ handler, when a write hits a closed pipe or the file size limit"
+   :jvm "the handler runs"
+   :jolt "the write fails with EPIPE or EFBIG and the handler does not run; it runs for a PIPE or XFSZ sent to the process with kill"
+   :check :prose
+   :why "the kernel sends these to the writing thread, which blocks them; only the watcher's sigwait takes a signal, and it sees the process-directed ones"
+   :note "An unhandled XFSZ from kill ends the process as before. One from a write is now an EFBIG instead, which is the JVM's answer too."}
+  {:category :host-model
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") h), the first time, for INT, TERM, HUP, USR2, PIPE or XFSZ"
    :jvm "returns the JVM's own handler for the signal (a Signal$SunMiscHandler wrapping its shutdown or VM handler)"
    :jolt "returns SignalHandler/SIG_DFL"
    :check :prose

@@ -9,17 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`sun.misc.Signal` handles USR1, USR2, WINCH, INT, TERM and HUP.**
+- **`sun.misc.Signal` handlers.**
   `(Signal/handle (Signal. "USR2") handler)` registers a `SignalHandler`,
   run as the JVM runs one: on a new daemon thread named `SIGUSR2 handler`,
   returning the previous handler, with `SIG_DFL` and `SIG_IGN` and
   `Signal/raise`. A handler for INT, TERM or HUP replaces the shutdown that
-  signal would run. The CLI and a built binary block USR1, USR2 and WINCH at
-  startup along with the shutdown three, so a thread started before the
-  handler was registered can't take the signal; one nobody handles keeps its
-  default action. QUIT, KILL, STOP, FPE, SEGV and ILL are refused, as on the
-  JVM, and so are the signals jolt does not take (ALRM, PIPE, CHLD...). A
-  jolt built as a library leaves USR1, USR2 and WINCH to its host. (#1679)
+  signal would run. The CLI and a built binary block the signals at startup,
+  so a thread started before the handler was registered can't take one, and
+  a signal nobody handles does what it did before. QUIT, KILL, STOP, FPE,
+  SEGV and ILL are refused, as on the JVM, and so are BUS (Chez's fault
+  handler), TTIN and TTOU (blocking them changes what the terminal does to a
+  background job) and PROF and VTALRM (CPU timers). A jolt built as a library
+  takes only INT, TERM and HUP and leaves the rest to its host. (#1679)
 
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept

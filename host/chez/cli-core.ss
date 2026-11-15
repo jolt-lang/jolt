@@ -434,8 +434,8 @@
   ;; kernel would deliver here, to SIG_DFL or to Chez's keyboard-interrupt
   ;; handler, with the hooks unrun either way. A JVM arms its signal dispatcher at
   ;; startup and answers 128+signal with the hooks run whoever registered them;
-  ;; this is the point where jolt can do the same (concurrency.ss). USR1, USR2
-  ;; and WINCH are claimed here too, for sun.misc.Signal handlers.
+  ;; this is the point where jolt can do the same (concurrency.ss). The other
+  ;; signals a sun.misc.Signal handler can take are claimed here too.
   (jolt-arm-signals!)
   (guard (v (#t (jolt-report-uncaught v)))
     ;; Host faults (a condition raised outside jolt-throw) get their k / marks /

@@ -1007,9 +1007,9 @@
             [(count err) (str/includes? err "Broken pipe")])
           [100000 false])
 
-;; sun.misc.Signal (#1679). The CLI claims USR1, USR2 and WINCH at entry along
-;; with the shutdown three, so the watcher's answer covers them too; a signal
-;; nobody takes (PROF) is still not one of its own.
+;; sun.misc.Signal (#1679). The CLI claims USR1, USR2, WINCH and the rest at
+;; entry along with the shutdown three, so the watcher's answer covers them too;
+;; a signal it never takes (PROF) is still not one of its own.
 (let [answer (fn [r n]
                (scm/eval-string (str "(let ([b (sa-foreign-alloc 4)])"
                                      " (sa-foreign-set! 'int b 0 " n ")"
@@ -1076,6 +1076,69 @@
   (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
   (check-eq "by the signal, hooks unrun" [(:exit @proc) (slurp hookf)] [(+ 128 usr1) ""])
   (doseq [f [readyf hookf]] (fs/delete-if-exists f)))
+
+;; The rest of the signals the watcher takes. A handler sees ALRM, TSTP and a
+;; CHLD from its own child; with no handler a signal does what it did before
+;; jolt took it: CHLD and PIPE are dropped, TSTP stops the process (and CONT
+;; resumes it), ALRM ends it. The signals jolt cannot take are refused.
+(let [readyf (str (fs/create-temp-file {:prefix "jp-sig2-" :suffix ".txt"}))
+      logf   (str (fs/create-temp-file {:prefix "jp-sig2-log-" :suffix ".txt"}))
+      prog (str "(import '[sun.misc Signal SignalHandler])"
+                "(doseq [n [\"ALRM\" \"CHLD\" \"TSTP\"]]"
+                "  (Signal/handle (Signal. n) (reify SignalHandler (handle [_ s]"
+                "    (locking *ns* (spit \"" logf "\" (str (.getName s) \"\\n\") :append true))))))"
+                "(.waitFor (.start (ProcessBuilder. [\"true\"])))"
+                "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
+      proc (process [jolt-bin "-e" prog] {:out :string :err :string})
+      pid (.pid (:proc proc))]
+  (loop [n 0]
+    (when (and (< n 200) (str/blank? (slurp readyf)))
+      (Thread/sleep 50)
+      (recur (inc n))))
+  (doseq [s ["ALRM" "TSTP"]]
+    (sh ["sh" "-c" (str "kill -" s " " pid)])
+    (Thread/sleep 300))
+  (check-eq "ALRM, TSTP and a child's CHLD reach their handlers"
+            (set (str/split-lines (slurp logf))) #{"ALRM" "TSTP" "CHLD"})
+  (check-eq "and the process runs on" (p/alive? proc) true)
+  (.destroyForcibly (:proc proc))
+  (doseq [f [readyf logf]] (fs/delete-if-exists f)))
+
+(let [readyf (str (fs/create-temp-file {:prefix "jp-sig3-" :suffix ".txt"}))
+      prog (str "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
+      proc (process [jolt-bin "-e" prog] {:out :string :err :string})
+      pid (.pid (:proc proc))
+      state #(second (re-find #"State:\s+(\S)" (slurp (str "/proc/" pid "/status"))))
+      linux? (fs/exists? "/proc/self/status")
+      alrm (scm/eval-string "(jolt-signal-number \"ALRM\")")]
+  (loop [n 0]
+    (when (and (< n 200) (str/blank? (slurp readyf)))
+      (Thread/sleep 50)
+      (recur (inc n))))
+  (doseq [s ["CHLD" "PIPE" "URG"]]
+    (sh ["sh" "-c" (str "kill -" s " " pid)])
+    (Thread/sleep 200))
+  (check-eq "an unhandled CHLD, PIPE or URG is dropped, as before" (p/alive? proc) true)
+  (when linux?
+    (sh ["sh" "-c" (str "kill -TSTP " pid)])
+    (Thread/sleep 300)
+    (check-eq "an unhandled TSTP stops the process" (state) "T")
+    (sh ["sh" "-c" (str "kill -CONT " pid)])
+    (Thread/sleep 300)
+    (check-eq "and CONT resumes it" (contains? #{"S" "R"} (state)) true))
+  (sh ["sh" "-c" (str "kill -ALRM " pid)])
+  (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+  (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+  (check-eq "an unhandled ALRM still ends it by the signal" (:exit @proc) (+ 128 alrm))
+  (fs/delete-if-exists readyf))
+
+(check-eq "the signals jolt cannot take are refused"
+          (mapv (fn [n] (try (sun.misc.Signal/handle (sun.misc.Signal. n) sun.misc.SignalHandler/SIG_DFL) :taken
+                             (catch IllegalArgumentException e (ex-message e))))
+                ["TTIN" "TTOU" "PROF" "VTALRM" "BUS"])
+          ["Signal not supported by jolt: SIGTTIN" "Signal not supported by jolt: SIGTTOU"
+           "Signal not supported by jolt: SIGPROF" "Signal not supported by jolt: SIGVTALRM"
+           "Signal already used by VM or OS: SIGBUS"])
 
 (if (empty? @failures)
   (println "PROCESS-TEST OK")

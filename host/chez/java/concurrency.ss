@@ -5554,11 +5554,13 @@
 ;; A CHILD process inherits none of this mask (jolt-with-empty-sigmask, further
 ;; down), so ^C on the foreground process group still kills subprocesses outright.
 ;;
-;; USR1, USR2 and WINCH are taken alongside them, for sun.misc.Signal (#1679),
-;; but only where the CLI or a built binary's launcher arms at entry
-;; (jolt-arm-signals!): a jolt built as a library leaves them to the program it
-;; is loaded into. Blocked up front for the reason the three are: a thread
-;; forked before a handler was registered would otherwise be a delivery target.
+;; Every other signal a sun.misc.Signal handler can take (#1679) is taken
+;; alongside them, but only where the CLI or a built binary's launcher arms at
+;; entry (jolt-arm-signals!): a jolt built as a library leaves them to the
+;; program it is loaded into. Blocked up front for the reason the three are: a
+;; thread forked before a handler was registered would otherwise be a delivery
+;; target. One nobody handles is raised again on the watcher with the process's
+;; own disposition, so it does what it did before (jolt-signal-default!).
 (define jolt-shutdown-signals '(15 1 2))
 (define jolt-shutdown-sigset (and jolt-sigmask-ok? (jolt-make-sigset jolt-shutdown-signals)))
 
@@ -5586,8 +5588,19 @@
     (cond ((null? ps) (number->string n))
           ((eqv? (cdar ps) n) (caar ps))
           (else (loop (cdr ps))))))
-(define jolt-sigwinch (jolt-signal-number "WINCH"))
-(define jolt-user-signals (map jolt-signal-number '("USR1" "USR2" "WINCH")))
+;; The signals the watcher takes besides the shutdown three. Left out:
+;;   - QUIT, KILL, STOP, FPE, SEGV, ILL and BUS: the JVM keeps the first six for
+;;     itself, and Chez handles BUS (with SEGV, FPE, ILL) as a fault.
+;;   - TTIN and TTOU: the kernel reads a BLOCKED one as ignored, so a background
+;;     read of the terminal would fail with EIO, and a write go through, where
+;;     the job stops today.
+;;   - PROF and VTALRM: a profiler's CPU timers, which have to reach the thread
+;;     that is running; blocked everywhere they could only land on the watcher.
+(define jolt-user-signals
+  (filter values
+          (map jolt-signal-number
+               '("USR1" "USR2" "WINCH" "ALRM" "URG" "IO" "XCPU" "XFSZ" "PWR" "SYS"
+                 "TRAP" "ABRT" "CHLD" "CONT" "TSTP" "PIPE" "STKFLT" "EMT" "INFO"))))
 (define jolt-watched-sigset
   (and jolt-sigmask-ok? (jolt-make-sigset (append jolt-shutdown-signals jolt-user-signals))))
 ;; #t once the entry point has claimed the user signals (jolt-arm-signals!). Read
@@ -5751,10 +5764,7 @@
                               (unless (jolt-native-handler-named? h "SIG_IGN")
                                 (jolt-signal-dispatch! sig h))
                               (loop)))
-                        ;; no handler: the OS default. WINCH's is to ignore it;
-                        ;; USR1 and USR2 end the process, hooks unrun, as SIG_DFL
-                        ;; does (the JVM's own answer to an unhandled USR1)
-                        ((= sig jolt-sigwinch) (loop))
+                        ;; no handler: what the signal did before jolt took it
                         ((not (memv sig jolt-shutdown-signals))
                          (jolt-signal-default! sig)
                          (loop))
@@ -5814,28 +5824,33 @@
       (record-method-dispatch t "setDaemon" (jolt-list #t))
       (record-method-dispatch t "start" jolt-nil))))
 
-;; The OS default for a signal the watcher took and nobody handles: put SIG_DFL
-;; back and raise it on this thread, the one thread that does not block it now.
-(define jsig-c-signal (jolt-foreign-proc-safe "signal" '(int void*) 'void*))
+;; A signal the watcher took and nobody handles: raise it again on this thread,
+;; unblocked here for the length of the raise, under whatever disposition the
+;; process has. The default action is then the one it always was (USR1 ends the
+;; process, CHLD and WINCH are dropped, TSTP stops it, PIPE stays ignored), and
+;; a handler a C library installed with sigaction still runs. No jolt code runs
+;; here: CHLD comes for every child, and that must not cost the program the
+;; multi-threaded paths (jolt-mark-mt!).
 (define jsig-c-raise (jolt-foreign-proc-safe "raise" '(int) 'int))
 (define jsig-c-kill (jolt-foreign-proc-safe "kill" '(int int) 'int))
 (define jsig-c-getpid (jolt-foreign-proc-safe "getpid" '() 'int))
+(define jolt-signal-raise-sets (make-eqv-hashtable))   ; watcher thread only
+(define jolt-signal-raise-old (and jolt-sigmask-ok? (sa-foreign-alloc 128)))
 (define (jolt-signal-default! sig)
-  (when (and jsig-c-signal jsig-c-raise)
-    (jolt-mark-mt!)
-    (guard (_ (#t #f)) (flush-output-port (current-output-port)))
-    (guard (_ (#t #f)) (flush-output-port (current-error-port)))
-    (jsig-c-signal sig 0)
-    (let ((set (jolt-make-sigset (list sig))) (old (sa-foreign-alloc 128)))
-      (c-pthread-sigmask jolt-sig-unblock-how set old)
+  (when jsig-c-raise
+    (let ((set (or (hashtable-ref jolt-signal-raise-sets sig #f)
+                   (let ((s (jolt-make-sigset (list sig))))
+                     (hashtable-set! jolt-signal-raise-sets sig s)
+                     s))))
+      (c-pthread-sigmask jolt-sig-unblock-how set jolt-signal-raise-old)
       (jsig-c-raise sig)
-      ;; a default that did not end the process: block it again and go on
-      (c-pthread-sigmask jolt-sig-setmask-how old 0)
-      (sa-foreign-free set)
-      (sa-foreign-free old))))
+      ;; it did not end the process (ignored, handled, or stopped and continued):
+      ;; block it again and go on
+      (c-pthread-sigmask jolt-sig-setmask-how jolt-signal-raise-old 0))))
 
-;; The JVM keeps these for itself and refuses a handler for them.
-(define jolt-signals-used-by-vm '("QUIT" "KILL" "STOP" "FPE" "SEGV" "ILL"))
+;; The JVM keeps the first six for itself and refuses a handler for them; Chez
+;; handles BUS as a fault, as it does SEGV, FPE and ILL.
+(define jolt-signals-used-by-vm '("QUIT" "KILL" "STOP" "FPE" "SEGV" "ILL" "BUS"))
 
 (define (jolt-signal-ctor name)
   (when (jolt-nil? name) (throw-jvm 'NullPointerException "name"))
