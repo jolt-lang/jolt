@@ -1015,6 +1015,8 @@ loaderconf: testbin
 # (from C, find-symbol, a foreign-callable, or a struct's callback slot) across
 # the scalar, by-value and option vocabulary, and the null refusal; the native
 # error gate covers atomic errno/GetLastError capture and option composition.
+# The string-argument gate covers a :string argument staying put while C calls
+# back into jolt and the callback collects.
 # The arena gate covers the allocation-lifetime API (issue #799) and the rest of
 # the babashka.ffi-compatible surface built on it — the four arena kinds and who
 # closes each, arena-owned blocks/strings/callbacks/views, the pointer
@@ -1036,6 +1038,7 @@ ffi:
 	@bin/jolt run test/chez/jolt-ffi-arena-test.clj
 	@bin/jolt run test/chez/jolt-ffi-typed-array-test.clj
 	@bin/jolt run test/chez/jolt-ffi-callback-preempt-test.clj
+	@bin/jolt run test/chez/jolt-ffi-string-arg-test.clj
 	@sh test/chez/ffi-native-error-test.sh "$(CHEZ)"
 	@sh test/chez/ffi-foreign-thread-test.sh
 	@sh test/chez/ffi-gc-stall-test.sh

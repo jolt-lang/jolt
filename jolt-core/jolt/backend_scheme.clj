@@ -22,7 +22,7 @@
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
                      *letrec-binders* *qualifying-ns* *recur-target* *tail?*
-                     *trace-site* *variadic-reg-suppressed?* clone-site-key
+                     *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
                      ctor-shapes cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label marker-safe-fqn?
@@ -668,6 +668,25 @@
        (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "instance-check" (:name fnode))
        (= 2 (count arg-nodes))))
 
+;; A class-name symbol evaluates to (jolt.host/jolt-class-for "name"), whose token
+;; changes only when a late deftype registration drops it. So the site keeps the
+;; token and asks again only after a drop (class-model.ss jolt-class-for-site).
+(defn- class-for-site-call? [fnode arg-nodes]
+  (and *const-pool* (var-cache?)
+       (= :var (:op fnode)) (= "jolt.host" (:ns fnode)) (= "jolt-class-for" (:name fnode))
+       (= 1 (count arg-nodes))
+       (= :const (:op (first arg-nodes))) (string? (:val (first arg-nodes)))))
+
+;; A deftype method binds each immutable field with (__deftype-field this :f),
+;; and jrec-field scans the type's field keys for it. The receiver is nearly
+;; always the method's own type, so the site keeps the slot against that type's
+;; descriptor (records.ss jrec-own-field).
+(defn- deftype-field-site-call? [fnode arg-nodes]
+  (and *const-pool* (var-cache?)
+       (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "__deftype-field" (:name fnode))
+       (= 2 (count arg-nodes))
+       (= :const (:op (second arg-nodes))) (keyword? (:val (second arg-nodes)))))
+
 ;; Calls an earlier pass annotated with how to lower them.
 (defn- emit-annotated-invoke [c]
   (let [node (:node c) arg-nodes (:arg-nodes c) tail? (:tail? c)
@@ -677,6 +696,14 @@
       (let [site (hoist-const-per-site "(jolt-instance-site-make)")]
         (note-tail-call! tail?)
         (order-args (fn [as] (str "(jolt-instance-site " site " " (first as) " " (second as) ")"))))
+      (deftype-field-site-call? (:fnode c) arg-nodes)
+      (let [site (hoist-const-per-site "(jrec-field-site-make)")]
+        (note-tail-call! tail?)
+        (order-args (fn [as] (str "(jrec-own-field " site " " (first as) " " (second as) ")"))))
+      (class-for-site-call? (:fnode c) arg-nodes)
+      (let [site (hoist-const-per-site "(jolt-class-for-site-make)")]
+        (note-tail-call! tail?)
+        (order-args (fn [as] (str "(jolt-class-for-site " site " " (first as) ")"))))
       ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
       ;; one record type, so resolve the impl by that static tag instead of routing
       ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
@@ -730,6 +757,8 @@
       ;; skipping jolt-nth's dispatch walk, which the call already gets.
       (:v-aget node) (order-args (fn [as] (emit-call tail? "jolt-vaget" as tl ich)))
       (:v-aset node) (order-args (fn [as] (emit-call tail? "jolt-vaset" as tl ich)))
+      ;; (alength a) on a hinted array: the backing's own length, a fixnum.
+      (:v-alength node) (order-args (fn [as] (emit-call tail? "jolt-valength" as tl ich)))
       ;; (aset ^bytes a i v): the store's own helper, because the byte kind narrows
       ;; to signed 8 bits and must answer what it stored — jolt-vaset answers its
       ;; argument. No inline form: there is nothing to unbox on the way out.
@@ -783,6 +812,15 @@
 ;; locals it is a tail region of its own, so its leaves keep the scope live there.
 (defn- emit-try-body [node]
   (binding [*tail?* (or (some? *dbg-scope*) *tail?*)] (emit (:body node))))
+
+;; Chez names a lambda after its binding. These thunks contain the enclosing
+;; fn's code, so keep its name when dynamic-wind replaces its physical frame.
+;; A non-recursive let leaves self-calls in BODY bound to the original fn.
+(defn- emit-finally-thunk [body]
+  (let [f (str "(lambda () " body ")")]
+    (if (and (trace-frames?) *trace-frame*)
+      (str "(let ((" *trace-frame* " " f ")) " *trace-frame* ")")
+      f)))
 
 ;; try/catch/finally. throw raises a Chez condition wrapping the jolt value
 ;; (jolt-throw = Scheme `raise` of a &jolt-throw condition); catch lowers to
@@ -874,10 +912,12 @@
             r (fresh-label "_wr$")]
         (str "(let ((" lv " (virtual-register 7))) (set-virtual-register! 7 (fx+ " lv " 1))"
              " (dynamic-wind jolt-finally-in"
-             " (lambda () (set-virtual-register! 7 (fx- (virtual-register 7) 1))"
-             " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r "))"
-             " (lambda () (if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
-             " " (binding [*tail?* false] (emit fin)) ")))"))
+             " " (emit-finally-thunk
+                    (str "(set-virtual-register! 7 (fx- (virtual-register 7) 1))"
+                         " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r ")"))
+             " " (emit-finally-thunk
+                    (str "(if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
+                         " " (binding [*tail?* false] (emit fin)))) "))"))
       core)))
 
 ;; Does this IR node emit to an expression that yields a Scheme boolean? Used to
@@ -1138,13 +1178,19 @@
 ;; non-top-level defmacro.
 (defn- emit-var-form [node]
   (case (:op node)
-    :the-var (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")
+    ;; Inside a def the var cell is hoisted into the binding a read of x shares
+    ;; (hoist-var-cell), so (var *x*) in a binding form is one load.
+    :the-var (let [lookup (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")]
+               (if (and (var-cache?) *const-pool*) (hoist-const lookup) lookup))
     ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
-    :set-field (str "(jolt-set-field! " (emit (:obj node)) " "
-                    (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))
-                    " " (emit (:val node)) ")")
+    ;; Inside a def the site keeps the resolved slot (records.ss jolt-set-own-field!).
+    :set-field (let [kw (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))]
+                 (if (and (var-cache?) *const-pool*)
+                   (str "(jolt-set-own-field! " (hoist-const-per-site "(jrec-field-site-make)") " "
+                        (emit (:obj node)) " " kw " " (emit (:val node)) ")")
+                   (str "(jolt-set-field! " (emit (:obj node)) " " kw " " (emit (:val node)) ")")))
     ;; a non-top-level defmacro -> def the expander fn + mark the var a macro at
     ;; runtime (the spine does the same for top-level forms).
     :defmacro (str "(begin (def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
@@ -1301,7 +1347,9 @@
      ;; own fixnum limits: the compiling host's fixnum width is not the
      ;; target's, so no bound is baked in here.
      :coerce (emit-coerce-node node)
-    :try (emit-try node)
+    ;; guard's continuation points at the try expression itself. Reset its
+    ;; marker so it cannot inherit an inline chain from the preceding branch.
+    :try (with-site node (emit-try node))
      ;; A :target-type direct emit skips record-method-dispatch entirely, so the
      ;; classes it fires for are the classes a library CANNOT override at runtime
      ;; (jolt.host/extend-class! rejects them, listed in class-ext-no-override,

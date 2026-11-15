@@ -37,7 +37,9 @@
 ;; expensive source is consumed incrementally — (first (sequence (map inc) (range)))
 ;; returns at once. Honors `reduced` (stop pulling) and runs the 1-arg completion to
 ;; flush a stateful xform (partition-all / dedupe / a trailing partition).
-(define (sequence-xf xform coll)
+;; SRC is one collection, or with MULTI? a list of them. The single source keeps
+;; its own loop so it doesn't pay for the lockstep walk's per-element lists.
+(define (sequence-xf xform src0 multi?)
   (let* ((buf (box '()))                  ; emitted values for the current step, reversed
          (rf (case-lambda
                (() jolt-nil)
@@ -53,11 +55,19 @@
           ((jolt-reduced? acc)
            (jolt-invoke xrf (jolt-reduced-val acc))      ; completion may flush
            (loop src (jolt-reduced-val acc) #t))
-          (else
+          ((not multi?)
            (let ((s (jolt-seq src)))
              (if (jolt-nil? s)
                  (begin (jolt-invoke xrf acc) (loop src acc #t))   ; complete -> flush
-                 (loop (seq-more s) (jolt-invoke xrf acc (seq-first s)) completed)))))))
+                 (loop (seq-more s) (jolt-invoke xrf acc (seq-first s)) completed))))
+          (else
+           ;; lockstep: the first source to run dry completes the whole thing
+           (let ((ss (map jolt-seq src)))
+             (if (let any-dry ((l ss)) (and (pair? l) (or (jolt-nil? (car l)) (any-dry (cdr l)))))
+                 (begin (jolt-invoke xrf acc) (loop src acc #t))   ; complete -> flush
+                 (loop (map seq-more ss)
+                       (apply jolt-invoke xrf acc (map seq-first ss))
+                       completed)))))))
     ;; Resolve the next chunk now (one fill pulls just enough input to emit or to
     ;; exhaust), so the result is a real cseq | empty — `empty` is jolt-empty-list
     ;; at the top (so an empty result still prints "()") and jolt-nil inside a tail
@@ -72,7 +82,7 @@
                 (if (null? (cdr o))
                     (cseq-lazy (car o) (lambda () (step src2 acc2 comp2 jolt-nil)))
                     (cseq-lazy (car o) (lambda () (build (cdr o))))))))))
-    (step coll jolt-nil #f jolt-empty-list)))
+    (step src0 jolt-nil #f jolt-empty-list)))
 
 ;; The 1-arity is `seq` except that an empty source yields () rather than nil, and
 ;; an argument that is already a seq is handed back untouched.
@@ -82,7 +92,8 @@
                 coll
                 (let ((s (jolt-seq coll)))
                   (if (jolt-nil? s) jolt-empty-list s))))
-    ((xform coll) (sequence-xf xform coll))))
+    ((xform coll) (sequence-xf xform coll #f))
+    ((xform coll . colls) (sequence-xf xform (cons coll colls) #t))))
 
 (def-var! "clojure.core" "sequence" jolt-sequence)
 

@@ -20,9 +20,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NullPointerException` instead of jumping to address zero. On the gambit
   target the binding defines and raises `UnsupportedOperationException` when
   called.
+- **`jolt.host/class-names` and `jolt.host/all-classes` list every class
+  jolt models**, as `babashka.classes/all-classes` does on babashka (#1663).
+  `class-names` is a sorted vector of canonical names, spelled as
+  `Class.getName` spells them; `all-classes` is the same list as `Class`
+  objects. The list reads the class graph (its rows and the supers they
+  name), the statics and constructor registries, the host tags' classes and
+  the lazy-shim index, so `java.util.Collections`, `java.net.URL`,
+  `java.nio.file.WatchKey` and a lazy shim's classes are there, and listing
+  loads no shim. Short aliases such as `System` and a `reify`'s class are
+  left out. Each call reads the tables as they are, so a class a `deftype`,
+  `defrecord` or `register-class-supers!` adds later is in the next one.
+- **`bencode.core` ships with jolt**, for babashka scripts that name it, since
+  babashka bundles nrepl/bencode. A bare script that speaks nREPL's wire
+  format, such as a small client that drives a running REPL, used to stop at
+  its `require` with "Could not locate bencode/core.jolt". The namespace is
+  nrepl/bencode 1.2.0's own file, in `compatibility/` beside `cheshire.core`,
+  so `read-bencode`, `write-bencode`, `read-netstring` and `write-netstring`
+  behave as the library does. A project that declares `nrepl/bencode` itself
+  still loads its own copy.
+
+### Changed
+
+- **`clojure.tools.reader` and rewrite-clj read faster** (#1646). Their reader
+  types are deftypes with mutable fields, and five steps on that path looked a
+  name up by string on every call. Each is now done once per call site, or
+  answered ahead of the slow path: an `(instance? my.ns.Type x)` (49 to 15 ns),
+  a `set!` of a mutable field and a method's read of its own fields, the
+  `(var *x*)` that every `binding` expands to (267 to 145 ns for a `binding`),
+  and `hash` of a character (103 to 17 ns, so a character-set lookup is 27 ns
+  instead of 112). On a built binary with a warm cache,
+  `clojure.tools.reader/read-string` of a 50-byte form is about 17% faster and
+  `rewrite-clj.parser/parse-string` about 22%. Both are still several times
+  slower than on the JVM.
+- **`=` on two different characters is about 3.7 times faster.** `(= c \a)` on a
+  character that isn't `\a` took 13.2 ns, because `jolt=2` tried every
+  collection, procedure and record clause before it reached the scalar one.
+  It now answers two characters directly, at 3.6 ns (#1651).
+- **`(== x 7)` on operands the compiler can't type costs 2.6 ns, down from
+  37.5 ns** (#1650). The call went through the var to the variadic
+  `jolt-num-equiv`, which builds a rest list and an inner procedure each time.
+  `==` now lowers to `jolt-num-equiv2`, which answers two fixnums or two flonums
+  directly and hands every other pair, including the ratio, BigDecimal, NaN and
+  non-number cases, to the same `jolt-num-equiv` as before, so results and
+  exceptions are unchanged.
+- **`alength` is about 4.5x faster.** A hinted `(alength a)` and an unhinted one
+  cost 19.9 ns and 20.0 ns per loop iteration because both went through the generic
+  `jolt-count`, and they now cost 4.5 ns and 4.8 ns, next to 4.1 ns for a hinted
+  `aget`. The numeric pass lowers `alength` on a `^doubles`, `^floats`, `^longs`,
+  `^ints`, `^bytes` or `^objects` array to `jolt-valength` and types the result
+  `:long`, and `jolt-alength` itself now checks for an array first. `nil` still
+  raises the NullPointerException, and `count` on an array is unchanged
+  (19.1 ns). (#1648)
+- **Indexed reads of a persistent vector are about a third faster.** On a
+  1000-element vector `(nth v i)` went from 16.8 to 11.9 ns, `(get v i)` from
+  19.4 to 12.3 ns and `(v i)` from 22.9 to 18.1 ns per read. Most of the time was
+  the trie read, which returned the leaf and the offset as two values, so it now
+  ends in the element read itself. `get` and `(v i)` also answer an in-range
+  vector index before the array probe and the generic invoke walk (#1652).
+- **Threads queued on a contended `ReentrantLock` or `locking` monitor no longer
+  all wake on every release** (#1654). A release broadcast to every waiting
+  thread, so 400 futures appending a line to a file under one lock returned from
+  their wait 53518 times and took 236-247ms (median). A release now wakes one
+  waiter, and the thread that takes the lock wakes the next. The same run returns
+  399 times and takes 44-51ms, against 32-36ms for the 400 appends made in a loop
+  on one thread.
+- **The `unchecked-*-int` family is 3 to 8 times faster.** `unchecked-add-int`,
+  `-subtract-int`, `-multiply-int`, `-divide-int`, `-remainder-int`, `-inc-int`,
+  `-dec-int` and `-negate-int` were rest-argument closures around the 64-bit
+  op, so each call paid a var call, a rest list and an `apply`. They are now
+  fixed-arity runtime helpers that fold to 32 bits in place, and the compiler
+  lowers a direct call to them. Per iteration, `unchecked-add-int`
+  went from 23.5 ns to 2.8 ns, `unchecked-inc-int` from 14.7 ns to 2.3 ns,
+  `unchecked-multiply-int` from 27.8 ns to 5.7 ns, and a hinted `areduce` from
+  18.1 ns to 5.9 ns an element, because it steps with `unchecked-inc-int`
+  (#1647). The vars now take the JVM's arities, so `(apply unchecked-add-int
+  [1 2 3])` raises an `ArityException` where it used to answer 6.
+
+### Performance
+
+- **`extend-type` and `extend-protocol` no longer rebuild the class-name tables
+  after every new record.** Each protocol registration asked whether the type
+  name was a JVM spelling of a record in a dashed namespace (`rf.def_two.R3`),
+  and the lookup rebuilt Jolt's class-name tables, sized by every modeled class,
+  whenever a class had been registered since the previous one. A JVM spelling always
+  contains an underscore, so a name without one now skips the lookup. A
+  generated 200k-line project with 1,106 records and 1,070 `extend-*` forms
+  loads from the AOT cache in 1.9 s instead of 2.6 s.
 
 ### Fixed
 
+- **Custom test assertions keep their failure locations.** Stack reads inside
+  `binding` and `try/finally` retain the enclosing function's source frame,
+  and macro-generated calls inherit their source line. `matcher-combinators`
+  failures now identify the assertion's file and line, including in compiled
+  test runners.
+- **`reader`, `writer`, `slurp` and `spit` refuse a non-source with the JVM's
+  message.** `(slurp 5)`, `(io/reader :k)` and `(spit {} "x")` said "Cannot
+  open <x> as a Reader." (or Writer). On the JVM only `nil` is refused by that
+  name; any other value reaches `IOFactory`'s Object impl, whose reader and
+  writer open through the stream side and refuse "as an InputStream." or "as an
+  OutputStream.".
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as
@@ -34,10 +132,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
+- **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).
+  It was Chez's `string` type, a heap copy the collector could move, so a C
+  function that called back into jolt before it was done with the text (a GTK
+  signal emitted ahead of the copy, a `bsearch` comparator) read moved memory
+  once the callback collected. It now travels as an immobile copy kept alive
+  for the call, which adds about 30 ns to each `:string` argument.
 - **`jolt build` checks every option before building native libraries.** An
   invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
   with no target pack, was reported only after the static archives and
   dependency libraries had been compiled.
+- **A `char[]` slice and a null argument to `String.` throw as on the JVM**
+  (#1657). `(String. chars offset count)` now runs String's range check before
+  reading, so a negative offset with a zero count no longer answers `""`, and an
+  overrun is a `StringIndexOutOfBoundsException` with the JDK's message instead
+  of an `ArrayIndexOutOfBoundsException`. `(String. nil)` and `.toCharArray` on a
+  nil `^String` parameter are a `NullPointerException`, where they answered
+  `""` and an empty array.
+- **`clojure.java.io/default-streams-impl` exists, and the io fns consult a
+  type extended with it.** Libraries extend `IOFactory` to their own types with
+  `(assoc io/default-streams-impl :make-input-stream f)`, and muuntaja failed to
+  load for want of the var (#1665). It holds the four `make-*` fns, the stream
+  ones refusing with the JVM's "Cannot open <x> as an InputStream." and the
+  reader and writer opening through them. `reader`, `writer`, `input-stream`,
+  `output-stream`, `slurp` and `spit` now call an extension's fn for a source
+  they do not open themselves.
+- **`(sequence xform coll & colls)` takes several collections.** The
+  multi-collection arity threw an `ArityException`, which stopped
+  meander/epsilon from loading. The xform's step function now receives one
+  argument per collection, the walk ends at the shortest one, and the result
+  stays lazy and is `()` when empty (#1664). A `(mapcat f)` xform
+  takes several inputs per step too, as `(comp (map f) cat)` does on the JVM.
 
 ## [0.8.27] - 2026-11-12
 
