@@ -74,3 +74,33 @@ index eb2965c..1c1809d 100644
      ptr eq_symbol;
      ptr eq_ht_rtd;
      ptr symbol_symbol;
+diff --git a/s/fasl.ss b/s/fasl.ss
+index 9fbc1aa..bc7d5a0 100644
+--- a/s/fasl.ss
++++ b/s/fasl.ss
+@@ -100,6 +100,13 @@
+                (bld ($stencil-vector-ref x i) t a? d)
+                (bldvec (fx+ i 1)))))))
+ 
++;; A record type whose uid carries $fasl-intern (see c/fasl.c fasl_intern_record)
++;; belongs to a runtime that is loaded before any fasl holding its records, so
++;; the type is written by uid alone, as fasl-omit-rtds would write it.
++(define fasl-intern-rtd?
++  (lambda (x)
++    (and ($sgetprop (record-type-uid x) '$fasl-intern #f) #t)))
++
+ (define bld-record
+   (lambda (x t a? d)
+     (unless (eq? x #!base-rtd)
+@@ -542,8 +549,9 @@
+              ($oops 'fasl "mismatch ~s ~s" x self)))
+          (unless (eq-hashtable-ref (table-hash t) x #f)
+            ($oops 'fasl "not in table!?"))
+-         (if (and a? (fxlogtest a? (constant fasl-omit-rtds))
+-                  (or (not ($ftd? x)) (fx= ($generation x) (constant static-generation))))
++         (if (or (and a? (fxlogtest a? (constant fasl-omit-rtds))
++                      (or (not ($ftd? x)) (fx= ($generation x) (constant static-generation))))
++                 (fasl-intern-rtd? x))
+              (put-uptr p 0) ; => must be registered already at load time
+              (wrf-fields (maybe-remake-rtd x t) p t a?))]
+         [else
