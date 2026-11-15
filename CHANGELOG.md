@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the trie read, which returned the leaf and the offset as two values, so it now
   ends in the element read itself. `get` and `(v i)` also answer an in-range
   vector index before the array probe and the generic invoke walk (#1652).
+- **Threads queued on a contended `ReentrantLock` or `locking` monitor no longer
+  all wake on every release** (#1654). A release broadcast to every waiting
+  thread, so 400 futures appending a line to a file under one lock returned from
+  their wait 53518 times and took 236-247ms (median). A release now wakes one
+  waiter, and the thread that takes the lock wakes the next. The same run returns
+  399 times and takes 44-51ms, against 32-36ms for the 400 appends made in a loop
+  on one thread.
 
 ### Performance
 

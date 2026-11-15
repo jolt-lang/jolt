@@ -1076,6 +1076,27 @@ else
   fails=$((fails + 1))
 fi
 
+# Monitor hand-off (jolt#1654): a release signals one thread, so a stranded waiter
+# shows as a deadline failure.
+mh_out="$($jolt run test/chez/monitor-handoff.clj 2>&1)"
+if printf '%s' "$mh_out" | grep -q 'MONITOR-HANDOFF OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a monitor release stranded a waiting thread"
+  echo "    $(printf '%s' "$mh_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
+# The same hand-off with threads and fibers queued on one monitor together.
+mtf_out="$($jolt run test/chez/monitor-threads-fibers.clj 2>&1)"
+if printf '%s' "$mtf_out" | grep -q 'MONITOR-THREADS-FIBERS OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a monitor shared by threads and fibers lost a waiter or an increment"
+  echo "    $(printf '%s' "$mtf_out" | tail -1)"
+  fails=$((fails + 1))
+fi
+
 # One paren too many must FAIL the file, not truncate it. The loader read forms
 # with the non-top-level reader, which parks on a stray `)` rather than raising,
 # and the loop read a parked position as end of input: everything after the paren
