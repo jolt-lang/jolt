@@ -336,11 +336,13 @@
     (let ((sfi (var-deref "jolt.backend-scheme" "set-fasl-intern!")))
       (when (procedure? sfi) (sfi on)))))
 (when (getenv "JOLT_FASL_INTERN") (jolt-fasl-intern-init!))
-;; Plain var-root calls default on only when the adapter found patch 0013.
-;; The explicit off override permits same-binary comparisons; stock stays off.
+;; JOLT_NATIVE_VAR_CALL=1 opts into the checked var-root application on a Chez
+;; with patch 0013. It helps call-heavy code but did not improve cold builds;
+;; default emission and every stock-Chez run keep the original invoke helper.
 (define (jolt-native-var-call-enabled?)
   (and (sa-call-error-supported?)
-       (not (jolt-trace-env-off? (getenv "JOLT_NATIVE_VAR_CALL")))))
+       (let ((e (getenv "JOLT_NATIVE_VAR_CALL")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
 (define (jolt-native-var-call-init-from-env!)
   (let ((set-mode (var-deref "jolt.backend-scheme.session" "set-native-var-call!")))
     (when (procedure? set-mode) (set-mode (jolt-native-var-call-enabled?))))
