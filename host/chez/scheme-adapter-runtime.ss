@@ -1842,6 +1842,11 @@
   (if (guard (c (#t #f)) (eval '($primitive $clj-call)) #t)
       (syntax-rules () ((_ fallback f a ...) (#%$clj-call f a ...)))
       (syntax-rules () ((_ fallback f a ...) fallback))))
+;; The procedure $clj-call hands anything but a procedure of the call's arity to
+;; (seq.ss registers jolt-invoke). A no-op on a Chez without the primitive.
+(define (sa-clj-call-handler-set! p)
+  (when (guard (c (#t #f)) (eval '($primitive $clj-call)) #t)
+    (#%$set-top-level-value! '$clj-call-handler p)))
 
 ;; (sa-time-compile-parts! expand-wrap run-wrap) -> #t | #f
 ;; JOLT_PHASE_TIMES (compile-eval.ss) splits each runtime eval into the target's

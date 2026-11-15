@@ -1721,6 +1721,7 @@
 ;; (sa-clj-call); a Chez without the primitive gets jolt-clj-call above.
 (define-syntax jolt-clj-call-prim
   (syntax-rules () ((_ f a ...) (sa-clj-call (jolt-clj-call f a ...) f a ...))))
+(sa-clj-call-handler-set! jolt-invoke)
 (define-syntax jolt-clj-call-kept-prim
   (syntax-rules () ((_ f a ...) (jolt-site-kept (jolt-clj-call-prim f a ...)))))
 
