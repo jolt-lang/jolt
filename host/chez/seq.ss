@@ -1671,18 +1671,31 @@
 (define (jolt-invoke-t3 f a b c) (if (procedure? f) (if (fxlogbit? 3 (procedure-arity-mask f)) (f a b c) (jolt-proc-arity-error f 3)) (jolt-invoke f a b c)))
 (define (jolt-invoke-t4 f a b c d) (if (procedure? f) (if (fxlogbit? 4 (procedure-arity-mask f)) (f a b c d) (jolt-proc-arity-error f 4)) (jolt-invoke f a b c d)))
 
+;; A cached call target wraps a Var without changing Var's own IFn semantics.
+;; Proxies resolve only at sites whose arguments cannot mutate their callee.
+(define-record-type jolt-var-call-proxy
+  (fields cell) (nongenerative jolt-var-call-proxy-v1))
+(define (jolt-var-call-target ns name)
+  (make-jolt-var-call-proxy (jolt-var ns name)))
+(define-syntax jolt-call-error-value
+  (syntax-rules ()
+    ((_ f)
+     (if (jolt-var-call-proxy? f)
+         (var-cell-deref (jolt-var-call-proxy-cell f))
+         f))))
+
 ;; Chez's shared non-procedure/wrong-arity detour preserves every argument
 ;; and tail-calls this handler. jolt-invoke owns all IFn cases, unbound vars and
 ;; Clojure's named ArityException; successful procedure calls never reach it.
 ;; Fixed arities retain keyword/map calls' no-rest-list path after the detour.
 (define jolt-call-error-handler
   (case-lambda
-    ((f) (jolt-invoke-t0 f))
-    ((f a) (jolt-invoke-t1 f a))
-    ((f a b) (jolt-invoke-t2 f a b))
-    ((f a b c) (jolt-invoke-t3 f a b c))
-    ((f a b c d) (jolt-invoke-t4 f a b c d))
-    ((f . args) (apply jolt-invoke f args))))
+    ((f) (jolt-invoke-t0 (jolt-call-error-value f)))
+    ((f a) (jolt-invoke-t1 (jolt-call-error-value f) a))
+    ((f a b) (jolt-invoke-t2 (jolt-call-error-value f) a b))
+    ((f a b c) (jolt-invoke-t3 (jolt-call-error-value f) a b c))
+    ((f a b c d) (jolt-invoke-t4 (jolt-call-error-value f) a b c d))
+    ((f . args) (apply jolt-invoke (jolt-call-error-value f) args))))
 (sa-call-error-handler-set! jolt-call-error-handler)
 
 ;; jolt-invoke0..4: the same calls, from code that is not traced -- clojure.core,
