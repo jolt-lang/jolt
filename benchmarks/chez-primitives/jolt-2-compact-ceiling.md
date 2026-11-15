@@ -31,8 +31,11 @@ and every variant is compiled the way the AOT cache compiles it.
   later, with CPU time tracking real time both times, so the single-thread
   speed of the machine drifted between passes. That is why only numbers from
   the same interleaved pass are compared.
-- Patched Chez: **not measured.** The run-wide rule for this run was stock Chez
-  unless jolt-1 had published its patched build, and it had not.
+- Patched Chez: jolt-1's build at
+  `/Users/admin/.cache/jolt-chez-patched/10.4.1-p0001-0007`, published while
+  this pellet ran. It was measured afterwards over the same variant files (the
+  emitted Scheme is byte-identical on both builds), with 3 interleaved runs and
+  without the pairs.
 
 ## Variants
 
@@ -68,7 +71,23 @@ information on is what the AOT cache does today.
 | BC | 52.6 MB | 20.88 s | −28.0% | 92.3 MB | 18.66 s | 46.4 MB |
 | **D all three** | **40.5 MB** | **15.57 s** | **−46.3%** | **83.7 MB** | **13.73 s** | **42.0 MB** |
 | T0 (`JOLT_TRACE=0`) | 44.9 MB | 20.42 s | −29.5% | 104.3 MB | 18.07 s | 51.7 MB |
-| Chez reference project (group baseline) | 4.1 MB | 7.9 s whole cold build | | 15.9 MB | | |
+| Chez reference project (jolt-1, stock) | 4.3 MB | 8.73 s whole cold build | | 16.7 MB | | |
+
+The same variants on **patched Chez** (median of 3, interleaved):
+
+| Variant | Compile, inspector on | vs orig | `.so`, inspector on | Compile, inspector off | vs orig | `.so`, inspector off |
+|---|---|---|---|---|---|---|
+| orig | 27.86 s | | 122.8 MB | 25.05 s | | 60.2 MB |
+| A tracing | 21.22 s | −23.8% | 114.3 MB | 19.12 s | −23.7% | 56.1 MB |
+| B constants | 23.37 s | −16.1% | 106.1 MB | 21.29 s | −15.0% | 51.9 MB |
+| C calls | 24.34 s | −12.6% | 110.1 MB | 21.63 s | −13.6% | 55.1 MB |
+| D all three | 14.74 s | −47.1% | 84.2 MB | 13.03 s | −48.0% | 42.0 MB |
+| T0 | 19.57 s | −29.8% | 104.8 MB | 17.34 s | −30.8% | 51.7 MB |
+
+The two builds rank the rewrites the same, within 1–4 points of each other.
+Patched writes 0.5 MB more `.so` with inspector information on, and an
+identical `.so` with it off. The absolute times of the two tables come from
+different passes, so compare them only within a table.
 
 The gains add up in seconds: alone, A, B and C remove 5.8 + 4.1 + 3.5 = 13.4 s,
 and together they remove 13.4 s. Each pair is likewise within 0.4 s of the
@@ -103,8 +122,8 @@ not the inner one while it is integrating the helper. Raising
 
 On macOS the AOT cache compiles in a background worker by default
 (`JOLT_AOT_ASYNC`, on unless set to off). So a default cold build compiles each
-form twice: once in-process when it is evaluated (the "Chez compile ~23 s"
-phase of the group baseline) and once in the worker with `compile-file`, off
+form twice: once in-process when it is evaluated (the "Chez compile" phase,
+21.9 s in jolt-1's phase table) and once in the worker with `compile-file`, off
 the critical path but on the CPU. Measured cold builds, median of 3, same
 binary, checksum 374878:
 
@@ -116,15 +135,17 @@ binary, checksum 374878:
 That difference, 24 s, is the in-process `compile-file` of the whole project,
 in line with the harness's 25.5–29.0 s. The eval-path compile runs the same
 passes minus the fasl write and the file read. So the "compile excluding read
-and fasl" row is its best proxy. Applied to the ~23 s share:
+and fasl" row is its best proxy. jolt-1's `JOLT_PHASE_TIMES` measured that
+phase at 21.86 s, and 14.55 s with `JOLT_TRACE=0`, so 33% lower. The proxy
+predicts T0 at −33%, which supports using it. Applied to the 21.9 s:
 
-| Rewrite | Share of compile removed | Of the ~23 s eval-path compile |
+| Rewrite | Share of compile removed | Of the 21.9 s eval-path compile |
 |---|---|---|
-| A tracing | 20–25% | ~4.6–5.7 s |
-| B constants | 14–16% | ~3.3–3.7 s |
-| C calls | 12–13% | ~2.8–3.0 s |
-| D all three | 46–48% | ~10.7–11.1 s |
-| (T0, tracing simply off) | 30–33% | ~6.8–7.7 s |
+| A tracing | 20–25% | ~4.4–5.5 s |
+| B constants | 14–16% | ~3.1–3.5 s |
+| C calls | 12–13% | ~2.6–2.8 s |
+| D all three | 46–48% | ~10.1–10.5 s |
+| (T0, tracing simply off) | 30–33% | 7.3 s measured by jolt-1 |
 
 The background `compile-file` shrinks by the same fractions: 29.0 s to 15.6 s
 for D.
@@ -133,7 +154,7 @@ for D.
 
 - **Primitives are worth pursuing, but they close only half the gap.** Even
   D still compiles in 15.6 s, against the Chez reference project's whole cold
-  build of 7.9 s, and it writes a 83.7 MB `.so` against 15.9 MB. D's text is
+  build of 8.7 s, and it writes an 83.7 MB `.so` against 16.7 MB. D's text is
   40.5 MB: 13 MB of it is the per-namespace quoted tables (fn-form source
   strings 7.3 MB, call-site table 4.8 MB, def ordinals 1.0 MB), and about
   27 MB is code, still 6.5× the 4.1 MB source. Among the largest remaining
