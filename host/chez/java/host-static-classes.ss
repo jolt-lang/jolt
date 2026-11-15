@@ -2539,7 +2539,10 @@
             (string-set! out i (if (and (fx>=? c #xD800) (fx<=? c #xDFFF)) #\xFFFD (integer->char c)))
             (loop (fx+ i 1)))))))
 (define (jolt-new-string x . rest)
-    (cond ((and (string-hibyte-form? rest)
+    (cond ;; every String constructor that takes an argument throws on a null one.
+          ;; The JDK's message names the overload, which we can't tell here.
+          ((jolt-nil? x) (throw-jvm 'NullPointerException "Cannot construct a String from null"))
+          ((and (string-hibyte-form? rest)
                 (or (bytevector? x) (and (jolt-array? x) (eq? (jolt-array-kind x) 'byte))))
            (if (bytevector? x)
                (string-from-hibyte (bytevector-length x)
@@ -2573,9 +2576,8 @@
           ;; laid out the way the result needs them, and nothing is walked. The
           ;; vector arm below it is the same copy against the older boxed
           ;; backing (a promoted array, or one restored from an image written
-          ;; before the string backing); anything else — a slice the caller got
-          ;; wrong — keeps the checked ja-ref path, which raises the JVM's own
-          ;; exception at the offending index.
+          ;; before the string backing). An out-of-range slice has already thrown, so
+          ;; the ja-ref loop at the end only sees in-range slices.
           ((and (jolt-array? x) (eq? (jolt-array-kind x) 'char))
            (let* ((v (jolt-array-vec x))
                   (n (ja-len x))
@@ -2583,6 +2585,13 @@
                   (cnt (if (pair? rest) (jnum->exact (cadr rest)) n))
                   (ok? (and (fixnum? off) (fixnum? cnt)
                             (fx>=? off 0) (fx>=? cnt 0) (fx<=? (fx+ off cnt) n))))
+             ;; String's checkBoundsOffCount: same exception and message as the
+             ;; byte[] slice above, before any character is read.
+             (unless ok?
+               (throw-jvm 'StringIndexOutOfBoundsException
+                          (string-append "Range [" (number->string off) ", " (number->string off)
+                                         " + " (number->string cnt) ") out of bounds for length "
+                                         (number->string n))))
              (cond
                ;; NOT substring: Chez's substring is ~2.2x slower than an
                ;; explicit copy of the same bytes (measured on 8.1M characters,

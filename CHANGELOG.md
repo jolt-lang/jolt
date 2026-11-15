@@ -7,8 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`jolt.host/class-names` and `jolt.host/all-classes` list every class
+  jolt models**, as `babashka.classes/all-classes` does on babashka (#1663).
+  `class-names` is a sorted vector of canonical names, spelled as
+  `Class.getName` spells them; `all-classes` is the same list as `Class`
+  objects. The list reads the class graph (its rows and the supers they
+  name), the statics and constructor registries, the host tags' classes and
+  the lazy-shim index, so `java.util.Collections`, `java.net.URL`,
+  `java.nio.file.WatchKey` and a lazy shim's classes are there, and listing
+  loads no shim. Short aliases such as `System` and a `reify`'s class are
+  left out. Each call reads the tables as they are, so a class a `deftype`,
+  `defrecord` or `register-class-supers!` adds later is in the next one.
+- **`bencode.core` ships with jolt**, for babashka scripts that name it, since
+  babashka bundles nrepl/bencode. A bare script that speaks nREPL's wire
+  format, such as a small client that drives a running REPL, used to stop at
+  its `require` with "Could not locate bencode/core.jolt". The namespace is
+  nrepl/bencode 1.2.0's own file, in `compatibility/` beside `cheshire.core`,
+  so `read-bencode`, `write-bencode`, `read-netstring` and `write-netstring`
+  behave as the library does. A project that declares `nrepl/bencode` itself
+  still loads its own copy.
+
 ### Changed
 
+- **`clojure.tools.reader` and rewrite-clj read faster** (#1646). Their reader
+  types are deftypes with mutable fields, and five steps on that path looked a
+  name up by string on every call. Each is now done once per call site, or
+  answered ahead of the slow path: an `(instance? my.ns.Type x)` (49 to 15 ns),
+  a `set!` of a mutable field and a method's read of its own fields, the
+  `(var *x*)` that every `binding` expands to (267 to 145 ns for a `binding`),
+  and `hash` of a character (103 to 17 ns, so a character-set lookup is 27 ns
+  instead of 112). On a built binary with a warm cache,
+  `clojure.tools.reader/read-string` of a 50-byte form is about 17% faster and
+  `rewrite-clj.parser/parse-string` about 22%. Both are still several times
+  slower than on the JVM.
 - **`=` on two different characters is about 3.7 times faster.** `(= c \a)` on a
   character that isn't `\a` took 13.2 ns, because `jolt=2` tried every
   collection, procedure and record clause before it reached the scalar one.
@@ -27,10 +60,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
+- **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).
+  It was Chez's `string` type, a heap copy the collector could move, so a C
+  function that called back into jolt before it was done with the text (a GTK
+  signal emitted ahead of the copy, a `bsearch` comparator) read moved memory
+  once the callback collected. It now travels as an immobile copy kept alive
+  for the call, which adds about 30 ns to each `:string` argument.
 - **`jolt build` checks every option before building native libraries.** An
   invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
   with no target pack, was reported only after the static archives and
   dependency libraries had been compiled.
+- **A `char[]` slice and a null argument to `String.` throw as on the JVM**
+  (#1657). `(String. chars offset count)` now runs String's range check before
+  reading, so a negative offset with a zero count no longer answers `""`, and an
+  overrun is a `StringIndexOutOfBoundsException` with the JDK's message instead
+  of an `ArrayIndexOutOfBoundsException`. `(String. nil)` and `.toCharArray` on a
+  nil `^String` parameter are a `NullPointerException`, where they answered
+  `""` and an empty array.
 
 ## [0.8.27] - 2026-11-12
 
