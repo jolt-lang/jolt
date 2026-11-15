@@ -3357,13 +3357,9 @@
 ;; called it, so no live jolt frame can be its caller; put the slot back when it
 ;; returns. A throw out of the seam fn leaves its own pair, which is genuine.
 (define (seam-invoke1 f x)
-  (let* ((s (virtual-register jolt-vreg-site)) (r (jolt-invoke f x)))
-    (set-virtual-register! jolt-vreg-site s)
-    r))
+  (jolt-site-kept (jolt-invoke f x)))
 (define (seam-invoke2 f a b)
-  (let* ((s (virtual-register jolt-vreg-site)) (r (jolt-invoke f a b)))
-    (set-virtual-register! jolt-vreg-site s)
-    r))
+  (jolt-site-kept (jolt-invoke f a b)))
 ;; A library that models its own host values (java.time via jolt-lang/time) needs
 ;; those values to compare, hash, print, and order like the real thing. These
 ;; expose the internal arm registries to Clojure: pred/handler are Clojure fns,

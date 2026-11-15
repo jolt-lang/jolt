@@ -12,7 +12,7 @@
             [jolt.backend-scheme.session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
                      clone-site? ctor-shapes fresh-label marker-safe-fqn?
-                     note-tail-call! trace-emit trace-frames? unsafe-prefix var-cache?]]
+                     note-tail-call! site-store trace-emit trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
              :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
                      hoist-const-per-site]]))
@@ -290,8 +290,8 @@
         binds (str/join " " (map (fn [t a] (str "(" t " " a ")")) tts operand-strs))
         site (site-literal site-qname line inl-chain)]
     (if (seq binds)
-      (str "(let* (" binds ") (jolt-site! " site ") " (plain-call callee tts) ")")
-      (str "(begin (jolt-site! " site ") " (plain-call callee operand-strs) ")")))))
+      (str "(let* (" binds ") " (site-store) site ") " (plain-call callee tts) ")")
+      (str "(begin " (site-store) site ") " (plain-call callee operand-strs) ")")))))
 ;; A NON-tail call with tracing on is wrapped in site-restore, which puts the
 ;; site slot (vreg 2, rt.ss jolt-vreg-site) back as it was when the call returns. The tail sites
 ;; that ran inside the call stored pairs, and once it has returned none of them is
@@ -334,7 +334,9 @@
      "global" (str "(jolt-site-call (lambda () " call "))")
      "macro" (str "(jolt-site-inline " call ")")
      "inline" (binding [*site-call* nil] (site-restore-default call))
-     "norestore" call))
+     "norestore" call
+     "attach" (str "(jolt-site-attach " call ")")
+     "prim" (str "(jolt-site-prim " call ")")))
   ([call rd wr]
    (let [sv (fresh-label "_ss$") rv (fresh-label "_sr$")]
      (str "(let ((" sv " " rd ")) (let ((" rv " " call ")) (" wr " " sv ") " rv "))"))))

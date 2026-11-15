@@ -27,7 +27,7 @@
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label marker-safe-fqn?
                      node-line note-tail-call! prelude-mode? record-shape-for-class
-                     register-callsite! seed-mint? source-reg? static-callee
+                     register-callsite! seed-mint? site-attach? site-store source-reg? static-callee
                      trace-callsite-reg unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
@@ -847,7 +847,7 @@
                      cl (when (trace-frames?) (fresh-label "_cl$"))
                      body (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
                                (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
-                               (if ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ") "")
+                               (if ts (str (if (site-attach?) "(jolt-site-set! " "(set-virtual-register! 2 ") ts ") (set-virtual-register! 12 " to ") ") "")
                                "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
                                             ;; debug locals: the handler body is a tail region.
                                             ;; cs is the analyzer's; the user's name is a let
@@ -858,9 +858,15 @@
                                "(jolt-catch-complete!) r)"
                                (if cl ")" "")
                                "))) "
-                               (emit-try-body node) ")")]
+                               ;; attach mode: a host fault's site is read when it
+                               ;; is raised (rt.ss jolt-site-try-body), before the
+                               ;; unwind pops the attachments that hold it
+                               (if (and ts (site-attach?))
+                                 (str "(jolt-site-try-body " (emit-try-body node) ")")
+                                 (emit-try-body node))
+                               ")")]
                  (if ts
-                   (str "(let ((" ts " (virtual-register 2)) (" to " (virtual-register 12))) " body ")")
+                   (str "(let ((" ts " " (if (site-attach?) "(jolt-site-cur)" "(virtual-register 2)") ") (" to " (virtual-register 12))) " body ")")
                    body))
                (emit-try-body node))]
     (if-let [fin (:finally node)]
@@ -1027,7 +1033,7 @@
                (not (trace-frames?)) (emit-call *tail?* "jolt-throw" [e] (or line 0) ch)
                *trace-site* (sited-tail-call *trace-site* (or line 0) "jolt-throw" [e] ch)
                :else (let [t (fresh-label "_tt$")]
-                       (str "(let* ((" t " " e ")) (set-virtual-register! 2 0) "
+                       (str "(let* ((" t " " e ")) " (if (site-attach?) "(jolt-site-set! 0) " "(set-virtual-register! 2 0) ")
                             (plain-call "jolt-throw" [t]) ")")))]
     ;; A macro-built throw has no :pos — `assert` expands to one, and the
     ;; app.util fixture reaches it through a user macro besides — so a
@@ -1073,8 +1079,8 @@
                                (node-inline-chain node))
             call (host-call-emit emit (assoc node :sited-target (or tt t) :sited-args as))]
         (if (seq binds)
-          (str "(let* (" binds ") (jolt-site! " site ") " call ")")
-          (str "(begin (jolt-site! " site ") " call ")")))
+          (str "(let* (" binds ") " (site-store) site ") " call ")")
+          (str "(begin " (site-store) site ") " call ")")))
       ;; A method a library type implements runs jolt code, so a
       ;; non-tail call restores the slot like any other
       ;; (returning-call?) -- unless the receiver is proven a

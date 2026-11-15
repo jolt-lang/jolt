@@ -1342,12 +1342,44 @@
             (guard (_ (#t #f)) (reporter seconds unreached callbacks message))
             (jolt-eprint message))))))
 
+;; Trace-primitive experiment (JOLT_TRACE_EMIT=attach, compile-eval.ss
+;; jolt-enable-trace!): the site slot lives on Chez's continuation-attachment
+;; list instead of vreg 2. A traced non-tail call pushes a fresh 0 for its
+;; callee (jolt-site-attach) and Chez pops it when the call returns or a throw
+;; escapes past it, so nothing is saved in the caller's frame. The head of the
+;; list is the slot, a tail call's store replaces its car, and the old vreg 12
+;; (the nearest pair further out) is the first pair below the head. With an
+;; empty list vreg 2 is the slot, as in the default mode, which never pushes.
+;; #f unless the variable says attach; nothing else reads it.
+(define jolt-site-attach? #f)
+(define (jolt-site-attach-enable!) (set! jolt-site-attach? #t))
+(define-syntax jolt-site-cur
+  (syntax-rules ()
+    ((_) (let ((a (#%$current-attachments))) (if (pair? a) (car a) (virtual-register 2))))))
+(define-syntax jolt-site-set!
+  (syntax-rules ()
+    ((_ v) (let ((a (#%$current-attachments)))
+             (if (pair? a) (set-car! a v) (set-virtual-register! 2 v))))))
+(define-syntax jolt-site-attach
+  (syntax-rules ()
+    ((_ call) (#%$call-setting-continuation-attachment 0 (lambda () call)))))
+;; A catch's guard handler runs after the unwind, which has popped the pushes
+;; that held a host fault's site, so in attach mode a try body stashes it at the
+;; raise the way the uncaught path does (jolt-capture-fault!) and re-raises.
+(define (jolt-site-fault-stash c) (jolt-capture-fault! c) (raise-continuable c))
+(define-syntax jolt-site-try-body
+  (syntax-rules ()
+    ((_ body) (with-exception-handler jolt-site-fault-stash (lambda () body)))))
 ;; CALL, then the site slot (vreg 2, jolt-vreg-site below) put back as it was
 ;; before it: seq.ss's jolt-invoke0..4, for untraced code calling a fn value that
-;; may be traced. The literal 2 compiles to a load and a store.
+;; may be traced. The literal 2 compiles to a load and a store. In attach mode
+;; it is the list's head that is put back. Not a push: these sit in tail
+;; position, where setting an attachment reifies the continuation.
 (define-syntax jolt-site-kept
   (syntax-rules ()
-    ((_ call) (let* ((s (virtual-register 2)) (r call)) (set-virtual-register! 2 s) r))))
+    ((_ call) (if jolt-site-attach?
+                  (let* ((s (jolt-site-cur)) (r call)) (jolt-site-set! s) r)
+                  (let* ((s (virtual-register 2)) (r call)) (set-virtual-register! 2 s) r)))))
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
@@ -1591,6 +1623,15 @@
                 (if (pair? s) (set-virtual-register! 12 s))
                 (set-virtual-register! 2 0)
                 (let ((r call)) (set-virtual-register! 2 s) (set-virtual-register! 12 o) r)))))
+;; JOLT_TRACE_EMIT=prim: the same restore as one Chez primitive, $jolt-site-call,
+;; which a Chez carrying host/chez/chez-patches/0008 open-codes after cp0 (in
+;; cpnanopass's np-recognize-attachment) so the passes before it see one call.
+;; Chosen when this file is compiled: a Chez without the primitive gets the
+;; jolt-site-inline expansion above.
+(define-syntax jolt-site-prim
+  (if (guard (c (#t #f)) (eval '($primitive $jolt-site-call)) #t)
+      (syntax-rules () ((_ call) (#%$jolt-site-call (lambda () call))))
+      (syntax-rules () ((_ call) (jolt-site-inline call)))))
 ;; A non-tail call moves the slot's pair to jolt-vreg-outer-site and clears the
 ;; slot while it runs (backend_scheme site-restore): a throw inside it has no
 ;; innermost pair, only the nearest erased caller from further out. The snapshot
@@ -1599,11 +1640,28 @@
 ;; every other reader tests pair? and ignores it.
 (define-record-type outer-site (fields pair) (nongenerative jolt-outer-site-v1))
 (define (jolt-site-snapshot)
-  (let ((s (virtual-register jolt-vreg-site)))
-    (if (pair? s)
-        s
-        (let ((o (virtual-register jolt-vreg-outer-site)))
-          (and (pair? o) (make-outer-site o))))))
+  (jolt-site-snapshot-of (if jolt-site-attach? (#%$current-attachments) '())))
+;; ...from attachment list A (attach mode; '() reads the vregs alone). A caught
+;; host fault reads the list its condition's continuation kept at the raise,
+;; since by handler time the throw's own pushes have been popped (host-faults.ss).
+(define (jolt-site-snapshot-of a)
+  (if (pair? a)
+        ;; attach mode: the head is the slot, the first pair below it the outer
+        ;; slot, and vreg 2 then vreg 12 lie below the whole list
+        (if (pair? (car a))
+            (car a)
+            (let loop ((l (cdr a)))
+              (cond ((and (pair? l) (pair? (car l))) (make-outer-site (car l)))
+                    ((pair? l) (loop (cdr l)))
+                    ((pair? (virtual-register jolt-vreg-site))
+                     (make-outer-site (virtual-register jolt-vreg-site)))
+                    (else (let ((o (virtual-register jolt-vreg-outer-site)))
+                            (and (pair? o) (make-outer-site o)))))))
+        (let ((s (virtual-register jolt-vreg-site)))
+          (if (pair? s)
+              s
+              (let ((o (virtual-register jolt-vreg-outer-site)))
+                (and (pair? o) (make-outer-site o)))))))
 ;; A top-level form is a root: nothing tail-called it, so whatever the slot holds
 ;; when one starts is a returned call's residue — the reporter's validator cannot
 ;; tell it from a live pair when the innermost live frame is a host fn (the
@@ -1611,6 +1669,7 @@
 ;; slot when a form starts to compile and again when its compiled code starts to
 ;; run, since macroexpansion runs user code in between.
 (define (jolt-site-reset!)
+  (when jolt-site-attach? (jolt-site-set! 0))
   (set-virtual-register! jolt-vreg-site 0)
   (set-virtual-register! jolt-vreg-outer-site 0))
 ;; The site pair ('ns/fn' . line) of the innermost call at the throw — the

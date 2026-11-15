@@ -152,6 +152,13 @@
           (unless (eq? (jolt-fault-captured) c)
             (jolt-throw-sitep (jolt-live-site)))
           (let ((t (jolt-host-throwable (fault-class c) (fault-message c))))
+            ;; attach mode: the capture's live site was read after the unwind
+            ;; popped the fault's own; use the raise-time one (rt.ss
+            ;; jolt-site-try-body), which is what the live read sees otherwise
+            (when jolt-site-attach?
+              (let ((cap (jolt-ex-info-record-capture t)))
+                (when (pair? cap)
+                  (jolt-ex-info-record-capture-set! t (cons (car cap) (jolt-throw-sitep))))))
             (hashtable-set! fault-throwables c t)
             (hashtable-set! fault-conditions t c)
             ;; The thread is now handling t, raised where c was: a catch that

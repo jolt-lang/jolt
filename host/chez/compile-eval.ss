@@ -337,7 +337,9 @@
     (let ((m (getenv "JOLT_TRACE_EMIT")))
       (when (and m (> (string-length m) 0))
         (let ((ste (var-deref "jolt.backend-scheme.session" "set-trace-emit!")))
-          (when (procedure? ste) (ste m)))))
+          (when (procedure? ste) (ste m))
+          ;; attach: the slot moves onto the continuation-attachment list (rt.ss)
+          (when (string=? m "attach") (jolt-site-attach-enable!)))))
     (jolt-trace-enable!)))
 ;; Exposed so the REPL / nREPL entrypoints (jolt.main, jolt.nrepl) can turn tracing
 ;; on for REPL-driven development without the user setting JOLT_TRACE. Because the

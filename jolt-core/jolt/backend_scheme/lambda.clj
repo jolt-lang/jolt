@@ -10,7 +10,7 @@
              :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
                      *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
                      *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
-                     debug-locals? fresh-label site-call-helper target trace-emit trace-frames?]]
+                     debug-locals? fresh-label site-attach? site-call-helper target trace-emit trace-frames?]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
             [jolt.backend-scheme.fnsrc
@@ -200,9 +200,9 @@
     (let [tok (:tok self-wrap)
           unsafe? @(:unsafe self-wrap)
           rd-from (str "(" tok "r)")
-          rd-to (if unsafe? "(virtual-register 2)" "0")
+          rd-to (if unsafe? (if (site-attach?) "(jolt-site-cur)" "(virtual-register 2)") "0")
           wr-from (str "(" tok "w ")
-          wr-to (if unsafe? "(set-virtual-register! 2 " "(begin ")
+          wr-to (if unsafe? (if (site-attach?) "(jolt-site-set! " "(set-virtual-register! 2 ") "(begin ")
           fix (fn [x] (if (string? x)
                         (str/replace (str/replace x rd-from rd-to) wr-from wr-to)
                         x))]

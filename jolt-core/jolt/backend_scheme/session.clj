@@ -318,9 +318,19 @@
 ;; is (jolt-site-inline call), a runtime macro that expands to the inline
 ;; restore. "inline": the inline form everywhere (the pre-#1423 shape).
 ;; "norestore": no restore at all, the cost ceiling; NOT trace-identical.
+;; Trace-primitive experiment: "attach" moves the slot onto Chez's
+;; continuation-attachment list (rt.ss jolt-site-attach): a non-tail call pushes
+;; and Chez pops, a tail call and every other slot read or write go through
+;; rt.ss jolt-site-cur / jolt-site-set!. "prim" wraps the call in rt.ss
+;; jolt-site-prim, the default restore as one Chez primitive where the Chez
+;; has it (host/chez/chez-patches/0008), else the inline restore.
 (def trace-emit (atom nil))
 (defn set-trace-emit! [m]
-  (reset! trace-emit (when (contains? #{"global" "macro" "inline" "norestore"} m) m)))
+  (reset! trace-emit (when (contains? #{"global" "macro" "inline" "norestore" "attach" "prim"} m) m)))
+;; attach mode: the slot is the head of the attachment list, not vreg 2
+(defn site-attach? [] (= "attach" @trace-emit))
+;; the head of a tail call's site store
+(defn site-store [] (if (site-attach?) "(jolt-site-set! " "(jolt-site! "))
 ;; A tail call that may run a jolt fn disqualifies the enclosing fn.
 (defn note-tail-call! [tail?]
   (when (and tail? *self-wrap*) (reset! (:unsafe *self-wrap*) true)))
