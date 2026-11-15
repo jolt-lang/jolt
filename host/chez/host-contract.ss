@@ -1182,7 +1182,7 @@
 ;; cell's unbound root is never deref'd. host/chez/manifest-check.sh fails CI if
 ;; this list drifts from native-ops.
 (define hc-native-op-names
-  '("+" "-" "*" "/" "<" ">" "<=" ">=" "=" "inc" "dec" "not" "min" "max"
+  '("+" "-" "*" "/" "<" ">" "<=" ">=" "=" "==" "inc" "dec" "not" "min" "max"
     "mod" "rem" "quot" "vector" "hash-map" "hash-set" "conj" "get" "nth" "count"
     "assoc" "dissoc" "contains?" "find" "empty?" "peek" "pop" "first" "rest" "next" "seq"
     "cons" "list" "reverse" "last" "map" "filter" "remove" "reduce" "reduce-kv" "into" "concat"
