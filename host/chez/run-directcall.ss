@@ -6,7 +6,8 @@
 ;;     the root is a procedure whose arity mask admits the call, the var is not
 ;;     ^:dynamic/^:redef, and the app has not redefined it. Off direct-link, and
 ;;     for a wrong arity, a non-procedure root or an app var, the site keeps the
-;;     var-routed jolt-invoke.
+;;     var-routed invocation. The native-call opt-in uses a checked application
+;;     and Chez's call-error hook instead of the jolt-invoke helper.
 ;;   * an interop call on an UNPROVEN receiver tests the receiver at the site and
 ;;     takes the string/keyword direct form, with record-method-dispatch as the
 ;;     slow arm; a method with no direct form keeps the plain dispatch.
@@ -42,6 +43,12 @@
 (define (invoke-sub? e n)
   (or (gate-sub? e (string-append "jolt-invoke" n))
       (gate-sub? e (string-append "jolt-invoke-t" n))))
+;; Keep the expected spelling independent of the emitter's mutable mode atom:
+;; the running compiler's capability and requested mode select one exact route.
+(define (var-call-sub? e n)
+  (if (jolt-native-var-call-enabled?)
+      (and (gate-sub? e "(#2%$app ") (not (invoke-sub? e n)))
+      (and (invoke-sub? e n) (not (gate-sub? e "(#2%$app ")))))
 (define (call name . args) (apply jolt-invoke (var-deref "user" name) args))
 (define (raises? thunk) (guard (e (#t #t)) (thunk) #f))
 
@@ -70,11 +77,20 @@
   (run-emit e)
   (gate-check "the hoisted seed call answers" (jolt-get (call "usearraymap" (keyword #f "a") 1) (keyword #f "a") jolt-nil) 1))
 (let ((e (emit-nodl "(def usetrue2 (fn [x] (true? x)))")))
-  (gate-check "off direct-link the site stays var-routed" (invoke-sub? e "1") #t)
-  (gate-check "off direct-link no root is bound" (gate-sub? e "jolt-seed-root") #f))
+  (gate-check "off direct-link the site uses the selected var-call route" (var-call-sub? e "1") #t)
+  (gate-check "off direct-link no root is bound" (gate-sub? e "jolt-seed-root") #f)
+  (run-emit e)
+  (gate-check "the var-routed seed call answers" (call "usetrue2" #t) #t)
+  (let ((cell (jolt-var "clojure.core" "true?")) (orig (var-deref "clojure.core" "true?")))
+    (jolt-alter-var-root cell (lambda (old) (lambda (x) 'rerouted)))
+    (gate-check "a var-routed site sees a rebind after loading" (call "usetrue2" #t) 'rerouted)
+    (jolt-alter-var-root cell (lambda (old) orig))))
 (let ((e (emit-dl "(def wrongarity (fn [x] (true? x 1)))")))
-  (gate-check "a wrong arity keeps jolt-invoke (it owns the ArityException)" (invoke-sub? e "2") #t)
-  (gate-check "a wrong arity binds no root" (gate-sub? e "jolt-seed-root") #f))
+  (gate-check "a wrong arity uses the selected checked var-call route" (var-call-sub? e "2") #t)
+  (gate-check "a wrong arity binds no root" (gate-sub? e "jolt-seed-root") #f)
+  (run-emit e)
+  (gate-check "a wrong arity raises the language's ArityException"
+              (ev "(try (wrongarity true) false (catch clojure.lang.ArityException _ true))") #t))
 (let ((e (emit-dl "(def nonproc (fn [] (*print-length*)))")))
   (gate-check "a non-procedure root keeps jolt-invoke" (invoke-sub? e "0") #t)
   (gate-check "a non-procedure root binds no root" (gate-sub? e "jolt-seed-root") #f))
@@ -110,8 +126,24 @@
     (run-emit (emit-dl "(def usederef3 (fn [a] @a))"))
     (gate-check "...and a site loaded after the restore sees the original" (call "usederef3" (jolt-atom-new 7)) 7)))
 (let ((e (emit-nodl "(def usederef2 (fn [a] @a))")))
+  ;; @a calls the clojure.core/deref Var; a is an argument, not the callee.
   (gate-check "@ off direct-link does not call jolt-deref" (gate-sub? e "jolt-deref") #f)
-  (gate-check "@ off direct-link is var-routed" (invoke-sub? e "1") #t))
+  (gate-check "@ off direct-link uses the selected var-call route" (var-call-sub? e "1") #t)
+  (run-emit e)
+  (gate-check "the var-routed deref answers" (call "usederef2" (jolt-atom-new 9)) 9)
+  (let ((cell (jolt-var "clojure.core" "deref")) (orig (var-deref "clojure.core" "deref")))
+    (jolt-alter-var-root cell (lambda (old) (lambda (x) 'rerouted)))
+    (gate-check "a var-routed deref sees a rebind after loading" (call "usederef2" 1) 'rerouted)
+    (jolt-alter-var-root cell (lambda (old) orig))))
+;; Native Var calls do not change local fn-value/callback invocation. In
+;; particular, a keyword or map callback keeps the helper's direct fast path.
+(let ((e (emit-nodl "(def localcallback (fn [f x] (f x)))")))
+  (gate-check "a local callback keeps the invoke helper" (invoke-sub? e "1") #t)
+  (gate-check "a local callback is not a checked native application" (gate-sub? e "(#2%$app ") #f)
+  (run-emit e)
+  (let ((k (keyword #f "callback-key")))
+    (gate-check "a keyword callback answers" (call "localcallback" k (jolt-hash-map k 7)) 7)
+    (gate-check "a map callback answers" (call "localcallback" (jolt-hash-map k 9) k) 9)))
 ;; The same for the other boot-layered natives (49 of them: map? and coll?
 ;; three times, __close four, var-get/with-meta/type/slurp/spit twice, …): each
 ;; is one definition once the image has booted, and direct-calls.
