@@ -289,7 +289,11 @@
 ;; Inside a fn the restore is spelled ONCE per clause, as the procedure
 ;; site-call-helper binds to jolt-site-call, and each site is
 ;; (jolt-site-call (lambda () call)). cp0 inlines the helper and the thunk, so
-;; the code that runs is the inline restore. What it saves is inspector
+;; the code that runs is the inline restore -- except at sites nested in another
+;; site's call, (f (g x)): there cp0 stops integrating the helper a few levels
+;; down and leaves a closure and an out-of-line call (on the generated 200k
+;; project ~22% of site references survive expand/optimize; see
+;; benchmarks/chez-primitives/jolt-3-trace-emitter.md). What it saves is inspector
 ;; information: with it on (jolt build's release mode) Chez keeps each lambda's
 ;; whole expanded body as data, the code-info sexpr, and the inline restore was
 ;; ~30 pairs of that per site, repeated in every enclosing lambda's copy. A
