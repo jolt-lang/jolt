@@ -343,8 +343,112 @@
 ;; set JOLT_TRACE=0 for. A `jolt build` binary is unaffected: its prologues are
 ;; baked at build time, so this runtime switch cannot add them.
 (define (jolt-trace-init-from-env!)
+  (jolt-phase-times-init-from-env!)
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (jolt-enable-trace!)))
+
+;; --- cold-path phase times (JOLT_PHASE_TIMES=1) -------------------------------
+;; Where a source load's wall time goes: jolt's analyze+emit, reading the emitted
+;; text back, Chez's expand, Chez's compile, running the compiled form, and the
+;; loader's own work around them (clj-read, loader, cache-load, aot-write,
+;; aot-compile — loader.ss). Reported on stderr at exit. Off unless the variable
+;; is set; off, each site costs one flag test.
+;;
+;; The times are EXCLUSIVE. One clock charges whichever phase is running; entering
+;; a phase charges the elapsed time to the phase it interrupts and resumes that one
+;; on the way out. A form whose run requires another namespace therefore charges
+;; that namespace's analyze/compile/... to those phases, not to its own execute —
+;; timing each phase as an interval around its call counted every nested require
+;; twice. Everything outside a named phase (startup after this init, the program's
+;; own run) lands in `other`, so the phases sum to the total.
+;;
+;; expand, compile and execute are the three parts of one Chez `eval`: current-expand
+;; is wrapped to time the expander, and Chez's $compile-backend to time the call of
+;; the code it produced; the rest of the eval is the compile. Both wrappers charge
+;; only inside the `compile` phase, so the in-process .so compile and Chez's own
+;; evals elsewhere keep their caller's phase. A form simple enough for Chez to
+;; interpret (compile-interpret-simple) runs inside `compile`.
+;;
+;; Main thread only: the thread that called init owns the clock, and a phase entered
+;; on any other thread is not charged. The process's cold load is single-threaded.
+;; Enabled at runtime from jolt-trace-init-from-env! (the entrypoints call it), not at
+;; load time, where a built jolt's image never sees the user's env.
+(define jolt-phase-times? #f)
+(define jp-thread #f)
+(define jp-phase 'other)               ; the phase the clock is charging
+(define jp-mark 0)                     ; ns at the last switch
+(define jp-start 0)
+(define jp-hooked? #f)
+(define jp-ns (make-eq-hashtable))     ; phase -> ns
+(define jp-entries (make-eq-hashtable)) ; phase -> times entered
+(define jp-order '(analyze+emit read expand compile execute
+                   clj-read loader cache-load aot-write aot-compile other))
+(define (jp-now)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* (time-second t) 1000000000) (time-nanosecond t))))
+;; Charge the time since the last switch to the running phase and start P; returns
+;; the phase it interrupted.
+(define (jp-switch! p)
+  (let ((now (jp-now)) (prev jp-phase))
+    (hashtable-update! jp-ns prev (lambda (x) (+ x (- now jp-mark))) 0)
+    (set! jp-mark now)
+    (set! jp-phase p)
+    prev))
+(define (jp-run p thunk)
+  (unless jp-hooked?
+    (set! jp-hooked? #t)
+    (jolt-add-runtime-shutdown-hook jolt-phase-times-report!))
+  (let ((prev #f))
+    (dynamic-wind
+      (lambda ()
+        (set! prev (jp-switch! p))
+        (hashtable-update! jp-entries p fx1+ 0))
+      thunk
+      (lambda () (jp-switch! prev)))))
+(define (jp-mine?) (eqv? (get-thread-id) jp-thread))
+;; (jolt-phase-call 'phase thunk) -> thunk's values, timed as PHASE when on.
+(define (jolt-phase-call p thunk)
+  (if (and jolt-phase-times? (jp-mine?)) (jp-run p thunk) (thunk)))
+(define (jolt-phase-times-init-from-env!)
+  (let ((e (getenv "JOLT_PHASE_TIMES")))
+    (when (and (not jolt-phase-times?) (string? e) (not (string=? e ""))
+               (not (jolt-trace-env-off? e)))
+      (set! jolt-phase-times? #t)
+      (set! jp-thread (get-thread-id))
+      (set! jp-start (jp-now))
+      (set! jp-mark jp-start)
+      (let ((expand0 (current-expand)))
+        (current-expand
+          (lambda args
+            (if (and (eq? jp-phase 'compile) (jp-mine?))
+                (jp-run 'expand (lambda () (apply expand0 args)))
+                (apply expand0 args)))))
+      (let ((backend0 (#%$top-level-value '$compile-backend)))
+        (#%$set-top-level-value! '$compile-backend
+          (lambda (x)
+            (let ((run (backend0 x)))
+              (lambda ()
+                (if (and (eq? jp-phase 'compile) (jp-mine?))
+                    (jp-run 'execute run)
+                    (run))))))))))
+(define (jolt-phase-times-report!)
+  (when (jp-mine?)
+    (jp-switch! jp-phase)
+    (let ((err (current-error-port))
+          (ms (lambda (ns) (/ (round (/ ns 100000)) 10.0)))
+          (pad (lambda (s n) (if (>= (string-length s) n) s
+                                 (string-append (make-string (- n (string-length s)) #\space) s)))))
+      (for-each
+        (lambda (p)
+          (put-string err (string-append "jolt phase-times: "
+                                         (symbol->string p)
+                                         (make-string (- 14 (string-length (symbol->string p))) #\space)
+                                         (pad (number->string (ms (hashtable-ref jp-ns p 0))) 10) " ms"
+                                         (pad (number->string (hashtable-ref jp-entries p 0)) 9) "\n")))
+        jp-order)
+      (put-string err (string-append "jolt phase-times: total         "
+                                     (pad (number->string (ms (- jp-mark jp-start))) 10) " ms\n"))
+      (flush-output-port err))))
 ;; Host-side mirror of the emitter's trace-frames? flag: whether the emitted
 ;; text carries #|L<line>|# markers (backend_scheme.clj with-site). When it is
 ;; off, no markers exist, so the annotated read below would attach source
@@ -374,13 +478,16 @@
   (let* ((bv (string->utf8 scm))
          (name (jolt-register-eval-marker-table! scm (hc-form-position form) written ns))
          (sfd (make-source-file-descriptor name (open-bytevector-input-port bv)))
-         (ann (call-with-values
-               (lambda ()
-                 (get-datum/annotations
-                  (transcoded-port (open-bytevector-input-port bv) (native-transcoder))
-                  sfd 0))
-               (lambda (a p) a))))
-    (sa-profile-compile (lambda () (eval ann (interaction-environment))))))
+         (ann (jolt-phase-call 'read
+                (lambda ()
+                  (call-with-values
+                    (lambda ()
+                      (get-datum/annotations
+                       (transcoded-port (open-bytevector-input-port bv) (native-transcoder))
+                       sfd 0))
+                    (lambda (a p) a))))))
+    (sa-profile-compile
+      (lambda () (jolt-phase-call 'compile (lambda () (eval ann (interaction-environment))))))))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
@@ -782,7 +889,7 @@
      ;; record this form's source location first, so a compile- or run-time error
      ;; in it reports the right place.
      (jolt-enter-form! form)
-     (let* ((scm (jolt-analyze-emit-form form ns))
+     (let* ((scm (jolt-phase-call 'analyze+emit (lambda () (jolt-analyze-emit-form form ns))))
             (cap (jolt-aot-capture)))            ; tee for the AOT cache (loader.ss)
        (when cap (put-string cap scm) (newline cap))
        ;; the run is a root as much as the compile was: expanding the form ran
@@ -798,7 +905,9 @@
        (let ((run (lambda ()
                     (if (jolt-ce-trace-frames?)
                         (jolt-eval-with-source scm form (or outer form) ns)
-                        (eval (read (open-input-string scm)) (interaction-environment))))))
+                        (let ((x (jolt-phase-call 'read (lambda () (read (open-input-string scm))))))
+                          (jolt-phase-call 'compile
+                            (lambda () (eval x (interaction-environment)))))))))
          (if cap
              (parameterize ((jolt-aot-capture #f)) (run))
              (run)))))))

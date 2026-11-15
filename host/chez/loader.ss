@@ -9,6 +9,12 @@
 ;; gates load compile-eval.ss but NOT this file, so the corpus/unit/sci runners
 ;; keep their alias-only `require` and are unaffected.
 
+;; compile-eval.ss's JOLT_PHASE_TIMES clock (jolt-phase-call), when this image
+;; has a compiler. A closed no-eval app loads this file without compile-eval.ss,
+;; and there every phase is just its thunk.
+(define ldr-phase
+  (or (sa-baked-global 'jolt-phase-call) (lambda (p thunk) (thunk))))
+
 ;; --- search roots -----------------------------------------------------------
 ;; An ordered list of directory strings. `require` searches them left to right.
 ;; The CLI seeds this with the project's resolved deps roots (jolt.deps) plus the
@@ -772,7 +778,7 @@
                     last
                   (let* ((i (if w (ce-skip-ws src i0 end) i0))
                          (pos (if w (ce-advance src i0 i (car pos0) (cdr pos0)) pos0)))
-                  (let-values (((form j) (rdr-read-top src i end)))
+                  (let-values (((form j) (ldr-phase 'clj-read (lambda () (rdr-read-top src i end)))))
                     (if (<= j i)
                         last
                       ;; ord counts every top-level form read (the ns form
@@ -1968,9 +1974,11 @@
               (let* ((deps (filter aot-cacheable-file (vector-ref sink 0)))
                      (res (vector-ref res-sink 0))
                      (obase (aot-base-for-own name own)))
-                (aot-write-sidecars! name own obase deps res)
+                (ldr-phase 'aot-write (lambda () (aot-write-sidecars! name own obase deps res)))
                 (aot-publish-when-readers-settle!
-                  name (lambda () (aot-publish-artifact! name own deps res captured stamps))))
+                  name (lambda ()
+                         (ldr-phase 'aot-write
+                           (lambda () (aot-publish-artifact! name own deps res captured stamps))))))
               (aot-info (string-append "nothing captured for " name ", not caching")))
           ;; with or without sidecars this namespace's digest is final now, so
           ;; what waited on it goes ahead either way
@@ -2041,8 +2049,10 @@
       (if (aot-enqueue-compile! scm so)
           (aot-info (string-append "queued " name))
           (begin
-            (parameterize ((current-output-port (open-output-string)))
-              (sa-compile-file scm tmp-so #f))
+            (ldr-phase 'aot-compile
+              (lambda ()
+                (parameterize ((current-output-port (open-output-string)))
+                  (sa-compile-file scm tmp-so #f))))
             (rename-replace! tmp-so so)
             (unless (file-exists? so)
               (aot-info (string-append "no .so produced for " name))))))))
@@ -2147,7 +2157,8 @@
     (let ((state (guard (e (else 'corrupt))
                    (aot-complete-reset! name)
                    (parameterize ((aot-loading-file file) (jolt-def-capture defs))
-                     (ldr-with-compiled-ns-vars file (lambda () (load so))))
+                     (ldr-with-compiled-ns-vars file
+                       (lambda () (ldr-phase 'cache-load (lambda () (load so))))))
                    (if (aot-complete? name) 'ok 'incomplete))))
       (case state
         ;; loaded — but if the key was computed with an inert ASSUMPTION for a dep
@@ -2193,7 +2204,9 @@
                                                           ", falling back to source"))
                                  #f))
                    (ldr-with-compiled-ns-vars file
-                     (lambda () (load-compiled-from-port (open-bytevector-input-port bv))))
+                     (lambda ()
+                       (ldr-phase 'cache-load
+                         (lambda () (load-compiled-from-port (open-bytevector-input-port bv))))))
                    (aot-info (string-append "embedded " name))
                    #t))))))
 
@@ -3116,6 +3129,8 @@
 ;; The load itself, run by the one thread that claimed it (never concurrently for
 ;; a given name, and never re-entered for it on this thread).
 (define (ldr-load-body name force? was-loaded?)
+  (ldr-phase 'loader (lambda () (ldr-load-body* name force? was-loaded?))))
+(define (ldr-load-body* name force? was-loaded?)
   ;; A compiled artifact on the roots wins over the source, like RT.load
   ;; preferring a .class to its .clj. :reload does NOT bypass it, also like the
   ;; JVM: the artifact is only offered here when it still matches the source it
