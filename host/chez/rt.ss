@@ -1352,7 +1352,10 @@
 ;; empty list vreg 2 is the slot, as in the default mode, which never pushes.
 ;; #f unless the variable says attach; nothing else reads it.
 (define jolt-site-attach? #f)
-(define (jolt-site-attach-enable!) (set! jolt-site-attach? #t))
+(define (jolt-site-attach-enable!)
+  (set! jolt-site-attach? #t)
+  (set! jolt-site-snapshot jolt-site-snapshot/attach)
+  (set! jolt-site-reset! jolt-site-reset!/attach))
 (define-syntax jolt-site-cur
   (syntax-rules ()
     ((_) (let ((a (sa-current-attachments))) (if (pair? a) (car a) (virtual-register 2))))))
@@ -1638,28 +1641,28 @@
 ;; every other reader tests pair? and ignores it.
 (define-record-type outer-site (fields pair) (nongenerative jolt-outer-site-v1))
 (define (jolt-site-snapshot)
-  (jolt-site-snapshot-of (if jolt-site-attach? (sa-current-attachments) '())))
-;; ...from attachment list A (attach mode; '() reads the vregs alone). A caught
-;; host fault reads the list its condition's continuation kept at the raise,
-;; since by handler time the throw's own pushes have been popped (host-faults.ss).
-(define (jolt-site-snapshot-of a)
-  (if (pair? a)
-        ;; attach mode: the head is the slot, the first pair below it the outer
-        ;; slot, and vreg 2 then vreg 12 lie below the whole list
-        (if (pair? (car a))
-            (car a)
-            (let loop ((l (cdr a)))
-              (cond ((and (pair? l) (pair? (car l))) (make-outer-site (car l)))
-                    ((pair? l) (loop (cdr l)))
-                    ((pair? (virtual-register jolt-vreg-site))
-                     (make-outer-site (virtual-register jolt-vreg-site)))
-                    (else (let ((o (virtual-register jolt-vreg-outer-site)))
-                            (and (pair? o) (make-outer-site o)))))))
-        (let ((s (virtual-register jolt-vreg-site)))
-          (if (pair? s)
-              s
-              (let ((o (virtual-register jolt-vreg-outer-site)))
-                (and (pair? o) (make-outer-site o)))))))
+  (let ((s (virtual-register jolt-vreg-site)))
+    (if (pair? s)
+        s
+        (let ((o (virtual-register jolt-vreg-outer-site)))
+          (and (pair? o) (make-outer-site o))))))
+(define jolt-site-snapshot/vregs jolt-site-snapshot)
+;; Attach mode's snapshot (jolt-site-attach-enable! installs it): the head of
+;; the attachment list is the slot, the first pair below it the outer slot, and
+;; the vregs lie below the whole list. Kept apart so the procedure above stays
+;; the one gambit/rt-core.ss mirrors.
+(define (jolt-site-snapshot/attach)
+  (let ((a (sa-current-attachments)))
+    (cond
+      ((not (pair? a)) (jolt-site-snapshot/vregs))
+      ((pair? (car a)) (car a))
+      (else
+       (let loop ((l (cdr a)))
+         (cond ((not (pair? l))
+                (let ((s (virtual-register jolt-vreg-site)))
+                  (if (pair? s) (make-outer-site s) (jolt-site-snapshot/vregs))))
+               ((pair? (car l)) (make-outer-site (car l)))
+               (else (loop (cdr l)))))))))
 ;; A top-level form is a root: nothing tail-called it, so whatever the slot holds
 ;; when one starts is a returned call's residue — the reporter's validator cannot
 ;; tell it from a live pair when the innermost live frame is a host fn (the
@@ -1667,9 +1670,12 @@
 ;; slot when a form starts to compile and again when its compiled code starts to
 ;; run, since macroexpansion runs user code in between.
 (define (jolt-site-reset!)
-  (when jolt-site-attach? (jolt-site-set! 0))
   (set-virtual-register! jolt-vreg-site 0)
   (set-virtual-register! jolt-vreg-outer-site 0))
+(define jolt-site-reset!/vregs jolt-site-reset!)
+(define (jolt-site-reset!/attach)
+  (jolt-site-set! 0)
+  (jolt-site-reset!/vregs))
 ;; The site pair ('ns/fn' . line) of the innermost call at the throw — the
 ;; catch-line snapshot when a handler is running, else the raise-time stash.
 ;; #f when unset. The reporter must validate this against the callsite table
