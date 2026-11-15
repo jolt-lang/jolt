@@ -2533,15 +2533,15 @@
   ;; links against those, so there it needs only a C compiler (jolt#1255).
   ;; A profile-guided build compiles in this process: the spawned-Chez paths
   ;; (a library, a cross build, a jolt without the embedded stub or kernel) have
-  ;; no profile to load. The dev mode compiles under the target's defaults,
-  ;; which is not a build anyone profiles.
+  ;; no profile to load. Dev keeps full debug information, but is not a mode
+  ;; supported by the profile-guided build pipeline.
   (when (bld-block-profile)
     (let ((flag (if (bld-profile-gen?) "--profile-gen" "--profile-use")))
       (cond
         ((or library? (bld-cross?) (not (jolt-embedded-bytes "stub/launcher"))
              (and (bld-signable) (not (bld-embedded-kernel?))))
          (error 'jolt-build (string-append flag " builds an executable for this machine with a self-contained jolt; it is not available with --library or --target")))
-        ((not (bld-mode-params mode))
+        ((string=? mode "dev")
          (error 'jolt-build (string-append flag " needs a release or --opt build, not --dev")))
         ;; the same code compiles differently in another mode, so a profile from
         ;; one does not fit the other; said here, rather than as stale units
@@ -3255,7 +3255,7 @@
 ;; `app.util/inner-boom` frames the build smoke's --innerfn case pins vanish
 ;; without it (both parameters off, AND proc-source alone: it does not cover
 ;; return points). "optimized" turns them OFF for the smallest, fastest app
-;; half; "dev" has no entry (Chez defaults: optimize-level 2, inspector ON,
+;; half; "dev" explicitly keeps Chez's defaults (optimize-level 2, inspector ON,
 ;; proc-source ON, fasl uncompressed — full debuggability). Single table
 ;; referenced by both the script-string builder and the in-process compile.
 ;; Patch 0015 can replace the release row with source-only data when requested
@@ -3268,7 +3268,11 @@
 ;; raising ((take nil coll) must throw, not walk off a nil count). Level 2
 ;; keeps every check with nearly all of the optimization.
 (define bld-chez-params
-  '(("optimized" (optimize-level 2)
+  '(("dev"       (optimize-level 2)
+                 (generate-inspector-information #t)
+                 (generate-procedure-source-information #t)
+                 (fasl-compressed #f))
+    ("optimized" (optimize-level 2)
                  (generate-inspector-information #f)
                  (generate-procedure-source-information #f)
                  (fasl-compressed #t))
@@ -3312,18 +3316,23 @@
                      ")"))
     "" params))
 
-;; The app half's parameters for MODE, or #f for a mode with no row (dev).
+;; The app half's parameters for MODE, or #f for an unknown mode. Dev's explicit
+;; profile also keeps its cache key distinct from the old implicit defaults,
+;; which could compile without names under JOLT_SOURCE_INFO=source/off.
 (define (bld-mode-params mode)
   (let ((row (assoc mode bld-chez-params))
         (sources (sa-source-info-mode)))
     (and row
-         (if (and sources (string=? mode "release"))
-             (cons (list 'generate-return-point-source-information (eq? sources 'source))
+         (if sources
+             (cons (list 'generate-return-point-source-information
+                         (and (string=? mode "release") (eq? sources 'source)))
                (map (lambda (p)
                       (cond
-                        ((eq? (car p) 'generate-inspector-information)
+                        ((and (string=? mode "release")
+                              (eq? (car p) 'generate-inspector-information))
                          (list (car p) (eq? sources 'full)))
-                        ((eq? (car p) 'generate-procedure-source-information)
+                        ((and (string=? mode "release")
+                              (eq? (car p) 'generate-procedure-source-information))
                          (list (car p) (not (eq? sources 'off))))
                         (else p)))
                     (cdr row)))

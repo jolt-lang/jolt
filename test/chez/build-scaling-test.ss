@@ -211,6 +211,49 @@
 (ok "changing one unit recompiles that unit only" (= compiled-again 1))
 (set! bld-chez-compile-file real-compile)
 
+;; --dev must retain named locals even when the runtime's optional source-only
+;; mode is active. Reuse exactly the same native unit cache after switching to
+;; full: a source-only dev fasl used to poison that later build's cache hit.
+(define source-info-env (getenv "JOLT_SOURCE_INFO"))
+(define dev-ss (at "dev.ss"))
+(define dev-so (at "dev.so"))
+(define dev-text
+  "(define (gate-dev-worker capture) (let ((kept (list 'kept-value))) (let ((answer (capture))) (cons kept answer))))\n")
+(write-text! dev-ss dev-text)
+(define dev-units (list (list dev-ss dev-so 'app)))
+(define (dev-named-local?)
+  (load dev-so)
+  (let loop ((io (inspect/object (cdr (gate-dev-worker (lambda () (call/cc values)))))))
+    (cond
+      ((not (eq? (io 'type) 'continuation)) #f)
+      ((equal? ((io 'code) 'name) "gate-dev-worker")
+       (exists (lambda (i)
+                 (let ((v (io 'ref i)))
+                   (and (v 'name) (equal? ((v 'ref) 'value) '(kept-value)))))
+               (iota (io 'length))))
+      (else (loop (io 'link))))))
+(putenv "JOLT_SOURCE_INFO" "source")
+(define dev-source-key (bld-unit-key "dev" dev-text))
+(bld-compile-app-units! tmp "dev" dev-units #f)
+(ok "source-only override keeps named locals in dev units" (dev-named-local?))
+(putenv "JOLT_SOURCE_INFO" "full")
+(delete-file dev-so)
+(set! compiled-again 0)
+(set! bld-chez-compile-file (lambda args (set! compiled-again (+ compiled-again 1)) (apply real-compile args)))
+(bld-compile-app-units! tmp "dev" dev-units #f)
+(set! bld-chez-compile-file real-compile)
+(ok "full dev reuses the source-override cache with named locals"
+    (and (= compiled-again 0) (dev-named-local?)
+         (string=? dev-source-key (bld-unit-key "dev" dev-text))))
+(putenv "JOLT_SOURCE_INFO" "off")
+(delete-file dev-so)
+(bld-run-job! (vector dev-ss dev-so #f "dev" 'default #f))
+(ok "off override keeps named locals in dev worker jobs" (dev-named-local?))
+(for-each (lambda (form) (eval form))
+          (read-all-string (bld-units-compile-forms dev-units "dev")))
+(ok "spawned-Chez dev compile forms keep named locals" (dev-named-local?))
+(putenv "JOLT_SOURCE_INFO" (or source-info-env ""))
+
 ;; The prune drops the least recently USED entries: a hit marks its entry, so an
 ;; entry every build reads is not evicted just for having been created first.
 (define lru (at "lru-cache"))
