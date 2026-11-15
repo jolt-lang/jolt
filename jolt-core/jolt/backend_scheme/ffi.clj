@@ -511,6 +511,42 @@
       (emit-ffi-bare-varargs-fn node vi)
       (emit-ffi-fixed-fn node vi))))
 
+(defn- ffi-callable-wrapper
+  "The lambda that converts a callback's arguments and result around FN-NODE."
+  [emit fn-node argtypes rettype aggregates ret-aggregate?]
+  ;; The fn is bound to a fresh name rather than inlined into the lambda
+  ;; body so it is evaluated once, at callable-construction time, not on
+  ;; every call C makes through the entry point.
+  (let [fname (fresh-label "jolt_ffi_cb")
+        params (ffi-params (count argtypes))
+        args (vec (map-indexed
+                   (fn [i param]
+                     (if (get aggregates i)
+                       (str "(ftype-pointer-address " param ")")
+                       (ffi-c->jolt (nth argtypes i) param)))
+                   params))
+        args (if ret-aggregate?
+               (into ["(ftype-pointer-address destination)"] args)
+               args)
+        invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]
+    (str "(let ((" fname " " (emit fn-node) ")) "
+         "(lambda (" (str/join " " (if ret-aggregate? (cons "destination" params) params)) ") "
+         (if ret-aggregate? invoke (ffi-jolt->c rettype invoke))
+         "))")))
+
+(defn- ffi-collect-safe-entry
+  "TARGET wrapped so each call C makes counts itself in and out."
+  [target arity]
+  (let [fname (fresh-label "jolt_ffi_cs")
+        params (mapv (fn [i] (str "c" i)) (range arity))]
+    (str "(let* ((" fname " " target ") "
+         "(jolt-ffi-collect-safe-entry "
+         "(lambda (" (str/join " " params) ") "
+         "(jolt-ffi-callback-enter!) "
+         "(let ((r (" fname (when (seq params) (str " " (str/join " " params))) "))) "
+         "(jolt-ffi-callback-exit!) r)))) "
+         "jolt-ffi-collect-safe-entry)")))
+
 ;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
 ;; locked + registered (jolt-ffi-register-callable!, host/chez/java/ffi.ss) so the
 ;; collector neither moves nor reclaims it while C may still call through it. The
@@ -571,25 +607,7 @@
         target
         (if-not converted-position?
           (emit (:fn node))
-          ;; The fn is bound to a fresh name rather than inlined into the lambda
-          ;; body so it is evaluated once, at callable-construction time, not on
-          ;; every call C makes through the entry point.
-          (let [fname (fresh-label "jolt_ffi_cb")
-                params (ffi-params (count argtypes))
-                args (vec (map-indexed
-                           (fn [i param]
-                             (if (get aggregates i)
-                               (str "(ftype-pointer-address " param ")")
-                               (ffi-c->jolt (nth argtypes i) param)))
-                           params))
-                args (if ret-aggregate?
-                       (into ["(ftype-pointer-address destination)"] args)
-                       args)
-                invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]
-            (str "(let ((" fname " " (emit (:fn node)) ")) "
-                 "(lambda (" (str/join " " (if ret-aggregate? (cons "destination" params) params)) ") "
-                 (if ret-aggregate? invoke (ffi-jolt->c rettype invoke))
-                 "))")))
+          (ffi-callable-wrapper emit (:fn node) argtypes rettype aggregates ret-aggregate?))
         ;; A :collect-safe callable counts itself in and out (java/ffi.ss
         ;; jolt-ffi-callback-enter!/exit!, a CAS each) so a collection stalled
         ;; by a non-:blocking outbound call can report that a callback is among
@@ -603,18 +621,7 @@
         ;; carries it: a backtrace or a stack sample taken on the library's
         ;; thread then reads jolt-ffi-collect-safe-entry where it would read an
         ;; anonymous frame.
-        target
-        (if (:collect-safe node)
-          (let [fname (fresh-label "jolt_ffi_cs")
-                params (mapv (fn [i] (str "c" i)) (range arity))]
-            (str "(let* ((" fname " " target ") "
-                 "(jolt-ffi-collect-safe-entry "
-                 "(lambda (" (str/join " " params) ") "
-                 "(jolt-ffi-callback-enter!) "
-                 "(let ((r (" fname (when (seq params) (str " " (str/join " " params))) "))) "
-                 "(jolt-ffi-callback-exit!) r)))) "
-                 "jolt-ffi-collect-safe-entry)"))
-          target)
+        target (if (:collect-safe node) (ffi-collect-safe-entry target arity) target)
         register (str "(jolt-ffi-register-callable! ("
                       (if (:collect-safe node) "sa-foreign-callable-collect-safe " "sa-foreign-callable ")
                       target
