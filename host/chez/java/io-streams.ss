@@ -2538,6 +2538,10 @@
             ;; the same adapter io/reader hands back for one
             ((user-in-stream? src) (decode-bytevector (user-in-stream-bytes src) (slurp-encoding opts)))
             ((user-reader? src) (drain-reader (make-reader-adapter src)))
+            ;; a type extended with IOFactory: slurp is a drain of io/reader on
+            ;; the JVM, so it reads through the extension's reader (closed by
+            ;; the reader arm of this slurp)
+            ((jio-extension src "make-reader") (jolt-slurp (apply jolt-io-reader src opts)))
             (else (apply prev src opts))))))
   (set! jolt-slurp
         (lambda (src . opts)
@@ -2578,6 +2582,11 @@
             ((user-writer? target)
              (record-method-dispatch target "write" (jolt-list (jolt-str-render-one content)))
              (jolt-close target) jolt-nil)
+            ;; a type extended with IOFactory: spit writes through io/writer on
+            ;; the JVM, so through the extension's writer, which the writer arms
+            ;; above close
+            ((jio-extension target "make-writer")
+             (jolt-spit (apply jolt-io-writer target opts) content))
             (else (apply prev target content opts)))))
   (def-var! "clojure.core" "spit" jolt-spit))
 
@@ -2625,6 +2634,18 @@
 (define (jio-open-in-file-buffered fs-path given)
   (jio-buffered-in (make-in-stream-markable (in-stream-port (jio-open-in-file fs-path given)))))
 (define (jio-buffered-in s) (stream-classed! (no-mark-yet! s) "java.io.BufferedInputStream"))
+;; An IOFactory impl that extend registered for X's type or an inherited host
+;; tag. The io fns dispatch on the source themselves, so each calls this only
+;; where it would otherwise raise "Cannot open". The impl takes OPTS as a map.
+(define (jio-extension x method)
+  (or (and (jrec? x) (find-protocol-method (jrdesc-tag (jrec-desc x)) "IOFactory" method))
+      (let loop ((tags (value-host-tags x)))
+        (cond ((null? tags) #f)
+              ((find-protocol-method (car tags) "IOFactory" method))
+              (else (loop (cdr tags)))))))
+(define (jio-extended x method opts otherwise)
+  (let ((f (jio-extension x method)))
+    (if f (f x (jolt-hash-map-build opts)) (otherwise))))
 (define (jio-input-stream x . opts)
   (io-opts-check! opts)
   (cond ((or (in-stream? x) (user-in-stream? x)) x)
@@ -2647,7 +2668,9 @@
         ((jar-path? x) (jar-path-stream x))
         ((string? x) (jio-open-in-file-buffered (io-source-path x) (if (file-url-string? x) (file-url->path x) x)))
         ((socket-value? x) (socket-stream x "getInputStream"))
-        (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as an InputStream.")))))
+        (else (jio-extended x "make-input-stream" opts
+                (lambda ()
+                  (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as an InputStream.")))))))
 (define (jio-output-stream x . rest)
   (io-opts-check! rest)
   (cond ((or (out-stream? x) (user-out-stream? x)) x)
@@ -2674,7 +2697,9 @@
         ;; the way an out-stream passes through.
         ((and (jhost? x) (text-sink-tag? (jhost-tag x))) x)
         ((socket-value? x) (socket-stream x "getOutputStream"))
-        (else (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as an OutputStream.")))))
+        (else (jio-extended x "make-output-stream" rest
+                (lambda ()
+                  (throw-jvm (quote IllegalArgumentException) (string-append "Cannot open <" (jolt-pr-str x) "> as an OutputStream.")))))))
 (def-var! "clojure.java.io" "input-stream" jio-input-stream)
 (def-var! "clojure.java.io" "output-stream" jio-output-stream)
 
@@ -2746,7 +2771,7 @@
             ((and (string? x) (not (jar-path? (io-source-path x))))
              (jio-file-char-reader (io-source-path x) (if (file-url-string? x) (file-url->path x) x)))
             ((socket-value? x) (apply jolt-io-reader (socket-stream x "getInputStream") opts))
-            (else (prev x))))))))
+            (else (jio-extended x "make-reader" opts (lambda () (prev x))))))))))
 (define (jio-buffered-reader x r)
   (cond ((eq? r x) r)
         ((and (char-reader? r) (not (stream-class r))) (stream-classed! r "java.io.BufferedReader"))
@@ -2783,7 +2808,7 @@
                  (let ((out (apply jio-output-stream x opts)))
                    (make-charset-writer (out-stream-port out) enc #f #t "java.io.BufferedWriter")))
                 ((socket-value? x) (apply jolt-io-writer (socket-stream x "getOutputStream") opts))
-                (else (apply prev x opts)))))))
+                (else (jio-extended x "make-writer" opts (lambda () (apply prev x opts)))))))))
 ;; re-bound: the clojure.java.io vars hold the VALUE these names had when io.ss
 ;; ran, so a set! above would not reach them.
 (def-var! "clojure.java.io" "writer" jolt-io-writer)
@@ -2945,8 +2970,8 @@
 ;; four are host fns that dispatch on the source themselves, so each make-* fn
 ;; calls its own through the var (natives-array.ss rebinds "reader" later) with
 ;; the map spread back to keyword arguments. IOFactory and Coercions are the
-;; protocol values, so code that names or extends them loads; the io fns do not
-;; consult an extension (known-divergences.edn).
+;; protocol values, so code that names or extends them loads. The io fns consult
+;; an extension only for a source they don't open themselves.
 ;; the map spread back to k1 v1 k2 v2 ..., folded here rather than through
 ;; clojure.core's apply/concat, which a tree-shaken app may not keep
 (define (jio-opts->list opts)
@@ -2973,6 +2998,34 @@
                           (apply append (map (lambda (m) (list (kw m) (kw m))) methods))))))
 (def-var! "clojure.java.io" "IOFactory"
   (jio-protocol-value "IOFactory" '("make-reader" "make-writer" "make-input-stream" "make-output-stream")))
+;; default-streams-impl: the reference's Object impl of IOFactory. make-reader and
+;; make-writer open through the source's own stream fn (an extension's if any),
+;; so an impl that overrides only the stream side gets a reader and writer free.
+(define (jio-default-open x opts method var-name)
+  (let ((f (jio-extension x method)))
+    (if f
+        (f x opts)
+        (apply jolt-invoke (var-deref "clojure.java.io" var-name) x (jio-opts->list opts)))))
+(def-var! "clojure.java.io" "default-streams-impl"
+  (jolt-hash-map
+    (keyword #f "make-reader")
+    (lambda (x opts)
+      (apply jolt-invoke (var-deref "clojure.java.io" "reader")
+             (jio-default-open x opts "make-input-stream" "input-stream")
+             (jio-opts->list opts)))
+    (keyword #f "make-writer")
+    (lambda (x opts)
+      (apply jolt-invoke (var-deref "clojure.java.io" "writer")
+             (jio-default-open x opts "make-output-stream" "output-stream")
+             (jio-opts->list opts)))
+    (keyword #f "make-input-stream")
+    (lambda (x opts)
+      (throw-jvm (quote IllegalArgumentException)
+                 (string-append "Cannot open <" (jolt-pr-str x) "> as an InputStream.")))
+    (keyword #f "make-output-stream")
+    (lambda (x opts)
+      (throw-jvm (quote IllegalArgumentException)
+                 (string-append "Cannot open <" (jolt-pr-str x) "> as an OutputStream.")))))
 (def-var! "clojure.java.io" "Coercions"
   (jio-protocol-value "Coercions" '("as-file" "as-url")))
 

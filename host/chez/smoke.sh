@@ -1475,6 +1475,24 @@ else
 fi
 rm -f "$bbshadow/src/cheshire/core.clj"; rmdir "$bbshadow/src/cheshire" 2>/dev/null
 
+# bencode.core is bundled like babashka does. It's the library's own file, so a
+# project declaring nrepl/bencode keeps its own copy.
+bnc_dir="$(mktemp -d)"
+printf '%s\n' "(require '[bencode.core :as b])" \
+  '(let [o (java.io.ByteArrayOutputStream.)]' \
+  '  (b/write-bencode o {"op" "eval" :id 7})' \
+  '  (let [m (b/read-bencode (java.io.PushbackInputStream. (java.io.ByteArrayInputStream. (.toByteArray o))))]' \
+  '    (println (String. (.toByteArray o) "UTF-8") (get m "id") (String. (get m "op") "UTF-8"))))' > "$bnc_dir/client.clj"
+bnc_out="$(cd "$bnc_dir" && JOLT_NO_DEVCACHE=1 "$bbs_jolt" client.clj 2>&1 | tail -1)"
+if [ "$bnc_out" = 'd2:idi7e2:op4:evale 7 eval' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: a bare script requiring bencode.core"
+  echo "    want \`d2:idi7e2:op4:evale 7 eval\` got \`$bnc_out\`"
+  fails=$((fails + 1))
+fi
+rm -rf "$bnc_dir"
+
 # ...and the escape hatch: a project that DECLARES it supplies the namespace
 # itself gets its own copy, with no supplement interned over it. Without one,
 # "jolt always wins" would be a thing a project could not get out of.
@@ -1721,6 +1739,21 @@ else
   elif [ -n "$props_out" ]; then
     echo "    (no verdict; last check reached was:)"
     printf '%s\n' "$props_out" | tail -3 | sed 's/^/    /'
+  fi
+  fails=$((fails + 1))
+fi
+
+# Class enumeration (#1663): jolt.host/class-names and all-classes.
+enum_out="$($jolt run test/chez/class-enum-test.clj 2>&1)"
+if printf '%s' "$enum_out" | grep -q 'CLASS-ENUM-TEST OK'; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: class enumeration"
+  if printf '%s\n' "$enum_out" | grep -q '^FAIL'; then
+    printf '%s\n' "$enum_out" | grep '^FAIL' | head -5 | sed 's/^/    /'
+  elif [ -n "$enum_out" ]; then
+    echo "    (no verdict; last check reached was:)"
+    printf '%s\n' "$enum_out" | tail -3 | sed 's/^/    /'
   fi
   fails=$((fails + 1))
 fi

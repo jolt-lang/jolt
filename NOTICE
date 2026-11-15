@@ -89,6 +89,13 @@ Clojure
   jolt-core/clojure/core/30-macros.clj jolt-core/clojure/core/50-io.clj
   jolt-core/clojure/core/60-gvec.clj jolt-core/clojure/core/90-docs.clj
 
+nrepl/bencode
+  https://github.com/nrepl/bencode
+  Copyright (c) Meikel Brandmeyer, Oleksandr Yakushev
+  Eclipse Public License 1.0: licenses/EPL-1.0.txt
+  compatibility/bencode/core.clj is bencode.core from version 1.2.0,
+  unchanged, the version babashka bundles.
+
 cheshire
   https://github.com/dakrone/cheshire
   Copyright (c) 2011 Matthew Lee Hinman

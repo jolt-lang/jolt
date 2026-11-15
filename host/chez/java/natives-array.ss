@@ -185,9 +185,14 @@
 ;; empty message is CORRECT for the NoSuchElementException sites elsewhere — the
 ;; JVM's is genuinely null there — so this is not a blanket rule.
 (define (jolt-alength a)
-  (if (jolt-nil? a)
-      (throw-jvm 'NullPointerException "Cannot read the array length because the array is null")
-      (jolt-count a)))
+  (cond ((jolt-array? a) (ja-len a))
+        ((jolt-nil? a)
+         (throw-jvm 'NullPointerException "Cannot read the array length because the array is null"))
+        (else (jolt-count a))))
+;; (alength a) on a hinted array (the numeric pass's :v-alength). Same answer as
+;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and generic count.
+(define (jolt-valength a)
+  (if (jolt-array? a) (ja-len a) (jolt-alength a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM
 ;; exception with the JVM message. The proven ^doubles fast path (jolt-flaget/
 ;; jolt-flaset below) and the unboxed jolt-vaget/jolt-vaset skip this pre-check —
@@ -886,10 +891,22 @@
 ;; itself has a count-arm registry) so arrays get the same nth semantics without
 ;; re-entering the get arm loop. This is the documented fast-path exception.
 (define %na-get jolt-get)
+;; The outermost jolt-get wrapper: map, vector and string receivers are answered
+;; here, calling what the wrapped definition's own arms call (jolt-get-dispatch).
+;; All three callees are in get-fast-probes, so no registered get arm may claim
+;; one of those types.
 (set! jolt-get
   (case-lambda
-    ((c k)   (if (jolt-array? c) (ja-get c k jolt-nil) (%na-get c k)))
-    ((c k d) (if (jolt-array? c) (ja-get c k d) (%na-get c k d)))))
+    ((c k)   (cond ((pmap? c) (pmap-fast-get c k jolt-nil))
+                   ((pvec? c) (pvec-get c k jolt-nil))
+                   ((string? c) (jolt-get-base c k jolt-nil))
+                   ((jolt-array? c) (ja-get c k jolt-nil))
+                   (else (%na-get c k))))
+    ((c k d) (cond ((pmap? c) (pmap-fast-get c k d))
+                   ((pvec? c) (pvec-get c k d))
+                   ((string? c) (jolt-get-base c k d))
+                   ((jolt-array? c) (ja-get c k d))
+                   (else (%na-get c k d))))))
 ;; get on an array is RT.getFrom's: any Number key, by intValue; anything else
 ;; is the default.
 (define (ja-get c k d)

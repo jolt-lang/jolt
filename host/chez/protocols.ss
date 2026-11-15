@@ -939,8 +939,21 @@
 ;; A deftype named by its JVM spelling — the namespace munged, rf.def_two.R3 for
 ;; the tag rf.def-two.R3 — is what a library computes from (namespace-munge *ns*)
 ;; and how typedclojure's subtype table spells every type-rep class. The tag.
+;;
+;; Only a name with an underscore can be such a spelling: munging turns dashes
+;; into underscores, and jch-registered-name answers a name other than NM only
+;; from the JVM-name table, whose keys all differ from their registered name by
+;; that munge. Testing for the underscore first returns the same #f for every
+;; other name without the lookup, which rebuilds the class-name tables from
+;; every modeled class whenever a class was registered since the last one: once
+;; per extend-type or extend-protocol that follows a new defrecord or deftype.
+(define (jch-string-has-underscore? s)
+  (let loop ((i (fx- (string-length s) 1)))
+    (and (fx>=? i 0)
+         (or (char=? (string-ref s i) #\_) (loop (fx- i 1))))))
 (define (deftype-tag-for-jvm-name type-name)
-  (and (not (hashtable-ref chez-deftype-tag-set type-name #f))
+  (and (jch-string-has-underscore? type-name)
+       (not (hashtable-ref chez-deftype-tag-set type-name #f))
        (let ((c (jch-registered-name type-name)))
          (and c (not (string=? c type-name))
               (hashtable-ref chez-deftype-tag-set c #f)
