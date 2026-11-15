@@ -1010,11 +1010,13 @@ loaderconf: testbin
 # API: runtime memory access and compiler-emitted procedures/callables, :bool
 # included — the one type whose value, not just width, converts at the boundary.
 # The layout gate compares declarative struct metadata and field access against
-# C; the aggregate gate covers structs passed and returned by C value; the
-# pointer-call gate covers jolt.ffi/pointer-fn, calls through a C function pointer
-# (from C, find-symbol, a foreign-callable, or a struct's callback slot) across
-# the scalar, by-value and option vocabulary, and the null refusal; the native
-# error gate covers atomic errno/GetLastError capture and option composition.
+# C; the aggregate gate covers structs passed and returned by C value, and the
+# by-value callback gate the same structs arriving at and returned from a jolt
+# callback; the pointer-call gate covers jolt.ffi/pointer-fn, calls through a C
+# function pointer (from C, find-symbol, a foreign-callable, or a struct's
+# callback slot) across the scalar, by-value and option vocabulary, and the null
+# refusal; the native error gate covers atomic errno/GetLastError capture and
+# option composition.
 # The string-argument gate covers a :string argument staying put while C calls
 # back into jolt and the callback collects.
 # The arena gate covers the allocation-lifetime API (issue #799) and the rest of
@@ -1033,6 +1035,7 @@ ffi:
 	@sh test/chez/ffi-layout-test.sh "$(CHEZ)"
 	@sh test/chez/ffi-aggregate-test.sh "$(CHEZ)"
 	@sh test/chez/ffi-pointer-call-test.sh
+	@sh test/chez/ffi-callable-by-value-test.sh
 	@sh test/chez/ffi-stack-args-test.sh "$(CHEZ)"
 	@bin/jolt run test/chez/jolt-ffi-scoped-test.clj
 	@bin/jolt run test/chez/jolt-ffi-arena-test.clj

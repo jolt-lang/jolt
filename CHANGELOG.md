@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A jolt callback can take and return C structs by value.**
+  `jolt.ffi/foreign-callable`, `callback` and `export!` accept
+  `[:by-value [:struct ...]]` in the argument vector and as the result, the
+  descriptor `foreign-fn` already takes, where before they refused it. A
+  by-value argument arrives as a pointer to the bytes C passed, valid until
+  the callback returns. For a by-value result the fn gets C's destination as
+  its first argument and writes the struct there. libghostty-vt's paste
+  reader, `bool read_clipboard(void *userdata, GhosttyString mime,
+  GhosttyWriter writer)`, is the shape that needed it. `:collect-safe` works
+  with both, a union is still refused as it is in `foreign-fn`, and on the
+  gambit target making one raises `UnsupportedOperationException`.
 - **`jolt.ffi/pointer-fn` calls a C function through a pointer.**
   `(ffi/pointer-fn [:pointer :pointer] :void)` takes cfn's signature with no
   C symbol and answers a fn whose first argument is the function pointer, so a

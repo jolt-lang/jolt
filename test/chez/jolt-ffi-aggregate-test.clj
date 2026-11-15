@@ -129,19 +129,26 @@
 (check "bare marker, empty tail through a scoped handle"
        (= 0 (sum-bare 0)))
 
-(check "public aggregate callback rejects"
+;; By-value callbacks have their own witness (ffi-callable-by-value-test.sh);
+;; these rows pin that the public macros accept the shape and still refuse a
+;; union.
+(check "public aggregate callback builds"
+       (let [pointer (eval '(ffi/foreign-callable (fn [p] 0)
+                              [[:by-value [:struct [[:year :int32]]]]]
+                              :int))]
+         (try (pos? pointer) (finally (ffi/free-callable pointer)))))
+(check "public union callback rejects"
        (rejects?
         #(eval '(ffi/foreign-callable identity
-                  [[:by-value [:struct [[:year :int32]]]]]
+                  [[:by-value [:union [[:year :int32]]]]]
                   :int))))
 (check "public scalar callback control"
        (let [pointer (eval '(ffi/foreign-callable identity [:int] :int))]
          (try (pos? pointer) (finally (ffi/free-callable pointer)))))
-(check "public aggregate export rejects"
-       (rejects?
-        #(eval '(ffi/export! "aggregate" identity
-                  [[:by-value [:struct [[:year :int32]]]]]
-                  :int))))
+(check "public aggregate export builds"
+       (pos? (eval '(ffi/export! "aggregate" (fn [p] 0)
+                      [[:by-value [:struct [[:year :int32]]]]]
+                      :int))))
 (check "public scalar export control"
        (pos? (eval '(ffi/export! "scalar-control" identity [:int] :int))))
 

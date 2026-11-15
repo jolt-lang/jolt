@@ -317,6 +317,15 @@
 (check "(try (pb 1 2) (catch UnsupportedOperationException t (ex-message t)))"
        "\"jolt.ffi/pointer-fn: ffi is unsupported on the gambit target\"")
 
+;; A by-value jolt.ffi callback has no gambit lowering (no ffi tier here, and no
+;; define-ftype): making one raises an exception jolt can catch, naming the form
+;; and the target, for a struct argument and a struct result alike. Not a Chez
+;; capture: on Chez the same forms build a callback.
+(check "(try (jolt.ffi/__ccallable (fn [p] 0) [[:by-value [:struct [[:a :int]]]]] :int) (catch UnsupportedOperationException t (ex-message t)))"
+       "\"jolt.ffi/foreign-callable: ffi is unsupported on the gambit target\"")
+(check "(try (jolt.ffi/__ccallable (fn [d] nil) [:int] [:by-value [:struct [[:a :int]]]]) (catch Throwable t (ex-message t)))"
+       "\"jolt.ffi/foreign-callable: ffi is unsupported on the gambit target\"")
+
 (printf "eval-test: ~a failure(s)\n" failures)
 (if (= failures 0)
     (begin (display "eval-test: PASS — jolt compiles and evaluates on native gsi\n") (exit 0))

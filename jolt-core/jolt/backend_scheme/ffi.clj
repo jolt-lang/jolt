@@ -535,12 +535,13 @@
        (into (sorted-map))))
 
 ;; The Chez signature: each argument's foreign type, an aggregate as a pointer to
-;; its ftype, then the result's.
-(defn- ffi-signature [types aggregates emitted-return]
+;; its ftype, then the result's. SCALAR->CHEZ maps the rest: a foreign-fn sends a
+;; :string as u8* (ffi-arg-type->chez), a callback receives it as Chez's string.
+(defn- ffi-signature [types aggregates emitted-return scalar->chez]
   (let [emitted-types (map-indexed (fn [i type]
                                      (if-let [entry (get aggregates i)]
                                        (str "(& " (:name entry) ")")
-                                       (ffi-arg-type->chez type)))
+                                       (scalar->chez type)))
                                    types)]
     (str " (" (str/join " " emitted-types) ") " emitted-return)))
 
@@ -567,7 +568,8 @@
         signature (ffi-signature types aggregates
                                  (if ret-aggregate?
                                    (str "(& " return-name ")")
-                                   (ffi-type->chez rettype)))
+                                   (ffi-type->chez rettype))
+                                 ffi-arg-type->chez)
         string-params (vec (keep-indexed (fn [i param]
                                            (when (= "string" (nth types i)) param))
                                          params))
@@ -627,6 +629,42 @@
       (and vi (= vi (dec (count at)))) (emit-ffi-bare-varargs-fn node vi)
       :else (emit-ffi-fixed-fn node vi))))
 
+(defn- ffi-callable-wrapper
+  "The lambda that converts a callback's arguments and result around FN-NODE."
+  [emit fn-node argtypes rettype aggregates ret-aggregate?]
+  ;; The fn is bound to a fresh name rather than inlined into the lambda
+  ;; body so it is evaluated once, at callable-construction time, not on
+  ;; every call C makes through the entry point.
+  (let [fname (fresh-label "jolt_ffi_cb")
+        params (ffi-params (count argtypes))
+        args (vec (map-indexed
+                   (fn [i param]
+                     (if (get aggregates i)
+                       (str "(ftype-pointer-address " param ")")
+                       (ffi-c->jolt (nth argtypes i) param)))
+                   params))
+        args (if ret-aggregate?
+               (into ["(ftype-pointer-address destination)"] args)
+               args)
+        invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]
+    (str "(let ((" fname " " (emit fn-node) ")) "
+         "(lambda (" (str/join " " (if ret-aggregate? (cons "destination" params) params)) ") "
+         (if ret-aggregate? invoke (ffi-jolt->c rettype invoke))
+         "))")))
+
+(defn- ffi-collect-safe-entry
+  "TARGET wrapped so each call C makes counts itself in and out."
+  [target arity]
+  (let [fname (fresh-label "jolt_ffi_cs")
+        params (mapv (fn [i] (str "c" i)) (range arity))]
+    (str "(let* ((" fname " " target ") "
+         "(jolt-ffi-collect-safe-entry "
+         "(lambda (" (str/join " " params) ") "
+         "(jolt-ffi-callback-enter!) "
+         "(let ((r (" fname (when (seq params) (str " " (str/join " " params))) "))) "
+         "(jolt-ffi-callback-exit!) r)))) "
+         "jolt-ffi-collect-safe-entry)")))
+
 ;; jolt.ffi/__ccallable -> a Chez foreign-callable wrapping the emitted jolt fn,
 ;; locked + registered (jolt-ffi-register-callable!, host/chez/java/ffi.ss) so the
 ;; collector neither moves nor reclaims it while C may still call through it. The
@@ -643,8 +681,16 @@
 ;; the callback could not model the argument at all, and could not decline to
 ;; answer one.
 ;;
-;; The wrapper lambda is emitted only when the signature has a :string, :bool or
-;; :float position or a :double result; every other callable reaches
+;; A by-value aggregate is the cfn shape with the roles swapped. Its argument is
+;; an (& ftype) position, so Chez hands the procedure an ftype-pointer to the
+;; bytes C passed, and the jolt fn receives that pointer's address: memory C
+;; owns, valid until the callback returns. An aggregate RESULT is (& ftype) too,
+;; where Chez passes the destination to fill ahead of the other arguments and
+;; ignores the procedure's value, so the jolt fn receives the destination's
+;; address first, writes the struct there, and what it returns is dropped.
+;;
+;; The wrapper lambda is emitted only when the signature has a :string, :bool,
+;; :float or by-value position or a :double result; every other callable reaches
 ;; sa-foreign-callable exactly as before. EMIT lowers the wrapped fn node (the
 ;; back end's own emit: this namespace sits below it).
 (defn- emit-ffi-callable [emit node]
@@ -663,26 +709,23 @@
   (let [argtypes (:argtypes node)
         rettype (:rettype node)
         converted? #{"string" "bool"}
+        aggregates (ffi-aggregate-args argtypes)
+        ret-aggregate? (ffi-by-value? rettype)
+        return-name (when ret-aggregate? (fresh-label "jolt_ffi_return"))
         ;; A float or double RESULT converts too: the fn may answer (float x), a
         ;; boxed Float. A :float argument is boxed into one, as the JVM hands a
         ;; C float to Clojure; a :double argument is already a double.
         converted-position? (or (converted? rettype) (some converted? argtypes)
                                 (#{"float" "double"} rettype)
-                                (some #{"float"} argtypes))
+                                (some #{"float"} argtypes)
+                                (seq aggregates) ret-aggregate?)
+        ;; The procedure's parameters, one per Chez argument: an aggregate
+        ;; result's destination comes first.
+        arity (+ (count argtypes) (if ret-aggregate? 1 0))
         target
         (if-not converted-position?
           (emit (:fn node))
-          ;; The fn is bound to a fresh name rather than inlined into the lambda
-          ;; body so it is evaluated once, at callable-construction time, not on
-          ;; every call C makes through the entry point.
-          (let [fname (fresh-label "jolt_ffi_cb")
-                params (ffi-params (count argtypes))
-                args (mapv (fn [param type] (ffi-c->jolt type param)) params argtypes)
-                invoke (str "(" fname (when (seq args) (str " " (str/join " " args))) ")")]
-            (str "(let ((" fname " " (emit (:fn node)) ")) "
-                 "(lambda (" (str/join " " params) ") "
-                 (ffi-jolt->c rettype invoke)
-                 "))")))
+          (ffi-callable-wrapper emit (:fn node) argtypes rettype aggregates ret-aggregate?))
         ;; A :collect-safe callable counts itself in and out (java/ffi.ss
         ;; jolt-ffi-callback-enter!/exit!, a CAS each) so a collection stalled
         ;; by a non-:blocking outbound call can report that a callback is among
@@ -696,27 +739,34 @@
         ;; carries it: a backtrace or a stack sample taken on the library's
         ;; thread then reads jolt-ffi-collect-safe-entry where it would read an
         ;; anonymous frame.
-        target
-        (if (:collect-safe node)
-          (let [fname (fresh-label "jolt_ffi_cs")
-                params (mapv (fn [i] (str "c" i)) (range (count argtypes)))]
-            (str "(let* ((" fname " " target ") "
-                 "(jolt-ffi-collect-safe-entry "
-                 "(lambda (" (str/join " " params) ") "
-                 "(jolt-ffi-callback-enter!) "
-                 "(let ((r (" fname (when (seq params) (str " " (str/join " " params))) "))) "
-                 "(jolt-ffi-callback-exit!) r)))) "
-                 "jolt-ffi-collect-safe-entry)"))
-          target)]
-    (str "(jolt-ffi-register-callable! ("
-         (if (:collect-safe node) "sa-foreign-callable-collect-safe " "sa-foreign-callable ")
-         target
-         " (" (str/join " " (map ffi-type->chez argtypes)) ") "
-         (ffi-type->chez rettype) "))")))
+        target (if (:collect-safe node) (ffi-collect-safe-entry target arity) target)
+        register (str "(jolt-ffi-register-callable! ("
+                      (if (:collect-safe node) "sa-foreign-callable-collect-safe " "sa-foreign-callable ")
+                      target
+                      (ffi-signature argtypes aggregates
+                                     (if ret-aggregate?
+                                       (str "(& " return-name ")")
+                                       (ffi-type->chez rettype))
+                                     ffi-type->chez)
+                      "))")
+        ftypes (ffi-ftype-defs aggregates return-name rettype)]
+    (if (seq ftypes)
+      (str "(let () " (str/join " " ftypes) " " register ")")
+      register)))
 
 ;; The three jolt.ffi IR ops. EMIT lowers a callable's wrapped fn.
 (defn emit-ffi-node [emit node]
   (case (:op node)
     :ffi-layout (emit-ffi-layout node)
     :ffi-fn (emit-ffi-fn node)
-    :ffi-callable (emit-ffi-callable emit node)))
+    :ffi-callable
+    (if (and (= :gambit (target))
+             (or (ffi-by-value? (:rettype node)) (some ffi-by-value? (:argtypes node))))
+      ;; gambit has no ffi tier, and its eval knows no define-ftype, so a
+      ;; by-value callable there would die on an unbound name rather than on
+      ;; the target's own "unsupported" error. Raise when it is made, in words
+      ;; that name the form, as a scalar callable does there.
+      (str "(throw-jvm 'UnsupportedOperationException "
+           (chez-str-lit "jolt.ffi/foreign-callable: ffi is unsupported on the gambit target")
+           ")")
+      (emit-ffi-callable emit node))))

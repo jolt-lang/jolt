@@ -126,16 +126,24 @@
     (= :array (:ffi-kind type)) (ffi-layout-holds-union? (:type type))
     :else false))
 
-(defn- analyze-ffi-signature-type [form position]
+(defn analyze-ffi-signature-type
+  "One argument or return type of a foreign-fn or foreign-callable signature:
+  the keyword's name, or {:ffi-kind :by-value :type layout}. POSITION names the
+  slot in the error message."
+  [form position]
   (cond
     (form-keyword? form) (name form)
     (ffi-by-value-form? form)
       (let [parts (vec (form-vec-items form))
             analyzed (analyze-ffi-layout-aggregate (nth parts 1))]
+        ;; A callback cannot take the :pointer way round: C is the caller and
+        ;; already passes the bytes by value, so the advice would be wrong there.
         (when (ffi-layout-holds-union? analyzed)
           (analysis-error :ffi/invalid-type (str "jolt.ffi " position
                       " type: a union is not passed by value, alone or inside a struct"
-                      " — declare :pointer and read the member you know applies")))
+                      (if (contains? #{"callback argument" "callback return"} position)
+                        ""
+                        " — declare :pointer and read the member you know applies"))))
         {:ffi-kind :by-value
          :type analyzed})
     :else
