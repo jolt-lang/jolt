@@ -503,7 +503,10 @@
         fnode (:fnode c)
         native? (and @session/native-var-call? (= :var (:op fnode))
                      (not (var-dynamic? nil (:ns fnode) (:name fnode))))
-        target (if (and native? (var-cache?) *const-pool*)
+        ;; A direct-linked value already has its own mutable binding. Keep it
+        ;; as the target even when its invocation needs the native IFn hook.
+        target (if (and native? (var-cache?) *const-pool*
+                        (not (direct-linkable? (:ns fnode) (:name fnode))))
                  (hoist-var-call-root (:ns fnode) (:name fnode))
                  (emit fnode))
         t? (or (:tail? c) (trace-frames?))

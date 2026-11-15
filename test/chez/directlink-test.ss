@@ -42,6 +42,11 @@
 (define (var-routed? s ns name)
   (or (contains? s (string-append "(var-deref \"" ns "\" \"" name "\")"))
       (contains? s (string-append "(jolt-var \"" ns "\" \"" name "\")"))))
+(define (selected-invocation? s)
+  (if (jolt-native-var-call-enabled?)
+      (and (contains? s "(#2%$app ") (not (contains? s "(jolt-invoke")))
+      (and (contains? s "(jolt-invoke") (not (contains? s "(#2%$app ")))))
+(define (run-emit s) (eval (read (open-input-string s)) (interaction-environment)))
 
 ;; Analyze+emit one form (string) in a namespace through the real build entry
 ;; (ei-compile-form -> emit-top-form), no optimization passes.
@@ -67,8 +72,8 @@
 
 ;; --- direct-link OFF: every reference stays indirect (var-deref) ---
 (let ((eb (emit-form "app" "(def b (fn* ([] (a))))")))
-  (ok "off: call to a routes through jolt-invoke + var-deref"
-      (and (contains? eb "(jolt-invoke") (var-routed? eb "app" "a")))
+  (ok "off: call to a uses the selected invocation + var lookup"
+      (and (selected-invocation? eb) (var-routed? eb "app" "a")))
   (ok "off: no jv$ direct call" (not (contains? eb "(jv$app/a)")))
   ;; a def carries source position in its var meta (:line/:column/:file), so it
   ;; emits def-var-with-meta! — but still NO jv$ binding off direct-link.
@@ -126,8 +131,8 @@
   (ok "on: value-ref to a is NOT var-routed" (not (var-routed? eh "app" "a"))))
 
 ;; A map-valued (non-fn) def is invokable in Clojure but is NOT a Scheme procedure;
-;; a direct-link call to it must route through jolt-invoke, never raw-apply the
-;; binding (which crashed with "attempt to apply non-procedure" before the fix).
+;; a direct-link call to it must use the invoke helper or checked native
+;; application, never raw-apply the binding as a procedure.
 (let ((ec (emit-form "app" "(def cfg {:a 1 :b 2})")))   ; registers app/cfg (non-fn) in the set
   (ok "on: a non-fn def still gets a jv$ binding" (contains? ec "(define jv$app/cfg "))
   ;; jolt#1009 was reported against exactly this shape — a plain value def, whose
@@ -136,9 +141,20 @@
       (and (contains? ec "(def-var-linked! \"app\" \"cfg\" 'jv$app/cfg jv$app/cfg")
            (contains? ec "(lambda (v) (set! jv$app/cfg v))"))))
 (let ((eu (emit-form "app" "(def usecfg (fn* ([] (cfg :a))))")))
-  (ok "on: call to a map-valued def routes through jolt-invoke" (contains? eu "(jolt-invoke"))
+  (ok "on: call to a map-valued def uses the selected checked invocation" (selected-invocation? eu))
   (ok "on: call to a map-valued def still uses the direct binding" (contains? eu "jv$app/cfg"))
-  (ok "on: a map-valued def is NOT raw-applied as a procedure" (not (contains? eu "(jv$app/cfg"))))
+  (ok "on: a map-valued def is NOT raw-applied as a procedure" (not (contains? eu "(jv$app/cfg")))
+  (run-emit (emit-form "app" "(def cfg {:a 1 :b 2})"))
+  (run-emit eu)
+  (ok "on: a direct-linked map invocation answers"
+      (= (jolt-invoke (var-deref "app" "usecfg")) 1))
+  (let ((cell (jolt-var "app" "cfg")) (orig (var-deref "app" "cfg")))
+    (jolt-alter-var-root cell (lambda (old) (jolt-hash-map (keyword #f "a") 9)))
+    (ok "on: a map root write reaches both the cell and direct binding"
+        (eq? (var-deref "app" "cfg") (eval 'jv$app/cfg)))
+    (ok "on: a loaded map invocation follows the root write"
+        (= (jolt-invoke (var-deref "app" "usecfg")) 9))
+    (jolt-alter-var-root cell (lambda (old) orig))))
 
 ;; ^:dynamic opts out: no jv$ binding, callers stay indirect.
 (let ((ed (emit-form "app" "(def ^:dynamic d 5)")))
