@@ -304,15 +304,6 @@
 ;; whose emitted prelude must not carry this machine's absolute paths.
 (let ((ssr (var-deref "jolt.backend-scheme" "set-source-reg!")))
   (when (procedure? ssr) (ssr #t)))
-;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
-;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
-;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so
-;; dev mode still traces and a whole run still doesn't.
-(define (jolt-trace-env-off? e)
-  (and (string? e)
-       (let ((s (string-downcase e)))
-         (or (string=? s "0") (string=? s "false") (string=? s "no")
-             (string=? s "off") (string=? s "n")))))
 ;; JOLT_CONST_DATA set and not "" or "0" (loader.ss aot-trace-tag reads it the
 ;; same way, for the cache generation's name).
 (define (jolt-const-data-env?)
@@ -324,13 +315,6 @@
 (when (jolt-const-data-env?)
   (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
     (when (procedure? scd) (scd (getenv "JOLT_CONST_DATA")))))
-;; JOLT_NATIVE_VAR_CALL=1 opts into the checked var-root application on a Chez
-;; with patch 0013. It helps call-heavy code but did not improve cold builds;
-;; default emission and every stock-Chez run keep the original invoke helper.
-(define (jolt-native-var-call-enabled?)
-  (and (sa-call-error-supported?)
-       (let ((e (getenv "JOLT_NATIVE_VAR_CALL")))
-         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
 (define (jolt-native-var-call-init-from-env!)
   (let ((set-mode (var-deref "jolt.backend-scheme.session" "set-native-var-call!")))
     (when (procedure? set-mode) (set-mode (jolt-native-var-call-enabled?))))

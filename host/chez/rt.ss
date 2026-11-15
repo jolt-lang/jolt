@@ -1531,6 +1531,26 @@
 ;; 300s timeout; every hop's mark op allocated). What ships is the JVM model:
 ;; all metadata compile-time, the stack itself the only runtime record.
 (define jolt-trace-on? #f)
+
+;; Cache generations are consulted by compilerless applications too, so these
+;; runtime mode predicates must not live in the optional compiler spine.
+;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
+;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
+;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so
+;; dev mode still traces and a whole run still doesn't.
+(define (jolt-trace-env-off? e)
+  (and (string? e)
+       (let ((s (string-downcase e)))
+         (or (string=? s "0") (string=? s "false") (string=? s "no")
+             (string=? s "off") (string=? s "n")))))
+;; JOLT_NATIVE_VAR_CALL=1 opts into the checked var-root application on a Chez
+;; with patch 0013. It helps call-heavy code but did not improve cold builds;
+;; default emission and every stock-Chez run keep the original invoke helper.
+(define (jolt-native-var-call-enabled?)
+  (and (sa-call-error-supported?)
+       (let ((e (getenv "JOLT_NATIVE_VAR_CALL")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+
 ;; Per-thread trace state lives in Chez VIRTUAL REGISTERS, not thread parameters:
 ;; a thread-parameter WRITE costs ~32ns against ~1ns for a virtual-register write
 ;; (measured, Chez 10.4 arm64), and jolt-site! sits on the hot path. Reads are

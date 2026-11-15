@@ -763,4 +763,6 @@
 (define sa-vector-append vector-append)
 
 ;; Chez-only call-error hook: this backend keeps jolt-invoke calls.
+(define-syntax sa-call-error-supported?
+  (syntax-rules () ((_) #f)))
 (define (sa-call-error-handler-set! p) #f)
