@@ -3232,6 +3232,40 @@
   {:suite "r3-equiv" :expr "(= 3M 3)" :expected "false"}
   {:suite "r3-equiv" :expr "(= 1M 1.00M)" :expected "true"}
   {:suite "r3-equiv" :expr "(== \"a\" \"a\")" :expected :throws}
+  {:suite "num-equiv2" :label "long=long" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1 1))" :expected "true"}
+  {:suite "num-equiv2" :label "long<>long" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1 2))" :expected "false"}
+  {:suite "num-equiv2" :label "double=double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1.5 1.5))" :expected "true"}
+  {:suite "num-equiv2" :label "double<>double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1.5 2.5))" :expected "false"}
+  {:suite "num-equiv2" :label "long vs double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1 1.0))" :expected "true"}
+  {:suite "num-equiv2" :label "ratio vs double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1/2 0.5))" :expected "true"}
+  {:suite "num-equiv2" :label "ratio<>double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1/3 0.5))" :expected "false"}
+  {:suite "num-equiv2" :label "bigint vs long" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 (bigint 5) 5))" :expected "true"}
+  {:suite "num-equiv2" :label "bigint=bigint" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 12345678901234567890N 12345678901234567890N))" :expected "true"}
+  {:suite "num-equiv2" :label "bigdec vs double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1M 1.0))" :expected "true"}
+  {:suite "num-equiv2" :label "bigdec scale" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1.0M 1.00M))" :expected "true"}
+  {:suite "num-equiv2" :label "bigdec vs long" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1M 1))" :expected "true"}
+  {:suite "num-equiv2" :label "NaN vs NaN" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 ##NaN ##NaN))" :expected "false"}
+  {:suite "num-equiv2" :label "NaN vs double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 ##NaN 1.0))" :expected "false"}
+  {:suite "num-equiv2" :label "-0.0 vs 0.0" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 -0.0 0.0))" :expected "true"}
+  {:suite "num-equiv2" :label "1-arity number" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f1 1))" :expected "true"}
+  {:suite "num-equiv2" :label "1-arity keyword" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f1 :a))" :expected "true"}
+  {:suite "num-equiv2" :label "1-arity nil" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f1 nil))" :expected "true"}
+  {:suite "num-equiv2" :label "3 args equal" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f3 1 1 1))" :expected "true"}
+  {:suite "num-equiv2" :label "3 args unequal" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f3 1 1 2))" :expected "false"}
+  {:suite "num-equiv2" :label "3 args mixed tower" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f3 1 1.0 1M))" :expected "true"}
+  {:suite "num-equiv2" :label "long vs keyword throws" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1 :a))" :expected :throws}
+  {:suite "num-equiv2" :label "keyword vs long throws" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 :a 1))" :expected :throws}
+  {:suite "num-equiv2" :label "nil vs long throws" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 nil 1))" :expected :throws}
+  {:suite "num-equiv2" :label "long vs nil throws" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 1 nil))" :expected :throws}
+  {:suite "num-equiv2" :label "nil vs nil throws" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 nil nil))" :expected :throws}
+  {:suite "num-equiv2" :label "2^62 fixnum edge" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 4611686018427387904 4611686018427387904))" :expected "true"}
+  {:suite "num-equiv2" :label "long rounds to same double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 9007199254740993 9007199254740992.0))" :expected "true"}
+  {:suite "num-equiv2" :label "max long both sides" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 Long/MAX_VALUE Long/MAX_VALUE))" :expected "true"}
+  {:suite "num-equiv2" :label "max long vs its double" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (f2 Long/MAX_VALUE (double Long/MAX_VALUE)))" :expected "true"}
+  {:suite "num-equiv2" :label "as a fn value" :expr "(let [f2 (fn [a b] (== a b)) f3 (fn [a b c] (== a b c)) f1 (fn [a] (== a))] (map f2 [1 2] [1 3]))" :expected "(true false)"}
+  ;; unproven two-arg == lowers to jolt-num-equiv2
+  {:suite "num-equiv2" :label "emits jolt-num-equiv2 for an unproven two-arg ==" :expr "(let [ctx (jolt.host/ctx-for-ns \"app.core\") s (jolt.backend-scheme/emit-top-form (jolt.analyzer/analyze ctx (quote (defn eqf [x] (== x 7))) (@#'jolt.analyzer/empty-env)))] (boolean (re-find #\"\\(jolt-num-equiv2 \" s)))" :expected "true"}
+  {:suite "num-equiv2" :label "3-arg == emits the variadic jolt-num-equiv" :expr "(let [ctx (jolt.host/ctx-for-ns \"app.core\") s (jolt.backend-scheme/emit-top-form (jolt.analyzer/analyze ctx (quote (defn eqf3 [x] (== x 7 8))) (@#'jolt.analyzer/empty-env)))] (boolean (re-find #\"\\(jolt-num-equiv \" s)))" :expected "true"}
   ;; compiler-review R3 stage 4 — Math.round semantics (math.ss jolt-math-round +
   ;; host-static-methods Math/round). Was (exact (floor (+ x 0.5))): errored on
   ;; NaN/Inf, returned bignums for huge values, and gave 1 for 0.49999999999999994.

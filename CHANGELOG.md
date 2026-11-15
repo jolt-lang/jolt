@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   character that isn't `\a` took 13.2 ns, because `jolt=2` tried every
   collection, procedure and record clause before it reached the scalar one.
   It now answers two characters directly, at 3.6 ns (#1651).
+- **`(== x 7)` on operands the compiler can't type costs 2.6 ns, down from
+  37.5 ns** (#1650). The call went through the var to the variadic
+  `jolt-num-equiv`, which builds a rest list and an inner procedure each time.
+  `==` now lowers to `jolt-num-equiv2`, which answers two fixnums or two flonums
+  directly and hands every other pair, including the ratio, BigDecimal, NaN and
+  non-number cases, to the same `jolt-num-equiv` as before, so results and
+  exceptions are unchanged.
 
 ### Performance
 

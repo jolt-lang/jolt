@@ -134,6 +134,12 @@
                    (or (null? xs) (apply = xs)))))
           ((numeric? (car ys)) (all-num? (cdr ys)))
           (else (throw-jvm (quote ClassCastException) "== requires numbers"))))))
+;; Two-arg == when operand types aren't proven: fixnum and flonum pairs answer
+;; directly, everything else goes to jolt-num-equiv above.
+(define (jolt-num-equiv2 a b)
+  (cond ((and (fixnum? a) (fixnum? b)) (fx=? a b))
+        ((and (flonum? a) (flonum? b)) (fl=? a b))
+        (else (jolt-num-equiv a b))))
 (def-var! "clojure.core" "==" jolt-num-equiv)
 (def-var! "clojure.core" "symbol?" jolt-symbol?)
 (def-var! "clojure.core" "keyword?" keyword?)
