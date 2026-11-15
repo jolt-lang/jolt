@@ -273,6 +273,11 @@
 ;; in code outside any named fn (top-level, anonymous fns): those tail sites skip.
 (def ^:dynamic *trace-site* nil)
 (def ^:dynamic *trace-self* #{})
+;; The procedure name of the enclosing fn, including anonymous literals. A
+;; finally thunk runs that fn's code after a tail call erased its frame, so it
+;; keeps the same name for source lookup. Separate from *trace-site*: anonymous
+;; literals need a frame name without changing their tail-site instrumentation.
+(def ^:dynamic *trace-frame* nil)
 ;; A named fn's direct calls to ITSELF skip the restore when nothing the fn
 ;; tail-calls can run a jolt fn: every tail site it has then stores the fn's own
 ;; pair, and the reporter drops a pair whose fn is a live frame -- the caller is

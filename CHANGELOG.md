@@ -99,6 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Custom test assertions keep their failure locations.** Stack reads inside
+  `binding` and `try/finally` retain the enclosing function's source frame,
+  and macro-generated calls inherit their source line. `matcher-combinators`
+  failures now identify the assertion's file and line, including in compiled
+  test runners.
 - **`reader`, `writer`, `slurp` and `spit` refuse a non-source with the JVM's
   message.** `(slurp 5)`, `(io/reader :k)` and `(spit {} "x")` said "Cannot
   open <x> as a Reader." (or Writer). On the JVM only `nil` is refused by that

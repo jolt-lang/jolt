@@ -22,7 +22,7 @@
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
                      *letrec-binders* *qualifying-ns* *recur-target* *tail?*
-                     *trace-site* *variadic-reg-suppressed?* clone-site-key
+                     *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
                      ctor-shapes cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label marker-safe-fqn?
@@ -813,6 +813,15 @@
 (defn- emit-try-body [node]
   (binding [*tail?* (or (some? *dbg-scope*) *tail?*)] (emit (:body node))))
 
+;; Chez names a lambda after its binding. These thunks contain the enclosing
+;; fn's code, so keep its name when dynamic-wind replaces its physical frame.
+;; A non-recursive let leaves self-calls in BODY bound to the original fn.
+(defn- emit-finally-thunk [body]
+  (let [f (str "(lambda () " body ")")]
+    (if (and (trace-frames?) *trace-frame*)
+      (str "(let ((" *trace-frame* " " f ")) " *trace-frame* ")")
+      f)))
+
 ;; try/catch/finally. throw raises a Chez condition wrapping the jolt value
 ;; (jolt-throw = Scheme `raise` of a &jolt-throw condition); catch lowers to
 ;; `guard`, whose raw binding is unwrapped via jolt-unwrap-throw so the catch var
@@ -903,10 +912,12 @@
             r (fresh-label "_wr$")]
         (str "(let ((" lv " (virtual-register 7))) (set-virtual-register! 7 (fx+ " lv " 1))"
              " (dynamic-wind jolt-finally-in"
-             " (lambda () (set-virtual-register! 7 (fx- (virtual-register 7) 1))"
-             " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r "))"
-             " (lambda () (if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
-             " " (binding [*tail?* false] (emit fin)) ")))"))
+             " " (emit-finally-thunk
+                    (str "(set-virtual-register! 7 (fx- (virtual-register 7) 1))"
+                         " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r ")"))
+             " " (emit-finally-thunk
+                    (str "(if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
+                         " " (binding [*tail?* false] (emit fin)))) "))"))
       core)))
 
 ;; Does this IR node emit to an expression that yields a Scheme boolean? Used to
@@ -1336,7 +1347,9 @@
      ;; own fixnum limits: the compiling host's fixnum width is not the
      ;; target's, so no bound is baked in here.
      :coerce (emit-coerce-node node)
-    :try (emit-try node)
+    ;; guard's continuation points at the try expression itself. Reset its
+    ;; marker so it cannot inherit an inline chain from the preceding branch.
+    :try (with-site node (emit-try node))
      ;; A :target-type direct emit skips record-method-dispatch entirely, so the
      ;; classes it fires for are the classes a library CANNOT override at runtime
      ;; (jolt.host/extend-class! rejects them, listed in class-ext-no-override,
