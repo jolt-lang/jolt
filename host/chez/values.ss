@@ -347,11 +347,12 @@
 ;; Chez's tc-mutex, the lock the C reader takes, so a load on another thread
 ;; and a first `keyword` call for the same name agree on one object.
 (define keyword-fasl-intern-on? #f)
+;; Interrupts stay off while it is held, as Chez's own with-tc-mutex keeps them;
+;; THUNK is a few plist operations that cannot raise.
 (define (call-with-tc-mutex thunk)
-  (dynamic-wind
-    (lambda () (disable-interrupts) (mutex-acquire #%$tc-mutex))
-    thunk
-    (lambda () (mutex-release #%$tc-mutex) (enable-interrupts))))
+  (jolt-with-mutex #%$tc-mutex
+    (disable-interrupts)
+    (let ((r (thunk))) (enable-interrupts) r)))
 ;; The canonical keyword for KW's name: the one already published on its symbol
 ;; (a .so loaded it first), else KW, published now. A keyword with an ikey is
 ;; published already (or came from a .so, whose reader published it).
