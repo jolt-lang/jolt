@@ -211,4 +211,4 @@ JOLT_CONST_DATA=1 sh benchmarks/chez-primitives/run.sh target/release/jolt-p9 $P
 JOLT_CONST_DATA=1 JOLT_FASL_INTERN=1 make corpus CHEZ=$P9/bin/scheme
 ```
 
-Verification: GATES
+Verification with the hook on (`JOLT_CONST_DATA=1 JOLT_FASL_INTERN=1`, `CHEZ` = the 0001–0009 build): `make corpus` 7664/7674 (the 10 known divergences), `unit` 2345/2345, `errorreport` (52 cases, stack traces unchanged), `tracesmoke`, `traceeval` 10/10, `degradedbacktrace` 6/6. Default (off), stock Chez: the filtered full gate (179 targets without Gambit and `certify`, then `fastpathratio stdlibratio`) passes. The measurements predate two refactors of the publishing path (the tc-mutex taken through `jolt-with-mutex`, the Chez primitives moved behind the scheme adapter), which touch only the first-intern slow path.
