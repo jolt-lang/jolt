@@ -821,6 +821,9 @@
     ;; matching JVM's Long.hasheq.
     ((fixnum? x) (murmur3-hash-long-flat x))
     ((string? x) (string-hasheq x))
+    ;; A char is in hash-fast-probes, so no arm may claim one.
+    ;; Character.hashCode = (int) charValue.
+    ((char? x) (char->integer x))
     ;; Collections sit up here for the same reason symbols do, and the cost they
     ;; were paying is worse: a collection reached the fallback only after walking
     ;; BOTH registries (jolt-hasheq-arms, then jolt-hash-arms), and a map or set

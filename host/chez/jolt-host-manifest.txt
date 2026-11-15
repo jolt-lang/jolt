@@ -11,6 +11,7 @@ add-immutable-roots!
 add-reader-features!
 add-shutdown-hook
 agent-threads-daemon!
+all-classes
 allow-unresolved-vars?
 aot-compile-worker
 array-value?
@@ -33,6 +34,7 @@ chez-number-literal
 class-ancestors
 class-bases
 class-isa?
+class-names
 class-object?
 class-supers
 class-value?

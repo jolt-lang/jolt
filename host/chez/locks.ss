@@ -595,8 +595,8 @@
 ;; fibers: parked fibers, newest first. threads: threads blocked in condition-wait.
 ;; Both change only with the waiters' mu held. A thread that leaves its wait by a
 ;; non-local exit leaves its count behind: it cannot take it back without mu, and a
-;; count that is too high only costs a broadcast nobody hears, where one that is too
-;; low would lose a wake.
+;; count that is too high only costs speed (a broadcast nobody hears, or a marked
+;; claim on a monitor's entry cv), where one that is too low would lose a wake.
 (define-record-type (jolt-cv make-jolt-cv jolt-cv?)
   (fields (immutable cond jolt-cv-cond)
           (mutable fibers jolt-cv-fibers jolt-cv-fibers-set!)
@@ -639,7 +639,8 @@
 ;; The narrow counterpart of jolt-cv-wake!, for a condition that carries a QUEUE of
 ;; interchangeable items to a crowd of interchangeable waiters: one item arrives,
 ;; one waiter can take it, and any of them will do. The executor's task condition is
-;; that and is the only one in the runtime (java/concurrency.ss).
+;; that (java/concurrency.ss), plus the object monitor's entry condition
+;; (monitor-claim-slow! there makes each new owner signal the next).
 ;;
 ;; The two preconditions, both of which that condition meets and neither of which
 ;; the caller can be trusted to remember, so they are stated where the call is:

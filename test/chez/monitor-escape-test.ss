@@ -110,6 +110,41 @@
            (lambda (m) (jolt-call-with-monitor m (lambda () 'body)))
            free?))
 
+;; 3b. Contended with a second waiter. A release signals one thread, so an escape
+;; across this thread's enter, body and exit must not eat the wake the second
+;; waiter needs. It must finish within its deadline on every tick.
+(define second-waiter-done? #f)
+(define (hold-with-second-waiter m)
+  (let ((mu (make-mutex)) (cv (make-condition)) (stage 0) (v-done #f))
+    (define (await n) (with-mutex mu (let wait () (unless (>= stage n) (condition-wait cv mu) (wait)))))
+    (define (advance! n) (with-mutex mu (set! stage (max stage n)) (condition-broadcast cv)))
+    (fork-thread
+      (lambda ()
+        (monitor-enter! m)
+        (advance! 1)
+        (sleep (make-time 'time-duration 1000000 0))
+        (monitor-exit! m)
+        (advance! 2)))
+    (await 1)
+    (fork-thread
+      (lambda ()
+        (monitor-enter! m)
+        (monitor-exit! m)
+        (with-mutex mu (set! v-done #t) (condition-broadcast cv))))
+    (lambda ()
+      (await 2)
+      (let ((deadline (add-duration (current-time) (make-time 'time-duration 0 2))))
+        (with-mutex mu
+          (let wait ()
+            (unless (or v-done (time>=? (current-time) deadline))
+              (condition-wait cv mu (make-time 'time-duration 50000000 0))
+              (wait))))
+        (set! second-waiter-done? (with-mutex mu v-done))))))
+(ok "the next claim keeps the wake for the waiter behind it"
+    (sweep hold-with-second-waiter
+           (lambda (m) (jolt-call-with-monitor m (lambda () 'body)))
+           (lambda (m) (and second-waiter-done? (free? m)))))
+
 ;; 4. Object.wait: released inside the wait and taken back at the saved depth.
 ;; Held twice, so a wait that comes back at the wrong depth shows up as a held
 ;; monitor or an IllegalMonitorState from the outer section's exit.
