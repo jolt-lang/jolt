@@ -1774,6 +1774,24 @@
 (define (sa-fasl-read port . rest)
   (apply fasl-read port rest))
 
+;; JOLT_FASL_INTERN (an experiment, values.ss): Jolt's Chez patch 0009 makes
+;; fasl-read intern a record whose type's uid has the property $fasl-intern,
+;; through the $fasl-intern property of the symbol in its first field.
+;; (sa-fasl-intern-get sym) -> the object published on SYM, or #f
+;; (sa-fasl-intern-put! sym obj) publishes OBJ on SYM
+;; (sa-fasl-intern-type! rtd on?) marks or unmarks RTD's records for interning
+;; (sa-fasl-intern-lock) -> the mutex the fasl reader holds while it interns,
+;;   for the caller to hold around a get-then-put
+;; Contract: as above. Degradation: get #f, put! and type! do nothing, lock a
+;; fresh mutex; the caller's probe then finds no interning and stays off.
+(define (sa-fasl-intern-get sym) (#%$sgetprop sym '$fasl-intern #f))
+(define (sa-fasl-intern-put! sym obj) (#%$sputprop sym '$fasl-intern obj))
+(define (sa-fasl-intern-type! rtd on?)
+  (if on?
+      (#%$sputprop (record-type-uid rtd) '$fasl-intern #t)
+      (#%$sremprop (record-type-uid rtd) '$fasl-intern)))
+(define (sa-fasl-intern-lock) #%$tc-mutex)
+
 ;; ---- execution-count profiling (capability: profile) -----------------------
 ;; jolt.profile's counters are Chez's compile-profile instrumentation: code
 ;; compiled while it is on carries a counter per source-annotated expression, and

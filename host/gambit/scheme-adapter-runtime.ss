@@ -502,6 +502,12 @@
 ;; sa-fasl-write wrote. Degradation: raise — same story as sa-fasl-write.
 (define (sa-fasl-read port . rest)
   (error 'sa-fasl-read "fasl serialization is unsupported on the gambit target"))
+;; no fasl, so nothing to intern on load (JOLT_FASL_INTERN stays off)
+(define (sa-fasl-intern-get sym) #f)
+(define (sa-fasl-intern-put! sym obj) (if #f #f))
+(define (sa-fasl-intern-type! rtd on?) (if #f #f))
+(define sa-fasl-intern-mutex (make-mutex))
+(define (sa-fasl-intern-lock) sa-fasl-intern-mutex)
 
 ;; ---- execution-count profiling (capability: profile) -----------------------
 ;; Gambit's compiler has no per-expression counters to read back, so this tier

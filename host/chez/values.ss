@@ -350,7 +350,7 @@
 ;; Interrupts stay off while it is held, as Chez's own with-tc-mutex keeps them;
 ;; THUNK is a few plist operations that cannot raise.
 (define (call-with-tc-mutex thunk)
-  (jolt-with-mutex #%$tc-mutex
+  (jolt-with-mutex (sa-fasl-intern-lock)
     (disable-interrupts)
     (let ((r (thunk))) (enable-interrupts) r)))
 ;; The canonical keyword for KW's name: the one already published on its symbol
@@ -362,9 +362,9 @@
       (let ((s (string->symbol (keyword-intern-key (keyword-t-ns kw) (keyword-t-name kw)))))
         (call-with-tc-mutex
           (lambda ()
-            (or (#%$sgetprop s '$fasl-intern #f)
+            (or (sa-fasl-intern-get s)
                 (begin (keyword-t-ikey-set! kw s)
-                       (#%$sputprop s '$fasl-intern kw)
+                       (sa-fasl-intern-put! s kw)
                        kw)))))))
 (define (keyword-new ns name)
   (let ((kw (make-keyword-t #f ns name (compute-keyword-hasheq ns name))))
@@ -376,7 +376,7 @@
         (vector-for-each keyword-fasl-publish! vs))
       (let-values (((ks vs) (hashtable-entries keyword-table)))
         (vector-for-each keyword-fasl-publish! vs))
-      (#%$sputprop (record-type-uid (record-type-descriptor keyword-t)) '$fasl-intern #t)
+      (sa-fasl-intern-type! (record-type-descriptor keyword-t) #t)
       (set! keyword-fasl-intern-on? #t))))
 ;; Does this Chez intern keyword records on fasl-read? A round trip through a
 ;; bytevector answers it: on a Chez without the patch the record comes back a
@@ -386,10 +386,10 @@
   (keyword-fasl-intern-enable!)
   (or (let ((kw (keyword "jolt.fasl-intern" "probe")))
         (let-values (((p get) (open-bytevector-output-port)))
-          (fasl-write kw p)
-          (eq? kw (fasl-read (open-bytevector-input-port (get))))))
+          (sa-fasl-write kw p)
+          (eq? kw (sa-fasl-read (open-bytevector-input-port (get))))))
       (jolt-with-mutex keyword-table-mu
-        (#%$sremprop (record-type-uid (record-type-descriptor keyword-t)) '$fasl-intern)
+        (sa-fasl-intern-type! (record-type-descriptor keyword-t) #f)
         (set! keyword-fasl-intern-on? #f)
         #f)))
 ;; A quoted keyword in emitted code. Expanding it publishes the keyword (an AOT
