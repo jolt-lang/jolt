@@ -313,6 +313,11 @@
        (let ((s (string-downcase e)))
          (or (string=? s "0") (string=? s "false") (string=? s "no")
              (string=? s "off") (string=? s "n")))))
+;; JOLT_CONST_DATA set and not "" or "0" (loader.ss aot-trace-tag reads it the
+;; same way, for the cache generation's name).
+(define (jolt-const-data-env?)
+  (let ((e (getenv "JOLT_CONST_DATA")))
+    (and e (not (string=? e "")) (not (string=? e "0")))))
 ;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
 ;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
 ;; JOLT_TRACE is a falsey value, so JOLT_TRACE=0 / off / no disables it in dev mode.
@@ -351,6 +356,12 @@
 ;; baked at build time, so this runtime switch cannot add them.
 (define (jolt-trace-init-from-env!)
   (jolt-phase-times-init-from-env!)
+  ;; JOLT_CONST_DATA=1 (or =bind): emit each top-level form's keyword/symbol
+  ;; literals as one quoted table (backend hoist.clj with-const-data). An
+  ;; experiment, off by default.
+  (when (jolt-const-data-env?)
+    (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
+      (when (procedure? scd) (scd (getenv "JOLT_CONST_DATA")))))
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (jolt-enable-trace!)))
 

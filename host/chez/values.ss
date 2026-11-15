@@ -455,6 +455,21 @@
       (make-symbol-t (intern-symbol-string ns) name meta #f #f)))
 (define (jolt-symbol ns name) (make-symbol-t/pooled ns name jolt-nil))
 (define (jolt-symbol/meta ns name meta) (make-symbol-t/pooled ns name meta))
+;; JOLT_CONST_DATA (an experiment, off by default; backend hoist.clj
+;; with-const-data): a top-level form's keyword and symbol literals arrive as ONE
+;; quoted vector of plain data, and this builds the objects once when the form
+;; loads. "name" is the keyword :name, ("ns" . "name") :ns/name, and
+;; #(ns-or-#f "name") a metadata-free symbol. Keywords go through `keyword`, so
+;; they intern to the very objects every other site gets. A fresh vector, not the
+;; quoted one written over: that is a constant of the compiled code.
+(define (intern-constants! tbl)
+  (let* ((n (vector-length tbl)) (out (make-vector n)))
+    (do ((i 0 (fx+ i 1))) ((fx= i n) out)
+      (vector-set! out i
+        (let ((e (vector-ref tbl i)))
+          (cond ((string? e) (keyword #f e))
+                ((pair? e) (keyword (car e) (cdr e)))
+                (else (jolt-symbol (vector-ref e 0) (vector-ref e 1)))))))))
 
 ;; ns/name identical means the hasheq is identical, so a symbol rebuilt only to
 ;; change its metadata inherits the cache instead of recomputing it. with-meta on

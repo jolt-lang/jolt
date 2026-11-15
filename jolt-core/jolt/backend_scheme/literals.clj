@@ -7,7 +7,7 @@
             [jolt.host
              :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-char-code form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value? form-class-value-name]]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
-            [jolt.backend-scheme.hoist :refer [hoist-const]]))
+            [jolt.backend-scheme.hoist :refer [keyword-const kdata-sort-key symbol-const]]))
 
 (defn emit-const [v]
   (cond
@@ -27,10 +27,8 @@
     ;; intern lookup runs once per def rather than at every use site — a keyword
     ;; in a hot path ((:left node), a cond's :else, a map key) was re-interned on
     ;; every evaluation, ~25% of the cost of a keyword-keyed lookup.
-    (keyword? v) (hoist-const
-                   (if-let [kns (namespace v)]
-                     (str "(keyword " (chez-str-lit kns) " " (chez-str-lit (name v)) ")")
-                     (str "(keyword #f " (chez-str-lit (name v)) ")")))
+    ;; (keyword-const: a table slot instead under JOLT_CONST_DATA, hoist.clj)
+    (keyword? v) (keyword-const (namespace v) (name v))
     ;; char literal -> (integer->char <codepoint>). Get the codepoint via the host
     ;; contract (form-char-code), NOT (get v :ch): on Chez (the self-hosted spine)
     ;; a char is a native char, so a struct-field read returns nil and would emit
@@ -125,7 +123,7 @@
   ;; the pairs sorted by their emitted Scheme text — keeps the seed byte-fixed
   ;; regardless of the host hash (jolt-8479).
   (let [pairs (binding [*quote-pool* nil]
-                (vec (sort (map (fn [k] (str (emit-quoted k) " " (emit-quoted (get m k)))) (keys m)))))]
+                (vec (sort-by kdata-sort-key (map (fn [k] (str (emit-quoted k) " " (emit-quoted (get m k)))) (keys m)))))]
     (q-intern (str "(jolt-hash-map " (str/join " " pairs) ")"))))
 ;; A quoted symbol, carrying its reader metadata (^:foo bar) so (meta 'x) sees it.
 (defn- emit-quoted-sym [form]
@@ -134,7 +132,8 @@
      (if (and m (pos? (count m)))
        (str "(jolt-symbol/meta " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) " "
             (emit-quoted m) ")")
-       (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")")))))
+       (symbol-const sns nm (str "(jolt-symbol " (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")")
+                     (some? *quote-pool*))))))
 
 ;; sort items by emitted text: a set has no source order, and host-hash order
 ;; is not stable across Chez versions (jolt-8479) — so the items are emitted
@@ -143,7 +142,7 @@
 (defn- emit-quoted-set [items]
   (q-intern (str "(jolt-hash-set "
                  (str/join " " (binding [*quote-pool* nil]
-                                 (vec (sort (map emit-quoted items)))))
+                                 (vec (sort-by kdata-sort-key (map emit-quoted items)))))
                  ")")))
 
 ;; The reader forms whose value the reader builds from a source string. None

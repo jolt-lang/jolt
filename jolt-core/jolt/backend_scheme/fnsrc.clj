@@ -9,7 +9,7 @@
              :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value?]]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-chars munge-name]]
             [jolt.backend-scheme.session :refer [fresh-label]]
-            [jolt.backend-scheme.hoist :refer [*cache-cells*]]
+            [jolt.backend-scheme.hoist :refer [*cache-cells* without-kdata]]
             [jolt.backend-scheme.literals
              :refer [*quote-pool* *quote-shared* emit-quoted]]))
 
@@ -194,7 +194,8 @@
   (try
     (let [s (fnsrc-src form)
           same? (binding [*quote-pool* nil *quote-shared* nil]
-                  (= (emit-quoted (jolt.host/fn-form-parse s)) (emit-quoted form)))]
+                  (without-kdata
+                   #(= (emit-quoted (jolt.host/fn-form-parse s)) (emit-quoted form))))]
       (when same? (str "(image-fn-form-src " (chez-str-lit s) ")")))
     (catch Exception _ nil)))
 

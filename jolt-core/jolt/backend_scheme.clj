@@ -33,7 +33,7 @@
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
                      hoist-const-per-site hoist-seed-root hoist-var-cell site-const
-                     unique-keyword-key-literal?]]
+                     unique-keyword-key-literal? with-const-data]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
@@ -98,6 +98,13 @@
 (defn set-trace-frames! [on] (reset! (:trace-frames? (cur)) (boolean on)))
 (defn set-source-reg! [on] (reset! (:source-reg? (cur)) (boolean on)))
 (defn set-debug-locals! [on] (reset! (:debug-locals? (cur)) (boolean on)))
+;; JOLT_CONST_DATA (experiment): a process-wide switch, not a unit flag, set from
+;; the runtime entrypoint (compile-eval.ss); see hoist.clj with-const-data.
+;; "bind" binds each slot read once per def (the sites read that variable); any
+;; other true value reads the slot at every site.
+(defn set-const-data! [on]
+  (reset! jolt.backend-scheme.hoist/const-data-flag
+          (cond (= on "bind") :bind on :use :else false)))
 
 ;; Fully-qualified app var names ("ns/name") already emitted with a direct-link
 ;; binding in the current unit; and, of those, the ones whose init is a fn literal
@@ -1468,9 +1475,11 @@
 ;; ce-defmacro->fn has already split the name off — so the caller supplies it
 ;; here; otherwise every macro in a namespace registers its anon fns under
 ;; jfn$<ns>/$<n> with the counter restarting per form, and siblings collide.
+(declare emit-top-form*)
 (defn emit-top-form
   ([node] (emit-top-form node nil))
-  ([node fnsrc-def]
+  ([node fnsrc-def] (with-const-data #(emit-top-form* node fnsrc-def))))
+(defn- emit-top-form* [node fnsrc-def]
   ;; A statement of a top-level do (the direct-link arm below re-enters here
   ;; per statement) carries no :ns and no :fnsrc-ns of its own -- the analyzer
   ;; stamps only the top-level node -- so it inherits the enclosing binding.
@@ -1511,4 +1520,4 @@
           ;; dependency on the form's evaluation, and the form itself may dump a
           ;; closure it just created — the registration must already be there.
           ;; begin keeps the form's value as the result.
-        :else (str "(begin" freg " " scm ")"))))))
+        :else (str "(begin" freg " " scm ")")))))

@@ -918,7 +918,11 @@
 ;; which is how it surfaced.) Read from the runtime flag rather than from JOLT_TRACE
 ;; directly, so a REPL that calls jolt.host/enable-trace! with the env var unset is
 ;; keyed correctly too. trace-smoke.sh gates both directions.
-(define (aot-trace-tag) (if jolt-trace-on? "-tr" ""))
+(define (aot-trace-tag)
+  (let ((kd (getenv "JOLT_CONST_DATA")))      ; the experiment's emit (compile-eval.ss)
+    (if (and kd (not (string=? kd "")) (not (string=? kd "0")))
+        (string-append (if jolt-trace-on? "-tr-kd" "-kd") (if (string=? kd "bind") "b" ""))
+        (if jolt-trace-on? "-tr" ""))))
 ;; <dir>/<jolt-version>-<runtime fingerprint>[-tr]/v1 — the version names the release
 ;; a fasl came from, the fingerprint pins the exact runtime that emitted it. One
 ;; such GENERATION per runtime; rebuilding jolt starts a new one and strands the
