@@ -149,7 +149,8 @@
 ;; :set-field    :obj :field :val                 :obj :val
 ;; :defmacro     :ns :name :fn                     :fn
 ;; :ffi-layout   :layout                           —
-;; :ffi-fn       :csym :argtypes :rettype         —
+;; :ffi-fn       :csym :argtypes :rettype         —   (:pointer-call: csym nil,
+;;                                                     the C fn pointer is arg 0)
 ;; :ffi-callable :fn :argtypes :rettype           :fn
 ;; :regex        :source                          —
 ;; :inst         :source                          —
@@ -177,8 +178,9 @@
 ;;                           read's numeric kind.
 ;;   :fl-aget :fl-aset       an aget/aset over a ^doubles array, lowered to the
 ;;   :v-aget :v-aset         unboxed flvector path / to the direct backing path for
-;;   :b-aset                 the other array kinds / to the byte store, which owns
-;;                           the signed-8-bit narrowing (jolt.passes.numeric).
+;;   :b-aset :v-alength      the other array kinds / to the byte store, which owns
+;;                           the signed-8-bit narrowing / a hinted alength
+;;                           (jolt.passes.numeric).
 ;;   :prim-op                a clojure.core call lowered to a Chez primitive over
 ;;                           operands the collection lattice proved
 ;;                           (jolt.passes.types str-prim-op).

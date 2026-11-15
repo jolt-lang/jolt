@@ -306,6 +306,17 @@
              (set! failures (+ failures 1)))))
 (check "(vals)" "1")
 
+;; jolt.ffi/pointer-fn has no gambit lowering (no ffi tier here): the binding
+;; defines, scalar or by-value, and calling it raises an exception jolt can
+;; catch, naming the form and the target. Not a Chez capture: on Chez the same
+;; call through a NULL pointer raises NullPointerException instead.
+(check "(def pf (jolt.ffi/__cfn-pointer [:int64] :int64))" "#'user/pf")
+(check "(def pb (jolt.ffi/__cfn-pointer [[:by-value [:struct [[:a :int]]]]] :int64))" "#'user/pb")
+(check "(try (pf 1 2) (catch Throwable t (ex-message t)))"
+       "\"jolt.ffi/pointer-fn: ffi is unsupported on the gambit target\"")
+(check "(try (pb 1 2) (catch UnsupportedOperationException t (ex-message t)))"
+       "\"jolt.ffi/pointer-fn: ffi is unsupported on the gambit target\"")
+
 ;; A by-value jolt.ffi callback has no gambit lowering (no ffi tier here, and no
 ;; define-ftype): making one raises an exception jolt can catch, naming the form
 ;; and the target, for a struct argument and a struct result alike. Not a Chez

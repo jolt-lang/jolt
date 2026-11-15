@@ -654,6 +654,16 @@
                                                 (else (cons (car ms) (cons "; " (loop (cdr ms))))))))))
                         #f)))))))
 
+;; jolt.ffi/pointer-fn: the address a call through a C function pointer jumps
+;; to (backend ffi-pointer-procedure-expr emits this ahead of each call). A NULL
+;; pointer, or jolt nil standing for one, raises here rather than letting the
+;; call branch to address zero and take the process down with it.
+(define (jolt-ffi-function-pointer ptr)
+  (let ((address (if (jolt-nil? ptr) 0 (jnum->exact ptr))))
+    (if (eqv? address 0)
+        (throw-jvm 'NullPointerException "jolt.ffi: null C function pointer")
+        address)))
+
 ;; jolt.ffi/defining-libraries: one declared native per DISTINCT definition of
 ;; `sym`, in declaration order — the diagnostic to reach for when a native call
 ;; returns something impossible and nothing has raised. A correctly linked set
@@ -742,6 +752,24 @@
                          (string-append "jolt.ffi: :string got " (jolt-pr-str x)
                                         " — NULL is spelled nil")))))
 (define (jolt-ffi-c->string x) (if x x jolt-nil))
+
+;; A foreign-fn's :string ARGUMENT travels as u8*. Chez's own `string` type copies
+;; into a movable heap bytevector, and a C function that calls back into jolt
+;; (bsearch's comparator, a GTK signal) can see a collection move it while C
+;; still holds the pointer. So the octets go into an immobile bytevector with a
+;; NUL. The emitted call keeps it live until C returns (keep-live in
+;; jolt/backend_scheme/ffi.clj), since C's copy of the address doesn't count as
+;; a reference.
+(define (jolt-ffi-string-arg x)
+  (cond ((string? x)
+         (let* ((bv (string->utf8 x))
+                (n (bytevector-length bv))
+                (out (make-immobile-bytevector (fx+ n 1))))
+           (bytevector-copy! bv 0 out 0 n)
+           (bytevector-u8-set! out n 0)
+           out))
+        ((jolt-nil? x) #f)
+        (else (jolt-ffi-string->c x))))
 
 ;; --- foreign memory ----------------------------------------------------------
 ;; alloc returns a pointer (integer address). The caller frees it. read/write take
@@ -1280,7 +1308,7 @@
 
 ;; The Chez foreign type each carrier declares.
 (define (ffi-varargs-carrier-type c)
-  (cond ((fx=? c 0) 'integer-64) ((fx=? c 1) 'double) (else 'string)))
+  (cond ((fx=? c 0) 'integer-64) ((fx=? c 1) 'double) (else 'u8*)))
 
 ;; One fixnum standing for the whole tail shape, folded base-3 from a seed of 1
 ;; so that tails of DIFFERENT LENGTHS cannot collide (0 shapes => 1, one-int =>
@@ -1301,7 +1329,7 @@
 ;; SAME list when nothing changed, and a variadic call allocates nothing beyond
 ;; the rest argument the lambda already built.
 (define (ffi-varargs-plain? v)
-  (or (flonum? v) (string? v) (and (number? v) (exact? v) (integer? v))))
+  (or (flonum? v) (and (number? v) (exact? v) (integer? v))))
 
 (define (ffi-varargs-marshal v)
   (cond
@@ -1310,7 +1338,7 @@
     ((fixnum? v) v)
     ((flonum? v) v)
     ((jfloat? v) (jfloat-fl v))
-    ((string? v) v)
+    ((string? v) (jolt-ffi-string-arg v))
     ((jolt-nil? v) 0)
     ((eq? v #t) 1)
     ((eq? v #f) 0)

@@ -197,14 +197,9 @@
      :else
      (analysis-error :ffi/invalid-option (str "jolt.ffi: option must be :blocking or an options map, got: " opt)))))
 
-(defn analyze-ffi-fn [ctx items env]
-  (when-not (<= 4 (count items) 5)
-    (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-fn expects "
-                "(foreign-fn \"sym\" [argtypes] rettype [:blocking | {opts}])")))
-  (let [rettype (analyze-ffi-signature-type (nth items 3) "return")
-        opt (if (= 5 (count items))
-              (ffi-option (nth items 4))
-              (ffi-option))
+(defn- analyze-ffi-signature [argtypes-form rettype-form opt-forms]
+  (let [rettype (analyze-ffi-signature-type rettype-form "return")
+        opt (if (seq opt-forms) (ffi-option (first opt-forms)) (ffi-option))
         blocking (:blocking opt)
         capture (:capture-native-error opt)]
     (when (and capture (= rettype "void"))
@@ -213,9 +208,30 @@
     (when (and capture (map? rettype))
       (analysis-error :ffi/invalid-option "jolt.ffi: :capture-native-error is not supported for by-value returns"))
     {:op :ffi-fn
-     :csym (nth items 1)
      :argtypes (mapv #(analyze-ffi-signature-type % "argument")
-                     (form-vec-items (nth items 2)))
+                     (form-vec-items argtypes-form))
      :rettype rettype
      :blocking blocking
      :capture-native-error capture}))
+
+(defn analyze-ffi-fn [ctx items env]
+  (when-not (<= 4 (count items) 5)
+    (analysis-error :ffi/invalid-signature (str "jolt.ffi/foreign-fn expects "
+                "(foreign-fn \"sym\" [argtypes] rettype [:blocking | {opts}])")))
+  (assoc (analyze-ffi-signature (nth items 2) (nth items 3) (drop 4 items))
+         :csym (nth items 1)))
+
+;; jolt.ffi/__cfn-pointer: the same signature with no C symbol, for a C function
+;; reached only through a pointer (a callback slot in a struct a library hands
+;; over). Shape:
+;;   (jolt.ffi/__cfn-pointer [:argtype ...] :rettype [:blocking | {opts}])
+;; It lowers to an :ffi-fn node marked :pointer-call, whose binding takes the
+;; function pointer as its FIRST argument and builds the foreign procedure
+;; against that address on each call. :csym is nil: there is no name to resolve.
+(defn analyze-ffi-pointer-fn [ctx items env]
+  (when-not (and (<= 3 (count items) 4) (form-vec? (nth items 1)))
+    (analysis-error :ffi/invalid-signature (str "jolt.ffi/pointer-fn expects "
+                "(pointer-fn [argtypes] rettype [:blocking | {opts}])")))
+  (assoc (analyze-ffi-signature (nth items 1) (nth items 2) (drop 3 items))
+         :csym nil
+         :pointer-call true))

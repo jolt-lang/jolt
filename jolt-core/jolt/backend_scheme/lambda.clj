@@ -9,7 +9,7 @@
             [jolt.backend-scheme.session
              :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
                      *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
-                     *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
+                     *trace-frame* *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
                      debug-locals? fresh-label site-call-helper target trace-frames?]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
@@ -178,10 +178,11 @@
         c))
     (emit-arity-clause emit a)))
 
-(defn- emit-fn-clauses [emit arities self site once-clears self-wrap]
+(defn- emit-fn-clauses [emit arities self site frame once-clears self-wrap]
   (binding [*known-procs* (if self (assoc *known-procs* self site) *known-procs*)
             *once-clears* once-clears
             *trace-site* site
+            *trace-frame* frame
             *trace-self* (cond-> #{} self (conj self) site (conj site))
             *self-wrap* self-wrap
             ;; An enclosing letrec's bindings are initialised by the
@@ -490,7 +491,7 @@
         once (fn-once-box node arities)
         self-wrap (when (and self (trace-frames?))
                     {:tok (fresh-label "_srself$") :unsafe (atom false)})
-        clauses (emit-fn-clauses emit (or (:marked once) arities) self site (:clears once) self-wrap)
+        clauses (emit-fn-clauses emit (or (:marked once) arities) self site (or site fnsrc-nm) (:clears once) self-wrap)
         lambda (fn-lambda (fill-self-wrap clauses self-wrap) arities id-nm once)
         ;; A fn with a variadic arity records that arity's FIXED param count, so
         ;; jolt-apply can hand it a lazy rest instead of realizing the tail. The

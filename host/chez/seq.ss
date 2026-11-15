@@ -1413,6 +1413,47 @@
   (cond ((null? xs) 0) ((null? (cdr xs)) (jolt-uncneg (car xs))) (else (fold-left jolt-uncsub2 (car xs) (cdr xs)))))
 (define (jolt-unchecked-div a b) (quotient (jolt-wrap64 a) (jolt-wrap64 b)))
 (define (jolt-unchecked-rem a b) (remainder (jolt-wrap64 a) (jolt-wrap64 b)))
+;; The -int family wraps to a signed 32-bit int. Each op has a fixed arity and a
+;; fixnum fast path that folds the exact result to 32 bits in place. Any other
+;; operand (flonum, char, bignum long, ratio) takes the long op, then the int cast.
+(define (unc-i32 r)
+  (let ((m (if (fixnum? r) (fxand r #xffffffff) (bitwise-and r #xffffffff))))
+    (if (fx>=? m #x80000000) (fx- m #x100000000) m)))
+(define (jolt-uncaddi2 a b)
+  (if (and (fixnum? a) (fixnum? b))
+      (unc-i32 (+ a b))
+      (jolt-unchecked-int (jolt-uncadd2 a b))))
+(define (jolt-uncsubi2 a b)
+  (if (and (fixnum? a) (fixnum? b))
+      (unc-i32 (- a b))
+      (jolt-unchecked-int (jolt-uncsub2 a b))))
+;; Two int-range factors can overflow a fixnum product. The low 32 bits of x*y
+;; only need x*(y low 16) plus ((x*(y high)) low 16) shifted up, and every
+;; partial product stays a fixnum.
+(define (jolt-uncmuli2 a b)
+  (if (and (fixnum? a) (fixnum? b))
+      (if (and (fx>=? a -2147483648) (fx<=? a 2147483647)
+               (fx>=? b -2147483648) (fx<=? b 2147483647))
+          (unc-i32 (+ (* a (fxand b #xffff))
+                      (* (fxand (* a (fxsra b 16)) #xffff) 65536)))
+          (unc-i32 (* a b)))
+      (jolt-unchecked-int (jolt-uncmul2 a b))))
+(define (jolt-uncinci x)
+  (if (fixnum? x) (unc-i32 (+ x 1)) (jolt-unchecked-int (jolt-uncinc x))))
+(define (jolt-uncdeci x)
+  (if (fixnum? x) (unc-i32 (- x 1)) (jolt-unchecked-int (jolt-uncdec x))))
+(define (jolt-uncnegi x)
+  (if (fixnum? x) (unc-i32 (- x)) (jolt-unchecked-int (jolt-uncneg x))))
+;; A zero divisor takes the slow path, which raises. MIN_VALUE / -1 is 2^31 here
+;; and folds back to MIN_VALUE, as on the JVM.
+(define (jolt-uncdivi2 a b)
+  (if (and (fixnum? a) (fixnum? b) (not (eq? b 0)))
+      (unc-i32 (quotient a b))
+      (jolt-unchecked-int (jolt-unchecked-div a b))))
+(define (jolt-uncremi2 a b)
+  (if (and (fixnum? a) (fixnum? b) (not (eq? b 0)))
+      (unc-i32 (remainder a b))
+      (jolt-unchecked-int (jolt-unchecked-rem a b))))
 ;; the clojure.core/unchecked-* vars are def-var!'d in natives-seq.ss (def-var! is
 ;; defined after this file loads).
 
@@ -1691,11 +1732,16 @@
           (jolt-proc-arity-error f 0))
       (jolt-site-kept (jolt-invoke-t0 f))))
 (define (jolt-invoke1 f a)
-  (if (procedure? f)
-      (if (fxlogbit? 1 (procedure-arity-mask f))
-          (jolt-site-kept (f a))
-          (jolt-proc-arity-error f 1))
-      (jolt-site-kept (jolt-invoke-t1 f a))))
+  (cond
+    ((procedure? f)
+     (if (fxlogbit? 1 (procedure-arity-mask f))
+         (jolt-site-kept (f a))
+         (jolt-proc-arity-error f 1)))
+    ;; (v i) with an in-range fixnum index can't throw or call out, so it skips
+    ;; the site bookkeeping
+    ((and (pvec? f) (fixnum? a) (fx>=? a 0) (fx<? a (pvec-cnt f)))
+     (pvec-nth-in-range f a))
+    (else (jolt-site-kept (jolt-invoke-t1 f a)))))
 (define (jolt-invoke2 f a b)
   (if (procedure? f)
       (if (fxlogbit? 2 (procedure-arity-mask f))

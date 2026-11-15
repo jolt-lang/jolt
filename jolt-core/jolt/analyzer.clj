@@ -45,14 +45,15 @@
                                embed-plan ctx-for-ns]]
             [jolt.analyzer.diagnostics :refer [*positioned-form-box* *expansion-box*
                                                *macro-run-box* analysis-error
-                                               resolve-error as-analysis-diagnostic]]
+                                               resolve-error as-analysis-diagnostic
+                                               current-form-position]]
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          with-ret-nhint fi-tag-class fi-adapt-form
                                          parse-params strip-arglist-meta arglist-ret-nkind
                                          str-target-type kw-target-type sb-target-type]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
-            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn
+            [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
                                        analyze-ffi-signature-type]]
             [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
@@ -869,7 +870,9 @@
     "let*"          (analyze-let* ctx items env)
     "loop*"         (analyze-loop* ctx items env)
     "recur"         (analyze-recur ctx form items env)
-    "try"           (analyze-try ctx items env)
+    "try"           (let [node (analyze-try ctx items env)
+                          p (or (form-position form) (current-form-position))]
+                      (if p (assoc node :pos p) node))
     ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
     ;; is a macro over the same jolt.host per-object monitor. Libraries that
     ;; expand their own locking macro rather than calling clojure.core/locking
@@ -1222,10 +1225,11 @@
   (let [r (when opn (rewrite opn n))]
     (when (and r (core-head? ctx head)) r)))
 
-;; Stamp the form's source offset onto a top-level def so the back end can
-;; register it (jv$ns/name -> source) for native stack traces.
+;; Stamp a def's source offset so the back end can register it for native stack
+;; traces. A def nested in a macro expansion (deftest's do) inherits the nearest
+;; positioned source form, just as a generated invocation does.
 (defn- stamp-def [ctx env form node]
-  (let [p (form-position form)]
+  (let [p (or (form-position form) (current-form-position))]
     (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node)))
 
 ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
@@ -1268,7 +1272,7 @@
 ;; the jolt.ffi macros, so aliases resolve.
 (defn- ffi-form-name [head]
   (when (and (form-sym? head) (= "jolt.ffi" (form-sym-ns head))
-             (contains? #{"__cfn" "__layout" "__ccallable"} (form-sym-name head)))
+             (contains? #{"__cfn" "__cfn-pointer" "__layout" "__ccallable"} (form-sym-name head)))
     (form-sym-name head)))
 
 (defn- analyze-ffi-form [ctx fname items env]
@@ -1276,6 +1280,9 @@
     ;; jolt.ffi/__cfn — the foreign-function special form (the jolt.ffi/foreign-fn
     ;; macro).
     "__cfn" (analyze-ffi-fn ctx items env)
+    ;; jolt.ffi/__cfn-pointer — the same signature called through a C function
+    ;; pointer passed as the binding's first argument (jolt.ffi/pointer-fn).
+    "__cfn-pointer" (analyze-ffi-pointer-fn ctx items env)
     ;; jolt.ffi/layout expands to this literal-only leaf. The back end
     ;; asks Chez for the actual ABI size, alignment and offsets.
     "__layout" (analyze-ffi-layout items)
@@ -1367,16 +1374,17 @@
   (if-let [rw (and (form-sym? head) (not shadowed)
                    (invoke-rewrite ctx head form))]
     (analyze ctx rw env)
-    ;; stamp the list form's source offset onto the :invoke
-    ;; so the success checker can report file:line:col. nil when the
-    ;; reader did not record it (synthetic/macro-built forms).
+    ;; Stamp the list form's source offset onto the :invoke so the success
+    ;; checker and stack reader can report file:line:col. A macro-generated
+    ;; call inherits the nearest positioned source form, as the JVM's LINE
+    ;; binding does during expansion.
     ;; qualified heads only: an unqualified one resolves again in
     ;; analyze-symbol, which applies the same check.
     (let [_ (when (and (form-sym? head) (form-sym-ns head))
               (deny-private head (resolve-global ctx head) true))
           n (invoke (analyze ctx head env)
                     (mapv #(analyze ctx % env) (rest items)))
-          p (form-position form)]
+          p (or (form-position form) (current-form-position))]
       (if p (assoc n :pos p) n))))
 
 ;; Interop by the head's shape, or nil when it is an ordinary call. Only for a
