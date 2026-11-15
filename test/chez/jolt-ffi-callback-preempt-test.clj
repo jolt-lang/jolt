@@ -96,6 +96,32 @@
   (ffi/free-callable ordinary)
   (ffi/free-callable collect-safe))
 
+;; A void foreign callback ignores zero or multiple Scheme values, as Chez's
+;; ordinary foreign-callable does. Public FFI spellings retain that contract.
+(let [zero (scm/proc "values")
+      many (scm/eval-string "(lambda () (values 1 2))")
+      callbacks [(ffi/foreign-callable zero [] :void)
+                 (ffi/foreign-callable many [] :void)]]
+  (doseq [cb callbacks]
+    (let [call ((scm/eval-string "(lambda (addr) (foreign-procedure addr () void))") cb)
+          depth (scm/call "sa-disable-count")]
+      (check-eq "void callback discards zero/multiple values" (do (call) :returned) :returned)
+      (check-eq "void callback preserves interrupt depth" (scm/call "sa-disable-count") depth))
+    (ffi/free-callable cb)))
+
+(let [zero (scm/proc "values")
+      many (scm/eval-string "(lambda () (values 1 2))")
+      callbacks [(ffi/foreign-callable zero [] :int)
+                 (ffi/foreign-callable many [] :int)]]
+  (doseq [cb callbacks]
+    (let [call ((scm/eval-string "(lambda (addr) (foreign-procedure addr () int))") cb)
+          depth (scm/call "sa-disable-count")]
+      (check-eq "nonvoid callback rejects zero/multiple values"
+                (try (call) :returned (catch Throwable _ :caught)) :caught)
+      (check-eq "rejected nonvoid callback preserves interrupt depth"
+                (scm/call "sa-disable-count") depth))
+    (ffi/free-callable cb)))
+
 ;; Preemption still works outside callbacks: two spinning fibers on a one-carrier
 ;; pool both make progress after each made a callback.
 (f/set-preempt-ticks! 10000)

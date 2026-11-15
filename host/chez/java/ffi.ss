@@ -1490,23 +1490,34 @@
 ;; The count is per thread, including callbacks on foreign or plain threads.
 ;; The dynamic-wind drops it again if the body escapes by a raise.
 ;; The adapter's __disable_interrupts convention masks the first and last Chez
-;; callback safepoints. Enter the lock before balancing its extra disable; on a
+;; callback safepoints. Install the lock cleanup before enabling events; on a
 ;; normal return mask again before dropping the lock, and Chez balances it with
 ;; a no-event enable after the last safepoint. A raise skips both that normal
 ;; disable and Chez's return wrapper, leaving the incoming disable depth intact.
-;; SYNTAX: (jolt-ffi-callable-body proc (argtype ...)) -> a procedure of as
+;; Void callbacks discard all result values before returning one void value to
+;; Chez's boundary wrapper; other result types still require exactly one value.
+;; SYNTAX: (jolt-ffi-callable-body proc (argtype ...) rettype) -> a procedure of as
 ;; many arguments, one per argtype.
 (define-syntax jolt-ffi-callable-body
-  (syntax-rules ()
-    ((_ proc (t ...)) (jolt-ffi-callable-body proc (t ...) ()))
-    ((_ proc () (p ...))
+  (syntax-rules (void)
+    ((_ proc (t ...) res) (jolt-ffi-callable-body proc (t ...) () res))
+    ((_ proc () (p ...) void)
      (let ((f proc))
        (lambda (p ...)
          (dynamic-wind
-           (lambda () (jolt-locks-enter!) (enable-interrupts))
-           (lambda () (let ((r (f p ...))) (disable-interrupts) r))
+           (lambda () (jolt-locks-enter!))
+           (lambda () (enable-interrupts) (f p ...) (disable-interrupts) (void))
            (lambda () (jolt-locks-exit!))))))
-    ((_ proc (t0 t1 ...) (p ...)) (jolt-ffi-callable-body proc (t1 ...) (p ... x)))))
+    ((_ proc () (p ...) res)
+     (let ((f proc))
+       (lambda (p ...)
+         (dynamic-wind
+           (lambda () (jolt-locks-enter!))
+           (lambda () (enable-interrupts)
+             (let ((r (f p ...))) (disable-interrupts) r))
+           (lambda () (jolt-locks-exit!))))))
+    ((_ proc (t0 t1 ...) (p ...) res)
+     (jolt-ffi-callable-body proc (t1 ...) (p ... x) res))))
 (define (ffi-free-callable addr)
   (let* ((a (jnum->exact addr))
          (co (jolt-with-mutex ffi-tbl-mu

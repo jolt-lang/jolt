@@ -943,7 +943,7 @@
 ;; while the counted lock is held (including exceptional exits).
 (define-syntax sa-foreign-callable
   (syntax-rules ()
-    ((_ proc args res) (foreign-callable __disable_interrupts (jolt-ffi-callable-body proc args) args res))))
+    ((_ proc args res) (foreign-callable __disable_interrupts (jolt-ffi-callable-body proc args res) args res))))
 
 ;; (sa-foreign-callable-collect-safe proc args res) -> foreign callable
 ;; SYNTAX: like sa-foreign-callable, but the callable entry uses the
@@ -955,7 +955,7 @@
 ;; nonrecoverable memory fault instead of an exception.
 (define-syntax sa-foreign-callable-collect-safe
   (syntax-rules ()
-    ((_ proc args res) (foreign-callable __collect_safe __disable_interrupts (jolt-ffi-callable-body proc args) args res))))
+    ((_ proc args res) (foreign-callable __collect_safe __disable_interrupts (jolt-ffi-callable-body proc args res) args res))))
 
 ;; (sa-foreign-procedure-runtime name args res blocking?) -> foreign procedure | #f
 ;; Construct a foreign procedure from a RUNTIME-known signature under the
