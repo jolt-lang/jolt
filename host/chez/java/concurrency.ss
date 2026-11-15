@@ -5869,29 +5869,36 @@
 ;; It blocks the shutdown signals itself, as every other jolt thread does, so a
 ;; SIGTERM never lands here at its default action.
 (define jsig-c-read (jolt-foreign-proc-blocking "read" '(int void* size_t) 'ssize_t))
-(define jolt-signal-relay-started (box #f))
-(define (jolt-signal-relay-start!)            ; under jolt-signal-handlers-mu
-  (or (unbox jolt-signal-relay-started)
-      (let ((fd (jsig-relay-fd)))
-        (and (>= fd 0) jsig-c-read
-             (begin
-               (set-box! jolt-signal-relay-started #t)
-               (fork-thread-dormant
-                 (lambda ()
-                   (let ((old (sa-foreign-alloc 128)))
-                     (c-pthread-sigmask jolt-sig-block-how (jolt-signal-sigset) old)
-                     (sa-foreign-free old))
-                   (let ((buf (sa-foreign-alloc 64)))
-                     (let loop ()
-                       (let ((r (jsig-c-read fd buf 64)))
-                         ;; -1 is EINTR: read again
-                         (do ((i 0 (+ i 1))) ((>= i r))
-                           (let* ((sig (sa-foreign-ref 'unsigned-8 buf i))
-                                  (h (jolt-signal-handler-of sig)))
-                             (when (and h (not (jolt-native-handler-named? h "SIG_IGN")))
-                               (jolt-signal-dispatch! sig h)))))
-                       (loop)))))
-               #t)))))
+;; The pipe is opened and the start committed under the lock; the fork happens
+;; outside it, since a fork can park (park-lock-check.sh). Answers whether the
+;; relay can carry a handler: #f only when the pipe could not be opened.
+(define jolt-signal-relay-mu (make-mutex))
+(define jolt-signal-relay-fd (box #f))       ; the read end once opened, or -1
+(define (jolt-signal-relay-start!)
+  (let ((fd-to-read
+         (jolt-with-mutex jolt-signal-relay-mu
+           (and (not (unbox jolt-signal-relay-fd))
+                (let ((fd (if jsig-c-read (jsig-relay-fd) -1)))
+                  (set-box! jolt-signal-relay-fd fd)
+                  (and (>= fd 0) fd))))))
+    (when fd-to-read
+      (fork-thread-dormant
+        (lambda ()
+          (let ((old (sa-foreign-alloc 128)))
+            (c-pthread-sigmask jolt-sig-block-how (jolt-signal-sigset) old)
+            (sa-foreign-free old))
+          (let ((buf (sa-foreign-alloc 64)))
+            (let loop ()
+              (let ((r (jsig-c-read fd-to-read buf 64)))
+                ;; -1 is EINTR: read again. 0 (no writer left) does not
+                ;; happen: the kernel abandons the pipe open (Sscheme_deinit).
+                (do ((i 0 (+ i 1))) ((>= i r))
+                  (let* ((sig (sa-foreign-ref 'unsigned-8 buf i))
+                         (h (jolt-signal-handler-of sig)))
+                    (when (and h (not (jolt-native-handler-named? h "SIG_IGN")))
+                      (jolt-signal-dispatch! sig h))))
+                (unless (eqv? r 0) (loop))))))))
+    (let ((fd (unbox jolt-signal-relay-fd))) (and fd (>= fd 0)))))
 
 ;; The JVM keeps the first six for itself and refuses a handler for them; Chez
 ;; handles BUS as a fault, as it does SEGV, FPE and ILL.
@@ -5937,14 +5944,19 @@
       ;; the relay: SIG_DFL gives back the disposition the signal had, SIG_IGN
       ;; ignores it in the kernel, and a handler relays it
       (jolt-signal-relay?
-       (jolt-with-mutex jolt-signal-handlers-mu
-         (let ((mode (cond ((jolt-native-handler-named? h "SIG_DFL") 0)
-                           ((jolt-native-handler-named? h "SIG_IGN") 2)
-                           (else 1))))
-           (unless (and (or (not (= mode 1)) (jolt-signal-relay-start!))
-                        (eqv? (jsig-relay-set n mode) 0))
-             (unsupported))
-           (swap!))))
+       (let ((mode (cond ((jolt-native-handler-named? h "SIG_DFL") 0)
+                         ((jolt-native-handler-named? h "SIG_IGN") 2)
+                         (else 1))))
+         (unless (or (not (= mode 1)) (jolt-signal-relay-start!))
+           (unsupported))
+         ;; the table first, so a signal the new disposition lets through
+         ;; finds its handler; put back if the kernel refuses the signal
+         (let ((r (jolt-with-mutex jolt-signal-handlers-mu
+                    (let ((prev (swap!)))
+                      (if (eqv? (jsig-relay-set n mode) 0)
+                          (cons 'ok prev)
+                          (begin (hashtable-set! jolt-signal-handlers n prev) #f))))))
+           (if r (cdr r) (unsupported)))))
       ;; stock Chez: only what the watcher took at entry can reach a handler. A
       ;; signal it does not take would still run its default action, so refuse
       ;; rather than accept and never call it.

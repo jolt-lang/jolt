@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   jolt thread reads, so whichever thread the kernel interrupts, and whatever
   it is doing, the handler runs. A signal nobody handles keeps the
   disposition it had, a handler some C library installed earlier still runs,
-  and a jolt built as a library takes only the signals its program asks for.
+  and a jolt built as a library takes only the signals its program asks for
+  and gives them back at `jolt_library_shutdown`.
   QUIT, KILL, STOP, FPE, SEGV and ILL are refused, as on the JVM, and so is
   BUS (Chez's fault handler). On a stock Chez, without the relay, the CLI
   blocks the other signals at startup for the shutdown watcher instead, and

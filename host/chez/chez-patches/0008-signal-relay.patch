@@ -1,19 +1,20 @@
 diff --git a/c/externs.h b/c/externs.h
-index 1a293aa..3abd26e 100644
+index 1a293aa..8a53788 100644
 --- a/c/externs.h
 +++ b/c/externs.h
-@@ -355,6 +355,9 @@ extern void S_print_init(void);
+@@ -355,6 +355,10 @@ extern void S_print_init(void);
  extern void S_prin1(ptr x);
  
  /* schsig.c */
 +#ifndef WIN32
 +extern void S_jolt_signal_relay_init(void);
++extern void S_jolt_signal_relay_deinit(void);
 +#endif
  extern ptr S_get_scheme_arg(ptr tc, iptr n);
  extern void S_put_scheme_arg(ptr tc, iptr n, ptr x);
  extern iptr S_continuation_depth(ptr k);
 diff --git a/c/scheme.c b/c/scheme.c
-index 086e423..4eecf36 100644
+index 086e423..3dd0cfa 100644
 --- a/c/scheme.c
 +++ b/c/scheme.c
 @@ -82,6 +82,9 @@ static void main_init(void) {
@@ -26,8 +27,16 @@ index 086e423..4eecf36 100644
  
      if (!S_boot_time) return;
  
+@@ -1386,4 +1389,7 @@ extern void Sscheme_deinit(void) {
+ 
+   S_errors_to_console = 1;
+   current_state = DEINITIALIZED;
++#ifndef WIN32
++  S_jolt_signal_relay_deinit();
++#endif
+ }
 diff --git a/c/schsig.c b/c/schsig.c
-index e3442e6..239cd4e 100644
+index e3442e6..b966908 100644
 --- a/c/schsig.c
 +++ b/c/schsig.c
 @@ -667,6 +667,7 @@ static void init_signal_handlers(void) {
@@ -38,7 +47,7 @@ index e3442e6..239cd4e 100644
  
  static void handle_signal(INT sig, siginfo_t *si, void *data);
  static IBOOL enqueue_scheme_signal(ptr tc, INT sig);
-@@ -882,6 +883,91 @@ static void init_signal_handlers(void) {
+@@ -882,6 +883,112 @@ static void init_signal_handlers(void) {
      SIGACTION(SIGSEGV, &act, (struct sigaction *)0);
  }
  
@@ -120,6 +129,27 @@ index e3442e6..239cd4e 100644
 +        : (jolt_relay_orig[sig].sa_handler != SIG_DFL && jolt_relay_orig[sig].sa_handler != SIG_IGN);
 +  }
 +  return SIGACTION(sig, &act, (struct sigaction *)0) == 0 ? 0 : -1;
++}
++
++/* Sscheme_deinit: every relayed or ignored signal gets back the disposition it
++   had before, so a host that loaded jolt as a library has its signals again
++   after jolt_library_shutdown. The pipe is abandoned, not closed. The reader
++   thread is parked in read(2) on it, and a close would wake it with EOF into
++   a Scheme that is gone; left open, nothing ever writes to it again, as the
++   shutdown watcher stays parked in sigwait. A later Sscheme_init opens a
++   new pipe, so a reinit's reader never shares the old one. A handler already
++   running on another thread sees -1 and its write fails harmlessly. */
++void S_jolt_signal_relay_deinit(void) {
++  INT sig;
++  for (sig = 1; sig < JOLT_RELAY_NSIG; sig += 1) {
++    if (jolt_relay_saved[sig]) {
++      jolt_relay_chain[sig] = 0;
++      SIGACTION(sig, &jolt_relay_orig[sig], (struct sigaction *)0);
++      jolt_relay_saved[sig] = 0;
++    }
++  }
++  jolt_relay_pipe[1] = -1;
++  jolt_relay_pipe[0] = -1;
 +}
 +
 +void S_jolt_signal_relay_init(void) {
