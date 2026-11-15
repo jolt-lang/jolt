@@ -36,7 +36,7 @@
   '("jolt-site-call" "virtual-register" "set-virtual-register!" "jolt-register-callsite!"
     "keyword" "jolt-symbol" "jolt-vector" "amap-slots->pmap" "image-fn-form-src"
     "image-register-fn-form!" "def-var-with-meta!" "aot-replay-def-ordinals!"
-    "var-cell-deref" "var-deref" "jolt-var" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke"
+    "var-cell-deref" "var-deref" "jolt-var" "jolt-invoke1" "jolt-invoke2" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke"
     "let*" "let" "lambda" "define"))
 (define tracked-text
   '(("(jolt-site-call (lambda" . "site-call wrappers (jolt-site-call (lambda ...))")
