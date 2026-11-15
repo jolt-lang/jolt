@@ -925,7 +925,13 @@
           (string-append (if jolt-trace-on? "-tr-kd" "-kd") (if (string=? kd "bind") "b" ""))
           (if jolt-trace-on? "-tr" ""))
       ;; JOLT_FASL_INTERN in effect (values.ss): its fasls quote keywords
-      (if keyword-fasl-intern-on? "-fi" ""))))
+      (if keyword-fasl-intern-on? "-fi" "")
+      (aot-exp-tag "JOLT_CLJ_CALL" "-cc") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl"))))
+;; The var-call experiments' emit (compile-eval.ss jolt-clj-call-init-from-env!):
+;; "" when VAR is unset or empty, else PREFIX and its value.
+(define (aot-exp-tag var prefix)
+  (let ((v (getenv var)))
+    (if (and v (not (string=? v ""))) (string-append prefix v) "")))
 ;; <dir>/<jolt-version>-<runtime fingerprint>[-tr]/v1 — the version names the release
 ;; a fasl came from, the fingerprint pins the exact runtime that emitted it. One
 ;; such GENERATION per runtime; rebuilding jolt starts a new one and strands the

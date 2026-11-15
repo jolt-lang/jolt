@@ -37,6 +37,8 @@
     "keyword" "jolt-symbol" "jolt-vector" "amap-slots->pmap" "image-fn-form-src"
     "image-register-fn-form!" "def-var-with-meta!" "aot-replay-def-ordinals!"
     "var-cell-deref" "var-deref" "jolt-var" "jolt-invoke1" "jolt-invoke2" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke"
+    "jolt-invoke-t0" "jolt-invoke-t3" "jolt-invoke-t4" "jolt-clj-call" "jolt-clj-call-prim"
+    "def-var-linked!" "jolt-seed-root"
     "let*" "let" "lambda" "define"))
 (define tracked-text
   '(("(jolt-site-call (lambda" . "site-call wrappers (jolt-site-call (lambda ...))")

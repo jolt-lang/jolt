@@ -336,6 +336,28 @@
     (let ((sfi (var-deref "jolt.backend-scheme" "set-fasl-intern!")))
       (when (procedure? sfi) (sfi on)))))
 (when (getenv "JOLT_FASL_INTERN") (jolt-fasl-intern-init!))
+;; Var-call experiment (pellet jolt-7), off unless set, read at load for the gate
+;; scripts and again by jolt-trace-init-from-env! for a run:
+;; JOLT_CLJ_CALL=inline|prim respells a call through a var (session.clj clj-call);
+;; JOLT_DIRECT_LINK=link turns the back end's direct linking on for every form
+;; the runtime spine compiles (what `jolt build` sets, without its inline pass or
+;; inference), =full binds *compiler-options* {:direct-linking true} for the run
+;; (linking, inlining and inference, as at the REPL). loader.ss aot-trace-tag
+;; names both in the cache generation.
+(define (jolt-clj-call-init-from-env!)
+  (let ((m (getenv "JOLT_CLJ_CALL"))
+        (scc (var-deref "jolt.backend-scheme.session" "set-clj-call!")))
+    (when (procedure? scc) (scc (and m (> (string-length m) 0) m))))
+  (let ((m (getenv "JOLT_DIRECT_LINK")))
+    (cond
+      ((and m (string=? m "link"))
+       (let ((sdl (var-deref "jolt.backend-scheme" "set-direct-link!"))
+             (rst (var-deref "jolt.backend-scheme" "direct-link-reset!")))
+         (when (and (procedure? sdl) (procedure? rst)) (rst) (sdl #t))))
+      ((and m (string=? m "full"))
+       (var-root-set! (jolt-var "clojure.core" "*compiler-options*")
+                      (jolt-hash-map (keyword #f "direct-linking") #t))))))
+(jolt-clj-call-init-from-env!)
 ;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
 ;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
 ;; JOLT_TRACE is a falsey value, so JOLT_TRACE=0 / off / no disables it in dev mode.
@@ -376,6 +398,7 @@
 ;; baked at build time, so this runtime switch cannot add them.
 (define (jolt-trace-init-from-env!)
   (jolt-phase-times-init-from-env!)
+  (jolt-clj-call-init-from-env!)
   ;; JOLT_CONST_DATA=1 (or =bind): emit each top-level form's keyword/symbol
   ;; literals as one quoted table (backend hoist.clj with-const-data). An
   ;; experiment, off by default. Set either way, so a value the load-time check

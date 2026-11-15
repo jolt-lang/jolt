@@ -498,12 +498,23 @@
 ;; whose tail site would otherwise outlive it. A tail call must stay one,
 ;; and a traced non-tail call restores the slot itself (site-restore), so
 ;; both take jolt-invoke-tN, which does not.
+;;
+;; JOLT_CLJ_CALL (session clj-call, an experiment, off by default): a callee that
+;; is a var takes the jolt-clj-call / jolt-clj-call-prim head instead, the same
+;; operands; seq.ss expands it to the procedure test and a direct application,
+;; jolt-invoke-tN only for anything else. Untraced and not in tail position, the
+;; call keeps jolt-invokeN's slot restore (jolt-site-kept) around it.
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
-        callee (if (<= (count args) 4)
-                 (str (if (or (:tail? c) (trace-frames?)) "jolt-invoke-t" "jolt-invoke")
+        cc (when (= :var (:op (:fnode c))) @session/clj-call)
+        t? (or (:tail? c) (trace-frames?))
+        callee (cond
+                 cc (str (if t? "jolt-clj-call" "jolt-clj-call-kept")
+                         (case cc "prim" "-prim" "extract" "-x" ""))
+                 (<= (count args) 4)
+                 (str (if t? "jolt-invoke-t" "jolt-invoke")
                       (count args))
-                 "jolt-invoke")]
+                 :else "jolt-invoke")]
     (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons (emit (:fnode c)) args)
                   (fn [operands] (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))
 

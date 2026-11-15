@@ -331,6 +331,18 @@
 (defn site-attach? [] (= "attach" @trace-emit))
 ;; the head of a tail call's site store
 (defn site-store [] (if (site-attach?) "(jolt-site-set! " "(jolt-site! "))
+;; Experiment knob (JOLT_CLJ_CALL, read by compile-eval.ss; pellet jolt-7, see
+;; benchmarks/chez-primitives/jolt-7-clj-call.md): how a call through a var is
+;; spelled. nil, the default, is (jolt-invoke-tN (var-cell-deref c) a ...).
+;; "inline": (jolt-clj-call (var-cell-deref c) a ...), a runtime macro (seq.ss)
+;; that tests for a procedure of that arity and applies it, else jolt-invoke-tN.
+;; "prim": (jolt-clj-call-prim ...), the same as one Chez primitive, $clj-call,
+;; where the Chez has it (host/chez/chez-patches/0010), else the inline macro.
+;; "extract": (jolt-clj-call-x ...), Racket CS's spelling of an application:
+;; the test picks the procedure to apply and the call site stays one call.
+(def clj-call (atom nil))
+(defn set-clj-call! [m]
+  (reset! clj-call (when (contains? #{"inline" "prim" "extract"} m) m)))
 ;; A tail call that may run a jolt fn disqualifies the enclosing fn.
 (defn note-tail-call! [tail?]
   (when (and tail? *self-wrap*) (reset! (:unsafe *self-wrap*) true)))
