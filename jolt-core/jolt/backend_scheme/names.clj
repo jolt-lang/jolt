@@ -127,7 +127,7 @@
                   ;; jolt-site-inline the JOLT_TRACE_EMIT=macro head (rt.ss).
                   "pair?" "virtual-register" "set-virtual-register!" "jolt-site-call" "jolt-site-inline"
                   ;; the trace-primitive experiment's heads (rt.ss, JOLT_TRACE_EMIT=attach|prim)
-                  "jolt-site-attach" "jolt-site-cur" "jolt-site-set!" "jolt-site-prim" "jolt-site-try-body"
+                  "jolt-site-attach" "jolt-site-cur" "jolt-site-set!" "jolt-site-try-body"
                   "fxand" "fxior" "fxxor" "fxnot"
                   "jolt-register-source!" "jolt-proto-epoch"
                   ;; --- bare heads emitted at sites the registry doesn't cover ---
@@ -212,9 +212,7 @@
                   "def-var-linked!" "amap-slots->pmap"
                   "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"
                   ;; JOLT_CONST_DATA's per-form table (hoist.clj with-const-data)
-                  "intern-constants!"
-                  ;; JOLT_FASL_INTERN's quoted keywords and table (hoist.clj)
-                  "jolt-kw-lit" "jolt-kd-lit"}]
+                  "intern-constants!"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an

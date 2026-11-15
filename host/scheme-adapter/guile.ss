@@ -178,10 +178,6 @@
 ;;                                        may RAISE (jolt.image surfaces a clean unsupported
 ;;                                        error — the raise must carry a message).
 ;;   sa-fasl-read           UNIMPLEMENTED  ?? same, must verify externals resolution shape.
-;;   sa-fasl-intern-get     UNIMPLEMENTED  #f; put!/type! do nothing; lock a fresh mutex.
-;;   sa-fasl-intern-put!    UNIMPLEMENTED  (see sa-fasl-intern-get)
-;;   sa-fasl-intern-type!   UNIMPLEMENTED  (see sa-fasl-intern-get)
-;;   sa-fasl-intern-lock    UNIMPLEMENTED  (see sa-fasl-intern-get)
 
 ;; ---------------------------------------------------------------------------
 ;; tier: capability-profile

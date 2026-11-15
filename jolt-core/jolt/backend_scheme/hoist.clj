@@ -78,43 +78,19 @@
 (defn kdata-sort-key [s]
   (if-let [t *kdata*] (kdata-expand s (:rows @t)) s))
 
-;; --- keywords as quoted constants (JOLT_FASL_INTERN, an experiment, OFF) ------
-;; Set only when the running Chez interns keyword records on fasl-read (Jolt's
-;; Chez patch 0009; values.ss keyword-fasl-intern-supported?). A keyword literal
-;; is then (jolt-kw-lit ns name), a macro that expands to the quoted keyword
-;; object itself: a code-object constant, with no construction, no pool binding
-;; and no table slot. A keyword inside a JOLT_CONST_DATA collection row stays a
-;; row of its own (kdata-elt), since a row is quoted data, not code. Same scope
-;; as the constant table: the seed mint and direct-link builds go into vfasl
-;; images, whose loader does not run the fasl hook.
-(def fasl-intern-flag (atom false))
-(defn fasl-intern? []
-  (and @fasl-intern-flag (var-cache?) (not (direct-link?)) (not (seed-mint?))))
-;; jolt-kw-lit text -> [datum ctor], for kdata-elt
-(def ^:private kw-lit-rows (atom {}))
-
-;; A keyword literal's text: a quoted constant under JOLT_FASL_INTERN, its table
-;; slot under JOLT_CONST_DATA, else the construction hoisted into the def's
-;; constant pool, as always.
+;; A keyword literal uses its table slot under JOLT_CONST_DATA, else the
+;; construction hoisted into the def's constant pool.
 (defn keyword-const [kns nm]
   (let [ctor (if kns
                (str "(keyword " (chez-str-lit kns) " " (chez-str-lit nm) ")")
                (str "(keyword #f " (chez-str-lit nm) ")"))]
-    (if (fasl-intern?)
-      (let [lit (str "(jolt-kw-lit " (if kns (chez-str-lit kns) "#f") " " (chez-str-lit nm) ")")]
-        (when (and *kdata* (not (contains? @kw-lit-rows lit)))
-          (swap! kw-lit-rows assoc lit
-                 [(if kns (str "(" (chez-str-lit kns) " . " (chez-str-lit nm) ")") (chez-str-lit nm))
-                  ctor]))
-        lit)
     (if-let [t *kdata*]
       (let [r (kdata-ref! t ctor
                           (if kns (str "(" (chez-str-lit kns) " . " (chez-str-lit nm) ")") (chez-str-lit nm))
                           ctor)]
-        ;; JOLT_CONST_DATA=bind: the slot read is bound once per def, like the
-        ;; construction was, and the sites read that variable
+        ;; JOLT_CONST_DATA=bind: bind the slot read once per def.
         (if (= :bind @const-data-flag) (hoist-const r) r))
-      (hoist-const ctor)))))
+      (hoist-const ctor))))
 
 ;; A metadata-free symbol literal's text: its own slot, else the construction.
 ;; SHARED? is for a caller that already shares one object between equal symbols
@@ -137,14 +113,9 @@
       (cond
         (empty? rows) s
         (str/includes? s "(define") (kdata-expand s rows)
-        ;; JOLT_FASL_INTERN: (jolt-kd-lit #(...)) quotes the table with its
-        ;; keyword rows already keyword objects (values.ss), so loading the
-        ;; form interns no keyword itself; the fasl reader did
-        :else (str "(let ((_kt$ (intern-constants! "
-                   (if (fasl-intern?) "(jolt-kd-lit #(" "'#(")
+        :else (str "(let ((_kt$ (intern-constants! '#("
                    (str/join " " (map first rows))
-                   (if (fasl-intern?) "))" ")")
-                   "))) " s ")")))))
+                   ")))) " s ")")))))
 
 ;; Per-site cache cells collected while emitting one top-level def. A site that
 ;; resolves a STABLE value — a devirtualized impl (constant tag/proto/method) or a
@@ -583,10 +554,6 @@
   (let [char-pre "(integer->char "]
     (cond
       (kdata-slot s) (str "#&" (kdata-slot s))
-      ;; a quoted keyword (JOLT_FASL_INTERN) is code, not data: a row here
-      (contains? @kw-lit-rows s)
-      (let [[datum ctor] (get @kw-lit-rows s)]
-        (str "#&" (kdata-slot (kdata-ref! *kdata* ctor datum ctor))))
       (= s "jolt-nil") "nil"
       (or (= s "#t") (= s "#f")) s
       (str/starts-with? s "\"") s

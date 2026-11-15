@@ -333,16 +333,6 @@ sa-make-boot-file
 # the write/read and convert a raise into a jolt-level message).
 sa-fasl-write
 sa-fasl-read
-# JOLT_FASL_INTERN (an experiment): records interned by a patched fasl reader.
-# (sa-fasl-intern-get sym), (sa-fasl-intern-put! sym obj) read and publish the
-# object a type's records intern to; (sa-fasl-intern-type! rtd on?) marks the
-# type; (sa-fasl-intern-lock) is the mutex the reader holds. Permitted
-# degradation: get #f, put!/type! no-ops, lock a fresh mutex (the caller's
-# round-trip probe then finds no interning and stays off).
-sa-fasl-intern-get
-sa-fasl-intern-put!
-sa-fasl-intern-type!
-sa-fasl-intern-lock
 #
 # tier: capability-profile
 # OUR OWN definitions in host/chez/scheme-adapter-runtime.ss — Chez's

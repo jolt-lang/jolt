@@ -281,9 +281,8 @@
     ((_ e ...) (jolt-truthy?-fn e ...))))
 
 ;; --- keywords: interned so identity works; optional namespace ----------------
-;; ikey is #f unless JOLT_FASL_INTERN is on (see keyword-fasl-intern-enable!
-;; below); it comes first because that is where a patched Chez's fasl reader
-;; looks for the intern key.
+;; Keep the reserved first field to preserve the keyword-v2 record layout.
+;; The rejected fasl-intern experiment used it; current keywords leave it #f.
 (define-record-type keyword-t (fields (mutable ikey) ns name khash) (nongenerative keyword-v2))
 (define keyword-table (make-hashtable string-hash string=?))
 ;; The common no-ns keyword is interned in a table keyed by NAME directly, so a
@@ -328,80 +327,8 @@
                   kw))))))
 (define (keyword? x) (keyword-t? x))
 
-;; --- JOLT_FASL_INTERN: keywords as quoted constants (an experiment, OFF) -------
-;; With Jolt's Chez patch 0009, fasl-read interns a record whose type's uid
-;; carries the property $fasl-intern: it looks at the symbol in the record's
-;; first field and returns the record on that symbol's $fasl-intern property
-;; instead, registering itself there when there is none. So once every keyword
-;; is published on its own Chez symbol (ikey, interned from the same key the
-;; tables use), a keyword can be a QUOTED constant in compiled code: a .so
-;; writes the record, and loading it yields the very object `keyword` returns.
-;; jolt-kw-lit is the emitter's spelling (hoist.clj keyword-const); it builds
-;; the keyword when the form is expanded.
-;;
-;; Off (the default) nothing here runs: ikey stays #f, no symbol is interned,
-;; the type is not marked, and a stock Chez reads keyword records as plain
-;; records. Turned on, every keyword that exists is published first and the
-;; type marked after, so no .so can register one ahead of the runtime's; new
-;; keywords publish themselves from keyword-new below. The publishing runs under
-;; Chez's tc-mutex, the lock the C reader takes, so a load on another thread
-;; and a first `keyword` call for the same name agree on one object.
-(define keyword-fasl-intern-on? #f)
-;; Interrupts stay off while it is held, as Chez's own with-tc-mutex keeps them;
-;; THUNK is a few plist operations that cannot raise.
-(define (call-with-tc-mutex thunk)
-  (jolt-with-mutex (sa-fasl-intern-lock)
-    (disable-interrupts)
-    (let ((r (thunk))) (enable-interrupts) r)))
-;; The canonical keyword for KW's name: the one already published on its symbol
-;; (a .so loaded it first), else KW, published now. A keyword with an ikey is
-;; published already (or came from a .so, whose reader published it).
-(define (keyword-fasl-publish! kw)
-  (if (keyword-t-ikey kw)
-      kw
-      (let ((s (string->symbol (keyword-intern-key (keyword-t-ns kw) (keyword-t-name kw)))))
-        (call-with-tc-mutex
-          (lambda ()
-            (or (sa-fasl-intern-get s)
-                (begin (keyword-t-ikey-set! kw s)
-                       (sa-fasl-intern-put! s kw)
-                       kw)))))))
 (define (keyword-new ns name)
-  (let ((kw (make-keyword-t #f ns name (compute-keyword-hasheq ns name))))
-    (if keyword-fasl-intern-on? (keyword-fasl-publish! kw) kw)))
-(define (keyword-fasl-intern-enable!)
-  (jolt-with-mutex keyword-table-mu
-    (unless keyword-fasl-intern-on?
-      (let-values (((ks vs) (hashtable-entries keyword-table-bare)))
-        (vector-for-each keyword-fasl-publish! vs))
-      (let-values (((ks vs) (hashtable-entries keyword-table)))
-        (vector-for-each keyword-fasl-publish! vs))
-      (sa-fasl-intern-type! (record-type-descriptor keyword-t) #t)
-      (set! keyword-fasl-intern-on? #t))))
-;; Does this Chez intern keyword records on fasl-read? A round trip through a
-;; bytevector answers it: on a Chez without the patch the record comes back a
-;; copy. The probe needs publishing on; a Chez that fails it turns it back off
-;; (the keywords keep their ikeys, which nothing reads there).
-(define (keyword-fasl-intern-supported?)
-  (keyword-fasl-intern-enable!)
-  (or (let ((kw (keyword "jolt.fasl-intern" "probe")))
-        (let-values (((p get) (open-bytevector-output-port)))
-          (sa-fasl-write kw p)
-          (eq? kw (sa-fasl-read (open-bytevector-input-port (get))))))
-      (jolt-with-mutex keyword-table-mu
-        (sa-fasl-intern-type! (record-type-descriptor keyword-t) #f)
-        (set! keyword-fasl-intern-on? #f)
-        #f)))
-;; A quoted keyword in emitted code. Expanding it publishes the keyword (an AOT
-;; worker compiling a .scm may never have called the enable above), so the
-;; record compile-file writes always carries its key.
-(define-syntax jolt-kw-lit
-  (lambda (x)
-    (syntax-case x ()
-      ((_ ns name)
-       (let ((kw (begin (unless keyword-fasl-intern-on? (keyword-fasl-intern-enable!))
-                        (keyword (syntax->datum #'ns) (syntax->datum #'name)))))
-         #`(quote #,kw))))))
+  (make-keyword-t #f ns name (compute-keyword-hasheq ns name)))
 
 ;; --- symbols: ns + name + meta; NOT interned (meta varies), = by ns/name ------
 ;; The ns/name STRINGS are pooled (like JVM Symbol.intern, which .intern()s them):
@@ -555,8 +482,7 @@
     (do ((i 0 (fx+ i 1))) ((fx= i n) out)
       (vector-set! out i
         (let ((e (vector-ref tbl i)))
-          (cond ((keyword-t? e) e)               ; a jolt-kd-lit table's keyword
-                ((string? e) (keyword #f e))
+          (cond ((string? e) (keyword #f e))
                 ((vector? e) (jolt-symbol (vector-ref e 0) (vector-ref e 1)))
                 ((string? (car e)) (keyword (car e) (cdr e)))
                 (else
@@ -568,23 +494,6 @@
                      ((am) (amap-slots->pmap (list->vector xs)))
                      ((s) (apply jolt-hash-set xs))
                      (else (error 'intern-constants! "bad row" e)))))))))))
-;; JOLT_FASL_INTERN's table: the quoted vector with each keyword row ("name" or
-;; ("ns" . "name")) replaced by the keyword itself when the form is expanded,
-;; so the .so carries keyword records, which patch 0009's reader interns. The
-;; datum goes back through datum->syntax because its other rows hold symbols
-;; (the l/v/m tags, nil), which a transformer may not return raw.
-(define-syntax jolt-kd-lit
-  (lambda (x)
-    (define (row e)
-      (cond ((string? e) (keyword #f e))
-            ((and (pair? e) (string? (car e))) (keyword (car e) (cdr e)))
-            (else e)))
-    (syntax-case x ()
-      ((k v)
-       (begin
-         (unless keyword-fasl-intern-on? (keyword-fasl-intern-enable!))
-         #`(quote #,(datum->syntax #'k (vector-map row (syntax->datum #'v)))))))))
-
 ;; ns/name identical means the hasheq is identical, so a symbol rebuilt only to
 ;; change its metadata inherits the cache instead of recomputing it. with-meta on
 ;; a symbol used as a map key is otherwise a guaranteed miss.

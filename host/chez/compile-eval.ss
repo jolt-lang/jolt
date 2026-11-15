@@ -324,18 +324,6 @@
 (when (jolt-const-data-env?)
   (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
     (when (procedure? scd) (scd (getenv "JOLT_CONST_DATA")))))
-;; JOLT_FASL_INTERN set (not "" or "0") AND the running Chez interns keyword
-;; records as it loads them (Jolt's Chez patch 0009, probed by values.ss
-;; keyword-fasl-intern-supported?): the emitter quotes keyword literals
-;; (hoist.clj keyword-const). On a Chez without the patch it stays off, and the
-;; run is whatever JOLT_CONST_DATA makes it. An experiment, off by default.
-(define (jolt-fasl-intern-init!)
-  (let* ((e (getenv "JOLT_FASL_INTERN"))
-         (on (and e (not (string=? e "")) (not (string=? e "0"))
-                  (keyword-fasl-intern-supported?))))
-    (let ((sfi (var-deref "jolt.backend-scheme" "set-fasl-intern!")))
-      (when (procedure? sfi) (sfi on)))))
-(when (getenv "JOLT_FASL_INTERN") (jolt-fasl-intern-init!))
 ;; JOLT_NATIVE_VAR_CALL=1 opts into the checked var-root application on a Chez
 ;; with patch 0013. It helps call-heavy code but did not improve cold builds;
 ;; default emission and every stock-Chez run keep the original invoke helper.
@@ -404,7 +392,6 @@
   (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
     (when (procedure? scd)
       (scd (and (jolt-const-data-env?) (getenv "JOLT_CONST_DATA")))))
-  (jolt-fasl-intern-init!)
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (jolt-enable-trace!)))
 

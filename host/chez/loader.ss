@@ -924,8 +924,6 @@
       (if (and kd (not (string=? kd "")) (not (string=? kd "0")))
           (string-append (if jolt-trace-on? "-tr-kd" "-kd") (if (string=? kd "bind") "b" ""))
           (if jolt-trace-on? "-tr" ""))
-      ;; JOLT_FASL_INTERN in effect (values.ss): its fasls quote keywords
-      (if keyword-fasl-intern-on? "-fi" "")
       (if (jolt-native-var-call-enabled?) "-nc" "") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl")
       (sa-source-info-cache-tag))))
 ;; The direct-link experiment's explicit cache tag:

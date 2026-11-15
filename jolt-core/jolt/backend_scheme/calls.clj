@@ -335,8 +335,7 @@
      "macro" (str "(jolt-site-inline " call ")")
      "inline" (binding [*site-call* nil] (site-restore-default call))
      "norestore" call
-     "attach" (str "(jolt-site-attach " call ")")
-     "prim" (str "(jolt-site-prim " call ")")))
+     "attach" (str "(jolt-site-attach " call ")")))
   ([call rd wr]
    (let [sv (fresh-label "_ss$") rv (fresh-label "_sr$")]
      (str "(let ((" sv " " rd ")) (let ((" rv " " call ")) (" wr " " sv ") " rv "))"))))

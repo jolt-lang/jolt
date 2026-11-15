@@ -1626,13 +1626,6 @@
                 (if (pair? s) (set-virtual-register! 12 s))
                 (set-virtual-register! 2 0)
                 (let ((r call)) (set-virtual-register! 2 s) (set-virtual-register! 12 o) r)))))
-;; JOLT_TRACE_EMIT=prim: the same restore as one Chez primitive, $jolt-site-call,
-;; which a Chez carrying host/chez/chez-patches/0008 open-codes after cp0 (in
-;; cpnanopass's np-recognize-attachment) so the passes before it see one call.
-;; Chosen when the adapter is compiled (sa-jolt-site-call): a Chez without the
-;; primitive gets the jolt-site-inline expansion above.
-(define-syntax jolt-site-prim
-  (syntax-rules () ((_ call) (sa-jolt-site-call call (jolt-site-inline call)))))
 ;; A non-tail call moves the slot's pair to jolt-vreg-outer-site and clears the
 ;; slot while it runs (backend_scheme site-restore): a throw inside it has no
 ;; innermost pair, only the nearest erased caller from further out. The snapshot

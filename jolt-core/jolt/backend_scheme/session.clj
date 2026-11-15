@@ -321,12 +321,10 @@
 ;; Trace-primitive experiment: "attach" moves the slot onto Chez's
 ;; continuation-attachment list (rt.ss jolt-site-attach): a non-tail call pushes
 ;; and Chez pops, a tail call and every other slot read or write go through
-;; rt.ss jolt-site-cur / jolt-site-set!. "prim" wraps the call in rt.ss
-;; jolt-site-prim, the default restore as one Chez primitive where the Chez
-;; has it (host/chez/chez-patches/0008), else the inline restore.
+;; rt.ss jolt-site-cur / jolt-site-set!.
 (def trace-emit (atom nil))
 (defn set-trace-emit! [m]
-  (reset! trace-emit (when (contains? #{"global" "macro" "inline" "norestore" "attach" "prim"} m) m)))
+  (reset! trace-emit (when (contains? #{"global" "macro" "inline" "norestore" "attach"} m) m)))
 ;; attach mode: the slot is the head of the attachment list, not vreg 2
 (defn site-attach? [] (= "attach" @trace-emit))
 ;; the head of a tail call's site store

@@ -1813,24 +1813,6 @@
 (define (sa-fasl-read port . rest)
   (apply fasl-read port rest))
 
-;; JOLT_FASL_INTERN (an experiment, values.ss): Jolt's Chez patch 0009 makes
-;; fasl-read intern a record whose type's uid has the property $fasl-intern,
-;; through the $fasl-intern property of the symbol in its first field.
-;; (sa-fasl-intern-get sym) -> the object published on SYM, or #f
-;; (sa-fasl-intern-put! sym obj) publishes OBJ on SYM
-;; (sa-fasl-intern-type! rtd on?) marks or unmarks RTD's records for interning
-;; (sa-fasl-intern-lock) -> the mutex the fasl reader holds while it interns,
-;;   for the caller to hold around a get-then-put
-;; Contract: as above. Degradation: get #f, put! and type! do nothing, lock a
-;; fresh mutex; the caller's probe then finds no interning and stays off.
-(define (sa-fasl-intern-get sym) (#%$sgetprop sym '$fasl-intern #f))
-(define (sa-fasl-intern-put! sym obj) (#%$sputprop sym '$fasl-intern obj))
-(define (sa-fasl-intern-type! rtd on?)
-  (if on?
-      (#%$sputprop (record-type-uid rtd) '$fasl-intern #t)
-      (#%$sremprop (record-type-uid rtd) '$fasl-intern)))
-(define (sa-fasl-intern-lock) #%$tc-mutex)
-
 ;; ---- execution-count profiling (capability: profile) -----------------------
 ;; jolt.profile's counters are Chez's compile-profile instrumentation: code
 ;; compiled while it is on carries a counter per source-annotated expression, and
@@ -1861,19 +1843,13 @@
       (parameterize ((compile-profile (and sa-profile-on? 'source))) (thunk))
       (thunk)))
 
-;; Trace-primitive experiment (rt.ss jolt-site-attach / jolt-site-prim, under
-;; JOLT_TRACE_EMIT=attach|prim only): Chez's continuation-attachment primitives,
-;; and $jolt-site-call from host/chez/chez-patches/0008 where this Chez has it
-;; (decided when this file is compiled; without it, the FALLBACK expression).
+;; Trace attachment experiment (JOLT_TRACE_EMIT=attach): Chez's native
+;; continuation-attachment primitives.
 (define-syntax sa-current-attachments
   (syntax-rules () ((_) (#%$current-attachments))))
 (define-syntax sa-call-with-attachment
   (syntax-rules ()
     ((_ v body) (#%$call-setting-continuation-attachment v (lambda () body)))))
-(define-syntax sa-jolt-site-call
-  (if (guard (c (#t #f)) (eval '($primitive $jolt-site-call)) #t)
-      (syntax-rules () ((_ call fallback) (#%$jolt-site-call (lambda () call))))
-      (syntax-rules () ((_ call fallback) fallback))))
 ;; Patch 0013's getter/setter is a capability probe at adapter compile time.
 ;; A stock Chez never parses a reference to the unavailable primitive.
 (define-syntax sa-call-error-supported?

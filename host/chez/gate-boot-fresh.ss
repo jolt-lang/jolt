@@ -66,7 +66,7 @@
                    (gate-boot-executable-path selected))))
     (and exe
          (format "chez-v1 ~s"
-           (list exe (gate-boot-hash-string exe) (scheme-version) (machine-type)
+           (list exe (gate-boot-hash-string exe) (scheme-version) (sa-host-tag)
                  (supports? '($primitive $jolt-site-call))
                  (supports? '($primitive $clj-call))
                  (supports? '($primitive $call-error-handler))

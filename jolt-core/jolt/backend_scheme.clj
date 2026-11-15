@@ -102,11 +102,6 @@
 ;; the runtime entrypoint (compile-eval.ss); see hoist.clj with-const-data.
 ;; "bind" binds each slot read once per def (the sites read that variable); any
 ;; other true value reads the slot at every site.
-;; JOLT_FASL_INTERN (experiment): keyword literals as quoted constants, set by
-;; compile-eval.ss only when the running Chez interns them on load (hoist.clj
-;; keyword-const).
-(defn set-fasl-intern! [on]
-  (reset! jolt.backend-scheme.hoist/fasl-intern-flag (boolean on)))
 (defn set-const-data! [on]
   (reset! jolt.backend-scheme.hoist/const-data-flag
           (cond (= on "bind") :bind on :use :else false)))
