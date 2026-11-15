@@ -89,7 +89,11 @@ leaf_of() {   # dir ext needle-prefix needle-suffix
   for lf in $(ls "$1" | grep -E "\\.$2\$" | grep -v -E '^(g[0-9]+|m[0-9]+|common|api|main)\.' | sort); do
     lusers=$(grep -l -F "$3${lf%.$2}$4" "$1"/*."$2" \
              | grep -v -E "/(g[0-9]+|main|${lf%.$2})\\.$2\$" | wc -l)
-    if [ "$lusers" -eq 0 ]; then echo "$lf"; return 0; fi
+    # A generated waste namespace can have no users at all. Editing it is a
+    # warm run, not an incremental build: require a real group/main reference.
+    lrefs=$(grep -l -F "$3${lf%.$2}$4" "$1"/*."$2" \
+            | grep -v -E "/${lf%.$2}\\.$2\$" | wc -l)
+    if [ "$lusers" -eq 0 ] && [ "$lrefs" -gt 0 ]; then echo "$lf"; return 0; fi
   done
   echo "run.sh: no leaf worker in $1" >&2
   return 1
