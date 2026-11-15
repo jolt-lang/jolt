@@ -48,7 +48,7 @@
     ((string=? name "getMessage") (list (jolt-str-render-one obj)))
     ((string=? name "getCause")  (list jolt-nil))
     ((string=? name "getNextException") (list jolt-nil))
-    ((string=? name "getStackTrace") (list (jolt-vector)))
+    ((string=? name "getStackTrace") (list (jolt-ref-array '() "java.lang.StackTraceElement")))
     ((string=? name "toString")  (list (jolt-str-render-one obj)))
     ((string=? name "hashCode")  (list (jolt-hash obj)))
     ((string=? name "equals")    (list (if (jolt= obj (car args)) #t #f)))

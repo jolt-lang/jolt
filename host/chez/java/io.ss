@@ -2320,10 +2320,12 @@
       ;; listFiles builds each child from the path AS GIVEN (new File(this, name)
       ;; on the JVM), so a File made from a relative path lists relative children.
       ((string=? name "listFiles")
-       (list (jfile-listing fp (lambda () (list->cseq (map make-jfile (jolt-list-dir p)))))))
+       (list (jfile-listing fp (lambda () (jolt-ref-array (map make-jfile (jolt-list-dir p))
+                                                           "java.io.File")))))
       ;; .list -> the child NAMES (a String[]), nil if not a readable directory.
       ((string=? name "list")
-       (list (jfile-listing fp (lambda () (apply jolt-vector (sort string<? (directory-list fp)))))))
+       (list (jfile-listing fp (lambda () (jolt-ref-array (sort string<? (directory-list fp))
+                                                           "java.lang.String")))))
       ((string=? name "length")         (list (->num (file-byte-size fp))))
       ((string=? name "lastModified")   (list (->num (file-mtime-millis fp))))
       ((string=? name "canRead")        (list (file-accessible? fp access-r-ok)))
