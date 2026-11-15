@@ -1348,6 +1348,27 @@
 (define-syntax jolt-site-kept
   (syntax-rules ()
     ((_ call) (let* ((s (virtual-register 2)) (r call)) (set-virtual-register! 2 s) r))))
+;; Signed 64-bit wraparound add, subtract and multiply in the Chez kernel
+;; (chez-patches/0008), for seq.ss's unchecked ops once an operand or the result
+;; leaves the fixnum range. Each takes two exact integers and returns the low 64
+;; bits of the exact result as a signed long, without building the exact result:
+;; one C call where the Scheme path makes three or four (stock Chez does every
+;; bignum op in C). #f on a stock Chez, which has no such entry, and seq.ss then
+;; takes the exact op and jolt-wrap64. Declared like Chez's own (cs)mul. Windows
+;; evals the form, as jolt-foreign-proc-safe does: a missing foreign entry in
+;; compiled fasl aborts the boot there. The eval'd form has no __atomic, which
+;; is slower but safe, since a plain foreign call may allocate.
+(define-syntax jolt-kernel-s64-op
+  (syntax-rules ()
+    ((_ name)
+     (guard (e (#t #f))
+       (and (sa-foreign-entry? name)
+            (if (eq? (sa-os-family) 'windows)
+                (sa-foreign-procedure-runtime name '(scheme-object scheme-object) 'scheme-object #f)
+                (sa-foreign-procedure __atomic __alloc name (scheme-object scheme-object) scheme-object)))))))
+(define jolt-s64-add-wrap (jolt-kernel-s64-op "(cs)s64_add_wrap"))
+(define jolt-s64-sub-wrap (jolt-kernel-s64-op "(cs)s64_sub_wrap"))
+(define jolt-s64-mul-wrap (jolt-kernel-s64-op "(cs)s64_mul_wrap"))
 (load "host/chez/collections.ss")
 (load "host/chez/seq.ss")
 
