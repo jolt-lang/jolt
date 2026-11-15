@@ -1,0 +1,132 @@
+diff --git a/c/externs.h b/c/externs.h
+index 1a293aa..3abd26e 100644
+--- a/c/externs.h
++++ b/c/externs.h
+@@ -355,6 +355,9 @@ extern void S_print_init(void);
+ extern void S_prin1(ptr x);
+ 
+ /* schsig.c */
++#ifndef WIN32
++extern void S_jolt_signal_relay_init(void);
++#endif
+ extern ptr S_get_scheme_arg(ptr tc, iptr n);
+ extern void S_put_scheme_arg(ptr tc, iptr n, ptr x);
+ extern iptr S_continuation_depth(ptr k);
+diff --git a/c/scheme.c b/c/scheme.c
+index 086e423..4eecf36 100644
+--- a/c/scheme.c
++++ b/c/scheme.c
+@@ -82,6 +82,9 @@ static void main_init(void) {
+ #ifdef FEATURE_EXPEDITOR
+     S_expeditor_init();
+ #endif /* FEATURE_EXPEDITOR */
++#ifndef WIN32
++    S_jolt_signal_relay_init();
++#endif
+ 
+     if (!S_boot_time) return;
+ 
+diff --git a/c/schsig.c b/c/schsig.c
+index e3442e6..239cd4e 100644
+--- a/c/schsig.c
++++ b/c/schsig.c
+@@ -667,6 +667,7 @@ static void init_signal_handlers(void) {
+ #else /* WIN32 */
+ 
+ #include <signal.h>
++#include <fcntl.h>
+ 
+ static void handle_signal(INT sig, siginfo_t *si, void *data);
+ static IBOOL enqueue_scheme_signal(ptr tc, INT sig);
+@@ -882,6 +883,91 @@ static void init_signal_handlers(void) {
+     SIGACTION(SIGSEGV, &act, (struct sigaction *)0);
+ }
+ 
++/* jolt: a signal relay for sun.misc.Signal. A program's handler has to run on
++   a thread of the program's own, whichever thread the kernel interrupted and
++   whatever that thread was doing: parked in a foreign call, waiting on a
++   condition, or running Scheme code. Chez's own Scheme signals reach the
++   main thread only, and only at its next safe point. Here the C handler does
++   the one async-signal-safe thing, writing the signal's number to a pipe, and
++   a thread that reads the pipe runs the handler. Nothing is blocked, so a
++   signal nobody asked for keeps whatever disposition it had. A handler that
++   was there before (the expeditor's SIGWINCH, a C library's) still runs. */
++#define JOLT_RELAY_NSIG 65
++static int jolt_relay_pipe[2] = {-1, -1};
++static struct sigaction jolt_relay_orig[JOLT_RELAY_NSIG];
++static char jolt_relay_saved[JOLT_RELAY_NSIG];
++static volatile sig_atomic_t jolt_relay_chain[JOLT_RELAY_NSIG];
++
++static void jolt_relay_handler(INT sig, siginfo_t *si, void *ctx) {
++  int saved_errno = errno;
++  if (sig > 0 && sig < JOLT_RELAY_NSIG) {
++    unsigned char b = (unsigned char)sig;
++    /* the write end is non-blocking: a full pipe drops the signal rather
++       than hang the thread the kernel picked */
++    if (write(jolt_relay_pipe[1], &b, 1) < 0) { /* dropped */ }
++    if (jolt_relay_chain[sig]) {
++      struct sigaction *o = &jolt_relay_orig[sig];
++      if (o->sa_flags & SA_SIGINFO) o->sa_sigaction(sig, si, ctx);
++      else o->sa_handler(sig);
++    }
++  }
++  errno = saved_errno;
++}
++
++/* The pipe's read end, opened on the first call; -1 if it can't be. */
++static INT s_jolt_signal_relay_fd(void) {
++  if (jolt_relay_pipe[0] < 0) {
++    int fds[2];
++    if (pipe(fds) != 0) return -1;
++    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
++    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
++    fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK);
++    jolt_relay_pipe[1] = fds[1];
++    jolt_relay_pipe[0] = fds[0];
++  }
++  return jolt_relay_pipe[0];
++}
++
++/* MODE 1 relays SIG through the pipe, 2 ignores it, 0 gives it back the
++   disposition it had before the first call. 0 on success, -1 with errno set,
++   -2 for a signal number out of range or a relay with no pipe. Callers
++   serialize. */
++static INT s_jolt_signal_relay_set(INT sig, INT mode) {
++  struct sigaction act;
++  if (sig <= 0 || sig >= JOLT_RELAY_NSIG) return -2;
++  if (!jolt_relay_saved[sig]) {
++    if (sigaction(sig, (struct sigaction *)0, &jolt_relay_orig[sig]) != 0) return -1;
++    jolt_relay_saved[sig] = 1;
++  }
++  if (mode == 0) {
++    jolt_relay_chain[sig] = 0;
++    return SIGACTION(sig, &jolt_relay_orig[sig], (struct sigaction *)0) == 0 ? 0 : -1;
++  }
++  sigemptyset(&act.sa_mask);
++  if (mode == 2) {
++    act.sa_flags = 0;
++    act.sa_handler = SIG_IGN;
++    jolt_relay_chain[sig] = 0;
++  } else {
++    if (jolt_relay_pipe[1] < 0) return -2;
++    act.sa_flags = SA_SIGINFO;
++#ifdef SA_RESTART
++    act.sa_flags |= SA_RESTART;
++#endif
++    act.sa_sigaction = jolt_relay_handler;
++    jolt_relay_chain[sig] =
++      (jolt_relay_orig[sig].sa_flags & SA_SIGINFO)
++        ? jolt_relay_orig[sig].sa_sigaction != (void (*)(int, siginfo_t *, void *))0
++        : (jolt_relay_orig[sig].sa_handler != SIG_DFL && jolt_relay_orig[sig].sa_handler != SIG_IGN);
++  }
++  return SIGACTION(sig, &act, (struct sigaction *)0) == 0 ? 0 : -1;
++}
++
++void S_jolt_signal_relay_init(void) {
++  Sforeign_symbol("(cs)jolt_signal_relay_fd", (void *)s_jolt_signal_relay_fd);
++  Sforeign_symbol("(cs)jolt_signal_relay_set", (void *)s_jolt_signal_relay_set);
++}
++
+ #endif /* WIN32 */
+ 
+ void S_schsig_init(void) {

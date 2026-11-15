@@ -14,13 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run as the JVM runs one: on a new daemon thread named `SIGUSR2 handler`,
   returning the previous handler, with `SIG_DFL` and `SIG_IGN` and
   `Signal/raise`. A handler for INT, TERM or HUP replaces the shutdown that
-  signal would run. The CLI and a built binary block the signals at startup,
-  so a thread started before the handler was registered can't take one, and
-  a signal nobody handles does what it did before. QUIT, KILL, STOP, FPE,
-  SEGV and ILL are refused, as on the JVM, and so are BUS (Chez's fault
-  handler), TTIN and TTOU (blocking them changes what the terminal does to a
-  background job) and PROF and VTALRM (CPU timers). A jolt built as a library
-  takes only INT, TERM and HUP and leaves the rest to its host. (#1679)
+  signal would run. Any other signal goes through a new kernel patch
+  (`chez-patches/0008-signal-relay.patch`): registering a handler installs a
+  C handler for that one signal, which writes its number to a pipe that a
+  jolt thread reads, so whichever thread the kernel interrupts, and whatever
+  it is doing, the handler runs. A signal nobody handles keeps the
+  disposition it had, a handler some C library installed earlier still runs,
+  and a jolt built as a library takes only the signals its program asks for.
+  QUIT, KILL, STOP, FPE, SEGV and ILL are refused, as on the JVM, and so is
+  BUS (Chez's fault handler). On a stock Chez, without the relay, the CLI
+  blocks the other signals at startup for the shutdown watcher instead, and
+  TTIN, TTOU, PROF and VTALRM are refused there. (#1679)
 
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept

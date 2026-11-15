@@ -540,25 +540,26 @@
    :check :prose
    :why "jdk.net.ExtendedSocketOptions is not modelled, so there is nothing to name the options by"
    :note "SO_KEEPALIVE itself works."}
-  ;; sun.misc.Signal (#1679). jolt's shutdown watcher takes HUP, INT and TERM, and
-  ;; under the CLI or a built binary every other signal but TTIN, TTOU, PROF,
-  ;; VTALRM and the faults (concurrency.ss).
+  ;; sun.misc.Signal (#1679). INT, TERM and HUP are the shutdown watcher's; any
+  ;; other signal a handler is registered for goes through the kernel's signal
+  ;; relay (chez-patches/0008). A jolt on a stock Chez has no relay and blocks
+  ;; the others at entry for the watcher instead (concurrency.ss).
   {:category :restrictive
-   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"TTIN\") handler), and TTOU, PROF, VTALRM; BUS"
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"BUS\") handler)"
    :jvm "accepts the handler"
-   :jolt "throws IllegalArgumentException: \"Signal not supported by jolt: SIGTTIN\" (TTIN, TTOU, PROF, VTALRM), \"Signal already used by VM or OS: SIGBUS\""
+   :jolt "throws IllegalArgumentException \"Signal already used by VM or OS: SIGBUS\""
    :check :prose
-   :why "a handler needs the signal blocked in every thread from startup. Blocked, TTIN and TTOU change what the terminal does to a background job (EIO instead of a stop), and PROF and VTALRM are CPU timers that must reach the running thread. Chez handles BUS as a fault."
-   :note "QUIT, KILL, STOP, FPE, SEGV and ILL are refused on both, with the JVM's message. A jolt built as a library claims only HUP, INT and TERM, so a handler for any other signal is refused there."}
-  {:category :host-model
-   :behavior "a PIPE or XFSZ handler, when a write hits a closed pipe or the file size limit"
-   :jvm "the handler runs"
-   :jolt "the write fails with EPIPE or EFBIG and the handler does not run; it runs for a PIPE or XFSZ sent to the process with kill"
+   :why "Chez handles BUS as a fault, as it does SEGV, FPE and ILL"
+   :note "QUIT, KILL, STOP, FPE, SEGV and ILL are refused on both, with the JVM's message."}
+  {:category :restrictive
+   :behavior "a TTIN, TTOU, PROF or VTALRM handler on a jolt built against a stock Chez"
+   :jvm "accepts the handler"
+   :jolt "throws IllegalArgumentException \"Signal not supported by jolt: SIGTTIN\"; and a PIPE or XFSZ handler runs only for one sent with kill, not for the one a write raises"
    :check :prose
-   :why "the kernel sends these to the writing thread, which blocks them; only the watcher's sigwait takes a signal, and it sees the process-directed ones"
-   :note "An unhandled XFSZ from kill ends the process as before. One from a write is now an EFBIG instead, which is the JVM's answer too."}
+   :why "without the kernel's relay a handler needs its signal blocked in every thread, which changes what the terminal does to a background job (TTIN, TTOU), keeps CPU timers off the running thread (PROF, VTALRM), and leaves a thread's own PIPE or XFSZ pending on it"
+   :note "jolt's own builds carry the relay and take all of these. A jolt built as a library on a stock Chez takes only INT, TERM and HUP."}
   {:category :host-model
-   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") h), the first time, for INT, TERM, HUP, USR2, PIPE or XFSZ"
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") h), the first time, for INT, TERM, HUP, USR2, PIPE, XFSZ or BUS"
    :jvm "returns the JVM's own handler for the signal (a Signal$SunMiscHandler wrapping its shutdown or VM handler)"
    :jolt "returns SignalHandler/SIG_DFL"
    :check :prose
