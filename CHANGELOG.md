@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`reader`, `writer`, `slurp` and `spit` refuse a non-source with the JVM's
+  message.** `(slurp 5)`, `(io/reader :k)` and `(spit {} "x")` said "Cannot
+  open <x> as a Reader." (or Writer). On the JVM only `nil` is refused by that
+  name; any other value reaches `IOFactory`'s Object impl, whose reader and
+  writer open through the stream side and refuse "as an InputStream." or "as an
+  OutputStream.".
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as

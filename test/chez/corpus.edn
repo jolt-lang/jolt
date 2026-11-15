@@ -2072,6 +2072,7 @@
   ;; saying so — which is how test.chuck's grammar load failed with a message that
   ;; had a hole in it.
   {:suite "interop / StringReader & StringBuilder" :label "reader/writer/slurp of nil name it" :expected "[\"Cannot open <nil> as a Reader.\" \"Cannot open <nil> as a Reader.\" \"Cannot open <nil> as a Writer.\"]" :actual "(do (require (quote clojure.java.io)) (mapv (fn [f] (try (f nil) (catch Exception e (ex-message e)))) [slurp clojure.java.io/reader clojure.java.io/writer]))" :portability :jvm}
+  {:suite "interop / StringReader & StringBuilder" :label "a non-source other than nil is refused as an InputStream or OutputStream" :expected "[\"Cannot open <5> as an InputStream.\" \"Cannot open <5> as an InputStream.\" \"Cannot open <:k> as an InputStream.\" \"Cannot open <5> as an OutputStream.\" \"Cannot open <{}> as an OutputStream.\" \"Cannot open <{}> as an OutputStream.\"]" :actual "(do (require (quote clojure.java.io)) (mapv (fn [f] (try (f) (catch IllegalArgumentException e (ex-message e)))) [#(slurp 5) #(clojure.java.io/reader 5) #(slurp :k) #(clojure.java.io/writer 5) #(spit {} \"x\") #(clojure.java.io/writer {})]))" :portability :jvm}
   ;; A PrintWriter forwards to whatever writer it wraps, host writer or pprint
   ;; record. Naming the host tags one at a time left a file-backed writer falling
   ;; through to the pprint protocol, which it does not implement — which is how
