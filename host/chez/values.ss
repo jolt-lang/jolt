@@ -623,6 +623,9 @@
         ;; once its own libraries had registered their arms.
         ((and (keyword-t? a) (keyword-t? b)) (eq? a b))  ; interned; eq? settled it above
         ((and (string? a) (string? b)) (string=? a b))
+        ;; Chars are immediates, so once eq? has failed they differ. No arm may claim
+        ;; a char pair (eq-fast-probes).
+        ((and (char? a) (char? b)) #f)
         ((and (symbol-t? a) (symbol-t? b))
          (let ((nsa (symbol-t-ns a)) (nsb (symbol-t-ns b))
                (na (symbol-t-name a)) (nb (symbol-t-name b)))

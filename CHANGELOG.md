@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.tools.reader/read-string` of a 50-byte form is about 17% faster and
   `rewrite-clj.parser/parse-string` about 22%. Both are still several times
   slower than on the JVM.
+- **`=` on two different characters is about 3.7 times faster.** `(= c \a)` on a
+  character that isn't `\a` took 13.2 ns, because `jolt=2` tried every
+  collection, procedure and record clause before it reached the scalar one.
+  It now answers two characters directly, at 3.6 ns (#1651).
 
 ### Fixed
 

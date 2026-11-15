@@ -235,6 +235,13 @@
 (ok "eq arm rejects symbol pair"
     (raises? (lambda () (register-eq-arm! (lambda (a b) (or (symbol-t? a) (symbol-t? b)))
                                           (lambda (a b) #t)))))
+;; jolt=2 answers unequal chars before the walk, so an arm claiming a char pair would be skipped.
+(ok "eq arm rejects char pair"
+    (raises? (lambda () (register-eq-arm! (lambda (a b) (and (char? a) (char? b)))
+                                          (lambda (a b) #t)))))
+(ok "eq arm rejects either-char shape"
+    (raises? (lambda () (eq-arm-reject-fast-type!
+                         'test (lambda (a b) (or (char? a) (char? b)))))))
 (ok "eq guard allows either-arg shape"
     (not (raises? (lambda () (eq-arm-reject-fast-type!
                               'test (lambda (a b) (or (armtest-t? a) (armtest-t? b))))))))
