@@ -123,7 +123,14 @@
 ;; load the old image in the new compiler. Removing it first makes every reader
 ;; take source mode until the completed image is renamed into place; an already
 ;; open image remains readable (cli-devcache.ss).
-(when (file-exists? jb-flat-so) (delete-file jb-flat-so))
+;; Chez reports even ENOENT as generic &i/o-filename. A successful listing must
+;; prove the entry absent; a remaining image or unreadable directory still
+;; raises before either receipt changes. #t requests errors instead of #f.
+(guard (e ((and (i/o-filename-error? e)
+                (equal? (i/o-error-filename e) jb-flat-so)
+                (not (member "flat.so" (directory-list jb-build))))
+           (void)))
+  (delete-file jb-flat-so #t))
 (display "make-devboot: writing input list\n")
 (let ((out (open-output-file db-input-file 'replace))
       (clj-files '()))
