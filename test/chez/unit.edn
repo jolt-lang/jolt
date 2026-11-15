@@ -4147,4 +4147,17 @@
   {:suite "char-equality", :label "chars across the BMP and the surrogate halves", :expr "[(= (char 0xFFFF) (char 0xFFFE)) (= (char 0xD800) (char 0xDC00)) (= (char 0xD800) (char 0xD800)) (= (char 0x4e2d) (char 0x4e2d)) (= \\a (char 97))]", :expected "[false false true true true]"}
   {:suite "char-equality", :label "variadic = on chars", :expr "[(= \\a \\a \\a) (= \\a \\a \\b) (= \\b \\a \\a)]", :expected "[true false false]"}
   {:suite "char-equality", :label "chars as map keys and set members", :expr "[(get {\\a 1 \\b 2} \\b) (get {\\a 1} \\c) (contains? #{\\a \\b} \\b) (contains? #{\\a \\b} \\c)]", :expected "[2 nil true false]"}
+  {:suite "sequence" :label "sequence two colls" :expr "(sequence (map vector) [1 2] [3 4])" :expected "([1 3] [2 4])"}
+  {:suite "sequence" :label "sequence three colls, unequal lengths stop at the shortest" :expr "(sequence (map vector) [1 2 3] [4 5] [6 7 8])" :expected "([1 4 6] [2 5 7])"}
+  {:suite "sequence" :label "sequence multi-coll with a numeric step fn" :expr "(sequence (map +) [1 2 3] [10 20])" :expected "(11 22)"}
+  {:suite "sequence" :label "sequence an empty coll gives ()" :expr "(sequence (map vector) [] [1 2])" :expected "()"}
+  {:suite "sequence" :label "sequence nil coll gives ()" :expr "(sequence (map vector) [1] nil)" :expected "()"}
+  {:suite "sequence" :label "sequence is lazy over infinite inputs" :expr "(first (sequence (map vector) (range) (range)))" :expected "[0 0]"}
+  {:suite "sequence" :label "sequence lazy prefix of infinite inputs" :expr "(take 3 (sequence (map vector) (range) (range)))" :expected "([0 0] [1 1] [2 2])"}
+  {:suite "sequence" :label "sequence early termination via take in the xform" :expr "(sequence (comp (map vector) (take 2)) (range) (range) (range))" :expected "([0 0 0] [1 1 1])"}
+  {:suite "sequence" :label "sequence stateful xform completion runs" :expr "(sequence (comp (map vector) (partition-all 2)) [1 2 3] [4 5 6])" :expected "([[1 4] [2 5]] [[3 6]])"}
+  {:suite "sequence" :label "sequence 1-arity still works" :expr "(sequence [1 2])" :expected "(1 2)"}
+  {:suite "sequence" :label "sequence 1-arity nil gives ()" :expr "(sequence nil)" :expected "()"}
+  {:suite "sequence" :label "sequence xform and one coll still works" :expr "(sequence (map inc) [1 2 3])" :expected "(2 3 4)"}
+  {:suite "sequence" :label "sequence xform and one empty coll gives ()" :expr "(sequence (map inc) [])" :expected "()"}
 ]
