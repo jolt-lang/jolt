@@ -33,7 +33,7 @@
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
                      hoist-const-per-site hoist-seed-root hoist-var-cell site-const
-                     unique-keyword-key-literal? with-const-data]]
+                     unique-keyword-key-literal? with-const-data kdata-coll kdata-coll?]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
@@ -1224,7 +1224,32 @@
                       "jolt-hash-map-checked")
                     kvs))))
 
+;; JOLT_CONST_DATA=1, slice 2: a constant literal as a row of its form's table
+;; (hoist.clj kdata-coll), or nil to take the ordinary path. A site-stamped
+;; literal keeps jolt-site-const's process-wide object, and a literal whose keys
+;; the runtime must still check stays a construction.
+(declare emit-coll-literal*)
+(defn- const-coll-row [node]
+  (when (and (kdata-coll?) (const-coll-node? node) (not (:site-id node)))
+    (let [map? (= :map (:op node))
+          ks (when map? (map first (:pairs node)))
+          [tag ctor] (case (:op node)
+                       :vector ["v" "jolt-vector"]
+                       :set (when (distinct-const-keys? (:items node)) ["s" "jolt-hash-set"])
+                       :map (cond (unique-keyword-key-literal? node) ["am" nil]
+                                  (distinct-const-keys? ks) ["m" "jolt-hash-map"]
+                                  :else nil))]
+      (when tag
+        (let [items (if map? (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs node)) (:items node))
+              strs (mapv emit items)
+              text (if ctor
+                     (str "(" ctor (if (empty? strs) "" (str " " (str/join " " strs))) ")")
+                     (str "(amap-slots->pmap (vector " (str/join " " strs) "))"))]
+          (hoist-const-per-site (kdata-coll tag strs text false)))))))
+
 (defn- emit-coll-literal [node]
+  (or (const-coll-row node) (emit-coll-literal* node)))
+(defn- emit-coll-literal* [node]
   (let [s (case (:op node)
             :vector (emit-ordered "jolt-vector" (:items node))
             :set (emit-ordered (if (distinct-const-keys? (:items node))

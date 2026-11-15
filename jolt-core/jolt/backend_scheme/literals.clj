@@ -7,7 +7,7 @@
             [jolt.host
              :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-char-code form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value? form-class-value-name]]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
-            [jolt.backend-scheme.hoist :refer [keyword-const kdata-sort-key symbol-const]]))
+            [jolt.backend-scheme.hoist :refer [keyword-const kdata-coll kdata-sort-key symbol-const]]))
 
 (defn emit-const [v]
   (cond
@@ -111,20 +111,27 @@
 ;; traversal order — i.e. in host-hash order — so sorting those would reintroduce
 ;; exactly the instability the sort exists to remove. Emit the items unpooled, sort
 ;; the real text, and intern only the finished construction.
+;; (q-coll: under JOLT_CONST_DATA=1 a construction whose parts are all
+;; constants is a row of the form's table instead, hoist.clj kdata-coll)
+(defn- q-coll [tag ctor strs]
+  (q-intern (kdata-coll tag strs
+                        ;; always the space: "(jolt-list )" is the spelling every
+                        ;; seed and cache already holds
+                        (str "(" ctor " " (str/join " " strs) ")")
+                        (some? *quote-pool*))))
 (defn- emit-quoted-map [pairs]
   ;; pairs: a jolt vector of [k-form v-form] pairs (form-map-pairs)
-  (q-intern
-   (str "(jolt-hash-map "
-        (str/join " " (mapcat (fn [p] [(emit-quoted (nth p 0)) (emit-quoted (nth p 1))]) pairs))
-        ")")))
+  (q-coll "m" "jolt-hash-map"
+          (vec (mapcat (fn [p] [(emit-quoted (nth p 0)) (emit-quoted (nth p 1))]) pairs))))
 (defn- emit-quoted-map-value [m]
   ;; A jolt map VALUE (def/symbol metadata is a value, not a reader form). (keys m)
   ;; iterates in host-hash order, which is not stable across Chez versions, so emit
   ;; the pairs sorted by their emitted Scheme text — keeps the seed byte-fixed
   ;; regardless of the host hash (jolt-8479).
   (let [pairs (binding [*quote-pool* nil]
-                (vec (sort-by kdata-sort-key (map (fn [k] (str (emit-quoted k) " " (emit-quoted (get m k)))) (keys m)))))]
-    (q-intern (str "(jolt-hash-map " (str/join " " pairs) ")"))))
+                (vec (sort-by (fn [p] (kdata-sort-key (str (nth p 0) " " (nth p 1))))
+                              (map (fn [k] [(emit-quoted k) (emit-quoted (get m k))]) (keys m)))))]
+    (q-coll "m" "jolt-hash-map" (vec (mapcat identity pairs)))))
 ;; A quoted symbol, carrying its reader metadata (^:foo bar) so (meta 'x) sees it.
 (defn- emit-quoted-sym [form]
   (let [m (form-sym-meta form) sns (form-sym-ns form) nm (form-sym-name form)]
@@ -140,10 +147,9 @@
 ;; unpooled, or the sort would be over binding names handed out in that same
 ;; unstable order. See the pool comment above.
 (defn- emit-quoted-set [items]
-  (q-intern (str "(jolt-hash-set "
-                 (str/join " " (binding [*quote-pool* nil]
-                                 (vec (sort-by kdata-sort-key (map emit-quoted items)))))
-                 ")")))
+  (q-coll "s" "jolt-hash-set"
+          (binding [*quote-pool* nil]
+            (vec (sort-by kdata-sort-key (map emit-quoted items))))))
 
 ;; The reader forms whose value the reader builds from a source string. None
 ;; is interned: each is a construction from its own literal text.
@@ -186,9 +192,9 @@
   (cond
     (and (map? form) (= :jolt/tagged (get form :jolt/type))) (emit-quoted-tagged form)
     (map? form) (emit-quoted-map-value form)
-    (vector? form) (q-intern (str "(jolt-vector " (str/join " " (map emit-quoted form)) ")"))
+    (vector? form) (q-coll "v" "jolt-vector" (mapv emit-quoted form))
     (set? form) (emit-quoted-set form)
-    (seq? form) (q-intern (str "(jolt-list " (str/join " " (map emit-quoted form)) ")"))
+    (seq? form) (q-coll "l" "jolt-list" (mapv emit-quoted form))
     :else (throw (ex-info (str "emit-quoted: unsupported quoted form " (pr-str form)) {}))))
 
 ;; emit-quoted reconstructs both raw reader forms (from :quote) AND plain jolt
@@ -205,8 +211,8 @@
     ;; a fn literal is a list, so this is the only branch that has to ask
     (form-list? form)
     (or (q-shared-name form)
-        (q-intern (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")))
-    (form-vec? form) (q-intern (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")"))
+        (q-coll "l" "jolt-list" (mapv emit-quoted (form-elements form))))
+    (form-vec? form) (q-coll "v" "jolt-vector" (mapv emit-quoted (form-vec-items form)))
     (form-map? form) (emit-quoted-map (form-map-pairs form))
     :else (or (emit-quoted-sourced form) (emit-quoted-value form))))
 

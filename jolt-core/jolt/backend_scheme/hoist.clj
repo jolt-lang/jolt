@@ -58,8 +58,16 @@
       (if-let [i (str/index-of s m from)]
         (let [j (str/index-of s ")" (+ i mlen))
               idx (reduce (fn [n c] (+ (* n 10) (- (int c) 48))) 0 (subs s (+ i mlen) j))]
-          (recur (inc j) (-> acc (conj! (subs s from i)) (conj! (nth (nth rows idx) 1)))))
+          ;; a collection row's construction reads its element slots in turn
+          (recur (inc j) (-> acc (conj! (subs s from i))
+                             (conj! (kdata-expand (nth (nth rows idx) 1) rows)))))
         (apply str (persistent! (conj! acc (subs s from))))))))
+
+;; The slot index this expression reads, when it is exactly one slot read.
+(defn- kdata-slot [expr]
+  (let [m (kdata-marker) n (count expr)]
+    (when (and (str/starts-with? expr m) (= (str/index-of expr ")") (dec n)))
+      (reduce (fn [i c] (+ (* i 10) (- (int c) 48))) 0 (subs expr (count m) (dec n))))))
 
 ;; Is this expression exactly one slot read? Such a value is already built once
 ;; per load of the form, so the constant pool has nothing to add by binding it.
@@ -511,3 +519,50 @@
   (if *kdata*
     (binding [*kdata* nil *const-pool* nil *const-ids* nil] (thunk))
     (thunk)))
+
+;; --- slice 2: constant collections as rows ------------------------------------
+;; A collection whose elements are all constants becomes a row too, its elements
+;; encoded as data: a box #&i reads row i (built earlier, a child is always
+;; emitted before its parent), the symbol nil is jolt's nil, and a string,
+;; number, boolean or char stands for itself. The row's head names the
+;; constructor values.ss intern-constants! applies: v jolt-vector, l jolt-list,
+;; m jolt-hash-map, am amap-slots->pmap (a keyword-keyed literal the emitter has
+;; checked fits array mode), s jolt-hash-set. Only under JOLT_CONST_DATA=1 (the
+;; bind mode keeps slice 1's shape).
+(defn- digit? [c] (let [i (int c)] (and (>= i 48) (<= i 57))))
+(defn- number-text? [s]
+  (or (contains? #{"+inf.0" "-inf.0" "+nan.0"} s)
+      (and (pos? (count s))
+           (or (digit? (nth s 0))
+               (and (> (count s) 1) (contains? #{\- \+ \.} (nth s 0)) (digit? (nth s 1))))
+           (every? (fn [c] (or (digit? c) (contains? #{\- \+ \. \e \/} c))) s))))
+(defn- hex [n]
+  (if (< n 16)
+    (str (nth "0123456789abcdef" n))
+    (str (hex (quot n 16)) (nth "0123456789abcdef" (rem n 16)))))
+(defn- kdata-elt [s]
+  (let [char-pre "(integer->char "]
+    (cond
+      (kdata-slot s) (str "#&" (kdata-slot s))
+      (= s "jolt-nil") "nil"
+      (or (= s "#t") (= s "#f")) s
+      (str/starts-with? s "\"") s
+      (and (str/starts-with? s char-pre) (str/ends-with? s ")"))
+      (let [n (subs s (count char-pre) (dec (count s)))]
+        (when (and (pos? (count n)) (every? digit? n))
+          (str "#\\x" (hex (reduce (fn [i c] (+ (* i 10) (- (int c) 48))) 0 n)))))
+      (number-text? s) s
+      :else nil)))
+
+;; The text for a constant collection: a slot read when every element encodes,
+;; else CTOR, the construction it would have been. SHARED? as for symbol-const.
+(defn kdata-coll [tag strs ctor shared?]
+  (let [t *kdata*]
+    (if (and t (= :use @const-data-flag))
+      (let [es (map kdata-elt strs)]
+        (if (every? some? es)
+          (kdata-ref! t (when shared? ctor)
+                      (str "(" tag (apply str (map (fn [e] (str " " e)) es)) ")") ctor)
+          ctor))
+      ctor)))
+(defn kdata-coll? [] (and *kdata* (= :use @const-data-flag)))

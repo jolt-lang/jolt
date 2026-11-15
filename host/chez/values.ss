@@ -462,14 +462,33 @@
 ;; #(ns-or-#f "name") a metadata-free symbol. Keywords go through `keyword`, so
 ;; they intern to the very objects every other site gets. A fresh vector, not the
 ;; quoted one written over: that is a constant of the compiled code.
+;;
+;; A constant collection is a list headed by its constructor's tag (v vector, l
+;; list, m hash-map, am array-map slots, s hash-set) over element data: #&i is
+;; row i, built earlier, the symbol nil is jolt-nil, anything else stands for
+;; itself. The constructors live in collections.ss / seq.ss, loaded after this
+;; file; they are looked up when a form loads, long after.
 (define (intern-constants! tbl)
   (let* ((n (vector-length tbl)) (out (make-vector n)))
+    (define (elt x)
+      (cond ((box? x) (vector-ref out (unbox x)))
+            ((eq? x 'nil) jolt-nil)
+            (else x)))
     (do ((i 0 (fx+ i 1))) ((fx= i n) out)
       (vector-set! out i
         (let ((e (vector-ref tbl i)))
           (cond ((string? e) (keyword #f e))
-                ((pair? e) (keyword (car e) (cdr e)))
-                (else (jolt-symbol (vector-ref e 0) (vector-ref e 1)))))))))
+                ((vector? e) (jolt-symbol (vector-ref e 0) (vector-ref e 1)))
+                ((string? (car e)) (keyword (car e) (cdr e)))
+                (else
+                 (let ((xs (map elt (cdr e))))
+                   (case (car e)
+                     ((v) (apply jolt-vector xs))
+                     ((l) (apply jolt-list xs))
+                     ((m) (apply jolt-hash-map xs))
+                     ((am) (amap-slots->pmap (list->vector xs)))
+                     ((s) (apply jolt-hash-set xs))
+                     (else (error 'intern-constants! "bad row" e)))))))))))
 
 ;; ns/name identical means the hasheq is identical, so a symbol rebuilt only to
 ;; change its metadata inherits the cache instead of recomputing it. with-meta on
