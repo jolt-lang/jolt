@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt.ffi/pointer-fn` calls a C function through a pointer.**
+  `(ffi/pointer-fn [:pointer :pointer] :void)` takes cfn's signature with no
+  C symbol and answers a fn whose first argument is the function pointer, so a
+  callback slot a library hands over in a struct (libghostty-vt's
+  `read->reply(read, &reply)`, a writer's `write(userdata, data, n)`) can be
+  called from jolt. The argument and result vocabulary is cfn's, by-value
+  structs, `:bool`, `:blocking`, `:capture-native-error` and a declared
+  variadic tail included. A bare `:&` is refused. A NULL or nil pointer raises
+  `NullPointerException` instead of jumping to address zero. On the gambit
+  target the binding defines and raises `UnsupportedOperationException` when
+  called.
 - **`jolt.host/class-names` and `jolt.host/all-classes` list every class
   jolt models**, as `babashka.classes/all-classes` does on babashka (#1663).
   `class-names` is a sorted vector of canonical names, spelled as

@@ -176,6 +176,8 @@
                   "sa-foreign-procedure" "sa-foreign-procedure-blocking"
                   "sa-foreign-callable" "sa-foreign-callable-collect-safe"
                   "jolt-ffi-native-error-procedure" "call-with-values"
+                  ;; the pointer-fn entry check (ffi-pointer-procedure-expr).
+                  "jolt-ffi-function-pointer"
                   ;; bare :& lowering (emit-ffi-bare-varargs-fn): the dispatcher
                   ;; spreads the inferred tail with Scheme's own apply, keeping
                   ;; the fixed arguments as arguments rather than appending them.
