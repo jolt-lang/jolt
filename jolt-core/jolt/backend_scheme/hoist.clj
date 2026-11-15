@@ -534,6 +534,14 @@
       lookup)))
 (defn hoist-var-cell [ns nm]
   (str "(var-cell-deref " (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")")) ")"))
+;; The common path reads the root without a runtime deref. dyn-bound? is
+;; mutable even when the var was non-dynamic at compile time: .setDynamic and
+;; a later binding must still reach an already-compiled caller. Keep that rare
+;; branch binding-aware rather than baking a closed-world metadata assumption.
+(defn hoist-var-call-root [ns nm]
+  (let [cell (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")"))]
+    (str "(if (" (unsafe-prefix) "var-cell-dyn-bound? " cell ")"
+         " (var-cell-deref " cell ") (" (unsafe-prefix) "var-cell-root " cell "))")))
 ;; A direct-linked SEED var: the def binds the var's root procedure once, at
 ;; load (jolt-seed-root checks it is one), and the site calls it like any Scheme
 ;; procedure. Only where jolt.host/seed-callable? said so — see emit-invoke.

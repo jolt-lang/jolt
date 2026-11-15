@@ -13,7 +13,7 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [seed-callable? form-char? form-literal?]]
+            [jolt.host :refer [seed-callable? var-dynamic? form-char? form-literal?]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -32,7 +32,7 @@
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
-                     hoist-const-per-site hoist-seed-root hoist-var-cell site-const
+                     hoist-const-per-site hoist-seed-root hoist-var-cell hoist-var-call-root site-const
                      unique-keyword-key-literal? with-const-data kdata-coll kdata-coll?]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
@@ -499,24 +499,26 @@
 ;; and a traced non-tail call restores the slot itself (site-restore), so
 ;; both take jolt-invoke-tN, which does not.
 ;;
-;; JOLT_CLJ_CALL (session clj-call, an experiment, off by default): a callee that
-;; is a var takes the jolt-clj-call / jolt-clj-call-prim head instead, the same
-;; operands; seq.ss expands it to the procedure test and a direct application,
-;; jolt-invoke-tN only for anything else. Untraced and not in tail position, the
-;; call keeps jolt-invokeN's slot restore (jolt-site-kept) around it.
+;; A patched Chez owns procedure checks and argument-count checks. Keep the
+;; application itself at the call site so its source annotation survives AOT.
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
-        cc (when (= :var (:op (:fnode c))) @session/clj-call)
+        fnode (:fnode c)
+        native? (and @session/native-var-call? (= :var (:op fnode))
+                     (not (var-dynamic? nil (:ns fnode) (:name fnode))))
+        target (if (and native? (var-cache?) *const-pool*)
+                 (hoist-var-call-root (:ns fnode) (:name fnode))
+                 (emit fnode))
         t? (or (:tail? c) (trace-frames?))
-        callee (cond
-                 cc (str (if t? "jolt-clj-call" "jolt-clj-call-kept")
-                         (case cc "prim" "-prim" "extract" "-x" ""))
-                 (<= (count args) 4)
-                 (str (if t? "jolt-invoke-t" "jolt-invoke")
-                      (count args))
-                 :else "jolt-invoke")]
-    (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons (emit (:fnode c)) args)
-                  (fn [operands] (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))
+        callee (if (<= (count args) 4)
+                 (str (if t? "jolt-invoke-t" "jolt-invoke") (count args))
+                 "jolt-invoke")]
+    (ordered-call (cons fnode (:arg-nodes c)) (cons target args)
+      (fn [operands]
+        (if native?
+          (let [call (emit-call (:tail? c) (first operands) (rest operands) (:tl c) (:ich c))]
+            (if t? call (str "(jolt-site-kept " call ")")))
+          (emit-call (:tail? c) callee operands (:tl c) (:ich c)))))))
 
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))

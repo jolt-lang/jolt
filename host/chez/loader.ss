@@ -926,9 +926,9 @@
           (if jolt-trace-on? "-tr" ""))
       ;; JOLT_FASL_INTERN in effect (values.ss): its fasls quote keywords
       (if keyword-fasl-intern-on? "-fi" "")
-      (aot-exp-tag "JOLT_CLJ_CALL" "-cc") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl")
+      (if (jolt-native-var-call-enabled?) "-nc" "") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl")
       (sa-source-info-cache-tag))))
-;; The var-call experiments' emit (compile-eval.ss jolt-clj-call-init-from-env!):
+;; The direct-link experiment's explicit cache tag:
 ;; "" when VAR is unset or empty, else PREFIX and its value.
 (define (aot-exp-tag var prefix)
   (let ((v (getenv var)))

@@ -1874,18 +1874,15 @@
   (if (guard (c (#t #f)) (eval '($primitive $jolt-site-call)) #t)
       (syntax-rules () ((_ call fallback) (#%$jolt-site-call (lambda () call))))
       (syntax-rules () ((_ call fallback) fallback))))
-;; Var-call experiment (seq.ss jolt-clj-call-prim, under JOLT_CLJ_CALL=prim only):
-;; $clj-call from host/chez/chez-patches/0010 where this Chez has it, decided
-;; when this file is compiled; without it, the FALLBACK expression.
-(define-syntax sa-clj-call
-  (if (guard (c (#t #f)) (eval '($primitive $clj-call)) #t)
-      (syntax-rules () ((_ fallback f a ...) (#%$clj-call f a ...)))
-      (syntax-rules () ((_ fallback f a ...) fallback))))
-;; The procedure $clj-call hands anything but a procedure of the call's arity to
-;; (seq.ss registers jolt-invoke). A no-op on a Chez without the primitive.
-(define (sa-clj-call-handler-set! p)
-  (when (guard (c (#t #f)) (eval '($primitive $clj-call)) #t)
-    (#%$set-top-level-value! '$clj-call-handler p)))
+;; Patch 0013 exposes its hook as a top-level value initialized to #f. Probe
+;; the capability while compiling the adapter, so a stock boot retains its path.
+(define-syntax sa-call-error-supported?
+  (if (top-level-bound? '$call-error-handler)
+      (syntax-rules () ((_) #t))
+      (syntax-rules () ((_) #f))))
+(define (sa-call-error-handler-set! p)
+  (when (sa-call-error-supported?)
+    (#%$set-top-level-value! '$call-error-handler p)))
 
 ;; (sa-time-compile-parts! expand-wrap run-wrap) -> #t | #f
 ;; JOLT_PHASE_TIMES (compile-eval.ss) splits each runtime eval into the target's

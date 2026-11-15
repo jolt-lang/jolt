@@ -1671,62 +1671,19 @@
 (define (jolt-invoke-t3 f a b c) (if (procedure? f) (if (fxlogbit? 3 (procedure-arity-mask f)) (f a b c) (jolt-proc-arity-error f 3)) (jolt-invoke f a b c)))
 (define (jolt-invoke-t4 f a b c d) (if (procedure? f) (if (fxlogbit? 4 (procedure-arity-mask f)) (f a b c d) (jolt-proc-arity-error f 4)) (jolt-invoke f a b c d)))
 
-;; JOLT_CLJ_CALL (an experiment, off by default; backend emit-jolt-invoke): a call
-;; through a var spelled at the site. A procedure that takes this many arguments
-;; is applied right there; anything else -- a keyword, map or multimethod in the
-;; var, or a wrong arity -- goes to jolt-invoke-tN, which does exactly what the
-;; default emission's call to it does. The operands are bound first so each is
-;; evaluated once; the emitter has already ordered them (ordered-call) where the
-;; order is observable.
-(define-syntax jolt-clj-call-slow
-  (syntax-rules ()
-    ((_ g) (jolt-invoke-t0 g))
-    ((_ g a) (jolt-invoke-t1 g a))
-    ((_ g a b) (jolt-invoke-t2 g a b))
-    ((_ g a b c) (jolt-invoke-t3 g a b c))
-    ((_ g a b c d) (jolt-invoke-t4 g a b c d))
-    ((_ g a ...) (jolt-invoke g a ...))))
-(define-syntax jolt-clj-call
-  (lambda (x)
-    (syntax-case x ()
-      ((_ f a ...)
-       (with-syntax (((t ...) (generate-temporaries #'(a ...)))
-                     (n (length #'(a ...))))
-         #'(let ((g f) (t a) ...)
-             (if (and (procedure? g) (fxlogbit? n (procedure-arity-mask g)))
-                 (g t ...)
-                 (jolt-clj-call-slow g t ...))))))))
-;; JOLT_CLJ_CALL=extract: Racket CS's spelling (rumble's |#%app| and
-;; extract-procedure). The test only chooses WHAT to apply, so the operands are
-;; written once, in the one call, and need no temporaries; anything but a
-;; procedure of this arity is applied through a closure over jolt-invoke, which
-;; does what jolt-invoke-tN does for it (keyword, map, multimethod, arity error).
-(define (jolt-clj-callable g) (lambda args (apply jolt-invoke g args)))
-(define-syntax jolt-clj-call-x
-  (lambda (x)
-    (syntax-case x ()
-      ((_ f a ...)
-       (with-syntax ((n (length #'(a ...))))
-         #'((let ((g f))
-              (if (and (procedure? g) (fxlogbit? n (procedure-arity-mask g))) g (jolt-clj-callable g)))
-            a ...))))))
-(define-syntax jolt-clj-call-kept-x
-  (syntax-rules () ((_ f a ...) (jolt-site-kept (jolt-clj-call-x f a ...)))))
-;; Untraced and not in tail position: jolt-invokeN's slot restore around the call.
-(define-syntax jolt-clj-call-kept
-  (syntax-rules () ((_ f a ...) (jolt-site-kept (jolt-clj-call f a ...)))))
-;; JOLT_CLJ_CALL=prim: the same call as one Chez primitive, $clj-call, which a
-;; Chez carrying host/chez/chez-patches/0010 open-codes late (cpnanopass), so the
-;; passes before it see one call. Chosen when the adapter is compiled
-;; (sa-clj-call); a Chez without the primitive gets today's call, jolt-invoke-tN,
-;; so stock Chez compiles what the default emission compiles. (The inline
-;; expansion was the fallback first; its application carries no source, so an
-;; AOT-compiled non-tail caller reported its fn's line, not the call's.)
-(define-syntax jolt-clj-call-prim
-  (syntax-rules () ((_ f a ...) (sa-clj-call (jolt-clj-call-slow f a ...) f a ...))))
-(sa-clj-call-handler-set! jolt-invoke)
-(define-syntax jolt-clj-call-kept-prim
-  (syntax-rules () ((_ f a ...) (jolt-site-kept (jolt-clj-call-prim f a ...)))))
+;; Chez's shared non-procedure/wrong-arity detour preserves every argument
+;; and tail-calls this handler. jolt-invoke owns all IFn cases, unbound vars and
+;; Clojure's named ArityException; successful procedure calls never reach it.
+;; Fixed arities retain keyword/map calls' no-rest-list path after the detour.
+(define jolt-call-error-handler
+  (case-lambda
+    ((f) (jolt-invoke-t0 f))
+    ((f a) (jolt-invoke-t1 f a))
+    ((f a b) (jolt-invoke-t2 f a b))
+    ((f a b c) (jolt-invoke-t3 f a b c))
+    ((f a b c d) (jolt-invoke-t4 f a b c d))
+    ((f . args) (apply jolt-invoke f args))))
+(sa-call-error-handler-set! jolt-call-error-handler)
 
 ;; jolt-invoke0..4: the same calls, from code that is not traced -- clojure.core,
 ;; the runtime's own Scheme -- calling a fn value that may be. A traced fn's tail

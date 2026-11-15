@@ -1,6 +1,6 @@
 ;; Redefinition semantics of the var-call experiments (pellet jolt-7,
 ;; benchmarks/chez-primitives/jolt-7-clj-call.md). Run with `jolt run` under each
-;; JOLT_CLJ_CALL / JOLT_DIRECT_LINK setting; prints CLJ-CALL-REDEF OK when every
+;; JOLT_NATIVE_VAR_CALL / JOLT_DIRECT_LINK setting; prints CLJ-CALL-REDEF OK when every
 ;; check holds for the mode in the environment. Each form is eval'd on its own,
 ;; as a REPL would compile it, so a caller is compiled after its callee's def.
 (def failures (atom []))
@@ -10,7 +10,7 @@
 (def dl (System/getenv "JOLT_DIRECT_LINK"))
 ;; JOLT_DIRECT_LINK=full is *compiler-options* {:direct-linking true}, whose
 ;; contract test/chez/repl-direct-link-test.clj covers; this file checks the
-;; open world, the JOLT_CLJ_CALL spellings and JOLT_DIRECT_LINK=link.
+;; open world, native var calls and JOLT_DIRECT_LINK=link.
 (when (= dl "full") (println "CLJ-CALL-REDEF SKIP full") (System/exit 0))
 (defmacro ev [& forms] `(do ~@(map (fn [f] `(eval '~f)) forms)))
 (defn try-call [f] (try (f) (catch Throwable t (symbol (.getName (class t))))))
@@ -46,6 +46,9 @@
          (contains? #{'java.lang.ClassCastException :one} r))
     (chk "callee redefined as a map" :one r)))
 
+(ev (defn f4 [x] :function-again))
+(chk "callee goes from map back to fn" :function-again (ev (g4 1)))
+
 ;; A wrong-arity call is an ArityException naming the fn in every mode.
 (ev (defn f5 [x] x)
     (defn g5 [] (f5 1 2)))
@@ -67,7 +70,56 @@
 (ev (defn f7 [x] :redefined))
 (chk "^:redef" :redefined (ev (g7 1)))
 
+;; A caller compiled before .setDynamic must see later thread bindings.
+;; This is stronger than compiling a fresh caller after the metadata changes.
+(ev (defn f8 [x] :root)
+    (defn g8 [x] (f8 x)))
+(when-not dl
+  (.setDynamic #'f8)
+  (chk "already-compiled caller sees a later dynamic binding" :bound
+       (ev (binding [f8 (fn [_] :bound)] (g8 1))))
+  (chk "later dynamic binding restores the root" :root (ev (g8 1))))
+
+(ev (declare unbound-call)
+    (defn g-unbound [] (unbound-call 1)))
+(chk "unbound callee class" 'java.lang.IllegalStateException (try-call #(ev (g-unbound))))
+(chk "unbound callee message" "Attempting to call unbound fn: #'user/unbound-call"
+     (try (ev (g-unbound)) (catch Throwable t (ex-message t))))
+
+;; Reading the operator precedes argument effects, including redefining it.
+(def call-order (atom []))
+(ev (defn ordered-f [x] [:old x])
+    (defn ordered-g []
+      (ordered-f (do (swap! call-order conj :argument)
+                     (alter-var-root #'ordered-f (constantly (fn [x] [:new x])))
+                     7))))
+(when-not dl
+  (chk "callee is read before argument redefinition" [:old 7] (ev (ordered-g)))
+  (chk "argument evaluated once" [:argument] @call-order)
+  (chk "next call sees argument's redefinition" [:new 7] (ev (ordered-g))))
+
+;; Calls race whole-value root writes. Every read may see either complete
+;; callable; none may retain a procedure-only assumption after the map write.
+(ev (defn racing-f [x] :fn)
+    (defn racing-g [] (racing-f :x)))
+(when-not dl
+  (let [start (promise)
+        ready (vec (repeatedly 4 promise))
+        workers (mapv (fn [r]
+                        (future (deliver r true) @start
+                                (loop [i 0]
+                                  (if (= i 400) true
+                                    (let [v (racing-g)]
+                                      (if (contains? #{:fn :map} v)
+                                        (recur (inc i)) v)))))) ready)]
+    (doseq [r ready] @r)
+    (deliver start true)
+    (dotimes [i 400]
+      (alter-var-root #'racing-f (constantly (if (even? i) {:x :map} (fn [_] :fn)))))
+    (chk "threads call through concurrent fn/map redefinitions" [true true true true]
+         (mapv deref workers))))
+
 (if (empty? @failures)
-  (println "CLJ-CALL-REDEF OK" (or dl "open-world") (or (System/getenv "JOLT_CLJ_CALL") "default"))
+  (println "CLJ-CALL-REDEF OK" (or dl "open-world") (or (System/getenv "JOLT_NATIVE_VAR_CALL") "default"))
   (do (doseq [f @failures] (println "FAIL" f))
       (System/exit 1)))

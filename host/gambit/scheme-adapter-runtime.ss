@@ -767,3 +767,6 @@
 (define (sa-vector-copy v) (subvector v 0 (vector-length v)))
 (define (sa-subvector v start end) (subvector v start end))
 (define sa-vector-append vector-append)
+
+;; Chez-only call-error hook: this backend keeps jolt-invoke calls.
+(define (sa-call-error-handler-set! p) #f)
