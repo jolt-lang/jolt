@@ -2538,6 +2538,10 @@
             ;; the same adapter io/reader hands back for one
             ((user-in-stream? src) (decode-bytevector (user-in-stream-bytes src) (slurp-encoding opts)))
             ((user-reader? src) (drain-reader (make-reader-adapter src)))
+            ;; a type extended with IOFactory: slurp is a drain of io/reader on
+            ;; the JVM, so it reads through the extension's reader (closed by
+            ;; the reader arm of this slurp)
+            ((jio-extension src "make-reader") (jolt-slurp (apply jolt-io-reader src opts)))
             (else (apply prev src opts))))))
   (set! jolt-slurp
         (lambda (src . opts)
@@ -2578,6 +2582,11 @@
             ((user-writer? target)
              (record-method-dispatch target "write" (jolt-list (jolt-str-render-one content)))
              (jolt-close target) jolt-nil)
+            ;; a type extended with IOFactory: spit writes through io/writer on
+            ;; the JVM, so through the extension's writer, which the writer arms
+            ;; above close
+            ((jio-extension target "make-writer")
+             (jolt-spit (apply jolt-io-writer target opts) content))
             (else (apply prev target content opts)))))
   (def-var! "clojure.core" "spit" jolt-spit))
 
