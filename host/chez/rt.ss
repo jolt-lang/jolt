@@ -1355,14 +1355,14 @@
 (define (jolt-site-attach-enable!) (set! jolt-site-attach? #t))
 (define-syntax jolt-site-cur
   (syntax-rules ()
-    ((_) (let ((a (#%$current-attachments))) (if (pair? a) (car a) (virtual-register 2))))))
+    ((_) (let ((a (sa-current-attachments))) (if (pair? a) (car a) (virtual-register 2))))))
 (define-syntax jolt-site-set!
   (syntax-rules ()
-    ((_ v) (let ((a (#%$current-attachments)))
+    ((_ v) (let ((a (sa-current-attachments)))
              (if (pair? a) (set-car! a v) (set-virtual-register! 2 v))))))
 (define-syntax jolt-site-attach
   (syntax-rules ()
-    ((_ call) (#%$call-setting-continuation-attachment 0 (lambda () call)))))
+    ((_ call) (sa-call-with-attachment 0 call))))
 ;; A catch's guard handler runs after the unwind, which has popped the pushes
 ;; that held a host fault's site, so in attach mode a try body stashes it at the
 ;; raise the way the uncaught path does (jolt-capture-fault!) and re-raises.
@@ -1626,12 +1626,10 @@
 ;; JOLT_TRACE_EMIT=prim: the same restore as one Chez primitive, $jolt-site-call,
 ;; which a Chez carrying host/chez/chez-patches/0008 open-codes after cp0 (in
 ;; cpnanopass's np-recognize-attachment) so the passes before it see one call.
-;; Chosen when this file is compiled: a Chez without the primitive gets the
-;; jolt-site-inline expansion above.
+;; Chosen when the adapter is compiled (sa-jolt-site-call): a Chez without the
+;; primitive gets the jolt-site-inline expansion above.
 (define-syntax jolt-site-prim
-  (if (guard (c (#t #f)) (eval '($primitive $jolt-site-call)) #t)
-      (syntax-rules () ((_ call) (#%$jolt-site-call (lambda () call))))
-      (syntax-rules () ((_ call) (jolt-site-inline call)))))
+  (syntax-rules () ((_ call) (sa-jolt-site-call call (jolt-site-inline call)))))
 ;; A non-tail call moves the slot's pair to jolt-vreg-outer-site and clears the
 ;; slot while it runs (backend_scheme site-restore): a throw inside it has no
 ;; innermost pair, only the nearest erased caller from further out. The snapshot
@@ -1640,7 +1638,7 @@
 ;; every other reader tests pair? and ignores it.
 (define-record-type outer-site (fields pair) (nongenerative jolt-outer-site-v1))
 (define (jolt-site-snapshot)
-  (jolt-site-snapshot-of (if jolt-site-attach? (#%$current-attachments) '())))
+  (jolt-site-snapshot-of (if jolt-site-attach? (sa-current-attachments) '())))
 ;; ...from attachment list A (attach mode; '() reads the vregs alone). A caught
 ;; host fault reads the list its condition's continuation kept at the raise,
 ;; since by handler time the throw's own pushes have been popped (host-faults.ss).

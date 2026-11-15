@@ -1804,6 +1804,20 @@
       (parameterize ((compile-profile (and sa-profile-on? 'source))) (thunk))
       (thunk)))
 
+;; Trace-primitive experiment (rt.ss jolt-site-attach / jolt-site-prim, under
+;; JOLT_TRACE_EMIT=attach|prim only): Chez's continuation-attachment primitives,
+;; and $jolt-site-call from host/chez/chez-patches/0008 where this Chez has it
+;; (decided when this file is compiled; without it, the FALLBACK expression).
+(define-syntax sa-current-attachments
+  (syntax-rules () ((_) (#%$current-attachments))))
+(define-syntax sa-call-with-attachment
+  (syntax-rules ()
+    ((_ v body) (#%$call-setting-continuation-attachment v (lambda () body)))))
+(define-syntax sa-jolt-site-call
+  (if (guard (c (#t #f)) (eval '($primitive $jolt-site-call)) #t)
+      (syntax-rules () ((_ call fallback) (#%$jolt-site-call (lambda () call))))
+      (syntax-rules () ((_ call fallback) fallback))))
+
 ;; (sa-time-compile-parts! expand-wrap run-wrap) -> #t | #f
 ;; JOLT_PHASE_TIMES (compile-eval.ss) splits each runtime eval into the target's
 ;; expand, its compile, and the call of the code the compile produced. From now
