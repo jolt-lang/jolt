@@ -5748,7 +5748,8 @@
                         ;; the signal, anything else runs on a thread of its own
                         ((jolt-signal-handler-of sig)
                          => (lambda (h)
-                              (unless (eq? h jolt-sig-ign) (jolt-signal-dispatch! sig h))
+                              (unless (jolt-native-handler-named? h "SIG_IGN")
+                                (jolt-signal-dispatch! sig h))
                               (loop)))
                         ;; no handler: the OS default. WINCH's is to ignore it;
                         ;; USR1 and USR2 end the process, hooks unrun, as SIG_DFL
@@ -5788,7 +5789,7 @@
 (define (jolt-signal-handler-of sig)
   (let ((h (jolt-with-mutex jolt-signal-handlers-mu
              (hashtable-ref jolt-signal-handlers sig #f))))
-    (and h (not (eq? h jolt-sig-dfl)) h)))
+    (and h (not (jolt-native-handler-named? h "SIG_DFL")) h)))
 
 (define (make-jolt-signal name n) (make-jhost "signal" (vector name n)))
 (define-jhost-tag-pred (jolt-signal? t) (string=? t "signal"))
@@ -5798,6 +5799,9 @@
 (define jolt-sig-dfl (make-jhost "signal-native-handler" (vector "SIG_DFL")))
 (define jolt-sig-ign (make-jhost "signal-native-handler" (vector "SIG_IGN")))
 (define-jhost-tag-pred (jolt-signal-native-handler? t) (string=? t "signal-native-handler"))
+;; By name, not identity: a SIG_IGN a built image rebuilt is not jolt-sig-ign.
+(define (jolt-native-handler-named? h name)
+  (and (jolt-signal-native-handler? h) (string=? (vector-ref (jhost-state h) 0) name)))
 
 (define (jolt-signal-dispatch! sig h)
   ;; this thread now runs jolt code alongside the program's
