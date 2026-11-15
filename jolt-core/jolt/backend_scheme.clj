@@ -501,6 +501,8 @@
 ;;
 ;; A patched Chez owns procedure checks and argument-count checks. Keep the
 ;; application itself at the call site so its source annotation survives AOT.
+;; #2%$app becomes a checked ordinary call in cp0 even under optimize-level 3;
+;; a plain level-3 application omits the procedure check and can fault on a map.
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
         fnode (:fnode c)
@@ -516,7 +518,7 @@
     (ordered-call (cons fnode (:arg-nodes c)) (cons target args)
       (fn [operands]
         (if native?
-          (let [call (emit-call (:tail? c) (first operands) (rest operands) (:tl c) (:ich c))]
+          (let [call (emit-call (:tail? c) "#2%$app" operands (:tl c) (:ich c))]
             (if t? call (str "(jolt-site-kept " call ")")))
           (emit-call (:tail? c) callee operands (:tl c) (:ich c)))))))
 

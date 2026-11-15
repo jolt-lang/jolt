@@ -540,8 +540,10 @@
 ;; branch binding-aware rather than baking a closed-world metadata assumption.
 (defn hoist-var-call-root [ns nm]
   (let [cell (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")"))]
-    (str "(if (" (unsafe-prefix) "var-cell-dyn-bound? " cell ")"
-         " (var-cell-deref " cell ") (" (unsafe-prefix) "var-cell-root " cell "))")))
+    ;; var-cell-v5 in rt.ss: root is field 2, dyn-bound? is field 6. Record
+    ;; accessors are ordinary procedures; #3%$record-ref performs the raw loads.
+    (str "(if (" (unsafe-prefix) "$record-ref " cell " 6)"
+         " (var-cell-deref " cell ") (" (unsafe-prefix) "$record-ref " cell " 2))")))
 ;; A direct-linked SEED var: the def binds the var's root procedure once, at
 ;; load (jolt-seed-root checks it is one), and the site calls it like any Scheme
 ;; procedure. Only where jolt.host/seed-callable? said so — see emit-invoke.

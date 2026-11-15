@@ -11,7 +11,7 @@ index 1c1809d..5573481 100644
      ptr null_continuation_id;
      ptr collect_request_pending_id;
 diff --git a/c/schsig.c b/c/schsig.c
-index e3442e6..ab9d19e 100644
+index e3442e6..778e5f5 100644
 --- a/c/schsig.c
 +++ b/c/schsig.c
 @@ -417,6 +417,25 @@ static void handle_call_error(ptr tc, iptr type, ptr x) {
@@ -54,29 +54,36 @@ index e3442e6..ab9d19e 100644
          S_G.error_id = S_intern((const unsigned char *)"$c-error");
  
 +        S_protect(&S_G.call_error_handler_id);
-+        S_G.call_error_handler_id = S_intern((const unsigned char *)"$call-error-handler");
++        S_G.call_error_handler_id = S_intern((const unsigned char *)"$call-error-handler-value");
 +
          S_protect(&S_G.event_and_resume_id);
          S_G.event_and_resume_id = S_intern((const unsigned char *)"$event-and-resume");
  
 diff --git a/s/7.ss b/s/7.ss
-index 2451115..280fb64 100644
+index 2451115..0960859 100644
 --- a/s/7.ss
 +++ b/s/7.ss
-@@ -1310,10 +1310,19 @@
+@@ -1310,10 +1310,26 @@
  
  (define collect-notify (make-parameter #f (lambda (x) (and x #t))))
  
 +;; A runtime may install a procedure taking the callee and its original
 +;; arguments. #f leaves ordinary Chez error behavior unchanged.
-+($set-top-level-value! '$call-error-handler #f)
++($set-top-level-value! '$call-error-handler-value #f)
++(define-who $call-error-handler
++  (case-lambda
++    [() ($top-level-value '$call-error-handler-value)]
++    [(p)
++     (unless (or (not p) (procedure? p))
++       ($oops who "~s is not a procedure or #f" p))
++     ($set-top-level-value! '$call-error-handler-value p)]))
 +
  (define $c-error
    (lambda (arg . error-args)
 -   ; error-args may be present along doargerr path, but we presently
 -   ; ignore them
 +    (define (call-handler cnt callee arg1 fallback)
-+      (let ([handler ($top-level-value '$call-error-handler)])
++      (let ([handler ($call-error-handler)])
 +        (if handler
 +            (if (fx= cnt 0)
 +                (handler callee)
@@ -85,7 +92,7 @@ index 2451115..280fb64 100644
      (define-syntax c-error-case
        (lambda (x)
          (syntax-case x ()
-@@ -1329,12 +1338,15 @@
+@@ -1329,12 +1345,15 @@
        [(ERROR_CALL_UNBOUND) (cnt symbol arg1?)
         ($oops #f "variable ~:s is not bound" symbol)]
        [(ERROR_CALL_NONPROCEDURE_SYMBOL) (cnt symbol arg1?)
@@ -106,27 +113,50 @@ index 2451115..280fb64 100644
         ($oops who "~?.  Some debugging context lost" msg args)]
        [(ERROR_NONCONTINUABLE_INTERRUPT) args
 diff --git a/s/cpnanopass.ss b/s/cpnanopass.ss
-index b3338c0..ee78ca2 100644
+index b3338c0..96ea139 100644
 --- a/s/cpnanopass.ss
 +++ b/s/cpnanopass.ss
-@@ -486,7 +486,7 @@
+@@ -484,9 +484,9 @@
+         (make-libspec-label 'domvleterr (lookup-libspec domvleterr)
+           (reg-list %ret %ac0))))
      (define make-Lcall-error
-       (lambda ()
+-      (lambda ()
++      (lambda (reg*)
          (make-libspec-label 'call-error (lookup-libspec call-error)
 -          (reg-list %ret %cp))))
-+          (reg-cons* %ret %cp %ac0 arg-registers))))
++          (reg-cons* %ret %cp %ac0 reg*))))
      (define make-Levent-detour
        (lambda ()
          (make-libspec-label 'event-detour (lookup-libspec event-detour)
-@@ -4198,7 +4198,10 @@
+@@ -4045,7 +4045,6 @@
+         (import (only asm-module asm-foreign-call asm-foreign-callable asm-enter))
+         (define newframe-info-for-mventry-point)
+         (define label-for-mverror-point)
+-        (define Lcall-error (make-Lcall-error))
+         (define dcl*)
+         (define local*)
+         (define max-fv)
+@@ -4198,7 +4197,10 @@
                             (if (and maybe-info (info-call-check? maybe-info))
                                 `(if ,(%type-check mask-closure type-closure ,reg)
                                      ,tlbody
 -                                    (seq (pariah) (goto ,Lcall-error)))
-+                                    (seq
-+                                      (pariah)
-+                                      (set! ,%ac0 (immediate ,(fx+ (length reg*) (length fv*))))
-+                                      (goto ,Lcall-error)))
++                                    (seq (pariah)
++                                      (seq
++                                        (set! ,%ac0 (immediate ,(fx+ (length reg*) (length fv*))))
++                                        (goto ,(make-Lcall-error reg*)))))
                                 tlbody)))
                         (if mdcl
                             (set-cp ,(ref-reg %cp) ,(or cploc (Triv t))
+diff --git a/s/primdata.ss b/s/primdata.ss
+index 2c2c673..81bc43e 100644
+--- a/s/primdata.ss
++++ b/s/primdata.ss
+@@ -1911,6 +1911,7 @@
+   ($bytevector-uncompress [flags])
+   ($capture-fasl-target [flags single-valued])
+   ($c-error [flags])
++  ($call-error-handler [sig [() -> (ptr)] [(ptr) -> (void)]] [flags])
+   ($call-consuming-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-getting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-setting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])

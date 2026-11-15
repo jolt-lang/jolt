@@ -49,6 +49,10 @@
 (ev (defn f4 [x] :function-again))
 (chk "callee goes from map back to fn" :function-again (ev (g4 1)))
 
+;; A local with the raw accessor's name cannot shadow the qualified primitive.
+(ev (defn raw-accessor-shadow [$record-ref] (f1 1)))
+(chk "raw accessor primitive cannot be shadowed" 100 (ev (raw-accessor-shadow :local)))
+
 ;; A wrong-arity call is an ArityException naming the fn in every mode.
 (ev (defn f5 [x] x)
     (defn g5 [] (f5 1 2)))

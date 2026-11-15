@@ -1874,15 +1874,16 @@
   (if (guard (c (#t #f)) (eval '($primitive $jolt-site-call)) #t)
       (syntax-rules () ((_ call fallback) (#%$jolt-site-call (lambda () call))))
       (syntax-rules () ((_ call fallback) fallback))))
-;; Patch 0013 exposes its hook as a top-level value initialized to #f. Probe
-;; the capability while compiling the adapter, so a stock boot retains its path.
+;; Patch 0013's getter/setter is a capability probe at adapter compile time.
+;; A stock Chez never parses a reference to the unavailable primitive.
 (define-syntax sa-call-error-supported?
-  (if (top-level-bound? '$call-error-handler)
+  (if (guard (c (#t #f)) (eval '($primitive $call-error-handler)) #t)
       (syntax-rules () ((_) #t))
       (syntax-rules () ((_) #f))))
-(define (sa-call-error-handler-set! p)
-  (when (sa-call-error-supported?)
-    (#%$set-top-level-value! '$call-error-handler p)))
+(define-syntax sa-call-error-handler-set!
+  (if (guard (c (#t #f)) (eval '($primitive $call-error-handler)) #t)
+      (syntax-rules () ((_ p) (#%$call-error-handler p)))
+      (syntax-rules () ((_ p) (void)))))
 
 ;; (sa-time-compile-parts! expand-wrap run-wrap) -> #t | #f
 ;; JOLT_PHASE_TIMES (compile-eval.ss) splits each runtime eval into the target's
