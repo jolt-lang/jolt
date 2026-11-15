@@ -123,6 +123,8 @@
     (chk "threads call through concurrent fn/map redefinitions" [true true true true]
          (mapv deref workers))))
 
+(shutdown-agents)
+
 (if (empty? @failures)
   (println "CLJ-CALL-REDEF OK" (or dl "open-world") (or (System/getenv "JOLT_NATIVE_VAR_CALL") "default"))
   (do (doseq [f @failures] (println "FAIL" f))
