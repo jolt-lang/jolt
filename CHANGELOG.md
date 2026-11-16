@@ -28,6 +28,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source or from a cached artifact), and every evaluation of the site reads
   that value. `jolt.loader` uses it to give cached code the context it is
   loaded into, the way a JVM class keeps its defining class loader.
+- **`sun.misc.Signal` handlers.**
+  `(Signal/handle (Signal. "USR2") handler)` registers a `SignalHandler`,
+  run as the JVM runs one: on a new daemon thread named `SIGUSR2 handler`,
+  returning the previous handler, with `SIG_DFL` and `SIG_IGN` and
+  `Signal/raise`. A handler for INT, TERM or HUP replaces the shutdown that
+  signal would run. Any other signal goes through a new kernel patch
+  (`chez-patches/0009-signal-relay.patch`): registering a handler installs a
+  C handler for that one signal, which writes its number to a pipe that a
+  jolt thread reads, so whichever thread the kernel interrupts, and whatever
+  it is doing, the handler runs. A signal nobody handles keeps the
+  disposition it had, a handler some C library installed earlier still runs,
+  and a jolt built as a library takes only the signals its program asks for
+  and gives them back at `jolt_library_shutdown`.
+  QUIT, KILL, STOP, FPE, SEGV and ILL are refused, as on the JVM, and so is
+  BUS (Chez's fault handler). On a stock Chez, without the relay, the CLI
+  blocks the other signals at startup for the shutdown watcher instead, and
+  TTIN, TTOU, PROF and VTALRM are refused there. (#1679)
+
+- **`jsonista.core` is bundled, so muuntaja loads.** Real jsonista wraps
+  Jackson and its own compiled Java classes, so `(require 'jsonista.core)`
+  failed at load on `(ObjectMapper.)`, and with it muuntaja and reitit's
+  default formats. `compatibility/jsonista/core.clj` implements jsonista's
+  API over the bundled `clojure.data.json`: `object-mapper` with its
+  encoding and decoding options, `read-value`, `write-value`,
+  `write-value-as-string` and `write-value-as-bytes`, the `ReadValue` and
+  `WriteValue` protocols, and `java-collection-module`. Output matches
+  jsonista 0.3.8's on the JVM, and a mapper answers `instance?`
+  `com.fasterxml.jackson.databind.ObjectMapper`, which muuntaja checks.
+  Jackson's own options (`:factory`, `:encoders`, other modules and mappers)
+  throw instead of being ignored. The real jsonista jar a project pulls in
+  doesn't shadow the bundled namespace. `Charset/availableCharsets`, which
+  muuntaja reads at load, is added too. (#1683)
 
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept
@@ -130,6 +162,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`unchecked-multiply`, `-add` and `-subtract` are 3 to 6 times faster once
+  a long leaves the fixnum range.** A long past 2^60 is a bignum on Chez, and
+  every bignum op there is a C call, so the exact result followed by the
+  64-bit mask was three or four of them. A new kernel patch
+  (`chez-patches/0008`) adds 64-bit wraparound add, subtract and multiply
+  entries that read the operands in C and return the wrapped long in one
+  call. Per iteration, `(unchecked-multiply 31 h)` with `h` overflowing went
+  from 121.5 ns to 25.2 ns, an overflowing `unchecked-add` from 82.7 ns to
+  25.3 ns, and a hash step `(unchecked-add (unchecked-multiply 31 h) i)` from
+  188.5 ns to 46.8 ns (#1649). A Chez built without jolt's patches, and the
+  gambit target, keep the previous path. A product that stays small costs
+  about 2 ns more (3.6 to 5.5 ns), for the check that routes a wide one to
+  the kernel without building it first.
 - **`extend-type` and `extend-protocol` no longer rebuild the class-name tables
   after every new record.** Each protocol registration asked whether the type
   name was a JVM spelling of a record in a dashed namespace (`rf.def_two.R3`),
@@ -140,6 +185,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads from the AOT cache in 1.9 s instead of 2.6 s.
 
 ### Fixed
+
+- **A constructor call on a class jolt knows nothing about says so.**
+  `import` stays lenient, since a library may import a class it never uses,
+  but `(import (com.nosuch Thing))` followed by `(Thing.)` said "No matching
+  ctor found for class Thing", which reads as an arity mismatch on a class
+  that exists. It now says "Unknown class com.nosuch.Thing", and an unmodeled
+  JDK class gets the "No dependency provides" advice, as a static call on one
+  already did. A class jolt does have keeps "No matching ctor". (#1683)
+- **`str` of a `proxy` is its base class's `toString`.** `str` of a proxy
+  over `java.io.StringWriter` gave the proxy's `Class@hash` while
+  `.toString` gave the text written to it. Both now give the base's
+  `toString` when the base class has one of its own, and otherwise the
+  proxy's own `Class@hash`. Before, `.toString` there gave the hidden base
+  instance's identity, `java.lang.Object@…`. (#1683)
 
 - **Custom test assertions keep their failure locations.** Stack reads inside
   `binding` and `try/finally` retain the enclosing function's source frame,
@@ -152,6 +211,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name; any other value reaches `IOFactory`'s Object impl, whose reader and
   writer open through the stream side and refuse "as an InputStream." or "as an
   OutputStream.".
+- **`System/console` answers a `java.io.Console` in a terminal.** It was nil
+  always, so a CLI could not tell a person from a pipe. It is now a Console
+  when stdin and stdout are both terminals and nil when either is redirected,
+  as on the JVM. `readLine` and `readPassword` take the JVM's optional prompt
+  format, `readPassword` turns echo off and puts it back even on ^C, and
+  `writer`, `reader`, `format`, `printf`, `flush`, `charset` and `isTerminal`
+  are there too. Windows still answers nil.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as
@@ -161,6 +227,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JVM's message ("Too few arguments to throw, …", "Bad binding form, expected
   vector", "Malformed assignment, expecting (set! target val)", …) under a
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
+- **The reader and `clojure.edn` refuse the colon tokens the JVM refuses.**
+  A token ending in a colon (`:abc:`, `abc:`), one with `::` past its first
+  character (`:a::b`), and one whose namespace ends in a colon (`:a:/b`) read
+  as keywords and symbols, so a config typo like `{:token :abc:}` loaded here
+  and failed on the JVM. Each is now `Invalid token`. A colon inside a name
+  (`:a:b`, `a/:b`) still reads.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
 - **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).

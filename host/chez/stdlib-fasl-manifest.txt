@@ -101,6 +101,7 @@ jolt.time.temporal
 jolt.time.util
 jolt.time.year
 jolt.util
+jsonista.core
 skip glojure.deps — requires glojure/deps/host.{jolt,clj,cljc} which is absent from the install roots at build time
 skip grenadine.host.glojure — glojure's Go-interop host: it references the `go` namespace (go/string) and Go package aliases, none of which exist here. Only grenadine.cli requires it, and jolt binds its own host through clojurestar.deps, so it is never loaded. (Grenadine v0.1.15 fixed the unqualified `strings` reference this reason used to name; the namespace is still unloadable, for the reason above.)
 skip grenadine.cli — requires grenadine/build_info.{jolt,clj,cljc} (generated at release packaging), absent in a dev build

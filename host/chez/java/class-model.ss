@@ -314,13 +314,13 @@
         (cons "getSuperclass" (lambda (self)
                                 (let ((s (jch-superclass (jclass-name self))))
                                   (if s (jolt-class-for s) jolt-nil))))
-        ;; getInterfaces: the DIRECT super-interfaces, as a seqable of Class
-        ;; values (the JVM's Class[] surfaces to Clojure as a seq anyway).
+        ;; getInterfaces: the DIRECT super-interfaces, as a Class[].
         (cons "getInterfaces" (lambda (self)
-                                (list->cseq
+                                (jolt-ref-array
                                  (map jolt-class-for
                                       (filter jch-interface?
-                                              (jch-direct-supers (jclass-name self)))))))
+                                              (jch-direct-supers (jclass-name self))))
+                                 "java.lang.Class")))
         (cons "isInterface" (lambda (self) (if (jch-interface? (jclass-name self)) #t #f)))
         (cons "isPrimitive" (lambda (self) (jclass-primitive? self)))
         ;; isAssignableFrom: the graph's isa?, JVM argument order — self is the
