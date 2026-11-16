@@ -602,6 +602,29 @@
   (rdr-error-class s i "java.lang.RuntimeException"
                    (keyword "read" "invalid-token")
                    (string-append "Invalid token: " tok)))
+;; LispReader's and EdnReader's matchSymbol refuse three colon shapes in a
+;; token T (a keyword's T keeps its leading colon(s)): a name ending in ':'
+;; (:abc:, abc:), a '::' anywhere past the first character (:a::b, a::b), and a
+;; namespace ending in ':', where the namespace is everything before the LAST
+;; '/' -- the JVM's pattern is greedy there, so a:/b/c reads and a/b:/c does
+;; not -- or before the '/' that is the name in ns//. A colon inside a name is
+;; fine (:a:b, a/:b).
+(define (rdr-colon-invalid? t)
+  (let ((len (string-length t)))
+    (and (> len 1)
+         (or (char=? (string-ref t (- len 1)) #\:)
+             (let loop ((k 1))
+               (and (< (+ k 1) len)
+                    (or (and (char=? (string-ref t k) #\:) (char=? (string-ref t (+ k 1)) #\:))
+                        (loop (+ k 1)))))
+             (let last ((k (- len 1)))
+               (cond ((<= k 0) #f)
+                     ((not (char=? (string-ref t k) #\/)) (last (- k 1)))
+                     ;; ns//: the namespace ends at the slash before the name
+                     ((= k (- len 1))
+                      (and (>= k 2) (char=? (string-ref t (- k 1)) #\/)
+                           (char=? (string-ref t (- k 2)) #\:)))
+                     (else (char=? (string-ref t (- k 1)) #\:))))))))
 (define (rdr-token->value tok s i)
   (let ((n (rdr-try-number tok)))
     (cond
@@ -629,6 +652,7 @@
                         (and (char=? (string-ref tok (- len 1)) #\/)
                              (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/))))))
            (rdr-invalid-token s i tok))
+         (when (rdr-colon-invalid? tok) (rdr-invalid-token s i tok))
          (let-values (((ns name) (rdr-sym-parts tok))) (jolt-symbol ns name)))))))
 
 ;; --- collections ------------------------------------------------------------
@@ -1644,10 +1668,12 @@
           ;; ":" and "::" alone, a leading or trailing slash (a name of exactly
           ;; "/" is fine, :ns//), a token that STARTS with ':' (:::foo — the
           ;; leading colon(s) are already consumed, and a keyword name can't begin
-          ;; with a colon, though :foo:bar is fine mid-name), or an auto-resolved
+          ;; with a colon, though :foo:bar is fine mid-name), the colon shapes
+          ;; rdr-colon-invalid? names (:abc:, :a::b, :a:/b), or an auto-resolved
           ;; keyword in edn (no resolution context) are invalid tokens.
           (when (or (= len 0)
                     (char=? (string-ref tok 0) #\:)
+                    (rdr-colon-invalid? (string-append (if auto? "::" ":") tok))
                     (and (> len 1) (char=? (string-ref tok 0) #\/))
                     (and (> len 1) (char=? (string-ref tok (- len 1)) #\/)
                          (not (and (> len 2) (char=? (string-ref tok (- len 2)) #\/)))))

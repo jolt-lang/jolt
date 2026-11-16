@@ -201,6 +201,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JVM's message ("Too few arguments to throw, …", "Bad binding form, expected
   vector", "Malformed assignment, expecting (set! target val)", …) under a
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
+- **The reader and `clojure.edn` refuse the colon tokens the JVM refuses.**
+  A token ending in a colon (`:abc:`, `abc:`), one with `::` past its first
+  character (`:a::b`), and one whose namespace ends in a colon (`:a:/b`) read
+  as keywords and symbols, so a config typo like `{:token :abc:}` loaded here
+  and failed on the JVM. Each is now `Invalid token`. A colon inside a name
+  (`:a:b`, `a/:b`) still reads.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
 - **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).
