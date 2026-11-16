@@ -241,6 +241,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as keywords and symbols, so a config typo like `{:token :abc:}` loaded here
   and failed on the JVM. Each is now `Invalid token`. A colon inside a name
   (`:a:b`, `a/:b`) still reads.
+- **`clojure.test/run-tests` on a namespace that doesn't exist throws, as on
+  the JVM.** It reported `Ran 0 tests` instead. A test file whose `ns` form
+  doesn't match its path loads under one name and gets run under another, so
+  its tests were skipped and the run stayed green. `run-tests`, `test-ns` and
+  `test-all-vars` now throw `No namespace: x found`. The cause sat lower down:
+  `ns-interns`, `ns-publics`, `ns-map`, `ns-refers`, `ns-aliases` and
+  `ns-imports` answered for a missing namespace, with `{}` or, for `ns-map`
+  and `ns-refers`, clojure.core's whole table. Each one now goes through
+  `the-ns` first, as on the JVM.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
 - **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).

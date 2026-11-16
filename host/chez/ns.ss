@@ -504,13 +504,20 @@
       (ns-cells-list nm))
     m))
 (define (ns-vars-pmap nm) (ns-vars-pmap-when nm (lambda (c) #t)))
-(define (jolt-ns-publics desig) (ns-vars-pmap-when (ns-desig->name desig) (lambda (c) (not (var-private? c)))))
-(define (jolt-ns-interns desig) (ns-vars-pmap (ns-desig->name desig)))
+;; The name of a namespace that exists. ns-publics, ns-interns, ns-map,
+;; ns-refers, ns-aliases and ns-imports all go through the-ns on the JVM, so a
+;; missing one throws "No namespace: x found" there. Reading its name straight
+;; off the designator answered {} instead (ns-map and ns-refers: clojure.core's
+;; whole table), and clojure.test's test-ns, built on ns-interns, then reported a
+;; namespace that never loaded as one with no tests.
+(define (ns-existing-name desig) (jns-name (jolt-the-ns desig)))
+(define (jolt-ns-publics desig) (ns-vars-pmap-when (ns-existing-name desig) (lambda (c) (not (var-private? c)))))
+(define (jolt-ns-interns desig) (ns-vars-pmap (ns-existing-name desig)))
 
 ;; ns-aliases: the {alias-sym -> ns-value} registered under `desig`
 ;; (default the current ns) via require :as / alias. Reads ns-alias-table.
 (define (jolt-ns-aliases . desig)
-  (let ((cns (if (pair? desig) (ns-desig->name (car desig)) (chez-current-ns)))
+  (let ((cns (if (pair? desig) (ns-existing-name (car desig)) (chez-current-ns)))
         (m (jolt-hash-map)))
     (vector-for-each
       (lambda (k)
@@ -525,7 +532,7 @@
 ;; visible everywhere, minus names the ns interns itself (an intern replaces
 ;; the mapping in the JVM's namespace table).
 (define (jolt-ns-refers desig)
-  (let* ((cns (ns-desig->name desig))
+  (let* ((cns (ns-existing-name desig))
          (m (if (string=? cns "clojure.core")
                 (jolt-hash-map)
                 (pmap-fold (ns-vars-pmap-when "clojure.core"
@@ -662,7 +669,9 @@
 ;; namespace's OWN class mappings (its :imports and deftypes) once the class model
 ;; it reads them out of exists. jolt-ns-map below goes through this variable, so
 ;; that extension reaches ns-map too.
-(define (jolt-ns-imports . _) jolt-default-imports)
+(define (jolt-ns-imports . desig)
+  (when (pair? desig) (jolt-the-ns (car desig)))
+  jolt-default-imports)
 
 ;; ns-map: every mapping visible in the ns — the java.lang imports, the refers
 ;; (including the implicit clojure.core publics), and the ns's own interns,
