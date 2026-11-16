@@ -1204,8 +1204,11 @@
                  (= "jolt.host" (form-sym-ns head))
                  (= "load-time-value" (form-sym-name head)))
         "load-time-value")
+      ;; clojure.core/load-time-value names no var, as on the JVM: it is not
+      ;; the special form
       (when (and (form-sym? head)
                  (= "clojure.core" (form-sym-ns head))
+                 (not= "load-time-value" (form-sym-name head))
                  (contains? handled (form-sym-name head)))
         (form-sym-name head))))
 

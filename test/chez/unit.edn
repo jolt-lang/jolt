@@ -4251,6 +4251,7 @@
   {:suite "load-time-value" :label "captures a binding in force at load, not at the call" :expr "(do (def ^:dynamic *ltv-d* :outer) (binding [*ltv-d* :load] (eval '(def ltv-g (fn [] (jolt.host/load-time-value *ltv-d*))))) (binding [*ltv-d* :call] (ltv-g)))" :expected ":load"}
   {:suite "load-time-value" :label "a def made when a fn runs reads its top-level form's load" :expr "(do (def ^:dynamic *ltv-e* :outer) (binding [*ltv-e* :load] (eval '(defn ltv-mk [] (def ltv-h (fn [] (jolt.host/load-time-value *ltv-e*)))))) (binding [*ltv-e* :call] (ltv-mk) (ltv-h)))" :expected ":load"}
   {:suite "load-time-value" :label "a bare load-time-value is an ordinary name" :expr "(let [load-time-value inc] (load-time-value 1))" :expected "2"}
+  {:suite "load-time-value" :label "clojure.core/load-time-value names no var, as on the JVM" :expr "(try (eval (quote (clojure.core/load-time-value 1))) :special (catch Throwable _ :no-var))" :expected ":no-var"}
   {:suite "load-time-value" :label "the expression sees no locals, and takes exactly one" :expr "[(try (eval '(let [x 1] (jolt.host/load-time-value x))) (catch Throwable e :no-local)) (try (eval '(jolt.host/load-time-value 1 2)) (catch Throwable e :arity))]" :expected "[:no-local :arity]"}
   ;; jsonista.core (compatibility/), over clojure.data.json (#1683). :expected is
   ;; jsonista 0.3.8's own answer on JVM Clojure 1.12, except the two rows on
