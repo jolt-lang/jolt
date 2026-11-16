@@ -423,11 +423,14 @@
   (let ((d (jreify-delegate x)))
     (and d
          (let ((s (jolt-str-render-one d))
-               (generic (string-append (jolt-class-name d) "@")))
+               (cn (jolt-class-name d)))
            (define (starts? p)
              (and (>= (string-length s) (string-length p))
                   (string=? (substring s 0 (string-length p)) p)))
-           (and (not (starts? generic)) (not (starts? "#object[")) s)))))
+           (and (string? cn)
+                (not (starts? (string-append cn "@")))
+                (not (starts? "#object["))
+                s)))))
 (register-str-render!
   (lambda (x) (and (jreify? x) (not (reify-method-ref x "toString")) (not (proxy-coll-kind x))))
   (lambda (x)
