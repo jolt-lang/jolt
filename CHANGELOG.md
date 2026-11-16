@@ -86,6 +86,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **jolt always builds on a patched Chez.** `make` no longer uses a Chez
+  found on `PATH`: unless `CHEZ=` names one, it downloads Chez 10.4.1,
+  applies `host/chez/chez-patches` and builds it under `.cache/local` (a few
+  minutes, once), and rebuilds it when the patches change. Before, a
+  provisioned Chez on macOS and Linux was stock 10.4.1, and so was any Chez
+  on `PATH`, so a from-source jolt ran a different kernel from the releases
+  (`jolt.ffi/stack-args-correct?` false on macOS arm64). `JOLT_SYSTEM_CHEZ`
+  is gone, and `bin/jolt` no longer searches `PATH` either. On Windows, pass
+  a patched Chez as `CHEZ=`. (#1699)
+
 - **`clojure.tools.reader` and rewrite-clj read faster** (#1646). Their reader
   types are deftypes with mutable fields, and five steps on that path looked a
   name up by string on every call. Each is now done once per call site, or
