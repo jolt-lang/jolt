@@ -2346,9 +2346,11 @@
         ;; object has no thread id), the thread's on a thread.
         (cons "getStackTrace" (lambda (self)
           (let* ((st (jhost-state self)) (f (jolt-current-fiber)))
-            (if (if f (eq? (jthread-fiber st) f) (eqv? (jthread-id st) (get-thread-id)))
-                (jolt-current-stack-trace)
-                (jolt-vector)))))
+            (jolt-ref-array
+             (if (if f (eq? (jthread-fiber st) f) (eqv? (jthread-id st) (get-thread-id)))
+                 (jolt-current-stack-trace)
+                 '())
+             "java.lang.StackTraceElement"))))
         (cons "getId" (lambda (self) (vector-ref (jhost-state self) 10)))
         (cons "threadId" (lambda (self) (vector-ref (jhost-state self) 10)))
         (cons "getContextClassLoader" (lambda (self) (thread-context-class-loader)))
