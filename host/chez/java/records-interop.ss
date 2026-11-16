@@ -474,10 +474,12 @@
     ;; Clojure source, from the continuation the throwable was thrown with
     ;; (source-registry.ss). A tail call leaves no frame to report, so a caller
     ;; erased by one is missing, as it is from Thread.getStackTrace.
-    ((string=? name "getStackTrace") (list (jolt-throwable-stack-trace obj)))
+    ;; A StackTraceElement[], as the JVM's is (jolt-ref-array).
+    ((string=? name "getStackTrace")
+     (list (jolt-ref-array (jolt-throwable-stack-trace obj) "java.lang.StackTraceElement")))
     ;; jolt never suppresses: an empty array is the JVM's own answer for a
     ;; throwable with nothing suppressed, so this is exact rather than a stand-in.
-    ((string=? name "getSuppressed") (list (jolt-vector)))
+    ((string=? name "getSuppressed") (list (jolt-ref-array '() "java.lang.Throwable")))
     ;; JVM contract is "returns this"; jolt has no stack to refill.
     ((string=? name "fillInStackTrace") (list obj))
     ((string=? name "printStackTrace")
