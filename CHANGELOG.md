@@ -136,6 +136,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A constructor call on a class jolt knows nothing about says so.**
+  `import` stays lenient, since a library may import a class it never uses,
+  but `(import (com.nosuch Thing))` followed by `(Thing.)` said "No matching
+  ctor found for class Thing", which reads as an arity mismatch on a class
+  that exists. It now says "Unknown class com.nosuch.Thing", and an unmodeled
+  JDK class gets the "No dependency provides" advice, as a static call on one
+  already did. A class jolt does have keeps "No matching ctor". (#1683)
+- **`str` of a `proxy` is its base class's `toString`.** `str` of a proxy
+  over `java.io.StringWriter` gave the proxy's `Class@hash` while
+  `.toString` gave the text written to it. Both now give the base's
+  `toString` when the base class has one of its own, and otherwise the
+  proxy's own `Class@hash`. Before, `.toString` there gave the hidden base
+  instance's identity, `java.lang.Object@…`. (#1683)
+
 - **Custom test assertions keep their failure locations.** Stack reads inside
   `binding` and `try/finally` retain the enclosing function's source frame,
   and macro-generated calls inherit their source line. `matcher-combinators`

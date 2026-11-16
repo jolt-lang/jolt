@@ -412,6 +412,18 @@
         (d (jreify-delegate obj)))
     (cond
       (f (invoke-declared-method f obj method-name rest))
+      ;; toString the proxy does not override is the base's when the base has
+      ;; one of its own, and otherwise Object.toString of the PROXY: its class
+      ;; and hash, not the hidden base instance's ("java.lang.Object@…"). str
+      ;; answers the same (host-class.ss), as it must on the JVM.
+      ((and d (null? rest) (string=? method-name "toString"))
+       (let ((s (record-method-dispatch d method-name rest-args))
+             (generic (string-append (jolt-class-name d) "@")))
+         (if (and (string? s)
+                  (>= (string-length s) (string-length generic))
+                  (string=? (substring s 0 (string-length generic)) generic))
+             (string-append (jolt-class-name obj) "@" (jolt-identity-hex obj))
+             s)))
       ;; a proxy forwards what it does not override to the base
       ;; instance, through the full dispatcher so the delegate gets
       ;; whatever method resolution its own kind of value has.
