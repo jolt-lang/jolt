@@ -125,7 +125,9 @@
   name, can both reach that). The context gets its own cells and works; the
   host's live code keeps its cells too, but the name is gone from the host's
   view, and the runtime's loaded mark survives `remove-ns`, so a plain
-  `require` will not restore it (`:reload` will). A host-side in-place reload
+  `require` will not restore it (`:reload` will). `evicted` names the host
+  namespaces a loader evicted (`unload!` reports them as `:evicted` too) and
+  `restore-evicted!` reloads exactly that set. A host-side in-place reload
   of a name a context owns reuses that context's namespace object and cells:
   one namespace, two writers. Both are the price of one registry; per-context
   var tables are what retire them.
@@ -139,7 +141,7 @@
   it links that context's cells, as compiling there would. The key covers the
   source, every namespace the compile loaded (transitively), the files it read
   and the data readers; the loader id is read from a per-load context var
-  (`jolt.loader.ctx.<ns>/id`) instead of baked in. See the artifact cache
+  (`*defining-loader*`, captured with load-time-value) instead of baked in. See the artifact cache
   section below. JOLT_AOT_CACHE=0 turns it off with the host's cache.
 
   One bookkeeping note: `loaders-by-id` — what evaluated source uses to find
@@ -540,7 +542,7 @@
         [base [{:message (ex-message e) :exception e}]]))
     [base []]))
 
-(declare ^:private root-loader)
+(declare ^:private root-loader evicted)
 ;; defined with the id registry below, after the impl record
 (declare ^:private evict!)
 
@@ -562,6 +564,7 @@
         {:unloaded true
          :already false
          :released released
+         :evicted (evicted l)
          :in-flight in-flight
          :raced (pos? in-flight)
          :errors errors})
@@ -570,6 +573,7 @@
         {:unloaded true
          :already true
          :released {}
+         :evicted (evicted l)
          :in-flight (count @(:in-flight state))
          :raced false
          :errors []}))))
@@ -675,7 +679,7 @@
              members (assoc :members (vec members))
              (some? context) (assoc :context context))
            {:links (atom {}) :in-flight (atom {}) :unloaded? (atom false)
-            :facade (atom nil)})]
+            :facade (atom nil) :evicted (atom #{})})]
     (swap! loaders-by-id assoc (:id l) l)
     l))
 
@@ -1046,11 +1050,42 @@
                :loaded (count links)
                :in-flight (count @(:in-flight state))
                :unloaded? (boolean @(:unloaded? state))}
+        (seq (some-> (:evicted state) deref)) (assoc :evicted (vec (sort @(:evicted state))))
         (and (:parent l) (pos? depth))
         (assoc :delegate (status* (:parent l) (dec depth)))
         (seq (:delegates (:info l))) (assoc :delegates (mapv :id (:delegates (:info l))))
         (seq (:members (:info l))) (assoc :members (mapv :id (:members (:info l))))))
     {:loader-id (or (:id l) "foreign") :unloaded? false}))
+
+(defn evicted
+  "The HOST namespaces L evicted to install its own versions under their names,
+   sorted, and not yet restored. A private load removes whatever the process
+   has under the name; when that was a host namespace — one no context owned —
+   the host's live code keeps its cells but the name is gone from its view, and
+   the runtime's loaded mark survives the removal, so a plain `require` will not
+   bring it back. These are the names `restore-evicted!` reloads. Answers on an
+   unloaded loader too: restoring is what follows `unload!`."
+  [l]
+  (if-let [ev (:evicted (:state l))]
+    (vec (sort @ev))
+    []))
+
+(defn restore-evicted!
+  "Reload into the host, from the host's roots, each namespace L evicted (see
+   `evicted`), and answer {:restored [names] :skipped [names]}. A name some
+   context still owns is skipped and stays recorded — restoring it would evict
+   that context's version in turn — so the usual order is `unload!` L, then
+   restore. Restored names leave the record; a reload that throws leaves the
+   rest unrestored and recorded, and propagates."
+  [l]
+  (let [ev (:evicted (:state l))
+        names (evicted l)
+        skipped (filterv private-ns? names)]
+    (doseq [nm names :when (not (private-ns? nm))]
+      (require (symbol nm) :reload)
+      (swap! ev disj nm))
+    {:restored (vec (remove (set skipped) names))
+     :skipped skipped}))
 
 (defn status
   "A diagnostics map: loader id, roots, loaded-namespace count, in-flight
@@ -1237,11 +1272,17 @@
    makes fresh cells (compiled code already holding the old cells keeps them).
    A `:reload` skips the eviction — see *reload-in-place*."
   [l ns-name]
-  (claim-private! l ns-name)
-  (when (find-ns (symbol ns-name))
-    (remove-ns (symbol ns-name))))
+  ;; asked before the claim: a name some context already owns is that
+  ;; context's to restore, not the host's
+  (let [host? (and (find-ns (symbol ns-name)) (not (private-ns? ns-name)))]
+    (claim-private! l ns-name)
+    (when (find-ns (symbol ns-name))
+      (remove-ns (symbol ns-name))
+      (when host?
+        (when-let [ev (:evicted (:state l))]
+          (swap! ev conj ns-name))))))
 
-(declare ^:private drop-ctx-var! ^:private forget-key!)
+(declare ^:private forget-key!)
 
 (defn- release-private!
   "`unload!` teardown for a source-roots loader: unmap the namespaces this
@@ -1263,7 +1304,6 @@
                             live (find-ns (symbol nm))]
                         (if (and (map? h) (identical? live (:handle h)))
                           (do (remove-ns (symbol nm))
-                              (drop-ctx-var! nm)
                               (forget-key! nm live)
                               ;; the mark goes with the namespace: a mark left
                               ;; behind makes every later require a no-op for a
@@ -1373,9 +1413,9 @@
    namespace is NS-NAME, which a transitive load's never is.
 
    ID-FORM is what the rewritten call passes as the loader id: the id string
-   itself for `eval-in`, and for namespace source the symbol of its context
-   var (`ctx-var-sym`), which the compiled code derefs. A literal id would bake
-   the context into the compiled code, and a cached artifact is shared by every
+   itself for `eval-in`, and for namespace source `defining-loader-form`, which
+   the compiled code evaluates once as it loads. A literal id would bake the
+   context into the compiled code, and a cached artifact is shared by every
    context that loads the same source."
   [id-form ns-name]
   (fn [var-ns var-name form]
@@ -1444,9 +1484,15 @@
 ;;
 ;; Two things would otherwise tie an artifact to the context that compiled it:
 ;;
-;;   * the loader id the require/resolve rewrite passes. It is a var instead
-;;     (`ctx-var-sym`), interned fresh with the namespace — so its cell is as
-;;     context-private as the namespace's own — and read by the compiled code.
+;;   * the loader id the require/resolve rewrite passes. The compiled code
+;;     captures it as it LOADS instead (`defining-loader-form`): the loader
+;;     binds *defining-loader* around the evaluation and around the artifact
+;;     load alike, and (jolt.host/load-time-value jolt.loader/*defining-loader*)
+;;     is evaluated once, when the top-level form holding the call loads. That
+;;     is the JVM's arrangement: Compiler.load binds LOADER, and an AOT
+;;     namespace's __init class pushes its own defining loader before its body
+;;     runs (Compiler.java pushNSandLoader), so a class keeps the loader that
+;;     defined it, not the one that compiled it.
 ;;   * what the compile depended on. The key folds the source and the name it
 ;;     is read under, the digest of every namespace the evaluation loaded
 ;;     (recursively: a private dependency's own key, a host one's AOT digest),
@@ -1458,27 +1504,17 @@
 ;; private one from a context that did not cache — makes its consumer compile
 ;; without caching. JOLT_AOT_CACHE=0 turns this off with the host's cache.
 
-(defn- ctx-ns-name [ns-name] (str "jolt.loader.ctx." ns-name))
+(def ^:dynamic *defining-loader*
+  "The id of the loader whose namespace source is being evaluated or whose
+   artifact is being loaded on this thread; nil otherwise. Read once per
+   top-level form, as it loads, by the context-carrying calls the rewrite
+   emits (`defining-loader-form`) — never at call time, when it is whatever
+   the caller has bound."
+  nil)
 
-(defn- ctx-var-sym
-  "The var a private namespace's compiled code reads its loader id from."
-  [ns-name]
-  (symbol (ctx-ns-name ns-name) "id"))
-
-(defn- install-ctx-var!
-  "Point NS-NAME's context var at L. A fresh namespace gets a fresh var — code
-   compiled for the version just evicted keeps the cell naming its own
-   context — and a :reload in place keeps the cell, like every other var of the
-   namespace it re-evaluates."
-  [l ns-name fresh?]
-  (let [sym (symbol (ctx-ns-name ns-name))]
-    (when (and fresh? (find-ns sym))
-      (remove-ns sym))
-    (intern (create-ns sym) 'id (str (:id l)))))
-
-(defn- drop-ctx-var!
-  [ns-name]
-  (remove-ns (symbol (ctx-ns-name ns-name))))
+(def ^:private defining-loader-form
+  "What a rewritten call passes as its loader id in namespace source."
+  '(jolt.host/load-time-value jolt.loader/*defining-loader*))
 
 (defonce ^:private artifact-keys
   ;; namespace name -> {:ns <the namespace object> :key <its cache key>}, for
@@ -1586,13 +1622,14 @@
    ldr-with-file-vars — the JVM's Compiler.load): a top-level
    (set! *warn-on-reflection* true) is legal, and its effect ends with the
    file instead of escaping into the loading context's frame."
-  [ns-name file f]
-  (binding [*ns* *ns*
+  [l ns-name file f]
+  (binding [*defining-loader* (str (:id l))
+            *ns* *ns*
             *file* file
             *warn-on-reflection* *warn-on-reflection*
             *assert* *assert*
             *unchecked-math* *unchecked-math*
-            jolt.host/*invoke-rewrite* (context-rewriter (ctx-var-sym ns-name) ns-name)]
+            jolt.host/*invoke-rewrite* (context-rewriter defining-loader-form ns-name)]
     (f)))
 
 (defn- load-artifact!
@@ -1604,7 +1641,7 @@
   (let [so (str (:key plan) ".so")]
     (and (jolt.host/file-exists? so)
          (let [ok (try
-                    (with-source-env ns-name file
+                    (with-source-env l ns-name file
                       #(jolt.host/load-loader-artifact! so (:key plan)))
                     (catch :default _ false))]
            (if (and ok (find-ns (symbol ns-name)))
@@ -1612,8 +1649,7 @@
                  true)
              (do (when-not reload?
                    (when (find-ns (symbol ns-name))
-                     (remove-ns (symbol ns-name)))
-                   (install-ctx-var! l ns-name true))
+                     (remove-ns (symbol ns-name))))
                  false))))))
 
 (defn- evaluate-source!
@@ -1628,7 +1664,7 @@
           (jolt.host/call-with-capture
            (boolean plan)
            (fn []
-             (with-source-env ns-name file
+             (with-source-env l ns-name file
                (fn []
                  (letfn [(eval-form [f]
                            (try
@@ -1707,7 +1743,6 @@
           (if reload?
             (claim-private! l ns-name)
             (mark-private! l ns-name))
-          (install-ctx-var! l ns-name (not reload?))
           (try
             (let [plan (cache-plan l ns-name file text form-deps)
                   k (if (and (:key plan) (load-artifact! l ns-name file plan reload?))
@@ -1727,8 +1762,7 @@
               ;; the registration would be the destructive choice.
               (when-not reload?
                 (when (find-ns (symbol ns-name))
-                  (remove-ns (symbol ns-name)))
-                (drop-ctx-var! ns-name))
+                  (remove-ns (symbol ns-name))))
               (throw e))))))))
 
 (defn- eval-namespace-source
