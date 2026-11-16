@@ -39,6 +39,8 @@ jobs:
           printf '#!/bin/sh\nexec /opt/chez/bin/scheme "$@"\n' > /opt/chez/bin/chez
           chmod +x /opt/chez/bin/chez
           echo '/opt/chez/bin' >> "$GITHUB_PATH"
+          echo 'CHEZ=/opt/chez/bin/chez' >> "$GITHUB_ENV"
+          echo 'JOLT_CHEZ=/opt/chez/bin/chez' >> "$GITHUB_ENV"
       - name: Build jolt with the watchdog
         run: |
           set -eu

@@ -97,52 +97,8 @@ check_override() {
 check_override CHEZ
 check_override CHEZSCHEME
 
-# A Chez already on PATH is used as-is, with NOTHING set. This is the case the
-# release matrix depends on: every non-Linux row builds its own Chez and exposes
-# it as `chez` on PATH, then runs a bare `make jolt-release`. If that fell through
-# to local provisioning, a release would silently ship a binary built by a Chez
-# other than the one the job prepared — and the two differ in exactly the ways
-# that matter here (threading, libc floor, cross target).
-check_path_discovery() {
-  local output real
-
-  # A toolchain already provisioned into .cache/local takes precedence over PATH,
-  # so this checkout can no longer answer the question. Legitimate state, and it
-  # does not arise on a release runner: those are fresh clones that put their own
-  # chez on PATH before any make runs, so nothing provisions.
-  if [ -d "$root/.cache/local" ]; then
-    echo "makefile smoke: SKIP PATH discovery (.cache/local is provisioned here)"
-    return 0
-  fi
-
-  # Deliberately the REAL chez, not the stub used above: provisioning validates
-  # what it finds on PATH and rejects a stub, so a fake would fall through and
-  # provision — testing the opposite of the intended case.
-  real="$(command -v chez 2>/dev/null || command -v chezscheme 2>/dev/null || command -v scheme 2>/dev/null || true)"
-  if [ -z "$real" ]; then
-    echo "makefile smoke: SKIP PATH discovery (no Chez on PATH)"
-    return 0
-  fi
-
-  output="$(make -C "$root" -f "$probe_mk" --no-print-directory -s inspect-chez)"
-
-  grep -Fx "jolt-chez=$real" <<<"$output" >/dev/null || {
-    echo "a Chez on PATH was not selected; expected $real, got:" >&2
-    echo "$output" >&2
-    exit 1
-  }
-  grep -Fx "local-origin=undefined" <<<"$output" >/dev/null || {
-    echo "provisioned a local toolchain despite a Chez on PATH:" >&2
-    echo "$output" >&2
-    exit 1
-  }
-}
-
-check_path_discovery
-
-# A fake Chez answering all three discovery names (chez, chezscheme, scheme)
-# with a chosen version, so shadowing PATH controls exactly what discovery
-# sees regardless of what else the machine has installed.
+# A fake Chez answering all three names a Chez goes by (chez, chezscheme,
+# scheme) with a chosen version, put first on PATH to show make ignores it.
 fake_chez_bin() {
   local dir=$1 line=$2 bare=$3
 
@@ -170,44 +126,17 @@ FAKE
   ln -sf chez "$dir/scheme"
 }
 
-# Nothing explicit selected + a Chez on PATH at or above the floor: used as-is,
-# with NOTHING provisioned or pinned — the system toolchain builds and links
-# everything, self-consistent end to end. All three discovery names are
-# shadowed so a real Chez further down PATH can't answer for the fake.
-check_system_chez_preferred() {
-  local bin out
+# With nothing explicit selected, make provisions the pinned, patched Chez —
+# whatever Chez is on PATH, newer ones included, since nothing says a Chez on
+# PATH carries jolt's kernel patches. CC is pinned to the Chez build's own
+# compiler, so the standalone-binary link cannot mix one compiler's driver
+# with another's binutils (#788: distro cc 16 driving the provisioned
+# pre-.base64 gas).
+check_provision() {
+  local version=$1 bin out
 
-  bin="$tmp/newer"
-  fake_chez_bin "$bin" 'Chez Scheme Version 10.9.0' '10.9.0'
-  bin="$(cd "$bin" && pwd -P)"
-
-  out="$(PATH="$bin:$PATH" make -C "$root" -f "$probe_mk" --no-print-directory -s inspect-chez)"
-
-  grep -Fx "jolt-chez=$bin/chez" <<<"$out" >/dev/null || {
-    echo "a same-or-newer Chez on PATH was not selected; expected $bin/chez, got:" >&2
-    echo "$out" >&2
-    exit 1
-  }
-  grep -Fx "gcc-origin=undefined" <<<"$out" >/dev/null || {
-    echo "provisioning armed despite a same-or-newer system Chez:" >&2
-    echo "$out" >&2
-    exit 1
-  }
-  grep -Fx "joltcc-origin=undefined" <<<"$out" >/dev/null || {
-    echo "JOLT_CC pinned without any provisioning armed:" >&2
-    echo "$out" >&2
-    exit 1
-  }
-}
-
-# Nothing qualifies (only an older-than-floor Chez on PATH): provisioning arms —
-# pinned Chez + xPack GCC — and CC is pinned to that same provisioned GCC, so
-# the standalone-binary link cannot mix one compiler's driver with another's
-# binutils (#788: distro cc 16 driving the provisioned pre-.base64 gas).
-check_provision_fallback() {  local bin out
-
-  bin="$tmp/older"
-  fake_chez_bin "$bin" 'Chez Scheme Version 10.3.9' '10.3.9'
+  bin="$tmp/path-$version"
+  fake_chez_bin "$bin" "Chez Scheme Version $version" "$version"
   bin="$(cd "$bin" && pwd -P)"
 
   out="$(PATH="$bin:$PATH" make -C "$root" -f "$probe_mk" --no-print-directory -s inspect-chez)"
@@ -220,7 +149,7 @@ check_provision_fallback() {  local bin out
     }
   else
     grep -Fx "gcc-origin=file" <<<"$out" >/dev/null || {
-      echo "provisioning did not arm despite no qualifying system Chez:" >&2
+      echo "provisioning did not arm with Chez $version on PATH:" >&2
       echo "$out" >&2
       exit 1
     }
@@ -229,11 +158,11 @@ check_provision_fallback() {  local bin out
   # .cache/local: the nix develop shell puts the provisioned toolchain somewhere
   # else entirely, and a pattern anchored on this checkout asserts the layout
   # rather than the property (which is that the PINNED toolchain won, not the
-  # older one on PATH).
+  # one on PATH).
   local root_dir
   root_dir="$(sed -n 's/^local-root=//p' <<<"$out")"
   grep -E "^jolt-chez=${root_dir%/}/chezscheme-[0-9.]+/bin/scheme$" <<<"$out" >/dev/null || {
-    echo "pinned provisioned Chez not selected as the fallback:" >&2
+    echo "pinned provisioned Chez not selected over Chez $version on PATH:" >&2
     echo "$out" >&2
     exit 1
   }
@@ -265,41 +194,6 @@ check_provision_fallback() {  local bin out
   else
     grep -E "^joltcc-env=${root_dir%/}/gcc-[0-9.-]+/bin/gcc$" <<<"$out" >/dev/null || {
       echo "provisioning armed but JOLT_CC not pinned to the provisioned GCC:" >&2
-      echo "$out" >&2
-      exit 1
-    }
-  fi
-}
-
-# A Chez on PATH that answers NOTHING (broken install, stub, wrong binary) must
-# not be selected by the floor probe: an empty version carries no information,
-# and an all-equal component comparison would otherwise treat it as at-floor.
-# The pinned provision is the safe fallback — this is the "broken" arm of the
-# same-or-newer rule.
-check_broken_chez_falls_back() {
-  local bin out
-
-  bin="$tmp/broken"
-  mkdir -p "$bin"
-  printf '#!/bin/sh\nexit 0\n' >"$bin/chez"
-  chmod +x "$bin/chez"
-  ln -sf chez "$bin/chezscheme"
-  ln -sf chez "$bin/scheme"
-  bin="$(cd "$bin" && pwd -P)"
-
-  out="$(PATH="$bin:$PATH" make -C "$root" -f "$probe_mk" --no-print-directory -s inspect-chez)"
-
-  if [ "$bionic" -eq 1 ]; then
-    local root_dir
-    root_dir="$(sed -n 's/^local-root=//p' <<<"$out")"
-    grep -E "^jolt-chez=${root_dir%/}/chezscheme-[0-9.]+/bin/scheme$" <<<"$out" >/dev/null || {
-      echo "a silent Chez on PATH was not replaced by the pinned provision:" >&2
-      echo "$out" >&2
-      exit 1
-    }
-  else
-    grep -Fx "gcc-origin=file" <<<"$out" >/dev/null || {
-      echo "a silent Chez on PATH was selected instead of falling back to provisioning:" >&2
       echo "$out" >&2
       exit 1
     }
@@ -357,9 +251,9 @@ check_gambit_detection() {
   done
 }
 
-check_system_chez_preferred
-check_provision_fallback
-check_broken_chez_falls_back
+check_provision 10.3.9
+check_provision 10.4.1
+check_provision 10.9.0
 check_gambit_detection
 
 # build.ss bld-cc is the seam the JOLT_CC pin lands on: the native link honors
@@ -420,8 +314,7 @@ actual_bldcc="$("${JOLT_CHEZ:-chez}" --script "$bldcc_ss")" || {
 }
 
 echo "makefile smoke: explicit Chez overrides bypass local provisioning,"
-echo "                a Chez on PATH is used without provisioning,"
-echo "                a same-or-newer system Chez is preferred over provisioning,"
+echo "                a Chez on PATH is never used: the patched Chez is provisioned,"
 echo "                provisioning pins CC to the provisioned GCC,"
 echo "                the gambit gates honor GAMBIT_PREFIX and JOLT_REQUIRE_GAMBIT,"
 echo "                and bld-cc honors CC / JOLT_TARGET_CC"

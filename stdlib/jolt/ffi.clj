@@ -66,7 +66,7 @@
   doubles, and on any arm64 it can't compile a struct over 16 bytes there. On
   x86_64 a struct of 3, 5, 6, 7, 11, 13, 14 or 15 bytes overwrites the start
   of the argument after it. jolt's release binaries carry a patched Chez, but a
-  jolt built over a system Chez runs without the patch and looks the same. The answer is true or
+  jolt built over an unpatched Chez runs without the patch and looks the same. The answer is true or
   false, probed once per process, or nil where jolt can't tell (another
   machine, a pb build, or a binary without the compiler). A library that passes
   structs by value can refuse a signature only where it would be misplaced:
