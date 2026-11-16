@@ -901,7 +901,11 @@
     ;; Optional calling-convention slot (e.g. (__varargs_after 2) for a variadic
     ;; libc function like fcntl — Apple arm64 passes variadic args in the caller's
     ;; register-save area, so a fixed-arity call silently corrupts them).
-    ((_ conv name args res) (foreign-procedure conv name args res))))
+    ((_ conv name args res) (foreign-procedure conv name args res))
+    ;; Two conventions: __atomic __alloc, for a C entry that never calls back
+    ;; and only allocates (rt.ss's kernel 64-bit wraparound ops, declared as
+    ;; Chez declares its own bignum ops).
+    ((_ conv1 conv2 name args res) (foreign-procedure conv1 conv2 name args res))))
 
 ;; (sa-foreign-procedure-native-error error-convention (conv ...) name args res)
 ;; -> foreign procedure

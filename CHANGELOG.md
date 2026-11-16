@@ -128,6 +128,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`unchecked-multiply`, `-add` and `-subtract` are 3 to 6 times faster once
+  a long leaves the fixnum range.** A long past 2^60 is a bignum on Chez, and
+  every bignum op there is a C call, so the exact result followed by the
+  64-bit mask was three or four of them. A new kernel patch
+  (`chez-patches/0008`) adds 64-bit wraparound add, subtract and multiply
+  entries that read the operands in C and return the wrapped long in one
+  call. Per iteration, `(unchecked-multiply 31 h)` with `h` overflowing went
+  from 121.5 ns to 25.2 ns, an overflowing `unchecked-add` from 82.7 ns to
+  25.3 ns, and a hash step `(unchecked-add (unchecked-multiply 31 h) i)` from
+  188.5 ns to 46.8 ns (#1649). A Chez built without jolt's patches, and the
+  gambit target, keep the previous path. A product that stays small costs
+  about 2 ns more (3.6 to 5.5 ns), for the check that routes a wide one to
+  the kernel without building it first.
 - **`extend-type` and `extend-protocol` no longer rebuild the class-name tables
   after every new record.** Each protocol registration asked whether the type
   name was a JVM spelling of a record in a dashed namespace (`rf.def_two.R3`),
