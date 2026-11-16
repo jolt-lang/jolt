@@ -71,7 +71,7 @@
 (def ^:private handled
   #{"quote" "if" "do" "def" "fn*" "let*" "loop*" "recur" "throw" "try"
     "syntax-quote" "var" "letfn*" "set!" "defmacro"
-    "monitor-enter" "monitor-exit"})
+    "monitor-enter" "monitor-exit" "load-time-value"})
 
 ;; ...of which these dispatch ONLY namespace-qualified. `syntax-quote` names no
 ;; Clojure special form — it is jolt's marker for a `, which the reader always
@@ -873,6 +873,19 @@
             :fn (analyze ctx fn-form env)}
            (if meta-expr {:meta-expr meta-expr} {:meta base}))))
 
+;; (jolt.host/load-time-value expr) — Common Lisp's load-time-value: EXPR is
+;; evaluated once, when the top-level form containing it is loaded (from source
+;; or from a compiled artifact alike), and every evaluation of the site reads that
+;; value. It is what a JVM class's static initializer is to the constants it sets
+;; up, and it is how code captures something that holds while it LOADS — the
+;; context a jolt.loader namespace is loaded into — without baking in what held
+;; when it was compiled. EXPR sees no locals: it runs before any of them exist.
+(defn- analyze-load-time-value [ctx items]
+  (when-not (= 2 (count items))
+    (analysis-error :analyze/invalid-load-time-value
+                    (str "load-time-value takes one expression, got " (dec (count items)))))
+  {:op :load-time-value :expr (analyze ctx (second items) (empty-env))})
+
 (defn- analyze-special [ctx op form items env]
   (case op
     "quote"         (analyze-quote ctx items env)
@@ -891,8 +904,7 @@
     ;; expand their own locking macro rather than calling clojure.core/locking
     ;; emit these directly (borkdude/dynaload does, under malli), so lower them
     ;; to that seam instead of punting. Like the JVM, both yield nil.
-    "monitor-enter" (analyze-monitor-op ctx items env "monitor-enter")
-    "monitor-exit"  (analyze-monitor-op ctx items env "monitor-exit")
+    ("monitor-enter" "monitor-exit") (analyze-monitor-op ctx items env op)
     "letfn*"        (analyze-letfn* ctx items env)
     "fn*"           (analyze-fn ctx form items env)
     ;; Lower the backtick to construction code (zero runtime cost), then analyze
@@ -901,6 +913,7 @@
     "var"           (analyze-var ctx items)
     "defmacro"      (analyze-defmacro ctx items env)
     "set!"          (analyze-set! ctx items env)
+    "load-time-value" (analyze-load-time-value ctx items)
     (analysis-error :analyze/unsupported-special-form
                     (str "Unsupported special form: " op))))
 
@@ -1196,9 +1209,19 @@
 ;; macro-emitted (clojure.core/letfn …) must still dispatch to the special form.
 ;; A `qualified-only` head is the reverse: bare, it is just a name.
 (defn- special-form-name [head hname]
-  (or (when-not (contains? qualified-only hname) hname)
+  (or (when-not (contains? qualified-only hname)
+        ;; load-time-value is jolt's, so it dispatches only as jolt.host/…: a
+        ;; program's own load-time-value stays a plain name
+        (when-not (= "load-time-value" hname) hname))
+      (when (and (form-sym? head)
+                 (= "jolt.host" (form-sym-ns head))
+                 (= "load-time-value" (form-sym-name head)))
+        "load-time-value")
+      ;; clojure.core/load-time-value names no var, as on the JVM: it is not
+      ;; the special form
       (when (and (form-sym? head)
                  (= "clojure.core" (form-sym-ns head))
+                 (not= "load-time-value" (form-sym-name head))
                  (contains? handled (form-sym-name head)))
         (form-sym-name head))))
 

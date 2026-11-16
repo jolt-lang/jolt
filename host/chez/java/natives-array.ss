@@ -177,20 +177,32 @@
                    ((bytevector? v) (bytevector-length v))
                    (else (flvector-length v)))))))
 (define (ja-len a) (ja-backing-len (jolt-array-vec a)))
-;; alength in call position (op registry): the count of any array-like, but nil
-;; is the NullPointerException the JVM raises rather than 0.
+;; alength in call position (op registry): an array's length; nil is the
+;; NullPointerException the JVM raises rather than 0.
 ;; The message names what was read, as the reference's helpful NPE does
 ;; ("Cannot read the array length because \"xs\" is null"). An empty one reported
 ;; as "Unhandled exception (NullPointerException): " and stopped. Note that an
 ;; empty message is CORRECT for the NoSuchElementException sites elsewhere — the
 ;; JVM's is genuinely null there — so this is not a blanket rule.
+;; Anything else that is not an array (a vector, string, map, list) is the
+;; IllegalArgumentException the JVM's reflective RT.alength call raises. It used
+;; to answer jolt-count, so code relying on alength to reject a non-array got a
+;; plausible number instead (#1677). Every jolt array is a jolt-array record.
 (define (jolt-alength a)
   (cond ((jolt-array? a) (ja-len a))
         ((jolt-nil? a)
          (throw-jvm 'NullPointerException "Cannot read the array length because the array is null"))
-        (else (jolt-count a))))
+        (else (throw-jvm 'IllegalArgumentException
+                         "No matching method alength found taking 1 args"))))
+;; A reference array of component class cls (a JVM name string) over the
+;; elements of xs, a Scheme list or any seqable. The interop methods the JVM
+;; answers with a typed array (getStackTrace, File.list, Class.getInterfaces...)
+;; return one, so alength and .isArray see an array there as they do on the JVM.
+;; host/gambit/rt-core.ss has its own, a vector: that host has no arrays.
+(define (jolt-ref-array xs cls)
+  (make-jolt-array (list->vector (if (list? xs) xs (seq->list xs))) cls))
 ;; (alength a) on a hinted array (the numeric pass's :v-alength). Same answer as
-;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and generic count.
+;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and its throw.
 (define (jolt-valength a)
   (if (jolt-array? a) (ja-len a) (jolt-alength a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM

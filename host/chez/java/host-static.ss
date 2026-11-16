@@ -557,6 +557,10 @@
     ("print-writer" "printf" varargs)
     ("print-writer" "println" 0 1)
     ("print-writer" "write" 1 3)
+    ("console" "format" varargs)
+    ("console" "printf" varargs)
+    ("console" "readLine" varargs)
+    ("console" "readPassword" varargs)
     ("print-writer-on" "append" 1 3)
     ("print-writer-on" "write" 1 3)
     ("process" "waitFor" 0 1 2)
@@ -2092,9 +2096,24 @@
          (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
              (apply (var-cell-root cell) args)
              ;; a ctor for a class some provider CLAIMS, that never resolved,
-             ;; is that provider's absence — name it; otherwise it is a genuine
-             ;; missing ctor on a class jolt does have.
+             ;; is that provider's absence — name it. So is one for a class jolt
+             ;; knows nothing about at all: an :import of com.nosuch.Thing
+             ;; succeeds here (a library may import a class it never touches),
+             ;; and "No matching ctor found for class Thing" then read as an
+             ;; arity mismatch on a class that exists (#1683). Only a class jolt
+             ;; does have — statics, or a place in the class graph — is a
+             ;; genuinely missing ctor.
              (throw-jvm (quote IllegalArgumentException)
-               (if (lib-provider-for class)
+               (if (or (lib-provider-for class) (not (host-class-known? class)))
                    (unknown-class-message class)
                    (string-append "No matching ctor found for class " class)))))))))
+
+;; Does jolt know CLASS — a simple, imported or qualified name — as a class, ctor
+;; or no ctor: the runtime registers statics or a ctor for it, or the class graph
+;; models it (java.lang.Number, an interface).
+(define (host-class-known? class)
+  (let ((fqn (static-class-fqn class)))
+    (or (runtime-provides-class? fqn)
+        (lookup-class class-statics-tbl fqn)
+        (jch-known-exact? fqn)
+        (jch-interface? fqn))))

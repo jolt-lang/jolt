@@ -32,8 +32,8 @@
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
-                     hoist-const-per-site hoist-seed-root hoist-var-cell site-const
-                     unique-keyword-key-literal?]]
+                     hoist-const-per-site hoist-load-time hoist-seed-root hoist-var-cell
+                     site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
@@ -1383,8 +1383,10 @@
 
 ;; Literal data the reader built: quoted forms, and the regex, #inst, #uuid,
 ;; bigdec and namespace leaves.
+(declare ^:private emit-load-time-value)
 (defn- emit-data-node [node]
   (case (:op node)
+    :load-time-value (emit-load-time-value node)
     ;; A quoted scalar (form-char?/form-literal?) emits as an immediate constant
     ;; via emit-const — nothing to hoist. Every other quoted form (symbol, list,
     ;; vector, map, set, regex/inst/uuid/tagged) is a CONSTRUCTION rebuilt per
@@ -1416,6 +1418,34 @@
     ;; a namespace value spliced into a form (~*ns*) -> reconstruct by name.
     :the-ns (str "(intern-ns! " (chez-str-lit (:name node)) ")")))
 
+;; (jolt.host/load-time-value expr): EXPR is emitted on its own — none of the
+;; site's def pool, cache cells, quote pool, or enclosing fn's site-call helper
+;; and frame names, all bound INSIDE the scope it is hoisted out of, and no tail
+;; position or local tables, since the analyzer gave it no locals — and bound
+;; once in the top-level form's load-time scope.
+(defn- emit-load-time-value [node]
+  (hoist-load-time
+   (binding [*const-pool* nil
+             jolt.backend-scheme.hoist/*cache-cells* nil
+             jolt.backend-scheme.hoist/*const-ids* nil
+             literals/*quote-pool* nil
+             literals/*quote-shared* nil
+             *tail?* false
+             *recur-target* nil
+             *known-procs* {}
+             *array-vecs* {}
+             *letrec-binders* #{}
+             *dl-self* nil
+             ;; per-fn emission state: the site-call helper and the frame names
+             ;; are bound by the fn the site sits in, which the hoisted
+             ;; expression is not inside
+             session/*site-call* nil
+             session/*self-wrap* nil
+             *trace-site* nil
+             session/*trace-self* #{}
+             *trace-frame* nil]
+     (emit (:expr node)))))
+
 (defn emit* [node]
   (case (:op node)
     :const (emit-const (:val node))
@@ -1428,7 +1458,7 @@
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)
     (:vector :set :map) (emit-coll-literal node)
-    (:quote :regex :inst :uuid :bigdec :the-ns) (emit-data-node node)
+    (:quote :regex :inst :uuid :bigdec :the-ns :load-time-value) (emit-data-node node)
     ;; the thrown value is an operand (emitted non-tail); the throw itself goes
     ;; through emit-call with marks?=#f, so a TAIL throw gets the site-vreg pair
     ;; (sited-tail-call — stored after the operand is bound, so the operand's own
@@ -1533,7 +1563,7 @@
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])
             *fnsrc-def-init?* fn?]
-    (let [i (emit-with-cells #(emit (:init node)))]
+    (let [i (with-load-time-scope (fn [] (emit-with-cells #(emit (:init node)))))]
       [i (trace-callsite-reg) (fnsrc-flush)])))
 
 ;; An unlinked def: def-var-with-meta! or def-var-plain!. A def evaluates to its
@@ -1652,14 +1682,19 @@
                 ;; this one (fresh counter/regs per def) and flush it themselves.
                 ;; emit-top-cells declines a :def itself, so this reaches it only
                 ;; for expressions.
-                (not (direct-link?)) (emit-top-cells node #(emit node))
+                ;; Every arm opens the load-time scope (with-load-time-scope)
+                ;; except the two direct-link ones that emit a bare top-level
+                ;; (define …)/(begin …), which no let may wrap: a spliced do
+                ;; re-enters here per statement, and a direct-linked def opens
+                ;; the scope around its init (emit-def-init).
+                (not (direct-link?)) (with-load-time-scope (fn [] (emit-top-cells node #(emit node))))
                 ;; top-level do splices: each statement/ret is itself a top-level form.
                 (= :do (:op node))
                 (str "(begin " (str/join " " (map emit-top-form (:statements node)))
                      (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
                 (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
                 (emit-def-cached node)
-                :else (emit-top-cells node #(emit node)))
+                :else (with-load-time-scope (fn [] (emit-top-cells node #(emit node)))))
           freg (fnsrc-flush)]
       (cond
         (= freg "") scm

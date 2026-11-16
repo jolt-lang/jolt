@@ -960,6 +960,11 @@
   (if (jolt-nil? a) (error 'alength "null") (jolt-count a)))
 ;; the hinted alength the numeric pass emits (natives-array.ss)
 (define (jolt-valength a) (jolt-alength a))
+;; natives-array.ss's typed reference array, for the shared interop files that
+;; answer one (records-interop, dot-forms, class-model). No arrays on this
+;; target, so it is the vector those answered before.
+(define (jolt-ref-array xs cls)
+  (apply jolt-vector (if (list? xs) xs (seq->list xs))))
 ;; Every value printed this way carries its identity hash, as the JVM's
 ;; print-object writes (System/identityHashCode o) for any object (jolt-28we).
 (define (jolt-object-repr x readable?)

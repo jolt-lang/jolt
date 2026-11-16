@@ -1,0 +1,77 @@
+diff --git a/c/number.c b/c/number.c
+--- a/c/number.c
++++ b/c/number.c
+@@ -422,6 +422,47 @@
+   }
+ }
+ 
++/* jolt: signed 64-bit wraparound arithmetic, Java long semantics. Each op
++   takes two exact integers of any size and returns the low 64 bits of their
++   exact sum, difference or product as a signed (two's complement) integer:
++   the same value as computing the exact result and folding it with
++   (bitwise-and r #xFFFFFFFFFFFFFFFF) plus a sign fixup, but without
++   building the exact result. Arithmetic modulo 2^64 depends only on each
++   operand's low 64 bits, so a bignum operand of any length is reduced first.
++   The result comes from Sinteger64, so it is a fixnum whenever it fits and a
++   normalized bignum otherwise. Anything that is not an exact integer returns
++   #f and allocates nothing, so a caller cannot reach the bigit reads below
++   with a flonum or ratnum. Called through foreign-procedure __atomic __alloc,
++   like (cs)mul: the operands are read into C integers before the one
++   allocation. */
++static Suint64_t s64_low64(ptr x) {
++  iptr xl; Suint64_t u;
++  if (Sfixnump(x)) return (Suint64_t)(Sint64_t)UNFIX(x);
++  xl = BIGLEN(x);
++  u = BIGIT(x, xl - 1);
++#if (U64_bigits == 2)
++  if (xl >= 2) u |= (Suint64_t)BIGIT(x, xl - 2) << bigit_bits;
++#endif
++  return BIGSIGN(x) ? (Suint64_t)0 - u : u;
++}
++
++#define S64_INTP(x) (Sfixnump(x) || Sbignump(x))
++
++ptr S_s64_add_wrap(ptr x, ptr y) {
++  if (!(S64_INTP(x) && S64_INTP(y))) return Sfalse;
++  return Sinteger64((Sint64_t)(s64_low64(x) + s64_low64(y)));
++}
++
++ptr S_s64_sub_wrap(ptr x, ptr y) {
++  if (!(S64_INTP(x) && S64_INTP(y))) return Sfalse;
++  return Sinteger64((Sint64_t)(s64_low64(x) - s64_low64(y)));
++}
++
++ptr S_s64_mul_wrap(ptr x, ptr y) {
++  if (!(S64_INTP(x) && S64_INTP(y))) return Sfalse;
++  return Sinteger64((Sint64_t)(s64_low64(x) * s64_low64(y)));
++}
++
+ /* extended arithmetic macros: use w/o trailing semicolon */
+ #define ELSH(n,x,k) { /* undefined when n == 0 */\
+   INT _n_ = (INT)(n); bigit _b_ = *(x), _newk_ = _b_>>(bigit_bits-_n_);\
+diff --git a/c/externs.h b/c/externs.h
+--- a/c/externs.h
++++ b/c/externs.h
+@@ -313,6 +313,9 @@
+ extern ptr S_add(ptr x, ptr y);
+ extern ptr S_sub(ptr x, ptr y);
+ extern ptr S_mul(ptr x, ptr y);
++extern ptr S_s64_add_wrap(ptr x, ptr y);
++extern ptr S_s64_sub_wrap(ptr x, ptr y);
++extern ptr S_s64_mul_wrap(ptr x, ptr y);
+ extern ptr S_div(ptr x, ptr y);
+ extern ptr S_rem(ptr x, ptr y);
+ extern ptr S_trunc(ptr x, ptr y);
+diff --git a/c/prim5.c b/c/prim5.c
+--- a/c/prim5.c
++++ b/c/prim5.c
+@@ -1856,6 +1856,9 @@
+     Sforeign_symbol("(cs)add", (void *)S_add);
+     Sforeign_symbol("(cs)gcd", (void *)S_gcd);
+     Sforeign_symbol("(cs)mul", (void *)S_mul);
++    Sforeign_symbol("(cs)s64_add_wrap", (void *)S_s64_add_wrap);
++    Sforeign_symbol("(cs)s64_sub_wrap", (void *)S_s64_sub_wrap);
++    Sforeign_symbol("(cs)s64_mul_wrap", (void *)S_s64_mul_wrap);
+     Sforeign_symbol("(cs)s_ash", (void *)S_ash);
+     Sforeign_symbol("(cs)s_big_positive_bit_field", (void *)S_big_positive_bit_field);
+     Sforeign_symbol("(cs)s_big_eq", (void *)S_big_eq);

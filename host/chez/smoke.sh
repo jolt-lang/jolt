@@ -1475,6 +1475,22 @@ else
 fi
 rm -f "$bbshadow/src/cheshire/core.clj"; rmdir "$bbshadow/src/cheshire" 2>/dev/null
 
+# jsonista.core is bundled the same way, for muuntaja and other libraries
+# written against it (#1683). A project that depends on metosin/jsonista still
+# gets jolt's copy: the real one is Jackson and could never load. A mapper
+# answers instance? ObjectMapper, as muuntaja tests it.
+mkdir -p "$bbshadow/src/jsonista"
+printf '(ns jsonista.core)\n(def marker :decoy)\n' > "$bbshadow/src/jsonista/core.clj"
+jsn_out="$(cd "$bbshadow" && JOLT_NO_DEVCACHE=1 "$bbs_jolt" -e '(do (require (quote [jsonista.core :as j])) [(nil? (resolve (quote jsonista.core/marker))) (j/write-value-as-string {:a/b [1 1/2]}) (j/read-value "{\"k\":[1]}" j/keyword-keys-object-mapper) (instance? com.fasterxml.jackson.databind.ObjectMapper (j/object-mapper))])' 2>&1 | tail -1)"
+if [ "$jsn_out" = '[true "{\"a/b\":[1,0.5]}" {:k [1]} true]' ]; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: bundled jsonista.core (shadowed, or not jsonista's output)"
+  echo "    want \`[true \"{\\\"a/b\\\":[1,0.5]}\" {:k [1]} true]\` got \`$jsn_out\`"
+  fails=$((fails + 1))
+fi
+rm -f "$bbshadow/src/jsonista/core.clj"; rmdir "$bbshadow/src/jsonista" 2>/dev/null
+
 # bencode.core is bundled like babashka does. It's the library's own file, so a
 # project declaring nrepl/bencode keeps its own copy.
 bnc_dir="$(mktemp -d)"

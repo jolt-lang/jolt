@@ -659,6 +659,27 @@
           (do (repl-eval-entry! form)
               (recur read-entry)))))))
 
+;; A task that takes a command's name usually wants that command underneath: a
+;; `build` task that shells out to `jolt build -m app.main`. That inner call would
+;; land on the task again, forever. So while an :override-builtin task runs, its
+;; command and project are listed in JOLT_OVERRIDE_ACTIVE, which every child
+;; process inherits, and a jolt started with its own command and project on that
+;; list runs the built-in. Keyed by project as well as command, so a task that
+;; runs `jolt build` in another project still reaches that project's own task.
+;; `jolt run build` marks it too, since the task's body is the same either way.
+(def ^:private override-active-var "JOLT_OVERRIDE_ACTIVE")
+
+(defn- override-key [cmd]
+  (str cmd " " (.getCanonicalPath (java.io.File. (project-dir)))))
+
+(defn- override-active []
+  (when-let [v (jolt.host/getenv override-active-var)]
+    (remove str/blank? (str/split-lines v))))
+
+(defn- mark-override-active! [cmd]
+  (jolt.host/setenv! override-active-var
+                     (str/join "\n" (cons (override-key cmd) (override-active)))))
+
 ;; A bb.edn / deps.edn :tasks entry. The semantics live in jolt.tasks — required
 ;; here only when a task actually runs, so the CLI's startup closure (and the
 ;; AOT'd jolt.main in a built binary) stays free of it and of babashka.process.
@@ -674,6 +695,8 @@
     (when (nil? task)
       (throw (ex-info (str "unknown command or task: " name " (see 'jolt tasks')")
                       {:name name})))
+    (when (and (map? task) (:override-builtin task))
+      (mark-override-active! name))
     ;; tolerant: see natives/load-natives! — the task may be the build step for a
     ;; :jolt/native library that does not exist yet
     (apply-project! resolved false)
@@ -770,7 +793,7 @@
   (let [t (get (deps/project-tasks (project-dir)) (symbol cmd))]
     (cond
       (nil? t)                             false
-      (and (map? t) (:override-builtin t)) true
+      (and (map? t) (:override-builtin t)) (not (some #{(override-key cmd)} (override-active)))
       :else                                (do (warn-shadowed-task! cmd) false))))
 
  ;; build [-m NS | FILE] [-o OUT] [--opt | --dev] [--no-direct-link] — AOT-compile
