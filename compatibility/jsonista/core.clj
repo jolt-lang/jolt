@@ -269,21 +269,32 @@
 
 (defn- empty-value?
   "Jackson's NON_EMPTY, which :strip-nils turns on: nil, or an empty string,
-  collection, map or array."
+  collection or array, or a map whose every value is itself empty, since
+  Jackson asks a map whether anything would be left of it once its own
+  entries are stripped ({:a {:b nil}} is written as {})."
   [v]
   (or (nil? v)
       (and (string? v) (= 0 (count v)))
-      (and (or (coll? v) (instance? java.util.Map v) (instance? java.util.Collection v))
+      (and (or (map? v) (instance? java.util.Map v))
+           (every? empty-value? (vals v)))
+      (and (or (coll? v) (instance? java.util.Collection v))
            (empty? v))
-      (and (some? v) (.isArray (class v)) (= 0 (count v)))))
+      (and (.isArray (class v)) (= 0 (count v)))))
 
 (declare write-value*)
 
 (defn- write-object [^Writer w m opts pretty? level]
   (let [entries (cond->> (seq m)
                   (:strip-nils opts) (remove (fn [[_ v]] (empty-value? v)))
-                  (:order-by-keys opts) (sort-by key))
+                  ;; keys that do not compare (:a and "a") fail as Jackson's
+                  ;; sort does, with an IOException
+                  (:order-by-keys opts)
+                  (#(try (doall (sort-by key %))
+                         (catch ClassCastException e
+                           (throw (IOException. (str "Cannot order map entries by key: " (ex-message e)) e))))))
         n (inc level)]
+    (when (some #(nil? (key %)) entries)
+      (throw (IOException. "Null key for a Map not allowed in JSON")))
     (.write w "{")
     (if (empty? entries)
       (when pretty? (.write w " "))
