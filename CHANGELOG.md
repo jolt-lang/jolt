@@ -127,8 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name, and every deftype registers its bare name too. So once a library that
   defines a `Reader` type was loaded (ebb does), `(proxy [java.io.Reader] [] …)`
   built that type with no arguments and threw "Wrong number of args (0)",
-  which killed every later request to an nREPL server. A bare name a user type
-  owns now answers only for that type's own qualified name.
+  which killed every later request to an nREPL server. A `java.*` or `javax.*`
+  name no longer takes a user type's bare name.
 - **Custom test assertions keep their failure locations.** Stack reads inside
   `binding` and `try/finally` retain the enclosing function's source frame,
   and macro-generated calls inherit their source line. `matcher-combinators`

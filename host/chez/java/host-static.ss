@@ -886,12 +886,19 @@
       ;; name is registered as — but a deftype registers its bare name too
       ;; (protocols.ss), so java.io.Reader, which has no constructor of its own,
       ;; got the ctor of any user type called Reader, and a proxy over it built
-      ;; that type with no args. A bare name owned by a user type answers only
-      ;; for that type's own qualified name.
+      ;; that type with no args. A JVM platform name (java.*, javax.*) is never
+      ;; a user type, so it does not take one's bare name. Only those: the seed
+      ;; defines clojure.core's own types while the current ns is still user,
+      ;; so clojure.core.VecNode reaches its ctor through this fallback.
       (let ((short (short-class-name name)))
-        (and (not (let ((tag (hashtable-ref chez-simple-name-tag short #f)))
-                    (and tag (not (string=? short name)) (not (string=? tag name)))))
+        (and (not (and (hashtable-ref chez-simple-name-tag short #f)
+                       (platform-class-name? name)))
              (hashtable-ref h-tbl short #f)))))
+
+(define (platform-class-name? name)
+  (let ((n (string-length name)))
+    (or (and (> n 5) (string=? (substring name 0 5) "java."))
+        (and (> n 6) (string=? (substring name 0 6) "javax.")))))
 
 ;; ---- the concrete methods of an abstract host class -------------------------
 ;; (proxy [java.io.InputStream] [] (read …)) extends the class on the JVM and
