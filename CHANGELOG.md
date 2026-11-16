@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`sun.misc.Signal` handlers.**
+  `(Signal/handle (Signal. "USR2") handler)` registers a `SignalHandler`,
+  run as the JVM runs one: on a new daemon thread named `SIGUSR2 handler`,
+  returning the previous handler, with `SIG_DFL` and `SIG_IGN` and
+  `Signal/raise`. A handler for INT, TERM or HUP replaces the shutdown that
+  signal would run. Any other signal goes through a new kernel patch
+  (`chez-patches/0009-signal-relay.patch`): registering a handler installs a
+  C handler for that one signal, which writes its number to a pipe that a
+  jolt thread reads, so whichever thread the kernel interrupts, and whatever
+  it is doing, the handler runs. A signal nobody handles keeps the
+  disposition it had, a handler some C library installed earlier still runs,
+  and a jolt built as a library takes only the signals its program asks for
+  and gives them back at `jolt_library_shutdown`.
+  QUIT, KILL, STOP, FPE, SEGV and ILL are refused, as on the JVM, and so is
+  BUS (Chez's fault handler). On a stock Chez, without the relay, the CLI
+  blocks the other signals at startup for the shutdown watcher instead, and
+  TTIN, TTOU, PROF and VTALRM are refused there. (#1679)
+
 - **`jsonista.core` is bundled, so muuntaja loads.** Real jsonista wraps
   Jackson and its own compiled Java classes, so `(require 'jsonista.core)`
   failed at load on `(ObjectMapper.)`, and with it muuntaja and reitit's

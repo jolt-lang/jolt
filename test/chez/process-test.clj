@@ -1007,6 +1007,154 @@
             [(count err) (str/includes? err "Broken pipe")])
           [100000 false])
 
+;; sun.misc.Signal (#1679). INT, TERM and HUP stay the shutdown watcher's.
+;; Any other signal goes through the kernel's relay (chez-patches/0009) when it
+;; has one, and nothing past the three is blocked; on a stock Chez, or with
+;; JOLT_NO_SIGNAL_RELAY=1, the CLI blocks the rest at entry for the watcher.
+;; Both paths run below. CI's kernels all carry the patches, so there the relay
+;; must be present (JOLT_REQUIRE_LOCKFREE_CHEZ, as the lock-free gates use it).
+(def relay? (= "#t" (scm/eval-string "(format #f \"~s\" jolt-signal-relay?)")))
+(def signum (fn [nm] (scm/eval-string (str "(jolt-signal-number \"" nm "\")"))))
+(when (= "1" (System/getenv "JOLT_REQUIRE_LOCKFREE_CHEZ"))
+  (check-eq "the kernel has the signal relay" relay? true))
+
+(let [answer (fn [r n]
+               (scm/eval-string (str "(let ([b (sa-foreign-alloc 4)])"
+                                     " (sa-foreign-set! 'int b 0 " n ")"
+                                     " (let ([s (jolt-sigwait-signal " r " b)]) (sa-foreign-free b) s))")))]
+  (check-eq (if relay?
+              "sigwait answer: USR1, USR2 and WINCH are the relay's, not the watcher's"
+              "sigwait answer: USR1, USR2 and WINCH are the watcher's under the CLI")
+            [(answer 0 (signum "USR1")) (answer 0 (signum "USR2")) (answer 0 (signum "WINCH"))]
+            (if relay? [false false false] [(signum "USR1") (signum "USR2") (signum "WINCH")]))
+  (check-eq "sigwait answer: PROF is never the watcher's" (answer 0 (signum "PROF")) false))
+
+(defn- await-file [f]
+  (loop [n 0]
+    (when (and (< n 200) (str/blank? (slurp f)))
+      (Thread/sleep 50)
+      (recur (inc n)))))
+
+(doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
+  ;; A handler runs on a daemon thread named "SIG<NAME> handler", for a signal
+  ;; from outside and for its own Signal/raise; SIG_IGN drops USR1, WINCH's
+  ;; default ignores it, and a handler for INT replaces the shutdown. The
+  ;; process lives through all of them, and SIGTERM still runs the hooks.
+  (let [readyf (str (fs/create-temp-file {:prefix "jp-signal-" :suffix ".txt"}))
+        logf   (str (fs/create-temp-file {:prefix "jp-signal-log-" :suffix ".txt"}))
+        hookf  (str (fs/create-temp-file {:prefix "jp-signal-hook-" :suffix ".txt"}))
+        prog (str "(import '[sun.misc Signal SignalHandler])"
+                  "(defn note [& xs] (locking *ns* (spit \"" logf "\" (str (apply str xs) \"\\n\") :append true)))"
+                  "(Signal/handle (Signal. \"USR2\")"
+                  "  (reify SignalHandler (handle [_ s]"
+                  "    (note (.getName s) \" \" (.getName (Thread/currentThread)) \" \" (.isDaemon (Thread/currentThread))))))"
+                  "(Signal/handle (Signal. \"INT\") (reify SignalHandler (handle [_ s] (note \"INT\"))))"
+                  "(doseq [n [\"ALRM\" \"CHLD\" \"TSTP\"]]"
+                  "  (Signal/handle (Signal. n) (reify SignalHandler (handle [_ s] (note (.getName s))))))"
+                  "(Signal/handle (Signal. \"USR1\") SignalHandler/SIG_IGN)"
+                  "(.addShutdownHook (Runtime/getRuntime) (Thread. (fn [] (spit \"" hookf "\" \"RAN\"))))"
+                  "(Signal/raise (Signal. \"USR2\"))"
+                  "(.waitFor (.start (ProcessBuilder. [\"true\"])))"
+                  "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
+        proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
+        pid (.pid (:proc proc))
+        lines #(set (str/split-lines (slurp logf)))]
+    (await-file readyf)
+    (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
+      (sh ["sh" "-c" (str "kill -" s " " pid)])
+      (Thread/sleep 300))
+    (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
+              (contains? (lines) "USR2 SIGUSR2 handler true") true)
+    (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? (lines) "INT") true)
+    (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
+              (every? (lines) ["ALRM" "TSTP" "CHLD"]) true)
+    (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
+    (sh ["sh" "-c" (str "kill -TERM " pid)])
+    (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+    (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+    (check-eq (str "SIGTERM still runs the hooks alongside signal handlers (" mode ")") (slurp hookf) "RAN")
+    (check-eq (str "and exits 128+SIGTERM (" mode ")") (:exit @proc) 143)
+    (doseq [f [readyf logf hookf]] (fs/delete-if-exists f)))
+
+  ;; With no handler a signal does what it did before: CHLD, PIPE, URG and WINCH
+  ;; are dropped, TSTP stops the process and CONT resumes it, USR1 and ALRM end
+  ;; it by the signal with the hooks unrun.
+  (doseq [fatal ["USR1" "ALRM"]]
+    (let [readyf (str (fs/create-temp-file {:prefix "jp-sigdfl-" :suffix ".txt"}))
+          hookf  (str (fs/create-temp-file {:prefix "jp-sigdfl-hook-" :suffix ".txt"}))
+          prog (str "(.addShutdownHook (Runtime/getRuntime) (Thread. (fn [] (spit \"" hookf "\" \"RAN\"))))"
+                    "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
+          proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
+          pid (.pid (:proc proc))
+          state #(second (re-find #"State:\s+(\S)" (slurp (str "/proc/" pid "/status"))))]
+      (await-file readyf)
+      (when (= fatal "USR1")
+        (doseq [s ["CHLD" "PIPE" "URG" "WINCH"]]
+          (sh ["sh" "-c" (str "kill -" s " " pid)])
+          (Thread/sleep 200))
+        (check-eq (str "an unhandled CHLD, PIPE, URG or WINCH is dropped (" mode ")") (p/alive? proc) true)
+        ;; TSTP's default is to stop, but the kernel discards it for a process
+        ;; in an orphaned process group, which is what the smoke harness runs
+        ;; this gate in. So jolt is held to what a plain `sleep` started the
+        ;; same way does, stopped or not.
+        (when (fs/exists? "/proc/self/status")
+          (let [ctl (process ["sleep" "30"] {:out :string :err :string})
+                cpid (.pid (:proc ctl))
+                state-of (fn [p] (second (re-find #"State:\s+(\S)" (slurp (str "/proc/" p "/status")))))]
+            (Thread/sleep 200)
+            (sh ["sh" "-c" (str "kill -TSTP " pid " " cpid)])
+            (Thread/sleep 300)
+            (check-eq (str "an unhandled TSTP does to jolt what it does to sleep (" mode ")")
+                      (state) (state-of cpid))
+            (sh ["sh" "-c" (str "kill -CONT " pid " " cpid)])
+            (Thread/sleep 300)
+            (check-eq (str "and CONT leaves it running (" mode ")") (contains? #{"S" "R"} (state)) true)
+            (.destroyForcibly (:proc ctl)))))
+      (sh ["sh" "-c" (str "kill -" fatal " " pid)])
+      (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+      (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+      (check-eq (str "an unhandled " fatal " ends it by the signal, hooks unrun (" mode ")")
+                [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""])
+      (doseq [f [readyf hookf]] (fs/delete-if-exists f)))))
+
+;; Only the relay can give a handler TTIN, TTOU, PROF or VTALRM (blocked in
+;; every thread, the first two change what the terminal does to a background
+;; job and the others are CPU timers), or the PIPE the kernel sends the thread
+;; whose write found a closed pipe. Without it they are refused. BUS is Chez's
+;; fault handler's either way.
+(check-eq "TTIN, TTOU, PROF and VTALRM need the relay; BUS is refused"
+          (mapv (fn [n] (try (sun.misc.Signal/handle (sun.misc.Signal. n) sun.misc.SignalHandler/SIG_DFL) :taken
+                             (catch IllegalArgumentException e (ex-message e))))
+                ["TTIN" "TTOU" "PROF" "VTALRM" "BUS"])
+          (conj (if relay?
+                  [:taken :taken :taken :taken]
+                  ["Signal not supported by jolt: SIGTTIN" "Signal not supported by jolt: SIGTTOU"
+                   "Signal not supported by jolt: SIGPROF" "Signal not supported by jolt: SIGVTALRM"])
+                "Signal already used by VM or OS: SIGBUS"))
+(when relay?
+  (let [readyf (str (fs/create-temp-file {:prefix "jp-sigrelay-" :suffix ".txt"}))
+        logf   (str (fs/create-temp-file {:prefix "jp-sigrelay-log-" :suffix ".txt"}))
+        prog (str "(import '[sun.misc Signal SignalHandler])"
+                  "(doseq [n [\"TTIN\" \"PROF\" \"PIPE\"]]"
+                  "  (Signal/handle (Signal. n) (reify SignalHandler (handle [_ s]"
+                  "    (locking *ns* (spit \"" logf "\" (str (.getName s) \"\\n\") :append true))))))"
+                  "(spit \"" readyf "\" (str (.pid (ProcessHandle/current))))"
+                  "(dotimes [i 100000] (println \"line\" i))"
+                  "(Thread/sleep 30000)")
+        ;; stdout into a pipe whose reader is gone: the writes get SIGPIPE
+        proc (process ["sh" "-c" (str jolt-bin " -e '" (str/replace prog "'" "'\\''") "' | head -c 1 >/dev/null")]
+                      {:out :string :err :string})]
+    (await-file readyf)
+    (Thread/sleep 1000)
+    (let [pid (str/trim (slurp readyf))]
+      (doseq [s ["TTIN" "PROF"]]
+        (sh ["sh" "-c" (str "kill -" s " " pid)])
+        (Thread/sleep 300))
+      (check-eq "the relay gives handlers TTIN, PROF and a write's own PIPE"
+                (set (str/split-lines (slurp logf))) #{"TTIN" "PROF" "PIPE"})
+      (sh ["sh" "-c" (str "kill -9 " pid)]))
+    (doseq [f [readyf logf]] (fs/delete-if-exists f))))
+
 (if (empty? @failures)
   (println "PROCESS-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

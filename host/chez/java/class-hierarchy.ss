@@ -1408,6 +1408,12 @@
                       '("java.util.concurrent.locks.Lock" "java.io.Serializable"))
 (jch-register-supers! "java.util.concurrent.CountDownLatch" '())
 (jch-register-supers! "java.util.Timer" '())
+;; sun.misc.Signal (concurrency.ss). SignalHandler is outside java.*, so the
+;; generated interface table does not have it.
+(jch-register-supers! "sun.misc.Signal" '())
+(jch-register-supers! "sun.misc.SignalHandler" '())
+(jch-mark-interface! "sun.misc.SignalHandler")
+(jch-register-supers! "sun.misc.Signal$SunMiscHandler" '("sun.misc.SignalHandler"))
 (jch-register-supers! "java.util.TimerTask" '("java.lang.Runnable"))
 (jch-mark-abstract! "java.util.TimerTask")
 ;; AtomicInteger and AtomicLong extend Number on the JVM; AtomicBoolean and
@@ -1707,6 +1713,8 @@
     ("reentrant-lock" . "java.util.concurrent.locks.ReentrantLock")
     ("count-down-latch" . "java.util.concurrent.CountDownLatch")
     ("timer" . "java.util.Timer")
+    ("signal" . "sun.misc.Signal")
+    ("signal-native-handler" . "sun.misc.Signal$SunMiscHandler")
     ("random" . "java.util.Random")
     ("splittable-random" . "java.util.SplittableRandom")
     ("securerandom" . "java.security.SecureRandom")

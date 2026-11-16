@@ -2666,7 +2666,7 @@
   ;; app registered them from. A library build has no thread of its own to
   ;; arm; its host process owns both of these.
   (unless library? (put-string out "    (jolt-install-exit-handler!)\n"))
-  (unless library? (put-string out "    (jolt-arm-shutdown!)\n"))
+  (unless library? (put-string out "    (jolt-arm-signals!)\n"))
   ;; JOLT_PROFILE=sample: the sampler needs only the runtime, so a built
   ;; app can be profiled as it ships (sampler.ss). After the exit handler,
   ;; since the report is a shutdown hook.
