@@ -28,6 +28,7 @@ BOTH="$root/test/chez/tasks/both"
 DEPS="$root/test/chez/tasks/depsonly"
 NAT="$root/test/chez/tasks/native"
 CLI="$root/test/chez/tasks/cliproj"
+OVR="$root/test/chez/tasks/override"
 pass=0; fail=0
 export JOLT_NO_USER_DEPS=1
 # babashka.tasks/jolt (and `clojure`, its babashka name) re-invokes the jolt
@@ -528,6 +529,28 @@ case "$(inbb "$BOTH" tasks)" in
   *shadowed*) check "a command with no task of its name is quiet" "quiet" "warned" ;;
   *) check "a command with no task of its name is quiet" "quiet" "quiet" ;;
 esac
+# A task that takes a command's name and then runs that command, the way a
+# `build` task shells out to `jolt build -m app.main`, reaches the built-in
+# underneath. The inner call used to land on the task again and recurse until
+# killed (burinc/jolt#8). The fixture's tasks stop themselves at depth 2 and
+# print LOOP, so a regression fails here instead of hanging.
+# `path` prints the root absolute from bin/jolt and as ./src from a built
+# binary, so only its last segment is compared
+srcpath() { sed 's#^.*/src$#src#'; }
+check "an override task's own command reaches the built-in (jolt helper)" "task path
+src" "$(inbb "$OVR" path | srcpath)"
+check "...and through shell" "task tasks
+The following tasks are available:
+
+path
+tasks" "$(inbb "$OVR" tasks)"
+check "...and when started with run <task>" "task path
+src" "$(inbb "$OVR" run path | srcpath)"
+# keyed by project: the same command in another project is still its task
+check "another project's task of that name still runs" "task path
+enter path
+overridden path
+leave path" "$(inbb "$OVR" path other)"
 
 # --- errors ------------------------------------------------------------------
 

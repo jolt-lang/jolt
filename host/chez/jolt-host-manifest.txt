@@ -284,6 +284,7 @@ set-instant-ctor!
 set-source-roots!
 set-static-field!
 set-var!
+setenv!
 sh
 sh-out
 site-const-salt

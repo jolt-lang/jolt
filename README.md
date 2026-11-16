@@ -280,7 +280,8 @@ compiler — which is what `-f` is for. A task loses to one: a file on disk is w
 command too, unless it claims the name with `:override-builtin true` — and when
 one does lose, jolt says so, because the command answering in a project that
 declares the task otherwise reads like the task went missing. `jolt run greet`
-reaches the task either way.
+reaches the task either way. A task that claims a command's name can still run
+that command, so `jolt build` inside a `build` task's body runs the compiler.
 
 Startup is jolt's boot floor — the runtime and compiler image are instantiated on
 every run, which measures ~0.17s against babashka's ~0.01s on the same machine. A
