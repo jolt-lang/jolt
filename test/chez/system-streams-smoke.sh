@@ -310,8 +310,12 @@ if command -v python3 >/dev/null 2>&1 && ptyrun '' sh -c 'test -t 0 && test -t 1
   # newline after it is the Console's own, and echo is back on afterwards
   check t7 "$(ptyrun 'hunter2\n' sh -c "$jolt -e '(println (String. (.readPassword (System/console) \"pw> \" (object-array 0))))'; stty -a | tr ' ' '\n' | grep -x -- '-*echo'" | tr '\n' '|')" \
     'pw> |hunter2|echo|'
-  # ^C at the prompt still puts echo back, through the shutdown hook
-  check t8 "$(ptyrun '\003' sh -c "$jolt -e '(.readPassword (System/console) \"pw> \" (object-array 0))'; stty -a | tr ' ' '\n' | grep -x -- '-*echo'" | tail -1 | awk '{print $NF}')" "echo"
+  # ^C at the prompt still puts echo back, through the shutdown hook. The ^C
+  # goes to the whole foreground group, so the shell traps it to live on and
+  # run stty (dash, Linux's sh, otherwise dies with jolt). A trapped signal is
+  # back to its default in jolt, which still exits 130.
+  check t8 "$(ptyrun '\003' sh -c "trap : INT; $jolt -e '(.readPassword (System/console) \"pw> \" (object-array 0))'; echo rc=\$?; stty -a | tr ' ' '\n' | grep -x -- '-*echo'" | tail -2 | tr '\n' '|')" \
+    'pw> rc=130|echo|'
 else
   echo "SKIP: (t3-t8) no python3 pty to run System/console under a terminal"
 fi

@@ -2040,11 +2040,12 @@
                            (console-format! self args)
                            (console-line self)))
         ;; readPassword([fmt, args...]): the same line read with echo off, as a
-        ;; char[]. The Enter that ended it was not echoed, so the JDK writes the
-        ;; newline itself afterwards.
+        ;; char[]. Echo goes off BEFORE the prompt, as the JDK orders it, so
+        ;; nothing typed the moment the prompt shows is echoed. The Enter that
+        ;; ended the line was not echoed either, so the newline is written here.
         (cons "readPassword" (lambda (self . args)
-                               (console-format! self args)
-                               (let ((l (console-without-echo (lambda () (console-line self)))))
+                               (let ((l (console-without-echo
+                                          (lambda () (console-format! self args) (console-line self)))))
                                  (record-method-dispatch (console-writer self) "println" jolt-nil)
                                  (console-flush! self)
                                  (if (jolt-nil? l) jolt-nil (na-char-array l)))))
