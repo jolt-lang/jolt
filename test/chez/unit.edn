@@ -4244,6 +4244,15 @@
   {:suite "unchecked-int" :label "narrow and non-fixnum operands the JVM also accepts" :expr "[(unchecked-add-int 1.5 1) (unchecked-inc-int 3.7) (unchecked-add-int (byte 1) (short 2)) (unchecked-add-int 1N 1)]" :expected "[2 4 3 2]"}
   {:suite "unchecked-int" :label "areduce and amap step with unchecked-inc-int" :expr "(let [a (int-array [1 2 3 4])] [(areduce a i s 0 (+ s (aget a i))) (vec (amap a i r (inc (aget a i))))])" :expected "[10 [2 3 4 5]]"}
   {:suite "unchecked-int" :label "a direct call lowers to the fixed-arity helper and skips the var" :expr "(let [ctx (jolt.host/ctx-for-ns \"app.core\") e (fn [f] (jolt.backend-scheme/emit-top-form (jolt.analyzer/analyze ctx f (@#'jolt.analyzer/empty-env)))) s (e (quote (def f2 (fn [a b] [(unchecked-add-int a b) (unchecked-multiply-int a b) (unchecked-inc-int a)]))))] [(boolean (re-find #\"jolt-uncaddi2\" s)) (boolean (re-find #\"jolt-uncmuli2\" s)) (boolean (re-find #\"jolt-uncinci\" s)) (boolean (re-find #\"unchecked-add-int\" s))])" :expected "[true true true false]"}
+  ;; (jolt.host/load-time-value expr): evaluated once, when the top-level form
+  ;; holding it loads; every evaluation of the site reads that value. jolt.loader
+  ;; captures the loading context with it (#1653).
+  {:suite "load-time-value" :label "evaluated once at load, not per call" :expr "(do (def ltv-n (atom 0)) (eval '(def ltv-f (fn [] (jolt.host/load-time-value (swap! ltv-n inc))))) [(ltv-f) (ltv-f) @ltv-n])" :expected "[1 1 1]"}
+  {:suite "load-time-value" :label "captures a binding in force at load, not at the call" :expr "(do (def ^:dynamic *ltv-d* :outer) (binding [*ltv-d* :load] (eval '(def ltv-g (fn [] (jolt.host/load-time-value *ltv-d*))))) (binding [*ltv-d* :call] (ltv-g)))" :expected ":load"}
+  {:suite "load-time-value" :label "a def made when a fn runs reads its top-level form's load" :expr "(do (def ^:dynamic *ltv-e* :outer) (binding [*ltv-e* :load] (eval '(defn ltv-mk [] (def ltv-h (fn [] (jolt.host/load-time-value *ltv-e*)))))) (binding [*ltv-e* :call] (ltv-mk) (ltv-h)))" :expected ":load"}
+  {:suite "load-time-value" :label "a bare load-time-value is an ordinary name" :expr "(let [load-time-value inc] (load-time-value 1))" :expected "2"}
+  {:suite "load-time-value" :label "clojure.core/load-time-value names no var, as on the JVM" :expr "(try (eval (quote (clojure.core/load-time-value 1))) :special (catch Throwable _ :no-var))" :expected ":no-var"}
+  {:suite "load-time-value" :label "the expression sees no locals, and takes exactly one" :expr "[(try (eval '(let [x 1] (jolt.host/load-time-value x))) (catch Throwable e :no-local)) (try (eval '(jolt.host/load-time-value 1 2)) (catch Throwable e :arity))]" :expected "[:no-local :arity]"}
   ;; jsonista.core (compatibility/), over clojure.data.json (#1683). :expected is
   ;; jsonista 0.3.8's own answer on JVM Clojure 1.12, except the two rows on
   ;; Jackson's options and modules, which have no JVM counterpart to match.

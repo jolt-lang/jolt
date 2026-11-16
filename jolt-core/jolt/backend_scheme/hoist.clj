@@ -394,6 +394,39 @@
         (swap! cells conj c)
         (str "(or " c " (let ((_d " lookup ")) (set! " c " _d) _d))"))
       lookup)))
+;; load-time-value: an expression evaluated ONCE, when the top-level form that
+;; contains it is loaded, whose value every evaluation of the site then reads —
+;; Common Lisp's load-time-value, and what a JVM class's static initializer is to
+;; its constants. The def pools above cannot carry it: they are an optimization,
+;; skipped when var-cache? is off, and a def nested in a fn opens its pool when
+;; that fn RUNS. This scope is opened once per top-level form (emit-top-form) and
+;; by nothing below it, so a site anywhere inside binds into it.
+(def ^:dynamic *load-time-pool* nil)
+
+(defn hoist-load-time
+  "Bind EXPR, emitted Scheme, in the enclosing top-level form's load-time scope
+  and answer the name that reads it. With no scope open — an emit path that is
+  not a top-level form — EXPR is evaluated in place."
+  [expr]
+  (if-let [pool *load-time-pool*]
+    (let [nm (fresh-label "_ltv$")]
+      (swap! pool conj (str "(" nm " " expr ")"))
+      nm)
+    expr))
+
+(defn with-load-time-scope
+  "Emit via EMIT-THUNK with a load-time scope open, wrapping the result in a
+  let* that evaluates the hoisted expressions first, in order. A scope already
+  open is used as is, so this opens only the outermost one."
+  [emit-thunk]
+  (if *load-time-pool*
+    (emit-thunk)
+    (let [pool (atom [])
+          s (binding [*load-time-pool* pool] (emit-thunk))]
+      (if (seq @pool)
+        (str "(let* (" (str/join " " @pool) ") " s ")")
+        s))))
+
 (defn hoist-var-cell [ns nm]
   (str "(var-cell-deref " (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")")) ")"))
 ;; A direct-linked SEED var: the def binds the var's root procedure once, at

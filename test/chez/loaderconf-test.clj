@@ -1097,6 +1097,49 @@
       (chk "and its code runs" (= :other-ok ((resolve 'unlm.fp/f))))
       (finally (host/set-source-roots! roots)))))
 
+;; --- 42. the evicted host set, and restoring exactly it ----------------------
+(defcase 42 "a loader reports the host namespaces it evicted and restores exactly those"
+  (let [h (root-dir "evh-host")
+        _ (.mkdirs (java.io.File. (str h "/evh")))
+        _ (write! h "evh/a.clj" "(ns evh.a (:require [evh.b])) (defn v [] :host-a)")
+        _ (write! h "evh/b.clj" "(ns evh.b) (defn v [] :host-b)")
+        _ (write! h "evh/c.clj" "(ns evh.c) (defn v [] :host-c)")
+        d (root-dir "evh-ctx")
+        _ (.mkdirs (java.io.File. (str d "/evh")))
+        _ (write! d "evh/a.clj" "(ns evh.a (:require [evh.b])) (defn v [] :ctx-a)")
+        _ (write! d "evh/b.clj" "(ns evh.b) (defn v [] :ctx-b)")
+        roots (vec (host/source-roots))]
+    (try
+      (host/set-source-roots! (conj roots h))
+      (require 'evh.a 'evh.c)
+      (let [c-ns (find-ns 'evh.c)
+            ;; an empty delegate: the context reads evh.* from its own root,
+            ;; shadowing the host's, rather than sharing the host's by reference
+            ctx (l/classpath [d] {:parent (l/->loader (fn [_] nil))})
+            other (l/classpath [d] {:parent (l/->loader (fn [_] nil))})]
+        (chk "a fresh loader evicted nothing" (= [] (l/evicted ctx)))
+        (l/load ctx {:kind :ns :name "evh.a"})
+        (chk "loading evicted the two host namespaces it shadows"
+             (= ["evh.a" "evh.b"] (l/evicted ctx)))
+        (chk "status reports them" (= ["evh.a" "evh.b"] (:evicted (l/status ctx))))
+        (l/load other {:kind :ns :name "evh.a"})
+        (chk "a name another context owned is not the host's to report"
+             (= [] (l/evicted other)))
+        (l/unload! other)
+        (chk "restoring while the context owns the names skips them"
+             (= {:restored [] :skipped ["evh.a" "evh.b"]} (l/restore-evicted! ctx)))
+        (let [report (l/unload! ctx)]
+          (chk "unload! reports the evicted names" (= ["evh.a" "evh.b"] (:evicted report))))
+        (chk "after unload! the host's names are gone" (nil? (find-ns 'evh.a)))
+        (chk "restore reloads exactly the evicted set"
+             (= {:restored ["evh.a" "evh.b"] :skipped []} (l/restore-evicted! ctx)))
+        (chk "the host's versions are back"
+             (and (= :host-a ((resolve 'evh.a/v))) (= :host-b ((resolve 'evh.b/v)))))
+        (chk "an unrelated host namespace was not touched"
+             (identical? c-ns (find-ns 'evh.c)))
+        (chk "restored names leave the record" (= [] (l/evicted ctx))))
+      (finally (host/set-source-roots! roots)))))
+
 ;; --- runner -----------------------------------------------------------------
 (defn run-case [[n title body]]
   (reset! failures [])

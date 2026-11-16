@@ -116,6 +116,9 @@
  :analyze/invalid-var-reference
  "A `var` special form whose argument is not a symbol."
 
+ :analyze/invalid-load-time-value
+ "A `jolt.host/load-time-value` form with other than one expression."
+
  :analyze/unresolved-var
  "A `var` special form naming a var that does not exist."
 

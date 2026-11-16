@@ -196,7 +196,7 @@ install: build
 # answers "is this working tree gated?" — which is not something to remember.
 
 CI-GATES := submodules values recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
-  smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
+  smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
   protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap mathfl flonumdisp flarr \
@@ -1003,6 +1003,14 @@ cts: testbin
 # stdlib fasl, so the binary is the arrangement the cases have to hold under.
 loaderconf: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/loaderconf.sh
+
+# jolt.loader's artifact cache for context-private namespaces (#1653): a second
+# context over the same roots, and a second process, load from the cache; an
+# edit to the source, a dependency's macro or a file a macro read recompiles;
+# code from a shared artifact keeps its defining context. Through the built
+# binary for the same reason as loaderconf.
+loadercache: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh test/chez/loader-cache-smoke.sh
 
 # FFI: bind native functions (typed foreign-procedure), memory, and that a
 # :blocking call is collect-safe (a parked thread doesn't pin the collector).
