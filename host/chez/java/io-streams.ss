@@ -1951,6 +1951,105 @@
           (stdin-line-from-port v (in-stream-port v))
           (stdin-line-from-stream v)))))
 
+;; --- System/console: java.io.Console ------------------------------------------
+;; The JVM hands out a Console only when standard input AND standard output are
+;; both terminals, and nil otherwise; stderr does not enter into it (measured on
+;; OpenJDK 25.0.1: `| cat` and `</dev/null` give nil, `2>/dev/null` a Console).
+;; A CLI asks it "is a person on the other end?", and libraries (pretty) read nil
+;; as "not a tty, no ANSI", which still holds whenever either stream is
+;; redirected. Windows keeps nil: there is no isatty binding there yet.
+;;
+;; One Console per process, as System.console() answers the same object. It
+;; reads the terminal through the one port on fd 0 (stdin-line-from-port above),
+;; so a readLine and a read-line share a cursor rather than buffering apart, and
+;; writes through the process's stdout, which a (binding [*out* ...]) leaves alone.
+(define (console-fd-tty? fd) (and jolt-c-isatty (= 1 (jolt-c-isatty fd))))
+(define console-memo #f)
+(define (system-console)
+  (if (and (console-fd-tty? 0) (console-fd-tty? 1))
+      (begin
+        (unless console-memo
+          (set! console-memo
+            (make-jhost "console" (vector (make-jhost "port-writer" (vector 'stdout)) #f))))
+        console-memo)
+      jolt-nil))
+(define (console-writer self) (vector-ref (jhost-state self) 0))
+(define (console-flush! self) (record-method-dispatch (console-writer self) "flush" jolt-nil))
+;; format(fmt, args...): the text to the terminal, flushed, the Console back.
+(define (console-format! self args)
+  (when (pair? args)
+    (record-method-dispatch (console-writer self) "print"
+      (jolt-list (jvm-format-string (car args) (cdr args))))
+    (console-flush! self))
+  self)
+(define (console-line self)
+  (let ((r (vector-ref (jhost-state self) 1)))
+    (if r
+        ;; once reader() has decoded ahead, the line is in its buffer
+        (record-method-dispatch r "readLine" jolt-nil)
+        (stdin-line-from-port system-in-stream (in-stream-port system-in-stream)))))
+
+;; Terminal echo, for readPassword. The JDK clears ECHO in c_lflag with
+;; tcsetattr(TCSANOW) and puts the saved settings back afterwards; so does this.
+;; struct termios opens with four tcflag_t fields, which are unsigned long on
+;; macOS and unsigned int on Linux and the BSDs, so c_lflag sits at byte 24 or
+;; 12. ECHO is 8 and TCSANOW 0 on all of them. 256 bytes covers every layout.
+(define console-tcgetattr (jolt-foreign-proc-safe "tcgetattr" '(int u8*) 'int))
+(define console-tcsetattr (jolt-foreign-proc-safe "tcsetattr" '(int int u8*) 'int))
+(define (console-lflag-ref bv)
+  (if (eq? (sa-os-family) 'macos) (bytevector-u64-native-ref bv 24) (bytevector-u32-native-ref bv 12)))
+(define (console-lflag-set! bv v)
+  (if (eq? (sa-os-family) 'macos) (bytevector-u64-native-set! bv 24 v) (bytevector-u32-native-set! bv 12 v)))
+;; THUNK's value, read with echo off on fd 0. The saved settings go back however
+;; THUNK leaves, and a shutdown hook puts them back if a signal ends the process
+;; mid-read, which is why the JDK installs one too: otherwise ^C at a password
+;; prompt leaves the shell not echoing what is typed.
+(define (console-without-echo thunk)
+  (let ((saved (make-bytevector 256 0)))
+    (if (not (and console-tcgetattr console-tcsetattr (= 0 (console-tcgetattr 0 saved))))
+        (thunk)
+        (let ((quiet (bytevector-copy saved))
+              (restore (lambda () (console-tcsetattr 0 0 saved) jolt-nil)))
+          (console-lflag-set! quiet (bitwise-and (console-lflag-ref quiet) (bitwise-not 8)))
+          (dynamic-wind
+            (lambda () (jolt-add-runtime-shutdown-hook restore) (console-tcsetattr 0 0 quiet))
+            thunk
+            (lambda () (restore) (jolt-remove-shutdown-hook! restore)))))))
+
+(register-host-methods! "console"
+  (list (cons "isTerminal" (lambda (self) #t))
+        (cons "writer" (lambda (self) (console-writer self)))
+        ;; reader(): a Reader over the terminal, built once, as the JDK's is
+        (cons "reader" (lambda (self)
+                         (let ((st (jhost-state self)))
+                           (or (vector-ref st 1)
+                               (let ((r (stream-classed!
+                                          (make-char-reader
+                                            (charset-input-port (in-stream-source-port system-in-stream)
+                                                                "UTF-8" "InputStreamReader" #f))
+                                          "java.io.InputStreamReader")))
+                                 (vector-set! st 1 r)
+                                 r)))))
+        (cons "charset" (lambda (self) (make-jhost "charset" (vector "UTF-8" #x10FFFF))))
+        (cons "flush" (lambda (self) (console-flush! self) jolt-nil))
+        (cons "format" (lambda (self . args) (console-format! self args)))
+        (cons "printf" (lambda (self . args) (console-format! self args)))
+        ;; readLine([fmt, args...]): the prompt, then the next line without its
+        ;; terminator, nil at end of input
+        (cons "readLine" (lambda (self . args)
+                           (console-format! self args)
+                           (console-line self)))
+        ;; readPassword([fmt, args...]): the same line read with echo off, as a
+        ;; char[]. The Enter that ended it was not echoed, so the JDK writes the
+        ;; newline itself afterwards.
+        (cons "readPassword" (lambda (self . args)
+                               (console-format! self args)
+                               (let ((l (console-without-echo (lambda () (console-line self)))))
+                                 (record-method-dispatch (console-writer self) "println" jolt-nil)
+                                 (console-flush! self)
+                                 (if (jolt-nil? l) jolt-nil (na-char-array l)))))
+        (cons "toString" host-object-tostring)))
+
 (reg-ctor! '("ByteArrayOutputStream" "java.io.ByteArrayOutputStream")
   (lambda _
     (call-with-values open-bytevector-output-port
