@@ -167,6 +167,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Follow-ups to #1687 and #1689.** A program's own `sun.misc.Signal`
+  handler for INT now outranks the REPL's ^C, as it would on the JVM;
+  `SIG_DFL` gives ^C back to the REPL. The signal relay's reader stops if
+  its pipe is closed under it, rather than spinning on failed reads. A
+  defrecord's `.entrySet` is `(set this)`, in hash order, as on the JVM,
+  and `jsonista.core` writes a record's fields in that order, as Jackson
+  does.
+
 - **A constructor call on a class jolt knows nothing about says so.**
   `import` stays lenient, since a library may import a class it never uses,
   but `(import (com.nosuch Thing))` followed by `(Thing.)` said "No matching

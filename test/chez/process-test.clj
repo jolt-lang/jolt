@@ -680,6 +680,41 @@
   (check-eq "and with no evaluation installed SIGINT exits 130" (:exit @proc) 130)
   (fs/delete-if-exists readyf))
 
+;; A program's own sun.misc.Signal handler for INT outranks the REPL's ^C: it
+;; asked for every INT, as it would get on the JVM, so the evaluation runs on and
+;; the handler is called. SIG_DFL gives ^C back to the REPL.
+(let [readyf (str (fs/create-temp-file {:prefix "jp-repl-int-handler-" :suffix ".txt"}))
+      prog (str "(def hits (atom 0))"
+                "(defn step [ready f]"
+                "  (let [t (jolt.host/make-interrupt)]"
+                "    (jolt.host/interrupt-on-sigint! t)"
+                "    (spit \"" readyf "\" ready)"
+                "    (try (jolt.host/run-interruptible t f) :finished"
+                "         (catch :default e (if (jolt.host/interrupted? t) :interrupted (ex-message e)))"
+                "         (finally (jolt.host/interrupt-on-sigint! nil)))))"
+                "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\")"
+                "  (reify sun.misc.SignalHandler (handle [_ _] (swap! hits inc))))"
+                "(println (step \"1\" (fn [] (Thread/sleep 3000))))"
+                "(println @hits)"
+                "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") sun.misc.SignalHandler/SIG_DFL)"
+                "(println (step \"2\" (fn [] (Thread/sleep 30000))))"
+                "(flush)")
+      proc (process [jolt-bin "-e" prog] {:out :string :err :string})
+      await-ready (fn [s]
+                    (loop [n 0]
+                      (when (and (< n 400) (not= s (slurp readyf)))
+                        (Thread/sleep 25)
+                        (recur (inc n))))
+                    (Thread/sleep 200))
+      sigint! #(sh ["sh" "-c" (str "kill -INT " (.pid (:proc proc)))])]
+  (doseq [s ["1" "2"]] (await-ready s) (sigint!))
+  (loop [n 0] (when (and (< n 100) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+  (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+  (check-eq "an INT handler outranks the REPL's ^C, and SIG_DFL gives ^C back"
+            [(str/split-lines (:out @proc)) (:exit @proc)]
+            [[":finished" "1" ":interrupted"] 0])
+  (fs/delete-if-exists readyf))
+
 ;; …and no signal may be swallowed by a thread that was already running, nor
 ;; depend on WHICH thread registered the hook. The kernel delivers to a thread
 ;; that does not block the signal, so before the watcher was armed up front it
