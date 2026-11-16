@@ -110,6 +110,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Indexed reads of a vector make no call past `nth`, `get` or the vector
+  itself (#1652).** The in-range read and the trie descent are inline in
+  each, where `(nth v i)` used to chain three calls to reach a `vector-ref`.
+  A loop with a proven-long index (a loop counter, a literal) reads a vector
+  at the call site, with no call at all. `nth` on a string reads its char the
+  same way. On an Intel i5-4278U, per read inside a 1.9 ns loop:
+  `(nth v i)` over a 1000-element vector takes 9.5 ns instead of 19.3,
+  `(get v i)` 10.8 ns instead of 22.0, and `(nth v 7)` over a 30-element
+  vector 4.9 ns instead of 13.1.
+- **Protocol calls, deftype field access and an empty `java.util` list are
+  cheaper, which is most of what `clojure.tools.reader` and rewrite-clj pay per
+  character (#1646).** Every protocol method fn now carries its own inline
+  cache keyed on the receiver's type, as a JVM protocol fn carries its method
+  cache. Before, only call sites a whole-program build had inferred got one,
+  and every other call re-interned the protocol and method names to look the
+  impl up. A deftype method reads and writes its fields through the slot
+  accessor, behind one check that the receiver is the type it was compiled
+  for. Before, each read was three calls deep. `(seq l)` on an empty
+  `LinkedList` or `ArrayList` answers nil without building an iterator.
+  tools.reader's `read*` asks that before every form it reads. Measured on the
+  same machine: `read-char` on tools.reader's `StringReader` takes 48 ns
+  instead of 178, `clojure.tools.reader/read-string` of a 50-byte form 89 µs
+  instead of 129, and `rewrite-clj.parser/parse-string` of it 560 µs instead
+  of 800.
 - **`extend-type` and `extend-protocol` no longer rebuild the class-name tables
   after every new record.** Each protocol registration asked whether the type
   name was a JVM spelling of a record in a dashed namespace (`rf.def_two.R3`),

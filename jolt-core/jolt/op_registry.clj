@@ -150,6 +150,14 @@
    ;; on every entry. Cheaper than get too — straight to the slot, no type
    ;; cascade. (records.ss jrec-field / clojure.core/__deftype-field.)
    "__deftype-field" {:call "jrec-field" :arity #(= % 2) :pure? true}
+   ;; The same reads with the field's place in the type, [index field-count], as
+   ;; the deftype macro now writes them; the back end open-codes them as the slot
+   ;; accessor inside a def (backend_scheme.clj emit-deftype-slot-read), and this
+   ;; is the call everywhere else. An immutable field's read is pure; a mutable
+   ;; field's live read and the write are not.
+   "__deftype-slot" {:call "jrec-slot-read" :arity #(= % 4) :pure? true}
+   "__deftype-mutable-slot" {:call "jrec-slot-read" :arity #(= % 4)}
+   "__deftype-slot-set!" {:call "jrec-slot-write!" :arity #(= % 5)}
    "nth"         {:call "jolt-nth"     :arity #(or (= % 2) (= % 3))}
    "count"       {:call "jolt-count"   :arity #(= % 1) :num-result? true}
    "assoc"       {:call "jolt-assoc"   :arity #(and (>= % 3) (odd? %))

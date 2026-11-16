@@ -871,15 +871,26 @@
 ;; record type), so reordering cannot shadow them. A string goes straight to
 ;; the base definition too: none of the wraps between intercepts one, and their
 ;; probes were most of what nth on a string cost.
+;;
+;; The in-range fixnum read of either is answered right here, with no further
+;; call: (nth v i) in a loop, and a reader walking a string by index
+;; (tools.reader's string-reader), are this case and nothing else. Anything
+;; else -- nil, a flonum or out-of-range index, a notFound -- takes the reads
+;; the definitions below own, so every refusal is still theirs.
+(define-syntax string-ref-or
+  (syntax-rules ()
+    ((_ s0 i0 miss)
+     (let ((s s0) (i i0))
+       (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length s))) (string-ref s i) miss)))))
 (set! jolt-nth
   (case-lambda
-    ((c i)   (cond ((pvec? c) (pvec-nth! c i))
-                   ((string? c) (jolt-nth-base c i))
+    ((c i)   (cond ((pvec? c) (pvec-ref-or c i (pvec-nth! c i)))
+                   ((string? c) (string-ref-or c i (jolt-nth-base c i)))
                    ((jolt-array? c) (ja-ref c (exact (na-idx i))))
                    (else (%na-nth c i))))
     ((c i d) (if (pvec? c)
-                 (begin (jolt-nth-nil-idx! i) (pvec-nth-cast-d c i d))
-                 (if (string? c) (jolt-nth-base c i d) (if (jolt-array? c)
+                 (pvec-ref-or c i (begin (jolt-nth-nil-idx! i) (pvec-nth-cast-d c i d)))
+                 (if (string? c) (string-ref-or c i (jolt-nth-base c i d)) (if (jolt-array? c)
                      (let ((j (exact (na-idx i))))
                        (if (and (>= j 0) (< j (ja-len c))) (ja-ref c j) (begin (index-int-check! j) d)))
                      (%na-nth c i d)))))))
@@ -894,16 +905,16 @@
 ;; The outermost jolt-get wrapper: map, vector and string receivers are answered
 ;; here, calling what the wrapped definition's own arms call (jolt-get-dispatch).
 ;; All three callees are in get-fast-probes, so no registered get arm may claim
-;; one of those types.
+;; one of those types. A vector's in-range fixnum key is read inline, as nth's is.
 (set! jolt-get
   (case-lambda
     ((c k)   (cond ((pmap? c) (pmap-fast-get c k jolt-nil))
-                   ((pvec? c) (pvec-get c k jolt-nil))
+                   ((pvec? c) (pvec-ref-or c k (pvec-get c k jolt-nil)))
                    ((string? c) (jolt-get-base c k jolt-nil))
                    ((jolt-array? c) (ja-get c k jolt-nil))
                    (else (%na-get c k))))
     ((c k d) (cond ((pmap? c) (pmap-fast-get c k d))
-                   ((pvec? c) (pvec-get c k d))
+                   ((pvec? c) (pvec-ref-or c k (pvec-get c k d)))
                    ((string? c) (jolt-get-base c k d))
                    ((jolt-array? c) (ja-get c k d))
                    (else (%na-get c k d))))))

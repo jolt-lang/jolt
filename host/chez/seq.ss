@@ -1699,7 +1699,8 @@
     ((keyword? f) (jolt-get a f))            ; (:k m) -> (get m :k)
     ((pmap? f) (jolt-get f a))               ; (m k)  -> (get m k)
     ((jolt-symbol? f) (jolt-get a f))        ; ('s m) -> (get m 's)
-    ((pvec? f) (pvec-nth! f (pvec-key-index! a)))  ; (v i) -> nth at (.intValue i)
+    ;; (v i) -> nth at (.intValue i); an in-range fixnum is read inline
+    ((pvec? f) (pvec-ref-or f a (pvec-nth! f (pvec-key-index! a))))
     ((pset? f) (jolt-get f a))               ; (s x)  -> (get s x)
     (else (jolt-invoke f a))))
 (define (jolt-invoke-t2 f a b)

@@ -1244,6 +1244,56 @@
               (begin (set-box! site (cons (jrec-desc obj) slot))
                      (jrec-field-ref obj slot))
               (jrec-field obj k))))))
+;; A deftype method's field read and write, with the field's place in the type
+;; known: the deftype macro writes (__deftype-slot this :f I N) (or
+;; __deftype-mutable-slot, for a mutable field) and (__deftype-slot-set! this :f
+;; I N v), I the field's index and N the type's
+;; field count, so the back end can open-code the read as the per-arity slot
+;; accessor (jrecN-fI) -- the getfield the reference compiles a field reference
+;; to -- behind one test: that the receiver's descriptor is the one the site
+;; cached. These are the misses. A site caches a descriptor only after checking
+;; that its layout really is (I, N): the receiver of a method is the method's own
+;; type except across a redefinition, where an instance of the older type can
+;; reach the newer type's methods by tag, and its field K may sit elsewhere. Any
+;; such receiver reads and writes by name, exactly as before.
+(define (jrec-own-slot-layout? obj k i n)
+  (and (jrec? obj)
+       (not (eq? k jolt-deftype-kw))
+       (fx=? (jrdesc-nfields (jrec-desc obj)) n)
+       (eqv? (jrec-field-index obj k) i)))
+(define (jrec-own-slot-miss site obj k i n)
+  (if (jrec-own-slot-layout? obj k i n)
+      (begin (set-box! site (jrec-desc obj)) (jrec-field-ref obj i))
+      (jrec-field obj k)))
+;; The write's site holds the bare descriptor only for a field that is not
+;; ^double. A ^double field stays a flonum across set! (jolt-set-field!'s
+;; coercion), which the open-coded store does not do, so its site holds
+;; (desc . #t) instead -- never eq? to a descriptor -- and every write lands here
+;; and is coerced and stored by slot.
+(define (jrec-own-slot-set-miss! site obj k i n v)
+  (let ((c (unbox site)))
+    (cond
+      ((and (pair? c) (jrec? obj) (eq? (jrec-desc obj) (car c)))
+       (jrec-own-slot-store! obj i #t v))
+      ((jrec-own-slot-layout? obj k i n)
+       (let* ((flags (vector-ref (jrdesc-ifc-of obj) 15))
+              (dbl? (and flags (fx< i (vector-length flags)) (vector-ref flags i) #t)))
+         (set-box! site (if dbl? (cons (jrec-desc obj) #t) (jrec-desc obj)))
+         (jrec-own-slot-store! obj i dbl? v)))
+      (else (jolt-set-field! obj k v)))))
+(define (jrec-own-slot-store! obj i dbl? v)
+  (let ((v2 (if (and dbl? (number? v) (not (flonum? v))) (exact->inexact v) v)))
+    (jrec-field-set! obj i v2)
+    v2))
+;; What clojure.core/__deftype-slot, __deftype-mutable-slot and
+;; __deftype-slot-set! are as values, and
+;; what a call that is not open-coded runs (the seed mint; a back end with no
+;; site caches). The place is only a hint there: the field is found by name.
+(define (jrec-slot-read obj k i n) (jrec-field obj k))
+(define (jrec-slot-write! obj k i n v) (jolt-set-field! obj k v))
+(def-var! "clojure.core" "__deftype-slot" jrec-slot-read)
+(def-var! "clojure.core" "__deftype-mutable-slot" jrec-slot-read)
+(def-var! "clojure.core" "__deftype-slot-set!" jrec-slot-write!)
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))
     (if (and c (jrec? obj) (eq? (jrec-desc obj) (car c))

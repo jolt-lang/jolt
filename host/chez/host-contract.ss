@@ -1192,6 +1192,9 @@
     ;; (records.ss jrec-field). Declared here like the rest so the list matches
     ;; native-ops, which manifest-check.sh enforces.
     "__deftype-field"
+    ;; ...and its field reads and writes by slot (records-dispatch.ss
+    ;; jrec-slot-read / jrec-slot-write!)
+    "__deftype-slot" "__deftype-mutable-slot" "__deftype-slot-set!"
     ;; the `lazy-seq` macro's two halves (lazy-bridge.ss): internal names too
     "make-lazy-seq" "coll->cells" "chunked-seq?"
     ;; doseq's chunk walk (natives-transduce.ss): internal names too

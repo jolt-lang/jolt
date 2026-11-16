@@ -687,6 +687,85 @@
        (= 2 (count arg-nodes))
        (= :const (:op (second arg-nodes))) (keyword? (:val (second arg-nodes)))))
 
+;; A deftype method's own field, by its place in the type: (__deftype-slot this
+;; :f I N) (__deftype-mutable-slot for a mutable field) and (__deftype-slot-set!
+;; this :f I N v), as the deftype macro writes them (30-macros.clj deftype-method-clause). The read is the per-arity slot
+;; accessor itself, guarded by the descriptor the site cached once it checked the
+;; layout (records-dispatch.ss jrec-own-slot-miss) -- a field reference in a
+;; method body is a getfield on the JVM, and through jrec-own-field it was three
+;; calls deep. A type of more than eight fields keeps them in jrec*'s vector.
+(defn- deftype-slot-call? [fnode arg-nodes nm n]
+  (and *const-pool* (var-cache?)
+       (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= nm (:name fnode))
+       (= n (count arg-nodes))
+       (let [[_ k i cnt] arg-nodes]
+         (and (= :const (:op k)) (keyword? (:val k))
+              (= :const (:op i)) (int? (:val i))
+              (= :const (:op cnt)) (int? (:val cnt))
+              (< -1 (:val i) (:val cnt))))))
+
+(defn- deftype-slot-place [arg-nodes]
+  [(:val (nth arg-nodes 2)) (:val (nth arg-nodes 3))])
+
+(defn- emit-deftype-slot-read [arg-nodes order-args]
+  (let [site (hoist-const-per-site "(jrec-field-site-make)")
+        [i n] (deftype-slot-place arg-nodes)
+        o (fresh-label "_o$")]
+    (order-args
+     (fn [as]
+       (str "(let ((" o " " (first as) "))"
+            " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
+            (if (<= n 8)
+              (str " (jrec" n "-f" i " " o ")")
+              (str " (vector-ref (jrec*-vals " o ") " i ")"))
+            " (jrec-own-slot-miss " site " " o " " (second as) " " i " " n ")))")))))
+
+(defn- emit-deftype-slot-write [arg-nodes order-args]
+  (let [site (hoist-const-per-site "(jrec-field-site-make)")
+        [i n] (deftype-slot-place arg-nodes)
+        o (fresh-label "_o$")
+        v (fresh-label "_v$")]
+    (order-args
+     (fn [as]
+       (str "(let ((" o " " (first as) ") (" v " " (nth as 4) "))"
+            " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
+            (if (<= n 8)
+              (str " (begin (jrec" n "-f" i "-set! " o " " v ") " v ")")
+              (str " (begin (vector-set! (jrec*-vals " o ") " i " " v ") " v ")"))
+            " (jrec-own-slot-set-miss! " site " " o " " (second as) " " i " " n " " v ")))")))))
+
+;; The vector read in front of an indexed call (jolt.passes.numeric
+;; indexed-invoke): the in-range test pvec-ref-or makes, inline, so a loop over
+;; a vector reads it with no call at all.
+(defn- emit-vec-idx-read [callee tail? tl ich order-args]
+  (let [v (fresh-label "_c$") k (fresh-label "_k$")]
+    (order-args
+     (fn [as]
+       (str "(let ((" v " " (first as) ") (" k " " (second as) "))"
+            " (if (and (pvec? " v ") (fixnum? " k ") (fx>=? " k " 0) (fx<? " k " (pvec-cnt " v ")))"
+            " (pvec-nth-in-range " v " " k ") "
+            (emit-call tail? callee [v k] tl ich) "))")))))
+
+;; The body of a defprotocol method fn (30-macros.clj protocol-dispatch-clause):
+;; (protocol-dispatchN "proto" "method" obj arg ...) with the two names as
+;; literal strings. Each method fn is one such site, so giving the site the
+;; per-site inline cache gives the protocol FN a cache of its own, keyed on the
+;; receiver's type -- what the reference's protocol fns carry as
+;; __methodImplCache. Without it every call re-interned the (proto, method) pair
+;; and looked the impl up in the type's table, for every caller that was not
+;; whole-program inferred (the only other place a call gets a PIC). Gated like
+;; the other site caches so the seed mint stays a byte-fixpoint.
+(def ^:private protocol-dispatch-arity
+  {"protocol-dispatch1" 3 "protocol-dispatch2" 4 "protocol-dispatch3" 5})
+
+(defn- protocol-shim-call? [fnode arg-nodes]
+  (and *const-pool* (var-cache?)
+       (= :var (:op fnode)) (= "clojure.core" (:ns fnode))
+       (= (protocol-dispatch-arity (:name fnode)) (count arg-nodes))
+       (let [[p m] arg-nodes]
+         (and (= :const (:op p)) (string? (:val p))
+              (= :const (:op m)) (string? (:val m))))))
+
 ;; Calls an earlier pass annotated with how to lower them.
 (defn- emit-annotated-invoke [c]
   (let [node (:node c) arg-nodes (:arg-nodes c) tail? (:tail? c)
@@ -700,10 +779,21 @@
       (let [site (hoist-const-per-site "(jrec-field-site-make)")]
         (note-tail-call! tail?)
         (order-args (fn [as] (str "(jrec-own-field " site " " (first as) " " (second as) ")"))))
+      (or (deftype-slot-call? (:fnode c) arg-nodes "__deftype-slot" 4)
+          (deftype-slot-call? (:fnode c) arg-nodes "__deftype-mutable-slot" 4))
+      (do (note-tail-call! tail?) (emit-deftype-slot-read arg-nodes order-args))
+      (deftype-slot-call? (:fnode c) arg-nodes "__deftype-slot-set!" 5)
+      (do (note-tail-call! tail?) (emit-deftype-slot-write arg-nodes order-args))
       (class-for-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jolt-class-for-site-make)")]
         (note-tail-call! tail?)
         (order-args (fn [as] (str "(jolt-class-for-site " site " " (first as) ")"))))
+      ;; the names are constants, so only the receiver and the method's own
+      ;; arguments are operands
+      (protocol-shim-call? (:fnode c) arg-nodes)
+      (emit-pic-call {:proto (:val (first arg-nodes)) :method (:val (second arg-nodes))}
+                     tail?
+                     (fn [build] (ordered-call (vec (drop 2 arg-nodes)) (vec (drop 2 (:args c))) build)))
       ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
       ;; one record type, so resolve the impl by that static tag instead of routing
       ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
@@ -756,6 +846,12 @@
       ;; cannot unbox, so there is no inline form and no hoisted vector — the win is
       ;; skipping jolt-nth's dispatch walk, which the call already gets.
       (:v-aget node) (order-args (fn [as] (emit-call tail? "jolt-vaget" as tl ich)))
+      ;; (nth coll i) / (get coll i) over a proven-:long index: a vector's
+      ;; in-range element is read inline, anything else makes the call it
+      ;; would have made. Chez only: the read is the runtime's
+      ;; pvec-nth-in-range macro, which code Gambit evaluates cannot see.
+      (and (:vec-idx node) (:nop c) (not= :gambit (session/target)))
+      (emit-vec-idx-read (:nop c) tail? tl ich order-args)
       (:v-aset node) (order-args (fn [as] (emit-call tail? "jolt-vaset" as tl ich)))
       ;; (alength a) on a hinted array: the backing's own length, a fixnum.
       (:v-alength node) (order-args (fn [as] (emit-call tail? "jolt-valength" as tl ich)))
