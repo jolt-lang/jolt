@@ -917,6 +917,8 @@
   ;; File/listRoots enumerates the filesystem roots: one here, one per drive on
   ;; Windows, where it used to answer "/" and enumerate nothing (#1074)
   {:suite "io" :expr "(mapv str (java.io.File/listRoots))" :expected "[\"/\"]"}
+  ;; File[] and StackTraceElement[] on the JVM, so alength answers rather than throwing (#1677)
+  {:suite "io" :label "listRoots and getAllStackTraces' traces are arrays" :expr "[(alength (java.io.File/listRoots)) (.isArray (class (java.io.File/listRoots))) (nat-int? (alength (get (Thread/getAllStackTraces) (Thread/currentThread)))) (.getName (class (get (Thread/getAllStackTraces) (Thread/currentThread))))]" :expected "[1 true true \"[Ljava.lang.StackTraceElement;\"]"}
   {:suite "io" :expr "(flush)" :expected ""}
   ;; .listFiles / file-seq keep the form of the path they were given, like the
   ;; JVM's new File(this, name) — a relative directory lists relative children.
