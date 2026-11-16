@@ -5799,8 +5799,11 @@
                     (loop))))))))) ; an error number, or 0 with no signal of ours — ask again
   jolt-nil)
 
-;; The CLI's and a built binary's entry: claim USR1/USR2/WINCH too, then arm.
-;; Before anything has forked, so every thread jolt starts is born masked.
+;; The CLI's and a built binary's entry. On a kernel without the signal relay,
+;; claim jolt-user-signals for the watcher too, then arm. Before anything has
+;; forked, so every thread jolt starts is born masked. With the relay only the
+;; shutdown three are taken here; the rest are installed one at a time, as a
+;; handler is registered.
 (define (jolt-arm-signals!)
   (unless (or (unbox jolt-shutdown-armed) jolt-signal-relay?)
     (set-box! jolt-user-signals-taken #t))
