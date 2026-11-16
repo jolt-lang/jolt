@@ -882,7 +882,16 @@
       ;; babashka.process's ProcessBuilder record, registered by its short name
       (and (lazy-shims-provides? name) (lazy-shims-class! name)
            (hashtable-ref h-tbl name #f))
-      (hashtable-ref h-tbl (short-class-name name) #f)))
+      ;; The short-name fallback answers a qualified name with what its simple
+      ;; name is registered as — but a deftype registers its bare name too
+      ;; (protocols.ss), so java.io.Reader, which has no constructor of its own,
+      ;; got the ctor of any user type called Reader, and a proxy over it built
+      ;; that type with no args. A bare name owned by a user type answers only
+      ;; for that type's own qualified name.
+      (let ((short (short-class-name name)))
+        (and (not (let ((tag (hashtable-ref chez-simple-name-tag short #f)))
+                    (and tag (not (string=? short name)) (not (string=? tag name)))))
+             (hashtable-ref h-tbl short #f)))))
 
 ;; ---- the concrete methods of an abstract host class -------------------------
 ;; (proxy [java.io.InputStream] [] (read …)) extends the class on the JVM and
