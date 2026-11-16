@@ -3139,6 +3139,21 @@
         (d (jreify-delegate obj)))
     (cond
       (f (invoke-declared-method f obj method-name rest))
+      ((and d (null? rest) (string=? method-name "toString"))
+       (let* ((s (record-method-dispatch d method-name rest-args))
+              (cn (jolt-class-name d))
+              (generic (and (string? cn) (string-append cn "@"))))
+         (if (and generic
+                  (string? s)
+                  (>= (string-length s) (string-length generic))
+                  (string=?
+                    (substring s 0 (string-length generic))
+                    generic))
+             (string-append
+               (jolt-class-name obj)
+               "@"
+               (jolt-identity-hex obj))
+             s)))
       (d (record-method-dispatch d method-name rest-args))
       ((and abstract-class-method-hook
             (abstract-class-method-hook obj method-name)) =>

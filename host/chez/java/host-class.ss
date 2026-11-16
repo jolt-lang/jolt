@@ -413,6 +413,24 @@
 ;; Class@hash, as on the JVM (a proxy over a java.util collection renders as the
 ;; collection through its own arm). Without this it fell through to the printer
 ;; and came back as the whole #object[...] form.
+;;
+;; A proxy whose BASE class has a toString of its own inherits it, though: str of
+;; a proxy over java.io.StringWriter is the text written to it, as (.toString p)
+;; already answered through the delegate. It rendered as the proxy's Class@hash,
+;; so the two disagreed (#1683). A base that keeps Object.toString renders as
+;; Class@hash or the #object form, and then the proxy's own Class@hash is right.
+(define (proxy-base-str x)
+  (let ((d (jreify-delegate x)))
+    (and d
+         (let ((s (jolt-str-render-one d))
+               (cn (jolt-class-name d)))
+           (define (starts? p)
+             (and (>= (string-length s) (string-length p))
+                  (string=? (substring s 0 (string-length p)) p)))
+           (and (string? cn)
+                (not (starts? (string-append cn "@")))
+                (not (starts? "#object["))
+                s)))))
 (register-str-render!
   (lambda (x) (and (jreify? x) (not (reify-method-ref x "toString")) (not (proxy-coll-kind x))))
   (lambda (x)
@@ -423,7 +441,8 @@
         ;; an overridden getMessage shows through
         (let ((m (record-method-dispatch x (if (reify-method-ref x "getLocalizedMessage") "getLocalizedMessage" "getMessage") jolt-nil)))
           (if (jolt-nil? m) (jolt-class-name x) (string-append (jolt-class-name x) ": " (jolt-str-render-one m))))
-        (string-append (jolt-class-name x) "@" (jolt-identity-hex x)))))
+        (or (proxy-base-str x)
+            (string-append (jolt-class-name x) "@" (jolt-identity-hex x))))))
 ;; pr/print of a fn uses the JVM object form — #object[ns$name 0xHASH
 ;; "ns$name@HASH"] — which fn-identity parsers (lasertag's resolve-fn-name)
 ;; read the class name out of.

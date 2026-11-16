@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blocks the other signals at startup for the shutdown watcher instead, and
   TTIN, TTOU, PROF and VTALRM are refused there. (#1679)
 
+- **`jsonista.core` is bundled, so muuntaja loads.** Real jsonista wraps
+  Jackson and its own compiled Java classes, so `(require 'jsonista.core)`
+  failed at load on `(ObjectMapper.)`, and with it muuntaja and reitit's
+  default formats. `compatibility/jsonista/core.clj` implements jsonista's
+  API over the bundled `clojure.data.json`: `object-mapper` with its
+  encoding and decoding options, `read-value`, `write-value`,
+  `write-value-as-string` and `write-value-as-bytes`, the `ReadValue` and
+  `WriteValue` protocols, and `java-collection-module`. Output matches
+  jsonista 0.3.8's on the JVM, and a mapper answers `instance?`
+  `com.fasterxml.jackson.databind.ObjectMapper`, which muuntaja checks.
+  Jackson's own options (`:factory`, `:encoders`, other modules and mappers)
+  throw instead of being ignored. The real jsonista jar a project pulls in
+  doesn't shadow the bundled namespace. `Charset/availableCharsets`, which
+  muuntaja reads at load, is added too. (#1683)
+
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept
   `[:by-value [:struct ...]]` in the argument vector and as the result, the
@@ -151,6 +166,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads from the AOT cache in 1.9 s instead of 2.6 s.
 
 ### Fixed
+
+- **A constructor call on a class jolt knows nothing about says so.**
+  `import` stays lenient, since a library may import a class it never uses,
+  but `(import (com.nosuch Thing))` followed by `(Thing.)` said "No matching
+  ctor found for class Thing", which reads as an arity mismatch on a class
+  that exists. It now says "Unknown class com.nosuch.Thing", and an unmodeled
+  JDK class gets the "No dependency provides" advice, as a static call on one
+  already did. A class jolt does have keeps "No matching ctor". (#1683)
+- **`str` of a `proxy` is its base class's `toString`.** `str` of a proxy
+  over `java.io.StringWriter` gave the proxy's `Class@hash` while
+  `.toString` gave the text written to it. Both now give the base's
+  `toString` when the base class has one of its own, and otherwise the
+  proxy's own `Class@hash`. Before, `.toString` there gave the hidden base
+  instance's identity, `java.lang.Object@…`. (#1683)
 
 - **Custom test assertions keep their failure locations.** Stack reads inside
   `binding` and `try/finally` retain the enclosing function's source frame,
