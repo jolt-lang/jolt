@@ -4539,8 +4539,19 @@
   (cond ((string? c) c)
         ((and (jhost? c) (string=? (jhost-tag c) "charset")) (charset-name c))
         (else (jolt-str-render-one c))))
+;; Charset.availableCharsets: a SortedMap from each charset's canonical name to
+;; the Charset, over the table above. muuntaja reads its keySet at load to know
+;; which charsets a request may name. The system iconv decodes more than these,
+;; through forName, but has no list to give, so the map holds the ones jolt
+;; encodes itself.
+(define (charset-available)
+  (let ((m (tm-new-map jolt-nil)))
+    (for-each (lambda (e) (v-put! m (car e) (make-jhost "charset" (vector (car e) (cadr e)))))
+              charset-table)
+    m))
 (register-class-statics! "java.nio.charset.Charset"
   (list (cons "forName" charset-for-name)
+        (cons "availableCharsets" charset-available)
         (cons "defaultCharset" (lambda () (make-jhost "charset" (vector "UTF-8" #x10FFFF))))
         (cons "isSupported" (lambda (s) (if (charset-lookup (jolt-str-render-one s)) #t #f)))))
 (register-host-methods! "charset"
