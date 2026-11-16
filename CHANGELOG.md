@@ -192,6 +192,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name; any other value reaches `IOFactory`'s Object impl, whose reader and
   writer open through the stream side and refuse "as an InputStream." or "as an
   OutputStream.".
+- **`System/console` answers a `java.io.Console` in a terminal.** It was nil
+  always, so a CLI could not tell a person from a pipe. It is now a Console
+  when stdin and stdout are both terminals and nil when either is redirected,
+  as on the JVM. `readLine` and `readPassword` take the JVM's optional prompt
+  format, `readPassword` turns echo off and puts it back even on ^C, and
+  `writer`, `reader`, `format`, `printf`, `flush`, `charset` and `isTerminal`
+  are there too. Windows still answers nil.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as

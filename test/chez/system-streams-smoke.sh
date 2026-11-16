@@ -263,6 +263,64 @@ check s2 "$(run '(let [p (java.io.PushbackInputStream. (java.io.ByteArrayInputSt
 # kernel reports (r9 above shows why that part is not a fixed number here)
 check s3 "$(run '(let [p (java.io.PushbackInputStream. System/in)] (.unread p 120) (println (pr-str [(>= (.available p) 1) (.read p) (.read p)])))' 'ab')" "[true 120 97]"
 
+# --- (t) System/console: a Console only when stdin and stdout are terminals ---
+# The JVM answers nil when either is redirected and a java.io.Console when both
+# are a terminal, whatever stderr is (measured on OpenJDK 25.0.1). jolt answered
+# nil always, so a CLI could not tell a person from a pipe. The terminal rows
+# need a pty, which python3's pty module provides; without python3 they skip.
+check t1 "$(run '(println (nil? (System/console)))' 'piped')" "true"
+check t2 "$(run '(println (nil? (System/console)))')" "true"
+# ptyrun <input> <cmd...>: run cmd on a fresh pty, type <input> (escapes allowed)
+# once it prints a '>' prompt, and print what the terminal showed, \r dropped.
+pty_dir="$(mktemp -d)"
+cat > "$pty_dir/ptyrun.py" <<'PY'
+import os, pty, select, sys, time
+inp = sys.argv[1].encode().decode('unicode_escape').encode()
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+out, sent, deadline = b'', False, time.time() + 120
+while time.time() < deadline:
+    if select.select([fd], [], [], 0.2)[0]:
+        try:
+            b = os.read(fd, 4096)
+        except OSError:
+            break
+        if not b:
+            break
+        out += b
+    if not sent and b'>' in out:
+        os.write(fd, inp)
+        sent = True
+os.waitpid(pid, 0)
+sys.stdout.write(out.decode(errors='replace').replace('\r', ''))
+PY
+ptyrun() { JOLT_QUIET=1 python3 -I "$pty_dir/ptyrun.py" "$@" 2>/dev/null; }
+if command -v python3 >/dev/null 2>&1 && ptyrun '' sh -c 'test -t 0 && test -t 1 && echo pty-ok' | grep -q pty-ok; then
+  check t3 "$(ptyrun '' "$jolt" -e '(let [c (System/console)] (println (pr-str [(class c) (.isTerminal c) (identical? c (System/console)) (class (.writer c))])))' | tail -1)" \
+    "[java.io.Console true true java.io.PrintWriter]"
+  # stdout piped, stdin still the terminal: nil, as on the JVM
+  check t4 "$(ptyrun '' sh -c "$jolt -e '(println (nil? (System/console)))' | cat" | tail -1)" "true"
+  # stderr is not consulted
+  check t5 "$(ptyrun '' sh -c "$jolt -e '(println (nil? (System/console)))' 2>/dev/null" | tail -1)" "false"
+  # readLine prints its prompt and answers the line
+  check t6 "$(ptyrun 'alice\n' "$jolt" -e '(let [c (System/console)] (println (pr-str (.readLine c "%s> " (object-array ["name"])))))' | tr '\n' '|')" \
+    'name> alice|"alice"|'
+  # readPassword turns echo off: the typed text never reaches the terminal, the
+  # newline after it is the Console's own, and echo is back on afterwards
+  check t7 "$(ptyrun 'hunter2\n' sh -c "$jolt -e '(println (String. (.readPassword (System/console) \"pw> \" (object-array 0))))'; stty -a | tr ' ' '\n' | grep -x -- '-*echo'" | tr '\n' '|')" \
+    'pw> |hunter2|echo|'
+  # ^C at the prompt still puts echo back, through the shutdown hook. The ^C
+  # goes to the whole foreground group, so the shell traps it to live on and
+  # run stty (dash, Linux's sh, otherwise dies with jolt). A trapped signal is
+  # back to its default in jolt, which still exits 130.
+  check t8 "$(ptyrun '\003' sh -c "trap : INT; $jolt -e '(.readPassword (System/console) \"pw> \" (object-array 0))'; echo rc=\$?; stty -a | tr ' ' '\n' | grep -x -- '-*echo'" | tail -2 | tr '\n' '|')" \
+    'pw> rc=130|echo|'
+else
+  echo "SKIP: (t3-t8) no python3 pty to run System/console under a terminal"
+fi
+rm -rf "$pty_dir"
+
 # --- (io/reader path) streams the file, it does not slurp it (jolt-0nk) -------
 # io/reader over a path used to answer a StringReader built from the whole file,
 # so the content had to be read before the reader existed and nothing could be

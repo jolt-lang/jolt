@@ -472,10 +472,10 @@
         ;; nothing else: spelled as a rest arg, (System/getenv "HOME" 1) answered
         ;; the variable instead of the JVM's arity miss.
         (cons "getenv" (case-lambda (() (sys-getenv)) ((k) (sys-getenv k))))
-        ;; System/console is nil when there is no attached terminal (piped /
-        ;; redirected) — the safe default here; libraries (pretty) use it to
-        ;; decide whether to emit ANSI, and a nil means "not a tty".
-        (cons "console" (lambda _ jolt-nil))
+        ;; System/console: a java.io.Console when stdin and stdout are both
+        ;; terminals, nil otherwise (io-streams.ss system-console), resolved at
+        ;; call time.
+        (cons "console" (lambda () (system-console)))
         (cons "lineSeparator" (lambda _ "\n"))
         ;; System.mapLibraryName: the platform's shared-library file name, decided
         ;; from the same OS family as os.name. nil is a NullPointerException with
