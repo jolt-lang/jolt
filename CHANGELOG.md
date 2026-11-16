@@ -126,6 +126,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and macro-generated calls inherit their source line. `matcher-combinators`
   failures now identify the assertion's file and line, including in compiled
   test runners.
+- **A task that takes over a command can run that command.** A `build` task
+  with `:override-builtin true` that shells out to `jolt build -m app.main`
+  used to land on itself again and recurse until it was killed. While such a
+  task runs, jolt lists its command and project in `JOLT_OVERRIDE_ACTIVE`,
+  which child processes inherit, so the inner `jolt build` runs the compiler.
+  This works through `shell`, through the task API's `jolt` and when the task
+  was started with `jolt run build`. A task that runs `jolt build` in a
+  different project still reaches that project's own `build` task.
 - **`reader`, `writer`, `slurp` and `spit` refuse a non-source with the JVM's
   message.** `(slurp 5)`, `(io/reader :k)` and `(spit {} "x")` said "Cannot
   open <x> as a Reader." (or Writer). On the JVM only `nil` is refused by that

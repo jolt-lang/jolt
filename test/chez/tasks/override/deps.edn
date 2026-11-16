@@ -1,0 +1,23 @@
+;; :override-builtin tasks that call the command they took over (burinc/jolt#8).
+;; The inner call has to reach the built-in. Each task counts how deep it is in
+;; NEST and stops at 2, so a regression prints LOOP instead of hanging the gate.
+{:tasks {path  {:override-builtin true
+                :task (let [n (parse-long (or (System/getenv "NEST") "0"))]
+                        (cond
+                          (> n 1) (println "LOOP")
+                          ;; another project's task of the same name is still
+                          ;; that project's
+                          (= ["other"] *command-line-args*)
+                          (do (println "task path")
+                              (jolt {:dir "../bbproj" :extra-env {"NEST" (str (inc n))}} "path"))
+                          :else
+                          (do (println "task path")
+                              (jolt {:extra-env {"NEST" (str (inc n))}} "path"))))}
+         ;; the same through shell, the way a bb.edn usually spells it
+         tasks {:override-builtin true
+                :task (let [n (parse-long (or (System/getenv "NEST") "0"))]
+                        (if (> n 1)
+                          (println "LOOP")
+                          (do (println "task tasks")
+                              (shell {:extra-env {"NEST" (str (inc n))}}
+                                     (System/getenv "JOLT_EXE") "tasks"))))}}}

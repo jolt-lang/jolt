@@ -2616,6 +2616,11 @@
 ;; JOLT_BAKE_ENV_ALLOWLIST, which is a sandbox for the program being run, not for
 ;; the compiler reading its own flags.
 (def-var! "jolt.host" "getenv" (lambda (n) (let ((v (getenv n))) (if v v jolt-nil))))
+;; Sets a variable in this process's environment, which every child it spawns
+;; inherits (ProcessBuilder and babashka.process seed theirs from it). The CLI
+;; uses it to tell a nested jolt that an :override-builtin task is already
+;; running, so the nested call reaches the built-in instead of the task again.
+(def-var! "jolt.host" "setenv!" (lambda (n v) (sa-setenv! n v) jolt-nil))
 
 ;; var def-time metadata: the :def emit passes the def's reader meta
 ;; (^:private / ^Type tag / docstring -> {:doc}) here, stored in an eq side-table
