@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt.loader` caches context-private namespaces.** A namespace a loader
+  reads from its own roots was compiled from source on every load, so every
+  fresh context paid full compilation again (#1653: 20 small files took
+  ~4.4 s per loader). Its compiled form now goes to the AOT cache, keyed by
+  the source, every namespace the compile loaded, the files it read and the
+  data readers, so a second context over the same roots, a `:reload` of
+  unchanged source, and the next process load the artifact instead (~145 ms
+  for the same tree). Each context still gets its own var cells: an artifact
+  links its vars by name as it loads. `JOLT_AOT_CACHE=0` turns it off.
+
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept
   `[:by-value [:struct ...]]` in the argument vector and as the result, the
