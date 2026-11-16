@@ -581,6 +581,11 @@
           4.0)
 
   ;; The site cache: cheaper than the protocol call it is measured against.
+  ;; A protocol fn carries its own inline cache since #1652/#1646, which
+  ;; brought the call down to about what a site costs with a deftype as T
+  ;; (0.90 on CI, 1.01 on a slow box, against the 0.42 the uncached call
+  ;; gave), so that arm's ceiling is 1.2. A site with no cache measured
+  ;; 1.15-1.95 against the uncached call, so well past 1.2 against this one.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
@@ -588,7 +593,7 @@
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          0.8)
+          1.2)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"

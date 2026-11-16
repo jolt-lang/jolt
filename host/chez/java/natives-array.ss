@@ -917,17 +917,18 @@
 ;; The outermost jolt-get wrapper: map, vector and string receivers are answered
 ;; here, calling what the wrapped definition's own arms call (jolt-get-dispatch).
 ;; All three callees are in get-fast-probes, so no registered get arm may claim
-;; one of those types. A vector's in-range fixnum key is read inline, as nth's is.
+;; one of those types. A vector's or a string's in-range fixnum key is read
+;; inline, as nth's is.
 (set! jolt-get
   (case-lambda
     ((c k)   (cond ((pmap? c) (pmap-fast-get c k jolt-nil))
                    ((pvec? c) (pvec-ref-or c k (pvec-get c k jolt-nil)))
-                   ((string? c) (jolt-get-base c k jolt-nil))
+                   ((string? c) (string-ref-or c k (jolt-get-base c k jolt-nil)))
                    ((jolt-array? c) (ja-get c k jolt-nil))
                    (else (%na-get c k))))
     ((c k d) (cond ((pmap? c) (pmap-fast-get c k d))
                    ((pvec? c) (pvec-ref-or c k (pvec-get c k d)))
-                   ((string? c) (jolt-get-base c k d))
+                   ((string? c) (string-ref-or c k (jolt-get-base c k d)))
                    ((jolt-array? c) (ja-get c k d))
                    (else (%na-get c k d))))))
 ;; get on an array is RT.getFrom's: any Number key, by intValue; anything else
