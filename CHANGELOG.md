@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged source, and the next process load the artifact instead (~145 ms
   for the same tree). Each context still gets its own var cells: an artifact
   links its vars by name as it loads. `JOLT_AOT_CACHE=0` turns it off.
+- **`jolt.loader/evicted` and `restore-evicted!`.** A private load removes a
+  host namespace it shadows, and a plain `require` cannot bring it back, so a
+  host had no way to know what to restore and reloaded everything. `evicted`
+  names the host namespaces a loader evicted (`unload!` and `status` report
+  them as `:evicted`), and `restore-evicted!` reloads exactly that set (#1653).
+- **`(jolt.host/load-time-value expr)`**, Common Lisp's `load-time-value`:
+  `expr` runs once, when the top-level form that contains it loads (from
+  source or from a cached artifact), and every evaluation of the site reads
+  that value. `jolt.loader` uses it to give cached code the context it is
+  loaded into, the way a JVM class keeps its defining class loader.
 
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept
