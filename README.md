@@ -92,12 +92,10 @@ with:
 git submodule update --init --recursive
 ```
 
-jolt runs on Chez Scheme 10.4.1 with jolt's kernel patches
-(`host/chez/chez-patches`). `make` downloads, patches and builds it under
-`.cache/local` the first time (a few minutes), unless `CHEZ=` names a patched
-Chez, and exports `JOLT_CHEZ` so both halves of a build agree. A Chez on `PATH`
-is never used. `bin/jolt` honors `JOLT_CHEZ`, then the Chez `make` built; run
-`make deps` once before using it.
+jolt runs on Chez 10.4.1 with its kernel patches (`host/chez/chez-patches`).
+`make` builds that Chez under `.cache/local` once (a few minutes) unless
+`CHEZ=` names one, never using a Chez on `PATH`. `bin/jolt` honors
+`JOLT_CHEZ`, then the Chez `make` built (`make deps`).
 
 After changing a compiler source — the reader (`host/chez/reader.ss`), the
 analyzer/IR/backend (`jolt-core/jolt/*.clj`), or the `clojure.core` overlay
