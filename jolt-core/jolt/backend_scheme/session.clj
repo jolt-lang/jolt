@@ -287,30 +287,12 @@
 ;; rewrites to the restore or to nothing (*self-wrap*: {:tok base :unsafe atom},
 ;; site-restore).
 (def ^:dynamic *self-wrap* nil)
-;; Inside a fn, a non-tail call's restore is a call to jolt-site-call, which the
-;; fn clause it sits in binds once (site-restore, emit-fn). Bound to an atom per
-;; clause while that clause emits; set once a site uses the helper.
+;; Inside a fn on Chez, a non-tail call's restore puts back the value the fn
+;; clause read at entry (site-restore, emit-fn). Bound to an atom per clause
+;; while that clause emits: :site once an ordinary site uses the entry value,
+;; :self while only self-calls have (their restore is decided per fn, after the
+;; body, see *self-wrap*).
 (def ^:dynamic *site-call* nil)
-;; Inside a fn the restore is spelled ONCE per clause, as the procedure
-;; site-call-helper binds to jolt-site-call, and each site is
-;; (jolt-site-call (lambda () call)). cp0 inlines the helper and the thunk, so
-;; the code that runs is the inline restore. What it saves is inspector
-;; information: with it on (jolt build's release mode) Chez keeps each lambda's
-;; whole expanded body as data, the code-info sexpr, and the inline restore was
-;; ~30 pairs of that per site, repeated in every enclosing lambda's copy. A
-;; 4,000-fn app's binary grew 32% with it (#1423). Outside any fn there is no
-;; clause to bind the helper in, and the site keeps the inline form.
-;;
-;; Every clause binds its own, nested fns included. A nested fn's sites once
-;; used the outermost clause's binding, and in a built program cp0 left those
-;; calls in: a closure per site and an out-of-line call, which made
-;; bench/keyed_lookup (a reduce fn per walk) 1.15x slower than 0.8.23. Bound in
-;; the clause, the helper is a known local of the lambda that calls it.
-(def site-call-helper
-  (str "(lambda (_th$) (let ((_ss$ (virtual-register 2)) (_so$ (virtual-register 12)))"
-       " (if (pair? _ss$) (set-virtual-register! 12 _ss$))"
-       " (set-virtual-register! 2 0)"
-       " (let ((_sr$ (_th$))) (set-virtual-register! 2 _ss$) (set-virtual-register! 12 _so$) _sr$)))"))
 ;; A tail call that may run a jolt fn disqualifies the enclosing fn.
 (defn note-tail-call! [tail?]
   (when (and tail? *self-wrap*) (reset! (:unsafe *self-wrap*) true)))

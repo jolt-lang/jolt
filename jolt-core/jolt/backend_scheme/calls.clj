@@ -12,7 +12,7 @@
             [jolt.backend-scheme.session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
                      clone-site? ctor-shapes fresh-label marker-safe-fqn?
-                     note-tail-call! trace-frames? unsafe-prefix var-cache?]]
+                     note-tail-call! target trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
              :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
                      hoist-const-per-site]]))
@@ -273,8 +273,12 @@
 ;; spliced body reports the fn it was spliced INTO, at a line that fn does not
 ;; contain: this is the path the continuation walk cannot cover, because the
 ;; tail call erased the frame.
+;; On Chez the pair is boxed, #&(fn . line): a box in the slot is the innermost
+;; erased frame, and a fn clause unboxes it at entry (lambda.clj site-entry). The
+;; constant is built once, when the code loads, so a tail site still stores
+;; without allocating.
 (defn site-literal [site-qname line inl-chain]
-  (str "'(" (chez-str-lit site-qname) " . "
+  (str (if (= :chez (target)) "'#&(" "'(") (chez-str-lit site-qname) " . "
        (if (seq inl-chain)
          (str "#(" line " ("
               (str/join " " (map (fn [e] (str "(" (chez-str-lit (nth e 0))
@@ -309,20 +313,32 @@
 ;; Spelled out in Chez primitives rather than a runtime macro: a cached fasl is
 ;; then compiled from text that needs nothing of the runtime to expand (the AOT
 ;; cache gate recompiles one with a bare Chez), and the literal slot compiles to a
-;; load and a store. rd / wr are the read form and the write head; a self-call
-;; passes placeholders emit-fn fills in later (*self-wrap*).
-;; The one-argument form also hands the slot's pair to the outer slot (vreg 12,
-;; rt.ss jolt-vreg-outer-site) and clears the slot for the call's duration:
-;; nothing the call runs is the tail call that pair describes, so a throw inside
-;; it must not splice the pair innermost -- a pair a callback left behind when it
-;; returned to untraced code (a core HOF) was reported as the innermost frame of
-;; the next callback's throw. The pair is still the nearest erased caller from
-;; further out, which the reporter reads from the outer slot as a gap bridge.
+;; load and a store.
+;;
+;; On Chez, inside a fn clause, a site is ONE store after the call: of the value
+;; the clause read at entry (lambda.clj site-entry), bound to _sw$. The clause
+;; unboxed the slot there, so a call it makes never runs with an innermost pair
+;; in the slot: nothing the call runs is the tail call that pair describes, and
+;; a pair a callback left behind when it returned to untraced code (a core HOF)
+;; was reported as the innermost frame of the next callback's throw. The bare
+;; pair is still the nearest erased caller from further out, which the reporter
+;; uses as a gap bridge. Outside any fn the slot is 0 when a form starts
+;; (compile-eval.ss jolt-site-reset!), and nothing there stores a tail site, so
+;; the store is of 0.
+;;
+;; A self-call passes the per-fn placeholders emit-fn fills in later
+;; (*self-wrap*): rd / wr are the read form and the write head on a host that
+;; keeps the two-slot form (Gambit, rt-core.ss), and wr is the head of the one
+;; store on Chez.
 (defn site-restore
   ([call]
-   (if *site-call*
-     (do (reset! *site-call* true)
-         (str "(jolt-site-call (lambda () " call "))"))
+   (cond
+     *site-call*
+     (do (reset! *site-call* :site)
+         (str "(let ((_sr$ " call ")) (set-virtual-register! 2 _sw$) _sr$)"))
+     (= :chez (target))
+     (str "(let ((_sr$ " call ")) (set-virtual-register! 2 0) _sr$)")
+     :else
      (let [sv (fresh-label "_ss$") so (fresh-label "_so$") rv (fresh-label "_sr$")]
        (str "(let ((" sv " (virtual-register 2)) (" so " (virtual-register 12)))"
             " (if (pair? " sv ") (set-virtual-register! 12 " sv "))"
@@ -330,8 +346,11 @@
             " (let ((" rv " " call ")) (set-virtual-register! 2 " sv ")"
             " (set-virtual-register! 12 " so ") " rv "))"))))
   ([call rd wr]
-   (let [sv (fresh-label "_ss$") rv (fresh-label "_sr$")]
-     (str "(let ((" sv " " rd ")) (let ((" rv " " call ")) (" wr " " sv ") " rv "))"))))
+   (if *site-call*
+     (do (when-not (= :site @*site-call*) (reset! *site-call* :self))
+         (str "(let ((_sr$ " call ")) (" wr " _sw$) _sr$)"))
+     (let [sv (fresh-label "_ss$") rv (fresh-label "_sr$")]
+       (str "(let ((" sv " " rd ")) (let ((" rv " " call ")) (" wr " " sv ") " rv "))")))))
 ;; A lookup the back end open-codes (jolt-get, a keyword or a collection in call
 ;; position) can still run jolt code: a deftype's valAt, a sorted map's
 ;; comparator, a key's equals. Not in tail position with tracing on, it restores
