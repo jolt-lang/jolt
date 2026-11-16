@@ -9,10 +9,10 @@ cd "$root"
 # Command-line variables also propagate to nested Makes through these flags.
 unset CC JOLT_CC CHEZ CHEZSCHEME MAKEFLAGS MAKEOVERRIDES GAMBIT_PREFIX JOLT_REQUIRE_GAMBIT
 
-# bionic (Android/Termux) provisions Chez through host/chez/bionic-provision-chez.sh
-# instead of makes' chezscheme.mk + xPack GCC: that GCC is a glibc binary the
+# bionic (Android/Termux) provisions Chez through host/chez/provision-chez.sh
+# with the host cc instead of xPack GCC: that GCC is a glibc binary the
 # Android loader cannot exec. The provisioning checks below therefore expect no
-# pinned GCC there; the host cc links, and bionic-provision-chez.sh passes
+# pinned GCC there; the host cc links, and provision-chez.sh passes
 # CFLAGS+=-fPIC for the same PIC kernel every other provision builds.
 bionic=0
 case "$(cc -dumpmachine 2>/dev/null)" in *android*) bionic=1 ;; esac
@@ -67,7 +67,8 @@ inspect-chez:
 	  "local-origin=$(origin LOCAL-LOADED)" \
 	  "gcc-origin=$(origin GCC-LOADED)" \
 	  "joltcc-origin=$(origin JOLT_CC)" \
-	  "joltcc-env=$${JOLT_CC-}"
+	  "joltcc-env=$${JOLT_CC-}" \
+	  "chez-stamp=$(CHEZSCHEME-STAMP)"
 inspect-gambit:
 	@printf "%s\n" "gsi=$(GAMBIT_GSI)" "gsc=$(GAMBIT_GSC)"
 MK
@@ -233,6 +234,16 @@ check_provision_fallback() {  local bin out
   root_dir="$(sed -n 's/^local-root=//p' <<<"$out")"
   grep -E "^jolt-chez=${root_dir%/}/chezscheme-[0-9.]+/bin/scheme$" <<<"$out" >/dev/null || {
     echo "pinned provisioned Chez not selected as the fallback:" >&2
+    echo "$out" >&2
+    exit 1
+  }
+  # The provisioned Chez carries jolt's kernel patches (#1699): it is built
+  # through provision-chez.sh, behind a stamp named for the patch set, so a
+  # prefix built without them, or with an older set, is rebuilt.
+  local hash
+  hash="$(sh "$root/host/chez/provision-chez.sh" --hash)"
+  grep -E "^chez-stamp=${root_dir%/}/chezscheme-[0-9.]+/jolt-patches-$hash$" <<<"$out" >/dev/null || {
+    echo "provisioned Chez is not keyed on the chez-patches hash ($hash):" >&2
     echo "$out" >&2
     exit 1
   }
