@@ -1034,6 +1034,11 @@
   ;; "Wrong number of args (0) passed to: ->Reader" in every nREPL session once
   ;; ebb.impl.store (which defines one) was loaded.
   {:suite "ioreader / user Reader" :label "a user deftype named Reader does not answer for java.io.Reader" :expr "(do (deftype Reader [a b]) (require (quote [clojure.java.io :as io])) [(line-seq (io/reader (proxy [java.io.Reader] [] (read [cbuf off len] -1)))) (.-a (Reader. 1 2))])" :expected "[nil 1]"}
+  ;; ...but a host class registered only by its short name still answers its
+  ;; qualified name when a user type shares that short name. The type lives in
+  ;; its own ns: the rows share one session, and a user-ns StringWriter would
+  ;; answer later rows' bare (StringWriter.)
+  {:suite "ioreader / user Reader" :label "a user deftype named StringWriter leaves java.io.StringWriter alone" :expr "(do (in-ns 'short-name-probe) (clojure.core/deftype StringWriter [a]) (in-ns 'user) (str (doto (java.io.StringWriter.) (.write \"x\"))))" :expected "\"x\""}
   {:suite "ioreader / user Reader" :expr "(do (require (quote [clojure.java.io :as io])) (slurp (io/reader (let [p (atom 0) s \"hi\\r\\nthere\"] (reify java.io.Reader (read [_ cbuf off len] (let [i @p] (if (>= i (count s)) -1 (do (aset cbuf off (.charAt s i)) (reset! p (inc i)) 1)))))))))" :expected "\"hi\\r\\nthere\""}
   {:suite "ioreader / user Reader" :expr "(let [src (let [p (atom 0) s \"hi\\r\\nthere\"] (reify java.io.Reader (read [_ cbuf off len] (let [i @p] (if (>= i (count s)) -1 (do (aset cbuf off (.charAt s i)) (reset! p (inc i)) 1)))))) b (java.io.BufferedReader. src)] [(identical? src b) (.getName (class b)) (instance? java.io.BufferedReader b) (.readLine b) (.readLine b) (.readLine b) (.close b)])" :expected "[false \"java.io.BufferedReader\" true \"hi\" \"there\" nil nil]"}
   {:suite "ioreader / user Reader" :expr "(do (require (quote [clojure.java.io :as io])) (line-seq (io/reader (proxy [java.io.Reader] [] (read [cbuf off len] -1)))))" :expected ""}

@@ -890,10 +890,17 @@
       ;; a user type, so it does not take one's bare name. Only those: the seed
       ;; defines clojure.core's own types while the current ns is still user,
       ;; so clojure.core.VecNode reaches its ctor through this fallback.
-      (let ((short (short-class-name name)))
-        (and (not (and (hashtable-ref chez-simple-name-tag short #f)
-                       (platform-class-name? name)))
-             (hashtable-ref h-tbl short #f)))))
+      ;; Refused only when the bare-name entry IS the user type's (the one its
+      ;; "ns.Name" tag holds): many host classes register only their short name
+      ;; ("StringWriter", "HashMap"), a deftype never replaces those, and
+      ;; java.io.StringWriter still has to reach it after (deftype StringWriter …).
+      (let* ((short (short-class-name name))
+             (v (hashtable-ref h-tbl short #f)))
+        (and v
+             (not (and (platform-class-name? name)
+                       (let ((tag (hashtable-ref chez-simple-name-tag short #f)))
+                         (and tag (eq? v (hashtable-ref h-tbl tag #f))))))
+             v))))
 
 (define (platform-class-name? name)
   (let ((n (string-length name)))
