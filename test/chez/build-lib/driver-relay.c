@@ -1,7 +1,7 @@
 /* driver-relay: a jolt library's sun.misc.Signal handler and its host's (#1679).
  *
  * The host installs its own SIGUSR2 handler, loads the library, and has it
- * register a USR2 handler. The kernel's signal relay (chez-patches/0008) puts
+ * register a USR2 handler. The kernel's signal relay (chez-patches/0009) puts
  * a C handler in front that chains to the host's, so one raise runs both.
  * jolt_library_shutdown must give SIGUSR2 back to the host's handler, and a
  * second init must be able to take it again, on a fresh relay.

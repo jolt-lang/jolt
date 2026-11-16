@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returning the previous handler, with `SIG_DFL` and `SIG_IGN` and
   `Signal/raise`. A handler for INT, TERM or HUP replaces the shutdown that
   signal would run. Any other signal goes through a new kernel patch
-  (`chez-patches/0008-signal-relay.patch`): registering a handler installs a
+  (`chez-patches/0009-signal-relay.patch`): registering a handler installs a
   C handler for that one signal, which writes its number to a pipe that a
   jolt thread reads, so whichever thread the kernel interrupts, and whatever
   it is doing, the handler runs. A signal nobody handles keeps the

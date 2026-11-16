@@ -1008,7 +1008,7 @@
           [100000 false])
 
 ;; sun.misc.Signal (#1679). INT, TERM and HUP stay the shutdown watcher's.
-;; Any other signal goes through the kernel's relay (chez-patches/0008) when it
+;; Any other signal goes through the kernel's relay (chez-patches/0009) when it
 ;; has one, and nothing past the three is blocked; on a stock Chez, or with
 ;; JOLT_NO_SIGNAL_RELAY=1, the CLI blocks the rest at entry for the watcher.
 ;; Both paths run below. CI's kernels all carry the patches, so there the relay

@@ -5557,7 +5557,7 @@
 ;; down), so ^C on the foreground process group still kills subprocesses outright.
 ;;
 ;; Any other signal a sun.misc.Signal handler is registered for (#1679) goes
-;; through the kernel's signal relay (chez-patches/0008): a C handler, installed
+;; through the kernel's signal relay (chez-patches/0009): a C handler, installed
 ;; for that signal when the handler is registered, writes its number to a pipe,
 ;; and a thread reading the pipe runs the handler. Nothing is blocked for it, so
 ;; a signal nobody handles keeps the disposition it had, a library build takes

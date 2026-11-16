@@ -542,7 +542,7 @@
    :note "SO_KEEPALIVE itself works."}
   ;; sun.misc.Signal (#1679). INT, TERM and HUP are the shutdown watcher's; any
   ;; other signal a handler is registered for goes through the kernel's signal
-  ;; relay (chez-patches/0008). A jolt on a stock Chez has no relay and blocks
+  ;; relay (chez-patches/0009). A jolt on a stock Chez has no relay and blocks
   ;; the others at entry for the watcher instead (concurrency.ss).
   {:category :restrictive
    :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"BUS\") handler)"
