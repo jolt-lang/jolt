@@ -891,8 +891,7 @@
     ;; expand their own locking macro rather than calling clojure.core/locking
     ;; emit these directly (borkdude/dynaload does, under malli), so lower them
     ;; to that seam instead of punting. Like the JVM, both yield nil.
-    "monitor-enter" (analyze-monitor-op ctx items env "monitor-enter")
-    "monitor-exit"  (analyze-monitor-op ctx items env "monitor-exit")
+    ("monitor-enter" "monitor-exit") (analyze-monitor-op ctx items env op)
     "letfn*"        (analyze-letfn* ctx items env)
     "fn*"           (analyze-fn ctx form items env)
     ;; Lower the backtick to construction code (zero runtime cost), then analyze

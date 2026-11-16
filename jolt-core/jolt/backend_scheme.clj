@@ -1275,8 +1275,10 @@
 
 ;; Literal data the reader built: quoted forms, and the regex, #inst, #uuid,
 ;; bigdec and namespace leaves.
+(declare ^:private emit-load-time-value)
 (defn- emit-data-node [node]
   (case (:op node)
+    :load-time-value (emit-load-time-value node)
     ;; A quoted scalar (form-char?/form-literal?) emits as an immediate constant
     ;; via emit-const — nothing to hoist. Every other quoted form (symbol, list,
     ;; vector, map, set, regex/inst/uuid/tagged) is a CONSTRUCTION rebuilt per
@@ -1338,7 +1340,6 @@
 
 (defn emit* [node]
   (case (:op node)
-    :load-time-value (emit-load-time-value node)
     :const (emit-const (:val node))
     :local (munge-name (:name node))
     ;; late-bound var: read the cell's current root at use time. A value-position
@@ -1349,7 +1350,7 @@
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)
     (:vector :set :map) (emit-coll-literal node)
-    (:quote :regex :inst :uuid :bigdec :the-ns) (emit-data-node node)
+    (:quote :regex :inst :uuid :bigdec :the-ns :load-time-value) (emit-data-node node)
     ;; the thrown value is an operand (emitted non-tail); the throw itself goes
     ;; through emit-call with marks?=#f, so a TAIL throw gets the site-vreg pair
     ;; (sited-tail-call — stored after the operand is bound, so the operand's own

@@ -6,8 +6,7 @@
 ;; artifacts phase 1 left. Needs JOLT_AOT_CACHE=1 and JOLT_AOT_ASYNC=0 (a miss
 ;; must have published its fasl before the next load looks for it).
 
-(require '[clojure.string :as str]
-         '[jolt.loader :as jl])
+(require '[jolt.loader :as jl])
 
 (def root (first *command-line-args*))
 (def phase (second *command-line-args*))
