@@ -27,6 +27,7 @@ bytes-allocated
 call-cc
 call-on-main-thread
 call-on-main-thread-async
+call-with-capture
 call-with-read-opts
 callable-host?
 catvec
@@ -40,6 +41,7 @@ class-supers
 class-value?
 compile-ns
 condition-message
+content-key
 cpu-nanos
 ctx-for-ns
 current-fiber
@@ -95,6 +97,7 @@ fiber-yield
 fiber?
 file-exists?
 file-mtime
+files-digest
 find-var
 fn-form-parse
 form-bigdec-source
@@ -156,6 +159,7 @@ gc-trip-bytes
 getenv
 host-class-name?
 host-intern!
+host-ns-digest
 identity-hash
 image-add-after-restore-hook!
 image-add-before-dump-hook!
@@ -188,8 +192,11 @@ late-bind?
 late-bound-namespace?
 list-dir
 list?
+load-loader-artifact!
 load-namespace
 load-string
+loader-cache-dir
+loader-cache-salt
 locale-name
 machine-type
 make-interrupt
@@ -224,6 +231,7 @@ protocol-key-of
 protocol-method-var?
 protocol-methods
 proxy-super-call
+publish-loader-artifact!
 rational-type?
 rbt-delete
 rbt-found
@@ -328,5 +336,6 @@ var-redefined?
 var-root-callable?
 wall-nanos
 with-monitor
+write-loader-sidecar!
 zip-archive?
 zip-entry-names

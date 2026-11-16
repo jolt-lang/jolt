@@ -1454,7 +1454,7 @@
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])
             *fnsrc-def-init?* fn?]
-    (let [i (with-load-time-scope #(emit-with-cells #(emit (:init node))))]
+    (let [i (with-load-time-scope (fn [] (emit-with-cells #(emit (:init node)))))]
       [i (trace-callsite-reg) (fnsrc-flush)])))
 
 ;; An unlinked def: def-var-with-meta! or def-var-plain!. A def evaluates to its
@@ -1578,14 +1578,14 @@
                 ;; (define …)/(begin …), which no let may wrap: a spliced do
                 ;; re-enters here per statement, and a direct-linked def opens
                 ;; the scope around its init (emit-def-init).
-                (not (direct-link?)) (with-load-time-scope #(emit-top-cells node #(emit node)))
+                (not (direct-link?)) (with-load-time-scope (fn [] (emit-top-cells node #(emit node))))
                 ;; top-level do splices: each statement/ret is itself a top-level form.
                 (= :do (:op node))
                 (str "(begin " (str/join " " (map emit-top-form (:statements node)))
                      (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
                 (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
                 (emit-def-cached node)
-                :else (with-load-time-scope #(emit-top-cells node #(emit node))))
+                :else (with-load-time-scope (fn [] (emit-top-cells node #(emit node)))))
           freg (fnsrc-flush)]
       (cond
         (= freg "") scm
