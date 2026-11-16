@@ -111,7 +111,11 @@
          (or (ldr-rel-prefix? rel (ns-name->rel (car ns))) (loop (cdr ns))))))
 ;; Matched as a namespace PREFIX so a child (babashka/process/pprint) travels
 ;; with its parent.
-(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "cheshire/core" "clojure/data/json"))
+;; jsonista/core is the compatibility shim over clojure.data.json: muuntaja puts
+;; the real jsonista jar on the classpath, and its jsonista.core can never load
+;; (it is Jackson), so the shim must win over it.
+(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "cheshire/core" "clojure/data/json"
+                              "jsonista/core"))
 (define (ldr-builtin-ns-rel? rel)
   (let loop ((bs ldr-builtin-ns-rels))
     (and (pair? bs)

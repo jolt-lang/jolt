@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jsonista.core` is bundled, so muuntaja loads.** Real jsonista wraps
+  Jackson and its own compiled Java classes, so `(require 'jsonista.core)`
+  failed at load on `(ObjectMapper.)`, and with it muuntaja and reitit's
+  default formats. `compatibility/jsonista/core.clj` implements jsonista's
+  API over the bundled `clojure.data.json`: `object-mapper` with its
+  encoding and decoding options, `read-value`, `write-value`,
+  `write-value-as-string` and `write-value-as-bytes`, the `ReadValue` and
+  `WriteValue` protocols, and `java-collection-module`. Output matches
+  jsonista 0.3.8's on the JVM, and a mapper answers `instance?`
+  `com.fasterxml.jackson.databind.ObjectMapper`, which muuntaja checks.
+  Jackson's own options (`:factory`, `:encoders`, other modules and mappers)
+  throw instead of being ignored. The real jsonista jar a project pulls in
+  doesn't shadow the bundled namespace. `Charset/availableCharsets`, which
+  muuntaja reads at load, is added too. (#1683)
+
 - **A jolt callback can take and return C structs by value.**
   `jolt.ffi/foreign-callable`, `callback` and `export!` accept
   `[:by-value [:struct ...]]` in the argument vector and as the result, the
