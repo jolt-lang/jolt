@@ -1093,13 +1093,23 @@
           (sh ["sh" "-c" (str "kill -" s " " pid)])
           (Thread/sleep 200))
         (check-eq (str "an unhandled CHLD, PIPE, URG or WINCH is dropped (" mode ")") (p/alive? proc) true)
+        ;; TSTP's default is to stop, but the kernel discards it for a process
+        ;; in an orphaned process group, which is what the smoke harness runs
+        ;; this gate in. So jolt is held to what a plain `sleep` started the
+        ;; same way does, stopped or not.
         (when (fs/exists? "/proc/self/status")
-          (sh ["sh" "-c" (str "kill -TSTP " pid)])
-          (Thread/sleep 300)
-          (check-eq (str "an unhandled TSTP stops the process (" mode ")") (state) "T")
-          (sh ["sh" "-c" (str "kill -CONT " pid)])
-          (Thread/sleep 300)
-          (check-eq (str "and CONT resumes it (" mode ")") (contains? #{"S" "R"} (state)) true)))
+          (let [ctl (process ["sleep" "30"] {:out :string :err :string})
+                cpid (.pid (:proc ctl))
+                state-of (fn [p] (second (re-find #"State:\s+(\S)" (slurp (str "/proc/" p "/status")))))]
+            (Thread/sleep 200)
+            (sh ["sh" "-c" (str "kill -TSTP " pid " " cpid)])
+            (Thread/sleep 300)
+            (check-eq (str "an unhandled TSTP does to jolt what it does to sleep (" mode ")")
+                      (state) (state-of cpid))
+            (sh ["sh" "-c" (str "kill -CONT " pid " " cpid)])
+            (Thread/sleep 300)
+            (check-eq (str "and CONT leaves it running (" mode ")") (contains? #{"S" "R"} (state)) true)
+            (.destroyForcibly (:proc ctl)))))
       (sh ["sh" "-c" (str "kill -" fatal " " pid)])
       (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
       (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))

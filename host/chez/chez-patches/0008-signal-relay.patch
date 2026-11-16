@@ -36,7 +36,7 @@ index 086e423..3dd0cfa 100644
 +#endif
  }
 diff --git a/c/schsig.c b/c/schsig.c
-index e3442e6..b966908 100644
+index e3442e6..50a2ae9 100644
 --- a/c/schsig.c
 +++ b/c/schsig.c
 @@ -667,6 +667,7 @@ static void init_signal_handlers(void) {
@@ -47,7 +47,7 @@ index e3442e6..b966908 100644
  
  static void handle_signal(INT sig, siginfo_t *si, void *data);
  static IBOOL enqueue_scheme_signal(ptr tc, INT sig);
-@@ -882,6 +883,112 @@ static void init_signal_handlers(void) {
+@@ -882,6 +883,115 @@ static void init_signal_handlers(void) {
      SIGACTION(SIGSEGV, &act, (struct sigaction *)0);
  }
  
@@ -61,7 +61,10 @@ index e3442e6..b966908 100644
 +   signal nobody asked for keeps whatever disposition it had. A handler that
 +   was there before (the expeditor's SIGWINCH, a C library's) still runs. */
 +#define JOLT_RELAY_NSIG 65
-+static int jolt_relay_pipe[2] = {-1, -1};
++/* zero-initialized, so all of this is bss rather than writable data; the pipe
++   is valid while jolt_relay_ready is set */
++static int jolt_relay_pipe[2];
++static volatile sig_atomic_t jolt_relay_ready;
 +static struct sigaction jolt_relay_orig[JOLT_RELAY_NSIG];
 +static char jolt_relay_saved[JOLT_RELAY_NSIG];
 +static volatile sig_atomic_t jolt_relay_chain[JOLT_RELAY_NSIG];
@@ -72,7 +75,7 @@ index e3442e6..b966908 100644
 +    unsigned char b = (unsigned char)sig;
 +    /* the write end is non-blocking: a full pipe drops the signal rather
 +       than hang the thread the kernel picked */
-+    if (write(jolt_relay_pipe[1], &b, 1) < 0) { /* dropped */ }
++    if (jolt_relay_ready && write(jolt_relay_pipe[1], &b, 1) < 0) { /* dropped */ }
 +    if (jolt_relay_chain[sig]) {
 +      struct sigaction *o = &jolt_relay_orig[sig];
 +      if (o->sa_flags & SA_SIGINFO) o->sa_sigaction(sig, si, ctx);
@@ -84,7 +87,7 @@ index e3442e6..b966908 100644
 +
 +/* The pipe's read end, opened on the first call; -1 if it can't be. */
 +static INT s_jolt_signal_relay_fd(void) {
-+  if (jolt_relay_pipe[0] < 0) {
++  if (!jolt_relay_ready) {
 +    int fds[2];
 +    if (pipe(fds) != 0) return -1;
 +    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
@@ -92,6 +95,7 @@ index e3442e6..b966908 100644
 +    fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL) | O_NONBLOCK);
 +    jolt_relay_pipe[1] = fds[1];
 +    jolt_relay_pipe[0] = fds[0];
++    jolt_relay_ready = 1;
 +  }
 +  return jolt_relay_pipe[0];
 +}
@@ -117,7 +121,7 @@ index e3442e6..b966908 100644
 +    act.sa_handler = SIG_IGN;
 +    jolt_relay_chain[sig] = 0;
 +  } else {
-+    if (jolt_relay_pipe[1] < 0) return -2;
++    if (!jolt_relay_ready) return -2;
 +    act.sa_flags = SA_SIGINFO;
 +#ifdef SA_RESTART
 +    act.sa_flags |= SA_RESTART;
@@ -138,7 +142,7 @@ index e3442e6..b966908 100644
 +   a Scheme that is gone; left open, nothing ever writes to it again, as the
 +   shutdown watcher stays parked in sigwait. A later Sscheme_init opens a
 +   new pipe, so a reinit's reader never shares the old one. A handler already
-+   running on another thread sees -1 and its write fails harmlessly. */
++   running on another thread sees the relay not ready and writes nothing. */
 +void S_jolt_signal_relay_deinit(void) {
 +  INT sig;
 +  for (sig = 1; sig < JOLT_RELAY_NSIG; sig += 1) {
@@ -148,8 +152,7 @@ index e3442e6..b966908 100644
 +      jolt_relay_saved[sig] = 0;
 +    }
 +  }
-+  jolt_relay_pipe[1] = -1;
-+  jolt_relay_pipe[0] = -1;
++  jolt_relay_ready = 0;
 +}
 +
 +void S_jolt_signal_relay_init(void) {
