@@ -214,4 +214,39 @@ signals after reinit: host host ign 1"
     fi ;;
 esac
 
+# A library's sun.misc.Signal handler (#1679) goes through the kernel's signal
+# relay, which chains to the host's own handler and gives the signal back at
+# jolt_library_shutdown; a second init takes it again. A kernel without the
+# relay refuses the handler, which a stock Chez is allowed to.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "build-lib smoke: signal relay skipped (POSIX signals driver)" ;;
+  *)
+    echo "build-lib smoke: a library's signal handler chains to the host's and gives the signal back"
+    if ! cc -O0 "$app/driver-relay.c" -ldl -o "$work/driver-relay" 2>"$work/driver-relay.err"; then
+      echo "  FAIL: relay driver compile failed"; cat "$work/driver-relay.err"; exit 1
+    fi
+    got="$("$work/driver-relay" "$lib" 2>&1)"; rc=$?
+    want="before load: host
+after load: host
+1 watching: relay
+1 seen: 1 host: 1
+1 after shutdown: host
+2 watching: relay
+2 seen: 1 host: 1
+2 after shutdown: host"
+    case "$got" in
+      *"Signal not supported by jolt"*)
+        if [ -n "${JOLT_REQUIRE_LOCKFREE_CHEZ:-}" ]; then
+          echo "  FAIL: the kernel has no signal relay, and JOLT_REQUIRE_LOCKFREE_CHEZ says it must"; exit 1
+        fi
+        echo "build-lib smoke: signal relay skipped (a stock Chez kernel)" ;;
+      *)
+        if [ "$rc" != "0" ] || [ "$got" != "$want" ]; then
+          echo "  FAIL: signal relay in a library, want rc 0 and:"; printf '%s\n' "$want"
+          echo "  got rc $rc:"; printf '%s\n' "$got"; exit 1
+        fi ;;
+    esac ;;
+esac
+
 echo "build-lib smoke: passed (add(2,3)=5 + jolt.ffi layout-size=8 + gzip_ok()=1 via dlopen+jolt_lookup, code churn, and a released init thread)"

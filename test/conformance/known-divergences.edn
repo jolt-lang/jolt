@@ -540,6 +540,38 @@
    :check :prose
    :why "jdk.net.ExtendedSocketOptions is not modelled, so there is nothing to name the options by"
    :note "SO_KEEPALIVE itself works."}
+  ;; sun.misc.Signal (#1679). INT, TERM and HUP are the shutdown watcher's; any
+  ;; other signal a handler is registered for goes through the kernel's signal
+  ;; relay (chez-patches/0009). A jolt on a stock Chez has no relay and blocks
+  ;; the others at entry for the watcher instead (concurrency.ss).
+  {:category :restrictive
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"BUS\") handler)"
+   :jvm "accepts the handler"
+   :jolt "throws IllegalArgumentException \"Signal already used by VM or OS: SIGBUS\""
+   :check :prose
+   :why "Chez handles BUS as a fault, as it does SEGV, FPE and ILL"
+   :note "QUIT, KILL, STOP, FPE, SEGV and ILL are refused on both, with the JVM's message."}
+  {:category :restrictive
+   :behavior "a TTIN, TTOU, PROF or VTALRM handler on a jolt built against a stock Chez"
+   :jvm "accepts the handler"
+   :jolt "throws IllegalArgumentException \"Signal not supported by jolt: SIGTTIN\"; and a PIPE or XFSZ handler runs only for one sent with kill, not for the one a write raises"
+   :check :prose
+   :why "without the kernel's relay a handler needs its signal blocked in every thread, which changes what the terminal does to a background job (TTIN, TTOU), keeps CPU timers off the running thread (PROF, VTALRM), and leaves a thread's own PIPE or XFSZ pending on it"
+   :note "jolt's own builds carry the relay and take all of these. A jolt built as a library on a stock Chez takes only INT, TERM and HUP."}
+  {:category :host-model
+   :behavior "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") h), the first time, for INT, TERM, HUP, USR2, PIPE, XFSZ or BUS"
+   :jvm "returns the JVM's own handler for the signal (a Signal$SunMiscHandler wrapping its shutdown or VM handler)"
+   :jolt "returns SignalHandler/SIG_DFL"
+   :check :prose
+   :why "the shutdown jolt runs for INT, TERM and HUP is the default action rather than a handler object"
+   :note "Handing the returned value back to handle restores the shutdown on both."}
+  {:category :host-model
+   :behavior "an unhandled SIGUSR2 sent to the process"
+   :jvm "nothing: HotSpot uses USR2 internally and drops a stray one"
+   :jolt "the OS default: the process ends with status 140"
+   :check :prose
+   :why "jolt has no internal use for USR2, so its default is the platform's"
+   :note "An unhandled USR1 ends both (138), and WINCH is ignored by both."}
   ;; *in* reads its source a line at a time (__stdin-read-line), so a
   ;; BufferedReader over it, which fills with one read of up to 8192 chars,
   ;; takes one line where the JVM's takes everything the pipe already holds.

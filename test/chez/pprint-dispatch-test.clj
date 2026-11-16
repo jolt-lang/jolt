@@ -170,6 +170,25 @@
      "<:a\n :b>\n"
      "cl-format true inside a dispatch fn writes into the pretty writer")
 
+;; --- *print-right-margin* nil: no line is too long (#1680) -------------------
+;; With no right margin pprint takes none of the optional newlines (fill, linear,
+;; miser), however long the line, and still takes a mandatory one. Expected
+;; strings are Clojure 1.12's.
+(ok= (binding [clojure.pprint/*print-right-margin* nil]
+       (out {:alpha (range 30) :beta {:gamma "a long string value here" :delta (vec (range 1 21))}}))
+     "{:alpha (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29), :beta {:gamma \"a long string value here\", :delta [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]}}\n"
+     "*print-right-margin* nil keeps a long map on one line")
+(ok= (code-out nil '(defn f "doc" ([x] (let [a 1 b 2] (cond (pos? x) (inc x) :else (dec x)))) ([x y] (+ x y))))
+     "(defn f \"doc\" ([x] (let [a 1 b 2] (cond (pos? x) (inc x) :else (dec x)))) ([x y] (+ x y)))\n"
+     "*print-right-margin* nil keeps code-dispatch's defn on one line")
+(ok= (binding [clojure.pprint/*print-right-margin* nil]
+       (clojure.pprint/cl-format nil "~<a~:@_b ~_c~:>" nil))
+     "a\nb\nc"
+     "*print-right-margin* nil still takes a mandatory newline")
+(ok= (with-out-str (clojure.pprint/write (vec (range 40)) :right-margin nil :stream true))
+     "[0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39]"
+     "write's :right-margin nil is the same")
+
 ;; --- the interop form core.logic uses: (. simple-dispatch addMethod Type f) -----
 ;; These mutate the dispatch table. On a record's class (an IPersistentMap) the
 ;; exact-class method must win over the built-in IPersistentMap arm.

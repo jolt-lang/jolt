@@ -65,3 +65,17 @@
   (try (ffi/read ffi/null :int) 0
        (catch Throwable _ 1)))
 (ffi/export! "scheme_fault" scheme-fault [] :int :collect-safe)
+
+;; watch_usr2 registers a sun.misc.Signal handler for USR2 from inside the
+;; library, and usr2_seen answers how many times it has run (#1679). The kernel's
+;; signal relay installs a C handler for USR2 that chains to the host's own, and
+;; jolt_library_shutdown gives USR2 back (driver-relay.c). :collect-safe because
+;; the driver calls them after releasing its init thread.
+(def usr2-count (atom 0))
+(defn watch-usr2 []
+  (sun.misc.Signal/handle (sun.misc.Signal. "USR2")
+                          (reify sun.misc.SignalHandler (handle [_ _] (swap! usr2-count inc))))
+  1)
+(defn usr2-seen [] @usr2-count)
+(ffi/export! "watch_usr2" watch-usr2 [] :int :collect-safe)
+(ffi/export! "usr2_seen" usr2-seen [] :int :collect-safe)

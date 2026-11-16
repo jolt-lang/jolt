@@ -2346,9 +2346,11 @@
         ;; object has no thread id), the thread's on a thread.
         (cons "getStackTrace" (lambda (self)
           (let* ((st (jhost-state self)) (f (jolt-current-fiber)))
-            (if (if f (eq? (jthread-fiber st) f) (eqv? (jthread-id st) (get-thread-id)))
-                (jolt-current-stack-trace)
-                (jolt-vector)))))
+            (jolt-ref-array
+             (if (if f (eq? (jthread-fiber st) f) (eqv? (jthread-id st) (get-thread-id)))
+                 (jolt-current-stack-trace)
+                 '())
+             "java.lang.StackTraceElement"))))
         (cons "getId" (lambda (self) (vector-ref (jhost-state self) 10)))
         (cons "threadId" (lambda (self) (vector-ref (jhost-state self) 10)))
         (cons "getContextClassLoader" (lambda (self) (thread-context-class-loader)))
@@ -5553,8 +5555,80 @@
 ;;
 ;; A CHILD process inherits none of this mask (jolt-with-empty-sigmask, further
 ;; down), so ^C on the foreground process group still kills subprocesses outright.
+;;
+;; Any other signal a sun.misc.Signal handler is registered for (#1679) goes
+;; through the kernel's signal relay (chez-patches/0009): a C handler, installed
+;; for that signal when the handler is registered, writes its number to a pipe,
+;; and a thread reading the pipe runs the handler. Nothing is blocked for it, so
+;; a signal nobody handles keeps the disposition it had, a library build takes
+;; nothing it was not asked to, and a signal the kernel sends to one thread
+;; (a write's PIPE or XFSZ) still reaches the handler.
+;;
+;; A stock Chez has no relay. There those signals are blocked up front instead,
+;; for the reason the three are (a thread forked before a handler was registered
+;; would otherwise be a delivery target), but only where the CLI or a built
+;; binary's launcher arms at entry (jolt-arm-signals!); the watcher takes them,
+;; and raises one nobody handles again with the process's own disposition
+;; (jolt-signal-default!).
 (define jolt-shutdown-signals '(15 1 2))
 (define jolt-shutdown-sigset (and jolt-sigmask-ok? (jolt-make-sigset jolt-shutdown-signals)))
+
+;; Every signal name this OS has, for (sun.misc.Signal. name). Linux numbers are
+;; the generic ones (x86-64, arm64); macOS moves the BSD ones around.
+(define jolt-signal-numbers
+  (if (eq? (sa-os-family) 'macos)
+      '(("HUP" . 1) ("INT" . 2) ("QUIT" . 3) ("ILL" . 4) ("TRAP" . 5) ("ABRT" . 6)
+        ("EMT" . 7) ("FPE" . 8) ("KILL" . 9) ("BUS" . 10) ("SEGV" . 11) ("SYS" . 12)
+        ("PIPE" . 13) ("ALRM" . 14) ("TERM" . 15) ("URG" . 16) ("STOP" . 17)
+        ("TSTP" . 18) ("CONT" . 19) ("CHLD" . 20) ("TTIN" . 21) ("TTOU" . 22)
+        ("IO" . 23) ("XCPU" . 24) ("XFSZ" . 25) ("VTALRM" . 26) ("PROF" . 27)
+        ("WINCH" . 28) ("INFO" . 29) ("USR1" . 30) ("USR2" . 31))
+      '(("HUP" . 1) ("INT" . 2) ("QUIT" . 3) ("ILL" . 4) ("TRAP" . 5) ("ABRT" . 6)
+        ("IOT" . 6) ("BUS" . 7) ("FPE" . 8) ("KILL" . 9) ("USR1" . 10) ("SEGV" . 11)
+        ("USR2" . 12) ("PIPE" . 13) ("ALRM" . 14) ("TERM" . 15) ("STKFLT" . 16)
+        ("CHLD" . 17) ("CONT" . 18) ("STOP" . 19) ("TSTP" . 20) ("TTIN" . 21)
+        ("TTOU" . 22) ("URG" . 23) ("XCPU" . 24) ("XFSZ" . 25) ("VTALRM" . 26)
+        ("PROF" . 27) ("WINCH" . 28) ("IO" . 29) ("POLL" . 29) ("PWR" . 30)
+        ("SYS" . 31))))
+(define (jolt-signal-number name)
+  (let ((p (assoc name jolt-signal-numbers))) (and p (cdr p))))
+(define (jolt-signal-name n)
+  (let loop ((ps jolt-signal-numbers))
+    (cond ((null? ps) (number->string n))
+          ((eqv? (cdar ps) n) (caar ps))
+          (else (loop (cdr ps))))))
+(define jsig-relay-fd (jolt-foreign-proc-safe "(cs)jolt_signal_relay_fd" '() 'int))
+(define jsig-relay-set (jolt-foreign-proc-safe "(cs)jolt_signal_relay_set" '(int int) 'int))
+;; JOLT_NO_SIGNAL_RELAY=1 takes the stock-Chez path on a patched kernel, which
+;; is how the gate covers both.
+(define jolt-signal-relay?
+  (and jsig-relay-fd jsig-relay-set
+       (not (equal? (getenv "JOLT_NO_SIGNAL_RELAY") "1"))
+       #t))
+;; Without the relay, the signals blocked up front for the watcher besides the
+;; shutdown three. Left out:
+;;   - QUIT, KILL, STOP, FPE, SEGV, ILL and BUS: the JVM keeps the first six for
+;;     itself, and Chez handles BUS (with SEGV, FPE, ILL) as a fault.
+;;   - TTIN and TTOU: the kernel reads a BLOCKED one as ignored, so a background
+;;     read of the terminal would fail with EIO, and a write go through, where
+;;     the job stops today.
+;;   - PROF and VTALRM: a profiler's CPU timers, which have to reach the thread
+;;     that is running; blocked everywhere they could only land on the watcher.
+(define jolt-user-signals
+  (filter values
+          (map jolt-signal-number
+               '("USR1" "USR2" "WINCH" "ALRM" "URG" "IO" "XCPU" "XFSZ" "PWR" "SYS"
+                 "TRAP" "ABRT" "CHLD" "CONT" "TSTP" "PIPE" "STKFLT" "EMT" "INFO"))))
+(define jolt-watched-sigset
+  (and jolt-sigmask-ok? (jolt-make-sigset (append jolt-shutdown-signals jolt-user-signals))))
+;; #t once the entry point has claimed the user signals (jolt-arm-signals!). Read
+;; by the fork guard and by arming, both of which then use jolt-watched-sigset.
+(define jolt-user-signals-taken (box #f))
+(define (jolt-signal-sigset)
+  (if (unbox jolt-user-signals-taken) jolt-watched-sigset jolt-shutdown-sigset))
+(define (jolt-watched-signal? sig)
+  (or (memv sig jolt-shutdown-signals)
+      (and (unbox jolt-user-signals-taken) (memv sig jolt-user-signals))))
 ;; #t once the sigwait watcher owns the signals above — park-until-interrupt reads
 ;; it to decide whether SIGINT is still Chez's to deliver.
 (define jolt-shutdown-armed (box #f))
@@ -5587,7 +5661,7 @@
 ;; forked thread leaves the primordial unmasked, and the signal goes there, just
 ;; as it did before any of this).
 (define (jolt-fork-with-shutdown-blocked fork)
-  (jolt-with-sigmask jolt-sig-block-how jolt-shutdown-sigset fork))
+  (jolt-with-sigmask jolt-sig-block-how (jolt-signal-sigset) fork))
 (set! jolt-fork-sigmask-guard jolt-fork-with-shutdown-blocked)
 (define c-sigwait (jolt-foreign-proc-blocking "sigwait" '(void* void*) 'int))
 ;; What a sigwait answered: its signal when it is one of ours, else #f and the
@@ -5602,7 +5676,7 @@
 (define (jolt-sigwait-signal r sigbuf)
   (and (eqv? r 0)
        (let ((sig (sa-foreign-ref 'int sigbuf 0)))
-         (and (memv sig jolt-shutdown-signals) sig))))
+         (and (jolt-watched-signal? sig) sig))))
 ;; The watcher cannot leave through Chez's (exit): called off the main thread it
 ;; never returns. It has already run the hooks and flushed by then, so _exit is
 ;; the whole of what is left to do.
@@ -5678,22 +5752,41 @@
   (when (and jolt-sigmask-ok? jolt-shutdown-sigset c-sigwait c-underscore-exit)
     (let ((start? (jolt-with-mutex jolt-shutdown-mutex
                     (and (not (unbox jolt-shutdown-armed))
-                         (begin (set-box! jolt-shutdown-armed #t) #t)))))
+                         (begin (set-box! jolt-shutdown-armed #t) #t))))
+          (sigset (jolt-signal-sigset)))
       (when start?
         (let ((old (sa-foreign-alloc 128)))
-          (c-pthread-sigmask jolt-sig-block-how jolt-shutdown-sigset old)
+          (c-pthread-sigmask jolt-sig-block-how sigset old)
           (sa-foreign-free old))
         (fork-thread-dormant
           (lambda ()
+            ;; Its own set blocked too. A dormant fork skips the fork guard, and
+            ;; an unblocked signal arriving while this thread is between waits
+            ;; (starting a handler's thread) took its default action here: a
+            ;; second USR2 right behind the first ended the process.
+            (let ((old (sa-foreign-alloc 128)))
+              (c-pthread-sigmask jolt-sig-block-how sigset old)
+              (sa-foreign-free old))
             (let ((sigbuf (sa-foreign-alloc 8)))
               (let loop ()
                 (sa-foreign-set! 'int sigbuf 0 0)
-                (if (jolt-sigwait-signal (c-sigwait jolt-shutdown-sigset sigbuf) sigbuf)
+                (if (jolt-sigwait-signal (c-sigwait sigset sigbuf) sigbuf)
                     (let ((sig (sa-foreign-ref 'int sigbuf 0))
                           (target (unbox jolt-sigint-target)))
-                      (if (and (= sig 2) target (jolt-sigint-trip! target))
-                          (loop)
-                          (begin
+                      (cond
+                        ((and (= sig 2) target (jolt-sigint-trip! target)) (loop))
+                        ;; a program's sun.misc.Signal handler: SIG_IGN drops
+                        ;; the signal, anything else runs on a thread of its own
+                        ((jolt-signal-handler-of sig)
+                         => (lambda (h)
+                              (unless (jolt-native-handler-named? h "SIG_IGN")
+                                (jolt-signal-dispatch! sig h))
+                              (loop)))
+                        ;; no handler: what the signal did before jolt took it
+                        ((not (memv sig jolt-shutdown-signals))
+                         (jolt-signal-default! sig)
+                         (loop))
+                        (else
                             ;; this thread now runs jolt code alongside the
                             ;; program's (jolt-add-runtime-shutdown-hook)
                             (jolt-mark-mt!)
@@ -5705,6 +5798,217 @@
                             (c-underscore-exit (+ 128 sig)))))
                     (loop))))))))) ; an error number, or 0 with no signal of ours — ask again
   jolt-nil)
+
+;; The CLI's and a built binary's entry. On a kernel without the signal relay,
+;; claim jolt-user-signals for the watcher too, then arm. Before anything has
+;; forked, so every thread jolt starts is born masked. With the relay only the
+;; shutdown three are taken here; the rest are installed one at a time, as a
+;; handler is registered.
+(define (jolt-arm-signals!)
+  (unless (or (unbox jolt-shutdown-armed) jolt-signal-relay?)
+    (set-box! jolt-user-signals-taken #t))
+  (jolt-arm-shutdown!))
+
+;; --- sun.misc.Signal ---------------------------------------------------------
+;; A program's own handler for a signal the watcher takes (#1679). The watcher
+;; runs it the way the JVM's dispatcher does: on a fresh daemon thread named
+;; "SIG<NAME> handler", handed a Signal. Registering one for INT, TERM or HUP
+;; replaces the shutdown, as it does on the JVM; SIG_DFL puts the shutdown back.
+(define jolt-signal-handlers (make-eqv-hashtable))
+(define jolt-signal-handlers-mu (make-mutex))
+;; The registered handler, or #f for the default (none, or SIG_DFL).
+(define (jolt-signal-handler-of sig)
+  (let ((h (jolt-with-mutex jolt-signal-handlers-mu
+             (hashtable-ref jolt-signal-handlers sig #f))))
+    (and h (not (jolt-native-handler-named? h "SIG_DFL")) h)))
+
+(define (make-jolt-signal name n) (make-jhost "signal" (vector name n)))
+(define-jhost-tag-pred (jolt-signal? t) (string=? t "signal"))
+(define (jolt-signal-name-of s) (vector-ref (jhost-state s) 0))
+(define (jolt-signal-number-of s) (vector-ref (jhost-state s) 1))
+;; SIG_DFL and SIG_IGN, sun.misc.Signal$SunMiscHandler on the JVM.
+(define jolt-sig-dfl (make-jhost "signal-native-handler" (vector "SIG_DFL")))
+(define jolt-sig-ign (make-jhost "signal-native-handler" (vector "SIG_IGN")))
+(define-jhost-tag-pred (jolt-signal-native-handler? t) (string=? t "signal-native-handler"))
+;; By name, not identity: a SIG_IGN a built image rebuilt is not jolt-sig-ign.
+(define (jolt-native-handler-named? h name)
+  (and (jolt-signal-native-handler? h) (string=? (vector-ref (jhost-state h) 0) name)))
+
+(define (jolt-signal-dispatch! sig h)
+  ;; this thread now runs jolt code alongside the program's
+  (jolt-mark-mt!)
+  (let* ((name (jolt-signal-name sig))
+         (signal (make-jolt-signal name sig))
+         (t (make-jthread (lambda () (record-method-dispatch h "handle" (jolt-list signal)) jolt-nil)
+                          (string-append "SIG" name " handler"))))
+    (guard (_ (#t #f))
+      (record-method-dispatch t "setDaemon" (jolt-list #t))
+      (record-method-dispatch t "start" jolt-nil))))
+
+;; A signal the watcher took and nobody handles: raise it again on this thread,
+;; unblocked here for the length of the raise, under whatever disposition the
+;; process has. The default action is then the one it always was (USR1 ends the
+;; process, CHLD and WINCH are dropped, TSTP stops it, PIPE stays ignored), and
+;; a handler a C library installed with sigaction still runs. No jolt code runs
+;; here: CHLD comes for every child, and that must not cost the program the
+;; multi-threaded paths (jolt-mark-mt!).
+(define jsig-c-raise (jolt-foreign-proc-safe "raise" '(int) 'int))
+(define jsig-c-kill (jolt-foreign-proc-safe "kill" '(int int) 'int))
+(define jsig-c-getpid (jolt-foreign-proc-safe "getpid" '() 'int))
+(define jolt-signal-raise-sets (make-eqv-hashtable))   ; watcher thread only
+(define jolt-signal-raise-old (and jolt-sigmask-ok? (sa-foreign-alloc 128)))
+(define (jolt-signal-default! sig)
+  (when jsig-c-raise
+    (let ((set (or (hashtable-ref jolt-signal-raise-sets sig #f)
+                   (let ((s (jolt-make-sigset (list sig))))
+                     (hashtable-set! jolt-signal-raise-sets sig s)
+                     s))))
+      (c-pthread-sigmask jolt-sig-unblock-how set jolt-signal-raise-old)
+      (jsig-c-raise sig)
+      ;; it did not end the process (ignored, handled, or stopped and continued):
+      ;; block it again and go on
+      (c-pthread-sigmask jolt-sig-setmask-how jolt-signal-raise-old 0))))
+
+;; The relay's reader: one thread, started with the first relayed handler, that
+;; blocks reading the pipe and runs a handler for each signal number it reads.
+;; It blocks the shutdown signals itself, as every other jolt thread does, so a
+;; SIGTERM never lands here at its default action.
+(define jsig-c-read (jolt-foreign-proc-blocking "read" '(int void* size_t) 'ssize_t))
+;; The pipe is opened and the start committed under the lock; the fork happens
+;; outside it, since a fork can park (park-lock-check.sh). Answers whether the
+;; relay can carry a handler: #f only when the pipe could not be opened.
+(define jolt-signal-relay-mu (make-mutex))
+(define jolt-signal-relay-fd (box #f))       ; the read end once opened, or -1
+(define (jolt-signal-relay-start!)
+  (let ((fd-to-read
+         (jolt-with-mutex jolt-signal-relay-mu
+           (and (not (unbox jolt-signal-relay-fd))
+                (let ((fd (if jsig-c-read (jsig-relay-fd) -1)))
+                  (set-box! jolt-signal-relay-fd fd)
+                  (and (>= fd 0) fd))))))
+    (when fd-to-read
+      (fork-thread-dormant
+        (lambda ()
+          (let ((old (sa-foreign-alloc 128)))
+            (c-pthread-sigmask jolt-sig-block-how (jolt-signal-sigset) old)
+            (sa-foreign-free old))
+          (let ((buf (sa-foreign-alloc 64)))
+            (let loop ()
+              (let ((r (jsig-c-read fd-to-read buf 64)))
+                ;; -1 is EINTR: read again. 0 (no writer left) does not
+                ;; happen: the kernel abandons the pipe open (Sscheme_deinit).
+                (do ((i 0 (+ i 1))) ((>= i r))
+                  (let* ((sig (sa-foreign-ref 'unsigned-8 buf i))
+                         (h (jolt-signal-handler-of sig)))
+                    (when (and h (not (jolt-native-handler-named? h "SIG_IGN")))
+                      (jolt-signal-dispatch! sig h))))
+                (unless (eqv? r 0) (loop))))))))
+    (let ((fd (unbox jolt-signal-relay-fd))) (and fd (>= fd 0)))))
+
+;; The JVM keeps the first six for itself and refuses a handler for them; Chez
+;; handles BUS as a fault, as it does SEGV, FPE and ILL.
+(define jolt-signals-used-by-vm '("QUIT" "KILL" "STOP" "FPE" "SEGV" "ILL" "BUS"))
+
+(define (jolt-signal-ctor name)
+  (when (jolt-nil? name) (throw-jvm 'NullPointerException "name"))
+  (let* ((nm (jolt-str-render-one name)) (n (jolt-signal-number nm)))
+    (unless n (throw-jvm 'IllegalArgumentException (string-append "Unknown signal: " nm)))
+    (make-jolt-signal nm n)))
+
+(define (jolt-signal-handle sig handler)
+  (when (jolt-nil? sig)
+    (throw-jvm 'NullPointerException "Cannot read field \"iSignal\" because \"sig\" is null"))
+  (unless (jolt-signal? sig)
+    (throw-jvm 'ClassCastException
+               (string-append "class " (jolt-class-name sig) " cannot be cast to class sun.misc.Signal")))
+  (let ((h (if (jolt-nil? handler) jolt-sig-dfl handler))
+        (name (jolt-signal-name-of sig))
+        (n (jolt-signal-number-of sig)))
+    (unless (or (jolt-signal-native-handler? h)
+                (instance-check (jolt-symbol #f "sun.misc.SignalHandler") h))
+      (throw-jvm 'ClassCastException
+                 (string-append "class " (jolt-class-name h)
+                                " cannot be cast to class sun.misc.SignalHandler")))
+    (when (member name jolt-signals-used-by-vm)
+      (throw-jvm 'IllegalArgumentException
+                 (string-append "Signal already used by VM or OS: SIG" name)))
+    (let ((unsupported
+           (lambda ()
+             (throw-jvm 'IllegalArgumentException
+                        (string-append "Signal not supported by jolt: SIG" name))))
+          (swap!
+           (lambda ()
+             (let ((prev (hashtable-ref jolt-signal-handlers n jolt-sig-dfl)))
+               (hashtable-set! jolt-signal-handlers n h)
+               prev))))
+    (cond
+      ;; the shutdown watcher's own: it dispatches the handler
+      ((and (memv n jolt-shutdown-signals) jolt-sigmask-ok? c-sigwait)
+       (jolt-arm-shutdown!)
+       (jolt-with-mutex jolt-signal-handlers-mu (swap!)))
+      ;; the relay: SIG_DFL gives back the disposition the signal had, SIG_IGN
+      ;; ignores it in the kernel, and a handler relays it
+      (jolt-signal-relay?
+       (let ((mode (cond ((jolt-native-handler-named? h "SIG_DFL") 0)
+                         ((jolt-native-handler-named? h "SIG_IGN") 2)
+                         (else 1))))
+         (unless (or (not (= mode 1)) (jolt-signal-relay-start!))
+           (unsupported))
+         ;; the table first, so a signal the new disposition lets through
+         ;; finds its handler; put back if the kernel refuses the signal
+         (let ((r (jolt-with-mutex jolt-signal-handlers-mu
+                    (let ((prev (swap!)))
+                      (if (eqv? (jsig-relay-set n mode) 0)
+                          (cons 'ok prev)
+                          (begin (hashtable-set! jolt-signal-handlers n prev) #f))))))
+           (if r (cdr r) (unsupported)))))
+      ;; stock Chez: only what the watcher took at entry can reach a handler. A
+      ;; signal it does not take would still run its default action, so refuse
+      ;; rather than accept and never call it.
+      ((and jolt-sigmask-ok? c-sigwait (unbox jolt-user-signals-taken)
+            (memv n jolt-user-signals))
+       (jolt-arm-shutdown!)
+       (jolt-with-mutex jolt-signal-handlers-mu (swap!)))
+      (else (unsupported))))))
+
+;; Signal.raise: to the PROCESS, not this thread. This thread blocks the signal,
+;; and only a process-directed one is left pending for the watcher's sigwait.
+(define (jolt-signal-raise sig)
+  (when (jolt-nil? sig)
+    (throw-jvm 'NullPointerException "Cannot read field \"number\" because \"sig\" is null"))
+  (when (and jsig-c-kill jsig-c-getpid)
+    (jsig-c-kill (jsig-c-getpid) (jolt-signal-number-of sig)))
+  jolt-nil)
+
+;; under the simple name too: (Signal. n) after an import looks the name up as written
+(register-class-ctor! "sun.misc.Signal" jolt-signal-ctor)
+(register-class-ctor! "Signal" jolt-signal-ctor)
+(register-class-statics! "sun.misc.Signal"
+  (list (cons "handle" jolt-signal-handle)
+        (cons "raise" jolt-signal-raise)))
+(register-class-statics! "sun.misc.SignalHandler"
+  (list (cons "SIG_DFL" jolt-sig-dfl)
+        (cons "SIG_IGN" jolt-sig-ign)))
+(register-host-methods! "signal"
+  (list (cons "getName" (lambda (self) (jolt-signal-name-of self)))
+        (cons "getNumber" (lambda (self) (jolt-signal-number-of self)))
+        (cons "toString" (lambda (self) (string-append "SIG" (jolt-signal-name-of self))))
+        (cons "hashCode" (lambda (self) (jolt-signal-number-of self)))
+        (cons "equals" (lambda (self o)
+                         (and (jolt-signal? o)
+                              (eqv? (jolt-signal-number-of self) (jolt-signal-number-of o))
+                              (string=? (jolt-signal-name-of self) (jolt-signal-name-of o)))))))
+(register-host-methods! "signal-native-handler"
+  (list (cons "toString" (lambda (self) (vector-ref (jhost-state self) 0)))
+        (cons "handle" (lambda (self s)
+                         (throw-jvm 'UnsupportedOperationException
+                                    "invoking native signal handle not supported")))))
+(register-eq-arm! (lambda (a b) (and (jolt-signal? a) (jolt-signal? b)))
+                  (lambda (a b) (and (eqv? (jolt-signal-number-of a) (jolt-signal-number-of b))
+                                     (string=? (jolt-signal-name-of a) (jolt-signal-name-of b)))))
+(register-hash-arm! jolt-signal? jolt-signal-number-of)
+(register-str-render! jolt-signal? (lambda (s) (string-append "SIG" (jolt-signal-name-of s))))
+(register-str-render! jolt-signal-native-handler? (lambda (h) (vector-ref (jhost-state h) 0)))
 
 ;; --- a child must not inherit jolt's signal mask -----------------------------
 ;; Both spawn paths hand the calling thread's mask straight to the child —

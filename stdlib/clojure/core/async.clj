@@ -89,9 +89,14 @@
 ;; meaning: the datum is data, but the :else arm rebuilt it as an application,
 ;; CPS'd the (<! ch) inside it into a real take, and syntax-quoted the resulting
 ;; gensym — so the channel was drained and the value came back (user/a__257 :done).
+;;
+;; jolt.host/load-time-value is listed QUALIFIED, the only spelling the analyzer
+;; dispatches (a bare load-time-value is a program's own name, and a park in its
+;; arguments must still be rewritten). sm-sf-head leaves a jolt.host head as is.
 (def ^:private sm-opaque
   '#{quote syntax-quote try catch finally fn* letfn* set! def defmacro throw var
-     monitor-enter monitor-exit new . & case* deftype* reify* import*})
+     monitor-enter monitor-exit new . & case* deftype* reify* import*
+     jolt.host/load-time-value})
 
 ;; recur inside one of these targets it, not an enclosing loop.
 (def ^:private sm-recur-barrier '#{fn* loop* letfn*})

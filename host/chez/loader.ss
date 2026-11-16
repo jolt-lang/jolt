@@ -111,7 +111,11 @@
          (or (ldr-rel-prefix? rel (ns-name->rel (car ns))) (loop (cdr ns))))))
 ;; Matched as a namespace PREFIX so a child (babashka/process/pprint) travels
 ;; with its parent.
-(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "cheshire/core" "clojure/data/json"))
+;; jsonista/core is the compatibility shim over clojure.data.json: muuntaja puts
+;; the real jsonista jar on the classpath, and its jsonista.core can never load
+;; (it is Jackson), so the shim must win over it.
+(define ldr-builtin-ns-rels '("babashka/fs" "babashka/process" "cheshire/core" "clojure/data/json"
+                              "jsonista/core"))
 (define (ldr-builtin-ns-rel? rel)
   (let loop ((bs ldr-builtin-ns-rels))
     (and (pair? bs)
@@ -3360,6 +3364,132 @@
 ;; a later require loads it again instead of no-op'ing (#1469).
 (def-var! "jolt.host" "unmark-loaded!"
   (lambda (n) (ldr-unmark-loaded! (jolt-str-render-one n)) jolt-nil))
+
+;; --- jolt.loader's artifact cache (#1653) -------------------------------------
+;; A context-private namespace (jolt.loader) is read and evaluated by the loader
+;; itself, not through load-namespace, so it never reached the AOT cache and
+;; every fresh context recompiled it. These are the pieces of the cache it uses.
+;; The loader owns the key — it is the one that knows which context's version of
+;; each dependency the namespace compiled against — and the artifact is the same
+;; captured Scheme a host namespace's is, so it relinks every var by name when it
+;; loads: loaded into a context whose dependencies are installed, it links to
+;; that context's cells, exactly as a fresh compile there would.
+
+;; The directory the loader's artifacts live in, or nil when this process must
+;; not cache — every condition the host's own cache path checks
+;; (aot-load-or-compile). Inside the generation directory, so a runtime change
+;; retires them with everything else.
+(def-var! "jolt.host" "loader-cache-dir"
+  (lambda ()
+    (if (and (aot-cache-enabled?)
+             (not (ldr-reload-all?))
+             (not (sa-profile-instrumenting?))
+             (not (jolt-debug-locals-instrumenting?))
+             (not (ldr-source-only?))
+             (aot-runtime-fingerprint)
+             (aot-cache-usable?))
+        (string-append (aot-cache-subdir) "/loader")
+        jolt-nil)))
+;; Compile-time state every private artifact shares with the host's: the data
+;; readers (their fns run while the source is read) and the linkage posture.
+(def-var! "jolt.host" "loader-cache-salt"
+  (lambda ()
+    (string-append (number->string (aot-readers-digest) 16) (aot-linkage-tag)
+                   (if (or hc-direct-link? hc-optimize?) "-o" ""))))
+;; The content key of a source string (length + FNV-1a over its UTF-8 bytes).
+(def-var! "jolt.host" "content-key"
+  (lambda (s) (aot-cache-key (string->utf8 (jolt-str-render-one s)))))
+;; What a HOST namespace contributes to a consumer's key: the host cache's own
+;; transitive digest for a namespace on the source roots, "rt" for one the
+;; runtime owns (covered by the generation), and nil for one with no source to
+;; key — defined at a REPL, say — which a consumer cannot be cached against.
+(def-var! "jolt.host" "host-ns-digest"
+  (lambda (n)
+    (let* ((name (jolt-str-render-one n))
+           (f (find-ns-file name)))
+      (cond ((and f (ldr-install-file? f)) "rt")
+            (f (number->string (aot-ns-digest name) 16))
+            ((hashtable-ref ldr-runtime-image-ns name #f) "rt")
+            (else jolt-nil)))))
+;; The digest of the files a compile read (the host's .res fold): name and
+;; content of each, so an edit to one moves every key folded from it.
+(def-var! "jolt.host" "files-digest"
+  (lambda (paths)
+    (number->string (aot-res-fold (map jolt-str-render-one (seq->list paths))) 16)))
+;; Run THUNK with its compiled top-level forms teed into a capture port (the
+;; per-form tee of compile-eval.ss), and answer a list of three: the captured
+;; Scheme (nil when nothing was captured), the host namespaces the compile
+;; required, and the files it read — the two things besides its source and its
+;; loader dependencies that the artifact bakes in. With CAPTURE? false nothing
+;; is teed or recorded: every private load binds that around itself, so one
+;; nested in a capturing load cannot append to it.
+(def-var! "jolt.host" "call-with-capture"
+  (lambda (capture? thunk)
+    (if (not (jolt-truthy? capture?))
+        (parameterize ((jolt-aot-capture #f) (aot-dep-sink #f) (io-file-read-sink #f))
+          (jolt-invoke0 thunk)
+          (jolt-list jolt-nil (jolt-list) (jolt-list)))
+        (let ((cap (open-output-string))
+              (sink (aot-new-dep-sink))
+              (reads (vector '())))
+          (parameterize ((jolt-aot-capture cap)
+                         ;; a host file loaded while this compiles tees nothing
+                         (jolt-aot-capture-file #f)
+                         (aot-dep-sink sink)
+                         (io-file-read-sink reads))
+            (jolt-invoke0 thunk))
+          (let ((s (get-output-string cap)))
+            (jolt-list (if (fx=? 0 (string-length s)) jolt-nil s)
+                       (apply jolt-list (vector-ref sink 0))
+                       (apply jolt-list (vector-ref reads 0))))))))
+;; Publish CAPTURED as BASE.so (with BASE.scm beside it), the way the host cache
+;; publishes: a temp file renamed into place, so a reader sees a whole artifact
+;; or none; compiled by the AOT worker when one runs, else here. TOKEN is the
+;; completion marker the artifact sets as its last act. Best effort — a failure
+;; only misses again next time.
+(def-var! "jolt.host" "publish-loader-artifact!"
+  (lambda (base captured token)
+    (let* ((base (jolt-str-render-one base))
+           (scm (string-append base ".scm"))
+           (so (string-append base ".so"))
+           (pid (number->string (get-process-id)))
+           (tmp-scm (string-append base ".tmp" pid ".scm"))
+           (tmp-so (string-append base ".tmp" pid ".so")))
+      (guard (e (else (aot-info (string-append "could not cache " base (ldr-condition-suffix e)))
+                      (delete-file tmp-scm #f) (delete-file tmp-so #f)))
+        (aot-mkdir-p (path-parent base))
+        (let ((out (open-output-file tmp-scm 'replace)))
+          (put-string out captured)
+          (put-string out (format "\n(aot-mark-complete! ~s)\n" (jolt-str-render-one token)))
+          (close-output-port out))
+        (rename-replace! tmp-scm scm)
+        (if (aot-enqueue-compile! scm so)
+            (aot-info (string-append "queued " base))
+            (begin
+              (parameterize ((current-output-port (open-output-string)))
+                (sa-compile-file scm tmp-so #f))
+              (rename-replace! tmp-so so)))))
+    jolt-nil))
+;; Load the artifact SO and answer whether it ran to its completion marker
+;; TOKEN. A throw propagates: the caller tells a broken artifact from a failing
+;; namespace by recompiling. The caller brackets *ns*, *file* and the compiler
+;; flags exactly as for the source evaluation, so the frame is not set here.
+(def-var! "jolt.host" "load-loader-artifact!"
+  (lambda (so token)
+    (let ((token (jolt-str-render-one token)))
+      (aot-complete-reset! token)
+      (parameterize ((aot-dep-sink #f) (io-file-read-sink #f) (jolt-aot-capture #f))
+        (load (jolt-str-render-one so)))
+      (let ((ok (aot-complete? token)))
+        (aot-complete-reset! token)
+        (if ok #t #f)))))
+;; Record a loader sidecar (a list of names) whole or not at all.
+(def-var! "jolt.host" "write-loader-sidecar!"
+  (lambda (path text)
+    (let ((path (jolt-str-render-one path)))
+      (guard (e (else #f)) (aot-mkdir-p (path-parent path)))
+      (aot-write-sidecar! path (lambda (out) (put-string out (jolt-str-render-one text)))))
+    jolt-nil))
 ;; The Clojure-facing seam for :jolt/replaces (see ldr-ns-replacements above).
 ;; jolt.deps collects the key and jolt.main calls this once per namespace after
 ;; it resolves the project, before any of the project compiles.
