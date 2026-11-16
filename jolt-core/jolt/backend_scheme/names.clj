@@ -213,7 +213,13 @@
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"
                   "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"}]
-    (into from-registry helpers)))
+    (into (into from-registry helpers)
+          ;; the per-arity record slot accessors and their setters (jrecN-fI,
+          ;; jrecN-fI-set!), built by name at deftype field sites
+          ;; (emit-deftype-slot-read/-write) and record field reads
+          ;; (calls.clj direct-field-accessor)
+          (for [n (range 1 9) i (range n) suffix ["" "-set!"]]
+            (str "jrec" n "-f" i suffix)))))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an
 ;; identifier. The reference reader yields SYMBOLS for +i, -i, +inf.0, -nan.0,

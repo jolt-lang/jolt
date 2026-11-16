@@ -174,14 +174,13 @@
                (loop (vector-ref (rrbnode-children node) k) (fx- level pv-bits) sub)))
             (else (loop (vector-ref node (fxand (fxsra i level) pv-mask))
                         (fx- level pv-bits) i)))))))
-;; The element at index i below the tail offset: pv-leaf-for's descent ending in
-;; the read, so no leaf and offset come back as two values. The shift and mask
-;; are the literals pv-bits and pv-mask hold (5 and 31), so the loop doesn't
-;; reload them as top-level variables. The relaxed level is pv-leaf-for's.
-;; pv-trie-ref-from starts the same descent at any NODE of the trie, at its
-;; LEVEL, with i still the vector's own index -- where pvec-nth-in-range's inline
-;; dense descent hands over when it meets a relaxed node.
-(define (pv-trie-ref p i) (pv-trie-ref-from (pvec-root p) (pvec-shift p) i))
+;; The element at index i below the tail offset, from NODE at LEVEL down (i is
+;; still the vector's own index): pv-leaf-for's descent ending in the read, so
+;; no leaf and offset come back as two values. The shift and mask are the
+;; literals pv-bits and pv-mask hold (5 and 31), so the loop doesn't reload them
+;; as top-level variables. The relaxed level is pv-leaf-for's.
+;; pvec-nth-in-range's inline dense descent hands over to it when it meets a
+;; relaxed node.
 (define (pv-trie-ref-from node level i)
   (let loop ((node node) (level level) (i i))
     (cond
