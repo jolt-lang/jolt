@@ -404,7 +404,7 @@
 (def ^:dynamic *load-time-pool* nil)
 
 (defn hoist-load-time
-  "Bind EXPR (emitted Scheme) in the enclosing top-level form's load-time scope
+  "Bind EXPR, emitted Scheme, in the enclosing top-level form's load-time scope
   and answer the name that reads it. With no scope open — an emit path that is
   not a top-level form — EXPR is evaluated in place."
   [expr]
