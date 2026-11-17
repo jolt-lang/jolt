@@ -19,8 +19,20 @@
     (and (>= cp 32) (< cp 127)) (str (char cp))
     :else (str "\\x" (format "%x" cp) ";")))
 
+;; Nearly every string the back end writes is printable ASCII with no quote or
+;; backslash, which char-escape returns unchanged, so a string with nothing to
+;; escape is wrapped as it is. The per-char rendering below allocated a string
+;; per character, and the emit of the 200k project spent 2.8 s of its 15 here.
+(defn- str-lit-plain? [s]
+  (let [n (count s)]
+    (loop [i 0]
+      (or (= i n)
+          (let [cp (int (.charAt ^String s i))]
+            (and (>= cp 32) (< cp 127) (not= cp 34) (not= cp 92) (recur (inc i))))))))
 (defn chez-str-lit [s]
-  (str "\"" (apply str (map (fn [c] (char-escape (int c))) s)) "\""))
+  (if (str-lit-plain? s)
+    (str "\"" s "\"")
+    (str "\"" (apply str (map (fn [c] (char-escape (int c))) s)) "\"")))
 ;; --- identifier munging ------------------------------------------------------
 ;; Every Clojure name the emitter writes as a Scheme IDENTIFIER — a local, a
 ;; param, a fn's letrec self-name, a direct-link binding — goes through
@@ -60,11 +72,23 @@
         (= cp 35) "$H"
         (= cp 124) "$V"
         :else (str "$U" (format "%x" cp) "$")))
+;; A letter, a digit, or one of - _ . * ? ! < > = / + & : % ~ ^ @, none of which
+;; munge-unsafe? flags: the test the scan below makes first, without a set lookup.
+(defn- munge-plain-cp? [cp]
+  (or (and (>= cp 97) (<= cp 122)) (and (>= cp 65) (<= cp 90)) (and (>= cp 48) (<= cp 57))
+      (= cp 45) (= cp 95) (= cp 46) (= cp 42) (= cp 63) (= cp 33) (= cp 60) (= cp 62)
+      (= cp 61) (= cp 47) (= cp 43) (= cp 38) (= cp 58) (= cp 37) (= cp 126) (= cp 94) (= cp 64)))
+(defn- munge-safe-str? [s]
+  (let [n (count s)]
+    (loop [i 0]
+      (or (= i n)
+          (let [cp (int (.charAt ^String s i))]
+            (and (or (munge-plain-cp? cp) (not (munge-unsafe? cp))) (recur (inc i))))))))
 (defn munge-chars [s]
   ;; a name with nothing to escape (nearly all of them) is returned as-is
-  (if (some (fn [c] (munge-unsafe? (int c))) s)
-    (apply str (map (fn [c] (let [cp (int c)] (if (munge-unsafe? cp) (munge-char cp) c))) s))
-    s))
+  (if (munge-safe-str? s)
+    s
+    (apply str (map (fn [c] (let [cp (int c)] (if (munge-unsafe? cp) (munge-char cp) c))) s))))
 ;; Scheme syntactic keywords. A jolt local with one of these names would, when
 ;; emitted verbatim, shadow the Scheme form in operator position (a local named
 ;; `if` would turn the special form (if …) the back end emits into a call), so
