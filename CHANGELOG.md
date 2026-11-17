@@ -173,6 +173,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
   rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
   and `clojure.tools.reader/read-string` ~13% less.
+- **A dynamic var bound far down the binding stack reads as fast as one bound
+  at the top (#1713).** A read walked every binding frame on the thread to
+  find its binding, and readers bind one frame per nesting level. The
+  innermost frame now remembers its last four lookups: a bound var's read
+  went from ~32 ns to ~18, and from ~10x to ~1x beneath thirty frames.
 - **`try` and `finally` cost a small constant wherever they run (#1713).** A
   catch was R6RS `guard`, which takes a full continuation: returning through
   one copies the frames beneath it back in, so a `try` under a deep stack cost

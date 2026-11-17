@@ -257,6 +257,14 @@
 ;;                      jolt-guard-body): 2.59 -> 1.31 for twenty nested tries
 ;;                      under 200 frames against the bare recursion.
 ;;
+;;   dyn-read-deep      a read of a dynamic var that has ever been bound walked
+;;                      every binding frame on the thread to its binding, and a
+;;                      reader binds one per nesting level (tools.reader's
+;;                      *read-delim*) while asking *read-eval*, bound at the
+;;                      bottom, for every form. The innermost frame memoizes its
+;;                      last four lookups (dyn-binding.ss): 9.7 -> 1.0 beneath
+;;                      thirty frames.
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
@@ -526,6 +534,9 @@
 (defn- gate-rec [n] (if (zero? n) 0 (inc (gate-rec (dec n)))))
 (defn- gate-rec-try [n] (try (if (zero? n) 0 (inc (gate-rec-try (dec n)))) (catch Exception e -1)))
 (defn- gate-under [n f] (if (zero? n) (f) (+ 0 (gate-under (dec n) f))))
+(def ^:dynamic *gate-deep* 0)
+(def ^:dynamic *gate-top* 0)
+(defn- gate-nest [n f] (if (zero? n) (f) (binding [*gate-top* n] (gate-nest (dec n) f))))
 (defn- gate-plain [x] x)
 (defmulti ^:private gate-mm identity)
 (defmethod gate-mm :a [x] x)
@@ -819,6 +830,12 @@
           #(dotimes [_ 20000] (gate-under 200 (fn [] (gate-rec 20))))
           #(dotimes [_ 20000] (gate-under 200 (fn [] (gate-rec-try 20))))
           1.9)
+  ;; A dynamic var bound beneath thirty frames of another reads about as fast as
+  ;; one bound in the top frame. Every read walked the frames to its binding.
+  (judge! "dyn-read-deep"
+          #(binding [*gate-deep* 1] (binding [*gate-top* 0] (dotimes [_ 200000] *gate-top*)))
+          #(binding [*gate-deep* 1] (gate-nest 30 (fn [] (dotimes [_ 200000] *gate-deep*))))
+          2.5)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))
