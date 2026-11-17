@@ -261,11 +261,16 @@
 ;; single-char search with no needle allocation — (.indexOf s (int 59)) used to
 ;; build a 1-char string through number->exact->truncate->integer->char->string
 ;; per call (~160ns); honeysql's suspicious? transducer does two per entity.
+;; The read is unchecked (sa-ustring-ref): i starts at 0 or above and stops
+;; below the length, and a char is an immediate, so eq? is char=?. A safe
+;; string-ref and char=? per position made a 16-character scan 54 ns; this is
+;; ~32 (rewrite-clj's boundary test is (.indexOf "\":;'@^`~()[]{}\\" (int c))
+;; for every character it reads, #1713).
 (define (str-char-index s c from)
   (let ((n (string-length s)))
-    (let loop ((i (max 0 from)))
+    (let loop ((i (if (fixnum? from) (fxmax 0 from) (max 0 from))))
       (cond ((fx>=? i n) -1)
-            ((char=? (string-ref s i) c) i)
+            ((eq? (sa-ustring-ref s i) c) i)
             (else (loop (fx+ i 1)))))))
 ;; a needle that is a char code (fixnum) or a char scans directly
 (define (str-index-of-any s needle from)

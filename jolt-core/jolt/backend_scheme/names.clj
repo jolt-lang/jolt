@@ -146,7 +146,7 @@
                   "host-new" "host-static-call" "host-static-ref"
                   ;; per-site caches: the static member site and the instance?
                   ;; site, each with the constructor its hoisted cell calls
-                  "jolt-once-tag" "jolt-once-clear!" "host-static-ref-site" "host-static-proc-site" "host-static-site-make"
+                  "jolt-once-tag" "jolt-once-clear!" "host-static-ref-site" "host-static-proc-site" "host-static-proc-site/i" "host-static-site-make"
                   "jolt-instance-site" "jolt-instance-site-make"
                   "jolt-class-for-site" "jolt-class-for-site-make"
                   ;; record/reify protocol-method dispatch (:host-call fallback
