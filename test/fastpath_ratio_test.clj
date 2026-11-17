@@ -224,6 +224,26 @@
 ;;                      the vector print got ~12% faster, the File side itself
 ;;                      within 1.1x of before).
 ;;
+;;   var-call           the per-operation costs a reader pays per character and
+;;   multimethod-call   per node (#1713, rewrite-clj and tools.reader at ~10x
+;;   str-sb             the JVM). A call through a var read the cell through two
+;;   char-at            more calls (the binding-stack gate, then the root) and
+;;                      checked the arity with procedure-arity-mask, an
+;;                      out-of-line library call, ahead of the call Chez checks
+;;                      anyway: 16 ns where the procedure alone is 3. Against an
+;;                      inline vector nth: 3.02 -> 1.82. A multimethod reached its
+;;                      fixed-arity dispatch only after the variadic jolt-invoke
+;;                      built a rest list and walked the prefix arms, then hashed
+;;                      the dispatch value into the methods table; a keyword now
+;;                      hits a per-multifn inline cache (172 -> 40 ns). Against
+;;                      the plain fn call it wraps: 6.04 -> 3.81, and ~10 with only
+;;                      the multimethod half reverted, since main's plain call was
+;;                      the slow var call above. str of a StringBuilder walked
+;;                      every registered str arm before its own (against its
+;;                      .toString: 21.0 -> 10.1), and .charAt coerced its
+;;                      index through an out-of-line call before the in-range read
+;;                      (against nth: 1.36 -> 0.98). Measured x86_64, 2026-11-17.
+;;
 (ns fastpath-ratio-test
   (:require [clojure.string :as str]))
 
@@ -479,6 +499,16 @@
 (def ^:private fn-holder (atom nil))
 (reset! fn-holder (fn [m] (+ (get m :a) (get m :b) (get m :c))))
 (def ^:private fn-via-top @fn-holder)
+;; the reader-path arms (#1713): a var-routed call, a keyword multimethod, a
+;; token buffer turned into its string, and a scanner's .charAt
+(def ^:private gate-vec [1 2 3 4 5 6 7 8])
+(defn- gate-f2 [a b] (if a b a))
+(defn- gate-plain [x] x)
+(defmulti ^:private gate-mm identity)
+(defmethod gate-mm :a [x] x)
+(def ^:private gate-sb (doto (StringBuilder.) (.append "token")))
+(def ^:private gate-str "abcdefgh")
+(def ^:private gate-n 1000000)
 
 (defn -main [& _]
   (spit src-path source-text)
@@ -586,14 +616,19 @@
   ;; (0.90 on CI, 1.01 on a slow box, against the 0.42 the uncached call
   ;; gave), so that arm's ceiling is 1.2. A site with no cache measured
   ;; 1.15-1.95 against the uncached call, so well past 1.2 against this one.
+  ;; #1713 then made the protocol call itself cheaper (it is a call through a
+  ;; var: 16 -> 9.5 ns), with the site unchanged, so on the slow box the two
+  ;; arms read 0.73 -> 0.92 and 1.00 -> 1.15 and the ceilings moved with them
+  ;; (0.8 -> 1.05, 1.2 -> 1.45); an uncached site reads higher still against
+  ;; the cheaper call.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          0.8)
+          1.05)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.2)
+          1.45)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"
@@ -707,6 +742,27 @@
               #(dotimes [_ 200000] (.size al))
               #(dotimes [_ 200000] (.getFileSystem p))
               2.5)))
+
+  ;; The reader path's per-operation costs (#1713). A call through a var must
+  ;; cost a small multiple of an inline vector read, a keyword multimethod a
+  ;; small multiple of the plain fn call it wraps, str of a StringBuilder about
+  ;; what its .toString costs, and .charAt about an inline vector read.
+  (judge! "var-call"
+          #(let [v gate-vec] (dotimes [i gate-n] (nth v 3)))
+          #(let [v gate-vec] (dotimes [i gate-n] (gate-f2 i v)))
+          2.4)
+  (judge! "multimethod-call"
+          #(dotimes [_ gate-n] (gate-plain :a))
+          #(dotimes [_ gate-n] (gate-mm :a))
+          5.0)
+  (judge! "str-sb"
+          #(let [b gate-sb] (dotimes [_ gate-n] (.toString ^StringBuilder b)))
+          #(let [b gate-sb] (dotimes [_ gate-n] (str b)))
+          14.0)
+  (judge! "char-at"
+          #(let [v gate-vec] (dotimes [i gate-n] (nth v 3)))
+          #(let [^String x gate-str] (dotimes [i gate-n] (.charAt x 3)))
+          1.2)
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints

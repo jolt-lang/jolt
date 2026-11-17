@@ -61,14 +61,16 @@
 
 (define-record-type jolt-multifn
   (fields name dispatch-fn methods default hierarchy prefers
-          cache (mutable cache-epoch) (mutable cache-hier))
-  (nongenerative jolt-multifn-v2))
+          cache (mutable cache-epoch) (mutable cache-hier) (mutable icache))
+  (nongenerative jolt-multifn-v3))
 
 ;; a multimethod is CODE: a var holding one travels in a state image as the var's
 ;; NAME, the way a named fn does, instead of having its dispatch tables walked.
 (register-code-value! jolt-multifn?)
 
 (define kw-default (keyword #f "default"))
+;; a key no dispatch value is eq? to (mm-resolve's inline cache, below)
+(define mm-icache-empty-key (list 'mm-icache-empty))
 (define (new-mm-table) (make-hashtable key-hash jolt=))
 
 ;; mm-tbl-mu serializes every MUTATION of every multifn's methods / prefers /
@@ -107,7 +109,7 @@
 ;; multimethod reflectively reaches for, and it must produce the same value.
 (define (make-multifn name dispatch default hierarchy)
   (make-jolt-multifn name dispatch (new-mm-table) default hierarchy
-                     (new-mm-table) (new-mm-table) -1 #f))
+                     (new-mm-table) (new-mm-table) -1 #f mm-icache-empty))
 
 ;; (defmulti-setup 'name dispatch & opts) — opts is a flat :default/:hierarchy plist.
 (define (parse-mm-opts opts)
@@ -201,7 +203,7 @@
                                   (jolt-multifn-dispatch-fn core)
                                   (var-deref "clojure.core" "identity")))
                         (deft (if (jolt-multifn? core) (jolt-multifn-default core) kw-default))
-                        (m (make-jolt-multifn source-name disp (new-mm-table) deft #f (new-mm-table) (new-mm-table) -1 #f)))
+                        (m (make-jolt-multifn source-name disp (new-mm-table) deft #f (new-mm-table) (new-mm-table) -1 #f mm-icache-empty)))
                    (def-var! mns source-name m) m))))
     (jolt-with-mutex mm-tbl-mu
       (hashtable-set! (jolt-multifn-methods mf) (mm-dispatch-val-canon dval) impl)
@@ -324,8 +326,47 @@
 ;; (mm-find-isa) and falls back to the :default method, memoizing the result. #f
 ;; only when nothing matches - the caller raises.
 (define (mm-resolve mf dv)
+  (let ((v (jolt-multifn-icache mf)))
+    (if (fx= (vector-ref v 0) jolt-mm-epoch)
+        (cond ((eq? (vector-ref v 1) dv) (vector-ref v 2))
+              ((eq? (vector-ref v 3) dv) (vector-ref v 4))
+              ((eq? (vector-ref v 5) dv) (vector-ref v 6))
+              ((eq? (vector-ref v 7) dv) (vector-ref v 8))
+              (else (mm-resolve-table mf dv)))
+        (mm-resolve-table mf dv))))
+
+;; The inline cache in front of the table: the last four dispatch values that
+;; hit the methods table DIRECTLY, compared with eq?, stamped with the epoch they
+;; were read under. The table lookup hashes the dispatch value with key-hash and
+;; compares with jolt= on every call; a multimethod dispatching on keywords (most
+;; of them -- rewrite-clj's parse-next* takes one per node, #1713) answers here in
+;; a few loads instead. Only direct hits are cached, so the entry depends on the
+;; methods table alone -- not the hierarchy or the prefers -- and every change to
+;; that table bumps jolt-mm-epoch, which retires the whole vector. Only values
+;; eq? can stand for are kept: an interned keyword, a fixnum, a char, a boolean,
+;; nil. The vector is replaced, never mutated, so a reader on another thread
+;; sees an old vector or a new one, never a torn one; a lost race only loses an
+;; entry. Slot 0 is the epoch; the empty vector's -1 never matches.
+(define mm-icache-empty (vector -1 mm-icache-empty-key #f mm-icache-empty-key #f
+                                mm-icache-empty-key #f mm-icache-empty-key #f))
+(define (mm-icache-key? dv)
+  (or (keyword? dv) (fixnum? dv) (char? dv) (boolean? dv) (jolt-nil? dv)))
+(define (mm-icache-add! mf epoch dv m)
+  (let* ((old (jolt-multifn-icache mf))
+         (keep? (fx= (vector-ref old 0) epoch)))
+    (jolt-multifn-icache-set! mf
+      (if keep?
+          (vector epoch dv m (vector-ref old 1) (vector-ref old 2)
+                  (vector-ref old 3) (vector-ref old 4) (vector-ref old 5) (vector-ref old 6))
+          (vector epoch dv m mm-icache-empty-key #f mm-icache-empty-key #f
+                  mm-icache-empty-key #f)))))
+
+(define (mm-resolve-table mf dv)
   (let* ((methods (jolt-multifn-methods mf))
+         (epoch jolt-mm-epoch)
          (direct (hashtable-ref methods dv #f)))
+    (when (and direct (mm-icache-key? dv))
+      (mm-icache-add! mf epoch dv direct))
     (or direct
         (begin
           (mm-cache-validate! mf)

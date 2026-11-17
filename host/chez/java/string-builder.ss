@@ -505,6 +505,14 @@
 (define (sb-class-name x)
   (if (sb-buffer-jhost? x) "java.lang.StringBuffer" "java.lang.StringBuilder"))
 (register-str-render! sb-jhost? sb-str*)
+;; ...and ahead of the registry walk too. (str sb) is how a token reader turns
+;; its buffer into the token -- rewrite-clj does it once per token -- and the
+;; walk over every registered str arm cost ~100 of the ~120 ns it took, against
+;; 18 for the (.toString sb) it means (#1713). Chained onto the identity hook
+;; (enums.ss installs it first), which runs before the walk.
+(let ((prev str-render-by-identity))
+  (set-str-render-by-identity!
+    (lambda (x) (if (sb-jhost? x) (sb-str* x) (prev x)))))
 ;; A StringBuilder IS a java.lang.CharSequence, so it answers (class …),
 ;; instance? through the class graph, and the three RT entry points that name a
 ;; CharSequence — count is its length, seq walks its characters, nth reads one.

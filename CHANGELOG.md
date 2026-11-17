@@ -162,6 +162,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A call through a var, a multimethod call, `str` of a StringBuilder and
+  `.charAt` cost less (#1713).** These are the per-operation costs a reader
+  pays for every character and node. A var-routed call read the var through
+  two more calls and checked the arity with an out-of-line library call
+  before Chez's own check. It now reads the root behind one flag test, and a
+  wrong-arity call raises from Chez's check with the JVM's ArityException
+  message: 16 ns down to 9.5. A multimethod is dispatched without a rest list,
+  and a keyword (or other identity) dispatch value hits a per-multifn inline
+  cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
+  rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
+  and `clojure.tools.reader/read-string` ~13% less.
 - **Indexed reads of a vector make no call past `nth`, `get` or the vector
   itself (#1652).** The in-range read and the trie descent are inline in
   each, where `(nth v i)` used to chain three calls to reach a `vector-ref`.
