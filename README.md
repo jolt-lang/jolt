@@ -40,6 +40,11 @@ $ ./hello world
 hello world
 ```
 
+As with `clojure.main`, a script waits at exit for live non-daemon threads, so one
+that used `future` (or `clojure.java.shell/sh`, which reads output on two futures)
+lingers for the agent pool's 60 s keep-alive unless it ends with `(shutdown-agents)`.
+Tasks run their futures on daemon threads, as in babashka, and exit at once.
+
 When the current directory has a `deps.edn`, Jolt resolves it first, so the
 program sees the project's namespaces and its dependencies. The familiar `clj`
 options work as you would expect: `-Sdeps`, `-A`, `-M:alias`, `-Spath`, `-Stree`,
