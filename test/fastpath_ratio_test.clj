@@ -638,11 +638,15 @@
           #(dotimes [_ dispatch-n] (mk-reify 1))
           3.0)
 
-  ;; satisfies? on a reify must cost about a protocol call.
+  ;; satisfies? on a reify must cost about a protocol call. The protocol call
+  ;; got cheaper under #1713 (a var call open-coded, the PIC's descriptor read
+  ;; inline) with satisfies? unchanged: 2.23 on the slow box before, 2.9-3.06
+  ;; after (and 1.24 on some runs), so 3.0 -> 4.5, against the 13.5 the
+  ;; re-munging walk this gates read.
   (judge! "satisfies-reify"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (satisfies? DP2 made-reify))
-          3.0)
+          4.5)
 
   ;; A key with its own equals/hashCode must not cost wildly more to look up
   ;; than a record key.
