@@ -13,7 +13,10 @@
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 
 (let ((e (emit (anode "(def ^{:t (fn [n] (clojure.core/str n))} x (fn [n] (clojure.core/str n)))"))))
-  (gate-check "the init's var ref is cell-cached" (gate-sub? e "var-cell-deref") #t)
+;; a call through the cell is open-coded as (jolt-var-fn cell) (backend
+;; emit-open-call); a plain reference reads (var-cell-deref cell)
+  (gate-check "the init's var ref is cell-cached"
+              (or (gate-sub? e "var-cell-deref") (gate-sub? e "(jolt-var-fn _kc")) #t)
   (gate-check "the metadata fn's var ref is not resolved by name per call"
               (gate-sub? e "(var-deref \"clojure.core\" \"str\")") #f))
 
