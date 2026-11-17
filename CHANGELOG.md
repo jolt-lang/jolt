@@ -186,6 +186,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A deftype no longer answers for a host class that shares its simple
+  name.** A qualified class with no constructor of its own, such as
+  `java.io.Reader`, fell back to the constructor registered under its bare
+  name, and every deftype registers its bare name too. So once a library that
+  defines a `Reader` type was loaded (ebb does), `(proxy [java.io.Reader] [] …)`
+  built that type with no arguments and threw "Wrong number of args (0)",
+  which killed every later request to an nREPL server. A `java.*` or `javax.*`
+  name no longer takes a user type's bare name.
 - **A constructor call on a class jolt knows nothing about says so.**
   `import` stays lenient, since a library may import a class it never uses,
   but `(import (com.nosuch Thing))` followed by `(Thing.)` said "No matching
