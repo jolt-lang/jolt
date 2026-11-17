@@ -165,7 +165,7 @@
                   "sb-append!" "sb-str" "sb-length" "sb-piece" "sb-char-at" "->num"
                   "sb-append*!" "sb-str*" "sb-length*" "sb-char-at*"
                   ;; cell-cached var deref (the whole-program var-cache? path).
-                  "var-cell-deref"
+                  "var-cell-deref" "var-cell-root"
                   ;; devirt cached-desc lookup (emit-invoke ctor inlining).
                   "hashtable-ref"
                   ;; top-level def / forward-declare / ns-value splice
