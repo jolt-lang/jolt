@@ -1432,9 +1432,15 @@
             (call-with-values (lambda () (jolt-backwalk site cont-names))
               (lambda (path connected?)
                 (cond
+                  ;; The live frame the pair's own tail call went to is the
+                  ;; confirmation (jolt-site-landing answers 0 when none is
+                  ;; live). jolt-site-evidenced? asks the INNERMOST live frame
+                  ;; instead, which is not that callee whenever the throw came
+                  ;; from something the callee called: c1 tail-calls k1, k1
+                  ;; calls boom, boom throws, and c1 was dropped.
                   (outer?
                    (let ((at (jolt-site-landing site path body)))
-                     (if (and (fx>? at 0) (jolt-site-evidenced? path connected? cont))
+                     (if (fx>? at 0)
                          (jolt-splice-at body at (srcreg-site-frames path))
                          body)))
                   ((if live?

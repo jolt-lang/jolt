@@ -263,6 +263,21 @@
 (let [e (try (let [r ((juxt cb-tail cb-throws) 1)] r) (catch Exception x x))]
   (ok= (first (frame-names e)) "stack_trace_test$cb_throws"
        "a returned callback's tail call is not the next callback's innermost frame"))
+;; ...while a tail call that is still running keeps its erased caller when the
+;; callee throws from a call of its own: os-caller's frame is erased by its tail
+;; call to os-callee, and os-callee is live below os-boom. The reporter used to
+;; ask os-boom, the innermost frame, whether it calls os-caller, and dropped it.
+;; os-boom throws from a non-tail call: a tail call there would store its own
+;; pair, and the slot holds one, so os-caller would be gone either way.
+(defn- os-boom [x] (inc (nth [] x)))
+(defn- os-callee [x] (let [y (inc x)] (inc (os-boom (dec y)))))
+(defn- os-caller [x] (os-callee x))
+(defn- os-top [f x] (inc (f x)))
+(let [e (try (os-top os-caller 0) (catch Exception x x))]
+  (ok= (vec (take 4 (frame-names e)))
+       ["stack_trace_test$os_boom" "stack_trace_test$os_callee"
+        "stack_trace_test$os_caller" "stack_trace_test$os_top"]
+       "a running tail call's erased caller lands below its callee"))
 ;; a lookup the back end open-codes runs jolt code too: a deftype's valAt, a
 ;; sorted map's comparator. The fn it ran returned, so it is not a frame.
 (deftype LookupRuns [] clojure.lang.ILookup
