@@ -262,6 +262,45 @@ printf '(println (.isAbsolute (java.io.File. (System/getProperty "jolt.file"))))
 check "jolt.file is absolute for a relative script path" "true" "$(runp "$bare" abs)"
 check "standard input leaves jolt.file unset" "nil" \
   "$(printf '(prn (System/getProperty "jolt.file"))\n' | runp "$bare" -)"
+# A bare `-` with no deps.edn is run by the launcher and never reaches the CLI's
+# script loader; `run -` and `-f -` do, and they are what pin its stdin arm.
+check "run - leaves jolt.file unset" "nil" \
+  "$(printf '(prn (System/getProperty "jolt.file"))\n' | runp "$bare" run -)"
+check "-f - leaves jolt.file unset" "nil" \
+  "$(printf '(prn (System/getProperty "jolt.file"))\n' | runp "$bare" -f -)"
+# A script an alias's or a task's :main-opts name is jolt.file too, except in
+# the :depends that `run --parallel` runs side by side: each would overwrite the
+# one process-wide property, and a script could read a sibling's path. me.clj
+# prints true when jolt.file names it, nil when unset; a.clj and b.clj write the
+# same to a file, since two of them print at once under --parallel.
+named="$tmp/named"; mkdir -p "$named"
+cat > "$named/deps.edn" <<'EOF'
+{:aliases {:me {:main-opts ["me.clj"]}}
+ :tasks {me {:main-opts ["me.clj"]}
+         a  {:main-opts ["a.clj"]}
+         b  {:main-opts ["b.clj"]}
+         ab {:depends [a b] :main-opts ["me.clj"]}}}
+EOF
+cat > "$named/me.clj" <<'EOF'
+(prn (some-> (System/getProperty "jolt.file") java.io.File. .getCanonicalPath
+             (= (.getCanonicalPath (java.io.File. *file*)))))
+EOF
+cat > "$named/a.clj" <<'EOF'
+(spit (str *file* ".seen")
+      (pr-str (some-> (System/getProperty "jolt.file") java.io.File. .getCanonicalPath
+                      (= (.getCanonicalPath (java.io.File. *file*))))))
+EOF
+cp "$named/a.clj" "$named/b.clj"
+seen() { # what a.clj and b.clj recorded, then clear it for the next run
+  printf '%s %s' "$(cat "$named/a.clj.seen" 2>/dev/null)" "$(cat "$named/b.clj.seen" 2>/dev/null)"
+  rm -f "$named"/*.seen
+}
+check "an alias's :main-opts script is jolt.file" "true" "$(runp "$named" -M:me)"
+check "a task's :main-opts script is jolt.file" "true" "$(runp "$named" run me)"
+r="$(runp "$named" run ab)"
+check "...and each task's in a sequential :depends run" "true true true" "$r $(seen)"
+r="$(runp "$named" run --parallel ab)"
+check "...but not a :depends task run beside others by --parallel" "true nil nil" "$r $(seen)"
 
 # --- the usage text says all this exists -------------------------------------
 usage="$(runp "$bare" --help)"

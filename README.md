@@ -271,9 +271,9 @@ standalone `--` ends option parsing — `*file*` is the script, stdin is left fo
 the program to read, and `(System/exit n)` sets the process's exit status (an
 uncaught exception exits 1). The `jolt.file` system property holds the script's
 absolute path, as `babashka.file` does under bb, so a file another script may
-`load-file` can run its entry point only when it is the one being run. An `(ns …)` form with `:require`s is fine, and when
-the directory has a `deps.edn` the script sees the project's paths and
-dependencies, like any other run.
+`load-file` can run its entry point only when it is the one being run. An
+`(ns …)` form with `:require`s is fine, and when the directory has a `deps.edn`
+the script sees the project's paths and dependencies, like any other run.
 
 A built-in command wins a name it shares with a file — `jolt build` is always the
 compiler — which is what `-f` is for. A task loses to one: a file on disk is what
