@@ -1480,7 +1480,7 @@
            (fqn (and slash (string-append (substring proto 0 slash) "/" method)))
            (decl (and fqn (hashtable-ref chez-protocol-methods-tbl fqn #f)))
            (nm (and decl (equal? (car decl) proto)
-                    (guard (e (#t #f)) (((inspect/object fn) 'code) 'name)))))
+                    (guard (e (#t #f)) (sa-procedure-code-name fn)))))
       (when (string? nm)
         (jolt-with-mutex jolt-proto-impl-mu
           (let ((cur (hashtable-ref jolt-proto-impl-names nm '())))
