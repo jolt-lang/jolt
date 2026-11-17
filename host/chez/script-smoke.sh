@@ -240,6 +240,29 @@ check "a directory is not a script" "fell through to the task lookup" "$r"
 check "- runs a program read from stdin" "stdin program" \
   "$(printf '(println "stdin program")\n' | runp "$bare" -)"
 
+# --- jolt.file: the script being run, as bb's babashka.file -----------------
+# What lets a file tell being run from being loaded by another script. It names
+# the top-level script, so a file the script load-files sees someone else's path.
+cat > "$bare/guarded" <<'EOF'
+#!/usr/bin/env jolt
+(def me (.getCanonicalPath (java.io.File. *file*)))
+(def running (some-> (System/getProperty "jolt.file") java.io.File. .getCanonicalPath))
+(when (= me running) (println "main of guarded"))
+(load-file (str (.getParent (java.io.File. *file*)) "/guarded-lib"))
+EOF
+cat > "$bare/guarded-lib" <<'EOF'
+(if (= (.getCanonicalPath (java.io.File. *file*))
+       (some-> (System/getProperty "jolt.file") java.io.File. .getCanonicalPath))
+  (println "main of lib")
+  (println "lib loaded"))
+EOF
+check "jolt.file names the script run, not a file it loads" "main of guarded
+lib loaded" "$(runp "$bare" guarded)"
+printf '(println (.isAbsolute (java.io.File. (System/getProperty "jolt.file"))))\n' > "$bare/abs"
+check "jolt.file is absolute for a relative script path" "true" "$(runp "$bare" abs)"
+check "standard input leaves jolt.file unset" "nil" \
+  "$(printf '(prn (System/getProperty "jolt.file"))\n' | runp "$bare" -)"
+
 # --- the usage text says all this exists -------------------------------------
 usage="$(runp "$bare" --help)"
 # The bare-FILE line, not `run FILE [args]` — which was already there and would
