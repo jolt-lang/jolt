@@ -5920,6 +5920,22 @@
                   (loop))))))))
     (let ((fd (unbox jolt-signal-relay-fd))) (and fd (>= fd 0)))))
 
+;; Without the relay the watcher's sigwait takes a handled signal, which only
+;; works while the kernel keeps it pending. macOS doesn't for a signal whose
+;; default action is to ignore it: under SIG_DFL it is discarded when sent,
+;; blocked or not (Linux keeps a blocked one pending), so a handler for CHLD,
+;; URG, IO, WINCH, INFO or CONT was never called. Any installed handler makes the
+;; kernel keep it. Chez's register-signal-handler installs one; it never runs
+;; while the signal is blocked everywhere, and if jolt-signal-default! raises
+;; the signal later its no-op drops it, as SIG_DFL would have.
+(define jolt-signals-discarded-at-default
+  (if (eq? (sa-os-family) 'macos)
+      (filter values (map jolt-signal-number '("CHLD" "URG" "IO" "WINCH" "INFO" "CONT")))
+      '()))
+(define (jolt-signal-keep-pending! n)
+  (when (memv n jolt-signals-discarded-at-default)
+    (register-signal-handler n (lambda (sig) (void)))))
+
 ;; The JVM keeps the first six for itself and refuses a handler for them; Chez
 ;; handles BUS as a fault, as it does SEGV, FPE and ILL.
 (define jolt-signals-used-by-vm '("QUIT" "KILL" "STOP" "FPE" "SEGV" "ILL" "BUS"))
@@ -5983,6 +5999,7 @@
       ((and jolt-sigmask-ok? c-sigwait (unbox jolt-user-signals-taken)
             (memv n jolt-user-signals))
        (jolt-arm-shutdown!)
+       (unless (jolt-signal-native-handler? h) (jolt-signal-keep-pending! n))
        (jolt-with-mutex jolt-signal-handlers-mu (swap!)))
       (else (unsupported))))))
 

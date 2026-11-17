@@ -11,7 +11,7 @@
 # The workspace is copied into $HOME first: Termux runs as an unprivileged user
 # that cannot write the host mount, and its filesystem refuses hard links. The
 # Makefile's bionic path provisions the pinned Chez itself
-# (host/chez/bionic-provision-chez.sh), so nothing Chez-shaped is installed here.
+# (host/chez/provision-chez.sh), so nothing Chez-shaped is installed here.
 # Results (the binary, the report) are copied back to /src/target/release.
 #
 # GATES are extra make targets to run after the build (tests.yml passes one

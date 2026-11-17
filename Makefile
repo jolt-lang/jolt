@@ -19,77 +19,66 @@ $(shell [ ! -d '$M/.git' ] || { git -C '$M' cat-file -e '$V^{commit}' 2>/dev/nul
 
 include $M/init.mk
 
-# An explicit caller-selected Chez is authoritative. This preserves CI/release
-# toolchains whose threading, libc floor, and native libraries are intentional.
-#
-# Same-or-newer system Chez: with nothing explicit selected, a Chez on PATH at
-# or above JOLT-CHEZ-FLOOR is also used as-is — the system toolchain then
-# builds and links everything, one self-consistent toolchain end to end, and
-# nothing is downloaded. Older, broken, or absent, fall through to provisioning
-# the pinned Chez + xPack GCC below. Set JOLT_SYSTEM_CHEZ= (empty) to always
-# provision the pinned versions.
-JOLT-CHEZ-FLOOR ?= 10.4.1
-JOLT_SYSTEM_CHEZ ?= 1
+# The Chez jolt builds with always carries jolt's kernel patches
+# (host/chez/chez-patches). An explicit CHEZ= or CHEZSCHEME= is authoritative:
+# CI, the release jobs and the nix shell build a patched Chez and pass it in.
+# Otherwise the pinned Chez is built and patched below; a Chez on PATH is never
+# used, since nothing says it carries the patches.
 JOLT-CHEZ := $(or $(CHEZ),$(CHEZSCHEME))
-ifeq (,$(JOLT-CHEZ))
-ifeq (1,$(JOLT_SYSTEM_CHEZ))
-JOLT-CHEZ := $(shell \
-  for name in chez chezscheme scheme; do \
-    exe=$$(command -v $$name 2>/dev/null) || continue; \
-    test -x "$$exe" || continue; \
-    exe=$$(cd "$$(dirname "$$exe")" && pwd -P)/$$(basename "$$exe"); \
-    v=$$(printf '(display (scheme-version)) (newline)\n' | "$$exe" -q 2>/dev/null | tr -d '\r'); \
-    v=$$(printf '%s\n' "$$v" | awk '{print $$NF}'); \
-    ok=$$(awk -v v="$$v" -v f="$(JOLT-CHEZ-FLOOR)" 'BEGIN { \
-      split(v, V, "."); split(f, F, "."); \
-      for (i = 1; i <= 3; i = i + 1) { \
-        if (V[i] + 0 > F[i] + 0) { print 1; exit } \
-        if (V[i] + 0 < F[i] + 0) { exit } \
-      } \
-      print 1 }'); \
-    if [ "$$ok" = 1 ]; then printf '%s\n' "$$exe"; break; fi; \
-  done)
-endif
-endif
 # bionic (Android's libc) is not readable off a machine tag — Android builds as
 # tarm64le, the same tag as glibc arm64 Linux — so ask the compiler, as
-# build.ss's bld-bionic? does. makes' provisioning assumes glibc twice over
-# (xPack GCC, Chez's hard-link install), so bionic provisions its own below.
+# build.ss's bld-bionic? does. makes' xPack GCC is a glibc binary, so bionic
+# builds Chez with the host cc below.
 JOLT-BIONIC := $(if $(findstring android,$(shell cc -dumpmachine 2>/dev/null)),1,)
 
 ifneq (,$(JOLT-CHEZ))
 SHELL-DEPS += $(JOLT-CHEZ)
-else ifeq (1,$(JOLT-BIONIC))
+else ifneq (windows,$(OS-NAME))
 $(eval $(call include-local))
-# The pinned release, built with the host compiler and staged without Chez's
-# hard-link install — host/chez/bionic-provision-chez.sh says why. The prefix
-# is makes' own layout, so bin/jolt's .cache/local glob finds it.
+# The pinned release, patched with host/chez/chez-patches the way every CI and
+# release Chez is, so a from-source build runs the same kernel the releases
+# do. makes' chezscheme.mk can't patch (its one recipe extracts, configures
+# and installs), so host/chez/provision-chez.sh builds it instead; that
+# script says why it stages by hand. The prefix is makes' own layout, so
+# bin/jolt's .cache/local glob finds it, and it is keyed on the patches' hash:
+# the stamp names the patch set, so a prefix built before a patch changed (or
+# before patches were applied here at all) is rebuilt.
+#
+# The compiler: on Linux, makes' xPack GCC; on macOS the host compiler, Apple's
+# clang, as release.yml builds it (xPack GCC 14.2.0-1's fixed <stdio.h> doesn't
+# compile against current macOS SDKs, #1601); on bionic the host cc, since
+# xPack GCC is a glibc binary the Android loader cannot exec.
+ifeq (1,$(JOLT-BIONIC))
+CHEZSCHEME-CC := cc
+else ifeq (macos,$(OS-NAME))
+GCC-LOADED := true
+GCC := $(shell command -v cc)
+CHEZSCHEME-CC := $(GCC)
+else
+include $M/gcc.mk
+CHEZSCHEME-CC := $(GCC)
+CHEZSCHEME-CC-DEP := $(GCC)
+endif
 CHEZSCHEME-VERSION ?= $(or $(shell sed -n 's/^CHEZSCHEME-VERSION ?= *//p' $M/chezscheme.mk | head -n1),10.4.1)
-CHEZSCHEME-DIR := csv$(CHEZSCHEME-VERSION)
 CHEZSCHEME-LOCAL := $(LOCAL-ROOT)/chezscheme-$(CHEZSCHEME-VERSION)
 CHEZSCHEME := $(CHEZSCHEME-LOCAL)/bin/scheme
 PETITE-CHEZSCHEME := $(CHEZSCHEME-LOCAL)/bin/petite
-$(CHEZSCHEME):
-	$Q sh host/chez/bionic-provision-chez.sh '$(CHEZSCHEME-LOCAL)' '$(CHEZSCHEME-VERSION)'
+CHEZSCHEME-STAMP := $(CHEZSCHEME-LOCAL)/jolt-patches-$(shell sh host/chez/provision-chez.sh --hash)
+$(CHEZSCHEME-STAMP): $(CHEZSCHEME-CC-DEP)
+	$Q sh host/chez/provision-chez.sh '$(CHEZSCHEME-LOCAL)' '$(CHEZSCHEME-VERSION)' '$(CHEZSCHEME-CC)'
+$(CHEZSCHEME): $(CHEZSCHEME-STAMP)
+	@:
 SHELL-DEPS += $(CHEZSCHEME)
 JOLT-CHEZ := $(CHEZSCHEME)
 else
-# On macOS the provisioned Chez is built with the host compiler, Apple's
-# clang, as release.yml builds it. xPack GCC 14.2.0-1's fixed <stdio.h> doesn't
-# compile against current macOS SDKs (#1601), so gcc.mk is marked loaded
-# and never fetched; GCC names cc for chezscheme.mk's CC= and for JOLT_CC.
-ifeq (macos,$(OS-NAME))
-GCC-LOADED := true
-GCC := $(shell command -v cc)
-endif
-# chezscheme.mk takes a system Chez of the pinned version too, unless told not
-# to: with JOLT_SYSTEM_CHEZ= (empty) the pinned Chez is provisioned whatever
-# is on PATH, as that switch promises.
-ifneq (1,$(JOLT_SYSTEM_CHEZ))
-CHEZSCHEME-USE-SYSTEM := 0
-endif
-include $M/chezscheme.mk
-JOLT-CHEZ := $(CHEZSCHEME)
+# Windows: Chez's `make install` doesn't run under MSYS2, so the Windows CI
+# jobs build and lay out a patched Chez themselves and pass it in. Only the
+# targets that need a Chez fail without one.
+JOLT-CHEZ := chez-not-provisioned-on-windows
+.PHONY: $(JOLT-CHEZ)
+$(JOLT-CHEZ):
+	@echo "On Windows, build Chez from source with ci/apply-chez-patches.sh and pass it as CHEZ= (see the Windows jobs in .github/workflows/tests.yml)" >&2
+	@exit 1
 endif
 
 include $M/clean.mk
@@ -109,18 +98,10 @@ CHEZ ?= $(JOLT-CHEZ)
 
 # Hand the selected Chez down to bin/jolt, so the targets that shell out to it
 # run the same interpreter as the ones that call $(CHEZ) directly. When make
-# provisions its own Chez (the one on PATH being a different version), bin/jolt's
-# own PATH search would otherwise pick the other one.
+# provisions its own Chez, bin/jolt would otherwise have to find it again.
 export JOLT_CHEZ := $(CHEZ)
 
-# A locally built Chez links its kernel against the bundled lz4 and zlib. Their
-# static archives remain in the Makes build tree rather than the installed Chez
-# prefix, so expose them when linking Jolt's standalone launcher.
 ifneq (,$(CHEZSCHEME-LOCAL))
-CHEZSCHEME-LIB-DIRS := \
-  $(LOCAL-TMP)/$(CHEZSCHEME-DIR)/pb/lz4/lib \
-  $(LOCAL-TMP)/$(CHEZSCHEME-DIR)/pb/zlib
-export LIBRARY_PATH := $(subst $(space),:,$(strip $(CHEZSCHEME-LIB-DIRS)))$(if $(LIBRARY_PATH),:$(LIBRARY_PATH))
 # The provisioned GCC (on macOS, the host cc) built Chez, so the same driver
 # links the standalone binary: gcc.mk puts the bundle's bin FIRST on the
 # exported PATH, but the bundle ships no `cc`, so a bare cc falls through to

@@ -1064,9 +1064,12 @@
             (if relay? [false false false] [(signum "USR1") (signum "USR2") (signum "WINCH")]))
   (check-eq "sigwait answer: PROF is never the watcher's" (answer 0 (signum "PROF")) false))
 
+;; Up to 60s: signals sent before the program has registered its handlers take
+;; their default action and kill it, and a 10s cap was not enough on the
+;; emulated Android runner (every "no relay" row failed at once).
 (defn- await-file [f]
   (loop [n 0]
-    (when (and (< n 200) (str/blank? (slurp f)))
+    (when (and (< n 1200) (str/blank? (slurp f)))
       (Thread/sleep 50)
       (recur (inc n)))))
 
