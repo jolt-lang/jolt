@@ -10,7 +10,7 @@
              :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
                      *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
                      *trace-frame* *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
-                     debug-locals? fresh-label site-call-helper target trace-frames?]]
+                     debug-locals? fresh-label target trace-frames?]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
             [jolt.backend-scheme.fnsrc
@@ -167,14 +167,43 @@
                             (fn [i nm] [nm (str "(vector-set! " env " " (inc i) " " cleared ")")])
                             (:free-names node))))})))
 
-;; One arity clause [params body]. Each clause that has a site binds the restore
-;; helper its sites call (site-restore), a nested fn's clauses their own.
+;; The site slot (vreg 2, rt.ss jolt-vreg-site) holds a tail site's BOXED pair,
+;; #&(fn . line), while the call that site made is the innermost erased frame,
+;; and the bare pair once that pair is only the nearest erased caller further
+;; out (rt.ss jolt-site-snapshot). A fn clause with sites reads the slot ONCE,
+;; at entry, and unboxes it there: from then on nothing the clause runs is the
+;; tail call the pair describes. Each non-tail site then costs one store after
+;; it returns, of that entry value, and a nested call in another call's
+;; arguments restores to the same value, so the order the operands run in does
+;; not matter.
+;;
+;; This replaced a save and restore of two slots at every site (#1645): with
+;; 20k sites in honeysql's suite Chez spent 40% longer compiling traced code
+;; than untraced, most of it there. Spelled in Chez primitives so a cached fasl
+;; compiles from text that needs nothing of the runtime (the AOT cache gate
+;; recompiles one with a bare Chez); small, since with inspector information
+;; on (jolt build's release mode) Chez keeps every lambda's expanded body as
+;; data, and a large inline restore made a 4,000-fn app's binary 32% bigger
+;; (#1423).
+(def ^:private site-entry
+  (str "(let ((_s$ (virtual-register 2)))"
+       " (if (box? _s$) (let ((_p$ (unbox _s$))) (set-virtual-register! 2 _p$) _p$) _s$))"))
+;; One arity clause [params body]. Each clause that has a site reads the site
+;; slot once at entry into _sw$, the value its sites restore (site-restore,
+;; site-entry above); a nested fn's clauses read their own. A clause whose
+;; only sites are self-calls reads it under the per-fn placeholder (TOKe), which
+;; fill-self-wrap turns into the read or, when the self-calls need no restore,
+;; into 0, which cp0 folds away with the stores.
 (defn- emit-site-clause [emit a]
   (if (and (trace-frames?) (= :chez (target)))
-    (let [used (atom false)
-          c (binding [*site-call* used] (emit-arity-clause emit a))]
-      (if @used
-        [(nth c 0) (str "(let ((jolt-site-call " site-call-helper ")) " (nth c 1) ")")]
+    (let [used (atom nil)
+          c (binding [*site-call* used] (emit-arity-clause emit a))
+          entry (case @used
+                  :site site-entry
+                  :self (str "(" (:tok *self-wrap*) "e)")
+                  nil)]
+      (if entry
+        [(nth c 0) (str "(let ((_sw$ " entry ")) " (nth c 1) ")")]
         c))
     (emit-arity-clause emit a)))
 
@@ -202,10 +231,13 @@
           unsafe? @(:unsafe self-wrap)
           rd-from (str "(" tok "r)")
           rd-to (if unsafe? "(virtual-register 2)" "0")
+          entry-from (str "(" tok "e)")
+          entry-to (if unsafe? site-entry "0")
           wr-from (str "(" tok "w ")
           wr-to (if unsafe? "(set-virtual-register! 2 " "(begin ")
           fix (fn [x] (if (string? x)
-                        (str/replace (str/replace x rd-from rd-to) wr-from wr-to)
+                        (-> x (str/replace rd-from rd-to) (str/replace wr-from wr-to)
+                            (str/replace entry-from entry-to))
                         x))]
       (mapv (fn [c] (mapv fix c)) clauses))
     clauses))

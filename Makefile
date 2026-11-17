@@ -139,7 +139,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
   hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap pic protoret printperf remint sbperf sci selfhost shakelocal \
-  traceemit vfaslceiling \
+  traceemit tracecompilecost vfaslceiling \
   shakesmoke smoke sortedcoll staticnativesmoke stateimage test testbin transient unit unitcontext zlibregistersmoke zlibnativesmoke noexecsmoke \
   threadsafety maskedacquire ioerrno values wp ci
 
@@ -200,7 +200,7 @@ CI-GATES := submodules values recordinline corpus nsaudit unit documented grenad
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
   protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap mathfl flonumdisp flarr \
-  fnform poolshape coreproc traceemit traceeval degradedbacktrace \
+  fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
@@ -1257,6 +1257,14 @@ traceemit:
 # registry; with tracing off the eval path registers nothing.
 traceeval:
 	@$(CHEZ) --script host/chez/run-traceeval.ss
+
+# What tracing adds to Chez's compile of jolt code, as a ratio measured in one
+# process: real code (stdlib pprint and test, babashka.cli) loaded traced and
+# untraced, both captures compiled, traced within 1.40x of untraced. #1645: a
+# per-site save and restore of two slots made it ~1.57x and the HoneySQL suite
+# ~40% slower on a cold cache, with every other gate green. Needs vendor/cli.
+tracecompilecost: submodules
+	@JOLT_AOT_CACHE=0 $(CHEZ) --script test/chez/trace-compile-cost-test.ss
 
 # PSL R6: with introspection suppressed (sa-introspect-enabled? #f), a throw
 # still surfaces type+message while the walker entry points return empty and

@@ -120,11 +120,12 @@
                   "jolt-cast-lo-short" "jolt-cast-hi-short" "jolt-cast-lo-byte" "jolt-cast-hi-byte"
                   "jolt-cast-lo-char" "jolt-cast-hi-char"
                   ;; the trace site-restore around a non-tail call (site-restore,
-                  ;; lookup-restore): it reads and writes the site slots and
-                  ;; tests the slot's pair. honeysql's (let [pair? ...]) turned
-                  ;; that test into a call to its boolean. jolt-site-call is the
-                  ;; local a clause binds the restore to (site-call-helper).
-                  "pair?" "virtual-register" "set-virtual-register!" "jolt-site-call"
+                  ;; lookup-restore) and a fn clause's read of the site slot at
+                  ;; entry (lambda.clj site-entry): they read and write the slot and
+                  ;; test and unbox its value (unbox is listed below). honeysql's (let [pair? ...]) turned
+                  ;; such a test into a call to its boolean. Gambit's two-slot
+                  ;; restore still tests pair?.
+                  "pair?" "box?" "virtual-register" "set-virtual-register!"
                   "fxand" "fxior" "fxxor" "fxnot"
                   "jolt-register-source!" "jolt-proto-epoch"
                   ;; --- bare heads emitted at sites the registry doesn't cover ---
