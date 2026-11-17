@@ -608,12 +608,16 @@
 ;; Safe because inlined bodies are alpha-renamed (every binder unique), so the
 ;; hoisted bindings can't collide. Exposes a map-returning init directly to
 ;; scalar-replace when it was wrapped in an inlined arg's let.
+;;
+;; A :letrec init (a letfn) stays put: its fns close over each other, and hoisted
+;; into the enclosing let* the first one's closure read its sibling before it
+;; was bound, so the sibling resolved as an unbound top-level variable (jolt-9).
 ;; ---------------------------------------------------------------------------
 (defn- flatten-let-bindings [binds]
   ;; returns a flattened binding vector; sets dirty when it hoists.
   (reduce (fn [out b]
             (let [nm (nth b 0) init (nth b 1)]
-              (if (= :let (get init :op))
+              (if (and (= :let (get init :op)) (not (get init :letrec)))
                 (do (mark!)
                     (conj (reduce conj out (get init :bindings))
                           [nm (get init :body)]))

@@ -236,6 +236,16 @@
   (ok "a non-allocating field read twice is still scalar-replaced" (not (has? e "amap-slots->pmap"))))
 (ok "a nested map read twice computes the same value" (= 4 (jnum->exact (ev "((fn* ([a] (let [m {:p {:x a :y 2} :q 1}] (+ (:x (:p m)) (:y (:p m)) (:q m))))) 1)"))))
 
+;; --- a letfn spliced into a let keeps its letrec* (jolt-9) ----------------------
+;; A letfn passed as an argument to an inlined call becomes a let binding init.
+;; flatten-lets hoisted its bindings into the enclosing let*, dropping the
+;; :letrec flag, so each fn's closure read its sibling before it was bound and
+;; resolved it as a top-level variable: "variable ... is not bound".
+;; (ja 2 835) -> (ju 1 2) -> (ja 0 1) = 1, so lf-t answers 2, as the JVM does.
+(ev "(def lf-t (fn* ([x] (+ x 1))))")
+(ok "a mutually recursive letfn passed to an inlined call keeps its letrec"
+    (= 2 (jnum->exact (ev "((fn* ([x y] (lf-t (letfn [(ja [d g] (if (zero? d) g (ju (dec d) y))) (ju [d g] (if (zero? d) g (ja (dec d) x)))] (ja (mod y 5) 835))))) 1 2)"))))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 (printf "~a/~a passed~n" (- total fails) total)
