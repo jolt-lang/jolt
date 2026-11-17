@@ -99,6 +99,7 @@
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
                   "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
                   "jolt-invoke-t0" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke-t3" "jolt-invoke-t4"
+                  "jolt-var-fn" "jolt-site-kept"
                   "var-deref" "list->cseq" "cseq->list"
                   "jolt-rest-seq" "jolt-register-variadic!"
                   "make-jrec" "jrec-field-at" "jrec-field-set!"
@@ -206,7 +207,7 @@
                   ;; runtime helpers emitted bare at boxed-float, record-field,
                   ;; PIC, ffi, def, and image sites.
                   "make-jfloat" "jfloat?" "jfloat-fl" "jfloat-unbox" "jnum->exact"
-                  "jrec-field-site-make" "jrec-field-site-ref" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec?" "jrec-desc"
+                  "jrec-field-site-make" "jrec-field-site-ref" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec-pic-desc/i" "jrec?" "jrec-desc"
                   "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox"
                   "pvec?" "pvec-cnt" "pvec-nth-in-range" "fx<?"
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"

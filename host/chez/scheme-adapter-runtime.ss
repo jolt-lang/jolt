@@ -2132,6 +2132,19 @@
 ;; carries its own range proof; here each is the #3% primitive — what the
 ;; whole runtime would be at optimize-level 3, applied to the one loop that
 ;; has proven it.
+;; (sa-record-rtd x) -> x's exact record-type descriptor, or #f when x is not a
+;; record. (sa-record-slot r i) -> field I of record R, inherited fields first,
+;; unchecked: the caller has proven R's type has that field (by an eq? on the
+;; descriptor sa-record-rtd answered). Both open-code to a load or two, where
+;; record? against a parent type is a library call; the protocol PIC uses them to
+;; recognise the record family by its few concrete descriptors (rt.ss
+;; jrec-pic-desc/i). Not CONTRACT.txt names: only the Chez runtime's own
+;; emitted-code macros use them, never shared host code, so no other target has
+;; to provide them.
+(define-syntax sa-record-rtd
+  (syntax-rules ()
+    ((_ x) (let ((v x)) (if (#3%$record? v) (#3%$record-type-descriptor v) #f)))))
+(define-syntax sa-record-slot (syntax-rules () ((_ r i) (#3%$record-ref r i))))
 (define-syntax sa-ufx+ (syntax-rules () ((_ a b) (#3%fx+ a b))))
 (define-syntax sa-ufx- (syntax-rules () ((_ a b) (#3%fx- a b))))
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (#3%fx<? a b))))

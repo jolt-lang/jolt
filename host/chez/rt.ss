@@ -3219,6 +3219,42 @@
 ;; paths + jolt-hash-map/pmap-fold/pmap-assoc (collections.ss).
 (load "host/chez/dyn-binding.ss")
 
+;; A call through a var, open-coded at the site (#1713). The Chez back end
+;; (backend_scheme.clj emit-var-cell-call) writes a call whose callee is a var's
+;; cell as (let* ((f (jolt-var-fn cell)) (a arg) ...) (if (procedure? f) (f a ...)
+;; (jolt-invoke-tN f a ...))) where it used to write (jolt-invoke-tN
+;; (var-cell-deref cell) arg ...): two calls into the runtime ahead of the one
+;; that does the work, ~4.5 ns over a plain procedure call. This is the value
+;; half: the root behind one flag test, the binding-stack walk and *ns* exactly
+;; as var-cell-deref decides them. The call stays in the emitted text so it
+;; keeps its own source position for a backtrace.
+(define-syntax jolt-var-fn
+  (syntax-rules ()
+    ((_ c0) (let ((c c0))
+              (if (or (var-cell-dyn-bound? c) (eq? c star-ns-cell))
+                  (var-cell-deref-bound c)
+                  (var-cell-root c))))))
+;; The protocol PIC's receiver descriptor, open-coded (#1713): a record of the
+;; jrec family -- a deftype or defrecord instance, whose exact type is one of the
+;; per-arity children (records.ss define-jrec-family) or the zero-field base --
+;; answers its desc, the slot every child inherits first; anything else #f. As a
+;; procedure (jrec-pic-desc, records.ss) it was a call on every protocol call,
+;; and jrec? is a record? against the parent type, itself a library call. Here
+;; it is the exact descriptor compared against the family's ten, most fields
+;; last.
+(define-syntax jrec-pic-desc/i
+  (syntax-rules ()
+    ((_ x0)
+     (let* ((x x0) (t (sa-record-rtd x)))
+       (if (and t
+                (or (eq? t (record-type-descriptor jrec1)) (eq? t (record-type-descriptor jrec2))
+                    (eq? t (record-type-descriptor jrec3)) (eq? t (record-type-descriptor jrec4))
+                    (eq? t (record-type-descriptor jrec5)) (eq? t (record-type-descriptor jrec6))
+                    (eq? t (record-type-descriptor jrec7)) (eq? t (record-type-descriptor jrec8))
+                    (eq? t (record-type-descriptor jrec*)) (eq? t (record-type-descriptor jrec))))
+           (sa-record-slot x 0)
+           #f)))))
+
 ;; java.lang.String method interop: jolt-string-method, the
 ;; portable String/CharSequence surface record-method-dispatch falls through to on
 ;; a string target. After regex.ss (jolt-re-pattern/regex-t-irx) + records.ss

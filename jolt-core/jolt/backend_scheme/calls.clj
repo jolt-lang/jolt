@@ -9,7 +9,7 @@
   (:require [clojure.string :as str]
             [jolt.op-registry :as op-registry]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
-            [jolt.backend-scheme.session
+            [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
                      clone-site? ctor-shapes fresh-label marker-safe-fqn?
                      note-tail-call! trace-frames? unsafe-prefix var-cache?]]
@@ -480,7 +480,7 @@
                                       " (begin (set! " c " _nv) (" (unsafe-prefix) "vector-ref _nv 1))))")]
                         (str "(let* ((" r " " (first as) ")"
                              " (" v " (or " c " jolt-pic-empty))"
-                             " (" d " (jrec-pic-desc " r ")))"
+                             " (" d " (" (if (= :gambit (session/target)) "jrec-pic-desc" "jrec-pic-desc/i") " " r ")))"
                              " ((if (and " d " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
                              " (or " scan " " miss ")"
                              " (if " d " " miss " (protocol-resolve " proto " " method " " r ")))"

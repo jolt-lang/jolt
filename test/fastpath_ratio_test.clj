@@ -620,15 +620,17 @@
   ;; var: 16 -> 9.5 ns), with the site unchanged, so on the slow box the two
   ;; arms read 0.73 -> 0.92 and 1.00 -> 1.15 and the ceilings moved with them
   ;; (0.8 -> 1.05, 1.2 -> 1.45); an uncached site reads higher still against
-  ;; the cheaper call.
+  ;; the cheaper call. The var call was then open-coded at the site and the
+  ;; protocol fn's descriptor read with it (jolt-var-callN, jrec-pic-desc/i):
+  ;; 1.11 and 1.35, ceilings 1.35 and 1.7, against ~2.3-3.9 uncached.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          1.05)
+          1.35)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.45)
+          1.7)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"
@@ -751,10 +753,12 @@
           #(let [v gate-vec] (dotimes [i gate-n] (nth v 3)))
           #(let [v gate-vec] (dotimes [i gate-n] (gate-f2 i v)))
           2.4)
+  ;; (multimethod-call's reference is the var call, open-coded since: 3.81 ->
+  ;; 5.26 with the multimethod unchanged, and ~14 with its fix reverted.)
   (judge! "multimethod-call"
           #(dotimes [_ gate-n] (gate-plain :a))
           #(dotimes [_ gate-n] (gate-mm :a))
-          5.0)
+          7.0)
   (judge! "str-sb"
           #(let [b gate-sb] (dotimes [_ gate-n] (.toString ^StringBuilder b)))
           #(let [b gate-sb] (dotimes [_ gate-n] (str b)))

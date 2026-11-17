@@ -486,14 +486,45 @@
 ;; whose tail site would otherwise outlive it. A tail call must stay one,
 ;; and a traced non-tail call restores the slot itself (site-restore), so
 ;; both take jolt-invoke-tN, which does not.
+;;
+;; A callee that is a var's cell read, (var-cell-deref <cell>), is open-coded
+;; at the site instead (#1713): the var's value read by jolt-var-fn (rt.ss, the
+;; root behind one flag test), the arguments bound after it -- Clojure evaluates
+;; the fn position first -- and a procedure applied directly, so Chez's own
+;; entry check is the arity check. Anything else a var can hold takes
+;; jolt-invoke-tN as before. Through jolt-invoke-tN of var-cell-deref this was
+;; two calls into the runtime ahead of the one that does the work. The direct
+;; call is written out here, not left to a macro, so the call itself is in the
+;; emitted text with its own line marker: a frame's line comes from the source
+;; object of the call it returns to, which a macro's template does not carry.
+;; Chez only: the Gambit back end evaluates emitted code that cannot see the
+;; runtime's macros.
+(def ^:private var-cell-deref-re #"^\(var-cell-deref (_kc\$[0-9]+)\)$")
+
+(defn- emit-var-cell-call [c cell operands invoker]
+  (let [tail? (:tail? c)
+        vf (fresh-label "_vf$")
+        ts (mapv (fn [_] (fresh-label "_va$")) (rest operands))
+        binds (apply str (map (fn [t a] (str " (" t " " a ")")) ts (rest operands)))
+        direct (emit-call tail? vf ts (:tl c) (:ich c))
+        direct (if (or tail? (trace-frames?)) direct (str "(jolt-site-kept " direct ")"))]
+    (str "(let* ((" vf " (jolt-var-fn " cell "))" binds ")"
+         " (if (procedure? " vf ") " (with-site (:node c) direct)
+         " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) "))")))
+
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
-        callee (if (<= (count args) 4)
-                 (str (if (or (:tail? c) (trace-frames?)) "jolt-invoke-t" "jolt-invoke")
-                      (count args))
+        n (count args)
+        callee (if (<= n 4)
+                 (str (if (or (:tail? c) (trace-frames?)) "jolt-invoke-t" "jolt-invoke") n)
                  "jolt-invoke")]
     (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons (emit (:fnode c)) args)
-                  (fn [operands] (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))
+                  (fn [operands]
+                    (let [cell (and (<= n 4) (not= :gambit (session/target))
+                                    (second (re-find var-cell-deref-re (first operands))))]
+                      (if cell
+                        (emit-var-cell-call c cell operands callee)
+                        (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))))
 
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
