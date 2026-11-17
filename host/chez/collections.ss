@@ -174,12 +174,15 @@
                (loop (vector-ref (rrbnode-children node) k) (fx- level pv-bits) sub)))
             (else (loop (vector-ref node (fxand (fxsra i level) pv-mask))
                         (fx- level pv-bits) i)))))))
-;; The element at index i below the tail offset: pv-leaf-for's descent ending in
-;; the read, so no leaf and offset come back as two values. The shift and mask
-;; are the literals pv-bits and pv-mask hold (5 and 31), so the loop doesn't
-;; reload them as top-level variables. The relaxed level is pv-leaf-for's.
-(define (pv-trie-ref p i)
-  (let loop ((node (pvec-root p)) (level (pvec-shift p)) (i i))
+;; The element at index i below the tail offset, from NODE at LEVEL down (i is
+;; still the vector's own index): pv-leaf-for's descent ending in the read, so
+;; no leaf and offset come back as two values. The shift and mask are the
+;; literals pv-bits and pv-mask hold (5 and 31), so the loop doesn't reload them
+;; as top-level variables. The relaxed level is pv-leaf-for's.
+;; pvec-nth-in-range's inline dense descent hands over to it when it meets a
+;; relaxed node.
+(define (pv-trie-ref-from node level i)
+  (let loop ((node node) (level level) (i i))
     (cond
       ((fx=? level 0) (vector-ref node (fxand i 31)))
       ((vector? node) (loop (vector-ref node (fxand (fxsra i level) 31)) (fx- level 5) i))
@@ -255,21 +258,46 @@
 ;; The tail is tested HERE, before pv-leaf-for: every vector of 32 or fewer
 ;; elements is all tail, and a tail index is one subtraction and a vector-ref,
 ;; where pv-leaf-for's two-value return through let-values costs 9 of the 13 ns
-;; a small-vector nth used to take. The trie path is unchanged.
-(define (pvec-nth-in-range p i)
-  (let* ((tail (pvec-tail p)) (tailoff (fx- (pvec-cnt p) (vector-length tail))))
-    (if (fx>=? i tailoff)
-        (vector-ref tail (fx- i tailoff))
-        (pv-trie-ref p i))))
+;; a small-vector nth used to take.
+;;
+;; A macro, not a procedure: every read of a vector element in the runtime
+;; (nth, get, a vector called as a fn, peek, the transient and queue reads)
+;; comes through here, and as a call it was one more frame between the caller
+;; and a vector-ref -- with three of them chained on a plain (nth v i). The
+;; dense trie descent is inline too (a 1000-element vector is one level below
+;; the root); only a relaxed (RRB) node makes a call. P and I are each
+;; evaluated once.
+(define-syntax pvec-nth-in-range
+  (syntax-rules ()
+    ((_ p0 i0)
+     (let* ((p p0) (i i0) (tail (pvec-tail p)) (tailoff (fx- (pvec-cnt p) (vector-length tail))))
+       (if (fx>=? i tailoff)
+           (vector-ref tail (fx- i tailoff))
+           (let descend ((node (pvec-root p)) (level (pvec-shift p)))
+             (cond ((fx=? level 0) (vector-ref node (fxand i 31)))
+                   ((vector? node) (descend (vector-ref node (fxand (fxsra i level) 31)) (fx- level 5)))
+                   (else (pv-trie-ref-from node level i)))))))))
+;; (pvec-ref-or p i miss): the element at I when I is a fixnum inside P's range,
+;; else MISS, evaluated only then. The in-range read every hot vector path opens
+;; with, so the fast case is one inline test and the slow case keeps each
+;; caller's own semantics (a throw, a default, a coercion).
+(define-syntax pvec-ref-or
+  (syntax-rules ()
+    ((_ p0 i0 miss)
+     (let ((p p0) (i i0))
+       (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
+           (pvec-nth-in-range p i)
+           miss)))))
 (define (pvec-nth! p i)
-  (if (jolt-nil? i)
-      (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))
-      (let ((i (if (fixnum? i) i (if (flonum? i) (exact (fltruncate i)) i))))
-        (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
-            (pvec-nth-in-range p i)
-            (begin
-              (index-int-check! i)
-              (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds")))))))
+  (pvec-ref-or p i
+    (if (jolt-nil? i)
+        (jolt-throw (jolt-host-throwable "java.lang.NullPointerException" "nth index"))
+        (let ((i (if (flonum? i) (exact (fltruncate i)) i)))
+          (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))
+              (pvec-nth-in-range p i)
+              (begin
+                (index-int-check! i)
+                (jolt-throw (jolt-host-throwable "java.lang.IndexOutOfBoundsException" "index out of bounds"))))))))
 (define (pvec-nth-d p i d)
   (let ((i (->idx i)))
     (if (and (fixnum? i) (fx>=? i 0) (fx<? i (pvec-cnt p)))

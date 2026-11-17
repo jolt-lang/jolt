@@ -550,11 +550,15 @@
             (let loop ((i (fx- k 1)) (rest tail))
               (if (fx<? i 0) rest
                   (loop (fx- i 1) (make-cseq (vector-ref bv (fx+ h c i)) rest sk-cons jolt-nil)))))))))
+;; An empty list is nil without an iterator: RT.seq's first hasNext answers it,
+;; and a reader that asks (seq pending-forms) before every form it reads
+;; (clojure.tools.reader's read*) asks it of an empty LinkedList almost always.
 (register-seq-arm! al-family?
   (lambda (x)
-    (if (member (jhost-tag x) '("arraylist" "linkedlist"))
-        (al-chunked-seq (al-iterator x))
-        (list->cseq (al->list x)))))
+    (cond ((fx=? (al-cnt x) 0) jolt-nil)
+          ((member (jhost-tag x) '("arraylist" "linkedlist"))
+           (al-chunked-seq (al-iterator x)))
+          (else (list->cseq (al->list x))))))
 
 ;; ---- StringWriter -----------------------------------------------------------
 ;; Writer.write(int) writes the CHAR for that code; append(char) appends the char.

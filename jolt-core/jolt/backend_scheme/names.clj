@@ -207,9 +207,23 @@
                   ;; PIC, ffi, def, and image sites.
                   "make-jfloat" "jfloat?" "jfloat-fl" "jfloat-unbox" "jnum->exact"
                   "jrec-field-site-make" "jrec-field-site-ref" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec?" "jrec-desc"
+                  "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox"
+                  "pvec?" "pvec-cnt" "pvec-nth-in-range" "fx<?"
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"
+                  ;; the per-arity record slot accessors and their setters,
+                  ;; built by name at deftype field sites
+                  ;; (emit-deftype-slot-read/-write) and record field reads
+                  ;; (calls.clj direct-field-accessor)
+                  "jrec1-f0" "jrec1-f0-set!"
+                  "jrec2-f0" "jrec2-f0-set!" "jrec2-f1" "jrec2-f1-set!"
+                  "jrec3-f0" "jrec3-f0-set!" "jrec3-f1" "jrec3-f1-set!" "jrec3-f2" "jrec3-f2-set!"
+                  "jrec4-f0" "jrec4-f0-set!" "jrec4-f1" "jrec4-f1-set!" "jrec4-f2" "jrec4-f2-set!" "jrec4-f3" "jrec4-f3-set!"
+                  "jrec5-f0" "jrec5-f0-set!" "jrec5-f1" "jrec5-f1-set!" "jrec5-f2" "jrec5-f2-set!" "jrec5-f3" "jrec5-f3-set!" "jrec5-f4" "jrec5-f4-set!"
+                  "jrec6-f0" "jrec6-f0-set!" "jrec6-f1" "jrec6-f1-set!" "jrec6-f2" "jrec6-f2-set!" "jrec6-f3" "jrec6-f3-set!" "jrec6-f4" "jrec6-f4-set!" "jrec6-f5" "jrec6-f5-set!"
+                  "jrec7-f0" "jrec7-f0-set!" "jrec7-f1" "jrec7-f1-set!" "jrec7-f2" "jrec7-f2-set!" "jrec7-f3" "jrec7-f3-set!" "jrec7-f4" "jrec7-f4-set!" "jrec7-f5" "jrec7-f5-set!" "jrec7-f6" "jrec7-f6-set!"
+                  "jrec8-f0" "jrec8-f0-set!" "jrec8-f1" "jrec8-f1-set!" "jrec8-f2" "jrec8-f2-set!" "jrec8-f3" "jrec8-f3-set!" "jrec8-f4" "jrec8-f4-set!" "jrec8-f5" "jrec8-f5-set!" "jrec8-f6" "jrec8-f6-set!" "jrec8-f7" "jrec8-f7-set!"
                   "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"}]
     (into from-registry helpers)))
 

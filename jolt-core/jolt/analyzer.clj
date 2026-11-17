@@ -618,8 +618,21 @@
               me (def-meta-expr ctx node-meta env)]
           (if me (assoc node :meta-expr me) node))))))
 
+;; (set! (__deftype-mutable-slot this :f i n) v): the deftype macro reads a
+;; mutable field as that form, so it is a place the way (.-f this) was. A
+;; macro in a method body that writes the field it was handed (tools.reader's
+;; (update! s-pos inc) -> (set! s-pos (inc s-pos))) receives the read already
+;; rewritten, and assigns to it.
+(defn- deftype-slot-place? [ctx ti thead]
+  (and (= thead "__deftype-mutable-slot") (= 5 (count ti))
+       (let [r (resolve-global ctx (first ti))]
+         (and (= :var (:kind r)) (= "clojure.core" (:ns r))))))
+
 (defn- analyze-set-member [ctx ti thead val-node env]
   (cond
+    (deftype-slot-place? ctx ti thead)
+    (invoke (var-ref "clojure.core" "__deftype-slot-set!")
+            (conj (mapv (fn [x] (analyze ctx x env)) (subvec ti 1)) val-node))
     ;; (set! (.-field obj) v) and (set! (.field obj) v) both set an instance
     ;; field in Clojure; accept either. The "." static-field head is handled
     ;; by the next arm (it isn't a .-/.name field head).
