@@ -134,17 +134,28 @@
 (define (raw-form name)
   (let ((e (hashtable-ref fn-form-tbl name #f))) (and e (vector-ref e 0))))
 
+;; JOLT_LAZY_META=1 writes the rows of a form as one quoted table, filed into
+;; the registry on the first lookup (fn-form-registry.ss image-register-fn-forms!).
+(define lazy-rows? (eq? (jolt-lazy-meta-mode) 'all))
 (let ((e (emit-src "app" "(def lazy1 {:f (fn [x] (* x 2))})")))
   (ok "a registration is emitted as source text"
-      (has? e "(image-register-fn-form! \"jfn$app/lazy1$0\" (image-fn-form-src \"(fn* [x] (* x 2))\") \"app\" (jolt-vector ))"))
+      (if lazy-rows?
+          (has? e "(image-register-fn-forms! \"app\" (image-fn-form-rows #(\"jfn$app/lazy1$0\" \"(fn* [x] (* x 2))\" #())))")
+          (has? e "(image-register-fn-form! \"jfn$app/lazy1$0\" (image-fn-form-src \"(fn* [x] (* x 2))\") \"app\" (jolt-vector ))")))
   (ok "...and builds no quoted structure at load" (not (has? e "(jolt-symbol "))))
 (let ((e (emit-src "app" "(def lazy2 {:a (fn [x] x) :b (fn [y] y)})")))
   (ok "several literals register as sibling calls, no let* header"
-      (and (has? e "(begin (image-register-fn-form! \"jfn$app/lazy2$0\"")
-           (has? e " (image-register-fn-form! \"jfn$app/lazy2$1\"")
-           (not (has? e "(let* ((_q$")))))
+      (if lazy-rows?
+          (and (has? e "(begin (image-register-fn-forms! \"app\" (image-fn-form-rows #(\"jfn$app/lazy2$")
+               (has? e "#() \"jfn$app/lazy2$")
+               (not (has? e "(let* ((_q$")))
+          (and (has? e "(begin (image-register-fn-form! \"jfn$app/lazy2$0\"")
+               (has? e " (image-register-fn-form! \"jfn$app/lazy2$1\"")
+               (not (has? e "(let* ((_q$"))))))
 (jolt-eval "(def lazy1 {:f (fn [x] (* x 2))})" "app")
-(ok "before the first lookup the slot holds the bytes" (bytevector? (raw-form "jfn$app/lazy1$0")))
+(if lazy-rows?
+    (ok "before the first lookup the row waits in its table" (not (raw-form "jfn$app/lazy1$0")))
+    (ok "before the first lookup the slot holds the bytes" (bytevector? (raw-form "jfn$app/lazy1$0"))))
 (ok "the first lookup parses the form" (string=? (reg-form-head "jfn$app/lazy1$0") "fn*"))
 (ok "...and caches it in the slot" (not (bytevector? (raw-form "jfn$app/lazy1$0"))))
 (ok "the parsed form carries no reader position"
@@ -294,7 +305,7 @@
     (string=? (or (reg-form-head "jfn$app/a$0/mapi") "") "fn*"))
 (let ((e (emit-src "app" "(def a (let [mapi (fn mapi [x] (* x 2))] mapi))")))
   (ok "...and the emitted text registers it under the same label"
-      (has? e "(image-register-fn-form! \"jfn$app/a$0/mapi\"")))
+      (has? e (if lazy-rows? "\"jfn$app/a$0/mapi\" \"(fn* mapi" "(image-register-fn-form! \"jfn$app/a$0/mapi\""))))
 ;; A def's DIRECT named init is the var's root: it is not a literal to
 ;; register, and its frame keeps the <ns>/<name> the source registry keys on.
 (jolt-eval "(defn direct [x] (inc x))" "app")

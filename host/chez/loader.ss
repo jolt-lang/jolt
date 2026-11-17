@@ -9,6 +9,12 @@
 ;; gates load compile-eval.ss but NOT this file, so the corpus/unit/sci runners
 ;; keep their alias-only `require` and are unaffected.
 
+;; compile-eval.ss's JOLT_PHASE_TIMES clock (jolt-phase-call), when this image
+;; has a compiler. A closed no-eval app loads this file without compile-eval.ss,
+;; and there every phase is just its thunk.
+(define ldr-phase
+  (or (sa-baked-global 'jolt-phase-call) (lambda (p thunk) (thunk))))
+
 ;; --- search roots -----------------------------------------------------------
 ;; An ordered list of directory strings. `require` searches them left to right.
 ;; The CLI seeds this with the project's resolved deps roots (jolt.deps) plus the
@@ -776,7 +782,7 @@
                     last
                   (let* ((i (if w (ce-skip-ws src i0 end) i0))
                          (pos (if w (ce-advance src i0 i (car pos0) (cdr pos0)) pos0)))
-                  (let-values (((form j) (rdr-read-top src i end)))
+                  (let-values (((form j) (ldr-phase 'clj-read (lambda () (rdr-read-top src i end)))))
                     (if (<= j i)
                         last
                       ;; ord counts every top-level form read (the ns form
@@ -916,7 +922,24 @@
 ;; which is how it surfaced.) Read from the runtime flag rather than from JOLT_TRACE
 ;; directly, so a REPL that calls jolt.host/enable-trace! with the env var unset is
 ;; keyed correctly too. trace-smoke.sh gates both directions.
-(define (aot-trace-tag) (if jolt-trace-on? "-tr" ""))
+(define (aot-trace-tag)
+  (let ((kd (getenv "JOLT_CONST_DATA")))      ; the experiment's emit (compile-eval.ss)
+    (string-append
+      (if (and kd (not (string=? kd "")) (not (string=? kd "0")))
+          (string-append (if jolt-trace-on? "-tr-kd" "-kd") (if (string=? kd "bind") "b" ""))
+          (if jolt-trace-on? "-tr" ""))
+      (if (jolt-native-var-call-enabled?) "-nc" "") (aot-exp-tag "JOLT_DIRECT_LINK" "-dl")
+      (if jolt-keep-frames-on? "-kf" "")
+      ;; global var calls emit applications of jg$ symbols (rt.ss "global vars")
+      (if jolt-global-mode "-gv" "")
+      ;; lazy metadata descriptors (rt.ss def-var-lazy-meta!)
+      (case (jolt-lazy-meta-mode) ((meta) "-lm") ((all) "-lmr") (else ""))
+      (sa-source-info-cache-tag))))
+;; The direct-link experiment's explicit cache tag:
+;; "" when VAR is unset or empty, else PREFIX and its value.
+(define (aot-exp-tag var prefix)
+  (let ((v (getenv var)))
+    (if (and v (not (string=? v ""))) (string-append prefix v) "")))
 ;; <dir>/<jolt-version>-<runtime fingerprint>[-tr]/v1 — the version names the release
 ;; a fasl came from, the fingerprint pins the exact runtime that emitted it. One
 ;; such GENERATION per runtime; rebuilding jolt starts a new one and strands the
@@ -1972,9 +1995,11 @@
               (let* ((deps (filter aot-cacheable-file (vector-ref sink 0)))
                      (res (vector-ref res-sink 0))
                      (obase (aot-base-for-own name own)))
-                (aot-write-sidecars! name own obase deps res)
+                (ldr-phase 'aot-write (lambda () (aot-write-sidecars! name own obase deps res)))
                 (aot-publish-when-readers-settle!
-                  name (lambda () (aot-publish-artifact! name own deps res captured stamps))))
+                  name (lambda ()
+                         (ldr-phase 'aot-write
+                           (lambda () (aot-publish-artifact! name own deps res captured stamps))))))
               (aot-info (string-append "nothing captured for " name ", not caching")))
           ;; with or without sidecars this namespace's digest is final now, so
           ;; what waited on it goes ahead either way
@@ -2033,7 +2058,10 @@
         (put-string out captured)
         ;; the first-def stamps this load made, replayed against whatever
         ;; file the artifact is loaded for (aot-replay-def-ordinals!)
-        (put-string out (format "\n(aot-replay-def-ordinals! '~s)" (reverse (vector-ref stamps 1))))
+        (if (eq? (jolt-lazy-meta-mode) 'all)
+            (put-string out (format "\n(aot-replay-def-ordinals*! '~s)"
+                                    (aot-def-ordinal-groups (reverse (vector-ref stamps 1)))))
+            (put-string out (format "\n(aot-replay-def-ordinals! '~s)" (reverse (vector-ref stamps 1)))))
         (put-string out (format "\n(aot-mark-complete! ~s)\n" name))
         (close-output-port out))
       (rename-replace! tmp-scm scm)
@@ -2045,8 +2073,10 @@
       (if (aot-enqueue-compile! scm so)
           (aot-info (string-append "queued " name))
           (begin
-            (parameterize ((current-output-port (open-output-string)))
-              (sa-compile-file scm tmp-so #f))
+            (ldr-phase 'aot-compile
+              (lambda ()
+                (parameterize ((current-output-port (open-output-string)))
+                  (sa-compile-file scm tmp-so #f))))
             (rename-replace! tmp-so so)
             (unless (file-exists? so)
               (aot-info (string-append "no .so produced for " name))))))))
@@ -2104,6 +2134,30 @@
     (when file
       (for-each (lambda (s) (var-def-ordinal-stamp1! file (car s) (cadr s) (caddr s)))
                 stamps))))
+;; JOLT_LAZY_META=1: the same stamps written compactly -- one group per
+;; namespace, ("ns" "name" ord "name" ord ...), and only each name's first stamp,
+;; the only one first-writer-wins keeps (every stamp here is against the one
+;; file) -- and replayed lazily (rt.ss var-def-ordinals-defer!). With a sink
+;; collecting stamps the replay runs now, as the sink reads them as they land.
+(define (aot-def-ordinal-groups stamps)
+  (let ((seen (make-hashtable equal-hash equal?)) (groups '()))
+    (for-each
+      (lambda (s)
+        (let ((ns (car s)) (nm (cadr s)))
+          (unless (hashtable-contains? seen (cons ns nm))
+            (hashtable-set! seen (cons ns nm) #t)
+            (let ((g (assoc ns groups)))
+              (if g
+                  (set-cdr! g (cons (caddr s) (cons nm (cdr g))))
+                  (set! groups (cons (list ns (caddr s) nm) groups)))))))
+      stamps)
+    (reverse (map (lambda (g) (cons (car g) (reverse (cdr g)))) groups))))
+(define (aot-replay-def-ordinals*! groups)
+  (let ((file (aot-loading-file)))
+    (when file
+      (if (jolt-def-ordinal-sink)
+          (begin (var-def-ordinals-drain!) (var-def-ordinals-replay! file groups))
+          (var-def-ordinals-defer! file groups)))))
 
 ;; Take back the defs a cached load made (rt.ss jolt-def-capture): every var the
 ;; load defined that was not defined before it goes back to undefined, as a
@@ -2151,7 +2205,8 @@
     (let ((state (guard (e (else 'corrupt))
                    (aot-complete-reset! name)
                    (parameterize ((aot-loading-file file) (jolt-def-capture defs))
-                     (ldr-with-compiled-ns-vars file (lambda () (load so))))
+                     (ldr-with-compiled-ns-vars file
+                       (lambda () (ldr-phase 'cache-load (lambda () (load so))))))
                    (if (aot-complete? name) 'ok 'incomplete))))
       (case state
         ;; loaded — but if the key was computed with an inert ASSUMPTION for a dep
@@ -2197,7 +2252,9 @@
                                                           ", falling back to source"))
                                  #f))
                    (ldr-with-compiled-ns-vars file
-                     (lambda () (load-compiled-from-port (open-bytevector-input-port bv))))
+                     (lambda ()
+                       (ldr-phase 'cache-load
+                         (lambda () (load-compiled-from-port (open-bytevector-input-port bv))))))
                    (aot-info (string-append "embedded " name))
                    #t))))))
 
@@ -2226,6 +2283,10 @@
           (not (sa-profile-instrumenting?))
           ;; ...and jolt.profile's :debug mode keeps locals that cached code lacks
           (not (jolt-debug-locals-instrumenting?))
+          ;; A debugger also reads live names in ordinary frames. Source-only
+          ;; fasls have none; compile from source after jolt.debug is required.
+          (not (and (memq (sa-source-info-mode) '(source off))
+                    (chez-ns-exists? "jolt.debug")))
           (or (not (ldr-source-only?)) (ldr-build-aot-cache?))
           (not (ldr-install-file? file))
           ;; no fingerprint = we can't tell this runtime from another one, so
@@ -3120,6 +3181,8 @@
 ;; The load itself, run by the one thread that claimed it (never concurrently for
 ;; a given name, and never re-entered for it on this thread).
 (define (ldr-load-body name force? was-loaded?)
+  (ldr-phase 'loader (lambda () (ldr-load-body* name force? was-loaded?))))
+(define (ldr-load-body* name force? was-loaded?)
   ;; A compiled artifact on the roots wins over the source, like RT.load
   ;; preferring a .class to its .clj. :reload does NOT bypass it, also like the
   ;; JVM: the artifact is only offered here when it still matches the source it

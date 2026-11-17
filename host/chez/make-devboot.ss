@@ -118,6 +118,19 @@
   (close-port out))
 
 ;; --- write input list (before compile, so the list is always consistent) ------
+;; The new receipts must never describe the previous image. In particular,
+;; publishing flat.chez before a stock/patched switch finishes let bin/jolt
+;; load the old image in the new compiler. Removing it first makes every reader
+;; take source mode until the completed image is renamed into place; an already
+;; open image remains readable (cli-devcache.ss).
+;; Chez reports even ENOENT as generic &i/o-filename. A successful listing must
+;; prove the entry absent; a remaining image or unreadable directory still
+;; raises before either receipt changes. #t requests errors instead of #f.
+(guard (e ((and (i/o-filename-error? e)
+                (equal? (i/o-error-filename e) jb-flat-so)
+                (not (member "flat.so" (directory-list jb-build))))
+           (void)))
+  (delete-file jb-flat-so #t))
 (display "make-devboot: writing input list\n")
 (let ((out (open-output-file db-input-file 'replace))
       (clj-files '()))
@@ -179,13 +192,10 @@
     (close-port p))
   (bld-system (string-append bld-chez " --script '" cs "'"))
   (when (file-exists? cs) (delete-file cs)))
-;; rename(2) over the old image, never delete-then-rename: bin/jolt checks
-;; flat.so exists and is fresh, then a moment later cli-devcache.ss loads it, and
-;; a delete landing between the two left it loading nothing ("failed for
-;; target/dev/flat.so: no such file or directory", no output). devbootsmoke
-;; rebuilds the image four times in a parallel `make ci`, so every bin/jolt gate
-;; beside it was exposed. rename-replace! deletes first only on Windows, where a
-;; rename cannot replace a file.
+;; Publish only a complete image. Readers that selected the cache before the
+;; earlier invalidation either retain an open old image or fall back to source
+;; when cli-devcache.ss opens the now-missing name. This does not make the fixed
+;; image/receipt paths atomic across delayed readers and concurrent producers.
 (rename-replace! jb-flat-so-tmp jb-flat-so)
 
 (display (string-append "make-devboot: wrote " jb-flat-so "\n"))

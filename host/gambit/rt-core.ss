@@ -183,6 +183,48 @@
 ;; 300s timeout; every hop's mark op allocated). What ships is the JVM model:
 ;; all metadata compile-time, the stack itself the only runtime record.
 (define jolt-trace-on? #f)
+
+;; Cache generations are consulted by compilerless applications too, so these
+;; runtime mode predicates must not live in the optional compiler spine.
+;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
+;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
+;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so
+;; dev mode still traces and a whole run still doesn't.
+(define (jolt-trace-env-off? e)
+  (and (string? e)
+       (let ((s (string-downcase e)))
+         (or (string=? s "0") (string=? s "false") (string=? s "no")
+             (string=? s "off") (string=? s "n")))))
+;; JOLT_NATIVE_VAR_CALL=1 opts into the checked var-root application on a Chez
+;; with patch 0010. It helps call-heavy code but did not improve cold builds;
+;; default emission and every stock-Chez run keep the original invoke helper.
+(define (jolt-native-var-call-enabled?)
+  (and (sa-call-error-supported?)
+       (let ((e (getenv "JOLT_NATIVE_VAR_CALL")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+;; JOLT_GLOBAL_VAR_CALL: per-var Chez top-level symbols (chez rt.ss "global
+;; vars"). Gambit has no call-error hook, so the knob is ignored: the emission
+;; is the default one.
+(define (jolt-global-var-call-enabled?) #f)
+(define (jolt-global-mode-enable!) #f)
+;; JOLT_LAZY_META: the Chez runtime's lazy var metadata (chez rt.ss
+;; def-var-lazy-meta!). Not ported, so the knob is ignored: the emission is the
+;; default one.
+(define (jolt-lazy-meta-mode) #f)
+(define (jolt-lazy-meta-enabled?) (and (jolt-lazy-meta-mode) #t))
+;; JOLT_KEEP_FRAMES=1 (with tracing on) opts into emitting traced code that
+;; erases no frame (backend session.clj keep-frames), on a Chez with patch 0012's
+;; $call-keeping-frame. Everywhere else it is ignored: the emission is the
+;; default one. jolt-keep-frames-on? is what this run decided (compile-eval.ss
+;; jolt-enable-trace!); the reporter and the cache generation read it.
+(define jolt-keep-frames-on? #f)
+(define (jolt-keep-frames-set! on) (set! jolt-keep-frames-on? on))
+(define (jolt-keep-frames-enabled?)
+  (and (sa-keep-frame-supported?)
+       (let ((e (getenv "JOLT_KEEP_FRAMES")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+
+
 ;; Per-thread trace state lives in Chez VIRTUAL REGISTERS, not thread parameters:
 ;; a thread-parameter WRITE costs ~32ns against ~1ns for a virtual-register write
 ;; (measured, Chez 10.4 arm64), and jolt-site! sits on the hot path. Reads are
@@ -571,6 +613,9 @@
 (define (var-table-entries)
   (jolt-with-mutex var-table-mu
     (let-values (((ks vs) (hashtable-entries var-table))) (cons ks vs))))
+;; Chez's global var calls (chez rt.ss "global vars"); never on here.
+(define jolt-global-mode #f)
+(define (var-global-link! c) #f)
 (define (jolt-var ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
@@ -579,6 +624,7 @@
               (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #f #f #f #f #f)))
                 (hashtable-set! var-table k c)
                 (ns-cells-add! c)
+                (when jolt-global-mode (var-global-link! c))
                 c))))))
 ;; non-creating lookup (resolve / find-var / ns-unmap): #f when absent, so a
 ;; probe never interns an empty cell.
@@ -643,6 +689,9 @@
 ;; the root-write hook host-contract.ss installs (chez rt.ss var-root-write-hook)
 (define var-root-write-hook #f)
 (define (set-var-root-write-hook! f) (set! var-root-write-hook f))
+;; the first-binding hook dyn-binding.ss calls (chez rt.ss var-first-bind-hook);
+;; only Chez's global vars install one
+(define var-first-bind-hook #f)
 (define (var-root-set! c v)
   (if var-root-write-hook (var-root-write-hook c))
   (var-cell-root-set! c v)

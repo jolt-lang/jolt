@@ -11,6 +11,12 @@
 (define set-trace-frames! (var-deref "jolt.backend-scheme" "set-trace-frames!"))
 (set-trace-frames! #t)
 (gate-check "trace frames on from the start" (jolt-ce-trace-frames?) #t)
+;; JOLT_KEEP_FRAMES=1 on a Chez with patch 0012 runs the gate over keep-frames
+;; emission (session.clj keep-frames), as jolt-enable-trace! would
+(define keep-frames? (jolt-keep-frames-enabled?))
+(when keep-frames?
+  ((var-deref "jolt.backend-scheme.session" "set-keep-frames!") #t)
+  (jolt-keep-frames-set! #t))
 
 ;; --- (1) an eval-path frame carries a source object and resolves ----------------
 ;; The source string, with the call sites on known clj lines:
@@ -59,7 +65,10 @@
     (and (pair? rs)
          (or (jolt-eval-source-line (car (car rs)) (cdr (car rs)))
              (loop (cdr rs))))))
-(gate-check "(1) innermost eval frame resolves to the throwing call site" first-line 3)
+;; Under keep-frames boom(0) keeps its own frame across the throw in its tail,
+;; so the innermost frame is boom(0) waiting on the throw, on line 4.
+(gate-check "(1) innermost eval frame resolves to the throwing call site" first-line
+            (if keep-frames? 4 3))
 ;; every registry frame resolves to a line from the source (1..5), never a
 ;; fabricated one
 (define bad-lines

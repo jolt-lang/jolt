@@ -186,6 +186,7 @@
 ;;                                        per-expression counters; degrade (#f for on).
 ;;   sa-profile-instrumenting? UNIMPLEMENTED  #f.
 ;;   sa-profile-compile     UNIMPLEMENTED  call the thunk.
+;;   sa-time-compile-parts! UNIMPLEMENTED  #f (phase times keep expand/run in compile).
 ;;   sa-profile-counts      UNIMPLEMENTED  '().
 ;;   sa-profile-release!    UNIMPLEMENTED  '().
 ;;   sa-block-profile-dump! UNIMPLEMENTED  0 (no block counters).

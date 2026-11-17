@@ -281,7 +281,9 @@
     ((_ e ...) (jolt-truthy?-fn e ...))))
 
 ;; --- keywords: interned so identity works; optional namespace ----------------
-(define-record-type keyword-t (fields ns name khash) (nongenerative keyword-v1))
+;; Keep the reserved first field to preserve the keyword-v2 record layout.
+;; The rejected fasl-intern experiment used it; current keywords leave it #f.
+(define-record-type keyword-t (fields (mutable ikey) ns name khash) (nongenerative keyword-v2))
 (define keyword-table (make-hashtable string-hash string=?))
 ;; The common no-ns keyword is interned in a table keyed by NAME directly, so a
 ;; lookup of an already-interned :kw (the hot case — every (:kw x), map literal,
@@ -314,16 +316,19 @@
         (or (hashtable-ref keyword-table k #f)
             (jolt-with-mutex keyword-table-mu
               (or (hashtable-ref keyword-table k #f)
-                  (let ((kw (make-keyword-t ns name (compute-keyword-hasheq ns name))))
+                  (let ((kw (keyword-new ns name)))
                     (hashtable-set! keyword-table k kw)
                     kw)))))
       (or (hashtable-ref keyword-table-bare name #f)
           (jolt-with-mutex keyword-table-mu
             (or (hashtable-ref keyword-table-bare name #f)
-                (let ((kw (make-keyword-t #f name (compute-keyword-hasheq #f name))))
+                (let ((kw (keyword-new #f name)))
                   (hashtable-set! keyword-table-bare name kw)
                   kw))))))
 (define (keyword? x) (keyword-t? x))
+
+(define (keyword-new ns name)
+  (make-keyword-t #f ns name (compute-keyword-hasheq ns name)))
 
 ;; --- symbols: ns + name + meta; NOT interned (meta varies), = by ns/name ------
 ;; The ns/name STRINGS are pooled (like JVM Symbol.intern, which .intern()s them):
@@ -455,7 +460,40 @@
       (make-symbol-t (intern-symbol-string ns) name meta #f #f)))
 (define (jolt-symbol ns name) (make-symbol-t/pooled ns name jolt-nil))
 (define (jolt-symbol/meta ns name meta) (make-symbol-t/pooled ns name meta))
-
+;; JOLT_CONST_DATA (an experiment, off by default; backend hoist.clj
+;; with-const-data): a top-level form's keyword and symbol literals arrive as ONE
+;; quoted vector of plain data, and this builds the objects once when the form
+;; loads. "name" is the keyword :name, ("ns" . "name") :ns/name, and
+;; #(ns-or-#f "name") a metadata-free symbol. Keywords go through `keyword`, so
+;; they intern to the very objects every other site gets. A fresh vector, not the
+;; quoted one written over: that is a constant of the compiled code.
+;;
+;; A constant collection is a list headed by its constructor's tag (v vector, l
+;; list, m hash-map, am array-map slots, s hash-set) over element data: #&i is
+;; row i, built earlier, the symbol nil is jolt-nil, anything else stands for
+;; itself. The constructors live in collections.ss / seq.ss, loaded after this
+;; file; they are looked up when a form loads, long after.
+(define (intern-constants! tbl)
+  (let* ((n (vector-length tbl)) (out (make-vector n)))
+    (define (elt x)
+      (cond ((box? x) (vector-ref out (unbox x)))
+            ((eq? x 'nil) jolt-nil)
+            (else x)))
+    (do ((i 0 (fx+ i 1))) ((fx= i n) out)
+      (vector-set! out i
+        (let ((e (vector-ref tbl i)))
+          (cond ((string? e) (keyword #f e))
+                ((vector? e) (jolt-symbol (vector-ref e 0) (vector-ref e 1)))
+                ((string? (car e)) (keyword (car e) (cdr e)))
+                (else
+                 (let ((xs (map elt (cdr e))))
+                   (case (car e)
+                     ((v) (apply jolt-vector xs))
+                     ((l) (apply jolt-list xs))
+                     ((m) (apply jolt-hash-map xs))
+                     ((am) (amap-slots->pmap (list->vector xs)))
+                     ((s) (apply jolt-hash-set xs))
+                     (else (error 'intern-constants! "bad row" e)))))))))))
 ;; ns/name identical means the hasheq is identical, so a symbol rebuilt only to
 ;; change its metadata inherits the cache instead of recomputing it. with-meta on
 ;; a symbol used as a map key is otherwise a guaranteed miss.

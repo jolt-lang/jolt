@@ -188,6 +188,7 @@ java-hashcode
 jolt-class-for
 jolt-version
 jrec-method?
+keep-frames?
 late-bind?
 late-bound-namespace?
 list-dir
@@ -333,6 +334,7 @@ unchecked-math?
 unmark-loaded!
 var-dynamic?
 var-linked?
+var-meta-lazy?
 var-redefined?
 var-root-callable?
 wall-nanos

@@ -68,16 +68,35 @@
 
 ;; --- errors keep their shape -----------------------------------------------------
 (define (catch thunk) (guard (e (#t e)) (thunk)))
+;; This unit pins the record wrapper's raw Chez contract. Loading rt.ss also
+;; installs Jolt's optional call-error hook, whose language error is checked
+;; separately below. Restore the process-wide hook even when the call raises.
+(define (without-call-error-hook thunk)
+  (if (sa-call-error-supported?)
+      (let* ((hook (eval '($primitive $call-error-handler))) (saved (hook)))
+        (dynamic-wind (lambda () (hook #f)) thunk (lambda () (hook saved))))
+      (thunk)))
 (let ((e (catch (lambda () (pvec-cnt 5)))))
   (ok "type error is a condition" (condition? e))
   (ok "type error message unchanged"
       (and (message-condition? e) (string=? (condition-message e) "~s is not of type ~s")))
   (ok "type error irritants: the value and the rtd"
       (and (irritants-condition? e) (eqv? (car (condition-irritants e)) 5))))
-(let ((e (catch (lambda () (eval '(pvec-cnt (jolt-vector 1) 2))))))
+(let ((e (catch (lambda ()
+                  (without-call-error-hook
+                    (lambda () (eval '(pvec-cnt (jolt-vector 1) 2))))))))
   (ok "wrong arity is a run-time error, not a syntax error"
       (and (condition? e) (message-condition? e)
+           (not (syntax-violation? e))
            (contains? (condition-message e) "number of arguments"))))
+(when (sa-call-error-supported?)
+  (let ((e (catch (lambda () (eval '(pvec-cnt (jolt-vector 1) 2))))))
+    (ok "the installed call-error hook raises a language ArityException"
+        (and (jolt-throw-condition? e)
+             (let ((v (jolt-throw-condition-value e)))
+               (and (jolt-ex-info-record? v)
+                    (string=? (jolt-ex-info-record-class-name v) "clojure.lang.ArityException")
+                    (contains? (jolt-ex-info-record-message v) "Wrong number of args (2)")))))))
 (ok "set! of a generated name is rejected at expansion"
     (let ((e (catch (lambda () (eval '(set! pvec? 5))))))
       (and (condition? e) (syntax-violation? e))))

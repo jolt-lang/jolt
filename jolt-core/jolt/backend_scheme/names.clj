@@ -19,8 +19,20 @@
     (and (>= cp 32) (< cp 127)) (str (char cp))
     :else (str "\\x" (format "%x" cp) ";")))
 
+;; Nearly every string the back end writes is printable ASCII with no quote or
+;; backslash, which char-escape returns unchanged, so a string with nothing to
+;; escape is wrapped as it is. The per-char rendering below allocated a string
+;; per character, and the emit of the 200k project spent 2.8 s of its 15 here.
+(defn- str-lit-plain? [s]
+  (let [n (count s)]
+    (loop [i 0]
+      (or (= i n)
+          (let [cp (int (.charAt ^String s i))]
+            (and (>= cp 32) (< cp 127) (not= cp 34) (not= cp 92) (recur (inc i))))))))
 (defn chez-str-lit [s]
-  (str "\"" (apply str (map (fn [c] (char-escape (int c))) s)) "\""))
+  (if (str-lit-plain? s)
+    (str "\"" s "\"")
+    (str "\"" (apply str (map (fn [c] (char-escape (int c))) s)) "\"")))
 ;; --- identifier munging ------------------------------------------------------
 ;; Every Clojure name the emitter writes as a Scheme IDENTIFIER — a local, a
 ;; param, a fn's letrec self-name, a direct-link binding — goes through
@@ -60,11 +72,23 @@
         (= cp 35) "$H"
         (= cp 124) "$V"
         :else (str "$U" (format "%x" cp) "$")))
+;; A letter, a digit, or one of - _ . * ? ! < > = / + & : % ~ ^ @, none of which
+;; munge-unsafe? flags: the test the scan below makes first, without a set lookup.
+(defn- munge-plain-cp? [cp]
+  (or (and (>= cp 97) (<= cp 122)) (and (>= cp 65) (<= cp 90)) (and (>= cp 48) (<= cp 57))
+      (= cp 45) (= cp 95) (= cp 46) (= cp 42) (= cp 63) (= cp 33) (= cp 60) (= cp 62)
+      (= cp 61) (= cp 47) (= cp 43) (= cp 38) (= cp 58) (= cp 37) (= cp 126) (= cp 94) (= cp 64)))
+(defn- munge-safe-str? [s]
+  (let [n (count s)]
+    (loop [i 0]
+      (or (= i n)
+          (let [cp (int (.charAt ^String s i))]
+            (and (or (munge-plain-cp? cp) (not (munge-unsafe? cp))) (recur (inc i))))))))
 (defn munge-chars [s]
   ;; a name with nothing to escape (nearly all of them) is returned as-is
-  (if (some (fn [c] (munge-unsafe? (int c))) s)
-    (apply str (map (fn [c] (let [cp (int c)] (if (munge-unsafe? cp) (munge-char cp) c))) s))
-    s))
+  (if (munge-safe-str? s)
+    s
+    (apply str (map (fn [c] (let [cp (int c)] (if (munge-unsafe? cp) (munge-char cp) c))) s))))
 ;; Scheme syntactic keywords. A jolt local with one of these names would, when
 ;; emitted verbatim, shadow the Scheme form in operator position (a local named
 ;; `if` would turn the special form (if …) the back end emits into a call), so
@@ -225,7 +249,12 @@
                   "jrec6-f0" "jrec6-f0-set!" "jrec6-f1" "jrec6-f1-set!" "jrec6-f2" "jrec6-f2-set!" "jrec6-f3" "jrec6-f3-set!" "jrec6-f4" "jrec6-f4-set!" "jrec6-f5" "jrec6-f5-set!"
                   "jrec7-f0" "jrec7-f0-set!" "jrec7-f1" "jrec7-f1-set!" "jrec7-f2" "jrec7-f2-set!" "jrec7-f3" "jrec7-f3-set!" "jrec7-f4" "jrec7-f4-set!" "jrec7-f5" "jrec7-f5-set!" "jrec7-f6" "jrec7-f6-set!"
                   "jrec8-f0" "jrec8-f0-set!" "jrec8-f1" "jrec8-f1-set!" "jrec8-f2" "jrec8-f2-set!" "jrec8-f3" "jrec8-f3-set!" "jrec8-f4" "jrec8-f4-set!" "jrec8-f5" "jrec8-f5-set!" "jrec8-f6" "jrec8-f6-set!" "jrec8-f7" "jrec8-f7-set!"
-                  "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"}]
+                  "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"
+                  ;; JOLT_CONST_DATA's per-form table (hoist.clj with-const-data)
+                  "intern-constants!"
+                  ;; JOLT_LAZY_META's def entries (rt.ss def-var-lazy-meta!)
+                  "def-var-lazy-meta!" "set-var-lazy-meta!"
+                  "image-register-fn-forms!" "image-fn-form-rows"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an
@@ -287,3 +316,18 @@
 ;; dce.ss / the jv$ shadow guard test only the prefix.
 (defn dl-fqn [ns nm] (str ns "/" nm))
 (defn dl-name [ns nm] (str "jv$" (munge-chars (dl-fqn ns nm))))
+;; A global var's top-level symbol (JOLT_GLOBAL_VAR_CALL, Chez only): jg$ and the
+;; RAW ns/name, which the runtime interns from the cell's own strings (rt.ss
+;; var-global-symbol), so nothing is munged. A char the Chez reader would not
+;; take in an identifier is written as its R6RS \x<hex>; escape, which reads back
+;; as that char. $ is an identifier char here, not an escape lead. No local can
+;; spell it: a munged local has no / (munge-name) and its $ doubles.
+(defn- gv-unsafe? [cp] (and (not= cp 36) (munge-unsafe? cp)))
+(defn gv-sym [ns nm]
+  (let [s (dl-fqn ns nm)]
+    (str "jg$"
+         (if (some (fn [c] (gv-unsafe? (int c))) s)
+           (apply str (map (fn [c] (let [cp (int c)]
+                                     (if (gv-unsafe? cp) (str "\\x" (format "%x" cp) ";") c)))
+                           s))
+           s))))

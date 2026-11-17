@@ -2532,15 +2532,15 @@
   ;; links against those, so there it needs only a C compiler (jolt#1255).
   ;; A profile-guided build compiles in this process: the spawned-Chez paths
   ;; (a library, a cross build, a jolt without the embedded stub or kernel) have
-  ;; no profile to load. The dev mode compiles under the target's defaults,
-  ;; which is not a build anyone profiles.
+  ;; no profile to load. Dev keeps full debug information, but is not a mode
+  ;; supported by the profile-guided build pipeline.
   (when (bld-block-profile)
     (let ((flag (if (bld-profile-gen?) "--profile-gen" "--profile-use")))
       (cond
         ((or library? (bld-cross?) (not (jolt-embedded-bytes "stub/launcher"))
              (and (bld-signable) (not (bld-embedded-kernel?))))
          (error 'jolt-build (string-append flag " builds an executable for this machine with a self-contained jolt; it is not available with --library or --target")))
-        ((not (bld-mode-params mode))
+        ((string=? mode "dev")
          (error 'jolt-build (string-append flag " needs a release or --opt build, not --dev")))
         ;; the same code compiles differently in another mode, so a profile from
         ;; one does not fit the other; said here, rather than as stale units
@@ -2922,6 +2922,10 @@
                 ;; must lower to var-deref, so prelude mode is on for the whole build.
                 (ei-fresh-unit!)
                 ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
+                ;; a built binary links no jg$ symbols (rt.ss "global vars"), so
+                ;; JOLT_GLOBAL_VAR_CALL never reaches its code
+                (let ((sg (var-deref "jolt.backend-scheme.session" "set-global-var-call!")))
+                  (when (procedure? sg) (sg #f)))
                 ;; The passes run for every mode but dev. "release" and
                 ;; "optimized" differ only in the Chez compile parameters
                 ;; below (inspector + procedure-source info), not in what the
@@ -3040,6 +3044,8 @@
               (lambda ()
                 (set-optimize! #f)
                 (set-direct-link-flag! #f)
+                (let ((sg (var-deref "jolt.backend-scheme.session" "set-global-var-call!")))
+                  (when (procedure? sg) (sg (and jolt-global-mode #t))))
                 ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
                 ((var-deref "jolt.backend-scheme" "set-source-reg!") #f)
                 ;; restore the DEV-mode emission state, not #f — an in-process
@@ -3247,16 +3253,18 @@
     (close-port out)))
 
 ;; Per-mode Chez compile parameters for the APP half of a binary (the app and
-;; its libraries). "release" keeps inspector + proc-source information ON:
-;; Chez records a frame's return-point source only as inspector information,
+;; its libraries). "release" keeps frame and procedure source information.
+;; Stock Chez records a frame's return-point source only as inspector information,
 ;; and the reporter resolves that offset through the marker table to recover
 ;; the spliced chain a frame sits in and the exact line — the `step-boom` /
 ;; `app.util/inner-boom` frames the build smoke's --innerfn case pins vanish
 ;; without it (both parameters off, AND proc-source alone: it does not cover
 ;; return points). "optimized" turns them OFF for the smallest, fastest app
-;; half; "dev" has no entry (Chez defaults: optimize-level 2, inspector ON,
+;; half; "dev" explicitly keeps Chez's defaults (optimize-level 2, inspector ON,
 ;; proc-source ON, fasl uncompressed — full debuggability). Single table
 ;; referenced by both the script-string builder and the in-process compile.
+;; Patch 0011 can replace the release row with source-only data when requested
+;; by JOLT_SOURCE_INFO=source. Dev retains the full inspector for named locals.
 ;;
 ;; The RUNTIME half never uses this table — see bld-runtime-chez-params.
 ;;
@@ -3265,7 +3273,11 @@
 ;; raising ((take nil coll) must throw, not walk off a nil count). Level 2
 ;; keeps every check with nearly all of the optimization.
 (define bld-chez-params
-  '(("optimized" (optimize-level 2)
+  '(("dev"       (optimize-level 2)
+                 (generate-inspector-information #t)
+                 (generate-procedure-source-information #t)
+                 (fasl-compressed #f))
+    ("optimized" (optimize-level 2)
                  (generate-inspector-information #f)
                  (generate-procedure-source-information #f)
                  (fasl-compressed #t))
@@ -3309,9 +3321,27 @@
                      ")"))
     "" params))
 
-;; The app half's parameters for MODE, or #f for a mode with no row (dev).
+;; The app half's parameters for MODE, or #f for an unknown mode. Dev's explicit
+;; profile also keeps its cache key distinct from the old implicit defaults,
+;; which could compile without names under JOLT_SOURCE_INFO=source/off.
 (define (bld-mode-params mode)
-  (let ((row (assoc mode bld-chez-params))) (and row (cdr row))))
+  (let ((row (assoc mode bld-chez-params))
+        (sources (sa-source-info-mode)))
+    (and row
+         (if sources
+             (cons (list 'generate-return-point-source-information
+                         (and (string=? mode "release") (eq? sources 'source)))
+               (map (lambda (p)
+                      (cond
+                        ((and (string=? mode "release")
+                              (eq? (car p) 'generate-inspector-information))
+                         (list (car p) (eq? sources 'full)))
+                        ((and (string=? mode "release")
+                              (eq? (car p) 'generate-procedure-source-information))
+                         (list (car p) (not (eq? sources 'off))))
+                        (else p)))
+                    (cdr row)))
+             (cdr row)))))
 
 ;; A `(compile-file SRC SO)` form for a spawned Chez, under PARAMS when given.
 (define (bld-compile-file-form params src so)
@@ -3398,7 +3428,9 @@
               (inspector-info . ,(pv 'generate-inspector-information))
               (source-info . ,(pv 'generate-procedure-source-information))
               (compressed . ,(pv 'fasl-compressed))
-              (block-profile . ,(bld-profile-gen?))))))
+              (block-profile . ,(bld-profile-gen?))
+              (return-point-info . ,(let ((p (assq 'generate-return-point-source-information params)))
+                                     (and p (cadr p))))))))
       (sa-compile-file src so #f)))
 
 ;; --- profile-guided builds (RFC 0015 part 2, tier 1) ---------------------------
@@ -3555,7 +3587,8 @@
 ;; with different bundled kernels share this directory. Identical source text
 ;; under a newer kernel must miss.
 (define (bld-runtime-cache-path body)
-  (let ((keyed (string-append (scheme-version) " " (sa-host-tag) "\n"
+  (let ((keyed (string-append (scheme-version) " " (sa-host-tag)
+                              (sa-source-info-cache-tag) "\n"
                               (bld-params-bindings bld-runtime-chez-params "\n")
                               (bld-profile-tag) body)))
     (string-append (bld-runtime-cache-dir) "/runtime-"

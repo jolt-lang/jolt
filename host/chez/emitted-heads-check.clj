@@ -36,7 +36,10 @@
    ;; catch body is evaluated outside it), the record ctor's v and the PIC's
    ;; _nv/_d/_f cache temporaries
    "a" :binder "p" :binder "r" :binder "v" :binder "result" :binder
-   "address" :binder "_nv" :binder "_d" :binder "_f" :binder})
+   "address" :binder "_nv" :binder "_d" :binder "_f" :binder
+   ;; tags inside JOLT_LAZY_META's quoted def descriptor (literals.clj
+   ;; meta-desc): data the runtime reads, never applied
+   "k" :quoted-data "ym" :quoted-data "var" :quoted-data})
 
 (def strs
   (let [acc (atom #{})]

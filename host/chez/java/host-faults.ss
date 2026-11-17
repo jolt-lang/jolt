@@ -73,8 +73,21 @@
                          (cons "java.lang.ArithmeticException" "integer overflow")
                          (cons "java.lang.IllegalArgumentException"
                                (string-append "Value out of range for long: " (number->string i))))))))))
+;; A call through a global var's symbol (rt.ss "global vars") whose var no form
+;; of this process has interned: Chez's "variable jg$ns/name is not bound".
+;; It is the call of an unbound var, so it reads as one, as the JVM's
+;; class static init would have interned the var and its call thrown.
+(define (global-unbound-refusal c)
+  (and jolt-global-mode (message-condition? c) (irritants-condition? c)
+       (equal? (condition-message c) "variable ~:s is not bound")
+       (let ((irr (condition-irritants c)))
+         (and (pair? irr)
+              (let ((nn (jolt-global-symbol-var (car irr))))
+                (and nn (cons "java.lang.IllegalStateException"
+                              (string-append "Attempting to call unbound fn: #'"
+                                             (car nn) "/" (cdr nn)))))))))
 (define (fault-class c)
-  (let ((r (array-index-int-refusal c)))
+  (let ((r (or (array-index-int-refusal c) (global-unbound-refusal c))))
     (if r (car r) (fault-class-of c))))
 (define (fault-class-of c)
   (let* ((m (if (message-condition? c) (condition-message c) ""))
@@ -133,7 +146,7 @@
   ;; a message that fails to render must not raise inside the handler that is
   ;; unwrapping the fault
   (guard (e (#t "host fault"))
-    (or (let ((r (array-index-int-refusal c))) (and r (cdr r)))
+    (or (let ((r (or (array-index-int-refusal c) (global-unbound-refusal c)))) (and r (cdr r)))
         (array-index-fault-message c)
         (port-errno-fault-message c)
         (condition->message-string c))))
@@ -152,6 +165,13 @@
           (unless (eq? (jolt-fault-captured) c)
             (jolt-throw-sitep (jolt-live-site)))
           (let ((t (jolt-host-throwable (fault-class c) (fault-message c))))
+            ;; keep-frames (rt.ss jolt-keep-frames-on?): the fault's own
+            ;; continuation still holds every frame down to the raise, and no
+            ;; site pair is recorded, so the trace is read from that rather
+            ;; than from this handler's, which the unwind has cut down to the
+            ;; catching fn
+            (when (and jolt-keep-frames-on? (continuation-condition? c))
+              (jolt-ex-info-record-capture-set! t (cons (condition-continuation c) #f)))
             (hashtable-set! fault-throwables c t)
             (hashtable-set! fault-conditions t c)
             ;; The thread is now handling t, raised where c was: a catch that

@@ -1517,6 +1517,58 @@
 ;; 300s timeout; every hop's mark op allocated). What ships is the JVM model:
 ;; all metadata compile-time, the stack itself the only runtime record.
 (define jolt-trace-on? #f)
+
+;; Cache generations are consulted by compilerless applications too, so these
+;; runtime mode predicates must not live in the optional compiler spine.
+;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
+;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
+;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so
+;; dev mode still traces and a whole run still doesn't.
+(define (jolt-trace-env-off? e)
+  (and (string? e)
+       (let ((s (string-downcase e)))
+         (or (string=? s "0") (string=? s "false") (string=? s "no")
+             (string=? s "off") (string=? s "n")))))
+;; JOLT_NATIVE_VAR_CALL=1 opts into the checked var-root application on a Chez
+;; with patch 0010. It helps call-heavy code but did not improve cold builds;
+;; default emission and every stock-Chez run keep the original invoke helper.
+(define (jolt-native-var-call-enabled?)
+  (and (sa-call-error-supported?)
+       (let ((e (getenv "JOLT_NATIVE_VAR_CALL")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+;; JOLT_GLOBAL_VAR_CALL opts into calls through vars as plain applications of a
+;; per-var Chez top-level symbol ("global vars" below; backend session.clj
+;; global-var-call), on a Chez with patch 0010. #f everywhere else: stock Chez,
+;; Gambit, unset or falsey, so the emission is the default one.
+(define (jolt-global-var-call-enabled?)
+  (and (sa-call-error-supported?)
+       (let ((e (getenv "JOLT_GLOBAL_VAR_CALL")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+;; JOLT_LAZY_META opts into emitting per-def data as quoted data built on first
+;; use: =meta hands each def's constant metadata to its var as one descriptor
+;; (def-var-lazy-meta!; backend session.clj lazy-meta), any other true value
+;; does that and also turns the per-def registration rows into quoted tables
+;; (fn-form-registry.ss image-register-fn-forms!, source-registry.ss pending
+;; rows, loader.ss aot-replay-def-ordinals*!). Needs no Chez patch. Gambit's
+;; mirror says no.
+(define (jolt-lazy-meta-mode)
+  (let ((e (getenv "JOLT_LAZY_META")))
+    (cond ((or (not e) (string=? e "") (jolt-trace-env-off? e)) #f)
+          ((string=? e "meta") 'meta)
+          (else 'all))))
+(define (jolt-lazy-meta-enabled?) (and (jolt-lazy-meta-mode) #t))
+;; JOLT_KEEP_FRAMES=1 (with tracing on) opts into emitting traced code that
+;; erases no frame (backend session.clj keep-frames), on a Chez with patch 0012's
+;; $call-keeping-frame. Everywhere else it is ignored: the emission is the
+;; default one. jolt-keep-frames-on? is what this run decided (compile-eval.ss
+;; jolt-enable-trace!); the reporter and the cache generation read it.
+(define jolt-keep-frames-on? #f)
+(define (jolt-keep-frames-set! on) (set! jolt-keep-frames-on? on))
+(define (jolt-keep-frames-enabled?)
+  (and (sa-keep-frame-supported?)
+       (let ((e (getenv "JOLT_KEEP_FRAMES")))
+         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+
 ;; Per-thread trace state lives in Chez VIRTUAL REGISTERS, not thread parameters:
 ;; a thread-parameter WRITE costs ~32ns against ~1ns for a virtual-register write
 ;; (measured, Chez 10.4 arm64), and jolt-site! sits on the hot path. Reads are
@@ -2036,10 +2088,95 @@
 ;; Var.threadBound, and the whole reason a var read is not O(binding depth). See
 ;; dyn-binding.ss, which owns it; it lives here because it has to be a field for
 ;; the same reason meta and macro? are.
+;;
+;; meta may also hold a LAZY descriptor (JOLT_LAZY_META, def-var-lazy-meta!
+;; below): a Scheme pair, which no metadata value ever is. var-cell-meta builds
+;; the map from it the first time anything reads it; the raw accessors are only
+;; for that.
 (define-record-type var-cell
-  (fields ns name (mutable root) (mutable defined?) (mutable meta) (mutable macro?)
+  (fields ns name (mutable root) (mutable defined?)
+          (mutable meta var-cell-meta-raw var-cell-meta-raw-set!) (mutable macro?)
           (mutable dyn-bound?) (mutable dynamic?))
   (nongenerative var-cell-v5))
+
+;; --- lazy var metadata (JOLT_LAZY_META) --------------------------------------
+;; With the experiment on, a def whose metadata is all constants does not run the
+;; code that builds its map. The emitter hands the var one quoted descriptor of it
+;; instead (backend literals.clj meta-desc, which documents the encoding), and the
+;; map is built here on first read: (meta #'x), the analyzer reading :tag or
+;; :protocol, ns-publics reading :private, alter-meta!. Each piece calls the
+;; constructor the eager emit would have called, over the same elements in the
+;; same order, so the map is equal to the eager one with its keys in the same
+;; order. A var nobody asks about never builds one.
+;;
+;; Publication: two threads reading a var's metadata for the first time may both
+;; build it; the first to publish wins and the other returns the winner's map, so
+;; every reader sees one object. The check-and-store runs under lazy-meta-mu, and
+;; so does any write that finds a descriptor in the field, so a concurrent
+;; reset-meta! cannot be overwritten by a build that started before it. A write
+;; over a built map (the default path's only kind) takes no lock: nothing can be
+;; publishing over it.
+(define lazy-meta-mu (make-mutex))
+(define (lazy-meta-decode x ns)
+  (define (dec x) (lazy-meta-decode x ns))
+  (cond
+    ((null? x) jolt-nil)
+    ((symbol? x) (keyword #f (symbol->string x)))
+    ((vector? x) (if (fx= (vector-length x) 1)
+                     (jolt-symbol #f (vector-ref x 0))
+                     (jolt-symbol (vector-ref x 0) (vector-ref x 1))))
+    ((pair? x)
+     (let ((args (cdr x)))
+       (case (car x)
+         ((am) (amap-slots->pmap (list->vector (lazy-meta-top-kvs args ns))))
+         ((m) (apply jolt-hash-map (lazy-meta-top-kvs args ns)))
+         ((v) (apply jolt-vector (map dec args)))
+         ((l) (apply jolt-list (map dec args)))
+         ((s) (apply jolt-hash-set (map dec args)))
+         ((k) (keyword (car args) (cadr args)))
+         ((ym) (jolt-symbol/meta (car args) (cadr args) (dec (caddr args))))
+         ((var) (jolt-var (if (eq? (car args) #t) ns (car args)) (cadr args)))
+         (else (error 'lazy-meta-decode "bad descriptor" x)))))
+    (else x)))
+;; A map's keys and values, in order, through a dotted #(line column file) tail
+;; (#t for the file the namespace name maps to, as the emitter checked).
+(define (lazy-meta-top-kvs kvs ns)
+  (let loop ((x kvs))
+    (cond
+      ((pair? x) (cons (lazy-meta-decode (car x) ns) (loop (cdr x))))
+      ((vector? x)
+       (list (keyword #f "line") (vector-ref x 0) (keyword #f "column") (vector-ref x 1)
+             (keyword #f "file") (let ((f (vector-ref x 2))) (if (eq? f #t) (lazy-meta-ns-file ns) f))))
+      (else '()))))
+(define (lazy-meta-ns-file ns)
+  (string-append
+    (list->string (map (lambda (c) (case c ((#\.) #\/) ((#\-) #\_) (else c))) (string->list ns)))
+    ".clj"))
+(define (lazy-meta-force! c d)
+  (let* ((built (lazy-meta-decode d (var-cell-ns c)))
+         (cur (jolt-with-mutex lazy-meta-mu
+                (let ((cur (var-cell-meta-raw c)))
+                  (if (eq? cur d)
+                      (begin (var-cell-meta-raw-set! c built) built)
+                      cur)))))
+    (if (pair? cur) (lazy-meta-force! c cur) cur)))
+(define (var-cell-meta c)
+  (let ((m (var-cell-meta-raw c)))
+    (if (pair? m) (lazy-meta-force! c m) m)))
+(define (var-cell-meta-set! c m)
+  (if (pair? (var-cell-meta-raw c))
+      (jolt-with-mutex lazy-meta-mu (var-cell-meta-raw-set! c m))
+      (var-cell-meta-raw-set! c m)))
+;; Is the var's metadata still a descriptor nobody has read? (the gates)
+(define (var-cell-meta-lazy? c) (pair? (var-cell-meta-raw c)))
+;; Does a descriptor ask for a dynamic var? Its top level is a map, (am k v ...)
+;; or (m k v ...); the plain keyword :dynamic is the bare symbol, and nil and
+;; false are the only falsey values.
+(define (lazy-meta-dynamic? d)
+  (let loop ((kv (cdr d)))
+    (cond ((not (and (pair? kv) (pair? (cdr kv)))) #f)
+          ((eq? (car kv) 'dynamic) (let ((v (cadr kv))) (not (or (null? v) (eq? v #f)))))
+          (else (loop (cddr kv))))))
 (define var-table (make-hashtable string-hash string=?))
 (define var-table-mu (make-mutex))
 ;; var-table-mu covers EVERY mutation of var-table and of ns-has-vars-set below
@@ -2109,6 +2246,9 @@
     (hashtable-clear! ns-cells-index)
     (vector-for-each ns-cells-add! (hashtable-values var-table))))
 
+;; JOLT_GLOBAL_VAR_CALL (see "global vars" below). Set once, at startup, by
+;; jolt-global-mode-enable!.
+(define jolt-global-mode #f)
 (define (jolt-var ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)
@@ -2117,6 +2257,7 @@
               (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #f #f #f #f #f)))
                 (hashtable-set! var-table k c)
                 (ns-cells-add! c)
+                (when jolt-global-mode (var-global-link! c))
                 c))))))
 ;; A whole-table scan is the one read that DOES need the lock, and for a different
 ;; reason than a rehash: hashtable-keys/values read ht-size, allocate a
@@ -2297,10 +2438,22 @@
 ;; not splice the old body. #f until then, so a root write pays one test.
 (define var-root-write-hook #f)
 (define (set-var-root-write-hook! f) (set! var-root-write-hook f))
+;; Called with a cell the first time any thread binds it (dyn-binding.ss
+;; dyn-push-frame!), once something installs it: global vars swap the var's
+;; trampoline into its symbol then. #f until then, so a push pays one test.
+(define var-first-bind-hook #f)
 (define (var-root-set! c v)
   (when var-root-write-hook (var-root-write-hook c))
   (let ((l (hashtable-ref var-linked-tbl c #f)))
-    (if l
+    (cond
+      ;; global vars: the root and the jg$ symbol are one value, like a linked
+      ;; var's root and binding, and for the same reason one critical section
+      (jolt-global-mode
+       (jolt-with-mutex var-linked-mu
+         (var-cell-root-set! c v)
+         (when l ((cdr l) v))
+         (var-global-sync! c)))
+      (l
         ;; The cell and the binding are ONE value, so the two writes are one
         ;; critical section: two writers of the same linked var (a def racing an
         ;; alter-var-root, two sessions interning the same name) would otherwise
@@ -2308,8 +2461,8 @@
         ;; row 14 reads the pair under the same mutex.
         (jolt-with-mutex var-linked-mu
           (var-cell-root-set! c v)
-          ((cdr l) v))
-        (var-cell-root-set! c v))))
+          ((cdr l) v)))
+      (else (var-cell-root-set! c v)))))
 ;; The jv$ symbol a linked var is bound under, or #f. jolt.host/seed-callable?
 ;; answers it so an app's direct call site applies the binding itself (the back end's
 ;; emit-invoke) rather than a root hoisted once at load.
@@ -2323,6 +2476,121 @@
     (jolt-with-mutex var-linked-mu
       (hashtable-set! var-linked-tbl c (cons sym setter)))
     c))
+
+;; --- global vars: a var's value behind a Chez top-level symbol ----------------
+;; JOLT_GLOBAL_VAR_CALL=1 (compile-eval.ss jolt-global-var-call-init-from-env!;
+;; only on a Chez with patch 0010's call-error hook). Every interned var gets the
+;; top-level symbol jg$<ns>/<name> (the raw names; the emitter writes any char
+;; the reader would not take as an \x..; escape, backend names.clj gv-sym), and
+;; the emitter compiles a call through a var that is not dynamic as a plain Chez
+;; application of that symbol, (jg$ns/f a b), and a value reference as
+;; (jolt-gv 'jg$ns/f): no hoisted var lookup, no var-cell-deref, no jolt-invoke.
+;;
+;; The symbol holds ONE wrapper procedure (make-wrapper-procedure) for the var's
+;; whole life, and a root write retargets the wrapper in place
+;; (set-wrapper-procedure-procedure!), never the symbol. That is what makes it
+;; safe. Chez calls a top-level symbol through a code pointer it caches in the
+;; symbol on the first call after each assignment, and two threads, one calling
+;; and one assigning, can leave that cache naming the previous procedure's code
+;; while the value is the new procedure: the next call runs one closure's code
+;; with another's free variables (global-var-calls.md: four of twelve runs of the
+;; concurrent-redefinition test faulted that way when the symbol held the root
+;; itself). Every wrapper shares one code object (Chez's wrapper-apply), and the
+;; symbol is assigned once, so the cache is right whatever it caught; the call
+;; then reads the wrapper's target in one load and jumps to that procedure's own
+;; code.
+;;
+;; The target is a procedure always:
+;;   - the root itself, while it is a procedure and the var has never had a
+;;     thread binding: a call costs one extra jump;
+;;   - otherwise a per-var trampoline that invokes the binding-aware value
+;;     through jolt-invoke-tN. A keyword, map, set, vector, multimethod, IFn
+;;     record or var held in a var is dispatched there exactly as through
+;;     jolt-invoke, an unbound var raises the unbound-fn error, and a var that is
+;;     bound per thread later (.setDynamic, a def that turns ^:dynamic) reaches
+;;     already-compiled call sites through it, because the first binding of the
+;;     var retargets the wrapper (dyn-binding.ss dyn-push-frame!,
+;;     var-first-bind-hook) before that binding is visible.
+;; An arity error inside a root procedure reaches jolt-invoke-tN through 0010's
+;; handler, which raises the ArityException that names the fn.
+;;
+;; Every root write retargets the wrapper (var-root-set!), every cell is linked
+;; when it is interned (jolt-var, declare-var!), and the cells interned before
+;; the mode was enabled are linked by jolt-global-mode-enable!, so the symbol is
+;; bound whenever its var exists. After remove-ns / ns-unmap a new cell for the
+;; same name links a new wrapper into the symbol; the removed cell keeps
+;; retargeting its own wrapper, which nothing calls any more.
+;;
+;; Two slots of the symbol are written, once each. Compiled code names the symbol
+;; as an identifier of the interaction environment, which Chez resolves to that
+;; environment's own location for it (a label, not the symbol's value slot;
+;; syntax.ss), so call sites read what set-top-level-value! writes
+;; (sa-top-level-assign!): the wrapper.
+;; The symbol's raw value slot holds the cell, which jolt-gv, handed the symbol
+;; itself, reads with no environment lookup.
+(define var-global-tbl (make-eq-hashtable))   ; cell -> (wrapper . trampoline|#f), under var-linked-mu
+(define (var-global-symbol ns name) (string->symbol (string-append "jg$" ns "/" name)))
+;; caller holds var-linked-mu
+(define (var-global-tramp c e)
+  (or (cdr e)
+      (let ((t (case-lambda
+                 (() (jolt-invoke-t0 (var-cell-deref c)))
+                 ((a) (jolt-invoke-t1 (var-cell-deref c) a))
+                 ((a b) (jolt-invoke-t2 (var-cell-deref c) a b))
+                 ((a b d) (jolt-invoke-t3 (var-cell-deref c) a b d))
+                 ((a b d f) (jolt-invoke-t4 (var-cell-deref c) a b d f))
+                 (args (apply jolt-invoke (var-cell-deref c) args)))))
+        (set-cdr! e t)
+        t)))
+;; caller holds var-linked-mu
+(define (var-global-target c e)
+  (let ((r (var-cell-root c)))
+    (if (and (procedure? r) (not (var-cell-dyn-bound? c)) (not (eq? c star-ns-cell)))
+        r
+        (var-global-tramp c e))))
+;; caller holds var-linked-mu
+(define (var-global-sync! c)
+  (let ((e (hashtable-ref var-global-tbl c #f)))
+    (when e (set-wrapper-procedure-procedure! (car e) (var-global-target c e)))))
+(define (var-global-link! c)
+  (jolt-with-mutex var-linked-mu
+    (unless (hashtable-ref var-global-tbl c #f)
+      (let* ((e (cons #f #f))
+             (w (make-wrapper-procedure (var-global-target c e) -1 c))
+             (s (var-global-symbol (var-cell-ns c) (var-cell-name c))))
+        (set-car! e w)
+        (hashtable-set! var-global-tbl c e)
+        (sa-top-level-assign! s w)
+        (sa-symbol-slot-set! s c)))))
+(define (var-global-first-bind! c)
+  (jolt-with-mutex var-linked-mu (var-global-sync! c)))
+;; Called once, before any app code is compiled or loaded.
+(define (jolt-global-mode-enable!)
+  (unless jolt-global-mode
+    (set! jolt-global-mode #t)
+    (set! var-first-bind-hook var-global-first-bind!)
+    (vector-for-each var-global-link! (var-table-cells))))
+;; A value reference: the var's binding-aware value, through the cell in the
+;; symbol's raw slot. A symbol with no cell is a var no form of this process has
+;; interned (a name a macro interned at compile time only): intern it now, as a
+;; JVM class's static init would, and read it (the Unbound value).
+(define (jolt-gv s)
+  (let ((c (sa-symbol-slot s)))
+    (if (var-cell? c)
+        (var-cell-deref c)
+        (let ((nn (jolt-global-symbol-var s)))
+          (var-cell-deref (jolt-var (car nn) (cdr nn)))))))
+;; jg$<ns>/<name> -> (ns . name), or #f. A namespace name has no /, so the first
+;; one after the prefix splits it (clojure.core// is ns clojure.core, name /).
+(define (jolt-global-symbol-var s)
+  (and (symbol? s)
+       (let* ((str (symbol->string s)) (n (string-length str)))
+         (and (> n 3) (string=? (substring str 0 3) "jg$")
+              (let loop ((i 3))
+                (cond ((>= i n) #f)
+                      ((char=? (string-ref str i) #\/)
+                       (cons (substring str 3 i) (substring str (+ i 1) n)))
+                      (else (loop (+ i 1)))))))))
 ;; A var root that is CODE rather than data. A procedure always is; a multimethod
 ;; and a reify are code too, but they are RECORDS, so `procedure?` misses them and
 ;; nothing recorded their name -- which is why a state image walked a multimethod's
@@ -2438,6 +2706,9 @@
 ;; (ns name ord) for stamps against FILE.
 (define jolt-def-ordinal-sink (make-parameter #f))
 (define (var-def-ordinal-stamp1! file ns name ord)
+  (var-def-ordinals-drain!)
+  (var-def-ordinal-stamp1-now! file ns name ord))
+(define (var-def-ordinal-stamp1-now! file ns name ord)
   (let ((k (var-def-ordinal-key file ns name))
         (sink (jolt-def-ordinal-sink)))
     (when (and sink (equal? file (vector-ref sink 0)))
@@ -2445,6 +2716,28 @@
     (jolt-with-mutex var-table-mu
       (unless (hashtable-contains? var-def-ordinals k)
         (hashtable-set! var-def-ordinals k ord)))))
+;; JOLT_LAZY_META=1: a cached artifact's replay (loader.ss
+;; aot-replay-def-ordinals*!) is kept as (file . groups) and stamped the first
+;; time the table is read or written, in arrival order, so first-writer-wins
+;; sees the order eager replay gave. A process that loads only from the cache
+;; and walks nothing never stamps them. GROUPS is (("ns" "name" ord ...) ...).
+(define var-def-ordinals-pending '())          ; newest first
+(define (var-def-ordinals-defer! file groups)
+  (jolt-with-mutex var-table-mu
+    (set! var-def-ordinals-pending (cons (cons file groups) var-def-ordinals-pending))))
+(define (var-def-ordinals-replay! file groups)
+  (for-each (lambda (g)
+              (let loop ((xs (cdr g)))
+                (unless (null? xs)
+                  (var-def-ordinal-stamp1-now! file (car g) (car xs) (cadr xs))
+                  (loop (cddr xs)))))
+            groups))
+(define (var-def-ordinals-drain!)
+  (when (pair? var-def-ordinals-pending)
+    (jolt-with-mutex var-table-mu
+      (let ((ps (reverse var-def-ordinals-pending)))
+        (set! var-def-ordinals-pending '())
+        (for-each (lambda (p) (var-def-ordinals-replay! (car p) (cdr p))) ps)))))
 ;; Stamp this def against every load frame it is visible from (jolt-load-frames
 ;; below): its own file at its own form, and — for a file pulled in by `load`
 ;; from INSIDE another file's form, the multi-file namespace shape
@@ -2485,6 +2778,7 @@
 ;; (defined in another file or outside any walked file — the host runtime
 ;; itself): visible from every form, as it would have been in-order.
 (define (var-def-ordinal ns name)
+  (var-def-ordinals-drain!)
   (jolt-with-mutex var-table-mu
     (or (hashtable-ref var-def-ordinals
          (var-def-ordinal-key (jolt-ordinal-source-file) ns name) #f)
@@ -2518,6 +2812,7 @@
 (define jolt-form-outer-frames (make-parameter '()))
 (define (var-def-visible-in-outer-frames? ns name)
   (let ((frames (jolt-form-outer-frames)))
+    (unless (null? frames) (var-def-ordinals-drain!))
     (or (null? frames)
         (jolt-with-mutex var-table-mu
           (let ((stamped? (lambda (file)
@@ -2658,6 +2953,30 @@
     (var-cell-meta-set! c m)
     (var-cell-dynamic?-set! c (var-meta-dynamic? m))
     c))
+;; The lazy twins of the two above (JOLT_LAZY_META): D is the quoted descriptor
+;; the emitter wrote for the def's metadata, stored as is and built on first read
+;; (var-cell-meta). The dynamic flag is read off the descriptor now, as the eager
+;; path reads it off the map.
+(define def-var-lazy-meta!
+  (case-lambda
+    ((ns name v d)
+     (let ((c (def-var! ns name v)))
+       (var-cell-meta-set! c d)
+       (var-cell-dynamic?-set! c (lazy-meta-dynamic? d))
+       c))
+    ;; JOLT_LAZY_META=1: and the fn def's source-registry row, kept pending
+    ;; (source-registry.ss srcreg-pend!) where the eager emit registered it
+    ;; right after the def
+    ((ns name v d src)
+     (let ((c (def-var-lazy-meta! ns name v d)))
+       (srcreg-pend! ns name src)
+       c))))
+(define (set-var-lazy-meta! ns name d)
+  (let ((c (jolt-var ns name)))
+    (var-cell-meta-set! c d)
+    (var-cell-dynamic?-set! c (lazy-meta-dynamic? d))))
+;; For the gates: is this var's metadata still an unread descriptor?
+(def-var! "jolt.host" "var-meta-lazy?" (lambda (v) (and (var-cell? v) (var-cell-meta-lazy? v))))
 ;; Does this DECLARED metadata map ask for a dynamic var? Only a def consults it
 ;; — see def-var! on why the flag is not read back out of the metadata later.
 (define (var-meta-dynamic? m)
@@ -2711,6 +3030,7 @@
                 (let ((c (make-var-cell ns name (make-jolt-var-unbound ns name) #t #f #f #f #f)))  ; declared => interned/resolvable
                   (hashtable-set! var-table k c)
                   (ns-cells-add! c)
+                  (when jolt-global-mode (var-global-link! c))
                   c)))))))
 
 ;; regex: defines regex-t + the re-* fns (def-var!'d into

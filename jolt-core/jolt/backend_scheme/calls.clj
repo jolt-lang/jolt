@@ -11,7 +11,7 @@
             [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
             [jolt.backend-scheme.session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
-                     clone-site? ctor-shapes fresh-label marker-safe-fqn?
+                     clone-site? ctor-shapes fresh-label keep-frames? marker-safe-fqn?
                      note-tail-call! target trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
              :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
@@ -365,6 +365,8 @@
 (defn site-restore
   ([call]
    (cond
+     ;; Keep-frames emits no restore: nothing writes the slot (session keep-frames).
+     (keep-frames?) call
      *site-call*
      (do (reset! *site-call* :site)
          (str "(let ((_sr$ " call ")) (set-virtual-register! 2 _sw$) _sr$)"))
@@ -378,9 +380,12 @@
             " (let ((" rv " " call ")) (set-virtual-register! 2 " sv ")"
             " (set-virtual-register! 12 " so ") " rv "))"))))
   ([call rd wr]
-   (if *site-call*
+   (cond
+     (keep-frames?) call
+     *site-call*
      (do (when-not (= :site @*site-call*) (reset! *site-call* :self))
          (str "(let ((_sr$ " call ")) (" wr " _sw$) _sr$)"))
+     :else
      (let [sv (fresh-label "_ss$") rv (fresh-label "_sr$")]
        (str "(let ((" sv " " rd ")) (let ((" rv " " call ")) (" wr " " sv ") " rv "))")))))
 ;; A lookup the back end open-codes (jolt-get, a keyword or a collection in call
@@ -401,6 +406,9 @@
    (let [self? (contains? *trace-self* callee)]
      (when-not (or self? (contains? no-jolt-call-procs callee)) (note-tail-call! tail?))
      (cond
+       ;; keep-frames: a tail call keeps its frame in emit (keep-frame), and
+       ;; nothing stores or restores a site
+       (keep-frames?) (plain-call callee operand-strs)
        (and (trace-frames?) tail? *trace-site* (not self?))
        (sited-tail-call *trace-site* line callee operand-strs inl-chain)
        (and (trace-frames?) (not tail?) self? *self-wrap*)

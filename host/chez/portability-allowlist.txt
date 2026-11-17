@@ -24,6 +24,7 @@ host/chez/scheme-adapter-runtime.ss foreign-procedure
 host/chez/scheme-adapter-runtime.ss foreign-ref
 host/chez/scheme-adapter-runtime.ss foreign-set!
 host/chez/scheme-adapter-runtime.ss foreign-sizeof
+host/chez/scheme-adapter-runtime.ss generate-return-point-source-information
 host/chez/scheme-adapter-runtime.ss inspect/object
 host/chez/scheme-adapter-runtime.ss load-shared-object
 host/chez/scheme-adapter-runtime.ss lock-object
@@ -33,6 +34,7 @@ host/chez/scheme-adapter-runtime.ss maximum-memory-bytes
 host/chez/scheme-adapter-runtime.ss open-process-ports
 host/chez/scheme-adapter-runtime.ss putenv
 host/chez/scheme-adapter-runtime.ss real-time
+host/chez/scheme-adapter-runtime.ss set-top-level-value!
 host/chez/scheme-adapter-runtime.ss statistics
 host/chez/scheme-adapter-runtime.ss string-copy!
 host/chez/scheme-adapter-runtime.ss top-level-bound?

@@ -36,19 +36,45 @@
 ;; cannot go 'ambiguous, because a fqn identifies exactly one var.
 (define source-registry-by-fqn (make-hashtable string-hash string=?))
 (define (srcreg-record-for-fqn fqn)
+  (srcreg-drain!)
   (and (string? fqn) (hashtable-ref source-registry-by-fqn fqn #f)))
+(define (srcreg-register-locked! procname ns nm file line)  ; holds source-registry-mu
+  (let ((rec (vector ns nm file line))
+        (existing (hashtable-ref source-registry procname #f)))
+    (hashtable-set! source-registry-by-fqn (string-append ns "/" nm) rec)
+    (cond
+      ((not existing) (hashtable-set! source-registry procname rec))
+      ((and (vector? existing)
+            (or (not (equal? (vector-ref existing 0) ns))
+                (not (equal? (vector-ref existing 1) nm))))
+       (hashtable-set! source-registry procname 'ambiguous)))))
 (define (jolt-register-source! procname ns nm file line)
   (jolt-with-mutex source-registry-mu
-    (let ((rec (vector ns nm file line))
-          (existing (hashtable-ref source-registry procname #f)))
-      (hashtable-set! source-registry-by-fqn (string-append ns "/" nm) rec)
-      (cond
-        ((not existing) (hashtable-set! source-registry procname rec))
-        ((and (vector? existing)
-              (or (not (equal? (vector-ref existing 0) ns))
-                  (not (equal? (vector-ref existing 1) nm))))
-         (hashtable-set! source-registry procname 'ambiguous)))))
+    (srcreg-drain-locked!)
+    (srcreg-register-locked! procname ns nm file line))
   jolt-nil)
+;; JOLT_LAZY_META=1: a fn def's row arrives with its def (rt.ss
+;; def-var-lazy-meta!) as #(procname-or-#t file-or-#f line), #t meaning
+;; "ns/name", and waits here until something reads the registry. Every read
+;; files the pending rows first, in arrival order and under the registry lock, so
+;; the tables answer exactly what eager registration would have left in them.
+(define srcreg-pending '())                    ; (ns nm . row), newest first
+(define (srcreg-pend! ns nm row)
+  (jolt-with-mutex source-registry-mu
+    (set! srcreg-pending (cons (cons ns (cons nm row)) srcreg-pending))))
+(define (srcreg-drain-locked!)
+  (unless (null? srcreg-pending)
+    (let ((ps (reverse srcreg-pending)))
+      (set! srcreg-pending '())
+      (for-each (lambda (p)
+                  (let ((ns (car p)) (nm (cadr p)) (row (cddr p)))
+                    (srcreg-register-locked!
+                      (let ((k (vector-ref row 0))) (if (eq? k #t) (string-append ns "/" nm) k))
+                      ns nm (or (vector-ref row 1) jolt-nil) (vector-ref row 2))))
+                ps))))
+(define (srcreg-drain!)
+  (when (pair? srcreg-pending)
+    (jolt-with-mutex source-registry-mu (srcreg-drain-locked!))))
 (def-var! "jolt.host" "register-source!" jolt-register-source!)
 
 ;; The continuation to walk for an uncaught value: the one jolt-throw captured for
@@ -208,6 +234,7 @@
 ;; (source-name . offset); only a mapped frame reads it, since only a mapped
 ;; frame prints a line. Error traces and the sampler both resolve through this.
 (define (srcreg-logical-frames nm source-pair)
+  (srcreg-drain!)
   (let ((src (and nm (hashtable-ref source-registry nm #f))))
     (if (not (and nm (or src (not (srcreg-plumbing-name? nm)))))
         '()
@@ -1081,6 +1108,7 @@
   (let ((want (make-hashtable string-hash string=?)))
     (for-each (lambda (f) (when (string? f) (hashtable-set! want f #t))) (seq->list files))
     (let-values (((ks vs) (jolt-with-mutex source-registry-mu
+                            (srcreg-drain-locked!)
                             (hashtable-entries source-registry-by-fqn))))
       (let loop ((i 0) (acc '()))
         (if (fx=? i (vector-length ks))
@@ -1249,6 +1277,7 @@
 ;; it, then this fn at the call. Deepest first, matching the order the callers
 ;; splice these in.
 (define (jolt-site-frame* site)
+  (srcreg-drain!)
   (srcreg-entry-frames (car site)
                        (hashtable-ref source-registry (car site) #f)
                        (cdr site)))
@@ -1410,7 +1439,13 @@
 ;; live frame its tail call went to, and is dropped when no live frame confirms
 ;; it -- a pair a callback left in the slot when it returned to untraced code
 ;; has none.
+;; Under keep-frames (rt.ss jolt-keep-frames-on?) traced code erases no frame
+;; and records no site, so the continuation alone is the trace.
 (define (jolt-continuation-recs/site k live? site0)
+  (if jolt-keep-frames-on?
+      (jolt-frame-records k)
+      (jolt-continuation-recs/site* k live? site0)))
+(define (jolt-continuation-recs/site* k live? site0)
   (let* ((outer? (outer-site? site0))
          (site0 (if outer? (outer-site-pair site0) site0))
          (cont (jolt-frame-records k))
@@ -1719,9 +1754,20 @@
 ;; of going through the uncaught reporter. Returns the "  trace:\n<frames>" block
 ;; from the tail-frame HISTORY only — the live continuation in a REPL is just the
 ;; REPL's own machinery — or nil when tracing is off (so a caller can when-let).
+;; Under keep-frames there is no history: the frames are on the continuation the
+;; throw being handled parked (jolt-throw-cont, set by jolt-throw and by a host
+;; fault's conversion), and these callers run inside that throw's handler. The
+;; REPL's own entry frame is dropped, as the CLI's are (srcreg-plumbing-names).
+(define (jolt-handled-throw-backtrace)
+  (let ((tc (jolt-throw-cont)))
+    (and (pair? tc)
+         (let ((recs (filter (lambda (f) (not (equal? (srcreg-frame-nm f) "repl-session")))
+                             (or (guard (e (#t #f)) (jolt-continuation-recs/site (cdr tc) #f #f))
+                                 '()))))
+           (and (pair? recs) (jolt-render-recs recs))))))
 (def-var! "jolt.host" "backtrace-string"
   (lambda ()
-    (let ((bt (jolt-history-backtrace)))
+    (let ((bt (if jolt-keep-frames-on? (jolt-handled-throw-backtrace) (jolt-history-backtrace))))
       (if bt (string-append "  trace:\n" bt) jolt-nil))))
 
 ;; A diagnostic's own keys all live in the "jolt.error" namespace — and, since

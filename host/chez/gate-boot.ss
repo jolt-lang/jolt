@@ -8,7 +8,7 @@
 ;; pass gate's ~1.5s runtime, paid two dozen times over in `make ci` and on every
 ;; single-gate run while iterating. `make gateboot` precompiles exactly this
 ;; preamble to target/dev/gate.so, which loads in ~0.2s; when that image is
-;; present and newer than every file that went into it, load it instead.
+;; present, matches this Chez, and has unchanged source inputs, load it instead.
 ;;
 ;; Purely an optimization. With no image, or a stale one, the literal loads below
 ;; run and the gate behaves identically — verified byte-identical output across
@@ -28,8 +28,8 @@
 
 (load "host/chez/gate-boot-fresh.ss")
 
-;; The image's freshness is decided by the CONTENT of the files that went into
-;; it, which cannot see JOLT_NARROW_HASH: that knob is read at EXPAND time by
+;; The image's freshness checks its compiler capabilities and source CONTENT,
+;; which cannot see JOLT_NARROW_HASH: that knob is read at EXPAND time by
 ;; hasheq.ss's define-width-op, so an image compiled without it holds the wide
 ;; arms no matter how current its inputs are. Loading it under the narrow gate
 ;; would silently test the wide path — the one thing that gate exists to catch.

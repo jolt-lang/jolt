@@ -13,6 +13,12 @@
 (import (chezscheme))
 
 (load "host/chez/run-gate-harness.ss")
+
+;; JOLT_GATE_TRACE=1 compiles every case traced, the way `jolt run` compiles
+;; user code (jolt-enable-trace!, which also honours JOLT_KEEP_FRAMES). Unset,
+;; the gate runs untraced as it always has.
+(when (let ((v (getenv "JOLT_GATE_TRACE"))) (and v (not (string=? v "")) (not (string=? v "0"))))
+  (jolt-enable-trace!))
 ;; The loader + install source roots, so a row's (require 'stdlib.ns) resolves the
 ;; .clj overlay from source exactly like jolt — without this, a require of a ns
 ;; whose NATIVE vars exist (e.g. clojure.core.async) silently no-ops via the

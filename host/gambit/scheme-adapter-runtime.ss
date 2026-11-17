@@ -510,6 +510,11 @@
 (define (sa-profile-instrument! on?) (not on?))
 (define (sa-profile-instrumenting?) #f)
 (define (sa-profile-compile thunk) (thunk))
+(define (sa-source-info-compile thunk names?) (thunk))
+(define (sa-source-info-cache-tag) "")
+(define (sa-source-info-mode) #f)
+;; no expander/backend hook to time: JOLT_PHASE_TIMES keeps expand and run in compile
+(define (sa-time-compile-parts! expand-wrap run-wrap) #f)
 (define (sa-profile-counts) '())
 (define (sa-profile-release!) '())
 ;; no block counters, so no build here can be profile-guided
@@ -756,3 +761,16 @@
 (define (sa-vector-copy v) (subvector v 0 (vector-length v)))
 (define (sa-subvector v start end) (subvector v start end))
 (define sa-vector-append vector-append)
+
+;; Chez-only top-level symbol slots (chez rt.ss "global vars"): the mode is
+;; never on here, so nothing calls these.
+(define (sa-top-level-assign! sym v) #f)
+(define (sa-symbol-slot s) #f)
+(define (sa-symbol-slot-set! s v) #f)
+;; Chez-only call-error hook: this backend keeps jolt-invoke calls.
+(define-syntax sa-call-error-supported?
+  (syntax-rules () ((_) #f)))
+(define (sa-call-error-handler-set! p) #f)
+;; Chez-only frame-keeping call (patch 0012): this backend keeps its tail calls.
+(define-syntax sa-keep-frame-supported?
+  (syntax-rules () ((_) #f)))

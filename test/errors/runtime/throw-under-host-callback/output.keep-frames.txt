@@ -1,0 +1,7 @@
+Unhandled exception: from boom
+  ex-data: {}
+  at ./test/errors/runtime/throw-under-host-callback/input.clj:16:1
+  trace:
+    input/boom (./test/errors/runtime/throw-under-host-callback/input.clj:8)
+    input/via-host (./test/errors/runtime/throw-under-host-callback/input.clj:11)
+exit: 1

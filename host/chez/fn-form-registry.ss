@@ -22,6 +22,19 @@
        (with-syntax ((bv (datum->syntax #'k (string->utf8 (syntax->datum #'s)))))
          #''bv)))))
 
+;; JOLT_LAZY_META=1's table of a form's rows, #("name" "text" #("free" ...) ...)
+;; (backend fnsrc.clj fnsrc-tables): each text becomes its bytevector the same
+;; way, when the table is expanded, and the table is quoted.
+(define-syntax image-fn-form-rows
+  (lambda (x)
+    (syntax-case x ()
+      ((k v) (vector? (syntax->datum #'v))
+       (let* ((d (syntax->datum #'v)) (out (vector-copy d)) (n (vector-length d)))
+         (do ((i 1 (fx+ i 3))) ((fx>= i n))
+           (vector-set! out i (string->utf8 (vector-ref d i))))
+         (with-syntax ((t (datum->syntax #'k out)))
+           #''t))))))
+
 ;; Source text -> the form, read as the compile path reads a file, minus
 ;; positions: the text is not that file, and the constructed form it stands in
 ;; for carried none. The back end checks every rendering against this same
@@ -72,6 +85,7 @@
   (let* ((lv (if (null? rest) #f (car rest)))
          (mk (if (or (null? rest) (null? (cdr rest))) #f (cadr rest))))
     (jolt-with-mutex fn-form-tbl-mu
+      (fn-form-drain!)
       (hashtable-set! fn-form-tbl name
                       (vector form ns free-names
                               (if (or (not lv) (jolt-nil? lv)) free-names lv)
@@ -83,12 +97,45 @@
 ;; cache-cell scope, after image-register-fn-form! has created the entry at the
 ;; top of the form — the maker closes over that scope's cells, so it cannot be
 ;; built where the registration is.
+;; A row still in a pending table (below) has no entry yet: its maker waits in
+;; fn-form-makers until the table is filed.
 (define (image-fn-form-maker! name mk)
   (jolt-with-mutex fn-form-tbl-mu
     (let ((reg (hashtable-ref fn-form-tbl name #f)))
-      (when (and reg (fx>? (vector-length reg) 4))
-        (vector-set! reg 4 mk))))
+      ;; Both, when tables are pending: a name registered before and now
+      ;; pending again (a def evaluated twice) has an entry the next filing
+      ;; replaces, and the replacement must get this maker, not none.
+      (when (and reg (fx>? (vector-length reg) 4)) (vector-set! reg 4 mk))
+      (when (pair? fn-form-pending) (hashtable-set! fn-form-makers name mk))))
   jolt-nil)
+
+;; --- JOLT_LAZY_META=1: rows as quoted tables, filed on first lookup ----------
+;; (image-register-fn-forms! ns table) keeps a form's table as it is; the rows go
+;; into fn-form-tbl, in registration order, the first time anything needs them:
+;; a lookup, or an eager registration, which files the pending ones first so a
+;; later registration of a name still replaces an earlier one. Only the image
+;; writer looks, so a process that writes no image never files a row.
+(define fn-form-pending '())                       ; (ns . table), newest first
+(define fn-form-makers (make-hashtable string-hash string=?))
+(define (image-register-fn-forms! ns table)
+  (jolt-with-mutex fn-form-tbl-mu
+    (set! fn-form-pending (cons (cons ns table) fn-form-pending)))
+  jolt-nil)
+(define (fn-form-drain!)                           ; caller holds fn-form-tbl-mu
+  (unless (null? fn-form-pending)
+    (let ((ps (reverse fn-form-pending)))
+      (set! fn-form-pending '())
+      (for-each
+        (lambda (p)
+          (let ((ns (car p)) (t (cdr p)))
+            (do ((i 0 (fx+ i 3))) ((fx>= i (vector-length t)))
+              (let* ((name (vector-ref t i))
+                     (frees (apply jolt-vector (vector->list (vector-ref t (fx+ i 2)))))
+                     (mk (hashtable-ref fn-form-makers name #f)))
+                (when mk (hashtable-delete! fn-form-makers name))
+                (hashtable-set! fn-form-tbl name
+                                (vector (vector-ref t (fx+ i 1)) ns frees frees mk #f))))))
+        ps))))
 
 (define (image-fn-form-maker reg) (and (fx>? (vector-length reg) 4) (vector-ref reg 4)))
 (define (image-fn-form-layout reg) (and (fx>? (vector-length reg) 5) (vector-ref reg 5)))
@@ -100,6 +147,8 @@
 ;; the parse replaces the bytes; under the write mutex, so two dumps racing on
 ;; one site parse it once and see one object.
 (define (image-fn-form-lookup name)
+  (when (pair? fn-form-pending)
+    (jolt-with-mutex fn-form-tbl-mu (fn-form-drain!)))
   (let ((reg (hashtable-ref fn-form-tbl name #f)))
     (when (and reg (bytevector? (vector-ref reg 0)))
       (jolt-with-mutex fn-form-tbl-mu

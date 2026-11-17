@@ -8,8 +8,8 @@
             [jolt.host
              :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value?]]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-chars munge-name]]
-            [jolt.backend-scheme.session :refer [fresh-label]]
-            [jolt.backend-scheme.hoist :refer [*cache-cells*]]
+            [jolt.backend-scheme.session :refer [fresh-label lazy-rows?]]
+            [jolt.backend-scheme.hoist :refer [*cache-cells* without-kdata]]
             [jolt.backend-scheme.literals
              :refer [*quote-pool* *quote-shared* emit-quoted]]))
 
@@ -190,17 +190,52 @@
 ;; the form has no rendering that reads back to the same construction -- checked
 ;; here against the very parse the registry runs, so a mismatch falls back to
 ;; the construction instead of registering a different form.
-(defn- fnsrc-row-src [form]
+(defn- fnsrc-row-text [form]
   (try
     (let [s (fnsrc-src form)
           same? (binding [*quote-pool* nil *quote-shared* nil]
-                  (= (emit-quoted (jolt.host/fn-form-parse s)) (emit-quoted form)))]
-      (when same? (str "(image-fn-form-src " (chez-str-lit s) ")")))
+                  (without-kdata
+                   #(= (emit-quoted (jolt.host/fn-form-parse s)) (emit-quoted form))))]
+      (when same? s))
     (catch Exception _ nil)))
+(defn- fnsrc-row-src [form]
+  (when-let [s (fnsrc-row-text form)] (str "(image-fn-form-src " (chez-str-lit s) ")")))
 
+;; JOLT_LAZY_META=1 (session.clj lazy-rows?): the rows that register source
+;; text and their own free names -- nearly all of them -- go out as ONE quoted
+;; table per namespace in the form, (image-register-fn-forms! "ns"
+;; (image-fn-form-rows #("name" "text" #("free" ...) ...))), which the registry
+;; keeps as is until an image first looks a name up (fn-form-registry.ss). The
+;; free names are Scheme strings in a Scheme vector; the registry makes the jolt
+;; vector when it files the row. Any other row keeps its call.
+(defn- fnsrc-table-row [row]
+  (let [nm (nth row 0) frees (nth row 3) lives (nth row 4)]
+    (when (and (or (nil? lives) (= lives frees)) (every? string? frees))
+      (when-let [s (fnsrc-row-text (nth row 1))]
+        (str (chez-str-lit nm) " " (chez-str-lit s) " #("
+             (str/join " " (map chez-str-lit frees)) ")")))))
+(defn- fnsrc-tables [rows]
+  (loop [rows rows order [] by-ns {} rest-rows []]
+    (if (empty? rows)
+      [(apply str (map (fn [ns] (str " (image-register-fn-forms! " (chez-str-lit ns)
+                                     " (image-fn-form-rows #(" (str/join " " (get by-ns ns)) ")))"))
+                       order))
+       rest-rows]
+      (let [row (first rows) ns (nth row 2)]
+        (if-let [t (fnsrc-table-row row)]
+          (recur (rest rows) (if (contains? by-ns ns) order (conj order ns))
+                 (update by-ns ns (fnil conj []) t) rest-rows)
+          (recur (rest rows) order by-ns (conj rest-rows row)))))))
+
+(declare fnsrc-flush-rows)
 (defn fnsrc-flush []
-  (if (or (fnsrc-system-ns? *fnsrc-ns*) (empty? @*fnsrc-regs*))
-    ""
+  (cond
+    (or (fnsrc-system-ns? *fnsrc-ns*) (empty? @*fnsrc-regs*)) ""
+    (lazy-rows?) (let [[tables rest-rows] (fnsrc-tables @*fnsrc-regs*)]
+                   (str tables (if (empty? rest-rows) "" (fnsrc-flush-rows rest-rows))))
+    :else (fnsrc-flush-rows @*fnsrc-regs*)))
+(defn- fnsrc-flush-rows [regs]
+  (do
     ;; best-effort: a macro can splice a LIVE value (a namespace, a var's
     ;; value) into a fn body, and emit-quoted has no rendering for those.
     ;; Such a literal just goes unregistered -- its closure refuses at dump
@@ -240,7 +275,7 @@
                                  (update :calls conj (nth q 1))
                                  (update :shared conj [form (nth q 0)])))))
                  {:calls [] :shared []}
-                 @*fnsrc-regs*))
+                 regs))
           calls (:calls out)
           binds (:order @pool)]
       (cond

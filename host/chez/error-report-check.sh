@@ -158,6 +158,21 @@ fi
 count=0
 fail=0
 
+# Keep-frames (JOLT_KEEP_FRAMES=1 on a Chez with patch 0012, session.clj
+# keep-frames) erases no frame, so a report that the default emission cuts short
+# where a tail call erased its caller names that caller. Such a case keeps a
+# second golden file, output.keep-frames.txt, read only in that mode; every other
+# case reads output.txt in both. `generate` in that mode writes the second file
+# only where the report differs.
+keep_frames="$("$jolt_bin" -e '(print (jolt.host/keep-frames?))' 2>/dev/null)"
+golden() {   # golden <case-dir>
+  if [ "$keep_frames" = true ] && [ -f "$1/output.keep-frames.txt" ]; then
+    echo "$1/output.keep-frames.txt"
+  else
+    echo "$1/output.txt"
+  fi
+}
+
 # Cases live at exactly test/errors/<group>/<case>. A case file one level too
 # high is invisible to the discovery glob, and an invisible case is a case that
 # passes without ever running — the exact failure this suite exists to prevent,
@@ -188,6 +203,15 @@ for dir in $(list_cases); do
   count=$((count + 1))
   run_case "$dir" > "$tmp/actual"
 
+  if [ "$mode" = "generate" ] && [ "$keep_frames" = true ]; then
+    if [ -f "$dir/output.txt" ] && cmp -s "$tmp/actual" "$dir/output.txt"; then
+      rm -f "$dir/output.keep-frames.txt"
+    else
+      cp "$tmp/actual" "$dir/output.keep-frames.txt"
+      echo "  wrote $name/output.keep-frames.txt"
+    fi
+    continue
+  fi
   if [ "$mode" = "generate" ]; then
     cp "$tmp/actual" "$dir/output.txt"
     echo "  wrote $name/output.txt"
@@ -200,7 +224,7 @@ for dir in $(list_cases); do
     continue
   fi
 
-  if ! diff -u "$dir/output.txt" "$tmp/actual" > "$tmp/diff"; then
+  if ! diff -u "$(golden "$dir")" "$tmp/actual" > "$tmp/diff"; then
     echo "  FAIL: $name report changed (< expected, > actual)"
     # The diff's own header names the scratch file; rewrite it so the failure
     # reads the same on every machine and in every CI log.

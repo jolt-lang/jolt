@@ -19,6 +19,12 @@
 (load "host/chez/run-gate-harness.ss")
 (load "host/chez/gate-private-tmpdir.ss")
 
+;; JOLT_GATE_TRACE=1 compiles every case traced, the way `jolt run` compiles
+;; user code (jolt-enable-trace!, which also honours JOLT_KEEP_FRAMES). Unset,
+;; the gate runs untraced as it always has.
+(when (let ((v (getenv "JOLT_GATE_TRACE"))) (and v (not (string=? v "")) (not (string=? v "0"))))
+  (jolt-enable-trace!))
+
 (define (slurp path)
   (call-with-input-file path
     (lambda (p)

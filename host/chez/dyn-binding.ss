@@ -44,7 +44,12 @@
 (define (dyn-push-frame! pairs)
   (let loop ((p pairs))
     (when (pair? p)
-      (var-cell-dyn-bound?-set! (caar p) #t)
+      (let ((c (caar p)))
+        (unless (var-cell-dyn-bound? c)
+          (var-cell-dyn-bound?-set! c #t)
+          ;; rt.ss var-first-bind-hook: global vars move compiled call sites
+          ;; onto the binding-aware path before this frame is published
+          (when var-first-bind-hook (var-first-bind-hook c))))
       (loop (cdr p))))
   (dyn-binding-stack (cons (cons (dyn-owner) pairs) (dyn-binding-stack))))
 

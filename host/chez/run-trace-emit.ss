@@ -381,4 +381,55 @@
 (gate-check "(15) 0 snapshots as no site" (jolt-site-snapshot) #f)
 (jolt-site-reset!)
 
+;; --- (15) keep-frames: traced code that erases no frame ----------------------
+;; JOLT_KEEP_FRAMES=1 on a Chez with patch 0012's $call-keeping-frame
+;; (session.clj keep-frames). Every tail node that can call runs inside the
+;; marker, which Chez compiles as an ordinary call and return, so the trace is
+;; the continuation itself: nothing stores, reads or restores the site slot,
+;; nothing registers callsites, and a catch snapshots nothing. recur stays a
+;; jump. On a Chez without the primitive the knob is ignored, and so is this.
+(define set-keep-frames! (var-deref "jolt.backend-scheme.session" "set-keep-frames!"))
+(define kf-head "(#2%$call-keeping-frame (lambda () ")
+(if (sa-keep-frame-supported?)
+    (begin
+      (set-keep-frames! #t)
+      (let ((e (emit-num "(def _ (fn kf15a [g x] (if (pos? x) (g x) (kf15a g (dec x)))))")))
+        (gate-check "(15) both tail calls keep their frame" (count-sub e kf-head) 2)
+        (gate-check "(15) no site pair is stored" (gate-sub? e "jolt-site!") #f)
+        (gate-check "(15) no slot is read or restored" (gate-sub? e "virtual-register") #f)
+        (gate-check "(15) no callsite is registered" (gate-sub? e "jolt-register-callsite!") #f))
+      (let ((e (emit-num "(def _ (fn kf15b [g m] (+ 1 (g m) (g (g m)))))")))
+        (gate-check "(15) a non-tail call takes no restore" (gate-sub? e "virtual-register") #f)
+        (gate-check "(15) ...and no helper" (gate-sub? e "jolt-site-call") #f)
+        ;; the tail (+ ...) is a call of its own: it can raise on a non-number
+        (gate-check "(15) ...only the tail call is wrapped" (count-sub e kf-head) 1))
+      (let ((e (emit-num "(def _ (fn kf15c [n acc] (if (zero? n) acc (recur (dec n) (+ acc n)))))")))
+        (gate-check "(15) recur and a returned local are not wrapped" (count-sub e kf-head) 0))
+      (let ((e (emit-num "(def _ (fn kf15d [x] (if x [x 1] {:a x})))")))
+        (gate-check "(15) a collection literal is not wrapped" (count-sub e kf-head) 0))
+      ;; a host call writes no #|L|# of its own; a kept one needs it to be located
+      (let ((e (emit-num "(def _ (fn kf15e [s]\n  (.concat s nil)))")))
+        (gate-check "(15) a tail host call keeps its frame" (gate-sub? e kf-head) #t)
+        (gate-check "(15) ...and carries its line" (gate-sub? e (string-append kf-head "#|L2|#")) #t))
+      (let ((e (emit-num "(def _ (fn kf15f [x] (throw (ex-info \"t\" {:x x}))))")))
+        (gate-check "(15) a tail throw keeps its frame" (gate-sub? e kf-head) #t)
+        (gate-check "(15) ...storing no site" (gate-sub? e "virtual-register") #f))
+      (let ((e (emit-num "(def _ (fn kf15g [g] (try (g 1) (catch Exception e (g 2)))))")))
+        (gate-check "(15) a catch takes no slot snapshot" (gate-sub? e "virtual-register") #f)
+        (gate-check "(15) ...and no catch-line enter" (gate-sub? e "jolt-catch-enter!") #f))
+      ;; and it runs: a 100k-deep mutual tail recursion returns, keeping one frame
+      ;; per hop, which a stack read from the bottom sees
+      (ev "(declare kf15od)")
+      (ev "(defn kf15ev [n] (if (zero? n) (count (.getStackTrace (Thread/currentThread))) (kf15od (dec n))))")
+      (ev "(defn kf15od [n] (if (zero? n) (count (.getStackTrace (Thread/currentThread))) (kf15ev (dec n))))")
+      (gate-check "(15) a deep mutual tail recursion returns" (fixnum? (ev "(kf15ev 100000)")) #t)
+      (gate-check "(15) ...with a frame per hop" (>= (ev "(kf15ev 40)") 40) #t)
+      (ev "(defn kf15loop [n acc] (if (zero? n) acc (recur (dec n) (inc acc))))")
+      (gate-check "(15) a recur loop still runs in constant space" (ev "(kf15loop 3000000 0)") 3000000)
+      (set-keep-frames! #f)
+      (let ((e (emit-num "(def _ (fn kf15h [g x] (g x)))")))
+        (gate-check "(15) off again: the default tail store" (gate-sub? e "jolt-site!") #t)
+        (gate-check "(15) ...and no marker" (gate-sub? e "call-keeping-frame") #f)))
+    (printf "  (15) keep-frames: skipped, this Chez has no $call-keeping-frame\n"))
+
 (gate-summary "trace-emit")

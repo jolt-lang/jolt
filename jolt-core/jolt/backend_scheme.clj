@@ -13,27 +13,28 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [seed-callable? form-char? form-literal?]]
+            [jolt.host :refer [seed-callable? var-dynamic? form-char? form-literal?]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
             [jolt.ir :as ir]
-            [jolt.backend-scheme.names :as names :refer [chez-str-lit dl-fqn dl-name]]
+            [jolt.backend-scheme.names :as names :refer [chez-str-lit dl-fqn dl-name gv-sym]]
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
                      *letrec-binders* *qualifying-ns* *recur-target* *site-call* *tail?*
                      *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
                      ctor-shapes cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
-                     direct-link? direct-linkable? fresh-label marker-safe-fqn?
-                     node-line note-tail-call! prelude-mode? record-shape-for-class
+                     direct-link? direct-linkable? fresh-label global-var-ref? keep-frame keep-frames?
+                     marker-safe-fqn? node-line note-tail-call! prelude-mode? record-shape-for-class
                      register-callsite! seed-mint? source-reg? static-callee
                      target trace-callsite-reg unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
                      hoist-const-per-site hoist-load-time hoist-seed-root hoist-var-cell
-                     site-const unique-keyword-key-literal? with-load-time-scope]]
+                     hoist-var-call-root site-const unique-keyword-key-literal?
+                     with-const-data with-load-time-scope kdata-coll kdata-coll?]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
@@ -98,6 +99,13 @@
 (defn set-trace-frames! [on] (reset! (:trace-frames? (cur)) (boolean on)))
 (defn set-source-reg! [on] (reset! (:source-reg? (cur)) (boolean on)))
 (defn set-debug-locals! [on] (reset! (:debug-locals? (cur)) (boolean on)))
+;; JOLT_CONST_DATA (experiment): a process-wide switch, not a unit flag, set from
+;; the runtime entrypoint (compile-eval.ss); see hoist.clj with-const-data.
+;; "bind" binds each slot read once per def (the sites read that variable); any
+;; other true value reads the slot at every site.
+(defn set-const-data! [on]
+  (reset! jolt.backend-scheme.hoist/const-data-flag
+          (cond (= on "bind") :bind on :use :else false)))
 
 ;; Fully-qualified app var names ("ns/name") already emitted with a direct-link
 ;; binding in the current unit; and, of those, the ones whose init is a fn literal
@@ -210,7 +218,28 @@
       (str "(let ((" r " " (binding [*tail?* false] (emit-plain node)) ")) (keep-live "
            *dbg-scope* ") " r ")"))
     (emit-plain node)))
+;; Keep-frames (session keep-frames?): the ops that make no call of their own in
+;; tail position -- values, a fn literal's allocation, a collection literal's
+;; construction -- and the tail-transparent structure (if/do/let/loop), whose
+;; tail children are wrapped one by one. Every other node in tail position runs
+;; inside keep-frame, which Chez compiles as an ordinary call and return, so the
+;; fn it sits in keeps its frame however the node leaves it: a call to a jolt fn,
+;; a runtime helper (a tail (mod a b) faults with the caller still on the stack),
+;; a protocol dispatch, a host method, a throw, a try. recur is a jump.
+;; The kept frame is located by the #|L|# marker before the call it is waiting
+;; on (with-site). A call and a throw write their own; every other kept node --
+;; a host method, a cast, a constructor, a try -- gets one here, or a fault
+;; inside it resolves to whatever marker precedes it, often none.
+(def ^:private kf-bare-ops
+  #{:const :local :var :the-var :quote :regex :inst :uuid :bigdec :the-ns :defmacro
+    :fn :vector :map :set :if :do :let :loop :recur :def})
+(declare emit-plain*)
 (defn- emit-plain [node]
+  (if (and *tail?* (keep-frames?) (not (contains? kf-bare-ops (:op node))))
+    (let [s (emit-plain* node)]
+      (keep-frame (if (contains? #{:invoke :throw} (:op node)) s (with-site node s))))
+    (emit-plain* node)))
+(defn- emit-plain* [node]
   (let [s (if (and *tail?* (not (tail-transparent? node)))
             (binding [*tail?* false] (emit* node))
             (emit* node))
@@ -278,6 +307,13 @@
 
 ;; A def's :meta is a jolt map value. Non-empty? (a plain def carries {}).
 (defn- jmeta-nonempty? [m] (and (map? m) (pos? (count m))))
+
+;; JOLT_LAZY_META (session.clj lazy-meta?): the def's metadata as one quoted
+;; descriptor (literals.clj node-desc / form-desc), or nil when it holds anything
+;; the descriptor cannot say -- the def then keeps def-var-with-meta!.
+(defn- lazy-meta-desc [node]
+  (when (session/lazy-meta?)
+    (literals/meta-desc (:ns node) (:meta-expr node) (:meta node))))
 
 ;; The meta argument to def-var-with-meta!. When the analyzer attached a
 ;; :meta-expr (metadata with values to evaluate, e.g. ^{:a some-fn}), emit it as a
@@ -486,14 +522,52 @@
 ;; whose tail site would otherwise outlive it. A tail call must stay one,
 ;; and a traced non-tail call restores the slot itself (site-restore), so
 ;; both take jolt-invoke-tN, which does not.
-(defn- emit-jolt-invoke [c]
+;;
+;; A patched Chez owns procedure checks and argument-count checks. Keep the
+;; application itself at the call site so its source annotation survives AOT.
+;; #2%$app becomes a checked ordinary call in cp0 even under optimize-level 3;
+;; a plain level-3 application omits the procedure check and can fault on a map.
+(defn- emit-jolt-invoke* [c]
   (let [args (:args c)
+        fnode (:fnode c)
+        native? (and @session/native-var-call? (= :var (:op fnode))
+                     (not (var-dynamic? nil (:ns fnode) (:name fnode))))
+        ;; A direct-linked value already has its own mutable binding. Keep it
+        ;; as the target even when its invocation needs the native IFn hook.
+        target (if (and native? (var-cache?) *const-pool*
+                        (not (direct-linkable? (:ns fnode) (:name fnode))))
+                 (hoist-var-call-root (:ns fnode) (:name fnode))
+                 (emit fnode))
+        t? (or (:tail? c) (trace-frames?))
         callee (if (<= (count args) 4)
-                 (str (if (or (:tail? c) (trace-frames?)) "jolt-invoke-t" "jolt-invoke")
-                      (count args))
+                 (str (if t? "jolt-invoke-t" "jolt-invoke") (count args))
                  "jolt-invoke")]
-    (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons (emit (:fnode c)) args)
-                  (fn [operands] (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))
+    (ordered-call (cons fnode (:arg-nodes c)) (cons target args)
+      (fn [operands]
+        (if native?
+          (let [call (emit-call (:tail? c) "#2%$app" operands (:tl c) (:ich c))]
+            (if t? call (str "(jolt-site-kept " call ")")))
+          (emit-call (:tail? c) callee operands (:tl c) (:ich c)))))))
+;; Global var calls (session global-var-ref?): the call is a plain Chez
+;; application of the var's jg$ symbol, which the runtime keeps holding a
+;; procedure -- the root, or a trampoline that dispatches any other IFn, an
+;; unbound var or a thread binding (rt.ss "global vars") -- so nothing at the site
+;; derefs, tests or dispatches. Chez reads the symbol when it makes the call,
+;; after the operands, so only the operands are ordered among themselves; an
+;; operand that redefines or rebinds the called var itself is the one case that
+;; now sees the new value where Clojure calls the old one.
+(defn- emit-global-invoke [c]
+  (let [fnode (:fnode c)
+        head (gv-sym (:ns fnode) (:name fnode))
+        t? (or (:tail? c) (trace-frames?))]
+    (ordered-call (:arg-nodes c) (:args c)
+      (fn [operands]
+        (let [call (emit-call (:tail? c) head operands (:tl c) (:ich c))]
+          (if t? call (str "(jolt-site-kept " call ")")))))))
+(defn- emit-jolt-invoke [c]
+  (if (and (= :var (:op (:fnode c))) (global-var-ref? (:ns (:fnode c)) (:name (:fnode c))))
+    (emit-global-invoke c)
+    (emit-jolt-invoke* c)))
 
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
@@ -975,11 +1049,11 @@
 ;; runs (lambda.clj site-entry), so the handler stores that, or 0 outside any fn,
 ;; with nothing read when the try begins; Gambit saves and restores both slots.
 (defn- emit-try [node]
-  (let [chez-slot (when (and (:catch-sym node) (trace-frames?) (= :chez (target)))
+  (let [chez-slot (when (and (:catch-sym node) (trace-frames?) (not (keep-frames?)) (= :chez (target)))
                     (if *site-call*
                       (do (reset! *site-call* :site) "_sw$")
                       "0"))
-        ts (when (and (:catch-sym node) (trace-frames?) (not chez-slot)) (fresh-label "_ts$"))
+        ts (when (and (:catch-sym node) (trace-frames?) (not (keep-frames?)) (not chez-slot)) (fresh-label "_ts$"))
         to (when ts (fresh-label "_to$"))
         core (if-let [cs (:catch-sym node)]
                (let [raw (munge-name (:catch-raw-sym node))
@@ -990,7 +1064,7 @@
                      ;; catch cannot leave its throw's line behind for an outer
                      ;; handler that runs later. Only under tracing — with it off
                      ;; there are no line stores to snapshot.
-                     cl (when (trace-frames?) (fresh-label "_cl$"))
+                     cl (when (and (trace-frames?) (not (keep-frames?))) (fresh-label "_cl$"))
                      body (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
                                (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
                                (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
@@ -1008,7 +1082,7 @@
                                "))) "
                                (emit-try-body node) ")")]
                  (if ts
-                   (str "(let ((" ts " (virtual-register 2)) (" to " (virtual-register 12))) " body ")")
+                   (str "(let ((" ts " " "(virtual-register 2)" ") (" to " (virtual-register 12))) " body ")")
                    body))
                (emit-try-body node))]
     (if-let [fin (:finally node)]
@@ -1074,18 +1148,26 @@
 ;; the fn's own name). Returns "" when off / not a positioned fn def, so the seed
 ;; mint's output stays byte-identical. Direct-link builds already register via
 ;; emit-def-cached; this covers the open-world eval path.
-(defn- trace-source-reg [node]
+(defn- trace-source-parts [node]
   (let [init (:init node) pos (:pos node)]
-    (if (and (or (trace-frames?) (source-reg?)) (= :fn (:op init)) (:name init) pos)
-      (let [nm (munge-name (:name init))
-            key (if *qualifying-ns*
-                  (str (munge-name *qualifying-ns*) "/" nm)
-                  nm)]
-        (str " (jolt-register-source! " (chez-str-lit key) " "
-             (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-             (if (:file pos) (chez-str-lit (:file pos)) "jolt-nil") " "
-             (or (:line pos) 0) ")"))
-      "")))
+    (when (and (or (trace-frames?) (source-reg?)) (= :fn (:op init)) (:name init) pos)
+      (let [nm (munge-name (:name init))]
+        [(if *qualifying-ns* (str (munge-name *qualifying-ns*) "/" nm) nm)
+         (:file pos) (or (:line pos) 0)]))))
+(defn- trace-source-reg [node]
+  (if-let [[key file line] (trace-source-parts node)]
+    (str " (jolt-register-source! " (chez-str-lit key) " "
+         (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+         (if file (chez-str-lit file) "jolt-nil") " "
+         line ")")
+    ""))
+;; JOLT_LAZY_META=1: the same row as the lazy def's last argument (rt.ss
+;; def-var-lazy-meta!), #(procname-or-#t file-or-#f line), #t when the
+;; procname is "ns/name".
+(defn- trace-source-datum [node]
+  (when-let [[key file line] (trace-source-parts node)]
+    (str "#(" (if (= key (str (:ns node) "/" (:name node))) "#t" (chez-str-lit key)) " "
+         (if file (chez-str-lit file) "#f") " " line ")")))
 
 ;; A (register-inline-method type-name proto method fn) / register-method call whose
 ;; fn arg is a single-arity impl literal. Returns [type-name proto method fn-node] or
@@ -1131,20 +1213,28 @@
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])
             *fnsrc-def-init?* (= :fn (:op (:init node)))]
-    (let [reg (trace-source-reg node)
+    (let [reg (volatile! (trace-source-reg node))
           d (cond
               (:no-init node)
               (if (jmeta-nonempty? (:meta node))
                 ;; set-var-meta! interns the same cell declare-var! returns, so
                 ;; declare-var! runs LAST — a no-init def evaluates to its var,
                 ;; like the JVM ((var? (def x)) is true), not set-var-meta!'s void.
-                (str "(begin (set-var-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                     (emit-def-meta node) ")"
-                     " (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) "))")
+                (let [md (lazy-meta-desc node)]
+                  (str "(begin (" (if md "set-var-lazy-meta! " "set-var-meta! ")
+                       (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                       (if md (str "'" md) (emit-def-meta node)) ")"
+                       " (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) "))"))
                 (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
               (jmeta-nonempty? (:meta node))
-              (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                   (emit-with-cells #(emit (:init node))) " " (emit-def-meta node) ")")
+              (let [init (emit-with-cells #(emit (:init node)))]
+                (if-let [md (lazy-meta-desc node)]
+                  (let [src (when (and (session/lazy-rows?) (not= "" @reg)) (trace-source-datum node))]
+                    (when src (vreset! reg ""))
+                    (str "(def-var-lazy-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                         init " '" md (if src (str " '" src) "") ")"))
+                  (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                       init " " (emit-def-meta node) ")")))
               :else
               (str "(def-var-plain! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                    (emit-with-cells #(emit (:init node))) ")"))
@@ -1157,9 +1247,9 @@
       ;; form's own evaluation may already dump a closure it just created.
       (let [pre (if (= freg "") "" (str "(begin" freg " "))
             post (if (= freg "") "" ")")
-            body (if (= (str reg creg) "") d
+            body (if (= (str @reg creg) "") d
                      (let [v (fresh-label "_dv$")]
-                       (str "(let ((" v " " d "))" reg creg " " v ")")))]
+                       (str "(let ((" v " " d "))" @reg creg " " v ")")))]
         (str pre body post)))))
 
 ;; throw, with the site the reporter needs.
@@ -1174,10 +1264,11 @@
         ;; that caller for the innermost frame. Outside a named fn there
         ;; is no pair to store, so the slot is emptied instead.
         call (cond
-               (not (trace-frames?)) (emit-call *tail?* "jolt-throw" [e] (or line 0) ch)
+               (or (not (trace-frames?)) (keep-frames?))
+               (emit-call *tail?* "jolt-throw" [e] (or line 0) ch)
                *trace-site* (sited-tail-call *trace-site* (or line 0) "jolt-throw" [e] ch)
                :else (let [t (fresh-label "_tt$")]
-                       (str "(let* ((" t " " e ")) (set-virtual-register! 2 0) "
+                       (str "(let* ((" t " " e ")) " "(set-virtual-register! 2 0) "
                             (plain-call "jolt-throw" [t]) ")")))]
     ;; A macro-built throw has no :pos — `assert` expands to one, and the
     ;; app.util fixture reaches it through a user macro besides — so a
@@ -1203,7 +1294,7 @@
 ;; A host method call (.m obj args).
 (defn- emit-host-call-node [node]
   (let [tail? *tail?*
-        sited? (and (trace-frames?) tail? *trace-site*)]
+        sited? (and (trace-frames?) (not (keep-frames?)) tail? *trace-site*)]
    (binding [*tail?* false]
     (when sited? (note-tail-call! tail?))
     (if sited?
@@ -1231,7 +1322,7 @@
       ;; string, keyword or string builder, a host method.
       (let [call (host-call-emit emit node)]
         (note-tail-call! tail?)
-        (if (and (trace-frames?) (not tail?)
+        (if (and (trace-frames?) (not (keep-frames?)) (not tail?)
                  (not (contains? #{:str :kw :sb :sbuf} (:target-type node))))
           (site-restore call)
           call))))))
@@ -1278,6 +1369,10 @@
       (and (stdlib-var? node) (not (prelude-mode?)))
       (throw (ex-info (str "emit: unsupported stdlib ref `" (:ns node) "/" (:name node)
                            "` (no core on Chez yet)") {}))
+      ;; global vars: the binding-aware value behind the var's jg$ symbol (rt.ss
+      ;; jolt-gv), with no hoisted cell
+      (global-var-ref? (:ns node) (:name node))
+      (str "(jolt-gv '" (gv-sym (:ns node) (:name node)) ")")
       ;; inside a def, cache the interned var cell in a per-site cell so the
       ;; name lookup (string-append + hash) runs once, not per access; the
       ;; cell is stable and def-var! mutates its root in place, so this stays
@@ -1310,11 +1405,13 @@
                    (str "(jolt-set-field! " (emit (:obj node)) " " kw " " (emit (:val node)) ")")))
     ;; a non-top-level defmacro -> def the expander fn + mark the var a macro at
     ;; runtime (the spine does the same for top-level forms).
-    :defmacro (str "(begin (def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                   (emit (:fn node)) " "
-                   (emit-def-meta node)
-                   ") (mark-macro! " (chez-str-lit (:ns node)) " "
-                   (chez-str-lit (:name node)) ") jolt-nil)")))
+    :defmacro (let [d (lazy-meta-desc node)]
+                (str "(begin (" (if d "def-var-lazy-meta! " "def-var-with-meta! ")
+                     (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
+                     (emit (:fn node)) " "
+                     (if d (str "'" d) (emit-def-meta node))
+                     ") (mark-macro! " (chez-str-lit (:ns node)) " "
+                     (chez-str-lit (:name node)) ") jolt-nil)"))))
 
 ;; Host references and constructions.
 (defn- emit-host-node [node]
@@ -1380,7 +1477,32 @@
                       "jolt-hash-map-checked")
                     kvs))))
 
+;; JOLT_CONST_DATA=1, slice 2: a constant literal as a row of its form's table
+;; (hoist.clj kdata-coll), or nil to take the ordinary path. A site-stamped
+;; literal keeps jolt-site-const's process-wide object, and a literal whose keys
+;; the runtime must still check stays a construction.
+(declare emit-coll-literal*)
+(defn- const-coll-row [node]
+  (when (and (kdata-coll?) (const-coll-node? node) (not (:site-id node)))
+    (let [map? (= :map (:op node))
+          ks (when map? (map first (:pairs node)))
+          [tag ctor] (case (:op node)
+                       :vector ["v" "jolt-vector"]
+                       :set (when (distinct-const-keys? (:items node)) ["s" "jolt-hash-set"])
+                       :map (cond (unique-keyword-key-literal? node) ["am" nil]
+                                  (distinct-const-keys? ks) ["m" "jolt-hash-map"]
+                                  :else nil))]
+      (when tag
+        (let [items (if map? (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs node)) (:items node))
+              strs (mapv emit items)
+              text (if ctor
+                     (str "(" ctor (if (empty? strs) "" (str " " (str/join " " strs))) ")")
+                     (str "(amap-slots->pmap (vector " (str/join " " strs) "))"))]
+          (hoist-const-per-site (kdata-coll tag strs text false)))))))
+
 (defn- emit-coll-literal [node]
+  (or (const-coll-row node) (emit-coll-literal* node)))
+(defn- emit-coll-literal* [node]
   (let [s (case (:op node)
             :vector (emit-ordered "jolt-vector" (:items node))
             :set (emit-ordered (if (distinct-const-keys? (:items node))
@@ -1663,9 +1785,11 @@
 ;; ce-defmacro->fn has already split the name off — so the caller supplies it
 ;; here; otherwise every macro in a namespace registers its anon fns under
 ;; jfn$<ns>/$<n> with the counter restarting per form, and siblings collide.
+(declare emit-top-form*)
 (defn emit-top-form
   ([node] (emit-top-form node nil))
-  ([node fnsrc-def]
+  ([node fnsrc-def] (with-const-data #(emit-top-form* node fnsrc-def))))
+(defn- emit-top-form* [node fnsrc-def]
   ;; A statement of a top-level do (the direct-link arm below re-enters here
   ;; per statement) carries no :ns and no :fnsrc-ns of its own -- the analyzer
   ;; stamps only the top-level node -- so it inherits the enclosing binding.
@@ -1711,4 +1835,4 @@
           ;; dependency on the form's evaluation, and the form itself may dump a
           ;; closure it just created — the registration must already be there.
           ;; begin keeps the form's value as the result.
-        :else (str "(begin" freg " " scm ")"))))))
+        :else (str "(begin" freg " " scm ")")))))

@@ -304,15 +304,51 @@
 ;; whose emitted prelude must not carry this machine's absolute paths.
 (let ((ssr (var-deref "jolt.backend-scheme" "set-source-reg!")))
   (when (procedure? ssr) (ssr #t)))
-;; JOLT_TRACE is a falsey value (case-insensitive) — the single predicate both the
-;; dev-mode enable and the whole-run enable consult, so "off" never accidentally
-;; means "on". An empty / unset value is NOT falsey here — it carries no signal, so
-;; dev mode still traces and a whole run still doesn't.
-(define (jolt-trace-env-off? e)
-  (and (string? e)
-       (let ((s (string-downcase e)))
-         (or (string=? s "0") (string=? s "false") (string=? s "no")
-             (string=? s "off") (string=? s "n")))))
+;; JOLT_CONST_DATA set and not "" or "0" (loader.ss aot-trace-tag reads it the
+;; same way, for the cache generation's name).
+(define (jolt-const-data-env?)
+  (let ((e (getenv "JOLT_CONST_DATA")))
+    (and e (not (string=? e "")) (not (string=? e "0")))))
+;; Also at load, for the gate scripts that load this file from source and never
+;; call jolt-trace-init-from-env! (run-corpus.ss and friends), so a gate can be
+;; run with the variant on. A built jolt loads this with the variable unset.
+(when (jolt-const-data-env?)
+  (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
+    (when (procedure? scd) (scd (getenv "JOLT_CONST_DATA")))))
+(define (jolt-native-var-call-init-from-env!)
+  (let ((set-mode (var-deref "jolt.backend-scheme.session" "set-native-var-call!")))
+    (when (procedure? set-mode) (set-mode (jolt-native-var-call-enabled?))))
+  (let ((m (getenv "JOLT_DIRECT_LINK")))
+    (cond
+      ((and m (string=? m "link"))
+       (let ((sdl (var-deref "jolt.backend-scheme" "set-direct-link!"))
+             (rst (var-deref "jolt.backend-scheme" "direct-link-reset!")))
+         (when (and (procedure? sdl) (procedure? rst)) (rst) (sdl #t))))
+      ((and m (string=? m "full"))
+       (var-root-set! (jolt-var "clojure.core" "*compiler-options*")
+                      (jolt-hash-map (keyword #f "direct-linking") #t))))))
+(jolt-native-var-call-init-from-env!)
+;; JOLT_GLOBAL_VAR_CALL (rt.ss jolt-global-var-call-enabled?, "global vars"): link
+;; every var to its jg$ symbol, then have the emitter call through them. Once
+;; on it stays on (the symbols are the runtime's, and code compiled against them
+;; may be loaded at any later point), so an unset variable later changes
+;; nothing. At load too, for the gate scripts, like the variant above.
+(define (jolt-global-var-call-init-from-env!)
+  (when (jolt-global-var-call-enabled?)
+    (jolt-global-mode-enable!)
+    (let ((sg (var-deref "jolt.backend-scheme.session" "set-global-var-call!")))
+      (when (procedure? sg) (sg #t)))))
+(jolt-global-var-call-init-from-env!)
+;; JOLT_LAZY_META (rt.ss jolt-lazy-meta-enabled?, def-var-lazy-meta!): a def's
+;; constant metadata goes to its var as one quoted descriptor, built into the map
+;; on first read. Set either way, so an unset variable is the default emission.
+;; At load too, for the gate scripts, like the variants above.
+(define (jolt-lazy-meta-init-from-env!)
+  (let ((sl (var-deref "jolt.backend-scheme.session" "set-lazy-meta!"))
+        (sr (var-deref "jolt.backend-scheme.session" "set-lazy-rows!")))
+    (when (procedure? sl) (sl (jolt-lazy-meta-enabled?)))
+    (when (procedure? sr) (sr (eq? (jolt-lazy-meta-mode) 'all)))))
+(jolt-lazy-meta-init-from-env!)
 ;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
 ;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
 ;; JOLT_TRACE is a falsey value, so JOLT_TRACE=0 / off / no disables it in dev mode.
@@ -320,12 +356,23 @@
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
       (when (procedure? stf) (stf #t)))
+    ;; Keep-frames experiment: JOLT_KEEP_FRAMES=1 on a Chez with patch 0012
+    ;; (rt.ss jolt-keep-frames-enabled?) emits traced code that keeps every
+    ;; frame instead of recording erased ones (session.clj keep-frames). Set
+    ;; either way, so a later enable without the variable is the default again.
+    (let ((skf (var-deref "jolt.backend-scheme.session" "set-keep-frames!")))
+      (when (procedure? skf)
+        (jolt-keep-frames-set! (jolt-keep-frames-enabled?))
+        (skf jolt-keep-frames-on?)))
     (jolt-trace-enable!)))
 ;; Exposed so the REPL / nREPL entrypoints (jolt.main, jolt.nrepl) can turn tracing
 ;; on for REPL-driven development without the user setting JOLT_TRACE. Because the
 ;; push is baked in at compile time, only code compiled after this call is traced —
 ;; which is exactly the code you eval / reload in a live session.
 (def-var! "jolt.host" "enable-trace!" jolt-enable-trace!)
+;; Whether this run's traced code keeps its frames (JOLT_KEEP_FRAMES honoured),
+;; for the trace gates, whose expectations differ where a frame was erased.
+(def-var! "jolt.host" "keep-frames?" (lambda () jolt-keep-frames-on?))
 ;; Turn tracing on for a whole run, BEFORE any app namespace is compiled, so the
 ;; app's own code carries the entry prologue. Called from the runtime entrypoints
 ;; (cli.ss, and the built jolt launcher) — NOT at load time: a built jolt runs
@@ -343,8 +390,128 @@
 ;; set JOLT_TRACE=0 for. A `jolt build` binary is unaffected: its prologues are
 ;; baked at build time, so this runtime switch cannot add them.
 (define (jolt-trace-init-from-env!)
+  (jolt-phase-times-init-from-env!)
+  (jolt-native-var-call-init-from-env!)
+  (jolt-global-var-call-init-from-env!)
+  (jolt-lazy-meta-init-from-env!)
+  ;; JOLT_CONST_DATA=1 (or =bind): emit each top-level form's keyword/symbol
+  ;; literals as one quoted table (backend hoist.clj with-const-data). An
+  ;; experiment, off by default. Set either way, so a value the load-time check
+  ;; above baked into a binary built with the variable set is the run's again.
+  (let ((scd (var-deref "jolt.backend-scheme" "set-const-data!")))
+    (when (procedure? scd)
+      (scd (and (jolt-const-data-env?) (getenv "JOLT_CONST_DATA")))))
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (jolt-enable-trace!)))
+
+;; --- cold-path phase times (JOLT_PHASE_TIMES=1) -------------------------------
+;; Where a source load's wall time goes: jolt's analyze+emit, reading the emitted
+;; text back, Chez's expand, Chez's compile, running the compiled form, and the
+;; loader's own work around them (clj-read, loader, cache-load, aot-write,
+;; aot-compile — loader.ss). Reported on stderr at exit. Off unless the variable
+;; is set; off, each site costs one flag test.
+;;
+;; The times are EXCLUSIVE. One clock charges whichever phase is running; entering
+;; a phase charges the elapsed time to the phase it interrupts and resumes that one
+;; on the way out. A form whose run requires another namespace therefore charges
+;; that namespace's analyze/compile/... to those phases, not to its own execute —
+;; timing each phase as an interval around its call counted every nested require
+;; twice. Everything outside a named phase (startup after this init, the program's
+;; own run) lands in `other`, so the phases sum to the total.
+;;
+;; expand, compile and execute are the three parts of one `eval`: the adapter
+;; (sa-time-compile-parts!) wraps the target's expander and the call of the code
+;; its compile produced; the rest of the eval is the compile. Both wrappers charge
+;; only inside the `compile` phase, so the in-process .so compile and evals
+;; elsewhere keep their caller's phase. On Chez a form simple enough for its
+;; interpreter shortcut (compile-interpret-simple) runs inside `compile`.
+;;
+;; Main thread only: the thread that called init owns the clock, and a phase entered
+;; on any other thread is not charged. The process's cold load is single-threaded.
+;; Enabled at runtime from jolt-trace-init-from-env! (the entrypoints call it), not at
+;; load time, where a built jolt's image never sees the user's env.
+(define jolt-phase-times? #f)
+(define jp-thread #f)
+(define jp-phase 'other)               ; the phase the clock is charging
+(define jp-mark 0)                     ; ns at the last switch
+(define jp-start 0)
+(define jp-hooked? #f)
+(define jp-ns (make-eq-hashtable))     ; phase -> ns
+(define jp-entries (make-eq-hashtable)) ; phase -> times entered
+(define jp-order '(analyze+emit read expand compile execute
+                   clj-read loader cache-load aot-write aot-compile other))
+;; JOLT_PHASE_TIMES=detail splits analyze+emit into the parts of
+;; jolt-analyze-emit-form (analyze, lint, passes, emit) and the macro expanders
+;; the analyzer calls (macroexpand, host-contract.ss hc-expand-1), each charged
+;; exclusively like the rest; analyze+emit keeps only the glue between them.
+(define jp-detail? #f)
+(define jp-detail-order '(macroexpand analyze lint passes emit))
+(define (jolt-phase-sub p thunk)
+  (if (and jp-detail? jolt-phase-times? (jp-mine?)) (jp-run p thunk) (thunk)))
+(define (jp-now)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* (time-second t) 1000000000) (time-nanosecond t))))
+;; Charge the time since the last switch to the running phase and start P; returns
+;; the phase it interrupted.
+(define (jp-switch! p)
+  (let ((now (jp-now)) (prev jp-phase))
+    (hashtable-update! jp-ns prev (lambda (x) (+ x (- now jp-mark))) 0)
+    (set! jp-mark now)
+    (set! jp-phase p)
+    prev))
+(define (jp-run p thunk)
+  (let ((prev #f))
+    (dynamic-wind
+      (lambda ()
+        (set! prev (jp-switch! p))
+        (hashtable-update! jp-entries p fx1+ 0))
+      thunk
+      (lambda () (jp-switch! prev)))))
+(define (jp-mine?) (eqv? (get-thread-id) jp-thread))
+;; (jolt-phase-call 'phase thunk) -> thunk's values, timed as PHASE when on.
+(define (jolt-phase-call p thunk)
+  (if (and jolt-phase-times? (jp-mine?)) (jp-run p thunk) (thunk)))
+(define (jolt-phase-times-init-from-env!)
+  (let ((e (getenv "JOLT_PHASE_TIMES")))
+    (when (and (not jolt-phase-times?) (string? e) (not (string=? e ""))
+               (not (jolt-trace-env-off? e)))
+      (set! jolt-phase-times? #t)
+      ;; Hooked here and not in jp-run: the compile path must not reach the
+      ;; shutdown-hook registry, which can park (park-lock-check.ss).
+      (unless jp-hooked?
+        (set! jp-hooked? #t)
+        (jolt-add-runtime-shutdown-hook jolt-phase-times-report!))
+      (when (string=? e "detail")
+        (set! jp-detail? #t)
+        (set! hc-phase-sub jolt-phase-sub)
+        (set! jp-order (append (list (car jp-order)) jp-detail-order (cdr jp-order))))
+      (set! jp-thread (get-thread-id))
+      (set! jp-start (jp-now))
+      (set! jp-mark jp-start)
+      (let ((inside (lambda (p)
+                      (lambda (thunk)
+                        (if (and (eq? jp-phase 'compile) (jp-mine?))
+                            (jp-run p thunk)
+                            (thunk))))))
+        (sa-time-compile-parts! (inside 'expand) (inside 'execute))))))
+(define (jolt-phase-times-report!)
+  (when (jp-mine?)
+    (jp-switch! jp-phase)
+    (let ((err (current-error-port))
+          (ms (lambda (ns) (/ (round (/ ns 100000)) 10.0)))
+          (pad (lambda (s n) (if (>= (string-length s) n) s
+                                 (string-append (make-string (- n (string-length s)) #\space) s)))))
+      (for-each
+        (lambda (p)
+          (put-string err (string-append "jolt phase-times: "
+                                         (symbol->string p)
+                                         (make-string (- 14 (string-length (symbol->string p))) #\space)
+                                         (pad (number->string (ms (hashtable-ref jp-ns p 0))) 10) " ms"
+                                         (pad (number->string (hashtable-ref jp-entries p 0)) 9) "\n")))
+        jp-order)
+      (put-string err (string-append "jolt phase-times: total         "
+                                     (pad (number->string (ms (- jp-mark jp-start))) 10) " ms\n"))
+      (flush-output-port err))))
 ;; Host-side mirror of the emitter's trace-frames? flag: whether the emitted
 ;; text carries #|L<line>|# markers (backend_scheme.clj with-site). When it is
 ;; off, no markers exist, so the annotated read below would attach source
@@ -374,13 +541,21 @@
   (let* ((bv (string->utf8 scm))
          (name (jolt-register-eval-marker-table! scm (hc-form-position form) written ns))
          (sfd (make-source-file-descriptor name (open-bytevector-input-port bv)))
-         (ann (call-with-values
-               (lambda ()
-                 (get-datum/annotations
-                  (transcoded-port (open-bytevector-input-port bv) (native-transcoder))
-                  sfd 0))
-               (lambda (a p) a))))
-    (sa-profile-compile (lambda () (eval ann (interaction-environment))))))
+         (ann (jolt-phase-call 'read
+                (lambda ()
+                  (call-with-values
+                    (lambda ()
+                      (get-datum/annotations
+                       (transcoded-port (open-bytevector-input-port bv) (native-transcoder))
+                       sfd 0))
+                    (lambda (a p) a))))))
+    (sa-profile-compile
+      (lambda ()
+        (sa-source-info-compile
+          (lambda () (jolt-phase-call 'compile (lambda () (eval ann (interaction-environment)))))
+          (or (jolt-debug-locals-instrumenting?)
+              ;; jolt.debug also reads live names from ordinary frames.
+              (chez-ns-exists? "jolt.debug")))))))
 
 ;; (with-meta sym m) -> sym, else x — an (ns ^:no-doc name …) yields the name with
 ;; reader metadata as a with-meta form; strip it to read the bare ns symbol.
@@ -523,11 +698,13 @@
 (define (jolt-analyze-emit-form form ns)
   (let* ((ctx (make-analyze-ctx ns))
          ;; the form runs as soon as it compiles (hc-late-bound-namespace?)
-         (node (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))
-    (jolt-lint-node! node)
+         (node (jolt-phase-sub 'analyze
+                 (lambda () (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))))
+    (jolt-phase-sub 'lint (lambda () (jolt-lint-node! node)))
     (if (hc-compiler-direct-linking?)
         (jolt-direct-link-emit node ctx)
-        (jolt-ce-emit (jolt-ce-run-passes node ctx)))))
+        (let ((passed (jolt-phase-sub 'passes (lambda () (jolt-ce-run-passes node ctx)))))
+          (jolt-phase-sub 'emit (lambda () (jolt-ce-emit passed)))))))
 
 ;; A form compiled under (binding [*compiler-options* {:direct-linking true}] ...)
 ;; gets what `jolt build` gives every app form: calls to the vars defined this
@@ -782,7 +959,7 @@
      ;; record this form's source location first, so a compile- or run-time error
      ;; in it reports the right place.
      (jolt-enter-form! form)
-     (let* ((scm (jolt-analyze-emit-form form ns))
+     (let* ((scm (jolt-phase-call 'analyze+emit (lambda () (jolt-analyze-emit-form form ns))))
             (cap (jolt-aot-capture)))            ; tee for the AOT cache (loader.ss)
        (when cap (put-string cap scm) (newline cap))
        ;; the run is a root as much as the compile was: expanding the form ran
@@ -798,7 +975,9 @@
        (let ((run (lambda ()
                     (if (jolt-ce-trace-frames?)
                         (jolt-eval-with-source scm form (or outer form) ns)
-                        (eval (read (open-input-string scm)) (interaction-environment))))))
+                        (let ((x (jolt-phase-call 'read (lambda () (read (open-input-string scm))))))
+                          (jolt-phase-call 'compile
+                            (lambda () (eval x (interaction-environment)))))))))
          (if cap
              (parameterize ((jolt-aot-capture #f)) (run))
              (run)))))))

@@ -293,6 +293,55 @@
 ;; :self while only self-calls have (their restore is decided per fn, after the
 ;; body, see *self-wrap*).
 (def ^:dynamic *site-call* nil)
+;; Plain applications through a var root on a Chez with the call-error hook.
+;; Set by the runtime capability probe; seed minting and stock Chez keep it off.
+(def native-var-call? (atom false))
+(defn set-native-var-call! [on] (reset! native-var-call? (boolean on)))
+;; Global var calls (JOLT_GLOBAL_VAR_CALL, compile-eval.ss; only on a Chez with
+;; patch 0010, never while minting the seed). The runtime links every var to the
+;; top-level symbol jg$<ns>/<name> (rt.ss "global vars"), so a call through a var
+;; that is not dynamic is a plain Chez application of that symbol and a value
+;; reference is (jolt-gv 'jg$ns/name): no hoisted var lookup, no deref, no invoke
+;; helper. Off, nothing changes.
+(def global-var-call (atom false))
+(defn set-global-var-call! [on] (reset! global-var-call (boolean on)))
+;; Does a reference to ns/nm go through its jg$ symbol? Not for a var that is
+;; dynamic when this code is compiled -- its reads stay binding-aware at the site
+;; -- nor for *ns*, whose value is per thread without being bound. A var that
+;; turns dynamic later reaches the symbol's trampoline (rt.ss).
+(defn global-var-ref? [ns nm]
+  (and @global-var-call
+       (not (and (= ns "clojure.core") (= nm "*ns*")))
+       (not (var-dynamic? nil ns nm))))
+;; Keep-frames experiment (JOLT_KEEP_FRAMES=1, compile-eval.ss jolt-enable-trace!,
+;; only on a Chez with $call-keeping-frame, host/chez/chez-patches/0012). Traced
+;; code then erases no frame: every node in tail position that can make a call
+;; runs inside (keep-frame ...), which Chez compiles as an ordinary call and
+;; return, so the caller's frame -- and the line it is at -- stays on the stack,
+;; as on the JVM. recur stays a jump. The trace then comes from the continuation
+;; alone, so none of the slot machinery below is emitted: no tail-site pair
+;; stores, no non-tail restores, no callsite registrations, no catch snapshots.
+;; Off (the default, and always on stock Chez and Gambit), nothing changes.
+;; Lazy quoted data experiment (JOLT_LAZY_META=1, compile-eval.ss; only where the
+;; runtime answers jolt-lazy-meta-supported?, never while minting the seed or
+;; building direct-linked). A def whose metadata is all constants hands the var
+;; ONE quoted descriptor of it (literals.clj meta-desc) instead of the code that
+;; builds the map, and the var builds the map the first time anything reads it
+;; (rt.ss def-var-lazy-meta!). Off, nothing changes.
+(def lazy-meta (atom false))
+(defn set-lazy-meta! [on] (reset! lazy-meta (boolean on)))
+(defn lazy-meta? [] (and @lazy-meta (var-cache?) (not (direct-link?)) (not (seed-mint?))))
+;; ...and with JOLT_LAZY_META=1 (not =meta), the per-def registration rows too:
+;; a form's fn-form rows as one quoted table (fnsrc.clj fnsrc-flush), a fn def's
+;; source row as one more argument of its lazy def (backend_scheme.clj
+;; emit-def-node), registered when something first looks.
+(def lazy-rows (atom false))
+(defn set-lazy-rows! [on] (reset! lazy-rows (boolean on)))
+(defn lazy-rows? [] (and @lazy-rows (lazy-meta?)))
+(def keep-frames (atom false))
+(defn set-keep-frames! [on] (reset! keep-frames (boolean on)))
+(defn keep-frames? [] (and @keep-frames (trace-frames?)))
+(defn keep-frame [s] (str "(#2%$call-keeping-frame (lambda () " s "))"))
 ;; A tail call that may run a jolt fn disqualifies the enclosing fn.
 (defn note-tail-call! [tail?]
   (when (and tail? *self-wrap*) (reset! (:unsafe *self-wrap*) true)))
@@ -313,7 +362,7 @@
 ;; TAIL edges only (a chain hop is by definition a tail call); the validator
 ;; consults every entry. A site seen both ways keeps tail? = true.
 (defn register-callsite! [line callee tail?]
-  (when (and (trace-frames?) *callsites* *trace-site* line callee)
+  (when (and (trace-frames?) (not (keep-frames?)) *callsites* *trace-site* line callee)
     (let [m @*callsites*
           sites (get m *trace-site*)
           cur (get sites line)

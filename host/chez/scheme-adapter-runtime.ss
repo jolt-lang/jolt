@@ -1174,7 +1174,8 @@
 ;; Compile the Scheme source file SRC to the native object SO under PROFILE:
 ;; #f = target defaults, or an alist with TARGET-NEUTRAL keys
 ;; (optimize . 0..3), (inspector-info . bool), (source-info . bool),
-;; (compressed . bool), (block-profile . bool). The Chez impl parameterizes
+;; (compressed . bool), (block-profile . bool), and optional
+;; (return-point-info . bool). The Chez impl parameterizes
 ;; optimize-level / generate-inspector-information /
 ;; generate-procedure-source-information / fasl-compressed, and compile-profile
 ;; to 'block when block-profile is true (the counters --profile-gen builds
@@ -1188,14 +1189,52 @@
 (define (sa-compile-file src so profile)
   (if profile
       (let ((pv (lambda (k) (cdr (assq k profile)))))
-        (parameterize ((optimize-level (pv 'optimize))
-                       (generate-inspector-information (pv 'inspector-info))
-                       (generate-procedure-source-information (pv 'source-info))
-                       (fasl-compressed (pv 'compressed))
-                       (compile-profile (let ((b (assq 'block-profile profile)))
-                                          (and b (cdr b) 'block))))
-          (compile-file src so)))
-      (compile-file src so)))
+        (define (run)
+          (parameterize ((optimize-level (pv 'optimize))
+                         (generate-inspector-information (pv 'inspector-info))
+                         (generate-procedure-source-information (pv 'source-info))
+                         (fasl-compressed (pv 'compressed))
+                         (compile-profile (let ((b (assq 'block-profile profile)))
+                                            (and b (cdr b) 'block))))
+            (compile-file src so)))
+        (if sa-return-point-sources
+            (parameterize ((sa-return-point-sources
+                            (let ((p (assq 'return-point-info profile))) (and p (cdr p)))))
+              (run))
+            (run)))
+      (sa-source-info-compile (lambda () (compile-file src so))
+                             (or (jolt-debug-locals-instrumenting?)
+                                 (chez-ns-exists? "jolt.debug")))))
+
+;; Patch 0011 is probed while the adapter is compiled; stock keeps its
+;; existing compile parameters. Full inspector data takes priority when named
+;; locals are needed. JOLT_SOURCE_INFO=source opts into the research mode;
+;; full remains the default, and off supplies the no-inspector comparison.
+(define-syntax sa-return-point-source-parameter
+  (if (guard (c (#t #f))
+        (procedure? (eval 'generate-return-point-source-information)))
+      (syntax-rules () ((_) generate-return-point-source-information))
+      (syntax-rules () ((_) #f))))
+(define sa-return-point-sources (sa-return-point-source-parameter))
+(define (sa-source-info-mode)
+  (and sa-return-point-sources
+       (let ((v (getenv "JOLT_SOURCE_INFO")))
+         (cond ((equal? v "source") 'source)
+               ((equal? v "off") 'off)
+               (else 'full)))))
+(define (sa-source-info-cache-tag)
+  (case (sa-source-info-mode)
+    ((source) "-rs") ((full) "-rif") ((off) "-rio") (else "")))
+;; Run a runtime compile with return-point and procedure sources only. A debug
+;; compile explicitly requests names; the unpatched path is unchanged.
+(define (sa-source-info-compile thunk names?)
+  (let ((mode (sa-source-info-mode)))
+    (if mode
+        (parameterize ((generate-inspector-information (or names? (eq? mode 'full)))
+                       (generate-procedure-source-information (or names? (not (eq? mode 'off))))
+                       (sa-return-point-sources (and (not names?) (eq? mode 'source))))
+          (thunk))
+        (thunk))))
 
 ;; ---- block profiles (capability: profile) -----------------------------------
 ;; A build compiled with (block-profile . #t) counts every basic block; the
@@ -1813,6 +1852,57 @@
   (if (or sa-profile-on? (compile-profile))
       (parameterize ((compile-profile (and sa-profile-on? 'source))) (thunk))
       (thunk)))
+
+;; Patch 0010's getter/setter is a capability probe at adapter compile time.
+;; A stock Chez never parses a reference to the unavailable primitive.
+(define-syntax sa-call-error-supported?
+  (if (guard (c (#t #f)) (eval '($primitive $call-error-handler)) #t)
+      (syntax-rules () ((_) #t))
+      (syntax-rules () ((_) #f))))
+(define-syntax sa-call-error-handler-set!
+  (if (guard (c (#t #f)) (eval '($primitive $call-error-handler)) #t)
+      (syntax-rules () ((_ p) (#%$call-error-handler p)))
+      (syntax-rules () ((_ p) (void)))))
+
+;; Top-level symbols for global var calls (rt.ss "global vars").
+;; (sa-top-level-assign! sym v): assign SYM's variable in the interaction
+;; environment, the location code compiled there reads for the identifier SYM
+;; (Chez resolves it to an environment label, not the symbol's own value slot).
+;; (sa-symbol-slot sym) / (sa-symbol-slot-set! sym v): the symbol's raw value
+;; slot, no environment and no unbound check (an unset slot reads as Chez's
+;; unbound object). Contract: as stated. Degradation: none; only a Chez with
+;; patch 0010 turns the mode on.
+(define (sa-top-level-assign! sym v) (set-top-level-value! sym v))
+(define-syntax sa-symbol-slot
+  (syntax-rules () ((_ s) (#3%$top-level-value s))))
+(define-syntax sa-symbol-slot-set!
+  (syntax-rules () ((_ s v) (#%$set-top-level-value! s v))))
+
+;; Patch 0012's $call-keeping-frame, probed the same way (rt.ss
+;; jolt-keep-frames-enabled?, the JOLT_KEEP_FRAMES experiment). The emitter writes
+;; the primitive's name into the code it emits only when this answers #t.
+(define-syntax sa-keep-frame-supported?
+  (if (guard (c (#t #f)) (eval '($primitive $call-keeping-frame)) #t)
+      (syntax-rules () ((_) #t))
+      (syntax-rules () ((_) #f))))
+
+;; (sa-time-compile-parts! expand-wrap run-wrap) -> #t | #f
+;; JOLT_PHASE_TIMES (compile-eval.ss) splits each runtime eval into the target's
+;; expand, its compile, and the call of the code the compile produced. From now
+;; on, process-wide, every expansion runs as (expand-wrap thunk) and every call of
+;; freshly compiled code as (run-wrap thunk); each wrapper returns its thunk's
+;; values. On Chez: current-expand, and $compile-backend, whose result `compile`
+;; calls to run the form (a form simple enough for Chez's interpreter shortcut
+;; never reaches it). Contract: #t when installed. Degradation: #f — the compile
+;; phase then also holds the expand and the run.
+(define (sa-time-compile-parts! expand-wrap run-wrap)
+  (guard (e (#t #f))
+    (let ((expand0 (current-expand))
+          (backend0 (#%$top-level-value '$compile-backend)))
+      (current-expand (lambda args (expand-wrap (lambda () (apply expand0 args)))))
+      (#%$set-top-level-value! '$compile-backend
+        (lambda (x) (let ((run (backend0 x))) (lambda () (run-wrap run)))))
+      #t)))
 
 ;; One profile-dump entry as #(source-name start end count), or #f for a counter
 ;; on code that was never annotated (it carries no name).

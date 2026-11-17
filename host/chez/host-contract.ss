@@ -515,7 +515,12 @@
                (not (proc-accepts? expander (fx+ 2 (length args)))))
       (jolt-arity-error-name (jolt-proc-arity-name expander) (length args)))
     (hc-propagate-pos form
-      (apply jolt-invoke expander (hc-form-sans-file nform) amp-env args))))
+      (if hc-phase-sub
+          (hc-phase-sub 'macroexpand
+            (lambda () (apply jolt-invoke expander (hc-form-sans-file nform) amp-env args)))
+          (apply jolt-invoke expander (hc-form-sans-file nform) amp-env args)))))
+;; compile-eval.ss jolt-phase-sub under JOLT_PHASE_TIMES=detail, else #f.
+(define hc-phase-sub #f)
 
 ;; Classify a global (non-local) symbol reference against the var registry:
 ;;   {:kind :var :ns NS :name NAME}   — a defined var (compile ns / clojure.core)

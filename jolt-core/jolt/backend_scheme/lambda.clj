@@ -10,7 +10,7 @@
              :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
                      *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
                      *trace-frame* *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
-                     debug-locals? fresh-label target trace-frames?]]
+                     debug-locals? fresh-label keep-frames? target trace-frames?]]
             [jolt.backend-scheme.hoist :refer [*cache-cells*]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
             [jolt.backend-scheme.fnsrc
@@ -195,7 +195,7 @@
 ;; fill-self-wrap turns into the read or, when the self-calls need no restore,
 ;; into 0, which cp0 folds away with the stores.
 (defn- emit-site-clause [emit a]
-  (if (and (trace-frames?) (= :chez (target)))
+  (if (and (trace-frames?) (not (keep-frames?)) (= :chez (target)))
     (let [used (atom nil)
           c (binding [*site-call* used] (emit-arity-clause emit a))
           entry (case @used
@@ -521,7 +521,7 @@
         ;; allocated.
         id-nm (when (and (not def-init?) (empty? (:free-names node))) (fresh-label "_fnid$"))
         once (fn-once-box node arities)
-        self-wrap (when (and self (trace-frames?))
+        self-wrap (when (and self (trace-frames?) (not (keep-frames?)))
                     {:tok (fresh-label "_srself$") :unsafe (atom false)})
         clauses (emit-fn-clauses emit (or (:marked once) arities) self site (or site fnsrc-nm) (:clears once) self-wrap)
         lambda (fn-lambda (fill-self-wrap clauses self-wrap) arities id-nm once)

@@ -6,7 +6,118 @@
   a scope at all."
   (:require [clojure.string :as str]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
-            [jolt.backend-scheme.session :refer [fresh-label var-cache?]]))
+            [jolt.backend-scheme.session
+             :refer [direct-link? fresh-label seed-mint? unsafe-prefix var-cache?]]))
+
+;; --- constants as quoted data (JOLT_CONST_DATA, an experiment, OFF by default) --
+;; Off, nothing below runs and every emit is byte-identical to before. On, a
+;; top-level form collects its keyword and plain-symbol literals into ONE table,
+;; emitted as a quoted vector of strings that a single runtime call turns into the
+;; real objects when the form loads (values.ss intern-constants!):
+;;
+;;   (let ((_kt$ (intern-constants! '#("line" ("ns" . "k") #(#f "sym") ...)))) FORM)
+;;
+;; and each use site reads its slot, (#3%vector-ref _kt$ i), in place of a
+;; (keyword #f "line") construction or a hoisted _kc$ binding of one. A keyword
+;; row is shared by every site naming it (keywords intern, so that is what one
+;; (keyword …) call per site gave too); a symbol row belongs to one site, never
+;; shared, so (identical? 'a 'a) still answers false. A site's symbol is now one
+;; object per load of its form instead of one per evaluation, which is what the
+;; JVM's constant pool gives a quoted symbol.
+;;
+;; Only the runtime spine's open-world emit takes it (var-cache on, not
+;; direct-link, not the seed mint): a direct-link def is a bare (define …), which
+;; cannot sit inside the let, and neither can a define-ftype or a contagion
+;; clone's define, so a form holding "(define" goes out with the constructions
+;; spliced back in (kdata-expand).
+(declare hoist-const)
+(def const-data-flag (atom false))
+(def ^:dynamic *kdata* nil)
+
+(defn const-data? []
+  (and @const-data-flag (var-cache?) (not (direct-link?)) (not (seed-mint?))))
+
+;; The slot-read prefix, built once per table rather than at every slot read
+;; and every check of one (it was a fresh string per call).
+(def ^:dynamic *kdata-marker* nil)
+(defn- kdata-marker [] (or *kdata-marker* (str "(" (unsafe-prefix) "vector-ref _kt$ ")))
+
+;; row = [datum construction]; key nil = a row of its own (a symbol site).
+;; :slot-of maps each slot read handed out back to its row, so a collection
+;; row finds its elements' slots by lookup instead of re-parsing their text.
+(defn- kdata-ref! [t key datum ctor]
+  (or (when key (get (:by-key @t) key))
+      (let [i (count (:rows @t))
+            ref (str (kdata-marker) i ")")]
+        (swap! t (fn [s] (cond-> (-> s (update :rows conj [datum ctor]) (assoc-in [:slot-of ref] i))
+                           key (assoc-in [:by-key key] ref))))
+        ref)))
+
+;; The text with every slot read replaced by the construction it stands for: the
+;; fallback for a form that cannot be wrapped, and the sort key of a rendering
+;; that orders by emitted text (literals.clj), so the order is the one the
+;; constructions gave.
+(defn kdata-expand [s rows]
+  (let [m (kdata-marker) mlen (count m)]
+    (loop [from 0 acc (transient [])]
+      (if-let [i (str/index-of s m from)]
+        (let [j (str/index-of s ")" (+ i mlen))
+              idx (reduce (fn [n c] (+ (* n 10) (- (int c) 48))) 0 (subs s (+ i mlen) j))]
+          ;; a collection row's construction reads its element slots in turn
+          (recur (inc j) (-> acc (conj! (subs s from i))
+                             (conj! (kdata-expand (nth (nth rows idx) 1) rows)))))
+        (apply str (persistent! (conj! acc (subs s from))))))))
+
+;; The slot index this expression reads, when it is exactly one slot read.
+(defn- kdata-slot [expr]
+  (when-let [t *kdata*] (get (:slot-of @t) expr)))
+
+;; Is this expression exactly one slot read? Such a value is already built once
+;; per load of the form, so the constant pool has nothing to add by binding it.
+(defn kdata-ref? [expr]
+  (and *kdata* (not= :bind @const-data-flag) (some? (kdata-slot expr))))
+
+(defn kdata-sort-key [s]
+  (if-let [t *kdata*] (kdata-expand s (:rows @t)) s))
+
+;; A keyword literal uses its table slot under JOLT_CONST_DATA, else the
+;; construction hoisted into the def's constant pool.
+(defn keyword-const [kns nm]
+  (let [ctor (if kns
+               (str "(keyword " (chez-str-lit kns) " " (chez-str-lit nm) ")")
+               (str "(keyword #f " (chez-str-lit nm) ")"))]
+    (if-let [t *kdata*]
+      (let [r (kdata-ref! t ctor
+                          (if kns (str "(" (chez-str-lit kns) " . " (chez-str-lit nm) ")") (chez-str-lit nm))
+                          ctor)]
+        ;; JOLT_CONST_DATA=bind: bind the slot read once per def.
+        (if (= :bind @const-data-flag) (hoist-const r) r))
+      (hoist-const ctor))))
+
+;; A metadata-free symbol literal's text: its own slot, else the construction.
+;; SHARED? is for a caller that already shares one object between equal symbols
+;; (literals.clj's quote pool, which hash-conses a fnsrc registration's
+;; constructions by text); there the slot is keyed by the construction too, or
+;; every subtree above it would render distinct and the hash-consing would stop
+;; working, which grew the 200k project's text by 60%.
+(defn symbol-const [sns nm ctor shared?]
+  (if-let [t *kdata*]
+    (kdata-ref! t (when shared? ctor)
+                (str "#(" (if sns (chez-str-lit sns) "#f") " " (chez-str-lit nm) ")") ctor)
+    ctor))
+
+(defn with-const-data [thunk]
+  (if (or *kdata* (not (const-data?)))
+    (thunk)
+    (let [t (atom {:rows [] :by-key {} :slot-of {}})
+          s (binding [*kdata* t *kdata-marker* (kdata-marker)] (thunk))
+          rows (:rows @t)]
+      (cond
+        (empty? rows) s
+        (str/includes? s "(define") (kdata-expand s rows)
+        :else (str "(let ((_kt$ (intern-constants! '#("
+                   (str/join " " (map first rows))
+                   ")))) " s ")")))))
 
 ;; Per-site cache cells collected while emitting one top-level def. A site that
 ;; resolves a STABLE value — a devirtualized impl (constant tag/proto/method) or a
@@ -66,7 +177,7 @@
 ;; reference nothing, were the sole hoisted constant.
 (defn hoist-const [expr]
   (let [pool *const-pool*]
-    (if pool
+    (if (and pool (not (kdata-ref? expr)))
       (or (first (get @pool expr))
           (let [nm (fresh-label "_kc$")]
             (swap! pool assoc expr [nm (count @pool) expr])
@@ -90,7 +201,7 @@
 ;; so sharing one across sites changes nothing observable.
 (defn hoist-const-per-site [expr]
   (let [pool *const-pool*]
-    (if pool
+    (if (and pool (not (kdata-ref? expr)))
       (let [nm (fresh-label "_kc$")]
         (swap! pool assoc [::site nm] [nm (count @pool) expr])
         nm)
@@ -429,8 +540,74 @@
 
 (defn hoist-var-cell [ns nm]
   (str "(var-cell-deref " (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")")) ")"))
+;; The common path reads the root without a runtime deref. dyn-bound? is
+;; mutable even when the var was non-dynamic at compile time: .setDynamic and
+;; a later binding must still reach an already-compiled caller. Keep that rare
+;; branch binding-aware rather than baking a closed-world metadata assumption.
+(defn hoist-var-call-root [ns nm]
+  (let [cell (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")"))]
+    ;; var-cell-v5 in rt.ss: root is field 2, dyn-bound? is field 6. Record
+    ;; accessors are ordinary procedures; #3%$record-ref performs the raw loads.
+    (str "(if (" (unsafe-prefix) "$record-ref " cell " 6)"
+         " (var-cell-deref " cell ") (" (unsafe-prefix) "$record-ref " cell " 2))")))
 ;; A direct-linked SEED var: the def binds the var's root procedure once, at
 ;; load (jolt-seed-root checks it is one), and the site calls it like any Scheme
 ;; procedure. Only where jolt.host/seed-callable? said so — see emit-invoke.
 (defn hoist-seed-root [ns nm]
   (hoist-const (str "(jolt-seed-root (jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) "))")))
+
+;; Run an emit whose text is only COMPARED, never placed (fnsrc.clj's read-back
+;; check), with no constant table and no pool: a table would keep the rows it
+;; added, and its per-site symbol slots would make two equal renderings differ.
+;; Without a table this is the plain call, so the default emit is unchanged.
+(defn without-kdata [thunk]
+  (if *kdata*
+    (binding [*kdata* nil *const-pool* nil *const-ids* nil] (thunk))
+    (thunk)))
+
+;; --- slice 2: constant collections as rows ------------------------------------
+;; A collection whose elements are all constants becomes a row too, its elements
+;; encoded as data: a box #&i reads row i (built earlier, a child is always
+;; emitted before its parent), the symbol nil is jolt's nil, and a string,
+;; number, boolean or char stands for itself. The row's head names the
+;; constructor values.ss intern-constants! applies: v jolt-vector, l jolt-list,
+;; m jolt-hash-map, am amap-slots->pmap (a keyword-keyed literal the emitter has
+;; checked fits array mode), s jolt-hash-set. Only under JOLT_CONST_DATA=1 (the
+;; bind mode keeps slice 1's shape).
+(defn- digit? [c] (let [i (int c)] (and (>= i 48) (<= i 57))))
+(defn- number-text? [s]
+  (or (contains? #{"+inf.0" "-inf.0" "+nan.0"} s)
+      (and (pos? (count s))
+           (or (digit? (nth s 0))
+               (and (> (count s) 1) (contains? #{\- \+ \.} (nth s 0)) (digit? (nth s 1))))
+           (every? (fn [c] (or (digit? c) (contains? #{\- \+ \. \e \/} c))) s))))
+(defn- hex [n]
+  (if (< n 16)
+    (str (nth "0123456789abcdef" n))
+    (str (hex (quot n 16)) (nth "0123456789abcdef" (rem n 16)))))
+(defn- kdata-elt [s]
+  (let [char-pre "(integer->char "]
+    (cond
+      (kdata-slot s) (str "#&" (kdata-slot s))
+      (= s "jolt-nil") "nil"
+      (or (= s "#t") (= s "#f")) s
+      (str/starts-with? s "\"") s
+      (and (str/starts-with? s char-pre) (str/ends-with? s ")"))
+      (let [n (subs s (count char-pre) (dec (count s)))]
+        (when (and (pos? (count n)) (every? digit? n))
+          (str "#\\x" (hex (reduce (fn [i c] (+ (* i 10) (- (int c) 48))) 0 n)))))
+      (number-text? s) s
+      :else nil)))
+
+;; The text for a constant collection: a slot read when every element encodes,
+;; else CTOR, the construction it would have been. SHARED? as for symbol-const.
+(defn kdata-coll [tag strs ctor shared?]
+  (let [t *kdata*]
+    (if (and t (= :use @const-data-flag))
+      (let [es (map kdata-elt strs)]
+        (if (every? some? es)
+          (kdata-ref! t (when shared? ctor)
+                      (str "(" tag (apply str (map (fn [e] (str " " e)) es)) ")") ctor)
+          ctor))
+      ctor)))
+(defn kdata-coll? [] (and *kdata* (= :use @const-data-flag)))

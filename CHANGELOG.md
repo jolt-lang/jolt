@@ -353,6 +353,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalid `--boot`, `:exclude-resources` or `--profile-use`, or a `--target`
   with no target pack, was reported only after the static archives and
   dependency libraries had been compiled.
+- **A `letfn` passed to an inlined call keeps its mutual recursion.** In a
+  `jolt build` (default or `--opt`), or under `{:direct-linking true}`, a call
+  such as `(f (letfn [(a [] (b)) (b [] …)] (a)))` to a function the compiler
+  inlines failed at runtime with "variable … is not bound": the `letfn`'s
+  functions were hoisted into a plain `let*`, so the first read its sibling
+  before it was bound.
 - **A `char[]` slice and a null argument to `String.` throw as on the JVM**
   (#1657). `(String. chars offset count)` now runs String's range check before
   reading, so a negative offset with a zero count no longer answers `""`, and an
