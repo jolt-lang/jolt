@@ -280,6 +280,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format, `readPassword` turns echo off and puts it back even on ^C, and
   `writer`, `reader`, `format`, `printf`, `flush`, `charset` and `isTerminal`
   are there too. Windows still answers nil.
+- **`user.home` comes from the passwd entry, as on the JVM.** It was `HOME`
+  or `""`, so with `HOME` unset `(fs/expand-home "~/.config")` gave the
+  relative path `.config`, and a tool defaulting to it read and wrote under
+  the current directory. Now `user.home` is the home directory in the user's
+  passwd entry, and `HOME` only stands in when that entry has none (or just
+  `/`). A `HOME` pointing somewhere else no longer moves it, which is the
+  JVM's behaviour too. Windows still reads `HOME`. Android reads `HOME`
+  first, because bionic's passwd entries are made up.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as

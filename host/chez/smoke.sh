@@ -1709,6 +1709,35 @@ check '(= "class java.net.Inet4Address" (str (class (java.net.InetAddress/getLoo
 # System properties read through the Properties API, not just as a map.
 check '(= (.getProperty (System/getProperties) "os.name") (System/getProperty "os.name"))' 'true'
 
+# user.home is the passwd entry's home directory, as on the JVM, so neither an
+# unset HOME nor one pointing elsewhere moves it. An unset HOME used to answer
+# "", and fs/expand-home then turned ~/.config into the relative path .config.
+# Android is skipped: bionic's passwd entry is made up, so HOME wins there.
+home_want=""
+if [ ! -e /system/bin/linker64 ] && [ ! -e /system/bin/linker ]; then
+  home_want="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  if [ -z "$home_want" ] && command -v dscl >/dev/null 2>&1; then
+    home_want="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed 's/^NFSHomeDirectory: //')"
+  fi
+fi
+if [ "${#home_want}" -gt 1 ]; then
+  # Run from a scratch dir: with HOME unset, jolt's caches fall back to ./.jolt.
+  home_tmp="$(mktemp -d "$tmp/jolt-home.XXXXXX")"
+  home_jolt="$jolt_timeout $(cd "$(dirname "$jolt_bin")" && pwd)/$(basename "$jolt_bin")"
+  home_prop='[(System/getProperty "user.home") (get (System/getProperties) "user.home")]'
+  for home_env in "env -u HOME" "env HOME=$home_tmp"; do
+    got="$(cd "$home_tmp" && $home_env JOLT_PWD="$home_tmp" $home_jolt -e "$home_prop" 2>/dev/null | tail -1)"
+    if [ "$got" = "[\"$home_want\" \"$home_want\"]" ]; then
+      pass=$((pass + 1))
+    else
+      echo "  FAIL: user.home under $home_env"
+      echo "    want \`$home_want\` twice got \`$got\`"
+      fails=$((fails + 1))
+    fi
+  done
+  rm -rf "$home_tmp"
+fi
+
 # jolt.socket — the java.net.Socket/ServerSocket surface over real loopback TCP
 # (roundtrip, EOF, broken pipe, ephemeral ports, class model). Self-checks, one marker.
 # stderr goes into the capture: a run that dies before its first check must leave
