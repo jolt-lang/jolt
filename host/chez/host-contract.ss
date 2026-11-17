@@ -1155,6 +1155,31 @@
          (hashtable-ref hc-seed-ns-tbl ns #f))))
 (define hc-kw-dynamic (keyword #f "dynamic"))
 (define hc-kw-redef (keyword #f "redef"))
+;; Is NS-NAME/NM, right now, a protocol method fn defprotocol defined, called
+;; with at least the receiver? Answers [proto method] -- the names its dispatch
+;; resolves by -- so the back end can dispatch at the call site on the
+;; receiver's own impl (protocols.ss jrdesc-vtable-ref, #1713), else nil. Not
+;; for a protocol with :extend-via-metadata, whose metadata comes ahead of an
+;; extend-type impl the dispatch vector also holds; not for a var that is
+;; dynamic or whose root is no longer a procedure.
+(define hc-kw-extend-via-metadata (keyword #f "extend-via-metadata"))
+(define (hc-protocol-call-key ctx ns-name nm nargs)
+  (let* ((e (hashtable-ref chez-protocol-methods-tbl (string-append ns-name "/" nm) #f))
+         (cell (and e (var-cell-lookup ns-name nm))))
+    (if (and cell (fixnum? nargs) (fx>=? nargs 1)
+             (procedure? (var-cell-root cell))
+             (not (var-cell-dynamic? cell))
+             (let* ((pk (car e))
+                    (slash (let loop ((i (fx- (string-length pk) 1)))
+                             (cond ((fx<? i 0) #f)
+                                   ((char=? (string-ref pk i) #\/) i)
+                                   (else (loop (fx- i 1))))))
+                    (pc (and slash (var-cell-lookup (substring pk 0 slash)
+                                                    (substring pk (fx+ slash 1) (string-length pk)))))
+                    (p (and pc (var-cell-root pc))))
+               (and p (pmap? p) (not (jolt-truthy? (jolt-get p hc-kw-extend-via-metadata jolt-nil))))))
+        (jolt-vector (car e) (cdr e))
+        jolt-nil)))
 (define (hc-seed-callable? ctx ns-name nm nargs)
   (let ((cell (var-cell-lookup ns-name nm)))
     (if (and cell
@@ -1308,6 +1333,7 @@
   (def-var! "jolt.host" "stash-inline!" hc-stash-inline!)
   (def-var! "jolt.host" "var-redefined?" hc-var-redefined?)
   (def-var! "jolt.host" "seed-callable?" hc-seed-callable?)
+  (def-var! "jolt.host" "protocol-call-key" hc-protocol-call-key)
   (def-var! "jolt.host" "mark-spliced!" hc-mark-spliced!))
 
 (hc-install!)

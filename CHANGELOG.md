@@ -162,6 +162,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A protocol method call on a record or deftype is one vector read (#1713).**
+  Each protocol method gets a fixnum id when it is defined, and a type's
+  descriptor holds a vector of its implementations indexed by that id. A call
+  site whose var is a protocol method reads the receiver's descriptor and the
+  vector slot inline, and calls the implementation directly; any other
+  receiver (a type extended later, `nil`, a host class, a redefined var) takes
+  the existing path, which went var, protocol fn, per-site cache, method. A
+  protocol call on a deftype now costs about 1.65x a plain fn call.
+  `deftype` and `defrecord` methods also bind only the fields their bodies
+  name.
 - **A call through a var, a multimethod call, `str` of a StringBuilder and
   `.charAt` cost less (#1713).** These are the per-operation costs a reader
   pays for every character and node. A var-routed call read the var through

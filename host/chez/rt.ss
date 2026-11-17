@@ -3305,6 +3305,16 @@
          (after)
          r)))))
 
+;; A record type's dispatch vector (protocols.ss find-protocol-method-desc) read
+;; at a protocol call site, open-coded (#1713). DESC is a record's own desc slot,
+;; so its ptable field (slot 3 of jrdesc, records.ss) is read unchecked, and the
+;; vector's own length bounds the read.
+(define-syntax jrdesc-vtable-ref
+  (syntax-rules ()
+    ((_ desc id0)
+     (let ((pt (sa-record-slot desc 3)) (id id0))
+       (and (vector? pt) (sa-ufx<? id (vector-length pt)) (sa-uvector-ref pt id))))))
+
 (define-syntax jolt-var-fn
   (syntax-rules ()
     ((_ c0) (let ((c c0))

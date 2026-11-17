@@ -15,7 +15,7 @@
                      note-tail-call! trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
              :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
-                     hoist-const-per-site]]))
+                     hoist-const hoist-const-per-site]]))
 
 ;; The op-registry tables the call heads read, bound to local names as
 ;; jolt.backend-scheme binds them (qualified refs, not :refer — see the note
@@ -478,13 +478,31 @@
                       (let [miss (str "(let ((_nv (jolt-pic-add " v " " d " " proto " " method " " r ")))"
                                       " (if (procedure? _nv) _nv"
                                       " (begin (set! " c " _nv) (" (unsafe-prefix) "vector-ref _nv 1))))")]
-                        (str "(let* ((" r " " (first as) ")"
-                             " (" v " (or " c " jolt-pic-empty))"
-                             " (" d " (" (if (= :gambit (session/target)) "jrec-pic-desc" "jrec-pic-desc/i") " " r ")))"
-                             " ((if (and " d " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
-                             " (or " scan " " miss ")"
-                             " (if " d " " miss " (protocol-resolve " proto " " method " " r ")))"
-                             " " apply-args "))")))
+                        (if (= :gambit (session/target))
+                          (str "(let* ((" r " " (first as) ")"
+                               " (" v " (or " c " jolt-pic-empty))"
+                               " (" d " (jrec-pic-desc " r ")))"
+                               " ((if (and " d " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
+                               " (or " scan " " miss ")"
+                               " (if " d " " miss " (protocol-resolve " proto " " method " " r ")))"
+                               " " apply-args "))")
+                          ;; Chez: a record receiver reads its type's own impl
+                          ;; from the descriptor's dispatch vector, at the
+                          ;; method's interned id (protocols.ss
+                          ;; jrdesc-vtable-ref, #1713); anything else -- an impl
+                          ;; inherited through an interface or Object, a host
+                          ;; value -- takes the per-site cache as before.
+                          (let [id (hoist-const (str "(intern-pm-key " proto " " method ")"))
+                                f (fresh-label "_pf$")]
+                            (str "(let* ((" r " " (first as) ")"
+                                 " (" d " (jrec-pic-desc/i " r "))"
+                                 " (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
+                                 " (if " f " (" f " " apply-args ")"
+                                 " (let ((" v " (or " c " jolt-pic-empty)))"
+                                 " ((if (and " d " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
+                                 " (or " scan " " miss ")"
+                                 " (if " d " " miss " (protocol-resolve " proto " " method " " r ")))"
+                                 " " apply-args "))))")))))
                     (str "(let* ((" r " " (first as) "))"
                          " ((protocol-resolve " proto " " method " " r ") " apply-args "))")))))))
 
