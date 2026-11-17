@@ -102,6 +102,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so `read-bencode`, `write-bencode`, `read-netstring` and `write-netstring`
   behave as the library does. A project that declares `nrepl/bencode` itself
   still loads its own copy.
+- **A script can tell being run from being loaded.** Running a file sets the
+  `jolt.file` system property to its absolute path, as babashka sets
+  `babashka.file`, so a script that a second one may `load-file` can guard its
+  entry point with `(when (= *file* (System/getProperty "jolt.file")) (-main))`.
+  The property names the file given on the command line, so a file that script
+  loads sees another path. A program read from standard input or run with `-e`
+  leaves it unset. A task whose `:main-opts` name a script sets it too, except
+  for the `:depends` that `run --parallel` runs side by side, where one
+  process-wide property could name only one of them.
 
 ### Changed
 
