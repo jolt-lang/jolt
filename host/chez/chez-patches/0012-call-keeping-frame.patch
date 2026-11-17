@@ -1,0 +1,56 @@
+diff --git a/s/cpnanopass.ss b/s/cpnanopass.ss
+index 6b18c7c..e94cb29 100644
+--- a/s/cpnanopass.ss
++++ b/s/cpnanopass.ss
+@@ -1228,6 +1228,22 @@
+         [,x (return mode x)]
+         [(letrec ([,x* ,[le* 'non/none -> le*]] ...) ,[body])
+          `(letrec ([,x* ,le*] ...) ,body)]
++        [(call ,info ,mdcl ,pr
++               (case-lambda ,info2 (clause () ,interface ,[body 'non/none -> body])))
++         (guard (and (eq? (primref-name pr) '$call-keeping-frame)
++                     (= interface 0)))
++         ;; The thunk's body is evaluated as a non-tail expression and its one
++         ;; value returned, so a call in its tail position is an ordinary call
++         ;; and the enclosing procedure's frame stays on the stack while it
++         ;; runs (a debugger can then find it). Nothing else is emitted.
++         (let ([t (make-tmp 'kf)])
++           `(let ([,t ,body]) ,(return mode t)))]
++        [(call ,info ,mdcl ,pr ,[e 'non/none -> e])
++         (guard (eq? (primref-name pr) '$call-keeping-frame))
++         ;; Any other thunk is called the same way, as an ordinary call.
++         (let ([t (make-tmp 'kf)])
++           `(let ([,t (call ,(make-info-call (info-call-src info) #f (fx< (primref-level pr) 3) #f #f) #f ,e)])
++              ,(return mode t)))]
+         [(call ,info ,mdcl ,pr ,[e1 'non/none -> e1]
+                (case-lambda ,info2 (clause () ,interface ,[body (->in-set mode) -> body])))
+          (guard (and (eq? (primref-name pr) '$call-setting-continuation-attachment)
+diff --git a/s/primdata.ss b/s/primdata.ss
+index 2ae68ff..9d3b3f4 100644
+--- a/s/primdata.ss
++++ b/s/primdata.ss
+@@ -1917,6 +1917,7 @@
+   ($call-getting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-setting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-in-continuation [sig [(ptr procedure) -> (ptr ...)] [(ptr ptr procedure) -> (ptr ...)]] [flags])
++  ($call-keeping-frame [sig [(procedure) -> (ptr)]] [flags])
+   ($char-grapheme-step [sig [(char fixnum) -> (boolean fixnum)]] [flags])
+   ($char-grapheme-other-state [flags true])
+   ($check-heap-errors [flags single-valued])
+diff --git a/s/prims.ss b/s/prims.ss
+index 56c6918..4ea801d 100644
+--- a/s/prims.ss
++++ b/s/prims.ss
+@@ -605,6 +605,12 @@
+       ($oops who "~s is not a procedure" p))
+     (#3%$call-setting-continuation-attachment v (lambda () (p)))))
+ 
++(define-who $call-keeping-frame
++  (lambda (p)
++    (unless (procedure? p)
++      ($oops who "~s is not a procedure" p))
++    (#3%$call-keeping-frame (lambda () (p)))))
++
+ (define-who $call-getting-continuation-attachment
+   (lambda (default-val p)
+     (unless (procedure? p)

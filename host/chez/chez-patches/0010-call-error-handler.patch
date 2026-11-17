@@ -1,0 +1,162 @@
+diff --git a/c/globals.h b/c/globals.h
+index 1c1809d..5573481 100644
+--- a/c/globals.h
++++ b/c/globals.h
+@@ -128,6 +128,7 @@ EXTERN struct S_G_struct {
+ 
+   /* schsig.c */
+     ptr error_id;
++    ptr call_error_handler_id;
+     ptr nuate_id;
+     ptr null_continuation_id;
+     ptr collect_request_pending_id;
+diff --git a/c/schsig.c b/c/schsig.c
+index e3442e6..778e5f5 100644
+--- a/c/schsig.c
++++ b/c/schsig.c
+@@ -417,6 +417,25 @@ static void handle_call_error(ptr tc, iptr type, ptr x) {
+     iptr argcnt;
+ 
+     argcnt = (iptr)AC0(tc);
++    if (!S_errors_to_console &&
++        (type == ERROR_CALL_NONPROCEDURE ||
++         type == ERROR_CALL_NONPROCEDURE_SYMBOL ||
++         type == ERROR_CALL_ARGUMENT_COUNT)) {
++        ptr handler = SYMVAL(S_G.call_error_handler_id);
++        iptr stack_avail = (((uptr)ESP(tc) - (uptr)SFP(tc)) >> log2_ptr_bytes) - 1;
++        if (Sprocedurep(handler) && argcnt < stack_avail + asm_arg_reg_cnt) {
++            iptr i;
++            /* As in event-detour, prepend the callee without allocating a list.
++               Near the stack limit the Scheme fallback reconstructs the args. */
++            for (i = argcnt; i > 0; i--)
++                S_put_scheme_arg(tc, i+1, S_get_scheme_arg(tc, i));
++            S_put_scheme_arg(tc, 1,
++                type == ERROR_CALL_NONPROCEDURE_SYMBOL ? SYMVAL(x) : x);
++            CP(tc) = handler;
++            AC0(tc) = (ptr)(argcnt+1);
++            return;
++        }
++    }
+     arg1 = argcnt == 0 ? Snil : S_get_scheme_arg(tc, 1);
+     p = Scons(FIX(type), Scons(FIX(argcnt), Scons(x, Scons(arg1, Snil))));
+ 
+@@ -435,7 +454,7 @@ static void handle_call_error(ptr tc, iptr type, ptr x) {
+ void S_handle_docall_error() {
+     ptr tc = get_thread_context();
+ 
+-    AC0(tc) = (ptr)0;
++    /* The call-site check sets AC0 before this detour; retain its arguments. */
+     handle_call_error(tc, ERROR_CALL_NONPROCEDURE, CP(tc));
+ }
+ 
+@@ -923,6 +942,9 @@ void S_schsig_init(void) {
+         S_protect(&S_G.error_id);
+         S_G.error_id = S_intern((const unsigned char *)"$c-error");
+ 
++        S_protect(&S_G.call_error_handler_id);
++        S_G.call_error_handler_id = S_intern((const unsigned char *)"$call-error-handler-value");
++
+         S_protect(&S_G.event_and_resume_id);
+         S_G.event_and_resume_id = S_intern((const unsigned char *)"$event-and-resume");
+ 
+diff --git a/s/7.ss b/s/7.ss
+index 2451115..0960859 100644
+--- a/s/7.ss
++++ b/s/7.ss
+@@ -1310,10 +1310,26 @@
+ 
+ (define collect-notify (make-parameter #f (lambda (x) (and x #t))))
+ 
++;; A runtime may install a procedure taking the callee and its original
++;; arguments. #f leaves ordinary Chez error behavior unchanged.
++($set-top-level-value! '$call-error-handler-value #f)
++(define-who $call-error-handler
++  (case-lambda
++    [() ($top-level-value '$call-error-handler-value)]
++    [(p)
++     (unless (or (not p) (procedure? p))
++       ($oops who "~s is not a procedure or #f" p))
++     ($set-top-level-value! '$call-error-handler-value p)]))
++
+ (define $c-error
+   (lambda (arg . error-args)
+-   ; error-args may be present along doargerr path, but we presently
+-   ; ignore them
++    (define (call-handler cnt callee arg1 fallback)
++      (let ([handler ($call-error-handler)])
++        (if handler
++            (if (fx= cnt 0)
++                (handler callee)
++                (apply handler callee arg1 error-args))
++            (fallback))))
+     (define-syntax c-error-case
+       (lambda (x)
+         (syntax-case x ()
+@@ -1329,12 +1345,15 @@
+       [(ERROR_CALL_UNBOUND) (cnt symbol arg1?)
+        ($oops #f "variable ~:s is not bound" symbol)]
+       [(ERROR_CALL_NONPROCEDURE_SYMBOL) (cnt symbol arg1?)
+-       ($oops #f "attempt to apply non-procedure ~s"
+-                 ($top-level-value symbol))]
++       (call-handler cnt ($top-level-value symbol) arg1?
++         (lambda () ($oops #f "attempt to apply non-procedure ~s"
++                             ($top-level-value symbol))))]
+       [(ERROR_CALL_NONPROCEDURE) (cnt nonprocedure arg1?)
+-       ($oops #f "attempt to apply non-procedure ~s" nonprocedure)]
++       (call-handler cnt nonprocedure arg1?
++         (lambda () ($oops #f "attempt to apply non-procedure ~s" nonprocedure)))]
+       [(ERROR_CALL_ARGUMENT_COUNT) (cnt procedure arg1?)
+-       ($oops #f "incorrect number of arguments ~s to ~s" cnt procedure)]
++       (call-handler cnt procedure arg1?
++         (lambda () ($oops #f "incorrect number of arguments ~s to ~s" cnt procedure)))]
+       [(ERROR_RESET) (who msg . args)
+        ($oops who "~?.  Some debugging context lost" msg args)]
+       [(ERROR_NONCONTINUABLE_INTERRUPT) args
+diff --git a/s/cpnanopass.ss b/s/cpnanopass.ss
+index b3338c0..96ea139 100644
+--- a/s/cpnanopass.ss
++++ b/s/cpnanopass.ss
+@@ -484,9 +484,9 @@
+         (make-libspec-label 'domvleterr (lookup-libspec domvleterr)
+           (reg-list %ret %ac0))))
+     (define make-Lcall-error
+-      (lambda ()
++      (lambda (reg*)
+         (make-libspec-label 'call-error (lookup-libspec call-error)
+-          (reg-list %ret %cp))))
++          (reg-cons* %ret %cp %ac0 reg*))))
+     (define make-Levent-detour
+       (lambda ()
+         (make-libspec-label 'event-detour (lookup-libspec event-detour)
+@@ -4045,7 +4045,6 @@
+         (import (only asm-module asm-foreign-call asm-foreign-callable asm-enter))
+         (define newframe-info-for-mventry-point)
+         (define label-for-mverror-point)
+-        (define Lcall-error (make-Lcall-error))
+         (define dcl*)
+         (define local*)
+         (define max-fv)
+@@ -4198,7 +4197,10 @@
+                            (if (and maybe-info (info-call-check? maybe-info))
+                                `(if ,(%type-check mask-closure type-closure ,reg)
+                                     ,tlbody
+-                                    (seq (pariah) (goto ,Lcall-error)))
++                                    (seq (pariah)
++                                      (seq
++                                        (set! ,%ac0 (immediate ,(fx+ (length reg*) (length fv*))))
++                                        (goto ,(make-Lcall-error reg*)))))
+                                tlbody)))
+                        (if mdcl
+                            (set-cp ,(ref-reg %cp) ,(or cploc (Triv t))
+diff --git a/s/primdata.ss b/s/primdata.ss
+index 2c2c673..81bc43e 100644
+--- a/s/primdata.ss
++++ b/s/primdata.ss
+@@ -1911,6 +1911,7 @@
+   ($bytevector-uncompress [flags])
+   ($capture-fasl-target [flags single-valued])
+   ($c-error [flags])
++  ($call-error-handler [sig [() -> (ptr)] [(ptr) -> (void)]] [flags])
+   ($call-consuming-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-getting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])
+   ($call-setting-continuation-attachment [sig [(ptr procedure) -> (ptr ...)]] [flags cptypes2x cp02])

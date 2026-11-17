@@ -1,0 +1,196 @@
+diff --git a/s/cmacros.ss b/s/cmacros.ss
+index 957ba1c..57cc5d1 100644
+--- a/s/cmacros.ss
++++ b/s/cmacros.ss
+@@ -1643,6 +1643,7 @@
+    [ptr compile-profile]
+    [ptr generate-inspector-information]
+    [ptr generate-procedure-source-information]
++   [ptr generate-return-point-source-information]
+    [ptr generate-profile-forms]
+    [ptr optimize-level]
+    [ptr subset-mode]
+diff --git a/s/compile.ss b/s/compile.ss
+index 89a5643..01f3aff 100644
+--- a/s/compile.ss
++++ b/s/compile.ss
+@@ -630,6 +630,7 @@
+                    [cp0-outer-unroll-limit (cp0-outer-unroll-limit)]
+                    [generate-inspector-information (generate-inspector-information)]
+                    [generate-procedure-source-information (generate-procedure-source-information)]
++                   [generate-return-point-source-information (generate-return-point-source-information)]
+                    [$compile-profile ($compile-profile)]
+                    [generate-interrupt-trap (generate-interrupt-trap)]
+                    [$optimize-closures ($optimize-closures)]
+@@ -671,7 +672,11 @@
+                             (lambda ()
+                               (expand x0 (if (eq? (subset-mode) 'system) ($system-environment) (interaction-environment)) #t #t outfn)))])
+                   (check-prelex-flags x1 'expand)
+-                  ($uncprep x1 #t) ; populate preinfo sexpr fields
++                  ;; Source-only code needs no retained S-expressions. cpcheck
++                  ;; reconstructs the rare incorrect-arity diagnostic on demand.
++                  (unless (and (generate-return-point-source-information)
++                               (not (generate-inspector-information)))
++                    ($uncprep x1 #t)) ; populate preinfo sexpr fields
+                   (check-prelex-flags x1 'uncprep)
+                   (when source-table ($insert-profile-src! source-table x1))
+                   (when wpoop
+@@ -1797,7 +1802,9 @@
+        (unless (environment? env-spec) ($oops who "~s is not an environment" env-spec))
+        ((parameterize ([$target-machine (constant machine-type-name)] [$sfd #f])
+           (let* ([x1 (expand-Lexpand ($pass-time 'expand (lambda () (expand x0 env-spec #t))))]
+-                 [waste ($uncprep x1 #t)] ; populate preinfo sexpr fields
++                 [waste (unless (and (generate-return-point-source-information)
++                                     (not (generate-inspector-information)))
++                          ($uncprep x1 #t))] ; populate preinfo sexpr fields
+                  [waste (when (and (expand-output) (not ($noexpand? x0)))
+                           (pretty-print ($uncprep x1) (expand-output))
+                           (flush-output-port (expand-output)))]
+diff --git a/s/cpcheck.ss b/s/cpcheck.ss
+index 67290d5..d823c1a 100644
+--- a/s/cpcheck.ss
++++ b/s/cpcheck.ss
+@@ -164,11 +164,16 @@
+              (and (gensym? x)
+                   (let ([name ($symbol-name x)])
+                     (or (not (pair? name)) (not (cdr name)))))))
+-         (if (and sexpr (and (pair? sexpr) (not (ugly-gensym? (car sexpr)))))
++         (if (or (and sexpr (pair? sexpr) (not (ugly-gensym? (car sexpr))))
++                 (and (not sexpr) (generate-return-point-source-information)))
+              (let ([ctxt (make-call-context (length e*))])
+                (let ([e (Expr e ctxt)])
+                  (if (call-context-err ctxt)
+-                     (argcnt-error preinfo e e*)
++                     (begin
++                       ;; Normal source-only compiles skip the whole-tree
++                       ;; S-expression pass. Only a diagnostic needs this call.
++                       (unless sexpr ($uncprep ir #t))
++                       (argcnt-error preinfo e e*))
+                      `(call ,preinfo ,e ,e* ...))))
+              `(call ,preinfo ,(Expr e #f) ,e* ...)))]
+       [(case-lambda ,preinfo (clause (,x** ...) ,interface* ,[body* #f -> body*]) ...)
+diff --git a/s/cpnanopass.ss b/s/cpnanopass.ss
+index 0edd378..ac5367c 100644
+--- a/s/cpnanopass.ss
++++ b/s/cpnanopass.ss
+@@ -8504,8 +8504,8 @@
+                     (make-code-info
+                       (info-lambda-src info)
+                       (compile-procedure-realm)
+-                      (info-lambda-sexpr info)
+-                      (and (eq? (info-lambda-closure-rep info) 'closure)
++                      (and (generate-inspector-information) (info-lambda-sexpr info))
++                      (and (generate-inspector-information) (eq? (info-lambda-closure-rep info) 'closure)
+                            (let f ([fv* (info-lambda-fv* info)] [n 0])
+                              (if (null? fv*)
+                                  (make-vector n #f)
+@@ -9401,7 +9401,10 @@
+                 (cond
+                   [(and call-live* (info-lambda-ctci lambda-info)) =>
+                    (lambda (ctci)
+-                     (let ([mask (build-mask
++                     (if (not (generate-inspector-information))
++                         (when src
++                           (ctci-rpi*-set! ctci (cons (make-ctrpi rpl src #f 0) (ctci-rpi* ctci))))
++                         (let ([mask (build-mask
+                                    (fold-left
+                                      (lambda (i* x)
+                                        (cond
+@@ -9415,7 +9418,7 @@
+                                          [else i*]))
+                                      '() call-live*))])
+                        (when (or src sexpr (not (eqv? mask 0)))
+-                         (ctci-rpi*-set! ctci (cons (make-ctrpi rpl src sexpr mask) (ctci-rpi* ctci))))))]))))
++                         (ctci-rpi*-set! ctci (cons (make-ctrpi rpl src sexpr mask) (ctci-rpi* ctci)))))))]))))
+           (Pred : Pred (ir) -> Pred ())
+           (Tail : Tail (ir) -> Tail ()
+             [(jump ,live-info ,[t] (,var* ...)) `(jump ,live-info ,t)]
+@@ -10668,7 +10671,8 @@
+                    ; find frame homes for call-live variables; adds new fv x spillable conflicts
+                    (RApass unparse-L15a assign-frame! (filter uvar-spilled? spillable*) reg-spillinfo)
+                    #;(show-homes)
+-                   (RApass unparse-L15a record-inspector-information! info)
++                   (when (generate-inspector-information)
++                     (RApass unparse-L15a record-inspector-information! info))
+                    ; determine frame sizes at nontail-call sites and assign homes to new-frame variables
+                    ; adds new fv x spillable conflicts
+                    (let ([dummy (RApass unparse-L15b assign-new-frame! (with-output-language (L15a Dummy) `(dummy)) info live-size varvec reg-spillinfo block*)])
+diff --git a/s/cpprim.ss b/s/cpprim.ss
+index d1a77c7..c47d90e 100644
+--- a/s/cpprim.ss
++++ b/s/cpprim.ss
+@@ -3586,6 +3586,7 @@
+       (define-tc-parameter current-error-port current-error)
+       (define-tc-parameter generate-inspector-information generate-inspector-information)
+       (define-tc-parameter generate-procedure-source-information generate-procedure-source-information)
++      (define-tc-parameter generate-return-point-source-information generate-return-point-source-information)
+       (define-tc-parameter generate-profile-forms generate-profile-forms)
+       (define-tc-parameter $compile-profile compile-profile)
+       (define-tc-parameter optimize-level optimize-level)
+diff --git a/s/np-info.ss b/s/np-info.ss
+index 675fe13..3b3e308 100644
+--- a/s/np-info.ss
++++ b/s/np-info.ss
+@@ -30,7 +30,9 @@
+            ((pargs->new) src sexpr libspec interface*
+             (map (lambda (iface) (make-direct-call-label 'dcl)) interface*)
+             (if (eq? (subset-mode) 'system) (fxlogor flags (constant code-flag-system)) flags)
+-            '() name #f 'closure (and (generate-inspector-information) (make-ctci)) '() ($np-next-lambda-seqno))])))))
++            '() name #f 'closure (and (or (generate-inspector-information)
++                                        (generate-return-point-source-information))
++                                    (make-ctci)) '() ($np-next-lambda-seqno))])))))
+ 
+ (define-record-type info-call
+   (nongenerative #{info-call bcpkdd2y9yyv643zicd4jbe3y-3})
+diff --git a/s/patch.ss b/s/patch.ss
+index 5bf1f9a..c1e58fb 100644
+--- a/s/patch.ss
++++ b/s/patch.ss
+@@ -15,6 +15,11 @@
+ 
+ (printf "loading ~s cross compiler~%" (constant machine-type-name))
+ 
++;; The bootstrapping host predates this optional compiler parameter.
++(meta-cond
++  [(not (#%$top-level-bound? 'generate-return-point-source-information))
++   (set! generate-return-point-source-information (make-parameter #f))])
++
+ ; (current-expand (lambda args (apply sc-expand args)))
+ ; (current-eval (lambda args (apply interpret args)))
+ 
+diff --git a/s/primdata.ss b/s/primdata.ss
+index 3a0ffce..8bcbde1 100644
+--- a/s/primdata.ss
++++ b/s/primdata.ss
+@@ -976,6 +976,7 @@
+   (generate-instruction-counts [sig [() -> (boolean)] [(ptr) -> (void)]] [flags unrestricted])
+   (generate-interrupt-trap [sig [() -> (boolean)] [(ptr) -> (void)]] [flags unrestricted])
+   (generate-procedure-source-information [sig [() -> (boolean)] [(ptr) -> (void)]] [flags unrestricted])
++  (generate-return-point-source-information [sig [() -> (boolean)] [(ptr) -> (void)]] [flags unrestricted])
+   (generate-profile-forms [sig [() -> (boolean)] [(ptr) -> (void)]] [flags unrestricted])
+   (generate-wpo-files [sig [() -> (boolean)] [(ptr) -> (void)]] [flags])
+   (gensym-count [sig [() -> (uint)] [(uint) -> (void)]] [flags])
+diff --git a/s/prims.ss b/s/prims.ss
+index 216e21f..81087d3 100644
+--- a/s/prims.ss
++++ b/s/prims.ss
+@@ -2273,6 +2273,7 @@
+              (name init))])))
+   (define-boolean-tc-parameter generate-inspector-information #t)
+   (define-boolean-tc-parameter generate-procedure-source-information #f)
++  (define-boolean-tc-parameter generate-return-point-source-information #f)
+   (define-boolean-tc-parameter generate-profile-forms #t)
+   (define-boolean-tc-parameter $suppress-primitive-inlining #f)
+ )
+diff --git a/s/reboot.ss b/s/reboot.ss
+index b82b570..eb033cf 100644
+--- a/s/reboot.ss
++++ b/s/reboot.ss
+@@ -429,6 +429,7 @@
+ (define-primitive enable-type-recovery (make-parameter #f))
+ (define-primitive enable-error-source-expression (make-parameter #f))
+ (define-primitive compile-procedure-realm (make-parameter #f))
++(define-primitive generate-return-point-source-information (make-parameter #f))
+ (define-primitive compile-omit-concatenate-support (make-parameter #f))
+ (define-primitive enable-arithmetic-left-associative (make-parameter #f))
+ (define-primitive self-evaluating-vectors (make-parameter #f))
