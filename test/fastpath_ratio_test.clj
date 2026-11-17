@@ -108,9 +108,11 @@
 ;;   instance-site-type its last type argument and receiver kind, so a repeat is
 ;;                      two eq?s and an epoch compare — the shape of the JVM's
 ;;                      inlined instanceof, where the memo path still interned the
-;;                      type name and read two tables per call. Held BELOW a
-;;                      protocol call: the site measures 0.32 (quoted name) and
-;;                      0.42 (a deftype as T) of one; without it, 1.15-1.95.
+;;                      type name and read two tables per call. Held near a
+;;                      protocol call: the site measured 0.32 (quoted name) and
+;;                      0.42 (a deftype as T) of one before the call got its
+;;                      own inline cache, about 0.75-0.9 of the cached call
+;;                      now; without the site cache, 1.15-1.95 of the uncached.
 ;;
 ;;   reify-construct    (reify …) built a {kw fn} map and then a hashtable from it
 ;;                      per instance (~310 ns against the JVM's ~25). The layout is
@@ -580,16 +582,19 @@
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 42))
           4.0)
 
-  ;; The site cache: cheaper than the protocol call it is measured against.
-  ;; A protocol fn carries its own inline cache since #1652/#1646, which
-  ;; brought the call down to about what a site costs with a deftype as T
-  ;; (0.90 on CI, 1.01 on a slow box, against the 0.42 the uncached call
-  ;; gave), so that arm's ceiling is 1.2. A site with no cache measured
-  ;; 1.15-1.95 against the uncached call, so well past 1.2 against this one.
+  ;; The site cache: about what the protocol call it is measured against
+  ;; costs. A protocol fn carries its own inline cache since #1652/#1646, and
+  ;; the call got about twice as fast again in the merges from #1690 to #1702
+  ;; (32 ms per million on x86_64 Linux, where it was 68; instance? stayed at
+  ;; 23). So both arms read near what a site costs: instance-site 0.75 locally
+  ;; and 0.85 on CI, where it failed the 0.8 ceiling it kept from the slower
+  ;; call, and instance-site-type 0.90 on CI and 1.01 on a slow box. Both
+  ;; ceilings are 1.2. A site with no cache measured 1.15-1.95 of the old
+  ;; call, about 2.4-4 of this one, so still well past 1.2.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          0.8)
+          1.2)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
