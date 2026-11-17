@@ -67,6 +67,7 @@
 ;; a multimethod is CODE: a var holding one travels in a state image as the var's
 ;; NAME, the way a named fn does, instead of having its dispatch tables walked.
 (register-code-value! jolt-multifn?)
+(set! jolt-invoke-multifn? jolt-multifn?)   ; seq.ss's fixed-arity invokes
 
 (define kw-default (keyword #f "default"))
 ;; a key no dispatch value is eq? to (mm-resolve's inline cache, below)

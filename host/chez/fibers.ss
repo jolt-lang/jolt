@@ -875,6 +875,19 @@
 ;; — so this lands the preemption just after the region instead of a whole
 ;; quantum later.
 (define (jolt-fiber-preempt-retry-ticks) jolt-fiber-preempt-ticks-min)
+;; The C-call chain this thread's drain started under (sa-foreign-call-chain).
+;; A fiber running with any other chain is inside a foreign callback: C frames
+;; sit on the carrier's stack under it, and switching away lets another fiber
+;; call into C over them, so the first one's return raises `attempt to return to
+;; stale foreign context`. The callback body holds the lock count too
+;; (java/ffi.ss jolt-ffi-callable-body), but only from inside its dynamic-wind:
+;; the callback's own entry, where Chez checks the timer before any of its code
+;; runs, is outside it. A preemption deferred inside one callback is retried a
+;; few ticks later, which is very often exactly the next callback's entry, under
+;; the same C caller -- 45 of 50 fibers sorting through a qsort comparator lost
+;; themselves there once calls got cheaper (#1713). The chain covers every point
+;; of the callback, entry included.
+(define jolt-carrier-base-cchain (make-thread-parameter #f))
 
 (define (jolt-fiber-preempt-handler)
   (let ((f (jolt-current-fiber)))
@@ -925,6 +938,10 @@
       ;; the request instead would quietly restore starvation for a fiber that is
       ;; inside a region whenever the timer fires.
       ((fx>? (jolt-locks-held) 0)
+       (jolt-tick-preempt! (jolt-fiber-preempt-retry-ticks)))
+      ;; INSIDE A FOREIGN CALLBACK, as the lock arm defers, and for the reason
+      ;; jolt-carrier-base-cchain gives.
+      ((not (eq? (sa-foreign-call-chain) (jolt-carrier-base-cchain)))
        (jolt-tick-preempt! (jolt-fiber-preempt-retry-ticks)))
       ;; The same transition sa-fiber-yield makes, under the same rule: the
       ;; state change, the enqueue and the switch are one step. The timer this
@@ -1607,6 +1624,7 @@
 ;; restores onto the carrier.
 (define (jolt-fiber-drain! c)
   (jolt-fiber-install-preempt-handler!)
+  (jolt-carrier-base-cchain (sa-foreign-call-chain))
   ;; The carrier's own interrupt depth, measured once per drain. Every fiber is
   ;; put back to this before the scheduler runs again, and a first run starts
   ;; here. Measured rather than assumed 0, because a drain can be entered from

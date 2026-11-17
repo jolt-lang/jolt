@@ -2132,6 +2132,13 @@
 ;; carries its own range proof; here each is the #3% primitive — what the
 ;; whole runtime would be at optimize-level 3, applied to the one loop that
 ;; has proven it.
+;; (sa-foreign-call-chain) -> this thread's chain of C-call frames, a list Chez
+;; extends when C calls back into Scheme and restores, the same object, when the
+;; callback returns. The fiber scheduler compares it with the chain its drain
+;; started under to tell that the running fiber is inside a foreign callback
+;; (fibers.ss jolt-fiber-preempt-handler). Not a CONTRACT.txt name: only the
+;; Chez scheduler asks it, and Gambit has no fibers.
+(define (sa-foreign-call-chain) (#%$tc-field 'cchain (#%$tc)))
 ;; (sa-record-rtd x) -> x's exact record-type descriptor, or #f when x is not a
 ;; record. (sa-record-slot r i) -> field I of record R, inherited fields first,
 ;; unchecked: the caller has proven R's type has that field (by an eq? on the
