@@ -207,6 +207,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains an underscore, so a name without one now skips the lookup. A
   generated 200k-line project with 1,106 records and 1,070 `extend-*` forms
   loads from the AOT cache in 1.9 s instead of 2.6 s.
+- **Traced code compiles faster, recovering most of 0.8.23's cold-start
+  regression (#1645).** Stack-trace tracing puts the site slot back after every
+  non-tail call, and since 0.8.23 that meant saving and restoring two slots at
+  each one. HoneySQL's suite has ~20k such sites, and Chez compiled the traced
+  code ~40% slower than untraced. A fn now reads the slot once when it is
+  entered, and each site is one store after the call returns, with a tail site's
+  pair boxed so a single slot tells the innermost erased frame from the nearest
+  one further out. Stack traces are unchanged. On a cold cache the HoneySQL
+  suite runs in 39.4 s instead of 44.8 s (37.5 s with `JOLT_TRACE=0`), and a
+  release `jolt build` of a generated 2,000-fn app takes 22.5 s instead of
+  37.5 s. Two new gates watch this: `make tracecompilecost` holds the traced
+  compile of real code within 1.40x of the untraced one, measured in one
+  process, and the release bench gate gains a `compile` row timing a cold source
+  load against the previous release.
 
 ### Fixed
 
@@ -220,6 +234,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol method keeps its caller too: the call site names the protocol fn,
   and the live frame is now matched to it through the impl (a deftype's,
   defrecord's, reify's or extend's method).
+- **Follow-ups to #1687 and #1689.** A program's own `sun.misc.Signal`
+  handler for INT now outranks the REPL's ^C, as it would on the JVM;
+  `SIG_DFL` gives ^C back to the REPL. The signal relay's reader stops if
+  its pipe is closed under it, rather than spinning on failed reads. A
+  defrecord's `.entrySet` is `(set this)`, in hash order, as on the JVM,
+  and `jsonista.core` writes a record's fields in that order, as Jackson
+  does.
 
 - **A deftype no longer answers for a host class that shares its simple
   name.** A qualified class with no constructor of its own, such as

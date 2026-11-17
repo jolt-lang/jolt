@@ -1105,6 +1105,11 @@
      (list (apply jolt-hash-set (seq->list (jolt-keys obj)))))
     ((and (jolt-map? obj) (string=? name "values"))
      (list (apply jolt-vector (seq->list (jolt-vals obj)))))
+    ;; A defrecord's entrySet is (set this) on the JVM, a PersistentHashSet in
+    ;; hash order; any other map's iterates in the map's own order. Jackson walks
+    ;; a record through it, so jsonista writes record fields in this order.
+    ((and (jolt-map? obj) (string=? name "entrySet") (jrec-record? obj))
+     (list (apply jolt-hash-set (seq->list (jolt-seq obj)))))
     ((and (jolt-map? obj) (string=? name "entrySet")) (list (jolt-seq obj)))
     ;; (.iterator coll): a java.util.Iterator over the seq — for a map this is the
     ;; entry iterator. Without this a map's .iterator falls into the map-as-object
