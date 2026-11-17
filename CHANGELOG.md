@@ -173,6 +173,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
   rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
   and `clojure.tools.reader/read-string` ~13% less.
+- **A record carries its metadata in a slot of its own (#1713).** `with-meta`
+  on a defrecord or deftype instance used to copy the record and insert it into
+  a weak identity table under a lock: ~440 ns, against ~32 for a vector, and
+  every record carrying metadata was a weak entry for the collector. It is now
+  one copy with the metadata in the record (~66 ns), and `assoc` keeps it.
+  rewrite-clj attaches position metadata to every node it parses:
+  `parse-string` takes ~30% less time and `parse-string-all` ~26% less. As on
+  the JVM, `with-meta` on a record always returns a new record. State images
+  move to format 15; older images still restore.
 - **A call through a var is open-coded at the call site (#1713).** On Chez,
   compiled code reads the var's value and applies a procedure directly,
   where it used to call into the runtime twice first. A protocol fn's inline
