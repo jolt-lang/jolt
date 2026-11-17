@@ -1454,13 +1454,6 @@
                   (else body))))
             body)))))
 
-;; Where a throw's erased chain goes among the live frames: how many of them stay
-;; above it. The pair's tail call went to a fn; when that fn is still a live frame
-;; -- it threw from a non-tail call of its own, or from something it called -- the
-;; chain was its caller and goes right below it, not above everything as the
-;; innermost frame. Of the frames running that fn, the first whose own caller
-;; calls the chain's outermost fn; else the first; else none of them is live (the
-;; call went to host code, which threw) and the chain is innermost.
 ;; A protocol method's impls by procedure name: "jfn$ns/$n" -> the method vars
 ;; ("ns/m") it implements. A call site registers the protocol fn as its callee,
 ;; but the frame that runs is the impl's (a deftype's, a defrecord's, a reify's or
@@ -1488,12 +1481,22 @@
               (hashtable-set! jolt-proto-impl-names nm (cons fqn cur)))))))))
 (set! protocol-impl-hook jolt-note-proto-impl!)
 ;; Whether frame F runs one of CALLEES: the fn itself, or an impl of a protocol
-;; method among them.
+;; method among them. The table is read under its mutex too: an impl can
+;; register on another thread while a trace is being reported, and a Chez
+;; hashtable is not safe to read while another thread resizes it.
 (define (jolt-frame-runs-callee? f callees)
   (let ((nm (srcreg-frame-nm f)))
     (or (and (member nm callees) #t)
         (exists (lambda (fqn) (and (member fqn callees) #t))
-                (hashtable-ref jolt-proto-impl-names nm '())))))
+                (jolt-with-mutex jolt-proto-impl-mu
+                  (hashtable-ref jolt-proto-impl-names nm '()))))))
+;; Where a throw's erased chain goes among the live frames: how many of them stay
+;; above it. The pair's tail call went to a fn; when that fn is still a live frame
+;; -- it threw from a non-tail call of its own, or from something it called -- the
+;; chain was its caller and goes right below it, not above everything as the
+;; innermost frame. Of the frames running that fn, the first whose own caller
+;; calls the chain's outermost fn; else the first; else none of them is live (the
+;; call went to host code, which threw) and the chain is innermost.
 (define (jolt-site-landing site path body)
   (let ((callees (jolt-callsite-callees (car site) (jolt-marker-entry-line (cdr site))))
         (outer-fn (car (list-ref path (fx- (length path) 1)))))
