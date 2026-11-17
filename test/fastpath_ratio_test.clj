@@ -244,6 +244,11 @@
 ;;                      index through an out-of-line call before the in-range read
 ;;                      (against nth: 1.36 -> 0.98). Measured x86_64, 2026-11-17.
 ;;
+;;   record-with-meta   a record's metadata lived in the weak identity side
+;;                      table, so with-meta was a copy plus a weak-table insert
+;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
+;;                      slot of the record now (values.ss jrec), ~66 ns.
+;;
 (ns fastpath-ratio-test
   (:require [clojure.string :as str]))
 
@@ -509,6 +514,10 @@
 (def ^:private gate-sb (doto (StringBuilder.) (.append "token")))
 (def ^:private gate-str "abcdefgh")
 (def ^:private gate-n 1000000)
+(defrecord GateMetaRec [a b])
+(def ^:private gate-meta-rec (->GateMetaRec 1 2))
+(def ^:private gate-meta-vec [1 2])
+(def ^:private gate-meta {:row 1 :col 2})
 
 (defn -main [& _]
   (spit src-path source-text)
@@ -771,6 +780,14 @@
           #(let [v gate-vec] (dotimes [i gate-n] (nth v 3)))
           #(let [^String x gate-str] (dotimes [i gate-n] (.charAt x 3)))
           1.2)
+  ;; A record's metadata is a slot of its own, like a vector's: with-meta on a
+  ;; record costs about what it costs on a vector. It was a weak identity-table
+  ;; insert under a lock, ~14x the vector's (rewrite-clj attaches position meta
+  ;; to every node it reads).
+  (judge! "record-with-meta"
+          #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
+          #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))
+          4.0)
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints

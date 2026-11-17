@@ -17,7 +17,12 @@
 ;; exists to prevent. coll-meta-set! is the only writer, and every caller of it
 ;; holds a fresh instance.
 ;;
-;; Everything else that can carry meta — a defrecord/deftype instance, a reify,
+;; A defrecord/deftype instance has a meta slot too (values.ss jrec), filled the
+;; same way: with-meta copies the record with the meta in it, and assoc's copy
+;; (make-jrec-from-existing) keeps the source's. A deftype that implements IObj
+;; itself keeps its meta where its own methods put it.
+;;
+;; Everything else that can carry meta — a reify,
 ;; a fn, a sorted collection (host-table.ss) — keeps it in the identity-keyed
 ;; side table below: with-meta returns a fresh COPY of the value (new identity)
 ;; and records its meta there, so the original is unchanged and a copy made by
@@ -180,8 +185,13 @@
     ;; it through its own assoc/withMeta (core.logic's Substitutions/LVar/LCons),
     ;; so dispatch to its meta method rather than the identity side-table — which
     ;; the deftype's reconstructed instances would not share.
-    ((and (jrec? x) (jrec-cl x "meta")) => (lambda (m) (jolt-invoke m x)))
-    ;; everything else (records, fns, reify, atoms/agents and any reference type)
+    ;; Every other record carries its meta in its own slot (values.ss jrec). A
+    ;; plain record declares no meta method (records-coll.ss), so it skips the
+    ;; method-table lookup altogether.
+    ((jrec? x)
+     (let ((meth (and (not (jrec-plain? x)) (jrec-cl x "meta"))))
+       (if meth (jolt-invoke meth x) (jrec-meta x))))
+    ;; everything else (fns, reify, atoms/agents and any reference type)
     ;; reads the identity side-table; a value with no entry is nil meta.
     ;; no such metadata anywhere: skip the table entirely
     ((meta-table-empty?) jolt-nil)
@@ -223,6 +233,12 @@
     (jolt-with-mutex fn-meta-mu (hashtable-set! fn-meta-targets w t))
     w))
 
+;; A fresh copy of record X carrying M in its slot: one allocation sharing X's
+;; fields (make-jrec-from-existing), the slot written before anyone else holds it.
+(define (jrec-with-meta x m)
+  (let ((c (make-jrec-from-existing x #f #f (jrec-ext x))))
+    (jrec-meta-set! c m)
+    c))
 (define (meta-copy x)
   (cond
     ((jrec? x) (make-jrec-from-existing x #f #f (jrec-ext x)))
@@ -249,8 +265,13 @@
     ((coll-meta x) => (lambda (cur) (if (eq? cur m) x (coll-with-meta x m))))
     ;; a deftype with an explicit clojure.lang.IObj withMeta carries meta in a
     ;; field; dispatch to it (see jolt-meta) so the meta survives reconstruction.
-    ((and (jrec? x) (jrec-cl x "withMeta")) => (lambda (meth) (jolt-invoke meth x m)))
-    ((or (jrec? x) (jreify? x) (procedure? x))
+    ;; Every other record: a copy with the meta in its slot. Always a copy, as a
+    ;; defrecord's generated withMeta is `new R(...)`; Obj's identity shortcut is
+    ;; the collections', not a record's.
+    ((jrec? x)
+     (let ((meth (and (not (jrec-plain? x)) (jrec-cl x "withMeta"))))
+       (if meth (jolt-invoke meth x m) (jrec-with-meta x m))))
+    ((or (jreify? x) (procedure? x))
      (if (eq? (jolt-meta x) m)
          x
          (let ((c (meta-copy x)))
@@ -300,11 +321,16 @@
         ((pset? src) (slot-carry (pset-meta src) dst))
         ((jolt-lazyseq? src) (slot-carry (jolt-lazyseq-meta src) dst))
         ((empty-list-t? src) (slot-carry (empty-list-t-meta src) dst))
+        ((jrec? src) (slot-carry (jrec-meta src) dst))
         ((meta-table-empty?) dst)
         (else (let ((m (meta-table-get src))) (if m (meta-attach dst m) dst)))))
 (define (meta-attach dst m)
   (let ((cur (coll-meta dst)))
     (cond (cur (if (eq? cur m) dst (coll-with-meta dst m)))
+          ;; a record made by the op (assoc copies the source's slot, so this is
+          ;; usually already eq?) -- or one it handed back unchanged, which is why
+          ;; this copies rather than writing the slot of a value others may hold
+          ((jrec? dst) (if (eq? (jrec-meta dst) m) dst (jrec-with-meta dst m)))
           (else (meta-table-set! dst m) dst))))
 ;; conj's carry: the receiver kinds whose JVM cons threads meta are the
 ;; collections and a PersistentList — a list cell, and (), whose cons builds a

@@ -413,7 +413,7 @@
                   (let [n (count as)
                         as (vec (map coerce-arg arg-tags arg-nodes as))]
                     (if (<= n 8)
-                      (str "(make-jrec" n " " cached-desc " jolt-nil 0"
+                      (str "(make-jrec" n " " cached-desc " jolt-nil 0 jolt-nil"
                            (when (pos? n) (str " " (str/join " " as))) ")")
                       (str "(let ((v (vector " (str/join " " as) "))) (make-jrec " cached-desc " v jolt-nil))")))))))
 

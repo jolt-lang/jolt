@@ -652,7 +652,7 @@
   (syntax-rules ()
     ((_ mk desc co slow (a ...) (i ...))
      (case-lambda
-       ((a ...) (mk desc jolt-nil 0 (if (and co (vector-ref co i)) (jolt-rec-dbl a) a) ...))
+       ((a ...) (mk desc jolt-nil 0 jolt-nil (if (and co (vector-ref co i)) (jolt-rec-dbl a) a) ...))
        (args (slow args))))))
 (define (make-deftype-ctor name-sym field-kws . rest-args)
   (let* ((tag (string-append (chez-current-ns) "." (symbol-t-name name-sym)))
@@ -726,7 +726,7 @@
                    ;; not a case-lambda: a 0-arity clause beside a bare rest clause is the
                    ;; pair Gambit's expander drops the rest parameter of
                    ;; (backend_scheme.clj emit-fn)
-                   ((0) (lambda args (if (null? args) (make-jrec0 desc jolt-nil 0) (slow args))))
+                   ((0) (lambda args (if (null? args) (make-jrec0 desc jolt-nil 0 jolt-nil) (slow args))))
                    ((1) (jrec-fixed-ctor make-jrec1 desc co slow (a0) (0)))
                    ((2) (jrec-fixed-ctor make-jrec2 desc co slow (a0 a1) (0 1)))
                    ((3) (jrec-fixed-ctor make-jrec3 desc co slow (a0 a1 a2) (0 1 2)))

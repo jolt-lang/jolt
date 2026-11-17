@@ -24,51 +24,51 @@
 (define-record-type (jrec1 make-jrec1 jrec1?)
   (parent jrec)
   (fields (mutable f0))
-  (nongenerative chez-jrec1v2))
+  (nongenerative chez-jrec1v3))
 
 (define-record-type (jrec2 make-jrec2 jrec2?)
   (parent jrec)
   (fields (mutable f0) (mutable f1))
-  (nongenerative chez-jrec2v2))
+  (nongenerative chez-jrec2v3))
 
 (define-record-type (jrec3 make-jrec3 jrec3?)
   (parent jrec)
   (fields (mutable f0) (mutable f1) (mutable f2))
-  (nongenerative chez-jrec3v2))
+  (nongenerative chez-jrec3v3))
 
 (define-record-type (jrec4 make-jrec4 jrec4?)
   (parent jrec)
   (fields (mutable f0) (mutable f1) (mutable f2) (mutable f3))
-  (nongenerative chez-jrec4v2))
+  (nongenerative chez-jrec4v3))
 
 (define-record-type (jrec5 make-jrec5 jrec5?)
   (parent jrec)
   (fields (mutable f0) (mutable f1) (mutable f2) (mutable f3)
     (mutable f4))
-  (nongenerative chez-jrec5v2))
+  (nongenerative chez-jrec5v3))
 
 (define-record-type (jrec6 make-jrec6 jrec6?)
   (parent jrec)
   (fields (mutable f0) (mutable f1) (mutable f2) (mutable f3)
     (mutable f4) (mutable f5))
-  (nongenerative chez-jrec6v2))
+  (nongenerative chez-jrec6v3))
 
 (define-record-type (jrec7 make-jrec7 jrec7?)
   (parent jrec)
   (fields (mutable f0) (mutable f1) (mutable f2) (mutable f3)
     (mutable f4) (mutable f5) (mutable f6))
-  (nongenerative chez-jrec7v2))
+  (nongenerative chez-jrec7v3))
 
 (define-record-type (jrec8 make-jrec8 jrec8?)
   (parent jrec)
   (fields (mutable f0) (mutable f1) (mutable f2) (mutable f3)
     (mutable f4) (mutable f5) (mutable f6) (mutable f7))
-  (nongenerative chez-jrec8v2))
+  (nongenerative chez-jrec8v3))
 
 (define-record-type (jrec* make-jrec* jrec*?)
   (parent jrec)
   (fields (mutable vals))
-  (nongenerative chez-jrecsp-v2))
+  (nongenerative chez-jrecsp-v3))
 
 (define (jrec-nfields r)
   (cond
@@ -287,42 +287,40 @@
     make-jrec4 make-jrec5 make-jrec6 make-jrec7 make-jrec8))
 
 (define (make-jrec-from-existing src ov ov-val ext)
-  (let ((desc (jrec-desc src)))
+  (let ((desc (jrec-desc src)) (meta (jrec-meta src)))
     (case (jrdesc-nfields desc)
-      ((0) (make-jrec0 desc ext 0))
+      ((0) (make-jrec0 desc ext 0 meta))
       ((1)
-       (make-jrec1
-         desc
-         ext
-         0
+       (make-jrec1 desc ext 0 meta
          (if (eq? ov 0) ov-val (jrec1-f0 src))))
       ((2)
-       (make-jrec2 desc ext 0 (if (eq? ov 0) ov-val (jrec2-f0 src))
+       (make-jrec2 desc ext 0 meta
+         (if (eq? ov 0) ov-val (jrec2-f0 src))
          (if (eq? ov 1) ov-val (jrec2-f1 src))))
       ((3)
-       (make-jrec3 desc ext 0 (if (eq? ov 0) ov-val (jrec3-f0 src))
+       (make-jrec3 desc ext 0 meta (if (eq? ov 0) ov-val (jrec3-f0 src))
          (if (eq? ov 1) ov-val (jrec3-f1 src))
          (if (eq? ov 2) ov-val (jrec3-f2 src))))
       ((4)
-       (make-jrec4 desc ext 0 (if (eq? ov 0) ov-val (jrec4-f0 src))
+       (make-jrec4 desc ext 0 meta (if (eq? ov 0) ov-val (jrec4-f0 src))
          (if (eq? ov 1) ov-val (jrec4-f1 src))
          (if (eq? ov 2) ov-val (jrec4-f2 src))
          (if (eq? ov 3) ov-val (jrec4-f3 src))))
       ((5)
-       (make-jrec5 desc ext 0 (if (eq? ov 0) ov-val (jrec5-f0 src))
+       (make-jrec5 desc ext 0 meta (if (eq? ov 0) ov-val (jrec5-f0 src))
          (if (eq? ov 1) ov-val (jrec5-f1 src))
          (if (eq? ov 2) ov-val (jrec5-f2 src))
          (if (eq? ov 3) ov-val (jrec5-f3 src))
          (if (eq? ov 4) ov-val (jrec5-f4 src))))
       ((6)
-       (make-jrec6 desc ext 0 (if (eq? ov 0) ov-val (jrec6-f0 src))
+       (make-jrec6 desc ext 0 meta (if (eq? ov 0) ov-val (jrec6-f0 src))
          (if (eq? ov 1) ov-val (jrec6-f1 src))
          (if (eq? ov 2) ov-val (jrec6-f2 src))
          (if (eq? ov 3) ov-val (jrec6-f3 src))
          (if (eq? ov 4) ov-val (jrec6-f4 src))
          (if (eq? ov 5) ov-val (jrec6-f5 src))))
       ((7)
-       (make-jrec7 desc ext 0 (if (eq? ov 0) ov-val (jrec7-f0 src))
+       (make-jrec7 desc ext 0 meta (if (eq? ov 0) ov-val (jrec7-f0 src))
          (if (eq? ov 1) ov-val (jrec7-f1 src))
          (if (eq? ov 2) ov-val (jrec7-f2 src))
          (if (eq? ov 3) ov-val (jrec7-f3 src))
@@ -330,7 +328,7 @@
          (if (eq? ov 5) ov-val (jrec7-f5 src))
          (if (eq? ov 6) ov-val (jrec7-f6 src))))
       ((8)
-       (make-jrec8 desc ext 0 (if (eq? ov 0) ov-val (jrec8-f0 src))
+       (make-jrec8 desc ext 0 meta (if (eq? ov 0) ov-val (jrec8-f0 src))
          (if (eq? ov 1) ov-val (jrec8-f1 src))
          (if (eq? ov 2) ov-val (jrec8-f2 src))
          (if (eq? ov 3) ov-val (jrec8-f3 src))
@@ -341,14 +339,14 @@
       (else
        (let ((nv (jrec-vec-copy (jrec*-vals src))))
          (when ov (vector-set! nv ov ov-val))
-         (make-jrec* desc ext 0 nv))))))
+         (make-jrec* desc ext 0 meta nv))))))
 
 (define (make-jrec desc vals ext)
   (let ((n (vector-length vals)))
     (if (fx<= n 8)
-        (apply (vector-ref jrec-ctor-vec n) desc ext 0
+        (apply (vector-ref jrec-ctor-vec n) desc ext 0 jolt-nil
           (vector->list vals))
-        (make-jrec* desc ext 0 vals))))
+        (make-jrec* desc ext 0 jolt-nil vals))))
 
 (define jrec-fast-type-probe
   (make-jrec 'fast-type-probe (vector) jolt-nil))
@@ -1146,7 +1144,7 @@
     "equals" "hasheq" "hashCode" "kvreduce" "reduce" "iterator"
     "nth" "peek" "pop" "first" "next" "more" "length" "charAt"
     "size" "isEmpty" "containsValue" "keySet" "values"
-    "entrySet"))
+    "entrySet" "meta" "withMeta"))
 
 (define (jrec-plain? x)
   (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
@@ -2170,7 +2168,7 @@
     ((_ mk desc co slow (a ...) (i ...))
      (case-lambda
        ((a ...)
-        (mk desc jolt-nil 0
+        (mk desc jolt-nil 0 jolt-nil
             (if (and co (vector-ref co i)) (jolt-rec-dbl a) a) ...))
        (args (slow args))))))
 
@@ -2244,7 +2242,7 @@
                  ((0)
                   (lambda args
                     (if (null? args)
-                        (make-jrec0 desc jolt-nil 0)
+                        (make-jrec0 desc jolt-nil 0 jolt-nil)
                         (slow args))))
                  ((1) (jrec-fixed-ctor make-jrec1 desc co slow (a0) (0)))
                  ((2)

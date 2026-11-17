@@ -318,7 +318,10 @@
   '("count" "containsKey" "contains" "assoc" "assocEx" "without" "seq" "cons"
     "empty" "valAt" "get" "entryAt" "equiv" "equals" "hasheq" "hashCode"
     "kvreduce" "reduce" "iterator" "nth" "peek" "pop" "first" "next" "more"
-    "length" "charAt" "size" "isEmpty" "containsValue" "keySet" "values" "entrySet"))
+    "length" "charAt" "size" "isEmpty" "containsValue" "keySet" "values" "entrySet"
+    ;; and IObj's pair, so a plain record's meta and with-meta read and copy the
+    ;; slot without asking the method table first (natives-meta.ss)
+    "meta" "withMeta"))
 (define (jrec-plain? x) (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
 ;; The impl a record type declares for METHOD (any protocol), or #f. Every
 ;; collection op on a record asks this first — equality asks it for equiv and
