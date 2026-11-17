@@ -1183,8 +1183,30 @@
                                     (else mid))))
                        (name (srcreg-strip-il (substring nm (fx+ i2 1) n))))
                   (string-append ns "/" (if (fx=? (string-length def) 0) "" (string-append def "/")) name)))))))
+;; An anonymous fn whose def has no source registered (jolt's own seed code,
+;; a def made at the REPL before tracing) still has a name that says which def
+;; it is in: jfn$<ns>/<def>$<n>. It reads the way Clojure demunges the JVM's
+;; ns$def$fn__n, ns/def/fn--n (ns/fn--n with no def), never as the emitter's
+;; internal spelling. #f for any other name.
+(define (srcreg-jfn-display nm)
+  (let ((n (string-length nm)))
+    (and (fx>? n 4) (string=? (substring nm 0 4) "jfn$")
+         (let* ((slash (let find ((i 4)) (cond ((fx=? i n) #f)
+                                               ((char=? (string-ref nm i) #\/) i)
+                                               (else (find (fx+ i 1))))))
+                (dollar (and slash (let find ((i (fx- n 1)))
+                                     (cond ((fx<=? i slash) #f)
+                                           ((char=? (string-ref nm i) #\$) i)
+                                           (else (find (fx- i 1))))))))
+           (and dollar (fx>? slash 4)
+                (let ((ns (substring nm 4 slash))
+                      (def (substring nm (fx+ slash 1) dollar))
+                      (k (substring nm (fx+ dollar 1) n)))
+                  (string-append ns "/" (if (fx=? (string-length def) 0) "" (string-append def "/"))
+                                 "fn--" k)))))))
 (define (srcreg-display-name nm)
   (or (srcreg-literal-display nm)
+      (srcreg-jfn-display nm)
       (srcreg-strip-il nm)))
 
 (define (srcreg-frame name record line) (vector name record line))
