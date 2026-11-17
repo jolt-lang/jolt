@@ -888,6 +888,10 @@
 ;; themselves there once calls got cheaper (#1713). The chain covers every point
 ;; of the callback, entry included.
 (define jolt-carrier-base-cchain (make-thread-parameter #f))
+;; Through the adapter, like the winder chain above; without it every chain
+;; reads #f, the base included, so the arm below never defers.
+(define jolt-foreign-call-chain
+  (guard (e (#t (lambda () #f))) sa-foreign-call-chain))
 
 (define (jolt-fiber-preempt-handler)
   (let ((f (jolt-current-fiber)))
@@ -941,7 +945,7 @@
        (jolt-tick-preempt! (jolt-fiber-preempt-retry-ticks)))
       ;; INSIDE A FOREIGN CALLBACK, as the lock arm defers, and for the reason
       ;; jolt-carrier-base-cchain gives.
-      ((not (eq? (sa-foreign-call-chain) (jolt-carrier-base-cchain)))
+      ((not (eq? (jolt-foreign-call-chain) (jolt-carrier-base-cchain)))
        (jolt-tick-preempt! (jolt-fiber-preempt-retry-ticks)))
       ;; The same transition sa-fiber-yield makes, under the same rule: the
       ;; state change, the enqueue and the switch are one step. The timer this
@@ -1624,7 +1628,7 @@
 ;; restores onto the carrier.
 (define (jolt-fiber-drain! c)
   (jolt-fiber-install-preempt-handler!)
-  (jolt-carrier-base-cchain (sa-foreign-call-chain))
+  (jolt-carrier-base-cchain (jolt-foreign-call-chain))
   ;; The carrier's own interrupt depth, measured once per drain. Every fiber is
   ;; put back to this before the scheduler runs again, and a first run starts
   ;; here. Measured rather than assumed 0, because a drain can be entered from
