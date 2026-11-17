@@ -1096,16 +1096,28 @@
                   "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
         proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
         pid (.pid (:proc proc))
-        lines #(set (str/split-lines (slurp logf)))]
+        lines #(set (str/split-lines (slurp logf)))
+        ;; Each handler writes its line from its own thread, so the last one
+        ;; sent (TSTP) can still be on its way after the 300ms pause: wait up
+        ;; to 10s for every expected line rather than reading the log once.
+        ;; A loaded CI runner lost the race once (no relay), not a lost signal.
+        want ["USR2 SIGUSR2 handler true" "INT" "ALRM" "TSTP" "CHLD"]
+        seen (fn []
+               (loop [n 0]
+                 (let [ls (lines)]
+                   (if (or (every? ls want) (>= n 200))
+                     ls
+                     (do (Thread/sleep 50) (recur (inc n)))))))]
     (await-file readyf)
     (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
       (sh ["sh" "-c" (str "kill -" s " " pid)])
       (Thread/sleep 300))
-    (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
-              (contains? (lines) "USR2 SIGUSR2 handler true") true)
-    (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? (lines) "INT") true)
-    (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
-              (every? (lines) ["ALRM" "TSTP" "CHLD"]) true)
+    (let [ls (seen)]
+      (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
+                (contains? ls "USR2 SIGUSR2 handler true") true)
+      (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? ls "INT") true)
+      (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
+                (filterv ls ["ALRM" "TSTP" "CHLD"]) ["ALRM" "TSTP" "CHLD"]))
     (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
     (sh ["sh" "-c" (str "kill -TERM " pid)])
     (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
