@@ -1481,8 +1481,8 @@
       (let* ((names (seq->list (jolt-nth shape 0)))
              (slots (make-hashtable string-hash string=?))
              (protos (reify-proto-names (seq->list (jolt-nth shape 1))))
-             ;; #(slots protos class-name)
-             (layout (vector slots protos (and (fx>? (jolt-count shape) 2) (jolt-nth shape 2)))))
+             ;; #(slots protos class-name impls-noted?)
+             (layout (vector slots protos (and (fx>? (jolt-count shape) 2) (jolt-nth shape 2)) #f)))
         (let loop ((ns names) (i 0))
           (unless (null? ns)
             (hashtable-set! slots (car ns) i)
@@ -1507,6 +1507,14 @@
 (define reify-class-graph-hook (lambda (name ifaces) #f))
 (define (make-reified-at shape . fns)
   (let ((layout (reify-shape-layout shape)))
+    ;; every instance from a site runs the same method code, so the first one
+    ;; tells protocol-impl-hook (protocols.ss) and the rest pay one slot read.
+    ;; Unlocked: two threads racing here tell it the same names twice.
+    (unless (vector-ref layout 3)
+      (vector-set! layout 3 #t)
+      (for-each (lambda (m fn)
+                  (for-each (lambda (p) (protocol-impl-hook p m fn)) (vector-ref layout 1)))
+                (seq->list (jolt-nth shape 0)) fns))
     (make-jreify (cons (vector-ref layout 0) (list->vector fns)) (vector-ref layout 1) #f (vector-ref layout 2))))
 ;; Every reify from one site declares the same protocols, but the names arrive
 ;; as rest args, so each instance got its own fresh list. The questions asked of

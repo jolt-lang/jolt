@@ -30,7 +30,15 @@ fi
 # The official mirror, not whichever one termux-docker picked at random: the
 # random one can be slow enough to dominate the job.
 echo "deb https://packages-cf.termux.dev/apt/termux-main stable main" > "$PREFIX/etc/apt/sources.list"
-apt-get update
+# Retried: a mirror caught mid-sync serves a Packages file that doesn't match
+# its Release ("File has unexpected size ... Mirror sync in progress?") and
+# apt-get update exits 100. The sync finishes within minutes.
+for attempt in 1 2 3 4; do
+  apt-get update && break
+  [ "$attempt" = 4 ] && exit 1
+  echo "termux-build: apt-get update failed (attempt $attempt), retrying in 30s" >&2
+  sleep 30
+done
 # Termux does not support partial upgrades: a new package against an old libc++
 # or openssl fails at load time, so bring the image current first.
 apt-get -y -o Dpkg::Options::=--force-confnew upgrade

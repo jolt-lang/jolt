@@ -263,6 +263,40 @@
 (let [e (try (let [r ((juxt cb-tail cb-throws) 1)] r) (catch Exception x x))]
   (ok= (first (frame-names e)) "stack_trace_test$cb_throws"
        "a returned callback's tail call is not the next callback's innermost frame"))
+;; ...while a tail call that is still running keeps its erased caller when the
+;; callee throws from a call of its own: os-caller's frame is erased by its tail
+;; call to os-callee, and os-callee is live below os-boom. The reporter used to
+;; ask os-boom, the innermost frame, whether it calls os-caller, and dropped it.
+;; os-boom throws from a non-tail call: a tail call there would store its own
+;; pair, and the slot holds one, so os-caller would be gone either way.
+(defn- os-boom [x] (inc (nth [] x)))
+(defn- os-callee [x] (let [y (inc x)] (inc (os-boom (dec y)))))
+(defn- os-caller [x] (os-callee x))
+(defn- os-top [f x] (inc (f x)))
+(let [e (try (os-top os-caller 0) (catch Exception x x))]
+  (ok= (vec (take 4 (frame-names e)))
+       ["stack_trace_test$os_boom" "stack_trace_test$os_callee"
+        "stack_trace_test$os_caller" "stack_trace_test$os_top"]
+       "a running tail call's erased caller lands below its callee"))
+;; ...and when the tail call is to a protocol method: the site names the
+;; protocol fn, the live frame is the impl's, from each way an impl is made.
+(defprotocol OsP (os-m [this x]) (os-m2 [this] [this x]))
+(deftype OsT [] OsP (os-m [this x] (inc (os-boom x))) (os-m2 [this] 0) (os-m2 [this x] 0))
+(defrecord OsR [] OsP (os-m [this x] (inc (os-boom x))) (os-m2 [this] 0) (os-m2 [this x] 0))
+(defn- os-reify [] (reify OsP (os-m [this x] (inc (os-boom x)))
+                     (os-m2 [this] 0) (os-m2 [this x] (inc (os-boom x)))))
+(extend-protocol OsP String (os-m [this x] (inc (os-boom x))) (os-m2 ([this] 0) ([this x] 0)))
+(defn- os-via-type [x] (os-m (OsT.) x))
+(defn- os-via-record [x] (os-m (->OsR) x))
+(defn- os-via-reify [x] (os-m (os-reify) x))
+(defn- os-via-reify-arity [x] (os-m2 (os-reify) x))
+(defn- os-via-extend [x] (os-m "s" x))
+(doseq [[f nm] [[os-via-type "os_via_type"] [os-via-record "os_via_record"]
+                [os-via-reify "os_via_reify"] [os-via-reify-arity "os_via_reify_arity"]
+                [os-via-extend "os_via_extend"]]]
+  (let [e (try (os-top f 0) (catch Exception x x))]
+    (ok= (boolean (some #{(str "stack_trace_test$" nm)} (frame-names e))) true
+         (str "a tail call into a protocol method keeps its erased caller: " nm))))
 ;; a lookup the back end open-codes runs jolt code too: a deftype's valAt, a
 ;; sorted map's comparator. The fn it ran returned, so it is not a frame.
 (deftype LookupRuns [] clojure.lang.ILookup

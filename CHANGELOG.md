@@ -243,6 +243,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A stack trace keeps the caller a running tail call erased.** When `c`
+  tail-called `k`, and `k` threw from a call of its own (into host code, or
+  through a fn that threw from a non-tail call), the trace went straight from
+  `k` to whatever called `c`, and `c` was missing. Since 0.8.23 that site is
+  kept aside during `k`'s calls and spliced in below `k` when `k` is still a
+  live frame, but the reporter also required the innermost frame, the one that
+  threw, to name `c` among its callees, which it does not. A tail call to a
+  protocol method keeps its caller too: the call site names the protocol fn,
+  and the live frame is now matched to it through the impl (a deftype's,
+  defrecord's, reify's or extend's method).
 - **Follow-ups to #1687 and #1689.** A program's own `sun.misc.Signal`
   handler for INT now outranks the REPL's ^C, as it would on the JVM;
   `SIG_DFL` gives ^C back to the REPL. The signal relay's reader stops if
