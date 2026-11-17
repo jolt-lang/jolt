@@ -1725,34 +1725,29 @@
 ;; takes exactly one argument and a map or keyword takes one or two, so
 ;; jolt-invoke2 answers fewer types than jolt-invoke1 and the rest fall through to
 ;; get their typed ArityException from jolt-invoke, unchanged.
-;; A multifn is a record multimethods.ss defines, after this file, so the arms
-;; below ask through this variable rather than naming its predicate, which would
-;; compile here as a call to an unbound variable instead of an open-coded test
-;; (the recordinline gate). multimethods.ss installs jolt-multifn?.
-(define jolt-invoke-multifn? (lambda (x) #f))
 (define (jolt-invoke-t0 f) (if (procedure? f) (f) (jolt-invoke f)))
 (define (jolt-invoke-t1 f a)
   (cond
     ((procedure? f) (f a))
+    ((jolt-multifn? f) (multifn-dispatch1 f a))
     ((keyword? f) (jolt-get a f))            ; (:k m) -> (get m :k)
     ((pmap? f) (jolt-get f a))               ; (m k)  -> (get m k)
     ((jolt-symbol? f) (jolt-get a f))        ; ('s m) -> (get m 's)
     ;; (v i) -> nth at (.intValue i); an in-range fixnum is read inline
     ((pvec? f) (pvec-ref-or f a (pvec-nth! f (pvec-key-index! a))))
     ((pset? f) (jolt-get f a))               ; (s x)  -> (get s x)
-    ((jolt-invoke-multifn? f) (multifn-dispatch1 f a))
     (else (jolt-invoke f a))))
 (define (jolt-invoke-t2 f a b)
   (cond
     ((procedure? f) (f a b))
+    ((jolt-multifn? f) (multifn-dispatch2 f a b))
     ((keyword? f) (jolt-get a f b))          ; (:k m d) -> (get m :k d)
     ((pmap? f) (jolt-get f a b))             ; (m k d)  -> (get m k d)
     ((jolt-symbol? f) (jolt-get a f b))      ; ('s m d) -> (get m 's d)
-    ((jolt-invoke-multifn? f) (multifn-dispatch2 f a b))
     (else (jolt-invoke f a b))))
 (define (jolt-invoke-t3 f a b c)
   (cond ((procedure? f) (f a b c))
-        ((jolt-invoke-multifn? f) (multifn-dispatch3 f a b c))
+        ((jolt-multifn? f) (multifn-dispatch3 f a b c))
         (else (jolt-invoke f a b c))))
 (define (jolt-invoke-t4 f a b c d) (if (procedure? f) (f a b c d) (jolt-invoke f a b c d)))
 

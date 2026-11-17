@@ -59,15 +59,11 @@
         (set-cdr! p (intern-ns! ns))
         (chez-current-ns-param ns))))
 
-(define-record-type jolt-multifn
-  (fields name dispatch-fn methods default hierarchy prefers
-          cache (mutable cache-epoch) (mutable cache-hier) (mutable icache))
-  (nongenerative jolt-multifn-v3))
+;; The jolt-multifn record type itself is defined in values.ss (see there).
 
 ;; a multimethod is CODE: a var holding one travels in a state image as the var's
 ;; NAME, the way a named fn does, instead of having its dispatch tables walked.
 (register-code-value! jolt-multifn?)
-(set! jolt-invoke-multifn? jolt-multifn?)   ; seq.ss's fixed-arity invokes
 
 (define kw-default (keyword #f "default"))
 ;; a key no dispatch value is eq? to (mm-resolve's inline cache, below)
