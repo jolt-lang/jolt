@@ -86,11 +86,10 @@ suites. A checkout missing them needs to run:
 
 Most portable Clojure runs unchanged, and all the standard features behave the same as they do on the JVM. There are a few differences that matter however:
 
-- There is no Java runtime available, so JVM reasoning about features such as garbage collection does not carry over.
-  - Interop syntax (`Class.`, `Class/static`, `.method`) resolves against a
+- Interop syntax (`Class.`, `Class/static`, `.method`) resolves against a
   shimmed subset of the `java.*` standard library written in Scheme.
-  - There is no reflection and no `gen-class`.
-  - For calling C libraries directly, jolt provides the `jolt.ffi` foreign-function interface.
+- There is no reflection and no `gen-class`.
+- For calling C libraries directly, jolt provides the `jolt.ffi` foreign-function interface.
 - Strings are indexed by codepoint rather than by UTF-16 unit:
   `(count "😀")` is 1 rather than 2, and `subs` does not split characters.
 - Regex Patterns compile through a vendored
