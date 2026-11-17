@@ -284,6 +284,7 @@ set-field!
 set-instant-ctor!
 set-source-roots!
 set-static-field!
+set-trace-off!
 set-var!
 setenv!
 sh

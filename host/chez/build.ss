@@ -2950,11 +2950,12 @@
                 ;; store at native/throw tail sites — measured at ~1.0-1.3x of the
                 ;; untraced floor — and the chain's site literals carry their own
                 ;; lines, so a deployed binary's trace needs no marker files.
-                ;; JOLT_TRACE=0 at BUILD time opts out (build-time axis, like the
-                ;; dev-mode emission toggle; the baked binary has no runtime knob).
-                ;; The seed mint is untouched — its emission stays untraced.
+                ;; JOLT_TRACE=0 or --no-trace at BUILD time opts out (build-time
+                ;; axis, like the dev-mode emission toggle; the baked binary has
+                ;; no runtime knob). The seed mint is untouched — its emission
+                ;; stays untraced.
                 ((var-deref "jolt.backend-scheme" "set-trace-frames!")
-                 (not (jolt-trace-env-off? (getenv "JOLT_TRACE"))))
+                 (not (jolt-trace-off?)))
                 ;; Cache resolved var cells per reference site in the APP forms
                 ;; (bld-emit-ns / ei-emit-ns-records). A user build is a single
                 ;; compile of fixed source, so the gensym-numbered cell names are

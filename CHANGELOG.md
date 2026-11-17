@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--no-trace`, the option spelling of `JOLT_TRACE=0`.** `jolt --no-trace
+  run …` (or `-m`, `-M`, `repl`, any command; it must be the first argument)
+  compiles the app without tail-frame tracing, and `jolt build --no-trace` or
+  deps.edn `:jolt/build {:trace false}` builds an untraced binary. The
+  environment variable and the option go through the same test, so they turn
+  off the same things.
+
 - **`jolt.loader` caches context-private namespaces.** A namespace a loader
   reads from its own roots was compiled from source on every load, so every
   fresh context paid full compilation again (#1653: 20 small files took

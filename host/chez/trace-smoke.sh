@@ -401,6 +401,14 @@ out_off="$(run_app app.tail JOLT_TRACE=0)"
 expect_match "still reports the message" "$out_off" 'Unhandled exception (ArithmeticException): Divide by zero'
 expect_no_match "no history frames when opted out" "$out_off" 'app\.tail/boom'
 
+# --no-trace is the same switch as an option, taken by the launcher ahead of the
+# command. Its own cache dir, so a fasl compiled traced by an earlier case
+# cannot answer for the untraced run.
+echo "trace smoke: --no-trace opts out"
+out_nt="$( cd "$work" && env JOLT_CACHE_DIR="$work/.nt-cache" "$joltabs" --no-trace run -m app.tail 2>&1 )"
+expect_match "--no-trace: still reports the message" "$out_nt" 'Unhandled exception (ArithmeticException): Divide by zero'
+expect_no_match "--no-trace: no history frames" "$out_nt" 'app\.tail/boom'
+
 # Whether tracing is on changes the code the emitter produces — the entry prologue
 # and the per-call save/restore are baked in at compile time. So a cached fasl is
 # only valid for the trace mode it was compiled under, and the cache generation has
@@ -612,6 +620,10 @@ echo "trace smoke: JOLT_TRACE=0 at build time opts the binary out"
 out_bt0="$("$work/tailbin0" 2>&1)"
 expect_match "untraced build: still reports the message" "$out_bt0" 'Unhandled exception (ArithmeticException): Divide by zero'
 expect_no_match "untraced build: no baked trace frames" "$out_bt0" 'app\.tail/boom (.*:4)'
+( cd "$work" && "$joltabs" build --no-trace -m app.tail -o tailbinnt >/dev/null 2>&1 )
+out_btnt="$("$work/tailbinnt" 2>&1)"
+expect_match "build --no-trace: still reports the message" "$out_btnt" 'Unhandled exception (ArithmeticException): Divide by zero'
+expect_no_match "build --no-trace: no baked trace frames" "$out_btnt" 'app\.tail/boom (.*:4)'
 
 echo "trace smoke: a non-tail throw under a host callback is its own innermost frame"
 out_cb="$(run_app app.hostcb)"
@@ -631,4 +643,4 @@ if [ "$fails" -gt 0 ]; then
   echo "trace smoke: $fails failed, $pass passed"
   exit 1
 fi
-echo "trace smoke: $pass passed (exact per-frame lines, JOLT_TRACE=0 opt-out, Throwable surface)"
+echo "trace smoke: $pass passed (exact per-frame lines, JOLT_TRACE=0 / --no-trace opt-out, Throwable surface)"
