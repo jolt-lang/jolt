@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`jolt.loader` caches context-private namespaces.** A namespace a loader
+  reads from its own roots was compiled from source on every load, so every
+  fresh context paid full compilation again (#1653: 20 small files took
+  ~4.4 s per loader). Its compiled form now goes to the AOT cache, keyed by
+  the source, every namespace the compile loaded, the files it read and the
+  data readers, so a second context over the same roots, a `:reload` of
+  unchanged source, and the next process load the artifact instead (~145 ms
+  for the same tree). Each context still gets its own var cells: an artifact
+  links its vars by name as it loads. `JOLT_AOT_CACHE=0` turns it off.
+- **`jolt.loader/evicted` and `restore-evicted!`.** A private load removes a
+  host namespace it shadows, and a plain `require` cannot bring it back, so a
+  host had no way to know what to restore and reloaded everything. `evicted`
+  names the host namespaces a loader evicted (`unload!` and `status` report
+  them as `:evicted`), and `restore-evicted!` reloads exactly that set (#1653).
+- **`(jolt.host/load-time-value expr)`**, Common Lisp's `load-time-value`:
+  `expr` runs once, when the top-level form that contains it loads (from
+  source or from a cached artifact), and every evaluation of the site reads
+  that value. `jolt.loader` uses it to give cached code the context it is
+  loaded into, the way a JVM class keeps its defining class loader.
 - **`sun.misc.Signal` handlers.**
   `(Signal/handle (Signal. "USR2") handler)` registers a `SignalHandler`,
   run as the JVM runs one: on a new daemon thread named `SIGUSR2 handler`,
@@ -143,6 +162,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Indexed reads of a vector make no call past `nth`, `get` or the vector
+  itself (#1652).** The in-range read and the trie descent are inline in
+  each, where `(nth v i)` used to chain three calls to reach a `vector-ref`.
+  A loop with a proven-long index (a loop counter, a literal) reads a vector
+  at the call site, with no call at all. `nth` on a string reads its char the
+  same way. On an Intel i5-4278U, per read inside a 1.9 ns loop:
+  `(nth v i)` over a 1000-element vector takes 9.5 ns instead of 19.3,
+  `(get v i)` 10.8 ns instead of 22.0, and `(nth v 7)` over a 30-element
+  vector 4.9 ns instead of 13.1.
+- **Protocol calls, deftype field access and an empty `java.util` list are
+  cheaper, which is most of what `clojure.tools.reader` and rewrite-clj pay per
+  character (#1646).** Every protocol method fn now carries its own inline
+  cache keyed on the receiver's type, as a JVM protocol fn carries its method
+  cache. Before, only call sites a whole-program build had inferred got one,
+  and every other call re-interned the protocol and method names to look the
+  impl up. A deftype method reads and writes its fields through the slot
+  accessor, behind one check that the receiver is the type it was compiled
+  for. Before, each read was three calls deep. `(seq l)` on an empty
+  `LinkedList` or `ArrayList` answers nil without building an iterator.
+  tools.reader's `read*` asks that before every form it reads. Measured on the
+  same machine: `read-char` on tools.reader's `StringReader` takes 48 ns
+  instead of 178, `clojure.tools.reader/read-string` of a 50-byte form 89 µs
+  instead of 129, and `rewrite-clj.parser/parse-string` of it 560 µs instead
+  of 800.
 - **`unchecked-multiply`, `-add` and `-subtract` are 3 to 6 times faster once
   a long leaves the fixnum range.** A long past 2^60 is a bignum on Chez, and
   every bignum op there is a C call, so the exact result followed by the
@@ -175,6 +218,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `jsonista.core` writes a record's fields in that order, as Jackson
   does.
 
+- **A deftype no longer answers for a host class that shares its simple
+  name.** A qualified class with no constructor of its own, such as
+  `java.io.Reader`, fell back to the constructor registered under its bare
+  name, and every deftype registers its bare name too. So once a library that
+  defines a `Reader` type was loaded (ebb does), `(proxy [java.io.Reader] [] …)`
+  built that type with no arguments and threw "Wrong number of args (0)",
+  which killed every later request to an nREPL server. A `java.*` or `javax.*`
+  name no longer takes a user type's bare name.
 - **A constructor call on a class jolt knows nothing about says so.**
   `import` stays lenient, since a library may import a class it never uses,
   but `(import (com.nosuch Thing))` followed by `(Thing.)` said "No matching
@@ -194,12 +245,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and macro-generated calls inherit their source line. `matcher-combinators`
   failures now identify the assertion's file and line, including in compiled
   test runners.
+- **A task that takes over a command can run that command.** A `build` task
+  with `:override-builtin true` that shells out to `jolt build -m app.main`
+  used to land on itself again and recurse until it was killed. While such a
+  task runs, jolt lists its command and project in `JOLT_OVERRIDE_ACTIVE`,
+  which child processes inherit, so the inner `jolt build` runs the compiler.
+  This works through `shell`, through the task API's `jolt` and when the task
+  was started with `jolt run build`. A task that runs `jolt build` in a
+  different project still reaches that project's own `build` task.
 - **`reader`, `writer`, `slurp` and `spit` refuse a non-source with the JVM's
   message.** `(slurp 5)`, `(io/reader :k)` and `(spit {} "x")` said "Cannot
   open <x> as a Reader." (or Writer). On the JVM only `nil` is refused by that
   name; any other value reaches `IOFactory`'s Object impl, whose reader and
   writer open through the stream side and refuse "as an InputStream." or "as an
   OutputStream.".
+- **`System/console` answers a `java.io.Console` in a terminal.** It was nil
+  always, so a CLI could not tell a person from a pipe. It is now a Console
+  when stdin and stdout are both terminals and nil when either is redirected,
+  as on the JVM. `readLine` and `readPassword` take the JVM's optional prompt
+  format, `readPassword` turns echo off and puts it back even on ^C, and
+  `writer`, `reader`, `format`, `printf`, `flush`, `charset` and `isTerminal`
+  are there too. Windows still answers nil.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as
@@ -209,6 +275,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JVM's message ("Too few arguments to throw, …", "Bad binding form, expected
   vector", "Malformed assignment, expecting (set! target val)", …) under a
   registered diagnostic kind, including the new `:analyze/invalid-throw`.
+- **The reader and `clojure.edn` refuse the colon tokens the JVM refuses.**
+  A token ending in a colon (`:abc:`, `abc:`), one with `::` past its first
+  character (`:a::b`), and one whose namespace ends in a colon (`:a:/b`) read
+  as keywords and symbols, so a config typo like `{:token :abc:}` loaded here
+  and failed on the JVM. Each is now `Invalid token`. A colon inside a name
+  (`:a:b`, `a/:b`) still reads.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
 - **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).

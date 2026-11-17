@@ -32,8 +32,8 @@
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
-                     hoist-const-per-site hoist-seed-root hoist-var-cell site-const
-                     unique-keyword-key-literal?]]
+                     hoist-const-per-site hoist-load-time hoist-seed-root hoist-var-cell
+                     site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
@@ -687,10 +687,93 @@
        (= 2 (count arg-nodes))
        (= :const (:op (second arg-nodes))) (keyword? (:val (second arg-nodes)))))
 
-;; Calls an earlier pass annotated with how to lower them.
-(defn- emit-annotated-invoke [c]
-  (let [node (:node c) arg-nodes (:arg-nodes c) tail? (:tail? c)
-        tl (:tl c) ich (:ich c) order-args (:order-args c)]
+;; A deftype method's own field, by its place in the type: (__deftype-slot this
+;; :f I N) (__deftype-mutable-slot for a mutable field) and (__deftype-slot-set!
+;; this :f I N v), as the deftype macro writes them (30-macros.clj deftype-method-clause). The read is the per-arity slot
+;; accessor itself, guarded by the descriptor the site cached once it checked the
+;; layout (records-dispatch.ss jrec-own-slot-miss) -- a field reference in a
+;; method body is a getfield on the JVM, and through jrec-own-field it was three
+;; calls deep. A type of more than eight fields keeps them in jrec*'s vector.
+(defn- deftype-slot-call? [fnode arg-nodes nm n]
+  (and *const-pool* (var-cache?)
+       (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= nm (:name fnode))
+       (= n (count arg-nodes))
+       (let [[_ k i cnt] arg-nodes]
+         (and (= :const (:op k)) (keyword? (:val k))
+              (= :const (:op i)) (int? (:val i))
+              (= :const (:op cnt)) (int? (:val cnt))
+              (< -1 (:val i) (:val cnt))))))
+
+;; jrecN-fI, the per-arity slot accessor (records.ss); its -set! twin is the
+;; write. names.clj lists every one, so a local of that name is renamed away.
+(defn- slot-accessor [n i] (str "jrec" n "-f" i))
+
+(defn- deftype-slot-place [arg-nodes]
+  [(:val (nth arg-nodes 2)) (:val (nth arg-nodes 3))])
+
+(defn- emit-deftype-slot-read [arg-nodes order-args]
+  (let [site (hoist-const-per-site "(jrec-field-site-make)")
+        [i n] (deftype-slot-place arg-nodes)
+        o (fresh-label "_o$")]
+    (order-args
+     (fn [as]
+       (str "(let ((" o " " (first as) "))"
+            " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
+            (if (<= n 8)
+              (str " (" (slot-accessor n i) " " o ")")
+              (str " (vector-ref (jrec*-vals " o ") " i ")"))
+            " (jrec-own-slot-miss " site " " o " " (second as) " " i " " n ")))")))))
+
+(defn- emit-deftype-slot-write [arg-nodes order-args]
+  (let [site (hoist-const-per-site "(jrec-field-site-make)")
+        [i n] (deftype-slot-place arg-nodes)
+        o (fresh-label "_o$")
+        v (fresh-label "_v$")]
+    (order-args
+     (fn [as]
+       (str "(let ((" o " " (first as) ") (" v " " (nth as 4) "))"
+            " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
+            (if (<= n 8)
+              (str " (begin (" (slot-accessor n i) "-set! " o " " v ") " v ")")
+              (str " (begin (vector-set! (jrec*-vals " o ") " i " " v ") " v ")"))
+            " (jrec-own-slot-set-miss! " site " " o " " (second as) " " i " " n " " v ")))")))))
+
+;; The vector read in front of an indexed call (jolt.passes.numeric
+;; indexed-invoke): the in-range test pvec-ref-or makes, inline, so a loop over
+;; a vector reads it with no call at all.
+(defn- emit-vec-idx-read [callee tail? tl ich order-args]
+  (let [v (fresh-label "_c$") k (fresh-label "_k$")]
+    (order-args
+     (fn [as]
+       (str "(let ((" v " " (first as) ") (" k " " (second as) "))"
+            " (if (and (pvec? " v ") (fixnum? " k ") (fx>=? " k " 0) (fx<? " k " (pvec-cnt " v ")))"
+            " (pvec-nth-in-range " v " " k ") "
+            (emit-call tail? callee [v k] tl ich) "))")))))
+
+;; The body of a defprotocol method fn (30-macros.clj protocol-dispatch-clause):
+;; (protocol-dispatchN "proto" "method" obj arg ...) with the two names as
+;; literal strings. Each method fn is one such site, so giving the site the
+;; per-site inline cache gives the protocol FN a cache of its own, keyed on the
+;; receiver's type -- what the reference's protocol fns carry as
+;; __methodImplCache. Without it every call re-interned the (proto, method) pair
+;; and looked the impl up in the type's table, for every caller that was not
+;; whole-program inferred (the only other place a call gets a PIC). Gated like
+;; the other site caches so the seed mint stays a byte-fixpoint.
+(def ^:private protocol-dispatch-arity
+  {"protocol-dispatch1" 3 "protocol-dispatch2" 4 "protocol-dispatch3" 5})
+
+(defn- protocol-shim-call? [fnode arg-nodes]
+  (and *const-pool* (var-cache?)
+       (= :var (:op fnode)) (= "clojure.core" (:ns fnode))
+       (= (protocol-dispatch-arity (:name fnode)) (count arg-nodes))
+       (let [[p m] arg-nodes]
+         (and (= :const (:op p)) (string? (:val p))
+              (= :const (:op m)) (string? (:val m))))))
+
+;; The calls that get a per-site cache of their own (instance?, a deftype's own
+;; field, class-for, a protocol fn's dispatch), or nil for any other call.
+(defn- emit-site-cache-invoke [c]
+  (let [arg-nodes (:arg-nodes c) tail? (:tail? c) order-args (:order-args c)]
     (cond
       (instance-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jolt-instance-site-make)")]
@@ -700,89 +783,114 @@
       (let [site (hoist-const-per-site "(jrec-field-site-make)")]
         (note-tail-call! tail?)
         (order-args (fn [as] (str "(jrec-own-field " site " " (first as) " " (second as) ")"))))
+      (or (deftype-slot-call? (:fnode c) arg-nodes "__deftype-slot" 4)
+          (deftype-slot-call? (:fnode c) arg-nodes "__deftype-mutable-slot" 4))
+      (do (note-tail-call! tail?) (emit-deftype-slot-read arg-nodes order-args))
+      (deftype-slot-call? (:fnode c) arg-nodes "__deftype-slot-set!" 5)
+      (do (note-tail-call! tail?) (emit-deftype-slot-write arg-nodes order-args))
       (class-for-site-call? (:fnode c) arg-nodes)
       (let [site (hoist-const-per-site "(jolt-class-for-site-make)")]
         (note-tail-call! tail?)
         (order-args (fn [as] (str "(jolt-class-for-site " site " " (first as) ")"))))
-      ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
-      ;; one record type, so resolve the impl by that static tag instead of routing
-      ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
-      ;; the tag and walks the type table). devirt-resolve does the same table lookup
-      ;; the dispatch would, but with no var-deref and no receiver-type computation;
-      ;; it falls back to ordinary dispatch when the static tag has no direct impl (a
-      ;; record satisfying the protocol via an Object/host-tag default). Fires only on
-      ;; a monomorphic site (a megamorphic receiver joins to :any, no :devirt-type).
-      ;; The receiver is bound once — it feeds both the resolve and the application.
-      (:devirt-type node)
-      (emit-devirt-call node tail? order-args)
-      ;; polymorphic inline cache: a protocol call the inference recognized (:proto)
-      ;; but could NOT prove monomorphic (no :devirt-type — a megamorphic / unknown
-      ;; receiver). Emit a per-site cache keyed on the receiver's descriptor identity:
-      ;; after warmup each call is one field read + an eq? scan over <= jolt-pic-n
-      ;; cached descs + a direct apply, with no string hashing or table walk. The
-      ;; cache lives in a def-closure cell (emit-with-cells); a register-protocol-
-      ;; method after population bumps jolt-proto-epoch and the cache re-resolves,
-      ;; so an extend-type at runtime can't strand a stale impl. Falls back to a
-      ;; direct protocol-resolve (still the per-descriptor fast path) when not inside
-      ;; a def. The receiver is bound once and feeds both the resolve and the apply.
-      (:proto node)
-      (emit-pic-call node tail? order-args)
-      ;; a java.lang.Math call jolt.passes.numeric proved is over flonum operands:
-      ;; emit the native Chez flonum op (flsqrt/flatan/…) instead of the generic
-      ;; string-keyed host-static-call, and (via its :double result kind) keep the
-      ;; surrounding arithmetic unboxed.
-      ;; (aget ^doubles a i): jolt.passes.numeric proved the array is a flvector. A
-      ;; proven-:long (or fixnum-literal) index (:fl-idx-long) reads the backing
-      ;; flvector INLINE — (flvector-ref (jolt-array-vec A) I) — so a call-position
-      ;; flonum stays unboxed through the surrounding fl+ chain instead of being boxed
-      ;; at a jolt-flaget procedure boundary. An unproven index keeps (jolt-flaget A I),
-      ;; which owns the fixnum?/na-idx coercion; the inline flvector-ref's own range
-      ;; check is the bounds contract on the hot path (a pre-check regresses ~11%).
-      ;; A ^doubles PARAM (the local is in *array-vecs*) reads the flvector its
-      ;; arity bound at entry; any other proven array re-reads the accessor.
-      ;; A ^floats read (:fl-float) is the Float unless an fl op takes it
-      ;; (:fl-unbox), which reads the double it holds and allocates nothing.
-      (:fl-aget node)
-      (emit-fl-aget node tail? arg-nodes tl ich order-args)
-      ;; (aset ^doubles a i v): proven index AND :double value (:fl-idx-long +
-      ;; :fl-val-double) store inline — (let ((v V)) (flvector-set! (jolt-array-vec A)
-      ;; I v) v) — and return the stored value (JVM contract; the let evaluates V once).
-      ;; Otherwise keep (jolt-flaset A I V), which owns exact->inexact for a non-double.
-      ;; ^floats (:fl-float) rounds the value to single precision as it stores it,
-      ;; and answers the Float unless an fl op takes the result (:fl-unbox).
-      (:fl-aset node)
-      (emit-fl-aset node tail? arg-nodes tl ich order-args)
-      ;; (aget ^longs/^ints/^bytes/^objects a i) and its aset twin. A boxed backing
-      ;; cannot unbox, so there is no inline form and no hoisted vector — the win is
-      ;; skipping jolt-nth's dispatch walk, which the call already gets.
-      (:v-aget node) (order-args (fn [as] (emit-call tail? "jolt-vaget" as tl ich)))
-      (:v-aset node) (order-args (fn [as] (emit-call tail? "jolt-vaset" as tl ich)))
-      ;; (alength a) on a hinted array: the backing's own length, a fixnum.
-      (:v-alength node) (order-args (fn [as] (emit-call tail? "jolt-valength" as tl ich)))
-      ;; (aset ^bytes a i v): the store's own helper, because the byte kind narrows
-      ;; to signed 8 bits and must answer what it stored — jolt-vaset answers its
-      ;; argument. No inline form: there is nothing to unbox on the way out.
-      (:b-aset node) (order-args (fn [as] (emit-call tail? "jolt-baset" as tl ich)))
-      (:fl-op node) (order-args (fn [as] (str "(" (:fl-op node) " " (str/join " " as) ")")))
-      ;; the integer twin of :fl-op — a java.lang.Math member over proven fixnum
-      ;; operands, lowered to its jolt-l-* macro (jolt.passes.numeric math-lng-ops).
-      (:lng-op node) (order-args (fn [as] (str "(" (:lng-op node) " " (str/join " " as) ")")))
-      ;; a clojure.core call the collection lattice proved reduces to a Chez
-      ;; primitive — (count s) / (str a b) over proven strings (jolt.passes.types
-      ;; str-prim-op). No var deref, no jolt-invoke, no type dispatch.
-      (:prim-op node) (order-args (fn [as] (str "(" (:prim-op node) " " (str/join " " as) ")")))
-      ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
-      ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
-      (:num-kind node) (emit-numeric (:num-kind node) (:name (:fnode c)) (:args c) order-args)
-      ;; a (/ ...) with a primitive double or float operand (jolt.passes.numeric
-      ;; :div-prim, one flag per step): a primitive step divides as IEEE does, the
-      ;; rest take the Object path, which raises on a zero divisor.
-      (:div-prim node)
-      (order-args (fn [as]
-        (reduce (fn [acc [prim? a]]
-                  (str "(" (if prim? "jolt-div2-prim" "jolt-div2") " " acc " " a ")"))
-                (first as) (map vector (:div-prim node) (rest as)))))
-      :else (emit-native-invoke c))))
+      ;; the names are constants, so only the receiver and the method's own
+      ;; arguments are operands
+      (protocol-shim-call? (:fnode c) arg-nodes)
+      (emit-pic-call {:proto (:val (first arg-nodes)) :method (:val (second arg-nodes))}
+                     tail?
+                     (fn [build] (ordered-call (vec (drop 2 arg-nodes)) (vec (drop 2 (:args c))) build))))))
+
+;; Calls an earlier pass annotated with how to lower them.
+(defn- emit-annotated-invoke [c]
+  (let [node (:node c) arg-nodes (:arg-nodes c) tail? (:tail? c)
+        tl (:tl c) ich (:ich c) order-args (:order-args c)]
+    (or
+     (emit-site-cache-invoke c)
+     (cond
+       ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
+       ;; one record type, so resolve the impl by that static tag instead of routing
+       ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
+       ;; the tag and walks the type table). devirt-resolve does the same table lookup
+       ;; the dispatch would, but with no var-deref and no receiver-type computation;
+       ;; it falls back to ordinary dispatch when the static tag has no direct impl (a
+       ;; record satisfying the protocol via an Object/host-tag default). Fires only on
+       ;; a monomorphic site (a megamorphic receiver joins to :any, no :devirt-type).
+       ;; The receiver is bound once — it feeds both the resolve and the application.
+       (:devirt-type node)
+       (emit-devirt-call node tail? order-args)
+       ;; polymorphic inline cache: a protocol call the inference recognized (:proto)
+       ;; but could NOT prove monomorphic (no :devirt-type — a megamorphic / unknown
+       ;; receiver). Emit a per-site cache keyed on the receiver's descriptor identity:
+       ;; after warmup each call is one field read + an eq? scan over <= jolt-pic-n
+       ;; cached descs + a direct apply, with no string hashing or table walk. The
+       ;; cache lives in a def-closure cell (emit-with-cells); a register-protocol-
+       ;; method after population bumps jolt-proto-epoch and the cache re-resolves,
+       ;; so an extend-type at runtime can't strand a stale impl. Falls back to a
+       ;; direct protocol-resolve (still the per-descriptor fast path) when not inside
+       ;; a def. The receiver is bound once and feeds both the resolve and the apply.
+       (:proto node)
+       (emit-pic-call node tail? order-args)
+       ;; a java.lang.Math call jolt.passes.numeric proved is over flonum operands:
+       ;; emit the native Chez flonum op (flsqrt/flatan/…) instead of the generic
+       ;; string-keyed host-static-call, and (via its :double result kind) keep the
+       ;; surrounding arithmetic unboxed.
+       ;; (aget ^doubles a i): jolt.passes.numeric proved the array is a flvector. A
+       ;; proven-:long (or fixnum-literal) index (:fl-idx-long) reads the backing
+       ;; flvector INLINE — (flvector-ref (jolt-array-vec A) I) — so a call-position
+       ;; flonum stays unboxed through the surrounding fl+ chain instead of being boxed
+       ;; at a jolt-flaget procedure boundary. An unproven index keeps (jolt-flaget A I),
+       ;; which owns the fixnum?/na-idx coercion; the inline flvector-ref's own range
+       ;; check is the bounds contract on the hot path (a pre-check regresses ~11%).
+       ;; A ^doubles PARAM (the local is in *array-vecs*) reads the flvector its
+       ;; arity bound at entry; any other proven array re-reads the accessor.
+       ;; A ^floats read (:fl-float) is the Float unless an fl op takes it
+       ;; (:fl-unbox), which reads the double it holds and allocates nothing.
+       (:fl-aget node)
+       (emit-fl-aget node tail? arg-nodes tl ich order-args)
+       ;; (aset ^doubles a i v): proven index AND :double value (:fl-idx-long +
+       ;; :fl-val-double) store inline — (let ((v V)) (flvector-set! (jolt-array-vec A)
+       ;; I v) v) — and return the stored value (JVM contract; the let evaluates V once).
+       ;; Otherwise keep (jolt-flaset A I V), which owns exact->inexact for a non-double.
+       ;; ^floats (:fl-float) rounds the value to single precision as it stores it,
+       ;; and answers the Float unless an fl op takes the result (:fl-unbox).
+       (:fl-aset node)
+       (emit-fl-aset node tail? arg-nodes tl ich order-args)
+       ;; (aget ^longs/^ints/^bytes/^objects a i) and its aset twin. A boxed backing
+       ;; cannot unbox, so there is no inline form and no hoisted vector — the win is
+       ;; skipping jolt-nth's dispatch walk, which the call already gets.
+       (:v-aget node) (order-args (fn [as] (emit-call tail? "jolt-vaget" as tl ich)))
+       ;; (nth coll i) / (get coll i) over a proven-:long index: a vector's
+       ;; in-range element is read inline, anything else makes the call it
+       ;; would have made. Chez only: the read is the runtime's
+       ;; pvec-nth-in-range macro, which code Gambit evaluates cannot see.
+       (and (:vec-idx node) (:nop c) (not= :gambit (session/target)))
+       (emit-vec-idx-read (:nop c) tail? tl ich order-args)
+       (:v-aset node) (order-args (fn [as] (emit-call tail? "jolt-vaset" as tl ich)))
+       ;; (alength a) on a hinted array: the backing's own length, a fixnum.
+       (:v-alength node) (order-args (fn [as] (emit-call tail? "jolt-valength" as tl ich)))
+       ;; (aset ^bytes a i v): the store's own helper, because the byte kind narrows
+       ;; to signed 8 bits and must answer what it stored — jolt-vaset answers its
+       ;; argument. No inline form: there is nothing to unbox on the way out.
+       (:b-aset node) (order-args (fn [as] (emit-call tail? "jolt-baset" as tl ich)))
+       (:fl-op node) (order-args (fn [as] (str "(" (:fl-op node) " " (str/join " " as) ")")))
+       ;; the integer twin of :fl-op — a java.lang.Math member over proven fixnum
+       ;; operands, lowered to its jolt-l-* macro (jolt.passes.numeric math-lng-ops).
+       (:lng-op node) (order-args (fn [as] (str "(" (:lng-op node) " " (str/join " " as) ")")))
+       ;; a clojure.core call the collection lattice proved reduces to a Chez
+       ;; primitive — (count s) / (str a b) over proven strings (jolt.passes.types
+       ;; str-prim-op). No var deref, no jolt-invoke, no type dispatch.
+       (:prim-op node) (order-args (fn [as] (str "(" (:prim-op node) " " (str/join " " as) ")")))
+       ;; hint-directed fast arithmetic: jolt.passes.numeric proved every operand a
+       ;; flonum (^double) or fixnum (^long), so emit the Chez fl*/fx* op.
+       (:num-kind node) (emit-numeric (:num-kind node) (:name (:fnode c)) (:args c) order-args)
+       ;; a (/ ...) with a primitive double or float operand (jolt.passes.numeric
+       ;; :div-prim, one flag per step): a primitive step divides as IEEE does, the
+       ;; rest take the Object path, which raises on a zero divisor.
+       (:div-prim node)
+       (order-args (fn [as]
+         (reduce (fn [acc [prim? a]]
+                   (str "(" (if prim? "jolt-div2-prim" "jolt-div2") " " acc " " a ")"))
+                 (first as) (map vector (:div-prim node) (rest as)))))
+       :else (emit-native-invoke c)))))
 
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
@@ -1275,8 +1383,10 @@
 
 ;; Literal data the reader built: quoted forms, and the regex, #inst, #uuid,
 ;; bigdec and namespace leaves.
+(declare ^:private emit-load-time-value)
 (defn- emit-data-node [node]
   (case (:op node)
+    :load-time-value (emit-load-time-value node)
     ;; A quoted scalar (form-char?/form-literal?) emits as an immediate constant
     ;; via emit-const — nothing to hoist. Every other quoted form (symbol, list,
     ;; vector, map, set, regex/inst/uuid/tagged) is a CONSTRUCTION rebuilt per
@@ -1308,6 +1418,34 @@
     ;; a namespace value spliced into a form (~*ns*) -> reconstruct by name.
     :the-ns (str "(intern-ns! " (chez-str-lit (:name node)) ")")))
 
+;; (jolt.host/load-time-value expr): EXPR is emitted on its own — none of the
+;; site's def pool, cache cells, quote pool, or enclosing fn's site-call helper
+;; and frame names, all bound INSIDE the scope it is hoisted out of, and no tail
+;; position or local tables, since the analyzer gave it no locals — and bound
+;; once in the top-level form's load-time scope.
+(defn- emit-load-time-value [node]
+  (hoist-load-time
+   (binding [*const-pool* nil
+             jolt.backend-scheme.hoist/*cache-cells* nil
+             jolt.backend-scheme.hoist/*const-ids* nil
+             literals/*quote-pool* nil
+             literals/*quote-shared* nil
+             *tail?* false
+             *recur-target* nil
+             *known-procs* {}
+             *array-vecs* {}
+             *letrec-binders* #{}
+             *dl-self* nil
+             ;; per-fn emission state: the site-call helper and the frame names
+             ;; are bound by the fn the site sits in, which the hoisted
+             ;; expression is not inside
+             session/*site-call* nil
+             session/*self-wrap* nil
+             *trace-site* nil
+             session/*trace-self* #{}
+             *trace-frame* nil]
+     (emit (:expr node)))))
+
 (defn emit* [node]
   (case (:op node)
     :const (emit-const (:val node))
@@ -1320,7 +1458,7 @@
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)
     (:vector :set :map) (emit-coll-literal node)
-    (:quote :regex :inst :uuid :bigdec :the-ns) (emit-data-node node)
+    (:quote :regex :inst :uuid :bigdec :the-ns :load-time-value) (emit-data-node node)
     ;; the thrown value is an operand (emitted non-tail); the throw itself goes
     ;; through emit-call with marks?=#f, so a TAIL throw gets the site-vreg pair
     ;; (sited-tail-call — stored after the operand is bound, so the operand's own
@@ -1425,7 +1563,7 @@
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])
             *fnsrc-def-init?* fn?]
-    (let [i (emit-with-cells #(emit (:init node)))]
+    (let [i (with-load-time-scope (fn [] (emit-with-cells #(emit (:init node)))))]
       [i (trace-callsite-reg) (fnsrc-flush)])))
 
 ;; An unlinked def: def-var-with-meta! or def-var-plain!. A def evaluates to its
@@ -1544,14 +1682,19 @@
                 ;; this one (fresh counter/regs per def) and flush it themselves.
                 ;; emit-top-cells declines a :def itself, so this reaches it only
                 ;; for expressions.
-                (not (direct-link?)) (emit-top-cells node #(emit node))
+                ;; Every arm opens the load-time scope (with-load-time-scope)
+                ;; except the two direct-link ones that emit a bare top-level
+                ;; (define …)/(begin …), which no let may wrap: a spliced do
+                ;; re-enters here per statement, and a direct-linked def opens
+                ;; the scope around its init (emit-def-init).
+                (not (direct-link?)) (with-load-time-scope (fn [] (emit-top-cells node #(emit node))))
                 ;; top-level do splices: each statement/ret is itself a top-level form.
                 (= :do (:op node))
                 (str "(begin " (str/join " " (map emit-top-form (:statements node)))
                      (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
                 (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
                 (emit-def-cached node)
-                :else (emit-top-cells node #(emit node)))
+                :else (with-load-time-scope (fn [] (emit-top-cells node #(emit node)))))
           freg (fnsrc-flush)]
       (cond
         (= freg "") scm

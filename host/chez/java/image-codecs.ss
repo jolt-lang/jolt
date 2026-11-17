@@ -248,5 +248,5 @@
 (register-image-refusal!
   '("in-stream" "out-stream" "char-reader" "char-writer" "reader-adapter" "pushback-reader"
     "line-numbering-pushback-reader" "string-reader" "print-stream" "print-writer" "port-writer"
-    "random-access-file" "file-channel")
+    "random-access-file" "file-channel" "console")
   "it is an open stream over a port this process holds; write what it reads or wrote instead")

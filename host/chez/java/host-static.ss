@@ -557,6 +557,10 @@
     ("print-writer" "printf" varargs)
     ("print-writer" "println" 0 1)
     ("print-writer" "write" 1 3)
+    ("console" "format" varargs)
+    ("console" "printf" varargs)
+    ("console" "readLine" varargs)
+    ("console" "readPassword" varargs)
     ("print-writer-on" "append" 1 3)
     ("print-writer-on" "write" 1 3)
     ("process" "waitFor" 0 1 2)
@@ -882,7 +886,30 @@
       ;; babashka.process's ProcessBuilder record, registered by its short name
       (and (lazy-shims-provides? name) (lazy-shims-class! name)
            (hashtable-ref h-tbl name #f))
-      (hashtable-ref h-tbl (short-class-name name) #f)))
+      ;; The short-name fallback answers a qualified name with what its simple
+      ;; name is registered as — but a deftype registers its bare name too
+      ;; (protocols.ss), so java.io.Reader, which has no constructor of its own,
+      ;; got the ctor of any user type called Reader, and a proxy over it built
+      ;; that type with no args. A JVM platform name (java.*, javax.*) is never
+      ;; a user type, so it does not take one's bare name. Only those: the seed
+      ;; defines clojure.core's own types while the current ns is still user,
+      ;; so clojure.core.VecNode reaches its ctor through this fallback.
+      ;; Refused only when the bare-name entry IS the user type's (the one its
+      ;; "ns.Name" tag holds): many host classes register only their short name
+      ;; ("StringWriter", "HashMap"), a deftype never replaces those, and
+      ;; java.io.StringWriter still has to reach it after (deftype StringWriter …).
+      (let* ((short (short-class-name name))
+             (v (hashtable-ref h-tbl short #f)))
+        (and v
+             (not (and (platform-class-name? name)
+                       (let ((tag (hashtable-ref chez-simple-name-tag short #f)))
+                         (and tag (eq? v (hashtable-ref h-tbl tag #f))))))
+             v))))
+
+(define (platform-class-name? name)
+  (let ((n (string-length name)))
+    (or (and (> n 5) (string=? (substring name 0 5) "java."))
+        (and (> n 6) (string=? (substring name 0 6) "javax.")))))
 
 ;; ---- the concrete methods of an abstract host class -------------------------
 ;; (proxy [java.io.InputStream] [] (read …)) extends the class on the JVM and

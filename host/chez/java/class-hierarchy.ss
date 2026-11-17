@@ -1669,6 +1669,7 @@
     ("line-numbering-pushback-reader" . "clojure.lang.LineNumberingPushbackReader")
     ("char-writer" . "java.io.OutputStreamWriter")
     ("char-reader" . "java.io.InputStreamReader")
+    ("console" . "java.io.Console")
     ;; the delegating wrapper over a Reader jolt did not build (io-streams.ss)
     ("reader-adapter" . "java.io.BufferedReader")
     ("time-unit" . "java.util.concurrent.TimeUnit")

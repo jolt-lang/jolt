@@ -573,23 +573,37 @@
   (when (and (seq? form) (seq form) (symbol? (first form)))
     (name (first form))))
 
-;; True when x names a mutable field no local shadows.
-(defn- live-field? [mutable? shadowed x]
-  (and (symbol? x) (mutable? x) (not (contains? shadowed x))))
+;; A deftype method's read or write of its own field FLD, at PLACE ([index
+;; field-count]): (__deftype-slot inst :f i n) for an immutable field,
+;; (__deftype-mutable-slot inst :f i n) for a live read of a mutable one -- not a
+;; pure call, so nothing moves it across a set! -- and (__deftype-slot-set! inst
+;; :f i n v).
+;; The field is still named, so anything that cannot use the place (an instance
+;; of an older definition of the type, a call that is not open-coded) finds it by
+;; name; the place lets the back end read the slot directly (backend_scheme.clj
+;; emit-deftype-slot-read).
+(defn- deftype-slot-form [op inst fld place more]
+  (list* (symbol "clojure.core" op) inst (keyword (name fld)) (nth place 0) (nth place 1) more))
 
-;; rewrite a method body: (set! mut-field v) -> an in-place (.-field inst)
-;; write, and a READ of a mutable field -> (.-field inst) so it observes the
-;; live value after a set! (the double-checked-locking idiom re-reads a field
-;; after taking a lock). Immutable fields stay let-bound (captured once is
-;; correct and cheaper). Tracks lexical shadowing through let/loop/fn/letfn so
-;; a same-named local wins over a field. mutable? tests a symbol for a mutable
-;; field of the type being defined.
+;; True when x names a mutable field no local shadows. mplace answers a mutable
+;; field's place in the type, [index field-count], and nil for anything else.
+(defn- live-field? [mplace shadowed x]
+  (and (symbol? x) (mplace x) (not (contains? shadowed x))))
+
+;; rewrite a method body: (set! mut-field v) -> an in-place slot write
+;; (__deftype-slot-set!), and a READ of a mutable field -> a slot read
+;; (__deftype-mutable-slot) so it observes the live value after a set! (the
+;; double-checked-locking idiom re-reads a field after taking a lock). Both
+;; carry the field's place, which the back end reads the slot by. Immutable
+;; fields stay let-bound (captured once is correct and cheaper). Tracks lexical
+;; shadowing through let/loop/fn/letfn so a same-named local wins over a field.
+;; mplace gives a mutable field of the type being defined its place.
 (declare rewrite-field-access)
 
 ;; let/loop-style vector-binding forms: rewrite inits, then shadow the
 ;; bound names in the body.
-(defn- rewrite-binding-form [mutable? inst shadowed form]
-  (let [rw (fn [sh x] (rewrite-field-access mutable? inst sh x))
+(defn- rewrite-binding-form [mplace inst shadowed form]
+  (let [rw (fn [sh x] (rewrite-field-access mplace inst sh x))
         bv (second form) n (count bv)
         bv' (loop [i 0 acc []]
               (if (< i n)
@@ -604,7 +618,7 @@
     (cons (first form) (cons bv' (map (fn [x] (rw sh x)) (drop 2 form))))))
 
 ;; fn/fn*: shadow each arity's params in its body.
-(defn- rewrite-fn-form [mutable? inst shadowed form]
+(defn- rewrite-fn-form [mplace inst shadowed form]
   (let [head (first form) tail (rest form)
         named? (and (seq tail) (symbol? (first tail)))
         fname (when named? (first tail))
@@ -615,24 +629,24 @@
                                   (if (and (symbol? (first p)) (not= (name (first p)) "&"))
                                     (conj acc (first p)) acc))
                            acc)))
-        do-art (fn [ar] (cons (first ar) (map (fn [x] (rewrite-field-access mutable? inst (psyms (first ar)) x))
+        do-art (fn [ar] (cons (first ar) (map (fn [x] (rewrite-field-access mplace inst (psyms (first ar)) x))
                                               (rest ar))))
         arts' (if (vector? (first arts)) (do-art arts) (map do-art arts))]
     (concat (list head) (when named? (list fname)) arts')))
 
-(defn- rewrite-field-access [mutable? inst shadowed form]
-  (let [rw (fn [x] (rewrite-field-access mutable? inst shadowed x))
+(defn- rewrite-field-access [mplace inst shadowed form]
+  (let [rw (fn [x] (rewrite-field-access mplace inst shadowed x))
         h (form-head-name form)]
     (cond
-      (and (= "set!" h) (live-field? mutable? shadowed (second form)))
-      (list 'set! (list (symbol (str ".-" (name (second form)))) inst)
-            (rw (nth form 2)))
+      (and (= "set!" h) (live-field? mplace shadowed (second form)))
+      (deftype-slot-form "__deftype-slot-set!" inst (second form) (mplace (second form))
+                         (list (rw (nth form 2))))
       (and (contains? #{"let" "let*" "loop" "binding" "when-let" "if-let"
                         "when-some" "if-some"} h)
            (vector? (second form)))
-      (rewrite-binding-form mutable? inst shadowed form)
+      (rewrite-binding-form mplace inst shadowed form)
       (contains? #{"fn" "fn*"} h)
-      (rewrite-fn-form mutable? inst shadowed form)
+      (rewrite-fn-form mplace inst shadowed form)
       ;; (. obj member args*) / (. obj (method args*)): the member position
       ;; names a field or method, it is not a value — rewrite the object and
       ;; argument positions only. Without this a member named like a mutable
@@ -646,8 +660,8 @@
             (cons (first (nth form 2))
                   (map rw (rest (nth form 2)))))
       ;; a bare read of a mutable field -> live field access
-      (live-field? mutable? shadowed form)
-      (list (symbol (str ".-" (name form))) inst)
+      (live-field? mplace shadowed form)
+      (deftype-slot-form "__deftype-mutable-slot" inst form (mplace form) nil)
       (seq? form) (map rw form)
       (vector? form) (mapv rw form)
       :else form)))
@@ -655,7 +669,7 @@
 ;; build one method clause (argv + field-bound body) from a method spec.
 ;; The clause is DATA, not a syntax-quote: a body that is itself a syntax-
 ;; quote would have its ~unquotes consumed a level early if re-spliced.
-(defn- deftype-method-clause [fields mutable? spec]
+(defn- deftype-method-clause [fields mplace spec]
   ;; fresh-name each _ param so two _ params don't collide on the
   ;; field binds / live-read instance (see defrecord's mk-clause).
   (let [raw (mapv (fn [p] (if (= p (quote _)) (gensym "_p") p)) (nth spec 1))
@@ -680,12 +694,16 @@
         ;; that valAt on every method entry — including valAt's
         ;; own — and never come back. It is also the cheaper read
         ;; (straight to the slot, no type cascade).
-        binds (vec (mapcat (fn [f] [f (list (symbol "clojure.core" "__deftype-field")
-                                            inst (keyword (name f)))])
-                           (filter (fn [f] (and (not (mutable? f))
-                                                (not (contains? pnames (name f)))))
-                                   fields)))
-        mbody (map (fn [bf] (rewrite-field-access mutable? inst shadowed bf)) (drop 2 spec))
+        nf (count fields)
+        binds (loop [i 0 fs (seq fields) acc []]
+                (if fs
+                  (let [f (first fs)]
+                    (recur (inc i) (next fs)
+                           (if (or (mplace f) (contains? pnames (name f)))
+                             acc
+                             (conj acc f (deftype-slot-form "__deftype-slot" inst f [i nf] nil)))))
+                  acc))
+        mbody (map (fn [bf] (rewrite-field-access mplace inst shadowed bf)) (drop 2 spec))
         mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
         mbody (underscore-rebind (nth spec 1) raw mbody)]
     (list argv (list* 'clojure.core/let binds mbody))))
@@ -728,10 +746,14 @@
         field-tags (map deftype-field-tag fields)
         field-muts (map deftype-field-mutable? fields)
         ;; mutable field symbols (^:unsynchronized-mutable / ^:volatile-mutable):
-        ;; (set! field v) in a method body lowers to (set! (.-field inst) v), the
-        ;; in-place field write the analyzer compiles to jolt-set-field!.
+        ;; (set! field v) in a method body lowers to (__deftype-slot-set! inst
+        ;; :field i n v), the in-place write of the field's slot.
         mutable-syms (map first (filter second (map vector fields field-muts)))
-        mutable? (fn [s] (boolean (some (fn [m] (= m s)) mutable-syms)))
+        ;; a mutable field's place in the type, [index field-count], else nil
+        nf (count fields)
+        mplace (fn [s] (when (some (fn [m] (= m s)) mutable-syms)
+                         (loop [i 0 fs (seq fields)]
+                           (when fs (if (= (first fs) s) [i nf] (recur (inc i) (next fs)))))))
         groups (impl-groups (drop-type-opts body))
         ;; merge clauses by method NAME across ALL protocols into one multi-arity
         ;; fn, so a name appearing in two interfaces with different arities
@@ -741,7 +763,7 @@
         ;; way.) Each (protocol, name) registers the merged fn, so dispatch by name
         ;; and satisfies? by protocol both hold.
         by-name (reduce-kv (fn [m nm specs]
-                             (assoc m nm (mapv (fn [spec] (deftype-method-clause fields mutable? spec))
+                             (assoc m nm (mapv (fn [spec] (deftype-method-clause fields mplace spec))
                                                specs)))
                            {} (merge-method-specs (type-class-file tname) (mapcat rest groups)))]
     `(do
