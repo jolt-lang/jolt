@@ -250,6 +250,13 @@
 ;;                      open-coded at any arity now (42 -> 6 ns for six args;
 ;;                      against a four-argument call ~7 -> ~1.05).
 ;;
+;;   try-deep           a try's catch was R6RS guard: a full continuation, which
+;;                      costs in proportion to the stack beneath it, and a body
+;;                      thunk closing over every free variable of the body. The
+;;                      body runs in place now behind a one-shot escape (rt.ss
+;;                      jolt-guard-body): 2.59 -> 1.31 for twenty nested tries
+;;                      under 200 frames against the bare recursion.
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
@@ -516,6 +523,9 @@
 (defn- gate-f2 [a b] (if a b a))
 (defn- gate-f4 [a b c d] a)
 (defn- gate-f6 [a b c d e f] a)
+(defn- gate-rec [n] (if (zero? n) 0 (inc (gate-rec (dec n)))))
+(defn- gate-rec-try [n] (try (if (zero? n) 0 (inc (gate-rec-try (dec n)))) (catch Exception e -1)))
+(defn- gate-under [n f] (if (zero? n) (f) (+ 0 (gate-under (dec n) f))))
 (defn- gate-plain [x] x)
 (defmulti ^:private gate-mm identity)
 (defmethod gate-mm :a [x] x)
@@ -800,6 +810,15 @@
           #(dotimes [i gate-n] (gate-f4 i 2 3 4))
           #(dotimes [i gate-n] (gate-f6 i 2 3 4 5 6))
           2.0)
+  ;; A try costs a small constant, wherever it runs. guard took a full
+  ;; continuation and with-exception-handler a body thunk per entry, so a try
+  ;; under a deep stack paid for the stack, and one in a big fn for its free
+  ;; variables. Twenty nested tries under 200 frames, against the same
+  ;; recursion without them.
+  (judge! "try-deep"
+          #(dotimes [_ 20000] (gate-under 200 (fn [] (gate-rec 20))))
+          #(dotimes [_ 20000] (gate-under 200 (fn [] (gate-rec-try 20))))
+          1.9)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))

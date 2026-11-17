@@ -173,6 +173,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
   rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
   and `clojure.tools.reader/read-string` ~13% less.
+- **`try` and `finally` cost a small constant wherever they run (#1713).** A
+  catch was R6RS `guard`, which takes a full continuation: returning through
+  one copies the frames beneath it back in, so a `try` under a deep stack cost
+  about 1.2 µs. Both a catch and a finally also handed their body to a thunk,
+  a closure over every free variable of the body, allocated on each entry.
+  On Chez the body now runs in place behind a one-shot escape, with the same
+  handler and winder semantics. A flat `try` takes ~38 ns instead of ~111,
+  `binding` gets cheaper too, and `clojure.tools.reader/read-string`, which
+  enters a `try` for every form it reads, takes ~7% less time.
 - **A call of more than four arguments through a var costs what a short one
   does (#1713).** There was no fixed-arity entry past four, so `jolt-invoke`
   built a rest list, measured it and applied it: 42 ns for a six-argument

@@ -3228,6 +3228,83 @@
 ;; half: the root behind one flag test, the binding-stack walk and *ns* exactly
 ;; as var-cell-deref decides them. The call stays in the emitted text so it
 ;; keeps its own source position for a backtrace.
+;; A jolt try's catch, on Chez (#1713). The back end emits
+;; (let ((r (call/1cc (lambda (k) (jolt-guard-body k BODY))))) (if (jolt-caught?
+;; r) (let ((raw (jolt-caught-val r))) HANDLER) r)) where it emitted R6RS guard. A jolt
+;; try always ends in else -- its handler unwraps, matches the catch clauses and
+;; rethrows itself -- so it never needs guard's way back into the raise for a
+;; clause that did not match. Two costs of Chez's guard go with that:
+;;
+;;   - $guard takes a FULL continuation (call/cc) plus the continuation marks.
+;;     A full continuation splits the stack, and returning through the split
+;;     copies the frames beneath back in: ~1.2 us for a try under 200 frames.
+;;     Here the escape is one-shot (call/1cc), which returns for free.
+;;   - with-exception-handler takes the body as a THUNK, a closure over every
+;;     free variable of the body -- in emitted code every hoisted constant the
+;;     body names -- allocated on each entry. tools.reader's read* enters a try
+;;     for every form it reads, and the thunk doubled what a parse allocated
+;;     (~650 bytes a try). Here the body runs inline: the handler stack is set,
+;;     and a winder that restores it is pushed, exactly as with-exception-
+;;     handler's parameterize does around its thunk (adapter sa-handler-stack,
+;;     sa-make-winder).
+;;
+;; So a raise in the body reaches this handler, which escapes to the try with the
+;; raised value, and the handler body runs there, in the try's own dynamic
+;; context, as guard runs it; an escape past the try by any other route (an
+;; outer catch, a park, an interrupt's jump) unwinds through the winder and puts
+;; the handler stack back. The setup and the teardown are masked by the
+;; counted-lock depth (locks.ss), as a finally's edges are, so an interrupt's
+;; escape cannot land between setting the stack and pushing the winder. The
+;; caught value travels back in a record of its own type, which the body can
+;; never return.
+(define-record-type jolt-caught (fields val) (nongenerative jolt-caught-v1) (sealed #t))
+;; (jolt-guard-body k body): BODY run with a handler installed that escapes to
+;; the one-shot continuation K with the raised value in a jolt-caught; BODY's
+;; value otherwise. The back end writes the rest around it -- (call/1cc (lambda
+;; (k) (jolt-guard-body k BODY))) and the jolt-caught test that runs the catch --
+;; into the emitted text, because a frame's line comes from the source object of
+;; the call it returns to, and a call a macro builds has none: the call/1cc call
+;; is the one the enclosing fn's frame returns to while the body runs.
+(define-syntax jolt-guard-body
+  (syntax-rules ()
+    ((_ k body)
+     (let* ((old-hs (sa-handler-stack))
+            (new-hs (cons (lambda (c) (k (make-jolt-caught c))) old-hs))
+            (old-w (sa-winders))
+            (lv (virtual-register 7)))
+       (set-virtual-register! 7 (fx+ lv 1))
+       (sa-handler-stack-set! new-hs)
+       (sa-winders-set! (cons (sa-make-winder (lambda () (sa-handler-stack-set! new-hs))
+                                              (lambda () (sa-handler-stack-set! old-hs)))
+                              old-w))
+       (set-virtual-register! 7 lv)
+       (let ((v body))
+         (set-virtual-register! 7 (fx+ (virtual-register 7) 1))
+         (sa-winders-set! old-w)
+         (sa-handler-stack-set! old-hs)
+         (set-virtual-register! 7 (fx- (virtual-register 7) 1))
+         v)))))
+
+;; A jolt finally, on Chez (#1713): (jolt-wind-inline IN BODY AFTER) is
+;; (dynamic-wind IN (lambda () BODY) AFTER) with BODY run in place instead of as
+;; a thunk, for the reason jolt-guard gives -- the thunk is a closure over every
+;; free variable of the body, allocated per entry, and every `binding` is a
+;; try/finally. The winder is the one dynamic-wind pushes, carrying IN, so the
+;; park filter still recognises a finally by its jolt-finally-in marker
+;; (fibers.ss), an escape still runs AFTER, and a resume still rewinds through
+;; IN. IN is not called on entry: a finally's is the marker, which does nothing.
+;; AFTER is the emitted cleanup thunk; the back end masks both edges around this
+;; form with the counted-lock depth, as it masked dynamic-wind's (emit-try).
+(define-syntax jolt-wind-inline
+  (syntax-rules ()
+    ((_ in body after-expr)
+     (let ((after after-expr) (old-w (sa-winders)))
+       (sa-winders-set! (cons (sa-make-winder in after) old-w))
+       (let ((r body))
+         (sa-winders-set! old-w)
+         (after)
+         r)))))
+
 (define-syntax jolt-var-fn
   (syntax-rules ()
     ((_ c0) (let ((c c0))

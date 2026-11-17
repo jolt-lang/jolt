@@ -1904,6 +1904,24 @@
 (define (sa-current-winders) (#%$current-winders))
 (define (sa-current-winders-set! w) (#%$current-winders w))
 
+;; The pieces of a handler installation that runs its body INLINE, for jolt's
+;; try (rt.ss jolt-guard). with-exception-handler takes the body as a thunk,
+;; and a thunk is a closure over every free variable of the body -- in emitted
+;; code, every hoisted constant it names -- allocated on each entry: ~650 bytes
+;; a try in tools.reader's read*. These set the handler stack and push the
+;; winder that restores it on an escape, exactly what with-exception-handler's
+;; parameterize does around its thunk, with the body left where it is. Syntax,
+;; so each is a load or a store at the site. NOT contract names: only the Chez
+;; back end's try emission uses them.
+(define-syntax sa-handler-stack (syntax-rules () ((_) (#%$current-handler-stack))))
+(define-syntax sa-handler-stack-set! (syntax-rules () ((_ v) (#%$current-handler-stack v))))
+(define-syntax sa-winders (syntax-rules () ((_) (#%$current-winders))))
+(define-syntax sa-winders-set! (syntax-rules () ((_ w) (#%$current-winders w))))
+(define sa-winder-make
+  (and sa-winder-rtd (record-constructor (make-record-constructor-descriptor sa-winder-rtd #f #f))))
+(define-syntax sa-make-winder
+  (syntax-rules () ((_ in out) (sa-winder-make in out (#%$current-attachments)))))
+
 ;; (sa-record-cas! r i old new): compare-and-swap field i (0-based) of record r,
 ;; answering whether it swapped. What lets a lazy cell be claimed for forcing
 ;; with no lock in the way and nothing allocated (seq.ss force-claimed!). A
