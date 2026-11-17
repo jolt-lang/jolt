@@ -216,7 +216,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `k` to whatever called `c`, and `c` was missing. Since 0.8.23 that site is
   kept aside during `k`'s calls and spliced in below `k` when `k` is still a
   live frame, but the reporter also required the innermost frame, the one that
-  threw, to name `c` among its callees, which it does not.
+  threw, to name `c` among its callees, which it does not. A tail call to a
+  protocol method keeps its caller too: the call site names the protocol fn,
+  and the live frame is now matched to it through the impl (a deftype's,
+  defrecord's, reify's or extend's method).
 
 - **A deftype no longer answers for a host class that shares its simple
   name.** A qualified class with no constructor of its own, such as

@@ -1461,6 +1461,39 @@
 ;; innermost frame. Of the frames running that fn, the first whose own caller
 ;; calls the chain's outermost fn; else the first; else none of them is live (the
 ;; call went to host code, which threw) and the chain is innermost.
+;; A protocol method's impls by procedure name: "jfn$ns/$n" -> the method vars
+;; ("ns/m") it implements. A call site registers the protocol fn as its callee,
+;; but the frame that runs is the impl's (a deftype's, a defrecord's, a reify's or
+;; an extend's method), which carries a counter name of its own, so without this
+;; a tail call into a protocol method had no live frame to land below. Filled by
+;; protocol-impl-hook (protocols.ss) as impls register; only a method var the
+;; protocol declares is kept (records.ss chez-protocol-methods-tbl), so a
+;; Java-interface method or a protocol-less name never matches.
+(define jolt-proto-impl-names (make-hashtable string-hash string=?))
+(define jolt-proto-impl-mu (make-mutex))
+(define (jolt-note-proto-impl! proto method fn)
+  (when (and (string? proto) (string? method) (procedure? fn))
+    (let* ((slash (let find ((i (fx- (string-length proto) 1)))
+                    (cond ((fx<? i 0) #f)
+                          ((char=? (string-ref proto i) #\/) i)
+                          (else (find (fx- i 1))))))
+           (fqn (and slash (string-append (substring proto 0 slash) "/" method)))
+           (decl (and fqn (hashtable-ref chez-protocol-methods-tbl fqn #f)))
+           (nm (and decl (equal? (car decl) proto)
+                    (guard (e (#t #f)) (((inspect/object fn) 'code) 'name)))))
+      (when (string? nm)
+        (jolt-with-mutex jolt-proto-impl-mu
+          (let ((cur (hashtable-ref jolt-proto-impl-names nm '())))
+            (unless (member fqn cur)
+              (hashtable-set! jolt-proto-impl-names nm (cons fqn cur)))))))))
+(set! protocol-impl-hook jolt-note-proto-impl!)
+;; Whether frame F runs one of CALLEES: the fn itself, or an impl of a protocol
+;; method among them.
+(define (jolt-frame-runs-callee? f callees)
+  (let ((nm (srcreg-frame-nm f)))
+    (or (and (member nm callees) #t)
+        (exists (lambda (fqn) (and (member fqn callees) #t))
+                (hashtable-ref jolt-proto-impl-names nm '())))))
 (define (jolt-site-landing site path body)
   (let ((callees (jolt-callsite-callees (car site) (jolt-marker-entry-line (cdr site))))
         (outer-fn (car (list-ref path (fx- (length path) 1)))))
@@ -1469,7 +1502,7 @@
         (let loop ((fs body) (i 1) (first-hit #f))
           (cond
             ((null? fs) (or first-hit 0))
-            ((member (srcreg-frame-nm (car fs)) callees)
+            ((jolt-frame-runs-callee? (car fs) callees)
              (if (or (null? (cdr fs))
                      (let ((oc (jolt-callsite-fn-callees (srcreg-frame-nm (cadr fs)))))
                        (and oc (member outer-fn oc) #t)))
