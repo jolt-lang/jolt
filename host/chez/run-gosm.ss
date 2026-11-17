@@ -347,8 +347,12 @@
                s
                (let* ((open (let back ((k (fx- j 1))) (if (char=? (string-ref s k) #\() k (back (fx- k 1)))))
                       (cell (substring s (fx+ open 1) j)))
+                 ;; a reference reads the cell, a call opens with jolt-var-fn
+                 ;; (backend emit-open-call); both are this op
                  (loop (fx+ j m)
-                       (string-replace-all s (string-append "(var-cell-deref " cell ")") (cdr op)))))))))
+                       (string-replace-all
+                        (string-replace-all s (string-append "(var-cell-deref " cell ")") (cdr op))
+                        (string-append "(jolt-var-fn " cell ")") (cdr op)))))))))
    s
    (list (cons "__sm-take" sm-call-take) (cons "__sm-put" sm-call-put)
          (cons "__sm-take!!" sm-call-take!!) (cons "__sm-put!!" sm-call-put!!))))
