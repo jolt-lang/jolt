@@ -104,6 +104,16 @@ cheshire
   names, arities, options and pretty-printer defaults) and matches its
   output. It is written over clojure.data.json, with no Jackson.
 
+jsonista
+  https://github.com/metosin/jsonista
+  Copyright (c) Metosin Oy
+  Eclipse Public License 2.0: licenses/EPL-2.0.txt
+  compatibility/jsonista/core.clj implements jsonista's public API (its
+  names, arities and object-mapper options) and matches jsonista 0.3.8's
+  output. It is written over clojure.data.json, with no Jackson; its
+  docstrings for read-value, write-value-as-string, write-value-as-bytes
+  and write-value are jsonista's.
+
 ClojureScript
   https://github.com/clojure/clojurescript
   Copyright (c) Rich Hickey and contributors

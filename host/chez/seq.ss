@@ -1390,23 +1390,48 @@
 ;; integers.
 (define (unc-int? x) (or (fixnum? x) (and (exact? x) (integer? x))))
 ;; Two fixnum operands are the whole of the hot path (loop counters, char code
-;; points, accumulators): their sum/difference/product is an exact integer that
-;; jolt-wrap64 leaves alone whenever it is still a fixnum, so the generic
-;; predicates are skipped for them. The wrap itself happens in jolt-wrap64, so
-;; a product that overflows 64 bits still wraps.
-(define-syntax unc-op2
+;; points, accumulators). A fixnum is 61 bits on Chez (62 on Gambit), so the sum
+;; or difference of two is at most 63 bits: always a signed long, never a wrap,
+;; and jolt-wrap64 is skipped for them. Likewise inc, dec and negate of one.
+;;
+;; Past the fixnum range, every Chez bignum op is a C call, and the exact op
+;; followed by jolt-wrap64's compares and mask is three or four of them (#1649).
+;; rt.ss binds jolt-s64-{add,sub,mul}-wrap to kernel entries (chez-patches/0008)
+;; that return the wrapped result in one; on a stock Chez, and on Gambit, they
+;; are #f and the exact op and jolt-wrap64 answer the same value.
+(define-syntax unc-wide2
   (syntax-rules ()
-    ((_ op a b)
-     (let ((x a) (y b))
-       (if (and (fixnum? x) (fixnum? y))
-           (let ((r (op x y))) (if (fixnum? r) r (jolt-wrap64 r)))
-           (if (and (unc-int? x) (unc-int? y)) (jolt-wrap64 (op x y)) (op x y)))))))
-(define (jolt-uncadd2 a b) (unc-op2 + a b))
-(define (jolt-uncsub2 a b) (unc-op2 - a b))
-(define (jolt-uncmul2 a b) (unc-op2 * a b))
-(define (jolt-uncinc x)    (if (fixnum? x) (let ((r (+ x 1))) (if (fixnum? r) r (jolt-wrap64 r))) (if (unc-int? x) (jolt-wrap64 (+ x 1)) (+ x 1))))
-(define (jolt-uncdec x)    (if (fixnum? x) (let ((r (- x 1))) (if (fixnum? r) r (jolt-wrap64 r))) (if (unc-int? x) (jolt-wrap64 (- x 1)) (- x 1))))
-(define (jolt-uncneg x)    (if (fixnum? x) (jolt-wrap64 (- x)) (if (unc-int? x) (jolt-wrap64 (- x)) (- x))))
+    ((_ op prim x y)
+     (if (and (unc-int? x) (unc-int? y))
+         (if prim (prim x y) (jolt-wrap64 (op x y)))
+         (op x y)))))
+(define (jolt-uncadd2 a b)
+  (if (and (fixnum? a) (fixnum? b)) (+ a b) (unc-wide2 + jolt-s64-add-wrap a b)))
+(define (jolt-uncsub2 a b)
+  (if (and (fixnum? a) (fixnum? b)) (- a b) (unc-wide2 - jolt-s64-sub-wrap a b)))
+;; Two fixnum factors whose product is plainly inside the fixnum range multiply
+;; with no wrap: both under 2^30 in magnitude (the cheapest test, and the usual
+;; case), or a flonum estimate of the product under 1e18 (2^60 is 1.15e18, so
+;; the estimate's rounding cannot carry a product past it). Every other product
+;; goes to the kernel op whole, which answers a fixnum when it still fits, so the
+;; exact bignum product is never built. The tests only pick the path: the
+;; kernel op is exact for any operands. fxlength would be tighter, but it is a
+;; call on Chez, not an inline op, and costs the small product 5 ns.
+(define (jolt-uncmul2 a b)
+  (if (and (fixnum? a) (fixnum? b))
+      (if (or (and (fx< -1073741824 a 1073741824) (fx< -1073741824 b 1073741824))
+              (fl< (flabs (fl* (fixnum->flonum a) (fixnum->flonum b))) 1e18))
+          (* a b)
+          (if jolt-s64-mul-wrap (jolt-s64-mul-wrap a b) (jolt-wrap64 (* a b))))
+      (unc-wide2 * jolt-s64-mul-wrap a b)))
+(define (jolt-uncinc x) (if (fixnum? x) (+ x 1) (unc-wide2 + jolt-s64-add-wrap x 1)))
+(define (jolt-uncdec x) (if (fixnum? x) (- x 1) (unc-wide2 - jolt-s64-sub-wrap x 1)))
+;; Not (unc-wide2 - prim 0 x): on a flonum that is (- 0 0.0) = 0.0, where
+;; negate must answer -0.0.
+(define (jolt-uncneg x)
+  (cond ((fixnum? x) (- x))
+        ((unc-int? x) (if jolt-s64-sub-wrap (jolt-s64-sub-wrap 0 x) (jolt-wrap64 (- x))))
+        (else (- x))))
 (define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
 (define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
 (define (jolt-unchecked-sub . xs)
@@ -1699,7 +1724,8 @@
     ((keyword? f) (jolt-get a f))            ; (:k m) -> (get m :k)
     ((pmap? f) (jolt-get f a))               ; (m k)  -> (get m k)
     ((jolt-symbol? f) (jolt-get a f))        ; ('s m) -> (get m 's)
-    ((pvec? f) (pvec-nth! f (pvec-key-index! a)))  ; (v i) -> nth at (.intValue i)
+    ;; (v i) -> nth at (.intValue i); an in-range fixnum is read inline
+    ((pvec? f) (pvec-ref-or f a (pvec-nth! f (pvec-key-index! a))))
     ((pset? f) (jolt-get f a))               ; (s x)  -> (get s x)
     (else (jolt-invoke f a))))
 (define (jolt-invoke-t2 f a b)

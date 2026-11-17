@@ -557,6 +557,10 @@
     ("print-writer" "printf" varargs)
     ("print-writer" "println" 0 1)
     ("print-writer" "write" 1 3)
+    ("console" "format" varargs)
+    ("console" "printf" varargs)
+    ("console" "readLine" varargs)
+    ("console" "readPassword" varargs)
     ("print-writer-on" "append" 1 3)
     ("print-writer-on" "write" 1 3)
     ("process" "waitFor" 0 1 2)
@@ -882,7 +886,30 @@
       ;; babashka.process's ProcessBuilder record, registered by its short name
       (and (lazy-shims-provides? name) (lazy-shims-class! name)
            (hashtable-ref h-tbl name #f))
-      (hashtable-ref h-tbl (short-class-name name) #f)))
+      ;; The short-name fallback answers a qualified name with what its simple
+      ;; name is registered as — but a deftype registers its bare name too
+      ;; (protocols.ss), so java.io.Reader, which has no constructor of its own,
+      ;; got the ctor of any user type called Reader, and a proxy over it built
+      ;; that type with no args. A JVM platform name (java.*, javax.*) is never
+      ;; a user type, so it does not take one's bare name. Only those: the seed
+      ;; defines clojure.core's own types while the current ns is still user,
+      ;; so clojure.core.VecNode reaches its ctor through this fallback.
+      ;; Refused only when the bare-name entry IS the user type's (the one its
+      ;; "ns.Name" tag holds): many host classes register only their short name
+      ;; ("StringWriter", "HashMap"), a deftype never replaces those, and
+      ;; java.io.StringWriter still has to reach it after (deftype StringWriter …).
+      (let* ((short (short-class-name name))
+             (v (hashtable-ref h-tbl short #f)))
+        (and v
+             (not (and (platform-class-name? name)
+                       (let ((tag (hashtable-ref chez-simple-name-tag short #f)))
+                         (and tag (eq? v (hashtable-ref h-tbl tag #f))))))
+             v))))
+
+(define (platform-class-name? name)
+  (let ((n (string-length name)))
+    (or (and (> n 5) (string=? (substring name 0 5) "java."))
+        (and (> n 6) (string=? (substring name 0 6) "javax.")))))
 
 ;; ---- the concrete methods of an abstract host class -------------------------
 ;; (proxy [java.io.InputStream] [] (read …)) extends the class on the JVM and
@@ -2092,9 +2119,24 @@
          (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
              (apply (var-cell-root cell) args)
              ;; a ctor for a class some provider CLAIMS, that never resolved,
-             ;; is that provider's absence — name it; otherwise it is a genuine
-             ;; missing ctor on a class jolt does have.
+             ;; is that provider's absence — name it. So is one for a class jolt
+             ;; knows nothing about at all: an :import of com.nosuch.Thing
+             ;; succeeds here (a library may import a class it never touches),
+             ;; and "No matching ctor found for class Thing" then read as an
+             ;; arity mismatch on a class that exists (#1683). Only a class jolt
+             ;; does have — statics, or a place in the class graph — is a
+             ;; genuinely missing ctor.
              (throw-jvm (quote IllegalArgumentException)
-               (if (lib-provider-for class)
+               (if (or (lib-provider-for class) (not (host-class-known? class)))
                    (unknown-class-message class)
                    (string-append "No matching ctor found for class " class)))))))))
+
+;; Does jolt know CLASS — a simple, imported or qualified name — as a class, ctor
+;; or no ctor: the runtime registers statics or a ctor for it, or the class graph
+;; models it (java.lang.Number, an interface).
+(define (host-class-known? class)
+  (let ((fqn (static-class-fqn class)))
+    (or (runtime-provides-class? fqn)
+        (lookup-class class-statics-tbl fqn)
+        (jch-known-exact? fqn)
+        (jch-interface? fqn))))

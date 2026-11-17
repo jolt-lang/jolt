@@ -3139,6 +3139,21 @@
         (d (jreify-delegate obj)))
     (cond
       (f (invoke-declared-method f obj method-name rest))
+      ((and d (null? rest) (string=? method-name "toString"))
+       (let* ((s (record-method-dispatch d method-name rest-args))
+              (cn (jolt-class-name d))
+              (generic (and (string? cn) (string-append cn "@"))))
+         (if (and generic
+                  (string? s)
+                  (>= (string-length s) (string-length generic))
+                  (string=?
+                    (substring s 0 (string-length generic))
+                    generic))
+             (string-append
+               (jolt-class-name obj)
+               "@"
+               (jolt-identity-hex obj))
+             s)))
       (d (record-method-dispatch d method-name rest-args))
       ((and abstract-class-method-hook
             (abstract-class-method-hook obj method-name)) =>
@@ -3855,6 +3870,60 @@
                 (set-box! site (cons (jrec-desc obj) slot))
                 (jrec-field-ref obj slot))
               (jrec-field obj k))))))
+
+(define (jrec-own-slot-layout? obj k i n)
+  (and (jrec? obj)
+       (not (eq? k jolt-deftype-kw))
+       (fx=? (jrdesc-nfields (jrec-desc obj)) n)
+       (eqv? (jrec-field-index obj k) i)))
+
+(define (jrec-own-slot-miss site obj k i n)
+  (if (jrec-own-slot-layout? obj k i n)
+      (begin
+        (set-box! site (jrec-desc obj))
+        (jrec-field-ref obj i))
+      (jrec-field obj k)))
+
+(define (jrec-own-slot-set-miss! site obj k i n v)
+  (let ((c (unbox site)))
+    (cond
+      ((and (pair? c) (jrec? obj) (eq? (jrec-desc obj) (car c)))
+       (jrec-own-slot-store! obj i #t v))
+      ((jrec-own-slot-layout? obj k i n)
+       (let* ((flags (vector-ref (jrdesc-ifc-of obj) 15))
+              (dbl? (and flags
+                         (fx< i (vector-length flags))
+                         (vector-ref flags i)
+                         #t)))
+         (set-box!
+           site
+           (if dbl? (cons (jrec-desc obj) #t) (jrec-desc obj)))
+         (jrec-own-slot-store! obj i dbl? v)))
+      (else (jolt-set-field! obj k v)))))
+
+(define (jrec-own-slot-store! obj i dbl? v)
+  (let ((v2 (if (and dbl? (number? v) (not (flonum? v)))
+                (exact->inexact v)
+                v)))
+    (jrec-field-set! obj i v2)
+    v2))
+
+(define (jrec-slot-read obj k i n) (jrec-field obj k))
+
+(define (jrec-slot-write! obj k i n v)
+  (jolt-set-field! obj k v))
+
+(def-var! "clojure.core" "__deftype-slot" jrec-slot-read)
+
+(def-var!
+  "clojure.core"
+  "__deftype-mutable-slot"
+  jrec-slot-read)
+
+(def-var!
+  "clojure.core"
+  "__deftype-slot-set!"
+  jrec-slot-write!)
 
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))

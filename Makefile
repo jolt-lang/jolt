@@ -138,7 +138,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
-  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity pic protoret printperf remint sbperf sci selfhost shakelocal \
+  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit tracecompilecost vfaslceiling \
   shakesmoke smoke sortedcoll staticnativesmoke stateimage test testbin transient unit unitcontext zlibregistersmoke zlibnativesmoke noexecsmoke \
   threadsafety maskedacquire ioerrno values wp ci
@@ -196,10 +196,10 @@ install: build
 # answers "is this working tree gated?" — which is not something to remember.
 
 CI-GATES := submodules values recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
-  smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
+  smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity mathfl flonumdisp flarr \
+  protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
@@ -1004,6 +1004,14 @@ cts: testbin
 loaderconf: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/loaderconf.sh
 
+# jolt.loader's artifact cache for context-private namespaces (#1653): a second
+# context over the same roots, and a second process, load from the cache; an
+# edit to the source, a dependency's macro or a file a macro read recompiles;
+# code from a shared artifact keeps its defining context. Through the built
+# binary for the same reason as loaderconf.
+loadercache: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh test/chez/loader-cache-smoke.sh
+
 # FFI: bind native functions (typed foreign-procedure), memory, and that a
 # :blocking call is collect-safe (a parked thread doesn't pin the collector).
 # The widths gate covers the exact scalar vocabulary across both halves of the
@@ -1367,6 +1375,12 @@ unitcontext:
 # that proc takes, so this is what pins the two together.
 oparity:
 	@$(CHEZ) --script test/chez/op-arity-test.ss
+
+# unchecked-add/-subtract/-multiply past the fixnum range: the kernel's 64-bit
+# wraparound entries (chez-patches/0008) and seq.ss's fallback without them,
+# both against the exact result masked to 64 bits (#1649).
+s64wrap:
+	@$(CHEZ) --script test/chez/s64-wrap-test.ss
 
 # Hint-directed fast arithmetic: ^double/^long param hints (and float literals)
 # lower arithmetic to Chez fl*/fx* ops; un-hinted integer code stays generic.

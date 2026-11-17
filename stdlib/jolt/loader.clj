@@ -125,19 +125,24 @@
   name, can both reach that). The context gets its own cells and works; the
   host's live code keeps its cells too, but the name is gone from the host's
   view, and the runtime's loaded mark survives `remove-ns`, so a plain
-  `require` will not restore it (`:reload` will). A host-side in-place reload
+  `require` will not restore it (`:reload` will). `evicted` names the host
+  namespaces a loader evicted (`unload!` reports them as `:evicted` too) and
+  `restore-evicted!` reloads exactly that set. A host-side in-place reload
   of a name a context owns reuses that context's namespace object and cells:
   one namespace, two writers. Both are the price of one registry; per-context
   var tables are what retire them.
 
-  Namespace sources are read and compiled directly at `load`, deliberately not
-  through the AOT cache: a compiled artifact bakes its cross-namespace links
-  (verified — code compiled against a var keeps the cell it saw when its file
-  was compiled), so an artifact is only reusable by a context whose cells are
-  the ones it was compiled against. The host-root path does use the cache —
-  the root loads through `jolt.host/load-namespace` — so every namespace shared
-  by reference gets AOT; only a context-private namespace pays compilation, and
-  a sound per-context artifact cache belongs with per-context var tables.
+  A context-private namespace is cached as a compiled artifact, like a host
+  namespace (the host-root path loads through `jolt.host/load-namespace`, AOT
+  cache and all), so a second context over the same roots — or the next
+  process — loads it without compiling. Code already in memory keeps the cell
+  it saw when it was compiled; an artifact does not: it links every var by
+  name as it loads, so loaded into a context whose dependencies are installed
+  it links that context's cells, as compiling there would. The key covers the
+  source, every namespace the compile loaded (transitively), the files it read
+  and the data readers; the loader id is read from a per-load context var
+  (`*defining-loader*`, captured with load-time-value) instead of baked in. See the artifact cache
+  section below. JOLT_AOT_CACHE=0 turns it off with the host's cache.
 
   One bookkeeping note: `loaders-by-id` — what evaluated source uses to find
   the loader that owns it — keeps an entry for every loader ever constructed,
@@ -537,7 +542,7 @@
         [base [{:message (ex-message e) :exception e}]]))
     [base []]))
 
-(declare ^:private root-loader)
+(declare ^:private root-loader evicted)
 ;; defined with the id registry below, after the impl record
 (declare ^:private evict!)
 
@@ -559,6 +564,7 @@
         {:unloaded true
          :already false
          :released released
+         :evicted (evicted l)
          :in-flight in-flight
          :raced (pos? in-flight)
          :errors errors})
@@ -567,6 +573,7 @@
         {:unloaded true
          :already true
          :released {}
+         :evicted (evicted l)
          :in-flight (count @(:in-flight state))
          :raced false
          :errors []}))))
@@ -672,7 +679,7 @@
              members (assoc :members (vec members))
              (some? context) (assoc :context context))
            {:links (atom {}) :in-flight (atom {}) :unloaded? (atom false)
-            :facade (atom nil)})]
+            :facade (atom nil) :evicted (atom #{})})]
     (swap! loaders-by-id assoc (:id l) l)
     l))
 
@@ -1043,11 +1050,42 @@
                :loaded (count links)
                :in-flight (count @(:in-flight state))
                :unloaded? (boolean @(:unloaded? state))}
+        (seq (some-> (:evicted state) deref)) (assoc :evicted (vec (sort @(:evicted state))))
         (and (:parent l) (pos? depth))
         (assoc :delegate (status* (:parent l) (dec depth)))
         (seq (:delegates (:info l))) (assoc :delegates (mapv :id (:delegates (:info l))))
         (seq (:members (:info l))) (assoc :members (mapv :id (:members (:info l))))))
     {:loader-id (or (:id l) "foreign") :unloaded? false}))
+
+(defn evicted
+  "The HOST namespaces L evicted to install its own versions under their names,
+   sorted, and not yet restored. A private load removes whatever the process
+   has under the name; when that was a host namespace — one no context owned —
+   the host's live code keeps its cells but the name is gone from its view, and
+   the runtime's loaded mark survives the removal, so a plain `require` will not
+   bring it back. These are the names `restore-evicted!` reloads. Answers on an
+   unloaded loader too: restoring is what follows `unload!`."
+  [l]
+  (if-let [ev (:evicted (:state l))]
+    (vec (sort @ev))
+    []))
+
+(defn restore-evicted!
+  "Reload into the host, from the host's roots, each namespace L evicted (see
+   `evicted`), and answer {:restored [names] :skipped [names]}. A name some
+   context still owns is skipped and stays recorded — restoring it would evict
+   that context's version in turn — so the usual order is `unload!` L, then
+   restore. Restored names leave the record; a reload that throws leaves the
+   rest unrestored and recorded, and propagates."
+  [l]
+  (let [ev (:evicted (:state l))
+        names (evicted l)
+        skipped (filterv private-ns? names)]
+    (doseq [nm names :when (not (private-ns? nm))]
+      (require (symbol nm) :reload)
+      (swap! ev disj nm))
+    {:restored (vec (remove (set skipped) names))
+     :skipped skipped}))
 
 (defn status
   "A diagnostics map: loader id, roots, loaded-namespace count, in-flight
@@ -1234,9 +1272,17 @@
    makes fresh cells (compiled code already holding the old cells keeps them).
    A `:reload` skips the eviction — see *reload-in-place*."
   [l ns-name]
-  (claim-private! l ns-name)
-  (when (find-ns (symbol ns-name))
-    (remove-ns (symbol ns-name))))
+  ;; asked before the claim: a name some context already owns is that
+  ;; context's to restore, not the host's
+  (let [host? (and (find-ns (symbol ns-name)) (not (private-ns? ns-name)))]
+    (claim-private! l ns-name)
+    (when (find-ns (symbol ns-name))
+      (remove-ns (symbol ns-name))
+      (when host?
+        (when-let [ev (:evicted (:state l))]
+          (swap! ev conj ns-name))))))
+
+(declare ^:private forget-key!)
 
 (defn- release-private!
   "`unload!` teardown for a source-roots loader: unmap the namespaces this
@@ -1258,6 +1304,7 @@
                             live (find-ns (symbol nm))]
                         (if (and (map? h) (identical? live (:handle h)))
                           (do (remove-ns (symbol nm))
+                              (forget-key! nm live)
                               ;; the mark goes with the namespace: a mark left
                               ;; behind makes every later require a no-op for a
                               ;; namespace that no longer exists (#1469)
@@ -1283,12 +1330,20 @@
   (throw (ex-info (str "loader " (:id l) " cannot read namespace " ns-name ": " msg)
                   {:type :loader/unreadable :kind :ns :name ns-name})))
 
+(def ^:private ^:dynamic *recorded-deps*
+  "An atom collecting the namespaces a private namespace's evaluation loads
+   through its loader — what its cached artifact is keyed against. nil outside
+   one, and rebound by each nested load so a dependency's own requires stay
+   its own."
+  nil)
+
 (defn- preload-dep!
   "Load DEP through L so the context's own version is installed before the
    compiler sees the `(:require …)` clause. A miss is left to the runtime's
    require — except when the name is another context's private namespace, which
    must never be shared implicitly."
   [l dep]
+  (when-let [rec *recorded-deps*] (swap! rec conj dep))
   (try
     (load l {:kind :ns :name dep :load? false})
     (catch :default e
@@ -1355,8 +1410,14 @@
    evaluation pulls in transitively compiles — a requiring-resolve at load
    time, an :import of an unloaded deftype — and that code, which the AOT tee
    captures, must stay the host's: a call is rewritten only while the compile
-   namespace is NS-NAME, which a transitive load's never is."
-  [loader-id ns-name]
+   namespace is NS-NAME, which a transitive load's never is.
+
+   ID-FORM is what the rewritten call passes as the loader id: the id string
+   itself for `eval-in`, and for namespace source `defining-loader-form`, which
+   the compiled code evaluates once as it loads. A literal id would bake the
+   context into the compiled code, and a cached artifact is shared by every
+   context that loads the same source."
+  [id-form ns-name]
   (fn [var-ns var-name form]
     (when (and (= "clojure.core" var-ns)
                (= ns-name (str (clojure.core/ns-name *ns*))))
@@ -1367,7 +1428,7 @@
                      args)]
           (with-meta
             (apply list
-                   (concat [(symbol "jolt.loader" (name op)) (str loader-id)]
+                   (concat [(symbol "jolt.loader" (name op)) id-form]
                            (when (contains? ns-carrying-ops op) [ns-name])
                            args))
             (meta form)))))))
@@ -1410,9 +1471,304 @@
     (io/reader (host-resource file))
     (io/reader file)))
 
+;; --- the artifact cache ---------------------------------------------------
+;; A private namespace's compiled form is cached the way the host caches a
+;; namespace on its roots: the Scheme each top-level form compiled to, teed
+;; while the source evaluates, compiled to a fasl under the AOT generation
+;; directory. What makes that sound across contexts is that a fasl links every
+;; var BY NAME when it loads — the cell-baking that keeps code compiled against
+;; a var on the cell it saw is a property of code already in memory, not of the
+;; artifact. Loaded into a context whose dependencies are installed (the ns
+;; form's requires are preloaded through the loader first, as for source), the
+;; artifact links that context's cells, which is what compiling there would do.
+;;
+;; Two things would otherwise tie an artifact to the context that compiled it:
+;;
+;;   * the loader id the require/resolve rewrite passes. The compiled code
+;;     captures it as it LOADS instead (`defining-loader-form`): the loader
+;;     binds *defining-loader* around the evaluation and around the artifact
+;;     load alike, and (jolt.host/load-time-value jolt.loader/*defining-loader*)
+;;     is evaluated once, when the top-level form holding the call loads. That
+;;     is the JVM's arrangement: Compiler.load binds LOADER, and an AOT
+;;     namespace's __init class pushes its own defining loader before its body
+;;     runs (Compiler.java pushNSandLoader), so a class keeps the loader that
+;;     defined it, not the one that compiled it.
+;;   * what the compile depended on. The key folds the source and the name it
+;;     is read under, the digest of every namespace the evaluation loaded
+;;     (recursively: a private dependency's own key, a host one's AOT digest),
+;;     the files it read, the data readers, and the linkage posture. The
+;;     namespace list is recorded beside the artifact, keyed by the source
+;;     alone, because a later run has to know it before evaluating anything.
+;;
+;; A dependency that cannot be keyed — a host namespace with no source, a
+;; private one from a context that did not cache — makes its consumer compile
+;; without caching. JOLT_AOT_CACHE=0 turns this off with the host's cache.
+
+(def ^:dynamic *defining-loader*
+  "The id of the loader whose namespace source is being evaluated or whose
+   artifact is being loaded on this thread; nil otherwise. Read once per
+   top-level form, as it loads, by the context-carrying calls the rewrite
+   emits (`defining-loader-form`) — never at call time, when it is whatever
+   the caller has bound."
+  nil)
+
+(def ^:private defining-loader-form
+  "What a rewritten call passes as its loader id in namespace source."
+  '(jolt.host/load-time-value jolt.loader/*defining-loader*))
+
+(defonce ^:private artifact-keys
+  ;; namespace name -> {:ns <the namespace object> :key <its cache key>}, for
+  ;; the private namespace installed under the name; a consumer folds the key.
+  (atom {}))
+
+(defonce ^:private cache-stats (atom {:hits 0 :misses 0}))
+
+(def ^:private ^:dynamic *keying*
+  "Names whose key is being computed on this thread — a require cycle stops
+   at the second visit and leaves the consumer uncached."
+  #{})
+
+(defn- read-source-text
+  [file]
+  (with-open [r (open-source-reader file)]
+    (slurp r)))
+
+(defn- read-name-list
+  [path]
+  (when (jolt.host/file-exists? path)
+    (vec (remove str/blank? (str/split-lines (slurp path))))))
+
+(defn- own-base
+  "The cache path prefix of NS-NAME's source TEXT read as FILE: the sidecars
+   live under it, and the artifact under it plus its dependency digest."
+  [dir ns-name file text]
+  (str dir "/" (str/replace ns-name #"[^A-Za-z0-9._-]" "_") "-"
+       (jolt.host/content-key (str file "\n" text))))
+
+(declare ^:private dep-digest)
+
+(defn- full-key
+  "OWN's artifact key over DEPS (names) and RES (files read), or nil when a
+   dependency cannot be keyed."
+  [l ns-name own deps res]
+  (let [ds (map (fn [d] [d (dep-digest l d)])
+                (sort (disj (set deps) ns-name)))]
+    (when (every? second ds)
+      (str own "-"
+           (jolt.host/content-key
+            (str (str/join "\n" (map #(str/join " " %) ds))
+                 "\n" (jolt.host/files-digest (vec res))
+                 "\n" (jolt.host/loader-cache-salt)))))))
+
+(defn- static-key
+  "The key NS-NAME would load under from FILE through HOME, computed from its
+   source and recorded sidecars without loading it — for a dependency the
+   consumer's artifact requires that this run has not loaded yet. nil when it
+   was never compiled from this source."
+  [home ns-name file]
+  (when-let [dir (jolt.host/loader-cache-dir)]
+    (binding [*keying* (conj *keying* ns-name)]
+      (let [own (own-base dir ns-name file (read-source-text file))]
+        (when-let [deps (read-name-list (str own ".deps"))]
+          (full-key home ns-name own deps (read-name-list (str own ".res"))))))))
+
+(defn- dep-digest
+  "What dependency DEP contributes to a consumer's key in L, or nil."
+  [l dep]
+  (let [e (get @artifact-keys dep)
+        n (find-ns (symbol dep))]
+    (cond
+      (and e n (identical? n (:ns e))) (:key e)
+      (contains? *keying* dep) nil
+      :else
+      (let [hit (try (first (find l {:kind :ns :name dep}))
+                     (catch :default _ ::unkeyable))
+            home (when (map? hit) (:loader hit))]
+        (cond
+          (= ::unkeyable hit) nil
+          (and home (seq (:roots (:info home))) (:file hit))
+          (static-key home dep (:file hit))
+          ;; installed privately but not keyed: compiled uncached
+          (private-ns? dep) nil
+          :else (jolt.host/host-ns-digest dep))))))
+
+(defn- record-key!
+  [ns-name k]
+  (swap! artifact-keys assoc ns-name {:ns (find-ns (symbol ns-name)) :key k}))
+
+(defn- forget-key!
+  "Drop NS-NAME's recorded key while it still describes the namespace NS."
+  [ns-name ns]
+  (swap! artifact-keys
+         (fn [m] (if (identical? ns (:ns (get m ns-name))) (dissoc m ns-name) m))))
+
+(defn- cache-plan
+  "Where NS-NAME's artifact lives, when this process caches: {:own <base> :key
+   <full key, or nil when it cannot be computed yet>}."
+  [l ns-name file text form-deps]
+  (when-let [dir (jolt.host/loader-cache-dir)]
+    (let [own (own-base dir ns-name file text)
+          deps (concat form-deps (read-name-list (str own ".deps")))]
+      {:own own
+       :key (full-key l ns-name own deps (read-name-list (str own ".res")))})))
+
+(defn- with-source-env
+  "Run F with the bindings a private namespace's source evaluates under —
+   from source or from its artifact alike. *file* is the source being
+   evaluated, as load binds it, so a def that reads it (a resource path
+   relative to its own file, a jar entry's spelling) sees the context's file
+   and not the program that opened the context. The compiler flags are
+   bracketed like a host file load brackets them (loader.ss
+   ldr-with-file-vars — the JVM's Compiler.load): a top-level
+   (set! *warn-on-reflection* true) is legal, and its effect ends with the
+   file instead of escaping into the loading context's frame."
+  [l ns-name file f]
+  (binding [*defining-loader* (str (:id l))
+            *ns* *ns*
+            *file* file
+            *warn-on-reflection* *warn-on-reflection*
+            *assert* *assert*
+            *unchecked-math* *unchecked-math*
+            jolt.host/*invoke-rewrite* (context-rewriter defining-loader-form ns-name)]
+    (f)))
+
+(defn- load-artifact!
+  "Load NS-NAME from its cached artifact when there is one. True on a load
+   that ran to completion; false otherwise, with the namespace evicted again
+   (or, under :reload, left for the source evaluation to re-define) so the
+   source path starts where it would have."
+  [l ns-name file plan reload?]
+  (let [so (str (:key plan) ".so")]
+    (and (jolt.host/file-exists? so)
+         (let [ok (try
+                    (with-source-env l ns-name file
+                      #(jolt.host/load-loader-artifact! so (:key plan)))
+                    (catch :default _ false))]
+           (if (and ok (find-ns (symbol ns-name)))
+             (do (swap! cache-stats update :hits inc)
+                 true)
+             (do (when-not reload?
+                   (when (find-ns (symbol ns-name))
+                     (remove-ns (symbol ns-name))))
+                 false))))))
+
+(defn- evaluate-source!
+  "Evaluate the rest of the source from R (after PREFIX) as NS-NAME, capturing
+   the compiled Scheme when PLAN says this process caches, and publish the
+   artifact."
+  [l ns-name file r prefix form-deps plan]
+  (let [rec (atom (set form-deps))
+        eof (Object.)
+        [captured host-deps reads]
+        (binding [*recorded-deps* rec]
+          (jolt.host/call-with-capture
+           (boolean plan)
+           (fn []
+             (with-source-env l ns-name file
+               (fn []
+                 (letfn [(eval-form [f]
+                           (try
+                             (eval f)
+                             (catch :default e
+                               ;; an unresolved #tag is the one failure the runtime
+                               ;; reports as a bare "cannot compile this value" —
+                               ;; name the tag and the reason
+                               (if-let [tags (seq (unresolved-reader-tags [f]))]
+                                 (throw (ex-info (str "the source of " ns-name " uses " (count tags)
+                                                      (if (= 1 (count tags)) " reader tag " " reader tags ")
+                                                      (str/join " " (map #(str "#" %) (sort tags)))
+                                                      (if (declares-data-readers? l)
+                                                        (str ": its roots ship a data_readers.clj, but"
+                                                             " per-context data readers are not supported"
+                                                             " — register the tag in the host's"
+                                                             " *data-readers* (or read such data with"
+                                                             " clojure.edn/read-string and a :readers map)")
+                                                        ": no reader is registered for it"))
+                                               {:type :loader/unreadable :kind :ns :name ns-name
+                                                :tags (vec (sort tags))}
+                                               e))
+                                 (throw e)))))]
+                   (doseq [f prefix]
+                     (eval-form f))
+                   (loop []
+                     (let [f (read r false eof)]
+                       (when-not (identical? eof f)
+                         (eval-form f)
+                         (recur))))))))))]
+    (when plan
+      (swap! cache-stats update :misses inc)
+      (let [deps (sort (disj (into @rec (map str host-deps)) ns-name))
+            res (sort (map str reads))]
+        (jolt.host/write-loader-sidecar! (str (:own plan) ".deps") (str/join "\n" deps))
+        (jolt.host/write-loader-sidecar! (str (:own plan) ".res") (str/join "\n" res))
+        (when-let [k (full-key l ns-name (:own plan) deps res)]
+          (when captured
+            (jolt.host/publish-loader-artifact! k captured k))
+          k)))))
+
+(defn- eval-namespace-source*
+  [l ns-name file]
+  (let [text (read-source-text file)
+        r (java.io.PushbackReader. (java.io.StringReader. text))
+        eof (Object.)
+        ;; Read through the first ns form, or the whole file when there is
+        ;; none. Reading stops there because the forms after it must be read
+        ;; once it has run — see the docstring — and the requires it names
+        ;; are the ones preloaded below, before evaluation.
+        prefix (loop [xs []]
+                 (let [f (read r false eof)]
+                   (cond
+                     (identical? eof f) xs
+                     (ns-form? f) (conj xs f)
+                     :else (recur (conj xs f)))))
+        _ (when (empty? prefix)
+            (unreadable! l ns-name (str file " is empty")))
+        form-deps (vec (distinct (remove #{ns-name} (required-ns-names prefix))))]
+    (doseq [dep form-deps]
+      (preload-dep! l dep)
+      ;; The runtime `require` inside the ns form would load from the GLOBAL
+      ;; roots whatever this loader could not serve, silently compiling the
+      ;; source against definitions the context cannot see (a hermetic
+      ;; context's clojure.string, say). Resolving only through the loader
+      ;; is what makes the policies and the delegate chain mean anything.
+      (when-not (resolve l {:kind :ns :name dep})
+        (throw (ex-info (str "namespace " ns-name " requires " dep
+                             ", which this loader cannot serve; add its root,"
+                             " delegate it, or inject it")
+                        {:type :loader/unreadable :kind :ns :name dep}))))
+    (with-private-load-claim
+      ns-name
+      (fn []
+        (let [reload? (reloading? ns-name)]
+          (if reload?
+            (claim-private! l ns-name)
+            (mark-private! l ns-name))
+          (try
+            (let [plan (cache-plan l ns-name file text form-deps)
+                  k (if (and (:key plan) (load-artifact! l ns-name file plan reload?))
+                      (:key plan)
+                      (evaluate-source! l ns-name file r prefix form-deps plan))
+                  n (find-ns (symbol ns-name))]
+              (when-not n
+                (unreadable! l ns-name (str "the source did not define it (" file ")")))
+              (if k (record-key! ns-name k) (forget-key! ns-name n))
+              {:handle n :vars (ns-interns n)})
+            (catch :default e
+              ;; A failed load leaves no partial namespace behind: the claim is
+              ;; held, so whatever is installed under the name was installed by
+              ;; this evaluation. A failed :reload is the exception — it was
+              ;; re-evaluating the INSTALLED namespace in place, and that
+              ;; namespace is what already-linked code is holding, so dropping
+              ;; the registration would be the destructive choice.
+              (when-not reload?
+                (when (find-ns (symbol ns-name))
+                  (remove-ns (symbol ns-name))))
+              (throw e))))))))
+
 (defn- eval-namespace-source
   "Read FILE, evaluate it as NS-NAME in the host namespace space, and answer
-   {:handle <namespace object> :vars {sym cell}}.
+   {:handle <namespace object> :vars {sym cell}} — from the cached artifact
+   when one matches (see the artifact cache above), else from source.
 
    FILE is a source path, a jar: path, or an embedded key (an ns hit on an
    embedded root) — `*file*` carries whichever of the three it is, and the
@@ -1425,101 +1781,19 @@
    declares, not in whatever namespace the caller happened to be in. Only the
    forms through the first `ns` form are read ahead, because its requires are
    preloaded through this loader before the private-load claim is taken (a
-   claim is never held while waiting on another)."
+   claim is never held while waiting on another).
+
+   The whole load runs with the host's capture and recording off and
+   *recorded-deps* unbound, so a private load nested in another's evaluation
+   (a top-level require of a context namespace) is not mistaken for part of
+   the outer one's compile."
   [l ns-name file]
-  (with-open [r (java.io.PushbackReader. (open-source-reader file))]
-    (let [eof (Object.)
-          ;; Read through the first ns form, or the whole file when there is
-          ;; none. Reading stops there because the forms after it must be read
-          ;; once it has run — see the docstring — and the requires it names
-          ;; are the ones preloaded below, before evaluation.
-          prefix (loop [xs []]
-                   (let [f (read r false eof)]
-                     (cond
-                       (identical? eof f) xs
-                       (ns-form? f) (conj xs f)
-                       :else (recur (conj xs f)))))]
-      (when (empty? prefix)
-        (unreadable! l ns-name (str file " is empty")))
-      (doseq [dep (required-ns-names prefix)]
-        (when (not= dep ns-name)
-          (preload-dep! l dep)
-          ;; The runtime `require` inside the ns form would load from the GLOBAL
-          ;; roots whatever this loader could not serve, silently compiling the
-          ;; source against definitions the context cannot see (a hermetic
-          ;; context's clojure.string, say). Resolving only through the loader
-          ;; is what makes the policies and the delegate chain mean anything.
-          (when-not (resolve l {:kind :ns :name dep})
-            (throw (ex-info (str "namespace " ns-name " requires " dep
-                                 ", which this loader cannot serve; add its root,"
-                                 " delegate it, or inject it")
-                            {:type :loader/unreadable :kind :ns :name dep})))))
-      (with-private-load-claim
-        ns-name
-        (fn []
-          (if (reloading? ns-name)
-            (claim-private! l ns-name)
-            (mark-private! l ns-name))
-          (try
-            ;; *file* is the source being evaluated, as load binds it, so a
-            ;; def that reads it (a resource path relative to its own file, a
-            ;; jar entry's spelling) sees the context's file and not the
-            ;; program that opened the context. The compiler flags are
-            ;; bracketed like a host file load brackets them
-            ;; (loader.ss ldr-with-file-vars — the JVM's Compiler.load): a
-            ;; top-level (set! *warn-on-reflection* true) is legal, and its
-            ;; effect ends with the file instead of escaping into the loading
-            ;; context's frame.
-            (binding [*ns* *ns*
-                      *file* file
-                      *warn-on-reflection* *warn-on-reflection*
-                      *assert* *assert*
-                      *unchecked-math* *unchecked-math*
-                      jolt.host/*invoke-rewrite* (context-rewriter (:id l) ns-name)]
-              (letfn [(eval-form [f]
-                        (try
-                          (eval f)
-                          (catch :default e
-                            ;; an unresolved #tag is the one failure the runtime
-                            ;; reports as a bare "cannot compile this value" —
-                            ;; name the tag and the reason
-                            (if-let [tags (seq (unresolved-reader-tags [f]))]
-                              (throw (ex-info (str "the source of " ns-name " uses " (count tags)
-                                                   (if (= 1 (count tags)) " reader tag " " reader tags ")
-                                                   (str/join " " (map #(str "#" %) (sort tags)))
-                                                   (if (declares-data-readers? l)
-                                                     (str ": its roots ship a data_readers.clj, but"
-                                                          " per-context data readers are not supported"
-                                                          " — register the tag in the host's"
-                                                          " *data-readers* (or read such data with"
-                                                          " clojure.edn/read-string and a :readers map)")
-                                                     ": no reader is registered for it"))
-                                            {:type :loader/unreadable :kind :ns :name ns-name
-                                             :tags (vec (sort tags))}
-                                            e))
-                              (throw e)))))]
-                (doseq [f prefix]
-                  (eval-form f))
-                (loop []
-                  (let [f (read r false eof)]
-                    (when-not (identical? eof f)
-                      (eval-form f)
-                      (recur))))))
-            (let [n (find-ns (symbol ns-name))]
-              (when-not n
-                (unreadable! l ns-name (str "the source did not define it (" file ")")))
-              {:handle n :vars (ns-interns n)})
-            (catch :default e
-              ;; A failed load leaves no partial namespace behind: the claim is
-              ;; held, so whatever is installed under the name was installed by
-              ;; this evaluation. A failed :reload is the exception — it was
-              ;; re-evaluating the INSTALLED namespace in place, and that
-              ;; namespace is what already-linked code is holding, so dropping
-              ;; the registration would be the destructive choice.
-              (when (and (not (reloading? ns-name))
-                         (find-ns (symbol ns-name)))
-                (remove-ns (symbol ns-name)))
-              (throw e))))))))
+  (let [v (volatile! nil)]
+    (binding [*recorded-deps* nil]
+      (jolt.host/call-with-capture
+       false
+       #(vreset! v (eval-namespace-source* l ns-name file))))
+    @v))
 
 (defn- declared-ns-name
   "The namespace name an `ns` form declares, or nil when F is not one. The
@@ -1859,7 +2133,7 @@
                            *assert* *assert*
                            *unchecked-math* *unchecked-math*
                            jolt.host/*invoke-rewrite*
-                           (context-rewriter (:id l) ns-name)]
+                           (context-rewriter (str (:id l)) ns-name)]
                    (let [result (eval-source-forms r prefix ns-name)
                          ;; the ns link and its var links, as a source load
                          ;; installs them: the value is the handle map the code

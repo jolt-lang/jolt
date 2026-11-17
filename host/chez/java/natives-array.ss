@@ -177,20 +177,32 @@
                    ((bytevector? v) (bytevector-length v))
                    (else (flvector-length v)))))))
 (define (ja-len a) (ja-backing-len (jolt-array-vec a)))
-;; alength in call position (op registry): the count of any array-like, but nil
-;; is the NullPointerException the JVM raises rather than 0.
+;; alength in call position (op registry): an array's length; nil is the
+;; NullPointerException the JVM raises rather than 0.
 ;; The message names what was read, as the reference's helpful NPE does
 ;; ("Cannot read the array length because \"xs\" is null"). An empty one reported
 ;; as "Unhandled exception (NullPointerException): " and stopped. Note that an
 ;; empty message is CORRECT for the NoSuchElementException sites elsewhere — the
 ;; JVM's is genuinely null there — so this is not a blanket rule.
+;; Anything else that is not an array (a vector, string, map, list) is the
+;; IllegalArgumentException the JVM's reflective RT.alength call raises. It used
+;; to answer jolt-count, so code relying on alength to reject a non-array got a
+;; plausible number instead (#1677). Every jolt array is a jolt-array record.
 (define (jolt-alength a)
   (cond ((jolt-array? a) (ja-len a))
         ((jolt-nil? a)
          (throw-jvm 'NullPointerException "Cannot read the array length because the array is null"))
-        (else (jolt-count a))))
+        (else (throw-jvm 'IllegalArgumentException
+                         "No matching method alength found taking 1 args"))))
+;; A reference array of component class cls (a JVM name string) over the
+;; elements of xs, a Scheme list or any seqable. The interop methods the JVM
+;; answers with a typed array (getStackTrace, File.list, Class.getInterfaces...)
+;; return one, so alength and .isArray see an array there as they do on the JVM.
+;; host/gambit/rt-core.ss has its own, a vector: that host has no arrays.
+(define (jolt-ref-array xs cls)
+  (make-jolt-array (list->vector (if (list? xs) xs (seq->list xs))) cls))
 ;; (alength a) on a hinted array (the numeric pass's :v-alength). Same answer as
-;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and generic count.
+;; jolt-alength, so a lying hint (nil, a vector) keeps its NPE and its throw.
 (define (jolt-valength a)
   (if (jolt-array? a) (ja-len a) (jolt-alength a)))
 ;; An out-of-range index on the generic aget/aset path throws the typed JVM
@@ -871,15 +883,26 @@
 ;; record type), so reordering cannot shadow them. A string goes straight to
 ;; the base definition too: none of the wraps between intercepts one, and their
 ;; probes were most of what nth on a string cost.
+;;
+;; The in-range fixnum read of either is answered right here, with no further
+;; call: (nth v i) in a loop, and a reader walking a string by index
+;; (tools.reader's string-reader), are this case and nothing else. Anything
+;; else -- nil, a flonum or out-of-range index, a notFound -- takes the reads
+;; the definitions below own, so every refusal is still theirs.
+(define-syntax string-ref-or
+  (syntax-rules ()
+    ((_ s0 i0 miss)
+     (let ((s s0) (i i0))
+       (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length s))) (string-ref s i) miss)))))
 (set! jolt-nth
   (case-lambda
-    ((c i)   (cond ((pvec? c) (pvec-nth! c i))
-                   ((string? c) (jolt-nth-base c i))
+    ((c i)   (cond ((pvec? c) (pvec-ref-or c i (pvec-nth! c i)))
+                   ((string? c) (string-ref-or c i (jolt-nth-base c i)))
                    ((jolt-array? c) (ja-ref c (exact (na-idx i))))
                    (else (%na-nth c i))))
     ((c i d) (if (pvec? c)
-                 (begin (jolt-nth-nil-idx! i) (pvec-nth-cast-d c i d))
-                 (if (string? c) (jolt-nth-base c i d) (if (jolt-array? c)
+                 (pvec-ref-or c i (begin (jolt-nth-nil-idx! i) (pvec-nth-cast-d c i d)))
+                 (if (string? c) (string-ref-or c i (jolt-nth-base c i d)) (if (jolt-array? c)
                      (let ((j (exact (na-idx i))))
                        (if (and (>= j 0) (< j (ja-len c))) (ja-ref c j) (begin (index-int-check! j) d)))
                      (%na-nth c i d)))))))
@@ -894,17 +917,18 @@
 ;; The outermost jolt-get wrapper: map, vector and string receivers are answered
 ;; here, calling what the wrapped definition's own arms call (jolt-get-dispatch).
 ;; All three callees are in get-fast-probes, so no registered get arm may claim
-;; one of those types.
+;; one of those types. A vector's or a string's in-range fixnum key is read
+;; inline, as nth's is.
 (set! jolt-get
   (case-lambda
     ((c k)   (cond ((pmap? c) (pmap-fast-get c k jolt-nil))
-                   ((pvec? c) (pvec-get c k jolt-nil))
-                   ((string? c) (jolt-get-base c k jolt-nil))
+                   ((pvec? c) (pvec-ref-or c k (pvec-get c k jolt-nil)))
+                   ((string? c) (string-ref-or c k (jolt-get-base c k jolt-nil)))
                    ((jolt-array? c) (ja-get c k jolt-nil))
                    (else (%na-get c k))))
     ((c k d) (cond ((pmap? c) (pmap-fast-get c k d))
-                   ((pvec? c) (pvec-get c k d))
-                   ((string? c) (jolt-get-base c k d))
+                   ((pvec? c) (pvec-ref-or c k (pvec-get c k d)))
+                   ((string? c) (string-ref-or c k (jolt-get-base c k d)))
                    ((jolt-array? c) (ja-get c k d))
                    (else (%na-get c k d))))))
 ;; get on an array is RT.getFrom's: any Number key, by intValue; anything else

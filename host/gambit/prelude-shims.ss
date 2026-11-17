@@ -790,6 +790,11 @@
 ;; target records no frames, so there is no slot to keep: the call alone.
 (define-syntax jolt-site-kept
   (syntax-rules () ((_ call) call)))
+;; rt.ss's kernel 64-bit wraparound ops (chez-patches/0008). This host has no
+;; such entry, so seq.ss's unchecked ops take the exact op and jolt-wrap64.
+(define jolt-s64-add-wrap #f)
+(define jolt-s64-sub-wrap #f)
+(define jolt-s64-mul-wrap #f)
 (define (virtual-register n) (vector-ref (%vreg-slots) n))
 (define (set-virtual-register! n v) (vector-set! (%vreg-slots) n v))
 (define (virtual-register-count) 16)

@@ -7,7 +7,7 @@ cd "$root"
 
 # Test each caller override independently of the Make process that launched us.
 # Command-line variables also propagate to nested Makes through these flags.
-unset CC JOLT_CC CHEZ CHEZSCHEME MAKEFLAGS MAKEOVERRIDES GAMBIT_PREFIX JOLT_REQUIRE_GAMBIT
+unset CC JOLT_CC CHEZ CHEZSCHEME JOLT_SYSTEM_CHEZ MAKEFLAGS MAKEOVERRIDES GAMBIT_PREFIX JOLT_REQUIRE_GAMBIT
 
 # bionic (Android/Termux) provisions Chez through host/chez/bionic-provision-chez.sh
 # instead of makes' chezscheme.mk + xPack GCC: that GCC is a glibc binary the

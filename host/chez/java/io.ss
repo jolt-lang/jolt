@@ -2320,10 +2320,12 @@
       ;; listFiles builds each child from the path AS GIVEN (new File(this, name)
       ;; on the JVM), so a File made from a relative path lists relative children.
       ((string=? name "listFiles")
-       (list (jfile-listing fp (lambda () (list->cseq (map make-jfile (jolt-list-dir p)))))))
+       (list (jfile-listing fp (lambda () (jolt-ref-array (map make-jfile (jolt-list-dir p))
+                                                           "java.io.File")))))
       ;; .list -> the child NAMES (a String[]), nil if not a readable directory.
       ((string=? name "list")
-       (list (jfile-listing fp (lambda () (apply jolt-vector (sort string<? (directory-list fp)))))))
+       (list (jfile-listing fp (lambda () (jolt-ref-array (sort string<? (directory-list fp))
+                                                           "java.lang.String")))))
       ((string=? name "length")         (list (->num (file-byte-size fp))))
       ((string=? name "lastModified")   (list (->num (file-mtime-millis fp))))
       ((string=? name "canRead")        (list (file-accessible? fp access-r-ok)))
@@ -3866,7 +3868,8 @@
     (cond ((null? ids) m)
           ((memv (car ids) seen) (loop (cdr ids) seen m))
           (else (loop (cdr ids) (cons (car ids) seen)
-                      (jolt-assoc m (thread-handle-for-id (car ids)) (jolt-vector)))))))
+                      (jolt-assoc m (thread-handle-for-id (car ids))
+                                  (jolt-ref-array '() "java.lang.StackTraceElement")))))))
 (let ((statics (list (cons "currentThread" current-thread-handle)
                      (cons "getAllStackTraces" all-stack-traces))))
   (register-class-statics! "Thread" statics)
@@ -3999,10 +4002,11 @@
                      (cons "createTempFile" file-create-temp)
                      (cons "listRoots"
                            (lambda ()
-                             (apply jolt-vector
-                                    (map make-jfile
-                                         (file-list-roots-for (eq? (sa-os-family) 'windows)
-                                                              file-exists?))))))))
+                             (jolt-ref-array
+                              (map make-jfile
+                                   (file-list-roots-for (eq? (sa-os-family) 'windows)
+                                                        file-exists?))
+                              "java.io.File"))))))
   (register-class-statics! "File" statics)
   (register-class-statics! "java.io.File" statics))
 (register-class-ctor! "java.io.File" jolt-file-ctor)

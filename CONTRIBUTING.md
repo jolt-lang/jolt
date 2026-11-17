@@ -121,7 +121,8 @@ source roots below are split by *when* they load:
   listed in `ei-prelude-ns-files` are the exception (see below).
 - **`compatibility/`** loads like `stdlib/`, but holds namespaces jolt carries
   only so code written for another runtime runs unchanged, such as
-  `cheshire.core` and `bencode.core` for babashka scripts. They aren't part of
+  `cheshire.core` and `bencode.core` for babashka scripts, and `jsonista.core`
+  for libraries such as muuntaja that are written against it. They aren't part of
   the language, so they stay out of `stdlib/`.
 
 `bin/jolt` loads the checked-in seed and the spine, then compiles and evaluates on

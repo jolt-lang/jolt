@@ -274,9 +274,11 @@
 ;; found: jolt lowers a backtick as a special form, the JVM's reader expands it
 ;; during read, so special-syms never named it.
 (ev "(def sm-rewrites #{\"do\" \"let*\" \"if\" \"loop*\" \"recur\"})")
+;; a special form the analyzer dispatches only qualified, by the spelling it does
+(ev "(def sm-dispatched {\"load-time-value\" 'jolt.host/load-time-value})")
 (gate-check "every analyzer special form is rewritten or opaque to the pass"
             (ev (string-append
-                 "(pr-str (sort (remove (fn [s] (contains? @#'clojure.core.async/sm-opaque (symbol s)))"
+                 "(pr-str (sort (remove (fn [s] (contains? @#'clojure.core.async/sm-opaque (get sm-dispatched s (symbol s))))"
                  "                      (remove sm-rewrites @#'jolt.analyzer/handled))))"))
             "()")
 ;; and the other direction is not asserted on purpose: sm-opaque names heads the

@@ -319,9 +319,9 @@
 (defn aget [arr & idxs]
   (reduce (fn [v i] (nth v i)) arr idxs))
 (defn alength [arr]
-  (if (nil? arr)
-    (throw (NullPointerException. "Cannot read the array length because the array is null"))
-    (count arr)))
+  ;; the op registry's jolt-alength (natives-array.ss), so the var answers as a
+  ;; call does: NPE on nil, IllegalArgumentException on a non-array (#1677)
+  (clojure.core/alength arr))
 (defn aset [arr & idxs+val]
   (let [n (count idxs+val)
         val (nth idxs+val (dec n))

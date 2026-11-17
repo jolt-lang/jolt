@@ -14,8 +14,10 @@
 # from the same patched build, which configure + make + install from one tree
 # guarantees. A jolt built against a stock Chez (Homebrew, a distro) still
 # works; it just pays the stock price for collect-safe foreign calls (see the
-# comments in c/thread.c), keeps a copy of each string literal per form, and
-# keeps stock Chez's placement of C arguments past the registers.
+# comments in c/thread.c), keeps a copy of each string literal per form,
+# keeps stock Chez's placement of C arguments past the registers, and has no
+# signal relay, so sun.misc.Signal falls back to blocking signals up front
+# (host/chez/java/concurrency.ss).
 set -eu
 
 src=${1:?usage: apply-chez-patches.sh <chez-src>}

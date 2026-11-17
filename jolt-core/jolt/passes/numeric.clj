@@ -371,6 +371,14 @@
       (fl-aset node1 ars)
       :else nil)))
 
+;; (nth coll i) / (get coll i) with a proven-:long index (a loop counter, a
+;; literal): the back end tests for a vector and reads it inline, falling back to
+;; the call -- the way RT.nth tests Indexed first, and what (aget a i) gets on a
+;; hinted array. No result kind: an element is whatever the vector holds.
+(defn- indexed-invoke [nm n node1 ars]
+  (when (and (or (= nm "nth") (= nm "get")) (= n 2) (fixnum-operand? (nth ars 1)))
+    [nil (assoc node1 :vec-idx true)]))
+
 (defn- core-kind-invoke
   "The kind of a clojure.core call that answers one without being lowered, or nil."
   [nm n node1 ars]
@@ -516,6 +524,7 @@
         [k (if (or (= k :double) (= k :float)) (assoc node1 :num-ret-guard k) node1)])
       (nil? nm) (or (math-invoke fnode node1 ars n) [nil node1])
       :else (or (array-invoke nm n node1 ars)
+                (indexed-invoke nm n node1 ars)
                 (core-kind-invoke nm n node1 ars)
                 (arith-invoke nm n node1 ars argnodes)))))
 
