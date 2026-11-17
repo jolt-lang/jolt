@@ -429,7 +429,35 @@
           ((and (pair? (car xs)) (eq? (caar xs) 'begin))
            (append (flat (cdar xs)) (flat (cdr xs))))
           (else (cons (car xs) (flat (cdr xs)))))))
-(define (dce-var-op-target x ops)
+;; A call through a linked var's jv$ binding is emitted through a local (backend
+;; calls.clj linked-call):
+;;   (let ((_lp$N jv$f) (_la$M <operand>) ...)
+;;     (if (#3%procedure? _lp$N) (_lp$N a ...) (jolt-invoke _lp$N a ...)))
+;; Read back as the plain (jv$f operand ...) it stands for, each _la$ temp
+;; replaced by the operand it binds, so a doc-metadata form is still seen as
+;; attaching to its one var. Any other form comes back unchanged.
+(define (dce-unlink-call x)
+  (define (prefixed? s pre)
+    (and (symbol? s)
+         (let ((t (symbol->string s)))
+           (and (fx>= (string-length t) (string-length pre))
+                (string=? (substring t 0 (string-length pre)) pre)))))
+  (define (binding? b) (and (pair? b) (pair? (cdr b)) (null? (cddr b)) (symbol? (car b))))
+  (or (and (pair? x) (eq? (car x) 'let)
+           (pair? (cdr x)) (list? (cadr x)) (pair? (cadr x)) (for-all binding? (cadr x))
+           (pair? (cddr x)) (null? (cdddr x))
+           (let* ((binds (cadr x)) (p (caar binds)) (callee (cadar binds)) (body (caddr x)))
+             (and (prefixed? p "_lp$") (prefixed? callee "jv$")
+                  (list? body) (= (length body) 4) (eq? (car body) 'if)
+                  (list? (caddr body)) (eq? (car (caddr body)) p)
+                  (cons callee
+                        (map (lambda (a)
+                               (let ((b (and (prefixed? a "_la$") (assq a (cdr binds)))))
+                                 (if b (cadr b) a)))
+                             (cdr (caddr body)))))))
+      x))
+(define (dce-var-op-target x0 ops)
+  (define x (dce-unlink-call x0))
   (and (pair? x) (memq (car x) ops)
        (pair? (cdr x)) (string? (cadr x)) (pair? (cddr x)) (string? (caddr x))
        (string-append (cadr x) "/" (caddr x))))
@@ -472,7 +500,7 @@
     (if reg
         (cadddr reg)
         (let ((op (dce-find-pair form (lambda (x) (dce-var-op-target x dce-ns-ops)))))
-          (if op (cadr op) (dce-refs-ns refs))))))
+          (if op (cadr (dce-unlink-call op)) (dce-refs-ns refs))))))
 ;; One prelude FORM as a DCE record: a def is prunable by its var; a form that
 ;; only attaches to one var is prunable by that var; another namespace's
 ;; top-level form is gated on the namespace (dce-rec-gated); the rest

@@ -254,9 +254,41 @@
     (when (<= n 8)
       (str "jrec" n "-f" idx))))
 
+;; A call through a linked var's jv$ binding (rt.ss def-var-linked!) applies the
+;; value read into a local, never the top-level variable itself. Chez compiles
+;; (jv$f a) as "load the symbol's value into cp, jump through the code pointer
+;; cached in the symbol", and a redefinition writes the value and then clears
+;; that cache. A thread calling while another redefines can pair one closure
+;; with the other's code -- the old fn's code run over the new closure's free
+;; variables -- and the first call after an assignment refills the cache from a
+;; value it read before the write, which can leave every later call running the
+;; old code for good. A call through a local takes the code from the closure it
+;; loaded, one value. The procedure? test is the check Chez makes before
+;; applying a local anyway, and it keeps cp0 from folding the let back into a
+;; call of the symbol (it does so when the operands are simple). A root that has
+;; since become a map, keyword or multimethod goes through jolt-invoke; the
+;; operands are bound first so neither arm copies their text.
+(defn- simple-operand? [s]
+  (and (pos? (count s))
+       (not (some #{\( \) \space \newline \tab \" \' \# \| \;} s))))
+(defn- linked-call [callee operand-strs]
+  (let [p (fresh-label "_lp$")
+        bound (mapv (fn [s] (if (simple-operand? s) [s nil] (let [t (fresh-label "_la$")] [t s])))
+                    operand-strs)
+        names (mapv first bound)
+        binds (str "(" p " " callee ")"
+                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))
+        args (if (seq names) (str " " (str/join " " names)) "")]
+    (str "(let (" binds ") (if (" (unsafe-prefix) "procedure? " p ") (" p args
+         ") (jolt-invoke " p args ")))")))
+(defn- linked-binding? [callee]
+  (and (string? callee) (str/starts-with? callee "jv$")))
+
 ;; A plain Scheme application: (callee op ...).
 (defn plain-call [callee operand-strs]
-  (str "(" callee (if (seq operand-strs) (str " " (str/join " " operand-strs)) "") ")"))
+  (if (linked-binding? callee)
+    (linked-call callee operand-strs)
+    (str "(" callee (if (seq operand-strs) (str " " (str/join " " operand-strs)) "") ")")))
 ;; A tail call in trace mode (R4, bead jolt-hm1p): ONE virtual-register store
 ;; of the static ('ns/fn' . line) site pair, after the operands are temp-bound
 ;; — an operand's own tail site would otherwise stomp the slot before the call
