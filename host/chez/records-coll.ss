@@ -274,7 +274,17 @@
             ;; slot 15: the type's ^double field flags (chez-record-dbl-tbl), or
             ;; #f — what assoc widens a replaced field by, read here rather than
             ;; through a string-keyed lookup on every assoc
-            (hashtable-ref chez-record-dbl-tbl tag #f))))
+            (hashtable-ref chez-record-dbl-tbl tag #f)
+            ;; slot 16: the type's own IObj, as (meta-impl . withMeta-impl), or
+            ;; #f when it declares neither -- what meta and with-meta ask on
+            ;; every call (natives-meta.ss jrec-iobj), so a record that keeps its
+            ;; meta in the slot answers with one vector-ref instead of two
+            ;; by-name lookups. Not the plain flag: a type is plain only when
+            ;; it declares none of a long list of names (rewrite-clj's nodes
+            ;; declare a protocol method named length, which is CharSequence's).
+            (let ((m (find-method-any-protocol tag "meta"))
+                  (w (find-method-any-protocol tag "withMeta")))
+              (and (or m w) (cons m w))))))
 ;; The derived vector of the descriptor asked last, as (desc . vector). Every
 ;; record op opens with jrdesc-ifc-of, and a weak-table probe is most of what a
 ;; plain record's count or contains? costs; a loop over one record type asks the
@@ -318,11 +328,10 @@
   '("count" "containsKey" "contains" "assoc" "assocEx" "without" "seq" "cons"
     "empty" "valAt" "get" "entryAt" "equiv" "equals" "hasheq" "hashCode"
     "kvreduce" "reduce" "iterator" "nth" "peek" "pop" "first" "next" "more"
-    "length" "charAt" "size" "isEmpty" "containsValue" "keySet" "values" "entrySet"
-    ;; and IObj's pair, so a plain record's meta and with-meta read and copy the
-    ;; slot without asking the method table first (natives-meta.ss)
-    "meta" "withMeta"))
+    "length" "charAt" "size" "isEmpty" "containsValue" "keySet" "values" "entrySet"))
 (define (jrec-plain? x) (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
+;; A record's own IObj impls (slot 16): (meta . withMeta), either #f, or #f.
+(define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
 ;; The impl a record type declares for METHOD (any protocol), or #f. Every
 ;; collection op on a record asks this first — equality asks it for equiv and
 ;; equals on both operands, hashing for hasheq and hashCode, meta/assoc/nth/count

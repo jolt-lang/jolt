@@ -185,11 +185,11 @@
     ;; it through its own assoc/withMeta (core.logic's Substitutions/LVar/LCons),
     ;; so dispatch to its meta method rather than the identity side-table — which
     ;; the deftype's reconstructed instances would not share.
-    ;; Every other record carries its meta in its own slot (values.ss jrec). A
-    ;; plain record declares no meta method (records-coll.ss), so it skips the
-    ;; method-table lookup altogether.
+    ;; Every other record carries its meta in its own slot (values.ss jrec);
+    ;; whether the type declares its own is one read of its derived vector
+    ;; (records-coll.ss jrec-iobj).
     ((jrec? x)
-     (let ((meth (and (not (jrec-plain? x)) (jrec-cl x "meta"))))
+     (let* ((io (jrec-iobj x)) (meth (and io (car io))))
        (if meth (jolt-invoke meth x) (jrec-meta x))))
     ;; everything else (fns, reify, atoms/agents and any reference type)
     ;; reads the identity side-table; a value with no entry is nil meta.
@@ -269,7 +269,7 @@
     ;; defrecord's generated withMeta is `new R(...)`; Obj's identity shortcut is
     ;; the collections', not a record's.
     ((jrec? x)
-     (let ((meth (and (not (jrec-plain? x)) (jrec-cl x "withMeta"))))
+     (let* ((io (jrec-iobj x)) (meth (and io (cdr io))))
        (if meth (jolt-invoke meth x m) (jrec-with-meta x m))))
     ((or (jreify? x) (procedure? x))
      (if (eq? (jolt-meta x) m)

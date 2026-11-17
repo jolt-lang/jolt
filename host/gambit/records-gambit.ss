@@ -1119,7 +1119,10 @@
            (not (exists
                   (lambda (nm) (find-method-any-protocol tag nm))
                   jrec-map-method-names)))
-      (hashtable-ref chez-record-dbl-tbl tag #f))))
+      (hashtable-ref chez-record-dbl-tbl tag #f)
+      (let ((m (find-method-any-protocol tag "meta"))
+            (w (find-method-any-protocol tag "withMeta")))
+        (and (or m w) (cons m w))))))
 
 (define jrdesc-ifc-last (cons #f #f))
 
@@ -1144,10 +1147,12 @@
     "equals" "hasheq" "hashCode" "kvreduce" "reduce" "iterator"
     "nth" "peek" "pop" "first" "next" "more" "length" "charAt"
     "size" "isEmpty" "containsValue" "keySet" "values"
-    "entrySet" "meta" "withMeta"))
+    "entrySet"))
 
 (define (jrec-plain? x)
   (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
+
+(define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
 
 (define (jrec-method x method)
   (let* ((t (vector-ref (jrdesc-ifc-of x) 7))
