@@ -1429,6 +1429,8 @@
                (if (and (var-cache?) *const-pool*) (hoist-const lookup) lookup))
     ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
+    ;; does the var still hold the fn a spliced body was compiled from (passes/inline.clj)
+    :inline-guard (hoist-inline-guard (emit (:fn node)) (:ns node) (:name node) (:token node))
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
     ;; Inside a def the site keeps the resolved slot (records.ss jolt-set-own-field!).
     :set-field (let [kw (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))]
@@ -1595,13 +1597,12 @@
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
     :var (emit-var-node node)
-    (:the-var :set-var :set-field :defmacro) (emit-var-form node)
+    (:the-var :set-var :set-field :defmacro :inline-guard) (emit-var-form node)
     (:host :host-static :host-new) (emit-host-node node)
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)
     (:vector :set :map) (emit-coll-literal node)
     (:quote :regex :inst :uuid :bigdec :the-ns :load-time-value) (emit-data-node node)
-    :inline-guard (hoist-inline-guard (emit (:fn node)) (:ns node) (:name node) (:token node))
     ;; the thrown value is an operand (emitted non-tail); the throw itself goes
     ;; through emit-call with marks?=#f, so a TAIL throw gets the site-vreg pair
     ;; (sited-tail-call — stored after the operand is bound, so the operand's own

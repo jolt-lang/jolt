@@ -1152,8 +1152,6 @@
 (define (jrec-plain? x)
   (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
 
-(define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
-
 (define-syntax jrec-iobj/i
   (syntax-rules ()
     ((_ x0)

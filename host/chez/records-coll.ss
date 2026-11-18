@@ -277,7 +277,7 @@
             (hashtable-ref chez-record-dbl-tbl tag #f)
             ;; slot 16: the type's own IObj, as (meta-impl . withMeta-impl), or
             ;; #f when it declares neither -- what meta and with-meta ask on
-            ;; every call (natives-meta.ss jrec-iobj), so a record that keeps its
+            ;; every call (natives-meta.ss, through jrec-iobj/i), so a record that keeps its
             ;; meta in the slot answers with one vector-ref instead of two
             ;; by-name lookups. Not the plain flag: a type is plain only when
             ;; it declares none of a long list of names (rewrite-clj's nodes
@@ -330,12 +330,10 @@
     "kvreduce" "reduce" "iterator" "nth" "peek" "pop" "first" "next" "more"
     "length" "charAt" "size" "isEmpty" "containsValue" "keySet" "values" "entrySet"))
 (define (jrec-plain? x) (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
-;; A record's own IObj impls (slot 16): (meta . withMeta), either #f, or #f.
-(define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
-;; The same read with the last-descriptor hit open-coded (#1713): meta and
-;; with-meta ask it for every record, and through jrec-iobj -> jrdesc-ifc-of ->
-;; jrdesc-ifc-epoch a hit was three procedure calls (~7 ns). A miss is
-;; jrdesc-ifc-of's whole path.
+;; A record's own IObj impls (slot 16): (meta . withMeta), either #f, or #f,
+;; with the last-descriptor hit open-coded (#1713): meta and with-meta ask it
+;; for every record, and through jrdesc-ifc-of -> jrdesc-ifc-epoch a hit was
+;; procedure calls (~7 ns). A miss is jrdesc-ifc-of's whole path.
 (define-syntax jrec-iobj/i
   (syntax-rules ()
     ((_ x0)
