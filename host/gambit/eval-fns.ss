@@ -112,6 +112,11 @@
                           (if (null? r) acc (loop (jolt-max2 acc (car r)) (cdr r))))))))
 (%eval-fn (define (jolt-n-inc a) (if (number? a) (+ a 1) (jolt-inc a))))
 (%eval-fn (define (jolt-n-dec a) (if (number? a) (- a 1) (jolt-dec a))))
+;; Chez's open-coded spellings of nth and neg? (rt.ss jolt-nth/i, jolt-neg?/i):
+;; the back end emits them only for Chez, but they are call-position heads of
+;; its tables, so they get twins with their macros' fallback answers.
+(%eval-fn (define (jolt-nth/i c k . d) (apply jolt-nth c k d)))
+(%eval-fn (define (jolt-neg?/i x) (jolt-neg? x)))
 
 ;; long ops: the range check calls the same unit globals the macro used
 (%eval-fn (define (jolt-l-check r)
