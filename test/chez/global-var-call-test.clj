@@ -193,6 +193,18 @@
 (ev (create-ns 'gvc.gone) (intern 'gvc.gone 'f (fn [] :gone-2)))
 (chk "a namespace defined again after remove-ns" (if global? :gone-2 :gone-1) (ev (call-gone)))
 
+;; A Var held across remove-ns is still a live var: a write to its root reaches
+;; a caller compiled against it, in both modes.
+(ev (create-ns 'gvc.kept) (intern 'gvc.kept 'f (fn [] :kept-1))
+    (def kept-var (resolve 'gvc.kept/f))
+    (defn call-kept [] (gvc.kept/f)))
+(remove-ns 'gvc.kept)
+(chk "after remove-ns a held var still answers" :kept-1 (ev (call-kept)))
+(alter-var-root kept-var (constantly (fn [] :kept-2)))
+(chk "alter-var-root on a var held across remove-ns reaches a compiled caller"
+     :kept-2 (ev (call-kept)))
+(chk "...and agrees with invoking the held var" :kept-2 (kept-var))
+
 ;; Reloading a namespace again and again (remove-ns, then defining it again, as
 ;; a long REPL session does) does not grow the runtime's table of global var
 ;; cells: remove-ns drops the namespace's entries, and a name defined again

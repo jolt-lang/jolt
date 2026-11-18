@@ -127,6 +127,10 @@
   (jolt-with-mutex %fn-form-mu
     (set! %fn-form-pending (cons (cons ns table) %fn-form-pending)))
   jolt-nil)
+;; How many tables wait unfiled; reads under the lock and files nothing. For
+;; the gates, which check that registration alone leaves a table pending.
+(define (image-fn-form-pending-count)
+  (jolt-with-mutex %fn-form-mu (length %fn-form-pending)))
 (define (%fn-form-file-pending!)                   ; caller holds %fn-form-mu
   (unless (null? %fn-form-pending)
     (let ((ps (reverse %fn-form-pending)))

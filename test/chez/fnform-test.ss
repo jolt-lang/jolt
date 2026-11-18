@@ -153,10 +153,16 @@
           (and (has? e "(begin (image-register-fn-form! \"jfn$app/lazy2$0\"")
                (has? e " (image-register-fn-form! \"jfn$app/lazy2$1\"")
                (not (has? e "(let* ((_q$"))))))
+(define pending-before-lazy1 (image-fn-form-pending-count))
 (jolt-eval "(def lazy1 {:f (fn [x] (* x 2))})" "app")
-;; under JOLT_LAZY_META=1 the row is still in its pending table here; reading
-;; through the API files it, so the reader sees it as eager registration left it
+;; under JOLT_LAZY_META=1 registration only queues the table: it is filed by the
+;; first read through the API, which then sees it as eager registration left it
+(if lazy-rows?
+    (ok "registration leaves the table pending, unfiled"
+        (fx=? (image-fn-form-pending-count) (fx+ pending-before-lazy1 1)))
+    (ok "eager registration queues nothing" (fx=? (image-fn-form-pending-count) 0)))
 (ok "before the first lookup the slot holds the bytes" (bytevector? (raw-form "jfn$app/lazy1$0")))
+(ok "the first read filed every pending table" (fx=? (image-fn-form-pending-count) 0))
 (ok "the first lookup parses the form" (string=? (reg-form-head "jfn$app/lazy1$0") "fn*"))
 (ok "...and caches it in the slot" (not (bytevector? (raw-form "jfn$app/lazy1$0"))))
 (ok "the parsed form carries no reader position"

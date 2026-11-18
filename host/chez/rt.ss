@@ -2587,10 +2587,17 @@
               (hashtable-set! var-global-tbl c e)
               (sa-top-level-assign! s w)
               (sa-symbol-slot-set! s w)))))))
-;; remove-ns (ns.ss): the removed cell leaves the table. Its wrapper keeps its
-;; last target until a new cell of the same name relinks it. Caller holds
-;; var-linked-mu.
-(define (var-global-forget! c) (hashtable-delete! var-global-tbl c))
+;; remove-ns (ns.ss): the removed cell leaves the table, so no later
+;; var-global-sync! reaches its wrapper. A Var of the removed namespace can
+;; still be held and written (alter-var-root, unbindRoot), so the wrapper is
+;; first pointed at the cell's trampoline, which reads the cell on every call,
+;; until a new cell of the same name relinks it. Caller holds var-linked-mu.
+(define (var-global-forget! c)
+  (let ((e (hashtable-ref var-global-tbl c #f)))
+    (when e
+      (when (and (car e) (eq? (wrapper-procedure-data (car e)) c))
+        (set-wrapper-procedure-procedure! (car e) (var-global-tramp c e)))
+      (hashtable-delete! var-global-tbl c))))
 ;; For the gates: how many cells the table holds.
 (define (var-global-table-size)
   (jolt-with-mutex var-linked-mu (hashtable-size var-global-tbl)))
