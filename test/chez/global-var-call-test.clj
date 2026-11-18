@@ -1,7 +1,7 @@
 ;; Semantics of global var calls (JOLT_GLOBAL_VAR_CALL=1, rt.ss "global vars").
 ;; Run with `jolt run`, knob set
-;; or not: every check holds in both modes except the one marked GLOBAL, whose
-;; changed answer is the edge case the write-up records. Prints
+;; or not: every check holds in both modes except those marked GLOBAL, whose
+;; answers differ by design (remove-ns, below). Prints
 ;; GLOBAL-VAR-CALL OK <mode> when every check holds. Each form is eval'd on its
 ;; own, as a REPL compiles it, so a caller is compiled after its callee's def.
 (def failures (atom []))
@@ -141,12 +141,38 @@
 (ev (defn self-redef [x] [:old x])
     (defn call-self-redef []
       (self-redef (do (alter-var-root #'self-redef (constantly (fn [x] [:new x]))) 7))))
-;; GLOBAL: Clojure reads the operator before the operands and calls :old. A
-;; global call reads the var's symbol when the call is made, after the operand
-;; redefined it, and calls :new.
+;; Clojure reads the operator before the operands and calls :old. So does a
+;; global call whose operands can run code: it reads the callee into a local
+;; first (backend_scheme.clj emit-global-invoke, rt.ss jolt-gv-callee).
 (chk "an operand that redefines the called var itself"
-     (if global? [:new 7] [:old 7]) (ev (call-self-redef)))
+     [:old 7] (ev (call-self-redef)))
 (chk "...and the next call sees the redefinition" [:new 8] (ev (self-redef 8)))
+;; ...whether the redefinition is a root write, a thread binding's var-set, or
+;; makes the var a value that is not a procedure
+(ev (defn ^:dynamic bound-redef [x] [:root x])
+    (defn call-bound-redef []
+      (bound-redef (do (var-set #'bound-redef (fn [x] [:set x])) 1))))
+(chk "an operand that var-sets the called var's binding"
+     [:bound 1] (ev (binding [bound-redef (fn [x] [:bound x])] (call-bound-redef))))
+(ev (defn map-redef [x] [:fn x])
+    (defn call-map-redef []
+      (map-redef (do (alter-var-root #'map-redef (constantly {1 :map})) 1))))
+(chk "an operand that turns the called var into a map" [:fn 1] (ev (call-map-redef)))
+(chk "...and the next call dispatches the map" :map (ev (call-map-redef)))
+(ev (def kw-callee :k)
+    (defn call-kw-redef []
+      (kw-callee (do (alter-var-root #'kw-callee (constantly :other)) {:k 1 :other 2}))))
+(chk "a non-procedure callee read before its operand" 1 (ev (call-kw-redef)))
+;; the early read leaves arity errors and unbound vars as they were
+(ev (defn arity-callee [x] x)
+    (defn call-arity [] (arity-callee (do 1) (inc 1))))
+(chk "wrong arity through an early-read callee" 'clojure.lang.ArityException
+     (first (outcome #(ev (call-arity)))))
+(ev (declare unbound-early)
+    (defn call-unbound-early [] (unbound-early (inc 1))))
+(chk "unbound callee through an early read"
+     ['java.lang.IllegalStateException "Attempting to call unbound fn: #'user/unbound-early"]
+     (outcome #(ev (call-unbound-early))))
 
 ;; --- ns-unmap and remove-ns --------------------------------------------------
 ;; jolt's ns-unmap keeps the cell and unbinds its root, so both modes agree.
@@ -166,6 +192,32 @@
 (chk "after remove-ns a compiled caller keeps the removed root" :gone-1 (ev (call-gone)))
 (ev (create-ns 'gvc.gone) (intern 'gvc.gone 'f (fn [] :gone-2)))
 (chk "a namespace defined again after remove-ns" (if global? :gone-2 :gone-1) (ev (call-gone)))
+
+;; Reloading a namespace again and again (remove-ns, then defining it again, as
+;; a long REPL session does) does not grow the runtime's table of global var
+;; cells: remove-ns drops the namespace's entries, and a name defined again
+;; reuses its symbol's wrapper, which is never reassigned (rt.ss "global vars").
+(def gv-table-size (resolve 'jolt.host/global-var-table-size))
+(defn reload-gvc! [i]
+  (remove-ns 'gvc.reload)
+  (ev (create-ns 'gvc.reload))
+  (binding [*ns* (the-ns 'gvc.reload)]
+    (eval '(clojure.core/refer-clojure))
+    (doseq [j (range 20)]
+      (eval (list 'clojure.core/defn (symbol (str "f" j)) '[x] (list 'clojure.core/+ 'x i))))))
+(reload-gvc! 0)
+(ev (defn call-reload [] (gvc.reload/f3 100)))
+(chk "a caller of a reloaded namespace" 100 (ev (call-reload)))
+(let [before (gv-table-size)]
+  (doseq [i (range 1 30)] (reload-gvc! i))
+  (chk "reloading a namespace 29 times does not grow the global var table"
+       true (<= (gv-table-size) before))
+  (chk "...and a caller compiled before the reloads calls the latest var"
+       (if global? 129 100) (ev (call-reload))))
+(let [before (gv-table-size)]
+  (remove-ns 'gvc.reload)
+  (chk "remove-ns drops the namespace's global var entries"
+       true (or (not global?) (<= (gv-table-size) (- before 20)))))
 
 ;; --- concurrent redefinition --------------------------------------------------
 ;; Callers race whole-value root writes that move the var between closures of

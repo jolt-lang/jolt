@@ -464,7 +464,8 @@
     (dynamic-wind
       (lambda ()
         (set! prev (jp-switch! p))
-        (hashtable-update! jp-entries p fx1+ 0))
+        ;; a lambda, not fx1+: Gambit's fx1+ is a macro, not a value
+        (hashtable-update! jp-entries p (lambda (n) (fx+ n 1)) 0))
       thunk
       (lambda () (jp-switch! prev)))))
 (define (jp-mine?) (eqv? (get-thread-id) jp-thread))

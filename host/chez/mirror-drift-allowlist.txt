@@ -56,6 +56,7 @@ host/chez/rt.ss::register-code-value!
 host/chez/rt.ss::register-proc-name!
 host/chez/rt.ss::var-def-ordinal
 host/chez/rt.ss::var-def-visible-in-outer-frames?
+host/chez/rt.ss::var-global-forget!
 host/chez/rt.ss::var-global-link!
 host/chez/rt.ss::var-redefined-clear!
 host/chez/rt.ss::var-redefined?

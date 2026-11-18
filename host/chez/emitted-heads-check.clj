@@ -39,7 +39,7 @@
    "address" :binder "_nv" :binder "_d" :binder "_f" :binder
    ;; tags inside JOLT_LAZY_META's quoted def descriptor (literals.clj
    ;; meta-desc): data the runtime reads, never applied
-   "k" :quoted-data "ym" :quoted-data "var" :quoted-data})
+   "k" :quoted-data "ym" :quoted-data})
 
 (def strs
   (let [acc (atom #{})]

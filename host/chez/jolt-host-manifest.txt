@@ -157,6 +157,7 @@ gc-old-growth-bytes
 gc-real-nanos
 gc-trip-bytes
 getenv
+global-var-table-size
 host-class-name?
 host-intern!
 host-ns-digest

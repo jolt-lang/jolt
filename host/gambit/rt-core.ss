@@ -616,6 +616,7 @@
 ;; Chez's global var calls (chez rt.ss "global vars"); never on here.
 (define jolt-global-mode #f)
 (define (var-global-link! c) #f)
+(define (var-global-forget! c) #f)
 (define (jolt-var ns name)
   (let ((k (string-append ns "/" name)))
     (or (hashtable-ref var-table k #f)

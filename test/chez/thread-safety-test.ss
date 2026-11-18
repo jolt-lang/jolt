@@ -498,7 +498,7 @@
                      (jolt-register-source! nm (string-append "ts10.ns" (number->string t))
                                             "f" "a.clj" 1))
                    30.0 "10. source registration")
-      (unless (eq? (hashtable-ref source-registry nm #f) 'ambiguous)
+      (unless (eq? (srcreg-record-for-name nm) 'ambiguous)
         (set! amb-missed (+ amb-missed 1))))
     (loop (fx+ r 1))))
 (ok "10. a colliding procname is always marked ambiguous" (= amb-missed 0))

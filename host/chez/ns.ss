@@ -771,7 +771,12 @@
                         (hashtable-delete! var-table k)
                         ;; a seed var's linked setter goes with its cell: the
                         ;; table is strong (rt.ss), and a re-def makes a new cell
-                        (jolt-with-mutex var-linked-mu (hashtable-delete! var-linked-tbl c)))))
+                        ;; and, under global var calls, its jg$ entry (rt.ss
+                        ;; var-global-forget!), so reloading a namespace again
+                        ;; and again does not grow that table
+                        (jolt-with-mutex var-linked-mu
+                          (hashtable-delete! var-linked-tbl c)
+                          (when jolt-global-mode (var-global-forget! c))))))
         (hashtable-keys var-table)))
     n))
 

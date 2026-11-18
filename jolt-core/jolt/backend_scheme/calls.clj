@@ -77,6 +77,14 @@
       ;; temporaries for constants at all; they are constant-pool loads.
       (const-coll-node? n)))
 
+;; Can evaluating these operands run any code at all? Not when each is
+;; effect-free, or a fn literal, whose evaluation only allocates the closure.
+;; A global var call (backend_scheme.clj emit-global-invoke) over such operands
+;; needs no early read of its callee: nothing between the read and the call can
+;; redefine or rebind the var.
+(defn inert-operands? [nodes]
+  (every? (fn [n] (or (side-effect-free? n) (= :fn (:op n)))) nodes))
+
 ;; A var VALUE read is effect-free but order-SENSITIVE: a mutating sibling
 ;; (def/alter-var-root/set!) changes what it yields, so it must not move across
 ;; an effectful operand in either direction. A :the-var read (the var object)

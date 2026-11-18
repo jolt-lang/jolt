@@ -19,62 +19,85 @@
 ;; jv$ns/name global. Two vars in different namespaces can share a short name; an
 ;; 'ambiguous marker then keeps the frame name in the trace but drops the
 ;; (now-uncertain) ns/file:line, so a trace is never misattributed.
-(define source-registry (make-hashtable string-hash string=?))
+;;
+;; The tables and the queue of rows not yet filed into them (below) are PRIVATE
+;; to this section: the %-names are touched by nothing but the definitions down
+;; to the public API, and every other reader goes through that API
+;; (srcreg-record-for-name, srcreg-record-for-fqn, srcreg-fqn-entries), which
+;; files any pending rows first under the same lock. A reader can therefore
+;; never see a table that is missing a row registered before it looked
+;; (fnform-test.ss checks that no other file names the private tables).
+(define %srcreg-by-name (make-hashtable string-hash string=?))
 
-;; The whole cond is ONE critical section. This runs at load, emitted by the back
-;; end once per def, and namespaces now load in parallel — so two threads
-;; registering the same procname under different namespaces both read #f, both
-;; write their own vector, and neither writes 'ambiguous. The trace then names one
-;; of them with confidence, which is exactly the misattribution the marker exists
-;; to prevent (400 contended pairs missed it 3 times). Reads stay unlocked: this is
-;; a strong hashtable and every read of it is single-key.
-(define source-registry-mu (make-mutex))
+;; ONE lock for both tables and the pending queue. Registration runs at load,
+;; emitted by the back end once per def, and namespaces load in parallel — so
+;; two threads registering the same procname under different namespaces would
+;; otherwise both read #f, both write their own vector, and neither write
+;; 'ambiguous. The trace then names one of them with confidence, which is
+;; exactly the misattribution the marker exists to prevent (400 contended pairs
+;; missed it 3 times). Reads take it too: they are rare (a trace being
+;; rendered), and a read that files pending rows is a write.
+(define %srcreg-mu (make-mutex))
 ;; The same records, keyed "ns/name" instead of by emitted procedure name. A
 ;; spliced call site names its callee by fqn (the trace marker carries it) and has
 ;; no procedure of its own to look up, so this is the index that answers it. Fed
 ;; from the same registration, under the same lock; unlike the procname table it
 ;; cannot go 'ambiguous, because a fqn identifies exactly one var.
-(define source-registry-by-fqn (make-hashtable string-hash string=?))
-(define (srcreg-record-for-fqn fqn)
-  (srcreg-drain!)
-  (and (string? fqn) (hashtable-ref source-registry-by-fqn fqn #f)))
-(define (srcreg-register-locked! procname ns nm file line)  ; holds source-registry-mu
+(define %srcreg-by-fqn (make-hashtable string-hash string=?))
+;; JOLT_LAZY_META=1: a fn def's row arrives with its def (rt.ss
+;; def-var-lazy-meta!) as #(procname-or-#t file-or-#f line), #t meaning
+;; "ns/name", and waits here until something reads the registry.
+(define %srcreg-pending '())                   ; (ns nm . row), newest first
+(define (%srcreg-register! procname ns nm file line)   ; holds %srcreg-mu
   (let ((rec (vector ns nm file line))
-        (existing (hashtable-ref source-registry procname #f)))
-    (hashtable-set! source-registry-by-fqn (string-append ns "/" nm) rec)
+        (existing (hashtable-ref %srcreg-by-name procname #f)))
+    (hashtable-set! %srcreg-by-fqn (string-append ns "/" nm) rec)
     (cond
-      ((not existing) (hashtable-set! source-registry procname rec))
+      ((not existing) (hashtable-set! %srcreg-by-name procname rec))
       ((and (vector? existing)
             (or (not (equal? (vector-ref existing 0) ns))
                 (not (equal? (vector-ref existing 1) nm))))
-       (hashtable-set! source-registry procname 'ambiguous)))))
-(define (jolt-register-source! procname ns nm file line)
-  (jolt-with-mutex source-registry-mu
-    (srcreg-drain-locked!)
-    (srcreg-register-locked! procname ns nm file line))
-  jolt-nil)
-;; JOLT_LAZY_META=1: a fn def's row arrives with its def (rt.ss
-;; def-var-lazy-meta!) as #(procname-or-#t file-or-#f line), #t meaning
-;; "ns/name", and waits here until something reads the registry. Every read
-;; files the pending rows first, in arrival order and under the registry lock, so
-;; the tables answer exactly what eager registration would have left in them.
-(define srcreg-pending '())                    ; (ns nm . row), newest first
-(define (srcreg-pend! ns nm row)
-  (jolt-with-mutex source-registry-mu
-    (set! srcreg-pending (cons (cons ns (cons nm row)) srcreg-pending))))
-(define (srcreg-drain-locked!)
-  (unless (null? srcreg-pending)
-    (let ((ps (reverse srcreg-pending)))
-      (set! srcreg-pending '())
+       (hashtable-set! %srcreg-by-name procname 'ambiguous)))))
+;; File the pending rows in arrival order, so the tables answer exactly what
+;; eager registration would have left in them. Holds %srcreg-mu.
+(define (%srcreg-file-pending!)
+  (unless (null? %srcreg-pending)
+    (let ((ps (reverse %srcreg-pending)))
+      (set! %srcreg-pending '())
       (for-each (lambda (p)
                   (let ((ns (car p)) (nm (cadr p)) (row (cddr p)))
-                    (srcreg-register-locked!
+                    (%srcreg-register!
                       (let ((k (vector-ref row 0))) (if (eq? k #t) (string-append ns "/" nm) k))
                       ns nm (or (vector-ref row 1) jolt-nil) (vector-ref row 2))))
                 ps))))
-(define (srcreg-drain!)
-  (when (pair? srcreg-pending)
-    (jolt-with-mutex source-registry-mu (srcreg-drain-locked!))))
+;; Run THUNK over complete tables: under the lock, after filing every row.
+(define (%srcreg-reading thunk)
+  (jolt-with-mutex %srcreg-mu
+    (%srcreg-file-pending!)
+    (thunk)))
+
+;; --- the public API -----------------------------------------------------------
+;; Register a fn's row now.
+(define (jolt-register-source! procname ns nm file line)
+  (jolt-with-mutex %srcreg-mu
+    (%srcreg-file-pending!)
+    (%srcreg-register! procname ns nm file line))
+  jolt-nil)
+;; Register a fn's row, filed the first time anything reads the registry
+;; (JOLT_LAZY_META=1, rt.ss def-var-lazy-meta!). ROW is
+;; #(procname-or-#t file-or-#f line).
+(define (jolt-register-source-later! ns nm row)
+  (jolt-with-mutex %srcreg-mu
+    (set! %srcreg-pending (cons (cons ns (cons nm row)) %srcreg-pending))))
+;; The record #(ns name file line) for a frame's procedure name, 'ambiguous, or #f.
+(define (srcreg-record-for-name nm)
+  (and (string? nm) (%srcreg-reading (lambda () (hashtable-ref %srcreg-by-name nm #f)))))
+;; The record for a var's "ns/name", or #f.
+(define (srcreg-record-for-fqn fqn)
+  (and (string? fqn) (%srcreg-reading (lambda () (hashtable-ref %srcreg-by-fqn fqn #f)))))
+;; Every fqn record: (values fqns records), a snapshot.
+(define (srcreg-fqn-entries)
+  (%srcreg-reading (lambda () (hashtable-entries %srcreg-by-fqn))))
 (def-var! "jolt.host" "register-source!" jolt-register-source!)
 
 ;; The continuation to walk for an uncaught value: the one jolt-throw captured for
@@ -234,8 +257,7 @@
 ;; (source-name . offset); only a mapped frame reads it, since only a mapped
 ;; frame prints a line. Error traces and the sampler both resolve through this.
 (define (srcreg-logical-frames nm source-pair)
-  (srcreg-drain!)
-  (let ((src (and nm (hashtable-ref source-registry nm #f))))
+  (let ((src (and nm (srcreg-record-for-name nm))))
     (if (not (and nm (or src (not (srcreg-plumbing-name? nm)))))
         '()
         (let* ((parts (and (not src) (srcreg-jfn-parts nm)))
@@ -433,7 +455,7 @@
                  (fs (srcreg-logical-frames nm (lambda () (srcreg-frame-source-pair io)))))
             (when (and debug? nm)
               (display (string-append "  [frame] " nm
-                                      (cond ((hashtable-ref source-registry nm #f) " *MAPPED*")
+                                      (cond ((srcreg-record-for-name nm) " *MAPPED*")
                                             ((null? fs) " (skipped)")
                                             (else ""))
                                       (srcreg-frame-source-debug io) "\n")
@@ -1107,9 +1129,7 @@
 (define (jolt-profile-defs files)
   (let ((want (make-hashtable string-hash string=?)))
     (for-each (lambda (f) (when (string? f) (hashtable-set! want f #t))) (seq->list files))
-    (let-values (((ks vs) (jolt-with-mutex source-registry-mu
-                            (srcreg-drain-locked!)
-                            (hashtable-entries source-registry-by-fqn))))
+    (let-values (((ks vs) (srcreg-fqn-entries)))
       (let loop ((i 0) (acc '()))
         (if (fx=? i (vector-length ks))
             (apply jolt-vector acc)
@@ -1277,9 +1297,8 @@
 ;; it, then this fn at the call. Deepest first, matching the order the callers
 ;; splice these in.
 (define (jolt-site-frame* site)
-  (srcreg-drain!)
   (srcreg-entry-frames (car site)
-                       (hashtable-ref source-registry (car site) #f)
+                       (srcreg-record-for-name (car site))
                        (cdr site)))
 ;; (append-map jolt-site-frame* sites). Written out rather than pulled from
 ;; SRFI-1: (chezscheme) has no append-map, and every list here is capped

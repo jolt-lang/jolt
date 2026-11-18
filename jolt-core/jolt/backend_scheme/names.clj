@@ -76,8 +76,7 @@
 ;; munge-unsafe? flags: the test the scan below makes first, without a set lookup.
 (defn- munge-plain-cp? [cp]
   (or (and (>= cp 97) (<= cp 122)) (and (>= cp 65) (<= cp 90)) (and (>= cp 48) (<= cp 57))
-      (= cp 45) (= cp 95) (= cp 46) (= cp 42) (= cp 63) (= cp 33) (= cp 60) (= cp 62)
-      (= cp 61) (= cp 47) (= cp 43) (= cp 38) (= cp 58) (= cp 37) (= cp 126) (= cp 94) (= cp 64)))
+      (case cp (45 95 46 42 63 33 60 62 61 47 43 38 58 37 126 94 64) true false)))
 (defn- munge-safe-str? [s]
   (let [n (count s)]
     (loop [i 0]

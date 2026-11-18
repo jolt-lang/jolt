@@ -2135,7 +2135,6 @@
          ((s) (apply jolt-hash-set (map dec args)))
          ((k) (keyword (car args) (cadr args)))
          ((ym) (jolt-symbol/meta (car args) (cadr args) (dec (caddr args))))
-         ((var) (jolt-var (if (eq? (car args) #t) ns (car args)) (cadr args)))
          (else (error 'lazy-meta-decode "bad descriptor" x)))))
     (else x)))
 ;; A map's keys and values, in order, through a dotted #(line column file) tail
@@ -2517,17 +2516,29 @@
 ;; Every root write retargets the wrapper (var-root-set!), every cell is linked
 ;; when it is interned (jolt-var, declare-var!), and the cells interned before
 ;; the mode was enabled are linked by jolt-global-mode-enable!, so the symbol is
-;; bound whenever its var exists. After remove-ns / ns-unmap a new cell for the
-;; same name links a new wrapper into the symbol; the removed cell keeps
-;; retargeting its own wrapper, which nothing calls any more.
+;; bound whenever its var exists.
+;;
+;; The wrapper belongs to the SYMBOL, not to a cell: it is made the first time
+;; any cell of that name is linked, and the symbol is assigned that once, for
+;; the life of the process. Its data is the cell the name links now. After
+;; remove-ns, the namespace's cells leave var-global-tbl (var-global-forget!,
+;; ns.ss jolt-remove-ns), and the wrapper keeps calling the removed var's last
+;; root, as code compiled against a removed var keeps calling it on the JVM. A
+;; new cell for the same name (the namespace loaded again) relinks the SAME
+;; wrapper to itself and drops the previous cell's entry, so code compiled
+;; against the old var now calls the new one. var-global-tbl therefore holds
+;; at most one entry per name the process has linked, however many times a REPL
+;; session removes and reloads a namespace, and a symbol is never reassigned
+;; while another thread may be calling through it.
 ;;
 ;; Two slots of the symbol are written, once each. Compiled code names the symbol
 ;; as an identifier of the interaction environment, which Chez resolves to that
 ;; environment's own location for it (a label, not the symbol's value slot;
 ;; syntax.ss), so call sites read what set-top-level-value! writes
 ;; (sa-top-level-assign!): the wrapper.
-;; The symbol's raw value slot holds the cell, which jolt-gv, handed the symbol
-;; itself, reads with no environment lookup.
+;; The symbol's raw value slot holds the wrapper too, which jolt-gv and
+;; jolt-gv-callee, handed the symbol itself, read with no environment lookup;
+;; the wrapper's data is the cell.
 (define var-global-tbl (make-eq-hashtable))   ; cell -> (wrapper . trampoline|#f), under var-linked-mu
 (define (var-global-symbol ns name) (string->symbol (string-append "jg$" ns "/" name)))
 ;; caller holds var-linked-mu
@@ -2552,16 +2563,36 @@
 (define (var-global-sync! c)
   (let ((e (hashtable-ref var-global-tbl c #f)))
     (when e (set-wrapper-procedure-procedure! (car e) (var-global-target c e)))))
+;; The symbol's wrapper, or #f before any cell of its name was linked.
+(define (var-global-wrapper s)
+  (let ((w (sa-symbol-slot s)))
+    (and (procedure? w) w)))
 (define (var-global-link! c)
   (jolt-with-mutex var-linked-mu
     (unless (hashtable-ref var-global-tbl c #f)
-      (let* ((e (cons #f #f))
-             (w (make-wrapper-procedure (var-global-target c e) -1 c))
-             (s (var-global-symbol (var-cell-ns c) (var-cell-name c))))
-        (set-car! e w)
-        (hashtable-set! var-global-tbl c e)
-        (sa-top-level-assign! s w)
-        (sa-symbol-slot-set! s c)))))
+      (let* ((s (var-global-symbol (var-cell-ns c) (var-cell-name c)))
+             (w (var-global-wrapper s))
+             (e (cons w #f)))
+        (if w
+            ;; the name was linked before: retire the previous cell's entry and
+            ;; point the same wrapper at this cell
+            (let ((old (wrapper-procedure-data w)))
+              (unless (eq? old c) (hashtable-delete! var-global-tbl old))
+              (set-wrapper-procedure-data! w c)
+              (hashtable-set! var-global-tbl c e)
+              (var-global-sync! c))
+            (let ((w (make-wrapper-procedure (var-global-target c e) -1 c)))
+              (set-car! e w)
+              (hashtable-set! var-global-tbl c e)
+              (sa-top-level-assign! s w)
+              (sa-symbol-slot-set! s w)))))))
+;; remove-ns (ns.ss): the removed cell leaves the table. Its wrapper keeps its
+;; last target until a new cell of the same name relinks it. Caller holds
+;; var-linked-mu.
+(define (var-global-forget! c) (hashtable-delete! var-global-tbl c))
+;; For the gates: how many cells the table holds.
+(define (var-global-table-size)
+  (jolt-with-mutex var-linked-mu (hashtable-size var-global-tbl)))
 (define (var-global-first-bind! c)
   (jolt-with-mutex var-linked-mu (var-global-sync! c)))
 ;; Called once, before any app code is compiled or loaded.
@@ -2570,16 +2601,26 @@
     (set! jolt-global-mode #t)
     (set! var-first-bind-hook var-global-first-bind!)
     (vector-for-each var-global-link! (var-table-cells))))
-;; A value reference: the var's binding-aware value, through the cell in the
-;; symbol's raw slot. A symbol with no cell is a var no form of this process has
-;; interned (a name a macro interned at compile time only): intern it now, as a
-;; JVM class's static init would, and read it (the Unbound value).
-(define (jolt-gv s)
-  (let ((c (sa-symbol-slot s)))
-    (if (var-cell? c)
-        (var-cell-deref c)
+;; The cell a jg$ symbol links now. A symbol with no wrapper names a var no form
+;; of this process has interned (a name a macro interned at compile time only):
+;; intern it now, as a JVM class's static init would.
+(define (jolt-gv-cell s)
+  (let ((w (var-global-wrapper s)))
+    (if w
+        (wrapper-procedure-data w)
         (let ((nn (jolt-global-symbol-var s)))
-          (var-cell-deref (jolt-var (car nn) (cdr nn)))))))
+          (jolt-var (car nn) (cdr nn))))))
+;; A value reference: the var's binding-aware value.
+(define (jolt-gv s) (var-cell-deref (jolt-gv-cell s)))
+;; The callee of a call whose operands can have effects (backend_scheme.clj
+;; emit-global-invoke), read BEFORE the operands run, as the JVM reads the var
+;; before evaluating the arguments: an operand that redefines or rebinds the
+;; var cannot change which fn this call runs. A procedure is applied as it is;
+;; any other value (a map, a keyword, a multimethod, the unbound marker) is
+;; dispatched through jolt-invoke, which raises what a call of it raises.
+(define (jolt-gv-callee s)
+  (let ((v (jolt-gv s)))
+    (if (procedure? v) v (lambda args (apply jolt-invoke v args)))))
 ;; jg$<ns>/<name> -> (ns . name), or #f. A namespace name has no /, so the first
 ;; one after the prefix splits it (clojure.core// is ns clojure.core, name /).
 (define (jolt-global-symbol-var s)
@@ -2684,7 +2725,10 @@
 ;; being walked. First writer wins, so a re-definition keeps the first stamp:
 ;; the var is ONE var from its first def, and only its root changes (the value
 ;; divergence is the redefined-set's splice concern, rt.ss def-var!).
-(define var-def-ordinals (make-hashtable string-hash string=?))
+;; PRIVATE, with the pending queue below: read and written only by the
+;; definitions from here to var-def-visible-in-outer-frames?, each under
+;; var-table-mu after filing any pending stamps (%var-def-ordinals-file-pending!).
+(define %var-def-ordinals (make-hashtable string-hash string=?))
 ;; reader.ss loads at rt.ss's END (rt.ss:~1995) but rt.ss's own def-var! calls
 ;; fire before it does — resolve the parameter late (sa-baked-global: a guarded
 ;; top-level lookup, the scheme-adapter's portable form), treating its absence
@@ -2706,38 +2750,45 @@
 ;; (ns name ord) for stamps against FILE.
 (define jolt-def-ordinal-sink (make-parameter #f))
 (define (var-def-ordinal-stamp1! file ns name ord)
-  (var-def-ordinals-drain!)
-  (var-def-ordinal-stamp1-now! file ns name ord))
-(define (var-def-ordinal-stamp1-now! file ns name ord)
+  (jolt-with-mutex var-table-mu
+    (%var-def-ordinals-file-pending!)
+    (%var-def-ordinal-stamp! file ns name ord)))
+;; caller holds var-table-mu
+(define (%var-def-ordinal-stamp! file ns name ord)
   (let ((k (var-def-ordinal-key file ns name))
         (sink (jolt-def-ordinal-sink)))
     (when (and sink (equal? file (vector-ref sink 0)))
       (vector-set! sink 1 (cons (list ns name ord) (vector-ref sink 1))))
-    (jolt-with-mutex var-table-mu
-      (unless (hashtable-contains? var-def-ordinals k)
-        (hashtable-set! var-def-ordinals k ord)))))
-;; JOLT_LAZY_META=1: a cached artifact's replay (loader.ss
-;; aot-replay-def-ordinals*!) is kept as (file . groups) and stamped the first
-;; time the table is read or written, in arrival order, so first-writer-wins
-;; sees the order eager replay gave. A process that loads only from the cache
-;; and walks nothing never stamps them. GROUPS is (("ns" "name" ord ...) ...).
-(define var-def-ordinals-pending '())          ; newest first
-(define (var-def-ordinals-defer! file groups)
-  (jolt-with-mutex var-table-mu
-    (set! var-def-ordinals-pending (cons (cons file groups) var-def-ordinals-pending))))
-(define (var-def-ordinals-replay! file groups)
+    (unless (hashtable-contains? %var-def-ordinals k)
+      (hashtable-set! %var-def-ordinals k ord))))
+;; A cached artifact's stamps (loader.ss aot-replay-def-ordinals*!), GROUPS
+;; being (("ns" "name" ord "name" ord ...) ...), all against FILE. With a sink
+;; collecting stamps they are stamped now, as the sink reads them as they land.
+;; Otherwise (JOLT_LAZY_META=1) they are queued and stamped the first time the
+;; table is read or written, in arrival order, so first-writer-wins sees the
+;; order eager replay gave, and a process that loads only from the cache and
+;; walks nothing never stamps them. The queue is private: every reader and
+;; writer of the table above files it first, under the same lock.
+(define %var-def-ordinals-pending '())          ; (file . groups), newest first
+(define (%var-def-ordinals-stamp-groups! file groups)   ; holds var-table-mu
   (for-each (lambda (g)
               (let loop ((xs (cdr g)))
                 (unless (null? xs)
-                  (var-def-ordinal-stamp1-now! file (car g) (car xs) (cadr xs))
+                  (%var-def-ordinal-stamp! file (car g) (car xs) (cadr xs))
                   (loop (cddr xs)))))
             groups))
-(define (var-def-ordinals-drain!)
-  (when (pair? var-def-ordinals-pending)
-    (jolt-with-mutex var-table-mu
-      (let ((ps (reverse var-def-ordinals-pending)))
-        (set! var-def-ordinals-pending '())
-        (for-each (lambda (p) (var-def-ordinals-replay! (car p) (cdr p))) ps)))))
+(define (%var-def-ordinals-file-pending!)       ; holds var-table-mu
+  (unless (null? %var-def-ordinals-pending)
+    (let ((ps (reverse %var-def-ordinals-pending)))
+      (set! %var-def-ordinals-pending '())
+      (for-each (lambda (p) (%var-def-ordinals-stamp-groups! (car p) (cdr p))) ps))))
+(define (var-def-ordinals-replay-cached! file groups)
+  (jolt-with-mutex var-table-mu
+    (if (jolt-def-ordinal-sink)
+        (begin (%var-def-ordinals-file-pending!)
+               (%var-def-ordinals-stamp-groups! file groups))
+        (set! %var-def-ordinals-pending
+              (cons (cons file groups) %var-def-ordinals-pending)))))
 ;; Stamp this def against every load frame it is visible from (jolt-load-frames
 ;; below): its own file at its own form, and — for a file pulled in by `load`
 ;; from INSIDE another file's form, the multi-file namespace shape
@@ -2778,9 +2829,9 @@
 ;; (defined in another file or outside any walked file — the host runtime
 ;; itself): visible from every form, as it would have been in-order.
 (define (var-def-ordinal ns name)
-  (var-def-ordinals-drain!)
   (jolt-with-mutex var-table-mu
-    (or (hashtable-ref var-def-ordinals
+    (%var-def-ordinals-file-pending!)
+    (or (hashtable-ref %var-def-ordinals
          (var-def-ordinal-key (jolt-ordinal-source-file) ns name) #f)
         0)))
 ;; Two clocks, deliberately separate parameters:
@@ -2812,14 +2863,14 @@
 (define jolt-form-outer-frames (make-parameter '()))
 (define (var-def-visible-in-outer-frames? ns name)
   (let ((frames (jolt-form-outer-frames)))
-    (unless (null? frames) (var-def-ordinals-drain!))
     (or (null? frames)
         (jolt-with-mutex var-table-mu
+          (%var-def-ordinals-file-pending!)
           (let ((stamped? (lambda (file)
-                            (hashtable-contains? var-def-ordinals
+                            (hashtable-contains? %var-def-ordinals
                               (var-def-ordinal-key file ns name)))))
             (for-all (lambda (fr)
-                       (let ((s (hashtable-ref var-def-ordinals
+                       (let ((s (hashtable-ref %var-def-ordinals
                                   (var-def-ordinal-key (vector-ref fr 0) ns name) #f))
                              (ord (vector-ref fr 1)))
                          (if (and s (not (fx=? s ord)))
@@ -2965,11 +3016,11 @@
        (var-cell-dynamic?-set! c (lazy-meta-dynamic? d))
        c))
     ;; JOLT_LAZY_META=1: and the fn def's source-registry row, kept pending
-    ;; (source-registry.ss srcreg-pend!) where the eager emit registered it
+    ;; (source-registry.ss jolt-register-source-later!) where the eager emit registered it
     ;; right after the def
     ((ns name v d src)
      (let ((c (def-var-lazy-meta! ns name v d)))
-       (srcreg-pend! ns name src)
+       (jolt-register-source-later! ns name src)
        c))))
 (define (set-var-lazy-meta! ns name d)
   (let ((c (jolt-var ns name)))
@@ -2977,6 +3028,8 @@
     (var-cell-dynamic?-set! c (lazy-meta-dynamic? d))))
 ;; For the gates: is this var's metadata still an unread descriptor?
 (def-var! "jolt.host" "var-meta-lazy?" (lambda (v) (and (var-cell? v) (var-cell-meta-lazy? v))))
+;; For the gates: how many cells the global var table holds ("global vars").
+(def-var! "jolt.host" "global-var-table-size" var-global-table-size)
 ;; Does this DECLARED metadata map ask for a dynamic var? Only a def consults it
 ;; — see def-var! on why the flag is not read back out of the metadata later.
 (define (var-meta-dynamic? m)

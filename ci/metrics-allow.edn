@@ -15,7 +15,11 @@
   {:path "test/chez/ns-audit/good/host.cljc" :lib "clojure.set"
    :why "ns-audit fixture"}
   {:path "test/chez/ns-audit/good/plain.clj" :lib "clojure.string"
-   :why "ns-audit fixture"}]
+   :why "ns-audit fixture"}
+  {:path "test/chez/lazy-quoted-data/src/lq/a.clj" :lib "clojure.string"
+   :why "lazy-quoted-data fixture: the test prints its defs' :line, which the ns form's shape fixes"}
+  {:path "test/chez/lazy-quoted-data/src/lq/b.clj" :lib "lq.a"
+   :why "lazy-quoted-data fixture: loads lq.a before lq.b, the order its cross-namespace checks need"}]
  :unused-private
  [{:path "jolt-core/clojure/core/22-coll.clj" :name "serialized-require"
    :why "clojure.core's private, kept for code that reaches #'clojure.core/serialized-require"}
@@ -42,6 +46,16 @@
    :why "var-deref from host/chez"}
   {:path "jolt-core/jolt/backend_scheme.clj" :name "seed-fnsrc-ns-counter!"
    :why "var-deref from host/chez/build.ss"}
+  {:path "jolt-core/jolt/backend_scheme.clj" :name "set-const-data!"
+   :why "var-deref from host/chez/compile-eval.ss (JOLT_CONST_DATA)"}
+  {:path "jolt-core/jolt/backend_scheme/session.clj" :name "set-global-var-call!"
+   :why "var-deref from host/chez/compile-eval.ss (JOLT_GLOBAL_VAR_CALL)"}
+  {:path "jolt-core/jolt/backend_scheme/session.clj" :name "set-lazy-meta!"
+   :why "var-deref from host/chez/compile-eval.ss (JOLT_LAZY_META)"}
+  {:path "jolt-core/jolt/backend_scheme/session.clj" :name "set-lazy-rows!"
+   :why "var-deref from host/chez/compile-eval.ss (JOLT_LAZY_META=1)"}
+  {:path "jolt-core/jolt/backend_scheme/session.clj" :name "set-native-var-call!"
+   :why "var-deref from host/chez/compile-eval.ss (JOLT_NATIVE_VAR_CALL)"}
   {:path "compatibility/cheshire/core.clj" :name "parse-string-strict"
    :why "cheshire's public API, for scripts that call it; nothing in jolt does"}
   {:path "compatibility/cheshire/core.clj" :name "parse-stream-strict"

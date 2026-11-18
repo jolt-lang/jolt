@@ -56,10 +56,16 @@
 ;; hashtable does not corrupt under that, but concurrent inserts do LOSE each
 ;; other (var-table measured 8.6k of 240k dropped), and a lost registration is a
 ;; closure the image writer can no longer reconstruct as code. Writes take the
-;; mutex; the single-key lookup below stays unlocked, which is safe here for the
-;; reasons set out at var-table in rt.ss.
-(define fn-form-tbl (make-hashtable string-hash string=?))
-(define fn-form-tbl-mu (make-mutex))
+;; mutex, and so do lookups, which may first have to file pending rows (below).
+;;
+;; The table, its lock and the pending queue are PRIVATE to this file (the
+;; %-names; fnform-test.ss checks no other file names them). Everything else goes
+;; through the public API: image-register-fn-form!, image-register-fn-forms!,
+;; image-fn-form-maker! to write, image-fn-form-lookup and image-fn-form-entry to
+;; read. Every read files the pending rows first under the lock, so no reader
+;; can see a table missing a row registered before it looked.
+(define %fn-form-tbl (make-hashtable string-hash string=?))
+(define %fn-form-mu (make-mutex))
 
 
 ;; LIVE-NAMES is the optional fifth argument, and only a SPLICED copy of a
@@ -84,9 +90,9 @@
 (define (image-register-fn-form! name form ns free-names . rest)
   (let* ((lv (if (null? rest) #f (car rest)))
          (mk (if (or (null? rest) (null? (cdr rest))) #f (cadr rest))))
-    (jolt-with-mutex fn-form-tbl-mu
-      (fn-form-drain!)
-      (hashtable-set! fn-form-tbl name
+    (jolt-with-mutex %fn-form-mu
+      (%fn-form-file-pending!)
+      (hashtable-set! %fn-form-tbl name
                       (vector form ns free-names
                               (if (or (not lv) (jolt-nil? lv)) free-names lv)
                               mk
@@ -98,42 +104,42 @@
 ;; top of the form — the maker closes over that scope's cells, so it cannot be
 ;; built where the registration is.
 ;; A row still in a pending table (below) has no entry yet: its maker waits in
-;; fn-form-makers until the table is filed.
+;; %fn-form-makers until the table is filed.
 (define (image-fn-form-maker! name mk)
-  (jolt-with-mutex fn-form-tbl-mu
-    (let ((reg (hashtable-ref fn-form-tbl name #f)))
+  (jolt-with-mutex %fn-form-mu
+    (let ((reg (hashtable-ref %fn-form-tbl name #f)))
       ;; Both, when tables are pending: a name registered before and now
       ;; pending again (a def evaluated twice) has an entry the next filing
       ;; replaces, and the replacement must get this maker, not none.
       (when (and reg (fx>? (vector-length reg) 4)) (vector-set! reg 4 mk))
-      (when (pair? fn-form-pending) (hashtable-set! fn-form-makers name mk))))
+      (when (pair? %fn-form-pending) (hashtable-set! %fn-form-makers name mk))))
   jolt-nil)
 
 ;; --- JOLT_LAZY_META=1: rows as quoted tables, filed on first lookup ----------
 ;; (image-register-fn-forms! ns table) keeps a form's table as it is; the rows go
-;; into fn-form-tbl, in registration order, the first time anything needs them:
+;; into the table, in registration order, the first time anything needs them:
 ;; a lookup, or an eager registration, which files the pending ones first so a
 ;; later registration of a name still replaces an earlier one. Only the image
 ;; writer looks, so a process that writes no image never files a row.
-(define fn-form-pending '())                       ; (ns . table), newest first
-(define fn-form-makers (make-hashtable string-hash string=?))
+(define %fn-form-pending '())                      ; (ns . table), newest first
+(define %fn-form-makers (make-hashtable string-hash string=?))
 (define (image-register-fn-forms! ns table)
-  (jolt-with-mutex fn-form-tbl-mu
-    (set! fn-form-pending (cons (cons ns table) fn-form-pending)))
+  (jolt-with-mutex %fn-form-mu
+    (set! %fn-form-pending (cons (cons ns table) %fn-form-pending)))
   jolt-nil)
-(define (fn-form-drain!)                           ; caller holds fn-form-tbl-mu
-  (unless (null? fn-form-pending)
-    (let ((ps (reverse fn-form-pending)))
-      (set! fn-form-pending '())
+(define (%fn-form-file-pending!)                   ; caller holds %fn-form-mu
+  (unless (null? %fn-form-pending)
+    (let ((ps (reverse %fn-form-pending)))
+      (set! %fn-form-pending '())
       (for-each
         (lambda (p)
           (let ((ns (car p)) (t (cdr p)))
             (do ((i 0 (fx+ i 3))) ((fx>= i (vector-length t)))
               (let* ((name (vector-ref t i))
                      (frees (apply jolt-vector (vector->list (vector-ref t (fx+ i 2)))))
-                     (mk (hashtable-ref fn-form-makers name #f)))
-                (when mk (hashtable-delete! fn-form-makers name))
-                (hashtable-set! fn-form-tbl name
+                     (mk (hashtable-ref %fn-form-makers name #f)))
+                (when mk (hashtable-delete! %fn-form-makers name))
+                (hashtable-set! %fn-form-tbl name
                                 (vector (vector-ref t (fx+ i 1)) ns frees frees mk #f))))))
         ps))))
 
@@ -144,14 +150,18 @@
 
 ;; The registration vector (form ns free-names live-names ...) or #f when unknown —
 ;; the R2 dump-side lookup. A form registered as text is parsed here, once, and
-;; the parse replaces the bytes; under the write mutex, so two dumps racing on
-;; one site parse it once and see one object.
+;; the parse replaces the bytes; under the mutex, so two dumps racing on one
+;; site parse it once and see one object.
 (define (image-fn-form-lookup name)
-  (when (pair? fn-form-pending)
-    (jolt-with-mutex fn-form-tbl-mu (fn-form-drain!)))
-  (let ((reg (hashtable-ref fn-form-tbl name #f)))
-    (when (and reg (bytevector? (vector-ref reg 0)))
-      (jolt-with-mutex fn-form-tbl-mu
-        (when (bytevector? (vector-ref reg 0))
-          (vector-set! reg 0 (image-fn-form-parse (utf8->string (vector-ref reg 0)))))))
-    reg))
+  (jolt-with-mutex %fn-form-mu
+    (%fn-form-file-pending!)
+    (let ((reg (hashtable-ref %fn-form-tbl name #f)))
+      (when (and reg (bytevector? (vector-ref reg 0)))
+        (vector-set! reg 0 (image-fn-form-parse (utf8->string (vector-ref reg 0)))))
+      reg)))
+;; The same vector without parsing its form (slot 0 may still be the text's
+;; bytes), or #f: for diagnostics and the gates.
+(define (image-fn-form-entry name)
+  (jolt-with-mutex %fn-form-mu
+    (%fn-form-file-pending!)
+    (hashtable-ref %fn-form-tbl name #f)))

@@ -235,15 +235,17 @@
 ;;   (ym ns-or-#f "name" M)  a symbol with metadata M
 ;;   (v e ...) (l e ...) (s e ...)   jolt-vector, jolt-list, jolt-hash-set
 ;;   (am k v ...) (m k v ...)        amap-slots->pmap, jolt-hash-map
-;;   (var "ns" "name")       the var #'ns/name, looked up when the map is built;
-;;                           #t for the def's own namespace
+;;
+;; A #'var is not encoded: a var named when the map is first READ could resolve
+;; to another var than the def's, or intern one into a namespace removed and
+;; recreated since, so metadata holding one keeps the eager emission, which
+;; interns the var when the def runs.
 ;;
 ;; The descriptor is the top map's list. Most end in :line L :column C :file F,
 ;; which is written as a dotted tail, (am k v ... . #(L C F)), F being #t when it
 ;; is the file the def's namespace name maps to (a.b-c -> "a/b_c.clj").
 ;;
 ;; nil from any of these means "not encodable": the def keeps today's emission.
-(def ^:dynamic *desc-ns* nil)
 (defn- desc-kw-name-ok? [nm]
   (let [n (count nm)
         first-ok (fn [c] (let [i (int c)]
@@ -325,8 +327,6 @@
     (case (:op n)
       :const (desc-const (:val n))
       :quote (form-desc (:form n))
-      :the-var (str "(var " (if (= (:ns n) *desc-ns*) "#t" (chez-str-lit (:ns n)))
-                    " " (chez-str-lit (:name n)) ")")
       :vector (desc-coll "v" node-desc (:items n))
       :set (when (distinct-const-keys? (:items n)) (desc-coll "s" node-desc (:items n)))
       :map (let [kvs (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs n))]
@@ -358,25 +358,24 @@
 ;; A def's metadata as its descriptor, or nil: from the analyzed EXPRESSION when
 ;; there is one (its top must be a map literal), else from the static map.
 (defn meta-desc [ns meta-expr meta]
-  (binding [*desc-ns* ns]
-    (if meta-expr
-      (let [n meta-expr]
-        (when (and (= :map (:op n)) (not (:site-id n)))
-          (let [kvs (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs n))
-                tag (cond (unique-keyword-key-literal? n) "am"
-                          (distinct-const-keys? (map first (:pairs n))) "m"
-                          :else nil)]
-            (when tag
-              (when-let [es (desc-all node-desc kvs)] (desc-top ns tag es))))))
-      (cond
-        (form-map? meta)
-        (when-let [es (desc-all form-desc (mapcat (fn [p] [(nth p 0) (nth p 1)]) (form-map-pairs meta)))]
-          (desc-top ns "m" es))
-        (and (map? meta) (not= :jolt/tagged (get meta :jolt/type)))
-        (when-let [es (desc-all form-desc
-                                (mapcat identity
-                                        (desc-sorted (map (fn [k] [k (get meta k)]) (keys meta))
-                                                     (fn [p] (str (emit-quoted (nth p 0)) " "
-                                                                  (emit-quoted (nth p 1)))))))]
-          (desc-top ns "m" es))
-        :else nil))))
+  (if meta-expr
+    (let [n meta-expr]
+      (when (and (= :map (:op n)) (not (:site-id n)))
+        (let [kvs (mapcat (fn [p] [(nth p 0) (nth p 1)]) (:pairs n))
+              tag (cond (unique-keyword-key-literal? n) "am"
+                        (distinct-const-keys? (map first (:pairs n))) "m"
+                        :else nil)]
+          (when tag
+            (when-let [es (desc-all node-desc kvs)] (desc-top ns tag es))))))
+    (cond
+      (form-map? meta)
+      (when-let [es (desc-all form-desc (mapcat (fn [p] [(nth p 0) (nth p 1)]) (form-map-pairs meta)))]
+        (desc-top ns "m" es))
+      (and (map? meta) (not= :jolt/tagged (get meta :jolt/type)))
+      (when-let [es (desc-all form-desc
+                              (mapcat identity
+                                      (desc-sorted (map (fn [k] [k (get meta k)]) (keys meta))
+                                                   (fn [p] (str (emit-quoted (nth p 0)) " "
+                                                                (emit-quoted (nth p 1)))))))]
+        (desc-top ns "m" es))
+      :else nil)))

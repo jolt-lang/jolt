@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in emission modes that emit less Scheme.** `JOLT_GLOBAL_VAR_CALL=1`
+  compiles a call through a var as a plain application of one permanent
+  per-var Chez procedure (needs the new kernel patch 0010,
+  `$call-error-handler`): the var is still read before the arguments run,
+  as on the JVM, so `(f (alter-var-root #'f g))` calls the old `f`, and
+  `remove-ns` drops the namespace's entries, so reloading a namespace again
+  and again does not grow the table. `JOLT_LAZY_META=meta` builds a def's
+  constant metadata the first time it is read, and `JOLT_LAZY_META=1` also
+  defers the per-def source and fn-form registration rows; metadata naming a
+  `#'var` is still built when the def runs. `JOLT_CONST_DATA=1` puts a
+  form's literal constants in one quoted table, `JOLT_SOURCE_INFO=source`
+  (patch 0011) keeps return-point source positions without the rest of the
+  inspector data, and `JOLT_PHASE_TIMES=1` (or `=detail`) reports where a
+  cold build's time goes.
+
 - **`jolt.loader` caches context-private namespaces.** A namespace a loader
   reads from its own roots was compiled from source on every load, so every
   fresh context paid full compilation again (#1653: 20 small files took

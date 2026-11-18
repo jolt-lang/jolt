@@ -1,5 +1,6 @@
-;; Redefinition semantics of the var-call experiments. Run with `jolt run` under each
-;; JOLT_NATIVE_VAR_CALL / JOLT_DIRECT_LINK setting; prints CLJ-CALL-REDEF OK when every
+;; Redefinition semantics of the var-call modes. Run with `jolt run` under each
+;; JOLT_NATIVE_VAR_CALL / JOLT_GLOBAL_VAR_CALL / JOLT_DIRECT_LINK setting
+;; (test/chez/emit-modes.sh runs it); prints CLJ-CALL-REDEF OK when every
 ;; check holds for the mode in the environment. Each form is eval'd on its own,
 ;; as a REPL would compile it, so a caller is compiled after its callee's def.
 (def failures (atom []))
@@ -141,6 +142,9 @@
 (shutdown-agents)
 
 (if (empty? @failures)
-  (println "CLJ-CALL-REDEF OK" (or dl "open-world") (or (System/getenv "JOLT_NATIVE_VAR_CALL") "default"))
+  (println "CLJ-CALL-REDEF OK" (or dl "open-world")
+           (cond (System/getenv "JOLT_NATIVE_VAR_CALL") "native"
+                 (System/getenv "JOLT_GLOBAL_VAR_CALL") "global"
+                 :else "default"))
   (do (doseq [f @failures] (println "FAIL" f))
       (System/exit 1)))

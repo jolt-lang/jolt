@@ -130,9 +130,10 @@
       (cond ((> (+ i nsub) ns) #f)
             ((string=? (substring s i (+ i nsub)) sub) #t)
             (else (loop (+ i 1)))))))
-;; the raw table slot, untouched by any lookup
+;; the table slot as registered, before any parse (image-fn-form-entry files
+;; pending rows but does not parse)
 (define (raw-form name)
-  (let ((e (hashtable-ref fn-form-tbl name #f))) (and e (vector-ref e 0))))
+  (let ((e (image-fn-form-entry name))) (and e (vector-ref e 0))))
 
 ;; JOLT_LAZY_META=1 writes the rows of a form as one quoted table, filed into
 ;; the registry on the first lookup (fn-form-registry.ss image-register-fn-forms!).
@@ -153,9 +154,9 @@
                (has? e " (image-register-fn-form! \"jfn$app/lazy2$1\"")
                (not (has? e "(let* ((_q$"))))))
 (jolt-eval "(def lazy1 {:f (fn [x] (* x 2))})" "app")
-(if lazy-rows?
-    (ok "before the first lookup the row waits in its table" (not (raw-form "jfn$app/lazy1$0")))
-    (ok "before the first lookup the slot holds the bytes" (bytevector? (raw-form "jfn$app/lazy1$0"))))
+;; under JOLT_LAZY_META=1 the row is still in its pending table here; reading
+;; through the API files it, so the reader sees it as eager registration left it
+(ok "before the first lookup the slot holds the bytes" (bytevector? (raw-form "jfn$app/lazy1$0")))
 (ok "the first lookup parses the form" (string=? (reg-form-head "jfn$app/lazy1$0") "fn*"))
 (ok "...and caches it in the slot" (not (bytevector? (raw-form "jfn$app/lazy1$0"))))
 (ok "the parsed form carries no reader position"
@@ -324,6 +325,48 @@
 (ok "display: splicer rename stripped from the name part"
     (string=? (srcreg-display-name "jfn$app.core/-main$0/step-boom__il22") "app.core/-main/step-boom"))
 (ok "display: splicer rename stripped from a bare frame" (string=? (srcreg-display-name "step-boom__il7") "step-boom"))
+
+;; A source row registered for later (JOLT_LAZY_META=1's def-var-lazy-meta!) is
+;; seen by the first reader, whichever public read it is.
+(jolt-register-source-later! "pq.later" "f1" (vector #t "pq/later.clj" 3))
+(jolt-register-source-later! "pq.later" "f2" (vector "f2-proc" #f 4))
+(ok "a later row answers a by-fqn read" (equal? (srcreg-record-for-fqn "pq.later/f1")
+                                                (vector "pq.later" "f1" "pq/later.clj" 3)))
+(ok "...and a by-name read, #t naming ns/name" (vector? (srcreg-record-for-name "pq.later/f1")))
+(ok "...a named procname, with no file" (equal? (srcreg-record-for-name "f2-proc")
+                                                (vector "pq.later" "f2" jolt-nil 4)))
+(jolt-register-source-later! "pq.later" "f3" (vector #t #f 5))
+(ok "...and the fqn snapshot"
+    (let-values (((ks vs) (srcreg-fqn-entries)))
+      (and (vector? ks) (exists (lambda (k) (equal? k "pq.later/f3")) (vector->list ks)))))
+
+;; The registries' tables and pending queues are private: only their own file
+;; names them (fn-form-registry.ss, source-registry.ss, rt.ss's def ordinals), so
+;; no reader can bypass the API that files pending rows under the lock.
+(define (file-text path)
+  (call-with-input-file path (lambda (p) (get-string-all p))))
+(define (private-names-outside owner prefix)
+  (let loop ((fs (append (map (lambda (f) (string-append "host/chez/" f))
+                              (directory-list "host/chez"))
+                         (map (lambda (f) (string-append "host/chez/java/" f))
+                              (directory-list "host/chez/java"))))
+             (acc '()))
+    (cond ((null? fs) acc)
+          ((and (not (string=? (car fs) owner))
+                (let ((n (string-length (car fs))))
+                  (and (> n 3) (string=? (substring (car fs) (- n 3) n) ".ss")))
+                (file-regular? (car fs))
+                (has? (file-text (car fs)) prefix))
+           (loop (cdr fs) (cons (car fs) acc)))
+          (else (loop (cdr fs) acc)))))
+(for-each
+  (lambda (row)
+    (let ((bad (private-names-outside (car row) (cadr row))))
+      (ok (string-append (cadr row) " names are private to " (car row))
+          (or (null? bad) (begin (printf "  named in: ~s\n" bad) #f)))))
+  '(("host/chez/fn-form-registry.ss" "%fn-form-")
+    ("host/chez/source-registry.ss" "%srcreg-")
+    ("host/chez/rt.ss" "%var-def-ordinals")))
 
 (printf "\nfnform gate: ~a/~a passed\n" (- total fails) total)
 (exit (if (> fails 0) 1 0))

@@ -25,7 +25,7 @@
                      *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
                      ctor-shapes cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
-                     direct-link? direct-linkable? fresh-label global-var-ref? keep-frame keep-frames?
+                     direct-link? direct-linkable? fresh-label global-var-ref? keep-frame keep-frames? slot-trace?
                      marker-safe-fqn? node-line note-tail-call! prelude-mode? record-shape-for-class
                      register-callsite! seed-mint? source-reg? static-callee
                      target trace-callsite-reg unsafe-prefix var-cache? with-site]]
@@ -40,7 +40,7 @@
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
                      emit-rec-type-check emit-record-ctor ifn-kind lookup-restore
-                     native-op node-inline-chain ordered-call plain-call
+                     inert-operands? native-op node-inline-chain ordered-call plain-call
                      site-literal site-restore sited-tail-call stdlib-var?
                      struct-field-index]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
@@ -553,17 +553,23 @@
 ;; procedure -- the root, or a trampoline that dispatches any other IFn, an
 ;; unbound var or a thread binding (rt.ss "global vars") -- so nothing at the site
 ;; derefs, tests or dispatches. Chez reads the symbol when it makes the call,
-;; after the operands, so only the operands are ordered among themselves; an
-;; operand that redefines or rebinds the called var itself is the one case that
-;; now sees the new value where Clojure calls the old one.
+;; after the operands. The JVM reads the var first, so when an operand can run
+;; code (calls.clj inert-operands?) the callee is read into a local before any
+;; operand runs (rt.ss jolt-gv-callee), and an operand that redefines or rebinds
+;; the called var cannot change which fn the call runs:
+;; (f (alter-var-root #'f g)) calls the old f, as on the JVM. Over operands that
+;; run no code (locals, constants, var reads, fn literals) nothing can change the
+;; var in between, and the call stays a plain application of the symbol.
 (defn- emit-global-invoke [c]
   (let [fnode (:fnode c)
-        head (gv-sym (:ns fnode) (:name fnode))
-        t? (or (:tail? c) (trace-frames?))]
-    (ordered-call (:arg-nodes c) (:args c)
-      (fn [operands]
-        (let [call (emit-call (:tail? c) head operands (:tl c) (:ich c))]
-          (if t? call (str "(jolt-site-kept " call ")")))))))
+        sym (gv-sym (:ns fnode) (:name fnode))
+        early? (not (inert-operands? (:arg-nodes c)))
+        head (if early? (fresh-label "_gf$") sym)
+        t? (or (:tail? c) (trace-frames?))
+        call (ordered-call (:arg-nodes c) (:args c)
+               (fn [operands] (emit-call (:tail? c) head operands (:tl c) (:ich c))))
+        call (if early? (str "(let ((" head " (jolt-gv-callee '" sym "))) " call ")") call)]
+    (if t? call (str "(jolt-site-kept " call ")"))))
 (defn- emit-jolt-invoke [c]
   (if (and (= :var (:op (:fnode c))) (global-var-ref? (:ns (:fnode c)) (:name (:fnode c))))
     (emit-global-invoke c)
@@ -1049,11 +1055,11 @@
 ;; runs (lambda.clj site-entry), so the handler stores that, or 0 outside any fn,
 ;; with nothing read when the try begins; Gambit saves and restores both slots.
 (defn- emit-try [node]
-  (let [chez-slot (when (and (:catch-sym node) (trace-frames?) (not (keep-frames?)) (= :chez (target)))
+  (let [chez-slot (when (and (:catch-sym node) (slot-trace?) (= :chez (target)))
                     (if *site-call*
                       (do (reset! *site-call* :site) "_sw$")
                       "0"))
-        ts (when (and (:catch-sym node) (trace-frames?) (not (keep-frames?)) (not chez-slot)) (fresh-label "_ts$"))
+        ts (when (and (:catch-sym node) (slot-trace?) (not chez-slot)) (fresh-label "_ts$"))
         to (when ts (fresh-label "_to$"))
         core (if-let [cs (:catch-sym node)]
                (let [raw (munge-name (:catch-raw-sym node))
@@ -1064,7 +1070,7 @@
                      ;; catch cannot leave its throw's line behind for an outer
                      ;; handler that runs later. Only under tracing — with it off
                      ;; there are no line stores to snapshot.
-                     cl (when (and (trace-frames?) (not (keep-frames?))) (fresh-label "_cl$"))
+                     cl (when (slot-trace?) (fresh-label "_cl$"))
                      body (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
                                (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
                                (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
@@ -1082,7 +1088,7 @@
                                "))) "
                                (emit-try-body node) ")")]
                  (if ts
-                   (str "(let ((" ts " " "(virtual-register 2)" ") (" to " (virtual-register 12))) " body ")")
+                   (str "(let ((" ts " (virtual-register 2)) (" to " (virtual-register 12))) " body ")")
                    body))
                (emit-try-body node))]
     (if-let [fin (:finally node)]
@@ -1205,6 +1211,31 @@
         base))))
 
 ;; A def: the var, its init, and the linked or cached forms it takes.
+;; A def with no init: its var declared, with its metadata when it has any.
+;; set-var-meta! interns the same cell declare-var! returns, so declare-var! runs
+;; LAST — a no-init def evaluates to its var, like the JVM ((var? (def x)) is
+;; true), not set-var-meta!'s void.
+(defn- emit-no-init-def [node]
+  (let [nm (str (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)))]
+    (if (jmeta-nonempty? (:meta node))
+      (let [md (lazy-meta-desc node)]
+        (str "(begin (" (if md "set-var-lazy-meta! " "set-var-meta! ") nm " "
+             (if md (str "'" md) (emit-def-meta node)) ")"
+             " (declare-var! " nm "))"))
+      (str "(declare-var! " nm ")"))))
+;; A def with an init and metadata. Under JOLT_LAZY_META the metadata is one
+;; descriptor (lazy-meta-desc) and, with lazy rows, the source row rides along
+;; as the lazy def's last argument instead of the registration REG holds, which
+;; is then emptied.
+(defn- emit-meta-def [node reg]
+  (let [nm (str (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)))
+        init (emit-with-cells #(emit (:init node)))]
+    (if-let [md (lazy-meta-desc node)]
+      (let [src (when (and (session/lazy-rows?) (not= "" @reg)) (trace-source-datum node))]
+        (when src (vreset! reg ""))
+        (str "(def-var-lazy-meta! " nm " " init " '" md (if src (str " '" src) "") ")"))
+      (str "(def-var-with-meta! " nm " " init " " (emit-def-meta node) ")"))))
+
 (defn- emit-def-node [node]
   (binding [*qualifying-ns* (when (source-reg?) (:ns node))
             *callsites* (when (trace-frames?) (atom {}))
@@ -1215,26 +1246,8 @@
             *fnsrc-def-init?* (= :fn (:op (:init node)))]
     (let [reg (volatile! (trace-source-reg node))
           d (cond
-              (:no-init node)
-              (if (jmeta-nonempty? (:meta node))
-                ;; set-var-meta! interns the same cell declare-var! returns, so
-                ;; declare-var! runs LAST — a no-init def evaluates to its var,
-                ;; like the JVM ((var? (def x)) is true), not set-var-meta!'s void.
-                (let [md (lazy-meta-desc node)]
-                  (str "(begin (" (if md "set-var-lazy-meta! " "set-var-meta! ")
-                       (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                       (if md (str "'" md) (emit-def-meta node)) ")"
-                       " (declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) "))"))
-                (str "(declare-var! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")"))
-              (jmeta-nonempty? (:meta node))
-              (let [init (emit-with-cells #(emit (:init node)))]
-                (if-let [md (lazy-meta-desc node)]
-                  (let [src (when (and (session/lazy-rows?) (not= "" @reg)) (trace-source-datum node))]
-                    (when src (vreset! reg ""))
-                    (str "(def-var-lazy-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                         init " '" md (if src (str " '" src) "") ")"))
-                  (str "(def-var-with-meta! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
-                       init " " (emit-def-meta node) ")")))
+              (:no-init node) (emit-no-init-def node)
+              (jmeta-nonempty? (:meta node)) (emit-meta-def node reg)
               :else
               (str "(def-var-plain! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                    (emit-with-cells #(emit (:init node))) ")"))
@@ -1264,11 +1277,11 @@
         ;; that caller for the innermost frame. Outside a named fn there
         ;; is no pair to store, so the slot is emptied instead.
         call (cond
-               (or (not (trace-frames?)) (keep-frames?))
+               (not (slot-trace?))
                (emit-call *tail?* "jolt-throw" [e] (or line 0) ch)
                *trace-site* (sited-tail-call *trace-site* (or line 0) "jolt-throw" [e] ch)
                :else (let [t (fresh-label "_tt$")]
-                       (str "(let* ((" t " " e ")) " "(set-virtual-register! 2 0) "
+                       (str "(let* ((" t " " e ")) (set-virtual-register! 2 0) "
                             (plain-call "jolt-throw" [t]) ")")))]
     ;; A macro-built throw has no :pos — `assert` expands to one, and the
     ;; app.util fixture reaches it through a user macro besides — so a
@@ -1294,7 +1307,7 @@
 ;; A host method call (.m obj args).
 (defn- emit-host-call-node [node]
   (let [tail? *tail?*
-        sited? (and (trace-frames?) (not (keep-frames?)) tail? *trace-site*)]
+        sited? (and (slot-trace?) tail? *trace-site*)]
    (binding [*tail?* false]
     (when sited? (note-tail-call! tail?))
     (if sited?
@@ -1322,7 +1335,7 @@
       ;; string, keyword or string builder, a host method.
       (let [call (host-call-emit emit node)]
         (note-tail-call! tail?)
-        (if (and (trace-frames?) (not (keep-frames?)) (not tail?)
+        (if (and (slot-trace?) (not tail?)
                  (not (contains? #{:str :kw :sb :sbuf} (:target-type node))))
           (site-restore call)
           call))))))

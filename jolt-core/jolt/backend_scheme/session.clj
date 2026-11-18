@@ -341,6 +341,9 @@
 (def keep-frames (atom false))
 (defn set-keep-frames! [on] (reset! keep-frames (boolean on)))
 (defn keep-frames? [] (and @keep-frames (trace-frames?)))
+;; Traced code that records erased frames in the site slots (virtual registers
+;; 2 and 12): tracing on, keep-frames off.
+(defn slot-trace? [] (and (trace-frames?) (not (keep-frames?))))
 (defn keep-frame [s] (str "(#2%$call-keeping-frame (lambda () " s "))"))
 ;; A tail call that may run a jolt fn disqualifies the enclosing fn.
 (defn note-tail-call! [tail?]

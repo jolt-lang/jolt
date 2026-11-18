@@ -2137,8 +2137,8 @@
 ;; JOLT_LAZY_META=1: the same stamps written compactly -- one group per
 ;; namespace, ("ns" "name" ord "name" ord ...), and only each name's first stamp,
 ;; the only one first-writer-wins keeps (every stamp here is against the one
-;; file) -- and replayed lazily (rt.ss var-def-ordinals-defer!). With a sink
-;; collecting stamps the replay runs now, as the sink reads them as they land.
+;; file) -- and replayed lazily (rt.ss var-def-ordinals-replay-cached!, which
+;; stamps them at once when a sink is collecting stamps).
 (define (aot-def-ordinal-groups stamps)
   (let ((seen (make-hashtable equal-hash equal?)) (groups '()))
     (for-each
@@ -2155,9 +2155,7 @@
 (define (aot-replay-def-ordinals*! groups)
   (let ((file (aot-loading-file)))
     (when file
-      (if (jolt-def-ordinal-sink)
-          (begin (var-def-ordinals-drain!) (var-def-ordinals-replay! file groups))
-          (var-def-ordinals-defer! file groups)))))
+      (var-def-ordinals-replay-cached! file groups))))
 
 ;; Take back the defs a cached load made (rt.ss jolt-def-capture): every var the
 ;; load defined that was not defined before it goes back to undefined, as a
