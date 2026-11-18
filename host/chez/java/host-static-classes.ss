@@ -4745,7 +4745,7 @@
          (and cn (string=? (var-cell-name c) (hsc-last-segment cn))
               (jolt-class-for cn)))))
 (define (hsc-ns-imports . desig)
-  (let ((cns (if (pair? desig) (ns-desig->name (car desig)) (chez-current-ns))))
+  (let ((cns (if (pair? desig) (ns-existing-name (car desig)) (chez-current-ns))))
     (fold-left (lambda (m c)
                  (let ((cls (hsc-ns-import-class c)))
                    (if cls (jolt-assoc m (jolt-symbol #f (var-cell-name c)) cls) m)))

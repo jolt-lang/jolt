@@ -50,7 +50,10 @@
 ;; binding, and a redefinition writes through to that binding (rt.ss
 ;; var-root-set!), so the site follows it.
 (let ((e (emit-dl "(def usetrue (fn [x] (true? x)))")))
-  (gate-check "seed call applies the linked jv$ binding" (gate-sub? e "(jv$clojure.core/true? ") #t)
+  ;; through a local (backend calls.clj linked-call): a call of the top-level
+  ;; variable itself races a redefinition on another thread
+  (gate-check "seed call applies the linked jv$ binding" (gate-sub? e " jv$clojure.core/true?)) (if (#3%procedure? _lp$") #t)
+  (gate-check "seed call never applies the top-level variable" (gate-sub? e "(jv$clojure.core/true? ") #f)
   (gate-check "seed call hoists no root" (gate-sub? e "jolt-seed-root") #f)
   (gate-check "seed call is a direct application, not jolt-invoke1" (invoke-sub? e "1") #f)
   (gate-check "seed call does not deref the var cell" (gate-sub? e "var-cell-deref") #f)

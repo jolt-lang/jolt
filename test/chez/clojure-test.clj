@@ -63,9 +63,16 @@
   (is (do (throw (ex-info "boom" {})) true)))
 
 ;; run-tests returns THIS call's summary; with explicit nses it runs only their
-;; tests (an unknown ns runs nothing).
+;; tests (a namespace with no tests runs nothing). A namespace that doesn't exist
+;; throws, as on the JVM, so a test file whose ns form doesn't match its path
+;; fails the run instead of being skipped.
 (def r1 (run-tests))
-(def r2 (run-tests 'no.such.test-ns))
+(create-ns 'no.tests.test-ns)
+(def r2 (run-tests 'no.tests.test-ns))
+(def r3 (mapv (fn [f] (try (f) :ran (catch Exception e (ex-message e))))
+              [#(run-tests 'no.such.test-ns)
+               #(t/test-ns 'no.such.test-ns)
+               #(t/test-all-vars 'no.such.test-ns)]))
 
 ;; Cumulative counters, snapshotted BEFORE the deselection run below adds to them:
 ;; 10 pass (= + vector? + 4 are rows + thrown? + thrown-with-msg? + near? + p/thrown?),
@@ -113,12 +120,13 @@
 
 (let [ok (and (= 4 (:test r1)) (= 10 (:pass r1)) (= 3 (:fail r1)) (= 1 (:error r1))
               (= 0 (:test r2)) (= 0 (:pass r2))
+              (= (repeat 3 "No namespace: no.such.test-ns found") r3)
               cum-ok deselect-ok restore-ok
               header-shape-ok error-header-ok
               (= @trials 2))]
   (println (if ok
              "CLOJURE-TEST OK"
-             (str "CLOJURE-TEST FAIL r1=" (pr-str r1) " r2=" (pr-str r2)
+             (str "CLOJURE-TEST FAIL r1=" (pr-str r1) " r2=" (pr-str r2) " r3=" (pr-str r3)
                   " cum-ok=" cum-ok " (pass=" (t/n-pass) " fail=" (t/n-fail)
                   " error=" (t/n-error) " setups=" @setups ")"
                   " deselected=" (pr-str deselected) " restored=" (pr-str restored)
