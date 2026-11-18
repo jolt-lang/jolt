@@ -332,6 +332,19 @@
 (define (jrec-plain? x) (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
 ;; A record's own IObj impls (slot 16): (meta . withMeta), either #f, or #f.
 (define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
+;; The same read with the last-descriptor hit open-coded (#1713): meta and
+;; with-meta ask it for every record, and through jrec-iobj -> jrdesc-ifc-of ->
+;; jrdesc-ifc-epoch a hit was three procedure calls (~7 ns). A miss is
+;; jrdesc-ifc-of's whole path.
+(define-syntax jrec-iobj/i
+  (syntax-rules ()
+    ((_ x0)
+     (let* ((x x0) (l jrdesc-ifc-last))
+       (vector-ref (if (and (eq? (car l) (jrec-desc x))
+                            (fx=? (vector-ref (cdr l) 0) (fx+ jch-graph-epoch jolt-proto-epoch)))
+                       (cdr l)
+                       (jrdesc-ifc-of x))
+                   16)))))
 ;; The impl a record type declares for METHOD (any protocol), or #f. Every
 ;; collection op on a record asks this first — equality asks it for equiv and
 ;; equals on both operands, hashing for hasheq and hashCode, meta/assoc/nth/count

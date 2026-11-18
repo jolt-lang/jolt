@@ -3370,6 +3370,17 @@
 ;; fresh descriptor (protocols.ss make-deftype-ctor), never a different layout
 ;; under the same one. Field I sits after the base's four (desc ext hasheq meta);
 ;; a type of more than eight keeps its fields in jrec*'s vector, the slot after.
+;; The test in front of an indexed vector read (backend_scheme.clj
+;; emit-vec-idx-read): V a vector and K an index into it. pvec? and pvec-cnt
+;; are a record predicate and accessor, each a call through its top-level
+;; binding from emitted code; open-coded here, the test is a few loads (#1713).
+;; cnt is pvec's first field (values.ss).
+(define-syntax pvec-in-range/i
+  (syntax-rules ()
+    ((_ v0 k0)
+     (let ((v v0) (k k0))
+       (and (record? v (record-type-descriptor pvec)) (fixnum? k) (fx>=? k 0)
+            (fx<? k (sa-record-slot v 0)))))))
 (define-syntax jrec-slot/u
   (syntax-rules () ((_ o i) (sa-record-slot o (fx+ 4 i)))))
 (define-syntax jrec-slot-set!/u

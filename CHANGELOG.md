@@ -348,6 +348,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Multimethod and record metadata costs a parser pays per node (#1713).** A
+  multimethod's inline cache keeps the last eight dispatch values rather than
+  four: rewrite-clj's `parse-next*` cycles through five to seven, so it missed
+  on every call and hashed into the methods table. `meta` and `with-meta` test
+  for a record first and read its type's IObj flags inline (`meta` on a record
+  ~14 -> ~5 ns). An indexed vector read's range test is open-coded. rewrite-clj
+  `parse-string` x5000: ~128 -> ~118 ms.
+
 - **A number's interop method is kept at its call site (#1713).** `(.bitLength
   n)`, `(.longValue n)` and the rest of the number method surface walked the
   method arms and a string compare per name on every call; tools.reader reads

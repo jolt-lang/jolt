@@ -302,6 +302,16 @@
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
 ;;                      slot of the record now (values.ss jrec), ~66 ns.
 ;;
+;;   record-meta        (meta r) of a record walked the collection kinds and two
+;;                      calls into the type's derived vector before its slot
+;;                      (~14 ns); records are tested first and the vector read
+;;                      is open-coded (records-coll.ss jrec-iobj/i), ~5 ns.
+;;
+;;   mm-cycle           a multimethod's inline cache kept the last four dispatch
+;;                      values, so one cycling through five or more (rewrite-clj's
+;;                      parse-next*) missed every call and hashed into the methods
+;;                      table; it keeps eight (multimethods.ss mm-resolve).
+;;
 (ns fastpath-ratio-test
   (:require [clojure.string :as str]))
 
@@ -589,6 +599,11 @@
 (def ^:private gate-meta-rec (->GateMetaRec 1 2))
 (def ^:private gate-meta-vec [1 2])
 (def ^:private gate-meta {:row 1 :col 2})
+(defmulti ^:private gate-mm identity)
+(defmethod gate-mm :a [_] 1) (defmethod gate-mm :b [_] 2) (defmethod gate-mm :c [_] 3)
+(defmethod gate-mm :d [_] 4) (defmethod gate-mm :e [_] 5) (defmethod gate-mm :f [_] 6)
+(def ^:private gate-mm-one [:a :a :a :a :a :a])
+(def ^:private gate-mm-six [:a :b :c :d :e :f])
 
 (defn -main [& _]
   (spit src-path source-text)
@@ -938,6 +953,19 @@
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))
           4.0)
+  ;; (meta r) of a record against (meta v) of a vector, both a slot read. Reads
+  ;; ~1.0; the walk to the record arm costs ~14 ns against ~5, ~2.8.
+  (judge! "record-meta"
+          #(let [v gate-meta-vec] (dotimes [_ gate-n] (meta v)))
+          #(let [r gate-meta-rec] (dotimes [_ gate-n] (meta r)))
+          2.0)
+  ;; six dispatch values in rotation against one: both answer from the inline
+  ;; cache, so the rotation costs only the scan. Reads ~1.2; a rotation past the
+  ;; cache's size reads ~14.
+  (judge! "mm-cycle"
+          #(let [ks gate-mm-one] (dotimes [i gate-n] (gate-mm (nth ks (rem i 6)))))
+          #(let [ks gate-mm-six] (dotimes [i gate-n] (gate-mm (nth ks (rem i 6)))))
+          3.0)
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints

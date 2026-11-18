@@ -827,7 +827,10 @@
     (order-args
      (fn [as]
        (str "(let ((" v " " (first as) ") (" k " " (second as) "))"
-            " (if (and (pvec? " v ") (fixnum? " k ") (fx>=? " k " 0) (fx<? " k " (pvec-cnt " v ")))"
+            (if (= :gambit (session/target))
+              (str " (if (and (pvec? " v ") (fixnum? " k ") (fx>=? " k " 0) (fx<? " k " (pvec-cnt " v ")))")
+              ;; the record test and the count open-coded (rt.ss)
+              (str " (if (pvec-in-range/i " v " " k ")"))
             " (pvec-nth-in-range " v " " k ") "
             (emit-call tail? callee [v k] tl ich) "))")))))
 

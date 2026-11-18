@@ -166,6 +166,18 @@
 
 (define (jolt-meta x)
   (cond
+    ;; Every other record carries its meta in its own slot (values.ss jrec);
+    ;; whether the type declares its own is one read of its derived vector
+    ;; (records-coll.ss jrec-iobj/i). Asked first: a parser that tags every node
+    ;; it builds (rewrite-clj's read-with-meta) asks it per node, and the
+    ;; collection tests ahead of it were a call of their own.
+    ;; A deftype implementing clojure.lang.IObj stores meta in a field and
+    ;; threads it through its own assoc/withMeta (core.logic's
+    ;; Substitutions/LVar/LCons), so dispatch to its meta method rather than the
+    ;; slot -- which the deftype's reconstructed instances would not share.
+    ((jrec? x)
+     (let* ((io (jrec-iobj/i x)) (meth (and io (car io))))
+       (if meth (jolt-invoke meth x) (jrec-meta x))))
     ((symbol-t? x) (let ((m (symbol-t-meta x))) (if (jolt-nil? m) jolt-nil m)))
     ((coll-meta x) => (lambda (m) m))
     ;; a var's meta is {:ns :name} (derived from the cell) + :macro true for a
@@ -181,16 +193,6 @@
        (if (macro-var? x)
            (jolt-assoc base jolt-kw-var-macro #t)
            base)))
-    ;; a deftype implementing clojure.lang.IObj stores meta in a field and threads
-    ;; it through its own assoc/withMeta (core.logic's Substitutions/LVar/LCons),
-    ;; so dispatch to its meta method rather than the identity side-table — which
-    ;; the deftype's reconstructed instances would not share.
-    ;; Every other record carries its meta in its own slot (values.ss jrec);
-    ;; whether the type declares its own is one read of its derived vector
-    ;; (records-coll.ss jrec-iobj).
-    ((jrec? x)
-     (let* ((io (jrec-iobj x)) (meth (and io (car io))))
-       (if meth (jolt-invoke meth x) (jrec-meta x))))
     ;; everything else (fns, reify, atoms/agents and any reference type)
     ;; reads the identity side-table; a value with no entry is nil meta.
     ;; no such metadata anywhere: skip the table entirely
@@ -261,16 +263,16 @@
 ;; (with-meta 5 nil) instead of throwing.
 (define (jolt-with-meta x m)
   (cond
-    ((symbol-t? x) (if (eq? (jolt-meta x) m) x (symbol-t-with-meta x m)))
-    ((coll-meta x) => (lambda (cur) (if (eq? cur m) x (coll-with-meta x m))))
     ;; a deftype with an explicit clojure.lang.IObj withMeta carries meta in a
     ;; field; dispatch to it (see jolt-meta) so the meta survives reconstruction.
     ;; Every other record: a copy with the meta in its slot. Always a copy, as a
     ;; defrecord's generated withMeta is `new R(...)`; Obj's identity shortcut is
-    ;; the collections', not a record's.
+    ;; the collections', not a record's. First, as in jolt-meta.
     ((jrec? x)
-     (let* ((io (jrec-iobj x)) (meth (and io (cdr io))))
+     (let* ((io (jrec-iobj/i x)) (meth (and io (cdr io))))
        (if meth (jolt-invoke meth x m) (jrec-with-meta x m))))
+    ((symbol-t? x) (if (eq? (jolt-meta x) m) x (symbol-t-with-meta x m)))
+    ((coll-meta x) => (lambda (cur) (if (eq? cur m) x (coll-with-meta x m))))
     ((or (jreify? x) (procedure? x))
      (if (eq? (jolt-meta x) m)
          x

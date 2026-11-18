@@ -1154,6 +1154,19 @@
 
 (define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
 
+(define-syntax jrec-iobj/i
+  (syntax-rules ()
+    ((_ x0)
+     (let* ((x x0) (l jrdesc-ifc-last))
+       (vector-ref
+         (if (and (eq? (car l) (jrec-desc x))
+                  (fx=?
+                    (vector-ref (cdr l) 0)
+                    (fx+ jch-graph-epoch jolt-proto-epoch)))
+             (cdr l)
+             (jrdesc-ifc-of x))
+         16)))))
+
 (define (jrec-method x method)
   (let* ((t (vector-ref (jrdesc-ifc-of x) 7))
          (hit (hashtable-ref t method 'none)))
