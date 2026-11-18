@@ -41,12 +41,21 @@
 ;; does — so on a carrier the thread id alone would let one fiber write another's
 ;; binding. Gambit has no fibers; its shim answers #f.
 (define (dyn-owner) (or (jolt-current-fiber) (get-thread-id)))
+;; A frame: who pushed it, its (cell . value) pairs, and the lookups answered
+;; through it (dyn-walk-frames below). A frame is made by exactly one push, so it
+;; heads exactly one stack, and what a lookup found under it stays true: the
+;; frames below are immutable, a binding's value lives in its pair (cached as
+;; the pair, so var-set through it is still seen), and "not bound here" cannot
+;; change for a stack nobody can extend from below.
+(define-record-type dyn-frame (fields owner alist (mutable cache)) (nongenerative dyn-frame-v1))
+(define dyn-cache-none (list 'dyn-cache-none))
+(define dyn-cache-empty (vector dyn-cache-none #f dyn-cache-none #f dyn-cache-none #f dyn-cache-none #f))
 (define (dyn-push-frame! pairs)
   (let loop ((p pairs))
     (when (pair? p)
       (var-cell-dyn-bound?-set! (caar p) #t)
       (loop (cdr p))))
-  (dyn-binding-stack (cons (cons (dyn-owner) pairs) (dyn-binding-stack))))
+  (dyn-binding-stack (cons (make-dyn-frame (dyn-owner) pairs dyn-cache-empty) (dyn-binding-stack))))
 
 ;; (dyn-with-frame pairs thunk) — THE way to scope a binding frame over a
 ;; dynamic extent. Three sites used to hand-roll it and all three were wrong
@@ -127,18 +136,39 @@
 ;; The walk itself, ungated, so the two readers below test the flag exactly once.
 ;; Testing it in both dyn-find-binding and dyn-binding-value cost a bound var
 ;; 8.5 -> 11.3 ns for nothing.
+;;
+;; A read of a var that IS bound somewhere walked every frame, and a reader binds
+;; one per nesting level: tools.reader's read-delimited binds *read-delim* for
+;; every list, and read* asks *read-eval* -- bound at the bottom by the load --
+;; for every form, so each read crossed the whole stack (#1713). The innermost
+;; frame remembers the last four cells asked through it, with the pair found (or
+;; #f): a repeat under the same frame is a few eq?s. The memo is a vector
+;; replaced whole, never written in place, so a thread sharing the frame (a
+;; conveyed stack) reads either the old memo or the new one.
 (define (dyn-walk-frames cell)
-  (let loop ((frames (dyn-binding-stack)))
+  (let ((frames (dyn-binding-stack)))
     (and (pair? frames)
-         (or (assq cell (cdar frames))
-             (loop (cdr frames))))))
+         (let* ((top (car frames)) (c (dyn-frame-cache top)))
+           (cond ((eq? (vector-ref c 0) cell) (vector-ref c 1))
+                 ((eq? (vector-ref c 2) cell) (vector-ref c 3))
+                 ((eq? (vector-ref c 4) cell) (vector-ref c 5))
+                 ((eq? (vector-ref c 6) cell) (vector-ref c 7))
+                 (else
+                  (let ((p (let loop ((fs frames))
+                             (and (pair? fs)
+                                  (or (assq cell (dyn-frame-alist (car fs)))
+                                      (loop (cdr fs)))))))
+                    (dyn-frame-cache-set! top
+                      (vector cell p (vector-ref c 0) (vector-ref c 1)
+                              (vector-ref c 2) (vector-ref c 3) (vector-ref c 4) (vector-ref c 5)))
+                    p)))))))
 ;; The FRAME holding the innermost binding of CELL, or #f — for the one caller
 ;; that needs the owner as well as the pair (jolt-set-var!).
 (define (dyn-find-binding-frame cell)
   (and (var-cell-dyn-bound? cell)
        (let loop ((frames (dyn-binding-stack)))
          (and (pair? frames)
-              (if (assq cell (cdar frames)) (car frames) (loop (cdr frames)))))))
+              (if (assq cell (dyn-frame-alist (car frames))) (car frames) (loop (cdr frames)))))))
 
 ;; the innermost (cell . value) pair binding CELL, or #f
 (define (dyn-find-binding cell)
@@ -261,7 +291,7 @@
     (if (null? frames)
         m
         (loop (cdr frames)
-              (let frame-loop ((alist (cdar frames)) (m m))
+              (let frame-loop ((alist (dyn-frame-alist (car frames))) (m m))
                 (if (null? alist)
                     m
                     (frame-loop (cdr alist)
@@ -330,11 +360,11 @@
                  (throw-jvm (quote IllegalStateException)
                             (string-append "Can't change/establish root binding of: "
                                            (var-cell-name v) " with set")))
-                ((not (eqv? (car f) (dyn-owner)))
+                ((not (eqv? (dyn-frame-owner f) (dyn-owner)))
                  (throw-jvm (quote IllegalStateException)
                             (string-append "Can't set!: " (var-cell-name v)
                                            " from non-binding thread")))
-                (else (set-cdr! (assq v (cdr f)) val) val))))
+                (else (set-cdr! (assq v (dyn-frame-alist f)) val) val))))
       (throw-jvm (quote ClassCastException) "set!: not a var")))
 
 ;; alter-var-root: apply f to the current root plus args, atomically.
