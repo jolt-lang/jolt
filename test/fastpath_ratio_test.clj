@@ -619,18 +619,20 @@
   ;; 23). So both arms read near what a site costs: instance-site 0.75 locally
   ;; and 0.85 on CI, and instance-site-type 0.90 on CI and 1.01 on a slow box.
   ;; #1713 then made the protocol call itself cheaper again (it is a call
-  ;; through a var: 16 -> 9.5 ns), with the site unchanged, so on the slow box
-  ;; the two arms read 0.73 -> 0.92 and 1.00 -> 1.15, and the ceilings are 1.35
-  ;; and 1.45. A site with no cache measured 1.15-1.95 of the oldest call,
-  ;; about 2.4-4 of this one, so still well past both.
+  ;; through a var: 16 -> 9.5 ns), and then open-coded that var call at the
+  ;; site and the protocol fn's descriptor read with it (jolt-var-fn,
+  ;; jrec-pic-desc/i), with the site unchanged: on the slow box the two arms
+  ;; read 0.73 -> 1.11 and 1.00 -> 1.35 over both steps. The ceilings are 1.6
+  ;; and 1.8, room for CI's higher reading. A site with no cache reads ~2.3-3.9
+  ;; against this call, so still well past both.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          1.35)
+          1.6)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.45)
+          1.8)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"
@@ -638,11 +640,15 @@
           #(dotimes [_ dispatch-n] (mk-reify 1))
           3.0)
 
-  ;; satisfies? on a reify must cost about a protocol call.
+  ;; satisfies? on a reify must cost about a protocol call. The protocol call
+  ;; got cheaper under #1713 (a var call open-coded, the PIC's descriptor read
+  ;; inline) with satisfies? unchanged: 2.23 on the slow box before, 2.9-3.06
+  ;; after (and 1.24 on some runs), so 3.0 -> 4.5, against the 13.5 the
+  ;; re-munging walk this gates read.
   (judge! "satisfies-reify"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (satisfies? DP2 made-reify))
-          3.0)
+          4.5)
 
   ;; A key with its own equals/hashCode must not cost wildly more to look up
   ;; than a record key.
@@ -753,10 +759,12 @@
           #(let [v gate-vec] (dotimes [i gate-n] (nth v 3)))
           #(let [v gate-vec] (dotimes [i gate-n] (gate-f2 i v)))
           2.4)
+  ;; (multimethod-call's reference is the var call, open-coded since: 3.81 ->
+  ;; 5.26 with the multimethod unchanged, and ~14 with its fix reverted.)
   (judge! "multimethod-call"
           #(dotimes [_ gate-n] (gate-plain :a))
           #(dotimes [_ gate-n] (gate-mm :a))
-          5.0)
+          7.0)
   (judge! "str-sb"
           #(let [b gate-sb] (dotimes [_ gate-n] (.toString ^StringBuilder b)))
           #(let [b gate-sb] (dotimes [_ gate-n] (str b)))

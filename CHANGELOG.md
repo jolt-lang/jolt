@@ -192,6 +192,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
   rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
   and `clojure.tools.reader/read-string` ~13% less.
+- **A call through a var is open-coded at the call site (#1713).** On Chez,
+  compiled code reads the var's value and applies a procedure directly,
+  where it used to call into the runtime twice first. A protocol fn's inline
+  cache also reads its receiver's type inline. A var-routed call costs about
+  6 ns instead of 9.5, and a protocol call about 17.6 ns instead of 20.
 - **Indexed reads of a vector make no call past `nth`, `get` or the vector
   itself (#1652).** The in-range read and the trie descent are inline in
   each, where `(nth v i)` used to chain three calls to reach a `vector-ref`.
