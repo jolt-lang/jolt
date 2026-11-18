@@ -228,10 +228,13 @@
 
 (defn- evaluate-frame?
   "A frame line of `evaluate` itself. Its own capture can name it
-  jolt.nrepl/evaluate or render it bare, as `evaluate`."
+  jolt.nrepl/evaluate or render it bare, as `evaluate`, and a fn literal inside
+  it (the body that runs the eval under its try) by its label,
+  jfn$jolt.nrepl/evaluate$<n>."
   [line]
   (let [t (str/trim line)]
     (or (str/starts-with? t "jolt.nrepl/evaluate")
+        (str/starts-with? t "jfn$jolt.nrepl/evaluate$")
         (= "evaluate" (first (str/split t #"\s"))))))
 
 (defn- cut-at-eval
@@ -302,7 +305,8 @@
   would name, as it skips the core's frames."
   [line]
   (when-let [{:keys [symbol]} (frame-location line)]
-    (not (re-find #"^(clojure|jolt)\." (namespace symbol)))))
+    ;; an anonymous fn literal's frame is labelled jfn$<ns>/<def>$<n>
+    (not (re-find #"^(jfn\$)?(clojure|jolt)\." (namespace symbol)))))
 
 (defn- simple-class-name [c]
   (when c (last (str/split (name c) #"\."))))

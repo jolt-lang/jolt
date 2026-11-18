@@ -958,8 +958,16 @@
 
 ;; A try's body runs in a closure of guard's or dynamic-wind's. Under debug
 ;; locals it is a tail region of its own, so its leaves keep the scope live there.
+;; On Chez a catch or a finally runs its body IN PLACE (rt.ss jolt-guard and
+;; jolt-wind-inline), so nothing erases the enclosing fn's frame and the body's
+;; last call is an ordinary non-tail call: it is emitted as one, restoring the
+;; site slot as it returns, or its stale tail pair would name the wrong frame
+;; and line in the next trace. (Under guard and dynamic-wind the call into them
+;; was the tail call, and the body's last call stood for the fn's exit.)
 (defn- emit-try-body [node]
-  (binding [*tail?* (or (some? *dbg-scope*) *tail?*)] (emit (:body node))))
+  (let [in-place? (and (or (:catch-sym node) (:finally node)) (not= :gambit (session/target)))]
+    (binding [*tail?* (or (some? *dbg-scope*) (and *tail?* (not in-place?)))]
+      (emit (:body node)))))
 
 ;; Chez names a lambda after its binding. These thunks contain the enclosing
 ;; fn's code, so keep its name when dynamic-wind replaces its physical frame.
@@ -969,6 +977,42 @@
     (if (and (trace-frames?) *trace-frame*)
       (str "(let ((" *trace-frame* " " f ")) " *trace-frame* ")")
       f)))
+
+;; A catch's handler: binds the user's name to the unwrapped throwable, puts the
+;; trace slots back, runs the catch body. The same text under Chez's one-shot
+;; escape and Gambit's guard (emit-try).
+(defn- emit-catch-handler [node cs raw cl ts to chez-slot]
+  (str "(let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
+       (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
+       (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
+             chez-slot (str "(set-virtual-register! 2 " chez-slot ") ")
+             :else "")
+       "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
+                    ;; debug locals: the handler body is a tail region.
+                    ;; cs is the analyzer's; the user's name is a let
+                    ;; inside, which records itself.
+                    (binding [*tail?* (or (some? *dbg-scope*) *tail?*)]
+                      (emit (:catch-body node)))) ")) "
+       (if cl (str "(jolt-catch-leave! " cl ") ") "")
+       "(jolt-catch-complete!) r)"
+       (if cl ")" "")
+       ")"))
+
+;; A finally around CORE: the counted-lock mask edges emit-try describes, and on
+;; Chez the body run in place (rt.ss jolt-wind-inline) where Gambit hands a thunk
+;; to dynamic-wind (#1713).
+(defn- emit-finally-wind [core fin]
+  (let [lv (fresh-label "_wl$")
+        r (fresh-label "_wr$")
+        body (str "(set-virtual-register! 7 (fx- (virtual-register 7) 1))"
+                  " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r ")")
+        after (emit-finally-thunk
+               (str "(if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
+                    " " (binding [*tail?* false] (emit fin))))]
+    (str "(let ((" lv " (virtual-register 7))) (set-virtual-register! 7 (fx+ " lv " 1))"
+         (if (= :gambit (session/target))
+           (str " (dynamic-wind jolt-finally-in " (emit-finally-thunk body) " " after "))")
+           (str " (jolt-wind-inline jolt-finally-in (begin " body ") " after "))")))))
 
 ;; try/catch/finally. throw raises a Chez condition wrapping the jolt value
 ;; (jolt-throw = Scheme `raise` of a &jolt-throw condition); catch lowers to
@@ -991,7 +1035,9 @@
 ;; This is why the marker must be emitted by NAME and not inlined: the filter
 ;; recognises it with eq?.
 ;;
-;; THIS IS ALSO THE ONLY dynamic-wind THE BACK END EMITS FOR A jolt FORM, and
+;; THIS IS ALSO THE ONLY dynamic-wind THE BACK END EMITS FOR A jolt FORM -- on
+;; Chez spelled jolt-wind-inline, the same winder with the body run in place, and
+;; a catch's jolt-guard pushes one too (rt.ss) -- and
 ;; that fact is load-bearing elsewhere. The cheap park in host/chez/java/sm.ss
 ;; escapes the whole winder chain above the carrier's base and resumes through
 ;; the fiber thunk, so it does not rewind: any wind between the CPS driver and a
@@ -1031,22 +1077,20 @@
                      ;; handler that runs later. Only under tracing — with it off
                      ;; there are no line stores to snapshot.
                      cl (when (trace-frames?) (fresh-label "_cl$"))
-                     body (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
-                               (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
-                               (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
-                                     chez-slot (str "(set-virtual-register! 2 " chez-slot ") ")
-                                     :else "")
-                               "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
-                                            ;; debug locals: the handler body is a tail region.
-                                            ;; cs is the analyzer's; the user's name is a let
-                                            ;; inside, which records itself.
-                                            (binding [*tail?* (or (some? *dbg-scope*) *tail?*)]
-                                              (emit (:catch-body node)))) ")) "
-                               (if cl (str "(jolt-catch-leave! " cl ") ") "")
-                               "(jolt-catch-complete!) r)"
-                               (if cl ")" "")
-                               "))) "
-                               (emit-try-body node) ")")]
+                     ;; On Chez a one-shot escape where guard takes a full
+                     ;; continuation, which costs in proportion to the stack
+                     ;; depth at the try, around a body run in place (rt.ss
+                     ;; jolt-guard-body, #1713); guard on Gambit
+                     handler (emit-catch-handler node cs raw cl ts to chez-slot)
+                     body (if (= :gambit (session/target))
+                            (str "(guard (" raw " (else " handler ")) " (emit-try-body node) ")")
+                            ;; Chez: a one-shot escape around the body run in place
+                            ;; (rt.ss jolt-guard-body). The call/1cc call is written
+                            ;; here, with the try's line marker, so the fn's frame
+                            ;; that returns to it while the body runs has its line.
+                            (let [k (fresh-label "_gk$") gr (fresh-label "_gr$")]
+                              (str "(let ((" gr " " (with-site node (str "(call/1cc (lambda (" k ") (jolt-guard-body " k " " (emit-try-body node) ")))")) "))"
+                                   " (if (jolt-caught? " gr ") (let ((" raw " (jolt-caught-val " gr "))) " handler ") " gr "))")))]
                  (if ts
                    (str "(let ((" ts " (virtual-register 2)) (" to " (virtual-register 12))) " body ")")
                    body))
@@ -1065,16 +1109,7 @@
       ;; at entry. Inline register ops and not the jolt-locks syntax, because the
       ;; emission is also eval'd where only procedures are bound (Gambit's eval
       ;; sees no shim macro, which is also why this says fx> and not fx>?).
-      (let [lv (fresh-label "_wl$")
-            r (fresh-label "_wr$")]
-        (str "(let ((" lv " (virtual-register 7))) (set-virtual-register! 7 (fx+ " lv " 1))"
-             " (dynamic-wind jolt-finally-in"
-             " " (emit-finally-thunk
-                    (str "(set-virtual-register! 7 (fx- (virtual-register 7) 1))"
-                         " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r ")"))
-             " " (emit-finally-thunk
-                    (str "(if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
-                         " " (binding [*tail?* false] (emit fin)))) "))"))
+      (emit-finally-wind core fin)
       core)))
 
 ;; Does this IR node emit to an expression that yields a Scheme boolean? Used to

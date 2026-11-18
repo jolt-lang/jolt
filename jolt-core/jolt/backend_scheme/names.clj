@@ -99,7 +99,7 @@
         helpers #{"jolt-nil" "jolt-invoke" "jolt-invoke0" "jolt-invoke1"
                   "jolt-invoke2" "jolt-invoke3" "jolt-invoke4"
                   "jolt-invoke-t0" "jolt-invoke-t1" "jolt-invoke-t2" "jolt-invoke-t3" "jolt-invoke-t4"
-                  "jolt-var-fn" "jolt-site-kept"
+                  "jolt-var-fn" "jolt-site-kept" "jolt-guard-body" "jolt-caught?" "jolt-caught-val" "call/1cc" "jolt-wind-inline"
                   "var-deref" "list->cseq" "cseq->list"
                   "jolt-rest-seq" "jolt-register-variadic!"
                   "make-jrec" "jrec-field-at" "jrec-field-set!"
