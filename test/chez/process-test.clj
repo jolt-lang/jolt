@@ -680,6 +680,41 @@
   (check-eq "and with no evaluation installed SIGINT exits 130" (:exit @proc) 130)
   (fs/delete-if-exists readyf))
 
+;; A program's own sun.misc.Signal handler for INT outranks the REPL's ^C: it
+;; asked for every INT, as it would get on the JVM, so the evaluation runs on and
+;; the handler is called. SIG_DFL gives ^C back to the REPL.
+(let [readyf (str (fs/create-temp-file {:prefix "jp-repl-int-handler-" :suffix ".txt"}))
+      prog (str "(def hits (atom 0))"
+                "(defn step [ready f]"
+                "  (let [t (jolt.host/make-interrupt)]"
+                "    (jolt.host/interrupt-on-sigint! t)"
+                "    (spit \"" readyf "\" ready)"
+                "    (try (jolt.host/run-interruptible t f) :finished"
+                "         (catch :default e (if (jolt.host/interrupted? t) :interrupted (ex-message e)))"
+                "         (finally (jolt.host/interrupt-on-sigint! nil)))))"
+                "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\")"
+                "  (reify sun.misc.SignalHandler (handle [_ _] (swap! hits inc))))"
+                "(println (step \"1\" (fn [] (Thread/sleep 3000))))"
+                "(println @hits)"
+                "(sun.misc.Signal/handle (sun.misc.Signal. \"INT\") sun.misc.SignalHandler/SIG_DFL)"
+                "(println (step \"2\" (fn [] (Thread/sleep 30000))))"
+                "(flush)")
+      proc (process [jolt-bin "-e" prog] {:out :string :err :string})
+      await-ready (fn [s]
+                    (loop [n 0]
+                      (when (and (< n 400) (not= s (slurp readyf)))
+                        (Thread/sleep 25)
+                        (recur (inc n))))
+                    (Thread/sleep 200))
+      sigint! #(sh ["sh" "-c" (str "kill -INT " (.pid (:proc proc)))])]
+  (doseq [s ["1" "2"]] (await-ready s) (sigint!))
+  (loop [n 0] (when (and (< n 100) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+  (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+  (check-eq "an INT handler outranks the REPL's ^C, and SIG_DFL gives ^C back"
+            [(str/split-lines (:out @proc)) (:exit @proc)]
+            [[":finished" "1" ":interrupted"] 0])
+  (fs/delete-if-exists readyf))
+
 ;; …and no signal may be swallowed by a thread that was already running, nor
 ;; depend on WHICH thread registered the hook. The kernel delivers to a thread
 ;; that does not block the signal, so before the watcher was armed up front it
@@ -1029,9 +1064,12 @@
             (if relay? [false false false] [(signum "USR1") (signum "USR2") (signum "WINCH")]))
   (check-eq "sigwait answer: PROF is never the watcher's" (answer 0 (signum "PROF")) false))
 
+;; Up to 60s: signals sent before the program has registered its handlers take
+;; their default action and kill it, and a 10s cap was not enough on the
+;; emulated Android runner (every "no relay" row failed at once).
 (defn- await-file [f]
   (loop [n 0]
-    (when (and (< n 200) (str/blank? (slurp f)))
+    (when (and (< n 1200) (str/blank? (slurp f)))
       (Thread/sleep 50)
       (recur (inc n)))))
 
@@ -1058,16 +1096,28 @@
                   "(spit \"" readyf "\" \"ready\") (Thread/sleep 30000)")
         proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
         pid (.pid (:proc proc))
-        lines #(set (str/split-lines (slurp logf)))]
+        lines #(set (str/split-lines (slurp logf)))
+        ;; Each handler writes its line from its own thread, so the last one
+        ;; sent (TSTP) can still be on its way after the 300ms pause: wait up
+        ;; to 10s for every expected line rather than reading the log once.
+        ;; A loaded CI runner lost the race once (no relay), not a lost signal.
+        want ["USR2 SIGUSR2 handler true" "INT" "ALRM" "TSTP" "CHLD"]
+        seen (fn []
+               (loop [n 0]
+                 (let [ls (lines)]
+                   (if (or (every? ls want) (>= n 200))
+                     ls
+                     (do (Thread/sleep 50) (recur (inc n)))))))]
     (await-file readyf)
     (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
       (sh ["sh" "-c" (str "kill -" s " " pid)])
       (Thread/sleep 300))
-    (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
-              (contains? (lines) "USR2 SIGUSR2 handler true") true)
-    (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? (lines) "INT") true)
-    (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
-              (every? (lines) ["ALRM" "TSTP" "CHLD"]) true)
+    (let [ls (seen)]
+      (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
+                (contains? ls "USR2 SIGUSR2 handler true") true)
+      (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? ls "INT") true)
+      (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
+                (filterv ls ["ALRM" "TSTP" "CHLD"]) ["ALRM" "TSTP" "CHLD"]))
     (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
     (sh ["sh" "-c" (str "kill -TERM " pid)])
     (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))

@@ -656,7 +656,13 @@
   (when (find-ns ns-sym)
     (find-var (symbol (str ns-sym) "test-ns-hook"))))
 
+;; the-ns first, as clojure.test's test-ns does: a namespace that never loaded
+;; throws "No namespace: x found" rather than running as one with no tests, so a
+;; test file whose ns form doesn't match its path fails the run instead of being
+;; skipped in silence. Namespaces ahead of it in run-tests have run by then, and
+;; no summary is reported, which is what the JVM does too.
 (defn- run-ns [n reg-by-ns]
+  (the-ns n)
   (do-report {:type :begin-test-ns :ns (find-ns n)})
   (if-let [hook (ns-hook n)]
     ((var-get hook))
@@ -766,7 +772,7 @@
   "If the namespace defines test-ns-hook, calls that; otherwise tests every var in
   it. Counts go to a ref bound for the call, whose contents are returned."
   [n]
-  (let [ns-sym (if (symbol? n) n (ns-name n))
+  (let [ns-sym (ns-name (the-ns n))
         rc (ref *initial-report-counters*)]
     (binding [*report-counters* rc
               *run-counters* rc]

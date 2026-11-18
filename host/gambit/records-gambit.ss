@@ -1866,7 +1866,10 @@
     (and pt
          (hashtable-ref pt (intern-pm-key proto method) #f))))
 
+(define protocol-impl-hook (lambda (proto method fn) #f))
+
 (define (register-protocol-method type-tag proto method fn)
+  (protocol-impl-hook proto method fn)
   (jolt-with-mutex
     rec-tbl-mu
     (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
@@ -3083,13 +3086,13 @@
          (jolt-multifn-methods obj)
          (car rest)
          (cadr rest))
-       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+       (mm-epoch-bump!))
      obj)
     ((string=? method-name "removeMethod")
      (jolt-with-mutex
        mm-tbl-mu
        (hashtable-delete! (jolt-multifn-methods obj) (car rest))
-       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+       (mm-epoch-bump!))
      obj)
     ((string=? method-name "getMethod")
      (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f)
@@ -3739,6 +3742,10 @@
      (list (apply jolt-hash-set (seq->list (jolt-keys obj)))))
     ((and (jolt-map? obj) (string=? name "values"))
      (list (apply jolt-vector (seq->list (jolt-vals obj)))))
+    ((and (jolt-map? obj)
+          (string=? name "entrySet")
+          (jrec-record? obj))
+     (list (apply jolt-hash-set (seq->list (jolt-seq obj)))))
     ((and (jolt-map? obj) (string=? name "entrySet"))
      (list (jolt-seq obj)))
     ((string=? name "iterator")
@@ -4110,8 +4117,8 @@
              (layout (vector
                        slots
                        protos
-                       (and (fx>? (jolt-count shape) 2)
-                            (jolt-nth shape 2)))))
+                       (and (fx>? (jolt-count shape) 2) (jolt-nth shape 2))
+                       #f)))
         (let loop ((ns names) (i 0))
           (unless (null? ns)
             (hashtable-set! slots (car ns) i)
@@ -4139,6 +4146,15 @@
 
 (define (make-reified-at shape . fns)
   (let ((layout (reify-shape-layout shape)))
+    (unless (vector-ref layout 3)
+      (vector-set! layout 3 #t)
+      (for-each
+        (lambda (m fn)
+          (for-each
+            (lambda (p) (protocol-impl-hook p m fn))
+            (vector-ref layout 1)))
+        (seq->list (jolt-nth shape 0))
+        fns))
     (make-jreify
       (cons (vector-ref layout 0) (list->vector fns))
       (vector-ref layout 1)
