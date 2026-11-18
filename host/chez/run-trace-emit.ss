@@ -382,19 +382,25 @@
 (jolt-site-reset!)
 
 ;; --- (15) keep-frames: traced code that erases no frame ----------------------
-;; JOLT_KEEP_FRAMES=1 on a Chez with patch 0012's $call-keeping-frame
-;; (session.clj keep-frames). Every tail node that can call runs inside the
-;; marker, which Chez compiles as an ordinary call and return, so the trace is
-;; the continuation itself: nothing stores, reads or restores the site slot,
-;; nothing registers callsites, and a catch snapshots nothing. recur stays a
-;; jump. On a Chez without the primitive the knob is ignored, and so is this.
+;; The default on a Chez with patch 0012's $call-keeping-frame (session.clj
+;; keep-frames; this gate sets it explicitly, the rest of it runs with it off).
+;; Every tail node that can call runs inside the marker, which Chez compiles as
+;; an ordinary call and return, so the trace is the continuation itself: nothing
+;; stores, reads or restores the site slot, nothing registers callsites, and a
+;; catch snapshots nothing. recur and a direct self tail call stay jumps. On a
+;; Chez without the primitive it is always off, and this is skipped.
 (define set-keep-frames! (var-deref "jolt.backend-scheme.session" "set-keep-frames!"))
 (define kf-head "(#2%$call-keeping-frame (lambda () ")
 (if (sa-keep-frame-supported?)
     (begin
       (set-keep-frames! #t)
       (let ((e (emit-num "(def _ (fn kf15a [g x] (if (pos? x) (g x) (kf15a g (dec x)))))")))
-        (gate-check "(15) both tail calls keep their frame" (count-sub e kf-head) 2)
+        ;; (g x) keeps its frame; (kf15a g (dec x)) is a direct self tail call,
+        ;; left a jump so self recursion runs in constant space
+        (gate-check "(15) the tail call keeps its frame, the self tail call does not"
+                    (count-sub e kf-head) 1)
+        (gate-check "(15) ...the self tail call is a plain jump"
+                    (gate-sub? e (string-append kf-head "(kf15a ")) #f)
         (gate-check "(15) no site pair is stored" (gate-sub? e "jolt-site!") #f)
         (gate-check "(15) no slot is read or restored" (gate-sub? e "virtual-register") #f)
         (gate-check "(15) no callsite is registered" (gate-sub? e "jolt-register-callsite!") #f))
@@ -424,6 +430,15 @@
       (ev "(defn kf15od [n] (if (zero? n) (count (.getStackTrace (Thread/currentThread))) (kf15ev (dec n))))")
       (gate-check "(15) a deep mutual tail recursion returns" (fixnum? (ev "(kf15ev 100000)")) #t)
       (gate-check "(15) ...with a frame per hop" (>= (ev "(kf15ev 40)") 40) #t)
+      ;; a direct self tail call is a jump: the stack is as deep at the bottom of
+      ;; a 3M-deep self recursion as at the bottom of a 1-deep one (one collapsed
+      ;; frame for the whole chain in a trace)
+      (ev "(defn kf15self [n] (if (zero? n) (count (.getStackTrace (Thread/currentThread))) (kf15self (dec n))))")
+      (gate-check "(15) a deep self tail recursion runs in constant space"
+                  (= (ev "(kf15self 3000000)") (ev "(kf15self 1)")) #t)
+      (ev "(defn kf15self2 [n acc] (if (zero? n) acc (kf15self2 (dec n) (conj acc n))))")
+      (gate-check "(15) ...with operands that need ordering too"
+                  (ev "(count (kf15self2 2000000 []))") 2000000)
       (ev "(defn kf15loop [n acc] (if (zero? n) acc (recur (dec n) (inc acc))))")
       (gate-check "(15) a recur loop still runs in constant space" (ev "(kf15loop 3000000 0)") 3000000)
       (set-keep-frames! #f)

@@ -22,7 +22,7 @@
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
                      *letrec-binders* *qualifying-ns* *recur-target* *site-call* *tail?*
-                     *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
+                     *trace-frame* *trace-self* *trace-site* *variadic-reg-suppressed?* clone-site-key
                      ctor-shapes cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label global-var-ref? keep-frame keep-frames? slot-trace?
@@ -233,9 +233,20 @@
 (def ^:private kf-bare-ops
   #{:const :local :var :the-var :quote :regex :inst :uuid :bigdec :the-ns :defmacro
     :fn :vector :map :set :if :do :let :loop :recur :def})
+;; A direct self tail call -- the fn calling its own letrec name (lambda.clj
+;; *trace-self*, emit-local-invoke) -- is left a jump, so self recursion runs in
+;; constant space as without keep-frames. The trace then shows one frame for the
+;; whole self-recursive chain, at the line of the innermost call.
+(defn- self-tail-invoke? [node]
+  (and (= :invoke (:op node))
+       (let [f (:fn node)]
+         (and (= :local (:op f))
+              (let [nm (munge-name (:name f))]
+                (and (contains? *trace-self* nm) (*known-procs* nm)))))))
 (declare emit-plain*)
 (defn- emit-plain [node]
-  (if (and *tail?* (keep-frames?) (not (contains? kf-bare-ops (:op node))))
+  (if (and *tail?* (keep-frames?) (not (contains? kf-bare-ops (:op node)))
+           (not (self-tail-invoke? node)))
     (let [s (emit-plain* node)]
       (keep-frame (if (contains? #{:invoke :throw} (:op node)) s (with-site node s))))
     (emit-plain* node)))

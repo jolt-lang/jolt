@@ -1557,17 +1557,18 @@
           ((string=? e "meta") 'meta)
           (else 'all))))
 (define (jolt-lazy-meta-enabled?) (and (jolt-lazy-meta-mode) #t))
-;; JOLT_KEEP_FRAMES=1 (with tracing on) opts into emitting traced code that
-;; erases no frame (backend session.clj keep-frames), on a Chez with patch 0012's
-;; $call-keeping-frame. Everywhere else it is ignored: the emission is the
-;; default one. jolt-keep-frames-on? is what this run decided (compile-eval.ss
-;; jolt-enable-trace!); the reporter and the cache generation read it.
+;; Traced code keeps its frames (backend session.clj keep-frames) by default,
+;; on a Chez with patch 0012's $call-keeping-frame; JOLT_KEEP_FRAMES set to a
+;; falsey value (0, false, no, off, n) turns it off, back to the tail-site
+;; records of erased frames. Where the primitive is missing (stock Chez,
+;; Gambit) it is always off. jolt-keep-frames-on? is what this run decided
+;; (compile-eval.ss jolt-enable-trace!); the reporter and the cache generation
+;; read it.
 (define jolt-keep-frames-on? #f)
 (define (jolt-keep-frames-set! on) (set! jolt-keep-frames-on? on))
 (define (jolt-keep-frames-enabled?)
   (and (sa-keep-frame-supported?)
-       (let ((e (getenv "JOLT_KEEP_FRAMES")))
-         (and e (not (string=? e "")) (not (jolt-trace-env-off? e))))))
+       (not (jolt-trace-env-off? (getenv "JOLT_KEEP_FRAMES")))))
 
 ;; Per-thread trace state lives in Chez VIRTUAL REGISTERS, not thread parameters:
 ;; a thread-parameter WRITE costs ~32ns against ~1ns for a virtual-register write

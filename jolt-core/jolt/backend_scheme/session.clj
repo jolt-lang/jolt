@@ -313,15 +313,19 @@
   (and @global-var-call
        (not (and (= ns "clojure.core") (= nm "*ns*")))
        (not (var-dynamic? nil ns nm))))
-;; Keep-frames experiment (JOLT_KEEP_FRAMES=1, compile-eval.ss jolt-enable-trace!,
-;; only on a Chez with $call-keeping-frame, host/chez/chez-patches/0012). Traced
+;; Keep-frames (the default; JOLT_KEEP_FRAMES=0 turns it off; compile-eval.ss
+;; jolt-enable-trace!; only on a Chez with $call-keeping-frame,
+;; host/chez/chez-patches/0012). Traced
 ;; code then erases no frame: every node in tail position that can make a call
 ;; runs inside (keep-frame ...), which Chez compiles as an ordinary call and
 ;; return, so the caller's frame -- and the line it is at -- stays on the stack,
-;; as on the JVM. recur stays a jump. The trace then comes from the continuation
-;; alone, so none of the slot machinery below is emitted: no tail-site pair
-;; stores, no non-tail restores, no callsite registrations, no catch snapshots.
-;; Off (the default, and always on stock Chez and Gambit), nothing changes.
+;; as on the JVM. recur and a direct self tail call stay jumps, so self
+;; recursion runs in constant space and shows as one frame per chain
+;; (backend_scheme.clj self-tail-invoke?). The trace then comes from the
+;; continuation alone, so none of the slot machinery below is emitted: no
+;; tail-site pair stores, no non-tail restores, no callsite registrations, no
+;; catch snapshots. Off (JOLT_KEEP_FRAMES=0, and always on stock Chez and
+;; Gambit), traced code records erased frames in the site slots instead.
 ;; Lazy quoted data experiment (JOLT_LAZY_META=1, compile-eval.ss; only where the
 ;; runtime answers jolt-lazy-meta-supported?, never while minting the seed or
 ;; building direct-linked). A def whose metadata is all constants hands the var

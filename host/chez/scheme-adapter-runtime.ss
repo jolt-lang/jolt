@@ -1879,7 +1879,7 @@
   (syntax-rules () ((_ s v) (#%$set-top-level-value! s v))))
 
 ;; Patch 0012's $call-keeping-frame, probed the same way (rt.ss
-;; jolt-keep-frames-enabled?, the JOLT_KEEP_FRAMES experiment). The emitter writes
+;; jolt-keep-frames-enabled?, keep-frames, on by default). The emitter writes
 ;; the primitive's name into the code it emits only when this answers #t.
 (define-syntax sa-keep-frame-supported?
   (if (guard (c (#t #f)) (eval '($primitive $call-keeping-frame)) #t)

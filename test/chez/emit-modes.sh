@@ -7,7 +7,7 @@
 #   lazy-meta-var-test.clj    JOLT_LAZY_META: a #'var inside def metadata
 #   global-var-cache-order.sh global var calls across AOT-cached namespaces
 #   lazy-quoted-data.sh       JOLT_LAZY_META / JOLT_CONST_DATA, cold and warm
-# Each .clj test runs with JOLT_KEEP_FRAMES=1 and =0.
+# Keep-frames is the default; each .clj test also runs with JOLT_KEEP_FRAMES=0.
 #   JOLT_BIN=target/release/jolt sh test/chez/emit-modes.sh
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 jolt="${JOLT_BIN:-$root/target/release/jolt}"

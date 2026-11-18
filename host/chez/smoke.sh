@@ -64,6 +64,10 @@ check() {
     fails=$((fails + 1))
   fi
 }
+# true when this jolt keeps frames in traced code (session.clj keep-frames, the
+# default on a Chez with patch 0012; JOLT_KEEP_FRAMES=0 turns it off). The few
+# expectations below that a tail call's erased frame used to shape differ.
+keep_frames="$($jolt -e '(print (jolt.host/keep-frames?))' 2>/dev/null | tail -1)"
 # Two separate jolt processes must not produce the same random draw. Chez seeds
 # its PRNG identically at every process start, so anything built on `random` —
 # rand, rand-int, Math/random, random-uuid — replayed one fixed stream: every
@@ -2510,7 +2514,13 @@ check '(do (require (quote jolt.nrepl)) (:out (jolt.nrepl/evaluate "(println 1) 
 # not a crash of the handler; *1 still holds the value, as on the JVM.
 check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "eval" "code" "(map (fn [x] (println \"side\" x) x) [1 2])" :reply #(swap! sent conj %)}) (mapv #(or (get % "out") (get % "value")) @sent)))' '["side 1\n" "side 2\n" "(1 2)"]'
 check '(do (require (quote jolt.nrepl)) ((juxt :value :out) (jolt.nrepl/evaluate "(map (fn [x] (println \"side\" x) x) [1 2])" "user")))' '["(1 2)" "side 1\nside 2\n"]'
-check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(map (fn [x] (/ 1 x)) [0])" "user")] [(:value r) (first (clojure.string/split-lines (:err r))) (identical? (:ex r) *e) (class *e) (seq? *1) (:err-msg r)]))' '[nil "Divide by zero" true java.lang.ArithmeticException true "Error printing return value (ArithmeticException) at (REPL:1).\nDivide by zero\n"]'
+# Keep-frames keeps the fn literal's frame, which a tail call to / erased
+# before, so the triage names it, as the JVM names user$eval..$fn.
+if [ "$keep_frames" = true ]; then
+  check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(map (fn [x] (/ 1 x)) [0])" "user")] [(:value r) (first (clojure.string/split-lines (:err r))) (identical? (:ex r) *e) (class *e) (seq? *1) (:err-msg r)]))' '[nil "Divide by zero" true java.lang.ArithmeticException true "Error printing return value (ArithmeticException) at jfn$user/$0 (REPL:1).\nDivide by zero\n"]'
+else
+  check '(do (require (quote jolt.nrepl)) (let [r (jolt.nrepl/evaluate "(map (fn [x] (/ 1 x)) [0])" "user")] [(:value r) (first (clojure.string/split-lines (:err r))) (identical? (:ex r) *e) (class *e) (seq? *1) (:err-msg r)]))' '[nil "Divide by zero" true java.lang.ArithmeticException true "Error printing return value (ArithmeticException) at (REPL:1).\nDivide by zero\n"]'
+fi
 # The trace on an eval error is the error's own, cut where the eval began: a
 # reader error in the eval'd text has none (cli-core.ss omits it too), where it
 # used to show whatever the thread had last called (the chunk writer, or an
@@ -2553,7 +2563,13 @@ check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/b
 # wrapper before evaluate catches it (a break handler before the stack unwinds
 # sits there). Unbound, nil, it evaluates directly.
 check '(do (require (quote jolt.nrepl)) (def seen (atom [])) (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (swap! user/seen conj (str *ns*)) (thunk))] [(:value (jolt.nrepl/evaluate "(+ 1 2)" "user")) (:value (jolt.nrepl/evaluate "(+ 2 2)" "user" {:load true})) @user/seen]))' '["3" "4" ["user" "user"]]'
-check '(do (require (quote jolt.nrepl)) (def seen (atom nil)) (let [r (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (try (thunk) (catch Throwable t (reset! user/seen (ex-message t)) (throw t))))] (jolt.nrepl/evaluate "(/ 1 0)" "user"))] [@user/seen (:err r)]))' '["Divide by zero" "Divide by zero"]'
+# Keep-frames keeps the wrapper's own frame (the stack the JVM shows holds it
+# too): the throw passed through it on its way to evaluate.
+if [ "$keep_frames" = true ]; then
+  check '(do (require (quote jolt.nrepl)) (def seen (atom nil)) (let [r (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (try (thunk) (catch Throwable t (reset! user/seen (ex-message t)) (throw t))))] (jolt.nrepl/evaluate "(/ 1 0)" "user"))] [@user/seen (:err r)]))' '["Divide by zero" "Divide by zero\n  trace:\n    jfn$user/$0\n"]'
+else
+  check '(do (require (quote jolt.nrepl)) (def seen (atom nil)) (let [r (binding [jolt.nrepl/*eval-wrapper* (fn [thunk] (try (thunk) (catch Throwable t (reset! user/seen (ex-message t)) (throw t))))] (jolt.nrepl/evaluate "(/ 1 0)" "user"))] [@user/seen (:err r)]))' '["Divide by zero" "Divide by zero"]'
+fi
 check '(do (require (quote jolt.nrepl)) (nil? jolt.nrepl/*eval-wrapper*))' 'true'
 # eval-string / load-string with a source path, as Compiler.load takes one: the
 # forms carry it as :file and *file* / *source-path* are the path and its name;

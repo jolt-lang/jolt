@@ -158,12 +158,12 @@ fi
 count=0
 fail=0
 
-# Keep-frames (JOLT_KEEP_FRAMES=1 on a Chez with patch 0012, session.clj
-# keep-frames) erases no frame, so a report that the default emission cuts short
-# where a tail call erased its caller names that caller. Such a case keeps a
-# second golden file, output.keep-frames.txt, read only in that mode; every other
-# case reads output.txt in both. `generate` in that mode writes the second file
-# only where the report differs.
+# Keep-frames (the default on a Chez with patch 0012, session.clj keep-frames)
+# erases no frame, so a report that JOLT_KEEP_FRAMES=0 cuts short where a tail
+# call erased its caller names that caller. Such a case keeps a second golden
+# file, output.keep-frames.txt, read only in that mode; every other case reads
+# output.txt in both. `generate` in that mode writes the second file only where
+# the report differs.
 keep_frames="$("$jolt_bin" -e '(print (jolt.host/keep-frames?))' 2>/dev/null)"
 golden() {   # golden <case-dir>
   if [ "$keep_frames" = true ] && [ -f "$1/output.keep-frames.txt" ]; then

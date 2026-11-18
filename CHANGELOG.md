@@ -129,6 +129,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Traced code keeps its frames.** Under tracing (dev runs, the REPL,
+  `JOLT_TRACE`), a tail call no longer erases its caller's frame: the code
+  runs each tail call through the new kernel primitive `$call-keeping-frame`
+  (patch 0012), so a trace is the stack itself, as on the JVM, and the
+  per-call bookkeeping that rebuilt erased frames is no longer emitted.
+  `recur` and a fn's direct call of itself stay jumps, so self recursion
+  still runs in constant space and shows as one frame per recursive chain.
+  Deep mutual or other non-self tail recursion in traced code now grows the
+  stack. `JOLT_KEEP_FRAMES=0` restores the old emission. Untraced code
+  (`JOLT_TRACE=0`) is unchanged.
+
 - **jolt always builds on a patched Chez.** `make` no longer uses a Chez
   found on `PATH`: unless `CHEZ=` names one, it downloads Chez 10.4.1,
   applies `host/chez/chez-patches` and builds it under `.cache/local` (a few

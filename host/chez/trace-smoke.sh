@@ -118,9 +118,9 @@ EOF
 run_app() {   # run_app <ns> [env-assignment]; prints combined output
   ( cd "$work" && env $2 "$joltabs" run -m "$1" 2>&1 )
 }
-# true when this jolt honours JOLT_KEEP_FRAMES (session.clj keep-frames): traced
-# code then erases no frame, and the few expectations that pin an erased frame
-# differ. Anything else (unset, stock Chez, an older jolt) is the default.
+# true when this jolt keeps frames (session.clj keep-frames; the default on a
+# Chez with patch 0012, JOLT_KEEP_FRAMES=0 turns it off): traced code then
+# erases no frame, and the few expectations that pin an erased frame differ.
 keep_frames="$( cd "$work" && "$joltabs" -e '(print (jolt.host/keep-frames?))' 2>/dev/null )"
 
 expect_match() {   # expect_match <label> <output> <grep-pattern>
@@ -203,7 +203,7 @@ out_deep="$(run_app app.deep)"
 expect_match "deep: outermost caller -main present" "$out_deep" 'app\.deep/-main (.*src/app/deep\.clj:7)'
 # (down 90) runs 91 frames. The innermost, (down 0), throws from its tail, so the
 # default trace loses it (its site pair names a fn that is still live) and shows
-# 90; keep-frames (JOLT_KEEP_FRAMES=1 on a Chez with patch 0012) erases no frame
+# 90; keep-frames (the default on a Chez with patch 0012) erases no frame
 # and shows all 91, the innermost at the throw's line.
 if [ "$keep_frames" = true ]; then
   expect_match "deep: all 91 down frames reported (true depth, keep-frames)" "$out_deep" 'app\.deep/down (.*src/app/deep\.clj:4) (x91)'

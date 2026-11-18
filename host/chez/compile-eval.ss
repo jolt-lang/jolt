@@ -356,10 +356,10 @@
   (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
     (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
       (when (procedure? stf) (stf #t)))
-    ;; Keep-frames experiment: JOLT_KEEP_FRAMES=1 on a Chez with patch 0012
-    ;; (rt.ss jolt-keep-frames-enabled?) emits traced code that keeps every
-    ;; frame instead of recording erased ones (session.clj keep-frames). Set
-    ;; either way, so a later enable without the variable is the default again.
+    ;; Keep-frames, the default on a Chez with patch 0012 (rt.ss
+    ;; jolt-keep-frames-enabled?; JOLT_KEEP_FRAMES=0 turns it off): traced code
+    ;; keeps every frame instead of recording erased ones (session.clj
+    ;; keep-frames). Set either way, so each enable reads the variable again.
     (let ((skf (var-deref "jolt.backend-scheme.session" "set-keep-frames!")))
       (when (procedure? skf)
         (jolt-keep-frames-set! (jolt-keep-frames-enabled?))

@@ -11,8 +11,9 @@
 (define set-trace-frames! (var-deref "jolt.backend-scheme" "set-trace-frames!"))
 (set-trace-frames! #t)
 (gate-check "trace frames on from the start" (jolt-ce-trace-frames?) #t)
-;; JOLT_KEEP_FRAMES=1 on a Chez with patch 0012 runs the gate over keep-frames
-;; emission (session.clj keep-frames), as jolt-enable-trace! would
+;; On a Chez with patch 0012 the gate runs over keep-frames emission (session.clj
+;; keep-frames), as jolt-enable-trace! does by default; JOLT_KEEP_FRAMES=0 runs
+;; it over the slot-recording emission
 (define keep-frames? (jolt-keep-frames-enabled?))
 (when keep-frames?
   ((var-deref "jolt.backend-scheme.session" "set-keep-frames!") #t)
