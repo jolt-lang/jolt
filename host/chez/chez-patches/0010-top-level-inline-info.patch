@@ -1,0 +1,130 @@
+diff --git a/s/syntax.ss b/s/syntax.ss
+--- a/s/syntax.ss
++++ b/s/syntax.ss
+@@ -582,6 +582,30 @@
+     ; stored in the library/ct-info record for the file.
+     `(cte-optimization-loc ,box ,exp ,exts)))
+ 
++;; jolt: a top-level definition whose identifier's symbol carries a
++;; cross-library optimization box on its property list ('*clo*, put there by
++;; the program before the definition is expanded) records its value's
++;; inlining information into that box, as a library export's definition does
++;; (build-library-body). The box goes on the definition's label too, where
++;; cp0's $top-level-value handler looks for it, so a reference compiled
++;; afterward is inlined as an imported library variable's is. Putting the box
++;; on the symbol is the program's promise that the variable is defined once and
++;; never assigned: the promise a library export carries by construction. Chez
++;; itself never puts the property on an interaction-environment symbol (its
++;; top-level labels are separate gensyms), so a definition without it is
++;; expanded exactly as before. The value goes into the cte-optimization-loc
++;; itself, not through a variable as a library's does, which is how cp0 tells
++;; the two apart (cp0.ss record-procedure!).
++(define build-top-level-definition
++  (lambda (ae id label rhs)
++    (let ([db (let ([sym (id-sym-name id)]) (and (symbol? sym) (get-clo-info sym)))])
++      (if (box? db)
++          (begin
++            (put-clo-info label db)
++            (build-global-assignment ae label
++              (build-cte-optimization-loc db rhs '())))
++          (build-global-assignment ae label rhs)))))
++
+ (define build-primitive-reference
+   (lambda (ae name)
+     (if ($suppress-primitive-inlining)
+@@ -2197,7 +2221,7 @@
+                        (fluid-let ([require-invoke (library-collector #f)]
+                                    [require-visit (library-collector #f)])
+                          (residualize-invoke-requirements
+-                           (build-global-assignment ae label
++                           (build-top-level-definition ae id label
+                              (not-at-top (chi rhs r empty-wrap)))))))
+                    rcode*))]
+               [system-define (label rhs ae)
+diff --git a/s/cp0.ss b/s/cp0.ss
+--- a/s/cp0.ss
++++ b/s/cp0.ss
+@@ -997,7 +997,7 @@
+ 
+     ;; Returns #f if the clause is not externally inlinable
+     (define externally-inlinable
+-      (lambda (clause exts)
++      (lambda (clause exts copy-ok?)
+         (call/cc
+          (lambda (exit)
+             (define bump!
+@@ -1020,7 +1020,7 @@
+                     (rec do-expr
+                       (lambda (e)
+                         (nanopass-case (Lsrc Expr) e
+-                          [(quote ,d) (if (okay-to-copy? d) (begin (bump!) e) (exit #f))]
++                          [(quote ,d) (if (copy-ok? d) (begin (bump!) e) (exit #f))]
+                           [(moi) (bump!) e]
+                           [,pr (bump!) e]
+                           [(ref ,maybe-src ,x) (cond
+@@ -5813,6 +5813,28 @@
+                  (cons
+                    (cons ($target-machine) cte-info)
+                    (remp (lambda (as) (eq? (car as) ($target-machine))) (unbox box))))))
++           (define record-procedure!
++             (lambda (preinfo cl* copy-ok?)
++               ;; Function registered for inlining may report fewer clauses
++               ;; than supported by the original, since only inlinable clauses
++               ;; are kept
++               (let ([new-cl* (fold-right (lambda (cl cl*)
++                                            (let ([cl (externally-inlinable cl new-exts copy-ok?)])
++                                              (if cl
++                                                  (cons cl cl*)
++                                                  cl*)))
++                                          '()
++                                          cl*)]
++                     [sv? (andmap (lambda (cl)
++                                    (nanopass-case (Lsrc CaseLambdaClause) cl
++                                      [(clause (,x* ...) ,interface ,body)
++                                       (single-valued/inspect-ok? body)]))
++                                  cl*)])
++                 (when (or (pair? new-cl*) sv?)
++                   (update-box! box (make-cte-info
++                                     `(case-lambda ,preinfo ,new-cl* ...)
++                                     (= (length cl*) (length new-cl*))
++                                     sv?))))))
+            (nanopass-case (Lsrc Expr) e
+              [(quote ,d) (and (okay-to-copy? d) (update-box! box (make-cte-info e)))]
+              [,pr (update-box! box (make-cte-info pr))]
+@@ -5820,28 +5842,15 @@
+               (and (not (prelex-was-assigned x))
+                    (let ([rhs (result-exp (operand-value (prelex-operand x)))])
+                      (nanopass-case (Lsrc Expr) rhs
+-                       [(case-lambda ,preinfo ,cl* ...)
+-                        ;; Function registered for inlining may report fewer clauses
+-                        ;; than supported by the original, since only inlinable clauses
+-                        ;; are kept
+-                        (let ([new-cl* (fold-right (lambda (cl cl*)
+-                                                     (let ([cl (externally-inlinable cl new-exts)])
+-                                                       (if cl
+-                                                           (cons cl cl*)
+-                                                           cl*)))
+-                                                   '()
+-                                                   cl*)]
+-                              [sv? (andmap (lambda (cl)
+-                                             (nanopass-case (Lsrc CaseLambdaClause) cl
+-                                               [(clause (,x* ...) ,interface ,body)
+-                                                (single-valued/inspect-ok? body)]))
+-                                           cl*)])
+-                          (when (or (pair? new-cl*) sv?)
+-                            (update-box! box (make-cte-info
+-                                              `(case-lambda ,preinfo ,new-cl* ...)
+-                                              (= (length cl*) (length new-cl*))
+-                                              sv?))))]
++                       [(case-lambda ,preinfo ,cl* ...) (record-procedure! preinfo cl* okay-to-copy?)]
+                        [else #f])))]
++             ;; jolt: the procedure itself, which only a top-level definition
++             ;; puts here (syntax.ss build-top-level-definition; a library's
++             ;; export comes through a variable). Its information stays in this
++             ;; process -- it is never written to an object file, the reason
++             ;; okay-to-copy? limits a library's -- so any constant may be copied
++             ;; into the place it is inlined.
++             [(case-lambda ,preinfo ,cl* ...) (record-procedure! preinfo cl* (lambda (d) #t))]
+              [else (void)])))
+        `(cte-optimization-loc ,box ,e ,new-exts)]
+       [(cpvalid-defer ,e) (sorry! who "cpvalid leaked a cpvalid-defer form ~s" ir)]
