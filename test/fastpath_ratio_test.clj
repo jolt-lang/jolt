@@ -246,6 +246,12 @@
 ;;                      index through an out-of-line call before the in-range read
 ;;                      (against nth: 1.36 -> 0.98). Measured x86_64, 2026-11-17.
 ;;
+;;   wide-call          a call of more than four arguments had no fixed-arity
+;;                      entry: jolt-invoke took a rest list, measured it, checked
+;;                      the arity mask and applied it. Through a var it is
+;;                      open-coded at any arity now (42 -> 6 ns for six args;
+;;                      against a four-argument call ~7 -> ~1.05).
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
@@ -510,6 +516,8 @@
 ;; token buffer turned into its string, and a scanner's .charAt
 (def ^:private gate-vec [1 2 3 4 5 6 7 8])
 (defn- gate-f2 [a b] (if a b a))
+(defn- gate-f4 [a b c d] a)
+(defn- gate-f6 [a b c d e f] a)
 (defn- gate-plain [x] x)
 (defmulti ^:private gate-mm identity)
 (defmethod gate-mm :a [x] x)
@@ -786,6 +794,14 @@
   ;; record costs about what it costs on a vector. It was a weak identity-table
   ;; insert under a lock, ~14x the vector's (rewrite-clj attaches position meta
   ;; to every node it reads).
+  ;; A six-argument call costs about what a four-argument one does. Past four
+  ;; there was no fixed-arity entry, and jolt-invoke built a rest list,
+  ;; measured it and applied it: 42 ns against 6 (tools.reader's read* takes
+  ;; six arguments per form it reads).
+  (judge! "wide-call"
+          #(dotimes [i gate-n] (gate-f4 i 2 3 4))
+          #(dotimes [i gate-n] (gate-f6 i 2 3 4 5 6))
+          2.0)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))

@@ -501,17 +501,26 @@
 ;; runtime's macros.
 (def ^:private var-cell-deref-re #"^\(var-cell-deref (_kc\$[0-9]+)\)$")
 
-(defn- emit-var-cell-call [c cell operands invoker]
+(defn- emit-open-call [c fn-expr operands invoker]
   (let [tail? (:tail? c)
         vf (fresh-label "_vf$")
         ts (mapv (fn [_] (fresh-label "_va$")) (rest operands))
         binds (apply str (map (fn [t a] (str " (" t " " a ")")) ts (rest operands)))
         direct (emit-call tail? vf ts (:tl c) (:ich c))
         direct (if (or tail? (trace-frames?)) direct (str "(jolt-site-kept " direct ")"))]
-    (str "(let* ((" vf " (jolt-var-fn " cell "))" binds ")"
+    (str "(let* ((" vf " " fn-expr ")" binds ")"
          " (if (procedure? " vf ") " (with-site (:node c) direct)
          " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) "))")))
 
+;; A call of more than four arguments has no fixed-arity entry: jolt-invoke takes
+;; them as a rest list, measures it, checks the procedure's arity mask and
+;; applies it -- 42 ns for a six-argument call that takes 6 with four
+;; (tools.reader's read* takes six, once per form it reads, #1713). So a call
+;; through a var is open-coded at any arity: a procedure is applied directly
+;; with Chez's own arity check, anything else goes to jolt-invoke. Only through
+;; a var: a local bound to a fn literal is a lambda cp0 can see, and a
+;; wrong-count call to it -- which must compile, and raise when it runs -- would
+;; be refused at compile time ("possible incorrect argument count").
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
         n (count args)
@@ -520,11 +529,11 @@
                  "jolt-invoke")]
     (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons (emit (:fnode c)) args)
                   (fn [operands]
-                    (let [cell (and (<= n 4) (not= :gambit (session/target))
-                                    (second (re-find var-cell-deref-re (first operands))))]
-                      (if cell
-                        (emit-var-cell-call c cell operands callee)
-                        (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))))
+                    (let [chez? (not= :gambit (session/target))
+                          cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
+                      (cond
+                        cell (emit-open-call c (str "(jolt-var-fn " cell ")") operands callee)
+                        :else (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))))
 
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))

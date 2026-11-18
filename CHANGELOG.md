@@ -192,6 +192,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
   rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
   and `clojure.tools.reader/read-string` ~13% less.
+- **A call of more than four arguments through a var costs what a short one
+  does (#1713).** There was no fixed-arity entry past four, so `jolt-invoke`
+  built a rest list, measured it and applied it: 42 ns for a six-argument
+  call against 6 for four. On Chez it is now open-coded at any arity.
+  `clojure.tools.reader`'s `read*` takes six arguments for every form it
+  reads.
 - **A record carries its metadata in a slot of its own (#1713).** `with-meta`
   on a defrecord or deftype instance used to copy the record and insert it into
   a weak identity table under a lock: ~440 ns, against ~32 for a vector, and
