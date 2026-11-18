@@ -69,14 +69,15 @@
          (define (pred k) (sym "jrec~a?" k))
          (define (rtname k) (sym "jrec~a" k))
          (define (mkname k) (sym "make-jrec~a" k))
-         (define (ngname k) (sym "chez-jrec~av2" k))
+         (define (ngname k) (sym "chez-jrec~av3" k))
          (define (acc k i) (sym "jrec~a-f~a" k i))
          (define (mut k i) (sym "jrec~a-f~a-set!" k i))
          (define (fsyms k) (map fsym (range 0 (- k 1))))
-         ;; The base type jrec (desc ext hasheq) is defined in values.ss, ahead
-         ;; of the dispatchers that test jrec?; the children inherit its three
-         ;; fields. make-jrecN is the raw ctor, so every call passes the hasheq
-         ;; slot's 0 explicitly — a ctor protocol would keep the old arity but
+         ;; The base type jrec (desc ext hasheq meta) is defined in values.ss,
+         ;; ahead of the dispatchers that test jrec?; the children inherit its
+         ;; four fields. make-jrecN is the raw ctor, so every call passes the
+         ;; hasheq slot's 0 and the meta slot's jolt-nil explicitly — a ctor
+         ;; protocol would keep the old arity but
          ;; costs two closure hops per construction (measured 40 -> 64 ns). The
          ;; slot makes the family's layout image surface: every nongenerative
          ;; tag bumps with it, and state-image.ss reads older images through a
@@ -88,7 +89,7 @@
               (nongenerative ,(ngname k))))
          (define spill-def
            '(define-record-type (jrec* make-jrec* jrec*?)
-             (parent jrec) (fields (mutable vals)) (nongenerative chez-jrecsp-v2)))
+             (parent jrec) (fields (mutable vals)) (nongenerative chez-jrecsp-v3)))
          (define nfields-def
            `(define (jrec-nfields r)
               (cond ,@(map (lambda (k) `((,(pred k) r) ,k)) (range 1 mn))
@@ -137,18 +138,18 @@
           ;; verbatim (dissoc / meta-copy). Spill (>8 fields) copies the backing vals
           ;; vector. Replaces the old jrec-vals + jrec-vec-copy + make-jrec triple-copy.
           (define (fromexisting-clause k)
-            `((,k) (,(mkname k) desc ext 0
+            `((,k) (,(mkname k) desc ext 0 meta
                     ,@(map (lambda (j) `(if (eq? ov ,j) ov-val (,(acc k j) src)))
                            (range 0 (- k 1))))))
           (define fromexisting-def
             `(define (make-jrec-from-existing src ov ov-val ext)
-               (let ((desc (jrec-desc src)))
+               (let ((desc (jrec-desc src)) (meta (jrec-meta src)))
                  (case (jrdesc-nfields desc)
-                   ((0) (make-jrec0 desc ext 0))
+                   ((0) (make-jrec0 desc ext 0 meta))
                    ,@(map fromexisting-clause (range 1 mn))
                    (else (let ((nv (jrec-vec-copy (jrec*-vals src))))
                            (when ov (vector-set! nv ov ov-val))
-                           (make-jrec* desc ext 0 nv)))))))
+                           (make-jrec* desc ext 0 meta nv)))))))
           (datum->syntax tid
             `(begin ,@(map child-def (range 1 mn))
                     ,spill-def
@@ -162,8 +163,8 @@
 (define (make-jrec desc vals ext)
   (let ((n (vector-length vals)))
     (if (fx<= n 8)
-        (apply (vector-ref jrec-ctor-vec n) desc ext 0 (vector->list vals))
-        (make-jrec* desc ext 0 vals))))
+        (apply (vector-ref jrec-ctor-vec n) desc ext 0 jolt-nil (vector->list vals))
+        (make-jrec* desc ext 0 jolt-nil vals))))
 ;; One throwaway record, built here at load and reused, for the arm registries to
 ;; probe a candidate predicate against (reject-fast-type-claim!, values.ss).
 ;; Built ONCE rather than per registration: registrations also happen at runtime,

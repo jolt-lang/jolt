@@ -72,8 +72,13 @@
 ;; Version 12: a host collection shim travels as an image-hosted record (its
 ;; codec's kind and plain data, host-static.ss register-image-codec!) and an
 ;; enum constant as its class and name; formats 11 and older carry neither.
-(define jolt-image-format-version 14)
-(define jolt-image-read-versions '(2 3 4 5 6 7 8 9 10 11 12 13 14))
+;; Version 15: a defrecord/deftype instance carries its metadata in a slot of
+;; its own (chez-jrec-v6 and its children), so it travels inside the record and
+;; the sidecar no longer holds records. Formats 14 and older carry chez-jrec-v5
+;; (no meta slot), which restores through image-legacy-jrec? with its meta from
+;; the sidecar, like any slotless legacy kind.
+(define jolt-image-format-version 15)
+(define jolt-image-read-versions '(2 3 4 5 6 7 8 9 10 11 12 13 14 15))
 
 ;; --- classification -----------------------------------------------------------
 ;; An eq hashtable is the ONE hashtable kind Chez can fasl; eqv/equal/string-hash
@@ -491,8 +496,8 @@
   (and (record? x)
        (record-rtd x)
        (eq? (record-type-uid (record-rtd x)) 'jolt-ref-v1)))
-;; A jrec from an image written before the hasheq slot (format <= 4): the
-;; family's nongenerative tags bumped, so the fasl materializes the OLD rtds and
+;; A jrec from an image written before the hasheq slot (format <= 4) or the meta
+;; slot (formats 5..14): the family's nongenerative tags bumped, so the fasl materializes the OLD rtds and
 ;; the instances answer #f to the current jrec?. Detected by uid prefix — every
 ;; family generation is chez-jrec… (chez-jrdesc… differs at the 8th char, and
 ;; the descriptor type is unchanged anyway) — and rebuilt into the current
@@ -720,9 +725,9 @@
 ;; or the walked map.
 (define (image-carry-meta! new m)
   (unless (jolt-nil? m)
-    (if (coll-meta new)
-        (coll-meta-set! new m)
-        (meta-table-set! new m))))
+    (cond ((coll-meta new) (coll-meta-set! new m))
+          ((jrec? new) (jrec-meta-set! new m))
+          (else (meta-table-set! new m)))))
 
 ;; A procedure's substitution decision, shared by both modes so scan and dump
 ;; cannot disagree. Returns the registration (name . (form ns free-names)) for
@@ -1915,10 +1920,12 @@
              ;; refs, image records, everything not special-cased above. The
              ;; rebuild applies record-constructor to the SAME list, which is why
              ;; the parent's fields have to be in it and in front.
-             ;; a pre-slot jrec (image-legacy-jrec?, format <= 4) rebuilds into
-             ;; the CURRENT family: fields read via its own rtd's accessors come
-             ;; back (desc ext fields...) root-first, the descriptor type is
-             ;; unchanged, and the ctor protocols start hasheq unset. The spill
+             ;; an older-layout jrec (image-legacy-jrec?: format <= 4 had no
+             ;; hasheq slot, formats 5..14 no meta slot) rebuilds into the
+             ;; CURRENT family: fields read via its own rtd's accessors come
+             ;; back (desc ext fields...) root-first once the hasheq cache is
+             ;; skipped, the descriptor type is unchanged, and the ctor protocols
+             ;; start hasheq unset and meta nil (the sidecar's lands after). The spill
              ;; type is told apart by its rtd name — field counts collide with a
              ;; one-field child.
              (walk-legacy-jrec
@@ -1926,18 +1933,24 @@
                 (or (hashtable-ref memo x #f)
                     (let* ((fs (image-record-fields (record-rtd x)))
                            (n (vector-length fs))
+                           ;; the slots that are not the record's VALUE: a
+                           ;; format 5..14 jrec (chez-jrec-v5) has the hasheq
+                           ;; cache after ext, and the current layout's meta is
+                           ;; taken from the sidecar
                            (vals (let loop ((i 0) (acc '()))
                                    (if (fx=? i n) (reverse acc)
                                        (let ((f (vector-ref fs i)))
                                          (loop (fx+ i 1)
-                                               (cons (walk (image-record-field-ref f x)
-                                                           (cons (symbol->string (car f)) path))
-                                                     acc)))))))
+                                               (if (memq (car f) '(hasheq meta))
+                                                   acc
+                                                   (cons (walk (image-record-field-ref f x)
+                                                               (cons (symbol->string (car f)) path))
+                                                         acc))))))))
                       (let* ((desc (car vals)) (ext (cadr vals)) (fvals (cddr vals))
                              (nx (if (eq? (record-type-name (record-rtd x)) 'jrec*)
                                      (make-jrec desc (car fvals) ext)
                                      (apply (vector-ref jrec-ctor-vec (length fvals))
-                                            desc ext 0 fvals))))
+                                            desc ext 0 jolt-nil fvals))))
                         (hashtable-set! memo x nx)
                         nx)))))
              ;; The legacy arms do not carry meta: a legacy record's meta is in
@@ -2233,7 +2246,8 @@
                           ;; record's structural hash can embed one through a fn
                           ;; or deftype field. Same rule as the collections.
                           ((jrec? x) (jrec-hasheq-set! x 0)))
-                    (unless (or (var-cell? x) (coll-meta x))
+                    ;; a record's meta rides in its slot (format 15)
+                    (unless (or (var-cell? x) (coll-meta x) (jrec? x))
                       (let ((m (call/cc (lambda (k)
                                  (with-exception-handler (lambda (e) (k jolt-nil))
                                    (lambda () (jolt-meta x)))))))
@@ -2248,9 +2262,9 @@
 ;; what lets a collection's slot be written here.
 (define (image-reattach-meta! pairs)
   (for-each (lambda (p)
-              (if (coll-meta (car p))
-                  (coll-meta-set! (car p) (cdr p))
-                  (meta-table-set! (car p) (cdr p))))
+              (cond ((coll-meta (car p)) (coll-meta-set! (car p) (cdr p)))
+                    ((jrec? (car p)) (jrec-meta-set! (car p) (cdr p)))
+                    (else (meta-table-set! (car p) (cdr p)))))
             pairs))
 
 (define jolt-image-write!
