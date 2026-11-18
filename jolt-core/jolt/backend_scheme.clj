@@ -21,14 +21,14 @@
             [jolt.backend-scheme.names :as names :refer [chez-str-lit dl-fqn dl-name]]
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *callsites* *dbg-scope* *dl-self* *known-procs*
-                     *letrec-binders* *qualifying-ns* *recur-target* *tail?*
+                     *letrec-binders* *qualifying-ns* *recur-target* *site-call* *tail?*
                      *trace-frame* *trace-site* *variadic-reg-suppressed?* clone-site-key
                      ctor-shapes cur dbg-hidden? dbg-record dbg-record1
                      direct-link-callable? direct-link-fn?
                      direct-link? direct-linkable? fresh-label marker-safe-fqn?
                      node-line note-tail-call! prelude-mode? record-shape-for-class
                      register-callsite! seed-mint? source-reg? static-callee
-                     trace-callsite-reg unsafe-prefix var-cache? with-site]]
+                     target trace-callsite-reg unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
@@ -1010,9 +1010,16 @@
 ;; With tracing on, a catch also puts the site slots back as they were when the
 ;; try began. A non-tail call restores them when it returns, but a throw does not
 ;; return: what the throw and the calls it left behind stored would stay there, and
-;; the next host fault would report the thrower as its innermost frame.
+;; the next host fault would report the thrower as its innermost frame. On Chez the
+;; slot holds the value the fn clause read at entry whenever the clause's own code
+;; runs (lambda.clj site-entry), so the handler stores that, or 0 outside any fn,
+;; with nothing read when the try begins; Gambit saves and restores both slots.
 (defn- emit-try [node]
-  (let [ts (when (and (:catch-sym node) (trace-frames?)) (fresh-label "_ts$"))
+  (let [chez-slot (when (and (:catch-sym node) (trace-frames?) (= :chez (target)))
+                    (if *site-call*
+                      (do (reset! *site-call* :site) "_sw$")
+                      "0"))
+        ts (when (and (:catch-sym node) (trace-frames?) (not chez-slot)) (fresh-label "_ts$"))
         to (when ts (fresh-label "_to$"))
         core (if-let [cs (:catch-sym node)]
                (let [raw (munge-name (:catch-raw-sym node))
@@ -1026,7 +1033,9 @@
                      cl (when (trace-frames?) (fresh-label "_cl$"))
                      body (str "(guard (" raw " (else (let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
                                (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
-                               (if ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ") "")
+                               (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
+                                     chez-slot (str "(set-virtual-register! 2 " chez-slot ") ")
+                                     :else "")
                                "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
                                             ;; debug locals: the handler body is a tail region.
                                             ;; cs is the analyzer's; the user's name is a let
