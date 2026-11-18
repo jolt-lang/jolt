@@ -98,6 +98,19 @@ runs:
       shell: bash
       run: /opt/gambit/bin/gsi -v
 
+    # The oracle Clojure (test/conformance/profile.edn :clojure-version) and
+    # its spec deps, from the actions cache: every shard of every run used to
+    # fetch them cold from Maven Central, and Central's 429s outlasted the five
+    # retries below (#1706's shard 1/4, 2026-11-17). A release version is never
+    # re-checked once it is in ~/.m2, so a hit makes no request at all. Saved
+    # right after the resolve, before any gate can add to ~/.m2.
+    - name: Restore the oracle Clojure
+      id: cache-oracle-clojure
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/.m2/repository
+        key: oracle-clojure-${{ hashFiles('test/conformance/profile.edn') }}
+
     - name: Install JDK + Clojure (certify oracle)
       shell: bash
       run: |
@@ -138,3 +151,10 @@ runs:
           echo "resolving Clojure $v failed (attempt $i of 5), retrying"
           sleep $((i * 15))
         done
+
+    - name: Save the oracle Clojure
+      if: steps.cache-oracle-clojure.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ~/.m2/repository
+        key: oracle-clojure-${{ hashFiles('test/conformance/profile.edn') }}

@@ -43,6 +43,8 @@ host/chez/rt.ss::jolt-object-repr
 host/chez/rt.ss::jolt-raise-thrown
 host/chez/rt.ss::jolt-random
 host/chez/rt.ss::jolt-random-bytes
+host/chez/rt.ss::jolt-site-reset!
+host/chez/rt.ss::jolt-site-snapshot
 host/chez/rt.ss::jolt-str-join-sep
 host/chez/rt.ss::jolt-table-add!
 host/chez/rt.ss::jolt-throw

@@ -36,31 +36,21 @@ export JOLT_EXE="${JOLT_EXE:-$root/bin/jolt}"
 # Identify the Chez Scheme executable. $JOLT_CHEZ is authoritative and is how the
 # Makefile hands down the one it selected — the same interpreter that mints the
 # seed and compiles target/dev/flat.so. A direct bin/jolt invocation does not
-# inherit that export, so prefer any 10.x Chez already provisioned by make before
-# searching PATH. Otherwise a checkout built with the local Chez can silently
-# fall back to an older system Chez: source mode then dies on whichever primitive
-# that release predates, and a devboot fasl cannot load in a different Chez.
-#
-# The Chez make recorded next to the dev boot cache goes first: it is the one
-# make selected (its own search takes a system Chez before a provisioned one,
-# the reverse of the order below), and any other pick makes the cache unusable.
+# inherit that export, so it takes the Chez make recorded next to the dev boot
+# cache (any other pick makes that cache unusable), then the one make
+# provisioned. A Chez on PATH is never used: jolt runs on a Chez carrying its
+# kernel patches, which make builds (`make deps`) or which is passed in.
 recorded_chez=""
 if [ -f "$root/target/dev/flat.chez" ]; then
   recorded_chez="$(cat "$root/target/dev/flat.chez")"
 fi
 if [ -z "${JOLT_CHEZ:-}" ]; then
-  for candidate in ${recorded_chez:+"$recorded_chez"} "$root"/.cache/local/chezscheme-*/bin/scheme chez chezscheme; do
-    if [ -x "$candidate" ]; then
-      candidate_path="$candidate"
-    else
-      candidate_path="$(command -v "$candidate" 2>/dev/null || true)"
-    fi
-    [ -n "$candidate_path" ] || continue
-
-    case "$("$candidate_path" --version 2>/dev/null || true)" in
+  for candidate in ${recorded_chez:+"$recorded_chez"} "$root"/.cache/local/chezscheme-*/bin/scheme; do
+    [ -x "$candidate" ] || continue
+    case "$("$candidate" --version 2>/dev/null || true)" in
       10.*)
-        if [ "$(printf '(display (threaded?))\n' | "$candidate_path" -q 2>/dev/null)" = "#t" ]; then
-          JOLT_CHEZ="$candidate_path"
+        if [ "$(printf '(display (threaded?))\n' | "$candidate" -q 2>/dev/null)" = "#t" ]; then
+          JOLT_CHEZ="$candidate"
           break
         fi
         ;;
@@ -68,7 +58,7 @@ if [ -z "${JOLT_CHEZ:-}" ]; then
   done
 
   if [ -z "${JOLT_CHEZ:-}" ]; then
-    echo "No threaded Chez Scheme 10.x found; install one or set JOLT_CHEZ." >&2
+    echo "No Chez Scheme for jolt: run \`make deps\` to build the patched Chez, or set JOLT_CHEZ." >&2
     exit 1
   fi
 fi
