@@ -25,7 +25,14 @@
         d2 (loop [i (inc d1)] (if (or (>= i n) (= \- (nth body i))) i (recur (inc i))))
         y (parse-long (subs body 0 d1)) m (parse-long (subs body (inc d1) d2)) d (parse-long (subs body (inc d2)))]
     (if (and y m d)
-      (days-from-civil (* (if neg -1 1) y) m d)
+      (let [y (* (if neg -1 1) y)]
+        ;; the JDK resolves fields strictly: a month or day out of range is a
+        ;; parse error, not a date rolled over into the next month or year
+        (try (u/check-date y m d)
+             (catch Exception e
+               (throw (jolt.host/throwable "java.time.format.DateTimeParseException"
+                                           (str "Text '" s "' could not be parsed: " (ex-message e))))))
+        (days-from-civil y m d))
       (throw (ex-info (str "could not parse LocalDate: " s) {})))))
 
 (defn lt-hour [nod] (quot nod (* 3600 nps)))
