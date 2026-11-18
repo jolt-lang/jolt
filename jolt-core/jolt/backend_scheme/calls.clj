@@ -500,16 +500,28 @@
                           ;; jrdesc-vtable-ref, #1713); anything else -- an impl
                           ;; inherited through an interface or Object, a host
                           ;; value -- takes the per-site cache as before.
+                          ;; A host value whose type alone decides its impl (a
+                          ;; string, a number, a char, nil, a boolean, a keyword:
+                          ;; none carries metadata) keys the same cache by a
+                          ;; per-type symbol (rt.ss jolt-pic-host-key/i), where it
+                          ;; resolved on every call -- tools.reader coerces each
+                          ;; string it reads to a reader through a protocol.
                           (let [id (hoist-const (str "(intern-pm-key " proto " " method ")"))
-                                f (fresh-label "_pf$")]
+                                f (fresh-label "_pf$")
+                                k (fresh-label "_k$")
+                                kscan (pic-scan-clauses v k)
+                                kmiss (str "(let ((_nv (jolt-pic-add " v " " k " " proto " " method " " r ")))"
+                                           " (if (procedure? _nv) _nv"
+                                           " (begin (set! " c " _nv) (" (unsafe-prefix) "vector-ref _nv 1))))")]
                             (str "(let* ((" r " " (first as) ")"
                                  " (" d " (jrec-pic-desc/i " r "))"
                                  " (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
                                  " (if " f " (" f " " apply-args ")"
-                                 " (let ((" v " (or " c " jolt-pic-empty)))"
-                                 " ((if (and " d " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
-                                 " (or " scan " " miss ")"
-                                 " (if " d " " miss " (protocol-resolve " proto " " method " " r ")))"
+                                 " (let* ((" v " (or " c " jolt-pic-empty))"
+                                 " (" k " (or " d " (jolt-pic-host-key/i " r "))))"
+                                 " ((if (and " k " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
+                                 " (or " kscan " " kmiss ")"
+                                 " (if " k " " kmiss " (protocol-resolve " proto " " method " " r ")))"
                                  " " apply-args "))))")))))
                     (str "(let* ((" r " " (first as) "))"
                          " ((protocol-resolve " proto " " method " " r ") " apply-args "))")))))))

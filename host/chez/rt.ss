@@ -3435,6 +3435,23 @@
                                  (else #f))))
                    (if c (dispatch c) (str-index-of-any t0 a 0))))
              #'(str-index-of-any t0 a0 0)))))))
+;; A protocol fn's cache key for a host value whose TYPE alone decides the impl
+;; protocol-resolve finds (calls.clj emit-pic-call): a string, a fixnum, a
+;; flonum, a char, nil, a boolean, a keyword -- values that carry no metadata, so
+;; an :extend-via-metadata protocol cannot answer differently for two of them.
+;; One symbol per type, never eq? to a record descriptor; #f for anything else,
+;; which resolves without caching as before.
+(define-syntax jolt-pic-host-key/i
+  (syntax-rules ()
+    ((_ x0) (let ((x x0))
+              (cond ((string? x) 'jolt-pic-key-string)
+                    ((fixnum? x) 'jolt-pic-key-fixnum)
+                    ((char? x) 'jolt-pic-key-char)
+                    ((flonum? x) 'jolt-pic-key-flonum)
+                    ((eq? x jolt-nil) 'jolt-pic-key-nil)
+                    ((boolean? x) 'jolt-pic-key-boolean)
+                    ((keyword-t? x) 'jolt-pic-key-keyword)
+                    (else #f))))))
 ;; (zero? x), (pos? x), (neg? x) on Chez: a fixnum answers inline, anything else
 ;; takes the procedure, which owns the coercion and the error (calls.clj
 ;; native-op). As calls they cost ~10 ns for a fixnum compare.
