@@ -1800,5 +1800,33 @@
                    "  (= \"sb0\" (str (first (:sbs m))))])")
     "[40 40 true]")
 
+;; Format 15 gives a defrecord/deftype instance a meta slot (values.ss jrec),
+;; so its metadata rides in the record instead of the sidecar. A format-14 image
+;; carries chez-jrec-v5 records (desc ext hasheq fields...) with their meta in
+;; the sidecar: the legacy arm re-mints each into the current family, skipping
+;; the hasheq cache, and the sidecar entry lands in the new slot. Plain, spilled
+;; (9 fields), ext-carrying, shared, nested, meta-less and deftype instances.
+;; Fixture made by the #1713 build before the slot (format 14); permanent.
+(ok "v0.8.27 record-meta fixture present" (file-exists? "test/chez/fixtures/image-v0.8.27-record-meta.image"))
+(is "v0.8.27 fixture: every record's meta arrives in its slot, values and sharing intact"
+    (string-append "(let [g (jolt.host/image-read \"test/chez/fixtures/image-v0.8.27-record-meta.image\")]"
+                   " [(meta (:r g)) (meta (:plain g)) (meta (:spill g)) (meta (:ext g)) (:z (:ext g))"
+                   "  (mapv meta (:shared g)) (identical? (first (:shared g)) (second (:shared g)))"
+                   "  (meta (:nested g)) (meta (first (:nested g))) (identical? (:r g) (first (:nested g)))"
+                   "  (meta (:dt g)) (:i (:spill g)) (:a (:r g)) (meta (assoc (:r g) :a 0))])")
+    "[{:m :rec} nil {:m :spill} {:m :ext} 9 [{:m :shared} {:m :shared}] true {:m :vec} {:m :rec} true {:m :dt} 9 1 {:m :rec}]")
+;; ...and a format-15 image carries it in the record: the same shapes round-trip.
+(ev "(defrecord ImgRM [a b])")
+(ev "(defrecord ImgRS [a b c d e f g h i])")
+(is "record meta rides the record: value round-trip"
+    (string-append
+      "(let [r (with-meta (->ImgRM 1 2) {:m :rec})"
+      "      _ (jolt.host/image-write! \"" tmp "\" {:r r :plain (->ImgRM 5 6) :spill (with-meta (->ImgRS 1 2 3 4 5 6 7 8 9) {:m :spill})"
+      "                                         :ext (with-meta (assoc (->ImgRM 7 8) :z 9) {:m :ext}) :shared [r r]})"
+      "      g (jolt.host/image-read \"" tmp "\")]"
+      "  [(meta (:r g)) (meta (:plain g)) (meta (:spill g)) (meta (:ext g)) (:z (:ext g))"
+      "   (identical? (:r g) (first (:shared g))) (mapv meta (:shared g)) (= (:r g) r)])")
+    "[{:m :rec} nil {:m :spill} {:m :ext} 9 true [{:m :rec} {:m :rec}] true]")
+
 (printf "~a/~a state-image assertions passed\n" (- total fails) total)
 (when (> fails 0) (exit 1))

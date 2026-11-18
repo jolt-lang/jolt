@@ -1994,6 +1994,24 @@
 (define (sa-current-winders) (#%$current-winders))
 (define (sa-current-winders-set! w) (#%$current-winders w))
 
+;; The pieces of a handler installation that runs its body INLINE, for jolt's
+;; try (rt.ss jolt-guard). with-exception-handler takes the body as a thunk,
+;; and a thunk is a closure over every free variable of the body -- in emitted
+;; code, every hoisted constant it names -- allocated on each entry: ~650 bytes
+;; a try in tools.reader's read*. These set the handler stack and push the
+;; winder that restores it on an escape, exactly what with-exception-handler's
+;; parameterize does around its thunk, with the body left where it is. Syntax,
+;; so each is a load or a store at the site. NOT contract names: only the Chez
+;; back end's try emission uses them.
+(define-syntax sa-handler-stack (syntax-rules () ((_) (#%$current-handler-stack))))
+(define-syntax sa-handler-stack-set! (syntax-rules () ((_ v) (#%$current-handler-stack v))))
+(define-syntax sa-winders (syntax-rules () ((_) (#%$current-winders))))
+(define-syntax sa-winders-set! (syntax-rules () ((_ w) (#%$current-winders w))))
+(define sa-winder-make
+  (and sa-winder-rtd (record-constructor (make-record-constructor-descriptor sa-winder-rtd #f #f))))
+(define-syntax sa-make-winder
+  (syntax-rules () ((_ in out) (sa-winder-make in out (#%$current-attachments)))))
+
 ;; (sa-record-cas! r i old new): compare-and-swap field i (0-based) of record r,
 ;; answering whether it swapped. What lets a lazy cell be claimed for forcing
 ;; with no lock in the way and nothing allocated (seq.ss force-claimed!). A
@@ -2222,6 +2240,26 @@
 ;; carries its own range proof; here each is the #3% primitive — what the
 ;; whole runtime would be at optimize-level 3, applied to the one loop that
 ;; has proven it.
+;; (sa-foreign-call-chain) -> this thread's chain of C-call frames, a list Chez
+;; extends when C calls back into Scheme and restores, the same object, when the
+;; callback returns. The fiber scheduler compares it with the chain its drain
+;; started under to tell that the running fiber is inside a foreign callback
+;; (fibers.ss jolt-fiber-preempt-handler). Not a CONTRACT.txt name: only the
+;; Chez scheduler asks it, and Gambit has no fibers.
+(define (sa-foreign-call-chain) (#%$tc-field 'cchain (#%$tc)))
+;; (sa-record-rtd x) -> x's exact record-type descriptor, or #f when x is not a
+;; record. (sa-record-slot r i) -> field I of record R, inherited fields first,
+;; unchecked: the caller has proven R's type has that field (by an eq? on the
+;; descriptor sa-record-rtd answered). Both open-code to a load or two, where
+;; record? against a parent type is a library call; the protocol PIC uses them to
+;; recognise the record family by its few concrete descriptors (rt.ss
+;; jrec-pic-desc/i). Not CONTRACT.txt names: only the Chez runtime's own
+;; emitted-code macros use them, never shared host code, so no other target has
+;; to provide them.
+(define-syntax sa-record-rtd
+  (syntax-rules ()
+    ((_ x) (let ((v x)) (if (#3%$record? v) (#3%$record-type-descriptor v) #f)))))
+(define-syntax sa-record-slot (syntax-rules () ((_ r i) (#3%$record-ref r i))))
 (define-syntax sa-ufx+ (syntax-rules () ((_ a b) (#3%fx+ a b))))
 (define-syntax sa-ufx- (syntax-rules () ((_ a b) (#3%fx- a b))))
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (#3%fx<? a b))))

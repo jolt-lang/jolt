@@ -229,12 +229,19 @@
 ;; `ext` the extension map, `hasheq` the defrecord __hasheq slot generalized to
 ;; the family -- 0 = unset; a defrecord caches its structural hash here, a plain
 ;; deftype its identity hash, and a type with a declared hasheq/hashCode never
-;; fills it (records-coll.ss jrec-hasheq-slow). The fielded children jrec1..8
-;; and the spill type jrec* (records.ss define-jrec-family) inherit these three
-;; fields, so desc-keyed dispatch stays uniform across the family.
+;; fills it (records-coll.ss jrec-hasheq-slow); `meta` the instance's metadata,
+;; jolt-nil for none -- a record's IObj _meta, the slot the collections have
+;; (natives-meta.ss owns it, and writes it only on an instance nobody else holds
+;; yet). It used to live in the weak identity side table, where attaching it cost
+;; ~500 ns a record (a weak-table insert under a lock) and every record that had
+;; any was a weak entry for the collector: rewrite-clj attaches position meta to
+;; every node it reads (#1713). The fielded children jrec1..8 and the spill type
+;; jrec* (records.ss define-jrec-family) inherit these four fields, so desc-keyed
+;; dispatch stays uniform across the family. chez-jrec-v5 (no meta) and older
+;; restore through state-image.ss's legacy jrec arm.
 (define-record-type (jrec make-jrec0 jrec?)
-  (fields (immutable desc) (immutable ext) (mutable hasheq))
-  (nongenerative chez-jrec-v5))
+  (fields (immutable desc) (immutable ext) (mutable hasheq) (mutable meta))
+  (nongenerative chez-jrec-v6))
 
 ;; --- the exit-only-cleanup marker --------------------------------------------
 ;; A fiber park is a continuation escape that is NOT an exit — the computation
@@ -805,3 +812,14 @@
                 (cond ((null? as) (jolt-hash-base x))
                       (((caar as) x) ((cdar as) x))
                       (else (loop (cdr as))))))))
+
+;; A multimethod (multimethods.ss holds everything that works on one). The type
+;; is defined here, ahead of seq.ss, so the fixed-arity invokes there test a
+;; multifn with the open-coded predicate (#1713): a multifn reached through a
+;; var is not a procedure, and a call to it used to fall through to the
+;; variadic jolt-invoke. A record op named before its type is defined compiles
+;; as a variable call instead (the recordinline gate).
+(define-record-type jolt-multifn
+  (fields name dispatch-fn methods default hierarchy prefers
+          cache (mutable cache-epoch) (mutable cache-hier) (mutable icache))
+  (nongenerative jolt-multifn-v3))

@@ -1693,8 +1693,14 @@
 ;; set callable) delegates to the full variadic jolt-invoke above, which after the
 ;; prefix-arm collapse is one lambda, one rest-list, no re-apply. The back end
 ;; picks jolt-invokeN by arg count (N<=4); apply/variadic cases keep jolt-invoke.
-;; Each embeds an arity pre-check — one fxlogbit? test, predicted taken — so a
-;; wrong-arity call throws a typed ArityException BEFORE Chez raises a raw condition.
+;; None of them checks the arity first. Chez's own entry check already refuses
+;; a wrong-arity application, and the raw condition it raises -- "incorrect
+;; number of arguments" with the count and the procedure as irritants -- is an
+;; ArityException by the time any catch or report sees it (host-faults.ss
+;; fault-class, and fault-message, which renders the JVM's "Wrong number of
+;; args (n) passed to: ns/fn" from those irritants). The pre-check was
+;; procedure-arity-mask, an out-of-line library call: ~4 of the ~5.5 ns
+;; jolt-invoke-t2 added to every var-routed call (#1713).
 ;;
 ;; Past the procedure? test they also answer the LOOKUP-SHAPED callables — a
 ;; keyword, symbol, map, set or vector in head position — instead of dropping to
@@ -1712,15 +1718,18 @@
 ;; is not a pmap and a multifn is not a keyword — so no predicate here can claim a
 ;; value a prefix arm would have. Everything else, records/reifies implementing
 ;; IFn, transients, sorted maps, unbound vars, still falls through unchanged.
+;; A multifn is answered here too, by the fixed-arity entry the prefix arm would
+;; have chosen, without the rest list and the arm walk that reach it (#1713).
 ;;
 ;; Only the arities each type actually accepts are answered here. A vector or set
 ;; takes exactly one argument and a map or keyword takes one or two, so
 ;; jolt-invoke2 answers fewer types than jolt-invoke1 and the rest fall through to
 ;; get their typed ArityException from jolt-invoke, unchanged.
-(define (jolt-invoke-t0 f) (if (procedure? f) (if (fxlogbit? 0 (procedure-arity-mask f)) (f) (jolt-proc-arity-error f 0)) (jolt-invoke f)))
+(define (jolt-invoke-t0 f) (if (procedure? f) (f) (jolt-invoke f)))
 (define (jolt-invoke-t1 f a)
   (cond
-    ((procedure? f) (if (fxlogbit? 1 (procedure-arity-mask f)) (f a) (jolt-proc-arity-error f 1)))
+    ((procedure? f) (f a))
+    ((jolt-multifn? f) (multifn-dispatch1 f a))
     ((keyword? f) (jolt-get a f))            ; (:k m) -> (get m :k)
     ((pmap? f) (jolt-get f a))               ; (m k)  -> (get m k)
     ((jolt-symbol? f) (jolt-get a f))        ; ('s m) -> (get m 's)
@@ -1730,26 +1739,30 @@
     (else (jolt-invoke f a))))
 (define (jolt-invoke-t2 f a b)
   (cond
-    ((procedure? f) (if (fxlogbit? 2 (procedure-arity-mask f)) (f a b) (jolt-proc-arity-error f 2)))
+    ((procedure? f) (f a b))
+    ((jolt-multifn? f) (multifn-dispatch2 f a b))
     ((keyword? f) (jolt-get a f b))          ; (:k m d) -> (get m :k d)
     ((pmap? f) (jolt-get f a b))             ; (m k d)  -> (get m k d)
     ((jolt-symbol? f) (jolt-get a f b))      ; ('s m d) -> (get m 's d)
     (else (jolt-invoke f a b))))
-(define (jolt-invoke-t3 f a b c) (if (procedure? f) (if (fxlogbit? 3 (procedure-arity-mask f)) (f a b c) (jolt-proc-arity-error f 3)) (jolt-invoke f a b c)))
-(define (jolt-invoke-t4 f a b c d) (if (procedure? f) (if (fxlogbit? 4 (procedure-arity-mask f)) (f a b c d) (jolt-proc-arity-error f 4)) (jolt-invoke f a b c d)))
+(define (jolt-invoke-t3 f a b c)
+  (cond ((procedure? f) (f a b c))
+        ((jolt-multifn? f) (multifn-dispatch3 f a b c))
+        (else (jolt-invoke f a b c))))
+(define (jolt-invoke-t4 f a b c d) (if (procedure? f) (f a b c d) (jolt-invoke f a b c d)))
 
-;; Chez's shared non-procedure/wrong-arity detour preserves every argument
-;; and tail-calls this handler. jolt-invoke owns all IFn cases, unbound vars and
-;; Clojure's named ArityException; successful procedure calls never reach it.
-;; Fixed arities retain keyword/map calls' no-rest-list path after the detour.
+;; Chez's call-error detour preserves every argument. A procedure here has
+;; already failed Chez's entry check, so raise its named ArityException
+;; directly. Retrying it through a fixed-arity helper would reenter this hook.
+;; Non-procedures still take the fixed-arity IFn paths where available.
 (define jolt-call-error-handler
   (case-lambda
-    ((f) (jolt-invoke-t0 f))
-    ((f a) (jolt-invoke-t1 f a))
-    ((f a b) (jolt-invoke-t2 f a b))
-    ((f a b c) (jolt-invoke-t3 f a b c))
-    ((f a b c d) (jolt-invoke-t4 f a b c d))
-    ((f . args) (apply jolt-invoke f args))))
+    ((f) (if (procedure? f) (jolt-proc-arity-error f 0) (jolt-invoke-t0 f)))
+    ((f a) (if (procedure? f) (jolt-proc-arity-error f 1) (jolt-invoke-t1 f a)))
+    ((f a b) (if (procedure? f) (jolt-proc-arity-error f 2) (jolt-invoke-t2 f a b)))
+    ((f a b c) (if (procedure? f) (jolt-proc-arity-error f 3) (jolt-invoke-t3 f a b c)))
+    ((f a b c d) (if (procedure? f) (jolt-proc-arity-error f 4) (jolt-invoke-t4 f a b c d)))
+    ((f . args) (if (procedure? f) (jolt-proc-arity-error f (length args)) (apply jolt-invoke f args)))))
 (sa-call-error-handler-set! jolt-call-error-handler)
 
 ;; jolt-invoke0..4: the same calls, from code that is not traced -- clojure.core,
@@ -1767,16 +1780,12 @@
 ;; jolt-invoke-tN there and these only at an untraced non-tail site.
 (define (jolt-invoke0 f)
   (if (procedure? f)
-      (if (fxlogbit? 0 (procedure-arity-mask f))
-          (jolt-site-kept (f))
-          (jolt-proc-arity-error f 0))
+      (jolt-site-kept (f))
       (jolt-site-kept (jolt-invoke-t0 f))))
 (define (jolt-invoke1 f a)
   (cond
     ((procedure? f)
-     (if (fxlogbit? 1 (procedure-arity-mask f))
-         (jolt-site-kept (f a))
-         (jolt-proc-arity-error f 1)))
+     (jolt-site-kept (f a)))
     ;; (v i) with an in-range fixnum index can't throw or call out, so it skips
     ;; the site bookkeeping
     ((and (pvec? f) (fixnum? a) (fx>=? a 0) (fx<? a (pvec-cnt f)))
@@ -1784,21 +1793,15 @@
     (else (jolt-site-kept (jolt-invoke-t1 f a)))))
 (define (jolt-invoke2 f a b)
   (if (procedure? f)
-      (if (fxlogbit? 2 (procedure-arity-mask f))
-          (jolt-site-kept (f a b))
-          (jolt-proc-arity-error f 2))
+      (jolt-site-kept (f a b))
       (jolt-site-kept (jolt-invoke-t2 f a b))))
 (define (jolt-invoke3 f a b c)
   (if (procedure? f)
-      (if (fxlogbit? 3 (procedure-arity-mask f))
-          (jolt-site-kept (f a b c))
-          (jolt-proc-arity-error f 3))
+      (jolt-site-kept (f a b c))
       (jolt-site-kept (jolt-invoke-t3 f a b c))))
 (define (jolt-invoke4 f a b c d)
   (if (procedure? f)
-      (if (fxlogbit? 4 (procedure-arity-mask f))
-          (jolt-site-kept (f a b c d))
-          (jolt-proc-arity-error f 4))
+      (jolt-site-kept (f a b c d))
       (jolt-site-kept (jolt-invoke-t4 f a b c d))))
 
 ;; ============================================================================

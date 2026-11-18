@@ -347,8 +347,12 @@
                s
                (let* ((open (let back ((k (fx- j 1))) (if (char=? (string-ref s k) #\() k (back (fx- k 1)))))
                       (cell (substring s (fx+ open 1) j)))
+                 ;; a reference reads the cell, a call opens with jolt-var-fn
+                 ;; (backend emit-open-call); both are this op
                  (loop (fx+ j m)
-                       (string-replace-all s (string-append "(var-cell-deref " cell ")") (cdr op)))))))))
+                       (string-replace-all
+                        (string-replace-all s (string-append "(var-cell-deref " cell ")") (cdr op))
+                        (string-append "(jolt-var-fn " cell ")") (cdr op)))))))))
    s
    (list (cons "__sm-take" sm-call-take) (cons "__sm-put" sm-call-put)
          (cons "__sm-take!!" sm-call-take!!) (cons "__sm-put!!" sm-call-put!!))))
@@ -382,7 +386,10 @@
                  ((char=? (string-ref s j) #\\) (skip (fx+ j 2)))
                  ((char=? (string-ref s j) #\") (loop (fx+ j 1) depth winds))
                  (else (skip (fx+ j 1))))))
-        ((at? i "(dynamic-wind") (loop (fx+ i 1) (fx+ depth 1) (cons depth winds)))
+        ;; a try's finally is jolt-wind-inline on Chez and its catch jolt-guard,
+        ;; each pushing a winder of its own (rt.ss); dynamic-wind on Gambit
+        ((or (at? i "(dynamic-wind") (at? i "(jolt-wind-inline") (at? i "(jolt-guard"))
+         (loop (fx+ i 1) (fx+ depth 1) (cons depth winds)))
         ((char=? (string-ref s i) #\() (loop (fx+ i 1) (fx+ depth 1) winds))
         ((char=? (string-ref s i) #\))
          (let ((d (fx- depth 1)))

@@ -1243,8 +1243,12 @@
     (else
      (let* ((cur (let ((m (jolt-meta ref))) (if (jolt-nil? m) (jolt-hash-map) m)))
             (new (apply jolt-invoke f cur args)))
-       (meta-table-set! ref new)
+       (jolt-meta-store! ref new)
        new))))
+;; A record keeps its meta in its slot (values.ss jrec), which is where meta
+;; reads it back; anything else in the identity side table.
+(define (jolt-meta-store! ref m)
+  (if (jrec? ref) (jrec-meta-set! ref m) (meta-table-set! ref m)))
 (define (jolt-reset-meta! ref m)
   (cond
     ((var-cell? ref)
@@ -1253,7 +1257,7 @@
      m)
     ((iface-method ref "resetMeta" 2)
      => (lambda (impl) (jolt-invoke impl ref m) m))
-    (else (meta-table-set! ref m) m)))
+    (else (jolt-meta-store! ref m) m)))
 
 ;; --- RESOLVE FRICTION: native-op cells -------------------------------------
 ;; Native-op primitives (+ map reduce …) are INLINED at emit, so they have no

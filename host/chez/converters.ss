@@ -168,7 +168,13 @@
              (string-append "Index " (number->string i) " out of bounds for length "
                             (number->string n))))
 
+;; An in-range fixnum index -- every (.charAt s i) a scanner makes -- reads
+;; before the jolt->idx coercion, which is an out-of-line call (7.6 -> ~3 ns).
 (define (jolt-char-at s i)
+  (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length s)))
+      (string-ref s i)
+      (jolt-char-at-coerced s i)))
+(define (jolt-char-at-coerced s i)
   (let ((i (jolt->idx i)))
     (if (and (fixnum? i) (fx>=? i 0) (fx<? i (string-length s)))
         (string-ref s i)

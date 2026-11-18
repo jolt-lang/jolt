@@ -207,6 +207,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A call through a var, a multimethod call, `str` of a StringBuilder and
+  `.charAt` cost less (#1713).** These are the per-operation costs a reader
+  pays for every character and node. A var-routed call read the var through
+  two more calls and checked the arity with an out-of-line library call
+  before Chez's own check. It now reads the root behind one flag test, and a
+  wrong-arity call raises from Chez's check with the JVM's ArityException
+  message: 16 ns down to 9.5. A multimethod is dispatched without a rest list,
+  and a keyword (or other identity) dispatch value hits a per-multifn inline
+  cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
+  rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
+  and `clojure.tools.reader/read-string` ~13% less.
+- **A dynamic var bound far down the binding stack reads as fast as one bound
+  at the top (#1713).** A read walked every binding frame on the thread to
+  find its binding, and readers bind one frame per nesting level. The
+  innermost frame now remembers its last four lookups: a bound var's read
+  went from ~32 ns to ~18, and from ~10x to ~1x beneath thirty frames.
+- **`try` and `finally` cost a small constant wherever they run (#1713).** A
+  catch was R6RS `guard`, which takes a full continuation: returning through
+  one copies the frames beneath it back in, so a `try` under a deep stack cost
+  about 1.2 µs. Both a catch and a finally also handed their body to a thunk,
+  a closure over every free variable of the body, allocated on each entry.
+  On Chez the body now runs in place behind a one-shot escape, with the same
+  handler and winder semantics. A flat `try` takes ~38 ns instead of ~111,
+  `binding` gets cheaper too, and `clojure.tools.reader/read-string`, which
+  enters a `try` for every form it reads, takes ~7% less time.
+- **A call of more than four arguments through a var costs what a short one
+  does (#1713).** There was no fixed-arity entry past four, so `jolt-invoke`
+  built a rest list, measured it and applied it: 42 ns for a six-argument
+  call against 6 for four. On Chez it is now open-coded at any arity.
+  `clojure.tools.reader`'s `read*` takes six arguments for every form it
+  reads.
+- **A record carries its metadata in a slot of its own (#1713).** `with-meta`
+  on a defrecord or deftype instance used to copy the record and insert it into
+  a weak identity table under a lock: ~440 ns, against ~32 for a vector, and
+  every record carrying metadata was a weak entry for the collector. It is now
+  one copy with the metadata in the record (~66 ns), and `assoc` keeps it.
+  rewrite-clj attaches position metadata to every node it parses:
+  `parse-string` takes ~30% less time and `parse-string-all` ~26% less. As on
+  the JVM, `with-meta` on a record always returns a new record. State images
+  move to format 15; older images still restore.
+- **A call through a var is open-coded at the call site (#1713).** On Chez,
+  compiled code reads the var's value and applies a procedure directly,
+  where it used to call into the runtime twice first. A protocol fn's inline
+  cache also reads its receiver's type inline. A var-routed call costs about
+  6 ns instead of 9.5, and a protocol call about 17.6 ns instead of 20.
 - **Indexed reads of a vector make no call past `nth`, `get` or the vector
   itself (#1652).** The in-range read and the trie descent are inline in
   each, where `(nth v i)` used to chain three calls to reach a `vector-ref`.
@@ -268,6 +313,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+
+- **A multimethod no longer answers with a method it has since replaced.** On
+  arm64, a thread dispatching while another ran `defmethod` (or
+  `remove-method`, `.addMethod`, `prefer-method`) could see the new cache epoch
+  together with the old methods table, and cache the old method stamped as
+  current, so every later call took it. A stress run with one writer swapping a
+  method and three dispatching threads hit it 2 times in 200k swaps. Every
+  epoch bump now goes through one helper with a release fence, the dispatch
+  path reads the epoch with an acquire fence, and `make mmepochcheck` fails on a
+  bump that skips the helper.
 
 - **A stack trace keeps the caller a running tail call erased.** When `c`
   tail-called `k`, and `k` threw from a call of its own (into host code, or
