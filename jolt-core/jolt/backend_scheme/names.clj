@@ -128,6 +128,9 @@
                   "pair?" "virtual-register" "set-virtual-register!" "jolt-site-call"
                   "fxand" "fxior" "fxxor" "fxnot"
                   "jolt-register-source!" "jolt-proto-epoch"
+                  ;; guarded inlining (#1713): the def's stamp and the guard's
+                  ;; load-time root read
+                  "jolt-inline-mark!" "jolt-inline-root"
                   ;; --- bare heads emitted at sites the registry doesn't cover ---
                   ;; INVARIANT: any new bare Scheme head an emit* clause outputs
                   ;; (a head a user local could shadow) MUST be added here. Literal

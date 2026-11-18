@@ -135,7 +135,7 @@ JOLT-TARGETS-NEEDING-DEPS := \
   aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink mintgate ffi fibers fiberspoll fieldjoin fieldnum fieldread flarr fnform poolshape coreproc grenadine \
-  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body irvalidate statlayout \
+  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
   hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
@@ -201,7 +201,7 @@ CI-GATES := submodules values recordinline corpus nsaudit unit documented grenad
   hasheq narrowhash \
   protoret accfix pic narrow directlink mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval degradedbacktrace \
-  inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
+  inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
@@ -1177,6 +1177,13 @@ fieldread:
 # must emit jrec-field-at (bare index) instead of jolt-get.
 inline-body:
 	@$(CHEZ) --script host/chez/run-inline-body.ss
+
+# Guarded inlining in the open-world spine (#1713): a small fn splices into its
+# callers behind a test that its var still holds the fn the body came from, and
+# a redefinition, with-redefs, alter-var-root, or a caller replayed after its
+# callee was redefined all take the call; ^:dynamic and protocol methods stay calls.
+guardedinline:
+	@$(CHEZ) --script host/chez/run-guarded-inline.ss
 
 # DCE reference collection (dce.ss): an app form's refs must union an IR walk
 # (:var/:the-var nodes) with a text scan of the emitted Scheme, so a macro-spliced

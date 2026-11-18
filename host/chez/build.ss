@@ -2914,7 +2914,7 @@
       ;; optimize/direct-link mode for a later caller.
       (let*-values
           (((core-strs app-strs drop-compiler?)
-            (let ((saved-unit (ei-save-unit)))
+            (let ((saved-unit (ei-save-unit)) (bld-guarded-inline-was hc-guarded-inline-on))
             (dynamic-wind
               (lambda ()
                 ;; Create + publish this build's compilation unit FIRST, so every
@@ -2929,6 +2929,9 @@
                 ;; compiler emits -- inlining follows direct-link, which both
                 ;; of them set.
                 (set-optimize! (not (string=? mode "dev")))
+                ;; a build is closed-world (direct-linked) or fully var-routed;
+                ;; neither takes the open world's guarded splices
+                (set-guarded-inline-flag! #f)
                 (when direct-link?
                   ((var-deref "jolt.backend-scheme" "set-direct-link!") #t)
                   ((var-deref "jolt.backend-scheme" "direct-link-reset!"))
@@ -3041,6 +3044,7 @@
                                                           entry-main allow-dynamic)))))))
               (lambda ()
                 (set-optimize! #f)
+                (set-guarded-inline-flag! bld-guarded-inline-was)
                 (set-direct-link-flag! #f)
                 ((var-deref "jolt.backend-scheme" "set-direct-link!") #f)
                 ((var-deref "jolt.backend-scheme" "set-source-reg!") #f)

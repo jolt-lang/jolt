@@ -32,7 +32,7 @@
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
-                     hoist-const-per-site hoist-load-time hoist-seed-root hoist-var-cell
+                     hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
@@ -1147,6 +1147,8 @@
   ([node bools]
    (cond
      (and (= :const (:op node)) (boolean? (:val node))) true
+     ;; a guarded splice's test is an eq? (hoist-inline-guard)
+     (= :inline-guard (:op node)) true
      ;; the declared-^Record guard emits an (and ...) of jrec-desc-is? tests
      (and (= :invoke (:op node)) (some? (:rec-guard node))) true
      (= :invoke (:op node))
@@ -1246,6 +1248,12 @@
               :else
               (str "(def-var-plain! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                    (emit-with-cells #(emit (:init node))) ")"))
+            ;; a def a guarded splice may copy (jolt.passes prepare-node)
+            ;; stamps its var with the splice's token once the root is set
+            ;; (rt.ss jolt-inline-mark!, which answers the var)
+            d (if-let [tok (:inline-token node)]
+                (str "(jolt-inline-mark! " d " " (chez-str-lit tok) ")")
+                d)
             creg (trace-callsite-reg)
             freg (fnsrc-flush)]
       ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
@@ -1384,6 +1392,10 @@
       ;; resolves to its binding) AND lenient on an unbound root (the strict
       ;; jolt-var-get throws on a forward-declared var). Outside a def,
       ;; resolve per access.
+      ;; a guarded splice's read of the var's fn (jolt.passes.inline
+      ;; guarded-splice): what a call through the var reads, open-coded
+      (and (:fn-read node) (var-cache?) *const-pool*)
+      (str "(jolt-var-fn " (hoist-const (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")) ")")
       :else
       (if (and (var-cache?) *const-pool*)
         (hoist-var-cell (:ns node) (:name node))
@@ -1571,6 +1583,7 @@
     :invoke (emit-invoke-maybe-clone node)
     (:vector :set :map) (emit-coll-literal node)
     (:quote :regex :inst :uuid :bigdec :the-ns :load-time-value) (emit-data-node node)
+    :inline-guard (hoist-inline-guard (emit (:fn node)) (:ns node) (:name node) (:token node))
     ;; the thrown value is an operand (emitted non-tail); the throw itself goes
     ;; through emit-call with marks?=#f, so a TAIL throw gets the site-vreg pair
     ;; (sited-tail-call — stored after the operand is bound, so the operand's own

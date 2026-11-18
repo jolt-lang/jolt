@@ -3325,6 +3325,27 @@
               (if (or (sa-record-slot c 6) (eq? c star-ns-cell))
                   (var-cell-deref-bound c)
                   (sa-record-slot c 2))))))
+;; Guarded inlining (host-contract.ss hc-guarded-inline?, #1713). A def whose
+;; body a later caller may splice stamps its var with a token naming that
+;; compilation of the body: jolt-inline-mark! records cell -> (root . token).
+;; A caller's guard reads jolt-inline-root once, as it loads: the cell's root
+;; when the def that set it stamped the token the splice was taken from, else a
+;; value no var holds, so the guard always takes the call. A cached caller
+;; loaded after its callee was redefined at a REPL (same source, so the same
+;; cache entry) thus never runs the body the cache was compiled against.
+(define jolt-inline-marks (make-weak-eq-hashtable))
+(define jolt-inline-marks-mu (make-mutex))
+(define jolt-inline-no-root (string #\nul))
+(define (jolt-inline-mark! v token)
+  (jolt-with-mutex jolt-inline-marks-mu
+    (hashtable-set! jolt-inline-marks v (cons (var-cell-root v) token)))
+  v)
+(define (jolt-inline-root c token)
+  (let ((e (jolt-with-mutex jolt-inline-marks-mu (hashtable-ref jolt-inline-marks c #f)))
+        (r (var-cell-root c)))
+    (if (and e (eq? (car e) r) (string=? (cdr e) token))
+        r
+        jolt-inline-no-root)))
 ;; The protocol PIC's receiver descriptor, open-coded (#1713): a record of the
 ;; jrec family -- a deftype or defrecord instance, whose exact type is one of the
 ;; per-arity children (records.ss define-jrec-family) or the zero-field base --

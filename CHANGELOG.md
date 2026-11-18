@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Guarded inlining under `jolt run` (#1713).** With tracing off
+  (`--no-trace` / `JOLT_TRACE=0`), code the CLI compiles splices a small fn's
+  body into its callers behind a test that the fn's var still holds the fn the
+  body came from: `(if (eq? <the var's fn> ROOT) <body> <call>)`. A
+  redefinition, `with-redefs` or `alter-var-root` takes the call,
+  and the fn is read before the arguments are, as a call reads it. ROOT is read
+  as the caller loads, and only if the def that set the var's root stamped the
+  same token the splice carries, so an AOT-cached caller loaded after its
+  callee was redefined at a REPL takes the call too. A loop calling a small
+  clamp fn runs 52 -> 29 ms; `^:dynamic` fns, protocol methods and bodies that
+  build a closure stay calls. `JOLT_GUARDED_INLINE=0` turns it off; a traced
+  run keeps every call, so an error report names each fn from its own frame.
+
 - **Chez inlines through a top-level definition jolt registers (#1713,
   `chez-patches/0010`).** Chez's cross-library inliner records an exported
   procedure's body so code compiled against the library can inline it. The
@@ -334,6 +347,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loads from the AOT cache in 1.9 s instead of 2.6 s.
 
 ### Fixed
+
+- **A number's interop method is kept at its call site (#1713).** `(.bitLength
+  n)`, `(.longValue n)` and the rest of the number method surface walked the
+  method arms and a string compare per name on every call; tools.reader reads
+  every integer through them, so `read-number` of `"2"` goes from ~1.2 to
+  ~0.85 us. A number method given too few arguments, `(.shiftLeft 1)`, raises
+  the JVM's no-matching-method error rather than faulting in `car`.
 
 - **A deftype no longer answers for a host class that shares its simple
   name.** A qualified class with no constructor of its own, such as

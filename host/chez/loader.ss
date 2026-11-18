@@ -545,6 +545,10 @@
 ;; host-contract's seed-var direct-link check reads the same boot set, and the
 ;; boot's re-assertions of its natives stop counting as redefinitions here.
 (hc-runtime-image-booted! ldr-runtime-image-ns-copy)
+;; Code the CLI compiles from here on (jolt run, a REPL, nREPL) splices small
+;; fns behind a guard (host-contract.ss hc-guarded-inline?); JOLT_GUARDED_INLINE=0
+;; keeps every call a call. A build clears it for its duration (build.ss).
+(set-guarded-inline-flag! (not (equal? (getenv "JOLT_GUARDED_INLINE") "0")))
 
 ;; *loaded-libs* is the other half of the loaded set: a clojure.lang.Ref that
 ;; tools.namespace and core.typed conj/disj on, and that ns-dedup-loaded? below
