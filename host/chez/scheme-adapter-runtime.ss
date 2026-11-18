@@ -2132,6 +2132,13 @@
 ;; carries its own range proof; here each is the #3% primitive — what the
 ;; whole runtime would be at optimize-level 3, applied to the one loop that
 ;; has proven it.
+;; (sa-foreign-call-chain) -> this thread's chain of C-call frames, a list Chez
+;; extends when C calls back into Scheme and restores, the same object, when the
+;; callback returns. The fiber scheduler compares it with the chain its drain
+;; started under to tell that the running fiber is inside a foreign callback
+;; (fibers.ss jolt-fiber-preempt-handler). Not a CONTRACT.txt name: only the
+;; Chez scheduler asks it, and Gambit has no fibers.
+(define (sa-foreign-call-chain) (#%$tc-field 'cchain (#%$tc)))
 (define-syntax sa-ufx+ (syntax-rules () ((_ a b) (#3%fx+ a b))))
 (define-syntax sa-ufx- (syntax-rules () ((_ a b) (#3%fx- a b))))
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (#3%fx<? a b))))

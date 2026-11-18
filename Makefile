@@ -934,7 +934,7 @@ grenadine:
 # Build jolt as a self-contained native binary into target/<profile>/jolt. The
 # binary bundles the runtime, compiler, jolt-core + stdlib source, the Chez boots,
 # and a launcher stub, so it runs AND compiles jolt apps with no Chez or cc on the
-# machine. Built on a dev/CI host that HAS Chez + cc. release = optimize-level 3,
+# machine. Built on a dev/CI host that HAS Chez + cc. release = optimize-level 2,
 # no inspector info, compressed; debug = optimize-level 0 + inspector + debug info.
 # JOLT_CROSS_TARGET (optional) cross-compiles jolt for another Chez machine — it is
 # passed as build-jolt.ss's 3rd arg and needs $JOLT_TARGET_PACK (empty = native).

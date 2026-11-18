@@ -767,3 +767,14 @@
                 (cond ((null? as) (jolt-hash-base x))
                       (((caar as) x) ((cdar as) x))
                       (else (loop (cdr as))))))))
+
+;; A multimethod (multimethods.ss holds everything that works on one). The type
+;; is defined here, ahead of seq.ss, so the fixed-arity invokes there test a
+;; multifn with the open-coded predicate (#1713): a multifn reached through a
+;; var is not a procedure, and a call to it used to fall through to the
+;; variadic jolt-invoke. A record op named before its type is defined compiles
+;; as a variable call instead (the recordinline gate).
+(define-record-type jolt-multifn
+  (fields name dispatch-fn methods default hierarchy prefers
+          cache (mutable cache-epoch) (mutable cache-hier) (mutable icache))
+  (nongenerative jolt-multifn-v3))

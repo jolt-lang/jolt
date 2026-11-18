@@ -430,7 +430,16 @@
 ;; caches the cell at a reference site. Binding stack first, then *ns* thread-local,
 ;; else the raw root. Lenient on an unbound root (returns the sentinel), matching
 ;; var-deref — NOT the strict jolt-var-get, which throws "Unbound var".
+;;
+;; Every var-routed call in compiled code opens with this read, so the common
+;; case — a var nobody ever bound, which is not *ns* — is one flag test and the
+;; root, with the gate (dyn-binding-value's) and the *ns* test inline instead of
+;; behind two more calls: 7 -> ~1 ns on a call through the var (#1713).
 (define (var-cell-deref cell)
+  (if (or (var-cell-dyn-bound? cell) (eq? cell star-ns-cell))
+      (var-cell-deref-bound cell)
+      (var-cell-root cell)))
+(define (var-cell-deref-bound cell)
   (let ((bv (dyn-binding-value cell)))
     (cond ((not (eq? bv dyn-no-binding)) bv)
           ((eq? cell star-ns-cell) (intern-ns! (chez-current-ns)))
