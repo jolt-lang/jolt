@@ -181,6 +181,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **The runtime operations a reader leans on cost less (#1713).** Each was a
+  call into a generic procedure that the JVM answers in a few instructions:
+  - `(= a b)` answers a char, nil, boolean or keyword on the left, or a string
+    literal (what `case` over strings expands to), without the call;
+    `zero?`/`pos?`/`neg?` test a fixnum inline.
+  - `(nth coll i)` (destructuring is two of these) reads a vector or string
+    index inline, and the runtime's own `nth` no longer pays the java.util
+    shims' type tests for jolt's collections.
+  - `(str x)` of a string or a StringBuilder, `java.lang.Character`'s
+    predicates on an ASCII char, and `(.indexOf "literal" c)` (a `case` over the
+    literal) answer inline.
+  - `(merge nil m)` is `m` (merge has fixed arities, and `(conj {} m)` answers
+    `m`): ~450 to ~25 ns.
+  - A one-var `binding` pushes its frame without building a map.
+  - `(seq java.util.LinkedList)` no longer walks every registered seq arm.
+  - A constructor call site keeps the constructor it resolved, a `Matcher`'s
+    methods are kept per call site (`.group` ~175 to ~80 ns), and a protocol
+    call on a string, number, char, nil, boolean or keyword is cached by type
+    instead of resolved per call (a tools.reader reader is built in ~130 ns,
+    from ~400).
+  - An `aget`/`aset` hinted with the JVM's spelling of an array class
+    (`^"[Ljava.lang.Object;"`) takes the typed path.
+
+  On an Intel i5-4278U, tools.reader's `read-string` of a small form takes
+  ~45 us, from ~67, and rewrite-clj's `parse-string` about 15% less.
+
 - **A deftype's method or field reached through interop costs about what a
   protocol call or a field load does (#1713).** `(.m ^T x)` on a deftype or
   record walked every dispatch arm by name and built an argument vector on

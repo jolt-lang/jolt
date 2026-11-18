@@ -278,6 +278,16 @@
 ;;                      method, which binds only the fields it names: 17.5 ->
 ;;                      10.5 ns, against a plain call ~2.6 -> ~1.6.
 ;;
+;;   host-protocol      a protocol call on a string, number, char, nil, boolean
+;;                      or keyword resolved its impl on every call; the protocol
+;;                      fn's cache keys those by type (rt.ss jolt-pic-host-key/i).
+;;
+;;   merge-nil          (merge nil m) was the variadic reduce (~450 ns); merge has
+;;                      fixed arities and (conj {} m) answers m.
+;;
+;;   str-builder        (str sb) went through clojure.core/str's arms (~50 ns);
+;;                      a StringBuilder answers inline (rt.ss jolt-str1/i).
+;;
 ;;   deftype-method     (.m ^T x) on a deftype walked every dispatch arm by name
 ;;                      with an argument vector (~240 ns); the call site keeps the
 ;;                      type's declared method (host-static.ss jrec-site-miss):
@@ -558,6 +568,12 @@
 (deftype GateT [a] GateP (gate-pm [_] nil))
 (def ^:private gate-t (GateT. 1))
 (defn- gate-fn1 [x] nil)
+;; a protocol extended to a host type, and the reader-path collection fixtures
+(defprotocol GateH (gate-hm [x]))
+(extend-protocol GateH String (gate-hm [_] nil) GateT (gate-hm [_] nil))
+(def ^:private gate-str "abc")
+(def ^:private gate-m4 {:line 1 :column 2 :end-line 1 :end-column 5})
+(def ^:private gate-sb (doto (StringBuilder.) (.append "token")))
 (defn- gate-rec-try [n] (try (if (zero? n) 0 (inc (gate-rec-try (dec n)))) (catch Exception e -1)))
 (defn- gate-under [n f] (if (zero? n) (f) (+ 0 (gate-under (dec n) f))))
 (def ^:dynamic *gate-deep* 0)
@@ -898,6 +914,25 @@
   (judge! "deftype-field"
           #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
           #(let [^GateT t gate-t] (dotimes [_ gate-n] (.-a t)))
+          2.0)
+  ;; A protocol call on a string costs about what one on a record does: the
+  ;; protocol fn keys its cache by the host type (rt.ss jolt-pic-host-key/i),
+  ;; where a string resolved on every call. Reads ~1.3.
+  (judge! "host-protocol"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-hm t)))
+          #(let [s gate-str] (dotimes [_ gate-n] (gate-hm s)))
+          3.0)
+  ;; (merge nil m) costs about what (conj m nil) does: merge's fixed arities and
+  ;; (conj {} m) answering m. It was the variadic reduce, ~450 ns. Reads ~1.5.
+  (judge! "merge-nil"
+          #(let [m gate-m4] (dotimes [_ gate-n] (conj m nil)))
+          #(let [m gate-m4] (dotimes [_ gate-n] (merge nil m)))
+          3.0)
+  ;; (str sb) costs about what (.toString sb) does (rt.ss jolt-str1/i); through
+  ;; clojure.core/str it was ~50 ns against ~15. Reads ~0.7.
+  (judge! "str-builder"
+          #(let [sb gate-sb] (dotimes [_ gate-n] (.toString sb)))
+          #(let [sb gate-sb] (dotimes [_ gate-n] (str sb)))
           2.0)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
