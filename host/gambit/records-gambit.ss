@@ -3086,13 +3086,13 @@
          (jolt-multifn-methods obj)
          (car rest)
          (cadr rest))
-       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+       (mm-epoch-bump!))
      obj)
     ((string=? method-name "removeMethod")
      (jolt-with-mutex
        mm-tbl-mu
        (hashtable-delete! (jolt-multifn-methods obj) (car rest))
-       (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+       (mm-epoch-bump!))
      obj)
     ((string=? method-name "getMethod")
      (or (hashtable-ref (jolt-multifn-methods obj) (car rest) #f)

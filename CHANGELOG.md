@@ -268,6 +268,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A multimethod no longer answers with a method it has since replaced.** On
+  arm64, a thread dispatching while another ran `defmethod` (or
+  `remove-method`, `.addMethod`, `prefer-method`) could see the new cache epoch
+  together with the old methods table, and cache the old method stamped as
+  current, so every later call took it. A stress run with one writer swapping a
+  method and three dispatching threads hit it 2 times in 200k swaps. Every
+  epoch bump now goes through one helper with a release fence, the dispatch
+  path reads the epoch with an acquire fence, and `make mmepochcheck` fails on a
+  bump that skips the helper.
+
 - **A stack trace keeps the caller a running tail call erased.** When `c`
   tail-called `k`, and `k` threw from a call of its own (into host code, or
   through a fn that threw from a non-tail call), the trace went straight from
