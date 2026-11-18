@@ -5774,14 +5774,17 @@
                     (let ((sig (sa-foreign-ref 'int sigbuf 0))
                           (target (unbox jolt-sigint-target)))
                       (cond
-                        ((and (= sig 2) target (jolt-sigint-trip! target)) (loop))
                         ;; a program's sun.misc.Signal handler: SIG_IGN drops
-                        ;; the signal, anything else runs on a thread of its own
+                        ;; the signal, anything else runs on a thread of its own.
+                        ;; It comes before the REPL's ^C below: a program that
+                        ;; registered for INT asked for every INT, as on the JVM,
+                        ;; and SIG_DFL gives ^C back to the REPL.
                         ((jolt-signal-handler-of sig)
                          => (lambda (h)
                               (unless (jolt-native-handler-named? h "SIG_IGN")
                                 (jolt-signal-dispatch! sig h))
                               (loop)))
+                        ((and (= sig 2) target (jolt-sigint-trip! target)) (loop))
                         ;; no handler: what the signal did before jolt took it
                         ((not (memv sig jolt-shutdown-signals))
                          (jolt-signal-default! sig)
@@ -5874,6 +5877,11 @@
 ;; It blocks the shutdown signals itself, as every other jolt thread does, so a
 ;; SIGTERM never lands here at its default action.
 (define jsig-c-read (jolt-foreign-proc-blocking "read" '(int void* size_t) 'ssize_t))
+;; fcntl(fd, F_GETFD), F_GETFD being 1 on Linux and macOS: -1 once FD is closed.
+;; Declared without the variadic third argument, which F_GETFD does not take.
+(define jsig-c-fcntl (jolt-foreign-proc-safe "fcntl" '(int int) 'int))
+(define (jolt-signal-relay-fd-open? fd)
+  (or (not jsig-c-fcntl) (>= (jsig-c-fcntl fd 1) 0)))
 ;; The pipe is opened and the start committed under the lock; the fork happens
 ;; outside it, since a fork can park (park-lock-check.sh). Answers whether the
 ;; relay can carry a handler: #f only when the pipe could not be opened.
@@ -5895,15 +5903,38 @@
           (let ((buf (sa-foreign-alloc 64)))
             (let loop ()
               (let ((r (jsig-c-read fd-to-read buf 64)))
-                ;; -1 is EINTR: read again. 0 (no writer left) does not
-                ;; happen: the kernel abandons the pipe open (Sscheme_deinit).
+                ;; 0 (no writer left) does not happen: the kernel abandons the
+                ;; pipe open (Sscheme_deinit).
                 (do ((i 0 (+ i 1))) ((>= i r))
                   (let* ((sig (sa-foreign-ref 'unsigned-8 buf i))
                          (h (jolt-signal-handler-of sig)))
                     (when (and h (not (jolt-native-handler-named? h "SIG_IGN")))
                       (jolt-signal-dispatch! sig h))))
-                (unless (eqv? r 0) (loop))))))))
+                ;; -1 on a pipe's read end is EINTR (read again) or EBADF, the
+                ;; fd closed under us, which would fail every read after it and
+                ;; spin this thread. Told apart by asking whether the fd is still
+                ;; open, not by errno: the thread reactivating after a blocking
+                ;; call can overwrite errno before it is read.
+                (unless (or (eqv? r 0)
+                            (and (< r 0) (not (jolt-signal-relay-fd-open? fd-to-read))))
+                  (loop))))))))
     (let ((fd (unbox jolt-signal-relay-fd))) (and fd (>= fd 0)))))
+
+;; Without the relay the watcher's sigwait takes a handled signal, which only
+;; works while the kernel keeps it pending. macOS doesn't for a signal whose
+;; default action is to ignore it: under SIG_DFL it is discarded when sent,
+;; blocked or not (Linux keeps a blocked one pending), so a handler for CHLD,
+;; URG, IO, WINCH, INFO or CONT was never called. Any installed handler makes the
+;; kernel keep it. Chez's register-signal-handler installs one; it never runs
+;; while the signal is blocked everywhere, and if jolt-signal-default! raises
+;; the signal later its no-op drops it, as SIG_DFL would have.
+(define jolt-signals-discarded-at-default
+  (if (eq? (sa-os-family) 'macos)
+      (filter values (map jolt-signal-number '("CHLD" "URG" "IO" "WINCH" "INFO" "CONT")))
+      '()))
+(define (jolt-signal-keep-pending! n)
+  (when (memv n jolt-signals-discarded-at-default)
+    (register-signal-handler n (lambda (sig) (void)))))
 
 ;; The JVM keeps the first six for itself and refuses a handler for them; Chez
 ;; handles BUS as a fault, as it does SEGV, FPE and ILL.
@@ -5968,6 +5999,7 @@
       ((and jolt-sigmask-ok? c-sigwait (unbox jolt-user-signals-taken)
             (memv n jolt-user-signals))
        (jolt-arm-shutdown!)
+       (unless (jolt-signal-native-handler? h) (jolt-signal-keep-pending! n))
        (jolt-with-mutex jolt-signal-handlers-mu (swap!)))
       (else (unsupported))))))
 
