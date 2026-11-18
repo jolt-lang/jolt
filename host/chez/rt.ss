@@ -3355,6 +3355,53 @@
   (syntax-rules () ((_ o i v) (sa-record-slot-set! o (fx+ 4 i) v))))
 (define-syntax jrec*-slot/u
   (syntax-rules () ((_ o i) (sa-uvector-ref (sa-record-slot o 4) i))))
+;; (= a b) at two arguments, open-coded on Chez (calls.clj native-op). Clojure's
+;; Util.equiv settles most of it from the FIRST operand alone: a char, a boolean
+;; or nil on the left equals only itself, and nil on either side equals only
+;; nil, so once eq? has failed the answer is false without the call -- tools.
+;; reader compares a char it read against its terminator on every character. A
+;; string literal (what case on strings expands to) is a string? test and a
+;; string=?. Everything else is jolt=2. Two eq? flonums still compare by =, so
+;; NaN stays unequal to itself.
+(define-syntax jolt=2/i
+  (lambda (x)
+    (syntax-case x ()
+      ((_ a0 b0)
+       (let ((da (syntax->datum #'a0)) (db (syntax->datum #'b0)))
+         (cond
+           ((string? db) #'(let ((a a0)) (and (string? a) (string=? a b0))))
+           ((string? da) #'(let ((b b0)) (and (string? b) (string=? a0 b))))
+           ((or (char? da) (char? db)) #'(eq? a0 b0))
+           (else
+            #'(let ((a a0) (b b0))
+                (cond ((eq? a b) (if (flonum? a) (fl= a b) #t))
+                      ((or (char? a) (boolean? a) (eq? a jolt-nil) (eq? b jolt-nil)) #f)
+                      (else (jolt=2 a b)))))))))))
+;; java.lang.Character's predicates on a char, open-coded for ASCII on Chez
+;; (calls.clj emit-host-static-call); any other argument -- a wider char, an int
+;; code point -- takes the static site, FALLBACK, as before. Java's rules in
+;; ASCII: whitespace is 9-13, 28-31 (the separators) and space; digits 0-9;
+;; letters A-Z a-z.
+(define-syntax jolt-char-pred/i
+  (lambda (x)
+    (syntax-case x ()
+      ((_ kind c0 fallback)
+       (with-syntax ((test
+                      (case (syntax->datum #'kind)
+                        ((whitespace) #'(let ((n (char->integer c)))
+                                          (or (fx=? n 32) (and (fx>=? n 9) (fx<=? n 13))
+                                              (and (fx>=? n 28) (fx<=? n 31)))))
+                        ((digit) #'(and (char>=? c #\0) (char<=? c #\9)))
+                        ((upper) #'(and (char>=? c #\A) (char<=? c #\Z)))
+                        ((lower) #'(and (char>=? c #\a) (char<=? c #\z)))
+                        ((letter) #'(or (and (char>=? c #\a) (char<=? c #\z))
+                                        (and (char>=? c #\A) (char<=? c #\Z))))
+                        ((letter-or-digit) #'(or (and (char>=? c #\a) (char<=? c #\z))
+                                                 (and (char>=? c #\A) (char<=? c #\Z))
+                                                 (and (char>=? c #\0) (char<=? c #\9))))
+                        (else (syntax-error #'kind "unknown char predicate")))))
+         #'(let ((c c0))
+             (if (and (char? c) (char<? c #\x80)) test (fallback c))))))))
 ;; (.-f x) on an unproven receiver (backend interop.clj): the site's hit open-
 ;; coded -- the receiver's descriptor against the one the site cached, then the
 ;; cached place read unchecked (records-dispatch.ss jrec-field-site-ref, which

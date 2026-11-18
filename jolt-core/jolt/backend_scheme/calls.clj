@@ -114,6 +114,8 @@
              :host (:name fnode)
              nil)
         fixed (when nm (get (fixed-arity-ops nm) nargs))
+        ;; (= a b) open-codes its common answers on Chez (rt.ss jolt=2/i)
+        fixed (if (and (= fixed "jolt=2") (not= :gambit (session/target))) "jolt=2/i" fixed)
         op (or fixed (when nm (native-ops nm)))
         arity-ok (when nm (op-arity nm))]
     (cond
@@ -547,15 +549,27 @@
          " (" fxop " " (str/join " " tmps) ")"
          " " (emit-call tail? nop tmps tl ich) "))")))
 
+;; java.lang.Character's predicates that open-code for an ASCII char on Chez
+;; (rt.ss jolt-char-pred/i), by member name.
+(def ^:private char-pred-intrinsics
+  {"isWhitespace" "whitespace" "isDigit" "digit" "isUpperCase" "upper"
+   "isLowerCase" "lower" "isLetter" "letter" "isLetterOrDigit" "letter-or-digit"})
+
 ;; A host static method call, through a per-site cache inside a pool.
 (defn emit-host-static-call [tail? fnode order-args]
   (if (do (note-tail-call! tail?) (and *const-pool* (var-cache?)))
-    (let [site (hoist-const-per-site "(host-static-site-make)")]
+    (let [site (hoist-const-per-site "(host-static-site-make)")
+          proc (fn [n] (str "(" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
+                            " " site " " (chez-str-lit (:class fnode)) " "
+                            (chez-str-lit (:member fnode)) " " n ")"))
+          intrinsic (and (not= :gambit (session/target))
+                         (#{"Character" "java.lang.Character"} (:class fnode))
+                         (char-pred-intrinsics (:member fnode)))]
       (order-args (fn [as]
-                    (str "((" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
-                         " " site " " (chez-str-lit (:class fnode)) " "
-                         (chez-str-lit (:member fnode)) " " (count as) ")"
-                         (if (empty? as) "" (str " " (str/join " " as))) ")"))))
+                    (if (and intrinsic (= 1 (count as)))
+                      (str "(jolt-char-pred/i " intrinsic " " (first as) " " (proc 1) ")")
+                      (str "(" (proc (count as))
+                           (if (empty? as) "" (str " " (str/join " " as))) ")")))))
     (order-args (fn [as]
                   (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
                        (if (empty? as) "" (str " " (str/join " " as))) ")")))))

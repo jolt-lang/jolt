@@ -553,12 +553,16 @@
 ;; An empty list is nil without an iterator: RT.seq's first hasNext answers it,
 ;; and a reader that asks (seq pending-forms) before every form it reads
 ;; (clojure.tools.reader's read*) asks it of an empty LinkedList almost always.
-(register-seq-arm! al-family?
+(define al-family-seq
   (lambda (x)
     (cond ((fx=? (al-cnt x) 0) jolt-nil)
           ((member (jhost-tag x) '("arraylist" "linkedlist"))
            (al-chunked-seq (al-iterator x)))
           (else (list->cseq (al->list x))))))
+(register-seq-arm! al-family? al-family-seq)
+;; ...and ahead of the arm walk (seq.ss jolt-seq-host-first): no later arm
+;; claims an ArrayList-family value, so answering it first changes no answer.
+(set-jolt-seq-host-first! (lambda (x) (and (al-family? x) (al-family-seq x))))
 
 ;; ---- StringWriter -----------------------------------------------------------
 ;; Writer.write(int) writes the CHAR for that code; append(char) appends the char.
