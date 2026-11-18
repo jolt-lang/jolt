@@ -787,7 +787,22 @@
 (defn- deftype-slot-place [arg-nodes]
   [(:val (nth arg-nodes 2)) (:val (nth arg-nodes 3))])
 
+(declare emit-deftype-slot-read*)
 (defn- emit-deftype-slot-read [arg-nodes order-args]
+  (let [o0 (first arg-nodes)
+        flag (when (= :local (:op o0)) (get session/*self-recs* (munge-name (:name o0))))]
+    (if flag
+      ;; the arity checked its receiver once (lambda.clj self-receiver)
+      (let [[i n] (deftype-slot-place arg-nodes)]
+        (order-args
+         (fn [as]
+           (str "(if " flag
+                (if (<= n 8) (str " (jrec-slot/u " (first as) " " i ")")
+                    (str " (jrec*-slot/u " (first as) " " i ")"))
+                " (jrec-field " (first as) " " (second as) "))"))))
+      (emit-deftype-slot-read* arg-nodes order-args))))
+
+(defn- emit-deftype-slot-read* [arg-nodes order-args]
   (let [site (hoist-const-per-site "(jrec-field-site-make)")
         [i n] (deftype-slot-place arg-nodes)
         o (fresh-label "_o$")]

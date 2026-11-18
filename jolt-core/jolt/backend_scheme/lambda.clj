@@ -6,12 +6,13 @@
   Arity bodies are lowered through the `emit` the back end passes in."
   (:require [clojure.string :as str]
             [jolt.backend-scheme.names :refer [munge-chars munge-name]]
+            [jolt.ir :refer [reduce-ir-children]]
             [jolt.backend-scheme.session
-             :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
+             :refer [*array-vecs* *self-recs* *dbg-scope* *known-procs* *letrec-binders*
                      *qualifying-ns* *recur-target* *self-wrap* *site-call* *tail?*
                      *trace-frame* *trace-self* *trace-site* *variadic-reg-suppressed?* dbg-record
                      debug-locals? fresh-label site-call-helper target trace-frames?]]
-            [jolt.backend-scheme.hoist :refer [*cache-cells*]]
+            [jolt.backend-scheme.hoist :refer [*cache-cells* *const-pool* hoist-const hoist-const-per-site]]
             [jolt.backend-scheme.once :refer [*once-clears* once-last-uses]]
             [jolt.backend-scheme.fnsrc
              :refer [*fnsrc-def-init?* *fnsrc-ns* *fnsrc-regs* fnsrc-maker-site
@@ -56,6 +57,73 @@
           (= k :long)   (emit-nhint-coerce :long munged)
           :else munged)))
 
+;; One receiver check per deftype method (#1713). The deftype macro writes each
+;; read of a field as (__deftype-slot this :f I N) (30-macros.clj), and each
+;; such site tested the receiver's type and descriptor again -- five times in a
+;; three-field reader method. When an arity's body reads fields off its first
+;; param at two or more sites, and no binder in it shadows that param, the arity
+;; tests it once on entry: the receiver is a record of the descriptor the arity
+;; cached, or one whose layout puts every field the body reads where the body
+;; reads it (records-dispatch.ss jrec-self-site-fill!). The reads branch on that.
+;; slot-reads answers [[k i n] ...], or nil when the param is shadowed.
+(defn- slot-read? [node p]
+  (let [f (:fn node) args (:args node)]
+    (and (= :invoke (:op node)) (= :var (:op f)) (= "clojure.core" (:ns f))
+         (or (= "__deftype-slot" (:name f)) (= "__deftype-mutable-slot" (:name f)))
+         (= 4 (count args))
+         (let [[o k i n] args]
+           (and (= :local (:op o)) (= p (:name o))
+                (= :const (:op k)) (keyword? (:val k))
+                (= :const (:op i)) (int? (:val i))
+                (= :const (:op n)) (int? (:val n))
+                (< -1 (:val i) (:val n)))))))
+
+(defn- binds-name? [node p]
+  (let [op (:op node)]
+    (cond
+      (or (= op :let) (= op :loop)) (some (fn [b] (= p (nth b 0))) (:bindings node))
+      (= op :fn) (or (= p (:name node))
+                     (some (fn [a] (or (some (fn [q] (= p q)) (:params a)) (= p (:rest a))))
+                           (:arities node)))
+      (= op :try) (= p (:catch-sym node))
+      :else false)))
+
+(defn- slot-reads [node p]
+  (loop [work [node] acc []]
+    (if (empty? work)
+      acc
+      (let [n (peek work) work (pop work)]
+        (cond
+          (not (map? n)) (recur work acc)
+          (binds-name? n p) nil
+          (slot-read? n p) (let [[_ k i c] (:args n)]
+                             (recur (into work (:args n)) (conj acc [(:val k) (:val i) (:val c)])))
+          :else (recur (reduce-ir-children conj work n) acc))))))
+
+(defn- self-receiver
+  "[param-munged flag binding-string] for an arity that reads its first param's
+  fields at two or more sites, else nil."
+  [a]
+  (let [p (first (:params a))]
+    (when (and p *const-pool* (not= :gambit (target)))
+      (let [rs (slot-reads (:body a) p)]
+        (when (and rs (>= (count rs) 2))
+          (let [pm (munge-name p)
+                flag (fresh-label "_self$")
+                site (hoist-const-per-site "(jrec-field-site-make)")
+                layout (hoist-const
+                        (str "(vector "
+                             (str/join " " (map (fn [[k i n]]
+                                                  (str (hoist-const (str "(keyword #f " (pr-str (name k)) ")"))
+                                                       " " i " " n))
+                                                (distinct rs)))
+                             ")"))
+                d (fresh-label "_d$")]
+            [pm flag
+             (str "(" flag " (let ((" d " (jrec-pic-desc/i " pm ")))"
+                  " (if (and " d " (eq? " d " (unbox " site "))) #t"
+                  " (jrec-self-site-fill! " site " " pm " " layout "))))")]))))))
+
 (defn- emit-arity-clause [emit a]
   (let [orig (:params a)
         nh (into {} (:nhints a))
@@ -79,9 +147,15 @@
         ;; chain, bound inside the named let so a fn-level recur rebinds them; the
         ;; body is a tail region whatever the return hint (emit's leaf rule)
         dv (when (debug-locals?) (fresh-label "_dl$"))
+        self (self-receiver a)
+        sr (if self (assoc *self-recs* (nth self 0) (nth self 1))
+               (apply dissoc *self-recs* (concat params (when restp [restp]))))
         body (binding [*recur-target* label *tail?* (or (some? dv) body-tail?) *array-vecs* av
-                       *dbg-scope* dv]
+                       *dbg-scope* dv *self-recs* sr]
                (emit (:body a)))
+        ;; the receiver test, inside the named let so a fn-level recur with
+        ;; another receiver tests that one
+        body (if self (str "(let (" (nth self 2) ") " body ")") body)
         body (if dv
                (str "(let ((" dv " " (dbg-record nil (concat orig (when-let [r (:rest a)] [r]))
                                                  (concat params (when restp [restp]))) ")) "

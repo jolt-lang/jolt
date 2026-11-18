@@ -3901,6 +3901,19 @@
        (fx=? (jrdesc-nfields (jrec-desc obj)) n)
        (eqv? (jrec-field-index obj k) i)))
 
+(define (jrec-self-site-fill! site obj layout)
+  (let ((len (vector-length layout)))
+    (let loop ((j 0))
+      (cond
+        ((fx=? j len) (set-box! site (jrec-desc obj)) #t)
+        ((jrec-own-slot-layout?
+           obj
+           (vector-ref layout j)
+           (vector-ref layout (fx+ j 1))
+           (vector-ref layout (fx+ j 2)))
+         (loop (fx+ j 3)))
+        (else #f)))))
+
 (define (jrec-own-slot-miss site obj k i n)
   (if (jrec-own-slot-layout? obj k i n)
       (begin
