@@ -3315,32 +3315,48 @@
      (let ((pt (sa-record-slot desc 3)) (id id0))
        (and (vector? pt) (sa-ufx<? id (vector-length pt)) (sa-uvector-ref pt id))))))
 
+;; C is always a var cell (the emitter only spells this around a cell it bound
+;; from jolt-var), so its two slots are read unchecked: dyn-bound? is field 6
+;; and root field 2 of var-cell (define-record-type below). The checked
+;; accessors tested the cell's type on every call.
 (define-syntax jolt-var-fn
   (syntax-rules ()
     ((_ c0) (let ((c c0))
-              (if (or (var-cell-dyn-bound? c) (eq? c star-ns-cell))
+              (if (or (sa-record-slot c 6) (eq? c star-ns-cell))
                   (var-cell-deref-bound c)
-                  (var-cell-root c))))))
+                  (sa-record-slot c 2))))))
 ;; The protocol PIC's receiver descriptor, open-coded (#1713): a record of the
 ;; jrec family -- a deftype or defrecord instance, whose exact type is one of the
 ;; per-arity children (records.ss define-jrec-family) or the zero-field base --
 ;; answers its desc, the slot every child inherits first; anything else #f. As a
-;; procedure (jrec-pic-desc, records.ss) it was a call on every protocol call,
-;; and jrec? is a record? against the parent type, itself a library call. Here
-;; it is the exact descriptor compared against the family's ten, most fields
-;; last.
+;; procedure (jrec-pic-desc, records.ss) it was a call on every protocol call.
+;; record? against the family's base type open-codes on Chez 10 to a constant-
+;; time ancestry test, the same cost for every child: comparing the exact
+;; descriptor against the family's ten cost one compare per child passed, so a
+;; seven-field type paid seven (100M tests: 425 ms either way, against 440 for
+;; the first child and 690 for the seventh).
 (define-syntax jrec-pic-desc/i
   (syntax-rules ()
     ((_ x0)
-     (let* ((x x0) (t (sa-record-rtd x)))
-       (if (and t
-                (or (eq? t (record-type-descriptor jrec1)) (eq? t (record-type-descriptor jrec2))
-                    (eq? t (record-type-descriptor jrec3)) (eq? t (record-type-descriptor jrec4))
-                    (eq? t (record-type-descriptor jrec5)) (eq? t (record-type-descriptor jrec6))
-                    (eq? t (record-type-descriptor jrec7)) (eq? t (record-type-descriptor jrec8))
-                    (eq? t (record-type-descriptor jrec*)) (eq? t (record-type-descriptor jrec))))
+     (let ((x x0))
+       (if (record? x (record-type-descriptor jrec))
            (sa-record-slot x 0)
            #f)))))
+;; A deftype method's own field, read or written once its site has matched the
+;; receiver's descriptor (backend_scheme emit-deftype-slot-read): the descriptor
+;; fixes the field count, and so the exact child type and the slot, so the
+;; per-arity accessor's own type test is redundant. A redefinition installs a
+;; fresh descriptor (protocols.ss make-deftype-ctor), never a different layout
+;; under the same one. Field I sits after the base's four (desc ext hasheq meta);
+;; a type of more than eight keeps its fields in jrec*'s vector, the slot after.
+(define-syntax jrec-slot/u
+  (syntax-rules () ((_ o i) (sa-record-slot o (fx+ 4 i)))))
+(define-syntax jrec-slot-set!/u
+  (syntax-rules () ((_ o i v) (sa-record-slot-set! o (fx+ 4 i) v))))
+(define-syntax jrec*-slot/u
+  (syntax-rules () ((_ o i) (sa-uvector-ref (sa-record-slot o 4) i))))
+(define-syntax jrec*-slot-set!/u
+  (syntax-rules () ((_ o i v) (sa-uvector-set! (sa-record-slot o 4) i v))))
 
 ;; java.lang.String method interop: jolt-string-method, the
 ;; portable String/CharSequence surface record-method-dispatch falls through to on

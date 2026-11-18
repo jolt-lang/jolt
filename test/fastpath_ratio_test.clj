@@ -677,15 +677,18 @@
   ;; (0.8 -> 1.05, 1.2 -> 1.45); an uncached site reads higher still against
   ;; the cheaper call. The var call was then open-coded at the site and the
   ;; protocol fn's descriptor read with it (jolt-var-callN, jrec-pic-desc/i):
-  ;; 1.11 and 1.35, ceilings 1.35 and 1.7, against ~2.3-3.9 uncached.
+  ;; 1.11 and 1.35, ceilings 1.35 and 1.7, against ~2.3-3.9 uncached. The
+  ;; protocol call then read the var cell and the receiver's descriptor without
+  ;; their type tests, the instance? site unchanged: 1.35 and 1.56, ceilings
+  ;; 1.6 and 1.9.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          1.35)
+          1.6)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.7)
+          1.9)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"
@@ -861,11 +864,13 @@
           2.0)
   ;; A protocol call on a deftype's own impl costs a little more than a plain fn
   ;; call. It went var -> protocol fn -> per-site cache -> method, and the
-  ;; method bound every field before its body ran.
+  ;; method bound every field before its body ran. 1.65 then; the plain call
+  ;; then lost its var cell's type test (6.2 -> 4.9 ns) and the protocol call
+  ;; less of its cost, so 1.9, ceiling 2.4.
   (judge! "protocol-call"
           #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
           #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
-          2.1)
+          2.4)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))

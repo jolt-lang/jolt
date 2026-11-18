@@ -790,9 +790,12 @@
      (fn [as]
        (str "(let ((" o " " (first as) "))"
             " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
-            (if (<= n 8)
-              (str " (" (slot-accessor n i) " " o ")")
-              (str " (vector-ref (jrec*-vals " o ") " i ")"))
+            (cond
+              ;; on Chez the matched descriptor is the proof: an unchecked load
+              (and (not= :gambit (session/target)) (<= n 8)) (str " (jrec-slot/u " o " " i ")")
+              (not= :gambit (session/target)) (str " (jrec*-slot/u " o " " i ")")
+              (<= n 8) (str " (" (slot-accessor n i) " " o ")")
+              :else (str " (vector-ref (jrec*-vals " o ") " i ")"))
             " (jrec-own-slot-miss " site " " o " " (second as) " " i " " n ")))")))))
 
 (defn- emit-deftype-slot-write [arg-nodes order-args]
@@ -804,9 +807,11 @@
      (fn [as]
        (str "(let ((" o " " (first as) ") (" v " " (nth as 4) "))"
             " (if (and (jrec? " o ") (eq? (jrec-desc " o ") (unbox " site ")))"
-            (if (<= n 8)
-              (str " (begin (" (slot-accessor n i) "-set! " o " " v ") " v ")")
-              (str " (begin (vector-set! (jrec*-vals " o ") " i " " v ") " v ")"))
+            (cond
+              (and (not= :gambit (session/target)) (<= n 8)) (str " (begin (jrec-slot-set!/u " o " " i " " v ") " v ")")
+              (not= :gambit (session/target)) (str " (begin (jrec*-slot-set!/u " o " " i " " v ") " v ")")
+              (<= n 8) (str " (begin (" (slot-accessor n i) "-set! " o " " v ") " v ")")
+              :else (str " (begin (vector-set! (jrec*-vals " o ") " i " " v ") " v ")"))
             " (jrec-own-slot-set-miss! " site " " o " " (second as) " " i " " n " " v ")))")))))
 
 ;; The vector read in front of an indexed call (jolt.passes.numeric
