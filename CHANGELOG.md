@@ -169,6 +169,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A deftype's method or field reached through interop costs about what a
+  protocol call or a field load does (#1713).** `(.m ^T x)` on a deftype or
+  record walked every dispatch arm by name and built an argument vector on
+  every call (~240 ns); the call site now keeps the method the type declares,
+  keyed on its descriptor, the dispatch arms and the type-interface epoch
+  (~17 ns, against a protocol call's ~10). `(.-f x)` was a call into the
+  runtime and the checked per-arity accessor (~15 ns); the site's hit is now a
+  descriptor test and a load (~6 ns).
+
 - **A call through a var, a protocol call and a deftype field access drop
   their redundant type tests (#1713).** The call read its var cell through the
   record type's checked accessors, though the cell is always a var cell; the

@@ -3936,6 +3936,14 @@
   "__deftype-slot-set!"
   jrec-slot-write!)
 
+(define (jrec-field-place obj i)
+  (if (fx<=? (jrdesc-nfields (jrec-desc obj)) 8)
+      (fx+ 4 i)
+      (fx- -1 i)))
+
+(define (jrec-place-ref o p)
+  (jrec-field-ref o (if (fx<? p 0) (fx- -1 p) (fx- p 4))))
+
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))
     (if (and c
@@ -3944,7 +3952,7 @@
              (not (fx=?
                     (caar method-dispatch-arms)
                     arm-priority-user-override)))
-        (jrec-field-ref obj (cdr c))
+        (jrec-place-ref obj (cdr c))
         (let ((slot (and (jrec? obj)
                          (not (fx=?
                                 (caar method-dispatch-arms)
@@ -3952,7 +3960,9 @@
                          (jrec-dash-field-index obj method-name))))
           (if slot
               (begin
-                (set-box! site (cons (jrec-desc obj) slot))
+                (set-box!
+                  site
+                  (cons (jrec-desc obj) (jrec-field-place obj slot)))
                 (jrec-field-ref obj slot))
               (record-method-dispatch obj method-name (jolt-vector)))))))
 

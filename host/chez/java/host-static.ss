@@ -1228,7 +1228,7 @@
      (let ((c (unbox site)))
        (and c (jhost? obj)
             (let ((t (jhost-tag obj)) (ct (vector-ref c 0)))
-              (or (eq? t ct) (string=? t ct)))
+              (or (eq? t ct) (and (string? ct) (string=? t ct))))
             (eq? (vector-ref c 2) method-dispatch-arms)
             (fx=? (vector-ref c 3) host-methods-epoch)
             (vector-ref c 1))))))
@@ -1251,24 +1251,61 @@
              (let ((r ((cdar as) obj name rest)))
                (if (eq? r 'pass) (loop (cdr as)) r))))))
       (record-method-dispatch obj name (apply jolt-vector argl))))
-;; Any receiver but a jhost goes to record-method-dispatch exactly as an
-;; uncached site did, so a map's .get or a vector's .count pays one type test.
-(define (jolt-host-site-call0 site obj name)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj) (host-site-miss site obj name '())))
-      (record-method-dispatch obj name (jolt-vector))))
-(define (jolt-host-site-call1 site obj name a)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj a) (host-site-miss site obj name (list a))))
-      (record-method-dispatch obj name (jolt-vector a))))
-(define (jolt-host-site-call2 site obj name a b)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj a b) (host-site-miss site obj name (list a b))))
-      (record-method-dispatch obj name (jolt-vector a b))))
-(define (jolt-host-site-call3 site obj name a b c)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj a b c) (host-site-miss site obj name (list a b c))))
-      (record-method-dispatch obj name (jolt-vector a b c))))
+;; A deftype or defrecord receiver: (.m x) on one resolves, once the arms ahead
+;; of the dot-form arm have passed, to the method its type declares (dot-forms.ss
+;; dotform-method-arm, jrec-method-arity), so the site keeps that one too: #(desc proc arms epoch),
+;; hit on the same descriptor, the same arm list and the same type-interface
+;; epoch (jrdesc-ifc-epoch, which an extension of the type or its protocols
+;; bumps). It was the full by-name walk, with an argument vector, on every call
+;; (~220 ns for a method the JVM calls through an interface). hashCode and hasheq
+;; keep the walk: invoke-declared-method coerces their answer.
+(define-syntax jrec-site-hit
+  (syntax-rules ()
+    ((_ site obj)
+     (let ((c (unbox site)))
+       (and c
+            (eq? (vector-ref c 0) (sa-record-slot obj 0))
+            (eq? (vector-ref c 2) method-dispatch-arms)
+            (fx=? (vector-ref c 3) (jrdesc-ifc-epoch))
+            (vector-ref c 1))))))
+(define (jrec-site-miss site obj name argl)
+  (let ((arms method-dispatch-arms) (epoch (jrdesc-ifc-epoch)))
+    (if (or (fx=? (caar arms) arm-priority-user-override)
+            (string=? name "hashCode") (string=? name "hasheq"))
+        (record-method-dispatch obj name (apply jolt-vector argl))
+        (let loop ((as arms))
+          (cond
+            ((null? as) (record-method-dispatch-base obj name (apply jolt-vector argl)))
+            ;; the walk reached the arm that answers a deftype's declared method
+            ;; (dot-forms.ss dotform-method-arm): keep that method. The names that
+            ;; arm answers otherwise (IFn's invoke/applyTo, a record's __extmap
+            ;; and __meta) are left to it.
+            ((and (eq? (cdar as) dotform-method-arm)
+                  (not (member name '("invoke" "applyTo" "__extmap" "__meta")))
+                  (jrec-method-arity obj name (fx+ 1 (length argl))))
+             => (lambda (f)
+                  (if (procedure? f)
+                      (begin (set-box! site (vector (jrec-desc obj) f arms epoch))
+                             (apply f obj argl))
+                      (record-method-dispatch obj name (apply jolt-vector argl)))))
+            (else
+             (let ((r ((cdar as) obj name (apply jolt-vector argl))))
+               (if (eq? r 'pass) (loop (cdr as)) r))))))))
+;; Any receiver but a jhost or a jrec goes to record-method-dispatch exactly as
+;; an uncached site did, so a map's .get or a vector's .count pays two type tests.
+(define-syntax host-site-call
+  (syntax-rules ()
+    ((_ site obj name (a ...))
+     (cond
+       ((jhost? obj)
+        (let ((f (host-site-hit site obj))) (if f (f obj a ...) (host-site-miss site obj name (list a ...)))))
+       ((record? obj (record-type-descriptor jrec))
+        (let ((f (jrec-site-hit site obj))) (if f (f obj a ...) (jrec-site-miss site obj name (list a ...)))))
+       (else (record-method-dispatch obj name (jolt-vector a ...)))))))
+(define (jolt-host-site-call0 site obj name) (host-site-call site obj name ()))
+(define (jolt-host-site-call1 site obj name a) (host-site-call site obj name (a)))
+(define (jolt-host-site-call2 site obj name a b) (host-site-call site obj name (a b)))
+(define (jolt-host-site-call3 site obj name a b c) (host-site-call site obj name (a b c)))
 
 ;; java.lang.Number method surface (the boxed-number methods cljc code calls). The
 ;; integer projections wrap modulo their width (ring-codec relies on byteValue

@@ -225,7 +225,7 @@
       ;; other receiver takes record-method-dispatch as below.
       (and chez? (empty? args) (str/starts-with? m "-") (> (count m) 1)
            *const-pool* (var-cache?))
-      (str "(jrec-field-site-ref " (hoist-const-per-site "(jrec-field-site-make)") " "
+      (str "(jrec-field-site-ref/i " (hoist-const-per-site "(jrec-field-site-make)") " "
            t " " (chez-str-lit m) ")")
       chez? (unproven-receiver-emit m t args)
       :else (method-dispatch-emit t m args))))
