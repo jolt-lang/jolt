@@ -2435,7 +2435,9 @@
   ;; 7. close! wakes parked alts take with nil
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [c (a/timeout 3000)]))] (Thread/sleep 50) (a/close! c) (let [[v p] @f] (and (nil? v) (= p c)))))" :expected "true"}
   ;; 8. close! wakes parked alts put with false
-  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [[c :v]]))] (Thread/sleep 50) (a/close! c) (let [[v p] @f] [v (= p c)])))" :expected "[false true]"}
+  ;; A put pending at close! stays until taken (jolt-5psco); one that loses the
+  ;; race to close! fails. Either way the take and the put agree.
+  {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) f (future (a/alts!! [[c :v]]))] (Thread/sleep 50) (a/close! c) (let [t (a/<!! c) [v p] (deref f 1000 [:timeout nil])] [(contains? #{[:v true] [nil false]} [t v]) (= p c)])))" :expected "[true true]"}
   ;; 9. transducer chan works through alts put
   {:suite "core.async alts" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (map inc))] (a/alts!! [[c 1]]) (a/<!! c)))" :expected "2"}
   ;; Validate every put before any ready operation can mutate channel state.
@@ -2519,7 +2521,7 @@
   ;; jolt said "on a channel".
   {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1)] (try (a/>!! c nil) :no-throw (catch IllegalArgumentException e (ex-message e)))))" :expected "\"Can't put nil on channel\""}
   ;; Stage B — pending rendezvous put parks until consumed (does NOT complete on close)
-  {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (future (a/>!! c :v))] (Thread/sleep 50) (a/close! c) [(a/<!! c) @p]))" :expected "[:v true]"}
+  {:suite "core.async" :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (promise)] (a/put! c :v (fn [r] (deliver p r))) (a/close! c) [(a/<!! c) (deref p 1000 :timeout)]))" :expected "[:v true]"}
   ;; io-thread is the FIBER carrier (jolt-579): the three names pick the three
   ;; things — thread an OS thread, io-thread a fiber, go the CPS pass — and
   ;; jolt.host/fiber? is the runtime's own answer, the same read <! dispatches on.
@@ -4396,4 +4398,12 @@
   {:suite "dyn-cache", :label "...a conveyed frame read on another thread refuses set!", :expr "(do (def ^:dynamic *dc7* :root) (binding [*dc7* :a] (dotimes [_ 5] *dc7*) (let [r (clojure.core/deref (future (try (set! *dc7* :x) :set (catch IllegalStateException e :refused))))] [r *dc7*])))", :expected "[:refused :a]"}
   {:suite "dyn-cache", :label "...thread-bound?", :expr "(do (def ^:dynamic *dc8* 0) [(thread-bound? (var *dc8*)) (binding [*dc8* 1] [(thread-bound? (var *dc8*)) *dc8*]) *dc8*])", :expected "[false [true 1] 0]"}
   {:suite "dyn-cache", :label "...rebinding in a loop, frame by frame", :expr "(do (def ^:dynamic *dc9* 0) (loop [i 0 acc []] (if (< i 4) (recur (inc i) (conj acc (binding [*dc9* i] (+ *dc9* (binding [*dc9* (* 10 i)] *dc9*))))) [acc *dc9*])))", :expected "[[0 11 22 33] 0]"}
+  ;; A put pending when close! lands stays queued until a take consumes it, as
+;; on the JVM, where close! resolves only takers (async.ss, jolt-5psco).
+  {:suite "async-close-pending", :label "a put pending when close! lands survives until a take consumes it (jolt-5psco): put! on an unbuffered channel", :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (promise)] (a/put! c :v (fn [r] (deliver p r))) (a/close! c) [(a/<!! c) (deref p 1000 :timeout) (a/<!! c)]))", :expected "[:v true nil]"}
+  {:suite "async-close-pending", :label "...two pending puts behind a full buffer drain in order after close!", :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1) p1 (promise) p2 (promise)] (a/>!! c 0) (a/put! c 1 (fn [r] (deliver p1 r))) (a/put! c 2 (fn [r] (deliver p2 r))) (a/close! c) [(a/<!! c) (a/<!! c) (a/<!! c) (a/<!! c) (deref p1 1000 :timeout) (deref p2 1000 :timeout)]))", :expected "[0 1 2 nil true true]"}
+  {:suite "async-close-pending", :label "...poll! takes a pending put after close!", :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (promise)] (a/put! c :v (fn [r] (deliver p r))) (a/close! c) [(a/poll! c) (deref p 1000 :timeout) (a/poll! c)]))", :expected "[:v true nil]"}
+  {:suite "async-close-pending", :label "...an alts!! take reaches a pending put after close!", :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (promise)] (a/put! c :v (fn [r] (deliver p r))) (a/close! c) (let [[v port] (a/alts!! [c])] [v (= port c) (deref p 1000 :timeout)])))", :expected "[:v true true]"}
+  {:suite "async-close-pending", :label "...a transducer's completion waits for the pending puts", :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan 1 (partition-all 2)) p (promise)] (a/>!! c 1) (a/>!! c 2) (a/put! c 3 (fn [r] (deliver p r))) (a/close! c) [(a/<!! c) (a/<!! c) (a/<!! c) (deref p 1000 :timeout)]))", :expected "[[1 2] [3] nil true]"}
+  {:suite "async-close-pending", :label "...a put after close! still fails at once", :expr "(do (require '[clojure.core.async :as a]) (let [c (a/chan) p (promise)] (a/close! c) [(a/put! c :v (fn [r] (deliver p r))) (deref p 1000 :timeout) (a/>!! c 1) (a/offer! c 1)]))", :expected "[false false false false]"}
 ]
