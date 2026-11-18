@@ -347,8 +347,9 @@
 ;; each arity is its own clause, and binds the helper only if it has a site
 (let ((e (emit-num "(def _ (fn rt14c ([g] (+ 1 (g 1))) ([g x] (+ 1 (g x) (g x))) ([g x y] x)))")))
   (gate-check "(14) one restore per clause with a site" (count-sub e "(virtual-register 12)") 2))
-;; outside any fn there is no clause to bind it in, so the site keeps the inline form
-(let ((e (emit-num "(def x14 (str (identity 1)))")))
+;; outside any fn there is no clause to bind it in, so the site keeps the inline form.
+;; str at two arguments: at one it is open-coded on Chez (rt.ss jolt-str1/i), no call
+(let ((e (emit-num "(def x14 (str (identity 1) \"\"))")))
   (gate-check "(14) a top-level site still restores inline" (gate-sub? e "(virtual-register 12)") #t)
   (gate-check "(14) ...without the helper" (gate-sub? e "jolt-site-call") #f))
 ;; cp0 must fold every helper call away: what runs is the inline restore, with no
