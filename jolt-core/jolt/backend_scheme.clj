@@ -978,6 +978,42 @@
       (str "(let ((" *trace-frame* " " f ")) " *trace-frame* ")")
       f)))
 
+;; A catch's handler: binds the user's name to the unwrapped throwable, puts the
+;; trace slots back, runs the catch body. The same text under Chez's one-shot
+;; escape and Gambit's guard (emit-try).
+(defn- emit-catch-handler [node cs raw cl ts to chez-slot]
+  (str "(let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
+       (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
+       (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
+             chez-slot (str "(set-virtual-register! 2 " chez-slot ") ")
+             :else "")
+       "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
+                    ;; debug locals: the handler body is a tail region.
+                    ;; cs is the analyzer's; the user's name is a let
+                    ;; inside, which records itself.
+                    (binding [*tail?* (or (some? *dbg-scope*) *tail?*)]
+                      (emit (:catch-body node)))) ")) "
+       (if cl (str "(jolt-catch-leave! " cl ") ") "")
+       "(jolt-catch-complete!) r)"
+       (if cl ")" "")
+       ")"))
+
+;; A finally around CORE: the counted-lock mask edges emit-try describes, and on
+;; Chez the body run in place (rt.ss jolt-wind-inline) where Gambit hands a thunk
+;; to dynamic-wind (#1713).
+(defn- emit-finally-wind [core fin]
+  (let [lv (fresh-label "_wl$")
+        r (fresh-label "_wr$")
+        body (str "(set-virtual-register! 7 (fx- (virtual-register 7) 1))"
+                  " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r ")")
+        after (emit-finally-thunk
+               (str "(if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
+                    " " (binding [*tail?* false] (emit fin))))]
+    (str "(let ((" lv " (virtual-register 7))) (set-virtual-register! 7 (fx+ " lv " 1))"
+         (if (= :gambit (session/target))
+           (str " (dynamic-wind jolt-finally-in " (emit-finally-thunk body) " " after "))")
+           (str " (jolt-wind-inline jolt-finally-in (begin " body ") " after "))")))))
+
 ;; try/catch/finally. throw raises a Chez condition wrapping the jolt value
 ;; (jolt-throw = Scheme `raise` of a &jolt-throw condition); catch lowers to
 ;; `guard`, whose raw binding is unwrapped via jolt-unwrap-throw so the catch var
@@ -1045,21 +1081,7 @@
                      ;; continuation, which costs in proportion to the stack
                      ;; depth at the try, around a body run in place (rt.ss
                      ;; jolt-guard-body, #1713); guard on Gambit
-                     handler (str "(let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
-                                  (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
-                                  (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
-                                        chez-slot (str "(set-virtual-register! 2 " chez-slot ") ")
-                                        :else "")
-                                  "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
-                                               ;; debug locals: the handler body is a tail region.
-                                               ;; cs is the analyzer's; the user's name is a let
-                                               ;; inside, which records itself.
-                                               (binding [*tail?* (or (some? *dbg-scope*) *tail?*)]
-                                                 (emit (:catch-body node)))) ")) "
-                                  (if cl (str "(jolt-catch-leave! " cl ") ") "")
-                                  "(jolt-catch-complete!) r)"
-                                  (if cl ")" "")
-                                  ")")
+                     handler (emit-catch-handler node cs raw cl ts to chez-slot)
                      body (if (= :gambit (session/target))
                             (str "(guard (" raw " (else " handler ")) " (emit-try-body node) ")")
                             ;; Chez: a one-shot escape around the body run in place
@@ -1087,20 +1109,7 @@
       ;; at entry. Inline register ops and not the jolt-locks syntax, because the
       ;; emission is also eval'd where only procedures are bound (Gambit's eval
       ;; sees no shim macro, which is also why this says fx> and not fx>?).
-      (let [lv (fresh-label "_wl$")
-            r (fresh-label "_wr$")]
-        ;; On Chez the body runs in place (rt.ss jolt-wind-inline) rather than
-        ;; as a thunk handed to dynamic-wind: the same winder, the same mask
-        ;; edges, no closure over the body's free variables per entry (#1713).
-        (let [body (str "(set-virtual-register! 7 (fx- (virtual-register 7) 1))"
-                        " (let ((" r " " core ")) (set-virtual-register! 7 (fx+ (virtual-register 7) 1)) " r ")")
-              after (emit-finally-thunk
-                     (str "(if (fx> (virtual-register 7) " lv ") (set-virtual-register! 7 (fx- (virtual-register 7) 1)))"
-                          " " (binding [*tail?* false] (emit fin))))]
-          (str "(let ((" lv " (virtual-register 7))) (set-virtual-register! 7 (fx+ " lv " 1))"
-               (if (= :gambit (session/target))
-                 (str " (dynamic-wind jolt-finally-in " (emit-finally-thunk body) " " after "))")
-                 (str " (jolt-wind-inline jolt-finally-in (begin " body ") " after "))")))))
+      (emit-finally-wind core fin)
       core)))
 
 ;; Does this IR node emit to an expression that yields a Scheme boolean? Used to
