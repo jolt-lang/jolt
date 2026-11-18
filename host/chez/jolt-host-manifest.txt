@@ -233,6 +233,7 @@ protocol-method-var?
 protocol-methods
 proxy-super-call
 publish-loader-artifact!
+push-binding1!
 rational-type?
 rbt-delete
 rbt-found

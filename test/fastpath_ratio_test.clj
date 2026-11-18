@@ -699,11 +699,14 @@
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
           1.9)
 
-  ;; Building a reify must cost about what building a deftype costs.
+  ;; Building a reify must cost about what building a deftype costs. The
+  ;; deftype's (T. a) then kept its resolved ctor at the call site (host-static.ss
+  ;; host-new-site/i), ~2.3x cheaper, with the reify unchanged: 1.9 -> 4.4,
+  ;; ceiling 3.0 -> 5.5.
   (judge! "reify-construct"
           #(dotimes [_ dispatch-n] (mk-type 1))
           #(dotimes [_ dispatch-n] (mk-reify 1))
-          3.0)
+          5.5)
 
   ;; satisfies? on a reify must cost about a protocol call. The protocol call
   ;; got cheaper under #1713 (a var call open-coded, the PIC's descriptor read

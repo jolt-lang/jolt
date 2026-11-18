@@ -87,10 +87,16 @@
 
 ;; conj semantics per entry arg (a map merges, a [k v] pair adds); nil args are
 ;; no-ops; all-nil (or no args) is nil.
-(defn merge [& maps]
-  (when (some identity maps)
-    (reduce (fn [acc m] (if (nil? m) acc (conj (or acc {}) m)))
-            maps)))
+(defn merge
+  ;; the fixed arities answer what the variadic one does without its rest list,
+  ;; some and reduce: (merge m nil) is m, (merge nil m) is (conj {} m)
+  ([] nil)
+  ([m] m)
+  ([m1 m2] (cond (nil? m2) m1 (nil? m1) (conj {} m2) :else (conj m1 m2)))
+  ([m1 m2 & maps]
+   (when (or m1 m2 (some identity maps))
+     (reduce (fn [acc m] (if (nil? m) acc (conj (or acc {}) m)))
+             (merge m1 m2) maps))))
 
 (defn merge-with [f & maps]
   (when (some identity maps)

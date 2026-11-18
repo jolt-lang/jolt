@@ -1291,8 +1291,35 @@
             (else
              (let ((r ((cdar as) obj name (apply jolt-vector argl))))
                (if (eq? r 'pass) (loop (cdr as)) r))))))))
-;; Any receiver but a jhost or a jrec goes to record-method-dispatch exactly as
-;; an uncached site did, so a map's .get or a vector's .count pays two type tests.
+;; A runtime record type whose methods an arm answers by name (a regex Pattern,
+;; a Matcher) can register a resolver, (name nargs) -> a procedure taking the
+;; receiver and the arguments, or #f; the site then keeps the procedure for the
+;; receiver's record type, #(rtd proc arms 0), hit on the same type and arm list.
+;; A resolver claims only names no arm ahead of its own answers. Without it a
+;; Matcher's .group walked the arms and the regex arm's string=? chain on every
+;; call (~175 ns, against the JVM's ~4) -- tools.reader reads a number's parts
+;; with six of them.
+(define record-method-resolvers '())   ; ((rtd . resolver) ...)
+(define (register-record-method-resolver! rtd resolver)
+  (set! record-method-resolvers (cons (cons rtd resolver) record-method-resolvers)))
+(define-syntax rec-site-hit
+  (syntax-rules ()
+    ((_ site obj)
+     (let ((c (unbox site)))
+       (and c
+            (eq? (vector-ref c 0) (record-rtd obj))
+            (eq? (vector-ref c 2) method-dispatch-arms)
+            (vector-ref c 1))))))
+(define (rec-site-miss site obj name argl)
+  (let* ((arms method-dispatch-arms)
+         (r (and (not (fx=? (caar arms) arm-priority-user-override))
+                 (assq (record-rtd obj) record-method-resolvers)))
+         (f (and r ((cdr r) name (length argl)))))
+    (if (procedure? f)
+        (begin (set-box! site (vector (record-rtd obj) f arms 0)) (apply f obj argl))
+        (record-method-dispatch obj name (apply jolt-vector argl)))))
+;; Any other receiver goes to record-method-dispatch exactly as an uncached site
+;; did, so a map's .get or a vector's .count pays a few type tests.
 (define-syntax host-site-call
   (syntax-rules ()
     ((_ site obj name (a ...))
@@ -1301,7 +1328,24 @@
         (let ((f (host-site-hit site obj))) (if f (f obj a ...) (host-site-miss site obj name (list a ...)))))
        ((record? obj (record-type-descriptor jrec))
         (let ((f (jrec-site-hit site obj))) (if f (f obj a ...) (jrec-site-miss site obj name (list a ...)))))
+       ((and (record? obj) (pair? record-method-resolvers))
+        (let ((f (rec-site-hit site obj))) (if f (f obj a ...) (rec-site-miss site obj name (list a ...)))))
        (else (record-method-dispatch obj name (jolt-vector a ...)))))))
+;; java.util.regex: the Matcher and Pattern methods the regex arm answers
+;; (host-static-classes.ss), by the same procedures it calls.
+(register-record-method-resolver! (record-type-descriptor matcher-t)
+  (lambda (name n)
+    (cond ((string=? name "group") (and (fx<=? n 1) jolt-matcher-group))
+          ((string=? name "matches") (and (fx=? n 0) jolt-matcher-matches))
+          ((string=? name "lookingAt") (and (fx=? n 0) jolt-matcher-looking-at))
+          ((string=? name "groupCount") (and (fx=? n 0) jolt-matcher-group-count))
+          ((string=? name "find") (and (fx=? n 0) (lambda (m) (not (jolt-nil? (jolt-re-find m))))))
+          (else #f))))
+(register-record-method-resolver! (record-type-descriptor regex-t)
+  (lambda (name n)
+    (cond ((string=? name "matcher") (and (fx=? n 1) jolt-re-matcher))
+          ((string=? name "pattern") (and (fx=? n 0) regex-t-source))
+          (else #f))))
 (define (jolt-host-site-call0 site obj name) (host-site-call site obj name ()))
 (define (jolt-host-site-call1 site obj name a) (host-site-call site obj name (a)))
 (define (jolt-host-site-call2 site obj name a b) (host-site-call site obj name (a b)))
@@ -2178,6 +2222,26 @@
                (if (or (lib-provider-for class) (not (host-class-known? class)))
                    (unknown-class-message class)
                    (string-append "No matching ctor found for class " class)))))))))
+
+;; (Name. arg …) at a call site that keeps the constructor it resolved (the
+;; backend emits host-new-site/i on Chez): the box holds (epoch . ctor), stamped
+;; with class-ctor-epoch as host-new-cache is, and a hit calls the ctor with the
+;; arguments in place -- no class-name hash, rest list or apply per object, which
+;; was most of a tools.reader reader's construction. Only a registered ctor is
+;; kept; the autoload and var paths stay host-new's, every time.
+(define (host-new-site-make) (box #f))
+(define (host-new-site-miss site class . args)
+  (let* ((epoch class-ctor-epoch) (ctor (host-new-ctor class)))
+    (if ctor
+        (begin (set-box! site (cons epoch ctor)) (apply ctor args))
+        (apply host-new class args))))
+(define-syntax host-new-site/i
+  (syntax-rules ()
+    ((_ site0 class arg ...)
+     (let* ((site site0) (c (unbox site)))
+       (if (and c (fx= (car c) class-ctor-epoch))
+           ((cdr c) arg ...)
+           (host-new-site-miss site class arg ...))))))
 
 ;; Does jolt know CLASS — a simple, imported or qualified name — as a class, ctor
 ;; or no ctor: the runtime registers statics or a ctor for it, or the class graph

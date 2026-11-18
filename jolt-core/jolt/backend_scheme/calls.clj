@@ -40,7 +40,9 @@
     ;; the array access helpers: each coerces a number or throws, and reads or
     ;; writes the backing -- nothing a jolt fn can run under
     (into #{"jolt-throw" "jolt-flaget" "jolt-flaset" "jolt-flaset-float"
-            "jolt-vaget" "jolt-vaset" "jolt-baset"}
+            "jolt-vaget" "jolt-vaset" "jolt-baset"
+            ;; native-op's Chez spellings of zero?/pos?/neg? (rt.ss jolt-zero?/i)
+            "jolt-zero?/i" "jolt-pos?/i" "jolt-neg?/i"}
           (for [[op spec] op-registry/op-registry
                 :when (and (not= op "=")
                            (or (:num-args? spec) (:dbl spec) (:lng spec) (contains? preds op)))
@@ -117,6 +119,10 @@
         ;; (= a b) open-codes its common answers on Chez (rt.ss jolt=2/i)
         fixed (if (and (= fixed "jolt=2") (not= :gambit (session/target))) "jolt=2/i" fixed)
         op (or fixed (when nm (native-ops nm)))
+        ;; zero?/pos?/neg? test a fixnum inline on Chez (rt.ss jolt-zero?/i)
+        op (if (and (#{"jolt-zero?" "jolt-pos?" "jolt-neg?" "jolt-nth"} op) (not= :gambit (session/target)))
+             (str op "/i")
+             op)
         arity-ok (when nm (op-arity nm))]
     (cond
       (nil? op) nil

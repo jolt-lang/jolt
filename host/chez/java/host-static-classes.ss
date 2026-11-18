@@ -4456,10 +4456,16 @@
   (cond ((al-family? coll) (list->cseq (al->list coll)))
         ((sb-jhost? coll) (sb-str* coll))
         (else coll)))
+;; jolt's own kinds go straight to the base nth: every nth the runtime makes --
+;; a vector called as a fn, PersistentList/create, a destructure's fallback --
+;; comes through here, and the shims' type tests (and jutil-views' on top of
+;; them) were most of its cost for a vector.
+(define-syntax shim-nth-native?
+  (syntax-rules () ((_ c) (or (pvec? c) (string? c) (cseq? c) (jolt-nil? c)))))
 (set! jolt-nth
   (case-lambda
-    ((coll i) (%shim-nth (shim-nth-target coll) i))
-    ((coll i d) (%shim-nth (shim-nth-target coll) i d))))
+    ((coll i) (if (shim-nth-native? coll) (%shim-nth coll i) (%shim-nth (shim-nth-target coll) i)))
+    ((coll i d) (if (shim-nth-native? coll) (%shim-nth coll i d) (%shim-nth (shim-nth-target coll) i d)))))
 (def-var! "clojure.core" "nth" jolt-nth)
 
 ;; --- java.nio.charset ---------------------------------------------------------
