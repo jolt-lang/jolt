@@ -44,7 +44,7 @@
   (let [op (offset-pos s) local (if op (subs s 0 op) s)
         off (parse-offset (if op (subs s op) "Z"))
         ti (.indexOf local "T")
-        ed (l/parse-iso-date (subs local 0 ti))
+        ed (l/parse-iso-date (subs local 0 ti) s 0)
         nod (u/parse-hms->nano (subs local (inc ti)))]
     (- (+ (* ed u/nanos-per-day) nod) (* off nps))))
 
