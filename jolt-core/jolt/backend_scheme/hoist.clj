@@ -5,6 +5,7 @@
   rather than rebuilt per evaluation. Also which top-level expressions get such
   a scope at all."
   (:require [clojure.string :as str]
+            [jolt.ir :as ir]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.session :refer [fresh-label var-cache?]]))
 
@@ -167,19 +168,7 @@
     (str "(jolt-site-const " (chez-str-lit id) " (lambda () " s "))")
     s))
 
-(defn const-coll-node? [n]
-  (and (map? n)
-       (case (:op n)
-         :const true
-         :quote true
-         ;; a #"…" literal is a constant object too (the reader hands the
-         ;; reference compiler a Pattern, which lands in the constant pool), so
-         ;; a collection holding one is as constant as one holding scalars
-         :regex true
-         :vector (every? const-coll-node? (:items n))
-         :set (every? const-coll-node? (:items n))
-         :map (every? const-coll-node? (apply concat (:pairs n)))
-         false)))
+(defn const-coll-node? [n] (ir/const-coll-node? n))
 
 ;; A :map literal whose keys are all constant keywords, pairwise distinct
 ;; (the reader refuses a repeat; checked anyway, since the direct build below

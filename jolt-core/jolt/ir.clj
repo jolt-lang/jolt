@@ -63,6 +63,16 @@
 (defn map-node [pairs] {:op :map :pairs pairs})
 (defn set-node [items] {:op :set :items items})
 
+(defn const-coll-node?
+  "True for the literal trees eligible for collection constant pooling."
+  [n]
+  (and (map? n)
+       (case (:op n)
+         (:const :quote :regex) true
+         (:vector :set) (every? const-coll-node? (:items n))
+         :map (every? const-coll-node? (apply concat (:pairs n)))
+         false)))
+
 (defn quote-node [form] {:op :quote :form form})
 (defn throw-node [expr] {:op :throw :expr expr})
 
@@ -400,6 +410,25 @@
                  (if (and (= shape :opt) (not v))
                    acc
                    (reduce-ir-child f acc shape v))))))))
+
+(defn reduce-ir-children-with-path
+  "Fold f (acc child path) over the same children as reduce-ir-children.
+  A path consists of map keys and vector indices relative to the walk root."
+  [f acc node path]
+  (reduce
+    (fn [a [k shape]]
+      (let [v (get node k)
+            p (conj path k)]
+        (case shape
+          :opt (if v (f a v p) a)
+          :nodes (reduce-kv (fn [a i child] (f a child (conj p i))) a v)
+          :pairs (reduce-kv (fn [a i [left right]]
+                              (f (f a left (conj p i 0)) right (conj p i 1)))
+                            a v)
+          :bindings (reduce-kv (fn [a i b] (f a (nth b 1) (conj p i 1))) a v)
+          :arities (reduce-kv (fn [a i ar] (f a (:body ar) (conj p i :body))) a v)
+          (f a v p))))
+    acc (get ir-child-layout (:op node))))
 
 ;; All schema problems in the tree rooted at node, via reduce-ir-children (so an
 ;; unknown op — which recurses over no children — is still reported for itself).
