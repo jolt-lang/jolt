@@ -1239,6 +1239,56 @@
     ((x86-64) "amd64")
     ((i386) "x86")
     (else (sa-host-tag))))
+;; user.home, by the JVM's rule (java_props_md.c on Linux, NSHomeDirectory on
+;; macOS): the home directory in the user's passwd entry. HOME is read only when
+;; that entry has no usable directory (missing, empty or one character, as "/"
+;; is in some containers), and "?" answers when HOME is unset or empty too. So
+;; HOME set to some other directory does not move user.home, as on the JVM, and
+;; an unset HOME no longer leaves it "" (which made ~/x expand to a relative x).
+;; Windows keeps HOME: the JVM reads the profile folder there, which no passwd
+;; entry describes. Android reads HOME first: bionic has no passwd database, and
+;; its getpwuid makes up "/" or "/data" for an app's uid, so under Termux the
+;; JVM rule would answer /data instead of the app's home. Bionic is told apart
+;; by __system_property_get, which no other libc exports.
+;;
+;; getpwuid's struct passwd is read at measured offsets: pw_uid at 16 on both
+;; LP64 layouts, pw_dir at 48 on Darwin (pw_change and pw_class come first) and
+;; 32 on glibc, musl and bionic. The entry is used only when its pw_uid is the
+;; caller's uid and its pw_dir is absolute, so a layout these rows don't
+;; describe (a BSD reporting as linux, a 32-bit host) falls back to HOME rather
+;; than reading another field.
+(define c-getuid (jolt-foreign-proc-safe "getuid" '() 'unsigned-32))
+(define c-getpwuid-home (jolt-foreign-proc-safe "getpwuid" '(unsigned-32) 'uptr))
+(define (sys-c-string-at addr)
+  (let loop ((i 0) (acc '()))
+    (let ((b (sa-foreign-ref 'unsigned-8 addr i)))
+      (if (fx=? b 0)
+          (utf8->string (u8-list->bytevector (reverse acc)))
+          (loop (fx+ i 1) (cons b acc))))))
+(define (sys-passwd-home)
+  (guard (e (#t #f))
+    (let ((dir-off (case (sa-os-family) ((macos) 48) ((linux) 32) (else #f))))
+      (and dir-off c-getuid c-getpwuid-home
+           (= 8 (sa-foreign-sizeof 'void*))
+           (let* ((uid (c-getuid)) (pw (c-getpwuid-home uid)))
+             (and (not (= 0 pw))
+                  (= uid (sa-foreign-ref 'unsigned-32 pw 16))
+                  (let ((dp (sa-foreign-ref 'uptr pw dir-off)))
+                    (and (not (= 0 dp))
+                         (let ((d (sys-c-string-at dp)))
+                           (and (fx>? (string-length d) 0)
+                                (char=? #\/ (string-ref d 0))
+                                d))))))))))
+(define sys-bionic? (and (jolt-foreign-proc-safe "__system_property_get" '(string u8*) 'int) #t))
+(define (sys-user-home)
+  (let ((home (let ((h (getenv "HOME"))) (and h (fx>? (string-length h) 0) h))))
+    (cond ((eq? (sa-os-family) 'windows) (or home ""))
+          ((and sys-bionic? home) home)
+          (else
+           (let ((d (sys-passwd-home)))
+             (cond ((and d (fx>? (string-length d) 1)) d)
+                   (home home)
+                   (else "?")))))))
 ;; user.name: the login name from the environment, as the JVM reports it.
 (define (sys-user-name)
   (or (getenv "USER") (getenv "LOGNAME") (getenv "USERNAME") jolt-nil))
@@ -1364,7 +1414,7 @@
           ;; owns that chain — JOLT_PWD, then the process's own working directory —
           ;; so the property and every relative path resolve against the same place.
           ((string=? k "user.dir") (jolt-user-dir))
-          ((string=? k "user.home") (or (getenv "HOME") ""))
+          ((string=? k "user.home") (sys-user-home))
           ((string=? k "java.io.tmpdir") (host-temp-dir))
           ((pair? dflt) (car dflt))
           (else jolt-nil))))
@@ -1379,7 +1429,7 @@
                              "path.separator" (path-list-separator)
                              "java.class.path" (sys-class-path)
                              "jolt.version" (jolt-version-string)
-                             "user.dir" (jolt-user-dir) "user.home" (or (getenv "HOME") "")
+                             "user.dir" (jolt-user-dir) "user.home" (sys-user-home)
                              "java.io.tmpdir" (host-temp-dir))))
     ;; keys whose value can be absent join only when they answer — a JVM
     ;; Properties never holds a nil value

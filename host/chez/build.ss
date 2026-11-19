@@ -167,10 +167,9 @@
 ;; so `cc` alone falls through to the system compiler. The link then pairs one
 ;; vendor's driver with another vendor's assembler and linker (#788: a distro
 ;; gcc 16 emitting .base64 into the bundle's pre-2.43 gas). Chez itself never
-;; had the problem: chezscheme.mk builds it with the absolute CC=$(GCC), and the
-;; Makefile now exports JOLT_CC with that same GCC. Same shape as JOLT_CHEZ,
-;; which exists because a bare `chez` on PATH could likewise be a different
-;; install from the one make provisioned.
+;; had the problem: provision-chez.sh builds it with the absolute CC=$(GCC), and
+;; the Makefile now exports JOLT_CC with that same GCC. Same shape as JOLT_CHEZ,
+;; which hands down the Chez make selected rather than whatever is on PATH.
 (define (bld-cc)
   (if (bld-cross?)
       (or (bld-env-override "JOLT_TARGET_CC") "cc")

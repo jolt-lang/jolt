@@ -61,7 +61,7 @@ jobs:
             CFLAGS="-fPIC -O2" CC_FOR_BUILD=cc
           make -j"$(nproc)"
 
-      # bin/jolt wants a `chez` on PATH; the workarea scheme needs its boot
+      # bin/jolt takes the Chez from JOLT_CHEZ; the workarea scheme needs its boot
       # dir. jolt build's legacy cc path reads the kernel/boots via JOLT_CHEZ_CSV.
       - name: Wire up chez wrapper
         run: |
@@ -70,6 +70,8 @@ jobs:
             "$HOME/chez/ta6le/boot/ta6le" "$HOME/chez/ta6le/bin/ta6le/scheme" > ~/bin/chez
           chmod +x ~/bin/chez
           echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "CHEZ=$HOME/bin/chez" >> "$GITHUB_ENV"
+          echo "JOLT_CHEZ=$HOME/bin/chez" >> "$GITHUB_ENV"
           echo "JOLT_CHEZ_CSV=$HOME/chez/ta6le/boot/ta6le" >> "$GITHUB_ENV"
           echo "JOLT_QUIET=1" >> "$GITHUB_ENV"
 

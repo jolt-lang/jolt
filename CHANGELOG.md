@@ -109,8 +109,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so `read-bencode`, `write-bencode`, `read-netstring` and `write-netstring`
   behave as the library does. A project that declares `nrepl/bencode` itself
   still loads its own copy.
+- **A script can tell being run from being loaded.** Running a file sets the
+  `jolt.file` system property to its absolute path, as babashka sets
+  `babashka.file`, so a script that a second one may `load-file` can guard its
+  entry point with `(when (= *file* (System/getProperty "jolt.file")) (-main))`.
+  The property names the file given on the command line, so a file that script
+  loads sees another path. A program read from standard input or run with `-e`
+  leaves it unset. A task whose `:main-opts` name a script sets it too, except
+  for the `:depends` that `run --parallel` runs side by side, where one
+  process-wide property could name only one of them.
 
 ### Changed
+
+- **jolt always builds on a patched Chez.** `make` no longer uses a Chez
+  found on `PATH`: unless `CHEZ=` names one, it downloads Chez 10.4.1,
+  applies `host/chez/chez-patches` and builds it under `.cache/local` (a few
+  minutes, once), and rebuilds it when the patches change. Before, a
+  provisioned Chez on macOS and Linux was stock 10.4.1, and so was any Chez
+  on `PATH`, so a from-source jolt ran a different kernel from the releases
+  (`jolt.ffi/stack-args-correct?` false on macOS arm64). `JOLT_SYSTEM_CHEZ`
+  is gone, and `bin/jolt` no longer searches `PATH` either. On Windows, pass
+  a patched Chez as `CHEZ=`. (#1699)
 
 - **`clojure.tools.reader` and rewrite-clj read faster** (#1646). Their reader
   types are deftypes with mutable fields, and five steps on that path looked a
@@ -178,7 +197,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the existing path, which went var, protocol fn, per-site cache, method. A
   protocol call on a deftype now costs about 1.65x a plain fn call.
   `deftype` and `defrecord` methods also bind only the fields their bodies
-  name.
+  name, unless a body calls a macro from outside `clojure.core`, whose
+  expansion may name any field.
 - **A call through a var, a multimethod call, `str` of a StringBuilder and
   `.charAt` cost less (#1713).** These are the per-operation costs a reader
   pays for every character and node. A var-routed call read the var through
@@ -275,8 +295,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contains an underscore, so a name without one now skips the lookup. A
   generated 200k-line project with 1,106 records and 1,070 `extend-*` forms
   loads from the AOT cache in 1.9 s instead of 2.6 s.
+- **Traced code compiles faster, recovering most of 0.8.23's cold-start
+  regression (#1645).** Stack-trace tracing puts the site slot back after every
+  non-tail call, and since 0.8.23 that meant saving and restoring two slots at
+  each one. HoneySQL's suite has ~20k such sites, and Chez compiled the traced
+  code ~40% slower than untraced. A fn now reads the slot once when it is
+  entered, and each site is one store after the call returns, with a tail site's
+  pair boxed so a single slot tells the innermost erased frame from the nearest
+  one further out. Stack traces are unchanged. On a cold cache the HoneySQL
+  suite runs in 39.4 s instead of 44.8 s (37.5 s with `JOLT_TRACE=0`), and a
+  release `jolt build` of a generated 2,000-fn app takes 22.5 s instead of
+  37.5 s. Two new gates watch this: `make tracecompilecost` holds the traced
+  compile of real code within 1.40x of the untraced one, measured in one
+  process, and the release bench gate gains a `compile` row timing a cold source
+  load against the previous release.
 
 ### Fixed
+- `(.indexOf s c)` and `.lastIndexOf` given a char code no string holds (a lone surrogate, a negative int, or one past `0x10FFFF`) answered a `ClassCastException` from `integer->char`; they answer -1, as the JVM does.
+
+- **A multimethod no longer answers with a method it has since replaced.** On
+  arm64, a thread dispatching while another ran `defmethod` (or
+  `remove-method`, `.addMethod`, `prefer-method`) could see the new cache epoch
+  together with the old methods table, and cache the old method stamped as
+  current, so every later call took it. A stress run with one writer swapping a
+  method and three dispatching threads hit it 2 times in 200k swaps. Every
+  epoch bump now goes through one helper with a release fence, the dispatch
+  path reads the epoch with an acquire fence, and `make mmepochcheck` fails on a
+  bump that skips the helper.
+
+- **A stack trace keeps the caller a running tail call erased.** When `c`
+  tail-called `k`, and `k` threw from a call of its own (into host code, or
+  through a fn that threw from a non-tail call), the trace went straight from
+  `k` to whatever called `c`, and `c` was missing. Since 0.8.23 that site is
+  kept aside during `k`'s calls and spliced in below `k` when `k` is still a
+  live frame, but the reporter also required the innermost frame, the one that
+  threw, to name `c` among its callees, which it does not. A tail call to a
+  protocol method keeps its caller too: the call site names the protocol fn,
+  and the live frame is now matched to it through the impl (a deftype's,
+  defrecord's, reify's or extend's method).
+- **Follow-ups to #1687 and #1689.** A program's own `sun.misc.Signal`
+  handler for INT now outranks the REPL's ^C, as it would on the JVM;
+  `SIG_DFL` gives ^C back to the REPL. The signal relay's reader stops if
+  its pipe is closed under it, rather than spinning on failed reads. A
+  defrecord's `.entrySet` is `(set this)`, in hash order, as on the JVM,
+  and `jsonista.core` writes a record's fields in that order, as Jackson
+  does.
 
 - **A deftype no longer answers for a host class that shares its simple
   name.** A qualified class with no constructor of its own, such as
@@ -326,6 +389,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format, `readPassword` turns echo off and puts it back even on ^C, and
   `writer`, `reader`, `format`, `printf`, `flush`, `charset` and `isTerminal`
   are there too. Windows still answers nil.
+- **`user.home` comes from the passwd entry, as on the JVM.** It was `HOME`
+  or `""`, so with `HOME` unset `(fs/expand-home "~/.config")` gave the
+  relative path `.config`, and a tool defaulting to it read and wrote under
+  the current directory. Now `user.home` is the home directory in the user's
+  passwd entry, and `HOME` only stands in when that entry has none (or just
+  `/`). A `HOME` pointing somewhere else no longer moves it, which is the
+  JVM's behaviour too. Windows still reads `HOME`. Android reads `HOME`
+  first, because bionic's passwd entries are made up.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as
@@ -341,6 +412,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as keywords and symbols, so a config typo like `{:token :abc:}` loaded here
   and failed on the JVM. Each is now `Invalid token`. A colon inside a name
   (`:a:b`, `a/:b`) still reads.
+- **`clojure.test/run-tests` on a namespace that doesn't exist throws, as on
+  the JVM.** It reported `Ran 0 tests` instead. A test file whose `ns` form
+  doesn't match its path loads under one name and gets run under another, so
+  its tests were skipped and the run stayed green. `run-tests`, `test-ns` and
+  `test-all-vars` now throw `No namespace: x found`. The cause sat lower down:
+  `ns-interns`, `ns-publics`, `ns-map`, `ns-refers`, `ns-aliases` and
+  `ns-imports` answered for a missing namespace, with `{}` or, for `ns-map`
+  and `ns-refers`, clojure.core's whole table. Each one now goes through
+  `the-ns` first, as on the JVM.
 - **`(.split s re)` answers a `String[]`**, as on the JVM, where it was an
   `Object[]`.
 - **A `jolt.ffi` `:string` argument stays put while C calls back** (#1661).

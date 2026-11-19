@@ -561,6 +561,13 @@
   (gate-check "prelude: doc metadata goes with its var"
               (cls "(guard (e (#t #f)) (jv$clojure.core/attach-core-doc-meta! \"clojure.core\" \"frequencies\" \"doc\" (jolt-list)))")
               '(#f "clojure.core/frequencies" #f))
+  ;; the shape the seed mints it in: the linked call through a local
+  (gate-check "prelude: doc metadata through a linked-call local goes with its var"
+              (cls "(guard (e (#t #f)) (let ((_lp$1 jv$clojure.core/attach-core-doc-meta!) (_la$2 \"clojure.core\") (_la$3 \"frequencies\") (_la$4 \"doc\") (_la$5 (jolt-list))) (if (#3%procedure? _lp$1) (_lp$1 _la$2 _la$3 _la$4 _la$5 jolt-nil) (jolt-invoke _lp$1 _la$2 _la$3 _la$4 _la$5 jolt-nil))))")
+              '(#f "clojure.core/frequencies" #f))
+  (gate-check "prelude: a linked call of another var stays clojure.core's own effect"
+              (cls "(guard (e (#t #f)) (let ((_lp$1 jv$clojure.core/println) (_la$2 \"clojure.core\") (_la$3 \"frequencies\")) (if (#3%procedure? _lp$1) (_lp$1 _la$2 _la$3) (jolt-invoke _lp$1 _la$2 _la$3))))")
+              '(#t #f #f))
   (gate-check "prelude: a declare with its meta goes with its var"
               (cls "(guard (e (#t #f)) (begin (set-var-meta! \"clojure.pprint\" \"emit-nl\" (jolt-hash-map)) (declare-var! \"clojure.pprint\" \"emit-nl\")))")
               '(#f "clojure.pprint/emit-nl" #f))

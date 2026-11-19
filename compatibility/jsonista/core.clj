@@ -338,6 +338,10 @@
       (ratio? x) (write-double w (double x))
       (float? x) (write-double w (double x))
       (number? x) (.write w (str x))
+      ;; Jackson walks a record through java.util.Map's entrySet, which a
+      ;; defrecord answers with (set this): its fields in hash-set order, not
+      ;; declaration order ({"b":2,"a":1} for (->R 1 2) with fields [a b]).
+      (record? x) (write-object w (set x) opts pretty? level)
       (map? x) (write-object w x opts pretty? level)
       (instance? java.util.Map x) (write-object w (into {} x) opts pretty? level)
       (bytes? x) (write-escaped w (.encodeToString (Base64/getEncoder) ^bytes x) false)
