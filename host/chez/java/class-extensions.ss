@@ -119,8 +119,32 @@
 (define (class-ext-install-fallback!)
   (jolt-with-mutex class-ext-mu
     (unless class-ext-fallback-installed?
-      (set! class-ext-fallback-installed? #t)
-      (set-class-ext-fallback-hook! class-ext-fallback-lookup))))
+      (set! class-ext-fallback-installed? #t))))
+
+;; Every value is a java.lang.Object, so the methods every class inherits from
+;; it answer for a value no tier claimed, after the extend tier: hashCode and
+;; equals by identity, toString as Class@hash, getClass. Without this a host
+;; value with no method table of its own -- a java.util.regex.Pattern -- refused
+;; (.hashCode p) with "No matching field found", and so did the str of a record
+;; holding one, whose hash asks each field for its hashCode. A value whose class
+;; overrides one of these answers through its own table before this is reached.
+(define (object-method-fallback method-name)
+  (define (miss name)
+    (lambda (o . args) (no-method-throw name o (length args))))
+  (cond ((string=? method-name "hashCode")
+         (case-lambda ((o) (->num (jolt-identity-hasheq o))) ((o . r) (apply (miss "hashCode") o r))))
+        ((string=? method-name "equals")
+         (case-lambda ((o x) (eq? o x)) ((o . r) (apply (miss "equals") o r))))
+        ((string=? method-name "toString")
+         (case-lambda ((o) (string-append (jolt-class-name o) "@" (jolt-identity-hex o)))
+                      ((o . r) (apply (miss "toString") o r))))
+        ((string=? method-name "getClass")
+         (case-lambda ((o) (jolt-class o)) ((o . r) (apply (miss "getClass") o r))))
+        (else #f)))
+(set-class-ext-fallback-hook!
+  (lambda (obj method-name)
+    (or (and class-ext-fallback-installed? (class-ext-fallback-lookup obj method-name))
+        (object-method-fallback method-name))))
 
 ;; ---- the Clojure-facing seam -------------------------------------------------
 ;; (jolt.host/extend-class! class spec)

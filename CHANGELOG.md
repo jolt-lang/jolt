@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookup once their classes are known not to reach a user method.
 - `(class (tagged-literal 'a 1))` is `clojure.lang.TaggedLiteral`; a sorted
   map and a queue have their own type tags.
+- A namespace and a `PersistentQueue` print as the JVM prints them, Object's
+  `#object[clojure.lang.Namespace 0x… "user"]` form (the queue's `str` is
+  `clojure.lang.PersistentQueue@<hash>`), and `pprint` writes a queue as
+  `<-(1 2)-<`. An Eduction prints its seq only under `pr` (`print` writes its
+  `#object` form), and its print-method is a built-in keyed by the class.
+- Every value answers `java.lang.Object`'s `hashCode`, `equals`, `toString` and
+  `getClass`, so `(.hashCode #"a")` and the `str` of a record holding a regex
+  no longer throw "No matching field found".
+- Comparing a keyword with a class or another host value no longer walks every
+  registered equality arm: `(= String :a)` is 20x faster, and so is a lookup in
+  a multimethod table keyed by both classes and keywords.
 - Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
 
 - **The reference fns call a user type's `clojure.lang` interface methods.**

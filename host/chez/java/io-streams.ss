@@ -3355,10 +3355,9 @@
 ;; the map. Each is the printer for its type, writing to the Writer it is
 ;; handed as it walks the value (printing.ss pr-builtin-to!: *print-meta*, then
 ;; jolt's own rendering, with the elements going back through pr), except the nil
-;; method, which writes "nil" whatever it is handed, as the JVM's does. The class keys left out are the ones
-;; jolt-core registers itself (clojure.core.Eduction).
+;; method, which writes "nil" whatever it is handed, as the JVM's does.
 (define pm-builtin-class-names
-  '("clojure.lang.BigInt" "clojure.lang.IDeref" "clojure.lang.IPersistentMap"
+  '("clojure.core.Eduction" "clojure.lang.BigInt" "clojure.lang.IDeref" "clojure.lang.IPersistentMap"
     "clojure.lang.IPersistentSet" "clojure.lang.IPersistentVector" "clojure.lang.IRecord"
     "clojure.lang.ISeq" "clojure.lang.Keyword" "clojure.lang.ReaderConditional"
     "clojure.lang.Symbol" "clojure.lang.TaggedLiteral" "clojure.lang.Var"
@@ -3385,6 +3384,21 @@
              jolt-nil)))
     (hashtable-set! pm-builtins f #t)
     f))
+;; clojure.core.Eduction: the JVM's print-method writes the seq it yields under
+;; pr, the elements as print-sequential writes them (the seq itself is not
+;; dispatched on), and Object's #object form under print.
+(define (eduction-value? x) (and (jrec? x) (equal? (jrec-tag x) "clojure.core.Eduction")))
+(define (eduction-write! p x)
+  (if (jolt-pr-readable?)
+      (let ((s (jolt-seq x)))
+        (cond ((jolt-nil? s) (pr-base-to! p jolt-empty-list))
+              ((cseq? s) (pr-base-to! p s))
+              (else (pr-own-to! p s))))
+      (put-string p (jolt-object-repr x #t))))
+;; Registered here, after records-coll.ss's deftype arm, which it refines.
+(register-pr-readable-arm! eduction-value? (lambda (x) (pr-to-string eduction-write! x)))
+(register-pr-stream-arm! eduction-value? eduction-write!)
+
 (register-multifn-seed! "clojure.core" "print-method"
   (lambda (mf)
     (let ((methods (jolt-multifn-methods mf))

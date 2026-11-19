@@ -80,10 +80,15 @@
 (define %q-sequential? jolt-sequential?)
 (set! jolt-sequential? (lambda (x) (or (jolt-queue? x) (%q-sequential? x))))
 
-;; printing: render the elements as a parenthesized list (delegate to the seq path).
-(define (jolt-seq-or-empty x) (let ((s (jolt-seq x))) (if (jolt-nil? s) jolt-empty-list s)))
-(register-pr-readable-arm! jolt-queue? (lambda (x) (jolt-pr-readable (jolt-seq-or-empty x))))
-(register-str-render! jolt-queue? (lambda (x) (jolt-str-render-one (jolt-seq-or-empty x))))
+;; printing: a PersistentQueue has no printer of its own on the JVM and does not
+;; override toString, so pr and print write Object's #object form and str is
+;; Object.toString: the class and its hashCode (a List's) in hex --
+;; #object[clojure.lang.PersistentQueue 0x... "clojure.lang.PersistentQueue@3e2"].
+;; clojure.pprint prints one as <-(1 2)-< itself.
+(register-str-render! jolt-queue?
+  (lambda (x) (string-append "clojure.lang.PersistentQueue@" (jolt-hex32 (jolt-java-hashcode x)))))
+(register-pr-str-arm! jolt-queue? (lambda (x) (jolt-object-repr x #f)))
+(register-pr-readable-arm! jolt-queue? (lambda (x) (jolt-object-repr x #t)))
 
 ;; class / type / instance? recognize a queue.
 (register-class-arm! jolt-queue? (lambda (x) "clojure.lang.PersistentQueue"))
