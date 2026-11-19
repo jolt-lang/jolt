@@ -671,6 +671,9 @@
 (jch-register-supers! "clojure.lang.IDrop" '())
 (jch-mark-interface! "clojure.lang.IDrop")
 (jch-register-supers! "clojure.lang.PersistentQueue" '("clojure.lang.IPersistentList" "clojure.lang.IPersistentCollection" "java.util.Collection"))
+;; the reader's two literal wrappers: lookups on :tag/:form and :form/:splicing?
+(jch-register-supers! "clojure.lang.TaggedLiteral" '("clojure.lang.ILookup"))
+(jch-register-supers! "clojure.lang.ReaderConditional" '("clojure.lang.ILookup"))
 ;; scalars / named / callable
 (jch-register-supers! "clojure.lang.Keyword" '("clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable" "java.io.Serializable"))
 (jch-register-supers! "clojure.lang.Symbol" '("clojure.lang.IObj" "clojure.lang.IFn" "clojure.lang.Named" "java.lang.Comparable" "java.io.Serializable"))

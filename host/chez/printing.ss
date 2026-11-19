@@ -231,12 +231,16 @@
 ;; only the arm walk, never the user-method check.
 (define (jolt-pr-readable-dispatch x)
   (or (and pr-user-method-render (pr-user-method-render x))
-      (if (pr-fast-type? x)
-          (jolt-pr-readable-base x)
-          (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
-            (cond ((null? as) (jolt-pr-readable-base x))
-                  (((caar as) x) ((cdar as) x))
-                  (else (loop (cdr as))))))))
+      (jolt-pr-readable-own x)))
+;; jolt's own rendering of x, the user method for x itself not consulted (the
+;; values inside x still go through jolt-pr-readable and so still reach theirs).
+(define (jolt-pr-readable-own x)
+  (if (pr-fast-type? x)
+      (jolt-pr-readable-base x)
+      (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
+        (cond ((null? as) (jolt-pr-readable-base x))
+              (((caar as) x) ((cdar as) x))
+              (else (loop (cdr as)))))))
 
 ;; *print-meta* support. The var is def'd after this file loads, so capture its
 ;; cell lazily; jolt-var-get (patched by dyn-binding.ss) honors a `binding`.
@@ -256,6 +260,19 @@
             (jolt-pr-readable-dispatch x)
             (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x))))
       (jolt-pr-readable-dispatch x)))
+
+;; What the JVM's built-in print-method for x's type writes: its metadata under
+;; *print-meta*, then x rendered by jolt's own printer. The built-in methods
+;; (methods print-method) hands out render through this, so a user method that
+;; borrows one for its own type -- (defmethod print-method IPersistentMap ...)
+;; calling the saved original -- does not come back to itself.
+(define (jolt-pr-readable-builtin x)
+  (if (pr-print-meta?)
+      (let ((m (pr-user-meta x)))
+        (if (jolt-nil? m)
+            (jolt-pr-readable-own x)
+            (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-own x))))
+      (jolt-pr-readable-own x)))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))

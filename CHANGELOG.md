@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `(methods print-method)` holds the JVM's built-in printers under the same
+  class keys (`IPersistentMap`, `ISeq`, `String`, `Object`, ...) and its
+  prefer-method pairs, so a library that borrows one, as duratom does with
+  `(get (methods print-method) clojure.lang.IPersistentMap)`, prints the map
+  instead of failing with "nil cannot be cast to IFn". A user method keyed on
+  an interface or superclass now applies through isa? and prefer-method as on
+  the JVM: one on `IPersistentMap` prints sorted maps too but not records.
+- A class-keyed print-method no longer slows printing of values it cannot
+  match: numbers, strings, keywords, vectors, hash maps and seqs skip the class
+  lookup once their classes are known not to reach a user method.
+- `(class (tagged-literal 'a 1))` is `clojure.lang.TaggedLiteral`; a sorted
+  map and a queue have their own type tags.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a

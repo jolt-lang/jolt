@@ -87,6 +87,10 @@
 
 ;; class / type / instance? recognize a queue.
 (register-class-arm! jolt-queue? (lambda (x) "clojure.lang.PersistentQueue"))
+;; its own type tag, as a sorted set and a sorted map have, so tag-keyed dispatch
+;; (print-method on __type-tag) tells it apart from an arbitrary host object
+(define ty-queue (keyword "jolt" "queue"))
+(register-type-arm! jolt-queue? (lambda (x) ty-queue))
 (register-instance-check-arm!
   (lambda (type-sym val)
     (if (jolt-queue? val)

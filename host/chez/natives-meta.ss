@@ -385,6 +385,7 @@
 (define ty-transient (keyword "jolt" "transient"))
 (define ty-uuid (keyword "jolt" "uuid"))
 (define ty-sorted-set (keyword "jolt" "sorted-set"))
+(define ty-sorted-map (keyword "jolt" "sorted-map"))
 (define ty-object (keyword #f "object"))
 
 ;; Arm registry for host-type extensions (jinst, jolt-array, jfile, etc.)
@@ -422,7 +423,7 @@
       ((jolt-transient? x) ty-transient)
       ((juuid? x) ty-uuid)
       ((htable-sorted-set? x) ty-sorted-set)
-      ((htable-sorted-map? x) ty-map)
+      ((htable-sorted-map? x) ty-sorted-map)
       ;; collections — pvec INCLUDES map entries (:vector).
       ((pvec? x) ty-vector)
       ((pmap? x)                                        ; a :jolt/type-tagged map (ex-info) -> its tag
