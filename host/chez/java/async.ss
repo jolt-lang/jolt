@@ -310,6 +310,44 @@
               (jolt-cv-wake! (alt-handler-wcv h)))
           (jolt-cv-wake! (alt-handler-wcv h))))))
 
+;; (ac-handler-await h intr?) -- a THREAD waiter's wait on handler H's mailbox,
+;; with no channel mutex held. #t once a deliverer filled the mailbox; #f when
+;; INTR? and the thread was interrupted first, H then claimed so no port can
+;; commit to it. An interrupt that loses the claim to a deliverer is given back
+;; to the flag and the delivered result is waited for: the op finished first.
+(define (ac-handler-await h intr?)
+  (let* ((wmu (alt-handler-wmu h)) (wcv (alt-handler-wcv h))
+         (mb (alt-handler-mailbox h))
+         (wait (lambda () (jolt-condition-wait wcv wmu)))
+         (await-mailbox
+          (lambda (intr?)
+            (jolt-with-mutex wmu
+              (let wait-loop ((reg #f))
+                (cond ((vector-ref mb 0) (ac-done reg #t))
+                      ((not intr?) (wait) (wait-loop #f))
+                      ((ac-intr-wait! wmu wcv wait reg) => wait-loop)
+                      (else #f)))))))
+    (cond ((await-mailbox intr?) #t)
+          ((alt-claim! h) #f)
+          (else (set-box! (current-interrupt-box) #t)
+                (await-mailbox #f)
+                #t))))
+
+;; Park a put of V on CH as an alt-putter with a thread waiter (mu held, the put
+;; not completable now): the handler to pass to ac-handler-await. A pending put
+;; is a registration on the channel, as on the JVM, so a take moves its value in
+;; under the same mu that frees the room (ac-notify! step 2), and close! leaves
+;; it queued: a take after the close still consumes it (jolt-5psco).
+(define (ac-park-putter! ch v)
+  (let ((h (alt-handler-alloc)))
+    (async-chan-alt-putters-set! ch (append (async-chan-alt-putters ch) (list (cons h v))))
+    (ac-notify! ch)
+    h))
+(define (ac-drop-putter! ch h)
+  (jolt-with-mutex (async-chan-mu ch)
+    (async-chan-alt-putters-set! ch
+      (remp (lambda (hp) (eq? (car hp) h)) (async-chan-alt-putters ch)))))
+
 ;; ac-notify! — drain pending alt registrations after any channel state mutation.
 ;; Called with the channel mutex held. Loops steps 1→2→3 until a full pass makes
 ;; no progress.
@@ -397,6 +435,7 @@
                            (async-chan-alt-takers-set! ch (remq t (async-chan-alt-takers ch)))))
                         (set! progress #t)
                         (pair-loop)))))))))
+      (when (ac-complete-if-due! ch) (set! progress #t))
       (when progress (loop))))
   (ac-broadcast! ch))
 
@@ -421,8 +460,9 @@
 
 ;; run the transducer step (or completion) guarded by the channel's ex-handler:
 ;; if the xform throws and exh returns non-nil, that value is added to the buffer.
-(define (ac-xrf-apply ch . v)
-  (let ((xrf (async-chan-xrf ch)) (exh (async-chan-exh ch)))
+(define (ac-xrf-apply ch . v) (apply ac-xrf-apply* ch (async-chan-xrf ch) v))
+(define (ac-xrf-apply* ch xrf . v)
+  (let ((exh (async-chan-exh ch)))
     ;; The handler is jolt code and takes a THROWABLE, so the raised condition
     ;; has to be unwrapped exactly as a catch clause would — jolt-throw raises a
     ;; &jolt-throw condition wrapping the value, and handing that straight to the
@@ -456,22 +496,37 @@
 ;; close! (idempotent): mark closed, flush a stateful transducer's completion,
 ;; notify pending alt handlers, and wake everyone. ac-close! assumes the lock is
 ;; held; the public form takes it.
+;;
+;; A put pending at the close is NOT failed: as on the JVM, close! resolves only
+;; takers, and every pending put (an alt-putter: alts!, a fiber or go >!, a
+;; blocked >!! or put! on a full buffer; or a rendezvous entry already queued)
+;; stays until a take consumes it (jolt-5psco). Takes drain them before they
+;; answer nil, and a transducer's completion waits until the last has gone in
+;; (ac-complete-if-due!).
 (define (ac-close! ch)
   (unless (async-chan-closed? ch)
     (async-chan-closed?-set! ch #t)
-    (when (async-chan-xrf ch)
-      (guard (e (#t (async-report-uncaught! "transducer completion on close!" e)))
-        (ac-xrf-apply ch)))
     (ac-notify! ch)
-    ;; claim+deliver to every remaining alt-taker (nil) and alt-putter (#f)
+    ;; claim+deliver nil to every remaining alt-taker: a taker still waiting
+    ;; after notify found nothing to take
     (for-each (lambda (h) (when (alt-claim! h) (alt-deliver! h jolt-nil ch)))
               (async-chan-alt-takers ch))
     (async-chan-alt-takers-set! ch '())
-    (for-each (lambda (hp) (when (alt-claim! (car hp)) (alt-deliver! (car hp) #f ch)))
-              (async-chan-alt-putters ch))
-    (async-chan-alt-putters-set! ch '())
     (ac-broadcast! ch))
   jolt-nil)
+
+;; A closed transducer channel runs its completion once no put is pending: then
+;; nothing more can go through the transducer. The field is cleared FIRST, so the
+;; values the completion adds (whose ac-buf-give! notifies again) cannot run it
+;; twice; a closed channel accepts no new put, so nothing reads it after. mu held.
+(define (ac-complete-if-due! ch)
+  (let ((xrf (async-chan-xrf ch)))
+    (and xrf (async-chan-closed? ch) (null? (async-chan-alt-putters ch))
+         (begin
+           (async-chan-xrf-set! ch #f)
+           (guard (e (#t (async-report-uncaught! "transducer completion on close!" e)))
+             (ac-xrf-apply* ch xrf))
+           #t))))
 (define (jolt-async-close! ch) (jolt-with-mutex (async-chan-mu ch) (ac-close! ch)))
 
 ;; >! / >!! — put, blocking. false if closed; nil may not be put. With a
@@ -481,23 +536,27 @@
 (define (jolt-async-give!! ch v) (ac-give ch v #t))
 (define (ac-give ch v intr?)
   (async-check-put! v)
+  (let ((r (ac-give/locked ch v intr?)))
+    (if (alt-handler? r)
+        ;; parked behind a full buffer (ac-park-putter!)
+        (if (ac-handler-await r intr?)
+            (vector-ref (alt-handler-mailbox r) 1)
+            (begin (ac-drop-putter! ch r) (jolt-interrupted-throw! ">!!")))
+        r)))
+(define (ac-give/locked ch v intr?)
   (jolt-with-mutex (async-chan-mu ch)
     (cond
       ((async-chan-closed? ch) #f)
       ((async-chan-xrf ch)
        (if (ac-bounded? ch)
-           ;; Fixed buffered with xform: wait for room, then apply xform.
-           ;; The xform step may overfill transiently (e.g. mapcat); the NEXT put
-           ;; will wait again.
-           (let loop ((reg #f))
-             (cond ((async-chan-closed? ch) (ac-done reg #f))
-                   ((< (ac-qlen ch) (async-chan-cap ch))
-                    (ac-unreg! reg)
-                    (let ((r (ac-xrf-apply ch v)))
-                      (when (jolt-reduced? r) (ac-close! ch))
-                      #t))
-                   ((ac-wait! ch intr? reg) => loop)
-                   (else (jolt-interrupted-throw! ">!!"))))
+           ;; Fixed buffered with xform: room now applies the xform, else the put
+           ;; parks and notify applies it once a take makes room. The xform step
+           ;; may overfill transiently (e.g. mapcat); the NEXT put waits again.
+           (if (< (ac-qlen ch) (async-chan-cap ch))
+               (let ((r (ac-xrf-apply ch v)))
+                 (when (jolt-reduced? r) (ac-close! ch))
+                 #t)
+               (ac-park-putter! ch v))
            ;; Unbuffered with xform: apply immediately (output goes to rendezvous
            ;; queue). A dropping or sliding buffer too: ac-buf-give! drops or
            ;; slides what the xform yields, so a put never waits.
@@ -515,13 +574,9 @@
                      #t)
           (else
            (if (> (async-chan-cap ch) 0)
-               (let loop ((reg #f))                            ; buffered fixed: wait for room
-                 (cond ((async-chan-closed? ch) (ac-done reg #f))
-                       ((< (ac-qlen ch) (async-chan-cap ch))
-                        (ac-unreg! reg)
-                        (ac-qpush! ch (cons v #f)) (ac-notify! ch) #t)
-                       ((ac-wait! ch intr? reg) => loop)
-                       (else (jolt-interrupted-throw! ">!!"))))
+               (if (< (ac-qlen ch) (async-chan-cap ch))        ; buffered fixed: room, or park
+                   (begin (ac-qpush! ch (cons v #f)) (ac-notify! ch) #t)
+                   (ac-park-putter! ch v))
                (let* ((box (vector #f)) (entry (cons v box))  ; unbuffered: rendezvous
                       ;; a blocked thread taker is counted before the push: it
                       ;; takes this value when it wakes and never abandons it, so
@@ -567,9 +622,9 @@
                    ((ac-take-wait ch intr? reg) => loop)
                    (else (jolt-interrupted-throw! "<!!"))))
             ((not (ac-qempty? ch)) (ac-done reg (ac-take-head! ch)))
-            ((async-chan-closed? ch) (ac-done reg jolt-nil))
             ;; drain an alt-putter if one is parked (no xform chans — those
-            ;; complete immediately into the buffer via ac-buf-give!)
+            ;; complete immediately into the buffer via ac-buf-give!), before
+            ;; the closed answer: a put pending at close! is still taken
             ((and (pair? (async-chan-alt-putters ch))
                   (not (async-chan-xrf ch)))
              (let* ((hp (car (async-chan-alt-putters ch)))
@@ -584,6 +639,7 @@
                        (ac-broadcast! ch))
                      (ac-done reg (ac-take-head! ch)))
                    (loop reg))))  ; dead registration, retry
+            ((async-chan-closed? ch) (ac-done reg jolt-nil))
             ;; An interrupted take leaves nothing behind: it holds no value (it
             ;; only ever takes one under mu and returns it) and ac-take-wait gives
             ;; its takew count back, so an offer! after the throw no longer
@@ -606,7 +662,7 @@
 (define (ac-poll!/locked ch)
   (cond ((and (eq? (async-chan-kind ch) 'promise) (not (ac-qempty? ch))) (ac-peek ch))
         ((not (ac-qempty? ch)) (ac-take-head! ch))
-        ((async-chan-closed? ch) jolt-nil)
+        ;; a parked putter before the closed answer, as ac-take
         ((and (pair? (async-chan-alt-putters ch)) (not (async-chan-xrf ch)))
          (let* ((hp (car (async-chan-alt-putters ch)))
                 (h (car hp)) (v (cdr hp)))
@@ -618,7 +674,8 @@
                    (ac-qpush! ch (cons v box))
                    (ac-broadcast! ch))
                  (ac-take-head! ch))
-               ac-poll-empty)))
+               (ac-poll!/locked ch))))   ; dead registration, retry
+        ((async-chan-closed? ch) jolt-nil)
         (else ac-poll-empty)))
 (define (ac-poll! ch)
   (jolt-with-mutex (async-chan-mu ch) (ac-poll!/locked ch)))
@@ -901,10 +958,21 @@
   (let* ((cb (if (pair? rest) (car rest) jolt-nil))
          (on-caller? (if (and (pair? rest) (pair? (cdr rest))) (jolt-truthy? (cadr rest)) #t))
          (call-cb (lambda (ok) (unless (jolt-nil? cb) (jolt-invoke cb ok)))))
-    (case (ac-try-give! ch v)
-      ((ok) (if on-caller? (call-cb #t) (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb #t)))) #t)
-      ((closed) (if on-caller? (call-cb #f) (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb #f)))) #f)
-      (else (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb (jolt-async-give ch v)))) #t))))
+    ;; A put that cannot complete now parks HERE, on the caller, under the same
+    ;; mu as the attempt, so a close! after put! returns finds it queued; the
+    ;; forked thread only waits for its outcome to run the callback (jolt-5psco).
+    (async-check-put! v)
+    (let ((r (jolt-with-mutex (async-chan-mu ch)
+               (let ((x (ac-try-give!/locked ch v)))
+                 (if (eq? x 'full) (ac-park-putter! ch v) x)))))
+      (case r
+        ((ok) (if on-caller? (call-cb #t) (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb #t)))) #t)
+        ((closed) (if on-caller? (call-cb #f) (fork-thread/daemon #t (lambda () (*txn* #f) (call-cb #f)))) #f)
+        (else (fork-thread/daemon #t
+                (lambda () (*txn* #f)
+                  (ac-handler-await r #f)
+                  (call-cb (vector-ref (alt-handler-mailbox r) 1))))
+              #t)))))
 
 ;; (take! ch cb [on-caller?]) — async take. Same on-caller? rule as put!.
 (define (jolt-async-take! ch cb . rest)
@@ -1188,37 +1256,14 @@
                                     h (and intr? (current-interrupt-box)))))
                             (unregister!)
                             (or r (jolt-interrupted-throw! "alts!!")))
-                          ;; thread waiter: condvar
-                          (let* ((wmu (alt-handler-wmu h)) (wcv (alt-handler-wcv h))
-                                 (mb (alt-handler-mailbox h))
-                                 (wait (lambda () (jolt-condition-wait wcv wmu)))
-                                 (await-mailbox
-                                  (lambda (intr?)
-                                    (jolt-with-mutex wmu
-                                      (let wait-loop ((reg #f))
-                                        (cond ((vector-ref mb 0) (ac-done reg #t))
-                                              ((not intr?) (wait) (wait-loop #f))
-                                              ((ac-intr-wait! wmu wcv wait reg) => wait-loop)
-                                              (else #f)))))))
-                            (cond
-                              ((await-mailbox intr?)
-                               (unregister!)
-                               (jolt-vector (vector-ref mb 1) (vector-ref mb 2)))
-                              ;; Interrupted. Claiming the handler is what makes
-                              ;; the throw true: once claimed no port can commit
-                              ;; to it, so nothing was taken and no put landed.
-                              ((alt-claim! h)
-                               (unregister!)
-                               (jolt-interrupted-throw! "alts!!"))
-                              ;; A deliverer claimed it first, so an op DID
-                              ;; complete and its result is on the way. Return it
-                              ;; and give the interrupt back to the flag: the op
-                              ;; finished before the interrupt, not after.
-                              (else
-                               (set-box! (current-interrupt-box) #t)
-                               (await-mailbox #f)
-                               (unregister!)
-                               (jolt-vector (vector-ref mb 1) (vector-ref mb 2)))))))))
+                          ;; thread waiter: condvar. #f is interrupted with the handler
+                          ;; claimed, so no op on any port committed.
+                          (let ((mb (alt-handler-mailbox h)))
+                            (if (ac-handler-await h intr?)
+                                (begin (unregister!)
+                                       (jolt-vector (vector-ref mb 1) (vector-ref mb 2)))
+                                (begin (unregister!)
+                                       (jolt-interrupted-throw! "alts!!"))))))))
               (let reg-loop ((j 0))
                 (if (fx=? j n)
                     (await)

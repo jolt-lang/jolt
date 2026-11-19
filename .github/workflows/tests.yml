@@ -86,7 +86,7 @@ jobs:
   #
   # bionic-ci's gates run as shards, like the gate job's, three ways: each shard repeats the container
   # setup and the jolt build (~2 minutes), so more shards stop paying. The
-  # bionic Chez the Makefile provisions (bionic-provision-chez.sh, ~2 minutes
+  # bionic Chez the Makefile provisions (provision-chez.sh, ~2 minutes
   # of the build) is cached between runs: termux-build.sh copies the
   # workspace in, so a restored prefix is there for make to find, and copies a
   # fresh one back out to target/bionic-chez for the save step.
@@ -125,7 +125,7 @@ jobs:
       # version), the provisioning script and jolt's kernel patches.
       - name: Bionic Chez cache key
         id: bionic-chez
-        run: echo "key=bionic-chez-$(sed -n 's/^V := //p' Makefile)-${{ hashFiles('host/chez/bionic-provision-chez.sh', 'host/chez/chez-patches/*.patch') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=bionic-chez-$(sed -n 's/^V := //p' Makefile)-${{ hashFiles('host/chez/provision-chez.sh', 'host/chez/chez-patches/*.patch') }}" >> "$GITHUB_OUTPUT"
       - name: Restore bionic Chez
         id: bionic-chez-cache
         uses: actions/cache/restore@v5
@@ -301,6 +301,9 @@ jobs:
           { echo '#!/bin/sh'; echo "exec \"$bindir/scheme.exe\" \"\$@\""; } > "$bindir/chez"
           chmod +x "$bindir/chez"
           echo "$bindir" >> "$GITHUB_PATH"
+          # make and bin/jolt never take a Chez from PATH.
+          echo "CHEZ=$(cygpath -u "$bindir")/chez" >> "$GITHUB_ENV"
+          echo "JOLT_CHEZ=$(cygpath -u "$bindir")/chez" >> "$GITHUB_ENV"
           echo "JOLT_CHEZ_CSV=$GITHUB_WORKSPACE/chez-install/csv" >> "$GITHUB_ENV"
           # cc is the build's compiler name; alias it to mingw gcc
           { echo '#!/bin/sh'; echo 'exec gcc "$@"'; } > "$bindir/cc"

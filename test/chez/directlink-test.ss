@@ -43,6 +43,25 @@
   (or (contains? s (string-append "(var-deref \"" ns "\" \"" name "\")"))
       (contains? s (string-append "(jolt-var \"" ns "\" \"" name "\")"))))
 
+;; A direct call through linked binding B: the binding read into a local and
+;; applied when it is a procedure (backend calls.clj linked-call), never a call of
+;; the top-level variable itself, which races a redefinition on Chez.
+(define (linked-call? s b)
+  (let ((pre "(let ((_lp$") (suf (string-append " " b ")")))
+    (let loop ((i 0))
+      (let ((j (let find ((k i))
+                 (cond ((> (+ k (string-length pre)) (string-length s)) #f)
+                       ((string=? (substring s k (+ k (string-length pre))) pre) k)
+                       (else (find (+ k 1)))))))
+        (and j
+             (let digits ((k (+ j (string-length pre))))
+               (if (and (< k (string-length s)) (char-numeric? (string-ref s k)))
+                   (digits (+ k 1))
+                   (or (and (<= (+ k (string-length suf)) (string-length s))
+                            (string=? (substring s k (+ k (string-length suf))) suf))
+                       (loop (+ j 1))))))))))
+(define (symbol-call? s b) (contains? s (string-append "(" b ")")))
+
 ;; Analyze+emit one form (string) in a namespace through the real build entry
 ;; (ei-compile-form -> emit-top-form), no optimization passes.
 (define (emit-form ns-name str)
@@ -69,7 +88,7 @@
 (let ((eb (emit-form "app" "(def b (fn* ([] (a))))")))
   (ok "off: call to a routes through jolt-invoke + var-deref"
       (and (contains? eb "(jolt-invoke") (var-routed? eb "app" "a")))
-  (ok "off: no jv$ direct call" (not (contains? eb "(jv$app/a)")))
+  (ok "off: no jv$ direct call" (not (or (linked-call? eb "jv$app/a") (symbol-call? eb "jv$app/a"))))
   ;; a def carries source position in its var meta (:line/:column/:file), so it
   ;; emits def-var-with-meta! — but still NO jv$ binding off direct-link.
   (ok "off: def emits def-var-with-meta! (no jv$ binding, not linked)"
@@ -99,7 +118,7 @@
   (ok "on: a pipe-named def's emission reads back as Scheme" (reads-clean? ep)))
 (let ((eu (emit-form "app" "(def uses-pipe (fn* ([] (|||))))")))
   (ok "on: a pipe-named call uses its escaped direct binding"
-      (contains? eu "(jv$app/$V$V$V)")))
+      (linked-call? eu "jv$app/$V$V$V")))
 ;; The binding name is jv$ + the munged FQN (ns/name), the same identity the
 ;; direct-link registry keys on, so two distinct vars can never share one: the
 ;; old per-part _V_/_D_/_H_/_Q_ substitutions were plain text a user can write
@@ -117,9 +136,14 @@
       (and (contains? eq "(define jv$app/a$P$H ") (reads-clean? eq))))
 
 (let ((eb (emit-form "app" "(def b (fn* ([] (a))))")))
-  (ok "on: b's call to a is a direct (jv$app/a) call" (contains? eb "(jv$app/a)"))
+  (ok "on: b's call to a is a direct call of jv$app/a" (linked-call? eb "jv$app/a"))
+  (ok "on: b's call to a never applies the top-level variable" (not (symbol-call? eb "jv$app/a")))
   (ok "on: b's call to a is NOT var-routed" (not (var-routed? eb "app" "a")))
-  (ok "on: b's call to a is NOT jolt-invoke'd" (not (contains? eb "(jolt-invoke"))))
+  ;; jolt-invoke only in the arm a root that is no longer a procedure takes
+  (ok "on: b's call to a applies the local when it is a procedure"
+      (contains? eb "(if (#3%procedure? _lp$"))
+  (ok "on: b's call to a jolt-invokes only from the fallback arm"
+      (contains? eb ") (jolt-invoke _lp$")))
 
 (let ((eh (emit-form "app" "(def hof (fn* ([] a)))")))
   (ok "on: a used as a value references the binding directly" (contains? eh " jv$app/a)"))
@@ -138,7 +162,8 @@
 (let ((eu (emit-form "app" "(def usecfg (fn* ([] (cfg :a))))")))
   (ok "on: call to a map-valued def routes through jolt-invoke" (contains? eu "(jolt-invoke"))
   (ok "on: call to a map-valued def still uses the direct binding" (contains? eu "jv$app/cfg"))
-  (ok "on: a map-valued def is NOT raw-applied as a procedure" (not (contains? eu "(jv$app/cfg"))))
+  (ok "on: a map-valued def is NOT raw-applied as a procedure"
+      (not (or (contains? eu "(jv$app/cfg") (linked-call? eu "jv$app/cfg")))))
 
 ;; ^:dynamic opts out: no jv$ binding, callers stay indirect.
 (let ((ed (emit-form "app" "(def ^:dynamic d 5)")))
@@ -146,7 +171,8 @@
   (ok "on: ^:dynamic def is not linked" (not (contains? ed "(def-var-linked!"))))
 (let ((eu (emit-form "app" "(def usesd (fn* ([] (d))))")))
   (ok "on: call to a ^:dynamic var stays indirect" (var-routed? eu "app" "d"))
-  (ok "on: ^:dynamic var not direct-linked" (not (contains? eu "(jv$app/d)"))))
+  (ok "on: ^:dynamic var not direct-linked"
+      (not (or (symbol-call? eu "jv$app/d") (linked-call? eu "jv$app/d")))))
 
 ;; ^:redef opts out too (a def redefinable after build stays var-routed).
 (let ((er (emit-form "app" "(def ^:redef r 5)")))
@@ -154,7 +180,8 @@
   (ok "on: ^:redef def is not linked" (not (contains? er "(def-var-linked!"))))
 (let ((eu (emit-form "app" "(def usesr (fn* ([] (r))))")))
   (ok "on: call to a ^:redef var stays indirect" (var-routed? eu "app" "r"))
-  (ok "on: ^:redef var not direct-linked" (not (contains? eu "(jv$app/r)"))))
+  (ok "on: ^:redef var not direct-linked"
+      (not (or (symbol-call? eu "jv$app/r") (linked-call? eu "jv$app/r")))))
 
 ;; A var only defined LATER in emission order is not yet in the set -> indirect.
 (direct-link-reset!)
