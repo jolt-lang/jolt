@@ -159,10 +159,14 @@ if build_app hello; then
   if grep -q '(def-var[a-z!-]* "clojure.pprint"' "$rt"; then
     echo "FAIL: a hello app that never loads clojure.pprint ships its defs" >&2; fail=1
   fi
-  if grep -q 'attach-core-doc-meta! "clojure.core" "frequencies"' "$rt"; then
+  # a var's doc form: (jv$clojure.core/attach-core-doc-meta! "ns" "name" ...), as
+  # minted through a linked-call local (backend calls.clj linked-call):
+  # (let ((_lp$N jv$...attach-core-doc-meta!) (_la$M "ns") (_la$K "name") ...
+  doc_form() { grep -Eq "attach-core-doc-meta!\)? (\(_la\\\$[0-9]+ )?\"clojure.core\"\)? (\(_la\\\$[0-9]+ )?\"$1\"" "$rt"; }
+  if doc_form frequencies; then
     echo "FAIL: doc metadata shipped for a var the shake dropped (frequencies)" >&2; fail=1
   fi
-  grep -q 'attach-core-doc-meta! "clojure.core" "println"' "$rt" ||
+  doc_form println ||
     { echo "FAIL: doc metadata missing for a var the app keeps (println)" >&2; fail=1; }
   # stripped already: stripping again changes nothing
   # the runtime fasl the boot was made from: the stripped copy when there is one

@@ -1432,9 +1432,15 @@
             (call-with-values (lambda () (jolt-backwalk site cont-names))
               (lambda (path connected?)
                 (cond
+                  ;; The live frame the pair's own tail call went to is the
+                  ;; confirmation (jolt-site-landing answers 0 when none is
+                  ;; live). jolt-site-evidenced? asks the INNERMOST live frame
+                  ;; instead, which is not that callee whenever the throw came
+                  ;; from something the callee called: c1 tail-calls k1, k1
+                  ;; calls boom, boom throws, and c1 was dropped.
                   (outer?
                    (let ((at (jolt-site-landing site path body)))
-                     (if (and (fx>? at 0) (jolt-site-evidenced? path connected? cont))
+                     (if (fx>? at 0)
                          (jolt-splice-at body at (srcreg-site-frames path))
                          body)))
                   ((if live?
@@ -1448,6 +1454,42 @@
                   (else body))))
             body)))))
 
+;; A protocol method's impls by procedure name: "jfn$ns/$n" -> the method vars
+;; ("ns/m") it implements. A call site registers the protocol fn as its callee,
+;; but the frame that runs is the impl's (a deftype's, a defrecord's, a reify's or
+;; an extend's method), which carries a counter name of its own, so without this
+;; a tail call into a protocol method had no live frame to land below. Filled by
+;; protocol-impl-hook (protocols.ss) as impls register; only a method var the
+;; protocol declares is kept (records.ss chez-protocol-methods-tbl), so a
+;; Java-interface method or a protocol-less name never matches.
+(define jolt-proto-impl-names (make-hashtable string-hash string=?))
+(define jolt-proto-impl-mu (make-mutex))
+(define (jolt-note-proto-impl! proto method fn)
+  (when (and (string? proto) (string? method) (procedure? fn))
+    (let* ((slash (let find ((i (fx- (string-length proto) 1)))
+                    (cond ((fx<? i 0) #f)
+                          ((char=? (string-ref proto i) #\/) i)
+                          (else (find (fx- i 1))))))
+           (fqn (and slash (string-append (substring proto 0 slash) "/" method)))
+           (decl (and fqn (hashtable-ref chez-protocol-methods-tbl fqn #f)))
+           (nm (and decl (equal? (car decl) proto)
+                    (guard (e (#t #f)) (sa-procedure-code-name fn)))))
+      (when (string? nm)
+        (jolt-with-mutex jolt-proto-impl-mu
+          (let ((cur (hashtable-ref jolt-proto-impl-names nm '())))
+            (unless (member fqn cur)
+              (hashtable-set! jolt-proto-impl-names nm (cons fqn cur)))))))))
+(set! protocol-impl-hook jolt-note-proto-impl!)
+;; Whether frame F runs one of CALLEES: the fn itself, or an impl of a protocol
+;; method among them. The table is read under its mutex too: an impl can
+;; register on another thread while a trace is being reported, and a Chez
+;; hashtable is not safe to read while another thread resizes it.
+(define (jolt-frame-runs-callee? f callees)
+  (let ((nm (srcreg-frame-nm f)))
+    (or (and (member nm callees) #t)
+        (exists (lambda (fqn) (and (member fqn callees) #t))
+                (jolt-with-mutex jolt-proto-impl-mu
+                  (hashtable-ref jolt-proto-impl-names nm '()))))))
 ;; Where a throw's erased chain goes among the live frames: how many of them stay
 ;; above it. The pair's tail call went to a fn; when that fn is still a live frame
 ;; -- it threw from a non-tail call of its own, or from something it called -- the
@@ -1463,7 +1505,7 @@
         (let loop ((fs body) (i 1) (first-hit #f))
           (cond
             ((null? fs) (or first-hit 0))
-            ((member (srcreg-frame-nm (car fs)) callees)
+            ((jolt-frame-runs-callee? (car fs) callees)
              (if (or (null? (cdr fs))
                      (let ((oc (jolt-callsite-fn-callees (srcreg-frame-nm (cadr fs)))))
                        (and oc (member outer-fn oc) #t)))
