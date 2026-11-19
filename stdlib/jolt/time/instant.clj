@@ -33,20 +33,45 @@
                :else (str "." (u/frac-fixed nano 9)))
          "Z")))
 
-(defn- parse-offset [s]
-  (if (or (= s "Z") (= s "z")) 0
-    (let [sign (if (= \- (nth s 0)) -1 1) h (u/digits-at s 1 2) m (or (u/digits-at s 4 2) 0)]
-      (* sign (+ (* h 3600) (* m 60))))))
-(defn- offset-pos [s]
-  (let [tpos (or (some (fn [i] (when (#{\T \t} (nth s i)) i)) (range (count s))) 0)]
-    (some (fn [i] (when (#{\Z \z \+ \-} (nth s i)) i)) (range (inc tpos) (count s)))))
+(defn- scan-offset
+  "ISO_INSTANT's offset from index i, read leniently as the JDK reads it: Z, or
+  +HH then optional minutes then optional seconds, all with ':' or all without.
+  A minute or second past 59 is left unread. [offset-seconds end]."
+  [s i]
+  (cond
+    (u/char-at? s i \Z) [0 (inc i)]
+    (not (and (< i (count s)) (#{\+ \-} (nth s i)))) (u/parse-fail-at s i)
+    :else
+    (let [h (or (u/two-digits s (inc i)) (u/parse-fail-at s i))
+          colon (u/char-at? s (+ i 3) \:)
+          sep (if colon 1 0)
+          field (fn [j] (when (or (not colon) (u/char-at? s j \:))
+                          (when-let [v (u/two-digits s (+ j sep))] (when (<= v 59) v))))
+          mpos (+ i 3)
+          m (field mpos)
+          spos (+ mpos sep 2)
+          sec (when m (field spos))]
+      (when (> h 23)
+        (throw (u/parse-exception (str "Text '" s "' could not be parsed: Value out of range: Hour[0-23], Minute[0-59], Second[0-59]"))))
+      [(* (if (= \- (nth s i)) -1 1) (+ (* h 3600) (* (or m 0) 60) (or sec 0)))
+       (cond sec (+ spos sep 2) m spos :else mpos)])))
+
 (defn parse-iso-instant [s]
-  (let [op (offset-pos s) local (if op (subs s 0 op) s)
-        off (parse-offset (if op (subs s op) "Z"))
-        ti (.indexOf local "T")
-        ed (l/parse-iso-date (subs local 0 ti) s 0)
-        nod (u/parse-hms->nano (subs local (inc ti)))]
-    (- (+ (* ed u/nanos-per-day) nod) (* off nps))))
+  (let [[y mo d e1] (u/scan-iso-date s 0)
+        _ (when-not (u/char-at? s e1 \T) (u/parse-fail-at s e1))
+        [h mi sec nano e2] (u/scan-iso-time s (inc e1) true)
+        [off e3] (scan-offset s e2)]
+    (u/parse-end! s e3)
+    ;; ISO_INSTANT reads 24:00:00 as the next midnight and 23:59:60 as :59; any
+    ;; other field out of range, offset past 18 hours included, fails at index 0
+    (let [[h sec day] (cond (and (= h 24) (= mi 0) (= sec 0) (= nano 0)) [0 0 1]
+                            (and (= h 23) (= mi 59) (= sec 60)) [23 59 0]
+                            :else [h sec 0])]
+      (try (u/check-date y mo d) (u/check-time h mi sec nano)
+           (catch java.time.DateTimeException _ (u/parse-fail-at s 0)))
+      (when-not (<= (* -18 3600) off (* 18 3600)) (u/parse-fail-at s 0))
+      (- (+ (* (+ (impl/days-from-civil y mo d) day) u/nanos-per-day) (u/hmsn->nano h mi sec nano))
+         (* off nps)))))
 
 (defn- unit-nanos [unit]
   (let [nm (u/upper (if (and (impl/jt? unit) (= :jolt.time/chrono-unit (impl/type-of unit)))

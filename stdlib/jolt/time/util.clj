@@ -144,18 +144,71 @@
           (let [c (nth s j)]
             (when (digit? c) (recur (inc j) (+ (* acc 10) (- (int c) 48)))))))))
 
-(defn parse-hms->nano
-  "Parse HH:mm[:ss[.fraction]] to nano-of-day."
-  [s]
-  (let [len (count s) h (digits-at s 0 2) mi (digits-at s 3 2)]
-    (when-not (and h mi (= \: (nth s 2)))
-      (throw (ex-info (str "could not parse LocalTime: " s) {})))
-    (let [s2 (and (> len 5) (= \: (nth s 5)) (digits-at s 6 2))]
-      (cond
-        (not s2) (hmsn->nano h mi 0 0)
-        (and (< 8 len) (= \. (nth s 8)))
-        (loop [j 9 k 0 acc 0]
-          (if (and (< j len) (digit? (nth s j)))
-            (recur (inc j) (inc k) (+ (* acc 10) (- (int (nth s j)) 48)))
-            (hmsn->nano h mi s2 (* acc (pow10 (max 0 (- 9 k)))))))
-        :else (hmsn->nano h mi s2 0)))))
+;; The ISO formatters' parsing, as the JDK does it: every scanner reads from
+;; index i of the whole text and answers the index past what it read, so a
+;; failure names the index in the text the caller was given.
+(defn parse-exception [msg]
+  (jolt.host/throwable "java.time.format.DateTimeParseException" msg))
+(defn parse-fail-at [text i]
+  (throw (parse-exception (str "Text '" text "' could not be parsed at index " i))))
+(defn parse-fail-unparsed [text i]
+  (throw (parse-exception (str "Text '" text "' could not be parsed, unparsed text found at index " i))))
+(defn parse-fail-resolve [text e]
+  (throw (parse-exception (str "Text '" text "' could not be parsed: " (ex-message e)))))
+(defn parse-end!
+  "Text past index i was not read by any field."
+  [text i]
+  (when (< i (count text)) (parse-fail-unparsed text i)))
+
+(defn char-at?
+  "The char at index i is c, ignoring case (the ISO formatters parse
+  case-insensitively, so 't' and 'z' read as 'T' and 'Z')."
+  [s i c]
+  (and (< i (count s)) (= (upper (str (nth s i))) (upper (str c)))))
+
+(defn digits-from
+  "The index past the run of digits starting at i, reading at most n."
+  [s i n]
+  (loop [j i] (if (and (< (- j i) n) (< j (count s)) (digit? (nth s j))) (recur (inc j)) j)))
+
+(defn two-digits
+  "The two-digit field at i, or nil."
+  [s i]
+  (when (= (+ i 2) (digits-from s i 2)) (parse-long (subs s i (+ i 2)))))
+
+(defn scan-iso-date
+  "ISO_LOCAL_DATE from index i: [year month day end]. A year past four digits
+  carries its sign (+10000-01-01, -999999999-01-01); '+' only past four."
+  [s i]
+  (let [sign (when (< i (count s)) (#{\+ \-} (nth s i)))
+        y0 (if sign (inc i) i)
+        y1 (digits-from s y0 10)
+        ny (- y1 y0)]
+    (when (or (< ny 4) (and (nil? sign) (> ny 4)) (and (= sign \+) (<= ny 4))) (parse-fail-at s i))
+    (when-not (char-at? s y1 \-) (parse-fail-at s y1))
+    (let [m0 (inc y1) m (or (two-digits s m0) (parse-fail-at s m0))
+          _ (when-not (char-at? s (+ m0 2) \-) (parse-fail-at s (+ m0 2)))
+          d0 (+ m0 3) d (or (two-digits s d0) (parse-fail-at s d0))
+          y (parse-long (subs s y0 y1))]
+      [(if (= sign \-) (- y) y) m d (+ d0 2)])))
+
+(defn scan-iso-time
+  "HH:mm[:ss[.fraction]] from index i: [hour minute second nano end]. With
+  need-secs (ISO_INSTANT) the seconds are required; otherwise ':' without two
+  digits after it is left unread, as the JDK's optional section leaves it."
+  [s i need-secs]
+  (let [h (or (two-digits s i) (parse-fail-at s i))
+        _ (when-not (char-at? s (+ i 2) \:) (parse-fail-at s (+ i 2)))
+        mi (or (two-digits s (+ i 3)) (parse-fail-at s (+ i 3)))
+        j (+ i 5)
+        sec (if need-secs
+              (do (when-not (char-at? s j \:) (parse-fail-at s j))
+                  (or (two-digits s (inc j)) (parse-fail-at s (inc j))))
+              (when (char-at? s j \:) (two-digits s (inc j))))]
+    (if (nil? sec)
+      [h mi 0 0 j]
+      (let [k (+ j 3)]
+        (if (char-at? s k \.)
+          (let [f1 (digits-from s (inc k) 9) fd (subs s (inc k) f1)]
+            [h mi sec (* (if (= "" fd) 0 (parse-long fd)) (pow10 (- 9 (count fd)))) f1])
+          [h mi sec 0 k])))))

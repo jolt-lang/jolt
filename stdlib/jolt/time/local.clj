@@ -18,52 +18,39 @@
 (defn iso-date-str [ed] (let [[y m d] (civil-from-days ed)] (str (u/pad4 y) "-" (u/pad2 m) "-" (u/pad2 d))))
 (defn iso-datetime-str [ed nod] (str (iso-date-str ed) "T" (u/iso-time-str nod)))
 
-(defn- parse-exception [msg]
-  (jolt.host/throwable "java.time.format.DateTimeParseException" msg))
+(defn- resolve-date
+  "The epoch day of fields parsed from text, resolved strictly as the JDK does:
+  a month or day out of range is a parse error, not a date rolled over."
+  [text y m d]
+  (try (u/check-date y m d)
+       (catch java.time.DateTimeException e (u/parse-fail-resolve text e)))
+  (days-from-civil y m d))
 
-(defn- digit-at? [s i] (and (< i (count s)) (let [c (int (nth s i))] (and (<= 48 c) (<= c 57)))))
-
-(defn- digits-from
-  "The index past the run of digits starting at i, reading at most n."
-  [s i n]
-  (loop [j i] (if (and (< (- j i) n) (digit-at? s j)) (recur (inc j)) j)))
+(defn- resolve-time [text h mi sec nano]
+  (try (u/check-time h mi sec nano)
+       (catch java.time.DateTimeException e (u/parse-fail-resolve text e)))
+  (u/hmsn->nano h mi sec nano))
 
 (defn parse-iso-date
-  "The epoch day of an ISO_LOCAL_DATE (yyyy-MM-dd; a year past four digits
-  carries its sign, as in +10000-01-01 or -999999999-01-01), parsed and
-  resolved as strictly as the JDK: text that does not match throws
-  DateTimeParseException naming the index it failed at, and a month or day
-  out of range throws one naming the field, rather than rolling over.
-  `text` and `offset` place s inside a longer text, for the message."
-  ([s] (parse-iso-date s s 0))
-  ([s text offset]
-   (let [at (fn [i] (throw (parse-exception (str "Text '" text "' could not be parsed at index " (+ offset i)))))
-         n (count s)
-         sign (when (pos? n) (#{\+ \-} (nth s 0)))
-         y0 (if sign 1 0)
-         y1 (digits-from s y0 10)
-         ny (- y1 y0)]
-     ;; year: four digits bare, more only with a sign, '+' only past four
-     (when (or (< ny 4) (and (nil? sign) (> ny 4)) (and (= sign \+) (<= ny 4))) (at 0))
-     (when-not (and (< y1 n) (= \- (nth s y1))) (at y1))
-     (let [m0 (inc y1) m1 (digits-from s m0 2)]
-       (when-not (= 2 (- m1 m0)) (at m0))
-       (when-not (and (< m1 n) (= \- (nth s m1))) (at m1))
-       (let [d0 (inc m1) d1 (digits-from s d0 2)]
-         (when-not (= 2 (- d1 d0)) (at d0))
-         (when (< d1 n)
-           (throw (parse-exception (str "Text '" text "' could not be parsed, unparsed text found at index "
-                                        (+ offset d1)))))
-         (let [y (parse-long (subs s y0 y1))
-               y (if (= sign \-) (- y) y)
-               m (parse-long (subs s m0 m1))
-               d (parse-long (subs s d0 d1))]
-           ;; the JDK resolves fields strictly: a month or day out of range is a
-           ;; parse error, not a date rolled over into the next month or year
-           (try (u/check-date y m d)
-                (catch Exception e
-                  (throw (parse-exception (str "Text '" text "' could not be parsed: " (ex-message e))))))
-           (days-from-civil y m d)))))))
+  "The epoch day of an ISO_LOCAL_DATE, parsed as strictly as the JDK: text
+  that does not match throws DateTimeParseException naming the index it
+  failed at, and a field out of range throws one naming the field."
+  [s]
+  (let [[y m d end] (u/scan-iso-date s 0)]
+    (u/parse-end! s end)
+    (resolve-date s y m d)))
+
+(defn parse-iso-time "The nano-of-day of an ISO_LOCAL_TIME." [s]
+  (let [[h mi sec nano end] (u/scan-iso-time s 0 false)]
+    (u/parse-end! s end)
+    (resolve-time s h mi sec nano)))
+
+(defn parse-iso-date-time "[epoch-day nano-of-day] of an ISO_LOCAL_DATE_TIME." [s]
+  (let [[y m d e1] (u/scan-iso-date s 0)
+        _ (when-not (u/char-at? s e1 \T) (u/parse-fail-at s e1))
+        [h mi sec nano e2] (u/scan-iso-time s (inc e1) false)]
+    (u/parse-end! s e2)
+    [(resolve-date s y m d) (resolve-time s h mi sec nano)]))
 
 (defn lt-hour [nod] (quot nod (* 3600 nps)))
 (defn lt-minute [nod] (mod (quot nod (* 60 nps)) 60))
@@ -268,7 +255,7 @@
                       ([h m s nano] (local-time (nod-of-checked h m s nano))))
    "ofNanoOfDay"  (fn [n] (local-time (u/->long n)))
    "ofSecondOfDay" (fn [n] (local-time (* (u/->long n) nps)))
-   "parse"        (fn [s & _] (local-time (u/parse-hms->nano (str s))))
+   "parse"        (fn [s & _] (local-time (parse-iso-time (str s))))
    "from"         (fn [x] (cond (lt? x) x
                                 (ldt? x) (local-time (ldt-nod x))
                                 :else (from-dte! "LocalTime" x)))
@@ -371,8 +358,7 @@
                            :else
                            (try (local-dt (ld-epoch-day (LocalDate/from x)) (lt-nano-of-day (LocalTime/from x)))
                                 (catch java.time.DateTimeException e (from-dte! "LocalDateTime" x e)))))
-   "parse"   (fn [s & _] (let [d (str s) t (.indexOf d "T")]
-                           (local-dt (parse-iso-date (subs d 0 t) d 0) (u/parse-hms->nano (subs d (inc t))))))
+   "parse"   (fn [s & _] (let [[ed nod] (parse-iso-date-time (str s))] (local-dt ed nod)))
    "now"     (fn [& args] (let [ms (impl/clock-millis (first args))] (local-dt (u/floor-div ms 86400000) (* (u/floor-mod ms 86400000) 1000000))))
    "MIN"     (local-dt (days-from-civil -999999999 1 1) 0)
    "MAX"     (local-dt (days-from-civil 999999999 12 31) (dec npd))})
