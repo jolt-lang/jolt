@@ -98,6 +98,10 @@ check held3 "$(held "(do (Thread/sleep 300) (let [r (.ready *in*)] $mark (printl
 check held4 "$(held "(let [c (.read *in*)] $mark (println (pr-str [c (read-line) (read-line)])))" 'ab' 'cd
 ef
 ')" "[97 \"bcd\" \"ef\"]"
+# a form read after a character read waits for the rest of its line, so a
+# token the chunk cut off reads whole
+check held5 "$(held "(let [c (.read *in*)] (.unread *in* c) $mark (println (pr-str (read))))" 'ab' 'c
+')" "abc"
 
 # --- (e) io/copy System/in -> System/out (the babashka.process wd.clj echo) ---
 check e "$(run '(clojure.java.io/copy System/in System/out) (flush)' 'echoed')" "echoed"

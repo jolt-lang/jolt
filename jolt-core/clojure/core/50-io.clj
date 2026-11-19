@@ -188,6 +188,20 @@
     (let [l (str line "\n")] (__numbering-advance! stdin-numbering l 0 (count l))))
   line)
 
+;; A character read can leave the buffer holding part of a line. A form parse
+;; must not see that part as the whole input, or a token cut off at its end
+;; reads short ("ab" of "abc"), so the rest of the line comes first. nil from
+;; the line seam means the input ended there, unterminated.
+(defn- stdin-finish-line! []
+  (let [sp @stdin-buf
+        s (nth sp 0)
+        p (nth sp 1)]
+    (when (and (< p (count s)) (not= \newline (nth s (dec (count s)))))
+      (let [line (__stdin-read-line)]
+        (when-not (nil? line)
+          (stdin-drop! s p)
+          (reset! stdin-buf [(str (subs s p) line "\n") 0]))))))
+
 (def ^:dynamic *in*
   (reify IReader
     (-read-line [_]
@@ -212,6 +226,7 @@
               (stdin-line! (__stdin-read-line))))))
     (-read-form [_]
       (reader-open! stdin-closed)
+      (stdin-finish-line!)
       (loop []
         (let [sp @stdin-buf
               s (nth sp 0)
@@ -228,6 +243,7 @@
                 (nth r 0))))))
     (-read+string [_ eof-error? eof-value]
       (reader-open! stdin-closed)
+      (stdin-finish-line!)
       (loop []
         (let [sp @stdin-buf
               s (nth sp 0)
