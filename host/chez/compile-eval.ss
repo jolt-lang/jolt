@@ -703,7 +703,16 @@
          (fn-sym (jolt-symbol "clojure.core" "fn")))
     (values (symbol-t-name name-sym)
             (apply jolt-list (cons fn-sym (ce-macro-arities after-meta)))
-            (ce-defmacro-meta name-sym after-meta attr doc trail))))
+            (ce-with-form-position (ce-defmacro-meta name-sym after-meta attr doc trail) f))))
+
+;; The form's reader position (:line/:column, and :file when compiling a file)
+;; merged last, as the analyzer's stamp-def-pos does for a runtime defmacro and
+;; the JVM Compiler does for every def: position beats an attr-map's :line.
+(define (ce-with-form-position m f)
+  (let ((p (hc-form-position f)))
+    (if (jolt-nil? p)
+        m
+        (pmap-fold p (lambda (k v acc) (jolt-assoc acc k v)) (or m (jolt-hash-map))))))
 
 ;; Clojure's compilation-unit rule applies to a top-level MACRO CALL too: the
 ;; form is macroexpanded first, and when the expansion lands on (do ...) its
