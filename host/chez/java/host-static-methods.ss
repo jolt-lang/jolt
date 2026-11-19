@@ -668,7 +668,15 @@
                                 ((or (string? x) (jolt-nil? x)) (jolt-parse-boolean x))
                                 (else (throw-jvm 'IllegalArgumentException
                                                  "No matching method valueOf found taking 1 args")))))
-        (cons "toString" (lambda (b) (if (jolt-truthy? b) "true" "false")))
+        ;; Boolean.toString(boolean): nil fails the unboxing, anything else has
+        ;; no overload
+        (cons "toString" (lambda (b)
+                           (cond ((boolean? b) (if b "true" "false"))
+                                 ((jolt-nil? b)
+                                  (throw-jvm 'NullPointerException
+                                             "Cannot invoke \"java.lang.Boolean.booleanValue()\" because \"null\" is null"))
+                                 (else (throw-jvm 'IllegalArgumentException
+                                                  "No matching method toString found taking 1 args")))))
         (cons "TRUE" #t) (cons "FALSE" #f)))
 
 (register-class-ctor! "Double" ->double)

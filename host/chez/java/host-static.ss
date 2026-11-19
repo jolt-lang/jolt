@@ -1427,11 +1427,15 @@
   (syntax-rules ()
     ((_ (n args) (name expr) ...)
      (begin (hashtable-set! number-method-tbl name (lambda (n args) expr)) ...))))
-;; The Number projections as the JVM computes them. An integer or a Ratio
-;; truncates and keeps the low bits of its width (BigInteger.intValue, the
-;; narrowing casts); a double saturates at the width's range with NaN as 0, the
-;; JLS (int)/(long) conversion, and Double.shortValue/byteValue narrow from that
-;; int. doubleValue is the nearest double and floatValue the nearest float, a jfloat.
+;; The Number projections as the JVM computes them. An integer truncates and
+;; keeps the low bits of its width (BigInteger.intValue, the narrowing casts); a
+;; double saturates at the width's range with NaN as 0, the JLS (int)/(long)
+;; conversion, and Double.shortValue/byteValue narrow from that int. A Ratio is
+;; both: Ratio.longValue keeps the low 64 bits of its truncation, but
+;; Ratio.intValue is (int)doubleValue, so it saturates, and short/byte narrow
+;; from that int. doubleValue is the nearest double and floatValue the nearest
+;; float, a jfloat. A fixnum is in range for 64 bits, and tools.reader reads
+;; every integer through .longValue (#1713), so it returns before any bignum.
 (define (num-wrap e bits)
   (let* ((m (bitwise-arithmetic-shift-left 1 bits))
          (b (modulo e m)))
@@ -1444,8 +1448,11 @@
           (else (exact (truncate d))))))
 (define (num-flo n) (cond ((jfloat? n) (jfloat-fl n)) ((flonum? n) n) (else #f)))
 (define (num-integral n bits)
-  (let ((d (num-flo n)))
-    (if d (num-flo-sat d bits) (num-wrap (jnum->exact n) bits))))
+  (cond ((fixnum? n)
+         (if (or (fx=? bits 64) (fx<=? -2147483648 n 2147483647)) n (num-wrap n bits)))
+        ((num-flo n) => (lambda (d) (num-flo-sat d bits)))
+        ((and (fx=? bits 32) (num-ratio? n)) (num-flo-sat (inexact n) 32))
+        (else (num-wrap (jnum->exact n) bits))))
 (define (num-exact-integer? n) (and (number? n) (exact? n) (integer? n)))
 (define (num-ratio? n) (and (number? n) (exact? n) (not (integer? n))))
 (define-number-methods (n args)
@@ -1456,8 +1463,21 @@
     ("doubleValue" (or (num-flo n) (inexact (jolt-need-num n))))
     ("floatValue" (make-jfloat (flsingle (or (num-flo n) (inexact (jolt-need-num n))))))
     ;; Comparable.compareTo: -1/0/1, a double by Double.compare (NaN above
-    ;; everything, -0.0 below 0.0)
+    ;; everything, -0.0 below 0.0). Long, Double and Float compare only to their
+    ;; own class, and the reflector's cast of the argument is what raises; a Ratio
+    ;; takes any number (Numbers.compare). jolt's one integer answers for a Long.
     ("compareTo"
+     (begin
+     (let ((o (car args)))
+       (unless (or (num-ratio? n)
+                   (cond ((jfloat? n) (jfloat? o))
+                         ((flonum? n) (flonum? o))
+                         (else (num-exact-integer? o))))
+         (throw-jvm 'ClassCastException
+                    (string-append "Cannot cast " (jolt-class-name o) " to "
+                                   (cond ((jfloat? n) "java.lang.Float")
+                                         ((flonum? n) "java.lang.Double")
+                                         (else "java.lang.Long"))))))
      (let ((a (or (num-flo n) n)) (b (let ((o (car args))) (or (num-flo o) (jolt-need-num o)))))
        (if (or (flonum? a) (flonum? b))
            (let ((x (inexact a)) (y (inexact b)))
@@ -1467,7 +1487,7 @@
                    ;; equal, so only the sign of a zero tells them apart
                    ((and (fl= x 0.0) (not (eqv? x y))) (if (eqv? x -0.0) -1 1))
                    (else 0)))
-           (cond ((< a b) -1) ((> a b) 1) (else 0)))))
+           (cond ((< a b) -1) ((> a b) 1) (else 0))))))
     ("numerator" (if (num-ratio? n) (numerator n) (dispatch-miss n "numerator" args)))
     ("denominator" (if (num-ratio? n) (denominator n) (dispatch-miss n "denominator" args)))
     ;; .toString(radix) — BigInteger/Integer render in a base, lowercase like the
