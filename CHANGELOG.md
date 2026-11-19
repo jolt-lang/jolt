@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The printer streams.** `pr`, `prn`, `print` and `print-method` write into
+  the target Writer as they walk the value, as core_print.clj does, instead of
+  building the whole text as a string first, and `pr-str` fills one string port.
+  Printing a large value to a file holds only the path to the value being
+  written; `pr-str` of a 480 KB nested value is about 12% faster, and `pr` to a
+  FileWriter or `io/writer` is as fast as `spit` of `pr-str`. A user
+  print-method reached mid-value is handed the Writer itself, and the built-in
+  methods in `(methods print-method)` are this printer. Output is unchanged.
+
 ### Fixed
+
+- `(methods print-method)` holds the JVM's built-in printers under the same
+  class keys (`IPersistentMap`, `ISeq`, `String`, `Object`, ...) and its
+  prefer-method pairs, so a library that borrows one, as duratom does with
+  `(get (methods print-method) clojure.lang.IPersistentMap)`, prints the map
+  instead of failing with "nil cannot be cast to IFn". A user method keyed on
+  an interface or superclass now applies through isa? and prefer-method as on
+  the JVM: one on `IPersistentMap` prints sorted maps too but not records.
+- A class-keyed print-method no longer slows printing of values it cannot
+  match: numbers, strings, keywords, vectors, hash maps and seqs skip the class
+  lookup once their classes are known not to reach a user method, and a
+  number, string, keyword, char or boolean skips the user-method lookup
+  entirely when nothing could match it. Printing a 10k-entry map of maps is
+  about 1.5x faster with or without class-keyed methods installed.
+- `(class (tagged-literal 'a 1))` is `clojure.lang.TaggedLiteral`; a sorted
+  map and a queue have their own type tags.
+- A namespace and a `PersistentQueue` print as the JVM prints them, Object's
+  `#object[clojure.lang.Namespace 0x… "user"]` form (the queue's `str` is
+  `clojure.lang.PersistentQueue@<hash>`), and `pprint` writes a queue as
+  `<-(1 2)-<`. An Eduction prints its seq only under `pr` (`print` writes its
+  `#object` form), and its print-method is a built-in keyed by the class.
+- Every value answers `java.lang.Object`'s `hashCode`, `equals`, `toString` and
+  `getClass`, so `(.hashCode #"a")` and the `str` of a record holding a regex
+  no longer throw "No matching field found".
+- Comparing a keyword with a class or another host value no longer walks every
+  registered equality arm: `(= String :a)` is 20x faster, and so is a lookup in
+  a multimethod table keyed by both classes and keywords.
 - Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
 
 - **The reference fns call a user type's `clojure.lang` interface methods.**

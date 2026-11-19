@@ -67,7 +67,7 @@
 (defn pr [& xs]
   (loop [s (seq xs)]
     (when s
-      (__write (__pr-str1 (first s)))
+      (__pr-out (first s))
       (let [n (next s)]
         (when n (__append \space) (recur n)))))
   nil)
@@ -86,7 +86,7 @@
   (loop [s (seq xs)]
     (when s
       (let [x (first s)]
-        (if (char? x) (__append x) (__write (__print1 x))))
+        (if (char? x) (__append x) (__print-out x)))
       (let [n (next s)]
         (when n (__append \space) (recur n)))))
   nil)

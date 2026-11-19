@@ -4429,6 +4429,8 @@
 (define (reader-conditional-value? x)
   (jolt-reader-conditional-record? x))
 (register-class-arm! reader-conditional-value? (lambda (x) "clojure.lang.ReaderConditional"))
+;; so does a tagged literal
+(register-class-arm! jtagged? (lambda (x) "clojure.lang.TaggedLiteral"))
 ;; a multimethod reports its JVM class.
 (register-class-arm! (lambda (x) (jolt-multifn? x)) (lambda (x) "clojure.lang.MultiFn"))
 ;; …and answers its public constructor, MultiFn(String, IFn, Object,

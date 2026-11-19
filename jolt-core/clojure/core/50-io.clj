@@ -391,7 +391,7 @@
                            (if (keyword? t) t (__type-tag x)))))
 
 (defmethod print-method :default [o w]
-  (.write w (__pr-str1 o))
+  (__pr-to o w)
   nil)
 
 ;; print-dup: jolt has one print representation, so dup routes to print-method
@@ -444,13 +444,13 @@
           (recur ns entries (conj kvs [(strip-ns k) v])))
         [ns kvs]))))
 
-;; An Eduction prints as the seq it yields — (2 3 4), not the deftype's fields.
-;; Registered against the type rather than derived from its interfaces because
-;; that is what the JVM does: a bare Sequential/Seqable deftype prints as
-;; #object[…] there, and only Eduction renders sequentially.
-;; (dispatch value is the __type-tag STRING for a deftype, not a symbol)
-(defmethod print-method "clojure.core.Eduction" [e w]
-  (print-method (apply list (seq e)) w))
+;; An Eduction prints as the seq it yields — (2 3 4), not the deftype's fields —
+;; and only under pr: print writes its #object form. That is the JVM's built-in
+;; print-method for clojure.core.Eduction, so it is registered with the other
+;; built-ins under the class (java/io-streams.ss) and rendered natively
+;; (printing.ss eduction-write!), which keeps the user-method lookup off every
+;; printed value. A bare Sequential/Seqable deftype prints as #object[…] on the
+;; JVM; only Eduction renders sequentially.
 
 ;; A channel has no readable form, so name it here; every other host type the
 ;; printer knows renders through :default, which is the native renderer.

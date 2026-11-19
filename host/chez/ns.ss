@@ -1358,6 +1358,10 @@
                (not (jolt-var-unbound? (var-cell-root c))))
           c jolt-nil))))
 
-;; --- printer patches: a namespace renders as its name (str / pr-str / -e) ----
-(register-pr-arm! jns? jns-name)
+;; --- printer patches ----------------------------------------------------------
+;; A Namespace has no printer of its own on the JVM, so pr and print write
+;; Object's #object[clojure.lang.Namespace 0x... "user"] form (the name unquoted
+;; under print); its toString, which str is, is the name.
+(register-pr-str-arm! jns? (lambda (x) (jolt-object-repr x #f)))
+(register-pr-readable-arm! jns? (lambda (x) (jolt-object-repr x #t)))
 (register-str-render! jns? jns-name)

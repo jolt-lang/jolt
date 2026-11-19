@@ -2133,6 +2133,7 @@ exactly equivalent to (pprint *1)."
   (-write *out* (pr-str obj)))
 
 (def pprint-set (formatter-out "~<#{~;~@{~w~^ ~:_~}~;}~:>"))
+(def pprint-pqueue (formatter-out "~<<-(~;~@{~w~^ ~_~}~;)-<~:>"))
 
 ;; simple-dispatch and code-dispatch are multimethods on class, like the
 ;; reference, so libraries can extend them: core.logic's nominal namespace does
@@ -2150,7 +2151,7 @@ exactly equivalent to (pprint *1)."
 (defmethod simple-dispatch clojure.lang.IPersistentVector [obj] (pprint-vector obj))
 (defmethod simple-dispatch clojure.lang.IPersistentMap [obj] (pprint-map obj))
 (defmethod simple-dispatch clojure.lang.IPersistentSet [obj] (pprint-set obj))
-(defmethod simple-dispatch clojure.lang.PersistentQueue [obj] (pprint-simple-default obj))
+(defmethod simple-dispatch clojure.lang.PersistentQueue [obj] (pprint-pqueue obj))
 (defmethod simple-dispatch clojure.lang.ISeq [obj] (pprint-list obj))
 (defmethod simple-dispatch clojure.lang.IDeref [obj] (pprint-simple-default obj))
 (defmethod simple-dispatch nil [obj] (-write *out* (pr-str nil)))
@@ -2418,7 +2419,7 @@ exactly equivalent to (pprint *1)."
 (defmethod code-dispatch clojure.lang.IPersistentVector [obj] (pprint-vector obj))
 (defmethod code-dispatch clojure.lang.IPersistentMap [obj] (pprint-map obj))
 (defmethod code-dispatch clojure.lang.IPersistentSet [obj] (pprint-set obj))
-(defmethod code-dispatch clojure.lang.PersistentQueue [obj] (pprint-simple-default obj))
+(defmethod code-dispatch clojure.lang.PersistentQueue [obj] (pprint-pqueue obj))
 (defmethod code-dispatch clojure.lang.ISeq [obj] (pprint-code-list obj))
 (defmethod code-dispatch clojure.lang.Symbol [obj] (pprint-code-symbol obj))
 (defmethod code-dispatch clojure.lang.IDeref [obj] (pprint-simple-default obj))

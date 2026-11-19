@@ -121,6 +121,21 @@
              (loop (cddr o) dk v))
             (else (loop (cddr o) dk h)))))))
 
+;; A host layer that owns a multimethod's built-in methods (the java layer's
+;; print-method printers) registers them here, keyed by the multimethod's
+;; qualified name: they go into the multifn when defmulti makes it, or at once if
+;; it already exists. The defmulti runs from the prelude, after the host files
+;; load, so this is what lets a host file seed a table it cannot yet see.
+(define mm-seed-hooks '())
+(define (register-multifn-seed! ns name proc)
+  (set! mm-seed-hooks (cons (cons (string-append ns "/" name) proc) mm-seed-hooks))
+  (let* ((c (var-cell-lookup ns name))
+         (cur (and c (var-cell-defined? c) (var-cell-root c))))
+    (when (jolt-multifn? cur) (proc cur))))
+(define (mm-run-seed-hooks! ns name mf)
+  (let ((key (string-append ns "/" name)))
+    (for-each (lambda (h) (when (string=? (car h) key) ((cdr h) mf))) mm-seed-hooks)))
+
 (define (jolt-defmulti-setup name-sym dispatch . opts)
   (let-values (((dk h) (parse-mm-opts opts)))
     (let* ((sns (symbol-t-ns name-sym))
@@ -137,6 +152,7 @@
           have
           (let ((mf (make-multifn (symbol-t-name name-sym) dispatch dk h)))
             (def-var! ns (symbol-t-name name-sym) mf)
+            (mm-run-seed-hooks! ns (symbol-t-name name-sym) mf)
             mf)))))
 
 ;; (defmethod-setup 'mm dispatch-val impl) — add a method. Auto-creates the multifn
