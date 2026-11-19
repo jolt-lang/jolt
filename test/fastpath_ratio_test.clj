@@ -299,6 +299,13 @@
 
 (def ^:private samples 3)
 
+;; FASTPATH_ONLY, a comma-separated list of labels, judges those rows and skips
+;; the rest. The Makefile sets it to re-judge the rows a run failed in a fresh
+;; process (see the fastpathratio target).
+(def ^:private only
+  (some-> (System/getenv "FASTPATH_ONLY") not-empty (str/split #",") set))
+(defn- judged? [label] (or (nil? only) (contains? only label)))
+
 ;; A nanosecond clock, not currentTimeMillis: these ratios are judged to two
 ;; decimals and the fast arms run in single-digit milliseconds, which a millisecond
 ;; clock quantizes badly — and the fast arm is the denominator.
@@ -342,29 +349,30 @@
    CEILING. Over the ceiling it samples both arms again, up to twice, and judges
    the ratio of each arm's minimum over every sample taken."
   [label fast-arm slow-arm ceiling]
-  (let [;; a floor on the denominator: an arm that measures as ~0 would make
-        ;; any numerator look infinite
-        ratio (fn [[f s]] (/ s (max f 0.05)))
-        ;; Interference only ever adds time to a sample, so each arm's minimum
-        ;; over more samples is a closer reading of that arm's cost, and the
-        ;; ratio of the two minima is what a re-measure refines. The lowest
-        ;; RATIO of separate readings would not be: a burst on the fast arm
-        ;; lowers one, and under load that hid a reverted string-nth fast path
-        ;; (1.33 against a 1.0 ceiling) in one run out of three. No reading is
-        ;; too high to re-measure: one burst put host-object-pr at 6.0 against
-        ;; its 1.9 ceiling, on a binary that reads 1.7.
-        r (loop [[f s] (best-of-pair samples fast-arm slow-arm) left 2]
-            (let [r (ratio [f s])]
-              (if (and (pos? left) (> r ceiling))
-                (let [[f' s'] (best-of-pair samples fast-arm slow-arm)]
-                  (println (format "  %s: %.2f — over the ceiling, sampling again" label r))
-                  (recur [(min f f') (min s s')] (dec left)))
-                r)))]
-    (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
-                     label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
-    (when (> r ceiling)
-      (swap! failures conj (format "%s: ratio %.2f exceeds ceiling %.1f" label r ceiling)))
-    r))
+  (when (judged? label)
+    (let [;; a floor on the denominator: an arm that measures as ~0 would make
+          ;; any numerator look infinite
+          ratio (fn [[f s]] (/ s (max f 0.05)))
+          ;; Interference only ever adds time to a sample, so each arm's minimum
+          ;; over more samples is a closer reading of that arm's cost, and the
+          ;; ratio of the two minima is what a re-measure refines. The lowest
+          ;; RATIO of separate readings would not be: a burst on the fast arm
+          ;; lowers one, and under load that hid a reverted string-nth fast path
+          ;; (1.33 against a 1.0 ceiling) in one run out of three. No reading is
+          ;; too high to re-measure: one burst put host-object-pr at 6.0 against
+          ;; its 1.9 ceiling, on a binary that reads 1.7.
+          r (loop [[f s] (best-of-pair samples fast-arm slow-arm) left 2]
+              (let [r (ratio [f s])]
+                (if (and (pos? left) (> r ceiling))
+                  (let [[f' s'] (best-of-pair samples fast-arm slow-arm)]
+                    (println (format "  %s: %.2f — over the ceiling, sampling again" label r))
+                    (recur [(min f f') (min s s')] (dec left)))
+                  r)))]
+      (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
+                       label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
+      (when (> r ceiling)
+        (swap! failures conj (format "%s: ratio %.2f exceeds ceiling %.1f" label r ceiling)))
+      r)))
 
 ;; The heap bytes 16 results of MK hold, from a fresh collection. Exact on this
 ;; host (used memory is Chez's bytes-allocated), and 16 arrays of the size
@@ -387,12 +395,13 @@
   "judge!, for a ratio of heap bytes held rather than of time: deterministic, so
    no re-measure."
   [label ref-mk mk ceiling]
-  (let [r (/ (double (bytes-held mk)) (max 1 (bytes-held ref-mk)))]
-    (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
-                     label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
-    (when (> r ceiling)
-      (swap! failures conj (format "%s: ratio %.2f exceeds ceiling %.1f" label r ceiling)))
-    r))
+  (when (judged? label)
+    (let [r (/ (double (bytes-held mk)) (max 1 (bytes-held ref-mk)))]
+      (println (format "  %-18s ratio %6.2f  (ceiling %.1f)%s"
+                       label r ceiling (if (> r ceiling) "  <-- REGRESSED" "")))
+      (when (> r ceiling)
+        (swap! failures conj (format "%s: ratio %.2f exceeds ceiling %.1f" label r ceiling)))
+      r)))
 
 ;; --- fixtures ---------------------------------------------------------------
 
@@ -618,7 +627,7 @@
 
   ;; Moving bytes through a child's pipe must cost about what moving them through
   ;; a file costs, with the same child spawned on both sides.
-  (when-not (= pipe-bytes (pipe-read-arm))
+  (when-not (or (not (judged? "pipe-read")) (= pipe-bytes (pipe-read-arm)))
     (swap! failures conj "pipe-read: drained the wrong number of bytes"))
   (binding [*clock* wall-ns]
     (judge! "pipe-read" pipe-read-ref pipe-read-arm 3.0)

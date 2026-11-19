@@ -849,8 +849,23 @@ ioscaling: testbin
 # recognition that keeps split/replace off the regex engine. Deliberately not a
 # scaling gate — every regression here is linear with a terrible constant, which
 # a 1x-vs-4x ratio cannot see (see the file's header).
+#
+# A row that fails is judged once more in a FRESH process, and only a row that
+# fails both times fails the gate. The test already re-samples a row over its
+# ceiling, but inside the same process, and a CI process can sit in a slow state
+# for a row's whole life: instance-site-type read 3.17 on all three of its
+# samplings in one shard and host-object-pr 2.35 in another (ceilings 1.9), on
+# a binary whose re-run read 1.66 and 1.47. A real regression fails both runs.
 fastpathratio: testbin
-	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj
+	@if JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj >target/fastpathratio.out 2>&1; then \
+	  cat target/fastpathratio.out; \
+	else \
+	  cat target/fastpathratio.out; \
+	  only=$$(sed -n 's/^  - \([a-z0-9-]*\): .*/\1/p' target/fastpathratio.out | paste -sd, -); \
+	  if [ -z "$$only" ]; then exit 1; fi; \
+	  echo; echo "fastpathratio: judging $$only again in a fresh process"; \
+	  FASTPATH_ONLY="$$only" JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj; \
+	fi
 
 # A stdlib fn against the same source compiled from a user file, as a ratio in
 # one process. The embedded stdlib fasls and the seed-embedded namespaces are
