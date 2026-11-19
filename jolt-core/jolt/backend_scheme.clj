@@ -32,7 +32,7 @@
                      register-callsite! seed-mint? source-reg? static-callee
                      target trace-callsite-reg unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
-             :refer [*const-pool* const-coll-node?
+             :refer [*const-pool* hoist-coll-literal
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
                      hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
@@ -1634,7 +1634,7 @@
                                  "jolt-hash-set-checked")
                                (:items node))
             :map (emit-map-literal node))]
-    (if (const-coll-node? node) (hoist-const-per-site (site-const node s)) s)))
+    (hoist-coll-literal node s)))
 
 ;; Literal data the reader built: quoted forms, and the regex, #inst, #uuid,
 ;; bigdec and namespace leaves.
