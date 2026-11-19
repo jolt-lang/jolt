@@ -1533,12 +1533,16 @@
 ;; protocol. Copy-on-write like the retired descriptors (records.ss): written
 ;; only by a redefinition, #f until the first.
 (define reify-retired-box (box #f))
-(define (reify-retired-protos obj)
+;; Entries are (proto . gen): the generation the site implemented.
+(define (reify-retired-entries obj)
   (let ((t (unbox reify-retired-box)))
     (if (and t (jreify? obj)) (hashtable-ref t (car (jreify-methods obj)) '()) '())))
+(define (reify-retired-protos obj) (map car (reify-retired-entries obj)))
+(define (reify-proto-retired-at? obj proto gen)
+  (and (member (cons proto gen) (reify-retired-entries obj)) #t))
 (define (reify-proto-retired? obj proto)
   (and (unbox reify-retired-box) (member proto (reify-retired-protos obj)) #t))
-(define (forget-reify-protocol! proto)
+(define (forget-reify-protocol! proto gen)
   (jolt-with-mutex reify-shape-mu
     (let-values (((sites protos) (hashtable-entries reify-site-protos)))
       (let ((t #f))
@@ -1550,7 +1554,7 @@
                             (hashtable-copy (unbox reify-retired-box) #t)
                             (make-weak-eq-hashtable))))
               (let ((cur (hashtable-ref t slots '())))
-                (unless (member proto cur) (hashtable-set! t slots (cons proto cur)))))))
+                (unless (assoc proto cur) (hashtable-set! t slots (cons (cons proto gen) cur)))))))
         (when t (set-box! reify-retired-box t))))))
 
 ;; A reify form's or a proxy's generated class name, or #f. A proxy's is worked
@@ -1795,16 +1799,25 @@
 ;; extenders: type-tags that extend a protocol via extend/extend-type/extend-
 ;; protocol, as symbols (extends? reads this). Inline deftype/defrecord impls are
 ;; excluded — only tags carrying the extend mark count, matching the JVM.
+;; A redefined type's OLD class that was extended answers as that class (its
+;; retired class token, class-model.ss), named as the JVM names it; extends?
+;; compares it by identity.
 (define (extenders proto)
   (let* ((pn (jolt-get proto kw-proto-name jolt-nil))
          (pn-str (if (symbol-t? pn) (symbol-t-name pn) pn))
+         (retired (retired-descs))
          (out '()))
     (vector-for-each
       (lambda (tag)
         (let ((ti (hashtable-ref type-registry tag #f)))
           (when ti (let ((pi (hashtable-ref ti pn-str #f)))
                      (when (and pi (hashtable-ref pi extend-mark #f))
-                       (set! out (cons (jolt-symbol jolt-nil tag) out)))))))
+                       (let ((r (let loop ((rs retired))
+                                  (cond ((null? rs) #f)
+                                        ((string=? (cdar rs) tag) (caar rs))
+                                        (else (loop (cdr rs)))))))
+                         (set! out (cons (if r (jolt-retired-class-token r) (jolt-symbol jolt-nil tag))
+                                         out))))))))
       (jolt-with-mutex rec-tbl-mu (hashtable-keys type-registry)))
     (if (null? out) jolt-nil (list->cseq out))))
 

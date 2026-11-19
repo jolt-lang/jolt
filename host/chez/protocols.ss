@@ -238,7 +238,13 @@
 (define protocol-fn-tbl (make-hashtable string-hash string=?))
 (define (register-protocol-fn! ns nm f)
   (jolt-with-mutex rec-tbl-mu
-    (hashtable-set! protocol-fn-tbl (string-append ns "/" nm) f))
+    (let ((key (string-append ns "/" nm)))
+      (hashtable-set! protocol-fn-tbl key f)
+      ;; the protocol's current generation, for a site that loads this fn
+      ;; (protocol-direct-impl/site)
+      (let* ((pm (hashtable-ref chez-protocol-methods-tbl key #f))
+             (g (and pm (hashtable-ref defined-protocols (car pm) #f))))
+        (when g (hashtable-set! protocol-fn-gens f g)))))
   jolt-nil)
 (define (protocol-fn-of ns nm)
   (jolt-with-mutex rec-tbl-mu
@@ -851,14 +857,19 @@
 ;; type tag at call time, so this table is read only by `jolt build` inference.
 ;; Called by defprotocol-emitted code in the protocol's ns -- once per evaluation
 ;; of the defprotocol, so a second call for the same protocol is a redefinition
-;; (forget-protocol-declarations!).
+;; (forget-protocol-declarations!). The table holds each protocol's GENERATION:
+;; 0 for the first definition, one more per redefinition -- the JVM's sequence
+;; of protocol interfaces, which a call site compiled against one of them keeps
+;; (protocol-direct-impl/site).
 (define defined-protocols (make-hashtable string-hash string=?))
+(define (protocol-gen proto)
+  (jolt-with-mutex rec-tbl-mu (hashtable-ref defined-protocols proto #f)))
 (define (register-protocol-methods! proto-name method-names)
-  (when (jolt-with-mutex rec-tbl-mu
-          (let ((seen (hashtable-ref defined-protocols proto-name #f)))
-            (hashtable-set! defined-protocols proto-name #t)
-            seen))
-    (forget-protocol-declarations! proto-name))
+  (let ((old-gen (jolt-with-mutex rec-tbl-mu
+                   (let ((g (hashtable-ref defined-protocols proto-name #f)))
+                     (hashtable-set! defined-protocols proto-name (if g (fx+ g 1) 0))
+                     g))))
+    (when old-gen (forget-protocol-declarations! proto-name old-gen)))
   (let ((ns (chez-current-ns)))
     (for-each (lambda (mn)
                 (let ((m (if (symbol-t? mn) (symbol-t-name mn) mn)))
@@ -888,8 +899,8 @@
   (let* ((n (vector-length v)) (new (make-vector n #f)))
     (let loop ((i 0))
       (if (fx=? i n) new (begin (vector-set! new i (vector-ref v i)) (loop (fx+ i 1)))))))
-(define (forget-protocol-declarations! proto)
-  (let ((dropped '()))                  ; ((tag method ...) ...)
+(define (forget-protocol-declarations! proto gen)
+  (let ((dropped '()))                  ; ((tag table method ...) ...)
     (jolt-with-mutex rec-tbl-mu
       (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
       (vector-for-each
@@ -914,14 +925,15 @@
                           (if (null? es) (hashtable-delete! mi m) (hashtable-set! mi m es))))
                       methods)))
                 (hashtable-delete! type-class-memo tag)
-                (set! dropped (cons (cons tag methods) dropped))))))
+                (set! dropped (cons (cons tag (cons pi methods)) dropped))))))
         (hashtable-keys type-registry)))
     (let ((retired (retired-descs))
           (iface (proto-iface-name proto)))
       (for-each
         (lambda (e)
           (let* ((tag (car e))
-                 (methods (cdr e))
+                 (table (cadr e))
+                 (methods (cddr e))
                  (desc (or (hashtable-ref chez-tag-desc tag #f)
                            (let loop ((rs retired))
                              (cond ((null? rs) #f)
@@ -929,6 +941,9 @@
                                    (else (loop (cdr rs)))))))
                  ;; interned outside the lock, which intern-pm-key-by-name takes
                  (ids (map (lambda (m) (intern-pm-key-by-name proto m)) methods)))
+            ;; the dropped table stays the impl a call site compiled against
+            ;; generation GEN reaches on this class (protocol-direct-impl/site)
+            (when desc (save-declared-impls! desc proto gen table))
             (when desc
               (jolt-with-mutex rec-tbl-mu
                 (let ((pt (jrdesc-ptable desc)))
@@ -948,8 +963,50 @@
                                                ((string=? (car ss) iface) (loop (cdr ss) acc))
                                                (else (loop (cdr ss) (cons (car ss) acc)))))))))))
         dropped))
-    (forget-reify-protocol! proto)
+    (forget-reify-protocol! proto gen)
     (chez-infer-registry-bump!)))
+
+;; ---- call sites compiled against an older protocol generation -----------------
+;; A call compiled before a protocol was redefined is, on the JVM, an interface
+;; call against the OLD interface: a class that declared the protocol back then
+;; still answers its own impl there, while a fresh call misses (Compiler
+;; emitProto: `instanceof` the interface the site was compiled with, else the
+;; var's fn). The back end's protocol site (emit-proto-site-call) holds the
+;; protocol fn it loaded against; when the var no longer holds it, it asks
+;; protocol-direct-impl/site with that fn, whose generation says which interface
+;; the site means.
+;;
+;; desc -> (((proto . gen) . impl-table) ...): the inline impls a redefinition of
+;; PROTO dropped from the class DESC describes, under the generation they
+;; implemented. Keyed by descriptor, so a later redefinition of the TYPE does not
+;; hand them to the new class. Read only on that slow path.
+(define declared-impls-by-gen (make-weak-eq-hashtable))
+(define (save-declared-impls! desc proto gen table)
+  (jolt-with-mutex rec-tbl-mu
+    (hashtable-set! declared-impls-by-gen desc
+                    (cons (cons (cons proto gen) table)
+                          (hashtable-ref declared-impls-by-gen desc '())))))
+;; protocol fn -> the generation of its protocol when defprotocol made it
+(define protocol-fn-gens (make-weak-eq-hashtable))
+(define (protocol-fn-gen f)
+  (jolt-with-mutex rec-tbl-mu (hashtable-ref protocol-fn-gens f #f)))
+(define (protocol-direct-impl/site proto-name method-name obj shim)
+  (let ((g (and shim (protocol-fn-gen shim)))
+        (cur (protocol-gen proto-name)))
+    (if (and g cur (fx<? g cur))
+        (cond
+          ((jrec? obj)
+           (let ((e (jolt-with-mutex rec-tbl-mu
+                      (let loop ((es (hashtable-ref declared-impls-by-gen (jrec-desc obj) '())))
+                        (cond ((null? es) #f)
+                              ((and (string=? (caaar es) proto-name) (fx=? (cdaar es) g)) (cdar es))
+                              (else (loop (cdr es))))))))
+             (and e (hashtable-ref e method-name #f))))
+          ((jreify? obj)
+           (and (reify-proto-retired-at? obj proto-name g)
+                (reify-method-ref obj method-name)))
+          (else #f))
+        (protocol-direct-impl proto-name method-name obj))))
 
 ;; register-method: extend-type/extend register an impl. Host type names keep a
 ;; bare canonical tag; record names qualify to the current ns.

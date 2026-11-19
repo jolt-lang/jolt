@@ -17,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them. Re-evaluating a `deftype`/`defrecord` makes a new class: instances built
   before are not `instance?` of it, their `class`/`type` is not `=` to it, an old
   record is not `=` to a new one, and they keep the old class's own and
-  extended impls instead of picking up the new definition's.
+  extended impls instead of picking up the new definition's. A protocol call
+  compiled before the protocol was redefined still makes the old interface's
+  call, so a type that declared the protocol back then answers it there, and
+  `extenders`/`extends?` name a redefined type's extended old class as the JVM
+  does.
 
 ## [0.8.28] - 2026-11-19
 

@@ -996,17 +996,22 @@
 ;; record name matches its "ns.Name" tag, and a query for a qualified host class
 ;; (java.util.Map) matches the canonical short tag (Map) extend registered it as.
 (defn extends? [protocol atype]
-  (let [want (if (nil? atype) "nil" (if (jolt.host/class-object? atype) (.getName atype) (name atype)))
-        suffix? (fn [long short]
-                  (let [d (str "." short)]
-                    (and (> (count long) (count d))
-                         (= (subs long (- (count long) (count d))) d))))
-        pn-str (some-> protocol :name name)]
-    (boolean (or (some (fn [t]
-                         (let [tn (name t)]
-                           (or (= tn want) (suffix? tn want) (suffix? want tn))))
-                       (extenders protocol))
-                 (and pn-str (jolt.host/type-satisfies? want pn-str))))))
+  (if (jolt.host/retired-class? atype)
+    ;; a redefined type's OLD class, which extenders holds as itself (its name
+    ;; is the new class's, so only identity tells them apart)
+    (boolean (some (fn [t] (identical? t atype)) (extenders protocol)))
+    (let [want (if (nil? atype) "nil" (if (jolt.host/class-object? atype) (.getName atype) (name atype)))
+          suffix? (fn [long short]
+                    (let [d (str "." short)]
+                      (and (> (count long) (count d))
+                           (= (subs long (- (count long) (count d))) d))))
+          pn-str (some-> protocol :name name)]
+      (boolean (or (some (fn [t]
+                           (when-not (jolt.host/class-object? t)
+                             (let [tn (name t)]
+                               (or (= tn want) (suffix? tn want) (suffix? want tn)))))
+                         (extenders protocol))
+                   (and pn-str (jolt.host/type-satisfies? want pn-str)))))))
 
 ;; The canonical name for a protocol-extension type: a symbol/keyword via name, a
 ;; string as-is, nil as "nil" (extends on nil values), and a Class VALUE — e.g.

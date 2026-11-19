@@ -180,6 +180,9 @@
 (define (jclass-retired? x)
   (let ((st (jhost-state x)))
     (and (fx>? (vector-length st) 1) (eq? (vector-ref st 1) 'retired))))
+;; extends? asks it of its type argument: such a class is matched by identity
+;; alone, its name being the new class's
+(def-var! "jolt.host" "retired-class?" (lambda (x) (and (jclass? x) (jclass-retired? x))))
 
 ;; Per-site cache for a class-name symbol: the token jolt-class-for answered,
 ;; with the drop epoch it answered in. The hook below bumps the epoch whenever it

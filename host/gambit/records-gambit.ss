@@ -1938,10 +1938,11 @@
 (define (register-protocol-fn! ns nm f)
   (jolt-with-mutex
     rec-tbl-mu
-    (hashtable-set!
-      protocol-fn-tbl
-      (string-append ns "/" nm)
-      f))
+    (let ((key (string-append ns "/" nm)))
+      (hashtable-set! protocol-fn-tbl key f)
+      (let* ((pm (hashtable-ref chez-protocol-methods-tbl key #f))
+             (g (and pm (hashtable-ref defined-protocols (car pm) #f))))
+        (when g (hashtable-set! protocol-fn-gens f g)))))
   jolt-nil)
 
 (define (protocol-fn-of ns nm)
@@ -2411,16 +2412,25 @@
 (define defined-protocols
   (make-hashtable string-hash string=?))
 
+(define (protocol-gen proto)
+  (jolt-with-mutex
+    rec-tbl-mu
+    (hashtable-ref defined-protocols proto #f)))
+
 (define (register-protocol-methods! proto-name method-names)
-  (when (jolt-with-mutex
-          rec-tbl-mu
-          (let ((seen (hashtable-ref
-                        defined-protocols
-                        proto-name
-                        #f)))
-            (hashtable-set! defined-protocols proto-name #t)
-            seen))
-    (forget-protocol-declarations! proto-name))
+  (let ((old-gen (jolt-with-mutex
+                   rec-tbl-mu
+                   (let ((g (hashtable-ref
+                              defined-protocols
+                              proto-name
+                              #f)))
+                     (hashtable-set!
+                       defined-protocols
+                       proto-name
+                       (if g (fx+ g 1) 0))
+                     g))))
+    (when old-gen
+      (forget-protocol-declarations! proto-name old-gen)))
   (let ((ns (chez-current-ns)))
     (for-each
       (lambda (mn)
@@ -2444,7 +2454,7 @@
             (vector-set! new i (vector-ref v i))
             (loop (fx+ i 1)))))))
 
-(define (forget-protocol-declarations! proto)
+(define (forget-protocol-declarations! proto gen)
   (let ((dropped '()))
     (jolt-with-mutex
       rec-tbl-mu
@@ -2484,14 +2494,16 @@
                               (hashtable-set! mi m es))))
                       methods)))
                 (hashtable-delete! type-class-memo tag)
-                (set! dropped (cons (cons tag methods) dropped))))))
+                (set! dropped
+                  (cons (cons tag (cons pi methods)) dropped))))))
         (hashtable-keys type-registry)))
     (let ((retired (retired-descs))
           (iface (proto-iface-name proto)))
       (for-each
         (lambda (e)
           (let* ((tag (car e))
-                 (methods (cdr e))
+                 (table (cadr e))
+                 (methods (cddr e))
                  (desc (or (hashtable-ref chez-tag-desc tag #f)
                            (let loop ((rs retired))
                              (cond
@@ -2500,6 +2512,7 @@
                                (else (loop (cdr rs)))))))
                  (ids (map (lambda (m) (intern-pm-key-by-name proto m))
                            methods)))
+            (when desc (save-declared-impls! desc proto gen table))
             (when desc
               (jolt-with-mutex
                 rec-tbl-mu
@@ -2525,8 +2538,53 @@
                         ((string=? (car ss) iface) (loop (cdr ss) acc))
                         (else (loop (cdr ss) (cons (car ss) acc)))))))))))
         dropped))
-    (forget-reify-protocol! proto)
+    (forget-reify-protocol! proto gen)
     (chez-infer-registry-bump!)))
+
+(define declared-impls-by-gen (make-weak-eq-hashtable))
+
+(define (save-declared-impls! desc proto gen table)
+  (jolt-with-mutex
+    rec-tbl-mu
+    (hashtable-set!
+      declared-impls-by-gen
+      desc
+      (cons
+        (cons (cons proto gen) table)
+        (hashtable-ref declared-impls-by-gen desc '())))))
+
+(define protocol-fn-gens (make-weak-eq-hashtable))
+
+(define (protocol-fn-gen f)
+  (jolt-with-mutex
+    rec-tbl-mu
+    (hashtable-ref protocol-fn-gens f #f)))
+
+(define (protocol-direct-impl/site proto-name method-name
+         obj shim)
+  (let ((g (and shim (protocol-fn-gen shim)))
+        (cur (protocol-gen proto-name)))
+    (if (and g cur (fx<? g cur))
+        (cond
+          ((jrec? obj)
+           (let ((e (jolt-with-mutex
+                      rec-tbl-mu
+                      (let loop ((es (hashtable-ref
+                                       declared-impls-by-gen
+                                       (jrec-desc obj)
+                                       '())))
+                        (cond
+                          ((null? es) #f)
+                          ((and (string=? (caaar es) proto-name)
+                                (fx=? (cdaar es) g))
+                           (cdar es))
+                          (else (loop (cdr es))))))))
+             (and e (hashtable-ref e method-name #f))))
+          ((jreify? obj)
+           (and (reify-proto-retired-at? obj proto-name g)
+                (reify-method-ref obj method-name)))
+          (else #f))
+        (protocol-direct-impl proto-name method-name obj))))
 
 (define host-type-set
   (let ((h (make-hashtable string-hash string=?)))
@@ -4354,18 +4412,25 @@
 
 (define reify-retired-box (box #f))
 
-(define (reify-retired-protos obj)
+(define (reify-retired-entries obj)
   (let ((t (unbox reify-retired-box)))
     (if (and t (jreify? obj))
         (hashtable-ref t (car (jreify-methods obj)) '())
         '())))
+
+(define (reify-retired-protos obj)
+  (map car (reify-retired-entries obj)))
+
+(define (reify-proto-retired-at? obj proto gen)
+  (and (member (cons proto gen) (reify-retired-entries obj))
+       #t))
 
 (define (reify-proto-retired? obj proto)
   (and (unbox reify-retired-box)
        (member proto (reify-retired-protos obj))
        #t))
 
-(define (forget-reify-protocol! proto)
+(define (forget-reify-protocol! proto gen)
   (jolt-with-mutex
     reify-shape-mu
     (let-values (((sites protos)
@@ -4382,8 +4447,8 @@
                       (hashtable-copy (unbox reify-retired-box) #t)
                       (make-weak-eq-hashtable))))
               (let ((cur (hashtable-ref t slots '())))
-                (unless (member proto cur)
-                  (hashtable-set! t slots (cons proto cur)))))))
+                (unless (assoc proto cur)
+                  (hashtable-set! t slots (cons (cons proto gen) cur)))))))
         (when t (set-box! reify-retired-box t))))))
 
 (define proxy-class-name-hook (lambda (x) #f))
@@ -4602,6 +4667,7 @@
 (define (extenders proto)
   (let* ((pn (jolt-get proto kw-proto-name jolt-nil))
          (pn-str (if (symbol-t? pn) (symbol-t-name pn) pn))
+         (retired (retired-descs))
          (out '()))
     (vector-for-each
       (lambda (tag)
@@ -4609,7 +4675,17 @@
           (when ti
             (let ((pi (hashtable-ref ti pn-str #f)))
               (when (and pi (hashtable-ref pi extend-mark #f))
-                (set! out (cons (jolt-symbol jolt-nil tag) out)))))))
+                (let ((r (let loop ((rs retired))
+                           (cond
+                             ((null? rs) #f)
+                             ((string=? (cdar rs) tag) (caar rs))
+                             (else (loop (cdr rs)))))))
+                  (set! out
+                    (cons
+                      (if r
+                          (jolt-retired-class-token r)
+                          (jolt-symbol jolt-nil tag))
+                      out))))))))
       (jolt-with-mutex rec-tbl-mu (hashtable-keys type-registry)))
     (if (null? out) jolt-nil (list->cseq out))))
 
