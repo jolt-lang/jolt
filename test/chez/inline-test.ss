@@ -124,6 +124,21 @@
            (and (identical? old same) (= old changed)
                 (not (identical? old changed))
                 (not (identical? (:p old) (:p changed)))))"))
+(ok "assoc-in preserves HAMT collision entries and the original stored UUID"
+    (ev "(let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+               sibling #uuid \"00000000-0000-0000-0000-000100000000\"
+               missing #uuid \"00000001-0000-0000-0000-000000000000\"
+               probe (parse-uuid (str stored))
+               m {:root (hash-map stored {} sibling :retained)}
+               replaced (sibling-edits m probe 1 2)
+               inserted (sibling-edits m missing false nil)]
+           (and (= (hash stored) (hash sibling) (hash missing))
+                (= {:a 1 :b 2} (get-in replaced [:root stored]))
+                (= :retained (get-in replaced [:root sibling]))
+                (identical? stored (key (find (:root replaced) probe)))
+                (= {:a false :b nil} (get-in inserted [:root missing]))
+                (= :retained (get-in inserted [:root sibling]))
+                (nil? (get-in m [:root missing]))))"))
 (ok "overlapping paths and externally retained intermediate maps stay ordered"
     (ev "(let [old {:root {:shape {:discarded 0}}} child {:keep true}
                first (assoc-in old [:root :shape] child)
