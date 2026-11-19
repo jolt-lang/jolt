@@ -1,6 +1,7 @@
 (ns jolt.passes.facts
   "Lexical bindings, value origins, and reachability for one IR body revision."
   (:require [jolt.analyzer.tree :refer [arity-params]]
+            [jolt.host :as host]
             [jolt.ir :as ir]))
 
 (def ^:private max-nodes 10000)
@@ -22,8 +23,14 @@
     (when (> (count joined) max-origins) (incomplete!))
     joined))
 
+(defn- effect! [state kind origins]
+  (swap! (:effects state) update kind (fnil into #{}) origins))
+
 (defn- opaque! [state origins]
-  (swap! (:opaque state) into origins))
+  (effect! state :opaque origins))
+
+(defn- merge-effects! [state effects]
+  (swap! (:effects state) #(merge-with into % effects)))
 
 ;; Scope maps printed names to [binder path, value origins, enclosing fn]. Neither the
 ;; bindings nor their uses are keyed by IR maps: two children can share the
@@ -88,7 +95,7 @@
       (walk-loop-body state node path body-env)
       (walk state (:body node) (conj path :body) body-env recur-params))))
 
-(defn- walk-arity [state arity path env]
+(defn- walk-arity [state arity path env operands]
   (let [fixed-count (count (:params arity))
         numeric-hints (into {} (:nhints arity))
         [arity-env params]
@@ -98,16 +105,18 @@
                   binder (if rest? (conj path :rest) (conj path :params j))]
               [(bind-local! state env name binder (if rest? :rest :param)
                             ;; Entry coercion can replace the caller's value.
-                            (when-not (and (not rest?)
-                                           (contains? #{:long :double} (get numeric-hints name)))
-                              #{{:kind :argument :binding binder}}))
+                            (if operands
+                              (nth operands j)
+                              (when-not (and (not rest?)
+                                             (contains? #{:long :double} (get numeric-hints name)))
+                                #{{:kind :argument :binding binder}})))
                (conj params binder)]))
           [env []] (arity-params arity))
         origins (walk state (:body arity) (conj path :body) arity-env {:binders params})]
     ;; Coercion may return its input, convert it, or name its class in a
     ;; cast exception. Preserve all three possibilities for downstream queries.
     (if (contains? #{:long :double} (:ret-nhint arity))
-      (do (swap! (:representation state) into origins)
+      (do (effect! state :representation origins)
           (join-origins origins unknown))
       origins)))
 
@@ -125,7 +134,9 @@
 
 (defn- walk-fn [state node path env]
   (let [origins (site :allocation path)
-        inner (assoc state :fn-path path :captures (atom {}))
+        inner (-> state
+                  (assoc :fn-path path :captures (atom {}) :effects (atom {}))
+                  (update :active-fns conj node))
         body-env (once-body-env node env)
         self-env (if-let [name (:name node)]
                    (bind-local! inner body-env name (conj path :name) :self origins)
@@ -133,8 +144,9 @@
         returns (reduce-kv
                   (fn [returns i arity]
                     (join-origins returns
-                                  (walk-arity inner arity (conj path :arities i) self-env)))
+                                  (walk-arity inner arity (conj path :arities i) self-env nil)))
                   #{} (:arities node))]
+    (swap! (:fn-targets state) assoc path {:fn node :env self-env})
     ;; The image's live names describe the spliced closure. A vector entry
     ;; carries literal data, with no lexical binding. The body walk also sees
     ;; captures in generated or rewritten IR without image registration.
@@ -143,7 +155,7 @@
     (let [captures @(:captures inner)]
       (doseq [name (keys captures)] (note-capture! state name (get env name)))
       (swap! (:closures state) assoc path
-             {:captures captures :returns returns
+             {:captures captures :returns returns :effects @(:effects inner)
               :zero-arity? (and (ir/single-fixed-arity-fn? node)
                                 (empty? (:params (first (:arities node)))))}))
     origins))
@@ -275,7 +287,8 @@
   (when (literal-key? key-node)
     (let [k (:val key-node)]
       (if-let [answer (projection state mode (child-origins state receiver-path) k fallback)]
-        (do (when (some? (:present? answer)) (swap! (:projections state) assoc path answer))
+        (do (effect! state :read (child-origins state receiver-path))
+            (when (some? (:present? answer)) (swap! (:projections state) assoc path answer))
             (:origins answer))
         (when (= mode :get)
           (note-guarded-record! state path receiver-path k)
@@ -295,25 +308,57 @@
                    {:kind :map :slots slots :children (reduce join-origins #{} (vals slots))})))
         (site :loop-edit path)))))
 
-(defn- invoke-origins [state node path]
+(defn- fixed-clause [node n]
+  (some (fn [a] (when (and (not (:rest a)) (= n (count (:params a)))) a))
+        (:arities node)))
+
+(defn- uncoerced? [arity]
+  (and (not (:ret-nhint arity))
+       (empty? (:nhints arity)) (empty? (:ahints arity)) (empty? (:phints arity))))
+
+(defn- invoke-known [state path target operands]
+  (let [callee (:fn target)
+        arity (fixed-clause callee (count operands))]
+    (when (and arity (uncoerced? arity) (not (:once callee))
+               (not-any? #(identical? callee %) (:active-fns state)))
+      (let [p (conj path :call-body)
+            inner (-> state
+                      (assoc :fn-path p :captures (atom {}))
+                      (update :active-fns conj callee))]
+        (walk-arity inner arity p (:env target) operands)))))
+
+(defn- invoke-origins [state node path operands]
   (let [f (:fn node)
         args (:args node)
         n (count args)
-        arg (fn [i] (child-origins state (conj path :args i)))
+        arg (fn [i] (nth operands i))
         callee (child-origins state (conj path :fn))
         core (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
                         (not (:proto node)) (not (:devirt-type node)))
                (:name f))
         default (fn [i implicit] (if (> n i) (arg i) implicit))
         absent (site :literal path)
-        closure (when (and (= 0 n) (= 1 (count callee)))
-                  (get @(:closures state) (:site (first callee))))]
+        target-path (when (and (= 1 (count callee)) (= :allocation (:kind (first callee))))
+                      (:site (first callee)))
+        target (when target-path (get @(:fn-targets state) target-path))
+        closure (when (and (= 0 n) target-path) (get @(:closures state) target-path))]
     (cond
-      (:zero-arity? closure) (:returns closure)
+      (or (:proto node) (:devirt-type node)) nil
+      (= path (:linked-path state))
+      (invoke-known state path {:fn (:init (:linked-def state)) :env {}} operands)
+      target
+      (or (invoke-known state path target operands)
+          ;; Existing capture flow for zero-arg once/coercing closures.
+          (when (and (:zero-arity? closure)
+                     (not-any? #(identical? (:fn target) %) (:active-fns state)))
+            (merge-effects! state (:effects closure))
+            (:returns closure)))
       ;; These exact call heads and arities lower directly to native ops.
       (and (= core "identical?") (= n 2))
-      (do (swap! (:identity state) into (into (arg 0) (arg 1))) absent)
+      (do (effect! state :identity (into (arg 0) (arg 1))) absent)
       (and (= core "identity") (= n 1)) (arg 0)
+      (and (#{"not" "nil?" "some?"} core) (= n 1))
+      (do (effect! state :read (arg 0)) absent)
       (and (= core "assoc") (= n 3) (= :const (:op (second args))) (keyword? (:val (second args))))
       (loop-edit state path (arg 0) (:val (second args)) (arg 2))
       (and (#{"get" "nth"} core) (<= 2 n 3))
@@ -327,8 +372,23 @@
       (projection-call state path (if (= :vector (:op f)) :nth :get)
                        (conj path :fn) (first args) (when (= :set (:op f)) absent))
       (and (#{"class" "type"} core) (= n 1))
-      (do (swap! (:representation state) into (arg 0)) nil)
+      (do (effect! state :representation (arg 0)) nil)
       :else nil)))
+
+(defn- walk-invoke [state node path]
+  (let [operands (mapv #(child-origins state (conj path :args %)) (range (count (:args node))))
+        effects (atom {})
+        inner (assoc state :effects effects)
+        known (invoke-origins inner node path operands)
+        returns (or known
+                    (do (opaque! inner (reduce join-origins
+                                               (child-origins state (conj path :fn))
+                                               operands))
+                        unknown))]
+    (merge-effects! state @effects)
+    (swap! (:calls state) assoc path {:args operands :effects @effects :returns returns
+                                     :resolved? (some? known)})
+    returns))
 
 (defn- walk-recur [state path target n]
   (let [{:keys [loop binders]} target
@@ -367,9 +427,10 @@
                          (site :literal path))
               (:quote :regex :load-time-value) (site :literal path)
               (:vector :map :set) (walk-collection state node path)
-              :if (join-origins (child :then) (child :else))
+              :if (do (effect! state :read (child :test))
+                      (join-origins (child :then) (child :else)))
               :do (child :ret)
-              :invoke (or (invoke-origins state node path) (opaque-children))
+              :invoke (walk-invoke state node path)
               :host-new (if-let [shape (record-constructor state node)]
                           (walk-record state path shape
                                        (mapv #(child-origins state (conj path :args %))
@@ -514,18 +575,18 @@
                :recurrent (atom #{}) :remaining remaining
                :loops (atom {}) :recurs (atom {}) :edits (atom {}) :nil-sites (atom #{})
                :containers (atom {}) :closures (atom {}) :projections (atom {})
-               :opaque (atom #{}) :identity (atom #{}) :representation (atom #{})
+               :effects (atom {}) :calls (atom {}) :fn-targets (atom {}) :active-fns []
                :guarded-records (atom {}) :record-classes record-classes}
         state (merge state options)]
     (assoc state :result (walk state body [] {} nil))))
 
-(defn- analyze-body [body record-classes track-edits?]
+(defn- analyze-body [body record-classes options]
   (let [remaining (atom max-nodes)
         first-pass (walk-body body record-classes remaining
-                              {:track-edits? track-edits? :discover? track-edits?})
+                              (assoc options :discover? (:track-edits? options)))
         state (if (seq @(:edits first-pass))
                 (walk-body body record-classes remaining
-                           {:track-edits? true :loop-maps (loop-maps (solve-layouts first-pass))})
+                           (assoc options :loop-maps (loop-maps (solve-layouts first-pass))))
                 first-pass)
         transfers (transfer-origins state)
         headers (header-origins state transfers)
@@ -538,16 +599,27 @@
         contained (into {}
                         (map (fn [[p c]] [p (captures-origins c)])) closures)
         contained (into contained (map (fn [[p c]] [p (:children c)])) @(:containers state))
-        ;; An exposed procedure could be invoked and leak its result. Keep
-        ;; those results off the containment graph used by clients.
-        edges (reduce-kv (fn [edges p c] (update edges p join-origins (:returns c)))
-                         (merge-with join-origins contained aliases) closures)
-        opaque (reachable @(:opaque state) edges nil)
-        published (reachable (into opaque (:result state)) edges nil)
-        identity-observed (reachable @(:identity state) aliases nil)
-        representation-observed (reachable @(:representation state) aliases nil)]
+        ;; Constructing a procedure captures values but doesn't run its body.
+        ;; An exposed procedure could be invoked, leak its result, or publish
+        ;; other values. Keep latent effects off the containment graph.
+        flow-edges (merge-with join-origins contained aliases)
+        edges (reduce-kv (fn [edges p c]
+                           (update edges p join-origins
+                                   (join-origins (:returns c) (get-in c [:effects :opaque]))))
+                         flow-edges closures)
+        immediate @(:effects state)
+        published (reachable (into (:result state) (get immediate :opaque)) edges nil)
+        effects (reduce (fn [effects {:keys [site kind]}]
+                          (if (= :allocation kind)
+                            (merge-with into effects (get-in closures [site :effects]))
+                            effects))
+                        immediate published)
+        opaque (reachable (get effects :opaque #{}) edges nil)
+        identity-observed (reachable (get effects :identity #{}) aliases nil)
+        representation-observed (reachable (get effects :representation #{}) aliases nil)]
     {:bindings @(:bindings state) :uses @(:uses state) :origins @(:origins state)
      :recurrent @(:recurrent state)
+     :calls @(:calls state) :aliases aliases :flow-edges flow-edges :escape-edges edges
      :contained contained :closures closures :projections @(:projections state)
      :guarded-records @(:guarded-records state)
      :published published :opaque opaque :identity identity-observed
@@ -555,6 +627,20 @@
      :loop-updates (when (seq @(:edits state))
                      (loop-updates state transfers edges published opaque
                                    (into identity-observed representation-observed)))}))
+
+(defn- analyze-facts [body shapes options]
+  (let [classes (reduce (fn [classes shape]
+                          (let [class (:type shape)]
+                            ;; Dotted record names can share a runtime class
+                            ;; tag. The matching constructor is ambiguous.
+                            (assoc classes class (when-not (contains? classes class) shape))))
+                        {} (vals shapes))]
+    (try
+      (analyze-body body classes options)
+      (catch clojure.lang.ExceptionInfo e
+        ;; Unsupported layouts and exhausted budgets can hide uses of even
+        ;; the sites we already walked.
+        (if (::incomplete (ex-data e)) {} (throw e))))))
 
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
@@ -574,18 +660,7 @@
            (= direct-link? (nth previous 2)))
       (nth previous 3)
       :else
-      (let [classes (reduce (fn [classes shape]
-                              (let [class (:type shape)]
-                                ;; Dotted record names can share a runtime class
-                                ;; tag. The matching constructor is ambiguous.
-                                (assoc classes class (when-not (contains? classes class) shape))))
-                            {} (vals shapes))
-            facts (try
-                    (analyze-body body classes direct-link?)
-                    (catch clojure.lang.ExceptionInfo e
-                      ;; Unsupported layouts and exhausted budgets can hide uses
-                      ;; of even the sites we already walked.
-                      (if (::incomplete (ex-data e)) {} (throw e))))]
+      (let [facts (analyze-facts body shapes {:track-edits? direct-link?})]
         (reset! cache [body shapes direct-link? facts])
         facts))))
 
@@ -603,6 +678,93 @@
   (if (some #(unresolved-origin? facts %) origins)
     (into #{} (map #(if (unresolved-origin? facts %) (first unknown) %)) origins)
     origins))
+
+(defn call-summary-at
+  "Summarize this invoke's fixed arity and operand origins, including effects
+  of the selected body before normal return. :arguments is indexed by operand.
+  Its sets describe possible :read, :identity, :representation, :publish
+  (exposure during the call), :return-alias and :return-contains. Returning a
+  closure or aggregate does not itself publish its contents. :unknown means
+  the argument can have further effects or result flow. :resolved? says the
+  immediate dispatch was modeled. Nested calls can still be opaque. Origins
+  inside a called body use paths under :call-body at the invoke site.
+
+  These facts concern value flow. A consumer must still preserve execution,
+  including effects unrelated to these operands, evaluation order and throws.
+  Returns nil for a missing site or incomplete analysis."
+  [facts path]
+  (when-let [{:keys [args effects returns resolved?]} (get (:calls facts) path)]
+    (let [aliases (:aliases facts)
+          observed (fn [kind] (reachable (get effects kind #{}) aliases nil))
+          read (observed :read)
+          identity (observed :identity)
+          representation (observed :representation)
+          published (reachable (get effects :opaque #{}) (:escape-edges facts) nil)
+          returned (reachable returns aliases nil)
+          retained (reachable (reduce (fn [out origin]
+                                        (into out (get (:contained facts) (:site origin))))
+                                      #{} returned)
+                              (:flow-edges facts) nil)]
+      {:arity (count args)
+       :resolved? resolved?
+       :returns (resolved-origins facts returns)
+       :arguments (mapv (fn [origins]
+                          (let [opaque? (intersect? origins published)]
+                            (cond-> #{}
+                              (intersect? origins read) (conj :read)
+                              (intersect? origins identity) (conj :identity)
+                              (intersect? origins representation) (conj :representation)
+                              opaque? (conj :publish :unknown)
+                              (contains? (resolved-origins facts origins) (first unknown)) (conj :unknown)
+                              (intersect? origins returned) (conj :return-alias)
+                              (intersect? origins retained) (conj :return-contains))))
+                        args)})))
+
+(defn note-linked-definition!
+  "Record the final IR of a linked top-level definition for conditional call
+  queries. Later definitions replace or clear the earlier revision."
+  [unit definition]
+  (when (and (= :def (:op definition)) (not (:no-init definition))
+             (not @(:seed-mint? unit)))
+    (let [key (str (:ns definition) "/" (:name definition))
+          definitions (:linked-call-definitions unit)]
+      (if (and @(:direct-link? unit) (not @(:debug-locals? unit))
+               (not (ir/closed-world-opt-out? (:meta definition)))
+               (= :fn (:op (:init definition))))
+        (swap! definitions assoc key definition)
+        (when (contains? @definitions key) (swap! definitions dissoc key))))))
+
+(defn linked-call-summary
+  "Conditional summary for a direct-linked user Var call at a physical IR
+  path. :definition is the exact final IR revision the summary assumes.
+  Direct linking alone does not freeze the root. A consumer must prove this
+  revision executes (e.g. by guarding the particular procedure the call
+  would apply) and use ordinary dispatch on a failed guard. Preserve the
+  evaluation order of the call target and operands on both paths.
+  The result describes only this call and never enters unconditional body
+  facts. Query again after changes to IR, linkage or the definition."
+  [unit body path]
+  (when (and @(:direct-link? unit) (not @(:debug-locals? unit)) (not @(:seed-mint? unit)))
+    (let [call (get-in body path)
+          {:keys [op ns name]} (:fn call)
+          key (str ns "/" name)
+          definition (get @(:linked-call-definitions unit) key)
+          n (count (:args call))]
+      (when (and (= :invoke (:op call)) (= :var op) definition
+                 (not (#{"clojure.core" "jolt.host"} ns))
+                 (not (or (:proto call) (:devirt-type call) (:prim-op call)))
+                 (contains? @(:direct-link-defined unit) key)
+                 (contains? @(:direct-link-fns unit) key)
+                 (not (host/var-redefined? nil ns name))
+                 (not (host/var-dynamic? nil ns name))
+                 (not (ir/closed-world-opt-out? (some-> (find-var (symbol ns name)) meta)))
+                 (host/var-root-callable? nil ns name n)
+                 (not (host/protocol-call-key nil ns name n)))
+        (let [facts (analyze-facts body (:record-shapes @(:config unit))
+                                   {:track-edits? true :linked-path path :linked-def definition})
+              summary (call-summary-at facts path)]
+          (when (:resolved? summary)
+            {:definition definition :summary summary}))))))
 
 (defn origins-at
   "Possible origins at an expression path. :argument identifies an incoming
