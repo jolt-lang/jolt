@@ -57,6 +57,8 @@
           (= k :long)   (emit-nhint-coerce :long munged)
           :else munged)))
 
+(def ^:private pair-return-name "_pair-ret$")
+
 (defn- emit-arity-clause [emit a]
   (let [orig (:params a)
         nh (into {} (:nhints a))
@@ -475,24 +477,27 @@
                                 "(jolt-register-variadic! " variadic-fixed " " fnsrc-nm "))")
                            (str "(letrec ((" fnsrc-nm " " lambda ")) " fnsrc-nm ")")))))
 
-(defn- pair-exits [node found?]
+(defn- pair-exits [node found? deliver]
   (case (:op node)
     :vector (when (and (= 2 (count (:items node))) (not (ir/const-coll-node? node)))
               (vreset! found? true)
-              (assoc node :pair-result true))
+              (assoc node :pair-result deliver))
     (:recur :throw) node
-    (:let :loop :let-values) (when-let [body (pair-exits (:body node) found?)]
+    (:let :loop :let-values) (when-let [body (pair-exits (:body node) found? deliver)]
                                (assoc node :body body))
-    :do (when-let [ret (pair-exits (:ret node) found?)]
+    :do (when-let [ret (pair-exits (:ret node) found? deliver)]
           (assoc node :ret ret))
-    :if (when-let [yes (pair-exits (:then node) found?)]
-          (when-let [no (pair-exits (:else node) found?)]
+    :if (when-let [yes (pair-exits (:then node) found? deliver)]
+          (when-let [no (pair-exits (:else node) found? deliver)]
             (assoc node :then yes :else no)))
     :try (when-not (:finally node)
-           (when-let [body (pair-exits (:body node) found?)]
-             (if-let [handler (:catch-body node)]
-               (when-let [handler (pair-exits handler found?)]
-                 (assoc node :body body :catch-body handler :pair-result true))
+           (if-let [handler (:catch-body node)]
+             ;; Protected exits first return raw values so normal and catch
+             ;; cleanup runs before the caller's result procedure.
+             (when-let [body (pair-exits (:body node) found? "values")]
+               (when-let [handler (pair-exits handler found? "values")]
+                 (assoc node :body body :catch-body handler :pair-result deliver)))
+             (when-let [body (pair-exits (:body node) found? deliver)]
                (assoc node :body body))))
     nil))
 
@@ -505,7 +510,7 @@
                (fn [i arity]
                  (when-not (or (:rest arity) (:ret-nhint arity))
                    (let [found? (volatile! false)
-                         body (pair-exits (:body arity) found?)]
+                         body (pair-exits (:body arity) found? pair-return-name)]
                      (when (and body @found?)
                        [i (assoc arity :body body)]))))
                (:arities node)))))
@@ -516,14 +521,18 @@
         ;; An inner let supplies the worker's source name without shadowing
         ;; either the linked Var or the named fn's ordinary self binding in it.
         worker-binds (for [i indices
-                           :let [[params body] (nth clauses i)
+                           :let [body (nth (nth clauses i) 1)
+                                 args (map munge-name (:params (nth arities i)))
+                                 params (str "(" (str/join " " (cons pair-return-name args)) ")")
                                  worker (get workers i)]]
                        (str "(" worker " (let ((" frame " (lambda " params " " body "))) " frame "))"))
+        ;; The ordinary entry tail-calls the same body with a vector result
+        ;; procedure. It keeps the public arity and adds no trace frame.
         wrappers (reduce (fn [out i]
                            (let [params (nth (nth clauses i) 0)
                                  args (map munge-name (:params (nth arities i)))
-                                 call (str "(" (str/join " " (cons (get workers i) args)) ")")]
-                             (assoc out i [params (str "(call-with-values (lambda () " call ") jolt-vector)")])))
+                                 call (str "(" (str/join " " (list* (get workers i) "jolt-vector" args)) ")")]
+                             (assoc out i [params call])))
                          clauses indices)
         wrapper (fn-lambda wrappers arities nil nil)]
     (str "(letrec* (" (str/join " " worker-binds)

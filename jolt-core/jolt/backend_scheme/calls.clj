@@ -310,16 +310,20 @@
 (defn- simple-operand? [s]
   (and (pos? (count s))
        (not (some #{\( \) \space \newline \tab \" \' \# \| \;} s))))
-(defn- linked-call [callee operand-strs]
+(defn- with-linked-operands [callee operand-strs build]
   (let [p (fresh-label "_lp$")
         bound (mapv (fn [s] (if (simple-operand? s) [s nil] (let [t (fresh-label "_la$")] [t s])))
                     operand-strs)
         names (mapv first bound)
         binds (str "(" p " " callee ")"
-                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))
-        args (if (seq names) (str " " (str/join " " names)) "")]
-    (str "(let (" binds ") (if (" (unsafe-prefix) "procedure? " p ") (" p args
-         ") (jolt-invoke " p args ")))")))
+                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))]
+    (str "(let (" binds ") " (build p names) ")")))
+(defn- apply-linked-root [root names]
+  (let [args (if (seq names) (str " " (str/join " " names)) "")]
+    (str "(if (" (unsafe-prefix) "procedure? " root ") (" root args
+         ") (jolt-invoke " root args "))")))
+(defn- linked-call [callee operand-strs]
+  (with-linked-operands callee operand-strs apply-linked-root))
 (defn- linked-binding? [callee]
   (and (string? callee) (str/starts-with? callee "jv$")))
 
@@ -434,16 +438,15 @@
   "Produce two values for a destructuring consumer. Both lanes apply the same
   captured root to the same operands. The miss projects the ordinary result."
   [call entry slot args project]
-  (let [{:keys [ns name]} (:fn call)
-        root (fresh-label "_pr$")
-        temps (mapv (fn [_] (fresh-label "_pa$")) args)
-        fast (with-site call (plain-call (str "(vector-ref " entry " " slot ")") temps))
-        slow (str "(if (procedure? " root ") " (plain-call root temps) " "
-                  (plain-call "jolt-invoke" (cons root temps)) ")")
-        slow (project (with-site call (lookup-restore false slow)))]
-    (str "(let* ((" root " " (dl-name ns name) ")"
-         (apply str (map (fn [t a] (str " (" t " " a ")")) temps args))
-         ") (if (eq? " root " (vector-ref " entry " 0)) " fast " " slow "))")))
+  (let [{:keys [ns name]} (:fn call)]
+    (ordered-call (:args call) args
+      (fn [operands]
+        (with-linked-operands (dl-name ns name) operands
+          (fn [root names]
+            (let [fast (with-site call (plain-call (str "(vector-ref " entry " " slot ")")
+                                                  (cons "values" names)))
+                  slow (project (with-site call (lookup-restore false (apply-linked-root root names))))]
+              (str "(if (eq? " root " (vector-ref " entry " 0)) " fast " " slow ")"))))))))
 
 (defn pair-call-site-restore []
   ;; The consumer has received the values, so the call's trace slot can now
