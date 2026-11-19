@@ -6,7 +6,8 @@
   (:require [jolt.host :refer [inline-ir mark-spliced!]]
             [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
             [jolt.op-registry :as op-registry]
-            [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]))
+            [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
+            [jolt.passes.transducers :as transducers]))
 
 ;; ---------------------------------------------------------------------------
 ;; Shared state on the current compilation unit: the fixpoint `dirty` flag the
@@ -599,8 +600,10 @@
   "Bottom-up: inline children first, then attempt to inline this node."
   [node ctx]
   (if (= :invoke (get node :op))
-    ;; inline children first, then attempt to splice this call
-    (try-inline (map-ir-children (fn [c] (inline-node c ctx)) node) ctx)
+    (let [node (if (transducers/filter-map-operands node)
+                 (assoc node :vector-filter-map true)
+                 node)]
+      (try-inline (map-ir-children (fn [c] (inline-node c ctx)) node) ctx))
     (map-ir-children (fn [c] (inline-node c ctx)) node)))
 
 ;; ---------------------------------------------------------------------------

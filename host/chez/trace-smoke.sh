@@ -567,6 +567,25 @@ out_bt="$("$work/tailbin" 2>&1)"
 expect_match "built: the spliced callee is named at its own line" "$out_bt" 'app\.tail/boom (app/tail\.clj:4)'
 expect_match "built: and its caller at the call site" "$out_bt" 'app\.tail/-main (app/tail\.clj:8)'
 
+# Rebinding comp takes the ordinary fallback at the fused filter/map site.
+# A throw there points to the call to comp, one line below into.
+cat > "$work/src/app/filtertrace.clj" <<'EOF'
+(ns app.filtertrace)
+(defn ^:redef widths [rows]
+  (into []
+        (comp
+          (filter sequential?)
+          (map count))
+        rows))
+(defn broken-comp [_ _] (throw (ex-info "broken comp" {})))
+(defn -main [& _]
+  (with-redefs [clojure.core/comp broken-comp]
+    (println (widths [[1] [2]]))))
+EOF
+( cd "$work" && "$joltabs" build -m app.filtertrace -o filtertracebin >/dev/null 2>&1 )
+out_xf="$("$work/filtertracebin" 2>&1)"
+expect_match "built: rebound comp points to its own call in the pipeline" "$out_xf" 'app\.filtertrace/widths (app/filtertrace\.clj:4)'
+
 # The same shape where the callee CANNOT be spliced (^:redef stays var-routed):
 # a real frame, not a reconstructed one. Without this row the block above would
 # pass on a build that had stopped inlining altogether.
