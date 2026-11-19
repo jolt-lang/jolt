@@ -284,10 +284,11 @@
 ;; main-opts is a vector like ["-m" "app.core"] or ["-e" "(prn :hi)"] (optionally
 ;; with trailing args). The user-supplied extra args are appended, so an alias's
 ;; :main-opts and the command line combine exactly like the clj CLI, which
-;; prepends the alias's :main-opts to the argv.
+;; prepends the alias's :main-opts to the argv. `named?` goes to run-script!:
+;; false only for a task running beside others under `run --parallel`.
 (declare repl-session run-script!)
 
-(defn- apply-main-opts [main-opts extra-args]
+(defn- apply-main-opts [main-opts extra-args named?]
   (let [opts (concat main-opts extra-args)]
     (cond
       (= "-m" (first opts)) (run-ns (second opts) (drop 2 opts))
@@ -303,7 +304,7 @@
       (and (string? (first opts))
            (seq (first opts))
            (not (str/starts-with? (first opts) "-")))
-      (run-script! (first opts) (rest opts))
+      (run-script! (first opts) (rest opts) named?)
       :else (throw (ex-info (str "unsupported :main-opts " (pr-str (vec opts))
                                  " (accepted: -m NS, -e EXPR, -r, or a script FILE)")
                             {:main-opts (vec opts)})))))
@@ -319,10 +320,23 @@
 ;; the four cannot drift apart. The file may open with a `#!/usr/bin/env jolt`
 ;; line: the reader takes `#!` as a comment to end of line, the way Clojure's does,
 ;; so an executable script needs nothing else to be readable as a program.
-(defn- run-script! [path args]
+;;
+;; The jolt.file property holds the script's absolute path, as babashka.file does
+;; under bb, so a file can tell being run from being loaded by another script:
+;; (when (= *file* (System/getProperty "jolt.file")) (-main))
+;; Standard input has no path, so it leaves the property unset. So does a script
+;; a task's :main-opts name when the task is one of the :depends that `run
+;; --parallel` runs side by side (`named?` false): with one process-wide property
+;; each of them set, a script could read a sibling's path and skip its own entry
+;; point. A task that runs alone (the target, which starts once its :depends are
+;; done, or any task in a sequential run) sets it like any other script.
+(defn- run-script! [path args named?]
   (push-thread-bindings
     {#'clojure.core/*command-line-args* (seq (drop-end-of-options args))})
-  (load-file (file-arg path))
+  (let [f (file-arg path)]
+    (when (and named? (not= "-" path))
+      (System/setProperty "jolt.file" (.getAbsolutePath (java.io.File. f))))
+    (load-file f))
   nil)
 
 ;; Does a bare argv token name a file to run (rather than a deps.edn task)? A "-"
@@ -370,14 +384,14 @@
         (when (nil? path)
           (throw (ex-info (str (first more) " needs a FILE argument") {})))
         (apply-project! (resolve-current))
-        (run-script! path (drop 2 more)))
+        (run-script! path (drop 2 more) true))
 
       (and (seq more) (not (run-file-arg? (first more))))
       (run-task (first more) (rest more) parallel?)
 
       (seq more)
       (do (apply-project! (resolve-current))
-          (run-script! (first more) (rest more)))
+          (run-script! (first more) (rest more) true))
 
       :else (throw (ex-info "run needs -m NS, a FILE, or a task name" {})))))
 
@@ -394,7 +408,7 @@
     (with-project aliases resolved
       (fn []
         (if (or (seq main-opts) (seq more))
-          (apply-main-opts main-opts more)
+          (apply-main-opts main-opts more true)
           (repl-session))))))
 
 ;; -A:alias… — select the aliases, then run the remaining argv as a command with

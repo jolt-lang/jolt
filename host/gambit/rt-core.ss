@@ -1277,10 +1277,17 @@
     ;; spellings Gambit does not bind, so (.indexOf s x) died on an unbound
     ;; global. A char or a code point needle (String.indexOf(int)) is searched
     ;; as its one-char string, like natives-str.ss.
+    ;; A code no string holds (a lone surrogate, a negative int, one past
+    ;; #x10FFFF) answers -1, as on the JVM; integer->char would raise
+    ;; (natives-str.ss str-unmatchable-code?, the Chez twin).
     ((string=? method "indexOf")
-     (str-index-of s (str-needle (arg 0)) (if (fx>? (length rest) 1) (arg-idx 1) 0)))
+     (if (str-unmatchable-code? (arg 0))
+         (begin (string-length s) -1)
+         (str-index-of s (str-needle (arg 0)) (if (fx>? (length rest) 1) (arg-idx 1) 0))))
     ((string=? method "lastIndexOf")
-     (str-last-index-of s (str-needle (arg 0))))
+     (if (str-unmatchable-code? (arg 0))
+         -1
+         (str-last-index-of s (str-needle (arg 0)))))
     ((string=? method "hashCode") (java-string-hash s))   ; natives-misc.ss, shared
     ((string=? method "startsWith") (string-prefix? (jolt-need-str (arg 0)) s))
     ((string=? method "endsWith") (string-suffix? (jolt-need-str (arg 0)) s))
@@ -1321,6 +1328,11 @@
       (cond ((fx<? i 0) found)
             ((jolt-char-by-char-match? s i needle nlen) i)
             (else (loop (fx- i 1) found))))))
+;; Gambit's integer->char refuses a surrogate and anything past #x10FFFF, like
+;; Chez's, so String.indexOf(int) of such a code answers -1 before str-needle.
+(define (str-unmatchable-code? x)
+  (and (exact-integer? x)
+       (not (and (<= 0 x #x10FFFF) (not (<= #xD800 x #xDFFF))))))
 (define (str-needle x)
   (cond ((char? x) (string x))
         ((number? x) (string (integer->char (exact (truncate x)))))
