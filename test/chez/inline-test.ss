@@ -659,8 +659,10 @@
            (has? (code-part (jolt-ce-emit ir)) "jolt-assoc3")
            (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}"))))
   (set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #f)
+  (set-direct-link-flag! #f)
   (ok "changing link mode invalidates the loop proof for the same IR"
       (jolt-nil? (loop-update-at (body-facts loop-facts-unit ir) direct-edit)))
+  (set-direct-link-flag! #t)
   (set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #t)
   (set-fact-flag! (fact-get loop-facts-unit 'debug-locals?) #t)
   (ok "debug frames can retain old versions across an exceptional transfer"
@@ -944,6 +946,11 @@
   (ok "unsupported arities use the conservative path"
       (and (eq? #f (fact-get summary 'resolved?)) (may-publish? f map-site))))
 
+(let* ((f (loop-facts "(fn [x] (let [m {:k x} helper (fn [a] (loop* [slot a] (assoc slot :k 0) nil))] (helper m)))"))
+       (summary (call-summary-at f ret-site)))
+  (ok "a discarded fixed-key assoc reads the helper argument through its loop slot"
+      (and (eq? #t (fact-get summary 'resolved?)) (effects? summary 0 'read))))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 
@@ -961,6 +968,8 @@
        (one (fact-ir source))
        (two (fact-ir "(fn [x] (let [m {:k x}] (summary-link m x)))")))
   (set-summary-unit! unit)
+  ;; Runtime compilation on Chez has the core prelude loaded.
+  ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
   (set-summary-link! #t)
   (ok "a forward Var reference has no call target from this unit"
       (jolt-nil? (linked-call-summary unit one ret-site)))
@@ -984,6 +993,14 @@
   (set-summary-link! #f)
   (ok "the same caller IR loses the linked summary when linkage is off"
       (jolt-nil? (linked-call-summary unit one ret-site)))
+  (ev "(binding [*compiler-options* {:direct-linking true}] (eval '(def summary-option (fn* ([a] a) ([a b] b)))))")
+  (let* ((caller (fact-ir "(fn [x] (let [m {:k x}] (summary-option m)))"))
+         (candidate (parameterize ((hc-form-direct-link #t))
+                      (linked-call-summary unit caller ret-site))))
+    (ok "runtime compiler-options register the callee and select its conditional summary"
+        (and (not (jolt-nil? candidate))
+             (effects? (fact-get candidate 'summary) 0 'return-alias)
+             (jolt-nil? (linked-call-summary unit caller ret-site)))))
   (set-summary-link! #t)
   (reset-summary-links!)
   (ok "resetting a compilation unit drops its definition revisions"
