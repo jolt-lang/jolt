@@ -42,6 +42,8 @@ print_help() {
     echo " * Version: the latest release on GitHub ('nightly' is the rolling build of main)"
     echo " * Checksum: fetched from the release and verified automatically"
     echo " * Repo: jolt-lang/jolt, or \$JOLT_REPO (a fork's own nightly lives on the fork)"
+    echo " * Latest release: from the GitHub API (\$GITHUB_TOKEN or \$GH_TOKEN"
+    echo "   lifts its rate limit), else from the releases page's redirect"
     exit 1
 }
 
@@ -49,13 +51,40 @@ has() {
     command -v "$1" >/dev/null 2>&1
 }
 
+github_api=${JOLT_GITHUB_API:-https://api.github.com}
+
+# The tag github.com/<repo>/releases/latest redirects to, read from the
+# Location header. It is not the API, so no rate limit applies.
+latest_from_redirect() {
+    local url="https://github.com/${repo}/releases/latest"
+    local location=""
+    if has curl; then
+        location="$(curl -fsSI "$url" | awk 'tolower($1) == "location:" { print $2 }' | tr -d '\r')"
+    elif has wget; then
+        location="$(wget -q -S --max-redirect=0 -O /dev/null "$url" 2>&1 \
+            | awk 'tolower($1) == "location:" { print $2 }' | tr -d '\r')"
+    fi
+    case "$location" in
+        */releases/tag/*) echo "${location##*/releases/tag/}" ;;
+    esac
+}
+
 fetch() {
     local url=$1
     local outfile=${2:-}
+    # The GitHub API allows 60 anonymous requests an hour per address, and CI
+    # runners share addresses. A token ($GITHUB_TOKEN or $GH_TOKEN) lifts that;
+    # it is only ever sent to the API. (${auth[@]+...} keeps bash 3.2, macOS's
+    # /bin/bash, from calling an empty array unbound under set -u.)
+    local token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
+    local auth=()
+    if [[ -n $token && $url == "$github_api"/* ]]; then
+        auth=(--header "Authorization: Bearer ${token}")
+    fi
     if has curl; then
-        if [[ -n $outfile ]]; then curl -fsSL "$url" -o "$outfile"; else curl -fsSL "$url"; fi
+        if [[ -n $outfile ]]; then curl -fsSL ${auth[@]+"${auth[@]}"} "$url" -o "$outfile"; else curl -fsSL ${auth[@]+"${auth[@]}"} "$url"; fi
     elif has wget; then
-        if [[ -n $outfile ]]; then wget -qO "$outfile" "$url"; else wget -qO - "$url"; fi
+        if [[ -n $outfile ]]; then wget -qO "$outfile" ${auth[@]+"${auth[@]}"} "$url"; else wget -qO - ${auth[@]+"${auth[@]}"} "$url"; fi
     else
         >&2 echo "Either 'curl' or 'wget' needs to be on PATH."
         exit 1
@@ -118,8 +147,12 @@ if [[ -z "$version" ]]; then
     # awk consumes the whole response: an early-exiting filter (grep -m1 /
     # sed q / head) SIGPIPEs curl mid-stream, and under `set -o pipefail`
     # curl's exit 23 kills the script before the download ever starts.
-    version="$(fetch "https://api.github.com/repos/${repo}/releases/latest" \
-        | awk -F'"' '/"tag_name"/ && !v { v=$4 } END { if (v) print v }')"
+    version="$(fetch "${github_api}/repos/${repo}/releases/latest" 2>/dev/null \
+        | awk -F'"' '/"tag_name"/ && !v { v=$4 } END { if (v) print v }' || true)"
+    # rate limited or unreachable: the releases page's redirect names it too
+    if [[ -z "$version" ]]; then
+        version="$(latest_from_redirect || true)"
+    fi
     if [[ -z "$version" ]]; then
         >&2 echo "Could not determine the latest release. Pass --version explicitly."
         exit 1
