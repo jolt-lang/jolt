@@ -178,6 +178,12 @@
 (define (sa-epoch-ms)
   (inexact->exact (floor (* (time->seconds (current-time)) 1000))))
 
+;; (sa-process-id) -> exact integer
+;; The operating-system id of this process. Contract: differs between two
+;; processes alive at the same time -- with sa-epoch-ms, the salt that keeps ids
+;; one process compiled from colliding with another's. Degradation: none.
+(define (sa-process-id) (##os-getpid))
+
 ;; ---- R5: io remainder (mtime) + the last GC hook -----------------------------
 
 ;; (sa-file-mtime-ms path) -> exact integer

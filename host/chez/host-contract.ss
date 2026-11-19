@@ -1074,7 +1074,7 @@
           ;; compiling in the same order minted the same salts, so one could
           ;; replay a splice the other's AOT cache holds against its own callee
           (set! hc-site-const-nonce (string-append (number->string (sa-epoch-ms)) "-"
-                                                   (number->string (get-process-id)))))
+                                                   (number->string (sa-process-id)))))
         (set! hc-site-const-count (fx+ hc-site-const-count 1))
         (string-append "@" hc-site-const-nonce "." (number->string hc-site-const-count)))
       ""))
