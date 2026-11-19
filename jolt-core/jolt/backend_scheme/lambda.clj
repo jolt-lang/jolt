@@ -5,6 +5,7 @@
   ^:once, trace-site, variadic and source-registration machinery around it.
   Arity bodies are lowered through the `emit` the back end passes in."
   (:require [clojure.string :as str]
+            [jolt.ir :as ir]
             [jolt.backend-scheme.names :refer [munge-chars munge-name]]
             [jolt.backend-scheme.session
              :refer [*array-vecs* *dbg-scope* *known-procs* *letrec-binders*
@@ -474,7 +475,65 @@
                                 "(jolt-register-variadic! " variadic-fixed " " fnsrc-nm "))")
                            (str "(letrec ((" fnsrc-nm " " lambda ")) " fnsrc-nm ")")))))
 
-(defn emit-fn [emit node]
+(defn- pair-exits [node found?]
+  (case (:op node)
+    :vector (when (and (= 2 (count (:items node))) (not (ir/const-coll-node? node)))
+              (vreset! found? true)
+              (assoc node :pair-result true))
+    (:recur :throw) node
+    (:let :loop :let-values) (when-let [body (pair-exits (:body node) found?)]
+                               (assoc node :body body))
+    :do (when-let [ret (pair-exits (:ret node) found?)]
+          (assoc node :ret ret))
+    :if (when-let [yes (pair-exits (:then node) found?)]
+          (when-let [no (pair-exits (:else node) found?)]
+            (assoc node :then yes :else no)))
+    :try (when-not (:finally node)
+           (when-let [body (pair-exits (:body node) found?)]
+             (if-let [handler (:catch-body node)]
+               (when-let [handler (pair-exits handler found?)]
+                 (assoc node :body body :catch-body handler :pair-result true))
+               (assoc node :body body))))
+    nil))
+
+(defn pair-arities
+  "Fixed arities with fresh vector literals at every normal exit. Constant
+  vectors, return coercions and finally keep their ordinary emission."
+  [node]
+  (when-not (:once node)
+    (into {} (keep-indexed
+               (fn [i arity]
+                 (when-not (or (:rest arity) (:ret-nhint arity))
+                   (let [found? (volatile! false)
+                         body (pair-exits (:body arity) found?)]
+                     (when (and body @found?)
+                       [i (assoc arity :body body)]))))
+               (:arities node)))))
+
+(defn- pair-lambda [clauses arities self {:keys [frame workers]} variadic-fixed]
+  (let [indices (sort (keys workers))
+        ordinary (or self (fresh-label "_pfn$"))
+        ;; An inner let supplies the worker's source name without shadowing
+        ;; either the linked Var or the named fn's ordinary self binding in it.
+        worker-binds (for [i indices
+                           :let [[params body] (nth clauses i)
+                                 worker (get workers i)]]
+                       (str "(" worker " (let ((" frame " (lambda " params " " body "))) " frame "))"))
+        wrappers (reduce (fn [out i]
+                           (let [params (nth (nth clauses i) 0)
+                                 args (map munge-name (:params (nth arities i)))
+                                 call (str "(" (str/join " " (cons (get workers i) args)) ")")]
+                             (assoc out i [params (str "(call-with-values (lambda () " call ") jolt-vector)")])))
+                         clauses indices)
+        wrapper (fn-lambda wrappers arities nil nil)]
+    (str "(letrec* (" (str/join " " worker-binds)
+         " (" ordinary " " (if self wrapper (str "(let ((" frame " " wrapper ")) " frame ")")) "))"
+         (when variadic-fixed (str " (jolt-register-variadic! " variadic-fixed " " ordinary ")"))
+         " (vector " ordinary " " (str/join " " (map workers indices)) "))")))
+
+(defn emit-fn
+  ([emit node] (emit-fn emit node nil))
+  ([emit node pair-entry]
   (let [;; a def's DIRECT anonymous init is named by its define, so it keeps the
         ;; bare lambda; *fnsrc-def-init?* is set only around that init's emission
         ;; and cleared for the body below, so a nested literal isn't mistaken for it.
@@ -523,8 +582,13 @@
         once (fn-once-box node arities)
         self-wrap (when (and self (trace-frames?))
                     {:tok (fresh-label "_srself$") :unsafe (atom false)})
-        clauses (emit-fn-clauses emit (or (:marked once) arities) self site (or site fnsrc-nm) (:clears once) self-wrap)
-        lambda (fn-lambda (fill-self-wrap clauses self-wrap) arities id-nm once)
+        lowered (cond once (:marked once)
+                      pair-entry (reduce-kv assoc arities (:arities pair-entry))
+                      :else arities)
+        frame (or site fnsrc-nm (:frame pair-entry))
+        clauses (emit-fn-clauses emit lowered self site frame (:clears once) self-wrap)
+        clauses (fill-self-wrap clauses self-wrap)
+        lambda (when-not pair-entry (fn-lambda clauses arities id-nm once))
         ;; A fn with a variadic arity records that arity's FIXED param count, so
         ;; jolt-apply can hand it a lazy rest instead of realizing the tail. The
         ;; count is recorded rather than read back from procedure-arity-mask,
@@ -545,9 +609,13 @@
         ;; tells this fn to leave it alone.
         variadic-fixed (some (fn [a] (when (:rest a) (count (:params a)))) arities)
         reg-here? (and variadic-fixed (not *variadic-reg-suppressed?*))]
-    (if (:name node)
+    (cond
+      pair-entry (pair-lambda clauses arities self (assoc pair-entry :frame frame)
+                             (when reg-here? variadic-fixed))
+      self
       (bind-named-fn node lambda qname fnsrc-nm src-ns (when reg-here? variadic-fixed))
       ;; a bare anonymous variadic fn still needs a binding to register through;
       ;; nothing maps its frame, so a fresh label costs no backtrace fidelity.
+      :else
       (bind-anon-fn node lambda fnsrc-nm src-ns variadic-fixed
-                    (when reg-here? (fresh-label "fnvar"))))))
+                    (when reg-here? (fresh-label "fnvar")))))))

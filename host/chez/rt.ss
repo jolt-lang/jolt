@@ -3270,8 +3270,14 @@
 (define-syntax jolt-guard-body
   (syntax-rules ()
     ((_ k body)
+     (jolt-guard-body (lambda (c) (k (make-jolt-caught c))) let ((v body)) v))
+    ((_ k body pair-result)
+     ;; The separate success flag keeps either field free to contain any value.
+     (jolt-guard-body (lambda (c) (k #f c #f)) let-values (((x y) body))
+                      (values #t x y)))
+    ((_ on-raise bind bindings result)
      (let* ((old-hs (sa-handler-stack))
-            (new-hs (cons (lambda (c) (k (make-jolt-caught c))) old-hs))
+            (new-hs (cons on-raise old-hs))
             (old-w (sa-winders))
             (lv (virtual-register 7)))
        (set-virtual-register! 7 (fx+ lv 1))
@@ -3280,12 +3286,12 @@
                                               (lambda () (sa-handler-stack-set! old-hs)))
                               old-w))
        (set-virtual-register! 7 lv)
-       (let ((v body))
+       (bind bindings
          (set-virtual-register! 7 (fx+ (virtual-register 7) 1))
          (sa-winders-set! old-w)
          (sa-handler-stack-set! old-hs)
          (set-virtual-register! 7 (fx- (virtual-register 7) 1))
-         v)))))
+         result)))))
 
 ;; A jolt finally, on Chez (#1713): (jolt-wind-inline IN BODY AFTER) is
 ;; (dynamic-wind IN (lambda () BODY) AFTER) with BODY run in place instead of as

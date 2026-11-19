@@ -1925,5 +1925,80 @@
       (ok "continuation reentry after a write returns the same version" (loop-reentry f 1))))
   '(#f #t))
 
+;; Multi-arity producers stay out of the inliner. The consumer uses Clojure's
+;; vector destructuring macro in both compilation modes.
+(define pair-producer
+  "(defn- pair-worker-target
+     ([x] [x nil])
+     ([events x]
+      (loop [n 1]
+        (if (pos? n)
+          (recur (dec n))
+          (try
+            [(do (swap! events conj :first)
+                 (if (= x :fail) (throw (ex-info \"bad input\" {:input x})) x))
+             (do (swap! events conj :second) nil)]
+            (catch Throwable e [false (ex-data e)]))))))")
+(define pair-consumer
+  "(defn pair-destructure [events x]
+     (let [before :before
+           [a b] (pair-worker-target (do (swap! events conj :arg1) events)
+                                     (do (swap! events conj :arg2) x))
+           b (if (nil? b) :none b)]
+       [before a b]))")
+(define pair-retained
+  "(defn pair-retain [events x]
+     (let [[a b :as both] (pair-worker-target events x)]
+       [a b ((fn [] both))]))")
+(let ((link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
+      (debug! (var-deref "jolt.backend-scheme" "set-debug-locals!")))
+  (for-each
+    (lambda (linked?)
+      (link! linked?)
+      (let* ((worker (code-part (emitf "u" pair-producer)))
+             (_ (ev pair-producer))
+             (use (code-part (emitf "u" pair-consumer)))
+             (retain (code-part (emitf "u" pair-retained))))
+        (ok "only the linked producer emits a worker and a vector wrapper"
+            (and (eq? linked? (has? worker "pair-result"))
+                 (eq? linked? (has? worker ") jolt-vector)"))))
+        (ok "actual destructuring receives two values only at a linked private use"
+            (and (eq? linked? (has? use "(call-with-values "))
+                 (not (has? retain "(call-with-values "))))
+        (ev pair-consumer)
+        (ev pair-retained)
+        (ok "pair call preserves positional nil and the order of operands and fields"
+            (clj= (ev "(let [events (atom [])] [(pair-destructure events 33) @events])")
+                  (ev "[[:before 33 :none] [:arg1 :arg2 :first :second]]")))
+        (ok "pair catch returns data and skips evaluation of the second success field"
+            (clj= (ev "(let [events (atom [])] [(pair-destructure events :fail) @events])")
+                  (ev "[[:before false {:input :fail}] [:arg1 :arg2 :first]]")))
+        (ok "generic apply produces one fresh persistent vector"
+            (clj= (ev "(let [a (apply pair-worker-target [7])
+                            b (apply pair-worker-target [7])]
+                        [(vector? a) (identical? a b) a])")
+                  (ev "[true false [7 nil]]")))
+        (ok "retaining a destructured pair keeps the original vector"
+            (clj= (ev "(pair-retain (atom []) 7)") (ev "[7 nil [7 nil]]")))
+        (ok "redefinition sees a new procedure that returns an ordinary short vector"
+            (clj= (ev "(with-redefs [pair-worker-target (fn [_ _] [:replaced])]
+                        (pair-destructure (atom []) 7))")
+                  (ev "[:before :replaced :none]")))
+        (debug! #t)
+        (ok "debug-local compilation keeps the vector visible"
+            (not (has? (code-part (emitf "u" pair-consumer)) "(call-with-values ")))
+        (debug! #f)))
+    '(#t #f))
+  (link! #t)
+  (for-each
+    (lambda (source)
+      (ok "an unproven or identity-bearing result stays single-valued"
+          (not (has? (code-part (emitf "u" source)) "(call-with-values "))))
+    '("(defn- pair-mixed [x] (if x [true x] x))"
+      "(defn- pair-constant [] [true 0])"
+      "(defn- pair-coerced ^long [x] [true x])"
+      "(defn- pair-finally [x] (try [true x] (finally nil)))"))
+  (link! #f))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))

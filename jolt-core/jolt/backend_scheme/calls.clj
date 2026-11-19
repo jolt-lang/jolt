@@ -9,11 +9,12 @@
   (:require [clojure.string :as str]
             [jolt.ir :as ir]
             [jolt.op-registry :as op-registry]
-            [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
+            [jolt.passes.facts :as facts]
+            [jolt.backend-scheme.names :refer [chez-str-lit dl-name munge-name]]
             [jolt.backend-scheme.session :as session
              :refer [*array-vecs* *self-wrap* *site-call* *trace-self* *trace-site*
                      clone-site? ctor-shapes fresh-label marker-safe-fqn?
-                     note-tail-call! target trace-frames? unsafe-prefix var-cache?]]
+                     note-tail-call! target trace-frames? unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
              :refer [*cache-cells* *const-pool* cached-tag-desc
                      hoist-const hoist-const-per-site]]))
@@ -121,6 +122,43 @@
       (nil? op) nil
       (and arity-ok (not (arity-ok nargs))) nil
       :else op)))
+
+(defn- pair-read? [node raw index]
+  (let [[receiver key fallback] (:args node)
+        callee (:fn node)]
+    (and (= :invoke (:op node)) (= 3 (count (:args node)))
+         (not (or (:proto node) (:devirt-type node) (:prim-op node)
+                  (:num-ret-guard node) (:fl-coerce node) (:fl-unbox node)))
+         (= :var (:op callee)) (= "clojure.core" (:ns callee)) (= "nth" (:name callee))
+         (= "jolt-nth" (native-op callee 3))
+         (= :local (:op receiver)) (= raw (:name receiver))
+         (= :const (:op key)) (= index (:val key))
+         (= :const (:op fallback)) (nil? (:val fallback)))))
+
+(defn- pair-binding-private? [f i]
+  (let [binder [:bindings i 0]
+        reads #{[:bindings (inc i) 1 :args 0] [:bindings (+ i 2) 1 :args 0]}
+        uses (into #{} (keep (fn [[path target]] (when (= binder target) path))) (:uses f))]
+    (and (= reads uses)
+         (not-any? (fn [{:keys [captures]}]
+                     (some #(= binder (:binding %)) (vals captures)))
+                   (vals (:closures f))))))
+
+(defn direct-pair-projection
+  "Match the two indexed reads that vector destructuring emits, then prove
+  that they are the only uses of that exact binding in the enclosing let."
+  [unit node]
+  (let [bindings (:bindings node)]
+    (some (fn [i]
+            (let [[raw call] (nth bindings i)
+                  [a x] (nth bindings (inc i))
+                  [b y] (nth bindings (+ i 2))]
+              (when (and (distinct? raw a b) (pair-read? x raw 0) (pair-read? y raw 1))
+                (let [entry (:pair-entry (facts/linked-call-definition unit call))
+                      slot (get (:slots entry) (count (:args call)))]
+                  (when (and slot (pair-binding-private? (facts/body-facts unit node) i))
+                    {:index i :entry (:name entry) :slot slot})))))
+          (range (- (count bindings) 2)))))
 
 ;; IFn dispatch for a LITERAL callee (Clojure's "value as fn"): a keyword looks
 ;; itself up in its arg; a map/set/vector literal looks up its arg. Only at an
@@ -391,6 +429,28 @@
 ;; inside it and returned was reported as the innermost frame of a later throw.
 (defn lookup-restore [tail? call]
   (if (and (trace-frames?) (not tail?)) (site-restore call) call))
+
+(defn emit-pair-call
+  "Produce two values for a destructuring consumer. Both lanes apply the same
+  captured root to the same operands. The miss projects the ordinary result."
+  [call entry slot args project]
+  (let [{:keys [ns name]} (:fn call)
+        root (fresh-label "_pr$")
+        temps (mapv (fn [_] (fresh-label "_pa$")) args)
+        fast (with-site call (plain-call (str "(vector-ref " entry " " slot ")") temps))
+        slow (str "(if (procedure? " root ") " (plain-call root temps) " "
+                  (plain-call "jolt-invoke" (cons root temps)) ")")
+        slow (project (with-site call (lookup-restore false slow)))]
+    (str "(let* ((" root " " (dl-name ns name) ")"
+         (apply str (map (fn [t a] (str " (" t " " a ")")) temps args))
+         ") (if (eq? " root " (vector-ref " entry " 0)) " fast " " slow "))")))
+
+(defn pair-call-site-restore []
+  ;; The consumer has received the values, so the call's trace slot can now
+  ;; be restored without binding the producer in a single-value context.
+  (when (trace-frames?)
+    (str "(set-virtual-register! 2 "
+         (if *site-call* (do (reset! *site-call* :site) "_sw$") "0") ") ")))
 ;; Emit a call. In tail position with tracing on, a call to a DIFFERENT fn than
 ;; the enclosing one stores its site pair (sited-tail-call), and a non-tail call
 ;; restores the slot when it returns (returning-call?). Everything else —

@@ -38,6 +38,7 @@
                      site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
+                     direct-pair-projection emit-pair-call pair-call-site-restore
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
                      emit-rec-type-check emit-record-ctor ifn-kind lookup-restore
@@ -45,13 +46,13 @@
                      site-literal site-restore sited-tail-call stdlib-var?
                      struct-field-index]]
             [jolt.backend-scheme.literals :as literals :refer [emit-const]]
-            [jolt.backend-scheme.once :refer [once-clear-stmts with-once-clears]]
+            [jolt.backend-scheme.once :refer [*once-clears* once-clear-stmts with-once-clears]]
             [jolt.backend-scheme.fnsrc :as fnsrc
              :refer [*fnsrc-counter* *fnsrc-def* *fnsrc-def-init?* *fnsrc-ns*
                      *fnsrc-regs* fnsrc-flush]]
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit]]
-            [jolt.backend-scheme.lambda :refer [emit-fn emit-nhint-coerce]]))
+            [jolt.backend-scheme.lambda :refer [emit-fn emit-nhint-coerce pair-arities]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -314,7 +315,7 @@
 ;; letfn lowers to a :let flagged :letrec (mutually-recursive named local fns):
 ;; Scheme `letrec*` binds them so each sees its siblings. A plain let uses let*.
 (declare emit-let-dbg)
-(defn- emit-let [node]
+(defn- emit-let-ordinary [node]
   (let [kw (if (:letrec node) "letrec*" "let*")
         bs (:bindings node)
         names (map #(munge-name (nth % 0)) bs)
@@ -342,6 +343,22 @@
                                       s (binding [*array-vecs* av] (emit-binding b))]
                                   (recur (rest bs) (dissoc av (munge-name (nth b 0))) (conj acc s)))))))]
         (str "(" kw " (" binds ") " (binding [*array-vecs* av-body] (emit (:body node))) ")")))))
+
+(defn- emit-let [node]
+  (if-let [{:keys [index] :as pair}
+           (when (and (= :chez (target)) @(:direct-link? (cur)) (not (seed-mint?))
+                      (not (or (:letrec node) *dbg-scope* *once-clears*)))
+             (direct-pair-projection (cur) node))]
+    (let [bindings (:bindings node)
+          [raw call] (nth bindings index)
+          reads (subvec bindings (inc index) (+ index 3))
+          body (assoc node :bindings (subvec bindings (+ index 3)))
+          joined {:op :let-values :names (mapv first reads) :init call :body body
+                  :pair-call (assoc pair :raw raw :reads reads)}]
+      (if (zero? index)
+        (emit joined)
+        (emit-let-ordinary (assoc node :bindings (subvec bindings 0 index) :body joined))))
+    (emit-let-ordinary node)))
 
 ;; emit-let under debug locals (*dbg-scope*): each binding is followed by a scope
 ;; record holding it, so an init sees the locals bound before it and the body all
@@ -406,10 +423,27 @@
 
 (defn- emit-let-values [node]
   (let [names (mapv munge-name (:names node))
-        init (binding [*tail?* false] (emit (:init node)))
+        pair (:pair-call node)
+        init (binding [*tail?* false]
+               (if pair
+                 (let [call (:init node)
+                       args (mapv emit (:args call))
+                       raw (munge-name (:raw pair))]
+                   (register-callsite! (or (node-line call) 0) (static-callee (:fn call)) false)
+                   (emit-pair-call call (:entry pair) (:slot pair) args
+                     (fn [result]
+                       (binding [*array-vecs* (dissoc *array-vecs* raw)]
+                         (str "(let* ((" raw " " result ") "
+                              (str/join " " (mapv emit-binding (:reads pair))) ") "
+                              "(values " (str/join " " names) "))")))))
+                 (emit (:init node))))
+        restore (when pair (pair-call-site-restore))
         body (binding [*array-vecs* (apply dissoc *array-vecs* names)]
                (emit (:body node)))]
-    (str "(let-values (((" (str/join " " names) ") " init ")) " body ")")))
+    (if pair
+      (str "(call-with-values (lambda () " init ") "
+           "(lambda (" (str/join " " names) ") " restore body "))")
+      (str "(let-values (((" (str/join " " names) ") " init ")) " body ")"))))
 
 (defn- emit-recur [node]
   (when-not *recur-target* (throw (ex-info "emit: recur outside a loop/fn target" {})))
@@ -1257,21 +1291,39 @@
 ;; trace slots back, runs the catch body. The same text under Chez's one-shot
 ;; escape and Gambit's guard (emit-try).
 (defn- emit-catch-handler [node cs raw cl ts to chez-slot]
-  (str "(let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
+  (let [pair? (:pair-result node)
+        x (if pair? (fresh-label "_cx$") "r")
+        y (when pair? (fresh-label "_cy$"))
+        receive (if pair? (str "(let-values (((" x " " y ") ") "(let ((r ")]
+    (str "(let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
        (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
        (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
              chez-slot (str "(set-virtual-register! 2 " chez-slot ") ")
              :else "")
-       "(let ((r " (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
+       receive (binding [*array-vecs* (dissoc *array-vecs* (munge-name cs) raw)]
                     ;; debug locals: the handler body is a tail region.
                     ;; cs is the analyzer's; the user's name is a let
                     ;; inside, which records itself.
                     (binding [*tail?* (or (some? *dbg-scope*) *tail?*)]
                       (emit (:catch-body node)))) ")) "
        (if cl (str "(jolt-catch-leave! " cl ") ") "")
-       "(jolt-catch-complete!) r)"
+       "(jolt-catch-complete!) " (if pair? (str "(values " x " " y ")") x) ")"
        (if cl ")" "")
-       ")"))
+       ")")))
+
+(defn- emit-chez-catch [node raw handler]
+  (let [k (fresh-label "_gk$") gr (fresh-label "_gr$")
+        pair? (:pair-result node)
+        x (when pair? (fresh-label "_gx$"))
+        y (when pair? (fresh-label "_gy$"))
+        call (with-site node
+               (str "(call/1cc (lambda (" k ") (jolt-guard-body " k " " (emit-try-body node)
+                    (when pair? " pair-result") ")))"))]
+    (if pair?
+      (str "(let-values (((" gr " " x " " y ") " call "))"
+           " (if " gr " (values " x " " y ") (let ((" raw " " x ")) " handler ")))")
+      (str "(let ((" gr " " call "))"
+           " (if (jolt-caught? " gr ") (let ((" raw " (jolt-caught-val " gr "))) " handler ") " gr "))"))))
 
 ;; A finally around CORE: the counted-lock mask edges emit-try describes, and on
 ;; Chez the body run in place (rt.ss jolt-wind-inline) where Gambit hands a thunk
@@ -1363,9 +1415,7 @@
                             ;; (rt.ss jolt-guard-body). The call/1cc call is written
                             ;; here, with the try's line marker, so the fn's frame
                             ;; that returns to it while the body runs has its line.
-                            (let [k (fresh-label "_gk$") gr (fresh-label "_gr$")]
-                              (str "(let ((" gr " " (with-site node (str "(call/1cc (lambda (" k ") (jolt-guard-body " k " " (emit-try-body node) ")))")) "))"
-                                   " (if (jolt-caught? " gr ") (let ((" raw " (jolt-caught-val " gr "))) " handler ") " gr "))")))]
+                            (emit-chez-catch node raw handler))]
                  (if ts
                    (str "(let ((" ts " (virtual-register 2)) (" to " (virtual-register 12))) " body ")")
                    body))
@@ -1734,7 +1784,7 @@
 
 (defn- emit-coll-literal [node]
   (let [s (case (:op node)
-            :vector (emit-ordered "jolt-vector" (:items node))
+            :vector (emit-ordered (if (:pair-result node) "values" "jolt-vector") (:items node))
             :set (emit-ordered (if (ir/distinct-const-keys? (:items node))
                                  "jolt-hash-set"
                                  "jolt-hash-set-checked")
@@ -1916,7 +1966,7 @@
 ;; built trace showed the erased fn but never its erased callers.
 ;; The fnsrc context rides the same binding: the init's anon literals
 ;; collect into *fnsrc-regs* and flush before the binding returns.
-(defn- emit-def-init [node dl-self anon-variadic fn?]
+(defn- emit-def-init [node dl-self anon-variadic fn? pair-entry]
   (binding [*dl-self* dl-self
             *variadic-reg-suppressed?* (boolean anon-variadic)
             *callsites* (when (trace-frames?) (atom {}))
@@ -1925,7 +1975,10 @@
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])
             *fnsrc-def-init?* fn?]
-    (let [i (with-load-time-scope (fn [] (emit-with-cells #(emit (:init node)))))]
+    (let [i (with-load-time-scope
+              (fn [] (emit-with-cells #(if pair-entry
+                                        (emit-fn emit (:init node) pair-entry)
+                                        (emit (:init node))))))]
       [i (trace-callsite-reg) (fnsrc-flush)])))
 
 ;; An unlinked def: def-var-with-meta! or def-var-plain!. A def evaluates to its
@@ -1952,7 +2005,7 @@
 ;; (var-ref + devirt) so a hot loop's lookups resolve once into the def's closure.
 ;; Runs in BOTH modes; in direct-link mode a non-opt-out def also binds jv$<fqn>
 ;; and registers it for app->app direct linking + a source-map frame.
-(defn- emit-def-cached [node]
+(defn- emit-def-cached [node pair-entry]
   (let [ns (:ns node) nm (:name node)
         dl? (and (direct-link?) (not (dl-opt-out? (:meta node))))
         b (dl-name ns nm)
@@ -1971,7 +2024,7 @@
         vreg (when anon-variadic
                (str " (jolt-register-variadic! " anon-variadic " " b ")"))
         init+creg (emit-def-init node (when (and dl? fn?) [(dl-fqn ns nm) (:init node)])
-                                 anon-variadic fn?)
+                                 anon-variadic fn? pair-entry)
         init (nth init+creg 0)
         creg (nth init+creg 1)
         freg (nth init+creg 2)]
@@ -2004,12 +2057,33 @@
       ;; separate closed-world freeze: a body spliced into a call site by the
       ;; inline pass still predates the write, and ^:dynamic/^:redef opt out of
       ;; direct-linking altogether.
-      (str "(begin" freg " (define " b " " init ") (def-var-linked! "
+      (str "(begin" freg
+           (when pair-entry (str " (define " (:name pair-entry) " " init ")"))
+           " (define " b " " (if pair-entry (str "(vector-ref " (:name pair-entry) " 0)") init)
+           ") (def-var-linked! "
            (chez-str-lit ns) " " (chez-str-lit nm) " '" b " " b
            " (lambda (v) (set! " b " v)) "
            (if (jmeta-nonempty? (:meta node)) (emit-def-meta node) "#f") ")"
            (or reg "") (or vreg "") creg ")")
       (emit-unlinked-def node init creg freg))))
+
+(defn- pair-entry [node]
+  ;; These extra Scheme bindings live in the same ahead-of-time compilation
+  ;; unit as the linked Var. Interactive and other back ends use ordinary fns.
+  (when (and (= :def (:op node)) (= :fn (:op (:init node))) (:private (:meta node))
+             (= :chez (target)) @(:direct-link? (cur))
+             (not (or (seed-mint?) @(:debug-locals? (cur)) (dl-opt-out? (:meta node)))))
+    (let [arities (pair-arities (:init node))]
+      (when (seq arities)
+        (let [frame (dl-name (:ns node) (:name node))
+              indices (sort (keys arities))]
+          {:name (fresh-label (str "_pair$" frame "$"))
+           :frame frame
+           :arities arities
+           :workers (into {} (map (fn [i] [i (fresh-label "_pw$")])) indices)
+           :slots (into {} (map-indexed
+                             (fn [slot i] [(count (:params (get arities i))) (inc slot)])
+                             indices))})))))
 
 ;; FNSRC-DEF names the enclosing top-level def for a node that does not carry the
 ;; name itself. A macro's expander reaches the image emitter as a BARE fn form —
@@ -2037,7 +2111,8 @@
                             fnsrc-def)
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])]
-    (let [scm (cond
+    (let [pair (pair-entry node)
+          scm (cond
                 ;; off direct-link (the seed mint + runtime-via-image) this is exactly
                 ;; `emit`, whose :def case already wraps cache cells, so the seed stays
                 ;; byte-unchanged. The :def cases bind their own fnsrc context over
@@ -2055,11 +2130,11 @@
                 (str "(begin " (str/join " " (map emit-top-form (:statements node)))
                      (if (empty? (:statements node)) "" " ") (emit-top-form (:ret node)) ")")
                 (and (= :def (:op node)) (not (:no-init node)) (not (dl-opt-out? (:meta node))))
-                (emit-def-cached node)
+                (emit-def-cached node pair)
                 :else (with-load-time-scope (fn [] (emit-top-cells node #(emit node)))))
           freg (fnsrc-flush)]
       (when (= :def (:op node))
-        (facts/note-linked-definition! (cur) node))
+        (facts/note-linked-definition! (cur) (cond-> node pair (assoc :pair-entry (select-keys pair [:name :slots])))))
       (cond
         (= freg "") scm
           ;; registrations run BEFORE the form: they are static data with no
