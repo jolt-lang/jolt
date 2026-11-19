@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Chez inlines through a top-level definition jolt registers (#1713,
+  `chez-patches/0010`).** Chez's cross-library inliner records an exported
+  procedure's body so code compiled against the library can inline it. The
+  patch extends the same machinery to a top-level definition whose symbol the
+  program marks, and `sa-define-inlinable!` (scheme-adapter-runtime.ss) is how
+  the runtime marks one: a caller compiled afterward that calls the symbol
+  behind a guard gets the body in place. It is the mechanism a runtime
+  specialization of a protocol call site will inline the receiver's observed
+  method with; on a three-layer deftype protocol chain, hand-specialized this
+  way, a call goes from 26.8 to 15.5 ns. A stock Chez defines the symbol and
+  inlines nothing.
+
 - **`--no-trace`, the option spelling of `JOLT_TRACE=0`.** `jolt --no-trace
   run …` (or `-m`, `-M`, `repl`, any command; it must be the first argument)
   compiles the app without tail-frame tracing, and `jolt build --no-trace` or

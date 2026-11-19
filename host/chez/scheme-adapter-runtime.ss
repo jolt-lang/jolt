@@ -2172,6 +2172,50 @@
 (define-syntax sa-record-slot (syntax-rules () ((_ r i) (#3%$record-ref r i))))
 ;; (sa-record-slot-set! r i v): the store, under the same proof as the read.
 (define-syntax sa-record-slot-set! (syntax-rules () ((_ r i v) (#3%$record-set! r i v))))
+;; (sa-define-inlinable! sym expr) -> the value. Defines SYM at top level to
+;; EXPR's value, and on a kernel carrying chez-patches/0010 records EXPR's
+;; inlining information as a library export's is recorded, so that code
+;; compiled AFTERWARD that calls SYM gets SYM's body inlined by cp0 (Chez's own
+;; cross-library inliner, Keep and Dybvig 2013). The caller keeps the call
+;; behind a guard of its own -- (if (eq? f SYM) (SYM x) (f x)) -- so the inlined
+;; body runs only when SYM's procedure is the one the caller would have called.
+;; On a stock kernel SYM is defined and nothing is recorded: the guarded call is
+;; a plain call.
+;;
+;; The definition is the promise a library export carries by construction: SYM
+;; is defined once and never assigned. A caller compiled against one body
+;; compares against SYM's current value, so a second definition would run the
+;; old body behind a guard that passes; that is why a symbol already defined
+;; through here is refused. A specialization takes a fresh symbol for each
+;; version. Its references to other top-level variables stay inlinable:
+;; interaction-environment labels are gensyms, which the inliner would take for
+;; library exports needing invoke requirements, and
+;; expand-omit-library-invocations says there are none.
+;;
+;; SCORE is the size cp0 may record a body up to (cp0-score-limit, 20 by
+;; default): how much code to copy into each caller is the specializer's call,
+;; which knows the site is hot.
+(define sa-define-inlinable!
+  (case-lambda
+    ((sym expr) (sa-define-inlinable! sym expr (cp0-score-limit)))
+    ((sym expr score)
+     (when (#%$sgetprop sym '*clo* #f)
+       (error 'sa-define-inlinable! "already defined once" sym))
+     (#%$sputprop sym '*clo* (box '()))
+     ;; a definition that raises defined nothing, so it leaves SYM unmarked
+     (guard (e (#t (#%$sremprop sym '*clo*) (raise e)))
+       (parameterize ([expand-omit-library-invocations #t] [cp0-score-limit score])
+         (eval `(define ,sym ,expr))))
+     (top-level-value sym))))
+;; (sa-inline-recorded? sym) -> whether SYM's definition recorded an inlinable
+;; body for every one of its clauses: #t on a patched kernel for a procedure cp0
+;; can inline (within its size limit, no free lexical variable), #f on a stock
+;; kernel or for one it cannot. The box holds, per target machine, cp0's
+;; #(procedure all-clauses? single-valued?) (cp0.ss make-cte-info).
+(define (sa-inline-recorded? sym)
+  (let* ((b (#%$sgetprop sym '*clo* #f))
+         (a (and (box? b) (assq (machine-type) (unbox b)))))
+    (and a (vector? (cdr a)) (vector-ref (cdr a) 1) #t)))
 (define-syntax sa-ufx+ (syntax-rules () ((_ a b) (#3%fx+ a b))))
 (define-syntax sa-ufx- (syntax-rules () ((_ a b) (#3%fx- a b))))
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (#3%fx<? a b))))
