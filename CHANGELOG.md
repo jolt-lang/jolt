@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The reference fns call a user type's `clojure.lang` interface methods.**
+  `swap!`, `reset!`, `compare-and-set!`, `swap-vals!`, `reset-vals!`,
+  `add-watch`, `remove-watch`, `set-validator!` and `get-validator` now work on
+  a deftype, defrecord or reify implementing `IAtom` / `IAtom2` / `IRef`, as on
+  the JVM, where each is one interface call (a durable atom like duratom's no
+  longer has to rebind them). `alter-meta!` / `reset-meta!` on a value that is
+  not an `IReference` throw the JVM's `ClassCastException` instead of storing
+  metadata `meta` never reads back, and `reset-meta!` answers the type's
+  `resetMeta`. A failed cast now names the interface the JVM does: `IAtom2` for
+  the `-vals!` pair, `IRef` for the watch/validator fns, and
+  `java.util.concurrent.Future` for `deref` (it was `IDeref` /
+  `IBlockingDeref`). The built-in atom path is unchanged.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a

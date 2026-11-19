@@ -1225,6 +1225,13 @@
 ;; def evaluated inside sci lost its metadata, which un-marked every macro sci
 ;; defined and made a macro call arrive at its expander as an ordinary call.
 ;; .alterMeta takes (f args-seq), matching the JVM's two-argument method.
+;;
+;; The built-in IReferences besides a var — atom, ref, agent, namespace — keep
+;; theirs in the identity side table. Nothing else is an IReference on the JVM (a
+;; map, a record, a fn), so anything that neither is one of those nor declares
+;; the interface is the JVM's failed cast, not a write `meta` never reads back.
+(define (jolt-builtin-ireference? ref)
+  (or (jolt-atom? ref) (jns? ref) (jolt-ref? ref) (jolt-agent? ref)))
 (define (jolt-alter-meta! ref f . args)
   (cond
     ((var-cell? ref)
@@ -1233,26 +1240,23 @@
        (var-cell-meta-set! ref new)
        (var-meta-sync-macro! ref new)
        new))
-    ((iface-method ref "alterMeta" 3)
-     => (lambda (m) (jolt-invoke m ref f (list->cseq args))))
-    (else
+    ((jolt-builtin-ireference? ref)
      (let* ((cur (let ((m (jolt-meta ref))) (if (jolt-nil? m) (jolt-hash-map) m)))
             (new (apply jolt-invoke f cur args)))
-       (jolt-meta-store! ref new)
-       new))))
-;; A record keeps its meta in its slot (values.ss jrec), which is where meta
-;; reads it back; anything else in the identity side table.
-(define (jolt-meta-store! ref m)
-  (if (jrec? ref) (jrec-meta-set! ref m) (meta-table-set! ref m)))
+       (meta-table-set! ref new)
+       new))
+    (else
+     (jolt-invoke (jolt-ref-iface-method ref "clojure.lang.IReference" "alterMeta" 3)
+                  ref f (list->cseq args)))))
 (define (jolt-reset-meta! ref m)
   (cond
     ((var-cell? ref)
      (var-cell-meta-set! ref m)
      (var-meta-sync-macro! ref m)
      m)
-    ((iface-method ref "resetMeta" 2)
-     => (lambda (impl) (jolt-invoke impl ref m) m))
-    (else (jolt-meta-store! ref m) m)))
+    ((jolt-builtin-ireference? ref) (meta-table-set! ref m) m)
+    (else
+     (jolt-invoke (jolt-ref-iface-method ref "clojure.lang.IReference" "resetMeta" 2) ref m))))
 
 ;; --- RESOLVE FRICTION: native-op cells -------------------------------------
 ;; Native-op primitives (+ map reduce …) are INLINED at emit, so they have no
