@@ -127,9 +127,9 @@
                 (not (identical? (:p old) (:p changed)))))"))
 (ev "(defn repeated-edit [m k a b] (-> m (assoc-in [k :x] a) (assoc-in [k :x] b)))")
 (ok "fused assoc-in preserves no-op and canceled edit identities"
-    (ev "(let [m {:p {:x :old}}
-               same (repeated-edit m :p :old :old)
-               changed (repeated-edit m :p :new :old)]
+    (ev "(let [edit (var-get #'repeated-edit) m {:p {:x :old}}
+               same (edit m :p :old :old)
+               changed (edit m :p :new :old)]
            (and (identical? m same) (= m changed) (not (identical? m changed))
                 (not (identical? (:p m) (:p changed)))))"))
 (ok "assoc-in preserves HAMT collision entries and the original stored UUID"
