@@ -109,7 +109,13 @@
         (cons "byteValue" (lambda (x) (unsigned->signed (bitwise-and (jfloat->int x) #xff) 8)))
         (cons "isNaN" (lambda (x) (nan? (jfloat-fl x))))
         (cons "isInfinite" (lambda (x) (infinite? (jfloat-fl x))))
-        (cons "compareTo" (lambda (x y) (jolt-float-compare x y)))
+        ;; Float.compareTo(Float): another class fails the reflector's cast
+        (cons "compareTo" (lambda (x y)
+                            (if (jfloat? y)
+                                (jolt-float-compare x y)
+                                (throw-jvm 'ClassCastException
+                                           (string-append "Cannot cast " (jolt-class-name y)
+                                                          " to java.lang.Float")))))
         ;; Float.equals: another Float with the same bits, so never a Double
         (cons "equals" (lambda (x y) (and (jfloat? y) (= (flt->bits (jfloat-fl x)) (flt->bits (jfloat-fl y))))))
         (cons "hashCode" (lambda (x) (unsigned->signed (flt->bits (jfloat-fl x)) 32)))

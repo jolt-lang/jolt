@@ -381,6 +381,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+- A `recur` in a `deftype`, `defrecord` or `reify` method passes the method's arguments without `this`, as on the JVM; jolt wanted `this` as well, so JVM code recurring in a method did not compile.
+- Number interop answers as the JVM's boxes do: `.doubleValue`/`.floatValue` give a double and a Float (they gave the number back unchanged, so `(.doubleValue 1/2)` was `1/2`), `.intValue`/`.longValue`/`.shortValue`/`.byteValue` keep the low bits of an integer or ratio and saturate a double (NaN is 0) instead of failing on NaN or answering a bignum, `.compareTo` and a Ratio's `.numerator`/`.denominator` work, and BigInteger's `.bitLength`, `.negate`, `.abs`, `.signum` and shifts refuse a double or a ratio.
+- `Year/parse`, `YearMonth/parse` and `MonthDay/parse` are as strict as the JDK's and throw its `DateTimeParseException` messages; `YearMonth/parse "2024-13"` rolled over to 2025-01 and `MonthDay/parse` accepted any text. `(str (YearMonth/of 10000 1))` is `10000-01`, not `+10000-01`.
+- `(hash-map)` is the empty array map `{}`, as on the JVM; `(empty m)` of a hash map, and `PersistentHashMap/EMPTY`, are an empty hash map, so what is added next iterates in the JVM's order.
+- `get-in` with a not-found value answered it for a key mapped to an empty map.
+- A Float NaN is unequal to itself under `=`, like a double NaN.
+- `(binding [x] ...)` with an odd binding vector raises, as the JVM's does; it ran the body.
+- `Boolean/valueOf` and `Boolean/toString` exist, and a `Matcher` method given an argument it has no overload for raises instead of ignoring it.
+- With guarded inlining off (`JOLT_GUARDED_INLINE=0`) the AOT cache keeps its own generation, and the token a guarded splice carries now includes the pid, so two processes started in the same millisecond cannot share one.
 - `defprotocol` answers the protocol's name, as on the JVM; it answered its last method's var, or nil for a protocol with no methods.
 - A protocol call on a value whose type declares the protocol in its own body (`deftype`, `defrecord`, `reify`) ignores `with-redefs`, `alter-var-root` or a redef of the protocol fn, as the JVM's interface call does; extended types, nil and host values still call what the var holds (jolt-9l97g). The call site now also applies when an argument is not a plain local, and in a bare top-level expression.
 - On the Gambit host, `.indexOf`/`.lastIndexOf` of a char code no string holds raised from `integer->char`; they answer -1, as on Chez and the JVM.

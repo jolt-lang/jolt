@@ -332,6 +332,17 @@
            :jvm "false"
            :jolt "true"}
    :note "Numeric-category-blind value equality; a deep = property, not a cheap fix. Verified against Clojure 1.12.5."}
+  ;; A ratio becomes a double by the nearest double here (Chez's inexact). The
+  ;; JVM's Ratio.doubleValue goes through BigDecimal at DECIMAL64, 16 significant
+  ;; digits half-even, and DoubleOps converts a ratio operand the same way.
+  {:category :numeric-model
+   :behavior "(double 2/3), (+ 2/3 0.0)"
+   :jvm "0.6666666666666667"
+   :jolt "0.6666666666666666"
+   :check {:expr "(pr-str [(double 2/3) (.doubleValue 2/3) (+ 2/3 0.0)])"
+           :jvm "\"[0.6666666666666667 0.6666666666666667 0.6666666666666667]\""
+           :jolt "\"[0.6666666666666666 0.6666666666666666 0.6666666666666666]\""}
+   :note "jolt-p4u05. Every ratio-to-double conversion would have to round to 16 digits first, including the mixed-arithmetic slow paths."}
   ;; The two ##NaN rows the clojure-test-suite flags as arguably-undefined. Both
   ;; were unreachable while jolt read :bb branches — the suite gates one behind
   ;; #?@(:bb [] :default [...]) and writes the other's expectation per platform —
@@ -369,6 +380,17 @@
            :jvm "throws ClassCastException"
            :jolt "5"}
    :note "Found while adding the (reduce + ...) vector fast path; that path keeps the entry check. Verified against Clojure 1.12.6."}
+  ;; aget/aset compile to the indexed read and write every collection answers,
+  ;; so they take a vector or a string where the JVM finds no aget for a
+  ;; non-array. A superset: an array behaves the same.
+  {:category :permissive
+   :behavior "(aget \"abc\" 1), (aget [1 2] 0)"
+   :jvm "throws IllegalArgumentException \"No matching method aget found taking 2 args\""
+   :jolt "\\b, 1"
+   :check {:expr "[(aget \"abc\" 1) (aget [1 2] 0)]"
+           :jvm "throws IllegalArgumentException"
+           :jolt "[\\b 1]"}
+   :note "jolt-aenwy. Kept: libraries ported to jolt read vectors through aget, and making it strict would break them for no gain on portable code."}
   {:category :permissive
    :behavior "(ex-data (ex-info \"m\" 5))"
    :jvm "throws ClassCastException"
@@ -725,6 +747,29 @@
    :check :prose
    :why "needs two source files on a root; the corpus evaluates single forms"
    :note "Deliberate (loader.ss step 3 of the JLS 12.4.2 procedure). The cross-thread case, which the JVM deadlocks on, raises here instead."}
+  ;; Compiled code names a var through its cell, and the cell is the name's for
+  ;; good: ns-unmap drops the mapping but a later def of the name reuses it. On
+  ;; the JVM the def interns a NEW Var, and code compiled before the unmap keeps
+  ;; calling the old one.
+  {:category :namespace-model
+   :behavior "(defn f [] 6) (defn c [] (f)) (ns-unmap *ns* 'f) (defn f [] :new) (c)"
+   :jvm "6 — c holds the unmapped Var"
+   :jolt ":new — c reaches the name's one cell, which the new defn wrote"
+   :check {:expr "(do (defn kd-unmap-f [] 6) (defn kd-unmap-c [] (kd-unmap-f)) (ns-unmap *ns* 'kd-unmap-f) (defn kd-unmap-f [] :new) (kd-unmap-c))"
+           :jvm "6"
+           :jolt ":new"}
+   :note "jolt-d6dti. The usual reason to unmap and redefine (a defmulti, a var turned into a macro) wants every caller to see the new definition, which jolt gives."}
+  ;; A var read compiled while the var was not dynamic reads its root on the JVM
+  ;; (getRawRoot), so .setDynamic and a binding afterwards do not reach it. jolt's
+  ;; read honours a binding wherever one is in force.
+  {:category :namespace-model
+   :behavior "(def v 1) (defn c [] v) (.setDynamic #'v) (binding [v 2] (c))"
+   :jvm "1 — c was compiled to read the root"
+   :jolt "2"
+   :check {:expr "(do (def kd-setdyn-v 1) (defn kd-setdyn-c [] kd-setdyn-v) (.setDynamic #'kd-setdyn-v) (binding [kd-setdyn-v 2] (kd-setdyn-c)))"
+           :jvm "1"
+           :jolt "2"}
+   :note "jolt-d6dti. A binding of a var made dynamic after the fact reaches every reader, not only those compiled after the .setDynamic."}
   {:category :namespace-model
    :behavior "(binding [*allow-unresolved-vars* true] (eval '(defn f [] later))) then (def later 42), (f)"
    :jvm "VerifyError at the defn (UnresolvedVarExpr emits nothing)"
@@ -976,6 +1021,17 @@
            :jvm "[\"java.lang.Integer\" false]"
            :jolt "[\"java.lang.Long\" true]"}
    :note "Chez has one fixnum. instance? is deliberately permissive for Integer/Long — a value answers to both spellings of its collapsed class — while Short and Byte stay false. Since #627 the big classes are value-sensitive: BigInt/BigInteger answer only for bignums (which also class as clojure.lang.BigInt), Long/Integer only for fixnums, matching the JVM. A bignum still answers BigInteger (one big representation serves both classes; the JVM says false) — the remaining superset. Float is its own value (a jfloat), so Float and Double answer as on the JVM."}
+;; The same collapse at protocol dispatch: an int, a short and a small BigInt are
+  ;; the fixnum a long is, so a protocol extended to Long and to Number picks Long
+  ;; for all of them where the JVM's boxes fall through to Number.
+  {:category :integer-box-model
+   :behavior "a protocol extended to Number and Long, called on (int 1), (short 1), 1N and 1"
+   :jvm "[:number :number :number :long]"
+   :jolt "[:long :long :long :long]"
+   :check {:expr "(do (defprotocol KdIntBox (kd-int-box [x])) (extend-protocol KdIntBox Number (kd-int-box [_] :number) Long (kd-int-box [_] :long)) (mapv kd-int-box [(int 1) (short 1) 1N 1]))"
+           :jvm "[:number :number :number :long]"
+           :jolt "[:long :long :long :long]"}
+   :note "jolt-tweq4. Follows from (class (int 1)) being Long (the entry above): dispatch keys on the value's class, and the value is one fixnum. A double, a ratio and a bignum still reach Number."}
   ;; URL.equals and hashCode resolve the host (URLStreamHandler.hostsEqual and
   ;; getHostAddress), a DNS lookup inside = and hash. jolt compares and hashes a
   ;; URL by its spec, so two names for one host are unequal here and the hash

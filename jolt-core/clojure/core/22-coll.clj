@@ -111,12 +111,16 @@
                    (reduce merge-entry (or m1 {}) (seq m2)))]
       (reduce merge2 maps))))
 
+;; The not-found value get-in and req! pass to get: an object no collection
+;; holds, so a present-but-nil (or present-but-empty) value is told from a
+;; missing key. An empty map will not do — {} is one shared value, so a key
+;; mapped to an empty map read as missing.
+(def ^:private absent-sentinel (atom nil))
+
 (defn get-in
   ([m ks] (reduce get m ks))
   ([m ks not-found]
-   ;; a fresh table is its own identity — a present-but-nil step is
-   ;; distinguished from a missing one
-   (let [sentinel (hash-map)]
+   (let [sentinel absent-sentinel]
      (loop [m m ks (seq ks)]
        (if ks
          (let [nxt (get m (first ks) sentinel)]
@@ -132,9 +136,7 @@
   behind checked-keys destructuring (:keys! / :syms! / :strs!)."
   {:added "1.13"}
   [m k]
-  ;; a fresh map is its own identity, so a present-but-nil value is distinguished
-  ;; from an absent key (same trick as get-in's sentinel).
-  (let [sentinel (hash-map)
+  (let [sentinel absent-sentinel
         v (get m k sentinel)]
     (if (identical? sentinel v)
       (throw (new IllegalArgumentException (str "Expected key: " k)))
@@ -185,7 +187,8 @@
     (record? coll) (throw (new UnsupportedOperationException
                                (str "Can't create empty: " (.getName (class coll)))))
     (sorted? coll) (with-meta ((get (jolt.host/ref-get coll :ops) :empty) coll) (meta coll))
-    (map? coll) (with-meta {} (meta coll))
+    ;; a hash map empties to an empty hash map (the arm), an array map to {}
+    (map? coll) (or (jolt.host/empty-coll-arm coll) (with-meta {} (meta coll)))
     (set? coll) (with-meta #{} (meta coll))
     ;; a map entry is a vector with no empty one (MapEntry.empty() is null)
     (map-entry? coll) nil

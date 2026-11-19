@@ -3413,7 +3413,10 @@
            (else
             ;; a keyword is interned, so it too equals only itself
             #'(let ((a a0) (b b0))
-                (cond ((eq? a b) (if (flonum? a) (fl= a b) #t))
+                ;; identity settles it but for a NaN: a double's or a Float's
+                (cond ((eq? a b) (cond ((flonum? a) (fl= a b))
+                                       ((jfloat? a) (fl= (jfloat-fl a) (jfloat-fl a)))
+                                       (else #t)))
                       ((or (char? a) (boolean? a) (keyword-t? a) (eq? a jolt-nil) (eq? b jolt-nil)) #f)
                       (else (jolt=2 a b)))))))))))
 ;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
