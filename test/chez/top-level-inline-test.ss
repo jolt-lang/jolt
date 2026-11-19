@@ -110,6 +110,10 @@
 (ok "f. a second definition of the same symbol is refused"
     (guard (e (#t #t)) (sa-define-inlinable! 'tli$add1 '(lambda (x) x)) #f))
 (ok "f. ...and the first definition stands" (= ((top-level-value 'tli$add1) 1) 2))
+(ok "f. a definition whose expression raises leaves the symbol free to define"
+    (begin (guard (e (#t #f)) (sa-define-inlinable! 'tli$retry '(car 1)))
+           (guard (e (#t #f)) (sa-define-inlinable! 'tli$retry '(lambda (x) (fx+ x 2))) #t)))
+(ok "f. ...and the retried definition stands" (= ((top-level-value 'tli$retry) 1) 3))
 
 (printf "top-level-inline: ~a/~a passed~a\n" (- total fails) total
         (if patched? "" " (stock kernel: the inlining rows skipped)"))

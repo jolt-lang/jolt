@@ -2202,8 +2202,10 @@
      (when (#%$sgetprop sym '*clo* #f)
        (error 'sa-define-inlinable! "already defined once" sym))
      (#%$sputprop sym '*clo* (box '()))
-     (parameterize ([expand-omit-library-invocations #t] [cp0-score-limit score])
-       (eval `(define ,sym ,expr)))
+     ;; a definition that raises defined nothing, so it leaves SYM unmarked
+     (guard (e (#t (#%$sremprop sym '*clo*) (raise e)))
+       (parameterize ([expand-omit-library-invocations #t] [cp0-score-limit score])
+         (eval `(define ,sym ,expr))))
      (top-level-value sym))))
 ;; (sa-inline-recorded? sym) -> whether SYM's definition recorded an inlinable
 ;; body for every one of its clauses: #t on a patched kernel for a procedure cp0

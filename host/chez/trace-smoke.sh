@@ -624,6 +624,14 @@ expect_no_match "untraced build: no baked trace frames" "$out_bt0" 'app\.tail/bo
 out_btnt="$("$work/tailbinnt" 2>&1)"
 expect_match "build --no-trace: still reports the message" "$out_btnt" 'Unhandled exception (ArithmeticException): Divide by zero'
 expect_no_match "build --no-trace: no baked trace frames" "$out_btnt" 'app\.tail/boom (.*:4)'
+# the deps.edn spelling of the same switch: :jolt/build {:trace false}
+mkdir -p "$work/cfgnt/src/app"
+cp "$work/src/app/tail.clj" "$work/cfgnt/src/app/tail.clj"
+printf '{:jolt/build {:trace false}}\n' > "$work/cfgnt/deps.edn"
+( cd "$work/cfgnt" && "$joltabs" build -m app.tail -o tailbincfg >/dev/null 2>&1 )
+out_btcfg="$("$work/cfgnt/tailbincfg" 2>&1)"
+expect_match "build :trace false: still reports the message" "$out_btcfg" 'Unhandled exception (ArithmeticException): Divide by zero'
+expect_no_match "build :trace false: no baked trace frames" "$out_btcfg" 'app\.tail/boom (.*:4)'
 
 echo "trace smoke: a non-tail throw under a host callback is its own innermost frame"
 out_cb="$(run_app app.hostcb)"

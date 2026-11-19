@@ -70,5 +70,20 @@
   (run-scm scm))
 (gate-check "...and answers" (evals "(gi-pcaller (GiT. 7))") 7)
 
+;; a ^double/^long param binds its argument coerced for the spliced body only:
+;; the fallback call passes each argument as given, evaluated once, in order
+(evals "(defn gi-dbl [^double x] (+ x 1.0))")
+(evals "(defn gi-lng [^long x y] (+ x y))")
+(evals "(def gi-log (atom []))")
+(let ((scm (emit-src "(defn gi-hcaller [v] [(gi-dbl v) (gi-dbl (do (swap! gi-log conj :a) v)) (gi-lng (do (swap! gi-log conj :b) v) (do (swap! gi-log conj :c) 1))])")))
+  (gate-check "a hinted callee is spliced" (spliced? scm) #t)
+  (run-scm scm))
+(gate-check "...and coerces in the body" (evals "(pr-str (gi-hcaller 1))") "[2.0 2.0 2]")
+(evals "(defn gi-dbl [x] [x (type x)])")
+(evals "(defn gi-lng [x y] [x y])")
+(gate-check "after a redefinition the call gets the arguments as passed"
+            (evals "(do (reset! gi-log []) (pr-str [(gi-hcaller 1) (gi-hcaller \"s\") @gi-log]))")
+            "[[[1 java.lang.Long] [1 java.lang.Long] [1 1]] [[\"s\" java.lang.String] [\"s\" java.lang.String] [\"s\" 1]] [:a :b :c :a :b :c]]")
+
 (set-guarded-inline-flag! #f)
 (gate-summary "guarded-inline")

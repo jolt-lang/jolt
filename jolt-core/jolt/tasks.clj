@@ -52,6 +52,10 @@
 ;; itself forcing.
 (def ^:private ^:dynamic *in-progress* #{})
 
+;; True on a thread that :parallel's :depends walk started, where other tasks
+;; may be running at the same time, and in everything that thread runs.
+(def ^:private ^:dynamic *parallel-branch* false)
+
 (defn tasks-of
   "The runnable entries of a :tasks map — every symbol key. The keyword keys
   (:init / :requires / :enter / :leave) configure the run, they are not tasks."
@@ -433,7 +437,10 @@
 
 (defn- run-body! [ctx t]
   (cond
-    (contains? t :main-opts) ((:run-main-opts ctx) (:main-opts t) (:args ctx))
+    ;; the last argument says whether a script the :main-opts name may set the
+    ;; process-wide jolt.file: not beside sibling tasks, which would overwrite it
+    (contains? t :main-opts) ((:run-main-opts ctx) (:main-opts t) (:args ctx)
+                              (not *parallel-branch*))
     (string? (:task t))      (shell-line! (:task t))
     (contains? t :task)      (eval-body (:task t))
     :else (throw (ex-info (str "task " (:name t) " has no :task body") {:task (:name t)}))))
@@ -447,7 +454,10 @@
   [ctx deps]
   (when (seq deps)
     (if (:parallel ctx)
-      (doseq [f (doall (map (fn [d] (future (ensure-run! ctx d false))) deps))] @f)
+      (doseq [f (doall (map (fn [d] (future (binding [*parallel-branch* true]
+                                              (ensure-run! ctx d false))))
+                            deps))]
+        @f)
       (doseq [d deps] (ensure-run! ctx d false)))))
 
 (defn- run-cli-target!
@@ -592,6 +602,8 @@
   {:tasks :name :args :run-main-opts :parallel} — :args is the argv after the
   task name verbatim. A code body sees it as *command-line-args* with every
   \"--\" kept, as babashka does, and a :main-opts task forwards it.
+  :run-main-opts takes the main-opts, those args, and whether a script they
+  name may set jolt.file (false in a :parallel branch).
 
   A failed subprocess exits with ITS status and prints nothing further — the
   child already reported, and a jolt stack trace over it would only bury that.

@@ -89,14 +89,15 @@
 ;; no-ops; all-nil (or no args) is nil.
 (defn merge
   ;; the fixed arities answer what the variadic one does without its rest list,
-  ;; some and reduce: (merge m nil) is m, (merge nil m) is (conj {} m)
+  ;; some and reduce: (merge m nil) is m, (merge nil m) is (conj {} m), and any
+  ;; falsey argument counts as absent the way (some identity maps) and (or acc {})
+  ;; read it
   ([] nil)
-  ([m] m)
-  ([m1 m2] (cond (nil? m2) m1 (nil? m1) (conj {} m2) :else (conj m1 m2)))
+  ([m] (when m m))
+  ([m1 m2] (when (or m1 m2) (conj (or m1 {}) m2)))
   ([m1 m2 & maps]
    (when (or m1 m2 (some identity maps))
-     (reduce (fn [acc m] (if (nil? m) acc (conj (or acc {}) m)))
-             (merge m1 m2) maps))))
+     (reduce (fn [acc m] (conj (or acc {}) m)) (conj (or m1 {}) m2) maps))))
 
 (defn merge-with [f & maps]
   (when (some identity maps)

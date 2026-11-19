@@ -188,7 +188,8 @@
               (gate-sub? e "(jolt-register-callsite! \"ddemo\" 2 ") #f))
 (define sited-src "(def sdemo (fn sdemo [x]\n  (+ x 1)))")
 (let ((e (emit-num sited-src)))
-  (gate-check "(10b) native tail site stores the pair" (gate-sub? e "(jolt-site! '(") #t)
+  ;; boxed: a box in the slot is the innermost erased frame (rt.ss jolt-site!)
+  (gate-check "(10b) native tail site stores the boxed pair" (gate-sub? e "(jolt-site! '#&(") #t)
   (gate-check "(10b) exactly one site store" (= (count-sub? e "(jolt-site! ") 1) #t)
   ;; this harness emits with source registration OFF, so the callee registers
   ;; under its bare munged name (the direct-link-build form); with it on (dev,
@@ -297,14 +298,14 @@
   (gate-check "(12b) unclosed '#|L': offset past the form" (jolt-marker-line-at-offset e (+ istr 20)) 3))
 
 ;; --- (13) a non-tail call puts the site slot back when it returns ----------------
-;; The emitter spells the restore with the slot's NUMBER (backend_scheme.clj
+;; The emitter spells the restore with the slot's NUMBER (backend_scheme
 ;; site-restore, so a cached fasl needs nothing of the runtime to expand). That
 ;; literal must be rt.ss's jolt-vreg-site: if the slot moves, these fail rather
 ;; than the restore silently clobbering another vreg.
 (define site-rd (string-append "(virtual-register " (number->string jolt-vreg-site) ")"))
 (define site-wr (string-append "(set-virtual-register! " (number->string jolt-vreg-site) " "))
 (let ((e (emit-num "(def _ (fn rt13a [g x] (+ 1 (g x))))")))
-  (gate-check "(13) non-tail call to a jolt fn reads jolt-vreg-site" (gate-sub? e site-rd) #t)
+  (gate-check "(13) a fn with a non-tail call to a jolt fn reads jolt-vreg-site" (gate-sub? e site-rd) #t)
   (gate-check "(13) ...and writes it back" (gate-sub? e site-wr) #t))
 (let ((e (emit-num "(def _ (fn rt13b [x y] (+ 1 (* x y))))")))
   (gate-check "(13) a numeric op takes no restore" (gate-sub? e "virtual-register") #f))
@@ -315,62 +316,70 @@
   (gate-check "(13) ...and leave no placeholder" (gate-sub? e "_srself$") #f))
 ;; a tail call that can run a jolt fn makes the self-calls restore
 (let ((e (emit-num "(def _ (fn fibu13 [g n] (if (< n 2) (g n) (+ (fibu13 g (- n 1)) 1))))")))
-  (gate-check "(13) unsafe self-calls restore" (gate-sub? e site-rd) #t)
+  (gate-check "(13) unsafe self-calls restore" (gate-sub? e site-wr) #t)
+  (gate-check "(13) ...reading the slot at entry" (gate-sub? e site-rd) #t)
   (gate-check "(13) ...and leave no placeholder" (gate-sub? e "_srself$") #f))
 (set-trace-frames! #f)
 (let ((e (emit-num "(def _ (fn rt13c [g x] (+ 1 (g x))))")))
   (gate-check "(13) tracing off: no restore" (gate-sub? e "virtual-register") #f))
 (set-trace-frames! #t)
 
-;; --- (14) the restore is spelled once per fn clause, not once per site ---------
-;; With inspector information on (jolt build's release mode), Chez keeps every
-;; lambda's whole expanded body as data (code-info sexpr), so each inline restore
-;; was ~30 pairs of it per site and per enclosing lambda: 0.8.22's restore made a
-;; 4,000-fn app's binary 32% bigger (#1423). A site is now a call to a helper the
-;; outermost fn's clause binds once, which cp0 inlines back to the same code.
+;; --- (14) the slot is read once per fn clause, and a site is one store --------
+;; #1645: the restore used to save and restore two slots at every non-tail site
+;; (through a helper per clause that cp0 inlined back at each one), and with
+;; ~20k sites in honeysql's suite Chez compiled traced code 40% slower than
+;; untraced, most of it there. A clause now reads the slot once at entry and
+;; unboxes it (lambda.clj site-entry), and each site stores that value back when
+;; it returns. Slot 12, which held the outer pair, is no longer touched.
 (define (count-sub s sub)
   (let ((m (string-length sub)))
     (let loop ((i 0) (n 0))
       (let ((j (find-sub (substring s i (string-length s)) sub)))
         (if j (loop (+ i j m) (+ n 1)) n)))))
-(define site-call-head "(jolt-site-call (lambda () ")
+(define site-store "(set-virtual-register! 2 _sw$)")
 ;; four non-tail sites (g m) (h xs) (g a) (h a); (h b) and (g …) are tail calls
 (define rt14-src "(def _ (fn rt14 [g h m xs] (let [a (g m) b (h xs)] (if (g a) (h b) (g (h a))))))")
 (let ((e (emit-num rt14-src)))
-  (gate-check "(14) the restore is spelled once in the fn" (count-sub e "(virtual-register 12)") 1)
-  (gate-check "(14) each non-tail site calls it" (count-sub e site-call-head) 4))
-;; a nested fn binds its own: sharing the outer clause's left the calls out of
-;; line in a built program (bench/keyed_lookup 1.15x)
+  (gate-check "(14) the slot is read once in the fn" (count-sub e site-rd) 1)
+  (gate-check "(14) each non-tail site stores the entry value" (count-sub e site-store) 4)
+  (gate-check "(14) no site touches the old outer slot" (gate-sub? e "virtual-register 12") #f)
+  (gate-check "(14) no per-site thunk" (gate-sub? e "(lambda ()") #f))
+;; a nested fn reads its own: it is entered on its own, maybe much later
 (let ((e (emit-num "(def _ (fn rt14b [g xs] (g (map (fn [x] (+ 1 (g x))) xs))))")))
-  (gate-check "(14) a nested fn binds its own restore" (count-sub e "(virtual-register 12)") 2)
-  (gate-check "(14) ...and its site calls it" (gate-sub? e site-call-head) #t))
-;; each arity is its own clause, and binds the helper only if it has a site
+  (gate-check "(14) a nested fn reads the slot itself" (count-sub e site-rd) 2))
+;; each arity is its own clause, and reads the slot only if it has a site
 (let ((e (emit-num "(def _ (fn rt14c ([g] (+ 1 (g 1))) ([g x] (+ 1 (g x) (g x))) ([g x y] x)))")))
-  (gate-check "(14) one restore per clause with a site" (count-sub e "(virtual-register 12)") 2))
-;; outside any fn there is no clause to bind it in, so the site keeps the inline form.
+  (gate-check "(14) one read per clause with a site" (count-sub e site-rd) 2)
+  (gate-check "(14) ...and one store per site" (count-sub e site-store) 3))
+;; outside any fn the slot is 0 when the form starts, so a site stores 0.
 ;; str at two arguments: at one it is open-coded on Chez (rt.ss jolt-str1/i), no call
 (let ((e (emit-num "(def x14 (str (identity 1) \"\"))")))
-  (gate-check "(14) a top-level site still restores inline" (gate-sub? e "(virtual-register 12)") #t)
-  (gate-check "(14) ...without the helper" (gate-sub? e "jolt-site-call") #f))
-;; cp0 must fold every helper call away: what runs is the inline restore, with no
-;; closure per site
+  (gate-check "(14) a top-level site stores 0" (gate-sub? e "(set-virtual-register! 2 0)") #t)
+  (gate-check "(14) ...and reads nothing" (gate-sub? e site-rd) #f))
+;; a catch puts back the clause's entry value, with nothing read when the try begins
+(let ((e (emit-num "(def _ (fn rt14t [g x] (try (g x) (catch Exception e (g e)))))")))
+  (gate-check "(14) a catch stores the entry value" (gate-sub? e site-store) #t)
+  (gate-check "(14) ...and the fn reads the slot once" (count-sub e site-rd) 1))
+;; what Chez compiles: the entry read, a store per site, nothing per site to inline
 (let* ((e (emit-num rt14-src))
        (opt (format "~s" (expand/optimize (read (open-input-string e))))))
-  (gate-check "(14) cp0 inlines the helper at every site" (gate-sub? opt "jolt-site-call") #f)
-  (gate-check "(14) ...leaving no thunk behind" (gate-sub? opt "(lambda ()") #f)
-  (gate-check "(14) ...and the restore inline" (count-sub opt "virtual-register) 12)") 4))
-;; also where the helper is free in a nested fn, and bound in several arities
-(for-each
-  (lambda (src)
-    (let ((opt (format "~s" (expand/optimize (read (open-input-string (emit-num src)))))))
-      (gate-check (string-append "(14) cp0 inlines every helper call: " src)
-                  (gate-sub? opt "jolt-site-call") #f)
-      (gate-check (string-append "(14) ...and every thunk: " src)
-                  (gate-sub? opt "(lambda ()") #f)))
-  '("(def _ (fn rt14e [g xs] (g (map (fn [x] (+ 1 (g x))) xs))))"
-    "(def _ (fn rt14f ([g] (+ 1 (g 1))) ([g x] (+ 1 (g x) (g x))) ([g x y] x)))"))
-;; and it still runs
+  (gate-check "(14) cp0 leaves no thunk" (gate-sub? opt "(lambda ()") #f)
+  (gate-check "(14) ...one store per site plus the entry's unbox"
+              (count-sub opt "set-virtual-register!) 2") 5))
+;; and it runs
 (ev "(defn rt14d [g h m xs] (let [a (g m) b (h xs)] (if (g a) (h b) (g (h a)))))")
-(gate-check "(14) a fn with helper sites runs" (ev "(rt14d identity identity 3 7)") 7)
+(gate-check "(14) a fn with sites runs" (ev "(rt14d identity identity 3 7)") 7)
+
+;; --- (15) the slot's two roles, as a throw reads them -----------------------------
+;; A box is the innermost erased frame; a bare pair is the nearest erased caller
+;; further out, which the snapshot wraps; anything else is no site.
+(set-virtual-register! jolt-vreg-site (box '("ns/f" . 3)))
+(gate-check "(15) a boxed pair snapshots as the innermost pair" (jolt-site-snapshot) '("ns/f" . 3))
+(set-virtual-register! jolt-vreg-site '("ns/f" . 3))
+(gate-check "(15) a bare pair snapshots as the outer site"
+            (let ((s (jolt-site-snapshot))) (and (outer-site? s) (outer-site-pair s))) '("ns/f" . 3))
+(set-virtual-register! jolt-vreg-site 0)
+(gate-check "(15) 0 snapshots as no site" (jolt-site-snapshot) #f)
+(jolt-site-reset!)
 
 (gate-summary "trace-emit")

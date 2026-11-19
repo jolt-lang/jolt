@@ -204,7 +204,7 @@
                    (def-var! mns source-name m) m))))
     (jolt-with-mutex mm-tbl-mu
       (hashtable-set! (jolt-multifn-methods mf) (mm-dispatch-val-canon dval) impl)
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
+      (mm-epoch-bump!))
     mf))
 
 ;; --- dispatch ----------------------------------------------------------------
@@ -292,6 +292,17 @@
 ;; prelude. A global epoch may over-invalidate across multifns (a miss, never a
 ;; wrong answer); correctness first, per jolt-mw44.30.
 (define jolt-mm-epoch 0)
+;; Every change to a methods / prefers table bumps the epoch through here, with
+;; the change already made and mm-tbl-mu held. The release fence orders the
+;; table's stores ahead of the epoch's, and mm-resolve-table's acquire fence
+;; orders its epoch load ahead of its table loads, so a reader that sees the new
+;; epoch also sees the new table. Without the pair, arm64 lets a reader pair the
+;; new epoch with the old method and cache that, stamped current, for good: a
+;; writer swapping one method while three threads dispatched read its own
+;; superseded method back 2 times in 200k rounds.
+(define (mm-epoch-bump!)
+  (memory-order-release)
+  (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1)))
 
 ;; the hierarchy object isa? resolves against for mf: its own :hierarchy atom/map
 ;; when set, else the global-hierarchy atom's current value. deref'd lazily (the
@@ -364,11 +375,13 @@
     (vector-set! v 2 m)
     (do ((i 3 (fx+ i 1))) ((fx= i mm-icache-len))
       (vector-set! v i (vector-ref src (fx- i 2))))
+    ;; the new vector's slots are written before another thread can reach it
+    (memory-order-release)
     (jolt-multifn-icache-set! mf v)))
 
 (define (mm-resolve-table mf dv)
   (let* ((methods (jolt-multifn-methods mf))
-         (epoch jolt-mm-epoch)
+         (epoch (let ((e jolt-mm-epoch)) (memory-order-acquire) e))
          (direct (hashtable-ref methods dv #f)))
     (when (and direct (mm-icache-key? dv))
       (mm-icache-add! mf epoch dv direct))
@@ -385,7 +398,7 @@
                 ;; method, not a stale miss, and it never expires because the
                 ;; stamp already says current. mm-find-isa runs OUTSIDE the lock:
                 ;; it calls isa? / parents, which is user code.
-                (let* ((epoch jolt-mm-epoch)
+                (let* ((epoch (let ((e jolt-mm-epoch)) (memory-order-acquire) e))
                        (hier (mm-current-hierarchy mf))
                        (m (or (mm-find-isa mf dv)
                               (hashtable-ref methods (jolt-multifn-default mf) #f))))
@@ -458,21 +471,21 @@
                      (let ((h (new-mm-table)))
                        (hashtable-set! (jolt-multifn-prefers mf) dval-a h) h))))
         (hashtable-set! sub dval-b #t))
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1))))
+      (mm-epoch-bump!)))
   mf)
 
 (define (jolt-remove-method-setup mf dval)
   (when (jolt-multifn? mf)
     (jolt-with-mutex mm-tbl-mu
       (hashtable-delete! (jolt-multifn-methods mf) dval)
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1))))
+      (mm-epoch-bump!)))
   mf)
 
 (define (jolt-remove-all-methods-setup mf)
   (when (jolt-multifn? mf)
     (jolt-with-mutex mm-tbl-mu
       (hashtable-clear! (jolt-multifn-methods mf))
-      (set! jolt-mm-epoch (fx+ jolt-mm-epoch 1))))
+      (mm-epoch-bump!)))
   mf)
 
 (define (jolt-get-method-setup mf dval)

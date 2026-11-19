@@ -622,7 +622,19 @@
 ;; rebound or with-redefs'd var fails it and takes the call. The fallback call
 ;; is marked :no-inline so the fixpoint never splices it again.
 (defn- guarded-splice [node ctx f stash]
-  (let [parts (splice-parts node ctx f stash)
+  (let [;; a ^double/^long or array-hinted param binds its argument already
+        ;; coerced, which the fallback call must not see: a redefinition gets
+        ;; the argument as passed. With such a param every non-trivial argument
+        ;; is bound raw first, in source order, so both arms read the same
+        ;; once-evaluated values and only the body sees the coercion.
+        hinted? (seq (concat (get stash :nhints) (get stash :ahints)))
+        raw (when hinted?
+              (mapv (fn [a] (if (trivial-arg? a) [nil a] (let [r (fresh "arg")] [r a])))
+                    (get node :args)))
+        node (if raw
+               (assoc node :args (mapv (fn [[r a]] (if r {:op :local :name r} a)) raw))
+               node)
+        parts (splice-parts node ctx f stash)
         body (nth parts 0)
         env (nth parts 2)
         ;; the var's fn is read FIRST, before any argument, as a call reads it
@@ -631,17 +643,19 @@
         ;; gets the same once-evaluated values the body does.
         fv (fresh "fn")
         fl {:op :local :name fv}
-        binds (into [[fv (assoc f :fn-read true)]] (nth parts 1))
+        binds (into (into [[fv (assoc f :fn-read true)]] (filter first) raw) (nth parts 1))
         bound (reduce (fn [m b] (assoc m (nth b 0) true)) {} binds)
         call (assoc node
                     :no-inline true
                     :fn fl
-                    :args (mapv (fn [p a]
-                                  (let [e (get env p)]
-                                    (if (and (= :local (get e :op)) (get bound (get e :name)))
-                                      {:op :local :name (get e :name)}
-                                      a)))
-                                (get stash :params) (get node :args)))
+                    :args (if raw
+                            (get node :args)
+                            (mapv (fn [p a]
+                                    (let [e (get env p)]
+                                      (if (and (= :local (get e :op)) (get bound (get e :name)))
+                                        {:op :local :name (get e :name)}
+                                        a)))
+                                  (get stash :params) (get node :args))))
         test {:op :inline-guard :fn fl :ns (get f :ns) :name (get f :name) :token (get stash :token)}]
     {:op :let :bindings binds :body {:op :if :test test :then body :else call}}))
 

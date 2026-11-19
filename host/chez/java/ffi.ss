@@ -1807,9 +1807,9 @@
 ;; arguments past the argument registers where C reads them. Chez 10.4.1 doesn't
 ;; always (cisco/ChezScheme#1091, merged into Chez main 2026-11-05 and in no
 ;; release yet). jolt carries the repair as chez-patches 0006 (arm64) and 0007
-;; (x86_64), but a jolt built over a system Chez (JOLT_SYSTEM_CHEZ=1, the
-;; default) runs without them, and neither `jolt --version` nor (scheme-version)
-;; differs. So this asks the code generator itself, once per process:
+;; (x86_64), but a jolt built over a Chez without them (one passed in as CHEZ=,
+;; or a distro's) runs without them, and neither `jolt --version` nor
+;; (scheme-version) differs. So this asks the code generator itself, once per process:
 ;;
 ;; - arm64: a struct over 16 bytes on the stack, then an int. Chez 10.4.1 can't
 ;;   compile that ("unexpected Triv") and the repaired back end can. The other

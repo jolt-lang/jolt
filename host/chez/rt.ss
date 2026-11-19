@@ -1532,12 +1532,12 @@
 ;; the 3.4M switches/sec design point (R0(c)); the fibers define re-defines the
 ;; value in fibers.ss so the standalone gate can load it without rt.ss. Slot 1
 ;; was freed by R3 (jolt-230w), which moved the R1 ring/mark vregs onto the
-;; continuation, and re-claimed by fibers.ss for park-unwinding; slot 12 is
-;; the outer site (below), and the next free slot is 13. The surviving slots keep their R2 numbers.
-(define jolt-vreg-site 2)        ; ('ns/fn' . line) of the innermost live call site
+;; continuation, and re-claimed by fibers.ss for park-unwinding; slot 12 held
+;; the outer site until the site slot took both roles (#1645), and is free.
+;; The surviving slots keep their R2 numbers.
+(define jolt-vreg-site 2)        ; #&('ns/fn' . line) innermost, ('ns/fn' . line) outer, or 0
 (define jolt-vreg-catch-line 3)  ; the site at the throw a catch clause is handling
 (define jolt-vreg-print-readably 4)  ; the print family's *print-readably* override; 0 = unset
-(define jolt-vreg-outer-site 12) ; the pair a non-tail call moved out of jolt-vreg-site
 (define jolt-vreg-current-fiber 0)  ; fibers.ss: the running fiber record, or 0 (fixnum) when not on a fiber
 ;; slot 1: fibers.ss jolt-vreg-park-unwinding — a park escape is unwinding this carrier
 ;; slot 5: hasheq.ss jolt-vreg-hasheq-caches — this thread's string hash cache and weak admission buckets
@@ -1589,35 +1589,37 @@
         (jolt-truthy? o))))
 (define (jolt-trace-enable!) (set! jolt-trace-on? #t))
 
-;; TAIL call emissions store their static ('ns/fn' . line) pair here right
-;; before the call (sited-tail-call / the :throw case), and a non-tail call puts
-;; it back when it returns (backend_scheme site-restore), so a pair in the slot is a
-;; tail call whose chain is still running. Consumers read the THROW-TIME snapshot
+;; TAIL call emissions store their static site here right before the call
+;; (sited-tail-call / the :throw case), BOXED: #&('ns/fn' . line), a constant
+;; built when the code loads. A box in the slot is a tail call whose chain is
+;; still running, the innermost erased frame. A fn clause that makes non-tail
+;; calls reads the slot once at entry and unboxes it there (the back end's
+;; lambda.clj site-entry), and each of its non-tail calls puts that value back when
+;; it returns (site-restore): from the clause's entry on, the bare pair is only
+;; the nearest erased caller further out, since nothing the clause runs is the
+;; tail call it describes. One slot holds both roles so that a site costs one
+;; store; the two-slot save and restore it replaced was most of the compile time
+;; tracing added (#1645). Consumers read the THROW-TIME snapshot
 ;; (jolt-throw-sitep), and the reporter still validates it against the callsite
 ;; table before splicing: code compiled untraced (the seed) restores nothing.
 (define (jolt-site! p) (set-virtual-register! jolt-vreg-site p))
-;; A non-tail call moves the slot's pair to jolt-vreg-outer-site and clears the
-;; slot while it runs (backend_scheme site-restore): a throw inside it has no
-;; innermost pair, only the nearest erased caller from further out. The snapshot
-;; a throw keeps is the slot's pair, else that outer pair wrapped as an
-;; outer-site, which only the continuation walk unwraps and only as a gap bridge:
-;; every other reader tests pair? and ignores it.
+;; The snapshot a throw keeps: the innermost pair, else the outer pair wrapped as
+;; an outer-site, which only the continuation walk unwraps and only as a gap
+;; bridge: every other reader tests pair? and ignores it. The outer-site is
+;; allocated here, at the throw, so the slot itself never allocates.
 (define-record-type outer-site (fields pair) (nongenerative jolt-outer-site-v1))
 (define (jolt-site-snapshot)
   (let ((s (virtual-register jolt-vreg-site)))
-    (if (pair? s)
-        s
-        (let ((o (virtual-register jolt-vreg-outer-site)))
-          (and (pair? o) (make-outer-site o))))))
+    (cond ((box? s) (let ((p (unbox s))) (and (pair? p) p)))
+          ((pair? s) (make-outer-site s))
+          (else #f))))
 ;; A top-level form is a root: nothing tail-called it, so whatever the slot holds
 ;; when one starts is a returned call's residue — the reporter's validator cannot
 ;; tell it from a live pair when the innermost live frame is a host fn (the
 ;; loader, the eval loop), which registers no callees. compile-eval.ss clears the
 ;; slot when a form starts to compile and again when its compiled code starts to
 ;; run, since macroexpansion runs user code in between.
-(define (jolt-site-reset!)
-  (set-virtual-register! jolt-vreg-site 0)
-  (set-virtual-register! jolt-vreg-outer-site 0))
+(define (jolt-site-reset!) (set-virtual-register! jolt-vreg-site 0))
 ;; The site pair ('ns/fn' . line) of the innermost call at the throw — the
 ;; catch-line snapshot when a handler is running, else the raise-time stash.
 ;; #f when unset. The reporter must validate this against the callsite table
@@ -2309,7 +2311,7 @@
           ((cdr l) v))
         (var-cell-root-set! c v))))
 ;; The jv$ symbol a linked var is bound under, or #f. jolt.host/seed-callable?
-;; answers it so an app's direct call site applies the binding itself (backend
+;; answers it so an app's direct call site applies the binding itself (the back end's
 ;; emit-invoke) rather than a root hoisted once at load.
 (define (var-linked-symbol c)
   (let ((l (hashtable-ref var-linked-tbl c #f)))
@@ -3538,6 +3540,22 @@
              (jrec-field-site-ref site o name)))))))
 (define-syntax jrec*-slot-set!/u
   (syntax-rules () ((_ o i v) (sa-uvector-set! (sa-record-slot o 4) i v))))
+;; The unchecked loads above name record slots by number, so a field added to
+;; var-cell or to the jrec base, or a reordered one, would read the wrong slot
+;; with no type test to catch it. Check every number against a built instance
+;; as the runtime loads, so a layout change fails the boot naming this place.
+(let ((c (make-var-cell 'ns 'name 'root #f #f #f 'dyn #f))
+      (r (make-jrec2 'desc 'ext 0 'meta 'f0 'f1))
+      (s (make-jrec* 'desc 'ext 0 'meta (vector 'v0)))
+      (fail (lambda (what)
+              (error 'rt.ss (string-append "record layout moved under an unchecked slot load: " what
+                                           " (update the slot numbers in jolt-var-fn / jrec-*/u)")))))
+  (unless (and (eq? (sa-record-slot c 2) 'root) (eq? (sa-record-slot c 6) 'dyn))
+    (fail "var-cell root / dyn-bound?"))
+  (unless (and (eq? (jrec-pic-desc/i r) 'desc) (eq? (jrec-slot/u r 0) 'f0) (eq? (jrec-slot/u r 1) 'f1))
+    (fail "jrec desc / inline fields"))
+  (unless (eq? (jrec*-slot/u s 0) 'v0)
+    (fail "jrec* value vector")))
 
 ;; java.lang.String method interop: jolt-string-method, the
 ;; portable String/CharSequence surface record-method-dispatch falls through to on
