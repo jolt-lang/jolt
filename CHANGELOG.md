@@ -22,6 +22,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call, so a type that declared the protocol back then answers it there, and
   `extenders`/`extends?` name a redefined type's extended old class as the JVM
   does.
+- Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
+
+- **The reference fns call a user type's `clojure.lang` interface methods.**
+  `swap!`, `reset!`, `compare-and-set!`, `swap-vals!`, `reset-vals!`,
+  `add-watch`, `remove-watch`, `set-validator!` and `get-validator` now work on
+  a deftype, defrecord or reify implementing `IAtom` / `IAtom2` / `IRef`, as on
+  the JVM, where each is one interface call (a durable atom like duratom's no
+  longer has to rebind them). `alter-meta!` / `reset-meta!` on a value that is
+  not an `IReference` throw the JVM's `ClassCastException` instead of storing
+  metadata `meta` never reads back, and `reset-meta!` answers the type's
+  `resetMeta`. A failed cast now names the interface the JVM does: `IAtom2` for
+  the `-vals!` pair, `IRef` for the watch/validator fns, and
+  `java.util.concurrent.Future` for `deref` (it was `IDeref` /
+  `IBlockingDeref`). The built-in atom path is unchanged.
+
+- **The unchecked ops follow the JVM's operand categories (jolt-cdjgi).**
+  `unchecked-add`, `-subtract`, `-multiply`, `-inc`, `-dec` and `-negate` wrap
+  only a long/long pair now. An operand past the long range takes BigInt
+  contagion, so `(unchecked-add 9223372036854775808N 1)` is
+  `9223372036854775809N`, not a wrapped long; a BigDecimal or Float operand is
+  ordinary arithmetic (they raised before), and `(unchecked-multiply 0 1.5)` is
+  `0.0`. The `-int` family casts each operand to int before the op, as the JVM
+  compiler does: `(unchecked-add-int 1/2 1/2)` is 0, and an operand outside int
+  range raises the ArithmeticException, unless the file sets `*unchecked-math*`,
+  where a compiled call wraps it. A nil operand of these ops and of `+`, `-`,
+  `*` and the comparisons is the NullPointerException even beside a
+  non-number, and `(int 9223372036854775808N)` is the IllegalArgumentException
+  naming the long range. A small BigInt such as `1N` still reads as a Long,
+  since jolt classes an integer by its range.
 
 ## [0.8.28] - 2026-11-19
 

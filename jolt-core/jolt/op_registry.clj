@@ -58,17 +58,17 @@
           :dbl-contagion? true :num-result? true :num-args? true :foldable? true}
    ;; comparisons: vacuously true at arity 1 and don't inspect the arg, but
    ;; Scheme's < demands a number even there — cmp1-ops special-cases that.
-   "<"   {:call "jolt-n<"   :value "jolt-lt" :bool? true
+   "<"   {:cmp1? true :arity #(>= % 1) :call "jolt-n<"   :value "jolt-lt" :bool? true
           :dbl "fl<?"  :lng "jolt-l<"  :bd "jbd-lt?" :pure? true :foldable? true}
-   ">"   {:call "jolt-n>"   :value "jolt-gt" :bool? true
+   ">"   {:cmp1? true :arity #(>= % 1) :call "jolt-n>"   :value "jolt-gt" :bool? true
           :dbl "fl>?"  :lng "jolt-l>"  :bd "jbd-gt?" :pure? true :foldable? true}
-   "<="  {:call "jolt-n<="  :value "jolt-le" :bool? true
+   "<="  {:cmp1? true :arity #(>= % 1) :call "jolt-n<="  :value "jolt-le" :bool? true
           :dbl "fl<=?" :lng "jolt-l<=" :bd "jbd-le?" :pure? true :foldable? true}
-   ">="  {:call "jolt-n>="  :value "jolt-ge" :bool? true
+   ">="  {:cmp1? true :arity #(>= % 1) :call "jolt-n>="  :value "jolt-ge" :bool? true
           :dbl "fl>=?" :lng "jolt-l>=" :bd "jbd-ge?" :pure? true :foldable? true}
    "="   {:call "jolt=" :bool? true :arity #(>= % 2)
           :fixed {2 "jolt=2"} :dbl "fl=?" :lng "jolt-l=" :pure? true :foldable? true}
-   "=="  {:call "jolt-num-equiv" :bool? true :fixed {2 "jolt-num-equiv2"}
+   "=="  {:cmp1? true :call "jolt-num-equiv" :bool? true :fixed {2 "jolt-num-equiv2"}
           :dbl "fl=?" :lng "jolt-l="}
    "not=" {:pure? true}                ; not a native op; pure classifier only
    "inc" {:call "jolt-n-inc" :value "jolt-inc" :arity #(= % 1)
@@ -137,6 +137,24 @@
    "unchecked-inc-int"       {:call "jolt-uncinci" :arity #(= % 1) :num-result? true}
    "unchecked-dec-int"       {:call "jolt-uncdeci" :arity #(= % 1) :num-result? true}
    "unchecked-negate-int"    {:call "jolt-uncnegi" :arity #(= % 1) :num-result? true}
+   ;; Their *unchecked-math* twins: private names the analyzer rewrites an -int
+   ;; call to in such a file (jolt.analyzer.interop/unchecked-arith). The ops
+   ;; above cast each operand with RT.intCast's range check, as the JVM compiler
+   ;; does by default; these wrap each operand to 32 bits instead, as its
+   ;; uncheckedIntCast does under *unchecked-math*.
+   "__unchecked-add-int"       {:call "jolt-uncaddi2w" :arity #(= % 2) :lng "jolt-uncaddi2w"
+                                :num-result? true}
+   "__unchecked-subtract-int"  {:call "jolt-uncsubi2w" :arity #(= % 2) :lng "jolt-uncsubi2w"
+                                :num-result? true}
+   "__unchecked-multiply-int"  {:call "jolt-uncmuli2w" :arity #(= % 2) :lng "jolt-uncmuli2w"
+                                :num-result? true}
+   "__unchecked-divide-int"    {:call "jolt-uncdivi2w" :arity #(= % 2) :lng "jolt-uncdivi2w"
+                                :num-result? true}
+   "__unchecked-remainder-int" {:call "jolt-uncremi2w" :arity #(= % 2) :lng "jolt-uncremi2w"
+                                :num-result? true}
+   "__unchecked-inc-int"       {:call "jolt-uncinciw" :arity #(= % 1) :num-result? true}
+   "__unchecked-dec-int"       {:call "jolt-uncdeciw" :arity #(= % 1) :num-result? true}
+   "__unchecked-negate-int"    {:call "jolt-uncnegiw" :arity #(= % 1) :num-result? true}
    ;; collections
    "vector"      {:call "jolt-vector"}
    "hash-map"    {:call "jolt-hash-map-fn"}
@@ -303,13 +321,13 @@
   (into {} (keep (fn [[op spec]] (when (:bd spec) [op (:bd spec)]))) op-registry))
 
 ;; jolt's comparison ops are vacuously true at arity 1 and DON'T inspect the arg
-;; (< > <= >=: a :bool? :dbl op with no fixed :arity — that excludes =, and the
-;; predicates, which lack :dbl); Scheme's < demands a number even at arity 1.
+;; (< > <= >= ==, marked :cmp1?; = is not one of them); Scheme's < demands a
+;; number even at arity 1. They are marked rather than told apart by a missing
+;; :arity: each now has one, so (<) reaches the var and its ArityException names
+;; clojure.core/< as the reference's does.
 (def cmp1-ops
-  (into #{} (keep (fn [[_ spec]]
-                    (when (and (:bool? spec) (:dbl spec) (not (:arity spec)))
-                      (:call spec)))
-                  op-registry)))
+  (into #{} (keep (fn [[_ spec]] (when (:cmp1? spec) (:call spec))))
+        op-registry))
 
 ;; Every bare Scheme identifier the registry drives the back end to emit — each
 ;; :call/:dbl/:lng/:value/:bd name plus each :fixed helper. The back end unions

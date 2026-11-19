@@ -286,27 +286,64 @@
 ;; :main-opts and the command line combine exactly like the clj CLI, which
 ;; prepends the alias's :main-opts to the argv. `named?` goes to run-script!:
 ;; false only for a task running beside others under `run --parallel`.
-(declare repl-session run-script!)
+(declare repl-session run-script! run-main-opt)
 
 (defn- apply-main-opts [main-opts extra-args named?]
-  (let [opts (concat main-opts extra-args)]
+  ;; clojure.main's shape (main.clj `main`): any number of init options, in
+  ;; order, then at most one main option, whose trailing args are
+  ;; *command-line-args*. -i/--init loads a file (@path: a classpath resource),
+  ;; -e/--eval evaluates and prints each non-nil value; --report takes a target
+  ;; jolt does not use. The inits run after *command-line-args* is bound and
+  ;; before the main option acts, as initialize runs them.
+  (loop [opts (seq (concat main-opts extra-args)) inits []]
+    (let [o (first opts)]
+      (cond
+        (#{"-i" "--init"} o) (recur (nnext opts) (conj inits [:init (second opts)]))
+        (#{"-e" "--eval"} o) (recur (nnext opts) (conj inits [:eval (second opts)]))
+        (= "--report" o) (recur (nnext opts) inits)
+        :else (run-main-opt opts inits named?)))))
+
+;; One init option, as clojure.main's init-opt / eval-opt run it.
+(defn- run-init-opt [[kind arg] app-args]
+  (case kind
+    :eval (eval-expr-string arg app-args true)
+    :init (do (when (nil? arg)
+                (throw (ex-info "-i needs a path" {})))
+              (if (str/starts-with? arg "@")
+                (let [r (subs arg (if (str/starts-with? arg "@/") 2 1))
+                      url ((requiring-resolve 'clojure.java.io/resource) r)]
+                  (when-not url
+                    (throw (java.io.FileNotFoundException.
+                            (str "Could not locate " r " on classpath."))))
+                  (load-string (slurp url)))
+                (load-file (file-arg arg))))))
+
+(defn- run-inits [inits app-args]
+  (binding [*command-line-args* (seq (drop-end-of-options app-args))]
+    (doseq [i inits] (run-init-opt i app-args))))
+
+(defn- run-main-opt [opts inits named?]
+  (let [o (first opts)
+        args (rest opts)]
     (cond
-      (= "-m" (first opts)) (run-ns (second opts) (drop 2 opts))
-      (= "-e" (first opts)) (eval-expr-string (second opts) (drop 2 opts) true)
+      (#{"-m" "--main"} o)
+      (do (run-inits inits (rest args)) (run-ns (first args) (rest args)))
       ;; clojure.main -r / --repl: a REPL, the rest as *command-line-args*.
-      (#{"-r" "--repl"} (first opts))
-      (do (push-thread-bindings
-            {#'clojure.core/*command-line-args* (seq (drop-end-of-options (rest opts)))})
+      (#{"-r" "--repl"} o)
+      (do (run-inits inits args)
+          (push-thread-bindings
+            {#'clojure.core/*command-line-args* (seq (drop-end-of-options args))})
           (repl-session))
-      ;; clojure.main: a bare non-option first arg is a script path and the
-      ;; rest is *command-line-args* — `jolt -M file.clj a b`, or an alias
+      ;; no main option: the inits are the program
+      (nil? o) (run-inits inits nil)
+      ;; clojure.main: a bare non-option arg is a script path ("-" is stdin) and
+      ;; the rest is *command-line-args* -- `jolt -M file.clj a b`, or an alias
       ;; whose :main-opts name a script. Same load shape as `run FILE`.
-      (and (string? (first opts))
-           (seq (first opts))
-           (not (str/starts-with? (first opts) "-")))
-      (run-script! (first opts) (rest opts) named?)
+      (and (string? o) (seq o)
+           (or (= "-" o) (not (str/starts-with? o "-"))))
+      (do (run-inits inits args) (run-script! o args named?))
       :else (throw (ex-info (str "unsupported :main-opts " (pr-str (vec opts))
-                                 " (accepted: -m NS, -e EXPR, -r, or a script FILE)")
+                                 " (accepted: init options -i PATH and -e EXPR, then -m NS, -r, or a script FILE)")
                             {:main-opts (vec opts)})))))
 
 (defn- parse-aliases [s]            ; "-M:a:b" / ":a:b" -> [:a :b]

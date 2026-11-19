@@ -1088,12 +1088,26 @@
       :else
       (for-chunked-step-fn bind body mods giter gxs do-mod))))
 
+;; The reference's assert-args, for the comprehension macros: the binding form
+;; is checked before it is read, and the message names the macro, *ns* and the
+;; form's line exactly as clojure.core's does.
+(defn- comprehension-assert-args [form bindings]
+  (let [where (str " in " *ns* ":" (:line (meta form)))]
+    (when-not (vector? bindings)
+      (throw (new IllegalArgumentException
+                  (str (first form) " requires a vector for its binding" where))))
+    (when-not (even? (count bindings))
+      (throw (new IllegalArgumentException
+                  (str (first form) " requires an even number of forms in binding vector" where))))))
+
+;; An empty binding vector is not an error of its own here, as in the reference,
+;; where the one group it destructures binds nil -- (let [nil ...]), which fails
+;; to compile. [nil nil] is that group.
 (defmacro for [bindings body]
-  (if (< (count bindings) 2)
-    body
-    (let [groups (for-parse-groups bindings 0 [])]
-      `(let [iter# ~(for-step-fn groups body 0)]
-         (iter# ~(nth (nth groups 0) 1))))))
+  (comprehension-assert-args &form bindings)
+  (let [groups (for-parse-groups (if (seq bindings) bindings [nil nil]) 0 [])]
+    `(let [iter# ~(for-step-fn groups body 0)]
+       (iter# ~(nth (nth groups 0) 1)))))
 
 ;; doseq runs body for side effects across the bindings in constant space,
 ;; returning nil. A direct nested loop/recur per group (not (count (for …)),
@@ -1154,10 +1168,13 @@
                (recur (seq (__chunk-after ~sv))))
              ~(doseq-plain-loop sv ps nx bind mods k-form)))))))
 
+;; With no bindings the body runs once and its value is the answer, as the
+;; reference's (do ~@body) is.
 (defmacro doseq [bindings & body]
-  (if (>= (count bindings) 2)
+  (comprehension-assert-args &form bindings)
+  (if (seq bindings)
     `(do ~(doseq-group (for-parse-groups bindings 0 []) 0 body) nil)
-    `(do ~@body nil)))
+    `(do ~@body)))
 
 ;; when-let must live in this (early) tier, not 30-macros with its if-let/if-some/
 ;; when-some siblings: 20-coll uses it (not-empty), and 20-coll loads before 30. The

@@ -612,6 +612,16 @@
   (parent [l] (:parent l))
   (unload! [l] (unload-run l)))
 
+;; A loader prints as its identity, not its fields. Its state holds the hits it
+;; produced, and every hit carries `:loader` back to it, so the record's own
+;; printing looped until the stack overflowed once anything had loaded -- which
+;; also took down printing a hit, the data the ns doc promises prints. A
+;; ClassLoader prints as an #object on the JVM too.
+(defmethod print-method LoaderImpl [l ^java.io.Writer w]
+  (.write w (str "#object[jolt.loader.LoaderImpl 0x"
+                 (Integer/toHexString (System/identityHashCode l))
+                 " " (pr-str (str "loader " (:id l))) "]")))
+
 ;; ─── Constructor seam for backends ─────────────────────────────────────────
 
 ;; Every loader is registered by id: evaluated source proves its context by

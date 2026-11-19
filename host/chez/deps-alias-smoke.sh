@@ -641,8 +641,13 @@ replcheck ":main-opts [\"-r\"] starts a REPL" "user=> 42" "$(repl '(+ 40 2)' -M:
 replcheck "-M:alias -r starts a REPL over the alias" "libc C" \
           "$(repl "(require 'appc) (appc/-main)" -M:dev --repl)"
 # an option jolt's clojure.main does not take says what it does take
-replcheck "unsupported :main-opts names the accepted forms" "accepted: -m NS, -e EXPR, -r, or a script FILE" \
+replcheck "unsupported :main-opts names the accepted forms" "accepted: init options -i PATH and -e EXPR, then -m NS, -r, or a script FILE" \
           "$(runfull -M:bad)"
+# clojure.main's init options: -i and -e run in order before the main option
+check "-M -i FILE -e EXPR runs the init then the expression" "init-ran 42" \
+      "$(run -M -i init.clj -e "(println 'init-ran user/init-x)")"
+check "-M -e EXPR -m NS runs the expression, then -main" "pre main1" \
+      "$(run -M -e '(print "pre ")' -m appmain)"
 
 # A data_readers entry whose namespace fails to load is a WARNING (the project
 # still loads), and the warning has to be actionable: which namespace, why,

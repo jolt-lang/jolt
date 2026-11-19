@@ -235,6 +235,7 @@
 ;;   sa-bits->flonum        UNIMPLEMENTED  Guile: bytevector-u64-set! + bytevector-ieee-double-ref.
 ;;   sa-flonum-hi32         UNIMPLEMENTED  Guile: as sa-flonum->bits, the upper u32.
 ;;   sa-hi32->flonum        UNIMPLEMENTED  Guile: as sa-bits->flonum over a zero lower u32.
+;;   sa-bignum-s64?         UNIMPLEMENTED  Guile: (<= -2^63 x (- 2^63 1)).
 ;;   gensym                 UNIMPLEMENTED  Guile: (gensym) native.
 ;;   format                 UNIMPLEMENTED  Guile: SRFI-28 (format #f ...) — ~a ~s ~d subset;
 ;;                                        (ice-9 format) is the full superset.

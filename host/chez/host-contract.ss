@@ -1262,7 +1262,12 @@
     "unchecked-inc" "unchecked-dec" "unchecked-negate"
     "unchecked-add-int" "unchecked-subtract-int" "unchecked-multiply-int"
     "unchecked-divide-int" "unchecked-remainder-int"
-    "unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"))
+    "unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"
+    ;; their *unchecked-math* twins, internal names the analyzer rewrites an
+    ;; -int call to in such a file (natives-seq.ss)
+    "__unchecked-add-int" "__unchecked-subtract-int" "__unchecked-multiply-int"
+    "__unchecked-divide-int" "__unchecked-remainder-int"
+    "__unchecked-inc-int" "__unchecked-dec-int" "__unchecked-negate-int"))
 (for-each (lambda (nm) (declare-var! "clojure.core" nm)) hc-native-op-names)
 ;; A ^:private one of these (doseq's __chunk-* walk helpers) is plumbing a core
 ;; macro's expansion calls from the user's namespace: the back end lowers the
