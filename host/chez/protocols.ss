@@ -206,7 +206,13 @@
 (define (find-protocol-method-desc desc proto method)
   (let ((pt (jrdesc-ptable desc)))
     (and pt (hashtable-ref pt (intern-pm-key proto method) #f))))
+;; Told of every impl as it registers (and of a reify site's methods, once per
+;; site): the stack-trace reporter (source-registry.ss on Chez) maps the impl's
+;; procedure name to the protocol method it implements, so a tail call to the
+;; protocol fn lands below the impl's live frame. A host without one keeps none.
+(define protocol-impl-hook (lambda (proto method fn) #f))
 (define (register-protocol-method type-tag proto method fn)
+  (protocol-impl-hook proto method fn)
   ;; the epoch bump, the two check-then-creates and the impl write are ONE step:
   ;; split, two threads extending the same type each build their own inner table
   ;; and the second overwrite drops the first's impl entirely.
