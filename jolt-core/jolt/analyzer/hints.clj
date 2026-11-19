@@ -208,9 +208,11 @@
 ;;             no result type (it can widen past a fixnum) and no jolt-nth walk.
 (defn- tag->akind [t]
   (let [s (cond (form-sym? t) (form-sym-name t) (string? t) t :else nil)]
-    (cond (= s "doubles") :doubles (= s "floats") :floats
-          (= s "longs") :longs (= s "ints") :ints
-          (= s "bytes") :bytes (= s "objects") :objects
+    ;; the JVM's own class-name spellings too: ^"[Ljava.lang.Object;" is how
+    ;; tools.reader hints its pushback buffer, ^"[D" a double array
+    (cond (or (= s "doubles") (= s "[D")) :doubles (or (= s "floats") (= s "[F")) :floats
+          (or (= s "longs") (= s "[J")) :longs (or (= s "ints") (= s "[I")) :ints
+          (or (= s "bytes") (= s "[B")) :bytes (or (= s "objects") (= s "[Ljava.lang.Object;")) :objects
           :else nil)))
 (defn ahint-of [ctx sym]
   (let [m (form-sym-meta sym)] (when m (tag->akind (get m :tag)))))

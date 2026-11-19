@@ -351,8 +351,9 @@
 (let ((e (emit-num "(def _ (fn rt14c ([g] (+ 1 (g 1))) ([g x] (+ 1 (g x) (g x))) ([g x y] x)))")))
   (gate-check "(14) one read per clause with a site" (count-sub e site-rd) 2)
   (gate-check "(14) ...and one store per site" (count-sub e site-store) 3))
-;; outside any fn the slot is 0 when the form starts, so a site stores 0
-(let ((e (emit-num "(def x14 (str (identity 1)))")))
+;; outside any fn the slot is 0 when the form starts, so a site stores 0.
+;; str at two arguments: at one it is open-coded on Chez (rt.ss jolt-str1/i), no call
+(let ((e (emit-num "(def x14 (str (identity 1) \"\"))")))
   (gate-check "(14) a top-level site stores 0" (gate-sub? e "(set-virtual-register! 2 0)") #t)
   (gate-check "(14) ...and reads nothing" (gate-sub? e site-rd) #f))
 ;; a catch puts back the clause's entry value, with nothing read when the try begins

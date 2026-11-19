@@ -225,6 +225,19 @@
                  '())))
     pairs))
 
+;; (binding [v val] ...) of ONE var, pushed without the map binding builds for
+;; push-thread-bindings or the fold over it (30-macros.clj binding): tools.reader
+;; binds *read-delim* around every collection it reads. Same refusal of a
+;; non-dynamic var, same frame.
+(define (jolt-push-binding1! cell v)
+  (when (not (var-cell-dynamic? cell))
+    (throw-jvm (quote IllegalStateException)
+               (string-append "Can't dynamically bind non-dynamic var: "
+                              (var-cell-ns cell) "/" (var-cell-name cell))))
+  (dyn-push-frame! (list (cons cell v)))
+  jolt-nil)
+(def-var! "jolt.host" "push-binding1!" jolt-push-binding1!)
+
 (define (jolt-pop-thread-bindings)
   (when (pair? (dyn-binding-stack))
     (dyn-binding-stack (cdr (dyn-binding-stack))))

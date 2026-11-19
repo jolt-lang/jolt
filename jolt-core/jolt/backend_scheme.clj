@@ -583,6 +583,11 @@
       (and (= "jolt.host" (:ns fnode)) (= "rec-type?" (:name fnode))
            (some? (:rec-guard node)) (even? (count arg-nodes)))
       (emit-rec-type-check node arg-nodes order-args)
+      ;; (str x): a string or a StringBuilder answers inline on Chez (rt.ss
+      ;; jolt-str1/i), as clojure.core/str's other natives do without its var
+      (and (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "str" (:name fnode))
+           (= 1 (count arg-nodes)) (not= :gambit (session/target)))
+      (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
       ;; closed-world direct call: the callee var is an app fn def already emitted
       ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
       ;; Only fn-valued defs qualify; a non-fn invokable value (a map/set/keyword
@@ -1444,9 +1449,14 @@
                     s (record-shape-for-class (:class node))]
                 (if (and s (= (count (get s :fields)) (count arg-nodes)) (<= (count arg-nodes) 6))
                   (emit-record-ctor s arg-nodes (mapv emit arg-nodes))
-                  (str "(host-new " (chez-str-lit (:class node))
-                       (let [args (map emit arg-nodes)]
-                         (if (empty? args) "" (str " " (str/join " " args)))) ")")))))
+                  (let [args (map emit arg-nodes)
+                        tail (if (empty? args) "" (str " " (str/join " " args)))]
+                    ;; a per-site cache of the resolved ctor on Chez, in a pool
+                    ;; (host-static.ss host-new-site/i)
+                    (if (and (not= :gambit (session/target)) *const-pool* (var-cache?))
+                      (str "(host-new-site/i " (hoist-const-per-site "(host-new-site-make)") " "
+                           (chez-str-lit (:class node)) tail ")")
+                      (str "(host-new " (chez-str-lit (:class node)) tail ")")))))))
 
 ;; if: the test is non-tail; then/else inherit the if's tail position.
 ;; do: non-last statements are non-tail; the ret inherits the do's tail position.
