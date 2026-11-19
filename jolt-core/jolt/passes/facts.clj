@@ -2,7 +2,8 @@
   "Lexical bindings, value origins, and reachability for one IR body revision."
   (:require [jolt.analyzer.tree :refer [arity-params]]
             [jolt.host :as host]
-            [jolt.ir :as ir]))
+            [jolt.ir :as ir]
+            [jolt.op-registry :as ops]))
 
 (def ^:private max-nodes 10000)
 (def ^:private max-path-length 192)
@@ -309,6 +310,16 @@
                    {:kind :map :slots slots :children (reduce join-origins #{} (vals slots))})))
         (site :loop-edit path)))))
 
+(defn- reducer-edit [state path [receiver key value]]
+  ;; Only the scoped reducer query can install this native map receiver.
+  ;; Assoc can call out while comparing or hashing keys. Its result stores
+  ;; the supplied operands, and can reuse the receiver on a no-op. Track the
+  ;; new contents separately from the old version, as with loop edits.
+  (effect! state :read receiver)
+  (opaque! state key)
+  (swap! (:containers state) assoc path {:children (join-origins key value)})
+  (join-origins receiver (site :reducer-edit path)))
+
 (defn- fixed-clause [node n]
   (some (fn [a] (when (and (not (:rest a)) (= n (count (:params a)))) a))
         (:arities node)))
@@ -345,6 +356,7 @@
         closure (when (and (= 0 n) target-path) (get @(:closures state) target-path))]
     (cond
       (or (:proto node) (:devirt-type node)) nil
+      (= path (:reducer-edit-path state)) (reducer-edit state path operands)
       (= path (:linked-path state))
       (invoke-known state path {:fn (:init (:linked-def state)) :env {}} operands)
       target
@@ -873,3 +885,104 @@
   dynamic iterations."
   [facts path]
   (get-in facts [:loop-updates path]))
+
+(defn- core-native-call? [node name n proc]
+  (let [f (:fn node)
+        {:keys [arity call fixed]} (get ops/op-registry name)]
+    (and (= :invoke (:op node)) (= n (count (:args node)))
+         (= :var (:op f)) (= "clojure.core" (:ns f)) (= name (:name f))
+         (not (or (:proto node) (:devirt-type node) (:prim-op node)))
+         (= proc (get fixed n call)) (or (nil? arity) (arity n))
+         (not (host/protocol-call-key nil "clojure.core" name n)))))
+
+(defn- references-binding? [facts node path binding]
+  (or (= binding (binding-at facts path))
+      ;; Include image captures even when no corresponding :local remains.
+      (some #(= binding (:binding %)) (vals (get-in facts [:closures path :captures])))
+      (ir/reduce-ir-children-with-path
+        (fn [seen child p] (or seen (references-binding? facts child p binding)))
+        false node path)))
+
+(defn- private-reducer-step? [callback edit edit-path]
+  (let [facts (analyze-facts callback {} {:reducer-edit-path edit-path})
+        binding [:arities 0 :params 0]
+        receiver (conj edit-path :args 0)]
+    (and (= binding (binding-at facts receiver))
+         ;; Assoc itself reads the receiver and a no-op can return that same
+         ;; version. A reference retained *inside* the result is observable
+         ;; in a later step, so :return-contains is disqualifying.
+         (= #{:read :return-alias} (get-in (call-summary-at facts edit-path) [:arguments 0]))
+         (empty? (observations-at facts receiver))
+         ;; No additional reference, even in an effect-free read or in a
+         ;; closure passed to an opaque transform.
+         (not (references-binding? facts (get-in edit [:args 1]) (conj edit-path :args 1) binding))
+         (not (references-binding? facts (get-in edit [:args 2]) (conj edit-path :args 2) binding)))))
+
+(defn- native-map-source? [unit body path]
+  (or (= :map (:op (get-in body path)))
+      (let [origins (origins-at (body-facts unit body) path)]
+        (and (seq origins)
+             (every? (fn [{:keys [kind site]}]
+                       (and (#{:literal :allocation} kind)
+                            (= :map (:op (get-in body site)))))
+                     origins)))))
+
+(defn reducer-confinement-at
+  "Prove private intermediate accumulator versions at a reduce-kv call in
+  this IR revision. Returns nil for unsupported calls (including reduce).
+  The three-argument query and unknown frame modes return nil. Pass
+  :opaque-accumulator-frames only if the consumer can establish, for the
+  final executable, that neither old accumulators nor their replacement can
+  be obtained through live or captured frames. This covers the driver and
+  assoc as well as the callback, including indirect calls during hashing or
+  equality and exceptions that retain a continuation. The builder must also
+  be safe across any continuation re-entry. Debug-local emission is refused
+  even with this assertion.
+
+  For example, a closed compilation can establish the condition by keeping
+  the relevant frames free of visible locals and excluding access through
+  raw Scheme, native interop or any other continuation inspector on the
+  paths that can run with the accumulator live. Chez --opt drops naming
+  information but the native inspector can still read unnamed slots.
+  Gambit's empty jolt.debug frames likewise say nothing about native slot
+  access. Neither a host tag, the IR optimization mode, nor the settings of
+  the compiler running this analysis certify later code generation. Carry
+  the obligation through deferred/cross compilation and re-establish it
+  before using the proof for different code or a different target.
+
+  A proof identifies the :step assoc occurrence. :guard is nil for a source
+  proven to be a native map, or specifies the host predicate pmap? on the
+  evaluated third operand. This is the exact branch in jolt-reduce-kv-walk,
+  ahead of IKVReduce lookup. Map interfaces and type hints cannot prove it.
+  The two call heads must reach the core intrinsics, which do not read a
+  Var root. Calls through locals or other values have no such proof.
+
+  Evaluate operands once in source order and fall back with those values
+  on a failed guard. Treat the possibly pooled seed as immutable and
+  return it on empty input. Preserve capture evaluation, pmap-kv-reduce
+  visitation order, key/value evaluation, assoc behavior and exceptions
+  without retrying a step. This callback can only return a map on normal
+  completion. Callbacks returning Reduced are outside the proof. A builder
+  must separately match persistent assoc's representation (including
+  promotion, iteration order and metadata)."
+  ([unit body path]
+   (reducer-confinement-at unit body path nil))
+  ([unit body path frame-access]
+   (when (and (= :opaque-accumulator-frames frame-access) (not @(:debug-locals? unit)))
+     (let [call (get-in body path)]
+       (when (core-native-call? call "reduce-kv" 3 "jolt-reduce-kv")
+         (let [[callback seed] (:args call)
+               arity (first (:arities callback))
+               edit-path [:arities 0 :body]
+               edit (:body arity)]
+           (when (and (= :map (:op seed)) (empty? (:pairs seed))
+                      (ir/single-fixed-arity-fn? callback)
+                      (= 3 (count (:params arity))) (uncoerced? arity)
+                      (not (or (:name callback) (:once callback)))
+                      (core-native-call? edit "assoc" 3 "jolt-assoc3")
+                      (= :local (:op (get-in edit [:args 0])))
+                      (private-reducer-step? callback edit edit-path))
+             {:driver :native-map-reduce-kv
+              :step (into (conj path :args 0) edit-path)
+              :guard (when-not (native-map-source? unit body (conj path :args 2))
+                       {:predicate "pmap?" :argument 2})})))))))
