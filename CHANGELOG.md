@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The printer streams.** `pr`, `prn`, `print` and `print-method` write into
+  the target Writer as they walk the value, as core_print.clj does, instead of
+  building the whole text as a string first, and `pr-str` fills one string port.
+  Printing a large value to a file holds only the path to the value being
+  written; `pr-str` of a 480 KB nested value is about 12% faster, and `pr` to a
+  FileWriter or `io/writer` is as fast as `spit` of `pr-str`. A user
+  print-method reached mid-value is handed the Writer itself, and the built-in
+  methods in `(methods print-method)` are this printer. Output is unchanged.
+
 ### Fixed
 
 - `(methods print-method)` holds the JVM's built-in printers under the same

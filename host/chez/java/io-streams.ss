@@ -1354,7 +1354,7 @@
 ;; before it gets here), so every character has a UTF-8 form and nothing is
 ;; replaced.
 (define (utf8-output-port bp)
-  (parameterize ((custom-port-buffer-size 4096))
+  (parameterize ((custom-port-buffer-size 65536))
     (make-custom-textual-output-port "utf8-writer"
       (lambda (str start count)
         (when (fx>? count 0)
@@ -3261,6 +3261,86 @@
                                                  "Closeable" "AutoCloseable" "Flushable" "Appendable"))) #t)
         (else 'pass))))))
 
+;; --- printing straight to a Writer ---------------------------------------------
+;; The streaming printer (printing.ss pr-to!) writes to a Chez textual port. A
+;; Writer whose text lands in a port is printed into that port directly: *out*
+;; and the other port-writers, and a char-writer (io/writer, FileWriter,
+;; OutputStreamWriter, BufferedWriter). Any other Writer -- a StringWriter, a
+;; proxy or reify, a PrintWriter shim -- gets a port of its own whose blocks go to
+;; the Writer's write method, so a proxy java.io.Writer sees the output through
+;; its own methods. A pending surrogate half (sink-text) keeps the plain write
+;; path, which knows how to pair it.
+;;
+;; While a print is under way, pr-sink holds (port . writer): a user print-method
+;; reached mid-stream is handed that Writer, as on the JVM, with the port flushed
+;; first when the port is the Writer's own buffer, so its writes land in order.
+(define pr-sink (make-thread-parameter #f))
+(define (writer-direct-port w)
+  (and (jhost? w) (fx=? sink-pending-live 0)
+       (let ((tag (jhost-tag w)))
+         (cond ((string=? tag "port-writer") (port-writer-port w))
+               ((string=? tag "char-writer") (char-writer-live-port w))
+               (else #f)))))
+(define (writer-block-port w)
+  (parameterize ((custom-port-buffer-size 4096))
+   (make-custom-textual-output-port "print-method"
+    (lambda (s start count)
+      (record-method-dispatch w "write" (jolt-list (substring s start (fx+ start count))))
+      count)
+    #f #f #f)))
+;; Print x to the Writer w with print (a procedure of port and value).
+(define (print-to-writer print w x)
+  (let ((direct (writer-direct-port w)))
+    (if direct
+        (parameterize ((pr-sink (cons direct w))) (print direct x))
+        (let ((p (writer-block-port w)))
+          (parameterize ((pr-sink (cons p w)))
+            (print p x)
+            (flush-output-port p))))))
+;; The Writer a user print-method is handed while printing into port p.
+(define (pr-sink-writer p)
+  (let ((s (pr-sink)))
+    (if (and s (eq? (car s) p))
+        (begin (unless (writer-direct-port (cdr s)) (flush-output-port p)) (cdr s))
+        (make-char-writer p))))
+
+;; pr and print of one value to *out*, and print-method's :default to a Writer,
+;; printing into the Writer as they go. A scalar is one small string, written as
+;; before. So is anything while *out* is clojure.pprint's pretty writer
+;; (jolt-write offers it each string, column-aware), or while a surrogate half
+;; waits to be paired.
+(define pr-out-cell #f)
+(define (pr-out-writer)
+  (unless pr-out-cell (set! pr-out-cell (jolt-var "clojure.core" "*out*")))
+  (var-cell-deref pr-out-cell))
+(define (stream-out write! x)
+  (and (not (pr-fast-type? x))
+       ;; the hook routes text only while *out* is a pretty writer, and says
+       ;; so: an empty string tells which, writing nothing
+       (or (jolt-nil? jolt-pprint-write-hook) (jolt-pprint-hook-suppressed)
+           (not (jolt-truthy? (jolt-invoke jolt-pprint-write-hook ""))))
+       (fx=? sink-pending-live 0)
+       (let ((w (pr-out-writer)))
+         (if (or (iface-method w "write" #f) (and (jhost? w) (not (out-port-writer? w))))
+             (print-to-writer write! w x)
+             (let ((p (current-output-port)))
+               (parameterize ((pr-sink (cons p w))) (write! p x))))
+         #t)))
+;; print: pr with *print-readably* off, as converters.ss jolt-print-one sets it
+(define (print-to! p x)
+  (let ((prev (virtual-register jolt-vreg-print-readably)) (lv (jolt-locks-held)))
+    (jolt-locks-enter!)
+    (dynamic-wind
+      (lambda () (set-virtual-register! jolt-vreg-print-readably #f))
+      (jolt-masked-body (lambda () (pr-to! p x)))
+      (jolt-masked-after lv (set-virtual-register! jolt-vreg-print-readably prev)))))
+(def-var! "clojure.core" "__pr-out"
+  (lambda (x) (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))) jolt-nil))
+(def-var! "clojure.core" "__print-out"
+  (lambda (x) (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))) jolt-nil))
+(def-var! "clojure.core" "__pr-to"
+  (lambda (x w) (print-to-writer pr-to! w x) jolt-nil))
+
 ;; --- print-method: the built-in printers and the user-method hook ----------------
 ;; On the JVM print-method IS the printer: a multimethod on (type x) whose table
 ;; holds a method for clojure.lang.IPersistentMap, ISeq, String, Number, Object
@@ -3272,10 +3352,10 @@
 ;; JVM's does, with its prefer-method pairs, so (methods print-method) and
 ;; get-method answer what they answer there. Libraries borrow them -- duratom
 ;; prints its tag and then calls (get (methods print-method) IPersistentMap) on
-;; the map. Each writes what pr writes for its argument (printing.ss
-;; jolt-pr-readable-builtin: *print-meta*, then jolt's own rendering, with the
-;; elements going back through pr), except the nil method, which writes "nil"
-;; whatever it is handed, as the JVM's does. The class keys left out are the ones
+;; the map. Each is the printer for its type, writing to the Writer it is
+;; handed as it walks the value (printing.ss pr-builtin-to!: *print-meta*, then
+;; jolt's own rendering, with the elements going back through pr), except the nil
+;; method, which writes "nil" whatever it is handed, as the JVM's does. The class keys left out are the ones
 ;; jolt-core registers itself (clojure.core.Eduction).
 (define pm-builtin-class-names
   '("clojure.lang.BigInt" "clojure.lang.IDeref" "clojure.lang.IPersistentMap"
@@ -3299,8 +3379,9 @@
 (define (pm-builtin? m) (hashtable-contains? pm-builtins m))
 (define (make-pm-builtin key)
   (let ((f (lambda (x w)
-             (record-method-dispatch w "write"
-               (jolt-list (if (jolt-nil? key) "nil" (jolt-pr-readable-builtin x))))
+             (if (jolt-nil? key)
+                 (record-method-dispatch w "write" (jolt-list "nil"))
+                 (print-to-writer pr-builtin-to! w x))
              jolt-nil)))
     (hashtable-set! pm-builtins f #t)
     f))
@@ -3483,6 +3564,10 @@
                ;; (with-meta x {:type SomeClass}) dispatches on that class
                (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
                (pm-class-method mf tbl st x))))))
+(set-pr-user-method-write!
+  (lambda (x p)
+    (let ((m (user-print-method x)))
+      (and m (begin (jolt-invoke m x (pr-sink-writer p)) #t)))))
 (set-pr-user-method-render!
   (lambda (x)
     (let ((m (user-print-method x)))

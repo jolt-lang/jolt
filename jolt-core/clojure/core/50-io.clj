@@ -391,7 +391,7 @@
                            (if (keyword? t) t (__type-tag x)))))
 
 (defmethod print-method :default [o w]
-  (.write w (__pr-str1 o))
+  (__pr-to o w)
   nil)
 
 ;; print-dup: jolt has one print representation, so dup routes to print-method

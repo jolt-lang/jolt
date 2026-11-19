@@ -463,6 +463,8 @@
   (lambda (x) (let ((s (jolt-seq x))) (if (jolt-nil? s) "()" (jolt-pr-str s)))))
 (register-pr-readable-arm! jolt-lazyseq?
   (lambda (x) (let ((s (jolt-seq x))) (if (jolt-nil? s) "()" (jolt-pr-readable s)))))
+(register-pr-stream-arm! jolt-lazyseq?
+  (lambda (p x) (let ((s (jolt-seq x))) (if (jolt-nil? s) (put-string p "()") (pr-to! p s)))))
 (register-str-render! jolt-lazyseq?
   (lambda (x) (let ((s (jolt-seq x))) (if (jolt-nil? s) "()" (jolt-str-render-one s)))))
 
