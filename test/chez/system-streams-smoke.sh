@@ -79,11 +79,13 @@ cd
 # reaches the program while the pipe is still open (an LSP body is one). The
 # writer below holds the pipe open until the program leaves a mark, then sends
 # the optional tail and closes; a read that waited for a line end or EOF only
-# returns once the writer gives up, after "LATE" lands in the input.
+# returns once the writer gives up, after "LATE" lands in the input. The writer
+# waits up to 120 s: a passing row ends as soon as the mark appears, and a
+# loaded Termux runner can take 10 s just to start jolt.
 held() {
   hmark="$(mktemp -d)/mark"
   { printf '%s' "$2"
-    i=0; while [ ! -e "$hmark" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+    i=0; while [ ! -e "$hmark" ] && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i+1)); done
     if [ -e "$hmark" ]; then printf '%s' "${3:-}"; else printf 'LATE\n'; fi
   } | JOLT_QUIET=1 HELD_MARK="$hmark" "$jolt" -e "$1" 2>/dev/null | tail -1
   rm -rf "$(dirname "$hmark")"
