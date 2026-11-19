@@ -126,7 +126,9 @@
         m)
       (persistent!
        (reduce-kv (fn [m k x] (assoc! m (if kf (kf k) k) (build x kf java?)))
-                  (transient (hash-map)) v)))
+                  ;; jsonista builds every object on PersistentHashMap.EMPTY, so
+                  ;; it iterates in hash order at any size; (hash-map) is {}
+                  (transient clojure.lang.PersistentHashMap/EMPTY) v)))
     (vector? v)
     (if java?
       (ArrayList. ^java.util.Collection (mapv #(build % kf java?) v))

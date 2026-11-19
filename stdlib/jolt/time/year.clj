@@ -42,11 +42,49 @@
    "hashCode"   year-val
    "toString"   (fn [y] (str (year-val y)))})
 
+;; The parsers of Year, YearMonth and MonthDay, as strict as the JDK's: a text
+;; that does not match names the index it failed at, and fields out of range
+;; are the resolve failure each type's from() raises.
+(defn parse-year
+  "Year.parse: an optional sign and up to nine digits."
+  [s]
+  (let [sign (when (pos? (count s)) (#{\+ \-} (nth s 0)))
+        d0 (if sign 1 0)
+        d1 (u/digits-from s d0 9)]
+    (when (= d0 d1) (u/parse-fail-at s d0))
+    (u/parse-end! s d1)
+    (let [y (parse-long (subs s d0 d1))] (if (= sign \-) (- y) y))))
+
+(defn parse-year-month
+  "YearMonth.parse: uuuu-MM. [year month]."
+  [s]
+  (let [[y e] (u/scan-iso-year s 0)
+        _ (when-not (u/char-at? s e \-) (u/parse-fail-at s e))
+        m (or (u/two-digits s (inc e)) (u/parse-fail-at s (inc e)))]
+    (u/parse-end! s (+ e 3))
+    (try (u/check-field "Year" -999999999 999999999 y)
+         (catch java.time.DateTimeException ex (u/parse-fail-resolve s ex)))
+    (when-not (<= 1 m 12)
+      (u/parse-fail-unobtainable s "YearMonth" (str "Year=" y ", MonthOfYear=" m)))
+    [y m]))
+
+(defn parse-month-day
+  "MonthDay.parse: --MM-dd, February 29 included. [month day]."
+  [s]
+  (when-not (and (u/char-at? s 0 \-) (u/char-at? s 1 \-)) (u/parse-fail-at s 0))
+  (let [m (or (u/two-digits s 2) (u/parse-fail-at s 2))
+        _ (when-not (u/char-at? s 4 \-) (u/parse-fail-at s 4))
+        d (or (u/two-digits s 5) (u/parse-fail-at s 5))]
+    (u/parse-end! s 7)
+    (when-not (and (<= 1 m 12) (<= 1 d (u/len-of-month 2000 m)))
+      (u/parse-fail-unobtainable s "MonthDay" (str "DayOfMonth=" d ", MonthOfYear=" m)))
+    [m d]))
+
 (statics! ["Year" "java.time.Year"]
   {"of"    (fn [y] (year (u/->long y)))
    "now"   (fn [& args] (year (first (civil-from-days (u/floor-div (impl/clock-millis (first args)) 86400000)))))
    "isLeap" (fn [y] (u/leap? (u/->long y)))
-   "parse" (fn [s & _] (year (or (parse-long (str s)) (throw (ex-info "could not parse Year" {})))))
+   "parse" (fn [s & _] (year (parse-year (str s))))
    "MIN_VALUE" -999999999
    "MAX_VALUE" 999999999})
 
@@ -65,7 +103,11 @@
 (defn- ym-plus-months [x n]
   (let [tm (+ (* (ym-year x) 12) (dec (ym-month x)) n)]
     (impl/value :jolt.time/year-month {:year (u/floor-div tm 12) :month (inc (u/floor-mod tm 12))})))
-(defn- ym->string [x] (str (u/pad4 (ym-year x)) "-" (u/pad2 (ym-month x))))
+;; YearMonth.toString pads a year under four digits but, unlike LocalDate, never
+;; signs one past four: 10000-01, not +10000-01.
+(defn- ym->string [x]
+  (let [y (ym-year x)]
+    (str (if (< (abs y) 1000) (u/pad4 y) (str y)) "-" (u/pad2 (ym-month x)))))
 
 (impl/register-type! :jolt.time/year-month
   {:eq   (fn [a b] (= (ym-key a) (ym-key b)))
@@ -104,9 +146,7 @@
 (statics! ["YearMonth" "java.time.YearMonth"]
   {"of"    (fn [y m] (year-month (u/->long y) (e/month-num m)))
    "now"   (fn [& args] (let [[y m _] (civil-from-days (u/floor-div (impl/clock-millis (first args)) 86400000))] (year-month y m)))
-   "parse" (fn [s & _] (let [d (str s)]
-                         (year-month (or (u/digits-at d 0 4) (throw (ex-info "could not parse YearMonth" {})))
-                                     (or (u/digits-at d 5 2) (throw (ex-info "could not parse YearMonth" {}))))))})
+   "parse" (fn [s & _] (let [[y m] (parse-year-month (str s))] (year-month y m)))})
 
 ;; --- MonthDay ----------------------------------------------------------------
 
@@ -133,6 +173,5 @@
 
 (statics! ["MonthDay" "java.time.MonthDay"]
   {"of" (fn [m d] (month-day (e/month-num m) (u/->long d)))
-   "parse" (fn [s & _] (let [d (str s) o (if (= "--" (subs d 0 2)) 2 0)]
-                         (month-day (u/digits-at d o 2) (u/digits-at d (+ o 3) 2))))
+   "parse" (fn [s & _] (let [[m d] (parse-month-day (str s))] (month-day m d)))
    "now" (fn [& args] (let [[_ m dd] (civil-from-days (u/floor-div (impl/clock-millis (first args)) 86400000))] (month-day m dd)))})

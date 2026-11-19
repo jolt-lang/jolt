@@ -1063,14 +1063,18 @@
 ;; the def's name and the literal's position: "". The runtime spine can compile
 ;; the same def again in one process (a REPL re-eval) and replays AOT-cached
 ;; code a previous process emitted, so each stash it takes gets a salt unique to
-;; this process and this stash.
+;; this process (start time and pid) and this stash.
 (define hc-site-const-nonce #f)
 (define hc-site-const-count 0)
 (define (hc-site-const-salt ctx)
   (if (hc-spine-splicing?)
       (jolt-with-mutex inline-stash-mu
         (unless hc-site-const-nonce
-          (set! hc-site-const-nonce (number->string (sa-epoch-ms))))
+          ;; the pid too: two processes starting in the same millisecond and
+          ;; compiling in the same order minted the same salts, so one could
+          ;; replay a splice the other's AOT cache holds against its own callee
+          (set! hc-site-const-nonce (string-append (number->string (sa-epoch-ms)) "-"
+                                                   (number->string (get-process-id)))))
         (set! hc-site-const-count (fx+ hc-site-const-count 1))
         (string-append "@" hc-site-const-nonce "." (number->string hc-site-const-count)))
       ""))

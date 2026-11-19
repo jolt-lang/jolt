@@ -3124,7 +3124,12 @@
         ;; .groupCount, and the region controls .region / .regionStart /
         ;; .regionEnd / .reset.
         ((jolt-matcher? obj)
-         (cond ((string=? method-name "matches") (jolt-matcher-matches obj))
+         (cond ((let ((m (assoc method-name matcher-method-arities)))
+                  (and m (not (memv (length rest) (cdr m)))))
+                ;; (.matches m 1) answered true: the arms never read what they
+                ;; were not given. The JVM has no such overload.
+                (dispatch-miss obj method-name rest))
+               ((string=? method-name "matches") (jolt-matcher-matches obj))
                ((string=? method-name "lookingAt") (jolt-matcher-looking-at obj))
                ;; .find() resumes at the scan cursor; .find(from) resets and
                ;; scans from `from`.
@@ -3160,6 +3165,12 @@
                       (jolt-matcher-no-match))))
                (else (dispatch-miss obj method-name rest))))
         (else 'pass))))))
+
+;; Matcher's overloads by argument count; a name not here is unchecked.
+(define matcher-method-arities
+  '(("matches" 0) ("lookingAt" 0) ("find" 0 1) ("group" 0 1) ("groupCount" 0)
+    ("replaceAll" 1) ("replaceFirst" 1) ("region" 2) ("regionStart" 0) ("regionEnd" 0)
+    ("start" 0 1) ("end" 0 1)))
 
 ;; ---- def-var! the registry entry points so emit can also reach them ---------
 (def-var! "clojure.core" "host-static-ref" host-static-ref)

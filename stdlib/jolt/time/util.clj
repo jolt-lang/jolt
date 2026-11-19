@@ -176,21 +176,34 @@
   [s i]
   (when (= (+ i 2) (digits-from s i 2)) (parse-long (subs s i (+ i 2)))))
 
-(defn scan-iso-date
-  "ISO_LOCAL_DATE from index i: [year month day end]. A year past four digits
-  carries its sign (+10000-01-01, -999999999-01-01); '+' only past four."
+(defn scan-iso-year
+  "The ISO formatters' year from index i: [year end]. Four digits bare; past
+  four it carries its sign (+10000, -999999999), and '+' only past four."
   [s i]
   (let [sign (when (< i (count s)) (#{\+ \-} (nth s i)))
         y0 (if sign (inc i) i)
         y1 (digits-from s y0 10)
         ny (- y1 y0)]
     (when (or (< ny 4) (and (nil? sign) (> ny 4)) (and (= sign \+) (<= ny 4))) (parse-fail-at s i))
+    (let [y (parse-long (subs s y0 y1))]
+      [(if (= sign \-) (- y) y) y1])))
+
+(defn scan-iso-date
+  "ISO_LOCAL_DATE from index i: [year month day end]."
+  [s i]
+  (let [[y y1] (scan-iso-year s i)]
     (when-not (char-at? s y1 \-) (parse-fail-at s y1))
     (let [m0 (inc y1) m (or (two-digits s m0) (parse-fail-at s m0))
           _ (when-not (char-at? s (+ m0 2) \-) (parse-fail-at s (+ m0 2)))
-          d0 (+ m0 3) d (or (two-digits s d0) (parse-fail-at s d0))
-          y (parse-long (subs s y0 y1))]
-      [(if (= sign \-) (- y) y) m d (+ d0 2)])))
+          d0 (+ m0 3) d (or (two-digits s d0) (parse-fail-at s d0))]
+      [y m d (+ d0 2)])))
+
+(defn parse-fail-unobtainable
+  "The JDK's resolve failure for a type built from parsed fields it rejects:
+  fields is the Parsed map's text, as in {Year=2024, MonthOfYear=13}."
+  [text type-name fields]
+  (throw (parse-exception (str "Text '" text "' could not be parsed: Unable to obtain " type-name
+                               " from TemporalAccessor: {" fields "},ISO of type java.time.format.Parsed"))))
 
 (defn scan-iso-time
   "HH:mm[:ss[.fraction]] from index i: [hour minute second nano end]. With
@@ -212,3 +225,15 @@
           (let [f1 (digits-from s (inc k) 9) fd (subs s (inc k) f1)]
             [h mi sec (* (if (= "" fd) 0 (parse-long fd)) (pow10 (- 9 (count fd)))) f1])
           [h mi sec 0 k])))))
+
+
+(defn parse-hms->nano
+  "The nano-of-day of s, the whole of it an ISO_LOCAL_TIME (HH:mm[:ss[.f]]),
+  parsed and range-checked as LocalTime/parse does. Public API: jolt-lang/time
+  parses the time half of its OffsetDateTime and OffsetTime texts with it."
+  [s]
+  (let [[h mi sec nano end] (scan-iso-time s 0 false)]
+    (parse-end! s end)
+    (try (check-time h mi sec nano)
+         (catch java.time.DateTimeException e (parse-fail-resolve s e)))
+    (hmsn->nano h mi sec nano)))

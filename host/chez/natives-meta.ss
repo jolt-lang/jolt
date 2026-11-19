@@ -296,6 +296,12 @@
       (cond ((null? as) jolt-nil)
             (((caar as) coll) ((cdar as) coll))
             (else (loop (cdr as)))))))
+;; A hash map's .empty() is PersistentHashMap.EMPTY, not the {} an array map
+;; empties to, so what is assoc'd onto it next iterates in hash order as on the JVM.
+(register-empty-coll-arm!
+  (lambda (c) (and (pmap? c) (not (pmap-array? c))))
+  (lambda (c) (let ((m (pmap-meta c)))
+                (if (jolt-nil? m) empty-pmap-hash (jolt-with-meta empty-pmap-hash m)))))
 
 ;; Carry SRC's metadata onto DST (a freshly-built collection of the same kind),
 ;; as Clojure's ops do — each new collection threads its receiver's meta()
