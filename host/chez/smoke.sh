@@ -770,6 +770,10 @@ else
 fi
 check '(do (require (quote jolt.nrepl)) (let [r1 (jolt.nrepl/evaluate "(ns nr-sw.a)" "user") r2 (jolt.nrepl/evaluate "(str *ns*)" (:ns r1)) r3 (jolt.nrepl/evaluate "(in-ns (quote nr-sw.b))" (:ns r2)) r4 (jolt.nrepl/evaluate "(str *ns*)" (:ns r3))] [(:ns r1) (:value r2) (:ns r3) (:value r4) (str *ns*)]))' '["nr-sw.a" "\"nr-sw.a\"" "nr-sw.b" "\"nr-sw.b\"" "user"]'
 check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "(ns nr-lf.a) (def z 3)" "ns" "user" :reply #(swap! sent conj %)}) [(get (last @sent) "ns") @(resolve (quote nr-lf.a/z))]))' '["user" 3]'
+# completions decode prefix and ns from the wire's latin1 as UTF-8 when no
+# middleware has (jolt-lang/nrepl#27's wrap-utf8 marks a request it decoded,
+# and that one is taken as it is)
+check '(do (require (quote jolt.nrepl)) (create-ns (quote nr-ütf)) (intern (quote nr-ütf) (quote café-x) 1) (let [w (fn [s] (String. (.getBytes s "UTF-8") "ISO-8859-1")) c (fn [req] (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) (assoc req "op" "completions" :reply #(swap! sent conj %))) (mapv #(get % "candidate") (get (first @sent) "completions"))))] [(c {"prefix" (w "café") "ns" (w "nr-ütf")}) (c {"prefix" "café" "ns" "nr-ütf" :nrepl.middleware.utf8/decoded true})]))' '[["café-x"] ["café-x"]]'
 nsm="$(mktemp -d)"
 mkdir -p "$nsm/src/nsm"
 printf '{:paths ["src"]}\n' > "$nsm/deps.edn"
