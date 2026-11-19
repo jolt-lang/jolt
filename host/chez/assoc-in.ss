@@ -3,17 +3,19 @@
 ;; before resuming ordinary dispatch. The walk itself never invokes user code.
 
 ;; UUID equality and hasheq normally go through the extension registries.
-;; The native registrants before the UUID handler agree with its comparison
-;; and hash for the admitted key kinds. If any registry changes, do not bypass
-;; it. Use the native implementations inside the walk so the probe itself
-;; cannot call out even if another thread installs an arm.
-(define assoc-in-native-eq-arms jolt-eq-arms)
-(define assoc-in-native-hash-arms jolt-hash-arms)
-(define assoc-in-native-hasheq-arms jolt-hasheq-arms)
+;; Capture the native lists during rt.ss, before application or library code.
+;; A shim can be present here in an eager boot or add arms later in a lazy
+;; boot. Any later change makes the UUID guard decline. Keep these immutable
+;; snapshots outside the -arms naming convention for live dispatch lists.
+;; Use native implementations inside the walk so it cannot call out for a UUID
+;; comparison or hash even if another thread installs an arm.
+(define assoc-in-native-eq-snapshot jolt-eq-arms)
+(define assoc-in-native-hash-snapshot jolt-hash-arms)
+(define assoc-in-native-hasheq-snapshot jolt-hasheq-arms)
 (define (assoc-in-native-uuid?)
-  (and (eq? jolt-eq-arms assoc-in-native-eq-arms)
-       (eq? jolt-hash-arms assoc-in-native-hash-arms)
-       (eq? jolt-hasheq-arms assoc-in-native-hasheq-arms)))
+  (and (eq? jolt-eq-arms assoc-in-native-eq-snapshot)
+       (eq? jolt-hash-arms assoc-in-native-hash-snapshot)
+       (eq? jolt-hasheq-arms assoc-in-native-hasheq-snapshot)))
 
 (define (assoc-in-scalar-key? k)
   (or (stable-hamt-key? k) (symbol-t? k) (string? k)))

@@ -45,6 +45,7 @@
     (and (not (lib-provider-for "java.util.concurrent.ConcurrentSkipListMap"))
          (not (lib-provider-for "ConcurrentSkipListMap"))))
 (ok "1i. ...without loading it" (null? (loaded)))
+(ok "1j. the UUID edit guard accepts the boot registries" (assoc-in-native-uuid?))
 
 ;; ---- 2. each kind of reference loads its file, and only its file ----------------
 (ok "2a. a constructor: (java.util.ArrayDeque.)"
@@ -93,6 +94,10 @@
     (same? (ev (string-append "(let [q (jolt.host/image-read \"" img "\")] [(.getName (class q)) (.poll q) (.poll q)])"))
            (ev "[\"java.util.PriorityQueue\" 1 2]")))
 (ok "2p. ...which loaded jutil-concurrent.ss" (eq? (st "jutil-concurrent") 'loaded))
+;; That shim appends BitSet equality and hash arms. The boot snapshots must
+;; stay fixed when a deferred shim registers new arms.
+(ok "2p'. a late BitSet registration closes the UUID edit guard"
+    (not (assoc-in-native-uuid?)))
 (guard (e (#t #f)) (delete-file child) (delete-file img))
 (ok "2q. a class it registers, by its short name through an import: Vector"
     (same? (ev "(do (import '[java.util Vector]) (let [v (Vector.)] (.add v :a) (.addElement v :b) (vec v)))")

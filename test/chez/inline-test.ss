@@ -242,28 +242,69 @@
   (run 'traced-tail #t '((":shape" "a") (":shape" "b")))
   (set-trace! #f))
 
+(ok "the UUID edit guard accepts the boot registries" (assoc-in-native-uuid?))
+
 (let ((original jolt-eq-arms) (observed 0))
   (dynamic-wind
     (lambda ()
       (register-eq-arm!
-        (lambda (a b) (when (and (juuid? a) (juuid? b)) (set! observed (+ observed 1))) #f)
+        (lambda (a b)
+          (and (juuid? a) (juuid? b)
+               (begin (set! observed (+ observed 1)) #t)))
         (lambda (a b) #f)))
     (lambda ()
       (ok "a UUID equality extension keeps its original calls"
           (ev "(defn uuid-edit-probe [mode]
                  (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
                        k (parse-uuid (str stored)) m {:root {stored {}}}
-                       generic (var-get #'clojure.core/assoc-in)]
-                   (= {:a 1 :b 2}
-                      (get-in (if mode (sibling-edits m k 1 2)
-                                  (generic (generic m [:root k :a] 1) [:root k :b] 2))
-                              [:root k]))))"))
+                       edit (var-get #'sibling-edits)
+                       generic (var-get #'clojure.core/assoc-in)
+                       result (if mode (edit m k 1 2)
+                                  (generic (generic m [:root k :a] 1) [:root k :b] 2))]
+                   (and (= {:a 1 :b 2} (get-in result [:root k]))
+                        (= {} (get-in result [:root stored]))
+                        (= 2 (count (:root result))))))"))
       (set! observed 0)
       (let* ((generic (ev "(uuid-edit-probe false)")) (expected observed))
         (set! observed 0)
         (ok "the guard does no speculative equality calls"
             (and (ev "(uuid-edit-probe true)") generic (positive? expected) (= expected observed)))))
     (lambda () (set! jolt-eq-arms original))))
+
+;; Use a HAMT built under the installed arm so looking up the UUID with its
+;; native hash would miss the existing entry.
+(let ((original-hash jolt-hash-arms)
+      (original-hasheq jolt-hasheq-arms)
+      (observed 0))
+  (define (custom-hash k) (set! observed (+ observed 1)) 17)
+  (define (check label install restore)
+    (dynamic-wind install
+      (lambda ()
+        (let* ((probe (ev "(fn [f]
+                             (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+                                   k (parse-uuid (str stored))
+                                   m {:root (hash-map stored {:kept true} :other :retained)}
+                                   result (f m k 1 2)]
+                               [(get-in result [:root k]) (count (:root result))
+                                (get-in result [:root :other]) (get-in m [:root k])]))"))
+               (ordinary (ev "(let [a (var-get #'clojure.core/assoc-in)]
+                                (fn [m k x y] (a (a m [:root k :a] x) [:root k :b] y)))")))
+          (set! observed 0)
+          (let* ((expected (jolt-invoke probe ordinary))
+                 (expected-calls observed))
+            (set! observed 0)
+            (let ((actual (jolt-invoke probe (var-deref "u" "sibling-edits"))))
+              (ok label
+                  (and (positive? expected-calls) (= expected-calls observed)
+                       (clj= expected actual)
+                       (clj= expected (ev "[{:kept true :a 1 :b 2} 2 :retained {:kept true}]"))))))))
+      restore))
+  (check "a UUID hash arm gets the ordinary HAMT edits and calls"
+         (lambda () (register-hash-arm! juuid? custom-hash))
+         (lambda () (set! jolt-hash-arms original-hash)))
+  (check "a UUID hasheq arm gets the ordinary HAMT edits and calls"
+         (lambda () (set! jolt-hasheq-arms (cons (cons juuid? custom-hash) original-hasheq)))
+         (lambda () (set! jolt-hasheq-arms original-hasheq))))
 
 (ev "(defn alias-edit-probe [a base-lang lang ns-sym alias-sym target]
        (swap! a (fn [n] (-> n
