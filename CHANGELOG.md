@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a
