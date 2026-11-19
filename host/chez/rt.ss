@@ -3287,6 +3287,18 @@
                                            (lambda () (sa-handler-stack-set! old-hs)))
                            (sa-winders)))
     (set-virtual-register! 7 lv)))
+;; The pair-result try (a private pair returned to a destructuring caller)
+;; reports a raise to K as (values #f raised #f) instead of a jolt-caught.
+(define (jolt-guard-enter-pair! k)
+  (let* ((old-hs (sa-handler-stack))
+         (new-hs (cons (lambda (c) (k #f c #f)) old-hs))
+         (lv (virtual-register 7)))
+    (set-virtual-register! 7 (fx+ lv 1))
+    (sa-handler-stack-set! new-hs)
+    (sa-winders-set! (cons (sa-make-winder (lambda () (sa-handler-stack-set! new-hs))
+                                           (lambda () (sa-handler-stack-set! old-hs)))
+                           (sa-winders)))
+    (set-virtual-register! 7 lv)))
 (define (jolt-guard-leave!)
   (set-virtual-register! 7 (fx+ (virtual-register 7) 1))
   (sa-winders-set! (cdr (sa-winders)))
@@ -3296,7 +3308,11 @@
   (syntax-rules ()
     ((_ k body)
      (begin (jolt-guard-enter! k)
-            (let ((v body)) (jolt-guard-leave!) v)))))
+            (let ((v body)) (jolt-guard-leave!) v)))
+    ((_ k body pair-result)
+     ;; The separate success flag keeps either field free to contain any value.
+     (begin (jolt-guard-enter-pair! k)
+            (let-values (((x y) body)) (jolt-guard-leave!) (values #t x y))))))
 
 ;; A jolt finally, on Chez (#1713): (jolt-wind-inline IN BODY AFTER) is
 ;; (dynamic-wind IN (lambda () BODY) AFTER) with BODY run in place instead of as

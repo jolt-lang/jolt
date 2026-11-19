@@ -758,19 +758,12 @@
         (swap! definitions assoc key definition)
         (when (contains? @definitions key) (swap! definitions dissoc key))))))
 
-(defn linked-call-summary
-  "Conditional summary for a direct-linked user Var call at a physical IR
-  path. :definition is the exact final IR revision the summary assumes.
-  Direct linking alone does not freeze the root. A consumer must prove this
-  revision executes (e.g. by guarding the particular procedure the call
-  would apply) and use ordinary dispatch on a failed guard. Preserve the
-  evaluation order of the call target and operands on both paths.
-  The result describes only this call and never enters unconditional body
-  facts. Query again after changes to IR, linkage or the definition."
-  [unit body path]
+(defn linked-call-definition
+  "The emitted definition a direct-linked user Var call can specialize for.
+  This is conditional on the identity of the procedure the call loads."
+  [unit call]
   (when (and (effective-direct-link? unit) (not @(:debug-locals? unit)) (not @(:seed-mint? unit)))
-    (let [call (get-in body path)
-          {:keys [op ns name]} (:fn call)
+    (let [{:keys [op ns name]} (:fn call)
           key (str ns "/" name)
           definition (get @(:linked-call-definitions unit) key)
           n (count (:args call))]
@@ -785,11 +778,21 @@
                  (not (ir/closed-world-opt-out? (some-> (find-var (symbol ns name)) meta)))
                  (host/var-root-callable? nil ns name n)
                  (not (host/protocol-call-key nil ns name n)))
-        (let [facts (analyze-facts body (:record-shapes @(:config unit))
-                                   {:track-edits? true :linked-path path :linked-def definition})
-              summary (call-summary-at facts path)]
-          (when (:resolved? summary)
-            {:definition definition :summary summary}))))))
+        definition))))
+
+(defn linked-call-summary
+  "Conditional summary for a direct-linked user Var call at a physical IR
+  path. :definition is the exact final IR revision the summary assumes.
+  Direct linking alone does not freeze the root. Guard the procedure the call
+  would apply and use ordinary dispatch on a failed guard. Preserve target and
+  operand evaluation order. This summary never enters unconditional facts."
+  [unit body path]
+  (when-let [definition (linked-call-definition unit (get-in body path))]
+    (let [facts (analyze-facts body (:record-shapes @(:config unit))
+                               {:track-edits? true :linked-path path :linked-def definition})
+          summary (call-summary-at facts path)]
+      (when (:resolved? summary)
+        {:definition definition :summary summary}))))
 
 (defn origins-at
   "Possible origins at an expression path. :argument identifies an incoming
