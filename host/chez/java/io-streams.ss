@@ -3458,8 +3458,12 @@
 ;;
 ;; The state is one immutable vector published whole, so a reader never pairs a
 ;; new generation with an old answer:
-;;   #(mm-epoch methods-table hierarchy graph-epoch user-keys? names kinds direct)
-;; direct is that copy of the user entries; names maps a class name to the user method or #f; a miss copies the table and
+;;   #(mm-epoch methods-table hierarchy graph-epoch user-keys? names kinds direct
+;;     scalar-tags?)
+;; direct is that copy of the user entries; scalar-tags? says whether one of its
+;; keys is the tag of a number, string, keyword, char or boolean -- values that
+;; carry no metadata, so with no such key and their kind out of reach, the
+;; commonest values printed skip the tag computation too; names maps a class name to the user method or #f; a miss copies the table and
 ;; publishes the copy, so a reader never sees a table another thread is
 ;; resizing. kinds holds per kind 'unknown, #t (resolve per value) or #f (skip);
 ;; filling a slot is idempotent, so two threads deciding one kind write one answer.
@@ -3481,7 +3485,7 @@
         ((char? x) 4) ((boolean? x) 5) ((pvec? x) 6) ((pmap? x) 7) ((pset? x) 8)
         ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)) 9)
         (else #f)))
-(define pm-state (vector -1 #f #f -1 #f #f #f #f))
+(define pm-state (vector -1 #f #f -1 #f #f #f #f #f))
 (define pm-hier-cell #f)
 (define (pm-hierarchy mf)
   (let ((h (jolt-multifn-hierarchy mf)))
@@ -3520,7 +3524,8 @@
           (let ((st2 (vector e tbl hier g (or class-keys? (pm-hier-derives-class? hier))
                              (make-hashtable string-hash string=?)
                              (make-vector (vector-length pm-kind-classes) 'unknown)
-                             direct)))
+                             direct
+                             (exists (lambda (t) (hashtable-contains? direct t)) pm-scalar-tags))))
             (memory-order-release)
             (set! pm-state st2)
             st2)))))
@@ -3530,6 +3535,13 @@
   (let ((c (jolt-class-for cname)))
     (or (hashtable-ref tbl c #f) (mm-find-isa mf c))))
 (define (pm-user-answer m) (and m (not (pm-builtin? m)) m))
+;; the kinds (pm-kind) whose values hold no metadata, and the tags jolt-type
+;; gives them
+(define pm-scalar-tags
+  (list (keyword #f "number") (keyword #f "string") (keyword #f "keyword")
+        (keyword #f "char") (keyword #f "boolean")))
+(define-syntax pm-scalar-kind?
+  (syntax-rules () ((_ k) (and k (or (fx<=? k 2) (fx=? k 4) (fx=? k 5))))))
 (define (pm-kind-live? mf tbl st k)
   (let* ((kinds (vector-ref st 6))
          (v (vector-ref kinds k)))
@@ -3572,12 +3584,14 @@
   (let ((mf (var-cell-deref pm-cell)))
     (and (jolt-multifn? mf)
          (let* ((tbl (jolt-multifn-methods mf))
-                (st (pm-current-state mf tbl))
-                (t (jolt-type x)))
-           (or (hashtable-ref (vector-ref st 7) t #f)
-               ;; (with-meta x {:type SomeClass}) dispatches on that class
-               (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
-               (pm-class-method mf tbl st x))))))
+                (st (pm-current-state mf tbl)))
+           (if (and (not (vector-ref st 8)) (pm-scalar-kind? (pm-kind x)))
+               (pm-class-method mf tbl st x)
+               (let ((t (jolt-type x)))
+                 (or (hashtable-ref (vector-ref st 7) t #f)
+                     ;; (with-meta x {:type SomeClass}) dispatches on that class
+                     (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
+                     (pm-class-method mf tbl st x))))))))
 (set-pr-user-method-write!
   (lambda (x p)
     (let ((m (user-print-method x)))

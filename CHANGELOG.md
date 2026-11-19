@@ -29,7 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the JVM: one on `IPersistentMap` prints sorted maps too but not records.
 - A class-keyed print-method no longer slows printing of values it cannot
   match: numbers, strings, keywords, vectors, hash maps and seqs skip the class
-  lookup once their classes are known not to reach a user method.
+  lookup once their classes are known not to reach a user method, and a
+  number, string, keyword, char or boolean skips the user-method lookup
+  entirely when nothing could match it. Printing a 10k-entry map of maps is
+  about 1.5x faster with or without class-keyed methods installed.
 - `(class (tagged-literal 'a 1))` is `clojure.lang.TaggedLiteral`; a sorted
   map and a queue have their own type tags.
 - A namespace and a `PersistentQueue` print as the JVM prints them, Object's
