@@ -544,15 +544,17 @@
                          (merge-with join-origins contained aliases) closures)
         opaque (reachable @(:opaque state) edges nil)
         published (reachable (into opaque (:result state)) edges nil)
-        observed (reachable (into @(:identity state) @(:representation state)) aliases nil)]
+        identity-observed (reachable @(:identity state) aliases nil)
+        representation-observed (reachable @(:representation state) aliases nil)]
     {:bindings @(:bindings state) :uses @(:uses state) :origins @(:origins state)
      :recurrent @(:recurrent state)
      :contained contained :closures closures :projections @(:projections state)
      :guarded-records @(:guarded-records state)
-     :published published :opaque opaque :identity @(:identity state)
-     :representation @(:representation state)
+     :published published :opaque opaque :identity identity-observed
+     :representation representation-observed
      :loop-updates (when (seq @(:edits state))
-                     (loop-updates state transfers edges published opaque observed))}))
+                     (loop-updates state transfers edges published opaque
+                                   (into identity-observed representation-observed)))}))
 
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
