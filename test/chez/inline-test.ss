@@ -423,6 +423,15 @@
          (eq? (fact-get p 'present?) present?)
          (clj= (fact-get p 'origins) (origins-at f from)))))
 
+(let ((f (facts-for "(fn [x] (loop* [m {:k x} saved m] (identical? m saved)))")))
+  (ok "identity observed through a loop slot reaches its confined initializer"
+      (and (confined? f map-site)
+           (clj= (observations-at f map-site) (jolt-hash-set (fact-kw 'identity))))))
+(let ((f (facts-for "(fn [x] (loop* [m {:k x} saved m] (class saved)))")))
+  (ok "class through a loop slot retains its representation and opaque observations"
+      (clj= (observations-at f map-site)
+            (jolt-hash-set (fact-kw 'representation) (fact-kw 'unknown)))))
+
 (let ((f (facts-for "(fn [x] (let [m {:k x} box [m]] (:k (nth box 0))))")))
   (ok "nested projections forward only the selected field"
       (and (projects? f (in-body 'body 'args 0) #t map-site)
