@@ -64,7 +64,8 @@
       (if (eof-object? c) jolt-nil (string c)))))
 
 (def-var! "clojure.core" "__stdin-ready?"
-  (lambda args (char-ready?)))
+  ;; char-ready? is #t at end of input; the JVM's ready is false there.
+  (lambda args (and (char-ready?) (not (eof-object? (peek-char))))))
 
 ;; ---- file IO: real on gsi ---------------------------------------------------
 ;; These work wherever the host has a filesystem. Under the js target the open

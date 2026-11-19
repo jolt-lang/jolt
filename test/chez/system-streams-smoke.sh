@@ -102,6 +102,13 @@ ef
 # token the chunk cut off reads whole
 check held5 "$(held "(let [c (.read *in*)] (.unread *in* c) $mark (println (pr-str (read))))" 'ab' 'c
 ')" "abc"
+# .ready is false at end of input, as the JVM's (available() is 0 there), so a
+# loop that drains while .ready ends
+check ready-eof "$(run '(println (pr-str [(.ready *in*) (read-line) (.ready *in*) (.read *in*) (.ready *in*)]))' 'abc
+')" "[true \"abc\" false -1 false]"
+check ready-empty "$(run '(println (.ready *in*))' '')" "false"
+check ready-drain "$(run '(let [r (java.io.BufferedReader. *in*)] (println (loop [a []] (if (.ready r) (recur (conj a (.read r))) (count a)))))' 'abc
+')" "4"
 
 # --- (e) io/copy System/in -> System/out (the babashka.process wd.clj echo) ---
 check e "$(run '(clojure.java.io/copy System/in System/out) (flush)' 'echoed')" "echoed"

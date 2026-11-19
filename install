@@ -74,17 +74,29 @@ fetch() {
     local outfile=${2:-}
     # The GitHub API allows 60 anonymous requests an hour per address, and CI
     # runners share addresses. A token ($GITHUB_TOKEN or $GH_TOKEN) lifts that;
-    # it is only ever sent to the API. (${auth[@]+...} keeps bash 3.2, macOS's
-    # /bin/bash, from calling an empty array unbound under set -u.)
+    # it is only ever sent to the API, and never on a command line, where other
+    # users could read it in `ps`: curl reads the header from stdin, wget from a
+    # private wgetrc.
     local token=${GITHUB_TOKEN:-${GH_TOKEN:-}}
-    local auth=()
-    if [[ -n $token && $url == "$github_api"/* ]]; then
-        auth=(--header "Authorization: Bearer ${token}")
-    fi
+    if [[ -z $token || $url != "$github_api"/* ]]; then token=; fi
+    local out=(-o "${outfile:--}")
     if has curl; then
-        if [[ -n $outfile ]]; then curl -fsSL ${auth[@]+"${auth[@]}"} "$url" -o "$outfile"; else curl -fsSL ${auth[@]+"${auth[@]}"} "$url"; fi
+        if [[ -n $token ]]; then
+            curl -fsSL --header @- "$url" "${out[@]}" <<<"Authorization: Bearer ${token}"
+        else
+            curl -fsSL "$url" "${out[@]}"
+        fi
     elif has wget; then
-        if [[ -n $outfile ]]; then wget -qO "$outfile" ${auth[@]+"${auth[@]}"} "$url"; else wget -qO - ${auth[@]+"${auth[@]}"} "$url"; fi
+        if [[ -n $token ]]; then
+            local rc status=0
+            rc=$(umask 077; mktemp)
+            printf 'header = Authorization: Bearer %s\n' "$token" >"$rc"
+            WGETRC=$rc wget -qO "${outfile:--}" "$url" || status=$?
+            rm -f "$rc"
+            return $status
+        else
+            wget -qO "${outfile:--}" "$url"
+        fi
     else
         >&2 echo "Either 'curl' or 'wget' needs to be on PATH."
         exit 1

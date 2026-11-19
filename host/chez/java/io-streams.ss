@@ -2008,7 +2008,15 @@
     (let ((v (vector-ref stdin-cell 0)))
       (and (in-stream? v)
            (let ((port (in-stream-port v)))
-             (guard (_ (#t #f)) (input-port-ready? port)))))))
+             ;; input-port-ready? is #t at end of input too; the JVM's ready
+             ;; goes through available(), which is 0 there, and a loop draining
+             ;; while .ready would never end. The lookahead cannot block once
+             ;; the port is ready.
+             (guard (_ (#t #f))
+               (and (input-port-ready? port)
+                    (not (eof-object? (if (binary-port? port)
+                                          (lookahead-u8 port)
+                                          (lookahead-char port)))))))))))
 
 ;; --- System/console: java.io.Console ------------------------------------------
 ;; The JVM hands out a Console only when standard input AND standard output are
@@ -3253,16 +3261,48 @@
 ;;
 ;; jolt's own print-method entries are all keyed by type tag, so resolving a
 ;; class per printed value would be dead weight until a library installs a
-;; class-keyed method. Whether any exists is settled once per multimethod epoch.
-(define pm-class-keys-epoch -1)
-(define pm-has-class-keys? #f)
-(define (pm-class-keys? tbl)
-  (unless (fx= pm-class-keys-epoch jolt-mm-epoch)
-    (set! pm-class-keys-epoch jolt-mm-epoch)
-    (set! pm-has-class-keys?
-          (let loop ((ks (vector->list (hashtable-keys tbl))))
-            (and (pair? ks) (or (jclass? (car ks)) (loop (cdr ks)))))))
-  pm-has-class-keys?)
+;; class-keyed method -- and once one has (a UUID or Instant printer is common),
+;; turning each value's class NAME into a class token and hashing that token into
+;; the method table cost every printed value, class-keyed or not: a vector of
+;; 200k longs printed 3x slower. So the answer is memoized by class name: per
+;; multimethod epoch, a string table from name to method or #f, filled on the
+;; first value of each class. A value then pays its class name and one lookup.
+;;
+;; The state is one immutable vector (epoch has-class-keys? names table) published
+;; whole, so a reader never pairs a new epoch with an old answer. A miss copies
+;; the table and publishes the copy: there are only as many entries as classes
+;; printed, and a reader never sees a table another thread is resizing.
+(define pm-state (vector -1 #f #f #f))
+(define (pm-current-state tbl)
+  (let ((st pm-state)
+        (e (let ((e jolt-mm-epoch)) (memory-order-acquire) e)))
+    (if (and (fx= (vector-ref st 0) e) (eq? (vector-ref st 3) tbl))
+        st
+        (let ((st2 (vector e
+                           (let loop ((ks (vector->list (hashtable-keys tbl))))
+                             (and (pair? ks) (or (jclass? (car ks)) (loop (cdr ks)))))
+                           (make-hashtable string-hash string=?)
+                           tbl)))
+          (memory-order-release)
+          (set! pm-state st2)
+          st2))))
+(define (pm-class-method tbl x)
+  (let ((st (pm-current-state tbl)))
+    (and (vector-ref st 1)
+         (let ((c (jolt-class-name x)))
+           (and (string? c)
+                (let* ((names (vector-ref st 2))
+                       (hit (hashtable-ref names c 'miss)))
+                  (if (eq? hit 'miss)
+                      (let ((m (hashtable-ref tbl (jolt-class-for c) #f))
+                            (names2 (hashtable-copy names #t)))
+                        (hashtable-set! names2 c m)
+                        (memory-order-release)
+                        ;; only over the state this read: a newer epoch wins
+                        (when (eq? pm-state st)
+                          (set! pm-state (vector (vector-ref st 0) #t names2 tbl)))
+                        m)
+                      hit)))))))
 
 ;; Resolved once: var-deref rebuilds "clojure.core/print-method" and hashes it on
 ;; every call, which this pays per printed value. The cell is stable — def-var!
@@ -3274,10 +3314,7 @@
     (and (jolt-multifn? mf)
          (let ((tbl (jolt-multifn-methods mf)))
            (or (hashtable-ref tbl (jolt-type x) #f)
-               (and (pm-class-keys? tbl)
-                    (let ((c (jolt-class-name x)))
-                      (and (string? c)
-                           (hashtable-ref tbl (jolt-class-for c) #f)))))))))
+               (pm-class-method tbl x))))))
 (set-pr-user-method-render!
   (lambda (x)
     (let ((m (user-print-method x)))

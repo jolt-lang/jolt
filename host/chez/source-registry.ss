@@ -1471,7 +1471,10 @@
                           ((char=? (string-ref proto i) #\/) i)
                           (else (find (fx- i 1))))))
            (fqn (and slash (string-append (substring proto 0 slash) "/" method)))
-           (decl (and fqn (hashtable-ref chez-protocol-methods-tbl fqn #f)))
+           ;; under rec-tbl-mu, the table's writer lock (protocols.ss): a defprotocol
+           ;; on another thread can be resizing it
+           (decl (and fqn (jolt-with-mutex rec-tbl-mu
+                            (hashtable-ref chez-protocol-methods-tbl fqn #f))))
            (nm (and decl (equal? (car decl) proto)
                     (guard (e (#t #f)) (sa-procedure-code-name fn)))))
       (when (string? nm)
