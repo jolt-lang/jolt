@@ -502,6 +502,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/`). A `HOME` pointing somewhere else no longer moves it, which is the
   JVM's behaviour too. Windows still reads `HOME`. Android reads `HOME`
   first, because bionic's passwd entries are made up.
+- **A `defmacro` var carries `:line`, `:column` and `:file`.** A `defn`
+  beside it did, but the macro's var had none, so go-to-definition and
+  apropos-style tools couldn't point at a macro. A `:line` in the macro's
+  attr-map used to stand in for the real one. Now the form's position wins,
+  as on the JVM. That holds for a macro loaded from source and for one baked
+  into a built app or the image. clojure.core's macros, such as `when`, now
+  carry their line in jolt's own `clojure/core/*.clj` sources.
 - **Malformed special forms report the reference compiler's error.**
   `(throw)`, `(def)`, `(set! x)`, `(let* x 1)`, `(loop* x 1)` and
   `(letfn* x 1)` failed inside the analyzer and surfaced as

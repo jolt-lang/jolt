@@ -555,7 +555,7 @@
 ;; position rides the evaluated path too. Non-def nodes (a cast/:invoke) keep the
 ;; :pos-only stamp.
 (defn- stamp-def-pos [ctx env node pos]
-  (if (and pos (= :def (:op node)))
+  (if (and pos (#{:def :defmacro} (:op node)))
     (let [new-meta (merge (or (:meta node) {}) pos)
           node (assoc node :pos pos :meta new-meta)]
       (if (:meta-expr node)
@@ -869,9 +869,12 @@
                     (or trail {}))
         meta-expr (def-meta-expr ctx base env)]
     (host-intern! ctx cur nm)
+    ;; :meta stays beside :meta-expr, as on a :def node: stamp-def-pos rebuilds
+    ;; the :meta-expr from :meta merged with the form's position.
     (merge {:op :defmacro :ns cur :name nm
-            :fn (analyze ctx fn-form env)}
-           (if meta-expr {:meta-expr meta-expr} {:meta base}))))
+            :fn (analyze ctx fn-form env)
+            :meta base}
+           (if meta-expr {:meta-expr meta-expr} {}))))
 
 ;; (jolt.host/load-time-value expr) — Common Lisp's load-time-value: EXPR is
 ;; evaluated once, when the top-level form containing it is loaded (from source
@@ -1266,7 +1269,7 @@
 ;; positioned source form, just as a generated invocation does.
 (defn- stamp-def [ctx env form node]
   (let [p (or (form-position form) (current-form-position))]
-    (if (and p (= :def (:op node))) (stamp-def-pos ctx env node p) node)))
+    (if (and p (#{:def :defmacro} (:op node))) (stamp-def-pos ctx env node p) node)))
 
 ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
 ;; source offset onto the resulting def, since the macro builds a fresh
