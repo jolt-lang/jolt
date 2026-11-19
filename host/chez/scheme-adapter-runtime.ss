@@ -2170,6 +2170,8 @@
   (syntax-rules ()
     ((_ x) (let ((v x)) (if (#3%$record? v) (#3%$record-type-descriptor v) #f)))))
 (define-syntax sa-record-slot (syntax-rules () ((_ r i) (#3%$record-ref r i))))
+;; (sa-record-slot-set! r i v): the store, under the same proof as the read.
+(define-syntax sa-record-slot-set! (syntax-rules () ((_ r i v) (#3%$record-set! r i v))))
 (define-syntax sa-ufx+ (syntax-rules () ((_ a b) (#3%fx+ a b))))
 (define-syntax sa-ufx- (syntax-rules () ((_ a b) (#3%fx- a b))))
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (#3%fx<? a b))))

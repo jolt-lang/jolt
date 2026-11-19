@@ -677,9 +677,11 @@
   ;; through a var: 16 -> 9.5 ns), and then open-coded that var call at the
   ;; site and the protocol fn's descriptor read with it (jolt-var-fn,
   ;; jrec-pic-desc/i), with the site unchanged: on the slow box the two arms
-  ;; read 0.73 -> 1.11 and 1.00 -> 1.35 over both steps. The ceilings are 1.6
-  ;; and 1.8, room for CI's higher reading. A site with no cache reads ~2.3-3.9
-  ;; against this call, so still well past both.
+  ;; read 0.73 -> 1.11 and 1.00 -> 1.35 over both steps. The protocol call then
+  ;; read the var cell and the receiver's descriptor without their type tests,
+  ;; the instance? site unchanged: 1.35 and 1.56. The ceilings are 1.6 and 1.9,
+  ;; room for CI's higher reading. A site with no cache reads ~2.3-3.9 against
+  ;; this call, so still well past both.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
@@ -687,7 +689,7 @@
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.8)
+          1.9)
 
   ;; Building a reify must cost about what building a deftype costs.
   (judge! "reify-construct"
@@ -863,11 +865,13 @@
           2.0)
   ;; A protocol call on a deftype's own impl costs a little more than a plain fn
   ;; call. It went var -> protocol fn -> per-site cache -> method, and the
-  ;; method bound every field before its body ran.
+  ;; method bound every field before its body ran. 1.65 then; the plain call
+  ;; then lost its var cell's type test (6.2 -> 4.9 ns) and the protocol call
+  ;; less of its cost, so 1.9, ceiling 2.4.
   (judge! "protocol-call"
           #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
           #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
-          2.1)
+          2.4)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))

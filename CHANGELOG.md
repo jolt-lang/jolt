@@ -188,6 +188,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **A call through a var, a protocol call and a deftype field access drop
+  their redundant type tests (#1713).** The call read its var cell through the
+  record type's checked accessors, though the cell is always a var cell; the
+  protocol call recognised a record by comparing its type against each of the
+  family's ten in turn; and a method's field read, already guarded by the
+  receiver's descriptor, went through an accessor that tested the type again.
+  Each is now the bare load. A plain fn call goes from 6.2 to 4.9 ns and a
+  protocol call on a deftype from 12.5 to 10.4; rewrite-clj's `parse-string`
+  takes about 12% less time.
+
 - **A protocol method call on a record or deftype is one vector read (#1713).**
   Each protocol method gets a fixnum id when it is defined, and a type's
   descriptor holds a vector of its implementations indexed by that id. A call
