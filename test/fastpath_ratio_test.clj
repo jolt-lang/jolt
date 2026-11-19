@@ -272,6 +272,14 @@
 ;;                      default: ~90 ns against the JVM's ~6 (rewrite-clj's
 ;;                      (:delimiter context) on a top-level form's nil context).
 ;;
+;;   protocol-call      a protocol call went through the protocol fn's var, the
+;;                      protocol fn and its per-site cache before the method, and
+;;                      every deftype or defrecord method bound all its fields
+;;                      first. The call site now reads the receiver type's
+;;                      dispatch vector (rt.ss jrdesc-vtable-ref) and calls the
+;;                      method, which binds only the fields it names: 17.5 ->
+;;                      10.5 ns, against a plain call ~2.6 -> ~1.6.
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
@@ -539,6 +547,10 @@
 (defn- gate-f4 [a b c d] a)
 (defn- gate-f6 [a b c d e f] a)
 (defn- gate-rec [n] (if (zero? n) 0 (inc (gate-rec (dec n)))))
+(defprotocol GateP (gate-pm [x]))
+(deftype GateT [a] GateP (gate-pm [_] nil))
+(def ^:private gate-t (GateT. 1))
+(defn- gate-fn1 [x] nil)
 (defn- gate-rec-try [n] (try (if (zero? n) 0 (inc (gate-rec-try (dec n)))) (catch Exception e -1)))
 (defn- gate-under [n f] (if (zero? n) (f) (+ 0 (gate-under (dec n) f))))
 (def ^:dynamic *gate-deep* 0)
@@ -849,6 +861,13 @@
           #(let [m {}] (dotimes [_ gate-n] (get m :k)))
           #(let [m nil] (dotimes [_ gate-n] (get m :k)))
           2.0)
+  ;; A protocol call on a deftype's own impl costs a little more than a plain fn
+  ;; call. It went var -> protocol fn -> per-site cache -> method, and the
+  ;; method bound every field before its body ran.
+  (judge! "protocol-call"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
+          2.1)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))

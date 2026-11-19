@@ -196,16 +196,32 @@
     ;; mint two gensyms, and the descriptor ptable is keyed by that identity — so
     ;; a store under one key and a lookup under the other miss each other for the
     ;; life of the process, silently demoting the record fast path.
+    ;; The identity is a small fixnum, issued in order: a protocol method's slot
+    ;; in every record type's dispatch vector (the descriptor's ptable, below).
     (or k (jolt-with-mutex rec-tbl-mu
             (or (hashtable-ref proto-method-keys s #f)
-                (let ((nk (gensym (string-append proto "." method))))
+                (let ((nk pm-key-next))
+                  (set! pm-key-next (fx+ pm-key-next 1))
                   (hashtable-set! proto-method-keys s nk) nk))))))
-;; descriptor ptable lookup (the record fast path): one eq?-ref keyed by the
-;; interned identity, valid while this desc is current (not invalidated by a
-;; type re-def). #f on any miss so protocol-resolve drops to the string registry.
+(define pm-key-next 0)
+;; A record type's DISPATCH VECTOR: the descriptor's ptable, indexed by a
+;; protocol method's interned id (intern-pm-key), holding the impl the type
+;; itself registered for it -- inline in deftype/defrecord, or extend-type on the
+;; type -- or #f. It is what a protocol call on a record reads (#1713): the back
+;; end's protocol fn looks its receiver's descriptor up and calls the slot, with
+;; no per-site cache, no epoch and no limit on how many types a call sees, where
+;; a JVM interface call reads the class's itable. Only a type's own impls live
+;; here: one inherited through an interface or Object is not the type's, and
+;; resolves (and is cached per site) as before. The slots stay current with no
+;; epoch because only register-protocol-method writes one, for this descriptor,
+;; and a redefinition retires the old descriptor's vector (#f) wholesale. The
+;; vector is replaced, never written in place, so a reader on another thread sees
+;; the old one or the new one. #f on any miss, so protocol-resolve drops to the
+;; string registry.
+;; (The back end's call-site read of the same slot is rt.ss jrdesc-vtable-ref.)
 (define (find-protocol-method-desc desc proto method)
-  (let ((pt (jrdesc-ptable desc)))
-    (and pt (hashtable-ref pt (intern-pm-key proto method) #f))))
+  (let ((pt (jrdesc-ptable desc)) (id (intern-pm-key proto method)))
+    (and pt (fx< id (vector-length pt)) (vector-ref pt id))))
 ;; Told of every impl as it registers (and of a reify site's methods, once per
 ;; site): the stack-trace reporter (source-registry.ss on Chez) maps the impl's
 ;; procedure name to the protocol method it implements, so a tail call to the
@@ -234,9 +250,13 @@
       ;; create-and-write as one step for the same reason as above
       (let ((k (intern-pm-key proto method)))
         (jolt-with-mutex rec-tbl-mu
-          (let ((pt (or (jrdesc-ptable desc)
-                        (let ((h (make-eq-hashtable))) (jrdesc-ptable-set! desc h) h))))
-            (hashtable-set! pt k fn))))
+          (let* ((old (or (jrdesc-ptable desc) '#()))
+                 (n (fxmax (vector-length old) (fx+ k 1)))
+                 (new (make-vector n #f)))
+            (vector-for-each (let ((i 0)) (lambda (x) (vector-set! new i x) (set! i (fx+ i 1)))) old)
+            (vector-set! new k fn)
+            (when jolt-mt? (memory-order-release))
+            (jrdesc-ptable-set! desc new))))
       ;; A type declaring its own clojure.lang.ILookup masks its fields from the
       ;; get path (records.ss jrdesc-mask-fields!) — that valAt is the only key
       ;; lookup the JVM gives a bare deftype, so it answers for a field-named key

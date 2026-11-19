@@ -13,7 +13,7 @@
   jolt.backend-scheme.* namespaces it requires, and those of them that need to
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
-            [jolt.host :refer [seed-callable? form-char? form-literal?]]
+            [jolt.host :refer [seed-callable? protocol-call-key form-char? form-literal?]]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -521,6 +521,32 @@
 ;; a var: a local bound to a fn literal is a lambda cp0 can see, and a
 ;; wrong-count call to it -- which must compile, and raise when it runs -- would
 ;; be refused at compile time ("possible incorrect argument count").
+;; A call to a protocol method fn through its var, dispatched at the call site
+;; (#1713): while the var still holds the protocol fn it held when this code
+;; loaded, a record receiver's own impl is read from its type's dispatch vector
+;; (protocols.ss jrdesc-vtable-ref) and applied directly -- no call into the
+;; protocol fn, no per-site cache scan. Anything else the receiver is goes
+;; through the protocol fn as before, and a var that no longer holds it (a
+;; redefinition, with-redefs) is called like any other. PK is [proto method],
+;; from jolt.host/protocol-call-key.
+(defn- emit-proto-site-call [c cell operands invoker pk]
+  (let [tail? (:tail? c)
+        traced? (or tail? (trace-frames?))
+        fnode (:fnode c)
+        shim (hoist-const (str "(var-cell-root (jolt-var " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) "))"))
+        id (hoist-const (str "(intern-pm-key " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) ")"))
+        vf (fresh-label "_vf$") d (fresh-label "_pd$") f (fresh-label "_pf$")
+        ts (mapv (fn [_] (fresh-label "_va$")) (rest operands))
+        binds (apply str (map (fn [t a] (str " (" t " " a ")")) ts (rest operands)))
+        kept (fn [s] (if traced? s (str "(jolt-site-kept " s ")")))]
+    (str "(let* ((" vf " (jolt-var-fn " cell "))" binds ")"
+         " (if (eq? " vf " " shim ")"
+         " (let* ((" d " (jrec-pic-desc/i " (first ts) ")) (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
+         " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
+         " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
+         " (if (procedure? " vf ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
+         " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) ")))")))
+
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
         n (count args)
@@ -532,6 +558,11 @@
                     (let [chez? (not= :gambit (session/target))
                           cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
                       (cond
+                        (and cell (seq (rest operands)) (var-cache?) *const-pool* (not (seed-mint?))
+                             (let [pk (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n)]
+                               (and pk (not (nil? pk)))))
+                        (emit-proto-site-call c cell operands callee
+                                              (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n))
                         cell (emit-open-call c (str "(jolt-var-fn " cell ")") operands callee)
                         :else (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))))
 

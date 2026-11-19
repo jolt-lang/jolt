@@ -227,6 +227,7 @@ profile-instrumenting?
 profile-retired
 profile-sites
 profile-stats
+protocol-call-key
 protocol-key-of
 protocol-method-var?
 protocol-methods

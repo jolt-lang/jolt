@@ -669,6 +669,32 @@
 ;; build one method clause (argv + field-bound body) from a method spec.
 ;; The clause is DATA, not a syntax-quote: a body that is itself a syntax-
 ;; quote would have its ~unquotes consumed a level early if re-spliced.
+;; Every name a method body could mean by a bare symbol, so a deftype or
+;; defrecord method binds only the fields its body mentions (#1713). Each field
+;; binding is a guarded slot read (a record's a get) on every call, and a method
+;; that names one field of four paid for all four -- rewrite-clj's node methods
+;; (tag, length, string) each touch one at most. Over-approximate by design:
+;; every symbol anywhere in the body counts, quoted or nested in a fn, so a field
+;; the body can reach is never left unbound.
+;;
+;; A macro's expansion can name a field the body never spells -- (defmacro
+;; use-x [] 'x) called as (use-x) -- and on the JVM every field is in scope for
+;; it. So a body that calls a macro from outside clojure.core binds every field
+;; (nil here); clojure.core's macros only pass on the symbols they are handed.
+(defn- foreign-macro-call? [x]
+  (and (seq? x) (symbol? (first x))
+       (let [v (resolve (first x))]
+         (and (var? v) (:macro (meta v))
+              (not= "clojure.core" (str (:ns (meta v))))))))
+(defn- body-sym-names [forms]
+  (let [walk (fn walk [acc x]
+               (cond (nil? acc) nil
+                     (symbol? x) (conj acc (name x))
+                     (foreign-macro-call? x) nil
+                     (coll? x) (reduce walk acc x)
+                     :else acc))]
+    (reduce walk #{} forms)))
+
 (defn- deftype-method-clause [fields mplace spec]
   ;; fresh-name each _ param so two _ params don't collide on the
   ;; field binds / live-read instance (see defrecord's mk-clause).
@@ -695,11 +721,13 @@
         ;; own — and never come back. It is also the cheaper read
         ;; (straight to the slot, no type cascade).
         nf (count fields)
+        used (body-sym-names (drop 2 spec))
         binds (loop [i 0 fs (seq fields) acc []]
                 (if fs
                   (let [f (first fs)]
                     (recur (inc i) (next fs)
-                           (if (or (mplace f) (contains? pnames (name f)))
+                           (if (or (mplace f) (contains? pnames (name f))
+                                   (and used (not (contains? used (name f)))))
                              acc
                              (conj acc f (deftype-slot-form "__deftype-slot" inst f [i nf] nil)))))
                   acc))
@@ -1175,8 +1203,11 @@
                           ;; including a name a destructured param binds, whose let
                           ;; sits inside the field binds.
                           pnames (set (map name (concat argv (mapcat pattern-syms dlets))))
+                          used (body-sym-names (drop 2 spec))
                           binds (vec (mapcat (fn [f] [f `(get ~inst ~(keyword (name f)))])
-                                             (remove (fn [f] (contains? pnames (name f))) fields)))
+                                             (remove (fn [f] (or (contains? pnames (name f))
+                                                                 (and used (not (contains? used (name f))))))
+                                                     fields)))
                           mbody (drop 2 spec)
                           mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
                           mbody (underscore-rebind (nth spec 1) raw mbody)]

@@ -1857,14 +1857,17 @@
         (jolt-with-mutex
           rec-tbl-mu
           (or (hashtable-ref proto-method-keys s #f)
-              (let ((nk (gensym (string-append proto "." method))))
+              (let ((nk pm-key-next))
+                (set! pm-key-next (fx+ pm-key-next 1))
                 (hashtable-set! proto-method-keys s nk)
                 nk))))))
 
+(define pm-key-next 0)
+
 (define (find-protocol-method-desc desc proto method)
-  (let ((pt (jrdesc-ptable desc)))
-    (and pt
-         (hashtable-ref pt (intern-pm-key proto method) #f))))
+  (let ((pt (jrdesc-ptable desc))
+        (id (intern-pm-key proto method)))
+    (and pt (fx< id (vector-length pt)) (vector-ref pt id))))
 
 (define protocol-impl-hook (lambda (proto method fn) #f))
 
@@ -1888,11 +1891,16 @@
       (let ((k (intern-pm-key proto method)))
         (jolt-with-mutex
           rec-tbl-mu
-          (let ((pt (or (jrdesc-ptable desc)
-                        (let ((h (make-eq-hashtable)))
-                          (jrdesc-ptable-set! desc h)
-                          h))))
-            (hashtable-set! pt k fn))))
+          (let* ((old (or (jrdesc-ptable desc) '#()))
+                 (n (fxmax (vector-length old) (fx+ k 1)))
+                 (new (make-vector n #f)))
+            (vector-for-each
+              (let ((i 0))
+                (lambda (x) (vector-set! new i x) (set! i (fx+ i 1))))
+              old)
+            (vector-set! new k fn)
+            (when jolt-mt? (memory-order-release))
+            (jrdesc-ptable-set! desc new))))
       (when (and (string=? method "valAt")
                  (chez-type-owns-lookup? type-tag))
         (jrdesc-mask-fields! desc))))
