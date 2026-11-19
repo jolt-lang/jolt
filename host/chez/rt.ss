@@ -2916,8 +2916,8 @@
          ;; do anything), and an enum constant (its name), go through the registry.
          (content (if (and hex (jrec? x) (not (enum-constant? x))
                            ;; under whatever name it was declared: Object or java.lang.Object
-                           (not (find-method-any-protocol (jrec-tag x) "toString"))
-                           (not (find-method-any-protocol (jrec-tag x) "hashCode")))
+                           (not (find-method-any-protocol (jrec-rtag x) "toString"))
+                           (not (find-method-any-protocol (jrec-rtag x) "hashCode")))
                       (string-append cls "@" hex)
                       (guard (e (#t #f)) (jolt-object-content x))))
          ;; an array's class name is quoted, as Clojure's print-method writes it

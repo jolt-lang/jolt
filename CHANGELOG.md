@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Redefining a protocol or a type follows the JVM.** Re-evaluating a
+  `defprotocol` drops the impls a `deftype`, `defrecord` or `reify` declared
+  inline before it (they implement the old interface), so calls on them miss and
+  `satisfies?`/`instance?` say no until the type is defined again; impls from
+  `extend`/`extend-type`/`extend-protocol` survive, as the JVM's merge keeps
+  them. Re-evaluating a `deftype`/`defrecord` makes a new class: instances built
+  before are not `instance?` of it, their `class`/`type` is not `=` to it, an old
+  record is not `=` to a new one, and they keep the old class's own and
+  extended impls instead of picking up the new definition's.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a

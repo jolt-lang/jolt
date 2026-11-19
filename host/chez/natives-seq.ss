@@ -336,7 +336,7 @@
     ((htable-sorted? coll) (sc-call coll kw-op-rseq))
     ;; a deftype/record implementing clojure.lang.Reversible (rseq) — e.g.
     ;; data.priority-map — drives rseq through its own method.
-    ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
+    ((and (jrec? coll) (find-method-any-protocol (jrec-rtag coll) "rseq"))
      => (lambda (f) (jolt-invoke1 f coll)))
     (else (jolt-cast-throw coll "clojure.lang.Reversible"))))
 (def-var! "clojure.core" "rseq" jolt-rseq)

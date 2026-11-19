@@ -1671,7 +1671,7 @@
                            (apply jolt-get f args)))             ; a transient vec/map/set is callable on the JVM
     ;; a record/reify implementing clojure.lang.IFn is callable: dispatch to its
     ;; inline `invoke` method with the value itself as the leading `this`.
-    ((and (jrec? f) (find-method-any-protocol (jrec-tag f) "invoke"))
+    ((and (jrec? f) (find-method-any-protocol (jrec-rtag f) "invoke"))
      => (lambda (m) (apply jolt-invoke m f args)))
     ((reify-method-ref f "invoke")
      => (lambda (m) (apply jolt-invoke m f args)))
@@ -2772,7 +2772,7 @@
 ;; call with 3+ arguments to (apply f args), so no SCI-evaluated call to a
 ;; variadic core fn could carry more than 21 arguments.
 (define (jolt-apply-to-method f)
-  (cond ((jrec? f) (find-method-any-protocol (jrec-tag f) "applyTo"))
+  (cond ((jrec? f) (find-method-any-protocol (jrec-rtag f) "applyTo"))
         ((jreify? f) (reify-method-ref f "applyTo"))
         (else #f)))
 (define (jolt-apply f . args)

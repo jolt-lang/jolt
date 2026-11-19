@@ -2805,7 +2805,7 @@
 ;; tag. The io fns dispatch on the source themselves, so each calls this only
 ;; where it would otherwise raise "Cannot open". The impl takes OPTS as a map.
 (define (jio-extension x method)
-  (or (and (jrec? x) (find-protocol-method (jrdesc-tag (jrec-desc x)) "IOFactory" method))
+  (or (and (jrec? x) (find-protocol-method (jrec-rtag x) "IOFactory" method))
       (let loop ((tags (value-host-tags x)))
         (cond ((null? tags) #f)
               ((find-protocol-method (car tags) "IOFactory" method))

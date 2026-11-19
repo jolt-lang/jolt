@@ -114,22 +114,28 @@
 ;; drop every type a case defined; pruning the tree alone would leave this index
 ;; answering for types that no longer exist, so the two are pruned through one
 ;; entry point rather than by remembering to do both.
-;; Forget everything registered against ONE type tag: its protocols, its methods,
-;; the by-method index, the class-answer memo and any devirt clone. A deftype
-;; redefinition is a new class on the JVM — neither the previous definition's
-;; own methods nor an extend-type made against it carries over — and jolt kept
-;; them, so a method the new definition does not declare still answered
-;; (jolt-lnwq). make-deftype-ctor calls this when a fresh descriptor replaces an
-;; existing one, before the new definition's registrations run.
-;; The epoch bump is what retires the per-site inline caches that resolved an
-;; impl this drops.
-(define (forget-type-methods! type-tag)
+;; A deftype redefinition is a new class on the JVM: neither the previous
+;; definition's own methods nor an extend-type made against it carries over to
+;; the NEW class (jolt-lnwq), but instances built before keep the OLD class, and
+;; with it everything it implemented. make-deftype-ctor calls this when a fresh
+;; descriptor replaces OLD-DESC, before the new definition's registrations run:
+;; the tag's protocols, by-method index, class-answer memo and devirt clones are
+;; dropped from the tag, and the first two move to the old descriptor's retired
+;; registry tag (records.ss retire-desc!), whose own dispatch vector stays as it
+;; is. The epoch bump is what retires the per-site inline caches that resolved
+;; an impl under the tag.
+(define (retire-type-desc! tag old-desc)
   (jolt-with-mutex rec-tbl-mu
     (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
-    (hashtable-delete! type-registry type-tag)
-    (hashtable-delete! type-method-index type-tag)
-    (hashtable-delete! type-class-memo type-tag)
-    (hashtable-delete! clone-registry type-tag))
+    (let ((rtag (retire-desc! old-desc))
+          (ti (hashtable-ref type-registry tag #f))
+          (mi (hashtable-ref type-method-index tag #f)))
+      (when ti (hashtable-set! type-registry rtag ti))
+      (when mi (hashtable-set! type-method-index rtag mi)))
+    (hashtable-delete! type-registry tag)
+    (hashtable-delete! type-method-index tag)
+    (hashtable-delete! type-class-memo tag)
+    (hashtable-delete! clone-registry tag))
   ;; find-method-any-protocol reads type-method-index, and
   ;; chez-type-owns-lookup? (records.ss) consults it while the inference
   ;; shapes map is built: dropping a type's valAt changes that map.
@@ -142,7 +148,7 @@
   (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
   ;; ...and to the inference shapes map, through the same
   ;; find-method-any-protocol / chez-type-owns-lookup? path as
-  ;; forget-type-methods!.
+  ;; retire-type-desc!.
   (chez-infer-registry-bump!)
   (vector-for-each
     (lambda (k)
@@ -396,7 +402,7 @@
 ;; {}, and (ifn? (reify IFn (invoke [_] …))) is true as on the JVM.
 (def-var! "jolt.host" "jrec-method?"
   (lambda (v name)
-    (cond ((jrec? v) (if (find-method-any-protocol (jrec-tag v) name) #t #f))
+    (cond ((jrec? v) (if (find-method-any-protocol (jrec-rtag v) name) #t #f))
           ((jreify? v) (if (reify-method-ref v name) #t #f))
           (else #f))))
 
@@ -410,7 +416,7 @@
 (set-str-tostring-hook!
   (lambda (v)
     (and (jrec? v)
-         (find-method-any-protocol (jrec-tag v) "toString")
+         (find-method-any-protocol (jrec-rtag v) "toString")
          (record-method-dispatch v "toString" jolt-nil))))
 
 ;; the interfaces every defrecord carries, spelled both ways (the record arm of
@@ -631,7 +637,7 @@
         ((jrec-record? obj)
          (let* ((tag (jrec-tag obj))
                 (extra (cddr (jch-tags tag))))
-           (cons tag (if (null? (cdr extra))
+           (cons (jrec-rtag obj) (if (null? (cdr extra))
                          jrec-record-iface-tags
                          (append (jch-tags-sans-object extra) jrec-record-iface-tags)))))
         ;; a bare deftype dispatches through its own tag first, then its declared
@@ -641,7 +647,9 @@
         ;; deftype name file under its ns-qualified tag, and a bare segment could
         ;; collide with a host class of the same name. A type declaring no
         ;; interfaces keeps (tag "Object").
-        ((jrec? obj) (let ((tag (jrec-tag obj))) (cons tag (cddr (jch-tags tag)))))
+        ;; A redefined type's old instance dispatches through its retired
+        ;; registry tag (records.ss jrdesc-rtag) ahead of the same ancestry.
+        ((jrec? obj) (let ((tag (jrec-tag obj))) (cons (jrec-rtag obj) (cddr (jch-tags tag)))))
         ;; a throwable reports its OWN class and that class's ancestry, so
         ;; (extend-protocol P Throwable …) reaches an ex-info or a host-constructed
         ;; RuntimeException. clojure.datafy extends Datafiable to Throwable exactly
@@ -706,19 +714,14 @@
           (desc (make-jrdesc tag kws))
           ;; index the descriptor so register-protocol-method can mirror impls
           ;; onto its ptable (protocol-resolve's record fast path). A re-def of
-          ;; the same type tag installs a fresh desc here; first invalidate the
-          ;; old desc's ptable (set to #f) so pre-redef instances fall back to
-          ;; the string registry on the next protocol-resolve.
-          ;; read-invalidate-install is one step: split, a concurrent re-def of
-          ;; the same tag can install its desc between this read and this write
-          ;; and have its ptable invalidated by us right after, leaving the live
-          ;; desc permanently on the slow path.
-          ;; a redefinition drops what the previous definition registered, so the
-          ;; new one starts from nothing — see forget-type-methods!
-          (_ (when (hashtable-ref chez-tag-desc tag #f) (forget-type-methods! tag)))
+          ;; the same type tag installs a fresh desc here, and the new definition
+          ;; starts from nothing. The old descriptor is retired, not invalidated:
+          ;; instances built before keep the old class's impls (its dispatch
+          ;; vector stays) and stop being instances of the new class -- see
+          ;; retire-type-desc!.
+          (_ (let ((old-desc (hashtable-ref chez-tag-desc tag #f)))
+               (when old-desc (retire-type-desc! tag old-desc))))
           (_ (jolt-with-mutex rec-tbl-mu
-               (let ((old-desc (hashtable-ref chez-tag-desc tag #f)))
-                 (when old-desc (jrdesc-ptable-set! old-desc #f)))
                (hashtable-set! chez-tag-desc tag desc)))
           ;; A redefinition, or an extend-type that named this tag before the
           ;; type existed, may already have registered a valAt for it: the fresh
@@ -846,8 +849,16 @@
 ;; register-protocol-methods!: record each method's var-key -> [proto method] for
 ;; the inference driver (devirtualization). Dispatch itself is by the receiver's
 ;; type tag at call time, so this table is read only by `jolt build` inference.
-;; Called by defprotocol-emitted code in the protocol's ns.
+;; Called by defprotocol-emitted code in the protocol's ns -- once per evaluation
+;; of the defprotocol, so a second call for the same protocol is a redefinition
+;; (forget-protocol-declarations!).
+(define defined-protocols (make-hashtable string-hash string=?))
 (define (register-protocol-methods! proto-name method-names)
+  (when (jolt-with-mutex rec-tbl-mu
+          (let ((seen (hashtable-ref defined-protocols proto-name #f)))
+            (hashtable-set! defined-protocols proto-name #t)
+            seen))
+    (forget-protocol-declarations! proto-name))
   (let ((ns (chez-current-ns)))
     (for-each (lambda (mn)
                 (let ((m (if (symbol-t? mn) (symbol-t-name mn) mn)))
@@ -857,6 +868,88 @@
               (seq->list method-names)))
   (chez-infer-registry-bump!)
   jolt-nil)
+
+;; Re-evaluating a defprotocol makes a NEW protocol interface on the JVM, and the
+;; classes compiled against the old one -- a deftype, defrecord or reify that
+;; declared the protocol in its own body -- implement only the old one: a call
+;; through the protocol's fns finds no impl for them, satisfies? and instance?
+;; say no, until the type is defined again. An impl filed by extend/extend-type/
+;; extend-protocol lives in the protocol's own method table, which the
+;; redefinition merges into rather than replaces (emit-protocol's
+;; alter-var-root merge), so those keep working.
+;;
+;; So a redefinition drops every impl table a type DECLARED for PROTO (the
+;; inline mark, register-inline-protocol!) -- under live and retired registry
+;; tags alike -- with its by-method index entries, the slots it filled in the
+;; descriptor's dispatch vector, its devirt clones and the protocol interface in
+;; the type's class graph row; and retires PROTO on every reify site laid out
+;; against it (records-dispatch.ss forget-reify-protocol!).
+(define (vector-copy/jolt v)
+  (let* ((n (vector-length v)) (new (make-vector n #f)))
+    (let loop ((i 0))
+      (if (fx=? i n) new (begin (vector-set! new i (vector-ref v i)) (loop (fx+ i 1)))))))
+(define (forget-protocol-declarations! proto)
+  (let ((dropped '()))                  ; ((tag method ...) ...)
+    (jolt-with-mutex rec-tbl-mu
+      (set! jolt-proto-epoch (fx+ jolt-proto-epoch 1))
+      (vector-for-each
+        (lambda (tag)
+          (let* ((ti (hashtable-ref type-registry tag #f))
+                 (pi (and ti (hashtable-ref ti proto #f))))
+            (when (and pi (hashtable-ref pi inline-mark #f))
+              (let ((methods (let loop ((ks (vector->list (hashtable-keys pi))) (acc '()))
+                               (cond ((null? ks) acc)
+                                     ((or (string=? (car ks) extend-mark) (string=? (car ks) inline-mark))
+                                      (loop (cdr ks) acc))
+                                     (else (loop (cdr ks) (cons (car ks) acc)))))))
+                (hashtable-delete! ti proto)
+                (let ((mi (hashtable-ref type-method-index tag #f)))
+                  (when mi
+                    (for-each
+                      (lambda (m)
+                        (let ((es (let loop ((es (hashtable-ref mi m '())) (acc '()))
+                                    (cond ((null? es) (reverse acc))
+                                          ((string=? (caar es) proto) (loop (cdr es) acc))
+                                          (else (loop (cdr es) (cons (car es) acc)))))))
+                          (if (null? es) (hashtable-delete! mi m) (hashtable-set! mi m es))))
+                      methods)))
+                (hashtable-delete! type-class-memo tag)
+                (set! dropped (cons (cons tag methods) dropped))))))
+        (hashtable-keys type-registry)))
+    (let ((retired (retired-descs))
+          (iface (proto-iface-name proto)))
+      (for-each
+        (lambda (e)
+          (let* ((tag (car e))
+                 (methods (cdr e))
+                 (desc (or (hashtable-ref chez-tag-desc tag #f)
+                           (let loop ((rs retired))
+                             (cond ((null? rs) #f)
+                                   ((string=? (cdar rs) tag) (caar rs))
+                                   (else (loop (cdr rs)))))))
+                 ;; interned outside the lock, which intern-pm-key-by-name takes
+                 (ids (map (lambda (m) (intern-pm-key-by-name proto m)) methods)))
+            (when desc
+              (jolt-with-mutex rec-tbl-mu
+                (let ((pt (jrdesc-ptable desc)))
+                  (when pt
+                    (let ((new (vector-copy/jolt pt)))
+                      (for-each (lambda (id) (when (fx< id (vector-length new)) (vector-set! new id #f))) ids)
+                      (when jolt-mt? (memory-order-release))
+                      (jrdesc-ptable-set! desc new))))))
+            (for-each (lambda (m) (remove-clone! tag proto m)) methods)
+            ;; a live type's class graph row loses the protocol's interface (a
+            ;; retired tag has no row: it shares its name's)
+            (when (hashtable-ref chez-tag-desc tag #f)
+              (let ((supers (jch-direct-supers tag)))
+                (when (member iface supers)
+                  (jch-set-supers! tag (let loop ((ss supers) (acc '()))
+                                         (cond ((null? ss) (reverse acc))
+                                               ((string=? (car ss) iface) (loop (cdr ss) acc))
+                                               (else (loop (cdr ss) (cons (car ss) acc)))))))))))
+        dropped))
+    (forget-reify-protocol! proto)
+    (chez-infer-registry-bump!)))
 
 ;; register-method: extend-type/extend register an impl. Host type names keep a
 ;; bare canonical tag; record names qualify to the current ns.
@@ -1149,10 +1242,10 @@
     ((and (jrec? obj)
           (let* ((desc (jrec-desc obj))
                  (f (find-protocol-method-desc desc proto-name method-name)))
-            (or f (find-protocol-method (jrdesc-tag desc) proto-name method-name)))))
+            (or f (find-protocol-method (jrdesc-rtag desc) proto-name method-name)))))
     ((jreify? obj)
      => (lambda (_)
-          (or (reify-method-ref obj method-name)
+          (or (and (not (reify-proto-retired? obj proto-name)) (reify-method-ref obj method-name))
               ;; not implemented on the reify — fall back to the protocol's
               ;; extended impls over the reify's host tags (e.g. an Object/default
               ;; extension). malli reifies some protocols and leans on the default.
@@ -1201,12 +1294,13 @@
 (define (protocol-direct-impl proto-name method-name obj)
   (cond
     ((jrec? obj)
-     (let* ((tag (jrdesc-tag (jrec-desc obj)))
+     (let* ((tag (jrdesc-rtag (jrec-desc obj)))
             (ti (hashtable-ref type-registry tag #f))
             (pi (and ti (hashtable-ref ti proto-name #f))))
        (and pi (not (extend-impl-table? pi)) (hashtable-ref pi method-name #f))))
     ((jreify? obj)
      (and (member proto-name (jreify-protos obj))
+          (not (reify-proto-retired? obj proto-name))
           (reify-method-ref obj method-name)))
     (else #f)))
 ;; The impl for obj under a metadata-extensible protocol, in the reference's
@@ -1342,7 +1436,7 @@
 ;; under any interface the type implements answers, the same lookup
 ;; record-method-dispatch performs for the direct call.
 (define (jrec-comparable-method v)
-  (and (jrec? v) (find-method-any-protocol (jrec-tag v) "compareTo")))
+  (and (jrec? v) (find-method-any-protocol (jrec-rtag v) "compareTo")))
 (register-compare-arm!
   (lambda (a b) (and (jrec-comparable-method a) #t))
   (lambda (a b) (jnum->exact (jolt-invoke (jrec-comparable-method a) a b))))

@@ -165,6 +165,22 @@
               obj)))))
 (def-var! "jolt.host" "jolt-class-for" jolt-class-for)
 
+;; The class of an instance built before its type was REDEFINED (records.ss
+;; jrdesc-rtag): the old class, which on the JVM is another Class object than the
+;; new definition's although it has the same name. One token per retired
+;; descriptor, never interned by name -- the name now belongs to the new class --
+;; and marked in its state so = tells it from every other token of that name.
+(define retired-class-tokens (make-weak-eq-hashtable))
+(define (jolt-retired-class-token d)
+  (jolt-with-mutex hsc-mu
+    (or (hashtable-ref retired-class-tokens d #f)
+        (let ((o (make-jhost "class" (vector (jrdesc-tag d) 'retired))))
+          (hashtable-set! retired-class-tokens d o)
+          o))))
+(define (jclass-retired? x)
+  (let ((st (jhost-state x)))
+    (and (fx>? (vector-length st) 1) (eq? (vector-ref st 1) 'retired))))
+
 ;; Per-site cache for a class-name symbol: the token jolt-class-for answered,
 ;; with the drop epoch it answered in. The hook below bumps the epoch whenever it
 ;; drops a token, so the cached one is current while the epochs match. The epoch
@@ -223,8 +239,10 @@
 ;; strings are no longer = to a jclass — class-key survives for internal
 ;; dispatch boundaries only (multimethod tables, catch dispatch, isa?).
 (register-eq-arm! (lambda (a b) (and (jclass? a) (jclass? b)))
-                  (lambda (a b) (let ((ka (class-key a)) (kb (class-key b)))
-                                  (and ka kb (string=? ka kb) #t))))
+                  (lambda (a b) (if (or (jclass-retired? a) (jclass-retired? b))
+                                    (eq? a b)
+                                    (let ((ka (class-key a)) (kb (class-key b)))
+                                      (and ka kb (string=? ka kb) #t)))))
 ;; A deftype/defrecord TYPE TOKEN and (class inst) are the same Class object on
 ;; the JVM — identical?, not merely =. jolt spells them differently (the token is
 ;; the ctor procedure, so it stays callable) and they compared unequal, so
@@ -237,9 +255,16 @@
 (register-eq-arm! (lambda (a b)
                     (or (and (jclass? a) (procedure? b) (deftype-ctor-tag b) #t)
                         (and (jclass? b) (procedure? a) (deftype-ctor-tag a) #t)))
-                  (lambda (a b) (let ((ka (class-key a)) (kb (class-key b)))
-                                  (and ka kb (string=? ka kb) #t))))
-(register-hash-arm! jclass? (lambda (x) (jolt-hash (jclass-name x))))
+                  ;; a redefined type's old class is not its current type token
+                  (lambda (a b) (and (not (and (jclass? a) (jclass-retired? a)))
+                                     (not (and (jclass? b) (jclass-retired? b)))
+                                     (let ((ka (class-key a)) (kb (class-key b)))
+                                       (and ka kb (string=? ka kb) #t)))))
+;; A retired token is = only to itself, so it need not hash with its name; it
+;; hashes apart from it, as the JVM's two Class objects do.
+(register-hash-arm! jclass? (lambda (x) (if (jclass-retired? x)
+                                            (jolt-hash (string-append (jclass-name x) retired-tag-marker))
+                                            (jolt-hash (jclass-name x)))))
 ;; The nine primitive classes. jolt names them exactly as the JVM does — the
 ;; class `long` is spelled "long" — and they are in no class graph row, so this
 ;; literal set is what tells them from a reference class.
@@ -381,7 +406,14 @@
 (def-var! "jolt.host" "class-isa?"
   (lambda (child parent)
     (let ((cc (class-key child)) (pp (class-key parent)))
-      (if (and cc pp)
+      (cond
+        ;; a redefined type's old class (jolt-retired-class-token) is neither the
+        ;; new class nor below it; its supers still answer
+        ((and (jclass? parent) (jclass-retired? parent)) jolt-nil)
+        ((and cc pp (jclass? child) (jclass-retired? child)
+              (or (string=? cc pp) (string=? (hsc-last-segment cc) (hsc-last-segment pp))))
+         jolt-nil)
+        ((and cc pp)
           (let ((pseg (hsc-last-segment pp)))
             (if (let loop ((names (cons cc (jch-closure cc))))
                   (cond ((string=? pp "java.lang.Object") #t)
@@ -389,8 +421,8 @@
                         ((or (string=? pp (car names))
                              (string=? pseg (hsc-last-segment (car names)))) #t)
                         (else (loop (cdr names)))))
-                #t jolt-nil))
-          jolt-nil))))
+                #t jolt-nil)))
+        (else jolt-nil)))))
 
 ;; is NAME a class the host models (registered in the class graph, or a fn class)?
 ;; Object itself is modeled.

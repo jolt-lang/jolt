@@ -73,6 +73,13 @@
 ;; interface it implements? The cheap half of the record arm below (no class-graph
 ;; walk); type-implements-class? is memoized per (tag, name).
 (define (jrec-declares-class? tag tname)
+  (or (tag-names-class? tag tname)
+      ;; a protocol/interface the type implements (defprotocol generates an
+      ;; interface; (instance? SomeProtocol record) is true when the record
+      ;; implements it — core.match dispatches on instance? IPatternCompile).
+      (type-implements-class? tag tname)))
+;; Does TNAME name the type tagged TAG itself?
+(define (tag-names-class? tag tname)
   (or (string=? tag tname)
       ;; a simple name matches a qualified tag only at a `.` boundary:
       ;; "a.b.IntervalFD" is an IntervalFD, but "a.b.MultiIntervalFD" is NOT
@@ -80,11 +87,23 @@
       (let ((tl (string-length tag)) (nl (string-length tname)))
         (and (fx>? tl nl)
              (char=? (string-ref tag (fx- (fx- tl nl) 1)) #\.)
-             (string=? (substring tag (fx- tl nl) tl) tname)))
-      ;; a protocol/interface the type implements (defprotocol generates an
-      ;; interface; (instance? SomeProtocol record) is true when the record
-      ;; implements it — core.match dispatches on instance? IPatternCompile).
-      (type-implements-class? tag tname)))
+             (string=? (substring tag (fx- tl nl) tl) tname)))))
+;; instance?'s no for a value whose class was REDEFINED after it was built: the
+;; old class is not the new one (records.ss jrdesc-rtag), whatever the class
+;; graph -- whose row for the name is the new definition's -- or an arm keyed
+;; by the class name would say. Its own name spelled any way, the JVM's munged
+;; one included.
+(define (retired-own-class? tname val)
+  (cond ((jrec-retired? val)
+         (let ((tag (jrec-tag val)))
+           (or (tag-names-class? tag tname)
+               (string=? (jch-munge-segments tag) tname))))
+        ;; ...and a reify's protocol redefined after its site was laid out
+        ;; (records-dispatch.ss reify-retired-protos)
+        ((jreify? val)
+         (let ((rs (reify-retired-protos val)))
+           (and (pair? rs) (exists (lambda (p) (proto-class-match? p tname)) rs) #t)))
+        (else #f)))
 
 ;; A yes that the value's OWN type gives — the record or reify declares the class —
 ;; is the JVM's answer whatever any arm would add, so instance-check takes it before
@@ -102,7 +121,7 @@
          (let* ((t (vector-ref (jrdesc-ifc-of val) 8))
                 (hit (hashtable-ref t tname 'none)))
            (if (eq? hit 'none)
-               (let ((ans (and (jrec-declares-class? (jrec-tag val) tname) #t)))
+               (let ((ans (and (jrec-declares-class? (jrec-rtag val) tname) #t)))
                  (jolt-with-mutex jrdesc-ifc-mutex (hashtable-set! t tname ans))
                  ans)
                hit)))
@@ -119,10 +138,10 @@
     (cond
       ((jrec? val)
        (let ((tag (jrec-tag val)))
-         (or (jrec-declares-class? tag tname)
+         (or (jrec-declares-class? (jrec-rtag val) tname)
              ;; the class graph: a declared interface's own ancestry answers too
              ;; (IPersistentMap is an Associative is an IPersistentCollection).
-             (jch-isa? tag tname))))
+             (and (not (retired-own-class? tname val)) (jch-isa? tag tname)))))
       ((jreify? val) (or (reify-declares-class? (jreify-protos val) tname) (reify-class-isa? val tname)))
       ((ex-info-map? val) (exception-isa? (last-dot (ex-info-class val)) (last-dot tname)))
       (else (case-string tname val)))))
@@ -180,7 +199,9 @@
 ;; registration can only understamp.
 (define (instance-kind-key val)
   (cond ((jrec? val) (jrec-desc val))
-        ((jreify? val) (and (not (jreify-delegate val)) (jreify-protos val)))
+        ;; a reify whose site lost a protocol answers apart from the sites that
+        ;; share its protocol list, so it is not memoized under that list
+        ((jreify? val) (and (not (jreify-delegate val)) (null? (reify-retired-protos val)) (jreify-protos val)))
         ((class-fast-name val))
         (else (ref-kind-key val))))
 ;; Without a key every (instance? IRef an-atom) walked the arms and the taxonomy,
@@ -280,6 +301,9 @@
       (and (symbol-t? t) (symbol-t? st-t)
            (eq? (symbol-t-name t) (symbol-t-name st-t))
            (eq? (symbol-t-ns t) (symbol-t-ns st-t)))))
+(define (retired-class-arg? t) (and (jclass? t) (jclass-retired? t)))
+(define (retired-class-instance? t val)
+  (and (jrec-retired? val) (eq? t (jolt-retired-class-token (jrec-desc val)))))
 (define (jolt-instance-site site t val)
   (let ((st (vector-ref site 0))
         (k (instance-kind-key val)))
@@ -292,7 +316,11 @@
          (ts (if same-t (vector-ref st 1) (instance-type-arg t)))
          (tname (if same-t (vector-ref st 2) (and (symbol-t? ts) (symbol-t-name ts))))
          (epoch (instance-kind-epoch))
-         (ans (cond ((or (not k) (not tname) (root-object-type? ts)) 'uncached)
+         ;; a retired class's answer is a function of the token and the
+         ;; receiver's descriptor alone, so it caches like any other
+         (ans (cond ((and k (retired-class-arg? t)) (retired-class-instance? t val))
+                    ((or (not k) (not tname) (root-object-type? ts)) 'uncached)
+                    ((retired-own-class? tname val) #f)
                     ((own-type-declares? tname val) #t)
                     (else
                      (let* ((e (instance-kind-entry k tname ts val))
@@ -312,7 +340,7 @@
 ;; unit rows compare the two).
 (define (instance-check-walk ts val)
   (let loop ((rs instance-check-registry))
-    (if (null? rs)
+    (if (or (null? rs) (and (symbol-t? ts) (retired-own-class? (symbol-t-name ts) val)))
         (instance-check-base ts val)
         (let ((r ((car rs) ts val)))
           (if (eq? r 'pass) (loop (cdr rs)) r)))))
@@ -324,7 +352,11 @@
   ;; (schema's record*/class-schema hold the type as a value, not a literal symbol).
   (let ((ts (instance-type-arg type-sym0)))
     (cond
+      ;; a redefined type's OLD class (class-model.ss jolt-retired-class-token)
+      ;; holds exactly the instances built before the redefinition
+      ((retired-class-arg? type-sym0) (retired-class-instance? type-sym0 val))
       ((root-object-type? ts) (not (jolt-nil? val)))
+      ((and (symbol-t? ts) (retired-own-class? (symbol-t-name ts) val)) #f)
       ((and (symbol-t? ts) (own-type-declares? (symbol-t-name ts) val)) #t)
       ((and (symbol-t? ts) (instance-kind-key val))
        => (lambda (key) (instance-check-kind key (symbol-t-name ts) ts val)))

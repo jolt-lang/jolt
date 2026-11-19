@@ -185,7 +185,10 @@
 ;; — a stale entry that revalidation could never catch. Reading it first can only
 ;; understamp, which costs one re-derivation.
 (define (jrdesc-derive-ifc d record?)
+  ;; TAG is the type's place in the class graph; RTAG where its impls are filed,
+  ;; which differs for a redefined type's old instances (records.ss jrdesc-rtag)
   (let ((tag (jrdesc-tag d))
+        (rtag (jrdesc-rtag d))
         (epoch (jrdesc-ifc-epoch)))
     (vector epoch
             (and (not record?)
@@ -204,12 +207,12 @@
                        (else #f)))
             (jch-isa? tag "java.lang.CharSequence")
             record?
-            (and (not record?) (tag-declares-coll-iface? tag))
+            (and (not record?) (tag-declares-coll-iface? rtag))
             ;; slot 5: declares clojure.lang.Sequential. Derived here with the
             ;; rest because it is asked on the EQUALITY path — every (= record x)
             ;; consults it for both operands — and answering it from the protocol
             ;; table meant a mutex and a key-vector allocation per comparison.
-            (and (not record?) (tag-declares-sequential? tag))
+            (and (not record?) (tag-declares-sequential? rtag))
             ;; slot 6: a bare deftype's DECLARED ILookup, as (3-arity . 2-arity);
             ;; either half may be #f. The JVM gives a bare deftype no key lookup
             ;; of its own, so a declared valAt IS the lookup and answers for
@@ -221,8 +224,8 @@
             ;; Derived here, so the get path pays the vector-ref it already pays
             ;; for the flags above rather than two string hashes per lookup.
             (and (not record?)
-                 (let ((m3 (find-method-any-protocol-arity tag "valAt" 3))
-                       (m2 (find-method-any-protocol-arity tag "valAt" 2)))
+                 (let ((m3 (find-method-any-protocol-arity rtag "valAt" 3))
+                       (m2 (find-method-any-protocol-arity rtag "valAt" 2)))
                    ;; -arity falls back to ANY same-named impl when no arity
                    ;; matches, so each half is confirmed against the procedure
                    ;; before it is kept — a type declaring only (valAt [_ k])
@@ -253,12 +256,12 @@
             ;; a java.util.Map that is not an IPersistentMap or also declares
             ;; MapEquivalence (APersistentMap.equiv's test — flatland's ordered
             ;; map passes it, a defrecord does not), a java.util.Set.
-            (let ((equiv (find-method-any-protocol tag "equiv")))
+            (let ((equiv (find-method-any-protocol rtag "equiv")))
               (vector equiv
-                      (find-method-any-protocol tag "equals")
+                      (find-method-any-protocol rtag "equals")
                       (and (or record? equiv (jch-isa? tag "clojure.lang.IPersistentCollection")) #t)
                       (and (not record?)
-                           (or (tag-declares-sequential? tag) (jch-isa? tag "java.util.List")) #t)
+                           (or (tag-declares-sequential? rtag) (jch-isa? tag "java.util.List")) #t)
                       (and (jch-isa? tag "java.util.Map")
                            (or (not (jch-isa? tag "clojure.lang.IPersistentMap"))
                                (jch-isa? tag "clojure.lang.MapEquivalence"))
@@ -269,7 +272,7 @@
             ;; slot 14: a PLAIN record — see jrec-plain? below
             (and record?
                  (not (jch-isa? tag "java.lang.CharSequence"))
-                 (not (exists (lambda (nm) (find-method-any-protocol tag nm))
+                 (not (exists (lambda (nm) (find-method-any-protocol rtag nm))
                               jrec-map-method-names)))
             ;; slot 15: the type's ^double field flags (chez-record-dbl-tbl), or
             ;; #f — what assoc widens a replaced field by, read here rather than
@@ -282,8 +285,8 @@
             ;; by-name lookups. Not the plain flag: a type is plain only when
             ;; it declares none of a long list of names (rewrite-clj's nodes
             ;; declare a protocol method named length, which is CharSequence's).
-            (let ((m (find-method-any-protocol tag "meta"))
-                  (w (find-method-any-protocol tag "withMeta")))
+            (let ((m (find-method-any-protocol rtag "meta"))
+                  (w (find-method-any-protocol rtag "withMeta")))
               (and (or m w) (cons m w))))))
 ;; The derived vector of the descriptor asked last, as (desc . vector). Every
 ;; record op opens with jrdesc-ifc-of, and a weak-table probe is most of what a
@@ -355,7 +358,7 @@
   (let* ((t (vector-ref (jrdesc-ifc-of x) 7))
          (hit (hashtable-ref t method 'none)))
     (if (eq? hit 'none)
-        (let ((m (find-method-any-protocol (jrec-tag x) method)))
+        (let ((m (find-method-any-protocol (jrec-rtag x) method)))
           (jolt-with-mutex jrdesc-ifc-mutex (hashtable-set! t method m))
           m)
         hit)))
@@ -374,7 +377,8 @@
          (hit (hashtable-ref t iface 'none)))
     (if (eq? hit 'none)
         (let* ((tag (jrec-tag x))
-               (ans (or (jrec-declares-class? tag iface) (jch-isa? tag iface))))
+               (ans (or (jrec-declares-class? (jrec-rtag x) iface)
+                        (and (not (retired-own-class? iface x)) (jch-isa? tag iface)))))
           (jolt-with-mutex jrdesc-ifc-mutex (hashtable-set! t iface ans))
           ans)
         hit)))
@@ -402,7 +406,7 @@
          (hit (assv nargs (hashtable-ref t method '()))))
     (if hit
         (cdr hit)
-        (let ((m (find-method-any-protocol-arity (jrec-tag x) method nargs)))
+        (let ((m (find-method-any-protocol-arity (jrec-rtag x) method nargs)))
           (jolt-with-mutex jrdesc-ifc-mutex
             (hashtable-set! t method (cons (cons nargs m) (hashtable-ref t method '()))))
           m))))
