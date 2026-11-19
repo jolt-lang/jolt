@@ -1,24 +1,27 @@
 ;; post-prelude overrides — loaded AFTER the assembled clojure.core
 ;; prelude, so these win over the overlay's own def-var!.
 
-;; Capture the standard comp before any user code can write its linked root.
-;; A tree-shaken prelude can omit it entirely.
-(define jolt-vector-filter-map-comp
-  (let ((cell (var-cell-lookup "clojure.core" "comp")))
-    (and cell (var-cell-root cell))))
+;; An identity guard can capture a procedure without making its Var a runtime
+;; root. The linked call sites keep their own Vars alive and take ordinary
+;; dispatch on a guard miss. Capture before app code can change the root. A
+;; missing or unbound Var gets a private token, so even a call through a
+;; non-procedure such as #f cannot accidentally enable the fast path.
+(define (capture-optional-guard-procedure ns name)
+  (let* ((cell (var-cell-lookup ns name))
+         (root (and cell (var-cell-root cell))))
+    (if (procedure? root) root (gensym "missing-guard-procedure"))))
 
-;; Linked references follow changes to the root. Only calls that read this
-;; procedure can participate in a guarded rebuild.
+(define jolt-vector-filter-map-comp
+  (capture-optional-guard-procedure "clojure.core" "comp"))
+
 (define jolt-assoc-in-original
-  (let ((cell (var-cell-lookup "clojure.core" "assoc-in")))
-    (and cell (var-cell-root cell))))
+  (capture-optional-guard-procedure "clojure.core" "assoc-in"))
 
 ;; Guard the linked root read at each scalar update site and the helper its
 ;; standard body resolves dynamically. Read the helper's cell only on a root hit.
 (define jolt-loop-map-update?
-  (let* ((cell (var-cell-lookup "clojure.core" "update"))
-         (standard (and cell (var-cell-root cell)))
-         (helper (jolt-var "jolt.host" "try-map-update")))
+  (let ((standard (capture-optional-guard-procedure "clojure.core" "update"))
+        (helper (jolt-var "jolt.host" "try-map-update")))
     (lambda (f)
       (and (eq? f standard)
            (eq? (var-cell-deref helper) jolt-try-map-update)))))
