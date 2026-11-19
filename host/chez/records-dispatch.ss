@@ -1519,6 +1519,12 @@
           (hashtable-set! reify-shape-memo shape layout)
           (hashtable-set! reify-site-protos slots protos))
         layout)))
+;; A reify site's shape, laid out as the code holding the site LOADS (the reify
+;; macro wraps it in load-time-value): that is when the JVM compiles the reify's
+;; class against the protocol interfaces of the moment, so a protocol redefined
+;; after it is one the site does not implement, whenever its first instance is
+;; built (forget-reify-protocol! finds the layout).
+(def-var! "jolt.host" "reify-site-shape" (lambda (shape) (reify-shape-layout shape) shape))
 ;; Every reify site's slot table -> its protocols, held as long as an instance
 ;; the site built is (each holds the table), whether or not the site's shape
 ;; literal still is: what a protocol redefinition walks

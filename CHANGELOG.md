@@ -21,7 +21,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiled before the protocol was redefined still makes the old interface's
   call, so a type that declared the protocol back then answers it there, and
   `extenders`/`extends?` name a redefined type's extended old class as the JVM
-  does.
+  does. A reify site keeps the protocols it was compiled against even when its
+  first instance is built after one of them is redefined.
+
+- **A reify's class is named as the JVM's compiler names it.** The enclosing
+  fn's class (a defn's `ns$f`, a nested `fn`, a named fn, a top-level form's
+  `ns$evalN`, the fn a `try` or expression-position `loop` is wrapped in, a
+  deftype's own class) with its trailing `__N` trimmed, then `$reify__N`, where
+  every reify used to be `ns$reify__N`. Only the counters differ from the JVM's.
+
+- **`instance?` casts its type argument to `Class`.** A protocol (its map), a
+  keyword, a string or a quoted symbol throws the JDK's `ClassCastException`,
+  and nil the `NullPointerException`, where jolt answered as if the protocol
+  were its interface. The interface itself (`(instance? my.ns.P x)`) still
+  answers.
 - Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
 
 - **The reference fns call a user type's `clojure.lang` interface methods.**

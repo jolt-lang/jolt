@@ -4408,6 +4408,11 @@
           (hashtable-set! reify-site-protos slots protos))
         layout)))
 
+(def-var!
+  "jolt.host"
+  "reify-site-shape"
+  (lambda (shape) (reify-shape-layout shape) shape))
+
 (define reify-site-protos (make-weak-eq-hashtable))
 
 (define reify-retired-box (box #f))

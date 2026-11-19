@@ -1010,7 +1010,7 @@
            (let ((m na-store-memo))
              ;; the memo is always the two-slot vector built here, so the
              ;; reads skip vector-ref's type and bounds checks
-             (and (eq? (#3%vector-ref m 0) k) (eq? (#3%vector-ref m 1) (na-store-key-fast x))))
+             (and (eq? (sa-uvector-ref m 0) k) (eq? (sa-uvector-ref m 1) (na-store-key-fast x))))
            (jolt-nil? x))))))
 (define (na-array-set! a k v)
   (let ((kind (jolt-array-kind a))

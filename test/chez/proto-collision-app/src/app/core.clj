@@ -9,5 +9,5 @@
   (println (str "A=" (a/greet 1) " B=" (b/greet 1)
                 " reified=" (a/greet (a/reified))
                 " cross-instance=" (instance? pb.core.Greeter (a/reified))
-                " own-instance=" (instance? pa.core/Greet (a/reified))
+                " own-instance=" (instance? pa.core.Greet (a/reified))
                 " satisfies=" (satisfies? pa.core/Greet (a/reified)))))

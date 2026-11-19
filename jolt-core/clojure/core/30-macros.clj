@@ -105,11 +105,17 @@
 ;; A symbol naming a PROTOCOL passes its ns-qualified key instead of the bare
 ;; name, so (instance? Shape x) asks about the Shape of THIS namespace — the JVM
 ;; resolves the same symbol to one specific generated interface.
+;; A type argument that is not a class name the macro resolves itself -- a local,
+;; an expression, a protocol's var (ns/P, or a bare P naming it; its value is the
+;; protocol's map), any non-symbol -- is cast to Class at run time, as the JVM's
+;; isInstance does (jolt.host/class-arg). A protocol's INTERFACE, the dotted
+;; my.ns.P, is a class name.
 (defmacro instance? [t x]
-  (let [local? (or (seq? t) (contains? &env t))
-        pkey (when (and (symbol? t) (not local?)) (jolt.host/protocol-key-of t))]
+  (let [local? (or (seq? t) (contains? &env t) (not (symbol? t)))
+        pkey (when (and (symbol? t) (not local?)) (jolt.host/protocol-key-of t))
+        pvar? (and pkey (or (namespace t) (not (some #(= % \.) (name t)))))]
     (cond
-      local? `(instance-check ~t ~x)
+      (or local? pvar?) `(instance-check (jolt.host/class-arg ~t) ~x)
       pkey `(instance-check ~pkey ~x)
       ;; an array class symbol (String/1, long/2) evaluates to its Class
       (and (symbol? t) (namespace t) (contains? #{"1" "2" "3" "4" "5" "6" "7" "8" "9"} (name t)))
@@ -135,7 +141,9 @@
 ;; became the recur TARGET: (loop [] (locking o (recur))) spun forever instead of
 ;; being refused.
 (defmacro locking [x & body]
-  `(jolt.host/with-monitor ~x (fn* [] (try ~@body))))
+  ;; the thunk is no class of the reference's (it has a let and a try), so it
+  ;; names nothing (jolt.analyzer *objx*)
+  `(jolt.host/with-monitor ~x (~(with-meta 'fn* {:jolt/same-objx true}) [] (try ~@body))))
 
 ;; STM macros over the host transaction seams (refs.ss). sync keeps the
 ;; reference's (sync flags & body) shape — flags are ignored, like the JVM.
@@ -763,7 +771,11 @@
 ;; a method of the class rather than a fn: the reference's NewInstanceMethod has
 ;; no 20-param limit (jolt.analyzer.hints/arglist-type-method?).
 (defn- type-method-clause [clause]
-  (cons (vary-meta (first clause) assoc :jolt/type-method true) (rest clause)))
+  (cons (vary-meta (first clause) assoc :jolt/type-method true
+                   ;; the class it is a method of, which names a reify inside it
+                   ;; (jolt.analyzer *objx*)
+                   :jolt/objx (str (munge (str *ns*)) "." (name (:jolt/type-name (meta (first clause))))))
+        (rest clause)))
 
 ;; inline impls register for dispatch but are NOT extenders of the
 ;; protocol (the JVM compiles them into the class) — register-inline-method,
@@ -777,7 +789,8 @@
               (cons `(register-inline-protocol! ~(name tname) ~proto)
                     (map (fn [nm]
                            `(register-inline-method ~(name tname) ~proto ~nm
-                                                    (fn ~@(map type-method-clause (get by-name nm)))))
+                                                    (fn ~@(map (fn [c] (type-method-clause (cons (vary-meta (first c) assoc :jolt/type-name (name tname)) (rest c))))
+                                                               (get by-name nm)))))
                          names))))
           groups))
 
@@ -1173,6 +1186,43 @@
 (defmacro definterface [name-sym & body]
   `(do (def ~name-sym {}) (quote ~name-sym)))
 
+;; A generated class's N, from where its form sits: what the reify macro has
+;; always minted, and what the enclosing classes' N's come from too.
+(defn- objx-pos-id [pos]
+  (if (and pos (:line pos))
+    (+ 1000000000 (mod (hash [*file* (:line pos) (:column pos)]) 1000000000))
+    (name (gensym ""))))
+;; The class name an enclosing-class path spells (jolt.analyzer *objx*): its root
+;; -- a namespace, munged, or a type's class -- then each class's simple name.
+(defn- objx-path-name [path]
+  (let [root (first path)]
+    (apply str (if (map? root) (:class root) (munge (str root)))
+           (map (fn [seg]
+                  (let [k (nth seg 0) n (nth seg 1) id (objx-pos-id (nth seg 2))
+                        simple (case k
+                                 :fn (str "fn__" id)
+                                 :named (str n "__" id)
+                                 :def n
+                                 :def-id (str n "__" id)
+                                 :eval (str "eval" id))]
+                    (str "$" (apply str (map (fn [c] (if (= c \.) "_DOT_" c)) (munge simple))))))
+                (rest path)))))
+;; Compiler.trimGenID: s up to its last "__", if it has one. Plain seq fns, not
+;; String methods: the macro runs on every host.
+(defn- trim-gen-id [s]
+  (loop [i (- (count s) 2)]
+    (cond (neg? i) s
+          (and (= \_ (nth s i)) (= \_ (nth s (inc i)))) (subs s 0 i)
+          :else (recur (dec i)))))
+(defn- reify-class-name [form]
+  (let [f (resolve 'jolt.analyzer/current-objx-name)
+        o (when f (f))
+        pos (meta form)
+        base (cond (= o :top) (str (munge (str *ns*)) "$eval" (objx-pos-id pos))
+                   (vector? o) (trim-gen-id (objx-path-name o))
+                   :else (munge (str *ns*)))]
+    (str base "$reify__" (objx-pos-id pos))))
+
 ;; make-reified-at is a fn (clojure.core). The site's SHAPE — its method names and
 ;; protocol keys, as a literal [[name …] [proto …]] of strings — is a constant, so
 ;; the compiled site binds it once and every instance hands the runtime the same
@@ -1188,26 +1238,25 @@
   ;; its last run of methods (impl-groups), and one method declared twice is
   ;; refused (merge-method-specs).
   ;;
-  ;; The third element of the shape names the class: ns$reify__N, one per reify
-  ;; form, as the JVM generates one class per form (its name also carries the
-  ;; enclosing fn and an eval counter, which jolt cannot reproduce). N comes from
-  ;; where the form sits (file, line, column), so a form compiled into the AOT
-  ;; cache and one expanded fresh in a later process can never share a name; a
-  ;; form with no position takes a gensym, below the position range
-  (let [cls (str (apply str (map (fn [c] (if (= c \-) \_ c)) (str *ns*))) "$"
-                 (let [{:keys [line column]} (meta &form)]
-                   (if line
-                     (str "reify__" (+ 1000000000 (mod (hash [*file* line column]) 1000000000)))
-                     (gensym "reify__"))))
+  ;; The third element of the shape names the class as Compiler names a reify's:
+  ;; the enclosing fn's class with its trailing __N trimmed (or the namespace),
+  ;; then $reify__N (reify-class-name). Each N comes from where its form sits
+  ;; (file, line, column), so a form compiled into the AOT cache and one expanded
+  ;; fresh in a later process can never share a name; a form with no position
+  ;; takes a gensym. The JVM's N is one global counter instead.
+  (let [cls (reify-class-name &form)
         ;; methods before any protocol name sit under a nil head
         groups (impl-groups (if (or (empty? forms) (symbol? (first forms))) forms (cons nil forms)))
         protos (remove nil? (map first groups))
         specs (mapcat rest groups)
         methods (merge-method-specs cls specs)
         order (distinct (map (fn [x] (name (first x))) specs))]
+    ;; the site's layout is built as its code LOADS, the JVM's compile of the
+    ;; reify class: a protocol redefined after that is not the one the site
+    ;; implements (records-dispatch.ss reify-site-shape)
     `(make-reified-at
-       [[~@order] [~@(map protocol-key protos)] ~cls]
-       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(vary-meta (nth x 1) assoc :jolt/type-method true) ~@(method-recur-body (nth x 1) (body-sym-names (drop 2 x)) (drop 2 x))))
+       (jolt.host/load-time-value (jolt.host/reify-site-shape [[~@order] [~@(map protocol-key protos)] ~cls]))
+       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(vary-meta (nth x 1) assoc :jolt/type-method true :jolt/objx cls) ~@(method-recur-body (nth x 1) (body-sym-names (drop 2 x)) (drop 2 x))))
                                   (get methods k))))
               order))))
 
@@ -1285,7 +1334,8 @@
                      (cons `(register-inline-protocol! ~(name name-sym) ~proto)
                            (map (fn [nm]
                                   `(register-inline-method ~(name name-sym) ~proto ~nm
-                                                           (fn ~@(map type-method-clause (get by-name nm)))))
+                                                           (fn ~@(map (fn [c] (type-method-clause (cons (vary-meta (first c) assoc :jolt/type-name (name name-sym)) (rest c))))
+                                                                      (get by-name nm)))))
                                 names))))
                  groups))))
 

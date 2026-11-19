@@ -735,6 +735,20 @@
            :jvm "nil"
            :jolt ":x"}
    :note "No method signatures; reify has always behaved this way."}
+  ;; Generated class names carry a counter: the JVM's is RT.nextID, one sequence
+  ;; for every class, fn, eval wrapper and constant id the process has compiled,
+  ;; so a name depends on everything compiled before it. jolt mints each N from
+  ;; where its form sits (file, line, column), so the same source names the same
+  ;; class in every process -- a form compiled into the AOT cache and one
+  ;; expanded fresh can never share a name. The shape around the counters is the
+  ;; reference's (unit.edn jvm-misc "a reify's class is named as Compiler names it").
+  {:category :host-model
+   :behavior "(.getName (class (reify clojure.lang.IDeref (deref [_] 1)))) in a defn, a nested fn or a top-level form"
+   :jvm "user$f$reify__142, user$eval140$reify__141 -- N from the process-wide counter"
+   :jolt "user$f$reify__1652772568, user$eval1948859455$reify__1740462644 -- N from the form's position"
+   :check :prose
+   :why "the JVM's N is a process-global sequence that depends on everything compiled before the form, so no expression has a fixed value to record"
+   :note "Only the counters differ: the enclosing class path, munging and trimming are Compiler's."}
   {:category :numeric-model
    :behavior "(loop [i 5] (+ i 9223372036854775807))"
    :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"

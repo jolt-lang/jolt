@@ -50,7 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          with-ret-nhint fi-tag-class fi-adapt-form
-                                         parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method?
+                                         parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method? arglist-meta
                                          str-target-type kw-target-type sb-target-type]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
@@ -102,6 +102,87 @@
   (reset! gensym-counter n))
 
 (defn- empty-env [] {:locals #{} :hints {}})
+
+;; ---- the JVM class each piece of code would compile into -------------------------
+;; A reify names its class after the code it sits in, as Compiler does: the
+;; enclosing fn's class (its trailing __N trimmed) or the namespace, then
+;; $reify__N. That class is an ObjExpr's name, built from the namespace, the
+;; enclosing fn classes and the def a fn initializes (FnExpr.parse): a fn a def
+;; names is ns$name (name__N when it sits inside another fn), a named fn name__N,
+;; any other fn__N; a top-level form that is not a def* is compiled as the fn
+;; ns$evalN (Compiler.eval), and a try that is not in return position or a loop
+;; in expression position is wrapped in a fn of its own.
+;;
+;; The env carries the enclosing class as a PATH (:objx, nil at namespace level):
+;; its root -- the namespace name, or {:class name} for a type's own method --
+;; then one segment per class, [kind name position], kind one of :fn :named :def
+;; :def-id :eval. Nothing is spelled here: the reify macro spells the path when
+;; it expands (munging, and minting each N from its form's position as it mints
+;; its own), so a fn pays one conj. The env also carries the context of the form
+;; being analyzed (:cx -- :return, :statement, :expression, or :eval for what
+;; a top-level def's init is analyzed in, where a let, loop, letfn, try or throw
+;; is wrapped too), whether it is a top-level form (:top?) and the name a def
+;; hands its init (:def-name).
+(def ^:dynamic *objx* nil)
+(defn- objx-in [ctx env seg]
+  (conj (or (:objx env) [(compile-ns ctx)]) seg))
+;; The enclosing class path a macro expanding here sees: a path, :top for a
+;; top-level form (its class, ns$evalN, is decided once it has expanded), or nil
+;; at namespace level. The reify macro reads it.
+(defn current-objx-name [] *objx*)
+;; A top-level form whose head names a def* is evaluated directly; anything else
+;; is compiled as a fn (Compiler.eval's startsWith("def") test, after expansion).
+;; jolt's defmulti and defmethod expand to calls of its own -setup fns where the
+;; reference's are a let and a .addMethod call, so those do not count.
+(defn- def-head? [form]
+  (let [h (first (form-elements form))
+        n (when (form-sym? h) (form-sym-name h))]
+    (and n (>= (count n) 3) (= "def" (subs n 0 3))
+         (not= n "defmethod-setup") (not= n "defmulti-setup"))))
+(defn- top-eval-env [ctx form env]
+  (-> (dissoc env :top?) (assoc :objx [(compile-ns ctx) [:eval nil (form-position form)]])))
+;; The env a list form's handler analyzes its parts in: parts are expressions
+;; unless the handler says otherwise from :here, this form's own context.
+(defn- child-env [ctx form env sf-name]
+  (let [top? (:top? env)
+        here (or (:cx env) :expression)
+        [env here] (cond
+                     (not top?) [env here]
+                     (= sf-name "do") [env :return]
+                     (def-head? form) [(dissoc env :top?) :eval]
+                     :else [(top-eval-env ctx form env) :return])
+        env (if (= sf-name "fn*") env (dissoc env :def-name))]
+    ;; a part is an expression, or analyzed in :eval under :eval (Compiler's
+    ;; context == C.EVAL ? context : C.EXPRESSION). :up-here is the context of
+    ;; the form this one is a part of, which a ^:jolt/same-objx fn takes.
+    (assoc env :cx (if (= here :eval) :eval :expression) :here here :up-here (:here env))))
+;; Does a let/loop/letfn/try/throw in context HERE compile as a fn of its own?
+;; Every one does under :eval; a try anywhere but return position; a loop in
+;; expression position.
+(defn- wraps? [here kind]
+  (or (= here :eval)
+      (and (= kind :try) (not= here :return))
+      (and (= kind :loop) (= here :expression))))
+;; A body: every form but the last is a statement, the last takes CX (all of
+;; them :eval under :eval, as BodyExpr does).
+(defn- analyze-body [ctx forms env cx]
+  (let [fs (vec forms)
+        n (count fs)
+        senv (assoc env :cx (if (= cx :eval) :eval :statement))
+        lenv (assoc env :cx cx)
+        v (mapv (fn [i] (analyze ctx (nth fs i) (if (= i (dec n)) lenv senv))) (range n))]
+    (cond
+      (zero? n) (const nil)
+      (= 1 n) (first v)
+      :else (do-node (subvec v 0 (dec n)) (peek v)))))
+;; The fn a try or loop is wrapped in when its context asks for one.
+(defn- wrapper-env [ctx form env]
+  (assoc env :objx (objx-in ctx env [:fn nil (form-position form)]) :here :return
+             :cx :expression))
+;; A head the jolt macros mark ^:jolt/same-objx is code of theirs the
+;; reference's expansion has no class for (locking's thunk, doseq's block loop).
+(defn- same-objx? [items]
+  (let [hm (form-sym-meta (first items))] (and (map? hm) (get hm :jolt/same-objx) true)))
 (defn- local? [env nm] (contains? (:locals env) nm))
 ;; A new binding of a name forgets what was known about the one it shadows: its
 ;; type hint and its JVM primitive type. An outer ^String s used to lend its hint
@@ -310,7 +391,7 @@
         ;; One of the two recur-target roots (the other is loop*): the body is
         ;; where a recur against THIS arity may legally sit, so it is where the
         ;; tail-position check starts.
-        body-node (analyze-seq ctx body env*)
+        body-node (analyze-body ctx body (dissoc env* :body-cx) (or (:body-cx env*) :return))
         _ (check-recur-tails! body-node)
         arity {:params fixed
                :body body-node}
@@ -341,6 +422,32 @@
         k (arglist-ret-nkind params-form)]
     (if (and k (not (:ret-nhint a))) (assoc a :ret-nhint k) a)))
 
+;; The class this fn compiles into (see *objx*). A type's method (the deftype,
+;; defrecord and reify macros mark its arglist with the class's name) is a method
+;; OF that class, not a class of its own; a fn the jolt macros add where the
+;; reference's expansion has none (^:jolt/same-objx on the fn* symbol) stays in
+;; its enclosing class, its body in the context of the call it is passed to (the
+;; reference's code sits there inline); defn's own name for its fn is the def's.
+(defn- fn-objx-env [ctx form items env named fn-name rest-items]
+  (let [p1 (first rest-items)
+        pm (arglist-meta (if (form-list? p1) (first (form-elements p1)) p1))
+        hm (form-sym-meta (first items))
+        dn (:def-name env)
+        env (dissoc env :def-name)]
+    (cond
+      (and (map? pm) (string? (get pm :jolt/objx))) (assoc env :objx [{:class (get pm :jolt/objx)}])
+      (or (and (map? hm) (get hm :jolt/same-objx)) (and (map? pm) (get pm :jolt/same-objx)))
+      (assoc env :body-cx (or (:up-here env) :expression))
+      :else
+      (let [nm (when named (form-sym-meta (nth items 1)))
+            defn-self? (and (map? nm) (get nm :jolt/defn))
+            pos (form-position form)
+            seg (cond (and named (not defn-self?)) [:named fn-name pos]
+                      dn (if (:objx env) [:def-id dn pos] [:def dn pos])
+                      defn-self? [:def fn-name pos]
+                      :else [:fn nil pos])]
+        (assoc env :objx (objx-in ctx env seg))))))
+
 ;; Is the form's own head already the bare, meta-free symbol fn*? Then the form IS
 ;; what :src-form rebuilds and the rebuild can be skipped — see analyze-fn.
 (defn- fn-head-canonical? [items]
@@ -354,6 +461,7 @@
   (let [named (form-sym? (nth items 1))
         fn-name (when named (form-sym-name (nth items 1)))
         rest-items (if named (drop 2 items) (drop 1 items))
+        env (fn-objx-env ctx form items env named fn-name rest-items)
         first* (strip-arglist-meta (first rest-items))
         node (cond
                (form-vec? first*)
@@ -458,8 +566,9 @@
     (list 'throw evar)
     (reverse catches)))
 
-(defn- analyze-try [ctx items env]
-  (let [parts (reduce add-try-clause
+(defn- analyze-try [ctx form items env]
+  (let [env (if (wraps? (or (:here env) :expression) :try) (wrapper-env ctx form env) env)
+        parts (reduce add-try-clause
                       {:body [] :catches [] :finally nil :finally? false}
                       (rest items))]
     ;; Multiple catch clauses dispatch on the thrown value's class, in order. Lower
@@ -484,18 +593,18 @@
     ;; finally is not a tail position in the first place and reports as such.
     (let [benv (assoc env :recur-blocked :try)
           tenv (assoc env :recur-blocked :non-tail)
-          n {:op :try :body (analyze-seq ctx (:body parts) benv)}
+          n {:op :try :body (analyze-body ctx (:body parts) benv :return)}
           n (if (seq (:catches parts))
               (let [evar-name (gen-name "catch")
                     raw-name (gen-name "catch-raw")
                     evar (symbol evar-name)]
                 (assoc n :catch-sym evar-name
                          :catch-raw-sym raw-name
-                         :catch-body (analyze-seq ctx (list (catch-dispatch-form evar (:catches parts)))
-                                                  (add-locals tenv [evar-name]))))
+                         :catch-body (analyze-body ctx (list (catch-dispatch-form evar (:catches parts)))
+                                                   (add-locals tenv [evar-name]) :expression)))
               n)
           n (if (:finally parts)
-              (assoc n :finally (analyze-seq ctx (:finally parts) tenv))
+              (assoc n :finally (analyze-body ctx (:finally parts) tenv :statement))
               n)]
       n)))
 
@@ -505,8 +614,9 @@
 ;; BEFORE analyzing any fn form — each then resolves its siblings (and itself) as
 ;; locals. Emitted as a :let flagged :letrec so the back end lowers it to
 ;; `letrec*`; the interpreter's shared mutable env gives the same semantics.
-(defn- analyze-letfn* [ctx items env]
-  (let [bvec  (binding-vector items)
+(defn- analyze-letfn* [ctx form items env]
+  (let [env   (if (wraps? (:here env) :letfn) (wrapper-env ctx form env) env)
+        bvec  (binding-vector items)
         n     (quot (count bvec) 2)
         names (mapv (fn [i] (form-sym-name (nth bvec (* 2 i)))) (range n))
         env*  (add-locals env names)
@@ -515,7 +625,7 @@
                        (analyze ctx (nth bvec (inc (* 2 i))) env*)])
                     (range n))]
     {:op :let :letrec true :bindings binds
-     :body (analyze-seq ctx (drop 2 items) env*)}))
+     :body (analyze-body ctx (drop 2 items) env* (or (:here env) :expression))}))
 
 ;; Clojure evaluates def metadata values as expressions: ^{:k (f)} stores the
 ;; result of (f), ^{:a some-fn} stores the fn value. Build an IR map that evaluates
@@ -621,7 +731,7 @@
             node-meta (if has-doc (assoc base-meta :doc (nth items 2)) base-meta)]
         (host-intern! ctx cur nm)
         ;; a ^double/^long return hint on the name applies to all arities of the fn.
-        (let [node (def-node cur nm (with-ret-nhint (analyze ctx val-form env) (tag->nkind tag)) node-meta)
+        (let [node (def-node cur nm (with-ret-nhint (analyze ctx val-form (assoc env :def-name nm)) (tag->nkind tag)) node-meta)
               me (def-meta-expr ctx node-meta env)]
           (if me (assoc node :meta-expr me) node))))))
 
@@ -740,26 +850,35 @@
                     (if (< (count items) 3)
                       "Too few arguments to if"
                       "Too many arguments to if")))
-  (if-node (analyze ctx (nth items 1) env)
-           (analyze ctx (nth items 2) env)
-           (if (> (count items) 3)
-             (analyze ctx (nth items 3) env)
-             (const nil))))
+  (let [benv (assoc env :cx (or (:here env) :expression))]
+    (if-node (analyze ctx (nth items 1) env)
+             (analyze ctx (nth items 2) benv)
+             (if (> (count items) 3)
+               (analyze ctx (nth items 3) benv)
+               (const nil)))))
 
-(defn- analyze-throw [ctx items env]
+(defn- analyze-throw [ctx form items env]
+  (let [env (if (wraps? (:here env) :throw) (wrapper-env ctx form env) env)]
   (case (count items)
     1 (analysis-error :analyze/invalid-throw
                       "Too few arguments to throw, throw expects a single Throwable instance")
     2 (throw-node (analyze ctx (nth items 1) env))
     (analysis-error :analyze/invalid-throw
-                    "Too many arguments to throw, throw expects a single Throwable instance")))
+                    "Too many arguments to throw, throw expects a single Throwable instance"))))
 
-(defn- analyze-let* [ctx items env]
-  (let [[pairs env*] (analyze-bindings ctx (binding-vector items) env)]
-    (let-node pairs (analyze-seq ctx (drop 2 items) env*))))
+(defn- analyze-let* [ctx form items env]
+  (let [env (if (wraps? (:here env) :let) (wrapper-env ctx form env) env)
+        [pairs env*] (analyze-bindings ctx (binding-vector items) env)]
+    (let-node pairs (analyze-body ctx (drop 2 items) env* (or (:here env) :expression)))))
 
-(defn- analyze-loop* [ctx items env]
-  (let [bvec (binding-vector items)
+(defn- analyze-loop* [ctx form items env]
+  (let [hm (form-sym-meta (first items))
+        ;; ^:jolt/up-context: the loop stands for the form it sits in (doseq's
+        ;; (do loop nil) is the reference's bare loop)
+        here (if (and (map? hm) (get hm :jolt/up-context)) (:up-here env) (:here env))
+        env (if (and (wraps? (or here :expression) :loop) (not (same-objx? items)))
+              (wrapper-env ctx form env) env)
+        bvec (binding-vector items)
         rname (gen-name "loop")
         [pairs env*] (analyze-bindings ctx bvec env)
         body-env (assoc (with-recur env* rname (quot (count bvec) 2)
@@ -767,7 +886,7 @@
                         :recur-locals (mapv first pairs))
         ;; The other recur-target root (see analyze-arity): a recur
         ;; against THIS loop may only sit in tail position of its body.
-        body-node (analyze-seq ctx (drop 2 items) body-env)]
+        body-node (analyze-body ctx (drop 2 items) body-env :return)]
     (check-recur-tails! body-node)
     {:op :loop :bindings pairs :body body-node}))
 
@@ -900,13 +1019,16 @@
   (case op
     "quote"         (analyze-quote ctx items env)
     "if"            (analyze-if ctx items env)
-    "do"            (analyze-seq ctx (rest items) env)
-    "throw"         (analyze-throw ctx items env)
+    "do"            (analyze-body ctx (rest items) env
+                                  (or (if (get (form-sym-meta (first items)) :jolt/up-context)
+                                        (:up-here env) (:here env))
+                                      :expression))
+    "throw"         (analyze-throw ctx form items env)
     "def"           (analyze-def ctx items env)
-    "let*"          (analyze-let* ctx items env)
-    "loop*"         (analyze-loop* ctx items env)
+    "let*"          (analyze-let* ctx form items env)
+    "loop*"         (analyze-loop* ctx form items env)
     "recur"         (analyze-recur ctx form items env)
-    "try"           (let [node (analyze-try ctx items env)
+    "try"           (let [node (analyze-try ctx form items env)
                           p (or (form-position form) (current-form-position))]
                       (if p (assoc node :pos p) node))
     ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
@@ -915,7 +1037,7 @@
     ;; emit these directly (borkdude/dynaload does, under malli), so lower them
     ;; to that seam instead of punting. Like the JVM, both yield nil.
     ("monitor-enter" "monitor-exit") (analyze-monitor-op ctx items env op)
-    "letfn*"        (analyze-letfn* ctx items env)
+    "letfn*"        (analyze-letfn* ctx form items env)
     "fn*"           (analyze-fn ctx form items env)
     ;; Lower the backtick to construction code (zero runtime cost), then analyze
     ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.
@@ -1098,7 +1220,7 @@
 (defn- macro-value-fn [ctx form r]
   (when (and (form-macro? ctx form)
              (= "clojure.core" (:ns r)) (= "instance?" (:name r)))
-    (var-ref "clojure.core" "instance-check")))
+    (var-ref "jolt.host" "instance-of")))
 
 ;; A symbol that resolved to a var: the var's node, unless it names a macro or a
 ;; private var of another namespace.
@@ -1294,7 +1416,8 @@
          mbox *macro-run-box*
          mprev (when mbox @mbox)
          _ (when mbox (reset! mbox [(macro-symbol ctx head) head form]))
-         expanded (form-expand-1 ctx form (amp-env-map env))
+         expanded (binding [*objx* (if (:top? env) :top (:objx env))]
+                    (form-expand-1 ctx form (amp-env-map env)))
          _ (when mbox (reset! mbox mprev))
          ebox *expansion-box*
          prev (when ebox @ebox)
@@ -1470,17 +1593,18 @@
                (not (contains? handled sf-name)) (form-macro? ctx head))
             (analyze-macro-call ctx head form env)
           (ffi-form-name head)
-            (analyze-ffi-form ctx (ffi-form-name head) items env)
+            (analyze-ffi-form ctx (ffi-form-name head) items (child-env ctx form env nil))
           ;; special-form heads are NOT shadowable (unlike macros): a local named
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.
           (and sf-name (contains? handled sf-name))
-            (stamp-def ctx env form (analyze-special ctx sf-name form items env))
+            (stamp-def ctx env form (analyze-special ctx sf-name form items (child-env ctx form env sf-name)))
           :else
-            (or (when-not shadowed (analyze-interop ctx head hname form items env))
-                (if cast
-                  (analyze-cast ctx cast form items env)
-                  (analyze-invoke ctx head form items env shadowed))))))))
+            (let [env (child-env ctx form env nil)]
+              (or (when-not shadowed (analyze-interop ctx head hname form items env))
+                  (if cast
+                    (analyze-cast ctx cast form items env)
+                    (analyze-invoke ctx head form items env shadowed)))))))))
 
 ;; Record `form` as the innermost positioned form while its children are analyzed,
 ;; then put back whatever was there, so a completed sibling subtree cannot leave a
@@ -1647,13 +1771,19 @@
        ;; Stamp the compile namespace on the TOP-LEVEL node so the back end can
        ;; gate anon-fn naming/registration on it even for a non-def form (a def
        ;; carries its own :ns). Invisible to emission unless read.
-       (assoc (analyze ctx (form-syntax-quote-expand ctx form) (empty-env))
+       (assoc (analyze ctx (form-syntax-quote-expand ctx form) (assoc (empty-env) :top? true :cx :return))
               :fnsrc-ns (compile-ns ctx))
        (catch Throwable e (throw (as-analysis-diagnostic e))))))
   ([ctx form env]
    (cond
      (form-literal? form) (const form)
      (form-sym? form) (analyze-symbol ctx form env)
+     (and (or (:top? env) (:def-name env) (not (contains? #{:expression :eval} (:cx env))))
+          (or (form-vec? form) (form-map? form) (form-set? form)))
+     ;; a collection's elements are expressions (:eval under :eval); at top
+     ;; level it is compiled as a fn, like any non-def form (child-env)
+     (analyze ctx form (assoc (dissoc (if (:top? env) (top-eval-env ctx form env) env) :def-name)
+                              :cx (if (and (not (:top? env)) (= :eval (:cx env))) :eval :expression)))
      (form-vec? form) (with-coll-meta ctx form env
                         (vector-node (mapv #(analyze ctx % env) (form-vec-items form))))
      (form-map? form) (with-coll-meta ctx form env
