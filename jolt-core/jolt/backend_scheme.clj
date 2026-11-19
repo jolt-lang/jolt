@@ -529,8 +529,10 @@
 ;; through the protocol fn as before. A var that no longer holds it (a
 ;; redefinition, with-redefs) is called like any other, except by a receiver
 ;; whose type declares the protocol itself: that is the JVM's interface call,
-;; which ignores the var. PK is [proto method],
-;; from jolt.host/protocol-call-key.
+;; which ignores the var. PK is [proto method evm?], from
+;; jolt.host/protocol-call-key; under :extend-via-metadata (evm?) the receiver's
+;; metadata comes ahead of an extend-type impl in the dispatch vector, so while
+;; the var holds the protocol fn the site just calls it.
 (defn- emit-proto-site-call [c vf-src operands invoker pk pooled?]
   (let [tail? (:tail? c)
         traced? (or tail? (trace-frames?))
@@ -548,7 +550,13 @@
                   " (if " g " " (with-site (:node c) (kept (emit-call tail? g ts (:tl c) (:ich c))))
                   " (if (procedure? " vf ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
                   " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) ")))")]
-    (if pooled?
+    (cond
+      (and pooled? (nth pk 2 nil))
+      (let [shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) ")"))]
+        (str "(let* ((" vf " " vf-src ")" binds ")"
+             " (if (eq? " vf " " shim ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
+             slow "))"))
+      pooled?
       (let [shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) ")"))
             id (hoist-const (str "(intern-pm-key " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) ")"))]
         (str "(let* ((" vf " " vf-src ")" binds ")"
@@ -557,7 +565,7 @@
              " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
              " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
              slow "))"))
-      (str "(let* ((" vf " " vf-src ")" binds ")" slow ")"))))
+      :else (str "(let* ((" vf " " vf-src ")" binds ")" slow ")"))))
 
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
