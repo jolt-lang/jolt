@@ -157,6 +157,7 @@ gc-old-growth-bytes
 gc-real-nanos
 gc-trip-bytes
 getenv
+guarded-inline?
 host-class-name?
 host-intern!
 host-ns-digest
@@ -233,6 +234,7 @@ protocol-method-var?
 protocol-methods
 proxy-super-call
 publish-loader-artifact!
+push-binding1!
 rational-type?
 rbt-delete
 rbt-found

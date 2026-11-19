@@ -336,40 +336,48 @@
 (define (mm-resolve mf dv)
   (let ((v (jolt-multifn-icache mf)))
     (if (fx= (vector-ref v 0) jolt-mm-epoch)
-        (cond ((eq? (vector-ref v 1) dv) (vector-ref v 2))
-              ((eq? (vector-ref v 3) dv) (vector-ref v 4))
-              ((eq? (vector-ref v 5) dv) (vector-ref v 6))
-              ((eq? (vector-ref v 7) dv) (vector-ref v 8))
-              (else (mm-resolve-table mf dv)))
+        (let scan ((i 1))
+          (cond ((fx= i mm-icache-len) (mm-resolve-table mf dv))
+                ((eq? (vector-ref v i) dv) (vector-ref v (fx+ i 1)))
+                (else (scan (fx+ i 2)))))
         (mm-resolve-table mf dv))))
 
-;; The inline cache in front of the table: the last four dispatch values that
+;; The inline cache in front of the table: the last eight dispatch values that
 ;; hit the methods table DIRECTLY, compared with eq?, stamped with the epoch they
 ;; were read under. The table lookup hashes the dispatch value with key-hash and
 ;; compares with jolt= on every call; a multimethod dispatching on keywords (most
 ;; of them -- rewrite-clj's parse-next* takes one per node, #1713) answers here in
-;; a few loads instead. Only direct hits are cached, so the entry depends on the
-;; methods table alone -- not the hierarchy or the prefers -- and every change to
-;; that table bumps jolt-mm-epoch, which retires the whole vector. Only values
-;; eq? can stand for are kept: an interned keyword, a fixnum, a char, a boolean,
-;; nil. The vector is replaced, never mutated, so a reader on another thread
-;; sees an old vector or a new one, never a torn one; a lost race only loses an
-;; entry. Slot 0 is the epoch; the empty vector's -1 never matches.
-(define mm-icache-empty (vector -1 mm-icache-empty-key #f mm-icache-empty-key #f
-                                mm-icache-empty-key #f mm-icache-empty-key #f))
+;; a few loads instead. Eight, not four: parse-next* cycles through five to seven
+;; values on ordinary source (token, whitespace, list, vector, delimiter, ...),
+;; and a cache smaller than the cycle missed on every call. Only direct hits are
+;; cached, so the entry depends on the methods table alone -- not the hierarchy
+;; or the prefers -- and every change to that table bumps jolt-mm-epoch, which
+;; retires the whole vector. Only values eq? can stand for are kept: an interned
+;; keyword, a fixnum, a char, a boolean, nil. The vector is replaced, never
+;; mutated, so a reader on another thread sees an old vector or a new one, never
+;; a torn one; a lost race only loses an entry. Slot 0 is the epoch; the empty
+;; vector's -1 never matches. A new entry goes in front and the last one drops.
+(define mm-icache-slots 8)
+(define mm-icache-len (fx+ 1 (fx* 2 mm-icache-slots)))
+(define mm-icache-empty
+  (let ((v (make-vector mm-icache-len #f)))
+    (vector-set! v 0 -1)
+    (do ((i 1 (fx+ i 2))) ((fx= i mm-icache-len) v)
+      (vector-set! v i mm-icache-empty-key))))
 (define (mm-icache-key? dv)
   (or (keyword? dv) (fixnum? dv) (char? dv) (boolean? dv) (jolt-nil? dv)))
 (define (mm-icache-add! mf epoch dv m)
   (let* ((old (jolt-multifn-icache mf))
-         (keep? (fx= (vector-ref old 0) epoch)))
+         (src (if (fx= (vector-ref old 0) epoch) old mm-icache-empty))
+         (v (make-vector mm-icache-len #f)))
+    (vector-set! v 0 epoch)
+    (vector-set! v 1 dv)
+    (vector-set! v 2 m)
+    (do ((i 3 (fx+ i 1))) ((fx= i mm-icache-len))
+      (vector-set! v i (vector-ref src (fx- i 2))))
     ;; the new vector's slots are written before another thread can reach it
     (memory-order-release)
-    (jolt-multifn-icache-set! mf
-      (if keep?
-          (vector epoch dv m (vector-ref old 1) (vector-ref old 2)
-                  (vector-ref old 3) (vector-ref old 4) (vector-ref old 5) (vector-ref old 6))
-          (vector epoch dv m mm-icache-empty-key #f mm-icache-empty-key #f
-                  mm-icache-empty-key #f)))))
+    (jolt-multifn-icache-set! mf v)))
 
 (define (mm-resolve-table mf dv)
   (let* ((methods (jolt-multifn-methods mf))

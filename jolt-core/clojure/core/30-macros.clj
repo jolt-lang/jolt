@@ -385,11 +385,18 @@
 ;; Dynamic binding: install a thread-binding frame of var->value (array-map keeps
 ;; var-get happy, unlike a phm), restore on exit.
 (defmacro binding [bindings & body]
-  (let [pairs (reduce (fn [acc p] (conj (conj acc `(var ~(first p))) (second p)))
-                      [] (partition 2 bindings))]
-    `(let* [frame# (array-map ~@pairs)]
-       (push-thread-bindings frame#)
-       (try (do ~@body) (finally (pop-thread-bindings))))))
+  (if (= 2 (count bindings))
+    ;; one var: pushed without the frame map (dyn-binding.ss jolt-push-binding1!).
+    ;; let*, not do: a top-level do is split into separate top-level forms, which
+    ;; would drop the record of this expansion an error report names
+    `(let* []
+       (jolt.host/push-binding1! (var ~(first bindings)) ~(second bindings))
+       (try (do ~@body) (finally (pop-thread-bindings))))
+    (let [pairs (reduce (fn [acc p] (conj (conj acc `(var ~(first p))) (second p)))
+                        [] (partition 2 bindings))]
+      `(let* [frame# (array-map ~@pairs)]
+         (push-thread-bindings frame#)
+         (try (do ~@body) (finally (pop-thread-bindings)))))))
 
 ;; condp: clauses are test-expr result-expr, or test-expr :>> result-fn (calls
 ;; result-fn on the truthy (pred test-expr value)); a lone trailing expr is the
@@ -950,7 +957,12 @@
        ;; register method var-keys for devirtualization; the inference
        ;; reads this (via infer-unit!) to resolve a protocol call on a known record
        (register-protocol-methods! ~pkey [~@(map (fn [s] (name (first s))) sigs)])
-       ~@(map (fn [sig] (protocol-method-def pname pkey via-meta? sig)) sigs))))
+       ~@(map (fn [sig] (protocol-method-def pname pkey via-meta? sig)) sigs)
+       ;; each method's protocol fn as made here, which a protocol call site
+       ;; compares the var's value against (protocols.ss protocol-fn-of)
+       ~@(map (fn [sig] `(register-protocol-fn! ~(str *ns*) ~(name (first sig)) ~(symbol (str *ns*) (name (first sig))))) sigs)
+       ;; the protocol's name, which is what defprotocol answers on the JVM
+       (quote ~pname))))
 
 ;; Member threading: (.. x f g) => (. (. x f) g); a parenthesized member
 ;; carries args. Canonical Clojure shape, single-arity defmacro.

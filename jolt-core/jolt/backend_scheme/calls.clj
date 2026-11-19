@@ -40,7 +40,9 @@
     ;; the array access helpers: each coerces a number or throws, and reads or
     ;; writes the backing -- nothing a jolt fn can run under
     (into #{"jolt-throw" "jolt-flaget" "jolt-flaset" "jolt-flaset-float"
-            "jolt-vaget" "jolt-vaset" "jolt-baset"}
+            "jolt-vaget" "jolt-vaset" "jolt-baset"
+            ;; native-op's Chez spellings of zero?/pos?/neg? (rt.ss jolt-zero?/i)
+            "jolt-zero?/i" "jolt-pos?/i" "jolt-neg?/i"}
           (for [[op spec] op-registry/op-registry
                 :when (and (not= op "=")
                            (or (:num-args? spec) (:dbl spec) (:lng spec) (contains? preds op)))
@@ -114,7 +116,13 @@
              :host (:name fnode)
              nil)
         fixed (when nm (get (fixed-arity-ops nm) nargs))
+        ;; (= a b) open-codes its common answers on Chez (rt.ss jolt=2/i)
+        fixed (if (and (= fixed "jolt=2") (not= :gambit (session/target))) "jolt=2/i" fixed)
         op (or fixed (when nm (native-ops nm)))
+        ;; zero?/pos?/neg? test a fixnum inline on Chez (rt.ss jolt-zero?/i)
+        op (if (and (#{"jolt-zero?" "jolt-pos?" "jolt-neg?" "jolt-nth"} op) (not= :gambit (session/target)))
+             (str op "/i")
+             op)
         arity-ok (when nm (op-arity nm))]
     (cond
       (nil? op) nil
@@ -543,16 +551,28 @@
                           ;; jrdesc-vtable-ref, #1713); anything else -- an impl
                           ;; inherited through an interface or Object, a host
                           ;; value -- takes the per-site cache as before.
+                          ;; A host value whose type alone decides its impl (a
+                          ;; string, a number, a char, nil, a boolean, a keyword:
+                          ;; none carries metadata) keys the same cache by a
+                          ;; per-type symbol (rt.ss jolt-pic-host-key/i), where it
+                          ;; resolved on every call -- tools.reader coerces each
+                          ;; string it reads to a reader through a protocol.
                           (let [id (hoist-const (str "(intern-pm-key " proto " " method ")"))
-                                f (fresh-label "_pf$")]
+                                f (fresh-label "_pf$")
+                                k (fresh-label "_k$")
+                                kscan (pic-scan-clauses v k)
+                                kmiss (str "(let ((_nv (jolt-pic-add " v " " k " " proto " " method " " r ")))"
+                                           " (if (procedure? _nv) _nv"
+                                           " (begin (set! " c " _nv) (" (unsafe-prefix) "vector-ref _nv 1))))")]
                             (str "(let* ((" r " " (first as) ")"
                                  " (" d " (jrec-pic-desc/i " r "))"
                                  " (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
                                  " (if " f " (" f " " apply-args ")"
-                                 " (let ((" v " (or " c " jolt-pic-empty)))"
-                                 " ((if (and " d " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
-                                 " (or " scan " " miss ")"
-                                 " (if " d " " miss " (protocol-resolve " proto " " method " " r ")))"
+                                 " (let* ((" v " (or " c " jolt-pic-empty))"
+                                 " (" k " (or " d " (jolt-pic-host-key/i " r "))))"
+                                 " ((if (and " k " (" (unsafe-prefix) "fx= (" (unsafe-prefix) "vector-ref " v " " pic-epoch-idx ") jolt-proto-epoch))"
+                                 " (or " kscan " " kmiss ")"
+                                 " (if " k " " kmiss " (protocol-resolve " proto " " method " " r ")))"
                                  " " apply-args "))))")))))
                     (str "(let* ((" r " " (first as) "))"
                          " ((protocol-resolve " proto " " method " " r ") " apply-args "))")))))))
@@ -598,15 +618,27 @@
          " (" fxop " " (str/join " " tmps) ")"
          " " (emit-call tail? nop tmps tl ich) "))")))
 
+;; java.lang.Character's predicates that open-code for an ASCII char on Chez
+;; (rt.ss jolt-char-pred/i), by member name.
+(def ^:private char-pred-intrinsics
+  {"isWhitespace" "whitespace" "isDigit" "digit" "isUpperCase" "upper"
+   "isLowerCase" "lower" "isLetter" "letter" "isLetterOrDigit" "letter-or-digit"})
+
 ;; A host static method call, through a per-site cache inside a pool.
 (defn emit-host-static-call [tail? fnode order-args]
   (if (do (note-tail-call! tail?) (and *const-pool* (var-cache?)))
-    (let [site (hoist-const-per-site "(host-static-site-make)")]
+    (let [site (hoist-const-per-site "(host-static-site-make)")
+          proc (fn [n] (str "(" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
+                            " " site " " (chez-str-lit (:class fnode)) " "
+                            (chez-str-lit (:member fnode)) " " n ")"))
+          intrinsic (and (not= :gambit (session/target))
+                         (#{"Character" "java.lang.Character"} (:class fnode))
+                         (char-pred-intrinsics (:member fnode)))]
       (order-args (fn [as]
-                    (str "((" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
-                         " " site " " (chez-str-lit (:class fnode)) " "
-                         (chez-str-lit (:member fnode)) " " (count as) ")"
-                         (if (empty? as) "" (str " " (str/join " " as))) ")"))))
+                    (if (and intrinsic (= 1 (count as)))
+                      (str "(jolt-char-pred/i " intrinsic " " (first as) " " (proc 1) ")")
+                      (str "(" (proc (count as))
+                           (if (empty? as) "" (str " " (str/join " " as))) ")")))))
     (order-args (fn [as]
                   (str "(host-static-call " (chez-str-lit (:class fnode)) " " (chez-str-lit (:member fnode))
                        (if (empty? as) "" (str " " (str/join " " as))) ")")))))

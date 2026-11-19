@@ -1280,6 +1280,19 @@
        (not (eq? k jolt-deftype-kw))
        (fx=? (jrdesc-nfields (jrec-desc obj)) n)
        (eqv? (jrec-field-index obj k) i)))
+;; A deftype method's one receiver test (lambda.clj self-receiver, #1713): OBJ
+;; is a record whose layout puts each field the method reads -- LAYOUT is
+;; #(k i n ...) -- where the method reads it. A descriptor that passes is kept in
+;; SITE, so the next call's test is one eq?. #f sends every read to jrec-field.
+(define (jrec-self-site-fill! site obj layout)
+  (let ((len (vector-length layout)))
+    (let loop ((j 0))
+      (cond
+        ((fx=? j len) (set-box! site (jrec-desc obj)) #t)
+        ((jrec-own-slot-layout? obj (vector-ref layout j) (vector-ref layout (fx+ j 1))
+                                (vector-ref layout (fx+ j 2)))
+         (loop (fx+ j 3)))
+        (else #f)))))
 (define (jrec-own-slot-miss site obj k i n)
   (if (jrec-own-slot-layout? obj k i n)
       (begin (set-box! site (jrec-desc obj)) (jrec-field-ref obj i))
@@ -1836,6 +1849,7 @@
 (def-var! "clojure.core" "register-record-type!" register-record-type!)
 (def-var! "clojure.core" "make-protocol" make-protocol)
 (def-var! "clojure.core" "register-protocol-methods!" register-protocol-methods!)
+(def-var! "clojure.core" "register-protocol-fn!" register-protocol-fn!)
 (def-var! "clojure.core" "register-method" register-method)
 (def-var! "clojure.core" "register-inline-method" register-inline-method)
 (def-var! "clojure.core" "register-inline-protocol!" register-inline-protocol!)

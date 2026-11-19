@@ -540,9 +540,15 @@
          ;; the form runs as soon as it compiles (hc-late-bound-namespace?)
          (node (parameterize ((hc-compiling-to-run #t)) (jolt-ce-analyze ctx form))))
     (jolt-lint-node! node)
-    (if (hc-compiler-direct-linking?)
-        (jolt-direct-link-emit node ctx)
-        (jolt-ce-emit (jolt-ce-run-passes node ctx)))))
+    (cond
+      ((hc-compiler-direct-linking?) (jolt-direct-link-emit node ctx))
+      ;; guarded inlining stashes and splices on the back end's unit, the one
+      ;; the inline pass reads (run-passes' invariant), as direct-linking does.
+      ;; Only untraced: a traced report names each fn from its own frame.
+      ((and hc-guarded-inline-on (not (jolt-ce-trace-frames?)))
+       (parameterize ((hc-form-guarded #t))
+         (jolt-ce-emit (jolt-ce-run-passes node ctx (jolt-ce-current-unit)))))
+      (else (jolt-ce-emit (jolt-ce-run-passes node ctx))))))
 
 ;; A form compiled under (binding [*compiler-options* {:direct-linking true}] ...)
 ;; gets what `jolt build` gives every app form: calls to the vars defined this
