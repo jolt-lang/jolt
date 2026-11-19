@@ -2008,7 +2008,15 @@
     (let ((v (vector-ref stdin-cell 0)))
       (and (in-stream? v)
            (let ((port (in-stream-port v)))
-             (guard (_ (#t #f)) (input-port-ready? port)))))))
+             ;; input-port-ready? is #t at end of input too; the JVM's ready
+             ;; goes through available(), which is 0 there, and a loop draining
+             ;; while .ready would never end. The lookahead cannot block once
+             ;; the port is ready.
+             (guard (_ (#t #f))
+               (and (input-port-ready? port)
+                    (not (eof-object? (if (binary-port? port)
+                                          (lookahead-u8 port)
+                                          (lookahead-char port)))))))))))
 
 ;; --- System/console: java.io.Console ------------------------------------------
 ;; The JVM hands out a Console only when standard input AND standard output are

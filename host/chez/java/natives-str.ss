@@ -1445,7 +1445,11 @@
 ;; the value truncated at its first separator.
 (define (jvm-split irx s limit)
   (let ((parts (re-split irx s (and (fx>? limit 0) limit))))
-    (if (fx=? limit 0) (str-split-drop-trailing parts) parts)))
+    ;; one part means nothing matched, and Java then answers {input} whole:
+    ;; "".split(",") is [""], not the [] that trimming its one empty part gives
+    (if (and (fx=? limit 0) (pair? parts) (pair? (cdr parts)))
+        (str-split-drop-trailing parts)
+        parts)))
 
 ;; The int limit of a .split call, defaulting to 0 (the 1-arg form).
 (define (split-limit-arg rest n)

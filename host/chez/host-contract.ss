@@ -1191,7 +1191,8 @@
 ;; on the JVM a call compiled after it is a plain call.
 (define hc-kw-extend-via-metadata (keyword #f "extend-via-metadata"))
 (define (hc-protocol-call-key ctx ns-name nm nargs)
-  (let* ((e (hashtable-ref chez-protocol-methods-tbl (string-append ns-name "/" nm) #f))
+  (let* ((e (jolt-with-mutex rec-tbl-mu
+              (hashtable-ref chez-protocol-methods-tbl (string-append ns-name "/" nm) #f)))
          (cell (and e (var-cell-lookup ns-name nm)))
          (p (and cell
                  (let* ((pk (car e))

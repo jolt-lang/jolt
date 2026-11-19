@@ -106,11 +106,13 @@
          (= (exact->inexact a) (exact->inexact b))
          (= a b)))
     (else (throw-jvm (quote ClassCastException) "== requires numbers"))))
-(define (jolt-num-equiv . xs)
+(define (jolt-num-equiv x0 . more)
   ;; 1-arity short-circuits to true for ANY value (Clojure's == 1-arg returns true
-  ;; before the number check); 2+ args must all be numbers.
+  ;; before the number check); 2+ args must all be numbers. (==) is an arity
+  ;; error, as on the JVM: x0 is required.
+  (define xs (cons x0 more))
   (define (numeric? x) (or (number? x) (jolt-num-slow? x)))
-  (if (and (pair? xs) (null? (cdr xs)))
+  (if (null? more)
       #t
       (let all-num? ((ys xs))
         (cond

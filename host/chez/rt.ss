@@ -3267,25 +3267,36 @@
 ;; into the emitted text, because a frame's line comes from the source object of
 ;; the call it returns to, and a call a macro builds has none: the call/1cc call
 ;; is the one the enclosing fn's frame returns to while the body runs.
+;;
+;; The setup and the teardown are procedures, not open code: the macro is
+;; expanded at every try, and with them inlined (three closures, the winder, the
+;; mask edges) a try cost Chez twice the compile time it does now -- 200 catches
+;; in one fn took 48 ms to load against 23 for guard, and a deftest of 200 `is`
+;; 1.3x. Two calls cost a few ns at run time; the body stays in place, which is
+;; what the change was for. The leave pops one entry off each chain rather than
+;; restoring saved values: BODY returned normally, so both chains are exactly as
+;; the enter left them (an escape and a re-entry through a continuation put back
+;; the very pairs the enter pushed).
+(define (jolt-guard-enter! k)
+  (let* ((old-hs (sa-handler-stack))
+         (new-hs (cons (lambda (c) (k (make-jolt-caught c))) old-hs))
+         (lv (virtual-register 7)))
+    (set-virtual-register! 7 (fx+ lv 1))
+    (sa-handler-stack-set! new-hs)
+    (sa-winders-set! (cons (sa-make-winder (lambda () (sa-handler-stack-set! new-hs))
+                                           (lambda () (sa-handler-stack-set! old-hs)))
+                           (sa-winders)))
+    (set-virtual-register! 7 lv)))
+(define (jolt-guard-leave!)
+  (set-virtual-register! 7 (fx+ (virtual-register 7) 1))
+  (sa-winders-set! (cdr (sa-winders)))
+  (sa-handler-stack-set! (cdr (sa-handler-stack)))
+  (set-virtual-register! 7 (fx- (virtual-register 7) 1)))
 (define-syntax jolt-guard-body
   (syntax-rules ()
     ((_ k body)
-     (let* ((old-hs (sa-handler-stack))
-            (new-hs (cons (lambda (c) (k (make-jolt-caught c))) old-hs))
-            (old-w (sa-winders))
-            (lv (virtual-register 7)))
-       (set-virtual-register! 7 (fx+ lv 1))
-       (sa-handler-stack-set! new-hs)
-       (sa-winders-set! (cons (sa-make-winder (lambda () (sa-handler-stack-set! new-hs))
-                                              (lambda () (sa-handler-stack-set! old-hs)))
-                              old-w))
-       (set-virtual-register! 7 lv)
-       (let ((v body))
-         (set-virtual-register! 7 (fx+ (virtual-register 7) 1))
-         (sa-winders-set! old-w)
-         (sa-handler-stack-set! old-hs)
-         (set-virtual-register! 7 (fx- (virtual-register 7) 1))
-         v)))))
+     (begin (jolt-guard-enter! k)
+            (let ((v body)) (jolt-guard-leave!) v)))))
 
 ;; A jolt finally, on Chez (#1713): (jolt-wind-inline IN BODY AFTER) is
 ;; (dynamic-wind IN (lambda () BODY) AFTER) with BODY run in place instead of as
@@ -3297,14 +3308,20 @@
 ;; IN. IN is not called on entry: a finally's is the marker, which does nothing.
 ;; AFTER is the emitted cleanup thunk; the back end masks both edges around this
 ;; form with the counted-lock depth, as it masked dynamic-wind's (emit-try).
+;; The push and the pop are procedures for the compile-time reason jolt-guard-body
+;; gives.
+(define (jolt-wind-enter! in after)
+  (sa-winders-set! (cons (sa-make-winder in after) (sa-winders))))
+(define (jolt-wind-leave! after)
+  (sa-winders-set! (cdr (sa-winders)))
+  (after))
 (define-syntax jolt-wind-inline
   (syntax-rules ()
     ((_ in body after-expr)
-     (let ((after after-expr) (old-w (sa-winders)))
-       (sa-winders-set! (cons (sa-make-winder in after) old-w))
+     (let ((after after-expr))
+       (jolt-wind-enter! in after)
        (let ((r body))
-         (sa-winders-set! old-w)
-         (after)
+         (jolt-wind-leave! after)
          r)))))
 
 ;; A record type's dispatch vector (protocols.ss find-protocol-method-desc) read

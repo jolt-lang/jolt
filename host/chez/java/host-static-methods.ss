@@ -1283,7 +1283,21 @@
       (if (fx=? b 0)
           (utf8->string (u8-list->bytevector (reverse acc)))
           (loop (fx+ i 1) (cons b acc))))))
+;; getpwuid answers in libc's static buffer, which another thread's getpw* call
+;; (or this one's, twice at once) overwrites, so it is asked once, under a lock,
+;; at the first user.home -- not at image build, which would keep the builder's.
+;; The passwd home does not change while the process runs.
+(define sys-passwd-home-cache (box 'unset))
+(define sys-passwd-home-mu (make-mutex))
 (define (sys-passwd-home)
+  (let ((v (unbox sys-passwd-home-cache)))
+    (if (eq? v 'unset)
+        (jolt-with-mutex sys-passwd-home-mu
+          (when (eq? (unbox sys-passwd-home-cache) 'unset)
+            (set-box! sys-passwd-home-cache (sys-passwd-home-read)))
+          (unbox sys-passwd-home-cache))
+        v)))
+(define (sys-passwd-home-read)
   (guard (e (#t #f))
     (let ((dir-off (case (sa-os-family) ((macos) 48) ((linux) 32) (else #f))))
       (and dir-off c-getuid c-getpwuid-home
