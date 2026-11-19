@@ -134,8 +134,10 @@ if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q ":thread-done"; then ok; else b
 t0=$(date +%s)
 out=$(JOLT_PWD="$root/test/chez/build-app" JOLT_RUNTIME_CACHE_DIR="$tmp/rtcache" "$J" build -m app.core -o "$tmp/built" 2>&1); rc=$?
 t1=$(date +%s)
-# the build itself takes well under 30s; waiting on the pool would add 60
-if [ "$rc" = 0 ] && [ -x "$tmp/built" ] && [ $((t1 - t0)) -lt 40 ]; then ok; else bad "jolt build does not wait for the app's pools ($((t1 - t0))s)"; fi
+# Waiting on the pool adds its 60s keep-alive to whatever the build took, so a
+# build that waited takes at least 60s, and anything under that did not wait. A
+# tighter bound only measures the runner: a loaded CI shard took 41s.
+if [ "$rc" = 0 ] && [ -x "$tmp/built" ] && [ $((t1 - t0)) -lt 60 ]; then ok; else bad "jolt build does not wait for the app's pools ($((t1 - t0))s)"; fi
 
 echo "exit-wait smoke: $pass passed, $fail failed"
 [ "$fail" = 0 ]
