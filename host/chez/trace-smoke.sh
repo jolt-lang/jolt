@@ -586,6 +586,101 @@ EOF
 out_xf="$("$work/filtertracebin" 2>&1)"
 expect_match "built: rebound comp points to its own call in the pipeline" "$out_xf" 'app\.filtertrace/widths (app/filtertrace\.clj:4)'
 
+# A full Chez continuation may return to a callback after the reduction has
+# advanced or finished. Test both AOT paths and check which one was emitted.
+cat > "$work/src/app/filterreentry.clj" <<'EOF'
+(ns app.filterreentry (:require [jolt.scheme :as scheme]))
+
+(def capture (scheme/proc "call/cc"))
+
+(defn ^:redef collect-rows [pred mapper rows]
+  (into [] (comp (filter pred) (map mapper)) rows))
+
+(defn mapper-reentry []
+  (let [saved (atom nil)
+        results (atom [])
+        out (collect-rows identity
+                          (fn [x]
+                            (if (= x 2)
+                              (capture (fn [k] (reset! saved k) :first))
+                              x))
+                          [1 2])
+        completed (swap! results conj out)]
+    (case (count completed)
+      1 (@saved :second)
+      2 (@saved :third)
+      (assert (= [[1 :first] [1 :second] [1 :third]] completed)))))
+
+(defn predicate-reentry []
+  (let [saved (atom nil)
+        resumed? (atom false)
+        visited (atom [])
+        rows (subvec (vec (range 132)) 33 99)
+        out (collect-rows (fn [x]
+                            (if (= x 62)
+                              (capture (fn [k] (reset! saved k) true))
+                              true))
+                          (fn [x]
+                            (swap! visited conj x)
+                            (when (and (= x 96) (compare-and-set! resumed? false true))
+                              (@saved false))
+                            x)
+                          rows)]
+    (assert (= (into (vec (range 33 62)) (range 63 99)) out))
+    (assert (= (into (vec (range 33 97)) (range 63 99)) @visited))))
+
+(deftype CapturingRow [saved]
+  clojure.lang.Sequential
+  clojure.lang.Counted
+  (count [_] (capture (fn [k] (reset! saved k) 2))))
+
+(defn ^:redef widths [rows]
+  (into [] (comp (filter sequential?) (map count)) rows))
+
+(defn count-reentry []
+  (let [saved (atom nil)
+        results (atom [])
+        out (widths [[1] (CapturingRow. saved) (list 1 2 3)])
+        completed (swap! results conj out)]
+    (if (= 1 (count completed))
+      (@saved 9)
+      (assert (= [[1 2 3] [1 9 3]] completed)))))
+
+(defn -main [which & _]
+  (case which
+    "mapper" (mapper-reentry)
+    "predicate" (predicate-reentry)
+    "count" (count-reentry))
+  (println "REENTRY" which))
+EOF
+echo "trace smoke: resuming inside a built filter/map keeps the captured output prefix"
+for mode in fused ordinary; do
+  case "$mode" in
+    fused) set -- --opt ;;
+    ordinary) set -- --opt --no-direct-link ;;
+  esac
+  reentrybin="$work/reentry-$mode"
+  if out_reentry="$(cd "$work" && "$joltabs" build "$@" -m app.filterreentry -o "$reentrybin" 2>&1)"; then
+    calls="$(grep -hoF '(jolt-vector-filter-map ' "$reentrybin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
+    if [ "$mode" = fused ]; then
+      expect_match "built: both filter/map re-entry sites exercise fusion" "$calls" '^2$'
+    else
+      expect_match "built: filter/map re-entry ordinary control skips fusion" "$calls" '^0$'
+    fi
+    for callback in mapper predicate count; do
+      if out_reentry="$("$reentrybin" "$callback" 2>&1)"; then
+        expect_match "built: $mode $callback re-entry" "$out_reentry" "^REENTRY $callback\$"
+      else
+        printf '  FAIL: %s %s re-entry exited nonzero\n%s\n' "$mode" "$callback" "$out_reentry"
+        fails=$((fails + 1))
+      fi
+    done
+  else
+    printf '  FAIL: %s re-entry build\n%s\n' "$mode" "$out_reentry"
+    fails=$((fails + 1))
+  fi
+done
+
 # The same shape where the callee CANNOT be spliced (^:redef stays var-routed):
 # a real frame, not a reconstructed one. Without this row the block above would
 # pass on a build that had stopped inlining altogether.
