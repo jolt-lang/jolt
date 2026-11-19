@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Guarded inlining under `jolt run` (#1713).** With tracing off
+  (`--no-trace` / `JOLT_TRACE=0`), code the CLI compiles splices a small fn's
+  body into its callers behind a test that the fn's var still holds the fn the
+  body came from: `(if (eq? <the var's fn> ROOT) <body> <call>)`. A
+  redefinition, `with-redefs` or `alter-var-root` takes the call,
+  and the fn is read before the arguments are, as a call reads it. ROOT is read
+  as the caller loads, and only if the def that set the var's root stamped the
+  same token the splice carries, so an AOT-cached caller loaded after its
+  callee was redefined at a REPL takes the call too. A loop calling a small
+  clamp fn runs 52 -> 29 ms; `^:dynamic` fns, protocol methods and bodies that
+  build a closure stay calls. `JOLT_GUARDED_INLINE=0` turns it off; a traced
+  run keeps every call, so an error report names each fn from its own frame.
+
 - **Chez inlines through a top-level definition jolt registers (#1713,
   `chez-patches/0010`).** Chez's cross-library inliner records an exported
   procedure's body so code compiled against the library can inline it. The
@@ -200,6 +213,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **The runtime operations a reader leans on cost less (#1713).** Each was a
+  call into a generic procedure that the JVM answers in a few instructions:
+  - `(= a b)` answers a char, nil, boolean or keyword on the left, or a string
+    literal (what `case` over strings expands to), without the call;
+    `zero?`/`pos?`/`neg?` test a fixnum inline.
+  - `(nth coll i)` (destructuring is two of these) reads a vector or string
+    index inline, and the runtime's own `nth` no longer pays the java.util
+    shims' type tests for jolt's collections.
+  - `(str x)` of a string or a StringBuilder, `java.lang.Character`'s
+    predicates on an ASCII char, and `(.indexOf "literal" c)` (a `case` over the
+    literal) answer inline.
+  - `(merge nil m)` is `m` (merge has fixed arities, and `(conj {} m)` answers
+    `m`): ~450 to ~25 ns.
+  - A one-var `binding` pushes its frame without building a map.
+  - `(seq java.util.LinkedList)` no longer walks every registered seq arm.
+  - A constructor call site keeps the constructor it resolved, a `Matcher`'s
+    methods are kept per call site (`.group` ~175 to ~80 ns), and a protocol
+    call on a string, number, char, nil, boolean or keyword is cached by type
+    instead of resolved per call (a tools.reader reader is built in ~130 ns,
+    from ~400).
+  - An `aget`/`aset` hinted with the JVM's spelling of an array class
+    (`^"[Ljava.lang.Object;"`) takes the typed path.
+
+  On an Intel i5-4278U, tools.reader's `read-string` of a small form takes
+  ~45 us, from ~67, and rewrite-clj's `parse-string` about 15% less.
+
 - **A deftype's method or field reached through interop costs about what a
   protocol call or a field load does (#1713).** `(.m ^T x)` on a deftype or
   record walked every dispatch arm by name and built an argument vector on
@@ -342,6 +381,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+- `defprotocol` answers the protocol's name, as on the JVM; it answered its last method's var, or nil for a protocol with no methods.
+- A protocol call on a value whose type declares the protocol in its own body (`deftype`, `defrecord`, `reify`) ignores `with-redefs`, `alter-var-root` or a redef of the protocol fn, as the JVM's interface call does; extended types, nil and host values still call what the var holds (jolt-9l97g). The call site now also applies when an argument is not a plain local, and in a bare top-level expression.
 - On the Gambit host, `.indexOf`/`.lastIndexOf` of a char code no string holds raised from `integer->char`; they answer -1, as on Chez and the JVM.
 - `(.indexOf s c)` and `.lastIndexOf` given a char code no string holds (a lone surrogate, a negative int, or one past `0x10FFFF`) answered a `ClassCastException` from `integer->char`; they answer -1, as the JVM does.
 
@@ -372,6 +413,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defrecord's `.entrySet` is `(set this)`, in hash order, as on the JVM,
   and `jsonista.core` writes a record's fields in that order, as Jackson
   does.
+
+- **Multimethod and record metadata costs a parser pays per node (#1713).** A
+  multimethod's inline cache keeps the last eight dispatch values rather than
+  four: rewrite-clj's `parse-next*` cycles through five to seven, so it missed
+  on every call and hashed into the methods table. `meta` and `with-meta` test
+  for a record first and read its type's IObj flags inline (`meta` on a record
+  ~14 -> ~5 ns). An indexed vector read's range test is open-coded. rewrite-clj
+  `parse-string` x5000: ~128 -> ~118 ms.
+
+- **A number's interop method is kept at its call site (#1713).** `(.bitLength
+  n)`, `(.longValue n)` and the rest of the number method surface walked the
+  method arms and a string compare per name on every call; tools.reader reads
+  every integer through them, so `read-number` of `"2"` goes from ~1.2 to
+  ~0.85 us. A number method given too few arguments, `(.shiftLeft 1)`, raises
+  the JVM's no-matching-method error rather than faulting in `car`.
 
 - **A deftype no longer answers for a host class that shares its simple
   name.** A qualified class with no constructor of its own, such as

@@ -706,6 +706,16 @@
 (define (register-seq-arm! pred handler)
   (seq-arm-reject-fast-type! 'register-seq-arm! pred)
   (set! jolt-seq-arms (cons (cons pred handler) jolt-seq-arms)))
+;; The host collection a program seqs most, answered ahead of the arm walk: the
+;; arms run newest-registration-first, and the java.util.ArrayList family's arm
+;; is registered early (host-static-classes.ss), so a (seq list) paid one
+;; predicate call per arm registered after it -- ~75 ns, which clojure.tools.
+;; reader pays on every character it reads, as (seq pending-forms) of an empty
+;; LinkedList. A host runtime sets this to a procedure answering such a value's
+;; seq, or #f for any other value, which then walks the arms. No other arm may
+;; claim what it answers.
+(define jolt-seq-host-first (lambda (x) #f))
+(define (set-jolt-seq-host-first! f) (set! jolt-seq-host-first f))
 ;; At the END of the walk, for a family of rare values (the arms run newest first).
 (define (register-seq-arm-last! pred handler)
   (seq-arm-reject-fast-type! 'register-seq-arm-last! pred)
@@ -810,6 +820,7 @@
     ;; a plain defrecord's entries, ahead of the arm walk (records-coll.ss
     ;; jrec-plain?, loaded later — resolved at call time)
     ((and (jrec? x) (jrec-plain? x)) (list->cseq (jrec-plain-entries x)))
+    ((jolt-seq-host-first x) => (lambda (s) s))
     (else (let loop ((as jolt-seq-arms))
             (cond ((null? as) (jolt-throw (jolt-host-throwable "java.lang.IllegalArgumentException"
                                           (string-append "Don't know how to create ISeq from: "

@@ -222,6 +222,21 @@
 (define (find-protocol-method-desc desc proto method)
   (let ((pt (jrdesc-ptable desc)) (id (intern-pm-key proto method)))
     (and pt (fx< id (vector-length pt)) (vector-ref pt id))))
+;; The protocol fn defprotocol made for each method, keyed "ns/name". A
+;; protocol call site (the back end's emit-proto-site-call) loads it once and
+;; compares it with what the var holds per call: while they are the same fn, a
+;; record receiver's own impl is read from its dispatch vector. It cannot be the
+;; var's root at load, which a with-redefs or alter-var-root may already have
+;; replaced. Absent (#f, e.g. after an image restore), the site always takes its
+;; slow path, which gives the same answer.
+(define protocol-fn-tbl (make-hashtable string-hash string=?))
+(define (register-protocol-fn! ns nm f)
+  (jolt-with-mutex rec-tbl-mu
+    (hashtable-set! protocol-fn-tbl (string-append ns "/" nm) f))
+  jolt-nil)
+(define (protocol-fn-of ns nm)
+  (jolt-with-mutex rec-tbl-mu
+    (hashtable-ref protocol-fn-tbl (string-append ns "/" nm) #f)))
 ;; Told of every impl as it registers (and of a reify site's methods, once per
 ;; site): the stack-trace reporter (source-registry.ss on Chez) maps the impl's
 ;; procedure name to the protocol method it implements, so a tail call to the
@@ -1178,6 +1193,11 @@
 ;; type DECLARES for the protocol, or #f. A record type's impl table counts
 ;; unless extend alone filled it (extend-impl-table?); a reify counts when the
 ;; protocol is one of the reify's own.
+;; It is also the JVM's interface call: a compiled protocol call on a value whose
+;; type declares the protocol never reads the var, so with-redefs or a redef of
+;; the protocol fn reaches only extended receivers (Compiler emitProto). The back
+;; end's protocol call site (emit-proto-site-call) asks it when the var no longer
+;; holds the protocol fn the site compiled against.
 (define (protocol-direct-impl proto-name method-name obj)
   (cond
     ((jrec? obj)

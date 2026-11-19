@@ -3327,6 +3327,27 @@
               (if (or (sa-record-slot c 6) (eq? c star-ns-cell))
                   (var-cell-deref-bound c)
                   (sa-record-slot c 2))))))
+;; Guarded inlining (host-contract.ss hc-guarded-inline?, #1713). A def whose
+;; body a later caller may splice stamps its var with a token naming that
+;; compilation of the body: jolt-inline-mark! records cell -> (root . token).
+;; A caller's guard reads jolt-inline-root once, as it loads: the cell's root
+;; when the def that set it stamped the token the splice was taken from, else a
+;; value no var holds, so the guard always takes the call. A cached caller
+;; loaded after its callee was redefined at a REPL (same source, so the same
+;; cache entry) thus never runs the body the cache was compiled against.
+(define jolt-inline-marks (make-weak-eq-hashtable))
+(define jolt-inline-marks-mu (make-mutex))
+(define jolt-inline-no-root (string #\nul))
+(define (jolt-inline-mark! v token)
+  (jolt-with-mutex jolt-inline-marks-mu
+    (hashtable-set! jolt-inline-marks v (cons (var-cell-root v) token)))
+  v)
+(define (jolt-inline-root c token)
+  (let ((e (jolt-with-mutex jolt-inline-marks-mu (hashtable-ref jolt-inline-marks c #f)))
+        (r (var-cell-root c)))
+    (if (and e (eq? (car e) r) (string=? (cdr e) token))
+        r
+        jolt-inline-no-root)))
 ;; The protocol PIC's receiver descriptor, open-coded (#1713): a record of the
 ;; jrec family -- a deftype or defrecord instance, whose exact type is one of the
 ;; per-arity children (records.ss define-jrec-family) or the zero-field base --
@@ -3351,12 +3372,154 @@
 ;; fresh descriptor (protocols.ss make-deftype-ctor), never a different layout
 ;; under the same one. Field I sits after the base's four (desc ext hasheq meta);
 ;; a type of more than eight keeps its fields in jrec*'s vector, the slot after.
+;; The test in front of an indexed vector read (backend_scheme.clj
+;; emit-vec-idx-read): V a vector and K an index into it. pvec? and pvec-cnt
+;; are a record predicate and accessor, each a call through its top-level
+;; binding from emitted code; open-coded here, the test is a few loads (#1713).
+;; cnt is pvec's first field (values.ss).
+(define-syntax pvec-in-range/i
+  (syntax-rules ()
+    ((_ v0 k0)
+     (let ((v v0) (k k0))
+       (and (record? v (record-type-descriptor pvec)) (fixnum? k) (fx>=? k 0)
+            (fx<? k (sa-record-slot v 0)))))))
 (define-syntax jrec-slot/u
   (syntax-rules () ((_ o i) (sa-record-slot o (fx+ 4 i)))))
 (define-syntax jrec-slot-set!/u
   (syntax-rules () ((_ o i v) (sa-record-slot-set! o (fx+ 4 i) v))))
 (define-syntax jrec*-slot/u
   (syntax-rules () ((_ o i) (sa-uvector-ref (sa-record-slot o 4) i))))
+;; (= a b) at two arguments, open-coded on Chez (calls.clj native-op). Clojure's
+;; Util.equiv settles most of it from the FIRST operand alone: a char, a boolean,
+;; a keyword (interned) or nil on the left equals only itself, and nil on either side equals only
+;; nil, so once eq? has failed the answer is false without the call -- tools.
+;; reader compares a char it read against its terminator on every character. A
+;; string literal (what case on strings expands to) is a string? test and a
+;; string=?. Everything else is jolt=2. Two eq? flonums still compare by =, so
+;; NaN stays unequal to itself.
+(define-syntax jolt=2/i
+  (lambda (x)
+    (syntax-case x ()
+      ((_ a0 b0)
+       (let ((da (syntax->datum #'a0)) (db (syntax->datum #'b0)))
+         (cond
+           ;; a literal's length first: a case over strings rejects most of its
+           ;; candidates by length without a string=? call
+           ((string? db) (with-syntax ((n (string-length db)))
+                           #'(let ((a a0)) (and (string? a) (fx=? (string-length a) n) (string=? a b0)))))
+           ((string? da) (with-syntax ((n (string-length da)))
+                           #'(let ((b b0)) (and (string? b) (fx=? (string-length b) n) (string=? a0 b)))))
+           ((or (char? da) (char? db)) #'(eq? a0 b0))
+           (else
+            ;; a keyword is interned, so it too equals only itself
+            #'(let ((a a0) (b b0))
+                (cond ((eq? a b) (if (flonum? a) (fl= a b) #t))
+                      ((or (char? a) (boolean? a) (keyword-t? a) (eq? a jolt-nil) (eq? b jolt-nil)) #f)
+                      (else (jolt=2 a b)))))))))))
+;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
+;; itself and a StringBuilder its contents, the two a reader's token loop hands
+;; it; anything else is jolt-str, clojure.core/str's procedure. Through the var
+;; it cost ~50 ns against .toString's ~15.
+(define-syntax jolt-str1/i
+  (syntax-rules ()
+    ((_ e) (let ((v e))
+             (cond ((string? v) v)
+                   ((sb-builder-jhost? v) (sb-str v))
+                   (else (jolt-str v)))))))
+;; (nth coll i) and (nth coll i not-found) on Chez (calls.clj native-op): an
+;; in-range index into a vector or a string answers inline -- destructuring a
+;; pair is two of these, and tools.reader destructures every [line column] it
+;; reads -- and everything else (nil, a default taken, a seq, an array, an index
+;; out of range or not a fixnum) is jolt-nth, which owns the answer and the error.
+(define-syntax jolt-nth/i
+  (syntax-rules ()
+    ((_ c0 k0 d ...)
+     (let ((c c0) (k k0))
+       (cond ((and (pvec? c) (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt c))) (pvec-nth-in-range c k))
+             ((and (string? c) (fixnum? k) (fx>=? k 0) (fx<? k (string-length c))) (string-ref c k))
+             (else (jolt-nth c k d ...)))))))
+;; (.indexOf "literal" x) on Chez (interop.clj string-direct-forms): a literal of
+;; up to 64 characters becomes a case over them, each to its first index, for a
+;; char or an ASCII code point -- rewrite-clj tests every character it reads for a
+;; token boundary as (.indexOf "\":;'@^`~()[]{}\\" (int c)), and the scan of the
+;; literal was most of that. Anything else is str-index-of-any, which owns the
+;; rest (a string needle, a wide code point, a non-literal target).
+(define-syntax str-index-of-any/i
+  (lambda (x)
+    (syntax-case x ()
+      ((k t0 a0)
+       (let ((dt (syntax->datum #'t0)))
+         (if (and (string? dt) (fx<=? (string-length dt) 64))
+             ;; the case is built as data, a lambda the template applies (cp0
+             ;; inlines it): one clause per distinct character, its first index
+             (with-syntax
+               ((dispatch
+                 (datum->syntax #'k
+                   (list 'lambda '(ch)
+                         (append (list 'case 'ch)
+                                 (let loop ((cs (string->list dt)) (i 0) (seen '()) (acc '()))
+                                   (cond ((null? cs) (reverse acc))
+                                         ((memv (car cs) seen) (loop (cdr cs) (fx+ i 1) seen acc))
+                                         (else (loop (cdr cs) (fx+ i 1) (cons (car cs) seen)
+                                                     (cons (list (list (car cs)) i) acc)))))
+                                 (list (list 'else -1)))))))
+               #'(let* ((a a0)
+                        (c (cond ((char? a) a)
+                                 ((and (fixnum? a) (fx>=? a 0) (fx<=? a 127)) (integer->char a))
+                                 (else #f))))
+                   (if c (dispatch c) (str-index-of-any t0 a 0))))
+             #'(str-index-of-any t0 a0 0)))))))
+;; A protocol fn's cache key for a host value whose TYPE alone decides the impl
+;; protocol-resolve finds (calls.clj emit-pic-call): a string, a fixnum, a
+;; flonum, a char, nil, a boolean, a keyword -- values that carry no metadata, so
+;; an :extend-via-metadata protocol cannot answer differently for two of them.
+;; One symbol per type, never eq? to a record descriptor; #f for anything else,
+;; which resolves without caching as before.
+(define-syntax jolt-pic-host-key/i
+  (syntax-rules ()
+    ((_ x0) (let ((x x0))
+              (cond ((string? x) 'jolt-pic-key-string)
+                    ((fixnum? x) 'jolt-pic-key-fixnum)
+                    ((char? x) 'jolt-pic-key-char)
+                    ((flonum? x) 'jolt-pic-key-flonum)
+                    ((eq? x jolt-nil) 'jolt-pic-key-nil)
+                    ((boolean? x) 'jolt-pic-key-boolean)
+                    ((keyword-t? x) 'jolt-pic-key-keyword)
+                    (else #f))))))
+;; (zero? x), (pos? x), (neg? x) on Chez: a fixnum answers inline, anything else
+;; takes the procedure, which owns the coercion and the error (calls.clj
+;; native-op). As calls they cost ~10 ns for a fixnum compare.
+(define-syntax jolt-zero?/i
+  (syntax-rules () ((_ e) (let ((x e)) (if (fixnum? x) (fx=? x 0) (jolt-zero? x))))))
+(define-syntax jolt-pos?/i
+  (syntax-rules () ((_ e) (let ((x e)) (if (fixnum? x) (fx>? x 0) (jolt-pos? x))))))
+(define-syntax jolt-neg?/i
+  (syntax-rules () ((_ e) (let ((x e)) (if (fixnum? x) (fx<? x 0) (jolt-neg? x))))))
+;; java.lang.Character's predicates on a char, open-coded for ASCII on Chez
+;; (calls.clj emit-host-static-call); any other argument -- a wider char, an int
+;; code point -- takes the static site, FALLBACK, as before. Java's rules in
+;; ASCII: whitespace is 9-13, 28-31 (the separators) and space; digits 0-9;
+;; letters A-Z a-z.
+(define-syntax jolt-char-pred/i
+  (lambda (x)
+    (syntax-case x ()
+      ((_ kind c0 fallback)
+       (with-syntax ((test
+                      (case (syntax->datum #'kind)
+                        ((whitespace) #'(let ((n (char->integer c)))
+                                          (or (fx=? n 32) (and (fx>=? n 9) (fx<=? n 13))
+                                              (and (fx>=? n 28) (fx<=? n 31)))))
+                        ((digit) #'(and (char>=? c #\0) (char<=? c #\9)))
+                        ((upper) #'(and (char>=? c #\A) (char<=? c #\Z)))
+                        ((lower) #'(and (char>=? c #\a) (char<=? c #\z)))
+                        ((letter) #'(or (and (char>=? c #\a) (char<=? c #\z))
+                                        (and (char>=? c #\A) (char<=? c #\Z))))
+                        ((letter-or-digit) #'(or (and (char>=? c #\a) (char<=? c #\z))
+                                                 (and (char>=? c #\A) (char<=? c #\Z))
+                                                 (and (char>=? c #\0) (char<=? c #\9))))
+                        (else (syntax-error #'kind "unknown char predicate")))))
+         #'(let ((c c0))
+             (if (and (char? c) (char<? c #\x80)) test (fallback c))))))))
 ;; (.-f x) on an unproven receiver (backend interop.clj): the site's hit open-
 ;; coded -- the receiver's descriptor against the one the site cached, then the
 ;; cached place read unchecked (records-dispatch.ss jrec-field-site-ref, which

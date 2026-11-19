@@ -40,7 +40,8 @@
    "trim"                {0 (fn [t] (str "(str-trim " t ")"))}
    "hashCode"            {0 (fn [t] (str "(java-string-hash " t ")"))}
    "charAt"              {1 (fn [t a] (str "(jolt-char-at " t " " a ")"))}
-   "indexOf"             {1 (fn [t a] (str "(str-index-of-any " t " " a " 0)"))
+   ;; a literal target becomes a case over its characters (rt.ss str-index-of-any/i)
+   "indexOf"             {1 (fn [t a] (str "(str-index-of-any/i " t " " a ")"))
                           2 (fn [t a from] (str "(str-index-of-any " t " " a " (jolt->idx " from "))"))}
    "startsWith"          {1 (fn [t a] (str "(str-starts-with? " t " " a ")"))}
    "endsWith"            {1 (fn [t a] (str "(str-ends-with? " t " " a ")"))}

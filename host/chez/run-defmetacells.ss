@@ -12,7 +12,9 @@
 ((var-deref "jolt.backend-scheme" "set-var-cache!") #t)
 (define (anode src) (analyze (make-analyze-ctx "user") (jolt-ce-read src)))
 
-(let ((e (emit (anode "(def ^{:t (fn [n] (clojure.core/str n))} x (fn [n] (clojure.core/str n)))"))))
+(let ((e (emit (anode "(def ^{:t (fn [n] (clojure.core/str n \"\"))} x (fn [n] (clojure.core/str n \"\")))"))))
+;; str at two arguments throughout: at one it is open-coded on Chez (rt.ss
+;; jolt-str1/i) and makes no var reference.
 ;; a call through the cell is open-coded as (jolt-var-fn cell) (backend
 ;; emit-open-call); a plain reference reads (var-cell-deref cell)
   (gate-check "the init's var ref is cell-cached"
@@ -21,13 +23,13 @@
               (gate-sub? e "(var-deref \"clojure.core\" \"str\")") #f))
 
 ;; the same through deftest, which is where the cost showed
-(let ((e (emit (anode "(def ^{:test (fn [] (loop [i 0] (when (< i 3) (clojure.core/str i) (recur (inc i)))))} t (fn [] nil))"))))
+(let ((e (emit (anode "(def ^{:test (fn [] (loop [i 0] (when (< i 3) (clojure.core/str i \"\") (recur (inc i)))))} t (fn [] nil))"))))
   (gate-check "a deftest-shaped :test body's var ref is not resolved by name per call"
               (gate-sub? e "(var-deref \"clojure.core\" \"str\")") #f))
 
 ;; off the var cache (the seed mint) the emission is unchanged
 ((var-deref "jolt.backend-scheme" "set-var-cache!") #f)
-(let ((e (emit (anode "(def ^{:t (fn [n] (clojure.core/str n))} x 1)"))))
+(let ((e (emit (anode "(def ^{:t (fn [n] (clojure.core/str n \"\"))} x 1)"))))
   (gate-check "off var-cache the metadata fn keeps the by-name deref"
               (gate-sub? e "(var-deref \"clojure.core\" \"str\")") #t))
 

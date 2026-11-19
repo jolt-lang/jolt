@@ -46,9 +46,11 @@ EOF
 # trace both go to current-error-port). $1 = the cache dir.
 # JOLT_TRACE=0: dev mode traces by default, and the tail-frame history ring then
 # preempts jolt-frame-records (the continuation walk) — this check drives it.
+# JOLT_GUARDED_INLINE=0: untraced, the cold run's -e form would splice boom's body
+# into itself (host-contract.ss hc-guarded-inline?) and boom has no frame to map.
 run_app() {
   JOLT_AOT_CACHE=1 JOLT_CACHE_DIR="$1" JOLT_QUIET=1 JOLT_DEBUG_FRAMES=1 \
-    JOLT_TRACE=0 \
+    JOLT_TRACE=0 JOLT_GUARDED_INLINE=0 \
     "$jolt" -e "
       (require 'jolt.deps)
       (jolt.deps/add-deps {:deps {'mylib/mylib {:local/root \"$tmp\"}}})

@@ -553,12 +553,16 @@
 ;; An empty list is nil without an iterator: RT.seq's first hasNext answers it,
 ;; and a reader that asks (seq pending-forms) before every form it reads
 ;; (clojure.tools.reader's read*) asks it of an empty LinkedList almost always.
-(register-seq-arm! al-family?
+(define al-family-seq
   (lambda (x)
     (cond ((fx=? (al-cnt x) 0) jolt-nil)
           ((member (jhost-tag x) '("arraylist" "linkedlist"))
            (al-chunked-seq (al-iterator x)))
           (else (list->cseq (al->list x))))))
+(register-seq-arm! al-family? al-family-seq)
+;; ...and ahead of the arm walk (seq.ss jolt-seq-host-first): no later arm
+;; claims an ArrayList-family value, so answering it first changes no answer.
+(set-jolt-seq-host-first! (lambda (x) (and (al-family? x) (al-family-seq x))))
 
 ;; ---- StringWriter -----------------------------------------------------------
 ;; Writer.write(int) writes the CHAR for that code; append(char) appends the char.
@@ -4452,10 +4456,16 @@
   (cond ((al-family? coll) (list->cseq (al->list coll)))
         ((sb-jhost? coll) (sb-str* coll))
         (else coll)))
+;; jolt's own kinds go straight to the base nth: every nth the runtime makes --
+;; a vector called as a fn, PersistentList/create, a destructure's fallback --
+;; comes through here, and the shims' type tests (and jutil-views' on top of
+;; them) were most of its cost for a vector.
+(define-syntax shim-nth-native?
+  (syntax-rules () ((_ c) (or (pvec? c) (string? c) (cseq? c) (jolt-nil? c)))))
 (set! jolt-nth
   (case-lambda
-    ((coll i) (%shim-nth (shim-nth-target coll) i))
-    ((coll i d) (%shim-nth (shim-nth-target coll) i d))))
+    ((coll i) (if (shim-nth-native? coll) (%shim-nth coll i) (%shim-nth (shim-nth-target coll) i)))
+    ((coll i d) (if (shim-nth-native? coll) (%shim-nth coll i d) (%shim-nth (shim-nth-target coll) i d)))))
 (def-var! "clojure.core" "nth" jolt-nth)
 
 ;; --- java.nio.charset ---------------------------------------------------------

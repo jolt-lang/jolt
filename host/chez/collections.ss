@@ -1595,6 +1595,18 @@
         ;; answers true to map? and used to be rejected here.
         ((pmap? coll)
          (cond ((jolt-nil? x) coll)                                   ; (conj m nil) = m
+               ;; onto an empty map the answer IS x, as a map without x's own
+               ;; metadata: (merge nil m) is (conj {} m), once per symbol tools.reader
+               ;; reads. The caller carries coll's metadata (meta-carry-conj).
+               ;; Only where assoc'ing x's entries in turn builds the same kind of
+               ;; map in the same order: both hashed, or both arrays small enough
+               ;; that no assoc promotes (an empty hash map stays hashed, and a big
+               ;; array map promotes on the JVM)
+               ((and (pmap? x) (fx=? 0 (pmap-cnt coll)) (eq? (pmap-meta x) jolt-nil)
+                     (if (pmap-array? coll)
+                         (and (pmap-array? x) (fx<=? (pmap-cnt x) array-map-limit))
+                         (not (pmap-array? x))))
+                x)
                ((pmap? x) (pmap-fold-fwd x (lambda (k v m) (pmap-assoc m k v)) coll))   ; fast path, same rule
                ;; a vector on the right is one ENTRY, so it must be a pair — never
                ;; a sequence of entries. The JVM says so by name.
