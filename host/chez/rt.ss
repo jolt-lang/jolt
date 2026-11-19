@@ -3357,6 +3357,24 @@
   (syntax-rules () ((_ o i v) (sa-record-slot-set! o (fx+ 4 i) v))))
 (define-syntax jrec*-slot/u
   (syntax-rules () ((_ o i) (sa-uvector-ref (sa-record-slot o 4) i))))
+;; (.-f x) on an unproven receiver (backend interop.clj): the site's hit open-
+;; coded -- the receiver's descriptor against the one the site cached, then the
+;; cached place read unchecked (records-dispatch.ss jrec-field-site-ref, which
+;; fills the site and answers every other receiver). As a call, each read paid
+;; the call and the checked per-arity accessor behind it: ~13 ns for a load.
+(define-syntax jrec-field-site-ref/i
+  (syntax-rules ()
+    ((_ site0 o0 name)
+     (let ((site site0) (o o0))
+       (let ((c (unbox site)))
+         (if (and c (record? o (record-type-descriptor jrec))
+                  (eq? (sa-record-slot o 0) (car c))
+                  (not (fx=? (caar method-dispatch-arms) arm-priority-user-override)))
+             (let ((p (cdr c)))
+               (if (fx<? p 0)
+                   (sa-uvector-ref (sa-record-slot o 4) (fx- -1 p))
+                   (sa-record-slot o p)))
+             (jrec-field-site-ref site o name)))))))
 (define-syntax jrec*-slot-set!/u
   (syntax-rules () ((_ o i v) (sa-uvector-set! (sa-record-slot o 4) i v))))
 ;; The unchecked loads above name record slots by number, so a field added to

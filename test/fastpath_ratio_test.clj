@@ -280,6 +280,15 @@
 ;;                      method, which binds only the fields it names: 17.5 ->
 ;;                      10.5 ns, against a plain call ~2.6 -> ~1.6.
 ;;
+;;   deftype-method     (.m ^T x) on a deftype walked every dispatch arm by name
+;;                      with an argument vector (~240 ns); the call site keeps the
+;;                      type's declared method (host-static.ss jrec-site-miss):
+;;                      ~17 ns, against the protocol call's ~10.
+;;
+;;   deftype-field      (.-f ^T x) was a call into the runtime and the checked
+;;                      per-arity accessor (~15 ns); the site's hit is open-coded
+;;                      (rt.ss jrec-field-site-ref/i): ~6 ns, a plain call's cost.
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
@@ -872,6 +881,22 @@
           #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
           #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
           2.4)
+  ;; A deftype's method called through interop, (.gate-pm ^GateT t), costs about
+  ;; what the protocol call does: the site keeps the type's declared method
+  ;; (host-static.ss jrec-site-miss). It walked every dispatch arm by name, with
+  ;; an argument vector, on every call: ~240 ns against the protocol call's 10.
+  ;; Reads ~1.7.
+  (judge! "deftype-method"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
+          #(let [^GateT t gate-t] (dotimes [_ gate-n] (.gate-pm t)))
+          3.0)
+  ;; (.-a t) costs about what a plain fn call does: the site's hit is open-coded
+  ;; (rt.ss jrec-field-site-ref/i), a descriptor test and a load. It was a call
+  ;; into the runtime and the checked per-arity accessor, ~15 ns. Reads ~1.2.
+  (judge! "deftype-field"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
+          #(let [^GateT t gate-t] (dotimes [_ gate-n] (.-a t)))
+          2.0)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))
