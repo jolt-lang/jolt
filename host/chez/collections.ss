@@ -993,8 +993,10 @@
 ;; also guard each resident we would compare: jolt=2 can call extension code
 ;; for a mixed built-in/custom pair. Return #f before any such comparison so
 ;; the caller can run the original get, apply and assoc with their usual effects.
+;; A callback can mutate a Scheme string (including a symbol's name), and
+;; Gambit symbol association can dispatch to a registered hash arm.
 (define (pmap-update-key? k)
-  (or (fixnum? k) (keyword-t? k) (string? k) (symbol-t? k) (char? k)))
+  (or (fixnum? k) (keyword-t? k) (char? k)))
 
 (define hcoll-update-unsafe (list 'unsafe))
 (define (hcoll-update-entry k al)

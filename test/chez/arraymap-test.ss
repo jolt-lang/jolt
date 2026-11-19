@@ -345,6 +345,26 @@
            (= 2 (jolt-get v b)) (= 4 (jolt-get v c))
            (eq? a (car (pmap-entry-at v (string-copy a))))
            (jolt=2 (jolt-seq v) (jolt-seq (pmap-assoc (pmap-assoc m a 3) c 4))))))
+(ok "update observes the probe string after the updater mutates it"
+    (let ((update-map (evv "(fn [m k f] (update m k f))")))
+      (for-all
+        (lambda (m)
+          (let* ((probe (string-copy "a"))
+                 (u (jolt-invoke update-map m probe
+                      (lambda (old) (string-set! probe 0 #\b) (fx+ old 1)))))
+            (and (= 1 (pmap-cnt m)) (= 2 (pmap-cnt u))
+                 (= 1 (jolt-get u "a")) (= 2 (jolt-get u "b")))))
+        (list (pmap-assoc empty-pmap "a" 1) (pmap-assoc empty-pmap-hash "a" 1)))))
+(ok "single-descent update handles colliding keyword probes"
+    ;; These namespaces have the same Java string hash.
+    (let* ((a (keyword "AaAa" "k")) (b (keyword "BBBB" "k")) (c (keyword "AaBB" "k"))
+           (m (pmap-assoc (pmap-assoc empty-pmap-hash a 1) b 2))
+           (update-map (evv "(fn [m k] (update m k (fnil inc 0)))"))
+           (u (jolt-invoke update-map m b))
+           (v (jolt-invoke update-map u c)))
+      (and (= (key-hash a) (key-hash b) (key-hash c))
+           (= 2 (jolt-get m b)) (= 3 (jolt-get u b))
+           (= 3 (pmap-cnt v)) (= 1 (jolt-get v a)) (= 1 (jolt-get v c)))))
 (ok "a custom resident at a leaf or in a collision keeps both comparison effects"
     (let* ((k 7) (custom (vector 'custom-key))
            (update-map (evv "(fn [m k f] (update m k f))"))
