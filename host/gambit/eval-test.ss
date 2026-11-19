@@ -29,6 +29,22 @@
 (check "{:a 1 :b 2}" "{:a 1, :b 2}")
 (check "(conj [1 2] 3)" "[1 2 3]")
 (check "(assoc {:a 1} :b 2)" "{:a 1, :b 2}")
+(check "(let [s (with-meta (set (range 128)) {:tag :left})
+               r (reduce disj s [13 35 57])
+               d (clojure.set/difference s r)]
+          [(= d (jolt.host/try-set-difference s r disj))
+           (= #{13 35 57} d) (count d) (meta d)])"
+       "[true true 3 {:tag :left}]")
+(check "(let [s (set (range 128)) bigger (conj s :extra) seen (atom [])
+               keep (fn [acc key] (swap! seen conj key) acc)]
+          (with-redefs [disj keep]
+            (let [same (clojure.set/difference s s)
+                  same-trace @seen
+                  _ (reset! seen [])
+                  larger (clojure.set/difference s bigger)]
+              [(identical? s same) (identical? s larger)
+               (= (vec s) same-trace @seen)])))"
+       "[true true true]")
 (check "(let [a {7 1} h (hash-map 7 1)]
           [(get (update a 7 inc) 7) (get a 7)
            (get (update h 7 + 2) 7) (get h 7) (identical? h (update h 7 identity))])"

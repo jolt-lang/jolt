@@ -382,5 +382,79 @@
                            (= 5 (jolt-get u k)))))))
         (and (run leaf jolt-nil) (run bucket 1)))))
 
+;; --- set difference over shared hash tries ------------------------------------
+(is "aligned subtraction keeps the left sequence, count, hash and metadata"
+    "(let [s (with-meta (set (range 128)) {:tag :left})
+           r (reduce disj s [13 35 57])
+           expected (reduce disj s r)
+           d (clojure.set/difference s r)]
+       [(= (vec d) (vec expected)) (= (hash d) (hash expected))
+        (count d) (meta d) (= d (jolt.host/try-set-difference s r disj))
+        (count (clojure.set/difference s s))])"
+    "[true true 3 {:tag :left} true 0]")
+(is "a shared root cannot suppress non-reflexive or nested comparisons"
+    "(let [base (set (range 128))
+           s (into base [##NaN [##NaN]])
+           r (disj s 13)]
+       [(nil? (jolt.host/try-set-difference s s disj))
+        (nil? (jolt.host/try-set-difference s r disj))
+        (= (pr-str (reduce disj s r)) (pr-str (clojure.set/difference s r)))])"
+    "[true true true]")
+(is "aligned subtraction preserves order across a branch and a collision bucket"
+    "(let [slot? #(zero? (bit-and 31 (hash %)))
+           ks (range 1 128)
+           common (conj (set (remove slot? ks)) 0)
+           other (first (filter slot? ks))
+           branch (conj common other)
+           bucket (conj common (char 0))
+           mixed (conj bucket other)]
+       (every? true?
+         (for [[l r] [[branch bucket] [bucket branch] [mixed branch] [mixed bucket]]
+               :let [d (clojure.set/difference l r)]]
+           (and (= (vec d) (vec (reduce disj l r)))
+                (let [trial (jolt.host/try-set-difference l r disj)]
+                  (if (< (count l) (count r)) (nil? trial) (= d trial)))))))"
+    "true")
+(is "public difference preserves both disj dispatch paths"
+    "(let [s (set (range 128))
+           bigger (conj s :extra)
+           first-key (first s)
+           seen (atom [])
+           replacement (fn [acc key] (swap! seen conj [:new key]) acc)
+           change (fn [acc key]
+                    (swap! seen conj [:first key])
+                    (when (= key first-key)
+                      (alter-var-root #'disj (constantly replacement)))
+                    acc)
+           run (fn [right]
+                 (reset! seen [])
+                 (let [result (with-redefs [disj change] (clojure.set/difference s right))]
+                   [(identical? s result) @seen]))]
+       (and (= [true (mapv (fn [key] [:first key]) s)] (run s))
+            (= [true (into [[:first first-key]] (map (fn [key] [:new key]) (rest s)))]
+               (run bigger))
+            (empty? (clojure.set/difference s s))))"
+    "true")
+(is "public difference honors thread-bound disj and native reduce and contains dispatch"
+    "(let [s (set (range 128))
+           bigger (conj s :extra)
+           v #'disj
+           seen (atom [])
+           keep (fn [acc key] (swap! seen conj key) acc)
+           poison (fn [& args] (throw (ex-info \"unexpected Var call\" {})))]
+       (.setDynamic v)
+       (try
+         (and (with-bindings {v keep}
+                (every? true?
+                  (for [right [s bigger]]
+                    (do (reset! seen [])
+                        (and (identical? s (clojure.set/difference s right))
+                             (= (vec s) @seen))))))
+              (with-redefs [reduce poison contains? poison]
+                (and (empty? (clojure.set/difference s s))
+                     (empty? (clojure.set/difference s bigger)))))
+         (finally (.setDynamic v false))))"
+    "true")
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
