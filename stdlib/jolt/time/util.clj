@@ -212,3 +212,15 @@
           (let [f1 (digits-from s (inc k) 9) fd (subs s (inc k) f1)]
             [h mi sec (* (if (= "" fd) 0 (parse-long fd)) (pow10 (- 9 (count fd)))) f1])
           [h mi sec 0 k])))))
+
+
+(defn parse-hms->nano
+  "The nano-of-day of s, the whole of it an ISO_LOCAL_TIME (HH:mm[:ss[.f]]),
+  parsed and range-checked as LocalTime/parse does. Public API: jolt-lang/time
+  parses the time half of its OffsetDateTime and OffsetTime texts with it."
+  [s]
+  (let [[h mi sec nano end] (scan-iso-time s 0 false)]
+    (parse-end! s end)
+    (try (check-time h mi sec nano)
+         (catch java.time.DateTimeException e (parse-fail-resolve s e)))
+    (hmsn->nano h mi sec nano)))
