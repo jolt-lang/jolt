@@ -131,12 +131,16 @@
       (and arity-ok (not (arity-ok nargs))) nil
       :else op)))
 
+;; Passing two values skips the ordinary call-result and projection wrappers.
+(defn- plain-pair-value? [node]
+  (not (or (:num-ret-guard node) (:fl-coerce node) (:fl-unbox node) (:clear-caps node))))
+
 (defn- pair-read? [node raw index]
   (let [[receiver key fallback] (:args node)
         callee (:fn node)]
     (and (= :invoke (:op node)) (= 3 (count (:args node)))
-         (not (or (:proto node) (:devirt-type node) (:prim-op node)
-                  (:num-ret-guard node) (:fl-coerce node) (:fl-unbox node)))
+         (plain-pair-value? node)
+         (not (or (:proto node) (:devirt-type node) (:prim-op node)))
          (= :var (:op callee)) (= "clojure.core" (:ns callee)) (= "nth" (:name callee))
          (= "jolt-nth" (native-op callee 3))
          (= :local (:op receiver)) (= raw (:name receiver))
@@ -161,7 +165,8 @@
             (let [[raw call] (nth bindings i)
                   [a x] (nth bindings (inc i))
                   [b y] (nth bindings (+ i 2))]
-              (when (and (distinct? raw a b) (pair-read? x raw 0) (pair-read? y raw 1))
+              (when (and (plain-pair-value? call) (distinct? raw a b)
+                         (pair-read? x raw 0) (pair-read? y raw 1))
                 (let [entry (:pair-entry (facts/linked-call-definition unit call))
                       slot (get (:slots entry) (count (:args call)))]
                   (when (and slot (pair-binding-private? (facts/body-facts unit node) i))
