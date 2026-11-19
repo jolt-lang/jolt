@@ -62,9 +62,9 @@
         _ (when-not (u/char-at? s e \-) (u/parse-fail-at s e))
         m (or (u/two-digits s (inc e)) (u/parse-fail-at s (inc e)))]
     (u/parse-end! s (+ e 3))
-    (try (u/check-field "Year" -999999999 999999999 y)
-         (catch java.time.DateTimeException ex (u/parse-fail-resolve s ex)))
-    (when-not (<= 1 m 12)
+    ;; the JDK resolves both fields together, so a year out of range and a
+    ;; month out of range fail with the same message
+    (when-not (and (<= -999999999 y 999999999) (<= 1 m 12))
       (u/parse-fail-unobtainable s "YearMonth" (str "Year=" y ", MonthOfYear=" m)))
     [y m]))
 

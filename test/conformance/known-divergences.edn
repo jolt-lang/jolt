@@ -332,6 +332,17 @@
            :jvm "false"
            :jolt "true"}
    :note "Numeric-category-blind value equality; a deep = property, not a cheap fix. Verified against Clojure 1.12.5."}
+  ;; A ratio becomes a double by the nearest double here (Chez's inexact). The
+  ;; JVM's Ratio.doubleValue goes through BigDecimal at DECIMAL64, 16 significant
+  ;; digits half-even, and DoubleOps converts a ratio operand the same way.
+  {:category :numeric-model
+   :behavior "(double 2/3), (+ 2/3 0.0)"
+   :jvm "0.6666666666666667"
+   :jolt "0.6666666666666666"
+   :check {:expr "(pr-str [(double 2/3) (.doubleValue 2/3) (+ 2/3 0.0)])"
+           :jvm "\"[0.6666666666666667 0.6666666666666667 0.6666666666666667]\""
+           :jolt "\"[0.6666666666666666 0.6666666666666666 0.6666666666666666]\""}
+   :note "jolt-p4u05. Every ratio-to-double conversion would have to round to 16 digits first, including the mixed-arithmetic slow paths."}
   ;; The two ##NaN rows the clojure-test-suite flags as arguably-undefined. Both
   ;; were unreachable while jolt read :bb branches — the suite gates one behind
   ;; #?@(:bb [] :default [...]) and writes the other's expectation per platform —
