@@ -32,7 +32,7 @@
             [jolt.backend-scheme.hoist
              :refer [*const-pool* const-coll-node? distinct-const-keys?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
-                     hoist-const-per-site hoist-load-time hoist-seed-root hoist-var-cell
+                     hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
              :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
@@ -787,7 +787,22 @@
 (defn- deftype-slot-place [arg-nodes]
   [(:val (nth arg-nodes 2)) (:val (nth arg-nodes 3))])
 
+(declare emit-deftype-slot-read*)
 (defn- emit-deftype-slot-read [arg-nodes order-args]
+  (let [o0 (first arg-nodes)
+        flag (when (= :local (:op o0)) (get session/*self-recs* (munge-name (:name o0))))]
+    (if flag
+      ;; the arity checked its receiver once (lambda.clj self-receiver)
+      (let [[i n] (deftype-slot-place arg-nodes)]
+        (order-args
+         (fn [as]
+           (str "(if " flag
+                (if (<= n 8) (str " (jrec-slot/u " (first as) " " i ")")
+                    (str " (jrec*-slot/u " (first as) " " i ")"))
+                " (jrec-field " (first as) " " (second as) "))"))))
+      (emit-deftype-slot-read* arg-nodes order-args))))
+
+(defn- emit-deftype-slot-read* [arg-nodes order-args]
   (let [site (hoist-const-per-site "(jrec-field-site-make)")
         [i n] (deftype-slot-place arg-nodes)
         o (fresh-label "_o$")]
@@ -827,7 +842,10 @@
     (order-args
      (fn [as]
        (str "(let ((" v " " (first as) ") (" k " " (second as) "))"
-            " (if (and (pvec? " v ") (fixnum? " k ") (fx>=? " k " 0) (fx<? " k " (pvec-cnt " v ")))"
+            (if (= :gambit (session/target))
+              (str " (if (and (pvec? " v ") (fixnum? " k ") (fx>=? " k " 0) (fx<? " k " (pvec-cnt " v ")))")
+              ;; the record test and the count open-coded (rt.ss)
+              (str " (if (pvec-in-range/i " v " " k ")"))
             " (pvec-nth-in-range " v " " k ") "
             (emit-call tail? callee [v k] tl ich) "))")))))
 
@@ -1165,6 +1183,8 @@
   ([node bools]
    (cond
      (and (= :const (:op node)) (boolean? (:val node))) true
+     ;; a guarded splice's test is an eq? (hoist-inline-guard)
+     (= :inline-guard (:op node)) true
      ;; the declared-^Record guard emits an (and ...) of jrec-desc-is? tests
      (and (= :invoke (:op node)) (some? (:rec-guard node))) true
      (= :invoke (:op node))
@@ -1264,6 +1284,12 @@
               :else
               (str "(def-var-plain! " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) " "
                    (emit-with-cells #(emit (:init node))) ")"))
+            ;; a def a guarded splice may copy (jolt.passes prepare-node)
+            ;; stamps its var with the splice's token once the root is set
+            ;; (rt.ss jolt-inline-mark!, which answers the var)
+            d (if-let [tok (:inline-token node)]
+                (str "(jolt-inline-mark! " d " " (chez-str-lit tok) ")")
+                d)
             creg (trace-callsite-reg)
             freg (fnsrc-flush)]
       ;; a def evaluates to its VAR ((var? (def x)) is true), so the source
@@ -1402,6 +1428,10 @@
       ;; resolves to its binding) AND lenient on an unbound root (the strict
       ;; jolt-var-get throws on a forward-declared var). Outside a def,
       ;; resolve per access.
+      ;; a guarded splice's read of the var's fn (jolt.passes.inline
+      ;; guarded-splice): what a call through the var reads, open-coded
+      (and (:fn-read node) (var-cache?) *const-pool*)
+      (str "(jolt-var-fn " (hoist-const (str "(jolt-var " (chez-str-lit (:ns node)) " " (chez-str-lit (:name node)) ")")) ")")
       :else
       (if (and (var-cache?) *const-pool*)
         (hoist-var-cell (:ns node) (:name node))
@@ -1417,6 +1447,8 @@
                (if (and (var-cache?) *const-pool*) (hoist-const lookup) lookup))
     ;; (set! *var* val) -> set the var's innermost thread binding; throws if none.
     :set-var (str "(jolt-set-var! " (emit (:the-var node)) " " (emit (:val node)) ")")
+    ;; does the var still hold the fn a spliced body was compiled from (passes/inline.clj)
+    :inline-guard (hoist-inline-guard (emit (:fn node)) (:ns node) (:name node) (:token node))
     ;; (set! (.-field obj) val) -> mutate the deftype instance field in place.
     ;; Inside a def the site keeps the resolved slot (records.ss jolt-set-own-field!).
     :set-field (let [kw (hoist-const (str "(keyword #f " (chez-str-lit (:field node)) ")"))]
@@ -1583,7 +1615,7 @@
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
     :var (emit-var-node node)
-    (:the-var :set-var :set-field :defmacro) (emit-var-form node)
+    (:the-var :set-var :set-field :defmacro :inline-guard) (emit-var-form node)
     (:host :host-static :host-new) (emit-host-node node)
     (:if :do) (emit-if-or-do node)
     :invoke (emit-invoke-maybe-clone node)

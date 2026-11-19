@@ -64,4 +64,30 @@
   (gate-check "simple ^Node in nsb -> nsb's Node" (tag-of "nsb/->Holder") "nsb/->Node")
   (gate-check "qualified ^nsa.Node from nsb -> nsa's Node" (tag-of "nsb/->HolderQ") "nsa/->Node"))
 
+;; --- one receiver check per deftype method (#1713) ---------------------------
+;; A method that reads two or more of its own fields tests the receiver once on
+;; entry (lambda.clj self-receiver); each read branches on that test.
+(define (emit-src src) (jolt-analyze-emit-form (jolt-ce-read src) "user"))
+(define (self-checked? src) (gate-sub? (emit-src src) "jrec-self-site-fill!"))
+(evals "(defprotocol FRP (frp [x]))")
+(gate-check "a method reading two fields tests its receiver once"
+            (self-checked? "(deftype FrTwo [a b] FRP (frp [_] (+ a b)))") #t)
+(gate-check "...one reading a single field keeps the site test"
+            (self-checked? "(deftype FrOne [a b] FRP (frp [_] a))") #f)
+(gate-check "...and one whose body rebinds the receiver's name keeps it"
+            (self-checked? "(deftype FrShadow [a b] FRP (frp [r] (+ a b (let [r 2] r))))") #f)
+(evals "(deftype FrTwo [a b] FRP (frp [_] (+ a b)))")
+(gate-check "the checked method answers" (evals "(frp (FrTwo. 1 2))") 3)
+(evals "(deftype FrCtr [^:unsynchronized-mutable n s] FRP (frp [_] (set! n (inc n)) [n s]))")
+(gate-check "a mutable field read after its set! sees the new value"
+            (evals "(let [c (FrCtr. 0 :s)] (frp c) (= [2 :s] (frp c)))") #t)
+;; FrTwo's method called on a record whose fields sit in the other order: the
+;; entry test fails, and each read goes by name
+(evals "(deftype FrSwap [b a])")
+(let* ((two (evals "(FrTwo. 1 2)"))
+       (m (find-protocol-method-desc (jrec-desc two) "user/FRP" "frp"))
+       (swapped (evals "(FrSwap. 20 10)")))
+  (gate-check "a receiver of another layout reads each field by name" (m swapped) 30)
+  (gate-check "...and the method still answers its own type after" (m two) 3))
+
 (gate-summary "fieldread")

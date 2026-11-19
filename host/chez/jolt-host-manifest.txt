@@ -157,6 +157,7 @@ gc-old-growth-bytes
 gc-real-nanos
 gc-trip-bytes
 getenv
+guarded-inline?
 host-class-name?
 host-intern!
 host-ns-digest

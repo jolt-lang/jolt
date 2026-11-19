@@ -3327,6 +3327,27 @@
               (if (or (sa-record-slot c 6) (eq? c star-ns-cell))
                   (var-cell-deref-bound c)
                   (sa-record-slot c 2))))))
+;; Guarded inlining (host-contract.ss hc-guarded-inline?, #1713). A def whose
+;; body a later caller may splice stamps its var with a token naming that
+;; compilation of the body: jolt-inline-mark! records cell -> (root . token).
+;; A caller's guard reads jolt-inline-root once, as it loads: the cell's root
+;; when the def that set it stamped the token the splice was taken from, else a
+;; value no var holds, so the guard always takes the call. A cached caller
+;; loaded after its callee was redefined at a REPL (same source, so the same
+;; cache entry) thus never runs the body the cache was compiled against.
+(define jolt-inline-marks (make-weak-eq-hashtable))
+(define jolt-inline-marks-mu (make-mutex))
+(define jolt-inline-no-root (string #\nul))
+(define (jolt-inline-mark! v token)
+  (jolt-with-mutex jolt-inline-marks-mu
+    (hashtable-set! jolt-inline-marks v (cons (var-cell-root v) token)))
+  v)
+(define (jolt-inline-root c token)
+  (let ((e (jolt-with-mutex jolt-inline-marks-mu (hashtable-ref jolt-inline-marks c #f)))
+        (r (var-cell-root c)))
+    (if (and e (eq? (car e) r) (string=? (cdr e) token))
+        r
+        jolt-inline-no-root)))
 ;; The protocol PIC's receiver descriptor, open-coded (#1713): a record of the
 ;; jrec family -- a deftype or defrecord instance, whose exact type is one of the
 ;; per-arity children (records.ss define-jrec-family) or the zero-field base --
@@ -3351,6 +3372,17 @@
 ;; fresh descriptor (protocols.ss make-deftype-ctor), never a different layout
 ;; under the same one. Field I sits after the base's four (desc ext hasheq meta);
 ;; a type of more than eight keeps its fields in jrec*'s vector, the slot after.
+;; The test in front of an indexed vector read (backend_scheme.clj
+;; emit-vec-idx-read): V a vector and K an index into it. pvec? and pvec-cnt
+;; are a record predicate and accessor, each a call through its top-level
+;; binding from emitted code; open-coded here, the test is a few loads (#1713).
+;; cnt is pvec's first field (values.ss).
+(define-syntax pvec-in-range/i
+  (syntax-rules ()
+    ((_ v0 k0)
+     (let ((v v0) (k k0))
+       (and (record? v (record-type-descriptor pvec)) (fixnum? k) (fx>=? k 0)
+            (fx<? k (sa-record-slot v 0)))))))
 (define-syntax jrec-slot/u
   (syntax-rules () ((_ o i) (sa-record-slot o (fx+ 4 i)))))
 (define-syntax jrec-slot-set!/u

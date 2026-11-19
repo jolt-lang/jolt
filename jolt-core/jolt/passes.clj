@@ -12,12 +12,12 @@
   take-diags!, …) in jolt.passes.types directly, by var name.
 
   Portable Clojure: kernel-tier fns + seed primitives only."
-  (:require [jolt.host :refer [inline-enabled? inference-enabled? record-shapes protocol-methods stash-inline! var-redefined?
-                               site-const-salt form-char? form-literal?]]
+  (:require [jolt.host :refer [inline-enabled? guarded-inline? inference-enabled? record-shapes protocol-methods
+                               stash-inline! var-redefined? site-const-salt form-char? form-literal?]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
-                                        begin-growth-budget! end-growth-budget!]]
+                                        begin-growth-budget! end-growth-budget! guarded-candidate?]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
                                        param-seeds-for param-num-seeds-for
@@ -104,6 +104,9 @@
     {:params (:params a) :body (:body a) :nhints (:nhints a) :phints (:phints a)
      :ahints (:ahints a) :wp-seeded (:wp-seeded a)
      :ret (:ret-nhint a)
+     ;; a guarded splice's token: the one the def stamps its var with (nil
+     ;; under direct-link, whose splices are unguarded)
+     :token (:inline-token node)
      ;; the stash-graph edges splice-cycle-member? (inline.clj) walks to refuse
      ;; inlining a recursive cluster; computed once here, on the analyzed body.
      :calls (direct-call-edges (:body a))}))
@@ -175,9 +178,17 @@
   (let [node (if (or (inline-enabled? ctx) (inference-enabled? ctx))
                (guard-declared-records node (record-shapes ctx))
                node)]
-    (if (and (inline-enabled? ctx) (= :def (:op node)) (inline-eligible? ctx node))
-      (stamp-site-consts ctx node)
-      node)))
+    (cond
+      (not (= :def (:op node))) node
+      (and (inline-enabled? ctx) (inline-eligible? ctx node)) (stamp-site-consts ctx node)
+      ;; Guarded (open-world) splicing stashes only a body small enough to
+      ;; splice, so the spine keeps no IR it will never copy, and gives the def
+      ;; the token its var is stamped with as it runs (rt.ss jolt-inline-mark!):
+      ;; the guard of every copy compares against that stamp.
+      (and (guarded-inline? ctx) (inline-eligible? ctx node) (guarded-candidate? node))
+      (assoc (stamp-site-consts ctx node)
+             :inline-token (str (:ns node) "/" (:name node) (site-const-salt ctx)))
+      :else node)))
 
 ;; stash an inline-eligible defn so later call sites can splice it (closed-world
 ;; optimization only). Done before optimizing, from the analyzed node.
@@ -190,9 +201,16 @@
 ;; a refusal that only declines to overwrite would splice it. Storing nil is the
 ;; removal: inline-ir hands it back as nil and try-inline treats that as no stash.
 (defn- stash-def! [ctx node]
-  (when (and (inline-enabled? ctx) (= :def (:op node)))
-    (pt :stash (fn [] (stash-inline! ctx (:ns node) (:name node)
-                                     (when (inline-eligible? ctx node) (stash-of node)))))))
+  (when (= :def (:op node))
+    (cond
+      (inline-enabled? ctx)
+      (pt :stash (fn [] (stash-inline! ctx (:ns node) (:name node)
+                                       (when (inline-eligible? ctx node) (stash-of node)))))
+      ;; prepare-node gave a guarded candidate its token; any other def of the
+      ;; name clears what an earlier def of it stashed
+      (guarded-inline? ctx)
+      (stash-inline! ctx (:ns node) (:name node)
+                     (when (:inline-token node) (stash-of node))))))
 
 ;; The inference tail both optimizing modes share, over the already-optimized node.
 (defn- infer-optimized [unit opt]
@@ -225,6 +243,21 @@
                                         n2))))))
         _ (pt :growth (fn [] (end-growth-budget!)))]
     (infer-optimized unit opt)))
+
+;; Guarded inlining (the open-world spine, jolt.host/guarded-inline?): the same
+;; inline fixpoint, each splice behind a test that the callee's var still holds
+;; the fn its stash was taken from (jolt.passes.inline guarded-splice). No
+;; inference: the spine never ran it, and nothing here is closed-world.
+(defn- optimize-guarded [node ctx unit]
+  (let [_ (begin-growth-budget! node)
+        opt (loop [i 0 n (const-fold node)]
+              (reset! (:dirty unit) false)
+              (let [n2 (const-fold (scalar-replace (flatten-lets (inline-node n ctx))))]
+                (if (and @(:dirty unit) (< i inline-fixpoint-cap))
+                  (recur (inc i) n2)
+                  n2)))]
+    (end-growth-budget!)
+    opt))
 
 ;; Inference mode (release/optimize without direct-link): inference without
 ;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.
@@ -284,6 +317,7 @@
     (let [ir (cond
                (inline-enabled? ctx) (optimize-inline node ctx unit)
                (inference-enabled? ctx) (optimize-inference node ctx unit)
+               (guarded-inline? ctx) (pt :inline (fn [] (optimize-guarded node ctx unit)))
                ;; Dev/normal: const-fold + numeric only
                :else (pt :fold (fn [] (const-fold node))))
           result (pt :numeric (fn [] (numeric/annotate ir)))]

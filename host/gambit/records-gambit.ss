@@ -1152,7 +1152,18 @@
 (define (jrec-plain? x)
   (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
 
-(define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
+(define-syntax jrec-iobj/i
+  (syntax-rules ()
+    ((_ x0)
+     (let* ((x x0) (l jrdesc-ifc-last))
+       (vector-ref
+         (if (and (eq? (car l) (jrec-desc x))
+                  (fx=?
+                    (vector-ref (cdr l) 0)
+                    (fx+ jch-graph-epoch jolt-proto-epoch)))
+             (cdr l)
+             (jrdesc-ifc-of x))
+         16)))))
 
 (define (jrec-method x method)
   (let* ((t (vector-ref (jrdesc-ifc-of x) 7))
@@ -3894,6 +3905,19 @@
        (not (eq? k jolt-deftype-kw))
        (fx=? (jrdesc-nfields (jrec-desc obj)) n)
        (eqv? (jrec-field-index obj k) i)))
+
+(define (jrec-self-site-fill! site obj layout)
+  (let ((len (vector-length layout)))
+    (let loop ((j 0))
+      (cond
+        ((fx=? j len) (set-box! site (jrec-desc obj)) #t)
+        ((jrec-own-slot-layout?
+           obj
+           (vector-ref layout j)
+           (vector-ref layout (fx+ j 1))
+           (vector-ref layout (fx+ j 2)))
+         (loop (fx+ j 3)))
+        (else #f)))))
 
 (define (jrec-own-slot-miss site obj k i n)
   (if (jrec-own-slot-layout? obj k i n)

@@ -1323,6 +1323,39 @@
     (if (procedure? f)
         (begin (set-box! site (vector (record-rtd obj) f arms 0)) (apply f obj argl))
         (record-method-dispatch obj name (apply jolt-vector argl)))))
+;; A number receiver: the site keeps the number-method-tbl procedure the walk
+;; reached host-type-arm for, #(number proc arms 0), hit on any number and the
+;; same arm list. No arm ahead of host-type-arm answers a Chez number (they test
+;; for a string, a record or a jhost first), and a library override heads the
+;; arm list, which the miss checks, as host-site-miss does. A name the table
+;; lacks, or an arity it refuses, keeps the walk and its JVM-worded miss.
+(define-syntax number-site-hit
+  (syntax-rules ()
+    ((_ site)
+     (let ((c (unbox site)))
+       (and c
+            (eq? (vector-ref c 0) 'number)
+            (eq? (vector-ref c 2) method-dispatch-arms)
+            (vector-ref c 1))))))
+(define (number-site-miss site obj name argl)
+  (let* ((arms method-dispatch-arms)
+         (f (and (not (fx=? (caar arms) arm-priority-user-override))
+                 (hashtable-ref number-method-tbl name #f)))
+         (m (and f (hashtable-ref number-method-arities name #f))))
+    (if (and f (or (not m) (bitwise-bit-set? m (length argl))))
+        (let loop ((as arms))
+          (cond
+            ((null? as) (record-method-dispatch-base obj name (apply jolt-vector argl)))
+            ((eq? (cdar as) host-type-arm)
+             (let ((p (lambda (x . args) (f x args))))
+               (set-box! site (vector 'number p arms 0))
+               (apply p obj argl)))
+            (else
+             (let ((r ((cdar as) obj name (apply jolt-vector argl))))
+               (if (eq? r 'pass) (loop (cdr as)) r)))))
+        ;; a name or arity the table does not answer: the uncached walk, in
+        ;; tail position, so its miss reports from the caller's frame
+        (record-method-dispatch obj name (apply jolt-vector argl)))))
 ;; Any other receiver goes to record-method-dispatch exactly as an uncached site
 ;; did, so a map's .get or a vector's .count pays a few type tests.
 (define-syntax host-site-call
@@ -1335,6 +1368,8 @@
         (let ((f (jrec-site-hit site obj))) (if f (f obj a ...) (jrec-site-miss site obj name (list a ...)))))
        ((and (record? obj) (pair? record-method-resolvers))
         (let ((f (rec-site-hit site obj))) (if f (f obj a ...) (rec-site-miss site obj name (list a ...)))))
+       ((number? obj)
+        (let ((f (number-site-hit site))) (if f (f obj a ...) (number-site-miss site obj name (list a ...)))))
        (else (record-method-dispatch obj name (jolt-vector a ...)))))))
 ;; java.util.regex: the Matcher and Pattern methods the regex arm answers
 ;; (host-static-classes.ss), by the same procedures it calls.
@@ -1374,52 +1409,61 @@
         ("signum" 0) ("shiftLeft" 1) ("shiftRight" 1) ("equals" 1)))
     h))
 (define (number-method method n . args)
-  ;; Same shape as jolt-string-method's check, including the (pair? args) guard:
-  ;; too few arguments already faults in the arm that reads one, and the 0-arg
-  ;; projections are what this is called with almost every time.
-  (if (and (pair? args)
-           (let ((m (hashtable-ref number-method-arities method #f)))
-             (and m (not (bitwise-bit-set? m (length args))))))
+  ;; Every arity is checked, a missing argument too: (.shiftLeft 1) faulted
+  ;; reading the argument it was not given. A method site keeps the procedure
+  ;; for a number receiver (number-site-miss), so this walk is the cold path.
+  (if (let ((m (hashtable-ref number-method-arities method #f)))
+        (and m (not (bitwise-bit-set? m (length args)))))
       (dispatch-miss n method args)
       (number-method-arms method n args)))
 
-(define (number-method-arms method n args)
-  (cond
-    ((string=? method "byteValue") (let ((b (modulo (jnum->exact n) 256))) (->num (if (>= b 128) (- b 256) b))))
-    ((string=? method "shortValue") (let ((b (modulo (jnum->exact n) 65536))) (->num (if (>= b 32768) (- b 65536) b))))
-    ((string=? method "intValue") (->num (jnum->exact n)))
-    ((string=? method "longValue") (->num (jnum->exact n)))
-    ((string=? method "doubleValue") (->num n))
-    ((string=? method "floatValue") (->num n))
+;; The number method surface as a table, name -> (lambda (n args) ...), so a
+;; method call site can keep the procedure for a number receiver (number-site-
+;; miss below) rather than walk a string=? chain per call: tools.reader reads
+;; every integer through .bitLength and .longValue (#1713).
+(define number-method-tbl (make-hashtable string-hash string=?))
+(define-syntax define-number-methods
+  (syntax-rules ()
+    ((_ (n args) (name expr) ...)
+     (begin (hashtable-set! number-method-tbl name (lambda (n args) expr)) ...))))
+(define-number-methods (n args)
+    ("byteValue" (let ((b (modulo (jnum->exact n) 256))) (->num (if (>= b 128) (- b 256) b))))
+    ("shortValue" (let ((b (modulo (jnum->exact n) 65536))) (->num (if (>= b 32768) (- b 65536) b))))
+    ("intValue" (->num (jnum->exact n)))
+    ("longValue" (->num (jnum->exact n)))
+    ("doubleValue" (->num n))
+    ("floatValue" (->num n))
     ;; .toString(radix) — BigInteger/Integer render in a base, lowercase like the
     ;; JVM (rewrite-clj's integer node reconstructs 0xff / 0377 / 2r1001 this way).
     ;; It is BigInteger's overload, the one jolt's single integer type can take, so
     ;; it follows BigInteger: a radix outside 2..36 renders in base 10 rather than
     ;; raising, and a double has no such overload.
-    ((string=? method "toString")
+    ("toString"
      (cond ((null? args) (jolt-num->string n))
            ((and (exact? n) (integer? n))
             (let ((radix (jnum->exact (car args))))
               (string-downcase
                 (number->string n (if (and (fixnum? radix) (fx<=? 2 radix 36)) radix 10)))))
-           (else (dispatch-miss n method args))))
-    ((string=? method "hashCode") (jolt-java-number-hashcode n))
-    ((string=? method "equals") (java-number-equals? n (car args)))
+           (else (dispatch-miss n "toString" args))))
+    ("hashCode" (jolt-java-number-hashcode n))
+    ("equals" (java-number-equals? n (car args)))
     ;; Double/Float .isNaN / .isInfinite (a non-flonum is neither).
-    ((string=? method "isNaN") (and (flonum? n) (not (= n n))))
-    ((string=? method "isInfinite") (and (flonum? n) (infinite? n)))
+    ("isNaN" (and (flonum? n) (not (= n n))))
+    ("isInfinite" (and (flonum? n) (infinite? n)))
     ;; BigInteger interop: .negate / .bitLength / .signum / .abs. A jolt integer is
     ;; a Chez exact integer, so these are native (integer-length = JVM bitLength,
     ;; matching for negative values too). tools.reader's number parser uses them.
-    ((string=? method "negate") (->num (- (jnum->exact n))))
-    ((string=? method "abs") (->num (abs (jnum->exact n))))
-    ((string=? method "bitLength") (->num (integer-length (jnum->exact n))))
-    ((string=? method "signum") (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
+    ("negate" (->num (- (jnum->exact n))))
+    ("abs" (->num (abs (jnum->exact n))))
+    ("bitLength" (->num (integer-length (jnum->exact n))))
+    ("signum" (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
     ;; BigInteger.shiftLeft/shiftRight (test.check's size-bounded-bigint): arbitrary
     ;; precision, so an arithmetic shift by the (positive) amount.
-    ((string=? method "shiftLeft") (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
-    ((string=? method "shiftRight") (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args)))))
-    (else (dispatch-miss n method args))))
+    ("shiftLeft" (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
+    ("shiftRight" (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args))))))
+(define (number-method-arms method n args)
+  (let ((f (hashtable-ref number-method-tbl method #f)))
+    (if f (f n args) (dispatch-miss n method args))))
 
 ;; Mutable static fields: "Class" -> (member -> 1-vector cell). A library that
 ;; writes a static field — clojure.spec.alpha's (set! (. clojure.lang.RT

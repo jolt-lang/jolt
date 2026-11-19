@@ -946,6 +946,26 @@
 (define hc-direct-link? #f)
 (define (set-direct-link-flag! on) (set! hc-direct-link? on))
 (define (hc-inline-enabled? ctx) (or hc-direct-link? (hc-form-direct-link)))
+;; Guarded inlining (#1713): the open-world spine (`jolt run`, a REPL) splices a
+;; small fn's body too, behind a test that the callee's var still holds the
+;; procedure that body was compiled into -- (if (eq? (jolt-var-fn CELL) ROOT)
+;; <body> <call>) -- so a redefinition, binding or with-redefs takes the call.
+;; ROOT is read when the caller loads, and only if the def that set the root
+;; stamped the same token the splice carries (rt.ss jolt-inline-root), so a
+;; cached caller loaded after the callee was redefined at a REPL never runs the
+;; old body. The CLI turns it on as the image boots (loader.ss); a build turns
+;; it off (it direct-links or stays fully var-routed), as do the gates.
+;; hc-guarded-inline-on is the switch; the spine opens hc-form-guarded around
+;; each form it compiles with tracing off (compile-eval.ss), since the trace
+;; reporter does not reconstruct a spliced fn's frame there, and an error report
+;; under the default trace names every fn as it ran.
+(define hc-guarded-inline-on #f)
+(define (set-guarded-inline-flag! on) (set! hc-guarded-inline-on on))
+(define hc-form-guarded (make-thread-parameter #f))
+(define (hc-guarded-inline? ctx)
+  (and (hc-form-guarded) (not (hc-inline-enabled? ctx))))
+;; Either kind of runtime-spine splicing: direct-linked forms, or guarded ones.
+(define (hc-spine-splicing?) (or (hc-form-direct-link) (hc-form-guarded)))
 ;; Inline-body registry: jolt.passes stashes an inline-eligible defn's
 ;; {:params :body :nhints :ret} here (keyed ns/name) as its form is optimized;
 ;; jolt.passes.inline fetches it to splice the body at a call site. The stash is an
@@ -1047,7 +1067,7 @@
 (define hc-site-const-nonce #f)
 (define hc-site-const-count 0)
 (define (hc-site-const-salt ctx)
-  (if (hc-form-direct-link)
+  (if (hc-spine-splicing?)
       (jolt-with-mutex inline-stash-mu
         (unless hc-site-const-nonce
           (set! hc-site-const-nonce (number->string (sa-epoch-ms))))
@@ -1060,7 +1080,7 @@
   (let ((fqn (string-append ns-name "/" nm)))
     (jolt-with-mutex inline-stash-mu
       (hashtable-set! inline-stash-table fqn m)
-      (if (and (hc-form-direct-link) (not (jolt-nil? m)))
+      (if (and (hc-spine-splicing?) (not (jolt-nil? m)))
           (let ((c (jolt-var ns-name nm)))
             (hashtable-set! inline-stash-pending c #t)
             (hashtable-set! inline-stash-owner fqn c))
@@ -1323,6 +1343,7 @@
   (def-var! "jolt.host" "record-shapes" hc-record-shapes)
   (def-var! "jolt.host" "protocol-methods" hc-protocol-methods)
   (def-var! "jolt.host" "inline-enabled?" hc-inline-enabled?)
+  (def-var! "jolt.host" "guarded-inline?" hc-guarded-inline?)
   (def-var! "jolt.host" "inference-enabled?" hc-inference-enabled?)
   (def-var! "jolt.host" "var-dynamic?" hc-var-dynamic?)
   (def-var! "jolt.host" "site-const-salt" hc-site-const-salt)
