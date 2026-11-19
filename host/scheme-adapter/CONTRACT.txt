@@ -482,6 +482,11 @@ sa-flonum->bits
 sa-bits->flonum
 sa-flonum-hi32
 sa-hi32->flonum
+# sa-bignum-s64? (added for the unchecked ops): whether a bignum (the caller
+# has already asked bignum?) lies in signed 64 bits, [-2^63, 2^63) — a Long in
+# jolt's range-classed integer model rather than a BigInt. Chez reads it off the
+# object's bigits; a host may answer with two compares.
+sa-bignum-s64?
 #
 # tier: coroutines
 # Stackful green threads sharing one OS thread (the carrier) — the fibers
