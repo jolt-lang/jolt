@@ -302,6 +302,7 @@
       (when (and (= :loop-slot (:kind origin))
                  (or (:discover? state) (and (not nullable?) (contains? slots k))))
         (swap! (:edits state) assoc path {:binder binder :key k})
+        (effect! state :read receiver)
         (when-not (:discover? state)
           (let [slots (assoc slots k value)]
             (swap! (:containers state) assoc path
@@ -642,6 +643,11 @@
         ;; the sites we already walked.
         (if (::incomplete (ex-data e)) {} (throw e))))))
 
+(defn effective-direct-link?
+  "Whether this unit or the current runtime compilation form enables direct linking."
+  [unit]
+  (or @(:direct-link? unit) (host/inline-enabled? nil)))
+
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
   rewriting IR. The unit caches only its latest root, record registry
@@ -652,7 +658,7 @@
   [unit body]
   (let [cache (:body-facts unit)
         shapes (:record-shapes @(:config unit))
-        direct-link? @(:direct-link? unit)
+        direct-link? (effective-direct-link? unit)
         previous @cache]
     (cond
       @(:debug-locals? unit) {}
@@ -728,7 +734,7 @@
              (not @(:seed-mint? unit)))
     (let [key (str (:ns definition) "/" (:name definition))
           definitions (:linked-call-definitions unit)]
-      (if (and @(:direct-link? unit) (not @(:debug-locals? unit))
+      (if (and (effective-direct-link? unit) (not @(:debug-locals? unit))
                (not (ir/closed-world-opt-out? (:meta definition)))
                (= :fn (:op (:init definition))))
         (swap! definitions assoc key definition)
@@ -744,7 +750,7 @@
   The result describes only this call and never enters unconditional body
   facts. Query again after changes to IR, linkage or the definition."
   [unit body path]
-  (when (and @(:direct-link? unit) (not @(:debug-locals? unit)) (not @(:seed-mint? unit)))
+  (when (and (effective-direct-link? unit) (not @(:debug-locals? unit)) (not @(:seed-mint? unit)))
     (let [call (get-in body path)
           {:keys [op ns name]} (:fn call)
           key (str ns "/" name)
