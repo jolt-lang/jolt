@@ -628,7 +628,178 @@
              (jolt-nil? (guarded-record-projection-at f (in-body)))
              (origin? f '(arities 0 body args 0) 'unknown)))))
 
+(define loop-update-at (var-deref "jolt.passes.facts" "loop-update-at"))
+(define loop-facts-unit ((var-deref "jolt.passes.types" "new-unit")))
+(define set-fact-flag! (var-deref "clojure.core" "reset!"))
+(set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #t)
+(define (loop-facts src) (body-facts loop-facts-unit (fact-ir src)))
+(define direct-edit (in-body 'body 'then 'args 1))
+(define (update-fact f path k) (fact-get (loop-update-at f path) k))
+
+(define direct-loop
+  "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m)))) m)))")
+(let* ((ctx (make-analyze-ctx "u"))
+       (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read direct-loop)) ctx))
+       (f (body-facts loop-facts-unit ir))
+       (update (loop-update-at f direct-edit)))
+  (ok "a linked fixed-key update can reuse storage even when the final map escapes"
+      (and (eq? #t (fact-get update 'reuse?)) (eq? #f (fact-get update 'confined?))
+           (eq? #f (fact-get update 'old-retained?))
+           (clj= (fact-get update 'binding) (in-body 'bindings 1 0))
+           (clj= (fact-get update 'recur) (in-body 'body 'then))
+           (has? (code-part (jolt-ce-emit ir)) "jolt-assoc3")
+           (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}"))))
+  (set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #f)
+  (ok "changing link mode invalidates the loop proof for the same IR"
+      (jolt-nil? (loop-update-at (body-facts loop-facts-unit ir) direct-edit)))
+  (set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #t)
+  (set-fact-flag! (fact-get loop-facts-unit 'debug-locals?) #t)
+  (ok "debug frames can retain old versions across an exceptional transfer"
+      (jolt-nil? (loop-update-at (body-facts loop-facts-unit ir) direct-edit)))
+  (set-fact-flag! (fact-get loop-facts-unit 'debug-locals?) #f))
+
+(let* ((src "(fn [x] (loop* [i 0 m {:k x} seen nil] (if (< i 3) (let* [alias m] (recur (inc i) (assoc alias :k (inc (:k alias))) (:k alias))) [(:k m) seen])))")
+       (update (loop-update-at (loop-facts src) (in-body 'body 'then 'body 'args 1))))
+  (ok "a dead alias and a later recur argument's scalar read allow reuse at transfer"
+      (and (eq? #t (fact-get update 'confined?)) (eq? #t (fact-get update 'reuse?))
+           (clj= (ev (string-append "(" src " 5)")) (ev "[8 7]")))))
+
+(for-each
+  (lambda (snapshot)
+    (let* ((src (string-append
+                  "(fn [x refresh?] (loop* [i 0 m {:k x} prev nil] (if (< i 3) "
+                  "(recur (inc i) (assoc m :k (inc (:k m))) " snapshot ") [(:k m) (:k prev)])))"))
+           (update (loop-update-at (loop-facts src) direct-edit)))
+      (ok (string-append "old snapshot keeps a distinct local version via " snapshot)
+          (and (eq? #t (fact-get update 'confined?))
+               (eq? #t (fact-get update 'old-retained?))
+               (eq? #f (fact-get update 'reuse?))
+               (clj= (ev (string-append "(" src " 5 true)")) (ev "[8 7]"))
+               (clj= (ev (string-append "(" src " 5 false)"))
+                     (ev (if (string=? snapshot "m") "[8 7]" "[8 nil]")))))))
+  '("m" "(if refresh? m prev)"))
+
+(let* ((src "(fn [x] (loop* [i 0 m {:k x :old nil}] (if (< i 2) (if (= i 0) (recur 1 (assoc m :old [m])) (recur 2 (assoc m :k (inc (:k m))))) (:k m))))")
+       (f (loop-facts src)))
+  (ok "the next map can retain its predecessor directly or through an unchanged field"
+      (and (eq? #t (update-fact f (in-body 'body 'then 'then 'args 1) 'old-retained?))
+           (eq? #t (update-fact f (in-body 'body 'then 'else 'args 1) 'old-retained?))
+           (eq? #f (update-fact f (in-body 'body 'then 'else 'args 1) 'reuse?))
+           (clj= (ev (string-append "(" src " 5)")) 6))))
+
+(for-each
+  (lambda (snapshot)
+    (let ((f (loop-facts
+               (string-append
+                 "(fn [x] (loop* [i 0 m {:k x} prev nil] (if (< i 3) "
+                 "(recur (inc i) (assoc m :k (inc (:k m))) " snapshot ") (:k m))))"))))
+      (ok (string-append "a backedge can retain a version via " snapshot)
+          (and (eq? #t (update-fact f direct-edit 'confined?))
+               (eq? #t (update-fact f direct-edit 'old-retained?))
+               (eq? #f (update-fact f direct-edit 'reuse?))))))
+  '("[m]" "(fn [] m)" "(loop* [j 0 v nil] (if (= j 0) (recur 1 [m]) v))"))
+
+(let* ((src "(fn [x] (loop* [i 0 m {:k x} read-prev nil] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m))) (fn [] (:k m))) [(:k m) (read-prev)])))")
+       (f (loop-facts src)))
+  (ok "a closure used after the transfer reads its captured older version"
+      (and (eq? #t (update-fact f direct-edit 'old-retained?))
+           (eq? #f (update-fact f direct-edit 'reuse?))
+           (clj= (ev (string-append "(" src " 5)")) (ev "[8 7]")))))
+
+(let* ((src "(fn [x] (loop* [i 0 m {:k x} prev nil] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m))) m) [(identical? m prev) (:k m) (:k prev)])))")
+       (f (loop-facts src)))
+  (ok "the same assoc occurrence makes distinct dynamic versions"
+      (and (eq? #t (update-fact f direct-edit 'old-retained?))
+           (eq? #f (update-fact f direct-edit 'reuse?))
+           (clj= (ev (string-append "(" src " 5)")) (ev "[false 8 7]")))))
+
+(let* ((src "(fn [x] (loop* [i 0 m {:k x} prev nil] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m))) (assoc m :k (:k m))) [(:k m) (:k prev)])))")
+       (f (loop-facts src)))
+  (ok "a sibling assoc occurrence can retain the old map by returning it unchanged"
+      (and (eq? #t (update-fact f direct-edit 'old-retained?))
+           (eq? #f (update-fact f direct-edit 'reuse?))
+           (clj= (ev (string-append "(" src " 5)")) (ev "[8 7]")))))
+
+(for-each
+  (lambda (observer)
+    (let* ((f (loop-facts
+                (string-append
+                  "(fn [x sink] (loop* [i 0 m {:k x}] (if (< i 3) (do " observer
+                  " (recur (inc i) (assoc m :k (inc (:k m))))) (:k m))))")))
+           (update (loop-update-at f (in-body 'body 'then 'ret 'args 1))))
+      (ok (string-append "reuse declines independently of retained slots for " observer)
+          (and (eq? #f (fact-get update 'old-retained?))
+               (eq? #f (fact-get update 'reuse?))))))
+  '("(identical? m m)" "(class m)" "(meta m)" "(sink m)"
+    "(try (throw (ex-info \"old\" {:map m})) (catch Throwable e nil))"))
+
+(let* ((src "(fn [x events] (try (loop* [m {:k x} i 0] (if (= i 0) (recur (assoc m :k (do (swap! events conj :field) (inc (:k m)))) (do (swap! events conj (:k m)) (throw (ex-info \"stop\" {})))) (:k m))) (catch Throwable e @events)))")
+       (f (loop-facts src)))
+  (ok "a later recur argument can throw after reading the old value"
+      (and (eq? #t (update-fact f (in-body 'body 'body 'then 'args 0) 'reuse?))
+           (clj= (ev (string-append "(" src " 5 (atom []))")) (ev "[:field 5]")))))
+
+(for-each
+  (lambda (src)
+    (ok (string-append "no loop update proof for " src)
+        (jolt-nil? (loop-update-at (loop-facts src) direct-edit))))
+  '("(fn [x] (loop* [i 0 m {:k 0}] (if (< i 3) (recur (inc i) (assoc m :k x)) m)))"
+    "(fn [x] (loop* [i 0 m x] (if (< i 3) (recur (inc i) (assoc m :k x)) m)))"
+    "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :extra x)) m)))"
+    "(fn [x assoc] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k x)) m)))"))
+
+(let ((f (loop-facts "(fn [x] (let* [other {:k x}] (loop* [i 0 m {:k x}] (if (< i 3) (if (= i 0) (recur 1 other) (recur (inc i) (assoc m :k x))) m))))")))
+  (ok "a backedge replacing the accumulator with a different map of the same layout declines"
+      (jolt-nil? (loop-update-at f (in-body 'body 'body 'then 'else 'args 1)))))
+
+;; A single chain of nested loops grows the IR linearly. Each level must still
+;; prove reuse, including after shadowing the enclosing level's names.
+(define (nested-loops depth)
+  (if (= depth 0)
+      "nil"
+      (string-append "(loop* [i 0 m {:k x}] (if (< i 1) (do "
+                     (nested-loops (- depth 1))
+                     " (recur (inc i) (assoc m :k (inc (:k m))))) (:k m)))")))
+(define (measure-loop-facts depth)
+  (let* ((ir (fact-ir (string-append "(fn [x] " (nested-loops depth) ")")))
+         (cache (fact-get loop-facts-unit 'body-facts))
+         (count-updates (var-deref "clojure.core" "count")))
+    (define (analyze)
+      (set-fact-flag! cache jolt-nil)
+      (body-facts loop-facts-unit ir))
+    (let* ((warm (analyze))
+           (updates (fact-get warm 'loop-updates))
+           (outer (in-body 'body 'then 'ret 'args 1)))
+      (ok (format "each of ~a nested loops proves reuse for its own slot" depth)
+          (and (pmap? updates) (= (count-updates updates) depth)
+               (eq? #t (update-fact warm outer 'reuse?))
+               (pmap-fold-fwd updates
+                 (lambda (k u all?) (and all? (eq? #t (fact-get u 'reuse?)))) #t))))
+    (let ((allocated (sstats-bytes (statistics))) (before (cpu-time)) (samples 24))
+      (do ((i 0 (+ i 1))) ((= i samples)) (analyze))
+      (let ((bytes (/ (- (sstats-bytes (statistics)) allocated) samples))
+            (msec (/ (- (cpu-time) before) samples)))
+        (printf "loop facts depth ~a: ~,2f ms, ~,0f bytes per uncached query~n"
+                depth (inexact msec) (inexact bytes))
+        bytes))))
+(let* ((small (measure-loop-facts 4))
+       (large (measure-loop-facts 16)))
+  (ok "uncached fact allocation stays bounded on four times the nesting"
+      (< 0 small large (* 8 small))))
+
+(define (shifted-snapshot slots)
+  (let* ((names (map (lambda (i) (format "s~a" i)) (iota slots)))
+         (inits (apply string-append (map (lambda (n) (string-append n " nil ")) names)))
+         (shift (apply string-append (map (lambda (n) (string-append n " ")) (cdr names)))))
+    (string-append "(fn [x] (loop* [i 0 m {:k x} " inits "] "
+                   "(if (< i 50) (recur (inc i) (assoc m :k x) " shift "m) (:k s0))))")))
+(ok "slot joins converge on a short snapshot chain and withhold facts beyond the budget"
+    (and (eq? #t (update-fact (loop-facts (shifted-snapshot 4)) direct-edit 'old-retained?))
+         (jolt-nil? (loop-update-at (loop-facts (shifted-snapshot 20)) direct-edit))))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
+(ok "ordinary evaluation computes the same fixed-field result"
+    (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}")))
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
