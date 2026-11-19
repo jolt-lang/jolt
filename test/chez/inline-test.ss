@@ -236,6 +236,168 @@
   (ok "a non-allocating field read twice is still scalar-replaced" (not (has? e "amap-slots->pmap"))))
 (ok "a nested map read twice computes the same value" (= 4 (jnum->exact (ev "((fn* ([a] (let [m {:p {:x a :y 2} :q 1}] (+ (:x (:p m)) (:y (:p m)) (:q m))))) 1)"))))
 
+;; Lexical facts describe occurrences in a particular IR revision. Scheme
+;; paths below use symbols for the IR's keyword keys and integers for indices.
+(define facts-unit ((var-deref "jolt.passes.types" "new-unit")))
+(define body-facts (var-deref "jolt.passes.facts" "body-facts"))
+(define binding-at (var-deref "jolt.passes.facts" "binding-at"))
+(define origins-at (var-deref "jolt.passes.facts" "origins-at"))
+(define clj= (var-deref "clojure.core" "="))
+(define (fact-kw name) (keyword #f (symbol->string name)))
+(define (ir-path steps)
+  (apply jolt-vector (map (lambda (s) (if (symbol? s) (fact-kw s) s)) steps)))
+(define (ir-at ir steps)
+  (fold-left (lambda (x s)
+               (if (symbol? s) (jolt-get x (fact-kw s) jolt-nil) (jolt-nth x s)))
+             ir steps))
+(define (fact-ir src) (jolt-ce-analyze (make-analyze-ctx "u") (jolt-ce-read src)))
+(define (facts-for src) (body-facts facts-unit (fact-ir src)))
+(define (binds? facts use binder)
+  (clj= (binding-at facts (ir-path use)) (ir-path binder)))
+(define (origin? facts use kind . path)
+  (let* ((base (jolt-hash-map (fact-kw 'kind) (fact-kw kind)))
+         (entry (if (eq? kind 'unknown)
+                    base
+                    (jolt-assoc base (fact-kw (if (eq? kind 'argument) 'binding 'site))
+                                (ir-path path)))))
+    (clj= (origins-at facts (ir-path use)) (jolt-hash-set entry))))
+
+(let ((f (facts-for "(fn* ([x] (let* [outer x x [x] alias x alias2 alias] [outer x alias2])))")))
+  (ok "a shadowing let initializer sees the outer parameter"
+      (binds? f '(arities 0 body bindings 1 1 items 0) '(arities 0 params 0)))
+  (ok "after shadowing, the same name resolves to the new binding"
+      (binds? f '(arities 0 body body items 1) '(arities 0 body bindings 1 0)))
+  (ok "a direct alias initializer resolves its original binding"
+      (binds? f '(arities 0 body bindings 2 1) '(arities 0 body bindings 1 0)))
+  (ok "the use still resolves to the last alias's own lexical binder"
+      (binds? f '(arities 0 body body items 2) '(arities 0 body bindings 3 0)))
+  (ok "an alias of a parameter has the caller-supplied origin"
+      (origin? f '(arities 0 body body items 0) 'argument 'arities 0 'params 0))
+  (ok "an alias chain retains the original execution-time constructor"
+      (origin? f '(arities 0 body body items 2) 'allocation 'arities 0 'body 'bindings 1 1)))
+
+(let* ((outer (fact-ir "(let* [x 1] (let* [x x] x))"))
+       (inner (ir-at outer '(body)))
+       (use (ir-at inner '(bindings 0 1)))
+       (shared (jolt-assoc outer (fact-kw 'body) (jolt-assoc inner (fact-kw 'body) use)))
+       (f (body-facts facts-unit shared)))
+  (ok "one shared local node resolves independently in two lexical scopes"
+      (and (eq? use (ir-at shared '(body body)))
+           (binds? f '(body bindings 0 1) '(bindings 0 0))
+           (binds? f '(body body) '(body bindings 0 0)))))
+
+(let ((f (facts-for "(letfn [(a [] [a b]) (b [] a)] [a b])")))
+  (ok "letfn binds a later sibling in an earlier closure"
+      (binds? f '(bindings 0 1 arities 0 body items 1) '(bindings 1 0)))
+  (ok "letfn binds an earlier sibling in a later closure"
+      (binds? f '(bindings 1 1 arities 0 body) '(bindings 0 0)))
+  (ok "the function self name shadows its letfn binder inside the function"
+      (binds? f '(bindings 0 1 arities 0 body items 0) '(bindings 0 1 name)))
+  (ok "the earlier closure sees the later sibling's constructor origin"
+      (origin? f '(bindings 0 1 arities 0 body items 1) 'allocation 'bindings 1 1)))
+
+(let ((f (facts-for "(fn* self ([self] self) ([x y & more] [self x y more]))")))
+  (ok "a parameter can shadow the fn self name in just its own arity"
+      (binds? f '(arities 0 body) '(arities 0 params 0)))
+  (ok "the fn self binder is visible in the second arity"
+      (binds? f '(arities 1 body items 0) '(name)))
+  (ok "rest has its own formal and an incoming origin"
+      (and (binds? f '(arities 1 body items 3) '(arities 1 rest))
+           (origin? f '(arities 1 body items 3) 'argument 'arities 1 'rest))))
+
+(let ((f (facts-for "(let* [e [:outer]] (try e (catch Throwable e e) (finally e)))")))
+  (ok "the source catch binding receives the exception from the IR catch binder"
+      (binds? f '(body catch-body bindings 0 1) '(body catch-sym)))
+  (ok "the catch name shadows the outer local only in the handler"
+      (and (binds? f '(body catch-body body) '(body catch-body bindings 0 0))
+           (binds? f '(body body) '(bindings 0 0))
+           (binds? f '(body finally) '(bindings 0 0))
+           (origin? f '(body catch-body body) 'unknown))))
+
+(let* ((ir (fact-ir "(fn* ([x] (let* [a [x] b [x] c [[1] :k] q '(x) r (identity x)] [a b c q r])))"))
+       (b '(arities 0 body))
+       (let-ir (ir-at ir b))
+       (alloc (ir-at let-ir '(bindings 0 1)))
+       ;; The two constructor occurrences now use the same map object.
+       (bindings (ir-at let-ir '(bindings)))
+       (shared (jolt-assoc let-ir (fact-kw 'bindings)
+                 (jolt-assoc bindings 1 (jolt-vector "b" alloc))))
+       (original (body-facts facts-unit ir))
+       (f (body-facts facts-unit shared)))
+  (ok "equal constructor syntax yields two distinct origin paths"
+      (and (origin? original '(arities 0 body body items 0) 'allocation 'arities 0 'body 'bindings 0 1)
+           (origin? original '(arities 0 body body items 1) 'allocation 'arities 0 'body 'bindings 1 1)))
+  (ok "even the same constructor node object has distinct occurrences"
+      (and (eq? (ir-at shared '(bindings 0 1)) (ir-at shared '(bindings 1 1)))
+           (origin? f '(body items 0) 'allocation 'bindings 0 1)
+           (origin? f '(body items 1) 'allocation 'bindings 1 1)))
+  (ok "constant collection and quoted data have potentially shared literal origins"
+      (and (origin? f '(body items 2) 'literal 'bindings 2 1)
+           (origin? f '(body items 3) 'literal 'bindings 3 1)))
+  (ok "an opaque invoke and a binding outside the requested root have unknown origins"
+      (and (origin? f '(body items 4) 'unknown)
+           (origin? f '(bindings 0 1 items 0) 'unknown)
+           (jolt-nil? (binding-at f (ir-path '(bindings 0 1 items 0)))))))
+
+(let* ((src "(fn* ([x] (loop* [i 0 prev nil] (let* [obj [x] alias obj] (if (= i 0) (recur 1 alias) [(= alias prev) (identical? alias prev)])))))")
+       (f (facts-for src)))
+  (ok "a loop body's alias carries its constructor site onto the backedge"
+      (origin? f '(arities 0 body body body then args 1) 'allocation 'arities 0 'body 'body 'bindings 0 1))
+  (ok "the outer fn parameter remains incoming across an inner loop's recur"
+      (origin? f '(arities 0 body body bindings 0 1 items 0) 'argument 'arities 0 'params 0))
+  (ok "a loop-carried local might have been rebound by recur"
+      (and (binds? f '(arities 0 body body body else items 0 args 1) '(arities 0 body bindings 1 0))
+           (origin? f '(arities 0 body body body else items 0 args 1) 'unknown)))
+  (ok "two evaluations of one loop site produce equal objects with distinct identities"
+      (equal? (seq->list (ev (string-append "(" src " 7)"))) '(#t #f))))
+(let ((f (facts-for "(fn* ([x] (let* [alias x] (if x alias (recur [x])))))")))
+  (ok "aliases of a fn parameter can see a value rebound by fn recur"
+      (origin? f '(arities 0 body body then) 'unknown)))
+(let ((f (facts-for "(fn* ([x] (loop* [x [x] y x] y)))")))
+  (ok "loop initializers have sequential scope and see first-entry values"
+      (and (binds? f '(arities 0 body bindings 0 1 items 0) '(arities 0 params 0))
+           (origin? f '(arities 0 body bindings 1 1) 'allocation 'arities 0 'body 'bindings 0 1))))
+(let ((f (facts-for "(fn* ([x] {x x}))")))
+  (ok "a map key and value are separate child occurrences"
+      (and (binds? f '(arities 0 body pairs 0 0) '(arities 0 params 0))
+           (binds? f '(arities 0 body pairs 0 1) '(arities 0 params 0)))))
+
+(ev "(def facts-copy (fn* ([p] [p p])))")
+(let* ((ctx (make-analyze-ctx "u"))
+       (before (jolt-ce-analyze ctx (jolt-ce-read "(fn* ([x] (let* [a [x]] (facts-copy a))))")))
+       (original (body-facts facts-unit before))
+       (after (jolt-ce-run-passes before ctx))
+       (rewritten (body-facts facts-unit after))
+       (other (body-facts ((var-deref "jolt.passes.types" "new-unit")) after)))
+  (ok "the same body revision hits the unit's fact cache"
+      (eq? rewritten (body-facts facts-unit after)))
+  (ok "different compilation units compute separate snapshots" (not (eq? rewritten other)))
+  (ok "the pass pipeline splices the call"
+      (not (has? (code-part (jolt-ce-emit after)) "facts-copy")))
+  (ok "recomputing after a splice finds both substituted uses in caller scope"
+      (and (origin? original '(arities 0 body body) 'unknown)
+           (binds? original '(arities 0 body body args 0) '(arities 0 body bindings 0 0))
+           (binds? rewritten '(arities 0 body body items 0) '(arities 0 body bindings 0 0))
+           (binds? rewritten '(arities 0 body body items 1) '(arities 0 body bindings 0 0))
+           (origin? rewritten '(arities 0 body body items 1) 'allocation 'arities 0 'body 'bindings 0 1)))
+  (let* ((opaque (jolt-hash-map (fact-kw 'op) (fact-kw 'future-op)))
+         (mixed (jolt-hash-map (fact-kw 'op) (fact-kw 'vector)
+                               (fact-kw 'items) (jolt-vector after opaque)))
+         (f (body-facts facts-unit mixed)))
+    (ok "an unrecognized IR op discards partial facts"
+        (and (origin? f '(items 1) 'unknown)
+             (origin? f '(items 0 arities 0 body body items 1) 'unknown)))))
+
+(let* ((leaf (fact-ir "1"))
+       (deep (let loop ((n 200) (ir leaf))
+               (if (zero? n) ir
+                   (loop (- n 1) (jolt-hash-map (fact-kw 'op) (fact-kw 'vector)
+                                                (fact-kw 'items) (jolt-vector ir))))))
+       (node (jolt-hash-map (fact-kw 'op) (fact-kw 'vector)
+                            (fact-kw 'items) (jolt-vector leaf deep))))
+  (ok "an exhausted analysis budget discards even the prefix's facts"
+      (origin? (body-facts facts-unit node) '(items 0) 'unknown)))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 (printf "~a/~a passed~n" (- total fails) total)
