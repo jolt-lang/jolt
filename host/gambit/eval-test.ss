@@ -33,6 +33,23 @@
           [(get (update a 7 inc) 7) (get a 7)
            (get (update h 7 + 2) 7) (get h 7) (identical? h (update h 7 identity))])"
        "[2 1 3 1 true]")
+;; A hash-map symbol lookup can bypass registered hash arms. Assoc must
+;; still dispatch after the updater, just as it does in the ordinary path.
+(let* ((k (jolt-compile-eval "'update-hash-probe" "user"))
+       (m (pmap-assoc empty-pmap-hash k 1))
+       (run-update (jolt-compile-eval "(fn [m k f] (update m k f))" "user"))
+       (ordinary (jolt-compile-eval "(fn [m k f] (assoc m k (f (get m k))))" "user"))
+       (events '())
+       (run (lambda (proc)
+              (set! events '())
+              (jolt-invoke proc m k (lambda (v) (set! events (cons 'update events)) (+ v 1)))
+              (reverse events))))
+  (register-hash-arm! (lambda (x) (eq? x k))
+    (lambda (x) (set! events (cons 'hash events)) (symbol-hasheq x)))
+  (let* ((expected (run ordinary)) (actual (run run-update)))
+    (unless (and (memq 'hash expected) (equal? expected actual))
+      (printf "  FAIL   symbol update effects: got ~s expected ~s\n" actual expected)
+      (set! failures (+ failures 1)))))
 ;; lazy seqs + HOFs through the prelude
 (check "(map inc [1 2 3])" "(2 3 4)")
 (check "(->> (range 100) (filter odd?) (map #(* % %)) (reduce +))" "166650")
