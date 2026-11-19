@@ -2065,20 +2065,9 @@
    {:suite "core / extenders", :label "extends? on inline defrecord impl", :category :host-model}
    {:suite "clojure.core / leaf batch (complement fnil munge etc.)", :label "supers empty set", :category :host-model}
 
-   ;; Array and JVM-shape stubs: jolt's arrays carry an element KIND but no
-   ;; per-element type check, so the aset-<prim> family writes into any array
-   ;; (the JVM refuses aset-int on an Object[]) and the coercion views are
-   ;; identity; there are no proxies and no Iterator/Enumeration either, so the
-   ;; proxy fns answer for the nil proxy the JVM dereferences. Whole suites of
-   ;; documented stubs.
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-boolean", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-byte", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-char", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-double", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-float", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-int", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-long", :category :host-model}
-   {:suite "untested / array stubs (vectors + host buffers)", :label "aset-short", :category :host-model}
+   ;; JVM-shape stubs: the typed coercion views are identity, and there are no
+   ;; proxies and no Iterator/Enumeration, so the proxy fns answer for the nil
+   ;; proxy the JVM dereferences. Whole suites of documented stubs.
    {:suite "untested / typed coercion views", :label "booleans", :category :host-model}
    {:suite "untested / typed coercion views", :label "bytes view", :category :host-model}
    {:suite "untested / typed coercion views", :label "chars first", :category :host-model}
