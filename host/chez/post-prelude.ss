@@ -7,6 +7,28 @@
   (let ((cell (var-cell-lookup "clojure.core" "comp")))
     (and cell (var-cell-root cell))))
 
+;; Guard the linked root read at each scalar update site and the helper its
+;; standard body resolves dynamically. Read the helper's cell only on a root hit.
+(define jolt-loop-map-update?
+  (let* ((cell (var-cell-lookup "clojure.core" "update"))
+         (standard (and cell (var-cell-root cell)))
+         (helper (jolt-var "jolt.host" "try-map-update")))
+    (lambda (f)
+      (and (eq? f standard)
+           (eq? (var-cell-deref helper) jolt-try-map-update)))))
+
+;; A version is the original map or a memo shared by continuations of the
+;; same write. Competing or resumed escapes publish one persistent map.
+(define (jolt-loop-map-memo) (box #f))
+(define (jolt-loop-map-value version)
+  (if (box? version) (unbox version) version))
+(define (jolt-loop-map-save! memo m)
+  (if (sa-box-cas! memo #f m) m (unbox memo)))
+
+;; Inspect the same seed procedure the ordinary destructurer would invoke.
+(define (jolt-loop-map-standard-seq? proc)
+  (eq? proc jolt-seq?))
+
 ;;
 ;; A few clojure.core predicates are implemented in the overlay by inspecting a
 ;; tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key doesn't
