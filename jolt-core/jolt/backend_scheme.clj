@@ -526,26 +526,46 @@
 ;; loaded, a record receiver's own impl is read from its type's dispatch vector
 ;; (protocols.ss jrdesc-vtable-ref) and applied directly -- no call into the
 ;; protocol fn, no per-site cache scan. Anything else the receiver is goes
-;; through the protocol fn as before, and a var that no longer holds it (a
-;; redefinition, with-redefs) is called like any other. PK is [proto method],
-;; from jolt.host/protocol-call-key.
-(defn- emit-proto-site-call [c cell operands invoker pk]
+;; through the protocol fn as before. A var that no longer holds it (a
+;; redefinition, with-redefs) is called like any other, except by a receiver
+;; whose type declares the protocol itself: that is the JVM's interface call,
+;; which ignores the var. PK is [proto method evm?], from
+;; jolt.host/protocol-call-key; under :extend-via-metadata (evm?) the receiver's
+;; metadata comes ahead of an extend-type impl in the dispatch vector, so while
+;; the var holds the protocol fn the site just calls it.
+(defn- emit-proto-site-call [c vf-src operands invoker pk pooled?]
   (let [tail? (:tail? c)
         traced? (or tail? (trace-frames?))
         fnode (:fnode c)
-        shim (hoist-const (str "(var-cell-root (jolt-var " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) "))"))
-        id (hoist-const (str "(intern-pm-key " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) ")"))
-        vf (fresh-label "_vf$") d (fresh-label "_pd$") f (fresh-label "_pf$")
+        vf (fresh-label "_vf$") d (fresh-label "_pd$") f (fresh-label "_pf$") g (fresh-label "_pg$")
         ts (mapv (fn [_] (fresh-label "_va$")) (rest operands))
         binds (apply str (map (fn [t a] (str " (" t " " a ")")) ts (rest operands)))
-        kept (fn [s] (if traced? s (str "(jolt-site-kept " s ")")))]
-    (str "(let* ((" vf " (jolt-var-fn " cell "))" binds ")"
-         " (if (eq? " vf " " shim ")"
-         " (let* ((" d " (jrec-pic-desc/i " (first ts) ")) (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
-         " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
-         " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
-         " (if (procedure? " vf ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
-         " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) ")))")))
+        kept (fn [s] (if traced? s (str "(jolt-site-kept " s ")")))
+        ;; the var was redefined (with-redefs, a def), or this site has no pool
+        ;; to remember the protocol fn in: as on the JVM, a type that declares
+        ;; the protocol in its own body is an interface call that never reads
+        ;; the var; every other receiver calls what the var holds now
+        ;; (protocols.ss protocol-direct-impl)
+        slow (str " (let ((" g " (protocol-direct-impl " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) " " (first ts) ")))"
+                  " (if " g " " (with-site (:node c) (kept (emit-call tail? g ts (:tl c) (:ich c))))
+                  " (if (procedure? " vf ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
+                  " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) ")))")]
+    (cond
+      (and pooled? (nth pk 2 nil))
+      (let [shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) ")"))]
+        (str "(let* ((" vf " " vf-src ")" binds ")"
+             " (if (eq? " vf " " shim ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
+             slow "))"))
+      pooled?
+      (let [shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) ")"))
+            id (hoist-const (str "(intern-pm-key " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) ")"))]
+        (str "(let* ((" vf " " vf-src ")" binds ")"
+             " (if (eq? " vf " " shim ")"
+             " (let* ((" d " (jrec-pic-desc/i " (first ts) ")) (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
+             " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
+             " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
+             slow "))"))
+      :else (str "(let* ((" vf " " vf-src ")" binds ")" slow ")"))))
 
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)
@@ -553,18 +573,31 @@
         callee (if (<= n 4)
                  (str (if (or (:tail? c) (trace-frames?)) "jolt-invoke-t" "jolt-invoke") n)
                  "jolt-invoke")]
-    (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons (emit (:fnode c)) args)
+    (let [fsrc (emit (:fnode c))
+          chez? (not= :gambit (session/target))
+          ;; the protocol call site keys on the callee's var cell as emitted, so
+          ;; a call whose arguments are bound to temporaries first (any argument
+          ;; that is not a plain local or constant) is still recognized; the
+          ;; temporary already holds the var's value, read ahead of the
+          ;; arguments as the fn position is
+          pcell (and chez? (second (re-find var-cell-deref-re fsrc)))
+          ;; pooled: the full site. No pool (a bare top-level expression, run
+          ;; once): only the declared-impl test, since there is no load-time
+          ;; slot to remember the protocol fn in
+          pooled? (boolean (and pcell *const-pool*))
+          pk (and chez? (= :var (:op (:fnode c))) (seq args) (var-cache?) (not (seed-mint?))
+                  (or pooled? (nil? *const-pool*))
+                  (let [pk (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n)]
+                    (when-not (nil? pk) pk)))]
+    (ordered-call (cons (:fnode c) (:arg-nodes c)) (cons fsrc args)
                   (fn [operands]
-                    (let [chez? (not= :gambit (session/target))
-                          cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
+                    (let [cell (and chez? (second (re-find var-cell-deref-re (first operands))))]
                       (cond
-                        (and cell (seq (rest operands)) (var-cache?) *const-pool* (not (seed-mint?))
-                             (let [pk (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n)]
-                               (and pk (not (nil? pk)))))
-                        (emit-proto-site-call c cell operands callee
-                                              (protocol-call-key nil (:ns (:fnode c)) (:name (:fnode c)) n))
+                        pk
+                        (emit-proto-site-call c (if cell (str "(jolt-var-fn " cell ")") (first operands))
+                                              operands callee pk pooled?)
                         cell (emit-open-call c (str "(jolt-var-fn " cell ")") operands callee)
-                        :else (emit-call (:tail? c) callee operands (:tl c) (:ich c))))))))
+                        :else (emit-call (:tail? c) callee operands (:tl c) (:ich c)))))))))
 
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))

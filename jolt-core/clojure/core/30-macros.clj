@@ -957,7 +957,12 @@
        ;; register method var-keys for devirtualization; the inference
        ;; reads this (via infer-unit!) to resolve a protocol call on a known record
        (register-protocol-methods! ~pkey [~@(map (fn [s] (name (first s))) sigs)])
-       ~@(map (fn [sig] (protocol-method-def pname pkey via-meta? sig)) sigs))))
+       ~@(map (fn [sig] (protocol-method-def pname pkey via-meta? sig)) sigs)
+       ;; each method's protocol fn as made here, which a protocol call site
+       ;; compares the var's value against (protocols.ss protocol-fn-of)
+       ~@(map (fn [sig] `(register-protocol-fn! ~(str *ns*) ~(name (first sig)) ~(symbol (str *ns*) (name (first sig))))) sigs)
+       ;; the protocol's name, which is what defprotocol answers on the JVM
+       (quote ~pname))))
 
 ;; Member threading: (.. x f g) => (. (. x f) g); a parenthesized member
 ;; carries args. Canonical Clojure shape, single-arity defmacro.

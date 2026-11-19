@@ -1178,27 +1178,33 @@
 ;; Is NS-NAME/NM, right now, a protocol method fn defprotocol defined, called
 ;; with at least the receiver? Answers [proto method] -- the names its dispatch
 ;; resolves by -- so the back end can dispatch at the call site on the
-;; receiver's own impl (protocols.ss jrdesc-vtable-ref, #1713), else nil. Not
-;; for a protocol with :extend-via-metadata, whose metadata comes ahead of an
-;; extend-type impl the dispatch vector also holds; not for a var that is
-;; dynamic or whose root is no longer a procedure.
+;; receiver's own impl (protocols.ss jrdesc-vtable-ref, #1713), else nil. A
+;; protocol with :extend-via-metadata answers a third element, true: its
+;; metadata comes ahead of an extend-type impl the dispatch vector also holds,
+;; so the site keeps only the declared-impl test a redefinition needs. Not for
+;; a var that is dynamic, whose root is no longer a procedure, or whose meta no
+;; longer names the protocol: a plain def over the method drops :protocol, and
+;; on the JVM a call compiled after it is a plain call.
 (define hc-kw-extend-via-metadata (keyword #f "extend-via-metadata"))
 (define (hc-protocol-call-key ctx ns-name nm nargs)
   (let* ((e (hashtable-ref chez-protocol-methods-tbl (string-append ns-name "/" nm) #f))
-         (cell (and e (var-cell-lookup ns-name nm))))
-    (if (and cell (fixnum? nargs) (fx>=? nargs 1)
+         (cell (and e (var-cell-lookup ns-name nm)))
+         (p (and cell
+                 (let* ((pk (car e))
+                        (slash (let loop ((i (fx- (string-length pk) 1)))
+                                 (cond ((fx<? i 0) #f)
+                                       ((char=? (string-ref pk i) #\/) i)
+                                       (else (loop (fx- i 1))))))
+                        (pc (and slash (var-cell-lookup (substring pk 0 slash)
+                                                        (substring pk (fx+ slash 1) (string-length pk))))))
+                   (and pc (var-cell-root pc))))))
+    (if (and p (pmap? p) (fixnum? nargs) (fx>=? nargs 1)
              (procedure? (var-cell-root cell))
              (not (var-cell-dynamic? cell))
-             (let* ((pk (car e))
-                    (slash (let loop ((i (fx- (string-length pk) 1)))
-                             (cond ((fx<? i 0) #f)
-                                   ((char=? (string-ref pk i) #\/) i)
-                                   (else (loop (fx- i 1))))))
-                    (pc (and slash (var-cell-lookup (substring pk 0 slash)
-                                                    (substring pk (fx+ slash 1) (string-length pk)))))
-                    (p (and pc (var-cell-root pc))))
-               (and p (pmap? p) (not (jolt-truthy? (jolt-get p hc-kw-extend-via-metadata jolt-nil))))))
-        (jolt-vector (car e) (cdr e))
+             (let ((m (var-cell-meta cell)))
+               (and (pmap? m) (jolt-truthy? (jolt-get m hc-kw-protocol jolt-nil)))))
+        (jolt-vector (car e) (cdr e)
+                     (jolt-truthy? (jolt-get p hc-kw-extend-via-metadata jolt-nil)))
         jolt-nil)))
 (define (hc-seed-callable? ctx ns-name nm nargs)
   (let ((cell (var-cell-lookup ns-name nm)))

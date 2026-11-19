@@ -53,7 +53,7 @@
 (check "(defrecord Pt [x y])" "#'user/map->Pt")
 (check "(:x (->Pt 3 4))" "3")
 (check "(pr-str (->Pt 1 2))" "\"#user.Pt{:x 1, :y 2}\"")
-(check "(defprotocol Shape (perim [s]))" "#'user/perim")
+(check "(defprotocol Shape (perim [s]))" "Shape")
 (check "(defrecord Sq [w] Shape (perim [s] (* 4 (:w s))))" "nil")
 (check "(perim (->Sq 5))" "20")
 ;; multimethods

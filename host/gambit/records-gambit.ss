@@ -1880,6 +1880,26 @@
         (id (intern-pm-key proto method)))
     (and pt (fx< id (vector-length pt)) (vector-ref pt id))))
 
+(define protocol-fn-tbl
+  (make-hashtable string-hash string=?))
+
+(define (register-protocol-fn! ns nm f)
+  (jolt-with-mutex
+    rec-tbl-mu
+    (hashtable-set!
+      protocol-fn-tbl
+      (string-append ns "/" nm)
+      f))
+  jolt-nil)
+
+(define (protocol-fn-of ns nm)
+  (jolt-with-mutex
+    rec-tbl-mu
+    (hashtable-ref
+      protocol-fn-tbl
+      (string-append ns "/" nm)
+      #f)))
+
 (define protocol-impl-hook (lambda (proto method fn) #f))
 
 (define (register-protocol-method type-tag proto method fn)
@@ -4491,6 +4511,11 @@
   "clojure.core"
   "register-protocol-methods!"
   register-protocol-methods!)
+
+(def-var!
+  "clojure.core"
+  "register-protocol-fn!"
+  register-protocol-fn!)
 
 (def-var! "clojure.core" "register-method" register-method)
 
