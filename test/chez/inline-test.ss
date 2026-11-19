@@ -405,6 +405,212 @@
   (ok "an exhausted analysis budget discards even the prefix's facts"
       (origin? (body-facts facts-unit node) '(items 0) 'unknown)))
 
+(define projection-at (var-deref "jolt.passes.facts" "projection-at"))
+(define guarded-record-projection-at (var-deref "jolt.passes.facts" "guarded-record-projection-at"))
+(define contained-at (var-deref "jolt.passes.facts" "contained-at"))
+(define captures-at (var-deref "jolt.passes.facts" "captures-at"))
+(define confined? (var-deref "jolt.passes.facts" "confined?"))
+(define may-publish? (var-deref "jolt.passes.facts" "may-publish?"))
+(define observations-at (var-deref "jolt.passes.facts" "observations-at"))
+(define (in-body . path) (ir-path (append '(arities 0 body) path)))
+(define map-site (in-body 'bindings 0 1))
+(define box-site (in-body 'bindings 1 1))
+(define ret-site (in-body 'body))
+(define (fact-get facts key) (jolt-get facts (fact-kw key) jolt-nil))
+(define (projects? f path present? from)
+  (let ((p (projection-at f path)))
+    (and (not (jolt-nil? p))
+         (eq? (fact-get p 'present?) present?)
+         (clj= (fact-get p 'origins) (origins-at f from)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} box [m]] (:k (nth box 0))))")))
+  (ok "nested projections forward only the selected field"
+      (and (projects? f (in-body 'body 'args 0) #t map-site)
+           (projects? f ret-site #t (in-body 'bindings 0 1 'pairs 0 1))))
+  (ok "projecting through both containers confines both allocations"
+      (and (confined? f map-site) (confined? f box-site)
+           (may-publish? f (in-body 'bindings 0 1 'pairs 0 1))
+           (clj= (contained-at f box-site) (origins-at f map-site)))))
+
+(for-each
+ (lambda (tail)
+   (let ((f (facts-for (string-append "(fn [x sink] (let [m {:k x} box [[m] [m]] other [x]] " tail "))"))))
+     (ok (string-append "shared child publishes transitively via " tail)
+         (and (not (confined? f map-site)) (not (confined? f box-site))
+              (confined? f (in-body 'bindings 2 1))))))
+ '("box" "(reset! sink box)" "(set! *print-length* box)" "(throw box)"
+   "(try (throw box) (catch Throwable e nil))"))
+
+(let ((f (facts-for "(fn [x callback] (let [field [x] m {:k field} box [m]] (callback (:k (nth box 0)))))")))
+  (ok "passing only a projected child to an opaque callback confines its holders"
+      (and (not (confined? f (in-body 'bindings 0 1)))
+           (confined? f (in-body 'bindings 1 1))
+           (confined? f (in-body 'bindings 2 1)))))
+
+(let ((f (facts-for "(fn [x i] (let [m {:k x} box [m] other [x]] (nth box i)))")))
+  (ok "unknown indexing conservatively exposes possible children and leaves unrelated sites local"
+      (and (jolt-nil? (projection-at f ret-site))
+           (not (confined? f map-site)) (not (confined? f box-site))
+           (confined? f (in-body 'bindings 2 1)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} box [m]] (identical? m (nth box 0))))")))
+  (ok "local identity is observable even while both objects are confined"
+      (and (confined? f map-site) (confined? f box-site)
+           (clj= (observations-at f map-site) (jolt-hash-set (fact-kw 'identity)))
+           (clj= (observations-at f box-site) (jolt-hash-set)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x}] (class m)))")))
+  (ok "representation and opaque uses are reported separately"
+      (and (not (confined? f map-site))
+           (clj= (observations-at f map-site)
+                 (jolt-hash-set (fact-kw 'representation) (fact-kw 'unknown))))))
+
+(let ((f (facts-for "(fn [x] (let [m {:a nil :b false :c (x)} v [nil false (x)]] [(get m :a x) (:b m x) (:c m) (nth v 0 x) (nth v 1) (nth v 2) (:z m x)]))")))
+  (ok "nil, false, and unknown values preserve literal key and slot presence"
+      (and (projects? f (in-body 'body 'items 0) #t (in-body 'bindings 0 1 'pairs 0 1))
+           (projects? f (in-body 'body 'items 1) #t (in-body 'bindings 0 1 'pairs 1 1))
+           (projects? f (in-body 'body 'items 2) #t (in-body 'bindings 0 1 'pairs 2 1))
+           (projects? f (in-body 'body 'items 3) #t (in-body 'bindings 1 1 'items 0))
+           (projects? f (in-body 'body 'items 4) #t (in-body 'bindings 1 1 'items 1))
+           (projects? f (in-body 'body 'items 5) #t (in-body 'bindings 1 1 'items 2))
+           (projects? f (in-body 'body 'items 6) #f (in-body 'body 'items 6 'args 1)))))
+
+(let ((f (facts-for "(fn [x] (let [key [x] val [x] m {key val} members #{key val}] [m members]))")))
+  (ok "maps retain both keys and values and sets retain members"
+      (let ((children (jolt-conj2 (origins-at f map-site)
+                                  (jolt-first (origins-at f box-site)))))
+        (and (clj= (contained-at f (in-body 'bindings 2 1)) children)
+             (clj= (contained-at f (in-body 'bindings 3 1)) children)))))
+(let ((f (facts-for "(fn [] (get #{false} false :missing))")))
+  (ok "set lookup forwards the stored member"
+      (projects? f (in-body) #t (in-body 'args 0 'items 0))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} f (fn [m] (fn [] m)) g (fn [] (fn [] m))] g))"))
+       (g (captures-at f (in-body 'bindings 2 1)))
+       (capture (jolt-get g "m" jolt-nil)))
+  (ok "nested capture follows lexical shadowing and returning a closure publishes its capture"
+      (and (clj= (captures-at f box-site) (jolt-hash-map))
+           (clj= (fact-get capture 'binding) (in-body 'bindings 0 0))
+           (clj= (fact-get capture 'origins) (origins-at f map-site))
+           (not (confined? f map-site)))))
+
+(ev "(def facts-make-fn (fn* ([p q] (fn* ([] [p q])))))")
+(let* ((ctx (make-analyze-ctx "u"))
+       (ir (jolt-ce-analyze ctx (jolt-ce-read "(fn [x] (let [m {:k x}] (facts-make-fn m false)))")))
+       (spliced (jolt-ce-run-passes ir ctx))
+       (closure (ir-at spliced '(arities 0 body body)))
+       (captures (captures-at (body-facts facts-unit spliced) ret-site)))
+  (ok "spliced image metadata retains a renamed live binding and carries false as data"
+      (and (clj= (fact-get closure 'free-names) (jolt-vector "p" "q"))
+           (clj= (fact-get closure 'live-names) (jolt-vector "m" (jolt-vector #f)))
+           (clj= (fact-get (jolt-get captures "m" jolt-nil) 'binding) (in-body 'bindings 0 0))
+           (= 1 (jolt-count captures)))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} f (fn [] m) a f] (:k (a))))")))
+  (ok "a proven local zero-arg invocation forwards its capture without publication"
+      (and (confined? f map-site) (confined? f box-site)
+           (projects? f ret-site #t (in-body 'bindings 0 1 'pairs 0 1)))))
+(let ((f (facts-for "(fn [x] (let [m {:k x}] ((fn [] (throw m)))))")))
+  (ok "an immediately invoked closure can still publish a capture through its effects"
+      (not (confined? f map-site))))
+
+(let* ((f (facts-for "(fn [x] (let [field [x] m {:k field} f (^:once fn* [] (let [box [m]] (:k (nth box 0) :missing)))] (f)))"))
+       (once-site (in-body 'bindings 2 1))
+       (capture (jolt-get (captures-at f once-site) "m" jolt-nil))
+       (read-site (in-body 'bindings 2 1 'arities 0 'body 'bindings 0 1 'items 0))
+       (lookup-site (in-body 'bindings 2 1 'arities 0 'body 'body))
+       (receiver-site (in-body 'bindings 2 1 'arities 0 'body 'body 'args 0)))
+  (ok "a once closure keeps the lexical binder and possible first-call value"
+      (and (clj= (fact-get capture 'binding) (in-body 'bindings 1 0))
+           (clj= (binding-at f read-site) (in-body 'bindings 1 0))
+           (clj= (fact-get capture 'origins) (origins-at f box-site))
+           (jolt-contains? (origins-at f read-site) (jolt-hash-map (fact-kw 'kind) (fact-kw 'unknown)))
+           (jolt-contains? (origins-at f read-site) (jolt-first (origins-at f box-site)))))
+  (ok "a cleared capture invalidates derived field proofs and may still publish its child"
+      (and (projects? f receiver-site #t read-site)
+           (jolt-nil? (projection-at f lookup-site))
+           (origin? f '(arities 0 body body) 'unknown)
+           (may-publish? f map-site))))
+
+(ok "a once closure retried after throwing reads the cleared capture"
+    (clj= (ev "(let [m {:k [1]} f (^:once fn* [fail?] (let [v (:k m :missing)] (if fail? (throw (ex-info \"retry\" {})) v)))] [(try (f true) (catch Throwable e :threw)) (f false)])")
+          (jolt-vector (fact-kw 'threw) (fact-kw 'missing))))
+
+(for-each
+  (lambda (hint)
+    (let ((f (facts-for (string-append "(fn [x] ((fn* ^" hint " [] x)))"))))
+      (ok (string-append "^" hint " closure call discards the pre-coercion origin")
+          (and (origin? f '(arities 0 body fn arities 0 body) 'argument 'arities 0 'params 0)
+               (origin? f '(arities 0 body) 'unknown)))))
+  '("double" "long"))
+(let ((d (ev "((fn [x] ((fn* ^double [] x))) 1)"))
+      (n (ev "((fn [x] ((fn* ^long [] x))) 18446744073709551616N)")))
+  (ok "fixed-arity return coercion widens to double and wraps long"
+      (and (flonum? d) (= d 1.0) (fixnum? n) (= n 0))))
+
+(define (record-layout-matches? r candidate)
+  (let* ((guard (fact-get candidate 'guard))
+         (arity (fact-get guard 'arity)))
+    (and (jrec? r)
+         (= arity (jrec-nfields r) (jrdesc-nfields (jrec-desc r)))
+         (eqv? (fact-get guard 'index) (jrec-get-index r (fact-get guard 'key))))))
+
+(ev "(defrecord FactRecord [a b])")
+(let* ((src "(fn [a b] (get (FactRecord. a b) :a :missing))")
+       (ir (fact-ir src))
+       (lookup-site (in-body))
+       (first-arg (in-body 'args 0 'args 0))
+       (before (body-facts facts-unit ir))
+       (lookup (ev src))
+       (ctx (make-analyze-ctx "u"))
+       (ctor-code (jolt-direct-link-emit
+                   (jolt-ce-analyze ctx (jolt-ce-read "(fn [a b] (FactRecord. a b))")) ctx))
+       (ctor-form (read (open-input-string ctor-code)))
+       (left (fact-kw 'left))
+       (right (fact-kw 'right)))
+  (ok "the direct-link path emits the positional constructor"
+      (has? (code-part ctor-code) "(make-jrec2 "))
+  ((var-deref "jolt.passes.types" "set-record-shapes!") facts-unit (chez-record-shapes-map))
+  (let* ((f (body-facts facts-unit ir))
+         (candidate (guarded-record-projection-at f lookup-site)))
+    (ok "a positional record retains both field arguments"
+        (clj= (contained-at f (in-body 'args 0))
+              (jolt-hash-set (jolt-first (origins-at f first-arg))
+                             (jolt-first (origins-at f (in-body 'args 0 'args 1))))))
+    (ok "an updated registry supplies a guarded candidate for the same IR revision"
+        (and (jolt-nil? (guarded-record-projection-at before lookup-site))
+             (not (eq? before f))
+             (jolt-nil? (projection-at f lookup-site))
+             (origin? f '(arities 0 body) 'unknown)
+             (clj= (fact-get candidate 'origins) (origins-at f first-arg))))
+    (ok "a fresh record with the matching layout reads the proposed argument"
+        (and (record-layout-matches? ((eval ctor-form (interaction-environment)) left right) candidate)
+             (eq? (lookup left right) left)))
+    (ev "(defrecord FactRecord [b a])")
+    (ok "reordering fields defeats the guard and the previously compiled lookup reads the new slot"
+        (let ((r ((eval ctor-form (interaction-environment)) left right)))
+          (and (not (record-layout-matches? r candidate))
+               (eq? (jolt-get r (fact-kw 'a) (fact-kw 'missing)) right)
+               (eq? (lookup left right) right))))))
+(let ((f (facts-for "(fn [x sink] (let [m {:k x} r (FactRecord. m false)] (sink r) (:a r)))")))
+  (ok "record fields exposed to mutation have no guarded candidate or unconditional proof"
+      (and (jolt-nil? (projection-at f (in-body 'body 'ret)))
+           (jolt-nil? (guarded-record-projection-at f (in-body 'body 'ret)))
+           (not (confined? f map-site)) (not (confined? f box-site)))))
+
+(ev "(defrecord Collision.Record [a])")
+(jolt-compile-eval "(defrecord Record [^double a])" "u.Collision")
+(let ((shapes (chez-record-shapes-map)))
+  ((var-deref "jolt.passes.types" "set-record-shapes!") facts-unit shapes)
+  (let* ((ir (fact-ir "(fn [x] (get (u.Collision.Record. x) :a :missing))"))
+         (f (body-facts facts-unit ir)))
+    (ok "distinct constructor entries sharing a class tag have no field candidate"
+        (and (clj= (fact-get (jolt-get shapes "u/->Collision.Record") 'type) "u.Collision.Record")
+             (clj= (fact-get (jolt-get shapes "u.Collision/->Record") 'type) "u.Collision.Record")
+             (clj= (ir-at ir '(arities 0 body args 0 class)) "u.Collision.Record")
+             (jolt-nil? (guarded-record-projection-at f (in-body)))
+             (origin? f '(arities 0 body args 0) 'unknown)))))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 (printf "~a/~a passed~n" (- total fails) total)
