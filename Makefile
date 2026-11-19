@@ -861,7 +861,7 @@ fastpathratio: testbin
 	  cat target/fastpathratio.out; \
 	else \
 	  cat target/fastpathratio.out; \
-	  only=$$(sed -n 's/^  - \([a-z0-9-]*\): .*/\1/p' target/fastpathratio.out | paste -sd, -); \
+	  only=$$(sed -n 's/^  - \([^:]*\): .*/\1/p' target/fastpathratio.out | paste -sd, -); \
 	  if [ -z "$$only" ]; then exit 1; fi; \
 	  echo; echo "fastpathratio: judging $$only again in a fresh process"; \
 	  FASTPATH_ONLY="$$only" JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj; \
