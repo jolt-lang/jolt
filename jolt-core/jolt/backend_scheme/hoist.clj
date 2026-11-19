@@ -429,6 +429,14 @@
 
 (defn hoist-var-cell [ns nm]
   (str "(var-cell-deref " (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")")) ")"))
+;; A guarded splice's test (jolt.passes.inline): FN-EXPR, the fn the site read
+;; off the var, is the root its def stamped with TOKEN, read once as the caller
+;; loads (rt.ss jolt-inline-root). The cell is the same hoisted constant a call
+;; through the var binds.
+(defn hoist-inline-guard [fn-expr ns nm token]
+  (let [cell (hoist-const (str "(jolt-var " (chez-str-lit ns) " " (chez-str-lit nm) ")"))
+        root (hoist-const (str "(jolt-inline-root " cell " " (chez-str-lit token) ")"))]
+    (str "(eq? " fn-expr " " root ")")))
 ;; A direct-linked SEED var: the def binds the var's root procedure once, at
 ;; load (jolt-seed-root checks it is one), and the site calls it like any Scheme
 ;; procedure. Only where jolt.host/seed-callable? said so — see emit-invoke.

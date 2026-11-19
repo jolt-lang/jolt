@@ -1152,7 +1152,18 @@
 (define (jrec-plain? x)
   (and (jrec? x) (vector-ref (jrdesc-ifc-of x) 14)))
 
-(define (jrec-iobj x) (vector-ref (jrdesc-ifc-of x) 16))
+(define-syntax jrec-iobj/i
+  (syntax-rules ()
+    ((_ x0)
+     (let* ((x x0) (l jrdesc-ifc-last))
+       (vector-ref
+         (if (and (eq? (car l) (jrec-desc x))
+                  (fx=?
+                    (vector-ref (cdr l) 0)
+                    (fx+ jch-graph-epoch jolt-proto-epoch)))
+             (cdr l)
+             (jrdesc-ifc-of x))
+         16)))))
 
 (define (jrec-method x method)
   (let* ((t (vector-ref (jrdesc-ifc-of x) 7))
@@ -3915,6 +3926,19 @@
        (fx=? (jrdesc-nfields (jrec-desc obj)) n)
        (eqv? (jrec-field-index obj k) i)))
 
+(define (jrec-self-site-fill! site obj layout)
+  (let ((len (vector-length layout)))
+    (let loop ((j 0))
+      (cond
+        ((fx=? j len) (set-box! site (jrec-desc obj)) #t)
+        ((jrec-own-slot-layout?
+           obj
+           (vector-ref layout j)
+           (vector-ref layout (fx+ j 1))
+           (vector-ref layout (fx+ j 2)))
+         (loop (fx+ j 3)))
+        (else #f)))))
+
 (define (jrec-own-slot-miss site obj k i n)
   (if (jrec-own-slot-layout? obj k i n)
       (begin
@@ -3963,6 +3987,14 @@
   "__deftype-slot-set!"
   jrec-slot-write!)
 
+(define (jrec-field-place obj i)
+  (if (fx<=? (jrdesc-nfields (jrec-desc obj)) 8)
+      (fx+ 4 i)
+      (fx- -1 i)))
+
+(define (jrec-place-ref o p)
+  (jrec-field-ref o (if (fx<? p 0) (fx- -1 p) (fx- p 4))))
+
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))
     (if (and c
@@ -3971,7 +4003,7 @@
              (not (fx=?
                     (caar method-dispatch-arms)
                     arm-priority-user-override)))
-        (jrec-field-ref obj (cdr c))
+        (jrec-place-ref obj (cdr c))
         (let ((slot (and (jrec? obj)
                          (not (fx=?
                                 (caar method-dispatch-arms)
@@ -3979,7 +4011,9 @@
                          (jrec-dash-field-index obj method-name))))
           (if slot
               (begin
-                (set-box! site (cons (jrec-desc obj) slot))
+                (set-box!
+                  site
+                  (cons (jrec-desc obj) (jrec-field-place obj slot)))
                 (jrec-field-ref obj slot))
               (record-method-dispatch obj method-name (jolt-vector)))))))
 

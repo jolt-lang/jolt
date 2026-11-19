@@ -116,10 +116,10 @@ JOLT-TARGETS-NEEDING-DEPS := \
   aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
   readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink linkedrace mintgate ffi fibers fiberspoll fieldjoin fieldnum fieldread flarr fnform poolshape coreproc grenadine \
-  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body irvalidate statlayout \
+  gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
   deadhost recordshadow emittedheads mirrordrift mirrordrift-regen regexdfacheck regexdfacheck-regen regexdfa regexanchor regexanchorprims regexanchorcheck regexsyntax regexbacktrack \
-  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap pic protoret printperf remint sbperf sci selfhost shakelocal \
+  hostarity enummodel enumregistrymodel cowpublishmodel doseqperf failfastmodel imagecoverage lazyshims narrow narrowhash numeric numwp oparity s64wrap toplevelinline pic protoret printperf remint sbperf sci selfhost shakelocal \
   traceemit tracecompilecost vfaslceiling \
   shakesmoke smoke sortedcoll staticnativesmoke stateimage test testbin transient unit unitcontext zlibregistersmoke zlibnativesmoke noexecsmoke \
   threadsafety maskedacquire ioerrno values wp ci
@@ -180,9 +180,9 @@ CI-GATES := submodules values recordinline corpus nsaudit unit documented grenad
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap mathfl flonumdisp flarr \
+  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
-  inline inline-body dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
+  inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
@@ -1159,6 +1159,13 @@ fieldread:
 inline-body:
 	@$(CHEZ) --script host/chez/run-inline-body.ss
 
+# Guarded inlining in the open-world spine (#1713): a small fn splices into its
+# callers behind a test that its var still holds the fn the body came from, and
+# a redefinition, with-redefs, alter-var-root, or a caller replayed after its
+# callee was redefined all take the call; ^:dynamic and protocol methods stay calls.
+guardedinline:
+	@$(CHEZ) --script host/chez/run-guarded-inline.ss
+
 # DCE reference collection (dce.ss): an app form's refs must union an IR walk
 # (:var/:the-var nodes) with a text scan of the emitted Scheme, so a macro-spliced
 # (var-deref "ns" "nm") with no :var node still roots its target. Pins both halves.
@@ -1360,6 +1367,13 @@ unitcontext:
 # that proc takes, so this is what pins the two together.
 oparity:
 	@$(CHEZ) --script test/chez/op-arity-test.ss
+
+# Inlining through a top-level definition (chez-patches/0010): a callee defined
+# with sa-define-inlinable! is inlined into a guarded call compiled afterward,
+# the guard falls back, and a symbol is defined once. The inlining rows skip on
+# a stock Chez unless JOLT_REQUIRE_LOCKFREE_CHEZ=1 (CI).
+toplevelinline:
+	@$(CHEZ) --script test/chez/top-level-inline-test.ss
 
 # unchecked-add/-subtract/-multiply past the fixnum range: the kernel's 64-bit
 # wraparound entries (chez-patches/0008) and seq.ss's fallback without them,

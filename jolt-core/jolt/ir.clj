@@ -159,6 +159,9 @@
 ;; :the-ns       :name                            —
 ;; :load-time-value :expr                          —  (:expr is evaluated once at
 ;;                                                     load, outside any pass)
+;; :inline-guard :fn :ns :name :token             :fn  (a guarded splice's test:
+;;                                                     the fn read off the var is
+;;                                                     the root :token stamped)
 ;;
 ;;  * the positions map-ir-children / reduce-ir-children recurse. A `?` marks an
 ;;    optional position recursed only when present.
@@ -228,7 +231,7 @@
   #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
     :let :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
     :set-var :set-field :defmacro :ffi-layout :ffi-fn :ffi-callable :regex :inst :uuid :bigdec
-    :the-ns :load-time-value})
+    :the-ns :load-time-value :inline-guard})
 
 ;; op -> the keys a node of that op must carry. Optional keys (:init, annotations)
 ;; are not listed. Kept conservative for the leaf/host ops so a shape change
@@ -245,7 +248,7 @@
    :ffi-layout [:layout]
    :ffi-fn [:csym :argtypes :rettype] :ffi-callable [:fn :argtypes :rettype]
    :regex [:source] :inst [:source] :uuid [:source] :bigdec [:source]
-   :the-ns [:name] :load-time-value [:expr]})
+   :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]})
 
 ;; Problems with THIS node's shape (not its children): an unknown or missing :op,
 ;; or a missing required key. Returns a seq of message strings (empty when valid).
@@ -337,6 +340,7 @@
    :set-field [[:obj :node] [:val :node]]
    :defmacro [[:fn :node]]
    :ffi-callable [[:fn :node]]
+   :inline-guard [[:fn :node]]
    :invoke [[:fn :node] [:args :nodes]]
    :vector [[:items :nodes]]
    :set [[:items :nodes]]

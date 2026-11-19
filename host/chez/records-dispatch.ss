@@ -1280,6 +1280,19 @@
        (not (eq? k jolt-deftype-kw))
        (fx=? (jrdesc-nfields (jrec-desc obj)) n)
        (eqv? (jrec-field-index obj k) i)))
+;; A deftype method's one receiver test (lambda.clj self-receiver, #1713): OBJ
+;; is a record whose layout puts each field the method reads -- LAYOUT is
+;; #(k i n ...) -- where the method reads it. A descriptor that passes is kept in
+;; SITE, so the next call's test is one eq?. #f sends every read to jrec-field.
+(define (jrec-self-site-fill! site obj layout)
+  (let ((len (vector-length layout)))
+    (let loop ((j 0))
+      (cond
+        ((fx=? j len) (set-box! site (jrec-desc obj)) #t)
+        ((jrec-own-slot-layout? obj (vector-ref layout j) (vector-ref layout (fx+ j 1))
+                                (vector-ref layout (fx+ j 2)))
+         (loop (fx+ j 3)))
+        (else #f)))))
 (define (jrec-own-slot-miss site obj k i n)
   (if (jrec-own-slot-layout? obj k i n)
       (begin (set-box! site (jrec-desc obj)) (jrec-field-ref obj i))
@@ -1313,16 +1326,27 @@
 (def-var! "clojure.core" "__deftype-slot" jrec-slot-read)
 (def-var! "clojure.core" "__deftype-mutable-slot" jrec-slot-read)
 (def-var! "clojure.core" "__deftype-slot-set!" jrec-slot-write!)
+;; The box holds (desc . place): the receiver's descriptor and where the field
+;; sits in a record of it -- the record slot (4 + I, after the base's desc ext
+;; hasheq meta) for a type of up to eight fields, or -1 - I into jrec*'s value
+;; vector. A descriptor fixes its type's field count, so the place holds while
+;; the receiver has that descriptor. Chez's emitted code reads the hit itself,
+;; as an unchecked load (rt.ss jrec-field-site-ref/i); this file is shared with
+;; the Gambit runtime, so the read here goes through the field's index.
+(define (jrec-field-place obj i)
+  (if (fx<=? (jrdesc-nfields (jrec-desc obj)) 8) (fx+ 4 i) (fx- -1 i)))
+(define (jrec-place-ref o p)
+  (jrec-field-ref o (if (fx<? p 0) (fx- -1 p) (fx- p 4))))
 (define (jrec-field-site-ref site obj method-name)
   (let ((c (unbox site)))
     (if (and c (jrec? obj) (eq? (jrec-desc obj) (car c))
              (not (fx=? (caar method-dispatch-arms) arm-priority-user-override)))
-        (jrec-field-ref obj (cdr c))
+        (jrec-place-ref obj (cdr c))
         (let ((slot (and (jrec? obj)
                          (not (fx=? (caar method-dispatch-arms) arm-priority-user-override))
                          (jrec-dash-field-index obj method-name))))
           (if slot
-              (begin (set-box! site (cons (jrec-desc obj) slot))
+              (begin (set-box! site (cons (jrec-desc obj) (jrec-field-place obj slot)))
                      (jrec-field-ref obj slot))
               (record-method-dispatch obj method-name (jolt-vector)))))))
 

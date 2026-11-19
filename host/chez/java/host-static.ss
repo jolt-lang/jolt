@@ -1228,7 +1228,7 @@
      (let ((c (unbox site)))
        (and c (jhost? obj)
             (let ((t (jhost-tag obj)) (ct (vector-ref c 0)))
-              (or (eq? t ct) (string=? t ct)))
+              (or (eq? t ct) (and (string? ct) (string=? t ct))))
             (eq? (vector-ref c 2) method-dispatch-arms)
             (fx=? (vector-ref c 3) host-methods-epoch)
             (vector-ref c 1))))))
@@ -1251,24 +1251,145 @@
              (let ((r ((cdar as) obj name rest)))
                (if (eq? r 'pass) (loop (cdr as)) r))))))
       (record-method-dispatch obj name (apply jolt-vector argl))))
-;; Any receiver but a jhost goes to record-method-dispatch exactly as an
-;; uncached site did, so a map's .get or a vector's .count pays one type test.
-(define (jolt-host-site-call0 site obj name)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj) (host-site-miss site obj name '())))
-      (record-method-dispatch obj name (jolt-vector))))
-(define (jolt-host-site-call1 site obj name a)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj a) (host-site-miss site obj name (list a))))
-      (record-method-dispatch obj name (jolt-vector a))))
-(define (jolt-host-site-call2 site obj name a b)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj a b) (host-site-miss site obj name (list a b))))
-      (record-method-dispatch obj name (jolt-vector a b))))
-(define (jolt-host-site-call3 site obj name a b c)
-  (if (jhost? obj)
-      (let ((f (host-site-hit site obj))) (if f (f obj a b c) (host-site-miss site obj name (list a b c))))
-      (record-method-dispatch obj name (jolt-vector a b c))))
+;; A deftype or defrecord receiver: (.m x) on one resolves, once the arms ahead
+;; of the dot-form arm have passed, to the method its type declares (dot-forms.ss
+;; dotform-method-arm, jrec-method-arity), so the site keeps that one too: #(desc proc arms epoch),
+;; hit on the same descriptor, the same arm list and the same type-interface
+;; epoch (jrdesc-ifc-epoch, which an extension of the type or its protocols
+;; bumps). It was the full by-name walk, with an argument vector, on every call
+;; (~220 ns for a method the JVM calls through an interface). hashCode and hasheq
+;; keep the walk: invoke-declared-method coerces their answer.
+(define-syntax jrec-site-hit
+  (syntax-rules ()
+    ((_ site obj)
+     (let ((c (unbox site)))
+       (and c
+            (eq? (vector-ref c 0) (sa-record-slot obj 0))
+            (eq? (vector-ref c 2) method-dispatch-arms)
+            (fx=? (vector-ref c 3) (jrdesc-ifc-epoch))
+            (vector-ref c 1))))))
+(define (jrec-site-miss site obj name argl)
+  (let ((arms method-dispatch-arms) (epoch (jrdesc-ifc-epoch)))
+    ;; A dashed name with no arguments is a field read, which dotform-method-arm
+    ;; answers ahead of any declared method of that name. The emitter never
+    ;; sends one here (interop.clj host-site-emit), but the site must not cache
+    ;; a method for it if a caller ever does.
+    (if (or (fx=? (caar arms) arm-priority-user-override)
+            (string=? name "hashCode") (string=? name "hasheq")
+            (and (null? argl) (fx>? (string-length name) 1) (char=? (string-ref name 0) #\-)))
+        (record-method-dispatch obj name (apply jolt-vector argl))
+        (let loop ((as arms))
+          (cond
+            ((null? as) (record-method-dispatch-base obj name (apply jolt-vector argl)))
+            ;; the walk reached the arm that answers a deftype's declared method
+            ;; (dot-forms.ss dotform-method-arm): keep that method. The names that
+            ;; arm answers otherwise (IFn's invoke/applyTo, a record's __extmap
+            ;; and __meta) are left to it.
+            ((and (eq? (cdar as) dotform-method-arm)
+                  (not (member name '("invoke" "applyTo" "__extmap" "__meta")))
+                  (jrec-method-arity obj name (fx+ 1 (length argl))))
+             => (lambda (f)
+                  (if (procedure? f)
+                      (begin (set-box! site (vector (jrec-desc obj) f arms epoch))
+                             (apply f obj argl))
+                      (record-method-dispatch obj name (apply jolt-vector argl)))))
+            (else
+             (let ((r ((cdar as) obj name (apply jolt-vector argl))))
+               (if (eq? r 'pass) (loop (cdr as)) r))))))))
+;; A runtime record type whose methods an arm answers by name (a regex Pattern,
+;; a Matcher) can register a resolver, (name nargs) -> a procedure taking the
+;; receiver and the arguments, or #f; the site then keeps the procedure for the
+;; receiver's record type, #(rtd proc arms 0), hit on the same type and arm list.
+;; A resolver claims only names no arm ahead of its own answers. Without it a
+;; Matcher's .group walked the arms and the regex arm's string=? chain on every
+;; call (~175 ns, against the JVM's ~4) -- tools.reader reads a number's parts
+;; with six of them.
+(define record-method-resolvers '())   ; ((rtd . resolver) ...)
+(define (register-record-method-resolver! rtd resolver)
+  (set! record-method-resolvers (cons (cons rtd resolver) record-method-resolvers)))
+(define-syntax rec-site-hit
+  (syntax-rules ()
+    ((_ site obj)
+     (let ((c (unbox site)))
+       (and c
+            (eq? (vector-ref c 0) (record-rtd obj))
+            (eq? (vector-ref c 2) method-dispatch-arms)
+            (vector-ref c 1))))))
+(define (rec-site-miss site obj name argl)
+  (let* ((arms method-dispatch-arms)
+         (r (and (not (fx=? (caar arms) arm-priority-user-override))
+                 (assq (record-rtd obj) record-method-resolvers)))
+         (f (and r ((cdr r) name (length argl)))))
+    (if (procedure? f)
+        (begin (set-box! site (vector (record-rtd obj) f arms 0)) (apply f obj argl))
+        (record-method-dispatch obj name (apply jolt-vector argl)))))
+;; A number receiver: the site keeps the number-method-tbl procedure the walk
+;; reached host-type-arm for, #(number proc arms 0), hit on any number and the
+;; same arm list. No arm ahead of host-type-arm answers a Chez number (they test
+;; for a string, a record or a jhost first), and a library override heads the
+;; arm list, which the miss checks, as host-site-miss does. A name the table
+;; lacks, or an arity it refuses, keeps the walk and its JVM-worded miss.
+(define-syntax number-site-hit
+  (syntax-rules ()
+    ((_ site)
+     (let ((c (unbox site)))
+       (and c
+            (eq? (vector-ref c 0) 'number)
+            (eq? (vector-ref c 2) method-dispatch-arms)
+            (vector-ref c 1))))))
+(define (number-site-miss site obj name argl)
+  (let* ((arms method-dispatch-arms)
+         (f (and (not (fx=? (caar arms) arm-priority-user-override))
+                 (hashtable-ref number-method-tbl name #f)))
+         (m (and f (hashtable-ref number-method-arities name #f))))
+    (if (and f (or (not m) (bitwise-bit-set? m (length argl))))
+        (let loop ((as arms))
+          (cond
+            ((null? as) (record-method-dispatch-base obj name (apply jolt-vector argl)))
+            ((eq? (cdar as) host-type-arm)
+             (let ((p (lambda (x . args) (f x args))))
+               (set-box! site (vector 'number p arms 0))
+               (apply p obj argl)))
+            (else
+             (let ((r ((cdar as) obj name (apply jolt-vector argl))))
+               (if (eq? r 'pass) (loop (cdr as)) r)))))
+        ;; a name or arity the table does not answer: the uncached walk, in
+        ;; tail position, so its miss reports from the caller's frame
+        (record-method-dispatch obj name (apply jolt-vector argl)))))
+;; Any other receiver goes to record-method-dispatch exactly as an uncached site
+;; did, so a map's .get or a vector's .count pays a few type tests.
+(define-syntax host-site-call
+  (syntax-rules ()
+    ((_ site obj name (a ...))
+     (cond
+       ((jhost? obj)
+        (let ((f (host-site-hit site obj))) (if f (f obj a ...) (host-site-miss site obj name (list a ...)))))
+       ((record? obj (record-type-descriptor jrec))
+        (let ((f (jrec-site-hit site obj))) (if f (f obj a ...) (jrec-site-miss site obj name (list a ...)))))
+       ((and (record? obj) (pair? record-method-resolvers))
+        (let ((f (rec-site-hit site obj))) (if f (f obj a ...) (rec-site-miss site obj name (list a ...)))))
+       ((number? obj)
+        (let ((f (number-site-hit site))) (if f (f obj a ...) (number-site-miss site obj name (list a ...)))))
+       (else (record-method-dispatch obj name (jolt-vector a ...)))))))
+;; java.util.regex: the Matcher and Pattern methods the regex arm answers
+;; (host-static-classes.ss), by the same procedures it calls.
+(register-record-method-resolver! (record-type-descriptor matcher-t)
+  (lambda (name n)
+    (cond ((string=? name "group") (and (fx<=? n 1) jolt-matcher-group))
+          ((string=? name "matches") (and (fx=? n 0) jolt-matcher-matches))
+          ((string=? name "lookingAt") (and (fx=? n 0) jolt-matcher-looking-at))
+          ((string=? name "groupCount") (and (fx=? n 0) jolt-matcher-group-count))
+          ((string=? name "find") (and (fx=? n 0) (lambda (m) (not (jolt-nil? (jolt-re-find m))))))
+          (else #f))))
+(register-record-method-resolver! (record-type-descriptor regex-t)
+  (lambda (name n)
+    (cond ((string=? name "matcher") (and (fx=? n 1) jolt-re-matcher))
+          ((string=? name "pattern") (and (fx=? n 0) regex-t-source))
+          (else #f))))
+(define (jolt-host-site-call0 site obj name) (host-site-call site obj name ()))
+(define (jolt-host-site-call1 site obj name a) (host-site-call site obj name (a)))
+(define (jolt-host-site-call2 site obj name a b) (host-site-call site obj name (a b)))
+(define (jolt-host-site-call3 site obj name a b c) (host-site-call site obj name (a b c)))
 
 ;; java.lang.Number method surface (the boxed-number methods cljc code calls). The
 ;; integer projections wrap modulo their width (ring-codec relies on byteValue
@@ -1288,52 +1409,61 @@
         ("signum" 0) ("shiftLeft" 1) ("shiftRight" 1) ("equals" 1)))
     h))
 (define (number-method method n . args)
-  ;; Same shape as jolt-string-method's check, including the (pair? args) guard:
-  ;; too few arguments already faults in the arm that reads one, and the 0-arg
-  ;; projections are what this is called with almost every time.
-  (if (and (pair? args)
-           (let ((m (hashtable-ref number-method-arities method #f)))
-             (and m (not (bitwise-bit-set? m (length args))))))
+  ;; Every arity is checked, a missing argument too: (.shiftLeft 1) faulted
+  ;; reading the argument it was not given. A method site keeps the procedure
+  ;; for a number receiver (number-site-miss), so this walk is the cold path.
+  (if (let ((m (hashtable-ref number-method-arities method #f)))
+        (and m (not (bitwise-bit-set? m (length args)))))
       (dispatch-miss n method args)
       (number-method-arms method n args)))
 
-(define (number-method-arms method n args)
-  (cond
-    ((string=? method "byteValue") (let ((b (modulo (jnum->exact n) 256))) (->num (if (>= b 128) (- b 256) b))))
-    ((string=? method "shortValue") (let ((b (modulo (jnum->exact n) 65536))) (->num (if (>= b 32768) (- b 65536) b))))
-    ((string=? method "intValue") (->num (jnum->exact n)))
-    ((string=? method "longValue") (->num (jnum->exact n)))
-    ((string=? method "doubleValue") (->num n))
-    ((string=? method "floatValue") (->num n))
+;; The number method surface as a table, name -> (lambda (n args) ...), so a
+;; method call site can keep the procedure for a number receiver (number-site-
+;; miss below) rather than walk a string=? chain per call: tools.reader reads
+;; every integer through .bitLength and .longValue (#1713).
+(define number-method-tbl (make-hashtable string-hash string=?))
+(define-syntax define-number-methods
+  (syntax-rules ()
+    ((_ (n args) (name expr) ...)
+     (begin (hashtable-set! number-method-tbl name (lambda (n args) expr)) ...))))
+(define-number-methods (n args)
+    ("byteValue" (let ((b (modulo (jnum->exact n) 256))) (->num (if (>= b 128) (- b 256) b))))
+    ("shortValue" (let ((b (modulo (jnum->exact n) 65536))) (->num (if (>= b 32768) (- b 65536) b))))
+    ("intValue" (->num (jnum->exact n)))
+    ("longValue" (->num (jnum->exact n)))
+    ("doubleValue" (->num n))
+    ("floatValue" (->num n))
     ;; .toString(radix) — BigInteger/Integer render in a base, lowercase like the
     ;; JVM (rewrite-clj's integer node reconstructs 0xff / 0377 / 2r1001 this way).
     ;; It is BigInteger's overload, the one jolt's single integer type can take, so
     ;; it follows BigInteger: a radix outside 2..36 renders in base 10 rather than
     ;; raising, and a double has no such overload.
-    ((string=? method "toString")
+    ("toString"
      (cond ((null? args) (jolt-num->string n))
            ((and (exact? n) (integer? n))
             (let ((radix (jnum->exact (car args))))
               (string-downcase
                 (number->string n (if (and (fixnum? radix) (fx<=? 2 radix 36)) radix 10)))))
-           (else (dispatch-miss n method args))))
-    ((string=? method "hashCode") (jolt-java-number-hashcode n))
-    ((string=? method "equals") (java-number-equals? n (car args)))
+           (else (dispatch-miss n "toString" args))))
+    ("hashCode" (jolt-java-number-hashcode n))
+    ("equals" (java-number-equals? n (car args)))
     ;; Double/Float .isNaN / .isInfinite (a non-flonum is neither).
-    ((string=? method "isNaN") (and (flonum? n) (not (= n n))))
-    ((string=? method "isInfinite") (and (flonum? n) (infinite? n)))
+    ("isNaN" (and (flonum? n) (not (= n n))))
+    ("isInfinite" (and (flonum? n) (infinite? n)))
     ;; BigInteger interop: .negate / .bitLength / .signum / .abs. A jolt integer is
     ;; a Chez exact integer, so these are native (integer-length = JVM bitLength,
     ;; matching for negative values too). tools.reader's number parser uses them.
-    ((string=? method "negate") (->num (- (jnum->exact n))))
-    ((string=? method "abs") (->num (abs (jnum->exact n))))
-    ((string=? method "bitLength") (->num (integer-length (jnum->exact n))))
-    ((string=? method "signum") (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
+    ("negate" (->num (- (jnum->exact n))))
+    ("abs" (->num (abs (jnum->exact n))))
+    ("bitLength" (->num (integer-length (jnum->exact n))))
+    ("signum" (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
     ;; BigInteger.shiftLeft/shiftRight (test.check's size-bounded-bigint): arbitrary
     ;; precision, so an arithmetic shift by the (positive) amount.
-    ((string=? method "shiftLeft") (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
-    ((string=? method "shiftRight") (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args)))))
-    (else (dispatch-miss n method args))))
+    ("shiftLeft" (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
+    ("shiftRight" (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args))))))
+(define (number-method-arms method n args)
+  (let ((f (hashtable-ref number-method-tbl method #f)))
+    (if f (f n args) (dispatch-miss n method args))))
 
 ;; Mutable static fields: "Class" -> (member -> 1-vector cell). A library that
 ;; writes a static field — clojure.spec.alpha's (set! (. clojure.lang.RT
@@ -2141,6 +2271,26 @@
                (if (or (lib-provider-for class) (not (host-class-known? class)))
                    (unknown-class-message class)
                    (string-append "No matching ctor found for class " class)))))))))
+
+;; (Name. arg …) at a call site that keeps the constructor it resolved (the
+;; backend emits host-new-site/i on Chez): the box holds (epoch . ctor), stamped
+;; with class-ctor-epoch as host-new-cache is, and a hit calls the ctor with the
+;; arguments in place -- no class-name hash, rest list or apply per object, which
+;; was most of a tools.reader reader's construction. Only a registered ctor is
+;; kept; the autoload and var paths stay host-new's, every time.
+(define (host-new-site-make) (box #f))
+(define (host-new-site-miss site class . args)
+  (let* ((epoch class-ctor-epoch) (ctor (host-new-ctor class)))
+    (if ctor
+        (begin (set-box! site (cons epoch ctor)) (apply ctor args))
+        (apply host-new class args))))
+(define-syntax host-new-site/i
+  (syntax-rules ()
+    ((_ site0 class arg ...)
+     (let* ((site site0) (c (unbox site)))
+       (if (and c (fx= (car c) class-ctor-epoch))
+           ((cdr c) arg ...)
+           (host-new-site-miss site class arg ...))))))
 
 ;; Does jolt know CLASS — a simple, imported or qualified name — as a class, ctor
 ;; or no ctor: the runtime registers statics or a ctor for it, or the class graph

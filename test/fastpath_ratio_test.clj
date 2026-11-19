@@ -280,10 +280,39 @@
 ;;                      method, which binds only the fields it names: 17.5 ->
 ;;                      10.5 ns, against a plain call ~2.6 -> ~1.6.
 ;;
+;;   host-protocol      a protocol call on a string, number, char, nil, boolean
+;;                      or keyword resolved its impl on every call; the protocol
+;;                      fn's cache keys those by type (rt.ss jolt-pic-host-key/i).
+;;
+;;   merge-nil          (merge nil m) was the variadic reduce (~450 ns); merge has
+;;                      fixed arities and (conj {} m) answers m.
+;;
+;;   str-builder        (str sb) went through clojure.core/str's arms (~50 ns);
+;;                      a StringBuilder answers inline (rt.ss jolt-str1/i).
+;;
+;;   deftype-method     (.m ^T x) on a deftype walked every dispatch arm by name
+;;                      with an argument vector (~240 ns); the call site keeps the
+;;                      type's declared method (host-static.ss jrec-site-miss):
+;;                      ~17 ns, against the protocol call's ~10.
+;;
+;;   deftype-field      (.-f ^T x) was a call into the runtime and the checked
+;;                      per-arity accessor (~15 ns); the site's hit is open-coded
+;;                      (rt.ss jrec-field-site-ref/i): ~6 ns, a plain call's cost.
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
 ;;                      slot of the record now (values.ss jrec), ~66 ns.
+;;
+;;   record-meta        (meta r) of a record walked the collection kinds and two
+;;                      calls into the type's derived vector before its slot
+;;                      (~14 ns); records are tested first and the vector read
+;;                      is open-coded (records-coll.ss jrec-iobj/i), ~5 ns.
+;;
+;;   mm-cycle           a multimethod's inline cache kept the last four dispatch
+;;                      values, so one cycling through five or more (rewrite-clj's
+;;                      parse-next*) missed every call and hashed into the methods
+;;                      table; it keeps eight (multimethods.ss mm-resolve).
 ;;
 (ns fastpath-ratio-test
   (:require [clojure.string :as str]))
@@ -551,6 +580,12 @@
 (deftype GateT [a] GateP (gate-pm [_] nil))
 (def ^:private gate-t (GateT. 1))
 (defn- gate-fn1 [x] nil)
+;; a protocol extended to a host type, and the reader-path collection fixtures
+(defprotocol GateH (gate-hm [x]))
+(extend-protocol GateH String (gate-hm [_] nil) GateT (gate-hm [_] nil))
+(def ^:private gate-str "abc")
+(def ^:private gate-m4 {:line 1 :column 2 :end-line 1 :end-column 5})
+(def ^:private gate-sb (doto (StringBuilder.) (.append "token")))
 (defn- gate-rec-try [n] (try (if (zero? n) 0 (inc (gate-rec-try (dec n)))) (catch Exception e -1)))
 (defn- gate-under [n f] (if (zero? n) (f) (+ 0 (gate-under (dec n) f))))
 (def ^:dynamic *gate-deep* 0)
@@ -566,6 +601,11 @@
 (def ^:private gate-meta-rec (->GateMetaRec 1 2))
 (def ^:private gate-meta-vec [1 2])
 (def ^:private gate-meta {:row 1 :col 2})
+(defmulti ^:private gate-mm identity)
+(defmethod gate-mm :a [_] 1) (defmethod gate-mm :b [_] 2) (defmethod gate-mm :c [_] 3)
+(defmethod gate-mm :d [_] 4) (defmethod gate-mm :e [_] 5) (defmethod gate-mm :f [_] 6)
+(def ^:private gate-mm-one [:a :a :a :a :a :a])
+(def ^:private gate-mm-six [:a :b :c :d :e :f])
 
 (defn -main [& _]
   (spit src-path source-text)
@@ -677,9 +717,11 @@
   ;; through a var: 16 -> 9.5 ns), and then open-coded that var call at the
   ;; site and the protocol fn's descriptor read with it (jolt-var-fn,
   ;; jrec-pic-desc/i), with the site unchanged: on the slow box the two arms
-  ;; read 0.73 -> 1.11 and 1.00 -> 1.35 over both steps. The ceilings are 1.6
-  ;; and 1.8, room for CI's higher reading. A site with no cache reads ~2.3-3.9
-  ;; against this call, so still well past both.
+  ;; read 0.73 -> 1.11 and 1.00 -> 1.35 over both steps. The protocol call then
+  ;; read the var cell and the receiver's descriptor without their type tests,
+  ;; the instance? site unchanged: 1.35 and 1.56. The ceilings are 1.6 and 1.9,
+  ;; room for CI's higher reading. A site with no cache reads ~2.3-3.9 against
+  ;; this call, so still well past both.
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
@@ -687,13 +729,16 @@
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          1.8)
+          1.9)
 
-  ;; Building a reify must cost about what building a deftype costs.
+  ;; Building a reify must cost about what building a deftype costs. The
+  ;; deftype's (T. a) then kept its resolved ctor at the call site (host-static.ss
+  ;; host-new-site/i), ~2.3x cheaper, with the reify unchanged: 1.9 -> 4.4,
+  ;; ceiling 3.0 -> 5.5.
   (judge! "reify-construct"
           #(dotimes [_ dispatch-n] (mk-type 1))
           #(dotimes [_ dispatch-n] (mk-reify 1))
-          3.0)
+          5.5)
 
   ;; satisfies? on a reify must cost about a protocol call. The protocol call
   ;; got cheaper under #1713 (a var call open-coded, the PIC's descriptor read
@@ -863,15 +908,65 @@
           2.0)
   ;; A protocol call on a deftype's own impl costs a little more than a plain fn
   ;; call. It went var -> protocol fn -> per-site cache -> method, and the
-  ;; method bound every field before its body ran.
+  ;; method bound every field before its body ran. 1.65 then; the plain call
+  ;; then lost its var cell's type test (6.2 -> 4.9 ns) and the protocol call
+  ;; less of its cost, so 1.9, ceiling 2.4.
   (judge! "protocol-call"
           #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
           #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
-          2.1)
+          2.4)
+  ;; A deftype's method called through interop, (.gate-pm ^GateT t), costs about
+  ;; what the protocol call does: the site keeps the type's declared method
+  ;; (host-static.ss jrec-site-miss). It walked every dispatch arm by name, with
+  ;; an argument vector, on every call: ~240 ns against the protocol call's 10.
+  ;; Reads ~1.7.
+  (judge! "deftype-method"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-pm t)))
+          #(let [^GateT t gate-t] (dotimes [_ gate-n] (.gate-pm t)))
+          3.0)
+  ;; (.-a t) costs about what a plain fn call does: the site's hit is open-coded
+  ;; (rt.ss jrec-field-site-ref/i), a descriptor test and a load. It was a call
+  ;; into the runtime and the checked per-arity accessor, ~15 ns. Reads ~1.2.
+  (judge! "deftype-field"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-fn1 t)))
+          #(let [^GateT t gate-t] (dotimes [_ gate-n] (.-a t)))
+          2.0)
+  ;; A protocol call on a string costs about what one on a record does: the
+  ;; protocol fn keys its cache by the host type (rt.ss jolt-pic-host-key/i),
+  ;; where a string resolved on every call. Reads ~1.3.
+  (judge! "host-protocol"
+          #(let [t gate-t] (dotimes [_ gate-n] (gate-hm t)))
+          #(let [s gate-str] (dotimes [_ gate-n] (gate-hm s)))
+          3.0)
+  ;; (merge nil m) costs about what (conj m nil) does: merge's fixed arities and
+  ;; (conj {} m) answering m. It was the variadic reduce, ~450 ns. Reads ~1.5.
+  (judge! "merge-nil"
+          #(let [m gate-m4] (dotimes [_ gate-n] (conj m nil)))
+          #(let [m gate-m4] (dotimes [_ gate-n] (merge nil m)))
+          3.0)
+  ;; (str sb) costs about what (.toString sb) does (rt.ss jolt-str1/i); through
+  ;; clojure.core/str it was ~50 ns against ~15. Reads ~0.7.
+  (judge! "str-builder"
+          #(let [sb gate-sb] (dotimes [_ gate-n] (.toString sb)))
+          #(let [sb gate-sb] (dotimes [_ gate-n] (str sb)))
+          2.0)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))
           4.0)
+  ;; (meta r) of a record against (meta v) of a vector, both a slot read. Reads
+  ;; ~1.0; the walk to the record arm costs ~14 ns against ~5, ~2.8.
+  (judge! "record-meta"
+          #(let [v gate-meta-vec] (dotimes [_ gate-n] (meta v)))
+          #(let [r gate-meta-rec] (dotimes [_ gate-n] (meta r)))
+          2.0)
+  ;; six dispatch values in rotation against one: both answer from the inline
+  ;; cache, so the rotation costs only the scan. Reads ~1.2; a rotation past the
+  ;; cache's size reads ~14.
+  (judge! "mm-cycle"
+          #(let [ks gate-mm-one] (dotimes [i gate-n] (gate-mm (nth ks (rem i 6)))))
+          #(let [ks gate-mm-six] (dotimes [i gate-n] (gate-mm (nth ks (rem i 6)))))
+          3.0)
 
   ;; pr-str of a host record (java.io.File) is the #object fallback: the print
   ;; arms, the class name and the str registry, against a vector that prints

@@ -10,14 +10,15 @@
 # tree restored from a cache or patched by an earlier step is left alone.
 #
 # The patches change the C kernel and Scheme sources (s/7.ss, s/inspect.ss,
-# s/vfasl.ss, s/arm64.ss, s/x86_64.ss), so the kernel and boot files must come
+# s/vfasl.ss, s/arm64.ss, s/x86_64.ss, s/syntax.ss, s/cp0.ss), so the kernel and boot files must come
 # from the same patched build, which configure + make + install from one tree
 # guarantees. A jolt built against a stock Chez (Homebrew, a distro) still
 # works; it just pays the stock price for collect-safe foreign calls (see the
 # comments in c/thread.c), keeps a copy of each string literal per form,
 # keeps stock Chez's placement of C arguments past the registers, and has no
 # signal relay, so sun.misc.Signal falls back to blocking signals up front
-# (host/chez/java/concurrency.ss).
+# (host/chez/java/concurrency.ss), and records no inlining information for a
+# top-level definition (sa-define-inlinable! defines it, uninlined).
 set -eu
 
 src=${1:?usage: apply-chez-patches.sh <chez-src>}

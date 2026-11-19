@@ -244,6 +244,13 @@
 ;; nested arity's params, a catch binding) drops the name for its scope, so an
 ;; inner `a` bound to some other array never reads the outer one's vector.
 (def ^:dynamic *array-vecs* {})
+;; A deftype method's receiver, checked once (lambda.clj self-receiver): the
+;; munged param name -> the Scheme local holding whether it is a record of the
+;; type the method's field reads were written for. Each read of a field off it is
+;; then a branch on that local and the slot load (backend_scheme.clj
+;; emit-deftype-slot-read). Only set for an arity no binder in which shadows the
+;; param, so the name means the receiver everywhere the body reaches.
+(def ^:dynamic *self-recs* {})
 ;; When set (in the :def emit path), the def's direct named init is emitted with
 ;; a qualified letrec binding (ns/name) so Chez reports a unique per-var frame
 ;; name — no collisions across namespaces — and that name is what the source

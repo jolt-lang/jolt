@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Guarded inlining under `jolt run` (#1713).** With tracing off
+  (`--no-trace` / `JOLT_TRACE=0`), code the CLI compiles splices a small fn's
+  body into its callers behind a test that the fn's var still holds the fn the
+  body came from: `(if (eq? <the var's fn> ROOT) <body> <call>)`. A
+  redefinition, `with-redefs` or `alter-var-root` takes the call,
+  and the fn is read before the arguments are, as a call reads it. ROOT is read
+  as the caller loads, and only if the def that set the var's root stamped the
+  same token the splice carries, so an AOT-cached caller loaded after its
+  callee was redefined at a REPL takes the call too. A loop calling a small
+  clamp fn runs 52 -> 29 ms; `^:dynamic` fns, protocol methods and bodies that
+  build a closure stay calls. `JOLT_GUARDED_INLINE=0` turns it off; a traced
+  run keeps every call, so an error report names each fn from its own frame.
+
+- **Chez inlines through a top-level definition jolt registers (#1713,
+  `chez-patches/0010`).** Chez's cross-library inliner records an exported
+  procedure's body so code compiled against the library can inline it. The
+  patch extends the same machinery to a top-level definition whose symbol the
+  program marks, and `sa-define-inlinable!` (scheme-adapter-runtime.ss) is how
+  the runtime marks one: a caller compiled afterward that calls the symbol
+  behind a guard gets the body in place. It is the mechanism a runtime
+  specialization of a protocol call site will inline the receiver's observed
+  method with; on a three-layer deftype protocol chain, hand-specialized this
+  way, a call goes from 26.8 to 15.5 ns. A stock Chez defines the symbol and
+  inlines nothing.
+
 - **`--no-trace`, the option spelling of `JOLT_TRACE=0`.** `jolt --no-trace
   run …` (or `-m`, `-M`, `repl`, any command; it must be the first argument)
   compiles the app without tail-frame tracing, and `jolt build --no-trace` or
@@ -188,6 +213,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **The runtime operations a reader leans on cost less (#1713).** Each was a
+  call into a generic procedure that the JVM answers in a few instructions:
+  - `(= a b)` answers a char, nil, boolean or keyword on the left, or a string
+    literal (what `case` over strings expands to), without the call;
+    `zero?`/`pos?`/`neg?` test a fixnum inline.
+  - `(nth coll i)` (destructuring is two of these) reads a vector or string
+    index inline, and the runtime's own `nth` no longer pays the java.util
+    shims' type tests for jolt's collections.
+  - `(str x)` of a string or a StringBuilder, `java.lang.Character`'s
+    predicates on an ASCII char, and `(.indexOf "literal" c)` (a `case` over the
+    literal) answer inline.
+  - `(merge nil m)` is `m` (merge has fixed arities, and `(conj {} m)` answers
+    `m`): ~450 to ~25 ns.
+  - A one-var `binding` pushes its frame without building a map.
+  - `(seq java.util.LinkedList)` no longer walks every registered seq arm.
+  - A constructor call site keeps the constructor it resolved, a `Matcher`'s
+    methods are kept per call site (`.group` ~175 to ~80 ns), and a protocol
+    call on a string, number, char, nil, boolean or keyword is cached by type
+    instead of resolved per call (a tools.reader reader is built in ~130 ns,
+    from ~400).
+  - An `aget`/`aset` hinted with the JVM's spelling of an array class
+    (`^"[Ljava.lang.Object;"`) takes the typed path.
+
+  On an Intel i5-4278U, tools.reader's `read-string` of a small form takes
+  ~45 us, from ~67, and rewrite-clj's `parse-string` about 15% less.
+
+- **A deftype's method or field reached through interop costs about what a
+  protocol call or a field load does (#1713).** `(.m ^T x)` on a deftype or
+  record walked every dispatch arm by name and built an argument vector on
+  every call (~240 ns); the call site now keeps the method the type declares,
+  keyed on its descriptor, the dispatch arms and the type-interface epoch
+  (~17 ns, against a protocol call's ~10). `(.-f x)` was a call into the
+  runtime and the checked per-arity accessor (~15 ns); the site's hit is now a
+  descriptor test and a load (~6 ns).
+
+- **A call through a var, a protocol call and a deftype field access drop
+  their redundant type tests (#1713).** The call read its var cell through the
+  record type's checked accessors, though the cell is always a var cell; the
+  protocol call recognised a record by comparing its type against each of the
+  family's ten in turn; and a method's field read, already guarded by the
+  receiver's descriptor, went through an accessor that tested the type again.
+  Each is now the bare load. A plain fn call goes from 6.2 to 4.9 ns and a
+  protocol call on a deftype from 12.5 to 10.4; rewrite-clj's `parse-string`
+  takes about 12% less time.
+
 - **A protocol method call on a record or deftype is one vector read (#1713).**
   Each protocol method gets a fixnum id when it is defined, and a type's
   descriptor holds a vector of its implementations indexed by that id. A call
@@ -343,6 +413,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defrecord's `.entrySet` is `(set this)`, in hash order, as on the JVM,
   and `jsonista.core` writes a record's fields in that order, as Jackson
   does.
+
+- **Multimethod and record metadata costs a parser pays per node (#1713).** A
+  multimethod's inline cache keeps the last eight dispatch values rather than
+  four: rewrite-clj's `parse-next*` cycles through five to seven, so it missed
+  on every call and hashed into the methods table. `meta` and `with-meta` test
+  for a record first and read its type's IObj flags inline (`meta` on a record
+  ~14 -> ~5 ns). An indexed vector read's range test is open-coded. rewrite-clj
+  `parse-string` x5000: ~128 -> ~118 ms.
+
+- **A number's interop method is kept at its call site (#1713).** `(.bitLength
+  n)`, `(.longValue n)` and the rest of the number method surface walked the
+  method arms and a string compare per name on every call; tools.reader reads
+  every integer through them, so `read-number` of `"2"` goes from ~1.2 to
+  ~0.85 us. A number method given too few arguments, `(.shiftLeft 1)`, raises
+  the JVM's no-matching-method error rather than faulting in `car`.
 
 - **A deftype no longer answers for a host class that shares its simple
   name.** A qualified class with no constructor of its own, such as

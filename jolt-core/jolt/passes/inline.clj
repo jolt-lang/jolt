@@ -3,7 +3,7 @@
   when host/inline-enabled? (user code opted into direct-linking); they
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
-  (:require [jolt.host :refer [inline-ir mark-spliced!]]
+  (:require [jolt.host :refer [inline-ir mark-spliced! guarded-inline? protocol-call-key]]
             [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
             [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]))
@@ -486,6 +486,22 @@
          ;; stash that would otherwise splice.
          (not (splice-cycle-member? ctx (get f :ns) (get f :name))))))
 
+(defn- builds-closure? [node]
+  (or (= :fn (get node :op))
+      (reduce-ir-children (fn [acc c] (or acc (builds-closure? c))) false node)))
+
+(defn guarded-candidate?
+  "Is this top-level single-arity defn one a guarded splice could take? The
+  open-world spine stashes only these (jolt.passes prepare-node): small, and
+  building no closure. A closure's captures are what lets a macro embed it as
+  a value and the compiler rebuild it as code; spliced, a capture of a param
+  can fold to the argument's constant and leave nothing to read back."
+  [node]
+  (let [a (first (get (get node :init) :arities))]
+    (and a
+         (<= (body-size (get a :body)) inline-budget)
+         (not (builds-closure? (get a :body))))))
+
 (defn- param-hint-map
   "[param value] hint pairs as a param name -> value map."
   [pairs]
@@ -547,9 +563,10 @@
                            (conj binds [f a])))))
         [env binds]))))
 
-(defn- splice-call
-  "Splice callee f's stashed body at the :invoke node: the alpha-renamed body
-  under a let binding the args that cannot be copy-propagated."
+(defn- splice-parts
+  "Splice callee f's stashed body at the :invoke node: [body binds env], the
+  alpha-renamed body, the let bindings of the args that cannot be
+  copy-propagated (in source order), and the param -> substituted node env."
   [node ctx f stash]
   (let [body (get stash :body)
         ret (get stash :ret)
@@ -580,20 +597,86 @@
     ;; backtrace (jolt-o13s). Recorded at the SPLICE, so a stashed fn
     ;; nobody spliced still shakes away.
     (mark-spliced! ctx (get f :ns) (get f :name))
+    [rbody binds env]))
+
+(defn- splice-call
+  "The spliced body under a let binding the args that cannot be copy-propagated."
+  [node ctx f stash]
+  (let [parts (splice-parts node ctx f stash)
+        rbody (nth parts 0)
+        binds (nth parts 1)]
     (if (= 0 (count binds))
       rbody
       {:op :let :bindings binds :body rbody})))
 
+;; The open-world splice (jolt.host/guarded-inline?): the arguments bind once,
+;; as splice-call binds them, then
+;;
+;;   (if <the var still holds the fn this body was compiled into>
+;;       <spliced body>
+;;       (f args...))
+;;
+;; The test is an :inline-guard leaf the back end emits as an eq? of the var's
+;; current fn against the root its def stamped with the stash's token, read as
+;; the caller loads (backend_scheme/hoist.clj hoist-inline-guard). A redefined,
+;; rebound or with-redefs'd var fails it and takes the call. The fallback call
+;; is marked :no-inline so the fixpoint never splices it again.
+(defn- guarded-splice [node ctx f stash]
+  (let [;; a ^double/^long or array-hinted param binds its argument already
+        ;; coerced, which the fallback call must not see: a redefinition gets
+        ;; the argument as passed. With such a param every non-trivial argument
+        ;; is bound raw first, in source order, so both arms read the same
+        ;; once-evaluated values and only the body sees the coercion.
+        hinted? (seq (concat (get stash :nhints) (get stash :ahints)))
+        raw (when hinted?
+              (mapv (fn [a] (if (trivial-arg? a) [nil a] (let [r (fresh "arg")] [r a])))
+                    (get node :args)))
+        node (if raw
+               (assoc node :args (mapv (fn [[r a]] (if r {:op :local :name r} a)) raw))
+               node)
+        parts (splice-parts node ctx f stash)
+        body (nth parts 0)
+        env (nth parts 2)
+        ;; the var's fn is read FIRST, before any argument, as a call reads it
+        ;; (an argument may redefine the var); the test and the fallback both
+        ;; use that read. The argument bindings follow, so the fallback call
+        ;; gets the same once-evaluated values the body does.
+        fv (fresh "fn")
+        fl {:op :local :name fv}
+        binds (into (into [[fv (assoc f :fn-read true)]] (filter first) raw) (nth parts 1))
+        bound (reduce (fn [m b] (assoc m (nth b 0) true)) {} binds)
+        call (assoc node
+                    :no-inline true
+                    :fn fl
+                    :args (if raw
+                            (get node :args)
+                            (mapv (fn [p a]
+                                    (let [e (get env p)]
+                                      (if (and (= :local (get e :op)) (get bound (get e :name)))
+                                        {:op :local :name (get e :name)}
+                                        a)))
+                                  (get stash :params) (get node :args))))
+        test {:op :inline-guard :fn fl :ns (get f :ns) :name (get f :name) :token (get stash :token)}]
+    {:op :let :bindings binds :body {:op :if :test test :then body :else call}}))
+
 (defn- try-inline
   "node is an :invoke whose children are already inlined. If its :fn is a var
   with a stashed, in-budget, arity-matching inline body, return the spliced
-  let; else node."
+  let; else node. In the open world (jolt.host/guarded-inline?) the splice is
+  guarded, and only a stash that carries a token can take one."
   [node ctx]
   (let [f (get node :fn)
-        stash (when (= :var (get f :op)) (inline-ir ctx (get f :ns) (get f :name)))]
-    (if (and stash (spliceable? stash f (get node :args) ctx))
-      (splice-call node ctx f stash)
-      node)))
+        stash (when (and (= :var (get f :op)) (not (get node :no-inline))
+                         ;; a protocol method's var holds defprotocol's generic
+                         ;; dispatcher, a plain one-arity fn; the back end calls
+                         ;; it through the receiver's dispatch vector, which its
+                         ;; spliced body (a by-name lookup) would replace
+                         (not (protocol-call-key ctx (get f :ns) (get f :name) (count (get node :args)))))
+                (inline-ir ctx (get f :ns) (get f :name)))]
+    (cond
+      (not (and stash (spliceable? stash f (get node :args) ctx))) node
+      (guarded-inline? ctx) (if (get stash :token) (guarded-splice node ctx f stash) node)
+      :else (splice-call node ctx f stash))))
 
 (defn inline-node
   "Bottom-up: inline children first, then attempt to inline this node."

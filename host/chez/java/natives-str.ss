@@ -284,7 +284,12 @@
   (cond ((str-unmatchable-code? needle) (string-length s) -1)   ; the length still refuses a non-string
         ((fixnum? needle) (str-char-index s (integer->char needle) from))
         ((char? needle) (str-char-index s needle from))
-        (else (str-index-of s (str-needle needle) from))))
+        ;; a one-character needle is that character's scan: (.indexOf token "/")
+        ;; is how tools.reader splits every symbol it reads
+        (else (let ((nd (str-needle needle)))
+                (if (fx=? (string-length nd) 1)
+                    (str-char-index s (string-ref nd 0) from)
+                    (str-index-of s nd from))))))
 ;; The backward twin of str-index-of, and it gets the same inline first-character
 ;; test for the same reason: a procedure call at every position cost more than
 ;; the comparison it was making. An empty needle answers the string's length,
