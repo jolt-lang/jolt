@@ -66,13 +66,17 @@
       (fn [_ i arity]
         (let [p (conj path :arities i)
               fixed-count (count (:params arity))
+              numeric-hints (into {} (:nhints arity))
               [arity-env params]
               (reduce-kv
                 (fn [[env params] j name]
                   (let [rest? (= j fixed-count)
                         binder (if rest? (conj p :rest) (conj p :params j))]
                     [(bind-local! state env name binder (if rest? :rest :param)
-                                  #{{:kind :argument :binding binder}})
+                                  ;; Entry coercion can replace the caller's value.
+                                  (when-not (and (not rest?)
+                                                 (contains? #{:long :double} (get numeric-hints name)))
+                                    #{{:kind :argument :binding binder}}))
                      (conj params binder)]))
                 [env []] (arity-params arity))]
           (walk state (:body arity) (conj p :body) arity-env params)))
@@ -156,7 +160,7 @@
   literal or load-time value. :allocation identifies a constructor occurrence,
   which may produce many live objects across executions. Different origins
   can alias and no origin guarantees ownership. A singleton :unknown covers
-  unresolved locals, unsupported values, formals rebound by recur, and
+  unresolved locals, unsupported values, coerced or recur-rebound formals, and
   analysis beyond budget."
   [facts path]
   (let [origins (get (:origins facts) path unknown)]
