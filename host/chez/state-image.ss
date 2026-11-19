@@ -159,19 +159,19 @@
 ;; A jrec's descriptor is its TYPE, not its value: every instance of the type
 ;; shares one, and it rides raw in the fasl (which is why its layout is frozen —
 ;; see make-jrdesc). Walking it would copy it per instance, giving each restored
-;; record its own descriptor, and would drag the descriptor's internal eq
-;; hashtable through the transform. The record's own fields and its extension map
+;; record its own descriptor, and would drag the descriptor's dispatch vector
+;; through the transform. The record's own fields and its extension map
 ;; are the value, and those are walked.
 (define (image-opaque-field? v) (jrdesc? v))
 ;; The descriptor's ptable is the one part of it that is NOT type data: it is a
-;; per-process dispatch cache of impl procedures, keyed by per-process interned
-;; (proto . method) gensyms, filled the moment the type implements a protocol
+;; per-process dispatch vector of impl procedures, indexed by per-process
+;; interned protocol-method ids (protocols.ss intern-pm-key), filled the moment the type implements a protocol
 ;; (inline in defrecord/deftype, or by extend-protocol/extend-type). Riding raw
 ;; in the fasl it carried those procedures with it, so a record whose type
 ;; implemented any protocol refused at a bare #<procedure> the walk never saw
 ;; (scan, which does not look inside the descriptor, called it clean). The cache
-;; could not have been used after a restore anyway — its keys are gensyms of the
-;; writing process — and a #f ptable is the supported "use the string registry"
+;; could not have been used after a restore anyway — its slots are the ids the
+;; writing process issued, in its own order — and a #f ptable is the supported "use the string registry"
 ;; state (the one a redefinition leaves on a stale descriptor). So the write side
 ;; substitutes a ptable-less copy, one per descriptor so the instances still
 ;; share it, and the read side relinks to the live descriptor for the tag when
