@@ -4,8 +4,9 @@
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir mark-spliced!]]
-            [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
+            [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node distinct-const-keys?]]
             [jolt.op-registry :as op-registry]
+            [jolt.passes.facts :as facts]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
             [jolt.passes.transducers :as transducers]))
 
@@ -35,8 +36,7 @@
 ;; every param and every inner let-bound name becomes a globally fresh name —
 ;; then bind the fresh params to the call's args in a wrapping let (args eval
 ;; once, in source order). After full renaming no name in the spliced body can
-;; collide with a caller local, so flatten-lets and scalar-replace need no
-;; shadowing logic.
+;; collide with a caller local.
 ;; ---------------------------------------------------------------------------
 
 ;; ops an inline-eligible body may contain. The criterion is what the SPLICER
@@ -608,28 +608,37 @@
 
 ;; ---------------------------------------------------------------------------
 ;; flatten-lets: (let [a (let [b X] Y) ..] body) -> (let [b X a Y ..] body).
-;; Safe because inlined bodies are alpha-renamed (every binder unique), so the
-;; hoisted bindings can't collide. Exposes a map-returning init directly to
-;; scalar-replace when it was wrapped in an inlined arg's let.
+;; Exposes map-returning inits wrapped by inlining. An initializer can also
+;; come from source or from a substituted field. Its binders may shadow names
+;; in the suffix, and a recursive let has different scoping altogether.
 ;; ---------------------------------------------------------------------------
-(defn- flatten-let-bindings [binds]
-  ;; returns a flattened binding vector; sets dirty when it hoists.
-  (reduce (fn [out b]
-            (let [nm (nth b 0) init (nth b 1)]
-              (if (= :let (get init :op))
-                (do (mark!)
-                    (conj (reduce conj out (get init :bindings))
-                          [nm (get init :body)]))
-                (conj out b))))
-          []
-          binds))
+
+(defn- reads-local?
+  "Does this tree read a local whose name matches? Includes reads under
+  binders, so a scope change may conservatively refuse a shadowed read."
+  [node matches?]
+  (or (and (= :local (:op node)) (matches? (:name node)))
+      (reduce-ir-children (fn [hit child] (or hit (reads-local? child matches?))) false node)))
+
+(defn- flatten-let-bindings [binds body]
+  (loop [i 0 out []]
+    (if (< i (count binds))
+      (let [b (nth binds i)
+            init (nth b 1)]
+        (if (and (= :let (:op init)) (not (:letrec init))
+                 (let [names (into #{} (map first (:bindings init)))]
+                   (and (not (reads-local? body names))
+                        (not-any? #(reads-local? (nth % 1) names) (subvec binds (inc i))))))
+          (do (mark!)
+              (recur (inc i) (conj (into out (:bindings init)) [(nth b 0) (:body init)])))
+          (recur (inc i) (conj out b))))
+      out)))
 
 (defn flatten-lets [node]
-  (if (= :let (get node :op))
-    ;; flatten children first, then hoist any let-valued binding inits
-    (let [n (map-ir-children flatten-lets node)]
-      (assoc n :bindings (flatten-let-bindings (get n :bindings))))
-    (map-ir-children flatten-lets node)))
+  (let [n (map-ir-children flatten-lets node)]
+    (if (and (= :let (:op n)) (not (:letrec n)))
+      (assoc n :bindings (flatten-let-bindings (:bindings n) (:body n)))
+      n)))
 
 ;; ---------------------------------------------------------------------------
 ;; scalar-replace (AOT escape analysis). A map allocation whose ONLY use is
@@ -712,6 +721,9 @@
       (= op :host) (contains? total-fns (get f :name))
       :else false)))
 
+(defn- distinct-scalar-keys? [ks]
+  (and (every? scalar-const? ks) (distinct-const-keys? ks)))
+
 (defn- total?
   "Stronger than pure?: no side effects AND never throws, so the expression is safe
   to DISCARD entirely (a merely-pure expression that throws would swallow the
@@ -725,13 +737,17 @@
       (= op :invoke) (and (or (total-fn? (get node :fn)) (ctor-shape node))
                           (invoke-arity-ok? node)
                           (every? total? (get node :args)))
-      (safe-op? op) (reduce-ir-children (fn [ok c] (and ok (total? c))) true node)
+      (safe-op? op) (and (case op
+                          :map (distinct-scalar-keys? (map first (:pairs node)))
+                          :set (distinct-scalar-keys? (:items node))
+                          true)
+                        (reduce-ir-children (fn [ok c] (and ok (total? c))) true node))
       :else false)))
 
 (defn- const-key-map? [node]
   (let [prs (get node :pairs)]
     (and (> (count prs) 0)
-         (every? (fn [pr] (scalar-const? (nth pr 0))) prs))))
+         (distinct-scalar-keys? (map first prs)))))
 
 ;; total variant — for a map whose unread values would be DISCARDED when the map
 ;; binding is dropped, so they must not throw.
@@ -977,13 +993,11 @@
 
 (defn- allocates?
   "Can evaluating node make an object that a second evaluation would not share?
-  Conservative: a collection literal, a fn literal, a host constructor or a record
-  ctor anywhere in node. A constant collection is hoisted by the back end, so a
-  :const is one object however often it is read."
+  Quoted data also constructs objects when emitted outside a constant pool."
   [node]
   (let [op (get node :op)]
     (cond
-      (or (= op :vector) (= op :map) (= op :set) (= op :fn) (= op :host-new)) true
+      (contains? #{:vector :map :set :quote :fn :host-new} op) true
       (ctor-shape node) true
       :else (reduce-ir-children (fn [acc c] (or acc (allocates? c))) false node))))
 
@@ -1005,7 +1019,7 @@
     (reduce (fn [r e]
               (let [k (nth e 0) v (nth e 1)]
                 (if (and (contains? @acc k) (not (get (nth r 1) k)) (allocates? v))
-                  (let [f (fresh (str nm "_" (name k)))]
+                  (let [f (fresh nm)]
                     [(conj (nth r 0) [f v]) (assoc (nth r 1) k {:op :local :name f})])
                   r)))
             [[] {}]
@@ -1025,11 +1039,6 @@
 ;;     the site. The args would also re-run on every call instead of once.
 ;; Both are refused here, so the allocation stays.
 
-(defn- mentions-local? [node nm]
-  (if (and (= :local (get node :op)) (= nm (get node :name)))
-    true
-    (reduce-ir-children (fn [acc c] (or acc (mentions-local? c nm))) false node)))
-
 (defn- local-names
   "Every local name node reads, free or not — an over-approximation of its free
   locals, which only makes relocation-blocked? refuse more."
@@ -1048,12 +1057,12 @@
   [node nm fv]
   (let [op (get node :op)]
     (cond
-      (= op :fn) (mentions-local? node nm)
+      (= op :fn) (reads-local? node #(= nm %))
       (and (or (= op :let) (= op :loop))
            (some (fn [b] (contains? fv (nth b 0))) (get node :bindings)))
-      (mentions-local? node nm)
+      (reads-local? node #(= nm %))
       (and (= op :try) (get node :catch-body) (contains? fv (get node :catch-sym))
-           (mentions-local? (get node :catch-body) nm))
+           (reads-local? (get node :catch-body) #(= nm %)))
       true
       :else (reduce-ir-children (fn [acc c] (or acc (relocation-blocked? c nm fv))) false node))))
 
@@ -1124,19 +1133,93 @@
       newbody
       (assoc node :bindings newbinds :body newbody))))
 
+(defn- adjacent-aliases
+  "Collect an unshadowed chain of leading aliases in these bindings and in
+  immediately nested tail lets. Return the names and the remaining region."
+  [nm tail body]
+  (loop [tail tail i 0 body body names #{nm}]
+    (let [[alias init] (get tail i)]
+      (cond
+        (and (= :local (:op init)) (contains? names (:name init)))
+        (when-not (contains? names alias)
+          (recur tail (inc i) body (conj names alias)))
+
+        (and (= i (count tail)) (= :let (:op body)) (not (:letrec body)))
+        (recur (:bindings body) 0 (:body body) names)
+
+        (> (count names) 1) [names (subvec tail i) body]))))
+
+(defn- alias-region-safe?
+  "Only allow native, non-throwing operations while a removed binding would
+  have been live. A callback or retained exception could inspect even raw
+  frame slots. Bare uses and shadowing of any of the map's names are refused."
+  [node names]
+  (let [op (:op node)]
+    (case op
+      (:const :quote) true
+      :local (not (contains? names (:name node)))
+      :invoke
+      (let [f (:fn node) args (:args node) subject (:name (first args))]
+        (and (not (or (:proto node) (:devirt-type node)))
+             (or (and (contains? names subject) (keyword? (lookup-key node subject)))
+                 ;; This intrinsic compares identity without invoking either operand.
+                 (and (= :var (:op f)) (= "clojure.core" (:ns f))
+                      (= "identical?" (:name f)) (= 2 (count args))
+                      (every? #(alias-region-safe? % names) args)))))
+      (:let :if :do :vector)
+      (and (not (:letrec node))
+           (not-any? #(contains? names (nth % 0)) (:bindings node))
+           (reduce-ir-children (fn [ok child] (and ok (alias-region-safe? child names))) true node))
+      false)))
+
+(defn- coalesce-alias-reads [node names nm]
+  (if (= :local (:op node))
+    (if (contains? names (:name node)) (assoc node :name nm) node)
+    (map-ir-children #(coalesce-alias-reads % names nm) node)))
+
+(defn- elim-aliased-map [node i b tail body]
+  (let [[nm init] b]
+    (when-not (or (:letrec node) @(:debug-locals? (unit)))
+      (when-let [[names remaining ret] (adjacent-aliases nm tail body)]
+        (when (and (every? (fn [[k v]] (and (kw-callee? k) (alias-region-safe? v #{}))) (:pairs init))
+                   (not-any? #(contains? names (nth % 0)) remaining)
+                   (every? #(alias-region-safe? (nth % 1) names) remaining)
+                   (alias-region-safe? ret names))
+          ;; Ask about this exact suffix, before coalescing any uses. Confinement
+          ;; alone permits e.g. local identity observations and unmodeled reads.
+          (let [binds (:bindings node)
+                site [:bindings 0 1]
+                f (facts/body-facts (unit) (assoc node :bindings (subvec binds i)))]
+            ;; This site can also be a pooled literal, which has no fresh
+            ;; allocation origin. Its uses still have to stay private.
+            (when (and (not (facts/may-publish? f site)) (empty? (facts/observations-at f site)))
+              (let [rename #(coalesce-alias-reads % names nm)
+                    tail (mapv (fn [[n v]] [n (rename v)]) remaining)
+                    body (rename ret)]
+                ;; Reuse purity, relocation and field-identity handling from
+                ;; the direct case. No alias is removed if the allocation stays.
+                (when (foldable-struct-binding? b tail body)
+                  (elim-struct-binding
+                    (assoc node :bindings (into (subvec binds 0 (inc i)) tail) :body body) i))))))))))
+
 (defn- elim-let-structs
   "(b) Drop the first non-escaping let binding whose init is a foldable struct
   source — a pure const-key map literal or a pure record ctor — substituting its
   field reads into the remaining bindings and body. Fixpoint re-runs us for the
   rest, so one elimination per call keeps it simple. For a record every lookup
-  of the binding must hit a declared field, else we keep the allocation."
+  must hit a declared field. For a map, also try adjacent aliases when the
+  direct-use proof fails."
   [node]
   (let [binds (get node :bindings) n (count binds) body (get node :body)]
     (loop [i 0]
       (if (< i n)
-        (if (foldable-struct-binding? (nth binds i) (subvec binds (inc i) n) body)
-          (elim-struct-binding node i)
-          (recur (inc i)))
+        (let [b (nth binds i) tail (subvec binds (inc i) n)]
+          (if (foldable-struct-binding? b tail body)
+            (elim-struct-binding node i)
+            (if-let [replacement (when (= :map (:op (nth b 1)))
+                                   (elim-aliased-map node i b tail body))]
+              replacement
+              (recur (inc i)))))
         node))))
 
 (defn scalar-replace

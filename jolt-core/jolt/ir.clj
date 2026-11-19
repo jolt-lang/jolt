@@ -63,6 +63,14 @@
 (defn map-node [pairs] {:op :map :pairs pairs})
 (defn set-node [items] {:op :set :items items})
 
+(defn distinct-const-keys?
+  "Can these literal keys (or set elements) skip the runtime duplicate check?
+  Even an all-constant list can have duplicates after constant folding."
+  [ks]
+  (or (empty? (rest ks))
+      (and (every? (fn [k] (= :const (:op k))) ks)
+           (apply distinct? (map :val ks)))))
+
 (defn const-coll-node?
   "True for the literal trees eligible for collection constant pooling."
   [n]
