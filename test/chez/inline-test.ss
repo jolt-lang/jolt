@@ -552,6 +552,14 @@
   (ok "a caught return coercion can report the map's runtime representation"
       (and (jolt-contains? (observations-at f map-site) (fact-kw 'representation))
            (has? (ev (string-append "(" source " 1)")) "PersistentArrayMap"))))
+(let* ((body (fact-ir "(fn [x] (let [m {:k x}] (try ((fn* ^double [] m)) nil (catch Throwable e e))))"))
+       (unit ((var-deref "jolt.passes.types" "new-unit")))
+       (plain (body-facts unit body)))
+  ((var-deref "clojure.core" "reset!") (fact-get unit 'debug-locals?) #t)
+  (let ((debug (body-facts unit body)))
+    (ok "a returned debug exception may retain the map even if the normal cast result is discarded"
+        (and (confined? plain map-site) (may-publish? debug map-site)
+             (not (confined? debug map-site))))))
 (let ((d (ev "((fn [x] ((fn* ^double [] x))) 1)"))
       (n (ev "((fn [x] ((fn* ^long [] x))) 18446744073709551616N)")))
   (ok "fixed-arity return coercion widens to double and wraps long"

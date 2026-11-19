@@ -27,6 +27,10 @@
 (check "mode off after" (prof/instrument-mode) nil)
 (check "instrumenting? off after" (prof/instrumenting?) false)
 
+(let [error ((fx "caught-return-cast") 42)
+      locals (:locals (frame (dbg/frames error) 'debug-fixture/caught-return-cast))]
+  (check "a returned cast exception retains its map local" (get locals 'm) {:k 42}))
+
 ;; a tail (/ y 0) and a tail call into it: both frames stay, with their locals
 (let [fs (frames-of #((fx "outer") 20))
       in (frame fs 'debug-fixture/inner)]
