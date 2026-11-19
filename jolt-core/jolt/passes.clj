@@ -68,17 +68,11 @@
 ;; every copy of a stashed body must hand back the same one (rt.ss
 ;; jolt-site-const). A constant collection literal is one construction --
 ;; its elements are part of it, not sites of their own.
-(defn- const-elem? [n]
-  (let [op (:op n)]
-    (cond (or (= op :const) (= op :quote) (= op :regex)) true
-          (or (= op :vector) (= op :set)) (every? const-elem? (:items n))
-          (= op :map) (every? const-elem? (apply concat (:pairs n)))
-          :else false)))
 (defn- site-const? [n]
   (let [op (:op n)]
     (cond (= op :quote) (let [f (:form n)] (not (or (form-char? f) (form-literal? f))))
           (= op :regex) true
-          (or (= op :vector) (= op :set) (= op :map)) (const-elem? n)
+          (or (= op :vector) (= op :set) (= op :map)) (jolt.ir/const-coll-node? n)
           :else false)))
 (defn- stamp-site-consts* [n prefix counter]
   (cond (not (map? n)) n
