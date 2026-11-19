@@ -9,8 +9,8 @@
   jolt.backend-scheme."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [var-dynamic? var-root-callable? var-linked?]]
-            [jolt.passes.facts :refer [effective-direct-link?]]
+             :refer [var-dynamic? var-root-callable?]]
+            [jolt.passes.facts :refer [effective-direct-link? linked-cell-eligible?]]
             [jolt.passes.types :as types]
             [jolt.backend-scheme.names :refer [chez-str-lit dl-fqn munge-name]]))
 
@@ -206,9 +206,8 @@
        ;; sees vars that live on after it: remove-ns / ns-unmap can drop the
        ;; cell the binding was linked to, so the live cell has to be linked now
        ;; -- or be the def being compiled, which links when it runs.
-       (or @(:direct-link? (cur))
-           (= (dl-fqn ns nm) (first *dl-self*))
-           (some? (var-linked? nil ns nm)))
+       (or (linked-cell-eligible? (cur) ns nm)
+           (= (dl-fqn ns nm) (first *dl-self*)))
        ;; .setDynamic after the def: a binding has to reach this reference
        (not (var-dynamic? nil ns nm))))
 ;; A direct-linked var whose value is a fn literal — its binding is a Scheme
