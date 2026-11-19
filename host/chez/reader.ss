@@ -1304,6 +1304,13 @@
       ;; there and meets the end of input
       (when (and (string=? nstok "") (>= j end))
         (rdr-eof-error s j "EOF while reading"))
+      ;; The reference READS the namespace (LispReader NamespaceMapReader) before
+      ;; it looks for the map or judges the namespace, so a token the reader
+      ;; refuses fails as itself: #:a:{} is "Invalid token: a:", not a bad
+      ;; namespace. rdr-simple-symbol-token? below swallows that error, so the
+      ;; token is read here first, unguarded.
+      (unless (string=? nstok "")
+        (rdr-token->value nstok s i2))
       (let skip-boundary ((k j))
         (cond
           ((and (< k end) (rdr-ws? (string-ref s k)))

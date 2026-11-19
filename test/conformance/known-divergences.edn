@@ -58,6 +58,28 @@
   ;; arrive unverified. Rendering is pr-str for a value, "throws <SimpleName>" for
   ;; a raise (the ROOT cause's simple name). :jvm/:jolt outside :check are prose
   ;; for a reader; the :check pair is what the gate holds to.
+  ;; The JVM checks core macro calls against clojure.core.specs.alpha before
+  ;; expanding them; jolt carries no macro specs. A malformed call still fails at
+  ;; compile time on both -- (let [x] 1), (for [] 1), (doseq [x] 1) -- but with
+  ;; jolt's own message where the JVM reports the spec failure.
+  {:category :host-model
+   :behavior "a core macro call that fails its clojure.core.specs.alpha spec, e.g. (let [x] 1)"
+   :jvm "a compile error whose cause is \"Call to clojure.core/let did not conform to spec.\""
+   :jolt "a compile error with jolt's own message for the same malformation"
+   :check {:expr "(try (eval (read-string \"(let [x] 1)\")) (catch Throwable e (.getMessage (or (.getCause e) e))))"
+           :jvm "\"Call to clojure.core/let did not conform to spec.\""
+           :jolt "\"Bad binding form, expected matched symbol expression pairs\""}
+   :note "jolt does not load spec into clojure.core; the call is rejected either way"}
+  ;; #:{...} names no namespace. The reference prints the namespace object it
+  ;; read with Java's String.valueOf, so a missing one reads "null"; jolt reports
+  ;; the value it has (host/chez/reader.ss rdr-read-ns-map).
+  {:category :host-model
+   :behavior "(read-string \"#:{:b 1}\") error message"
+   :jvm "\"Namespaced map must specify a valid namespace: null\""
+   :jolt "\"Namespaced map must specify a valid namespace: nil\""
+   :check {:expr "(try (read-string \"#:{:b 1}\") (catch Throwable e (.getMessage e)))"
+           :jvm "\"Namespaced map must specify a valid namespace: null\""
+           :jolt "\"Namespaced map must specify a valid namespace: nil\""}}
   ;; The JVM's read-string reads through a plain PushbackReader, not a
   ;; LineNumberingPushbackReader, so nothing it returns carries source metadata at
   ;; all — that only happens for forms the compiler reads out of a file. jolt's
