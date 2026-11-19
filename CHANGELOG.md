@@ -212,6 +212,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [1 2 3])` raises an `ArityException` where it used to answer 6.
 
 ### Performance
+- Printing no longer slows down for every value once any class-keyed `print-method` exists (a `java.util.UUID` or `java.time.Instant` printer from a library is common). Each printed value turned its class name into a class token and looked that up; the answer is now cached per class. `pr-str` of a 200k vector and a 20k map with a UUID printer installed: 225 ms before, 96 ms now (80 ms with no class-keyed methods).
 - `(reduce conj! (transient coll) v)` over a vector builds vectors, maps and sets several times faster: vector builds copy whole leaves, map and set builds walk them directly with a shorter hash path for integer keys, and the first few edits to a populated transient map or set copy a compact trie path instead of expanding it.
 - Hashing more distinct strings than the per-thread string-hash cache holds no longer clears the whole cache on the next miss; 2,049 strings hashed as fast as 2,048 instead of ~4x slower.
 - `clojure.string/escape` scans a string directly and copies unchanged spans.
