@@ -7,6 +7,7 @@
   access, fixnum bit ops, static host calls. Each takes its operands already
   emitted, through an order-args fn of the caller's."
   (:require [clojure.string :as str]
+            [jolt.ir :as ir]
             [jolt.op-registry :as op-registry]
             [jolt.backend-scheme.names :refer [chez-str-lit munge-name]]
             [jolt.backend-scheme.session :as session
@@ -14,7 +15,7 @@
                      clone-site? ctor-shapes fresh-label marker-safe-fqn?
                      note-tail-call! target trace-frames? unsafe-prefix var-cache?]]
             [jolt.backend-scheme.hoist
-             :refer [*cache-cells* *const-pool* cached-tag-desc const-coll-node?
+             :refer [*cache-cells* *const-pool* cached-tag-desc
                      hoist-const hoist-const-per-site]]))
 
 ;; The op-registry tables the call heads read, bound to local names as
@@ -75,7 +76,7 @@
       ;; 98000 ordering temporaries, one hoisted constant in every form wrapped in
       ;; an ordering let* it cannot need. The reference emits no ordering
       ;; temporaries for constants at all; they are constant-pool loads.
-      (const-coll-node? n)))
+      (ir/const-coll-node? n true)))
 
 ;; A var VALUE read is effect-free but order-SENSITIVE: a mutating sibling
 ;; (def/alter-var-root/set!) changes what it yields, so it must not move across

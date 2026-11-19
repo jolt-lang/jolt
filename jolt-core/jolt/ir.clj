@@ -72,14 +72,21 @@
            (apply distinct? (map :val ks)))))
 
 (defn const-coll-node?
-  "True for the literal trees eligible for collection constant pooling."
-  [n]
-  (and (map? n)
-       (case (:op n)
-         (:const :quote :regex) true
-         (:vector :set) (every? const-coll-node? (:items n))
-         :map (every? const-coll-node? (apply concat (:pairs n)))
-         false)))
+  "Is the entire literal constant? For eager construction every nested map
+  and set must also be able to skip its duplicate check."
+  ([n] (const-coll-node? n false))
+  ([n eager?]
+   (and (map? n)
+        (case (:op n)
+          (:const :quote :regex) true
+          (:vector :set)
+          (and (or (not eager?) (= :vector (:op n)) (distinct-const-keys? (:items n)))
+               (every? #(const-coll-node? % eager?) (:items n)))
+          :map
+          (and (or (not eager?) (distinct-const-keys? (map first (:pairs n))))
+               (every? #(and (const-coll-node? (first %) eager?)
+                             (const-coll-node? (second %) eager?)) (:pairs n)))
+          false))))
 
 (defn quote-node [form] {:op :quote :form form})
 (defn throw-node [expr] {:op :throw :expr expr})

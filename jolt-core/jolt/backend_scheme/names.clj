@@ -210,6 +210,7 @@
                   "make-jfloat" "jfloat?" "jfloat-fl" "jfloat-unbox" "jnum->exact"
                   "jrec-field-site-make" "jrec-field-site-ref" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec-pic-desc/i" "jrdesc-vtable-ref" "intern-pm-key" "jrec?" "jrec-desc"
                   "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox"
+                  "jolt-atom-new" "jolt-atom-val" "jolt-atom-cas!"
                   "pvec?" "pvec-cnt" "pvec-nth-in-range" "fx<?"
                   ;; The guarded into/filter/map lowering keeps these runtime
                   ;; entries visible even when a user local has the same name.
