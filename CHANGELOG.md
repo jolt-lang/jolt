@@ -421,6 +421,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format, `readPassword` turns echo off and puts it back even on ^C, and
   `writer`, `reader`, `format`, `printf`, `flush`, `charset` and `isTerminal`
   are there too. Windows still answers nil.
+- **`.read` on `*in*` returns what stdin has, without waiting for a newline.**
+  A character read, or a bulk read into a char array, waited for a whole line
+  or end of input, so on a pipe that stayed open a program never saw input
+  with no newline after it. An LSP server reading a message body was the
+  common case. A read now waits for the first character only and takes the
+  rest that has arrived, up to the end of its line, and `.ready` is true when
+  stdin has input waiting. `read-line` after a character read still returns
+  the whole rest of that line.
 - **`user.home` comes from the passwd entry, as on the JVM.** It was `HOME`
   or `""`, so with `HOME` unset `(fs/expand-home "~/.config")` gave the
   relative path `.config`, and a tool defaulting to it read and wrote under

@@ -11,10 +11,11 @@
 ;; (a code point, -1 at end of input), all off one cursor so they interleave.
 ;; clojure.main/repl-read is what wants the character: it skips whitespace one
 ;; character at a time before handing the rest to a form read. The default *in*
-;; reads real stdin through the host seam __stdin-read-line, with a shared
-;; leftover buffer; with-in-str rebinds *in* to a string reader over one
-;; atom-held buffer, so (read) consumes its form and a following (read-line)
-;; returns the REST of that line — as in Clojure.
+;; reads real stdin through the host seams __stdin-read-line and, for a
+;; character read, __stdin-read-chunk, with a shared leftover buffer;
+;; with-in-str rebinds *in* to a string reader over one atom-held buffer, so
+;; (read) consumes its form and a following (read-line) returns the REST of
+;; that line — as in Clojure.
 ;;
 ;; Forms are parsed by the host seam __parse-next-numbered (one form + the index
 ;; just past it, nil when only whitespace remains). A JVM *in* is a
@@ -73,7 +74,7 @@
 
 ;; read(cbuf, off, len): the first character blocks as .read does, the rest
 ;; come while more? says the reader already holds them, so over stdin this
-;; answers what has arrived instead of waiting on the next line. The count, or
+;; answers what has arrived, up to the end of its line. The count, or
 ;; -1 at end of input.
 (defn- read-chars [rdr more? buf off len]
   (if (zero? len)
@@ -198,7 +199,13 @@
         (if (< p (count s))
           (let [i (str-find "\n" s p)]
             (if (nil? i)
-              (do (stdin-drop! s (count s)) (reset! stdin-buf ["" 0]) (subs s p))
+              ;; a character read left part of a line: the rest of it is still
+              ;; to come off stdin, and nil there means it ended unterminated
+              (let [head (subs s p)]
+                (stdin-drop! s (count s))
+                (reset! stdin-buf ["" 0])
+                (let [tail (stdin-line! (__stdin-read-line))]
+                  (if (nil? tail) head (str head tail))))
               (do (reset! stdin-buf [s (inc i)]) (subs s p i))))
           (do (stdin-drop! s (count s))
               (reset! stdin-buf ["" 0])
@@ -242,8 +249,9 @@
     ;; A character comes off the same buffer the form and line ops read, so the
     ;; three interleave: clojure.main/repl-read skips whitespace character by
     ;; character, unreads the one that ended the skip, and then reads a form
-    ;; from the very next position. The pull when the buffer runs dry blocks on
-    ;; a line, as .read on the JVM's stdin reader blocks on input.
+    ;; from the very next position. The pull when the buffer runs dry takes
+    ;; what stdin already holds, up to the end of its line, and waits only
+    ;; for the first character, as .read on the JVM's stdin reader does.
     (-read-char [_]
       (reader-open! stdin-closed)
       (loop []
@@ -255,11 +263,11 @@
               (reset! stdin-buf [s (inc p)])
               (line-start! stdin-line-start (or (= c 10) (= c 13)))
               c)
-            (let [line (__stdin-read-line)]
-              (if (nil? line)
+            (let [chunk (__stdin-read-chunk)]
+              (if (nil? chunk)
                 (do (line-start! stdin-line-start true) -1)
                 (do (stdin-drop! s (count s))
-                    (reset! stdin-buf [(str line "\n") 0]) (recur))))))))
+                    (reset! stdin-buf [chunk 0]) (recur))))))))
     (-unread-char [_ _c]
       (let [sp @stdin-buf
             p (nth sp 1)]
@@ -275,8 +283,8 @@
     (readLine [this] (-read-line this))
     (unread [this c] (reader-open! stdin-closed) (-unread-char this c))
     (atLineStart [this] (-at-line-start? this))
-    ;; only what is already buffered is known to be there
-    (ready [_] (reader-open! stdin-closed) (stdin-more?))
+    ;; buffered here, or waiting on stdin for the next read to take
+    (ready [_] (reader-open! stdin-closed) (or (stdin-more?) (__stdin-ready?)))
     (close [_] (reset! stdin-closed true) nil)))
 
 (defn read-line
