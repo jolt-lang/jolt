@@ -1195,7 +1195,7 @@
                             apply-edit (str "(let* ((" path " " (emit (nth (:args call) 1)) ")"
                                             " (" v " " (emit value) ")) " dispatch ")")]
                         (if (= i last-i) apply-edit
-                            (str "(if (fx<=? " index " " i ") " apply-edit " " m ")"))))
+                            (str "(if (fx>=? " i " " index ") " apply-edit " " m ")"))))
                     (range (count edits)) edits)
         bindings (map (fn [nm expr] (str "(" nm " " expr ")")) (rest names) (pop calls))]
     (str "(let* ((" index " (if " stop " (car " stop ") 0)) " (str/join " " bindings) ") " (peek calls) ")")))
