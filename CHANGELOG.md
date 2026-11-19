@@ -46,6 +46,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comparing a keyword with a class or another host value no longer walks every
   registered equality arm: `(= String :a)` is 20x faster, and so is a lookup in
   a multimethod table keyed by both classes and keywords.
+- **Redefining a protocol or a type follows the JVM.** Re-evaluating a
+  `defprotocol` drops the impls a `deftype`, `defrecord` or `reify` declared
+  inline before it (they implement the old interface), so calls on them miss and
+  `satisfies?`/`instance?` say no until the type is defined again; impls from
+  `extend`/`extend-type`/`extend-protocol` survive, as the JVM's merge keeps
+  them. Re-evaluating a `deftype`/`defrecord` makes a new class: instances built
+  before are not `instance?` of it, their `class`/`type` is not `=` to it, an old
+  record is not `=` to a new one, and they keep the old class's own and
+  extended impls instead of picking up the new definition's. A protocol call
+  compiled before the protocol was redefined still makes the old interface's
+  call, so a type that declared the protocol back then answers it there, and
+  `extenders`/`extends?` name a redefined type's extended old class as the JVM
+  does. A reify site keeps the protocols it was compiled against even when its
+  first instance is built after one of them is redefined.
+
+- **A reify's class is named as the JVM's compiler names it.** The enclosing
+  fn's class (a defn's `ns$f`, a nested `fn`, a named fn, a top-level form's
+  `ns$evalN`, the fn a `try` or expression-position `loop` is wrapped in, a
+  deftype's own class) with its trailing `__N` trimmed, then `$reify__N`, where
+  every reify used to be `ns$reify__N`. Only the counters differ from the JVM's.
+
+- **`instance?` casts its type argument to `Class`.** A protocol (its map), a
+  keyword, a string or a quoted symbol throws the JDK's `ClassCastException`,
+  and nil the `NullPointerException`, where jolt answered as if the protocol
+  were its interface. The interface itself (`(instance? my.ns.P x)`) still
+  answers.
 - Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
 
 - **The reference fns call a user type's `clojure.lang` interface methods.**
@@ -75,20 +101,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-number, and `(int 9223372036854775808N)` is the IllegalArgumentException
   naming the long range. A small BigInt such as `1N` still reads as a Long,
   since jolt classes an integer by its range.
-
-- **Redefining a protocol or a type follows the JVM.** Re-evaluating a
-  `defprotocol` drops the impls a `deftype`, `defrecord` or `reify` declared
-  inline before it (they implement the old interface), so calls on them miss and
-  `satisfies?`/`instance?` say no until the type is defined again; impls from
-  `extend`/`extend-type`/`extend-protocol` survive, as the JVM's merge keeps
-  them. Re-evaluating a `deftype`/`defrecord` makes a new class: instances built
-  before are not `instance?` of it, their `class`/`type` is not `=` to it, an old
-  record is not `=` to a new one, and they keep the old class's own and
-  extended impls instead of picking up the new definition's. A protocol call
-  compiled before the protocol was redefined still makes the old interface's
-  call, so a type that declared the protocol back then answers it there, and
-  `extenders`/`extends?` name a redefined type's extended old class as the JVM
-  does.
 
 ## [0.8.28] - 2026-11-19
 

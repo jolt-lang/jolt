@@ -775,8 +775,8 @@
     ;; (docstring + attr-map + the name's own + :arglists) is attached to the def
     ;; name symbol, which analyze-def reads — so (meta #'f) reflects every source.
     (if meta-map
-      `(def ~(with-meta fn-only-name meta-map) (fn ~(with-meta fn-only-name nil) ~@body))
-      `(def ~fn-only-name (fn ~fn-only-name ~@body)))))
+      `(def ~(with-meta fn-only-name meta-map) (fn ~(with-meta fn-only-name {:jolt/defn true}) ~@body))
+      `(def ~fn-only-name (fn ~(with-meta fn-only-name {:jolt/defn true}) ~@body)))))
 
 ;; defn- marks the var :private (like Clojure). Jolt doesn't restrict access, but
 ;; ns-publics filters private vars out — a lib that introspects ns-publics (e.g.
@@ -1083,8 +1083,20 @@
            (loop [~gxs ~gxs]
              (when-first [~bind ~gxs]
                ~(do-mod)))))
+      ;; The reference compiles the body twice -- a chunk at a time inside a
+      ;; loop of its own, and one element at a time -- and a class the body
+      ;; compiles (a reify) is named by the copy that runs. So two copies over
+      ;; map here too, picked by the seq's chunkedness: the first named as
+      ;; that loop's class, the second as no class of its own (jolt.analyzer
+      ;; *objx*).
       (empty? mods)
-      `(fn ~giter [~gxs] (map (fn [~bind] ~body) ~gxs))
+      (let [gs (gensym "s__")]
+        `(fn ~giter [~gxs]
+           (lazy-seq
+             (let [~gs (seq ~gxs)]
+               (if (chunked-seq? ~gs)
+                 (map (fn [~bind] ~body) ~gs)
+                 (map (fn ~(with-meta [bind] {:jolt/same-objx true}) ~body) ~gs))))))
       :else
       (for-chunked-step-fn bind body mods giter gxs do-mod))))
 
@@ -1135,8 +1147,11 @@
 ;; nil when a :while stopped the walk.
 (defn- doseq-chunk-loop [sv cv iv ev bind mods k-form]
   (let [in-chunk `(recur (unchecked-inc ~iv))]
+    ;; loop* marked as no class of its own: the reference's doseq is one loop,
+    ;; so a reify in the body names the code around the doseq (jolt.analyzer
+    ;; *objx*), where this expression-position loop would be wrapped
     `(let [~ev (__chunk-end ~sv)]
-       (loop [~iv (__chunk-start ~sv)]
+       (~(with-meta 'loop* {:jolt/same-objx true}) [~iv (__chunk-start ~sv)]
          (if (< ~iv ~ev)
            (let [~bind (__chunk-nth ~cv ~iv)]
              ~(comprehension-chain mods `(do ~k-form ~in-chunk) in-chunk nil))
@@ -1160,7 +1175,9 @@
                  (doseq-group groups (inc idx) body))
         sv (fresh-sym) cv (fresh-sym) iv (fresh-sym) ev (fresh-sym) ps (fresh-sym)
         nx (fresh-sym)]
-    `(loop [~sv (seq ~(nth g 1))]
+    ;; loop*, marked as standing for the doseq itself: the reference's doseq IS
+    ;; this loop, where jolt's answers nil after it (jolt.analyzer *objx*)
+    `(~(with-meta 'loop* {:jolt/up-context true}) [~sv (seq ~(nth g 1))]
        (when ~sv
          (let [~cv (__chunk-vec ~sv)]
            (if ~cv
@@ -1198,7 +1215,10 @@
   ;; ^:once, as the reference writes it: the thunk runs once, and lets go of what
   ;; it closed over as it runs (backend emit-fn) -- a thunk walking a source must
   ;; not pin the source's head
-  `(make-lazy-seq (~(with-meta 'fn* {:once true}) [] (coll->cells (do ~@body)))))
+  ;; The body is the thunk's return value in the reference's (new LazySeq (fn*
+  ;; [] body)); the do is marked as standing in that place, past the
+  ;; coll->cells call jolt adds (jolt.analyzer *objx*).
+  `(make-lazy-seq (~(with-meta 'fn* {:once true}) [] (coll->cells (~(with-meta 'do {:jolt/up-context true}) ~@body)))))
 
 (defmacro lazy-cat [& colls]
   `(concat ~@(map (fn [c] `(lazy-seq ~c)) colls)))

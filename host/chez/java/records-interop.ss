@@ -402,6 +402,32 @@
 
 (def-var! "clojure.core" "instance-check" instance-check)
 
+;; instance? is Class.isInstance on the JVM: its type argument is cast to Class
+;; first, so anything else -- a protocol's map, a keyword, a string, a quoted
+;; symbol -- is the JDK's ClassCastException, and nil the NullPointerException of
+;; calling isInstance on it, whatever the value. The instance? macro hands every
+;; type argument it does not know to be a class through here (a class name it
+;; resolved itself goes straight to instance-check). jolt's own class values: a
+;; Class token, and a deftype/defrecord's type token (its ctor).
+(define (jolt-class-arg t)
+  (cond ((jclass? t) t)
+        ((and (procedure? t) (deftype-ctor-tag t)) t)
+        ((jolt-nil? t)
+         (throw-jvm 'NullPointerException
+                    "Cannot invoke \"java.lang.Class.isInstance(Object)\" because \"c\" is null"))
+        (else
+         (let ((from (let ((n (guard (e (#t #f)) (jolt-class-name t)))) (if (string? n) n "java.lang.Object"))))
+           (throw-jvm 'ClassCastException
+                      (string-append
+                       "class " from " cannot be cast to class java.lang.Class ("
+                       (if (and (fx>? (string-length from) 5) (string=? (substring from 0 5) "java."))
+                           (string-append from " and java.lang.Class are in module java.base of loader 'bootstrap'")
+                           (string-append from " is in unnamed module of loader 'app'; java.lang.Class is in module java.base of loader 'bootstrap'"))
+                       ")"))))))
+(def-var! "jolt.host" "class-arg" jolt-class-arg)
+;; instance? taken as a value ((partial instance? C)): the same cast, then the test
+(def-var! "jolt.host" "instance-of" (lambda (t x) (instance-check (jolt-class-arg t) x)))
+
 ;; ---- java.lang.Throwable: the surface EVERY throwable inherits ---------------
 ;; On the JVM these are declared on Throwable itself, so every exception class has
 ;; them by inheritance and no shim ever needs to restate them. jolt had no such

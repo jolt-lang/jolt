@@ -129,15 +129,17 @@ fi
 # would come back empty and the check would pass over every referred name.
 command -v perl >/dev/null 2>&1 || { echo "  FAIL: manifest check needs perl to read [jolt.host :refer [...]] vectors"; exit 1; }
 # references from jolt-core: qualified jolt.host/NAME plus names pulled in via
-# [jolt.host :refer [...]]. Strip Clojure line comments first so a `; jolt.host/x`
-# mention (e.g. a prose reference to the class-* seams) isn't counted.
+# [jolt.host :refer [...]], less jolt.host/load-time-value (a special form the
+# analyzer dispatches on that spelling, not a var). Strip Clojure line comments
+# first so a `; jolt.host/x` mention (e.g. a prose reference to the class-*
+# seams) isn't counted.
 {
   find jolt-core -name '*.clj' -exec sed 's/;.*//' {} + \
     | grep -oE 'jolt\.host/[a-zA-Z][a-zA-Z0-9!?*<>=+.-]*' | sed 's|jolt\.host/||'
   reffiles=$(grep -rl '\[jolt.host :refer' jolt-core 2>/dev/null)
   [ -n "$reffiles" ] && perl -0777 -ne 'while (/\[jolt\.host\s+:refer\s+\[(.*?)\]/gs){ print "$1\n" }' $reffiles \
     | tr -s ' \t\n' '\n' | grep -E '^[a-zA-Z]'
-} | LC_ALL=C sort -u > "$tmp/hostref"
+} | grep -vxF load-time-value | LC_ALL=C sort -u > "$tmp/hostref"
 missing=$(LC_ALL=C comm -23 "$tmp/hostref" "$tmp/hostman")
 if [ -n "$missing" ]; then
   echo "  FAIL: jolt-core references jolt.host names absent from the manifest:"
