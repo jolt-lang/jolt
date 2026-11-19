@@ -17,6 +17,7 @@
             [jolt.passes.facts :as facts]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
+            [jolt.passes.transducers :as transducers]
             [jolt.op-registry :as op-registry]
             [jolt.ir :as ir]
             [jolt.backend-scheme.names :as names :refer [chez-str-lit dl-fqn dl-name]]
@@ -1026,13 +1027,70 @@
                  (first as) (map vector (:div-prim node) (rest as)))))
        :else (emit-native-invoke c)))))
 
+(defn- emit-filter-map-walk [node operands compose tail?]
+  (let [[to p filter-ok filter-xf m map-ok map-xf c fuse xf from]
+        (repeatedly 11 #(fresh-label "_xf$"))
+        [dest pred mapper source] (mapv emit operands)
+        core "clojure.core"
+        into-proc (hoist-seed-root core "into")
+        filter-proc (hoist-seed-root core "filter")
+        map-proc (hoist-seed-root core "map")
+        [comp-node] (rest (:args node))
+        [filter-node map-node] (:args comp-node)
+        call (fn [n tail? proc args]
+               (let [line (or (node-line n) 0)]
+                 (register-callsite! line (static-callee (:fn n)) tail?)
+                 (with-site n (emit-call tail? proc args line (node-inline-chain n)))))
+        td-filter (plain-call "td-filter" [p])
+        td-map (plain-call "td-map" [m])
+        ;; The linked comp root is read after evaluating the stages. Build
+        ;; nonstandard stages at their original position and call comp before
+        ;; the source. Only pure standard constructors can be deferred.
+        binds [[to dest]
+               [p pred]
+               [filter-ok (plain-call "eq?" [filter-proc "jolt-filter"])]
+               [filter-xf (str "(and (not " filter-ok ") " (call filter-node false filter-proc [p]) ")")]
+               [m mapper]
+               [map-ok (plain-call "eq?" [map-proc "jolt-map"])]
+               [map-xf (str "(and (not " map-ok ") " (call map-node false map-proc [m]) ")")]
+               [c compose]
+               [fuse (str "(and " filter-ok " " map-ok " (eq? " c " jolt-vector-filter-map-comp)"
+                          " (eq? " into-proc " jolt-into))")]
+               [xf (str "(and (not " fuse ") "
+                        (call comp-node false "jolt-invoke2"
+                              [c (str "(if " filter-ok " " td-filter " " filter-xf ")")
+                               (str "(if " map-ok " " td-map " " map-xf ")")]) ")")]
+               [from source]]
+        ordinary-xf (str "(if " fuse " " (with-site comp-node (plain-call c [td-filter td-map])) " " xf ")")]
+    (str "(let* (" (str/join " " (map (fn [[name value]] (str "(" name " " value ")")) binds)) ")"
+         " (if (and " fuse " (pvec? " from ") (not (eq? (pvec-ent " from ") #t)))"
+         " " (call node tail? "jolt-vector-filter-map" [to p m from])
+         " " (call node tail? into-proc [to ordinary-xf from]) "))")))
+
+(defn- emit-vector-filter-map [node tail?]
+  (when (and (:vector-filter-map node) *const-pool*
+             (= :chez (target)) (direct-link?) (not (seed-mint?))
+             (not (session/debug-locals?)))
+    ;; Three native seed calls hoist their procedure at the enclosing def.
+    ;; comp uses its linked Scheme binding and can change while evaluating
+    ;; the stage arguments. Leave all other linkage to emit-var-invoke.
+    (let [core "clojure.core"
+          compose (seed-callable? nil core "comp" 2)]
+      (when (and (string? compose)
+                 (true? (seed-callable? nil core "into" 3))
+                 (true? (seed-callable? nil core "filter" 1))
+                 (true? (seed-callable? nil core "map" 1)))
+        (when-let [operands (transducers/filter-map-operands node)]
+          (emit-filter-map-walk node operands compose tail?))))))
+
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
-    (let [fnode (:fn node)
-          arg-nodes (:args node)
-          args (mapv emit arg-nodes)
-          tl (or (node-line node) 0)]
+    (or (emit-vector-filter-map node tail?)
+      (let [fnode (:fn node)
+            arg-nodes (:args node)
+            args (mapv emit arg-nodes)
+            tl (or (node-line node) 0)]
       ;; R2: record this site's static callee for the callsite table. Runs after
       ;; the args are emitted, so when a line carries both a call and its
       ;; operand's call the OUTER (later-emitted) callee wins — the tail call's.
@@ -1048,7 +1106,7 @@
         :ich (node-inline-chain node)
         :nop (native-op fnode (count args))
         :kind (ifn-kind fnode (count args))
-        :order-args (fn [build] (ordered-call arg-nodes args build))})))))
+        :order-args (fn [build] (ordered-call arg-nodes args build))}))))))
 
 ;; A try's body runs in a closure of guard's or dynamic-wind's. Under debug
 ;; locals it is a tail region of its own, so its leaves keep the scope live there.

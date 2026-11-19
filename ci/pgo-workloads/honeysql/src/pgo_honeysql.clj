@@ -1,6 +1,7 @@
 ;; pgo-honeysql — honey.sql/format throughput, the loops honeysql's own
 ;; cache_test times, uncached: a small query with a random id and a large one
-;; with joins, a nested where, grouping and ordering. ci/pgo-bench.sh builds it
+;; with joins, a nested where, grouping and ordering, plus VALUES with
+;; matching widths and a ragged ROW-marked input. ci/pgo-bench.sh builds it
 ;; as a library workload (honeysql v2.7.1437, pinned in deps.edn).
 ;;   jolt run -m pgo-honeysql 20000
 (ns pgo-honeysql
@@ -29,10 +30,18 @@
       (limit 50)
       (offset 10)))
 
+(def regular-values
+  {:insert-into :table :columns [:id :amount] :values [[1 10] (list 2 20)]})
+
+(def ragged-values
+  {:insert-into :table :columns [:id :amount] :values [:row (list 1 10) [2]]})
+
 (defn run [n]
   (dotimes [_ n]
     (sql/format {:select [:*] :from [:table] :where [:= :id (rand-int 10)]})
-    (sql/format big-complicated-map {:params {:param1 "gabba" :param2 (rand-int 10)}})))
+    (sql/format big-complicated-map {:params {:param1 "gabba" :param2 (rand-int 10)}})
+    (sql/format regular-values)
+    (sql/format ragged-values)))
 
 (defn -main [& args]
   (let [n (if (seq args) (Integer/parseInt (first args)) 20000)]
