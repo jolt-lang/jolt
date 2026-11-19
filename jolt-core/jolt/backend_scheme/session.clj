@@ -9,7 +9,8 @@
   jolt.backend-scheme."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [inline-enabled? var-dynamic? var-root-callable? var-linked?]]
+             :refer [var-dynamic? var-root-callable? var-linked?]]
+            [jolt.passes.facts :refer [effective-direct-link?]]
             [jolt.passes.types :as types]
             [jolt.backend-scheme.names :refer [chez-str-lit dl-fqn munge-name]]))
 
@@ -42,7 +43,7 @@
 ;; jolt-direct-link-emit). That is a per-thread host flag, and the host's
 ;; inline-enabled? answers it: inlining follows linkage, so the two are the same
 ;; question there, and the unit flag stays what a build or the seed mint set.
-(defn direct-link? [] (or @(:direct-link? (cur)) (inline-enabled? nil)))
+(defn direct-link? [] (effective-direct-link? (cur)))
 
 ;; SEED-MINT MODE. bootstrap.ss mints clojure.core and the compiler with
 ;; direct-link ON — a core->core call applies the callee's jv$ binding, one
