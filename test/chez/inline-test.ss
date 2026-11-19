@@ -95,6 +95,7 @@
     "(defn no-edit [m k a b] (-> m (assoc-in [:root (k) :a] a) (assoc-in [:root (k) :b] b)))"
     "(defn no-edit [m k a b] (-> m (assoc-in [:root k :a] (a)) (assoc-in [:root k :b] b)))"
     "(defn no-edit [m k a b] (-> (m) (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m a b] (-> m (assoc-in [:root :shape :a] a) (assoc-in [:root :shape :b] b)))"
     "(defn no-edit [m k a b] (assoc-in (let [k :other] (assoc-in m [:root k :a] a)) [:root k :b] b))"))
 (set-direct-link-flag! #f)
 (ok "dynamic calls keep ordinary assoc-in dispatch"
@@ -124,6 +125,13 @@
            (and (identical? old same) (= old changed)
                 (not (identical? old changed))
                 (not (identical? (:p old) (:p changed)))))"))
+(ev "(defn repeated-edit [m k a b] (-> m (assoc-in [k :x] a) (assoc-in [k :x] b)))")
+(ok "fused assoc-in preserves no-op and canceled edit identities"
+    (ev "(let [m {:p {:x :old}}
+               same (repeated-edit m :p :old :old)
+               changed (repeated-edit m :p :new :old)]
+           (and (identical? m same) (= m changed) (not (identical? m changed))
+                (not (identical? (:p m) (:p changed)))))"))
 (ok "assoc-in preserves HAMT collision entries and the original stored UUID"
     (ev "(let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
                sibling #uuid \"00000000-0000-0000-0000-000100000000\"
@@ -162,14 +170,78 @@
                                 :returned)))
                 (= [:m :key :value] @seen)))"))
 (ok "assoc-in follows successive live core roots after a redefinition"
-    (ev "(let [seen (atom [])
+    ;; Call the compiled body so inlining cannot turn its paths into constants.
+    (ev "(let [edit (var-get #'sibling-edits) seen (atom [])
                next (fn [m path v] (swap! seen conj :next) (assoc m (peek path) v))
                init (fn [m path v] (swap! seen conj :init)
                       (alter-var-root #'clojure.core/assoc-in (constantly next))
                       (assoc m (peek path) v))]
            (with-redefs [clojure.core/assoc-in init]
-             (and (= {:a 1 :b 2} (sibling-edits {} :shape 1 2))
+             (and (= {:a 1 :b 2} (edit {} :shape 1 2))
                   (= [:init :next] @seen))))"))
+
+;; Both ordinary and fused array-map edits use this slot write. Install a new
+;; root after the first write has run, without changing an eligible operand.
+(let ((cell (var-cell-lookup "clojure.core" "assoc-in"))
+      (write-slot pmap-array-assoc-at)
+      (set-trace! (var-deref "jolt.backend-scheme" "set-trace-frames!"))
+      (root-key (keyword #f "root")) (shape (keyword #f "shape"))
+      (replaced (keyword #f "replaced")) (later (keyword #f "later")))
+  (define original (var-cell-root cell))
+  (define (run label trace? paths)
+    (let* ((name (format "assoc-in-rebind-~a" label))
+           (edits (apply string-append
+                         (map (lambda (path) (apply format " (assoc-in [:root ~a :~a] v)" path)) paths)))
+           (form (format "(defn ~a [m k v] (-> m~a))" name edits))
+           (ks (map (lambda (path) (keyword #f (cadr path))) paths))
+           (root (ev "(with-meta {:root {:shape {:old true}} :kept true} {:marked true})"))
+           (v (jolt-vector (keyword #f "token")))
+           (writes '()) (calls '()))
+      (define (value-at m k)
+        (jolt-get (jolt-get (jolt-get m root-key) shape) k))
+      (define (replacement marker)
+        (lambda (m path arg)
+          (set! calls (cons (list marker m path arg) calls))
+          (when (eq? marker replaced) (var-root-set! cell (replacement later)))
+          (original m path marker)))
+      (set-trace! trace?)
+      (ok (string-append name " uses fused edits")
+          (has? (code-part (emitf "u" form)) "(jolt-assoc-in-map-edit "))
+      (ev form)
+      (let ((result (dynamic-wind
+                      (lambda ()
+                        (set! pmap-array-assoc-at
+                          (lambda (m arr i k value)
+                            (let ((r (write-slot m arr i k value)))
+                              (when (memq k ks) (set! writes (cons k writes)))
+                              (when (eq? k (car ks)) (var-root-set! cell (replacement replaced)))
+                              r))))
+                      (lambda () ((var-deref "u" name) root shape v))
+                      (lambda ()
+                        (set! pmap-array-assoc-at write-slot)
+                        (var-root-set! cell original)))))
+        (ok name
+            (and (equal? (reverse writes) ks)
+                 (eq? jolt-nil (value-at root (car ks)))
+                 (eq? (jolt-meta root) (jolt-meta result))
+                 (= (length calls) (- (length ks) 1))
+                 (let loop ((i 0) (keys ks) (calls (reverse calls)) (before root))
+                   (or (null? keys)
+                       (let* ((k (car keys))
+                              (marker (cond ((= i 0) v) ((= i 1) replaced) (else later)))
+                              (path (jolt-vector root-key shape k)))
+                         (and (eq? marker (value-at result k))
+                              (or (= i 0)
+                                  (let ((entry (car calls)))
+                                    (and (eq? marker (car entry)) (clj= before (cadr entry))
+                                         (eq? (jolt-meta root) (jolt-meta (cadr entry)))
+                                         (clj= path (caddr entry)) (eq? v (cadddr entry)))))
+                              (loop (+ i 1) (cdr keys) (if (= i 0) calls (cdr calls))
+                                    (original before path marker)))))))))))
+  (run 'dynamic #f '(("k" "a") ("k" "b") ("k" "c") ("k" "d")))
+  (run 'traced-tail #t '((":shape" "a") (":shape" "b")))
+  (set-trace! #f))
+
 (let ((original jolt-eq-arms) (observed 0))
   (dynamic-wind
     (lambda ()
