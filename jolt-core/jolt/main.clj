@@ -1059,6 +1059,10 @@
      ;; No effect on --library (build-shared is always signable) or on
      ;; a --target build (already forced onto this path).
      :signable? (boolean (some #{"--signable"} flag-args))
+     ;; tail-frame tracing is baked into a built binary by default; --no-trace
+     ;; (or deps.edn :jolt/build {:trace false}, or JOLT_TRACE=0 in the build's
+     ;; environment) bakes an untraced one: no entry prologue, no site markers.
+     :trace? (not (or (some #{"--no-trace"} flag-args) (false? (:trace build))))
      :profile (build-profile flag-args pdir)}))
 
 (defn- cmd-build [more]
@@ -1073,6 +1077,7 @@
                         {:target target})))
       ;; embed-dirs (absolute) are walked + baked into the binary by the driver;
       ;; project-paths (relative) become runtime io/resource roots (ship-alongside).
+      (when-not (:trace? opts) (jolt.host/set-trace-off!))
       (let [natives (natives/build-natives resolved opts)]
         (if library?
           (jolt.host/build-library entry out mode natives embed-dirs project-paths direct-link? tree-shake? target target-pack boot-mode allow-dynamic nil include-names exclude-resources profile)
@@ -1153,7 +1158,7 @@
      "                         executable script, with or without an extension"]]
    ["build"
     ["  build -m NS [-o OUT] [--opt|--dev] [--direct-link] [--closed-world] [--dynamic]"
-     "              [--boot fast|small|plain] [--library] [--signable]"
+     "              [--boot fast|small|plain] [--library] [--signable] [--no-trace]"
      "              [--include NS] [--target MACHINE --target-pack DIR]"
      "                         compile a standalone binary, or with --library a"
      "                         shared object an embedder dlopens and calls through"
@@ -1224,6 +1229,8 @@
   (println "  -X:alias [ns/fn] [k v …]  invoke :exec-fn (or ns/fn) with :exec-args")
   (println "  -T:alias [ns/fn] [k v …]  like -X, with the project paths/deps replaced")
   (println "  -Sdeps '<edn>' …       merge an extra deps.edn map, run the rest")
+  (println "  --no-trace …           first option only: compile without tail-frame")
+  (println "                         tracing (as JOLT_TRACE=0 does), run the rest")
   (println)
   (println "The report options answer something about the project and run nothing.")
   (println "Each takes the aliases around it, so -A:test -Spath and -Spath -M:test")

@@ -253,9 +253,10 @@
     (set! jolt-standalone-binary #t)
     (set-source-roots! " (ldr-install-roots-str) ")
     (jolt-startup-profile-mark! \"source roots + data readers\")
-    ;; JOLT_TRACE at RUNTIME (the env is unset at heap-build), before any app ns
-    ;; compiles, so a `-M:run` traces the app's own code.
-    (jolt-trace-init-from-env!)
+    ;; JOLT_TRACE / a leading --no-trace at RUNTIME (the env is unset at
+    ;; heap-build), before any app ns compiles, so a `-M:run` traces the app's
+    ;; own code.
+    (set! args (jolt-trace-init! args))
     (jolt-stdlib-fasls-attach! '" (jb-stdlib-index-str) ")
     (jolt-startup-profile-mark! \"trace init + fasl index attach\")
     ;; shared dispatch (cli-core.ss, inlined via the runtime manifest): the -e

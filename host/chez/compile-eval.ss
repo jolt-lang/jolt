@@ -316,8 +316,18 @@
 ;; Tail-frame history. Turning it on makes the emitter add a per-fn history push to
 ;; every fn compiled AFTERWARD, and allocates this thread's ring. Suppressed when
 ;; JOLT_TRACE is a falsey value, so JOLT_TRACE=0 / off / no disables it in dev mode.
+;; Off when JOLT_TRACE is a falsey value or --no-trace was given: the one test
+;; every enable and the build's emission switch (build.ss) go through, so the
+;; environment variable and the option cannot answer differently.
+(define jolt-trace-off-flag? #f)
+(define (jolt-trace-off?)
+  (or jolt-trace-off-flag? (jolt-trace-env-off? (getenv "JOLT_TRACE"))))
+;; --no-trace, set before the enable it suppresses: the launcher takes it ahead
+;; of jolt-trace-init!, and `jolt build` reads its own before it emits.
+(define (jolt-trace-set-off!) (set! jolt-trace-off-flag? #t))
+(def-var! "jolt.host" "set-trace-off!" (lambda () (jolt-trace-set-off!) jolt-nil))
 (define (jolt-enable-trace!)
-  (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
+  (unless (jolt-trace-off?)
     (let ((stf (var-deref "jolt.backend-scheme" "set-trace-frames!")))
       (when (procedure? stf) (stf #t)))
     (jolt-trace-enable!)))
@@ -340,11 +350,16 @@
 ;; affected (the seed prelude is already compiled), which is why a seq/string/map
 ;; workload measures the same either way. It is only visible in code that is almost
 ;; entirely user-level calls — a fib microbenchmark pays ~7x, which is the case to
-;; set JOLT_TRACE=0 for. A `jolt build` binary is unaffected: its prologues are
-;; baked at build time, so this runtime switch cannot add them.
-(define (jolt-trace-init-from-env!)
-  (unless (jolt-trace-env-off? (getenv "JOLT_TRACE"))
-    (jolt-enable-trace!)))
+;; set JOLT_TRACE=0 for, or pass --no-trace as the first argument (`jolt
+;; --no-trace run …`), which this takes off ARGS before it decides. A `jolt build`
+;; binary is unaffected: its prologues are baked at build time, so this runtime
+;; switch cannot add them. Returns the arguments left to dispatch.
+(define (jolt-trace-init! args)
+  (let ((args (if (and (pair? args) (equal? (car args) "--no-trace"))
+                  (begin (jolt-trace-set-off!) (cdr args))
+                  args)))
+    (jolt-enable-trace!)
+    args))
 ;; Host-side mirror of the emitter's trace-frames? flag: whether the emitted
 ;; text carries #|L<line>|# markers (backend_scheme.clj with-site). When it is
 ;; off, no markers exist, so the annotated read below would attach source
