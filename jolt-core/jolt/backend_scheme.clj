@@ -32,7 +32,7 @@
                      register-callsite! seed-mint? source-reg? static-callee
                      target trace-callsite-reg unsafe-prefix var-cache? with-site]]
             [jolt.backend-scheme.hoist
-             :refer [*const-pool* const-coll-node? distinct-const-keys?
+             :refer [*const-pool* const-coll-node?
                      emit-top-cells emit-with-cells hoist-const hoist-const-for
                      hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
@@ -1633,7 +1633,7 @@
     (if (unique-keyword-key-literal? node)
       (ordered-call kvs (mapv emit kvs)
         (fn [strs] (str "(amap-slots->pmap (vector " (str/join " " strs) "))")))
-      (emit-ordered (if (distinct-const-keys? (map first (:pairs node)))
+      (emit-ordered (if (ir/distinct-const-keys? (map first (:pairs node)))
                       "jolt-hash-map"
                       "jolt-hash-map-checked")
                     kvs))))
@@ -1641,7 +1641,7 @@
 (defn- emit-coll-literal [node]
   (let [s (case (:op node)
             :vector (emit-ordered "jolt-vector" (:items node))
-            :set (emit-ordered (if (distinct-const-keys? (:items node))
+            :set (emit-ordered (if (ir/distinct-const-keys? (:items node))
                                  "jolt-hash-set"
                                  "jolt-hash-set-checked")
                                (:items node))

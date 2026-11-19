@@ -74,6 +74,7 @@
               (loop (skip-form s i) i))))
       s))
 (define (ev s) (jolt-compile-eval s "u"))
+(define clj= (var-deref "clojure.core" "="))
 
 ;; inlining is a closed-world optimization — requires optimize + direct-link.
 (set-optimize! #t)
@@ -259,13 +260,114 @@
   (ok "a non-allocating field read twice is still scalar-replaced" (not (has? e "amap-slots->pmap"))))
 (ok "a nested map read twice computes the same value" (= 4 (jnum->exact (ev "((fn* ([a] (let [m {:p {:x a :y 2} :q 1}] (+ (:x (:p m)) (:y (:p m)) (:q m))))) 1)"))))
 
+;; Check executable bodies and run the same forms with and without the passes.
+(define (compare-map-scalarization name src args expected removes-map?)
+  (let ((run (string-append "(" src " " args ")"))
+        (map-constructor "(amap-slots->pmap "))
+    (set-optimize! #f)
+    (set-direct-link-flag! #f)
+    (let ((baseline (ev run))
+          (ordinary (code-part (emitf "u" src))))
+      (set-optimize! #t)
+      (set-direct-link-flag! #t)
+      (ok (string-append name ": executable constructor")
+          (and (has? ordinary map-constructor)
+               (eq? (not (has? (code-part (emitf "u" src)) map-constructor)) removes-map?)))
+      (ok (string-append name ": equal runtime values and effects")
+          (and (clj= baseline (ev expected)) (clj= baseline (ev run)))))))
+
+(compare-map-scalarization "direct lookup"
+  "(fn [x] (let [m {:k x}] (:k m)))" "7" "7" #t)
+(compare-map-scalarization "adjacent aliases and keyword projections"
+  "(fn [x] (let [m {:k x :other false} a m b a hit (get b :k)]
+             [hit (:k m) (:other b) (:missing a)]))" "7" "[7 7 false nil]" #t)
+(compare-map-scalarization "pooled literal behind an alias"
+  "(fn [] (let [m {:k 7} a m] (:k a)))" "" "7" #t)
+(compare-map-scalarization "nested alias preserves one allocating field"
+  "(fn [x] (let [m {:k [x]}] (let [a m] [(identical? (:k a) (:k m)) (:k a)])))"
+  "7" "[true [7]]" #t)
+(compare-map-scalarization "effects outside the aliased map's scope"
+  "(fn [x] (let [seen (atom [])]
+             (swap! seen conj :before)
+             [(let [m {:k x} a m] (:k a)) (swap! seen conj :after)]))"
+  "7" "[7 [:before :after]]" #t)
+(compare-map-scalarization "published aggregate"
+  "(fn [x] (let [m {:k x} a m] [a (:k a)]))" "7" "[{:k 7} 7]" #f)
+(compare-map-scalarization "observed map identity"
+  "(fn [x] (let [m {:k x} a m] [(identical? m a) (:k a)]))" "7" "[true 7]" #f)
+(compare-map-scalarization "shadowed value and alias"
+  "(fn [x] (let [m {:k x} a m] (let [x :inner a a] [(:k a) x])))"
+  "7" "[7 :inner]" #f)
+(compare-map-scalarization "field read under a shadowing binder"
+  "(fn [x] (let [m {:k x} a m] (let [x :inner] [(:k a) x])))"
+  "7" "[7 :inner]" #f)
+(compare-map-scalarization "live previous loop value"
+  "(fn [x] (let [m {:k x} a m]
+             (loop [cur a old nil]
+               (if old [(identical? old a) (:k old) (:k cur)]
+                 (recur (assoc cur :k (inc x)) cur)))))" "7" "[true 7 8]" #f)
+(compare-map-scalarization "locally consumed container needs further lowering"
+  "(fn [x] (let [m {:k x} a m box [a]] (:k (nth box 0))))" "7" "7" #f)
+(compare-map-scalarization "retained closure"
+  "(fn [x] (let [closures (let [m {:k x} a m] [(fn [] (:k a))]) f (nth closures 0)]
+             [(f) (f)]))"
+  "7" "[7 7]" #f)
+(compare-map-scalarization "throwing unread sibling"
+  "(fn [x] (let [seen (atom [])]
+             (try (let [m {:k x :bad (do (swap! seen conj :field) (/ 1 0))} a m]
+                    (swap! seen conj :body) (:k a))
+                  (catch ArithmeticException _ [:threw @seen]))))"
+  "7" "[:threw [:field]]" #f)
+
+;; Public eval's compiler-options path shares the emitter's unit, so a
+;; substitution can mark the fixpoint dirty and expose a let on the next pass.
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+(for-each
+  (lambda (direct?)
+    (define (eval-form src)
+      (ev (format "(binding [*compiler-options* {:direct-linking ~a}] (eval (read-string ~s)))"
+                  (if direct? "true" "false") src)))
+    (for-each
+      (lambda (alias?)
+        (let ((bind (if alias? " a m" "")) (m (if alias? "a" "m")))
+          (ok "a field's inner let does not capture a later read of the enclosing x"
+              (clj= (ev "[9 7]")
+                    (eval-form (format "((fn [x] (let [m {:k (let [x 9] x)}~a v (:k ~a)] [v x])) 7)"
+                                       bind m))))
+          (ok "two unpooled reads of a quoted field share one object"
+              (eq? #t (eval-form (format "(let [m {:k '(1)}~a] (identical? (:k ~a) (:k ~a)))"
+                                         bind m m))))
+          (ok "an unused map still checks for keys that become duplicates after folding"
+              (equal? "Duplicate key: :k"
+                      (eval-form (format "(try (let [m {(if true :k :other) 1 :k 2}~a] :ok) (catch IllegalArgumentException e (.getMessage e)))"
+                                         bind))))))
+      '(#f #t))
+    (ok "flattening a let initializer preserves the scope of subsequent initializers"
+        (clj= (ev "[9 7]")
+              (eval-form "((fn [x] (let [v (let [x 9] x) outer x] [v outer])) 7)")))
+    (ok "a keyword projection still checks a discarded map literal for duplicate keys"
+        (equal? "Duplicate key: :k"
+                (eval-form "(try (:k {(if true :k :other) 1 :k 2}) (catch IllegalArgumentException e (.getMessage e)))")))
+    (ok "a discarded sibling map still checks for duplicate keys"
+        (equal? "Duplicate key: :k"
+                (eval-form "(try (:value {:value 1 :unused {(if true :k :other) 1 :k 2}}) (catch IllegalArgumentException e (.getMessage e)))"))))
+  '(#f #t))
+(set-optimize! #t)
+(set-direct-link-flag! #t)
+
+(let ((set-debug-locals! (var-deref "jolt.backend-scheme" "set-debug-locals!")))
+  (set-debug-locals! #t)
+  (ok "instrumented locals keep even a projection-only aliased map"
+      (has? (code-part (emitf "u" "(fn [x] (let [m {:k x} a m] (:k a)))")) "(amap-slots->pmap "))
+  (set-debug-locals! #f))
+
 ;; Lexical facts describe occurrences in a particular IR revision. Scheme
 ;; paths below use symbols for the IR's keyword keys and integers for indices.
 (define facts-unit ((var-deref "jolt.passes.types" "new-unit")))
 (define body-facts (var-deref "jolt.passes.facts" "body-facts"))
 (define binding-at (var-deref "jolt.passes.facts" "binding-at"))
 (define origins-at (var-deref "jolt.passes.facts" "origins-at"))
-(define clj= (var-deref "clojure.core" "="))
 (define (fact-kw name) (keyword #f (symbol->string name)))
 (define (ir-path steps)
   (apply jolt-vector (map (lambda (s) (if (symbol? s) (fact-kw s) s)) steps)))
@@ -463,6 +565,14 @@
       (and (confined? f map-site) (confined? f box-site)
            (may-publish? f (in-body 'bindings 0 1 'pairs 0 1))
            (clj= (contained-at f box-site) (origins-at f map-site)))))
+
+(let* ((prefix "(fn [x] (let [m {:k x} alias m box [alias]] ")
+       (local (facts-for (string-append prefix "(:k (nth box 0))))")))
+       (published (facts-for (string-append prefix "box))")))
+       (box (in-body 'bindings 2 1)))
+  (ok "returning the same container publishes its aliased map"
+      (and (confined? local map-site) (confined? local box)
+           (may-publish? published map-site) (may-publish? published box))))
 
 (for-each
  (lambda (tail)
@@ -1077,7 +1187,7 @@
 
 ;; Code generation happens after the analysis and can use another profile.
 ;; Compile the same emitted Scheme with and without named inspector locals.
-(define (compile-reducer emitted inspector?)
+(define (compile-with-inspector emitted inspector?)
   (let-values (((out bytes) (open-bytevector-output-port)))
     (parameterize ((optimize-level 2)
                    (generate-inspector-information inspector?)
@@ -1088,13 +1198,34 @@
 (jolt-load-string (call-with-input-file "stdlib/jolt/debug.clj" get-string-all))
 (define reducer-frame-acc
   (ev "(fn [t] (some #(get (:locals %) 'acc) (jolt.debug/frames t)))"))
-(define (raw-reducer-acc? t matches?)
+(define (raw-frame-value? t matches?)
   (exists (lambda (frame)
             (let loop ((i 0))
               (and (< i (frame 'length))
                    (or (matches? (((frame 'ref i) 'ref) 'value))
                        (loop (+ i 1))))))
           (sa-continuation-frames (car (jolt-thrown-cont t)))))
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let* ((src "(defn inspecting-alias [x f]
+                   (let [m {:observed x} alias m retained (f)]
+                     [retained (:observed alias)]))")
+           (emitted (emitf "u" src))
+           (payload (jolt-vector 7))
+           (callback (ev "(fn [] (try (throw (ex-info \"snapshot\" {})) (catch Throwable t t)))")))
+      (compile-with-inspector emitted #f)
+      (let* ((answer (jolt-invoke (var-deref "u" "inspecting-alias") payload callback))
+             (thrown (jolt-nth answer 0)))
+        (ok "a throwable retained by an opaque callback sees the aliased map in raw frames"
+            (and (has? (code-part emitted) "(amap-slots->pmap ")
+                 (eq? payload (jolt-nth answer 1))
+                 (raw-frame-value? thrown (lambda (v)
+                                            (and (pmap? v)
+                                                 (eq? payload (jolt-get v (fact-kw 'observed)))))))))))
+  '(#f #t))
 
 (for-each
   (lambda (enabled)
@@ -1122,7 +1253,7 @@
     ;; This closed fixture binds the transform to the core keyword operation
     ;; and uses only builtin keys. Neither it nor assoc's comparisons have a
     ;; stack observer. Compile it without named locals, as in the --opt app.
-    (compile-reducer (emitf "u" (string-append "(def named-param-fixture " named-params ")")) #f)
+    (compile-with-inspector (emitf "u" (string-append "(def named-param-fixture " named-params ")")) #f)
     (ok "the closed named-parameter fixture runs after deferred code generation"
         (clj= (jolt-invoke (var-deref "u" "named-param-fixture")
                           (ev "{:params (array-map 'p 2 'q 3)}")
@@ -1144,7 +1275,7 @@
               (jolt-nil? (reducer-confinement-at facts-unit ir path)))
           (for-each
             (lambda (inspector?)
-              (compile-reducer emitted inspector?)
+              (compile-with-inspector emitted inspector?)
               (let* ((m (jolt-invoke (var-deref "u" "inspecting-reducer") capture inputs))
                      (first-error (jolt-get m a))
                      (second-error (jolt-get m b))
@@ -1158,7 +1289,7 @@
                         (and (jolt-nil? (reducer-frame-acc first-error))
                              (jolt-nil? (reducer-frame-acc second-error)))))
                 (ok "the native inspector sees the previous map even without inspector metadata"
-                    (raw-reducer-acc? second-error previous?))))
+                    (raw-frame-value? second-error previous?))))
             '(#t #f))))
       '("(fn [acc k v] (assoc acc k (ex-info \"snapshot\" {})))"
         "(fn [acc k v] (assoc acc k (f k)))")))
@@ -1182,7 +1313,7 @@
     (lambda () (set! jolt-eq-arms old-arms)))
   (ok "a key comparison can indirectly retain the previous map of a plain assoc step"
       (and snap
-           (raw-reducer-acc? snap (lambda (x) (and (pmap? x) (= 1 (pmap-cnt x))
+           (raw-frame-value? snap (lambda (x) (and (pmap? x) (= 1 (pmap-cnt x))
                                                    (eqv? 1 (jolt-get x a)))))
            (jolt-nil? (reducer-confinement-at facts-unit (fact-ir run) (in-body))))))
 
