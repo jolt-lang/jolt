@@ -212,6 +212,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [1 2 3])` raises an `ArityException` where it used to answer 6.
 
 ### Performance
+- `(reduce conj! (transient coll) v)` over a vector builds vectors, maps and sets several times faster: vector builds copy whole leaves, map and set builds walk them directly with a shorter hash path for integer keys, and the first few edits to a populated transient map or set copy a compact trie path instead of expanding it.
+- Hashing more distinct strings than the per-thread string-hash cache holds no longer clears the whole cache on the next miss; 2,049 strings hashed as fast as 2,048 instead of ~4x slower.
+- `clojure.string/escape` scans a string directly and copies unchanged spans.
+- `babashka.fs` name and parent operations on relative paths (`file-name`, `extension`, `strip-ext`, `parent`, `normalize`) skip a working-directory lookup.
 
 - **The runtime operations a reader leans on cost less (#1713).** Each was a
   call into a generic procedure that the JVM answers in a few instructions:
@@ -381,6 +385,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+- `.ready` on `*in*` is false at end of input, as on the JVM. It answered true there, so a loop reading a `BufferedReader` over `*in*` while `.ready` never ended.
+- `LocalDate/parse` (and the ISO date reads built on it) is as strict as the JDK's: `2024-13-45` rolled over to 2025-02-14 and `2024-1-2` was accepted. Bad text throws `DateTimeParseException` with the JDK's message instead of a plain ex-info.
+- core.async: a put pending when its channel closes stays queued and completes when a take consumes it, as on the JVM. `close!` failed parked `alts!`/`>!` puts, a take on a closed channel answered nil before draining parked putters, a blocking `>!!` on a full buffer gave up at the close, and a `put!` could lose its value to a `close!` right after it.
+- `java.time.zone.ZoneRulesException` is a `DateTimeException`: it had no constructor and a `DateTimeParseException` catch clause caught it.
+- A direct-linked call can no longer race a redefinition of the var it calls. A call during the root write could run the old fn's code over the new closure, or keep calling the old fn afterwards.
+- Two processes sharing an AOT cache no longer fail with `FileNotFoundException` on a namespace's `.ct` sidecar: sidecars are written to a temp file and renamed into place.
+- `Character/isWhitespace`, `clojure.string/trim` and `blank?` follow Java's rule for U+001C..U+001F (whitespace) and U+0085 (not whitespace).
+- `alength` of something that is not an array throws `IllegalArgumentException`, as on the JVM.
+- `"".split(",")` and `(.split #"," "")` give `[""]`, not `[]`: with no match Java returns the input whole.
+- `(==)` with no arguments is an `ArityException`; it answered true.
+- `System/getProperty "user.home"` reads the passwd entry once, under a lock, instead of on every call through libc's shared `getpwuid` buffer, which another thread could overwrite mid-read.
+- The install script sends `$GITHUB_TOKEN`/`$GH_TOKEN` to the GitHub API only, and never on a command line where `ps` would show it (curl reads the header from stdin, wget from a private wgetrc). When the API is unreachable or rate-limited, the latest version comes from the releases page redirect.
+- Building with a Chez from a Nix profile on macOS: `bin/jolt` finds the dev boot cache when Chez is reached through a symlinked directory, and the launcher links Nix's lz4/zlib/ncurses/iconv.
 - A `recur` in a `deftype`, `defrecord` or `reify` method passes the method's arguments without `this`, as on the JVM; jolt wanted `this` as well, so JVM code recurring in a method did not compile.
 - Number interop answers as the JVM's boxes do: `.doubleValue`/`.floatValue` give a double and a Float (they gave the number back unchanged, so `(.doubleValue 1/2)` was `1/2`), `.intValue`/`.longValue`/`.shortValue`/`.byteValue` keep the low bits of an integer or ratio and saturate a double (NaN is 0) instead of failing on NaN or answering a bignum, `.compareTo` and a Ratio's `.numerator`/`.denominator` work, and BigInteger's `.bitLength`, `.negate`, `.abs`, `.signum` and shifts refuse a double or a ratio.
 - `Year/parse`, `YearMonth/parse` and `MonthDay/parse` are as strict as the JDK's and throw its `DateTimeParseException` messages; `YearMonth/parse "2024-13"` rolled over to 2025-01 and `MonthDay/parse` accepted any text. `(str (YearMonth/of 10000 1))` is `10000-01`, not `+10000-01`.
