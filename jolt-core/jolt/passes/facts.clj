@@ -6,12 +6,16 @@
 (def ^:private max-nodes 10000)
 (def ^:private max-path-length 192)
 (def ^:private max-origins 256)
+(def ^:private max-layout-rounds 12)
 (def ^:private unknown #{{:kind :unknown}})
 
 (defn- site [kind path] #{{:kind kind :site path}})
 
 (defn- incomplete! []
   (throw (ex-info "IR facts analysis incomplete" {::incomplete true})))
+
+(defn- spend! [remaining]
+  (when (neg? (swap! remaining dec)) (incomplete!)))
 
 (defn- join-origins [left right]
   (let [joined (into left right)]
@@ -53,6 +57,16 @@
                      (when (= :fn (:op init)) (site :allocation (conj p 1))))))
     env bindings))
 
+(defn- walk-loop-body [state node path env]
+  (let [binders (mapv #(conj path :bindings % 0) (range (count (:bindings node))))
+        initializers (mapv #(conj path :bindings % 1) (range (count binders)))]
+    (swap! (:loops state) assoc path {:binders binders :initializers initializers})
+    (let [env (reduce-kv (fn [env i [name _]]
+                          (let [binder (nth binders i)]
+                            (assoc env name [binder (site :loop-slot binder) (:fn-path state)])))
+                        env (:bindings node))]
+      (walk state (:body node) (conj path :body) env {:loop path :binders binders}))))
+
 (defn- walk-let [state node path env recur-params]
   (let [bindings (:bindings node)
         loop? (= :loop (:op node))
@@ -63,21 +77,16 @@
           (fn [env i [name init]]
             (let [p (conj path :bindings i)
                   origins (walk state init (conj p 1) env recur-params)]
-              (when (or loop? (and recursive? (not= :fn (:op init))))
-                ;; Rebound and non-fn letrec slots lose provenance.
+              (when (and recursive? (not= :fn (:op init)))
+                ;; Non-fn letrec slots lose provenance.
                 (opaque! state origins))
               (if recursive?
                 env
                 (bind-local! state env name (conj p 0) (if loop? :loop :let) origins))))
-          env bindings)
-        ;; Loop inits are sequential, just like let. At the loop body, the
-        ;; same binders may hold values from recur instead of their inits.
-        body-env (if loop?
-                   (reduce-kv (fn [env i [name _]]
-                                (assoc env name [(conj path :bindings i 0) nil (:fn-path state)]))
-                              body-env bindings)
-                   body-env)]
-    (walk state (:body node) (conj path :body) body-env (when-not loop? recur-params))))
+          env bindings)]
+    (if loop?
+      (walk-loop-body state node path body-env)
+      (walk state (:body node) (conj path :body) body-env recur-params))))
 
 (defn- walk-arity [state arity path env]
   (let [fixed-count (count (:params arity))
@@ -94,7 +103,7 @@
                               #{{:kind :argument :binding binder}}))
                (conj params binder)]))
           [env []] (arity-params arity))
-        origins (walk state (:body arity) (conj path :body) arity-env params)]
+        origins (walk state (:body arity) (conj path :body) arity-env {:binders params})]
     ;; Coercion may return its input, convert it, or name its class in a
     ;; cast exception. Preserve all three possibilities for downstream queries.
     (if (contains? #{:long :double} (:ret-nhint arity))
@@ -161,6 +170,24 @@
 (defn- child-origins [state path]
   (get @(:origins state) path unknown))
 
+(defn- loop-field [binder k]
+  (site :loop-field (conj binder :field k)))
+
+(defn- loop-maps [layouts]
+  (reduce-kv
+    (fn [maps binder layout]
+      (if (map? layout)
+        (assoc maps binder
+               {:kind :map :nullable? (:nullable? layout)
+                :slots (into {} (map (fn [k] [k (loop-field binder k)])) (:keys layout))})
+        maps))
+    {} layouts))
+
+(defn- container [state origin]
+  (if (= :loop-slot (:kind origin))
+    (get (:loop-maps state) (:site origin))
+    (get @(:containers state) (:site origin))))
+
 (defn- walk-collection [state node path]
   (let [kind (:op node)
         map? (= :map kind)
@@ -222,13 +249,16 @@
 (defn- projection [state mode receiver k fallback]
   (reduce
     (fn [result origin]
-      (let [{:keys [kind slots]} (get @(:containers state) (:site origin))
+      (let [{:keys [kind slots nullable?]} (container state origin)
             table (projection-slots mode k kind slots)
-            entry (find table k)
-            present? (some? entry)]
-        (if (and table (or entry fallback) (or (nil? result) (= present? (:present? result))))
-          {:present? present?
-           :origins (join-origins (:origins result #{}) (if entry (val entry) fallback))}
+            entry (find table k)]
+        (if (and table (or (and entry (not nullable?)) fallback))
+          (let [present? (when-not (and entry nullable?) (some? entry))
+                projected (if entry
+                            (if nullable? (join-origins (val entry) fallback) (val entry))
+                            fallback)]
+            {:present? (when (or (nil? result) (= present? (:present? result))) present?)
+             :origins (join-origins (:origins result #{}) projected)})
           (reduced nil))))
     nil receiver))
 
@@ -245,11 +275,25 @@
   (when (literal-key? key-node)
     (let [k (:val key-node)]
       (if-let [answer (projection state mode (child-origins state receiver-path) k fallback)]
-        (do (swap! (:projections state) assoc path answer)
+        (do (when (some? (:present? answer)) (swap! (:projections state) assoc path answer))
             (:origins answer))
         (when (= mode :get)
           (note-guarded-record! state path receiver-path k)
           nil)))))
+
+(defn- loop-edit [state path receiver k value]
+  (when (and (:track-edits? state) (= (count receiver) 1))
+    (let [origin (first receiver)
+          binder (:site origin)
+          {:keys [slots nullable?]} (container state origin)]
+      (when (and (= :loop-slot (:kind origin))
+                 (or (:discover? state) (and (not nullable?) (contains? slots k))))
+        (swap! (:edits state) assoc path {:binder binder :key k})
+        (when-not (:discover? state)
+          (let [slots (assoc slots k value)]
+            (swap! (:containers state) assoc path
+                   {:kind :map :slots slots :children (reduce join-origins #{} (vals slots))})))
+        (site :loop-edit path)))))
 
 (defn- invoke-origins [state node path]
   (let [f (:fn node)
@@ -257,7 +301,9 @@
         n (count args)
         arg (fn [i] (child-origins state (conj path :args i)))
         callee (child-origins state (conj path :fn))
-        core (when (and (= :var (:op f)) (= "clojure.core" (:ns f))) (:name f))
+        core (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
+                        (not (:proto node)) (not (:devirt-type node)))
+               (:name f))
         default (fn [i implicit] (if (> n i) (arg i) implicit))
         absent (site :literal path)
         closure (when (and (= 0 n) (= 1 (count callee)))
@@ -268,6 +314,8 @@
       (and (= core "identical?") (= n 2))
       (do (swap! (:identity state) into (into (arg 0) (arg 1))) absent)
       (and (= core "identity") (= n 1)) (arg 0)
+      (and (= core "assoc") (= n 3) (= :const (:op (second args))) (keyword? (:val (second args))))
+      (loop-edit state path (arg 0) (:val (second args)) (arg 2))
       (and (#{"get" "nth"} core) (<= 2 n 3))
       (projection-call state path (if (= core "get") :get :nth)
                        (conj path :args 0) (second args) (default 2 (when (= core "get") absent)))
@@ -282,10 +330,21 @@
       (do (swap! (:representation state) into (arg 0)) nil)
       :else nil)))
 
+(defn- walk-recur [state path target n]
+  (let [{:keys [loop binders]} target
+        args (mapv #(conj path :args %) (range n))]
+    (if loop
+      (do (when-not (= n (count binders)) (incomplete!))
+          ;; Every operand has already been walked in the old environment.
+          (swap! (:recurs state) assoc path {:loop loop :args args})
+          #{})
+      (do (swap! (:recurrent state) into binders)
+          (doseq [arg args] (opaque! state (child-origins state arg)))
+          unknown))))
+
 (defn- walk [state node path env recur-params]
-  (when (or (> (count path) max-path-length)
-            (neg? (swap! (:remaining state) dec)))
-    (incomplete!))
+  (when (> (count path) max-path-length) (incomplete!))
+  (spend! (:remaining state))
   (let [op (:op node)
         origins
         (case op
@@ -303,7 +362,10 @@
             (ir/reduce-ir-children-with-path
               (fn [_ child p] (walk state child p env recur-params)) nil node path)
             (case op
-              (:const :quote :regex :load-time-value) (site :literal path)
+              :const (do (when (and (:discover? state) (nil? (:val node)))
+                           (swap! (:nil-sites state) conj path))
+                         (site :literal path))
+              (:quote :regex :load-time-value) (site :literal path)
               (:vector :map :set) (walk-collection state node path)
               :if (join-origins (child :then) (child :else))
               :do (child :ret)
@@ -313,9 +375,7 @@
                                        (mapv #(child-origins state (conj path :args %))
                                              (range (count (:args node)))))
                           (opaque-children))
-              :recur (do (when (seq recur-params)
-                           (swap! (:recurrent state) into recur-params))
-                         (opaque-children))
+              :recur (walk-recur state path recur-params (count (:args node)))
               ;; Stores, throws (including locally caught ones), host/FFI
               ;; calls, and any other unmodeled operation can leak their operands.
               (opaque-children))))]
@@ -325,20 +385,155 @@
 (defn- captures-origins [closure]
   (reduce join-origins #{} (map :origins (vals (:captures closure)))))
 
-(defn- reachable [roots edges]
+(defn- reachable [roots edges remaining]
   (loop [seen roots pending (vec roots)]
     (if-let [origin (peek pending)]
-      (let [children (remove seen (get edges (:site origin)))]
+      (let [_ (when remaining (spend! remaining))
+            children (remove seen (get edges (:site origin)))]
         (recur (into seen children) (into (pop pending) children)))
       seen)))
 
-(defn- analyze-body [body record-classes]
+(defn- transfer-origins [state]
+  (reduce-kv
+    (fn [transfers _ {:keys [loop args]}]
+      (reduce-kv (fn [out i binder]
+                   (update out binder (fnil join-origins #{})
+                           (child-origins state (nth args i))))
+                 transfers (get-in @(:loops state) [loop :binders])))
+    {} @(:recurs state)))
+
+(defn- header-origins [state transfers]
+  (reduce-kv
+    (fn [headers _ {:keys [binders initializers]}]
+      (reduce-kv (fn [out i binder]
+                   (assoc out binder (join-origins (child-origins state (nth initializers i))
+                                                  (get transfers binder))))
+                 headers binders))
+    {} @(:loops state)))
+
+(defn- join-layout [a b]
+  (cond
+    (nil? a) b
+    (nil? b) a
+    (= a b) a
+    (or (= a :unknown) (= b :unknown)) :unknown
+    (and (:keys a) (:keys b) (not= (:keys a) (:keys b))) :unknown
+    :else {:keys (or (:keys a) (:keys b)) :nullable? true}))
+
+(defn- origin-layout [state layouts edits origin]
+  (let [{:keys [kind site]} origin]
+    (case kind
+      :loop-slot (get layouts site)
+      :loop-edit (let [{:keys [binder key]} (get edits site)
+                       layout (get layouts binder)]
+                   (cond (nil? layout) nil
+                         (and (not (:nullable? layout)) (contains? (:keys layout) key)) layout
+                         :else :unknown))
+      (let [{:keys [kind slots]} (container state origin)]
+        (cond
+          (and (= kind :map) slots (every? keyword? (keys slots))) {:keys (set (keys slots))}
+          (contains? @(:nil-sites state) site) {:nullable? true}
+          :else :unknown)))))
+
+(defn- solve-layouts [state]
+  ;; Infer only a fixed keyword layout (with optional nil for lookups).
+  ;; The first walk records provisional edits and treats unresolved reads as
+  ;; unknown. Solve all loop headers together, independent of nesting depth.
+  (let [headers (header-origins state (transfer-origins state))
+        edits @(:edits state)]
+    (loop [layouts {} round 0]
+      (let [next (reduce-kv
+                   (fn [out binder origins]
+                     (assoc out binder
+                            (reduce (fn [layout origin]
+                                      (spend! (:remaining state))
+                                      (join-layout layout (origin-layout state layouts edits origin)))
+                                    nil origins)))
+                   {} headers)]
+        (cond
+          (= next layouts) next
+          (= round max-layout-rounds) (incomplete!)
+          :else (recur next (inc round)))))))
+
+(defn- field-edges [state headers]
+  (reduce-kv
+    (fn [edges binder incoming]
+      (reduce (fn [edges k]
+                (assoc edges (conj binder :field k)
+                       (reduce (fn [origins origin]
+                                 (spend! (:remaining state))
+                                 (join-origins origins (get-in (container state origin) [:slots k])))
+                               #{} incoming)))
+              edges (keys (get-in state [:loop-maps binder :slots]))))
+    {} headers))
+
+(defn- same-lineage? [binder edits origin]
+  (case (:kind origin)
+    :loop-slot (= binder (:site origin))
+    :loop-edit (= binder (get-in edits [(:site origin) :binder]))
+    false))
+
+(defn- intersect? [a b]
+  (boolean (some #(contains? b %) a)))
+
+(defn- loop-updates [state transfers edges published opaque observed]
+  (let [edits @(:edits state)]
+    (reduce-kv
+      (fn [updates recur-path {:keys [loop args]}]
+        (let [{:keys [binders initializers]} (get @(:loops state) loop)]
+          (reduce-kv
+            (fn [updates i path]
+              (let [{:keys [binder key]} (get edits path)
+                    init (nth initializers i)
+                    seed (site :allocation init)
+                    incoming (get transfers binder)]
+                (if (and (= binder (nth binders i))
+                         (= seed (child-origins state init))
+                         (= :map (get-in @(:containers state) [init :kind]))
+                         (every? #(same-lineage? binder edits %) incoming))
+                  (let [old (into seed (site :loop-slot binder))
+                        ;; The edit result may be identical to its receiver on
+                        ;; a no-op. Its *contents* must never keep the old map.
+                        roots (reduce-kv (fn [roots j arg]
+                                           (if (= i j) roots
+                                             (join-origins roots (child-origins state arg))))
+                                         (get-in @(:containers state) [path :children]) args)
+                        retained? (intersect? old (reachable roots edges (:remaining state)))]
+                    (assoc updates path
+                           {:binding binder :recur recur-path :key key
+                            :confined? (not (intersect? old published))
+                            :old-retained? retained?
+                            :reuse? (not (or retained? (intersect? old opaque)
+                                             (intersect? old observed)))}))
+                  updates)))
+            updates args)))
+      {} @(:recurs state))))
+
+(defn- walk-body [body record-classes remaining options]
   (let [state {:bindings (atom {}) :uses (atom {}) :origins (atom {})
-               :recurrent (atom #{}) :remaining (atom max-nodes)
+               :recurrent (atom #{}) :remaining remaining
+               :loops (atom {}) :recurs (atom {}) :edits (atom {}) :nil-sites (atom #{})
                :containers (atom {}) :closures (atom {}) :projections (atom {})
                :opaque (atom #{}) :identity (atom #{}) :representation (atom #{})
                :guarded-records (atom {}) :record-classes record-classes}
-        result (walk state body [] {} nil)
+        state (merge state options)]
+    (assoc state :result (walk state body [] {} nil))))
+
+(defn- analyze-body [body record-classes track-edits?]
+  (let [remaining (atom max-nodes)
+        first-pass (walk-body body record-classes remaining
+                              {:track-edits? track-edits? :discover? track-edits?})
+        state (if (seq @(:edits first-pass))
+                (walk-body body record-classes remaining
+                           {:track-edits? true :loop-maps (loop-maps (solve-layouts first-pass))})
+                first-pass)
+        transfers (transfer-origins state)
+        headers (header-origins state transfers)
+        ;; These edges describe value flow, including the same-object result
+        ;; of a no-op assoc. They are distinct from aggregates' stored fields.
+        aliases (reduce-kv (fn [edges p {:keys [binder]}]
+                             (assoc edges p (site :loop-slot binder)))
+                           (into headers (field-edges state headers)) @(:edits state))
         closures @(:closures state)
         contained (into {}
                         (map (fn [[p c]] [p (captures-origins c)])) closures)
@@ -346,31 +541,36 @@
         ;; An exposed procedure could be invoked and leak its result. Keep
         ;; those results off the containment graph used by clients.
         edges (reduce-kv (fn [edges p c] (update edges p join-origins (:returns c)))
-                         contained closures)
-        opaque (reachable @(:opaque state) edges)
-        published (reachable (into opaque result) edges)]
+                         (merge-with join-origins contained aliases) closures)
+        opaque (reachable @(:opaque state) edges nil)
+        published (reachable (into opaque (:result state)) edges nil)
+        observed (reachable (into @(:identity state) @(:representation state)) aliases nil)]
     {:bindings @(:bindings state) :uses @(:uses state) :origins @(:origins state)
      :recurrent @(:recurrent state)
      :contained contained :closures closures :projections @(:projections state)
      :guarded-records @(:guarded-records state)
      :published published :opaque opaque :identity @(:identity state)
-     :representation @(:representation state)}))
+     :representation @(:representation state)
+     :loop-updates (when (seq @(:edits state))
+                     (loop-updates state transfers edges published opaque observed))}))
 
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
-  rewriting IR. The unit caches only its latest root and record registry
-  snapshot, compared by identity. Debug-local frames can publish any live
+  rewriting IR. The unit caches only its latest root, record registry
+  snapshot and direct-link mode. Debug-local frames can publish any live
   local through a throwable, so instrumented bodies get conservative answers.
   All binding and site paths are relative to this snapshot. Include the
   enclosing fn/let/etc. to resolve its bindings."
   [unit body]
   (let [cache (:body-facts unit)
         shapes (:record-shapes @(:config unit))
+        direct-link? @(:direct-link? unit)
         previous @cache]
     (cond
       @(:debug-locals? unit) {}
-      (and previous (identical? body (nth previous 0)) (identical? shapes (nth previous 1)))
-      (nth previous 2)
+      (and previous (identical? body (nth previous 0)) (identical? shapes (nth previous 1))
+           (= direct-link? (nth previous 2)))
+      (nth previous 3)
       :else
       (let [classes (reduce (fn [classes shape]
                               (let [class (:type shape)]
@@ -379,12 +579,12 @@
                                 (assoc classes class (when-not (contains? classes class) shape))))
                             {} (vals shapes))
             facts (try
-                    (analyze-body body classes)
+                    (analyze-body body classes direct-link?)
                     (catch clojure.lang.ExceptionInfo e
                       ;; Unsupported layouts and exhausted budgets can hide uses
                       ;; of even the sites we already walked.
                       (if (::incomplete (ex-data e)) {} (throw e))))]
-        (reset! cache [body shapes facts])
+        (reset! cache [body shapes direct-link? facts])
         facts))))
 
 (defn binding-at
@@ -393,12 +593,13 @@
   [facts path]
   (get (:uses facts) path))
 
+(defn- unresolved-origin? [facts origin]
+  (or (contains? #{:loop-slot :loop-field :loop-edit} (:kind origin))
+      (contains? (:recurrent facts) (:binding origin))))
+
 (defn- resolved-origins [facts origins]
-  (if (some (fn [origin] (contains? (:recurrent facts) (:binding origin))) origins)
-    (into #{} (map (fn [origin]
-                     (if (contains? (:recurrent facts) (:binding origin))
-                       (first unknown)
-                       origin))) origins)
+  (if (some #(unresolved-origin? facts %) origins)
+    (into #{} (map #(if (unresolved-origin? facts %) (first unknown) %)) origins)
     origins))
 
 (defn origins-at
@@ -478,3 +679,20 @@
         (contains? (:identity facts) origin) (conj :identity)
         (contains? (:representation facts) origin) (conj :representation)))
     #{} (origins-at facts path)))
+
+(defn loop-update-at
+  "Facts for a direct three-argument assoc in a loop's recur argument, or nil
+  when the receiver's lineage or fixed keyword layout is unproved. :binding
+  and :recur identify the slot and transfer by occurrence in this IR.
+  :confined? accounts for normal return and opaque uses. :old-retained?
+  tracks receiver retention through modeled next-slot and stored-field flow.
+  :reuse? also rules out opaque, identity, and representation observations.
+  A normal final result may escape independently of that proof.
+
+  Reuse is proved at the transfer, after evaluating the receiver, key, new
+  field and all sibling recur arguments once in source order. A consumer
+  must preserve exceptions, no-op assoc behavior and the ordinary result
+  and its aliases on exit. Occurrence paths identify source positions across
+  dynamic iterations."
+  [facts path]
+  (get-in facts [:loop-updates path]))
