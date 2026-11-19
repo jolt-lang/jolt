@@ -1032,6 +1032,239 @@
   (ok "a live redefinition disqualifies the older emitted candidate"
       (jolt-nil? (linked-call-summary unit one ret-site))))
 
+(define reducer-confinement-at (var-deref "jolt.passes.facts" "reducer-confinement-at"))
+(define opaque-accumulator-frames (fact-kw 'opaque-accumulator-frames))
+(define (reducer-call step seed source)
+  (string-append "(reduce-kv " step " " seed " " source ")"))
+(define plain-reducer "(fn [a k v] (assoc a k v))")
+(define (reducer-facts source path)
+  (let* ((ctx (make-analyze-ctx "u"))
+         (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read source)) ctx)))
+    (reducer-confinement-at facts-unit ir path opaque-accumulator-frames)))
+(define (guarded-reducer? proof)
+  (let ((guard (fact-get proof 'guard)))
+    (and (clj= (fact-get proof 'driver) (fact-kw 'native-map-reduce-kv))
+         (equal? (fact-get guard 'predicate) "pmap?")
+         (clj= (fact-get guard 'argument) 2))))
+
+(define named-params
+  "(fn [opts sym->kw] (reduce-kv (fn [m k v] (assoc m (sym->kw k) v)) {} (:params opts)))")
+(define request-headers
+  "(fn [request replace-newline] (reduce-kv (fn [m k v] (assoc m k (replace-newline v))) {} (:headers request)))")
+
+;; Code generation happens after the analysis and can use another profile.
+;; Compile the same emitted Scheme with and without named inspector locals.
+(define (compile-reducer emitted inspector?)
+  (let-values (((out bytes) (open-bytevector-output-port)))
+    (parameterize ((optimize-level 2)
+                   (generate-inspector-information inspector?)
+                   (generate-procedure-source-information inspector?))
+      (call-with-port (open-input-string emitted) (lambda (in) (compile-port in out))))
+    (call-with-port (open-bytevector-input-port (bytes)) load-compiled-from-port)))
+
+(jolt-load-string (call-with-input-file "stdlib/jolt/debug.clj" get-string-all))
+(define reducer-frame-acc
+  (ev "(fn [t] (some #(get (:locals %) 'acc) (jolt.debug/frames t)))"))
+(define (raw-reducer-acc? t matches?)
+  (exists (lambda (frame)
+            (let loop ((i 0))
+              (and (< i (frame 'length))
+                   (or (matches? (((frame 'ref i) 'ref) 'value))
+                       (loop (+ i 1))))))
+          (sa-continuation-frames (car (jolt-thrown-cont t)))))
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let ((proof (reducer-facts named-params (in-body))))
+      (ok "HoneySQL's named parameter reducer needs the native map guard"
+          (and (guarded-reducer? proof)
+               (clj= (fact-get proof 'step) (in-body 'args 0 'arities 0 'body))
+               (clj= (ev (string-append "(" named-params " {:params {'p 2}} keyword)"))
+                     (ev "{:p 2}")))))
+    (ok "Pedestal's header reducer keeps its capture and guards the lookup result"
+        (and (guarded-reducer? (reducer-facts request-headers (in-body)))
+             (clj= (ev (string-append "(" request-headers " {:headers {\"accept\" \"x\\ny\"}}"
+                                      " #(clojure.string/replace % \"\\n\" \",\"))"))
+                   (ev "{\"accept\" \"x,y\"}"))))
+    (let* ((proof (reducer-facts "(fn [x] (let [source {:z x}] (reduce-kv (fn [a k v] (assoc a (let [a k] a) v)) {} source)))"
+                                 (in-body 'body)))
+           (code (code-part (emitf "u" named-params))))
+      (ok "a literal-map alias needs no guard and a shadowed name is independent"
+          (and (clj= (fact-get proof 'driver) (fact-kw 'native-map-reduce-kv))
+               (jolt-nil? (fact-get proof 'guard))))
+      (ok "the query leaves the public driver and assoc in executable code"
+          (and (has? code "jolt-reduce-kv") (has? code "jolt-assoc3"))))
+    ;; This closed fixture binds the transform to the core keyword operation
+    ;; and uses only builtin keys. Neither it nor assoc's comparisons have a
+    ;; stack observer. Compile it without named locals, as in the --opt app.
+    (compile-reducer (emitf "u" (string-append "(def named-param-fixture " named-params ")")) #f)
+    (ok "the closed named-parameter fixture runs after deferred code generation"
+        (clj= (jolt-invoke (var-deref "u" "named-param-fixture")
+                          (ev "{:params (array-map 'p 2 'q 3)}")
+                          (var-deref "clojure.core" "keyword"))
+              (ev "{:p 2 :q 3}")))
+    (for-each
+      (lambda (step)
+        (let* ((ctx (make-analyze-ctx "u"))
+               (source (string-append "(defn inspecting-reducer [f m] "
+                          (reducer-call step "{}" "m") ")"))
+               (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read source)) ctx))
+               (path (ir-path '(init arities 0 body)))
+               (emitted (jolt-ce-emit ir))
+               (inputs (ev "(array-map :a 1 :b 2)"))
+               (capture (ev "(fn [k] (try (throw (ex-info (name k) {})) (catch Throwable t t)))"))
+               (a (fact-kw 'a))
+               (b (fact-kw 'b)))
+          (ok "generic analysis withholds the proof for a frame-observing step"
+              (jolt-nil? (reducer-confinement-at facts-unit ir path)))
+          (for-each
+            (lambda (inspector?)
+              (compile-reducer emitted inspector?)
+              (let* ((m (jolt-invoke (var-deref "u" "inspecting-reducer") capture inputs))
+                     (first-error (jolt-get m a))
+                     (second-error (jolt-get m b))
+                     (previous? (lambda (x)
+                                  (and (pmap? x) (= 1 (pmap-cnt x))
+                                       (eq? first-error (jolt-get x a))))))
+                (ok "the final profile can expose both previous maps through jolt.debug/frames"
+                    (if inspector?
+                        (and (clj= empty-pmap (reducer-frame-acc first-error))
+                             (previous? (reducer-frame-acc second-error)))
+                        (and (jolt-nil? (reducer-frame-acc first-error))
+                             (jolt-nil? (reducer-frame-acc second-error)))))
+                (ok "the native inspector sees the previous map even without inspector metadata"
+                    (raw-reducer-acc? second-error previous?))))
+            '(#t #f))))
+      '("(fn [acc k v] (assoc acc k (ex-info \"snapshot\" {})))"
+        "(fn [acc k v] (assoc acc k (f k)))")))
+  '(#f #t))
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+
+;; Even the plain assoc step can call an observer for a user-defined key.
+(let* ((a (fact-kw 'a))
+       (b (vector 'reducer-eq-probe))
+       (source (jolt-array-map a 1 b 2))
+       (run "(fn [m] (reduce-kv (fn [acc k v] (assoc acc k v)) {} m))")
+       (ordinary (ev run))
+       (old-arms jolt-eq-arms)
+       (snap #f))
+  (dynamic-wind
+    (lambda ()
+      (register-eq-arm! (lambda (x y) (and (eq? x a) (eq? y b)))
+                        (lambda (x y) (set! snap (jolt-ex-info "comparison" empty-pmap)) #f)))
+    (lambda () (jolt-invoke ordinary source))
+    (lambda () (set! jolt-eq-arms old-arms)))
+  (ok "a key comparison can indirectly retain the previous map of a plain assoc step"
+      (and snap
+           (raw-reducer-acc? snap (lambda (x) (and (pmap? x) (= 1 (pmap-cnt x))
+                                                   (eqv? 1 (jolt-get x a)))))
+           (jolt-nil? (reducer-confinement-at facts-unit (fact-ir run) (in-body))))))
+
+(ev "(def reducer-sink (atom nil))")
+(ev "(defn reducer-forward [x] x)")
+(for-each
+  (lambda (step)
+    (ok (string-append "unsupported reducer step: " step)
+        (jolt-nil? (reducer-facts (reducer-call step "{}" "{:x 1}") (ir-path '())))))
+  '("(fn [a k v] (assoc a k (do (reset! reducer-sink a) v)))"
+    "(fn [a k v] (assoc a k [a]))"
+    "(fn [a k v] (assoc a k (let [alias a] (reducer-forward [alias]))))"
+    "(fn [a k v] (assoc a k (fn [] a)))"
+    "(fn [a k v] (assoc a k (class a)))"
+    "(fn [a k v] (assoc a k (identical? a a)))"
+    "(fn [a k v] (assoc a k (count a)))"
+    "(fn [a k v] (assoc a k (throw (ex-info \"stop\" {:acc a}))))"
+    "(fn [a k v] (reduced (assoc a k v)))"
+    "(fn [a k v] (assoc k a v))"
+    "(fn [a k v & more] (assoc a k v))"
+    "(fn [a k ^long v] (assoc a k v))"
+    "assoc"))
+
+(for-each
+  (lambda (source path)
+    (ok (string-append "unsupported reduction call: " source)
+        (jolt-nil? (reducer-facts source path))))
+  (list "(fn [reduce-kv] (reduce-kv (fn [a k v] (assoc a k v)) {} {}))"
+        "(fn [assoc] (reduce-kv (fn [a k v] (assoc a k v)) {} {}))"
+        "(reduce (fn [a [k v]] (assoc a k v)) {} {:x 1})"
+        (reducer-call plain-reducer "{:seed true}" "{:x 1}")
+        (reducer-call plain-reducer "(reduced {})" "{:x 1}"))
+  (list (in-body) (in-body) (ir-path '()) (ir-path '()) (ir-path '())))
+
+(let* ((ir (fact-ir (reducer-call plain-reducer "{}" "{:x 1}")))
+       (annotated (jolt-assoc ir (fact-kw 'proto) "test/OtherProtocol"))
+       (debug-unit ((var-deref "jolt.passes.types" "new-unit"))))
+  ((var-deref "clojure.core" "reset!") (fact-get debug-unit 'debug-locals?) #t)
+  (ok "protocol dispatch and debug-local frames withhold the proof"
+      (and (jolt-nil? (reducer-confinement-at facts-unit annotated (ir-path '()) opaque-accumulator-frames))
+           (jolt-nil? (reducer-confinement-at debug-unit ir (ir-path '()) opaque-accumulator-frames))))
+  (ok "even a literal native source needs the final frame guarantee"
+      (and (jolt-nil? (reducer-confinement-at facts-unit ir (ir-path '())))
+           (jolt-nil? (reducer-confinement-at facts-unit ir (ir-path '()) (fact-kw 'stripped)))
+           (clj= (fact-get (reducer-confinement-at facts-unit ir (ir-path '()) opaque-accumulator-frames)
+                          'driver)
+                 (fact-kw 'native-map-reduce-kv)))))
+
+(ok "direct core calls and calls through values retain their different redefinition behavior"
+    (eq? #t (ev "(with-redefs [reduce-kv (fn [& _] :replacement) assoc (fn [& _] :step)]
+                    (let [driver @#'reduce-kv step @#'assoc]
+                      (and (= {:x 1} (reduce-kv (fn [a k v] (assoc a k v)) {} {:x 1}))
+                           (= :replacement (driver step {} {:x 1}))
+                           (= :step (reduce-kv step {} {:x 1})))))")))
+
+(let* ((custom (ev "(reify clojure.lang.IKVReduce
+                     (kvreduce [_ f seed]
+                       (let [first-step (f seed :b 2) final (f first-step :a 1)]
+                         (reduced [seed first-step final]))))"))
+       (run (ev "(fn [source] (reduce-kv (fn [a k v] (assoc a k v)) {} source))"))
+       (answer (jolt-invoke run custom)))
+  (ok "the pmap guard excludes a custom driver that keeps the seed and an old step"
+      (and (pmap? (ev "{:x 1}")) (pmap? (ev "(hash-map :x 1)"))
+           (not (pmap? custom)) (not (pmap? (ev "(sorted-map :x 1)")))
+           (not (pmap? (ev "[:x]"))) (not (pmap? jolt-nil))
+           (jolt-reduced? answer)
+           (clj= (jolt-reduced-val answer) (ev "[{} {:b 2} {:b 2 :a 1}]")))))
+
+(ok "ordinary reduction keeps published and nested snapshots distinct"
+    (clj= (ev "(let [m (reduce-kv (fn [a k v] (assoc a k (do (reset! reducer-sink a) [a v])))
+                                {} (array-map :a 1 :b 2))]
+                 [@reducer-sink m])")
+          (ev "[{:a [{} 1]} {:a [{} 1] :b [{:a [{} 1]} 2]}]")))
+(ok "a callback can observe the count and class of successive persistent versions"
+    (clj= (ev "(reduce-kv (fn [a k v] (assoc a k [(count a) (= clojure.lang.PersistentArrayMap (class a))]))
+                        {} (array-map :a 1 :b 2))")
+          (ev "{:a [0 true] :b [1 true]}")))
+(ok "ordinary native traversal preserves step order, stops on reduced and never retries a throw"
+    (eq? #t (ev "(let [source (hash-map :c 3 :b 2 :a 1) order (vec (keys source)) seen (atom [])
+                       run (fn [f m]
+                             (reduce-kv (fn [a k v] (assoc a (do (swap! seen conj [:key k]) k) (f k v))) {} m))
+                       all (run (fn [k v] (swap! seen conj [:val k]) v) source)
+                       trace @seen
+                       _ (reset! seen [])
+                       problem (ex-info \"stop\" {})
+                       thrown (try (run (fn [k v] (swap! seen conj [:val k]) (throw problem)) source)
+                                   (catch Throwable e e))
+                       before-throw @seen
+                       _ (reset! seen [])
+                       early (reduce-kv (fn [a k v] (swap! seen conj k) (reduced (assoc a k v))) {} source)]
+                   (and (= source all) (= trace (vec (mapcat (fn [k] [[:key k] [:val k]]) order)))
+                        (= before-throw [[:key (first order)] [:val (first order)]])
+                        (identical? thrown problem) (= early (select-keys source [(first order)]))
+                        (= @seen [(first order)])))")))
+(ok "empty native traversal returns its original seed and skips the callback"
+    (eq? #t (ev "(let [seed {}] (identical? seed (reduce-kv (fn [_ _ _] (throw (ex-info \"called\" {}))) seed {})))")))
+(ok "equal nine-key results expose different persistent and transient representations"
+    (eq? #t (ev "(let [source (apply array-map (interleave [:a :b :c :d :e :f :g :h :i] (range 9)))
+                       ordinary (reduce-kv (fn [a k v] (assoc a k v)) {} source)
+                       built (persistent! (reduce-kv assoc! (transient {}) source))]
+                   (and (= ordinary built) (= (vec (keys ordinary)) (vec (keys source)))
+                        (= clojure.lang.PersistentArrayMap (class ordinary))
+                        (= clojure.lang.PersistentHashMap (class built))
+                        (not= (vec (keys ordinary)) (vec (keys built)))))")))
+
 (ok "ordinary evaluation computes the same fixed-field result"
     (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}")))
 (printf "~a/~a passed~n" (- total fails) total)
