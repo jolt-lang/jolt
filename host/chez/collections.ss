@@ -1480,7 +1480,8 @@
 ;; hash-map-build: CL function hash-map — always hash-ordered (JVM PersistentHashMap).
 (define (jolt-hash-map-build kvs)
   (when (fxodd? (length kvs)) (odd-kvs-error "map entries"))
-  (hash-from-kvs kvs))
+  ;; (hash-map) with no entries is {} on the JVM, an array map
+  (if (null? kvs) empty-pmap (hash-from-kvs kvs)))
 
 ;; The pset record (m hasheq meta, chez-pset-v3) is defined in values.ss with
 ;; the other collection layouts; make-pset fills the hasheq and meta defaults.

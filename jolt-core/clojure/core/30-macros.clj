@@ -385,6 +385,9 @@
 ;; Dynamic binding: install a thread-binding frame of var->value (array-map keeps
 ;; var-get happy, unlike a phm), restore on exit.
 (defmacro binding [bindings & body]
+  (assert-args
+    (vector? bindings) "a vector for its binding"
+    (even? (count bindings)) "an even number of forms in binding vector")
   (if (= 2 (count bindings))
     ;; one var: pushed without the frame map (dyn-binding.ss jolt-push-binding1!).
     ;; let*, not do: a top-level do is split into separate top-level forms, which
@@ -702,6 +705,19 @@
                      :else acc))]
     (reduce walk #{} forms)))
 
+;; A recur in a deftype, defrecord or reify method body passes the method's
+;; arguments WITHOUT `this`, as on the JVM, where the method is the recur target
+;; and this is not one of its locals to rebind. The method is a fn taking this
+;; first, so the body goes inside a loop over the other parameters, which is
+;; the target the recur then finds. Only when the body can hold a recur (USED is
+;; the body's symbol names, nil when a foreign macro hides them) and every
+;; parameter is a plain symbol: a method without one compiles as before.
+(defn- method-recur-body [argv used body]
+  (if (and (or (nil? used) (contains? used "recur"))
+           (every? (fn [p] (and (symbol? p) (not= p (quote &)))) argv))
+    (list (list* 'clojure.core/loop (vec (mapcat (fn [p] [p p]) (rest argv))) body))
+    body))
+
 (defn- deftype-method-clause [fields mplace spec]
   ;; fresh-name each _ param so two _ params don't collide on the
   ;; field binds / live-read instance (see defrecord's mk-clause).
@@ -741,7 +757,7 @@
         mbody (map (fn [bf] (rewrite-field-access mplace inst shadowed bf)) (drop 2 spec))
         mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
         mbody (underscore-rebind (nth spec 1) raw mbody)]
-    (list argv (list* 'clojure.core/let binds mbody))))
+    (list* argv (method-recur-body argv used (list (list* 'clojure.core/let binds mbody))))))
 
 ;; inline impls register for dispatch but are NOT extenders of the
 ;; protocol (the JVM compiles them into the class) — register-inline-method,
@@ -1180,7 +1196,8 @@
         order (distinct (map (fn [x] (name (first x))) specs))]
     `(make-reified-at
        [[~@order] [~@(map protocol-key protos)] ~cls]
-       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(nth x 1) ~@(drop 2 x))) (get methods k))))
+       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(nth x 1) ~@(method-recur-body (nth x 1) (body-sym-names (drop 2 x)) (drop 2 x))))
+                                  (get methods k))))
               order))))
 
 (defmacro defrecord [name-sym fields & body]
@@ -1223,7 +1240,7 @@
                           mbody (drop 2 spec)
                           mbody (if (seq dlets) (list (list* 'clojure.core/let dlets mbody)) mbody)
                           mbody (underscore-rebind (nth spec 1) raw mbody)]
-                      (list hinted (list* 'clojure.core/let binds mbody))))
+                      (list* hinted (method-recur-body argv used (list (list* 'clojure.core/let binds mbody))))))
         groups (impl-groups (drop-type-opts body))
         ;; merge clauses by name across protocols into one multi-arity fn (see
         ;; deftype's by-name).

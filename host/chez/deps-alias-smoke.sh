@@ -579,15 +579,22 @@ esac
 # Clojure is terminal, while directly declared spec.alpha and core.specs.alpha
 # remain ordinary Maven dependencies. This needs the network for the two small
 # artifacts, so it is skipped when they cannot be fetched rather than failing.
+# The whole output is matched, not its last line: a fetch failure is an error
+# report whose last line is a stack frame ("resolve-project"), so a skip pattern
+# looking at that line missed it and the row failed on a network blip.
 SPECPROJ="$root/test/chez/deps-alias/specproj"
-out="$(JOLT_PWD="$SPECPROJ" JOLT_QUIET=1 \
+full="$(JOLT_PWD="$SPECPROJ" JOLT_QUIET=1 \
       JOLT_MAVEN_REPOSITORY="$tmp/spec-m2" \
-      "$JOLT" run -m specapp 2>&1 | tail -1)"
+      "$JOLT" run -m specapp 2>&1)"
+out="$(printf '%s\n' "$full" | tail -1)"
 case "$out" in
   "spec: true false") check "explicit spec.alpha dependency loads" ok ok ;;
-  *"Could not locate"*|*"could not"*|*"no such"*)
-    echo "  SKIP: spec.alpha transitivity (spec artifacts not fetchable offline)" >&2 ;;
-  *) check "explicit spec.alpha dependency loads" "spec: true false" "$out" ;;
+  *)
+    case "$full" in
+      *"could not be resolved"*|*"Could not locate"*|*"could not"*|*"no such"*)
+        echo "  SKIP: spec.alpha transitivity (spec artifacts not fetchable offline)" >&2 ;;
+      *) check "explicit spec.alpha dependency loads" "spec: true false" "$(printf '%s' "$full" | head -3)" ;;
+    esac ;;
 esac
 
 # --- tools.deps CLI surface -------------------------------------------------

@@ -656,9 +656,27 @@
 (register-class-statics! "Void" (list (cons "TYPE" "void")))
 (register-class-statics! "java.lang.Void" (list (cons "TYPE" "void")))
 
+(define (jolt-parse-boolean s)
+  (and (string? s) (string=? "true" (ascii-string-down s))))
 (register-class-statics! "Boolean"
   (list (cons "TYPE" "boolean")
-        (cons "parseBoolean" (lambda (s) (string=? "true" (ascii-string-down (if (string? s) s (jolt-str-render-one s))))))
+        ;; null and any text but "true" (in any case) are false
+        (cons "parseBoolean" (lambda (s) (jolt-parse-boolean (if (or (string? s) (jolt-nil? s)) s (jolt-str-render-one s)))))
+        ;; Boolean.valueOf(boolean) and valueOf(String); there is no other overload
+        (cons "valueOf" (lambda (x)
+                          (cond ((boolean? x) x)
+                                ((or (string? x) (jolt-nil? x)) (jolt-parse-boolean x))
+                                (else (throw-jvm 'IllegalArgumentException
+                                                 "No matching method valueOf found taking 1 args")))))
+        ;; Boolean.toString(boolean): nil fails the unboxing, anything else has
+        ;; no overload
+        (cons "toString" (lambda (b)
+                           (cond ((boolean? b) (if b "true" "false"))
+                                 ((jolt-nil? b)
+                                  (throw-jvm 'NullPointerException
+                                             "Cannot invoke \"java.lang.Boolean.booleanValue()\" because \"null\" is null"))
+                                 (else (throw-jvm 'IllegalArgumentException
+                                                  "No matching method toString found taking 1 args")))))
         (cons "TRUE" #t) (cons "FALSE" #f)))
 
 (register-class-ctor! "Double" ->double)
@@ -1169,7 +1187,7 @@
     (register-class-statics! (string-append "clojure.lang." (car p)) (list (cons "EMPTY" (cdr p)))))
   (list (cons "PersistentVector" empty-pvec)
         (cons "PersistentArrayMap" empty-pmap)
-        (cons "PersistentHashMap" (jolt-hash-map-fn))
+        (cons "PersistentHashMap" empty-pmap-hash)
         (cons "PersistentHashSet" empty-pset)
         (cons "PersistentTreeMap"
               (make-static-deferred (lambda () (jolt-invoke (var-deref "clojure.core" "sorted-map")))))
