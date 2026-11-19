@@ -13,15 +13,14 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  # pinned: a new release would change what CI runs on. jolt-metrics declares
-  # :jolt/min-version, so a METRICS_SHA bump may need a JOLT_VERSION bump too.
+  # jolt runs the gate script. jolt-metrics is the latest release's standalone
+  # binary, so its fixes arrive without a change here.
   JOLT_VERSION: v0.8.27
-  METRICS_SHA: 3e13e1f1b86e7ba2db3f28125279864ef7ff0818
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,16 +32,25 @@ jobs:
           sudo apt-get install -y liblz4-1 zlib1g libtinfo6
           curl -sL https://raw.githubusercontent.com/jolt-lang/jolt/main/install | bash -s -- --version "$JOLT_VERSION"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install jolt-metrics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo jlt-commons/jolt-metrics --pattern '*-x86_64-linux.tar.gz' --dir "$RUNNER_TEMP"
+          tar xzf "$RUNNER_TEMP"/jolt-metrics-*-x86_64-linux.tar.gz -C "$RUNNER_TEMP"
+          mkdir -p "$HOME/.local/bin"
+          install "$RUNNER_TEMP"/jolt-metrics-*-x86_64-linux/jolt-metrics "$HOME/.local/bin/"
+          gh release view --repo jlt-commons/jolt-metrics --json tagName -q '"jolt-metrics " + .tagName'
       - name: Run jolt-metrics
         run: |
-          jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
-            -m metrics.cli . metrics-report.md --top 50
+          jolt-metrics . metrics-report.md --top 50
           # the summary stops before the long per-file tables
           awk '/^## Cleanup candidates/{exit} {print}' metrics-report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Check for critical findings and unused code
         run: |
-          jolt -Sdeps "{:deps {io.github.jlt-commons/jolt-metrics {:git/url \"https://github.com/jlt-commons/jolt-metrics\" :git/sha \"$METRICS_SHA\"}}}" \
-            -m metrics.cli . metrics-report.edn --format edn
+          # the gate reads the queue and cleanup only, so it skips the slow
+          # search for abstraction opportunities
+          jolt-metrics . metrics-report.edn --format edn --no-abstractions
           jolt ci/metrics-gate.clj metrics-report.edn ci/metrics-allow.edn
       - uses: actions/upload-artifact@v6
         if: always()
