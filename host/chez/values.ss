@@ -685,7 +685,10 @@
         ;; are probed (eq-fast-probes here, the jhost one by the dispatch-caches
         ;; unit row after boot), so no arm may claim one.
         ((keyword-t? a) #f)
-        ((and (keyword-t? b) (jhost? a)) #f)
+        ;; jolt-host-object? is a procedure host-static.ss defines over its
+        ;; jhost record: a forward reference to a record op is refused here
+        ;; (record-inline-test), a call resolved at run time is not.
+        ((and (keyword-t? b) (jolt-host-object? a)) #f)
         ((and (base-scalar? a) (base-scalar? b))
          (cond ((and (number? a) (number? b)) (and (eq? (exact? a) (exact? b)) (= a b)))
                ((and (char? a) (char? b)) (char=? a b))

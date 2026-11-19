@@ -1010,6 +1010,9 @@
 
 ;; ---- host object ------------------------------------------------------------
 (define-record-type jhost (fields tag (mutable state)) (nongenerative chez-jhost-v1))
+;; jhost? as a procedure, for values.ss's equality fast path, which loads before
+;; this file and may not name a record op defined after it.
+(define (jolt-host-object? x) (jhost? x))
 
 ;; A question a host object's tag alone answers ("is this an ArrayList?", "which
 ;; kind of linked map is it?"), remembered by the tag OBJECT. The arm walks behind
