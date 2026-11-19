@@ -600,9 +600,10 @@
   "Bottom-up: inline children first, then attempt to inline this node."
   [node ctx]
   (if (= :invoke (get node :op))
-    (let [node (if (transducers/filter-map-operands node)
-                 (assoc node :vector-filter-map true)
-                 node)]
+    (let [node (cond
+                 (transducers/filter-map-operands node) (assoc node :vector-filter-map true)
+                 (transducers/map-optional-take node) (assoc node :iterable-map-take true)
+                 :else node)]
       (try-inline (map-ir-children (fn [c] (inline-node c ctx)) node) ctx))
     (map-ir-children (fn [c] (inline-node c ctx)) node)))
 

@@ -526,6 +526,19 @@
 (define-jhost-tag-pred (al-family? t)
   (or (string=? t "arraylist") (string=? t "linkedlist")
       (string=? t "arrays-aslist") (string=? t "immutable-list")))
+
+;; Chez's linked map/optional-take site can use the ordinary iterator driver
+;; with a fused reducer. Custom reduce methods can inspect the reducer and seed,
+;; so they and custom Seqable sources keep ordinary transduction.
+(define (jolt-iterable-map-take-into to xform from mapper limit)
+  (if (or (al-family? from)
+          (and (jreify? from)
+               (reify-declares-class? (jreify-protos from) "java.lang.Iterable")
+               (iface-iterator-obj from) (not (iface-iterator-cursor from))
+               (not (iface-method from "reduce" 3))))
+      (into-xform to xform from mapper limit)
+      (into-xform to xform from)))
+
 ;; …through its iterator, 32 elements to a chunk, as clojure.lang.RT seqs an
 ;; Iterable (chunkIteratorSeq): the chunks after the first are read when the walk
 ;; reaches them, so a change made meanwhile is a ConcurrentModificationException,

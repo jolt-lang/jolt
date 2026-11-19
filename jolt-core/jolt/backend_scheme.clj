@@ -966,6 +966,11 @@
                  (first as) (map vector (:div-prim node) (rest as)))))
        :else (emit-native-invoke c)))))
 
+(defn- emit-transducer-call [node tail? proc args]
+  (let [line (or (node-line node) 0)]
+    (register-callsite! line (static-callee (:fn node)) tail?)
+    (with-site node (emit-call tail? proc args line (node-inline-chain node)))))
+
 (defn- emit-filter-map-walk [node operands compose tail?]
   (let [[to p filter-ok filter-xf m map-ok map-xf c fuse xf from]
         (repeatedly 11 #(fresh-label "_xf$"))
@@ -976,10 +981,7 @@
         map-proc (hoist-seed-root core "map")
         [comp-node] (rest (:args node))
         [filter-node map-node] (:args comp-node)
-        call (fn [n tail? proc args]
-               (let [line (or (node-line n) 0)]
-                 (register-callsite! line (static-callee (:fn n)) tail?)
-                 (with-site n (emit-call tail? proc args line (node-inline-chain n)))))
+        call emit-transducer-call
         td-filter (plain-call "td-filter" [p])
         td-map (plain-call "td-map" [m])
         ;; The linked comp root is read after evaluating the stages. Build
@@ -1006,10 +1008,12 @@
          " " (call node tail? "jolt-vector-filter-map" [to p m from])
          " " (call node tail? into-proc [to ordinary-xf from]) "))")))
 
+(defn- fuse-transducers? []
+  (and *const-pool* (= :chez (target)) (direct-link?)
+       (not (seed-mint?)) (not (session/debug-locals?))))
+
 (defn- emit-vector-filter-map [node tail?]
-  (when (and (:vector-filter-map node) *const-pool*
-             (= :chez (target)) (direct-link?) (not (seed-mint?))
-             (not (session/debug-locals?)))
+  (when (and (:vector-filter-map node) (fuse-transducers?))
     ;; Three native seed calls hoist their procedure at the enclosing def.
     ;; comp uses its linked Scheme binding and can change while evaluating
     ;; the stage arguments. Leave all other linkage to emit-var-invoke.
@@ -1022,10 +1026,57 @@
         (when-let [operands (transducers/filter-map-operands node)]
           (emit-filter-map-walk node operands compose tail?))))))
 
+(defn- emit-optional-take-walk [node comp-node compose tail?]
+  (let [[dest _ source] (:args node)
+        [map-node choice] (:args comp-node)
+        take-node (:then choice)
+        [to mapper map-xf limit n last-xf stage comp-proc xf from]
+        (repeatedly 10 #(fresh-label "_xf$"))
+        core "clojure.core"
+        into-proc (hoist-seed-root core "into")
+        map-proc (hoist-seed-root core "map")
+        take-proc (hoist-seed-root core "take")
+        call emit-transducer-call
+        ;; #f means unbounded; #t requests ordinary into. Bind the selected
+        ;; stage and limit together so a resumed operand sees its own choice.
+        bindings [[[to] (emit dest)]
+                  [[mapper] (emit (first (:args map-node)))]
+                  [[map-xf] (call map-node false map-proc [mapper])]
+                  [[last-xf limit]
+                   (with-site choice
+                     (str "(if (jolt-truthy? " (emit (:test choice)) ")"
+                          " (let ((" n " " (emit (first (:args take-node))) "))"
+                          " (values " (call take-node false take-proc [n])
+                          " (if (and (eq? " take-proc " jolt-take) (fixnum? " n ")) " n " #t)))"
+                          " (let ((" stage " " (emit (:else choice)) "))"
+                          " (values " stage " (not (eq? " stage " jolt-identity-fn)))))"))]
+                  [[comp-proc] compose]
+                  [[xf] (call comp-node false "jolt-invoke2" [comp-proc map-xf last-xf])]
+                  [[from] (emit source)]]]
+    (str "(let*-values ("
+         (str/join " " (map (fn [[names value]] (str "((" (str/join " " names) ") " value ")")) bindings))
+         ")"
+         " (if (and (eq? " map-proc " jolt-map) (eq? " into-proc " jolt-into)"
+         " (eq? " comp-proc " jolt-vector-filter-map-comp) (not (eq? " limit " #t)))"
+         " " (call node tail? "jolt-iterable-map-take-into" [to xf from mapper limit])
+         " " (call node tail? into-proc [to xf from]) "))")))
+
+(defn- emit-iterable-map-take [node tail?]
+  (when (and (:iterable-map-take node) (fuse-transducers?))
+    (let [core "clojure.core"
+          compose (seed-callable? nil core "comp" 2)]
+      (when (and (string? compose)
+                 (true? (seed-callable? nil core "into" 3))
+                 (true? (seed-callable? nil core "map" 1))
+                 (true? (seed-callable? nil core "take" 1)))
+        (when-let [xf (transducers/map-optional-take node)]
+          (emit-optional-take-walk node xf compose tail?))))))
+
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
     (or (emit-vector-filter-map node tail?)
+      (emit-iterable-map-take node tail?)
       (let [fnode (:fn node)
             arg-nodes (:args node)
             args (mapv emit arg-nodes)

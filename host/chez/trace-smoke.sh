@@ -681,6 +681,42 @@ for mode in fused ordinary; do
   fi
 done
 
+# The iterable pipeline can resume in the mapper, iterator or operand
+# evaluation. Compare completed vectors and the iterator's actual effects.
+cp "$root/test/chez/iterable-transducer-reentry.clj" "$work/src/app/iterablereentry.clj"
+echo "trace smoke: resuming inside a built iterable map/optional-take"
+for mode in ordinary fused; do
+  case "$mode" in
+    ordinary) set -- --opt --no-direct-link; expected_calls=0 ;;
+    fused) set -- --opt; expected_calls=1 ;;
+  esac
+  reentrybin="$work/iterablereentry-$mode"
+  if out_reentry="$(cd "$work" && "$joltabs" build "$@" -m app.iterablereentry -o "$reentrybin" 2>&1)"; then
+    calls="$(grep -hoF '(jolt-iterable-map-take-into ' "$reentrybin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
+    expect_match "built: iterable $mode call count" "$calls" "^$expected_calls\$"
+    for callback in mapper iterator option; do
+      trace="$work/iterablereentry-$mode.$callback"
+      if "$reentrybin" "$callback" >"$trace" 2>&1; then
+        expect_match "built: iterable $mode $callback re-entry" "$(cat "$trace")" "^:$callback "
+        if [ "$mode" = fused ]; then
+          if difference="$(diff -u "$work/iterablereentry-ordinary.$callback" "$trace")"; then
+            pass=$((pass + 1))
+          else
+            printf '  FAIL: iterable %s re-entry differs from ordinary effects\n%s\n' "$callback" "$difference"
+            fails=$((fails + 1))
+          fi
+        fi
+      else
+        printf '  FAIL: iterable %s %s re-entry exited nonzero\n%s\n' "$mode" "$callback" "$(cat "$trace")"
+        fails=$((fails + 1))
+      fi
+    done
+  else
+    printf '  FAIL: iterable %s re-entry build\n%s\n' "$mode" "$out_reentry"
+    fails=$((fails + 1))
+  fi
+done
+
 # The same shape where the callee CANNOT be spliced (^:redef stays var-routed):
 # a real frame, not a reconstructed one. Without this row the block above would
 # pass on a build that had stopped inlining altogether.
