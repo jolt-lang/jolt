@@ -328,6 +328,7 @@ throwable
 timer-at!
 timer-cancel!
 transient-associative?
+try-map-update
 type-satisfies?
 tz-backend
 tz-offset-seconds

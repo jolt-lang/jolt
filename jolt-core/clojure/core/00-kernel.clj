@@ -69,7 +69,11 @@
   ([f c1 c2 c3] (into [] (map f c1 c2 c3)))
   ([f c1 c2 c3 & colls] (into [] (apply map f c1 c2 c3 colls))))
 
-(defn update [m k f & args] (assoc m k (apply f (get m k) args)))
+(defn update [m k f & args]
+  (let [updated (jolt.host/try-map-update m k f args)]
+    (if (nil? updated)
+      (assoc m k (apply f (get m k) args))
+      updated)))
 
 ;; set: build through a transient, like clojure.core. The compiler uses it off
 ;; the emit path (backend bare-native-names, type inference), so unlike boolean it
