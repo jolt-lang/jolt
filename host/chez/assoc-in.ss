@@ -1,5 +1,6 @@
-;; Guarded persistent map path edits. #f means the caller must use the
-;; original assoc-in chain. Nothing before that decision can invoke user code.
+;; Guarded persistent map path edits. #f means a receiver or key failed a
+;; guard. The emitter can send the last good subtree back up the same walk
+;; before resuming ordinary dispatch. The walk itself never invokes user code.
 
 ;; UUID equality and hasheq normally go through the extension registries.
 ;; The native registrants before the UUID handler agree with its comparison
@@ -102,3 +103,7 @@
 
 (define (jolt-assoc-in-map-edit m k edit) (assoc-in-edit m k edit #f))
 (define (jolt-assoc-in-leaf-edit m k v) (assoc-in-edit m k #f v))
+
+;; Match the linked call's dispatch using the root the caller already read.
+(define (jolt-assoc-in-apply proc m path value)
+  (if (procedure? proc) (proc m path value) (jolt-invoke proc m path value)))
