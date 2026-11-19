@@ -359,15 +359,19 @@
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
   rewriting IR. The unit caches only its latest root and record registry
-  snapshot, compared by identity.
+  snapshot, compared by identity. Debug-local frames can publish any live
+  local through a throwable, so instrumented bodies get conservative answers.
   All binding and site paths are relative to this snapshot. Include the
   enclosing fn/let/etc. to resolve its bindings."
   [unit body]
   (let [cache (:body-facts unit)
         shapes (:record-shapes @(:config unit))
         previous @cache]
-    (if (and previous (identical? body (nth previous 0)) (identical? shapes (nth previous 1)))
+    (cond
+      @(:debug-locals? unit) {}
+      (and previous (identical? body (nth previous 0)) (identical? shapes (nth previous 1)))
       (nth previous 2)
+      :else
       (let [classes (reduce (fn [classes shape]
                               (let [class (:type shape)]
                                 ;; Dotted record names can share a runtime class
