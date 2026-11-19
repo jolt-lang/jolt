@@ -806,8 +806,203 @@
     (and (eq? #t (update-fact (loop-facts (shifted-snapshot 4)) direct-edit 'old-retained?))
          (jolt-nil? (loop-update-at (loop-facts (shifted-snapshot 20)) direct-edit))))
 
+(define call-summary-at (var-deref "jolt.passes.facts" "call-summary-at"))
+(define (argument-effects summary i)
+  (jolt-nth (fact-get summary 'arguments) i))
+(define (effects? summary i . effects)
+  (clj= (argument-effects summary i) (apply jolt-hash-set (map fact-kw effects))))
+
+(let* ((source "(fn [x] (let [m {:k x} read-k (fn [a] (:k a))] (read-k m)))")
+       (f (facts-for source)))
+  (ok "a fixed-arity helper reads the caller's map and returns just its field"
+      (and (confined? f map-site)
+           (effects? (call-summary-at f ret-site) 0 'read)
+           (origin? f '(arities 0 body body) 'argument 'arities 0 'params 0)
+           (clj= (ev (string-append "(" source " 42)")) 42))))
+
+;; The same request lookup shape that Ring uses for path-info with a URI fallback.
+(let* ((source "(fn [path uri] (let [request {:path-info path :uri uri}] (letfn [(path-for [r] (or (:path-info r) (:uri r)))] (path-for request))))")
+       (f (facts-for source))
+       (call (in-body 'body 'body)))
+  (ok "a closed request helper reads both fields without exposing the request"
+      (and (confined? f map-site) (effects? (call-summary-at f call) 0 'read)
+           (equal? (ev (string-append "(" source " nil \"/fallback\")")) "/fallback")
+           (equal? (ev (string-append "(" source " \"/path\" \"/fallback\")")) "/path"))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} pass (fn [a] a) r (pass m)] (:k r)))"))
+       (call (in-body 'bindings 2 1)))
+  (ok "returning an argument forwards its original alias"
+      (and (confined? f map-site) (effects? (call-summary-at f call) 0 'return-alias)
+           (clj= (origins-at f call) (origins-at f map-site)))))
+
+(for-each
+  (lambda (pack read-out)
+    (let* ((prefix (string-append "(fn [x] (let [m {:k x} pack " pack " r (pack m)] "))
+           (inside (facts-for (string-append prefix read-out "))")))
+           (outside (facts-for (string-append prefix "r))")))
+           (call (in-body 'bindings 2 1)))
+      (ok (string-append "the result retains its argument until it escapes: " pack)
+          (and (effects? (call-summary-at inside call) 0 'return-contains)
+               (confined? inside map-site) (may-publish? outside map-site)))))
+  '("(fn [a] [a])" "(fn [a] (fn [] a))")
+  '("(:k (nth r 0))" "(:k (r))"))
+
+(ev "(def call-summary-sink (atom nil))")
+(let* ((prefix "(fn [x] (let [m {:k x} pack (fn [a] (fn [] (reset! call-summary-sink a))) run (pack m)] ")
+       (discarded (facts-for (string-append prefix "nil))")))
+       (returned (facts-for (string-append prefix "run))")))
+       (called (facts-for (string-append prefix "(do (run) nil)))")))
+       (call (in-body 'bindings 2 1)))
+  (ok "a returned closure's publication stays latent until it is called or escapes"
+      (and (effects? (call-summary-at discarded call) 0 'return-contains)
+           (confined? discarded map-site)
+           (may-publish? returned map-site) (may-publish? called map-site))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} helper (fn ([a] (:k a)) ([a b] [a b]))] (do (helper m) (helper m x) nil)))"))
+       (one (call-summary-at f (in-body 'body 'statements 0)))
+       (two (call-summary-at f (in-body 'body 'statements 1))))
+  (ok "one closure has independent fixed-arity summaries"
+      (and (confined? f map-site)
+           (= (fact-get one 'arity) 1) (effects? one 0 'read)
+           (= (fact-get two 'arity) 2) (effects? two 0 'return-contains)
+           (effects? two 1 'return-contains))))
+
+(let* ((source "(fn [x] (let [m {:k x} same? (fn [a b] (identical? a b))] (same? m m)))")
+       (f (facts-for source))
+       (s (call-summary-at f ret-site)))
+  (ok "identity observations cross the call without publishing either argument"
+      (and (confined? f map-site) (effects? s 0 'identity) (effects? s 1 'identity)
+           (clj= (observations-at f map-site) (jolt-hash-set (fact-kw 'identity)))
+           (eq? #t (ev (string-append "(" source " 1)"))))))
+
+(ev "(defprotocol CallSummaryProtocol (call-summary-step [receiver a]))")
+(for-each
+  (lambda (action)
+    (let* ((f (facts-for (string-append "(fn [x cb] (let [m {:k x} helper (fn [a] "
+                                       action ")] (do (helper m) nil)))")))
+           (summary (call-summary-at f (in-body 'body 'statements 0))))
+      (ok (string-append "an argument can escape during " action)
+          (and (may-publish? f map-site)
+               (jolt-contains? (argument-effects summary 0) (fact-kw 'publish))
+               (jolt-contains? (argument-effects summary 0) (fact-kw 'unknown))))))
+  '("(reset! call-summary-sink a)" "(.toString a)" "(cb a)" "(call-summary-step cb a)"
+    "(throw a)" "(class a)" "((jolt.ffi/__cfn \"puts\" [:string] :int) a)"))
+
+(let* ((f (facts-for "(fn [x cb] (let [field [x] m {:k field} helper (fn [a] (cb (:k a)))] (helper m)))"))
+       (field (in-body 'bindings 0 1))
+       (map (in-body 'bindings 1 1)))
+  (ok "an opaque callback can publish a field while the helper's map stays confined"
+      (and (confined? f map) (may-publish? f field)
+           (effects? (call-summary-at f ret-site) 0 'read))))
+
+(ev "(deftype CallSummaryLookup [value] clojure.lang.ILookup (valAt [this k] (reset! call-summary-sink this) value) (valAt [this k d] (reset! call-summary-sink this) value))")
+(let* ((source "(fn [receiver] (let [lookup (fn [a] (:k a))] (lookup receiver)))")
+       (f (facts-for source)))
+  (ok "a literal-key helper cannot assume how a custom receiver looks up a key"
+      (and (effects? (call-summary-at f ret-site) 0 'publish 'unknown)
+           (eq? #t (ev (string-append "(let [custom (CallSummaryLookup. :found)] "
+                                      "(and (= :found (" source " custom)) "
+                                      "(identical? custom @call-summary-sink)))"))))))
+
+(let* ((source "(fn [x] (let [m {:k x} fail (fn [a] (throw (ex-info \"stop\" {:value a})))] (try (fail m) (catch Throwable e (:value (ex-data e))))))")
+       (f (facts-for source)))
+  (ok "an argument can reach the caller through a thrown exception"
+      (and (may-publish? f map-site)
+           (clj= (ev (string-append "(" source " 7)")) (ev "{:k 7}")))))
+
+(let ((f (facts-for "(fn [x] (let [m {:k x} inspect (fn [a] (class a))] (inspect m)))")))
+  (ok "a representation observer is carried through its helper"
+      (jolt-contains? (argument-effects (call-summary-at f ret-site) 0)
+                      (fact-kw 'representation))))
+
+(let* ((f (facts-for "(fn [x cb] (let [m {:k x}] (letfn [(apply1 [f a] (f a)) (read-k [a] (:k a))] [(apply1 read-k m) (apply1 cb m)])))"))
+       (inside (in-body 'body 'body 'items 0))
+       (opaque (in-body 'body 'body 'items 1)))
+  (ok "higher-order dispatch uses the supplied closure, with an opaque fallback"
+      (and (effects? (call-summary-at f inside) 1 'read)
+           (effects? (call-summary-at f opaque) 1 'publish 'unknown)
+           (may-publish? f map-site))))
+
+(for-each
+  (lambda (helper)
+    (let* ((f (facts-for (string-append "(fn [x] (let [m {:k x} helper " helper "] (helper m true)))")))
+           (summary (call-summary-at f ret-site)))
+      (ok "a recursive transfer is conservative"
+          (and (may-publish? f map-site)
+               (jolt-contains? (argument-effects summary 0) (fact-kw 'unknown))))))
+  '("(fn self [a again?] (if again? (self a false) (:k a)))"
+    "(fn [a again?] (if again? (recur a false) (:k a)))"))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x}] (letfn [(a [v] (b v)) (b [v] (a v))] (a m))))")))
+  (ok "a mutually recursive cycle does not yield confinement"
+      (and (may-publish? f map-site)
+           (jolt-contains? (argument-effects (call-summary-at f (in-body 'body 'body)) 0)
+                           (fact-kw 'unknown)))))
+
+(let* ((f (facts-for "(fn [x] (let [m {:k x} helper (fn [a] a)] (helper m x)))"))
+       (summary (call-summary-at f ret-site)))
+  (ok "unsupported arities use the conservative path"
+      (and (eq? #f (fact-get summary 'resolved?)) (may-publish? f map-site))))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
+
+(define linked-call-summary (var-deref "jolt.passes.facts" "linked-call-summary"))
+(define set-summary-unit! (var-deref "jolt.backend-scheme" "set-emit-unit!"))
+(define set-summary-link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
+(define reset-summary-links! (var-deref "jolt.backend-scheme" "direct-link-reset!"))
+(ev "(def summary-link (fn* ([a] (:k a)) ([a b] [a b])))")
+(ev "(def ^:redef summary-redef (fn [a] a))")
+(ev "(def ^:dynamic summary-dynamic (fn [a] a))")
+(let* ((previous ((var-deref "jolt.backend-scheme" "current-unit")))
+       (unit ((var-deref "jolt.passes.types" "new-unit")))
+       (revision (fact-ir "(def summary-link (fn* ([a] (:k a)) ([a b] [a b])))"))
+       (source "(fn [x] (let [m {:k x}] (summary-link m)))")
+       (one (fact-ir source))
+       (two (fact-ir "(fn [x] (let [m {:k x}] (summary-link m x)))")))
+  (set-summary-unit! unit)
+  (set-summary-link! #t)
+  (ok "a forward Var reference has no call target from this unit"
+      (jolt-nil? (linked-call-summary unit one ret-site)))
+  (jolt-ce-emit revision)
+  (let ((one-candidate (linked-call-summary unit one ret-site))
+        (two-candidate (linked-call-summary unit two ret-site)))
+    (ok "a linked Var summary is conditional on the exact emitted revision and arity"
+        (and (eq? revision (fact-get one-candidate 'definition))
+             (effects? (fact-get one-candidate 'summary) 0 'read)
+             (effects? (fact-get two-candidate 'summary) 0 'return-contains)
+             (may-publish? (body-facts unit one) map-site)
+             (eq? #f (fact-get (call-summary-at (body-facts unit one) ret-site) 'resolved?)))))
+  (for-each
+    (lambda (name meta)
+      (jolt-ce-emit (fact-ir (string-append "(def ^:" meta " " name " (fn [a] a))")))
+      (let ((ir (fact-ir (string-append "(fn [x] (let [m {:k x}] (" name " m)))"))))
+        (ok (string-append "no linked revision proof for ^:" meta)
+            (and (jolt-nil? (linked-call-summary unit ir ret-site))
+                 (may-publish? (body-facts unit ir) map-site)))))
+    '("summary-redef" "summary-dynamic") '("redef" "dynamic"))
+  (set-summary-link! #f)
+  (ok "the same caller IR loses the linked summary when linkage is off"
+      (jolt-nil? (linked-call-summary unit one ret-site)))
+  (set-summary-link! #t)
+  (reset-summary-links!)
+  (ok "resetting a compilation unit drops its definition revisions"
+      (jolt-nil? (linked-call-summary unit one ret-site)))
+  (let* ((replacement (fact-ir "(def summary-link (fn* ([a] a) ([a b] b)))")))
+    (jolt-ce-emit replacement)
+    (let ((new (linked-call-summary unit one ret-site)))
+      (ok "re-emission replaces the summary for the same caller and Var name"
+          (and (eq? replacement (fact-get new 'definition))
+               (effects? (fact-get new 'summary) 0 'return-alias)))))
+  (set-summary-unit! previous)
+  (ok "ordinary Var calls follow temporary replacements and preserve publication"
+      (clj= (ev (string-append "(with-redefs [summary-link (fn [m] (reset! call-summary-sink m))] "
+                               "(let [result (" source " 9)] (identical? result @call-summary-sink)))"))
+            #t))
+  (ev "(def summary-link (fn [a] (reset! call-summary-sink a)))")
+  (ok "a live redefinition disqualifies the older emitted candidate"
+      (jolt-nil? (linked-call-summary unit one ret-site))))
+
 (ok "ordinary evaluation computes the same fixed-field result"
     (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}")))
 (printf "~a/~a passed~n" (- total fails) total)
