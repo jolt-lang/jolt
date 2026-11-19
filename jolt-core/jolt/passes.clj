@@ -16,7 +16,7 @@
                                site-const-salt form-char? form-literal?]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
-            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
+            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace lower-fixed-map-loops direct-call-edges
                                         begin-growth-budget! end-growth-budget!]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
@@ -218,7 +218,7 @@
                                           (println (str "[inline] " (:ns node) "/" (:name node) " rounds " (inc i))))
                                         n2))))))
         _ (pt :growth (fn [] (end-growth-budget!)))]
-    (infer-optimized unit opt)))
+    (infer-optimized unit (pt :loop-fields (fn [] (lower-fixed-map-loops opt))))))
 
 ;; Inference mode (release/optimize without direct-link): inference without
 ;; the inline fixpoint. Record shape + protocol caches are redefinition-safe.

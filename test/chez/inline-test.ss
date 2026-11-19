@@ -822,8 +822,8 @@
 
 (define direct-loop
   "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m)))) m)))")
-(let* ((ctx (make-analyze-ctx "u"))
-       (ir (jolt-ce-run-passes (jolt-ce-analyze ctx (jolt-ce-read direct-loop)) ctx))
+(let* (;; Query the transfer before the scalar pass consumes it.
+       (ir (fact-ir direct-loop))
        (f (body-facts loop-facts-unit ir))
        (update (loop-update-at f direct-edit)))
   (ok "a linked fixed-key update can reuse storage even when the final map escapes"
@@ -1463,5 +1463,262 @@
 
 (ok "ordinary evaluation computes the same fixed-field result"
     (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}")))
+
+;; Exercise the loop rewrite through analyze, passes, emission and evaluation.
+(define (loop-shape src)
+  (code-part (emitf "u" src)))
+
+(define boxed-loop-divide
+  "(fn [a] (loop* [again true m {:x 0.0 :n 0}]
+             (if again (recur false (assoc m :n 1)) (/ a (:x m)))))")
+(define destructured-loop
+  "(fn [n]
+     (let [{:keys [items schemas]}
+           (loop [i n m {:items [] :schemas []}]
+             (if (zero? i) m (recur (dec i) (update m :items conj i))))]
+       [items schemas]))")
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (ok "a let can rebind the name of a loop result"
+        (clj= (ev "(let* [x (loop* [n 2] (if (pos? n) (recur (dec n)) 12))
+                          x (inc x)]
+                      x)")
+              13))
+    (ok "destructuring a non-map exit uses its original sequence coercion"
+        (clj= (ev "(let [f (fn [stay? other]
+                           (let [{:keys [a b]}
+                                 (loop* [i 0 m {:a 1 :b 2}]
+                                   (if (zero? i) (recur 1 (assoc m :a 3))
+                                     (if stay? m other)))]
+                             [a b]))]
+                     [(f true nil) (f false (list :a 7 :b 8)) (f false nil) (f false 6)])")
+              (ev "[[3 2] [7 8] [nil nil] [nil nil]]")))
+    (ok "an update replacement can return a sequence to the destructurer"
+        (clj= (ev (string-append "(let [f " destructured-loop "]
+                      (with-redefs [clojure.core/update (fn [& _] (list :items [7] :schemas [8]))]
+                        (f 2)))"))
+              (ev "[[7] [8]]")))
+    (ok "fallback lookup order and exceptions protect the consumer"
+        (clj= (ev "(let [seen (atom [])
+                         error (ex-info \"lookup\" {})
+                         other (reify clojure.lang.ILookup
+                                 (valAt [_ k] (swap! seen conj k)
+                                   (if (= k :a) 1 (throw error))))]
+                     (try
+                       (let [{:keys [a b]}
+                             (loop* [i 0 m {:a 1 :b 2}]
+                               (if (zero? i) (recur 1 (assoc m :a 3))
+                                 (if (= i 2) m (do (swap! seen conj :exit) other))))]
+                         (swap! seen conj :consumer)
+                         [a b])
+                       (catch Throwable t [(identical? t error) @seen])))")
+              (ev "[true [:exit :a :b]]")))
+    (ok "destructuring with :as receives the unchanged seed object"
+        (eq? #t (ev "(let [seed {:a 1 :b 2}
+                            {:keys [a b] :as out}
+                            (loop* [i 0 m seed]
+                              (if (zero? i) m (recur (dec i) (assoc m :a 3))))]
+                        (and (identical? seed out) (= [1 2] [a b])))")))
+    (ok "a consumer recur still targets the enclosing loop"
+        (let ((src "(loop* [i 0 total {:x 1}]
+                       (let [{:keys [a b]}
+                             (loop* [j 0 m {:a 1 :b 2}]
+                               (if (zero? j) (recur 1 (assoc m :a 3)) m))]
+                         (if (= i 2) (:x total)
+                           (recur (inc i) (assoc total :x (+ (:x total) a b))))))"))
+          (and (eq? (not enabled) (has? (loop-shape src) "(jolt-assoc3 "))
+               (clj= (ev src) 11))))
+    (ok "a default expression still runs when the field is present"
+        (eq? #t (ev "(let [error (ex-info \"default\" {})]
+                        (try
+                          (let [{:keys [a b] :or {a (throw error)}}
+                                (loop* [i 0 m {:a 1 :b 2}]
+                                  (if (zero? i) (recur 1 (assoc m :a 3)) m))]
+                            [a b])
+                          (catch Throwable t (identical? t error))))")))
+    (ok "a destructurer compiled with a nonstandard seed predicate still calls it"
+        (clj= (ev (string-append "(let [standard seq?
+                                        seen (atom [])
+                                        f (with-redefs [clojure.core/seq?
+                                                        (fn [x]
+                                                          (when (and (map? x) (contains? x :items)
+                                                                     (contains? x :schemas))
+                                                            (swap! seen conj x))
+                                                          (standard x))]
+                                            (eval '" destructured-loop "))]
+                                    [(f 1) @seen])"))
+              (ev (if enabled "[[[1] []] [{:items [1] :schemas []}]]" "[[[1] []] []]")))))
+  '(#f #t))
+
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let ((s (loop-shape direct-loop)))
+      (ok "scalar loop carries the field and keeps the final array map"
+          (and (eq? (not enabled) (has? s "(jolt-assoc3 "))
+               (has? s "(amap-slots->pmap "))))
+    (ok "zero and no-op iterations preserve the seed; changing it and back creates a fresh map"
+        (eq? #t (ev "(let [f (fn [n forced]
+                              (let [seed {:a :initial :b 2}
+                                    out (loop [m seed i n]
+                                          (if (zero? i) m
+                                            (recur (assoc m :a (if (and forced (= i 2))
+                                                                 :different :initial))
+                                                   (dec i))))]
+                                [(identical? seed out) (= (vec seed) (vec out))
+                                 (= (class seed) (class out))]))]
+                        (= [[true true true] [true true true] [false true true]]
+                           [(f 0 true) (f 2 false) (f 2 true)]))")))
+    (ok "branch-dependent writes preserve old values and simultaneous recur order"
+        (clj= (ev "(let [events (atom [])
+                         ans (loop [a 0 m {:x 1 :y 0} b 0]
+                               (if (< a 2)
+                                 (recur (do (swap! events conj [:first (:x m)]) (inc a))
+                                        (assoc (assoc m :x (if (zero? a) 7 9))
+                                               :y (do (swap! events conj [:field (:x m)]) (:x m)))
+                                        (do (swap! events conj [:last (:x m)]) (:x m)))
+                                 [(:x m) (:y m) b]))]
+                     [ans @events])")
+              (ev "[[9 7 7] [[:first 1] [:field 1] [:last 1]
+                                       [:first 7] [:field 7] [:last 7]]]")))
+    (ok "throwing field expression short-circuits the following recur operand"
+        (clj= (ev "(let [events (atom []) problem (ex-info \"stop\" {})]
+                     (try
+                       (loop [a 0 m {:k a} b 0]
+                         (if (zero? a)
+                           (recur (do (swap! events conj :first) 1)
+                                  (assoc m :k (do (swap! events conj :field) (throw problem)))
+                                  (do (swap! events conj :last) 1))
+                           (:k m)))
+                       (catch Throwable e [(identical? e problem) @events])))")
+              (ev "[true [:first :field]]")))
+    (let ((src "(fn [x] (:k (loop [m {:k x} n 2]
+                              (if (zero? n) m (recur (assoc m :k (inc (:k m))) (dec n))))))"))
+      (ok "a direct consumer gets the field at loop exit"
+          (and (eq? (not enabled) (has? (loop-shape src) "(jolt-assoc3 "))
+               (clj= (ev (string-append "(" src " 5)")) 7))))
+    (ok "a projected flonum still participates in boxed division"
+        (clj= (ev (string-append "(try (" boxed-loop-divide
+                                 " 1.0) (catch ArithmeticException _ :arithmetic))"))
+              (ev ":arithmetic")))
+    (ok "a projected get remains boxed through an alias and another arithmetic call"
+        (clj= (ev "(let [f (fn [a]
+                           (loop* [again true m {:x 0.0}]
+                             (if again (recur false (assoc m :x 0.0))
+                               (let [x (get m :x)] (/ a (+ x 0.0))))))]
+                     (try (f 1.0) (catch ArithmeticException _ :arithmetic)))")
+              (ev ":arithmetic")))
+    (ok "an explicit double cast of a projected field keeps primitive division"
+        (clj= (ev "(let [f (fn [a]
+                           (loop* [again true m {:x 0.0}]
+                             (if again (recur false (assoc m :x 0.0))
+                               (/ a (double (:x m))))))]
+                     (f 1.0))")
+              (ev "##Inf")))
+    (ok "a boxed map read truncates before the byte range check"
+        (clj= (ev "(loop* [again true m {:x 127.5}]
+                     (if again (recur false (assoc m :x 127.5)) (byte (:x m))))")
+              127))
+    (ok "destructured loop exits bind multiple fields directly when optimized"
+        (and (eq? enabled (has? (loop-shape destructured-loop) "(let-values "))
+             (clj= (ev (string-append "(" destructured-loop " 2)"))
+                   (ev "[[2 1] []]")))))
+  '(#f #t))
+
+(for-each
+  (lambda (case)
+    (let ((src (cadr case)))
+      (ok (car case)
+          (and (has? (loop-shape src) "(jolt-assoc3 ")
+               (clj= (ev src) (ev (caddr case)))))))
+  '(("a prior version carried alongside the loop state stays persistent"
+     "(loop [m {:k 0} i 0 prev nil]
+        (if (< i 2) (recur (assoc m :k (inc i)) (inc i) m) [m prev]))"
+     "[{:k 2} {:k 1}]")
+    ("a closure capturing the loop state sees its original snapshot"
+     "(loop [m {:k 0} i 0 prior nil]
+        (if (< i 2) (recur (assoc m :k (inc i)) (inc i) #(:k m)) [(:k m) (prior)]))"
+     "[2 1]")
+    ("adding a key keeps ordinary recurrence"
+     "(loop [m {:k 0} i 0]
+        (if (zero? i) (recur (assoc m :extra 2) (inc i)) m))"
+     "{:k 0 :extra 2}")
+    ("a dynamic receiver use inside the loop keeps ordinary recurrence"
+     "(let [f (fn [m k] (m k))]
+        (loop [m {:k 0} i 0]
+          (if (< i 2) (do (f m :k) (recur (assoc m :k (inc i)) (inc i))) m)))"
+     "{:k 2}")))
+
+(let ((debug! (var-deref "jolt.backend-scheme" "set-debug-locals!")))
+  (debug! #t)
+  (ok "debug frames keep the source accumulator"
+      (has? (loop-shape direct-loop) "(jolt-assoc3 "))
+  (debug! #f))
+
+(define guarded-counter
+  "(defn guarded-counter [change]
+     (loop [i 0 m {:count 0 :items []}]
+       (if (= i 2) m
+         (recur (inc i)
+                (let [m (update m :count inc)]
+                  (update m :items conj (change i)))))))")
+(ok "linked update checks the operation-time callee after its operands"
+    (has? (loop-shape guarded-counter) "jolt-loop-map-update"))
+(ev guarded-counter)
+(ok "an update rebound midway through recur sees the current map and can return nil"
+    (clj= (ev "(let [original update seen (atom [])
+                     replacement (fn [m k f & args]
+                                   (swap! seen conj [m k (vec args)])
+                                   nil)]
+                 (try
+                   (let [answer (guarded-counter
+                                  (fn [i]
+                                    (when (zero? i)
+                                      (alter-var-root #'clojure.core/update (constantly replacement)))
+                                    i))]
+                     [answer @seen])
+                   (finally (alter-var-root #'clojure.core/update (constantly original)))))")
+          (ev "[nil [[{:count 1 :items []} :items [0]] [nil :count []] [nil :items [1]]]]")))
+(ev "(defmulti loop-map-edit (fn [& args] (count args)))")
+(ev "(defmethod loop-map-edit 3 [m k f] (assoc m k 20))")
+(ev "(defmethod loop-map-edit 4 [m k f v] (assoc m k [v]))")
+(ok "an invokable replacement for update keeps ordinary linked dispatch"
+    (clj= (ev "(with-redefs [clojure.core/update loop-map-edit] (guarded-counter identity))")
+          (ev "{:count 20 :items [1]}")))
+(ok "a replacement for update's host helper is also observable"
+    (clj= (ev "(with-redefs [jolt.host/try-map-update (fn [m k f args] (assoc m k :custom))]
+                 (guarded-counter identity))")
+          (ev "{:count :custom :items :custom}")))
+
+;; Resume once before a write and once after it. A write that runs a second
+;; time creates a different map, while a repeated exit from one write returns
+;; the very same map. Keep the continuation in Scheme so it can be re-entered.
+(define continuation-loop
+  "(fn [done?]
+     (loop [i 0 m {:k 0}]
+       (if (done? i) m (recur (inc i) (assoc m :k (inc (:k m)))))))")
+(define (loop-reentry f capture-at)
+  (let ((saved #f) (first-map #f))
+    (let* ((done? (lambda (i)
+                    (if (= i capture-at)
+                        (call/cc (lambda (k) (set! saved k) (= i 1)))
+                        (= i 1))))
+           (result (jolt-invoke1 f done?)))
+      (if first-map
+          (and (clj= result first-map) (eq? (eq? result first-map) (= capture-at 1)))
+          (begin (set! first-map result) (saved (= capture-at 1)))))))
+(for-each
+  (lambda (enabled)
+    (set-optimize! enabled)
+    (set-direct-link-flag! enabled)
+    (let ((f (ev continuation-loop)))
+      (ok "continuation reentry before a write makes a fresh version" (loop-reentry f 0))
+      (ok "continuation reentry after a write returns the same version" (loop-reentry f 1))))
+  '(#f #t))
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
