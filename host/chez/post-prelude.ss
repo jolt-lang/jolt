@@ -7,6 +7,12 @@
   (let ((cell (var-cell-lookup "clojure.core" "comp")))
     (and cell (var-cell-root cell))))
 
+;; Linked references follow changes to the root. The assoc-in emitter compares
+;; that live procedure with this one before entering the guarded rebuild.
+(define jolt-assoc-in-original
+  (let ((cell (var-cell-lookup "clojure.core" "assoc-in")))
+    (and cell (var-cell-root cell))))
+
 ;; Guard the linked root read at each scalar update site and the helper its
 ;; standard body resolves dynamically. Read the helper's cell only on a root hit.
 (define jolt-loop-map-update?
