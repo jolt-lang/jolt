@@ -648,6 +648,12 @@
   [unit]
   (or @(:direct-link? unit) (host/inline-enabled? nil)))
 
+(defn linked-cell-eligible?
+  "A build can use its emitted binding. Per-form compilation also needs the
+  current Var cell to be linked to that binding."
+  [unit ns nm]
+  (or @(:direct-link? unit) (some? (host/var-linked? nil ns nm))))
+
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
   rewriting IR. The unit caches only its latest root, record registry
@@ -761,6 +767,7 @@
                  (not (or (:proto call) (:devirt-type call) (:prim-op call)))
                  (contains? @(:direct-link-defined unit) key)
                  (contains? @(:direct-link-fns unit) key)
+                 (linked-cell-eligible? unit ns name)
                  (not (host/var-redefined? nil ns name))
                  (not (host/var-dynamic? nil ns name))
                  (not (ir/closed-world-opt-out? (some-> (find-var (symbol ns name)) meta)))
