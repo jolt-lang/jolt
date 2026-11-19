@@ -75,6 +75,34 @@ check in4 "$(run '(let [b (char-array 64) n (.read *in* b 0 64)] (println (pr-st
 cd
 ')" "\"ab\\ncd|\""
 
+# A read of *in* takes what has arrived, so a message with no newline after it
+# reaches the program while the pipe is still open (an LSP body is one). The
+# writer below holds the pipe open until the program leaves a mark, then sends
+# the optional tail and closes; a read that waited for a line end or EOF only
+# returns once the writer gives up, after "LATE" lands in the input. The writer
+# waits up to 120 s: a passing row ends as soon as the mark appears, and a
+# loaded Termux runner can take 10 s just to start jolt.
+held() {
+  hmark="$(mktemp -d)/mark"
+  { printf '%s' "$2"
+    i=0; while [ ! -e "$hmark" ] && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i+1)); done
+    if [ -e "$hmark" ]; then printf '%s' "${3:-}"; else printf 'LATE\n'; fi
+  } | JOLT_QUIET=1 HELD_MARK="$hmark" "$jolt" -e "$1" 2>/dev/null | tail -1
+  rm -rf "$(dirname "$hmark")"
+}
+mark='(spit (System/getenv "HELD_MARK") "")'
+check held1 "$(held "(let [c (.read *in*)] $mark (println (pr-str [c (read-line)])))" 'x')" "[120 nil]"
+check held2 "$(held "(let [b (char-array 64) n (.read *in* b 0 64)] $mark (println (pr-str [n (String. b 0 n) (read-line)])))" 'hello')" "[5 \"hello\" nil]"
+check held3 "$(held "(do (Thread/sleep 300) (let [r (.ready *in*)] $mark (println (pr-str [r (read-line)]))))" 'abc')" "[true \"abc\"]"
+# read-line after a character read waits for the rest of that line
+check held4 "$(held "(let [c (.read *in*)] $mark (println (pr-str [c (read-line) (read-line)])))" 'ab' 'cd
+ef
+')" "[97 \"bcd\" \"ef\"]"
+# a form read after a character read waits for the rest of its line, so a
+# token the chunk cut off reads whole
+check held5 "$(held "(let [c (.read *in*)] (.unread *in* c) $mark (println (pr-str (read))))" 'ab' 'c
+')" "abc"
+
 # --- (e) io/copy System/in -> System/out (the babashka.process wd.clj echo) ---
 check e "$(run '(clojure.java.io/copy System/in System/out) (flush)' 'echoed')" "echoed"
 

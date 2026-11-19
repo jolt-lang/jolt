@@ -1951,6 +1951,65 @@
           (stdin-line-from-port v (in-stream-port v))
           (stdin-line-from-stream v)))))
 
+;; The characters of System/in that have already arrived, for a .read of *in*:
+;; the first one waits as a read does, then the rest come while the port says
+;; more is there without blocking. nil at end of input. It stops after the first
+;; line end, as __stdin-read-line does, so it never takes bytes past the line it
+;; is in and (.read System/in) after it still answers the next byte. A line end
+;; comes back as \n: \r\n and a lone \r are \n here, which is what the line
+;; seam hands *in* too, and a \r leaves stdin-pending-lf owed the same way.
+;; A character split across reads is finished before returning, so the decode
+;; never sees half of one. A stream System/setIn was handed reads one character,
+;; since it has no way to say more is there.
+(define stdin-chunk-cap 8192)
+(define (utf8-lead-len b)
+  (cond ((fx<? b #x80) 1)
+        ((fx=? (fxand b #xe0) #xc0) 2)
+        ((fx=? (fxand b #xf0) #xe0) 3)
+        ((fx=? (fxand b #xf8) #xf0) 4)
+        (else 1)))
+(define (stdin-chunk v get ready? crlf!)
+  (let ((buf (make-bytevector stdin-chunk-cap)))
+    (let loop ((b (stdin-first-byte v get)) (i 0) (need 0))
+      (cond
+        ((eof-object? b) (if (fx=? i 0) jolt-nil (stdin-line-string buf i)))
+        ((and (fx=? need 0) (or (fx=? b 10) (fx=? b 13)))
+         (when (fx=? b 13) (crlf!))
+         (bytevector-u8-set! buf i 10)
+         (stdin-line-string buf (fx+ i 1)))
+        (else
+          (bytevector-u8-set! buf i b)
+          (let ((i (fx+ i 1))
+                (need (if (fx>? need 0) (fx- need 1) (fx- (utf8-lead-len b) 1))))
+            (if (or (fx>? need 0)
+                    (and (fx<? i (fx- stdin-chunk-cap 4)) (ready?)))
+                (loop (get) i need)
+                (stdin-line-string buf i))))))))
+(def-var! "clojure.core" "__stdin-read-chunk"
+  (lambda ()
+    (let ((v (vector-ref stdin-cell 0)))
+      (if (in-stream? v)
+          (let ((port (in-stream-port v)))
+            (jolt-stdin-wait-ready! port)
+            (stdin-chunk v (lambda () (get-u8 port))
+                         (lambda () (and (unbox jolt-stdin-poll-ok)
+                                         (eq? (unbox jolt-stdin-poll-port) port)
+                                         (input-port-ready? port)))
+                         (lambda () (stdin-take-crlf! v port))))
+          (stdin-chunk v (lambda () (stream-read-byte v))
+                       (lambda () #f)
+                       (lambda () (set-box! stdin-pending-lf v)))))))
+
+;; Whether System/in has input a read would take without waiting: what .ready
+;; on *in* answers once *in*'s own buffer is empty. A stream System/setIn was
+;; handed, or a port that cannot say, answers false, as a Reader may.
+(def-var! "clojure.core" "__stdin-ready?"
+  (lambda ()
+    (let ((v (vector-ref stdin-cell 0)))
+      (and (in-stream? v)
+           (let ((port (in-stream-port v)))
+             (guard (_ (#t #f)) (input-port-ready? port)))))))
+
 ;; --- System/console: java.io.Console ------------------------------------------
 ;; The JVM hands out a Console only when standard input AND standard output are
 ;; both terminals, and nil otherwise; stderr does not enter into it (measured on

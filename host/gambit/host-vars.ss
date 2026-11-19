@@ -56,6 +56,16 @@
     (let ((l (read-line)))
       (if (eof-object? l) jolt-nil l))))
 
+;; One character, or nil at end of input: what has arrived, as a .read of *in*
+;; wants it (the Chez seam takes every character already there).
+(def-var! "clojure.core" "__stdin-read-chunk"
+  (lambda args
+    (let ((c (read-char)))
+      (if (eof-object? c) jolt-nil (string c)))))
+
+(def-var! "clojure.core" "__stdin-ready?"
+  (lambda args (char-ready?)))
+
 ;; ---- file IO: real on gsi ---------------------------------------------------
 ;; These work wherever the host has a filesystem. Under the js target the open
 ;; fails and Gambit's own error surfaces with its message intact (the condition
