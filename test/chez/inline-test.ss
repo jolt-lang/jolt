@@ -80,6 +80,113 @@
 (set-optimize! #t)
 (set-direct-link-flag! #t)
 
+(define assoc-in-pair
+  "(defn sibling-edits [m k a b] (-> m (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))")
+(let ((e (code-part (emitf "u" assoc-in-pair))))
+  (ok "assoc-in chain emits guards and ordered sibling writes"
+      (and (has? e "jolt-assoc-in-original") (has? e "(jolt-assoc-in-map-edit ")
+           (has? e "(jolt-assoc-in-leaf-edit ") (has? e "jv$clojure.core/assoc-in"))))
+(for-each
+  (lambda (form)
+    (ok (string-append "ordinary assoc-in emission: " form)
+        (not (has? (code-part (emitf "u" form)) "(jolt-assoc-in-map-edit "))))
+  '("(defn no-edit [assoc-in m k a b] (-> m (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root k] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root (k) :a] a) (assoc-in [:root (k) :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root k :a] (a)) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> (m) (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (assoc-in (let [k :other] (assoc-in m [:root k :a] a)) [:root k :b] b))"))
+(set-direct-link-flag! #f)
+(ok "dynamic calls keep ordinary assoc-in dispatch"
+    (not (has? (code-part (emitf "u" assoc-in-pair)) "(jolt-assoc-in-map-edit ")))
+(set-direct-link-flag! #t)
+(ev assoc-in-pair)
+(ev "(defrecord EditRecord [root])")
+(ok "assoc-in keeps nil and missing, native and record paths, and retained versions"
+    (ev "(let [ordinary (var-get #'clojure.core/assoc-in)
+               k (symbol \"namespace\") leaf (with-meta (hash-map :b 9) {:leaf true})
+               root (with-meta {:root {k leaf}} {:root true})]
+           (and (every? (fn [m]
+                          (= (sibling-edits m k nil false)
+                             (ordinary (ordinary m [:root k :a] nil) [:root k :b] false)))
+                        [nil {} {:root nil} {:root {k nil}} root (->EditRecord {k leaf})])
+                (= (sibling-edits nil nil 1 2) {:root {nil {:a 1 :b 2}}})
+                (= 9 (get-in root [:root k :b]))
+                (= {:root true} (meta (sibling-edits root k 1 2)))
+                (= {:leaf true} (meta (get-in (sibling-edits root k 1 2) [:root k])))
+                (= (class leaf) (class (get-in (sibling-edits root k 1 2) [:root k])))))"))
+(ok "assoc-in compares no-op identity without canonicalizing canceled edits"
+    (ev "(let [old (with-meta {:p {:x :old}} {:retained true})
+               same (-> old (assoc-in [:p :x] :old) (assoc-in [:p :x] :old))
+               changed (-> old (assoc-in [:p :x] :new) (assoc-in [:p :x] :old))]
+           (and (identical? old same) (= old changed)
+                (not (identical? old changed))
+                (not (identical? (:p old) (:p changed)))))"))
+(ok "assoc-in fallback preserves an earlier bad receiver and operand order"
+    (ev "(let [seen (atom []) note (fn [k v] (swap! seen conj k) v)
+               run (fn [f] (try [(f)] (catch Throwable e [(class e) (.getMessage e)])))
+               invalid {:root {:bad 1}}
+               generic (var-get #'clojure.core/assoc-in)]
+           (and (= (run #(sibling-edits invalid :bad 1 2))
+                   (run #(generic (generic invalid [:root :bad :a] 1) [:root :bad :b] 2)))
+                (not= [:returned]
+                      (run #(do (-> (note :m invalid)
+                                    (assoc-in [:root (note :key :bad) :a] (note :value 1))
+                                    (assoc-in [:root (note :later-key :bad) :b] (note :later-value 2)))
+                                :returned)))
+                (= [:m :key :value] @seen)))"))
+(ok "assoc-in follows successive live core roots after a redefinition"
+    (ev "(let [seen (atom [])
+               next (fn [m path v] (swap! seen conj :next) (assoc m (peek path) v))
+               init (fn [m path v] (swap! seen conj :init)
+                      (alter-var-root #'clojure.core/assoc-in (constantly next))
+                      (assoc m (peek path) v))]
+           (with-redefs [clojure.core/assoc-in init]
+             (and (= {:a 1 :b 2} (sibling-edits {} :shape 1 2))
+                  (= [:init :next] @seen))))"))
+(let ((original jolt-eq-arms) (observed 0))
+  (dynamic-wind
+    (lambda ()
+      (register-eq-arm!
+        (lambda (a b) (when (and (juuid? a) (juuid? b)) (set! observed (+ observed 1))) #f)
+        (lambda (a b) #f)))
+    (lambda ()
+      (ok "a UUID equality extension keeps its original calls"
+          (ev "(defn uuid-edit-probe [mode]
+                 (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+                       k (parse-uuid (str stored)) m {:root {stored {}}}
+                       generic (var-get #'clojure.core/assoc-in)]
+                   (= {:a 1 :b 2}
+                      (get-in (if mode (sibling-edits m k 1 2)
+                                  (generic (generic m [:root k :a] 1) [:root k :b] 2))
+                              [:root k]))))"))
+      (set! observed 0)
+      (let* ((generic (ev "(uuid-edit-probe false)")) (expected observed))
+        (set! observed 0)
+        (ok "the guard does no speculative equality calls"
+            (and (ev "(uuid-edit-probe true)") generic (positive? expected) (= expected observed)))))
+    (lambda () (set! jolt-eq-arms original))))
+
+(ev "(defn alias-edit-probe [a base-lang lang ns-sym alias-sym target]
+       (swap! a (fn [n] (-> n
+                          (assoc-in [base-lang lang ns-sym :qualify-ns alias-sym] target)
+                          (assoc-in [base-lang lang ns-sym :aliases alias-sym] target)))))")
+(ok "assoc-in alias callback re-reads the current maps after a failed CAS"
+    (ev "(let [path [:cljc :clj 'demo] a (atom (assoc-in {} path {:version :old}))
+               changed (atom false) seen (atom [])]
+           (set-validator! a
+             (fn [proposed]
+               (let [slot (get-in proposed path)]
+                 (when (:aliases slot)
+                   (swap! seen conj (:version slot))
+                   (when (compare-and-set! changed false true)
+                     (reset! a (assoc-in {} path {:version :new :kept true})))))
+               true))
+           (alias-edit-probe a :cljc :clj 'demo 'str 'clojure.string)
+           (and (= [:old :new] @seen)
+                (= {:version :new :kept true :qualify-ns {'str 'clojure.string}
+                    :aliases {'str 'clojure.string}} (get-in @a path))))"))
+
 ;; One public site accepts both bounded native vector leaves and generic
 ;; sources. Check the executable form, since the preamble quotes the input.
 (define widths-form

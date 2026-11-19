@@ -3849,6 +3849,9 @@
 (load "host/chez/java/image-codecs.ss")         ; how the host's values travel in an image
 (load "host/chez/state-image.ss")
 
+;; Guarded path edits emitted by the Chez backend.
+(load "host/chez/assoc-in.ss")
+
 ;; The stall watch (see "a stalled collection says so" above): after every
 ;; load, so a rendezvous that times out finds the reporter's dependencies.
 (jolt-gc-stall-setup!)
