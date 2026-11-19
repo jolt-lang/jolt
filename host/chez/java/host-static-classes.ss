@@ -3794,6 +3794,18 @@
     (let loop ((i f) (xs (list-sort less? items)))
       (if (null? xs) jolt-nil
           (begin (ja-set! a i (car xs)) (loop (fx+ i 1) (cdr xs)))))))
+;; Arrays.fill(a, [from, to,] v): the value narrowed to the element kind, and a
+;; typed reference array checks it against its component class once — the JVM
+;; stores it slot by slot, so a refused value leaves every slot as it was, and an
+;; empty range stores nothing and refuses nothing.
+(define (arrays-fill! a f t v)
+  (let* ((kind (jolt-array-kind a)) (v (na-elem-of kind v)))
+    (when (and (string? kind) (< f t)) (na-ref-store-check! a f kind v))
+    (do ((i f (fx+ i 1))) ((fx>=? i t) jolt-nil) (ja-set! a i v))))
+;; Arrays.rangeCheck's out-of-range index.
+(define (arrays-range-throw i)
+  (throw-jvm 'ArrayIndexOutOfBoundsException
+             (string-append "Array index out of range: " (number->string i))))
 (define arrays-sort
   (case-lambda
     ((a) (arrays-sort! a 0 #f jolt-compare))
@@ -3806,9 +3818,17 @@
                           (cond ((and (jolt-nil? a) (jolt-nil? b)) #t)
                                 ((or (jolt-nil? a) (jolt-nil? b)) #f)
                                 (else (ja-equal? a b)))))
-         (cons "fill" (lambda (a v)
-                        (let ((n (ja-len a)) (v (na-elem-of (jolt-array-kind a) v)))
-                          (do ((i 0 (fx+ i 1))) ((fx=? i n) jolt-nil) (ja-set! a i v)))))
+         (cons "fill" (case-lambda
+                        ((a v) (arrays-fill! a 0 (ja-len a) v))
+                        ((a from to v)
+                         (let ((f (jnum->exact from)) (t (jnum->exact to)))
+                           (cond ((> f t)
+                                  (throw-jvm 'IllegalArgumentException
+                                             (string-append "fromIndex(" (number->string f)
+                                                            ") > toIndex(" (number->string t) ")")))
+                                 ((< f 0) (arrays-range-throw f))
+                                 ((> t (ja-len a)) (arrays-range-throw t)))
+                           (arrays-fill! a f t v)))))
          ;; The tail past the source is the element kind's ZERO — nil in a
          ;; reference array, #\nul in a char[], false in a boolean[] — not the 0
          ;; every kind used to get regardless.

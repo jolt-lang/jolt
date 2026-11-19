@@ -159,8 +159,11 @@
     (and (= n 2) (contains? #{"quot" "rem" "mod"} nm)) :long
     ;; the -int family: an int-range integer for any operands
     (and (= n 2) (contains? #{"unchecked-add-int" "unchecked-subtract-int" "unchecked-multiply-int"
-                              "unchecked-divide-int" "unchecked-remainder-int"} nm)) :long
-    (and (= n 1) (contains? #{"unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"} nm)) :long
+                              "unchecked-divide-int" "unchecked-remainder-int"
+                              "__unchecked-add-int" "__unchecked-subtract-int" "__unchecked-multiply-int"
+                              "__unchecked-divide-int" "__unchecked-remainder-int"} nm)) :long
+    (and (= n 1) (contains? #{"unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"
+                              "__unchecked-inc-int" "__unchecked-dec-int" "__unchecked-negate-int"} nm)) :long
     (and (>= n 2) (contains? #{"<" ">" "<=" ">=" "=" "=="} nm)) :bool
     :else nil))
 

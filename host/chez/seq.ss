@@ -1041,14 +1041,26 @@
 ;; A numeric shim (java/bigdec.ss) set!-extends them; the base case is the JVM's:
 ;; not a number -> ClassCastException. The hooks are BINARY and never re-enter
 ;; the variadic shims, so extension order can't recurse.
-(define (jolt-add-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
-(define (jolt-sub-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
-(define (jolt-mul-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
-(define (jolt-div-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+;;
+;; WHICH operand is named follows the reference's order of operations.
+;; Numbers.add/minus/multiply and the comparisons are
+;; ops(x).combine(ops(y)).op(x, y): ops() calls getClass() on both operands
+;; before anything casts one, so a nil ANYWHERE is the NullPointerException
+;; ((+ "a" nil) included), and only then is the first non-number the
+;; ClassCastException. divide/quotient/remainder look at the divisor first,
+;; ops(y) and a (Number) cast for the zero test, then ops(x): so (/ nil "a") is
+;; the ClassCastException and (/ "a" nil) the NullPointerException.
+(define (jolt-num2-throw a b)
+  (jolt-num-cast-throw (cond ((jolt-nil? a) a) ((jolt-nil? b) b) ((number? a) b) (else a))))
+(define (jolt-num2-throw-divisor-first a b)
+  (jolt-num-cast-throw (if (number? b) a b)))
+(define (jolt-add-slow a b) (jolt-num2-throw a b))
+(define (jolt-sub-slow a b) (jolt-num2-throw a b))
+(define (jolt-mul-slow a b) (jolt-num2-throw a b))
+(define (jolt-div-slow a b) (jolt-num2-throw-divisor-first a b))
 ;; comparison of operands outside the Chez tower: numeric shims extend this to a
 ;; 3-way compare; anything left over is not a number.
-(define (jolt-num-cmp-slow a b)
-  (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-num-cmp-slow a b) (jolt-num2-throw a b))
 
 ;; A Float (a jfloat) meeting a double or another Float is double arithmetic,
 ;; as on the JVM, so it is answered here: through the slow hooks it cost a
@@ -1124,9 +1136,9 @@
 ;; sign). A zero divisor throws ArithmeticException in both worlds (JVM double
 ;; quot/rem check the divisor before dividing). Non-tower operands hit the
 ;; set!-extensible slow hooks.
-(define (jolt-quot-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
-(define (jolt-rem-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
-(define (jolt-mod-slow a b) (jolt-num-cast-throw (if (number? a) b a)))
+(define (jolt-quot-slow a b) (jolt-num2-throw-divisor-first a b))
+(define (jolt-rem-slow a b) (jolt-num2-throw-divisor-first a b))
+(define (jolt-mod-slow a b) (jolt-num2-throw-divisor-first a b))
 (define (jolt-quot a b)
   (cond ((not (and (number? a) (number? b))) (jolt-quot-slow a b))
         ((or (flonum? a) (flonum? b))
@@ -1392,14 +1404,29 @@
           x
           (let ((m (bitwise-and (if (and (number? x) (exact? x) (integer? x)) x (exact (floor x))) unc-mask64)))
             (if (>= m unc-2^63) (- m unc-2^64) m)))))
-;; unchecked-* only WRAP integer (long) math; on a flonum OR ratio operand they
-;; are an ordinary numeric op, since *unchecked-math* never wraps a non-long —
-;; Clojure's unchecked-add falls back to regular arithmetic for non-primitives:
-;; (unchecked-multiply 1.5 2.0) => 3.0, (unchecked-add 2/3 2/3) => 4/3, not a
-;; truncated long. (test.check's rand-double is (* double-unit shifted), and
-;; gen/ratio sums ratios, both under *unchecked-math*.) Wrap iff both are exact
-;; integers.
-(define (unc-int? x) (or (fixnum? x) (and (exact? x) (integer? x))))
+;; unchecked-* only WRAP long/long math. On the JVM they are Numbers.unchecked_*
+;; over Objects, which dispatch by operand category like + does: a Long pair
+;; wraps at 64 bits, and anything else is the ordinary op of the wider
+;; category. A BigInt operand gives a BigInt ((unchecked-add 9223372036854775808N
+;; 1) is 9223372036854775809N, not a wrapped long), a BigDecimal a BigDecimal,
+;; a double or Float a double, a ratio a ratio. test.check's rand-double and
+;; gen/ratio lean on the double and ratio arms under *unchecked-math*.
+;;
+;; jolt has one exact integer type and classes an exact integer by its range
+;; (protocols.ss): inside signed 64 bits it is a Long, past it a BigInt. So a
+;; pair wraps iff both are integers inside that range (unc-long?), and every
+;; other pair goes to the checked binary op (jolt-add2 and friends), which
+;; already carries the category rules, the BigDecimal and Float hooks, and the
+;; JVM's errors for nil and non-numbers.
+;; fixnum? first, as everywhere here: it is the whole hot path, and a Chez
+;; fixnum (61 bits; 62 on Gambit) is always inside the long range. A bignum asks
+;; the host adapter, which on Chez reads the answer off its bigits rather than
+;; paying two bignum compares.
+(define-syntax unc-long?
+  (syntax-rules ()
+    ((_ e) (let ((x e))
+             (or (fixnum? x)
+                 (and (bignum? x) (sa-bignum-s64? x)))))))
 ;; Two fixnum operands are the whole of the hot path (loop counters, char code
 ;; points, accumulators). A fixnum is 61 bits on Chez (62 on Gambit), so the sum
 ;; or difference of two is at most 63 bits: always a signed long, never a wrap,
@@ -1412,14 +1439,14 @@
 ;; are #f and the exact op and jolt-wrap64 answer the same value.
 (define-syntax unc-wide2
   (syntax-rules ()
-    ((_ op prim x y)
-     (if (and (unc-int? x) (unc-int? y))
+    ((_ op checked prim x y)
+     (if (and (unc-long? x) (unc-long? y))
          (if prim (prim x y) (jolt-wrap64 (op x y)))
-         (op x y)))))
+         (checked x y)))))
 (define (jolt-uncadd2 a b)
-  (if (and (fixnum? a) (fixnum? b)) (+ a b) (unc-wide2 + jolt-s64-add-wrap a b)))
+  (if (and (fixnum? a) (fixnum? b)) (+ a b) (unc-wide2 + jolt-add2 jolt-s64-add-wrap a b)))
 (define (jolt-uncsub2 a b)
-  (if (and (fixnum? a) (fixnum? b)) (- a b) (unc-wide2 - jolt-s64-sub-wrap a b)))
+  (if (and (fixnum? a) (fixnum? b)) (- a b) (unc-wide2 - jolt-sub2 jolt-s64-sub-wrap a b)))
 ;; Two fixnum factors whose product is plainly inside the fixnum range multiply
 ;; with no wrap: both under 2^30 in magnitude (the cheapest test, and the usual
 ;; case), or a flonum estimate of the product under 1e18 (2^60 is 1.15e18, so
@@ -1428,68 +1455,125 @@
 ;; exact bignum product is never built. The tests only pick the path: the
 ;; kernel op is exact for any operands. fxlength would be tighter, but it is a
 ;; call on Chez, not an inline op, and costs the small product 5 ns.
+;; jolt-mul2, not a bare *, for the rest: (* 0 1.5) is an exact 0 on Chez, and
+;; the JVM's (unchecked-multiply 0 1.5) is 0.0.
 (define (jolt-uncmul2 a b)
   (if (and (fixnum? a) (fixnum? b))
       (if (or (and (fx< -1073741824 a 1073741824) (fx< -1073741824 b 1073741824))
               (fl< (flabs (fl* (fixnum->flonum a) (fixnum->flonum b))) 1e18))
           (* a b)
           (if jolt-s64-mul-wrap (jolt-s64-mul-wrap a b) (jolt-wrap64 (* a b))))
-      (unc-wide2 * jolt-s64-mul-wrap a b)))
-(define (jolt-uncinc x) (if (fixnum? x) (+ x 1) (unc-wide2 + jolt-s64-add-wrap x 1)))
-(define (jolt-uncdec x) (if (fixnum? x) (- x 1) (unc-wide2 - jolt-s64-sub-wrap x 1)))
-;; Not (unc-wide2 - prim 0 x): on a flonum that is (- 0 0.0) = 0.0, where
-;; negate must answer -0.0.
+      (unc-wide2 * jolt-mul2 jolt-s64-mul-wrap a b)))
+;; jolt-inc/jolt-dec are inc and dec themselves: they carry the BigDecimal arm
+;; and raise for nil and non-numbers as the JVM's do.
+(define (jolt-uncinc x)
+  (cond ((fixnum? x) (+ x 1))
+        ((unc-long? x) (if jolt-s64-add-wrap (jolt-s64-add-wrap x 1) (jolt-wrap64 (+ x 1))))
+        (else (jolt-inc x))))
+(define (jolt-uncdec x)
+  (cond ((fixnum? x) (- x 1))
+        ((unc-long? x) (if jolt-s64-sub-wrap (jolt-s64-sub-wrap x 1) (jolt-wrap64 (- x 1))))
+        (else (jolt-dec x))))
+;; A flonum is negated in place, not as (- 0 x): that is 0.0 on 0.0, where
+;; negate must answer -0.0. A Float negates to the double it widens to (the
+;; JVM's Float is in the double category). Anything else outside Chez's tower
+;; (a BigDecimal, nil, a non-number) is 0 minus it through the checked op.
 (define (jolt-uncneg x)
   (cond ((fixnum? x) (- x))
-        ((unc-int? x) (if jolt-s64-sub-wrap (jolt-s64-sub-wrap 0 x) (jolt-wrap64 (- x))))
-        (else (- x))))
+        ((unc-long? x) (if jolt-s64-sub-wrap (jolt-s64-sub-wrap 0 x) (jolt-wrap64 (- x))))
+        ((number? x) (- x))
+        ((jfloat? x) (fl- (jfloat-fl x)))
+        (else (jolt-sub2 0 x))))
 (define (jolt-unchecked-add . xs) (if (null? xs) 0 (fold-left jolt-uncadd2 (car xs) (cdr xs))))
 (define (jolt-unchecked-mul . xs) (if (null? xs) 1 (fold-left jolt-uncmul2 (car xs) (cdr xs))))
 (define (jolt-unchecked-sub . xs)
   (cond ((null? xs) 0) ((null? (cdr xs)) (jolt-uncneg (car xs))) (else (fold-left jolt-uncsub2 (car xs) (cdr xs)))))
-(define (jolt-unchecked-div a b) (quotient (jolt-wrap64 a) (jolt-wrap64 b)))
-(define (jolt-unchecked-rem a b) (remainder (jolt-wrap64 a) (jolt-wrap64 b)))
-;; The -int family wraps to a signed 32-bit int. Each op has a fixed arity and a
-;; fixnum fast path that folds the exact result to 32 bits in place. Any other
-;; operand (flonum, char, bignum long, ratio) takes the long op, then the int cast.
-(define (unc-i32 r)
-  (let ((m (if (fixnum? r) (fxand r #xffffffff) (bitwise-and r #xffffffff))))
-    (if (fx>=? m #x80000000) (fx- m #x100000000) m)))
-(define (jolt-uncaddi2 a b)
-  (if (and (fixnum? a) (fixnum? b))
-      (unc-i32 (+ a b))
-      (jolt-unchecked-int (jolt-uncadd2 a b))))
-(define (jolt-uncsubi2 a b)
-  (if (and (fixnum? a) (fixnum? b))
-      (unc-i32 (- a b))
-      (jolt-unchecked-int (jolt-uncsub2 a b))))
+;; The -int family is Numbers.unchecked_int_add(int, int) and its siblings: the
+;; compiler casts EACH operand to int before the op, and only the op wraps. So
+;; (unchecked-add-int 1/2 1/2) is 0 + 0 and (unchecked-add-int 1.5 1.5) is 2.
+;;
+;; The operand cast is the one the compiler emits for an Object passed where an
+;; int is wanted: a checkcast to Number, then RT.intCast(Object) — so nil is a
+;; NullPointerException, a char or any other non-Number a ClassCastException,
+;; a long outside int range the ArithmeticException "integer overflow", and a
+;; value outside long range the IllegalArgumentException jolt-int-cast raises.
+;; A ^long operand reaches RT.intCast(long), the same check. Under
+;; *unchecked-math* the compiler emits uncheckedIntCast instead, which wraps;
+;; the analyzer sends those calls to the -w twins below (clojure.core's
+;; __unchecked-*-int natives). The var itself was compiled without it, so a
+;; call through the var or apply is always the checked one.
+;;
+;; Each op keeps a fixnum fast path, and the op bodies are macros so a fast
+;; path is one procedure, not three: two int-range fixnums need no cast. The
+;; -w twins wrap every fixnum alike (the low 32 bits of a sum, difference or
+;; product depend only on the operands' low 32 bits), so theirs is the old
+;; fixnum? test; divide and remainder are not like that, and cast first.
+(define-syntax unc-int-fx?
+  (syntax-rules ()
+    ((_ e) (let ((x e)) (and (fixnum? x) (fx>=? x -2147483648) (fx<=? x 2147483647))))))
+(define (unc-int-arg x)
+  (if (or (char? x) (jsurr? x)) (jolt-num-cast-throw x) (jolt-int-cast x)))
+(define (unc-int-arg-w x)
+  (if (or (char? x) (jsurr? x)) (jolt-num-cast-throw x) (jolt-unchecked-int x)))
+(define-syntax unc-i32
+  (syntax-rules ()
+    ((_ e) (let* ((r e)
+                  (m (if (fixnum? r) (fxand r #xffffffff) (bitwise-and r #xffffffff))))
+             (if (fx>=? m #x80000000) (fx- m #x100000000) m)))))
 ;; Two int-range factors can overflow a fixnum product. The low 32 bits of x*y
 ;; only need x*(y low 16) plus ((x*(y high)) low 16) shifted up, and every
 ;; partial product stays a fixnum.
-(define (jolt-uncmuli2 a b)
-  (if (and (fixnum? a) (fixnum? b))
-      (if (and (fx>=? a -2147483648) (fx<=? a 2147483647)
-               (fx>=? b -2147483648) (fx<=? b 2147483647))
-          (unc-i32 (+ (* a (fxand b #xffff))
-                      (* (fxand (* a (fxsra b 16)) #xffff) 65536)))
-          (unc-i32 (* a b)))
-      (jolt-unchecked-int (jolt-uncmul2 a b))))
-(define (jolt-uncinci x)
-  (if (fixnum? x) (unc-i32 (+ x 1)) (jolt-unchecked-int (jolt-uncinc x))))
-(define (jolt-uncdeci x)
-  (if (fixnum? x) (unc-i32 (- x 1)) (jolt-unchecked-int (jolt-uncdec x))))
-(define (jolt-uncnegi x)
-  (if (fixnum? x) (unc-i32 (- x)) (jolt-unchecked-int (jolt-uncneg x))))
-;; A zero divisor takes the slow path, which raises. MIN_VALUE / -1 is 2^31 here
-;; and folds back to MIN_VALUE, as on the JVM.
-(define (jolt-uncdivi2 a b)
-  (if (and (fixnum? a) (fixnum? b) (not (eq? b 0)))
-      (unc-i32 (quotient a b))
-      (jolt-unchecked-int (jolt-unchecked-div a b))))
-(define (jolt-uncremi2 a b)
-  (if (and (fixnum? a) (fixnum? b) (not (eq? b 0)))
-      (unc-i32 (remainder a b))
-      (jolt-unchecked-int (jolt-unchecked-rem a b))))
+(define-syntax unc-muli
+  (syntax-rules ()
+    ((_ ea eb) (let ((a ea) (b eb))
+                 (unc-i32 (+ (* a (fxand b #xffff))
+                             (* (fxand (* a (fxsra b 16)) #xffff) 65536)))))))
+;; A zero divisor raises, and MIN_VALUE / -1 is 2^31 here and folds back to
+;; MIN_VALUE, as on the JVM.
+(define-syntax unc-divi
+  (syntax-rules ()
+    ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-div0-throw) (unc-i32 (quotient a b)))))))
+(define-syntax unc-remi
+  (syntax-rules ()
+    ((_ ea eb) (let ((a ea) (b eb)) (if (eq? b 0) (jolt-div0-throw) (unc-i32 (remainder a b)))))))
+(define-syntax unc-addi (syntax-rules () ((_ a b) (unc-i32 (+ a b)))))
+(define-syntax unc-subi (syntax-rules () ((_ a b) (unc-i32 (- a b)))))
+(define-syntax unc-inci (syntax-rules () ((_ a) (unc-i32 (+ a 1)))))
+(define-syntax unc-deci (syntax-rules () ((_ a) (unc-i32 (- a 1)))))
+(define-syntax unc-negi (syntax-rules () ((_ a) (unc-i32 (- a)))))
+;; One definer per arity, so a checked op and its wrapping twin share a body.
+;; let*, not the call's own argument list: the left operand is cast first, so
+;; (unchecked-add-int Long/MAX_VALUE nil) is the overflow, not the NPE.
+(define-syntax define-unc-int2
+  (syntax-rules ()
+    ((_ name fast? cast body)
+     (define (name a b)
+       (if (and (fast? a) (fast? b))
+           (body a b)
+           (let* ((x (cast a)) (y (cast b))) (body x y)))))))
+(define-syntax define-unc-int1
+  (syntax-rules ()
+    ((_ name fast? cast body)
+     (define (name a)
+       (if (fast? a) (body a) (body (cast a)))))))
+(define-unc-int2 jolt-uncaddi2 unc-int-fx? unc-int-arg unc-addi)
+(define-unc-int2 jolt-uncsubi2 unc-int-fx? unc-int-arg unc-subi)
+(define-unc-int2 jolt-uncmuli2 unc-int-fx? unc-int-arg unc-muli)
+(define-unc-int2 jolt-uncdivi2 unc-int-fx? unc-int-arg unc-divi)
+(define-unc-int2 jolt-uncremi2 unc-int-fx? unc-int-arg unc-remi)
+(define-unc-int1 jolt-uncinci unc-int-fx? unc-int-arg unc-inci)
+(define-unc-int1 jolt-uncdeci unc-int-fx? unc-int-arg unc-deci)
+(define-unc-int1 jolt-uncnegi unc-int-fx? unc-int-arg unc-negi)
+;; Any fixnum product is exact, so the -w multiply needs the partial-product
+;; trick only for int-range factors; a wider one wraps first.
+(define-unc-int2 jolt-uncaddi2w fixnum? unc-int-arg-w unc-addi)
+(define-unc-int2 jolt-uncsubi2w fixnum? unc-int-arg-w unc-subi)
+(define-unc-int2 jolt-uncmuli2w unc-int-fx? unc-int-arg-w unc-muli)
+(define-unc-int2 jolt-uncdivi2w unc-int-fx? unc-int-arg-w unc-divi)
+(define-unc-int2 jolt-uncremi2w unc-int-fx? unc-int-arg-w unc-remi)
+(define-unc-int1 jolt-uncinciw fixnum? unc-int-arg-w unc-inci)
+(define-unc-int1 jolt-uncdeciw fixnum? unc-int-arg-w unc-deci)
+(define-unc-int1 jolt-uncnegiw fixnum? unc-int-arg-w unc-negi)
 ;; the clojure.core/unchecked-* vars are def-var!'d in natives-seq.ss (def-var! is
 ;; defined after this file loads).
 
@@ -1671,7 +1755,7 @@
                            (apply jolt-get f args)))             ; a transient vec/map/set is callable on the JVM
     ;; a record/reify implementing clojure.lang.IFn is callable: dispatch to its
     ;; inline `invoke` method with the value itself as the leading `this`.
-    ((and (jrec? f) (find-method-any-protocol (jrec-tag f) "invoke"))
+    ((and (jrec? f) (find-method-any-protocol (jrec-rtag f) "invoke"))
      => (lambda (m) (apply jolt-invoke m f args)))
     ((reify-method-ref f "invoke")
      => (lambda (m) (apply jolt-invoke m f args)))
@@ -2772,7 +2856,7 @@
 ;; call with 3+ arguments to (apply f args), so no SCI-evaluated call to a
 ;; variadic core fn could carry more than 21 arguments.
 (define (jolt-apply-to-method f)
-  (cond ((jrec? f) (find-method-any-protocol (jrec-tag f) "applyTo"))
+  (cond ((jrec? f) (find-method-any-protocol (jrec-rtag f) "applyTo"))
         ((jreify? f) (reify-method-ref f "applyTo"))
         (else #f)))
 (define (jolt-apply f . args)

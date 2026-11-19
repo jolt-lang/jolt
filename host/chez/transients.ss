@@ -86,7 +86,7 @@
     ;; (flatland's OrderedMap/OrderedSet) returns its OWN transient type, which
     ;; drives its declared ITransient* methods — not the copy-on-write wrapper.
     ;; find-method-any-protocol is a forward ref to records.ss (bound by call time).
-    ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "asTransient"))
+    ((and (jrec? coll) (find-method-any-protocol (jrec-rtag coll) "asTransient"))
      => (lambda (m) (jolt-invoke m coll)))
     ;; RFC 0003: a list or seq transients too (jolt's superset rides the
     ;; copy-on-write fallback); anything else is the JVM's cast failure. That
@@ -215,7 +215,7 @@
 ;; TransientOrderedMap/Set) is a plain jrec, not a jolt-transient — the transient
 ;; ops route to its declared methods. jrec?/find-method-any-protocol/jolt-invoke
 ;; are forward refs bound by call time.
-(define (jrec-trans-method t name) (and (jrec? t) (find-method-any-protocol (jrec-tag t) name)))
+(define (jrec-trans-method t name) (and (jrec? t) (find-method-any-protocol (jrec-rtag t) name)))
 
 (define (jolt-persistent! t)
   (cond

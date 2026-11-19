@@ -545,17 +545,24 @@
         ;; to remember the protocol fn in: as on the JVM, a type that declares
         ;; the protocol in its own body is an interface call that never reads
         ;; the var; every other receiver calls what the var holds now
-        ;; (protocols.ss protocol-direct-impl)
-        slow (str " (let ((" g " (protocol-direct-impl " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) " " (first ts) ")))"
-                  " (if " g " " (with-site (:node c) (kept (emit-call tail? g ts (:tl c) (:ich c))))
-                  " (if (procedure? " vf ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
-                  " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) ")))")]
+        ;; (protocols.ss protocol-direct-impl). A pooled site passes the
+        ;; protocol fn it loaded against: after a REDEFINITION of the protocol
+        ;; that fn names the older interface the site was compiled for, and a
+        ;; type that declared that one still answers here, as the JVM's
+        ;; interface call does (protocols.ss protocol-direct-impl/site).
+        slow (fn [shim]
+               (str " (let ((" g (if shim
+                                   (str " (protocol-direct-impl/site " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) " " (first ts) " " shim ")))")
+                                   (str " (protocol-direct-impl " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) " " (first ts) ")))"))
+                    " (if " g " " (with-site (:node c) (kept (emit-call tail? g ts (:tl c) (:ich c))))
+                    " (if (procedure? " vf ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
+                    " " (emit-call tail? invoker (cons vf ts) (:tl c) (:ich c)) ")))"))]
     (cond
       (and pooled? (nth pk 2 nil))
       (let [shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) ")"))]
         (str "(let* ((" vf " " vf-src ")" binds ")"
              " (if (eq? " vf " " shim ") " (kept (emit-call tail? vf ts (:tl c) (:ich c)))
-             slow "))"))
+             (slow shim) "))"))
       pooled?
       (let [shim (hoist-const (str "(protocol-fn-of " (chez-str-lit (:ns fnode)) " " (chez-str-lit (:name fnode)) ")"))
             id (hoist-const (str "(intern-pm-key " (chez-str-lit (nth pk 0)) " " (chez-str-lit (nth pk 1)) ")"))]
@@ -564,8 +571,8 @@
              " (let* ((" d " (jrec-pic-desc/i " (first ts) ")) (" f " (and " d " (jrdesc-vtable-ref " d " " id "))))"
              " (if " f " " (with-site (:node c) (kept (emit-call tail? f ts (:tl c) (:ich c))))
              " " (kept (emit-call tail? vf ts (:tl c) (:ich c))) "))"
-             slow "))"))
-      :else (str "(let* ((" vf " " vf-src ")" binds ")" slow ")"))))
+             (slow shim) "))"))
+      :else (str "(let* ((" vf " " vf-src ")" binds ")" (slow nil) ")"))))
 
 (defn- emit-jolt-invoke [c]
   (let [args (:args c)

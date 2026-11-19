@@ -50,7 +50,7 @@
             [jolt.analyzer.hints :refer [jvm-boolean-prim? jvm-non-boolean-class hint-of
                                          init-proves-hint add-hint tag->nkind ahint-of
                                          with-ret-nhint fi-tag-class fi-adapt-form
-                                         parse-params strip-arglist-meta arglist-ret-nkind
+                                         parse-params strip-arglist-meta arglist-ret-nkind arglist-type-method?
                                          str-target-type kw-target-type sb-target-type]]
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
@@ -279,8 +279,14 @@
           (list '. vform (list 'setMacro))
           vform)))
 
-(defn- analyze-arity [ctx pvec body env fn-name]
+(defn- analyze-arity [ctx pvec body env fn-name type-method?]
   (let [pp (parse-params ctx (vec (form-vec-items pvec)))
+        ;; The reference's limit (Compiler FnMethod.parse, MAX_POSITIONAL_ARITY):
+        ;; more than 20 REQUIRED params is a compile error, a rest param aside.
+        ;; A defmacro's &form/&env count, as they do there; a type's method does
+        ;; not have the limit (hints/arglist-type-method?).
+        _ (when (and (not type-method?) (> (count (:fixed pp)) 20))
+            (analysis-error :analyze/invalid-arity "Can't specify more than 20 params"))
         rst (:rest pp)
         ;; uniquify over fixed AND rest together: the rest param shares the one
         ;; Scheme formal list ((lambda (a b . r))), so a positional duplicating
@@ -330,7 +336,8 @@
 ;; analyze-arity over the stripped params, with the arglist's own return hint
 ;; attached. An explicit :ret-nhint already on the arity wins.
 (defn- analyze-arity-with-ret [ctx params-form body env fn-name]
-  (let [a (analyze-arity ctx (strip-arglist-meta params-form) body env fn-name)
+  (let [a (analyze-arity ctx (strip-arglist-meta params-form) body env fn-name
+                        (arglist-type-method? params-form))
         k (arglist-ret-nkind params-form)]
     (if (and k (not (:ret-nhint a))) (assoc a :ret-nhint k) a)))
 

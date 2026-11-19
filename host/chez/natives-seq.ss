@@ -336,7 +336,7 @@
     ((htable-sorted? coll) (sc-call coll kw-op-rseq))
     ;; a deftype/record implementing clojure.lang.Reversible (rseq) — e.g.
     ;; data.priority-map — drives rseq through its own method.
-    ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
+    ((and (jrec? coll) (find-method-any-protocol (jrec-rtag coll) "rseq"))
      => (lambda (f) (jolt-invoke1 f coll)))
     (else (jolt-cast-throw coll "clojure.lang.Reversible"))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
@@ -356,3 +356,16 @@
   (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" jolt-uncdeci)
   (d! "unchecked-divide-int" jolt-uncdivi2)
   (d! "unchecked-remainder-int" jolt-uncremi2))
+;; The -int ops cast their operands with RT.intCast's range check, as the JVM
+;; compiler does by default. Under *unchecked-math* the analyzer rewrites a call
+;; to one of these twins instead, which wrap each operand (uncheckedIntCast).
+;; Private, like doseq's __chunk-* walk: the rewrite is their only caller.
+(let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
+  (d! "__unchecked-add-int" jolt-uncaddi2w)       (d! "__unchecked-subtract-int" jolt-uncsubi2w)
+  (d! "__unchecked-multiply-int" jolt-uncmuli2w)  (d! "__unchecked-divide-int" jolt-uncdivi2w)
+  (d! "__unchecked-remainder-int" jolt-uncremi2w) (d! "__unchecked-inc-int" jolt-uncinciw)
+  (d! "__unchecked-dec-int" jolt-uncdeciw)        (d! "__unchecked-negate-int" jolt-uncnegiw))
+(for-each (lambda (n) (set-var-meta! "clojure.core" n (jolt-hash-map (keyword #f "private") #t)))
+  '("__unchecked-add-int" "__unchecked-subtract-int" "__unchecked-multiply-int"
+    "__unchecked-divide-int" "__unchecked-remainder-int"
+    "__unchecked-inc-int" "__unchecked-dec-int" "__unchecked-negate-int"))

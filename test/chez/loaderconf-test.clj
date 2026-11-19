@@ -1140,6 +1140,22 @@
         (chk "restored names leave the record" (= [] (l/evicted ctx))))
       (finally (host/set-source-roots! roots)))))
 
+(defcase 43 "a loader and its hits print after a load, though each hit points back at the loader"
+  (let [d (root-dir "prt")
+        _ (.mkdirs (java.io.File. (str d "/prt")))
+        _ (write! d "prt/a.clj" "(ns prt.a) (defn v [] 1)")
+        ctx (l/classpath [d] {:id "prt-ctx"})
+        hit (first (l/find ctx {:kind :ns :name "prt.a"}))]
+    (l/load ctx hit)
+    (let [s (pr-str ctx)
+          hs (pr-str (first (l/find ctx {:kind :ns :name "prt.a"})))]
+      (chk "the loader prints as its identity"
+           (and (clojure.string/starts-with? s "#object[jolt.loader.LoaderImpl ")
+                (clojure.string/includes? s "\"loader prt-ctx\"")))
+      (chk "a hit prints, its :loader as that identity"
+           (clojure.string/includes? hs (str ":loader " s))))
+    (l/unload! ctx)))
+
 ;; --- runner -----------------------------------------------------------------
 (defn run-case [[n title body]]
   (reset! failures [])

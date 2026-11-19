@@ -759,6 +759,12 @@
         mbody (underscore-rebind (nth spec 1) raw mbody)]
     (list* argv (method-recur-body argv used (list (list* 'clojure.core/let binds mbody))))))
 
+;; A type's inline method clause, its arglist marked so the analyzer knows it is
+;; a method of the class rather than a fn: the reference's NewInstanceMethod has
+;; no 20-param limit (jolt.analyzer.hints/arglist-type-method?).
+(defn- type-method-clause [clause]
+  (cons (vary-meta (first clause) assoc :jolt/type-method true) (rest clause)))
+
 ;; inline impls register for dispatch but are NOT extenders of the
 ;; protocol (the JVM compiles them into the class) — register-inline-method,
 ;; not extend-type. One registration per protocol group, then one per method
@@ -771,7 +777,7 @@
               (cons `(register-inline-protocol! ~(name tname) ~proto)
                     (map (fn [nm]
                            `(register-inline-method ~(name tname) ~proto ~nm
-                                                    (fn ~@(get by-name nm))))
+                                                    (fn ~@(map type-method-clause (get by-name nm)))))
                          names))))
           groups))
 
@@ -996,17 +1002,22 @@
 ;; record name matches its "ns.Name" tag, and a query for a qualified host class
 ;; (java.util.Map) matches the canonical short tag (Map) extend registered it as.
 (defn extends? [protocol atype]
-  (let [want (if (nil? atype) "nil" (if (jolt.host/class-object? atype) (.getName atype) (name atype)))
-        suffix? (fn [long short]
-                  (let [d (str "." short)]
-                    (and (> (count long) (count d))
-                         (= (subs long (- (count long) (count d))) d))))
-        pn-str (some-> protocol :name name)]
-    (boolean (or (some (fn [t]
-                         (let [tn (name t)]
-                           (or (= tn want) (suffix? tn want) (suffix? want tn))))
-                       (extenders protocol))
-                 (and pn-str (jolt.host/type-satisfies? want pn-str))))))
+  (if (jolt.host/retired-class? atype)
+    ;; a redefined type's OLD class, which extenders holds as itself (its name
+    ;; is the new class's, so only identity tells them apart)
+    (boolean (some (fn [t] (identical? t atype)) (extenders protocol)))
+    (let [want (if (nil? atype) "nil" (if (jolt.host/class-object? atype) (.getName atype) (name atype)))
+          suffix? (fn [long short]
+                    (let [d (str "." short)]
+                      (and (> (count long) (count d))
+                           (= (subs long (- (count long) (count d))) d))))
+          pn-str (some-> protocol :name name)]
+      (boolean (or (some (fn [t]
+                           (when-not (jolt.host/class-object? t)
+                             (let [tn (name t)]
+                               (or (= tn want) (suffix? tn want) (suffix? want tn)))))
+                         (extenders protocol))
+                   (and pn-str (jolt.host/type-satisfies? want pn-str)))))))
 
 ;; The canonical name for a protocol-extension type: a symbol/keyword via name, a
 ;; string as-is, nil as "nil" (extends on nil values), and a Class VALUE — e.g.
@@ -1196,7 +1207,7 @@
         order (distinct (map (fn [x] (name (first x))) specs))]
     `(make-reified-at
        [[~@order] [~@(map protocol-key protos)] ~cls]
-       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(nth x 1) ~@(method-recur-body (nth x 1) (body-sym-names (drop 2 x)) (drop 2 x))))
+       ~@(map (fn [k] `(fn ~@(map (fn [x] `(~(vary-meta (nth x 1) assoc :jolt/type-method true) ~@(method-recur-body (nth x 1) (body-sym-names (drop 2 x)) (drop 2 x))))
                                   (get methods k))))
               order))))
 
@@ -1274,7 +1285,7 @@
                      (cons `(register-inline-protocol! ~(name name-sym) ~proto)
                            (map (fn [nm]
                                   `(register-inline-method ~(name name-sym) ~proto ~nm
-                                                           (fn ~@(get by-name nm))))
+                                                           (fn ~@(map type-method-clause (get by-name nm)))))
                                 names))))
                  groups))))
 

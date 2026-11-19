@@ -152,7 +152,7 @@
 (define (enum-jrec-render x)
   (let ((e (enum-of x)))
     (and e
-         (let ((f (find-protocol-method (jrec-tag x) "Object" "toString")))
+         (let ((f (find-protocol-method (jrec-rtag x) "Object" "toString")))
            (if f (jolt-invoke f x) (enum-entry-name e))))))
 (set-str-render-by-identity!
   (lambda (x)

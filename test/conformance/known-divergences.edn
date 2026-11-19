@@ -58,6 +58,28 @@
   ;; arrive unverified. Rendering is pr-str for a value, "throws <SimpleName>" for
   ;; a raise (the ROOT cause's simple name). :jvm/:jolt outside :check are prose
   ;; for a reader; the :check pair is what the gate holds to.
+  ;; The JVM checks core macro calls against clojure.core.specs.alpha before
+  ;; expanding them; jolt carries no macro specs. A malformed call still fails at
+  ;; compile time on both -- (let [x] 1), (for [] 1), (doseq [x] 1) -- but with
+  ;; jolt's own message where the JVM reports the spec failure.
+  {:category :host-model
+   :behavior "a core macro call that fails its clojure.core.specs.alpha spec, e.g. (let [x] 1)"
+   :jvm "a compile error whose cause is \"Call to clojure.core/let did not conform to spec.\""
+   :jolt "a compile error with jolt's own message for the same malformation"
+   :check {:expr "(try (eval (read-string \"(let [x] 1)\")) (catch Throwable e (.getMessage (or (.getCause e) e))))"
+           :jvm "\"Call to clojure.core/let did not conform to spec.\""
+           :jolt "\"Bad binding form, expected matched symbol expression pairs\""}
+   :note "jolt does not load spec into clojure.core; the call is rejected either way"}
+  ;; #:{...} names no namespace. The reference prints the namespace object it
+  ;; read with Java's String.valueOf, so a missing one reads "null"; jolt reports
+  ;; the value it has (host/chez/reader.ss rdr-read-ns-map).
+  {:category :host-model
+   :behavior "(read-string \"#:{:b 1}\") error message"
+   :jvm "\"Namespaced map must specify a valid namespace: null\""
+   :jolt "\"Namespaced map must specify a valid namespace: nil\""
+   :check {:expr "(try (read-string \"#:{:b 1}\") (catch Throwable e (.getMessage e)))"
+           :jvm "\"Namespaced map must specify a valid namespace: null\""
+           :jolt "\"Namespaced map must specify a valid namespace: nil\""}}
   ;; The JVM's read-string reads through a plain PushbackReader, not a
   ;; LineNumberingPushbackReader, so nothing it returns carries source metadata at
   ;; all — that only happens for forms the compiler reads out of a file. jolt's
@@ -401,21 +423,20 @@
            :jvm "throws ClassCastException"
            :jolt "5"}
    :note "Unchecked data argument; a map behaves identically. Verified against Clojure 1.12.5."}
-  ;; A reference array's elements are not checked against its component class:
-  ;; the JVM raises "array element type mismatch" from into-array and
-  ;; ArrayStoreException from aset, while jolt stores the value. Typed arrays
-  ;; carry their component class (into-array String … is a String[]), but jolt's
-  ;; class model does not know every JDK class's ancestry — a StandardCopyOption
-  ;; is a CopyOption on the JVM and not here — so a check would refuse arrays the
-  ;; JVM builds. A superset: an array of the right elements behaves identically.
-  {:category :permissive
-   :behavior "(into-array String [1]) — an element that is not of the component class"
-   :jvm "throws IllegalArgumentException"
-   :jolt "a String[] holding 1"
-   :check {:expr "(vec (into-array String [1]))"
-           :jvm "throws IllegalArgumentException"
+  ;; A typed reference array checks what it stores against its component class
+  ;; (natives-array.ss na-ref-storable?), but jolt keeps one representation for
+  ;; every exact integer in long range, so it cannot tell a Long from the
+  ;; Integer, Short or Byte the JVM would refuse in a Long[] (or the reverse),
+  ;; and stores it. The check only ever refuses a definite mismatch. The same
+  ;; one-fixnum collapse as the (class (int 1)) entry.
+  {:category :integer-box-model
+   :behavior "(aset (make-array Integer 1) 0 1) — a Long into an Integer[] (and Integer/Short/Byte into each other's arrays)"
+   :jvm "throws ArrayStoreException"
+   :jolt "stores it"
+   :check {:expr "(vec (doto (make-array Integer 1) (aset 0 1)))"
+           :jvm "throws ArrayStoreException"
            :jolt "[1]"}
-   :note "aset into a typed array is unchecked the same way. Verified against Clojure 1.12.5."}
+   :note "jolt-uh8ck. Every other mismatch (a String into a Number[], a Double into a Long[]) is refused as on the JVM. Verified against Clojure 1.12.5."}
   ;; A primitive array coerces what it is handed. The JVM's reflective aset and
   ;; into-array refuse a value whose box does not match the element type; jolt
   ;; stores the value narrowed as Numbers.T_array would.
@@ -1023,6 +1044,17 @@
            :jvm "[\"java.lang.Integer\" false]"
            :jolt "[\"java.lang.Long\" true]"}
    :note "Chez has one fixnum. instance? is deliberately permissive for Integer/Long — a value answers to both spellings of its collapsed class — while Short and Byte stay false. Since #627 the big classes are value-sensitive: BigInt/BigInteger answer only for bignums (which also class as clojure.lang.BigInt), Long/Integer only for fixnums, matching the JVM. A bignum still answers BigInteger (one big representation serves both classes; the JVM says false) — the remaining superset. Float is its own value (a jfloat), so Float and Double answer as on the JVM."}
+;; The same collapse in arithmetic: a BigInt inside the long range is a fixnum, so
+;; the unchecked ops (which only wrap on two longs) see two longs and answer one.
+;; Past the long range a BigInt is its own value and contaminates as on the JVM.
+  {:category :integer-box-model
+   :behavior "(unchecked-add 1N 2)"
+   :jvm "3N, a BigInt: a BigInt operand takes the BigInt category"
+   :jolt "3, a Long: 1N is the fixnum 1"
+   :check {:expr "(let [r (unchecked-add 1N 2)] [(.getSimpleName (class r)) r])"
+           :jvm "[\"BigInt\" 3N]"
+           :jolt "[\"Long\" 3]"}
+   :note "Same one-exact-integer model as (class 1N); (unchecked-add 9223372036854775808N 1) is 9223372036854775809N on both."}
 ;; The same collapse at protocol dispatch: an int, a short and a small BigInt are
   ;; the fixnum a long is, so a protocol extended to Long and to Number picks Long
   ;; for all of them where the JVM's boxes fall through to Number.

@@ -32,6 +32,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookup once their classes are known not to reach a user method.
 - `(class (tagged-literal 'a 1))` is `clojure.lang.TaggedLiteral`; a sorted
   map and a queue have their own type tags.
+- Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
+
+- **The reference fns call a user type's `clojure.lang` interface methods.**
+  `swap!`, `reset!`, `compare-and-set!`, `swap-vals!`, `reset-vals!`,
+  `add-watch`, `remove-watch`, `set-validator!` and `get-validator` now work on
+  a deftype, defrecord or reify implementing `IAtom` / `IAtom2` / `IRef`, as on
+  the JVM, where each is one interface call (a durable atom like duratom's no
+  longer has to rebind them). `alter-meta!` / `reset-meta!` on a value that is
+  not an `IReference` throw the JVM's `ClassCastException` instead of storing
+  metadata `meta` never reads back, and `reset-meta!` answers the type's
+  `resetMeta`. A failed cast now names the interface the JVM does: `IAtom2` for
+  the `-vals!` pair, `IRef` for the watch/validator fns, and
+  `java.util.concurrent.Future` for `deref` (it was `IDeref` /
+  `IBlockingDeref`). The built-in atom path is unchanged.
+
+- **The unchecked ops follow the JVM's operand categories (jolt-cdjgi).**
+  `unchecked-add`, `-subtract`, `-multiply`, `-inc`, `-dec` and `-negate` wrap
+  only a long/long pair now. An operand past the long range takes BigInt
+  contagion, so `(unchecked-add 9223372036854775808N 1)` is
+  `9223372036854775809N`, not a wrapped long; a BigDecimal or Float operand is
+  ordinary arithmetic (they raised before), and `(unchecked-multiply 0 1.5)` is
+  `0.0`. The `-int` family casts each operand to int before the op, as the JVM
+  compiler does: `(unchecked-add-int 1/2 1/2)` is 0, and an operand outside int
+  range raises the ArithmeticException, unless the file sets `*unchecked-math*`,
+  where a compiled call wraps it. A nil operand of these ops and of `+`, `-`,
+  `*` and the comparisons is the NullPointerException even beside a
+  non-number, and `(int 9223372036854775808N)` is the IllegalArgumentException
+  naming the long range. A small BigInt such as `1N` still reads as a Long,
+  since jolt classes an integer by its range.
+
+- **Redefining a protocol or a type follows the JVM.** Re-evaluating a
+  `defprotocol` drops the impls a `deftype`, `defrecord` or `reify` declared
+  inline before it (they implement the old interface), so calls on them miss and
+  `satisfies?`/`instance?` say no until the type is defined again; impls from
+  `extend`/`extend-type`/`extend-protocol` survive, as the JVM's merge keeps
+  them. Re-evaluating a `deftype`/`defrecord` makes a new class: instances built
+  before are not `instance?` of it, their `class`/`type` is not `=` to it, an old
+  record is not `=` to a new one, and they keep the old class's own and
+  extended impls instead of picking up the new definition's. A protocol call
+  compiled before the protocol was redefined still makes the old interface's
+  call, so a type that declared the protocol back then answers it there, and
+  `extenders`/`extends?` name a redefined type's extended old class as the JVM
+  does.
 
 ## [0.8.28] - 2026-11-19
 
