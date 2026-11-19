@@ -527,9 +527,8 @@
   (unless (jolt-array? dst)
     (arraycopy-store-throw (string-append "destination type " (jolt-class-name dst) " is not an array")))
   ;; A copy between different element kinds is the JVM's ArrayStoreException;
-  ;; only reference arrays may differ (the JVM then checks each element as it
-  ;; stores, which jolt does not — its element store is unchecked, see
-  ;; known-divergences :typed-array-store), so two reference kinds are compatible.
+  ;; only reference arrays may differ, and then each element is checked as it is
+  ;; stored (arraycopy-checked! below).
   (unless (or (eq? (jolt-array-kind src) (jolt-array-kind dst))
               (and (na-ref-kind? (jolt-array-kind src)) (na-ref-kind? (jolt-array-kind dst))))
     (arraycopy-store-throw (string-append "type mismatch: can not copy " (arraycopy-label src)
@@ -545,8 +544,35 @@
     ;; bytevector, flvector or fxvector backings, and the descending walk when the regions overlap
     ;; forwards inside one array — which is what gives the JVM's "as if the source
     ;; were copied to a temporary first" without the temporary.
-    (ja-copy-range! src sp dst dp n)
+    ;; Into a typed reference array from one whose component class is not
+    ;; known to be assignable to it, every element is checked.
+    (let ((sk (jolt-array-kind src)) (dk (jolt-array-kind dst)))
+      (if (and (string? dk) (not (arraycopy-kind-assignable? sk dk)))
+          (arraycopy-checked! src sp dst dp n sk dk)
+          (ja-copy-range! src sp dst dp n)))
     jolt-nil))
+;; Is every element of an array of kind SK storable in one of kind DK? Unknown to
+;; the class model reads as yes (natives-array.ss na-class-assignable?).
+(define (arraycopy-kind-assignable? sk dk)
+  (and (string? sk)
+       (or (string=? sk dk)
+           (na-array-class-assignable? (na-kind-class-name sk) (na-kind-class-name dk)))))
+;; HotSpot's objArrayKlass copy: the elements before the first one the
+;; destination refuses are copied, then the ArrayStoreException — "type mismatch"
+;; when the destination's component is not even a subclass of the source's,
+;; "element type mismatch" when it is and one element was not.
+(define (arraycopy-checked! src sp dst dp n sk dk)
+  (let loop ((i 0))
+    (cond ((= i n) (ja-copy-range! src sp dst dp n))
+          ((na-ref-storable? dk (ja-ref src (+ sp i))) (loop (+ i 1)))
+          (else
+           (ja-copy-range! src sp dst dp i)
+           (arraycopy-store-throw
+            (if (and (string? sk) (not (arraycopy-kind-assignable? dk sk)))
+                (string-append "type mismatch: can not copy " sk "[] into " dk "[]")
+                (string-append "element type mismatch: can not cast one of the elements of "
+                               (na-kind-element-name sk) "[] to the type of the destination array, "
+                               dk)))))))
 
 ;; java.lang.Long.bitCount: the population count of the value's 64-bit two's-
 ;; complement (mask to 64 bits so a negative long counts like the JVM, e.g.

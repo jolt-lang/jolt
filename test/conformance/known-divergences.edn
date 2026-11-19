@@ -423,21 +423,20 @@
            :jvm "throws ClassCastException"
            :jolt "5"}
    :note "Unchecked data argument; a map behaves identically. Verified against Clojure 1.12.5."}
-  ;; A reference array's elements are not checked against its component class:
-  ;; the JVM raises "array element type mismatch" from into-array and
-  ;; ArrayStoreException from aset, while jolt stores the value. Typed arrays
-  ;; carry their component class (into-array String … is a String[]), but jolt's
-  ;; class model does not know every JDK class's ancestry — a StandardCopyOption
-  ;; is a CopyOption on the JVM and not here — so a check would refuse arrays the
-  ;; JVM builds. A superset: an array of the right elements behaves identically.
-  {:category :permissive
-   :behavior "(into-array String [1]) — an element that is not of the component class"
-   :jvm "throws IllegalArgumentException"
-   :jolt "a String[] holding 1"
-   :check {:expr "(vec (into-array String [1]))"
-           :jvm "throws IllegalArgumentException"
+  ;; A typed reference array checks what it stores against its component class
+  ;; (natives-array.ss na-ref-storable?), but jolt keeps one representation for
+  ;; every exact integer in long range, so it cannot tell a Long from the
+  ;; Integer, Short or Byte the JVM would refuse in a Long[] (or the reverse),
+  ;; and stores it. The check only ever refuses a definite mismatch. The same
+  ;; one-fixnum collapse as the (class (int 1)) entry.
+  {:category :integer-box-model
+   :behavior "(aset (make-array Integer 1) 0 1) — a Long into an Integer[] (and Integer/Short/Byte into each other's arrays)"
+   :jvm "throws ArrayStoreException"
+   :jolt "stores it"
+   :check {:expr "(vec (doto (make-array Integer 1) (aset 0 1)))"
+           :jvm "throws ArrayStoreException"
            :jolt "[1]"}
-   :note "aset into a typed array is unchecked the same way. Verified against Clojure 1.12.5."}
+   :note "jolt-uh8ck. Every other mismatch (a String into a Number[], a Double into a Long[]) is refused as on the JVM. Verified against Clojure 1.12.5."}
   ;; A primitive array coerces what it is handed. The JVM's reflective aset and
   ;; into-array refuse a value whose box does not match the element type; jolt
   ;; stores the value narrowed as Numbers.T_array would.

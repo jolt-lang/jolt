@@ -1466,7 +1466,7 @@
 ;; rather than Object[]. (natives-array.ss loads after this file; the reference
 ;; resolves when the method runs.)
 (define (jvm-split-array irx s limit)
-  (make-jolt-array (list->vector (jvm-split irx s limit)) "java.lang.String"))
+  (make-jolt-array (list->vector (jvm-split irx s limit)) na-string-kind))
 
 ;; re-split's semantics over a literal separator: interior AND trailing empty
 ;; strings kept, a positive limit capping the parts with the tail left unsplit.
