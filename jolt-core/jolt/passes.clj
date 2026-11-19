@@ -16,7 +16,7 @@
                                stash-inline! var-redefined? site-const-salt form-char? form-literal?]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
-            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
+            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace lower-fixed-map-loops direct-call-edges
                                         begin-growth-budget! end-growth-budget! guarded-candidate?]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
@@ -236,7 +236,7 @@
                                           (println (str "[inline] " (:ns node) "/" (:name node) " rounds " (inc i))))
                                         n2))))))
         _ (pt :growth (fn [] (end-growth-budget!)))]
-    (infer-optimized unit opt)))
+    (infer-optimized unit (pt :loop-fields (fn [] (lower-fixed-map-loops opt))))))
 
 ;; Guarded inlining (the open-world spine, jolt.host/guarded-inline?): the same
 ;; inline fixpoint, each splice behind a test that the callee's var still holds
