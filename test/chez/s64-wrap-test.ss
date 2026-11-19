@@ -14,7 +14,8 @@
 ;;      fixnum whenever the result fits, and #f for a non-integer
 ;;   c. jolt-uncadd2/sub2/mul2/inc/dec/neg answer the definition over the same
 ;;      operands, on the kernel path and again with the entries unbound (the
-;;      stock-Chez and Gambit path)
+;;      stock-Chez and Gambit path): a wrap for Long operands, the exact op once
+;;      an operand is past the long range (a BigInt)
 ;;   d. a flonum or ratio operand is an ordinary op, not a wrap, and negate
 ;;      keeps -0.0
 ;;
@@ -103,13 +104,22 @@
               (list jolt-s64-add-wrap jolt-s64-sub-wrap jolt-s64-mul-wrap))))
 
 ;; --- c. the unchecked ops, on both paths -------------------------------------
+;; Only a Long pair wraps. An operand outside signed 64 bits is a BigInt, and
+;; the JVM's unchecked ops take BigInt contagion from it like + does: the exact
+;; result (jolt-cdjgi).
+(define (long? x) (and (>= x (- 2^63)) (< x 2^63)))
+(define (unc op)
+  (lambda (x y) (if (and (long? x) (long? y)) (wrap (op x y)) (op x y))))
+(define (unc1 op)
+  (lambda (x) (if (long? x) (wrap (op x)) (op x))))
 (define (check-ops label)
-  (check (format "c. jolt-uncadd2 wraps (~a)" label) jolt-uncadd2 (lambda (x y) (wrap (+ x y))))
-  (check (format "c. jolt-uncsub2 wraps (~a)" label) jolt-uncsub2 (lambda (x y) (wrap (- x y))))
-  (check (format "c. jolt-uncmul2 wraps (~a)" label) jolt-uncmul2 (lambda (x y) (wrap (* x y))))
-  (check (format "c. jolt-uncinc, -dec and -neg wrap (~a)" label)
+  (check (format "c. jolt-uncadd2 wraps a Long pair (~a)" label) jolt-uncadd2 (unc +))
+  (check (format "c. jolt-uncsub2 wraps a Long pair (~a)" label) jolt-uncsub2 (unc -))
+  (check (format "c. jolt-uncmul2 wraps a Long pair (~a)" label) jolt-uncmul2 (unc *))
+  (check (format "c. jolt-uncinc, -dec and -neg wrap a Long (~a)" label)
          (lambda (x y) (list (jolt-uncinc x) (jolt-uncdec x) (jolt-uncneg x)))
-         (lambda (x y) (list (wrap (+ x 1)) (wrap (- x 1)) (wrap (- x)))))
+         (lambda (x y) (list ((unc1 (lambda (v) (+ v 1))) x) ((unc1 (lambda (v) (- v 1))) x)
+                             ((unc1 -) x))))
   (ok (format "c. the variadic fns wrap (~a)" label)
       (equal? (list (jolt-unchecked-mul 31 (- 2^63 1) 7) (jolt-unchecked-add (- 2^63 1) 1 1)
                     (jolt-unchecked-sub (- 2^63) 1 1) (jolt-unchecked-sub (- 2^63)))

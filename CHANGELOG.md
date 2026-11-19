@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `java.util.concurrent.Future` for `deref` (it was `IDeref` /
   `IBlockingDeref`). The built-in atom path is unchanged.
 
+- **The unchecked ops follow the JVM's operand categories (jolt-cdjgi).**
+  `unchecked-add`, `-subtract`, `-multiply`, `-inc`, `-dec` and `-negate` wrap
+  only a long/long pair now. An operand past the long range takes BigInt
+  contagion, so `(unchecked-add 9223372036854775808N 1)` is
+  `9223372036854775809N`, not a wrapped long; a BigDecimal or Float operand is
+  ordinary arithmetic (they raised before), and `(unchecked-multiply 0 1.5)` is
+  `0.0`. The `-int` family casts each operand to int before the op, as the JVM
+  compiler does: `(unchecked-add-int 1/2 1/2)` is 0, and an operand outside int
+  range raises the ArithmeticException, unless the file sets `*unchecked-math*`,
+  where a compiled call wraps it. A nil operand of these ops and of `+`, `-`,
+  `*` and the comparisons is the NullPointerException even beside a
+  non-number, and `(int 9223372036854775808N)` is the IllegalArgumentException
+  naming the long range. A small BigInt such as `1N` still reads as a Long,
+  since jolt classes an integer by its range.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a

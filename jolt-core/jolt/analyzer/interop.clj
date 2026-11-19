@@ -121,6 +121,22 @@
 ;; The wrapping unchecked-* name a core arithmetic op rewrites to under
 ;; *unchecked-math*, or nil. n is the full item count (head + args); unary - is a
 ;; negate.
+;;
+;; The -int family rewrites too, to clojure.core's private __unchecked-*-int
+;; natives: the JVM compiler casts an -int op's operands with
+;; RT.uncheckedIntCast under *unchecked-math* and with the checked RT.intCast
+;; otherwise, so (unchecked-add-int 2147483648 0) wraps in such a file and
+;; raises in any other. Only at the op's own arity; another is left to raise.
+(def ^:private unchecked-int-ops
+  {"unchecked-add-int" [3 "clojure.core/__unchecked-add-int"]
+   "unchecked-subtract-int" [3 "clojure.core/__unchecked-subtract-int"]
+   "unchecked-multiply-int" [3 "clojure.core/__unchecked-multiply-int"]
+   "unchecked-divide-int" [3 "clojure.core/__unchecked-divide-int"]
+   "unchecked-remainder-int" [3 "clojure.core/__unchecked-remainder-int"]
+   "unchecked-inc-int" [2 "clojure.core/__unchecked-inc-int"]
+   "unchecked-dec-int" [2 "clojure.core/__unchecked-dec-int"]
+   "unchecked-negate-int" [2 "clojure.core/__unchecked-negate-int"]})
+
 (defn unchecked-arith [hname n]
   (cond
     (= hname "+") "unchecked-add"
@@ -128,7 +144,8 @@
     (= hname "-") (if (= n 2) "unchecked-negate" "unchecked-subtract")
     (= hname "inc") "unchecked-inc"
     (= hname "dec") "unchecked-dec"
-    :else nil))
+    :else (when-let [[arity target] (get unchecked-int-ops hname)]
+            (when (= n arity) target))))
 
 ;; A clojure.core numeric cast (double/long/int/float/byte/short of one arg)
 ;; becomes a :coerce node carrying the checked runtime helper, so it feeds the

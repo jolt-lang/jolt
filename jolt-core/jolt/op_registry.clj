@@ -137,6 +137,24 @@
    "unchecked-inc-int"       {:call "jolt-uncinci" :arity #(= % 1) :num-result? true}
    "unchecked-dec-int"       {:call "jolt-uncdeci" :arity #(= % 1) :num-result? true}
    "unchecked-negate-int"    {:call "jolt-uncnegi" :arity #(= % 1) :num-result? true}
+   ;; Their *unchecked-math* twins: private names the analyzer rewrites an -int
+   ;; call to in such a file (jolt.analyzer.interop/unchecked-arith). The ops
+   ;; above cast each operand with RT.intCast's range check, as the JVM compiler
+   ;; does by default; these wrap each operand to 32 bits instead, as its
+   ;; uncheckedIntCast does under *unchecked-math*.
+   "__unchecked-add-int"       {:call "jolt-uncaddi2w" :arity #(= % 2) :lng "jolt-uncaddi2w"
+                                :num-result? true}
+   "__unchecked-subtract-int"  {:call "jolt-uncsubi2w" :arity #(= % 2) :lng "jolt-uncsubi2w"
+                                :num-result? true}
+   "__unchecked-multiply-int"  {:call "jolt-uncmuli2w" :arity #(= % 2) :lng "jolt-uncmuli2w"
+                                :num-result? true}
+   "__unchecked-divide-int"    {:call "jolt-uncdivi2w" :arity #(= % 2) :lng "jolt-uncdivi2w"
+                                :num-result? true}
+   "__unchecked-remainder-int" {:call "jolt-uncremi2w" :arity #(= % 2) :lng "jolt-uncremi2w"
+                                :num-result? true}
+   "__unchecked-inc-int"       {:call "jolt-uncinciw" :arity #(= % 1) :num-result? true}
+   "__unchecked-dec-int"       {:call "jolt-uncdeciw" :arity #(= % 1) :num-result? true}
+   "__unchecked-negate-int"    {:call "jolt-uncnegiw" :arity #(= % 1) :num-result? true}
    ;; collections
    "vector"      {:call "jolt-vector"}
    "hash-map"    {:call "jolt-hash-map-fn"}
