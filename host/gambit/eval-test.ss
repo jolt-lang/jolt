@@ -142,6 +142,8 @@
 ;; rt-core: indexOf/lastIndexOf on the kernel's own search, object monitors, the
 ;; ns-cells index ns.ss reads, proc-name-of for (class a-fn)
 (check "[(.indexOf \"hello\" \"l\") (.indexOf \"hello\" \"l\" 3) (.lastIndexOf \"hello\" \"l\") (.indexOf \"hello\" \\l)]" "[2 3 3 2]")
+;; a code no string holds answers -1, as on the JVM (integer->char refuses it)
+(check "(let [s \"abc\"] [(.indexOf s (int 0xD800)) (.indexOf s 0x110000) (.indexOf s -1) (.lastIndexOf s (int 0xDFFF)) (.indexOf s (int 98))])" "[-1 -1 -1 -1 1]")
 (check "(locking :x 1)" "1")
 (check "(count (ns-publics (quote clojure.set)))" "12")
 (check "(str (find-var (quote clojure.core/print-method)))" "\"#'clojure.core/print-method\"")

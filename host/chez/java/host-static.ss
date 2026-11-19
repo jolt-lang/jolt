@@ -1270,8 +1270,13 @@
             (vector-ref c 1))))))
 (define (jrec-site-miss site obj name argl)
   (let ((arms method-dispatch-arms) (epoch (jrdesc-ifc-epoch)))
+    ;; A dashed name with no arguments is a field read, which dotform-method-arm
+    ;; answers ahead of any declared method of that name. The emitter never
+    ;; sends one here (interop.clj host-site-emit), but the site must not cache
+    ;; a method for it if a caller ever does.
     (if (or (fx=? (caar arms) arm-priority-user-override)
-            (string=? name "hashCode") (string=? name "hasheq"))
+            (string=? name "hashCode") (string=? name "hasheq")
+            (and (null? argl) (fx>? (string-length name) 1) (char=? (string-ref name 0) #\-)))
         (record-method-dispatch obj name (apply jolt-vector argl))
         (let loop ((as arms))
           (cond
