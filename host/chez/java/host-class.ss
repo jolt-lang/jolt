@@ -298,8 +298,11 @@
 ;; its own. It also canonicalizes the spelling, so a deftype in a dashed
 ;; namespace lands on the token its own values report.
 (define (jolt-class x)
-  (let ((n (jolt-class-name x)))
-    (if (jolt-nil? n) jolt-nil (jolt-class-for n))))
+  (if (jrec-retired? x)
+      ;; built before its type was redefined: the old class (class-model.ss)
+      (jolt-retired-class-token (jrec-desc x))
+      (let ((n (jolt-class-name x)))
+        (if (jolt-nil? n) jolt-nil (jolt-class-for n)))))
 
 (def-var! "clojure.core" "class" jolt-class)
 

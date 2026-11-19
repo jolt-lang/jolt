@@ -267,6 +267,7 @@ reset-maximum-memory-bytes!
 resolvable-names
 resolve-class-hint
 resolve-global
+retired-class?
 root-file
 run-expr-string
 run-interruptible

@@ -158,21 +158,23 @@
   (gate-check "Square desc ptable resolves" (not (not (find-protocol-method-desc sd "user/Shape" "area"))) #t)
   (gate-check "Triangle desc ptable resolves" (not (not (find-protocol-method-desc td "user/Shape" "area"))) #t))
 
-;; re-def Circle via defrecord to test old-desc invalidation. The old desc's
-;; ptable must be set to #f so pre-redef instances fall back to the string
-;; registry; the new desc resolves via its own ptable.
+;; re-def Circle via defrecord. The old desc is RETIRED, not invalidated: it is
+;; the old class, whose instances keep its impls (its ptable stays and resolves
+;; the OLD impl), while the new desc resolves the new one via its own ptable.
 (let* ((old-desc (hashtable-ref chez-tag-desc "user.Circle" #f))
+       (old-impl (find-protocol-method-desc old-desc "user/Shape" "area"))
        (_ (evals "(defrecord Circle [r] Shape (area [s] (:r s)))"))
        (new-desc (hashtable-ref chez-tag-desc "user.Circle" #f)))
-  (gate-check "old desc invalidated after redef"     (jrdesc-ptable old-desc) #f)
-  (gate-check "find-protocol-method-desc misses on old desc"
-         (find-protocol-method-desc old-desc "user/Shape" "area") #f)
+  (gate-check "old desc retired after redef"         (jrdesc-retired? old-desc) #t)
+  (gate-check "old desc keeps its own impl"
+         (eq? (find-protocol-method-desc old-desc "user/Shape" "area") old-impl) #t)
   (gate-check "new desc ptable resolves after redef"
          (not (not (find-protocol-method-desc new-desc "user/Shape" "area"))) #t)
-  ;; protocol-resolve on a pre-redef instance still works (falls back to string
-  ;; registry when the desc's ptable is #f).
+  (gate-check "new desc resolves the new impl"
+         (eq? (find-protocol-method-desc new-desc "user/Shape" "area") old-impl) #f)
+  ;; protocol-resolve on a pre-redef instance answers the old class's impl
   (gate-check "protocol-resolve old instance after redef"
-         (not (not (protocol-resolve "user/Shape" "area" (var-deref "user" "c")))) #t))
+         (eq? (protocol-resolve "user/Shape" "area" (var-deref "user" "c")) old-impl) #t))
 
 ;; ---- contagion: a PIC (megamorphic) site never resolves a contagion clone ------
 ;; Contagion clones are gated to monomorphic devirt sites by construction — only the

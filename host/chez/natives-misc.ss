@@ -264,7 +264,7 @@
     ;; else a record's is APersistentMap.mapHash over its entries, as defrecord's
     ;; hashCode is, and a deftype's is Object.hashCode, its identity. Both used
     ;; to answer the record hasheq.
-    ((jrec? x) (let ((m (find-method-any-protocol (jrec-tag x) "hashCode")))
+    ((jrec? x) (let ((m (find-method-any-protocol (jrec-rtag x) "hashCode")))
                  (cond (m (call-declared-hash m x))
                        ((jrec-record? x)
                         (fold-left (lambda (a e)

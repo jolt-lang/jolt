@@ -1515,8 +1515,48 @@
         ;; it to every instance; code compiled before that reports the shared
         ;; placeholder
         (when (vector-ref layout 2) (reify-class-graph-hook (vector-ref layout 2) protos))
-        (jolt-with-mutex reify-shape-mu (hashtable-set! reify-shape-memo shape layout))
+        (jolt-with-mutex reify-shape-mu
+          (hashtable-set! reify-shape-memo shape layout)
+          (hashtable-set! reify-site-protos slots protos))
         layout)))
+;; Every reify site's slot table -> its protocols, held as long as an instance
+;; the site built is (each holds the table), whether or not the site's shape
+;; literal still is: what a protocol redefinition walks
+;; (forget-reify-protocol!).
+(define reify-site-protos (make-weak-eq-hashtable))
+;; A protocol REDEFINED after a reify site was laid out: the site's class was
+;; compiled against the old protocol interface, so its instances -- those built
+;; before and those it builds after -- no longer implement the protocol
+;; (protocols.ss forget-protocol-declarations!). Recorded per site, by the
+;; site's slot table, which every instance it builds shares (the car of its
+;; methods); a reify form evaluated again is a new site and implements the new
+;; protocol. Copy-on-write like the retired descriptors (records.ss): written
+;; only by a redefinition, #f until the first.
+(define reify-retired-box (box #f))
+;; Entries are (proto . gen): the generation the site implemented.
+(define (reify-retired-entries obj)
+  (let ((t (unbox reify-retired-box)))
+    (if (and t (jreify? obj)) (hashtable-ref t (car (jreify-methods obj)) '()) '())))
+(define (reify-retired-protos obj) (map car (reify-retired-entries obj)))
+(define (reify-proto-retired-at? obj proto gen)
+  (and (member (cons proto gen) (reify-retired-entries obj)) #t))
+(define (reify-proto-retired? obj proto)
+  (and (unbox reify-retired-box) (member proto (reify-retired-protos obj)) #t))
+(define (forget-reify-protocol! proto gen)
+  (jolt-with-mutex reify-shape-mu
+    (let-values (((sites protos) (hashtable-entries reify-site-protos)))
+      (let ((t #f))
+        (do ((i 0 (fx+ i 1))) ((fx=? i (vector-length sites)))
+          (let ((slots (vector-ref sites i)) (ps (vector-ref protos i)))
+            (when (member proto ps)
+              (unless t
+                (set! t (if (unbox reify-retired-box)
+                            (hashtable-copy (unbox reify-retired-box) #t)
+                            (make-weak-eq-hashtable))))
+              (let ((cur (hashtable-ref t slots '())))
+                (unless (assoc proto cur) (hashtable-set! t slots (cons (cons proto gen) cur)))))))
+        (when t (set-box! reify-retired-box t))))))
+
 ;; A reify form's or a proxy's generated class name, or #f. A proxy's is worked
 ;; out on first ask by the host (proxy-class-name-hook, java/proxy.ss on Chez).
 (define proxy-class-name-hook (lambda (x) #f))
@@ -1662,6 +1702,12 @@
 (define reify-satisfies-memo (make-weak-eq-hashtable))
 (define reify-satisfies-mu (make-mutex))
 (define (reify-satisfies? obj pn-str)
+  (if (pair? (reify-retired-protos obj))
+      ;; the memo is keyed by the protocol list, which a site whose protocol
+      ;; was redefined shares with sites whose protocol was not
+      (and (jolt-satisfies-walk obj pn-str) #t)
+      (reify-satisfies?/memo obj pn-str)))
+(define (reify-satisfies?/memo obj pn-str)
   (let* ((protos (jreify-protos obj))
          (epoch (fx+ jolt-proto-epoch jch-graph-epoch))
          (inner (hashtable-ref reify-satisfies-memo protos #f))
@@ -1680,10 +1726,11 @@
     (or
       ;; direct: a record type's own registry, a reify's declared list.
       (cond
-        ((jrec? obj) (and (type-satisfies? (jrec-tag obj) pn-str) #t))
+        ((jrec? obj) (and (type-satisfies? (jrec-rtag obj) pn-str) #t))
         ((jreify? obj)
          (and (memp (lambda (p) (or (string=? p pn-str) (proto-class-match? p pn-str)))
                     (jreify-protos obj))
+              (not (reify-proto-retired? obj pn-str))
               #t))
         (else #f))
       ;; extended: the protocol may be extended to an interface or class the
@@ -1752,16 +1799,25 @@
 ;; extenders: type-tags that extend a protocol via extend/extend-type/extend-
 ;; protocol, as symbols (extends? reads this). Inline deftype/defrecord impls are
 ;; excluded — only tags carrying the extend mark count, matching the JVM.
+;; A redefined type's OLD class that was extended answers as that class (its
+;; retired class token, class-model.ss), named as the JVM names it; extends?
+;; compares it by identity.
 (define (extenders proto)
   (let* ((pn (jolt-get proto kw-proto-name jolt-nil))
          (pn-str (if (symbol-t? pn) (symbol-t-name pn) pn))
+         (retired (retired-descs))
          (out '()))
     (vector-for-each
       (lambda (tag)
         (let ((ti (hashtable-ref type-registry tag #f)))
           (when ti (let ((pi (hashtable-ref ti pn-str #f)))
                      (when (and pi (hashtable-ref pi extend-mark #f))
-                       (set! out (cons (jolt-symbol jolt-nil tag) out)))))))
+                       (let ((r (let loop ((rs retired))
+                                  (cond ((null? rs) #f)
+                                        ((string=? (cdar rs) tag) (caar rs))
+                                        (else (loop (cdr rs)))))))
+                         (set! out (cons (if r (jolt-retired-class-token r) (jolt-symbol jolt-nil tag))
+                                         out))))))))
       (jolt-with-mutex rec-tbl-mu (hashtable-keys type-registry)))
     (if (null? out) jolt-nil (list->cseq out))))
 
@@ -1774,7 +1830,7 @@
 ;; used to be the record's print form with the # dropped.
 (register-str-render! jrec?
   (lambda (v)
-    (let ((f (find-method-any-protocol (jrec-tag v) "toString")))
+    (let ((f (find-method-any-protocol (jrec-rtag v) "toString")))
       (if f
           (jolt-invoke f v)
           (string-append (jolt-class-name v) "@" (jolt-hex32 (jolt-java-hashcode v)))))))
@@ -1878,7 +1934,7 @@
     (let loop ((as args))
       (or (null? as)
           (let ((d (jrec-pic-desc (car as))))
-            (and d (string=? (jrdesc-tag d) (cadr as)) (loop (cddr as))))))))
+            (and d (string=? (jrdesc-rtag d) (cadr as)) (loop (cddr as))))))))
 ;; The dispatch key for the protocol SYM names — resolved the way any other
 ;; reference resolves, through :refer and :as — or nil when the symbol names no
 ;; protocol (a host class or interface, which keeps its bare name). deftype /
