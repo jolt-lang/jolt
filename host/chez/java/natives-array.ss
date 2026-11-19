@@ -830,8 +830,21 @@
 ;; aset-int and its siblings are clojure.core's def-aset: the value goes through
 ;; the checked cast of its type ((aset-int a 0 1e10) is out of range, as (int
 ;; 1e10) is) and the call returns the value it was handed, not the stored one.
+;; The store is java.lang.reflect.Array.setInt and its siblings, which take only
+;; a primitive array: a reference array (Object[], String[]) is their
+;; IllegalArgumentException, raised after the cast, as def-aset casts first.
+;; More indices walk down through aget first, def-aset's second arity.
 (define (na-typed-aset cast)
-  (lambda (arr i v) (na-aset! arr i (cast v)) v))
+  (letrec ((store
+            (case-lambda
+              ((arr i v)
+               (let ((x (cast v)))
+                 (when (and (jolt-array? arr) (na-ref-kind? (jolt-array-kind arr)))
+                   (throw-jvm 'IllegalArgumentException "Argument is not an array of primitive type"))
+                 (na-aset! arr i x)
+                 v))
+              ((arr i i2 . more) (apply store (jolt-nth arr i) i2 more)))))
+    store))
 ;; aset-int's value arrives boxed, so the JVM casts it with RT.intCast(Object):
 ;; a double goes through longCast first, and one past the int range is the
 ;; ArithmeticException "integer overflow", not the IllegalArgumentException a
@@ -995,15 +1008,27 @@
      (let ((k kind) (x v))
        (or (and (string? x) (eq? k na-string-kind))
            (let ((m na-store-memo))
-             (and (eq? (vector-ref m 0) k) (eq? (vector-ref m 1) (na-store-key-fast x))))
+             ;; the memo is always the two-slot vector built here, so the
+             ;; reads skip vector-ref's type and bounds checks
+             (and (eq? (#3%vector-ref m 0) k) (eq? (#3%vector-ref m 1) (na-store-key-fast x))))
            (jolt-nil? x))))))
 (define (na-array-set! a k v)
-  (let* ((kind (jolt-array-kind a)) (sv (na-elem-of kind v))
-         (j (if (fixnum? k) k (exact (na-idx k)))))
-    (when (and (string? kind) (not (na-store-ok-fast? kind sv)))
-      (na-ref-store-check! a j kind sv))
-    (ja-set! a j sv)
-    (if (eq? kind 'float) (make-jfloat sv) sv)))
+  (let ((kind (jolt-array-kind a))
+        (j (if (fixnum? k) k (exact (na-idx k)))))
+    (if (string? kind)
+        ;; A typed reference array has its own arm: no narrowing to do (its
+        ;; na-elem-of is the identity, reached after six kind compares) and a
+        ;; plain-vector backing, so a checked store is one vector-set! — which is
+        ;; what pays for the check.
+        (let ((bk (jolt-array-vec a)))
+          (unless (na-store-ok-fast? kind v) (na-ref-store-check! a j kind v))
+          (if (and (vector? bk) (fixnum? j) (fx<? -1 j (vector-length bk)))
+              (vector-set! bk j v)
+              (ja-set! a j v))
+          v)
+        (let ((sv (na-elem-of kind v)))
+          (ja-set! a j sv)
+          (if (eq? kind 'float) (make-jfloat sv) sv)))))
 ;; The same store through reflection — the aset VAR (apply aset …, the
 ;; multi-index form) and java.lang.reflect.Array/set — which the JVM routes
 ;; through Array.set, whose refusal is the IllegalArgumentException "array
@@ -1208,10 +1233,11 @@
 (define (jolt-vaset-coerce a bk i v)
   (let* ((j (if (fixnum? i) i (exact (na-idx i))))
          (kind (jolt-array-kind a))
-         (x (na-elem-of kind v)))
-    ;; ^objects over a typed reference array checks as the untyped aset does
-    (when (and (string? kind) (not (na-store-ok-fast? kind x)))
-      (na-ref-store-check! a j kind x))
+         ;; ^objects over a typed reference array checks as the untyped aset
+         ;; does, and skips na-elem-of, the identity on any reference kind
+         (x (if (string? kind)
+                (begin (unless (na-store-ok-fast? kind v) (na-ref-store-check! a j kind v)) v)
+                (na-elem-of kind v))))
     (cond ((fxvector? bk)
            (if (fixnum? x) (fxvector-set! bk j x) (vector-set! (ja-promote! a) j x)))
           ((vector? bk)

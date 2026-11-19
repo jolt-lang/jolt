@@ -405,8 +405,9 @@
   ;; (natives-array.ss na-ref-storable?), but jolt keeps one representation for
   ;; every exact integer in long range, so it cannot tell a Long from the
   ;; Integer, Short or Byte the JVM would refuse in a Long[] (or the reverse),
-  ;; and stores it. The check only ever refuses a definite mismatch.
-  {:category :permissive
+  ;; and stores it. The check only ever refuses a definite mismatch. The same
+  ;; one-fixnum collapse as the (class (int 1)) entry.
+  {:category :integer-box-model
    :behavior "(aset (make-array Integer 1) 0 1) — a Long into an Integer[] (and Integer/Short/Byte into each other's arrays)"
    :jvm "throws ArrayStoreException"
    :jolt "stores it"
@@ -414,17 +415,6 @@
            :jvm "throws ArrayStoreException"
            :jolt "[1]"}
    :note "jolt-uh8ck. Every other mismatch (a String into a Number[], a Double into a Long[]) is refused as on the JVM. Verified against Clojure 1.12.5."}
-  ;; aset-int and its siblings go through Array.setInt & co. on the JVM, which
-  ;; take only a primitive array; jolt stores the cast value into a reference
-  ;; array too (the corpus's array-stub rows rely on it).
-  {:category :permissive
-   :behavior "(aset-int (object-array 1) 0 7) — a typed aset on a reference array"
-   :jvm "throws IllegalArgumentException (Argument is not an array of primitive type)"
-   :jolt "stores the cast value"
-   :check {:expr "(let [a (object-array 1)] (aset-int a 0 7) (vec a))"
-           :jvm "throws IllegalArgumentException"
-           :jolt "[7]"}
-   :note "Found with jolt-uh8ck. Verified against Clojure 1.12.5."}
   ;; A primitive array coerces what it is handed. The JVM's reflective aset and
   ;; into-array refuse a value whose box does not match the element type; jolt
   ;; stores the value narrowed as Numbers.T_array would.
