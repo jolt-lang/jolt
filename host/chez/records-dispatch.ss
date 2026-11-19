@@ -1825,6 +1825,7 @@
 (def-var! "clojure.core" "register-record-type!" register-record-type!)
 (def-var! "clojure.core" "make-protocol" make-protocol)
 (def-var! "clojure.core" "register-protocol-methods!" register-protocol-methods!)
+(def-var! "clojure.core" "register-protocol-fn!" register-protocol-fn!)
 (def-var! "clojure.core" "register-method" register-method)
 (def-var! "clojure.core" "register-inline-method" register-inline-method)
 (def-var! "clojure.core" "register-inline-protocol!" register-inline-protocol!)

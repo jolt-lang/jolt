@@ -311,6 +311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+- A protocol call on a value whose type declares the protocol in its own body (`deftype`, `defrecord`, `reify`) ignores `with-redefs`, `alter-var-root` or a redef of the protocol fn, as the JVM's interface call does; extended types, nil and host values still call what the var holds (jolt-9l97g). The call site now also applies when an argument is not a plain local, and in a bare top-level expression.
 - On the Gambit host, `.indexOf`/`.lastIndexOf` of a char code no string holds raised from `integer->char`; they answer -1, as on Chez and the JVM.
 - `(.indexOf s c)` and `.lastIndexOf` given a char code no string holds (a lone surrogate, a negative int, or one past `0x10FFFF`) answered a `ClassCastException` from `integer->char`; they answer -1, as the JVM does.
 
