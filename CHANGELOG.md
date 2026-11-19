@@ -311,6 +311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+- On the Gambit host, `.indexOf`/`.lastIndexOf` of a char code no string holds raised from `integer->char`; they answer -1, as on Chez and the JVM.
 - `(.indexOf s c)` and `.lastIndexOf` given a char code no string holds (a lone surrogate, a negative int, or one past `0x10FFFF`) answered a `ClassCastException` from `integer->char`; they answer -1, as the JVM does.
 
 - **A multimethod no longer answers with a method it has since replaced.** On
