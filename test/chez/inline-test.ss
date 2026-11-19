@@ -1989,6 +1989,17 @@
             (clj= (ev "(with-redefs [pair-worker-target :pair]
                         (pair-destructure-single {:pair [:new 11 :ignored]}))")
                   (ev "[:new 11]")))
+        (when linked?
+          (ok "ordered operands can replace the linked root before the call"
+              (clj= (ev "(with-redefs [pair-worker-target pair-worker-target]
+                          (let [events (atom [])]
+                            (add-watch events :replace
+                              (fn [_ _ _ after]
+                                (when (= after [:arg1 :arg2])
+                                  (alter-var-root #'pair-worker-target
+                                                  (constantly (fn [_ _] [:later]))))))
+                            [(pair-destructure events 7) @events]))")
+                    (ev "[[:before :later :none] [:arg1 :arg2]]"))))
         (debug! #t)
         (ok "debug-local compilation keeps the vector visible"
             (not (has? (code-part (emitf "u" pair-consumer)) "(call-with-values ")))
