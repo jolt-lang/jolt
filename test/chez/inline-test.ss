@@ -103,6 +103,48 @@
     (not (has? (code-part (emitf "u" widths-form)) "(jolt-vector-filter-map ")))
 (set-direct-link-flag! #t)
 
+(define decode-rows-form
+  "(def decode-rows (fn* ([parse-row max-rows rows] (into [] (comp (map parse-row) (if max-rows (take max-rows) identity)) rows))))")
+(let ((e (code-part (emitf "u" decode-rows-form))))
+  (ok "row decoder calls the guarded map/take reducer"
+      (has? e "(jolt-iterable-map-take-into "))
+  (ok "row decoder keeps the ordinary linked constructors and into fallback"
+      (and (has? e "jolt-vector-filter-map-comp") (has? e "jolt-take")
+           (has? e "jolt-identity-fn") (has? e "jolt-into"))))
+(ok "row decoder with a shadowed identity keeps ordinary into"
+    (not (has? (code-part (emitf "u" "(def decode-shadowed (fn* ([identity f n xs] (into [] (comp (map f) (if n (take n) identity)) xs))))"))
+               "(jolt-iterable-map-take-into ")))
+(set-direct-link-flag! #f)
+(ok "dynamically linked row decoder keeps ordinary into"
+    (not (has? (code-part (emitf "u" decode-rows-form)) "(jolt-iterable-map-take-into ")))
+(set-direct-link-flag! #t)
+(ev decode-rows-form)
+(ok "map/take value bindings survive a local named let*-values"
+    (ev "(let [let*-values inc]
+           (= [2] (into [] (comp (map let*-values) (if true (take 1) identity))
+                         (java.util.ArrayList. [1]))))"))
+(ok "map/take preserves zero-limit mapper work, iterable lookahead and Reduced data"
+    (ev "(let [seen (atom []) box (reduced :row)
+                source (reify Iterable
+                         (iterator [_]
+                           (let [i (atom 0)]
+                             (reify java.util.Iterator
+                               (hasNext [_] (< @i 3))
+                               (next [_] (let [n (swap! i inc)] (swap! seen conj n) n))))))
+                parser (fn [x] (swap! seen conj [:parse x]) box)
+                zero (decode-rows parser 0 source)
+                one (decode-rows parser 1 source)]
+            (and (identical? zero []) (= 1 (count one)) (identical? box (first one))
+                 (= [1 2 [:parse 1] 1 2 [:parse 1]] @seen)))"))
+(ok "map/take gives custom reduce its ordinary reducer and vector seed"
+    (ev "(let [source (reify Iterable
+                         (iterator [_] (throw (ex-info \"unexpected traversal\" {})))
+                         clojure.lang.IReduceInit
+                         (reduce [_ rf seed]
+                           (assert (vector? seed))
+                           (rf (rf seed 1) 2)))]
+            (= [2 3] (decode-rows inc nil source)))"))
+
 ;; a small plain fn is spliced; the call to it disappears.
 (ev "(def add1 (fn* ([x] (+ x 1))))")
 (let ((e (emitf "u" "(fn* ([y] (add1 y)))")))

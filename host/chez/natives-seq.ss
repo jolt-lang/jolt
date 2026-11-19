@@ -97,18 +97,39 @@
       ((acc x . xs) (splice acc (apply jolt-invoke f x xs))))))
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
-(define (into-xform to xform from)
-  ;; conj onto a nil accumulator starts a list, as (conj nil x) does — into nil
-  ;; is (reduce conj nil from) on the JVM, and an empty source leaves nil.
-  (let* ((conj-rf (lambda a (if (fx=? (length a) 1) (car a)   ; completion = identity
-                               (jolt-conj1 (if (jolt-nil? (car a)) jolt-empty-list (car a)) (cadr a)))))
-         (xrf (jolt-invoke xform conj-rf))
-         ;; into-fold, not reduce-seq: an IReduce(Init) source drives its own
-         ;; reduce here too (seq.ss).
-         (res (jolt-invoke xrf (into-fold xrf to from))))
-    ;; jolt-conj1 carries no meta; the JVM's into keeps to's (with-meta on the
-    ;; transient path, conj's own carry otherwise), as jolt-into does
-    (if (jolt-nil? to) res (meta-carry-conj to res))))
+(define into-xform
+  (case-lambda
+    ((to xform from)
+     ;; conj onto a nil accumulator starts a list, and empty input leaves nil.
+     (let* ((conj-rf (lambda a (if (fx=? (length a) 1) (car a)
+                                  (jolt-conj1 (if (jolt-nil? (car a)) jolt-empty-list (car a)) (cadr a)))))
+            (xrf (jolt-invoke xform conj-rf))
+            (res (jolt-invoke xrf (into-fold xrf to from))))
+       ;; jolt-conj1 carries no meta; the JVM's into keeps to's, as jolt-into does.
+       (if (jolt-nil? to) res (meta-carry-conj to res))))
+    ((to xform from mapper limit)
+     ;; into-fold still owns dispatch and lookahead. Mapper and iterator
+     ;; callbacks can capture a continuation, so carry a persistent prefix.
+     (let ((rf (jolt-invoke xform jolt-identity-fn)))
+       (meta-carry-conj
+         to
+         (jolt-invoke1
+           rf
+           (into-fold
+             (if limit
+                 (let ((left limit))
+                   (lambda (acc x)
+                     ;; Map runs even at zero. Like td-take, read the shared
+                     ;; counter after the mapper, including on resumption.
+                     (let ((row (jolt-invoke1 mapper x)))
+                       (if (fx<=? left 0)
+                           (make-jolt-reduced acc)
+                           (let ((out (pvec-conj acc row)))
+                             (set! left (fx- left 1))
+                             (if (fxzero? left) (make-jolt-reduced out) out))))))
+                 ;; A Reduced from the mapper is still an element.
+                 (lambda (acc x) (pvec-conj acc (jolt-invoke1 mapper x))))
+             to from)))))))
 
 ;; A native vector (including an RRB slice tagged as a SubVector) has its
 ;; own logical count and leaves. Only the predicate and mapper call out.
