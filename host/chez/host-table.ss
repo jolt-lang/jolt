@@ -150,6 +150,7 @@
           (if p (make-map-entry (car p) (cdr p)) jolt-nil))
         not-mine)))
 (def-var! "jolt.host" "try-map-update" jolt-try-map-update)
+(def-var! "jolt.host" "try-set-difference" jolt-try-set-difference)
 ;; clojure.core/find's 2-arity call sites lower here (op-registry "find"), so the
 ;; overwhelmingly common case — a native map — costs one traversal and an entry,
 ;; with no var deref in front of it. Everything else is the type taxonomy, which
