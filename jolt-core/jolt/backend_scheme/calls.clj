@@ -585,7 +585,8 @@
   (if (do (note-tail-call! tail?) (and *const-pool* (var-cache?)))
     (let [site (hoist-const-per-site "(host-static-site-make)")]
       (order-args (fn [as]
-                    (str "((host-static-proc-site " site " " (chez-str-lit (:class fnode)) " "
+                    (str "((" (if (= :gambit (session/target)) "host-static-proc-site" "host-static-proc-site/i")
+                         " " site " " (chez-str-lit (:class fnode)) " "
                          (chez-str-lit (:member fnode)) " " (count as) ")"
                          (if (empty? as) "" (str " " (str/join " " as))) ")"))))
     (order-args (fn [as]

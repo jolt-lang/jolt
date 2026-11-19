@@ -267,6 +267,11 @@
 ;;                      last four lookups (dyn-binding.ss): 9.7 -> 1.0 beneath
 ;;                      thirty frames.
 ;;
+;;   get-nil            (get nil k) -- and (:k nil), a keyword on a nil map --
+;;                      walked every registered get arm before answering the
+;;                      default: ~90 ns against the JVM's ~6 (rewrite-clj's
+;;                      (:delimiter context) on a top-level form's nil context).
+;;
 ;;   record-with-meta   a record's metadata lived in the weak identity side
 ;;                      table, so with-meta was a copy plus a weak-table insert
 ;;                      under a lock, ~440 ns against ~32 for a vector's; it is a
@@ -838,6 +843,12 @@
           #(binding [*gate-deep* 1] (binding [*gate-top* 0] (dotimes [_ 200000] *gate-top*)))
           #(binding [*gate-deep* 1] (gate-nest 30 (fn [] (dotimes [_ 200000] *gate-deep*))))
           2.5)
+  ;; get on nil costs about what get on an empty map does. It walked every
+  ;; registered get arm before answering the default.
+  (judge! "get-nil"
+          #(let [m {}] (dotimes [_ gate-n] (get m :k)))
+          #(let [m nil] (dotimes [_ gate-n] (get m :k)))
+          2.0)
   (judge! "record-with-meta"
           #(let [v gate-meta-vec m gate-meta] (dotimes [_ 200000] (with-meta v m)))
           #(let [r gate-meta-rec m gate-meta] (dotimes [_ 200000] (with-meta r m)))

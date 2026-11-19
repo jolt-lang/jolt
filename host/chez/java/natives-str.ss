@@ -261,18 +261,28 @@
 ;; single-char search with no needle allocation — (.indexOf s (int 59)) used to
 ;; build a 1-char string through number->exact->truncate->integer->char->string
 ;; per call (~160ns); honeysql's suspicious? transducer does two per entity.
+;; The read is unchecked (sa-ustring-ref): i starts at 0 or above and stops
+;; below the length, and a char is an immediate, so eq? is char=?. A safe
+;; string-ref and char=? per position made a 16-character scan 54 ns; this is
+;; ~32 (rewrite-clj's boundary test is (.indexOf "\":;'@^`~()[]{}\\" (int c))
+;; for every character it reads, #1713).
 (define (str-char-index s c from)
   (let ((n (string-length s)))
-    (let loop ((i (max 0 from)))
+    (let loop ((i (if (fixnum? from) (fxmax 0 from) (max 0 from))))
       (cond ((fx>=? i n) -1)
-            ((char=? (string-ref s i) c) i)
+            ((eq? (sa-ustring-ref s i) c) i)
             (else (loop (fx+ i 1)))))))
+;; A char code that is no Unicode scalar value -- a lone surrogate, a negative
+;; int, or one past #x10FFFF -- is in no jolt string (a Chez string holds scalar
+;; values only), so String.indexOf/lastIndexOf(int) answer -1 for it, as the JVM
+;; does for a code no position holds. str-needle would raise in integer->char.
+(define (str-unmatchable-code? x)
+  (and (or (fixnum? x) (bignum? x))
+       (not (and (<= 0 x #x10FFFF) (not (<= #xD800 x #xDFFF))))))
 ;; a needle that is a char code (fixnum) or a char scans directly
 (define (str-index-of-any s needle from)
-  (cond ((fixnum? needle)
-         (if (and (fx>=? needle 0) (fx<=? needle #x10FFFF))
-             (str-char-index s (integer->char needle) from)
-             (str-index-of s (str-needle needle) from)))
+  (cond ((str-unmatchable-code? needle) (string-length s) -1)   ; the length still refuses a non-string
+        ((fixnum? needle) (str-char-index s (integer->char needle) from))
         ((char? needle) (str-char-index s needle from))
         (else (str-index-of s (str-needle needle) from))))
 ;; The backward twin of str-index-of, and it gets the same inline first-character
@@ -1035,7 +1045,8 @@
         (apply string-append
                (let rep ((i n) (a (quote ()))) (if (fx=? i 0) a (rep (fx- i 1) (cons s a))))))))
 (define (jolt-str-code-point-at s i) (char->integer (string-ref s (jolt->idx i))))
-(define (jolt-str-last-index-of s needle) (str-last-index-of s (str-needle needle)))
+(define (jolt-str-last-index-of s needle)
+  (if (str-unmatchable-code? needle) -1 (str-last-index-of s (str-needle needle))))
 (define (jolt-str-strip s left? right?) (str-strip s left? right?))
 (define (jolt-str-to-char-array s)
   ;; na-char-array reads nil as an empty seq, but the JVM throws NPE here.
@@ -1198,7 +1209,9 @@
                   (if (fx>? (length rest) 1) (jolt->idx (arg 1)) (string-length s))))
     ((string=? method "lastIndexOf")
      (if (fx>? (length rest) 1)
-         (str-last-index-of-from s (str-needle (arg 0)) (jolt->idx (arg 1)))
+         (if (str-unmatchable-code? (arg 0))
+             -1
+             (str-last-index-of-from s (str-needle (arg 0)) (jolt->idx (arg 1))))
          (jolt-str-last-index-of s (arg 0))))
     ((string=? method "endsWith")
      (let ((p (str-arg (arg 0))) (slen (string-length s)))
@@ -1325,7 +1338,7 @@
 ;; on every call). A char needle is the one-char string the JVM's char overload
 ;; answers identically for.
 (define (str-last-find needle s from)
-  (let ((i (str-last-index-of-from s (str-needle needle) from)))
+  (let ((i (if (str-unmatchable-code? needle) -1 (str-last-index-of-from s (str-needle needle) from))))
     (if (fx<? i 0) jolt-nil i)))
 
 ;; --- native one-shots for clojure.string's hot wrappers ----------------------

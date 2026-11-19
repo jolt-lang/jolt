@@ -1653,7 +1653,7 @@
   (probe-if-available (lambda () jrec-fast-type-probe)))
 
 (define (get-fast-probes)
-  (append (list (probe-pmap) (probe-pvec) (probe-pset) "s") (probe-jrecs)))
+  (append (list (probe-pmap) (probe-pvec) (probe-pset) "s" jolt-nil) (probe-jrecs)))
 (define (get-arm-reject-fast-type! who pred)
   (reject-fast-type-claim! who pred (get-fast-probes) "the jolt-get fast path"))
 (define jolt-get-arms '())
@@ -1729,6 +1729,11 @@
 ;; resolved at call time. Check concrete types first, then records, then arms.
 (define (jolt-get-dispatch coll k d)
   (cond ((pmap? coll) (pmap-fast-get coll k d))
+        ;; (get nil k) is the default, and a keyword or a get on a nil map is
+        ;; common (rewrite-clj's (:delimiter context) on a top-level form's nil
+        ;; context): it walked every registered arm first, 90 ns against the
+        ;; JVM's 6 (#1713). No arm may claim nil (get-fast-probes).
+        ((eq? coll jolt-nil) d)
         ((pvec? coll) (pvec-get coll k d))
         ((pset? coll) (pset-get coll k d))
         ((jrec? coll) (jrec-ref coll k d))

@@ -2056,6 +2056,17 @@
     (if st
         (vector-ref st 2)
         (host-static-proc-site-miss site class member n))))
+;; The same, open-coded at the call site (the Chez back end emits it, #1713): the
+;; hit is a slot read and an epoch compare, where the procedure above was three
+;; calls -- itself, host-static-site-hit, host-static-epoch -- ahead of the
+;; method, on every Character/isWhitespace a scanner makes per character.
+(define-syntax host-static-proc-site/i
+  (syntax-rules ()
+    ((_ site0 class member n)
+     (let* ((site site0) (st (vector-ref site 0)))
+       (if (and st (fx= (vector-ref st 0) (unbox host-static-epoch-box)))
+           (vector-ref st 2)
+           (host-static-proc-site-miss site class member n))))))
 (define (host-static-proc-site-miss site class member n)
   (let ((e (host-static-epoch)))
     (memory-order-acquire)

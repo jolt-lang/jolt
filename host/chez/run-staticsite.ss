@@ -17,7 +17,9 @@
   (gate-check "a static field read is a cached site" (gate-sub? e "(host-static-ref-site ") #t)
   (gate-check "...not the per-call lookup" (gate-sub? e "(host-static-ref \"") #f))
 (let ((e (emit (anode "(def g (fn [x] (Long/numberOfLeadingZeros x)))"))))
-  (gate-check "a static call is a cached site" (gate-sub? e "((host-static-proc-site ") #t)
+  ;; open-coded on Chez (host-static-proc-site/i), the procedure elsewhere
+  (gate-check "a static call is a cached site"
+              (or (gate-sub? e "((host-static-proc-site/i ") (gate-sub? e "((host-static-proc-site ")) #t)
   (gate-check "...passing its argument count" (gate-sub? e "\"numberOfLeadingZeros\" 1)") #t)
   (gate-check "...not the per-call lookup" (gate-sub? e "(host-static-call \"") #f))
 

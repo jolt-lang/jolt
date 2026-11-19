@@ -192,6 +192,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cache before the methods table: 172 ns down to 40. On an Intel i5-4278U,
   rewrite-clj's `parse-string` and `parse-string-all` take ~16% less time
   and `clojure.tools.reader/read-string` ~13% less.
+- **`get` on nil, a static method call and `String.indexOf` of a char cost
+  less (#1713).** `(get nil k)` and `(:k nil)` walked every registered `get`
+  arm before answering the default: 90 ns down to 15. A static method's
+  call-site cache is open-coded, so `Character/isWhitespace` takes ~15 ns
+  instead of ~24. `.indexOf` of a char scans without bounds checks, which
+  takes a short scan from ~54 ns to ~32.
 - **A dynamic var bound far down the binding stack reads as fast as one bound
   at the top (#1713).** A read walked every binding frame on the thread to
   find its binding, and readers bind one frame per nesting level. The
@@ -287,6 +293,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load against the previous release.
 
 ### Fixed
+- `(.indexOf s c)` and `.lastIndexOf` given a char code no string holds (a lone surrogate, a negative int, or one past `0x10FFFF`) answered a `ClassCastException` from `integer->char`; they answer -1, as the JVM does.
 
 - **A multimethod no longer answers with a method it has since replaced.** On
   arm64, a thread dispatching while another ran `defmethod` (or

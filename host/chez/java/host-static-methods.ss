@@ -744,8 +744,10 @@
         ;; JVM Character.isWhitespace: java-whitespace? (natives-str.ss), shared with
         ;; clojure.string's trim and blank?.
         ;; A surrogate (a unit, or its int) is no whitespace and no Chez char.
-        (cons "isWhitespace" (lambda (c) (let ((ch (scalar-char c)))
-                                           (and ch (java-whitespace? ch)))))
+        (cons "isWhitespace" (lambda (c) (if (char? c)
+                                             (java-whitespace? c)
+                                             (let ((ch (scalar-char c)))
+                                               (and ch (java-whitespace? ch))))))
         ;; Codepoint bounds, as plain integers. The UTF-16 surrogate API is in
         ;; the codepoint-conversion block above.
         (cons "MIN_VALUE" (integer->char 0))
