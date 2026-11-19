@@ -538,11 +538,20 @@
 
 (for-each
   (lambda (hint)
-    (let ((f (facts-for (string-append "(fn [x] ((fn* ^" hint " [] x)))"))))
-      (ok (string-append "^" hint " closure call discards the pre-coercion origin")
+    (let* ((f (facts-for (string-append "(fn [x] ((fn* ^" hint " [] x)))")))
+           (read (in-body 'fn 'arities 0 'body))
+           (returns (origins-at f (in-body))))
+      (ok (string-append "^" hint " closure return may preserve or replace the captured argument")
           (and (origin? f '(arities 0 body fn arities 0 body) 'argument 'arities 0 'params 0)
-               (origin? f '(arities 0 body) 'unknown)))))
+               (jolt-contains? returns (jolt-first (origins-at f read)))
+               (jolt-contains? returns (jolt-hash-map (fact-kw 'kind) (fact-kw 'unknown)))
+               (may-publish? f read)))))
   '("double" "long"))
+(let* ((source "(fn [v] (let [m {:k v}] (try ((fn* ^double [] m)) (catch Throwable e (ex-message e)))))")
+       (f (facts-for source)))
+  (ok "a caught return coercion can report the map's runtime representation"
+      (and (jolt-contains? (observations-at f map-site) (fact-kw 'representation))
+           (has? (ev (string-append "(" source " 1)")) "PersistentArrayMap"))))
 (let ((d (ev "((fn [x] ((fn* ^double [] x))) 1)"))
       (n (ev "((fn [x] ((fn* ^long [] x))) 18446744073709551616N)")))
   (ok "fixed-arity return coercion widens to double and wraps long"
