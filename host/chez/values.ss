@@ -612,7 +612,9 @@
 (define (jolt=2 a b)
   (cond ((and (fixnum? a) (fixnum? b)) (= a b))
         ((and (flonum? a) (flonum? b)) (= a b))
-        ((and (eq? a b) (not (number? a))) #t)
+        ;; a Float NaN is unequal to itself, as a double NaN is (the clause above):
+        ;; a jfloat is a box, so identity alone would call it equal
+        ((and (eq? a b) (not (number? a))) (not (and (jfloat? a) (nan? (jfloat-fl a)))))
         ;; Two keywords, and two strings, answer HERE rather than after the arm
         ;; walk. Both pairs are already in eq-fast-probes, so the registry REFUSES
         ;; an arm that would claim them (eq-arm-reject-fast-type!) — that guard is

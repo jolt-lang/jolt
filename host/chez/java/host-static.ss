@@ -1406,7 +1406,8 @@
       '(("byteValue" 0) ("shortValue" 0) ("intValue" 0) ("longValue" 0)
         ("doubleValue" 0) ("floatValue" 0) ("toString" 0 1) ("hashCode" 0)
         ("isNaN" 0) ("isInfinite" 0) ("negate" 0) ("abs" 0) ("bitLength" 0)
-        ("signum" 0) ("shiftLeft" 1) ("shiftRight" 1) ("equals" 1)))
+        ("signum" 0) ("shiftLeft" 1) ("shiftRight" 1) ("equals" 1)
+        ("compareTo" 1) ("numerator" 0) ("denominator" 0)))
     h))
 (define (number-method method n . args)
   ;; Every arity is checked, a missing argument too: (.shiftLeft 1) faulted
@@ -1426,13 +1427,69 @@
   (syntax-rules ()
     ((_ (n args) (name expr) ...)
      (begin (hashtable-set! number-method-tbl name (lambda (n args) expr)) ...))))
+;; The Number projections as the JVM computes them. An integer truncates and
+;; keeps the low bits of its width (BigInteger.intValue, the narrowing casts); a
+;; double saturates at the width's range with NaN as 0, the JLS (int)/(long)
+;; conversion, and Double.shortValue/byteValue narrow from that int. A Ratio is
+;; both: Ratio.longValue keeps the low 64 bits of its truncation, but
+;; Ratio.intValue is (int)doubleValue, so it saturates, and short/byte narrow
+;; from that int. doubleValue is the nearest double and floatValue the nearest
+;; float, a jfloat. A fixnum is in range for 64 bits, and tools.reader reads
+;; every integer through .longValue (#1713), so it returns before any bignum.
+(define (num-wrap e bits)
+  (let* ((m (bitwise-arithmetic-shift-left 1 bits))
+         (b (modulo e m)))
+    (if (>= b (bitwise-arithmetic-shift-right m 1)) (- b m) b)))
+(define (num-flo-sat d bits)
+  (let ((hi (- (bitwise-arithmetic-shift-left 1 (- bits 1)) 1)))
+    (cond ((nan? d) 0)
+          ((>= d (inexact hi)) hi)
+          ((<= d (inexact (- -1 hi))) (- -1 hi))
+          (else (exact (truncate d))))))
+(define (num-flo n) (cond ((jfloat? n) (jfloat-fl n)) ((flonum? n) n) (else #f)))
+(define (num-integral n bits)
+  (cond ((fixnum? n)
+         (if (or (fx=? bits 64) (fx<=? -2147483648 n 2147483647)) n (num-wrap n bits)))
+        ((num-flo n) => (lambda (d) (num-flo-sat d bits)))
+        ((and (fx=? bits 32) (num-ratio? n)) (num-flo-sat (inexact n) 32))
+        (else (num-wrap (jnum->exact n) bits))))
+(define (num-exact-integer? n) (and (number? n) (exact? n) (integer? n)))
+(define (num-ratio? n) (and (number? n) (exact? n) (not (integer? n))))
 (define-number-methods (n args)
-    ("byteValue" (let ((b (modulo (jnum->exact n) 256))) (->num (if (>= b 128) (- b 256) b))))
-    ("shortValue" (let ((b (modulo (jnum->exact n) 65536))) (->num (if (>= b 32768) (- b 65536) b))))
-    ("intValue" (->num (jnum->exact n)))
-    ("longValue" (->num (jnum->exact n)))
-    ("doubleValue" (->num n))
-    ("floatValue" (->num n))
+    ("byteValue" (num-wrap (num-integral n 32) 8))
+    ("shortValue" (num-wrap (num-integral n 32) 16))
+    ("intValue" (num-integral n 32))
+    ("longValue" (num-integral n 64))
+    ("doubleValue" (or (num-flo n) (inexact (jolt-need-num n))))
+    ("floatValue" (make-jfloat (flsingle (or (num-flo n) (inexact (jolt-need-num n))))))
+    ;; Comparable.compareTo: -1/0/1, a double by Double.compare (NaN above
+    ;; everything, -0.0 below 0.0). Long, Double and Float compare only to their
+    ;; own class, and the reflector's cast of the argument is what raises; a Ratio
+    ;; takes any number (Numbers.compare). jolt's one integer answers for a Long.
+    ("compareTo"
+     (begin
+     (let ((o (car args)))
+       (unless (or (num-ratio? n)
+                   (cond ((jfloat? n) (jfloat? o))
+                         ((flonum? n) (flonum? o))
+                         (else (num-exact-integer? o))))
+         (throw-jvm 'ClassCastException
+                    (string-append "Cannot cast " (jolt-class-name o) " to "
+                                   (cond ((jfloat? n) "java.lang.Float")
+                                         ((flonum? n) "java.lang.Double")
+                                         (else "java.lang.Long"))))))
+     (let ((a (or (num-flo n) n)) (b (let ((o (car args))) (or (num-flo o) (jolt-need-num o)))))
+       (if (or (flonum? a) (flonum? b))
+           (let ((x (inexact a)) (y (inexact b)))
+             (cond ((nan? x) (if (nan? y) 0 1))
+                   ((nan? y) -1)
+                   ((fl< x y) -1) ((fl> x y) 1)
+                   ;; equal, so only the sign of a zero tells them apart
+                   ((and (fl= x 0.0) (not (eqv? x y))) (if (eqv? x -0.0) -1 1))
+                   (else 0)))
+           (cond ((< a b) -1) ((> a b) 1) (else 0))))))
+    ("numerator" (if (num-ratio? n) (numerator n) (dispatch-miss n "numerator" args)))
+    ("denominator" (if (num-ratio? n) (denominator n) (dispatch-miss n "denominator" args)))
     ;; .toString(radix) — BigInteger/Integer render in a base, lowercase like the
     ;; JVM (rewrite-clj's integer node reconstructs 0xff / 0377 / 2r1001 this way).
     ;; It is BigInteger's overload, the one jolt's single integer type can take, so
@@ -1453,14 +1510,20 @@
     ;; BigInteger interop: .negate / .bitLength / .signum / .abs. A jolt integer is
     ;; a Chez exact integer, so these are native (integer-length = JVM bitLength,
     ;; matching for negative values too). tools.reader's number parser uses them.
-    ("negate" (->num (- (jnum->exact n))))
-    ("abs" (->num (abs (jnum->exact n))))
-    ("bitLength" (->num (integer-length (jnum->exact n))))
-    ("signum" (->num (let ((e (jnum->exact n))) (cond ((> e 0) 1) ((< e 0) -1) (else 0)))))
+    ;; They are BigInteger's: a double or a Ratio has none (jolt's one integer
+    ;; type answers for a Long too, which cannot be told from a small BigInt).
+    ("negate" (if (num-exact-integer? n) (- n) (dispatch-miss n "negate" args)))
+    ("abs" (if (num-exact-integer? n) (abs n) (dispatch-miss n "abs" args)))
+    ("bitLength" (if (num-exact-integer? n) (integer-length n) (dispatch-miss n "bitLength" args)))
+    ("signum" (if (num-exact-integer? n) (cond ((> n 0) 1) ((< n 0) -1) (else 0)) (dispatch-miss n "signum" args)))
     ;; BigInteger.shiftLeft/shiftRight (test.check's size-bounded-bigint): arbitrary
     ;; precision, so an arithmetic shift by the (positive) amount.
-    ("shiftLeft" (->num (bitwise-arithmetic-shift-left (jnum->exact n) (jnum->exact (car args)))))
-    ("shiftRight" (->num (bitwise-arithmetic-shift-right (jnum->exact n) (jnum->exact (car args))))))
+    ("shiftLeft" (if (num-exact-integer? n)
+                     (bitwise-arithmetic-shift-left n (jnum->exact (car args)))
+                     (dispatch-miss n "shiftLeft" args)))
+    ("shiftRight" (if (num-exact-integer? n)
+                      (bitwise-arithmetic-shift-right n (jnum->exact (car args)))
+                      (dispatch-miss n "shiftRight" args))))
 (define (number-method-arms method n args)
   (let ((f (hashtable-ref number-method-tbl method #f)))
     (if f (f n args) (dispatch-miss n method args))))

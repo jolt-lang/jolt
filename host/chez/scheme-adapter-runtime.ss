@@ -189,6 +189,12 @@
   (let ((t (current-time 'time-utc)))
     (+ (* (time-second t) 1000) (quotient (time-nanosecond t) 1000000))))
 
+;; (sa-process-id) -> exact integer
+;; The operating-system id of this process. Contract: differs between two
+;; processes alive at the same time -- with sa-epoch-ms, the salt that keeps ids
+;; one process compiled from colliding with another's. Degradation: none.
+(define (sa-process-id) (get-process-id))
+
 ;; ---- records: open-coded predicates, accessors, mutators, constructors -------
 ;;
 ;; A nongenerative type's rtd is a compile-time constant in Chez, and cp0
