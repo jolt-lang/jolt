@@ -262,6 +262,13 @@
                                 (ir-path path)))))
     (clj= (origins-at facts (ir-path use)) (jolt-hash-set entry))))
 
+(let ((f (facts-for "(fn* ([^double x ^long y z] (let* [a x b y c z] [a b c])))")))
+  (ok "numeric entry coercions give aliases an unknown origin"
+      (and (origin? f '(arities 0 body body items 0) 'unknown)
+           (origin? f '(arities 0 body body items 1) 'unknown)))
+  (ok "the adjacent uncoerced alias still has its incoming origin"
+      (origin? f '(arities 0 body body items 2) 'argument 'arities 0 'params 2)))
+
 (let ((f (facts-for "(fn* ([x] (let* [outer x x [x] alias x alias2 alias] [outer x alias2])))")))
   (ok "a shadowing let initializer sees the outer parameter"
       (binds? f '(arities 0 body bindings 1 1 items 0) '(arities 0 params 0)))
