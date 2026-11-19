@@ -111,6 +111,8 @@
                              (ordinary (ordinary m [:root k :a] nil) [:root k :b] false)))
                         [nil {} {:root nil} {:root {k nil}} root (->EditRecord {k leaf})])
                 (= (sibling-edits nil nil 1 2) {:root {nil {:a 1 :b 2}}})
+                (= (sibling-edits nil [:composite] 1 2) {:root {[:composite] {:a 1 :b 2}}})
+                (= (sibling-edits {:root [{}]} 0 1 2) {:root [{:a 1 :b 2}]})
                 (= 9 (get-in root [:root k :b]))
                 (= {:root true} (meta (sibling-edits root k 1 2)))
                 (= {:leaf true} (meta (get-in (sibling-edits root k 1 2) [:root k])))
@@ -122,6 +124,15 @@
            (and (identical? old same) (= old changed)
                 (not (identical? old changed))
                 (not (identical? (:p old) (:p changed)))))"))
+(ok "overlapping paths and externally retained intermediate maps stay ordered"
+    (ev "(let [old {:root {:shape {:discarded 0}}} child {:keep true}
+               first (assoc-in old [:root :shape] child)
+               second (assoc-in first [:root :shape :added] false)]
+           (and (= second (-> old (assoc-in [:root :shape] child)
+                                   (assoc-in [:root :shape :added] false)))
+                (= {:discarded 0} (get-in old [:root :shape]))
+                (identical? child (get-in first [:root :shape]))
+                (= {:keep true :added false} (get-in second [:root :shape]))))"))
 (ok "assoc-in fallback preserves an earlier bad receiver and operand order"
     (ev "(let [seen (atom []) note (fn [k v] (swap! seen conj k) v)
                run (fn [f] (try [(f)] (catch Throwable e [(class e) (.getMessage e)])))
