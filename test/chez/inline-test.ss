@@ -79,6 +79,29 @@
 (set-optimize! #t)
 (set-direct-link-flag! #t)
 
+;; One public site accepts both bounded native vector leaves and generic
+;; sources. Check the executable form, since the preamble quotes the input.
+(define widths-form
+  "(def row-widths (fn* ([xs] (into [] (comp (filter sequential?) (map count)) xs))))")
+(let ((e (code-part (emitf "u" widths-form))))
+  (ok "row widths calls the fused leaf walk" (has? e "(jolt-vector-filter-map "))
+  (ok "row widths checks the source representation" (has? e "(pvec-ent "))
+  (ok "row widths retains the ordinary transducers on a miss"
+      (and (has? e "(td-filter ") (has? e "(td-map "))))
+(ok "a shadowed stage is not fused"
+    (not (has? (code-part (emitf "u" "(def w (fn* ([filter xs] (into [] (comp (filter sequential?) (map count)) xs))))"))
+               "(jolt-vector-filter-map ")))
+(ok "a custom final stage is not fused"
+    (not (has? (code-part (emitf "u" "(def w (fn* ([stop xs] (into [] (comp (filter sequential?) (map count) stop) xs))))"))
+               "(jolt-vector-filter-map ")))
+(let ((e (code-part (emitf "u" "(def w (fn* ([pvec-ent td-map xs] (into [] (comp (filter pvec-ent) (map td-map)) xs))))"))))
+  (ok "filter/map locals cannot shadow emitted runtime names"
+      (and (has? e "$Rpvec-ent") (has? e "$Rtd-map") (has? e "(pvec-ent ") (has? e "(td-map "))))
+(set-direct-link-flag! #f)
+(ok "dynamically linked row widths keep the ordinary cascade"
+    (not (has? (code-part (emitf "u" widths-form)) "(jolt-vector-filter-map ")))
+(set-direct-link-flag! #t)
+
 ;; a small plain fn is spliced; the call to it disappears.
 (ev "(def add1 (fn* ([x] (+ x 1))))")
 (let ((e (emitf "u" "(fn* ([y] (add1 y)))")))

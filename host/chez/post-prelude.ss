@@ -1,5 +1,12 @@
 ;; post-prelude overrides — loaded AFTER the assembled clojure.core
 ;; prelude, so these win over the overlay's own def-var!.
+
+;; Capture the standard comp before any user code can write its linked root.
+;; A tree-shaken prelude can omit it entirely.
+(define jolt-vector-filter-map-comp
+  (let ((cell (var-cell-lookup "clojure.core" "comp")))
+    (and cell (var-cell-root cell))))
+
 ;;
 ;; A few clojure.core predicates are implemented in the overlay by inspecting a
 ;; tagged value's :jolt/type key (e.g. (get x :jolt/type)). That key doesn't

@@ -214,6 +214,9 @@
                   "jrec-field-site-make" "jrec-field-site-ref" "jrec-field-site-ref/i" "jolt=2/i" "jolt-char-pred/i" "jolt-zero?/i" "jolt-pos?/i" "jolt-neg?/i" "jolt-str1/i" "jolt-nth/i" "str-index-of-any/i" "jolt-pic-host-key/i" "host-new-site/i" "host-new-site-make" "jrec-own-field" "jolt-set-own-field!" "jrec-pic-desc" "jrec-pic-desc/i" "jrdesc-vtable-ref" "jrec-slot/u" "jrec-slot-set!/u" "jrec*-slot/u" "jrec*-slot-set!/u" "intern-pm-key" "protocol-direct-impl" "protocol-direct-impl/site" "protocol-fn-of" "jrec?" "jrec-desc"
                   "jrec-own-slot-miss" "jrec-own-slot-set-miss!" "jrec*-vals" "unbox" "pvec-in-range/i" "jrec-self-site-fill!" "jrec-field"
                   "pvec?" "pvec-cnt" "pvec-nth-in-range" "fx<?"
+                  ;; The guarded into/filter/map lowering keeps these runtime
+                  ;; entries visible even when a user local has the same name.
+                  "pvec-ent" "jolt-vector-filter-map-comp" "jolt-vector-filter-map" "td-filter" "td-map"
                   "jrec1?" "jrec2?" "jrec3?" "jrec4?" "jrec5?" "jrec6?" "jrec7?" "jrec8?"
                   "keyword-t?" "mark-macro!" "set-var-meta!" "throw-jvm"
                   "def-var-linked!" "amap-slots->pmap"
