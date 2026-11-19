@@ -285,5 +285,82 @@
       (printf "  kw site: scan ~a ms, cached ~a ms (ratio ~a, ceiling 0.6)\n" scan cached (if (> scan 0) (/ (round (* 100.0 (/ cached scan))) 100.0) 'n/a))
       (< cached (* 0.6 scan))))
 
+
+;; --- update at the public entry point ----------------------------------------
+(is "update retains the original map and observes present nil and absence"
+    "(mapv (fn [m]
+             (let [m (with-meta m {:tag true})
+                   same (update m :nil identity)
+                   inserted (update m :new identity)
+                   changed (update m :old (fn [old a & more] (apply + old a more)) 2 3 4)]
+               [(identical? same m) (contains? m :nil) (contains? m :new)
+                (contains? inserted :new) (:new inserted) (meta inserted)
+                (:old changed) (:old m) (meta changed)]))
+           [{:nil nil :old 1} (hash-map :nil nil :old 1)])"
+    "[[true true false true nil {:tag true} 10 1 {:tag true}] [true true false true nil {:tag true} 10 1 {:tag true}]]")
+(is "update calls an updater once if it throws, and retains applyTo dispatch"
+    "(let [seen (atom []) m {0 1}
+           f (reify clojure.lang.IFn
+               (invoke [_ x] :invoke)
+               (applyTo [_ args] (vec args)))]
+       [(try (update m 0 (fn [v] (swap! seen conj v) (throw (ex-info \"stop\" {}))))
+             (catch Exception e (= \"stop\" (ex-message e))))
+        @seen (get m 0)
+        (get (update m 0 f 2 3) 0)
+        (try (update m 0 (fn [] :wrong)) (catch clojure.lang.ArityException _ :arity))])"
+    "[true [1] 1 [1 2 3] :arity]")
+(is "update retains the stored equal key in arrays and tries"
+    "(let [k (with-meta 'table {:stored true}) p (with-meta 'table {:stored false})]
+       (mapv (fn [m] (let [u (update m p inc)] [(get m p) (get u p) (identical? k (key (find u p)))]))
+             [(array-map k 1) (hash-map k 1)]))"
+    "[[1 2 true] [1 2 true]]")
+(is "updating either endpoint of a self-loop advances the degree twice"
+    "(reduce (fn [degrees edge]
+              (reduce #(update %1 %2 (fnil inc 0)) degrees
+                      (filter #{1} ((juxt (comp :table :lhs) (comp :table :rhs)) edge))))
+            {} [{:lhs {:table 1} :rhs {:table 1}}])"
+    "{1 2}")
+(is "update keeps the generic association path for other receivers and keys"
+    "(let [m (sorted-map :k 1) k [1] v [2]]
+       [(update nil :k (fnil inc 0)) (update v 0 + 3)
+        (update (hash-map k 1) k inc) (class (update m :k inc)) (:k m) (:k (update m :k inc))])"
+    "[{:k 1} [5] {[1] 2} clojure.lang.PersistentTreeMap 1 2]")
+(ok "update promotes an array map using assoc's thresholds, count and order"
+    (let* ((m (evv "(with-meta (zipmap (range 8) (range 8)) {:tag true})"))
+           (update-map (evv "(fn [m] (update m 8 (fnil inc 0)))"))
+           (u (jolt-invoke update-map m)))
+      (and (pmap-array? m) (not (pmap-array? u)) (= 8 (pmap-cnt m)) (= 9 (pmap-cnt u))
+           (eq? (jolt-meta m) (jolt-meta u))
+           (jolt=2 (jolt-seq u) (jolt-seq (pmap-assoc m 8 1))))))
+(ok "update handles replacement, insertion and identity in a full hash collision"
+    (let* ((a (string-copy "AaAa")) (b (string-copy "BBBB")) (c (string-copy "AaBB"))
+           (m (pmap-assoc (pmap-assoc empty-pmap-hash a 1) b 2))
+           (update-map (evv "(fn [m k f] (update m k f))"))
+           (u (jolt-invoke update-map m (string-copy a) (lambda (x) (fx+ x 2))))
+           (v (jolt-invoke update-map u c (lambda (x) (if (jolt-nil? x) 4 0)))))
+      (and (= (key-hash a) (key-hash b) (key-hash c))
+           (eq? m (jolt-invoke update-map m b (lambda (x) x)))
+           (= 2 (pmap-cnt m) (pmap-cnt u)) (= 3 (pmap-cnt v))
+           (= 1 (jolt-get m a)) (= 3 (jolt-get v a))
+           (= 2 (jolt-get v b)) (= 4 (jolt-get v c))
+           (eq? a (car (pmap-entry-at v (string-copy a))))
+           (jolt=2 (jolt-seq v) (jolt-seq (pmap-assoc (pmap-assoc m a 3) c 4))))))
+(ok "a custom resident at a leaf or in a collision keeps both comparison effects"
+    (let* ((k 7) (custom (vector 'custom-key))
+           (update-map (evv "(fn [m k f] (update m k f))"))
+           (seen '()))
+      (register-hash-arm! (lambda (x) (eq? x custom)) (lambda (x) (key-hash k)))
+      (register-eq-arm! (lambda (a b) (and (eq? a custom) (eq? b k)))
+        (lambda (a b) (set! seen (cons 'compare seen)) #f))
+      (let* ((leaf (pmap-assoc empty-pmap-hash custom 0))
+             (bucket (pmap-assoc leaf k 1))
+             (run (lambda (m expected)
+                    (set! seen '())
+                    (let ((u (jolt-invoke update-map m k
+                               (lambda (v) (set! seen (cons v seen)) 5))))
+                      (and (equal? seen (list 'compare expected 'compare))
+                           (= 5 (jolt-get u k)))))))
+        (and (run leaf jolt-nil) (run bucket 1)))))
+
 (printf "arraymap-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))

@@ -29,6 +29,10 @@
 (check "{:a 1 :b 2}" "{:a 1, :b 2}")
 (check "(conj [1 2] 3)" "[1 2 3]")
 (check "(assoc {:a 1} :b 2)" "{:a 1, :b 2}")
+(check "(let [a {7 1} h (hash-map 7 1)]
+          [(get (update a 7 inc) 7) (get a 7)
+           (get (update h 7 + 2) 7) (get h 7) (identical? h (update h 7 identity))])"
+       "[2 1 3 1 true]")
 ;; lazy seqs + HOFs through the prelude
 (check "(map inc [1 2 3])" "(2 3 4)")
 (check "(->> (range 100) (filter odd?) (map #(* % %)) (reduce +))" "166650")
