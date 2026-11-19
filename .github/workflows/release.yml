@@ -284,6 +284,9 @@ jobs:
           printf '#!/bin/sh\nexec %s/bin/scheme "$@"\n' "$HOME/chez-mac" > "$HOME/chez-mac/bin/chez"
           chmod +x "$HOME/chez-mac/bin/chez"
           echo "$HOME/chez-mac/bin" >> "$GITHUB_PATH"
+          # make and bin/jolt never take a Chez from PATH.
+          echo "CHEZ=$HOME/chez-mac/bin/chez" >> "$GITHUB_ENV"
+          echo "JOLT_CHEZ=$HOME/chez-mac/bin/chez" >> "$GITHUB_ENV"
 
       # --- Windows: MSYS2/MinGW-w64 toolchain + Chez built from source (ta6nt).
       # The whole job runs in the msys2 shell so cc/xxd/paths behave; the
@@ -340,6 +343,9 @@ jobs:
           { echo '#!/bin/sh'; echo "exec \"$bindir/scheme.exe\" \"\$@\""; } > "$bindir/chez"
           chmod +x "$bindir/chez"
           echo "$bindir" >> "$GITHUB_PATH"
+          # make and bin/jolt never take a Chez from PATH.
+          echo "CHEZ=$(cygpath -u "$bindir")/chez" >> "$GITHUB_ENV"
+          echo "JOLT_CHEZ=$(cygpath -u "$bindir")/chez" >> "$GITHUB_ENV"
           echo "JOLT_CHEZ_CSV=$GITHUB_WORKSPACE/chez-install/csv" >> "$GITHUB_ENV"
           # cc is the build's compiler name; alias it to mingw gcc
           { echo '#!/bin/sh'; echo 'exec gcc "$@"'; } > "$bindir/cc"
