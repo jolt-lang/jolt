@@ -170,6 +170,19 @@
 
 (defn const-coll-node? [n] (ir/const-coll-node? n))
 
+(defn hoist-coll-literal [node expr]
+  (if (const-coll-node? node)
+    (let [value (site-const node expr)]
+      (cond
+        (nil? *const-pool*) value
+        (ir/const-coll-node? node true) (hoist-const-per-site value)
+        ;; The constructor can throw. Run it at the original call site and
+        ;; publish only a successful result, shared across all callers.
+        :else (let [cell (hoist-const-per-site "(jolt-atom-new #f)")]
+                (str "(or (jolt-atom-val " cell ")"
+                     " (begin (jolt-atom-cas! " cell " #f " value ") (jolt-atom-val " cell ")))"))))
+    expr))
+
 ;; A :map literal whose keys are all constant keywords, pairwise distinct
 ;; (the reader refuses a repeat; checked anyway, since the direct build below
 ;; skips the runtime's scan), and few enough to stay in array mode whatever the
