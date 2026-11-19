@@ -1322,14 +1322,12 @@
    (cons "toString" host-object-tostring)))
 
 ;; --- constructors -----------------------------------------------------------
-(define utf8-tx (make-transcoder (utf-8-codec)))
 
 ;; --- text over bytes in a named charset ----------------------------------------
 ;; What io/reader and io/writer build when given :encoding, and what the
 ;; InputStreamReader / OutputStreamWriter / FileReader / FileWriter constructors
 ;; build when given a charset. Every one of those used to accept the charset and
-;; read or write UTF-8 regardless. UTF-8 keeps the ports it always had; the
-;; charset is checked by name first, as the JVM does when the reader or writer is
+;; read or write UTF-8 regardless. The charset is checked by name first, as the JVM does when the reader or writer is
 ;; constructed.
 ;;
 ;; Writing: each block the port hands over is encoded through charset-encode-bv
@@ -1345,10 +1343,32 @@
 ;; REPORT? encodes as a CharsetEncoder does by default: a character the charset
 ;; cannot hold is UnmappableCharacterException when its block is encoded -- at a
 ;; flush or close, as the JDK's StreamEncoder raises it -- rather than "?".
+;;
+;; UTF-8 hands each block to string->utf8 and the bytes to bp. It was an R6RS
+;; transcoded-port, whose codec goes a character at a time through the
+;; transcoder's own buffer: a 500 KB (.write w s) to a FileWriter cost 2x what
+;; spit's string->utf8 + put-bytevector did, so (pr v) to a writer lost to
+;; (spit f (pr-str v)). A write longer than the port's buffer reaches the
+;; procedure whole, so a big write is one encode, as spit's is. A Chez string
+;; holds no surrogate (a lone unit is a jsurr, paired or replaced by sink-text
+;; before it gets here), so every character has a UTF-8 form and nothing is
+;; replaced.
+(define (utf8-output-port bp)
+  (parameterize ((custom-port-buffer-size 4096))
+    (make-custom-textual-output-port "utf8-writer"
+      (lambda (str start count)
+        (when (fx>? count 0)
+          (put-bytevector bp (string->utf8
+                               (if (and (fx=? start 0) (fx=? count (string-length str)))
+                                   str
+                                   (substring str start (fx+ start count))))))
+        count)
+      #f #f
+      (lambda () (close-port bp)))))
 (define (charset-output-port bp name . report?)
   (io-check-encoding! name)
   (if (io-utf8? name)
-      (transcoded-port bp utf8-tx)
+      (utf8-output-port bp)
       (let ((enc name) (utf16? (string=? (charset-canonical-down name) "utf-16"))
             (encode (if (and (pair? report?) (car report?)) charset-encode-report charset-encode-bv)))
         (make-custom-textual-output-port "charset-writer"
