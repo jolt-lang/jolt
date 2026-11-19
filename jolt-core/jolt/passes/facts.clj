@@ -95,9 +95,12 @@
                (conj params binder)]))
           [env []] (arity-params arity))
         origins (walk state (:body arity) (conj path :body) arity-env params)]
-    ;; Return coercion can produce a different value. Walking the body
-    ;; still records its effects and the origins before coercion.
-    (if (contains? #{:long :double} (:ret-nhint arity)) unknown origins)))
+    ;; Coercion may return its input, convert it, or name its class in a
+    ;; cast exception. Preserve all three possibilities for downstream queries.
+    (if (contains? #{:long :double} (:ret-nhint arity))
+      (do (swap! (:representation state) into origins)
+          (join-origins origins unknown))
+      origins)))
 
 (defn- once-body-env [node env]
   ;; Match the emitter's capture box, including the spliced-closure exception.
