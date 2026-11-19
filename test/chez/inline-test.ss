@@ -2009,7 +2009,7 @@
   (for-each
     (lambda (source)
       (ok "an unproven or identity-bearing result stays single-valued"
-          (not (has? (code-part (emitf "u" source)) "(call-with-values "))))
+          (not (has? (code-part (emitf "u" source)) "_pair$jv$u/"))))
     '("(defn- pair-mixed [x] (if x [true x] x))"
       "(defn- pair-constant [] [true 0])"
       "(defn- pair-coerced ^long [x] [true x])"
@@ -2021,6 +2021,19 @@
   (ok "a declared numeric return still rejects a vector"
       (clj= (ev "(try (apply pair-declared [7]) (catch Throwable e :return-error))")
             (ev ":return-error")))
+  (ev "(defn- ^{:jolt/num-ret :double} pair-guarded-return
+         ([x] [x nil])
+         ([x y] (+ x y)))")
+  (for-each
+    (lambda (linked?)
+      (link! linked?)
+      (let ((consumer "(fn [x] (let [[a b] (pair-guarded-return x)] [a b]))"))
+        (ok "destructuring preserves the producer call's numeric return check"
+            (and (not (has? (code-part (emitf "u" consumer)) "(call-with-values "))
+                 (clj= (ev (string-append "(try (" consumer " 1)"
+                                          " (catch ClassCastException e :cast-error))"))
+                       (ev ":cast-error"))))))
+    '(#t #f))
   (link! #f))
 
 (printf "~a/~a passed~n" (- total fails) total)
