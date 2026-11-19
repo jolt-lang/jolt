@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.28] - 2026-11-19
+
+A performance release: with tracing off, `jolt run` inlines small fns behind a
+redefinition guard, protocol calls go through a per-type vtable, var calls,
+`try` and `binding` are open-coded, and transient builds, string hashing and
+printing got faster. Also new: `sun.misc.Signal` handlers, `jsonista.core` and
+`bencode.core` bundled, C structs by value in callbacks and
+`jolt.ffi/pointer-fn`, plus a long list of JVM parity fixes.
+
 ### Added
 
 - **Guarded inlining under `jolt run` (#1713).** With tracing off
