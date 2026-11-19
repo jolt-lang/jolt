@@ -1961,7 +1961,7 @@
              (retain (code-part (emitf "u" pair-retained))))
         (ok "only the linked producer emits a worker and a vector wrapper"
             (and (eq? linked? (has? worker "pair-result"))
-                 (eq? linked? (has? worker ") jolt-vector)"))))
+                 (eq? linked? (has? worker " jolt-vector events x)"))))
         (ok "actual destructuring receives two values only at a linked private use"
             (and (eq? linked? (has? use "(call-with-values "))
                  (not (has? retain "(call-with-values "))))
@@ -1984,6 +1984,11 @@
             (clj= (ev "(with-redefs [pair-worker-target (fn [_ _] [:replaced])]
                         (pair-destructure (atom []) 7))")
                   (ev "[:before :replaced :none]")))
+        (ev "(defn pair-destructure-single [x] (let [[a b] (pair-worker-target x)] [a b]))")
+        (ok "the fallback dispatches a keyword root and reads its ordinary result"
+            (clj= (ev "(with-redefs [pair-worker-target :pair]
+                        (pair-destructure-single {:pair [:new 11 :ignored]}))")
+                  (ev "[:new 11]")))
         (debug! #t)
         (ok "debug-local compilation keeps the vector visible"
             (not (has? (code-part (emitf "u" pair-consumer)) "(call-with-values ")))
@@ -1998,6 +2003,13 @@
       "(defn- pair-constant [] [true 0])"
       "(defn- pair-coerced ^long [x] [true x])"
       "(defn- pair-finally [x] (try [true x] (finally nil)))"))
+  (ev "(defn- pair-constant [] [true 0])")
+  (ok "ordinary calls still share the constant vector from one return site"
+      (eq? (ev "(identical? (pair-constant) (apply pair-constant []))") #t))
+  (ev "(defn- pair-declared ^long [x] [true x])")
+  (ok "a declared numeric return still rejects a vector"
+      (clj= (ev "(try (apply pair-declared [7]) (catch Throwable e :return-error))")
+            (ev ":return-error")))
   (link! #f))
 
 (printf "~a/~a passed~n" (- total fails) total)

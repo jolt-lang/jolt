@@ -1352,10 +1352,10 @@
 ;; trace slots back, runs the catch body. The same text under Chez's one-shot
 ;; escape and Gambit's guard (emit-try).
 (defn- emit-catch-handler [node cs raw cl ts to chez-slot]
-  (let [pair? (:pair-result node)
-        x (if pair? (fresh-label "_cx$") "r")
-        y (when pair? (fresh-label "_cy$"))
-        receive (if pair? (str "(let-values (((" x " " y ") ") "(let ((r ")]
+  (let [deliver (:pair-result node)
+        x (if deliver (fresh-label "_cx$") "r")
+        y (when deliver (fresh-label "_cy$"))
+        receive (if deliver (str "(let-values (((" x " " y ") ") "(let ((r ")]
     (str "(let ((" (munge-name cs) " (jolt-unwrap-throw " raw "))) "
        (if cl (str "(let ((" cl " (jolt-catch-enter!))) ") "")
        (cond ts (str "(set-virtual-register! 2 " ts ") (set-virtual-register! 12 " to ") ")
@@ -1368,21 +1368,21 @@
                     (binding [*tail?* (or (some? *dbg-scope*) *tail?*)]
                       (emit (:catch-body node)))) ")) "
        (if cl (str "(jolt-catch-leave! " cl ") ") "")
-       "(jolt-catch-complete!) " (if pair? (str "(values " x " " y ")") x) ")"
+       "(jolt-catch-complete!) " (if deliver (str "(" deliver " " x " " y ")") x) ")"
        (if cl ")" "")
        ")")))
 
 (defn- emit-chez-catch [node raw handler]
   (let [k (fresh-label "_gk$") gr (fresh-label "_gr$")
-        pair? (:pair-result node)
-        x (when pair? (fresh-label "_gx$"))
-        y (when pair? (fresh-label "_gy$"))
+        deliver (:pair-result node)
+        x (when deliver (fresh-label "_gx$"))
+        y (when deliver (fresh-label "_gy$"))
         call (with-site node
                (str "(call/1cc (lambda (" k ") (jolt-guard-body " k " " (emit-try-body node)
-                    (when pair? " pair-result") ")))"))]
-    (if pair?
+                    (when deliver " pair-result") ")))"))]
+    (if deliver
       (str "(let-values (((" gr " " x " " y ") " call "))"
-           " (if " gr " (values " x " " y ") (let ((" raw " " x ")) " handler ")))")
+           " (if " gr " (" deliver " " x " " y ") (let ((" raw " " x ")) " handler ")))")
       (str "(let ((" gr " " call "))"
            " (if (jolt-caught? " gr ") (let ((" raw " (jolt-caught-val " gr "))) " handler ") " gr "))"))))
 
@@ -1864,7 +1864,7 @@
 
 (defn- emit-coll-literal [node]
   (let [s (case (:op node)
-            :vector (emit-ordered (if (:pair-result node) "values" "jolt-vector") (:items node))
+            :vector (emit-ordered (or (:pair-result node) "jolt-vector") (:items node))
             :set (emit-ordered (if (ir/distinct-const-keys? (:items node))
                                  "jolt-hash-set"
                                  "jolt-hash-set-checked")
