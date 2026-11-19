@@ -1044,6 +1044,17 @@
            :jvm "[\"java.lang.Integer\" false]"
            :jolt "[\"java.lang.Long\" true]"}
    :note "Chez has one fixnum. instance? is deliberately permissive for Integer/Long — a value answers to both spellings of its collapsed class — while Short and Byte stay false. Since #627 the big classes are value-sensitive: BigInt/BigInteger answer only for bignums (which also class as clojure.lang.BigInt), Long/Integer only for fixnums, matching the JVM. A bignum still answers BigInteger (one big representation serves both classes; the JVM says false) — the remaining superset. Float is its own value (a jfloat), so Float and Double answer as on the JVM."}
+;; The same collapse in arithmetic: a BigInt inside the long range is a fixnum, so
+;; the unchecked ops (which only wrap on two longs) see two longs and answer one.
+;; Past the long range a BigInt is its own value and contaminates as on the JVM.
+  {:category :integer-box-model
+   :behavior "(unchecked-add 1N 2)"
+   :jvm "3N, a BigInt: a BigInt operand takes the BigInt category"
+   :jolt "3, a Long: 1N is the fixnum 1"
+   :check {:expr "(let [r (unchecked-add 1N 2)] [(.getSimpleName (class r)) r])"
+           :jvm "[\"BigInt\" 3N]"
+           :jolt "[\"Long\" 3]"}
+   :note "Same one-exact-integer model as (class 1N); (unchecked-add 9223372036854775808N 1) is 9223372036854775809N on both."}
 ;; The same collapse at protocol dispatch: an int, a short and a small BigInt are
   ;; the fixnum a long is, so a protocol extended to Long and to Number picks Long
   ;; for all of them where the JVM's boxes fall through to Number.
