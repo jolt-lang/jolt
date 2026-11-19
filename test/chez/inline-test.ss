@@ -1001,6 +1001,18 @@
         (and (not (jolt-nil? candidate))
              (effects? (fact-get candidate 'summary) 0 'return-alias)
              (jolt-nil? (linked-call-summary unit caller ret-site)))))
+  (jolt-compile-eval "(ns summary-recreated)" "summary-recreated")
+  (jolt-compile-eval "(binding [*compiler-options* {:direct-linking true}] (eval '(def from-cell (fn [a] a))))"
+                     "summary-recreated")
+  (let* ((caller (fact-ir "(fn [x] (let [m {:k x}] (summary-recreated/from-cell m)))"))
+         (summary-now (lambda () (parameterize ((hc-form-direct-link #t))
+                                   (linked-call-summary unit caller ret-site))))
+         (before (summary-now)))
+    (ev "(do (remove-ns 'summary-recreated) (intern (create-ns 'summary-recreated) 'from-cell (fn [a] :new)))")
+    (ok "a recreated namespace's fresh Var cell invalidates the old per-form linked summary"
+        (and (not (jolt-nil? before)) (jolt-nil? (summary-now))
+             (clj= (ev "(binding [*compiler-options* {:direct-linking true}] (eval '(summary-recreated/from-cell 1)))")
+                   (fact-kw 'new)))))
   (set-summary-link! #t)
   (reset-summary-links!)
   (ok "resetting a compilation unit drops its definition revisions"
