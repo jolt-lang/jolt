@@ -2907,28 +2907,41 @@
 ;; Every value printed this way carries its identity hash, as the JVM's
 ;; print-object writes (System/identityHashCode o) for any object (jolt-28we).
 (define (jolt-object-repr x readable?)
-  (let* ((cls (guard (e (#t #f)) (jolt-class-name x)))
-         (hex (and (string? cls) (jolt-identity-hex x)))
+  ;; One guard for the class name and the content, not one each: a guard costs
+  ;; about 40 ns, a sixth of an #object print. Which stage raised is told by how
+  ;; far it got, as two guards told it: no class name -- the bare ~a fallback --
+  ;; or a class name with no content -- the form without its quoted part.
+  (let* ((cls #f)
+         (hex #f)
          ;; a deftype with neither toString nor hashCode of its own is
          ;; Object.toString over its identity hash: the class and hex already in
          ;; hand, rather than a second class-name lookup and a walk of the str
          ;; registry to reach them. One that declares either (user code, which may
          ;; do anything), and an enum constant (its name), go through the registry.
-         (content (if (and hex (jrec? x) (not (enum-constant? x))
-                           ;; under whatever name it was declared: Object or java.lang.Object
-                           (not (find-method-any-protocol (jrec-rtag x) "toString"))
-                           (not (find-method-any-protocol (jrec-rtag x) "hashCode")))
-                      (string-append cls "@" hex)
-                      (guard (e (#t #f)) (jolt-object-content x))))
+         (content (guard (e (#t #f))
+                    (set! cls (jolt-class-name x))
+                    (and (string? cls)
+                         (begin
+                           (set! hex (jolt-identity-hex x))
+                           (if (and (jrec? x) (not (enum-constant? x))
+                                    ;; under whatever name it was declared: Object or java.lang.Object
+                                    (not (find-method-any-protocol (jrec-rtag x) "toString"))
+                                    (not (find-method-any-protocol (jrec-rtag x) "hashCode")))
+                               (string-append cls "@" hex)
+                               (jolt-object-content x))))))
+         (cls (and (string? cls) cls))
+         (hex (and cls (or hex (jolt-identity-hex x))))
          ;; an array's class name is quoted, as Clojure's print-method writes it
          (array? (and hex (fx>? (string-length cls) 0) (char=? (string-ref cls 0) #\[)))
          (content (if (and array? (not (string? content))) (string-append cls "@" hex) content))
-         (head (and hex (string-append "#object[" (if array? (string-append "\"" cls "\"") cls) " 0x" hex))))
-    (cond ((not head) (format "~a" x))
-          ((not (string? content)) (string-append head "]"))
+         (cls* (and hex (if array? (string-append "\"" cls "\"") cls))))
+    ;; each form is one string-append: building the #object[cls 0xhex head first
+    ;; and appending to it copied it twice
+    (cond ((not hex) (format "~a" x))
+          ((not (string? content)) (string-append "#object[" cls* " 0x" hex "]"))
           ((and readable? (jolt-pr-readable?))
-           (string-append head " \"" (jolt-str-escape content) "\"]"))
-          (else (string-append head " " content "]")))))
+           (string-append "#object[" cls* " 0x" hex " \"" (jolt-str-escape content) "\"]"))
+          (else (string-append "#object[" cls* " 0x" hex " " content "]")))))
 
 (define (jolt-pr-str-base/readable x readable?)
   (cond
