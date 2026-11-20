@@ -718,6 +718,10 @@
 (define sa-flonum-hi-disp
   (if (eq? (native-endianness) (endianness little)) (fx+ sa-flonum-disp 4) sa-flonum-disp))
 (define (sa-flonum-hi32 x) (#%$object-ref 'unsigned-32 x sa-flonum-hi-disp))
+;; and the low word, the payload's other half (number-print.ss reads both)
+(define sa-flonum-lo-disp
+  (if (eq? (native-endianness) (endianness little)) sa-flonum-disp (fx+ sa-flonum-disp 4)))
+(define (sa-flonum-lo32 x) (#%$object-ref 'unsigned-32 x sa-flonum-lo-disp))
 ;; (sa-bignum-s64? x): whether a BIGNUM (the caller has asked bignum?) lies in
 ;; signed 64 bits, [-2^63, 2^63). jolt classes an exact integer by that range
 ;; (a Long inside, a BigInt past it), and the unchecked ops ask it of every
