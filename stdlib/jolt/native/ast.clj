@@ -249,6 +249,28 @@
             (node :math :double form :fn (name f) :args args))
         (fail form (str "not allowed in a native region: " (pr-str f)))))))
 
+(def ^:private builtins
+  "Heads analyze-call handles itself: never macroexpanded."
+  '#{+ * - / quot rem mod inc dec < <= > >= == = not= zero? pos? neg? not
+     double long aget aset alength double-array long-array aclone})
+
+(def ^:private special-heads
+  '#{let let* if when when-not do loop loop* recur dotimes and or})
+
+(defn- norm-head
+  "A clojure.core-qualified head (what a syntax-quoting macro emits) read as
+  the unqualified name the region language uses."
+  [op]
+  (if (and (symbol? op) (= "clojure.core" (namespace op))) (symbol (name op)) op))
+
+(defn- user-macro?
+  "A head that names a macro, not a region local, builtin or special form: the
+  region expands it and analyzes what it expands to."
+  [env op]
+  (and (symbol? op) (not (contains? env op))
+       (not (builtins op)) (not (special-heads op))
+       (when-let [v (resolve op)] (:macro (meta v)))))
+
 (defn analyze
   "Analyze one region form in env (symbol -> {:id :type :name})."
   [env form tail]
@@ -264,8 +286,12 @@
       (node :local (:type b) form :name form :binding (:id b))
       (fail form (str "unknown name " form
                       " (a region sees only its parameters and its own locals)")))
+    (and (seq? form) (user-macro? env (norm-head (first form))))
+    (analyze env (macroexpand-1 form) tail)
     (seq? form)
-    (let [[op & more] form]
+    (let [op (norm-head (first form))
+          more (rest form)
+          form (if (= op (first form)) form (with-meta (cons op more) (meta form)))]
       (case op
         let (analyze-let env form tail)
         let* (analyze-let env form tail)
@@ -273,7 +299,7 @@
         when (analyze-if env (with-meta (list 'if (first more) (cons 'do (rest more))) (meta form)) tail)
         when-not (analyze-if env (with-meta (list 'if (list 'not (first more)) (cons 'do (rest more))) (meta form)) tail)
         do (analyze-body env more tail form)
-        loop (analyze-loop env form)
+        (loop loop*) (analyze-loop env form)
         recur (analyze-recur env form tail)
         dotimes (analyze-dotimes env form tail)
         and (analyze env (if (empty? more) true

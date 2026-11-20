@@ -227,6 +227,14 @@
              (aget b 0))
            [[(double-array (map #(+ 0.5 (* % 0.37)) (range 35))) 100]] :raw true)
 
+;; a user macro expands inside the region; its syntax-quoted output names
+;; clojure.core/let and clojure.core/* which the region reads unqualified
+(defmacro sq [x] `(let [v# ~x] (* v# v#)))
+(defmacro sum-to [n] `(loop [i# 0 s# 0] (if (< i# ~n) (recur (inc i#) (+ s# i#)) s#)))
+(check-run "user macros inside a region" '[^double a ^long n]
+           '((+ (sq (+ a 1.0)) (double (sum-to n))))
+           [[2.0 10] [-1.0 0]] :raw true)
+
 ;; --- failures: same exception as Jolt, nothing leaked -------------------------
 
 (check-run "out of bounds with live arrays" '[^long i]
