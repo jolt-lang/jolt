@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:actual`, and `clojure.stacktrace/print-stack-trace` indents frames by four
   spaces as the JVM's does.
 
+- `run-tests` runs a namespace's tests in `(ns-interns ns)` order through
+  `test-all-vars`, as the reference's `test-ns` does, and `ns-interns` /
+  `ns-publics` iterate in the JVM's hash order (an array map of up to 8 entries
+  holds them in that order) instead of definition order. `(into {} m)`,
+  `(merge {} m)` and `(conj {} m)` of a hash map reversed its entries; they keep
+  its iteration order now.
+
 - The built-in nREPL server decodes a completion request's `prefix` and `ns` as UTF-8, so a non-ASCII symbol or namespace completes with no middleware loaded, as jolt-lang/nrepl#27 does for the middleware stack. A request that middleware already decoded is not decoded again.
 
 - `(methods print-method)` holds the JVM's built-in printers under the same
