@@ -136,7 +136,11 @@
 
 (let ((e (emit-src "app" "(def lazy1 {:f (fn [x] (* x 2))})")))
   (ok "a registration is emitted as source text"
-      (has? e "(image-register-fn-form! \"jfn$app/lazy1$0\" (image-fn-form-src \"(fn* [x] (* x 2))\") \"app\" (jolt-vector ))"))
+      (has? e "(image-register-fn-form! \"jfn$app/lazy1$0\" (image-fn-form-src \"(fn* [x] (* x 2))\") \"app\" (jolt-vector )"))
+  ;; ...followed by the class the literal compiles into (no live-names, no
+  ;; maker: #f #f), which (class f) reports
+  (ok "...carrying the literal's JVM class"
+      (has? e "(jolt-vector ) #f #f \"app$fn__"))
   (ok "...and builds no quoted structure at load" (not (has? e "(jolt-symbol "))))
 (let ((e (emit-src "app" "(def lazy2 {:a (fn [x] x) :b (fn [y] y)})")))
   (ok "several literals register as sibling calls, no let* header"
