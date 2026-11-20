@@ -488,9 +488,9 @@
       ;; no maker: a spliced copy (see above), or a literal emitted outside
       ;; any cache-cell scope — there would be nowhere to bind one, and a
       ;; site calling an unbound maker is worse than a closure that refuses.
-      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees lives])
+      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees lives (:class node)])
           inner)
-      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees nil])
+      (do (swap! *fnsrc-regs* conj [nm (:src-form node) src-ns frees nil (:class node)])
           (fnsrc-maker-site nm frees inner)))))
 
 ;; A named fn references itself by name — the analyzer binds that name as a

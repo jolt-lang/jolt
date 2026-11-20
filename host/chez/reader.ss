@@ -1968,7 +1968,7 @@
                                   (jolt-with-mutex rdr-name-counter-mutex
                                     (set! rdr-sq-gensym-counter (fx+ rdr-sq-gensym-counter 1))
                                     rdr-sq-gensym-counter))
-                                 "__auto")))
+                                 "__auto__")))  ; the reference's x__N__auto__
 
 ;; special forms / interop heads stay bare in backquote, like the JVM reader
 ;; The one list of names a syntax-quote leaves BARE (not namespace-qualified):

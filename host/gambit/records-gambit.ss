@@ -2158,7 +2158,23 @@
        (let ((head (car tags)))
          (or (eq? tags (jch-tags head))
              (let ((e (hashtable-ref jch-tags-plus-cache head #f)))
+               (and e (eq? tags (cdr e))))
+             (let ((e (hashtable-ref fn-class-tags-tbl head #f)))
                (and e (eq? tags (cdr e))))))))
+
+(define fn-class-tags-tbl
+  (make-hashtable string-hash string=?))
+
+(define (fn-class-tags cls)
+  (let ((e (hashtable-ref fn-class-tags-tbl cls #f)))
+    (if (and e (fx= (car e) jch-graph-epoch))
+        (cdr e)
+        (let* ((ge jch-graph-epoch)
+               (tags (cons cls (jch-tags "clojure.lang.AFunction"))))
+          (jolt-with-mutex
+            jch-cache-mutex
+            (hashtable-set! fn-class-tags-tbl cls (cons ge tags)))
+          tags))))
 
 (define (value-host-tags obj)
   (cond
@@ -2198,14 +2214,11 @@
     ((jclass? obj) '("Class" "java.lang.Class" "Object"))
     ((and (procedure? obj) (deftype-ctor-tag obj))
      '("Class" "java.lang.Class" "Object"))
-    ((and (procedure? obj) (hashtable-ref proc-name-tbl obj #f)) =>
-     (lambda (p)
-       (cons
-         (string-append
-           (class-munge-name (car p))
-           "$"
-           (class-munge-name (cdr p)))
-         (jch-tags "clojure.lang.AFunction"))))
+    ((and (procedure? obj)
+          (or (procedure-class-name-hook obj)
+              (let ((p (hashtable-ref proc-name-tbl obj #f)))
+                (and p (var-fn-class-name (car p) (cdr p)))))) =>
+     fn-class-tags)
     ((and (jhost? obj) (jhost-value-tags (jhost-tag obj))) =>
      (lambda (tags) tags))
     ((and (jolt-array? obj) (eq? (jolt-array-kind obj) 'byte))

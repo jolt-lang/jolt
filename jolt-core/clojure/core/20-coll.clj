@@ -174,8 +174,43 @@
 (defn juxt [& fs]
   (fn [& args] (mapv (fn [f] (apply f args)) fs)))
 
-(defn every-pred [& preds]
-  (fn [& xs] (every? (fn [p] (every? p xs)) preds)))
+;; The reference's every-pred, arity for arity: at least one predicate, each
+;; returned fn named ep1/ep2/ep3/epn (its class, clojure.core$every_pred$ep1__N),
+;; and the predicates tested in the same order.
+(defn every-pred
+  ([p]
+     (fn ep1
+       ([] true)
+       ([x] (boolean (p x)))
+       ([x y] (boolean (and (p x) (p y))))
+       ([x y z] (boolean (and (p x) (p y) (p z))))
+       ([x y z & args] (boolean (and (ep1 x y z)
+                                     (every? p args))))))
+  ([p1 p2]
+     (fn ep2
+       ([] true)
+       ([x] (boolean (and (p1 x) (p2 x))))
+       ([x y] (boolean (and (p1 x) (p1 y) (p2 x) (p2 y))))
+       ([x y z] (boolean (and (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z))))
+       ([x y z & args] (boolean (and (ep2 x y z)
+                                     (every? #(and (p1 %) (p2 %)) args))))))
+  ([p1 p2 p3]
+     (fn ep3
+       ([] true)
+       ([x] (boolean (and (p1 x) (p2 x) (p3 x))))
+       ([x y] (boolean (and (p1 x) (p1 y) (p2 x) (p2 y) (p3 x) (p3 y))))
+       ([x y z] (boolean (and (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z) (p3 x) (p3 y) (p3 z))))
+       ([x y z & args] (boolean (and (ep3 x y z)
+                                     (every? #(and (p1 %) (p2 %) (p3 %)) args))))))
+  ([p1 p2 p3 & ps]
+     (let [ps (cons p1 (cons p2 (cons p3 ps)))]
+       (fn epn
+         ([] true)
+         ([x] (every? #(% x) ps))
+         ([x y] (every? #(and (% x) (% y)) ps))
+         ([x y z] (every? #(and (% x) (% y) (% z)) ps))
+         ([x y z & args] (boolean (and (epn x y z)
+                                       (every? #(every? % args) ps))))))))
 
 ;; Expressed over reduce+reduced (like every?) so a chunked source drives reduce's
 ;; index loop. Returns the first truthy (pred x), or nil; reduced short-circuits on
@@ -183,52 +218,43 @@
 (defn some [pred coll]
   (reduce (fn [_ x] (let [v (pred x)] (if v (reduced v) nil))) nil coll))
 
-;; some-fn's returned fns, one per predicate count — the reference's unrolled
-;; shape, so each arity tests its predicates in the same order.
-(defn- some-fn1 [p]
-  (fn sp1
-    ([] nil)
-    ([x] (p x))
-    ([x y] (or (p x) (p y)))
-    ([x y z] (or (p x) (p y) (p z)))
-    ([x y z & args] (or (sp1 x y z)
-                        (some p args)))))
-
-(defn- some-fn2 [p1 p2]
-  (fn sp2
-    ([] nil)
-    ([x] (or (p1 x) (p2 x)))
-    ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
-    ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
-    ([x y z & args] (or (sp2 x y z)
-                        (some (fn [q] (or (p1 q) (p2 q))) args)))))
-
-(defn- some-fn3 [p1 p2 p3]
-  (fn sp3
-    ([] nil)
-    ([x] (or (p1 x) (p2 x) (p3 x)))
-    ([x y] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y)))
-    ([x y z] (or (p1 x) (p2 x) (p3 x) (p1 y) (p2 y) (p3 y) (p1 z) (p2 z) (p3 z)))
-    ([x y z & args] (or (sp3 x y z)
-                        (some (fn [q] (or (p1 q) (p2 q) (p3 q))) args)))))
-
-(defn- some-fnn [ps]
-  (fn spn
-    ([] nil)
-    ([x] (some (fn [p] (p x)) ps))
-    ([x y] (or (spn x) (spn y)))
-    ([x y z] (or (spn x) (spn y) (spn z)))
-    ([x y z & args] (or (spn x y z)
-                        (some (fn [p] (some p args)) ps)))))
-
-;; Reference arities: at least one predicate ((some-fn) is an arity error), and
-;; the returned fn chains with or — a no-match result is the last predicate's
-;; own falsy value (false stays false, not nil).
+;; The reference's some-fn, arity for arity: each returned fn named
+;; sp1/sp2/sp3/spn (its class, clojure.core$some_fn$sp1__N), the predicates tested
+;; in the same order, and a no-match result the last predicate's own falsy value.
 (defn some-fn
-  ([p] (some-fn1 p))
-  ([p1 p2] (some-fn2 p1 p2))
-  ([p1 p2 p3] (some-fn3 p1 p2 p3))
-  ([p1 p2 p3 & ps] (some-fnn (cons p1 (cons p2 (cons p3 ps))))))
+  ([p]
+     (fn sp1
+       ([] nil)
+       ([x] (p x))
+       ([x y] (or (p x) (p y)))
+       ([x y z] (or (p x) (p y) (p z)))
+       ([x y z & args] (or (sp1 x y z)
+                           (some p args)))))
+  ([p1 p2]
+     (fn sp2
+       ([] nil)
+       ([x] (or (p1 x) (p2 x)))
+       ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y)))
+       ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z)))
+       ([x y z & args] (or (sp2 x y z)
+                           (some #(or (p1 %) (p2 %)) args)))))
+  ([p1 p2 p3]
+     (fn sp3
+       ([] nil)
+       ([x] (or (p1 x) (p2 x) (p3 x)))
+       ([x y] (or (p1 x) (p1 y) (p2 x) (p2 y) (p3 x) (p3 y)))
+       ([x y z] (or (p1 x) (p1 y) (p1 z) (p2 x) (p2 y) (p2 z) (p3 x) (p3 y) (p3 z)))
+       ([x y z & args] (or (sp3 x y z)
+                           (some #(or (p1 %) (p2 %) (p3 %)) args)))))
+  ([p1 p2 p3 & ps]
+     (let [ps (cons p1 (cons p2 (cons p3 ps)))]
+       (fn spn
+         ([] nil)
+         ([x] (some #(% x) ps))
+         ([x y] (some #(or (% x) (% y)) ps))
+         ([x y z] (some #(or (% x) (% y) (% z)) ps))
+         ([x y z & args] (or (spn x y z)
+                             (some #(some % args) ps)))))))
 
 (defn not-any? [pred coll] (not (some pred coll)))
 
@@ -297,10 +323,13 @@
 
 ;; A vector input maps to a vector (eager); any other coll to a lazy seq — JVM
 ;; replace is type-preserving, not vector-always.
-(defn replace [smap coll]
-  (if (vector? coll)
-    (mapv (fn [x] (get smap x x)) coll)
-    (map (fn [x] (get smap x x)) coll)))
+(defn replace
+  ;; the transducer arity, as the reference's: map over the lookup
+  ([smap] (map (fn [x] (get smap x x))))
+  ([smap coll]
+   (if (vector? coll)
+     (mapv (fn [x] (get smap x x)) coll)
+     (map (fn [x] (get smap x x)) coll))))
 
 (defn bounded-count [n coll]
   (if (counted? coll)
