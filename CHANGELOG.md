@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   methods in `(methods print-method)` are this printer. Output is unchanged.
 
 ### Fixed
+- Starting several subprocesses at once as a process's first spawns no longer fails with "variable … is not bound": a lazily loaded host shim (here ProcessBuilder's) could have a method registered and called on one thread before another thread's load had defined what it calls. A lazy shim now defines everything before it registers anything (burinc/jolt#24).
+- An unbound-variable error names the variable instead of printing `#object[:object …]`.
+- `==` casts each pair to Number left to right as the JVM does: a nil operand throws `NullPointerException` (it threw `ClassCastException`), a non-number is the `ClassCastException` first, and `(== 1 2 :a)` answers false at the first unequal pair instead of throwing (burinc/jolt#6).
+- `(System/getProperty "user.name")` is the login name from the passwd entry for the process's uid, as on the JVM, so an unset or borrowed `USER` no longer makes it nil or someone else's; `"?"` when there is no entry (burinc/jolt#19).
 - The built-in nREPL server decodes a completion request's `prefix` and `ns` as UTF-8, so a non-ASCII symbol or namespace completes with no middleware loaded, as jolt-lang/nrepl#27 does for the middleware stack. A request that middleware already decoded is not decoded again.
 
 - `(methods print-method)` holds the JVM's built-in printers under the same
