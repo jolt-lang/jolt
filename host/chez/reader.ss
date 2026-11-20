@@ -889,6 +889,19 @@
 ;; and clojure.main/repl, reading source, wrap one under :read-source. The
 ;; position keys stay on either kind of read.
 (define rdr-data-read (make-thread-parameter #f))
+;; Whether a list form carries :line/:column. The reference's LispReader stamps
+;; them only when its reader counts lines: a LineNumberingPushbackReader (a REPL,
+;; Compiler.load over a file or a string, with-in-str) does, and read-string,
+;; clojure.edn and a read off a plain PushbackReader do not -- (meta (read-string
+;; "(a)")) is nil there. So a source read (rdr-data-read #f) and a line-numbering
+;; one (the origin vector) stamp, and any other data read does not, unless its
+;; caller is reading source text through the data seam (rdr-data-pos, the
+;; compile-eval spine's jolt-ce-read) and wants the positions a Compiler.load of
+;; that text would give.
+(define rdr-data-pos (make-thread-parameter #f))
+(define (rdr-stamps-pos?)
+  (and (not (rdr-suppress-pos))
+       (let ((d (rdr-data-read))) (or (not d) (vector? d) (rdr-data-pos)))))
 (define (rdr-call-as-data thunk)
   (parameterize ((rdr-source-file #f) (rdr-data-read #t)) (thunk)))
 (define (rdr-phase-keys m)
@@ -1003,6 +1016,20 @@
   (let ((d (rdr-read-error-of e)))
     (if d (jolt-get d rdr-kw-err-kind jolt-nil) jolt-nil)))
 
+;; ^meta on a list: LispReader's MetaReader takes the position where the ^
+;; stands, before it reads the metadata, and gives the list THAT :line/:column
+;; unless the metadata names its own -- so (meta '^:foo (a)) has the caret's
+;; column, and '^{:line 99} (a) keeps line 99. Only when the read stamps
+;; positions at all (rdr-stamps-pos?). Taken before the metadata and target are
+;; read, so rdr-line-col-at's cursor keeps walking forward.
+(define (rdr-caret-pos s i)
+  (and (rdr-stamps-pos?)
+       (let-values (((line col) (rdr-form-line-col s i))) (cons line col))))
+(define (rdr-caret-meta pos target meta)
+  (if (and pos (cseq? target) (pmap? meta))
+      (jolt-assoc (jolt-assoc meta rdr-kw-line (jolt-get meta rdr-kw-line (car pos)))
+                  rdr-kw-column (jolt-get meta rdr-kw-column (cdr pos)))
+      meta))
 (define (rdr-attach-pos lst line col)
   (if (empty-list-t? lst)            ; () is interned, can't carry meta (= Clojure)
       lst
@@ -1584,11 +1611,12 @@
       ((char=? c #\')                    ; #'x var-quote -> (var x)
        (rdr-wrap s (+ i 1) end (jolt-symbol #f "var")))
       ((char=? c #\^)                    ; #^meta — deprecated metadata syntax = ^meta
-       (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
-         (let-values (((target k) (rdr-read-form s j end)))
-           (when (rdr-eof? target)
-             (rdr-eof-error s j "EOF while reading"))
-           (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
+       (let ((pos (rdr-caret-pos s i)))
+         (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
+           (let-values (((target k) (rdr-read-form s j end)))
+             (when (rdr-eof? target)
+               (rdr-eof-error s j "EOF while reading"))
+             (values (rdr-attach-meta target (rdr-caret-meta pos target (rdr-meta-map mform))) k)))))
       ((char=? c #\#)                    ; ## symbolic value: ##Inf / ##-Inf / ##NaN
        ;; the reference reads a whole FORM here, so what follows ## may be any
        ;; form, and only a symbol can name a symbolic value
@@ -1713,7 +1741,7 @@
             ;; asking afterwards sent it back to the start of the string on every
             ;; list holding a list: quadratic over any real source file.
             ((char=? c #\()
-             (let ((pos (and (not (rdr-suppress-pos))
+             (let ((pos (and (rdr-stamps-pos?)
                              (let-values (((line col) (rdr-form-line-col s i)))
                                (cons line col)))))
                (let-values (((es j) (rdr-read-seq s (+ i 1) end #\))))
@@ -1781,11 +1809,12 @@
                  (rdr-wrap s (+ i 2) end (jolt-symbol "clojure.core" "unquote-splicing"))
                  (rdr-wrap s (+ i 1) end (jolt-symbol "clojure.core" "unquote"))))
             ((char=? c #\^)
-             (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
-               (let-values (((target k) (rdr-read-form s j end)))
-                 (when (rdr-eof? target)
-                   (rdr-eof-error s i "EOF while reading"))
-                 (values (rdr-attach-meta target (rdr-meta-map mform)) k))))
+             (let ((pos (rdr-caret-pos s i)))
+               (let-values (((mform j) (rdr-read-form s (+ i 1) end)))
+                 (let-values (((target k) (rdr-read-form s j end)))
+                   (when (rdr-eof? target)
+                     (rdr-eof-error s i "EOF while reading"))
+                   (values (rdr-attach-meta target (rdr-caret-meta pos target (rdr-meta-map mform))) k)))))
             (else
              (let-values (((tok j) (rdr-read-token-lead s i end)))
                (values (rdr-token->value tok s i) j))))))))

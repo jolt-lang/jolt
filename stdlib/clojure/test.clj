@@ -476,7 +476,14 @@
    ;; The reader stamps :line/:column on the form; the file comes from *file*,
    ;; reduced to its base name because that is what the reference prints and what
    ;; tooling matches on (test.check asserts #"\(clojure_test_test\.cljc:\d+\)$").
-   (let [pos (assoc (select-keys (meta &form) [:line])
+   ;;
+   ;; A form with no :line (built by code, or read by read-string, which stamps
+   ;; none) takes the line being compiled, Compiler/LINE: the reference's frame
+   ;; for such a form carries that line too, as eval compiles it at the
+   ;; enclosing position.
+   (let [line (or (:line (meta &form))
+                  (let [l @clojure.lang.Compiler/LINE] (when (pos? l) l)))
+         pos (assoc (if line {:line line} {})
                     :file (source-file-name))]
      `(binding [clojure.test/*report-pos* ~pos]
         (is-impl ~form ~msg)))))
