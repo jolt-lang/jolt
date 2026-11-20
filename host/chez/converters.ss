@@ -252,20 +252,20 @@
     (else (make-pvec (list->vector (seq->list coll))))))
 
 ;; The one-argument string spelling splits on the FIRST slash, except at
-;; either end. The builder can use this same spelling with a lookup-only intern.
-;; A macro, so (keyword "x") still calls keyword directly: passed as a
-;; procedure it cost every one-argument string keyword ~1.5ns.
-(define-syntax keyword-from-string
+;; either end: this is that slash's index, or #f. The builder's lookup-only
+;; intern splits the same way. A macro, and each caller applies its own
+;; interner, so (keyword "x") still calls keyword directly: a split procedure
+;; that took the interner cost every one-argument string keyword ~1.5ns, and
+;; binding it to a local ~0.5ns. Gambit expands syntax-rules without hygiene,
+;; so the operand is evaluated, once, before the macro binds a name of its own.
+(define-syntax keyword-split-index
   (syntax-rules ()
-    ((_ str intern)
-     (let* ((a str)
-            (si (let loop ((i 0))
-                  (cond ((>= i (string-length a)) #f)
-                        ((char=? (string-ref a i) #\/) i)
-                        (else (loop (+ i 1)))))))
-       (if (and si (> si 0) (< si (- (string-length a) 1)))
-           (intern (substring a 0 si) (substring a (+ si 1) (string-length a)))
-           (intern #f a))))))
+    ((_ str)
+     (let ((a str))
+       (let loop ((i 0))
+         (cond ((>= i (string-length a)) #f)
+               ((char=? (string-ref a i) #\/) (and (> i 0) (< i (- (string-length a) 1)) i))
+               (else (loop (+ i 1)))))))))
 
 (define (jolt-keyword . args)
   (cond
@@ -274,7 +274,14 @@
        (cond
          ((jolt-nil? a) jolt-nil)
          ((keyword? a) a)
-         ((string? a) (keyword-from-string a keyword))
+         ;; a 1-arg string splits on the FIRST "/" into ns/name:
+         ;; (keyword "x/y") => :x/y with ns "x" — destructure's {:keys [x/y]} builds
+         ;; the key this way, so without the split the namespaced key never matches.
+         ((string? a)
+          (let ((si (keyword-split-index a)))
+            (if si
+                (keyword (substring a 0 si) (substring a (+ si 1) (string-length a)))
+                (keyword #f a))))
          ((jolt-symbol? a)
           (let ((ns (symbol-t-ns a)))
             (keyword (if (or (jolt-nil? ns) (not ns) (eq? ns '())) #f ns) (symbol-t-name a))))
