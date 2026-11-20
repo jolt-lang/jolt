@@ -23,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An unbound-variable error names the variable instead of printing `#object[:object …]`.
 - `==` casts each pair to Number left to right as the JVM does: a nil operand throws `NullPointerException` (it threw `ClassCastException`), a non-number is the `ClassCastException` first, and `(== 1 2 :a)` answers false at the first unequal pair instead of throwing (burinc/jolt#6).
 - `(System/getProperty "user.name")` is the login name from the passwd entry for the process's uid, as on the JVM, so an unset or borrowed `USER` no longer makes it nil or someone else's; `"?"` when there is no entry (burinc/jolt#19).
+- `clojure.test` prints what the JVM's prints (burinc/jolt#18). `run-tests`,
+  `test-ns` and `run-test-var` print `Testing <ns>` before a namespace's tests,
+  and the summary reads `Ran N tests containing M assertions.` /
+  `F failures, E errors.` instead of jolt's own one-line wording. An `:error`
+  report prints the throwable through `print-cause-trace` (class, message,
+  ex-data, then frames) and takes its file and line from the top frame; the
+  `:default` report method prints the map. Each namespace counts into its own
+  `*report-counters*` ref, so a reporter reading it at `:end-test-ns` sees that
+  namespace's counts. `run-test-var` and `run-test` print the Testing line and
+  summary and return the summary map, `try-expr` reports the throwable itself as
+  `:actual`, and `clojure.stacktrace/print-stack-trace` indents frames by four
+  spaces as the JVM's does.
+
 - The built-in nREPL server decodes a completion request's `prefix` and `ns` as UTF-8, so a non-ASCII symbol or namespace completes with no middleware loaded, as jolt-lang/nrepl#27 does for the middleware stack. A request that middleware already decoded is not decoded again.
 
 - `(methods print-method)` holds the JVM's built-in printers under the same

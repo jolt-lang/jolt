@@ -65,7 +65,7 @@ out="$(JOLT_PWD="$proj" BABASHKA_TEST_ENV=jvm PATH="$onpath:$toolbin:/usr/bin:/b
        perl -e 'alarm shift; exec @ARGV' 300 "$jolt" -M:proc babashka.process-test 2>&1)"
 
 echo "$out" | grep -E 'PROC-RESULT|Ran '
-echo "$out" | grep -E 'FAIL:|ERROR:' | head -20
+echo "$out" | grep -E '^(FAIL|ERROR) in' | head -20
 res="$(echo "$out" | grep '^PROC-RESULT' | head -1)"
 fails="$(echo "$res" | awk '{print $4}')"
 errs="$(echo "$res" | awk '{print $5}')"
