@@ -103,7 +103,11 @@
       (let ((ns (jolt-namespace k)) (name (symbol-t-name k)))
         (and (pmap-builder-short-string? name)
              (if (jolt-nil? ns)
-                 (keyword-from-string name builder-interned-keyword)
+                 (let ((si (keyword-split-index name)))
+                   (if si
+                       (builder-interned-keyword
+                         (substring name 0 si) (substring name (+ si 1) (string-length name)))
+                       (builder-interned-keyword #f name)))
                  (and (pmap-builder-short-string? ns) (builder-interned-keyword ns name)))))
       (and (pmap-builder-key? k) k)))
 (define (jolt-reduce-kv-build-symbol-keys f seed source)

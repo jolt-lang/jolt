@@ -62,6 +62,25 @@
              (not (eq? stored probe)) (not (pmap-array? result))
              (eq? (car entry) stored) (eq? (cdr entry) value)))))
 
+;; The builder's symbol keys and jolt-keyword split a name with converters.ss's
+;; keyword-split-index. Its operand runs once, and sees the caller's bindings
+;; of the names the macro uses inside. The Gambit kernel test
+;; (host/gambit/kernel-test.ss) runs the same rows.
+(define (ok-equal name actual expected) (ok name (equal? actual expected)))
+(for-each
+  (lambda (row)
+    (let ((s (car row)) (a 'a) (loop 'loop) (i 'i) (evals 0))
+      (let* ((got (keyword-split-index
+                    (begin (set! evals (+ evals 1))
+                           (if (equal? (list a loop i) '(a loop i)) s "captured/x"))))
+             (k (jolt-keyword s))
+             (ns (keyword-t-ns k)))
+        (ok-equal (string-append "keyword split: " s)
+            (list got evals (if (string? ns) ns #f) (keyword-t-name k))
+            (cons (cadr row) (cons 1 (if (cadr row) (cddr row) (list #f s))))))))
+  '(("" #f "") ("/" #f "/") ("//" #f "//") ("/a" #f "/a") ("a/" #f "a/")
+    ("a//" 1 "a" "/") ("a/b/c" 1 "a" "b/c") ("é/😀" 1 "é" "😀") ("n/ " 1 "n" " ")))
+
 ;; --- edges the implementation must keep -------------------------------------
 (is "nil key"            "(get (persistent! (assoc! (transient {}) nil :v)) nil)" ":v")
 (is "collection key"     "(get (persistent! (assoc! (transient {}) [1 2] :v)) [1 2])" ":v")
