@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the timer thread) lost data or a finished handshake. The call now tries
   once more and times out only if that would still block, as the JDK's
   `timedRead` and `timedFinishConnect` do.
+- The built-in collection methods in `(methods print-method)` print the value
+  in their key's shape, as on the JVM: the `IPersistentVector` method writes a
+  queue as `[...]`, `ISeq`'s writes a vector as `(...)`, `IPersistentMap`'s
+  writes a record's entries. Libraries that borrow them (duratom) no longer
+  need a `(vec q)` workaround.
+- `remove-method`, `get-method` and `prefer-method` key a deftype or defrecord
+  dispatch value the way `defmethod` does, so `(remove-method f SomeType)`
+  removes the method. `(methods f)` and `(prefers f)` present such a key as the
+  class, and `(class SomeType)` is `java.lang.Class`.
+
+### Changed
+
+- A user `print-method` no longer slows printing the values it does not reach.
+  Printing a 10k-entry map with one unrelated method installed went from 1.22x
+  to 1.08x of the time with none.
 
 ## [0.8.28] - 2026-11-19
 
