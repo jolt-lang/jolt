@@ -363,7 +363,12 @@
                    (native/connect-pending? e)
                    (let [t (poller/wait-ready fd :write deadline)]
                      (raise-if-closed! owner "Socket closed")
-                     (when (= t :timeout)
+                     ;; the deadline ending the wait is not the verdict: the
+                     ;; handshake may have finished while this waiter was late
+                     ;; to look, so ask the kernel once more (the JDK's
+                     ;; pollConnectNow) — see last-try below
+                     (when (and (= t :timeout)
+                                (not (pos? (native/poll-one fd native/pollout 0))))
                        (throw (java.net.SocketTimeoutException. "Connect timed out")))
                      (let [e (native/pending-error fd)]
                        (cond (zero? e) 0
@@ -880,16 +885,22 @@
   (with-op owner
     (let [closed-msg (if (= wait-kind :write) "Broken pipe" "Socket closed")
           deadline (when (pos? timeout-ms) (poller/deadline-ms timeout-ms))]
-      (loop []
+      ;; LAST-TRY: a wait that ended at its deadline. It is not yet a timeout:
+      ;; the waiter may have looked late — off the CPU, or beaten to its fiber
+      ;; by the timer thread — after the fd was ready. So the syscall runs once
+      ;; more, and only a call that would still block times out, as the JDK's
+      ;; timedRead and timedAccept decide it.
+      (loop [last-try false]
         (let [[r e] (op)]
           (cond
-            (and (neg? r) (native/eintr? e)) (recur)
+            (and (neg? r) (native/eintr? e)) (recur last-try)
             (and (neg? r) (native/eagain? e))
-            (let [t (poller/wait-ready fd wait-kind deadline)]
-              (raise-if-closed! owner closed-msg)
-              (when (= t :timeout)
+            (do
+              (when last-try
                 (throw (java.net.SocketTimeoutException. timeout-msg)))
-              (recur))
+              (let [t (poller/wait-ready fd wait-kind deadline)]
+                (raise-if-closed! owner closed-msg)
+                (recur (= t :timeout))))
             :else
             (do
               (when (neg? r) (raise-if-closed! owner closed-msg))
