@@ -114,7 +114,7 @@ endif
 JOLT-TARGETS-NEEDING-DEPS := \
   aotcacheperf aotcachesmoke aotfingerprint asynctimer buildlibsmoke buildsmoke reprobuildsmoke profilebuildsmoke embeddedresources \
   aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke compilepathsmoke contagion corpus cts dcerefs depssmoke depsunit devboot \
-  readscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
+  readscaling vecscaling pipescaling chunkscaling printscaling pmoverhead complexity ioscaling hotscaling applyscaling zipmemory lazyscaling \
   devbootsmoke devirt directlink linkedrace mintgate ffi fibers fiberspoll fieldjoin fieldnum fieldread flarr fnform poolshape coreproc grenadine \
   gateboot gatebootsmoke gosm hasheq httpsfetch infer inferscaling inline inline-body guardedinline irvalidate statlayout \
   jolt jolt-debug jolt-release joltsmoke libconformance libperf mandelbrot-num mathfl mvnhttp defmetacells staticsite gcpolicy stacklimit lazyretain \
@@ -176,7 +176,7 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
+CI-GATES := submodules values recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling pmoverhead complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
@@ -829,6 +829,12 @@ chunkscaling: testbin
 # pr-str/str/prn of any collection, record, or sorted coll.
 printscaling: testbin
 	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/print_scaling_test.clj
+
+# A user print-method must not tax printing the values it does not reach: the
+# lookup answers a plain value of a runtime kind once per method-table
+# generation instead of computing its type tag (io-streams.ss user-print-method).
+pmoverhead: testbin
+	@JOLT_NO_USER_DEPS=1 target/release/jolt run test/print_method_overhead_test.clj
 
 # Operations that must not be linear in the collection's size: count/drop on a
 # vector-backed seq, rseq, first on a sorted collection. Every one of these was
