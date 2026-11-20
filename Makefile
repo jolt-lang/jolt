@@ -400,7 +400,7 @@ fiberspoll:
 	@JOLT_IO_POLLER=poll $(CHEZ) --script test/chez/fibers-io-test.ss
 	@out="$$(JOLT_IO_POLLER=poll $(CHEZ) --script host/chez/cli.ss test/chez/socket-test.clj 2>&1)"; \
 	  if printf '%s' "$$out" | grep -q 'SOCKET-TEST OK'; then echo "fiberspoll: socket-test OK"; \
-	  else printf '%s\n' "$$out" | tail -5; echo "fiberspoll: socket-test FAILED"; exit 1; fi
+	  else printf '%s\n' "$$out" | tail -40; echo "fiberspoll: socket-test FAILED"; exit 1; fi
 	@JOLT_IO_POLLER=poll $(CHEZ) --script host/chez/cli.ss test/chez/win-parity-smoke.clj
 	@JOLT_IO_POLLER=poll $(CHEZ) --script host/chez/cli.ss test/chez/poller-registration.clj
 	@JOLT_IO_POLLER=poll $(CHEZ) --script host/chez/cli.ss test/chez/poller-retirement.clj
