@@ -247,7 +247,9 @@
   (let [pos (quoted-pos-only form)
         body (str/join " " (map emit-quoted items))]
     (if pos
-      (str "(" ctor "-pos " (nth pos 0) " " (nth pos 1) " " body ")")
+      ;; spelled out, so each runtime name appears as itself (deadhost)
+      (str "(" (if (= ctor "jolt-list") "jolt-list-pos" "jolt-vector-pos")
+           " " (nth pos 0) " " (nth pos 1) " " body ")")
       ;; byte-identical to the rendering before positions, the bare one included
       (quoted-meta-text form (str "(" ctor " " body ")")))))
 ;; A set or map arrives already pooled (its sorted rendering interns itself);
