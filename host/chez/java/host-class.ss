@@ -33,7 +33,17 @@
 ;; the dispatch-caches unit gate requires it to be empty.
 (define (register-class-arm-checked! pred handler)
   (class-arm-reject-fast-type! '__register-class! pred)
+  (class-arm-live! pred)
   (register-class-arm! pred handler))
+;; The arms of the walk that can claim x, in walk order: the whole list here; a
+;; host narrows it per type (host-static.ss on Chez), as it does the print arms.
+;; An arm whose predicate reads more than the type -- a library's, which the
+;; runtime cannot vouch for, or one that looks into the value's state -- is
+;; marked live and stays in every narrowed walk.
+(define class-arms-for (lambda (arms x) arms))
+(define (set-class-arms-for! f) (set! class-arms-for f))
+(define class-arm-live-preds '())
+(define (class-arm-live! pred) (set! class-arm-live-preds (cons pred class-arm-live-preds)))
 (define (class-arms-claiming-fast-types)
   (let ((probes (class-fast-probes)))
     (filter (lambda (arm)
@@ -280,7 +290,7 @@
       (let ((c jolt-class-name-last))
         (if (eq? (car c) x)
             (cdr c)
-            (let ((n (let loop ((as jolt-class-arms))
+            (let ((n (let loop ((as (class-arms-for jolt-class-arms x)))
                        (cond ((null? as) (jolt-class-base x))
                              (((caar as) x) ((cdar as) x))
                              (else (loop (cdr as)))))))

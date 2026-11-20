@@ -242,7 +242,24 @@
   (or (and pr-user-method-render (pr-user-method-render x))
       (if (pr-fast-type? x)
           (jolt-pr-readable-base x)
-          (pr-to-string pr-own-to! x))))
+          (pr-own-string x))))
+;; pr-own-to!'s text as a string. A value whose arm renders a string -- a host
+;; object's #object form, a File, a UUID -- hands that string back as it is; only
+;; a collection, or an arm that streams, is written through a port. Opening a port
+;; and copying out of it cost a host object about 0.1 us, a quarter of its print.
+(define (pr-own-string x)
+  (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
+    (cond ((null? as)
+           (cond ((or (pvec? x) (pmap? x) (pset? x) (cseq? x)) (pr-to-string pr-base-to! x))
+                 ;; what jolt-pr-readable-base's own cond ends in for a host
+                 ;; object or a record, without walking it
+                 ((or (number? x) (string? x) (jolt-transient? x) (empty-list-t? x))
+                  (jolt-pr-readable-base x))
+                 (else (jolt-pr-str/readable x #t))))
+          (((caar as) x)
+           (let ((s (assq (caar as) pr-stream-arms)))
+             (if s (pr-to-string (cdr s) x) ((cdar as) x))))
+          (else (loop (cdr as))))))
 (define (pr-to-string write! x)
   (let ((p (open-output-string)))
     (write! p x)
@@ -423,10 +440,9 @@
            (if (jolt-nil? m)
                (jolt-pr-readable-dispatch x)
                (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x)))))
-        ;; a scalar's text is one small string already; anything else is
-        ;; written into one port rather than built level by level
-        ((pr-fast-type? x) (jolt-pr-readable-dispatch x))
-        (else (pr-to-string pr-to! x))))
+        ;; a collection is written into one port rather than built level by
+        ;; level; a scalar's or a host object's text is one string already
+        (else (jolt-pr-readable-dispatch x))))
 
 ;; What the JVM's built-in print-method for x's type writes: its metadata under
 ;; *print-meta*, then x rendered by jolt's own printer. The built-in methods

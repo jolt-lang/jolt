@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.lang.PersistentQueue@<hash>`), and `pprint` writes a queue as
   `<-(1 2)-<`. An Eduction prints its seq only under `pr` (`print` writes its
   `#object` form), and its print-method is a built-in keyed by the class.
+- A core.async channel prints as the JVM prints it,
+  `#object[clojure.core.async.impl.channels.ManyToManyChannel 0x… "…@…"]`,
+  instead of `#<channel>`.
+- Printing a host object is faster: `(class x)` walks only the class arms that
+  can claim the value's type, the `#object` form is built with one guard and
+  one string-append, and print-method's user lookup is skipped outright when
+  only the built-in printers are installed. `pr-str` of a fresh `java.io.File`
+  is about 0.65x what it was before this release.
 - Every value answers `java.lang.Object`'s `hashCode`, `equals`, `toString` and
   `getClass`, so `(.hashCode #"a")` and the `str` of a record holding a regex
   no longer throw "No matching field found".

@@ -1115,6 +1115,37 @@
                   (vector-set! slots which (cons arms (cons ep n)))
                   n)))))))
 
+;; The class arm walk (jolt-class-name, host-class.ss), narrowed the same way and
+;; for the same reason: a fresh java.io.File's (class x) asked ~55 predicates, and
+;; every #object print asks it. Keyed as the print walks are (print-arm-key: a
+;; host object's tag, a plain record's descriptor) except for host tables, cached
+;; against the arm list it came from, so a new arm retires it.
+(define class-arms-tbl (make-weak-eq-hashtable))
+(define class-arms-mutex (make-mutex))
+(define class-arms-last (cons #f #f))
+(set-class-arms-for!
+  (lambda (arms x)
+    ;; not a host table: one descriptor serves sorted maps and sets and
+    ;; tagged tables alike, and the arms tell them apart by contents
+    (let ((k (and (not (htable? x)) (print-arm-key x))))
+     (if (not k)
+        arms
+        (let* (
+               (l class-arms-last)
+               (e (if (eq? (car l) k) (cdr l) (hashtable-ref class-arms-tbl k #f))))
+          (if (and e (eq? (car e) arms))
+              (begin (unless (eq? (car l) k) (set! class-arms-last (cons k e)))
+                     (cdr e))
+              (let* ((n (filter (lambda (arm)
+                                  (or (memq (car arm) class-arm-live-preds)
+                                      ;; one that raises is left to raise in the walk
+                                      (guard (c (#t #t)) ((car arm) x))))
+                                arms))
+                     (e (cons arms n)))
+                (jolt-with-mutex class-arms-mutex (hashtable-set! class-arms-tbl k e))
+                (set! class-arms-last (cons k e))
+                n)))))))
+
 ;; record-method-dispatch (records.ss) gets a jhost arm: dispatch (.method obj a*)
 ;; through the tag's method table.
 (define host-type-arm

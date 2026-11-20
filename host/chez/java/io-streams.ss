@@ -3403,17 +3403,23 @@
   (lambda (mf)
     (let ((methods (jolt-multifn-methods mf))
           (prefers (jolt-multifn-prefers mf))
-          (keys (cons jolt-nil (map jolt-class-for pm-builtin-class-names))))
-      (jolt-with-mutex mm-tbl-mu
-        (for-each (lambda (k) (hashtable-set! methods k (make-pm-builtin k))) keys)
-        (for-each
-          (lambda (row)
-            (let* ((a (jolt-class-for (car row)))
-                   (sub (or (hashtable-ref prefers a #f)
-                            (let ((h (new-mm-table))) (hashtable-set! prefers a h) h))))
-              (for-each (lambda (b) (hashtable-set! sub (jolt-class-for b) #t)) (cdr row))))
-          pm-builtin-prefers)
-        (mm-epoch-bump!)))))
+          ;; and gvec.clj's two, which print as a vector and as a seq
+          (keys (cons* jolt-nil (keyword "clojure.core" "Vec") (keyword "clojure.core" "VecSeq")
+                       (map jolt-class-for pm-builtin-class-names))))
+      ;; everything that allocates, interns a class (a lock of its own) or
+      ;; registers a built-in is done first; the lock covers the table stores
+      (let ((entries (map (lambda (k) (cons k (make-pm-builtin k))) keys))
+            (prefs (map (lambda (row) (map jolt-class-for row)) pm-builtin-prefers))
+            (subs (map (lambda (row) (new-mm-table)) pm-builtin-prefers)))
+        (jolt-with-mutex mm-tbl-mu
+          (for-each (lambda (e) (hashtable-set! methods (car e) (cdr e))) entries)
+          (for-each
+            (lambda (row fresh)
+              (let ((sub (or (hashtable-ref prefers (car row) #f)
+                             (begin (hashtable-set! prefers (car row) fresh) fresh))))
+                (for-each (lambda (b) (hashtable-set! sub b #t)) (cdr row))))
+            prefs subs)
+          (mm-epoch-bump!))))))
 
 ;; The hook. printing.ss consults it before its native arms, so a user method IS
 ;; the printer for its type: it fires from pr/prn/pr-str and nested inside
@@ -3491,9 +3497,12 @@
   (let ((h (jolt-multifn-hierarchy mf)))
     (if h
         (mm-hierarchy-value h)
+        ;; the global one is an atom in a var nothing binds: its root, then the
+        ;; atom's value, two field reads on every printed value
         (begin
           (unless pm-hier-cell (set! pm-hier-cell (jolt-var "clojure.core" "global-hierarchy")))
-          (mm-hierarchy-value pm-hier-cell)))))
+          (let ((a (var-cell-root pm-hier-cell)))
+            (if (jolt-atom? a) (jolt-atom-val a) (mm-hierarchy-value a)))))))
 ;; Does the hierarchy derive any class from anything? A keyword key reaches a
 ;; class only through such a derivation.
 (define (pm-hier-derives-class? hier)
@@ -3540,8 +3549,9 @@
 (define pm-scalar-tags
   (list (keyword #f "number") (keyword #f "string") (keyword #f "keyword")
         (keyword #f "char") (keyword #f "boolean")))
-(define-syntax pm-scalar-kind?
-  (syntax-rules () ((_ k) (and k (or (fx<=? k 2) (fx=? k 4) (fx=? k 5))))))
+(define-syntax pm-scalar?
+  (syntax-rules ()
+    ((_ x*) (let ((x x*)) (or (number? x) (string? x) (keyword? x) (char? x) (boolean? x))))))
 (define (pm-kind-live? mf tbl st k)
   (let* ((kinds (vector-ref st 6))
          (v (vector-ref kinds k)))
@@ -3585,13 +3595,18 @@
     (and (jolt-multifn? mf)
          (let* ((tbl (jolt-multifn-methods mf))
                 (st (pm-current-state mf tbl)))
-           (if (and (not (vector-ref st 8)) (pm-scalar-kind? (pm-kind x)))
-               (pm-class-method mf tbl st x)
+           ;; with no user entry at all -- the usual table, where every entry is
+           ;; a built-in -- there is nothing to look up
+           (cond
+             ((and (fx=? 0 (hashtable-size (vector-ref st 7))) (not (vector-ref st 4))) #f)
+             ((and (not (vector-ref st 8)) (pm-scalar? x))
+               (pm-class-method mf tbl st x))
+             (else
                (let ((t (jolt-type x)))
                  (or (hashtable-ref (vector-ref st 7) t #f)
                      ;; (with-meta x {:type SomeClass}) dispatches on that class
                      (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
-                     (pm-class-method mf tbl st x))))))))
+                     (pm-class-method mf tbl st x)))))))))
 (set-pr-user-method-write!
   (lambda (x p)
     (let ((m (user-print-method x)))
