@@ -251,6 +251,17 @@
     ((iface-method coll "reduce" 3) (jolt-into (make-pvec (vector)) coll))
     (else (make-pvec (list->vector (seq->list coll))))))
 
+;; The one-argument string spelling splits on the FIRST slash, except at
+;; either end. The builder can use this same spelling with a lookup-only intern.
+(define (keyword-from-string a intern)
+  (let ((si (let loop ((i 0))
+              (cond ((>= i (string-length a)) #f)
+                    ((char=? (string-ref a i) #\/) i)
+                    (else (loop (+ i 1)))))))
+    (if (and si (> si 0) (< si (- (string-length a) 1)))
+        (intern (substring a 0 si) (substring a (+ si 1) (string-length a)))
+        (intern #f a))))
+
 (define (jolt-keyword . args)
   (cond
     ((= (length args) 1)
@@ -258,17 +269,7 @@
        (cond
          ((jolt-nil? a) jolt-nil)
          ((keyword? a) a)
-         ;; a 1-arg string splits on the FIRST "/" into ns/name:
-         ;; (keyword "x/y") => :x/y with ns "x" — destructure's {:keys [x/y]} builds
-         ;; the key this way, so without the split the namespaced key never matches.
-         ((string? a)
-          (let ((si (let loop ((i 0))
-                      (cond ((>= i (string-length a)) #f)
-                            ((char=? (string-ref a i) #\/) i)
-                            (else (loop (+ i 1)))))))
-            (if (and si (> si 0) (< si (- (string-length a) 1)))
-                (keyword (substring a 0 si) (substring a (+ si 1) (string-length a)))
-                (keyword #f a))))
+         ((string? a) (keyword-from-string a keyword))
          ((jolt-symbol? a)
           (let ((ns (symbol-t-ns a)))
             (keyword (if (or (jolt-nil? ns) (not ns) (eq? ns '())) #f ns) (symbol-t-name a))))

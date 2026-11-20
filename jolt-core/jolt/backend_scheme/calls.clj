@@ -332,7 +332,9 @@
         binds (str "(" p " " callee ")"
                    (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))]
     (str "(let (" binds ") " (build p names) ")")))
-(defn- apply-linked-root [root names]
+(defn apply-linked-root
+  "Apply an already bound linked root to already evaluated operands."
+  [root names]
   (let [args (if (seq names) (str " " (str/join " " names)) "")]
     (str "(if (" (unsafe-prefix) "procedure? " root ") (" root args
          ") (jolt-invoke " root args "))")))

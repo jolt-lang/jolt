@@ -889,14 +889,17 @@
   [facts path]
   (get-in facts [:loop-updates path]))
 
-(defn- core-native-call? [node name n proc]
-  (let [f (:fn node)
-        {:keys [arity call fixed]} (get ops/op-registry name)]
+(defn- resolved-call? [node ns name n]
+  (let [f (:fn node)]
     (and (= :invoke (:op node)) (= n (count (:args node)))
-         (= :var (:op f)) (= "clojure.core" (:ns f)) (= name (:name f))
+         (= :var (:op f)) (= ns (:ns f)) (= name (:name f))
          (not (or (:proto node) (:devirt-type node) (:prim-op node)))
-         (= proc (get fixed n call)) (or (nil? arity) (arity n))
-         (not (host/protocol-call-key nil "clojure.core" name n)))))
+         (not (host/protocol-call-key nil ns name n)))))
+
+(defn- core-native-call? [node name n proc]
+  (let [{:keys [arity call fixed]} (get ops/op-registry name)]
+    (and (resolved-call? node "clojure.core" name n)
+         (= proc (get fixed n call)) (or (nil? arity) (arity n)))))
 
 (defn- references-binding? [facts node path binding]
   (or (= binding (binding-at facts path))
@@ -989,3 +992,62 @@
               :step (into (conj path :args 0) edit-path)
               :guard (when-not (native-map-source? unit body (conj path :args 2))
                        {:predicate "pmap?" :argument 2})})))))))
+
+(defn- reads-local? [node binder]
+  (and (= :local (:op node)) (= binder (:name node))))
+
+(defn- core-local-arg? [node name binder]
+  (and (resolved-call? node "clojure.core" name 1)
+       (reads-local? (first (:args node)) binder)))
+
+(defn- symbol-key-conversion?
+  "Match the alpha-renamed, inlined symbol-to-keyword branch, including the
+  two distinct keyword arities. No call to a user helper survives this match."
+  [node key]
+  (let [{:keys [test then else]} node
+        [[ns-temp ns-expr]] (:bindings then)
+        ns-if (:body then)
+        ns-let (:then ns-if)
+        [[ns-local ns-read]] (:bindings ns-let)
+        qualified (:body ns-let)
+        bare (:else ns-if)]
+    (and (= :if (:op node)) (core-local-arg? test "symbol?" key) (reads-local? else key)
+         (= :let (:op then)) (= 1 (count (:bindings then))) (not (:letrec then))
+         (core-local-arg? ns-expr "namespace" key)
+         (= :if (:op ns-if)) (reads-local? (:test ns-if) ns-temp)
+         (= :let (:op ns-let)) (= 1 (count (:bindings ns-let))) (not (:letrec ns-let))
+         (reads-local? ns-read ns-temp)
+         ;; The aliases must not shadow the reducer's key in (name key).
+         (not= ns-temp key) (not= ns-local key)
+         (resolved-call? qualified "clojure.core" "keyword" 2)
+         (reads-local? (first (:args qualified)) ns-local)
+         (core-local-arg? (second (:args qualified)) "name" key)
+         (resolved-call? bare "clojure.core" "keyword" 1)
+         (core-local-arg? (first (:args bare)) "name" key))))
+
+(defn closed-reducer-plan
+  "Describe a reducer with a closed native replacement. The emitter must
+  verify the original call heads and emit the matching runtime domain guard
+  before any builder is created. This is a conditional lowering plan, never
+  a claim that the ordinary callback or its frames are opaque."
+  [unit node]
+  (when (core-native-call? node "reduce-kv" 3 "jolt-reduce-kv")
+    (let [arity (get-in node [:args 0 :arities 0])
+          [_ k v] (:params arity)
+          [_ key value] (:args (:body arity))
+          [input match replacement] (:args value)
+          plan (cond
+                 (and (reads-local? key k) (reads-local? value v))
+                 {:kind :copy}
+
+                 (and (reads-local? value v) (symbol-key-conversion? key k))
+                 {:kind :symbol-keys}
+
+                 (and (reads-local? key k) (reads-local? input v)
+                      (resolved-call? value "clojure.string" "replace" 3)
+                      (every? (fn [n] (and (= :const (:op n))
+                                           (string? (:val n)) (= 1 (count (:val n)))))
+                              [match replacement]))
+                 {:kind :string-replace :transform value :literals [match replacement]})]
+      (when (and plan (reducer-confinement-at unit node [] :opaque-accumulator-frames))
+        plan))))
