@@ -21,7 +21,10 @@
 ;; The compiler reads source as FORMS (set literals stay {:jolt/type :jolt/set},
 ;; which the analyzer lowers) — the raw reader, not clojure.core/read-string,
 ;; whose data conversion would turn those into real sets.
-(define jolt-ce-read jolt-read-form-raw)
+;; Source text read for compiling, so its lists carry the positions a
+;; Compiler.load of the text would give (reader.ss rdr-data-pos); read-string's
+;; own read carries none, as the reference's does.
+(define (jolt-ce-read s) (parameterize ((rdr-data-pos #t)) (jolt-read-form-raw s)))
 
 ;; --- current source location ------------------------------------------------
 ;; The position of the top-level form currently compiling/evaluating, so an
@@ -755,7 +758,7 @@
      (let loop ((fs (cdr (seq->list form))) (result jolt-nil) (cur ns))
        (if (null? fs)
            result
-           (let ((r (jolt-compile-eval-form/outer (car fs) cur outer)))
+           (let ((r (jolt-compile-eval-form/outer (hc-propagate-pos form (car fs)) cur outer)))
              (loop (cdr fs) r (chez-current-ns))))))
     ;; a macro call whose expansion is a (do ...): unroll the expansion the same
     ;; way (each child re-enters, so nested macro-to-do chains unroll too). The
@@ -976,8 +979,34 @@
 ;; at runtime). eval takes an already-read FORM (e.g. from quote / list); it and
 ;; load-string compile+eval in the current ns. eval is removed from the analyzer's
 ;; special-symbol lists (host-contract.ss) so it resolves as an ordinary core var.
+;;
+;; A form with no position of its own (built by code, or read by read-string,
+;; which stamps none) compiles at the position of the form being evaluated
+;; around it, as the reference's Compiler takes LINE/COLUMN from the enclosing
+;; load for any expression without :line metadata: its fns' frames, an `is` in
+;; it and a def it makes name that line. A form that has one compiles at its
+;; own, and the enclosing position is back once the eval returns, as the
+;; reference's binding of LINE is popped.
+(define (ce-eval-at-enclosing form)
+  (let ((line (jolt-atom-val compiler-line-cell))
+        (col (jolt-atom-val compiler-column-cell)))
+    (if (and (cseq? form) (fixnum? line) (fx>? line 0)
+             (jolt-nil? (hc-form-line form)))
+        (let ((m (jolt-meta form)))
+          (jolt-with-meta form
+            (let ((m (if (pmap? m) m (jolt-hash-map))))
+              (jolt-assoc (jolt-assoc m hc-kw-line line) hc-kw-column col))))
+        form)))
 (def-var! "clojure.core" "eval"
-  (lambda (form) (jolt-compile-eval-form form (chez-current-ns))))
+  (lambda (form)
+    (let ((line (jolt-atom-val compiler-line-cell))
+          (col (jolt-atom-val compiler-column-cell)))
+      (dynamic-wind
+        void
+        (lambda () (jolt-compile-eval-form (ce-eval-at-enclosing form) (chez-current-ns)))
+        (lambda ()
+          (jolt-atom-val-set! compiler-line-cell line)
+          (jolt-atom-val-set! compiler-column-cell col))))))
 ;; load-string is Compiler.load over a string: *ns* is bound for the load, so
 ;; an (ns …) in the string does not leave the caller in that namespace. A REPL
 ;; is the one place that wants the switch to stick, and it gets it the way

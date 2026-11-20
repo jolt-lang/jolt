@@ -84,8 +84,9 @@
 (prof/instrument!)
 (load-file fixture)
 (prof/clear!)
-;; an eval'd form with no position of its own counts under no file, not under
-;; whatever top-level form ran last (this file's, which is uninstrumented)
+;; an eval'd form compiles in the file being evaluated, as the reference's
+;; Compiler compiles it in SOURCE: the loop's quoted body keeps its own reader
+;; line (25, in the fixture's text) and takes this file, the enclosing one
 ((resolve 'profile-fixture/eval-loop))
 (prof/instrument! false)
 (dotimes [_ 50] ((resolve 'profile-fixture/area) ((resolve 'profile-fixture/->Square) 3)))
@@ -95,11 +96,11 @@
 (check "record method line" (:line (fn-row fns2 'profile-fixture/Square.area)) 18)
 (check "defmethod row" (:hits (fn-row fns2 (symbol "profile-fixture/describe[:dot]"))) 7)
 (def lines2 (prof/line-counts))
-(check "eval'd code is not charged to the caller's form"
-       (some #(and (str/ends-with? (str (:file %)) "profile-test.clj") (> (:hits %) 1)) lines2)
-       nil)
-(check "eval'd code counts under no file"
-       (boolean (some #(and (nil? (:file %)) (= 1001 (:hits %))) lines2)) true)
+(check "eval'd code counts at its own line in the enclosing file"
+       (boolean (some #(and (str/ends-with? (str (:file %)) "profile-test.clj")
+                            (= 25 (:line %)) (= 1001 (:hits %)))
+                      lines2))
+       true)
 
 ;; Code that is compiled and dropped gives its counters back, and what they
 ;; counted is kept: the defn forms' load-time code is gone after a collection.

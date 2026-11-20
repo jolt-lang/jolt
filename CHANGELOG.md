@@ -36,6 +36,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:actual`, and `clojure.stacktrace/print-stack-trace` indents frames by four
   spaces as the JVM's does.
 
+- `run-tests` runs a namespace's tests in `(ns-interns ns)` order through
+  `test-all-vars`, as the reference's `test-ns` does, and `ns-interns` /
+  `ns-publics` iterate in the JVM's hash order (an array map of up to 8 entries
+  holds them in that order) instead of definition order. `(into {} m)`,
+  `(merge {} m)` and `(conj {} m)` of a hash map reversed its entries; they keep
+  its iteration order now.
+
+- Source positions follow the JVM's reader and compiler. A quoted list keeps
+  its reader `:line`/`:column`, nested lists too, so `(meta '(a b))` is
+  `{:line 1, :column 2}`, and `^meta` on a list takes the caret's position
+  unless the metadata names its own. `read-string`, `clojure.edn/read-string`
+  and a read off a plain `PushbackReader` stamp no position; a
+  `LineNumberingPushbackReader`, a file load, `load-string`, `-e`, the REPL and
+  nREPL still do. A syntax-quoted form keeps its position beside user metadata,
+  and a syntax-quoted map is a hash map in hash order. `eval` of a form with no
+  position compiles at the enclosing form's line and column in the enclosing
+  file, so its fns' frames, a def it makes and an `is` in it name that line, and
+  a def with no file of its own records `*file*` (or `"NO_SOURCE_FILE"`).
+  `macroexpand-1` returns the expansion without the call's position, and a
+  macro called with the wrong number of arguments throws the bare
+  ArityException, as the JVM's `macroexpand1` does.
+
 - The built-in nREPL server decodes a completion request's `prefix` and `ns` as UTF-8, so a non-ASCII symbol or namespace completes with no middleware loaded, as jolt-lang/nrepl#27 does for the middleware stack. A request that middleware already decoded is not decoded again.
 
 - `(methods print-method)` holds the JVM's built-in printers under the same

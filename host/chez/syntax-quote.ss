@@ -99,11 +99,13 @@
 (define (jolt-sqset . parts) (apply jolt-hash-set (sq-flatten parts)))
 ;; map FORM: a plain pmap (the analyzer's form-map? = pmap with no :jolt/type).
 ;; Clojure's syntaxQuote builds the map via `apply hash-map`, so a `{...} template
-;; is HASH-ordered (unlike a {...} literal, which keeps insertion order).
-;; However, the LOWERED form already evaluates its value expressions in source
-;; order through the reader's rdr-map-order side-table; build a map that preserves
-;; that evaluation order by using the same ctor as map literals.
-(define (jolt-sqmap . parts) (apply jolt-hash-map parts))
+;; is a PersistentHashMap in hash order at any size (unlike a {...} literal, an
+;; array map in insertion order up to 8 entries) -- (keys `{:z 1 :a 2 :m 3 :b 4})
+;; is (:m :z :b :a) there, and the metadata `^:foo (a) carries is ordered the same
+;; way. The parts are evaluated, in source order, as this call's arguments; an
+;; expansion that splices the map back into code is then compiled in the map's
+;; own order, as the reference's MapExpr compiles a hash map's.
+(define (jolt-sqmap . parts) (jolt-hash-map-build parts))
 
 (def-var! "clojure.core" "__sq1"   jolt-sq1)
 (def-var! "clojure.core" "__sqcat" jolt-sqcat)

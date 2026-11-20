@@ -496,13 +496,21 @@
 (define (ns-vars-pmap-when nm keep?)
   ;; the namespace's own bucket (rt.ss ns-cells-index): O(vars in nm), where a
   ;; var-table-cells scan cost O(every var in the image) per call
-  (let ((m (jolt-hash-map)))
+  ;;
+  ;; The order is the JVM's. Its ns-interns / ns-publics are filter-key over the
+  ;; namespace's mapping table, a PersistentHashMap, reduced into {}: the keys
+  ;; come out in hash order, and a result of 8 or fewer is an array map holding
+  ;; them in that order. clojure.test's test-all-vars runs tests in exactly this
+  ;; order, so definition order here reordered a namespace's test output.
+  (let ((h empty-pmap-hash))
     (for-each
       (lambda (c)
         (when (and (var-cell-defined? c) (keep? c) (not (ns-cell-class-mapping? c)))
-          (set! m (jolt-assoc m (jolt-symbol #f (var-cell-name c)) c))))
+          (set! h (pmap-put-hash h (jolt-symbol #f (var-cell-name c)) c))))
       (ns-cells-list nm))
-    m))
+    (if (fx>? (pmap-cnt h) 8)
+        h
+        (pmap-fold-fwd h (lambda (k v acc) (jolt-assoc acc k v)) (jolt-hash-map)))))
 (define (ns-vars-pmap nm) (ns-vars-pmap-when nm (lambda (c) #t)))
 ;; The name of a namespace that exists. ns-publics, ns-interns, ns-map,
 ;; ns-refers, ns-aliases and ns-imports all go through the-ns on the JVM, so a

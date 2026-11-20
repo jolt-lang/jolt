@@ -700,9 +700,17 @@
 ;; :arglists/:doc, or ^{:k (f)}), the :meta-expr is rebuilt from the merged meta so
 ;; position rides the evaluated path too. Non-def nodes (a cast/:invoke) keep the
 ;; :pos-only stamp.
+;; A position with no :file of its own -- a form eval'd at runtime, a -e or REPL
+;; entry, a load-string -- names the file being compiled the way DefExpr does:
+;; *file*, or "NO_SOURCE_FILE" when that is nil (a load-string binds it so).
+(defn- def-file-pos [pos]
+  (if (contains? pos :file)
+    pos
+    (assoc pos :file (or clojure.core/*file* "NO_SOURCE_FILE"))))
+
 (defn- stamp-def-pos [ctx env node pos]
   (if (and pos (#{:def :defmacro} (:op node)))
-    (let [new-meta (merge (or (:meta node) {}) pos)
+    (let [new-meta (merge (or (:meta node) {}) (def-file-pos pos))
           node (assoc node :pos pos :meta new-meta)]
       (if (:meta-expr node)
         (assoc node :meta-expr (def-meta-expr ctx new-meta env))
@@ -844,21 +852,17 @@
 ;; create ISeq" for (throw), (def), (let* x 1) and (set!). The messages are the
 ;; reference compiler's own.
 
-;; A quoted collection keeps its USER metadata (rewrite-clj coerces
-;; '^:x (4 5 6) and expects the meta back). A list form is the one thing the
-;; reader stamps with :line/:column/:file, and that is its own bookkeeping
-;; rather than data, so it comes back off — but only there: on a vector, map,
-;; set or symbol the only possible source of a position key is the program
-;; that wrote it. The kept metadata is part of the literal, so quote it.
+;; A quoted datum is the value the reader built, metadata and all, as the
+;; reference's ConstantExpr emits it: user metadata (rewrite-clj coerces
+;; '^:x (4 5 6) and expects the meta back) and, on a list, the reader's
+;; :line/:column -- (meta '(a b)) is {:line 1, :column 2} on the JVM, nested
+;; lists included. The back end's quote emit carries it (literals.clj
+;; *quote-meta*), dropping only the :file jolt's reader adds for itself.
 (defn- analyze-quote [ctx items env]
   (when-not (= 2 (count items))
     (analysis-error :analyze/invalid-arity
                     (str "Wrong number of args (" (dec (count items)) ") passed to quote")))
-  (let [qf (second items)
-        m (form-coll-meta qf)
-        m (when (map? m)
-            (let [u (if (form-list? qf) (dissoc m :line :column :file) m)]
-              (when (seq u) u)))]
+  (let [qf (second items)]
     ;; Quoting a live VALUE a macro spliced is the value — (quote 5) is
     ;; 5, and (quote <fn>) is that fn — so it rebuilds the same way an
     ;; unquoted one does rather than going to the quoted-data emitter,
@@ -867,10 +871,7 @@
     ;; restating the list of shapes analyze already recognizes.
     (if-let [plan (embed-plan qf)]
       (embedded-plan-node ctx plan env)
-      (if (nil? m)
-        (quote-node qf)
-        (invoke (var-ref "clojure.core" "with-meta")
-                [(quote-node qf) (quote-node m)])))))
+      (quote-node qf))))
 
 ;; 2 or 3 argument forms only (spec 03-special-forms X1)
 (defn- analyze-if [ctx items env]

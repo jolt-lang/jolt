@@ -476,7 +476,14 @@
    ;; The reader stamps :line/:column on the form; the file comes from *file*,
    ;; reduced to its base name because that is what the reference prints and what
    ;; tooling matches on (test.check asserts #"\(clojure_test_test\.cljc:\d+\)$").
-   (let [pos (assoc (select-keys (meta &form) [:line])
+   ;;
+   ;; A form with no :line (built by code, or read by read-string, which stamps
+   ;; none) takes the line being compiled, Compiler/LINE: the reference's frame
+   ;; for such a form carries that line too, as eval compiles it at the
+   ;; enclosing position.
+   (let [line (or (:line (meta &form))
+                  (let [l @clojure.lang.Compiler/LINE] (when (pos? l) l)))
+         pos (assoc (if line {:line line} {})
                     :file (source-file-name))]
      `(binding [clojure.test/*report-pos* ~pos]
         (is-impl ~form ~msg)))))
@@ -643,70 +650,29 @@
         (fn [] (doseq [t (get by-ns n)] (run-one t))))))
   nil)
 
-;; Tests attached to a namespace's vars via :test metadata but never registered
-;; through deftest — clojure.test discovers tests by scanning ns-interns, so a
-;; suite that interns test vars directly (yamltest-style intern + vary-meta)
-;; must be visible to (run-tests 'ns) too. deftest'd vars also carry :test
-;; meta, so names already in the registry are excluded.
-;; registered-by-ns is (group-by :ns @registry), built ONCE by the caller —
-;; run-all-tests hands every loaded namespace through here, and a fresh
-;; whole-registry scan per namespace was O(namespaces x tests).
-(defn- interned-tests [n registered-by-ns]
-  (let [known (set (map :name (get registered-by-ns n)))]
-    (->> (ns-interns n)
-         (keep (fn [[s v]]
-                 (when-let [t (:test (meta v))]
-                   (when-not (contains? known s)
-                     {:name s :ns n :fn t}))))
-         (sort-by (fn [t] (str (:name t)))))))
-
 (defn run-registered [] (run-selected nil))
 
-;; A namespace's tests: its test-ns-hook when it defines one, which then decides
-;; what runs, like clojure.test's test-ns; otherwise its registered and interned
-;; tests inside its :once fixtures.
+;; A namespace's test-ns-hook, which test-ns calls instead of testing its vars.
 (defn- ns-hook [ns-sym]
   (when (find-ns ns-sym)
     (find-var (symbol (str ns-sym) "test-ns-hook"))))
 
-;; One namespace's run, as clojure.test's test-ns does it: a fresh
-;; *report-counters* ref for the namespace, bracketed in :begin-test-ns /
-;; :end-test-ns, answering the ref's final contents. the-ns first: a namespace
-;; that never loaded throws "No namespace: x found" rather than running as one
-;; with no tests, so a test file whose ns form doesn't match its path fails the
-;; run instead of being skipped in silence. Namespaces ahead of it in run-tests
-;; have run by then, and no summary is reported, which is what the JVM does too.
-(defn- run-ns [n reg-by-ns]
-  (let [ns-obj (the-ns n)
-        rc (ref *initial-report-counters*)]
-    (binding [*report-counters* rc
-              *run-counters* rc]
-      (do-report {:type :begin-test-ns :ns ns-obj})
-      (if-let [hook (ns-hook n)]
-        ((var-get hook))
-        (let [ts (concat (filter selected? (get reg-by-ns n))
-                         (interned-tests n reg-by-ns))]
-          (when (seq ts)
-            (wrap-fixtures (get @once-fixtures n [])
-              (fn [] (doseq [t ts] (run-one t)))))))
-      (do-report {:type :end-test-ns :ns ns-obj}))
-    @rc))
+(declare test-ns)
 
 ;; (run-tests 'ns1 'ns2 …) runs only those namespaces' tests, like clojure.test,
 ;; and (run-tests) is (run-tests *ns*). run-registered runs everything registered.
 ;; The summary is the namespaces' counters summed, as the reference's
 ;; (apply merge-with + (map test-ns namespaces)); the process-wide counters stay
-;; cumulative for the n-pass/n-fail harness API.
+;; cumulative for the n-pass/n-fail harness API. test-ns throws "No namespace: x
+;; found" for one that never loaded, after the namespaces ahead of it have run
+;; and with no summary, as the JVM does.
 (defn run-tests
   "Runs all tests in the given namespaces; prints results.
   Defaults to current namespace if none given.  Returns a map
   summarizing test results."
   ([] (run-tests *ns*))
   ([& nses]
-   (let [reg-by-ns (group-by :ns @registry)
-         summary (assoc (apply merge-with +
-                               (map (fn [n] (run-ns (if (symbol? n) n (ns-name n)) reg-by-ns))
-                                    nses))
+   (let [summary (assoc (apply merge-with + (map test-ns nses))
                         :type :summary)]
      (do-report summary)
      summary)))

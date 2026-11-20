@@ -527,14 +527,14 @@ rm -rf "$rc_dir"
 # runtime used to come back with forms tagged :file "<that file>", and a read
 # error then carried a position into the STRING rendered against that file — a
 # framed snippet of a line that had nothing to do with it. Only reachable from
-# inside a real load, which is the one place the parameter is set; :line stays,
-# and describes the string that was read (known-divergences: the JVM records no
-# position for read-string at all).
+# inside a real load, which is the one place the parameter is set. Nor any
+# :line: the JVM's read-string records no position at all, and neither does this
+# one; a LineNumberingPushbackReader read does, and still names no file.
 rs_dir="$(mktemp -d)"
 printf '%s\n' '(ns p)' \
-  '(prn [(:file (meta (read-string "(foo)"))) (:line (meta (read-string "(foo)")))])' \
+  '(prn [(:file (meta (read-string "(foo)"))) (:line (meta (read-string "(foo)"))) (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. "(foo)"))))])' \
   > "$rs_dir/p.clj"
-cla_check "$jolt run \"$rs_dir/p.clj\"" '[nil 1]'
+cla_check "$jolt run \"$rs_dir/p.clj\"" '[nil nil {:line 1, :column 1}]'
 rm -rf "$rs_dir"
 # -m NS -- ... : same end-of-options rule for a namespace -main.
 mp="$(mktemp -d)"; mkdir -p "$mp/src"
@@ -2584,7 +2584,7 @@ check '(do (require (quote jolt.nrepl)) (nil? jolt.nrepl/*eval-wrapper*))' 'true
 # without one nothing changes. clojure.core/load-string still takes the string
 # alone. evaluate's :file and the load-file op's file-path go the same way.
 check '(do (jolt.host/eval-string "(defn nes-f [] 1)" "/tmp/nes/a.clj") [(:file (meta (var user/nes-f))) (:line (meta (var user/nes-f))) (jolt.host/eval-string "*file*" "/tmp/nes/a.clj") (jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj")])' '["/tmp/nes/a.clj" 1 "/tmp/nes/a.clj" "a.clj"]'
-check '(do (jolt.host/eval-string "(defn nes-g [] 1)") [(nil? (:file (meta (var user/nes-g)))) (nil? (jolt.host/eval-string "*file*"))])' '[true true]'
+check '(do (jolt.host/eval-string "(defn nes-g [] 1)") [(:file (meta (var user/nes-g))) (nil? (jolt.host/eval-string "*file*"))])' '["NO_SOURCE_FILE" true]'
 check '(do (jolt.host/load-string "(ns nes.b) (defn h [] 2)" "/tmp/nes/b.clj") [(:file (meta (resolve (quote nes.b/h)))) (str *ns*)])' '["/tmp/nes/b.clj" "user"]'
 check '(try (load-string "1" "/tmp/nes/c.clj") :no-throw (catch Throwable _ :arity))' ':arity'
 check '(do (require (quote jolt.nrepl)) (jolt.nrepl/evaluate "(ns nes.d) (defn k [] 3)" "user" {:load true :file "/tmp/nes/d.clj"}) (:file (meta (resolve (quote nes.d/k)))))' '"/tmp/nes/d.clj"'

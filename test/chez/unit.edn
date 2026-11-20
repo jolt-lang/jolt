@@ -67,9 +67,11 @@
   {:suite "defonce-shape" :expr "(do (defonce ^:private ^{:doc \"from meta\"} du-c \"from docstring\" 1) [(:private (meta #'du-c)) (:doc (meta #'du-c))])" :expected "[true \"from docstring\"]"}
   ;; the init is still evaluated at most once
   {:suite "defonce-shape" :expr "(do (def du-d-runs (atom 0)) (defonce du-d \"doc\" (do (swap! du-d-runs inc) 1)) (defonce du-d \"doc\" (do (swap! du-d-runs inc) 2)) [du-d @du-d-runs])" :expected "[1 1]"}
-  ;; and a shape that is neither gets a named error rather than a silent mis-parse
-  {:suite "defonce-shape" :expr "(try (eval '(defonce du-e)) (catch Throwable e (class e)))" :expected "java.lang.IllegalArgumentException"}
-  {:suite "defonce-shape" :expr "(try (eval '(defonce du-f 1 2 3)) (catch Throwable e (class e)))" :expected "java.lang.IllegalArgumentException"}
+  ;; and a shape that is neither gets a named error rather than a silent mis-parse:
+  ;; an IllegalArgumentException the macro throws, which reaches the caller as the
+  ;; cause of the macroexpansion diagnostic, as a macro's throw does on the JVM
+  {:suite "defonce-shape" :expr "(try (eval '(defonce du-e)) (catch Throwable e (class (or (ex-cause e) e))))" :expected "java.lang.IllegalArgumentException"}
+  {:suite "defonce-shape" :expr "(try (eval '(defonce du-f 1 2 3)) (catch Throwable e (class (or (ex-cause e) e))))" :expected "java.lang.IllegalArgumentException"}
   ;; The reflection member model: jolt reports what its registries KNOW a class
   ;; declares, not what the JVM ships. Three registries answer: the protocol/type
   ;; registry (a deftype's methods), the host shim tables (an ArrayList's), and
@@ -142,8 +144,8 @@
   ;; JVM's "not public" (jolt#1095); the rows below define their macros IN core.
   {:suite "assert-args" :expr "(try (eval '(defmacro aa-m0 [b] (clojure.core/assert-args (vector? b) \"a vector\") :ok)) :compiled (catch Exception e (ex-message e)))" :expected "\"var: #'clojure.core/assert-args is not public\""}
   {:suite "assert-args" :expr "(do (binding [*ns* (the-ns 'clojure.core)] (eval '(defmacro aa-m1 [b] (clojure.core/assert-args (vector? b) \"a vector for its binding\") :ok))) (eval '(clojure.core/aa-m1 [1])))" :expected ":ok"}
-  {:suite "assert-args" :expr "(do (binding [*ns* (the-ns 'clojure.core)] (eval '(defmacro aa-m2 [b] (clojure.core/assert-args (vector? b) \"a vector for its binding\") :ok))) (try (eval '(clojure.core/aa-m2 (1))) (catch IllegalArgumentException e (boolean (re-find #\"aa-m2 requires a vector for its binding\" (ex-message e))))))" :expected "true"}
-  {:suite "assert-args" :expr "(do (binding [*ns* (the-ns 'clojure.core)] (eval '(defmacro aa-m3 [b] (clojure.core/assert-args (vector? b) \"a vector for its binding\" (even? (count b)) \"an even number of forms in binding vector\") :ok))) (try (eval '(clojure.core/aa-m3 [1 2 3])) (catch IllegalArgumentException e (boolean (re-find #\"aa-m3 requires an even number of forms in binding vector\" (ex-message e))))))" :expected "true"}
+  {:suite "assert-args" :expr "(do (binding [*ns* (the-ns 'clojure.core)] (eval '(defmacro aa-m2 [b] (clojure.core/assert-args (vector? b) \"a vector for its binding\") :ok))) (try (eval '(clojure.core/aa-m2 (1))) (catch Throwable e [(class (ex-cause e)) (ex-message (ex-cause e))])))" :expected "[java.lang.IllegalArgumentException \"clojure.core/aa-m2 requires a vector for its binding in user:1\"]"}
+  {:suite "assert-args" :expr "(do (binding [*ns* (the-ns 'clojure.core)] (eval '(defmacro aa-m3 [b] (clojure.core/assert-args (vector? b) \"a vector for its binding\" (even? (count b)) \"an even number of forms in binding vector\") :ok))) (try (eval '(clojure.core/aa-m3 [1 2 3])) (catch Throwable e [(class (ex-cause e)) (ex-message (ex-cause e))])))" :expected "[java.lang.IllegalArgumentException \"clojure.core/aa-m3 requires an even number of forms in binding vector in user:1\"]"}
   {:suite "repl-demunge" :expr "(do (require 'clojure.repl) (clojure.repl/demunge \"my_ns$my_fn_QMARK_\"))" :expected "\"my-ns/my-fn?\""}
   {:suite "repl-demunge" :expr "(do (require 'clojure.repl) (ifn? (requiring-resolve 'clojure.repl/demunge)))" :expected "true"}
   {:suite "special-form precedence" :expr "(do (ns sftest (:refer-clojure :exclude [def])) (defmacro def [n v] :shadowed) (clojure.core/defn ff [] 99) (ff))" :expected "99"}
@@ -1384,7 +1386,7 @@
   ;; an interpolated form's offsets are into the STRING, not the file, so it
   ;; carries no reader position — with one a throw inside ~(…) reported line 1 of
   ;; whatever file the literal sits in. An ordinary read still positions its lists.
-  {:suite "reader-macros" :expr "[(meta (nth (read-string \"#$\\\"a ~(inc x)\\\"\") 2)) (some? (:line (meta (read-string \"(inc x)\"))))]" :expected "[nil true]"}
+  {:suite "reader-macros" :expr "[(meta (nth (read-string \"#$\\\"a ~(inc x)\\\"\") 2)) (some? (:line (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(inc x)\"))))))]" :expected "[nil true]"}
   ;; edn is a closed grammar with no user extension point, so the table is not
   ;; consulted there. Nor does #$ fall through to the tagged-literal arm: the
   ;; reference dispatches a tag on a LETTER only, and answers "No dispatch macro"
@@ -1491,25 +1493,26 @@
   {:suite "reader" :expr "(nil? (read-string \"  , ,\"))" :expected "true"}
   {:suite "reader" :expr "(:tag (meta (read-string \"^String x\")))" :expected "String"}
   {:suite "reader" :expr "(:foo (meta (read-string \"^:foo x\")))" :expected "true"}
-  {:suite "reader" :expr "(:line (meta (read-string \"(foo bar)\")))" :expected "1"}
-  {:suite "reader" :expr "(:column (meta (read-string \"(foo bar)\")))" :expected "1"}
-  {:suite "reader" :expr "(:line (meta (read-string \"\\n\\n  (x)\")))" :expected "3"}
-  {:suite "reader" :expr "(:column (meta (read-string \"\\n\\n  (x)\")))" :expected "3"}
+  {:suite "reader" :expr "(:line (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(foo bar)\")))))" :expected "1"}
+  {:suite "reader" :expr "(:column (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(foo bar)\")))))" :expected "1"}
+  {:suite "reader" :expr "(:line (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"\\n\\n  (x)\")))))" :expected "3"}
+  {:suite "reader" :expr "(:column (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"\\n\\n  (x)\")))))" :expected "3"}
   {:suite "reader" :expr "(nil? (meta (read-string \"[1 2]\")))" :expected "true"}
   {:suite "reader" :expr "(nil? (meta (read-string \"()\")))" :expected "true"}
   {:suite "reader" :expr "(:foo (meta (read-string \"^:foo (x y)\")))" :expected "true"}
-  {:suite "reader" :expr "(:line (meta (read-string \"^:foo (x y)\")))" :expected "1"}
-  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"(when x y)\"))))" :expected "1"}
-  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"\\n\\n(when x y)\"))))" :expected "3"}
-  {:suite "reader" :expr "(:column (meta (macroexpand-1 (read-string \"(when x y)\"))))" :expected "1"}
-  ;; Each -> step keeps its own form's position, so a fault inside a chain reports
-  ;; the step's line and not the whole chain's. A bare-symbol step has no form of
-  ;; its own, so it inherits the -> call's position.
-  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"(-> 1\\n  (inc))\"))))" :expected "2"}
-  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"(-> 1\\n  (inc)\\n  (dec))\"))))" :expected "3"}
-  {:suite "reader" :expr "(:line (meta (second (macroexpand-1 (read-string \"(-> 1\\n  (inc)\\n  (dec))\")))))" :expected "2"}
-  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"\\n(-> 1 inc)\"))))" :expected "2"}
-  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read-string \"(->> [1]\\n  (map inc))\"))))" :expected "2"}
+  {:suite "reader" :expr "(:line (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"^:foo (x y)\")))))" :expected "1"}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(when x y)\"))))))" :expected ""}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"\\n\\n(when x y)\"))))))" :expected ""}
+  {:suite "reader" :expr "(:column (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(when x y)\"))))))" :expected ""}
+  ;; macroexpand-1 answers what the macro built, as the JVM's does: a when
+  ;; expansion has no position, and each -> step keeps its own form's, so a fault
+  ;; inside a chain reports the step's line. A bare-symbol step has none here
+  ;; (the compiler still gives it the -> call's line).
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(-> 1\\n  (inc))\"))))))" :expected "2"}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(-> 1\\n  (inc)\\n  (dec))\"))))))" :expected "3"}
+  {:suite "reader" :expr "(:line (meta (second (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(-> 1\\n  (inc)\\n  (dec))\")))))))" :expected "2"}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"\\n(-> 1 inc)\"))))))" :expected ""}
+  {:suite "reader" :expr "(:line (meta (macroexpand-1 (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"(->> [1]\\n  (map inc))\"))))))" :expected "2"}
   {:suite "reader" :expr "(= 42 (with-in-str \"42\" (read)))" :expected "true"}
   {:suite "reader" :expr "(= (quote (+ 1 2)) (with-in-str \"(+ 1 2)\" (read)))" :expected "true"}
   {:suite "reader" :expr "(with-in-str \"1 2\" [(read) (read)])" :expected "[1 2]"}
@@ -2366,7 +2369,7 @@
   {:suite "instance? / bound-class" :expr "(do (def icv-n java.util.Map) (instance? icv-n 42))" :expected "false"}
   {:suite "instance? / bound-class" :expr "(do (def icv-k clojure.lang.Keyword) (instance? icv-k :k))" :expected "true"}
   {:suite "maps / hash-map order" :expr "(seq (hash-map :xmap 1 :! 2))" :expected "([:xmap 1] [:! 2])"}
-  {:suite "maps / hash-map order" :expr "(do (def sq-log (atom [])) (defmacro sq-m3 [] `{:a ~(list 'swap! 'sq-log 'conj 1) :b ~(list 'swap! 'sq-log 'conj 2)}) (sq-m3) (deref sq-log))" :expected "[1 2]"}
+  {:suite "maps / hash-map order" :expr "(do (def sq-log (atom [])) (defmacro sq-m3 [] `{:a ~(list 'swap! 'sq-log 'conj 1) :b ~(list 'swap! 'sq-log 'conj 2)}) (sq-m3) (deref sq-log))" :expected "[2 1]"}
   {:suite "core / dynamic-vars" :expr "*source-path*" :expected "\"NO_SOURCE_FILE\""}
   {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"hi\") (.flush w)) @sb)" :expected "\"hi\""}
   {:suite "core / PrintWriter-on" :expr "(let [sb (atom nil)] (let [w (PrintWriter-on (fn [s] (reset! sb s)) nil)] (.write w \"a\") (.write w \"b\") (.flush w)) @sb)" :expected "\"ab\""}
@@ -2504,6 +2507,17 @@
   {:suite "clojure.test / JVM output", :label "a rebound report sees every event run-tests emits, in order", :expr "(do (require '[clojure.test :as t]) (binding [*ns* (create-ns 'u18.g)] (eval '(do (clojure.core/refer 'clojure.core) (clojure.test/deftest g1 (clojure.test/is true))))) (let [seen (atom [])] (binding [t/report (fn [m] (swap! seen conj (:type m)))] (t/run-tests 'u18.g)) @seen))", :expected "[:begin-test-ns :begin-test-var :pass :end-test-var :end-test-ns :summary]"}
   {:suite "clojure.test / JVM output", :label "*report-counters* is a fresh ref per namespace, read at :end-test-ns", :expr "(do (require '[clojure.test :as t]) (binding [*ns* (create-ns 'u18.h)] (eval '(do (clojure.core/refer 'clojure.core) (clojure.test/deftest h1 (clojure.test/is true) (clojure.test/is true))))) (binding [*ns* (create-ns 'u18.i)] (eval '(do (clojure.core/refer 'clojure.core) (clojure.test/deftest i1 (clojure.test/is true))))) (let [seen (atom []) orig t/report] (with-out-str (binding [t/*test-out* *out*] (binding [t/report (fn [m] (orig m) (when (= :end-test-ns (:type m)) (swap! seen conj @t/*report-counters*)))] (t/run-tests 'u18.h 'u18.i)))) @seen))", :expected "[{:test 1, :pass 2, :fail 0, :error 0} {:test 1, :pass 1, :fail 0, :error 0}]"}
   {:suite "clojure.test / JVM output", :label "try-expr reports an unexpected throw with the throwable itself as :actual", :expr "(do (require '[clojure.test :as t]) (let [a (atom nil)] (binding [t/report (fn [m] (reset! a m))] (t/try-expr nil (throw (ex-info \"x\" {})))) [(:type @a) (instance? Throwable (:actual @a)) (ex-message (:actual @a))]))", :expected "[:error true \"x\"]"}
+  {:suite "clojure.test / JVM output", :label "ns-interns and ns-publics iterate in the JVM's hash order: an array map under 9 vars, a hash map past 8", :expr "(do (binding [*ns* (create-ns 'u18o)] (eval '(do (def zz 1) (def ok 2) (def errs 3) (def ^:private fails 4))) (create-ns 'u18p)) (binding [*ns* (the-ns 'u18p)] (eval '(do (def q 1) (def a 2) (def m 3) (def b 4) (def x 5) (def c 6) (def y 7) (def d 8) (def e 9)))) [(keys (ns-interns 'u18o)) (keys (ns-publics 'u18o)) (keys (ns-interns 'u18p)) (type (ns-interns 'u18o)) (type (ns-interns 'u18p))])", :expected "[(fails errs ok zz) (errs ok zz) (x a y q m e c b d) clojure.lang.PersistentArrayMap clojure.lang.PersistentHashMap]"}
+  {:suite "clojure.test / JVM output", :label "run-tests runs a namespace's tests in (ns-interns ns) order, as test-all-vars does", :expr "(do (require '[clojure.test :as t]) (binding [*ns* (create-ns 'u18q)] (eval '(do (clojure.core/refer 'clojure.core) (clojure.test/deftest zz (clojure.test/do-report {:type :fail :file \"q.clj\" :line 1 :expected 1 :actual 2})) (clojure.test/deftest ok (clojure.test/do-report {:type :fail :file \"q.clj\" :line 2 :expected 1 :actual 2})) (clojure.test/deftest errs (clojure.test/do-report {:type :fail :file \"q.clj\" :line 3 :expected 1 :actual 2})) (clojure.test/deftest fails (clojure.test/do-report {:type :fail :file \"q.clj\" :line 4 :expected 1 :actual 2}))))) (with-out-str (binding [t/*test-out* *out*] (t/run-tests 'u18q))))", :expected "\"\\nTesting u18q\\n\\nFAIL in (fails) (q.clj:4)\\nexpected: 1\\n  actual: 2\\n\\nFAIL in (errs) (q.clj:3)\\nexpected: 1\\n  actual: 2\\n\\nFAIL in (ok) (q.clj:2)\\nexpected: 1\\n  actual: 2\\n\\nFAIL in (zz) (q.clj:1)\\nexpected: 1\\n  actual: 2\\n\\nRan 4 tests containing 4 assertions.\\n4 failures, 0 errors.\\n\""}
+  {:suite "clojure.test / JVM output", :label "into / merge / conj of a hash map into a small map keep the hash map's iteration order", :expr "(let [h (hash-map 'zz 1 'ok 2 'errs 3 'fails 4)] [(keys (into {} h)) (keys (merge {} h)) (keys (persistent! (reduce conj! (transient {}) h))) (keys (conj {:a 1} h))])", :expected "[(fails errs ok zz) (fails errs ok zz) (fails errs ok zz) (:a fails errs ok zz)]"}
+  {:suite "reader positions / JVM", :label "a quoted list keeps the reader's :line/:column, nested lists too; a vector, map, set or symbol gets none", :expr "[(meta '(a b)) (meta (second '(x (a b)))) (meta (first '[(a b)])) (meta '[a]) (meta '{:a 1}) (meta '#{a}) (meta 'a)]", :expected "[{:line 1, :column 13} {:line 1, :column 38} {:line 1, :column 62} nil nil nil nil]"}
+  {:suite "reader positions / JVM", :label "^meta on a quoted list: the position is the caret's, and a :line the metadata names wins", :expr "[(meta '^:foo (a b)) (meta '^{:line 99} (a b)) (meta '^:foo [a])]", :expected "[{:line 1, :column 13, :foo true} {:line 99, :column 33} {:foo true}]"}
+  {:suite "reader positions / JVM", :label "syntax-quote drops a bare position and keeps it beside user metadata, in a hash map", :expr "[(meta `(a b)) (meta `^:foo (a b)) (meta `[a])]", :expected "[nil {:column 27, :line 1, :foo true} nil]"}
+  {:suite "reader positions / JVM", :label "a syntax-quoted map is a PersistentHashMap in hash order", :expr "[(keys `{:z 1 :a 2 :m 3 :b 4}) (type `{:a 1})]", :expected "[(:m :z :b :a) clojure.lang.PersistentHashMap]"}
+  {:suite "reader positions / JVM", :label "read-string, clojure.edn and a plain PushbackReader stamp no position; a LineNumberingPushbackReader does", :expr "(do (require 'clojure.edn) [(meta (read-string \"(a b)\")) (meta (read-string \"^:x (a b)\")) (meta (clojure.edn/read-string \"(a b)\")) (meta (read (java.io.PushbackReader. (java.io.StringReader. \"\\n(a b)\")))) (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. \"\\n  (a b)\"))))])", :expected "[nil {:x true} nil nil {:line 2, :column 3}]"}
+  {:suite "reader positions / JVM", :label "a macro's &form carries the call's position", :expr "(do (defmacro u18-fm [] (list 'quote (meta &form))) (eval '(u18-fm)))", :expected "{:line 1, :column 64}"}
+  {:suite "reader positions / JVM", :label "eval of a positionless form compiles at the enclosing form's line and column", :expr "(select-keys (meta (eval (read-string \"(defn u18-h [] 1)\"))) [:line :column])", :expected "{:line 1, :column 5}"}
+  {:suite "reader positions / JVM", :label "eval of a quoted form compiles at the form's own position", :expr "(select-keys (meta (eval '(defn u18-g [] 1))) [:line :column])", :expected "{:line 1, :column 31}"}
   ;; A record literal calls the type's factory, so under *read-eval* false the
   ;; reader refuses it as the JVM's CtorReader does, even with map->T loaded.
   ;; It used to call map->T / ->T at read time.
@@ -4039,8 +4053,8 @@
   {:suite "error-phase" :expr "(try (load-string \"(let [x] 1)\") (catch Throwable e (nil? (ex-cause e))))" :expected "true"}
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (defmacro ep-boom6 [] (throw (IllegalStateException. \"b6\"))) (let [t (clojure.main/ex-triage (Throwable->map (try (load-string \"(user/ep-boom6)\") (catch Throwable e e))))] [(:clojure.error/phase t) (:clojure.error/class t) (:clojure.error/cause t) (:clojure.error/symbol t)]))" :expected "[:macro-syntax-check java.lang.IllegalStateException \"b6\" user/ep-boom6]"}
   {:suite "clojure.main" :expr "(do (require 'clojure.main) (defmacro ep-boom7 [] (throw (ClassCastException. \"b7\"))) (clojure.main/err->msg (try (load-string \"(user/ep-boom7)\") (catch Throwable e e))))" :expected "\"Unexpected error (ClassCastException) macroexpanding user/ep-boom7 at (REPL:1:1).\\nb7\\n\""}
-  ;; an eval'd form has no position; a kinded diagnostic still carries the phase
-  {:suite "error-phase" :expr "(try (eval '(let [x] 1)) (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/line (ex-data e))]))" :expected "[:macro-syntax-check nil]"}
+  ;; a quoted form keeps its reader position, so the diagnostic names its line
+  {:suite "error-phase" :expr "(try (eval '(let [x] 1)) (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/line (ex-data e))]))" :expected "[:macro-syntax-check 1]"}
   ;; a macro that re-enters the compiler is compiling on its own account
   {:suite "error-phase" :expr "(do (defmacro ep-inner [] (eval '(fn [] zzz9))) (try (load-string \"(user/ep-inner)\") (catch Throwable e [(:clojure.error/phase (ex-data e)) (:clojure.error/symbol (ex-data e))])))" :expected "[:compile-syntax-check nil]"}
   ;; Throwable->map lifts the phase to the top, where ex-triage reads it

@@ -1719,7 +1719,7 @@
 (defn- eval-namespace-source*
   [l ns-name file]
   (let [text (read-source-text file)
-        r (java.io.PushbackReader. (java.io.StringReader. text))
+        r (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. text))
         eof (Object.)
         ;; Read through the first ns form, or the whole file when there is
         ;; none. Reading stops there because the forms after it must be read
@@ -1833,7 +1833,7 @@
    the caller's namespace. The peek reads with no data readers and no `#=`, so
    a first form that is not an ns form ran nothing when it is read again."
   [source]
-  (let [r (java.io.PushbackReader. (java.io.StringReader. source))]
+  (let [r (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. source))]
     (try
       (let [f (binding [*read-eval* false
                         *data-readers* {}
@@ -2111,7 +2111,7 @@
      ;; before the source is read: a registered data reader runs during read
      (check-live! owner)
      (let [[ns-form r] (or (read-leading-ns source)
-                           [nil (java.io.PushbackReader. (java.io.StringReader. source))])
+                           [nil (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. source))])
            prefix (if ns-form [ns-form] [])]
        (when-let [declared (some declared-ns-name prefix)]
          (when-not (= ns-name (str declared))

@@ -94,9 +94,11 @@
 ;; compile before any of it runs — a property of that wrapper, not of the case.
 ;; jolt unrolls a top-level do the same way. Reader conditionals are allowed (a few
 ;; corpus rows carry #?(:clj ...)); a read failure is tagged so the caller can tell
-;; it from an eval failure.
+;; it from an eval failure. The reader is a LineNumberingPushbackReader, as a
+;; REPL's and Compiler.load's are, so a case's list forms carry :line/:column
+;; exactly as they do in a file or at a REPL (a plain PushbackReader stamps none).
 (defn eval-program [src]
-  (let [r (java.io.PushbackReader. (java.io.StringReader. src))
+  (let [r (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. src))
         opts {:read-cond :allow :eof ::eof}]
     (loop [v nil]
       (let [form (try (read opts r)
