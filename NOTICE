@@ -162,3 +162,10 @@ Racket treelist
   Copyright (c) PLT Design Inc. and contributors
   MIT License: licenses/MIT-racket.txt
   The RRB vector in host/chez/collections.ss.
+
+Carp
+  https://github.com/carp-lang/Carp
+  Copyright (c) Erik Svedäng and contributors
+  Apache License 2.0: licenses/Apache-2.0.txt
+  The ownership checker in stdlib/jolt/native/memory.clj ports src/Memory.hs;
+  the region language and C emission follow src/Emit.hs.
