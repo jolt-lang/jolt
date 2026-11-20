@@ -1605,7 +1605,7 @@
     ;; its expansion gets one constant rather than one per mention. See
     ;; hoist-const-for.
     :quote (let [f (:form node)
-                 s (binding [literals/*quote-meta* true] (emit-quoted f))]
+                 s (literals/emit-quoted-positioned f)]
              (if (or (form-char? f) (form-literal? f))
                s
                (hoist-const-for f (site-const node s))))
