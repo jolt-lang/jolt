@@ -66,44 +66,9 @@
     (fold-left (lambda (m s) (jolt-assoc1 m (jolt-symbol #f s) #t))
                (jolt-assoc1 (jolt-hash-map) (jolt-symbol "clojure.core" "import*") #t)
                unq)))
-;; clojure.lang.Compiler/demunge — reverse the name munging Clojure applies to
-;; build JVM class/method names, so "clojure.core$odd_QMARK_" -> clojure.core/odd?.
-;; clojure.spec.alpha's fn-sym uses it to recover a symbol from a fn's class name.
-;; Longest tokens first; a standalone _ is a hyphen; $ separates ns from name.
-;;
-;; Derived from class-munge-map (java/host-class.ss), the forward table, so the two
-;; directions cannot drift: every escape demunge reverses is one munge emits. The
-;; hyphen row is dropped — its escape is a bare "_", which demunge handles as its
-;; own rule below rather than as a token — and "_DOT_" is added, an escape jolt
-;; reverses although Clojure's CHAR_MAP never produces it. Sorted longest token
-;; first so a scan cannot stop at a shorter token that prefixes a longer one.
-(define demunge-token-map
-  (sort (lambda (a b) (fx>? (string-length (car a)) (string-length (car b))))
-        (cons '("_DOT_" . ".")
-              (fold-left (lambda (acc p)
-                           (if (string=? (cdr p) "_")
-                               acc
-                               (cons (cons (cdr p) (string (car p))) acc)))
-                         '()
-                         class-munge-map))))
-(define (compiler-demunge s)
-  (let* ((s (if (string? s) s (jolt-str-render-one s)))
-         (n (string-length s))
-         (out (open-output-string)))
-    (let loop ((i 0))
-      (if (>= i n) (get-output-string out)
-          (let ((tok (let scan ((ts demunge-token-map))
-                       (cond ((null? ts) #f)
-                             ((let ((t (caar ts)))
-                                (and (<= (+ i (string-length t)) n)
-                                     (string=? (substring s i (+ i (string-length t))) t)))
-                              (car ts))
-                             (else (scan (cdr ts)))))))
-            (cond
-              (tok (display (cdr tok) out) (loop (+ i (string-length (car tok)))))
-              ((char=? (string-ref s i) #\_) (write-char #\- out) (loop (+ i 1)))
-              ((char=? (string-ref s i) #\$) (write-char #\/ out) (loop (+ i 1)))
-              (else (write-char (string-ref s i) out) (loop (+ i 1)))))))))
+;; Compiler/demunge (compiler-demunge) lives in java/host-class.ss beside
+;; class-munge-map: the runtime names a fn in an ArityException with it, and a
+;; built program carries no compiler.
 ;; clojure.lang.Compiler/CHAR_MAP — the forward munge map (special char -> escape
 ;; token) as a jolt map, which is what a Clojure caller reading the field expects.
 ;; class-munge-map is already exactly that table; this only changes its shape.
