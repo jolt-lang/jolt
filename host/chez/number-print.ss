@@ -65,7 +65,77 @@
                              (loop (fx- k 1))
                              (substring s 0 k))))))))))
 
+;; The fast path: a double that some decimal of at most 15 significant digits
+;; reads back as -- 1.1, 3.25, 0.001, what EDN and JSON mostly carry -- has its
+;; digits found in flonum arithmetic, never the host's arbitrary-precision
+;; shortest-digits search (number->string was ~0.5 us a double, most of printing one).
+;;
+;; For k = 0, 1, ... take y = x * 10^k and n = round(y). With n < 2^53 and
+;; 10^k <= 10^22 both exact, the division is correctly rounded, so (= (/ n 10^k) x)
+;; is exactly "the decimal n x 10^-k reads back as x". The first k with a hit has
+;; the fewest fractional digits, so the fewest significant ones: the shortest
+;; decimal. No other integer can hit: below 10^15 a double's spacing scaled by
+;; 10^k is under 0.23, so a k-place decimal that reads back as x lies within 0.12
+;; of x * 10^k, and y is within 0.12 of that; one integer, round(y), is that close,
+;; so there is no nearest-or-even choice to make. Past 15 digits the host path
+;; answers, which also keeps the 16-17 digit ties (flonum-long-digits) off this one.
+;; Answers (digits . point) for a positive X, or #f.
+(define flonum-pow10
+  (let ((v (make-vector 23 1.0)))
+    (do ((k 1 (fx+ k 1))) ((fx= k 23) v)
+      (vector-set! v k (fl* 10.0 (vector-ref v (fx- k 1)))))))
+;; (digits . point) for the decimal N x 10^-K, N a positive fixnum: N's digits
+;; with its trailing zeros dropped (k = 0 leaves them: 1200.0), written by hand
+;; because number->string of a fixnum costs ~0.2 us, most of a short double's print
+(define (flonum-fixnum-digits n k)
+  (let strip ((m n) (z 0))
+    (if (fx=? 0 (fxremainder m 10))
+        (strip (fxquotient m 10) (fx+ z 1))
+        (let* ((len (let count ((q m) (c 0)) (if (fx=? q 0) c (count (fxquotient q 10) (fx+ c 1)))))
+               (s (make-string len)))
+          (let fill ((q m) (i (fx- len 1)))
+            (if (fx<? i 0)
+                (cons s (fx- (fx+ len z) k))
+                (begin (string-set! s i (integer->char (fx+ 48 (fxremainder q 10))))
+                       (fill (fxquotient q 10) (fx- i 1)))))))))
+(define (flonum-fast-digits x)
+  (and (fl>= x 1e-22) (fl< x 1e15)
+       (let loop ((k 0))
+         (and (fx< k 23)
+              (let* ((p (vector-ref flonum-pow10 k))
+                     (y (fl* x p)))
+                (and (fl< y 1e15)
+                     (let ((n (flround y)))
+                       (if (and (fl>= n 1.0) (fl= (fl/ n p) x))
+                           (flonum-fixnum-digits (exact n) k)
+                           (loop (fx+ k 1))))))))))
+
+;; Double.toString's layout of the decimal 0.DIGITS x 10^POINT
+(define (flonum-layout neg? digits point)
+  (let* ((dlen (string-length digits))
+         (res (cond
+                ((string=? digits "0") "0.0")
+                ((and (>= point -2) (<= point 7))   ; 1e-3 <= |x| < 1e7
+                 (cond
+                   ((<= point 0)
+                    (string-append "0." (make-string (- point) #\0) digits))
+                   ((>= point dlen)
+                    (string-append digits (make-string (- point dlen) #\0) ".0"))
+                   (else (string-append (substring digits 0 point) "."
+                                        (substring digits point dlen)))))
+                (else
+                 (string-append (substring digits 0 1) "."
+                                (if (fx>? dlen 1) (substring digits 1 dlen) "0")
+                                "E" (number->string (- point 1)))))))
+    (if neg? (string-append "-" res) res)))
+
 (define (jolt-flonum->string x)
+  (let ((fast (flonum-fast-digits (flabs x))))
+    (if fast
+        (flonum-layout (fl< x 0.0) (car fast) (cdr fast))
+        (flonum-host->string x))))
+
+(define (flonum-host->string x)
   (let* ((s (number->string x))
          (neg? (char=? (string-ref s 0) #\-))
          (body0 (if neg? (substring s 1 (string-length s)) s))
@@ -118,22 +188,8 @@
                      (flonum-two-digits (flabs x))))
            (digits (if two (car two) digits))
            (point (if two (cdr two) point))
-           (dlen (string-length digits))
-           (res (cond
-                  ((string=? digits "0") "0.0")
-                  ((and (>= point -2) (<= point 7))   ; 1e-3 <= |x| < 1e7
-                   (cond
-                     ((<= point 0)
-                      (string-append "0." (make-string (- point) #\0) digits))
-                     ((>= point dlen)
-                      (string-append digits (make-string (- point dlen) #\0) ".0"))
-                     (else (string-append (substring digits 0 point) "."
-                                          (substring digits point dlen)))))
-                  (else
-                   (string-append (substring digits 0 1) "."
-                                  (if (fx>? dlen 1) (substring digits 1 dlen) "0")
-                                  "E" (number->string (- point 1)))))))
-      (if neg? (string-append "-" res) res))))
+           (dlen (string-length digits)))
+      (flonum-layout neg? digits point))))
 
 (define (jolt-num->string x)
   (cond

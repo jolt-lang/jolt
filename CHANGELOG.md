@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.
+- A double with at most 15 significant digits (`1.1`, `3.25`, `0.001`) prints
+  about 4x faster. Its digits come from flonum arithmetic instead of Chez's
+  arbitrary-precision shortest-digits search; other doubles print as before.
 
 ## [0.8.28] - 2026-11-19
 
