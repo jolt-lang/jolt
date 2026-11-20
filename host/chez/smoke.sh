@@ -1745,6 +1745,20 @@ if [ "${#home_want}" -gt 1 ]; then
       fails=$((fails + 1))
     fi
   done
+  # user.name is the same entry's pw_name: an unset or borrowed USER/LOGNAME
+  # does not change it (burinc/jolt#19)
+  name_want="$(id -un)"
+  name_prop='[(System/getProperty "user.name") (get (System/getProperties) "user.name")]'
+  for name_env in "env -u USER -u LOGNAME" "env USER=someoneelse LOGNAME=someoneelse"; do
+    got="$(cd "$home_tmp" && $name_env JOLT_PWD="$home_tmp" $home_jolt -e "$name_prop" 2>/dev/null | tail -1)"
+    if [ "$got" = "[\"$name_want\" \"$name_want\"]" ]; then
+      pass=$((pass + 1))
+    else
+      echo "  FAIL: user.name under $name_env"
+      echo "    want \`$name_want\` twice got \`$got\`"
+      fails=$((fails + 1))
+    fi
+  done
   rm -rf "$home_tmp"
 fi
 

@@ -1311,19 +1311,24 @@
           (loop (fx+ i 1) (cons b acc))))))
 ;; getpwuid answers in libc's static buffer, which another thread's getpw* call
 ;; (or this one's, twice at once) overwrites, so it is asked once, under a lock,
-;; at the first user.home -- not at image build, which would keep the builder's.
-;; The passwd home does not change while the process runs.
-(define sys-passwd-home-cache (box 'unset))
-(define sys-passwd-home-mu (make-mutex))
-(define (sys-passwd-home)
-  (let ((v (unbox sys-passwd-home-cache)))
+;; at the first user.home or user.name -- not at image build, which would keep
+;; the builder's. The entry does not change while the process runs. The cache
+;; holds (dir . name), either #f when the entry has no usable one, or #f for no
+;; entry at all.
+(define sys-passwd-cache (box 'unset))
+(define sys-passwd-mu (make-mutex))
+(define (sys-passwd-entry)
+  (let ((v (unbox sys-passwd-cache)))
     (if (eq? v 'unset)
-        (jolt-with-mutex sys-passwd-home-mu
-          (when (eq? (unbox sys-passwd-home-cache) 'unset)
-            (set-box! sys-passwd-home-cache (sys-passwd-home-read)))
-          (unbox sys-passwd-home-cache))
+        (jolt-with-mutex sys-passwd-mu
+          (when (eq? (unbox sys-passwd-cache) 'unset)
+            (set-box! sys-passwd-cache (sys-passwd-read)))
+          (unbox sys-passwd-cache))
         v)))
-(define (sys-passwd-home-read)
+(define (sys-passwd-home) (let ((e (sys-passwd-entry))) (and e (car e))))
+(define (sys-passwd-name) (let ((e (sys-passwd-entry))) (and e (cdr e))))
+;; pw_name is the first field on every LP64 layout these rows describe.
+(define (sys-passwd-read)
   (guard (e (#t #f))
     (let ((dir-off (case (sa-os-family) ((macos) 48) ((linux) 32) (else #f))))
       (and dir-off c-getuid c-getpwuid-home
@@ -1331,12 +1336,16 @@
            (let* ((uid (c-getuid)) (pw (c-getpwuid-home uid)))
              (and (not (= 0 pw))
                   (= uid (sa-foreign-ref 'unsigned-32 pw 16))
-                  (let ((dp (sa-foreign-ref 'uptr pw dir-off)))
-                    (and (not (= 0 dp))
-                         (let ((d (sys-c-string-at dp)))
-                           (and (fx>? (string-length d) 0)
-                                (char=? #\/ (string-ref d 0))
-                                d))))))))))
+                  (let ((dp (sa-foreign-ref 'uptr pw dir-off))
+                        (np (sa-foreign-ref 'uptr pw 0)))
+                    (cons (and (not (= 0 dp))
+                               (let ((d (sys-c-string-at dp)))
+                                 (and (fx>? (string-length d) 0)
+                                      (char=? #\/ (string-ref d 0))
+                                      d)))
+                          (and (not (= 0 np))
+                               (let ((n (sys-c-string-at np)))
+                                 (and (fx>? (string-length n) 0) n)))))))))))
 (define sys-bionic? (and (jolt-foreign-proc-safe "__system_property_get" '(string u8*) 'int) #t))
 (define (sys-user-home)
   (let ((home (let ((h (getenv "HOME"))) (and h (fx>? (string-length h) 0) h))))
@@ -1347,9 +1356,18 @@
              (cond ((and d (fx>? (string-length d) 1)) d)
                    (home home)
                    (else "?")))))))
-;; user.name: the login name from the environment, as the JVM reports it.
+;; user.name: as the JVM reports it, the passwd entry's pw_name for the process's
+;; uid (java_props_md.c), so neither an unset nor a borrowed USER changes it, and
+;; "?" with no entry. Windows has no passwd entry (the JVM asks GetUserName, which
+;; USERNAME carries); Android's bionic makes one up for an app's uid, so there the
+;; environment comes first, as for user.home.
+(define (sys-env-user)
+  (let ((ok (lambda (v) (and v (fx>? (string-length v) 0) v))))
+    (or (ok (getenv "USER")) (ok (getenv "LOGNAME")) (ok (getenv "USERNAME")))))
 (define (sys-user-name)
-  (or (getenv "USER") (getenv "LOGNAME") (getenv "USERNAME") jolt-nil))
+  (cond ((eq? (sa-os-family) 'windows) (or (sys-env-user) "?"))
+        (sys-bionic? (or (sys-env-user) (sys-passwd-name) "?"))
+        (else (or (sys-passwd-name) "?"))))
 ;; os.version, computed once on first read: the macOS PRODUCT version (what
 ;; the JVM reports there — the kernel release is the wrong number for "which
 ;; macOS is this"), the kernel release elsewhere, nil where the adapter cannot
