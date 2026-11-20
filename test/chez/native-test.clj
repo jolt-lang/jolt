@@ -150,6 +150,14 @@
                (loop [i 0 s 0.0] (if (< i n) (recur (inc i) (+ s (aget xs i))) s))))
            [[(da)] [(da 1.5)] [(da 1 2 3 4.25)]] :raw true)
 
+;; 8192+ elements: make-jolt-array pins the backing flvector (na-pin-large!);
+;; the flvector header C reads must be the same either way
+(check-run "large pinned input" '[^doubles xs]
+           '((let [n (alength xs)]
+               (loop [i 0 s 0.0] (if (< i n) (recur (inc i) (+ s (aget xs i))) (+ s (double n))))))
+           [[(double-array (range 8191))] [(double-array (range 8192))] [(double-array (range 100000))]]
+           :raw true)
+
 (check-run "fill and return owned" '[^long n]
            '((let [a (double-array n)] (dotimes [i n] (aset a i (* i 0.5))) a))
            [[0] [1] [7] [-1]] :raw true)
