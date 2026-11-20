@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   methods in `(methods print-method)` are this printer. Output is unchanged.
 
 ### Fixed
+- `clojure.test` prints what the JVM's prints (burinc/jolt#18). `run-tests`,
+  `test-ns` and `run-test-var` print `Testing <ns>` before a namespace's tests,
+  and the summary reads `Ran N tests containing M assertions.` /
+  `F failures, E errors.` instead of jolt's own one-line wording. An `:error`
+  report prints the throwable through `print-cause-trace` (class, message,
+  ex-data, then frames) and takes its file and line from the top frame; the
+  `:default` report method prints the map. Each namespace counts into its own
+  `*report-counters*` ref, so a reporter reading it at `:end-test-ns` sees that
+  namespace's counts. `run-test-var` and `run-test` print the Testing line and
+  summary and return the summary map, `try-expr` reports the throwable itself as
+  `:actual`, and `clojure.stacktrace/print-stack-trace` indents frames by four
+  spaces as the JVM's does.
+
 - The built-in nREPL server decodes a completion request's `prefix` and `ns` as UTF-8, so a non-ASCII symbol or namespace completes with no middleware loaded, as jolt-lang/nrepl#27 does for the middleware stack. A request that middleware already decoded is not decoded again.
 
 - `(methods print-method)` holds the JVM's built-in printers under the same
