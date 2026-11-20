@@ -142,6 +142,22 @@
               (fixnum? (car irr)) (procedure? (cadr irr))
               (string-append "Wrong number of args (" (jvm-arity-count (car irr))
                              ") passed to: " (jolt-proc-arity-name (cadr irr)))))))
+;; A reference to a Scheme top-level variable that has no value: Chez raises
+;; "variable ~:s is not bound" with the symbol. The generic rendering prints the
+;; irritant through jolt's printer, where a raw Scheme symbol is just an
+;; #object[:object …] -- which named nothing for anyone chasing one. The symbol's
+;; own name, and a gensym's unique name, say which variable it was.
+(define (unbound-variable-fault-message c)
+  (and (message-condition? c) (irritants-condition? c)
+       (let ((m (condition-message c)) (irr (condition-irritants c)))
+         (and (string? m) (fault-template-has? m "is not bound")
+              (list? irr) (= (length irr) 1) (symbol? (car irr))
+              (let ((s (car irr)))
+                (string-append "variable "
+                               (if (gensym? s)
+                                   (string-append (symbol->string s) " (" (gensym->unique-string s) ")")
+                                   (symbol->string s))
+                               " is not bound"))))))
 (define (fault-message c)
   ;; a message that fails to render must not raise inside the handler that is
   ;; unwrapping the fault
@@ -150,6 +166,7 @@
         (arity-fault-message c)
         (array-index-fault-message c)
         (port-errno-fault-message c)
+        (unbound-variable-fault-message c)
         (condition->message-string c))))
 
 ;; First sight of a condition is also where its throw site is stashed, unless
