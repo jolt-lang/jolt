@@ -586,6 +586,34 @@ EOF
 out_xf="$("$work/filtertracebin" 2>&1)"
 expect_match "built: rebound comp points to its own call in the pipeline" "$out_xf" 'app\.filtertrace/widths (app/filtertrace\.clj:4)'
 
+# A rebound clojure.string/replace takes the header builder's ordinary step.
+# The replacement's throw keeps the reducer's frame, as when a custom timer
+# handler sends the whole fold down the ordinary path.
+cat > "$work/src/app/kvtrace.clj" <<'EOF'
+(ns app.kvtrace
+  (:require [clojure.string :as string]))
+(defn ^:redef headers [m]
+  (reduce-kv (fn [a k v]
+               (assoc a k (string/replace v "x" "y")))
+             {} m))
+(defn explode [s _ _] (throw (ex-info "changed root" {:s s})))
+(defn -main [& [mode]]
+  (let [tick (jolt.host/scheme-proc "timer-interrupt-handler")
+        standard (tick)]
+    (when (= "ordinary" mode) (tick (fn [] nil)))
+    (with-redefs [string/replace explode]
+      (try (headers (array-map :a "ax" :b "bx" :c "cx"))
+           (catch Throwable e
+             (println "KVTRACE" (mapv first (:trace (Throwable->map e)))))))
+    (tick standard)))
+EOF
+( cd "$work" && "$joltabs" build -m app.kvtrace -o kvtracebin >/dev/null 2>&1 )
+calls="$(grep -hoF '(jolt-reduce-kv-build-string-replace ' "$work/kvtracebin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
+expect_match "built: the header reducer emits its builder" "$calls" '^1$'
+kv_frames='^KVTRACE \[app\.kvtrace\$explode app\.kvtrace\$headers\$fn__0 app\.kvtrace\$_main'
+expect_match "built: the builder's ordinary step keeps the reducer frame" "$("$work/kvtracebin" 2>&1)" "$kv_frames"
+expect_match "built: the ordinary driver names the same frames" "$("$work/kvtracebin" ordinary 2>&1)" "$kv_frames"
+
 # A full Chez continuation may return to a callback after the reduction has
 # advanced or finished. Test both AOT paths and check which one was emitted.
 cat > "$work/src/app/filterreentry.clj" <<'EOF'
