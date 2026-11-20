@@ -1924,5 +1924,58 @@
       (ok "continuation reentry after a write returns the same version" (loop-reentry f 1))))
   '(#f #t))
 
+;; Put a real Chez timer delivery inside the first native replacement, after
+;; its caller has chosen the replacement procedure for that entry.
+(set-optimize! #t)
+(set-direct-link-flag! #t)
+(define builder-headers-form
+  "(defn builder-headers [m]
+     (reduce-kv (fn [a k v] (assoc a k (clojure.string/replace v \"\\n\" \",\"))) {} m))")
+(ev builder-headers-form)
+(define builder-header-source (ev "(array-map :a \"a\\n1\" :b \"b\\n2\")"))
+(define (with-header-tick handler run)
+  (let ((replace str-replace-literal) (fired? #f))
+    (parameterize ((timer-interrupt-handler (lambda () (set! fired? #t) (handler))))
+      (dynamic-wind
+        (lambda ()
+          (set! str-replace-literal
+            (lambda (s match replacement)
+              (when (and (not fired?) (string=? s "a\n1"))
+                (set-timer 1)
+                (let spin ((i 2000) (x s))
+                  (unless (zero? i) (spin (- i 1) (cons i x)))))
+              (replace s match replacement))))
+        run
+        (lambda () (set-timer 0) (set! str-replace-literal replace))))))
+(let* ((root (jolt-var "clojure.string" "replace")) (original (var-cell-deref root))
+       (calls 0))
+  (dynamic-wind
+    (lambda () (void))
+    (lambda ()
+      (with-header-tick
+        (lambda ()
+          (var-root-set! root (lambda (s _match _replacement) (set! calls (+ calls 1)) s)))
+        (lambda ()
+          (let ((result (jolt-invoke1 (var-deref "u" "builder-headers") builder-header-source)))
+            (ok "header steps dispatch at the time of the individual replacement"
+                (and (= calls 1) (clj= result (ev "{:a \"a,1\" :b \"b\\n2\"}"))))))))
+    (lambda () (var-root-set! root original))))
+(let ((resume #f) (results '()) (expected (ev "{:a \"a,1\" :b \"b,2\"}")))
+  (with-header-tick
+    (lambda () (call/cc (lambda (k) (set! resume k))))
+    (lambda ()
+      (let ((result (guard (e (#t #f))
+                      (jolt-invoke1 (var-deref "u" "builder-headers") builder-header-source))))
+        (set! results (cons result results))
+        (if (and resume (< (length results) 3))
+            (resume (void))
+            (ok "a native header fold can resume twice from the same timer continuation"
+                (and (= (length results) 3)
+                     (for-all (lambda (m) (and (pmap? m) (clj= m expected))) results)
+                     (not (eq? (car results) (cadr results)))
+                     (not (eq? (cadr results) (caddr results))))))))))
+(set-optimize! #f)
+(set-direct-link-flag! #f)
+
 (printf "~a/~a passed~n" (- total fails) total)
 (exit (if (zero? fails) 0 1))
