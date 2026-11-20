@@ -317,7 +317,11 @@
 (define procedure-class-name-hook (lambda (p) #f))
 (define (procedure-class-name x)
   (and (procedure? x)
-       (or (procedure-class-name-hook x)
+       ;; a deftype or defrecord name evaluates to its constructor, which stands
+       ;; for the class itself (class?, and = to (class instance)), so its class
+       ;; is Class, as (class SomeType) is on the JVM
+       (or (and (deftype-ctor-tag x) "java.lang.Class")
+           (procedure-class-name-hook x)
            (let ((p (proc-name-of x)))
              (and p (var-fn-class-name (car p) (cdr p)))))))
 ;; The class of the fn a var ns/name holds: ns$name -- the ns segment munges too

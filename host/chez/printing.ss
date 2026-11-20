@@ -457,6 +457,69 @@
         (pr-own-to! p x))
       (pr-own-to! p x)))
 
+;; What the JVM's built-in collection methods write: each prints the value in its
+;; KEY's shape, over (seq x), whatever x is. IPersistentVector's writes a queue or
+;; a list as [...], ISeq's writes a vector as (...), IPersistentMap's writes a
+;; record's entries as {...}. shape is one of 'vec 'seq 'set 'map. A value already
+;; of that shape prints through pr-builtin-to!, the same text by jolt's own
+;; printer; anything else is walked here as core_print.clj's print-sequential and
+;; print-map walk it, *print-length*, *print-level* and lift-ns included.
+(define (pr-shape-native? shape x)
+  (case shape
+    ((vec) (pvec? x))
+    ((seq) (or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)))
+    ((set) (pset? x))
+    (else (pmap? x))))
+(define (pr-shape-to! shape p x)
+  (if (pr-shape-native? shape x)
+      (pr-builtin-to! p x)
+      (begin
+        (when (pr-print-meta?)
+          (let ((m (pr-user-meta x)))
+            (unless (jolt-nil? m)
+              (put-string p "^") (pr-dispatch-to! p m) (put-string p " "))))
+        (if (jolt-print-hash?)
+            (put-string p "#")
+            (with-deeper-print
+              (if (eq? shape 'map)
+                  (pr-entries-to! p (jolt-seq x))
+                  (pr-elements-to! p (jolt-seq x)
+                                   (case shape ((vec) "[") ((seq) "(") (else "#{"))
+                                   (case shape ((vec) "]") ((seq) ")") (else "}")))))))))
+(define (pr-elements-to! p s open close)
+  (put-string p open)
+  (let ((lim (jolt-print-length)))
+    (let loop ((s s) (i 0))
+      (cond ((jolt-nil? s))
+            ((pr-past-limit? lim i) (put-string p (if (fx=? i 0) "..." " ...")))
+            (else (unless (fx=? i 0) (put-string p " "))
+                  (pr-to! p (seq-first s))
+                  (loop (jolt-seq (seq-more s)) (fx+ i 1))))))
+  (put-string p close))
+;; print-map over a seq of entries (or [k v] pairs): collected first, since
+;; lift-ns has to see every key before the opening brace is written
+(define (pr-entries-to! p s)
+  (let* ((pairs (let loop ((s s) (acc '()))
+                  (if (jolt-nil? s)
+                      (reverse acc)
+                      (let ((e (seq-first s)))
+                        (loop (jolt-seq (seq-more s))
+                              (cons (cons (jolt-nth e 0) (jolt-nth e 1)) acc))))))
+         (ns (pr-ns-maps-shared-ns pairs))
+         (lim (jolt-print-length)))
+    (if ns
+        (begin (put-string p "#:") (put-string p ns) (put-string p "{"))
+        (put-string p "{"))
+    (let loop ((ps pairs) (i 0))
+      (cond ((null? ps))
+            ((pr-past-limit? lim i) (put-string p (if (fx=? i 0) "..." ", ...")))
+            (else (unless (fx=? i 0) (put-string p ", "))
+                  (pr-to! p (if ns (pr-strip-ns (caar ps)) (caar ps)))
+                  (put-string p " ")
+                  (pr-to! p (cdar ps))
+                  (loop (cdr ps) (fx+ i 1)))))
+    (put-string p "}")))
+
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))
 

@@ -470,7 +470,11 @@
 ;; All table ops take the multifn VALUE (Clojure semantics): the multifn record
 ;; carries its method/prefer tables, so the overlay fns pass the value directly.
 
-(define (jolt-prefer-method-setup mf dval-a dval-b)
+(define (jolt-prefer-method-setup mf dval-a* dval-b*)
+  ;; every table op keys a dispatch value as defmethod stores it: a deftype or
+  ;; defrecord name evaluates to its constructor, filed under its class tag
+  (define dval-a (mm-dispatch-val-canon dval-a*))
+  (define dval-b (mm-dispatch-val-canon dval-b*))
   (when (jolt-multifn? mf)
     ;; a preference b-over-a (direct or transitive) makes a-over-b a conflict, as
     ;; in Clojure MultiFn.preferMethod.
@@ -493,7 +497,7 @@
 (define (jolt-remove-method-setup mf dval)
   (when (jolt-multifn? mf)
     (jolt-with-mutex mm-tbl-mu
-      (hashtable-delete! (jolt-multifn-methods mf) dval)
+      (hashtable-delete! (jolt-multifn-methods mf) (mm-dispatch-val-canon dval))
       (mm-epoch-bump!)))
   mf)
 
@@ -504,7 +508,8 @@
       (mm-epoch-bump!)))
   mf)
 
-(define (jolt-get-method-setup mf dval)
+(define (jolt-get-method-setup mf dval*)
+  (define dval (mm-dispatch-val-canon dval*))
   (if (jolt-multifn? mf)
       (or (hashtable-ref (jolt-multifn-methods mf) dval #f)
           ;; isa?-based lookup, exactly like the runtime mm-resolve path —

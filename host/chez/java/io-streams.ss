@@ -3376,12 +3376,42 @@
 ;; (and is honored, as on the JVM); re-installing a saved built-in restores it.
 (define pm-builtins (make-weak-eq-hashtable))
 (define (pm-builtin? m) (hashtable-contains? pm-builtins m))
+;; The keys whose method prints in its own shape (printing.ss pr-shape-to!), with
+;; gvec.clj's two, which call IPersistentVector's and ISeq's. The java.util ones
+;; write that shape only under *print-readably*; under print they write the
+;; #object form, as core_print.clj's print-object does.
+(define pm-builtin-shapes
+  '(("clojure.lang.IPersistentVector" vec) ("clojure.lang.ISeq" seq)
+    ("clojure.lang.IPersistentMap" map) ("clojure.lang.IPersistentSet" set)
+    ("java.util.RandomAccess" vec java) ("java.util.List" seq java)
+    ("java.util.Map" map java) ("java.util.Set" set java)))
+(define (pm-builtin-shape key)
+  (cond ((jclass? key)
+         (let ((row (assoc (jclass-name key) pm-builtin-shapes)))
+           (and row (cdr row))))
+        ((equal? key (keyword "clojure.core" "Vec")) '(vec))
+        ((equal? key (keyword "clojure.core" "VecSeq")) '(seq))
+        (else #f)))
 (define (make-pm-builtin key)
-  (let ((f (lambda (x w)
-             (if (jolt-nil? key)
-                 (record-method-dispatch w "write" (jolt-list "nil"))
-                 (print-to-writer pr-builtin-to! w x))
-             jolt-nil)))
+  (let* ((shape (pm-builtin-shape key))
+         (f (cond
+              ((jolt-nil? key)
+               (lambda (x w) (record-method-dispatch w "write" (jolt-list "nil")) jolt-nil))
+              ((not shape)
+               (lambda (x w) (print-to-writer pr-builtin-to! w x) jolt-nil))
+              ((null? (cdr shape))
+               (let ((s (car shape)))
+                 (lambda (x w) (print-to-writer (lambda (p x) (pr-shape-to! s p x)) w x) jolt-nil)))
+              (else
+               (let ((s (car shape)))
+                 (lambda (x w)
+                   (print-to-writer
+                     (lambda (p x)
+                       (if (jolt-pr-readable?)
+                           (pr-shape-to! s p x)
+                           (put-string p (jolt-object-repr x #t))))
+                     w x)
+                   jolt-nil))))))
     (hashtable-set! pm-builtins f #t)
     f))
 ;; clojure.core.Eduction: the JVM's print-method writes the seq it yields under
@@ -3465,14 +3495,22 @@
 ;; The state is one immutable vector published whole, so a reader never pairs a
 ;; new generation with an old answer:
 ;;   #(mm-epoch methods-table hierarchy graph-epoch user-keys? names kinds direct
-;;     scalar-tags?)
-;; direct is that copy of the user entries; scalar-tags? says whether one of its
-;; keys is the tag of a number, string, keyword, char or boolean -- values that
-;; carry no metadata, so with no such key and their kind out of reach, the
-;; commonest values printed skip the tag computation too; names maps a class name to the user method or #f; a miss copies the table and
-;; publishes the copy, so a reader never sees a table another thread is
-;; resizing. kinds holds per kind 'unknown, #t (resolve per value) or #f (skip);
-;; filling a slot is idempotent, so two threads deciding one kind write one answer.
+;;     answers)
+;; direct is that copy of the user entries. names maps a class name to the user
+;; method or #f; a miss copies the table and publishes the copy, so a reader never
+;; sees a table another thread is resizing. kinds holds per kind whether a user
+;; method reaches one of its classes: 'unknown, #t (resolve per value) or #f.
+;;
+;; answers settles a value of a runtime kind whole, tag and class together. A
+;; value of one of those kinds with no metadata has a fixed tag (pm-kind-tags; a
+;; map's is its :jolt/type entry when it has one, checked per map), so per
+;; generation each kind is answered once: the tag's user method, else #t when
+;; its class lookup is live, else #f. Such a value then costs the kind test, a
+;; metadata read and a vector-ref -- no jolt-type, whose arm walk and base cond
+;; were most of what a single tag-keyed method added to printing a map of
+;; vectors. A value with metadata (:type can name anything) takes the full path.
+;; Filling a slot in kinds or answers is idempotent, so two threads deciding one
+;; kind write one answer.
 (define pm-kind-classes
   (vector
     '("java.lang.Double" "java.lang.Long" "clojure.lang.BigInt" "clojure.lang.Ratio" "java.lang.Number")
@@ -3491,6 +3529,10 @@
         ((char? x) 4) ((boolean? x) 5) ((pvec? x) 6) ((pmap? x) 7) ((pset? x) 8)
         ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)) 9)
         (else #f)))
+(define pm-kind-tags
+  (vector (keyword #f "number") (keyword #f "string") (keyword #f "keyword")
+          (keyword #f "symbol") (keyword #f "char") (keyword #f "boolean")
+          (keyword #f "vector") (keyword #f "map") (keyword #f "set") (keyword #f "seq")))
 (define pm-state (vector -1 #f #f -1 #f #f #f #f #f))
 (define pm-hier-cell #f)
 (define (pm-hierarchy mf)
@@ -3534,7 +3576,7 @@
                              (make-hashtable string-hash string=?)
                              (make-vector (vector-length pm-kind-classes) 'unknown)
                              direct
-                             (exists (lambda (t) (hashtable-contains? direct t)) pm-scalar-tags))))
+                             (make-vector (vector-length pm-kind-classes) 'unknown))))
             (memory-order-release)
             (set! pm-state st2)
             st2)))))
@@ -3544,14 +3586,6 @@
   (let ((c (jolt-class-for cname)))
     (or (hashtable-ref tbl c #f) (mm-find-isa mf c))))
 (define (pm-user-answer m) (and m (not (pm-builtin? m)) m))
-;; the kinds (pm-kind) whose values hold no metadata, and the tags jolt-type
-;; gives them
-(define pm-scalar-tags
-  (list (keyword #f "number") (keyword #f "string") (keyword #f "keyword")
-        (keyword #f "char") (keyword #f "boolean")))
-(define-syntax pm-scalar?
-  (syntax-rules ()
-    ((_ x*) (let ((x x*)) (or (number? x) (string? x) (keyword? x) (char? x) (boolean? x))))))
 (define (pm-kind-live? mf tbl st k)
   (let* ((kinds (vector-ref st 6))
          (v (vector-ref kinds k)))
@@ -3564,6 +3598,30 @@
           (vector-set! kinds k live)
           live)
         v)))
+;; the answer for a value of kind k that carries no metadata: its tag's user
+;; method, #t to resolve its class, or #f when no user method reaches it
+(define (pm-kind-answer mf tbl st k)
+  (let* ((answers (vector-ref st 8))
+         (v (vector-ref answers k)))
+    (if (eq? v 'unknown)
+        (let ((a (or (hashtable-ref (vector-ref st 7) (vector-ref pm-kind-tags k) #f)
+                     (and (vector-ref st 4) (pm-kind-live? mf tbl st k)))))
+          (vector-set! answers k a)
+          a)
+        v)))
+;; does x, of kind k, print by its kind's fixed tag? Numbers, strings, keywords,
+;; chars and booleans hold no metadata; the rest must have none, and a map no
+;; :jolt/type entry while some tag key could match one.
+(define-syntax pm-plain?
+  (syntax-rules ()
+    ((_ k* x* direct*)
+     (let ((k k*) (x x*))
+       (or (fx<? k 3) (fx=? k 4) (fx=? k 5)
+           (and (jolt-nil? (jolt-meta x))
+                (or (not (fx=? k 7))
+                    (fx=? 0 (hashtable-size direct*))
+                    (jolt-nil? (jolt-get x pm-jtype-kw jolt-nil)))))))))
+(define pm-jtype-kw (keyword "jolt" "type"))
 (define (pm-class-method mf tbl st x)
   (and (vector-ref st 4)
        (let ((k (pm-kind x)))
@@ -3597,16 +3655,17 @@
                 (st (pm-current-state mf tbl)))
            ;; with no user entry at all -- the usual table, where every entry is
            ;; a built-in -- there is nothing to look up
-           (cond
-             ((and (fx=? 0 (hashtable-size (vector-ref st 7))) (not (vector-ref st 4))) #f)
-             ((and (not (vector-ref st 8)) (pm-scalar? x))
-               (pm-class-method mf tbl st x))
-             (else
-               (let ((t (jolt-type x)))
-                 (or (hashtable-ref (vector-ref st 7) t #f)
-                     ;; (with-meta x {:type SomeClass}) dispatches on that class
-                     (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
-                     (pm-class-method mf tbl st x)))))))))
+           (if (and (fx=? 0 (hashtable-size (vector-ref st 7))) (not (vector-ref st 4)))
+               #f
+               (let ((k (pm-kind x)))
+                 (if (and k (pm-plain? k x (vector-ref st 7)))
+                     (let ((a (pm-kind-answer mf tbl st k)))
+                       (if (eq? a #t) (pm-class-method mf tbl st x) a))
+                     (let ((t (jolt-type x)))
+                       (or (hashtable-ref (vector-ref st 7) t #f)
+                           ;; (with-meta x {:type SomeClass}) dispatches on that class
+                           (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
+                           (pm-class-method mf tbl st x))))))))))
 (set-pr-user-method-write!
   (lambda (x p)
     (let ((m (user-print-method x)))
