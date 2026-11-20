@@ -207,6 +207,27 @@
 (chk "own-ns: ns-resolve of in-ns is clojure.core's"
      (= #'clojure.core/in-ns (ns-resolve 'ownns 'in-ns)))
 
+;; --- (12) :reload of a namespace loaded from a file off the roots throws -----
+;; RT.load throws FileNotFoundException when a :reload finds no source on the
+;; classpath. A namespace load-file'd from outside every source root used to
+;; take the in-memory branch for AOT'd namespaces and reload as a silent no-op,
+;; so the caller kept running the old definitions.
+(def offroot (str (fs/create-temp-dir {:prefix "loader-offroot-"})))
+(spit (str offroot "/offroot.clj") "(ns offroot) (def v 1)")
+(load-file (str offroot "/offroot.clj"))
+(in-ns 'loader-test)
+(spit (str offroot "/offroot.clj") "(ns offroot) (def v 2)")
+(let [e (try (require 'offroot :reload) nil
+             (catch :default e (in-ns 'loader-test) e))]
+  (chk (str "off-root: :reload throws FileNotFoundException (got " (some-> e ex-message) ")")
+       (and e (re-find #"Could not locate offroot" (ex-message e))))
+  (chk "off-root: the message names the file it was loaded from"
+       (and e (clojure.string/includes? (ex-message e) "offroot.clj"))))
+(chk "off-root: the old definition is untouched" (= 1 (vof 'offroot 'v)))
+(chk "off-root: a plain require stays a no-op" (nil? (require 'offroot)))
+(chk "off-root: a built-in namespace still reloads quietly"
+     (nil? (require 'clojure.string :reload)))
+
 (if (empty? @failures)
   (println "LOADER OK")
   (doseq [f @failures] (println "FAIL:" f)))
