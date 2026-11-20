@@ -452,11 +452,11 @@
 ;; printed value. A bare Sequential/Seqable deftype prints as #object[…] on the
 ;; JVM; only Eduction renders sequentially.
 
-;; A channel has no readable form, so name it here; every other host type the
-;; printer knows renders through :default, which is the native renderer.
-(defmethod print-method :jolt/chan [c w]
-  (.write w "#<channel>")
-  nil)
+;; A channel has no print-method of its own on the JVM: it prints Object's
+;; #object form over its toString, as every host type here does through the
+;; native renderer (:default). Its toString is the class and identity hash
+;; (java/async.ss). There used to be a :jolt/chan method writing #<channel>,
+;; which the JVM never prints.
 
 ;; Minimal synchronous agent shim. jolt has no thread pool or STM, so this is
 ;; enough for libraries that hold an agent but don't depend on asynchronous

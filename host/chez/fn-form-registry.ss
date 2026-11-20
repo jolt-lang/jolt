@@ -68,16 +68,75 @@
 ;;
 ;; A #f in the live-names position means "no live-names" — a caller passing a
 ;; maker has to fill the fifth argument to reach the sixth.
+;; CLASS is the optional seventh: the JVM class the literal compiles into, as
+;; the analyzer names it (ns$f$fn__N), which (class f) and the trace report for
+;; the closures the site makes (slot 6; fn-literal-class).
 (define (image-register-fn-form! name form ns free-names . rest)
   (let* ((lv (if (null? rest) #f (car rest)))
-         (mk (if (or (null? rest) (null? (cdr rest))) #f (cadr rest))))
+         (mk (if (or (null? rest) (null? (cdr rest))) #f (cadr rest)))
+         (cls (if (or (null? rest) (null? (cdr rest)) (null? (cddr rest))) #f (caddr rest))))
     (jolt-with-mutex fn-form-tbl-mu
       (hashtable-set! fn-form-tbl name
                       (vector form ns free-names
                               (if (or (not lv) (jolt-nil? lv)) free-names lv)
                               mk
-                              #f))))
+                              #f
+                              cls))))
   jolt-nil)
+;; A literal whose form could not be registered (a macro spliced a live value
+;; into it) still has its class -- kept apart, so the image writer never meets a
+;; registration with no form.
+(define fn-class-only-tbl (make-hashtable string-hash string=?))
+(define (image-register-fn-class! name cls)
+  (jolt-with-mutex fn-form-tbl-mu (hashtable-set! fn-class-only-tbl name cls))
+  jolt-nil)
+;; The class a registered literal's closures report, from the name its code
+;; object carries (the literal's unique letrec name), or #f.
+(define (fn-literal-class-of-name nm)
+  (and nm
+       (let ((reg (hashtable-ref fn-form-tbl nm #f)))
+         (if reg
+             (and (fx>? (vector-length reg) 6) (vector-ref reg 6))
+             (hashtable-ref fn-class-only-tbl nm #f)))))
+(define (fn-literal-class p)
+  (and (procedure? p) (fn-literal-class-of-name (sa-procedure-code-name p))))
+(set! procedure-class-name-hook fn-literal-class)
+;; ...and its Class token. Asked per (class f), so the answer is memoized on the
+;; code name OBJECT -- the one string a code object carries, so an eq?-probe
+;; with no string hashing -- negative answers included (a def'd fn's name, which
+;; the class arm answers). Copy-on-write, so the read is unlocked; bounded, so a
+;; program asking the class of endlessly many distinct fns stops copying and
+;; takes the uncached path past the bound.
+(define fn-class-token-box (box (make-weak-eq-hashtable)))
+(define fn-class-token-mu (make-mutex))
+(define (fn-literal-class-token-slow nm)
+  (let ((c (fn-literal-class-of-name nm)))
+    (if c (jolt-class-for c) 'none)))
+(define (fn-literal-class-token p)
+  (let ((nm (sa-procedure-code-name p)))
+    (and nm
+         (let ((hit (hashtable-ref (unbox fn-class-token-box) nm #f)))
+           (if hit
+               (and (not (eq? hit 'none)) hit)
+               (let ((tok (fn-literal-class-token-slow nm)))
+                 (jolt-with-mutex fn-class-token-mu
+                   (let ((t (unbox fn-class-token-box)))
+                     (when (fx<? (hashtable-size t) 4096)
+                       (let ((t2 (hashtable-copy t #t)))
+                         (hashtable-set! t2 nm tok)
+                         (set-box! fn-class-token-box t2)))))
+                 (and (not (eq? tok 'none)) tok)))))))
+(set! procedure-class-token-hook fn-literal-class-token)
+;; The runtime's own closures named after the reference's classes
+;; (natives-seq.ss jvm-class-named): the name IS the class.
+(for-each (lambda (c) (hashtable-set! fn-class-only-tbl c c))
+  '("clojure.core$map$fn__5950" "clojure.core$map$fn__5950$fn__5951"
+    "clojure.core$filter$fn__5977" "clojure.core$filter$fn__5977$fn__5978"
+    "clojure.core$take$fn__5993" "clojure.core$take$fn__5993$fn__5994"
+    "clojure.core$drop$fn__6009" "clojure.core$drop$fn__6009$fn__6010"
+    "clojure.core$take_while$fn__6001" "clojure.core$take_while$fn__6001$fn__6002"
+    "clojure.core$drop_while$fn__6024" "clojure.core$drop_while$fn__6024$fn__6025"
+    "clojure.core$comp$fn__5895" "clojure.core$cat$fn__8893"))
 
 ;; Attach a site's maker to its registration. Called from inside the form's own
 ;; cache-cell scope, after image-register-fn-form! has created the entry at the

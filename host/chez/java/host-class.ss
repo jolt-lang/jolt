@@ -33,7 +33,17 @@
 ;; the dispatch-caches unit gate requires it to be empty.
 (define (register-class-arm-checked! pred handler)
   (class-arm-reject-fast-type! '__register-class! pred)
+  (class-arm-live! pred)
   (register-class-arm! pred handler))
+;; The arms of the walk that can claim x, in walk order: the whole list here; a
+;; host narrows it per type (host-static.ss on Chez), as it does the print arms.
+;; An arm whose predicate reads more than the type -- a library's, which the
+;; runtime cannot vouch for, or one that looks into the value's state -- is
+;; marked live and stays in every narrowed walk.
+(define class-arms-for (lambda (arms x) arms))
+(define (set-class-arms-for! f) (set! class-arms-for f))
+(define class-arm-live-preds '())
+(define (class-arm-live! pred) (set! class-arm-live-preds (cons pred class-arm-live-preds)))
 (define (class-arms-claiming-fast-types)
   (let ((probes (class-fast-probes)))
     (filter (lambda (arm)
@@ -198,10 +208,10 @@
     ;; record's own comment in regex.ss already said — without this arm it fell
     ;; through to (jolt-type x) and (class m) was :object. #998.
     ((matcher-t? x) "java.util.regex.Matcher")
-    ;; an anonymous / unregistered fn — like the JVM, where (class #(..)) is a
-    ;; concrete ns$fn__N subclass. The $fn marker lets clojure.spec.alpha's fn-sym
-    ;; recognize it as anonymous and return ::s/unknown. A named fn is registered
-    ;; (proc-name-tbl) and handled by a class-arm with its real ns$name.
+    ;; a fn no class arm names: neither a literal the compiler registered with
+    ;; its class (procedure-class-name, below) nor a def'd var's -- the runtime's
+    ;; own procedures, and every fn on a host with no code names. The $fn marker
+    ;; lets clojure.spec.alpha's fn-sym recognize it as anonymous.
     ((procedure? x) "clojure.lang.AFunction$fn__0")
     ;; an exception value (ex-info record / host-constructed throwable) reports its JVM
     ;; class, so (= clojure.lang.ExceptionInfo (class e)) and clojure.test's
@@ -261,12 +271,44 @@
      (lambda (c) (let ((t (assv c class-munge-map))) (if t (display (cdr t) out) (write-char c out))))
      s)
     (get-output-string out)))
-(register-class-arm!
-  (lambda (x) (and (procedure? x) (proc-name-of x)))
-  (lambda (x) (let ((p (proc-name-of x)))
-                ;; the ns segment munges too (a-b.core -> a_b.core), like
-                ;; Compiler.munge; dots stay.
-                (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p))))))
+;; A fn's class. A literal the compiler registered reports the class Compiler
+;; would have compiled it into (ns$f$fn__N, the analyzer's name for its site,
+;; fn-form-registry.ss), whatever var it was later stored in -- a closure made
+;; by mk and def'd as f2 is still mk's fn__N, as on the JVM. A fn a def names
+;; directly (defn) has no registration and is ns$name.
+(define procedure-class-name-hook (lambda (p) #f))
+(define (procedure-class-name x)
+  (and (procedure? x)
+       (or (procedure-class-name-hook x)
+           (let ((p (proc-name-of x)))
+             (and p (var-fn-class-name (car p) (cdr p)))))))
+;; The class of the fn a var ns/name holds: ns$name -- the ns segment munges too
+;; (a-b.core -> a_b.core), like Compiler.munge; dots stay -- except the
+;; clojure.core vars the reference does not define as a plain defn: an early
+;; (def x (fn ^:static x ..)) is the class x__N, (def not-any? (comp not some))
+;; comp's fn, list the Primordial. Clojure 1.12.6's names; its clojure.core is
+;; AOT-compiled, so they are fixed.
+(define core-var-fn-classes
+  (let ((t (make-hashtable string-hash string=?)))
+    (for-each (lambda (p) (hashtable-set! t (car p) (cdr p)))
+      '(("assoc" . "clojure.core$assoc__5500") ("butlast" . "clojure.core$butlast__5514")
+        ("char?" . "clojure.core$char_QMARK___5492") ("conj" . "clojure.core$conj__5474")
+        ("cons" . "clojure.core$cons__5460") ("defn" . "clojure.core$defn__5516")
+        ("ffirst" . "clojure.core$ffirst__5478") ("first" . "clojure.core$first__5468")
+        ("fnext" . "clojure.core$fnext__5482") ("instance?" . "clojure.core$instance_QMARK___5488")
+        ("last" . "clojure.core$last__5512") ("list" . "clojure.lang.PersistentList$Primordial")
+        ("map?" . "clojure.core$map_QMARK___5496") ("meta" . "clojure.core$meta__5502")
+        ("next" . "clojure.core$next__5470") ("nfirst" . "clojure.core$nfirst__5480")
+        ("nnext" . "clojure.core$nnext__5484") ("not-any?" . "clojure.core$comp$fn__5895")
+        ("not-every?" . "clojure.core$comp$fn__5895") ("rest" . "clojure.core$rest__5472")
+        ("second" . "clojure.core$second__5476") ("seq" . "clojure.core$seq__5486")
+        ("seq?" . "clojure.core$seq_QMARK___5490") ("string?" . "clojure.core$string_QMARK___5494")
+        ("vector?" . "clojure.core$vector_QMARK___5498") ("with-meta" . "clojure.core$with_meta__5504")))
+    t))
+(define (var-fn-class-name ns nm)
+  (or (and (string=? ns "clojure.core") (hashtable-ref core-var-fn-classes nm #f))
+      (string-append (class-munge-name ns) "$" (class-munge-name nm))))
+(register-class-arm! procedure-class-name procedure-class-name)
 
 ;; The arm walk's answer for the last value it named, as one (value . name)
 ;; pair replaced whole: an object's class does not change, and one print asks
@@ -280,7 +322,7 @@
       (let ((c jolt-class-name-last))
         (if (eq? (car c) x)
             (cdr c)
-            (let ((n (let loop ((as jolt-class-arms))
+            (let ((n (let loop ((as (class-arms-for jolt-class-arms x)))
                        (cond ((null? as) (jolt-class-base x))
                              (((caar as) x) ((cdar as) x))
                              (else (loop (cdr as)))))))
@@ -297,12 +339,18 @@
 ;; (a class token, resolve, supers, Class/forName); this was the one that minted
 ;; its own. It also canonicalizes the spelling, so a deftype in a dashed
 ;; namespace lands on the token its own values report.
+;; A fn literal's Class token straight from its registration (fn-form-registry.ss),
+;; or #f -- the same class the arm below names, without the arm walk and the
+;; interning of the name per call.
+(define procedure-class-token-hook (lambda (p) #f))
 (define (jolt-class x)
-  (if (jrec-retired? x)
-      ;; built before its type was redefined: the old class (class-model.ss)
-      (jolt-retired-class-token (jrec-desc x))
-      (let ((n (jolt-class-name x)))
-        (if (jolt-nil? n) jolt-nil (jolt-class-for n)))))
+  (cond
+    ;; built before its type was redefined: the old class (class-model.ss)
+    ((jrec-retired? x) (jolt-retired-class-token (jrec-desc x)))
+    ((and (procedure? x) (procedure-class-token-hook x)))
+    (else
+     (let ((n (jolt-class-name x)))
+       (if (jolt-nil? n) jolt-nil (jolt-class-for n))))))
 
 (def-var! "clojure.core" "class" jolt-class)
 

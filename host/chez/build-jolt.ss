@@ -419,9 +419,17 @@
           "(fasl-compressed " (jb-bool jb-release?) ")\n"
           (apply string-append
             (map (lambda (sp)
-                   (string-append "(compile-file "
-                     (ei-str-lit (car sp)) " "
-                     (ei-str-lit (cdr sp)) ")\n"))
+                   (if (pair? (car sp))
+                       ;; a lazy host shim: its definition forms first, then the
+                       ;; rest, the order lazy-shims.ss lazy-shim-hoist gives a
+                       ;; source load (see the note there, burinc/jolt#24)
+                       (string-append "(let ((op (open-file-output-port "
+                         (ei-str-lit (cdr sp)) " (file-options no-fail))))"
+                         " (compile-to-port (lazy-shim-hoisted-forms "
+                         (ei-str-lit (cadr (car sp))) ") op) (close-port op))\n")
+                       (string-append "(compile-file "
+                         (ei-str-lit (car sp)) " "
+                         (ei-str-lit (cdr sp)) ")\n")))
                  pairs))))
       (close-port p))))
 
@@ -502,7 +510,7 @@
       (lambda (path)
         (let ((so (string-append jb-stdlib-dir "/" (jb-sanitize (jb-lazy-fasl-name path)) ".so")))
           (set! order (cons (cons (jb-lazy-fasl-name path) so) order))
-          (set! to-compile (cons (cons path so) to-compile))))
+          (set! to-compile (cons (cons (list 'lazy path) so) to-compile))))
       (jb-collect-lazy-paths))
     (jb-write-stdlib-compile-script! (reverse to-compile))
     (values (reverse order) (reverse skips)
@@ -510,7 +518,8 @@
             ;; hash stands in for their bytes in the runtime fingerprint
             (aot-content-hash
               (apply string-append
-                (map (lambda (sp) (read-file-string (car sp))) (reverse to-compile)))))))
+                (map (lambda (sp) (read-file-string (if (pair? (car sp)) (cadr (car sp)) (car sp))))
+                     (reverse to-compile)))))))
 
 ;; Capture the stdlib namespaces (jb-compile-stdlib-fasls!) and record which go
 ;; in the blob. The blob is linked into the binary as the C array

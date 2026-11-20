@@ -2127,9 +2127,11 @@
 ;; JVM, to class and instance? alike, where a constructed StringReader is not.
 (define (string-reader-buffered? x)
   (let ((st (jhost-state x))) (and (fx>? (vector-length st) 3) (vector-ref st 3))))
-(register-class-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "string-reader")
-                                      (string-reader-buffered? x)))
-                     (lambda (x) "java.io.BufferedReader"))
+(define (buffered-string-reader? x)
+  (and (jhost? x) (string=? (jhost-tag x) "string-reader") (string-reader-buffered? x)))
+;; live: whether it claims a string-reader depends on the reader, not its tag
+(class-arm-live! buffered-string-reader?)
+(register-class-arm! buffered-string-reader? (lambda (x) "java.io.BufferedReader"))
 ;; Reader.read(char[]) and Reader.read(char[], int, int) are BOTH overloads on
 ;; java.io.Reader, and the one-argument form means "fill the whole array". Only
 ;; the three-argument form was destructured here, so `(.read r cbuf)` — the

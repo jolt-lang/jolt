@@ -58,6 +58,20 @@
   ;; arrive unverified. Rendering is pr-str for a value, "throws <SimpleName>" for
   ;; a raise (the ROOT cause's simple name). :jvm/:jolt outside :check are prose
   ;; for a reader; the :check pair is what the gate holds to.
+  ;; A protocol method's fn. The JVM's class is an artifact of emit-protocol's
+  ;; expansion -- the gensym'd G__N fn inside the eval wrapper -- whose counters
+  ;; change from run to run; jolt names it after the method, as its other fns are
+  ;; named after their def. Matching the shape would mean emitting protocol
+  ;; methods differently from every other def, which the protocol call site's
+  ;; direct path relies on. Digits are masked so the check holds across runs.
+  {:category :host-model
+   :behavior "(class m) for a protocol method m"
+   :jvm "user$evalN$fn__N$G__N__N, the gensym'd fn defprotocol's expansion builds"
+   :jolt "user$m, named after the method"
+   :check {:expr "(do (defprotocol KdProtoFnClass (kd-pfc [x])) (clojure.string/replace (.getName (class kd-pfc)) #\"\\d+\" \"N\"))"
+           :jvm "\"user$evalN$fn__N$G__N__N\""
+           :jolt "\"user$kd_pfc\""}
+   :note "Every other fn's class follows the JVM's Compiler naming; only the counters differ there (the :prose entry on generated class names)."}
   ;; The JVM checks core macro calls against clojure.core.specs.alpha before
   ;; expanding them; jolt carries no macro specs. A malformed call still fails at
   ;; compile time on both -- (let [x] 1), (for [] 1), (doseq [x] 1) -- but with
@@ -741,14 +755,15 @@
   ;; where its form sits (file, line, column), so the same source names the same
   ;; class in every process -- a form compiled into the AOT cache and one
   ;; expanded fresh can never share a name. The shape around the counters is the
-  ;; reference's (unit.edn jvm-misc "a reify's class is named as Compiler names it").
+  ;; reference's (unit.edn jvm-misc "a reify's class is named as Compiler names it"
+  ;; and "a fn's class is named as Compiler names it").
   {:category :host-model
-   :behavior "(.getName (class (reify clojure.lang.IDeref (deref [_] 1)))) in a defn, a nested fn or a top-level form"
-   :jvm "user$f$reify__142, user$eval140$reify__141 -- N from the process-wide counter"
-   :jolt "user$f$reify__1652772568, user$eval1948859455$reify__1740462644 -- N from the form's position"
+   :behavior "(.getName (class x)) of a reify or a fn literal in a defn, a nested fn or a top-level form; the same N in an ArityException's demunged fn name"
+   :jvm "user$f$reify__142, user$f$fn__144, user$eval140$fn__141 -- N from the process-wide counter"
+   :jolt "user$f$reify__1652772568, user$f$fn__1740571258, user$eval1948859455$fn__1948859455 -- N from the form's position"
    :check :prose
    :why "the JVM's N is a process-global sequence that depends on everything compiled before the form, so no expression has a fixed value to record"
-   :note "Only the counters differ: the enclosing class path, munging and trimming are Compiler's."}
+   :note "Only the counters differ: the enclosing class path, munging and trimming are Compiler's. clojure.core's own fns and the closures its natives make carry Clojure 1.12.6's exact names (its core is AOT-compiled, so those are fixed); a core closure compiled from jolt's own clojure.core source carries a position N like any other."}
   {:category :numeric-model
    :behavior "(loop [i 5] (+ i 9223372036854775807))"
    :jvm "throws ArithmeticException (primitive long add overflows at 2^63)"
@@ -961,15 +976,6 @@
            :jvm "throws ClassCastException"
            :jolt "\"(:a :b)\""}
    :note "jolt reads any 2-element vector as an entry, so a vector of pairs walks like a seq of map entries. Anything else — a string, a number, a longer vector — is the same ClassCastException the JVM throws, naming the same class; keys never returns a nil or an index into a non-entry."}
-  ;; auto-gensym suffix differs by a trailing "__".
-  {:category :reader-model
-   :behavior "an auto-gensym x# expands to a symbol named"
-   :jvm "x__N__auto__"
-   :jolt "x__N__auto"
-   :check {:expr "(boolean (re-find #\"__auto__$\" (name `x#)))"
-           :jvm "true"
-           :jolt "false"}
-   :note "Cosmetic; each x# in a syntax-quote is still consistently renamed. Only string comparison of gensym names would see it."}
   ;; #?(...) reader conditionals are read by default (JVM requires {:read-cond :allow}).
   {:category :reader-model
    :behavior "read-string of a #?(...) reader conditional"

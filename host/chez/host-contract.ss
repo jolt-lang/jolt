@@ -724,7 +724,7 @@
                                   (jolt-with-mutex hc-sq-gensym-mutex
                                     (set! hc-sq-gensym-counter (+ hc-sq-gensym-counter 1))
                                     hc-sq-gensym-counter))
-                                 "__auto")))
+                                 "__auto__")))  ; the reference's x__N__auto__
 
 (define (hc-sym nm) (jolt-symbol #f nm))
 ;; is `x` a non-empty list FORM whose head is the unqualified symbol `nm`?

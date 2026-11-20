@@ -207,13 +207,17 @@
     ;; like any other unregistered fn -- rather than failing the whole
     ;; compilation of code that never dumps anything.
     (let [pool (atom {:by-expr {} :order []})
-          call (fn [nm f ns frees lives]
+          call (fn [nm f ns frees lives cls]
                  (str "(image-register-fn-form! " (chez-str-lit nm) " " f " " (chez-str-lit ns) " "
                       (emit-quoted frees)
                       ;; the optional 5th argument, emitted only when the copy's
                       ;; captures differ from the source names -- so every
-                      ;; un-spliced registration stays byte-identical.
-                      (if lives (str " " (emit-quoted lives)) "")
+                      ;; un-spliced registration stays byte-identical; the 7th
+                      ;; is the JVM class the literal compiles into (the
+                      ;; analyzer's :class), which (class f) reports
+                      (cond cls (str " " (if lives (emit-quoted lives) "#f") " #f " (chez-str-lit cls))
+                            lives (str " " (emit-quoted lives))
+                            :else "")
                       ")"))
           ;; the rows in order. A text row touches no pool; a constructed one is
           ;; emitted with every EARLIER constructed row available to stop the walk
@@ -226,14 +230,19 @@
                    (let [nm (nth row 0) form (nth row 1) ns (nth row 2) frees (nth row 3)
                          lives (nth row 4)
                          lives (when (and lives (not= lives frees)) lives)
+                         cls (nth row 5 nil)
                          src (fnsrc-row-src form)
                          q (if src
-                             [nil (binding [*quote-pool* nil] (call nm src ns frees lives))]
+                             [nil (binding [*quote-pool* nil] (call nm src ns frees lives cls))]
                              (try
                                (binding [*quote-shared* (:shared acc)]
-                                 (let [f (emit-quoted form)] [f (call nm f ns frees lives)]))
+                                 (let [f (emit-quoted form)] [f (call nm f ns frees lives cls)]))
                                (catch Exception _ nil)))]
                      (cond
+                       ;; no form to register, but the class still names the fn
+                       (and (nil? q) cls)
+                       (update acc :calls conj (str "(image-register-fn-class! " (chez-str-lit nm) " "
+                                                    (chez-str-lit cls) ")"))
                        (nil? q) acc
                        (nil? (nth q 0)) (update acc :calls conj (nth q 1))
                        :else (-> acc

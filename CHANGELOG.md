@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   methods in `(methods print-method)` are this printer. Output is unchanged.
 
 ### Fixed
+- Starting several subprocesses at once as a process's first spawns no longer fails with "variable … is not bound": a lazily loaded host shim (here ProcessBuilder's) could have a method registered and called on one thread before another thread's load had defined what it calls. A lazy shim now defines everything before it registers anything (burinc/jolt#24).
+- An unbound-variable error names the variable instead of printing `#object[:object …]`.
+- `==` casts each pair to Number left to right as the JVM does: a nil operand throws `NullPointerException` (it threw `ClassCastException`), a non-number is the `ClassCastException` first, and `(== 1 2 :a)` answers false at the first unequal pair instead of throwing (burinc/jolt#6).
+- `(System/getProperty "user.name")` is the login name from the passwd entry for the process's uid, as on the JVM, so an unset or borrowed `USER` no longer makes it nil or someone else's; `"?"` when there is no entry (burinc/jolt#19).
 - `clojure.test` prints what the JVM's prints (burinc/jolt#18). `run-tests`,
   `test-ns` and `run-test-var` print `Testing <ns>` before a namespace's tests,
   and the summary reads `Ran N tests containing M assertions.` /
@@ -61,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clojure.lang.PersistentQueue@<hash>`), and `pprint` writes a queue as
   `<-(1 2)-<`. An Eduction prints its seq only under `pr` (`print` writes its
   `#object` form), and its print-method is a built-in keyed by the class.
+- A core.async channel prints as the JVM prints it,
+  `#object[clojure.core.async.impl.channels.ManyToManyChannel 0x… "…@…"]`,
+  instead of `#<channel>`.
+- Printing a host object is faster: `(class x)` walks only the class arms that
+  can claim the value's type, the `#object` form is built with one guard and
+  one string-append, and print-method's user lookup is skipped outright when
+  only the built-in printers are installed. `pr-str` of a fresh `java.io.File`
+  is about 0.65x what it was before this release.
 - Every value answers `java.lang.Object`'s `hashCode`, `equals`, `toString` and
   `getClass`, so `(.hashCode #"a")` and the `str` of a record holding a regex
   no longer throw "No matching field found".
@@ -87,6 +99,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ns$evalN`, the fn a `try` or expression-position `loop` is wrapped in, a
   deftype's own class) with its trailing `__N` trimmed, then `$reify__N`, where
   every reify used to be `ns$reify__N`. Only the counters differ from the JVM's.
+
+- **A fn's class is named as the JVM's compiler names it.** `(class f)` of a fn
+  literal is the class Compiler compiles it into -- `ns$mk$fn__N` inside `mk`, a
+  named fn's `name__N`, a let-bound fn's local, nested fns, letfn, `#()`, a
+  top-level form's `ns$evalN$fn__N` -- where every such fn was
+  `clojure.lang.AFunction$fn__0`, so class-keyed dispatch and `instance?` on a
+  fn's class now tell two sites apart. `.getName`, `str`, `pr-str`'s
+  `#object[...]`, stack trace elements and ArityException's fn name
+  (`my.ns/mk/fn--N`) agree. clojure.core's closures and transducers report the
+  reference's classes. Only the counters differ from the JVM's. Protocol
+  dispatch on a fn value memoizes on its class now (about 3x faster), and
+  `(class f)` of a fn literal is about 2x faster.
+- **`every-pred` and `some-fn` are the reference's**, arity for arity: the
+  predicates are tested in its order, so the first truthy value `some-fn`
+  answers and the side effects match, and `(every-pred)` is an arity error.
+  `(replace smap)` returns a transducer. An auto-gensym is spelled
+  `x__N__auto__`.
 
 - **`instance?` casts its type argument to `Class`.** A protocol (its map), a
   keyword, a string or a quoted symbol throws the JDK's `ClassCastException`,

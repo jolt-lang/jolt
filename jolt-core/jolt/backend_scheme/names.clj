@@ -229,7 +229,7 @@
                   "jrec6-f0" "jrec6-f0-set!" "jrec6-f1" "jrec6-f1-set!" "jrec6-f2" "jrec6-f2-set!" "jrec6-f3" "jrec6-f3-set!" "jrec6-f4" "jrec6-f4-set!" "jrec6-f5" "jrec6-f5-set!"
                   "jrec7-f0" "jrec7-f0-set!" "jrec7-f1" "jrec7-f1-set!" "jrec7-f2" "jrec7-f2-set!" "jrec7-f3" "jrec7-f3-set!" "jrec7-f4" "jrec7-f4-set!" "jrec7-f5" "jrec7-f5-set!" "jrec7-f6" "jrec7-f6-set!"
                   "jrec8-f0" "jrec8-f0-set!" "jrec8-f1" "jrec8-f1-set!" "jrec8-f2" "jrec8-f2-set!" "jrec8-f3" "jrec8-f3-set!" "jrec8-f4" "jrec8-f4-set!" "jrec8-f5" "jrec8-f5-set!" "jrec8-f6" "jrec8-f6-set!" "jrec8-f7" "jrec8-f7-set!"
-                  "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!"}]
+                  "image-fn-form-maker!" "image-fn-form-src" "image-register-fn-form!" "image-register-fn-class!"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an

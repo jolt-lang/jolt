@@ -162,8 +162,8 @@ Object
   (iterator [this]
     (SeqIterator. this)))
 
-(defmethod print-method ::VecSeq [v w]
-  ((get (methods print-method) clojure.lang.ISeq) v w))
+;; print-method ::VecSeq is one of the built-in printers (java/io-streams.ss):
+;; the reference's writes it as a seq, which jolt's native printer does.
 
 (deftype Vec [^clojure.core.ArrayManager am ^int cnt ^int shift ^clojure.core.VecNode root tail _meta]
   Object
@@ -489,8 +489,8 @@ Object
   (set [_ i e] (throw (UnsupportedOperationException.)))
 )
 
-(defmethod print-method ::Vec [v w]
-  ((get (methods print-method) clojure.lang.IPersistentVector) v w))
+;; print-method ::Vec is one of the built-in printers (java/io-streams.ss): the
+;; reference's writes it as a vector, which jolt's native printer does.
 
 (defmacro mk-am {:private true} [t]
   (let [garr (gensym)

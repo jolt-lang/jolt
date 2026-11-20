@@ -1590,6 +1590,7 @@ enummodel:
 lazyshims:
 	@CHEZ='$(CHEZ)' $(CHEZ) --script tools/lazy-shims-gen.ss --check
 	@CHEZ='$(CHEZ)' $(CHEZ) --script test/chez/lazy-shims-test.ss
+	@$(CHEZ) --script test/chez/lazy-hoist-test.ss
 
 # Every java.util collection shim round-trips through a state image (its
 # contents, order, comparator and class), or is refused naming its class.

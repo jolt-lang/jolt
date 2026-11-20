@@ -1691,9 +1691,12 @@
 ;; --- arity pre-check: throw typed ArityException BEFORE applying a proc or
 ;; invokable, so the site is classified structurally, not by matching Chez's
 ;; error message text after the fact.
+;; ArityException names the fn by its class, demunged as Compiler.demunge does
+;; (my.ns/mk/fn--123 for a literal in mk, my.ns/f for a defn): host-class.ss
+;; procedure-class-name.
 (define (jolt-proc-arity-name f)
-  (let ((p (proc-name-of f)))
-    (if p (string-append (car p) "/" (cdr p)) "fn")))
+  (let ((c (procedure-class-name f)))
+    (if c (compiler-demunge c) "fn")))
 ;; ArityException's count: the number, or "> 20" past twenty (CLJ-2739).
 (define (jvm-arity-count n)
   (if (and (number? n) (> n 20)) "> 20" (if (number? n) (number->string n) (jolt-str-render-one n))))
