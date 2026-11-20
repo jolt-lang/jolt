@@ -606,9 +606,13 @@
                     ((jsurr? x) (jsurr-unit x))
                     ((and (number? x) (exact? x)) (truncate x))
                     (else (jolt-cast-truncate-slow x)))))
-       (if (and (>= n -2147483648) (<= n 2147483647))
-           n
-           (jolt-int-overflow-throw))))))
+       ;; RT.intCast(Object) narrows through longCast first, so a value past
+       ;; the long range (a BigInt, a ratio truncating past it) is longCast's
+       ;; IllegalArgumentException naming the truncated value, not the overflow.
+       (cond ((and (>= n -2147483648) (<= n 2147483647)) n)
+             ((and (>= n -9223372036854775808) (<= n 9223372036854775807))
+              (jolt-int-overflow-throw))
+             (else (jolt-cast-range-throw "long" n)))))))
 (define (jolt-int-cast-prim x)
   (if (jfloat? x)
       (let ((d (jfloat-fl x)))

@@ -5,7 +5,7 @@
   quote pool is bound."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-char-code form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value? form-class-value-name]]
+             :refer [form-sym? form-sym-name form-sym-ns form-sym-meta form-list? form-vec? form-map? form-set? form-char? form-literal? form-elements form-vec-items form-map-pairs form-set-items form-char-code form-regex? form-regex-source form-inst? form-inst-source form-uuid? form-uuid-source form-bigdec? form-bigdec-source form-class-value? form-class-value-name form-coll-meta]]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.hoist :refer [hoist-const]]))
 
@@ -198,16 +198,82 @@
 ;; jolt collection VALUES. The form-* branches come first so a reader form (a
 ;; host-native struct/array that a native predicate might also match) is always
 ;; handled as a form.
+;; True while emitting the datum of a (quote ...): its collections keep their
+;; metadata, as the reference's ConstantExpr emits the quoted value whole -- a
+;; list its reader :line/:column, any collection the metadata a ^{...} gave it,
+;; nested ones included. A list's :file is the one key dropped: jolt's reader
+;; stamps it on list forms for its own positions and the reference's reader
+;; never does. Every other caller (the fn source registrations) renders the
+;; bare structure, unchanged.
+(def ^:dynamic *quote-meta* false)
+
+(defn- quoted-coll-meta [form]
+  (when *quote-meta*
+    (let [m (form-coll-meta form)
+          m (when (map? m) (if (form-list? form) (dissoc m :file) m))]
+      (when (seq m) m))))
+
+;; CTOR (construction text, or a pooled name) with FORM's quoted metadata
+;; around it, as text; CTOR itself when there is none.
+(defn- quoted-meta-text [form ctor]
+  (if-let [m (quoted-coll-meta form)]
+    (let [l (get m :line) c (get m :column)]
+      (if (and (= 2 (count m)) (int? l) (int? c))
+        ;; the reader's own position, which nearly every quoted list carries:
+        ;; one runtime call that builds {:line l :column c}, rather than a map
+        ;; literal emitted (pairs sorted, keys re-emitted) once per list --
+        ;; that doubled the compile time of a quoted form (natives-meta.ss)
+        (str "(jolt-with-pos " ctor " " l " " c ")")
+        (str "(jolt-with-meta " ctor " " (emit-quoted m) ")")))
+    ctor))
+;; A list or vector's construction. One carrying only the reader's position --
+;; nearly every quoted list -- uses the constructor's position-taking twin,
+;; (jolt-list-pos line column item ...) (natives-meta.ss): the same one call
+;; with two more fixnums, where a wrapper call per list made Chez compile one
+;; more application per list and an `is` quotes a whole nested form. Any other
+;; metadata wraps the construction (quoted-meta-text).
+;; The reader's position and nothing else, read off the raw metadata without
+;; building the :file-less copy quoted-coll-meta makes -- asked of every list.
+(defn- quoted-pos-only [form]
+  (when *quote-meta*
+    (let [m (form-coll-meta form)]
+      (when (map? m)
+        (let [l (get m :line) c (get m :column)]
+          (when (and (int? l) (int? c)
+                     (= (count m) (if (and (form-list? form) (contains? m :file)) 3 2)))
+            [l c]))))))
+
+(defn- quoted-ctor-text [form ctor items]
+  (let [pos (quoted-pos-only form)
+        body (str/join " " (map emit-quoted items))]
+    (if pos
+      ;; spelled out, so each runtime name appears as itself (deadhost)
+      (str "(" (if (= ctor "jolt-list") "jolt-list-pos" "jolt-vector-pos")
+           " " (nth pos 0) " " (nth pos 1) " " body ")")
+      ;; byte-identical to the rendering before positions, the bare one included
+      (quoted-meta-text form (str "(" ctor " " body ")")))))
+;; A set or map arrives already pooled (its sorted rendering interns itself);
+;; its metadata, when it has any, is one more pooled construction around it.
+(defn- with-quoted-meta [form ctor]
+  (let [t (quoted-meta-text form ctor)]
+    (if (identical? t ctor) ctor (q-intern t))))
+
+(defn emit-quoted-positioned
+  "emit-quoted for the datum of a (quote ...), keeping its collections' reader
+  metadata as the reference's ConstantExpr does."
+  [form]
+  (binding [*quote-meta* true] (emit-quoted form)))
+
 (defn emit-quoted [form]
   (cond
     (or (form-char? form) (form-literal? form)) (emit-const form)
     (form-sym? form) (emit-quoted-sym form)
-    (form-set? form) (emit-quoted-set (form-set-items form))
+    (form-set? form) (with-quoted-meta form (emit-quoted-set (form-set-items form)))
     ;; a fn literal is a list, so this is the only branch that has to ask
     (form-list? form)
     (or (q-shared-name form)
-        (q-intern (str "(jolt-list " (str/join " " (map emit-quoted (form-elements form))) ")")))
-    (form-vec? form) (q-intern (str "(jolt-vector " (str/join " " (map emit-quoted (form-vec-items form))) ")"))
-    (form-map? form) (emit-quoted-map (form-map-pairs form))
+        (q-intern (quoted-ctor-text form "jolt-list" (form-elements form))))
+    (form-vec? form) (q-intern (quoted-ctor-text form "jolt-vector" (form-vec-items form)))
+    (form-map? form) (with-quoted-meta form (emit-quoted-map (form-map-pairs form)))
     :else (or (emit-quoted-sourced form) (emit-quoted-value form))))
 

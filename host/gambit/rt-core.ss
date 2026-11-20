@@ -1529,6 +1529,9 @@
 (define (image-register-fn-form! . _) #f)
 ;; ...and the maker a site attaches to its registration on first call
 (define (image-fn-form-maker! . _) #f)
+;; ...and a literal's class with no form to register (no code names to key it
+;; by on this target, so fns keep the AFunction stand-in)
+(define (image-register-fn-class! . _) #f)
 ;; the source text a registration carries is (image-fn-form-src "..."): a
 ;; bytevector constant on chez, an inert argument here
 (define (image-fn-form-src s) s)

@@ -1416,7 +1416,11 @@
 
 ;; A channel is opaque, but it should still name itself: without these it fell to
 ;; the :object catch-all, so (class ch) was :object and pr printed #object[:object].
-;; The tag is what print-method's :jolt/chan method (50-io.clj) dispatches on.
+;; It prints, as on the JVM, as Object's #object form over its toString, which
+;; ManyToManyChannel does not override: the class and the identity hash.
 (register-type-arm! async-chan? (lambda (x) (keyword "jolt" "chan")))
 (register-class-arm! async-chan?
   (lambda (x) "clojure.core.async.impl.channels.ManyToManyChannel"))
+(register-str-render! async-chan?
+  (lambda (x) (string-append "clojure.core.async.impl.channels.ManyToManyChannel@"
+                             (jolt-identity-hex x))))

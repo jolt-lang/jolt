@@ -298,6 +298,13 @@
       ;; macro it came out of are worth carrying on their own.
       kind (ex-info (throw-message e) (diagnostic-data kind pos orig e) (ex-cause e))
       (nil? pos) e
+      ;; A macro called with the wrong number of arguments. The reference's
+      ;; macroexpand1 catches the ArityException its expander raised and
+      ;; rethrows it bare, so it is never a macro-phase diagnostic there: a
+      ;; caller catches the ArityException itself, and a load files it under
+      ;; :execution like any runtime throw. jolt's expander raises it with the
+      ;; declared count already (host-contract hc-expand-1-raw).
+      (and (current-macro-run) (instance? clojure.lang.ArityException e)) e
       ;; No diagnostic at all: anything else raised while analyzing. Keep the
       ;; thrower's ex-data and add the position beside it.
       :else (ex-info (throw-message e)

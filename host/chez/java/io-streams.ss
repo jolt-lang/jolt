@@ -1322,14 +1322,12 @@
    (cons "toString" host-object-tostring)))
 
 ;; --- constructors -----------------------------------------------------------
-(define utf8-tx (make-transcoder (utf-8-codec)))
 
 ;; --- text over bytes in a named charset ----------------------------------------
 ;; What io/reader and io/writer build when given :encoding, and what the
 ;; InputStreamReader / OutputStreamWriter / FileReader / FileWriter constructors
 ;; build when given a charset. Every one of those used to accept the charset and
-;; read or write UTF-8 regardless. UTF-8 keeps the ports it always had; the
-;; charset is checked by name first, as the JVM does when the reader or writer is
+;; read or write UTF-8 regardless. The charset is checked by name first, as the JVM does when the reader or writer is
 ;; constructed.
 ;;
 ;; Writing: each block the port hands over is encoded through charset-encode-bv
@@ -1345,10 +1343,32 @@
 ;; REPORT? encodes as a CharsetEncoder does by default: a character the charset
 ;; cannot hold is UnmappableCharacterException when its block is encoded -- at a
 ;; flush or close, as the JDK's StreamEncoder raises it -- rather than "?".
+;;
+;; UTF-8 hands each block to string->utf8 and the bytes to bp. It was an R6RS
+;; transcoded-port, whose codec goes a character at a time through the
+;; transcoder's own buffer: a 500 KB (.write w s) to a FileWriter cost 2x what
+;; spit's string->utf8 + put-bytevector did, so (pr v) to a writer lost to
+;; (spit f (pr-str v)). A write longer than the port's buffer reaches the
+;; procedure whole, so a big write is one encode, as spit's is. A Chez string
+;; holds no surrogate (a lone unit is a jsurr, paired or replaced by sink-text
+;; before it gets here), so every character has a UTF-8 form and nothing is
+;; replaced.
+(define (utf8-output-port bp)
+  (parameterize ((custom-port-buffer-size 65536))
+    (make-custom-textual-output-port "utf8-writer"
+      (lambda (str start count)
+        (when (fx>? count 0)
+          (put-bytevector bp (string->utf8
+                               (if (and (fx=? start 0) (fx=? count (string-length str)))
+                                   str
+                                   (substring str start (fx+ start count))))))
+        count)
+      #f #f
+      (lambda () (close-port bp)))))
 (define (charset-output-port bp name . report?)
   (io-check-encoding! name)
   (if (io-utf8? name)
-      (transcoded-port bp utf8-tx)
+      (utf8-output-port bp)
       (let ((enc name) (utf16? (string=? (charset-canonical-down name) "utf-16"))
             (encode (if (and (pair? report?) (car report?)) charset-encode-report charset-encode-bv)))
         (make-custom-textual-output-port "charset-writer"
@@ -2805,7 +2825,7 @@
 ;; tag. The io fns dispatch on the source themselves, so each calls this only
 ;; where it would otherwise raise "Cannot open". The impl takes OPTS as a map.
 (define (jio-extension x method)
-  (or (and (jrec? x) (find-protocol-method (jrdesc-tag (jrec-desc x)) "IOFactory" method))
+  (or (and (jrec? x) (find-protocol-method (jrec-rtag x) "IOFactory" method))
       (let loop ((tags (value-host-tags x)))
         (cond ((null? tags) #f)
               ((find-protocol-method (car tags) "IOFactory" method))
@@ -3241,68 +3261,329 @@
                                                  "Closeable" "AutoCloseable" "Flushable" "Appendable"))) #t)
         (else 'pass))))))
 
-;; --- pr / pr-str honor a user (defmethod print-method T …) -------------------
-;; On the JVM print-method IS the printer, so installing one changes what pr
-;; emits for that type. Here the printer is a list of native arms, and this hook
-;; (printing.ss consults it before that list) restores the JVM's precedence: a
-;; record renders through its method instead of the default #ns.Name{…} form, and
-;; a host class renders through its method instead of the arm the library that
-;; provided the class registered — for instance ring's session store, which
-;; round-trips a java.time.Instant through a custom print-method and edn reader.
+;; --- printing straight to a Writer ---------------------------------------------
+;; The streaming printer (printing.ss pr-to!) writes to a Chez textual port. A
+;; Writer whose text lands in a port is printed into that port directly: *out*
+;; and the other port-writers, and a char-writer (io/writer, FileWriter,
+;; OutputStreamWriter, BufferedWriter). Any other Writer -- a StringWriter, a
+;; proxy or reify, a PrintWriter shim -- gets a port of its own whose blocks go to
+;; the Writer's write method, so a proxy java.io.Writer sees the output through
+;; its own methods. A pending surrogate half (sink-text) keeps the plain write
+;; path, which knows how to pair it.
 ;;
-;; Two dispatch values are tried: the type tag the multimethod dispatches on
-;; itself (a record's class name, or the :jolt/… tag of a built-in), then the
-;; value's class, since a method written for a host type names the class —
-;; (defmethod print-method java.time.Instant …) — and jolt's tag for one of those
-;; is the catch-all :object.
+;; While a print is under way, pr-sink holds (port . writer): a user print-method
+;; reached mid-stream is handed that Writer, as on the JVM, with the port flushed
+;; first when the port is the Writer's own buffer, so its writes land in order.
+(define pr-sink (make-thread-parameter #f))
+(define (writer-direct-port w)
+  (and (jhost? w) (fx=? sink-pending-live 0)
+       (let ((tag (jhost-tag w)))
+         (cond ((string=? tag "port-writer") (port-writer-port w))
+               ((string=? tag "char-writer") (char-writer-live-port w))
+               (else #f)))))
+(define (writer-block-port w)
+  (parameterize ((custom-port-buffer-size 4096))
+   (make-custom-textual-output-port "print-method"
+    (lambda (s start count)
+      (record-method-dispatch w "write" (jolt-list (substring s start (fx+ start count))))
+      count)
+    #f #f #f)))
+;; Print x to the Writer w with print (a procedure of port and value).
+(define (print-to-writer print w x)
+  (let ((direct (writer-direct-port w)))
+    (if direct
+        (parameterize ((pr-sink (cons direct w))) (print direct x))
+        (let ((p (writer-block-port w)))
+          (parameterize ((pr-sink (cons p w)))
+            (print p x)
+            (flush-output-port p))))))
+;; The Writer a user print-method is handed while printing into port p.
+(define (pr-sink-writer p)
+  (let ((s (pr-sink)))
+    (if (and s (eq? (car s) p))
+        (begin (unless (writer-direct-port (cdr s)) (flush-output-port p)) (cdr s))
+        (make-char-writer p))))
+
+;; pr and print of one value to *out*, and print-method's :default to a Writer,
+;; printing into the Writer as they go. A scalar is one small string, written as
+;; before. So is anything while *out* is clojure.pprint's pretty writer
+;; (jolt-write offers it each string, column-aware), or while a surrogate half
+;; waits to be paired.
+(define pr-out-cell #f)
+(define (pr-out-writer)
+  (unless pr-out-cell (set! pr-out-cell (jolt-var "clojure.core" "*out*")))
+  (var-cell-deref pr-out-cell))
+(define (stream-out write! x)
+  (and (not (pr-fast-type? x))
+       ;; the hook routes text only while *out* is a pretty writer, and says
+       ;; so: an empty string tells which, writing nothing
+       (or (jolt-nil? jolt-pprint-write-hook) (jolt-pprint-hook-suppressed)
+           (not (jolt-truthy? (jolt-invoke jolt-pprint-write-hook ""))))
+       (fx=? sink-pending-live 0)
+       (let ((w (pr-out-writer)))
+         (if (or (iface-method w "write" #f) (and (jhost? w) (not (out-port-writer? w))))
+             (print-to-writer write! w x)
+             (let ((p (current-output-port)))
+               (parameterize ((pr-sink (cons p w))) (write! p x))))
+         #t)))
+;; print: pr with *print-readably* off, as converters.ss jolt-print-one sets it
+(define (print-to! p x)
+  (let ((prev (virtual-register jolt-vreg-print-readably)) (lv (jolt-locks-held)))
+    (jolt-locks-enter!)
+    (dynamic-wind
+      (lambda () (set-virtual-register! jolt-vreg-print-readably #f))
+      (jolt-masked-body (lambda () (pr-to! p x)))
+      (jolt-masked-after lv (set-virtual-register! jolt-vreg-print-readably prev)))))
+(def-var! "clojure.core" "__pr-out"
+  (lambda (x) (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))) jolt-nil))
+(def-var! "clojure.core" "__print-out"
+  (lambda (x) (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))) jolt-nil))
+(def-var! "clojure.core" "__pr-to"
+  (lambda (x w) (print-to-writer pr-to! w x) jolt-nil))
+
+;; --- print-method: the built-in printers and the user-method hook ----------------
+;; On the JVM print-method IS the printer: a multimethod on (type x) whose table
+;; holds a method for clojure.lang.IPersistentMap, ISeq, String, Number, Object
+;; and so on, resolved through isa? over the class hierarchy and prefer-method.
+;; Here the printer is native (printing.ss), and this section keeps the two
+;; views in step.
 ;;
-;; Only a DIRECT method counts — the multimethod's :default falls back to
-;; __pr-str1, which returns here, so a full resolve would recurse forever.
+;; The built-in methods. print-method's table carries one for each class key the
+;; JVM's does, with its prefer-method pairs, so (methods print-method) and
+;; get-method answer what they answer there. Libraries borrow them -- duratom
+;; prints its tag and then calls (get (methods print-method) IPersistentMap) on
+;; the map. Each is the printer for its type, writing to the Writer it is
+;; handed as it walks the value (printing.ss pr-builtin-to!: *print-meta*, then
+;; jolt's own rendering, with the elements going back through pr), except the nil
+;; method, which writes "nil" whatever it is handed, as the JVM's does.
+(define pm-builtin-class-names
+  '("clojure.core.Eduction" "clojure.lang.BigInt" "clojure.lang.IDeref" "clojure.lang.IPersistentMap"
+    "clojure.lang.IPersistentSet" "clojure.lang.IPersistentVector" "clojure.lang.IRecord"
+    "clojure.lang.ISeq" "clojure.lang.Keyword" "clojure.lang.ReaderConditional"
+    "clojure.lang.Symbol" "clojure.lang.TaggedLiteral" "clojure.lang.Var"
+    "java.lang.Boolean" "java.lang.Character" "java.lang.Class" "java.lang.Double"
+    "java.lang.Float" "java.lang.Number" "java.lang.Object" "java.lang.StackTraceElement"
+    "java.lang.String" "java.lang.Throwable" "java.math.BigDecimal" "java.sql.Timestamp"
+    "java.util.Calendar" "java.util.Date" "java.util.List" "java.util.Map"
+    "java.util.RandomAccess" "java.util.Set" "java.util.UUID" "java.util.regex.Pattern"))
+;; core_print.clj's prefer-method calls: preferred -> the keys it is preferred over
+(define pm-builtin-prefers
+  '(("clojure.lang.ISeq" "clojure.lang.IPersistentCollection" "java.util.Collection")
+    ("clojure.lang.IPersistentCollection" "java.util.Collection" "java.util.RandomAccess" "java.util.Map")
+    ("java.util.RandomAccess" "java.util.List")
+    ("clojure.lang.IRecord" "java.util.Map" "clojure.lang.IPersistentMap")))
+;; The built-in method fns, by identity. A user method replaces one under its key
+;; (and is honored, as on the JVM); re-installing a saved built-in restores it.
+(define pm-builtins (make-weak-eq-hashtable))
+(define (pm-builtin? m) (hashtable-contains? pm-builtins m))
+(define (make-pm-builtin key)
+  (let ((f (lambda (x w)
+             (if (jolt-nil? key)
+                 (record-method-dispatch w "write" (jolt-list "nil"))
+                 (print-to-writer pr-builtin-to! w x))
+             jolt-nil)))
+    (hashtable-set! pm-builtins f #t)
+    f))
+;; clojure.core.Eduction: the JVM's print-method writes the seq it yields under
+;; pr, the elements as print-sequential writes them (the seq itself is not
+;; dispatched on), and Object's #object form under print.
+(define (eduction-value? x) (and (jrec? x) (equal? (jrec-tag x) "clojure.core.Eduction")))
+(define (eduction-write! p x)
+  (if (jolt-pr-readable?)
+      (let ((s (jolt-seq x)))
+        (cond ((jolt-nil? s) (pr-base-to! p jolt-empty-list))
+              ((cseq? s) (pr-base-to! p s))
+              (else (pr-own-to! p s))))
+      (put-string p (jolt-object-repr x #t))))
+;; Registered here, after records-coll.ss's deftype arm, which it refines.
+(register-pr-readable-arm! eduction-value? (lambda (x) (pr-to-string eduction-write! x)))
+(register-pr-stream-arm! eduction-value? eduction-write!)
+
+(register-multifn-seed! "clojure.core" "print-method"
+  (lambda (mf)
+    (let ((methods (jolt-multifn-methods mf))
+          (prefers (jolt-multifn-prefers mf))
+          ;; and gvec.clj's two, which print as a vector and as a seq
+          (keys (cons* jolt-nil (keyword "clojure.core" "Vec") (keyword "clojure.core" "VecSeq")
+                       (map jolt-class-for pm-builtin-class-names))))
+      ;; everything that allocates, interns a class (a lock of its own) or
+      ;; registers a built-in is done first; the lock covers the table stores
+      (let ((entries (map (lambda (k) (cons k (make-pm-builtin k))) keys))
+            (prefs (map (lambda (row) (map jolt-class-for row)) pm-builtin-prefers))
+            (subs (map (lambda (row) (new-mm-table)) pm-builtin-prefers)))
+        (jolt-with-mutex mm-tbl-mu
+          (for-each (lambda (e) (hashtable-set! methods (car e) (cdr e))) entries)
+          (for-each
+            (lambda (row fresh)
+              (let ((sub (or (hashtable-ref prefers (car row) #f)
+                             (begin (hashtable-set! prefers (car row) fresh) fresh))))
+                (for-each (lambda (b) (hashtable-set! sub b #t)) (cdr row))))
+            prefs subs)
+          (mm-epoch-bump!))))))
+
+;; The hook. printing.ss consults it before its native arms, so a user method IS
+;; the printer for its type: it fires from pr/prn/pr-str and nested inside
+;; collections, and a record or host class renders through it instead of the
+;; arm the library that provided the class registered -- ring's session store,
+;; for one, round-trips a java.time.Instant through a custom print-method.
 ;;
-;; jolt's own print-method entries are all keyed by type tag, so resolving a
-;; class per printed value would be dead weight until a library installs a
-;; class-keyed method -- and once one has (a UUID or Instant printer is common),
-;; turning each value's class NAME into a class token and hashing that token into
-;; the method table cost every printed value, class-keyed or not: a vector of
-;; 200k longs printed 3x slower. So the answer is memoized by class name: per
-;; multimethod epoch, a string table from name to method or #f, filled on the
-;; first value of each class. A value then pays its class name and one lookup.
+;; Two lookups. First the type tag the multimethod dispatches on (a record's
+;; class name, or the :jolt/... tag of a built-in). Then the value's class,
+;; resolved the way the JVM resolves print-method: a direct key, else every key
+;; the class isa? (supers, and keywords it was derived from), the dominant one by
+;; isa? and prefer-method, and an ambiguity raises as there. So a method on
+;; IPersistentMap prints sorted maps but not records (IRecord is preferred), and
+;; one on IPersistentCollection reaches a queue but not a vector
+;; (IPersistentVector is more specific). A built-in answer means jolt's native
+;; printer, which is what keeps ordinary printing on the fast path; only a user's
+;; method is handed back. :default is never consulted -- it falls back to
+;; __pr-str1, which returns here.
 ;;
-;; The state is one immutable vector (epoch has-class-keys? names table) published
-;; whole, so a reader never pairs a new epoch with an old answer. A miss copies
-;; the table and publishes the copy: there are only as many entries as classes
-;; printed, and a reader never sees a table another thread is resizing.
-(define pm-state (vector -1 #f #f #f))
-(define (pm-current-state tbl)
-  (let ((st pm-state)
-        (e (let ((e jolt-mm-epoch)) (memory-order-acquire) e)))
-    (if (and (fx= (vector-ref st 0) e) (eq? (vector-ref st 3) tbl))
+;; The class lookup has to stay off the cost of printing. Resolving a class per
+;; printed value -- its name, a class token, a scan of the table -- printed a
+;; vector of 200k longs 3x slower once any class-keyed method existed. So:
+;;  - The answer is memoized by class name, per generation of everything it
+;;    depends on: the multimethod epoch (defmethod/prefer-method), the hierarchy
+;;    value (derive), and the class graph's epoch (a library grafting supers).
+;;  - With no user method a class can reach (no non-built-in class key, and no
+;;    class derived from anything in the hierarchy), nothing is resolved at all.
+;;  - The runtime's own values -- numbers, strings, keywords, symbols, chars,
+;;    booleans, vectors, hash maps, hash sets and seqs -- have a fixed set of
+;;    classes each (host-class.ss jolt-class-base; class-fast-name answers for
+;;    exactly these). Per generation each such kind is decided once, by resolving
+;;    all its classes; a kind no user method reaches skips the class lookup
+;;    entirely, so a UUID printer costs a 10k-entry map of keywords and vectors
+;;    one predicate chain and a vector-ref per value.
+;;
+;; The tag lookup does not probe the method table itself either: with the
+;; built-ins' class keys in it, a keyword tag colliding with a class token in a
+;; bucket paid jolt='s arm walk, and printing ran 3-4x slower. It probes a copy
+;; of the table's user entries taken per generation, leaving out the built-ins,
+;; :default and every class key: a class key is the class lookup's to find, and
+;; a tag only names a class when :type metadata says so, which is checked apart.
+;;
+;; The state is one immutable vector published whole, so a reader never pairs a
+;; new generation with an old answer:
+;;   #(mm-epoch methods-table hierarchy graph-epoch user-keys? names kinds direct
+;;     scalar-tags?)
+;; direct is that copy of the user entries; scalar-tags? says whether one of its
+;; keys is the tag of a number, string, keyword, char or boolean -- values that
+;; carry no metadata, so with no such key and their kind out of reach, the
+;; commonest values printed skip the tag computation too; names maps a class name to the user method or #f; a miss copies the table and
+;; publishes the copy, so a reader never sees a table another thread is
+;; resizing. kinds holds per kind 'unknown, #t (resolve per value) or #f (skip);
+;; filling a slot is idempotent, so two threads deciding one kind write one answer.
+(define pm-kind-classes
+  (vector
+    '("java.lang.Double" "java.lang.Long" "clojure.lang.BigInt" "clojure.lang.Ratio" "java.lang.Number")
+    '("java.lang.String")
+    '("clojure.lang.Keyword")
+    '("clojure.lang.Symbol")
+    '("java.lang.Character")
+    '("java.lang.Boolean")
+    '("clojure.lang.MapEntry" "clojure.lang.APersistentVector$SubVector" "clojure.lang.PersistentVector")
+    '("clojure.lang.PersistentArrayMap" "clojure.lang.PersistentHashMap")
+    '("clojure.lang.PersistentHashSet")
+    (cons* "clojure.lang.LazySeq" "clojure.lang.PersistentList$EmptyList"
+           (vector->list seq-kind-class-v))))
+(define (pm-kind x)
+  (cond ((number? x) 0) ((string? x) 1) ((keyword? x) 2) ((symbol-t? x) 3)
+        ((char? x) 4) ((boolean? x) 5) ((pvec? x) 6) ((pmap? x) 7) ((pset? x) 8)
+        ((or (cseq? x) (empty-list-t? x) (jolt-lazyseq? x)) 9)
+        (else #f)))
+(define pm-state (vector -1 #f #f -1 #f #f #f #f #f))
+(define pm-hier-cell #f)
+(define (pm-hierarchy mf)
+  (let ((h (jolt-multifn-hierarchy mf)))
+    (if h
+        (mm-hierarchy-value h)
+        ;; the global one is an atom in a var nothing binds: its root, then the
+        ;; atom's value, two field reads on every printed value
+        (begin
+          (unless pm-hier-cell (set! pm-hier-cell (jolt-var "clojure.core" "global-hierarchy")))
+          (let ((a (var-cell-root pm-hier-cell)))
+            (if (jolt-atom? a) (jolt-atom-val a) (mm-hierarchy-value a)))))))
+;; Does the hierarchy derive any class from anything? A keyword key reaches a
+;; class only through such a derivation.
+(define (pm-hier-derives-class? hier)
+  (let ((ps (if (pmap? hier) (jolt-get hier (keyword #f "parents") jolt-nil) hier)))
+    (if (pmap? ps)
+        (pmap-fold ps (lambda (k v a) (or a (jclass? k))) #f)
+        #t)))
+(define (pm-user-entries mf tbl)
+  (let-values (((ks vs) (jolt-with-mutex mm-tbl-mu (hashtable-entries tbl))))
+    (let ((direct (new-mm-table))
+          (default (jolt-multifn-default mf)))
+      (let loop ((i 0) (class-keys? #f))
+        (if (fx< i (vector-length ks))
+            (let ((k (vector-ref ks i)) (m (vector-ref vs i)))
+              (cond ((or (pm-builtin? m) (jolt= k default)) (loop (fx+ i 1) class-keys?))
+                    ((jclass? k) (loop (fx+ i 1) #t))
+                    (else (hashtable-set! direct k m) (loop (fx+ i 1) class-keys?))))
+            (values class-keys? direct))))))
+(define (pm-current-state mf tbl)
+  (let* ((st pm-state)
+         (e (let ((e jolt-mm-epoch)) (memory-order-acquire) e))
+         (hier (pm-hierarchy mf))
+         (g jch-graph-epoch))
+    (if (and (fx= (vector-ref st 0) e) (eq? (vector-ref st 1) tbl)
+             (eq? (vector-ref st 2) hier) (fx= (vector-ref st 3) g))
         st
-        (let ((st2 (vector e
-                           (let loop ((ks (vector->list (hashtable-keys tbl))))
-                             (and (pair? ks) (or (jclass? (car ks)) (loop (cdr ks)))))
-                           (make-hashtable string-hash string=?)
-                           tbl)))
-          (memory-order-release)
-          (set! pm-state st2)
-          st2))))
-(define (pm-class-method tbl x)
-  (let ((st (pm-current-state tbl)))
-    (and (vector-ref st 1)
-         (let ((c (jolt-class-name x)))
-           (and (string? c)
-                (let* ((names (vector-ref st 2))
-                       (hit (hashtable-ref names c 'miss)))
-                  (if (eq? hit 'miss)
-                      (let ((m (hashtable-ref tbl (jolt-class-for c) #f))
-                            (names2 (hashtable-copy names #t)))
-                        (hashtable-set! names2 c m)
-                        (memory-order-release)
-                        ;; only over the state this read: a newer epoch wins
-                        (when (eq? pm-state st)
-                          (set! pm-state (vector (vector-ref st 0) #t names2 tbl)))
-                        m)
-                      hit)))))))
+        (let-values (((class-keys? direct) (pm-user-entries mf tbl)))
+          (let ((st2 (vector e tbl hier g (or class-keys? (pm-hier-derives-class? hier))
+                             (make-hashtable string-hash string=?)
+                             (make-vector (vector-length pm-kind-classes) 'unknown)
+                             direct
+                             (exists (lambda (t) (hashtable-contains? direct t)) pm-scalar-tags))))
+            (memory-order-release)
+            (set! pm-state st2)
+            st2)))))
+;; the method print-method resolves for the class named cname, built-in or not;
+;; #f when none, and an ambiguity raises as dispatch does
+(define (pm-resolve-class mf tbl cname)
+  (let ((c (jolt-class-for cname)))
+    (or (hashtable-ref tbl c #f) (mm-find-isa mf c))))
+(define (pm-user-answer m) (and m (not (pm-builtin? m)) m))
+;; the kinds (pm-kind) whose values hold no metadata, and the tags jolt-type
+;; gives them
+(define pm-scalar-tags
+  (list (keyword #f "number") (keyword #f "string") (keyword #f "keyword")
+        (keyword #f "char") (keyword #f "boolean")))
+(define-syntax pm-scalar?
+  (syntax-rules ()
+    ((_ x*) (let ((x x*)) (or (number? x) (string? x) (keyword? x) (char? x) (boolean? x))))))
+(define (pm-kind-live? mf tbl st k)
+  (let* ((kinds (vector-ref st 6))
+         (v (vector-ref kinds k)))
+    (if (eq? v 'unknown)
+        (let ((live (let loop ((cs (vector-ref pm-kind-classes k)))
+                      (and (pair? cs)
+                           (or (guard (e (#t #t))   ; ambiguous: let the value's own lookup raise
+                                 (and (pm-user-answer (pm-resolve-class mf tbl (car cs))) #t))
+                               (loop (cdr cs)))))))
+          (vector-set! kinds k live)
+          live)
+        v)))
+(define (pm-class-method mf tbl st x)
+  (and (vector-ref st 4)
+       (let ((k (pm-kind x)))
+         (and (or (not k) (pm-kind-live? mf tbl st k))
+              (let ((c (jolt-class-name x)))
+                (and (string? c)
+                     (let* ((names (vector-ref st 5))
+                            (hit (hashtable-ref names c 'miss)))
+                       (if (eq? hit 'miss)
+                           (let ((m (pm-user-answer (pm-resolve-class mf tbl c)))
+                                 (names2 (hashtable-copy names #t)))
+                             (hashtable-set! names2 c m)
+                             (memory-order-release)
+                             ;; only over the state this read: a newer generation wins
+                             (when (eq? pm-state st)
+                               (let ((st2 (vector-copy st)))
+                                 (vector-set! st2 5 names2)
+                                 (set! pm-state st2)))
+                             m)
+                           hit))))))))
 
 ;; Resolved once: var-deref rebuilds "clojure.core/print-method" and hashes it on
 ;; every call, which this pays per printed value. The cell is stable — def-var!
@@ -3312,9 +3593,24 @@
   (unless pm-cell (set! pm-cell (jolt-var "clojure.core" "print-method")))
   (let ((mf (var-cell-deref pm-cell)))
     (and (jolt-multifn? mf)
-         (let ((tbl (jolt-multifn-methods mf)))
-           (or (hashtable-ref tbl (jolt-type x) #f)
-               (pm-class-method tbl x))))))
+         (let* ((tbl (jolt-multifn-methods mf))
+                (st (pm-current-state mf tbl)))
+           ;; with no user entry at all -- the usual table, where every entry is
+           ;; a built-in -- there is nothing to look up
+           (cond
+             ((and (fx=? 0 (hashtable-size (vector-ref st 7))) (not (vector-ref st 4))) #f)
+             ((and (not (vector-ref st 8)) (pm-scalar? x))
+               (pm-class-method mf tbl st x))
+             (else
+               (let ((t (jolt-type x)))
+                 (or (hashtable-ref (vector-ref st 7) t #f)
+                     ;; (with-meta x {:type SomeClass}) dispatches on that class
+                     (and (not (keyword? t)) (jclass? t) (pm-user-answer (hashtable-ref tbl t #f)))
+                     (pm-class-method mf tbl st x)))))))))
+(set-pr-user-method-write!
+  (lambda (x p)
+    (let ((m (user-print-method x)))
+      (and m (begin (jolt-invoke m x (pr-sink-writer p)) #t)))))
 (set-pr-user-method-render!
   (lambda (x)
     (let ((m (user-print-method x)))

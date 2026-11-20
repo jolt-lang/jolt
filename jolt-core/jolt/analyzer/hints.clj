@@ -418,7 +418,9 @@
 ;; a reader that lowers ^meta on a collection to (with-meta <vec> <meta>) puts it
 ;; in the third element. A non-numeric tag (^String [x]) still yields nil, so
 ;; class hints on an arglist stay ignored exactly as before.
-(defn arglist-ret-nkind [form]
+;; An arglist's own metadata, written directly or as the (with-meta [...] m)
+;; form a macro leaves when it attaches it.
+(defn arglist-meta [form]
   (let [m (cond
             (form-vec? form) (form-coll-meta form)
             (form-list? form)
@@ -429,7 +431,16 @@
                          (form-vec? (nth es 1)))
                 (nth es 2)))
             :else nil)]
-    (when (map? m) (tag->nkind (get m :tag)))))
+    (when (map? m) m)))
+
+(defn arglist-ret-nkind [form]
+  (when-let [m (arglist-meta form)] (tag->nkind (get m :tag))))
+
+;; A deftype/defrecord/reify method's arglist, marked by those macros. The
+;; reference compiles one as a method of the class (NewInstanceMethod), which has
+;; no MAX_POSITIONAL_ARITY limit, unlike a fn.
+(defn arglist-type-method? [form]
+  (boolean (get (arglist-meta form) :jolt/type-method)))
 
 ;; The compile-time proof that a :host-call's target is a string, driving the
 ;; backend's direct string-native emission (no record-method-dispatch walk, no

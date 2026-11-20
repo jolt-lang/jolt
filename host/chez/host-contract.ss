@@ -200,12 +200,28 @@
 (define hc-kw-line   (keyword #f "line"))
 (define hc-kw-column (keyword #f "column"))
 (define hc-kw-file   (keyword #f "file"))
+;; A position with no :file -- a quoted list, which keeps its :line/:column as
+;; the JVM's does, eval'd at runtime; a form eval compiled at the enclosing
+;; position -- is in the file being compiled, as everything the reference's
+;; Compiler compiles is in SOURCE_PATH: the reader's file while a file is read,
+;; else *file* when something has bound it. *file*'s root ("NO_SOURCE_PATH", a
+;; -e or REPL entry) names no file, and leaves the position without one.
+(define hc-file-cell #f)
+(define (hc-enclosing-file)
+  (let ((p (rdr-source-file)))
+    (if p
+        (rdr-file-name-of p)
+        (begin
+          (unless hc-file-cell (set! hc-file-cell (var-cell-lookup "clojure.core" "*file*")))
+          (let ((f (and hc-file-cell (jolt-deref hc-file-cell))))
+            (and (string? f) (not (string=? f "NO_SOURCE_PATH")) f))))))
 (define (hc-form-position x)
   (let ((m (jolt-meta x)))
     (if (and (pmap? m) (not (jolt-nil? (jolt-get m hc-kw-line))))
         (let ((line (jolt-get m hc-kw-line))
               (col  (jolt-get m hc-kw-column))
-              (file (jolt-get m hc-kw-file)))
+              (file (let ((f (jolt-get m hc-kw-file)))
+                      (if (jolt-nil? f) (or (hc-enclosing-file) jolt-nil) f))))
           (if (jolt-nil? file)
               (jolt-hash-map hc-kw-line line hc-kw-column col)
               (jolt-hash-map hc-kw-line line hc-kw-column col hc-kw-file file)))
@@ -489,7 +505,15 @@
     (if (or (jolt-nil? m) (jolt-nil? (jolt-get m hc-kw-file jolt-nil)))
         form
         (jolt-with-meta form (jolt-dissoc2 m hc-kw-file)))))
+;; The compiler's expansion: the call form's position carried onto the
+;; expansion (hc-propagate-pos), so code a macro built names the call site.
 (define (hc-expand-1 ctx form . maybe-env)
+  (hc-propagate-pos form (apply hc-expand-1-raw ctx form maybe-env)))
+;; What the macro itself returned. clojure.core/macroexpand-1 answers this: the
+;; reference's hands back the expander's value untouched, so (meta
+;; (macroexpand-1 '(when x y))) is nil there -- the position the compiler gives
+;; an expansion comes from its LINE, not from the form.
+(define (hc-expand-1-raw ctx form . maybe-env)
   ;; Normalize the WHOLE call form once, then take both the arguments and &form
   ;; out of the result. Walking each argument separately left &form holding the
   ;; raw shapes — a macro reading (nth &form 1) rather than its parameter still
@@ -514,8 +538,7 @@
     (when (and (procedure? expander)
                (not (proc-accepts? expander (fx+ 2 (length args)))))
       (jolt-arity-error-name (jolt-proc-arity-name expander) (length args)))
-    (hc-propagate-pos form
-      (apply jolt-invoke expander (hc-form-sans-file nform) amp-env args))))
+    (apply jolt-invoke expander (hc-form-sans-file nform) amp-env args)))
 
 ;; Classify a global (non-local) symbol reference against the var registry:
 ;;   {:kind :var :ns NS :name NAME}   — a defined var (compile ns / clojure.core)
@@ -724,7 +747,7 @@
                                   (jolt-with-mutex hc-sq-gensym-mutex
                                     (set! hc-sq-gensym-counter (+ hc-sq-gensym-counter 1))
                                     hc-sq-gensym-counter))
-                                 "__auto")))
+                                 "__auto__")))  ; the reference's x__N__auto__
 
 (define (hc-sym nm) (jolt-symbol #f nm))
 ;; is `x` a non-empty list FORM whose head is the unqualified symbol `nm`?
@@ -762,15 +785,19 @@
 (define (hc-sq-lower ctx form gsmap)
   ;; Non-nil metadata wraps the lowered form in with-meta, with the meta map
   ;; itself lowered as a template (so a ^Thread tag qualifies to its FQN) —
-  ;; matches what the JVM emits for `^Thread [] and `^:foo a alike. Reader
-  ;; position keys (:line/:column/:file) are reader artifacts, not user meta:
-  ;; they are stripped, or every macro template form would carry its
-  ;; definition-site position into the expansion and shadow the reader
-  ;; position of the macro's input form.
+  ;; matches what the JVM emits for `^Thread [] and `^:foo a alike. A form
+  ;; whose only metadata is the reader's position (:line/:column, and the :file
+  ;; jolt's reader adds) gets none, or every macro template form would carry
+  ;; its definition-site position into the expansion and shadow the reader
+  ;; position of the macro's input form. A form with metadata of its own keeps
+  ;; the position beside it, as LispReader's SyntaxQuoteReader does: it tests
+  ;; the metadata without :line/:column for emptiness and then emits the whole
+  ;; map, so (meta `^:foo (a b)) is {:line .. :column .. :foo true}.
   (let* ((out (hc-sq-lower-bare ctx form gsmap))
          (m (jolt-meta form))
-         (m (if (jolt-nil? m) m (jolt-dissoc m rdr-kw-line rdr-kw-column rdr-kw-file))))
-    (if (or (jolt-nil? m) (zero? (jolt-count m)))
+         (m (if (jolt-nil? m) m (jolt-dissoc m rdr-kw-file))))
+    (if (or (jolt-nil? m)
+            (zero? (jolt-count (jolt-dissoc m rdr-kw-line rdr-kw-column))))
         out
         (jolt-list (hc-sym "with-meta") out (hc-sq-lower ctx m gsmap)))))
 
@@ -1262,7 +1289,12 @@
     "unchecked-inc" "unchecked-dec" "unchecked-negate"
     "unchecked-add-int" "unchecked-subtract-int" "unchecked-multiply-int"
     "unchecked-divide-int" "unchecked-remainder-int"
-    "unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"))
+    "unchecked-inc-int" "unchecked-dec-int" "unchecked-negate-int"
+    ;; their *unchecked-math* twins, internal names the analyzer rewrites an
+    ;; -int call to in such a file (natives-seq.ss)
+    "__unchecked-add-int" "__unchecked-subtract-int" "__unchecked-multiply-int"
+    "__unchecked-divide-int" "__unchecked-remainder-int"
+    "__unchecked-inc-int" "__unchecked-dec-int" "__unchecked-negate-int"))
 (for-each (lambda (nm) (declare-var! "clojure.core" nm)) hc-native-op-names)
 ;; A ^:private one of these (doseq's __chunk-* walk helpers) is plumbing a core
 ;; macro's expansion calls from the user's namespace: the back end lowers the

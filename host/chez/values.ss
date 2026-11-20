@@ -539,6 +539,7 @@
          ;; The number pairs cover the exactness-aware number clause that moved
          ;; up with them (bignum and ratio pairs used to reach the arms).
          (cons (keyword #f "a") "a") (cons "a" (jolt-symbol #f "a"))
+         (cons (keyword #f "a") (jolt-vector 1)) (cons (keyword #f "a") car)
          (cons (keyword #f "a") jolt-nil) (cons jolt-nil 0) (cons jolt-nil "s")
          (cons 1 2.5) (cons #t (keyword #f "a")) (cons #\a "a") (cons 0 #f)
          (cons (expt 2 70) (expt 2 71)) (cons 1/2 1/3) (cons #\a #\b) (cons #t #f)
@@ -676,6 +677,18 @@
         ;; compare of jolt=2-base. Every pair answered here is in
         ;; eq-fast-probes, so the registry refuses an arm that would claim one.
         ((or (jolt-nil? a) (jolt-nil? b)) #f)
+        ;; A keyword equals only itself (Keyword.equals is identity, and the eq?
+        ;; clause above answered that), and a host object -- a Class token, a
+        ;; stream -- is never a keyword. A multimethod table keyed by both
+        ;; classes and keywords compares the two kinds on every bucket collision,
+        ;; and each compare walked every registered arm (about 1 us). The pairs
+        ;; are probed (eq-fast-probes here, the jhost one by the dispatch-caches
+        ;; unit row after boot), so no arm may claim one.
+        ((keyword-t? a) #f)
+        ;; jolt-host-object? is a procedure host-static.ss defines over its
+        ;; jhost record: a forward reference to a record op is refused here
+        ;; (record-inline-test), a call resolved at run time is not.
+        ((and (keyword-t? b) (jolt-host-object? a)) #f)
         ((and (base-scalar? a) (base-scalar? b))
          (cond ((and (number? a) (number? b)) (and (eq? (exact? a) (exact? b)) (= a b)))
                ((and (char? a) (char? b)) (char=? a b))

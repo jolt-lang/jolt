@@ -1224,8 +1224,8 @@
       ;; method with the value itself as the leading `this`. The timed arity
       ;; passes its opts through — (deref r ms val) reaches the IBlockingDeref
       ;; 3-arity method. A deref method that exists only at the other arity is
-      ;; the JVM's failed interface cast: throw ClassCastException naming the
-      ;; interface the requested arity belongs to.
+      ;; the JVM's fall-through to deref-future: a ClassCastException to
+      ;; java.util.concurrent.Future.
       ((and (jrec? x)
             (jrec-method-arity x "deref" (if (null? opts) 1 3)))
        ;; the arity lookup falls back to any same-name method, so verify the
@@ -1267,12 +1267,14 @@
     ((x ms val) (%conc-deref-general x ms val))
     ((x . opts) (apply %conc-deref-general x opts))))
 
+;; clojure.core/deref tries the interface the arity belongs to (IDeref, or
+;; IBlockingDeref for the timed one) and falls through to deref-future for
+;; anything that is not, so the cast that fails is always the Future one.
 (define (deref-cast-error x opts)
   (jolt-host-throwable
    "java.lang.ClassCastException"
    (string-append "class " (guard (e (#t "?")) (jolt-class-name x))
-                  " cannot be cast to class "
-                  (if (null? opts) "clojure.lang.IDeref" "clojure.lang.IBlockingDeref"))))
+                  " cannot be cast to class java.util.concurrent.Future")))
 
 ;; realized? for a future/promise/delay. Wrapped over the overlay version in
 ;; post-prelude.ss.

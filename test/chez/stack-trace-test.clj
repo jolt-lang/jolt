@@ -22,6 +22,11 @@
     (swap! passes inc)
     (swap! fails conj (str label ": want " (pr-str want) " got " (pr-str got)))))
 
+;; A generated class's counter masked: the JVM's comes from one process-wide
+;; sequence and jolt's from the form's position, so only the shape around it is
+;; the reference's (known-divergences).
+(defn- nN [c] (str/replace c #"__\d+" "__N"))
+
 (defn- own-frames
   "This namespace's frames, as [class file] pairs, innermost first."
   [elems]
@@ -105,10 +110,10 @@
 (def ^:private in-test (atom nil))
 (clojure.test/deftest ^:private reads-in-test (let [st (here)] (reset! in-test st)))
 (clojure.test/test-var #'reads-in-test)
-(ok= (vec (take 2 (own-frames @in-test)))
+(ok= (mapv (fn [[c f]] [(nN c) f]) (take 2 (own-frames @in-test)))
      [["stack_trace_test$here" "stack-trace-test.clj"]
-      ["stack_trace_test$reads_in_test$fn__0" "stack-trace-test.clj"]]
-     "a deftest body's frame is named and mapped to its file")
+      ["stack_trace_test$fn__N" "stack-trace-test.clj"]]
+     "a deftest body's frame is named and mapped to its file (the fn in the def's :test metadata, ns$fn__N)")
 
 ;; --- a caller erased through apply, under a try ------------------------------------
 ;; The JVM keeps fail and runner; jolt erased both (apply is a tail call, and the
@@ -122,11 +127,11 @@
 (defn- runner [] (try (fail :bad) (catch Exception e nil)))
 (defn- probe-runner [] (let [st (runner)] st))
 
-(ok= (mapv first (own-frames (probe-runner)))
-     ["stack_trace_test$here" "stack_trace_test$checking$fn__0"
-      "stack_trace_test$checking$fn__1" "stack_trace_test$fail" "stack_trace_test$runner"
+(ok= (mapv (comp nN first) (own-frames (probe-runner)))
+     ["stack_trace_test$here" "stack_trace_test$checking$conform_BANG___N"
+      "stack_trace_test$checking$fn__N" "stack_trace_test$fail" "stack_trace_test$runner"
       "stack_trace_test$probe_runner"]
-     "anonymous fns are named ns$def$fn__n; an apply-erased caller and a try wrapper come back")
+     "anonymous fns are named by their class (a let-bound fn by its local); an apply-erased caller and a try wrapper come back")
 
 ;; --- StackTraceElement as a value ---------------------------------------------
 (let [e (StackTraceElement. "a.b$c" "invoke" "c.clj" 7)]
@@ -198,7 +203,7 @@
   (ok= (first (own-frames (.getStackTrace e2))) ["stack_trace_test$thrower" "stack-trace-test.clj"]
        "a rethrow keeps the original frames"))
 (ok= (StackTraceElement->vec (first (.getStackTrace (catch-it))))
-     ['stack_trace_test$thrower 'invoke "stack-trace-test.clj" 158]
+     ['stack_trace_test$thrower 'invoke "stack-trace-test.clj" 163]
      "StackTraceElement->vec names class and method as symbols")
 
 ;; --- a tail call that RETURNED is not a frame of a later throw ------------------
@@ -370,7 +375,7 @@
   (doseq [r @reports]
     (ok= (:file r) "stack-trace-test.clj" "a custom assertion names its test file")
     (ok= (:line r) (:expected-line r) "a custom assertion names its exact source line")
-    (ok= (:class r) "stack_trace_test$custom_stack_locations$fn__0"
+    (ok= (nN (:class r)) "stack_trace_test$fn__N"
          "the first caller outside the helper is the test body")))
 
 ;; Naming a finally thunk must leave self-calls bound to the original fn.

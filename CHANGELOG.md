@@ -14,7 +14,12 @@ redefinition guard, protocol calls go through a per-type vtable, var calls,
 `try` and `binding` are open-coded, and transient builds, string hashing and
 printing got faster. Also new: `sun.misc.Signal` handlers, `jsonista.core` and
 `bencode.core` bundled, C structs by value in callbacks and
-`jolt.ffi/pointer-fn`, plus a long list of JVM parity fixes.
+`jolt.ffi/pointer-fn`, `jolt -M -i`, and a printer that streams into its
+Writer as the JVM's does. The rest is JVM parity, much of it found reviewing
+this window: `(methods print-method)` holds the JVM's built-in printers,
+redefining a protocol or type follows the JVM, fn and reify classes are named
+as Compiler names them, quoted forms keep their reader position, clojure.test
+prints the JVM's report, and the reference fns work on custom IAtom/IRef types.
 
 ### Added
 
@@ -219,6 +224,14 @@ printing got faster. Also new: `sun.misc.Signal` handlers, `jsonista.core` and
   18.1 ns to 5.9 ns an element, because it steps with `unchecked-inc-int`
   (#1647). The vars now take the JVM's arities, so `(apply unchecked-add-int
   [1 2 3])` raises an `ArityException` where it used to answer 6.
+- **The printer streams.** `pr`, `prn`, `print` and `print-method` write into
+  the target Writer as they walk the value, as core_print.clj does, instead of
+  building the whole text as a string first, and `pr-str` fills one string port.
+  Printing a large value to a file holds only the path to the value being
+  written; `pr-str` of a 480 KB nested value is about 12% faster, and `pr` to a
+  FileWriter or `io/writer` is as fast as `spit` of `pr-str`. A user
+  print-method reached mid-value is handed the Writer itself, and the built-in
+  methods in `(methods print-method)` are this printer. Output is unchanged.
 
 ### Performance
 - Printing no longer slows down for every value once any class-keyed `print-method` exists (a `java.util.UUID` or `java.time.Instant` printer from a library is common). Each printed value turned its class name into a class token and looked that up; the answer is now cached per class. `pr-str` of a 200k vector and a 20k map with a UUID printer installed: 225 ms before, 96 ms now (80 ms with no class-keyed methods).
@@ -593,6 +606,153 @@ printing got faster. Also new: `sun.misc.Signal` handlers, `jsonista.core` and
   argument per collection, the walk ends at the shortest one, and the result
   stays lazy and is `()` when empty (#1664). A `(mapcat f)` xform
   takes several inputs per step too, as `(comp (map f) cat)` does on the JVM.
+- Starting several subprocesses at once as a process's first spawns no longer fails with "variable … is not bound": a lazily loaded host shim (here ProcessBuilder's) could have a method registered and called on one thread before another thread's load had defined what it calls. A lazy shim now defines everything before it registers anything (burinc/jolt#24).
+- An unbound-variable error names the variable instead of printing `#object[:object …]`.
+- `==` casts each pair to Number left to right as the JVM does: a nil operand throws `NullPointerException` (it threw `ClassCastException`), a non-number is the `ClassCastException` first, and `(== 1 2 :a)` answers false at the first unequal pair instead of throwing (burinc/jolt#6).
+- `(System/getProperty "user.name")` is the login name from the passwd entry for the process's uid, as on the JVM, so an unset or borrowed `USER` no longer makes it nil or someone else's; `"?"` when there is no entry (burinc/jolt#19).
+- `clojure.test` prints what the JVM's prints (burinc/jolt#18). `run-tests`,
+  `test-ns` and `run-test-var` print `Testing <ns>` before a namespace's tests,
+  and the summary reads `Ran N tests containing M assertions.` /
+  `F failures, E errors.` instead of jolt's own one-line wording. An `:error`
+  report prints the throwable through `print-cause-trace` (class, message,
+  ex-data, then frames) and takes its file and line from the top frame; the
+  `:default` report method prints the map. Each namespace counts into its own
+  `*report-counters*` ref, so a reporter reading it at `:end-test-ns` sees that
+  namespace's counts. `run-test-var` and `run-test` print the Testing line and
+  summary and return the summary map, `try-expr` reports the throwable itself as
+  `:actual`, and `clojure.stacktrace/print-stack-trace` indents frames by four
+  spaces as the JVM's does.
+
+- `run-tests` runs a namespace's tests in `(ns-interns ns)` order through
+  `test-all-vars`, as the reference's `test-ns` does, and `ns-interns` /
+  `ns-publics` iterate in the JVM's hash order (an array map of up to 8 entries
+  holds them in that order) instead of definition order. `(into {} m)`,
+  `(merge {} m)` and `(conj {} m)` of a hash map reversed its entries; they keep
+  its iteration order now.
+
+- Source positions follow the JVM's reader and compiler. A quoted list keeps
+  its reader `:line`/`:column`, nested lists too, so `(meta '(a b))` is
+  `{:line 1, :column 2}`, and `^meta` on a list takes the caret's position
+  unless the metadata names its own. `read-string`, `clojure.edn/read-string`
+  and a read off a plain `PushbackReader` stamp no position; a
+  `LineNumberingPushbackReader`, a file load, `load-string`, `-e`, the REPL and
+  nREPL still do. A syntax-quoted form keeps its position beside user metadata,
+  and a syntax-quoted map is a hash map in hash order. `eval` of a form with no
+  position compiles at the enclosing form's line and column in the enclosing
+  file, so its fns' frames, a def it makes and an `is` in it name that line, and
+  a def with no file of its own records `*file*` (or `"NO_SOURCE_FILE"`).
+  `macroexpand-1` returns the expansion without the call's position, and a
+  macro called with the wrong number of arguments throws the bare
+  ArityException, as the JVM's `macroexpand1` does.
+
+- The built-in nREPL server decodes a completion request's `prefix` and `ns` as UTF-8, so a non-ASCII symbol or namespace completes with no middleware loaded, as jolt-lang/nrepl#27 does for the middleware stack. A request that middleware already decoded is not decoded again.
+
+- `(methods print-method)` holds the JVM's built-in printers under the same
+  class keys (`IPersistentMap`, `ISeq`, `String`, `Object`, ...) and its
+  prefer-method pairs, so a library that borrows one, as duratom does with
+  `(get (methods print-method) clojure.lang.IPersistentMap)`, prints the map
+  instead of failing with "nil cannot be cast to IFn". A user method keyed on
+  an interface or superclass now applies through isa? and prefer-method as on
+  the JVM: one on `IPersistentMap` prints sorted maps too but not records.
+- A class-keyed print-method no longer slows printing of values it cannot
+  match: numbers, strings, keywords, vectors, hash maps and seqs skip the class
+  lookup once their classes are known not to reach a user method, and a
+  number, string, keyword, char or boolean skips the user-method lookup
+  entirely when nothing could match it. Printing a 10k-entry map of maps is
+  about 1.5x faster with or without class-keyed methods installed.
+- `(class (tagged-literal 'a 1))` is `clojure.lang.TaggedLiteral`; a sorted
+  map and a queue have their own type tags.
+- A namespace and a `PersistentQueue` print as the JVM prints them, Object's
+  `#object[clojure.lang.Namespace 0x… "user"]` form (the queue's `str` is
+  `clojure.lang.PersistentQueue@<hash>`), and `pprint` writes a queue as
+  `<-(1 2)-<`. An Eduction prints its seq only under `pr` (`print` writes its
+  `#object` form), and its print-method is a built-in keyed by the class.
+- A core.async channel prints as the JVM prints it,
+  `#object[clojure.core.async.impl.channels.ManyToManyChannel 0x… "…@…"]`,
+  instead of `#<channel>`.
+- Printing a host object is faster: `(class x)` walks only the class arms that
+  can claim the value's type, the `#object` form is built with one guard and
+  one string-append, and print-method's user lookup is skipped outright when
+  only the built-in printers are installed. `pr-str` of a fresh `java.io.File`
+  is about 0.65x what it was before this release.
+- Every value answers `java.lang.Object`'s `hashCode`, `equals`, `toString` and
+  `getClass`, so `(.hashCode #"a")` and the `str` of a record holding a regex
+  no longer throw "No matching field found".
+- Comparing a keyword with a class or another host value no longer walks every
+  registered equality arm: `(= String :a)` is 20x faster, and so is a lookup in
+  a multimethod table keyed by both classes and keywords.
+- **Redefining a protocol or a type follows the JVM.** Re-evaluating a
+  `defprotocol` drops the impls a `deftype`, `defrecord` or `reify` declared
+  inline before it (they implement the old interface), so calls on them miss and
+  `satisfies?`/`instance?` say no until the type is defined again; impls from
+  `extend`/`extend-type`/`extend-protocol` survive, as the JVM's merge keeps
+  them. Re-evaluating a `deftype`/`defrecord` makes a new class: instances built
+  before are not `instance?` of it, their `class`/`type` is not `=` to it, an old
+  record is not `=` to a new one, and they keep the old class's own and
+  extended impls instead of picking up the new definition's. A protocol call
+  compiled before the protocol was redefined still makes the old interface's
+  call, so a type that declared the protocol back then answers it there, and
+  `extenders`/`extends?` name a redefined type's extended old class as the JVM
+  does. A reify site keeps the protocols it was compiled against even when its
+  first instance is built after one of them is redefined.
+
+- **A reify's class is named as the JVM's compiler names it.** The enclosing
+  fn's class (a defn's `ns$f`, a nested `fn`, a named fn, a top-level form's
+  `ns$evalN`, the fn a `try` or expression-position `loop` is wrapped in, a
+  deftype's own class) with its trailing `__N` trimmed, then `$reify__N`, where
+  every reify used to be `ns$reify__N`. Only the counters differ from the JVM's.
+
+- **A fn's class is named as the JVM's compiler names it.** `(class f)` of a fn
+  literal is the class Compiler compiles it into -- `ns$mk$fn__N` inside `mk`, a
+  named fn's `name__N`, a let-bound fn's local, nested fns, letfn, `#()`, a
+  top-level form's `ns$evalN$fn__N` -- where every such fn was
+  `clojure.lang.AFunction$fn__0`, so class-keyed dispatch and `instance?` on a
+  fn's class now tell two sites apart. `.getName`, `str`, `pr-str`'s
+  `#object[...]`, stack trace elements and ArityException's fn name
+  (`my.ns/mk/fn--N`) agree. clojure.core's closures and transducers report the
+  reference's classes. Only the counters differ from the JVM's. Protocol
+  dispatch on a fn value memoizes on its class now (about 3x faster), and
+  `(class f)` of a fn literal is about 2x faster.
+- **`every-pred` and `some-fn` are the reference's**, arity for arity: the
+  predicates are tested in its order, so the first truthy value `some-fn`
+  answers and the side effects match, and `(every-pred)` is an arity error.
+  `(replace smap)` returns a transducer. An auto-gensym is spelled
+  `x__N__auto__`.
+
+- **`instance?` casts its type argument to `Class`.** A protocol (its map), a
+  keyword, a string or a quoted symbol throws the JDK's `ClassCastException`,
+  and nil the `NullPointerException`, where jolt answered as if the protocol
+  were its interface. The interface itself (`(instance? my.ns.P x)`) still
+  answers.
+- Printing a `jolt.loader` loader, or a hit from one, no longer overflows the stack once the loader has loaded something. A loader prints as `#object[jolt.loader.LoaderImpl 0x… "loader <id>"]`.
+
+- **The reference fns call a user type's `clojure.lang` interface methods.**
+  `swap!`, `reset!`, `compare-and-set!`, `swap-vals!`, `reset-vals!`,
+  `add-watch`, `remove-watch`, `set-validator!` and `get-validator` now work on
+  a deftype, defrecord or reify implementing `IAtom` / `IAtom2` / `IRef`, as on
+  the JVM, where each is one interface call (a durable atom like duratom's no
+  longer has to rebind them). `alter-meta!` / `reset-meta!` on a value that is
+  not an `IReference` throw the JVM's `ClassCastException` instead of storing
+  metadata `meta` never reads back, and `reset-meta!` answers the type's
+  `resetMeta`. A failed cast now names the interface the JVM does: `IAtom2` for
+  the `-vals!` pair, `IRef` for the watch/validator fns, and
+  `java.util.concurrent.Future` for `deref` (it was `IDeref` /
+  `IBlockingDeref`). The built-in atom path is unchanged.
+
+- **The unchecked ops follow the JVM's operand categories (jolt-cdjgi).**
+  `unchecked-add`, `-subtract`, `-multiply`, `-inc`, `-dec` and `-negate` wrap
+  only a long/long pair now. An operand past the long range takes BigInt
+  contagion, so `(unchecked-add 9223372036854775808N 1)` is
+  `9223372036854775809N`, not a wrapped long; a BigDecimal or Float operand is
+  ordinary arithmetic (they raised before), and `(unchecked-multiply 0 1.5)` is
+  `0.0`. The `-int` family casts each operand to int before the op, as the JVM
+  compiler does: `(unchecked-add-int 1/2 1/2)` is 0, and an operand outside int
+  range raises the ArithmeticException, unless the file sets `*unchecked-math*`,
+  where a compiled call wraps it. A nil operand of these ops and of `+`, `-`,
+  `*` and the comparisons is the NullPointerException even beside a
+  non-number, and `(int 9223372036854775808N)` is the IllegalArgumentException
+  naming the long range. A small BigInt such as `1N` still reads as a Long,
+  since jolt classes an integer by its range.
 
 ## [0.8.27] - 2026-11-12
 

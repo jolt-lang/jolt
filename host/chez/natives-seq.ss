@@ -28,73 +28,95 @@
 ;; inputs]) — a multi-collection sequence/transduce, or medley's sequence-padded
 ;; calling (f acc i1 i2 …) — via a trailing variadic clause, so the single-input
 ;; hot path stays allocation-free while (rf result (apply f inputs)) still works.
+;; A transducer and the reducing fn it makes are the fns the reference's map,
+;; filter, ... return, so they carry those fns' JVM class names (Clojure 1.12.6's
+;; AOT-compiled clojure.core, where the numbers are fixed): Chez names a closure
+;; after the identifier it is bound to, and fn-form-registry.ss maps each name to
+;; itself as the class (class (map inc)) reports.
+(define-syntax jvm-class-named
+  (syntax-rules () ((_ name e) (let ((name e)) name))))
 (define (td-map f)
-  (lambda (rf)
-    (case-lambda
-      (() (jolt-invoke rf))
-      ((acc) (jolt-invoke1 rf acc))
-      ((acc x) (jolt-invoke2 rf acc (jolt-invoke1 f x)))
-      ((acc . xs) (jolt-invoke2 rf acc (apply jolt-invoke f xs))))))
+  (jvm-class-named clojure.core$map$fn__5950
+    (lambda (rf)
+      (jvm-class-named clojure.core$map$fn__5950$fn__5951
+        (case-lambda
+          (() (jolt-invoke rf))
+          ((acc) (jolt-invoke1 rf acc))
+          ((acc x) (jolt-invoke2 rf acc (jolt-invoke1 f x)))
+          ((acc . xs) (jolt-invoke2 rf acc (apply jolt-invoke f xs))))))))
 (define (td-filter pred)
-  (lambda (rf)
-    (case-lambda
-      (() (jolt-invoke rf))
-      ((acc) (jolt-invoke1 rf acc))
-      ((acc x) (if (jolt-truthy? (jolt-invoke1 pred x))
-                   (jolt-invoke2 rf acc x)
-                   acc)))))
+  (jvm-class-named clojure.core$filter$fn__5977
+    (lambda (rf)
+      (jvm-class-named clojure.core$filter$fn__5977$fn__5978
+        (case-lambda
+          (() (jolt-invoke rf))
+          ((acc) (jolt-invoke1 rf acc))
+          ((acc x) (if (jolt-truthy? (jolt-invoke1 pred x))
+                       (jolt-invoke2 rf acc x)
+                       acc)))))))
 (define (td-remove pred) (td-filter (lambda (x) (jolt-not (jolt-invoke1 pred x)))))
 (define (td-take n)
-  (lambda (rf)
-    (let ((left n))
-      (case-lambda
-        (() (jolt-invoke rf))
-        ((acc) (jolt-invoke1 rf acc))
-        ((acc x) (if (<= left 0)
-                     (make-jolt-reduced acc)
-                     (let ((r (jolt-invoke2 rf acc x)))
-                       (set! left (- left 1))
-                       (if (<= left 0) (ensure-reduced r) r))))))))
+  (jvm-class-named clojure.core$take$fn__5993
+    (lambda (rf)
+      (let ((left n))
+        (jvm-class-named clojure.core$take$fn__5993$fn__5994
+          (case-lambda
+            (() (jolt-invoke rf))
+            ((acc) (jolt-invoke1 rf acc))
+            ((acc x) (if (<= left 0)
+                         (make-jolt-reduced acc)
+                         (let ((r (jolt-invoke2 rf acc x)))
+                           (set! left (- left 1))
+                           (if (<= left 0) (ensure-reduced r) r))))))))))
 (define (td-drop n)
-  (lambda (rf)
-    (let ((left n))
-      (case-lambda
-        (() (jolt-invoke rf))
-        ((acc) (jolt-invoke1 rf acc))
-        ((acc x) (if (> left 0) (begin (set! left (- left 1)) acc)
-                     (jolt-invoke2 rf acc x)))))))
+  (jvm-class-named clojure.core$drop$fn__6009
+    (lambda (rf)
+      (let ((left n))
+        (jvm-class-named clojure.core$drop$fn__6009$fn__6010
+          (case-lambda
+            (() (jolt-invoke rf))
+            ((acc) (jolt-invoke1 rf acc))
+            ((acc x) (if (> left 0) (begin (set! left (- left 1)) acc)
+                         (jolt-invoke2 rf acc x)))))))))
 (define (td-take-while pred)
-  (lambda (rf)
-    (case-lambda
-      (() (jolt-invoke rf))
-      ((acc) (jolt-invoke1 rf acc))
-      ((acc x) (if (jolt-truthy? (jolt-invoke1 pred x))
-                   (jolt-invoke2 rf acc x)
-                   (make-jolt-reduced acc))))))
+  (jvm-class-named clojure.core$take_while$fn__6001
+    (lambda (rf)
+      (jvm-class-named clojure.core$take_while$fn__6001$fn__6002
+        (case-lambda
+          (() (jolt-invoke rf))
+          ((acc) (jolt-invoke1 rf acc))
+          ((acc x) (if (jolt-truthy? (jolt-invoke1 pred x))
+                       (jolt-invoke2 rf acc x)
+                       (make-jolt-reduced acc))))))))
 (define (td-drop-while pred)
-  (lambda (rf)
-    (let ((dropping #t))
-      (case-lambda
-        (() (jolt-invoke rf))
-        ((acc) (jolt-invoke1 rf acc))
-        ((acc x) (begin
-                   (when (and dropping (not (jolt-truthy? (jolt-invoke1 pred x))))
-                     (set! dropping #f))
-                   (if dropping acc (jolt-invoke2 rf acc x))))))))
+  (jvm-class-named clojure.core$drop_while$fn__6024
+    (lambda (rf)
+      (let ((dropping #t))
+        (jvm-class-named clojure.core$drop_while$fn__6024$fn__6025
+          (case-lambda
+            (() (jolt-invoke rf))
+            ((acc) (jolt-invoke1 rf acc))
+            ((acc x) (begin
+                       (when (and dropping (not (jolt-truthy? (jolt-invoke1 pred x))))
+                         (set! dropping #f))
+                       (if dropping acc (jolt-invoke2 rf acc x))))))))))
 ;; (mapcat f) transducer: map f, then splice (cat) f's result into rf, honoring a
 ;; mid-splice `reduced`. The JVM's is (comp (map f) cat), so like map's its step
-;; takes several inputs: (sequence (mapcat list) [1 2] [3 4]) is (1 3 2 4).
+;; takes several inputs: (sequence (mapcat list) [1 2] [3 4]) is (1 3 2 4) -- and
+;; its classes are comp's fn and map's reducing fn.
 (define (td-mapcat f)
-  (lambda (rf)
-    (define (splice acc r)
-      (let loop ((acc acc) (xs (seq->list (jolt-seq r))))
-        (if (or (null? xs) (jolt-reduced? acc)) acc
-            (loop (jolt-invoke2 rf acc (car xs)) (cdr xs)))))
-    (case-lambda
-      (() (jolt-invoke rf))
-      ((acc) (jolt-invoke1 rf acc))
-      ((acc x) (splice acc (jolt-invoke1 f x)))
-      ((acc x . xs) (splice acc (apply jolt-invoke f x xs))))))
+  (jvm-class-named clojure.core$comp$fn__5895
+    (lambda (rf)
+      (define (splice acc r)
+        (let loop ((acc acc) (xs (seq->list (jolt-seq r))))
+          (if (or (null? xs) (jolt-reduced? acc)) acc
+              (loop (jolt-invoke2 rf acc (car xs)) (cdr xs)))))
+      (jvm-class-named clojure.core$map$fn__5950$fn__5951
+        (case-lambda
+          (() (jolt-invoke rf))
+          ((acc) (jolt-invoke1 rf acc))
+          ((acc x) (splice acc (jolt-invoke1 f x)))
+          ((acc x . xs) (splice acc (apply jolt-invoke f x xs))))))))
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
 (define (into-xform to xform from)
@@ -336,7 +358,7 @@
     ((htable-sorted? coll) (sc-call coll kw-op-rseq))
     ;; a deftype/record implementing clojure.lang.Reversible (rseq) — e.g.
     ;; data.priority-map — drives rseq through its own method.
-    ((and (jrec? coll) (find-method-any-protocol (jrec-tag coll) "rseq"))
+    ((and (jrec? coll) (find-method-any-protocol (jrec-rtag coll) "rseq"))
      => (lambda (f) (jolt-invoke1 f coll)))
     (else (jolt-cast-throw coll "clojure.lang.Reversible"))))
 (def-var! "clojure.core" "rseq" jolt-rseq)
@@ -356,3 +378,16 @@
   (d! "unchecked-dec" jolt-uncdec)               (d! "unchecked-dec-int" jolt-uncdeci)
   (d! "unchecked-divide-int" jolt-uncdivi2)
   (d! "unchecked-remainder-int" jolt-uncremi2))
+;; The -int ops cast their operands with RT.intCast's range check, as the JVM
+;; compiler does by default. Under *unchecked-math* the analyzer rewrites a call
+;; to one of these twins instead, which wrap each operand (uncheckedIntCast).
+;; Private, like doseq's __chunk-* walk: the rewrite is their only caller.
+(let ((d! (lambda (n v) (def-var! "clojure.core" n v))))
+  (d! "__unchecked-add-int" jolt-uncaddi2w)       (d! "__unchecked-subtract-int" jolt-uncsubi2w)
+  (d! "__unchecked-multiply-int" jolt-uncmuli2w)  (d! "__unchecked-divide-int" jolt-uncdivi2w)
+  (d! "__unchecked-remainder-int" jolt-uncremi2w) (d! "__unchecked-inc-int" jolt-uncinciw)
+  (d! "__unchecked-dec-int" jolt-uncdeciw)        (d! "__unchecked-negate-int" jolt-uncnegiw))
+(for-each (lambda (n) (set-var-meta! "clojure.core" n (jolt-hash-map (keyword #f "private") #t)))
+  '("__unchecked-add-int" "__unchecked-subtract-int" "__unchecked-multiply-int"
+    "__unchecked-divide-int" "__unchecked-remainder-int"
+    "__unchecked-inc-int" "__unchecked-dec-int" "__unchecked-negate-int"))

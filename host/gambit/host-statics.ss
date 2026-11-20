@@ -24,6 +24,9 @@
 ;; mutable state. A Class object is a jhost tagged "class" (class-model.ss), a
 ;; StringBuilder one tagged "string-builder" (string-builder.ss).
 (define-record-type jhost (fields tag (mutable state)) (nongenerative gambit-jhost-v1))
+;; jhost? as a procedure, as host/chez/java/host-static.ss defines it, for
+;; values.ss's equality fast path.
+(define (jolt-host-object? x) (jhost? x))
 
 ;; A question a host object's tag alone answers, remembered by the tag object —
 ;; the same helper as host/chez/java/host-static.ss (which explains it); the

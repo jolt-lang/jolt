@@ -65,7 +65,7 @@
         ;; a record/reify implementing clojure.lang.IPending answers via its
         ;; isRealized method (the JVM casts to IPending and calls it); the
         ;; result is boolean-cast like any interface-boolean return.
-        ((and (jrec? x) (find-method-any-protocol (jrec-tag x) "isRealized"))
+        ((and (jrec? x) (find-method-any-protocol (jrec-rtag x) "isRealized"))
          => (lambda (m) (if (jolt-truthy? (jolt-invoke m x)) #t #f)))
         ((reify-method-ref x "isRealized")
          => (lambda (m) (if (jolt-truthy? (jolt-invoke m x)) #t #f)))

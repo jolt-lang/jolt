@@ -718,6 +718,33 @@
 (define sa-flonum-hi-disp
   (if (eq? (native-endianness) (endianness little)) (fx+ sa-flonum-disp 4) sa-flonum-disp))
 (define (sa-flonum-hi32 x) (#%$object-ref 'unsigned-32 x sa-flonum-hi-disp))
+;; (sa-bignum-s64? x): whether a BIGNUM (the caller has asked bignum?) lies in
+;; signed 64 bits, [-2^63, 2^63). jolt classes an exact integer by that range
+;; (a Long inside, a BigInt past it), and the unchecked ops ask it of every
+;; non-fixnum operand. Two generic compares against the bignum bounds cost
+;; 14 ns there, longer than the wrapped op itself, so the answer is read off
+;; the object: a bignum that fits has at most two 32-bit bigits, and with two
+;; the top one decides (below 2^31, or exactly 2^31 over a zero low bigit for
+;; -2^63). Bigits are stored most significant first; the payload's offset from
+;; the tagged pointer is found once at load by probing a two-bigit bignum for
+;; its own words, counting up from the header so no probe reads outside it.
+(define sa-bignum-data-disp
+  (let ((x (+ #x5A5A5A5AA5C3A5C3 0)))
+    (let loop ((d 1))
+      (cond ((fx> d 17) (error 'sa-bignum-data-disp "no bignum payload"))
+            ((and (= (#%$object-ref 'unsigned-32 x d) #x5A5A5A5A)
+                  (= (#%$object-ref 'unsigned-32 x (fx+ d 4)) #xA5C3A5C3)) d)
+            (else (loop (fx+ d 1)))))))
+(define-syntax sa-bignum-s64?
+  (syntax-rules ()
+    ((_ e) (let* ((x e) (n (#%$bignum-length x)))
+             (or (fx= n 1)
+                 (and (fx= n 2)
+                      (let ((hi (#%$object-ref 'unsigned-32 x sa-bignum-data-disp)))
+                        (or (< hi #x80000000)
+                            (and (= hi #x80000000) (not (#%$bigpositive? x))
+                                 (eqv? 0 (#%$object-ref 'unsigned-32 x
+                                                        (fx+ sa-bignum-data-disp 4))))))))))))
 ;; Built arithmetically, exactly: (1 + m/2^20) * 2^(e-1023) for a normal field,
 ;; m * 2^-1042 for a subnormal one, each power of two from a table.
 (define sa-pow2-base 1100)

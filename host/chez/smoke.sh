@@ -527,14 +527,14 @@ rm -rf "$rc_dir"
 # runtime used to come back with forms tagged :file "<that file>", and a read
 # error then carried a position into the STRING rendered against that file — a
 # framed snippet of a line that had nothing to do with it. Only reachable from
-# inside a real load, which is the one place the parameter is set; :line stays,
-# and describes the string that was read (known-divergences: the JVM records no
-# position for read-string at all).
+# inside a real load, which is the one place the parameter is set. Nor any
+# :line: the JVM's read-string records no position at all, and neither does this
+# one; a LineNumberingPushbackReader read does, and still names no file.
 rs_dir="$(mktemp -d)"
 printf '%s\n' '(ns p)' \
-  '(prn [(:file (meta (read-string "(foo)"))) (:line (meta (read-string "(foo)")))])' \
+  '(prn [(:file (meta (read-string "(foo)"))) (:line (meta (read-string "(foo)"))) (meta (read (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. "(foo)"))))])' \
   > "$rs_dir/p.clj"
-cla_check "$jolt run \"$rs_dir/p.clj\"" '[nil 1]'
+cla_check "$jolt run \"$rs_dir/p.clj\"" '[nil nil {:line 1, :column 1}]'
 rm -rf "$rs_dir"
 # -m NS -- ... : same end-of-options rule for a namespace -main.
 mp="$(mktemp -d)"; mkdir -p "$mp/src"
@@ -756,14 +756,24 @@ else
 fi
 rm -rf "$rle"
 e_nsf="$($jolt -e '(ns foo) (println *ns*)' 2>/dev/null | tail -1)"
-if [ "$e_nsf" = "foo" ]; then
+# println writes a namespace as the JVM does, Object's #object form with the
+# name unquoted
+case "$e_nsf" in
+  "#object[clojure.lang.Namespace 0x"*" foo]") e_nsf_ok=1 ;;
+  *) e_nsf_ok= ;;
+esac
+if [ -n "$e_nsf_ok" ]; then
   pass=$((pass + 1))
 else
-  echo "  FAIL: -e \"(ns foo) (println *ns*)\" should print foo (got \`$e_nsf\`)"
+  echo "  FAIL: -e \"(ns foo) (println *ns*)\" should print foo's #object form (got \`$e_nsf\`)"
   fails=$((fails + 1))
 fi
 check '(do (require (quote jolt.nrepl)) (let [r1 (jolt.nrepl/evaluate "(ns nr-sw.a)" "user") r2 (jolt.nrepl/evaluate "(str *ns*)" (:ns r1)) r3 (jolt.nrepl/evaluate "(in-ns (quote nr-sw.b))" (:ns r2)) r4 (jolt.nrepl/evaluate "(str *ns*)" (:ns r3))] [(:ns r1) (:value r2) (:ns r3) (:value r4) (str *ns*)]))' '["nr-sw.a" "\"nr-sw.a\"" "nr-sw.b" "\"nr-sw.b\"" "user"]'
 check '(do (require (quote jolt.nrepl)) (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) {"op" "load-file" "file" "(ns nr-lf.a) (def z 3)" "ns" "user" :reply #(swap! sent conj %)}) [(get (last @sent) "ns") @(resolve (quote nr-lf.a/z))]))' '["user" 3]'
+# completions decode prefix and ns from the wire's latin1 as UTF-8 when no
+# middleware has (jolt-lang/nrepl#27's wrap-utf8 marks a request it decoded,
+# and that one is taken as it is)
+check '(do (require (quote jolt.nrepl)) (create-ns (quote nr-ütf)) (intern (quote nr-ütf) (quote café-x) 1) (let [w (fn [s] (String. (.getBytes s "UTF-8") "ISO-8859-1")) c (fn [req] (let [sent (atom [])] ((var jolt.nrepl/built-in-handler) (assoc req "op" "completions" :reply #(swap! sent conj %))) (mapv #(get % "candidate") (get (first @sent) "completions"))))] [(c {"prefix" (w "café") "ns" (w "nr-ütf")}) (c {"prefix" "café" "ns" "nr-ütf" :nrepl.middleware.utf8/decoded true})]))' '[["café-x"] ["café-x"]]'
 nsm="$(mktemp -d)"
 mkdir -p "$nsm/src/nsm"
 printf '{:paths ["src"]}\n' > "$nsm/deps.edn"
@@ -1735,6 +1745,20 @@ if [ "${#home_want}" -gt 1 ]; then
       fails=$((fails + 1))
     fi
   done
+  # user.name is the same entry's pw_name: an unset or borrowed USER/LOGNAME
+  # does not change it (burinc/jolt#19)
+  name_want="$(id -un)"
+  name_prop='[(System/getProperty "user.name") (get (System/getProperties) "user.name")]'
+  for name_env in "env -u USER -u LOGNAME" "env USER=someoneelse LOGNAME=someoneelse"; do
+    got="$(cd "$home_tmp" && $name_env JOLT_PWD="$home_tmp" $home_jolt -e "$name_prop" 2>/dev/null | tail -1)"
+    if [ "$got" = "[\"$name_want\" \"$name_want\"]" ]; then
+      pass=$((pass + 1))
+    else
+      echo "  FAIL: user.name under $name_env"
+      echo "    want \`$name_want\` twice got \`$got\`"
+      fails=$((fails + 1))
+    fi
+  done
   rm -rf "$home_tmp"
 fi
 
@@ -2560,7 +2584,7 @@ check '(do (require (quote jolt.nrepl)) (nil? jolt.nrepl/*eval-wrapper*))' 'true
 # without one nothing changes. clojure.core/load-string still takes the string
 # alone. evaluate's :file and the load-file op's file-path go the same way.
 check '(do (jolt.host/eval-string "(defn nes-f [] 1)" "/tmp/nes/a.clj") [(:file (meta (var user/nes-f))) (:line (meta (var user/nes-f))) (jolt.host/eval-string "*file*" "/tmp/nes/a.clj") (jolt.host/eval-string "*source-path*" "/tmp/nes/a.clj")])' '["/tmp/nes/a.clj" 1 "/tmp/nes/a.clj" "a.clj"]'
-check '(do (jolt.host/eval-string "(defn nes-g [] 1)") [(nil? (:file (meta (var user/nes-g)))) (nil? (jolt.host/eval-string "*file*"))])' '[true true]'
+check '(do (jolt.host/eval-string "(defn nes-g [] 1)") [(:file (meta (var user/nes-g))) (nil? (jolt.host/eval-string "*file*"))])' '["NO_SOURCE_FILE" true]'
 check '(do (jolt.host/load-string "(ns nes.b) (defn h [] 2)" "/tmp/nes/b.clj") [(:file (meta (resolve (quote nes.b/h)))) (str *ns*)])' '["/tmp/nes/b.clj" "user"]'
 check '(try (load-string "1" "/tmp/nes/c.clj") :no-throw (catch Throwable _ :arity))' ':arity'
 check '(do (require (quote jolt.nrepl)) (jolt.nrepl/evaluate "(ns nes.d) (defn k [] 3)" "user" {:load true :file "/tmp/nes/d.clj"}) (:file (meta (resolve (quote nes.d/k)))))' '"/tmp/nes/d.clj"'
@@ -2709,7 +2733,7 @@ printf '(ns xeflags) (defn go [_] (set! *assert* false) (println "XF-FLAGS" *ass
   > "$ef_dir/src/xeflags.clj"
 printf '{:paths ["src"] :tasks {flg {:task (do (set! *warn-on-reflection* true) (println "TASK-FLAGS" *warn-on-reflection*))}}}\n' \
   > "$ef_dir/deps.edn"
-printf '(ns lflags (:require [jolt.loader :as jl]))\n(defn -main [& _]\n  (set! *unchecked-math* true)\n  (let [r (jl/load (jl/classpath ["%s/src"]) {:kind :ns :name "fdep"})]\n    (println "LOADER-FLAGS" *unchecked-math* *assert* (:handle r))))\n' "$ef_dir" \
+printf '(ns lflags (:require [jolt.loader :as jl]))\n(defn -main [& _]\n  (set! *unchecked-math* true)\n  (let [r (jl/load (jl/classpath ["%s/src"]) {:kind :ns :name "fdep"})]\n    (println "LOADER-FLAGS" *unchecked-math* *assert* (str (:handle r)))))\n' "$ef_dir" \
   > "$ef_dir/src/lflags.clj"
 ef_check() { # label expected actual
   if [ "$2" = "$3" ]; then pass=$((pass + 1))

@@ -51,7 +51,7 @@
   [^java.io.File f]
   (let [path (.getPath f)
         eof (Object.)]
-    (with-open [r (java.io.PushbackReader. (io/reader f))]
+    (with-open [r (clojure.lang.LineNumberingPushbackReader. (io/reader f))]
       (binding [*default-data-reader-fn* (fn [_ v] v)]
         (loop [seen-ns? false found []]
           (let [form (try

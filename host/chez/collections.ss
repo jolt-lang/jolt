@@ -1034,6 +1034,23 @@
                          (let cl ((al (hcoll-alist child)) (a acc))
                            (if (null? al) a (cl (cdr al) (proc (caar al) (cdar al) a)))))
                         (else (proc (car child) (cdr child) acc)))))))))
+;; node-fold's visit, reversed: (proc k v acc) over every leaf in the order a
+;; seq over the map yields them. node-fold walks the trie from the high end so a
+;; consing caller ends up with an ascending list; a caller building a value
+;; directly (pmap-fold-fwd) needs the ascending walk itself, or (into {} m) of a
+;; hash map lands its entries in reverse.
+(define (node-fold-fwd node proc acc)
+  (let* ((arr (hnode-arr node)) (n (vector-length arr)))
+    (let loop ((i 0) (acc acc))
+      (if (fx=? i n)
+          acc
+          (let ((child (vector-ref arr i)))
+            (loop (fx+ i 1)
+                  (cond ((hnode? child) (node-fold-fwd child proc acc))
+                        ((hcoll? child)
+                         (fold-left (lambda (a p) (proc (car p) (cdr p) a))
+                                    acc (reverse (hcoll-alist child))))
+                        (else (proc (car child) (cdr child) acc)))))))))
 
 ;; ============================================================================
 ;; editable HAMT nodes — reachable only from a live transient
@@ -1432,7 +1449,7 @@
 (define (pmap-fold-fwd m proc acc)
   (let ((root (pmap-root m)))
     (if (hnode? root)
-        (node-fold root proc acc)
+        (node-fold-fwd root proc acc)
         (let ((n (vector-length root)))
           (let loop ((i 0) (acc acc))
             (if (sa-ufx>=? i n) acc

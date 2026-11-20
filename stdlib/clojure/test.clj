@@ -17,7 +17,8 @@
 
 (ns clojure.test
   (:require [clojure.string :as str]
-            [clojure.template :as temp]))
+            [clojure.template :as temp]
+            [clojure.stacktrace :as stack]))
 
 ;; --- state -----------------------------------------------------------------
 
@@ -62,8 +63,8 @@
 ;; set-test create nothing.
 (def ^:dynamic *load-tests* true)
 
-;; Accepted for parity and inert here: jolt reports a crash by message, not by
-;; printing a stack trace, so there is no depth to cap.
+;; How many frames the :error report prints under a throwable, nil for all of
+;; them, as the reference's print-cause-trace call takes it.
 (def ^:dynamic *stack-trace-depth* nil)
 
 (defn reset-report! []
@@ -184,7 +185,11 @@
       (when (seq *testing-contexts*) (println (testing-contexts-str)))
       (when-let [message (:message m)] (println message))
       (println "expected:" (pr-str (:expected m)))
-      (println "  actual:" (report-value (:actual m))))))
+      (print "  actual: ")
+      (let [actual (:actual m)]
+        (if (instance? Throwable actual)
+          (stack/print-cause-trace actual *stack-trace-depth*)
+          (prn actual))))))
 
 (defn n-pass [] (:pass @counters))
 (defn n-fail [] (:fail @counters))
@@ -192,15 +197,16 @@
 (defn failures [] (:fails @counters))
 
 
-;; clojure.test/report multimethod — present so suites that add reporting
-;; methods (defmethod clojure.test/report :begin-test-var ...) load. The runner
-;; below does its own console output and doesn't dispatch through it.
+;; clojure.test/report multimethod. Every line the runner prints goes through
+;; it, with the reference's methods as the defaults, so a runner that adds or
+;; rebinds methods (kaocha, eftest, CIDER) owns the output.
 ;;
 ;; ^:dynamic like the reference's: a suite that installs its own reporter for the
 ;; duration of a run rebinds this rather than adding methods (test.check's
 ;; clojure-test suite does, and so does every TAP/JUnit reporter).
 (defmulti ^:dynamic report :type)
-(defmethod report :default [_m] nil)
+(defmethod report :default [m]
+  (with-test-out (prn m)))
 
 ;; do-report routes a {:type …} report map through the report multimethod — the
 ;; seam clojure.test assertions emit through. The built-in :pass/:fail/:error
@@ -218,12 +224,20 @@
   the stack for :file/:line; jolt's `is` macro stashes the assertion's position
   (from (meta &form)) in *report-pos*, merged here for :fail/:error reports."
   [m]
-  (let [m (if (or (:file m) (:line m))
-            m
-            (if (and (or (= :fail (:type m)) (= :error (:type m))) *report-pos*)
-              (merge *report-pos* m)
-              m))]
-    (report m)))
+  (report
+   (case (:type m)
+     ;; the reference merges {:file :line} under every :fail and :error, nil when
+     ;; it finds no frame, so a reporter can read both keys off any of them
+     :fail (merge {:file nil :line nil} *report-pos* m)
+     ;; an :error's position is the throwable's top frame, as the reference's
+     (:error) (merge {:file nil :line nil}
+                     (let [a (:actual m)
+                           s (when (instance? Throwable a) (first (.getStackTrace a)))]
+                       (if s
+                         {:file (.getFileName s) :line (.getLineNumber s)}
+                         *report-pos*))
+                     m)
+     m)))
 
 ;; assert-expr is the macro-level extension point: `is` expands a form by calling
 ;; (assert-expr msg form), dispatched on the form's first symbol (or :default /
@@ -244,7 +258,7 @@
        (clojure.test/do-report {:type :fail :message ~msg :form '~form}))
      (catch Throwable e#
        (clojure.test/do-report {:type :error :message ~msg :form '~form
-                                :actual (clojure.test/err-text e#)}))))
+                                :expected '~form :actual e#}))))
 
 ;; The building blocks a library uses when it writes its own assert-expr method:
 ;; assert-predicate for a functional predicate (args evaluated so the report shows
@@ -284,8 +298,7 @@
   `(try ~(assert-expr msg form)
         (catch Throwable t#
           (clojure.test/do-report {:type :error :message ~msg :form '~form
-                                   :expected '~form
-                                   :actual (clojure.test/err-text t#)}))))
+                                   :expected '~form :actual t#}))))
 
 ;; The common pure predicates whose args `is` evaluates so a failure shows the
 ;; actual values — (is (= expected got)) prints `got`, not just the form. A macro
@@ -463,7 +476,14 @@
    ;; The reader stamps :line/:column on the form; the file comes from *file*,
    ;; reduced to its base name because that is what the reference prints and what
    ;; tooling matches on (test.check asserts #"\(clojure_test_test\.cljc:\d+\)$").
-   (let [pos (assoc (select-keys (meta &form) [:line])
+   ;;
+   ;; A form with no :line (built by code, or read by read-string, which stamps
+   ;; none) takes the line being compiled, Compiler/LINE: the reference's frame
+   ;; for such a form carries that line too, as eval compiles it at the
+   ;; enclosing position.
+   (let [line (or (:line (meta &form))
+                  (let [l @clojure.lang.Compiler/LINE] (when (pos? l) l)))
+         pos (assoc (if line {:line line} {})
                     :file (source-file-name))]
      `(binding [clojure.test/*report-pos* ~pos]
         (is-impl ~form ~msg)))))
@@ -630,72 +650,48 @@
         (fn [] (doseq [t (get by-ns n)] (run-one t))))))
   nil)
 
-;; Tests attached to a namespace's vars via :test metadata but never registered
-;; through deftest — clojure.test discovers tests by scanning ns-interns, so a
-;; suite that interns test vars directly (yamltest-style intern + vary-meta)
-;; must be visible to (run-tests 'ns) too. deftest'd vars also carry :test
-;; meta, so names already in the registry are excluded.
-;; registered-by-ns is (group-by :ns @registry), built ONCE by the caller —
-;; run-all-tests hands every loaded namespace through here, and a fresh
-;; whole-registry scan per namespace was O(namespaces x tests).
-(defn- interned-tests [n registered-by-ns]
-  (let [known (set (map :name (get registered-by-ns n)))]
-    (->> (ns-interns n)
-         (keep (fn [[s v]]
-                 (when-let [t (:test (meta v))]
-                   (when-not (contains? known s)
-                     {:name s :ns n :fn t}))))
-         (sort-by (fn [t] (str (:name t)))))))
-
 (defn run-registered [] (run-selected nil))
 
-;; A namespace's tests: its test-ns-hook when it defines one, which then decides
-;; what runs, like clojure.test's test-ns; otherwise its registered and interned
-;; tests inside its :once fixtures.
+;; A namespace's test-ns-hook, which test-ns calls instead of testing its vars.
 (defn- ns-hook [ns-sym]
   (when (find-ns ns-sym)
     (find-var (symbol (str ns-sym) "test-ns-hook"))))
 
-;; the-ns first, as clojure.test's test-ns does: a namespace that never loaded
-;; throws "No namespace: x found" rather than running as one with no tests, so a
-;; test file whose ns form doesn't match its path fails the run instead of being
-;; skipped in silence. Namespaces ahead of it in run-tests have run by then, and
-;; no summary is reported, which is what the JVM does too.
-(defn- run-ns [n reg-by-ns]
-  (the-ns n)
-  (do-report {:type :begin-test-ns :ns (find-ns n)})
-  (if-let [hook (ns-hook n)]
-    ((var-get hook))
-    (let [ts (concat (filter selected? (get reg-by-ns n))
-                     (interned-tests n reg-by-ns))]
-      (when (seq ts)
-        (wrap-fixtures (get @once-fixtures n [])
-          (fn [] (doseq [t ts] (run-one t)))))))
-  (do-report {:type :end-test-ns :ns (find-ns n)}))
+(declare test-ns)
 
 ;; (run-tests 'ns1 'ns2 …) runs only those namespaces' tests, like clojure.test,
 ;; and (run-tests) is (run-tests *ns*). run-registered runs everything registered.
-;; Counts go to a ref bound for this call, whose contents are the summary; the
-;; process-wide counters stay cumulative for the n-pass/n-fail harness API.
+;; The summary is the namespaces' counters summed, as the reference's
+;; (apply merge-with + (map test-ns namespaces)); the process-wide counters stay
+;; cumulative for the n-pass/n-fail harness API. test-ns throws "No namespace: x
+;; found" for one that never loaded, after the namespaces ahead of it have run
+;; and with no summary, as the JVM does.
 (defn run-tests
+  "Runs all tests in the given namespaces; prints results.
+  Defaults to current namespace if none given.  Returns a map
+  summarizing test results."
   ([] (run-tests *ns*))
   ([& nses]
-   (let [ns-syms (map (fn [n] (if (symbol? n) n (ns-name n))) nses)
-         rc (ref *initial-report-counters*)]
-     (binding [*report-counters* rc
-               *run-counters* rc]
-       (let [reg-by-ns (group-by :ns @registry)]
-         (doseq [n ns-syms] (run-ns n reg-by-ns))))
-     (let [d (assoc @rc :type :summary)]
-       (do-report d)
-       d))))
+   (let [summary (assoc (apply merge-with + (map test-ns nses))
+                        :type :summary)]
+     (do-report summary)
+     summary)))
 
+;; The reference's report methods, line for line.
 (defmethod report :summary [m]
   (with-test-out
-    (println)
-    (println (str "Ran " (:test m) " tests. "
-                  (:pass m) " assertions passed, "
-                  (:fail m) " failures, " (:error m) " errors."))))
+    (println "\nRan" (:test m) "tests containing"
+             (+ (:pass m) (:fail m) (:error m)) "assertions.")
+    (println (:fail m) "failures," (:error m) "errors.")))
+
+(defmethod report :begin-test-ns [m]
+  (with-test-out
+    (println "\nTesting" (ns-name (:ns m)))))
+
+;; Ignore these message types:
+(defmethod report :end-test-ns [_m])
+(defmethod report :begin-test-var [_m])
+(defmethod report :end-test-var [_m])
 
 ;; --- var-level API (clojure.test parity) -------------------------------------
 
@@ -735,14 +731,39 @@
                 (fn [] (test-var v))))))))))
 
 (defmacro run-test
-  "Run a single test var: (run-test my-test)."
-  [v]
-  `(clojure.test/test-var (var ~v)))
+  "Runs a single test.
+
+  Because the intent is to run a single test, there is no check for the namespace test-ns-hook."
+  [test-symbol]
+  (let [test-var (resolve test-symbol)]
+    (cond
+      (nil? test-var)
+      (binding [*out* *err*]
+        (println "Unable to resolve" test-symbol "to a test function."))
+
+      (not (-> test-var meta :test))
+      (binding [*out* *err*]
+        (println test-symbol "is not a test."))
+
+      :else
+      `(clojure.test/run-test-var (var ~(symbol (str (ns-name (:ns (meta test-var))))
+                                                (str (:name (meta test-var)))))))))
 
 (defn run-test-var
-  "Run a single test var, given the var itself."
+  "Runs the tests for a single Var, with fixtures executed around the test, and
+  summary output after."
   [v]
-  (test-vars [v]))
+  (let [rc (ref *initial-report-counters*)]
+    (binding [*report-counters* rc
+              *run-counters* rc]
+      (let [ns-obj (-> v meta :ns)
+            summary (do
+                      (do-report {:type :begin-test-ns :ns ns-obj})
+                      (test-vars [v])
+                      (do-report {:type :end-test-ns :ns ns-obj})
+                      (assoc @rc :type :summary))]
+        (do-report summary)
+        summary))))
 
 (defn get-possibly-unbound-var
   "Like var-get but returns nil if the var is unbound."

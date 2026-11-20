@@ -111,7 +111,7 @@
 (define (nr-macroexpand-1* form env)
   (if (and (hc-list? form) (not (jolt-nil? (jolt-seq form))) (symbol-t? (seq-first (jolt-seq form))))
       (let ((ctx (make-analyze-ctx (chez-current-ns))))
-        (if (hc-macro? ctx (seq-first (jolt-seq form))) (hc-expand-1 ctx form env) form))
+        (if (hc-macro? ctx (seq-first (jolt-seq form))) (hc-expand-1-raw ctx form env) form))
       form))
 (define (nr-macroexpand* form env)
   (let loop ((cur form))

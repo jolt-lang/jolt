@@ -198,6 +198,57 @@
       (when same? (str "(image-fn-form-src " (chez-str-lit s) ")")))
     (catch Exception _ nil)))
 
+(defn- fnsrc-reg-call [nm f ns frees lives cls]
+  (str "(image-register-fn-form! " (chez-str-lit nm) " " f " " (chez-str-lit ns) " "
+       (emit-quoted frees)
+       ;; the optional 5th argument, emitted only when the copy's captures differ
+       ;; from the source names -- so every un-spliced registration stays
+       ;; byte-identical; the 7th is the JVM class the literal compiles into (the
+       ;; analyzer's :class), which (class f) reports
+       (cond cls (str " " (if lives (emit-quoted lives) "#f") " #f " (chez-str-lit cls))
+             lives (str " " (emit-quoted lives))
+             :else "")
+       ")"))
+
+;; One registration row onto ACC ({:calls [...] :shared [...]}). A text row
+;; touches no pool; a constructed one is emitted with every EARLIER constructed
+;; row available to stop the walk at (see *quote-shared*). Runs inside the
+;; caller's *quote-pool* binding.
+(defn- fnsrc-add-row [acc row]
+  (let [nm (nth row 0) form (nth row 1) ns (nth row 2) frees (nth row 3)
+        lives (nth row 4)
+        lives (when (and lives (not= lives frees)) lives)
+        cls (nth row 5 nil)
+        src (fnsrc-row-src form)
+        q (if src
+            [nil (binding [*quote-pool* nil] (fnsrc-reg-call nm src ns frees lives cls))]
+            (try
+              (binding [*quote-shared* (:shared acc)]
+                (let [f (emit-quoted form)] [f (fnsrc-reg-call nm f ns frees lives cls)]))
+              (catch Exception _ nil)))]
+    (cond
+      ;; no form to register, but the class still names the fn
+      (and (nil? q) cls)
+      (update acc :calls conj (str "(image-register-fn-class! " (chez-str-lit nm) " "
+                                   (chez-str-lit cls) ")"))
+      (nil? q) acc
+      (nil? (nth q 0)) (update acc :calls conj (nth q 1))
+      :else (-> acc
+                (update :calls conj (nth q 1))
+                (update :shared conj [form (nth q 0)])))))
+
+;; The registration calls, wrapped in a let* binding the pooled constants.
+(defn- fnsrc-wrap [calls binds]
+  (cond
+    ;; every row threw: nothing to register, and a let* with no body is not a
+    ;; form at all
+    (empty? calls) ""
+    (empty? binds) (str " " (str/join " " calls))
+    :else
+    (str " (let* ("
+         (str/join " " (map (fn [b] (str "(" (nth b 0) " " (nth b 1) ")")) binds))
+         ") " (str/join " " calls) ")")))
+
 (defn fnsrc-flush []
   (if (or (fnsrc-system-ns? *fnsrc-ns*) (empty? @*fnsrc-regs*))
     ""
@@ -207,49 +258,10 @@
     ;; like any other unregistered fn -- rather than failing the whole
     ;; compilation of code that never dumps anything.
     (let [pool (atom {:by-expr {} :order []})
-          call (fn [nm f ns frees lives]
-                 (str "(image-register-fn-form! " (chez-str-lit nm) " " f " " (chez-str-lit ns) " "
-                      (emit-quoted frees)
-                      ;; the optional 5th argument, emitted only when the copy's
-                      ;; captures differ from the source names -- so every
-                      ;; un-spliced registration stays byte-identical.
-                      (if lives (str " " (emit-quoted lives)) "")
-                      ")"))
-          ;; the rows in order. A text row touches no pool; a constructed one is
-          ;; emitted with every EARLIER constructed row available to stop the walk
-          ;; at (see *quote-shared*). Innermost first, so a nested literal is
-          ;; already there by the time its parent is emitted. reduce and not map:
-          ;; each row's emission depends on the ones before it.
+          ;; the rows in order, innermost first, so a nested literal is already
+          ;; there by the time its parent is emitted. reduce and not map: each
+          ;; row's emission depends on the ones before it.
           out (binding [*quote-pool* pool]
-                (reduce
-                 (fn [acc row]
-                   (let [nm (nth row 0) form (nth row 1) ns (nth row 2) frees (nth row 3)
-                         lives (nth row 4)
-                         lives (when (and lives (not= lives frees)) lives)
-                         src (fnsrc-row-src form)
-                         q (if src
-                             [nil (binding [*quote-pool* nil] (call nm src ns frees lives))]
-                             (try
-                               (binding [*quote-shared* (:shared acc)]
-                                 (let [f (emit-quoted form)] [f (call nm f ns frees lives)]))
-                               (catch Exception _ nil)))]
-                     (cond
-                       (nil? q) acc
-                       (nil? (nth q 0)) (update acc :calls conj (nth q 1))
-                       :else (-> acc
-                                 (update :calls conj (nth q 1))
-                                 (update :shared conj [form (nth q 0)])))))
-                 {:calls [] :shared []}
-                 @*fnsrc-regs*))
-          calls (:calls out)
-          binds (:order @pool)]
-      (cond
-        ;; every row threw: nothing to register, and a let* with no body is not a
-        ;; form at all
-        (empty? calls) ""
-        (empty? binds) (str " " (str/join " " calls))
-        :else
-        (str " (let* ("
-             (str/join " " (map (fn [b] (str "(" (nth b 0) " " (nth b 1) ")")) binds))
-             ") " (str/join " " calls) ")")))))
+                (reduce fnsrc-add-row {:calls [] :shared []} @*fnsrc-regs*))]
+      (fnsrc-wrap (:calls out) (:order @pool)))))
 

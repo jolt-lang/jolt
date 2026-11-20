@@ -224,7 +224,12 @@
 ;;                      small vector's print (measured 1.24-1.40, 2026-10; then
 ;;                      1.53-1.60 once every #object carried its identity hash and
 ;;                      the vector print got ~12% faster, the File side itself
-;;                      within 1.1x of before).
+;;                      within 1.1x of before). Re-based 2026-11 at 2.4: the
+;;                      streaming printer took the vector side from ~10 ms to
+;;                      ~5.3 ms per 20k while the File side also got faster
+;;                      (~13 ms to ~8.5 ms, release binaries, A/B in one
+;;                      session), which left the ratio at 1.5-1.7 on macOS and
+;;                      1.94-2.05 on the Linux runner.
 ;;
 ;;   var-call           the per-operation costs a reader pays per character and
 ;;   multimethod-call   per node (#1713, rewrite-clj and tools.reader at ~10x
@@ -983,7 +988,7 @@
   (judge! "host-object-pr"
           #(dotimes [_ 20000] (pr-str [1 "a"]))
           #(dotimes [_ 20000] (pr-str (java.io.File. "/tmp")))
-          1.9)
+          2.4)
 
   (.delete (java.io.File. src-path))
   (.delete (java.io.File. data-path))

@@ -29,8 +29,10 @@
 (load "host/chez/loader.ss")
 
 (define set-trace-frames! (var-deref "jolt.backend-scheme" "set-trace-frames!"))
-;; babashka.cli requires its own internal namespace off the source roots
-(set-source-roots! (append (get-source-roots) '("vendor/cli/src")))
+;; babashka.cli requires its own internal namespace off the source roots, and
+;; clojure.test requires clojure.stacktrace, a stdlib sibling the files below
+;; are loaded beside by path rather than through a root
+(set-source-roots! (append (get-source-roots) '("stdlib" "vendor/cli/src")))
 
 (define corpus
   '("stdlib/clojure/pprint.clj"

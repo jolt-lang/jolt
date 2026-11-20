@@ -133,8 +133,10 @@
   (cond ((jbigdec? x) x)
         ((and (number? x) (exact? x) (integer? x)) (make-jbigdec x 0))
         ((and (number? x) (exact? x) (rational? x)) (jbd-rational->bigdec x))
-        (else (throw-jvm (if (string? x) (quote NumberFormatException) (quote IllegalArgumentException))
-               (string-append "bigdec arithmetic: cannot coerce operand " (jolt-final-str x))))))
+        ;; Numbers.toBigDecimal casts anything else to Number: nil is the
+        ;; NullPointerException, a string or other non-number the
+        ;; ClassCastException, as for any other arithmetic operand.
+        (else (jolt-num-cast-throw x))))
 
 ;; --- core arithmetic on the {unscaled, scale} pair --------------------------
 ;; align two bigdecs to a common scale, returning (unscaled-a unscaled-b scale).

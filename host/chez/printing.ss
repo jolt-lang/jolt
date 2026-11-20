@@ -43,6 +43,13 @@
 (define (register-pr-arm! pred render)
   (register-pr-str-arm! pred render)
   (register-pr-readable-arm! pred render))
+;; An arm can also say how to WRITE its value to a port (pr-to!, below): pred ->
+;; (lambda (port x) ...), used in place of the arm's string renderer when the arm
+;; walk lands on pred, so the contents of a lazy seq or an atom stream like any
+;; collection's instead of being built into a string first.
+(define pr-stream-arms '())
+(define (register-pr-stream-arm! pred write!)
+  (set! pr-stream-arms (cons (cons pred write!) pr-stream-arms)))
 
 ;; An IDeref value prints as the JVM's print-tagged-object over deref-as-map:
 ;; #object[cls 0xHASH {:status :ready, :val v}], the value printed the way the
@@ -99,11 +106,12 @@
     (display-to port (car sv))
     (display-to port ", :val ")
     (let* ((v (cdr sv))
-           (user (and readable? pr-user-method-render (pr-user-method-render v)))
+           (user (and readable? pr-user-method-write (pr-user-method-write v port)))
            (inner (and (not user) (deref-print-state v))))
-      (cond (user (display-to port user))
+      (cond (user)
             (inner (deref-print-to! port v inner readable?))
-            (else (display-to port (if readable? (jolt-pr-readable v) (jolt-pr-str v))))))
+            (readable? (pr-to! port v))
+            (else (display-to port (jolt-pr-str v)))))
     (display-to port "}]")))
 (define (register-deref-print! pred state)
   (define (form readable?)
@@ -114,6 +122,7 @@
   (set! deref-print-arms (cons (cons pred state) deref-print-arms))
   (register-pr-str-arm! pred (form #f))
   (register-pr-readable-arm! pred (form #t))
+  (register-pr-stream-arm! pred (lambda (port x) (deref-print-to! port x state #t)))
   ;; str is toString, which an IDeref does not override: Class@hash, the value
   ;; never visited
   (register-str-render! pred
@@ -233,10 +242,186 @@
   (or (and pr-user-method-render (pr-user-method-render x))
       (if (pr-fast-type? x)
           (jolt-pr-readable-base x)
-          (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
-            (cond ((null? as) (jolt-pr-readable-base x))
-                  (((caar as) x) ((cdar as) x))
-                  (else (loop (cdr as))))))))
+          (pr-own-string x))))
+;; pr-own-to!'s text as a string. A value whose arm renders a string -- a host
+;; object's #object form, a File, a UUID -- hands that string back as it is; only
+;; a collection, or an arm that streams, is written through a port. Opening a port
+;; and copying out of it cost a host object about 0.1 us, a quarter of its print.
+(define (pr-own-string x)
+  (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
+    (cond ((null? as)
+           (cond ((or (pvec? x) (pmap? x) (pset? x) (cseq? x)) (pr-to-string pr-base-to! x))
+                 ;; what jolt-pr-readable-base's own cond ends in for a host
+                 ;; object or a record, without walking it
+                 ((or (number? x) (string? x) (jolt-transient? x) (empty-list-t? x))
+                  (jolt-pr-readable-base x))
+                 (else (jolt-pr-str/readable x #t))))
+          (((caar as) x)
+           (let ((s (assq (caar as) pr-stream-arms)))
+             (if s (pr-to-string (cdr s) x) ((cdar as) x))))
+          (else (loop (cdr as))))))
+(define (pr-to-string write! x)
+  (let ((p (open-output-string)))
+    (write! p x)
+    (get-output-string p)))
+
+;; --- the streaming readable printer --------------------------------------------
+;; pr writes as it walks, the way core_print.clj does: print-method writes each
+;; piece to the Writer it is handed, and pr-str is pr over a StringWriter. So a
+;; value printed to a file or a socket never exists whole as a string -- what is
+;; held is the path from the root to the value being written -- and pr-str is one
+;; string port filled once instead of every level's text copied into its parent's.
+;;
+;; pr-to! is jolt-pr-readable written to the textual port p, piece for piece the
+;; same text: *print-meta*, a user print-method (handed the Writer behind p, mid
+;; stream, as on the JVM), then jolt's own rendering. The collections stream here;
+;; a value a host arm renders is written as the arm's string, except the arms
+;; that register a streaming form (a lazy seq, an atom), whose contents stream.
+;;
+;; pr-user-method-write is the java layer's hook (io-streams.ss): it prints x to p
+;; through x's user print-method and answers #t, or answers #f when x has none.
+(define pr-user-method-write #f)
+(define (set-pr-user-method-write! f) (set! pr-user-method-write f))
+
+(define (pr-to! p x)
+  (if (pr-print-meta?)
+      (let ((m (pr-user-meta x)))
+        (if (jolt-nil? m)
+            (pr-dispatch-to! p x)
+            (begin (put-string p "^") (pr-dispatch-to! p m) (put-string p " ")
+                   (pr-dispatch-to! p x))))
+      (pr-dispatch-to! p x)))
+(define (pr-dispatch-to! p x)
+  (unless (and pr-user-method-write (pr-user-method-write x p))
+    (pr-own-to! p x)))
+;; jolt's own rendering of x to p, the user method for x itself not consulted
+;; (the values inside x still go through pr-to! and so still reach theirs)
+(define (pr-own-to! p x)
+  (if (pr-fast-type? x)
+      (pr-scalar-to! p x)
+      (let loop ((as (print-arms-for 1 jolt-pr-readable-arms x)))
+        (cond ((null? as) (pr-base-to! p x))
+              (((caar as) x)
+               (let ((s (assq (caar as) pr-stream-arms)))
+                 (if s ((cdr s) p x) (put-string p ((cdar as) x)))))
+              (else (loop (cdr as)))))))
+(define (pr-scalar-to! p x)
+  (if (string? x)
+      (if (jolt-pr-readable?)
+          (begin (put-string p "\"") (put-string p (jolt-str-escape x)) (put-string p "\""))
+          (put-string p x))
+      (put-string p (jolt-pr-readable-base x))))
+;; *print-length*: the element count written so far is past the limit
+(define-syntax pr-past-limit?
+  (syntax-rules () ((_ lim i) (and lim (fx>=? i lim)))))
+(define (pr-base-to! p x)
+  (cond
+    ((pvec? x)
+     (if (jolt-print-hash?)
+         (put-string p "#")
+         (with-deeper-print
+           (put-string p "[")
+           (let ((len (pvec-count x)) (lim (jolt-print-length)))
+             (let loop ((i 0))
+               (cond ((fx>=? i len))
+                     ((pr-past-limit? lim i) (put-string p (if (fx=? i 0) "..." " ...")))
+                     (else (unless (fx=? i 0) (put-string p " "))
+                           (pr-to! p (pvec-nth-d x i jolt-nil))
+                           (loop (fx+ i 1))))))
+           (put-string p "]"))))
+    ((pset? x)
+     (if (jolt-print-hash?)
+         (put-string p "#")
+         (with-deeper-print
+           (put-string p "#{")
+           (let ((lim (jolt-print-length)) (i 0))
+             (pr-pmap-for-each (pset-m x)
+               (lambda (k v)
+                 (cond ((not i))
+                       ((pr-past-limit? lim i)
+                        (put-string p (if (fx=? i 0) "..." " ..."))
+                        (set! i #f))
+                       (else (unless (fx=? i 0) (put-string p " "))
+                             (pr-to! p k)
+                             (set! i (fx+ i 1)))))))
+           (put-string p "}"))))
+    ((pmap? x)
+     (if (jolt-print-hash?)
+         (put-string p "#")
+         (with-deeper-print
+           (let ((ns (pr-ns-maps-shared-ns-of x))
+                 (lim (jolt-print-length))
+                 (i 0))
+             (if ns
+                 (begin (put-string p "#:") (put-string p ns) (put-string p "{"))
+                 (put-string p "{"))
+             (pr-pmap-for-each x
+               (lambda (k v)
+                 (cond ((not i))
+                       ((pr-past-limit? lim i)
+                        (put-string p (if (fx=? i 0) "..." ", ..."))
+                        (set! i #f))
+                       (else (unless (fx=? i 0) (put-string p ", "))
+                             (pr-to! p (if ns (pr-strip-ns k) k))
+                             (put-string p " ")
+                             (pr-to! p v)
+                             (set! i (fx+ i 1))))))
+             (put-string p "}")))))
+    ((empty-list-t? x) (put-string p (if (jolt-print-hash?) "#" "()")))
+    ((cseq? x)
+     (if (jolt-print-hash?)
+         (put-string p "#")
+         (with-deeper-print
+           (put-string p "(")
+           (let ((lim (jolt-print-length)))
+             (let loop ((s x) (i 0))
+               (cond ((jolt-nil? s))
+                     ((pr-past-limit? lim i) (put-string p (if (fx=? i 0) "..." " ...")))
+                     (else (unless (fx=? i 0) (put-string p " "))
+                           (pr-to! p (seq-first s))
+                           (loop (jolt-seq (seq-more s)) (fx+ i 1))))))
+           (put-string p ")"))))
+    (else (put-string p (jolt-pr-readable-base x)))))
+;; A map's entries in iteration order -- the order pmap-fold's cons-accumulation
+;; reconstructs (collections.ss): an array map front to back, a hash map's trie
+;; ascending with a collision bucket's list reversed.
+(define (pr-pmap-for-each m proc)
+  (let ((root (pmap-root m)))
+    (if (hnode? root)
+        (pr-node-for-each root proc)
+        (let ((n (vector-length root)))
+          (let loop ((i 0))
+            (when (fx<? i n)
+              (proc (vector-ref root i) (vector-ref root (fx+ i 1)))
+              (loop (fx+ i 2))))))))
+(define (pr-node-for-each node proc)
+  (let* ((arr (hnode-arr node)) (n (vector-length arr)))
+    (let loop ((i 0))
+      (when (fx<? i n)
+        (let ((child (vector-ref arr i)))
+          (cond ((hnode? child) (pr-node-for-each child proc))
+                ((hcoll? child)
+                 (for-each (lambda (e) (proc (car e) (cdr e))) (reverse (hcoll-alist child))))
+                (else (proc (car child) (cdr child)))))
+        (loop (fx+ i 1))))))
+;; pr-ns-maps-shared-ns over the map itself, without collecting its entries
+(define (pr-ns-maps-shared-ns-of m)
+  (and (fx>? (pmap-cnt m) 0)
+       (begin
+         (unless ns-maps-cell
+           (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
+         (jolt-truthy? (jolt-var-get ns-maps-cell)))
+       (let ((ns (pmap-fold m
+                   (lambda (k v a)
+                     (and a
+                          (let ((n (cond ((keyword? k) (keyword-t-ns k))
+                                         ((symbol-t? k) (symbol-t-ns k))
+                                         (else #f))))
+                            (and (string? n) (not (string=? n ""))
+                                 (or (eq? a #t) (string=? a n))
+                                 n))))
+                   #t)))
+         (and (string? ns) ns))))
 
 ;; *print-meta* support. The var is def'd after this file loads, so capture its
 ;; cell lazily; jolt-var-get (patched by dyn-binding.ss) honors a `binding`.
@@ -250,12 +435,27 @@
   (if (or (var-cell? x) (procedure? x)) jolt-nil (jolt-meta x)))
 
 (define (jolt-pr-readable x)
+  (cond ((pr-print-meta?)
+         (let ((m (pr-user-meta x)))
+           (if (jolt-nil? m)
+               (jolt-pr-readable-dispatch x)
+               (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x)))))
+        ;; a collection is written into one port rather than built level by
+        ;; level; a scalar's or a host object's text is one string already
+        (else (jolt-pr-readable-dispatch x))))
+
+;; What the JVM's built-in print-method for x's type writes: its metadata under
+;; *print-meta*, then x rendered by jolt's own printer. The built-in methods
+;; (methods print-method) hands out write through this, so a user method that
+;; borrows one for its own type -- (defmethod print-method IPersistentMap ...)
+;; calling the saved original -- does not come back to itself.
+(define (pr-builtin-to! p x)
   (if (pr-print-meta?)
       (let ((m (pr-user-meta x)))
-        (if (jolt-nil? m)
-            (jolt-pr-readable-dispatch x)
-            (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x))))
-      (jolt-pr-readable-dispatch x)))
+        (unless (jolt-nil? m)
+          (put-string p "^") (pr-dispatch-to! p m) (put-string p " "))
+        (pr-own-to! p x))
+      (pr-own-to! p x)))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
 (define (jolt-pr-str1 x) (jolt-pr-readable x))
@@ -485,6 +685,14 @@
   (flush-output-port (current-error-port))
   jolt-nil)
 
+;; pr / print / print-method's write of ONE value: to *out* (pr, print) or to
+;; a Writer (print-method's :default). This is the portable form, the value
+;; rendered and written as one string; the java layer replaces all three with
+;; ones that print straight into the Writer (io-streams.ss).
+(def-var! "clojure.core" "__pr-out" (lambda (x) (jolt-write (jolt-pr-str1 x))))
+(def-var! "clojure.core" "__print-out" (lambda (x) (jolt-write (jolt-print-one x))))
+(def-var! "clojure.core" "__pr-to"
+  (lambda (x w) (record-method-dispatch w "write" (jolt-list (jolt-pr-str1 x))) jolt-nil))
 (def-var! "clojure.core" "__pr-str1" jolt-pr-str1)
 (def-var! "clojure.core" "__write" jolt-write)
 (def-var! "clojure.core" "__append" jolt-append)

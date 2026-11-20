@@ -261,6 +261,32 @@
 ;; The test is per-arm rather than a leading clause: a non-IObj value also has
 ;; nil metadata, so a leading (eq? (jolt-meta x) m) would return 5 from
 ;; (with-meta 5 nil) instead of throwing.
+(define jolt-with-pos-kw-line (keyword #f "line"))
+(define jolt-with-pos-kw-column (keyword #f "column"))
+;; (jolt-list-pos line column item ...) / (jolt-vector-pos line column item ...):
+;; the list or vector of the items, with the reader-position metadata a quoted
+;; one carries (literals.clj quoted-ctor-text). Run once, when the constant is
+;; built.
+;; Built with the metadata in place: one map and the list's own cells, no copy.
+;; A def's constants are built when the def loads, and an `is` quotes a nested
+;; form, so this runs once per quoted list per load.
+(define (jolt-pos-meta l c)
+  (make-pmap (vector jolt-with-pos-kw-line l jolt-with-pos-kw-column c) 2))
+(define (jolt-list-pos l c . xs)
+  (if (null? xs)
+      (coll-with-meta jolt-empty-list (jolt-pos-meta l c))
+      (let ((tail (list->cseq/k (cdr xs) sk-list)) (m (jolt-pos-meta l c)))
+        (cond ((jolt-nil? tail) (make-cseqn (car xs) tail sk-list m 1))
+              ((cseqn? tail) (make-cseqn (car xs) tail sk-list m (fx+ (cseqn-cnt tail) 1)))
+              (else (make-cseq (car xs) tail sk-list m))))))
+(define (jolt-vector-pos l c . xs)
+  (coll-with-meta (apply jolt-vector xs) (jolt-pos-meta l c)))
+;; (jolt-with-pos coll line column): COLL with the reader-position metadata
+;; {:line line :column column}, as a quoted list carries it (the back end's
+;; literals.clj emits this for a quoted collection whose metadata is exactly
+;; that, in place of a map literal per list).
+(define (jolt-with-pos x l c)
+  (jolt-with-meta x (jolt-hash-map jolt-with-pos-kw-line l jolt-with-pos-kw-column c)))
 (define (jolt-with-meta x m)
   (cond
     ;; a deftype with an explicit clojure.lang.IObj withMeta carries meta in a
@@ -385,6 +411,7 @@
 (define ty-transient (keyword "jolt" "transient"))
 (define ty-uuid (keyword "jolt" "uuid"))
 (define ty-sorted-set (keyword "jolt" "sorted-set"))
+(define ty-sorted-map (keyword "jolt" "sorted-map"))
 (define ty-object (keyword #f "object"))
 
 ;; Arm registry for host-type extensions (jinst, jolt-array, jfile, etc.)
@@ -422,7 +449,7 @@
       ((jolt-transient? x) ty-transient)
       ((juuid? x) ty-uuid)
       ((htable-sorted-set? x) ty-sorted-set)
-      ((htable-sorted-map? x) ty-map)
+      ((htable-sorted-map? x) ty-sorted-map)
       ;; collections — pvec INCLUDES map entries (:vector).
       ((pvec? x) ty-vector)
       ((pmap? x)                                        ; a :jolt/type-tagged map (ex-info) -> its tag

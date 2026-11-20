@@ -63,7 +63,7 @@
        (print "[empty stack trace]"))
      (newline)
      (doseq [e (if (nil? n) (rest st) (take (dec n) (rest st)))]
-       (print " ")
+       (print "    ")
        (print-trace-element e)
        (newline)))))
 

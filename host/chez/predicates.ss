@@ -106,36 +106,36 @@
          (= (exact->inexact a) (exact->inexact b))
          (= a b)))
     (else (throw-jvm (quote ClassCastException) "== requires numbers"))))
+(define (jolt-num-equiv-numeric? x) (or (number? x) (jolt-num-slow? x)))
+;; One pair, in the reference's order (Numbers.equiv(Object, Object) casts x and
+;; then y to Number, then dispatches on their categories): a non-number on
+;; either side is the ClassCastException, left first, and only then is a nil the
+;; NullPointerException -- (== :a nil) is the cast error, (== 1 nil) the NPE.
+(define (jolt-num-equiv-pair a b)
+  (unless (or (jolt-num-equiv-numeric? a) (jolt-nil? a)) (jolt-num-cast-throw a))
+  (unless (or (jolt-num-equiv-numeric? b) (jolt-nil? b)) (jolt-num-cast-throw b))
+  (when (jolt-nil? a) (jolt-num-cast-throw a))
+  (when (jolt-nil? b) (jolt-num-cast-throw b))
+  (cond
+    ((or (jolt-num-slow? a) (jolt-num-slow? b))
+     ;; a shim-number operand (BigDecimal): by value through its slow arm
+     (jolt-num-equiv-slow a b))
+    ;; JVM == on a long and a double compares as doubles (the category ops
+    ;; promote), so it agrees with the fl=? the numeric pass emits in call
+    ;; position: (== 9007199254740993 9e15-ish) is true because the long rounds
+    ;; to the same double. Chez = would promote the double to exact instead.
+    ((or (inexact? a) (inexact? b)) (= (exact->inexact a) (exact->inexact b)))
+    (else (= a b))))
 (define (jolt-num-equiv x0 . more)
   ;; 1-arity short-circuits to true for ANY value (Clojure's == 1-arg returns true
-  ;; before the number check); 2+ args must all be numbers. (==) is an arity
-  ;; error, as on the JVM: x0 is required.
-  (define xs (cons x0 more))
-  (define (numeric? x) (or (number? x) (jolt-num-slow? x)))
-  (if (null? more)
-      #t
-      (let all-num? ((ys xs))
-        (cond
-          ((null? ys)
-           (if (exists jolt-num-slow? xs)
-               ;; a shim-number operand (BigDecimal): compare consecutive pairs
-               ;; by value through the shim's num-equiv-slow arm
-               (let loop ((a (car xs)) (zs (cdr xs)))
-                 (cond ((null? zs) #t)
-                       ((jolt-num-equiv-slow a (car zs)) (loop (car zs) (cdr zs)))
-                       (else #f)))
-               ;; JVM == on a mixed long/double set compares as doubles (the
-               ;; category ops promote), so it agrees with the fl=? the numeric
-               ;; pass emits in call position: (== 9007199254740993 9e15-ish)
-               ;; is true because the long rounds to the same double. Chez `=`
-               ;; would instead promote the double to exact and answer false, so
-               ;; the fn path (apply/HOF) disagreed with the call path. Match the
-               ;; call path: if any operand is inexact, compare all as doubles.
-               (if (exists (lambda (x) (and (number? x) (inexact? x))) xs)
-                   (apply = (map (lambda (x) (exact->inexact x)) xs))
-                   (or (null? xs) (apply = xs)))))
-          ((numeric? (car ys)) (all-num? (cdr ys)))
-          (else (throw-jvm (quote ClassCastException) "== requires numbers"))))))
+  ;; before the number check). More than one: pairwise, left to right, stopping
+  ;; at the first unequal pair as the reference's variadic arity does, so
+  ;; (== 1 2 :a) is false and never looks at :a. (==) is an arity error, as on
+  ;; the JVM: x0 is required.
+  (let loop ((a x0) (ys more))
+    (cond ((null? ys) #t)
+          ((jolt-num-equiv-pair a (car ys)) (loop (car ys) (cdr ys)))
+          (else #f))))
 ;; Two-arg == when operand types aren't proven: fixnum and flonum pairs answer
 ;; directly, everything else goes to jolt-num-equiv above.
 (define (jolt-num-equiv2 a b)

@@ -2127,9 +2127,11 @@
 ;; JVM, to class and instance? alike, where a constructed StringReader is not.
 (define (string-reader-buffered? x)
   (let ((st (jhost-state x))) (and (fx>? (vector-length st) 3) (vector-ref st 3))))
-(register-class-arm! (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "string-reader")
-                                      (string-reader-buffered? x)))
-                     (lambda (x) "java.io.BufferedReader"))
+(define (buffered-string-reader? x)
+  (and (jhost? x) (string=? (jhost-tag x) "string-reader") (string-reader-buffered? x)))
+;; live: whether it claims a string-reader depends on the reader, not its tag
+(class-arm-live! buffered-string-reader?)
+(register-class-arm! buffered-string-reader? (lambda (x) "java.io.BufferedReader"))
 ;; Reader.read(char[]) and Reader.read(char[], int, int) are BOTH overloads on
 ;; java.io.Reader, and the one-argument form means "fill the whole array". Only
 ;; the three-argument form was destructured here, so `(.read r cbuf)` — the
@@ -3794,6 +3796,18 @@
     (let loop ((i f) (xs (list-sort less? items)))
       (if (null? xs) jolt-nil
           (begin (ja-set! a i (car xs)) (loop (fx+ i 1) (cdr xs)))))))
+;; Arrays.fill(a, [from, to,] v): the value narrowed to the element kind, and a
+;; typed reference array checks it against its component class once — the JVM
+;; stores it slot by slot, so a refused value leaves every slot as it was, and an
+;; empty range stores nothing and refuses nothing.
+(define (arrays-fill! a f t v)
+  (let* ((kind (jolt-array-kind a)) (v (na-elem-of kind v)))
+    (when (and (string? kind) (< f t)) (na-ref-store-check! a f kind v))
+    (do ((i f (fx+ i 1))) ((fx>=? i t) jolt-nil) (ja-set! a i v))))
+;; Arrays.rangeCheck's out-of-range index.
+(define (arrays-range-throw i)
+  (throw-jvm 'ArrayIndexOutOfBoundsException
+             (string-append "Array index out of range: " (number->string i))))
 (define arrays-sort
   (case-lambda
     ((a) (arrays-sort! a 0 #f jolt-compare))
@@ -3806,9 +3820,17 @@
                           (cond ((and (jolt-nil? a) (jolt-nil? b)) #t)
                                 ((or (jolt-nil? a) (jolt-nil? b)) #f)
                                 (else (ja-equal? a b)))))
-         (cons "fill" (lambda (a v)
-                        (let ((n (ja-len a)) (v (na-elem-of (jolt-array-kind a) v)))
-                          (do ((i 0 (fx+ i 1))) ((fx=? i n) jolt-nil) (ja-set! a i v)))))
+         (cons "fill" (case-lambda
+                        ((a v) (arrays-fill! a 0 (ja-len a) v))
+                        ((a from to v)
+                         (let ((f (jnum->exact from)) (t (jnum->exact to)))
+                           (cond ((> f t)
+                                  (throw-jvm 'IllegalArgumentException
+                                             (string-append "fromIndex(" (number->string f)
+                                                            ") > toIndex(" (number->string t) ")")))
+                                 ((< f 0) (arrays-range-throw f))
+                                 ((> t (ja-len a)) (arrays-range-throw t)))
+                           (arrays-fill! a f t v)))))
          ;; The tail past the source is the element kind's ZERO — nil in a
          ;; reference array, #\nul in a char[], false in a boolean[] — not the 0
          ;; every kind used to get regardless.
@@ -4409,6 +4431,8 @@
 (define (reader-conditional-value? x)
   (jolt-reader-conditional-record? x))
 (register-class-arm! reader-conditional-value? (lambda (x) "clojure.lang.ReaderConditional"))
+;; so does a tagged literal
+(register-class-arm! jtagged? (lambda (x) "clojure.lang.TaggedLiteral"))
 ;; a multimethod reports its JVM class.
 (register-class-arm! (lambda (x) (jolt-multifn? x)) (lambda (x) "clojure.lang.MultiFn"))
 ;; …and answers its public constructor, MultiFn(String, IFn, Object,

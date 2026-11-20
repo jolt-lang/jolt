@@ -30,8 +30,13 @@
 (def dry? (some #{"--dry"} *command-line-args*))
 
 ;; --- isolated JVM evaluation (same model as certify.clj) ---------------------
+;; Read off a LineNumberingPushbackReader, as certify.clj and a REPL do, so a
+;; case's list forms carry the :line/:column a file or REPL gives them.
 (defn read-program [src]
-  (read-string {:read-cond :allow} (str "(do " src ")")))
+  (let [r (clojure.lang.LineNumberingPushbackReader. (java.io.StringReader. src))]
+    (loop [fs []]
+      (let [f (read {:read-cond :allow :eof ::eof} r)]
+        (if (= f ::eof) (cons 'do fs) (recur (conj fs f)))))))
 
 (defn eval-isolated [src]
   (let [sink (java.io.StringWriter.)

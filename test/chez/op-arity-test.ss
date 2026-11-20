@@ -74,22 +74,31 @@
 (define (sep-join sep xs)
   (if (null? xs) "" (fold-left (lambda (a x) (string-append a sep x)) (car xs) (cdr xs))))
 
+;; How a case names its op. A private native (__unchecked-add-int, the
+;; *unchecked-math* twin the analyzer rewrites to) has no public var, so a bare
+;; reference from this namespace is refused; it is written qualified, as the
+;; rewrite and a syntax-quoted expansion reach it.
+(define (op-ref op)
+  (if (and (> (string-length op) 2) (string=? (substring op 0 2) "__"))
+      (string-append "clojure.core/" op)
+      op))
+
 ;; The specialized form. :lng/:dbl are seeded by a param hint; :bigdec is seeded by
 ;; the LITERAL (there is no ^bigdec hint), so its operands sit in the body — which
 ;; is also why it takes no arguments.
 (define (specialized-src op kind n)
   (let ((vs (first-n (kind-vals kind) n)))
     (if (string=? kind "bd")
-        (string-append "((fn* ([] (" op " " (sep-join " " vs) "))))")
+        (string-append "((fn* ([] (" (op-ref op) " " (sep-join " " vs) "))))")
         (let* ((hint (if (string=? kind "lng") "^long " "^double "))
                (ps   (map (lambda (i) (string-append "p" (number->string i))) (iota n)))
                (params (sep-join " " (map (lambda (p) (string-append hint p)) ps))))
-          (string-append "((fn* ([" params "] (" op " " (sep-join " " ps) "))) " (sep-join " " vs) ")")))))
+          (string-append "((fn* ([" params "] (" (op-ref op) " " (sep-join " " ps) "))) " (sep-join " " vs) ")")))))
 
 ;; The reference: the same operands through apply, which reaches the variadic
 ;; value-position proc instead of any inline specialization.
 (define (generic-src op kind n)
-  (string-append "(apply " op " [" (sep-join " " (first-n (kind-vals kind) n)) "])"))
+  (string-append "(apply " (op-ref op) " [" (sep-join " " (first-n (kind-vals kind) n)) "])"))
 
 ;; --- the matrix, straight out of the registry -----------------------------
 (define cases
