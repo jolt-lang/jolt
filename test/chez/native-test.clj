@@ -53,7 +53,9 @@
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
         cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror"
-             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c]
+             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c
+             ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
+             "-lm"]
         p (.start (ProcessBuilder. ^java.util.List cmd))
         err (slurp (.getErrorStream p))]
     (when-not (zero? (.waitFor p))
