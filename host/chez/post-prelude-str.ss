@@ -41,6 +41,14 @@
 (define (pmap-builder-key? k)
   (or (keyword-t? k) (pmap-builder-short-string? k) (fixnum? k) (char? k) (jolt-nil? k)))
 
+(define (jolt-reduce-kv-builder-source? source)
+  (and (pmap? source)
+       ;; For one or two writes the ordinary array copies cost less than setup.
+       (fx<=? 3 (pmap-cnt source) pmap-builder-max-entries)
+       ;; A custom engine handler can observe or change an in-flight fold.
+       (let ((handler (timer-interrupt-handler)))
+         (or (eq? handler pmap-builder-stock-timer) (eq? handler jolt-tick-fire)))))
+
 ;; The source is a built-in immutable map. Finding the first unhandled
 ;; entry again only reads its slots and trie nodes. Keep the skip counter
 ;; in the continuation too: this walk may be interrupted or re-entered.
@@ -56,39 +64,28 @@
       (if (jolt-reduced? r) (jolt-reduced-val r) r))))
 
 (define (reduce-kv-build f seed source attempt retry)
-  (cond
-    ((not (pmap? source)) (jolt-reduce-kv f seed source))
-    ((fx=? 0 (pmap-cnt source)) seed)
-    ;; For one or two writes the ordinary array copies cost less than setup.
-    ((or (fx<=? (pmap-cnt source) 2)
-         (fx>? (pmap-cnt source) pmap-builder-max-entries)
-         ;; A custom engine handler can observe or change an in-flight fold.
-         (let ((handler (timer-interrupt-handler)))
-           (not (or (eq? handler pmap-builder-stock-timer) (eq? handler jolt-tick-fire)))))
-     (jolt-reduce-kv f seed source))
-    (else
-     ;; The live builder never crosses a host delivery point or a call into
-     ;; user code. On refusal publish the persistent prefix before performing
-     ;; the first ordinary step. A continuation from that step cannot get
-     ;; back to the builder, even if it resumes before the fold returns.
-     (let-values (((prefix count missed)
-                   (dynamic-wind
-                     disable-interrupts
-                     (lambda ()
-                       (let ((t (pmap-builder-new (pmap-cnt source))) (count 0) (missed #f))
-                         (let ((r (walk-pmap-kv source
-                                    (lambda (_ k v)
-                                      (let ((decision (attempt t k v)))
-                                        (if (eq? decision #t)
-                                            (begin (set! count (fx+ count 1)) #t)
-                                            (begin (set! missed decision) pmap-builder-stop))))
-                                    #t)))
-                           (values (if (fx=? count 0) seed (jolt-persistent! t))
-                                   (and (eq? r pmap-builder-stop) count) missed))))
-                     enable-interrupts)))
-       (cond ((not count) prefix)
-             ((and (fx=? count 0) (not missed)) (jolt-reduce-kv f seed source))
-             (else (reduce-kv-builder-resume f source prefix count missed retry)))))))
+  ;; The live builder never crosses a host delivery point or a call into
+  ;; user code. On refusal publish the persistent prefix before performing
+  ;; the first ordinary step. A continuation from that step cannot get
+  ;; back to the builder, even if it resumes before the fold returns.
+  (let-values (((prefix count missed)
+                (dynamic-wind
+                  disable-interrupts
+                  (lambda ()
+                    (let ((t (pmap-builder-new (pmap-cnt source))) (count 0) (missed #f))
+                      (let ((r (walk-pmap-kv source
+                                 (lambda (_ k v)
+                                   (let ((decision (attempt t k v)))
+                                     (if (eq? decision #t)
+                                         (begin (set! count (fx+ count 1)) #t)
+                                         (begin (set! missed decision) pmap-builder-stop))))
+                                 #t)))
+                        (values (if (fx=? count 0) seed (jolt-persistent! t))
+                                (and (eq? r pmap-builder-stop) count) missed))))
+                  enable-interrupts)))
+    (cond ((not count) prefix)
+          ((and (fx=? count 0) (not missed)) (jolt-reduce-kv f seed source))
+          (else (reduce-kv-builder-resume f source prefix count missed retry)))))
 
 (define (pmap-builder-write! t k v)
   (pmap-builder-put! t k v)
