@@ -4404,11 +4404,9 @@
       (let* ((names (seq->list (jolt-nth shape 0)))
              (slots (make-hashtable string-hash string=?))
              (protos (reify-proto-names (seq->list (jolt-nth shape 1))))
-             (layout (vector
-                       slots
-                       protos
+             (layout (vector slots protos
                        (and (fx>? (jolt-count shape) 2) (jolt-nth shape 2))
-                       #f)))
+                       #f names)))
         (let loop ((ns names) (i 0))
           (unless (null? ns)
             (hashtable-set! slots (car ns) i)
@@ -4424,7 +4422,7 @@
 (def-var!
   "jolt.host"
   "reify-site-shape"
-  (lambda (shape) (reify-shape-layout shape) shape))
+  (lambda (shape) (reify-shape-layout shape)))
 
 (define reify-site-protos (make-weak-eq-hashtable))
 
@@ -4484,7 +4482,9 @@
 (define reify-class-graph-hook (lambda (name ifaces) #f))
 
 (define (make-reified-at shape . fns)
-  (let ((layout (reify-shape-layout shape)))
+  (let ((layout (if (vector? shape)
+                    shape
+                    (reify-shape-layout shape))))
     (unless (vector-ref layout 3)
       (vector-set! layout 3 #t)
       (for-each
@@ -4492,7 +4492,7 @@
           (for-each
             (lambda (p) (protocol-impl-hook p m fn))
             (vector-ref layout 1)))
-        (seq->list (jolt-nth shape 0))
+        (vector-ref layout 4)
         fns))
     (make-jreify
       (cons (vector-ref layout 0) (list->vector fns))

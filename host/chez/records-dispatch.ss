@@ -1505,8 +1505,8 @@
       (let* ((names (seq->list (jolt-nth shape 0)))
              (slots (make-hashtable string-hash string=?))
              (protos (reify-proto-names (seq->list (jolt-nth shape 1))))
-             ;; #(slots protos class-name impls-noted?)
-             (layout (vector slots protos (and (fx>? (jolt-count shape) 2) (jolt-nth shape 2)) #f)))
+             ;; #(slots protos class-name impls-noted? method-names)
+             (layout (vector slots protos (and (fx>? (jolt-count shape) 2) (jolt-nth shape 2)) #f names)))
         (let loop ((ns names) (i 0))
           (unless (null? ns)
             (hashtable-set! slots (car ns) i)
@@ -1524,7 +1524,9 @@
 ;; class against the protocol interfaces of the moment, so a protocol redefined
 ;; after it is one the site does not implement, whenever its first instance is
 ;; built (forget-reify-protocol! finds the layout).
-(def-var! "jolt.host" "reify-site-shape" (lambda (shape) (reify-shape-layout shape) shape))
+;; It answers the LAYOUT, which the site then hands make-reified-at in place of
+;; the shape, so building an instance skips the shape memo's lookup.
+(def-var! "jolt.host" "reify-site-shape" (lambda (shape) (reify-shape-layout shape)))
 ;; Every reify site's slot table -> its protocols, held as long as an instance
 ;; the site built is (each holds the table), whether or not the site's shape
 ;; literal still is: what a protocol redefinition walks
@@ -1575,8 +1577,10 @@
 ;; Placing a reify form's class in the class graph is the host's (the Chez half
 ;; installs it with the graph, proxy.ss); a host without one keeps just the name.
 (define reify-class-graph-hook (lambda (name ifaces) #f))
+;; SHAPE is the site's layout itself when the site laid it out as it loaded
+;; (reify-site-shape), else the shape literal of code compiled before that.
 (define (make-reified-at shape . fns)
-  (let ((layout (reify-shape-layout shape)))
+  (let ((layout (if (vector? shape) shape (reify-shape-layout shape))))
     ;; every instance from a site runs the same method code, so the first one
     ;; tells protocol-impl-hook (protocols.ss) and the rest pay one slot read.
     ;; Unlocked: two threads racing here tell it the same names twice.
@@ -1584,7 +1588,7 @@
       (vector-set! layout 3 #t)
       (for-each (lambda (m fn)
                   (for-each (lambda (p) (protocol-impl-hook p m fn)) (vector-ref layout 1)))
-                (seq->list (jolt-nth shape 0)) fns))
+                (vector-ref layout 4) fns))
     (make-jreify (cons (vector-ref layout 0) (list->vector fns)) (vector-ref layout 1) #f (vector-ref layout 2))))
 ;; Every reify from one site declares the same protocols, but the names arrive
 ;; as rest args, so each instance got its own fresh list. The questions asked of
