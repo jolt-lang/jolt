@@ -347,7 +347,11 @@
 (jolt-compile-eval "(do (defn sysmk [n] (fn [y] (+ n y))))" "jolt.ilgsys")
 (ilg-emit-ns "(defn sysmk [n] (fn [y] (+ n y)))" "jolt.ilgsys")
 (let ((e (ilg-emit-ns "(defn ilg-uses-sys [q] (jolt.ilgsys/sysmk q))" "ilgapp")))
-  (gate-check "a system-namespace callee is still spliced" (gate-sub? e "sysmk") #f)
+  ;; nothing names the callee's var: the spliced literal's registration still
+  ;; carries the class its code compiles into, jolt.ilgsys$sysmk$fn__N, which
+  ;; is the callee's
+  (gate-check "a system-namespace callee is still spliced" (gate-sub? e "\"sysmk\"") #f)
+  (gate-check "...and its literal keeps the callee's class" (gate-sub? e "jolt.ilgsys$sysmk$fn__") #t)
   (gate-check "and its literal is registered, like any other"
               (gate-sub? e "image-register-fn-form!") #t))
 ;;    the same shape from an ordinary namespace, so the pair reads as one rule
