@@ -2318,31 +2318,38 @@
 ;; record, a sorted map, a host map arm) folds over its keys, the reference's
 ;; IPersistentMap arm. nil folds to init.
 (define (kv-step f) (if (procedure? f) (lambda (acc k v) (jolt-site-kept (f acc k v))) (lambda (acc k v) (jolt-invoke3 f acc k v))))
+;; Keep kv-step in the ordinary walker's compilation scope so the host can
+;; specialize its procedure and IFn arms. The confined path already has a
+;; Scheme step and uses the same array, trie and collision traversal.
+(define-syntax walk-pmap-kv
+  (syntax-rules ()
+    ((_ m step init)
+     (let ((root (pmap-root m)))
+       (if (not (hnode? root))
+           (let ((n (vector-length root)))
+             (let loop ((i 0) (acc init))
+               (cond ((jolt-reduced? acc) acc)
+                     ((fx>=? i n) acc)
+                     (else (loop (fx+ i 2) (step acc (vector-ref root i) (vector-ref root (fx+ i 1))))))))
+           ;; Hash mode follows the seq view, stopping at Reduced at any leaf.
+           (let walk ((node root) (acc init))
+             (let ((arr (hnode-arr node)))
+               (let loop ((i 0) (acc acc))
+                 (cond ((jolt-reduced? acc) acc)
+                       ((fx>=? i (vector-length arr)) acc)
+                       (else
+                        (let ((child (vector-ref arr i)))
+                          (loop (fx+ i 1)
+                                (cond ((hnode? child) (walk child acc))
+                                      ((hcoll? child)
+                                       (let cl ((al (hcoll-alist child)) (acc acc))
+                                         (cond ((jolt-reduced? acc) acc)
+                                               ((null? al) acc)
+                                               (else (cl (cdr al) (step acc (caar al) (cdar al)))))))
+                                      (else (step acc (car child) (cdr child))))))))))))))))
 (define (pmap-kv-reduce m f init)
-  (let ((step (kv-step f)) (root (pmap-root m)))
-    (if (not (hnode? root))
-        (let ((n (vector-length root)))
-          (let loop ((i 0) (acc init))
-            (cond ((jolt-reduced? acc) acc)
-                  ((fx>=? i n) acc)
-                  (else (loop (fx+ i 2) (step acc (vector-ref root i) (vector-ref root (fx+ i 1))))))))
-        ;; hash mode walks the trie in the seq view's order (ascending slots,
-        ;; children in place), stopping at a reduced accumulator at any leaf
-        (let walk ((node root) (acc init))
-          (let ((arr (hnode-arr node)))
-            (let loop ((i 0) (acc acc))
-              (cond ((jolt-reduced? acc) acc)
-                    ((fx>=? i (vector-length arr)) acc)
-                    (else
-                     (let ((child (vector-ref arr i)))
-                       (loop (fx+ i 1)
-                             (cond ((hnode? child) (walk child acc))
-                                   ((hcoll? child)
-                                    (let cl ((al (hcoll-alist child)) (acc acc))
-                                      (cond ((jolt-reduced? acc) acc)
-                                            ((null? al) acc)
-                                            (else (cl (cdr al) (step acc (caar al) (cdar al)))))))
-                                   (else (step acc (car child) (cdr child))))))))))))))
+  (let ((step (kv-step f)))
+    (walk-pmap-kv m step init)))
 (define (vec-kv-reduce v f init)
   (let ((step (kv-step f)) (n (pvec-count v)))
     (let outer ((i 0) (acc init))

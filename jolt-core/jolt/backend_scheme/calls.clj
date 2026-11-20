@@ -283,16 +283,20 @@
 (defn- simple-operand? [s]
   (and (pos? (count s))
        (not (some #{\( \) \space \newline \tab \" \' \# \| \;} s))))
+(defn apply-linked-root
+  "Apply an already bound linked root to already evaluated operands."
+  [root names]
+  (let [args (if (seq names) (str " " (str/join " " names)) "")]
+    (str "(if (" (unsafe-prefix) "procedure? " root ") (" root args
+         ") (jolt-invoke " root args "))")))
 (defn- linked-call [callee operand-strs]
   (let [p (fresh-label "_lp$")
         bound (mapv (fn [s] (if (simple-operand? s) [s nil] (let [t (fresh-label "_la$")] [t s])))
                     operand-strs)
         names (mapv first bound)
         binds (str "(" p " " callee ")"
-                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))
-        args (if (seq names) (str " " (str/join " " names)) "")]
-    (str "(let (" binds ") (if (" (unsafe-prefix) "procedure? " p ") (" p args
-         ") (jolt-invoke " p args ")))")))
+                   (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))]
+    (str "(let (" binds ") " (apply-linked-root p names) ")")))
 (defn- linked-binding? [callee]
   (and (string? callee) (str/starts-with? callee "jv$")))
 

@@ -37,7 +37,7 @@
                      hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
-             :refer [bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
+             :refer [apply-linked-root bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
                      emit-rec-type-check emit-record-ctor ifn-kind lookup-restore
@@ -1086,10 +1086,12 @@
          " " (call node tail? "jolt-vector-filter-map" [to p m from])
          " " (call node tail? into-proc [to ordinary-xf from]) "))")))
 
+(defn- chez-linked-fast-path? []
+  (and *const-pool* (= :chez (target)) (direct-link?)
+       (not (seed-mint?)) (not (session/debug-locals?))))
+
 (defn- emit-vector-filter-map [node tail?]
-  (when (and (:vector-filter-map node) *const-pool*
-             (= :chez (target)) (direct-link?) (not (seed-mint?))
-             (not (session/debug-locals?)))
+  (when (and (:vector-filter-map node) (chez-linked-fast-path?))
     ;; Three native seed calls hoist their procedure at the enclosing def.
     ;; comp uses its linked Scheme binding and can change while evaluating
     ;; the stage arguments. Leave all other linkage to emit-var-invoke.
@@ -1201,7 +1203,7 @@
     (str "(let* ((" index " (if " stop " (car " stop ") 0)) " (str/join " " bindings) ") " (peek calls) ")")))
 
 (defn- emit-assoc-in-chain [node tail?]
-  (when (and (assoc-in-call? node) (fuse-transducers?))
+  (when (and (assoc-in-call? node) (chez-linked-fast-path?))
     (let [linked (seed-callable? nil "clojure.core" "assoc-in" 3)]
       (when (string? linked)
         (when-let [{:keys [base prefix edits]} (assoc-in-chain node)]
@@ -1223,11 +1225,74 @@
                    " (if (and " result " (not " stop ")) " result
                    " (let ((" base-name " (or " result " " base-name "))) " fallback ")))"))))))))
 
+(def ^:private builder-symbol-calls
+  [["symbol?" [1] "jolt-symbol?"]
+   ["namespace" [1] "jolt-namespace"]
+   ["name" [1] "jolt-name"]
+   ["keyword" [1 2] "jolt-keyword"]])
+
+(defn- emit-builder-symbol-guard []
+  (let [core "clojure.core"]
+    (when (every? (fn [[nm arities _]]
+                    (and (not (direct-linkable? core nm))
+                         (every? #(and (nil? (native-op {:op :var :ns core :name nm} %))
+                                       (true? (seed-callable? nil core nm %)))
+                                 arities)))
+                  builder-symbol-calls)
+      ;; These calls use roots hoisted at load time. The ordinary callback
+      ;; and the guard must consult the same hoists.
+      (plain-call "and"
+        (map (fn [[nm _ proc]] (plain-call "eq?" [(hoist-seed-root core nm) proc]))
+             builder-symbol-calls)))))
+
+(defn- emit-builder-replace-args [replace-root transform [match replacement]]
+  (let [[a k v proc] (repeatedly 4 #(fresh-label "_kv$"))
+        ;; On a mismatch apply the precise linked callable read by the fast
+        ;; step. The runtime supplies the persistent prefix as its receiver.
+        called (apply-linked-root proc [v match replacement])
+        replaced (with-site transform (if (trace-frames?) (site-restore called) called))
+        retry (str "(lambda (" (str/join " " [a k v proc]) ") "
+                   (plain-call "jolt-assoc3" [a k replaced]) ")")]
+    [(str "(lambda () " replace-root ")") match replacement retry]))
+
+(defn- emit-reduce-kv-builder [node tail?]
+  (when (and (= "reduce-kv" (:name (:fn node))) (chez-linked-fast-path?))
+    (when-let [{:keys [kind transform literals]} (facts/closed-reducer-plan (cur) node)]
+      (let [replace-root (when (= kind :string-replace)
+                           (seed-callable? nil "clojure.string" "replace" 3))
+            replace? (and (string? replace-root)
+                          (not (direct-linkable? "clojure.string" "replace"))
+                          (= replace-root (dl-name "clojure.string" "replace")))
+            symbol-guard (when (= kind :symbol-keys) (emit-builder-symbol-guard))]
+        (when (or (= kind :copy) symbol-guard replace?)
+          (let [[match replacement :as refs] (when replace? (mapv #(hoist-const-per-site (emit %)) literals))
+                ;; The first ordinary step after a root change and the rest
+                ;; of the callback must receive the very same literal objects.
+                arg-nodes (cond-> (:args node)
+                            replace? (assoc-in [0 :arities 0 :body :args 2 :args 1 :literal-binding] match)
+                            replace? (assoc-in [0 :arities 0 :body :args 2 :args 2 :literal-binding] replacement))
+                args (mapv emit arg-nodes)
+                temps (mapv (fn [_] (fresh-label "_kv$")) args)
+                binds (map (fn [nm arg] (str "(" nm " " arg ")")) temps args)
+                call (fn [proc as] (emit-fused-site-call node tail? proc as))
+                fast (case kind
+                       :copy (call "jolt-reduce-kv-build-copy" temps)
+                       :symbol-keys (call "jolt-reduce-kv-build-symbol-keys" temps)
+                       :string-replace
+                       (call "jolt-reduce-kv-build-string-replace"
+                             (into temps (emit-builder-replace-args replace-root transform refs))))]
+            (str "(let* (" (str/join " " binds) ") "
+                 (if symbol-guard
+                   (str "(if " symbol-guard " " fast " " (call "jolt-reduce-kv" temps) ")")
+                   fast)
+                 ")")))))))
+
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
     (or (emit-vector-filter-map node tail?)
       (emit-assoc-in-chain node tail?)
+      (emit-reduce-kv-builder node tail?)
       (let [fnode (:fn node)
             arg-nodes (:args node)
             args (mapv emit arg-nodes)
@@ -1852,7 +1917,7 @@
 
 (defn emit* [node]
   (case (:op node)
-    :const (emit-const (:val node))
+    :const (or (:literal-binding node) (emit-const (:val node)))
     :local (munge-name (:name node))
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
