@@ -1578,6 +1578,59 @@
       (check-eq "a refused read consumes nothing" (.read in buf 0 8) 4)
       (check-eq "the bytes are the ones sent" (vec (take 4 buf)) [5 6 7 8]))))
 
+;; A timed wait that ends at its deadline is not yet a timeout: like the JDK's
+;; timedRead and timedFinishConnect, the call tries once more and times out only
+;; if that still would block. A waiter that first looks after the deadline — off
+;; the CPU, or beaten to the fiber by the timer thread — must not report a
+;; timeout for an fd that was ready all along. The rows make the late look
+;; happen on purpose, on a thread and on a fiber: the read's first try answers
+;; EAGAIN over a byte already sent, with a deadline already gone, and the
+;; connect's wait comes back after the handshake has finished, saying :timeout.
+(def ^:private io-call #'jolt.socket/io-call)
+(def ^:private connect-fd! #'jolt.socket/connect-fd!)
+
+(defn- late-read [conn]
+  ;; the first try answers EAGAIN as if the byte had not landed yet; the wait
+  ;; then finds its deadline gone. The byte was sent before the call.
+  (let [tries (atom 0)
+        fd (jolt.host/ref-get conn :fd)
+        op (fn [] (if (= 1 (swap! tries inc))
+                    [-1 jolt.socket.native/eagain]
+                    [7 0]))]
+    (try (io-call conn op fd :read 1/1000000 "Read timed out")
+         (catch java.net.SocketTimeoutException e [:timed-out (.getMessage e)]))))
+
+(defn- late-connect []
+  (let [server (java.net.ServerSocket. 0 50 (java.net.InetAddress/getLoopbackAddress))
+        s (java.net.Socket.)
+        fd (jolt.host/ref-get s :fd)
+        inet (java.net.InetAddress/getByName "127.0.0.1")]
+    (try
+      ;; the waiter comes back late: the loopback handshake finishes while it
+      ;; is away, and what it brings back is the deadline
+      (with-redefs [jolt.io-poller/wait-ready (fn [& _] (Thread/sleep 20) :timeout)]
+        (connect-fd! s fd inet (.getLocalPort server)
+                     (+ (jolt.io-poller/clock-ms) 10)))
+      :connected
+      (catch java.net.SocketTimeoutException e [:timed-out (.getMessage e)])
+      (finally (.close s) (.close server)))))
+
+(with-pair
+  (fn [server client conn]
+    (.write (.getOutputStream client) 65)
+    (.flush (.getOutputStream client))
+    (Thread/sleep 20)
+    (check-eq "a read that looks after its deadline takes data already there" (late-read conn) 7)
+    (let [p (promise)]
+      (fib/spawn (fn [] (deliver p (late-read conn))))
+      (check-eq "…on a fiber too" (deref p 5000 :hung) 7))))
+
+(check-eq "a connect that looks after its deadline finds the socket connected"
+          (late-connect) :connected)
+(let [p (promise)]
+  (fib/spawn (fn [] (deliver p (late-connect))))
+  (check-eq "…on a fiber too" (deref p 5000 :hung) :connected))
+
 (if (empty? @failures)
   (println "SOCKET-TEST OK")
   (do (doseq [f @failures] (println "FAIL:" f))

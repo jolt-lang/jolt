@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A timed socket read, accept or connect no longer reports a timeout for an fd
+  that was ready before its deadline. When the wait ended at the deadline, the
+  call raised `SocketTimeoutException` without looking at the socket again, so
+  a waiter that got back late (descheduled under load, or beaten to its fiber
+  by the timer thread) lost data or a finished handshake. The call now tries
+  once more and times out only if that would still block, as the JDK's
+  `timedRead` and `timedFinishConnect` do.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a
