@@ -47,8 +47,6 @@
       (if (= :double (ast/elem-type t)) "jn_arr_d" "jn_arr_l")
       (throw (ex-info "no C type" {:type t})))))
 
-(defn- zero-of [t] (if (ast/array-type? t) "(jn_arr_d){0}" "0"))
-
 (defn- var-name [id] (str "x" id))
 
 (defn- declare-var! [id t]
@@ -63,9 +61,10 @@
     (swap! *decls* assoc id (str (ctype t) " " id " = 0;"))
     id))
 
-(defn- ret-zero []
-  (let [t (:type *region*)]
-    (cond (ast/owned? t) "0" (= :unit t) "0" :else "0")))
+(defn- ret-zero
+  "What a failing region returns: 0, or NULL for an array result. The stub
+  reads out->code before it looks at the value."
+  [] "0")
 
 (defn- frees [ids] (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);") (sort ids))))
 
@@ -350,16 +349,21 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
                   "  if (n > 0) memcpy(JN_FLV_DATA(flv), src, n * 8);\n"
                   "  JN_FREE(src);\n}\n"))))))
 
-(defn foreign-sig
-  "The Chez foreign-procedure form that calls the region's C entry. A borrowed
-  array is passed as the raw flvector (scheme-object); out is a 40-byte
-  bytevector the C fills on failure (u8*). Neither may be __collect_safe."
-  [region sym]
+(defn foreign-types
+  "[argument-types result-type] of the region's C entry as Chez foreign types,
+  strings. A borrowed array crosses as the raw flvector (scheme-object); the
+  trailing u8* is the 40-byte out buffer C fills on failure. The call must not
+  be __collect_safe: an active thread is what keeps the flvector from moving."
+  [region]
   (let [arg (fn [t] (cond (ast/borrowed? t) "scheme-object"
                           (= t :long) "integer-64" (= t :double) "double" (= t :bool) "boolean"))
         t (:type region)
         ret (cond (ast/owned? t) "uptr" (#{:unit :never} t) "int"
                   (= t :long) "integer-64" (= t :double) "double" (= t :bool) "boolean")]
-    (str "(foreign-procedure \"" sym "\" ("
-         (str/join " " (concat (map (comp arg :type) (:params region)) ["u8*"]))
-         ") " ret ")")))
+    [(conj (mapv (comp arg :type) (:params region)) "u8*") ret]))
+
+(defn foreign-sig
+  "The Chez foreign-procedure form that calls the region's C entry by name."
+  [region sym]
+  (let [[args ret] (foreign-types region)]
+    (str "(foreign-procedure \"" sym "\" (" (str/join " " args) ") " ret ")")))

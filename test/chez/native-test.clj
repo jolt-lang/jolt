@@ -6,9 +6,7 @@
 ;; error exit. Rejected programs must fail to compile with the expected message.
 ;; Needs cc. Run: bin/jolt run test/chez/native-test.clj
 (ns native-test
-  (:require [clojure.string :as str]
-            [jolt.ffi :as ffi]
-            [jolt.scheme :as scm]
+  (:require [jolt.scheme :as scm]
             [jolt.native.ast :as ast]
             [jolt.native.memory :as mem]
             [jolt.native.emit :as emit]

@@ -3,8 +3,7 @@
   the C comes from, so the REPL and a built binary agree. It differs from the
   body as written only where a region's rules differ from Jolt's: long
   arithmetic overflows instead of promoting, an index passes through
-  RT.intCast, and a variadic op folds pair by pair exactly as the C does."
-  (:require [jolt.native.ast :as ast]))
+  RT.intCast, and a variadic op folds pair by pair exactly as the C does.")
 
 (defn- lname [id] (symbol (str "nr__l" id)))
 
