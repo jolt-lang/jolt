@@ -1186,27 +1186,6 @@
 (defmacro definterface [name-sym & body]
   `(do (def ~name-sym {}) (quote ~name-sym)))
 
-;; A generated class's N, from where its form sits: what the reify macro has
-;; always minted, and what the enclosing classes' N's come from too.
-(defn- objx-pos-id [pos]
-  (if (and pos (:line pos))
-    (+ 1000000000 (mod (hash [*file* (:line pos) (:column pos)]) 1000000000))
-    (name (gensym ""))))
-;; The class name an enclosing-class path spells (jolt.analyzer *objx*): its root
-;; -- a namespace, munged, or a type's class -- then each class's simple name.
-(defn- objx-path-name [path]
-  (let [root (first path)]
-    (apply str (if (map? root) (:class root) (munge (str root)))
-           (map (fn [seg]
-                  (let [k (nth seg 0) n (nth seg 1) id (objx-pos-id (nth seg 2))
-                        simple (case k
-                                 :fn (str "fn__" id)
-                                 :named (str n "__" id)
-                                 :def n
-                                 :def-id (str n "__" id)
-                                 :eval (str "eval" id))]
-                    (str "$" (apply str (map (fn [c] (if (= c \.) "_DOT_" c)) (munge simple))))))
-                (rest path)))))
 ;; Compiler.trimGenID: s up to its last "__", if it has one. Plain seq fns, not
 ;; String methods: the macro runs on every host.
 (defn- trim-gen-id [s]
@@ -1214,14 +1193,21 @@
     (cond (neg? i) s
           (and (= \_ (nth s i)) (= \_ (nth s (inc i)))) (subs s 0 i)
           :else (recur (dec i)))))
+;; The enclosing class path and its spelling are the analyzer's (jolt.analyzer
+;; *objx*), the one place every generated class is named.
 (defn- reify-class-name [form]
   (let [f (resolve 'jolt.analyzer/current-objx-name)
+        spell (resolve 'jolt.analyzer/objx-path-name)
+        id (resolve 'jolt.analyzer/objx-pos-id)
         o (when f (f))
         pos (meta form)
-        base (cond (= o :top) (str (munge (str *ns*)) "$eval" (objx-pos-id pos))
-                   (vector? o) (trim-gen-id (objx-path-name o))
-                   :else (munge (str *ns*)))]
-    (str base "$reify__" (objx-pos-id pos))))
+        nsm (munge (str *ns*))]
+    (if (and spell id)
+      (str (cond (= o :top) (str nsm "$eval" (id pos))
+                 (vector? o) (trim-gen-id (spell o))
+                 :else nsm)
+           "$reify__" (id pos))
+      (str nsm "$reify__" (name (gensym ""))))))
 
 ;; make-reified-at is a fn (clojure.core). The site's SHAPE — its method names and
 ;; protocol keys, as a literal [[name …] [proto …]] of strings — is a constant, so

@@ -1306,7 +1306,12 @@
             *fnsrc-def* (:name node)
             *fnsrc-counter* (atom 0)
             *fnsrc-regs* (atom [])
-            *fnsrc-def-init?* (= :fn (:op (:init node)))]
+            ;; a def's direct fn init, which the define names -- unless the fn
+            ;; has a name of its own: (def g (fn gg [] ..)) compiles into the
+            ;; class gg__N, which only a registered literal carries
+            *fnsrc-def-init?* (and (= :fn (:op (:init node)))
+                                   (or (nil? (:name (:init node)))
+                                       (= (:name (:init node)) (:name node))))]
     (let [reg (trace-source-reg node)
           d (cond
               (:no-init node)

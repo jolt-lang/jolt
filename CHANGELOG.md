@@ -30,6 +30,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deftype's own class) with its trailing `__N` trimmed, then `$reify__N`, where
   every reify used to be `ns$reify__N`. Only the counters differ from the JVM's.
 
+- **A fn's class is named as the JVM's compiler names it.** `(class f)` of a fn
+  literal is the class Compiler compiles it into -- `ns$mk$fn__N` inside `mk`, a
+  named fn's `name__N`, a let-bound fn's local, nested fns, letfn, `#()`, a
+  top-level form's `ns$evalN$fn__N` -- where every such fn was
+  `clojure.lang.AFunction$fn__0`, so class-keyed dispatch and `instance?` on a
+  fn's class now tell two sites apart. `.getName`, `str`, `pr-str`'s
+  `#object[...]`, stack trace elements and ArityException's fn name
+  (`my.ns/mk/fn--N`) agree. clojure.core's closures and transducers report the
+  reference's classes. Only the counters differ from the JVM's. Protocol
+  dispatch on a fn value memoizes on its class now (about 3x faster), and
+  `(class f)` of a fn literal is about 2x faster.
+- **`every-pred` and `some-fn` are the reference's**, arity for arity: the
+  predicates are tested in its order, so the first truthy value `some-fn`
+  answers and the side effects match, and `(every-pred)` is an arity error.
+  `(replace smap)` returns a transducer. An auto-gensym is spelled
+  `x__N__auto__`.
+
 - **`instance?` casts its type argument to `Class`.** A protocol (its map), a
   keyword, a string or a quoted symbol throws the JDK's `ClassCastException`,
   and nil the `NullPointerException`, where jolt answered as if the protocol

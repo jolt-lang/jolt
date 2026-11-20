@@ -130,6 +130,28 @@
 ;; top-level form (its class, ns$evalN, is decided once it has expanded), or nil
 ;; at namespace level. The reify macro reads it.
 (defn current-objx-name [] *objx*)
+;; A generated class's N, from where its form sits (file, line, column), so the
+;; same source names the same class in every process and an AOT-cached form and
+;; a fresh expansion never share one; a gensym for a form with no position.
+(defn objx-pos-id [pos]
+  (if (and pos (:line pos))
+    (+ 1000000000 (mod (hash [*file* (:line pos) (:column pos)]) 1000000000))
+    (name (gensym ""))))
+;; The class name a path spells: its root -- a namespace, munged, or a type's
+;; class -- then each class's simple name, munged with . as _DOT_.
+(defn objx-path-name [path]
+  (let [root (first path)]
+    (apply str (if (map? root) (:class root) (munge (str root)))
+           (map (fn [seg]
+                  (let [k (nth seg 0) n (nth seg 1) id (objx-pos-id (nth seg 2))
+                        simple (case k
+                                 :fn (str "fn__" id)
+                                 :named (str n "__" id)
+                                 :def n
+                                 :def-id (str n "__" id)
+                                 :eval (str "eval" id))]
+                    (str "$" (apply str (map (fn [c] (if (= c \.) "_DOT_" c)) (munge simple))))))
+                (rest path)))))
 ;; A top-level form whose head names a def* is evaluated directly; anything else
 ;; is compiled as a fn (Compiler.eval's startsWith("def") test, after expansion).
 ;; jolt's defmulti and defmethod expand to calls of its own -setup fns where the
@@ -251,10 +273,12 @@
                           "Bad binding form, expected symbol"))
         (let [nm (form-sym-name bsym)
               fi (fi-tag-class ctx bsym)
+              ;; a fn bound here is named by the local (LetExpr hands the name
+              ;; to the init's analysis, as a def does)
               init0 (analyze ctx (if fi
                                    (fi-adapt-form fi (nth bvec (inc i)))
                                    (nth bvec (inc i)))
-                             env)
+                             (assoc env :def-name nm))
               ;; a ^doubles/^longs/^objects/... let binding wraps its init in a
               ;; :coerce of the array kind, so jolt.passes.numeric seeds the local
               ;; for the direct aget/aset paths. A node, not a key on the init:
@@ -446,7 +470,9 @@
                       dn (if (:objx env) [:def-id dn pos] [:def dn pos])
                       defn-self? [:def fn-name pos]
                       :else [:fn nil pos])]
-        (assoc env :objx (objx-in ctx env seg))))))
+        (let [path (objx-in ctx env seg)]
+          ;; the fn's own class name, which (class f) reports (:class on the node)
+          (assoc env :objx path :fn-class (objx-path-name path)))))))
 
 ;; Is the form's own head already the bare, meta-free symbol fn*? Then the form IS
 ;; what :src-form rebuilds and the rebuild can be skipped — see analyze-fn.
@@ -462,6 +488,8 @@
         fn-name (when named (form-sym-name (nth items 1)))
         rest-items (if named (drop 2 items) (drop 1 items))
         env (fn-objx-env ctx form items env named fn-name rest-items)
+        fn-class (:fn-class env)
+        env (dissoc env :fn-class)
         first* (strip-arglist-meta (first rest-items))
         node (cond
                (form-vec? first*)
@@ -500,6 +528,7 @@
         node (assoc node
                     :src-form (if (fn-head-canonical? items) form (cons 'fn* (rest items)))
                     :free-names (fn-free-names (:arities node) fn-name))
+        node (if fn-class (assoc node :class fn-class) node)
         ;; ^{:once true} on the fn* symbol, as the reference's lazy-seq writes it:
         ;; the fn runs at most once, so its captures may be let go as it runs
         ;; (backend_scheme.clj emit-fn)
@@ -875,7 +904,9 @@
   (let [hm (form-sym-meta (first items))
         ;; ^:jolt/up-context: the loop stands for the form it sits in (doseq's
         ;; (do loop nil) is the reference's bare loop)
-        here (if (and (map? hm) (get hm :jolt/up-context)) (:up-here env) (:here env))
+        ;; (a form the loader runs on its own, a top-level do unrolled, has no
+        ;; enclosing form: its own context then)
+        here (if (and (map? hm) (get hm :jolt/up-context)) (or (:up-here env) (:here env)) (:here env))
         env (if (and (wraps? (or here :expression) :loop) (not (same-objx? items)))
               (wrapper-env ctx form env) env)
         bvec (binding-vector items)
@@ -998,7 +1029,9 @@
     ;; :meta stays beside :meta-expr, as on a :def node: stamp-def-pos rebuilds
     ;; the :meta-expr from :meta merged with the form's position.
     (merge {:op :defmacro :ns cur :name nm
-            :fn (analyze ctx fn-form env)
+            ;; the macro's fn is the def's (the reference's defmacro is a defn),
+            ;; so its class is ns$name
+            :fn (analyze ctx fn-form (assoc env :def-name nm))
             :meta base}
            (if meta-expr {:meta-expr meta-expr} {}))))
 
@@ -1021,7 +1054,7 @@
     "if"            (analyze-if ctx items env)
     "do"            (analyze-body ctx (rest items) env
                                   (or (if (get (form-sym-meta (first items)) :jolt/up-context)
-                                        (:up-here env) (:here env))
+                                        (or (:up-here env) (:here env)) (:here env))
                                       :expression))
     "throw"         (analyze-throw ctx form items env)
     "def"           (analyze-def ctx items env)
@@ -1398,7 +1431,15 @@
 ;; positioned source form, just as a generated invocation does.
 (defn- stamp-def [ctx env form node]
   (let [p (or (form-position form) (current-form-position))]
-    (if (and p (#{:def :defmacro} (:op node))) (stamp-def-pos ctx env node p) node)))
+    (if (and p (#{:def :defmacro} (:op node)))
+      ;; the metadata is re-analyzed in the env the def's own parts are: a
+      ;; top-level def is evaluated directly, its metadata in :eval (child-env)
+      (stamp-def-pos ctx (-> (if (:top? env)
+                               (assoc (dissoc env :top?) :cx :eval)
+                               (assoc env :cx (if (= :eval (:cx env)) :eval :expression)))
+                             (dissoc :def-name))
+                     node p)
+      node)))
 
 ;; defn/defn- expand to (def name (fn …)); carry the ORIGINAL form's
 ;; source offset onto the resulting def, since the macro builds a fresh

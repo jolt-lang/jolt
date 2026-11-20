@@ -101,13 +101,17 @@
 ;; cat transducer: each input item is itself a collection, concatenated into the
 ;; downstream reducing fn.
 (define (jolt-cat rf)
-  (lambda a
-    (cond
-      ((null? a) (jolt-invoke rf))
-      ((null? (cdr a)) (jolt-invoke rf (car a)))
-      (else
-       (let loop ((xs (seq->list (jolt-seq (cadr a)))) (acc (car a)))
-         (if (null? xs) acc (loop (cdr xs) (jolt-invoke rf acc (car xs)))))))))
+  ;; the reference's cat's reducing fn and its class name (natives-seq.ss
+  ;; jvm-class-named)
+  (let ((clojure.core$cat$fn__8893
+         (lambda a
+           (cond
+             ((null? a) (jolt-invoke rf))
+             ((null? (cdr a)) (jolt-invoke rf (car a)))
+             (else
+              (let loop ((xs (seq->list (jolt-seq (cadr a)))) (acc (car a)))
+                (if (null? xs) acc (loop (cdr xs) (jolt-invoke rf acc (car xs))))))))))
+    clojure.core$cat$fn__8893))
 (def-var! "clojure.core" "cat" jolt-cat)
 
 ;; --- chunked seqs -----------------------------------------------------------

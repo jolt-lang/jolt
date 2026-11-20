@@ -511,7 +511,23 @@
        (let ((head (car tags)))
          (or (eq? tags (jch-tags head))
              (let ((e (hashtable-ref jch-tags-plus-cache head #f)))
+               (and e (eq? tags (cdr e))))
+             (let ((e (hashtable-ref fn-class-tags-tbl head #f)))
                (and e (eq? tags (cdr e))))))))
+;; A fn class's dispatch tags: the class, then AFunction's ancestry. One list per
+;; class (rebuilt when the class graph moves), so the memos keyed on the list
+;; (resolve-memo, satisfies?'s) hit for every closure of a site. Read unlocked,
+;; written under jch-cache-mutex: the jch-tags pattern.
+(define fn-class-tags-tbl (make-hashtable string-hash string=?))
+(define (fn-class-tags cls)
+  (let ((e (hashtable-ref fn-class-tags-tbl cls #f)))
+    (if (and e (fx= (car e) jch-graph-epoch))
+        (cdr e)
+        (let* ((ge jch-graph-epoch)
+               (tags (cons cls (jch-tags "clojure.lang.AFunction"))))
+          (jolt-with-mutex jch-cache-mutex
+            (hashtable-set! fn-class-tags-tbl cls (cons ge tags)))
+          tags))))
 
 ;; host type-tag candidates for a non-record value (extend-protocol on builtins).
 (define (value-host-tags obj)
@@ -588,10 +604,14 @@
         ;; below; a hand-copied list here had no Comparator, Runnable or
         ;; Callable, so (instance? java.util.Comparator inc) was false while
         ;; (instance? java.util.Comparator (fn [a b] 0)) was true.
-        ((and (procedure? obj) (hashtable-ref proc-name-tbl obj #f))
-         => (lambda (p)
-              (cons (string-append (class-munge-name (car p)) "$" (class-munge-name (cdr p)))
-                    (jch-tags "clojure.lang.AFunction"))))
+        ;; The class is a registered literal's site class (host-class.ss
+        ;; procedure-class-name), else the var a def named it into; the list is
+        ;; the one fn-class-tags keeps per class, so dispatch memoizes on it.
+        ((and (procedure? obj)
+              (or (procedure-class-name-hook obj)
+                  (let ((p (hashtable-ref proc-name-tbl obj #f)))
+                    (and p (var-fn-class-name (car p) (cdr p))))))
+         => fn-class-tags)
         ;; a value-layer shim value (java.time.*, URI, ByteBuffer, java.io reader/
         ;; writer, ArrayList/HashMap, …) reports its class's whole ancestry from the
         ;; single jhost-tag->fqn registry (class-hierarchy.ss). So (extend-protocol
