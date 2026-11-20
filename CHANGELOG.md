@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `format` rounds the same digits `Double.toString` prints, as JDK 21's
+  Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
+  `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the
+  JDK `1.3381632805467082e+15`.
 - A timed socket read, accept or connect no longer reports a timeout for an fd
   that was ready before its deadline. When the wait ended at the deadline, the
   call raised `SocketTimeoutException` without looking at the socket again, so
@@ -31,9 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.
-- A double with at most 15 significant digits (`1.1`, `3.25`, `0.001`) prints
-  about 3x faster. Its digits come from flonum arithmetic instead of Chez's
-  arbitrary-precision shortest-digits search; other doubles print as before.
+- Doubles print faster: about 3x for one with at most 15 significant digits
+  (`1.1`, `3.25`, `0.001`), whose digits come from flonum arithmetic, and about
+  2x for a full-precision one, whose digits come from a port of the JDK's own
+  Schubfach (`jdk.internal.math.DoubleToDecimal`) instead of Chez's
+  arbitrary-precision search.
 
 ## [0.8.28] - 2026-11-19
 
