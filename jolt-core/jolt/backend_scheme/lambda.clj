@@ -548,6 +548,12 @@
                                 "(jolt-register-variadic! " variadic-fixed " " fnsrc-nm "))")
                            (str "(letrec ((" fnsrc-nm " " lambda ")) " fnsrc-nm ")")))))
 
+;; While bound to an atom, the first fn literal emitted stores [name], the
+;; binding Chez names its procedure after, or [nil] for a bare lambda. A
+;; lowering that applies part of a literal's body in its own lambda binds
+;; that lambda under the same name, so its frame reads as the literal's.
+(def ^:dynamic *frame-name-sink* nil)
+
 (defn emit-fn [emit node]
   (let [;; a def's DIRECT anonymous init is named by its define, so it keeps the
         ;; bare lambda; *fnsrc-def-init?* is set only around that init's emission
@@ -576,6 +582,8 @@
         ;; the name a NAMED fn's frame carries, which is what its tail sites
         ;; record; nil for an anonymous literal, whose tail sites skip
         site (when self (or qname fnsrc-nm self))
+        _ (when-let [sink *frame-name-sink*]
+            (when (nil? @sink) (reset! sink [(if self site fnsrc-nm)])))
         ;; --- fn identity -------------------------------------------------
         ;; Chez shares ONE closure object across every evaluation of a lambda
         ;; with no free variables, where Clojure allocates a fresh fn each time.

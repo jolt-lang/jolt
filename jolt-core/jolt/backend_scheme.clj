@@ -51,7 +51,8 @@
                      *fnsrc-regs* fnsrc-flush]]
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit]]
-            [jolt.backend-scheme.lambda :refer [emit-fn emit-nhint-coerce]]))
+            [jolt.backend-scheme.lambda
+             :refer [*frame-name-sink* emit-fn emit-nhint-coerce]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -1245,7 +1246,7 @@
         (map (fn [[nm _ proc]] (plain-call "eq?" [(hoist-seed-root core nm) proc]))
              builder-symbol-calls)))))
 
-(defn- emit-builder-replace-args [replace-root transform [match replacement]]
+(defn- emit-builder-replace-args [replace-root transform frame [match replacement]]
   (let [[a k v proc] (repeatedly 4 #(fresh-label "_kv$"))
         ;; On a mismatch apply the precise linked callable read by the fast
         ;; step. The runtime supplies the persistent prefix as its receiver.
@@ -1253,7 +1254,10 @@
         replaced (with-site transform (if (trace-frames?) (site-restore called) called))
         retry (str "(lambda (" (str/join " " [a k v proc]) ") "
                    (plain-call "jolt-assoc3" [a k replaced]) ")")]
-    [(str "(lambda () " replace-root ")") match replacement retry]))
+    ;; This step belongs to the reducer literal. Bound under that literal's
+    ;; name, a throw from the replacement keeps the reducer's trace frame.
+    [(str "(lambda () " replace-root ")") match replacement
+     (if frame (str "(letrec ((" frame " " retry ")) " frame ")") retry)]))
 
 (defn- emit-reduce-kv-builder [node tail?]
   (when (and (= "reduce-kv" (:name (:fn node))) (chez-linked-fast-path?))
@@ -1271,7 +1275,9 @@
                 arg-nodes (cond-> (:args node)
                             replace? (assoc-in [0 :arities 0 :body :args 2 :args 1 :literal-binding] match)
                             replace? (assoc-in [0 :arities 0 :body :args 2 :args 2 :literal-binding] replacement))
-                args (mapv emit arg-nodes)
+                frame (atom nil)
+                args (into [(binding [*frame-name-sink* frame] (emit (first arg-nodes)))]
+                           (map emit) (rest arg-nodes))
                 temps (mapv (fn [_] (fresh-label "_kv$")) args)
                 binds (map (fn [nm arg] (str "(" nm " " arg ")")) temps args)
                 source-guard (plain-call "jolt-reduce-kv-builder-source?" [(peek temps)])
@@ -1282,7 +1288,8 @@
                        :symbol-keys (call "jolt-reduce-kv-build-symbol-keys" temps)
                        :string-replace
                        (call "jolt-reduce-kv-build-string-replace"
-                             (into temps (emit-builder-replace-args replace-root transform refs))))]
+                             (into temps (emit-builder-replace-args replace-root transform
+                                                                    (first @frame) refs))))]
             (str "(let* (" (str/join " " binds) ") (if " guard " " fast " "
                  (call "jolt-reduce-kv" temps) "))")))))))
 
