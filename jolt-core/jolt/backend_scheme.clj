@@ -1274,6 +1274,8 @@
                 args (mapv emit arg-nodes)
                 temps (mapv (fn [_] (fresh-label "_kv$")) args)
                 binds (map (fn [nm arg] (str "(" nm " " arg ")")) temps args)
+                source-guard (plain-call "jolt-reduce-kv-builder-source?" [(peek temps)])
+                guard (if symbol-guard (plain-call "and" [source-guard symbol-guard]) source-guard)
                 call (fn [proc as] (emit-fused-site-call node tail? proc as))
                 fast (case kind
                        :copy (call "jolt-reduce-kv-build-copy" temps)
@@ -1281,11 +1283,8 @@
                        :string-replace
                        (call "jolt-reduce-kv-build-string-replace"
                              (into temps (emit-builder-replace-args replace-root transform refs))))]
-            (str "(let* (" (str/join " " binds) ") "
-                 (if symbol-guard
-                   (str "(if " symbol-guard " " fast " " (call "jolt-reduce-kv" temps) ")")
-                   fast)
-                 ")")))))))
+            (str "(let* (" (str/join " " binds) ") (if " guard " " fast " "
+                 (call "jolt-reduce-kv" temps) "))")))))))
 
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
