@@ -142,7 +142,8 @@
          (plain-pair-value? node)
          (not (or (:proto node) (:devirt-type node) (:prim-op node)))
          (= :var (:op callee)) (= "clojure.core" (:ns callee)) (= "nth" (:name callee))
-         (= "jolt-nth" (native-op callee 3))
+         ;; native-op spells Chez's open-coded nth jolt-nth/i
+         (contains? #{"jolt-nth" "jolt-nth/i"} (native-op callee 3))
          (= :local (:op receiver)) (= raw (:name receiver))
          (= :const (:op key)) (= index (:val key))
          (= :const (:op fallback)) (nil? (:val fallback)))))
