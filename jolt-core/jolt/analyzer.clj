@@ -241,13 +241,6 @@
   ([env name arity prims]
    (-> env (assoc :recur name :recur-arity arity :recur-prims prims) (dissoc :recur-blocked))))
 
-(defn- analyze-seq [ctx forms env]
-  (let [v (mapv #(analyze ctx % env) forms)
-        n (count v)]
-    (cond
-      (zero? n) (const nil)
-      (= 1 n) (first v)
-      :else (do-node (subvec v 0 (dec n)) (peek v)))))
 
 (defn- binding-vector
   "The binding vector of a (let*|loop*|letfn* [...] body*) form, as a Clojure vector."
@@ -1049,37 +1042,49 @@
                     (str "load-time-value takes one expression, got " (dec (count items)))))
   {:op :load-time-value :expr (analyze ctx (second items) (empty-env))})
 
+(defn- analyze-do [ctx items env]
+  (analyze-body ctx (rest items) env
+                (or (if (get (form-sym-meta (first items)) :jolt/up-context)
+                      (or (:up-here env) (:here env)) (:here env))
+                    :expression)))
+
+(defn- analyze-try-positioned [ctx form items env]
+  (let [node (analyze-try ctx form items env)
+        p (or (form-position form) (current-form-position))]
+    (if p (assoc node :pos p) node)))
+
+;; The special forms, by name: each analyzer takes (ctx op form items env). A map
+;; rather than one case, so the dispatch reads as the table it is.
+(def ^:private special-analyzers
+  {"quote"   (fn [ctx _ _ items env] (analyze-quote ctx items env))
+   "if"      (fn [ctx _ _ items env] (analyze-if ctx items env))
+   "do"      (fn [ctx _ _ items env] (analyze-do ctx items env))
+   "throw"   (fn [ctx _ form items env] (analyze-throw ctx form items env))
+   "def"     (fn [ctx _ _ items env] (analyze-def ctx items env))
+   "let*"    (fn [ctx _ form items env] (analyze-let* ctx form items env))
+   "loop*"   (fn [ctx _ form items env] (analyze-loop* ctx form items env))
+   "recur"   (fn [ctx _ form items env] (analyze-recur ctx form items env))
+   "try"     (fn [ctx _ form items env] (analyze-try-positioned ctx form items env))
+   ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
+   ;; is a macro over the same jolt.host per-object monitor. Libraries that
+   ;; expand their own locking macro rather than calling clojure.core/locking
+   ;; emit these directly (borkdude/dynaload does, under malli), so lower them
+   ;; to that seam instead of punting. Like the JVM, both yield nil.
+   "monitor-enter" (fn [ctx op _ items env] (analyze-monitor-op ctx items env op))
+   "monitor-exit"  (fn [ctx op _ items env] (analyze-monitor-op ctx items env op))
+   "letfn*"  (fn [ctx _ form items env] (analyze-letfn* ctx form items env))
+   "fn*"     (fn [ctx _ form items env] (analyze-fn ctx form items env))
+   ;; Lower the backtick to construction code (zero runtime cost), then analyze
+   ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.
+   "syntax-quote" (fn [ctx _ _ items env] (analyze ctx (form-syntax-quote-lower ctx (second items)) env))
+   "var"     (fn [ctx _ _ items _] (analyze-var ctx items))
+   "defmacro" (fn [ctx _ _ items env] (analyze-defmacro ctx items env))
+   "set!"    (fn [ctx _ _ items env] (analyze-set! ctx items env))
+   "load-time-value" (fn [ctx _ _ items _] (analyze-load-time-value ctx items))})
+
 (defn- analyze-special [ctx op form items env]
-  (case op
-    "quote"         (analyze-quote ctx items env)
-    "if"            (analyze-if ctx items env)
-    "do"            (analyze-body ctx (rest items) env
-                                  (or (if (get (form-sym-meta (first items)) :jolt/up-context)
-                                        (or (:up-here env) (:here env)) (:here env))
-                                      :expression))
-    "throw"         (analyze-throw ctx form items env)
-    "def"           (analyze-def ctx items env)
-    "let*"          (analyze-let* ctx form items env)
-    "loop*"         (analyze-loop* ctx form items env)
-    "recur"         (analyze-recur ctx form items env)
-    "try"           (let [node (analyze-try ctx form items env)
-                          p (or (form-position form) (current-form-position))]
-                      (if p (assoc node :pos p) node))
-    ;; (monitor-enter x) / (monitor-exit x) — the bare halves of `locking`, which
-    ;; is a macro over the same jolt.host per-object monitor. Libraries that
-    ;; expand their own locking macro rather than calling clojure.core/locking
-    ;; emit these directly (borkdude/dynaload does, under malli), so lower them
-    ;; to that seam instead of punting. Like the JVM, both yield nil.
-    ("monitor-enter" "monitor-exit") (analyze-monitor-op ctx items env op)
-    "letfn*"        (analyze-letfn* ctx form items env)
-    "fn*"           (analyze-fn ctx form items env)
-    ;; Lower the backtick to construction code (zero runtime cost), then analyze
-    ;; it — the macroexpand/compile-time step, per read -> macroexpand -> compile.
-    "syntax-quote"  (analyze ctx (form-syntax-quote-lower ctx (second items)) env)
-    "var"           (analyze-var ctx items)
-    "defmacro"      (analyze-defmacro ctx items env)
-    "set!"          (analyze-set! ctx items env)
-    "load-time-value" (analyze-load-time-value ctx items)
+  (if-let [f (get special-analyzers op)]
+    (f ctx op form items env)
     (analysis-error :analyze/unsupported-special-form
                     (str "Unsupported special form: " op))))
 

@@ -1,6 +1,6 @@
 ;; System-properties gate (epic jolt-of08.4) — the JVM-standard keys a library
 ;; can reasonably sniff. os.arch answers in the JVM's spelling (aarch64/amd64),
-;; user.name from the environment, os.version from the kernel. java.version
+;; user.name from the passwd entry, os.version from the kernel. java.version
 ;; stays nil deliberately (jolt has no JDK to report — known divergence);
 ;; unknown keys answer nil exactly as the JVM's do.
 ;; Run: bin/jolt run test/chez/sysprops-test.clj (smoke.sh greps for
@@ -22,10 +22,13 @@
           (contains? #{"aarch64" "amd64"} (System/getProperty "os.arch"))
           true)
 
-;; user.name: the login name, as the JVM reports
-(check-eq "user.name matches the environment"
-          (System/getProperty "user.name")
-          (or (System/getenv "USER") (System/getenv "LOGNAME") (System/getenv "USERNAME")))
+;; user.name: the login name, as the JVM reports -- the passwd entry's pw_name
+;; for the process's uid (the environment on Windows and Android), "?" with no
+;; entry, so never nil. smoke.sh checks that an unset or borrowed USER does not
+;; move it.
+(check-eq "user.name is a non-empty string"
+          (let [u (System/getProperty "user.name")] (and (string? u) (pos? (count u))))
+          true)
 
 ;; os.version: non-empty version string (Windows has no uname/sw_vers — nil there)
 (check-eq "os.version is non-empty"
