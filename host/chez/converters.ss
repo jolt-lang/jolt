@@ -253,14 +253,19 @@
 
 ;; The one-argument string spelling splits on the FIRST slash, except at
 ;; either end. The builder can use this same spelling with a lookup-only intern.
-(define (keyword-from-string a intern)
-  (let ((si (let loop ((i 0))
-              (cond ((>= i (string-length a)) #f)
-                    ((char=? (string-ref a i) #\/) i)
-                    (else (loop (+ i 1)))))))
-    (if (and si (> si 0) (< si (- (string-length a) 1)))
-        (intern (substring a 0 si) (substring a (+ si 1) (string-length a)))
-        (intern #f a))))
+;; A macro, so (keyword "x") still calls keyword directly: passed as a
+;; procedure it cost every one-argument string keyword ~1.5ns.
+(define-syntax keyword-from-string
+  (syntax-rules ()
+    ((_ str intern)
+     (let* ((a str)
+            (si (let loop ((i 0))
+                  (cond ((>= i (string-length a)) #f)
+                        ((char=? (string-ref a i) #\/) i)
+                        (else (loop (+ i 1)))))))
+       (if (and si (> si 0) (< si (- (string-length a) 1)))
+           (intern (substring a 0 si) (substring a (+ si 1) (string-length a)))
+           (intern #f a))))))
 
 (define (jolt-keyword . args)
   (cond
