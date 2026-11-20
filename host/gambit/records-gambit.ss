@@ -4597,26 +4597,25 @@
 (define reify-satisfies-mu (make-mutex))
 
 (define (reify-satisfies? obj pn-str)
-  (if (pair? (reify-retired-protos obj))
-      (and (jolt-satisfies-walk obj pn-str) #t)
-      (reify-satisfies?/memo obj pn-str)))
-
-(define (reify-satisfies?/memo obj pn-str)
   (let* ((protos (jreify-protos obj))
          (epoch (fx+ jolt-proto-epoch jch-graph-epoch))
          (inner (hashtable-ref reify-satisfies-memo protos #f))
          (e (and inner (hashtable-ref inner pn-str #f))))
-    (if (and e (fx= (car e) epoch))
-        (cdr e)
-        (let ((ans (and (jolt-satisfies-walk obj pn-str) #t)))
-          (jolt-with-mutex
-            reify-satisfies-mu
-            (let ((t (or (hashtable-ref reify-satisfies-memo protos #f)
-                         (let ((t (make-weak-eq-hashtable)))
-                           (hashtable-set! reify-satisfies-memo protos t)
-                           t))))
-              (hashtable-set! t pn-str (cons epoch ans))))
-          ans))))
+    (cond
+      ((and (unbox reify-retired-box)
+            (pair? (reify-retired-entries obj)))
+       (and (jolt-satisfies-walk obj pn-str) #t))
+      ((and e (fx= (car e) epoch)) (cdr e))
+      (else
+       (let ((ans (and (jolt-satisfies-walk obj pn-str) #t)))
+         (jolt-with-mutex
+           reify-satisfies-mu
+           (let ((t (or (hashtable-ref reify-satisfies-memo protos #f)
+                        (let ((t (make-weak-eq-hashtable)))
+                          (hashtable-set! reify-satisfies-memo protos t)
+                          t))))
+             (hashtable-set! t pn-str (cons epoch ans))))
+         ans)))))
 
 (define (jolt-satisfies-walk obj pn-str)
   (or (cond

@@ -1708,18 +1708,20 @@
 (define reify-satisfies-memo (make-weak-eq-hashtable))
 (define reify-satisfies-mu (make-mutex))
 (define (reify-satisfies? obj pn-str)
-  (if (pair? (reify-retired-protos obj))
-      ;; the memo is keyed by the protocol list, which a site whose protocol
-      ;; was redefined shares with sites whose protocol was not
-      (and (jolt-satisfies-walk obj pn-str) #t)
-      (reify-satisfies?/memo obj pn-str)))
-(define (reify-satisfies?/memo obj pn-str)
   (let* ((protos (jreify-protos obj))
          (epoch (fx+ jolt-proto-epoch jch-graph-epoch))
          (inner (hashtable-ref reify-satisfies-memo protos #f))
          (e (and inner (hashtable-ref inner pn-str #f))))
-    (if (and e (fx= (car e) epoch))
-        (cdr e)
+    (cond
+      ;; a site whose protocol was redefined answers apart from the sites that
+      ;; share its protocol list, which is what the memo is keyed by. The box is
+      ;; #f until a protocol is first redefined, so a hit pays one unbox for
+      ;; this and no call (fastpathratio satisfies-reify).
+      ((and (unbox reify-retired-box) (pair? (reify-retired-entries obj)))
+       (and (jolt-satisfies-walk obj pn-str) #t))
+      ((and e (fx= (car e) epoch))
+        (cdr e))
+      (else
         (let ((ans (and (jolt-satisfies-walk obj pn-str) #t)))
           (jolt-with-mutex reify-satisfies-mu
             (let ((t (or (hashtable-ref reify-satisfies-memo protos #f)
@@ -1727,7 +1729,7 @@
                            (hashtable-set! reify-satisfies-memo protos t)
                            t))))
               (hashtable-set! t pn-str (cons epoch ans))))
-          ans))))
+          ans)))))
 (define (jolt-satisfies-walk obj pn-str)
     (or
       ;; direct: a record type's own registry, a reify's declared list.
