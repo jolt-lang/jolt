@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `(require 'x :reload)` throws `FileNotFoundException` when `x` was loaded
+  from a file under none of the source roots (a `load-file`, an nREPL
+  `load-file`) and the roots don't have it, as on the JVM. The reload used to
+  succeed without loading anything, so the caller kept running the old
+  definitions: an nREPL test run on a server started without the test paths
+  ran stale tests. The message names the file the namespace came from.
+  Namespaces baked into a built binary still reload as a no-op.
 - A timed socket read, accept or connect no longer reports a timeout for an fd
   that was ready before its deadline. When the wait ended at the deadline, the
   call raised `SocketTimeoutException` without looking at the socket again, so
