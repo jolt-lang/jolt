@@ -37,7 +37,7 @@
                      hoist-const-per-site hoist-inline-guard hoist-load-time hoist-seed-root hoist-var-cell
                      site-const unique-keyword-key-literal? with-load-time-scope]]
             [jolt.backend-scheme.calls
-             :refer [apply-linked-root bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
+             :refer [*read-roots* bit-fx-ops direct-field-accessor emit-bit-fx-call emit-call
                      direct-pair-projection emit-pair-call pair-call-site-restore
                      emit-devirt-call emit-fl-aget emit-fl-aset
                      emit-host-static-call emit-numeric emit-pic-call
@@ -53,7 +53,7 @@
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit]]
             [jolt.backend-scheme.lambda
-             :refer [*frame-name-sink* emit-fn emit-nhint-coerce pair-arities]]))
+             :refer [*step-variant* emit-fn emit-nhint-coerce pair-arities]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -696,8 +696,12 @@
       (and (direct-link?) (not (seed-mint?))
            (seed-callable? nil (:ns fnode) (:name fnode) (count args)))
       (let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))
-            head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))]
-        (order-args (fn [as] (emit-call tail? head as tl ich))))
+            head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))
+            root (:root-binding fnode)]
+        (when (and root (not (string? sc)))
+          (throw (ex-info "emit: a supplied root needs a linked call head" {:var (:name fnode)})))
+        (binding [*read-roots* (if root {head root} *read-roots*)]
+          (order-args (fn [as] (emit-call tail? head as tl ich)))))
       ;; record ctor with matching arity: inline the native per-arity ctor
       ;; (make-jrecN) directly — desc + ext + one inline slot per field —
       ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
@@ -1319,22 +1323,19 @@
         (map (fn [[nm _ proc]] (plain-call "eq?" [(hoist-seed-root core nm) proc]))
              builder-symbol-calls)))))
 
-(defn- emit-builder-replace-args [replace-root transform frame [match replacement]]
-  (let [[a k v proc] (repeatedly 4 #(fresh-label "_kv$"))
-        ;; On a mismatch apply the precise linked callable read by the fast
-        ;; step. The runtime supplies the persistent prefix as its receiver.
-        called (apply-linked-root proc [v match replacement])
-        replaced (with-site transform (if (trace-frames?) (site-restore called) called))
-        retry (str "(lambda (" (str/join " " [a k v proc]) ") "
-                   (plain-call "jolt-assoc3" [a k replaced]) ")")]
-    ;; This step belongs to the reducer literal. Bound under that literal's
-    ;; name, a throw from the replacement keeps the reducer's trace frame.
-    [(str "(lambda () " replace-root ")") match replacement
-     (if frame (str "(letrec ((" frame " " retry ")) " frame ")") retry)]))
+(defn- builder-replace-step
+  "The reducer's arity with a fourth parameter, the linked replace callable
+  the fast step read, which its replace call applies in place of a root read."
+  [arity]
+  (let [taken (set (map munge-name (:params arity)))
+        proc (first (remove #(contains? taken (munge-name %)) (repeatedly #(fresh-label "_kv$"))))]
+    (-> arity
+        (update :params #(conj (vec %) proc))
+        (assoc-in [:body :args 2 :fn :root-binding] (munge-name proc)))))
 
 (defn- emit-reduce-kv-builder [node tail?]
   (when (and (= "reduce-kv" (:name (:fn node))) (chez-linked-fast-path?))
-    (when-let [{:keys [kind transform literals]} (facts/closed-reducer-plan (cur) node)]
+    (when-let [{:keys [kind literals]} (facts/closed-reducer-plan (cur) node)]
       (let [replace-root (when (= kind :string-replace)
                            (seed-callable? nil "clojure.string" "replace" 3))
             replace? (and (string? replace-root)
@@ -1342,17 +1343,21 @@
                           (= replace-root (dl-name "clojure.string" "replace")))
             symbol-guard (when (= kind :symbol-keys) (emit-builder-symbol-guard))]
         (when (or (= kind :copy) symbol-guard replace?)
-          (let [[match replacement :as refs] (when replace? (mapv #(hoist-const-per-site (emit %)) literals))
+          (let [[match replacement] (when replace? (mapv #(hoist-const-per-site (emit %)) literals))
                 ;; The first ordinary step after a root change and the rest
                 ;; of the callback must receive the very same literal objects.
                 arg-nodes (cond-> (:args node)
                             replace? (assoc-in [0 :arities 0 :body :args 2 :args 1 :literal-binding] match)
                             replace? (assoc-in [0 :arities 0 :body :args 2 :args 2 :literal-binding] replacement))
-                frame (atom nil)
-                args (into [(binding [*frame-name-sink* frame] (emit (first arg-nodes)))]
+                ;; On a root change the runtime applies the reducer's own body,
+                ;; emitted once more by emit-fn with the callable it read, to
+                ;; the persistent prefix. Its trace is the literal's.
+                variant (atom (when replace? {:rewrite builder-replace-step}))
+                args (into [(binding [*step-variant* variant] (emit (first arg-nodes)))]
                            (map emit) (rest arg-nodes))
+                step (:step @variant)
                 temps (mapv (fn [_] (fresh-label "_kv$")) args)
-                binds (map (fn [nm arg] (str "(" nm " " arg ")")) temps args)
+                binds (str/join " " (map (fn [nm arg] (str "(" nm " " arg ")")) temps args))
                 source-guard (plain-call "jolt-reduce-kv-builder-source?" [(peek temps)])
                 guard (if symbol-guard (plain-call "and" [source-guard symbol-guard]) source-guard)
                 call (fn [proc as] (emit-fused-site-call node tail? proc as))
@@ -1360,11 +1365,13 @@
                        :copy (call "jolt-reduce-kv-build-copy" temps)
                        :symbol-keys (call "jolt-reduce-kv-build-symbol-keys" temps)
                        :string-replace
-                       (call "jolt-reduce-kv-build-string-replace"
-                             (into temps (emit-builder-replace-args replace-root transform
-                                                                    (first @frame) refs))))]
-            (str "(let* (" (str/join " " binds) ") (if " guard " " fast " "
-                 (call "jolt-reduce-kv" temps) "))")))))))
+                       (when step
+                         (call "jolt-reduce-kv-build-string-replace"
+                               (into temps [(str "(lambda () " replace-root ")") match replacement step]))))
+                ordinary (call "jolt-reduce-kv" temps)]
+            (if fast
+              (str "(let* (" binds ") (if " guard " " fast " " ordinary "))")
+              (str "(let* (" binds ") " ordinary ")"))))))))
 
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail

@@ -587,8 +587,11 @@ out_xf="$("$work/filtertracebin" 2>&1)"
 expect_match "built: rebound comp points to its own call in the pipeline" "$out_xf" 'app\.filtertrace/widths (app/filtertrace\.clj:4)'
 
 # A rebound clojure.string/replace takes the header builder's ordinary step.
-# The replacement's throw keeps the reducer's frame, as when a custom timer
-# handler sends the whole fold down the ordinary path.
+# That step runs the reducer's own body with the root the builder read, so
+# whatever the root does there, the throwable is the one a custom timer
+# handler's ordinary driver produces: the same :via, :trace and data. The
+# roots cover a throwing fn, a host fn's type error (subs), a type error from
+# a core fn, IFn and procedure arity errors and a value that is not an IFn.
 cat > "$work/src/app/kvtrace.clj" <<'EOF'
 (ns app.kvtrace
   (:require [clojure.string :as string]))
@@ -597,22 +600,44 @@ cat > "$work/src/app/kvtrace.clj" <<'EOF'
                (assoc a k (string/replace v "x" "y")))
              {} m))
 (defn explode [s _ _] (throw (ex-info "changed root" {:s s})))
+(def roots
+  [["explode" explode] ["subs" subs] ["assoc" assoc]
+   ["keyword" :replacement] ["fn" (fn [_ _] "wrong arity")] ["long" 42]])
 (defn -main [& [mode]]
   (let [tick (jolt.host/scheme-proc "timer-interrupt-handler")
-        standard (tick)]
+        standard (tick)
+        m (array-map :a "ax" :b "bx" :c "cx")]
     (when (= "ordinary" mode) (tick (fn [] nil)))
-    (with-redefs [string/replace explode]
-      (try (headers (array-map :a "ax" :b "bx" :c "cx"))
+    (println "KVGUARD" ((jolt.host/scheme-proc "jolt-reduce-kv-builder-source?") m))
+    (doseq [[label root] roots]
+      (try (with-redefs [string/replace root] (headers m))
            (catch Throwable e
-             (println "KVTRACE" (mapv first (:trace (Throwable->map e)))))))
+             (println "KVTRACE" label (pr-str (Throwable->map e))))))
     (tick standard)))
 EOF
 ( cd "$work" && "$joltabs" build -m app.kvtrace -o kvtracebin >/dev/null 2>&1 )
 calls="$(grep -hoF '(jolt-reduce-kv-build-string-replace ' "$work/kvtracebin.build"/app-[0-9]*.ss | wc -l | tr -d '[:space:]')"
 expect_match "built: the header reducer emits its builder" "$calls" '^1$'
-kv_frames='^KVTRACE \[app\.kvtrace\$explode app\.kvtrace\$headers\$fn__0 app\.kvtrace\$_main'
-expect_match "built: the builder's ordinary step keeps the reducer frame" "$("$work/kvtracebin" 2>&1)" "$kv_frames"
-expect_match "built: the ordinary driver names the same frames" "$("$work/kvtracebin" ordinary 2>&1)" "$kv_frames"
+kv_default="$("$work/kvtracebin" 2>&1)"
+kv_ordinary="$("$work/kvtracebin" ordinary 2>&1)"
+expect_match "built: the default driver admits the header map" "$kv_default" '^KVGUARD true$'
+expect_match "built: a custom timer handler declines it" "$kv_ordinary" '^KVGUARD false$'
+printf '%s\n' "$kv_default" | grep '^KVTRACE' > "$work/kvtrace.default" || true
+printf '%s\n' "$kv_ordinary" | grep '^KVTRACE' > "$work/kvtrace.ordinary" || true
+kv_maps="$(cat "$work/kvtrace.default")"
+expect_match "built: every rebound root threw" "$(wc -l < "$work/kvtrace.default" | tr -d '[:space:]')" '^6$'
+if cmp -s "$work/kvtrace.default" "$work/kvtrace.ordinary"; then
+  pass=$((pass + 1))
+else
+  echo "  FAIL: built: the builder's ordinary step throws what the ordinary driver throws"
+  diff "$work/kvtrace.ordinary" "$work/kvtrace.default"
+  fails=$((fails + 1))
+fi
+expect_match "built: a throwing root is innermost, above the reducer" "$kv_maps" \
+  '^KVTRACE explode .*:trace \[\[app\.kvtrace\$explode invoke [^]]*\] \[app\.kvtrace\$headers\$fn__0 invoke'
+expect_match "built: a host fn's type error is at the reducer" "$kv_maps" \
+  '^KVTRACE subs .*:at \[app\.kvtrace\$headers\$fn__0 invoke.*:trace \[\[app\.kvtrace\$headers\$fn__0 invoke'
+expect_no_match "built: no step reports the tail-called headers frame" "$kv_maps" 'app\.kvtrace\$headers invoke'
 
 # A full Chez continuation may return to a callback after the reduction has
 # advanced or finished. Test both AOT paths and check which one was emitted.
