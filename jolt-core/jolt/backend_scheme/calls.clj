@@ -283,9 +283,11 @@
 (defn- simple-operand? [s]
   (and (pos? (count s))
        (not (some #{\( \) \space \newline \tab \" \' \# \| \;} s))))
-(defn apply-linked-root
-  "Apply an already bound linked root to already evaluated operands."
-  [root names]
+;; A lowering that read a linked root itself binds that value's local here,
+;; keyed by the jv$ name, around one call's emission. The call then applies
+;; the value it was handed through the same text as a read of the root.
+(def ^:dynamic *read-roots* nil)
+(defn- apply-linked-root [root names]
   (let [args (if (seq names) (str " " (str/join " " names)) "")]
     (str "(if (" (unsafe-prefix) "procedure? " root ") (" root args
          ") (jolt-invoke " root args "))")))
@@ -294,7 +296,7 @@
         bound (mapv (fn [s] (if (simple-operand? s) [s nil] (let [t (fresh-label "_la$")] [t s])))
                     operand-strs)
         names (mapv first bound)
-        binds (str "(" p " " callee ")"
+        binds (str "(" p " " (get *read-roots* callee callee) ")"
                    (apply str (keep (fn [[t s]] (when s (str " (" t " " s ")"))) bound)))]
     (str "(let (" binds ") " (apply-linked-root p names) ")")))
 (defn- linked-binding? [callee]

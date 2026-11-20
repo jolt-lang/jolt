@@ -548,11 +548,27 @@
                                 "(jolt-register-variadic! " variadic-fixed " " fnsrc-nm "))")
                            (str "(letrec ((" fnsrc-nm " " lambda ")) " fnsrc-nm ")")))))
 
-;; While bound to an atom, the first fn literal emitted stores [name], the
-;; binding Chez names its procedure after, or [nil] for a bare lambda. A
-;; lowering that applies part of a literal's body in its own lambda binds
-;; that lambda under the same name, so its frame reads as the literal's.
-(def ^:dynamic *frame-name-sink* nil)
+;; A lowering that must run one step of a literal's body in a procedure of its
+;; own binds this to an atom holding {:rewrite f}. The first fn literal emitted
+;; takes it, and when the literal has a single fixed arity and no ^:once box it
+;; also emits (f arity) as a step through this same clause emission: the site
+;; entry and each call's restore and marker are the literal's, and the step is
+;; bound under the literal's frame name. The atom then holds {:step lambda}, so
+;; a throw from the step reports what the same throw from the literal would.
+(def ^:dynamic *step-variant* nil)
+
+(defn- claim-step-variant []
+  (when-let [sink *step-variant*]
+    (when-let [rewrite (:rewrite @sink)]
+      (reset! sink {})
+      [sink rewrite])))
+
+(defn- emit-step-variant [[sink rewrite] emit arities self site frame self-wrap]
+  (let [variant [(rewrite (first arities))]
+        clauses (fill-self-wrap (emit-fn-clauses emit variant self site frame nil self-wrap)
+                                self-wrap)
+        lambda (fn-lambda clauses variant nil nil)]
+    (reset! sink {:step (if frame (str "(letrec ((" frame " " lambda ")) " frame ")") lambda)})))
 
 (defn emit-fn [emit node]
   (let [;; a def's DIRECT anonymous init is named by its define, so it keeps the
@@ -582,8 +598,8 @@
         ;; the name a NAMED fn's frame carries, which is what its tail sites
         ;; record; nil for an anonymous literal, whose tail sites skip
         site (when self (or qname fnsrc-nm self))
-        _ (when-let [sink *frame-name-sink*]
-            (when (nil? @sink) (reset! sink [(if self site fnsrc-nm)])))
+        ;; claimed before the bodies emit, so no nested literal takes it
+        variant (claim-step-variant)
         ;; --- fn identity -------------------------------------------------
         ;; Chez shares ONE closure object across every evaluation of a lambda
         ;; with no free variables, where Clojure allocates a fresh fn each time.
@@ -605,8 +621,13 @@
         once (fn-once-box node arities)
         self-wrap (when (and self (trace-frames?))
                     {:tok (fresh-label "_srself$") :unsafe (atom false)})
-        clauses (emit-fn-clauses emit (or (:marked once) arities) self site (or site fnsrc-nm) (:clears once) self-wrap)
-        lambda (fn-lambda (fill-self-wrap clauses self-wrap) arities id-nm once)
+        frame (or site fnsrc-nm)
+        clauses (emit-fn-clauses emit (or (:marked once) arities) self site frame (:clears once) self-wrap)
+        clauses (fill-self-wrap clauses self-wrap)
+        _ (when (and variant (not once)
+                     (= 1 (count arities)) (not (:rest (first arities))))
+            (emit-step-variant variant emit arities self site frame self-wrap))
+        lambda (fn-lambda clauses arities id-nm once)
         ;; A fn with a variadic arity records that arity's FIXED param count, so
         ;; jolt-apply can hand it a lazy rest instead of realizing the tail. The
         ;; count is recorded rather than read back from procedure-arity-mask,
