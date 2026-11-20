@@ -193,14 +193,44 @@
                (and (eq? (vector-ref u 0) 'loaded)
                     (begin (lazy-shim-first-sight! u) #t)))))))
 
+;; DEFINITIONS FIRST. A load publishes as it goes: each registration a file's top
+;; level makes (a constructor, a method table, statics) is visible to every
+;; thread the moment it is made, and a thread that HITS it takes no trigger --
+;; only a miss waits for the loading thread (lazy-shim-load!). So a registered
+;; closure must never name a definition the file has not reached yet: four
+;; threads spawning at once found ProcessBuilder's "start" registered while
+;; another was still loading process.ss, and called proc-pb-start before its
+;; define had run ("variable proc-pb-start is not bound", burinc/jolt#24). The
+;; files keep their definitions next to what registers them; every load runs the
+;; definition forms first, in order, then everything else, in order. That is
+;; sound because no definition's value depends on a registration made above it,
+;; which test/chez/lazy-hoist-test.ss (make lazyshims) checks of every lazy file.
+(define lazy-shim-definition-heads
+  '(define define-syntax define-record-type define-values define-ftype
+    define-condition-type define-enumeration))
+(define (lazy-shim-definition? f)
+  (and (pair? f) (memq (car f) lazy-shim-definition-heads) #t))
+(define (lazy-shim-hoist forms)
+  (append (filter lazy-shim-definition? forms)
+          (filter (lambda (f) (not (lazy-shim-definition? f))) forms)))
+(define (lazy-shim-read-forms path)
+  (call-with-input-file path
+    (lambda (p)
+      (let loop ((acc '()))
+        (let ((f (read p)))
+          (if (eof-object? f) (reverse acc) (loop (cons f acc))))))))
+(define (lazy-shim-hoisted-forms path) (lazy-shim-hoist (lazy-shim-read-forms path)))
+
 (define (lazy-shim-load-code! path abs wanted kind)
   ;; io.ss's reader of the embedded fasl blob, resolved at the call: this file
-  ;; loads before io.ss does
+  ;; loads before io.ss does. The embedded fasl was compiled from the hoisted
+  ;; forms (build-jolt.ss); a source file is hoisted here.
   (let ((bv (let ((fetch (sa-baked-global 'jolt-embedded-fasl)))
               (and fetch (fetch (string-append "lazy:" path))))))
     (cond
       (bv (load-compiled-from-port (open-bytevector-input-port bv)))
-      ((and abs (file-exists? abs)) (load abs))
+      ((and abs (file-exists? abs))
+       (for-each (lambda (f) (eval f)) (lazy-shim-hoisted-forms abs)))
       (else (lazy-shim-absent! path wanted kind)))))
 
 ;; A class the JVM cannot find at run time raises NoClassDefFoundError where code
