@@ -1822,7 +1822,7 @@
 ;; The C entry's address, or #f when no region of that name is linked into this
 ;; process (the REPL, source mode, and the build process itself before the
 ;; region is compiled): the call site then runs its fallback.
-(define (jolt-native-entry sym) (and (sa-foreign-entry? sym) (foreign-entry sym)))
+(define (jolt-native-entry sym) (and (sa-foreign-entry? sym) (sa-foreign-entry-address sym)))
 
 ;; Every region whose call site has loaded, sym -> C source, for jolt build to
 ;; compile and link. Registered when the site's top-level form loads, so a build
