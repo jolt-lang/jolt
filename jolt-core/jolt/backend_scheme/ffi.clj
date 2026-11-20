@@ -4,7 +4,8 @@
   layouts, and the marshaling across the C boundary in both directions."
   (:require [clojure.string :as str]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
-            [jolt.backend-scheme.session :refer [fresh-label target]]))
+            [jolt.backend-scheme.session :refer [fresh-label target]]
+            [jolt.backend-scheme.hoist :refer [hoist-load-time]]))
 
 ;; jolt.ffi/__cfn -> a Chez foreign-procedure (jolt-ffi). The C symbol + types are
 ;; compile-time literals from the analyzer, so this emits a real typed binding;
@@ -755,10 +756,78 @@
       register)))
 
 ;; The three jolt.ffi IR ops. EMIT lowers a callable's wrapped fn.
+;; --- native regions (stdlib/jolt/native) ------------------------------------
+;; jolt.native/__region -> a call to the region's C entry when it is linked into
+;; this process, else its Jolt fallback. The entry is resolved once, when the
+;; enclosing top-level form loads (hoist-load-time), which also registers the C
+;; source for jolt build; it answers #f in the REPL, under jolt run, and in the
+;; build process itself, and the site then calls the fallback. Each argument
+;; goes through the host's check for its kind before either path, so both see
+;; the same coerced values. A ^doubles argument crosses as its flvector
+;; (scheme-object) and C reads it in place: the call is a plain foreign call,
+;; never __collect_safe, so the thread stays active and no collection can move
+;; the flvector while C holds its address. C reports a failure in the 40-byte
+;; out buffer (code, two longs, a double, and an owned result's length) and the
+;; raise fn turns it into the JVM's exception.
+(def ^:private native-arg-chez
+  {"doubles" "scheme-object" "long" "integer-64" "double" "double" "bool" "boolean"})
+(def ^:private native-result-chez
+  {"doubles" "uptr" "unit" "int" "long" "integer-64" "double" "double" "bool" "boolean"})
+(def ^:private native-arg-check
+  {"doubles" "jolt-native-arg-doubles" "long" "jolt-native-arg-long"
+   "double" "jolt-native-arg-double" "bool" "jolt-native-arg-bool"})
+
+(defn- native-entry-expr [sym argtypes ret]
+  (let [a (fresh-label "jn_entry")]
+    (str "(let ((" a " (jolt-native-entry " (chez-str-lit sym) "))) "
+         "(and " a " (sa-foreign-procedure " a " (" (str/join " " argtypes) ") " ret ")))")))
+
+(defn- emit-native-region [emit node]
+  (let [kinds (:kinds node)
+        args (mapv emit (:args node))
+        fallback (emit (:fallback node))]
+    (if (= :gambit (target))
+      ;; no ffi tier on gambit: the checked Jolt program is the region
+      (str "(jolt-invoke " fallback (apply str (map #(str " " %) args)) ")")
+      (let [sym (:sym node)
+            result (:result node)
+            argtypes (conj (mapv native-arg-chez kinds) "u8*")
+            entry (hoist-load-time
+                   (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
+                        (native-entry-expr sym argtypes (native-result-chez result)) ")"))
+            copy-out (when (= result "doubles")
+                       (hoist-load-time
+                        (native-entry-expr (str sym "_copy_out") ["scheme-object" "uptr" "integer-64"] "void")))
+            p (fresh-label "jn_p")
+            out (fresh-label "jn_out")
+            r (fresh-label "jn_r")
+            as (mapv (fn [_] (fresh-label "jn_a")) kinds)
+            c-args (map (fn [k a] (if (= k "doubles") (str "(jolt-native-flv " a ")") a)) kinds as)
+            raise (emit (:raise node))
+            ref (fn [off] (str "(bytevector-s64-native-ref " out " " off ")"))
+            value (case result
+                    "doubles" (let [n (fresh-label "jn_n") fv (fresh-label "jn_fv")]
+                                (str "(let* ((" n " " (ref 32) ") (" fv " (make-flvector " n "))) "
+                                     "(" copy-out " " fv " " r " " n ") "
+                                     "(jolt-native-wrap-flv " fv "))"))
+                    "unit" "jolt-nil"
+                    r)]
+        (str "(let ((" p " " entry ")"
+             (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
+             ") "
+             "(if " p " "
+             "(let* ((" out " (make-bytevector 40 0)) "
+             "(" r " (" p (apply str (map #(str " " %) c-args)) " " out "))) "
+             "(if (fx= 0 " (ref 0) ") " value " "
+             "(jolt-invoke " raise " " (ref 0) " " (ref 8) " " (ref 16) " "
+             "(bytevector-ieee-double-native-ref " out " 24)))) "
+             "(jolt-invoke " fallback (apply str (map #(str " " %) as)) ")))")))))
+
 (defn emit-ffi-node [emit node]
   (case (:op node)
     :ffi-layout (emit-ffi-layout node)
     :ffi-fn (emit-ffi-fn node)
+    :native-region (emit-native-region emit node)
     :ffi-callable
     (if (and (= :gambit (target))
              (or (ffi-by-value? (:rettype node)) (some ffi-by-value? (:argtypes node))))

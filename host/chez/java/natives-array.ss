@@ -1786,3 +1786,58 @@
 (register-class-statics!
  "clojure.lang.Reflector"
  (list (cons "getMethods" reflect-get-methods)))
+
+;; --- native regions (stdlib/jolt/native) ------------------------------------
+;; A region call (the backend's :native-region lowering) passes each argument
+;; through one of these before either path runs, so the C half and the Jolt
+;; fallback see the same coerced values and fail the same way. A ^long or
+;; ^double parameter converts as clojure.core/long and double do; a ^boolean
+;; one must be a boolean; a ^doubles one must be a double-array whose backing
+;; is still an flvector. jolt widens a double-array's backing to a plain vector
+;; when a non-number is stored into it, and C reads the argument as raw flvector
+;; memory, so that case is refused here rather than read.
+(define (jolt-native-arg-long x) (if (fixnum? x) x (jolt-long-cast x)))
+(define (jolt-native-arg-double x) (if (flonum? x) x (jolt-double x)))
+(define (jolt-native-arg-bool x)
+  (if (boolean? x)
+      x
+      (throw-jvm 'ClassCastException
+                 (string-append "native region: a ^boolean parameter got "
+                                (jolt-class-name x)))))
+(define (jolt-native-arg-doubles a)
+  (cond
+    ((not (and (jolt-array? a) (eq? (jolt-array-kind a) 'double)))
+     (throw-jvm 'ClassCastException
+                (string-append "native region: a ^doubles parameter got "
+                               (jolt-class-name a))))
+    ((not (flvector? (jolt-array-vec a)))
+     (throw-jvm 'IllegalArgumentException
+                "native region: this double-array holds a value that is not a double"))
+    (else a)))
+;; The flvector C reads in place. Only after jolt-native-arg-doubles.
+(define (jolt-native-flv a) (jolt-array-vec a))
+;; An owned double-array result, filled from the region's buffer by C.
+(define (jolt-native-wrap-flv fv) (make-jolt-array fv 'double))
+
+;; The C entry's address, or #f when no region of that name is linked into this
+;; process (the REPL, source mode, and the build process itself before the
+;; region is compiled): the call site then runs its fallback.
+(define (jolt-native-entry sym) (and (sa-foreign-entry? sym) (foreign-entry sym)))
+
+;; Every region whose call site has loaded, sym -> C source, for jolt build to
+;; compile and link. Registered when the site's top-level form loads, so a build
+;; served from the AOT cache sees the same set as one that macroexpanded.
+(define jolt-native-regions '())
+(define jolt-native-regions-mutex (make-mutex))
+(define (jolt-native-register! sym src)
+  (jolt-with-mutex jolt-native-regions-mutex
+    (unless (assoc sym jolt-native-regions)
+      (set! jolt-native-regions (cons (cons sym src) jolt-native-regions)))))
+(define (jolt-native-registered)
+  (jolt-with-mutex jolt-native-regions-mutex (reverse jolt-native-regions)))
+;; jolt.native/linked-regions: each loaded region as [sym linked?], as a jolt
+;; vector of vectors (a Scheme list does not cross into jolt as a seq).
+(define (jolt-native-linked)
+  (make-pvec (list->vector
+              (map (lambda (r) (make-pvec (vector (car r) (if (jolt-native-entry (car r)) #t #f))))
+                   (jolt-native-registered)))))
