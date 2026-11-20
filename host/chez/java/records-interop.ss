@@ -101,7 +101,7 @@
         ;; ...and a reify's protocol redefined after its site was laid out
         ;; (records-dispatch.ss reify-retired-protos)
         ((jreify? val)
-         (let ((rs (reify-retired-protos val)))
+         (let ((rs (if (unbox reify-retired-box) (reify-retired-protos val) '())))
            (and (pair? rs) (exists (lambda (p) (proto-class-match? p tname)) rs) #t)))
         (else #f)))
 
@@ -201,7 +201,9 @@
   (cond ((jrec? val) (jrec-desc val))
         ;; a reify whose site lost a protocol answers apart from the sites that
         ;; share its protocol list, so it is not memoized under that list
-        ((jreify? val) (and (not (jreify-delegate val)) (null? (reify-retired-protos val)) (jreify-protos val)))
+        ((jreify? val) (and (not (jreify-delegate val))
+                            (or (not (unbox reify-retired-box)) (null? (reify-retired-protos val)))
+                            (jreify-protos val)))
         ((class-fast-name val))
         (else (ref-kind-key val))))
 ;; Without a key every (instance? IRef an-atom) walked the arms and the taxonomy,
