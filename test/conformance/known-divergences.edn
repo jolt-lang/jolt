@@ -58,6 +58,20 @@
   ;; arrive unverified. Rendering is pr-str for a value, "throws <SimpleName>" for
   ;; a raise (the ROOT cause's simple name). :jvm/:jolt outside :check are prose
   ;; for a reader; the :check pair is what the gate holds to.
+  ;; A protocol method's fn. The JVM's class is an artifact of emit-protocol's
+  ;; expansion -- the gensym'd G__N fn inside the eval wrapper -- whose counters
+  ;; change from run to run; jolt names it after the method, as its other fns are
+  ;; named after their def. Matching the shape would mean emitting protocol
+  ;; methods differently from every other def, which the protocol call site's
+  ;; direct path relies on. Digits are masked so the check holds across runs.
+  {:category :host-model
+   :behavior "(class m) for a protocol method m"
+   :jvm "user$evalN$fn__N$G__N__N, the gensym'd fn defprotocol's expansion builds"
+   :jolt "user$m, named after the method"
+   :check {:expr "(do (defprotocol KdProtoFnClass (kd-pfc [x])) (clojure.string/replace (.getName (class kd-pfc)) #\"\\d+\" \"N\"))"
+           :jvm "\"user$evalN$fn__N$G__N__N\""
+           :jolt "\"user$kd_pfc\""}
+   :note "Every other fn's class follows the JVM's Compiler naming; only the counters differ there (the :prose entry on generated class names)."}
   ;; The JVM checks core macro calls against clojure.core.specs.alpha before
   ;; expanding them; jolt carries no macro specs. A malformed call still fails at
   ;; compile time on both -- (let [x] 1), (for [] 1), (doseq [x] 1) -- but with
