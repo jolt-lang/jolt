@@ -165,11 +165,16 @@
                           " else " (raise! node :long-range :d d))
                    r)))))
 
+(defn- emit-index-cast
+  "aget/aset take their index through RT.intCast, which on the JVM runs as the
+  index argument is evaluated: before a later argument (aset's value) runs, so
+  its side effects never happen when the index overflows."
+  [node idx]
+  (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow)))
+
 (defn- emit-array-index
-  "aget/aset take their index through RT.intCast: outside the int range is an
-  integer overflow, inside it an out-of-bounds index."
+  "The bounds check, inside the store or load: after every argument ran."
   [node arr idx]
-  (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow))
   (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len"))))
 
 (defn- bind! [id t atom]
@@ -262,10 +267,14 @@
             r)
     :alength (str "(" (emit (:arr node)) ".len)")
     :aget (let [arr (emit (:arr node)) idx (emit (:idx node)) r (fresh! (:type node))]
+            (emit-index-cast node idx)
             (emit-array-index node arr idx)
             (line! r " = " arr ".data[" idx "];")
             r)
-    :aset (let [arr (emit (:arr node)) idx (emit (:idx node)) v (emit (:val node))
+    :aset (let [arr (emit (:arr node))
+                idx (emit (:idx node))
+                _ (emit-index-cast (assoc node :live (:live-idx node)) idx)
+                v (emit (:val node))
                 r (fresh! (:type node))]
             (emit-array-index node arr idx)
             (line! r " = " (as-double-if (:type node) v (:type (:val node))) ";")

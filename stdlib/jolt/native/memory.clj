@@ -211,10 +211,13 @@
     :aget (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))]
             (snapshot (assoc node :arr arr :idx idx)))
+    ;; :live-idx is what is live when the index has run: the index cast fails
+    ;; there, before the value runs (emit-index-cast)
     :aset (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))
+                live-idx (deleters)
                 v (visit (:val node))]
-            (snapshot (assoc node :arr arr :idx idx :val v)))
+            (snapshot (assoc node :arr arr :idx idx :val v :live-idx live-idx)))
     :aclone (let [arr (visit-borrowing node :arr)
                   n (snapshot (assoc node :arr arr))]
               (manage! node)
