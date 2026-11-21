@@ -458,8 +458,9 @@
         2 (if (chance 30) (list 'alength 'ls) (list 'alength (borrowable)))
         3 (if (chance 40) (list 'aget 'ls (gen-idx d)) (list 'long (gen :double (dec d))))
         4 (if (chance 30) 9223372036854775807 (rnd 100))
-        5 (let [[t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        5 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
+            (list 'if c t e))
         6 (gen-let :long d)
         (pick (concat ['n (rnd 6)] ls))))))
 
@@ -472,8 +473,9 @@
         1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
         2 (list 'Math/sqrt (gen :double (dec d)))
         3 (list 'double (gen :long (dec d)))
-        4 (let [[t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        4 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
+            (list 'if c t e))
         5 (gen-let :double d)
         6 (gen-loop :double d)
         8 (list 'do (list 'aset 'ls (gen-idx d) (gen :long (dec d))) (gen :double (dec d)))
@@ -512,8 +514,9 @@
       (case (rnd 5)
         0 (list 'double-array (gen-idx d))
         1 (list 'aclone (borrowable))
-        2 (let [[t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        2 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
+            (list 'if c t e))
         3 (gen-let [:array :double] d)
         (gen-loop [:array :double] d)))))
 
