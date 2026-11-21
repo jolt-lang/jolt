@@ -325,10 +325,46 @@
 (check-run "a recursive helper with a return hint" '[^long n] '((fib n)) [[0] [1] [15]] :raw true)
 
 (check-reject "a recursive helper without a hint" '[^long n] '((fib-nohint n)) #"return type hint")
-(check-reject "a helper returning an array it borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
-              #"cannot return an array it borrowed")
+(check-reject "a helper returning an array the region borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
+              #"only borrowed from its caller.*pass \(aclone x\)")
 (check-reject "moving the array a helper borrows in a sibling argument" '[]
               '((let [a (double-array 3)] (pick-at a (let [b a] 0)))) #"after it was given away")
+
+;; the index cast runs before aset's value (as on the JVM); its failure frees what
+;; is live THEN, not what the value expression would have allocated or consumed
+(check-run "an index overflow before aset's value, inside a loop with temporaries" '[^doubles xs ^long big]
+           '((loop [i 0 s 0.0]
+               (if (< i 3)
+                 (recur (inc i) (+ s (aset xs (if (= i 2) big 0) (aget (double-array 2) 0))))
+                 s)))
+           [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
+(check-run "an index overflow before a value that moves an owned array" '[^doubles xs ^long big]
+           '((let [a (double-array 2)] (aset xs big (let [b a] (aget b 0)))))
+           [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
+
+;; --- inferred ownership: a helper takes the arrays it gives away ----------------
+(defnative keep-it [a] a)
+(defnative maybe-keep [a c] (if c a (double-array 1)))
+(defnative pass-on [a] (keep-it a))
+(defnative ^doubles drain [a n] (if (<= n 0) a (drain a (dec n))))
+
+(check-run "a helper that returns its argument takes it" '[]
+           '((let [a (double-array 3)] (aset a 0 1.5) (keep-it a)))
+           [[]] :raw true)
+(check-run "a helper that takes on one path frees it on the other" '[^boolean c]
+           '((let [a (double-array 2)] (alength (maybe-keep a c))))
+           [[true] [false]] :raw true)
+(check-run "taken through another helper" '[] '((let [a (double-array 2)] (aset a 1 3.0) (pass-on a))) [[]] :raw true)
+(check-run "taken through recursion" '[^long n] '((drain (double-array 3) n)) [[0] [5]] :raw true)
+(check-reject "using an array after a helper took it" '[]
+              '((let [a (double-array 3) b (keep-it a)] (aget a 0)))
+              #"after it was given away \(moved\); native-test/keep-it took ownership of its 1st argument \(it returns it\)")
+(check-reject "the explanation follows a transitive take" '[]
+              '((let [a (double-array 3) b (pass-on a)] (alength a)))
+              #"native-test/pass-on took ownership of its 1st argument \(it passes it to native-test/keep-it, which takes it\)")
+(check-reject "a taking helper in a loop iteration that continues" '[]
+              '((let [a (double-array 1)] (loop [i 0] (if (< i 3) (let [b (keep-it a)] (recur (inc i))) 0))))
+              #"loop iteration that continues")
 
 ;; --- failures: same exception as Jolt, nothing leaked -------------------------
 
@@ -558,6 +594,11 @@
       (do (reset! *planted* true) (pick dead))
       (and (seq movable) (plant-chance 35 75))
       (let [v (pick movable)] (kill! v) v)
+      ;; a helper that takes its argument: passing an owned local moves it
+      (and (seq movable) (chance 15))
+      (let [v (pick movable)]
+        (kill! v)
+        (if (chance 50) (list 'keep-it v) (list 'maybe-keep v (gen :bool (dec d)))))
       ;; the other violation: moving an outer value in an iteration that continues
       (and *plant-mode* (seq (:borrow-only @*g*)) (chance 30)
            (some (set (live-owned)) (:borrow-only @*g*)))

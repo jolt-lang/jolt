@@ -197,6 +197,7 @@
   {'long :long 'double :double 'boolean :bool 'doubles [:array :double] 'longs [:array :long]})
 
 (defn- loan-type [t] (if (owned? t) [:loan (elem-type t)] t))
+(defn- first-or-nil [t] (when (vector? t) (first t)))
 
 (defn- instantiate!
   "Analyze helper h's body for these parameter types, once per types."
@@ -205,12 +206,21 @@
         hint (when-let [tag (:ret h)] (or (ret-hints (if (string? tag) (symbol tag) tag))
                                           (fail form (str "bad return hint on " (:sym h)))))]
     (swap! *instances* assoc key {:iid iid :ret hint :pending true})
-    (let [ps (mapv (fn [p t] {:name p :id (next-id) :type t}) (:params h) ptypes)
+    ;; an array the region owns arrives typed as owned: whether the helper takes
+    ;; it (gives it away on some path) or only borrows it is inferred by the
+    ;; ownership pass (jolt.native.memory), which strips the ones it never gives
+    ;; away. An array the region borrowed from Jolt ([:ref e]) can only be lent.
+    (let [ps (mapv (fn [p t] {:name p :id (next-id)
+                              :type (if (= :loan (first-or-nil t)) [:array (elem-type t)] t)
+                              :candidate (= :loan (first-or-nil t))})
+                   (:params h) ptypes)
           env (into {} (map (fn [p] [(:name p) p]) ps))
           body (binding [*ns* (the-ns (:ns h))] (analyze-body env (:body h) false form))
           t (:type body)]
       (when (borrowed? t)
-        (fail form (str "native helper " (:sym h) " cannot return an array it borrowed; return (aclone it)")))
+        (fail form (str "native helper " (:sym h) " returns an array the region only borrowed from"
+                        " its caller (a ^doubles or ^longs parameter); pass (aclone x) so the helper"
+                        " gets one it can own")))
       (when (and hint (not= hint t) (not= :never t))
         (fail form (str "native helper " (:sym h) " is hinted " (pr-str hint) " but returns " (pr-str t))))
       (let [inst {:iid iid :ret (or hint t) :params ps :body body :sym (:sym h) :types ptypes}]
@@ -228,7 +238,7 @@
     (when (and (:pending inst) (nil? (:ret inst)))
       (fail form (str "native helper " (:sym h) " calls itself: give it a return type hint, "
                       "(defnative ^double " (name (:sym h)) " [...] ...)")))
-    (node :call (:ret inst) form :instance (:iid inst) :args args)))
+    (node :call (:ret inst) form :instance (:iid inst) :args args :helper-sym (:sym h))))
 
 (defn- analyze-call [env [f & raw :as form] tail]
   (let [args (mapv #(analyze env % false) raw)
