@@ -37,6 +37,18 @@
        "int64_t " sym "_peak(void) { int64_t p = jn_peak; jn_peak = jn_live_n; return p; }\n"))
 
 (def flv (scm/call "record-accessor" (scm/call "record-rtd" (double-array 1)) 0))
+
+;; One shared definition of the regions' thread-local status: each region is
+;; its own shared object here, and an object with its own _Thread_local takes
+;; a pthread key (macOS allows 512; a run of ~510 regions aborted).
+(def rt-so (str work-dir "/jn_rt.dylib"))
+(spit (str work-dir "/jn_rt.c")
+      (str "#include <stdint.h>\n"
+           "typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn_out;\n"
+           "_Thread_local jn_out jn_tls;\n"))
+(let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" rt-so (str work-dir "/jn_rt.c")]))]
+  (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_rt" {}))))
+(scm/call "load-shared-object" rt-so)
 (def counter (atom 0))
 
 (defn compile-region
@@ -48,7 +60,7 @@
         c (str work-dir "/" sym ".c")
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
-        cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror"
+        cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_TLS" rt-so
              "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c
              ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
              "-lm"]
@@ -603,7 +615,7 @@
 
 (defn fuzz! []
   (let [stats (atom {:accepted 0 :planted 0 :rejected-valid 0})]
-    (dotimes [k fuzz-n]
+    (doseq [k (range (or (some-> (System/getenv "NATIVE_FUZZ_SKIP") parse-long) 0) fuzz-n)]
       (let [seed (+ fuzz-seed (* 7919 k))
             [body planted?] (gen-program seed)
             label (str "fuzz seed=" seed)
