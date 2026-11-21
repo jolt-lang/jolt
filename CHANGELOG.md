@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Windows `jolt build` that links OpenSSL 4's static `libcrypto.a` as a
+  `:static` native links again. MSYS2 moved to OpenSSL 4.1, whose RNG calls
+  `BCryptGenRandom`, and the final link had no `-lbcrypt`.
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the
