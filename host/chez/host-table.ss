@@ -425,6 +425,47 @@
 (def-var! "jolt.host" "rbt-leftmost"
   (lambda (n) (let loop ((n n)) (let ((l (rb-left n))) (if (jolt-nil? l) n (loop l))))))
 
+;; The tree ops 25-sorted.clj calls. Each answers with a VALUE (the stored val,
+;; the stored key, an entry, a new tree) and never with a node, so the tree's node
+;; layout stays private to this file.
+;;
+;;   rbt-get / rbt-get-key   the stored val / stored key at K, or NF
+;;   rbt-entry               the map-entry at K (its stored key), or nil
+;;   rbt-contains?           K present
+;;   rbt-assoc               a new tree when K was absent; when K was present, a
+;;                           present marker whose rbt-present-tree is the tree with
+;;                           K's value replaced (the stored key kept), or the SAME
+;;                           tree when the value is identical (PersistentTreeMap
+;;                           returns this when found.val() == val)
+;;   rbt-without             the tree without K; the SAME tree when K is absent
+;;   rbt-min-key / -entry    the first key / entry of a non-empty tree
+(define (rb-min-node t) (let loop ((n t)) (let ((l (rb-left n))) (if (jolt-nil? l) n (loop l)))))
+(def-var! "jolt.host" "rbt-get"
+  (lambda (tree cmp k nf) (let ((n (rb-lookup cmp tree k))) (if (jolt-nil? n) nf (rb-val n)))))
+(def-var! "jolt.host" "rbt-get-key"
+  (lambda (tree cmp k nf) (let ((n (rb-lookup cmp tree k))) (if (jolt-nil? n) nf (rb-key n)))))
+(def-var! "jolt.host" "rbt-entry"
+  (lambda (tree cmp k)
+    (let ((n (rb-lookup cmp tree k))) (if (jolt-nil? n) jolt-nil (make-map-entry (rb-key n) (rb-val n))))))
+(def-var! "jolt.host" "rbt-contains?"
+  (lambda (tree cmp k) (not (jolt-nil? (rb-lookup cmp tree k)))))
+(def-var! "jolt.host" "rbt-assoc"
+  (lambda (tree cmp k v)
+    (let* ((found (box #f)) (t (rb-ins cmp tree k v found)))
+      (cond (t (rb-blacken t))
+            ((eq? v (rb-val (unbox found))) (cons 'rbt-present tree))
+            (else (cons 'rbt-present (rb-replace cmp tree k v)))))))
+(def-var! "jolt.host" "rbt-present?" (lambda (r) (pair? r)))
+(def-var! "jolt.host" "rbt-present-tree" (lambda (r) (cdr r)))
+(def-var! "jolt.host" "rbt-without"
+  (lambda (tree cmp k)
+    (if (jolt-nil? (rb-lookup cmp tree k))
+        tree
+        (let ((t (rb-del cmp tree k))) (if (jolt-nil? t) t (rb-blacken t))))))
+(def-var! "jolt.host" "rbt-min-key" (lambda (tree) (rb-key (rb-min-node tree))))
+(def-var! "jolt.host" "rbt-min-entry"
+  (lambda (tree) (let ((n (rb-min-node tree))) (make-map-entry (rb-key n) (rb-val n)))))
+
 ;; --- the in-order walk over the red-black tree -------------------------------
 ;; Over the nodes above; nil children are jolt-nil. The walk is Clojure's PersistentTreeMap$Seq: a stack
 ;; of the nodes still to visit, whose top is the next one out, so the head is

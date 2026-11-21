@@ -52,36 +52,29 @@
   (jolt.host/make-sorted tag tree cnt cmp cmp-fn ops))
 
 ;; --- sorted-map ops ---------------------------------------------------------
-;; a real map-entry (map-entry? true), so key/val/seq destructuring work like a
-;; regular map's entries.
-(defn- map-entry [t] (jolt.host/map-entry (jolt.host/rbt-key t) (jolt.host/rbt-val t)))
+;; The tree answers with values (jolt.host/rbt-get, -entry, -assoc, ...), never
+;; with its nodes, so its layout is the host's alone.
 
-(defn- lookup [sc k] (jolt.host/rbt-lookup (jolt.host/sorted-tree sc) (tree-cmp sc) k))
+(defn- contains-key? [sc k] (jolt.host/rbt-contains? (jolt.host/sorted-tree sc) (tree-cmp sc) k))
 
 (defn- sm-get [sm k not-found]
-  (let [n (lookup sm k)]
-    (if (nil? n) not-found (jolt.host/rbt-val n))))
+  (jolt.host/rbt-get (jolt.host/sorted-tree sm) (tree-cmp sm) k not-found))
 
-;; Associative.entryAt — the entry carries the node's own key, which is what
+;; Associative.entryAt — the entry carries the stored key, which is what
 ;; clojure.core/find hands back (its metadata is read).
 (defn- sm-entry-at [sm k]
-  (let [n (lookup sm k)]
-    (when-not (nil? n) (map-entry n))))
+  (jolt.host/rbt-entry (jolt.host/sorted-tree sm) (tree-cmp sm) k))
 
-;; One walk for a fresh key (rbt-insert reports a present one instead of
-;; inserting), two for a replace, as PersistentTreeMap.assoc walks. The value is
-;; kept only when it is the IDENTICAL object, as there (found.val() == val):
-;; `=` kept [1] where the JVM stores the '(1) it was handed.
+;; A present key keeps its first-inserted key and takes the new value, unless the
+;; value is the IDENTICAL object, which leaves the map as it was (found.val() ==
+;; val): `=` kept [1] where the JVM stores the '(1) it was handed.
 (defn- sm-assoc-1 [sm k v]
-  (let [cmp (tree-cmp sm) tree (jolt.host/sorted-tree sm)
-        t (jolt.host/rbt-insert tree cmp k v)
-        found (jolt.host/rbt-found t)]
-    (if (nil? found)
-      (jolt.host/sorted-with sm t (inc (jolt.host/sorted-cnt sm)))
-      ;; the key is present: keep its first-inserted key, replace the value
-      (if (identical? v (jolt.host/rbt-val found))
-        sm
-        (jolt.host/sorted-with sm (jolt.host/rbt-replace tree cmp k v) (jolt.host/sorted-cnt sm))))))
+  (let [tree (jolt.host/sorted-tree sm)
+        r (jolt.host/rbt-assoc tree (tree-cmp sm) k v)]
+    (if (jolt.host/rbt-present? r)
+      (let [t (jolt.host/rbt-present-tree r)]
+        (if (identical? t tree) sm (jolt.host/sorted-with sm t (jolt.host/sorted-cnt sm))))
+      (jolt.host/sorted-with sm r (inc (jolt.host/sorted-cnt sm))))))
 
 (defn- sm-assoc-many [sm kvs]
   (let [n (count kvs)]
@@ -93,10 +86,9 @@
         m))))
 
 (defn- sm-dissoc-1 [sm k]
-  (if (nil? (lookup sm k))
-    sm
-    (jolt.host/sorted-with sm (jolt.host/rbt-delete (jolt.host/sorted-tree sm) (tree-cmp sm) k)
-                           (dec (jolt.host/sorted-cnt sm)))))
+  (let [tree (jolt.host/sorted-tree sm)
+        t (jolt.host/rbt-without tree (tree-cmp sm) k)]
+    (if (identical? t tree) sm (jolt.host/sorted-with sm t (dec (jolt.host/sorted-cnt sm))))))
 
 (defn- sm-dissoc-many [sm ks] (reduce sm-dissoc-1 sm ks))
 
@@ -115,25 +107,23 @@
 
 ;; --- sorted-set ops (elements stored as keys, nil value) --------------------
 (defn- ss-get [ss x not-found]
-  (let [n (lookup ss x)]
-    (if (nil? n) not-found (jolt.host/rbt-key n))))
+  (jolt.host/rbt-get-key (jolt.host/sorted-tree ss) (tree-cmp ss) x not-found))
 
 ;; One walk. PersistentTreeSet.cons walks twice (contains, then add), so a
-;; counting comparator sees fewer calls here than on the JVM; the set is not
-;; pinned in the corpus for that reason, the map is.
+;; counting comparator sees fewer calls here than on the JVM. A present element
+;; has the identical nil value, so rbt-assoc leaves the tree as it was.
 (defn- ss-conj-1 [ss x]
-  (let [t (jolt.host/rbt-insert (jolt.host/sorted-tree ss) (tree-cmp ss) x nil)]
-    (if (nil? (jolt.host/rbt-found t))
-      (jolt.host/sorted-with ss t (inc (jolt.host/sorted-cnt ss)))
-      ss)))
+  (let [r (jolt.host/rbt-assoc (jolt.host/sorted-tree ss) (tree-cmp ss) x nil)]
+    (if (jolt.host/rbt-present? r)
+      ss
+      (jolt.host/sorted-with ss r (inc (jolt.host/sorted-cnt ss))))))
 
 (defn- ss-conj-many [ss xs] (reduce ss-conj-1 ss xs))
 
 (defn- ss-disj-1 [ss x]
-  (if (nil? (lookup ss x))
-    ss
-    (jolt.host/sorted-with ss (jolt.host/rbt-delete (jolt.host/sorted-tree ss) (tree-cmp ss) x)
-                           (dec (jolt.host/sorted-cnt ss)))))
+  (let [tree (jolt.host/sorted-tree ss)
+        t (jolt.host/rbt-without tree (tree-cmp ss) x)]
+    (if (identical? t tree) ss (jolt.host/sorted-with ss t (dec (jolt.host/sorted-cnt ss))))))
 
 (defn- ss-disj-many [ss xs] (reduce ss-disj-1 ss xs))
 
@@ -143,10 +133,10 @@
   {:count    (fn [sm] (jolt.host/sorted-cnt sm))
    :seq      (fn [sm] (jolt.host/sorted-seq (jolt.host/sorted-tree sm) true 0))
    :rseq     (fn [sm] (jolt.host/sorted-seq (jolt.host/sorted-tree sm) false 0))
-   :first    (fn [sm] (when-let [t (jolt.host/sorted-tree sm)] (map-entry (jolt.host/rbt-leftmost t))))
+   :first    (fn [sm] (when-let [t (jolt.host/sorted-tree sm)] (jolt.host/rbt-min-entry t)))
    :get      sm-get
    :entry-at sm-entry-at
-   :contains (fn [sm k] (not (nil? (lookup sm k))))
+   :contains contains-key?
    :assoc    sm-assoc-many
    :assoc1   sm-assoc-1
    :dissoc   sm-dissoc-many
@@ -159,9 +149,9 @@
   {:count    (fn [ss] (jolt.host/sorted-cnt ss))
    :seq      (fn [ss] (jolt.host/sorted-seq (jolt.host/sorted-tree ss) true 1))
    :rseq     (fn [ss] (jolt.host/sorted-seq (jolt.host/sorted-tree ss) false 1))
-   :first    (fn [ss] (when-let [t (jolt.host/sorted-tree ss)] (jolt.host/rbt-key (jolt.host/rbt-leftmost t))))
+   :first    (fn [ss] (when-let [t (jolt.host/sorted-tree ss)] (jolt.host/rbt-min-key t)))
    :get      ss-get
-   :contains (fn [ss x] (not (nil? (lookup ss x))))
+   :contains contains-key?
    :conj     ss-conj-many
    :conj1    ss-conj-1
    :disj     ss-disj-many
