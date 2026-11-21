@@ -17,6 +17,9 @@
     4 (throw (NegativeArraySizeException. (str a)))
     5 (throw (IllegalArgumentException. (str "Value out of range for long: " d)))
     6 (throw (OutOfMemoryError. "native region: allocation failed"))
+    7 (throw (IllegalArgumentException.
+              (str "native region: " a " does not fit a borrowed long-array, which"
+                   " holds fixnums (-2^60 to 2^60-1); widen the array outside the region")))
     (throw (IllegalStateException. (str "native region: unknown failure code " code)))))
 
 (defn- in-long [r]
@@ -36,3 +39,16 @@
   "RT.intCast of an array index: outside the int range is an overflow."
   [i]
   (if (and (<= Integer/MIN_VALUE i) (<= i Integer/MAX_VALUE)) i (raise! 2 0 0 0.0)))
+
+(defn fixnum-store
+  "A value stored into a borrowed long-array: it must stay a fixnum, as the C
+  half (which writes the fxvector in place) requires."
+  [v]
+  (if (and (<= -1152921504606846976 v) (<= v 1152921504606846975)) v (raise! 7 v 0 0.0)))
+
+(defn fixnum-aset
+  "aset into a borrowed long-array: the index is checked before the value, as
+  the C half checks them."
+  [^longs arr i v]
+  (aget arr i)
+  (aset arr i (fixnum-store v)))

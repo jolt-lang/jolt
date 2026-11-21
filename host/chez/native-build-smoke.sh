@@ -39,7 +39,9 @@ want_results="5.0
 5
 integer overflow
 ClassCastException
-Index 1 out of bounds for length 1"
+Index 1 out of bounds for length 1
+6
+[0 1 4 9]"
 
 ran="$(cd "$app" && JOLT_PWD="$app" "$joltabs" run -m app.main 2>&1)"
 if [ "$ran" != "$want_results
@@ -52,8 +54,8 @@ echo "native-build smoke: building"
 if ! JOLT_PWD="$app" "$jolt" build -m app.main -o "$out" >"$work/build.log" 2>&1; then
   echo "  FAIL: jolt build exited non-zero"; cat "$work/build.log"; exit 1
 fi
-grep -q "compiled 3 native region(s)" "$work/build.log" || {
-  echo "  FAIL: the build did not compile the three regions"; cat "$work/build.log"; exit 1; }
+grep -q "compiled 5 native region(s)" "$work/build.log" || {
+  echo "  FAIL: the build did not compile the five regions"; cat "$work/build.log"; exit 1; }
 got="$(cd / && "$out" 2>&1)"
 if [ "$got" != "$want_results
 linked (true)" ]; then

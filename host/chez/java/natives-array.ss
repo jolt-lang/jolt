@@ -1821,10 +1821,34 @@
      (throw-jvm 'IllegalArgumentException
                 "native region: this double-array holds a value that is not a double"))
     (else a)))
-;; The flvector C reads in place. Only after jolt-native-arg-doubles.
+;; A ^longs parameter: a long-array still backed by an fxvector, which C reads
+;; and writes as fixnums. jolt widens the backing to a plain vector once a value
+;; leaves the fixnum range (or a non-number is stored); that array is refused.
+(define (jolt-native-arg-longs a)
+  (cond
+    ((not (and (jolt-array? a) (eq? (jolt-array-kind a) 'long)))
+     (throw-jvm 'ClassCastException
+                (string-append "native region: a ^longs parameter got "
+                               (jolt-class-name a))))
+    ((not (fxvector? (jolt-array-vec a)))
+     (throw-jvm 'IllegalArgumentException
+                "native region: this long-array holds a value outside the fixnum range"))
+    (else a)))
+;; The flvector or fxvector C reads in place. Only after the arg checks.
 (define (jolt-native-flv a) (jolt-array-vec a))
 ;; An owned double-array result, filled from the region's buffer by C.
 (define (jolt-native-wrap-flv fv) (make-jolt-array fv 'double))
+;; An owned long-array result: C fills an fxvector and frees its buffer, or,
+;; when a value is past the fixnum range, answers that index and leaves the
+;; buffer; the array is then built through jolt's own store, which widens.
+(define (jolt-native-wrap-longs n ptr copy-out elem free)
+  (let* ((fx (make-fxvector n 0)) (bad (copy-out fx ptr n)))
+    (if (fx= bad -1)
+        (make-jolt-array fx 'long)
+        (let ((a (na-long-array n)))
+          (do ((i 0 (fx+ i 1))) ((fx= i n)) (jolt-aset3 a i (elem ptr i)))
+          (free ptr)
+          a))))
 
 ;; The C entry's address, or #f when no region of that name is linked into this
 ;; process (the REPL, source mode, and the build process itself before the

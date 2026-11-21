@@ -234,7 +234,8 @@
                   ;; checks, the entry lookup and registry, the out buffer and
                   ;; the owned-array result
                   "jolt-native-arg-doubles" "jolt-native-arg-long" "jolt-native-arg-double"
-                  "jolt-native-arg-bool" "jolt-native-flv" "jolt-native-wrap-flv"
+                  "jolt-native-arg-bool" "jolt-native-arg-longs" "jolt-native-flv"
+                  "jolt-native-wrap-flv" "jolt-native-wrap-longs"
                   "jolt-native-entry" "jolt-native-register!"
                   "make-bytevector" "bytevector-s64-native-ref" "bytevector-ieee-double-native-ref"
                   "make-flvector"}]

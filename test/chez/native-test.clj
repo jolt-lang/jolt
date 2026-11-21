@@ -62,8 +62,14 @@
     ;; a library to its own defcfns
     (scm/call "load-shared-object" so)
     (let [entry (scm/eval-string (emit/foreign-sig r sym))
-          copy-out (when (ast/owned? (:type r))
-                     (scm/eval-string (str "(foreign-procedure \"" sym "_copy_out\" (scheme-object uptr integer-64) void)")))
+          fp (fn [suffix args ret]
+               (scm/eval-string (str "(foreign-procedure \"" sym suffix "\" " args " " ret ")")))
+          copy-out (case (:type r)
+                     [:array :double] (fp "_copy_out" "(scheme-object uptr integer-64)" "void")
+                     [:array :long] (fp "_copy_out" "(scheme-object uptr integer-64)" "integer-64")
+                     nil)
+          elem (when (= [:array :long] (:type r)) (fp "_elem" "(uptr integer-64)" "integer-64"))
+          free (when (= [:array :long] (:type r)) (fp "_free" "(uptr)" "void"))
           q (fn [n] (scm/eval-string (str "(foreign-procedure \"" sym "_" n "\" () integer-64)")))]
       {:region r :c src
        :live (q "live") :bad (q "bad") :peak (q "peak")
@@ -75,6 +81,8 @@
                  (when-not (zero? code)
                    (rt/raise! code (s64 out 8) (s64 out 16) (f64 out 24)))
                  (cond
+                   (= [:array :long] (:type r))
+                   (scm/call "jolt-native-wrap-longs" (s64 out 32) res copy-out elem free)
                    (ast/owned? (:type r))
                    (let [n (s64 out 32) arr (double-array n)]
                      (copy-out (flv arr) res n)
@@ -85,6 +93,12 @@
 (defn fallback-fn [r]
   (eval (list 'fn (mapv :name (:params r)) (fallback/region-form r))))
 
+;; the backend runs each argument through the host check for its kind before
+;; either half; the harness does the same
+(def arg-checks {[:ref :double] "jolt-native-arg-doubles" [:ref :long] "jolt-native-arg-longs"
+                 :long "jolt-native-arg-long" :double "jolt-native-arg-double" :bool "jolt-native-arg-bool"})
+(defn checked [r f] (fn [& args] (apply f (map (fn [p a] (scm/call (arg-checks (:type p)) a)) (:params r) args))))
+
 (defn outcome [f args]
   (try {:value (f args)}
        (catch Throwable e {:throw (.getName (class e)) :msg (.getMessage e)})))
@@ -93,14 +107,17 @@
   (or (and (Double/isNaN a) (Double/isNaN b))
       (and (== a b) (= (Math/copySign 1.0 a) (Math/copySign 1.0 b)))))
 
+(def longs-class (class (long-array 0)))
 (defn same? [a b]
   (cond
     (and (double? a) (double? b)) (same-double? a b)
+    (and (instance? longs-class a) (instance? longs-class b)) (= (vec a) (vec b))
     (and (instance? (class (double-array 0)) a) (instance? (class (double-array 0)) b))
     (and (= (alength a) (alength b)) (every? true? (map same-double? a b)))
     :else (= a b)))
 
-(defn copy-args [args] (mapv #(if (instance? (class (double-array 0)) %) (aclone %) %) args))
+(defn copy-args [args]
+  (mapv #(if (or (instance? (class (double-array 0)) %) (instance? longs-class %)) (aclone %) %) args))
 
 (defn check-run
   "Run one program as C and as its fallback on each arg vector; compare."
@@ -112,8 +129,8 @@
             raw-f (when raw (eval (list* 'fn (vec params) body)))]
         (doseq [args arg-vecs]
           (let [ca (copy-args args) fa (copy-args args) ra (copy-args args)
-                c (outcome #(apply (:call compiled) %) ca)
-                f (outcome #(apply fb %) fa)]
+                c (outcome #(apply (checked (:region compiled) (:call compiled)) %) ca)
+                f (outcome #(apply (checked (:region compiled) fb) %) fa)]
             (when-not (if (contains? c :value)
                         (and (contains? f :value) (same? (:value c) (:value f)))
                         (= c f))
@@ -235,6 +252,32 @@
            '((+ (sq (+ a 1.0)) (double (sum-to n))))
            [[2.0 10] [-1.0 0]] :raw true)
 
+;; --- long arrays: a borrowed one is an fxvector of fixnums ----------------------
+(defn la [& xs] (long-array xs))
+(def big59 576460752303423488)          ; 2^59, still a fixnum
+(def past-fixnum 4611686018427387904)   ; 2^62: jolt widens a long-array to hold it
+
+(check-run "sum a borrowed long-array" '[^longs ls]
+           '((loop [i 0 s 0] (if (< i (alength ls)) (recur (inc i) (+ s (aget ls i))) s)))
+           [[(la)] [(la 1 2 3)] [(la -5 big59 7)]] :raw true)
+(check-run "store into a borrowed long-array" '[^longs ls]
+           '((dotimes [i (alength ls)] (aset ls i (* 2 (aget ls i)))))
+           [[(la 1 -2 3)] [(la big59)]])
+(check-run "a store past the fixnum range raises" '[^longs ls ^long k]
+           '((aset ls 0 (* (aget ls 0) k)))
+           [[(la big59) 2] [(la big59) 1] [(la 3) 4]])
+(check-run "a long-array already widened is refused" '[^longs ls] '((alength ls))
+           [[(let [a (long-array 2)] (aset a 0 past-fixnum) a)]])
+(check-run "return an owned long-array" '[^long n]
+           '((let [a (long-array n)] (dotimes [i n] (aset a i (* i 3))) a))
+           [[0] [4]] :raw true)
+(check-run "an owned long-array result past the fixnum range widens" '[^long v]
+           '((let [a (long-array 3)] (aset a 1 v) (aset a 2 7) a))
+           [[5] [past-fixnum] [9223372036854775807]] :raw true)
+(check-run "aclone a borrowed long-array" '[^longs ls]
+           '((let [a (aclone ls)] (dotimes [i (alength a)] (aset a i (inc (aget a i)))) a))
+           [[(la 1 2 3)] [(la)]] :raw true)
+
 ;; --- failures: same exception as Jolt, nothing leaked -------------------------
 
 (check-run "out of bounds with live arrays" '[^long i]
@@ -310,7 +353,6 @@
 (check-reject "recur not in tail position" '[]
               '((loop [i 0] (do (recur (inc i)) i))) #"tail position")
 (check-reject "unknown function" '[^long a] '((println a)) #"not allowed")
-(check-reject "^longs parameter" '[^longs xs] '((alength xs)) #"not supported yet")
 
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its
@@ -413,11 +455,12 @@
       (case (rnd 9)
         0 (list (pick '[+ - *]) (gen :long (dec d)) (gen :long (dec d)))
         1 (list (pick '[quot rem mod]) (gen :long (dec d)) (gen :long (dec d)))
-        2 (list 'alength (borrowable))
-        3 (list 'long (gen :double (dec d)))
+        2 (if (chance 30) (list 'alength 'ls) (list 'alength (borrowable)))
+        3 (if (chance 40) (list 'aget 'ls (gen-idx d)) (list 'long (gen :double (dec d))))
         4 (if (chance 30) 9223372036854775807 (rnd 100))
-        5 (let [[t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        5 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
+            (list 'if c t e))
         6 (gen-let :long d)
         (pick (concat ['n (rnd 6)] ls))))))
 
@@ -425,15 +468,17 @@
   (let [ds (scalars :double)]
     (if (<= d 0)
       (pick (concat [(double (rnd 7)) 'dd 0.5] ds))
-      (case (rnd 9)
+      (case (rnd 10)
         0 (list (pick '[+ - * /]) (gen :double (dec d)) (gen (pick [:double :long]) (dec d)))
         1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
         2 (list 'Math/sqrt (gen :double (dec d)))
         3 (list 'double (gen :long (dec d)))
-        4 (let [[t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        4 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
+            (list 'if c t e))
         5 (gen-let :double d)
         6 (gen-loop :double d)
+        8 (list 'do (list 'aset 'ls (gen-idx d) (gen :long (dec d))) (gen :double (dec d)))
         7 (let [a (borrowable)]
             (list 'do (cons 'aset (cons a (with-borrowed a #(vector (gen-idx d) (gen :double (dec d))))))
                   (gen :double (dec d))))
@@ -469,8 +514,9 @@
       (case (rnd 5)
         0 (list 'double-array (gen-idx d))
         1 (list 'aclone (borrowable))
-        2 (let [[t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        2 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
+            (list 'if c t e))
         3 (gen-let [:array :double] d)
         (gen-loop [:array :double] d)))))
 
@@ -543,8 +589,10 @@
               [(list 'let ['v0 (list 'double-array 3) 'v1 'v0] body) @*planted*]))
         [(gen t 4) @*planted*]))))
 
-(def fuzz-params '[^doubles xs ^long n ^double dd])
-(def fuzz-inputs [[(da 1 2 3 4 5) 2 0.25] [(da -1.5 0 7) 0 -3.0] [(da) 4 1e300]])
+(def fuzz-params '[^doubles xs ^long n ^double dd ^longs ls])
+(def fuzz-inputs [[(da 1 2 3 4 5) 2 0.25 (la 1 2 3 4 5)]
+                  [(da -1.5 0 7) 0 -3.0 (la big59 -3)]
+                  [(da) 4 1e300 (la)]])
 
 (defn fuzz! []
   (let [stats (atom {:accepted 0 :planted 0 :rejected-valid 0})]

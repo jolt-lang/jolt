@@ -31,7 +31,14 @@
             [jolt.native.ast :as ast]))
 
 (def err-codes
-  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6})
+  {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7})
+
+;; A borrowed long-array is a Chez fxvector: each slot a fixnum, the value times
+;; 8 (scheme.h Sfixnum/Sfixnum_value). jolt widens the backing once a value
+;; leaves the fixnum range, which C cannot do, so a region's store there raises.
+(def fixnum-min "(-1152921504606846976LL)")
+(def fixnum-max "1152921504606846975LL")
+(defn- fx-borrowed? [t] (= t [:ref :long]))
 
 (def ^:dynamic *decls* nil)
 (def ^:dynamic *lines* nil)
@@ -268,13 +275,17 @@
     :alength (let [r (fresh! :long)] (line! r " = " (emit (:arr node)) ".len;") r)
     :aget (let [arr (emit (:arr node)) idx (emit (:idx node)) r (fresh! (:type node))]
             (emit-array-index node arr idx)
-            (line! r " = " arr ".data[" idx "];")
+            (line! r " = " arr ".data[" idx "]" (when (fx-borrowed? (:type (:arr node))) " / 8") ";")
             r)
     :aset (let [arr (emit (:arr node)) idx (emit (:idx node)) v (emit (:val node))
                 r (fresh! (:type node))]
             (emit-array-index node arr idx)
             (line! r " = " (as-double-if (:type node) v (:type (:val node))) ";")
-            (line! arr ".data[" idx "] = " r ";")
+            (if (fx-borrowed? (:type (:arr node)))
+              (do (line! "if (" r " < " fixnum-min " || " r " > " fixnum-max ") "
+                         (raise! node :fixnum-store :a r))
+                  (line! arr ".data[" idx "] = (int64_t)((uint64_t)" r " * 8);"))
+              (line! arr ".data[" idx "] = " r ";"))
             r)
     ;; the size goes through Number.intValue as the JVM's Numbers.T_array does:
     ;; the low 32 bits, signed, so (double-array 4294967296) is empty
@@ -290,7 +301,9 @@
                   n (declare-var! (:id node) (:type node))]
               (line! n ".len = " src ".len; " n ".data = JN_MALLOC(" src ".len > 0 ? " src ".len * 8 : 8);")
               (line! "if (!" n ".data) " (raise! node :oom))
-              (line! "memcpy(" n ".data, " src ".data, " src ".len * 8);")
+              (if (fx-borrowed? (:type (:arr node)))
+                (line! "for (int64_t k = 0; k < " src ".len; k++) " n ".data[k] = " src ".data[k] / 8;")
+                (line! "memcpy(" n ".data, " src ".data, " src ".len * 8);"))
               n)))
 
 (defn- as-double-if [want v vt] (if (and (= want :double) (= vt :long)) (str "(double)" v) v))
@@ -335,11 +348,14 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
             *tmp* (atom 0)
             *region* (atom (assoc region :loops {}))]
     (let [t (:type region)
-          ret-c (cond (ast/owned? t) "double *" (#{:unit :never} t) "int" :else (ctype t))
+          ret-c (cond (= [:array :double] t) "double *" (= [:array :long] t) "int64_t *"
+                      (#{:unit :never} t) "int" :else (ctype t))
           _ (doseq [p (:params region)]
               (when (ast/borrowed? (:type p))
+                ;; an fxvector has the flvector's layout (length at +1, slots at +9)
                 (swap! *decls* assoc (var-name (:id p))
-                       (str "jn_arr_d " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), JN_FLV_DATA(p" (:id p) ") };"))))
+                       (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
+                            (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };"))))
           v (emit (:body region))
           body @*lines*
           decls (vals @*decls*)
@@ -355,10 +371,22 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
            ret-c " " sym "(" (str/join ", " (concat (map param-c (:params region)) ["jn_out *out"])) ") {\n"
            (str/join "\n" (map #(str "  " %) (concat decls body result)))
            "\n}\n"
-           (when (ast/owned? t)
+           (when (= [:array :double] t)
              (str "\nvoid " sym "_copy_out(void *flv, double *src, int64_t n) {\n"
                   "  if (n > 0) memcpy(JN_FLV_DATA(flv), src, n * 8);\n"
-                  "  JN_FREE(src);\n}\n"))))))
+                  "  JN_FREE(src);\n}\n"))
+           ;; a long result fills an fxvector; a value past the fixnum range
+           ;; answers its index instead and the stub widens through jolt's own
+           ;; array store, reading the rest with _elem and freeing with _free
+           (when (= [:array :long] t)
+             (str "\nint64_t " sym "_copy_out(void *fxv, int64_t *src, int64_t n) {\n"
+                  "  int64_t *dst = (int64_t *)JN_FLV_DATA(fxv);\n"
+                  "  for (int64_t i = 0; i < n; i++) {\n"
+                  "    if (src[i] < " fixnum-min " || src[i] > " fixnum-max ") return i;\n"
+                  "    dst[i] = (int64_t)((uint64_t)src[i] * 8);\n  }\n"
+                  "  JN_FREE(src);\n  return -1;\n}\n"
+                  "int64_t " sym "_elem(int64_t *src, int64_t i) { return src[i]; }\n"
+                  "void " sym "_free(int64_t *src) { JN_FREE(src); }\n"))))))
 
 (defn foreign-types
   "[argument-types result-type] of the region's C entry as Chez foreign types,

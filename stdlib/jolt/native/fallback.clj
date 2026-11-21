@@ -73,10 +73,13 @@
     :math (cons (symbol "Math" (:fn node)) (map #(dbl (clj %) (:type %)) (:args node)))
     :alength (list 'clojure.core/alength (clj (:arr node)))
     :aget (list 'clojure.core/aget (clj (:arr node)) (list 'jolt.native.rt/index (clj (:idx node))))
-    :aset (list 'clojure.core/aset (clj (:arr node)) (list 'jolt.native.rt/index (clj (:idx node)))
-                (if (and (= :double (:type node)) (= :long (:type (:val node))))
-                  (list 'clojure.core/double (clj (:val node)))
-                  (clj (:val node))))
+    :aset (let [v (if (and (= :double (:type node)) (= :long (:type (:val node))))
+                    (list 'clojure.core/double (clj (:val node)))
+                    (clj (:val node)))]
+            ;; a borrowed long-array keeps fixnum storage, as the C half must;
+            ;; the index is checked first there, so it is here too
+            (list (if (= [:ref :long] (:type (:arr node))) 'jolt.native.rt/fixnum-aset 'clojure.core/aset)
+                  (clj (:arr node)) (list 'jolt.native.rt/index (clj (:idx node))) v))
     :new-array (list (if (= :double (:elem node)) 'clojure.core/double-array 'clojure.core/long-array)
                      (clj (:len node)))
     :aclone (list 'clojure.core/aclone (clj (:arr node)))))
