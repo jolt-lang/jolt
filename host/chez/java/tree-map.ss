@@ -453,10 +453,6 @@
 (define (ts-add! v x)
   (unless (v-in-range? v x) (throw-jvm 'IllegalArgumentException "key out of range"))
   (eq? (tmr-put-raw! (v-root v) x #t) tm-absent))
-(define (v-ref-or-put! v x)
-  (let ((old (if (v-in-range? v x) (tmr-ref (v-root v) x) tm-absent)))
-    (when (eq? old tm-absent) (v-put! v x #t))
-    old))
 (define ts-ctor
   (case-lambda
     (() (make-tm-view "treeset" (tm-make-root jolt-nil) tm-unbounded #f tm-unbounded #f #f))
