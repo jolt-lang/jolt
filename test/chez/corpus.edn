@@ -5198,8 +5198,8 @@
   ;; --- sorted collections: one tree walk per insert, like PersistentTreeMap.add.
   ;; The comparator call count is exact and deterministic for a given key order,
   ;; so it pins both the walk count and the balancing algorithm to the reference.
-  {:suite "sorted / one walk per insert" :label "1024 ascending keys into a sorted-map-by count comparator calls like the reference" :expected "12301" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [i i]) (range 1024))) @c)" :portability :common}
-  {:suite "sorted / one walk per insert" :label "replacing values in a sorted-map-by counts like the reference" :expected "29414" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [(mod (* i 7919) 1024) i]) (range 2048))) @c)" :portability :common}
+  {:suite "sorted / one walk per insert" :label "1024 ascending keys into a sorted-map-by: one comparison per key confirms the order" :expected "1023" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [i i]) (range 1024))) @c)" :portability :common}
+  {:suite "sorted / one walk per insert" :label "replacing values in a sorted-map-by: an into sorts its batch" :expected "23455" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [(mod (* i 7919) 1024) i]) (range 2048))) @c)" :portability :common}
   ;; --- a core fn in value position IS its var's root, as on the JVM: the
   ;; comparison chains, min/max and the integer division trio used to compile
   ;; to seq.ss's procedures while ns.ss bound the var roots to raw Scheme ops.
