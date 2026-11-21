@@ -787,24 +787,24 @@
           "(and " a " (" (if collect-safe? "sa-foreign-procedure-blocking " "sa-foreign-procedure ")
           a " (" (str/join " " argtypes) ") " ret ")))"))))
 
-;; A region is SAFE unless marked ^:unsafe, as GHC's foreign calls are: a safe
-;; call locks each borrowed array and goes through __collect_safe, so other
+;; A region is PINNED unless marked ^:hold-gc, like GHC's safe foreign calls: a
+;; pinned call locks each borrowed array and goes through __collect_safe, so other
 ;; threads keep collecting while C runs and the locked arrays stay put; interrupts
 ;; are off from the lock to the unlock so nothing can unwind between them (C
-;; never throws or calls back). An ^:unsafe call is a plain foreign call: the
+;; never throws or calls back). A ^:hold-gc call is a plain foreign call: the
 ;; thread stays active, which is what keeps the arrays from moving, and every
 ;; other thread's collection waits for the region (Chez's stop-the-world needs
 ;; each active thread). It costs ~2.5ns against ~45ns, for short regions.
 (defn- native-accessors
   "The region's entry and its helpers, each resolved once at load (hoisted)."
-  [node safe?]
+  [node pinned?]
   (let [sym (:sym node)
         result (:result node)
         entry-of (fn [suffix args ret] (hoist-load-time (native-entry-expr (str sym suffix) args ret)))]
     {:entry (hoist-load-time
              (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
                   (native-entry-expr sym (mapv native-arg-chez (:kinds node))
-                                     (native-result-chez result) safe?) ")"))
+                                     (native-result-chez result) pinned?) ")"))
      :status (entry-of "_status" [] "integer-64")
      :err-l (entry-of "_err_l" ["integer-64"] "integer-64")
      :err-d (entry-of "_err_d" [] "double")
@@ -846,8 +846,8 @@
     (if (= :gambit (target))
       ;; no ffi tier on gambit: the checked Jolt program is the region
       (call-fallback args)
-      (let [safe? (not= "unsafe" (:mode node))
-            acc (native-accessors node safe?)
+      (let [pinned? (not= "hold-gc" (:mode node))
+            acc (native-accessors node pinned?)
             {:keys [status err-l err-d]} acc
             p (fresh-label "jn_p")
             r (fresh-label "jn_r")
@@ -859,7 +859,7 @@
              (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
              ") (if " p " "
              "(let* (" (apply str (map (fn [a b] (when b (str "(" b " (jolt-native-flv " a ")) "))) as bs))
-             "(" r " " (native-call-expr p (map (fn [a b] (or b a)) as bs) backings (and safe? (seq backings))) ")) "
+             "(" r " " (native-call-expr p (map (fn [a b] (or b a)) as bs) backings (and pinned? (seq backings))) ")) "
              "(let ((" code " (" status "))) "
              "(if (fx= 0 " code ") " (native-result-value (:result node) r acc) " "
              "(jolt-invoke " (emit (:raise node)) " " code " (" err-l " 0) (" err-l " 1) (" err-d "))))) "
