@@ -9,7 +9,7 @@
 ;; jolt.native/__region — a native region call site, what the jolt.native/native
 ;; macro expands to:
 ;;   (jolt.native/__region "jn_<16 hex>" "<C source>" [:doubles :long ...] :result
-;;                         [arg ...] fallback-fn raise-fn :safe|:unsafe)
+;;                         [arg ...] fallback-fn raise-fn :pinned|:hold-gc)
 ;; The kinds and result are literals read here; the args, the fallback fn and the
 ;; raise fn are child expressions. The back end derives the Chez foreign types
 ;; from the kinds rather than taking them from the form, so a ^doubles slot is
@@ -63,5 +63,5 @@
        :args (mapv #(analyze ctx % env) args)
        :fallback (analyze ctx (nth items 6) env)
        :raise (analyze ctx (nth items 7) env)
-       ;; :safe (lock + collect-safe call) or :unsafe (plain call, holds the GC)
-       :mode (native-kind (nth items 8) #{"safe" "unsafe"} "mode")})))
+       ;; :pinned (lock + collect-safe call) or :hold-gc (plain call, holds the GC)
+       :mode (native-kind (nth items 8) #{"pinned" "hold-gc"} "mode")})))
