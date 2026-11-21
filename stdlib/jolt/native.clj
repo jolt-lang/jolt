@@ -77,7 +77,7 @@
 
 (defmacro native
   "Run body as C in a built binary, as checked Jolt elsewhere. params names the
-  locals it reads, each hinted ^long ^double ^boolean or ^doubles."
+  locals it reads, each hinted ^long ^double ^boolean ^doubles or ^longs."
   [params & body]
   (let [{:keys [sym src region]} (compile-region params body)
         names (mapv :name (:params region))
@@ -98,9 +98,12 @@
   is compiled once per distinct set of argument types it is called with, as
   Carp concretizes a generic function, so (defnative dot [xs ys] ...) works on
   double arrays in one region and long arrays in another. An array argument is
-  borrowed: the helper reads and writes it but can neither free nor return it;
-  it can create and return arrays of its own. A helper that calls itself needs
-  a return type hint: (defnative ^double f [x] ...).
+  borrowed unless the body gives it away (returns it, or passes it to a helper
+  that takes it); then the helper takes ownership and the caller's binding is
+  moved, which the compiler infers and names in its error. A helper can create
+  and return arrays of its own. A helper that calls itself has its
+  result type inferred from its base case; a return hint, (defnative ^double f
+  [x] ...), is optional and checked.
 
   Outside a region, name is an ordinary fn over the same body, with Jolt's own
   semantics."
