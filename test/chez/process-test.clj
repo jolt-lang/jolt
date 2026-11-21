@@ -1069,7 +1069,8 @@
 ;; the program exits, or 180s pass (a 10s and then a 60s cap were not enough on
 ;; the emulated Android runner, where every "no relay" row failed at once). A
 ;; program that never got ready is reported as that, with its exit and stderr,
-;; rather than only as the signal rows that fail after it.
+;; and answers false so the caller skips the rows that would signal it; one
+;; still running at 180s is killed rather than left behind.
 (defn- await-file [f proc label]
   (loop [n 0]
     (cond
@@ -1079,7 +1080,9 @@
         (check-eq (str label ": the program got ready") (str "exited " exit ": " err) "ready")
         false)
       (>= n 3600)
-      (do (check-eq (str label ": the program got ready") "not ready after 180s" "ready") false)
+      (do (check-eq (str label ": the program got ready") "not ready after 180s" "ready")
+          (.destroyForcibly (:proc proc))
+          false)
       :else (do (Thread/sleep 50) (recur (inc n))))))
 
 (doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
@@ -1117,22 +1120,22 @@
                    (if (or (every? ls want) (>= n 200))
                      ls
                      (do (Thread/sleep 50) (recur (inc n)))))))]
-    (await-file readyf proc (str "signal handlers (" mode ")"))
-    (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
-      (sh ["sh" "-c" (str "kill -" s " " pid)])
-      (Thread/sleep 300))
-    (let [ls (seen)]
-      (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
-                (contains? ls "USR2 SIGUSR2 handler true") true)
-      (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? ls "INT") true)
-      (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
-                (filterv ls ["ALRM" "TSTP" "CHLD"]) ["ALRM" "TSTP" "CHLD"]))
-    (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
-    (sh ["sh" "-c" (str "kill -TERM " pid)])
-    (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
-    (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
-    (check-eq (str "SIGTERM still runs the hooks alongside signal handlers (" mode ")") (slurp hookf) "RAN")
-    (check-eq (str "and exits 128+SIGTERM (" mode ")") (:exit @proc) 143)
+    (when (await-file readyf proc (str "signal handlers (" mode ")"))
+      (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
+        (sh ["sh" "-c" (str "kill -" s " " pid)])
+        (Thread/sleep 300))
+      (let [ls (seen)]
+        (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
+                  (contains? ls "USR2 SIGUSR2 handler true") true)
+        (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? ls "INT") true)
+        (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
+                  (filterv ls ["ALRM" "TSTP" "CHLD"]) ["ALRM" "TSTP" "CHLD"]))
+      (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
+      (sh ["sh" "-c" (str "kill -TERM " pid)])
+      (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+      (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+      (check-eq (str "SIGTERM still runs the hooks alongside signal handlers (" mode ")") (slurp hookf) "RAN")
+      (check-eq (str "and exits 128+SIGTERM (" mode ")") (:exit @proc) 143))
     (doseq [f [readyf logf hookf]] (fs/delete-if-exists f)))
 
   ;; With no handler a signal does what it did before: CHLD, PIPE, URG and WINCH
@@ -1146,34 +1149,34 @@
           proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
           pid (.pid (:proc proc))
           state #(second (re-find #"State:\s+(\S)" (slurp (str "/proc/" pid "/status"))))]
-      (await-file readyf proc (str "unhandled " fatal " (" mode ")"))
-      (when (= fatal "USR1")
-        (doseq [s ["CHLD" "PIPE" "URG" "WINCH"]]
-          (sh ["sh" "-c" (str "kill -" s " " pid)])
-          (Thread/sleep 200))
-        (check-eq (str "an unhandled CHLD, PIPE, URG or WINCH is dropped (" mode ")") (p/alive? proc) true)
-        ;; TSTP's default is to stop, but the kernel discards it for a process
-        ;; in an orphaned process group, which is what the smoke harness runs
-        ;; this gate in. So jolt is held to what a plain `sleep` started the
-        ;; same way does, stopped or not.
-        (when (fs/exists? "/proc/self/status")
-          (let [ctl (process ["sleep" "30"] {:out :string :err :string})
-                cpid (.pid (:proc ctl))
-                state-of (fn [p] (second (re-find #"State:\s+(\S)" (slurp (str "/proc/" p "/status")))))]
-            (Thread/sleep 200)
-            (sh ["sh" "-c" (str "kill -TSTP " pid " " cpid)])
-            (Thread/sleep 300)
-            (check-eq (str "an unhandled TSTP does to jolt what it does to sleep (" mode ")")
-                      (state) (state-of cpid))
-            (sh ["sh" "-c" (str "kill -CONT " pid " " cpid)])
-            (Thread/sleep 300)
-            (check-eq (str "and CONT leaves it running (" mode ")") (contains? #{"S" "R"} (state)) true)
-            (.destroyForcibly (:proc ctl)))))
-      (sh ["sh" "-c" (str "kill -" fatal " " pid)])
-      (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
-      (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
-      (check-eq (str "an unhandled " fatal " ends it by the signal, hooks unrun (" mode ")")
-                [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""])
+      (when (await-file readyf proc (str "unhandled " fatal " (" mode ")"))
+        (when (= fatal "USR1")
+          (doseq [s ["CHLD" "PIPE" "URG" "WINCH"]]
+            (sh ["sh" "-c" (str "kill -" s " " pid)])
+            (Thread/sleep 200))
+          (check-eq (str "an unhandled CHLD, PIPE, URG or WINCH is dropped (" mode ")") (p/alive? proc) true)
+          ;; TSTP's default is to stop, but the kernel discards it for a process
+          ;; in an orphaned process group, which is what the smoke harness runs
+          ;; this gate in. So jolt is held to what a plain `sleep` started the
+          ;; same way does, stopped or not.
+          (when (fs/exists? "/proc/self/status")
+            (let [ctl (process ["sleep" "30"] {:out :string :err :string})
+                  cpid (.pid (:proc ctl))
+                  state-of (fn [p] (second (re-find #"State:\s+(\S)" (slurp (str "/proc/" p "/status")))))]
+              (Thread/sleep 200)
+              (sh ["sh" "-c" (str "kill -TSTP " pid " " cpid)])
+              (Thread/sleep 300)
+              (check-eq (str "an unhandled TSTP does to jolt what it does to sleep (" mode ")")
+                        (state) (state-of cpid))
+              (sh ["sh" "-c" (str "kill -CONT " pid " " cpid)])
+              (Thread/sleep 300)
+              (check-eq (str "and CONT leaves it running (" mode ")") (contains? #{"S" "R"} (state)) true)
+              (.destroyForcibly (:proc ctl)))))
+        (sh ["sh" "-c" (str "kill -" fatal " " pid)])
+        (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+        (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+        (check-eq (str "an unhandled " fatal " ends it by the signal, hooks unrun (" mode ")")
+                  [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""]))
       (doseq [f [readyf hookf]] (fs/delete-if-exists f)))))
 
 ;; Only the relay can give a handler TTIN, TTOU, PROF or VTALRM (blocked in
@@ -1203,15 +1206,15 @@
         ;; stdout into a pipe whose reader is gone: the writes get SIGPIPE
         proc (process ["sh" "-c" (str jolt-bin " -e '" (str/replace prog "'" "'\\''") "' | head -c 1 >/dev/null")]
                       {:out :string :err :string})]
-    (await-file readyf proc "relay PIPE")
-    (Thread/sleep 1000)
-    (let [pid (str/trim (slurp readyf))]
-      (doseq [s ["TTIN" "PROF"]]
-        (sh ["sh" "-c" (str "kill -" s " " pid)])
-        (Thread/sleep 300))
-      (check-eq "the relay gives handlers TTIN, PROF and a write's own PIPE"
-                (set (str/split-lines (slurp logf))) #{"TTIN" "PROF" "PIPE"})
-      (sh ["sh" "-c" (str "kill -9 " pid)]))
+    (when (await-file readyf proc "relay PIPE")
+      (Thread/sleep 1000)
+      (let [pid (str/trim (slurp readyf))]
+        (doseq [s ["TTIN" "PROF"]]
+          (sh ["sh" "-c" (str "kill -" s " " pid)])
+          (Thread/sleep 300))
+        (check-eq "the relay gives handlers TTIN, PROF and a write's own PIPE"
+                  (set (str/split-lines (slurp logf))) #{"TTIN" "PROF" "PIPE"})
+        (sh ["sh" "-c" (str "kill -9 " pid)])))
     (doseq [f [readyf logf]] (fs/delete-if-exists f))))
 
 (if (empty? @failures)
