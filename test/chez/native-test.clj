@@ -558,13 +558,14 @@
 
 (defn- stack-arrays [src] (count (re-seq #"_buf\[" src)))
 
-(check-eq "a temporary per iteration goes on the stack"
-          (stack-arrays (c-of '[^long n]
-                              '((loop [i 0 s 0.0]
-                                  (if (< i n)
-                                    (recur (inc i) (let [t (double-array 3)] (aset t 1 2.0) (+ s (aget t 1))))
-                                    s)))))
-          1)
+(check-eq "a temporary per iteration is not heap-allocated"
+          (boolean (re-find #"\.data = JN_CALLOC\("
+                            (c-of '[^long n]
+                                  '((loop [i 0 s 0.0]
+                                      (if (< i n)
+                                        (recur (inc i) (let [t (double-array 3)] (aset t 1 2.0) (+ s (aget t 1))))
+                                        s))))))
+          false)
 (check-eq "the region's result stays on the heap"
           (stack-arrays (c-of '[] '((let [a (double-array 3)] (aset a 0 1.0) a)))) 0)
 (check-eq "an array carried by recur stays on the heap"
@@ -603,6 +604,40 @@
                (dotimes [i 5] (aset a i (* i n)))
                (let [b (long-array 5)] (dotimes [i 5] (aset b i 1)) (dot a b))))
            [[3] [0] [-4]])
+
+;; --- scalar replacement: a stack array used only at constant indexes ---------
+
+(defn- scalar-locals [src] (count (re-seq #"_e[0-9]+ = 0;" src)))
+
+(check-eq "a constant-index temporary becomes locals"
+          (let [src (c-of '[^long n]
+                          '((loop [i 0 s 0.0]
+                              (if (< i n)
+                                (recur (inc i) (let [t (double-array 3)]
+                                                 (aset t 0 (double i)) (aset t 2 1.0)
+                                                 (+ s (aget t 0) (aget t 2) (double (alength t)))))
+                                s))))]
+            [(pos? (scalar-locals src)) (stack-arrays src)])
+          [true 0])
+(check-eq "a variable index keeps the array in memory"
+          (stack-arrays (c-of '[^long k] '((let [t (double-array 3)] (aset t 0 1.0) (aget t (rem k 3)))))) 1)
+(check-eq "a helper call keeps the array in memory"
+          (stack-arrays (c-of '[] '((let [t (double-array 3)] (aset t 0 2.0) (dot t t))))) 1)
+(check-eq "a constant index past the end keeps the array in memory"
+          (stack-arrays (c-of '[^boolean c] '((let [t (double-array 2)] (if c (aget t 5) (aget t 1)))))) 1)
+
+(check-run "locals are zeroed each time the array is made" '[^long n]
+           '((loop [i 0 s 0.0]
+               (if (< i n)
+                 (recur (inc i) (let [t (double-array 2)] (aset t 0 (+ (aget t 0) 1.0)) (+ s (aget t 0) (aget t 1))))
+                 s)))
+           [[0] [4]])
+(check-run "a past-the-end constant still raises" '[^boolean c]
+           '((let [t (double-array 2)] (if c (aget t 5) (aget t 1))))
+           [[true] [false]])
+(check-run "scalar long arrays through a let alias" '[^long n]
+           '((let [a (long-array 2) b a] (aset b 1 n) (aset b 0 (* 2 (aget b 1))) (+ (aget b 0) (aget b 1))))
+           [[3] [-4611686018427387904]])
 
 ;; --- defextern: C functions a region calls directly ---------------------------
 ;; The C half calls the function; the fallback calls it through jolt.ffi.

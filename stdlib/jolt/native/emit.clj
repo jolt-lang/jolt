@@ -112,7 +112,8 @@
        (when d (str " jn_tls.d = " d ";"))
        " return " (ret-zero) "; }"))
 
-(declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone)
+(declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone
+         scalar-site elem-local)
 
 (defn- c-double-lit [v]
   (cond (Double/isNaN v) "(0.0/0.0)"
@@ -215,20 +216,24 @@
 (defn- emit-index-cast
   "aget/aset take their index through RT.intCast, which on the JVM runs as the
   index argument is evaluated: before a later argument (aset's value) runs, so
-  its side effects never happen when the index overflows."
+  its side effects never happen when the index overflows. An array kept in
+  locals is only ever indexed by constants in range (jolt.native.stack)."
   [node idx]
-  (when-not (proven? node :idx-int)
+  (when-not (or (proven? node :idx-int) (scalar-site (:arr node)))
     (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow))))
 
 (defn- emit-array-index
   "The bounds check, inside the store or load: after every argument ran."
   [node arr idx]
-  (when-not (proven? node :in-bounds)
+  (when-not (or (proven? node :in-bounds) (scalar-site (:arr node)))
     (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len")))))
 
-(defn- bind! [id t atom]
+(defn- bind!
+  "Bind id to atom. A name for an array kept in locals has nothing to copy:
+  its elements are the site's locals and its length a constant."
+  [id t atom]
   (let [n (declare-var! id t)]
-    (line! n " = " atom ";")
+    (when-not (get (:scalar *stack*) id) (line! n " = " atom ";"))
     n))
 
 (defn- emit-loop [node]
@@ -292,7 +297,8 @@
               branch (fn [b dels]
                        (let [v (emit b)]
                          (when-not (= :never (:type b))
-                           (when r (line! r " = " (if (and (= t :double) (= :long (:type b)))
+                           (when (and r (not (get (:scalar *stack*) (:id node))))
+                             (line! r " = " (if (and (= t :double) (= :long (:type b)))
                                                     (str "(double)" v) v) ";"))
                            (line! (frees dels)))))]
           (line! "if (" c ") {")
@@ -321,11 +327,18 @@
             r)
     ;; a temp like every other value: inlined, (aget a (alength a)) emitted
     ;; `a.len >= a.len`, which compilers flag as a tautology
-    :alength (let [r (fresh! :long)] (line! r " = " (emit (:arr node)) ".len;") r)
+    :alength (let [r (fresh! :long) a (emit (:arr node))]
+               (line! r " = " (if-let [site (scalar-site (:arr node))]
+                                (str (get-in *stack* [:sites site]) "LL")
+                                (str a ".len"))
+                      ";")
+               r)
     :aget (let [arr (emit (:arr node)) idx (emit (:idx node)) r (fresh! (:type node))]
             (emit-index-cast node idx)
             (emit-array-index node arr idx)
-            (line! r " = " arr ".data[" idx "]" (when (fx-borrowed? (:type (:arr node))) " / 8") ";")
+            (if-let [site (scalar-site (:arr node))]
+              (line! r " = " (elem-local site (:val (:idx node))) ";")
+              (line! r " = " arr ".data[" idx "]" (when (fx-borrowed? (:type (:arr node))) " / 8") ";"))
             r)
     :aset (let [arr (emit (:arr node))
                 idx (emit (:idx node))
@@ -334,11 +347,14 @@
                 r (fresh! (:type node))]
             (emit-array-index node arr idx)
             (line! r " = " (as-double-if (:type node) v (:type (:val node))) ";")
-            (if (fx-borrowed? (:type (:arr node)))
+            (cond
+              (scalar-site (:arr node))
+              (line! (elem-local (scalar-site (:arr node)) (:val (:idx node))) " = " r ";")
+              (fx-borrowed? (:type (:arr node)))
               (do (line! "if (" r " < " fixnum-min " || " r " > " fixnum-max ") "
                          (raise! node :fixnum-store :a r))
                   (line! arr ".data[" idx "] = (int64_t)((uint64_t)" r " * 8);"))
-              (line! arr ".data[" idx "] = " r ";"))
+              :else (line! arr ".data[" idx "] = " r ";"))
             r)
     ;; a native helper instance: a failure there has freed its own values and
     ;; set the status; the caller frees what it holds and passes it on
@@ -353,16 +369,30 @@
                  (emit-heap-array node))
     :aclone (emit-aclone node)))
 
+(defn- elem-local [site k] (str (var-name site) "_e" k))
+
+(defn- scalar-site
+  "The stack site an array expression names when its elements are kept in C
+  locals (jolt.native.stack :scalar), or nil."
+  [arr]
+  (get (:scalar *stack*) (if (= :local (:op arr)) (:binding arr) (:id arr))))
+
 (defn- emit-stack-array
   "A small constant-size array that stays in this function: a frame buffer,
-  zeroed each time it is made, as calloc would."
+  zeroed each time it is made, as calloc would. When every use is a constant
+  index, its elements are C locals instead, which a compiler keeps in
+  registers."
   [node n-el]
   (let [n (declare-var! (:id node) (:type node))
-        buf (str n "_buf")
         et (if (= :double (ast/elem-type (:type node))) "double" "int64_t")]
     (emit (:len node))
-    (swap! *decls* assoc buf (str et " " buf "[" (max 1 n-el) "];"))
-    (line! n ".len = " n-el "; " n ".data = " buf "; memset(" buf ", 0, sizeof " buf ");")
+    (if (get (:scalar *stack*) (:id node))
+      (do (doseq [k (range n-el)]
+            (swap! *decls* assoc (elem-local (:id node) k) (str et " " (elem-local (:id node) k) " = 0;")))
+          (line! (str/join " " (map #(str (elem-local (:id node) %) " = 0;") (range n-el)))))
+      (let [buf (str n "_buf")]
+        (swap! *decls* assoc buf (str et " " buf "[" (max 1 n-el) "];"))
+        (line! n ".len = " n-el "; " n ".data = " buf "; memset(" buf ", 0, sizeof " buf ");")))
     n))
 
 (defn- emit-heap-array
