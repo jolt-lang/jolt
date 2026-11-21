@@ -796,7 +796,7 @@
 ;; other thread's collection waits for the region (Chez's stop-the-world needs
 ;; each active thread). It costs ~2.5ns against ~45ns, for short regions.
 (defn- native-accessors
-  "The region's entry and its helpers, each resolved once at load (hoisted)."
+  "The region's entry and its helpers, each resolved once at load by hoist-load-time."
   [node pinned?]
   (let [sym (:sym node)
         result (:result node)

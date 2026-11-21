@@ -338,11 +338,11 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
    operands; and an array result's length. Thread-local rather than an argument
    buffer: a collect-safe call lets the collector run while C works, and a
    bytevector passed in could move under it. jolt build compiles every region
-   into one translation unit, so a binary has one. JN_EXTERN_TLS is for a host
-   that loads each region as its own shared object (the native gate): every
-   object with its own thread-local takes a pthread key, and macOS has 512. */
-#ifdef JN_EXTERN_TLS
-extern _Thread_local jn_out jn_tls;
+   into one translation unit, so a binary has one. JN_EXTERN_STATUS is for a
+   single-threaded host that loads each region as its own shared object (the
+   native gate) and defines one plain jn_tls for all of them. */
+#ifdef JN_EXTERN_STATUS
+extern jn_out jn_tls;
 #else
 static _Thread_local jn_out jn_tls;
 #endif
