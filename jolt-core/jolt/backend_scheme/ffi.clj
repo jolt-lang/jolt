@@ -770,11 +770,13 @@
 ;; out buffer (code, two longs, a double, and an owned result's length) and the
 ;; raise fn turns it into the JVM's exception.
 (def ^:private native-arg-chez
-  {"doubles" "scheme-object" "long" "integer-64" "double" "double" "bool" "boolean"})
+  {"doubles" "scheme-object" "longs" "scheme-object" "long" "integer-64" "double" "double"
+   "bool" "boolean"})
 (def ^:private native-result-chez
-  {"doubles" "uptr" "unit" "int" "long" "integer-64" "double" "double" "bool" "boolean"})
+  {"doubles" "uptr" "longs" "uptr" "unit" "int" "long" "integer-64" "double" "double"
+   "bool" "boolean"})
 (def ^:private native-arg-check
-  {"doubles" "jolt-native-arg-doubles" "long" "jolt-native-arg-long"
+  {"doubles" "jolt-native-arg-doubles" "longs" "jolt-native-arg-longs" "long" "jolt-native-arg-long"
    "double" "jolt-native-arg-double" "bool" "jolt-native-arg-bool"})
 
 (defn- native-entry-expr [sym argtypes ret]
@@ -795,14 +797,21 @@
             entry (hoist-load-time
                    (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
                         (native-entry-expr sym argtypes (native-result-chez result)) ")"))
-            copy-out (when (= result "doubles")
-                       (hoist-load-time
-                        (native-entry-expr (str sym "_copy_out") ["scheme-object" "uptr" "integer-64"] "void")))
+            copy-out (case result
+                       "doubles" (hoist-load-time
+                                  (native-entry-expr (str sym "_copy_out") ["scheme-object" "uptr" "integer-64"] "void"))
+                       "longs" (hoist-load-time
+                                (native-entry-expr (str sym "_copy_out") ["scheme-object" "uptr" "integer-64"] "integer-64"))
+                       nil)
+            elem (when (= result "longs")
+                   (hoist-load-time (native-entry-expr (str sym "_elem") ["uptr" "integer-64"] "integer-64")))
+            free (when (= result "longs")
+                   (hoist-load-time (native-entry-expr (str sym "_free") ["uptr"] "void")))
             p (fresh-label "jn_p")
             out (fresh-label "jn_out")
             r (fresh-label "jn_r")
             as (mapv (fn [_] (fresh-label "jn_a")) kinds)
-            c-args (map (fn [k a] (if (= k "doubles") (str "(jolt-native-flv " a ")") a)) kinds as)
+            c-args (map (fn [k a] (if (#{"doubles" "longs"} k) (str "(jolt-native-flv " a ")") a)) kinds as)
             raise (emit (:raise node))
             ref (fn [off] (str "(bytevector-s64-native-ref " out " " off ")"))
             value (case result
@@ -810,6 +819,7 @@
                                 (str "(let* ((" n " " (ref 32) ") (" fv " (make-flvector " n "))) "
                                      "(" copy-out " " fv " " r " " n ") "
                                      "(jolt-native-wrap-flv " fv "))"))
+                    "longs" (str "(jolt-native-wrap-longs " (ref 32) " " r " " copy-out " " elem " " free ")")
                     "unit" "jolt-nil"
                     r)]
         (str "(let ((" p " " entry ")"

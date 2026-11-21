@@ -325,12 +325,6 @@
           env (into {} (map (fn [p] [(:name p) p]) ps))
           body (analyze-body env body false (cons 'native body))
           t (:type body)]
-      (doseq [p ps]
-        (when (= [:ref :long] (:type p))
-          (fail (:name p) (str "^longs parameters are not supported yet: a long-array is an "
-                               "fxvector of fixnums, and C cannot widen it past 2^60 as Jolt does"))))
-      (when (= [:array :long] t)
-        (fail (:form body) "returning a long array is not supported yet; return a double array"))
       (when (borrowed? t)
         (fail (:form body) "a region cannot return an array it borrowed; return (aclone it)"))
       {:params ps :body body :type t})))

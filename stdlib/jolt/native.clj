@@ -14,13 +14,16 @@
                 (Math/sqrt s))))))
 
   The vector names the locals the region reads, each with its type: ^long,
-  ^double, ^boolean, or ^doubles (a double-array the region borrows: it reads
-  and writes the caller's array in place, and cannot keep it). The body is a
+  ^double, ^boolean, ^doubles or ^longs (an array the region borrows: it reads
+  and writes the caller's array in place, and cannot keep it). A borrowed
+  long-array holds fixnums, so storing a value outside -2^60..2^60-1 into one
+  raises; widen it outside the region first. The body is a
   subset of Clojure: let, if, when, do, loop/recur, dotimes, and/or/not,
   arithmetic and comparisons, quot/rem/mod, long/double, aget/aset/alength,
   double-array/long-array/aclone (arrays the region owns), and Math/sqrt, sin,
   cos, tan, exp, log, floor, ceil, pow, atan2. It returns a long, double,
-  boolean, nil, or an array it owns, which arrives as a fresh double-array.
+  boolean, nil, or an array it owns, which arrives as a fresh double-array or
+  long-array.
 
   The region is checked when it is compiled — in the REPL too — and a program
   that would use an array after giving it away, or let one escape, is a compile
@@ -48,10 +51,12 @@
   (str "jn_" (format "%08x%08x" (fnv32 src 2166136261) (fnv32 src 84696351))))
 
 (defn- param-kind [t]
-  (cond (= t [:ref :double]) :doubles (= t :long) :long (= t :double) :double (= t :bool) :bool))
+  (cond (= t [:ref :double]) :doubles (= t [:ref :long]) :longs
+        (= t :long) :long (= t :double) :double (= t :bool) :bool))
 
 (defn- result-kind [t]
-  (cond (ast/owned? t) :doubles (#{:unit :never} t) :unit :else t))
+  (cond (= t [:array :double]) :doubles (= t [:array :long]) :longs
+        (#{:unit :never} t) :unit :else t))
 
 (defn compile-region
   "Check and lower a region. Answers {:sym :src :region} — the C entry's name
