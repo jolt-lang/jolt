@@ -30,7 +30,8 @@
   pair as it does on the JVM. Compile the output with -ffp-contract=off: a fused
   multiply-add rounds once where Jolt rounds twice."
   (:require [clojure.string :as str]
-            [jolt.native.ast :as ast]))
+            [jolt.native.ast :as ast]
+            [jolt.native.range :as ranges]))
 
 (def err-codes
   {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7})
@@ -51,6 +52,12 @@
 ;; type (a static function, which returns an owned array struct by value)
 (def ^:dynamic *fn-ret* :entry)
 (def ^:dynamic *sym* nil)
+;; range facts per function (jolt.native.range), and the facts in force while
+;; the fast copy of a function is emitted (nil in the checked copy)
+(def ^:dynamic *ranges* nil)
+(def ^:dynamic *fast* nil)
+
+(defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
 
 (defn- line! [& parts] (let [l (apply str parts)] (when-not (str/blank? l) (swap! *lines* conj l))))
 
@@ -109,13 +116,16 @@
 (defn- as-double [atom t] (if (= t :long) (str "((double)" atom ")") atom))
 
 (defn- arith-pair
-  "One step of a left fold: acc (type at) op b (type bt). Answers [atom type]."
-  [node op [a at] [b bt]]
+  "One step of a left fold: acc (type at) op b (type bt). Answers [atom type].
+  safe: the range facts prove this long step cannot overflow."
+  [node op [a at] [b bt] safe]
   (if (and (= at :long) (= bt :long))
     (let [r (fresh! :long)
           builtin (case op :+ "__builtin_add_overflow" :- "__builtin_sub_overflow"
                           :* "__builtin_mul_overflow")]
-      (line! "if (" builtin "(" a ", " b ", &" r ")) " (raise! node :overflow))
+      (if safe
+        (line! r " = " a " " (case op :+ "+" :- "-" :* "*") " " b ";")
+        (line! "if (" builtin "(" a ", " b ", &" r ")) " (raise! node :overflow)))
       [r :long])
     (let [r (fresh! :double)
           cop (case op :+ "+" :- "-" :* "*" :div "/")]
@@ -128,19 +138,24 @@
         t (:type node)
         one (first args)]
     (case p
-      (:+ :- :*) (first (reduce #(arith-pair node p %1 %2) args))
-      :div (first (reduce #(arith-pair node :div %1 %2)
+      (:+ :- :*) (let [oks (proven? node :no-ov)]
+                   (first (reduce (fn [acc [i b]] (arith-pair node p acc b (get oks i)))
+                                  (first args) (map-indexed vector (rest args)))))
+      :div (first (reduce #(arith-pair node :div %1 %2 false)
                           (if (= 1 (count args)) (cons ["1.0" :double] args) args)))
       :neg (if (= t :long)
              (let [r (fresh! :long)]
-               (line! "if (" (first one) " == INT64_MIN) " (raise! node :overflow))
+               (when-not (first (proven? node :no-ov))
+                 (line! "if (" (first one) " == INT64_MIN) " (raise! node :overflow)))
                (line! r " = -" (first one) ";")
                r)
              (str "(-" (first one) ")"))
       (:inc :dec) (if (= t :long)
                     (let [r (fresh! :long)]
-                      (line! "if (" (if (= p :inc) "__builtin_add_overflow" "__builtin_sub_overflow")
-                             "(" (first one) ", 1, &" r ")) " (raise! node :overflow))
+                      (if (first (proven? node :no-ov))
+                        (line! r " = " (first one) (if (= p :inc) " + 1;" " - 1;"))
+                        (line! "if (" (if (= p :inc) "__builtin_add_overflow" "__builtin_sub_overflow")
+                               "(" (first one) ", 1, &" r ")) " (raise! node :overflow)))
                       r)
                     (str "(" (first one) (if (= p :inc) " + 1.0)" " - 1.0)")))
       (:quot :rem :mod)
@@ -193,12 +208,14 @@
   index argument is evaluated: before a later argument (aset's value) runs, so
   its side effects never happen when the index overflows."
   [node idx]
-  (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow)))
+  (when-not (proven? node :idx-int)
+    (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow))))
 
 (defn- emit-array-index
   "The bounds check, inside the store or load: after every argument ran."
   [node arr idx]
-  (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len"))))
+  (when-not (proven? node :in-bounds)
+    (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len")))))
 
 (defn- bind! [id t atom]
   (let [n (declare-var! id t)]
@@ -389,6 +406,45 @@ static _Thread_local jn_out jn_tls;
            "void")
          ")")))
 
+(defn- useful? [facts]
+  (some (fn [f] (or (:idx-int f) (:in-bounds f) (some true? (:no-ov f)))) (vals facts)))
+
+(defn- version-guard
+  "The condition the fast copy's facts assume: each array parameter no longer
+  than Integer/MAX_VALUE, and longer than the largest index proven for it."
+  [{:keys [needs arrays]}]
+  (str/join " && " (concat (map #(str (var-name %) ".len <= INT32_MAX") arrays)
+                           (map (fn [[p hi]] (str (var-name p) ".len > " hi "LL")) (sort needs)))))
+
+(defn- emit-versioned
+  "A function body, twice when its range facts drop any check: a fast copy
+  without those checks, run when the guard holds, and the fully checked copy
+  otherwise. Answers the atom holding the body's value."
+  [body analysis]
+  (if-not (useful? (:facts analysis))
+    (emit body)
+    (let [t (:type body)
+          res (when-not (#{:unit :never} t)
+                (swap! *decls* assoc "jn_res"
+                       (str (ctype t) " jn_res = " (if (ast/array-type? t) "{0, 0}" "0") ";"))
+                "jn_res")
+          copy (fn [facts]
+                 (binding [*lines* (atom []) *fast* facts]
+                   (let [v (emit body)]
+                     (when res (line! res " = " v ";"))
+                     @*lines*)))
+          fast (copy (:facts analysis))
+          g (version-guard analysis)]
+      (if (str/blank? g)
+        (swap! *lines* into fast)
+        (let [slow (copy nil)]
+          (line! "if (" g ") {")
+          (swap! *lines* into fast)
+          (line! "} else {")
+          (swap! *lines* into slow)
+          (line! "}")))
+      (or res "0"))))
+
 (defn- emit-helper
   "A static C function for one native helper instance. Its array parameters are
   borrowed structs; an owned array result is returned by value."
@@ -398,7 +454,7 @@ static _Thread_local jn_out jn_tls;
             *tmp* (atom 0)
             *fn-ret* (:ret inst)]
     (let [t (:ret inst)
-          v (emit (:body inst))
+          v (emit-versioned (:body inst) (get *ranges* (:iid inst)))
           body @*lines*
           result (cond
                    (ast/owned? t) [(frees (disj (:delete inst) (:id (:body inst)))) (str "return " v ";")]
@@ -413,7 +469,8 @@ static _Thread_local jn_out jn_tls;
   returns an array), with a static function per native helper instance."
   [region sym]
   (binding [*sym* sym
-            *region* (atom (assoc region :loops {}))]
+            *region* (atom (assoc region :loops {}))
+            *ranges* (ranges/analyze-region region)]
     (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
                        (apply str (map emit-helper (:instances region))))]
       (str prelude "\n" helpers (emit-entry region sym)))))
@@ -434,7 +491,7 @@ static _Thread_local jn_out jn_tls;
                 (swap! *decls* assoc (var-name (:id p))
                        (str (ctype (:type p)) " " (var-name (:id p)) " = { JN_FLV_LEN(p" (:id p) "), "
                             (if (fx-borrowed? (:type p)) "(int64_t *)" "") "JN_FLV_DATA(p" (:id p) ") };"))))
-          v (emit (:body region))
+          v (emit-versioned (:body region) (:entry *ranges*))
           body @*lines*
           decls (vals @*decls*)
           result (cond
