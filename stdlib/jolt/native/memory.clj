@@ -236,6 +236,7 @@
                 long-arith (and (= :long (:type node)) (fallible-prims (:prim node)))]
             (if (or long-arith (= :to-long (:prim node))) (snapshot n) n))
     :math (visit-args node)
+    :extern (visit-args node)
     :alength (assoc node :arr (borrow-checked! (visit-borrowing node :arr)))
     :aget (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))]

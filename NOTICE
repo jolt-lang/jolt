@@ -169,3 +169,12 @@ Carp
   Apache License 2.0: licenses/Apache-2.0.txt
   The ownership checker in stdlib/jolt/native/memory.clj ports src/Memory.hs;
   the region language and C emission follow src/Emit.hs.
+
+Ferret
+  https://github.com/nakkaya/ferret
+  Copyright (c) 2019, Nurullah Akkaya
+  BSD 2-Clause license: licenses/BSD-2-ferret.txt
+  jolt.native/defextern's headers follow Ferret's native-header, and a native
+  helper's per-platform bodies port its defnative / on (#if guards, an
+  _ENABLED define, and #error on a platform no body covers). Native region
+  stack arrays take the idea, not the code, of its escape analysis.

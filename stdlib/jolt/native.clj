@@ -47,6 +47,7 @@
             [jolt.native.emit :as emit]
             [jolt.native.fallback :as fallback]
             [jolt.native.rt]
+            [jolt.ffi]
             [jolt.scheme]))
 
 (defn- fnv32
@@ -114,6 +115,46 @@
                 :ret (:tag (meta name))}]
     `(def ~(vary-meta name assoc :jolt.native/helper (list 'quote helper))
        (fn ~(mapv #(with-meta % nil) params) ~@body))))
+
+(def ^:private extern-types {'long :long 'double :double 'boolean :bool})
+(def ^:private ffi-types {:long :int64 :double :double :bool :bool :unit :void})
+
+(defn- extern-type [sym what]
+  (let [tag (:tag (meta sym)) tag (if (string? tag) (symbol tag) tag)]
+    (or (extern-types tag)
+        (throw (ex-info (str "defextern: " what " needs a hint of ^long ^double or ^boolean, got "
+                             (pr-str tag))
+                        {:jolt.native/error true})))))
+
+(defmacro defextern
+  "Declare a C function native regions can call:
+
+      (defextern ^double fast-erf [^double x])
+      (defextern ^long next-seed [^long s] {:c \"xs_next\" :header \"xorshift.h\"})
+
+  Parameters and the result are scalars (^long ^double ^boolean; no result
+  hint is a void function, answering nil). The region's C calls the function
+  directly: it is declared from these hints, or by its :header when one is
+  given (as Ferret's native-header does). A jolt build links it like any other
+  symbol, so it must come from a :static :jolt/native library (or libc/libm).
+  Outside a region, and in a region's Jolt fallback, name is a jolt.ffi
+  binding of the same function, so both halves call the same code.
+
+  The checker cannot see into the C: a region that calls one is memory safe
+  only as far as that function is."
+  [name params & [opts]]
+  (let [c (or (:c opts) (str name))
+        header (:header opts)
+        ret (if (:tag (meta name)) (extern-type name (str "the result of " name)) :unit)
+        ps (mapv #(extern-type % (str "parameter " %)) params)]
+    (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" c)
+      (throw (ex-info (str "defextern: " (pr-str c) " is not a C identifier; name it with {:c \"...\"}")
+                      {:jolt.native/error true})))
+    (when (and header (not (re-matches #"<?[A-Za-z0-9_./+-]+>?" header)))
+      (throw (ex-info (str "defextern: bad header " (pr-str header)) {:jolt.native/error true})))
+    `(jolt.ffi/defcfn ~(vary-meta name assoc :jolt.native/extern
+                                  (list 'quote {:c c :header header :params ps :ret ret}))
+       ~c ~(mapv ffi-types ps) ~(ffi-types ret))))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of

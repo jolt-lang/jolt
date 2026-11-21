@@ -72,6 +72,9 @@
                       (:args node) (:want node)))
     :prim (prim node)
     :math (cons (symbol "Math" (:fn node)) (map #(dbl (clj %) (:type %)) (:args node)))
+    ;; the same C function, through its jolt.ffi binding
+    :extern (cons (:sym node) (map (fn [a want] (if (= want :double) (dbl (clj a) (:type a)) (clj a)))
+                                   (:args node) (:params node)))
     :alength (list 'clojure.core/alength (clj (:arr node)))
     :aget (list 'clojure.core/aget (clj (:arr node)) (list 'jolt.native.rt/index (clj (:idx node))))
     :aset (let [v (if (and (= :double (:type node)) (= :long (:type (:val node))))
