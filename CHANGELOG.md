@@ -65,6 +65,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- jolt.ffi's fixed costs are lower (#1753). A one-allocation
+  `(with-open [a (ffi/confined-arena)] (ffi/alloc a 64))` went from 820 to
+  460 ns and `(ffi/free (ffi/alloc 64))` from 126 to 87: the size table no
+  longer takes its lock through a `dynamic-wind`, arena creation skips the
+  automatic-arena drain while none is live, and the arena attach no longer
+  goes through variadic `update`. `(ffi/write-array p :double arr)` of 35
+  doubles went from 230 to 137 ns, mostly by remembering each type keyword's
+  Chez type instead of matching its name per call.
+- `double-array`, `float-array`, `long-array`, `int-array` and `short-array`
+  built from a vector or another array fill the backing straight from it
+  instead of draining a seq: 1000 doubles from a vector went from 13.4 to
+  3.9 us, and 35 from a double-array from 1650 to 180 ns.
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.

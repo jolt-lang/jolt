@@ -444,6 +444,7 @@
 (defn- remember-size! [pointer byte-count]
   (jolt.ffi/__remember-size! pointer byte-count))
 
+;; pointers is one address or a seq of them.
 (defn- forget-sizes! [pointers]
   (jolt.ffi/__forget-sizes! pointers)
   nil)
@@ -526,12 +527,10 @@
 ;; allocator. :shared is usable from any thread; the atom's swap! is what makes
 ;; that safe. :global and :auto cannot be closed by hand.
 
-(def ^:private arena-marker :jolt.ffi/arena)
-
 (defn arena?
   "True for a value from one of the arena constructors."
   [x]
-  (and (map? x) (= true (get x arena-marker))))
+  (and (map? x) (= true (get x :jolt.ffi/arena))))
 
 (defn- checked-arena [a]
   (when-not (arena? a)
@@ -603,7 +602,7 @@
            (and (empty? views) (empty? callables) (= 1 (count blocks)))
            (let [[usable raw] (first blocks)]
              (try (jolt.ffi/__free raw)
-                  (finally (forget-sizes! [usable]))))
+                  (finally (forget-sizes! usable))))
 
            (or (seq views) (seq callables) (seq blocks))
            (let [failure (volatile! nil)]
@@ -638,7 +637,7 @@
 (defn- new-arena [kind thread]
   (drain-auto-arenas!)
   (let [state (atom {:open? true :blocks [] :callables [] :views []})
-        arena {arena-marker true
+        arena {:jolt.ffi/arena true
                :jolt.ffi/kind kind
                :jolt.ffi/thread thread
                :jolt.ffi/state state
@@ -716,7 +715,7 @@
 ;; the confined path below builds no closure at all, and calls this only on the
 ;; rare loss.
 (defn- arena-swap-add! [state key value]
-  (first (swap-vals! state (fn [m] (if (:open? m) (update m key conj value) m)))))
+  (first (swap-vals! state (fn [m] (if (:open? m) (assoc m key (conj (get m key) value)) m)))))
 
 (defn- arena-add!
   ([a key value] (arena-add! a key value nil))
@@ -728,7 +727,7 @@
                   ;; code and close the arena before attachment.
                   (let [before @state]
                     (if (and (:open? before)
-                             (not (compare-and-set! state before (update before key conj value))))
+                             (not (compare-and-set! state before (assoc before key (conj (get before key) value)))))
                       ;; The publish is a compare-and-set!, not a reset!, because
                       ;; "one owner THREAD" is not "one mutator": fibers share
                       ;; their carrier's thread-id (jolt.host/thread-id is
@@ -843,7 +842,7 @@
   a size for a block that never had one — which copy and clone would then use as
   a byte count. Arena memory is released by closing the arena, not by this."
   [p]
-  (forget-sizes! [p])
+  (forget-sizes! p)
   (jolt.ffi/__free p)
   nil)
 
@@ -1208,11 +1207,26 @@
     (:int8 :i8 :uint8 :u8 :byte :char :bool) true
     false))
 
+;; The carriers are constants: building one per call (it holds the array
+;; constructor, so it is not a literal the compiler can hoist) was a large share
+;; of a small write-array.
+(def ^:private byte-carrier {:width 1})
+(def ^:private float-carrier
+  {:width 4 :ctor float-array :read-type :float :write-type :float :float? true})
+(def ^:private double-carrier
+  {:width 8 :ctor double-array :read-type :double :write-type :double :float? true})
+(def ^:private short-carrier
+  {:width 2 :ctor short-array :read-type :int16 :write-type :uint16 :mask 0xffff})
+(def ^:private int-carrier
+  {:width 4 :ctor int-array :read-type :int32 :write-type :uint32 :mask 0xffffffff})
+(def ^:private long-carrier
+  {:width 8 :ctor long-array :read-type :int64 :write-type :uint64 :signed-type :int64})
+
 (defn- array-carrier [t]
   (cond
-    (byte-type? t) {:width 1}
-    (= t :float) {:width 4 :ctor float-array :read-type :float :write-type :float :float? true}
-    (= t :double) {:width 8 :ctor double-array :read-type :double :write-type :double :float? true}
+    (= t :double) double-carrier
+    (byte-type? t) byte-carrier
+    (= t :float) float-carrier
     (or (= t :string) (= t :void) (not (keyword? t)))
     (throw (ex-info (str "jolt.ffi: read-array and write-array copy scalars; "
                          (if (= t :string)
@@ -1222,10 +1236,9 @@
     :else
     (let [w (jolt.ffi/__sizeof t)]
       (case w
-        2 {:width 2 :ctor short-array :read-type :int16 :write-type :uint16 :mask 0xffff}
-        4 {:width 4 :ctor int-array :read-type :int32 :write-type :uint32 :mask 0xffffffff}
-        8 {:width 8 :ctor long-array :read-type :int64 :write-type :uint64
-           :signed-type :int64}
+        2 short-carrier
+        4 int-carrier
+        8 long-carrier
         (throw (ex-info (str "jolt.ffi: cannot copy " (pr-str t) " as an array element")
                         {:type t :width w}))))))
 
@@ -1262,17 +1275,19 @@
 ;; index and n select arr[index, index+n); a nil n is the whole array. The range
 ;; is checked here, before anything is written, so the host, the element loop and
 ;; the one-byte route all see a range within the array.
-(defn- check-array-range [who arr index n]
-  (let [cap (count arr)]
-    (when-not (and (number? index) (number? n)
-                   (<= 0 index) (<= 0 n) (<= (+ index n) cap))
-      (throw (ex-info (str "jolt.ffi/" who ": range outside the array")
-                      {:index index :length n :capacity cap})))))
+(defn- check-array-range
+  ([who arr index n] (check-array-range who arr index n (count arr)))
+  ([who arr index n cap]
+   (when-not (and (number? index) (number? n)
+                  (<= 0 index) (<= 0 n) (<= (+ index n) cap))
+     (throw (ex-info (str "jolt.ffi/" who ": range outside the array")
+                     {:index index :length n :capacity cap})))))
 
 (defn- write-array-typed [p t arr off index n]
   (let [carrier (array-carrier t)
-        n (if (nil? n) (count arr) n)]
-    (check-array-range "write-array" arr index n)
+        cap (count arr)
+        n (if (nil? n) cap n)]
+    (check-array-range "write-array" arr index n cap)
     (if (nil? (:ctor carrier))
       (jolt.ffi/__write-array (+ p off) arr index n)
       ;; The host's block encode takes the :read-type too: it picks the width
