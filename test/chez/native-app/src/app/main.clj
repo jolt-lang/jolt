@@ -1,11 +1,11 @@
 (ns app.main
-  (:require [jolt.native :refer [native linked-regions]]))
+  (:require [jolt.native :refer [native defnative linked-regions]]))
+
+(defnative sum-of-squares [xs]
+  (loop [i 0 s 0.0] (if (< i (alength xs)) (recur (inc i) (+ s (* (aget xs i) (aget xs i)))) s)))
 
 (defn norm [^doubles xs]
-  (native [^doubles xs]
-    (let [n (alength xs)]
-      (loop [i 0 s 0.0]
-        (if (< i n) (recur (inc i) (+ s (* (aget xs i) (aget xs i)))) (Math/sqrt s))))))
+  (native [^doubles xs] (Math/sqrt (sum-of-squares xs))))
 
 (defn scaled [^doubles xs ^double k]
   (native [^doubles xs ^double k]

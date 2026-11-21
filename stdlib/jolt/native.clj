@@ -93,6 +93,25 @@
           'jolt.native.rt/raise!
           (if (:hold-gc (meta params)) :hold-gc :pinned))))
 
+(defmacro defnative
+  "A helper native regions can call. Its parameters need no hints: the helper
+  is compiled once per distinct set of argument types it is called with, as
+  Carp concretizes a generic function, so (defnative dot [xs ys] ...) works on
+  double arrays in one region and long arrays in another. An array argument is
+  borrowed: the helper reads and writes it but can neither free nor return it;
+  it can create and return arrays of its own. A helper that calls itself needs
+  a return type hint: (defnative ^double f [x] ...).
+
+  Outside a region, name is an ordinary fn over the same body, with Jolt's own
+  semantics."
+  [name params & body]
+  (let [helper {:params (mapv #(with-meta % nil) params)
+                :body (vec body)
+                :ns (ns-name *ns*)
+                :ret (:tag (meta name))}]
+    `(def ~(vary-meta name assoc :jolt.native/helper (list 'quote helper))
+       (fn ~(mapv #(with-meta % nil) params) ~@body))))
+
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of
   its C symbol to whether that region runs as C here (true in a binary built

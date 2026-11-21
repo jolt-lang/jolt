@@ -12,7 +12,8 @@
             [jolt.native.memory :as mem]
             [jolt.native.emit :as emit]
             [jolt.native.fallback :as fallback]
-            [jolt.native.rt :as rt]))
+            [jolt.native.rt :as rt]
+            [jolt.native :refer [defnative]]))
 
 (def failures (atom []))
 (defn fail! [msg] (swap! failures conj msg) (println "FAIL" msg))
@@ -300,6 +301,38 @@
            '((let [a (aclone ls)] (dotimes [i (alength a)] (aset a i (inc (aget a i)))) a))
            [[(la 1 2 3)] [(la)]] :raw true)
 
+;; --- native helpers (defnative): one instance per call-site types ---------------
+(defnative dot [xs ys]
+  (loop [i 0 s 0.0] (if (< i (alength xs)) (recur (inc i) (+ s (* (aget xs i) (aget ys i)))) s)))
+(defnative scaled [xs k]
+  (let [a (aclone xs)] (dotimes [i (alength a)] (aset a i (* k (aget a i)))) a))
+(defnative fill! [a v] (dotimes [i (alength a)] (aset a i v)))
+(defnative pick-at [xs i] (aget xs i))
+(defnative sum-pick [xs i j] (+ (pick-at xs i) (pick-at xs j)))
+(defnative ^long fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(defnative fib-nohint [n] (if (< n 2) n (+ (fib-nohint (- n 1)) (fib-nohint (- n 2)))))
+(defnative leak-borrowed [xs] xs)
+
+(check-run "one helper instantiated for double and long arrays" '[^doubles a ^longs b]
+           '((+ (dot a a) (double (sum-pick b 0 1)) (sum-pick a 0 0)))
+           [[(da 1 2 3) (la 1 2 3)] [(da 1.5 2) (la 2 big59)]] :raw true)
+(check-run "a helper's owned result returned by the region" '[^doubles xs ^double k]
+           '((scaled xs k))
+           [[(da 1 2 3) 2.0] [(da) 3.0]] :raw true)
+(check-run "a region-owned array lent to a helper that fills it" '[^long n]
+           '((let [a (double-array n)] (fill! a 2.5) (scaled a 2.0)))
+           [[0] [3]] :raw true)
+(check-run "a failure in a nested helper with arrays live on both sides" '[^doubles xs ^long i]
+           '((let [a (aclone xs) b (scaled a 2.0)] (+ (sum-pick b 0 i) (aget a 0))))
+           [[(da 1 2 3) 2] [(da 1 2 3) 3] [(da 1 2 3) -1]])
+(check-run "a recursive helper with a return hint" '[^long n] '((fib n)) [[0] [1] [15]] :raw true)
+
+(check-reject "a recursive helper without a hint" '[^long n] '((fib-nohint n)) #"return type hint")
+(check-reject "a helper returning an array it borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
+              #"cannot return an array it borrowed")
+(check-reject "moving the array a helper borrows in a sibling argument" '[]
+              '((let [a (double-array 3)] (pick-at a (let [b a] 0)))) #"after it was given away")
+
 ;; --- failures: same exception as Jolt, nothing leaked -------------------------
 
 ;; the index cast runs before aset's value (as on the JVM); its failure frees what
@@ -502,7 +535,7 @@
   (let [ds (scalars :double)]
     (if (<= d 0)
       (pick (concat [(double (rnd 7)) 'dd 0.5] ds))
-      (case (rnd 10)
+      (case (rnd 11)
         0 (list (pick '[+ - * /]) (gen :double (dec d)) (gen (pick [:double :long]) (dec d)))
         1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
         2 (list 'Math/sqrt (gen :double (dec d)))
@@ -513,6 +546,7 @@
         5 (gen-let :double d)
         6 (gen-loop :double d)
         8 (list 'do (list 'aset 'ls (gen-idx d) (gen :long (dec d))) (gen :double (dec d)))
+        9 (let [a (borrowable)] (list 'pick-at a (with-borrowed a #(gen-idx d))))
         7 (let [a (borrowable)]
             (list 'do (cons 'aset (cons a (with-borrowed a #(vector (gen-idx d) (gen :double (dec d))))))
                   (gen :double (dec d))))
@@ -547,7 +581,9 @@
       :else
       (case (rnd 5)
         0 (list 'double-array (gen-idx d))
-        1 (list 'aclone (borrowable))
+        1 (if (chance 40)
+            (let [a (borrowable)] (list 'scaled a (with-borrowed a #(gen :double (dec d)))))
+            (list 'aclone (borrowable)))
         2 (let [c (gen :bool (dec d))
                 [t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
             (list 'if c t e))

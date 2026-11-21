@@ -6,6 +6,7 @@
   RT.intCast, and a variadic op folds pair by pair exactly as the C does.")
 
 (defn- lname [id] (symbol (str "nr__l" id)))
+(defn- hname [iid] (symbol (str "nr__h" iid)))
 
 (declare clj)
 
@@ -82,7 +83,8 @@
                   (clj (:arr node)) (list 'jolt.native.rt/index (clj (:idx node))) v))
     :new-array (list (if (= :double (:elem node)) 'clojure.core/double-array 'clojure.core/long-array)
                      (clj (:len node)))
-    :aclone (list 'clojure.core/aclone (clj (:arr node)))))
+    :aclone (list 'clojure.core/aclone (clj (:arr node)))
+    :call (cons (hname (:instance node)) (map clj (:args node)))))
 
 (defn region-form
   "The fallback expression for an analyzed region, evaluated where its
@@ -96,4 +98,12 @@
                  (map? node) (into {} (map (fn [[k v]] [k (mark v)]) node))
                  (vector? node) (mapv mark node)
                  :else node))]
-    (clj (mark (:body region)))))
+    (let [body (clj (mark (:body region)))
+          insts (:instances region)]
+      (if (seq insts)
+        ;; each native helper instance as a local fn, from its own checked IR
+        (list 'clojure.core/letfn
+              (mapv (fn [i] (list (hname (:iid i)) (mapv (comp lname :id) (:params i)) (clj (:body i))))
+                    insts)
+              body)
+        body))))

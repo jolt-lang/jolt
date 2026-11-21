@@ -229,16 +229,36 @@
                   n (snapshot (assoc node :arr arr))]
               (manage! node)
               n)
+    ;; a native helper borrows every array it is passed (it can neither free nor
+    ;; return one), so each owned argument must be live at the call, after all
+    ;; the arguments ran; it can fail, and an owned result is the caller's
+    :call (let [args (mapv visit (:args node))]
+            (doseq [a args] (borrow-checked! a))
+            (let [n (snapshot (assoc node :args args))]
+              (manage! node)
+              n))
     :new-array (let [len (visit (:len node))
                      n (snapshot (assoc node :len len))]
                  (manage! node)
                  n)))
 
-(defn check-region
-  "Run the ownership pass over an analyzed region. Answers the region with
-  :body annotated and :delete, the owned values to free before returning."
-  [region]
+(defn- check-body
+  "Check one function body (a region's or a helper instance's): its parameters
+  are borrowed or scalar, so nothing starts managed. Answers [body delete]."
+  [body]
   (binding [*state* (atom {:deleters #{} :names {} :loops {}})]
-    (let [body (visit (:body region))]
+    (let [body (visit body)]
       (when-not (diverges? body) (unmanage! body))
-      (assoc region :body body :delete (deleters)))))
+      [body (deleters)])))
+
+(defn check-region
+  "Run the ownership pass over an analyzed region and each native helper
+  instance it calls. Answers the region with every :body annotated and a
+  :delete per body, the owned values to free before it returns."
+  [region]
+  (let [[body delete] (check-body (:body region))]
+    (assoc region :body body :delete delete
+           :instances (mapv (fn [inst]
+                              (let [[b d] (check-body (:body inst))]
+                                (assoc inst :body b :delete d)))
+                            (:instances region)))))
