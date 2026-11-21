@@ -13,7 +13,7 @@
             [jolt.native.emit :as emit]
             [jolt.native.fallback :as fallback]
             [jolt.native.rt :as rt]
-            [jolt.native :refer [defnative]]))
+            [jolt.native :refer [defnative defextern]]))
 
 (def failures (atom []))
 (defn fail! [msg] (swap! failures conj msg) (println "FAIL" msg))
@@ -53,6 +53,21 @@
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" rt-so (str work-dir "/jn_rt.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_rt" {}))))
 (scm/call "load-shared-object" rt-so)
+
+;; C functions for the defextern rows: linked into every region object like
+;; jn_rt, and loaded into the process so their jolt.ffi bindings resolve too
+(def ext-so (str work-dir "/jn_ext.dylib"))
+(spit (str work-dir "/jn_ext.c")
+      (str "#include <stdint.h>\n"
+           "int64_t jn_ext_mix(int64_t a, double b) { return a * 3 + (int64_t)(b * 10.0); }\n"
+           "_Bool jn_ext_odd(int64_t a) { return (a & 1) != 0; }\n"
+           "double jn_ext_half(double x) { return x / 2.0; }\n"
+           "static int64_t jn_ext_count;\n"
+           "void jn_ext_tick(void) { jn_ext_count++; }\n"
+           "int64_t jn_ext_ticks(void) { return jn_ext_count; }\n"))
+(let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" ext-so (str work-dir "/jn_ext.c")]))]
+  (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_ext" {}))))
+(scm/call "load-shared-object" ext-so)
 (def counter (atom 0))
 
 (defn compile-region
@@ -65,7 +80,7 @@
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
         cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_STATUS"
-             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c rt-so
+             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c rt-so ext-so
              ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
              "-lm"]
         p (.start (ProcessBuilder. ^java.util.List cmd))
@@ -588,6 +603,49 @@
                (dotimes [i 5] (aset a i (* i n)))
                (let [b (long-array 5)] (dotimes [i 5] (aset b i 1)) (dot a b))))
            [[3] [0] [-4]])
+
+;; --- defextern: C functions a region calls directly ---------------------------
+;; The C half calls the function; the fallback calls it through jolt.ffi.
+
+(defextern ^long ext-mix [^long a ^double b] {:c "jn_ext_mix"})
+(defextern ^boolean ext-odd [^long a] {:c "jn_ext_odd"})
+(defextern ^double ext-half [^double x] {:c "jn_ext_half"})
+(defextern ext-tick [] {:c "jn_ext_tick"})
+(defextern ^long ext-ticks [] {:c "jn_ext_ticks"})
+
+(check-run "a region calls declared C functions" '[^long n ^double d]
+           '((loop [i 0 s 0]
+               (if (< i n)
+                 (recur (inc i) (if (ext-odd i) (+ s (ext-mix i d)) s))
+                 (+ (double s) (ext-half d)))))
+           [[0 1.5] [7 0.25] [20 -2.0]])
+
+(check-run "a long passed where C takes a double" '[^long n]
+           '((ext-half n))
+           [[9] [-3]])
+
+(let [before (ext-ticks)
+      f (:call (compile-region '[^long n] '((dotimes [_ n] (ext-tick)) (ext-ticks))))]
+  (check-eq "a void C function runs for its effect" (- (f 4) before) 4))
+
+(defnative scaled-mix [a] (ext-mix a 0.5))
+(check-run "a helper calls a C function" '[^long n] '((scaled-mix n)) [[2] [-5]])
+
+(check-reject "a C function's argument types are checked" '[^double d] '((ext-odd d))
+              #"takes :long here, got :double")
+(check-reject "a C function's arity is checked" '[] '((ext-half))
+              #"takes 1 argument")
+
+(check-eq "a C function without a header is declared from its hints"
+          (boolean (re-find #"double jn_ext_half\(double\);" (c-of '[^double x] '((ext-half x)))))
+          true)
+
+(defextern ^double ext-cbrt [^double x] {:c "cbrt" :header "<math.h>"})
+(check-eq "a C function with a header is included, not declared"
+          (let [src (c-of '[^double x] '((ext-cbrt x)))]
+            [(boolean (re-find #"#include <math.h>\n" src)) (boolean (re-find #"double cbrt\(double\);" src))])
+          [true false])
+(check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]])
 
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its

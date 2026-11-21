@@ -270,6 +270,7 @@
     :recur (do (swap! *recurs* update (:loop-id node) conj (mapv #(rng % env) (:args node))) nil)
     :prim (prim-rng node env)
     :math (do (run! #(rng % env) (:args node)) nil)
+    :extern (do (run! #(rng % env) (:args node)) (when (= :long (:type node)) full))
     :alength (do (rng (:arr node) env) (alen env (:arr node)))
     :aget (do (rng (:arr node) env)
               (index-facts! node env (rng (:idx node) env))

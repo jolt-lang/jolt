@@ -307,6 +307,11 @@
     :prim (let [v (emit-prim node) r (fresh! (:type node))]
             (line! r " = " v ";")
             r)
+    :extern (let [args (mapv (fn [a want] (as-double-if want (emit a) (:type a))) (:args node) (:params node))
+                  call (str (:c node) "(" (str/join ", " args) ")")]
+              (if (#{:unit :never} (:type node))
+                (do (line! call ";") "0")
+                (let [r (fresh! (:type node))] (line! r " = " call ";") r)))
     :math (let [args (mapv (fn [a] (as-double (emit a) (:type a))) (:args node))
                 r (fresh! :double)
                 f (case (:fn node) "sqrt" "sqrt" "sin" "sin" "cos" "cos" "tan" "tan"
@@ -495,6 +500,24 @@ static _Thread_local jn_out jn_tls;
            (str/join "\n" (map #(str "  " %) (concat (vals @*decls*) body result)))
            "\n}\n"))))
 
+(def ^:private extern-ctype {:long "int64_t" :double "double" :bool "_Bool" :unit "void"})
+
+(defn- extern-decls
+  "Each C function the region calls: its header's #include (Ferret's
+  native-header), or a prototype from its hints."
+  [region]
+  (let [all (->> (cons (:body region) (map :body (:instances region)))
+                 (mapcat #(tree-seq map? (fn [n] (filter map? (concat (vals n) (mapcat (fn [v] (when (sequential? v) v)) (vals n))))) %))
+                 (filter #(= :extern (:op %)))
+                 (map #(select-keys % [:c :header :params :type]))
+                 distinct)]
+    (str (apply str (map #(str "#include " (if (str/starts-with? % "<") % (str "\"" % "\"")) "\n")
+                         (distinct (keep :header all))))
+         (apply str (for [x all :when (nil? (:header x))]
+                      (str (extern-ctype (:type x)) " " (:c x) "("
+                           (if (seq (:params x)) (str/join ", " (map extern-ctype (:params x))) "void")
+                           ");\n"))))))
+
 (defn emit-region
   "C source for a checked region, exporting sym (and sym_copy_out when it
   returns an array), with a static function per native helper instance."
@@ -505,7 +528,7 @@ static _Thread_local jn_out jn_tls;
             *stacks* (stack/analyze-region region)]
     (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
                        (apply str (map emit-helper (:instances region))))]
-      (str prelude "\n" helpers (emit-entry region sym)))))
+      (str prelude "\n" (extern-decls region) helpers (emit-entry region sym)))))
 
 (defn- emit-entry
   "The region's exported entry and its status accessors."

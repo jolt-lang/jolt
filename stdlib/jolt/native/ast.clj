@@ -189,7 +189,7 @@
     (fail form (str what " takes a long here, got " (pr-str (:type a)))))
   a)
 
-(declare analyze-body)
+(declare analyze-body analyze-extern-call)
 
 ;; --- native helpers (jolt.native/defnative) ----------------------------------
 
@@ -200,6 +200,14 @@
     (when-let [v (resolve f)]
       (when-let [h (:jolt.native/helper (meta v))]
         (assoc h :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
+
+(defn extern-of
+  "The C function (jolt.native/defextern) a call head names, or nil."
+  [env f]
+  (when (and (symbol? f) (not (contains? env f)))
+    (when-let [v (resolve f)]
+      (when-let [x (:jolt.native/extern (meta v))]
+        (assoc x :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
 
 (def ^:private ret-hints
   {'long :long 'double :double 'boolean :bool 'doubles [:array :double] 'longs [:array :long]})
@@ -348,7 +356,20 @@
             (node :math :double form :fn (name f) :args args))
         (if-let [h (helper-of env f)]
           (analyze-helper-call h args form)
-          (fail form (str "not allowed in a native region: " (pr-str f))))))))
+          (if-let [x (extern-of env f)]
+            (analyze-extern-call x args form)
+            (fail form (str "not allowed in a native region: " (pr-str f)))))))))
+
+(defn- analyze-extern-call
+  "A call to a declared C function: scalars in, a scalar (or nothing) out."
+  [x args form]
+  (when-not (= (count args) (count (:params x)))
+    (fail form (str (:sym x) " takes " (count (:params x)) " argument(s), got " (count args))))
+  (doseq [[want a] (map vector (:params x) args)]
+    (when-not (or (= want (:type a)) (and (= want :double) (= :long (:type a))) (unknown? (:type a)))
+      (fail form (str (:sym x) " takes " (pr-str want) " here, got " (pr-str (:type a))))))
+  (node :extern (:ret x) form :c (:c x) :header (:header x) :params (:params x)
+        :args args :sym (:sym x)))
 
 (def ^:private builtins
   "Heads analyze-call handles itself: never macroexpanded."
