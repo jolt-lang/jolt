@@ -606,11 +606,15 @@
       (do (reset! *planted* true) (pick dead))
       (and (seq movable) (plant-chance 35 75))
       (let [v (pick movable)] (kill! v) v)
-      ;; a helper that takes its argument: passing an owned local moves it
+      ;; a helper that takes its argument: passing an owned local moves it, at
+      ;; the call, so a later argument may still read it (but not move it)
       (and (seq movable) (chance 15))
-      (let [v (pick movable)]
+      (let [v (pick movable)
+            call (if (chance 50)
+                   (list 'keep-it v)
+                   (list 'maybe-keep v (with-borrowed v #(gen :bool (dec d)))))]
         (kill! v)
-        (if (chance 50) (list 'keep-it v) (list 'maybe-keep v (gen :bool (dec d)))))
+        call)
       ;; the other violation: moving an outer value in an iteration that continues
       (and *plant-mode* (seq (:borrow-only @*g*)) (chance 30)
            (some (set (live-owned)) (:borrow-only @*g*)))
