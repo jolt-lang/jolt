@@ -315,6 +315,9 @@
 (define bt-fixnum-ordered '())
 (define (bt-fixnum-ordered! cmp)
   (unless (memq cmp bt-fixnum-ordered) (set! bt-fixnum-ordered (cons cmp bt-fixnum-ordered))))
+;; clojure.core/compare is jolt-compare (converters.ss def-var!s it): subseq /
+;; rsubseq hand it to the tree as a natural-order coll's comparator
+(bt-fixnum-ordered! jolt-compare)
 (define-bt-search bt-search-fxc (cmp n k)
   (lambda (a b) (if (fixnum? b) (cond ((fx<? a b) -1) ((fx=? a b) 0) (else 1)) (jolt-invoke2 cmp a b))))
 (define-syntax bt-search
