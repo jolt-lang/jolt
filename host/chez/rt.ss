@@ -3420,13 +3420,15 @@
 (define-syntax jrec*-slot/u
   (syntax-rules () ((_ o i) (sa-uvector-ref (sa-record-slot o 4) i))))
 ;; (= a b) at two arguments, open-coded on Chez (calls.clj native-op). Clojure's
-;; Util.equiv settles most of it from the FIRST operand alone: a char, a boolean,
-;; a keyword (interned) or nil on the left equals only itself, and nil on either side equals only
-;; nil, so once eq? has failed the answer is false without the call -- tools.
-;; reader compares a char it read against its terminator on every character. A
-;; string literal (what case on strings expands to) is a string? test and a
-;; string=?. Everything else is jolt=2. Two eq? flonums still compare by =, so
-;; NaN stays unequal to itself.
+;; Util.equiv decides a pair of base scalars (nil, a number, a keyword, a
+;; symbol, a string, a char, a boolean) by kind: a char, a boolean or a keyword
+;; equals only itself, and nil on the left equals only nil, so once eq? has
+;; failed the answer is false without the call -- tools.reader compares a char
+;; it read against its terminator on every character. A string literal (what
+;; case on strings expands to) is a string? test and a string=?. Any other
+;; operand may be a collection whose own equiv Util.equiv asks whatever the
+;; other side is (#1769), so the pair goes to jolt=2. Two eq? flonums still
+;; compare by =, so NaN stays unequal to itself.
 (define-syntax jolt=2/i
   (lambda (x)
     (syntax-case x ()
@@ -3436,18 +3438,38 @@
            ;; a literal's length first: a case over strings rejects most of its
            ;; candidates by length without a string=? call
            ((string? db) (with-syntax ((n (string-length db)))
-                           #'(let ((a a0)) (and (string? a) (fx=? (string-length a) n) (string=? a b0)))))
+                           #'(let ((a a0))
+                               (cond ((string? a) (and (fx=? (string-length a) n) (string=? a b0)))
+                                     ((eq-kind-settled? a) #f)
+                                     (else (jolt=2 a b0))))))
            ((string? da) (with-syntax ((n (string-length da)))
-                           #'(let ((b b0)) (and (string? b) (fx=? (string-length b) n) (string=? a0 b)))))
-           ((or (char? da) (char? db)) #'(eq? a0 b0))
+                           #'(let ((b b0))
+                               (cond ((string? b) (and (fx=? (string-length b) n) (string=? a0 b)))
+                                     ((eq-kind-settled? b) #f)
+                                     (else (jolt=2 a0 b))))))
+           ;; a literal nil: on the left it equals only nil (Util.equiv's
+           ;; k1 == null), and on the right only nil, a deftype or a reify can
+           ;; answer true (values.ss jolt=2)
+           ((eq? da 'jolt-nil) #'(eq? b0 jolt-nil))
+           ((eq? db 'jolt-nil) #'(let ((a a0))
+                                   (or (eq? a jolt-nil) (and (or (jrec? a) (jreify? a)) (jolt=2 a jolt-nil)))))
+           ((char? db) #'(let ((a a0))
+                           (if (or (char? a) (eq-kind-settled? a)) (eq? a b0) (jolt=2 a b0))))
+           ((char? da) #'(let ((b b0))
+                           (if (or (char? b) (eq-kind-settled? b)) (eq? a0 b) (jolt=2 a0 b))))
            (else
-            ;; a keyword is interned, so it too equals only itself
-            #'(let ((a a0) (b b0))
+            #'(let* ((a a0) (b b0))
                 ;; identity settles it but for a NaN: a double's or a Float's
                 (cond ((eq? a b) (cond ((flonum? a) (fl= a b))
                                        ((jfloat? a) (fl= (jfloat-fl a) (jfloat-fl a)))
                                        (else #t)))
-                      ((or (char? a) (boolean? a) (keyword-t? a) (eq? a jolt-nil) (eq? b jolt-nil)) #f)
+                      ((eq? a jolt-nil) #f)
+                      ;; nil on the right: only a deftype or a reify can
+                      ;; answer true, by its own equality (values.ss jolt=2)
+                      ((eq? b jolt-nil) (and (or (jrec? a) (jreify? a)) (jolt=2 a b)))
+                      ;; a keyword is interned, so it too equals only itself
+                      ((or (char? a) (boolean? a) (keyword-t? a))
+                       (and (not (eq-kind-settled? b)) (jolt=2 a b)))
                       (else (jolt=2 a b)))))))))))
 ;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
 ;; itself and a StringBuilder its contents, the two a reader's token loop hands

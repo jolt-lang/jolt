@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with-redefs` and a redefinition reach it as they reach every other arity.
   The open-coded call from 0.8.28 never read the var (#1768). It still answers
   a string or a StringBuilder inline while the var holds the original `str`.
+- `=` asks a deftype's or a reify's own equality again when the other operand
+  is a string literal, a keyword, a char or a boolean, as `Util.equiv` does
+  for a collection on either side. Since 0.8.28 the open-coded `=` and
+  `jolt=2` answered those pairs false from the scalar's type alone (#1769).
+  `(= coll nil)` also asks the collection now; it always answered false.
+- `=` between one of jolt's vectors, maps or sets and a scalar no longer
+  walks every registered equality arm: `(= [1] :k)` went from 57 to 21 ns.
 - `(nth coll i not-found)` evaluates `not-found` when `i` is in range for a
   vector or a string again. The open-coded `nth` from 0.8.28 only evaluated it
   on the fallback path, so a side effect or a throw in the default was lost
