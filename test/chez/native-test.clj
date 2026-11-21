@@ -237,6 +237,18 @@
 
 ;; --- failures: same exception as Jolt, nothing leaked -------------------------
 
+;; the index cast runs before aset's value (as on the JVM); its failure frees what
+;; is live THEN, not what the value expression would have allocated or consumed
+(check-run "an index overflow before aset's value, inside a loop with temporaries" '[^doubles xs ^long big]
+           '((loop [i 0 s 0.0]
+               (if (< i 3)
+                 (recur (inc i) (+ s (aset xs (if (= i 2) big 0) (aget (double-array 2) 0))))
+                 s)))
+           [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
+(check-run "an index overflow before a value that moves an owned array" '[^doubles xs ^long big]
+           '((let [a (double-array 2)] (aset xs big (let [b a] (aget b 0)))))
+           [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
+
 (check-run "out of bounds with live arrays" '[^long i]
            '((let [a (double-array 4) b (double-array 2)] (aset a 0 1.0) (+ (aget a i) (aget b 0))))
            [[0] [4] [-1] [4294967296]] :raw true)
