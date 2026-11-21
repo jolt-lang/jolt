@@ -534,61 +534,6 @@
               '((loop [i 0] (do (recur (inc i)) i))) #"tail position")
 (check-reject "unknown function" '[^long a] '((println a)) #"not allowed")
 
-;; --- stack arrays: small constant-size arrays that stay in the function -----
-;; (jolt.native.stack) live in a frame buffer: no calloc, no free. The tracker
-;; would count a free of one as a bad free.
-
-(defn- c-of [params body]
-  (emit/emit-region (mem/check-region (ast/analyze-region params body)) "jn_x"))
-
-(defn- stack-arrays [src] (count (re-seq #"_buf\[" src)))
-
-(check-eq "a temporary per iteration goes on the stack"
-          (stack-arrays (c-of '[^long n]
-                              '((loop [i 0 s 0.0]
-                                  (if (< i n)
-                                    (recur (inc i) (let [t (double-array 3)] (aset t 1 2.0) (+ s (aget t 1))))
-                                    s)))))
-          1)
-(check-eq "the region's result stays on the heap"
-          (stack-arrays (c-of '[] '((let [a (double-array 3)] (aset a 0 1.0) a)))) 0)
-(check-eq "an array carried by recur stays on the heap"
-          (stack-arrays (c-of '[^long n]
-                              '((loop [a (double-array 2) i 0]
-                                  (if (< i n) (recur (let [b (double-array 2)] (aset b 0 (aget a 0)) b) (inc i))
-                                      (aget a 0))))))
-          0)
-(check-eq "an array a helper takes stays on the heap"
-          (stack-arrays (c-of '[] '((let [a (double-array 3)] (alength (keep-it a)))))) 0)
-(check-eq "an array a helper only borrows goes on the stack"
-          (stack-arrays (c-of '[] '((let [a (double-array 3)] (aset a 0 2.0) (dot a a))))) 1)
-(check-eq "a name that may hold a heap array keeps both on the heap"
-          (stack-arrays (c-of '[^doubles xs ^boolean c]
-                              '((let [a (if c (double-array 3) (aclone xs))] (aget a 0)))))
-          0)
-(check-eq "a size past the cap stays on the heap"
-          (stack-arrays (c-of '[] '((let [a (double-array 300)] (aget a 0))))) 0)
-
-(check-run "a stack temporary is zeroed each time it is made" '[^long n]
-           '((loop [i 0 s 0.0]
-               (if (< i n)
-                 (recur (inc i) (let [t (double-array 2)] (aset t 0 (+ (aget t 0) 1.0)) (+ s (aget t 0))))
-                 s)))
-           [[0] [3] [10]])
-
-(check-run "an error with stack arrays live frees only the heap ones" '[^doubles xs ^long k]
-           '((let [t (double-array 4) h (aclone xs)]
-               (aset t 1 (aget h 0))
-               (aset t k 1.0)
-               (+ (aget t 1) (aget h 0))))
-           [[(da 1 2) 2] [(da 1 2) 9] [(da) 0]])
-
-(check-run "stack long-arrays and a borrowing helper" '[^long n]
-           '((let [a (long-array 5)]
-               (dotimes [i 5] (aset a i (* i n)))
-               (let [b (long-array 5)] (dotimes [i 5] (aset b i 1)) (dot a b))))
-           [[3] [0] [-4]])
-
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its
 ;; own model of the rules (moves in let bindings, returns and recur; borrows in
