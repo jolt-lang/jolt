@@ -124,7 +124,10 @@
                       r)
                     (str "(" (first one) (if (= p :inc) " + 1.0)" " - 1.0)")))
       (:quot :rem :mod)
-      (let [[[a _] [b _]] args r (fresh! :long)]
+      ;; operands in temps: gcc refuses a literal 2LL / 0LL under -Werror even
+      ;; behind the guard that makes it unreachable
+      (let [[[a0 _] [b0 _]] args r (fresh! :long) a (fresh! :long) b (fresh! :long)]
+        (line! a " = " a0 "; " b " = " b0 ";")
         (line! "if (" b " == 0) " (raise! node :div-zero))
         (case p
           :quot (do (line! "if (" a " == INT64_MIN && " b " == -1) " (raise! node :overflow))
