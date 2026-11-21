@@ -7,43 +7,38 @@
 ;;
 ;; A sorted-map / sorted-set is a tagged host table
 ;;   {:jolt/type :jolt/sorted-map|:jolt/sorted-set
-;;    :tree      RB-NODE | nil   ; a red-black tree, comparator-ordered
+;;    :tree      NODE | nil      ; a persistent B+tree, comparator-ordered
 ;;    :cnt       N               ; element count (O(1))
 ;;    :cmp       FN-or-nil       ; 3-way comparator; nil = natural order (compare)
 ;;    :ops       {op-kw fn}}     ; this tier's implementations, attached to the value
 ;;
-;; The tree is a red-black tree — Rich Hickey's algorithm, ported from the
-;; ClojureScript PersistentTreeMap — kept by the host (host-table.ss), where a
-;; node is a Scheme vector. assoc / get / dissoc / contains are O(log n).
+;; The tree is a persistent B+tree kept by the host (host-table.ss, "the
+;; B+tree"), where a node is a Scheme vector of up to 16 entries (a leaf) or 32
+;; children. assoc / get / dissoc / contains are O(log n).
 ;;
 ;; A sorted-SET stores its elements as keys with a nil value; its ops project the
 ;; key. ALL the semantics live here in Clojure; the host keeps only its
-;; dispatch branches (conj/assoc/get/seq/count/…), each a one-line call through
+;; dispatch branches (conj/assoc/seq/count/…), each a one-line call through
 ;; the value's own :ops table, so the ops travel WITH the value (correct across
-;; contexts, forks, and AOT images). The wrapper is the host's sorted record
+;; contexts, forks, and AOT images). The two hot lookups, get and contains?,
+;; read the tree directly (host-table.ss), answering what :get / :contains do. The wrapper is the host's sorted record
 ;; (host-table.ss), minted by jolt.host/make-sorted and read field by field
 ;; through jolt.host/sorted-tree, -cnt, -cmp, -cmp-fn and -ops. Plain `get` on a
 ;; sorted coll IS the comparator lookup — it dispatches back into these ops, so
 ;; reading a field with it would recurse forever.
 
 ;; Clojure's fn->comparator: a comparator fn may return a number (3-way) or a
-;; boolean less-than predicate. The value may also be a reify/deftype Comparator,
-;; which is not IFn — __comparator-fn is the shared seam that turns either into a
-;; 2-arg compare fn.
-(defn- fn->cmp [f]
-  (let [f (__comparator-fn f)]
-    (fn [a b]
-      (let [r (f a b)]
-        (if (number? r)
-          r
-          (if r -1 (if (f b a) 1 0)))))))
+;; boolean less-than predicate, and may be a reify/deftype Comparator, which is
+;; not IFn. jolt.host/comparator->cmp is that reading as a host procedure, the
+;; same one a java.util.TreeMap holds, so the tree calls it directly.
+(defn- fn->cmp [f] (jolt.host/comparator->cmp f))
 
 (defn- the-cmp [sc] (or (jolt.host/sorted-cmp sc) compare))
 
-;; --- the red-black tree -----------------------------------------------------
-;; The tree is the host's (host-table.ss, "the red-black tree"): Scheme-vector
-;; nodes, whose fields read without a dispatch, and the insert/replace/delete
-;; walks over them. What stays here is what each op does with the result. The
+;; --- the tree ----------------------------------------------------------------
+;; The tree is the host's (host-table.ss, "the B+tree"): its nodes and the
+;; insert/replace/delete walks over them. What stays here is what each op does
+;; with the result. The
 ;; comparator handed to them is the collection's own :cmp, nil for natural
 ;; order (Util.compare, as PersistentTreeMap's default comparator is).
 (defn- tree-cmp [sc] (jolt.host/sorted-cmp sc))

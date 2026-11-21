@@ -2424,6 +2424,9 @@
                              (else (loop (step acc (jolt-nth (car es) 0) (jolt-nth (car es) 1))
                                          (cdr es))))))))
              ((iface-method coll "kvreduce" 3) => (lambda (m) (jolt-invoke m coll f init)))
+             ;; a sorted map walks its tree's leaves, as PersistentTreeMap.kvreduce
+             ;; walks its nodes, stopping at a reduced value (host-table.ss)
+             ((htable-sorted-map? coll) (sc-tree-reduce-kv (scoll-tree coll) (kv-step f) init))
              ((jolt-map? coll)
               (let ((step (kv-step f)))
                 (reduce-seq (lambda (acc k) (step acc k (jolt-get coll k))) init (jolt-seq (jolt-keys coll)))))

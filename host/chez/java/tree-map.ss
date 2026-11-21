@@ -58,7 +58,12 @@
 ;; a.compareTo(b): a must be Comparable, b must be castable to a's class. A
 ;; Ratio compares against any Number (Ratio.compareTo goes through Numbers).
 (define (tm-natural-compare a b)
-  (cond ((or (jolt-nil? a) (jolt-nil? b)) (throw-jvm 'NullPointerException jolt-nil))
+  (cond ;; the common keys first: two Longs, two Strings, two Doubles are each
+        ;; Comparable to their own class, so none of the checks below can fire
+        ((and (fixnum? a) (fixnum? b)) (cond ((fx<? a b) -1) ((fx=? a b) 0) (else 1)))
+        ((and (string? a) (string? b)) (jolt-compare a b))
+        ((and (flonum? a) (flonum? b)) (jolt-compare a b))
+        ((or (jolt-nil? a) (jolt-nil? b)) (throw-jvm 'NullPointerException jolt-nil))
         ((not (tm-comparable? a))
          (throw-jvm 'ClassCastException
                     (string-append "class " (tm-class-name a)
@@ -71,16 +76,8 @@
                           (string-append "class " cb " cannot be cast to class " ca)))))
         (else (jolt-compare a b))))
 
-;; A comparator object as a 3-way procedure, with AFunction.compare's reading of
-;; a boolean result (a less-than predicate: true is -1, else ask the other way).
-(define (tm-comparator->cmpf c)
-  (let ((f (jolt-comparator-fn c)))
-    (lambda (a b)
-      (let ((r (f a b)))
-        (cond ((number? r) r)
-              ((jolt-truthy? r) -1)
-              ((jolt-truthy? (f b a)) 1)
-              (else 0))))))
+;; A comparator object as a 3-way procedure (natives-seq.ss)
+(define (tm-comparator->cmpf c) (jolt-comparator->cmp c))
 (define (tm-comparator-like? x)
   (or (procedure? x) (jhost-compare-method? x) (and (iface-method x "compare" #f) #t)))
 
@@ -90,6 +87,8 @@
 ;; does, so (.reversed (Comparator/reverseOrder)) is naturalOrder itself.
 (define tm-reverse-order (make-jhost "reverse-comparator" (vector)))
 (define tm-natural-order (make-jhost "natural-comparator" (vector)))
+;; natural order is numeric order on two Longs: the tree may compare them in line
+(bt-fixnum-ordered! tm-natural-compare)
 (define (tm-reverse-of c)
   (cond ((jolt-nil? c) tm-reverse-order)
         ((eq? c tm-reverse-order) tm-natural-order)
@@ -117,10 +116,16 @@
 ;; ---- the root: the sorted map a TreeMap and all its views share -----------------
 ;; #(sorted-map comparator-object cmpf modcount). comparator-object is nil for
 ;; natural ordering — what .comparator answers — and cmpf the 3-way procedure
-;; every compare in this file goes through, bounds checks included.
+;; every compare in this file goes through, bounds checks included. The sorted
+;; map holds cmpf itself as its comparator, rather than the Clojure wrapper
+;; sorted-map-by puts around a comparator: cmpf already answers a number, so
+;; the tree calls it directly. Reads and writes go to the tree through
+;; host-table.ss's sc-ref / sc-put / sc-remove / sc-nav / sc-walk.
 (define (tm-make-root cmp-obj)
-  (let ((cmpf (if (jolt-nil? cmp-obj) tm-natural-compare (tm-comparator->cmpf cmp-obj))))
-    (vector (jolt-invoke (var-deref "clojure.core" "sorted-map-by") cmpf) cmp-obj cmpf 0)))
+  (let* ((cmpf (if (jolt-nil? cmp-obj) tm-natural-compare (tm-comparator->cmpf cmp-obj)))
+         (proto (jolt-invoke (var-deref "clojure.core" "sorted-map-by") cmpf)))
+    (vector (make-scoll* #f #f (scoll-kind proto) (scoll-tag proto) jolt-nil 0 cmpf cmpf (scoll-ops proto))
+            cmp-obj cmpf 0)))
 (define (tmr-sm r) (vector-ref r 0))
 (define (tmr-sm! r sm)
   (when (tmr-concurrent? r) (tm-publish-fence))
@@ -145,51 +150,42 @@
 (define tm-root-write (lambda (r thunk) (thunk)))
 (define (tmr-write r thunk) (if (tmr-concurrent? r) (tm-root-write r thunk) (thunk)))
 (define tm-absent (list 'tm-absent))
-(define (tmr-count r) (sc-call (tmr-sm r) kw-op-count))
+(define (tmr-count r) (scoll-cnt (tmr-sm r)))
 ;; getEntry's Objects.requireNonNull: natural ordering refuses a nil key even
 ;; when there is nothing to compare it with.
 (define (tmr-check-key r k)
   (when (and (jolt-nil? k) (or (tmr-natural? r) (tmr-concurrent? r))) (throw-jvm 'NullPointerException jolt-nil)))
 (define (tmr-ref r k)
   (tmr-check-key r k)
-  (sc-call (tmr-sm r) kw-op-get k tm-absent))
-(define (tmr-put! r k v)
+  (sc-ref (tmr-sm r) k tm-absent))
+;; put K -> V, answering K's old value or tm-absent
+(define (tmr-put-raw! r k v)
   (when (and (jolt-nil? v) (tmr-concurrent? r)) (throw-jvm 'NullPointerException jolt-nil))
   (tmr-write r
     (lambda ()
       ;; put on an empty map compares the key with itself: the JDK's type (and
       ;; null) check, so (.put (TreeMap.) {:a 1} 1) fails before anything is stored.
       (when (eqv? 0 (tmr-count r)) ((tmr-cmpf r) k k))
-      (let ((old (tmr-ref r k)))
-        (tmr-sm! r (sc-call (tmr-sm r) kw-op-assoc (jolt-vector k v)))
-        (if (eq? old tm-absent) (begin (tmr-bump! r) jolt-nil) old)))))
+      (tmr-check-key r k)
+      (let-values (((sm old) (sc-put (tmr-sm r) k v tm-absent)))
+        (tmr-sm! r sm)
+        (when (eq? old tm-absent) (tmr-bump! r))
+        old))))
+(define (tmr-put! r k v)
+  (let ((old (tmr-put-raw! r k v))) (if (eq? old tm-absent) jolt-nil old)))
 (define (tmr-remove! r k)
   (tmr-write r
     (lambda ()
-      (let ((old (tmr-ref r k)))
+      (tmr-check-key r k)
+      (let-values (((sm old) (sc-remove (tmr-sm r) k tm-absent)))
         (unless (eq? old tm-absent)
-          (tmr-sm! r (sc-call (tmr-sm r) kw-op-dissoc (jolt-vector k)))
+          (tmr-sm! r sm)
           (tmr-bump! r))
         old))))
-(define (tm-seq-head s)
-  (let ((s (jolt-seq s))) (if (jolt-nil? s) #f (seq-first s))))
-(define (tm-always c z) #t)
-(define (tmr-first r) (let ((e (jolt-first (tmr-sm r)))) (if (jolt-nil? e) #f e)))
-;; the greatest entry, by an rsubseq whose test always holds: an O(log n) walk
-;; down the right spine. The bound it is handed is any key of the map (the
-;; first), so the comparisons it makes are ones the map can answer.
-(define (tmr-desc-all r)
-  (let ((f (tmr-first r)))
-    (if f (jolt-invoke (var-deref "clojure.core" "rsubseq") (tmr-sm r) tm-always (jolt-nth f 0)) jolt-nil)))
-(define (tmr-last r) (tm-seq-head (tmr-desc-all r)))
-(define (tmr-asc-from r k incl?)
-  (jolt-invoke (var-deref "clojure.core" "subseq") (tmr-sm r)
-               (if incl? (var-deref "clojure.core" ">=") (var-deref "clojure.core" ">")) k))
-(define (tmr-desc-from r k incl?)
-  (jolt-invoke (var-deref "clojure.core" "rsubseq") (tmr-sm r)
-               (if incl? (var-deref "clojure.core" "<=") (var-deref "clojure.core" "<")) k))
-(define (tmr-ceiling r k incl?) (tm-seq-head (tmr-asc-from r k incl?)))
-(define (tmr-floor r k incl?) (tm-seq-head (tmr-desc-from r k incl?)))
+(define (tmr-first r) (sc-end-entry (tmr-sm r) #t))
+(define (tmr-last r) (sc-end-entry (tmr-sm r) #f))
+(define (tmr-ceiling r k incl?) (sc-nav (tmr-sm r) k #t (not incl?)))
+(define (tmr-floor r k incl?) (sc-nav (tmr-sm r) k #f (not incl?)))
 
 ;; ---- views ------------------------------------------------------------------------
 ;; A view's state is #(root lo lo-incl hi hi-incl descending? sub?); lo / hi are
@@ -249,26 +245,24 @@
 (define (v-floor v k) (if (v-desc? v) (v-abs-ceiling v k #t) (v-abs-floor v k #t)))
 (define (v-lower v k) (if (v-desc? v) (v-abs-ceiling v k #f) (v-abs-floor v k #f)))
 
-;; the view's entries in its own order, as a Scheme list
-(define (tm-take-while s keep?)
-  (let loop ((s (jolt-seq s)) (acc '()))
-    (if (or (jolt-nil? s) (not (keep? (seq-first s))))
-        (reverse acc)
-        (loop (jolt-seq (seq-more s)) (cons (seq-first s) acc)))))
-(define (v-entries v)
+;; the view's entries in its own order, as a Scheme list: one walk of the tree
+;; from the view's near bound, stopping at its far one
+(define (v-fold v f acc)
   (let ((r (v-root v)))
-    (cond
-      ((and (v-unbounded? v) (not (v-desc? v))) (seq->list (jolt-seq (tmr-sm r))))
-      ((v-desc? v)
-       (tm-take-while (if (eq? (v-hi v) tm-unbounded) (tmr-desc-all r)
-                          (tmr-desc-from r (v-hi v) (v-hi-incl v)))
-                      (lambda (e) (not (v-too-low? v (e-key e))))))
-      (else
-       (tm-take-while (if (eq? (v-lo v) tm-unbounded) (jolt-seq (tmr-sm r))
-                          (tmr-asc-from r (v-lo v) (v-lo-incl v)))
-                      (lambda (e) (not (v-too-high? v (e-key e)))))))))
+    (if (v-desc? v)
+        (sc-walk (tmr-sm r) (not (eq? (v-hi v) tm-unbounded)) (v-hi v) (v-hi-incl v) #f
+                 (lambda (k) (not (v-too-low? v k))) f acc)
+        (sc-walk (tmr-sm r) (not (eq? (v-lo v) tm-unbounded)) (v-lo v) (v-lo-incl v) #t
+                 (lambda (k) (not (v-too-high? v k))) f acc))))
+(define (v-entries v)
+  (reverse (v-fold v (lambda (k val acc) (cons (make-map-entry k val) acc)) '())))
 (define (v-keys v) (map e-key (v-entries v)))
-(define (v-size v) (if (v-unbounded? v) (tmr-count (v-root v)) (length (v-entries v))))
+(define (v-size v)
+  (if (v-unbounded? v)
+      (tmr-count (v-root v))
+      (sc-count-range (tmr-sm (v-root v))
+                      (not (eq? (v-lo v) tm-unbounded)) (v-lo v) (v-lo-incl v)
+                      (not (eq? (v-hi v) tm-unbounded)) (v-hi v) (v-hi-incl v))))
 (define (v-empty? v) (if (v-unbounded? v) (eqv? 0 (tmr-count (v-root v))) (not (v-lowest v))))
 
 ;; reads and writes through a view: out of range is absent to a read and
@@ -454,7 +448,11 @@
 ;; (TreeSet.) | (TreeSet. Comparator) | (TreeSet. SortedSet) | (TreeSet. Collection)
 (define (ts-add-all! v xs)
   (fold-left (lambda (changed x) (or (ts-add! v x) changed)) #f xs))
-(define (ts-add! v x) (eq? (v-ref-or-put! v x) tm-absent))
+;; TreeSet.add is m.put(e, PRESENT) == null: one put, which leaves a present
+;; element's key and (identical) value as they were
+(define (ts-add! v x)
+  (unless (v-in-range? v x) (throw-jvm 'IllegalArgumentException "key out of range"))
+  (eq? (tmr-put-raw! (v-root v) x #t) tm-absent))
 (define (v-ref-or-put! v x)
   (let ((old (if (v-in-range? v x) (tmr-ref (v-root v) x) tm-absent)))
     (when (eq? old tm-absent) (v-put! v x #t))

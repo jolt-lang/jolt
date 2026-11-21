@@ -259,6 +259,19 @@
       (lambda (a b) (record-method-dispatch cmp "compare" (jolt-list a b)))
       (lambda (a b) (jolt-invoke2 cmp a b))))
 (def-var! "clojure.core" "__comparator-fn" jolt-comparator-fn)
+;; A comparator as a 3-way procedure, with AFunction.compare's reading of its
+;; answer: a number is the order, a boolean is a less-than predicate (true is
+;; -1, else ask the other way round). What sorted-map-by / sorted-set-by and a
+;; java.util.TreeMap hold as their tree's comparator.
+(define (jolt-comparator->cmp c)
+  (let ((f (jolt-comparator-fn c)))
+    (lambda (a b)
+      (let ((r (f a b)))
+        (cond ((number? r) r)
+              ((jolt-truthy? r) -1)
+              ((jolt-truthy? (f b a)) 1)
+              (else 0))))))
+(def-var! "jolt.host" "comparator->cmp" jolt-comparator->cmp)
 
 ;; sort: (sort coll) uses compare; (sort cmp coll) uses cmp, whose result may be
 ;; a 3-way number (<0 / 0 / >0) OR a boolean (a Clojure-style less-than pred).

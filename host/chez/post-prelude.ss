@@ -444,3 +444,8 @@
                   (cons "protocol-dispatch1" protocol-dispatch1)
                   (cons "protocol-dispatch2" protocol-dispatch2)
                 (cons "protocol-dispatch3" protocol-dispatch3)))
+
+;; clojure.core/compare orders two Longs numerically: a sorted coll walking with
+;; it (subseq / rsubseq hand it to the tree for a natural-order coll) compares
+;; fixnum keys in line (host-table.ss bt-fixnum-ordered!)
+(bt-fixnum-ordered! (var-deref "clojure.core" "compare"))

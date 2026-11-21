@@ -208,6 +208,37 @@
     (tree-ok? "(reduce disj (reduce conj (into (sorted-set) (range 1000)) (range 1000 1500)) (range 0 1500 3))"))
 (is "(let [s (into (sorted-set) (shuffle (range 3000)))] [(= (range 3000) (seq s)) (= (reverse (range 3000)) (rseq s)) (count s)])" "[true true 3000]")
 
+;; --- java.util.TreeMap / TreeSet against a model ---------------------------
+;; navigation and bounded view sizes read the tree directly; each is checked
+;; against a filter of the sorted keys, at bounds that are and are not keys
+(ev "(def tm-keys (vec (distinct (map (fn [i] (* 3 (mod (* i 7919) 2000))) (range 3000)))))")
+(ev "(def tmm (let [m (java.util.TreeMap.)] (doseq [k tm-keys] (.put m k (- k))) m))")
+(ev "(def tm-sorted (sort tm-keys))")
+(ev "(def tm-probes (range -5 6010 7))")
+(is "(every? (fn [k] (and (= (.floorKey tmm k) (last (filter #(<= % k) tm-sorted)))
+                          (= (.lowerKey tmm k) (last (filter #(< % k) tm-sorted)))
+                          (= (.ceilingKey tmm k) (first (filter #(>= % k) tm-sorted)))
+                          (= (.higherKey tmm k) (first (filter #(> % k) tm-sorted)))))
+            tm-probes)" "true")
+(is "(every? (fn [[lo hi]] (let [lo (min lo hi) hi (max lo hi)]
+                              (and (= (.size (.subMap tmm lo true hi true)) (count (filter #(<= lo % hi) tm-sorted)))
+                                   (= (.size (.subMap tmm lo false hi false)) (count (filter #(< lo % hi) tm-sorted)))
+                                   (= (.size (.headMap tmm hi)) (count (filter #(< % hi) tm-sorted)))
+                                   (= (.size (.headMap tmm hi true)) (count (filter #(<= % hi) tm-sorted)))
+                                   (= (.size (.tailMap tmm lo)) (count (filter #(>= % lo) tm-sorted)))
+                                   (= (.size (.tailMap tmm lo false)) (count (filter #(> % lo) tm-sorted)))
+                                   (= (.size (.descendingMap (.subMap tmm lo true hi false))) (count (filter #(and (<= lo %) (< % hi)) tm-sorted))))))
+            (map vector tm-probes (reverse tm-probes)))" "true")
+(is "[(.size (.subMap tmm 7 true 7 true)) (.size (.subMap tmm 6 true 6 true)) (.size (.subMap tmm 6 false 6 true)) (.size (.headMap tmm -100)) (.size (.tailMap tmm 100000))]" "[0 1 0 0 0]")
+(is "(= (keys (.headMap tmm 300 true)) (filter #(<= % 300) tm-sorted))" "true")
+(is "(= (map key (.entrySet (.descendingMap (.tailMap tmm 5800)))) (reverse (filter #(>= % 5800) tm-sorted)))" "true")
+(is "(let [m (java.util.TreeMap.)] [(.put m 1 :a) (.put m 1 :b) (.get m 1) (.remove m 1) (.remove m 1) (.size m)])" "[nil :a :b :b nil 0]")
+(is "(let [s (java.util.TreeSet.)] [(.add s 3) (.add s 3) (.add s 1) (vec s) (.remove s 3) (.remove s 3) (vec s)])" "[true false true [1 3] true false [1]]")
+(is "(let [s (java.util.TreeSet. [5 1 3])] [(.add s 3) (.add s 2) (vec s) (.add (.headSet s 3) 1) (try (.add (.headSet s 3) 4) (catch IllegalArgumentException _ :iae))])" "[false true [1 2 3 5] false :iae]")
+(is "(let [m (java.util.TreeMap. (comparator >))] (doseq [k (shuffle (range 100))] (.put m k k)) [(.firstKey m) (.lastKey m) (.floorKey m 50) (.higherKey m 50) (.size (.headMap m 90))])" "[99 0 50 49 9]")
+(is "(let [m (java.util.TreeMap.)] (.put m \"b\" 1) (.put m \"a\" 2) [(.firstKey m) (try (.put m 1 1) (catch ClassCastException _ :cce)) (try (.get m nil) (catch NullPointerException _ :npe))])" "[a :cce :npe]")
+(is "(let [m (java.util.TreeMap.)] (.put m 1 :x) [(try (.put m 1.5 :y) (catch ClassCastException _ :cce)) (try (.floorKey m 2.0) (catch ClassCastException _ :cce))])" "[:cce :cce]")
+
 ;; --- scaling, as bytes allocated --------------------------------------------
 (define (bytes-of thunk reps)
   (thunk)
