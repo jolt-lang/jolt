@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `format` rounds the same digits `Double.toString` prints, as JDK 21's
+  Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
+  `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the
+  JDK `1.3381632805467082e+15`.
 - `(require 'x :reload)` throws `FileNotFoundException` when `x` was loaded
   from a file under none of the source roots (a `load-file`, an nREPL
   `load-file`) and the roots don't have it, as on the JVM. The reload used to
@@ -38,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.
+- Doubles print faster: about 3x for one with at most 15 significant digits
+  (`1.1`, `3.25`, `0.001`), whose digits come from flonum arithmetic, and about
+  2x for a full-precision one, whose digits come from a port of the JDK's own
+  Schubfach (`jdk.internal.math.DoubleToDecimal`) instead of Chez's
+  arbitrary-precision search.
 
 ## [0.8.28] - 2026-11-19
 

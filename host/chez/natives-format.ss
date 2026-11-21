@@ -58,12 +58,13 @@
 ;; --- the decimal digits of a number ---------------------------------------------
 ;; (num-digits x) -> (values digits expo) for a finite x >= 0: digits are the
 ;; significant decimal digits with no leading or trailing zeros ("0" for zero),
-;; and x = 0.DIGITS x 10^expo. A flonum's digits are Chez's shortest round-trip
-;; print, which is the digit string java.util.Formatter rounds too: it formats
-;; from FloatingDecimal's digits, not from the binary value, so 1.005 rounds to
-;; 1.01 at two places where the binary value 1.00499… would round down, and
-;; (format "%.20f" 0.1) pads zeros rather than printing the expansion. A
-;; BigDecimal's digits are its unscaled value against its scale, exact.
+;; and x = 0.DIGITS x 10^expo. A flonum's digits are Double.toString's
+;; (number-print.ss jolt-flonum-digits), which is the digit string
+;; java.util.Formatter rounds too: it formats from those digits, not from the
+;; binary value, so 1.005 rounds to 1.01 at two places where the binary value
+;; 1.00499… would round down, and (format "%.20f" 0.1) pads zeros rather than
+;; printing the expansion. A BigDecimal's digits are its unscaled value against
+;; its scale, exact.
 (define (str-index s c)
   (let loop ((i 0))
     (cond ((fx=? i (string-length s)) #f) ((char=? (string-ref s i) c) i) (else (loop (fx+ i 1))))))
@@ -79,27 +80,8 @@
   (if (jbigdec? x)
       (let ((u (number->string (abs (jbigdec-unscaled x)))))
         (digits-normalize u (- (string-length u) (jbigdec-scale x))))
-      (let* ((s (number->string (inexact x)))   ; "123.45" | "1e100" | "1.5e-7" | "123456789.0"
-             ;; a denormal prints with its bit count after a bar ("1e-320|11"):
-             ;; cut there before splitting the exponent off
-             (bar (or (str-index s #\|) (string-length s)))
-             (s (substring s 0 bar))
-             (epos (or (str-index s #\e) (string-length s)))
-             (mant (substring s 0 epos))
-             (e10 (if (fx<? epos (string-length s))
-                      (string->number (substring s (fx+ epos 1) (string-length s)))
-                      0))
-             (dot (str-index mant #\.))
-             (int-part (if dot (substring mant 0 dot) mant))
-             (frac-part (if dot (substring mant (fx+ dot 1) (string-length mant)) "")))
-        (let-values (((digits point)
-                      (digits-normalize (string-append int-part frac-part) (+ e10 (string-length int-part)))))
-          ;; Formatter starts from Double.toString's digits, which for a
-          ;; one-digit subnormal are the two nearest its value (4.9E-324, not 5)
-          (let ((two (and (fx=? (string-length digits) 1) (not (string=? digits "0"))
-                          (fl< (flabs (inexact x)) 2.2250738585072014e-308)
-                          (flonum-two-digits (flabs (inexact x))))))
-            (if two (values (car two) (cdr two)) (values digits point)))))))
+      (let ((d (jolt-flonum-digits (inexact x))))
+        (values (car d) (cdr d)))))
 ;; (digits-round digits n) -> (cons digits* carry?): the first n digits, rounded
 ;; half up on the one after them -- java.util.Formatter's applyPrecision looks
 ;; at exactly that one digit. carry? says the round went past the top digit
