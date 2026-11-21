@@ -100,6 +100,25 @@ make jolt-debug               # => target/debug/jolt   (optimize-level 0, inspec
 make jolt                     # re-mint the seed first, then both
 ```
 
+Every Makefile target is also a jolt task in `deps.edn`, so a jolt binary
+(or `bin/jolt` with a patched Chez in `JOLT_CHEZ`) can do all of this
+without make. Make takes variables on its command line where jolt takes them
+from the environment, and the task for `make install` is `install-local`
+because `jolt install` runs the `./install` script:
+
+```bash
+jolt info                     # every task, grouped
+jolt build                    # => target/release/jolt
+PREFIX=/opt/jolt jolt install-local
+jolt test -j 8                # the full gate; jolt ci -j 8 for the CI gate
+SHARD_SET=ci SHARD=2 SHARDS=3 jolt ci-shard -j 4
+```
+
+Both files are written by hand. A target added to the Makefile needs its task
+in `deps.edn` (and its group in `tools/tasks/info.clj`), and a gate added to
+`CI-GATES` goes in `tools/tasks/gate.clj` too. `make taskparity`, which is in
+the gate, fails until they match.
+
 `make jolt` re-mints the seed so the embedded compiler image is current before
 linking; `jolt-release`/`jolt-debug` force their respective builds without
 re-minting. `make clean` removes build products; `make distclean` also removes

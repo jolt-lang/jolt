@@ -75,6 +75,39 @@ jobs:
     steps:
       - run: test "${{ needs.gate.result }}" = success
 
+  # The same gate driven by jolt instead of make: deps.edn's :tasks, one task
+  # per Makefile target (tools/tasks/). bin/jolt builds target/release/jolt off
+  # the checked-in seed with the Chez built above, and that binary runs the
+  # shard, so jolt's Makefile never runs in this job. Sharded like the gate job;
+  # ci-shard deals the same sorted gate list out the same way.
+  tasks:
+    name: jolt tasks (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      CHEZ: /opt/chez/bin/chez
+      JOLT_CHEZ: /opt/chez/bin/chez
+      GAMBIT_PREFIX: /opt/gambit
+      JOLT_REQUIRE_BUILDLIB: "1"
+      JOLT_REQUIRE_GAMBIT: "1"
+      JOLT_REQUIRE_LOCKFREE_CHEZ: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up Chez, Gambit and the certify oracle
+        uses: ./.github/actions/setup-chez
+
+      - name: Build jolt with bin/jolt
+        run: TMPDIR="$RUNNER_TEMP" bin/jolt testbin
+
+      - name: Gate through jolt tasks (shard ${{ matrix.shard }}/4)
+        run: TMPDIR="$RUNNER_TEMP" SHARD_SET=test SHARD=${{ matrix.shard }} SHARDS=4 target/release/jolt ci-shard -j "$(nproc)"
+
   # The gate on bionic (Android/Termux, #943): jolt and its pinned Chez build in
   # termux/termux-docker on an arm64 runner, the release smokes run there
   # (ci/termux-build.sh), and then `make bionic-ci` -- the full CI gate: the ten

@@ -74,6 +74,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Schubfach (`jdk.internal.math.DoubleToDecimal`) instead of Chez's
   arbitrary-precision search.
 
+### Added
+
+- **jolt builds and gates itself without make.** The repository's `deps.edn`
+  has a task for every Makefile target, so a checkout with a jolt binary (or
+  just `bin/jolt` and a patched Chez) runs `jolt build`, `jolt test -j 8`,
+  `jolt ci-shard` and each gate by name. `jolt info` lists them in groups.
+  The tasks run the same Chez and shell scripts as the Makefile's recipes,
+  under the same `bash -e -o pipefail` and environment, and the gate keeps
+  the Makefile's receipt rules: a verdict line printed last, a non-zero exit
+  on any failure, and `target/gate-receipt` only on a complete pass. It also
+  runs every gate instead of stopping at the first failure, so the verdict
+  names all of them. The Makefile stays, and the new `taskparity` gate fails
+  when the two stop naming the same targets and gate lists. A `tasks` job in
+  `tests.yml` runs the gate this way, with jolt's Makefile never invoked.
+  `make install` is `jolt install-local`, because `jolt install` runs the
+  `./install` script.
+
 ## [0.8.28] - 2026-11-19
 
 A performance release: with tracing off, `jolt run` inlines small fns behind a
