@@ -15,6 +15,9 @@
   number types, a non-boolean test) rather than pick one.")
 
 (def ^:dynamic *ids* nil)
+;; native helper instances analyzed for the current region, [helper-sym param-types]
+;; -> {:iid :ret :params :body}; Carp's Concretize: one instance per call-site types
+(def ^:dynamic *instances* nil)
 (defn- next-id [] (swap! *ids* inc))
 
 (defn fail
@@ -26,7 +29,10 @@
                     (merge {:jolt.native/error true :form form} data)))))
 
 (defn owned? [t] (and (vector? t) (= :array (first t))))
-(defn borrowed? [t] (and (vector? t) (= :ref (first t))))
+;; [:ref e] is an array borrowed from Jolt (a region parameter: the flvector or
+;; fxvector itself); [:loan e] is a region-owned array lent to a native helper
+;; (plain C storage). Both are borrowed: never freed or returned by the borrower.
+(defn borrowed? [t] (and (vector? t) (contains? #{:ref :loan} (first t))))
 (defn array-type? [t] (or (owned? t) (borrowed? t)))
 (defn elem-type [t] (second t))
 (defn numeric? [t] (or (= t :long) (= t :double)))
@@ -175,6 +181,55 @@
     (fail form (str what " takes a long here, got " (pr-str (:type a)))))
   a)
 
+(declare analyze-body)
+
+;; --- native helpers (jolt.native/defnative) ----------------------------------
+
+(defn helper-of
+  "The defnative helper a call head names, or nil."
+  [env f]
+  (when (and (symbol? f) (not (contains? env f)))
+    (when-let [v (resolve f)]
+      (when-let [h (:jolt.native/helper (meta v))]
+        (assoc h :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
+
+(def ^:private ret-hints
+  {'long :long 'double :double 'boolean :bool 'doubles [:array :double] 'longs [:array :long]})
+
+(defn- loan-type [t] (if (owned? t) [:loan (elem-type t)] t))
+
+(defn- instantiate!
+  "Analyze helper h's body for these parameter types, once per types."
+  [h key ptypes form]
+  (let [iid (next-id)
+        hint (when-let [tag (:ret h)] (or (ret-hints (if (string? tag) (symbol tag) tag))
+                                          (fail form (str "bad return hint on " (:sym h)))))]
+    (swap! *instances* assoc key {:iid iid :ret hint :pending true})
+    (let [ps (mapv (fn [p t] {:name p :id (next-id) :type t}) (:params h) ptypes)
+          env (into {} (map (fn [p] [(:name p) p]) ps))
+          body (binding [*ns* (the-ns (:ns h))] (analyze-body env (:body h) false form))
+          t (:type body)]
+      (when (borrowed? t)
+        (fail form (str "native helper " (:sym h) " cannot return an array it borrowed; return (aclone it)")))
+      (when (and hint (not= hint t) (not= :never t))
+        (fail form (str "native helper " (:sym h) " is hinted " (pr-str hint) " but returns " (pr-str t))))
+      (let [inst {:iid iid :ret (or hint t) :params ps :body body :sym (:sym h) :types ptypes}]
+        (swap! *instances* assoc key inst)
+        inst))))
+
+(defn- analyze-helper-call [h args form]
+  (when-not (= (count args) (count (:params h)))
+    (fail form (str (:sym h) " takes " (count (:params h)) " argument(s), got " (count args))))
+  (doseq [a args]
+    (when (#{:unit :never} (:type a)) (fail form (str "an argument to " (:sym h) " has no value"))))
+  (let [ptypes (mapv (comp loan-type :type) args)
+        key [(:sym h) ptypes]
+        inst (or (get @*instances* key) (instantiate! h key ptypes form))]
+    (when (and (:pending inst) (nil? (:ret inst)))
+      (fail form (str "native helper " (:sym h) " calls itself: give it a return type hint, "
+                      "(defnative ^double " (name (:sym h)) " [...] ...)")))
+    (node :call (:ret inst) form :instance (:iid inst) :args args)))
+
 (defn- analyze-call [env [f & raw :as form] tail]
   (let [args (mapv #(analyze env % false) raw)
         n (count args)
@@ -247,7 +302,9 @@
         (do (when-not (= arity n) (fail form (str f " takes " arity " argument(s)")))
             (check-num form args (str f))
             (node :math :double form :fn (name f) :args args))
-        (fail form (str "not allowed in a native region: " (pr-str f)))))))
+        (if-let [h (helper-of env f)]
+          (analyze-helper-call h args form)
+          (fail form (str "not allowed in a native region: " (pr-str f))))))))
 
 (def ^:private builtins
   "Heads analyze-call handles itself: never macroexpanded."
@@ -317,7 +374,7 @@
   "Analyze (native [params...] body...) given as params + body forms. Answers
   {:params [{:name :id :type}] :body node :type t}."
   [params body]
-  (binding [*ids* (atom 0)]
+  (binding [*ids* (atom 0) *instances* (atom {})]
     (let [ps (mapv (fn [p]
                      (when-not (local-sym? p) (fail p "region parameters are plain symbols"))
                      {:name p :id (next-id) :type (param-type p)})
@@ -327,4 +384,5 @@
           t (:type body)]
       (when (borrowed? t)
         (fail (:form body) "a region cannot return an array it borrowed; return (aclone it)"))
-      {:params ps :body body :type t})))
+      {:params ps :body body :type t
+       :instances (vec (sort-by :iid (vals @*instances*)))})))

@@ -46,6 +46,11 @@
 (def ^:dynamic *lines* nil)
 (def ^:dynamic *region* nil)
 (def ^:dynamic *tmp* nil)
+;; the function being emitted: :entry (the region's exported C entry, which
+;; returns an array result as its data pointer) or the helper instance's result
+;; type (a static function, which returns an owned array struct by value)
+(def ^:dynamic *fn-ret* :entry)
+(def ^:dynamic *sym* nil)
 
 (defn- line! [& parts] (let [l (apply str parts)] (when-not (str/blank? l) (swap! *lines* conj l))))
 
@@ -71,9 +76,15 @@
     id))
 
 (defn- ret-zero
-  "What a failing region returns: 0, or NULL for an array result. The stub
-  reads the status before it looks at the value."
-  [] "0")
+  "What a failing function returns: 0 (NULL for the entry's array result), or
+  an empty struct from a helper that returns an owned array. The caller reads
+  the status before it looks at the value."
+  []
+  (if (and (not= :entry *fn-ret*) (ast/owned? *fn-ret*))
+    (str "(" (ctype *fn-ret*) "){0, 0}")
+    "0"))
+
+(defn- helper-name [iid] (str *sym* "_h" iid))
 
 (defn- frees [ids] (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);") (sort ids))))
 
@@ -85,7 +96,7 @@
        (when d (str " jn_tls.d = " d ";"))
        " return " (ret-zero) "; }"))
 
-(declare emit fresh-copy! as-double-if)
+(declare emit fresh-copy! as-double-if emit-entry)
 
 (defn- c-double-lit [v]
   (cond (Double/isNaN v) "(0.0/0.0)"
@@ -289,6 +300,14 @@
                   (line! arr ".data[" idx "] = (int64_t)((uint64_t)" r " * 8);"))
               (line! arr ".data[" idx "] = " r ";"))
             r)
+    ;; a native helper instance: a failure there has freed its own values and
+    ;; set the status; the caller frees what it holds and passes it on
+    :call (let [args (mapv emit (:args node))
+                t (:type node)
+                r (if (ast/owned? t) (declare-var! (:id node) t) (fresh! (if (#{:unit :never} t) :long t)))]
+            (line! r " = " (helper-name (:instance node)) "(" (str/join ", " args) ");")
+            (line! "if (jn_tls.code) { " (frees (:live node)) " return " (ret-zero) "; }")
+            r)
     ;; the size goes through Number.intValue as the JVM's Numbers.T_array does:
     ;; the low 32 bits, signed, so (double-array 4294967296) is empty
     :new-array (let [raw (emit (:len node))
@@ -328,8 +347,15 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
 /* The status of the region this thread ran last: code 0, or a failure and its
    operands; and an array result's length. Thread-local rather than an argument
    buffer: a collect-safe call lets the collector run while C works, and a
-   bytevector passed in could move under it. */
+   bytevector passed in could move under it. jolt build compiles every region
+   into one translation unit, so a binary has one. JN_EXTERN_TLS is for a host
+   that loads each region as its own shared object (the native gate): every
+   object with its own thread-local takes a pthread key, and macOS has 512. */
+#ifdef JN_EXTERN_TLS
+extern _Thread_local jn_out jn_tls;
+#else
 static _Thread_local jn_out jn_tls;
+#endif
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
@@ -346,14 +372,50 @@ static _Thread_local jn_out jn_tls;
   (let [t (:type p)]
     (if (ast/borrowed? t) (str "void *p" (:id p)) (str (ctype t) " " (var-name (:id p))))))
 
+(defn- helper-sig [inst]
+  (let [t (:ret inst)]
+    (str "static " (if (#{:unit :never} t) "int64_t" (ctype t)) " " (helper-name (:iid inst)) "("
+         (if (seq (:params inst))
+           (str/join ", " (map (fn [p] (str (ctype (:type p)) " " (var-name (:id p)))) (:params inst)))
+           "void")
+         ")")))
+
+(defn- emit-helper
+  "A static C function for one native helper instance. Its array parameters are
+  borrowed structs; an owned array result is returned by value."
+  [inst]
+  (binding [*decls* (atom (sorted-map))
+            *lines* (atom [])
+            *tmp* (atom 0)
+            *fn-ret* (:ret inst)]
+    (let [t (:ret inst)
+          v (emit (:body inst))
+          body @*lines*
+          result (cond
+                   (ast/owned? t) [(frees (disj (:delete inst) (:id (:body inst)))) (str "return " v ";")]
+                   (#{:unit :never} t) [(frees (:delete inst)) "return 0;"]
+                   :else [(str (ctype t) " result = " v ";") (frees (:delete inst)) "return result;"])]
+      (str (helper-sig inst) " {\n"
+           (str/join "\n" (map #(str "  " %) (concat (vals @*decls*) body result)))
+           "\n}\n"))))
+
 (defn emit-region
   "C source for a checked region, exporting sym (and sym_copy_out when it
-  returns an array)."
+  returns an array), with a static function per native helper instance."
+  [region sym]
+  (binding [*sym* sym
+            *region* (atom (assoc region :loops {}))]
+    (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
+                       (apply str (map emit-helper (:instances region))))]
+      (str prelude "\n" helpers (emit-entry region sym)))))
+
+(defn- emit-entry
+  "The region's exported entry and its status accessors."
   [region sym]
   (binding [*decls* (atom (sorted-map))
             *lines* (atom [])
             *tmp* (atom 0)
-            *region* (atom (assoc region :loops {}))]
+            *fn-ret* :entry]
     (let [t (:type region)
           ret-c (cond (= [:array :double] t) "double *" (= [:array :long] t) "int64_t *"
                       (#{:unit :never} t) "int" :else (ctype t))
@@ -374,8 +436,7 @@ static _Thread_local jn_out jn_tls;
                    :else [(str (ctype t) " result = " v ";")
                           (frees (:delete region))
                           "return result;"])]
-      (str prelude "\n"
-           ret-c " " sym "(" (if (seq (:params region)) (str/join ", " (map param-c (:params region))) "void") ") {\n"
+      (str ret-c " " sym "(" (if (seq (:params region)) (str/join ", " (map param-c (:params region))) "void") ") {\n"
            (str/join "\n" (map #(str "  " %) (concat ["jn_tls.code = 0;"] decls body result)))
            "\n}\n"
            "int64_t " sym "_status(void) { return jn_tls.code; }\n"
