@@ -260,7 +260,9 @@
                         "pow" "pow" "atan2" "atan2")]
             (line! r " = " f "(" (str/join ", " args) ");")
             r)
-    :alength (str "(" (emit (:arr node)) ".len)")
+    ;; a temp like every other value: inlined, (aget a (alength a)) emitted
+    ;; `a.len >= a.len`, which compilers flag as a tautology
+    :alength (let [r (fresh! :long)] (line! r " = " (emit (:arr node)) ".len;") r)
     :aget (let [arr (emit (:arr node)) idx (emit (:idx node)) r (fresh! (:type node))]
             (emit-array-index node arr idx)
             (line! r " = " arr ".data[" idx "];")
@@ -271,8 +273,12 @@
             (line! r " = " (as-double-if (:type node) v (:type (:val node))) ";")
             (line! arr ".data[" idx "] = " r ";")
             r)
-    :new-array (let [len (emit (:len node))
+    ;; the size goes through Number.intValue as the JVM's Numbers.T_array does:
+    ;; the low 32 bits, signed, so (double-array 4294967296) is empty
+    :new-array (let [raw (emit (:len node))
+                     len (fresh! :long)
                      n (declare-var! (:id node) (:type node))]
+                 (line! "{ int64_t lo = " raw " & 0xffffffffLL; " len " = lo >= 0x80000000LL ? lo - 0x100000000LL : lo; }")
                  (line! "if (" len " < 0) " (raise! node :neg-size :a len))
                  (line! n ".len = " len "; " n ".data = JN_CALLOC(" len " > 0 ? " len " : 1, 8);")
                  (line! "if (!" n ".data) " (raise! node :oom))
@@ -291,6 +297,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+/* (== x x) on a double is how NaN is tested; the comparison is meant */
+#pragma GCC diagnostic ignored \"-Wtautological-compare\"
 #if UINTPTR_MAX != 0xffffffffffffffffu
 #error \"jolt native regions need a 64-bit target\"
 #endif

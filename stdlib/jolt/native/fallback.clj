@@ -78,7 +78,7 @@
                   (list 'clojure.core/double (clj (:val node)))
                   (clj (:val node))))
     :new-array (list (if (= :double (:elem node)) 'clojure.core/double-array 'clojure.core/long-array)
-                     (list 'jolt.native.rt/size (clj (:len node))))
+                     (clj (:len node)))
     :aclone (list 'clojure.core/aclone (clj (:arr node)))))
 
 (defn region-form

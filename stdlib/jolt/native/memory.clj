@@ -71,10 +71,15 @@
 
 (defn- diverges? [node] (= :never (:type node)))
 
-(defn- visit-borrowing [node k]
-  (let [a (visit (k node))]
-    (can-be-referenced! a)
-    a))
+(defn- visit-borrowing
+  "Visit the array an op borrows. The borrow is checked where the op USES it,
+  after its other arguments ran (borrow-checked!): an index expression that
+  moves the array, (aset a (let [b a] 0) 1.0), would otherwise free it between
+  the check and the store."
+  [node k]
+  (visit (k node)))
+
+(defn- borrow-checked! [arr] (can-be-referenced! arr) arr)
 
 (defn- visit-let [node]
   (let [pre (deleters)
@@ -207,15 +212,17 @@
                 long-arith (and (= :long (:type node)) (fallible-prims (:prim node)))]
             (if (or long-arith (= :to-long (:prim node))) (snapshot n) n))
     :math (visit-args node)
-    :alength (assoc node :arr (visit-borrowing node :arr))
+    :alength (assoc node :arr (borrow-checked! (visit-borrowing node :arr)))
     :aget (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))]
+            (borrow-checked! arr)
             (snapshot (assoc node :arr arr :idx idx)))
     :aset (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))
                 v (visit (:val node))]
+            (borrow-checked! arr)
             (snapshot (assoc node :arr arr :idx idx :val v)))
-    :aclone (let [arr (visit-borrowing node :arr)
+    :aclone (let [arr (borrow-checked! (visit-borrowing node :arr))
                   n (snapshot (assoc node :arr arr))]
               (manage! node)
               n)

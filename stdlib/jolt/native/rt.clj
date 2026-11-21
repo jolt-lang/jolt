@@ -36,5 +36,3 @@
   "RT.intCast of an array index: outside the int range is an overflow."
   [i]
   (if (and (<= Integer/MIN_VALUE i) (<= i Integer/MAX_VALUE)) i (raise! 2 0 0 0.0)))
-
-(defn size [n] (if (neg? n) (raise! 4 n 0 0.0) n))

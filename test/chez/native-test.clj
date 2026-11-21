@@ -264,7 +264,9 @@
            '((let [q (quot a b) r (rem a b) m (mod a b)] (+ (* q 1000000) (* r 1000) m)))
            [[7 2] [-7 2] [7 -2] [-7 -2] [5 0] [-9223372036854775808 -1]])
 
-(check-run "negative size" '[^long n] '((alength (double-array n))) [[3] [0] [-2]] :raw true)
+(check-run "array size is Number.intValue" '[^long n] '((alength (double-array n)))
+           [[3] [0] [-2] [4294967296] [4294967297] [2147483648] [9223372036854775807] [-4294967295]]
+           :raw true)
 
 (check-run "long of double" '[^double d]
            '((long d))
@@ -295,6 +297,10 @@
               '((let [a (double-array 1)] (loop [i 0 x (double-array 1)] (if (< i 3) (recur (inc i) a) x))))
               #"loop iteration that continues")
 (check-reject "returning a borrowed array" '[^doubles xs] '(xs) #"borrowed")
+;; found by the random programs: the index moved the array aset was borrowing,
+;; freeing it before the store (a use after free the allocator trapped on)
+(check-reject "an argument moves the array the op borrows" '[]
+              '((let [a (double-array 4)] (aset a (let [b a] 0) 1.0))) #"after it was given away")
 (check-reject "non-boolean test" '[^long n] '((if n 1 2)) #"must be a boolean")
 (check-reject "long division" '[^long a] '((/ a 2)) #"ratio")
 (check-reject "= across number types" '[^long a] '((= a 1.0)) #"same scalar type")
@@ -305,6 +311,276 @@
               '((loop [i 0] (do (recur (inc i)) i))) #"tail position")
 (check-reject "unknown function" '[^long a] '((println a)) #"not allowed")
 (check-reject "^longs parameter" '[^longs xs] '((alength xs)) #"not supported yet")
+
+;; --- random programs ----------------------------------------------------------
+;; A generator builds well-typed region programs and tracks ownership with its
+;; own model of the rules (moves in let bindings, returns and recur; borrows in
+;; aget/aset/alength/aclone; no outer value moved in a continuing loop
+;; iteration). About one program in twelve gets a planted violation: a use of a
+;; value the model knows is gone. The checker must accept every program the
+;; model accepts (which then has to pass the C-vs-fallback run and leave no
+;; leak or bad free), and reject every planted one. Two implementations of the
+;; ownership rules, checked against each other.
+;; NATIVE_FUZZ_SEED and NATIVE_FUZZ_N reproduce or widen a run.
+
+(def fuzz-seed (or (some-> (System/getenv "NATIVE_FUZZ_SEED") parse-long) 20261120))
+(def fuzz-n (or (some-> (System/getenv "NATIVE_FUZZ_N") parse-long) 150))
+
+(def ^:dynamic *rng* nil)
+(defn rnd
+  "A uniform int in [0, n), from a 31-bit LCG (reproducible on every host)."
+  [n]
+  (let [s (swap! *rng* (fn [s] (mod (+ (* s 1103515245) 12345) 2147483648)))]
+    (mod (quot s 65536) n)))
+(defn pick [xs] (nth xs (rnd (count xs))))
+(defn chance [pct] (< (rnd 100) pct))
+
+;; generator state: owned locals and whether each is still live; borrow-only is
+;; the set of owned names a continuing loop iteration may not move
+(def ^:dynamic *g* nil)
+(def ^:dynamic *planted* nil)
+;; plant mode: this program aims for a violation, so moves and reuses of dead
+;; values are far likelier
+(def ^:dynamic *plant-mode* false)
+(defn plant-chance [normal boosted] (chance (if *plant-mode* boosted normal)))
+(defn fresh-name [] (symbol (str "v" (:n (swap! *g* update :n inc)))))
+(defn live-owned [] (vec (for [[k v] (:owned @*g*) :when (:alive v)] k)))
+(defn movable-owned []
+  (vec (remove (:borrow-only @*g*) (live-owned))))
+(defn dead-owned [] (vec (for [[k v] (:owned @*g*) :when (not (:alive v))] k)))
+(defn kill! [name] (swap! *g* assoc-in [:owned name :alive] false))
+(defn scalars [t] (vec (for [[k v] (:scalars @*g*) :when (= v t)] k)))
+
+(declare gen gen-let gen-loop)
+
+(defn with-scope
+  "Run f with names bound in it; owned names introduced inside go out of scope."
+  [f]
+  (let [before (set (keys (:owned @*g*)))
+        sc (:scalars @*g*)
+        r (f)]
+    (swap! *g* (fn [g] (-> g
+                           (update :owned #(select-keys % (concat before (filter before (keys %)))))
+                           (assoc :scalars sc))))
+    r))
+
+(defn branch-merge
+  "Generate then/else from the same state; a value moved in either is gone after."
+  [gen-then gen-else]
+  (let [s0 @*g*
+        t (gen-then)
+        s1 @*g*
+        _ (reset! *g* s0)
+        e (gen-else)
+        s2 @*g*]
+    (reset! *g* (assoc s2 :owned
+                       (into {} (for [[k v] (:owned s0)]
+                                  [k {:alive (and (get-in s1 [:owned k :alive])
+                                                  (get-in s2 [:owned k :alive]))}]))
+                       :n (max (:n s1) (:n s2))))
+    [t e]))
+
+(defn borrowable
+  "An array expression to read from: the borrowed param, a live owned local,
+  or a fresh temporary. A planted violation borrows a dead one."
+  []
+  (let [dead (dead-owned)]
+    (if (and (seq dead) (plant-chance 8 45))
+      (do (reset! *planted* true) (pick dead))
+      (let [live (live-owned)]
+        (cond
+          (and (seq live) (chance 50)) (pick live)
+          (chance 70) 'xs
+          :else (list 'double-array (inc (rnd 4))))))))
+
+(defn with-borrowed
+  "Generate the sibling arguments of an op that borrows arr: arr must stay live
+  until the op uses it, so it is borrow-only meanwhile (a planted program may
+  still move it, which the checker has to refuse)."
+  [arr f]
+  (if (and (symbol? arr) (contains? (:owned @*g*) arr))
+    (let [bo (:borrow-only @*g*)]
+      (swap! *g* update :borrow-only (fnil conj #{}) arr)
+      (let [r (f)] (swap! *g* assoc :borrow-only bo) r))
+    (f)))
+
+(defn gen-idx [d] (if (chance 75) (rnd 5) (gen :long (dec d))))
+
+(defn gen-long [d]
+  (let [ls (scalars :long)]
+    (if (<= d 0)
+      (pick (concat [(rnd 6) 'n] ls))
+      (case (rnd 9)
+        0 (list (pick '[+ - *]) (gen :long (dec d)) (gen :long (dec d)))
+        1 (list (pick '[quot rem mod]) (gen :long (dec d)) (gen :long (dec d)))
+        2 (list 'alength (borrowable))
+        3 (list 'long (gen :double (dec d)))
+        4 (if (chance 30) 9223372036854775807 (rnd 100))
+        5 (let [[t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
+            (list 'if (gen :bool (dec d)) t e))
+        6 (gen-let :long d)
+        (pick (concat ['n (rnd 6)] ls))))))
+
+(defn gen-double [d]
+  (let [ds (scalars :double)]
+    (if (<= d 0)
+      (pick (concat [(double (rnd 7)) 'dd 0.5] ds))
+      (case (rnd 9)
+        0 (list (pick '[+ - * /]) (gen :double (dec d)) (gen (pick [:double :long]) (dec d)))
+        1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
+        2 (list 'Math/sqrt (gen :double (dec d)))
+        3 (list 'double (gen :long (dec d)))
+        4 (let [[t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
+            (list 'if (gen :bool (dec d)) t e))
+        5 (gen-let :double d)
+        6 (gen-loop :double d)
+        7 (let [a (borrowable)]
+            (list 'do (cons 'aset (cons a (with-borrowed a #(vector (gen-idx d) (gen :double (dec d))))))
+                  (gen :double (dec d))))
+        (pick (concat ['dd 1.5] ds))))))
+
+(defn gen-bool [d]
+  (if (<= d 0)
+    (pick [true false (list '< 'n 3)])
+    (case (rnd 6)
+      0 (list (pick '[< <= > >=]) (gen :long (dec d)) (gen :double (dec d)))
+      1 (list '= (gen :long (dec d)) (gen :long (dec d)))
+      2 (list 'not (gen :bool (dec d)))
+      3 (list (pick '[and or]) (gen :bool (dec d)) (gen :bool (dec d)))
+      4 (list 'zero? (gen :long (dec d)))
+      (list '== (gen :double (dec d)) (gen :long (dec d))))))
+
+(defn gen-array
+  "An owned array value: new, a clone, a moved local, or built by a form."
+  [d]
+  (let [movable (movable-owned)
+        dead (dead-owned)]
+    (cond
+      (and (seq dead) (plant-chance 6 45))
+      (do (reset! *planted* true) (pick dead))
+      (and (seq movable) (plant-chance 35 75))
+      (let [v (pick movable)] (kill! v) v)
+      ;; the other violation: moving an outer value in an iteration that continues
+      (and *plant-mode* (seq (:borrow-only @*g*)) (chance 30)
+           (some (set (live-owned)) (:borrow-only @*g*)))
+      (do (reset! *planted* true) (pick (vec (filter (set (live-owned)) (:borrow-only @*g*)))))
+      (<= d 0) (list 'double-array (rnd 5))
+      :else
+      (case (rnd 5)
+        0 (list 'double-array (gen-idx d))
+        1 (list 'aclone (borrowable))
+        2 (let [[t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
+            (list 'if (gen :bool (dec d)) t e))
+        3 (gen-let [:array :double] d)
+        (gen-loop [:array :double] d)))))
+
+(defn gen-let [t d]
+  (with-scope
+    (fn []
+      (let [k (inc (rnd 2))
+            bs (vec (mapcat (fn [_]
+                              (let [bt (pick [:long :double [:array :double]])
+                                    init (gen bt (dec d))
+                                    nm (fresh-name)]
+                                (if (vector? bt)
+                                  (swap! *g* assoc-in [:owned nm] {:alive true})
+                                  (swap! *g* assoc-in [:scalars nm] bt))
+                                [nm init]))
+                            (range k)))
+            body (gen t (dec d))]
+        (list 'let bs body)))))
+
+(defn gen-loop
+  "(loop [i 0 acc init] (if (< i K) (recur (inc i) step) exit)). The step may
+  not move an outer owned value; the exit may."
+  [t d]
+  (with-scope
+    (fn []
+      (let [i (fresh-name)
+            acc (fresh-name)
+            init (gen t (dec d))
+            outer (set (live-owned))
+            _ (swap! *g* assoc-in [:scalars i] :long)
+            _ (if (vector? t)
+                (swap! *g* assoc-in [:owned acc] {:alive true})
+                (swap! *g* assoc-in [:scalars acc] t))
+            [step exit]
+            (branch-merge
+             (fn []
+               (let [bo (:borrow-only @*g*)
+                     _ (swap! *g* assoc :borrow-only (into (or bo #{}) outer))
+                     s (gen t (dec d))]
+                 (swap! *g* assoc :borrow-only bo)
+                 s))
+             (fn [] (if (and (vector? t) (chance 50))
+                      (do (kill! acc) acc)
+                      (gen t (dec d)))))]
+        (list 'loop [i 0 acc init]
+              (list 'if (list '< i (rnd 4)) (list 'recur (list 'inc i) step) exit))))))
+
+(defn gen [t d]
+  (case t
+    :long (gen-long d)
+    :double (gen-double d)
+    :bool (gen-bool d)
+    (gen-array d)))
+
+(defn gen-program
+  "[body planted?] for one random program of a random result type."
+  [seed]
+  (binding [*rng* (atom seed)
+            *g* (atom {:n 0 :owned {} :scalars {} :borrow-only #{}})
+            *planted* (atom false)
+            *plant-mode* (zero? (mod seed 5))]
+    (let [t (pick [:long :double :bool [:array :double] [:array :double]])]
+      (if *plant-mode*
+        ;; start with a value already given away (v0, moved into v1), so the
+        ;; generator has something dead to reach for from the first form
+        (do (swap! *g* #(-> % (assoc :n 1)
+                            (assoc-in [:owned 'v0] {:alive false})
+                            (assoc-in [:owned 'v1] {:alive true})))
+            (let [body (gen t 4)]
+              [(list 'let ['v0 (list 'double-array 3) 'v1 'v0] body) @*planted*]))
+        [(gen t 4) @*planted*]))))
+
+(def fuzz-params '[^doubles xs ^long n ^double dd])
+(def fuzz-inputs [[(da 1 2 3 4 5) 2 0.25] [(da -1.5 0 7) 0 -3.0] [(da) 4 1e300]])
+
+(defn fuzz! []
+  (let [stats (atom {:accepted 0 :planted 0 :rejected-valid 0})]
+    (dotimes [k fuzz-n]
+      (let [seed (+ fuzz-seed (* 7919 k))
+            [body planted?] (gen-program seed)
+            label (str "fuzz seed=" seed)
+            _ (when (System/getenv "NATIVE_FUZZ_TRACE")
+                (binding [*out* *err*] (println label (pr-str body)) (flush)))
+            verdict (try (mem/check-region (ast/analyze-region fuzz-params [body])) :ok
+                         (catch Throwable e e))]
+        (cond
+          (and planted? (= verdict :ok))
+          (fail! (str label ": a planted use of a moved value was accepted: " (pr-str body)))
+
+          planted?
+          (if (re-find #"given away|loop iteration" (.getMessage ^Throwable verdict))
+            (swap! stats update :planted inc)
+            (fail! (str label ": planted violation rejected for another reason: "
+                        (.getMessage ^Throwable verdict) "\n  " (pr-str body))))
+
+          (not= verdict :ok)
+          (do (swap! stats update :rejected-valid inc)
+              (fail! (str label ": the checker rejected a program its model accepts: "
+                          (.getMessage ^Throwable verdict) "\n  " (pr-str body))))
+
+          :else
+          (do (swap! stats update :accepted inc)
+              (let [before (count @failures)]
+                (check-run label fuzz-params [body] fuzz-inputs)
+                (when (> (count @failures) before)
+                  (println "  program:" (pr-str body))))))))
+    (println "fuzz:" fuzz-n "programs from seed" fuzz-seed "--" (pr-str @stats))))
+
+(fuzz!)
+
 
 (if (seq @failures)
   (do (println (count @failures) "native-test failure(s)") (System/exit 1))
