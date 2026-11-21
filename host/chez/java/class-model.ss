@@ -416,8 +416,9 @@
 
 ;; JVM class assignability for isa? (20-coll): true when child and parent are both
 ;; class values and parent is child, java.lang.Object (every class's root), or a
-;; modeled ancestor of child (full name or last segment). nil for non-class args, so
-;; isa? falls through to its hierarchy/vector logic.
+;; modeled ancestor of child. A last-segment match counts only when one side is a
+;; simple name, as in jch-isa?: java.lang.Process is not babashka.process.Process.
+;; nil for non-class args, so isa? falls through to its hierarchy/vector logic.
 (def-var! "jolt.host" "class-isa?"
   (lambda (child parent)
     (let ((cc (class-key child)) (pp (class-key parent)))
@@ -429,12 +430,14 @@
               (or (string=? cc pp) (string=? (hsc-last-segment cc) (hsc-last-segment pp))))
          jolt-nil)
         ((and cc pp)
-          (let ((pseg (hsc-last-segment pp)))
+          (let ((pseg (hsc-last-segment pp))
+                (pdot? (memv #\. (string->list pp))))
             (if (let loop ((names (cons cc (jch-closure cc))))
                   (cond ((string=? pp "java.lang.Object") #t)
                         ((null? names) #f)
                         ((or (string=? pp (car names))
-                             (string=? pseg (hsc-last-segment (car names)))) #t)
+                             (and (not (and pdot? (memv #\. (string->list (car names)))))
+                                  (string=? pseg (hsc-last-segment (car names))))) #t)
                         (else (loop (cdr names)))))
                 #t jolt-nil)))
         (else jolt-nil)))))
