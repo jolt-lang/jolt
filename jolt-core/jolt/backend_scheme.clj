@@ -17,7 +17,6 @@
             [jolt.passes.facts :as facts]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
-            [jolt.passes.transducers :as transducers]
             [jolt.op-registry :as op-registry]
             [jolt.ir :as ir]
             [jolt.backend-scheme.names :as names :refer [chez-str-lit dl-fqn dl-name]]
@@ -52,7 +51,8 @@
             [jolt.backend-scheme.ffi :as ffi :refer [emit-ffi-node]]
             [jolt.backend-scheme.interop :refer [host-call-emit]]
             [jolt.backend-scheme.lambda
-             :refer [*step-variant* emit-fn emit-nhint-coerce]]))
+             :refer [emit-fn emit-nhint-coerce]]
+            [jolt.backend-scheme.fused :refer [emit-fused-invoke]]))
 
 ;; op-registry and its derived accessor tables live in jolt.op-registry — the
 ;; single source of truth for per-op facts, shared with the passes. Bind them to
@@ -109,7 +109,7 @@
 ;; call/value-ref direct-links only to a name defined earlier in emission order (or
 ;; itself), so the Scheme binding exists by the time the reference runs. Reset per build.
 (defn direct-link-reset! []
-  (reset! (:linked-call-definitions (cur)) {})
+  (swap! (:linked-call-definitions (cur)) #(when % {}))
   (reset! (:direct-link-defined (cur)) #{}) (reset! (:direct-link-fns (cur)) #{}))
 
 
@@ -620,6 +620,21 @@
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
 
+(defn- emit-seed-callable-invoke [fnode args tail? tl ich order-args]
+  (when (and (direct-link?) (not (seed-mint?)))
+    (when-let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))]
+      (let [head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))
+            root (:root-binding fnode)]
+        (when (and root (not (string? sc)))
+          (throw (ex-info "emit: a supplied root needs a linked call head" {:var (:name fnode)})))
+        (binding [*read-roots* (if root {head root} *read-roots*)]
+          (order-args (fn [as] (emit-call tail? head as tl ich))))))))
+
+(defn- record-ctor-shape [fnode n]
+  (when-let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]
+    (when (and (= (count (get shape :fields)) n) (<= n 6))
+      shape)))
+
 ;; The callee by what it is, once no annotation or native op has claimed the call.
 (defn- emit-var-invoke [c]
   (let [node (:node c) fnode (:fnode c) arg-nodes (:arg-nodes c) args (:args c)
@@ -648,46 +663,13 @@
            (direct-link-fn? (:ns fnode) (:name fnode))
            (direct-link-callable? (:ns fnode) (:name fnode) (count args)))
       (order-args (fn [as] (emit-call tail? (dl-name (:ns fnode) (:name fnode)) as tl ich)))
-      ;; closed-world direct call to a SEED var — clojure.core and the other
-      ;; namespaces the runtime image boots with. Such a var is preloaded ahead
-      ;; of every app def and never emitted by this build, so the def binds its
-      ;; root procedure once at load and the site applies it directly: no
-      ;; var-cell-deref (7 ns), no jolt-invokeN (5 ns) — true? went 16 -> 4 ns.
-      ;; jolt.host/seed-callable? applies the same closed-world rule an app def
-      ;; gets (not ^:dynamic/^:redef, not redefined by the app) plus "root is a
-      ;; procedure whose arity mask admits this arity", so a keyword/map/multi-
-      ;; method-valued var and a wrong-arity call keep jolt-invoke below.
-      ;; seed-callable? answers the callee's jv$ binding name for a var the seed
-      ;; minted direct-linked (def-var-linked!), and the site applies that
-      ;; top-level variable: the same one load, and a later def / alter-var-root
-      ;; / with-redefs of the var writes through to it (rt.ss var-root-set!), so
-      ;; the site follows a redefinition. A seed var the runtime defined itself
-      ;; (a Scheme def-var!) has no binding to name; its root is hoisted once at
-      ;; load, and a redefinition is invisible to that site, as under the JVM's
-      ;; direct linking. `jolt run` never direct-links. Off while MINTING the
-      ;; seed: the vars this arm would bind are the ones being emitted.
-      (and (direct-link?) (not (seed-mint?))
-           (seed-callable? nil (:ns fnode) (:name fnode) (count args)))
-      (let [sc (seed-callable? nil (:ns fnode) (:name fnode) (count args))
-            head (if (string? sc) sc (hoist-seed-root (:ns fnode) (:name fnode)))
-            root (:root-binding fnode)]
-        (when (and root (not (string? sc)))
-          (throw (ex-info "emit: a supplied root needs a linked call head" {:var (:name fnode)})))
-        (binding [*read-roots* (if root {head root} *read-roots*)]
-          (order-args (fn [as] (emit-call tail? head as tl ich)))))
-      ;; record ctor with matching arity: inline the native per-arity ctor
-      ;; (make-jrecN) directly — desc + ext + one inline slot per field —
-      ;; eliminating jolt-invoke / var-deref / rest-list / ctor call / hashtable
-      ;; lookup AND the field vector. After per-site desc-cell warmup the hot
-      ;; path is: cell read -> make-jrecN — one allocation, no lookups, no
-      ;; dispatch. The shape comes from the unit's record-shapes (set-record-shapes!).
-      (let [shape (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode)))]
-        (and shape (= (count (get shape :fields)) (count args)) (<= (count args) 6)))
-      (emit-record-ctor (get (ctor-shapes) (str (:ns fnode) "/" (:name fnode))) arg-nodes args)
-      ;; a late-bound :var call head can hold a procedure OR a non-applicable
-      ;; value the RT dispatches (multimethod, keyword/coll IFn) — route via
-      ;; jolt-invoke (transparent for a procedure).
-      :else (emit-jolt-invoke c))))
+      :else
+      ;; closed-world direct call to a seed var, or record ctor with matching
+      ;; arity (make-jrecN), else late-bound dispatch via jolt-invoke.
+      (or (emit-seed-callable-invoke fnode args tail? tl ich order-args)
+          (when-let [shape (record-ctor-shape fnode (count args))]
+            (emit-record-ctor shape arg-nodes args))
+          (emit-jolt-invoke c)))))
 
 ;; a :local callee: a known procedure (the letrec-bound self-name of a named
 ;; fn — i.e. self-recursion) is a real Scheme proc, so call it directly with
@@ -1049,263 +1031,10 @@
                  (first as) (map vector (:div-prim node) (rest as)))))
        :else (emit-native-invoke c)))))
 
-(defn- emit-fused-site-call [node tail? proc args]
-  (let [line (or (node-line node) 0)]
-    (register-callsite! line (static-callee (:fn node)) tail?)
-    (with-site node (emit-call tail? proc args line (node-inline-chain node)))))
-
-(defn- emit-filter-map-walk [node operands compose tail?]
-  (let [[to p filter-ok filter-xf m map-ok map-xf c fuse xf from]
-        (repeatedly 11 #(fresh-label "_xf$"))
-        [dest pred mapper source] (mapv emit operands)
-        core "clojure.core"
-        into-proc (hoist-seed-root core "into")
-        filter-proc (hoist-seed-root core "filter")
-        map-proc (hoist-seed-root core "map")
-        [comp-node] (rest (:args node))
-        [filter-node map-node] (:args comp-node)
-        call emit-fused-site-call
-        td-filter (plain-call "td-filter" [p])
-        td-map (plain-call "td-map" [m])
-        ;; The linked comp root is read after evaluating the stages. Build
-        ;; nonstandard stages at their original position and call comp before
-        ;; the source. Only pure standard constructors can be deferred.
-        binds [[to dest]
-               [p pred]
-               [filter-ok (plain-call "eq?" [filter-proc "jolt-filter"])]
-               [filter-xf (str "(and (not " filter-ok ") " (call filter-node false filter-proc [p]) ")")]
-               [m mapper]
-               [map-ok (plain-call "eq?" [map-proc "jolt-map"])]
-               [map-xf (str "(and (not " map-ok ") " (call map-node false map-proc [m]) ")")]
-               [c compose]
-               [fuse (str "(and " filter-ok " " map-ok " (eq? " c " jolt-vector-filter-map-comp)"
-                          " (eq? " into-proc " jolt-into))")]
-               [xf (str "(and (not " fuse ") "
-                        (call comp-node false "jolt-invoke2"
-                              [c (str "(if " filter-ok " " td-filter " " filter-xf ")")
-                               (str "(if " map-ok " " td-map " " map-xf ")")]) ")")]
-               [from source]]
-        ordinary-xf (str "(if " fuse " " (with-site comp-node (plain-call c [td-filter td-map])) " " xf ")")]
-    (str "(let* (" (str/join " " (map (fn [[name value]] (str "(" name " " value ")")) binds)) ")"
-         " (if (and " fuse " (pvec? " from ") (not (eq? (pvec-ent " from ") #t)))"
-         " " (call node tail? "jolt-vector-filter-map" [to p m from])
-         " " (call node tail? into-proc [to ordinary-xf from]) "))")))
-
-(defn- chez-linked-fast-path? []
-  (and *const-pool* (= :chez (target)) (direct-link?)
-       (not (seed-mint?)) (not (session/debug-locals?))))
-
-(defn- emit-vector-filter-map [node tail?]
-  (when (and (:vector-filter-map node) (chez-linked-fast-path?))
-    ;; Three native seed calls hoist their procedure at the enclosing def.
-    ;; comp uses its linked Scheme binding and can change while evaluating
-    ;; the stage arguments. Leave all other linkage to emit-var-invoke.
-    (let [core "clojure.core"
-          compose (seed-callable? nil core "comp" 2)]
-      (when (and (string? compose)
-                 (true? (seed-callable? nil core "into" 3))
-                 (true? (seed-callable? nil core "filter" 1))
-                 (true? (seed-callable? nil core "map" 1)))
-        (when-let [operands (transducers/filter-map-operands node)]
-          (emit-filter-map-walk node operands compose tail?))))))
-
-(defn- assoc-in-call? [node]
-  (let [f (:fn node)]
-    (and (= :invoke (:op node)) (= :var (:op f))
-         (= "clojure.core" (:ns f)) (= "assoc-in" (:name f))
-         (= 3 (count (:args node))) (not (:clear-caps node)))))
-
-(defn- stable-edit-operand? [node]
-  (and (not (:clear-caps node)) (#{:local :const} (:op node))))
-
-(defn- same-edit-key? [a b]
-  (case (:op a)
-    ;; Only walk directly nested calls and their literal vectors. There is no
-    ;; binder between these occurrences, so a name identifies the same local.
-    :local (and (= :local (:op b)) (= (:name a) (:name b)))
-    :const (and (= :const (:op b)) (keyword? (:val a)) (= (:val a) (:val b)))
-    false))
-
-(defn- assoc-in-chain [node]
-  (loop [call node edits []]
-    (let [[m path value] (:args call)
-          keys (:items path)]
-      (if (and (assoc-in-call? call) (= :vector (:op path)) (not (:clear-caps path))
-               (<= 2 (count keys) 5) (every? stable-edit-operand? keys)
-               (stable-edit-operand? value))
-        (when (< (count edits) 4)
-          (recur m (conj edits [call keys value])))
-        (when (and (<= 2 (count edits)) (stable-edit-operand? call))
-          (let [paths (mapv second edits)
-                path (first paths)
-                shared (when (every? #(= (count path) (count %)) paths)
-                         (count (take-while
-                                  (fn [i] (every? #(same-edit-key? (nth path i) (nth % i)) paths))
-                                  (range (dec (count path))))))]
-            (when (and shared (pos? shared) (<= (- (count path) shared) 2))
-              {:base call :prefix (subvec path 0 shared)
-               :edits (mapv (fn [[call keys v]] [call (subvec keys shared) v])
-                            (reverse edits))})))))))
-
-(defn- emit-assoc-in-map-edit [m key child body]
-  (plain-call "jolt-assoc-in-map-edit" [m (emit key) (str "(lambda (" child ") " body ")")]))
-
-(defn- emit-assoc-in-suffix [m keys value]
-  (let [leaf (fn [m key] (plain-call "jolt-assoc-in-leaf-edit" [m (emit key) (emit value)]))]
-    (if (= 1 (count keys))
-      (leaf m (first keys))
-      (let [child (fresh-label "_ae$")]
-        (emit-assoc-in-map-edit m (first keys) child (leaf child (second keys)))))))
-
-(defn- ordered-assoc-in-chain? [edits linked tail?]
-  ;; Ordinary ordered-call binds a nested receiver before a dynamic path and
-  ;; the linked callee. A traced tail call also binds its operands first.
-  ;; Otherwise a constant path leaves the receiver and root read in the same
-  ;; Scheme let, whose evaluation order Chez may choose at each site.
-  (let [traced-tail? (and tail? (trace-frames?) *trace-site* (not (contains? session/*trace-self* linked)))
-        end (if traced-tail? (dec (count edits)) (count edits))]
-    (every? (fn [[call]] (not (ir/const-coll-node? (nth (:args call) 1) true)))
-            (subvec edits 1 end))))
-
-(defn- emit-assoc-in-edits [initial edits linked stop]
-  (letfn [(step [m i]
-            (if-let [[_ keys value] (get edits i)]
-              (let [first? (zero? i)
-                    proc (when-not first? (fresh-label "_ae$"))
-                    next-map (fresh-label "_ae$")
-                    edit (emit-assoc-in-suffix m keys value)
-                    ;; The first root is checked before descent. On a later
-                    ;; miss, return the last good subtree for the ascent to
-                    ;; rebuild. Save the exact callable already read for i.
-                    attempt (if first? edit (str "(and (eq? " proc " jolt-assoc-in-original) " edit ")"))
-                    miss (if first? "#f" (str "(begin (set! " stop " (cons " i " " proc ")) " m ")"))]
-                (str "(let* (" (when proc (str "(" proc " " linked ") "))
-                     "(" next-map " " attempt "))"
-                     " (if " next-map " " (step next-map (inc i)) " " miss "))"))
-              m))]
-    (step initial 0)))
-
-(defn- emit-unfused-assoc-in [base edits first-proc linked stop tail?]
-  (let [index (fresh-label "_ae$")
-        last-i (dec (count edits))
-        names (into [base] (map (fn [_] (fresh-label "_ae$"))) (rest edits))
-        calls (mapv (fn [i [call _ value]]
-                      (let [path (fresh-label "_ae$")
-                            v (fresh-label "_ae$")
-                            m (nth names i)
-                            tail-edit? (and tail? (= i last-i))
-                            proc (if (zero? i) first-proc (str "(cdr " stop ")"))
-                            captured (emit-fused-site-call call tail-edit? "jolt-assoc-in-apply" [proc m path v])
-                            dispatch (if (zero? i) captured
-                                         (str "(if (fx=? " index " " i ") " captured " "
-                                              (emit-fused-site-call call tail-edit? linked [m path v]) ")"))
-                            apply-edit (str "(let* ((" path " " (emit (nth (:args call) 1)) ")"
-                                            " (" v " " (emit value) ")) " dispatch ")")]
-                        (if (= i last-i) apply-edit
-                            (str "(if (fx>=? " i " " index ") " apply-edit " " m ")"))))
-                    (range (count edits)) edits)
-        bindings (map (fn [nm expr] (str "(" nm " " expr ")")) (rest names) (pop calls))]
-    (str "(let* ((" index " (if " stop " (car " stop ") 0)) " (str/join " " bindings) ") " (peek calls) ")")))
-
-(defn- emit-assoc-in-chain [node tail?]
-  (when (and (assoc-in-call? node) (chez-linked-fast-path?))
-    (let [linked (seed-callable? nil "clojure.core" "assoc-in" 3)]
-      (when (string? linked)
-        (when-let [{:keys [base prefix edits]} (assoc-in-chain node)]
-          (when (ordered-assoc-in-chain? edits linked tail?)
-            (let [base-name (fresh-label "_ae$")
-                  first-proc (fresh-label "_ae$")
-                  stop (fresh-label "_ae$")
-                  result (fresh-label "_ae$")
-                  frames (into [base-name] (map (fn [_] (fresh-label "_ae$"))) prefix)
-                  original-base (emit base)
-                  edited (reduce (fn [body [key m child]] (emit-assoc-in-map-edit m key child body))
-                                 (emit-assoc-in-edits (peek frames) edits linked stop)
-                                 (reverse (map vector prefix frames (rest frames))))
-                  fallback (emit-unfused-assoc-in base-name edits first-proc linked stop tail?)]
-              (str "(let* ((" base-name " " original-base ")"
-                   " (" first-proc " " linked ")"
-                   " (" stop " #f)"
-                   " (" result " (and (eq? " first-proc " jolt-assoc-in-original) " edited ")))"
-                   " (if (and " result " (not " stop ")) " result
-                   " (let ((" base-name " (or " result " " base-name "))) " fallback ")))"))))))))
-
-(def ^:private builder-symbol-calls
-  [["symbol?" [1] "jolt-symbol?"]
-   ["namespace" [1] "jolt-namespace"]
-   ["name" [1] "jolt-name"]
-   ["keyword" [1 2] "jolt-keyword"]])
-
-(defn- emit-builder-symbol-guard []
-  (let [core "clojure.core"]
-    (when (every? (fn [[nm arities _]]
-                    (and (not (direct-linkable? core nm))
-                         (every? #(and (nil? (native-op {:op :var :ns core :name nm} %))
-                                       (true? (seed-callable? nil core nm %)))
-                                 arities)))
-                  builder-symbol-calls)
-      ;; These calls use roots hoisted at load time. The ordinary callback
-      ;; and the guard must consult the same hoists.
-      (plain-call "and"
-        (map (fn [[nm _ proc]] (plain-call "eq?" [(hoist-seed-root core nm) proc]))
-             builder-symbol-calls)))))
-
-(defn- builder-replace-step
-  "The reducer's arity with a fourth parameter, the linked replace callable
-  the fast step read, which its replace call applies in place of a root read."
-  [arity]
-  (let [taken (set (map munge-name (:params arity)))
-        proc (first (remove #(contains? taken (munge-name %)) (repeatedly #(fresh-label "_kv$"))))]
-    (-> arity
-        (update :params #(conj (vec %) proc))
-        (assoc-in [:body :args 2 :fn :root-binding] (munge-name proc)))))
-
-(defn- emit-reduce-kv-builder [node tail?]
-  (when (and (= "reduce-kv" (:name (:fn node))) (chez-linked-fast-path?))
-    (when-let [{:keys [kind literals]} (facts/closed-reducer-plan (cur) node)]
-      (let [replace-root (when (= kind :string-replace)
-                           (seed-callable? nil "clojure.string" "replace" 3))
-            replace? (and (string? replace-root)
-                          (not (direct-linkable? "clojure.string" "replace"))
-                          (= replace-root (dl-name "clojure.string" "replace")))
-            symbol-guard (when (= kind :symbol-keys) (emit-builder-symbol-guard))]
-        (when (or (= kind :copy) symbol-guard replace?)
-          (let [[match replacement] (when replace? (mapv #(hoist-const-per-site (emit %)) literals))
-                ;; The first ordinary step after a root change and the rest
-                ;; of the callback must receive the very same literal objects.
-                arg-nodes (cond-> (:args node)
-                            replace? (assoc-in [0 :arities 0 :body :args 2 :args 1 :literal-binding] match)
-                            replace? (assoc-in [0 :arities 0 :body :args 2 :args 2 :literal-binding] replacement))
-                ;; On a root change the runtime applies the reducer's own body,
-                ;; emitted once more by emit-fn with the callable it read, to
-                ;; the persistent prefix. Its trace is the literal's.
-                variant (atom (when replace? {:rewrite builder-replace-step}))
-                args (into [(binding [*step-variant* variant] (emit (first arg-nodes)))]
-                           (map emit) (rest arg-nodes))
-                step (:step @variant)
-                temps (mapv (fn [_] (fresh-label "_kv$")) args)
-                binds (str/join " " (map (fn [nm arg] (str "(" nm " " arg ")")) temps args))
-                source-guard (plain-call "jolt-reduce-kv-builder-source?" [(peek temps)])
-                guard (if symbol-guard (plain-call "and" [source-guard symbol-guard]) source-guard)
-                call (fn [proc as] (emit-fused-site-call node tail? proc as))
-                fast (case kind
-                       :copy (call "jolt-reduce-kv-build-copy" temps)
-                       :symbol-keys (call "jolt-reduce-kv-build-symbol-keys" temps)
-                       :string-replace
-                       (when step
-                         (call "jolt-reduce-kv-build-string-replace"
-                               (into temps [(str "(lambda () " replace-root ")") match replacement step]))))
-                ordinary (call "jolt-reduce-kv" temps)]
-            (if fast
-              (str "(let* (" binds ") (if " guard " " fast " " ordinary "))")
-              (str "(let* (" binds ") " ordinary ")"))))))))
-
 (defn- emit-invoke [node]
   (let [tail? *tail?*]           ; capture: children below emit non-tail
    (binding [*tail?* false]
-    (or (emit-vector-filter-map node tail?)
-      (emit-assoc-in-chain node tail?)
-      (emit-reduce-kv-builder node tail?)
+    (or (emit-fused-invoke emit node tail?)
       (let [fnode (:fn node)
             arg-nodes (:args node)
             args (mapv emit arg-nodes)
@@ -1928,9 +1657,19 @@
              *trace-frame* nil]
      (emit (:expr node)))))
 
+(defn- emit-const-node [node]
+  (or (:literal-binding node) (emit-const (:val node))))
+
+(defn- emit-binding-form [node]
+  (case (:op node)
+    :let (emit-let node)
+    :let-values (emit-let-values node)
+    :loop (emit-loop node)
+    :recur (emit-recur node)))
+
 (defn emit* [node]
   (case (:op node)
-    :const (or (:literal-binding node) (emit-const (:val node)))
+    :const (emit-const-node node)
     :local (munge-name (:name node))
     ;; late-bound var: read the cell's current root at use time. A value-position
     ;; ref to a clojure.core fn the RT provides lowers to the RT procedure.
@@ -1989,10 +1728,7 @@
      ;; on nil — is then reported at this fn and line, TCO having erased the
      ;; frame. Untraced and non-tail emission is byte-identical to before.
      :host-call (emit-host-call-node node)
-    :let (emit-let node)
-    :let-values (emit-let-values node)
-    :loop (emit-loop node)
-    :recur (emit-recur node)
+    (:let :let-values :loop :recur) (emit-binding-form node)
     (:ffi-layout :ffi-fn :ffi-callable) (emit-ffi-node emit node)
     :fn (emit-fn emit node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
@@ -2179,7 +1915,7 @@
                 (emit-def-cached node)
                 :else (with-load-time-scope (fn [] (emit-top-cells node #(emit node)))))
           freg (fnsrc-flush)]
-      (when (= :def (:op node))
+      (when (and (= :def (:op node)) @(:linked-call-definitions (cur)))
         (facts/note-linked-definition! (cur) node))
       (cond
         (= freg "") scm

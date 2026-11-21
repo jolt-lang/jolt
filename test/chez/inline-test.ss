@@ -1353,6 +1353,11 @@
   (ok "a forward Var reference has no call target from this unit"
       (jolt-nil? (linked-call-summary unit one ret-site)))
   (jolt-ce-emit revision)
+  (ok "emitting a linked def does not retain its IR unless opted in"
+      (and (jolt-nil? ((var-deref "clojure.core" "deref") (fact-get unit 'linked-call-definitions)))
+           (jolt-nil? (linked-call-summary unit one ret-site))))
+  ((var-deref "clojure.core" "reset!") (fact-get unit 'linked-call-definitions) (ev "{}"))
+  (jolt-ce-emit revision)
   (let ((one-candidate (linked-call-summary unit one ret-site))
         (two-candidate (linked-call-summary unit two ret-site)))
     (ok "a linked Var summary is conditional on the exact emitted revision and arity"

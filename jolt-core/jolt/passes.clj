@@ -16,8 +16,9 @@
                                stash-inline! var-redefined? site-const-salt form-char? form-literal?]]
             [jolt.passes.fold :refer [const-fold]]
             [jolt.passes.numeric :as numeric]
-            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace lower-fixed-map-loops direct-call-edges
+            [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
                                         begin-growth-budget! end-growth-budget! guarded-candidate?]]
+            [jolt.passes.loop-maps :refer [lower-fixed-map-loops]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
                                        param-seeds-for param-num-seeds-for

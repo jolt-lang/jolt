@@ -109,7 +109,9 @@
    :debug-locals? (atom false)
    :direct-link-defined (atom #{})
    :direct-link-fns (atom #{})
-   :linked-call-definitions (atom {})
+   ;; Opt-in map of emitted linked def IR for jolt.passes.facts/linked-call-summary.
+   ;; nil by default so optimized builds do not retain IR until a pass uses it.
+   :linked-call-definitions (atom nil)
    ;; the back-end gensym label counter — emit scratch, one per unit and shared by
    ;; every thread emitting into it. Shared is the requirement, not a compromise:
    ;; fresh-label mints names that reach the Scheme TOP LEVEL (emit-impl-clone's

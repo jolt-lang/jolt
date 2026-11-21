@@ -339,54 +339,82 @@
                       (update :active-fns conj callee))]
         (walk-arity inner arity p (:env target) operands)))))
 
+(defn- invoke-target-origins [state path callee n operands]
+  (when (and (= 1 (count callee)) (= :allocation (:kind (first callee))))
+    (let [target-path (:site (first callee))]
+      (when-let [target (get @(:fn-targets state) target-path)]
+        (or (invoke-known state path target operands)
+            ;; Existing capture flow for zero-arg once/coercing closures.
+            (when-let [closure (when (zero? n) (get @(:closures state) target-path))]
+              (when (and (:zero-arity? closure)
+                         (not-any? #(identical? (:fn target) %) (:active-fns state)))
+                (merge-effects! state (:effects closure))
+                (:returns closure))))))))
+
+(defn- invoke-core-origins [state path core args operands absent]
+  (let [n (count args)
+        arg (fn [i] (nth operands i))]
+    (case core
+      "identical?"
+      (when (= n 2)
+        (effect! state :identity (into (arg 0) (arg 1)))
+        absent)
+      "identity"
+      (when (= n 1) (arg 0))
+      ("not" "nil?" "some?")
+      (when (= n 1)
+        (effect! state :read (arg 0))
+        absent)
+      "assoc"
+      (when (and (= n 3) (= :const (:op (second args))) (keyword? (:val (second args))))
+        (loop-edit state path (arg 0) (:val (second args)) (arg 2)))
+      ("get" "nth")
+      (when (<= 2 n 3)
+        (let [get? (= core "get")
+              fallback (if (> n 2) (arg 2) (when get? absent))]
+          (projection-call state path (if get? :get :nth)
+                           (conj path :args 0) (second args) fallback)))
+      ("class" "type")
+      (when (= n 1)
+        (effect! state :representation (arg 0))
+        nil)
+      nil)))
+
+(defn- invoke-literal-callee-origins [state path f args operands absent]
+  (let [n (count args)
+        op (:op f)]
+    (case op
+      :const
+      (when (and (keyword? (:val f)) (<= 1 n 2))
+        (projection-call state path :get (conj path :args 0) f
+                         (if (> n 1) (nth operands 1) absent)))
+      :map
+      (when (<= 1 n 2)
+        (projection-call state path :get (conj path :fn) (first args)
+                         (if (> n 1) (nth operands 1) absent)))
+      (:vector :set)
+      (when (= n 1)
+        (projection-call state path (if (= :vector op) :nth :get)
+                         (conj path :fn) (first args) (when (= :set op) absent)))
+      nil)))
+
 (defn- invoke-origins [state node path operands]
-  (let [f (:fn node)
-        args (:args node)
-        n (count args)
-        arg (fn [i] (nth operands i))
-        callee (child-origins state (conj path :fn))
-        core (when (and (= :var (:op f)) (= "clojure.core" (:ns f))
-                        (not (:proto node)) (not (:devirt-type node)))
-               (:name f))
-        default (fn [i implicit] (if (> n i) (arg i) implicit))
-        absent (site :literal path)
-        target-path (when (and (= 1 (count callee)) (= :allocation (:kind (first callee))))
-                      (:site (first callee)))
-        target (when target-path (get @(:fn-targets state) target-path))
-        closure (when (and (= 0 n) target-path) (get @(:closures state) target-path))]
+  (when-not (or (:proto node) (:devirt-type node))
     (cond
-      (or (:proto node) (:devirt-type node)) nil
       (= path (:reducer-edit-path state)) (reducer-edit state path operands)
       (= path (:linked-path state))
       (invoke-known state path {:fn (:init (:linked-def state)) :env {}} operands)
-      target
-      (or (invoke-known state path target operands)
-          ;; Existing capture flow for zero-arg once/coercing closures.
-          (when (and (:zero-arity? closure)
-                     (not-any? #(identical? (:fn target) %) (:active-fns state)))
-            (merge-effects! state (:effects closure))
-            (:returns closure)))
-      ;; These exact call heads and arities lower directly to native ops.
-      (and (= core "identical?") (= n 2))
-      (do (effect! state :identity (into (arg 0) (arg 1))) absent)
-      (and (= core "identity") (= n 1)) (arg 0)
-      (and (#{"not" "nil?" "some?"} core) (= n 1))
-      (do (effect! state :read (arg 0)) absent)
-      (and (= core "assoc") (= n 3) (= :const (:op (second args))) (keyword? (:val (second args))))
-      (loop-edit state path (arg 0) (:val (second args)) (arg 2))
-      (and (#{"get" "nth"} core) (<= 2 n 3))
-      (projection-call state path (if (= core "get") :get :nth)
-                       (conj path :args 0) (second args) (default 2 (when (= core "get") absent)))
-      (and (= :const (:op f)) (keyword? (:val f)) (<= 1 n 2))
-      (projection-call state path :get (conj path :args 0) f (default 1 absent))
-      (and (= :map (:op f)) (<= 1 n 2))
-      (projection-call state path :get (conj path :fn) (first args) (default 1 absent))
-      (and (#{:vector :set} (:op f)) (= n 1))
-      (projection-call state path (if (= :vector (:op f)) :nth :get)
-                       (conj path :fn) (first args) (when (= :set (:op f)) absent))
-      (and (#{"class" "type"} core) (= n 1))
-      (do (effect! state :representation (arg 0)) nil)
-      :else nil)))
+      :else
+      (let [f (:fn node)
+            args (:args node)
+            callee (child-origins state (conj path :fn))
+            absent (site :literal path)
+            core (when (and (= :var (:op f)) (= "clojure.core" (:ns f)))
+                   (:name f))]
+        (or (invoke-target-origins state path callee (count args) operands)
+            ;; These exact call heads and arities lower directly to native ops.
+            (when core (invoke-core-origins state path core args operands absent))
+            (invoke-literal-callee-origins state path f args operands absent))))))
 
 (defn- walk-invoke [state node path]
   (let [operands (mapv #(child-origins state (conj path :args %)) (range (count (:args node))))
@@ -745,18 +773,20 @@
                         args)})))
 
 (defn note-linked-definition!
-  "Record the final IR of a linked top-level definition for conditional call
-  queries. Later definitions replace or clear the earlier revision."
+  "Record the final IR of a linked top-level definition when the unit has opted
+  in to linked call-summary retention (:linked-call-definitions holds a map).
+  Later definitions replace or clear the earlier revision."
   [unit definition]
-  (when (and (= :def (:op definition)) (not (:no-init definition))
-             (not @(:seed-mint? unit)))
-    (let [key (str (:ns definition) "/" (:name definition))
-          definitions (:linked-call-definitions unit)]
-      (if (and (effective-direct-link? unit) (not @(:debug-locals? unit))
-               (not (ir/closed-world-opt-out? (:meta definition)))
-               (= :fn (:op (:init definition))))
-        (swap! definitions assoc key definition)
-        (when (contains? @definitions key) (swap! definitions dissoc key))))))
+  (let [definitions (:linked-call-definitions unit)]
+    (when (and (map? @definitions)
+               (= :def (:op definition)) (not (:no-init definition))
+               (not @(:seed-mint? unit)))
+      (let [key (str (:ns definition) "/" (:name definition))]
+        (if (and (effective-direct-link? unit) (not @(:debug-locals? unit))
+                 (not (ir/closed-world-opt-out? (:meta definition)))
+                 (= :fn (:op (:init definition))))
+          (swap! definitions assoc key definition)
+          (when (contains? @definitions key) (swap! definitions dissoc key)))))))
 
 (defn linked-call-summary
   "Conditional summary for a direct-linked user Var call at a physical IR
