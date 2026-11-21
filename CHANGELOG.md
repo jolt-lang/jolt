@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `(nth coll i not-found)` evaluates `not-found` when `i` is in range for a
+  vector or a string again. The open-coded `nth` from 0.8.28 only evaluated it
+  on the fallback path, so a side effect or a throw in the default was lost
+  (#1767).
 - A Windows `jolt build` that links OpenSSL 4's static `libcrypto.a` as a
   `:static` native links again. MSYS2 moved to OpenSSL 4.1, whose RNG calls
   `BCryptGenRandom`, and the final link had no `-lbcrypt`.
