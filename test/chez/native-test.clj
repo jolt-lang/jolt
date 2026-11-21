@@ -647,6 +647,46 @@
           [true false])
 (check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]])
 
+;; --- platform bodies: defnative's (on guard ...), chosen by the C compiler ------
+
+(defnative which-body [] (on "0" 10) (on "1" 20) (on :default 30))
+(let [f (:call (compile-region '[] '((which-body))))]
+  (check-eq "C compiles the first body whose guard holds" (f) 20)
+  (check-eq "the fallback runs the :default body" (which-body) 30))
+
+(defnative no-body [] (on "0" 1) (on "defined(JN_NEVER_DEFINED)" 2))
+(check-eq "a platform no body covers is a build error"
+          (try (compile-region '[] '((no-body))) :compiled
+               (catch Throwable e (boolean (re-find #"Not Supported on This Platform" (.getMessage e)))))
+          true)
+
+(defnative vsum [xs]
+  (on "defined(__aarch64__) || defined(__x86_64__)"
+      (loop [i 0 s 0] (if (< i (alength xs)) (recur (inc i) (+ s (aget xs i))) s)))
+  (on :default
+      (loop [i (dec (alength xs)) s 0] (if (>= i 0) (recur (dec i) (+ s (aget xs i))) s))))
+(check-run "equivalent platform bodies agree with the fallback" '[^longs xs]
+           '((vsum xs))
+           [[(long-array [1 2 3 4])] [(long-array [])] [(long-array [-5 9])]])
+
+(defnative mixed-types [x] (on "1" x) (on :default (double x)))
+(check-reject "platform bodies must agree on their result type" '[^long n] '((mixed-types n))
+              #"platform bodies return different types")
+
+(defnative mixed-takes [a] (on "1" (let [b a] (alength b))) (on :default (alength a)))
+(check-reject "platform bodies must take the same arguments" '[]
+              '((let [a (double-array 2)] (mixed-takes a)))
+              #"platform bodies take different arguments")
+
+(check-eq "a guard is one line of C"
+          (try (eval '(jolt.native/defnative bad-guard [] (on "1\n#define X" 1))) :defined
+               (catch Throwable e (boolean (re-find #"one-line C condition" (.getMessage e)))))
+          true)
+
+(defnative halve-on [x] (on "1" (ext-half x)) (on :default (* 0.5 x)))
+(check-run "a C function used only in a platform body is declared" '[^double x]
+           '((halve-on x)) [[3.0] [-1.5]])
+
 ;; --- random programs ----------------------------------------------------------
 ;; A generator builds well-typed region programs and tracks ownership with its
 ;; own model of the rules (moves in let bindings, returns and recur; borrows in

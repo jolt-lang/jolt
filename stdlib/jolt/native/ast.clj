@@ -242,6 +242,16 @@
             (> n 4) (fail form (str "native helper " (:sym h) "'s result type does not settle; give it a return type hint"))
             :else (do (reset! *instances* snap) (recur t (inc n)))))))))
 
+(defn- variant-type
+  "The result type of a helper's bodies, which must agree (a body that never
+  returns agrees with any)."
+  [h form bodies]
+  (let [ts (distinct (remove #{:never} (map :type bodies)))]
+    (when (< 1 (count ts))
+      (fail form (str "native helper " (:sym h) "'s platform bodies return different types: "
+                      (clojure.string/join ", " (map pr-str ts)))))
+    (or (first ts) :never)))
+
 (defn- attempt-instance
   "One analysis of a helper instance, its own calls typed `assumed`: the hint
   when hinted? (then binding), else the current guess of instantiate!'s
@@ -258,15 +268,21 @@
                               :candidate (= :loan (first-or-nil t))})
                    (:params h) ptypes)
           env (into {} (map (fn [p] [(:name p) p]) ps))
-          body (binding [*ns* (the-ns (:ns h))] (analyze-body env (:body h) false form))
-          t (:type body)]
+          analyze-in (fn [forms] (binding [*ns* (the-ns (:ns h))] (analyze-body env forms false form)))
+          variants (when (:variants h)
+                     (mapv (fn [v] (assoc v :body (analyze-in (:body v)))) (:variants h)))
+          body (if variants
+                 (:body (or (first (filter #(= :default (:guard %)) variants)) (first variants)))
+                 (analyze-in (:body h)))
+          t (variant-type h form (if variants (map :body variants) [body]))]
       (when (borrowed? t)
         (fail form (str "native helper " (:sym h) " returns an array the region only borrowed from"
                         " its caller (a ^doubles or ^longs parameter); pass (aclone x) so the helper"
                         " gets one it can own")))
       (when (and hinted? (not= assumed t) (not= :never t))
         (fail form (str "native helper " (:sym h) " is hinted " (pr-str assumed) " but returns " (pr-str t))))
-      (let [inst {:iid iid :ret (if hinted? assumed t) :params ps :body body :sym (:sym h) :types ptypes}]
+      (let [inst (cond-> {:iid iid :ret (if hinted? assumed t) :params ps :body body :sym (:sym h) :types ptypes}
+                   variants (assoc :variants variants))]
         (swap! *instances* assoc key inst)
         inst))))
 

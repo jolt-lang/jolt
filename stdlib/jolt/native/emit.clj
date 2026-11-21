@@ -480,25 +480,49 @@ static _Thread_local jn_out jn_tls;
           (line! "}")))
       (or res "0"))))
 
-(defn- emit-helper
-  "A static C function for one native helper instance. Its array parameters are
-  borrowed structs; an owned array result is returned by value."
-  [inst]
+(defn- emit-helper-fn
+  "One static C function for a helper instance, from one of its bodies. key
+  names that body's range and stack facts."
+  [inst body delete key]
   (binding [*decls* (atom (sorted-map))
             *lines* (atom [])
             *tmp* (atom 0)
             *fn-ret* (:ret inst)
-            *stack* (get *stacks* (:iid inst))]
+            *stack* (get *stacks* key)]
     (let [t (:ret inst)
-          v (emit-versioned (:body inst) (get *ranges* (:iid inst)))
-          body @*lines*
+          v (emit-versioned body (get *ranges* key))
+          lines @*lines*
           result (cond
-                   (ast/owned? t) [(frees (disj (:delete inst) (:id (:body inst)))) (str "return " v ";")]
-                   (#{:unit :never} t) [(frees (:delete inst)) "return 0;"]
-                   :else [(str (ctype t) " result = " v ";") (frees (:delete inst)) "return result;"])]
+                   (ast/owned? t) [(frees (disj delete (:id body))) (str "return " v ";")]
+                   (#{:unit :never} t) [(frees delete) "return 0;"]
+                   :else [(str (ctype t) " result = " v ";") (frees delete) "return result;"])]
       (str (helper-sig inst) " {\n"
-           (str/join "\n" (map #(str "  " %) (concat (vals @*decls*) body result)))
+           (str/join "\n" (map #(str "  " %) (concat (vals @*decls*) lines result)))
            "\n}\n"))))
+
+;; emit-helper's platform-body emission (and defextern's :header) are ported
+;; from Ferret, https://github.com/nakkaya/ferret
+;; Copyright (c) 2019, Nurullah Akkaya. BSD 2-Clause: licenses/BSD-2-ferret.txt
+(defn- emit-helper
+  "The static C function for one native helper instance. Its array parameters
+  are borrowed structs; an owned array result is returned by value.
+
+  A helper with platform bodies (defnative's on) is emitted as Ferret emits
+  one: each guarded body under its #if, defining NAME_ENABLED, the :default
+  as the #else, and an #error for a platform no body covers. #elif, not one
+  #if per body, so two guards that both hold cannot define it twice."
+  [inst]
+  (if-let [vs (seq (map-indexed vector (:variants inst)))]
+    (let [enabled (str (str/upper-case (helper-name (:iid inst))) "_ENABLED")
+          one (fn [[i v]] (str "#define " enabled "\n" (emit-helper-fn inst (:body v) (:delete v) [(:iid inst) i])))
+          guarded (remove #(= :default (:guard (second %))) vs)
+          default (first (filter #(= :default (:guard (second %))) vs))]
+      (str (apply str (map-indexed (fn [k [i v]] (str (if (zero? k) "#if " "#elif ") "(" (:guard v) ")\n" (one [i v])))
+                                   guarded))
+           (when default (str (if (seq guarded) "#else\n" "") (one default)))
+           (when (seq guarded) "#endif\n")
+           "#if !defined(" enabled ")\n#error " (:sym inst) " Not Supported on This Platform\n#endif\n"))
+    (emit-helper-fn inst (:body inst) (:delete inst) (:iid inst))))
 
 (def ^:private extern-ctype {:long "int64_t" :double "double" :bool "_Bool" :unit "void"})
 
@@ -506,7 +530,8 @@ static _Thread_local jn_out jn_tls;
   "Each C function the region calls: its header's #include (Ferret's
   native-header), or a prototype from its hints."
   [region]
-  (let [all (->> (cons (:body region) (map :body (:instances region)))
+  (let [all (->> (cons (:body region)
+                       (mapcat #(cons (:body %) (map :body (:variants %))) (:instances region)))
                  (mapcat #(tree-seq map? (fn [n] (filter map? (concat (vals n) (mapcat (fn [v] (when (sequential? v) v)) (vals n))))) %))
                  (filter #(= :extern (:op %)))
                  (map #(select-keys % [:c :header :params :type]))
