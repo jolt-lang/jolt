@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `=` asks a deftype's or a reify's own equality again when the other operand
+  is a string literal, a keyword, a char or a boolean, as `Util.equiv` does
+  for a collection on either side. Since 0.8.28 the open-coded `=` and
+  `jolt=2` answered those pairs false from the scalar's type alone (#1769).
+  `(= coll nil)` also asks the collection now; it always answered false.
+- `=` between one of jolt's vectors, maps or sets and a scalar no longer
+  walks every registered equality arm: `(= [1] :k)` went from 57 to 21 ns.
 - A Windows `jolt build` that links OpenSSL 4's static `libcrypto.a` as a
   `:static` native links again. MSYS2 moved to OpenSSL 4.1, whose RNG calls
   `BCryptGenRandom`, and the final link had no `-lbcrypt`.
