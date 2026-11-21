@@ -236,7 +236,10 @@
                 long-arith (and (= :long (:type node)) (fallible-prims (:prim node)))]
             (if (or long-arith (= :to-long (:prim node))) (snapshot n) n))
     :math (visit-args node)
-    :extern (visit-args node)
+    ;; a C function borrows the arrays it is passed, for the call
+    :extern (let [args (mapv visit (:args node))]
+              (doseq [a args] (if (ast/array-type? (:type a)) (borrow-checked! a) (unmanage! a)))
+              (assoc node :args args))
     :alength (assoc node :arr (borrow-checked! (visit-borrowing node :arr)))
     :aget (let [arr (visit-borrowing node :arr)
                 idx (visit (:idx node))]

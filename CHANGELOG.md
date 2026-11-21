@@ -40,7 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results are scalars; the region's C calls it by name (declared from the hints,
   or through its header), and the Jolt fallback and plain Jolt code call the
   same function through `jolt.ffi`. A `jolt build` links it from a `:static`
-  native.
+  native. An array parameter (`^doubles`, `^longs`) reaches C as a pointer to
+  its elements and their count; a region passes the array's own storage, and
+  the Jolt side copies it in and back out.
 - A native helper can give a body per platform, chosen by the C compiler:
   `(defnative f [xs] (on "defined(__aarch64__)" ...) (on :default ...))`. A
   platform no guard covers is a build error unless there is a `:default`,

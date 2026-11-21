@@ -160,44 +160,85 @@
        (fn ~(mapv #(with-meta % nil) params) ~@(:body helper)))))
 
 (def ^:private extern-types {'long :long 'double :double 'boolean :bool})
+(def ^:private extern-arrays {'doubles [:array :double] 'longs [:array :long]})
 (def ^:private ffi-types {:long :int64 :double :double :bool :bool :unit :void})
 
-(defn- extern-type [sym what]
+(defn- extern-type [sym what arrays?]
   (let [tag (:tag (meta sym)) tag (if (string? tag) (symbol tag) tag)]
     (or (extern-types tag)
-        (throw (ex-info (str "defextern: " what " needs a hint of ^long ^double or ^boolean, got "
-                             (pr-str tag))
+        (and arrays? (extern-arrays tag))
+        (throw (ex-info (str "defextern: " what " needs a hint of ^long ^double or ^boolean"
+                             (when arrays? ", or ^doubles ^longs") ", got " (pr-str tag))
                         {:jolt.native/error true})))))
+
+(defn extern-call
+  "Call raw, a jolt.ffi binding whose array parameters each take a pointer
+  and a length, with jolt arrays: each array is copied into foreign memory for
+  the call and copied back after it, so what the C wrote shows, as it does in
+  a region, where the C gets the array's own storage. kinds says which
+  arguments are arrays (:doubles, :longs) and which are scalars (nil)."
+  [raw kinds args]
+  (let [bufs (mapv (fn [k a]
+                     (when k
+                       (let [n (alength a) t (if (= k :doubles) :double :int64)
+                             p (jolt.ffi/alloc (* 8 (max 1 n)))]
+                         (jolt.ffi/write-array p t a)
+                         {:p p :n n :t t :arr a})))
+                   kinds args)
+        cargs (mapcat (fn [b a] (if b [(:p b) (:n b)] [a])) bufs args)]
+    (try
+      (apply raw cargs)
+      (finally
+        (doseq [{:keys [p n t arr]} (remove nil? bufs)]
+          (let [back (jolt.ffi/read-array p t n)]
+            (dotimes [i n] (aset arr i (aget back i))))
+          (jolt.ffi/free p))))))
 
 (defmacro defextern
   "Declare a C function native regions can call:
 
       (defextern ^double fast-erf [^double x])
       (defextern ^long next-seed [^long s] {:c \"xs_next\" :header \"xorshift.h\"})
+      (defextern scale! [^doubles xs ^double k])   ; C: void scale_(double *, int64_t, double)
 
-  Parameters and the result are scalars (^long ^double ^boolean; no result
-  hint is a void function, answering nil). The region's C calls the function
-  directly: it is declared from these hints, or by its :header when one is
-  given (as Ferret's native-header does). A jolt build links it like any other
-  symbol, so it must come from a :static :jolt/native library (or libc/libm).
-  Outside a region, and in a region's Jolt fallback, name is a jolt.ffi
-  binding of the same function, so both halves call the same code.
+  Scalars are ^long ^double ^boolean; no result hint is a void function,
+  answering nil. An array parameter (^doubles, ^longs) reaches C as a pointer
+  to its elements and their count (int64_t), for the length of the call: the
+  function may read and write them but must not keep the pointer. A region
+  passes an array's own storage; a borrowed ^longs (stored as fixnums) has to
+  be passed as (aclone xs).
+
+  The region's C calls the function directly: it is declared from these hints,
+  or by its :header when one is given (as Ferret's native-header does). A jolt
+  build links it like any other symbol, so it must come from a :static
+  :jolt/native library (or libc/libm). Outside a region, and in a region's
+  Jolt fallback, name calls the same function through jolt.ffi, copying arrays
+  in and back out.
 
   The checker cannot see into the C: a region that calls one is memory safe
   only as far as that function is."
   [name params & [opts]]
   (let [c (or (:c opts) (str name))
         header (:header opts)
-        ret (if (:tag (meta name)) (extern-type name (str "the result of " name)) :unit)
-        ps (mapv #(extern-type % (str "parameter " %)) params)]
+        ret (if (:tag (meta name)) (extern-type name (str "the result of " name) false) :unit)
+        ps (mapv #(extern-type % (str "parameter " %) true) params)
+        kinds (mapv #(case % [:array :double] :doubles [:array :long] :longs nil) ps)
+        info (list 'quote {:c c :header header :params ps :ret ret})]
     (when-not (re-matches #"[A-Za-z_][A-Za-z0-9_]*" c)
       (throw (ex-info (str "defextern: " (pr-str c) " is not a C identifier; name it with {:c \"...\"}")
                       {:jolt.native/error true})))
     (when (and header (not (re-matches #"<?[A-Za-z0-9_./+-]+>?" header)))
       (throw (ex-info (str "defextern: bad header " (pr-str header)) {:jolt.native/error true})))
-    `(jolt.ffi/defcfn ~(vary-meta name assoc :jolt.native/extern
-                                  (list 'quote {:c c :header header :params ps :ret ret}))
-       ~c ~(mapv ffi-types ps) ~(ffi-types ret))))
+    (if (some some? kinds)
+      (let [raw (symbol (str name "__c"))
+            args (mapv #(with-meta (symbol (str "a" %)) nil) (range (count ps)))]
+        `(do (jolt.ffi/defcfn ~(vary-meta raw assoc :private true) ~c
+               ~(vec (mapcat #(if (vector? %) [:pointer :int64] [(ffi-types %)]) ps))
+               ~(ffi-types ret))
+             (def ~(vary-meta name assoc :jolt.native/extern info)
+               (fn ~args (extern-call ~raw ~kinds ~args)))))
+      `(jolt.ffi/defcfn ~(vary-meta name assoc :jolt.native/extern info)
+         ~c ~(mapv ffi-types ps) ~(ffi-types ret)))))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of

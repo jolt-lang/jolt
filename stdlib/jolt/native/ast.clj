@@ -376,14 +376,24 @@
             (analyze-extern-call x args form)
             (fail form (str "not allowed in a native region: " (pr-str f)))))))))
 
+(defn- extern-arg-ok? [want t]
+  (if (vector? want)
+    (and (array-type? t) (= (elem-type want) (elem-type t)))
+    (or (= want t) (and (= want :double) (= :long t)) (unknown? t))))
+
 (defn- analyze-extern-call
-  "A call to a declared C function: scalars in, a scalar (or nothing) out."
+  "A call to a declared C function: scalars and arrays in (an array as its
+  storage and length), a scalar (or nothing) out."
   [x args form]
   (when-not (= (count args) (count (:params x)))
     (fail form (str (:sym x) " takes " (count (:params x)) " argument(s), got " (count args))))
   (doseq [[want a] (map vector (:params x) args)]
-    (when-not (or (= want (:type a)) (and (= want :double) (= :long (:type a))) (unknown? (:type a)))
-      (fail form (str (:sym x) " takes " (pr-str want) " here, got " (pr-str (:type a))))))
+    (when-not (extern-arg-ok? want (:type a))
+      (fail form (str (:sym x) " takes " (pr-str want) " here, got " (pr-str (:type a)))))
+    ;; a long-array borrowed from Jolt holds fixnums (value * 8), not int64_t
+    (when (= [:ref :long] (:type a))
+      (fail form (str (:sym x) " gets a long-array's int64_t elements; a ^longs borrowed from"
+                      " Jolt stores fixnums, so pass (aclone it)"))))
   (node :extern (:ret x) form :c (:c x) :header (:header x) :params (:params x)
         :args args :sym (:sym x)))
 

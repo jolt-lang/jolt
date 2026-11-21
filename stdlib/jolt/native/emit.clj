@@ -313,7 +313,11 @@
     :prim (let [v (emit-prim node) r (fresh! (:type node))]
             (line! r " = " v ";")
             r)
-    :extern (let [args (mapv (fn [a want] (as-double-if want (emit a) (:type a))) (:args node) (:params node))
+    :extern (let [args (mapv (fn [a want]
+                               (let [v (emit a)]
+                                 ;; an array crosses as its storage and length
+                                 (if (vector? want) (str v ".data, " v ".len") (as-double-if want v (:type a)))))
+                             (:args node) (:params node))
                   call (str (:c node) "(" (str/join ", " args) ")")]
               (if (#{:unit :never} (:type node))
                 (do (line! call ";") "0")
@@ -554,7 +558,10 @@ static _Thread_local jn_out jn_tls;
            "#if !defined(" enabled ")\n#error " (:sym inst) " Not Supported on This Platform\n#endif\n"))
     (emit-helper-fn inst (:body inst) (:delete inst) (:iid inst))))
 
-(def ^:private extern-ctype {:long "int64_t" :double "double" :bool "_Bool" :unit "void"})
+(defn- extern-ctype [t]
+  (case t
+    :long "int64_t" :double "double" :bool "_Bool" :unit "void"
+    (if (= :double (ast/elem-type t)) "double *, int64_t" "int64_t *, int64_t")))
 
 (defn- extern-decls
   "Each C function the region calls: its header's #include (Ferret's

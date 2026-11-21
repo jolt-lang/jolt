@@ -64,7 +64,11 @@
            "double jn_ext_half(double x) { return x / 2.0; }\n"
            "static int64_t jn_ext_count;\n"
            "void jn_ext_tick(void) { jn_ext_count++; }\n"
-           "int64_t jn_ext_ticks(void) { return jn_ext_count; }\n"))
+           "int64_t jn_ext_ticks(void) { return jn_ext_count; }\n"
+           "double jn_ext_sum(double *xs, int64_t n) { double s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"
+           "void jn_ext_scale(double *xs, int64_t n, double k) { for (int64_t i = 0; i < n; i++) xs[i] *= k; }\n"
+           "void jn_ext_fill(int64_t *xs, int64_t n, int64_t v) { for (int64_t i = 0; i < n; i++) xs[i] = v + i; }\n"
+           "int64_t jn_ext_lsum(int64_t *xs, int64_t n) { int64_t s = 0; for (int64_t i = 0; i < n; i++) s += xs[i]; return s; }\n"))
 (let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" ext-so (str work-dir "/jn_ext.c")]))]
   (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_ext" {}))))
 (scm/call "load-shared-object" ext-so)
@@ -681,6 +685,35 @@
             [(boolean (re-find #"#include <math.h>\n" src)) (boolean (re-find #"double cbrt\(double\);" src))])
           [true false])
 (check-run "a libm function through its header" '[^double x] '((ext-cbrt x)) [[27.0] [-8.0] [2.0]])
+
+;; array arguments: a pointer to the elements and their count
+
+(defextern ^double ext-sum [^doubles xs] {:c "jn_ext_sum"})
+(defextern ext-scale [^doubles xs ^double k] {:c "jn_ext_scale"})
+(defextern ext-fill [^longs xs ^long v] {:c "jn_ext_fill"})
+(defextern ^long ext-lsum [^longs xs] {:c "jn_ext_lsum"})
+
+(check-run "a C function reads a borrowed array" '[^doubles xs] '((ext-sum xs))
+           [[(da 1 2 3.5)] [(da)]])
+(check-run "a C function writes a borrowed array in place" '[^doubles xs ^double k]
+           '((ext-scale xs k) (+ (aget xs 0) (ext-sum xs)))
+           [[(da 1 2 3) 2.0] [(da 4) -0.5]])
+(check-run "owned arrays cross as their storage" '[^long n]
+           '((let [a (long-array n) d (double-array 3)]
+               (ext-fill a 10)
+               (aset d 1 1.5)
+               (ext-scale d 4.0)
+               (+ (double (ext-lsum a)) (aget d 1))))
+           [[0] [5]])
+(check-reject "a borrowed long-array must be copied for C" '[^longs xs] '((ext-lsum xs))
+              #"pass \(aclone it\)")
+(check-run "a copied long-array is fine" '[^longs xs] '((ext-lsum (aclone xs)))
+           [[(long-array [1 2 3])] [(long-array [])]])
+(check-eq "an array passed to C stays in memory"
+          (stack-arrays (c-of '[] '((let [t (double-array 3)] (aset t 0 1.0) (ext-sum t))))) 1)
+(check-eq "the fallback writes C's changes back"
+          (let [a (da 1 2)] (ext-scale a 3.0) (vec a))
+          [3.0 6.0])
 
 ;; --- platform bodies: defnative's (on guard ...), chosen by the C compiler ------
 
