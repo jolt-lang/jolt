@@ -185,7 +185,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
-  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
+  certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow native nativebuild
 TEST-GATES := submodules selfhost ci
 
 GATE-RECEIPT := target/gate-receipt
@@ -1101,6 +1101,25 @@ sortedcoll:
 # Transients: mutable backing, snapshot on persistent!, and linear-time builds.
 transient:
 	@$(CHEZ) --script test/chez/transient-test.ss
+
+# Native regions (stdlib/jolt/native): every accepted program compiled with a
+# tracking allocator and run as C and as its Jolt fallback, which must agree on
+# result, exception and input mutation and leave no live block or bad free; the
+# rejected programs must fail to compile. Needs cc.
+native:
+	@bin/jolt run test/chez/native-test.clj
+
+# A program with native regions: C in a jolt build binary, fallback under jolt
+# run, same output, every region linked in the binary and none under run.
+nativebuild: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/native-build-smoke.sh
+
+# The ownership and cast rules native regions rely on, proved with z3 (each file
+# must answer unsat). Manual: the CI images do not carry z3.
+nativeproofs:
+	@for f in test/native/proofs/*.smt2; do \
+	  r=$$(z3 "$$f"); [ "$$r" = unsat ] || { echo "FAIL nativeproofs: $$f answered $$r"; exit 1; }; \
+	done; echo "native proofs OK"
 
 # RRB vector: catvec/slice against a list model with structural invariants
 # (seeded sequences, seed printed on failure), and the n-vs-4n complexity

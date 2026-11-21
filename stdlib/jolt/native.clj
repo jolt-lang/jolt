@@ -1,0 +1,86 @@
+(ns jolt.native
+  "Native regions: a block of numeric code compiled to C by jolt build, with
+  Carp-style ownership so the arrays it creates are freed deterministically and
+  nothing it allocates can escape.
+
+      (require '[jolt.native :refer [native]])
+
+      (defn norm [^doubles xs]
+        (native [^doubles xs]
+          (let [n (alength xs)]
+            (loop [i 0 s 0.0]
+              (if (< i n)
+                (recur (inc i) (+ s (* (aget xs i) (aget xs i))))
+                (Math/sqrt s))))))
+
+  The vector names the locals the region reads, each with its type: ^long,
+  ^double, ^boolean, or ^doubles (a double-array the region borrows: it reads
+  and writes the caller's array in place, and cannot keep it). The body is a
+  subset of Clojure: let, if, when, do, loop/recur, dotimes, and/or/not,
+  arithmetic and comparisons, quot/rem/mod, long/double, aget/aset/alength,
+  double-array/long-array/aclone (arrays the region owns), and Math/sqrt, sin,
+  cos, tan, exp, log, floor, ceil, pow, atan2. It returns a long, double,
+  boolean, nil, or an array it owns, which arrives as a fresh double-array.
+
+  The region is checked when it is compiled — in the REPL too — and a program
+  that would use an array after giving it away, or let one escape, is a compile
+  error. Long arithmetic overflows as on the JVM (ArithmeticException) rather
+  than promoting to a bignum, and every failure raises the JVM's exception.
+
+  In a binary built with jolt build the body runs as C. Anywhere else (the
+  REPL, jolt run) the same checked program runs as Jolt, so the two agree. jolt
+  build needs a C compiler for a program with regions."
+  (:require [jolt.native.ast :as ast]
+            [jolt.native.memory :as memory]
+            [jolt.native.emit :as emit]
+            [jolt.native.fallback :as fallback]
+            [jolt.native.rt]
+            [jolt.scheme]))
+
+(defn- fnv32
+  "FNV-1a over the string's chars, kept in 32 bits: a stable name for a region
+  across processes (the build's and the binary's must agree)."
+  [s offset]
+  (reduce (fn [h c] (bit-and (* (bit-xor h (int c)) 16777619) 0xffffffff))
+          offset s))
+
+(defn- region-sym [src]
+  (str "jn_" (format "%08x%08x" (fnv32 src 2166136261) (fnv32 src 84696351))))
+
+(defn- param-kind [t]
+  (cond (= t [:ref :double]) :doubles (= t :long) :long (= t :double) :double (= t :bool) :bool))
+
+(defn- result-kind [t]
+  (cond (ast/owned? t) :doubles (#{:unit :never} t) :unit :else t))
+
+(defn compile-region
+  "Check and lower a region. Answers {:sym :src :region} — the C entry's name
+  and source, and the checked IR. Throws the region's compile error."
+  [params body]
+  (let [r (memory/check-region (ast/analyze-region params body))
+        sym (region-sym (emit/emit-region r "JN_SYM"))]
+    {:sym sym :src (emit/emit-region r sym) :region r}))
+
+(defmacro native
+  "Run body as C in a built binary, as checked Jolt elsewhere. params names the
+  locals it reads, each hinted ^long ^double ^boolean or ^doubles."
+  [params & body]
+  (let [{:keys [sym src region]} (compile-region params body)
+        names (mapv :name (:params region))
+        plain (mapv #(with-meta % nil) names)]
+    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] fallback-fn raise!)
+    ;; the analyzer derives the Chez foreign types from the kinds
+    (list 'jolt.native/__region
+          sym src
+          (mapv (comp param-kind :type) (:params region))
+          (result-kind (:type region))
+          plain
+          (list 'fn* names (fallback/region-form region))
+          'jolt.native.rt/raise!)))
+
+(defn linked-regions
+  "Each native region whose call site has loaded in this process, as a map of
+  its C symbol to whether that region runs as C here (true in a binary built
+  with jolt build, false in the REPL or under jolt run)."
+  []
+  (into {} (jolt.scheme/call "jolt-native-linked")))
