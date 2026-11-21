@@ -390,7 +390,8 @@
       (set-box! chez-deftype-ctor-tag-box t))))
 
 (define (mm-dispatch-val-canon dval)
-  (or (and (procedure? dval) (deftype-ctor-tag dval)) dval))
+  (let ((tag (and (procedure? dval) (deftype-ctor-tag dval))))
+    (if tag (jolt-class-for tag) dval)))
 
 (define chez-simple-name-tag
   (make-hashtable string-hash string=?))
@@ -3716,8 +3717,7 @@
              (list->cseq items))))
       ((rd-coll-mutator? obj method-name (length rest))
        (rd-coll-mutator-call obj method-name rest))
-      ((string=? method-name "toString")
-       (jolt-str-render-one obj))
+      ((string=? method-name "toString") (jolt-str-one obj))
       ((string=? method-name "hashCode")
        (if (or (cseq? obj) (empty-list-t? obj) (jolt-lazyseq? obj))
            (jolt-java-hashcode obj)

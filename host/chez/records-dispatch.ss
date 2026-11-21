@@ -794,7 +794,7 @@
       ((rd-coll-mutator? obj method-name (length rest))
        (rd-coll-mutator-call obj method-name rest))
       ;; universal Object methods on any remaining value (boolean, etc.).
-      ((string=? method-name "toString") (jolt-str-render-one obj))
+      ((string=? method-name "toString") (jolt-str-one obj))
       ;; a seq or list is a java.util.List: List.hashCode (31*h + e.hashCode),
       ;; which an infinite one refuses (CLJ-2839) — not its hasheq
       ((string=? method-name "hashCode")

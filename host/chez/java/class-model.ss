@@ -317,9 +317,21 @@
 (register-pr-arm! jclass? jclass-print-name)
 ;; print/println of a Class prints the bare name (getName), like pr — the JVM's
 ;; print-method for Class ignores *print-readably*. Only str is "class <name>".
+;; A deftype or defrecord name evaluates to its constructor token, which stands
+;; for the class (= to it, same hash, (class SomeType) is Class), so it prints
+;; as the class does rather than as an opaque fn.
+(define (deftype-token-class x)
+  (let ((tag (and (procedure? x) (deftype-ctor-tag x))))
+    (and tag (jolt-class-for tag))))
+(define (deftype-token? x) (and (deftype-token-class x) #t))
+(register-str-render! deftype-token? (lambda (x) (jclass-tostring (deftype-token-class x))))
+(register-pr-arm! deftype-token? (lambda (x) (jclass-print-name (deftype-token-class x))))
 (let ((prev (var-deref "clojure.core" "__print1")))
   (def-var! "clojure.core" "__print1"
-    (lambda (x) (if (jclass? x) (jclass-print-name x) (jolt-invoke1 prev x)))))
+    (lambda (x)
+      (cond ((jclass? x) (jclass-print-name x))
+            ((deftype-token-class x) => jclass-print-name)
+            (else (jolt-invoke1 prev x))))))
 (register-host-methods! "class"
   (list (cons "getName" (lambda (self) (jclass-jvm-name self)))
         (cons "getCanonicalName" (lambda (self) (hsc-canonical-name (jclass-jvm-name self))))
