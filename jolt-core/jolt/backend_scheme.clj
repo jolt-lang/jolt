@@ -624,10 +624,23 @@
            (some? (:rec-guard node)) (even? (count arg-nodes)))
       (emit-rec-type-check node arg-nodes order-args)
       ;; (str x): a string or a StringBuilder answers inline on Chez (rt.ss
-      ;; jolt-str1/i), as clojure.core/str's other natives do without its var
+      ;; jolt-str1/i) while the var still holds clojure.core/str. str has no
+      ;; :inline on the JVM, so a call reaches it through the var and sees
+      ;; with-redefs (#1768): the site reads the var as a call through it
+      ;; does, ahead of the argument, and calls whatever it holds otherwise.
+      ;; Minting the seed, clojure.core's own calls take the inline answer
+      ;; with no var read, as the JVM's direct-linked core does.
       (and (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "str" (:name fnode))
            (= 1 (count arg-nodes)) (not= :gambit (session/target)))
-      (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
+      (if (seed-mint?)
+        (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
+        (let [fsrc (emit fnode)
+              cell (second (re-find var-cell-deref-re fsrc))]
+          (if cell
+            (order-args (fn [as] (str "(jolt-str1/i " cell " " (first as) ")")))
+            ;; no cell to read (var cache off): an ordinary call through the var
+            (ordered-call (cons fnode arg-nodes) (cons fsrc args)
+                          (fn [[f a]] (str "(jolt-invoke " f " " a ")"))))))
       ;; closed-world direct call: the callee var is an app fn def already emitted
       ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
       ;; Only fn-valued defs qualify; a non-fn invokable value (a map/set/keyword

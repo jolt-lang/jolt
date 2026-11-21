@@ -3452,13 +3452,29 @@
 ;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
 ;; itself and a StringBuilder its contents, the two a reader's token loop hands
 ;; it; anything else is jolt-str, clojure.core/str's procedure. Through the var
-;; it cost ~50 ns against .toString's ~15.
+;; it cost ~50 ns against .toString's ~15. C is the var's cell, read at the
+;; site: while its root is jolt-str and it has no thread binding the answer is
+;; inline, and anything else it holds (with-redefs, a redefinition) is called
+;; with the argument instead (#1768). Without C (minting the seed) there is no
+;; var read. C is always a var cell (the emitter spells it only around one), so
+;; its slots are read unchecked, as jolt-var-fn reads them.
 (define-syntax jolt-str1/i
   (syntax-rules ()
-    ((_ e) (let ((v e))
-             (cond ((string? v) v)
-                   ((sb-builder-jhost? v) (sb-str v))
-                   (else (jolt-str v)))))))
+    ((_ e) (let ((v e)) (jolt-str1/i-body v)))
+    ((_ c0 e) (let* ((c c0)
+                     ;; the var's root (field 2) and dyn-bound? (field 6) read
+                     ;; ahead of the argument, as a call through the var reads it
+                     (pristine (and (eq? (sa-record-slot c 2) jolt-str) (not (sa-record-slot c 6))))
+                     (f (if pristine jolt-str (jolt-var-fn c)))
+                     (v e))
+                (cond (pristine (jolt-str1/i-body v))
+                      ((procedure? f) (f v))
+                      (else (jolt-invoke f v)))))))
+(define-syntax jolt-str1/i-body
+  (syntax-rules ()
+    ((_ v) (cond ((string? v) v)
+                 ((sb-builder-jhost? v) (sb-str v))
+                 (else (jolt-str v))))))
 ;; (nth coll i) and (nth coll i not-found) on Chez (calls.clj native-op): an
 ;; in-range index into a vector or a string answers inline -- destructuring a
 ;; pair is two of these, and tools.reader destructures every [line column] it
