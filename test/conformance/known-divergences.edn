@@ -1858,7 +1858,18 @@
    :note "Distinct objects of every other kind stay distinct keys."}
 ]
  :entries
- [;; Wherever a syntax-quote's CONSTRUCTION CODE becomes a value rather than
+ [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree:
+  ;; a lookup binary-searches up to 32 keys a node, so a counting comparator sees
+  ;; fewer calls than on the JVM (12301 -> 6870 and 29414 -> 19879 here). Order,
+  ;; equality (comparator zero keeps the first key) and (cmp k node-key) argument
+  ;; order are unchanged; only the count differs. The rows still pin jolt's count.
+  {:suite "sorted / one walk per insert",
+   :label "1024 ascending keys into a sorted-map-by: a binary search per B+tree node",
+   :category :impl-detail}
+  {:suite "sorted / one walk per insert",
+   :label "replacing values in a sorted-map-by: one walk, a binary search per node",
+   :category :impl-detail}
+;; Wherever a syntax-quote's CONSTRUCTION CODE becomes a value rather than
   ;; being compiled — a nested backtick, a quoted one, a macro's argument —
   ;; jolt's lowering is visible. jolt emits __sqcat/__sq1 (which the analyzer
   ;; builds at compile time, the point of the design); the JVM's reader emits

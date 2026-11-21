@@ -83,6 +83,87 @@
 (is "[(= (sorted-map :a 1) (sorted-map :b 1)) (= (sorted-set :a) (sorted-set :b)) (= (sorted-set) #{}) (= (sorted-map) {})]" "[false false true true]")
 (is "[(= (sorted-map 1 nil) {2 nil}) (= (sorted-map 1 nil) {1 nil}) (= (sorted-map nil 1) {nil 1})]" "[false true true]")
 
+;; --- the tree under churn: a model check across splits and merges -----------
+;; Random assoc/dissoc (and conj/disj) runs against a plain hash map as the
+;; model, at sizes that cross many node splits and merges in both directions.
+;; After each phase the whole observable surface is compared with the model, and
+;; the tree's own shape invariant (bt-check: order, occupancy, depth, routing
+;; keys) is asserted on the host value.
+(ev "(defn lcg [s] (mod (+ (* s 1103515245) 12345) 2147483648))")
+(ev "(defn churn [empty-coll n-ops key-space set? seed]
+       (loop [i 0 s seed c empty-coll m {} checks []]
+         (if (= i n-ops)
+           [c m]
+           (let [s1 (lcg s) s2 (lcg s1)
+                 k (mod (quot s1 7) key-space)
+                 add? (< (mod (quot s2 11) 100) (if (< i (quot n-ops 2)) 70 30))]
+             (recur (inc i) s2
+                    (if set? (if add? (conj c k) (disj c k)) (if add? (assoc c k i) (dissoc c k)))
+                    (if add? (assoc m k i) (dissoc m k))
+                    checks)))))")
+(ev "(defn agrees? [c m set? cmp]
+       (let [ks (sort cmp (keys m))
+             probe (range -3 (+ 3 (if (seq ks) (reduce max ks) 0)))]
+         (and (= (count c) (count m))
+              (= (seq (if set? c (keys c))) (seq ks))
+              (= (seq (if set? (rseq c) (map key (rseq c)))) (seq (reverse ks)))
+              (or set? (= (seq (vals c)) (seq (map m ks))))
+              (every? (fn [k] (if set? (= (contains? c k) (contains? m k))
+                                       (= (get c k :none) (get m k :none)))) probe)
+              (every? (fn [k] (= (seq (if set? (subseq c >= k) (map key (subseq c >= k))))
+                                 (seq (filter #(>= (cmp % k) 0) ks)))) (take-nth 7 probe))
+              (every? (fn [k] (= (seq (if set? (rsubseq c < k) (map key (rsubseq c < k))))
+                                 (seq (reverse (filter #(neg? (cmp % k)) ks))))) (take-nth 7 probe))
+              (= (reduce + 0 (if set? c (vals c))) (reduce + 0 (if set? ks (vals m))))
+              (= c (if set? (set ks) m))
+              (= (hash c) (hash (if set? (set ks) m))))))")
+(define (tree-ok? src)
+  (let ((c (jolt-compile-eval src "user")))
+    (bt-check (scoll-tree c) (scoll-cmp c))))
+(for-each
+  (lambda (spec)
+    (let ((n (car spec)) (space (cadr spec)) (seed (caddr spec)))
+      (for-each
+        (lambda (kind)
+          (let* ((set? (memq kind '(set set-by)))
+                 (empty (case kind ((map) "(sorted-map)") ((map-by) "(sorted-map-by >)")
+                              ((set) "(sorted-set)") ((set-by) "(sorted-set-by >)")))
+                 (cmp (if (memq kind '(map-by set-by)) "(fn [a b] (compare b a))" "compare"))
+                 (run (format "(churn ~a ~a ~a ~a ~a)" empty n space (if set? "true" "false") seed)))
+            (ev (format "(def churned ~a)" run))
+            (ok (format "~a churn n=~a agrees" kind n)
+                (string=? "true" (ev (format "(agrees? (first churned) (second churned) ~a ~a)"
+                                             (if set? "true" "false") cmp))))
+            (ok (format "~a churn n=~a keeps the tree shape" kind n)
+                (tree-ok? "(first churned)"))))
+        '(map map-by set set-by))))
+  '((40 20 1) (400 150 7) (3000 1200 42) (6000 600 99)))
+;; build up then drain to empty, in order and in reverse, through every size
+(is "(let [s (into (sorted-set) (range 5000))] [(count (reduce disj s (range 5000))) (count (reduce disj s (reverse (range 5000))))])" "[0 0]")
+(is "(let [s (into (sorted-set) (range 5000)) d (reduce disj s (range 0 5000 2))] [(count d) (take 3 d) (take 3 (rseq d))])" "[2500 (1 3 5) (4999 4997 4995)]")
+(ok "draining every other key keeps the tree shape"
+    (tree-ok? "(reduce disj (into (sorted-set) (range 5000)) (range 0 5000 2))"))
+(ok "draining from the front keeps the tree shape"
+    (tree-ok? "(reduce disj (into (sorted-set) (range 5000)) (range 4000))"))
+(ok "draining from the back keeps the tree shape"
+    (tree-ok? "(reduce disj (into (sorted-set) (range 5000)) (range 4999 999 -1))"))
+;; the priority-queue loop: first + disj until empty, both ends
+(is "(loop [s (into (sorted-set) (range 3000)) n 0] (if (seq s) (recur (disj s (first s)) (inc n)) n))" "3000")
+(is "(loop [s (into (sorted-set) (range 3000)) n 0] (if (seq s) (recur (disj s (first (rseq s))) (inc n)) n))" "3000")
+;; a missing key leaves the SAME coll; an identical value too (PersistentTreeMap
+;; returns this); comparator-equal keys keep the first-inserted key
+(is "(let [m (into (sorted-map) (map (fn [i] [i i]) (range 500)))] [(identical? m (dissoc m 1000)) (identical? m (dissoc m -1)) (identical? m (assoc m 7 7))])" "[true true true]")
+(is "(let [s (into (sorted-set) (range 500))] [(identical? s (disj s 1000)) (identical? s (conj s 7))])" "[true true]")
+(is "(let [m (assoc (into (sorted-map) (map (fn [i] [i i]) (range 500))) 7.0 :x)] [(get m 7) (some #(when (= 7 %) (class %)) (keys m))])" "[:x java.lang.Long]")
+(is "(let [s (conj (into (sorted-set) (range 500)) 7.0)] [(count s) (some #(when (= 7 %) (class %)) s)])" "[500 java.lang.Long]")
+(is "(let [m (into (sorted-map) (map (fn [i] [i i]) (range 500)))] [(find m 250) (find m 1000) (key (find m 250.0))])" "[[250 250] nil 250]")
+;; nil is a key like any other under compare
+(is "(let [m (into (sorted-map nil :n) (map (fn [i] [i i]) (range 100)))] [(first m) (get m nil) (count (dissoc m nil)) (first (dissoc m nil))])" "[[nil :n] :n 100 [0 0]]")
+;; the leftmost/rightmost read across a deep tree
+(is "(let [s (into (sorted-set) (shuffle (range 20000)))] [(first s) (first (rseq s)) (first (subseq s > 19998)) (first (rsubseq s < 1))])" "[0 19999 19999 0]")
+;; reduce and reduce-kv stop at a reduced value mid-leaf and mid-tree
+(is "(let [s (into (sorted-set) (range 1000))] [(reduce (fn [a x] (if (= x 77) (reduced a) (+ a x))) 0 s) (reduce-kv (fn [a k v] (if (= k 500) (reduced k) a)) 0 (into (sorted-map) (map (fn [i] [i i])) (range 1000)))])" "[2926 500]")
+
 ;; --- scaling, as bytes allocated --------------------------------------------
 (define (bytes-of thunk reps)
   (thunk)
