@@ -176,5 +176,5 @@ Ferret
   BSD 2-Clause license: licenses/BSD-2-ferret.txt
   jolt.native/defextern's headers follow Ferret's native-header, and a native
   helper's per-platform bodies port its defnative / on (#if guards, an
-  _ENABLED define, and #error on a platform no body covers). Stack arrays in
-  stdlib/jolt/native/stack.clj take the idea of its escape analysis.
+  _ENABLED define, and #error on a platform no body covers). Native region
+  stack arrays take the idea, not the code, of its escape analysis.
