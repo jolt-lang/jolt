@@ -30,6 +30,14 @@
   error. Long arithmetic overflows as on the JVM (ArithmeticException) rather
   than promoting to a bignum, and every failure raises the JVM's exception.
 
+  A region is safe by default: while it runs as C, other threads keep running
+  and collecting, and the arrays it borrows are locked in place for the call
+  (about 45ns a call). Mark the vector ^:unsafe for a plain call (about 2.5ns)
+  that holds every other thread's collection until the region returns, as
+  GHC's unsafe foreign calls do; use it only for regions that finish quickly.
+
+      (native ^:unsafe [^double x] (* x x))
+
   In a binary built with jolt build the body runs as C. Anywhere else (the
   REPL, jolt run) the same checked program runs as Jolt, so the two agree. jolt
   build needs a C compiler for a program with regions."
@@ -73,7 +81,7 @@
   (let [{:keys [sym src region]} (compile-region params body)
         names (mapv :name (:params region))
         plain (mapv #(with-meta % nil) names)]
-    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] fallback-fn raise!)
+    ;; (jolt.native/__region sym src [param-kinds] result-kind [args] fallback-fn raise! mode)
     ;; the analyzer derives the Chez foreign types from the kinds
     (list 'jolt.native/__region
           sym src
@@ -81,7 +89,8 @@
           (result-kind (:type region))
           plain
           (list 'fn* names (fallback/region-form region))
-          'jolt.native.rt/raise!)))
+          'jolt.native.rt/raise!
+          (if (:unsafe (meta params)) :unsafe :safe))))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of

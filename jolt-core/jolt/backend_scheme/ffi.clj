@@ -779,59 +779,91 @@
   {"doubles" "jolt-native-arg-doubles" "longs" "jolt-native-arg-longs" "long" "jolt-native-arg-long"
    "double" "jolt-native-arg-double" "bool" "jolt-native-arg-bool"})
 
-(defn- native-entry-expr [sym argtypes ret]
-  (let [a (fresh-label "jn_entry")]
-    (str "(let ((" a " (jolt-native-entry " (chez-str-lit sym) "))) "
-         "(and " a " (sa-foreign-procedure " a " (" (str/join " " argtypes) ") " ret ")))")))
+(defn- native-entry-expr
+  ([sym argtypes ret] (native-entry-expr sym argtypes ret false))
+  ([sym argtypes ret collect-safe?]
+   (let [a (fresh-label "jn_entry")]
+     (str "(let ((" a " (jolt-native-entry " (chez-str-lit sym) "))) "
+          "(and " a " (" (if collect-safe? "sa-foreign-procedure-blocking " "sa-foreign-procedure ")
+          a " (" (str/join " " argtypes) ") " ret ")))"))))
+
+;; A region is SAFE unless marked ^:unsafe, as GHC's foreign calls are: a safe
+;; call locks each borrowed array and goes through __collect_safe, so other
+;; threads keep collecting while C runs and the locked arrays stay put; interrupts
+;; are off from the lock to the unlock so nothing can unwind between them (C
+;; never throws or calls back). An ^:unsafe call is a plain foreign call: the
+;; thread stays active, which is what keeps the arrays from moving, and every
+;; other thread's collection waits for the region (Chez's stop-the-world needs
+;; each active thread). It costs ~2.5ns against ~45ns, for short regions.
+(defn- native-accessors
+  "The region's entry and its helpers, each resolved once at load (hoisted)."
+  [node safe?]
+  (let [sym (:sym node)
+        result (:result node)
+        entry-of (fn [suffix args ret] (hoist-load-time (native-entry-expr (str sym suffix) args ret)))]
+    {:entry (hoist-load-time
+             (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
+                  (native-entry-expr sym (mapv native-arg-chez (:kinds node))
+                                     (native-result-chez result) safe?) ")"))
+     :status (entry-of "_status" [] "integer-64")
+     :err-l (entry-of "_err_l" ["integer-64"] "integer-64")
+     :err-d (entry-of "_err_d" [] "double")
+     :copy-out (case result
+                 "doubles" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "void")
+                 "longs" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "integer-64")
+                 nil)
+     :elem (when (= result "longs") (entry-of "_elem" ["uptr" "integer-64"] "integer-64"))
+     :free (when (= result "longs") (entry-of "_free" ["uptr"] "void"))}))
+
+(defn- native-result-value
+  "The jolt value of a successful call's result R."
+  [result r {:keys [err-l copy-out elem free]}]
+  (case result
+    "doubles" (let [n (fresh-label "jn_n") fv (fresh-label "jn_fv")]
+                (str "(let* ((" n " (" err-l " 2)) (" fv " (make-flvector " n "))) "
+                     "(" copy-out " " fv " " r " " n ") "
+                     "(jolt-native-wrap-flv " fv "))"))
+    "longs" (str "(jolt-native-wrap-longs (" err-l " 2) " r " " copy-out " " elem " " free ")")
+    "unit" "jolt-nil"
+    r))
+
+(defn- native-call-expr
+  "The call itself: plain, or with the borrowed BACKINGS locked around it."
+  [p c-args backings pinned?]
+  (let [call (str "(" p (apply str (map #(str " " %) c-args)) ")")
+        each (fn [f] (apply str (map #(str "(" f " " % ") ") backings)))
+        r (fresh-label "jn_r")]
+    (if pinned?
+      (str "(begin (disable-interrupts) " (each "sa-lock-object")
+           "(let ((" r " " call ")) " (each "sa-unlock-object") "(enable-interrupts) " r "))")
+      call)))
 
 (defn- emit-native-region [emit node]
   (let [kinds (:kinds node)
         args (mapv emit (:args node))
-        fallback (emit (:fallback node))]
+        fallback (emit (:fallback node))
+        call-fallback (fn [as] (str "(jolt-invoke " fallback (apply str (map #(str " " %) as)) ")"))]
     (if (= :gambit (target))
       ;; no ffi tier on gambit: the checked Jolt program is the region
-      (str "(jolt-invoke " fallback (apply str (map #(str " " %) args)) ")")
-      (let [sym (:sym node)
-            result (:result node)
-            argtypes (conj (mapv native-arg-chez kinds) "u8*")
-            entry (hoist-load-time
-                   (str "(begin (jolt-native-register! " (chez-str-lit sym) " " (chez-str-lit (:src node)) ") "
-                        (native-entry-expr sym argtypes (native-result-chez result)) ")"))
-            copy-out (case result
-                       "doubles" (hoist-load-time
-                                  (native-entry-expr (str sym "_copy_out") ["scheme-object" "uptr" "integer-64"] "void"))
-                       "longs" (hoist-load-time
-                                (native-entry-expr (str sym "_copy_out") ["scheme-object" "uptr" "integer-64"] "integer-64"))
-                       nil)
-            elem (when (= result "longs")
-                   (hoist-load-time (native-entry-expr (str sym "_elem") ["uptr" "integer-64"] "integer-64")))
-            free (when (= result "longs")
-                   (hoist-load-time (native-entry-expr (str sym "_free") ["uptr"] "void")))
+      (call-fallback args)
+      (let [safe? (not= "unsafe" (:mode node))
+            acc (native-accessors node safe?)
+            {:keys [status err-l err-d]} acc
             p (fresh-label "jn_p")
-            out (fresh-label "jn_out")
             r (fresh-label "jn_r")
+            code (fresh-label "jn_code")
             as (mapv (fn [_] (fresh-label "jn_a")) kinds)
-            c-args (map (fn [k a] (if (#{"doubles" "longs"} k) (str "(jolt-native-flv " a ")") a)) kinds as)
-            raise (emit (:raise node))
-            ref (fn [off] (str "(bytevector-s64-native-ref " out " " off ")"))
-            value (case result
-                    "doubles" (let [n (fresh-label "jn_n") fv (fresh-label "jn_fv")]
-                                (str "(let* ((" n " " (ref 32) ") (" fv " (make-flvector " n "))) "
-                                     "(" copy-out " " fv " " r " " n ") "
-                                     "(jolt-native-wrap-flv " fv "))"))
-                    "longs" (str "(jolt-native-wrap-longs " (ref 32) " " r " " copy-out " " elem " " free ")")
-                    "unit" "jolt-nil"
-                    r)]
-        (str "(let ((" p " " entry ")"
+            bs (mapv (fn [k] (when (contains? #{"doubles" "longs"} k) (fresh-label "jn_b"))) kinds)
+            backings (filterv some? bs)]
+        (str "(let ((" p " " (:entry acc) ")"
              (apply str (map (fn [a k v] (str " (" a " (" (native-arg-check k) " " v "))")) as kinds args))
-             ") "
-             "(if " p " "
-             "(let* ((" out " (make-bytevector 40 0)) "
-             "(" r " (" p (apply str (map #(str " " %) c-args)) " " out "))) "
-             "(if (fx= 0 " (ref 0) ") " value " "
-             "(jolt-invoke " raise " " (ref 0) " " (ref 8) " " (ref 16) " "
-             "(bytevector-ieee-double-native-ref " out " 24)))) "
-             "(jolt-invoke " fallback (apply str (map #(str " " %) as)) ")))")))))
+             ") (if " p " "
+             "(let* (" (apply str (map (fn [a b] (when b (str "(" b " (jolt-native-flv " a ")) "))) as bs))
+             "(" r " " (native-call-expr p (map (fn [a b] (or b a)) as bs) backings (and safe? (seq backings))) ")) "
+             "(let ((" code " (" status "))) "
+             "(if (fx= 0 " code ") " (native-result-value (:result node) r acc) " "
+             "(jolt-invoke " (emit (:raise node)) " " code " (" err-l " 0) (" err-l " 1) (" err-d "))))) "
+             (call-fallback as) "))")))))
 
 (defn emit-ffi-node [emit node]
   (case (:op node)

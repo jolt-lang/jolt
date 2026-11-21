@@ -6,7 +6,8 @@
 ;; error exit. Rejected programs must fail to compile with the expected message.
 ;; Needs cc. Run: bin/jolt run test/chez/native-test.clj
 (ns native-test
-  (:require [jolt.scheme :as scm]
+  (:require [clojure.string :as str]
+            [jolt.scheme :as scm]
             [jolt.native.ast :as ast]
             [jolt.native.memory :as mem]
             [jolt.native.emit :as emit]
@@ -36,9 +37,6 @@
        "int64_t " sym "_peak(void) { int64_t p = jn_peak; jn_peak = jn_live_n; return p; }\n"))
 
 (def flv (scm/call "record-accessor" (scm/call "record-rtd" (double-array 1)) 0))
-(def mkbv (scm/proc "make-bytevector"))
-(def s64 (scm/proc "bytevector-s64-native-ref"))
-(def f64 (scm/proc "bytevector-ieee-double-native-ref"))
 (def counter (atom 0))
 
 (defn compile-region
@@ -61,7 +59,15 @@
     ;; process-global, like a statically linked region; ffi/load-library scopes
     ;; a library to its own defcfns
     (scm/call "load-shared-object" so)
-    (let [entry (scm/eval-string (emit/foreign-sig r sym))
+    (let [[argtypes ret] (emit/foreign-types r)
+          ;; the default (safe) call: collect-safe, borrowed arrays locked around it
+          entry (scm/eval-string (str "(foreign-procedure __collect_safe \"" sym "\" ("
+                                      (str/join " " argtypes) ") " ret ")"))
+          status (scm/eval-string (str "(foreign-procedure \"" sym "_status\" () integer-64)"))
+          err-l (scm/eval-string (str "(foreign-procedure \"" sym "_err_l\" (integer-64) integer-64)"))
+          err-d (scm/eval-string (str "(foreign-procedure \"" sym "_err_d\" () double)"))
+          lock (scm/proc "lock-object")
+          unlock (scm/proc "unlock-object")
           fp (fn [suffix args ret]
                (scm/eval-string (str "(foreign-procedure \"" sym suffix "\" " args " " ret ")")))
           copy-out (case (:type r)
@@ -74,17 +80,18 @@
       {:region r :c src
        :live (q "live") :bad (q "bad") :peak (q "peak")
        :call (fn [& args]
-               (let [out (mkbv 40 0)
-                     cargs (map (fn [p a] (if (ast/borrowed? (:type p)) (flv a) a)) (:params r) args)
-                     res (apply entry (concat cargs [out]))
-                     code (s64 out 0)]
+               (let [cargs (mapv (fn [p a] (if (ast/borrowed? (:type p)) (flv a) a)) (:params r) args)
+                     pinned (keep (fn [[p a]] (when (ast/borrowed? (:type p)) a)) (map vector (:params r) cargs))
+                     _ (run! lock pinned)
+                     res (try (apply entry cargs) (finally (run! unlock pinned)))
+                     code (status)]
                  (when-not (zero? code)
-                   (rt/raise! code (s64 out 8) (s64 out 16) (f64 out 24)))
+                   (rt/raise! code (err-l 0) (err-l 1) (err-d)))
                  (cond
                    (= [:array :long] (:type r))
-                   (scm/call "jolt-native-wrap-longs" (s64 out 32) res copy-out elem free)
+                   (scm/call "jolt-native-wrap-longs" (err-l 2) res copy-out elem free)
                    (ast/owned? (:type r))
-                   (let [n (s64 out 32) arr (double-array n)]
+                   (let [n (err-l 2) arr (double-array n)]
                      (copy-out (flv arr) res n)
                      arr)
                    (#{:unit :never} (:type r)) nil
@@ -458,8 +465,9 @@
         2 (if (chance 30) (list 'alength 'ls) (list 'alength (borrowable)))
         3 (if (chance 40) (list 'aget 'ls (gen-idx d)) (list 'long (gen :double (dec d))))
         4 (if (chance 30) 9223372036854775807 (rnd 100))
-        5 (let [[t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        5 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen :long (dec d)) #(gen :long (dec d)))]
+            (list 'if c t e))
         6 (gen-let :long d)
         (pick (concat ['n (rnd 6)] ls))))))
 
@@ -472,8 +480,9 @@
         1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
         2 (list 'Math/sqrt (gen :double (dec d)))
         3 (list 'double (gen :long (dec d)))
-        4 (let [[t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        4 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen :double (dec d)) #(gen :double (dec d)))]
+            (list 'if c t e))
         5 (gen-let :double d)
         6 (gen-loop :double d)
         8 (list 'do (list 'aset 'ls (gen-idx d) (gen :long (dec d))) (gen :double (dec d)))
@@ -512,8 +521,9 @@
       (case (rnd 5)
         0 (list 'double-array (gen-idx d))
         1 (list 'aclone (borrowable))
-        2 (let [[t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
-            (list 'if (gen :bool (dec d)) t e))
+        2 (let [c (gen :bool (dec d))
+                [t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
+            (list 'if c t e))
         3 (gen-let [:array :double] d)
         (gen-loop [:array :double] d)))))
 

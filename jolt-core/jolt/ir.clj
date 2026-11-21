@@ -152,7 +152,7 @@
 ;; :ffi-fn       :csym :argtypes :rettype         —   (:pointer-call: csym nil,
 ;;                                                     the C fn pointer is arg 0)
 ;; :ffi-callable :fn :argtypes :rettype           :fn
-;; :native-region :sym :src :kinds :result        :args :fallback :raise
+;; :native-region :sym :src :kinds :result :mode  :args :fallback :raise
 ;;                (a jolt.native region call site)
 ;; :regex        :source                          —
 ;; :inst         :source                          —
@@ -251,7 +251,7 @@
    :ffi-fn [:csym :argtypes :rettype] :ffi-callable [:fn :argtypes :rettype]
    :regex [:source] :inst [:source] :uuid [:source] :bigdec [:source]
    :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]
-   :native-region [:sym :src :kinds :result :args :fallback :raise]})
+   :native-region [:sym :src :kinds :result :mode :args :fallback :raise]})
 
 ;; Problems with THIS node's shape (not its children): an unknown or missing :op,
 ;; or a missing required key. Returns a seq of message strings (empty when valid).

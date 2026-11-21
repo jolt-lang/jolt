@@ -9,7 +9,7 @@
 ;; jolt.native/__region — a native region call site, what the jolt.native/native
 ;; macro expands to:
 ;;   (jolt.native/__region "jn_<16 hex>" "<C source>" [:doubles :long ...] :result
-;;                         [arg ...] fallback-fn raise-fn)
+;;                         [arg ...] fallback-fn raise-fn :safe|:unsafe)
 ;; The kinds and result are literals read here; the args, the fallback fn and the
 ;; raise fn are child expressions. The back end derives the Chez foreign types
 ;; from the kinds rather than taking them from the form, so a ^doubles slot is
@@ -36,10 +36,10 @@
 (defn analyze-native-region
   "ANALYZE is the analyzer's own entry, passed in: this namespace loads before it."
   [analyze ctx items env]
-  (when-not (= 8 (count items))
+  (when-not (= 9 (count items))
     (analysis-error :analyze/invalid-native-region
                     (str "jolt.native/__region expects (__region sym src [kinds] result [args] "
-                         "fallback raise); use the jolt.native/native macro")))
+                         "fallback raise mode); use the jolt.native/native macro")))
   (let [sym (nth items 1) src (nth items 2) kinds-form (nth items 3)
         args-form (nth items 5)]
     (when-not (native-region-sym? sym)
@@ -62,4 +62,6 @@
        :result (native-kind (nth items 4) native-result-kinds "result")
        :args (mapv #(analyze ctx % env) args)
        :fallback (analyze ctx (nth items 6) env)
-       :raise (analyze ctx (nth items 7) env)})))
+       :raise (analyze ctx (nth items 7) env)
+       ;; :safe (lock + collect-safe call) or :unsafe (plain call, holds the GC)
+       :mode (native-kind (nth items 8) #{"safe" "unsafe"} "mode")})))
