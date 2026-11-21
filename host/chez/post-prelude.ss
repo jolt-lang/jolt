@@ -17,14 +17,11 @@
 (define jolt-assoc-in-original
   (capture-optional-guard-procedure "clojure.core" "assoc-in"))
 
-;; Guard the linked root read at each scalar update site and the helper its
-;; standard body resolves dynamically. Read the helper's cell only on a root hit.
+;; Guard the linked root read at each scalar update site.
 (define jolt-loop-map-update?
-  (let ((standard (capture-optional-guard-procedure "clojure.core" "update"))
-        (helper (jolt-var "jolt.host" "try-map-update")))
+  (let ((standard (capture-optional-guard-procedure "clojure.core" "update")))
     (lambda (f)
-      (and (eq? f standard)
-           (eq? (var-cell-deref helper) jolt-try-map-update)))))
+      (eq? f standard))))
 
 ;; A version is the original map or a memo shared by continuations of the
 ;; same write. Competing or resumed escapes publish one persistent map.

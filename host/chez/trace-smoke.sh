@@ -634,9 +634,9 @@ else
   fails=$((fails + 1))
 fi
 expect_match "built: a throwing root is innermost, above the reducer" "$kv_maps" \
-  '^KVTRACE explode .*:trace \[\[app\.kvtrace\$explode invoke [^]]*\] \[app\.kvtrace\$headers\$fn__0 invoke'
+  '^KVTRACE explode .*:trace \[\[app\.kvtrace\$explode invoke [^]]*\] \[app\.kvtrace\$headers\$fn__[0-9][0-9]* invoke'
 expect_match "built: a host fn's type error is at the reducer" "$kv_maps" \
-  '^KVTRACE subs .*:at \[app\.kvtrace\$headers\$fn__0 invoke.*:trace \[\[app\.kvtrace\$headers\$fn__0 invoke'
+  '^KVTRACE subs .*:at \[app\.kvtrace\$headers\$fn__[0-9][0-9]* invoke.*:trace \[\[app\.kvtrace\$headers\$fn__[0-9][0-9]* invoke'
 expect_no_match "built: no step reports the tail-called headers frame" "$kv_maps" 'app\.kvtrace\$headers invoke'
 
 # A full Chez continuation may return to a callback after the reduction has

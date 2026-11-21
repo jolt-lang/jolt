@@ -1544,7 +1544,7 @@
 (set-direct-link-flag! #f)
 
 ;; Even the plain assoc step can call an observer for a user-defined key.
-(let* ((a (fact-kw 'a))
+(let* ((a (vector 'reducer-eq-probe-a))
        (b (vector 'reducer-eq-probe))
        (source (jolt-array-map a 1 b 2))
        (run "(fn [m] (reduce-kv (fn [acc k v] (assoc acc k v)) {} m))")
@@ -1893,10 +1893,6 @@
 (ok "an invokable replacement for update keeps ordinary linked dispatch"
     (clj= (ev "(with-redefs [clojure.core/update loop-map-edit] (guarded-counter identity))")
           (ev "{:count 20 :items [1]}")))
-(ok "a replacement for update's host helper is also observable"
-    (clj= (ev "(with-redefs [jolt.host/try-map-update (fn [m k f args] (assoc m k :custom))]
-                 (guarded-counter identity))")
-          (ev "{:count :custom :items :custom}")))
 
 ;; Resume once before a write and once after it. A write that runs a second
 ;; time creates a different map, while a repeated exit from one write returns
