@@ -101,6 +101,13 @@
     (else jolt-nil)))
 
 (define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (truncate i)) (jolt-need-num i)))
+;; A constructor's size, (double-array n) and its siblings: Numbers.T_array
+;; reads it with Number.intValue, which keeps the low 32 bits of an integer and
+;; saturates a double, so (double-array 4294967296) is empty and
+;; (double-array Long/MAX_VALUE) is NegativeArraySizeException -1 on the JVM.
+;; jolt took the whole value and tried to allocate it (an OutOfMemoryError, or
+;; make-flvector's own error past its length limit).
+(define (na-size n) (or (num-key-index n) (na-idx n)))
 
 ;; The character a value denotes when it is STORED into a char array, or #f when
 ;; no character does — the test that decides whether a char array can keep its
@@ -596,8 +603,8 @@
 (define (na-num-array a rest init kind)
   (if (number? a)
       (if (and (pair? rest) (not (na-scalar-init? kind (car rest))))
-          (make-jolt-array (na-init-prefix-backing (na-idx a) kind (car rest) init) kind)
-          (make-jolt-array (na-make-backing (na-idx a) kind (if (pair? rest) (car rest) init)) kind))
+          (make-jolt-array (na-init-prefix-backing (na-size a) kind (car rest) init) kind)
+          (make-jolt-array (na-make-backing (na-size a) kind (if (pair? rest) (car rest) init)) kind))
       (na-from-seq a kind)))
 
 ;; numeric tower: array element defaults / narrowed bytes / count are

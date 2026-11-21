@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `double-array`, `long-array` and the other array constructors read a numeric
+  size with `Number.intValue`, as the JVM does: `(double-array 4294967296)` is
+  empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
+  -1. jolt tried to allocate the whole value, which ran out of memory or leaked
+  Chez's `make-flvector` error as a `ClassCastException`.
 - A timed socket read, accept or connect no longer reports a timeout for an fd
   that was ready before its deadline. When the wait ended at the deadline, the
   call raised `SocketTimeoutException` without looking at the socket again, so
