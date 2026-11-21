@@ -102,7 +102,7 @@
                    :let [op (:op n)]
                    arr (case op
                          (:aget :aset :alength :aclone) [(:arr n)]
-                         :call (filter #(ast/array-type? (:type %)) (:args n))
+                         (:call :extern) (filter #(ast/array-type? (:type %)) (:args n))
                          [])
                    :let [s (expr-srcs srcs arr)]
                    :when (some sites s)]
