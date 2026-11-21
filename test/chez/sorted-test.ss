@@ -164,6 +164,50 @@
 ;; reduce and reduce-kv stop at a reduced value mid-leaf and mid-tree
 (is "(let [s (into (sorted-set) (range 1000))] [(reduce (fn [a x] (if (= x 77) (reduced a) (+ a x))) 0 s) (reduce-kv (fn [a k v] (if (= k 500) (reduced k) a)) 0 (into (sorted-map) (map (fn [i] [i i])) (range 1000)))])" "[2926 500]")
 
+;; --- many entries at once: constructors, multi-arg assoc/conj, into ----------
+;; A batch is sorted and bulk-loaded; its result must be conj after conj's.
+(is "(let [m (into (sorted-map) [[1 :a] [1.0 :b] [2 :c]])] [m (class (key (first m)))])" "[{1 :b, 2 :c} java.lang.Long]")
+(is "(let [m (sorted-map 3 :c 1 :a 1.0 :b)] [m (class (key (first m)))])" "[{1 :b, 3 :c} java.lang.Long]")
+(is "(let [s (sorted-set 3 1 2 1.0 1)] [s (class (first s))])" "[#{1 2 3} java.lang.Long]")
+(is "(conj (sorted-set 3) 1 2 1)" "#{1 2 3}")
+(is "(assoc (sorted-map 1 :a) 0 :z 1 :b 2 :c)" "{0 :z, 1 :b, 2 :c}")
+(is "(into (sorted-set-by >) (shuffle (range 50)))" (format "#{~{~a~^ ~}}" (reverse (iota 50))))
+;; the existing key stays and the batch's last value wins, both ways round
+(is "(let [m (into (sorted-map 1.0 :old 5 :five) [[1 :x] [2 :y] [1 :z] [3 :w]])] [m (class (key (first m)))])" "[{1.0 :z, 2 :y, 3 :w, 5 :five} java.lang.Double]")
+(is "(let [big (into (sorted-map) (map (fn [i] [i i])) (range 100)) m (into big [[5 :x] [200 :y]])] [(count m) (get m 5) (get m 200) (get m 6)])" "[101 :x :y 6]")
+(is "(let [a (into (sorted-set) (range 0 100 2)) b (into a (range 0 300 3))] [(count b) (= (seq b) (sort (distinct (concat (range 0 100 2) (range 0 300 3)))))])" "[133 true]")
+;; nothing changed: the SAME coll, as conj after conj returns it
+(is "(let [m (sorted-map 1 :a 2 :b)] [(identical? m (into m [[1 :a]])) (identical? m (into m [])) (identical? m (into m [[2 :b] [1 :a]])) (identical? m (into m [[1 :x]]))])" "[true true true false]")
+(is "(let [s (sorted-set 1 2 3)] [(identical? s (into s [1 2 3])) (identical? s (conj s 3 2)) (identical? s (into s [4]))])" "[true true false]")
+;; past the first few elements an into buffers; equal keys either side of the
+;; switch keep the first key and the last value
+(is "(into (sorted-map) (map (fn [i] [(mod i 5) i])) (range 20))" "{0 15, 1 16, 2 17, 3 18, 4 19}")
+(is "(let [m (into (sorted-map) (map (fn [i] [(if (even? i) (mod i 5) (double (mod i 5))) i])) (range 20))] [(vals m) (map class (keys m))])"
+    "[(15 16 17 18 19) (java.lang.Long java.lang.Double java.lang.Long java.lang.Double java.lang.Long)]")
+(is "(let [m (into (sorted-map 3.0 :x) (map (fn [i] [(mod i 12) i])) (range 30))] [(count m) (get m 3) (class (key (nth (seq m) 3)))])" "[12 27 java.lang.Double]")
+(is "(into (sorted-set-by >) (comp (filter odd?) (map #(* % %))) (range 30))" "#{841 729 625 529 441 361 289 225 169 121 81 49 25 9 1}")
+(is "(let [s (sorted-set 1 2 3)] [(identical? s (into s (map identity) [1 2 3])) (identical? s (into s (map identity) (range 1 4))) (identical? s (into s (map inc) (range 20)))])" "[true true false]")
+(is "(let [m (into (sorted-map) (map (fn [i] [i i])) (range 100))] [(identical? m (into m (map (fn [i] [i i])) (range 100))) (count (into m (map (fn [i] [i (- i)])) (range 100)))])" "[true 100]")
+;; a transducer's completion step still lands in the coll
+(is "(into (sorted-set) (comp (map inc) (partition-all 3) (map first)) (range 10))" "#{1 4 7 10}")
+(is "(into (sorted-map) (map (fn [i] [(- i) i])) (range 5))" "{-4 4, -3 3, -2 2, -1 1, 0 0}")
+;; a bad entry or an incomparable key still throws
+(is "(try (into (sorted-map) [[1 2] [3]]) (catch Exception e :threw))" ":threw")
+(is "(try (into (sorted-set) [1 :a]) (catch ClassCastException e :cce))" ":cce")
+(is "(try (sorted-map 1 2 3) (catch IllegalArgumentException e :iae))" ":iae")
+;; the receiver's metadata carries
+(is "(meta (into (with-meta (sorted-set) {:a 1}) [3 1 2]))" "{:a 1}")
+(is "(meta (into (with-meta (sorted-map) {:a 1}) (map (fn [i] [i i])) (range 3)))" "{:a 1}")
+(ok "a bulk-loaded tree keeps the tree shape"
+    (tree-ok? "(into (sorted-set) (shuffle (range 5000)))"))
+(ok "a bulk-loaded ascending tree keeps the tree shape"
+    (tree-ok? "(into (sorted-map) (map (fn [i] [i i])) (range 4097))"))
+(ok "a merged batch keeps the tree shape"
+    (tree-ok? "(into (into (sorted-set) (range 0 3000 2)) (shuffle (range 0 6000 3)))"))
+(ok "a bulk-loaded tree takes single ops after it"
+    (tree-ok? "(reduce disj (reduce conj (into (sorted-set) (range 1000)) (range 1000 1500)) (range 0 1500 3))"))
+(is "(let [s (into (sorted-set) (shuffle (range 3000)))] [(= (range 3000) (seq s)) (= (reverse (range 3000)) (rseq s)) (count s)])" "[true true 3000]")
+
 ;; --- scaling, as bytes allocated --------------------------------------------
 (define (bytes-of thunk reps)
   (thunk)

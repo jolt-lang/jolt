@@ -1858,16 +1858,19 @@
    :note "Distinct objects of every other kind stay distinct keys."}
 ]
  :entries
- [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree:
-  ;; a lookup binary-searches up to 32 keys a node, so a counting comparator sees
-  ;; fewer calls than on the JVM (12301 -> 6870 and 29414 -> 19879 here). Order,
-  ;; equality (comparator zero keeps the first key) and (cmp k node-key) argument
-  ;; order are unchanged; only the count differs. The rows still pin jolt's count.
+ [;; sorted-map/sorted-set are a B+tree, not PersistentTreeMap's red-black tree,
+  ;; so a counting comparator sees a different number of calls than on the JVM:
+  ;; a single insert binary-searches each node, and a batch (constructor, into,
+  ;; multi-arg conj/assoc) checks its order once and sorts only when it must, so
+  ;; an ascending 1024-key into makes 1023 calls where the JVM makes 12301.
+  ;; Order, equality (comparator zero keeps the first key, the last value wins)
+  ;; and the (cmp later earlier) argument order are unchanged; only the count
+  ;; differs. The rows still pin jolt's count.
   {:suite "sorted / one walk per insert",
-   :label "1024 ascending keys into a sorted-map-by: a binary search per B+tree node",
+   :label "1024 ascending keys into a sorted-map-by: one comparison per key confirms the order",
    :category :impl-detail}
   {:suite "sorted / one walk per insert",
-   :label "replacing values in a sorted-map-by: one walk, a binary search per node",
+   :label "replacing values in a sorted-map-by: an into sorts its batch",
    :category :impl-detail}
 ;; Wherever a syntax-quote's CONSTRUCTION CODE becomes a value rather than
   ;; being compiled — a nested backtick, a quoted one, a macro's argument —

@@ -76,14 +76,30 @@
         (if (identical? t tree) sm (jolt.host/sorted-with sm t (jolt.host/sorted-cnt sm))))
       (jolt.host/sorted-with sm r (inc (jolt.host/sorted-cnt sm))))))
 
+;; Many entries at once (a constructor's arguments, a multi-arg assoc/conj, an
+;; into): KVS is k0 v0 k1 v1 ... (or, KEYS-ONLY, a set's elements), handed to the
+;; tree in one call, which sorts and bulk-loads them when the coll is small
+;; against the batch. Same result as one assoc after another, the SAME coll when
+;; nothing changes.
+(defn- assoc-all [sc kvs keys-only]
+  (let [tree (jolt.host/sorted-tree sc)
+        r (jolt.host/rbt-assoc-all tree (tree-cmp sc) (jolt.host/sorted-cnt sc) kvs keys-only)
+        t (key r)]
+    (if (identical? t tree) sc (jolt.host/sorted-with sc t (val r)))))
+
+;; under this many entries a batch costs more to gather than it saves
+(def ^:private batch-min 8)
+
+(defn- small? [xs n] (and (counted? xs) (< (count xs) n)))
+
 (defn- sm-assoc-many [sm kvs]
   (let [n (count kvs)]
     (when (odd? n)
       (throw (IllegalArgumentException. (str "No value supplied for key: " (nth kvs (dec n))))))
-    (loop [m sm i 0]
-      (if (< i n)
-        (recur (sm-assoc-1 m (nth kvs i) (nth kvs (inc i))) (+ i 2))
-        m))))
+    (if (< n (* 2 batch-min))
+      (loop [m sm i 0]
+        (if (< i n) (recur (sm-assoc-1 m (nth kvs i) (nth kvs (inc i))) (+ i 2)) m))
+      (assoc-all sm kvs false))))
 
 (defn- sm-dissoc-1 [sm k]
   (let [tree (jolt.host/sorted-tree sm)
@@ -103,7 +119,19 @@
     (map-entry? x) (sm-assoc-1 sm (key x) (val x))
     :else (throw (ex-info "conj on a sorted-map requires a [key value] pair or a map" {}))))
 
-(defn- sm-conj-many [sm xs] (reduce sm-conj-1 sm xs))
+;; sm-conj-1's cases, onto a flat k v buffer
+(defn- conj-kvs [kvs x]
+  (cond
+    (nil? x) kvs
+    (map? x) (reduce (fn [acc e] (conj! (conj! acc (first e)) (second e))) kvs (seq x))
+    (and (vector? x) (= 2 (count x))) (conj! (conj! kvs (nth x 0)) (nth x 1))
+    (map-entry? x) (conj! (conj! kvs (key x)) (val x))
+    :else (throw (ex-info "conj on a sorted-map requires a [key value] pair or a map" {}))))
+
+(defn- sm-conj-many [sm xs]
+  (if (small? xs batch-min)
+    (reduce sm-conj-1 sm xs)
+    (assoc-all sm (persistent! (reduce conj-kvs (transient []) xs)) false)))
 
 ;; --- sorted-set ops (elements stored as keys, nil value) --------------------
 (defn- ss-get [ss x not-found]
@@ -118,7 +146,8 @@
       ss
       (jolt.host/sorted-with ss r (inc (jolt.host/sorted-cnt ss))))))
 
-(defn- ss-conj-many [ss xs] (reduce ss-conj-1 ss xs))
+(defn- ss-conj-many [ss xs]
+  (if (small? xs batch-min) (reduce ss-conj-1 ss xs) (assoc-all ss xs true)))
 
 (defn- ss-disj-1 [ss x]
   (let [tree (jolt.host/sorted-tree ss)
@@ -143,6 +172,10 @@
    :dissoc1  sm-dissoc-1
    :conj     sm-conj-many
    :conj1    sm-conj-1
+   ;; into's batch, built by the host one element at a time: :conj-kvs folds an
+   ;; element onto a transient k v buffer, :assoc-all takes the finished buffer
+   :conj-kvs  conj-kvs
+   :assoc-all (fn [sm kvs] (assoc-all sm kvs false))
    :empty    (fn [sm] (jolt.host/sorted-with sm nil 0))})
 
 (def ^:private ss-ops
@@ -154,6 +187,8 @@
    :contains contains-key?
    :conj     ss-conj-many
    :conj1    ss-conj-1
+   :conj-kvs  (fn [acc x] (conj! acc x))
+   :assoc-all (fn [ss xs] (assoc-all ss xs true))
    :disj     ss-disj-many
    :disj1    ss-disj-1
    :empty    (fn [ss] (jolt.host/sorted-with ss nil 0))})

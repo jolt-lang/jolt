@@ -120,6 +120,8 @@
 
 ;; (into to xform from): transduce `from` through `xform` with conj as the rf.
 (define (into-xform to xform from)
+  (if (htable-sorted? to) (sorted-into to xform from) (into-xform-conj to xform from)))
+(define (into-xform-conj to xform from)
   ;; conj onto a nil accumulator starts a list, as (conj nil x) does — into nil
   ;; is (reduce conj nil from) on the JVM, and an empty source leaves nil.
   (let* ((conj-rf (lambda a (if (fx=? (length a) 1) (car a)   ; completion = identity

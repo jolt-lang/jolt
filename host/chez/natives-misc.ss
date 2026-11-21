@@ -241,11 +241,11 @@
     ;; a sorted coll is a Map / Set too. Without this arm it fell to the else
     ;; clause, whose record-method-dispatch "hashCode" comes straight back here.
     ((htable-sorted-map? x)
-     (sc-tree-fold-kv (jolt-ref-get x kw-tree)
+     (sc-tree-fold-kv (scoll-tree x)
                       (lambda (k v a) (i32 (+ a (bitwise-xor (jolt-java-hashcode k) (jolt-java-hashcode v)))))
                       0))
     ((htable-sorted-set? x)
-     (sc-tree-fold-kv (jolt-ref-get x kw-tree)
+     (sc-tree-fold-kv (scoll-tree x)
                       (lambda (k v a) (i32 (+ a (jolt-java-hashcode k)))) 0))
     ((pvec? x)
      (let ((n (pvec-count x)))
