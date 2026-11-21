@@ -1064,14 +1064,23 @@
             (if relay? [false false false] [(signum "USR1") (signum "USR2") (signum "WINCH")]))
   (check-eq "sigwait answer: PROF is never the watcher's" (answer 0 (signum "PROF")) false))
 
-;; Up to 60s: signals sent before the program has registered its handlers take
-;; their default action and kill it, and a 10s cap was not enough on the
-;; emulated Android runner (every "no relay" row failed at once).
-(defn- await-file [f]
+;; Signals sent before the program has registered its handlers take their
+;; default action and kill it, so wait for its ready file: until it is written,
+;; the program exits, or 180s pass (a 10s and then a 60s cap were not enough on
+;; the emulated Android runner, where every "no relay" row failed at once). A
+;; program that never got ready is reported as that, with its exit and stderr,
+;; rather than only as the signal rows that fail after it.
+(defn- await-file [f proc label]
   (loop [n 0]
-    (when (and (< n 1200) (str/blank? (slurp f)))
-      (Thread/sleep 50)
-      (recur (inc n)))))
+    (cond
+      (not (str/blank? (slurp f))) true
+      (not (p/alive? proc))
+      (let [{:keys [exit err]} @proc]
+        (check-eq (str label ": the program got ready") (str "exited " exit ": " err) "ready")
+        false)
+      (>= n 3600)
+      (do (check-eq (str label ": the program got ready") "not ready after 180s" "ready") false)
+      :else (do (Thread/sleep 50) (recur (inc n))))))
 
 (doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
   ;; A handler runs on a daemon thread named "SIG<NAME> handler", for a signal
@@ -1108,7 +1117,7 @@
                    (if (or (every? ls want) (>= n 200))
                      ls
                      (do (Thread/sleep 50) (recur (inc n)))))))]
-    (await-file readyf)
+    (await-file readyf proc (str "signal handlers (" mode ")"))
     (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
       (sh ["sh" "-c" (str "kill -" s " " pid)])
       (Thread/sleep 300))
@@ -1137,7 +1146,7 @@
           proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
           pid (.pid (:proc proc))
           state #(second (re-find #"State:\s+(\S)" (slurp (str "/proc/" pid "/status"))))]
-      (await-file readyf)
+      (await-file readyf proc (str "unhandled " fatal " (" mode ")"))
       (when (= fatal "USR1")
         (doseq [s ["CHLD" "PIPE" "URG" "WINCH"]]
           (sh ["sh" "-c" (str "kill -" s " " pid)])
@@ -1194,7 +1203,7 @@
         ;; stdout into a pipe whose reader is gone: the writes get SIGPIPE
         proc (process ["sh" "-c" (str jolt-bin " -e '" (str/replace prog "'" "'\\''") "' | head -c 1 >/dev/null")]
                       {:out :string :err :string})]
-    (await-file readyf)
+    (await-file readyf proc "relay PIPE")
     (Thread/sleep 1000)
     (let [pid (str/trim (slurp readyf))]
       (doseq [s ["TTIN" "PROF"]]

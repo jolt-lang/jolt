@@ -3480,13 +3480,23 @@
 ;; pair is two of these, and tools.reader destructures every [line column] it
 ;; reads -- and everything else (nil, a default taken, a seq, an array, an index
 ;; out of range or not a fixnum) is jolt-nth, which owns the answer and the error.
+;; A not-found operand is evaluated with the other two, in order, whichever
+;; branch answers: nth is a call, and Clojure evaluates every argument of one,
+;; so its side effect or throw is never skipped by an in-range index (#1767).
 (define-syntax jolt-nth/i
   (syntax-rules ()
-    ((_ c0 k0 d ...)
-     (let ((c c0) (k k0))
-       (cond ((and (pvec? c) (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt c))) (pvec-nth-in-range c k))
-             ((and (string? c) (fixnum? k) (fx>=? k 0) (fx<? k (string-length c))) (string-ref c k))
-             (else (jolt-nth c k d ...)))))))
+    ((_ c0 k0 d0)
+     (let* ((c c0) (k k0) (d d0))
+       (jolt-nth/i-body c k (jolt-nth c k d))))
+    ((_ c0 k0)
+     (let* ((c c0) (k k0))
+       (jolt-nth/i-body c k (jolt-nth c k))))))
+(define-syntax jolt-nth/i-body
+  (syntax-rules ()
+    ((_ c k fallback)
+     (cond ((and (pvec? c) (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt c))) (pvec-nth-in-range c k))
+           ((and (string? c) (fixnum? k) (fx>=? k 0) (fx<? k (string-length c))) (string-ref c k))
+           (else fallback)))))
 ;; (.indexOf "literal" x) on Chez (interop.clj string-direct-forms): a literal of
 ;; up to 64 characters becomes a case over them, each to its first index, for a
 ;; char or an ASCII code point -- rewrite-clj tests every character it reads for a

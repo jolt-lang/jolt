@@ -183,12 +183,15 @@ n=0; while [ ! -f "$tmp/nb/lib/native/builds.log" ] && [ $n -lt 200 ]; do sleep 
 kill -KILL $pa $(pgrep -P $pa) 2>/dev/null; wait $pa 2>/dev/null
 [ -d "$tmp/nb/lib/.jolt-native-build.lock" ] && r=left || r=gone
 check "a build interrupted mid-run leaves its lock behind" "left" "$r"
-t0=$(date +%s)
-out="$(bounded 30 inbb "$tmp/nb/app" -M:go)"; s=$?
-t1=$(date +%s)
+# "Promptly" is a property of the run, not of the clock: it judged the lock
+# dead on first sight, so it never fell into the wait loop (which says so). A
+# wall-clock bound failed on a loaded machine, where the run includes a C build.
+# The watchdog only guards against a hang.
+out="$(bounded 120 inbb "$tmp/nb/app" -M:go)"; s=$?
 case "$out" in *"stale native build lock for jbt (its holder, pid "*" is gone)"*"answer 42") r=yes ;; *) r="no: $out" ;; esac
 check "the next run breaks the dead build's lock and builds" "yes" "$r"
-check "...promptly" "yes" "$([ $((t1-t0)) -lt 20 ] && echo yes || echo "no: $((t1-t0))s")"
+case "$out" in *"waiting for another jolt"*) r="no: it waited: $out" ;; *) r=yes ;; esac
+check "...promptly" "yes" "$r"
 [ -d "$tmp/nb/lib/.jolt-native-build.lock" ] && r=left || r=gone
 check "...releasing the lock it took" "gone" "$r"
 
@@ -202,11 +205,17 @@ case "$out" in *"stale native build lock for jbt (it has not been refreshed for 
 check "a lock that stopped being refreshed is broken" "yes" "$r"
 
 # a live holder's lock is waited on, and the wait names the lock to delete
+# The lock is released once the run says it is waiting, not after a fixed
+# sleep: a run slower than the sleep to reach the lock found it gone and never
+# waited.
 fresh
 mkdir "$tmp/nb/lib/.jolt-native-build.lock"
-( sleep 2; rm -rf "$tmp/nb/lib/.jolt-native-build.lock" ) &
-out="$(bounded 30 inbb "$tmp/nb/app" -M:go)"
-wait
+bounded 120 inbb "$tmp/nb/app" -M:go > "$tmp/nb-w.out" 2>&1 &
+pw=$!
+n=0; while ! grep -q "waiting for another jolt" "$tmp/nb-w.out" 2>/dev/null && [ $n -lt 600 ]; do sleep 0.1; n=$((n+1)); done
+rm -rf "$tmp/nb/lib/.jolt-native-build.lock"
+wait $pw
+out="$(cat "$tmp/nb-w.out")"
 case "$out" in *"waiting for another jolt building jbt; if no build is running, delete "*"/nb/lib/.jolt-native-build.lock"*"answer 42") r=yes ;; *) r="no: $out" ;; esac
 check "a held lock is waited on, naming the path to delete" "yes" "$r"
 
