@@ -457,6 +457,29 @@
                          loc)))
            (set! ldr-last-name (cons loc name))
            name))))
+;; The file each namespace was last entered from, when that file is named by an
+;; absolute path: a load-file, an nREPL load-file, a load-string given a path.
+;; A namespace loaded off the source roots is named root-relative and is not
+;; recorded (a :reload finds it on the roots), and neither is one baked into an
+;; image, which has no file. ldr-load-body reads it to refuse a :reload that
+;; would otherwise leave the old definitions running in silence.
+(define ldr-ns-source (make-hashtable string-hash string=?))
+(define ldr-ns-source-mu (make-mutex))
+(define (ldr-absolute-path? f)
+  (let ((n (string-length f)))
+    (and (fx>? n 0)
+         (or (memv (string-ref f 0) '(#\/ #\\))
+             (and (fx>=? n 3) (char=? (string-ref f 1) #\:))))))
+(define (ldr-ns-source-of name)
+  (jolt-with-mutex ldr-ns-source-mu (hashtable-ref ldr-ns-source name #f)))
+(set-ns-entered-hook!
+  (lambda (nm)
+    (when (ldr-file-cells-ready?)
+      (let ((f (var-cell-deref ldr-file-cell)))
+        (when (and (string? f) (ldr-absolute-path? f) (file-exists? f))
+          (jolt-with-mutex ldr-ns-source-mu
+            (hashtable-set! ldr-ns-source nm f)))))))
+
 (define (ldr-source-location name)
   (or (jolt-with-mutex ldr-names-mu (hashtable-ref ldr-name->location name #f))
       name))
@@ -3193,6 +3216,17 @@
           " this build, only its channel primitives; build with --include"
           " clojure.core.async, or add :jolt/build {:include [clojure.core.async]}"
           " to deps.edn")))
+;; A :reload of a namespace that was loaded from a file under no source
+      ;; root: RT.load throws here, finding nothing on the classpath. Taking the
+      ;; in-memory arm below instead made the reload a silent no-op, and the
+      ;; caller went on running the old definitions.
+      ((and force? (ldr-ns-source-of name))
+       => (lambda (src)
+            (throw-jvm (quote java.io.FileNotFoundException)
+              (string-append "Could not locate " (ns-name->rel name)
+                             ".jolt (or .clj/.cljc) on the source roots; " name
+                             " was loaded from " src ", which is under none of them:"
+                             " load-file it again, or add its directory to the source roots"))))
       ;; No source file but the namespace exists in memory (AOT'd into a built
       ;; binary): it's already defined — mark loaded and move on.
       ((ns-has-vars? name)
