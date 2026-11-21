@@ -477,10 +477,12 @@ scheme-version
 # doubles through them. sa-flonum-hi32 is the pattern's upper 32 bits (a fixnum
 # on any 64-bit host, where the full pattern is often a bignum) and
 # sa-hi32->flonum the double with those upper bits and zero lower ones: fdlibm's
-# cbrt works on the high word.
+# cbrt works on the high word. sa-flonum-lo32 is the lower 32 bits: with the high
+# word, number-print.ss reads a double's significand without a bignum.
 sa-flonum->bits
 sa-bits->flonum
 sa-flonum-hi32
+sa-flonum-lo32
 sa-hi32->flonum
 # sa-bignum-s64? (added for the unchecked ops): whether a bignum (the caller
 # has already asked bignum?) lies in signed 64 bits, [-2^63, 2^63) — a Long in

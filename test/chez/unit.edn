@@ -341,6 +341,9 @@
   ;; documented divergence from a machine-locale JVM, which is why these are unit
   ;; rows and not corpus ones. The zone is the one the rest of the date layer
   ;; reads: a Calendar's own, else the machine default. jolt-c90
+  ;; Formatter rounds Double.toString's digits (JDK 21 FormattedFPDecimal): on a
+  ;; 16-17 digit tie those are the even ones, not Chez's (number-print.ss)
+  {:suite "format-float-digits" :expr "[(format \"%.16e|%.4f|%.17g|%.3e\" 1338163280546708.25 -650605845684.15625 1338163280546708.25 4.9e-324) (str 1338163280546708.25 \" \" 4.9E-324 \" \" 0.1 \" \" (/ 1.0 3))]" :expected "[\"1.3381632805467082e+15|-650605845684.1562|1338163280546708.2|4.900e-324\" \"1.3381632805467082E15 4.9E-324 0.1 0.3333333333333333\"]"}
   {:suite "format-datetime" :expr "[(format \"%tB\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%tb\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%th\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))]" :expected "[\"Feb\" \"Feb\" \"Feb\"]"}
   {:suite "format-datetime" :expr "[(format \"%tA\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%ta\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))]" :expected "[\"Fri\" \"Fri\"]"}
   {:suite "format-datetime" :expr "[(format \"%tp\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\")))) (format \"%Tp\" (doto (java.util.GregorianCalendar.) (.setTimeInMillis 1234567890123) (.setTimeZone (java.util.TimeZone/getTimeZone \"UTC\"))))]" :expected "[\"pm\" \"PM\"]"}

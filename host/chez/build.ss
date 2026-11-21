@@ -617,9 +617,10 @@
      ;; required for a distributable binary and for TLS init consistency.
      ;; -lcrypt32: OpenSSL 3's static libcrypto.a calls the CryptoAPI certificate
      ;; store (CertOpenStore and the rest), so an app that links it as a :static
-     ;; native could not link without it (jolt-lang/jolt#1206). An import library
-     ;; costs nothing when nothing references it.
-     "-static -llz4 -lz -lws2_32 -lcrypt32 -lrpcrt4 -lole32 -luuid -ladvapi32 -luser32 -lshell32 -lm")
+     ;; native could not link without it (jolt-lang/jolt#1206). -lbcrypt: OpenSSL
+     ;; 4 seeds its RNG with BCryptGenRandom. An import library costs nothing
+     ;; when nothing references it.
+     "-static -llz4 -lz -lws2_32 -lcrypt32 -lbcrypt -lrpcrt4 -lole32 -luuid -ladvapi32 -luser32 -lshell32 -lm")
     ;; Linux: the Chez kernel pulls in compression (lz4/z), the expression
     ;; editor (ncurses + terminfo), threads, dlopen, libuuid, and clock_gettime.
     ;;

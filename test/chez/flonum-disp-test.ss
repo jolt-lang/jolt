@@ -78,8 +78,10 @@
 (for-each
   (lambda (x)
     (ok (format "sa-flonum-hi32 ~s" x)
-        (= (sa-flonum-hi32 x) (quotient (sa-flonum->bits x) 4294967296))))
-  (list 0.0 -0.0 1.0 2.5 -3.75 1e300 4.9e-324 +inf.0 -inf.0))
+        (= (sa-flonum-hi32 x) (quotient (sa-flonum->bits x) 4294967296)))
+    (ok (format "sa-flonum-lo32 ~s" x)
+        (= (sa-flonum-lo32 x) (remainder (sa-flonum->bits x) 4294967296))))
+  (list 0.0 -0.0 1.0 2.5 -3.75 1e300 4.9e-324 +inf.0 -inf.0 0.1 (/ 1.0 3.0)))
 
 (display (if (= fails 0) "flonum-disp: all " "flonum-disp: FAILED "))
 (display (- total fails)) (display "/") (display total) (newline)
