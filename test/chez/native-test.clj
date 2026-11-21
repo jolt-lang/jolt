@@ -267,6 +267,86 @@
              (aget b 0))
            [[(double-array (map #(+ 0.5 (* % 0.37)) (range 35))) 100]] :raw true)
 
+;; --- range facts: a fast copy without the checks they prove can't fire -------
+;; (jolt.native.range). The guard on the array parameters picks the copy; each
+;; row runs once where the fast copy runs and once where the checked one must,
+;; and the two halves must still agree on results and exceptions.
+
+(defn- check-eq [label got want]
+  (when-not (= got want) (fail! (str label ": want " (pr-str want) " got " (pr-str got)))))
+
+(defnative sum3 [xs] (+ (aget xs 0) (aget xs 1) (aget xs 2)))
+
+(def nbody-params '[^doubles b ^long steps])
+(def nbody-body
+  '((dotimes [_ steps]
+      (dotimes [i 5]
+        (let [oi (* i 7)]
+          (loop [j (inc i)]
+            (when (< j 5)
+              (let [oj (* j 7)
+                    dx (- (aget b oi) (aget b oj))
+                    mag (/ 0.01 (* dx dx))]
+                (aset b (+ oi 3) (- (aget b (+ oi 3)) (* dx (aget b (+ oj 6)) mag)))
+                (recur (inc j))))))))
+    (aget b 0)))
+
+(defn- fast-copy
+  "The fast copy of the entry's body: from its guard to the checked copy."
+  [src]
+  (let [entry (subs src (str/index-of src "double jn_"))
+        g (str/index-of entry "if (x")]
+    (when g (subs entry g (str/index-of entry "} else {" g)))))
+
+(let [src (emit/emit-region (mem/check-region (ast/analyze-region nbody-params nbody-body)) "jn_x")
+      fast (fast-copy src)]
+  (check-eq "n-body: a guard picks a fast copy" (some? fast) true)
+  (check-eq "n-body: the guard asks for 35 elements" (boolean (and fast (str/includes? fast ".len > 34LL"))) true)
+  (check-eq "n-body: the fast copy keeps no overflow, cast or bounds check"
+            (when fast (re-find #"overflow|INT32_MIN|jn_tls\.code = 1" fast)) nil))
+
+(check-run "n-body: fast copy, and the checked copy on a short array" nbody-params nbody-body
+           [[(double-array (map #(+ 0.5 (* % 0.37)) (range 35))) 50]
+            [(double-array (map #(+ 0.5 (* % 0.37)) (range 34))) 3]
+            [(double-array 0) 0]
+            [(double-array 30) 1]])
+
+(check-run "a loop guarded by alength needs no bounds check" '[^doubles xs]
+           '((loop [i 0 s 0.0]
+               (if (< i (alength xs)) (recur (inc i) (+ s (aget xs i))) s)))
+           [[(da 1 2 3)] [(da)]])
+
+(check-run "an index past the guarded one still raises" '[^doubles xs]
+           '((loop [i 0 s 0.0]
+               (if (< i (alength xs)) (recur (inc i) (+ s (aget xs (+ i 1)))) s)))
+           [[(da 1 2 3)] [(da)] [(da 5)]])
+
+(check-run "dotimes over a let-bound alength" '[^doubles xs]
+           '((let [n (alength xs)] (dotimes [i n] (aset xs i (* 2.0 (aget xs i)))) (aget xs 0)))
+           [[(da 1 2 3)] [(da 4)] [(da)]])
+
+(check-run "a count up to Long/MAX_VALUE cannot overflow its inc" '[^long n ^long k]
+           '((loop [i (- n k)] (if (< i n) (recur (inc i)) i)))
+           [[9223372036854775807 3] [10 2] [-9223372036854775807 1]])
+
+(check-run "an inc past the guard still overflows" '[^long n]
+           '((loop [i (- n 2)] (if (<= i n) (recur (inc i)) i)))
+           [[9223372036854775807] [5]])
+
+(check-run "rem and mod by a positive constant index an owned array" '[^long k]
+           '((let [a (long-array 7)]
+               (dotimes [i 20] (aset a (mod (- i k) 7) i) (aset a (rem (* i k) 7) (- i)))
+               (aget a 3)))
+           [[3] [-9223372036854775807] [0] [9223372036854775807]])
+
+(check-run "a negative rem index still raises" '[^long k]
+           '((let [a (double-array 7)] (aset a (rem k 7) 1.5) (aget a 0)))
+           [[3] [-3] [0]])
+
+(check-run "a helper's array parameter gets its own guard" '[^doubles xs]
+           '((sum3 xs))
+           [[(da 1 2 3)] [(da 1 2)] [(da 1 2 3 4)]])
+
 ;; a user macro expands inside the region; its syntax-quoted output names
 ;; clojure.core/let and clojure.core/* which the region reads unqualified
 (defmacro sq [x] `(let [v# ~x] (* v# v#)))
@@ -568,9 +648,16 @@
   (let [ds (scalars :double)]
     (if (<= d 0)
       (pick (concat [(double (rnd 7)) 'dd 0.5] ds))
-      (case (rnd 11)
+      (case (rnd 12)
         0 (list (pick '[+ - * /]) (gen :double (dec d)) (gen (pick [:double :long]) (dec d)))
         1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
+        ;; a scan guarded by the array's length, read at an offset from the loop
+        ;; variable: in bounds (and proven so) at 0, past either end otherwise
+        10 (let [a (borrowable) i (fresh-name) acc (fresh-name) off (pick [0 0 1 -1])]
+             (list 'loop [i 0 acc 0.0]
+                   (list 'if (list '< i (list 'alength a))
+                         (list 'recur (list 'inc i) (list '+ acc (list 'aget a (if (zero? off) i (list '+ i off)))))
+                         acc)))
         2 (list 'Math/sqrt (gen :double (dec d)))
         3 (list 'double (gen :long (dec d)))
         4 (let [c (gen :bool (dec d))
@@ -606,11 +693,15 @@
       (do (reset! *planted* true) (pick dead))
       (and (seq movable) (plant-chance 35 75))
       (let [v (pick movable)] (kill! v) v)
-      ;; a helper that takes its argument: passing an owned local moves it
+      ;; a helper that takes its argument: passing an owned local moves it, at
+      ;; the call, so a later argument may still read it (but not move it)
       (and (seq movable) (chance 15))
-      (let [v (pick movable)]
+      (let [v (pick movable)
+            call (if (chance 50)
+                   (list 'keep-it v)
+                   (list 'maybe-keep v (with-borrowed v #(gen :bool (dec d)))))]
         (kill! v)
-        (if (chance 50) (list 'keep-it v) (list 'maybe-keep v (gen :bool (dec d)))))
+        call)
       ;; the other violation: moving an outer value in an iteration that continues
       (and *plant-mode* (seq (:borrow-only @*g*)) (chance 30)
            (some (set (live-owned)) (:borrow-only @*g*)))
