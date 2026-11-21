@@ -30,13 +30,14 @@
   error. Long arithmetic overflows as on the JVM (ArithmeticException) rather
   than promoting to a bignum, and every failure raises the JVM's exception.
 
-  A region is safe by default: while it runs as C, other threads keep running
-  and collecting, and the arrays it borrows are locked in place for the call
-  (about 45ns a call). Mark the vector ^:unsafe for a plain call (about 2.5ns)
+  By default, while a region runs as C, other threads keep running and
+  collecting, and the arrays it borrows are pinned in place for the call
+  (about 45ns a call). Mark the vector ^:hold-gc for a plain call (about 2.5ns)
   that holds every other thread's collection until the region returns, as
   GHC's unsafe foreign calls do; use it only for regions that finish quickly.
+  Either way the region is memory safe.
 
-      (native ^:unsafe [^double x] (* x x))
+      (native ^:hold-gc [^double x] (* x x))
 
   In a binary built with jolt build the body runs as C. Anywhere else (the
   REPL, jolt run) the same checked program runs as Jolt, so the two agree. jolt
@@ -90,7 +91,7 @@
           plain
           (list 'fn* names (fallback/region-form region))
           'jolt.native.rt/raise!
-          (if (:unsafe (meta params)) :unsafe :safe))))
+          (if (:hold-gc (meta params)) :hold-gc :pinned))))
 
 (defn linked-regions
   "Each native region whose call site has loaded in this process, as a map of

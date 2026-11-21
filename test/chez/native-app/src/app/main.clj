@@ -24,16 +24,16 @@
   (native [^long n]
     (let [a (long-array n)] (dotimes [i n] (aset a i (* i i))) a)))
 
-(defn sq-unsafe [x]
-  (native ^:unsafe [^double x] (* x x)))
+(defn sq-hold-gc [x]
+  (native ^:hold-gc [^double x] (* x x)))
 
 (defn spin [n]
   (native [^long n]
     (loop [i 0 s 0.0] (if (< i n) (recur (inc i) (+ s (Math/sqrt (double i)))) s))))
 
 (defn gc-during-region
-  "A safe region lets other threads collect while it runs: a collection forced
-  while one spins finishes before it does. An ^:unsafe one would hold it."
+  "A pinned region lets other threads collect while it runs: a collection forced
+  while one spins finishes before it does. A ^:hold-gc one would hold it."
   []
   (let [done (promise)
         f (future (let [r (spin 300000000)] (deliver done (System/nanoTime)) r))]
@@ -52,6 +52,6 @@
   (println (try (aget (scaled (double-array [1]) 1.0) 1) (catch ArrayIndexOutOfBoundsException e (.getMessage e))))
   (println (lsum (long-array [1 2 3])))
   (println (vec (squares 4)))
-  (println (sq-unsafe 3.0))
+  (println (sq-hold-gc 3.0))
   (println "gc during region" (gc-during-region))
   (println "linked" (sort (distinct (vals (linked-regions))))))

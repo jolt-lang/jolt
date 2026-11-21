@@ -15,8 +15,8 @@
       RET <sym>(ARGS...)
 
   A borrowed array arrives as the Chez flvector or fxvector itself (a raw ptr)
-  and is read in place. The call site keeps it from moving: an ^:unsafe region
-  is a plain call, so the thread stays active and no collection runs; a safe
+  and is read in place. The call site keeps it from moving: a ^:hold-gc region
+  is a plain call, so the thread stays active and no collection runs; a pinned
   one locks each borrowed array around a __collect_safe call. An owned array
   result comes back as a malloc'd buffer the stub copies into a fresh array,
   then frees through <sym>_copy_out. On a failure C frees every live owned
@@ -418,7 +418,7 @@ static _Thread_local jn_out jn_tls;
   "[argument-types result-type] of the region's C entry as Chez foreign types,
   strings. A borrowed array crosses as the raw flvector or fxvector
   (scheme-object): the call site keeps it from moving, by holding the thread
-  active (an ^:unsafe region) or by locking it around a __collect_safe call.
+  active (a ^:hold-gc region) or by locking it around a __collect_safe call.
   The status comes back through sym_status, not an argument."
   [region]
   (let [arg (fn [t] (cond (ast/borrowed? t) "scheme-object"
