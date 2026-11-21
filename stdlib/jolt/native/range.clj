@@ -300,5 +300,9 @@
   "Facts for a checked region: {:entry analysis, iid analysis ...}."
   [region]
   (into {:entry (analyze-fn (:params region) (:body region))}
-        (map (fn [inst] [(:iid inst) (analyze-fn (:params inst) (:body inst))]))
+        (mapcat (fn [inst]
+                  ;; a platform body (defnative's on) is its own function in C
+                  (cons [(:iid inst) (analyze-fn (:params inst) (:body inst))]
+                        (map-indexed (fn [i v] [[(:iid inst) i] (analyze-fn (:params inst) (:body v))])
+                                     (:variants inst)))))
         (:instances region)))

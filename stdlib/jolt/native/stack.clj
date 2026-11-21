@@ -104,5 +104,8 @@
   "{:entry analysis, iid analysis ...} for a checked region."
   [region]
   (into {:entry (analyze-fn (:body region) (:takes region))}
-        (map (fn [inst] [(:iid inst) (analyze-fn (:body inst) (:takes region))]))
+        (mapcat (fn [inst]
+                  (cons [(:iid inst) (analyze-fn (:body inst) (:takes region))]
+                        (map-indexed (fn [i v] [[(:iid inst) i] (analyze-fn (:body v) (:takes region))])
+                                     (:variants inst)))))
         (:instances region)))

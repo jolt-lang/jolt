@@ -42,7 +42,8 @@
   In a binary built with jolt build the body runs as C. Anywhere else (the
   REPL, jolt run) the same checked program runs as Jolt, so the two agree. jolt
   build needs a C compiler for a program with regions."
-  (:require [jolt.native.ast :as ast]
+  (:require [clojure.string :as str]
+            [jolt.native.ast :as ast]
             [jolt.native.memory :as memory]
             [jolt.native.emit :as emit]
             [jolt.native.fallback :as fallback]
@@ -94,6 +95,33 @@
           'jolt.native.rt/raise!
           (if (:hold-gc (meta params)) :hold-gc :pinned))))
 
+(defn- on-form? [x] (and (seq? x) (= 'on (first x))))
+
+(defn- on-variants
+  "A helper's (on guard body...) forms as [{:guard g :body [...]}], or nil when
+  it has a plain body. A guard is a C preprocessor condition, or :default."
+  [name body]
+  (when (some on-form? body)
+    (when-not (every? on-form? body)
+      (throw (ex-info (str "defnative " name ": with (on ...) bodies, every form must be one")
+                      {:jolt.native/error true})))
+    (let [vs (mapv (fn [[_ guard & forms]]
+                     (when-not (or (= :default guard)
+                                   (and (string? guard) (not (str/blank? guard))
+                                        (not (re-find #"[\r\n]" guard))))
+                       (throw (ex-info (str "defnative " name ": a guard is a one-line C condition"
+                                            " string or :default, got " (pr-str guard))
+                                       {:jolt.native/error true})))
+                     (when (empty? forms)
+                       (throw (ex-info (str "defnative " name ": (on " (pr-str guard) ") has no body")
+                                       {:jolt.native/error true})))
+                     {:guard guard :body (vec forms)})
+                   body)]
+      (when (< 1 (count (filter #(= :default (:guard %)) vs)))
+        (throw (ex-info (str "defnative " name ": more than one (on :default ...)")
+                        {:jolt.native/error true})))
+      vs)))
+
 (defmacro defnative
   "A helper native regions can call. Its parameters need no hints: the helper
   is compiled once per distinct set of argument types it is called with, as
@@ -106,15 +134,30 @@
   result type inferred from its base case; a return hint, (defnative ^double f
   [x] ...), is optional and checked.
 
+  A helper can give a body per platform, chosen by the C compiler, as Ferret's
+  defnative does:
+
+      (defnative sum [xs]
+        (on \"defined(__aarch64__)\" ...)
+        (on :default ...))
+
+  Each guard is a C preprocessor condition; the first that holds is compiled,
+  and a platform no guard covers is a build error unless there is an
+  (on :default ...). The bodies must agree on their result type and on which
+  arguments they take. The Jolt fallback runs the :default body, or the first.
+
   Outside a region, name is an ordinary fn over the same body, with Jolt's own
   semantics."
   [name params & body]
-  (let [helper {:params (mapv #(with-meta % nil) params)
-                :body (vec body)
-                :ns (ns-name *ns*)
-                :ret (:tag (meta name))}]
+  (let [variants (on-variants name body)
+        default (or (first (filter #(= :default (:guard %)) variants)) (first variants))
+        helper (cond-> {:params (mapv #(with-meta % nil) params)
+                        :body (if variants (:body default) (vec body))
+                        :ns (ns-name *ns*)
+                        :ret (:tag (meta name))}
+                 variants (assoc :variants variants))]
     `(def ~(vary-meta name assoc :jolt.native/helper (list 'quote helper))
-       (fn ~(mapv #(with-meta % nil) params) ~@body))))
+       (fn ~(mapv #(with-meta % nil) params) ~@(:body helper)))))
 
 (def ^:private extern-types {'long :long 'double :double 'boolean :bool})
 (def ^:private ffi-types {:long :int64 :double :double :bool :bool :unit :void})

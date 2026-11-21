@@ -40,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or through its header), and the Jolt fallback and plain Jolt code call the
   same function through `jolt.ffi`. A `jolt build` links it from a `:static`
   native.
+- A native helper can give a body per platform, chosen by the C compiler:
+  `(defnative f [xs] (on "defined(__aarch64__)" ...) (on :default ...))`. A
+  platform no guard covers is a build error unless there is a `:default`,
+  which is also what the Jolt fallback runs. The bodies must agree on their
+  result type and on which arguments they take.
 
 ### Fixed
 
