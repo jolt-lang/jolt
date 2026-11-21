@@ -324,7 +324,15 @@
            [[(da 1 2 3) 2] [(da 1 2 3) 3] [(da 1 2 3) -1]])
 (check-run "a recursive helper with a return hint" '[^long n] '((fib n)) [[0] [1] [15]] :raw true)
 
-(check-reject "a recursive helper without a hint" '[^long n] '((fib-nohint n)) #"return type hint")
+(check-run "a recursive helper's result type is inferred" '[^long n] '((fib-nohint n)) [[0] [1] [15]] :raw true)
+(defnative spins [n] (spins n))
+(check-reject "a helper that never returns" '[^long n] '((spins n)) #"never returns")
+(defnative ^double halve-to [x lim] (if (< x lim) x (halve-to (/ x 2.0) lim)))
+(declare odd-steps)
+(defnative even-steps [n] (if (zero? n) 0 (odd-steps (dec n))))
+(defnative odd-steps [n] (if (zero? n) 1 (even-steps (dec n))))
+(check-run "a hinted recursive helper still checks" '[^double x] '((halve-to x 1.0)) [[10.0] [0.5]] :raw true)
+(check-run "mutual recursion between helpers is inferred" '[^long n] '((+ (even-steps n) (odd-steps n))) [[0] [7]] :raw true)
 (check-reject "a helper returning an array the region borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
               #"only borrowed from its caller.*pass \(aclone x\)")
 (check-reject "moving the array a helper borrows in a sibling argument" '[]

@@ -98,8 +98,9 @@
   Carp concretizes a generic function, so (defnative dot [xs ys] ...) works on
   double arrays in one region and long arrays in another. An array argument is
   borrowed: the helper reads and writes it but can neither free nor return it;
-  it can create and return arrays of its own. A helper that calls itself needs
-  a return type hint: (defnative ^double f [x] ...).
+  it can create and return arrays of its own. A helper that calls itself has its
+  result type inferred from its base case; a return hint, (defnative ^double f
+  [x] ...), is optional and checked.
 
   Outside a region, name is an ordinary fn over the same body, with Jolt's own
   semantics."
