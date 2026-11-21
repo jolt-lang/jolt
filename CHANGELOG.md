@@ -39,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch value the way `defmethod` does, so `(remove-method f SomeType)`
   removes the method. `(methods f)` and `(prefers f)` present such a key as the
   class, and `(class SomeType)` is `java.lang.Class`.
+- The borrowed `IPersistentMap` print-method stops at `*print-length*` on an
+  infinite seq of entries instead of hanging. Under `print`, the `java.util`
+  methods write the value inside `#object[...]` as the JVM's `print-object`
+  does.
+- `*print-meta*` prints metadata only while printing readably, and never empty
+  metadata: `(print (with-meta [1] {:m 1}))` writes `[1]`, as on the JVM.
+- A string dispatch value spelled like a deftype's class name is its own
+  multimethod key, separate from the type's. A deftype name prints as its class
+  (`user.T`, not `#object[...]`), and a multimethod's "No method" and "Multiple
+  methods" messages name the dispatch value by its `toString`.
+- `.toString` on a vector, list or set returns the readable form `str` gives:
+  `(.toString [1 "a"])` is `[1 "a"]`.
 
 ### Changed
 

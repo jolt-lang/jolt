@@ -147,26 +147,41 @@
 ;; keyword, and they all share the same (non-nil) namespace. Otherwise #f.
 ;; resolved once — see pr-readably-cell (rt.ss) for why the cached cell is safe
 (define ns-maps-cell #f)
+;; the namespace of a qualified ident -- keyword OR symbol -- else #f
+(define (pr-ident-ns k)
+  (let ((n (cond ((keyword? k) (keyword-t-ns k))
+                 ((symbol-t? k) (symbol-t-ns k))
+                 (else #f))))
+    (and (string? n) (not (string=? n "")) n)))
+(define (pr-ns-maps?)
+  (unless ns-maps-cell
+    (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
+  (jolt-truthy? (jolt-var-get ns-maps-cell)))
 (define (pr-ns-maps-shared-ns pairs)
-  ;; clojure.core/lift-ns: every key a qualified ident — keyword OR symbol — of
-  ;; one namespace
-  (define (ident-ns k)
-    (let ((n (cond ((keyword? k) (keyword-t-ns k))
-                   ((symbol-t? k) (symbol-t-ns k))
-                   (else #f))))
-      (and (string? n) (not (string=? n "")) n)))
+  ;; clojure.core/lift-ns: every key a qualified ident of one namespace
   (and (pair? pairs)
-       (begin
-         (unless ns-maps-cell
-           (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
-         (jolt-truthy? (jolt-var-get ns-maps-cell)))
-       (let ((ns (ident-ns (caar pairs))))
+       (pr-ns-maps?)
+       (let ((ns (pr-ident-ns (caar pairs))))
          (and ns
               (let all-ns? ((rest (cdr pairs)))
                 (if (null? rest)
                     ns   ;; all keys checked → return the shared namespace
-                    (let ((n (ident-ns (caar rest))))
+                    (let ((n (pr-ident-ns (caar rest))))
                       (and n (string=? n ns) (all-ns? (cdr rest))))))))))
+;; lift-ns over a seq of entries: as clojure.core's, it walks nothing unless
+;; *print-namespace-maps* is on and stops at the first key that cannot share a
+;; namespace, so an infinite seq of unqualified keys still prints to
+;; *print-length*
+(define (pr-seq-shared-ns s)
+  (and (not (jolt-nil? s))
+       (pr-ns-maps?)
+       (let ((ns (pr-ident-ns (jolt-nth (seq-first s) 0))))
+         (and ns
+              (let all-ns? ((s (jolt-seq (seq-more s))))
+                (if (jolt-nil? s)
+                    ns
+                    (let ((n (pr-ident-ns (jolt-nth (seq-first s) 0))))
+                      (and n (string=? n ns) (all-ns? (jolt-seq (seq-more s)))))))))))
 ;; lift-ns's strip-ns: the key without its namespace, keeping its kind
 (define (pr-strip-ns k)
   (if (keyword? k) (keyword #f (keyword-t-name k)) (jolt-symbol #f (symbol-t-name k))))
@@ -407,10 +422,7 @@
 ;; pr-ns-maps-shared-ns over the map itself, without collecting its entries
 (define (pr-ns-maps-shared-ns-of m)
   (and (fx>? (pmap-cnt m) 0)
-       (begin
-         (unless ns-maps-cell
-           (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
-         (jolt-truthy? (jolt-var-get ns-maps-cell)))
+       (pr-ns-maps?)
        (let ((ns (pmap-fold m
                    (lambda (k v a)
                      (and a
@@ -426,13 +438,20 @@
 ;; *print-meta* support. The var is def'd after this file loads, so capture its
 ;; cell lazily; jolt-var-get (patched by dyn-binding.ss) honors a `binding`.
 (define pr-meta-cell #f)
+;; core_print.clj's print-meta writes metadata under *print-meta* only while
+;; printing readably: print, println and str leave it out.
 (define (pr-print-meta?)
   (unless pr-meta-cell (set! pr-meta-cell (jolt-var "clojure.core" "*print-meta*")))
-  (jolt-truthy? (jolt-var-get pr-meta-cell)))
+  (and (jolt-truthy? (jolt-var-get pr-meta-cell))
+       (jolt-pr-readable?)))
 ;; The metadata to print before x, or jolt-nil. A var prints as #'ns/name (its
 ;; {:ns :name} is derived, not user metadata) and a procedure is opaque — skip both.
+;; Empty metadata prints nothing, as print-meta's (pos? (count m)) has it.
 (define (pr-user-meta x)
-  (if (or (var-cell? x) (procedure? x)) jolt-nil (jolt-meta x)))
+  (if (or (var-cell? x) (procedure? x))
+      jolt-nil
+      (let ((m (jolt-meta x)))
+        (if (or (jolt-nil? m) (fx=? 0 (jolt-count m))) jolt-nil m))))
 
 (define (jolt-pr-readable x)
   (cond ((pr-print-meta?)
@@ -496,28 +515,25 @@
                   (pr-to! p (seq-first s))
                   (loop (jolt-seq (seq-more s)) (fx+ i 1))))))
   (put-string p close))
-;; print-map over a seq of entries (or [k v] pairs): collected first, since
-;; lift-ns has to see every key before the opening brace is written
+;; print-map over a seq of entries (or [k v] pairs). lift-ns has to see every
+;; key before the opening brace when it can lift, so the seq is walked twice;
+;; neither walk outruns what the JVM's would.
 (define (pr-entries-to! p s)
-  (let* ((pairs (let loop ((s s) (acc '()))
-                  (if (jolt-nil? s)
-                      (reverse acc)
-                      (let ((e (seq-first s)))
-                        (loop (jolt-seq (seq-more s))
-                              (cons (cons (jolt-nth e 0) (jolt-nth e 1)) acc))))))
-         (ns (pr-ns-maps-shared-ns pairs))
-         (lim (jolt-print-length)))
+  (let ((ns (pr-seq-shared-ns s))
+        (lim (jolt-print-length)))
     (if ns
         (begin (put-string p "#:") (put-string p ns) (put-string p "{"))
         (put-string p "{"))
-    (let loop ((ps pairs) (i 0))
-      (cond ((null? ps))
+    (let loop ((s s) (i 0))
+      (cond ((jolt-nil? s))
             ((pr-past-limit? lim i) (put-string p (if (fx=? i 0) "..." ", ...")))
-            (else (unless (fx=? i 0) (put-string p ", "))
-                  (pr-to! p (if ns (pr-strip-ns (caar ps)) (caar ps)))
-                  (put-string p " ")
-                  (pr-to! p (cdar ps))
-                  (loop (cdr ps) (fx+ i 1)))))
+            (else (let ((e (seq-first s)))
+                    (unless (fx=? i 0) (put-string p ", "))
+                    (let ((k (jolt-nth e 0)))
+                      (pr-to! p (if ns (pr-strip-ns k) k)))
+                    (put-string p " ")
+                    (pr-to! p (jolt-nth e 1))
+                    (loop (jolt-seq (seq-more s)) (fx+ i 1))))))
     (put-string p "}")))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).
