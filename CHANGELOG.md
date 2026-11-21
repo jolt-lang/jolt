@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the C stack when it never leaves the function or the loop iteration that
   made it: no allocation, no free. An array that is returned, carried by
   `recur`, taken by a helper, or shares a name with a heap array stays on the
-  heap.
+  heap. One indexed only by constants (a scratch `[x y z]`) becomes plain C
+  locals, with no memory at all.
 - `jolt.native/defextern` declares a C function native regions call directly:
   `(defextern ^double fast-erf [^double x] {:header "erf.h"})`. Arguments and
   results are scalars; the region's C calls it by name (declared from the hints,

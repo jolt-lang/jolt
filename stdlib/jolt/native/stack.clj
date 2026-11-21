@@ -87,9 +87,41 @@
     (loop [s stack]
       (if-let [h (mixed s)] (recur (apply disj s h)) s))))
 
+(defn- expr-srcs
+  "The sites an array expression can be: a local reads its binding's."
+  [srcs node]
+  (get srcs (if (= :local (:op node)) (:binding node) (:id node)) #{}))
+
+(defn- scalar-sites
+  "Stack sites whose every use is aget/aset at a constant index in range, or
+  alength, through an expression that can only be that site: their elements
+  can be plain C locals. Anything else that reads the array (a helper call,
+  aclone) needs it in memory."
+  [body srcs sites]
+  (let [uses (for [n (nodes body)
+                   :let [op (:op n)]
+                   arr (case op
+                         (:aget :aset :alength :aclone) [(:arr n)]
+                         :call (filter #(ast/array-type? (:type %)) (:args n))
+                         [])
+                   :let [s (expr-srcs srcs arr)]
+                   :when (some sites s)]
+               [n s])
+        ok? (fn [[n s]]
+              (and (= 1 (count s))
+                   (case (:op n)
+                     :alength true
+                     (:aget :aset) (let [i (:idx n)]
+                                     (and (= :const (:op i)) (<= 0 (:val i))
+                                          (< (:val i) (get sites (first s)))))
+                     false)))]
+    (reduce (fn [acc [n s]] (if (ok? [n s]) acc (apply disj acc s)))
+            (set (keys sites)) uses)))
+
 (defn analyze-fn
-  "For one function body: {:sites {site-id elems} :holders #{id}}, the stack
-  arrays and the names (node and binding ids) whose frees the frame does."
+  "For one function body: {:sites {site-id elems} :holders #{id} :scalar
+  {holder-id site-id}}: the stack arrays, the names (node and binding ids)
+  whose frees the frame does, and which names hold an array kept in locals."
   [body takes]
   (binding [*srcs* (atom {}) *escapes* (atom #{}) *loops* (atom {}) *takes* takes]
     ;; twice: a loop variable's sources include what its recurs pass, which the
@@ -97,8 +129,12 @@
     (dotimes [_ 3] (escape! (walk body)))
     (let [cands (into {} (map (fn [n] [(:id n) (:val (:len n))])) (filter candidate? (nodes body)))
           stack (settle (apply disj (set (keys cands)) @*escapes*) @*srcs*)]
-      {:sites (select-keys cands stack)
-       :holders (set (for [[id s] @*srcs* :when (and (seq s) (every? stack s))] id))})))
+      (let [sites (select-keys cands stack)
+            scalar (scalar-sites body @*srcs* sites)]
+        {:sites sites
+         :holders (set (for [[id s] @*srcs* :when (and (seq s) (every? stack s))] id))
+         :scalar (into {} (for [[id s] @*srcs* :when (and (= 1 (count s)) (scalar (first s)))]
+                            [id (first s)]))}))))
 
 (defn analyze-region
   "{:entry analysis, iid analysis ...} for a checked region."
