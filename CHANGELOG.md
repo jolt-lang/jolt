@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run behind one guard at the function's entry: a fast copy when it holds, the
   fully checked body otherwise, so results and exceptions are unchanged. The
   rules are proved with z3 in `test/native/proofs/range-*.smt2`.
+- A native region keeps a small constant-size array (up to 256 elements) on
+  the C stack when it never leaves the function or the loop iteration that
+  made it: no allocation, no free. An array that is returned, carried by
+  `recur`, taken by a helper, or shares a name with a heap array stays on the
+  heap.
 
 ### Fixed
 

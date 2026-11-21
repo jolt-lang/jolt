@@ -31,7 +31,8 @@
   multiply-add rounds once where Jolt rounds twice."
   (:require [clojure.string :as str]
             [jolt.native.ast :as ast]
-            [jolt.native.range :as ranges]))
+            [jolt.native.range :as ranges]
+            [jolt.native.stack :as stack]))
 
 (def err-codes
   {:oob 1 :overflow 2 :div-zero 3 :neg-size 4 :long-range 5 :oom 6 :fixnum-store 7})
@@ -56,6 +57,9 @@
 ;; the fast copy of a function is emitted (nil in the checked copy)
 (def ^:dynamic *ranges* nil)
 (def ^:dynamic *fast* nil)
+;; stack arrays per function (jolt.native.stack), and the current function's
+(def ^:dynamic *stacks* nil)
+(def ^:dynamic *stack* nil)
 
 (defn- proven? [node k] (and *fast* (get-in *fast* [(:id node) k])))
 
@@ -93,7 +97,12 @@
 
 (defn- helper-name [iid] (str *sym* "_h" iid))
 
-(defn- frees [ids] (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);") (sort ids))))
+(defn- frees
+  "Free the owned arrays named by ids, except those only ever holding a stack
+  array, which the frame frees."
+  [ids]
+  (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);")
+                     (sort (remove (or (:holders *stack*) #{}) ids)))))
 
 (defn- raise! [node code & {:keys [a b d]}]
   (str "{ " (frees (:live node))
@@ -103,7 +112,7 @@
        (when d (str " jn_tls.d = " d ";"))
        " return " (ret-zero) "; }"))
 
-(declare emit fresh-copy! as-double-if emit-entry)
+(declare emit fresh-copy! as-double-if emit-entry emit-stack-array emit-heap-array emit-aclone)
 
 (defn- c-double-lit [v]
   (cond (Double/isNaN v) "(0.0/0.0)"
@@ -334,24 +343,45 @@
             (line! r " = " (helper-name (:instance node)) "(" (str/join ", " args) ");")
             (line! "if (jn_tls.code) { " (frees (:live node)) " return " (ret-zero) "; }")
             r)
-    ;; the size goes through Number.intValue as the JVM's Numbers.T_array does:
-    ;; the low 32 bits, signed, so (double-array 4294967296) is empty
-    :new-array (let [raw (emit (:len node))
-                     len (fresh! :long)
-                     n (declare-var! (:id node) (:type node))]
-                 (line! "{ int64_t lo = " raw " & 0xffffffffLL; " len " = lo >= 0x80000000LL ? lo - 0x100000000LL : lo; }")
-                 (line! "if (" len " < 0) " (raise! node :neg-size :a len))
-                 (line! n ".len = " len "; " n ".data = JN_CALLOC(" len " > 0 ? " len " : 1, 8);")
-                 (line! "if (!" n ".data) " (raise! node :oom))
-                 n)
-    :aclone (let [src (emit (:arr node))
-                  n (declare-var! (:id node) (:type node))]
-              (line! n ".len = " src ".len; " n ".data = JN_MALLOC(" src ".len > 0 ? " src ".len * 8 : 8);")
-              (line! "if (!" n ".data) " (raise! node :oom))
-              (if (fx-borrowed? (:type (:arr node)))
-                (line! "for (int64_t k = 0; k < " src ".len; k++) " n ".data[k] = " src ".data[k] / 8;")
-                (line! "memcpy(" n ".data, " src ".data, " src ".len * 8);"))
-              n)))
+    :new-array (if-let [n-el (get-in *stack* [:sites (:id node)])]
+                 (emit-stack-array node n-el)
+                 (emit-heap-array node))
+    :aclone (emit-aclone node)))
+
+(defn- emit-stack-array
+  "A small constant-size array that stays in this function: a frame buffer,
+  zeroed each time it is made, as calloc would."
+  [node n-el]
+  (let [n (declare-var! (:id node) (:type node))
+        buf (str n "_buf")
+        et (if (= :double (ast/elem-type (:type node))) "double" "int64_t")]
+    (emit (:len node))
+    (swap! *decls* assoc buf (str et " " buf "[" (max 1 n-el) "];"))
+    (line! n ".len = " n-el "; " n ".data = " buf "; memset(" buf ", 0, sizeof " buf ");")
+    n))
+
+(defn- emit-heap-array
+  "The size goes through Number.intValue as the JVM's Numbers.T_array does:
+  the low 32 bits, signed, so (double-array 4294967296) is empty."
+  [node]
+  (let [raw (emit (:len node))
+        len (fresh! :long)
+        n (declare-var! (:id node) (:type node))]
+    (line! "{ int64_t lo = " raw " & 0xffffffffLL; " len " = lo >= 0x80000000LL ? lo - 0x100000000LL : lo; }")
+    (line! "if (" len " < 0) " (raise! node :neg-size :a len))
+    (line! n ".len = " len "; " n ".data = JN_CALLOC(" len " > 0 ? " len " : 1, 8);")
+    (line! "if (!" n ".data) " (raise! node :oom))
+    n))
+
+(defn- emit-aclone [node]
+  (let [src (emit (:arr node))
+        n (declare-var! (:id node) (:type node))]
+    (line! n ".len = " src ".len; " n ".data = JN_MALLOC(" src ".len > 0 ? " src ".len * 8 : 8);")
+    (line! "if (!" n ".data) " (raise! node :oom))
+    (if (fx-borrowed? (:type (:arr node)))
+      (line! "for (int64_t k = 0; k < " src ".len; k++) " n ".data[k] = " src ".data[k] / 8;")
+      (line! "memcpy(" n ".data, " src ".data, " src ".len * 8);"))
+    n))
 
 (defn- as-double-if [want v vt] (if (and (= want :double) (= vt :long)) (str "(double)" v) v))
 
@@ -452,7 +482,8 @@ static _Thread_local jn_out jn_tls;
   (binding [*decls* (atom (sorted-map))
             *lines* (atom [])
             *tmp* (atom 0)
-            *fn-ret* (:ret inst)]
+            *fn-ret* (:ret inst)
+            *stack* (get *stacks* (:iid inst))]
     (let [t (:ret inst)
           v (emit-versioned (:body inst) (get *ranges* (:iid inst)))
           body @*lines*
@@ -470,7 +501,8 @@ static _Thread_local jn_out jn_tls;
   [region sym]
   (binding [*sym* sym
             *region* (atom (assoc region :loops {}))
-            *ranges* (ranges/analyze-region region)]
+            *ranges* (ranges/analyze-region region)
+            *stacks* (stack/analyze-region region)]
     (let [helpers (str (apply str (map #(str (helper-sig %) ";\n") (:instances region)))
                        (apply str (map emit-helper (:instances region))))]
       (str prelude "\n" helpers (emit-entry region sym)))))
@@ -481,7 +513,8 @@ static _Thread_local jn_out jn_tls;
   (binding [*decls* (atom (sorted-map))
             *lines* (atom [])
             *tmp* (atom 0)
-            *fn-ret* :entry]
+            *fn-ret* :entry
+            *stack* (:entry *stacks*)]
     (let [t (:type region)
           ret-c (cond (= [:array :double] t) "double *" (= [:array :long] t) "int64_t *"
                       (#{:unit :never} t) "int" :else (ctype t))
