@@ -84,6 +84,7 @@ jolt.native.fallback
 jolt.native.memory
 jolt.native.range
 jolt.native.rt
+jolt.native.stack
 jolt.nrepl
 jolt.parinfer
 jolt.parser
