@@ -18,7 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only borrowed, is a compile error. Long arithmetic overflows with
   `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions.
   Under `jolt run` and in the REPL the same checked program runs as Jolt, so
-  both agree. A build with regions needs a C compiler.
+  both agree. By default other threads keep running and collecting while a
+  region works, its borrowed arrays pinned in place for the call.
+  `(native ^:hold-gc [...] ...)` opts into a cheaper call that holds every
+  other thread's collection until it returns, for short regions. A build with regions
+  needs a C compiler.
 
 ### Fixed
 

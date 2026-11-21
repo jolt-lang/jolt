@@ -6,7 +6,8 @@
 ;; error exit. Rejected programs must fail to compile with the expected message.
 ;; Needs cc. Run: bin/jolt run test/chez/native-test.clj
 (ns native-test
-  (:require [jolt.scheme :as scm]
+  (:require [clojure.string :as str]
+            [jolt.scheme :as scm]
             [jolt.native.ast :as ast]
             [jolt.native.memory :as mem]
             [jolt.native.emit :as emit]
@@ -36,9 +37,21 @@
        "int64_t " sym "_peak(void) { int64_t p = jn_peak; jn_peak = jn_live_n; return p; }\n"))
 
 (def flv (scm/call "record-accessor" (scm/call "record-rtd" (double-array 1)) 0))
-(def mkbv (scm/proc "make-bytevector"))
-(def s64 (scm/proc "bytevector-s64-native-ref"))
-(def f64 (scm/proc "bytevector-ieee-double-native-ref"))
+
+;; One shared, plain definition of the regions' status (this harness calls
+;; regions from one thread). Each region is its own shared object here, and an
+;; object with its own _Thread_local takes a pthread key (macOS allows 512; a
+;; run of ~510 regions aborted); an extern _Thread_local shared across dlopen'd
+;; objects reads back stale under Android's emulated TLS. The region objects
+;; name jn_rt after their source so an --as-needed linker keeps it.
+(def rt-so (str work-dir "/jn_rt.dylib"))
+(spit (str work-dir "/jn_rt.c")
+      (str "#include <stdint.h>\n"
+           "typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn_out;\n"
+           "jn_out jn_tls;\n"))
+(let [p (.start (ProcessBuilder. ^java.util.List ["cc" "-O2" "-shared" "-fPIC" "-o" rt-so (str work-dir "/jn_rt.c")]))]
+  (when-not (zero? (.waitFor p)) (throw (ex-info "cc failed for jn_rt" {}))))
+(scm/call "load-shared-object" rt-so)
 (def counter (atom 0))
 
 (defn compile-region
@@ -50,8 +63,8 @@
         c (str work-dir "/" sym ".c")
         so (str work-dir "/" sym ".dylib")
         _ (spit c src)
-        cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror"
-             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c
+        cmd ["cc" "-O2" "-ffp-contract=off" "-shared" "-fPIC" "-Wall" "-Werror" "-DJN_EXTERN_STATUS"
+             "-Wno-unused-variable" "-Wno-unused-but-set-variable" "-o" so c rt-so
              ;; bionic links no libm into a shared object unasked (atan2 went unresolved)
              "-lm"]
         p (.start (ProcessBuilder. ^java.util.List cmd))
@@ -61,7 +74,15 @@
     ;; process-global, like a statically linked region; ffi/load-library scopes
     ;; a library to its own defcfns
     (scm/call "load-shared-object" so)
-    (let [entry (scm/eval-string (emit/foreign-sig r sym))
+    (let [[argtypes ret] (emit/foreign-types r)
+          ;; the default (safe) call: collect-safe, borrowed arrays locked around it
+          entry (scm/eval-string (str "(foreign-procedure __collect_safe \"" sym "\" ("
+                                      (str/join " " argtypes) ") " ret ")"))
+          status (scm/eval-string (str "(foreign-procedure \"" sym "_status\" () integer-64)"))
+          err-l (scm/eval-string (str "(foreign-procedure \"" sym "_err_l\" (integer-64) integer-64)"))
+          err-d (scm/eval-string (str "(foreign-procedure \"" sym "_err_d\" () double)"))
+          lock (scm/proc "lock-object")
+          unlock (scm/proc "unlock-object")
           fp (fn [suffix args ret]
                (scm/eval-string (str "(foreign-procedure \"" sym suffix "\" " args " " ret ")")))
           copy-out (case (:type r)
@@ -74,17 +95,18 @@
       {:region r :c src
        :live (q "live") :bad (q "bad") :peak (q "peak")
        :call (fn [& args]
-               (let [out (mkbv 40 0)
-                     cargs (map (fn [p a] (if (ast/borrowed? (:type p)) (flv a) a)) (:params r) args)
-                     res (apply entry (concat cargs [out]))
-                     code (s64 out 0)]
+               (let [cargs (mapv (fn [p a] (if (ast/borrowed? (:type p)) (flv a) a)) (:params r) args)
+                     pinned (keep (fn [[p a]] (when (ast/borrowed? (:type p)) a)) (map vector (:params r) cargs))
+                     _ (run! lock pinned)
+                     res (try (apply entry cargs) (finally (run! unlock pinned)))
+                     code (status)]
                  (when-not (zero? code)
-                   (rt/raise! code (s64 out 8) (s64 out 16) (f64 out 24)))
+                   (rt/raise! code (err-l 0) (err-l 1) (err-d)))
                  (cond
                    (= [:array :long] (:type r))
-                   (scm/call "jolt-native-wrap-longs" (s64 out 32) res copy-out elem free)
+                   (scm/call "jolt-native-wrap-longs" (err-l 2) res copy-out elem free)
                    (ast/owned? (:type r))
-                   (let [n (s64 out 32) arr (double-array n)]
+                   (let [n (err-l 2) arr (double-array n)]
                      (copy-out (flv arr) res n)
                      arr)
                    (#{:unit :never} (:type r)) nil
@@ -279,6 +301,18 @@
            [[(la 1 2 3)] [(la)]] :raw true)
 
 ;; --- failures: same exception as Jolt, nothing leaked -------------------------
+
+;; the index cast runs before aset's value (as on the JVM); its failure frees what
+;; is live THEN, not what the value expression would have allocated or consumed
+(check-run "an index overflow before aset's value, inside a loop with temporaries" '[^doubles xs ^long big]
+           '((loop [i 0 s 0.0]
+               (if (< i 3)
+                 (recur (inc i) (+ s (aset xs (if (= i 2) big 0) (aget (double-array 2) 0))))
+                 s)))
+           [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
+(check-run "an index overflow before a value that moves an owned array" '[^doubles xs ^long big]
+           '((let [a (double-array 2)] (aset xs big (let [b a] (aget b 0)))))
+           [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
 
 (check-run "out of bounds with live arrays" '[^long i]
            '((let [a (double-array 4) b (double-array 2)] (aset a 0 1.0) (+ (aget a i) (aget b 0))))
@@ -596,7 +630,7 @@
 
 (defn fuzz! []
   (let [stats (atom {:accepted 0 :planted 0 :rejected-valid 0})]
-    (dotimes [k fuzz-n]
+    (doseq [k (range (or (some-> (System/getenv "NATIVE_FUZZ_SKIP") parse-long) 0) fuzz-n)]
       (let [seed (+ fuzz-seed (* 7919 k))
             [body planted?] (gen-program seed)
             label (str "fuzz seed=" seed)

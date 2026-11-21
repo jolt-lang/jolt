@@ -236,9 +236,9 @@
                   "jolt-native-arg-doubles" "jolt-native-arg-long" "jolt-native-arg-double"
                   "jolt-native-arg-bool" "jolt-native-arg-longs" "jolt-native-flv"
                   "jolt-native-wrap-flv" "jolt-native-wrap-longs"
-                  "jolt-native-entry" "jolt-native-register!"
-                  "make-bytevector" "bytevector-s64-native-ref" "bytevector-ieee-double-native-ref"
-                  "make-flvector"}]
+                  "jolt-native-entry" "jolt-native-register!" "make-flvector"
+                  ;; a safe region's call: locks around a collect-safe call
+                  "disable-interrupts" "enable-interrupts" "sa-lock-object" "sa-unlock-object"}]
     (into from-registry helpers)))
 
 ;; A munged name both Scheme readers would take for a NUMBER rather than an

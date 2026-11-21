@@ -12,15 +12,17 @@
 
   The generated function is
 
-      RET <sym>(ARGS..., jn_out *out)
+      RET <sym>(ARGS...)
 
-  A borrowed double array arrives as the Chez flvector itself (a raw ptr) and is
-  read in place; the call must not be __collect_safe, which is what keeps the
-  flvector from moving while C holds its address. An owned array result comes
-  back as a malloc'd buffer the stub copies into a fresh double-array, then
-  frees through <sym>_copy_out. On a failure C frees every live owned value
-  (the node's :live set), fills out->code and its operands, and returns 0; the
-  stub raises the matching JVM exception.
+  A borrowed array arrives as the Chez flvector or fxvector itself (a raw ptr)
+  and is read in place. The call site keeps it from moving: a ^:hold-gc region
+  is a plain call, so the thread stays active and no collection runs; a pinned
+  one locks each borrowed array around a __collect_safe call. An owned array
+  result comes back as a malloc'd buffer the stub copies into a fresh array,
+  then frees through <sym>_copy_out. On a failure C frees every live owned
+  value (the node's :live set), records the code and its operands in the
+  thread's status (<sym>_status, _err_l, _err_d), and returns 0; the stub
+  raises the matching JVM exception.
 
   Arithmetic follows the JVM's primitive rules exactly: a long op that leaves
   the long range raises (the C uses the overflow builtins), and a variadic op
@@ -70,17 +72,17 @@
 
 (defn- ret-zero
   "What a failing region returns: 0, or NULL for an array result. The stub
-  reads out->code before it looks at the value."
+  reads the status before it looks at the value."
   [] "0")
 
 (defn- frees [ids] (str/join " " (map #(str "JN_FREE(" (var-name %) ".data);") (sort ids))))
 
 (defn- raise! [node code & {:keys [a b d]}]
   (str "{ " (frees (:live node))
-       " out->code = " (err-codes code) ";"
-       (when a (str " out->a = " a ";"))
-       (when b (str " out->b = " b ";"))
-       (when d (str " out->d = " d ";"))
+       " jn_tls.code = " (err-codes code) ";"
+       (when a (str " jn_tls.a = " a ";"))
+       (when b (str " jn_tls.b = " b ";"))
+       (when d (str " jn_tls.d = " d ";"))
        " return " (ret-zero) "; }"))
 
 (declare emit fresh-copy! as-double-if)
@@ -175,11 +177,16 @@
                           " else " (raise! node :long-range :d d))
                    r)))))
 
+(defn- emit-index-cast
+  "aget/aset take their index through RT.intCast, which on the JVM runs as the
+  index argument is evaluated: before a later argument (aset's value) runs, so
+  its side effects never happen when the index overflows."
+  [node idx]
+  (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow)))
+
 (defn- emit-array-index
-  "aget/aset take their index through RT.intCast: outside the int range is an
-  integer overflow, inside it an out-of-bounds index."
+  "The bounds check, inside the store or load: after every argument ran."
   [node arr idx]
-  (line! "if (" idx " < INT32_MIN || " idx " > INT32_MAX) " (raise! node :overflow))
   (line! "if (" idx " < 0 || " idx " >= " arr ".len) " (raise! node :oob :a idx :b (str arr ".len"))))
 
 (defn- bind! [id t atom]
@@ -274,10 +281,14 @@
     ;; `a.len >= a.len`, which compilers flag as a tautology
     :alength (let [r (fresh! :long)] (line! r " = " (emit (:arr node)) ".len;") r)
     :aget (let [arr (emit (:arr node)) idx (emit (:idx node)) r (fresh! (:type node))]
+            (emit-index-cast node idx)
             (emit-array-index node arr idx)
             (line! r " = " arr ".data[" idx "]" (when (fx-borrowed? (:type (:arr node))) " / 8") ";")
             r)
-    :aset (let [arr (emit (:arr node)) idx (emit (:idx node)) v (emit (:val node))
+    :aset (let [arr (emit (:arr node))
+                idx (emit (:idx node))
+                _ (emit-index-cast (assoc node :live (:live-idx node)) idx)
+                v (emit (:val node))
                 r (fresh! (:type node))]
             (emit-array-index node arr idx)
             (line! r " = " (as-double-if (:type node) v (:type (:val node))) ";")
@@ -323,6 +334,18 @@
 typedef struct { int64_t len; double *data; } jn_arr_d;
 typedef struct { int64_t len; int64_t *data; } jn_arr_l;
 typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn_out;
+/* The status of the region this thread ran last: code 0, or a failure and its
+   operands; and an array result's length. Thread-local rather than an argument
+   buffer: a collect-safe call lets the collector run while C works, and a
+   bytevector passed in could move under it. jolt build compiles every region
+   into one translation unit, so a binary has one. JN_EXTERN_STATUS is for a
+   single-threaded host that loads each region as its own shared object (the
+   native gate) and defines one plain jn_tls for all of them. */
+#ifdef JN_EXTERN_STATUS
+extern jn_out jn_tls;
+#else
+static _Thread_local jn_out jn_tls;
+#endif
 /* Chez's 64-bit flvector layout (scheme.h Sflvector_length / Sflvector_ref) */
 #define JN_FLV_LEN(x) ((int64_t)((uintptr_t)(*((intptr_t *)((uintptr_t)(x) + 1))) >> 4))
 #define JN_FLV_DATA(x) ((double *)((uintptr_t)(x) + 9))
@@ -360,7 +383,7 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
           body @*lines*
           decls (vals @*decls*)
           result (cond
-                   (ast/owned? t) [(str "out->len = " v ".len;")
+                   (ast/owned? t) [(str "jn_tls.len = " v ".len;")
                                    (frees (disj (:delete region) (:id (:body region))))
                                    (str "return " v ".data;")]
                    (#{:unit :never} t) [(frees (:delete region)) "return 0;"]
@@ -368,9 +391,12 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
                           (frees (:delete region))
                           "return result;"])]
       (str prelude "\n"
-           ret-c " " sym "(" (str/join ", " (concat (map param-c (:params region)) ["jn_out *out"])) ") {\n"
-           (str/join "\n" (map #(str "  " %) (concat decls body result)))
+           ret-c " " sym "(" (if (seq (:params region)) (str/join ", " (map param-c (:params region))) "void") ") {\n"
+           (str/join "\n" (map #(str "  " %) (concat ["jn_tls.code = 0;"] decls body result)))
            "\n}\n"
+           "int64_t " sym "_status(void) { return jn_tls.code; }\n"
+           "int64_t " sym "_err_l(int64_t k) { return k == 0 ? jn_tls.a : k == 1 ? jn_tls.b : jn_tls.len; }\n"
+           "double " sym "_err_d(void) { return jn_tls.d; }\n"
            (when (= [:array :double] t)
              (str "\nvoid " sym "_copy_out(void *flv, double *src, int64_t n) {\n"
                   "  if (n > 0) memcpy(JN_FLV_DATA(flv), src, n * 8);\n"
@@ -390,19 +416,14 @@ typedef struct { int64_t code; int64_t a; int64_t b; double d; int64_t len; } jn
 
 (defn foreign-types
   "[argument-types result-type] of the region's C entry as Chez foreign types,
-  strings. A borrowed array crosses as the raw flvector (scheme-object); the
-  trailing u8* is the 40-byte out buffer C fills on failure. The call must not
-  be __collect_safe: an active thread is what keeps the flvector from moving."
+  strings. A borrowed array crosses as the raw flvector or fxvector
+  (scheme-object): the call site keeps it from moving, by holding the thread
+  active (a ^:hold-gc region) or by locking it around a __collect_safe call.
+  The status comes back through sym_status, not an argument."
   [region]
   (let [arg (fn [t] (cond (ast/borrowed? t) "scheme-object"
                           (= t :long) "integer-64" (= t :double) "double" (= t :bool) "boolean"))
         t (:type region)
         ret (cond (ast/owned? t) "uptr" (#{:unit :never} t) "int"
                   (= t :long) "integer-64" (= t :double) "double" (= t :bool) "boolean")]
-    [(conj (mapv (comp arg :type) (:params region)) "u8*") ret]))
-
-(defn foreign-sig
-  "The Chez foreign-procedure form that calls the region's C entry by name."
-  [region sym]
-  (let [[args ret] (foreign-types region)]
-    (str "(foreign-procedure \"" sym "\" (" (str/join " " args) ") " ret ")")))
+    [(mapv (comp arg :type) (:params region)) ret]))
