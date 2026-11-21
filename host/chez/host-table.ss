@@ -913,6 +913,7 @@
             (cond ((or (fx=? i sz) (jolt-reduced? acc)) acc)
                   ((bt-leaf? n) (loop (fx+ i 1) (step acc (bt-key n i) (bt-val n i))))
                   (else (loop (fx+ i 1) (walk (bt-val n i) acc)))))))))
+(define (sc-reduce-kv sc step init) (sc-tree-reduce-kv (scoll-tree sc) step init))
 ;; every entry, in order, satisfies (pred k v); stops at the first that does not
 (define (sc-tree-every-kv? t pred)
   (or (jolt-nil? t)
