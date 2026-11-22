@@ -51,16 +51,18 @@
   ;; script mode.
   testbin {:doc "Standalone binary at target/release/jolt, rebuilt when an input is newer"
            :depends [deps]
-           :task (let [inputs ["host/chez" "jolt-core" "stdlib" "compatibility" "vendor/fs/src"
-                               "vendor/process/src" "vendor/cli/src" "vendor/grenadine/src"
-                               "vendor/grenadine-generated" "vendor/irregex"]
-                       bin "target/release/jolt"]
-                   (if (or (tasks.env/getenv "JOLT_FORCE_TESTBIN")
-                           (not (fs/executable? bin))
-                           (not-empty (tasks.env/sh-out (str "find " (str/join " " inputs)
-                                                             " -type f -newer " bin " -print -quit 2>/dev/null"))))
-                     (chez "--script" "host/chez/build-jolt.ss" "release" bin)
-                     (println "testbin: target/release/jolt up to date")))}
+           :task (if (tasks.gate/done? 'testbin)
+                   (println "testbin: built once by the gate runner")
+                   (let [inputs ["host/chez" "jolt-core" "stdlib" "compatibility" "vendor/fs/src"
+                                 "vendor/process/src" "vendor/cli/src" "vendor/grenadine/src"
+                                 "vendor/grenadine-generated" "vendor/irregex"]
+                         bin "target/release/jolt"]
+                     (if (or (tasks.env/getenv "JOLT_FORCE_TESTBIN")
+                             (not (fs/executable? bin))
+                             (not-empty (tasks.env/sh-out (str "find " (str/join " " inputs)
+                                                               " -type f -newer " bin " -print -quit 2>/dev/null"))))
+                       (chez "--script" "host/chez/build-jolt.ss" "release" bin)
+                       (println "testbin: target/release/jolt up to date"))))}
 
   ;; Not named install, because jolt runs a file named ./install before a task of
   ;; that name.
@@ -1003,7 +1005,9 @@ done"
   ;; jobserver.
   devbootsmoke {:doc "The dev boot cache is used when fresh and invalidated when stale"
                 :depends [devboot deps]
-                :task (sh "MAKEFLAGS= sh test/chez/devboot-smoke.sh")}
+                :task (if (tasks.gate/done? 'devbootsmoke)
+                        (println "devbootsmoke: already run by the gate runner")
+                        (sh "MAKEFLAGS= sh test/chez/devboot-smoke.sh"))}
 
   gatebootsmoke {:doc "The gate boot image's staleness predicate, over synthetic inputs"
                  :depends [gateboot devbootsmoke deps]
@@ -1262,8 +1266,10 @@ fi")}
   ;; A web REPL once hung at boot for a week while every other gambit gate stayed
   ;; green.
   gambitboot {:doc "The full-profile boot comes up on gsi, which the js and gsi targets share"
-              :task (sh (gambit-env)
-                        "if [ -x \"$GAMBIT_GSI\" ]; then \\
+              :task (if (tasks.gate/done? 'gambitboot)
+                      (println "gambitboot: already run by the gate runner")
+                      (sh (gambit-env)
+                          "if [ -x \"$GAMBIT_GSI\" ]; then \\
 $JOLT_CHEZ --script host/gambit/gen-boot.ss full; \\
 out=$(cd host/gambit && \"$GAMBIT_GSI\" boot-probe.scm < /dev/null 2>&1); \\
 case \"$out\" in \\
@@ -1272,7 +1278,7 @@ case \"$out\" in \\
 esac; \\
 else \\
 if [ -n \"$JOLT_REQUIRE_GAMBIT\" ]; then echo \"gambitboot: no gambit at $GAMBIT_PREFIX/bin and JOLT_REQUIRE_GAMBIT is set\" >&2; exit 1; else echo \"gambitboot: gambit-scheme not installed (GAMBIT_PREFIX=$GAMBIT_PREFIX) — skipped\"; fi; \\
-fi")}
+fi"))}
 
   ;; Regenerate after every change to any of the four records files.
   gambitgen {:doc "Regenerate host/gambit/records-gambit.ss from the four host/chez records files"

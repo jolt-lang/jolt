@@ -90,24 +90,59 @@
 (def ^:private self-jolt
   (or (env/getenv "JOLT_EXE") (jolt.host/self-exe) (str env/root "/" env/jolt-bin)))
 
+;; make runs each target once per invocation, and each gate here is its own
+;; process that would walk its :depends again. Rebuilt beside other gates, that
+;; raced: devbootsmoke touches rt.ss, a neighbour's testbin saw it and relinked
+;; target/release/jolt under aotcachesmoke, and gatebootsmoke re-ran
+;; devbootsmoke beside the gate itself. So the runner lists in JOLT_GATE_DONE
+;; what it already ran, and those tasks check done? and skip.
+(defn done?
+  "True when the gate runner already ran `task` for the gate in this process."
+  [task]
+  (contains? (set (str/split (or (env/getenv "JOLT_GATE_DONE") "") #" ")) (str task)))
+
+(defn- deps-of
+  "Every task `task` depends on, transitively, as symbols."
+  [tasks task]
+  (let [d (:depends (get tasks task))]
+    (into (set d) (mapcat #(deps-of tasks %) d))))
+
 (defn- run-one
   "One gate as its own `jolt <gate> -j n` process; the -j reaches the one
-  gate that is itself a gate list (test runs ci). Returns [gate exit-status]."
-  [n gate]
-  [gate (:exit (p/shell {:continue true :dir env/root} self-jolt (str gate) "-j" (str n)))])
+  gate that is itself a gate list (test runs ci). `done` names the tasks it
+  skips. Returns [gate exit-status]."
+  [n gate done]
+  [gate (:exit (p/shell {:continue true :dir env/root
+                         :extra-env {"JOLT_GATE_DONE" (str/join " " (map str done))}}
+                        self-jolt (str gate) "-j" (str n)))])
 
 (defn run-gates
   "Run `gates`, at most `n` at once, then the quiet gates one at a time with
   nothing beside them. Every gate runs whatever fails. Returns the failed
-  gates. The shared prerequisites (deps, testbin) run once first, so the
-  parallel processes find them done instead of racing to build them."
+  gates. testbin runs once first and no gate builds it again. A gate that
+  depends on another gate of the run waits for it and skips it."
   [gates n]
   (t/run 'testbin)
-  (let [{quiet true loud false} (group-by (comp boolean quiet-gates symbol) (map str gates))
+  (let [tasks (:tasks (read-string (slurp (str env/root "/deps.edn"))))
+        in-run (set (map symbol gates))
+        before (fn [g] (filter in-run (deps-of tasks (symbol g))))
+        done (fn [g] (into #{'testbin} (mapcat #(cons % (deps-of tasks %))) (before g)))
+        ;; A gate's in-run deps have fewer in-run deps of their own, so this
+        ;; order submits them first: by the time the pool takes a gate, what it
+        ;; waits on has started.
+        {quiet true loud false} (group-by (comp boolean quiet-gates symbol)
+                                          (sort-by #(count (before %)) (map str gates)))
         pool (Executors/newFixedThreadPool (max 1 n))
-        loud-results (try (mapv #(.get %) (mapv (fn [g] (.submit pool ^Callable (fn [] (run-one n g)))) loud))
-                          (finally (.shutdown pool)))
-        results (into loud-results (map #(run-one 1 %) quiet))]
+        loud-results
+        (try (let [futs (reduce (fn [acc g]
+                                  (let [waits (keep #(get (into {} acc) (str %)) (before g))]
+                                    (conj acc [g (.submit pool ^Callable
+                                                          (fn [] (run! #(.get %) waits)
+                                                            (run-one n g (done g))))])))
+                                [] loud)]
+               (mapv #(.get (second %)) futs))
+             (finally (.shutdown pool)))
+        results (into loud-results (map #(run-one 1 % (done %)) quiet))]
     (vec (keep (fn [[g ex]] (when-not (zero? ex) g)) results))))
 
 (defn run-gate!
