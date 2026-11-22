@@ -179,6 +179,38 @@
                (catch Exception e (if (re-find #"No such file" (str (ex-message e))) :nosuch :other)))
           :nosuch)
 
+;; A file redirect is opened by jolt before the spawn, as the JDK opens it, so a
+;; target that cannot be opened throws from start(). Through /bin/sh the child
+;; started anyway and exited 1 when the shell could not open it. Each redirect
+;; kind, and the merged case, also stays off the shell (process.ss
+;; proc-direct-spec), which is what the worker spawns rely on.
+(doseq [[label redirect!] [["to"       #(.redirectOutput % (java.io.File. "/nonexistent-dir/x"))]
+                           ["appendTo" #(.redirectOutput % (java.lang.ProcessBuilder$Redirect/appendTo
+                                                            (java.io.File. "/nonexistent-dir/x")))]
+                           ["from"     #(.redirectInput % (java.io.File. "/nonexistent-dir/x"))]]]
+  (check-eq (str "an unopenable " label " redirect throws from start")
+            (try (.waitFor (.start (doto (java.lang.ProcessBuilder. ["true"]) redirect!))) :started
+                 (catch java.io.IOException e (ex-message e)))
+            "Cannot run program \"true\": /nonexistent-dir/x (No such file or directory)"))
+(let [dir (str (fs/create-temp-dir {:prefix "jp-redir-"}))
+      out (java.io.File. dir "out.txt")
+      in  (java.io.File. dir "in.txt")]
+  (spit in "from-file\n")
+  (spit out "old\n")
+  (check-eq "append + merged stderr land in the file, no pipes handed back"
+            (let [pr (.start (doto (java.lang.ProcessBuilder. ["sh" "-c" "cat; echo e 1>&2"])
+                               (.redirectInput in)
+                               (.redirectOutput (java.lang.ProcessBuilder$Redirect/appendTo out))
+                               (.redirectErrorStream true)))]
+              [(.waitFor pr) (slurp (.getInputStream pr)) (slurp out)])
+            [0 "" "old\nfrom-file\ne\n"])
+  (check-eq "DISCARD drops the child's output"
+            (let [pr (.start (doto (java.lang.ProcessBuilder. ["echo" "gone"])
+                               (.redirectOutput java.lang.ProcessBuilder$Redirect/DISCARD)))]
+              [(.waitFor pr) (slurp (.getInputStream pr))])
+            [0 ""])
+  (fs/delete-tree dir))
+
 ;; A child that cannot be waited on must still produce an answer. With SIGCHLD set
 ;; to SIG_IGN the kernel reaps every child itself, so waitpid can only ever fail
 ;; with ECHILD — and the reap loop used to treat that as "ask again", spinning
@@ -1042,6 +1074,60 @@
             [(count err) (str/includes? err "Broken pipe")])
           [100000 false])
 
+;; Chez's parallel collector starts its sweeper threads from inside a
+;; collection, and a new thread takes the mask of the thread that made it: the
+;; collecting one, not the fork guard's. A collection run while that thread had
+;; a signal unblocked (a spawn under jolt-with-empty-sigmask, the watcher
+;; re-raising a signal nobody handles, park-until-interrupt's SIGINT) left
+;; sweepers that never block it, for the life of the process. Without the relay
+;; the watcher's signals sit at SIG_DFL, so the kernel could hand one to a
+;; sweeper and end the process: the "no relay" signal rows' child dying of its
+;; own Signal/raise USR2 (exit 140) before it got ready. Collections run with the
+;; watched signals blocked, so a sweeper is born with them blocked whoever made
+;; it. The child below opens such a window on purpose (USR2 unblocked on every
+;; thread while parallel collections start the sweepers), closes it, and raises
+;; USR2 in a burst: the watcher is busy between waits for most of it, which is
+;; when the kernel looks for another thread. On Linux it also reads each
+;; thread's mask: the only one that may not block USR2 is the watcher, whose
+;; mask reads empty while it sits in sigwait.
+(let [progf (str (fs/create-temp-file {:prefix "jp-sweepers-" :suffix ".clj"}))
+      prog "(require '[jolt.scheme :as scm])
+(import '[sun.misc Signal SignalHandler])
+(defn mask! [how] (scm/eval-string (str \"(c-pthread-sigmask \" how \" (jolt-make-sigset (list (jolt-signal-number \\\"USR2\\\"))) 0)\")))
+(def handled (atom 0))
+(Signal/handle (Signal. \"USR2\") (reify SignalHandler (handle [_ s] (swap! handled inc))))
+(def go? (atom true))
+(def started (java.util.concurrent.CountDownLatch. 4))
+(def done (java.util.concurrent.CountDownLatch. 4))
+(mask! \"jolt-sig-unblock-how\")
+(dotimes [i 4]
+  (future (mask! \"jolt-sig-unblock-how\") (.countDown started)
+          (loop [] (when @go? (vec (range 2000)) (recur)))
+          (mask! \"jolt-sig-block-how\") (.countDown done)))
+(.await started)
+(dotimes [i 40] (doall (map str (range 20000))))
+(reset! go? false)
+(.await done)
+(mask! \"jolt-sig-block-how\")
+(def usr2-bit (bit-shift-left 1 (dec (scm/eval-string \"(jolt-signal-number \\\"USR2\\\")\"))))
+(defn blocked-mask [t] (Long/parseLong (second (re-find #\"SigBlk:\\s+(\\S+)\" (slurp (str t \"/status\")))) 16))
+(def unmasked
+  (let [d (java.io.File. \"/proc/self/task\")]
+    (if (.isDirectory d)
+      (count (filter (fn [t] (let [m (blocked-mask t)] (and (not (zero? m)) (zero? (bit-and m usr2-bit)))))
+                     (.listFiles d)))
+      0)))
+(dotimes [i 200] (Signal/raise (Signal. \"USR2\")))
+(Thread/sleep 300)
+(println \"survived\" unmasked (pos? @handled))
+(shutdown-agents)"]
+  (spit progf prog)
+  (let [r (sh [jolt-bin progf] {:out :string :err :string :extra-env {"JOLT_NO_SIGNAL_RELAY" "1"}})]
+    (check-eq "a sweeper started while a thread had USR2 unblocked still blocks it"
+              [(:exit r) (str/trim (:out r)) (:err r)]
+              [0 "survived 0 true" ""]))
+  (fs/delete-if-exists progf))
+
 ;; sun.misc.Signal (#1679). INT, TERM and HUP stay the shutdown watcher's.
 ;; Any other signal goes through the kernel's relay (chez-patches/0009) when it
 ;; has one, and nothing past the three is blocked; on a stock Chez, or with
@@ -1178,6 +1264,25 @@
         (check-eq (str "an unhandled " fatal " ends it by the signal, hooks unrun (" mode ")")
                   [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""]))
       (doseq [f [readyf hookf]] (fs/delete-if-exists f)))))
+
+;; Starting a child must not unblock what jolt's threads block. A handled signal
+;; still pending when a ProcessBuilder starts (a Signal/raise the watcher had not
+;; taken yet killed the no-relay row above on the Android runner) used to be
+;; delivered to the spawning thread at its default action, because the spawn
+;; emptied that thread's mask for the child's sake. pthread_kill on this thread
+;; makes the pending signal one only this thread could take, so the old window
+;; killed it every time.
+(doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
+  (let [prog (str "(require '[jolt.ffi :as ffi]) (import '[sun.misc Signal SignalHandler])"
+                  "(ffi/defcfn pthread-self \"pthread_self\" [] :pointer)"
+                  "(ffi/defcfn pthread-kill \"pthread_kill\" [:pointer :int] :int)"
+                  "(Signal/handle (Signal. \"USR2\") (reify SignalHandler (handle [_ s] nil)))"
+                  "(pthread-kill (pthread-self) " (signum "USR2") ")"
+                  "(.waitFor (.start (ProcessBuilder. [\"true\"])))"
+                  "(print \"alive\")")
+        r (sh [jolt-bin "-e" prog] {:extra-env env})]
+    (check-eq (str "a pending handled signal survives starting a child (" mode ")")
+              [(:exit r) (:out r)] [0 "alive"])))
 
 ;; Only the relay can give a handler TTIN, TTOU, PROF or VTALRM (blocked in
 ;; every thread, the first two change what the terminal does to a background

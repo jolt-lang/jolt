@@ -21,7 +21,7 @@
   in both directions. Grenadine expands the dependency tree, builds effective
   POMs, and compares Maven versions; files are fetched by jolt itself over
   HTTPS (jolt.mvn-http);
-  git still shells out through jolt.host/sh; a jar is a source root read in
+  git runs as a subprocess (jolt.deps.io/sh, no shell); a jar is a source root read in
   place through its central directory, never extracted (nothing here touches
   the JVM)."
   (:require [clojure.edn :as edn]

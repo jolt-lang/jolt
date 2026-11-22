@@ -152,7 +152,7 @@
 ;; (atom only).
 (defn- bump-counters! [k]
   (when *report-counters*
-    (dosync (commute *report-counters* assoc k (inc (or (@*report-counters* k) 0))))))
+    (dosync (commute *report-counters* update k (fnil inc 0)))))
 
 (defn- global-tally? []
   (or (nil? *report-counters*) (identical? *report-counters* *run-counters*)))
