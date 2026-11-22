@@ -132,6 +132,27 @@
     ;; transient path, conj's own carry otherwise), as jolt-into does
     (if (jolt-nil? to) res (meta-carry-conj to res))))
 
+;; A native vector (including an RRB slice tagged as a SubVector) has its
+;; own logical count and leaves. Only the predicate and mapper call out.
+;; Either callback can capture a continuation. Carry a persistent prefix so
+;; resuming it sees the output as it was at capture time, even after completion.
+;; Mapper results, even Reduced values, are elements of the output.
+(define (jolt-vector-filter-map to pred mapper from)
+  (let ((end (pvec-cnt from)))
+    (let walk ((i 0) (out to))
+      (if (fx=? i end)
+          (meta-carry-conj to out)
+          (let*-values (((leaf offset) (pv-leaf-for from i))
+                        ((stop) (fxmin (vector-length leaf) (fx+ offset (fx- end i)))))
+            (let step ((j offset) (out out))
+              (if (fx<? j stop)
+                  (let ((x (vector-ref leaf j)))
+                    (step (fx+ j 1)
+                          (if (jolt-truthy? (jolt-invoke1 pred x))
+                              (pvec-conj out (jolt-invoke1 mapper x))
+                              out)))
+                  (walk (fx+ i (fx- stop offset)) out))))))))
+
 ;; mapcat: (mapcat f) -> transducer; (mapcat f coll & colls) -> map f across the
 ;; colls (stops at shortest), then concat the results.
 (define (jolt-mapcat f . colls)
