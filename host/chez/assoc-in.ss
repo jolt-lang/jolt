@@ -54,31 +54,56 @@
         ((assoc-in-key=? (caar entries) k) (car entries))
         (else (assoc-in-collision-entry k (cdr entries)))))
 
+;; One level of the walk over the node layout (collections.ss hnode): an
+;; entry's key/value slot pair under dmap, a branch under nmap. Each write
+;; mirrors node-assoc-by's, with the stored key hashed by assoc-in-key-hash.
 (define (assoc-in-node-edit node shift h k edit value added)
-  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node))
-         (i (hamt-arr-index bm bit)))
-    (if (hamt=? 0 (hamt-and bm bit))
-        (let ((v (if edit (edit jolt-nil) value)))
-          (and (or (not edit) v) (node-insert bm arr bit i k v added)))
-        (let ((child (vector-ref arr i)))
-          (cond
-            ((hnode? child)
-             (let ((r (assoc-in-node-edit child (fx+ shift 5) h k edit value added)))
-               (and r (node-with-child node bm arr i child r))))
-            ((hcoll? child)
-             (let ((entry (assoc-in-collision-entry k (hcoll-alist child))))
-               (and (not (eq? entry assoc-in-unsafe-entry))
-                    (let ((v (if edit (edit (if entry (cdr entry) jolt-nil)) value)))
-                      (and (or (not edit) v)
-                           (node-with-child node bm arr i child (hcoll-assoc child entry k v added)))))))
-            ((not (assoc-in-safe-key? (car child))) #f)
-            ((assoc-in-key=? (car child) k)
-             (let ((v (if edit (edit (cdr child)) value)))
-               (and (or (not edit) v) (node-assoc-leaf node bm arr i child v))))
-            (else
-             (let ((v (if edit (edit jolt-nil) value)))
-               (and (or (not edit) v)
-                    (node-split-leaf bm arr i child shift h k v added assoc-in-key-hash)))))))))
+  (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)) (nm (hnode-nmap node))
+         (arr (hnode-arr node)))
+    (cond
+      ((not (hamt=? 0 (hamt-and dm bit)))
+       (let* ((i (fx* 2 (hamt-arr-index dm bit))) (ks (vector-ref arr i)))
+         (cond
+           ((not (assoc-in-safe-key? ks)) #f)
+           ((assoc-in-key=? ks k)
+            (let* ((j (fx+ i 1)) (old (vector-ref arr j))
+                   (v (if edit (edit old) value)))
+              (and (or (not edit) v)
+                   (if (eq? old v) node (make-hnode dm nm (vec-set arr j v))))))
+           (else
+            (let ((v (if edit (edit jolt-nil) value)))
+              (and (or (not edit) v)
+                   (let ((b (split-hashed-leaves (fx+ shift 5) (assoc-in-key-hash ks) ks
+                                                 (vector-ref arr (fx+ i 1)) h k v)))
+                     (set-box! added #t)
+                     (make-hnode (hamt-and dm (hamt-not bit)) (hamt-ior nm bit)
+                                 (vec-entry->branch arr i (fx+ (hamt-branch-slot arr nm bit) 1) b)))))))))
+      ((not (hamt=? 0 (hamt-and nm bit)))
+       (let* ((j (hamt-branch-slot arr nm bit)) (b (vector-ref arr j)))
+         (define (with-branch nb) (if (eq? nb b) node (make-hnode dm nm (vec-set arr j nb))))
+         (cond
+           ((hnode? b)
+            (let ((r (assoc-in-node-edit b (fx+ shift 5) h k edit value added)))
+              (and r (with-branch r))))
+           ;; another hash than the bucket's: the key is not in it, and the
+           ;; bucket nests beside the new entry
+           ((not (hamt=? h (hcoll-hash b)))
+            (let ((v (if edit (edit jolt-nil) value)))
+              (and (or (not edit) v)
+                   (begin (set-box! added #t)
+                          (with-branch (nest-bucket (fx+ shift 5) b h k v))))))
+           (else
+            (let ((entry (assoc-in-collision-entry k (hcoll-alist b))))
+              (and (not (eq? entry assoc-in-unsafe-entry))
+                   (let ((v (if edit (edit (if entry (cdr entry) jolt-nil)) value)))
+                     (and (or (not edit) v)
+                          (with-branch (hcoll-assoc b entry k v added))))))))))
+      (else
+       (let ((v (if edit (edit jolt-nil) value)))
+         (and (or (not edit) v)
+              (begin (set-box! added #t)
+                     (make-hnode (hamt-ior dm bit) nm
+                                 (vec-insert2 arr (fx* 2 (hamt-arr-index dm bit)) k v)))))))))
 
 ;; The edit closure is compiler-generated, and may itself refuse a receiver
 ;; or key. It can return any Clojure value, including false, so carry success

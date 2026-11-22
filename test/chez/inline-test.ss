@@ -147,6 +147,18 @@
                 (= {:a false :b nil} (get-in inserted [:root missing]))
                 (= :retained (get-in inserted [:root sibling]))
                 (nil? (get-in m [:root missing]))))"))
+;; 54 and 95 share the low five hash bits with the \"AaAa\"/\"BBBB\" bucket but
+;; not its hash: the bucket nests beside them, in the JVM's order
+(ok "assoc-in of a key landing on a bucket's slot nests the bucket"
+    (ev "(let [ordinary (var-get #'clojure.core/assoc-in)
+               inner (hash-map \"AaAa\" {} \"BBBB\" {})
+               m {:root inner}]
+           (every? (fn [k]
+                     (let [got (sibling-edits m k 1 2)
+                           want (ordinary (ordinary m [:root k :a] 1) [:root k :b] 2)]
+                       (and (= got want) (= (keys (:root got)) (keys (:root want)))
+                            (= (count (:root got)) (count (:root want))))))
+                   [54 95 \"AaAa\" \"AaBB\"]))"))
 (ok "overlapping paths and externally retained intermediate maps stay ordered"
     (ev "(let [old {:root {:shape {:discarded 0}}} child {:keep true}
                first (assoc-in old [:root :shape] child)

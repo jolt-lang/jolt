@@ -1293,6 +1293,25 @@
   (let ((w (win32-wstr s)))
     (dynamic-wind (lambda () #f) (lambda () (proc w)) (lambda () (sa-foreign-free w)))))
 
+;; The executable this process is running, asked of Windows (GetModuleFileNameW),
+;; or #f off Windows or when it cannot say. argv[0] is no substitute: it is the
+;; name as typed, or the script under `scheme --script`. The loader's
+;; aot-self-exe and the FFI's DLL search directory both read it.
+(define-win32-proc win32-get-module-file-name-w
+  "kernel32.dll" "GetModuleFileNameW" (void* u8* unsigned-32) unsigned-32)
+
+(define (win32-exe-path)
+  (let ((f (win32-get-module-file-name-w)))
+    (and f
+         (guard (e (#t #f))
+           (let* ((cap 32768)
+                  (bv (make-bytevector (* 2 cap) 0))
+                  (n (f 0 bv cap)))
+             (and (> n 0) (< n cap)
+                  (let ((out (make-bytevector (* 2 n))))
+                    (bytevector-copy! bv 0 out 0 (* 2 n))
+                    (utf16->string out (endianness little)))))))))
+
 (define win32-INVALID-FILE-ATTRIBUTES #xFFFFFFFF)
 (define win32-FILE-ATTRIBUTE-HIDDEN   #x2)
 (define win32-FILE-ATTRIBUTE-DIRECTORY #x10)
@@ -3264,7 +3283,10 @@
 
 ;; --- with-open's close seam (__close): a map-like value closes via its :close
 ;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
-;; else is an error.
+;; else is an error. The :close keyword is interned once here: with-open closes
+;; through this on every exit, and interning it per call (a string hash and an
+;; intern-table probe) was a measurable share of a short-lived ffi arena.
+(define io-kw-close (keyword #f "close"))
 (define (jolt-close x)
   (cond
     ((jolt-nil? x) jolt-nil)
@@ -3286,7 +3308,7 @@
     ((iface-method x "close" #f)
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
     (else
-     (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
+     (let ((closef (jolt-get x io-kw-close jolt-nil)))
        (if (and (not (jolt-nil? closef)) (procedure? closef))
            (begin (jolt-invoke closef) jolt-nil)
            (throw-jvm (quote IllegalArgumentException) "with-open: no .close method on value"))))))

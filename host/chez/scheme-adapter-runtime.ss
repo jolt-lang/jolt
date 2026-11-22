@@ -38,6 +38,27 @@
 (define (sa-run-process cmd transcoder)
   (open-process-ports cmd (buffer-mode block) transcoder))
 
+;; (sa-gc-set-collect-guard! guard): GUARD is called with a thunk that runs one
+;; collection, and must call it exactly once. Every collection jolt starts runs
+;; through it: the collect-request handler's and sa-gc-collect's direct one.
+;; Chez's parallel collector starts its sweeper threads from inside a
+;; collection, and a new thread takes the mask of the thread that made it, so
+;; the guard is where the host gives them the mask every other thread is forked
+;; with (concurrency.ss jolt-collect-with-signals-blocked). The direct path can
+;; be entered by two threads at once (one of them then loses the race and
+;; joins the rendezvous), so a guard may not keep per-collection state in a
+;; shared place. A process that never installs jolt's handler (source mode
+;; without a devcache, an embedder that skips the policy) would otherwise
+;; collect through Chez's default one, outside the guard, so setting a guard
+;; then puts in a handler that does what the default does, through it.
+;; sa-gc-install-after-collect! replaces that one with its own.
+(define sa-collect-handler-installed? #f)
+(define sa-gc-collect-guard (lambda (collect!) (collect!)))
+(define (sa-gc-set-collect-guard! guard)
+  (set! sa-gc-collect-guard guard)
+  (unless sa-collect-handler-installed?
+    (collect-request-handler (lambda () (sa-gc-collect-guard collect)))))
+
 ;; (sa-gc-collect) -> void
 ;; A full collection hint (every generation) — what the Runtime.gc /
 ;; System.gc callers mean: weak references clear and guardians fire.
@@ -57,7 +78,6 @@
 ;; handler, retry over a short window and degrade to a no-op, because
 ;; System.gc must hint, never throw. Any other collector error still raises.
 (define sa-full-collect-requested? #f)
-(define sa-collect-handler-installed? #f)
 (define (sa-gc-collect)
   (let loop ((tries (if sa-collect-handler-installed? 0 100)))
     (let ((r (guard (e (#t (if (and (message-condition? e)
@@ -65,7 +85,7 @@
                                               "cannot collect when multiple threads are active"))
                                'busy
                                (raise e))))
-               (collect (collect-maximum-generation))
+               (sa-gc-collect-guard (lambda () (collect (collect-maximum-generation))))
                'ok)))
       (case r
         ;; no collect-request-handler ran, so undo the pins of arrays this one
@@ -1474,21 +1494,23 @@
                  (collect (collect-maximum-generation)))))))
     (collect-request-handler
       (lambda ()
-        (if sa-full-collect-requested?
-            ;; sa-gc-collect's full collection, run here because another thread
-            ;; was active: what its direct path does, and no more -- it is not a
-            ;; young collection for the nursery's time share to count
-            (begin
-              (set! sa-full-collect-requested? #f)
-              (collect (collect-maximum-generation))
-              (sa-pin-drain-after-collect!))
-            (let ((t0 (sa-monotonic-ns)))
-              (sa-collect-young!)
-              (maintain collect-full!)
-              (sa-pin-drain-after-collect!)
-              (let ((t1 (sa-monotonic-ns)))
-                (observe (- t1 t0) (- t1 last-end))
-                (set! last-end t1)))))))
+        (sa-gc-collect-guard
+          (lambda ()
+            (if sa-full-collect-requested?
+                ;; sa-gc-collect's full collection, run here because another thread
+                ;; was active: what its direct path does, and no more -- it is not a
+                ;; young collection for the nursery's time share to count
+                (begin
+                  (set! sa-full-collect-requested? #f)
+                  (collect (collect-maximum-generation))
+                  (sa-pin-drain-after-collect!))
+                (let ((t0 (sa-monotonic-ns)))
+                  (sa-collect-young!)
+                  (maintain collect-full!)
+                  (sa-pin-drain-after-collect!)
+                  (let ((t1 (sa-monotonic-ns)))
+                    (observe (- t1 t0) (- t1 last-end))
+                    (set! last-end t1)))))))))
   (set! sa-collect-handler-installed? #t)
   #t)
 ;; A tight full collection within ROOM free bytes: every generation from 1 up
@@ -2258,6 +2280,8 @@
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (#3%fx<? a b))))
 (define-syntax sa-ufx>=? (syntax-rules () ((_ a b) (#3%fx>=? a b))))
 (define-syntax sa-ufx=? (syntax-rules () ((_ a b) (#3%fx=? a b))))
+(define-syntax sa-ufxand (syntax-rules () ((_ a b) (#3%fxand a b))))
+(define-syntax sa-ufxxor (syntax-rules () ((_ a b) (#3%fxxor a b))))
 (define-syntax sa-uvector-ref (syntax-rules () ((_ v i) (#3%vector-ref v i))))
 (define-syntax sa-uvector-set! (syntax-rules () ((_ v i x) (#3%vector-set! v i x))))
 (define-syntax sa-ustring-ref (syntax-rules () ((_ s i) (#3%string-ref s i))))

@@ -5623,6 +5623,34 @@
                  "TRAP" "ABRT" "CHLD" "CONT" "TSTP" "PIPE" "STKFLT" "EMT" "INFO"))))
 (define jolt-watched-sigset
   (and jolt-sigmask-ok? (jolt-make-sigset (append jolt-shutdown-signals jolt-user-signals))))
+
+;; Every collection runs with all of those blocked on the collecting thread. Chez's
+;; parallel collector starts its sweeper threads from inside a collection, and a
+;; new thread takes the mask of the thread that made it: the fork guard below
+;; never sees them. A collection run while that thread had a signal unblocked (a
+;; spawn under jolt-with-empty-sigmask, the watcher re-raising a signal nobody
+;; handles, park-until-interrupt's SIGINT, the primordial before arming) left
+;; sweepers that never block it, for the life of the process. Without the relay
+;; the kernel could hand one of the watcher's signals to a sweeper at SIG_DFL and
+;; end the process (a program's own Signal/raise USR2 killed it, exit 140); with
+;; it, a ^C landing there reached Chez's SIGINT handler on a thread that is not
+;; the main one, which drops it. A sweeper never runs jolt code, so it takes no
+;; signal at all. All of them, not jolt-signal-sigset: a sweeper started before
+;; arming outlives the arming that decides which signals are the watcher's.
+;; The mask to put back is per call: sa-gc-collect's direct attempt runs on
+;; whichever thread asked, and two of them can be inside it at once.
+;; A refused attempt raises out of COLLECT!, so the buffer is freed on the way out.
+(define (jolt-collect-with-signals-blocked collect!)
+  (let ((old #f))
+    (dynamic-wind
+      (lambda ()
+        (set! old (sa-foreign-alloc 128))
+        (c-pthread-sigmask jolt-sig-block-how jolt-watched-sigset old))
+      collect!
+      (lambda ()
+        (c-pthread-sigmask jolt-sig-setmask-how old 0)
+        (sa-foreign-free old)))))
+(when jolt-sigmask-ok? (sa-gc-set-collect-guard! jolt-collect-with-signals-blocked))
 ;; #t once the entry point has claimed the user signals (jolt-arm-signals!). Read
 ;; by the fork guard and by arming, both of which then use jolt-watched-sigset.
 (define jolt-user-signals-taken (box #f))
@@ -6057,12 +6085,14 @@
 ;; The mask is emptied on THIS thread for the length of the spawn and put back
 ;; exactly as it was, so the whole of jolt's private masking is undone at once
 ;; rather than a named subset of it. That leaves one fork+exec in which jolt
-;; itself is unmasked: a SIGTERM landing there kills it without running hooks, as
-;; it did before there were hooks, and a ^C landing there may be taken by this
-;; thread instead of the parked one. Both are pre-existing behavior. The
-;; window-free alternative, posix_spawnattr with POSIX_SPAWN_SETSIGMASK, reaches
-;; only one of the two paths — Chez's fork takes no attributes — and two
-;; mechanisms for one rule is worse than one honest window.
+;; itself is unmasked: a SIGTERM landing there kills it without running hooks,
+;; and any watched signal still PENDING for the process (a Signal/raise the
+;; watcher has not taken yet) is delivered to this thread at its default action.
+;; So the posix_spawn path (process.ss proc-spawn-fd-level), which is every
+;; ProcessBuilder / jolt.process spawn where posix_spawn resolves, gives the
+;; child its empty mask through POSIX_SPAWN_SETSIGMASK and never opens the
+;; window. This one is left for the spawns Chez's own fork makes (system,
+;; process), which take no attributes.
 (define jolt-empty-sigset (and jolt-sigmask-ok? (jolt-make-sigset '())))
 (define (jolt-with-empty-sigmask thunk)
   (jolt-with-sigmask jolt-sig-setmask-how jolt-empty-sigset thunk))

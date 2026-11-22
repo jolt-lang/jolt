@@ -497,6 +497,12 @@ leave viajolt2" "$(inbb "$BB" viajolt2)"
 check "jolt is the same fn under its own name" "enter viajolt3
 :from-jolt-fn
 leave viajolt3" "$(inbb "$BB" viajolt3)"
+# Without JOLT_EXE a built jolt re-invokes itself, not the `jolt` on PATH (#1787).
+mkdir -p "$tmp/fakebin"
+printf '#!/bin/sh\necho wrong-jolt\n' > "$tmp/fakebin/jolt"; chmod +x "$tmp/fakebin/jolt"
+check "jolt re-invokes the running jolt, not the one on PATH" "enter viajolt3
+:from-jolt-fn
+leave viajolt3" "$(unset JOLT_EXE; PATH="$tmp/fakebin:$PATH"; inbb "$BB" viajolt3)"
 
 # --- :override-builtin -------------------------------------------------------
 

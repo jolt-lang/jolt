@@ -69,7 +69,14 @@
   ([f c1 c2 c3] (into [] (map f c1 c2 c3)))
   ([f c1 c2 c3 & colls] (into [] (apply map f c1 c2 c3 colls))))
 
-(defn update [m k f & args] (assoc m k (apply f (get m k) args)))
+;; clojure.core's fixed arities: the variadic-only form sent every
+;; (update m k f x) through apply.
+(defn update
+  ([m k f] (assoc m k (f (get m k))))
+  ([m k f x] (assoc m k (f (get m k) x)))
+  ([m k f x y] (assoc m k (f (get m k) x y)))
+  ([m k f x y z] (assoc m k (f (get m k) x y z)))
+  ([m k f x y z & more] (assoc m k (apply f (get m k) x y z more))))
 
 ;; set: build through a transient, like clojure.core. The compiler uses it off
 ;; the emit path (backend bare-native-names, type inference), so unlike boolean it
