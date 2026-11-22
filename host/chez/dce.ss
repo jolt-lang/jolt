@@ -292,6 +292,10 @@
     ;; PersistentTreeMap/EMPTY and PersistentTreeSet/EMPTY (host-static-methods.ss)
     ;; make their value with these, by name, on first read
     "clojure.core/sorted-map" "clojure.core/sorted-set"
+    ;; the Persistent*/create statics (host-static-methods.ss) build with these
+    "clojure.core/sorted-set-by" "clojure.core/into" "clojure.core/map?"
+    ;; the printer hands each value to print-dup under *print-dup* (io-streams.ss)
+    "clojure.core/print-dup"
     ;; FileTime.from(Instant) (nio-file.ss) reads the Instant's epoch millis
     ;; through inst-ms, so fs/set-last-modified-time with an Instant needs it
     "clojure.core/inst-ms"))
