@@ -22,6 +22,9 @@ on:
       - 'host/chez/build.ss'
       - 'host/chez/build-jolt.ss'
       - 'host/chez/loader.ss'
+      - 'host/chez/spawn.ss'
+      - 'host/chez/java/process.ss'
+      - 'test/chez/aot-worker-cleanup-smoke.sh'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
       - 'host/chez/java/io-streams.ss'
@@ -38,6 +41,9 @@ on:
       - 'host/chez/build.ss'
       - 'host/chez/build-jolt.ss'
       - 'host/chez/loader.ss'
+      - 'host/chez/spawn.ss'
+      - 'host/chez/java/process.ss'
+      - 'test/chez/aot-worker-cleanup-smoke.sh'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
       - 'host/chez/java/io-streams.ss'
@@ -127,6 +133,50 @@ jobs:
       # :static natives relinks its bundled launcher stub with the system cc.
       - name: Build jolt.exe
         run: make jolt-release
+
+      # The AOT cache's worker on a real Windows process table (Wine cannot say:
+      # it hands every top-level process the same pid). A cold-cache run hands
+      # its compiles to a detached copy of jolt.exe, which must finish them and
+      # then remove its manifest, log and locks; what a killed worker left is
+      # swept by the next run. From MSYS2's shell, then from PowerShell, whose
+      # console is the arrangement a Windows user runs jolt in.
+      - name: AOT worker cleans up after itself (MSYS2)
+        if: ${{ !cancelled() }}
+        run: JOLT_BIN=target/release/jolt.exe sh test/chez/aot-worker-cleanup-smoke.sh
+
+      - name: AOT worker cleans up after itself (PowerShell)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        run: |
+          $jolt = Join-Path $env:GITHUB_WORKSPACE 'target\release\jolt.exe'
+          $root = Join-Path $env:RUNNER_TEMP 'aot-worker-ps'
+          $src = Join-Path $root 'proj\src\mylib'
+          $cache = Join-Path $root 'cache'
+          New-Item -ItemType Directory -Force -Path $src, $cache | Out-Null
+          foreach ($i in 1..3) {
+            Set-Content -NoNewline -Encoding ascii -Path (Join-Path $src "n$i.clj") `
+              -Value "(ns mylib.n$i) (defn f [] $i)"
+          }
+          $env:JOLT_AOT_CACHE = '1'
+          $env:JOLT_CACHE_DIR = $cache
+          $env:JOLT_PROJ = (Join-Path $root 'proj') -replace '\\','/'
+          # no string literals in the argument: Windows PowerShell 5.1 strips
+          # their quotes while it builds the command line
+          $prog = '(require (quote jolt.deps)) (jolt.deps/add-deps {:deps {(quote mylib/mylib) {:local/root (System/getenv (name (quote JOLT_PROJ)))}}}) (require (quote mylib.n1) (quote mylib.n2) (quote mylib.n3)) (println (+ (mylib.n1/f) (mylib.n2/f) (mylib.n3/f)))'
+          $out = (& $jolt -e $prog 2>&1 | Out-String).Trim()
+          Write-Host "run: $out"
+          if ($out -ne '6') { throw "the cold run printed '$out'" }
+          $deadline = (Get-Date).AddSeconds(120)
+          while ((Get-ChildItem -Recurse -Path $cache -Filter 'aot-jobs-*.edn').Count -gt 0 -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+          }
+          Start-Sleep -Seconds 1
+          Get-ChildItem -Recurse -Path $cache | ForEach-Object { Write-Host $_.FullName }
+          $left = @(Get-ChildItem -Recurse -Path $cache -Filter 'aot-jobs-*')
+          $sos = @(Get-ChildItem -Recurse -Path $cache -Filter 'mylib.n*.so')
+          foreach ($f in $left) { Write-Host "== $($f.FullName)"; Get-Content $f.FullName }
+          if ($left.Count -ne 0) { throw "the worker left $($left.Count) file(s) behind" }
+          if ($sos.Count -lt 3) { throw "only $($sos.Count) of 3 namespaces were compiled" }
 
       - name: Write the OpenSSL app
         run: |

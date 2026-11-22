@@ -1331,22 +1331,54 @@
 (define (aot-async?)
   (and (not (aot-env-off? "JOLT_AOT_ASYNC"))
        (not (ldr-build-aot-cache?))))
-(define aot-worker-state (vector #f #f #f))   ; #(manifest out-port process) once started
+;; #(manifest out-port process owner-lock) once started
+(define aot-worker-state (vector #f #f #f #f))
+;; aot-jobs-<pid>-<nonce>.edn: the pid says whose it is, and the nonce keeps two
+;; runs that were handed the same pid (reuse, or Wine, which gives every
+;; top-level process the same one) from sharing a manifest.
+(define (aot-manifest-name dir)
+  (string-append dir "/aot-jobs-" (number->string (get-process-id))
+                 "-" (number->string (sa-epoch-ms) 36)
+                 "-" (number->string (random 1679616) 36) ".edn"))
+;; Each side of a manifest says it is alive by holding a lock beside it
+;; (spawn.ss jolt-lock-hold!): the parent on <mf>.plock for its whole life, the
+;; worker on <mf>.wlock. The OS drops a lock when its holder dies, however it
+;; dies, so neither the worker's watch of its parent nor a later run's sweep
+;; depends on a pid that may have been reused.
+(define (aot-owner-lock mf) (string-append mf ".plock"))
+(define (aot-worker-lock mf) (string-append mf ".wlock"))
 (define (aot-worker-start!)
   (let ((exe (aot-self-exe)))
     (and exe (aot-worker-capable? exe)
-         (let* ((mf (string-append (aot-cache-subdir) "/aot-jobs-"
-                                   (number->string (get-process-id)) ".edn"))
-                (out (guard (e (else #f)) (open-output-file mf 'replace))))
+         (let* ((dir (aot-cache-subdir))
+                (mf (aot-manifest-name dir))
+                (out (begin
+                       (aot-sweep-dead-workers! dir)
+                       (vector-set! aot-worker-state 3 (jolt-lock-hold! (aot-owner-lock mf)))
+                       (guard (e (else #f)) (open-output-file mf 'replace)))))
            (and out
                 (or (aot-worker-spawn! exe mf out)
-                    (begin (close-port out) #f)))))))
+                    (begin (close-port out)
+                           (let ((tok (vector-ref aot-worker-state 3)))
+                             (when tok (jolt-lock-release! tok))
+                             (vector-set! aot-worker-state 3 #f))
+                           (aot-worker-cleanup! mf #f)
+                           #f)))))))
 (define (aot-worker-spawn! exe mf out)
   ;; never waited on: it outlives this process, finishing the jobs written
-  ;; before the exit (aot-compile-worker watches the pid for that)
-  (let ((p (jolt-spawn-worker (list exe "--aot-worker" mf) (string-append mf ".log"))))
+  ;; before the exit (aot-compile-worker watches the pid for that). Detached, so
+  ;; a ^C that ends this run leaves it to finish and clean up.
+  (let ((p (jolt-spawn-detached-worker (list exe "--aot-worker" mf) (string-append mf ".log"))))
     (and p
          (begin
+           ;; the manifest's first line names the worker, for the sweep of a
+           ;; later run (aot-sweep-dead-workers!); not a job, so the worker skips it
+           (let ((pid (jolt-worker-pid p)))
+             (when pid
+               (guard (e (else #f))
+                 (write (list 'worker pid) out)
+                 (newline out)
+                 (flush-output-port out))))
            (vector-set! aot-worker-state 0 mf)
            (vector-set! aot-worker-state 1 out)
            (vector-set! aot-worker-state 2 p)
@@ -1392,11 +1424,9 @@
 ;; namespace a long-running program requires late. An idle worker polls from
 ;; 50ms backing off to ~1s, so it costs one small read a second.
 ;;
-;; The parent's pid is in the manifest's name (aot-jobs-<pid>.edn) — it wrote
-;; that file, and it is the one that keeps appending to it. kill(pid, 0) is the
-;; aliveness probe: 0 for a process of this uid. A host where the probe itself
-;; fails reads as dead, which costs only the jobs in flight (their namespaces
-;; miss again next run).
+;; The parent's pid is in the manifest's name (aot-jobs-<pid>-<nonce>.edn, or
+;; aot-jobs-<pid>.edn from before the nonce) -- it wrote that file, and it is the
+;; one that keeps appending to it. -> the pid, or #f for any other name.
 (define (aot-manifest-owner manifest)
   (guard (e (else #f))
     (let* ((base (path-last manifest))
@@ -1405,18 +1435,79 @@
       (and (fx>? n (fx+ pn sn))
            (string=? pre (substring base 0 pn))
            (string=? suf (substring base (fx- n sn) n))
-           (string->number (substring base pn (fx- n sn)))))))
+           (let* ((mid (substring base pn (fx- n sn)))
+                  (dash (let scan ((i 0))
+                          (cond ((fx=? i (string-length mid)) i)
+                                ((char=? (string-ref mid i) #\-) i)
+                                (else (scan (fx+ i 1))))))
+                  (pid (string->number (substring mid 0 dash))))
+             (and (fixnum? pid) (fx>? pid 0) pid))))))
 (define (aot-proc-alive? pid) (jolt-pid-alive? pid))
-;; The manifest and an empty log go with the worker: each run that missed has
-;; its own pair, and nothing else reads them once the parent is gone.
-(define (aot-worker-cleanup! manifest)
-  (guard (e (else #f)) (delete-file manifest #f))
+;; Is the process behind LOCK (held by it for its whole life) still running?
+;; The lock answers when the host can say. Otherwise PID, if there is one, is
+;; probed, with the pid-reuse risk that carries; with neither, #f.
+(define (aot-lock-alive? lock pid)
+  (case (jolt-lock-state lock)
+    ((held) #t)
+    ((free) #f)
+    (else (and pid (aot-proc-alive? pid) #t))))
+;; Everything a run's manifest has beside it goes with the worker: each run that
+;; missed has its own set, and nothing else reads them once the parent is gone.
+;; WORKER-LOCK is the worker's own token, released first so its lock file can go
+;; (Windows refuses to delete a file held open). A non-empty log stays, for
+;; whoever wants to read what went wrong.
+(define (aot-worker-cleanup! manifest worker-lock)
+  (when worker-lock (jolt-lock-release! worker-lock))
+  (for-each (lambda (f) (guard (e (else #f)) (delete-file f #f)))
+            (list manifest (aot-owner-lock manifest) (aot-worker-lock manifest)))
   (let ((log (string-append manifest ".log")))
     (guard (e (else #f))
       (when (and (file-exists? log) (fx=? 0 (string-length (read-file-string log))))
         (delete-file log #f)))))
+;; The worker's pid, from the (worker PID) line its parent wrote first, or #f.
+(define (aot-manifest-worker manifest)
+  (guard (e (else #f))
+    (let* ((ip (open-input-file manifest))
+           (x (guard (e (else #f)) (read ip))))
+      (close-port ip)
+      (and (pair? x) (eq? (car x) 'worker) (pair? (cdr x)) (fixnum? (cadr x)) (cadr x)))))
+;; Only the worker cleans up after a run, so a worker that died before it could
+;; (killed with its process group, kill -9, a crash, a reboot) left its manifest,
+;; its log, its locks and the partial fasl of the job it was on in the cache for
+;; good. A run that starts a worker first removes what such workers left: every
+;; manifest whose parent AND worker are gone, with the <so>.part<worker> of each
+;; of its jobs. The locks say who is gone (aot-lock-alive?). A worker that never
+;; took its lock (it died starting, or the host has no locks) is asked by the pid
+;; on the manifest's first line, and a manifest without one (its parent died
+;; between the spawn and the write) is only removed once it is an hour old.
+(define aot-headerless-manifest-grace-seconds 3600)
+(define (aot-sweep-dead-workers! dir)
+  (guard (e (else #f))
+    (let ((now (div (sa-epoch-ms) 1000)))
+      (for-each
+        (lambda (name)
+          (let* ((mf (string-append dir "/" name))
+                 (owner (aot-manifest-owner mf)))
+            (when (and owner
+                       (not (equal? mf (vector-ref aot-worker-state 0)))
+                       (not (aot-lock-alive? (aot-owner-lock mf) owner)))
+              (let ((w (aot-manifest-worker mf)))
+                (when (case (jolt-lock-state (aot-worker-lock mf))
+                        ((held) #f)
+                        ((free) #t)
+                        (else (if w
+                                  (not (aot-proc-alive? w))
+                                  (> (- now (aot-file-seconds mf)) aot-headerless-manifest-grace-seconds))))
+                  (when w
+                    (for-each (lambda (job)
+                                (guard (e (else #f))
+                                  (delete-file (string-append (cadr job) ".part" (number->string w)) #f)))
+                              (aot-manifest-jobs mf)))
+                  (aot-worker-cleanup! mf #f))))))
+        (directory-list dir)))))
 (define (aot-compile-worker manifest)
-  (let ((owner (aot-manifest-owner manifest)))
+  (let ((owner (aot-manifest-owner manifest))
+        (lock (jolt-lock-hold! (aot-worker-lock manifest))))
     (let loop ((done 0) (idle 0))
       (let ((jobs (aot-manifest-jobs manifest)))
         (cond
@@ -1425,11 +1516,13 @@
            (loop (fx+ done 1) 0))
           ;; the parent is gone: no job can arrive after it, and the read above
           ;; came after its last flush
-          ((and owner (not (aot-proc-alive? owner)))
-           (aot-worker-cleanup! manifest))
+          ((and owner (not (aot-lock-alive? (aot-owner-lock manifest) owner)))
+           (aot-worker-cleanup! manifest lock))
           ;; no owner to watch (a manifest not named by a pid): the old idle
           ;; window, ~10s at the capped poll
-          ((and (not owner) (fx>=? idle 20)) #t)
+          ((and (not owner) (fx>=? idle 20))
+           (when lock (jolt-lock-release! lock))
+           (guard (e (else #f)) (delete-file (aot-worker-lock manifest) #f)))
           ;; make-time is (type NANOSECONDS seconds). The reversed reading slept
           ;; for a year and a half — and with it the whole async cache, since a
           ;; worker that never wakes never sees the jobs appended after its first

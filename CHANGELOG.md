@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`#=` reads a var.** `(read-string "#=(var clojure.core/inc)")` under
   `*read-eval*` threw `ClassCastException`: the reader tried to put the var's
   own metadata back on it as reader metadata.
+- A `ProcessBuilder` whose directory does not exist threw
+  `IOException: posix_spawn failed (errno 2)`, and through the shell fallback
+  it started anyway. `start` now throws what the JDK throws,
+  `Cannot run program "cat" (in directory "/nonexistdir"): error=2, No such file or directory`
+  (`error=20, Not a directory` for a file), and every start failure, a missing
+  program or an unopenable redirect file included, names the directory when
+  one was set. `clojure.java.shell` and `jolt.process` surface the same.
+- On Windows every child process jolt started inherited a handle to each file
+  jolt had open, so a file could not be deleted or renamed while any child
+  that started after it was opened was still running. A child now inherits
+  only the standard handles it was given, as on the JVM.
+- `(.directory pb nil)` failed the next `start` instead of going back to the
+  default directory, and `(.directory pb)` with no argument was not there to
+  read the setting back.
 - A hash map or set ordered a collision bucket and its neighbours as the JVM
   does not. A key whose hash differed from a bucket's was appended to the
   bucket on its slot instead of the bucket nesting one level down
