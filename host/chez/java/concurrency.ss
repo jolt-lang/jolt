@@ -5623,6 +5623,28 @@
                  "TRAP" "ABRT" "CHLD" "CONT" "TSTP" "PIPE" "STKFLT" "EMT" "INFO"))))
 (define jolt-watched-sigset
   (and jolt-sigmask-ok? (jolt-make-sigset (append jolt-shutdown-signals jolt-user-signals))))
+
+;; Every collection runs with all of those blocked on the collecting thread. Chez's
+;; parallel collector starts its sweeper threads from inside a collection, and a
+;; new thread takes the mask of the thread that made it: the fork guard below
+;; never sees them. A collection run while that thread had a signal unblocked (a
+;; spawn under jolt-with-empty-sigmask, the watcher re-raising a signal nobody
+;; handles, park-until-interrupt's SIGINT, the primordial before arming) left
+;; sweepers that never block it, for the life of the process. Without the relay
+;; the kernel could hand one of the watcher's signals to a sweeper at SIG_DFL and
+;; end the process (a program's own Signal/raise USR2 killed it, exit 140); with
+;; it, a ^C landing there reached Chez's SIGINT handler on a thread that is not
+;; the main one, which drops it. A sweeper never runs jolt code, so it takes no
+;; signal at all. All of them, not jolt-signal-sigset: a sweeper started before
+;; arming outlives the arming that decides which signals are the watcher's.
+;; Collections are serialized, so one buffer holds the mask to put back.
+(define jolt-collect-old-mask (and jolt-sigmask-ok? (sa-foreign-alloc 128)))
+(define (jolt-collect-with-signals-blocked collect!)
+  (dynamic-wind
+    (lambda () (c-pthread-sigmask jolt-sig-block-how jolt-watched-sigset jolt-collect-old-mask))
+    collect!
+    (lambda () (c-pthread-sigmask jolt-sig-setmask-how jolt-collect-old-mask 0))))
+(when jolt-sigmask-ok? (sa-gc-set-collect-guard! jolt-collect-with-signals-blocked))
 ;; #t once the entry point has claimed the user signals (jolt-arm-signals!). Read
 ;; by the fork guard and by arming, both of which then use jolt-watched-sigset.
 (define jolt-user-signals-taken (box #f))

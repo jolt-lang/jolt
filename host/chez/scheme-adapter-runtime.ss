@@ -1474,23 +1474,33 @@
                  (collect (collect-maximum-generation)))))))
     (collect-request-handler
       (lambda ()
-        (if sa-full-collect-requested?
-            ;; sa-gc-collect's full collection, run here because another thread
-            ;; was active: what its direct path does, and no more -- it is not a
-            ;; young collection for the nursery's time share to count
-            (begin
-              (set! sa-full-collect-requested? #f)
-              (collect (collect-maximum-generation))
-              (sa-pin-drain-after-collect!))
-            (let ((t0 (sa-monotonic-ns)))
-              (sa-collect-young!)
-              (maintain collect-full!)
-              (sa-pin-drain-after-collect!)
-              (let ((t1 (sa-monotonic-ns)))
-                (observe (- t1 t0) (- t1 last-end))
-                (set! last-end t1)))))))
+        (sa-gc-collect-guard
+          (lambda ()
+            (if sa-full-collect-requested?
+                ;; sa-gc-collect's full collection, run here because another thread
+                ;; was active: what its direct path does, and no more -- it is not a
+                ;; young collection for the nursery's time share to count
+                (begin
+                  (set! sa-full-collect-requested? #f)
+                  (collect (collect-maximum-generation))
+                  (sa-pin-drain-after-collect!))
+                (let ((t0 (sa-monotonic-ns)))
+                  (sa-collect-young!)
+                  (maintain collect-full!)
+                  (sa-pin-drain-after-collect!)
+                  (let ((t1 (sa-monotonic-ns)))
+                    (observe (- t1 t0) (- t1 last-end))
+                    (set! last-end t1)))))))))
   (set! sa-collect-handler-installed? #t)
   #t)
+;; (sa-gc-set-collect-guard! guard): GUARD is called with a thunk that runs one
+;; collection, and must call it exactly once. The handler above runs every
+;; collection through it. Chez's parallel collector starts its sweeper threads
+;; from inside a collection, and a new thread takes the mask of the thread that
+;; made it, so the guard is where the host gives them the mask every other
+;; thread is forked with (concurrency.ss jolt-collect-with-signals-blocked).
+(define sa-gc-collect-guard (lambda (collect!) (collect!)))
+(define (sa-gc-set-collect-guard! guard) (set! sa-gc-collect-guard guard))
 ;; A tight full collection within ROOM free bytes: every generation from 1 up
 ;; is marked where it is rather than copied, in ONE collection. Chez marks a
 ;; segment only when its generation is at least both in-place-minimum-generation

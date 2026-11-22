@@ -133,6 +133,10 @@
 (define (sa-gc-install-after-collect! maintain observe)
   #f)
 
+;; (sa-gc-set-collect-guard! guard): no collection hook to run it from (above),
+;; and Gambit's collector starts no threads of its own; nothing to do.
+(define (sa-gc-set-collect-guard! guard) (void))
+
 ;; (sa-gc-install-stall-watch! seconds on-stall) -> boolean
 ;; Permitted degradation: Gambit's collector is not a rendezvous of active
 ;; threads that a foreign call can hold off, and it exposes no hook on the
