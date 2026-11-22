@@ -942,6 +942,20 @@
                   (make-hnode (hamt-ior eb nb) (vector (cons ek ev) (cons k v)))
                   (make-hnode (hamt-ior eb nb) (vector (cons k v) (cons ek ev)))))))))
 
+(define (node-insert bm arr bit i k v added)
+  (set-box! added #t)
+  (make-hnode (hamt-ior bm bit) (vec-insert arr i (cons k v))))
+
+(define (node-with-child node bm arr i child replacement)
+  (if (eq? replacement child) node (make-hnode bm (vec-set arr i replacement))))
+
+(define (hcoll-assoc child entry k v added)
+  (cond ((not entry)
+         (set-box! added #t)
+         (make-hcoll (hcoll-hash child) (append (hcoll-alist child) (list (cons k v)))))
+        ((eq? (cdr entry) v) child)
+        (else (make-hcoll (hcoll-hash child) (alist-replace entry v (hcoll-alist child))))))
+
 ;; Answers the node ITSELF when the key is present with that very value — the
 ;; reference's `if(val == valOrNode) return this` — so pmap-assoc can hand the
 ;; caller's map back untouched (the eq? test at the root), the way both
@@ -949,29 +963,31 @@
 (define (node-assoc node shift h k v added)
   (node-assoc-by node shift h k v added jolt=2 key-hash))
 (define (node-assoc-by node shift h k v added same? stored-hash)
-  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
+  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node))
+         (i (hamt-arr-index bm bit)))
     (if (hamt=? 0 (hamt-and bm bit))
-        (begin (set-box! added #t)
-               (make-hnode (hamt-ior bm bit) (vec-insert arr (hamt-arr-index bm bit) (cons k v))))
-        (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
+        (node-insert bm arr bit i k v added)
+        (let ((child (vector-ref arr i)))
           (cond
             ((hnode? child)
-             (let ((nc (node-assoc-by child (fx+ shift 5) h k v added same? stored-hash)))
-               (if (eq? nc child) node (make-hnode bm (vec-set arr i nc)))))
+             (node-with-child node bm arr i child
+               (node-assoc-by child (fx+ shift 5) h k v added same? stored-hash)))
             ((hcoll? child)
-             (let* ((al (hcoll-alist child)) (p (assoc-by same? k al)))
-               (cond ((not p)
-                      (set-box! added #t)
-                      (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (append al (list (cons k v)))))))
-                     ((eq? (cdr p) v) node)
-                     (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (alist-replace p v al))))))))
+             (node-with-child node bm arr i child
+               (hcoll-assoc child (assoc-by same? k (hcoll-alist child)) k v added)))
             ;; replace: the leaf keeps ITS key, not the equal one handed in
             ((same? (car child) k)
-             (if (eq? (cdr child) v) node (make-hnode bm (vec-set arr i (cons (car child) v)))))
-            (else (set-box! added #t)
-                  (let ((sub (split-hashed-leaves (fx+ shift 5) (stored-hash (car child))
-                                                  (car child) (cdr child) h k v)))
-                    (make-hnode bm (vec-set arr i sub)))))))))
+             (node-assoc-leaf node bm arr i child v))
+            (else (node-split-leaf bm arr i child shift h k v added stored-hash)))))))
+
+(define (node-assoc-leaf node bm arr i child v)
+  (if (eq? (cdr child) v) node (make-hnode bm (vec-set arr i (cons (car child) v)))))
+
+(define (node-split-leaf bm arr i child shift h k v added stored-hash)
+  (set-box! added #t)
+  (make-hnode bm
+    (vec-set arr i (split-hashed-leaves (fx+ shift 5) (stored-hash (car child))
+                                       (car child) (cdr child) h k v))))
 
 (define (stable-hamt-key? k)
   (or (fixnum? k) (keyword-t? k) (char? k)))
@@ -1318,23 +1334,28 @@
 ;; the map may stay in array mode; otherwise the slots become a trie first and
 ;; the key goes in there. Replacing a key keeps its position. Assoc of the value
 ;; already held is the map itself, in both modes.
+(define (pmap-hash-write-result m root r added)
+  (cond ((unbox added) (make-pmap r (fx+ (pmap-cnt m) 1)))
+        ((eq? r root) m)
+        (else (make-pmap r (pmap-cnt m)))))
 (define (pmap-hash-assoc m root k v)
   (let* ((added (box #f)) (r (node-assoc root 0 (key-hash k) k v added)))
-    (cond ((unbox added) (make-pmap r (fx+ (pmap-cnt m) 1)))
-          ((eq? r root) m)
-          (else (make-pmap r (pmap-cnt m))))))
+    (pmap-hash-write-result m root r added)))
+
+(define (pmap-array-assoc-at m root i k v)
+  (cond ((fx>=? i 0)
+         (if (eq? (vector-ref root (fx+ i 1)) v)
+             m
+             (make-pmap (vec-set root (fx+ i 1) v) (pmap-cnt m))))
+        ((pmap-array-keep? (pmap-cnt m) k)
+         (make-pmap (vec-append2 root k v) (fx+ (pmap-cnt m) 1)))
+        (else (pmap-hash-assoc m (amap->hnode root) k v))))
+
 (define (pmap-assoc m k v)
   (let ((root (pmap-root m)))
     (if (hnode? root)
         (pmap-hash-assoc m root k v)
-        (let ((i (amap-index root (vector-length root) k)))
-          (cond ((fx>=? i 0)
-                 (if (eq? (vector-ref root (fx+ i 1)) v)
-                     m
-                     (make-pmap (vec-set root (fx+ i 1) v) (pmap-cnt m))))
-                ((pmap-array-keep? (pmap-cnt m) k)
-                 (make-pmap (vec-append2 root k v) (fx+ (pmap-cnt m) 1)))
-                (else (pmap-hash-assoc m (amap->hnode root) k v)))))))
+        (pmap-array-assoc-at m root (amap-index root (vector-length root) k) k v))))
 ;; force-hash insert for rebuilding a map whose final mode is already decided
 ;; (hash-map ctor, a set's backing map).
 (define (pmap-put-hash m k v)

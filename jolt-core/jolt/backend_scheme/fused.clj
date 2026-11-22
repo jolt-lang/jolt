@@ -1,13 +1,16 @@
 (ns jolt.backend-scheme.fused
-  "Fused call lowering on Chez: explicit filter/map into empty vectors.
+  "Fused call lowering on Chez: explicit filter/map into empty vectors and
+  guarded sibling assoc-in chains.
   Each emitter checks linkage and emits a runtime fallback when a linked root
   or runtime domain guard fails."
   (:require [clojure.string :as str]
             [jolt.host :refer [seed-callable?]]
+            [jolt.ir :as ir]
             [jolt.passes.transducers :as transducers]
             [jolt.backend-scheme.session :as session
-             :refer [direct-link? fresh-label node-line register-callsite!
-                     seed-mint? static-callee target with-site]]
+             :refer [*trace-site* direct-link? fresh-label node-line
+                     register-callsite! seed-mint? static-callee target
+                     trace-frames? with-site]]
             [jolt.backend-scheme.hoist :refer [*const-pool* hoist-seed-root]]
             [jolt.backend-scheme.calls :refer [emit-call node-inline-chain plain-call]]))
 
@@ -71,5 +74,127 @@
         (when-let [operands (transducers/filter-map-operands node)]
           (emit-filter-map-walk emit node operands compose tail?))))))
 
+(defn- assoc-in-call? [node]
+  (let [f (:fn node)]
+    (and (= :invoke (:op node)) (= :var (:op f))
+         (= "clojure.core" (:ns f)) (= "assoc-in" (:name f))
+         (= 3 (count (:args node))) (not (:clear-caps node)))))
+
+(defn- stable-edit-operand? [node]
+  (and (not (:clear-caps node)) (#{:local :const} (:op node))))
+
+(defn- same-edit-key? [a b]
+  (case (:op a)
+    ;; Only walk directly nested calls and their literal vectors. There is no
+    ;; binder between these occurrences, so a name identifies the same local.
+    :local (and (= :local (:op b)) (= (:name a) (:name b)))
+    :const (and (= :const (:op b)) (keyword? (:val a)) (= (:val a) (:val b)))
+    false))
+
+(defn- assoc-in-chain [node]
+  (loop [call node edits []]
+    (let [[m path value] (:args call)
+          keys (:items path)]
+      (if (and (assoc-in-call? call) (= :vector (:op path)) (not (:clear-caps path))
+               (<= 2 (count keys) 5) (every? stable-edit-operand? keys)
+               (stable-edit-operand? value))
+        (when (< (count edits) 4)
+          (recur m (conj edits [call keys value])))
+        (when (and (<= 2 (count edits)) (stable-edit-operand? call))
+          (let [paths (mapv second edits)
+                path (first paths)
+                shared (when (every? #(= (count path) (count %)) paths)
+                         (count (take-while
+                                  (fn [i] (every? #(same-edit-key? (nth path i) (nth % i)) paths))
+                                  (range (dec (count path))))))]
+            (when (and shared (pos? shared) (<= (- (count path) shared) 2))
+              {:base call :prefix (subvec path 0 shared)
+               :edits (mapv (fn [[call keys v]] [call (subvec keys shared) v])
+                            (reverse edits))})))))))
+
+(defn- emit-assoc-in-map-edit [emit m key child body]
+  (plain-call "jolt-assoc-in-map-edit" [m (emit key) (str "(lambda (" child ") " body ")")]))
+
+(defn- emit-assoc-in-suffix [emit m keys value]
+  (let [leaf (fn [m key] (plain-call "jolt-assoc-in-leaf-edit" [m (emit key) (emit value)]))]
+    (if (= 1 (count keys))
+      (leaf m (first keys))
+      (let [child (fresh-label "_ae$")]
+        (emit-assoc-in-map-edit emit m (first keys) child (leaf child (second keys)))))))
+
+(defn- ordered-assoc-in-chain? [edits linked tail?]
+  ;; Ordinary ordered-call binds a nested receiver before a dynamic path and
+  ;; the linked callee. A traced tail call also binds its operands first.
+  ;; Otherwise a constant path leaves the receiver and root read in the same
+  ;; Scheme let, whose evaluation order Chez may choose at each site.
+  (let [traced-tail? (and tail? (trace-frames?) *trace-site* (not (contains? session/*trace-self* linked)))
+        end (if traced-tail? (dec (count edits)) (count edits))]
+    (every? (fn [[call]] (not (ir/const-coll-node? (nth (:args call) 1) true)))
+            (subvec edits 1 end))))
+
+(defn- emit-assoc-in-edits [emit initial edits linked stop]
+  (letfn [(step [m i]
+            (if-let [[_ keys value] (get edits i)]
+              (let [first? (zero? i)
+                    proc (when-not first? (fresh-label "_ae$"))
+                    next-map (fresh-label "_ae$")
+                    edit (emit-assoc-in-suffix emit m keys value)
+                    ;; The first root is checked before descent. On a later
+                    ;; miss, return the last good subtree for the ascent to
+                    ;; rebuild. Save the exact callable already read for i.
+                    attempt (if first? edit (str "(and (eq? " proc " jolt-assoc-in-original) " edit ")"))
+                    miss (if first? "#f" (str "(begin (set! " stop " (cons " i " " proc ")) " m ")"))]
+                (str "(let* (" (when proc (str "(" proc " " linked ") "))
+                     "(" next-map " " attempt "))"
+                     " (if " next-map " " (step next-map (inc i)) " " miss "))"))
+              m))]
+    (step initial 0)))
+
+(defn- emit-unfused-assoc-in [emit base edits first-proc linked stop tail?]
+  (let [index (fresh-label "_ae$")
+        last-i (dec (count edits))
+        names (into [base] (map (fn [_] (fresh-label "_ae$"))) (rest edits))
+        calls (mapv (fn [i [call _ value]]
+                      (let [path (fresh-label "_ae$")
+                            v (fresh-label "_ae$")
+                            m (nth names i)
+                            tail-edit? (and tail? (= i last-i))
+                            proc (if (zero? i) first-proc (str "(cdr " stop ")"))
+                            captured (emit-fused-site-call call tail-edit? "jolt-assoc-in-apply" [proc m path v])
+                            dispatch (if (zero? i) captured
+                                         (str "(if (fx=? " index " " i ") " captured " "
+                                              (emit-fused-site-call call tail-edit? linked [m path v]) ")"))
+                            apply-edit (str "(let* ((" path " " (emit (nth (:args call) 1)) ")"
+                                            " (" v " " (emit value) ")) " dispatch ")")]
+                        (if (= i last-i) apply-edit
+                            (str "(if (fx>=? " i " " index ") " apply-edit " " m ")"))))
+                    (range (count edits)) edits)
+        bindings (map (fn [nm expr] (str "(" nm " " expr ")")) (rest names) (pop calls))]
+    (str "(let* ((" index " (if " stop " (car " stop ") 0)) " (str/join " " bindings) ") " (peek calls) ")")))
+
+(defn- emit-assoc-in-chain [emit node tail?]
+  (when (and (assoc-in-call? node) (chez-linked-fast-path?))
+    (let [linked (seed-callable? nil "clojure.core" "assoc-in" 3)]
+      (when (string? linked)
+        (when-let [{:keys [base prefix edits]} (assoc-in-chain node)]
+          (when (ordered-assoc-in-chain? edits linked tail?)
+            (let [base-name (fresh-label "_ae$")
+                  first-proc (fresh-label "_ae$")
+                  stop (fresh-label "_ae$")
+                  result (fresh-label "_ae$")
+                  frames (into [base-name] (map (fn [_] (fresh-label "_ae$"))) prefix)
+                  original-base (emit base)
+                  edited (reduce (fn [body [key m child]] (emit-assoc-in-map-edit emit m key child body))
+                                 (emit-assoc-in-edits emit (peek frames) edits linked stop)
+                                 (reverse (map vector prefix frames (rest frames))))
+                  fallback (emit-unfused-assoc-in emit base-name edits first-proc linked stop tail?)]
+              (str "(let* ((" base-name " " original-base ")"
+                   " (" first-proc " " linked ")"
+                   " (" stop " #f)"
+                   " (" result " (and (eq? " first-proc " jolt-assoc-in-original) " edited ")))"
+                   " (if (and " result " (not " stop ")) " result
+                   " (let ((" base-name " (or " result " " base-name "))) " fallback ")))"))))))))
+
 (defn emit-fused-invoke [emit node tail?]
-  (emit-vector-filter-map emit node tail?))
+  (or (emit-vector-filter-map emit node tail?)
+      (emit-assoc-in-chain emit node tail?)))

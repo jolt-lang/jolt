@@ -80,6 +80,252 @@
 (set-optimize! #t)
 (set-direct-link-flag! #t)
 
+(define assoc-in-pair
+  "(defn sibling-edits [m k a b] (-> m (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))")
+(let ((e (code-part (emitf "u" assoc-in-pair))))
+  (ok "assoc-in chain emits guards and ordered sibling writes"
+      (and (has? e "jolt-assoc-in-original") (has? e "(jolt-assoc-in-map-edit ")
+           (has? e "(jolt-assoc-in-leaf-edit ") (has? e "jv$clojure.core/assoc-in"))))
+(for-each
+  (lambda (form)
+    (ok (string-append "ordinary assoc-in emission: " form)
+        (not (has? (code-part (emitf "u" form)) "(jolt-assoc-in-map-edit "))))
+  '("(defn no-edit [assoc-in m k a b] (-> m (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root k] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root (k) :a] a) (assoc-in [:root (k) :b] b)))"
+    "(defn no-edit [m k a b] (-> m (assoc-in [:root k :a] (a)) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m k a b] (-> (m) (assoc-in [:root k :a] a) (assoc-in [:root k :b] b)))"
+    "(defn no-edit [m a b] (-> m (assoc-in [:root :shape :a] a) (assoc-in [:root :shape :b] b)))"
+    "(defn no-edit [m k a b] (assoc-in (let [k :other] (assoc-in m [:root k :a] a)) [:root k :b] b))"))
+(set-direct-link-flag! #f)
+(ok "dynamic calls keep ordinary assoc-in dispatch"
+    (not (has? (code-part (emitf "u" assoc-in-pair)) "(jolt-assoc-in-map-edit ")))
+(set-direct-link-flag! #t)
+(ev assoc-in-pair)
+(ev "(defrecord EditRecord [root])")
+(ok "assoc-in keeps nil and missing, native and record paths, and retained versions"
+    (ev "(let [ordinary (var-get #'clojure.core/assoc-in)
+               k (symbol \"namespace\") leaf (with-meta (hash-map :b 9) {:leaf true})
+               root (with-meta {:root {k leaf}} {:root true})]
+           (and (every? (fn [m]
+                          (= (sibling-edits m k nil false)
+                             (ordinary (ordinary m [:root k :a] nil) [:root k :b] false)))
+                        [nil {} {:root nil} {:root {k nil}} root (->EditRecord {k leaf})])
+                (= (sibling-edits nil nil 1 2) {:root {nil {:a 1 :b 2}}})
+                (= (sibling-edits nil [:composite] 1 2) {:root {[:composite] {:a 1 :b 2}}})
+                (= (sibling-edits {:root [{}]} 0 1 2) {:root [{:a 1 :b 2}]})
+                (= 9 (get-in root [:root k :b]))
+                (= {:root true} (meta (sibling-edits root k 1 2)))
+                (= {:leaf true} (meta (get-in (sibling-edits root k 1 2) [:root k])))
+                (= (class leaf) (class (get-in (sibling-edits root k 1 2) [:root k])))))"))
+(ok "assoc-in compares no-op identity without canonicalizing canceled edits"
+    (ev "(let [old (with-meta {:p {:x :old}} {:retained true})
+               same (-> old (assoc-in [:p :x] :old) (assoc-in [:p :x] :old))
+               changed (-> old (assoc-in [:p :x] :new) (assoc-in [:p :x] :old))]
+           (and (identical? old same) (= old changed)
+                (not (identical? old changed))
+                (not (identical? (:p old) (:p changed)))))"))
+(ev "(defn repeated-edit [m k a b] (-> m (assoc-in [k :x] a) (assoc-in [k :x] b)))")
+(ok "fused assoc-in preserves no-op and canceled edit identities"
+    (ev "(let [edit (var-get #'repeated-edit) m {:p {:x :old}}
+               same (edit m :p :old :old)
+               changed (edit m :p :new :old)]
+           (and (identical? m same) (= m changed) (not (identical? m changed))
+                (not (identical? (:p m) (:p changed)))))"))
+(ok "assoc-in preserves HAMT collision entries and the original stored UUID"
+    (ev "(let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+               sibling #uuid \"00000000-0000-0000-0000-000100000000\"
+               missing #uuid \"00000001-0000-0000-0000-000000000000\"
+               probe (parse-uuid (str stored))
+               m {:root (hash-map stored {} sibling :retained)}
+               replaced (sibling-edits m probe 1 2)
+               inserted (sibling-edits m missing false nil)]
+           (and (= (hash stored) (hash sibling) (hash missing))
+                (= {:a 1 :b 2} (get-in replaced [:root stored]))
+                (= :retained (get-in replaced [:root sibling]))
+                (identical? stored (key (find (:root replaced) probe)))
+                (= {:a false :b nil} (get-in inserted [:root missing]))
+                (= :retained (get-in inserted [:root sibling]))
+                (nil? (get-in m [:root missing]))))"))
+(ok "overlapping paths and externally retained intermediate maps stay ordered"
+    (ev "(let [old {:root {:shape {:discarded 0}}} child {:keep true}
+               first (assoc-in old [:root :shape] child)
+               second (assoc-in first [:root :shape :added] false)]
+           (and (= second (-> old (assoc-in [:root :shape] child)
+                                   (assoc-in [:root :shape :added] false)))
+                (= {:discarded 0} (get-in old [:root :shape]))
+                (identical? child (get-in first [:root :shape]))
+                (= {:keep true :added false} (get-in second [:root :shape]))))"))
+(ok "assoc-in fallback preserves an earlier bad receiver and operand order"
+    (ev "(let [seen (atom []) note (fn [k v] (swap! seen conj k) v)
+               run (fn [f] (try [(f)] (catch Throwable e [(class e) (.getMessage e)])))
+               invalid {:root {:bad 1}}
+               generic (var-get #'clojure.core/assoc-in)]
+           (and (= (run #(sibling-edits invalid :bad 1 2))
+                   (run #(generic (generic invalid [:root :bad :a] 1) [:root :bad :b] 2)))
+                (not= [:returned]
+                      (run #(do (-> (note :m invalid)
+                                    (assoc-in [:root (note :key :bad) :a] (note :value 1))
+                                    (assoc-in [:root (note :later-key :bad) :b] (note :later-value 2)))
+                                :returned)))
+                (= [:m :key :value] @seen)))"))
+(ok "assoc-in follows successive live core roots after a redefinition"
+    ;; Call the compiled body so inlining cannot turn its paths into constants.
+    (ev "(let [edit (var-get #'sibling-edits) seen (atom [])
+               next (fn [m path v] (swap! seen conj :next) (assoc m (peek path) v))
+               init (fn [m path v] (swap! seen conj :init)
+                      (alter-var-root #'clojure.core/assoc-in (constantly next))
+                      (assoc m (peek path) v))]
+           (with-redefs [clojure.core/assoc-in init]
+             (and (= {:a 1 :b 2} (edit {} :shape 1 2))
+                  (= [:init :next] @seen))))"))
+
+;; Both ordinary and fused array-map edits use this slot write. Install a new
+;; root after the first write has run, without changing an eligible operand.
+(let ((cell (var-cell-lookup "clojure.core" "assoc-in"))
+      (write-slot pmap-array-assoc-at)
+      (set-trace! (var-deref "jolt.backend-scheme" "set-trace-frames!"))
+      (root-key (keyword #f "root")) (shape (keyword #f "shape"))
+      (replaced (keyword #f "replaced")) (later (keyword #f "later")))
+  (define original (var-cell-root cell))
+  (define (run label trace? paths)
+    (let* ((name (format "assoc-in-rebind-~a" label))
+           (edits (apply string-append
+                         (map (lambda (path) (apply format " (assoc-in [:root ~a :~a] v)" path)) paths)))
+           (form (format "(defn ~a [m k v] (-> m~a))" name edits))
+           (ks (map (lambda (path) (keyword #f (cadr path))) paths))
+           (root (ev "(with-meta {:root {:shape {:old true}} :kept true} {:marked true})"))
+           (v (jolt-vector (keyword #f "token")))
+           (writes '()) (calls '()))
+      (define (value-at m k)
+        (jolt-get (jolt-get (jolt-get m root-key) shape) k))
+      (define (replacement marker)
+        (lambda (m path arg)
+          (set! calls (cons (list marker m path arg) calls))
+          (when (eq? marker replaced) (var-root-set! cell (replacement later)))
+          (original m path marker)))
+      (set-trace! trace?)
+      (ok (string-append name " uses fused edits")
+          (has? (code-part (emitf "u" form)) "(jolt-assoc-in-map-edit "))
+      (ev form)
+      (let ((result (dynamic-wind
+                      (lambda ()
+                        (set! pmap-array-assoc-at
+                          (lambda (m arr i k value)
+                            (let ((r (write-slot m arr i k value)))
+                              (when (memq k ks) (set! writes (cons k writes)))
+                              (when (eq? k (car ks)) (var-root-set! cell (replacement replaced)))
+                              r))))
+                      (lambda () ((var-deref "u" name) root shape v))
+                      (lambda ()
+                        (set! pmap-array-assoc-at write-slot)
+                        (var-root-set! cell original)))))
+        (ok name
+            (and (equal? (reverse writes) ks)
+                 (eq? jolt-nil (value-at root (car ks)))
+                 (eq? (jolt-meta root) (jolt-meta result))
+                 (= (length calls) (- (length ks) 1))
+                 (let loop ((i 0) (keys ks) (calls (reverse calls)) (before root))
+                   (or (null? keys)
+                       (let* ((k (car keys))
+                              (marker (cond ((= i 0) v) ((= i 1) replaced) (else later)))
+                              (path (jolt-vector root-key shape k)))
+                         (and (eq? marker (value-at result k))
+                              (or (= i 0)
+                                  (let ((entry (car calls)))
+                                    (and (eq? marker (car entry)) (clj= before (cadr entry))
+                                         (eq? (jolt-meta root) (jolt-meta (cadr entry)))
+                                         (clj= path (caddr entry)) (eq? v (cadddr entry)))))
+                              (loop (+ i 1) (cdr keys) (if (= i 0) calls (cdr calls))
+                                    (original before path marker)))))))))))
+  (run 'dynamic #f '(("k" "a") ("k" "b") ("k" "c") ("k" "d")))
+  (run 'traced-tail #t '((":shape" "a") (":shape" "b")))
+  (set-trace! #f))
+
+(ok "the UUID edit guard accepts the boot registries" (assoc-in-native-uuid?))
+
+(let ((original jolt-eq-arms) (observed 0))
+  (dynamic-wind
+    (lambda ()
+      (register-eq-arm!
+        (lambda (a b)
+          (and (juuid? a) (juuid? b)
+               (begin (set! observed (+ observed 1)) #t)))
+        (lambda (a b) #f)))
+    (lambda ()
+      (ok "a UUID equality extension keeps its original calls"
+          (ev "(defn uuid-edit-probe [mode]
+                 (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+                       k (parse-uuid (str stored)) m {:root {stored {}}}
+                       edit (var-get #'sibling-edits)
+                       generic (var-get #'clojure.core/assoc-in)
+                       result (if mode (edit m k 1 2)
+                                  (generic (generic m [:root k :a] 1) [:root k :b] 2))]
+                   (and (= {:a 1 :b 2} (get-in result [:root k]))
+                        (= {} (get-in result [:root stored]))
+                        (= 2 (count (:root result))))))"))
+      (set! observed 0)
+      (let* ((generic (ev "(uuid-edit-probe false)")) (expected observed))
+        (set! observed 0)
+        (ok "the guard does no speculative equality calls"
+            (and (ev "(uuid-edit-probe true)") generic (positive? expected) (= expected observed)))))
+    (lambda () (set! jolt-eq-arms original))))
+
+;; Use a HAMT built under the installed arm so looking up the UUID with its
+;; native hash would miss the existing entry.
+(let ((original-hash jolt-hash-arms)
+      (original-hasheq jolt-hasheq-arms)
+      (observed 0))
+  (define (custom-hash k) (set! observed (+ observed 1)) 17)
+  (define (check label install restore)
+    (dynamic-wind install
+      (lambda ()
+        (let* ((probe (ev "(fn [f]
+                             (let [stored #uuid \"00000000-0000-0000-0000-000000000001\"
+                                   k (parse-uuid (str stored))
+                                   m {:root (hash-map stored {:kept true} :other :retained)}
+                                   result (f m k 1 2)]
+                               [(get-in result [:root k]) (count (:root result))
+                                (get-in result [:root :other]) (get-in m [:root k])]))"))
+               (ordinary (ev "(let [a (var-get #'clojure.core/assoc-in)]
+                                (fn [m k x y] (a (a m [:root k :a] x) [:root k :b] y)))")))
+          (set! observed 0)
+          (let* ((expected (jolt-invoke probe ordinary))
+                 (expected-calls observed))
+            (set! observed 0)
+            (let ((actual (jolt-invoke probe (var-deref "u" "sibling-edits"))))
+              (ok label
+                  (and (positive? expected-calls) (= expected-calls observed)
+                       (clj= expected actual)
+                       (clj= expected (ev "[{:kept true :a 1 :b 2} 2 :retained {:kept true}]"))))))))
+      restore))
+  (check "a UUID hash arm gets the ordinary HAMT edits and calls"
+         (lambda () (register-hash-arm! juuid? custom-hash))
+         (lambda () (set! jolt-hash-arms original-hash)))
+  (check "a UUID hasheq arm gets the ordinary HAMT edits and calls"
+         (lambda () (set! jolt-hasheq-arms (cons (cons juuid? custom-hash) original-hasheq)))
+         (lambda () (set! jolt-hasheq-arms original-hasheq))))
+
+(ev "(defn alias-edit-probe [a base-lang lang ns-sym alias-sym target]
+       (swap! a (fn [n] (-> n
+                          (assoc-in [base-lang lang ns-sym :qualify-ns alias-sym] target)
+                          (assoc-in [base-lang lang ns-sym :aliases alias-sym] target)))))")
+(ok "assoc-in alias callback re-reads the current maps after a failed CAS"
+    (ev "(let [path [:cljc :clj 'demo] a (atom (assoc-in {} path {:version :old}))
+               changed (atom false) seen (atom [])]
+           (set-validator! a
+             (fn [proposed]
+               (let [slot (get-in proposed path)]
+                 (when (:aliases slot)
+                   (swap! seen conj (:version slot))
+                   (when (compare-and-set! changed false true)
+                     (reset! a (assoc-in {} path {:version :new :kept true})))))
+               true))
+           (alias-edit-probe a :cljc :clj 'demo 'str 'clojure.string)
+           (and (= [:old :new] @seen)
+                (= {:version :new :kept true :qualify-ns {'str 'clojure.string}
+                    :aliases {'str 'clojure.string}} (get-in @a path))))"))
+
 ;; One public site accepts both bounded native vector leaves and generic
 ;; sources. Check the executable form, since the preamble quotes the input.
 (define widths-form
