@@ -20,6 +20,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`(require 'x :reload-all)` of a namespace load-file'd from off the source
+  roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
+  kept the stale definitions in silence. The message is now RT.load's, `Could
+  not locate x__init.class, x.clj or x.cljc on classpath.`, and names the file
+  the namespace was loaded from only when it is that namespace's own file: a
+  script that did `(in-ns 'yy)` is no longer reported as yy's source.
+- **A thrown exception is not an instance of a record sharing its simple
+  name.** With `(defrecord IOException [x])` in `demo`, `(instance?
+  demo.IOException (java.io.IOException. "x"))` was true, `cast` returned, and
+  `(catch demo.IOException e …)` caught a failed `slurp`. Exceptions now ask the
+  class graph as the `:class` envelope arm does since #1795.
+- **`=` on a reify, and a deftype opposite a java.util collection, follow
+  `Util.equiv`.** A reify whose `equals` says true was `=` to `[1]`, `{}` and
+  `'()`; the JVM asks the persistent collection, which says false. A deftype
+  whose `equals` says true was not `=` to a `java.util.ArrayList` on its right,
+  because the collection was converted to a persistent one before the deftype
+  was asked.
+- **`*print-meta*` writes no `^meta` before a user `print-method`.** A record
+  with its own `print-method` printed as `^{:m 1} #R!`; the JVM's built-in
+  methods write the metadata, and a user method that replaces one writes none.
 - A hash map or set ordered a collision bucket and its neighbours as the JVM
   does not. A key whose hash differed from a bucket's was appended to the
   bucket on its slot instead of the bucket nesting one level down
