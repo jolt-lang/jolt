@@ -770,6 +770,18 @@ EOF
 check ":git/tag + short sha resolves" "git dep: tagged" \
       "$(JOLT_PWD="$tmp/gitproj" JOLT_QUIET=1 JOLT_GITLIBS_DIR="$tmp/gitlibs" "$JOLT" run -m gapp 2>&1 | tail -1)"
 
+# git runs with an argument list, not a shell line: a URL is passed as written.
+# Each argument was wrapped in double quotes for sh, where $ and backticks still
+# expand, so this one cloned "$tmp/git" plus the runner's home directory.
+odd="$tmp/git\$HOME-\`echo x\`-repo"
+cp -R "$tmp/gitrepo" "$odd"
+mkdir -p "$tmp/gitproj2/src"
+cp "$tmp/gitproj/src/gapp.clj" "$tmp/gitproj2/src/"
+printf '{:paths ["src"]\n :deps {local/gitdep {:git/url "file://%s" :git/tag "v1.0" :git/sha "%s"}}}\n' \
+  "$odd" "$short" > "$tmp/gitproj2/deps.edn"
+check "a :git/url with \$ and a backtick is passed to git as written" "git dep: tagged" \
+      "$(JOLT_PWD="$tmp/gitproj2" JOLT_QUIET=1 JOLT_GITLIBS_DIR="$tmp/gitlibs2" "$JOLT" run -m gapp 2>&1 | tail -1)"
+
 # An annotated tag carries two shas: the tag object's own, and the commit it
 # peels to. `git ls-remote` prints the tag object for refs/tags/X, so that is
 # what a deps.edn written from ls-remote output pins — cognitect-labs/test-runner

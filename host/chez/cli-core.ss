@@ -471,10 +471,6 @@
        (jolt-skip-exit-wait!)
        (prepare-build!)
        ((var-deref "jolt.host" "build-compile-worker") (cadr cli-args)))
-      ;; …and asks this first, so it never hands a worker argv to something that
-      ;; is not a jolt (under the dev launcher the process is a plain Chez).
-      ((and (pair? cli-args) (string=? (car cli-args) "--build-worker-probe"))
-       (display "jolt-build-worker\n"))
       ;; --aot-worker MANIFEST — internal: the run-path AOT cache compiling its
       ;; misses off the startup path (loader.ss aot-enqueue-compile!), spawned by
       ;; a run whose launcher set jolt-standalone-binary. Ahead of project

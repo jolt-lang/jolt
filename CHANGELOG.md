@@ -7,8 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`(jolt.host/build-id)` names the exact build that is running (#1793).**
+  It joins the jolt version, the runtime fingerprint jolt's own AOT cache keys
+  its generations on, and the Chez release, for example
+  `v0.8.28-71-g35af4916-dirty-B6-3AD3D880-chez-1041`. A tool that keeps its
+  own cache of compiled code can key on it: two builds of one dirty commit, or
+  a rebuild with other edits, share `*jolt-version*` but not the build id.
+  `jolt.image/runtime-version` stays the Chez release alone, since an image
+  holds data, and its docstring now says so.
+
 ### Fixed
 
+- A hash map or set ordered a collision bucket and its neighbours as the JVM
+  does not. A key whose hash differed from a bucket's was appended to the
+  bucket on its slot instead of the bucket nesting one level down
+  (`HashCollisionNode.assoc`), and a bucket iterated in reverse insertion
+  order: `(keys (assoc (hash-map "AaAa" 1 "BBBB" 2) 54 1 95 1))` gave
+  `(95 54 "BBBB" "AaAa")` where the JVM gives `("AaAa" "BBBB" 95 54)`.
+- An image restore that had to rebuild a small hash map made it an array map,
+  and a rebuilt set reversed its collision buckets.
+
+- A program could die of a signal it had a `sun.misc.Signal` handler for. Chez
+  starts its parallel GC threads with the mask of whichever thread runs the
+  collection, so one started while that thread had a signal unblocked never
+  blocked it. On a Chez without jolt's signal relay the kernel could deliver the
+  signal to one of those threads at its default action (a `Signal/raise` of USR2
+  ended the process with 140). Collections now run with jolt's signals blocked.
 - A one-argument `(str x)` goes through the `clojure.core/str` var again, so
   `with-redefs` and a redefinition reach it as they reach every other arity.
   The open-coded call from 0.8.28 never read the var (#1768). It still answers
@@ -27,6 +53,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Windows `jolt build` that links OpenSSL 4's static `libcrypto.a` as a
   `:static` native links again. MSYS2 moved to OpenSSL 4.1, whose RNG calls
   `BCryptGenRandom`, and the final link had no `-lbcrypt`.
+- A task that calls `babashka.tasks/jolt` or `clojure` under a built jolt runs
+  that same jolt again. It used to run whichever `jolt` was on PATH, or fail
+  with `exec: jolt: not found` when there was none (#1787).
+  On Windows the binary could not name its own path, so a task there still
+  went to PATH; it asks Windows for it now.
+- A `ProcessBuilder` file redirect (`to`, `appendTo`, `from`, `DISCARD`) no
+  longer runs the child through `/bin/sh`. jolt opens the file before the spawn,
+  as the JDK does, so a target that cannot be opened throws `Cannot run program
+  "x": path (No such file or directory)` from `start()` instead of starting a
+  child that exits 1.
+- `jolt build`'s parallel compile workers and the run-path AOT cache's
+  background worker start without a shell, so both now run on Windows too. The
+  build workers used to need a `--build-worker-probe` round trip through `sh`
+  before a build could fan out.
+- A git dependency whose URL or cache path holds a `$` or a backtick resolves.
+  git ran as a shell line with each argument in double quotes, where the shell
+  still expands both; it runs with an argument list now.
+- `jolt build` no longer needs `xxd` or `sed`: the boot is written into its C
+  header directly, about 4x faster on a 30 MB boot. PATH lookups, `brew`,
+  `pkg-config`, `nm` and `otool` also run without a shell.
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the
@@ -64,11 +110,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multimethod key, separate from the type's. A deftype name prints as its class
   (`user.T`, not `#object[...]`), and a multimethod's "No method" and "Multiple
   methods" messages name the dispatch value by its `toString`.
+- `instance?` and `cast` no longer take a host value for a record or deftype
+  that only shares its class's simple name. A `java.lang.Process` isn't a
+  `demo.Process` record, as `isa?` already answered, so `cast` to that record
+  throws `ClassCastException`. A simple name such as `Process` still matches.
+  A thrown envelope carrying a JVM `:class` follows the same rule, so a record
+  named `IOException` no longer catches a `java.net.UnknownHostException`.
 - `.toString` on a vector, list or set returns the readable form `str` gives:
   `(.toString [1 "a"])` is `[1 "a"]`.
 
 ### Changed
 
+- A hash map or set node keeps its entries in its own array, two slots each,
+  with an entry bitmap and a branch bitmap, instead of a `(key . value)` pair
+  per entry: 16 bytes less per entry and one pointer chase less per lookup.
+  At 100k entries `get` with a string key is about 0.8x the time it was,
+  `dissoc`/`disj` 0.9x, and builds and walks are unchanged. Images are format
+  16; older images still restore.
+- Hashing a long multiplies with one wrapping fixnum multiply per step instead
+  of a 16-bit split.
+
+- jolt.ffi's fixed costs are lower (#1753). A one-allocation
+  `(with-open [a (ffi/confined-arena)] (ffi/alloc a 64))` went from 820 to
+  460 ns and `(ffi/free (ffi/alloc 64))` from 126 to 87: the size table no
+  longer takes its lock through a `dynamic-wind`, arena creation skips the
+  automatic-arena drain while none is live, and the arena attach no longer
+  goes through variadic `update`. `(ffi/write-array p :double arr)` of 35
+  doubles went from 230 to 137 ns, mostly by remembering each type keyword's
+  Chez type instead of matching its name per call.
+- `double-array`, `float-array`, `long-array`, `int-array` and `short-array`
+  built from a vector or another array fill the backing straight from it
+  instead of draining a seq: 1000 doubles from a vector went from 13.4 to
+  3.9 us, and 35 from a double-array from 1650 to 180 ns.
+- `update` has clojure.core's fixed arities instead of only `[m k f & args]`,
+  so it no longer goes through `apply`: `(update m :k inc)` went from 113 to
+  35 ns and `(update m :k + 1 2 3)` from 204 to 46.
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.
