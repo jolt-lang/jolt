@@ -271,6 +271,9 @@
          (let [before (ffi/size p)]
            (ffi/free p)
            (and (= 32 before) (zero? (ffi/size p))))))
+(check "free names a non-pointer argument as itself"
+       (let [msg (try (ffi/free "x") nil (catch Throwable e (ex-message e)))]
+         (boolean (and msg (re-find #"String" msg)))))
 ;; Type keywords are remembered by identity once resolved; an unknown one is
 ;; never remembered, so it raises every time it is asked.
 (check "an unknown type raises on every call"

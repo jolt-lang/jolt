@@ -1748,14 +1748,16 @@
     (jolt-unlock! mu)))
 
 ;; Batch, because an arena close forgets its whole group at once and a per-entry
-;; crossing of the jolt/host boundary is the expensive part, not the delete. A
-;; single address is accepted as well — ffi/free and the one-block arena close
-;; forget exactly one, and wrapping it in a vector only to walk it back out was
-;; most of their cost.
+;; crossing of the jolt/host boundary is the expensive part, not the delete.
+;; ffi/free and the one-block arena close forget exactly one address and use the
+;; single entry: wrapping it in a vector only to walk it back out was most of
+;; their cost. Two entries rather than one that guesses from the argument's
+;; shape, so a bad pointer (a string, say) reaches jnum->exact as itself.
+(define (jolt-ffi-forget-size! p)
+  (ffi-forget-size! p)
+  jolt-nil)
 (define (jolt-ffi-forget-sizes! ps)
-  (if (number? ps)
-      (ffi-forget-size! ps)
-      (for-each ffi-forget-size! (seq->list (jolt-seq ps))))
+  (for-each ffi-forget-size! (seq->list (jolt-seq ps)))
   jolt-nil)
 
 ;; ffi-auto-live counts the state cells registered with the guardian and not yet
@@ -1838,6 +1840,7 @@
 ;; that also forgets the pointer's recorded size, the same way __read/__write sit
 ;; under the layout-aware read/write.
 (def-var! "jolt.ffi" "__remember-size!" jolt-ffi-remember-size!)
+(def-var! "jolt.ffi" "__forget-size!" jolt-ffi-forget-size!)
 (def-var! "jolt.ffi" "__forget-sizes!" jolt-ffi-forget-sizes!)
 (def-var! "jolt.ffi" "__size" jolt-ffi-recorded-size)
 (def-var! "jolt.ffi" "__free" ffi-free)

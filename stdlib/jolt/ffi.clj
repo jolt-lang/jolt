@@ -444,7 +444,10 @@
 (defn- remember-size! [pointer byte-count]
   (jolt.ffi/__remember-size! pointer byte-count))
 
-;; pointers is one address or a seq of them.
+(defn- forget-size! [pointer]
+  (jolt.ffi/__forget-size! pointer)
+  nil)
+
 (defn- forget-sizes! [pointers]
   (jolt.ffi/__forget-sizes! pointers)
   nil)
@@ -602,7 +605,7 @@
            (and (empty? views) (empty? callables) (= 1 (count blocks)))
            (let [[usable raw] (first blocks)]
              (try (jolt.ffi/__free raw)
-                  (finally (forget-sizes! usable))))
+                  (finally (forget-size! usable))))
 
            (or (seq views) (seq callables) (seq blocks))
            (let [failure (volatile! nil)]
@@ -842,7 +845,7 @@
   a size for a block that never had one — which copy and clone would then use as
   a byte count. Arena memory is released by closing the arena, not by this."
   [p]
-  (forget-sizes! p)
+  (forget-size! p)
   (jolt.ffi/__free p)
   nil)
 
