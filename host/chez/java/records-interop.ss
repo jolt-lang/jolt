@@ -143,7 +143,7 @@
              ;; (IPersistentMap is an Associative is an IPersistentCollection).
              (and (not (retired-own-class? tname val)) (jch-isa? tag tname)))))
       ((jreify? val) (or (reify-declares-class? (jreify-protos val) tname) (reify-class-isa? val tname)))
-      ((ex-info-map? val) (exception-isa? (last-dot (ex-info-class val)) (last-dot tname)))
+      ((ex-info-map? val) (exception-isa? (ex-info-class val) tname))
       (else (case-string tname val)))))
 
 ;; Does a reify declaring PROTOS answer instance? for class name TNAME? Every
