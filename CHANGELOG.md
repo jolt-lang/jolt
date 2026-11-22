@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`error=20, Not a directory` for a file), and every start failure, a missing
   program or an unopenable redirect file included, names the directory when
   one was set. `clojure.java.shell` and `jolt.process` surface the same.
+- `(.directory pb nil)` failed the next `start` instead of going back to the
+  default directory, and `(.directory pb)` with no argument was not there to
+  read the setting back.
 - A hash map or set ordered a collision bucket and its neighbours as the JVM
   does not. A key whose hash differed from a bucket's was appended to the
   bucket on its slot instead of the bucket nesting one level down
