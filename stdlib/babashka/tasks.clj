@@ -49,10 +49,10 @@
   (apply @p-shell args))
 
 (defn- jolt-exe
-  "The jolt executable to re-invoke. $JOLT_EXE names it outright (bin/jolt
-  exports it); otherwise the one on PATH, which is where an installed jolt is."
+  "The jolt executable to re-invoke: $JOLT_EXE (bin/jolt exports it), else
+  this binary's own path, else `jolt` on PATH."
   []
-  (or (System/getenv "JOLT_EXE") "jolt"))
+  (or (System/getenv "JOLT_EXE") (jolt.host/self-exe) "jolt"))
 
 (defn jolt
   "Run the jolt CLI as a subprocess with these arguments. Same call shape as

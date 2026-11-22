@@ -1292,6 +1292,7 @@
              (and f
                   (let* ((buf (make-bytevector 4096 0)) (n (f "/proc/self/exe" buf 4095)))
                     (and (fx>? n 0) (aot-cstring buf))))))
+          ((windows) (win32-exe-path))
           (else #f)))))
   (and (string? aot-self-exe-memo) (file-exists? aot-self-exe-memo) aot-self-exe-memo))
 ;; #t only in a built jolt/app binary. Its launcher (build-jolt.ss
@@ -1303,11 +1304,13 @@
 (define jolt-standalone-binary #f)
 (define (aot-worker-capable? exe)
   (and jolt-standalone-binary (string? exe) #t))
+;; Every platform: the worker is spawned directly and watched by pid
+;; (spawn.ss), and where aot-self-exe cannot name the
+;; binary no worker starts and the caller compiles in process.
 (define (aot-async?)
   (and (not (aot-env-off? "JOLT_AOT_ASYNC"))
-       (not (ldr-build-aot-cache?))
-       (case (sa-os-family) ((linux macos) #t) (else #f))))
-(define aot-worker-state (vector #f #f))   ; #(manifest out-port) once started
+       (not (ldr-build-aot-cache?))))
+(define aot-worker-state (vector #f #f #f))   ; #(manifest out-port process) once started
 (define (aot-worker-start!)
   (let ((exe (aot-self-exe)))
     (and exe (aot-worker-capable? exe)
@@ -1315,13 +1318,18 @@
                                    (number->string (get-process-id)) ".edn"))
                 (out (guard (e (else #f)) (open-output-file mf 'replace))))
            (and out
-                (zero? (jolt-sh (string-append "( " (sh-quote exe) " --aot-worker "
-                                               (sh-quote mf)
-                                               " </dev/null >> " (sh-quote (string-append mf ".log"))
-                                               " 2>&1 & )")))
-                (vector-set! aot-worker-state 0 mf)
-                (vector-set! aot-worker-state 1 out)
-                #t)))))
+                (or (aot-worker-spawn! exe mf out)
+                    (begin (close-port out) #f)))))))
+(define (aot-worker-spawn! exe mf out)
+  ;; never waited on: it outlives this process, finishing the jobs written
+  ;; before the exit (aot-compile-worker watches the pid for that)
+  (let ((p (jolt-spawn-worker (list exe "--aot-worker" mf) (string-append mf ".log"))))
+    (and p
+         (begin
+           (vector-set! aot-worker-state 0 mf)
+           (vector-set! aot-worker-state 1 out)
+           (vector-set! aot-worker-state 2 p)
+           #t))))
 ;; #t when a worker owns the job, #f when the caller must compile it here.
 (define (aot-enqueue-compile! scm so)
   (and (aot-async?)
@@ -1377,10 +1385,7 @@
            (string=? pre (substring base 0 pn))
            (string=? suf (substring base (fx- n sn) n))
            (string->number (substring base pn (fx- n sn)))))))
-(define (aot-proc-alive? pid)
-  (guard (e (else #f))
-    (let ((f (jolt-foreign-proc-safe "kill" '(int int) 'int)))
-      (and f (fx=? 0 (f pid 0))))))
+(define (aot-proc-alive? pid) (jolt-pid-alive? pid))
 ;; The manifest and an empty log go with the worker: each run that missed has
 ;; its own pair, and nothing else reads them once the parent is gone.
 (define (aot-worker-cleanup! manifest)
@@ -3664,3 +3669,12 @@
 ;; jolt version string — one source (jolt-version-string, rt.ss): the baked
 ;; release tag in a binary, $JOLT_VERSION under bin/jolt, else "dev".
 (def-var! "jolt.host" "jolt-version" (lambda () (jolt-version-string)))
+;; The identity of this exact build, for a cache of compiled code kept outside
+;; jolt: the version, the runtime fingerprint the AOT cache names its
+;; generations with, and the Chez release. Two builds of one dirty commit, or a
+;; rebuild with other edits, share a version but not this. image-runtime-version
+;; is the Chez release alone, because an image holds data only.
+(def-var! "jolt.host" "build-id"
+  (lambda ()
+    (string-append (jolt-version-string) "-" (or (aot-runtime-fingerprint) "nofp")
+                   "-" (jolt-image-runtime-version))))

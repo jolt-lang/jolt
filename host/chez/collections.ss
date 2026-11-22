@@ -15,23 +15,14 @@
 ;; No copy here is a checked Scheme loop: the runtime compiles at
 ;; optimize-level 2, where such a loop pays a type and bounds check per element
 ;; (a 64-slot copy measured 390ns). Whole vectors and computed ranges (a node
-;; update, vec-copy-range, vec-insert) are the target's block copy INTO A FRESH
+;; update, vec-copy-range) are the target's block copy INTO A FRESH
 ;; vector (sa-vector-copy / sa-subvector): no initializing fill and no write
 ;; barrier per slot, 19ns for 32 slots against 82 for the unchecked loop below
 ;; and 86 for Chez's vector-copy!, which is that same barriered loop. What still
-;; copies into a vector made first (vec-remove, the array-map's append/remove)
+;; copies into a vector made first (the HAMT node edits, the array-map's append/remove)
 ;; runs the unchecked loop or the checked bulk move. Never a bare vector-copy:
 ;; the vendored irregex redefines that name at top level as a one-argument loop.
 (define (vec-copy-range v start end) (sa-subvector v start end))
-;; copy of v with x spliced in at index i: the two halves are block copies into
-;; fresh vectors (sa-subvector), which beats copying into one made up front
-(define (vec-insert v i x)
-  (sa-vector-append (sa-subvector v 0 i) (vector x) (sa-subvector v i (vector-length v))))
-(define (vec-remove v i)              ; copy of v with index i dropped
-  (let* ((n (vector-length v)) (out (make-vector (fx- n 1))))
-    (sa-vector-copy-range! out 0 v 0 i)
-    (sa-vector-copy-range! out i v (fx+ i 1) n)
-    out))
 ;; slots 0..n-1 of v into out, unchecked: out was just made at least n long
 (define (vec-fill-prefix! out v n)
   (let loop ((j 0))
@@ -865,11 +856,33 @@
 
 ;; ============================================================================
 ;; bitmap HAMT — keys hashed by jolt-hash, leaves compared by jolt=
-;;   arr slot is one of: leaf (cons k v) | hnode (branch) | hcoll (hash bucket)
 ;; ============================================================================
-(define-record-type hnode (fields bm arr) (nongenerative chez-hnode-v1))
+;; A node has two bitmaps over its 32 hash fragments, never sharing a bit:
+;; `dmap` marks the fragments holding an entry, `nmap` those holding a branch
+;; (an hnode, or an hcoll collision bucket). The array holds the entries first,
+;; key and value in two slots each in fragment order, then the branches, one
+;; slot each, in fragment order from the END back:
+;;
+;;   #(k0 v0 k1 v1 ... kd-1 vd-1  bn-1 ... b1 b0)      d = |dmap|, n = |nmap|
+;;
+;; so an entry's key slot is 2 x (entries below it) and a branch's slot is
+;; len - 1 - (branches below it): one popcount either way, where branches
+;; stored forward would need the entry count too on every level of a lookup.
+;;
+;; The storage is CHAMP's (Steindorfer & Vinju); the ORDER is not. A walk visits
+;; the fragments ascending over both bitmaps, an entry or a branch's entries in
+;; place of each, which is the reference's BitmapIndexedNode order and so the
+;; JVM's iteration order. The bitmaps say which region a fragment is in, so
+;; nothing reads a slot to learn its kind; an entry costs two slots and no
+;; object (chez-hnode-v1 held a (key . value) pair per slot); a branch costs one
+;; slot, so the dense upper nodes of a big map copy no more than they did
+;; before. A bucket holds its entries as an alist in insertion order, which is
+;; also its iteration order (HashCollisionNode's array order).
+;;
+;; chez-hnode-v1 tries in an old image restore through state-image.ss hnode-v1->hnode.
+(define-record-type hnode (fields dmap nmap arr) (nongenerative chez-hnode-v2) (sealed #t))
 (define-record-type hcoll (fields hash alist) (nongenerative chez-hcoll-v1))
-(define empty-hnode (make-hnode 0 (vector)))
+(define empty-hnode (make-hnode 0 0 (vector)))
 (define hmask #xFFFFFFFF)                ; 32-bit unsigned hash window (JVM int range)
 (define max-shift 30)                     ; 7 levels × 5 bits = 35 > 32; last level shift 30
 
@@ -898,17 +911,82 @@
       (murmur3-hash-fixnum-u32 k)
       (let ((h (jolt-hasheq k)))
         (if (fixnum? h) (hamt-and h hmask) (bitwise-and h hmask)))))
-;; Macros: every level of every lookup, insert and removal runs all four, and
-;; as procedures they were four out-of-line calls a level -- most of a set
-;; lookup's cost once the key is hashed (a cache-resident two-level lookup took
-;; 37 ns).
+;; Macros: every level of every lookup, insert and removal runs them, and as
+;; procedures they were out-of-line calls a level -- most of a set lookup's cost
+;; once the key is hashed (a cache-resident two-level lookup took 37 ns).
 (define-syntax hamt-chunk
   (syntax-rules () ((_ h shift) (hamt-and (hamt-sra h shift) 31))))
 (define-syntax hamt-bitpos
   (syntax-rules () ((_ h shift) (hamt-sll 1 (hamt-chunk h shift)))))
+;; how many of map's bits lie below bit: an entry's or a branch's index
 (define-syntax hamt-arr-index
   (syntax-rules () ((_ bm bit) (hamt-popcount (hamt-and bm (hamt-sub bit 1))))))
 (define (chunk h shift) (hamt-chunk h shift))
+;; slot of the branch for `bit` in a node array arr with branch map nm
+(define-syntax hamt-branch-slot
+  (syntax-rules () ((_ arr nm bit) (fx- (fx- (vector-length arr) 1) (hamt-arr-index nm bit)))))
+;; the lowest set bit of a nonzero map
+(define-syntax hamt-low-bit
+  (syntax-rules () ((_ bits) (let ((b bits)) (hamt-and b (hamt-sub 0 b))))))
+;; The walks' per-fragment steps, unchecked (capability-unchecked): their
+;; operands are a node's own bitmaps and bits taken from them, so on the wide
+;; path each is a fixnum by construction, and the narrow path is the generic op
+;; as above. A walk takes the low bit of what is left, tests it against dmap and
+;; clears it: three of these per entry, where the checked forms cost a walk a
+;; quarter more than the v1 layout's pair test.
+(define-width-op hamt-uand    sa-ufxand   bitwise-and)
+(define-width-op hamt-uxor    sa-ufxxor   bitwise-xor)
+(define-width-op hamt-usub    sa-ufx-     -)
+(define-width-op hamt-u=?     sa-ufx=?    =)
+(define-syntax hamt-ulow-bit
+  (syntax-rules () ((_ bits) (let ((b bits)) (hamt-uand b (hamt-usub 0 b))))))
+;; is `low` (one bit of the walk) an entry of the node with entry map dm?
+(define-syntax hamt-uentry?
+  (syntax-rules () ((_ dm low) (not (hamt-u=? 0 (hamt-uand dm low))))))
+
+;; --- node array edits ----------------------------------------------------------
+;; i is a slot index: an entry's key slot (2d) or a branch's slot. Each builds
+;; its result in ONE pass over the source: a vector made to size and filled by
+;; unchecked moves (vec-fill-prefix!'s loop). Sub-vectors appended together copy
+;; every slot twice and allocate the pieces as well, which on a 100k-key build
+;; was a fifth more allocation than the whole old trie's.
+(define-syntax vec-move!               ; out[at..] <- v[from, to), unchecked
+  (syntax-rules ()
+    ((_ out at v from to)
+     (let ((o out) (src v) (e to) (d (fx- at from)))
+       (let loop ((k from))
+         (when (sa-ufx<? k e)
+           (sa-uvector-set! o (sa-ufx+ k d) (sa-uvector-ref src k))
+           (loop (sa-ufx+ k 1))))))))
+(define (vec-insert2 v i k x)          ; copy of v with k, x spliced in at i
+  (let* ((n (vector-length v)) (out (make-vector (fx+ n 2))))
+    (vec-move! out 0 v 0 i)
+    (vector-set! out i k) (vector-set! out (fx+ i 1) x)
+    (vec-move! out (fx+ i 2) v i n)
+    out))
+(define (vec-remove1 v j)              ; copy of v with slot j dropped
+  (let* ((n (vector-length v)) (out (make-vector (fx- n 1))))
+    (vec-move! out 0 v 0 j)
+    (vec-move! out j v (fx+ j 1) n)
+    out))
+;; the entry at key slot i becomes the branch b, which lands just before
+;; slot j of the ORIGINAL array (i < j): the pair leaves the entry region and b
+;; joins the branch region
+(define (vec-entry->branch v i j b)
+  (let* ((n (vector-length v)) (out (make-vector (fx- n 1))))
+    (vec-move! out 0 v 0 i)
+    (vec-move! out i v (fx+ i 2) j)
+    (vector-set! out (fx- j 2) b)
+    (vec-move! out (fx- j 1) v j n)
+    out))
+;; the branch at slot j becomes the entry k, x at key slot i (i < j)
+(define (vec-branch->entry v j i k x)
+  (let* ((n (vector-length v)) (out (make-vector (fx+ n 1))))
+    (vec-move! out 0 v 0 i)
+    (vector-set! out i k) (vector-set! out (fx+ i 1) x)
+    (vec-move! out (fx+ i 2) v i j)
+    (vec-move! out (fx+ j 2) v (fx+ j 1) n)
+    out))
 
 ;; jolt= alist ops (for hash-collision buckets)
 (define (assoc-by same? k al)
@@ -927,8 +1005,9 @@
   (if (eq? (car al) entry) (cdr al)
       (cons (car al) (alist-remove entry (cdr al)))))
 
-;; split two leaves that collided at `shift` into a subtree (or hcoll if the
-;; full hashes are equal / the hash is exhausted).
+;; Two entries that collided at the level above, as the branch that replaces
+;; the old one: a node at `shift` (descending while their fragments agree), or a
+;; bucket when the full hashes are equal / the hash is exhausted.
 (define (split-leaf shift ek ev h k v)
   (split-hashed-leaves shift (key-hash ek) ek ev h k v))
 (define (split-hashed-leaves shift eh ek ev h k v)
@@ -936,11 +1015,21 @@
       (make-hcoll h (list (cons ek ev) (cons k v)))
       (let ((ei (hamt-chunk eh shift)) (ni (hamt-chunk h shift)))
         (if (fx=? ei ni)
-            (make-hnode (hamt-sll 1 ei) (vector (split-hashed-leaves (fx+ shift 5) eh ek ev h k v)))
-            (let ((eb (hamt-sll 1 ei)) (nb (hamt-sll 1 ni)))
-              (if (fx<? ei ni)
-                  (make-hnode (hamt-ior eb nb) (vector (cons ek ev) (cons k v)))
-                  (make-hnode (hamt-ior eb nb) (vector (cons k v) (cons ek ev)))))))))
+            (make-hnode 0 (hamt-sll 1 ei) (vector (split-hashed-leaves (fx+ shift 5) eh ek ev h k v)))
+            (make-hnode (hamt-ior (hamt-sll 1 ei) (hamt-sll 1 ni)) 0
+                        (if (fx<? ei ni) (vector ek ev k v) (vector k v ek ev)))))))
+
+;; A key whose hash differs from a bucket's, landing on the bucket's slot: the
+;; bucket moves down into a new node at `shift` beside the entry, as
+;; HashCollisionNode.assoc nests itself in a BitmapIndexedNode. Appending the key
+;; to the bucket instead still answered lookups (a bucket is scanned whole) but
+;; put the key where no hash order does, and a later bucket edit compares the
+;; bucket's hash. Two different 32-bit hashes part by shift 30, so this ends.
+(define (nest-bucket shift b h k v)
+  (let ((bi (hamt-chunk (hcoll-hash b) shift)) (ni (hamt-chunk h shift)))
+    (if (fx=? bi ni)
+        (make-hnode 0 (hamt-sll 1 bi) (vector (nest-bucket (fx+ shift 5) b h k v)))
+        (make-hnode (hamt-sll 1 ni) (hamt-sll 1 bi) (vector k v b)))))
 
 ;; Answers the node ITSELF when the key is present with that very value — the
 ;; reference's `if(val == valOrNode) return this` — so pmap-assoc can hand the
@@ -949,111 +1038,150 @@
 (define (node-assoc node shift h k v added)
   (node-assoc-by node shift h k v added jolt=2 key-hash))
 (define (node-assoc-by node shift h k v added same? stored-hash)
-  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
-    (if (hamt=? 0 (hamt-and bm bit))
-        (begin (set-box! added #t)
-               (make-hnode (hamt-ior bm bit) (vec-insert arr (hamt-arr-index bm bit) (cons k v))))
-        (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
-          (cond
-            ((hnode? child)
-             (let ((nc (node-assoc-by child (fx+ shift 5) h k v added same? stored-hash)))
-               (if (eq? nc child) node (make-hnode bm (vec-set arr i nc)))))
-            ((hcoll? child)
-             (let* ((al (hcoll-alist child)) (p (assoc-by same? k al)))
-               (cond ((not p)
-                      (set-box! added #t)
-                      (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (append al (list (cons k v)))))))
-                     ((eq? (cdr p) v) node)
-                     (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) (alist-replace p v al))))))))
-            ;; replace: the leaf keeps ITS key, not the equal one handed in
-            ((same? (car child) k)
-             (if (eq? (cdr child) v) node (make-hnode bm (vec-set arr i (cons (car child) v)))))
-            (else (set-box! added #t)
-                  (let ((sub (split-hashed-leaves (fx+ shift 5) (stored-hash (car child))
-                                                  (car child) (cdr child) h k v)))
-                    (make-hnode bm (vec-set arr i sub)))))))))
+  (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)) (nm (hnode-nmap node))
+         (arr (hnode-arr node)))
+    (cond
+      ((not (hamt=? 0 (hamt-and dm bit)))
+       (let* ((i (fx* 2 (hamt-arr-index dm bit))) (ks (vector-ref arr i)))
+         (if (same? ks k)
+             ;; replace: the entry keeps ITS key, not the equal one handed in
+             (let ((j (fx+ i 1)))
+               (if (eq? (vector-ref arr j) v) node (make-hnode dm nm (vec-set arr j v))))
+             (let ((b (split-hashed-leaves (fx+ shift 5) (stored-hash ks) ks (vector-ref arr (fx+ i 1)) h k v)))
+               (set-box! added #t)
+               (make-hnode (hamt-and dm (hamt-not bit)) (hamt-ior nm bit)
+                           (vec-entry->branch arr i (fx+ (hamt-branch-slot arr nm bit) 1) b))))))
+      ((not (hamt=? 0 (hamt-and nm bit)))
+       (let* ((j (hamt-branch-slot arr nm bit)) (b (vector-ref arr j)))
+         (cond
+           ((hnode? b)
+            (let ((nb (node-assoc-by b (fx+ shift 5) h k v added same? stored-hash)))
+              (if (eq? nb b) node (make-hnode dm nm (vec-set arr j nb)))))
+           ((not (hamt=? h (hcoll-hash b)))
+            (set-box! added #t)
+            (make-hnode dm nm (vec-set arr j (nest-bucket (fx+ shift 5) b h k v))))
+           (else
+            (let* ((al (hcoll-alist b)) (p (assoc-by same? k al)))
+              (cond ((not p)
+                     (set-box! added #t)
+                     (make-hnode dm nm (vec-set arr j (make-hcoll (hcoll-hash b) (append al (list (cons k v)))))))
+                    ((eq? (cdr p) v) node)
+                    (else (make-hnode dm nm (vec-set arr j (make-hcoll (hcoll-hash b) (alist-replace p v al)))))))))))
+      (else
+       (set-box! added #t)
+       (make-hnode (hamt-ior dm bit) nm (vec-insert2 arr (fx* 2 (hamt-arr-index dm bit)) k v))))))
 
 (define (stable-hamt-key? k)
   (or (fixnum? k) (keyword-t? k) (char? k)))
 
 (define (node-get node shift h k default)
-  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)))
-    (if (hamt=? 0 (hamt-and bm bit)) default
-        (let ((child (vector-ref (hnode-arr node) (hamt-arr-index bm bit))))
-          (cond ((hnode? child) (node-get child (fx+ shift 5) h k default))
-                ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
-                ((jolt= (car child) k) (cdr child))
-                (else default))))))
+  (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)))
+    (if (not (hamt=? 0 (hamt-and dm bit)))
+        (let* ((arr (hnode-arr node)) (i (fx* 2 (hamt-arr-index dm bit))))
+          (if (jolt=2 (vector-ref arr i) k) (vector-ref arr (fx+ i 1)) default))
+        (let ((nm (hnode-nmap node)))
+          (if (hamt=? 0 (hamt-and nm bit))
+              default
+              (let ((b (let ((arr (hnode-arr node))) (vector-ref arr (hamt-branch-slot arr nm bit)))))
+                (if (hnode? b)
+                    (node-get b (fx+ shift 5) h k default)
+                    (let ((p (assoc-jolt k (hcoll-alist b)))) (if p (cdr p) default)))))))))
 
-;; node-get, but answering with the whole stored (key . value) pair — #f when the
-;; key is absent. The pair's car is the key the map HOLDS, which is what `find`
-;; must put in its entry (see pmap-entry-at).
+;; node-get, but answering with the stored (key . value) — #f when the key is
+;; absent. The car is the key the map HOLDS, which is what `find` must put in
+;; its entry (see pmap-entry-at). A bucket's pair is its own; an entry's is
+;; made here.
 (define (node-entry node shift h k)
-  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)))
-    (if (hamt=? 0 (hamt-and bm bit)) #f
-        (let ((child (vector-ref (hnode-arr node) (hamt-arr-index bm bit))))
-          (cond ((hnode? child) (node-entry child (fx+ shift 5) h k))
-                ((hcoll? child) (assoc-jolt k (hcoll-alist child)))
-                ((jolt= (car child) k) child)
-                (else #f))))))
+  (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)))
+    (if (not (hamt=? 0 (hamt-and dm bit)))
+        (let* ((arr (hnode-arr node)) (i (fx* 2 (hamt-arr-index dm bit))) (ks (vector-ref arr i)))
+          (and (jolt=2 ks k) (cons ks (vector-ref arr (fx+ i 1)))))
+        (let ((nm (hnode-nmap node)))
+          (and (not (hamt=? 0 (hamt-and nm bit)))
+               (let ((b (let ((arr (hnode-arr node))) (vector-ref arr (hamt-branch-slot arr nm bit)))))
+                 (if (hnode? b)
+                     (node-entry b (fx+ shift 5) h k)
+                     (assoc-jolt k (hcoll-alist b)))))))))
 
 (define (node-dissoc node shift h k removed)
   (node-dissoc-by node shift h k removed jolt=2))
 (define (node-dissoc-by node shift h k removed same?)
-  (let* ((bit (hamt-bitpos h shift)) (bm (hnode-bm node)) (arr (hnode-arr node)))
-    (if (hamt=? 0 (hamt-and bm bit)) node
-        (let* ((i (hamt-arr-index bm bit)) (child (vector-ref arr i)))
-          (cond
-            ;; A child the removal empties is dropped from this node, as the
-            ;; reference's BitmapIndexedNode.without drops a null child. Left in
-            ;; place, emptied branches pile up at the front of a map drained in
-            ;; iteration order, and every later seq/first has to step over them.
-            ((hnode? child)
-             (let ((nc (node-dissoc-by child (fx+ shift 5) h k removed same?)))
-               (cond ((eq? nc child) node)
-                     ((hamt=? 0 (hnode-bm nc)) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
-                     (else (make-hnode bm (vec-set arr i nc))))))
-            ((hcoll? child)
-             (let ((entry (assoc-by same? k (hcoll-alist child))))
+  (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)) (nm (hnode-nmap node))
+         (arr (hnode-arr node)))
+    (cond
+      ((not (hamt=? 0 (hamt-and dm bit)))
+       (let ((i (fx* 2 (hamt-arr-index dm bit))))
+         (if (same? (vector-ref arr i) k)
+             (begin (set-box! removed #t)
+                    (make-hnode (hamt-and dm (hamt-not bit)) nm (vec-remove2 arr i)))
+             node)))
+      ((not (hamt=? 0 (hamt-and nm bit)))
+       (let* ((j (hamt-branch-slot arr nm bit)) (b (vector-ref arr j)))
+         (if (hnode? b)
+             ;; A branch the removal empties is dropped from this node, as the
+             ;; reference's BitmapIndexedNode.without drops a null child. Left in
+             ;; place, emptied branches pile up at the front of a map drained in
+             ;; iteration order, and every later seq/first has to step over them.
+             (let ((nb (node-dissoc-by b (fx+ shift 5) h k removed same?)))
+               (cond ((eq? nb b) node)
+                     ((and (hamt=? 0 (hnode-dmap nb)) (hamt=? 0 (hnode-nmap nb)))
+                      (make-hnode dm (hamt-and nm (hamt-not bit)) (vec-remove1 arr j)))
+                     (else (make-hnode dm nm (vec-set arr j nb)))))
+             (let ((entry (assoc-by same? k (hcoll-alist b))))
                (if (not entry) node
-                   (let ((nal (alist-remove entry (hcoll-alist child))))
+                   (let ((nal (alist-remove entry (hcoll-alist b))))
                      (set-box! removed #t)
-                     (cond ((null? nal) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
-                           ((null? (cdr nal)) (make-hnode bm (vec-set arr i (car nal)))) ; collapse to leaf
-                           (else (make-hnode bm (vec-set arr i (make-hcoll (hcoll-hash child) nal)))))))))
-            ((same? (car child) k)
-             (set-box! removed #t) (make-hnode (hamt-and bm (hamt-not bit)) (vec-remove arr i)))
-            (else node))))))
+                     (cond ((null? nal) (make-hnode dm (hamt-and nm (hamt-not bit)) (vec-remove1 arr j)))
+                           ;; one entry left: it moves back into the entry region
+                           ((null? (cdr nal))
+                            (make-hnode (hamt-ior dm bit) (hamt-and nm (hamt-not bit))
+                                        (vec-branch->entry arr j (fx* 2 (hamt-arr-index dm bit)) (caar nal) (cdar nal))))
+                           (else (make-hnode dm nm (vec-set arr j (make-hcoll (hcoll-hash b) nal)))))))))))
+      (else node))))
 
-(define (node-fold node proc acc)     ; (proc k v acc) over every leaf, JVM (ascending) order
-  (let ((arr (hnode-arr node)))
-    (let loop ((i (fx- (vector-length arr) 1)) (acc acc))
-      (if (fx<? i 0)
-          acc
-          (let ((child (vector-ref arr i)))
-            (loop (fx- i 1)
-                  (cond ((hnode? child) (node-fold child proc acc))
-                        ((hcoll? child)
-                         (let cl ((al (hcoll-alist child)) (a acc))
-                           (if (null? al) a (cl (cdr al) (proc (caar al) (cdar al) a)))))
-                        (else (proc (car child) (cdr child) acc)))))))))
-;; node-fold's visit, reversed: (proc k v acc) over every leaf in the order a
-;; seq over the map yields them. node-fold walks the trie from the high end so a
-;; consing caller ends up with an ascending list; a caller building a value
-;; directly (pmap-fold-fwd) needs the ascending walk itself, or (into {} m) of a
-;; hash map lands its entries in reverse.
+;; --- walks in iteration order ----------------------------------------------------
+;; Fragments ascending over dmap|nmap: `di` is the next entry's slot (counting
+;; up) and `ni` the next branch's (counting down from the end), each advanced
+;; by the region the fragment is in. A node
+;; with no branches (most leaves) is its entries in slot order.
 (define (node-fold-fwd node proc acc)
-  (let* ((arr (hnode-arr node)) (n (vector-length arr)))
-    (let loop ((i 0) (acc acc))
-      (if (fx=? i n)
-          acc
-          (let ((child (vector-ref arr i)))
-            (loop (fx+ i 1)
-                  (cond ((hnode? child) (node-fold-fwd child proc acc))
-                        ((hcoll? child)
-                         (fold-left (lambda (a p) (proc (car p) (cdr p) a))
-                                    acc (reverse (hcoll-alist child))))
-                        (else (proc (car child) (cdr child) acc)))))))))
+  (let* ((dm (hnode-dmap node)) (nm (hnode-nmap node)) (arr (hnode-arr node))
+         (base (fx* 2 (hamt-popcount dm))))
+    (if (hamt-u=? 0 nm)
+        (let run ((i 0) (acc acc))
+          (if (fx=? i base) acc (run (fx+ i 2) (proc (vector-ref arr i) (vector-ref arr (fx+ i 1)) acc))))
+        (let loop ((rem (hamt-ior dm nm)) (di 0) (ni (fx- (vector-length arr) 1)) (acc acc))
+          (if (hamt-u=? 0 rem)
+              acc
+              (let ((low (hamt-ulow-bit rem)))
+                (if (hamt-uentry? dm low)
+                    (loop (hamt-uxor rem low) (fx+ di 2) ni (proc (vector-ref arr di) (vector-ref arr (fx+ di 1)) acc))
+                    (let ((b (vector-ref arr ni)))
+                      (loop (hamt-uxor rem low) di (fx- ni 1)
+                            (if (hnode? b)
+                                (node-fold-fwd b proc acc)
+                                (fold-left (lambda (a p) (proc (car p) (cdr p) a)) acc (hcoll-alist b))))))))))))
+;; (proc k v acc) over every entry in REVERSE iteration order, so a consing
+;; caller ends up with a list in iteration order (pmap-fold's idiom). The visit
+;; of a fragment comes after the rest of its node's: recursion depth is at most
+;; 32 per node.
+(define (node-fold node proc acc)
+  (let* ((dm (hnode-dmap node)) (nm (hnode-nmap node)) (arr (hnode-arr node))
+         (base (fx* 2 (hamt-popcount dm))))
+    (if (hamt-u=? 0 nm)
+        (let run ((i (fx- base 2)) (acc acc))
+          (if (fx<? i 0) acc (run (fx- i 2) (proc (vector-ref arr i) (vector-ref arr (fx+ i 1)) acc))))
+        (let loop ((rem (hamt-ior dm nm)) (di 0) (ni (fx- (vector-length arr) 1)))
+          (if (hamt-u=? 0 rem)
+              acc
+              (let ((low (hamt-ulow-bit rem)))
+                (if (hamt-uentry? dm low)
+                    (proc (vector-ref arr di) (vector-ref arr (fx+ di 1)) (loop (hamt-uxor rem low) (fx+ di 2) ni))
+                    (let ((after (loop (hamt-uxor rem low) di (fx- ni 1))) (b (vector-ref arr ni)))
+                      (if (hnode? b)
+                          (node-fold b proc after)
+                          (fold-right (lambda (p a) (proc (car p) (cdr p) a)) after (hcoll-alist b)))))))))))
+
 
 ;; ============================================================================
 ;; editable HAMT nodes — reachable only from a live transient
@@ -1067,7 +1195,7 @@
 ;; image-format surface. state-image.ss keeps a CLEAN pmap by pointer and only
 ;; rebuilds it when a key or value had to be substituted, so an ordinary map's
 ;; whole node tree is fasl-written raw — a dumped map's bytes contain
-;; `chez-hnode-v1`. Adding a field to it stops released images restoring.
+;; `chez-hnode-v2`. Adding a field to it stops released images restoring.
 ;;
 ;; So the editable node is a separate type, and "is this node mine?" is just
 ;; `enode?` — no token needed. That is a stronger guarantee than the JVM's: an
@@ -1076,11 +1204,15 @@
 ;; transients can never share one. The immutable node functions above therefore
 ;; never see an enode, and nothing on the persistent map path changes.
 ;;
-;; Editable nodes have one slot per five-bit hash fragment. A free slot holds
-;; #f. Every child is a node, a collision bucket or a (key . value) pair,
-;; including entries with false or nil keys and values. The bitmap is kept
-;; for the compact persistent node produced at freeze.
-(define-record-type enode (fields (mutable bm) arr) (nongenerative chez-enode-v2))
+;; Editable nodes have one slot per five-bit hash fragment, the layout the
+;; transient writes in place. A free slot holds #f. Every other slot is a
+;; branch (an enode, an hnode or an hcoll) or an entry as a (key . value) pair,
+;; including entries with false or nil keys and values -- the chez-hnode-v1
+;; layout, which costs a pair per entry written but keeps an editable node at
+;; 32 slots: a node of key/value slot pairs would be 64, and a build claims an
+;; editable node for every node it reaches. The bitmap is kept for the compact
+;; node produced at freeze, which splits it into dmap and nmap.
+(define-record-type enode (fields (mutable bm) arr) (nongenerative chez-enode-v3) (sealed #t))
 (define enode-width 32)
 
 (define (enode-empty) (make-enode 0 (make-vector enode-width #f)))
@@ -1091,16 +1223,22 @@
 (define-syntax hamt-lowest-slot
   (syntax-rules () ((_ bits low) (hamt-popcount (hamt-and low (hamt-not bits))))))
 
-;; Expand the source's packed children into their hash slots. Only this
-;; node's array is copied. Its children remain shared until the next write.
+;; Spread the source's entries (each as a pair) and branches into their
+;; fragment slots. Only this node is copied; its branches remain shared until
+;; the next write reaches them.
 (define (hnode->enode nd)
-  (let ((bm (hnode-bm nd)) (src (hnode-arr nd)) (out (make-vector enode-width #f)))
-    (let loop ((bits bm) (j 0))
+  (let* ((dm (hnode-dmap nd)) (nm (hnode-nmap nd)) (src (hnode-arr nd))
+         (out (make-vector enode-width #f)))
+    (let loop ((bits (hamt-ior dm nm)) (di 0) (ni (fx- (vector-length src) 1)))
       (unless (hamt=? 0 bits)
-        (let ((below (hamt-sub bits 1)))
-          (vector-set! out (hamt-lowest-slot bits below) (vector-ref src j))
-          (loop (hamt-and bits below) (fx+ j 1)))))
-    (make-enode bm out)))
+        (let* ((below (hamt-sub bits 1)) (s (hamt-lowest-slot bits below))
+               (low (hamt-and bits (hamt-not below))))
+          (if (hamt=? 0 (hamt-and dm low))
+              (begin (vector-set! out s (vector-ref src ni))
+                     (loop (hamt-and bits below) di (fx- ni 1)))
+              (begin (vector-set! out s (cons (vector-ref src di) (vector-ref src (fx+ di 1))))
+                     (loop (hamt-and bits below) (fx+ di 2) ni))))))
+    (make-enode (hamt-ior dm nm) out)))
 (define (enode-claim nd) (if (enode? nd) nd (hnode->enode nd)))
 
 ;; The caller owns nd. Return #t when this write adds a key.
@@ -1111,23 +1249,27 @@
        (vector-set! arr i (cons k v))
        (enode-bm-set! nd (hamt-ior (enode-bm nd) (hamt-sll 1 i)))
        #t)
+      ((pair? child)
+       (if (jolt=2 (car child) k)
+           ;; the pair may be shared with a frozen node's source; its stored
+           ;; key stays
+           (begin (vector-set! arr i (cons (car child) v)) #f)
+           (begin (vector-set! arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v)) #t)))
       ((enode? child) (enode-assoc! child (fx+ shift 5) h k v))
       ((hnode? child)
        (let ((c (hnode->enode child)))
          (vector-set! arr i c)
          (enode-assoc! c (fx+ shift 5) h k v)))
+      ((not (hamt=? h (hcoll-hash child)))
+       (vector-set! arr i (nest-bucket (fx+ shift 5) child h k v))
+       #t)
       ;; collisions are rare, so the bucket stays immutable and is replaced
-      ((hcoll? child)
+      (else
        (let* ((al (hcoll-alist child)) (existing (assoc-jolt k al)))
          (vector-set! arr i
            (make-hcoll (hcoll-hash child)
              (if existing (alist-replace existing v al) (append al (list (cons k v))))))
-         (not existing)))
-      ;; The leaf may be shared with the source. Preserve its stored key.
-      ((jolt= (car child) k) (vector-set! arr i (cons (car child) v)) #f)
-      (else
-       (vector-set! arr i (split-leaf (fx+ shift 5) (car child) (cdr child) h k v))
-       #t))))
+         (not existing))))))
 
 ;; Mirrors node-dissoc, including dropping an interior node the removal empties.
 (define (enode-dissoc! nd shift h k removed)
@@ -1137,51 +1279,64 @@
       (enode-bm-set! nd (hamt-and (enode-bm nd) (hamt-not (hamt-sll 1 i)))))
     (cond
       ((not child) #f)
+      ((pair? child) (when (jolt=2 (car child) k) (set-box! removed #t) (drop-slot!)))
       ((or (enode? child) (hnode? child))
        (let ((c (enode-claim child)))
          (vector-set! arr i c)
          (enode-dissoc! c (fx+ shift 5) h k removed)
          (when (hamt=? 0 (enode-bm c)) (drop-slot!))))
-      ((hcoll? child)
+      (else
        (let ((entry (assoc-jolt k (hcoll-alist child))))
          (when entry
            (set-box! removed #t)
            (let ((al (alist-remove entry (hcoll-alist child))))
              (cond ((null? al) (drop-slot!))
                    ((null? (cdr al)) (vector-set! arr i (car al)))
-                   (else (vector-set! arr i (make-hcoll (hcoll-hash child) al))))))))
-      ((jolt= (car child) k) (set-box! removed #t) (drop-slot!)))))
+                   (else (vector-set! arr i (make-hcoll (hcoll-hash child) al)))))))))))
 
 ;; Reads work over a MIXED tree: the part the transient has written to is
 ;; enodes, everything else is still the source map's hnodes. This is on the hot
 ;; path for read-heavy transient code (group-by does one get per element), so
-;; the cases are ordered by frequency rather than by kind: a leaf is a pair and
-;; nothing else here is, so one `pair?` settles the common case, and an
-;; unclaimed subtree hands off to node-get, which carries no enode tests at all.
+;; the cases are ordered by frequency: an entry is a pair and nothing else here
+;; is, and an unclaimed subtree hands off to node-get, which carries no enode
+;; tests at all.
 (define (enode-get nd shift h k default)
   (if (enode? nd)
       (let ((child (vector-ref (enode-arr nd) (hamt-chunk h shift))))
-        (cond ((pair? child) (if (jolt= (car child) k) (cdr child) default))
+        (cond ((pair? child) (if (jolt=2 (car child) k) (cdr child) default))
               ((not child) default)
               ((enode? child) (enode-get child (fx+ shift 5) h k default))
               ((hcoll? child) (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) default)))
               (else (node-get child (fx+ shift 5) h k default))))
       (node-get nd shift h k default)))
 
-;; Freeze an edited tree: every enode becomes an hnode whose array is trimmed to
-;; exactly its used slots. An hnode subtree was never claimed, so it is already
-;; immutable and is kept BY POINTER — that is the structural sharing with the
-;; map the transient started from. Cost is O(claimed nodes), not O(entries).
+;; Freeze an edited tree: every enode becomes an hnode holding exactly its used
+;; fragments, entries unpacked into key/value slots. An hnode subtree was never
+;; claimed, so it is already immutable and is kept BY POINTER — that is the
+;; structural sharing with the map the transient started from. Cost is
+;; O(claimed nodes), not O(entries).
 (define (enode-freeze nd)
   (if (enode? nd)
-      (let* ((bm (enode-bm nd)) (used (hamt-popcount bm))
-             (arr (enode-arr nd)) (out (make-vector used)))
-        (let loop ((bits bm) (j 0))
+      (let* ((bm (enode-bm nd)) (arr (enode-arr nd))
+             ;; which fragments hold an entry: the pairs
+             (dm (let loop ((bits bm) (dm 0))
+                   (if (hamt=? 0 bits) dm
+                       (let* ((below (hamt-sub bits 1)))
+                         (loop (hamt-and bits below)
+                               (if (pair? (vector-ref arr (hamt-lowest-slot bits below)))
+                                   (hamt-ior dm (hamt-and bits (hamt-not below)))
+                                   dm))))))
+             (nm (hamt-and bm (hamt-not dm)))
+             (out (make-vector (fx+ (fx* 2 (hamt-popcount dm)) (hamt-popcount nm)))))
+        (let loop ((bits bm) (di 0) (ni (fx- (vector-length out) 1)))
           (if (hamt=? 0 bits)
-              (make-hnode bm out)
-              (let* ((below (hamt-sub bits 1)) (slot (hamt-lowest-slot bits below)))
-                (vector-set! out j (enode-freeze (vector-ref arr slot)))
-                (loop (hamt-and bits below) (fx+ j 1))))))
+              (make-hnode dm nm out)
+              (let* ((below (hamt-sub bits 1)) (x (vector-ref arr (hamt-lowest-slot bits below))))
+                (if (pair? x)
+                    (begin (vector-set! out di (car x)) (vector-set! out (fx+ di 1) (cdr x))
+                           (loop (hamt-and bits below) (fx+ di 2) ni))
+                    (begin (vector-set! out ni (enode-freeze x))
+                           (loop (hamt-and bits below) di (fx- ni 1))))))))
       nd))
 
 ;; ============================================================================
@@ -1404,20 +1559,24 @@
              (let ((h (hamt-and h hmask)))
                (let lp ((node root) (shift 0))
                  (let* ((bit (hamt-sll 1 (hamt-and (hamt-sra h shift) 31)))
-                        (bm (hnode-bm node)))
-                   (if (hamt=? 0 (hamt-and bm bit)) d
-                       (let ((child (vector-ref (hnode-arr node)
-                                                (hamt-popcount (hamt-and bm (hamt-sub bit 1))))))
-                         (cond ((hnode? child) (lp child (fx+ shift 5)))
-                               ((hcoll? child)
-                                (let ((p (assoc-jolt k (hcoll-alist child)))) (if p (cdr p) d)))
-                               ((let ((ck (car child)))
-                                  (cond ((keyword-t? ck) (and (keyword-t? k) (eq? ck k)))
-                                        ((fixnum? ck) (and (fixnum? k) (fx=? ck k)))
-                                        ((string? ck) (and (string? k) (string=? ck k)))
-                                        (else (jolt=2 ck k))))
-                                (cdr child))
-                               (else d)))))))
+                        (dm (hnode-dmap node)))
+                   (if (not (hamt=? 0 (hamt-and dm bit)))
+                       (let* ((arr (hnode-arr node))
+                              (i (fx* 2 (hamt-popcount (hamt-and dm (hamt-sub bit 1)))))
+                              (ck (vector-ref arr i)))
+                         (if (cond ((keyword-t? ck) (and (keyword-t? k) (eq? ck k)))
+                                   ((fixnum? ck) (and (fixnum? k) (fx=? ck k)))
+                                   ((string? ck) (and (string? k) (string=? ck k)))
+                                   (else (jolt=2 ck k)))
+                             (vector-ref arr (fx+ i 1))
+                             d))
+                       (let ((nm (hnode-nmap node)))
+                         (if (hamt=? 0 (hamt-and nm bit))
+                             d
+                             (let ((b (let ((arr (hnode-arr node))) (vector-ref arr (hamt-branch-slot arr nm bit)))))
+                               (if (hnode? b)
+                                   (lp b (fx+ shift 5))
+                                   (let ((p (assoc-jolt k (hcoll-alist b)))) (if p (cdr p) d))))))))))
              (node-get root 0 (key-hash k) k d)))))))
 ;; the stored (key . value) pair, or #f — `find` builds its entry from this so the
 ;; entry's key is the map's own key object, not the equal one probed with.
@@ -1560,39 +1719,46 @@
 ;; identity is no proof of membership for a NaN or collection holding one.
 ;; Unknown members can also run code during the baseline's hashing or equality.
 ;; In either case we must decline before bypassing any lookup or deletion.
-(define (hamt-low-bit bits)
-  (hamt-and bits (hamt-sub 0 bits)))
+;;
+;; The walk reads the node layout directly (an entry bitmap and a branch
+;; bitmap, see hnode above). A fragment's result is #f (nothing left), an entry
+;; as a (key . value) pair, or a branch (an hnode or hcoll).
+(define (hnode-empty? nd)
+  (and (hamt=? 0 (hnode-dmap nd)) (hamt=? 0 (hnode-nmap nd))))
 
-;; Checking at most the 32 aligned root slots can reject independently built
-;; sets before walking either trie. Leaf identity alone is a weak predictor.
+;; Checking at most the 32 aligned root fragments can reject independently
+;; built sets before walking either trie. Entry identity alone is a weak
+;; predictor, so only a shared branch node counts.
 (define (shared-set-root-child? left right)
-  (let ((lb (hnode-bm left)) (rb (hnode-bm right))
+  (let ((lnm (hnode-nmap left)) (rnm (hnode-nmap right))
         (la (hnode-arr left)) (ra (hnode-arr right)))
-    (let loop ((bits (hamt-and lb rb)))
+    (let loop ((bits (hamt-and lnm rnm)))
       (and (not (hamt=? bits 0))
            (let* ((bit (hamt-low-bit bits))
-                  (child (vector-ref la (hamt-arr-index lb bit))))
+                  (child (vector-ref la (hamt-branch-slot la lnm bit))))
              (or (and (hnode? child)
-                      (eq? child (vector-ref ra (hamt-arr-index rb bit))))
+                      (eq? child (vector-ref ra (hamt-branch-slot ra rnm bit))))
                  (loop (hamt-sub bits bit))))))))
 
 ;; No cached size on an hnode. Count only retained branches, without copying
 ;; them or visiting any descendants of discarded shared nodes.
 (define (set-child-size child)
   (cond ((hnode? child)
-         (let ((arr (hnode-arr child)))
-           (let loop ((i (fx- (vector-length arr) 1)) (n 0))
-             (if (fx<? i 0) n
+         (let* ((arr (hnode-arr child)) (base (fx* 2 (hamt-popcount (hnode-dmap child)))))
+           (let loop ((i (fx- (vector-length arr) 1)) (n (hamt-popcount (hnode-dmap child))))
+             (if (fx<? i base) n
                  (loop (fx- i 1) (fx+ n (set-child-size (vector-ref arr i))))))))
         ((hcoll? child) (length (hcoll-alist child)))
         (else 1)))
 
-(define (set-child-contains? child shift k)
-  (cond ((hnode? child) (node-entry child shift (key-hash k) k))
-        ((hcoll? child) (assoc-jolt k (hcoll-alist child)))
-        (else (jolt=2 (car child) k))))
+;; is k in the branch b (an hnode one level down, or a bucket)?
+(define (set-branch-contains? b shift k)
+  (if (hnode? b)
+      (node-entry b shift (key-hash k) k)
+      (assoc-jolt k (hcoll-alist b))))
 
-(define (set-bucket-difference left right shift)
+;; a bucket minus the keys `contains?` answers for; one survivor becomes an entry
+(define (set-bucket-difference left contains?)
   (let loop ((entries (hcoll-alist left)) (kept '()) (n 0) (changed? #f))
     (cond
       ((null? entries)
@@ -1601,57 +1767,77 @@
                      ((fx=? n 1) (car kept))
                      (else (make-hcoll (hcoll-hash left) (reverse kept))))
                n))
-      ((set-child-contains? right shift (caar entries))
+      ((contains? (caar entries))
        (loop (cdr entries) kept n #t))
       (else
        (loop (cdr entries) (cons (car entries) kept) (fx+ n 1) changed?)))))
 
-(define (set-branch-difference left right shift)
-  ;; The right side at this slot is a leaf or bucket. A bucket may contain
-  ;; distinct hashes with the same prefix, so use each member's own hash and
-  ;; stop once the left branch has been exhausted.
+;; A node branch minus a few keys (the other side's entry or bucket here). A
+;; bucket may contain distinct hashes with the same prefix, so each key uses
+;; its own hash; stop once the branch is exhausted.
+(define (set-branch-difference left keys shift)
   (let ((removed (box #f)))
-    (define (drop node entry)
-      (let ((k (car entry)))
-        (node-dissoc node shift (key-hash k) k removed)))
-    (let ((next (if (hcoll? right)
-                    (let loop ((node left) (entries (hcoll-alist right)))
-                      (if (or (null? entries) (hamt=? (hnode-bm node) 0)) node
-                          (loop (drop node (car entries)) (cdr entries))))
-                    (drop left right))))
-      (if (hamt=? (hnode-bm next) 0) (values #f 0)
-          (values next (set-child-size next))))))
+    (let loop ((node left) (keys keys))
+      (cond ((hnode-empty? node) (values #f 0))
+            ((null? keys) (values node (set-child-size node)))
+            (else (loop (node-dissoc node shift (key-hash (car keys)) (car keys) removed)
+                        (cdr keys)))))))
 
-(define (set-child-difference left right shift)
-  (cond ((eq? left right) (values #f 0))
-        ((hnode? left)
-         (if (hnode? right) (set-node-difference left right shift)
-             (set-branch-difference left right shift)))
-        ((hcoll? left) (set-bucket-difference left right shift))
-        ((set-child-contains? right shift (car left)) (values #f 0))
-        (else (values left 1))))
+;; left branch lb against right branch rb, both one level down (at shift)
+(define (set-child-difference lb rb shift)
+  (cond ((eq? lb rb) (values #f 0))
+        ((hnode? lb)
+         (if (hnode? rb)
+             (set-node-difference lb rb shift)
+             (set-branch-difference lb (map car (hcoll-alist rb)) shift)))
+        (else (set-bucket-difference lb (lambda (k) (set-branch-contains? rb shift k))))))
 
 (define (set-node-difference left right shift)
-  (let* ((lb (hnode-bm left)) (rb (hnode-bm right))
-         (la (hnode-arr left)) (ra (hnode-arr right)))
-    (if (hamt=? (hamt-and lb rb) 0) (values left (set-child-size left))
-        (let ((out (make-vector (vector-length la))))
-          (let loop ((bits lb) (i 0) (j 0) (bm 0) (n 0) (changed? #f))
-            (if (hamt=? bits 0)
-                (values (cond ((not changed?) left)
-                              ((fxzero? j) #f)
-                              (else (make-hnode bm (if (fx=? i j) out (vec-copy-range out 0 j)))))
-                        n)
-                (let* ((bit (hamt-low-bit bits)) (child (vector-ref la i)))
-                  (let-values (((kept size)
-                                (if (hamt=? (hamt-and rb bit) 0)
-                                    (values child (set-child-size child))
-                                    (set-child-difference child
-                                      (vector-ref ra (hamt-arr-index rb bit)) (fx+ shift 5)))))
-                    (when kept (vector-set! out j kept))
-                    (loop (hamt-sub bits bit) (fx+ i 1) (if kept (fx+ j 1) j)
-                          (if kept (hamt-ior bm bit) bm) (fx+ n size)
-                          (or changed? (not (eq? child kept))))))))))))
+  (let* ((ldm (hnode-dmap left)) (lnm (hnode-nmap left)) (la (hnode-arr left))
+         (rdm (hnode-dmap right)) (rnm (hnode-nmap right)) (ra (hnode-arr right))
+         (down (fx+ shift 5)))
+    (if (hamt=? 0 (hamt-and (hamt-ior ldm lnm) (hamt-ior rdm rnm)))
+        (values left (set-child-size left))
+        ;; ents: kept entries' slots, reversed; brs: kept branches, highest
+        ;; fragment first (the order they sit in the array)
+        (let loop ((rem (hamt-ior ldm lnm)) (di 0) (ni (fx- (vector-length la) 1))
+                   (dm 0) (nm 0) (ents '()) (brs '()) (n 0) (changed? #f))
+          (if (hamt=? 0 rem)
+              (values (cond ((not changed?) left)
+                            ((and (hamt=? 0 dm) (hamt=? 0 nm)) #f)
+                            (else (make-hnode dm nm (list->vector (append (reverse ents) brs)))))
+                      n)
+              (let* ((bit (hamt-low-bit rem)) (rest (hamt-and rem (hamt-sub rem 1))))
+                (define (keep-result kept size di ni changed?)
+                  (cond ((not kept) (loop rest di ni dm nm ents brs n #t))
+                        ((pair? kept)
+                         (loop rest di ni (hamt-ior dm bit) nm (cons (cdr kept) (cons (car kept) ents))
+                               brs (fx+ n size) changed?))
+                        (else (loop rest di ni dm (hamt-ior nm bit) ents (cons kept brs)
+                                    (fx+ n size) changed?))))
+                (if (not (hamt=? 0 (hamt-and ldm bit)))
+                    ;; left holds an entry here
+                    (let* ((lk (vector-ref la di)) (lv (vector-ref la (fx+ di 1)))
+                           (gone? (cond ((not (hamt=? 0 (hamt-and rdm bit)))
+                                         (jolt=2 lk (vector-ref ra (fx* 2 (hamt-arr-index rdm bit)))))
+                                        ((not (hamt=? 0 (hamt-and rnm bit)))
+                                         (set-branch-contains? (vector-ref ra (hamt-branch-slot ra rnm bit)) down lk))
+                                        (else #f))))
+                      (if gone?
+                          (loop rest (fx+ di 2) ni dm nm ents brs n #t)
+                          (loop rest (fx+ di 2) ni (hamt-ior dm bit) nm (cons lv (cons lk ents)) brs (fx+ n 1) changed?)))
+                    ;; left holds a branch here
+                    (let ((lb (vector-ref la ni)))
+                      (let-values (((kept size)
+                                    (cond ((not (hamt=? 0 (hamt-and rdm bit)))
+                                           (let ((rk (vector-ref ra (fx* 2 (hamt-arr-index rdm bit)))))
+                                             (if (hnode? lb)
+                                                 (set-branch-difference lb (list rk) down)
+                                                 (set-bucket-difference lb (lambda (k) (jolt=2 k rk))))))
+                                          ((not (hamt=? 0 (hamt-and rnm bit)))
+                                           (set-child-difference lb (vector-ref ra (hamt-branch-slot ra rnm bit)) down))
+                                          (else (values lb (set-child-size lb))))))
+                        (keep-result kept size di (fx- ni 1) (or changed? (not (eq? kept lb)))))))))))))
 
 (define (jolt-try-set-difference s1 s2 drop-member)
   ;; Compare the actual callback selected by the caller against the host's
@@ -2268,7 +2454,9 @@
                               (and (fx>=? j 0)
                                    (jolt=2 (vector-ref ra (fx+ i 1)) (vector-ref rb (fx+ j 1)))
                                    (loop (fx+ i 2)))))))
-                    (pmap-fold a (lambda (k v ok) (and ok (jolt=2 (pmap-fast-get b k pmap-absent) v))) #t))))))
+                    ;; the forward fold: equality needs no order, and it is the walk
+                    ;; that runs as a loop rather than recursing per fragment
+                    (pmap-fold-fwd a (lambda (k v ok) (and ok (jolt=2 (pmap-fast-get b k pmap-absent) v))) #t))))))
     ((and (pset? a) (pset? b))
      (if (hasheq-rejects? (pset-hasheq a) (pset-hasheq b))
          #f
