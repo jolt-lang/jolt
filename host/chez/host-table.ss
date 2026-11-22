@@ -210,8 +210,8 @@
 ;; so a node of N entries is 2N+1 slots, a field read is a vector-ref, and an
 ;; update copies one contiguous vector per level. With up to 16 entries a leaf
 ;; and 32 an inner node, a lookup touches ~log32(n) nodes where the red-black tree
-;; touched ~log2(n)
-;; separate 5-slot vectors, and a walk reads leaves front to back. Every
+;; touched ~log2(n) separate 5-slot vectors, and a walk reads leaves front to
+;; back. Every
 ;; comparison is (cmp k node-key), as the reference makes it, but the NUMBER of
 ;; calls is a binary search's per node, not one per red-black level: a counting
 ;; comparator sees a different total than on the JVM (known-divergences).
@@ -704,17 +704,22 @@
 ;; whole: a bulk load, a merge, or single inserts, as host-table.ss's batch
 ;; decides. A source small enough to count goes into an EMPTY coll by plain
 ;; conj, which costs less than gathering a buffer. XFORM is #f for a plain into.
+;;
+;; With an XFORM it stays conj after conj onto the coll itself: a sorted coll is
+;; not IEditableCollection, so the JVM's into is (transduce xform conj to from),
+;; and a transducer sees that accumulator. halt-when hands it to its retf and
+;; answers whatever its completion returns, neither of which a hidden buffer
+;; could stand in for.
 (define (sorted-into to xform from)
-  (let ((n (bt-known-count from)))
-    (if (and n (fx<=? n bt-into-conj-max) (fx=? (scoll-cnt to) 0))
-        (if xform (into-xform-conj to xform from) (meta-carry-conj to (into-fold jolt-conj1 to from)))
-        (let* ((step (sc-op to kw-op-conj-kvs))
-               (buf (jolt-transient-new (make-pvec (vector))))
-               (res (if xform
-                        (let ((xrf (jolt-invoke xform (lambda a (if (fx=? (length a) 1) (car a) (jolt-invoke2 step (car a) (cadr a)))))))
-                          (jolt-invoke xrf (into-fold xrf buf from)))
-                        (into-fold (lambda (acc x) (jolt-invoke2 step acc x)) buf from))))
-          (meta-carry-conj to (sc-call to kw-op-assoc-all (jolt-persistent! res)))))))
+  (if xform
+      (into-xform-conj to xform from)
+      (let ((n (bt-known-count from)))
+        (if (and n (fx<=? n bt-into-conj-max) (fx=? (scoll-cnt to) 0))
+            (meta-carry-conj to (into-fold jolt-conj1 to from))
+            (let* ((step (sc-op to kw-op-conj-kvs))
+                   (buf (jolt-transient-new (make-pvec (vector))))
+                   (res (into-fold (lambda (acc x) (jolt-invoke2 step acc x)) buf from)))
+              (meta-carry-conj to (sc-call to kw-op-assoc-all (jolt-persistent! res))))))))
 
 ;; --- the in-order walk over the B+tree -------------------------------------------
 ;; The walk is Clojure's PersistentTreeMap$Seq, over leaves: a stack of frames
@@ -780,9 +785,6 @@
   (if (jolt-nil? tree)
       jolt-nil
       (sc-stack->seq (bt-push-down tree asc? '()) (sc-walk-code asc? mode))))
-;; PersistentTreeMap.seqFrom: the walk from the first key at or past K in the
-;; walk's direction, nil when there is none. The comparator is called the way
-;; seqFrom calls it, (cmp k node-key).
 ;; The walk position at the first key at or past K in the walk's direction: (values
 ;; STACK HIT?), STACK settled (its top a leaf frame with an entry left, or '() when
 ;; there is none), HIT? whether that entry's key compares equal to K. The

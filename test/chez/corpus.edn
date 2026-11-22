@@ -4873,6 +4873,8 @@
   {:suite "transducers / halt-when" :label "no halt is a plain reduction" :expected "[1 2 3]" :actual "(transduce (halt-when (fn [x] (> x 5))) conj [1 2 3])" :portability :common}
   {:suite "transducers / halt-when" :label "retf combines acc and input" :expected "[[1 2] 7]" :actual "(transduce (halt-when (fn [x] (> x 5)) (fn [r i] [r i])) conj [1 2 7 3])" :portability :common}
   {:suite "transducers / halt-when" :label "halt-when through into" :expected "3" :actual "(into [] (halt-when odd?) [2 4 3 6])" :portability :common}
+  {:suite "transducers / halt-when" :label "halt-when through into a sorted-set answers the halting input" :expected "3" :actual "(into (sorted-set) (halt-when #{3}) (range 10))" :portability :common}
+  {:suite "transducers / halt-when" :label "halt-when retf through into a sorted-map sees the sorted map built so far" :expected "12" :actual "(into (sorted-map) (halt-when (fn [[k]] (= k 12)) (fn [acc x] (count acc))) (map (fn [x] [x x]) (range 20)))" :portability :common}
   {:suite "transducers / short-circuit over infinite seqs" :label "into take (range)" :expected "[0 1 2 3 4]" :actual "(into [] (take 5) (range))" :portability :common}
   {:suite "transducers / short-circuit over infinite seqs" :label "transduce take (range)" :expected "3" :actual "(transduce (take 3) + 0 (range))" :portability :common}
   {:suite "transducers / short-circuit over infinite seqs" :label "sequence take (range)" :expected "[0 1 2 3 4]" :actual "(sequence (take 5) (range))" :portability :common}
