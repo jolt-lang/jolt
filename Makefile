@@ -180,7 +180,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
-  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
+  protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
@@ -1312,6 +1312,13 @@ staticsite:
 # is a lazy chunked walk of its trie (test/chez/arraymap-test.ss).
 arraymap:
 	@$(CHEZ) --script test/chez/arraymap-test.ss
+
+# Hash-mode maps and sets: random assoc/dissoc, persistent and through a
+# transient, against an alist model over collision families and nil/false keys;
+# the trie must iterate in hash-chunk order and keep its key/value slot-pair
+# node layout (test/chez/hamt-test.ss).
+hamt:
+	@$(CHEZ) --script test/chez/hamt-test.ss
 
 # A plain defrecord (no collection methods of its own) answers count, contains?,
 # seq, assoc, reduce-kv, into, = and hash from its slots ahead of the arm walk

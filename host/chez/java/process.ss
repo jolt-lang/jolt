@@ -378,29 +378,29 @@
 
 ;; What a spawn runs: the program path, its argv, its environment (an alist),
 ;; the directory to start in (or #f), and whether stderr is stdout (dup2 1 2).
-(define (make-proc-spawn-spec path argv env dir merge?) (vector path argv env dir merge?))
+(define (make-proc-spawn-spec path argv env dir merge? files)
+  (vector path argv env dir merge? files))
 (define (proc-spec-path s) (vector-ref s 0))
 (define (proc-spec-argv s) (vector-ref s 1))
 (define (proc-spec-env s)  (vector-ref s 2))
 (define (proc-spec-dir s)  (vector-ref s 3))
 (define (proc-spec-merge? s) (vector-ref s 4))
+;; The file redirects, as (fd kind path) for each of 0/1/2 that has one. The
+;; parent opens them (proc-open-redirect-files) and the child gets them by dup2.
+(define (proc-spec-files s) (vector-ref s 5))
 
 (define (proc-shell-spec st)
   (let ((shell (proc-posix-shell)))
     (make-proc-spawn-spec shell (list shell "-c" (proc-build-shell-command st))
-                          (proc-child-env-pairs) #f #f)))
+                          (proc-child-env-pairs) #f #f '())))
 (define (proc-direct-spec st)
   (let* ((cmd (proc-pb-cmd st))
          (dir (proc-effective-dir (proc-pb-dir st)))
          (env-map (proc-pb-env st))
-         (file-redirect? (lambda (r) (and (proc-redirect? r)
-                                          (memq (proc-redirect-kind r) '(write append read discard))
-                                          #t))))
+         (files (proc-redirect-files st)))
     (and (pair? cmd)
          (not (proc-via-shell-forced?))
-         (not (file-redirect? (proc-pb-redir-in st)))
-         (not (file-redirect? (proc-pb-redir-out st)))
-         (not (file-redirect? (proc-pb-redir-err st)))
+         (or (null? files) proc-open-flags)
          (or (not dir) proc-fa-chdir)
          (let ((path (proc-resolve-direct (proc-render-arg (car cmd)) dir)))
            (and path
@@ -409,7 +409,63 @@
                   (proc-env-with-pwd
                     (if env-map (proc-env-map-pairs env-map) (proc-child-env-pairs))
                     dir)
-                  dir (and (proc-pb-merge-err? st) #t)))))))
+                  dir (and (proc-pb-merge-err? st) #t) files))))))
+;; A file redirect is the parent's to open, as the JDK opens it (ProcessImpl
+;; hands the child FileOutputStream/FileInputStream descriptors): a target that
+;; cannot be opened throws from start() rather than starting a child that the
+;; shell then fails in. -> ((fd kind path) ...) for each stream that has one; a
+;; merged stderr has none, since it is stdout's.
+(define (proc-redirect-files st)
+  (let ((one (lambda (fd r)
+               (if (and (proc-redirect? r)
+                        (memq (proc-redirect-kind r) '(write append read discard)))
+                   (list (list fd (proc-redirect-kind r) (proc-redirect-file r)))
+                   '()))))
+    (append (one 0 (proc-pb-redir-in st))
+            (one 1 (proc-pb-redir-out st))
+            (if (proc-pb-merge-err? st) '() (one 2 (proc-pb-redir-err st))))))
+;; open(2) flags per kind, from <sys/fcntl.h> on macOS and asm-generic/fcntl.h on
+;; Linux (every Linux target Chez builds for, Android included). O_CLOEXEC keeps
+;; the descriptor out of a spawn running alongside; the dup2 onto 0/1/2 clears
+;; it for the child. #f elsewhere, and a file redirect goes through the shell.
+(define proc-open-flags
+  (let ((tbl (case (sa-os-family)
+               ((macos) '((rdonly . 0) (wronly . 1) (creat . #x200) (trunc . #x400)
+                          (append . #x8) (cloexec . #x1000000)))
+               ((linux) '((rdonly . 0) (wronly . 1) (creat . #x40) (trunc . #x200)
+                          (append . #x400) (cloexec . #x80000)))
+               (else #f))))
+    (and tbl
+         (let ((f (lambda (k) (cdr (assq k tbl)))))
+           (lambda (kind)
+             (fxior (f 'cloexec)
+                    (case kind
+                      ((write discard) (fxior (f 'wronly) (f 'creat) (f 'trunc)))
+                      ((append) (fxior (f 'wronly) (f 'creat) (f 'append)))
+                      (else (f 'rdonly)))))))))
+(define proc-c-open
+  (and proc-open-flags
+       (jolt-foreign-proc-safe (__varargs_after 2) "open" '(string int int) 'int)))
+(define proc-c-strerror (jolt-foreign-proc-safe "strerror" '(int) 'string))
+;; Open every file in FILES -> ((fd . opened-fd) ...), or throw the JDK's
+;; IOException naming the path as given. A relative path is the user's
+;; directory's, as a File is (user.dir), not the child's :dir.
+(define (proc-open-redirect-files files program)
+  (let loop ((fs files) (acc '()))
+    (if (null? fs)
+        (reverse acc)
+        (let* ((fd (car (car fs))) (kind (cadr (car fs))) (given (caddr (car fs)))
+               (path (if (eq? kind 'discard) "/dev/null" (jfile-abs given))))
+          (let-values (((r err) (io-call+errno (proc-c-open path (proc-open-flags kind) #o666))))
+            (if (< r 0)
+                (begin
+                  (for-each (lambda (p) (proc-c-close (cdr p))) acc)
+                  (throw-jvm (quote java.io.IOException)
+                    (string-append "Cannot run program \"" program "\": "
+                                   (if (eq? kind 'discard) "/dev/null" given) " ("
+                                   (or (and proc-c-strerror (proc-c-strerror err)) "open failed")
+                                   ")")))
+                (loop (cdr fs) (cons (cons fd r) acc))))))))
 ;; The shell's `cd` set PWD for the child, and a child that asks for its
 ;; directory by $PWD (pwd, any shell) answered the directory as given rather than
 ;; its resolved path (/var/... rather than /private/var/... on macOS). A chdir
@@ -707,6 +763,20 @@
 (define (proc-sigdefault-ok?)
   (and proc-attr-init proc-attr-setflags proc-attr-destroy proc-attr-setsigdefault
        proc-c-sigemptyset proc-c-sigaddset #t))
+
+;; The child's signal mask, set by the attribute rather than by emptying this
+;; thread's mask around the spawn. Every jolt thread blocks the watcher's signals
+;; (concurrency.ss), and one sent to the process sits pending until the watcher's
+;; sigwait takes it; emptying the spawning thread's mask hands any pending one to
+;; that thread at its default action instead. A Signal/raise USR2 followed by a
+;; ProcessBuilder start died of SIGUSR2 on a slow runner that way, its handler
+;; registered. POSIX_SPAWN_SETSIGMASK is 8 on every host that spawns here.
+(define proc-attr-setsigmask
+  (jolt-foreign-proc-safe "posix_spawnattr_setsigmask" '(void* void*) 'int))
+(define proc-POSIX-SPAWN-SETSIGMASK #x08)
+(define (proc-sigmask-attr-ok?)
+  (and proc-attr-init proc-attr-setflags proc-attr-destroy proc-attr-setsigmask
+       proc-c-sigemptyset #t))
 
 ;; What posix_spawn-with-pipes needs, and nothing more. The R8 fiber-parking
 ;; extension's own bindings (fcntl, errno) are gated separately by
@@ -1164,10 +1234,18 @@
 ;; parent's descriptor); the rest get pipes, except a stderr merged into stdout,
 ;; which is a dup2 of the child's 1 onto its 2.
 ;; Returns (values stdin-port stdout-port stderr-port pid), #f for inherited
-;; ends. attrp is NULL: signal mask and dispositions are inherited, matching
-;; the pipe path — so the mask is corrected on this side, around the spawn
-;; itself (see the call below).
+;; ends. The child starts with an empty signal mask, set through the attribute
+;; (POSIX_SPAWN_SETSIGMASK) where the platform has it, else by emptying this
+;; thread's mask around the spawn itself (see the call below).
 (define (proc-spawn-fd-level spec inherit-in? inherit-out? inherit-err?)
+  ;; The file redirects are opened first, outside the lock, and closed here
+  ;; whatever the spawn does: the child has its own copies once it exists.
+  (let ((files (proc-open-redirect-files (proc-spec-files spec) (car (proc-spec-argv spec)))))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (proc-spawn-fd-level* spec files inherit-in? inherit-out? inherit-err?))
+      (lambda () (for-each (lambda (p) (proc-c-close (cdr p))) files)))))
+(define (proc-spawn-fd-level* spec files inherit-in? inherit-out? inherit-err?)
   ;; nonblocking-read? / nonblocking-write? -- set O_NONBLOCK unconditionally
   ;; on the PARENT's own RETAINED end at creation (never poller-gated), so
   ;; the retry loops below
@@ -1211,22 +1289,30 @@
   ;; the call graph say what is true instead of asking for an exemption.
   (define (spawn-locked)
     (jolt-with-mutex proc-spawn-fd-mutex
-      (let* ((in-p  (and (not inherit-in?)  (mk-pipe #f #t)))
-             (out-p (and (not inherit-out?) (mk-pipe #t #f)))
+      (let* ((file-fd (lambda (fd) (let ((p (assv fd files))) (and p (cdr p)))))
+             (in-p  (and (not inherit-in?)  (not (file-fd 0)) (mk-pipe #f #t)))
+             (out-p (and (not inherit-out?) (not (file-fd 1)) (mk-pipe #t #f)))
              (merge? (proc-spec-merge? spec))
-             (err-p (and (not inherit-err?) (not merge?) (mk-pipe #t #f)))
+             (err-p (and (not inherit-err?) (not merge?) (not (file-fd 2)) (mk-pipe #t #f)))
              (barrier (proc-exec-barrier-pipe))
              (fa (sa-foreign-alloc 128))
              (cloexec? (proc-cloexec-default?))
              (sigdef? (proc-sigdefault-ok?))
-             (attr (and (or cloexec? sigdef?) (sa-foreign-alloc proc-attr-bytes)))
+             (sigmask? (proc-sigmask-attr-ok?))
+             (attr (and (or cloexec? sigdef? sigmask?) (sa-foreign-alloc proc-attr-bytes)))
              (pidbuf (sa-foreign-alloc 8)))
         (proc-fa-init fa)
         (when attr
           (proc-attr-init attr)
           (proc-attr-setflags attr
             (fxior (if cloexec? proc-POSIX-SPAWN-CLOEXEC-DEFAULT 0)
-                   (if sigdef? proc-POSIX-SPAWN-SETSIGDEF 0)))
+                   (if sigdef? proc-POSIX-SPAWN-SETSIGDEF 0)
+                   (if sigmask? proc-POSIX-SPAWN-SETSIGMASK 0)))
+          (when sigmask?
+            (let ((set (sa-foreign-alloc proc-sigset-bytes)))
+              (proc-c-sigemptyset set)
+              (proc-attr-setsigmask attr set)
+              (sa-foreign-free set)))
           (when sigdef?
             (let ((set (sa-foreign-alloc proc-sigset-bytes)))
               (proc-c-sigemptyset set)
@@ -1246,6 +1332,9 @@
                     (proc-fa-close fa (cdr out-p)) (proc-fa-close fa (car out-p)))
         (when err-p (proc-fa-dup2 fa (cdr err-p) 2)
                     (proc-fa-close fa (cdr err-p)) (proc-fa-close fa (car err-p)))
+        ;; a file redirect: the parent's descriptor onto the stream, then shut
+        (for-each (lambda (p) (proc-fa-dup2 fa (cdr p) (car p)) (proc-fa-close fa (cdr p)))
+                  files)
         ;; after stdout's own dup2, so 2 becomes whatever 1 is now: the pipe, or
         ;; the inherited descriptor
         (when merge? (proc-fa-dup2 fa 1 2))
@@ -1260,17 +1349,19 @@
             fa (append (if in-p  (list (car in-p)  (cdr in-p))  '())
                        (if out-p (list (car out-p) (cdr out-p)) '())
                        (if err-p (list (car err-p) (cdr err-p)) '())
+                       (map cdr files)
                        (if barrier (list (car barrier) (cdr barrier)) '()))))
         (let* ((path (proc-spec-path spec))
                (argv (proc-marshal-argv (proc-spec-argv spec)))
                (envp (proc-marshal-argv
                       (map (lambda (p) (string-append (car p) "=" (cdr p)))
                            (proc-spec-env spec))))
-               ;; attrp carries CLOEXEC_DEFAULT and SETSIGDEF at most, never
-               ;; SETSIGMASK — so the child inherits this thread's signal mask,
-               ;; which must carry none of jolt's own blocking (concurrency.ss).
-               (rc (jolt-with-empty-sigmask
-                     (lambda () (proc-c-spawn pidbuf path fa (or attr 0) (car argv) (car envp)))))
+               ;; With SETSIGMASK the attribute gives the child its empty mask
+               ;; and this thread's stays as it is; without it the child
+               ;; inherits this thread's mask, which must then carry none of
+               ;; jolt's own blocking for the length of the spawn (concurrency.ss).
+               (rc (let ((spawn (lambda () (proc-c-spawn pidbuf path fa (or attr 0) (car argv) (car envp)))))
+                     (if sigmask? (spawn) (jolt-with-empty-sigmask spawn))))
                (pid (sa-foreign-ref 'int pidbuf 0)))
           (proc-fa-destroy fa)
           (when attr (proc-attr-destroy attr) (sa-foreign-free attr))
@@ -1415,20 +1506,25 @@
               (cond ((null? exts) (reverse acc))
                     ((= (string-length (car exts)) 0) (loop (cdr exts) acc))
                     (else (loop (cdr exts) (cons (string-append prog (car exts)) acc))))))))
-(define (proc-candidate-exists? windows? pathext exists? p)
+;; The candidate (P, or P plus a PATHEXT extension) that exists, or #f.
+(define (proc-candidate-found windows? pathext exists? p)
   (let loop ((cs (proc-name-candidates-for windows? pathext p)))
     (cond ((null? cs) #f)
-          ((exists? (car cs)) #t)
+          ((exists? (car cs)) (car cs))
           (else (loop (cdr cs))))))
+(define (proc-candidate-exists? windows? pathext exists? p)
+  (and (proc-candidate-found windows? pathext exists? p) #t))
 
-(define (proc-on-path-for? windows? pathext path prog exists?)
+;; The file a PATH search for PROG lands on, or #f: `command -v` for a bare name.
+(define (proc-on-path-found windows? pathext path prog exists?)
   (let loop ((dirs (proc-path-entries-for windows? path)))
     (cond ((null? dirs) #f)
           ((and (> (string-length (car dirs)) 0)
-                (proc-candidate-exists? windows? pathext exists?
-                                        (proc-path-join-for windows? (car dirs) prog)))
-           #t)
+                (proc-candidate-found windows? pathext exists?
+                                      (proc-path-join-for windows? (car dirs) prog))))
           (else (loop (cdr dirs))))))
+(define (proc-on-path-for? windows? pathext path prog exists?)
+  (and (proc-on-path-found windows? pathext path prog exists?) #t))
 
 (define (proc-program-resolvable-for? windows? pathext path base prog exists?)
   (cond
@@ -1443,6 +1539,19 @@
      (proc-candidate-exists? windows? pathext exists?
                              (proc-path-join-for windows? base prog)))
     (else (proc-on-path-for? windows? pathext path prog exists?))))
+
+;; Where PROG resolves, as a spawn would resolve it: a path as spelled (joined to
+;; the cwd when relative), a bare name on this process's PATH. -> the file, or #f.
+(define (proc-which prog)
+  (let ((windows? (eq? (sa-os-family) 'windows)) (pathext (getenv "PATHEXT")))
+    (cond
+      ((= (string-length prog) 0) #f)
+      ((or (jfile-path-absolute-for? windows? prog) (windows-root-relative-for? windows? prog))
+       (proc-candidate-found windows? pathext file-exists? prog))
+      ((proc-has-separator-for? windows? prog)
+       (proc-candidate-found windows? pathext file-exists?
+                             (proc-path-join-for windows? (current-directory) prog)))
+      (else (proc-on-path-found windows? pathext (getenv "PATH") prog file-exists?)))))
 
 (define (proc-program-resolvable? prog effective-dir)
   (let ((prog (if (string? prog) prog (jolt-str-render-one prog))))
@@ -2527,6 +2636,39 @@
                   (when eq (hashtable-set! h (substring s 0 eq) (substring s (+ eq 1) (string-length s))))))
               (seq->list (jolt-seq envp)))
     (make-jhost "jolt-env-map" h)))
+
+;; A copy of jolt doing work for this one (the AOT cache's worker, `jolt build`'s
+;; compile workers): ARGV run directly, stdin the null device, stdout and stderr
+;; appended to LOG. It runs where this process runs and with its whole
+;; environment, JOLT_PWD included: it is the runtime's child, not a user
+;; program's, so neither the user directory nor proc-child-env-pairs applies.
+;; -> the Process; waitFor it (proc-wait-blocking) or let it run on.
+(define (proc-spawn-worker argv log)
+  (let ((pb (make-proc-builder argv))
+        (env (make-hashtable string-hash string=?)))
+    (for-each (lambda (p) (hashtable-set! env (car p) (cdr p))) (all-env-pairs))
+    (proc-pb-set! pb 1 (make-jhost "jolt-env-map" env))
+    (proc-pb-set! pb 2 (current-directory))
+    (proc-pb-set! pb 3 (make-proc-redirect 'read (if proc-win? "NUL" "/dev/null")))
+    (proc-pb-set! pb 4 (make-proc-redirect 'append log))
+    (proc-pb-set! pb 6 #t)
+    (proc-pb-start pb)))
+
+;; ARGV run directly in this process's directory and environment, stdin the null
+;; device and stderr discarded. -> (values exit-status stdout-text). The output
+;; is read to EOF before the wait, so a child that fills the pipe never blocks.
+(define (proc-run-capture argv)
+  (let ((pb (make-proc-builder argv))
+        (env (make-hashtable string-hash string=?)))
+    (for-each (lambda (p) (hashtable-set! env (car p) (cdr p))) (all-env-pairs))
+    (proc-pb-set! pb 1 (make-jhost "jolt-env-map" env))
+    (proc-pb-set! pb 2 (current-directory))
+    (proc-pb-set! pb 3 (make-proc-redirect 'read (if proc-win? "NUL" "/dev/null")))
+    (proc-pb-set! pb 5 (make-proc-redirect 'discard #f))
+    (let* ((p (proc-pb-start pb))
+           (bv (get-bytevector-all (proc-p-stdout-port p)))
+           (code (proc-wait-blocking p)))
+      (values code (if (eof-object? bv) "" (utf8->string bv))))))
 
 ;; Runtime.exec(cmdarray [envp [dir]]): the classic spawn API clojure.java.shell
 ;; uses. envp/dir may be nil (inherit / cwd). Returns a Process.

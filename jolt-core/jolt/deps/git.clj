@@ -72,9 +72,7 @@
   [url tag]
   (let [{:keys [exit out err]}
         (with-net-retries #(zero? (:exit %))
-          #(sh-out* (str "git ls-remote " (pr-str url) " "
-                         (pr-str (str "refs/tags/" tag)) " "
-                         (pr-str (str "refs/tags/" tag "^{}")))))]
+          #(sh-out* ["git" "ls-remote" url (str "refs/tags/" tag) (str "refs/tags/" tag "^{}")]))]
     (when-not (zero? exit)
       (throw (ex-info (str "git dep: could not list " url " (git ls-remote exited "
                            exit " after " net-attempts " attempts"
@@ -181,14 +179,14 @@
     ;; the clone talks to the remote, so it gets the same bounded retry the tag
     ;; listing does — scrubbing first, since a failed clone leaves a partial
     ;; staging dir that the next attempt would refuse to clone into.
-    (when-not (zero? (with-net-retries zero? (fn [] (scrub) (sh (str "git clone --quiet " (pr-str url) " " (pr-str stage))))))
+    (when-not (zero? (with-net-retries zero? (fn [] (scrub) (sh ["git" "clone" "--quiet" url stage]))))
       (fail (str "git clone failed after " net-attempts " attempts: " url) nil))
     ;; local, so no retry: the objects are already in the staging clone.
-    (when-not (zero? (sh (str "git -C " (pr-str stage) " checkout --quiet " (pr-str sha))))
+    (when-not (zero? (sh ["git" "-C" stage "checkout" "--quiet" sha]))
       (fail (str "git checkout failed: " sha " in " url) nil))
     ;; submodules are pinned in the checkout; pull them if the dep uses any. This
     ;; one fetches too, and is idempotent, so it retries in place.
-    (when-not (zero? (with-net-retries zero? #(sh (str "git -C " (pr-str stage) " submodule update --init --recursive --quiet"))))
+    (when-not (zero? (with-net-retries zero? #(sh ["git" "-C" stage "submodule" "update" "--init" "--recursive" "--quiet"])))
       (fail (str "git submodule update failed after " net-attempts " attempts for " url) nil))
     (touch! (str stage "/.jolt-git-ok"))
     (if (checkout-complete? dir)
@@ -232,7 +230,6 @@
           git-url-hosts)))
 
 ;; sh-out* rather than sh: this asks a question whose "no" arrives as both a
-;; non-zero exit and a message on stderr, and the 2>/dev/null that used to
-;; silence it is a POSIX path, not a portable way to discard output.
+;; non-zero exit and a message on stderr, which is captured, not printed.
 (defn git-ancestor? [dir a b]
-  (zero? (:exit (sh-out* (str "git -C " (pr-str dir) " merge-base --is-ancestor " a " " b)))))
+  (zero? (:exit (sh-out* ["git" "-C" dir "merge-base" "--is-ancestor" a b]))))

@@ -260,6 +260,34 @@
              p (ffi/alloc a 8)]
          (ffi/close-arena a)
          (zero? (ffi/size p))))
+(check "closing forgets every size in a multi-block group"
+       (let [a (ffi/confined-arena)
+             ps (doall (for [n [8 16 24]] (ffi/alloc a n)))]
+         (ffi/close-arena a)
+         (every? zero? (map ffi/size ps))))
+(check "free forgets a size declared on a caller-owned block"
+       (let [p (ffi/alloc 32)]
+         (ffi/segment p 32)
+         (let [before (ffi/size p)]
+           (ffi/free p)
+           (and (= 32 before) (zero? (ffi/size p))))))
+(check "free names a non-pointer argument as itself"
+       (let [msg (try (ffi/free "x") nil (catch Throwable e (ex-message e)))]
+         (boolean (and msg (re-find #"String" msg)))))
+;; Type keywords are remembered by identity once resolved; an unknown one is
+;; never remembered, so it raises every time it is asked.
+(check "an unknown type raises on every call"
+       (let [p (ffi/alloc 8)]
+         (try (and (rejects? #(ffi/write-array p :no-such-type (long-array 1)))
+                   (rejects? #(ffi/read p :no-such-type))
+                   (rejects? #(ffi/read p :no-such-type)))
+              (finally (ffi/free p)))))
+(check "a type answers the same width after it is remembered"
+       (let [p (ffi/alloc 64)]
+         (try (ffi/write-array p :int32 (int-array [1 -2 3]))
+              (ffi/write-array p :int32 (int-array [4 -5 6]) 12)
+              (= [1 -2 3 4 -5 6] (vec (ffi/read-array p :int32 6)))
+              (finally (ffi/free p)))))
 
 ;; -- C strings ----------------------------------------------------------------
 
@@ -693,6 +721,13 @@
 (check "a drain with nothing reclaimed releases nothing"
        (do (ffi/drain-auto-arenas!)
            (zero? (ffi/drain-auto-arenas!))))
+;; The drain skips the guardian entirely while no automatic arena is live; one
+;; made after the count fell back to zero must still be released.
+(check "an automatic arena made after a full drain is still released"
+       (do (System/gc) (ffi/drain-auto-arenas!)
+           (dotimes [_ 8] (ffi/alloc (ffi/auto-arena) 64))
+           (System/gc)
+           (pos? (ffi/drain-auto-arenas!))))
 (check "an automatic arena still reachable is not released"
        (let [held (ffi/auto-arena)
              p (ffi/alloc held :int64)]
