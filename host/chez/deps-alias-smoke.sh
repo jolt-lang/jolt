@@ -456,10 +456,13 @@ check "add-deps installs the added library's :jolt/provides" '"claimer-sig:RSA"'
 # initialized. They used to see the claim already taken and the class not yet
 # registered, and all but the first got the message for a class nobody provides.
 # A class the provider declares and never registers still misses, on every thread.
+# The install namespace waits until all eight have started; how many of them
+# actually reach the class during the load does not change the answer.
 mkdir -p "$tmp/slowprov"
 cat > "$tmp/slowprov/probe.clj" <<EOF
 ((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provslow {:local/root "$root/test/chez/deps-alias/provslow"}}})
-(let [fs (doall (for [_ (range 8)] (future (try (provslow.Clock/now) (catch Throwable e :miss)))))
+(def started (java.util.concurrent.CountDownLatch. 8))
+(let [fs (doall (for [_ (range 8)] (future (.countDown started) (try (provslow.Clock/now) (catch Throwable e :miss)))))
       gs (doall (for [_ (range 4)] (future (try (provslow.Missing/now) (catch Throwable e (ex-message e))))))]
   (prn (frequencies (map deref fs)))
   (prn (distinct (map deref gs))))
@@ -468,6 +471,49 @@ EOF
 out="$(JOLT_PWD="$tmp/slowprov" JOLT_QUIET=1 "$JOLT" "$tmp/slowprov/probe.clj" 2>&1 | tail -2)"
 check "concurrent first use of a provided class waits for its provider" \
       '{"slow-clock" 8} ("Unknown class provslow.Missing")' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+# An install namespace that fails while several threads wait on its load runs
+# once: the threads that waited get the provider's failure, not a run of the
+# namespace each (the loader's rollback left it free to load again, and every
+# waiter loaded it).
+mkdir -p "$tmp/failprov"
+cat > "$tmp/failprov/probe.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provfail {:local/root "$root/test/chez/deps-alias/provfail"}}})
+(def runs (atom 0))
+(def started (java.util.concurrent.CountDownLatch. 8))
+(let [fs (doall (for [_ (range 8)]
+                  (future (.countDown started)
+                          (try (provfail.Clock/now)
+                               (catch Throwable e
+                                 (let [m (ex-message e)]
+                                   (cond (re-find #"failed to load .*provfail.install broke" m) :failed
+                                         (re-find #"Syntax error macroexpanding at .provfail/install" m) :raised
+                                         :else m)))))))
+      rs (mapv deref fs)]
+  (prn @runs (into (sorted-map) (frequencies rs))))
+(shutdown-agents)
+EOF
+check "a provider failing while threads wait on its load runs once" \
+      '1 {:failed 7, :raised 1}' \
+      "$(JOLT_PWD="$tmp/failprov" JOLT_QUIET=1 "$JOLT" "$tmp/failprov/probe.clj" 2>&1 | tail -1)"
+# An install namespace whose top level waits on a future that reaches one of the
+# provider's own classes: the future is part of the load and must not wait for
+# it. On the JVM that is the class-initialization deadlock; it waited for the
+# loader's watchdog (120 s), or forever on a fiber, whenever the future landed
+# on a pool thread that already existed, which the first @(future 1) makes
+# sure of. The future gets a message naming the load, at once.
+mkdir -p "$tmp/selfprov"
+cat > "$tmp/selfprov/probe.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provself {:local/root "$root/test/chez/deps-alias/provself"}}})
+@(future 1)
+(prn (provself.Clock/now))
+(prn (re-find #"^provself.Clock is not installed yet: provself.install, which provides it, is still loading"
+              @(resolve 'provself.install/from-future)))
+(shutdown-agents)
+EOF
+out="$(JOLT_LOAD_WAIT_LIMIT_SECS=20 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 "$JOLT" "$tmp/selfprov/probe.clj" 2>&1 | tail -2)"
+check "a future the install namespace waits on does not wait for that load" \
+      '"self-clock" "provself.Clock is not installed yet: provself.install, which provides it, is still loading"' \
       "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
 # Adding a library the project already resolved must not claim its classes a
 # second time: once provclaim.install has registered Signature, a fresh claim

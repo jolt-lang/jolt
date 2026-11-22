@@ -791,6 +791,26 @@
    :check :prose
    :why "needs two source files on a root; the corpus evaluates single forms"
    :note "Deliberate (loader.ss step 3 of the JLS 12.4.2 procedure). The cross-thread case, which the JVM deadlocks on, raises here instead."}
+  ;; A class a dependency provides (:jolt/provides, RFC 0014) is installed by
+  ;; its provider's install namespace, autoloaded on first reference. A thread
+  ;; that reaches the class while another thread runs that load waits for it,
+  ;; as a JVM thread waits for a class another thread is initializing (JLS
+  ;; 12.4.2 step 2). The exception is work the load itself started: a future,
+  ;; agent action, go block, fiber or thread its top level spawned. On the JVM
+  ;; such a thread waits like any other, which deadlocks when the initializer
+  ;; is waiting on it (a top-level @(future ...)), and the JVM never detects
+  ;; it. jolt cannot see a deref as a wait edge either, so it does not let
+  ;; that work wait at all: it gets an error naming the load (host-static.ss
+  ;; lib-await-provider-load!). A spawned thread the load never waits on, which
+  ;; would have succeeded on the JVM once the class finished initializing,
+  ;; gets the error too if it reaches the class before the load ends.
+  {:category :namespace-model
+   :behavior "an install namespace whose top level spawns a future that reaches one of the provider's own classes before the namespace has registered it"
+   :jvm "the future blocks until the class is initialized: forever if the initializer derefs it, otherwise it gets the class after"
+   :jolt "the future throws IllegalArgumentException \"<class> is not installed yet: <install-ns>, which provides it, is still loading ...\" at once"
+   :check :prose
+   :why "needs a dependency with :jolt/provides on a root and a second thread; the JVM half has no :jolt/provides at all and blocks forever in the deadlocking case"
+   :note "Deliberate: a silent hang becomes an immediate error. depssmoke pins the jolt side (\"a future the install namespace waits on does not wait for that load\")."}
   ;; Compiled code names a var through its cell, and the cell is the name's for
   ;; good: ns-unmap drops the mapping but a later def of the name reuses it. On
   ;; the JVM the def interns a NEW Var, and code compiled before the unmap keeps

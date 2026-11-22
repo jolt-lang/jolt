@@ -3092,7 +3092,15 @@
 ;; back IF this call made it (a retry then loads) and the caller's ns is restored —
 ;; matching Clojure, which marks a lib loaded only after success.
 (define (load-namespace name) (load-namespace* name #f))
-(define (load-namespace* name force?)
+(define (load-namespace* name force?) (load-namespace** name force? #f))
+;; (load-namespace/when name run?): load-namespace, except that a context that
+;; gets the claim runs the namespace only if (run?) still answers true, asked
+;; under that claim -- after any load it waited for has ended. Otherwise it drops
+;; the claim and returns with the namespace as it found it. host-static.ss loads
+;; a provider's install namespace this way, so a context that waited on a load
+;; that failed does not run the failing namespace a second time.
+(define (load-namespace/when name run?) (load-namespace** name #f run?))
+(define (load-namespace** name force? run?)
   ;; steps 1-6 above: 'loaded and 'recursive are both "complete normally, do
   ;; nothing"; only 'claimed means this thread owns the load and must run it.
   (when (eq? 'claimed (ldr-begin-load! name force?))
@@ -3151,9 +3159,10 @@
         (lambda () (ldr-assert-claim! name))
         (jolt-masked-body
           (lambda ()
-            (call-with-zipdir-read-scope
-              (lambda ()
-                (lib-with-install-ns-mark name (lambda () (ldr-load-body name force? was-loaded?)))))
+            (when (or (not run?) (run?))
+              (call-with-zipdir-read-scope
+                (lambda ()
+                  (lib-with-install-ns-mark name (lambda () (ldr-load-body name force? was-loaded?))))))
             (set! finished? #t)))
         (jolt-masked-cleanup lv
           (unless (jolt-park-unwinding?)

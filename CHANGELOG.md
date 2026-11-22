@@ -151,6 +151,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   futures calling `Instant/now` got one value and seven errors. A thread that
   misses a class whose provider is loading now waits for that load and looks
   again, the way a JVM thread waits for a class another thread is initializing.
+  A fiber parks for it instead of blocking its carrier. Work the install
+  namespace itself started does not wait: a top-level `@(future ...)` that
+  reaches one of the provider's own classes gets an error saying the class is
+  still being installed by the load it belongs to, where the JVM would deadlock.
+  A provider that fails while threads wait on it runs once, and the waiters get
+  its failure; each waiter used to run the failing namespace again.
+- Registering classes from several threads at once no longer loses
+  registrations. A deftype, a library's class registration and a lazy host shim
+  all write the class tables, and two namespaces loading in parallel wrote them
+  with no lock, which drops entries and can corrupt the table. The other host
+  registries written at run time (method tag aliases, image codecs, provider
+  ownership) are serialized the same way.
+- A thread started inside a provider's install namespace (a pool worker its
+  first `future` forked) no longer carries that provider's loading mark for the
+  rest of its life, where every later registration on it counted as the
+  provider's own.
 - A timed socket read, accept or connect no longer reports a timeout for an fd
   that was ready before its deadline. When the wait ended at the deadline, the
   call raised `SocketTimeoutException` without looking at the socket again, so

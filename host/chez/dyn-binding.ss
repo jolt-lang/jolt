@@ -91,6 +91,19 @@
   (let ((outer (dyn-binding-stack)))
     (jolt-wind* (lambda () #f) (dyn-push-frame! pairs) thunk (dyn-binding-stack outer))))
 
+;; (dyn-call-with-mark-frame proc): PROC called with a frame that binds nothing,
+;; pushed for its extent. Conveyance shares frames, so the frame is in the
+;; binding stack of every context started inside the extent and of no other
+;; (dyn-frame-in-stack?): it answers "was this started by that work" without
+;; binding a var get-thread-bindings would show. host-static.ss marks a
+;; provider's install-namespace load with one.
+(define (dyn-call-with-mark-frame proc)
+  (let* ((outer (dyn-binding-stack))
+         (fr (make-dyn-frame (dyn-owner) '() dyn-cache-empty)))
+    (jolt-wind* (lambda () #f) (dyn-binding-stack (cons fr outer))
+                (lambda () (proc fr)) (dyn-binding-stack outer))))
+(define (dyn-frame-in-stack? fr) (and (memq fr (dyn-binding-stack)) #t))
+
 ;; --- reading a var -----------------------------------------------------------
 ;; THE GATE, and why every read below opens with it.
 ;;
