@@ -73,7 +73,7 @@
                          (shell "install -d" (str prefix "/bin"))
                          (shell "install -m 755 target/release/jolt" (str prefix "/bin/jolt")))}
 
-  jolt {:doc "Re-mint the seed, then build the release and debug binaries"
+  jolt {:doc "Check the seed fixpoint, then build the release and debug binaries"
         :depends [selfhost jolt-release jolt-debug deps]
         :task (sh "echo \"OK: target/release/jolt and target/debug/jolt built\"")}
 
@@ -242,7 +242,7 @@ JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $LI
               :depends [deps]
               :task (chez "--script" "test/chez/sorted-test.ss")}
 
-  rrbprop {:doc "RRB vector catvec and slice against a list model, plus n vs 4n complexity"
+  rrbprop {:doc "RRB vector catvec and slice against a list model, with RRB invariants"
            :task (chez "--script" "test/chez/rrb-property-test.ss")}
 
   rrbscaling {:doc "RRB vector catvec and slice stay within their complexity bounds"
@@ -469,7 +469,7 @@ JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $LI
                   :depends [testbin]
                   :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/compile_scaling_test.clj")}
 
-  shakelocal {:doc "Tree-shake correctness fixtures that need no examples repo"
+  shakelocal {:doc "Shaken fixture apps match plain builds and drop dead defs, no examples repo"
               :depends [testbin deps]
               :task (sh "SHAKESMOKE_SCOPE=local JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/tree-shake-smoke.sh")}
 
@@ -498,7 +498,7 @@ JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $LI
 
   ;; Wrapping an inline primitive re-boxed an unboxed flonum and cost 19x on an
   ;; array loop.
-  traceemit {:doc "Under tracing, tail-frame save and restore wraps only calls that can push"
+  traceemit {:doc "Tracing wraps no call in a ring save or restore, so primitives stay inline"
              :depends [deps]
              :task (chez "--script" "host/chez/run-trace-emit.ss")}
 
@@ -533,9 +533,9 @@ JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $LI
                 :depends [testbin deps]
                 :task (sh "JOLT_NO_USER_DEPS=1 JOLT_GC_TRIP_BYTES=16777216 target/release/jolt run test/apply_scaling_test.clj")}
 
-  ;; A per-cell lock or once-only mutex would show as a before and after ratio in
-  ;; one process.
-  lazyscaling {:doc "Lazy realization costs the same whether or not a thread has ever existed"
+  ;; Judged by counting mutex allocations, not a timed ratio, so load can't
+  ;; move it.
+  lazyscaling {:doc "Lazy realization takes no per-cell mutex, before or after a thread exists"
                :depends [testbin deps]
                :task (sh "JOLT_NO_USER_DEPS=1 target/release/jolt run test/lazyseq_mt_scaling_test.clj")}
 
@@ -575,7 +575,7 @@ JOLT_NO_USER_DEPS=1 target/release/jolt run test/conformance/libs/timing.clj $LI
 
   ;; Runs alone because a busy neighbour moved its ratio 1.5-3x. A failing row is
   ;; retried in a fresh process.
-  fastpathratio {:doc "Constant-factor fast paths (stream read, char[] read, literal split) as ratios"
+  fastpathratio {:doc "Read, string-scan and dispatch fast paths, judged as ratios in one process"
                  :depends [testbin]
                  :task (sh "if JOLT_NO_USER_DEPS=1 target/release/jolt run test/fastpath_ratio_test.clj >target/fastpathratio.out 2>&1; then \\
 cat target/fastpathratio.out; \\
@@ -611,7 +611,7 @@ echo \"lazyretain: $n cases in constant memory under a 256MB heap\"")}
              :depends [testbin]
              :task (sh "sh test/chez/footprint-test.sh target/release/jolt \"$JOLT_CHEZ\"")}
 
-  gcpolicy {:doc "The nursery grows with the collector's time share, bounded by the live set"
+  gcpolicy {:doc "GC policy: nursery sizing, JOLT_MAX_HEAP ceiling, overhead limit, env checks"
             :depends [testbin deps]
             :task (sh "floor=16777216; t=test/gc_policy_test.clj; j=target/release/jolt; \\
 trip() { env JOLT_NO_USER_DEPS=1 \"$@\" $j run $t churn 2>&1 | sed -n 's/^trip //p'; }; \\
@@ -933,7 +933,7 @@ fi")}
               :depends [testbin deps]
               :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/build-smoke.sh")}
 
-  buildlibsmoke {:doc "`jolt build` in library mode makes a shared object callable from C and Rust"
+  buildlibsmoke {:doc "`jolt build --library` makes a shared object a C program loads and calls"
                  :depends [testbin deps]
                  :task (sh "JOLT_BIN=\"${JOLT_BIN:-target/release/jolt}\" sh host/chez/build-lib-smoke.sh")}
 
@@ -1137,7 +1137,7 @@ done"
 
   ;; Dead procedures still compile into every binary and get copied into the
   ;; Gambit half.
-  deadhost {:doc "List top-level host procedures that nothing calls"
+  deadhost {:doc "Fail on any top-level host procedure that nothing references"
             :depends [deps]
             :task (sh "sh host/chez/dead-host-check.sh")}
 
@@ -1154,7 +1154,7 @@ done"
 
   ;; The backward-composing property cannot be read from Chez, so a miss is a
   ;; wrong answer.
-  normalizecheck {:doc "The pinned backward-composing character data in text-normalize.ss is right"
+  normalizecheck {:doc "Normalizer fast paths agree with Chez, and the pinned composer set is current"
                   :task (chez "--script" "test/chez/normalize-fastpath-test.ss")}
 
   ;; --- Regex -------------------------------------------------------------------
@@ -1228,7 +1228,7 @@ done"
 
   ;; On Windows, sh is cmd.exe, so mkdir -p made a directory named -p and mv, rm,
   ;; test do not exist.
-  shelloutcheck {:doc "jolt.host/sh callers avoid POSIX-only shell commands that fail under cmd.exe"
+  shelloutcheck {:doc "jolt-core shells out only to git, and the runtime names no program to run"
                  :task (sh "sh host/chez/shellout-check.sh")}
 
   ;; --- Gambit ------------------------------------------------------------------
