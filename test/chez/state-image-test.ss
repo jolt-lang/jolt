@@ -1607,6 +1607,22 @@
     (string-append "(let [g " hamt-v1 "] [(count (assoc (:m g) 54 9)) (get (assoc (:m g) 54 9) 54) (count (conj (:s g) 95)) (count (dissoc (:m g) 95)) (count (disj (:s g) 54 \"AaAa\"))])")
     "[4 9 4 3 2]")
 
+;; A hash map's seq walked part way: past the first chunk, the rest is a lazy
+;; cell. Format 15 cells carry a path of ranks ('hamt-chunk); format 16 cells
+;; carry the walk's frame stack ('hamt-chunk-resume). Both read on in order.
+(is "v0.8.28 fixture: a part-walked hash seq resumes in order"
+    (string-append "(let [g (jolt.host/image-read \"test/chez/fixtures/image-v0.8.28-hamt-seq.image\")]"
+                   " [(= (vec (:s g)) (vec (drop 40 (seq (:m g))))) (count (:s g)) (count (:k g)) (= (set (:k g)) (set (drop 70 (seq (into #{} (range 3000))))))])")
+    "[true 4960 2930 true]")
+(is "a part-walked hash seq round-trips"
+    (string-append
+      "(let [m (zipmap (range 5000) (range 5000)) s (drop 40 (seq m)) k (drop 70 (seq (into #{} (range 3000))))"
+      "      _ (first s) _ (first k)"
+      "      _ (jolt.host/image-write! \"" tmp "\" [s k])"
+      "      [gs gk] (jolt.host/image-read \"" tmp "\")]"
+      "  [(= (vec gs) (vec s)) (= (vec gk) (vec k)) (count gs)])")
+    "[true true 4960]")
+
 ;; A map or set the walk has to rebuild (a value substituted, a key whose hash
 ;; is per-process) comes back in its own mode and order: a small hash map stays
 ;; a hash map, an array map an array map, a collision bucket keeps its order.

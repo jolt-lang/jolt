@@ -154,6 +154,17 @@
        (count (persistent! (reduce disj! (reduce conj! (transient (set (range 40))) ks) (take 3 ks)))))"
     "45")
 
+;; --- reduce over a set walks the trie in seq order --------------------------------------
+(is "set reduce visits in seq order"
+    "(let [s (into #{} (concat (range 200) (for [a [\"Aa\" \"BB\"] b [\"Aa\" \"BB\"]] (str a b))))]
+       (= (reduce conj [] s) (vec (seq s))))"
+    "true")
+(is "set reduce stops at reduced"
+    "(reduce (fn [a x] (if (= a 7) (reduced [:done a]) (inc a))) 0 (set (range 100)))"
+    "[:done 7]")
+(is "set reduce with a non-fn step" "(reduce (fn [a x] (+ a x)) 0 (set (range 100)))" "4950")
+(is "small set reduce" "(reduce + 0 #{1 2 3})" "6")
+
 ;; --- what the trie answers beyond get ---------------------------------------------------
 (is "find answers the stored key" "(let [k [1] m (assoc (zipmap (range 20) (range 20)) k :v)] (identical? k (key (find m [1]))))" "true")
 (is "reduce-kv stops at reduced" "(reduce-kv (fn [a k v] (if (= a 5) (reduced a) (inc a))) 0 (zipmap (range 100) (range 100)))" "5")

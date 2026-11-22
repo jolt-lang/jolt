@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hash map or set ordered a collision bucket and its neighbours as the JVM
+  does not. A key whose hash differed from a bucket's was appended to the
+  bucket on its slot instead of the bucket nesting one level down
+  (`HashCollisionNode.assoc`), and a bucket iterated in reverse insertion
+  order: `(keys (assoc (hash-map "AaAa" 1 "BBBB" 2) 54 1 95 1))` gave
+  `(95 54 "BBBB" "AaAa")` where the JVM gives `("AaAa" "BBBB" 95 54)`.
+- An image restore that had to rebuild a small hash map made it an array map,
+  and a rebuilt set reversed its collision buckets.
+
 - A program could die of a signal it had a `sun.misc.Signal` handler for. Chez
   starts its parallel GC threads with the mask of whichever thread runs the
   collection, so one started while that thread had a signal unblocked never
@@ -111,6 +120,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(.toString [1 "a"])` is `[1 "a"]`.
 
 ### Changed
+
+- A hash map or set node keeps its entries in its own array, two slots each,
+  with an entry bitmap and a branch bitmap, instead of a `(key . value)` pair
+  per entry: 16 bytes less per entry and one pointer chase less per lookup.
+  At 100k entries `get` with a string key is about 0.8x the time it was,
+  `dissoc`/`disj` 0.9x, and builds and walks are unchanged. Images are format
+  16; older images still restore.
+- Hashing a long multiplies with one wrapping fixnum multiply per step instead
+  of a 16-bit split.
 
 - jolt.ffi's fixed costs are lower (#1753). A one-allocation
   `(with-open [a (ffi/confined-arena)] (ffi/alloc a 64))` went from 820 to

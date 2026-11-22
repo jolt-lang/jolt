@@ -754,7 +754,7 @@
   (let ((n (pmap-cnt m)))
     (cond
       ((fx=? n 0) jolt-nil)
-      ((hnode? (pmap-root m)) (hamt-chunk-seq m mode '(0)))
+      ((hnode? (pmap-root m)) (hamt-chunk-seq m mode))
       (else
        (let ((v (make-vector n)))
          (pmap-fold m (lambda (k val i) (vector-set! v i (pmap-seq-sel mode k val)) (fx- i 1)) (fx- n 1))
@@ -768,62 +768,51 @@
 ;; next chunk, so walking within a chunk allocates nothing beyond the cell, and
 ;; the walk as a whole stays O(n).
 ;;
-;; The walk keeps a stack of the nodes it is inside. Where the next chunk starts
-;; is a PATH from the root, one element per level: in a node, the hash fragment
-;; (0-31) the read is at -- a position in the hash, not in any array, so it
-;; means the same thing in every node layout and resumes in O(1) (two
-;; popcounts) -- and in a collision bucket, the index into its alist. A path is
-;; data, so the lazy cell is a lazy-src over (map, mode . path) and travels in a
-;; state image like any other producer. Resuming re-descends the path: O(depth)
-;; per chunk, the same order as NodeSeq's first.
+;; The walk keeps a stack of where it is, one frame per level (a 32-bit hash
+;; spans at most 7 levels below the root, so 8 frames), four slots each in one
+;; vector. A frame above the level being read is a node positioned ON the
+;; branch being read below it: node, rem (its fragments not yet passed, that
+;; branch's included), di and ni (the next entry's slot counting up, the next
+;; branch's counting down from the end). When a chunk fills, the level being
+;; read is written as the top frame -- a node and its position, a branch-free
+;; node and its next key slot (rem 'leaf), or a bucket's remaining alist (rem
+;; 'bucket) -- and the next chunk's lazy cell holds the stack itself, so the
+;; next chunk resumes where this one stopped instead of re-descending from the
+;; root. A cell is realized once (a lazy-src runs under its cell's claim), so
+;; the next chunk may reuse the stack. The stack is nodes, alists and fixnums:
+;; data, so the cell travels in a state image like any other producer.
 ;;
-;; Images written before format 16 hold 'hamt-chunk cells whose node elements
-;; are RANKS (the fragment's index among the node's occupied ones); that name
-;; converts them to fragments. Cells made now are 'hamt-chunk-at.
-;; the fragment a single bit stands for
-(define-syntax hamt-frag-of
+;; Images written before format 16 hold 'hamt-chunk cells instead: a path from
+;; the root of RANKS (a fragment's index among its node's occupied ones, an
+;; index into a bucket's alist), which that name still resumes by descending.
+(define-syntax hamt-frag-of                    ; the fragment a single bit stands for
   (syntax-rules () ((_ low) (hamt-popcount (hamt-sub low 1)))))
 (define (hamt-mode-kind mode)
   (cond ((fx=? mode 0) sk-hashmap-seq) ((fx=? mode 1) sk-key-seq) (else sk-val-seq)))
-(define lz-hamt-chunk-at
-  (register-lazy-src! 'hamt-chunk-at
-    (lambda (m mode+path) (hamt-chunk-seq m (car mode+path) (cdr mode+path)))))
+(define lz-hamt-chunk-resume
+  (register-lazy-src! 'hamt-chunk-resume
+    (lambda (m mode+state)
+      (let ((stack (cadr mode+state)) (d (cddr mode+state)))
+        (hamt-walk-resume m (car mode+state) (make-vector seq-chunk-size) stack d)))))
 (define lz-hamt-chunk
   (register-lazy-src! 'hamt-chunk
-    (lambda (m mode+path)
-      (hamt-chunk-seq m (car mode+path) (hamt-rank-path->fragments (pmap-root m) (cdr mode+path))))))
-;; the fragment of the r-th occupied slot of a node (r past the end: 32)
-(define (hamt-rank->fragment node r)
-  (let loop ((bits (hamt-ior (hnode-dmap node) (hnode-nmap node))) (r r))
-    (cond ((hamt=? 0 bits) 32)
-          ((fx=? r 0) (hamt-frag-of (hamt-low-bit bits)))
-          (else (loop (hamt-and bits (hamt-sub bits 1)) (fx- r 1))))))
-(define (hamt-rank-path->fragments node path)
-  (let ((f (hamt-rank->fragment node (car path))))
-    (if (null? (cdr path))
-        (list f)
-        (let ((b (hamt-branch-at node f)))
-          (cons f (if (hnode? b) (hamt-rank-path->fragments b (cdr path)) (cdr path)))))))
-(define (hamt-branch-at node f)
-  (let ((dm (hnode-dmap node)) (nm (hnode-nmap node)))
-    (let ((arr (hnode-arr node))) (vector-ref arr (hamt-branch-slot arr nm (hamt-sll 1 f))))))
+    (lambda (m mode+path) (hamt-chunk-seq-ranks m (car mode+path) (cdr mode+path)))))
 
-;; The walk's state is the map and mode (for the chunk cell), the chunk buffer,
-;; and a stack of the nodes above the one being read, one frame per level (a
-;; 32-bit hash spans at most 7 levels below the root), four slots each in one
-;; vector: node rem di ni, positioned ON the branch being read below it -- rem
-;; its fragments not yet passed (that branch's included), di/ni the next
-;; entry's and branch's slots. The stack is one allocation per chunk, so
-;; descending allocates nothing. The steps are top-level procedures over it.
 (define (hamt-walk-push! stack d node rem di ni)
   (let ((o (fx* 4 d)))
     (vector-set! stack o node) (vector-set! stack (fx+ o 1) rem)
     (vector-set! stack (fx+ o 2) di) (vector-set! stack (fx+ o 3) ni)))
-;; the resume path: each frame's fragment, then `last` for the level being read
-(define (hamt-walk-path stack d last)
-  (let up ((k (fx- d 1)) (acc (list last)))
-    (if (fx<? k 0) acc
-        (up (fx- k 1) (cons (hamt-frag-of (hamt-low-bit (vector-ref stack (fx+ (fx* 4 k) 1)))) acc)))))
+;; the chunk is full: the level being read becomes the top frame and the next
+;; chunk's cell carries the stack
+(define (hamt-walk-stop m mode buf stack d node rem di ni)
+  (hamt-walk-push! stack d node rem di ni)
+  (hamt-chunk-cell m mode buf seq-chunk-size (cons stack d)))
+;; continue at the top frame (d), as the stop above left it
+(define (hamt-walk-resume m mode buf stack d)
+  (let* ((o (fx* 4 d)) (node (vector-ref stack o)) (rem (vector-ref stack (fx+ o 1))))
+    (cond ((eq? rem 'leaf) (hamt-walk-leaf m mode buf stack node (vector-ref stack (fx+ o 2)) d 0))
+          ((eq? rem 'bucket) (hamt-walk-bucket m mode buf stack node d 0))
+          (else (hamt-walk m mode buf stack node rem (vector-ref stack (fx+ o 2)) (vector-ref stack (fx+ o 3)) d 0)))))
 ;; back up a level, stepping past the branch that frame is on
 (define (hamt-walk-pop m mode buf stack d n)
   (if (fx=? d 0)
@@ -833,19 +822,17 @@
                    (vector-ref stack (fx+ o 2)) (fx- (vector-ref stack (fx+ o 3)) 1) (fx- d 1) n))))
 ;; start reading branch b at depth d
 (define (hamt-walk-enter m mode buf stack b d n)
-  (cond ((not (hnode? b)) (hamt-walk-bucket m mode buf stack (hcoll-alist b) 0 d n))
+  (cond ((not (hnode? b)) (hamt-walk-bucket m mode buf stack (hcoll-alist b) d n))
         ((hamt=? 0 (hnode-nmap b)) (hamt-walk-leaf m mode buf stack b 0 d n))
         (else (let ((bdm (hnode-dmap b)))
                 (hamt-walk m mode buf stack b (hamt-ior bdm (hnode-nmap b)) 0 (fx- (vector-length (hnode-arr b)) 1) d n)))))
 ;; a node with no branches (most leaves, and the big nodes of a small map): its
-;; entries in slot order, from key slot i; the fragment is worked out only for a
-;; resume path
+;; entries in slot order, from key slot i
 (define (hamt-walk-leaf m mode buf stack node i d n)
   (let* ((arr (hnode-arr node)) (len (vector-length arr)))
     (let run ((i i) (n n))
       (cond ((fx=? i len) (hamt-walk-pop m mode buf stack d n))
-            ((fx=? n seq-chunk-size)
-             (hamt-chunk-cell m mode buf n (hamt-walk-path stack d (hamt-rank->fragment node (fxsra i 1)))))
+            ((fx=? n seq-chunk-size) (hamt-walk-stop m mode buf stack d node 'leaf i 0))
             (else (vector-set! buf n (pmap-seq-pick mode arr i))
                   (run (fx+ i 2) (fx+ n 1)))))))
 (define (hamt-walk m mode buf stack node rem di ni d n)
@@ -855,8 +842,7 @@
     (let run ((rem rem) (di di) (ni ni) (n n))
       (cond
         ((hamt-u=? 0 rem) (hamt-walk-pop m mode buf stack d n))
-        ((fx=? n seq-chunk-size)
-         (hamt-chunk-cell m mode buf n (hamt-walk-path stack d (hamt-frag-of (hamt-low-bit rem)))))
+        ((fx=? n seq-chunk-size) (hamt-walk-stop m mode buf stack d node rem di ni))
         (else
          (let ((low (hamt-ulow-bit rem)))
            (if (hamt-uentry? dm low)
@@ -877,38 +863,39 @@
                      (begin
                        (hamt-walk-push! stack d node rem di ni)
                        (hamt-walk-enter m mode buf stack b (fx+ d 1) n)))))))))))
-(define (hamt-walk-bucket m mode buf stack al j d n)
+(define (hamt-walk-bucket m mode buf stack al d n)
   (cond ((null? al) (hamt-walk-pop m mode buf stack d n))
-        ((fx=? n seq-chunk-size) (hamt-chunk-cell m mode buf n (hamt-walk-path stack d j)))
+        ((fx=? n seq-chunk-size) (hamt-walk-stop m mode buf stack d al 'bucket 0 0))
         (else (vector-set! buf n (pmap-seq-sel mode (caar al) (cdar al)))
-              (hamt-walk-bucket m mode buf stack (cdr al) (fx+ j 1) d (fx+ n 1)))))
-(define (hamt-chunk-seq m mode path)
+              (hamt-walk-bucket m mode buf stack (cdr al) d (fx+ n 1)))))
+;; the first chunk of a hash-mode map's walk
+(define (hamt-chunk-seq m mode)
+  (hamt-walk-enter m mode (make-vector seq-chunk-size) (make-vector 32) (pmap-root m) 0 0))
+;; a pre-format-16 'hamt-chunk cell's path of ranks: descend it, framing each
+;; level, and read on from the last
+(define (hamt-chunk-seq-ranks m mode path)
   (let ((buf (make-vector seq-chunk-size)) (stack (make-vector 32)))
-    ;; descend PATH: every element but the last positions a frame on the branch
-    ;; being read; the last is where the read resumes. A node's state at
-    ;; fragment f is its fragments from f up and the slots below them.
     (let descend ((node (pmap-root m)) (path path) (d 0))
-      (let* ((dm (hnode-dmap node)) (nm (hnode-nmap node))
-             (below (hamt-sub (hamt-sll 1 (car path)) 1))
-             (rem (hamt-and (hamt-ior dm nm) (hamt-not below)))
-             (di (fx* 2 (hamt-popcount (hamt-and dm below))))
-             (ni (fx- (fx- (vector-length (hnode-arr node)) 1) (hamt-popcount (hamt-and nm below)))))
-        (if (null? (cdr path))
-            (if (hamt=? 0 nm)
-                (hamt-walk-leaf m mode buf stack node di d 0)
-                (hamt-walk m mode buf stack node rem di ni d 0))
-            (let ((b (vector-ref (hnode-arr node) ni)))
-              (hamt-walk-push! stack d node rem di ni)
-              (if (hnode? b)
-                  (descend b (cdr path) (fx+ d 1))
-                  (hamt-walk-bucket m mode buf stack (list-tail (hcoll-alist b) (cadr path))
-                                    (cadr path) (fx+ d 1) 0))))))))
+      (let ((dm (hnode-dmap node)))
+        (let skip ((rem (hamt-ior dm (hnode-nmap node))) (di 0) (ni (fx- (vector-length (hnode-arr node)) 1)) (j (car path)))
+          (cond
+            ((and (fx>? j 0) (not (hamt=? 0 rem)))
+             (if (hamt=? 0 (hamt-and dm (hamt-low-bit rem)))
+                 (skip (hamt-and rem (hamt-sub rem 1)) di (fx- ni 1) (fx- j 1))
+                 (skip (hamt-and rem (hamt-sub rem 1)) (fx+ di 2) ni (fx- j 1))))
+            ((null? (cdr path)) (hamt-walk m mode buf stack node rem di ni d 0))
+            (else
+             (let ((b (vector-ref (hnode-arr node) ni)))
+               (hamt-walk-push! stack d node rem di ni)
+               (if (hnode? b)
+                   (descend b (cdr path) (fx+ d 1))
+                   (hamt-walk-bucket m mode buf stack (list-tail (hcoll-alist b) (cadr path)) (fx+ d 1) 0))))))))))
 (define (hamt-chunk-cell m mode buf n next)
   (if (fx=? n 0)
       jolt-nil
       (cseq-chunked/k (make-pvec (if (fx=? n seq-chunk-size) buf (vec-copy-range buf 0 n)))
                       0
-                      (if next (jolt-make-lazy-src lz-hamt-chunk-at m (cons mode next)) jolt-nil)
+                      (if next (jolt-make-lazy-src lz-hamt-chunk-resume m (cons mode next)) jolt-nil)
                       (hamt-mode-kind mode))))
 (define (jolt-seq x)
   (cond
