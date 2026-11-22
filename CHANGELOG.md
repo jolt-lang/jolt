@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   map threw an ExceptionInfo for every shape; it now throws
   IllegalArgumentException "Vector arg to map conj must be a pair" for a vector
   that is not a pair, seq's IllegalArgumentException for a value that does not
-  seq, and a ClassCastException for a seq element that is not an entry. A
+  seq, and a ClassCastException for a seq element that is not a map entry,
+  including a plain `[k v]` vector: `(conj {} '([1 2]))` throws as on the JVM,
+  while `(conj {} [1 2])` and `(into {} [[1 2]])` still take the pair. A
   transient hash map (so `into {}`) refused a seq of entries outright, and
   `(conj {} '(nil))` failed inside the error message instead of throwing the
   NullPointerException.
