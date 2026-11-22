@@ -1780,6 +1780,53 @@
 (define proc-win-si-stderr-off (+ proc-win-si-res2-off (* 3 proc-win-ptr-size)))
 (define proc-win-si-size       (+ proc-win-si-res2-off (* 4 proc-win-ptr-size)))
 (define proc-win-pi-size (+ (* 2 proc-win-ptr-size) 8))
+;; STARTUPINFOEXW: the STARTUPINFOW, then the attribute list pointer.
+(define proc-win-six-list-off proc-win-si-size)
+(define proc-win-six-size (+ proc-win-si-size proc-win-ptr-size))
+
+;; The handles a child inherits, named one by one. bInheritHandles alone passes
+;; EVERY inheritable handle in the process, and Chez opens its own files
+;; inheritable (the CRT's _wopen without _O_NOINHERIT): every child jolt started
+;; held a copy of whatever file jolt had open. A file stays undeletable on
+;; Windows while any process holds it, so the AOT worker could never remove the
+;; manifest its parent had open when it was spawned (it held that handle
+;; itself), and any program that spawned with a file open lost the ability to
+;; delete or rename it until the child exited. PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+;; restricts inheritance to the three standard handles the child is given.
+(define-win32-proc proc-win-init-attr-list
+  "kernel32.dll" "InitializeProcThreadAttributeList" (void* unsigned-32 unsigned-32 void*) int)
+(define-win32-proc proc-win-update-attr
+  "kernel32.dll" "UpdateProcThreadAttribute"
+  (void* unsigned-32 uptr void* uptr void* void*) int)
+(define-win32-proc proc-win-delete-attr-list
+  "kernel32.dll" "DeleteProcThreadAttributeList" (void*) void)
+(define proc-win-PROC-THREAD-ATTRIBUTE-HANDLE-LIST #x20002)
+(define proc-win-EXTENDED-STARTUPINFO-PRESENT #x00080000)
+;; An initialised attribute list naming HANDLES (distinct), plus the memory to
+;; free: -> (list attr-list handle-array), or #f where the host has no such
+;; list (the caller then inherits as before).
+(define (proc-win-handle-list handles)
+  (let ((init (proc-win-init-attr-list)) (upd (proc-win-update-attr)))
+    (and init upd (pair? handles)
+         (let ((szp (sa-foreign-alloc 8)))
+           (sa-foreign-set! 'uptr szp 0 0)
+           (init 0 1 0 szp)              ; asks the size; fails by design
+           (let* ((sz (sa-foreign-ref 'uptr szp 0))
+                  (lst (and (> sz 0) (sa-foreign-alloc sz))))
+             (if (not (and lst (not (= 0 (init lst 1 0 szp)))))
+                 (begin (sa-foreign-free szp) (when lst (sa-foreign-free lst)) #f)
+                 (let* ((n (length handles))
+                        (arr (sa-foreign-alloc (* n proc-win-ptr-size))))
+                   (let loop ((hs handles) (i 0))
+                     (unless (null? hs)
+                       (sa-foreign-set! 'void* arr (* i proc-win-ptr-size) (car hs))
+                       (loop (cdr hs) (+ i 1))))
+                   (sa-foreign-free szp)
+                   (if (= 0 (upd lst 0 proc-win-PROC-THREAD-ATTRIBUTE-HANDLE-LIST
+                                 arr (* n proc-win-ptr-size) 0 0))
+                       (begin ((proc-win-delete-attr-list) lst)
+                              (sa-foreign-free lst) (sa-foreign-free arr) #f)
+                       (list lst arr)))))))))
 
 ;; --- the command line --------------------------------------------------------
 ;; CreateProcessW takes ONE string, so the argv list has to be flattened into the
@@ -2211,7 +2258,13 @@
     (let* ((sin  (stream 'in  rin))
            (sout (stream 'out rout))
            (serr (if merge? (cons (car sout) #f) (stream 'err rerr)))
-           (si (keep-free! (sa-foreign-alloc proc-win-si-size)))
+           (hlist (proc-win-handle-list
+                   (let loop ((hs (list (car sin) (car sout) (car serr))) (acc '()))
+                     (cond ((null? hs) (reverse acc))
+                           ((memv (car hs) acc) (loop (cdr hs) acc))
+                           (else (loop (cdr hs) (cons (car hs) acc)))))))
+           (si-size (if hlist proc-win-six-size proc-win-si-size))
+           (si (keep-free! (sa-foreign-alloc si-size)))
            (pi (keep-free! (sa-foreign-alloc proc-win-pi-size)))
            (wcmd (keep-free! (win32-wstr cmdline)))
            (wdir (and dir (keep-free! (win32-wstr dir))))
@@ -2227,14 +2280,16 @@
                    ;; a worker's group of its own: Ctrl+C is off in it, as SIGINT
                    ;; does not reach one on POSIX (proc-attr-setpgroup)
                    (if (proc-pb-new-pgroup? st) proc-win-CREATE-NEW-PROCESS-GROUP 0)
+                   (if hlist proc-win-EXTENDED-STARTUPINFO-PRESENT 0)
                    (if (and console? (or (inherit? rin) (inherit? rout) (inherit? rerr)))
                        0
                        proc-win-CREATE-NO-WINDOW))))
-      (let loop ((i 0)) (when (< i proc-win-si-size)
+      (let loop ((i 0)) (when (< i si-size)
                           (sa-foreign-set! 'unsigned-8 si i 0) (loop (+ i 1))))
       (let loop ((i 0)) (when (< i proc-win-pi-size)
                           (sa-foreign-set! 'unsigned-8 pi i 0) (loop (+ i 1))))
-      (sa-foreign-set! 'unsigned-32 si 0 proc-win-si-size)             ; cb
+      (sa-foreign-set! 'unsigned-32 si 0 si-size)                      ; cb
+      (when hlist (sa-foreign-set! 'void* si proc-win-six-list-off (car hlist)))
       (sa-foreign-set! 'unsigned-32 si proc-win-si-flags-off proc-win-STARTF-USESTDHANDLES)
       (sa-foreign-set! 'void* si proc-win-si-stdin-off  (car sin))
       (sa-foreign-set! 'void* si proc-win-si-stdout-off (car sout))
@@ -2248,6 +2303,10 @@
                  (or wenv 0)  ; NULL inherits jolt's own environment
                  (or wdir 0)
                  si pi)))
+        (when hlist
+          ((proc-win-delete-attr-list) (car hlist))
+          (sa-foreign-free (car hlist))
+          (sa-foreign-free (cadr hlist)))
         (when (= ok 0)
           (let ((e (let ((g (proc-win-last-error))) (if g (g) 0))))
             (fail! (string-append (proc-cannot-run-what st)
