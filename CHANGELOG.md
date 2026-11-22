@@ -20,6 +20,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`(require 'x :reload-all)` of a namespace load-file'd from off the source
+  roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
+  kept the stale definitions in silence. The message is now RT.load's, `Could
+  not locate x__init.class, x.clj or x.cljc on classpath.`, and names the file
+  the namespace was loaded from only when it is that namespace's own file: a
+  script that did `(in-ns 'yy)` is no longer reported as yy's source.
+- **A thrown exception is not an instance of a record sharing its simple
+  name.** With `(defrecord IOException [x])` in `demo`, `(instance?
+  demo.IOException (java.io.IOException. "x"))` was true, `cast` returned, and
+  `(catch demo.IOException e …)` caught a failed `slurp`. Exceptions now ask the
+  class graph as the `:class` envelope arm does since #1795.
+- **`=` on a reify, and a deftype opposite a java.util collection, follow
+  `Util.equiv`.** A reify whose `equals` says true was `=` to `[1]`, `{}` and
+  `'()`; the JVM asks the persistent collection, which says false. A deftype
+  whose `equals` says true was not `=` to a `java.util.ArrayList` on its right,
+  because the collection was converted to a persistent one before the deftype
+  was asked.
+- **`*print-meta*` writes no `^meta` before a user `print-method`.** A record
+  with its own `print-method` printed as `^{:m 1} #R!`; the JVM's built-in
+  methods write the metadata, and a user method that replaces one writes none.
+- **`#=` reads a var.** `(read-string "#=(var clojure.core/inc)")` under
+  `*read-eval*` threw `ClassCastException`: the reader tried to put the var's
+  own metadata back on it as reader metadata.
+- A `ProcessBuilder` whose directory does not exist threw
+  `IOException: posix_spawn failed (errno 2)`, and through the shell fallback
+  it started anyway. `start` now throws what the JDK throws,
+  `Cannot run program "cat" (in directory "/nonexistdir"): error=2, No such file or directory`
+  (`error=20, Not a directory` for a file), and every start failure, a missing
+  program or an unopenable redirect file included, names the directory when
+  one was set. `clojure.java.shell` and `jolt.process` surface the same.
+- On Windows every child process jolt started inherited a handle to each file
+  jolt had open, so a file could not be deleted or renamed while any child
+  that started after it was opened was still running. A child now inherits
+  only the standard handles it was given, as on the JVM.
+- `(.directory pb nil)` failed the next `start` instead of going back to the
+  default directory, and `(.directory pb)` with no argument was not there to
+  read the setting back.
 - A hash map or set ordered a collision bucket and its neighbours as the JVM
   does not. A key whose hash differed from a bucket's was appended to the
   bucket on its slot instead of the bucket nesting one level down

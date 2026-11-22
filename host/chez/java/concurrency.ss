@@ -4434,7 +4434,7 @@
 
 ;; Class tests on a stored throwable, by the class graph like a catch clause.
 (define (cf-exc-isa? x simple)
-  (and (jolt-ex-info-record? x) (exception-isa? (last-dot (ex-info-class x)) simple)))
+  (and (jolt-ex-info-record? x) (exception-isa? (ex-info-class x) simple)))
 (define (cf-cancellation? x) (cf-exc-isa? x "CancellationException"))
 (define (cf-completion? x) (cf-exc-isa? x "CompletionException"))
 (define (cf-cause x) (if (jolt-ex-info-record? x) (jolt-ex-info-record-cause x) jolt-nil))

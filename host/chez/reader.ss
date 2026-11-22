@@ -1851,8 +1851,14 @@
 ;; carry the reader metadata, converting its nested forms too — a set/tagged
 ;; literal inside a ^{…} map (^{:k #{…}}) must become a value like the rest of
 ;; the data, not stay the tagged set-form.
+;; Only a form the reader built carries reader metadata. A #= result is any
+;; value, and a var or an atom answers meta without taking any (IMeta, not IObj):
+;; it is handed on as it is.
+(define (rdr-meta-carrier? x)
+  (or (symbol-t? x) (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x) (jrec? x)))
 (define (rdr-carry-meta src dst)
-  (let ((m (jolt-meta src))) (if (jolt-nil? m) dst (jolt-with-meta dst (rdr-form->data m)))))
+  (let ((m (if (rdr-meta-carrier? src) (jolt-meta src) jolt-nil)))
+    (if (jolt-nil? m) dst (jolt-with-meta dst (rdr-form->data m)))))
 
 ;; tag keyword (:#time/date) -> its *data-readers* reader fn, or #f. The fn's
 ;; namespace must already be loaded (the loader requires them when a project's
@@ -2228,7 +2234,7 @@
 ;; literal in metadata is a value, not a form. Carry it whether or not the value
 ;; itself changed (a set-form in the metadata of an otherwise-unchanged value).
 (define (rdr-form->data x)
-  (let ((v (rdr-form->data* x)) (m (jolt-meta x)))
+  (let ((v (rdr-form->data* x)) (m (if (rdr-meta-carrier? x) (jolt-meta x) jolt-nil)))
     (if (jolt-nil? m) v (jolt-with-meta v (rdr-form->data m)))))
 
 ;; --- the two host seams -----------------------------------------------------
