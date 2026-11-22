@@ -399,7 +399,7 @@
     (else (put-string p (jolt-pr-readable-base x)))))
 ;; A map's entries in iteration order -- the order pmap-fold's cons-accumulation
 ;; reconstructs (collections.ss): an array map front to back, a hash map's trie
-;; ascending with a collision bucket's list reversed.
+;; ascending with a collision bucket's list in order.
 (define (pr-pmap-for-each m proc)
   (let ((root (pmap-root m)))
     (if (hnode? root)
@@ -410,15 +410,7 @@
               (proc (vector-ref root i) (vector-ref root (fx+ i 1)))
               (loop (fx+ i 2))))))))
 (define (pr-node-for-each node proc)
-  (let* ((arr (hnode-arr node)) (n (vector-length arr)))
-    (let loop ((i 0))
-      (when (fx<? i n)
-        (let ((child (vector-ref arr i)))
-          (cond ((hnode? child) (pr-node-for-each child proc))
-                ((hcoll? child)
-                 (for-each (lambda (e) (proc (car e) (cdr e))) (reverse (hcoll-alist child))))
-                (else (proc (car child) (cdr child)))))
-        (loop (fx+ i 1))))))
+  (node-fold-fwd node (lambda (k v acc) (proc k v) acc) #f))
 ;; pr-ns-maps-shared-ns over the map itself, without collecting its entries
 (define (pr-ns-maps-shared-ns-of m)
   (and (fx>? (pmap-cnt m) 0)

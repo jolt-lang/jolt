@@ -383,7 +383,8 @@ sa-thread-cpu-nanos
 # gives exactly the checked primitive's result. On invalid input the behaviour
 # is undefined, so a call site carries its own proof: a loop bound read from
 # the vector's own length or a used-count kept <= it, an index stepped from 0
-# by a constant. Degradation: a target may expand every one of these to the
+# by a constant; for sa-ufxand / sa-ufxxor, operands that are fixnums (a HAMT
+# bitmap on a 64-bit target, chosen at expand time by define-width-op). Degradation: a target may expand every one of these to the
 # checked primitive (gambit does) — the speed goes, nothing else. On Chez they
 # lower to the #3% (optimize-level 3) primitives, which is what makes a scan
 # loop 3x faster in the optimize-level 2 runtime.
@@ -392,6 +393,8 @@ sa-ufx-
 sa-ufx<?
 sa-ufx>=?
 sa-ufx=?
+sa-ufxand
+sa-ufxxor
 sa-uvector-ref
 sa-uvector-set!
 sa-ustring-ref

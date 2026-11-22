@@ -77,8 +77,20 @@
 ;; the sidecar no longer holds records. Formats 14 and older carry chez-jrec-v5
 ;; (no meta slot), which restores through image-legacy-jrec? with its meta from
 ;; the sidecar, like any slotless legacy kind.
-(define jolt-image-format-version 15)
-(define jolt-image-read-versions '(2 3 4 5 6 7 8 9 10 11 12 13 14 15))
+;; Version 16: a hash-mode map's trie is chez-hnode-v2 (an entry bitmap and a
+;; branch bitmap; entries as key/value slot pairs, branches after them) where v1
+;; held a (key . value) pair per slot under one bitmap. Formats 15 and older
+;; carry v1 tries, which restore through image-legacy-pmap? below. A rekeyed
+;; map now names its mode ('hash-map / 'array-map where 15 wrote 'map).
+(define jolt-image-format-version 16)
+(define jolt-image-read-versions '(2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+
+;; A map the walk rebuilds, from (key . value) entries in iteration order, in the
+;; mode the original had: a literal's rules would turn a small hash map into an
+;; array map, changing its class and its order.
+(define (image-map-in-mode array? entries)
+  (let ((kvs (apply append (map (lambda (e) (list (car e) (cdr e))) entries))))
+    (if array? (jolt-array-map-build kvs) (jolt-hash-map-build kvs))))
 
 ;; --- classification -----------------------------------------------------------
 ;; An eq hashtable is the ONE hashtable kind Chez can fasl; eqv/equal/string-hash
@@ -526,22 +538,48 @@
 ;; fasl materializes the old rtd and its instances answer #f to pmap?. Detected
 ;; by uid prefix like a legacy jrec and rebuilt through the old rtd's
 ;; accessors: a v4 array-mode map's pairs become its slot vector, a hash-mode
-;; root is kept as is — hnode/hcoll are unchanged, so it IS a current trie.
+;; root is that generation's trie (converted as below).
 ;; Meta starts nil: the sidecar entry, walked with the body, lands on the
 ;; rebuilt map through image-reattach-meta! after the walk.
+;; A third case since format 16: a current map whose hash-mode root is a
+;; chez-hnode-v1 trie, (key . value) pair per slot, re-laid out as the current
+;; hnode (collections.ss hnode-v1->hnode). Any legacy map generation can carry
+;; one, so every arm converts its root.
 (define (image-legacy-pmap? x)
-  (and (record? x) (not (pmap? x))
-       (let ((uid (record-type-uid (record-rtd x))))
-         (and (symbol? uid)
-              (let ((n (symbol->string uid)))
-                (and (fx>=? (string-length n) 9)
-                     (string=? (substring n 0 9) "chez-pmap")))))))
+  (and (record? x)
+       (if (pmap? x)
+           (hnode-v1? (pmap-root x))
+           (let ((uid (record-type-uid (record-rtd x))))
+             (and (symbol? uid)
+                  (let ((n (symbol->string uid)))
+                    (and (fx>=? (string-length n) 9)
+                         (string=? (substring n 0 9) "chez-pmap"))))))))
+;;
+;; A v1 trie can also hold a bucket with a key of ANOTHER hash in it: the v1
+;; insert appended such a key to the bucket on its slot rather than nesting the
+;; bucket (collections.ss nest-bucket). Lookups still find it, but a later
+;; insert compares the bucket's hash and would file an equal key a second time.
+;; So a map converted from a v1 trie is rebuilt from its entries once the walk
+;; has restored them (walk-pmap / walk-pset consult this table); a rebuild
+;; before the walk would hash keys that may themselves still be legacy records.
+(define image-legacy-rehash (make-weak-eq-hashtable))
+(define (legacy-root->root r) (if (hnode-v1? r) (hnode-v1->hnode r) r))
 (define (legacy-pmap->pmap x)
+  (let ((m (legacy-pmap->pmap* x)))
+    ;; a v4 array map carried a v1 trie beside its order list, but comes back
+    ;; as slots: only a map still in hash mode is rebuilt
+    (when (and (hnode-v1? ((record-accessor (record-rtd x) 0) x)) (hnode? (pmap-root m)))
+      (hashtable-set! image-legacy-rehash m #t))
+    m))
+(define (legacy-pmap->pmap* x)
   (let* ((rtd (record-rtd x))
-         (root ((record-accessor rtd 0) x))
+         (root (legacy-root->root ((record-accessor rtd 0) x)))
          (cnt ((record-accessor rtd 1) x)))
-    (if (eq? (record-type-uid rtd) 'chez-pmap-v5)
-        (make-pmap root cnt)
+    (cond
+      ;; a current record: only the root changes, its meta slot rides along
+      ((pmap? x) (%mk-pmap root cnt 0 (pmap-meta x)))
+      ((eq? (record-type-uid rtd) 'chez-pmap-v5) (make-pmap root cnt))
+      (else
         (let ((ord ((record-accessor rtd 2) x)))
           (if (or (pair? ord) (null? ord))
               (let* ((ps (reverse ord)) (n (length ps)) (arr (make-vector (fx* 2 n))))
@@ -551,7 +589,7 @@
                     (vector-set! arr (fx+ i 1) (cdar ps))
                     (loop (cdr ps) (fx+ i 2))))
                 (make-pmap arr n))
-              (make-pmap root cnt))))))
+              (make-pmap root cnt)))))))
 ;; The other collections from an image written before the meta slot (format
 ;; <= 7): chez-pvec-v3 (cnt shift root tail ent hasheq), chez-pset-v2 (m
 ;; hasheq), chez-cseq-v6 (head tail forced? kind cvec ci crest lock),
@@ -1581,19 +1619,17 @@
                             (if (and rekey (not restore?))
                                 ;; a key's hash depends on a per-process fn id —
                                 ;; substitute the entries record; restore rebuilds
-                                (let ((r (make-image-rekey 'map
+                                (let ((r (make-image-rekey (if (pmap-array? x) 'array-map 'hash-map)
                                            (list->vector (reverse entries)))))
                                   (hashtable-set! memo x r)
                                   (image-carry-meta! r wm)
                                   r)
                             ;; on the read side a rekey verdict means the
                             ;; placement is stale: rebuild in this process
-                            (if (or dirty rekey (not (eq? wm m)))
+                            (if (or dirty rekey (not (eq? wm m))
+                                    (hashtable-contains? image-legacy-rehash x))
                                 (let ((nx (coll-unshared
-                                            (apply jolt-hash-map
-                                                   (apply append
-                                                          (map (lambda (e) (list (car e) (cdr e)))
-                                                               (reverse entries)))))))
+                                            (image-map-in-mode (pmap-array? x) (reverse entries)))))
                                   (hashtable-set! memo x nx)
                                   (image-carry-meta! nx wm)
                                   nx)
@@ -1635,13 +1671,13 @@
                         (if (hashtable-ref memo x #f)
                             (hashtable-ref memo x #f)
                             (if (and rekey (not restore?))
-                                (let ((r (make-image-rekey 'set
-                                           (list->vector (reverse pairs)))))
+                                (let ((r (make-image-rekey 'set (list->vector pairs))))
                                   (hashtable-set! memo x r)
                                   (image-carry-meta! r wm)
                                   r)
-                            (if (or dirty rekey (not (eq? wm m)))
-                                (let ((nx (coll-unshared (pset-from-pairs (reverse pairs)))))
+                            (if (or dirty rekey (not (eq? wm m))
+                                    (hashtable-contains? image-legacy-rehash (pset-m x)))
+                                (let ((nx (coll-unshared (pset-from-pairs pairs))))
                                   (hashtable-set! memo x nx)
                                   (image-carry-meta! nx wm)
                                   nx)
@@ -1960,7 +1996,10 @@
               (lambda (x path)
                 (or (hashtable-ref memo x #f)
                     (let ((nx (if (pset? x)
-                                  (walk-pset (make-pset (legacy-pmap->pmap (pset-m x))) path)
+                                  ;; a set reaching here is a current record
+                                  ;; (pset-v3 arrived with pmap-v6), so its meta
+                                  ;; slot carries over
+                                  (walk-pset (%mk-pset (legacy-pmap->pmap (pset-m x)) 0 (pset-meta x)) path)
                                   (walk-pmap (legacy-pmap->pmap x) path))))
                       (hashtable-set! memo x nx)
                       nx))))
@@ -2092,11 +2131,14 @@
                                                    wk
                                                    (walk (cdr e) (cons "<val>" path)))))
                                       (loop (fx+ i 1) (cons (cons wk wv) acc)))))))
-                  (let ((coll (if (eq? (image-rekey-kind x) 'map)
-                                  (apply jolt-hash-map
-                                         (apply append
-                                                (map (lambda (e) (list (car e) (cdr e))) pairs)))
-                                  (pset-from-pairs pairs))))
+                  (let ((coll (case (image-rekey-kind x)
+                                ;; format 16 names the map's mode; a format 15
+                                ;; 'map did not, and builds as a literal would
+                                ((hash-map) (image-map-in-mode #f pairs))
+                                ((array-map) (image-map-in-mode #t pairs))
+                                ((map) (apply jolt-hash-map
+                                              (apply append (map (lambda (e) (list (car e) (cdr e))) pairs))))
+                                (else (pset-from-pairs pairs)))))
                     (hashtable-set! memo x coll)
                     (image-meta-copy! x coll)
                     coll))))

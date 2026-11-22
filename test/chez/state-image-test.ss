@@ -1588,6 +1588,45 @@
     "[(meta (conj imgmeta8/vm 3)) (meta (assoc imgmeta8/mm :b 2)) (meta (disj imgmeta8/sm 1)) (meta (conj imgmeta8/lm 0)) (meta (conj imgmeta8/em 0))]"
     "[{:m :vec} {:m :map} {:m :set} {:m :list} {:m :empty}]")
 
+;; --- format 15: chez-hnode-v1 tries, a (key . value) pair per slot. Format 16
+;; lays a node out as key, value slot pairs; the v1 trie converts on restore.
+;; The 0.8.28 build also appended a key of ANOTHER hash to a collision bucket
+;; on its slot (54 and 95 share the low five hash bits with "AaAa"/"BBBB"), so
+;; the converted maps are rebuilt: the JVM's order (the bucket nested, its keys
+;; in insertion order) and no second copy of a key on a later insert. Fixture
+;; written by the released 0.8.28 binary; permanent, like the ones above.
+(ok "v0.8.28 hamt-v1 fixture present" (file-exists? "test/chez/fixtures/image-v0.8.28-hamt-v1.image"))
+(define hamt-v1 "(jolt.host/image-read \"test/chez/fixtures/image-v0.8.28-hamt-v1.image\")")
+(is "v0.8.28 fixture: map and set in the JVM's order"
+    (string-append "(let [g " hamt-v1 "] (pr-str [(keys (:m g)) (seq (:s g))]))")
+    "[(\"AaAa\" \"BBBB\" 95 54) (\"AaAa\" \"BBBB\" 95 54)]")
+(is "v0.8.28 fixture: lookups, meta and the untouched entries"
+    (string-append "(let [g " hamt-v1 "] [(get (:m g) 54) (get (:m g) \"BBBB\") (meta (:m g)) (meta (:s g)) (= (:big g) (zipmap (range 100) (range 100))) (count (:t g)) ((:t g) 54)])")
+    "[3 2 {:tag :m} {:tag :s} true 43 54]")
+(is "v0.8.28 fixture: an insert of a held key does not file it twice"
+    (string-append "(let [g " hamt-v1 "] [(count (assoc (:m g) 54 9)) (get (assoc (:m g) 54 9) 54) (count (conj (:s g) 95)) (count (dissoc (:m g) 95)) (count (disj (:s g) 54 \"AaAa\"))])")
+    "[4 9 4 3 2]")
+
+;; A map or set the walk has to rebuild (a value substituted, a key whose hash
+;; is per-process) comes back in its own mode and order: a small hash map stays
+;; a hash map, an array map an array map, a collision bucket keeps its order.
+(is "a rebuilt map keeps its mode and order"
+    (string-append
+      "(let [a (atom 1) hm (hash-map :x a :y 2 :z 3) am (array-map :c 1 :b a :a 2) f (fn [] 1)"
+      "      km (hash-map f 1 :q 2) ka (array-map :q 2 f 1)"
+      "      _ (jolt.host/image-write! \"" tmp "\" [hm am km ka])"
+      "      [ghm gam gkm gka] (jolt.host/image-read \"" tmp "\")]"
+      "  [(= (class hm) (class ghm)) (= (keys hm) (keys ghm)) (= (class am) (class gam)) (= (keys am) (keys gam))"
+      "   (= (class km) (class gkm)) (= (class ka) (class gka)) (= :q (first (keys gka)))])")
+    "[true true true true true true true]")
+(is "a rebuilt set keeps its collision bucket's order"
+    (string-append
+      "(let [f (fn [] 1) s (conj (hash-set \"AaAa\" \"BBBB\" \"AaBB\") f)"
+      "      _ (jolt.host/image-write! \"" tmp "\" s)"
+      "      g (jolt.host/image-read \"" tmp "\")]"
+      "  (pr-str [(filter string? (seq s)) (= (filter string? (seq s)) (filter string? (seq g)))]))")
+    "[(\"AaAa\" \"BBBB\" \"AaBB\") true]")
+
 ;; a format-8 image carries collection meta in the record itself: nested and
 ;; shared collections round-trip with their meta, and sharing survives.
 (is "collection meta rides the record: value round-trip"
