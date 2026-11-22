@@ -78,3 +78,8 @@
 (extend-protocol Sized
   String
   (size-of [this] (let [n (count this)] (/ n 0))))
+
+(defn caught-return-cast [x]
+  (let [m {:k x}]
+    (try ((fn* ^double [] m)) nil
+         (catch Throwable e e))))

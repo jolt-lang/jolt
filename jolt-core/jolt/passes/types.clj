@@ -109,6 +109,9 @@
    :debug-locals? (atom false)
    :direct-link-defined (atom #{})
    :direct-link-fns (atom #{})
+   ;; Opt-in map of emitted linked def IR for jolt.passes.facts/linked-call-summary.
+   ;; nil by default so optimized builds do not retain IR until a pass uses it.
+   :linked-call-definitions (atom nil)
    ;; the back-end gensym label counter — emit scratch, one per unit and shared by
    ;; every thread emitting into it. Shared is the requirement, not a compromise:
    ;; fresh-label mints names that reach the Scheme TOP LEVEL (emit-impl-clone's
@@ -133,7 +136,9 @@
    ;; jolt.passes.inline scratch: the fixpoint dirty flag run-passes reads/resets and
    ;; the alpha-rename counter for inlined binders.
    :dirty (atom false)
-   :fresh-counter (atom 0)})
+   :fresh-counter (atom 0)
+   ;; jolt.passes.facts keeps only the most recently requested body revision.
+   :body-facts (atom nil)})
 
 ;; build a per-run env: a snapshot of the installed config plus this run's flags and
 ;; fresh accumulator/guard cells. escapes/user-sigs reference the unit's sweep-level

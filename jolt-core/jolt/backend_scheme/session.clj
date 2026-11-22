@@ -9,7 +9,8 @@
   jolt.backend-scheme."
   (:require [clojure.string :as str]
             [jolt.host
-             :refer [inline-enabled? var-dynamic? var-root-callable? var-linked?]]
+             :refer [var-dynamic? var-root-callable?]]
+            [jolt.passes.facts :refer [effective-direct-link? linked-cell-eligible?]]
             [jolt.passes.types :as types]
             [jolt.backend-scheme.names :refer [chez-str-lit dl-fqn munge-name]]))
 
@@ -42,7 +43,7 @@
 ;; jolt-direct-link-emit). That is a per-thread host flag, and the host's
 ;; inline-enabled? answers it: inlining follows linkage, so the two are the same
 ;; question there, and the unit flag stays what a build or the seed mint set.
-(defn direct-link? [] (or @(:direct-link? (cur)) (inline-enabled? nil)))
+(defn direct-link? [] (effective-direct-link? (cur)))
 
 ;; SEED-MINT MODE. bootstrap.ss mints clojure.core and the compiler with
 ;; direct-link ON — a core->core call applies the callee's jv$ binding, one
@@ -205,9 +206,8 @@
        ;; sees vars that live on after it: remove-ns / ns-unmap can drop the
        ;; cell the binding was linked to, so the live cell has to be linked now
        ;; -- or be the def being compiled, which links when it runs.
-       (or @(:direct-link? (cur))
-           (= (dl-fqn ns nm) (first *dl-self*))
-           (some? (var-linked? nil ns nm)))
+       (or (linked-cell-eligible? (cur) ns nm)
+           (= (dl-fqn ns nm) (first *dl-self*)))
        ;; .setDynamic after the def: a binding has to reach this reference
        (not (var-dynamic? nil ns nm))))
 ;; A direct-linked var whose value is a fn literal — its binding is a Scheme
