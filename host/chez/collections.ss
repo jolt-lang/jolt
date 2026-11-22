@@ -1004,6 +1004,26 @@
 (define (alist-remove entry al)
   (if (eq? (car al) entry) (cdr al)
       (cons (car al) (alist-remove entry (cdr al)))))
+;; A bucket keeps nil FIRST. The JVM holds a nil key outside the trie and seqs it
+;; ahead of everything, so the hash-0 bucket nil shares with 0, "" and 0.0 lists
+;; it before them whatever order they arrived in; the others keep insertion order,
+;; as HashCollisionNode appends.
+(define (bucket-add al k v)
+  (if (jolt-nil? k) (cons (cons k v) al) (append al (list (cons k v)))))
+;; A transient removal, as HashCollisionNode.without(edit, ...) does it: the
+;; bucket's last entry moves into the hole. Removing nil keeps the order, since the
+;; JVM's transient only clears its hasNull flag; nil sits first, so the last entry
+;; that moves is never nil.
+(define (alist-remove-swap entry al)
+  (if (jolt-nil? (car entry))
+      (alist-remove entry al)
+      (let ((last (list-ref al (fx- (length al) 1))))
+        (if (eq? last entry)
+            (alist-remove entry al)
+            (let loop ((al al))
+              (cond ((eq? (car al) entry) (cons last (loop (cdr al))))
+                    ((null? (cdr al)) '())      ; the moved last entry
+                    (else (cons (car al) (loop (cdr al))))))))))
 
 ;; Two entries that collided at the level above, as the branch that replaces
 ;; the old one: a node at `shift` (descending while their fragments agree), or a
@@ -1012,7 +1032,7 @@
   (split-hashed-leaves shift (key-hash ek) ek ev h k v))
 (define (split-hashed-leaves shift eh ek ev h k v)
   (if (or (fx>? shift max-shift) (hamt=? eh h))
-      (make-hcoll h (list (cons ek ev) (cons k v)))
+      (make-hcoll h (bucket-add (list (cons ek ev)) k v))
       (let ((ei (hamt-chunk eh shift)) (ni (hamt-chunk h shift)))
         (if (fx=? ei ni)
             (make-hnode 0 (hamt-sll 1 ei) (vector (split-hashed-leaves (fx+ shift 5) eh ek ev h k v)))
@@ -1064,7 +1084,7 @@
             (let* ((al (hcoll-alist b)) (p (assoc-by same? k al)))
               (cond ((not p)
                      (set-box! added #t)
-                     (make-hnode dm nm (vec-set arr j (make-hcoll (hcoll-hash b) (append al (list (cons k v)))))))
+                     (make-hnode dm nm (vec-set arr j (make-hcoll (hcoll-hash b) (bucket-add al k v)))))
                     ((eq? (cdr p) v) node)
                     (else (make-hnode dm nm (vec-set arr j (make-hcoll (hcoll-hash b) (alist-replace p v al)))))))))))
       (else
@@ -1100,9 +1120,12 @@
                      (node-entry b (fx+ shift 5) h k)
                      (assoc-jolt k (hcoll-alist b)))))))))
 
+;; BUCKET-REMOVE takes an entry out of a collision bucket's alist: alist-remove
+;; for a persistent map, alist-remove-swap for a transient's edits (transients.ss
+;; runs its first few through here rather than through enode-dissoc!).
 (define (node-dissoc node shift h k removed)
-  (node-dissoc-by node shift h k removed jolt=2))
-(define (node-dissoc-by node shift h k removed same?)
+  (node-dissoc-by node shift h k removed jolt=2 alist-remove))
+(define (node-dissoc-by node shift h k removed same? bucket-remove)
   (let* ((bit (hamt-bitpos h shift)) (dm (hnode-dmap node)) (nm (hnode-nmap node))
          (arr (hnode-arr node)))
     (cond
@@ -1119,14 +1142,14 @@
              ;; reference's BitmapIndexedNode.without drops a null child. Left in
              ;; place, emptied branches pile up at the front of a map drained in
              ;; iteration order, and every later seq/first has to step over them.
-             (let ((nb (node-dissoc-by b (fx+ shift 5) h k removed same?)))
+             (let ((nb (node-dissoc-by b (fx+ shift 5) h k removed same? bucket-remove)))
                (cond ((eq? nb b) node)
                      ((and (hamt=? 0 (hnode-dmap nb)) (hamt=? 0 (hnode-nmap nb)))
                       (make-hnode dm (hamt-and nm (hamt-not bit)) (vec-remove1 arr j)))
                      (else (make-hnode dm nm (vec-set arr j nb)))))
              (let ((entry (assoc-by same? k (hcoll-alist b))))
                (if (not entry) node
-                   (let ((nal (alist-remove entry (hcoll-alist b))))
+                   (let ((nal (bucket-remove entry (hcoll-alist b))))
                      (set-box! removed #t)
                      (cond ((null? nal) (make-hnode dm (hamt-and nm (hamt-not bit)) (vec-remove1 arr j)))
                            ;; one entry left: it moves back into the entry region
@@ -1265,10 +1288,12 @@
        (let* ((al (hcoll-alist child)) (existing (assoc-jolt k al)))
          (vector-set! arr i
            (make-hcoll (hcoll-hash child)
-             (if existing (alist-replace existing v al) (append al (list (cons k v))))))
+             (if existing (alist-replace existing v al) (bucket-add al k v))))
          (not existing))))))
 
-;; Mirrors node-dissoc, including dropping an interior node the removal empties.
+;; Mirrors node-dissoc, including dropping an interior node the removal empties,
+;; except in a bucket, where the transient's swap-the-last-entry-in removal applies
+;; (alist-remove-swap).
 (define (enode-dissoc! nd shift h k removed)
   (let* ((i (hamt-chunk h shift)) (arr (enode-arr nd)) (child (vector-ref arr i)))
     (define (drop-slot!)
@@ -1286,7 +1311,7 @@
        (let ((entry (assoc-jolt k (hcoll-alist child))))
          (when entry
            (set-box! removed #t)
-           (let ((al (alist-remove entry (hcoll-alist child))))
+           (let ((al (alist-remove-swap entry (hcoll-alist child))))
              (cond ((null? al) (drop-slot!))
                    ((null? (cdr al)) (vector-set! arr i (car al)))
                    (else (vector-set! arr i (make-hcoll (hcoll-hash child) al)))))))))))
@@ -1731,28 +1756,33 @@
 (define (register-conj-arm! pred handler)
   (set! jolt-conj1-arms (cons (cons pred handler) jolt-conj1-arms)))
 
-;; Assoc every entry of `x` into map `m`, in x's own seq order. jolt models a map
-;; entry as a 2-element vector, so that is the shape each element must have — the
-;; JVM casts to java.util.Map$Entry here and this reports the same failure.
+;; (f k v acc) over every entry of `x`, in x's own seq order. Each element must be
+;; a map entry (a MapEntry or a host Map$Entry) — the JVM casts to
+;; java.util.Map$Entry here and this reports the same failure.
 ;; jolt-seq / seq-first / seq-more live in seq.ss, which rt.ss loads after this
 ;; file; forward references resolved at call time (cf. jolt-get-dispatch).
-(define (conj-map-entries m x)
-  (let loop ((s (jolt-seq x)) (acc m))
+(define (fold-map-entries x f acc)
+  (let loop ((s (jolt-seq x)) (acc acc))
     (if (jolt-nil? s)
         acc
         (let ((e (seq-first s)))
           (cond
-            ((and (pvec? e) (fx=? 2 (pvec-count e)))
-             (loop (jolt-seq (seq-more s))
-                   (pmap-assoc acc (pvec-nth-d e 0 jolt-nil) (pvec-nth-d e 1 jolt-nil))))
+            ;; a MapEntry, not any pair: each element is cast to Map$Entry, so a
+            ;; plain [k v] vector here is the ClassCastException
+            ((jolt-map-entry? e)
+             (loop (jolt-seq (seq-more s)) (f (pvec-nth-d e 0 jolt-nil) (pvec-nth-d e 1 jolt-nil) acc)))
             ((jolt-host-entry e)
-             => (lambda (kv) (loop (jolt-seq (seq-more s)) (pmap-assoc acc (car kv) (cdr kv)))))
+             => (lambda (kv) (loop (jolt-seq (seq-more s)) (f (car kv) (cdr kv) acc))))
+            ;; the cast lets null through and getKey fails on it
+            ((jolt-nil? e)
+             (throw-jvm (quote NullPointerException) "nil where a java.util.Map$Entry is required"))
             (else
               (jolt-throw
                (jolt-host-throwable
                 "java.lang.ClassCastException"
                 (string-append "class " (guard (c (#t "?")) (jolt-class-name e))
                                " cannot be cast to class java.util.Map$Entry")))))))))
+(define (conj-map-entries m x) (fold-map-entries x (lambda (k v acc) (pmap-assoc acc k v)) m))
 
 (define (jolt-conj1 coll x)
   (cond ((pvec? coll) (pvec-conj coll x))   ; nil is a valid vector/set element

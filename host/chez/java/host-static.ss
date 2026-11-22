@@ -565,6 +565,7 @@
     ("print-writer-on" "write" 1 3)
     ("process" "waitFor" 0 1 2)
     ("process-builder" "command" varargs)
+    ("process-builder" "directory" 0 1)
     ("process-builder" "redirectError" 0 1)
     ("process-builder" "redirectErrorStream" 0 1)
     ("process-builder" "redirectInput" 0 1)
