@@ -472,6 +472,27 @@
              (and (fx>=? n 3) (char=? (string-ref f 1) #\:))))))
 (define (ldr-ns-source-of name)
   (jolt-with-mutex ldr-ns-source-mu (hashtable-ref ldr-ns-source name #f)))
+;; RT.load's message for a lib with no resource on the classpath. The file the
+;; namespace was entered from is named only when it is that namespace's own file
+;; (off/zz.clj for zz): a script that did (in-ns 'yy) is not yy's source, and
+;; load-file'ing it again is no advice for reloading yy.
+(define (ldr-throw-off-root-reload name src)
+  (let* ((rel (ns-name->rel name))
+         (stem (let loop ((k (fx- (string-length rel) 1)))
+                 (cond ((fx<? k 0) rel)
+                       ((char=? (string-ref rel k) #\/) (substring rel (fx+ k 1) (string-length rel)))
+                       (else (loop (fx- k 1))))))
+         (own-file? (member (path-last src)
+                            (map (lambda (ext) (string-append stem ext))
+                                 '(".jolt" ".clj" ".cljc")))))
+    (throw-jvm (quote java.io.FileNotFoundException)
+      (string-append "Could not locate " rel "__init.class, " rel ".clj or " rel
+                     ".cljc on classpath."
+                     (if own-file?
+                         (string-append " " name " was loaded from " src
+                                        ", which is under no source root: load-file it"
+                                        " again, or add its directory to the source roots")
+                         "")))))
 (set-ns-entered-hook!
   (lambda (nm)
     (when (ldr-file-cells-ready?)
@@ -3225,13 +3246,10 @@
       ;; root: RT.load throws here, finding nothing on the classpath. Taking the
       ;; in-memory arm below instead made the reload a silent no-op, and the
       ;; caller went on running the old definitions.
-      ((and force? (ldr-ns-source-of name))
-       => (lambda (src)
-            (throw-jvm (quote java.io.FileNotFoundException)
-              (string-append "Could not locate " (ns-name->rel name)
-                             ".jolt (or .clj/.cljc) on the source roots; " name
-                             " was loaded from " src ", which is under none of them:"
-                             " load-file it again, or add its directory to the source roots"))))
+      ;; :reload-all forces every lib in its extent the same way (force? is #f
+      ;; there; the extent's claimed set does the forcing).
+      ((and (or force? (ldr-reload-all?)) (ldr-ns-source-of name))
+       => (lambda (src) (ldr-throw-off-root-reload name src)))
       ;; No source file but the namespace exists in memory (AOT'd into a built
       ;; binary): it's already defined — mark loaded and move on.
       ((ns-has-vars? name)
