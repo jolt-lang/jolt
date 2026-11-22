@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiler inlines failed at runtime with "variable … is not bound": the
   `letfn`'s functions were hoisted into a plain `let*`, so the first read its
   sibling before it was bound.
+- **Every compiler pass reads a `letfn`'s fns as seeing each other, and a
+  `loop` init as seeing the loop vars before it.** The inline splice, the type
+  pass and the numeric pass walked a `letfn`'s bindings in sequence, so a fn
+  naming a later sibling got whatever an outer binding of that name held: an
+  inlined `(defn h [g] (letfn [(f [] (g)) (g [] 42)] (f)))` called its argument
+  instead of `g`, and `(let [g nil] (letfn [(f [] (nil? g)) (g [] 0)] (f)))`
+  answered `true` in an optimized build. The numeric pass typed every `loop`
+  init in the enclosing scope, so `(let [x 1.5] (loop [x 1 y x] ...))` ran
+  flonum ops on the fixnum `1` and crashed with "invalid memory reference" in
+  any mode. One helper, `jolt.ir/thread-bindings`, now carries the scope rule
+  for all of them.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could
