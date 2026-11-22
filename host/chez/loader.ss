@@ -1316,16 +1316,27 @@
     (and exe (aot-worker-capable? exe)
          (let* ((mf (string-append (aot-cache-subdir) "/aot-jobs-"
                                    (number->string (get-process-id)) ".edn"))
-                (out (guard (e (else #f)) (open-output-file mf 'replace))))
+                (out (begin
+                       (aot-sweep-dead-workers! (aot-cache-subdir))
+                       (guard (e (else #f)) (open-output-file mf 'replace)))))
            (and out
                 (or (aot-worker-spawn! exe mf out)
                     (begin (close-port out) #f)))))))
 (define (aot-worker-spawn! exe mf out)
   ;; never waited on: it outlives this process, finishing the jobs written
-  ;; before the exit (aot-compile-worker watches the pid for that)
-  (let ((p (jolt-spawn-worker (list exe "--aot-worker" mf) (string-append mf ".log"))))
+  ;; before the exit (aot-compile-worker watches the pid for that). Detached, so
+  ;; a ^C that ends this run leaves it to finish and clean up.
+  (let ((p (jolt-spawn-detached-worker (list exe "--aot-worker" mf) (string-append mf ".log"))))
     (and p
          (begin
+           ;; the manifest's first line names the worker, for the sweep of a
+           ;; later run (aot-sweep-dead-workers!); not a job, so the worker skips it
+           (let ((pid (jolt-worker-pid p)))
+             (when pid
+               (guard (e (else #f))
+                 (write (list 'worker pid) out)
+                 (newline out)
+                 (flush-output-port out))))
            (vector-set! aot-worker-state 0 mf)
            (vector-set! aot-worker-state 1 out)
            (vector-set! aot-worker-state 2 p)
@@ -1394,6 +1405,41 @@
     (guard (e (else #f))
       (when (and (file-exists? log) (fx=? 0 (string-length (read-file-string log))))
         (delete-file log #f)))))
+;; The worker's pid, from the (worker PID) line its parent wrote first, or #f.
+(define (aot-manifest-worker manifest)
+  (guard (e (else #f))
+    (let* ((ip (open-input-file manifest))
+           (x (guard (e (else #f)) (read ip))))
+      (close-port ip)
+      (and (pair? x) (eq? (car x) 'worker) (pair? (cdr x)) (fixnum? (cadr x)) (cadr x)))))
+;; Only the worker cleans up after a run, so a worker that died before it could
+;; (killed with its process group, kill -9, a crash, a reboot) left its manifest,
+;; its log and the partial fasl of the job it was on in the cache for good. A
+;; run that starts a worker first removes what such workers left: every manifest
+;; whose parent AND worker are gone, with the <so>.part<worker> of each of its
+;; jobs. A manifest with no worker line (its parent died between the spawn and
+;; the write) has no worker to ask, so it is only removed once it is an hour old.
+(define aot-headerless-manifest-grace-seconds 3600)
+(define (aot-sweep-dead-workers! dir)
+  (guard (e (else #f))
+    (let ((self (get-process-id))
+          (now (div (sa-epoch-ms) 1000)))
+      (for-each
+        (lambda (name)
+          (let* ((mf (string-append dir "/" name))
+                 (owner (aot-manifest-owner mf)))
+            (when (and owner (not (eqv? owner self)) (not (aot-proc-alive? owner)))
+              (let ((w (aot-manifest-worker mf)))
+                (when (if w
+                          (not (aot-proc-alive? w))
+                          (> (- now (aot-file-seconds mf)) aot-headerless-manifest-grace-seconds))
+                  (when w
+                    (for-each (lambda (job)
+                                (guard (e (else #f))
+                                  (delete-file (string-append (cadr job) ".part" (number->string w)) #f)))
+                              (aot-manifest-jobs mf)))
+                  (aot-worker-cleanup! mf))))))
+        (directory-list dir)))))
 (define (aot-compile-worker manifest)
   (let ((owner (aot-manifest-owner manifest)))
     (let loop ((done 0) (idle 0))

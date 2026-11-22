@@ -16,12 +16,24 @@
 (define (spawn-load!)
   (lazy-shims-class! "java.lang.ProcessBuilder"))
 
-;; ARGV run directly, stdin the null device, stdout and stderr appended to LOG.
-;; -> the Process, or #f when it could not be started.
+;; ARGV run directly, stdin the null device, stdout and stderr written to LOG
+;; (truncated first). -> the Process, or #f when it could not be started.
 (define (jolt-spawn-worker argv log)
   (guard (e (#t #f))
     (spawn-load!)
-    (proc-spawn-worker argv log)))
+    (proc-spawn-worker argv log #f)))
+
+;; jolt-spawn-worker for a worker that outlives this process (the AOT cache's):
+;; in a process group of its own, so the terminal's ^C, which ends the run, does
+;; not end it before it has cleaned up.
+(define (jolt-spawn-detached-worker argv log)
+  (guard (e (#t #f))
+    (spawn-load!)
+    (proc-spawn-worker argv log #t)))
+
+;; P's pid, or #f.
+(define (jolt-worker-pid p)
+  (guard (e (#t #f)) (proc-p-pid p)))
 
 ;; Block until P exits. -> its exit status, or #f.
 (define (jolt-wait-worker p)

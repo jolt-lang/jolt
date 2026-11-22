@@ -378,8 +378,11 @@
 
 ;; What a spawn runs: the program path, its argv, its environment (an alist),
 ;; the directory to start in (or #f), and whether stderr is stdout (dup2 1 2).
+;; proc-spawn-spec fills in the last two from the builder: what a failure to
+;; start says it could not run, and whether the child leads a process group of
+;; its own.
 (define (make-proc-spawn-spec path argv env dir merge? files)
-  (vector path argv env dir merge? files))
+  (vector path argv env dir merge? files "" #f))
 (define (proc-spec-path s) (vector-ref s 0))
 (define (proc-spec-argv s) (vector-ref s 1))
 (define (proc-spec-env s)  (vector-ref s 2))
@@ -388,6 +391,9 @@
 ;; The file redirects, as (fd kind path) for each of 0/1/2 that has one. The
 ;; parent opens them (proc-open-redirect-files) and the child gets them by dup2.
 (define (proc-spec-files s) (vector-ref s 5))
+;; `Cannot run program "x" (in directory "d")`, the head of every start() failure
+(define (proc-spec-what s) (vector-ref s 6))
+(define (proc-spec-new-pgroup? s) (vector-ref s 7))
 
 (define (proc-shell-spec st)
   (let ((shell (proc-posix-shell)))
@@ -450,7 +456,7 @@
 ;; Open every file in FILES -> ((fd . opened-fd) ...), or throw the JDK's
 ;; IOException naming the path as given. A relative path is the user's
 ;; directory's, as a File is (user.dir), not the child's :dir.
-(define (proc-open-redirect-files files program)
+(define (proc-open-redirect-files files what)
   (let loop ((fs files) (acc '()))
     (if (null? fs)
         (reverse acc)
@@ -461,7 +467,7 @@
                 (begin
                   (for-each (lambda (p) (proc-c-close (cdr p))) acc)
                   (throw-jvm (quote java.io.IOException)
-                    (string-append "Cannot run program \"" program "\": "
+                    (string-append what ": "
                                    (if (eq? kind 'discard) "/dev/null" given) " ("
                                    (or (and proc-c-strerror (proc-c-strerror err)) "open failed")
                                    ")")))
@@ -474,7 +480,40 @@
   (if dir
       (cons (cons "PWD" dir) (filter (lambda (p) (not (string=? (car p) "PWD"))) env))
       env))
-(define (proc-spawn-spec st) (or (proc-direct-spec st) (proc-shell-spec st)))
+(define (proc-spawn-spec st)
+  (let ((spec (or (proc-direct-spec st) (proc-shell-spec st))))
+    (vector-set! spec 6 (proc-cannot-run-what st))
+    (vector-set! spec 7 (proc-pb-new-pgroup? st))
+    spec))
+;; The JDK's head for a start() that fails (ProcessBuilder.start): the program
+;; as given, and the directory as given when one was set. The cause follows it
+;; after ": " -- "error=2, No such file or directory", or the redirect file's own
+;; FileNotFoundException text.
+(define (proc-cannot-run-what st)
+  (let ((cmd (proc-pb-cmd st)) (dir (proc-pb-dir st)))
+    (string-append "Cannot run program \""
+                   (if (pair? cmd) (proc-render-arg (car cmd)) "")
+                   "\""
+                   (if dir (string-append " (in directory \"" dir "\")") ""))))
+;; The cause the JDK gives for a start that never reaches the program: KIND is
+;; no-program, no-dir (the start directory is missing) or not-dir (it is a
+;; file). POSIX words it as errno and strerror; Windows words a bad directory
+;; as CreateProcess's error code and its FormatMessage text. A missing program
+;; keeps the POSIX wording there, which it has always had.
+(define proc-bad-start-cause
+  (if (eq? (sa-os-family) 'windows)
+      (lambda (kind)
+        (case kind
+          ((no-program) "error=2, No such file or directory")
+          (else "CreateProcess error=267, The directory name is invalid")))
+      (lambda (kind)
+        (case kind
+          ((not-dir) "error=20, Not a directory")
+          (else "error=2, No such file or directory")))))
+;; The cause of a failed spawn as the JDK words it: errno and strerror.
+(define (proc-errno-cause err)
+  (string-append "error=" (number->string err) ", "
+                 (or (and proc-c-strerror (proc-c-strerror err)) "Unknown error")))
 
 ;; --- java.lang.ProcessBuilder$Redirect ---------------------------------------
 ;; state: #(kind file) — kind in {inherit discard pipe write append read}.
@@ -581,9 +620,11 @@
         (cons "containsKey" (lambda (self k) (and (hashtable-contains? (jhost-state self) (jolt-str-render-one k)) #t)))))
 
 ;; --- java.lang.ProcessBuilder ------------------------------------------------
-;; state: #(cmd env-map dir redir-in redir-out redir-err merge-err?)
+;; state: #(cmd env-map dir redir-in redir-out redir-err merge-err? new-pgroup?)
+;; new-pgroup? has no ProcessBuilder method: only the runtime's own workers set
+;; it (proc-spawn-worker).
 (define (make-proc-builder cmd)
-  (make-jhost "process-builder" (vector cmd #f #f #f #f #f #f)))
+  (make-jhost "process-builder" (vector cmd #f #f #f #f #f #f #f)))
 (define (proc-pb-cmd st)         (vector-ref (jhost-state st) 0))
 (define (proc-pb-env st)         (vector-ref (jhost-state st) 1))
 (define (proc-pb-dir st)         (vector-ref (jhost-state st) 2))
@@ -591,6 +632,8 @@
 (define (proc-pb-redir-out st)   (vector-ref (jhost-state st) 4))
 (define (proc-pb-redir-err st)   (vector-ref (jhost-state st) 5))
 (define (proc-pb-merge-err? st)  (vector-ref (jhost-state st) 6))
+(define (proc-pb-new-pgroup? st)
+  (let ((v (jhost-state st))) (and (> (vector-length v) 7) (vector-ref v 7))))
 (define (proc-pb-set! st i v)    (vector-set! (jhost-state st) i v))
 
 ;; the ProcessBuilder ctor: (java.lang.ProcessBuilder. cmd) where cmd is a jolt
@@ -777,6 +820,18 @@
 (define (proc-sigmask-attr-ok?)
   (and proc-attr-init proc-attr-setflags proc-attr-destroy proc-attr-setsigmask
        proc-c-sigemptyset #t))
+
+;; A child in a process group of its own, which the terminal's ^C (SIGINT to the
+;; foreground group) does not reach. Only the runtime's workers ask for it: an
+;; AOT worker outlives the run it serves and cleans up after itself, so a ^C that
+;; killed it with the run left its manifest and partial fasl behind for good.
+;; POSIX_SPAWN_SETPGROUP is 2 on every host that spawns here, and pgroup 0 means
+;; the child's own pid.
+(define proc-attr-setpgroup
+  (jolt-foreign-proc-safe "posix_spawnattr_setpgroup" '(void* int) 'int))
+(define proc-POSIX-SPAWN-SETPGROUP #x02)
+(define (proc-pgroup-attr-ok?)
+  (and proc-attr-init proc-attr-setflags proc-attr-destroy proc-attr-setpgroup #t))
 
 ;; What posix_spawn-with-pipes needs, and nothing more. The R8 fiber-parking
 ;; extension's own bindings (fcntl, errno) are gated separately by
@@ -1240,7 +1295,7 @@
 (define (proc-spawn-fd-level spec inherit-in? inherit-out? inherit-err?)
   ;; The file redirects are opened first, outside the lock, and closed here
   ;; whatever the spawn does: the child has its own copies once it exists.
-  (let ((files (proc-open-redirect-files (proc-spec-files spec) (car (proc-spec-argv spec)))))
+  (let ((files (proc-open-redirect-files (proc-spec-files spec) (proc-spec-what spec))))
     (dynamic-wind
       (lambda () #f)
       (lambda () (proc-spawn-fd-level* spec files inherit-in? inherit-out? inherit-err?))
@@ -1299,7 +1354,8 @@
              (cloexec? (proc-cloexec-default?))
              (sigdef? (proc-sigdefault-ok?))
              (sigmask? (proc-sigmask-attr-ok?))
-             (attr (and (or cloexec? sigdef? sigmask?) (sa-foreign-alloc proc-attr-bytes)))
+             (pgroup? (and (proc-spec-new-pgroup? spec) (proc-pgroup-attr-ok?)))
+             (attr (and (or cloexec? sigdef? sigmask? pgroup?) (sa-foreign-alloc proc-attr-bytes)))
              (pidbuf (sa-foreign-alloc 8)))
         (proc-fa-init fa)
         (when attr
@@ -1307,7 +1363,9 @@
           (proc-attr-setflags attr
             (fxior (if cloexec? proc-POSIX-SPAWN-CLOEXEC-DEFAULT 0)
                    (if sigdef? proc-POSIX-SPAWN-SETSIGDEF 0)
-                   (if sigmask? proc-POSIX-SPAWN-SETSIGMASK 0)))
+                   (if sigmask? proc-POSIX-SPAWN-SETSIGMASK 0)
+                   (if pgroup? proc-POSIX-SPAWN-SETPGROUP 0)))
+          (when pgroup? (proc-attr-setpgroup attr 0))
           (when sigmask?
             (let ((set (sa-foreign-alloc proc-sigset-bytes)))
               (proc-c-sigemptyset set)
@@ -1385,7 +1443,7 @@
                 (when out-p (proc-c-close (car out-p)))
                 (when err-p (proc-c-close (car err-p)))
                 (throw-jvm (quote java.io.IOException)
-                  (string-append "posix_spawn failed (errno " (number->string rc) ")"))))))))
+                  (string-append (proc-spec-what spec) ": " (proc-errno-cause rc)))))))))
   (let ((fds (spawn-locked)))
     ;; Outside the lock: the child's table was copied at fork, so a spawn that
     ;; starts meanwhile cannot reach it, and waiting on exec here would
@@ -1540,6 +1598,17 @@
                              (proc-path-join-for windows? base prog)))
     (else (proc-on-path-for? windows? pathext path prog exists?))))
 
+;; What a PATH search may land on. `command -v` and execvp skip a directory and a
+;; file without execute permission and keep looking, so a stray `ls/` directory
+;; or a mode-644 `true` early on PATH is not the program. Windows has no execute
+;; bit (PATHEXT decides what runs there), so only the directory is skipped.
+(define proc-which-candidate?
+  (if (eq? (sa-os-family) 'windows)
+      (lambda (p) (and (file-exists? p) (not (file-directory? p))))
+      (lambda (p)
+        (and (guard (e (#t #f)) (and (file-regular? p) (not (file-directory? p))))
+             (file-accessible? p access-x-ok)))))
+
 ;; Where PROG resolves, as a spawn would resolve it: a path as spelled (joined to
 ;; the cwd when relative), a bare name on this process's PATH. -> the file, or #f.
 (define (proc-which prog)
@@ -1547,11 +1616,11 @@
     (cond
       ((= (string-length prog) 0) #f)
       ((or (jfile-path-absolute-for? windows? prog) (windows-root-relative-for? windows? prog))
-       (proc-candidate-found windows? pathext file-exists? prog))
+       (proc-candidate-found windows? pathext proc-which-candidate? prog))
       ((proc-has-separator-for? windows? prog)
-       (proc-candidate-found windows? pathext file-exists?
+       (proc-candidate-found windows? pathext proc-which-candidate?
                              (proc-path-join-for windows? (current-directory) prog)))
-      (else (proc-on-path-found windows? pathext (getenv "PATH") prog file-exists?)))))
+      (else (proc-on-path-found windows? pathext (getenv "PATH") prog proc-which-candidate?)))))
 
 (define (proc-program-resolvable? prog effective-dir)
   (let ((prog (if (string? prog) prog (jolt-str-render-one prog))))
@@ -1651,6 +1720,7 @@
 ;; --- Win32 constants ---------------------------------------------------------
 (define proc-win-STARTF-USESTDHANDLES       #x100)
 (define proc-win-CREATE-NO-WINDOW           #x08000000)
+(define proc-win-CREATE-NEW-PROCESS-GROUP   #x00000200)
 (define proc-win-CREATE-UNICODE-ENVIRONMENT #x00000400)
 (define proc-win-HANDLE-FLAG-INHERIT        1)
 (define proc-win-STD-INPUT-HANDLE  -10)
@@ -2136,6 +2206,9 @@
                        (and g (proc-win-handle-ok? (g)))))
            (flags (bitwise-ior
                    proc-win-CREATE-UNICODE-ENVIRONMENT
+                   ;; a worker's group of its own: Ctrl+C is off in it, as SIGINT
+                   ;; does not reach one on POSIX (proc-attr-setpgroup)
+                   (if (proc-pb-new-pgroup? st) proc-win-CREATE-NEW-PROCESS-GROUP 0)
                    (if (and console? (or (inherit? rin) (inherit? rout) (inherit? rerr)))
                        0
                        proc-win-CREATE-NO-WINDOW))))
@@ -2159,8 +2232,8 @@
                  si pi)))
         (when (= ok 0)
           (let ((e (let ((g (proc-win-last-error))) (if g (g) 0))))
-            (fail! (string-append "Cannot run program \"" (jolt-str-render-one (car (proc-pb-cmd st)))
-                                  "\": CreateProcess error=" (number->string e)))))
+            (fail! (string-append (proc-cannot-run-what st)
+                                  ": CreateProcess error=" (number->string e)))))
         ;; The child owns its ends now; keeping them open here is what stops a
         ;; read ever seeing EOF.
         (cleanup-child!)
@@ -2182,9 +2255,20 @@
     (when (and (pair? cmd)
                (not (proc-program-resolvable? (car cmd) (proc-effective-dir (proc-pb-dir self)))))
       (throw-jvm (quote java.io.IOException)
-        (string-append "Cannot run program \""
-                       (if (string? (car cmd)) (car cmd) (jolt-str-render-one (car cmd)))
-                       "\": error=2, No such file or directory")))
+        (string-append (proc-cannot-run-what self) ": " (proc-bad-start-cause 'no-program))))
+    ;; A start directory that is not there fails the start, as chdir fails the
+    ;; JDK's child before its exec. Asked here rather than left to the spawn, so
+    ;; the shell fallback (whose `cd` would only fail inside the child) and every
+    ;; platform answer the same way.
+    (let ((dir (proc-pb-dir self)))
+      (when dir
+        (let ((eff (proc-effective-dir dir)))
+          (cond ((not (file-exists? eff))
+                 (throw-jvm (quote java.io.IOException)
+                   (string-append (proc-cannot-run-what self) ": " (proc-bad-start-cause 'no-dir))))
+                ((not (file-directory? eff))
+                 (throw-jvm (quote java.io.IOException)
+                   (string-append (proc-cannot-run-what self) ": " (proc-bad-start-cause 'not-dir))))))))
     (proc-ensure-reapable!)
     (let* ((rin  (proc-pb-redir-in self))
            (rout (proc-pb-redir-out self))
@@ -2639,19 +2723,24 @@
 
 ;; A copy of jolt doing work for this one (the AOT cache's worker, `jolt build`'s
 ;; compile workers): ARGV run directly, stdin the null device, stdout and stderr
-;; appended to LOG. It runs where this process runs and with its whole
-;; environment, JOLT_PWD included: it is the runtime's child, not a user
-;; program's, so neither the user directory nor proc-child-env-pairs applies.
+;; written to LOG (truncated first). It runs where this process runs and with
+;; its whole environment, JOLT_PWD included: it is the runtime's child, not a
+;; user program's, so neither the user directory nor proc-child-env-pairs
+;; applies. DETACHED? puts it in a process group of its own, for a worker that
+;; outlives its parent: a ^C at the terminal then stops the run and not it.
 ;; -> the Process; waitFor it (proc-wait-blocking) or let it run on.
-(define (proc-spawn-worker argv log)
+(define (proc-spawn-worker argv log detached?)
   (let ((pb (make-proc-builder argv))
         (env (make-hashtable string-hash string=?)))
     (for-each (lambda (p) (hashtable-set! env (car p) (cdr p))) (all-env-pairs))
     (proc-pb-set! pb 1 (make-jhost "jolt-env-map" env))
     (proc-pb-set! pb 2 (current-directory))
     (proc-pb-set! pb 3 (make-proc-redirect 'read (if proc-win? "NUL" "/dev/null")))
-    (proc-pb-set! pb 4 (make-proc-redirect 'append log))
+    ;; truncated: a build reuses its builddir, and one log per spawn is what
+    ;; the reader of it expects
+    (proc-pb-set! pb 4 (make-proc-redirect 'write log))
     (proc-pb-set! pb 6 #t)
+    (proc-pb-set! pb 7 (and detached? #t))
     (proc-pb-start pb)))
 
 ;; ARGV run directly in this process's directory and environment, stdin the null
