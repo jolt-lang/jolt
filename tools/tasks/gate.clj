@@ -83,11 +83,18 @@
                    "{ git ls-files -z -c -o --exclude-standard | LC_ALL=C sort -z | xargs -0 $sha 2>/dev/null; "
                    "git submodule status --recursive 2>/dev/null; } | $sha | cut -d' ' -f1")))
 
+;; The jolt running this gate, so each gate runs under it too: bin/jolt
+;; exports JOLT_EXE, and a built jolt knows its own path. babashka.tasks/jolt
+;; would take `jolt` from PATH, which is absent on CI and an older installed
+;; jolt on a dev machine.
+(def ^:private self-jolt
+  (or (env/getenv "JOLT_EXE") (jolt.host/self-exe) (str env/root "/" env/jolt-bin)))
+
 (defn- run-one
   "One gate as its own `jolt <gate> -j n` process; the -j reaches the one
   gate that is itself a gate list (test runs ci). Returns [gate exit-status]."
   [n gate]
-  [gate (:exit (t/jolt {:continue true :dir env/root} (str gate) "-j" (str n)))])
+  [gate (:exit (p/shell {:continue true :dir env/root} self-jolt (str gate) "-j" (str n)))])
 
 (defn run-gates
   "Run `gates`, at most `n` at once, then the quiet gates one at a time with
