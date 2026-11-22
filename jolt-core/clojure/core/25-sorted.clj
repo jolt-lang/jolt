@@ -103,25 +103,35 @@
 
 (defn- sm-dissoc-many [sm ks] (reduce sm-dissoc-1 sm ks))
 
-;; conj on a map: a [k v] pair (2-vector / map-entry) or a map to merge;
-;; nil is a no-op, as in Clojure.
+;; conj on a map, as APersistentMap.cons: a [k v] pair (2-vector / map-entry),
+;; then anything that seqs into entries (a map, a seq of entries; nil seqs to
+;; nothing). A vector of any other length is the JVM's named refusal, a value
+;; that does not seq is seq's own IllegalArgumentException, and a seq element
+;; that is not an entry fails the Map$Entry cast.
+(defn- conj-entries [acc x add]
+  (if (vector? x)
+    (throw (IllegalArgumentException. "Vector arg to map conj must be a pair"))
+    (reduce (fn [acc e]
+              (cond (and (vector? e) (= 2 (count e))) (add acc (nth e 0) (nth e 1))
+                    ;; any other java.util.Map$Entry (a TreeMap's)
+                    (map-entry? e) (add acc (key e) (val e))
+                    :else (entry-cast-throw e)))
+            acc (seq x))))
+
 (defn- sm-conj-1 [sm x]
   (cond
-    (nil? x) sm
-    (map? x) (reduce (fn [m e] (sm-assoc-1 m (first e) (second e))) sm (seq x))
     (and (vector? x) (= 2 (count x))) (sm-assoc-1 sm (nth x 0) (nth x 1))
-    ;; any other java.util.Map$Entry (a TreeMap's), as APersistentMap.cons takes
     (map-entry? x) (sm-assoc-1 sm (key x) (val x))
-    :else (throw (ex-info "conj on a sorted-map requires a [key value] pair or a map" {}))))
+    :else (conj-entries sm x sm-assoc-1)))
+
+(defn- kvs-add [kvs k v] (conj! (conj! kvs k) v))
 
 ;; sm-conj-1's cases, onto a flat k v buffer
 (defn- conj-kvs [kvs x]
   (cond
-    (nil? x) kvs
-    (map? x) (reduce (fn [acc e] (conj! (conj! acc (first e)) (second e))) kvs (seq x))
-    (and (vector? x) (= 2 (count x))) (conj! (conj! kvs (nth x 0)) (nth x 1))
-    (map-entry? x) (conj! (conj! kvs (key x)) (val x))
-    :else (throw (ex-info "conj on a sorted-map requires a [key value] pair or a map" {}))))
+    (and (vector? x) (= 2 (count x))) (kvs-add kvs (nth x 0) (nth x 1))
+    (map-entry? x) (kvs-add kvs (key x) (val x))
+    :else (conj-entries kvs x kvs-add)))
 
 (defn- sm-conj-many [sm xs]
   (if (small? xs batch-min)
