@@ -545,6 +545,26 @@
 ;; chez-hnode-v1 trie, (key . value) pair per slot, re-laid out as the current
 ;; hnode (collections.ss hnode-v1->hnode). Any legacy map generation can carry
 ;; one, so every arm converts its root.
+;; A chez-hnode-v1 trie (an image written before format 16) as a current one:
+;; each v1 slot was a (key . value) pair, an hnode-v1 or an hcoll, under one
+;; bitmap. The v1 rtd is the one the fasl materialized, so its fields are read
+;; through its own accessors. hcoll's layout did not change. Here, not in
+;; collections.ss: only an image restore meets one, and gambit (which shares
+;; collections.ss) has no record reflection to read it with.
+(define (hnode-v1? x)
+  (and (record? x) (not (hnode? x))
+       (eq? (record-type-uid (record-rtd x)) 'chez-hnode-v1)))
+(define (hnode-v1->hnode x)
+  (let* ((rtd (record-rtd x))
+         (bm ((record-accessor rtd 0) x))
+         (src ((record-accessor rtd 1) x)))
+    (let loop ((bits bm) (j 0) (dm 0) (nm 0) (entries '()) (branches '()))
+      (if (hamt=? 0 bits)
+          (make-hnode dm nm (list->vector (append (reverse entries) branches)))
+          (let ((low (hamt-low-bit bits)) (c (vector-ref src j)) (rest (hamt-and bits (hamt-sub bits 1))))
+            (cond ((hnode-v1? c) (loop rest (fx+ j 1) dm (hamt-ior nm low) entries (cons (hnode-v1->hnode c) branches)))
+                  ((hcoll? c) (loop rest (fx+ j 1) dm (hamt-ior nm low) entries (cons c branches)))
+                  (else (loop rest (fx+ j 1) (hamt-ior dm low) nm (cons (cdr c) (cons (car c) entries)) branches))))))))
 (define (image-legacy-pmap? x)
   (and (record? x)
        (if (pmap? x)
