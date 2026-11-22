@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`error=20, Not a directory` for a file), and every start failure, a missing
   program or an unopenable redirect file included, names the directory when
   one was set. `clojure.java.shell` and `jolt.process` surface the same.
+- On Windows every child process jolt started inherited a handle to each file
+  jolt had open, so a file could not be deleted or renamed while any child
+  that started after it was opened was still running. A child now inherits
+  only the standard handles it was given, as on the JVM.
 - `(.directory pb nil)` failed the next `start` instead of going back to the
   default directory, and `(.directory pb)` with no argument was not there to
   read the setting back.
