@@ -84,6 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   multimethod key, separate from the type's. A deftype name prints as its class
   (`user.T`, not `#object[...]`), and a multimethod's "No method" and "Multiple
   methods" messages name the dispatch value by its `toString`.
+- `instance?` and `cast` no longer take a host value for a record or deftype
+  that only shares its class's simple name. A `java.lang.Process` isn't a
+  `demo.Process` record, as `isa?` already answered, so `cast` to that record
+  throws `ClassCastException`. A simple name such as `Process` still matches.
 - `.toString` on a vector, list or set returns the readable form `str` gives:
   `(.toString [1 "a"])` is `[1 "a"]`.
 
