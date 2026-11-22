@@ -4325,22 +4325,18 @@
 ;; fn classes (ns$name) inherit AFunction (handled by jch-direct-supers).
 
 ;; (instance? Class e) on a throwable tagged-table carrying a JVM :class matches the
-;; carried class or any of its ancestors (full name or last segment), so a library's
-;; (catch UnknownHostException e …) / (catch IOException e …) matches the ex-info
-;; envelope it threw. Mirrors the (class e) arm (host-table.ss) for catch dispatch,
-;; which lowers to (instance? C e). Non-match returns 'pass so other arms still run.
+;; carried class or any of its ancestors, so a library's (catch UnknownHostException
+;; e …) / (catch IOException e …) matches the ex-info envelope it threw. jch-isa?
+;; decides: a simple name matches by segment, a qualified one only by its full name,
+;; so a record named IOException is not java.io.IOException. Mirrors the (class e)
+;; arm (host-table.ss) for catch dispatch, which lowers to (instance? C e).
+;; Non-match returns 'pass so other arms still run.
 (register-instance-check-arm!
   (lambda (type-sym val)
-    (if (and (htable? val) (string? (htable-str-ref val "class" #f)))
-        (let* ((cls (htable-str-ref val "class" #f))
-               (want (symbol-t-name type-sym))
-               (want-seg (hsc-last-segment want)))
-          (let loop ((names (cons cls (jch-closure cls))))
-            (cond ((null? names) 'pass)
-                  ((or (string=? want (car names))
-                       (string=? want-seg (hsc-last-segment (car names)))) #t)
-                  (else (loop (cdr names))))))
-        'pass)))
+    (let ((cls (and (htable? val) (htable-str-ref val "class" #f))))
+      (if (and (string? cls) (jch-isa? cls (symbol-t-name type-sym)))
+          #t
+          'pass))))
 
 ;; ---- (class x) for host-shim values ------------------------------------------
 ;; jhost-backed shims report their JVM class instead of falling through to the
