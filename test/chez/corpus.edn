@@ -2805,6 +2805,12 @@
   {:suite "map / update" :label "merge-with" :expected "{:a 3}" :actual "(merge-with + {:a 1} {:a 2})" :portability :common}
   {:suite "map / update" :label "update" :expected "{:a 2}" :actual "(update {:a 1} :a inc)" :portability :common}
   {:suite "map / update" :label "update missing w/ fnil" :expected "{:a 1}" :actual "(update {} :a (fnil inc 0))" :portability :common}
+  {:suite "map / update" :label "update arglists are clojure.core's fixed arities" :expected "(quote ([m k f] [m k f x] [m k f x y] [m k f x y z] [m k f x y z & more]))" :actual "(:arglists (meta (var update)))" :portability :common}
+  {:suite "map / update" :label "update with one extra arg" :expected "{:a [1 2]}" :actual "(update {:a [1]} :a conj 2)" :portability :common}
+  {:suite "map / update" :label "update with two extra args" :expected "{:a 6}" :actual "(update {:a 1} :a + 2 3)" :portability :common}
+  {:suite "map / update" :label "update with three extra args" :expected "{:a 10}" :actual "(update {:a 1} :a + 2 3 4)" :portability :common}
+  {:suite "map / update" :label "update with four or more extra args" :expected "{:a 21}" :actual "(update {:a 1} :a + 2 3 4 5 6)" :portability :common}
+  {:suite "map / update" :label "update on a vector index with args" :expected "[1 12]" :actual "(update [1 2] 1 + 10)" :portability :common}
   {:suite "map / update" :label "update-in" :expected "{:a {:b 2}}" :actual "(update-in {:a {:b 1}} [:a :b] inc)" :portability :common}
   {:suite "map / update" :label "assoc-in" :expected "{:a {:b 1}}" :actual "(assoc-in {} [:a :b] 1)" :portability :common}
   {:suite "map / update" :label "select-keys" :expected "{:a 1}" :actual "(select-keys {:a 1 :b 2} [:a])" :portability :common}

@@ -77,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built from a vector or another array fill the backing straight from it
   instead of draining a seq: 1000 doubles from a vector went from 13.4 to
   3.9 us, and 35 from a double-array from 1650 to 180 ns.
+- `update` has clojure.core's fixed arities instead of only `[m k f & args]`,
+  so it no longer goes through `apply`: `(update m :k inc)` went from 113 to
+  35 ns and `(update m :k + 1 2 3)` from 204 to 46.
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.
