@@ -1090,14 +1090,21 @@
 ;; not plain; nil is not either, since it sits beside any class.
 (define (sc-plain-key? x)
   (or (string? x) (keyword-t? x) (symbol-t? x) (char? x) (boolean? x)))
+;; SC is natural-order and its first key is plain, so every key is of that one
+;; class (nil would sort first): a jolt= probe answers what its comparator would
+(define (sc-plain-keyed? sc)
+  (and (jolt-nil? (scoll-cmp sc))
+       (let ((t (scoll-tree sc)))
+         (and (not (jolt-nil? t)) (sc-plain-key? (bt-key (bt-first-leaf t) 0))))))
 ;; SC's comparator finds A and B equivalent
 (define (sc-cmp-zero? sc a b)
   (let* ((cmp (scoll-cmp sc))
          (c (if (jolt-nil? cmp) (jolt-compare a b) (jolt-invoke2 cmp a b))))
     (not (or (positive? c) (negative? c)))))
-;; every (k v) of a hash map satisfies PRED; PRED is not asked again after a miss
+;; every (k v) of a hash map satisfies PRED, leaving the walk at the first miss
 (define (pmap-every-kv? m pred)
-  (pmap-fold-fwd m (lambda (k v acc) (and acc (pred k v))) #t))
+  (sa-call-with-escape-continuation
+    (lambda (out) (pmap-fold-fwd m (lambda (k v acc) (if (pred k v) acc (out #f))) #t))))
 ;; 'ne on a count mismatch without running BODY, else BODY's verdict
 (define-syntax and-count=
   (syntax-rules () ((_ n m body) (if (eqv? n m) (if body 'eq 'ne) 'ne))))
@@ -1117,8 +1124,8 @@
 ;; walk that matches every one answers what the JVM's lookups would. Only a miss
 ;; asks the comparator, which can still find the keys equivalent (1 and 1.0
 ;; under compare): in the lockstep, just for the pair that missed; against a hash
-;; coll, by walking the side the JVM walks, unless the missed key is one no
-;; natural-order key can be equivalent to without being = (sc-plain-key?). 'eq / 'ne, or #f to fall back to the
+;; coll, the one walk is picked up front: the probe when the sorted side's keys
+;; are plain (sc-plain-keyed?), the JVM's own walk otherwise. 'eq / 'ne, or #f to fall back to the
 ;; conversion (a record, a Java map, ...).
 (define (sorted-fast= a b)
   (define (verdict x) (if x 'eq 'ne))
@@ -1129,7 +1136,7 @@
   (define (k-equiv? ka va kb vb) (or (jolt=2 ka kb) (sc-equiv-miss? a ka kb)))
   (define (kv-equiv? ka va kb vb) (and (k-equiv? ka va kb vb) (jolt=2 va vb)))
   ;; every entry of sorted map S is in hash map M by jolt=: exactly the JVM's
-  ;; s.equiv(m), and a sufficient test for m.equiv(s)
+  ;; s.equiv(m)
   (define (sm-in-pmap? s m)
     (sc-tree-every-kv? (scoll-tree s)
       (lambda (k v) (let ((p (pmap-entry-at m k))) (and p (jolt=2 v (cdr p)))))))
@@ -1140,11 +1147,11 @@
      (cond
        ((pset? b)
         (and-count= (sc-count a) (pset-count b)
-          (let ((missed sc-absent))
-            (or (sc-tree-every-kv? (scoll-tree a)
-                  (lambda (k v) (or (pset-contains? b k) (begin (set! missed k) #f))))
-                (and (not (and (jolt-nil? (scoll-cmp a)) (sc-plain-key? missed)))
-                     (sc-cce-false (lambda () (pmap-every-kv? (pset-m b) (lambda (k v) (sc-has? a k))))))))))
+          ;; one walk, chosen up front: the jolt= probe when it is exact (a
+          ;; plain-keyed natural-order set), else the JVM's own walk
+          (if (sc-plain-keyed? a)
+              (sc-tree-every-kv? (scoll-tree a) (lambda (k v) (pset-contains? b k)))
+              (sc-cce-false (lambda () (pmap-every-kv? (pset-m b) (lambda (k v) (sc-has? a k))))))))
        ((htable-sorted-set? b)
         (and-count= (sc-count a) (sc-count b)
           (if (same-cmp? a b)
@@ -1167,10 +1174,10 @@
                         (sc-tree-every-kv? (scoll-tree b) (lambda (k v) (pset-contains? a k)))))))
     ((htable-sorted-map? b)
      (and (pmap? a)
+          ;; the JVM's walk, which also answers the equal case. No catch: the
+          ;; hash map's equiv has none, so an incomparable key throws.
           (verdict (and (eqv? (pmap-cnt a) (sc-count b))
-                        (or (sm-in-pmap? b a)
-                            ;; no catch: the hash map's equiv has none
-                            (pmap-every-kv? a (in-sm? b)))))))
+                        (pmap-every-kv? a (in-sm? b))))))
     (else #f)))
 (register-eq-arm! (lambda (a b) (or (htable-sorted? a) (htable-sorted? b)))
                   (lambda (a b)

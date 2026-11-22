@@ -1756,9 +1756,9 @@
 (define (register-conj-arm! pred handler)
   (set! jolt-conj1-arms (cons (cons pred handler) jolt-conj1-arms)))
 
-;; (f k v acc) over every entry of `x`, in x's own seq order. jolt models a map
-;; entry as a 2-element vector, so that is the shape each element must have — the
-;; JVM casts to java.util.Map$Entry here and this reports the same failure.
+;; (f k v acc) over every entry of `x`, in x's own seq order. Each element must be
+;; a map entry (a MapEntry or a host Map$Entry) — the JVM casts to
+;; java.util.Map$Entry here and this reports the same failure.
 ;; jolt-seq / seq-first / seq-more live in seq.ss, which rt.ss loads after this
 ;; file; forward references resolved at call time (cf. jolt-get-dispatch).
 (define (fold-map-entries x f acc)
@@ -1767,7 +1767,9 @@
         acc
         (let ((e (seq-first s)))
           (cond
-            ((and (pvec? e) (fx=? 2 (pvec-count e)))
+            ;; a MapEntry, not any pair: each element is cast to Map$Entry, so a
+            ;; plain [k v] vector here is the ClassCastException
+            ((jolt-map-entry? e)
              (loop (jolt-seq (seq-more s)) (f (pvec-nth-d e 0 jolt-nil) (pvec-nth-d e 1 jolt-nil) acc)))
             ((jolt-host-entry e)
              => (lambda (kv) (loop (jolt-seq (seq-more s)) (f (car kv) (cdr kv) acc))))

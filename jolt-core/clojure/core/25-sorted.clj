@@ -104,7 +104,7 @@
 (defn- sm-dissoc-many [sm ks] (reduce sm-dissoc-1 sm ks))
 
 ;; conj on a map, as APersistentMap.cons: a [k v] pair (2-vector / map-entry),
-;; then anything that seqs into entries (a map, a seq of entries; nil seqs to
+;; then anything that seqs into map entries (a map, a seq of entries; nil seqs to
 ;; nothing). A vector of any other length is the JVM's named refusal, a value
 ;; that does not seq is seq's own IllegalArgumentException, and a seq element
 ;; that is not an entry fails the Map$Entry cast.
@@ -112,9 +112,9 @@
   (if (vector? x)
     (throw (IllegalArgumentException. "Vector arg to map conj must be a pair"))
     (reduce (fn [acc e]
-              (cond (and (vector? e) (= 2 (count e))) (add acc (nth e 0) (nth e 1))
-                    ;; any other java.util.Map$Entry (a TreeMap's)
-                    (map-entry? e) (add acc (key e) (val e))
+              ;; a map entry (MapEntry or a TreeMap's), never a plain pair:
+              ;; the JVM casts each element to java.util.Map$Entry
+              (cond (map-entry? e) (add acc (key e) (val e))
                     :else (entry-cast-throw e)))
             acc (seq x))))
 
