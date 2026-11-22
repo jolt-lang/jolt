@@ -1305,7 +1305,7 @@
 (define (aot-worker-capable? exe)
   (and jolt-standalone-binary (string? exe) #t))
 ;; Every platform: the worker is spawned directly and watched by pid
-;; (worker-spawn.ss), and where aot-self-exe cannot name the
+;; (spawn.ss), and where aot-self-exe cannot name the
 ;; binary no worker starts and the caller compiles in process.
 (define (aot-async?)
   (and (not (aot-env-off? "JOLT_AOT_ASYNC"))

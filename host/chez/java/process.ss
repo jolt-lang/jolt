@@ -1484,20 +1484,25 @@
               (cond ((null? exts) (reverse acc))
                     ((= (string-length (car exts)) 0) (loop (cdr exts) acc))
                     (else (loop (cdr exts) (cons (string-append prog (car exts)) acc))))))))
-(define (proc-candidate-exists? windows? pathext exists? p)
+;; The candidate (P, or P plus a PATHEXT extension) that exists, or #f.
+(define (proc-candidate-found windows? pathext exists? p)
   (let loop ((cs (proc-name-candidates-for windows? pathext p)))
     (cond ((null? cs) #f)
-          ((exists? (car cs)) #t)
+          ((exists? (car cs)) (car cs))
           (else (loop (cdr cs))))))
+(define (proc-candidate-exists? windows? pathext exists? p)
+  (and (proc-candidate-found windows? pathext exists? p) #t))
 
-(define (proc-on-path-for? windows? pathext path prog exists?)
+;; The file a PATH search for PROG lands on, or #f: `command -v` for a bare name.
+(define (proc-on-path-found windows? pathext path prog exists?)
   (let loop ((dirs (proc-path-entries-for windows? path)))
     (cond ((null? dirs) #f)
           ((and (> (string-length (car dirs)) 0)
-                (proc-candidate-exists? windows? pathext exists?
-                                        (proc-path-join-for windows? (car dirs) prog)))
-           #t)
+                (proc-candidate-found windows? pathext exists?
+                                      (proc-path-join-for windows? (car dirs) prog))))
           (else (loop (cdr dirs))))))
+(define (proc-on-path-for? windows? pathext path prog exists?)
+  (and (proc-on-path-found windows? pathext path prog exists?) #t))
 
 (define (proc-program-resolvable-for? windows? pathext path base prog exists?)
   (cond
@@ -1512,6 +1517,19 @@
      (proc-candidate-exists? windows? pathext exists?
                              (proc-path-join-for windows? base prog)))
     (else (proc-on-path-for? windows? pathext path prog exists?))))
+
+;; Where PROG resolves, as a spawn would resolve it: a path as spelled (joined to
+;; the cwd when relative), a bare name on this process's PATH. -> the file, or #f.
+(define (proc-which prog)
+  (let ((windows? (eq? (sa-os-family) 'windows)) (pathext (getenv "PATHEXT")))
+    (cond
+      ((= (string-length prog) 0) #f)
+      ((or (jfile-path-absolute-for? windows? prog) (windows-root-relative-for? windows? prog))
+       (proc-candidate-found windows? pathext file-exists? prog))
+      ((proc-has-separator-for? windows? prog)
+       (proc-candidate-found windows? pathext file-exists?
+                             (proc-path-join-for windows? (current-directory) prog)))
+      (else (proc-on-path-found windows? pathext (getenv "PATH") prog file-exists?)))))
 
 (define (proc-program-resolvable? prog effective-dir)
   (let ((prog (if (string? prog) prog (jolt-str-render-one prog))))
@@ -2613,6 +2631,22 @@
     (proc-pb-set! pb 4 (make-proc-redirect 'append log))
     (proc-pb-set! pb 6 #t)
     (proc-pb-start pb)))
+
+;; ARGV run directly in this process's directory and environment, stdin the null
+;; device and stderr discarded. -> (values exit-status stdout-text). The output
+;; is read to EOF before the wait, so a child that fills the pipe never blocks.
+(define (proc-run-capture argv)
+  (let ((pb (make-proc-builder argv))
+        (env (make-hashtable string-hash string=?)))
+    (for-each (lambda (p) (hashtable-set! env (car p) (cdr p))) (all-env-pairs))
+    (proc-pb-set! pb 1 (make-jhost "jolt-env-map" env))
+    (proc-pb-set! pb 2 (current-directory))
+    (proc-pb-set! pb 3 (make-proc-redirect 'read (if proc-win? "NUL" "/dev/null")))
+    (proc-pb-set! pb 5 (make-proc-redirect 'discard #f))
+    (let* ((p (proc-pb-start pb))
+           (bv (get-bytevector-all (proc-p-stdout-port p)))
+           (code (proc-wait-blocking p)))
+      (values code (if (eof-object? bv) "" (utf8->string bv))))))
 
 ;; Runtime.exec(cmdarray [envp [dir]]): the classic spawn API clojure.java.shell
 ;; uses. envp/dir may be nil (inherit / cwd). Returns a Process.

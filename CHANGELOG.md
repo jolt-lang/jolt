@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   background worker start without a shell, so both now run on Windows too. The
   build workers used to need a `--build-worker-probe` round trip through `sh`
   before a build could fan out.
+- A git dependency whose URL or cache path holds a `$` or a backtick resolves.
+  git ran as a shell line with each argument in double quotes, where the shell
+  still expands both; it runs with an argument list now.
+- `jolt build` no longer needs `xxd` or `sed`: the boot is written into its C
+  header directly, about 4x faster on a 30 MB boot. PATH lookups, `brew`,
+  `pkg-config`, `nm` and `otool` also run without a shell.
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the

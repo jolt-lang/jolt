@@ -43,10 +43,10 @@
 ;; Files that name a lazy file's definitions only inside code that runs on that
 ;; file's own values (an image codec's encoder sees a Vector only once Vector has
 ;; loaded; its decoder triggers the load by class name first).
-;; worker-spawn.ss: the runtime's own worker spawns, run only by a jolt binary,
+;; spawn.ss: the runtime's own worker spawns, run only by a jolt binary,
 ;; which carries every lazy file; it loads process.ss by name and falls back to
 ;; compiling in process where the file is absent.
-(define lazy-shims-ref-allow '("host/chez/java/image-codecs.ss" "host/chez/worker-spawn.ss"))
+(define lazy-shims-ref-allow '("host/chez/java/image-codecs.ss" "host/chez/spawn.ss"))
 ;; (file name): a lazy class's name in another file as data, not a use. A file
 ;; listed alone holds only such data.
 (define lazy-shims-name-allow
@@ -55,7 +55,7 @@
     ("host/chez/java/jdk-interfaces.ss")               ; class-graph rows (generated)
     ("host/chez/java/image-codecs.ss")                 ; codec kinds
     ("host/chez/ns.ss" "ProcessBuilder")               ; the default java.lang imports
-    ("host/chez/worker-spawn.ss" "java.lang.ProcessBuilder") ; loads process.ss (see ref-allow)
+    ("host/chez/spawn.ss" "java.lang.ProcessBuilder") ; loads process.ss (see ref-allow)
     ("host/chez/java/host-static.ss" "EnumSet")        ; an arity row: EnumSet/of
     ;; a ListIterator's class for a Vector or Stack it is handed
     ("host/chez/java/coll-defaults.ss" "java.util.Vector")
@@ -142,7 +142,7 @@
 (load "host/chez/png.ss")
 (load "host/chez/loader.ss")
 (load "host/chez/diagnostic-render.ss")
-(load "host/chez/worker-spawn.ss")
+(load "host/chez/spawn.ss")
 (load "host/chez/java/ffi.ss")
 (set! file-log (reverse file-log))
 

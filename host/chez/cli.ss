@@ -48,7 +48,7 @@
 (load "host/chez/diagnostic-render.ss")
 ;; The runtime's own worker processes (AOT cache, `jolt build`): after the
 ;; loader and build code that call them, which only do so at run time.
-(load "host/chez/worker-spawn.ss")
+(load "host/chez/spawn.ss")
 ;; jolt.ffi host primitives (memory / library loading) load AFTER the loader's
 ;; baked-ns snapshot, so a library's (require '[jolt.ffi]) still loads jolt.ffi's
 ;; Clojure side (the foreign-fn / defcfn macros, stdlib/jolt/ffi.clj).
