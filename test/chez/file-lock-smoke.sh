@@ -52,6 +52,7 @@ expect() {
     echo "PASS: $1"
   else
     echo "FAIL: $1"; echo "  got:  $(printf '%s' "$2" | tr '\n' '|')"; echo "  want: $(printf '%s' "$3" | tr '\n' '|')"
+    [ -s "$tmp/stderr" ] && sed 's/^/  stderr: /' "$tmp/stderr"
     fails=$((fails+1))
   fi
 }
@@ -91,13 +92,13 @@ holder() { # name position size shared mode
 
 # --- one process: the open's checks and DELETE_ON_CLOSE -----------------------
 # The unit rows hold these on POSIX; this is where a Windows run sees them too.
-got="$(jolt "$pre (let [f \"$dir/doc.tmp\" o (fn [& xs] (into-array OpenOption xs)) p (Paths/get f (make-array String 0))] (spit f \"x\") (let [c (FileChannel/open p (o StandardOpenOption/WRITE StandardOpenOption/DELETE_ON_CLOSE)) sz (.size c)] (.close c) (prn [sz (.exists (java.io.File. f)) (try (FileChannel/open p (o StandardOpenOption/APPEND StandardOpenOption/TRUNCATE_EXISTING)) (catch IllegalArgumentException e (.getMessage e))) (.getName (class (ch)))])))" 2>&1)"
+got="$(jolt "$pre (let [f \"$dir/doc.tmp\" o (fn [& xs] (into-array OpenOption xs)) p (Paths/get f (make-array String 0))] (spit f \"x\") (let [c (FileChannel/open p (o StandardOpenOption/WRITE StandardOpenOption/DELETE_ON_CLOSE)) sz (.size c)] (.close c) (prn [sz (.exists (java.io.File. f)) (try (FileChannel/open p (o StandardOpenOption/APPEND StandardOpenOption/TRUNCATE_EXISTING)) (catch IllegalArgumentException e (.getMessage e))) (.getName (class (ch)))])))" 2>"$tmp/stderr")"
 expect "DELETE_ON_CLOSE removes the file at the close; option checks come before the open" "$got" '[1 false "APPEND + TRUNCATE_EXISTING not allowed" "sun.nio.ch.FileChannelImpl"]'
 
 # --- an exclusive lock keeps another process out of its bytes -----------------
 holder ex 0 100 false exit
 if wait_for "$tmp/ex.held" 120; then
-  got="$(jolt "$pre (let [c (ch)] (prn [(.tryLock c) (.tryLock c 0 1 true) (.tryLock c 99 5 false) (ok (.tryLock c 100 10 false))]))" 2>&1)"
+  got="$(jolt "$pre (let [c (ch)] (prn [(.tryLock c) (.tryLock c 0 1 true) (.tryLock c 99 5 false) (ok (.tryLock c 100 10 false))]))" 2>"$tmp/stderr")"
   expect "tryLock over an exclusively held range answers nil, outside it a lock" "$got" "[nil nil nil true]"
 
   # lock() waits while the holder has the bytes, and gets them once it exits.
@@ -125,11 +126,11 @@ fi
 # --- a shared lock admits shared and refuses exclusive -------------------------
 holder sh 0 100 true release
 if wait_for "$tmp/sh.held" 120; then
-  got="$(jolt "$pre (let [c (ch)] (prn [(ok (.tryLock c 0 10 true)) (.tryLock c 0 10 false) (.tryLock c)]))" 2>&1)"
+  got="$(jolt "$pre (let [c (ch)] (prn [(ok (.tryLock c 0 10 true)) (.tryLock c 0 10 false) (.tryLock c)]))" 2>"$tmp/stderr")"
   expect "a shared lock admits another process's shared lock, not its exclusive one" "$got" "[true nil nil]"
   touch "$tmp/sh.go"
   if wait_for "$tmp/sh.released" 120; then
-    got="$(jolt "$pre (let [c (ch)] (prn (ok (.tryLock c))))" 2>&1)"
+    got="$(jolt "$pre (let [c (ch)] (prn (ok (.tryLock c))))" 2>"$tmp/stderr")"
     expect "release() lets another process lock while the holder still runs" "$got" "true"
   else
     expect "shared holder released" "$(cat "$tmp/sh.out")" ""
