@@ -1041,6 +1041,21 @@
            :jvm "[\"BigInt\" 3N]"
            :jolt "[\"Long\" 3]"}
    :note "Same one-exact-integer model as (class 1N); (unchecked-add 9223372036854775808N 1) is 9223372036854775809N on both."}
+  ;; The same collapse under *print-dup*: print-dup writes a Number as its
+  ;; constructor unless it is a Long (or a BigInt, which prints with its N), and
+  ;; an int, a short, a byte, a small BigInteger and a small BigInt are all the
+  ;; fixnum a long is here, so each prints as the long it reads back as. The
+  ;; reader's :line/:column on a quoted list are the same fixnums, so a quoted
+  ;; literal's metadata prints as {:line 1, :column 2} where the JVM's reader
+  ;; stored Integers and print-dup writes #=(java.lang.Integer. "1").
+  {:category :integer-box-model
+   :behavior "(binding [*print-dup* true] (pr-str (int 1))) and the other narrow integers"
+   :jvm "#=(java.lang.Integer. \"1\"), and #=(java.lang.Short. …), #=(java.lang.Byte. …), #=(java.math.BigInteger. …), 5N"
+   :jolt "1, and the plain integer for each"
+   :check {:expr "(binding [*print-dup* true] (pr-str [(int 1) (short 2) (byte 3) (biginteger 4) 5N]))"
+           :jvm "\"[#=(java.lang.Integer. \\\"1\\\") #=(java.lang.Short. \\\"2\\\") #=(java.lang.Byte. \\\"3\\\") #=(java.math.BigInteger. \\\"4\\\") 5N]\""
+           :jolt "\"[1 2 3 4 5]\""}
+   :note "Read back, each is = to the value printed on both. A Float is its own value here and prints #=(java.lang.Float. \"2.5\") as on the JVM."}
 ;; The same collapse at protocol dispatch: an int, a short and a small BigInt are
   ;; the fixnum a long is, so a protocol extended to Long and to Number picks Long
   ;; for all of them where the JVM's boxes fall through to Number.
@@ -1971,6 +1986,11 @@
    ;; (nth coll 0 nil), through the [[f :as xs]] destructure. The two agree on every
    ;; coll nth accepts, so this only widens what distinct accepts — to any seqable,
    ;; which is what its docstring already says. See the :permissive note below.
+   ;; print-dup writes a sorted set as #=(clojure.lang.PersistentTreeSet/create [1 2]),
+   ;; which the JVM cannot read back: its create takes an ISeq and the vector is
+   ;; a ClassCastException. jolt's create takes any seqable, so the value reads
+   ;; back as every other print-dup form does.
+   {:suite "io / *print-dup*", :label "a sorted set reads back", :category :permissive}
    {:suite "distinct / any seqable", :label "the head of a distinct set is an element, not nil", :category :permissive}
    {:suite "distinct / any seqable", :label "distinct over a set keeps every element", :category :permissive}
    {:suite "distinct / any seqable", :label "distinct over a map yields its entries", :category :permissive}
