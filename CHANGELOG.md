@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`*print-meta*` writes no `^meta` before a user `print-method`.** A record
   with its own `print-method` printed as `^{:m 1} #R!`; the JVM's built-in
   methods write the metadata, and a user method that replaces one writes none.
+- **`#=` reads a var.** `(read-string "#=(var clojure.core/inc)")` under
+  `*read-eval*` threw `ClassCastException`: the reader tried to put the var's
+  own metadata back on it as reader metadata.
 - A hash map or set ordered a collision bucket and its neighbours as the JVM
   does not. A key whose hash differed from a bucket's was appended to the
   bucket on its slot instead of the bucket nesting one level down
