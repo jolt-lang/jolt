@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A one-argument `(str x)` goes through the `clojure.core/str` var again, so
+  `with-redefs` and a redefinition reach it as they reach every other arity.
+  The open-coded call from 0.8.28 never read the var (#1768). It still answers
+  a string or a StringBuilder inline while the var holds the original `str`.
 - `=` asks a deftype's or a reify's own equality again when the other operand
   is a string literal, a keyword, a char or a boolean, as `Util.equiv` does
   for a collection on either side. Since 0.8.28 the open-coded `=` and
