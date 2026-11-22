@@ -6057,12 +6057,14 @@
 ;; The mask is emptied on THIS thread for the length of the spawn and put back
 ;; exactly as it was, so the whole of jolt's private masking is undone at once
 ;; rather than a named subset of it. That leaves one fork+exec in which jolt
-;; itself is unmasked: a SIGTERM landing there kills it without running hooks, as
-;; it did before there were hooks, and a ^C landing there may be taken by this
-;; thread instead of the parked one. Both are pre-existing behavior. The
-;; window-free alternative, posix_spawnattr with POSIX_SPAWN_SETSIGMASK, reaches
-;; only one of the two paths — Chez's fork takes no attributes — and two
-;; mechanisms for one rule is worse than one honest window.
+;; itself is unmasked: a SIGTERM landing there kills it without running hooks,
+;; and any watched signal still PENDING for the process (a Signal/raise the
+;; watcher has not taken yet) is delivered to this thread at its default action.
+;; So the posix_spawn path (process.ss proc-spawn-fd-level), which is every
+;; ProcessBuilder / jolt.process spawn where posix_spawn resolves, gives the
+;; child its empty mask through POSIX_SPAWN_SETSIGMASK and never opens the
+;; window. This one is left for the spawns Chez's own fork makes (system,
+;; process), which take no attributes.
 (define jolt-empty-sigset (and jolt-sigmask-ok? (jolt-make-sigset '())))
 (define (jolt-with-empty-sigmask thunk)
   (jolt-with-sigmask jolt-sig-setmask-how jolt-empty-sigset thunk))

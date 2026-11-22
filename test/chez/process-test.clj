@@ -1211,6 +1211,25 @@
                   [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""]))
       (doseq [f [readyf hookf]] (fs/delete-if-exists f)))))
 
+;; Starting a child must not unblock what jolt's threads block. A handled signal
+;; still pending when a ProcessBuilder starts (a Signal/raise the watcher had not
+;; taken yet killed the no-relay row above on the Android runner) used to be
+;; delivered to the spawning thread at its default action, because the spawn
+;; emptied that thread's mask for the child's sake. pthread_kill on this thread
+;; makes the pending signal one only this thread could take, so the old window
+;; killed it every time.
+(doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
+  (let [prog (str "(require '[jolt.ffi :as ffi]) (import '[sun.misc Signal SignalHandler])"
+                  "(ffi/defcfn pthread-self \"pthread_self\" [] :pointer)"
+                  "(ffi/defcfn pthread-kill \"pthread_kill\" [:pointer :int] :int)"
+                  "(Signal/handle (Signal. \"USR2\") (reify SignalHandler (handle [_ s] nil)))"
+                  "(pthread-kill (pthread-self) " (signum "USR2") ")"
+                  "(.waitFor (.start (ProcessBuilder. [\"true\"])))"
+                  "(print \"alive\")")
+        r (sh [jolt-bin "-e" prog] {:extra-env env})]
+    (check-eq (str "a pending handled signal survives starting a child (" mode ")")
+              [(:exit r) (:out r)] [0 "alive"])))
+
 ;; Only the relay can give a handler TTIN, TTOU, PROF or VTALRM (blocked in
 ;; every thread, the first two change what the terminal does to a background
 ;; job and the others are CPU timers), or the PIPE the kernel sends the thread

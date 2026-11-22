@@ -4879,6 +4879,8 @@
   {:suite "transducers / halt-when" :label "no halt is a plain reduction" :expected "[1 2 3]" :actual "(transduce (halt-when (fn [x] (> x 5))) conj [1 2 3])" :portability :common}
   {:suite "transducers / halt-when" :label "retf combines acc and input" :expected "[[1 2] 7]" :actual "(transduce (halt-when (fn [x] (> x 5)) (fn [r i] [r i])) conj [1 2 7 3])" :portability :common}
   {:suite "transducers / halt-when" :label "halt-when through into" :expected "3" :actual "(into [] (halt-when odd?) [2 4 3 6])" :portability :common}
+  {:suite "transducers / halt-when" :label "halt-when through into a sorted-set answers the halting input" :expected "3" :actual "(into (sorted-set) (halt-when #{3}) (range 10))" :portability :common}
+  {:suite "transducers / halt-when" :label "halt-when retf through into a sorted-map sees the sorted map built so far" :expected "12" :actual "(into (sorted-map) (halt-when (fn [[k]] (= k 12)) (fn [acc x] (count acc))) (map (fn [x] [x x]) (range 20)))" :portability :common}
   {:suite "transducers / short-circuit over infinite seqs" :label "into take (range)" :expected "[0 1 2 3 4]" :actual "(into [] (take 5) (range))" :portability :common}
   {:suite "transducers / short-circuit over infinite seqs" :label "transduce take (range)" :expected "3" :actual "(transduce (take 3) + 0 (range))" :portability :common}
   {:suite "transducers / short-circuit over infinite seqs" :label "sequence take (range)" :expected "[0 1 2 3 4]" :actual "(sequence (take 5) (range))" :portability :common}
@@ -5204,8 +5206,8 @@
   ;; --- sorted collections: one tree walk per insert, like PersistentTreeMap.add.
   ;; The comparator call count is exact and deterministic for a given key order,
   ;; so it pins both the walk count and the balancing algorithm to the reference.
-  {:suite "sorted / one walk per insert" :label "1024 ascending keys into a sorted-map-by count comparator calls like the reference" :expected "12301" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [i i]) (range 1024))) @c)" :portability :common}
-  {:suite "sorted / one walk per insert" :label "replacing values in a sorted-map-by counts like the reference" :expected "29414" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [(mod (* i 7919) 1024) i]) (range 2048))) @c)" :portability :common}
+  {:suite "sorted / one walk per insert" :label "1024 ascending keys into a sorted-map-by: one comparison per key confirms the order" :expected "1023" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [i i]) (range 1024))) @c)" :portability :common}
+  {:suite "sorted / one walk per insert" :label "replacing values in a sorted-map-by: an into sorts its batch" :expected "23455" :actual "(let [c (atom 0) cmp (fn [a b] (swap! c inc) (compare a b))] (into (sorted-map-by cmp) (map (fn [i] [(mod (* i 7919) 1024) i]) (range 2048))) @c)" :portability :common}
   ;; --- a core fn in value position IS its var's root, as on the JVM: the
   ;; comparison chains, min/max and the integer division trio used to compile
   ;; to seq.ss's procedures while ns.ss bound the var roots to raw Scheme ops.
