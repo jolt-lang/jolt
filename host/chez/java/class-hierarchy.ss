@@ -820,6 +820,7 @@
 (jch-register-supers! "java.nio.file.AccessDeniedException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.NotDirectoryException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.NotLinkException" '("java.nio.file.FileSystemException"))
+(jch-register-supers! "java.nio.file.FileSystemLoopException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.DirectoryNotEmptyException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.AtomicMoveNotSupportedException" '("java.nio.file.FileSystemException"))
 (jch-register-supers! "java.nio.file.FileSystemNotFoundException" '("java.lang.RuntimeException"))
@@ -1545,6 +1546,15 @@
 (jch-register-supers! "java.nio.file.StandardOpenOption" '("java.lang.Enum" "java.nio.file.OpenOption"))
 (jch-register-supers! "java.nio.file.StandardCopyOption" '("java.lang.Enum" "java.nio.file.CopyOption"))
 (jch-register-supers! "java.nio.file.LinkOption" '("java.lang.Enum" "java.nio.file.OpenOption" "java.nio.file.CopyOption"))
+;; the attribute interfaces nio-file.ss's snapshots and principals implement
+(jch-register-supers! "java.nio.file.attribute.PosixFileAttributes" '("java.nio.file.attribute.BasicFileAttributes"))
+(jch-register-supers! "java.nio.file.attribute.UserPrincipal" '("java.security.Principal"))
+(jch-register-supers! "java.nio.file.attribute.GroupPrincipal" '("java.nio.file.attribute.UserPrincipal"))
+(jch-register-supers! "sun.nio.fs.UnixFileAttributes$UnixAsBasicFileAttributes" '("java.nio.file.attribute.BasicFileAttributes"))
+(jch-register-supers! "sun.nio.fs.UnixFileAttributes" '("java.nio.file.attribute.PosixFileAttributes"))
+(jch-register-supers! "sun.nio.fs.UnixUserPrincipals$User" '("java.nio.file.attribute.UserPrincipal"))
+(jch-register-supers! "sun.nio.fs.UnixUserPrincipals$Group"
+                      '("sun.nio.fs.UnixUserPrincipals$User" "java.nio.file.attribute.GroupPrincipal"))
 
 ;; ---- jhost value tag -> FQN (single value-discriminator registry) --------------
 ;; A value-layer shim value (make-jhost tag …) reports its JVM class by this map;
@@ -1679,6 +1689,12 @@
     ("time-unit" . "java.util.concurrent.TimeUnit")
     ;; Files/getLastModifiedTime and fs/last-modified-time (nio-file.ss)
     ("file-time" . "java.nio.file.attribute.FileTime")
+    ;; readAttributes' snapshots and the owners they name (nio-file.ss)
+    ("basic-attrs" . "sun.nio.fs.UnixFileAttributes$UnixAsBasicFileAttributes")
+    ("posix-attrs" . "sun.nio.fs.UnixFileAttributes")
+    ("file-key" . "sun.nio.fs.UnixFileKey")
+    ("user-principal" . "sun.nio.fs.UnixUserPrincipals$User")
+    ("group-principal" . "sun.nio.fs.UnixUserPrincipals$Group")
     ("normalizer-form" . "java.text.Normalizer$Form")
     ;; subprocess shims (process.ss), backing vendored babashka.process
     ("process-builder" . "java.lang.ProcessBuilder")
