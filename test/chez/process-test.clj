@@ -252,6 +252,27 @@
   (check-eq "directory reads back as a File"
             (str (.directory (doto (java.lang.ProcessBuilder. ["true"]) (.directory (java.io.File. "/tmp")))))
             "/tmp")
+  ;; the shell path is also what a spawn with a directory takes where posix_spawn
+  ;; has no chdir action (bionic, older glibc)
+  (check-eq "the shell fallback throws for an unopenable redirect too"
+            (try (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"1\")")
+                 (.waitFor (.start (doto (java.lang.ProcessBuilder. ["true"])
+                                     (.directory (java.io.File. "/"))
+                                     (.redirectOutput (java.io.File. "/nonexistent-dir/x")))))
+                 :started
+                 (catch java.io.IOException e (ex-message e))
+                 (finally (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"\")")))
+            "Cannot run program \"true\" (in directory \"/\"): /nonexistent-dir/x (No such file or directory)")
+  (check-eq "the shell fallback still redirects into a file"
+            (let [f (str (fs/create-temp-file {:prefix "jp-shredir-"}))]
+              (try (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"1\")")
+                   (.waitFor (.start (doto (java.lang.ProcessBuilder. ["echo" "via-sh"])
+                                       (.directory (java.io.File. "/"))
+                                       (.redirectOutput (java.io.File. f)))))
+                   (slurp f)
+                   (finally (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"\")")
+                            (fs/delete-if-exists f))))
+            "via-sh\n")
   (check-eq "clojure.java.shell surfaces the same message"
             (try ((requiring-resolve 'clojure.java.shell/sh) "cat" :dir "/nonexistdir") :started
                  (catch java.io.IOException e (ex-message e)))
@@ -335,6 +356,51 @@
   (check-eq "the sweep keeps a manifest whose worker is alive, and its own"
             (mapv #(fs/exists? %) [live-mf own-mf])
             [true true])
+  (fs/delete-tree d))
+
+;; A pid says nothing once it has been reused (Wine gives every top-level
+;; process the same one), so each side of a manifest holds a lock beside it for
+;; its whole life (spawn.ss jolt-lock-hold!) and the sweep asks the locks. The
+;; manifests below all name THIS process, which is alive, as parent and worker:
+;; only the locks tell them apart.
+(let [d (str (fs/create-temp-dir {:prefix "jp-aotlock-"}))
+      me (.pid (ProcessHandle/current))
+      lock-state (fn [f] (scm/eval-string (str "(symbol->string (jolt-lock-state " (pr-str f) "))")))
+      hold! (fn [f] (scm/eval-string (str "(jolt-lock-hold! " (pr-str f) ")")))
+      mf (fn [tag] (str d "/aot-jobs-" me "-" tag ".edn"))
+      lockf (str d "/probe.lock")]
+  (check-eq "a lock file nobody made is missing" (lock-state lockf) "missing")
+  (let [tok (hold! lockf)]
+    (check-eq "a held lock reads held" [(boolean tok) (lock-state lockf)] [true "held"])
+    (check-eq "a second hold fails while it is held" (hold! lockf) false)
+    (scm/eval-string (str "(jolt-lock-release! " tok ")"))
+    (check-eq "a released lock reads free" (lock-state lockf) "free"))
+  (doseq [tag ["deadowner" "liveowner" "deadworker"]]
+    (spit (mf tag) (str "(worker " me ")\n"))
+    (spit (str (mf tag) ".log") "")
+    (spit (str (mf tag) ".plock") "")
+    (spit (str (mf tag) ".wlock") ""))
+  ;; the parent of "liveowner" holds its lock; its worker's is free
+  (hold! (str (mf "liveowner") ".plock"))
+  ;; "deadworker": parent gone, worker gone, though the pid on its first line lives
+  ;; "deadowner": the same, but its worker still holds its lock
+  (hold! (str (mf "deadowner") ".wlock"))
+  (scm/eval-string (str "(aot-sweep-dead-workers! " (pr-str d) ")"))
+  (check-eq "a manifest whose parent and worker locks are free goes, locks and log too"
+            (mapv #(fs/exists? (str (mf "deadworker") %)) ["" ".log" ".plock" ".wlock"])
+            [false false false false])
+  (check-eq "a manifest whose parent holds its lock stays"
+            (fs/exists? (mf "liveowner")) true)
+  (check-eq "a manifest whose worker holds its lock stays"
+            (fs/exists? (mf "deadowner")) true)
+  (check-eq "manifest names carry a nonce after the pid"
+            (boolean (re-matches #".*/aot-jobs-\d+-[0-9A-Z]+-[0-9A-Z]+\.edn"
+                                 (scm/eval-string "(aot-manifest-name \"/x\")")))
+            true)
+  (check-eq "the owner is read from either name"
+            (mapv #(scm/eval-string (str "(aot-manifest-owner " (pr-str %) ")"))
+                  ["/x/aot-jobs-123-k2-9z.edn" "/x/aot-jobs-123.edn" "/x/aot-jobs-x.edn" "/x/other.edn"])
+            [123 123 false false])
   (fs/delete-tree d))
 
 ;; A child that cannot be waited on must still produce an answer. With SIGCHLD set

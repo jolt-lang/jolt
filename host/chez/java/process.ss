@@ -395,10 +395,17 @@
 (define (proc-spec-what s) (vector-ref s 6))
 (define (proc-spec-new-pgroup? s) (vector-ref s 7))
 
+;; The file redirects go in here too, though the command line redirects as well:
+;; the parent opening them is what makes an unopenable target throw from start()
+;; as the JDK's does, rather than the shell failing inside a child that started.
+;; A spawn with a directory takes this path wherever posix_spawn has no chdir
+;; action (bionic, glibc before 2.29), so without them a redirect there never
+;; threw.
 (define (proc-shell-spec st)
   (let ((shell (proc-posix-shell)))
     (make-proc-spawn-spec shell (list shell "-c" (proc-build-shell-command st))
-                          (proc-child-env-pairs) #f #f '())))
+                          (proc-child-env-pairs) #f #f
+                          (if proc-open-flags (proc-redirect-files st) '()))))
 (define (proc-direct-spec st)
   (let* ((cmd (proc-pb-cmd st))
          (dir (proc-effective-dir (proc-pb-dir st)))
@@ -1924,7 +1931,11 @@
 (define (proc-win-open-redirect kind file)
   (let ((open (proc-win-create-file)))
     (and open
-         (let* ((share (bitwise-ior proc-win-FILE-SHARE-READ proc-win-FILE-SHARE-WRITE))
+         ;; FILE_SHARE_DELETE as well, as a POSIX descriptor never stops an
+         ;; unlink: a worker removing its own log (loader.ss
+         ;; aot-worker-cleanup!) holds it open as its stdout while it does
+         (let* ((share (bitwise-ior proc-win-FILE-SHARE-READ proc-win-FILE-SHARE-WRITE
+                                    proc-win-FILE-SHARE-DELETE))
                 (h (case kind
                      ((write)
                       (win32-with-wstr file
@@ -2633,6 +2644,80 @@
           ;; report every process but our own as gone.
           (= (proc-errno) proc-EPERM))
       #t)))
+
+;; --- liveness locks ------------------------------------------------------------
+;; A process says it is alive by holding a lock on a file, and another asks
+;; whether anyone holds it. The OS drops the lock when the holder dies, however
+;; it dies, so unlike a pid probe the answer cannot be fooled by a pid that was
+;; reused (Wine hands every top-level process the same one). POSIX: flock(2)
+;; on a descriptor opened O_CLOEXEC, so no child inherits the lock. Windows: the
+;; file held open with no sharing, which a second open fails with
+;; ERROR_SHARING_VIOLATION; a CreateFileW handle is not inheritable.
+(define proc-c-flock (jolt-foreign-proc-safe "flock" '(int int) 'int))
+(define proc-LOCK-SH 1)
+(define proc-LOCK-EX 2)
+(define proc-LOCK-NB 4)
+(define proc-win-ERROR-FILE-NOT-FOUND 2)
+(define proc-win-ERROR-PATH-NOT-FOUND 3)
+(define proc-win-ERROR-SHARING-VIOLATION 32)
+(define proc-win-FILE-SHARE-DELETE #x00000004)
+
+;; Take the lock on PATH (created if missing) and keep it. -> a token for
+;; proc-lock-release!, or #f when it could not be taken.
+(define proc-lock-hold!
+  (if proc-win?
+      (lambda (path)
+        (let ((open (proc-win-create-file)))
+          (and open
+               (let ((h (win32-with-wstr path
+                          (lambda (w) (open w proc-win-GENERIC-WRITE 0 0 proc-win-OPEN-ALWAYS
+                                            proc-win-FILE-ATTRIBUTE-NORMAL 0)))))
+                 (and (proc-win-handle-ok? h) h)))))
+      (lambda (path)
+        (and proc-c-flock proc-c-open
+             (let ((fd (proc-c-open path (proc-open-flags 'append) #o666)))
+               (and (>= fd 0)
+                    (if (= 0 (proc-c-flock fd (fxior proc-LOCK-EX proc-LOCK-NB)))
+                        fd
+                        (begin (proc-c-close fd) #f))))))))
+(define proc-lock-release!
+  (if proc-win?
+      (lambda (token) ((proc-win-close-handle) token))
+      (lambda (token) (proc-c-close token))))
+;; -> 'held, 'free (the file is there and nobody holds it), 'missing, or
+;; 'unknown (the host could not say: no flock, a filesystem without locks).
+(define proc-lock-state
+  (if proc-win?
+      (lambda (path)
+        (let ((open (proc-win-create-file)) (err (proc-win-last-error)))
+          (if (not (and open err))
+              'unknown
+              (let ((h (win32-with-wstr path
+                         (lambda (w)
+                           (open w proc-win-GENERIC-READ
+                                 (bitwise-ior proc-win-FILE-SHARE-READ proc-win-FILE-SHARE-WRITE
+                                              proc-win-FILE-SHARE-DELETE)
+                                 0 proc-win-OPEN-EXISTING proc-win-FILE-ATTRIBUTE-NORMAL 0)))))
+                (if (proc-win-handle-ok? h)
+                    (begin ((proc-win-close-handle) h) 'free)
+                    (let ((e (err)))
+                      (cond ((= e proc-win-ERROR-SHARING-VIOLATION) 'held)
+                            ((memv e (list proc-win-ERROR-FILE-NOT-FOUND proc-win-ERROR-PATH-NOT-FOUND))
+                             'missing)
+                            (else 'unknown))))))))
+      (lambda (path)
+        (cond
+          ((not (file-exists? path)) 'missing)
+          ((not (and proc-c-flock proc-c-open)) 'unknown)
+          (else
+           (let ((fd (proc-c-open path (proc-open-flags 'read) 0)))
+             (if (< fd 0)
+                 (if (file-exists? path) 'unknown 'missing)
+                 (let-values (((r err) (io-call+errno (proc-c-flock fd (fxior proc-LOCK-SH proc-LOCK-NB)))))
+                   (proc-c-close fd)
+                   (cond ((= r 0) 'free)
+                         ((= err proc-EAGAIN) 'held)   ; EWOULDBLOCK is EAGAIN on both
+                         (else 'unknown))))))))))
 
 (define (proc-handle-destroy! pid sig)
   (cond (proc-win? (proc-win-pid-terminate! pid))

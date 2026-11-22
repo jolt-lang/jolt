@@ -46,6 +46,20 @@
     (spawn-load!)
     (proc-pid-alive? pid)))
 
+;; A liveness lock (process.ss proc-lock-hold!): held while this process lives,
+;; dropped by the OS when it dies however it dies. -> a token, or #f.
+(define (jolt-lock-hold! path)
+  (guard (e (#t #f))
+    (spawn-load!)
+    (proc-lock-hold! path)))
+(define (jolt-lock-release! token)
+  (guard (e (#t #f)) (proc-lock-release! token)))
+;; -> 'held, 'free, 'missing or 'unknown.
+(define (jolt-lock-state path)
+  (guard (e (#t 'unknown))
+    (spawn-load!)
+    (proc-lock-state path)))
+
 ;; Where a spawn of PROG would find it: `command -v`, without the shell. PATHEXT
 ;; on Windows. -> the file, or #f.
 (define (jolt-which prog)
