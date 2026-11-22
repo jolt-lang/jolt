@@ -1134,11 +1134,11 @@
 ;; The basic attribute NM of FP, read through a symbolic link (FOLLOW?) or of
 ;; the link itself. A link read as itself is a link: not a directory, not a
 ;; regular file, sized by its target string, with its own times and file key.
-(define (nio-attr-value fp nm follow?)
+(define (nio-attr-value fp nm follow? . shown)
   (let ((link? (and (not follow?) (nio-is-symlink? fp))))
     (cond
       ((member nm '("lastModifiedTime" "lastAccessTime" "creationTime"))
-       (nio-time-attr fp nm (not link?)))
+       (apply nio-time-attr fp nm (not link?) shown))
       ((string=? nm "size")
        (if link?
            (bytevector-length (string->utf8 (or (nio-readlink fp) "")))
@@ -1180,7 +1180,7 @@
         ;; the string form ("view:a,b" / "*" / "a") -> a map of just those attributes
         (let* ((attr-part (nio-attr-name w))
                (names (if (string=? attr-part "*") nio-basic-attr-names (nio-split-commas attr-part))))
-          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-attr-value fp nm follow?))) empty-pmap names)))))
+          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-attr-value fp nm follow? (nio-shown path)))) empty-pmap names)))))
 
 ;; PosixFilePermissions <-> "rwxr-xr-x" strings, and chmod-based set.
 (define posix-order '("OWNER_READ" "OWNER_WRITE" "OWNER_EXECUTE"
@@ -1856,10 +1856,20 @@
 ;; The same, never #f: a host or filesystem with no birth time answers the mtime,
 ;; which is the JDK's fallback too, and a host with no stat layout the
 ;; millisecond mtime Chez reads.
-(define (nio-time-attr fp nm follow?)
+;; A caller that passes SHOWN is one the JDK answers with a single stat
+;; (getLastModifiedTime, getAttribute, readAttributes to a map): when the stat
+;; fails because the path is gone, deleted after the caller's existence check,
+;; that is NoSuchFileException named SHOWN, never an epoch-0 time. A
+;; BasicFileAttributes getter passes none, because the JDK's attributes object
+;; is a snapshot and never throws.
+(define (nio-time-attr fp nm follow? . shown)
   (or (nio-read-time fp nm follow?)
       (and (not (string=? nm "lastModifiedTime")) (nio-read-time fp "lastModifiedTime" follow?))
-      (make-file-time (file-mtime-millis fp))))
+      (begin
+        (when (and (pair? shown)
+                   (not (or (file-exists? fp) (and (not follow?) (nio-is-symlink? fp)))))
+          (nio-no-such-file (car shown)))
+        (make-file-time (file-mtime-millis fp)))))
 
 ;; Setting them. utimensat(2) with UTIME_OMIT in the mtime slot moves the access
 ;; time alone; its constants are per-OS (measured with cc/gcc as above). The
@@ -1889,12 +1899,12 @@
         (cons "getLastModifiedTime" (lambda (p . opts)
                                       (let ((fp (nfp p)) (follow? (not (nio-opts-nofollow? opts))))
                                         (nio-attrs-require-exists! fp follow? (nio-shown p))
-                                        (nio-attr-value fp "lastModifiedTime" follow?))))
+                                        (nio-attr-value fp "lastModifiedTime" follow? (nio-shown p)))))
         (cons "getAttribute" (lambda (path attr . opts)
                                (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr)))
                                      (follow? (not (nio-opts-nofollow? opts))))
                                  (nio-attrs-require-exists! fp follow? (nio-shown path))
-                                 (nio-attr-value fp nm follow?)))))))
+                                 (nio-attr-value fp nm follow? (nio-shown path))))))))
   (set! files-accum-chunks (cons files-nofollow-time files-accum-chunks)))
 
 ;; java.nio.channels.FileChannel/open — babashka.fs/touch uses it only to create

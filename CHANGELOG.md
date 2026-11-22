@@ -63,6 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the JDK does, so a target that cannot be opened throws `Cannot run program
   "x": path (No such file or directory)` from `start()` instead of starting a
   child that exits 1.
+- `Files/getLastModifiedTime`, `Files/getAttribute`, `Files/readAttributes` and
+  `babashka.fs/last-modified-time` of a file deleted while they ran answered
+  epoch 0 about 1 time in 100. They checked that the path existed, then
+  statted it, and a failed stat fell back to a millisecond mtime that is 0 for
+  an absent file. A failed stat of a path that is gone now throws
+  `NoSuchFileException` naming the path, as the JDK's single stat does.
+  `File.lastModified` still answers 0 for a missing file, as on the JVM, and a
+  `BasicFileAttributes` getter still never throws.
 - `jolt build`'s parallel compile workers and the run-path AOT cache's
   background worker start without a shell, so both now run on Windows too. The
   build workers used to need a `--build-worker-probe` round trip through `sh`
