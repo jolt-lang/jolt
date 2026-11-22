@@ -133,6 +133,10 @@
 (define (sa-gc-install-after-collect! maintain observe)
   #f)
 
+;; (sa-gc-set-collect-guard! guard): no collection hook to run it from (above),
+;; and Gambit's collector starts no threads of its own; nothing to do.
+(define (sa-gc-set-collect-guard! guard) (void))
+
 ;; (sa-gc-install-stall-watch! seconds on-stall) -> boolean
 ;; Permitted degradation: Gambit's collector is not a rendezvous of active
 ;; threads that a foreign call can hold off, and it exposes no hook on the
@@ -728,6 +732,8 @@
 (define-syntax sa-ufx<? (syntax-rules () ((_ a b) (fx<? a b))))
 (define-syntax sa-ufx>=? (syntax-rules () ((_ a b) (fx>=? a b))))
 (define-syntax sa-ufx=? (syntax-rules () ((_ a b) (fx=? a b))))
+(define-syntax sa-ufxand (syntax-rules () ((_ a b) (fxand a b))))
+(define-syntax sa-ufxxor (syntax-rules () ((_ a b) (fxxor a b))))
 (define-syntax sa-uvector-ref (syntax-rules () ((_ v i) (vector-ref v i))))
 (define-syntax sa-uvector-set! (syntax-rules () ((_ v i x) (vector-set! v i x))))
 (define-syntax sa-ustring-ref (syntax-rules () ((_ s i) (string-ref s i))))

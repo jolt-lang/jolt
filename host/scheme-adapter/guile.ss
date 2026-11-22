@@ -206,6 +206,7 @@
 ;; tier: capability-unchecked
 ;; ---------------------------------------------------------------------------
 ;;   sa-ufx+ sa-ufx- sa-ufx<? sa-ufx>=? sa-ufx=?  UNIMPLEMENTED  Guile: the
+;;   sa-ufxand sa-ufxxor
 ;;                                        checked (rnrs arithmetic fixnums) ops are
 ;;                                        the permitted degradation; a tuned port may
 ;;                                        expand to the unchecked variants.

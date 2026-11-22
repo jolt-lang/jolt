@@ -79,7 +79,8 @@
 (defn runtime-version
   "The runtime identity images are pinned to. `read-image` refuses a file whose
   recorded version differs from this. Architecture is deliberately not part of
-  it."
+  it. It names the Chez release only, because an image holds data, so it is not
+  a key for a cache of compiled code: use `jolt.host/build-id` for that."
   []
   (host/image-runtime-version))
 

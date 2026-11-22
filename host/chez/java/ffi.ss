@@ -289,30 +289,16 @@
 ;; deliberately absent — a bare name already reaches them, and the versioned
 ;; OpenSSL builds are never there.
 ;;
-;; The executable is asked of Windows itself: (command-line)'s first element is
-;; argv[0] as TYPED — plain "jolt" when jolt.exe is found on PATH, which has no
-;; directory in it — and under `scheme --script` it is the script. Either way the
-;; folder holding jolt.exe went unsearched, and a DLL copied beside it was not
-;; found by the one lookup that could find it (jolt-lang/jolt#1127).
-(define-win32-proc ffi-get-module-file-name-w
-  "kernel32.dll" "GetModuleFileNameW" (void* u8* unsigned-32) unsigned-32)
-
-(define (ffi-win32-exe-path)
-  (let ((f (ffi-get-module-file-name-w)))
-    (and f
-         (guard (e (#t #f))
-           (let* ((cap 32768)
-                  (bv (make-bytevector (* 2 cap) 0))
-                  (n (f 0 bv cap)))
-             (and (> n 0) (< n cap)
-                  (let ((out (make-bytevector (* 2 n))))
-                    (bytevector-copy! bv 0 out 0 (* 2 n))
-                    (utf16->string out (endianness little)))))))))
-
+;; The executable is asked of Windows itself (io.ss win32-exe-path): (command-line)'s
+;; first element is argv[0] as TYPED — plain "jolt" when jolt.exe is found on
+;; PATH, which has no directory in it — and under `scheme --script` it is the
+;; script. Either way the folder holding jolt.exe went unsearched, and a DLL
+;; copied beside it was not found by the one lookup that could find it
+;; (jolt-lang/jolt#1127).
 (define (ffi-exe-dir)
   (guard (e (#t #f))
     (let* ((argv (command-line))
-           (exe (or (ffi-win32-exe-path) (and (pair? argv) (car argv)))))
+           (exe (or (win32-exe-path) (and (pair? argv) (car argv)))))
       (and (string? exe)
            (let loop ((i (- (string-length exe) 1)))
              (cond ((< i 0) #f)
@@ -682,7 +668,29 @@
 ;; Exact scalar widths use native byte order. Signed and unsigned names at one
 ;; width expose the same stored bits; wire byte order remains an explicit codec
 ;; or htons/ntohs concern.
+;;
+;; A type keyword is resolved by name once and remembered by identity after:
+;; the name chain below is a few dozen string compares by the time it reaches
+;; :double, and it runs on every read-array, write-array and scalar access. The
+;; memo is an immutable alist, replaced whole under a mutex and read without one
+;; (a reader sees the old list or the new, both complete). Keywords are interned,
+;; so the type names a program uses are a handful of objects; the cap keeps a
+;; non-interned keyword, or a program minting type keywords, from growing it.
+(define ffi-type-memo '())
+(define ffi-type-memo-count 0)
+(define ffi-type-memo-mu (make-mutex))
 (define (ffi-type->chez kw)
+  (let ((hit (and (keyword-t? kw) (assq kw ffi-type-memo))))
+    (if hit
+        (cdr hit)
+        (let ((ct (ffi-type-name->chez kw)))
+          (when (and (keyword-t? kw) (fx<? ffi-type-memo-count 64))
+            (jolt-with-mutex ffi-type-memo-mu
+              (unless (assq kw ffi-type-memo)
+                (set! ffi-type-memo (cons (cons kw ct) ffi-type-memo))
+                (set! ffi-type-memo-count (fx+ ffi-type-memo-count 1)))))
+          ct))))
+(define (ffi-type-name->chez kw)
   (let ((n (if (keyword-t? kw) (keyword-t-name kw) (ffi-str-arg "foreign type" kw))))
     (cond
       ((string=? n "int") 'int)
@@ -1690,14 +1698,26 @@
     (vector-set! ffi-size-mutexes i (make-mutex))
     (loop (fx+ i 1))))
 
+;; An address is a fixnum on every 64-bit host this file runs on, so the shard
+;; index stays in fixnum arithmetic; a non-fixnum (a bignum handed in by
+;; mistake) still lands in a shard through the generic path.
 (define (ffi-size-shard-index a)
-  (bitwise-and (bitwise-arithmetic-shift-right a 4) (- ffi-size-shard-count 1)))
+  (if (fixnum? a)
+      (fxand (fxsrl a 4) (fx- ffi-size-shard-count 1))
+      (bitwise-and (bitwise-arithmetic-shift-right a 4) (- ffi-size-shard-count 1))))
 
+;; The shard lock is taken by hand rather than through jolt-with-mutex: the body
+;; is one hashtable operation on a fixnum key, which cannot raise or park, so
+;; the dynamic-wind the macro builds bought nothing and cost most of the
+;; operation. Every arena allocation pays this once and every free once more.
 (define (jolt-ffi-remember-size! p n)
   (let* ((a (jnum->exact p))
-         (i (ffi-size-shard-index a)))
-    (jolt-with-mutex (vector-ref ffi-size-mutexes i)
-      (hashtable-set! (vector-ref ffi-size-tables i) a (jnum->exact n)))
+         (n (jnum->exact n))
+         (i (ffi-size-shard-index a))
+         (mu (vector-ref ffi-size-mutexes i)))
+    (jolt-lock! mu)
+    (hashtable-set! (vector-ref ffi-size-tables i) a n)
+    (jolt-unlock! mu)
     p))
 
 (define (jolt-ffi-recorded-size p)
@@ -1705,32 +1725,55 @@
          (i (ffi-size-shard-index a)))
     (hashtable-ref (vector-ref ffi-size-tables i) a 0)))
 
+(define (ffi-forget-size! p)
+  (let* ((a (jnum->exact p))
+         (i (ffi-size-shard-index a))
+         (mu (vector-ref ffi-size-mutexes i)))
+    (jolt-lock! mu)
+    (hashtable-delete! (vector-ref ffi-size-tables i) a)
+    (jolt-unlock! mu)))
+
 ;; Batch, because an arena close forgets its whole group at once and a per-entry
 ;; crossing of the jolt/host boundary is the expensive part, not the delete.
+;; ffi/free and the one-block arena close forget exactly one address and use the
+;; single entry: wrapping it in a vector only to walk it back out was most of
+;; their cost. Two entries rather than one that guesses from the argument's
+;; shape, so a bad pointer (a string, say) reaches jnum->exact as itself.
+(define (jolt-ffi-forget-size! p)
+  (ffi-forget-size! p)
+  jolt-nil)
 (define (jolt-ffi-forget-sizes! ps)
-  (for-each
-    (lambda (p)
-      (let* ((a (jnum->exact p))
-             (i (ffi-size-shard-index a)))
-        (jolt-with-mutex (vector-ref ffi-size-mutexes i)
-          (hashtable-delete! (vector-ref ffi-size-tables i) a))))
-    (seq->list (jolt-seq ps)))
+  (for-each ffi-forget-size! (seq->list (jolt-seq ps)))
   jolt-nil)
 
+;; ffi-auto-live counts the state cells registered with the guardian and not yet
+;; handed back. Every arena creation drains, so the common program that never
+;; makes an automatic arena must not pay the guardian's lock and an empty vector
+;; per creation: at zero there is nothing the guardian could return. Read
+;; without the lock: a stale zero only defers a release to the next drain, and
+;; registration bumps the count before the guardian holds the cell, so a nonzero
+;; count is never missed for a cell the guardian could already return.
 (define ffi-auto-mu (make-mutex))
 (define ffi-auto-guardian (make-guardian))
+(define ffi-auto-live 0)
+(define ffi-auto-none (make-pvec (vector)))
 (define (jolt-ffi-auto-guard! token)
-  (jolt-with-mutex ffi-auto-mu (ffi-auto-guardian token))
+  (jolt-with-mutex ffi-auto-mu
+    (set! ffi-auto-live (fx+ ffi-auto-live 1))
+    (ffi-auto-guardian token))
   token)
 ;; Every state cell the collector has reclaimed since the last drain, as a jolt
 ;; vector. Resurrected by the guardian, so reading each one is safe.
 (define (jolt-ffi-auto-reclaimed)
-  (make-pvec
-   (list->vector
-    (jolt-with-mutex ffi-auto-mu
-      (let loop ((acc '()))
-        (let ((t (ffi-auto-guardian)))
-          (if t (loop (cons t acc)) acc)))))))
+  (if (fx=? ffi-auto-live 0)
+      ffi-auto-none
+      (let ((got (jolt-with-mutex ffi-auto-mu
+                   (let loop ((acc '()) (k 0))
+                     (let ((t (ffi-auto-guardian)))
+                       (if t
+                           (loop (cons t acc) (fx+ k 1))
+                           (begin (set! ffi-auto-live (fx- ffi-auto-live k)) acc)))))))
+        (if (null? got) ffi-auto-none (make-pvec (list->vector got))))))
 
 ;; --- expose under jolt.ffi ---------------------------------------------------
 (def-var! "jolt.ffi" "free-callable" ffi-free-callable)
@@ -1783,6 +1826,7 @@
 ;; that also forgets the pointer's recorded size, the same way __read/__write sit
 ;; under the layout-aware read/write.
 (def-var! "jolt.ffi" "__remember-size!" jolt-ffi-remember-size!)
+(def-var! "jolt.ffi" "__forget-size!" jolt-ffi-forget-size!)
 (def-var! "jolt.ffi" "__forget-sizes!" jolt-ffi-forget-sizes!)
 (def-var! "jolt.ffi" "__size" jolt-ffi-recorded-size)
 (def-var! "jolt.ffi" "__free" ffi-free)

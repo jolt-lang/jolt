@@ -12,7 +12,7 @@
 ;;   1. tagged-table / ref-put! / ref-get over a Chez mutable tagged-table type
 ;;      (a string-keyed hashtable wrapped in an `htable` record), def-var!'d into
 ;;      the jolt.host ns. The sorted tier (25-sorted.clj) mints its wrapper with
-;;      these — a red-black tree + :ops table travel inside the htable.
+;;      these — a B+tree + :ops table travel inside the htable.
 ;;   2. a sorted-coll arm on the collection dispatchers, set!-extended the same
 ;;      way records.ss extends them for jrec: each op routes through the value's
 ;;      own :ops table (the dispatch pattern). first/rest/
@@ -179,6 +179,8 @@
 (define kw-op-assoc (keyword #f "assoc"))
 (define kw-op-dissoc (keyword #f "dissoc"))
 (define kw-op-conj (keyword #f "conj"))
+(define kw-op-conj-kvs (keyword #f "conj-kvs"))
+(define kw-op-assoc-all (keyword #f "assoc-all"))
 (define kw-op-disj (keyword #f "disj"))
 ;; the one-element ops: conj/assoc/dissoc/disj of a single item, which is every
 ;; call into/reduce makes, go straight to the per-item fn rather than through a
@@ -199,15 +201,29 @@
     ((sc op-kw a) (jolt-invoke2 (sc-op sc op-kw) sc a))
     ((sc op-kw a b) (jolt-invoke3 (sc-op sc op-kw) sc a b))))
 
-;; --- the red-black tree --------------------------------------------------------
-;; Rich Hickey's PersistentTreeMap algorithm (via cljs.core's port: tree-map-add,
-;; balance-left/right, tree-map-append, balance-*-del), which 25-sorted.clj
-;; carries the semantics around. A node is a 5-slot Scheme vector
-;; #(red? key val left right), red? a boolean and an absent child jolt-nil. It
-;; lived in 25-sorted.clj as a jolt vector [:red k v l r], where every field read
-;; was a generic nth and every node a persistent vector: ~200ns a tree level
-;; against the JVM's ~25ns, and a sorted-set build 4.5x the JVM's. Here a field
-;; read is a vector-ref.
+;; --- the B+tree ------------------------------------------------------------------
+;; A persistent B+tree, path-copied like the red-black tree it replaced (Rich
+;; Hickey's PersistentTreeMap, via cljs). A node is one Scheme vector:
+;;
+;;   leaf   #(#t  k0 v0  k1 v1 ...)        entries in comparator order
+;;   inner  #(#f  m0 c0  m1 c1 ...)        child Ci and Mi, the largest key below Ci
+;;
+;; so a node of N entries is 2N+1 slots, a field read is a vector-ref, and an
+;; update copies one contiguous vector per level. With up to 16 entries a leaf
+;; and 32 an inner node, a lookup touches ~log32(n) nodes where the red-black tree
+;; touched ~log2(n) separate 5-slot vectors, and a walk reads leaves front to
+;; back. Every
+;; comparison is (cmp k node-key), as the reference makes it, but the NUMBER of
+;; calls is a binary search's per node, not one per red-black level: a counting
+;; comparator sees a different total than on the JVM (known-divergences).
+;;
+;; Occupancy: every node holds at most its kind's capacity (bt-cap) and, off the
+;; two outer spines, at least half of it (bt-floor). A node on the leftmost or rightmost spine may hold
+;; fewer, because an append past the last key (or before the first) splits a full
+;; node into a full one and a one-entry one, rather than two half-full ones; an
+;; ascending (into (sorted-set) (range n)) then fills every node to capacity. The
+;; root is a non-empty leaf or an inner node of at least two children; the empty
+;; tree is jolt-nil. bt-check asserts all of it.
 ;;
 ;; Not image surface: an image writes a sorted collection out as its entries and
 ;; rebuilds it (state-image.ss walk-sorted), so the node layout never travels.
@@ -215,294 +231,723 @@
 ;; CMP is the collection's comparator as 25-sorted.clj holds it, or jolt-nil for
 ;; natural order, which is Util.compare (jolt-compare) and not the clojure.core
 ;; var: the JVM's PersistentTreeMap orders by RT.DEFAULT_COMPARATOR, which a
-;; rebinding of #'compare does not reach. Every comparison is (cmp k node-key),
-;; once per level, as the reference makes it; the corpus pins the counts.
-;;
-;; The node helpers are macros, not procedures: a top-level procedure is a call
-;; Chez cannot inline across, and an insert makes a dozen of these per level.
-;; Only this file uses them as macros; sc-nd-key and friends below are the
-;; procedures the other files call.
-(define-syntax rb-red?
-  (syntax-rules () ((_ n) (let ((x n)) (and (not (jolt-nil? x)) (vector-ref x 0))))))
-(define-syntax rb-black?
-  (syntax-rules () ((_ n) (let ((x n)) (and (not (jolt-nil? x)) (not (vector-ref x 0)))))))
-(define-syntax rb-red (syntax-rules () ((_ k v l r) (vector #t k v l r))))
-(define-syntax rb-black (syntax-rules () ((_ k v l r) (vector #f k v l r))))
-(define-syntax rb-key (syntax-rules () ((_ n) (vector-ref n 1))))
-(define-syntax rb-val (syntax-rules () ((_ n) (vector-ref n 2))))
-(define-syntax rb-left (syntax-rules () ((_ n) (vector-ref n 3))))
-(define-syntax rb-right (syntax-rules () ((_ n) (vector-ref n 4))))
-(define (sc-nd-key n) (rb-key n))
-(define (sc-nd-val n) (rb-val n))
-(define (sc-nd-left n) (rb-left n))
-(define (sc-nd-right n) (rb-right n))
-;; BlackNode.blacken is the node itself; RedNode.blacken a black copy. redden is
-;; only ever applied to a known-black node.
-(define (rb-blacken n)
-  (if (rb-red? n) (rb-black (rb-key n) (rb-val n) (rb-left n) (rb-right n)) n))
-(define (rb-redden n) (rb-red (rb-key n) (rb-val n) (rb-left n) (rb-right n)))
+;; rebinding of #'compare does not reach. A comparator may answer any number.
+(define bt-leaf-max 16)
+(define bt-inner-max 32)
+;; a node's capacity, and the floor it is held to off the outer spines
+(define-syntax bt-cap (syntax-rules () ((_ n) (if (bt-leaf? n) bt-leaf-max bt-inner-max))))
+(define-syntax bt-floor (syntax-rules () ((_ n) (fxsrl (bt-cap n) 1))))
+(define-syntax bt-leaf? (syntax-rules () ((_ n) (vector-ref n 0))))
+(define-syntax bt-size (syntax-rules () ((_ n) (fxsrl (vector-length n) 1))))
+(define-syntax bt-key (syntax-rules () ((_ n i) (vector-ref n (fx+ (fx+ i i) 1)))))
+(define-syntax bt-val (syntax-rules () ((_ n i) (vector-ref n (fx+ (fx+ i i) 2)))))
 ;; natural order on two fixnums answers in line; anything else goes through
 ;; Util.compare or the comparator
-(define (rb-compare-slow cmp a b)
+(define (bt-compare-slow cmp a b)
   (if (jolt-nil? cmp) (jolt-compare a b) (jolt-invoke cmp a b)))
-(define-syntax rb-compare
+(define-syntax bt-compare
   (syntax-rules ()
     ((_ cmp a b)
      (let ((c cmp) (x a) (y b))
        (if (and (jolt-nil? c) (fixnum? x) (fixnum? y))
            (cond ((fx<? x y) -1) ((fx=? x y) 0) (else 1))
-           (rb-compare-slow c x y))))))
+           (bt-compare-slow c x y))))))
 
-;; insert balancing: RedNode/BlackNode .balanceLeft/.balanceRight
-(define (rb-ins-balance-left ins p)
-  (if (rb-red? ins)
-      (let ((l (rb-left ins)) (r (rb-right ins)))
-        (cond
-          ((rb-red? l) (rb-red (rb-key ins) (rb-val ins)
-                               (rb-blacken l)
-                               (rb-black (rb-key p) (rb-val p) r (rb-right p))))
-          ((rb-red? r) (rb-red (rb-key r) (rb-val r)
-                               (rb-black (rb-key ins) (rb-val ins) l (rb-left r))
-                               (rb-black (rb-key p) (rb-val p) (rb-right r) (rb-right p))))
-          (else (rb-black (rb-key p) (rb-val p) ins (rb-right p)))))
-      (rb-black (rb-key p) (rb-val p) ins (rb-right p))))
-(define (rb-ins-balance-right ins p)
-  (if (rb-red? ins)
-      (let ((l (rb-left ins)) (r (rb-right ins)))
-        (cond
-          ((rb-red? r) (rb-red (rb-key ins) (rb-val ins)
-                               (rb-black (rb-key p) (rb-val p) (rb-left p) l)
-                               (rb-blacken r)))
-          ((rb-red? l) (rb-red (rb-key l) (rb-val l)
-                               (rb-black (rb-key p) (rb-val p) (rb-left p) (rb-left l))
-                               (rb-black (rb-key ins) (rb-val ins) (rb-right l) r)))
-          (else (rb-black (rb-key p) (rb-val p) (rb-left p) ins))))
-      (rb-black (rb-key p) (rb-val p) (rb-left p) ins)))
-(define (rb-add-left p ins)
-  (if (rb-red? p)
-      (rb-red (rb-key p) (rb-val p) ins (rb-right p))
-      (rb-ins-balance-left ins p)))
-(define (rb-add-right p ins)
-  (if (rb-red? p)
-      (rb-red (rb-key p) (rb-val p) (rb-left p) ins)
-      (rb-ins-balance-right ins p)))
+;; Node copies are the target's block moves into a fresh vector (sa-subvector,
+;; sa-vector-append, sa-vector-copy; collections.ss says why): no zero fill and no
+;; write barrier per slot, where a slot loop at the runtime's optimize level pays
+;; a check and a barrier each. Never a bare vector-copy: the vendored irregex
+;; rebinds that name at top level.
+(define (bt-alloc leaf? n)
+  (let ((v (make-vector (fx+ (fx+ n n) 1)))) (vector-set! v 0 leaf?) v))
+(define (bt-max-key n) (bt-key n (fx- (bt-size n) 1)))
+;; N with entry I replaced
+(define (bt-with n i k v)
+  (let ((r (sa-vector-copy n)))
+    (vector-set! r (fx+ (fx+ i i) 1) k)
+    (vector-set! r (fx+ (fx+ i i) 2) v)
+    r))
+(define (bt-insert-at n i k v)
+  (let ((p (fx+ (fx+ i i) 1)))
+    (sa-vector-append (sa-subvector n 0 p) (vector k v) (sa-subvector n p (vector-length n)))))
+(define (bt-remove-at n i)
+  (let ((p (fx+ (fx+ i i) 1)))
+    (sa-vector-append (sa-subvector n 0 p) (sa-subvector n (fx+ p 2) (vector-length n)))))
+;; entries [S, E) of N as a node of N's kind
+(define (bt-slice n s e)
+  (sa-vector-append (vector (bt-leaf? n)) (sa-subvector n (fx+ (fx+ s s) 1) (fx+ (fx+ e e) 1))))
+(define (bt-concat a b)
+  (sa-vector-append a (sa-subvector b 1 (vector-length b))))
 
-;; Insert in ONE walk: the new subtree, or #f when k is present, with that node
-;; left in FOUND (PersistentTreeMap.add answers null and fills its box the same
-;; way).
-(define (rb-ins cmp t k v found)
-  (if (jolt-nil? t)
-      (rb-red k v jolt-nil jolt-nil)
-      (let ((c (rb-compare cmp k (rb-key t))))
-        (cond
-          ((zero? c) (set-box! found t) #f)
-          ((negative? c)
-           (let ((ins (rb-ins cmp (rb-left t) k v found)))
-             (and ins (rb-add-left t ins))))
-          (else
-           (let ((ins (rb-ins cmp (rb-right t) k v found)))
-             (and ins (rb-add-right t ins))))))))
+;; Binary search of N for K: 2i+1 when entry I's key compares equal, else 2i for
+;; the first entry whose key is greater (I = size when there is none). Natural
+;; order on a fixnum K compares fixnum keys in line, as rb-compare did.
+(define (bt-search-fx n k)
+  (let loop ((lo 0) (hi (bt-size n)))
+    (if (fx>=? lo hi)
+        (fx+ lo lo)
+        (let* ((m (fxsrl (fx+ lo hi) 1)) (x (bt-key n m)))
+          (if (fixnum? x)
+              (cond ((fx>? k x) (loop (fx+ m 1) hi))
+                    ((fx<? k x) (loop lo m))
+                    (else (fx+ (fx+ m m) 1)))
+              (let ((c (jolt-compare k x)))
+                (cond ((positive? c) (loop (fx+ m 1) hi))
+                      ((negative? c) (loop lo m))
+                      (else (fx+ (fx+ m m) 1)))))))))
+(define-syntax define-bt-search
+  (syntax-rules ()
+    ((_ name (cmp n k) compare-expr)
+     (define (name cmp n k)
+       (let loop ((lo 0) (hi (bt-size n)))
+         (if (fx>=? lo hi)
+             (fx+ lo lo)
+             (let* ((m (fxsrl (fx+ lo hi) 1)) (x (bt-key n m)) (c (compare-expr k x)))
+               (cond ((positive? c) (loop (fx+ m 1) hi))
+                     ((negative? c) (loop lo m))
+                     (else (fx+ (fx+ m m) 1))))))))))
+;; natural order on any other key, and a collection's own comparator
+(define-bt-search bt-search-natural (cmp n k) jolt-compare)
+(define-bt-search bt-search-cmp (cmp n k) (lambda (a b) (jolt-invoke2 cmp a b)))
+;; Comparators that order two fixnums as their numeric order (-1 / 0 / 1), the
+;; way Util.compare does: clojure.core/compare, java.util.TreeMap's natural
+;; order. Under one of these a fixnum K is compared with a fixnum key in line,
+;; and with anything else through the comparator, so its answers are unchanged.
+(define bt-fixnum-ordered '())
+(define (bt-fixnum-ordered! cmp)
+  (unless (memq cmp bt-fixnum-ordered) (set! bt-fixnum-ordered (cons cmp bt-fixnum-ordered))))
+;; clojure.core/compare is jolt-compare (converters.ss def-var!s it): subseq /
+;; rsubseq hand it to the tree as a natural-order coll's comparator
+(bt-fixnum-ordered! jolt-compare)
+(define-bt-search bt-search-fxc (cmp n k)
+  (lambda (a b) (if (fixnum? b) (cond ((fx<? a b) -1) ((fx=? a b) 0) (else 1)) (jolt-invoke2 cmp a b))))
+(define-syntax bt-search
+  (syntax-rules ()
+    ((_ cmp n k)
+     (let ((c* cmp) (k* k))
+       (cond ((not (jolt-nil? c*))
+              (if (and (fixnum? k*) (memq c* bt-fixnum-ordered))
+                  (bt-search-fxc c* n k*)
+                  (bt-search-cmp c* n k*)))
+             ((fixnum? k*) (bt-search-fx n k*))
+             (else (bt-search-natural c* n k*)))))))
+(define-syntax bt-hit? (syntax-rules () ((_ r) (fx=? (fxand r 1) 1))))
 
-;; Replace the value at a present key, keeping the tree's shape and the node's
-;; own (first-inserted) key, as PersistentTreeMap.replace does.
-(define (rb-replace cmp t k v)
-  (let ((c (rb-compare cmp k (rb-key t))))
-    (vector (vector-ref t 0) (rb-key t)
-            (if (zero? c) v (rb-val t))
-            (if (negative? c) (rb-replace cmp (rb-left t) k v) (rb-left t))
-            (if (positive? c) (rb-replace cmp (rb-right t) k v) (rb-right t)))))
+;; the last leaf below N
+(define (bt-last-leaf n)
+  (if (bt-leaf? n) n (bt-last-leaf (bt-val n (fx- (bt-size n) 1)))))
+(define (bt-first-leaf n)
+  (if (bt-leaf? n) n (bt-first-leaf (bt-val n 0))))
 
-(define (rb-lookup cmp t k)
-  (let loop ((t t))
-    (if (jolt-nil? t)
-        jolt-nil
-        (let ((c (rb-compare cmp k (rb-key t))))
-          (cond ((zero? c) t)
-                ((negative? c) (loop (rb-left t)))
-                (else (loop (rb-right t))))))))
+;; Find K in T: FOUND with L bound to its leaf and I to its index there, else
+;; MISSING. Expanded in place at each lookup so nothing is returned through a
+;; call. A key equal to an inner node's Mi IS Ci's last key, so the walk drops
+;; down Ci's right edge without comparing.
+(define-syntax bt-locate
+  (syntax-rules ()
+    ((_ cmp t k (l i) found missing)
+     (let ((c* cmp) (k* k) (t* t))
+       (if (jolt-nil? t*)
+           missing
+           (let loop ((n t*))
+             (let* ((r (bt-search c* n k*)) (j (fxsrl r 1)))
+               (cond ((bt-leaf? n) (if (bt-hit? r) (let ((l n) (i j)) found) missing))
+                     ((bt-hit? r) (let* ((l (bt-last-leaf (bt-val n j))) (i (fx- (bt-size l) 1))) found))
+                     ((fx=? j (bt-size n)) missing)
+                     (else (loop (bt-val n j)))))))))))
 
-;; delete balancing: cljs's standalone balance-left/-right and *-del
-(define (rb-balance-left k v ins right)
-  (if (rb-red? ins)
-      (let ((il (rb-left ins)) (ir (rb-right ins)))
-        (cond
-          ((rb-red? il) (rb-red (rb-key ins) (rb-val ins) (rb-blacken il) (rb-black k v ir right)))
-          ((rb-red? ir) (rb-red (rb-key ir) (rb-val ir)
-                                (rb-black (rb-key ins) (rb-val ins) il (rb-left ir))
-                                (rb-black k v (rb-right ir) right)))
-          (else (rb-black k v ins right))))
-      (rb-black k v ins right)))
-(define (rb-balance-right k v left ins)
-  (if (rb-red? ins)
-      (let ((il (rb-left ins)) (ir (rb-right ins)))
-        (cond
-          ((rb-red? ir) (rb-red (rb-key ins) (rb-val ins) (rb-black k v left il) (rb-blacken ir)))
-          ((rb-red? il) (rb-red (rb-key il) (rb-val il)
-                                (rb-black k v left (rb-left il))
-                                (rb-black (rb-key ins) (rb-val ins) (rb-right il) ir)))
-          (else (rb-black k v left ins))))
-      (rb-black k v left ins)))
-(define (rb-invariant-violation)
-  (jolt-throw (jolt-ex-info "red-black tree invariant violation" (jolt-hash-map))))
-(define (rb-balance-left-del k v del right)
-  (cond
-    ((rb-red? del) (rb-red k v (rb-blacken del) right))
-    ((rb-black? right) (rb-balance-right k v del (rb-redden right)))
-    ((and (rb-red? right) (rb-black? (rb-left right)))
-     (let ((rl (rb-left right)))
-       (rb-red (rb-key rl) (rb-val rl)
-               (rb-black k v del (rb-left rl))
-               (rb-balance-right (rb-key right) (rb-val right) (rb-right rl)
-                                 (rb-redden (rb-right right))))))
-    (else (rb-invariant-violation))))
-(define (rb-balance-right-del k v left del)
-  (cond
-    ((rb-red? del) (rb-red k v left (rb-blacken del)))
-    ((rb-black? left) (rb-balance-left k v (rb-redden left) del))
-    ((and (rb-red? left) (rb-black? (rb-right left)))
-     (let ((lr (rb-right left)))
-       (rb-red (rb-key lr) (rb-val lr)
-               (rb-balance-left (rb-key left) (rb-val left) (rb-redden (rb-left left))
-                                (rb-left lr))
-               (rb-black k v (rb-right lr) del))))
-    (else (rb-invariant-violation))))
-;; merge the two subtrees of a removed node
-(define (rb-append left right)
-  (cond
-    ((jolt-nil? left) right)
-    ((jolt-nil? right) left)
-    ((rb-red? left)
-     (if (rb-red? right)
-         (let ((app (rb-append (rb-right left) (rb-left right))))
-           (if (rb-red? app)
-               (rb-red (rb-key app) (rb-val app)
-                       (rb-red (rb-key left) (rb-val left) (rb-left left) (rb-left app))
-                       (rb-red (rb-key right) (rb-val right) (rb-right app) (rb-right right)))
-               (rb-red (rb-key left) (rb-val left) (rb-left left)
-                       (rb-red (rb-key right) (rb-val right) app (rb-right right)))))
-         (rb-red (rb-key left) (rb-val left) (rb-left left) (rb-append (rb-right left) right))))
-    ((rb-red? right)
-     (rb-red (rb-key right) (rb-val right) (rb-append left (rb-left right)) (rb-right right)))
-    (else
-     (let ((app (rb-append (rb-right left) (rb-left right))))
-       (if (rb-red? app)
-           (rb-red (rb-key app) (rb-val app)
-                   (rb-black (rb-key left) (rb-val left) (rb-left left) (rb-left app))
-                   (rb-black (rb-key right) (rb-val right) (rb-right app) (rb-right right)))
-           (rb-balance-left-del (rb-key left) (rb-val left) (rb-left left)
-                                (rb-black (rb-key right) (rb-val right) app (rb-right right))))))))
-;; remove k, which the caller has found present
-(define (rb-del cmp t k)
-  (let ((c (rb-compare cmp k (rb-key t))))
+;; --- insert --------------------------------------------------------------------
+;; N with K/V added as entry I; past its capacity, the two nodes it splits into,
+;; as a pair, each built straight from N's slots (no oversized copy first). The
+;; split is at the middle, except at the outer edge of the tree (EDGE bit 1 on
+;; the leftmost spine, bit 2 on the rightmost), where an entry added at the very
+;; front (ADDED 0) or back (ADDED = the new last index) leaves the full node full.
+(define (bt-add n i k v added edge)
+  (let* ((sz (bt-size n)) (cap (bt-cap n)))
+    (if (fx<? sz cap)
+        (bt-insert-at n i k v)
+        (let* ((at (cond ((and (fx=? (fxand edge 2) 2) (fx=? added sz)) cap)
+                         ((and (fx=? (fxand edge 1) 1) (fx=? added 0)) 1)
+                         (else (fxsrl (fx+ sz 1) 1))))
+               (tag (vector (bt-leaf? n)))
+               (p (fx+ (fx+ i i) 1))
+               (len (vector-length n)))
+          (if (fx<? i at)
+              ;; the new entry falls left: left is N's [0, i) + K/V + [i, at-1)
+              (let ((cut (fx- (fx+ at at) 1)))
+                (cons (sa-vector-append tag (sa-subvector n 1 p) (vector k v) (sa-subvector n p cut))
+                      (sa-vector-append tag (sa-subvector n cut len))))
+              ;; it falls right: right is N's [at, i) + K/V + [i, sz)
+              (let ((cut (fx+ (fx+ at at) 1)))
+                (cons (sa-vector-append tag (sa-subvector n 1 cut))
+                      (sa-vector-append tag (sa-subvector n cut p) (vector k v) (sa-subvector n p len)))))))))
+(define (bt-child-edge edge i sz)
+  (fxior (if (fx=? i 0) (fxand edge 1) 0) (if (fx=? i (fx- sz 1)) (fxand edge 2) 0)))
+;; what an insert or delete answers as the old value of a key that was not there
+(define bt-absent (list 'bt-absent))
+;; K already present as N's last key: (values N' OLD), N' with the value
+;; replaced (the stored key kept), or #f when V is that very value, and OLD the
+;; value it had.
+(define (bt-ins-last n v)
+  (let ((i (fx- (bt-size n) 1)))
+    (if (bt-leaf? n)
+        (values (if (eq? v (bt-val n i)) #f (bt-with n i (bt-key n i) v)) (bt-val n i))
+        (let-values (((c present) (bt-ins-last (bt-val n i) v)))
+          (values (and c (bt-with n i (bt-key n i) c)) present)))))
+;; Insert K/V below N. Answers two values: the new node, a pair (left . right)
+;; when N split, or #f when nothing changed; and K's old value, bt-absent when
+;; it was not present (a present K keeps its stored key, and its value is
+;; replaced unless V is that very value).
+(define (bt-ins cmp n k v edge)
+  (let* ((r (bt-search cmp n k)) (i (fxsrl r 1)))
     (cond
-      ((zero? c) (rb-append (rb-left t) (rb-right t)))
-      ((negative? c)
-       (let ((del (rb-del cmp (rb-left t) k)))
-         (if (rb-black? (rb-left t))
-             (rb-balance-left-del (rb-key t) (rb-val t) del (rb-right t))
-             (rb-red (rb-key t) (rb-val t) del (rb-right t)))))
+      ((bt-leaf? n)
+       (if (bt-hit? r)
+           (values (if (eq? v (bt-val n i)) #f (bt-with n i (bt-key n i) v)) (bt-val n i))
+           (values (bt-add n i k v i edge) bt-absent)))
+      ((bt-hit? r)
+       (let-values (((c present) (bt-ins-last (bt-val n i) v)))
+         (values (and c (bt-with n i (bt-key n i) c)) present)))
       (else
-       (let ((del (rb-del cmp (rb-right t) k)))
-         (if (rb-black? (rb-right t))
-             (rb-balance-right-del (rb-key t) (rb-val t) (rb-left t) del)
-             (rb-red (rb-key t) (rb-val t) (rb-left t) del)))))))
+       (let* ((sz (bt-size n))
+              (i (if (fx=? i sz) (fx- sz 1) i)))
+         (let-values (((c present) (bt-ins cmp (bt-val n i) k v (bt-child-edge edge i sz))))
+           (values
+             (cond ((not c) #f)
+                   ((pair? c)
+                    (let ((l (car c)) (rt (cdr c)))
+                      ;; the short half of an edge split is the entry "added" at
+                      ;; this level; a half split adds neither (-1)
+                      (bt-add (bt-with n i (bt-max-key l) l) (fx+ i 1) (bt-max-key rt) rt
+                              (cond ((fx<? (bt-size rt) (bt-floor rt)) (fx+ i 1))
+                                    ((fx<? (bt-size l) (bt-floor l)) i)
+                                    (else -1))
+                              edge)))
+                   (else (bt-with n i (bt-max-key c) c)))
+             present)))))))
 
-;; The ops 25-sorted.clj calls. A FOUND answer from rbt-insert is a pair holding
-;; the present node, which rbt-found unwraps; a tree is always a node (a vector)
-;; or nil, so the two cannot be confused.
-(def-var! "jolt.host" "rbt-insert"
-  (lambda (tree cmp k v)
-    (let* ((found (box #f)) (t (rb-ins cmp tree k v found)))
-      (if t (rb-blacken t) (cons 'rbt-found (unbox found))))))
-(def-var! "jolt.host" "rbt-found"
-  (lambda (r) (if (pair? r) (cdr r) jolt-nil)))
-(def-var! "jolt.host" "rbt-replace" (lambda (tree cmp k v) (rb-replace cmp tree k v)))
-(def-var! "jolt.host" "rbt-lookup" (lambda (tree cmp k) (rb-lookup cmp tree k)))
-(def-var! "jolt.host" "rbt-delete"
-  (lambda (tree cmp k) (let ((t (rb-del cmp tree k))) (if (jolt-nil? t) t (rb-blacken t)))))
-(def-var! "jolt.host" "rbt-key" (lambda (n) (rb-key n)))
-(def-var! "jolt.host" "rbt-val" (lambda (n) (rb-val n)))
-;; the leftmost node, down one spine: PersistentTreeMap.min
-(def-var! "jolt.host" "rbt-leftmost"
-  (lambda (n) (let loop ((n n)) (let ((l (rb-left n))) (if (jolt-nil? l) n (loop l))))))
+;; --- delete --------------------------------------------------------------------
+;; Child I of N replaced by C, which a removal may have left under its floor: an
+;; empty C is dropped; a short one is merged with a neighbour when the two fit in
+;; one node, else the two share their entries evenly. N itself may come out short
+;; or empty; its own parent mends it in turn, and the root is trimmed last.
+(define (bt-mend n i c)
+  (let ((cs (bt-size c)) (sz (bt-size n)))
+    (cond
+      ((fx=? cs 0) (bt-remove-at n i))
+      ((or (fx>=? cs (bt-floor c)) (fx=? sz 1)) (bt-with n i (bt-max-key c) c))
+      (else
+       (let* ((lo (if (fx>? i 0) (fx- i 1) i))
+              (a (if (fx=? lo i) c (bt-val n lo)))
+              (b (if (fx=? lo i) (bt-val n (fx+ i 1)) c))
+              (na (bt-size a)) (nb (bt-size b)) (tot (fx+ na nb)))
+         (if (fx<=? tot (bt-cap c))
+             (let ((m (bt-concat a b)))
+               (bt-with (bt-remove-at n (fx+ lo 1)) lo (bt-max-key m) m))
+             (let* ((h (fxsrl tot 1))
+                    (all (bt-concat a b))
+                    (a2 (bt-slice all 0 h))
+                    (b2 (bt-slice all h tot))
+                    (r (sa-vector-copy n)))
+               (vector-set! r (fx+ (fx+ lo lo) 1) (bt-max-key a2))
+               (vector-set! r (fx+ (fx+ lo lo) 2) a2)
+               (vector-set! r (fx+ (fx+ lo lo) 3) (bt-max-key b2))
+               (vector-set! r (fx+ (fx+ lo lo) 4) b2)
+               r)))))))
+;; N without its last entry: (values N' OLD), OLD the value it held
+(define (bt-del-last n)
+  (let ((i (fx- (bt-size n) 1)))
+    (if (bt-leaf? n)
+        (values (bt-remove-at n i) (bt-val n i))
+        (let-values (((c old) (bt-del-last (bt-val n i)))) (values (bt-mend n i c) old)))))
+;; N without K: (values N' OLD), K's old value; (values #f bt-absent) when K is absent
+(define (bt-del cmp n k)
+  (let* ((r (bt-search cmp n k)) (i (fxsrl r 1)))
+    (cond ((bt-leaf? n) (if (bt-hit? r) (values (bt-remove-at n i) (bt-val n i)) (values #f bt-absent)))
+          ((bt-hit? r) (let-values (((c old) (bt-del-last (bt-val n i)))) (values (bt-mend n i c) old)))
+          ((fx=? i (bt-size n)) (values #f bt-absent))
+          (else (let-values (((c old) (bt-del cmp (bt-val n i) k)))
+                  (values (and c (bt-mend n i c)) old))))))
+;; an empty root is the empty tree; an inner root of one child is that child
+(define (bt-trim t)
+  (cond ((fx=? (bt-size t) 0) jolt-nil)
+        ((and (not (bt-leaf? t)) (fx=? (bt-size t) 1)) (bt-trim (bt-val t 0)))
+        (else t)))
 
-;; --- the in-order walk over the red-black tree -------------------------------
-;; Over the nodes above; nil children are jolt-nil. The walk is Clojure's PersistentTreeMap$Seq: a stack
-;; of the nodes still to visit, whose top is the next one out, so the head is
-;; O(log n) away and every later step is amortized O(1). It is done here rather
-;; than in 25-sorted.clj because a per-node lazy cell written in Clojure cost
-;; 1.5x the old eager walk end to end (jolt-r8tz.7); filling a chunk of up to 32
-;; projected nodes per step in Scheme beats the eager walk instead, and the result
-;; is still a lazy seq — `first`/`take` touch one chunk, not the tree.
-(define kw-tree (keyword #f "tree"))
-(define kw-cnt (keyword #f "cnt"))
-(define kw-cmp (keyword #f "cmp"))
-;; push n and its whole near-side spine: the left one walking up, the right one down
-(define (sc-push-spine n asc? stack)
-  (if (jolt-nil? n)
+;; --- shape check (gates) ---------------------------------------------------------
+;; #t when T is a well-formed tree under CMP: keys strictly ascending, every leaf
+;; at one depth, every Mi the identical object as Ci's last key, occupancy within
+;; bounds (see above).
+(define (bt-check t cmp)
+  (call/cc
+    (lambda (fail)
+      (define (no) (fail #f))
+      (define depth #f)
+      (define prev (list 'none))
+      (define (walk n d left? right? root?)
+        (unless (and (vector? n) (odd? (vector-length n)) (boolean? (vector-ref n 0))) (no))
+        (let ((sz (bt-size n)))
+          (when (fx>? sz (bt-cap n)) (no))
+          (cond (root? (when (if (bt-leaf? n) (fx<? sz 1) (fx<? sz 2)) (no)))
+                ((or left? right?) (when (fx<? sz 1) (no)))
+                (else (when (fx<? sz (bt-floor n)) (no))))
+          (if (bt-leaf? n)
+              (begin
+                (if depth (unless (fx=? depth d) (no)) (set! depth d))
+                (do ((i 0 (fx+ i 1))) ((fx=? i sz))
+                  (unless (or (and (pair? prev) (eq? (car prev) 'none))
+                              (negative? (bt-compare cmp (car prev) (bt-key n i))))
+                    (no))
+                  (set! prev (cons (bt-key n i) '()))))
+              (do ((i 0 (fx+ i 1))) ((fx=? i sz))
+                (let ((c (bt-val n i)))
+                  (walk c (fx+ d 1) (and left? (fx=? i 0)) (and right? (fx=? i (fx- sz 1))) #f)
+                  (unless (eq? (bt-key n i) (bt-max-key c)) (no)))))))
+      (or (jolt-nil? t) (begin (walk t 0 #t #t #t) #t)))))
+
+;; --- the ops 25-sorted.clj calls ------------------------------------------------
+;; Each answers with a VALUE (the stored val, the stored key, an entry, a new
+;; tree) and never with a node, so the layout above stays private to this file.
+;;
+;;   rbt-get / rbt-get-key   the stored val / stored key at K, or NF
+;;   rbt-entry               the map-entry at K (its stored key), or nil
+;;   rbt-contains?           K present
+;;   rbt-assoc               a new tree when K was absent; when K was present, a
+;;                           present marker whose rbt-present-tree is the tree with
+;;                           K's value replaced (the stored key kept), or the SAME
+;;                           tree when the value is identical (PersistentTreeMap
+;;                           returns this when found.val() == val)
+;;   rbt-without             the tree without K; the SAME tree when K is absent
+;;   rbt-min-key / -entry    the first key / entry of a non-empty tree
+(def-var! "jolt.host" "rbt-get"
+  (lambda (tree cmp k nf) (bt-locate cmp tree k (l i) (bt-val l i) nf)))
+(def-var! "jolt.host" "rbt-get-key"
+  (lambda (tree cmp k nf) (bt-locate cmp tree k (l i) (bt-key l i) nf)))
+(def-var! "jolt.host" "rbt-entry"
+  (lambda (tree cmp k) (bt-locate cmp tree k (l i) (make-map-entry (bt-key l i) (bt-val l i)) jolt-nil)))
+(def-var! "jolt.host" "rbt-contains?"
+  (lambda (tree cmp k) (bt-locate cmp tree k (l i) #t #f)))
+(define (bt-assoc tree cmp k v)
+  (if (jolt-nil? tree)
+      (let ((l (bt-alloc #t 1))) (vector-set! l 1 k) (vector-set! l 2 v) l)
+      (let-values (((r old) (bt-ins cmp tree k v 3)))
+        (cond ((not (eq? old bt-absent)) (cons 'rbt-present (or r tree)))
+              ((pair? r)
+               (let ((t (bt-alloc #f 2)))
+                 (vector-set! t 1 (bt-max-key (car r))) (vector-set! t 2 (car r))
+                 (vector-set! t 3 (bt-max-key (cdr r))) (vector-set! t 4 (cdr r))
+                 t))
+              (else r)))))
+(def-var! "jolt.host" "rbt-assoc" bt-assoc)
+(def-var! "jolt.host" "rbt-present?" (lambda (r) (pair? r)))
+(def-var! "jolt.host" "rbt-present-tree" (lambda (r) (cdr r)))
+(define (bt-without tree cmp k)
+  (if (jolt-nil? tree)
+      tree
+      (let-values (((r old) (bt-del cmp tree k))) (if r (bt-trim r) tree))))
+(def-var! "jolt.host" "rbt-without" bt-without)
+(def-var! "jolt.host" "rbt-min-key" (lambda (tree) (bt-key (bt-first-leaf tree) 0)))
+(def-var! "jolt.host" "rbt-min-entry"
+  (lambda (tree) (let ((l (bt-first-leaf tree))) (make-map-entry (bt-key l 0) (bt-val l 0)))))
+
+;; --- many entries at once ---------------------------------------------------------
+;; A batch (a constructor's arguments, a multi-arg assoc/conj, an into) against an
+;; empty tree or one no bigger than the batch is sorted and bulk-loaded rather than
+;; inserted entry by entry: every node is written once, full, and nothing is
+;; copied along a path. A small batch against a big tree inserts one entry at a
+;; time, which touches only the paths it changes.
+;;
+;; The batch's meaning is the entry-by-entry one: of comparator-equal keys the
+;; first key stays (an existing key over a batch key) and the last value wins,
+;; and a batch that changes nothing answers the SAME tree. Comparisons keep the
+;; (cmp later earlier) shape of an insert's (cmp k node-key).
+
+;; stable merge sort of the N entries of flat F (k v k v ...) by key, in place;
+;; a half already in order behind the other is not merged
+(define (bt-sort-flat! f n cmp)
+  (let ((tmp (make-vector (fx+ n n))))
+    (define (key i) (vector-ref f (fx+ i i)))
+    (define (move! dst o src i)
+      (vector-set! dst (fx+ o o) (vector-ref src (fx+ i i)))
+      (vector-set! dst (fx+ (fx+ o o) 1) (vector-ref src (fx+ (fx+ i i) 1))))
+    (let rec ((lo 0) (hi n))
+      (when (fx>? (fx- hi lo) 1)
+        (let ((mid (fxsrl (fx+ lo hi) 1)))
+          (rec lo mid)
+          (rec mid hi)
+          (when (negative? (bt-compare cmp (key mid) (key (fx- mid 1))))
+            (let merge ((i lo) (j mid) (o lo))
+              (cond
+                ((and (fx<? i mid) (fx<? j hi))
+                 (if (negative? (bt-compare cmp (key j) (key i)))
+                     (begin (move! tmp o f j) (merge i (fx+ j 1) (fx+ o 1)))
+                     (begin (move! tmp o f i) (merge (fx+ i 1) j (fx+ o 1)))))
+                ((fx<? i mid) (move! tmp o f i) (merge (fx+ i 1) j (fx+ o 1)))
+                ((fx<? j hi) (move! tmp o f j) (merge i (fx+ j 1) (fx+ o 1)))
+                (else (do ((x lo (fx+ x 1))) ((fx=? x hi)) (move! f x tmp x)))))))))))
+;; the N sorted entries of flat F with each run of equal keys made one entry:
+;; its first key, its last value. Compacts F in place; answers the new count.
+(define (bt-dedup-flat! f n cmp)
+  (if (fx=? n 0)
+      0
+      (let loop ((i 1) (o 0))
+        (if (fx=? i n)
+            (fx+ o 1)
+            (if (zero? (bt-compare cmp (vector-ref f (fx+ i i)) (vector-ref f (fx+ o o))))
+                (begin (vector-set! f (fx+ (fx+ o o) 1) (vector-ref f (fx+ (fx+ i i) 1)))
+                       (loop (fx+ i 1) o))
+                (let ((o (fx+ o 1)))
+                  (vector-set! f (fx+ o o) (vector-ref f (fx+ i i)))
+                  (vector-set! f (fx+ (fx+ o o) 1) (vector-ref f (fx+ (fx+ i i) 1)))
+                  (loop (fx+ i 1) o)))))))
+;; F's first N entries (flat k v k v ...) packed into nodes of LEAF?'s capacity,
+;; spread evenly so each is at least half full: (values P m), P the flat
+;; (max-key node ...) of the m nodes
+(define (bt-pack f n leaf?)
+  (let* ((cap (if leaf? bt-leaf-max bt-inner-max))
+         (k (fxquotient (fx+ n (fx- cap 1)) cap))
+         (base (fxquotient n k))
+         (extra (fxremainder n k))
+         (p (make-vector (fx+ k k)))
+         (tag (vector leaf?)))
+    (let loop ((j 0) (start 0))
+      (if (fx=? j k)
+          (values p k)
+          (let* ((sz (if (fx<? j extra) (fx+ base 1) base))
+                 (node (sa-vector-append tag (sa-subvector f (fx+ start start) (fx* 2 (fx+ start sz))))))
+            (vector-set! p (fx+ j j) (bt-max-key node))
+            (vector-set! p (fx+ (fx+ j j) 1) node)
+            (loop (fx+ j 1) (fx+ start sz)))))))
+;; a tree of the N entries of flat F, in order, bottom up
+(define (bt-bulk f n)
+  (if (fx=? n 0)
+      jolt-nil
+      (let loop ((f f) (n n) (leaf? #t))
+        (let-values (((p m) (bt-pack f n leaf?)))
+          (if (fx=? m 1) (vector-ref p 1) (loop p m #f))))))
+;; TREE's entries merged with the D sorted, deduplicated entries of flat G and
+;; bulk-loaded: (values tree count changed?)
+(define (bt-merge-load tree cmp g d)
+  (let* ((xs (list->vector (reverse (sc-tree-fold-kv tree (lambda (k v acc) (cons v (cons k acc))) '()))))
+         (nx (fxsrl (vector-length xs) 1))
+         (out (make-vector (fx* 2 (fx+ nx d)))))
+    (define (emit! o k v) (vector-set! out (fx+ o o) k) (vector-set! out (fx+ (fx+ o o) 1) v))
+    (let loop ((i 0) (j 0) (o 0) (changed #f))
+      (cond
+        ((and (fx<? i nx) (fx<? j d))
+         (let* ((xk (vector-ref xs (fx+ i i))) (xv (vector-ref xs (fx+ (fx+ i i) 1)))
+                (gk (vector-ref g (fx+ j j))) (gv (vector-ref g (fx+ (fx+ j j) 1)))
+                (c (bt-compare cmp gk xk)))
+           (cond ((negative? c) (emit! o gk gv) (loop i (fx+ j 1) (fx+ o 1) #t))
+                 ((positive? c) (emit! o xk xv) (loop (fx+ i 1) j (fx+ o 1) changed))
+                 (else (emit! o xk gv) (loop (fx+ i 1) (fx+ j 1) (fx+ o 1) (or changed (not (eq? gv xv))))))))
+        ((fx<? i nx)
+         (emit! o (vector-ref xs (fx+ i i)) (vector-ref xs (fx+ (fx+ i i) 1)))
+         (loop (fx+ i 1) j (fx+ o 1) changed))
+        ((fx<? j d)
+         (emit! o (vector-ref g (fx+ j j)) (vector-ref g (fx+ (fx+ j j) 1)))
+         (loop i (fx+ j 1) (fx+ o 1) #t))
+        (else (values (if changed (bt-bulk out o) tree) o changed))))))
+;; the batch as a fresh flat k v vector: a vector's slots copied by block, a set's
+;; elements (KEYS-ONLY) given nil values, anything else folded
+(define (bt-batch-flat kvs keys-only?)
+  (cond
+    ((and (pvec? kvs) (not keys-only?))
+     (let ((v (make-vector (pvec-cnt kvs)))) (pvec-copy-into! v 0 kvs) v))
+    (keys-only?
+     (let* ((xs (into-fold (lambda (acc x) (cons x acc)) '() kvs))
+            (n (length xs))
+            (v (make-vector (fx+ n n) jolt-nil)))
+       (let loop ((xs xs) (i (fx- n 1)))
+         (if (null? xs) v (begin (vector-set! v (fx+ i i) (car xs)) (loop (cdr xs) (fx- i 1)))))))
+    (else (list->vector (reverse (into-fold (lambda (acc x) (cons x acc)) '() kvs))))))
+;; under this many entries a batch is inserted entry by entry
+(define bt-batch-min 8)
+;; (rbt-assoc-all tree cmp cnt kvs keys-only?): KVS assoc'd onto TREE of CNT
+;; entries — k0 v0 k1 v1 ..., or with KEYS-ONLY? each element a key with a nil
+;; value — answered as a map entry [tree count]
+(def-var! "jolt.host" "rbt-assoc-all"
+  (lambda (tree cmp cnt kvs keys-only?)
+    (let* ((f (bt-batch-flat kvs (jolt-truthy? keys-only?)))
+           (m (fxsrl (vector-length f) 1)))
+      (if (or (fx<? m bt-batch-min) (and (not (jolt-nil? tree)) (fx<? m cnt)))
+          (let loop ((i 0) (t tree) (c cnt))
+            (if (fx=? i m)
+                (make-map-entry t c)
+                (let ((r (bt-assoc t cmp (vector-ref f (fx+ i i)) (vector-ref f (fx+ (fx+ i i) 1)))))
+                  (if (pair? r) (loop (fx+ i 1) (cdr r) c) (loop (fx+ i 1) r (fx+ c 1))))))
+          ;; in order already? each key against the one before it
+          (let-values (((sorted dups)
+                        (let check ((i 1) (dups #f))
+                          (if (fx>=? i m)
+                              (values #t dups)
+                              (let ((c (bt-compare cmp (vector-ref f (fx+ i i)) (vector-ref f (fx- (fx+ i i) 2)))))
+                                (if (negative? c) (values #f dups) (check (fx+ i 1) (or dups (zero? c)))))))))
+            (unless sorted (bt-sort-flat! f m cmp))
+            (let ((d (if (or dups (not sorted)) (bt-dedup-flat! f m cmp) m)))
+              (if (jolt-nil? tree)
+                  (make-map-entry (bt-bulk f d) d)
+                  (let-values (((t n changed) (bt-merge-load tree cmp f d)))
+                    (make-map-entry t (if changed n cnt))))))))))
+
+;; a source no bigger than this goes into an empty sorted coll by plain conj
+(define bt-into-conj-max 8)
+;; FROM's element count when it is O(1) to know, else #f
+(define (bt-known-count from)
+  (cond ((pvec? from) (pvec-cnt from))
+        ((pmap? from) (pmap-cnt from))
+        ((pset? from) (pset-count from))
+        ((scoll? from) (scoll-cnt from))
+        (else #f)))
+;; (into sorted-coll [xform] from): conj after conj's result, built as a batch.
+;; Each element folds onto a transient buffer through the coll's own :conj-kvs
+;; step (a map's entry rules, a set's element) and :assoc-all takes the buffer
+;; whole: a bulk load, a merge, or single inserts, as host-table.ss's batch
+;; decides. A source small enough to count goes into an EMPTY coll by plain
+;; conj, which costs less than gathering a buffer. XFORM is #f for a plain into.
+;;
+;; With an XFORM it stays conj after conj onto the coll itself: a sorted coll is
+;; not IEditableCollection, so the JVM's into is (transduce xform conj to from),
+;; and a transducer sees that accumulator. halt-when hands it to its retf and
+;; answers whatever its completion returns, neither of which a hidden buffer
+;; could stand in for.
+(define (sorted-into to xform from)
+  (if xform
+      (into-xform-conj to xform from)
+      (let ((n (bt-known-count from)))
+        (if (and n (fx<=? n bt-into-conj-max) (fx=? (scoll-cnt to) 0))
+            (meta-carry-conj to (into-fold jolt-conj1 to from))
+            (let* ((step (sc-op to kw-op-conj-kvs))
+                   (buf (jolt-transient-new (make-pvec (vector))))
+                   (res (into-fold (lambda (acc x) (jolt-invoke2 step acc x)) buf from)))
+              (meta-carry-conj to (sc-call to kw-op-assoc-all (jolt-persistent! res))))))))
+
+;; --- the in-order walk over the B+tree -------------------------------------------
+;; The walk is Clojure's PersistentTreeMap$Seq, over leaves: a stack of frames
+;; (node . i), innermost first. In a leaf frame I is the next entry out; in an
+;; inner frame, the next child to descend. The head is O(log n) away and every
+;; later step amortized O(1). It is done here rather than in 25-sorted.clj
+;; because a per-node lazy cell written in Clojure cost 1.5x the old eager walk
+;; end to end (jolt-r8tz.7); filling a chunk of up to 32 projected entries per
+;; step in Scheme beats the eager walk instead, and the result is still a lazy
+;; seq — `first`/`take` touch one chunk, not the tree.
+(define (bt-near n asc?) (if asc? 0 (fx- (bt-size n) 1)))
+(define-syntax bt-step (syntax-rules () ((_ i asc?) (if asc? (fx+ i 1) (fx- i 1)))))
+;; push N and its near spine, down to a leaf frame
+(define (bt-push-down n asc? stack)
+  (let ((i (bt-near n asc?)))
+    (if (bt-leaf? n)
+        (cons (cons n i) stack)
+        (bt-push-down (bt-val n i) asc? (cons (cons n (bt-step i asc?)) stack)))))
+;; STACK with its top made a leaf frame that has an entry left, or '() at the end
+(define (bt-settle stack asc?)
+  (if (null? stack)
       stack
-      (sc-push-spine (if asc? (sc-nd-left n) (sc-nd-right n)) asc? (cons n stack))))
-;; what a node walks as. mode 0: a map entry (PersistentTreeMap$Seq); 1: its key
+      (let* ((f (car stack)) (n (car f)) (i (cdr f)))
+        (cond ((or (fx<? i 0) (fx>=? i (bt-size n))) (bt-settle (cdr stack) asc?))
+              ((bt-leaf? n) stack)
+              (else (bt-push-down (bt-val n i) asc? (cons (cons n (bt-step i asc?)) (cdr stack))))))))
+;; what an entry walks as. mode 0: a map entry (PersistentTreeMap$Seq); 1: its key
 ;; (a sorted set's seq, or (keys m) — APersistentMap$KeySeq); 2: its val (ValSeq).
-(define (sc-node-proj n mode)
-  (cond ((fx=? mode 0) (make-map-entry (sc-nd-key n) (sc-nd-val n)))
-        ((fx=? mode 1) (sc-nd-key n))
-        (else (sc-nd-val n))))
+(define (sc-entry-proj n i mode)
+  (cond ((fx=? mode 0) (make-map-entry (bt-key n i) (bt-val n i)))
+        ((fx=? mode 1) (bt-key n i))
+        (else (bt-val n i))))
 (define (sc-mode-kind mode)
   (cond ((fx=? mode 0) sk-treemap-seq) ((fx=? mode 1) sk-key-seq) (else sk-val-seq)))
-(define sc-walk-chunk 32)
 ;; The seq of what is left on STACK: a ChunkedCons-shaped cell over the next
-;; <=32 nodes, flavored as the tree seq it is (so chunked-seq? stays false, as it
-;; is on the JVM, while reduce still runs the chunk in vec-reduce's loop), whose
-;; after-chunk rest is a lazy seq over the stack that remains. The stack and the
-;; packed walk (mode*2 + ascending?) are the lazy-src's data, so a seq caught
+;; entries of one leaf, flavored as the tree seq it is (so chunked-seq? stays false, as
+;; it is on the JVM, while reduce still runs the chunk in vec-reduce's loop),
+;; whose after-chunk rest is a lazy seq over the stack that remains. The stack and
+;; the packed walk (mode*2 + ascending?) are the lazy-src's data, so a seq caught
 ;; half-walked by a state image restores still lazy.
 (define (sc-stack->seq stack code)
-  (if (null? stack)
-      jolt-nil
-      (let ((asc? (fx=? (fxand code 1) 1)) (mode (fxsrl code 1))
-            (buf (make-vector sc-walk-chunk)))
-        (let loop ((i 0) (st stack))
-          (if (or (null? st) (fx=? i sc-walk-chunk))
-              (cseq-chunked/k (make-pvec (if (fx=? i sc-walk-chunk) buf (vec-copy-range buf 0 i)))
-                              0
-                              (if (null? st) jolt-nil (jolt-make-lazy-src lz-sorted-walk st code))
-                              (sc-mode-kind mode))
-              (let ((n (car st)))
-                (vector-set! buf i (sc-node-proj n mode))
-                (loop (fx+ i 1)
-                      (sc-push-spine (if asc? (sc-nd-right n) (sc-nd-left n)) asc? (cdr st)))))))))
+  (let* ((asc? (fx=? (fxand code 1) 1)) (st (bt-settle stack asc?)))
+    (if (null? st)
+        jolt-nil
+        ;; one chunk: the rest of the top leaf (at most bt-leaf-max entries).
+        ;; Ending a chunk with its leaf keeps the head of a walk (first of an
+        ;; rseq or a subseq) at one leaf's entries.
+        (let* ((mode (fxsrl code 1)) (n (caar st)) (i0 (cdar st))
+               (cnt (if asc? (fx- (bt-size n) i0) (fx+ i0 1)))
+               (buf (make-vector cnt)))
+          (do ((j 0 (fx+ j 1)) (i i0 (bt-step i asc?))) ((fx=? j cnt))
+            (vector-set! buf j (sc-entry-proj n i mode)))
+          (let ((rest (bt-settle (cdr st) asc?)))
+            (cseq-chunked/k (make-pvec buf)
+                            0
+                            (if (null? rest) jolt-nil (jolt-make-lazy-src lz-sorted-walk rest code))
+                            (sc-mode-kind mode)))))))
 (define lz-sorted-walk
   (register-lazy-src! 'sorted-walk (lambda (st code) (sc-stack->seq st code))))
 (define (sc-walk-code asc? mode) (fx+ (fx* mode 2) (if asc? 1 0)))
 ;; the whole tree, ascending or descending
 (define (sc-tree-seq tree asc? mode)
-  (sc-stack->seq (sc-push-spine tree asc? '()) (sc-walk-code asc? mode)))
+  (if (jolt-nil? tree)
+      jolt-nil
+      (sc-stack->seq (bt-push-down tree asc? '()) (sc-walk-code asc? mode))))
+;; The walk position at the first key at or past K in the walk's direction: (values
+;; STACK HIT?), STACK settled (its top a leaf frame with an entry left, or '() when
+;; there is none), HIT? whether that entry's key compares equal to K. The
+;; comparator is called the way seqFrom calls it, (cmp k node-key).
+(define (bt-seek tree cmp k asc?)
+  (if (jolt-nil? tree)
+      (values '() #f)
+      (let loop ((n tree) (stack '()))
+        (let* ((sz (bt-size n))
+               (r (bt-search cmp n k))
+               (i (fxsrl r 1)))
+          (cond
+            ((bt-leaf? n)
+             (let ((st (bt-settle (cons (cons n (if (or asc? (bt-hit? r)) i (fx- i 1))) stack) asc?)))
+               ;; a hit stays on top only when the settle did not move off it
+               (values st (and (bt-hit? r) (pair? st) (eq? (caar st) n)))))
+            (asc? (if (fx=? i sz)
+                      (values (bt-settle stack asc?) #f)
+                      (loop (bt-val n i) (cons (cons n (fx+ i 1)) stack))))
+            (else (let ((i (if (fx=? i sz) (fx- sz 1) i)))
+                    (loop (bt-val n i) (cons (cons n (fx- i 1)) stack)))))))))
+;; a settled STACK moved one entry on in its direction
+(define (bt-advance stack asc?)
+  (let ((f (car stack)))
+    (bt-settle (cons (cons (car f) (bt-step (cdr f) asc?)) (cdr stack)) asc?)))
 ;; PersistentTreeMap.seqFrom: the walk from the first key at or past K in the
-;; walk's direction, nil when there is none. The comparator is called the way
-;; seqFrom calls it, (cmp k node-key).
+;; walk's direction, nil when there is none.
 (define (sc-tree-seq-from tree asc? mode cmp k)
-  (let loop ((t tree) (stack '()))
-    (if (jolt-nil? t)
-        (sc-stack->seq stack (sc-walk-code asc? mode))
-        (let ((c (jolt-invoke cmp k (sc-nd-key t))))
-          (cond ((zero? c) (sc-stack->seq (cons t stack) (sc-walk-code asc? mode)))
-                (asc? (if (negative? c) (loop (sc-nd-left t) (cons t stack)) (loop (sc-nd-right t) stack)))
-                (else (if (positive? c) (loop (sc-nd-right t) (cons t stack)) (loop (sc-nd-left t) stack))))))))
+  (let-values (((st hit) (bt-seek tree cmp k asc?)))
+    (sc-stack->seq st (sc-walk-code asc? mode))))
 (def-var! "jolt.host" "sorted-seq"
   (lambda (tree asc? mode) (sc-tree-seq tree (jolt-truthy? asc?) mode)))
 (def-var! "jolt.host" "sorted-seq-from"
   (lambda (tree asc? mode cmp k) (sc-tree-seq-from tree (jolt-truthy? asc?) mode cmp k)))
-;; every node, in order, satisfies pred (stops at the first that does not)
-(define (sc-tree-every? t pred)
-  (or (jolt-nil? t)
-      (and (sc-tree-every? (sc-nd-left t) pred)
-           (pred t)
-           (sc-tree-every? (sc-nd-right t) pred))))
-(define (sc-tree-fold t f acc)
+;; --- direct access for java.util.TreeMap / TreeSet (java/tree-map.ss) -------------
+;; The TreeMap shim keeps a sorted map as its tree and reads and writes it here,
+;; under the map's own comparator, without the Clojure ops' dispatch or a seq.
+(define (sc-ref sc k nf) (bt-locate (scoll-cmp sc) (scoll-tree sc) k (l i) (bt-val l i) nf))
+(define (sc-with sc tree cnt)
+  (make-scoll* #f #f (scoll-kind sc) (scoll-tag sc) tree cnt (scoll-cmp sc) (scoll-cmp-fn sc) (scoll-ops sc)))
+;; SC with K -> V, in one walk: (values SC' OLD), SC' the new coll (SC itself
+;; when nothing changed), OLD K's previous value or NF
+(define (sc-put sc k v nf)
+  (let ((tree (scoll-tree sc)) (cmp (scoll-cmp sc)))
+    (if (jolt-nil? tree)
+        (values (sc-with sc (let ((l (bt-alloc #t 1))) (vector-set! l 1 k) (vector-set! l 2 v) l) 1) nf)
+        (let-values (((r old) (bt-ins cmp tree k v 3)))
+          (cond ((not (eq? old bt-absent)) (values (if r (sc-with sc r (scoll-cnt sc)) sc) old))
+                ((pair? r)
+                 (let ((t (bt-alloc #f 2)))
+                   (vector-set! t 1 (bt-max-key (car r))) (vector-set! t 2 (car r))
+                   (vector-set! t 3 (bt-max-key (cdr r))) (vector-set! t 4 (cdr r))
+                   (values (sc-with sc t (fx+ (scoll-cnt sc) 1)) nf)))
+                (else (values (sc-with sc r (fx+ (scoll-cnt sc) 1)) nf)))))))
+;; SC without K, in one walk: (values SC' OLD), SC itself and NF when K is absent
+(define (sc-remove sc k nf)
+  (let ((tree (scoll-tree sc)))
+    (if (jolt-nil? tree)
+        (values sc nf)
+        (let-values (((r old) (bt-del (scoll-cmp sc) tree k)))
+          (if r (values (sc-with sc (bt-trim r) (fx- (scoll-cnt sc) 1)) old) (values sc nf))))))
+;; how many entries lie between two bounds, each optional (LO? / HI?) and each
+;; inclusive or not: the two ends are sought once and the leaves between them
+;; summed, so no key in the middle is compared
+(define (sc-count-range sc lo? lo lo-incl hi? hi hi-incl)
+  (let* ((tree (scoll-tree sc)) (cmp (scoll-cmp sc))
+         (end-at (lambda (on? k incl? asc?)
+                   (cond ((jolt-nil? tree) '())
+                         ((not on?) (bt-settle (bt-push-down tree asc? '()) asc?))
+                         (else (let-values (((st hit) (bt-seek tree cmp k asc?)))
+                                 (if (and hit (not incl?)) (bt-advance st asc?) st))))))
+         (start (end-at lo? lo lo-incl #t))
+         (end (end-at hi? hi hi-incl #f)))
+    (if (or (null? start) (null? end))
+        0
+        (let ((el (caar end)) (ei (cdar end)))
+          (if (negative? (bt-compare cmp (bt-key el ei) (bt-key (caar start) (cdar start))))
+              0
+              (let loop ((st start) (n 0))
+                (let ((l (caar st)) (i (cdar st)))
+                  (if (eq? l el)
+                      (fx+ n (fx+ (fx- ei i) 1))
+                      (loop (bt-settle (cdr st) #t) (fx+ n (fx- (bt-size l) i)))))))))))
+(define (sc-top-entry st)
+  (and (pair? st) (let ((n (caar st)) (i (cdar st))) (make-map-entry (bt-key n i) (bt-val n i)))))
+;; the entry at the first key at or past K (strictly past with STRICT?) in the
+;; direction ASC?: ceiling / higher ascending, floor / lower descending; #f if none
+(define (sc-nav sc k asc? strict?)
+  (let-values (((st hit) (bt-seek (scoll-tree sc) (scoll-cmp sc) k asc?)))
+    (sc-top-entry (if (and strict? hit) (bt-advance st asc?) st))))
+;; the first (ASC?) or last entry, #f when empty
+(define (sc-end-entry sc asc?)
+  (let ((tree (scoll-tree sc)))
+    (and (not (jolt-nil? tree))
+         (let* ((l (if asc? (bt-first-leaf tree) (bt-last-leaf tree))) (i (bt-near l asc?)))
+           (make-map-entry (bt-key l i) (bt-val l i))))))
+;; (f k v acc) over the entries from START (or the end the walk begins at, with
+;; START? #f; past an equal key unless INCL?) in direction ASC?, while (keep? k)
+(define (sc-walk sc start? start incl? asc? keep? f acc)
+  (let* ((tree (scoll-tree sc))
+         (st (cond ((jolt-nil? tree) '())
+                   ((not start?) (bt-settle (bt-push-down tree asc? '()) asc?))
+                   (else (let-values (((st hit) (bt-seek tree (scoll-cmp sc) start asc?)))
+                           (if (and hit (not incl?)) (bt-advance st asc?) st))))))
+    (let loop ((st st) (acc acc))
+      (if (null? st)
+          acc
+          (let* ((n (caar st)) (sz (bt-size n)))
+            (let run ((i (cdar st)) (acc acc))
+              (cond ((or (fx<? i 0) (fx>=? i sz)) (loop (bt-settle (cdr st) asc?) acc))
+                    ((keep? (bt-key n i)) (run (bt-step i asc?) (f (bt-key n i) (bt-val n i) acc)))
+                    (else acc))))))))
+
+;; (f k v acc) over every entry, in order
+(define (sc-tree-fold-kv t f acc)
   (if (jolt-nil? t)
       acc
-      (sc-tree-fold (sc-nd-right t) f (f t (sc-tree-fold (sc-nd-left t) f acc)))))
+      (let walk ((n t) (acc acc))
+        (let ((sz (bt-size n)))
+          (if (bt-leaf? n)
+              (do ((i 0 (fx+ i 1)) (acc acc (f (bt-key n i) (bt-val n i) acc))) ((fx=? i sz) acc))
+              (do ((i 0 (fx+ i 1)) (acc acc (walk (bt-val n i) acc))) ((fx=? i sz) acc)))))))
+;; (step acc k v) over every entry, in order, stopping at a reduced acc, which is
+;; answered still wrapped
+(define (sc-tree-reduce-kv t step init)
+  (if (jolt-nil? t)
+      init
+      (let walk ((n t) (acc init))
+        (let ((sz (bt-size n)))
+          (let loop ((i 0) (acc acc))
+            (cond ((or (fx=? i sz) (jolt-reduced? acc)) acc)
+                  ((bt-leaf? n) (loop (fx+ i 1) (step acc (bt-key n i) (bt-val n i))))
+                  (else (loop (fx+ i 1) (walk (bt-val n i) acc)))))))))
+(define (sc-reduce-kv sc step init) (sc-tree-reduce-kv (scoll-tree sc) step init))
+;; every entry, in order, satisfies (pred k v); stops at the first that does not
+(define (sc-tree-every-kv? t pred)
+  (or (jolt-nil? t)
+      (let walk ((n t))
+        (let ((sz (bt-size n)))
+          (let loop ((i 0))
+            (or (fx=? i sz)
+                (and (if (bt-leaf? n) (pred (bt-key n i) (bt-val n i)) (walk (bt-val n i)))
+                     (loop (fx+ i 1)))))))))
+;; Two trees' entries in lockstep, ascending: #t when SAME? holds for every pair
+;; (same? ka va kb vb) and both run out together. The two trees need not share a
+;; shape, so each side keeps its own leaf and index; a frame is consed only where
+;; a side crosses into its next leaf, not per entry.
+(define (sc-tree-lockstep? ta tb same?)
+  (let loop ((sa (if (jolt-nil? ta) '() (bt-push-down ta #t '())))
+             (sb (if (jolt-nil? tb) '() (bt-push-down tb #t '()))))
+    (cond ((null? sa) (null? sb))
+          ((null? sb) #f)
+          (else
+           (let ((la (caar sa)) (lb (caar sb)))
+             (let run ((ia (cdar sa)) (ib (cdar sb)))
+               (let ((enda (fx=? ia (bt-size la))) (endb (fx=? ib (bt-size lb))))
+                 (cond ((or enda endb)
+                        (loop (if enda (bt-settle (cdr sa) #t) (cons (cons la ia) (cdr sa)))
+                              (if endb (bt-settle (cdr sb) #t) (cons (cons lb ib) (cdr sb)))))
+                       ((same? (bt-key la ia) (bt-val la ia) (bt-key lb ib) (bt-val lb ib))
+                        (run (fx+ ia 1) (fx+ ib 1)))
+                       (else #f)))))))))
 
 ;; --- extend the collection dispatchers with a sorted arm ---------------------
 ;; A sorted coll's seq is the :seq op's: the lazy walk above, already flavored
@@ -518,9 +963,16 @@
 (register-first-arm! htable-sorted? (lambda (x) (sc-call x kw-op-first)))
 (register-count-arm! htable-sorted?
   (lambda (coll) (sc-call coll kw-op-count)))
-(register-get-arm! htable-sorted? (lambda (coll k d) (sc-call coll kw-op-get k d)))
+;; get and contains? read the tree directly rather than through the :get /
+;; :contains ops: they are the hot lookups, and the ops answer exactly this (a
+;; map's stored value, a set's stored element, presence)
+(register-get-arm! htable-sorted?
+  (lambda (coll k d)
+    (if (htable-sorted-map? coll)
+        (sc-ref coll k d)
+        (bt-locate (scoll-cmp coll) (scoll-tree coll) k (l i) (bt-key l i) d))))
 (register-contains-arm! htable-sorted?
-  (lambda (coll k) (if (jolt-truthy? (sc-call coll kw-op-contains k)) #t #f)))
+  (lambda (coll k) (bt-locate (scoll-cmp coll) (scoll-tree coll) k (l i) #t #f)))
 (define %h-assoc1 jolt-assoc1)
 (set! jolt-assoc1 (lambda (coll k v)
   (if (htable-sorted-map? coll) (meta-carry coll (sc-call coll kw-op-assoc1 k v)) (%h-assoc1 coll k v))))
@@ -541,12 +993,12 @@
 (define %h-keys jolt-keys)
 (set! jolt-keys (lambda (m)
   (if (htable-sorted-map? m)
-      (sc-tree-seq (jolt-ref-get m kw-tree) #t 1)
+      (sc-tree-seq (scoll-tree m) #t 1)
       (%h-keys m))))
 (define %h-vals jolt-vals)
 (set! jolt-vals (lambda (m)
   (if (htable-sorted-map? m)
-      (sc-tree-seq (jolt-ref-get m kw-tree) #t 2)
+      (sc-tree-seq (scoll-tree m) #t 2)
       (%h-vals m))))
 ;; keys/vals walk the tree lazily as the KeySeq/ValSeq they are on the JVM.
 ;; sorted colls carry collection metadata like the natives-meta collections. htable?
@@ -611,50 +1063,40 @@
 ;; so extending jolt=2 here doesn't recurse: the inner tag compare gets two
 ;; keywords.)
 (define (sorted-map->pmap sc)
-  (sc-tree-fold (jolt-ref-get sc kw-tree)
-                (lambda (n m) (pmap-assoc m (sc-nd-key n) (sc-nd-val n))) empty-pmap))
+  (sc-tree-fold-kv (scoll-tree sc) (lambda (k v m) (pmap-assoc m k v)) empty-pmap))
 (define (sorted-set->pset sc)
-  (sc-tree-fold (jolt-ref-get sc kw-tree) (lambda (n s) (pset-conj s (sc-nd-key n))) empty-pset))
+  (sc-tree-fold-kv (scoll-tree sc) (lambda (k v s) (pset-conj s k)) empty-pset))
 (define (sorted->plain x) (if (htable-sorted-map? x) (sorted-map->pmap x) (sorted-set->pset x)))
 ;; The common pairings answer without building anything, the way APersistentMap /
 ;; APersistentSet.equiv do: counts first, then one walk of the sorted tree. Against
-;; a hash coll each node is probed there (hash lookup, the same test the converted
+;; a hash coll each entry is probed there (hash lookup, the same test the converted
 ;; compare made); against a sorted coll with the SAME comparator the two trees walk
 ;; in lockstep, which is O(n) with no comparator calls at all. 'eq / 'ne, or #f to
 ;; fall back to the conversion (a different comparator, a record, a Java map, …).
-(define (sc-count x) (jolt-ref-get x kw-cnt))
+(define (sc-count x) (scoll-cnt x))
 (define (sorted-fast= s o)
   (define (verdict b) (if b 'eq 'ne))
-  (define (same-cmp? o) (eq? (jolt-ref-get s kw-cmp-fn) (jolt-ref-get o kw-cmp-fn)))
-  (define (lockstep node=?)
-    (let loop ((sa (sc-push-spine (jolt-ref-get s kw-tree) #t '()))
-               (sb (sc-push-spine (jolt-ref-get o kw-tree) #t '())))
-      (cond ((null? sa) (null? sb))
-            ((null? sb) #f)
-            (else (let ((na (car sa)) (nb (car sb)))
-                    (and (node=? na nb)
-                         (loop (sc-push-spine (sc-nd-right na) #t (cdr sa))
-                               (sc-push-spine (sc-nd-right nb) #t (cdr sb)))))))))
+  (define (same-cmp? o) (eq? (scoll-cmp-fn s) (scoll-cmp-fn o)))
+  (define (lockstep same?) (sc-tree-lockstep? (scoll-tree s) (scoll-tree o) same?))
   (if (htable-sorted-map? s)
       (cond
         ((pmap? o)
          (verdict (and (eqv? (sc-count s) (pmap-cnt o))
-                       (sc-tree-every? (jolt-ref-get s kw-tree)
-                         (lambda (n) (let ((p (pmap-entry-at o (sc-nd-key n))))
-                                       (and p (jolt=2 (sc-nd-val n) (cdr p)))))))))
+                       (sc-tree-every-kv? (scoll-tree s)
+                         (lambda (k v) (let ((p (pmap-entry-at o k)))
+                                         (and p (jolt=2 v (cdr p)))))))))
         ((and (htable-sorted-map? o) (not (eqv? (sc-count s) (sc-count o)))) 'ne)
         ((and (htable-sorted-map? o) (same-cmp? o))
-         (verdict (lockstep (lambda (a b) (and (jolt=2 (sc-nd-key a) (sc-nd-key b))
-                                               (jolt=2 (sc-nd-val a) (sc-nd-val b)))))))
+         (verdict (lockstep (lambda (ka va kb vb) (and (jolt=2 ka kb) (jolt=2 va vb))))))
         (else #f))
       (cond
         ((pset? o)
          (verdict (and (eqv? (sc-count s) (pset-count o))
-                       (sc-tree-every? (jolt-ref-get s kw-tree)
-                         (lambda (n) (pset-contains? o (sc-nd-key n)))))))
+                       (sc-tree-every-kv? (scoll-tree s)
+                         (lambda (k v) (pset-contains? o k))))))
         ((and (htable-sorted-set? o) (not (eqv? (sc-count s) (sc-count o)))) 'ne)
         ((and (htable-sorted-set? o) (same-cmp? o))
-         (verdict (lockstep (lambda (a b) (jolt=2 (sc-nd-key a) (sc-nd-key b))))))
+         (verdict (lockstep (lambda (ka va kb vb) (jolt=2 ka kb)))))
         (else #f))))
 (register-eq-arm! (lambda (a b) (or (htable-sorted? a) (htable-sorted? b)))
                   (lambda (a b)
@@ -672,10 +1114,10 @@
 ;; on the wrapper, as APersistentMap caches _hasheq.
 (define (sorted-hash x)
   (or (htable-hc x)
-      (let* ((t (jolt-ref-get x kw-tree))
+      (let* ((t (scoll-tree x))
              (sum (if (htable-sorted-map? x)
-                      (sc-tree-fold t (lambda (n acc) (add32 acc (entry-hasheq (sc-nd-key n) (sc-nd-val n)))) 0)
-                      (sc-tree-fold t (lambda (n acc) (+ acc (jolt-hasheq (sc-nd-key n)))) 0)))
+                      (sc-tree-fold-kv t (lambda (k v acc) (add32 acc (entry-hasheq k v))) 0)
+                      (sc-tree-fold-kv t (lambda (k v acc) (+ acc (jolt-hasheq k))) 0)))
              (h (mix-coll-hash sum (sc-count x))))
         (htable-hc-set! x h)
         h)))

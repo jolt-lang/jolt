@@ -226,6 +226,8 @@
     ;; (sealed #t) only lets Chez check the type faster; nothing to do here
     ((_ (name ctor pred) (parent p) (fields spec ...) (nongenerative uid) (sealed s))
      (define-record-type (name ctor pred) (parent p) (fields spec ...) (nongenerative uid)))
+    ((_ name (fields spec ...) (nongenerative uid) (sealed s))
+     (define-record-type name (fields spec ...) (nongenerative uid)))
     ((_ (name ctor pred) (parent p) (fields spec ...) (nongenerative uid))
      (define name (make-jolt-record-type 'name 'ctor 'pred 'p
                                          (jolt-record-field-names (spec ...)))))
