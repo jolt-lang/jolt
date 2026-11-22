@@ -3455,6 +3455,20 @@
                     (list (cons p (lambda (x) (jt-jolt-strs->list (seam-invoke1 tags-fn x))))))))
     jolt-nil))
 
+;; Does a value tagged TAGS answer instance? for TNAME (its last segment IFACE)?
+;; By full name, or by simple name, but a qualified TNAME takes a simple tag only
+;; when no qualified tag in the list has that segment. jch-tags spells every class
+;; both ways, so demo.Process is not java.lang.Process (whose list holds "Process"
+;; only as java.lang.Process's short form), as jch-isa? has it. A library's
+;; simple-only tags (__register-class!) still match either spelling.
+(define (hsc-tags-name-class? tname iface tags)
+  (or (and (member tname tags) #t)
+      (and (member iface tags)
+           (or (string=? tname iface)
+               (not (exists (lambda (t) (and (not (string=? t iface))
+                                             (string=? (hsc-last-segment t) iface)))
+                            tags))))))
+
 ;; values that carry metadata (mirrors jolt-with-meta's set in natives-meta.ss).
 (define (hsc-imeta? x)
   (or (pvec? x) (pmap? x) (pset? x) (cseq? x) (empty-list-t? x)
@@ -3465,8 +3479,7 @@
       ;; the value's own class-graph tags (value-host-tags) are authoritative — the
       ;; SAME source protocol dispatch reads, so instance? and extend-protocol can't
       ;; disagree about the interfaces a builtin implements.
-      (if (let ((tags (value-host-tags val)))
-            (or (member (symbol-t-name type-sym) tags) (member iface tags)))
+      (if (hsc-tags-name-class? (symbol-t-name type-sym) iface (value-host-tags val))
           #t
       (let ((hit (cond
                    ;; IObj/IMeta — metadata-bearing values not tagged via jch-tags
