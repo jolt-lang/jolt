@@ -1081,6 +1081,15 @@
 (define (sc-equiv-miss? sc a b)
   (and (not (and (fixnum? a) (fixnum? b) (jolt-nil? (scoll-cmp sc))))
        (sc-cce-false (lambda () (sc-cmp-zero? sc a b)))))
+;; A key whose natural-order class answers compare = 0 exactly when = is true,
+;; and compares with nothing else but nil (checked against JVM 1.12.6: a string,
+;; keyword, symbol, char or boolean against another class is a
+;; ClassCastException). So a natural-order sorted coll holding one holds only
+;; that class and nil, and no element of another coll is equivalent to one of its
+;; keys without being =. Numbers (1 vs 1.0) and collections ([1] vs [1.0]) are
+;; not plain; nil is not either, since it sits beside any class.
+(define (sc-plain-key? x)
+  (or (string? x) (keyword-t? x) (symbol-t? x) (char? x) (boolean? x)))
 ;; SC's comparator finds A and B equivalent
 (define (sc-cmp-zero? sc a b)
   (let* ((cmp (scoll-cmp sc))
@@ -1108,7 +1117,8 @@
 ;; walk that matches every one answers what the JVM's lookups would. Only a miss
 ;; asks the comparator, which can still find the keys equivalent (1 and 1.0
 ;; under compare): in the lockstep, just for the pair that missed; against a hash
-;; coll, by walking the side the JVM walks. 'eq / 'ne, or #f to fall back to the
+;; coll, by walking the side the JVM walks, unless the missed key is one no
+;; natural-order key can be equivalent to without being = (sc-plain-key?). 'eq / 'ne, or #f to fall back to the
 ;; conversion (a record, a Java map, ...).
 (define (sorted-fast= a b)
   (define (verdict x) (if x 'eq 'ne))
@@ -1130,8 +1140,11 @@
      (cond
        ((pset? b)
         (and-count= (sc-count a) (pset-count b)
-          (or (sc-tree-every-kv? (scoll-tree a) (lambda (k v) (pset-contains? b k)))
-              (sc-cce-false (lambda () (pmap-every-kv? (pset-m b) (lambda (k v) (sc-has? a k))))))))
+          (let ((missed sc-absent))
+            (or (sc-tree-every-kv? (scoll-tree a)
+                  (lambda (k v) (or (pset-contains? b k) (begin (set! missed k) #f))))
+                (and (not (and (jolt-nil? (scoll-cmp a)) (sc-plain-key? missed)))
+                     (sc-cce-false (lambda () (pmap-every-kv? (pset-m b) (lambda (k v) (sc-has? a k))))))))))
        ((htable-sorted-set? b)
         (and-count= (sc-count a) (sc-count b)
           (if (same-cmp? a b)
