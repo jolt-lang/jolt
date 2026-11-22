@@ -88,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that only shares its class's simple name. A `java.lang.Process` isn't a
   `demo.Process` record, as `isa?` already answered, so `cast` to that record
   throws `ClassCastException`. A simple name such as `Process` still matches.
+  A thrown envelope carrying a JVM `:class` follows the same rule, so a record
+  named `IOException` no longer catches a `java.net.UnknownHostException`.
 - `.toString` on a vector, list or set returns the readable form `str` gives:
   `(.toString [1 "a"])` is `[1 "a"]`.
 
