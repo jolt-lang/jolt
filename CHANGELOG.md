@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a rebuild with other edits, share `*jolt-version*` but not the build id.
   `jolt.image/runtime-version` stays the Chez release alone, since an image
   holds data, and its docstring now says so.
+- **`FileChannel` can lock a file, so two processes can keep out of each
+  other's way.** `.tryLock` and `.lock`, with or without a position, size and
+  shared flag, answer a `java.nio.channels.FileLock` with `release`, `close`,
+  `isValid`, `isShared`, `channel`, `position`, `size` and `overlaps`. They
+  take POSIX record locks the way OpenJDK does on Unix, so a JVM and a jolt
+  process see each other's locks. `tryLock` answers nil when another process
+  holds an overlapping range, and `lock` waits for it. Inside one process a
+  second overlapping lock, through any channel on the file, is
+  `OverlappingFileLockException`, and closing a channel releases its locks.
+  An exclusive lock on a read-only channel is `NonWritableChannelException`
+  and a shared one on a write-only channel `NonReadableChannelException`, as
+  on the JDK. A channel now prints and answers `class` and `instance?` as a
+  `FileChannel` instead of a bare `:object`. Windows answers
+  `UnsupportedOperationException` for now.
+  `FileChannel/open` now really opens the file, so a missing file without
+  `CREATE` throws `NoSuchFileException`, an unreadable one
+  `AccessDeniedException`, and a write-open of a directory
+  `FileSystemException`, as on the JDK. Its options act as the JDK's too:
+  `CREATE_NEW` creates the file exclusively and throws
+  `FileAlreadyExistsException` when it exists, `TRUNCATE_EXISTING` empties a
+  file opened for writing, and neither `CREATE` nor `CREATE_NEW` makes a file
+  for a channel that only reads.
 
 ### Fixed
 

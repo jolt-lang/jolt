@@ -1897,12 +1897,23 @@
                                  (nio-attr-value fp nm follow?)))))))
   (set! files-accum-chunks (cons files-nofollow-time files-accum-chunks)))
 
-;; java.nio.channels.FileChannel/open — babashka.fs/touch uses it only to create
-;; a file (CREATE + WRITE) inside with-open, so support open+close of a channel.
-;; State: #(path size-at-open|#f). DELETE_ON_CLOSE unlinks the file as the
-;; channel opens, as the stream opens do (nio-delete-on-close!); nothing writes
-;; through this channel, so the size it had then is its size.
-(define (fc-close! self) jolt-nil)
+;; java.nio.channels.FileChannel/open. babashka.fs/touch opens one to create a
+;; file (CREATE + WRITE) inside with-open; nothing reads or writes through it.
+;; The channel keeps the file open on a port for its lifetime, which gives it
+;; the descriptor its locks are taken on. DELETE_ON_CLOSE unlinks the file as
+;; the channel opens, as the stream opens do (nio-delete-on-close!); nothing
+;; writes through this channel, so the size it had then is its size.
+;; State: #(path size-at-open|#f port open? readable? writable? file-id mutex)
+;; The mutex orders close against the lock calls: each fcntl runs with it held
+;; and the channel seen open, so a close on another thread can't leave one
+;; working on a closed descriptor, or on a reused one.
+(define (fc-path self) (vector-ref (jhost-state self) 0))
+(define (fc-port self) (vector-ref (jhost-state self) 2))
+(define (fc-open? self) (vector-ref (jhost-state self) 3))
+(define (fc-readable? self) (vector-ref (jhost-state self) 4))
+(define (fc-writable? self) (vector-ref (jhost-state self) 5))
+(define (fc-file-id self) (vector-ref (jhost-state self) 6))
+(define (fc-mutex self) (vector-ref (jhost-state self) 7))
 (let ((fc-statics
        (list (cons "open" (lambda (path . opts)
                             (if (nio-path? path)
@@ -1910,25 +1921,260 @@
                                 (apply nio-host-file-channel path opts)))))))
   (register-class-statics! "FileChannel" fc-statics)
   (register-class-statics! "java.nio.channels.FileChannel" fc-statics))
+;; What identifies the file for the in-process lock table: the (st_dev, st_ino)
+;; pair, so two paths to one file (a hard link, a symlink, a relative spelling)
+;; share their locks, as the JDK's FileLockTable keys them. Taken at open, before
+;; DELETE_ON_CLOSE can unlink the path. The path itself where stat can't answer.
+(define (nio-fc-file-id fp)
+  (let ((buf (and (not (nio-windows?)) (nio-stat-buf fp #t))))
+    (if buf
+        (cons (nio-layout-dev-ref (nio-stat-layout) buf) (bytevector-u64-ref buf 8 (native-endianness)))
+        fp)))
+;; The open options a writable channel opens with, the JDK's way: CREATE_NEW
+;; is an exclusive create (no `no-fail`, so the open itself fails on an existing
+;; file, with no check before it to race), CREATE makes a missing file, and
+;; TRUNCATE_EXISTING empties an existing one. A read-only channel ignores all
+;; three, as the JDK's does, so it never creates or truncates.
+(define (fc-write-options create-new? create? truncate?)
+  (cond (create-new? (file-options))
+        ((and create? truncate?) (file-options no-fail))
+        (create? (file-options no-fail no-truncate))
+        (truncate? (file-options no-create no-fail))
+        (else (file-options no-create no-fail no-truncate))))
 (define (nio-host-file-channel path . opts)
-                                (let ((fp (nfp path)))
-                                  (when (and (nio-opts-have? opts oopt-sym 'create) (not (file-exists? fp)))
-                                    (close-port (open-file-output-port fp (file-options no-fail))))
-                                  (if (nio-opts-have? opts oopt-sym 'delete-on-close)
-                                      (begin
-                                        (when (nio-windows?)
-                                          (throw-jvm 'UnsupportedOperationException "DELETE_ON_CLOSE not supported"))
-                                        (let ((size (nio-size fp (nio-shown path))))
-                                          (guard (_ (#t #f)) (delete-file fp))
-                                          (make-jhost "file-channel" (vector fp size))))
-                                      (make-jhost "file-channel" (vector fp #f)))))
+  (let* ((fp (nfp path))
+         (shown (nio-shown path))
+         (writable? (or (nio-opts-have? opts oopt-sym 'write) (nio-opts-have? opts oopt-sym 'append)))
+         (readable? (or (not writable?) (nio-opts-have? opts oopt-sym 'read))))
+    (let* ((wopts (and writable?
+                       (fc-write-options (nio-opts-have? opts oopt-sym 'create-new)
+                                         (nio-opts-have? opts oopt-sym 'create)
+                                         (nio-opts-have? opts oopt-sym 'truncate-existing))))
+           (port (nio-fs-call fp
+                              (lambda ()
+                                (cond ((and readable? writable?)
+                                       (open-file-input/output-port fp wopts (buffer-mode none)))
+                                      (writable? (open-file-output-port fp wopts (buffer-mode none)))
+                                      (else (open-file-input-port fp (file-options) (buffer-mode none)))))
+                              shown))
+           (id (nio-fc-file-id fp))
+           (size (and (nio-opts-have? opts oopt-sym 'delete-on-close)
+                      (begin
+                        (when (nio-windows?)
+                          (close-port port)
+                          (throw-jvm 'UnsupportedOperationException "DELETE_ON_CLOSE not supported"))
+                        (let ((size (nio-size fp shown)))
+                          (guard (_ (#t #f)) (delete-file fp))
+                          size)))))
+      (make-jhost "file-channel" (vector fp size port #t readable? writable? id (make-mutex))))))
 (hashtable-set! (nio-provider-path-ops default-nio-provider) "newFileChannel" nio-host-file-channel)
+
+;; ---- FileChannel.lock / tryLock -----------------------------------------------
+;; A lock is a POSIX record lock (fcntl F_SETLK on struct flock), which is what
+;; OpenJDK takes on Unix, so it excludes other processes, a JVM's included.
+;; Record locks belong to the process, not the descriptor: a second lock from
+;; this process over the same bytes would simply merge with the first, and
+;; closing ANY descriptor on the file drops every lock the process holds there.
+;; So, as the JDK does in FileLockTable, the process keeps its own table of the
+;; locks it holds per file, and a request overlapping one of them, through any
+;; channel, is OverlappingFileLockException rather than a second kernel lock.
+;;
+;; lock() waits by retrying F_SETLK with a growing sleep, not with F_SETLKW: the
+;; wait has to be a collect-safe call so other threads can still collect, fcntl
+;; is variadic, and the blocking foreign-procedure form has no slot for the
+;; variadic calling convention Apple arm64 needs. The sleep is Thread.sleep's,
+;; so an interrupt ends the wait.
+;;
+;; Windows has no fcntl; locking there answers UnsupportedOperationException.
+;;
+;; struct flock and the constants, offsetof-measured with cc on macOS (arm64 and
+;; x86_64) and gcc in arm64 and amd64 Linux containers:
+;;   #(sizeof l_start@ l_len@ l_type@ l_whence@ F_SETLK F_RDLCK F_WRLCK F_UNLCK EAGAIN)
+;; EACCES (13) and EINTR (4) are the same on both. A function rather than a
+;; constant so a saved image never carries the build host's answer.
+(define (nio-flock-layout)
+  (case (sa-os-family)
+    ((macos) '#(24 0 8 20 22 8 1 3 2 35))
+    ((linux) (and (memq (sa-arch) '(x86-64 arm64)) '#(32 8 16 0 2 6 0 1 2 11)))
+    (else #f)))
+(define c-fcntl-flock
+  (and (not (nio-windows?))
+       (jolt-foreign-proc-safe (__varargs_after 2) "fcntl" '(int int u8*) 'int)))
+;; One F_SETLK over [start, start+len), len 0 meaning to the end of the file and
+;; past it. KIND is 'shared, 'exclusive or 'unlock. #t when it was granted, #f
+;; when another process holds a conflicting lock; any other failure throws.
+(define (nio-flock! port kind start len)
+  (let* ((lay (nio-flock-layout))
+         (fd (port-file-descriptor port))
+         (bv (make-bytevector (vector-ref lay 0) 0))
+         (e (native-endianness)))
+    (bytevector-s64-set! bv (vector-ref lay 1) start e)
+    (bytevector-s64-set! bv (vector-ref lay 2) len e)
+    (bytevector-s16-set! bv (vector-ref lay 3)
+                         (vector-ref lay (case kind ((shared) 6) ((exclusive) 7) (else 8))) e)
+    (bytevector-s16-set! bv (vector-ref lay 4) 0 e)          ; SEEK_SET
+    (let retry ()
+      (let-values (((r err) (io-call+errno (c-fcntl-flock fd (vector-ref lay 5) bv))))
+        (cond ((= r 0) #t)
+              ((= err 4) (retry))
+              ((or (= err (vector-ref lay 9)) (= err 13)) #f)
+              (else (throw-jvm 'IOException (if c-strerror (c-strerror err) "fcntl failed"))))))))
+;; The kernel range of a lock: the JDK passes Long.MAX_VALUE as "to the end".
+(define (nio-flock-len size) (if (= size #x7FFFFFFFFFFFFFFF) 0 size))
+
+;; State: #(channel position size shared? valid?)
+(define (fl-channel l) (vector-ref (jhost-state l) 0))
+(define (fl-position l) (vector-ref (jhost-state l) 1))
+(define (fl-size l) (vector-ref (jhost-state l) 2))
+(define (fl-shared? l) (vector-ref (jhost-state l) 3))
+(define (fl-valid? l) (vector-ref (jhost-state l) 4))
+(define (fl-invalidate! l) (vector-set! (jhost-state l) 4 #f))
+;; FileLock.overlaps, the JDK's: a size of 0 is an unbounded range, a negative
+;; one overlaps nothing. Exact integers, so the sums the JDK guards against
+;; overflowing are simply large.
+(define (fl-overlaps? l position size)
+  (and (>= size 0)
+       (> (+ (fl-position l) (fl-size l)) position)
+       (or (= size 0) (> (+ position size) (fl-position l)))))
+(define (fl-string l)
+  (string-append "sun.nio.ch.FileLockImpl[" (number->string (fl-position l)) ":"
+                 (number->string (fl-size l)) (if (fl-shared? l) " shared" " exclusive")
+                 (if (fl-valid? l) " valid]" " invalid]")))
+
+;; file-id -> the locks this process holds on that file, through any channel
+(define nio-file-locks (make-hashtable equal-hash equal?))
+(define nio-file-locks-mu (make-mutex))
+(define (nio-file-locks-add! l)
+  (let ((id (fc-file-id (fl-channel l))))
+    (jolt-with-mutex nio-file-locks-mu
+      (let ((held (hashtable-ref nio-file-locks id '())))
+        (when (exists (lambda (h) (fl-overlaps? h (fl-position l) (fl-size l))) held)
+          (throw-jvm 'java.nio.channels.OverlappingFileLockException jolt-nil))
+        (hashtable-set! nio-file-locks id (cons l held))))))
+(define (nio-file-locks-remove! l)
+  (let ((id (fc-file-id (fl-channel l))))
+    (jolt-with-mutex nio-file-locks-mu
+      (let ((left (remq l (hashtable-ref nio-file-locks id '()))))
+        (if (null? left)
+            (hashtable-delete! nio-file-locks id)
+            (hashtable-set! nio-file-locks id left))))))
+(define (nio-file-locks-of ch)
+  (jolt-with-mutex nio-file-locks-mu
+    (filter (lambda (l) (eq? (fl-channel l) ch))
+            (hashtable-ref nio-file-locks (fc-file-id ch) '()))))
+
+(define (fc-ensure-open! self)
+  (unless (fc-open? self)
+    (throw-jvm 'java.nio.channels.ClosedChannelException jolt-nil)))
+;; The checks in the JDK's order: closed, then the channel's mode, then the
+;; range (FileLock's constructor). A size of 0 means from position to the end.
+(define (fc-new-lock self position size shared?)
+  (fc-ensure-open! self)
+  (let ((position (jnum->exact position)) (size (jnum->exact size)) (shared? (jolt-truthy? shared?)))
+    (when (and shared? (not (fc-readable? self)))
+      (throw-jvm 'java.nio.channels.NonReadableChannelException jolt-nil))
+    (when (and (not shared?) (not (fc-writable? self)))
+      (throw-jvm 'java.nio.channels.NonWritableChannelException jolt-nil))
+    (let ((size (if (= size 0) (- #x7FFFFFFFFFFFFFFF (max 0 position)) size)))
+      (cond ((< position 0) (throw-jvm 'IllegalArgumentException "Negative position"))
+            ((< size 0) (throw-jvm 'IllegalArgumentException "Negative size"))
+            ((> (+ position size) #x7FFFFFFFFFFFFFFF)
+             (throw-jvm 'IllegalArgumentException "Negative position + size")))
+      (unless (and c-fcntl-flock (nio-flock-layout))
+        (throw-jvm 'UnsupportedOperationException
+                   (string-append "FileChannel locking is not supported on this host ("
+                                  (sa-host-tag) ")")))
+      (make-jhost "file-lock" (vector self position size shared? #t)))))
+;; A close that got in after the open check is AsynchronousCloseException,
+;; as when the JDK's channel is closed under a lock call.
+(define (fl-kernel-lock! l)
+  (let ((ch (fl-channel l)))
+    (jolt-with-mutex (fc-mutex ch)
+      (unless (fc-open? ch)
+        (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+      (nio-flock! (fc-port ch) (if (fl-shared? l) 'shared 'exclusive)
+                  (fl-position l) (nio-flock-len (fl-size l))))))
+;; tryLock: the lock, or nil when another process holds an overlapping one.
+(define (fc-try-lock self position size shared?)
+  (let ((l (fc-new-lock self position size shared?)))
+    (nio-file-locks-add! l)
+    (if (guard (e (#t (nio-file-locks-remove! l) (raise e))) (fl-kernel-lock! l))
+        l
+        (begin (nio-file-locks-remove! l) jolt-nil))))
+;; lock: retry until granted. An interrupt ends the wait the JDK's way: the
+;; channel closes and FileLockInterruptionException is thrown with the thread's
+;; interrupt status still set.
+(define (fc-lock self position size shared?)
+  (let ((l (fc-new-lock self position size shared?)) (ibox (current-interrupt-box)))
+    (define (interrupted!)
+      (set-box! ibox #t)
+      (fc-close! self)
+      (throw-jvm 'java.nio.channels.FileLockInterruptionException jolt-nil))
+    (nio-file-locks-add! l)
+    (guard (e (#t (nio-file-locks-remove! l) (raise e)))
+      (let wait ((ms 1))
+        (cond ((jolt-interrupted? ibox) (interrupted!))
+              ((not (fc-open? self))
+               (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+              ((fl-kernel-lock! l) l)
+              (else
+               (when (guard (_ (#t #t)) (jolt-thread-sleep-ms ms) #f) (interrupted!))
+               (wait (min 50 (* ms 2)))))))))
+(define (fl-release! l)
+  (let ((ch (fl-channel l)))
+    (jolt-with-mutex (fc-mutex ch)
+      (unless (fc-open? ch)
+        (throw-jvm 'java.nio.channels.ClosedChannelException jolt-nil))
+      (when (fl-valid? l)
+        (nio-flock! (fc-port ch) 'unlock (fl-position l) (nio-flock-len (fl-size l)))
+        (fl-invalidate! l)
+        (nio-file-locks-remove! l))))
+  jolt-nil)
+(register-host-methods! "file-lock"
+  (list (cons "release" fl-release!)
+        (cons "close" fl-release!)
+        (cons "isValid" fl-valid?)
+        (cons "isShared" fl-shared?)
+        (cons "channel" fl-channel)
+        (cons "acquiredBy" fl-channel)
+        (cons "position" fl-position)
+        (cons "size" fl-size)
+        (cons "overlaps" (lambda (self position size)
+                           (fl-overlaps? self (jnum->exact position) (jnum->exact size))))
+        (cons "toString" fl-string)))
+(hashtable-set! jhost-tag->fqn "file-lock" "sun.nio.ch.FileLockImpl")
+
+;; Closing the channel releases the locks taken through it, then the descriptor.
+(define (fc-close! self)
+  (jolt-with-mutex (fc-mutex self)
+    (when (fc-open? self)
+      (vector-set! (jhost-state self) 3 #f)
+      (for-each (lambda (l)
+                  (when (fl-valid? l)
+                    (guard (_ (#t #f))
+                      (nio-flock! (fc-port self) 'unlock (fl-position l) (nio-flock-len (fl-size l))))
+                    (fl-invalidate! l))
+                  (nio-file-locks-remove! l))
+                (nio-file-locks-of self))
+      (close-port (fc-port self))))
+  jolt-nil)
 (register-host-methods! "file-channel"
   (list (cons "close" fc-close!)
+        (cons "isOpen" fc-open?)
+        (cons "tryLock" (case-lambda
+                          ((self) (fc-try-lock self 0 #x7FFFFFFFFFFFFFFF #f))
+                          ((self position size shared?) (fc-try-lock self position size shared?))))
+        (cons "lock" (case-lambda
+                       ((self) (fc-lock self 0 #x7FFFFFFFFFFFFFFF #f))
+                       ((self position size shared?) (fc-lock self position size shared?))))
         (cons "size" (lambda (self) (or (vector-ref (jhost-state self) 1)
-                                        (nio-size (vector-ref (jhost-state self) 0)))))))
+                                        (nio-size (fc-path self)))))))
+(hashtable-set! jhost-tag->fqn "file-channel" "java.nio.channels.FileChannel")
 (let ((prev jolt-close))
-  (set! jolt-close (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "file-channel")) (fc-close! x) (prev x))))
+  (set! jolt-close (lambda (x)
+                     (cond ((and (jhost? x) (string=? (jhost-tag x) "file-channel")) (fc-close! x))
+                           ((and (jhost? x) (string=? (jhost-tag x) "file-lock")) (fl-release! x))
+                           (else (prev x)))))
   (def-var! "clojure.core" "__close" jolt-close))
 
 ;; A missing target makes the time setters throw NoSuchFileException, as
