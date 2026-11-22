@@ -3669,3 +3669,12 @@
 ;; jolt version string — one source (jolt-version-string, rt.ss): the baked
 ;; release tag in a binary, $JOLT_VERSION under bin/jolt, else "dev".
 (def-var! "jolt.host" "jolt-version" (lambda () (jolt-version-string)))
+;; The identity of this exact build, for a cache of compiled code kept outside
+;; jolt: the version, the runtime fingerprint the AOT cache names its
+;; generations with, and the Chez release. Two builds of one dirty commit, or a
+;; rebuild with other edits, share a version but not this. image-runtime-version
+;; is the Chez release alone, because an image holds data only.
+(def-var! "jolt.host" "build-id"
+  (lambda ()
+    (string-append (jolt-version-string) "-" (or (aot-runtime-fingerprint) "nofp")
+                   "-" (jolt-image-runtime-version))))

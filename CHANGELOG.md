@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`(jolt.host/build-id)` names the exact build that is running (#1793).**
+  It joins the jolt version, the runtime fingerprint jolt's own AOT cache keys
+  its generations on, and the Chez release, for example
+  `v0.8.28-71-g35af4916-dirty-B6-3AD3D880-chez-1041`. A tool that keeps its
+  own cache of compiled code can key on it: two builds of one dirty commit, or
+  a rebuild with other edits, share `*jolt-version*` but not the build id.
+  `jolt.image/runtime-version` stays the Chez release alone, since an image
+  holds data, and its docstring now says so.
+
 ### Fixed
 
 - A one-argument `(str x)` goes through the `clojure.core/str` var again, so

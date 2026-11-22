@@ -21,6 +21,7 @@ backtrace-string
 block-sigint
 build-binary
 build-compile-worker
+build-id
 build-lib-links?
 build-library
 bytes-allocated
