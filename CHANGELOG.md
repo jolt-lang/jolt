@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A task that calls `babashka.tasks/jolt` or `clojure` under a built jolt runs
   that same jolt again. It used to run whichever `jolt` was on PATH, or fail
   with `exec: jolt: not found` when there was none (#1787).
+  On Windows the binary could not name its own path, so a task there still
+  went to PATH; it asks Windows for it now.
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the
@@ -72,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- jolt.ffi's fixed costs are lower (#1753). A one-allocation
+  `(with-open [a (ffi/confined-arena)] (ffi/alloc a 64))` went from 820 to
+  460 ns and `(ffi/free (ffi/alloc 64))` from 126 to 87: the size table no
+  longer takes its lock through a `dynamic-wind`, arena creation skips the
+  automatic-arena drain while none is live, and the arena attach no longer
+  goes through variadic `update`. `(ffi/write-array p :double arr)` of 35
+  doubles went from 230 to 137 ns, mostly by remembering each type keyword's
+  Chez type instead of matching its name per call.
+- `double-array`, `float-array`, `long-array`, `int-array` and `short-array`
+  built from a vector or another array fill the backing straight from it
+  instead of draining a seq: 1000 doubles from a vector went from 13.4 to
+  3.9 us, and 35 from a double-array from 1650 to 180 ns.
+- `update` has clojure.core's fixed arities instead of only `[m k f & args]`,
+  so it no longer goes through `apply`: `(update m :k inc)` went from 113 to
+  35 ns and `(update m :k + 1 2 3)` from 204 to 46.
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.

@@ -1292,6 +1292,7 @@
              (and f
                   (let* ((buf (make-bytevector 4096 0)) (n (f "/proc/self/exe" buf 4095)))
                     (and (fx>? n 0) (aot-cstring buf))))))
+          ((windows) (win32-exe-path))
           (else #f)))))
   (and (string? aot-self-exe-memo) (file-exists? aot-self-exe-memo) aot-self-exe-memo))
 ;; #t only in a built jolt/app binary. Its launcher (build-jolt.ss
