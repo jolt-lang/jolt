@@ -32,6 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `exec: jolt: not found` when there was none (#1787).
   On Windows the binary could not name its own path, so a task there still
   went to PATH; it asks Windows for it now.
+- A `ProcessBuilder` file redirect (`to`, `appendTo`, `from`, `DISCARD`) no
+  longer runs the child through `/bin/sh`. jolt opens the file before the spawn,
+  as the JDK does, so a target that cannot be opened throws `Cannot run program
+  "x": path (No such file or directory)` from `start()` instead of starting a
+  child that exits 1.
+- `jolt build`'s parallel compile workers and the run-path AOT cache's
+  background worker start without a shell, so both now run on Windows too. The
+  build workers used to need a `--build-worker-probe` round trip through `sh`
+  before a build could fan out.
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the

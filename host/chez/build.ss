@@ -753,6 +753,7 @@
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
     "(load \"host/chez/diagnostic-render.ss\")"
+    "(load \"host/chez/worker-spawn.ss\")"
     "(load \"host/chez/java/ffi.ss\")"
     (string-append "(set-source-roots! " (ldr-install-roots-str) ")")))
 
@@ -3991,38 +3992,12 @@
             (when (> t limit) (guard (e (#t #f)) (delete-file (car (car fs)))))
             (loop (cdr fs) t)))))))
 
-;; The executable this process is running, or #f when it cannot be named — then
-;; units compile in process. Asked of the OS rather than read off argv[0], which
-;; is whatever the caller passed.
+;; The jolt binary this process is, or #f — then units compile in process. Only
+;; a built jolt answers (loader.ss jolt-standalone-binary): under the dev
+;; launcher the process is a plain Chez, and a worker argv handed to that would
+;; not compile anything.
 (define (bld-self-exe)
-  (guard (e (#t #f))
-    (let ((p (case (sa-os-family)
-               ((macos)
-                (let ((f (jolt-foreign-proc-safe "_NSGetExecutablePath" '(u8* u8*) 'int)))
-                  (and f
-                       (let ((buf (make-bytevector 4096 0)) (sz (make-bytevector 4 0)))
-                         (bytevector-u32-native-set! sz 0 4096)
-                         (and (fx=? 0 (f buf sz)) (bld-cstring buf))))))
-               ((linux)
-                (let ((f (jolt-foreign-proc-safe "readlink" '(string u8* size_t) 'long)))
-                  (and f
-                       (let* ((buf (make-bytevector 4096 0)) (n (f "/proc/self/exe" buf 4095)))
-                         (and (> n 0) (bld-cstring buf))))))
-               (else #f))))
-      (and p (file-exists? p) (bld-jolt-exe? p) p))))
-;; Does PATH answer the worker probe? Under the dev launcher this process is a
-;; plain Chez running jolt, and a worker argv handed to that would not compile
-;; anything. One process start, and only for a build with misses to share out.
-(define (bld-jolt-exe? path)
-  (guard (e (#t #f))
-    (string=? "jolt-build-worker"
-              (bld-sh-capture (string-append (bld-sh-quote path)
-                                             " --build-worker-probe < /dev/null 2>/dev/null")))))
-(define (bld-cstring bv)
-  (let loop ((i 0))
-    (if (or (fx=? i (bytevector-length bv)) (fx=? 0 (bytevector-u8-ref bv i)))
-        (utf8->string (let ((out (make-bytevector i))) (bytevector-copy! bv 0 out 0 i) out))
-        (loop (fx+ i 1)))))
+  (and jolt-standalone-binary (aot-self-exe)))
 
 (define (bld-build-jobs)
   (let ((v (getenv "JOLT_BUILD_JOBS")))
@@ -4048,14 +4023,19 @@
           (rename-file vso-part vso))))))
 
 ;; Entry for a child: run every job in MANIFEST (a file of `write`n job vectors).
+;; The closing line lands in the child's log: a parent that falls back to
+;; compiling in process looks the same from outside, so a gate needs the
+;; worker's own word that it ran.
 (define (bld-compile-worker manifest)
   (let ((ip (open-input-file manifest)))
-    (let loop ()
+    (let loop ((n 0))
       (let ((job (read ip)))
-        (unless (eof-object? job)
-          (parameterize ((current-output-port (open-output-string)))   ; compile-file's "compiling …"
-            (bld-run-job! job))
-          (loop))))
+        (if (eof-object? job)
+            (printf "jolt-build-worker: ~a units\n" n)
+            (begin
+              (parameterize ((current-output-port (open-output-string)))   ; compile-file's "compiling …"
+                (bld-run-job! job))
+              (loop (+ n 1))))))
     (close-port ip)))
 
 ;; Split JOBS (with sizes) into N bins, largest first into the lightest bin.
@@ -4076,21 +4056,19 @@
 ;; produce compiles again in process, where a failure raises with its real
 ;; message.
 (define (bld-run-jobs-parallel! builddir exe jobs n)
-  (let* ((bins (bld-bin-jobs jobs n))
-         (cmds (let loop ((bs bins) (i 0) (acc '()))
-                 (if (null? bs) (reverse acc)
-                     (let ((mf (string-append builddir "/jobs-" (number->string i) ".edn")))
-                       (let ((op (open-output-file mf 'replace)))
-                         (for-each (lambda (j) (write j op) (newline op)) (car bs))
-                         (close-port op))
-                       (loop (cdr bs) (+ i 1)
-                             (cons (string-append
-                                     (bld-sh-quote exe) " --build-worker " (bld-sh-quote mf)
-                                     " < /dev/null > " (bld-sh-quote (string-append mf ".log")) " 2>&1")
-                                   acc)))))))
-    (bld-system->log
-      (string-append "( " (fold-left (lambda (acc c) (string-append acc c " & ")) "" cmds) "wait )")
-      (string-append builddir "/jobs.log"))))
+  (let ((procs
+          (let loop ((bs (bld-bin-jobs jobs n)) (i 0) (acc '()))
+            (if (null? bs) (reverse acc)
+                (let ((mf (string-append builddir "/jobs-" (number->string i) ".edn")))
+                  (let ((op (open-output-file mf 'replace)))
+                    (for-each (lambda (j) (write j op) (newline op)) (car bs))
+                    (close-port op))
+                  ;; a child that cannot start leaves its units to the parent
+                  (loop (cdr bs) (+ i 1)
+                        (cons (jolt-spawn-worker (list exe "--build-worker" mf)
+                                                 (string-append mf ".log"))
+                              acc)))))))
+    (for-each (lambda (p) (when p (jolt-wait-worker p))) procs)))
 
 ;; Compile the app units (src so kind) under MODE, from the cache where it can.
 ;; VFASL? also converts each compiled miss while its child has it (the split vfasl
