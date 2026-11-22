@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A task that calls `babashka.tasks/jolt` or `clojure` under a built jolt runs
   that same jolt again. It used to run whichever `jolt` was on PATH, or fail
   with `exec: jolt: not found` when there was none (#1787).
+  On Windows the binary could not name its own path, so a task there still
+  went to PATH; it asks Windows for it now.
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the

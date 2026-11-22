@@ -289,30 +289,16 @@
 ;; deliberately absent — a bare name already reaches them, and the versioned
 ;; OpenSSL builds are never there.
 ;;
-;; The executable is asked of Windows itself: (command-line)'s first element is
-;; argv[0] as TYPED — plain "jolt" when jolt.exe is found on PATH, which has no
-;; directory in it — and under `scheme --script` it is the script. Either way the
-;; folder holding jolt.exe went unsearched, and a DLL copied beside it was not
-;; found by the one lookup that could find it (jolt-lang/jolt#1127).
-(define-win32-proc ffi-get-module-file-name-w
-  "kernel32.dll" "GetModuleFileNameW" (void* u8* unsigned-32) unsigned-32)
-
-(define (ffi-win32-exe-path)
-  (let ((f (ffi-get-module-file-name-w)))
-    (and f
-         (guard (e (#t #f))
-           (let* ((cap 32768)
-                  (bv (make-bytevector (* 2 cap) 0))
-                  (n (f 0 bv cap)))
-             (and (> n 0) (< n cap)
-                  (let ((out (make-bytevector (* 2 n))))
-                    (bytevector-copy! bv 0 out 0 (* 2 n))
-                    (utf16->string out (endianness little)))))))))
-
+;; The executable is asked of Windows itself (io.ss win32-exe-path): (command-line)'s
+;; first element is argv[0] as TYPED — plain "jolt" when jolt.exe is found on
+;; PATH, which has no directory in it — and under `scheme --script` it is the
+;; script. Either way the folder holding jolt.exe went unsearched, and a DLL
+;; copied beside it was not found by the one lookup that could find it
+;; (jolt-lang/jolt#1127).
 (define (ffi-exe-dir)
   (guard (e (#t #f))
     (let* ((argv (command-line))
-           (exe (or (ffi-win32-exe-path) (and (pair? argv) (car argv)))))
+           (exe (or (win32-exe-path) (and (pair? argv) (car argv)))))
       (and (string? exe)
            (let loop ((i (- (string-length exe) 1)))
              (cond ((< i 0) #f)
