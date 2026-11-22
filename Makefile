@@ -183,7 +183,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   protoret accfix pic narrow directlink linkedrace mintgate directcall defmetacells staticsite arraymap hamt recfast recfold arraybacking largebytesgc largefxgc unitcontext numeric oparity s64wrap toplevelinline mathfl flonumdisp flarr \
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
-  gatebootsmoke aotcachesmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
+  gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
   systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
 TEST-GATES := submodules selfhost ci
@@ -573,6 +573,13 @@ seeddefs:
 # `jolt build` produces a working standalone binary.
 buildsmoke: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/build-smoke.sh
+
+# The AOT cache's worker removes everything it wrote once its run is gone: after
+# a cold run, after a ^C to the run's process group, and (swept by the next run)
+# after the worker itself was killed. Needs a built binary: source mode has no
+# worker to spawn.
+aotworkersmoke: testbin
+	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh test/chez/aot-worker-cleanup-smoke.sh
 
 embeddedresources: testbin
 	@JOLT_BIN="$${JOLT_BIN:-target/release/jolt}" sh host/chez/embedded-resource-smoke.sh
