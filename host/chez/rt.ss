@@ -1538,6 +1538,7 @@
 (define jolt-vreg-site 2)        ; #&('ns/fn' . line) innermost, ('ns/fn' . line) outer, or 0
 (define jolt-vreg-catch-line 3)  ; the site at the throw a catch clause is handling
 (define jolt-vreg-print-readably 4)  ; the print family's *print-readably* override; 0 = unset
+(define jolt-vreg-print-dup 15)  ; #t while this thread prints under *print-dup* (java/io-streams.ss)
 (define jolt-vreg-current-fiber 0)  ; fibers.ss: the running fiber record, or 0 (fixnum) when not on a fiber
 ;; slot 1: fibers.ss jolt-vreg-park-unwinding — a park escape is unwinding this carrier
 ;; slot 5: hasheq.ss jolt-vreg-hasheq-caches — this thread's string hash cache and weak admission buckets
@@ -1565,6 +1566,10 @@
 ;; slot 13: ticks.ss jolt-vreg-ticks
 ;; slot 14: printing.ss jolt-vreg-deref-printing — the cycle check's state for
 ;;   the IDeref values this thread is printing
+;; slot 15: jolt-vreg-print-dup (above) — #t while this thread prints under
+;;   *print-dup*, so the native printer sends each element to print-dup; set and
+;;   cleared at the print entries (java/io-streams.ss), read per element. Not 12:
+;;   the Gambit kernel still keeps its outer site there.
 ;; Effective *print-readably* for the readable renderer's string/char cases. The
 ;; print family stashes its override in the slot above — a virtual-register write
 ;; is ~1ns vs a pmap alloc + fold + two thread-parameter writes per dynamic
@@ -1579,14 +1584,16 @@
 ;; vars.ss/rt.ss finish loading after this point. Same shape as pm-cell
 ;; (io-streams.ss) and the cells the backend emits for compiled code.
 (define pr-readably-cell #f)
+;; Under *print-dup* a string or a char prints readably whatever *print-readably*
+;; says, as core_print.clj's (or *print-dup* *print-readably*) has it.
 (define (jolt-pr-readable?)
   (let ((o (virtual-register jolt-vreg-print-readably)))
-    (if (eq? o 0)
-        (begin
-          (unless pr-readably-cell
-            (set! pr-readably-cell (jolt-var "clojure.core" "*print-readably*")))
-          (jolt-truthy? (jolt-var-get pr-readably-cell)))
-        (jolt-truthy? o))))
+    (cond ((eq? (virtual-register jolt-vreg-print-dup) #t) #t)
+          ((eq? o 0)
+           (unless pr-readably-cell
+             (set! pr-readably-cell (jolt-var "clojure.core" "*print-readably*")))
+           (jolt-truthy? (jolt-var-get pr-readably-cell)))
+          (else (jolt-truthy? o)))))
 (define (jolt-trace-enable!) (set! jolt-trace-on? #t))
 
 ;; TAIL call emissions store their static site here right before the call
@@ -2785,12 +2792,15 @@
 ;; limited-string walkers never truncate.
 (define plevel-cell #f)
 (define plength-cell #f)
+;; Neither limits a print under *print-dup*, which has to read back whole.
 (define (jolt-print-level)
   (unless plevel-cell (set! plevel-cell (jolt-var "clojure.core" "*print-level*")))
-  (let ((v (jolt-var-get plevel-cell))) (and (number? v) v)))
+  (let ((v (jolt-var-get plevel-cell)))
+    (and (number? v) (not (eq? (virtual-register jolt-vreg-print-dup) #t)) v)))
 (define (jolt-print-length)
   (unless plength-cell (set! plength-cell (jolt-var "clojure.core" "*print-length*")))
-  (let ((v (jolt-var-get plength-cell))) (and (number? v) v)))
+  (let ((v (jolt-var-get plength-cell)))
+    (and (number? v) (not (eq? (virtual-register jolt-vreg-print-dup) #t)) v)))
 (define jolt-print-depth (make-thread-parameter 0))
 ;; A collection at depth >= *print-level* renders as "#". The top-level collection
 ;; is depth 0, so *print-level* 0 collapses any collection, 1 keeps the outermost.

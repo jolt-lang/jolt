@@ -98,12 +98,16 @@
 ;; only reached for values no branch here claims, and a record is claimed.
 (define str-tostring-hook #f)
 (define (set-str-tostring-hook! f) (set! str-tostring-hook f))
+;; A collection's rendering: readable, unless the java layer replaces it with one
+;; that follows *print-dup* (io-streams.ss).
+(define str-coll-render (lambda (v) (jolt-pr-readable v)))
+(define (set-str-coll-render! f) (set! str-coll-render f))
 (define (jolt-str-one v)
   (let ((own (and str-tostring-hook (str-tostring-hook v))))
     (cond
       ((string? own) own)
       ((or (pvec? v) (pmap? v) (pset? v) (cseq? v) (empty-list-t? v) (jolt-lazyseq? v))
-       (jolt-pr-readable v))
+       (str-coll-render v))
       (else (jolt-str-render-one v)))))
 ;; A string renders as itself. jolt-str-one asks the toString hook first, but
 ;; that hook only ever answers for a record (protocols.ss), so a string can skip
