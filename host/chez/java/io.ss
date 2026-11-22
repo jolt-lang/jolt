@@ -3264,7 +3264,10 @@
 
 ;; --- with-open's close seam (__close): a map-like value closes via its :close
 ;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
-;; else is an error.
+;; else is an error. The :close keyword is interned once here: with-open closes
+;; through this on every exit, and interning it per call (a string hash and an
+;; intern-table probe) was a measurable share of a short-lived ffi arena.
+(define io-kw-close (keyword #f "close"))
 (define (jolt-close x)
   (cond
     ((jolt-nil? x) jolt-nil)
@@ -3286,7 +3289,7 @@
     ((iface-method x "close" #f)
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
     (else
-     (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
+     (let ((closef (jolt-get x io-kw-close jolt-nil)))
        (if (and (not (jolt-nil? closef)) (procedure? closef))
            (begin (jolt-invoke closef) jolt-nil)
            (throw-jvm (quote IllegalArgumentException) "with-open: no .close method on value"))))))
