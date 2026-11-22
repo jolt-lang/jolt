@@ -1931,26 +1931,26 @@
          (values opts '()))
         (else (values (seq->list (jolt-seq (car opts))) (cdr opts)))))
 (define (link-option? x) (and (jhost? x) (string=? (jhost-tag x) "link-option")))
-;; Flags.toFlags (UnixChannelFactory, and WindowsChannelFactory's the same for
-;; these): each option a symbol, SPARSE dropped, NOFOLLOW_LINKS 'nofollow-links
-;; where the host can honour it. null is NullPointerException; anything else,
-;; NOFOLLOW_LINKS on a host that can't, is UnsupportedOperationException naming
-;; the option.
-(define (fc-option-syms opts nofollow-ok?)
+;; Flags.toFlags (UnixChannelFactory, WindowsChannelFactory): each option a
+;; symbol, NOFOLLOW_LINKS 'nofollow-links where the host can honour it. null is
+;; NullPointerException; anything else, NOFOLLOW_LINKS on a host that can't, is
+;; UnsupportedOperationException with the host's message (UNKNOWN-MSG): Unix
+;; names the option, Windows says nothing.
+(define (fc-option-syms opts nofollow-ok? unknown-msg)
   (fold-left
     (lambda (acc o)
-      (cond ((oopt-sym o) => (lambda (s) (if (eq? s 'sparse) acc (cons s acc))))
+      (cond ((oopt-sym o) => (lambda (s) (cons s acc)))
             ((and (link-option? o) nofollow-ok?) (cons 'nofollow-links acc))
             ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
-            (else (throw-jvm 'UnsupportedOperationException
-                             (string-append (if (link-option? o) "NOFOLLOW_LINKS" (jolt-str-render-one o))
-                                            " not supported")))))
+            (else (throw-jvm 'UnsupportedOperationException (unknown-msg o)))))
     '() opts))
+(define (fc-posix-unknown-option o)
+  (string-append (if (link-option? o) "NOFOLLOW_LINKS" (jolt-str-render-one o)) " not supported"))
 ;; newFileChannel's defaults and checks, before anything touches the disk: with
 ;; neither READ nor WRITE a channel reads, or writes when APPEND is given; READ
 ;; with APPEND, and APPEND with TRUNCATE_EXISTING, are IllegalArgumentException.
-(define (fc-open-flags opts nofollow-ok?)
-  (let* ((syms (fc-option-syms opts nofollow-ok?))
+(define (fc-open-flags opts nofollow-ok? unknown-msg)
+  (let* ((syms (fc-option-syms opts nofollow-ok? unknown-msg))
          (syms (if (or (memq 'read syms) (memq 'write syms))
                    syms
                    (cons (if (memq 'append syms) 'write 'read) syms))))
@@ -2075,11 +2075,16 @@
 (define (fc-posix-can-lock?) (and c-fcntl-flock (nio-flock-layout) #t))
 ;; What identifies the file for the in-process lock table: the (st_dev, st_ino)
 ;; pair, so two paths to one file (a hard link, a symlink, a relative spelling)
-;; share their locks, as the JDK's FileLockTable keys them. Taken right after the
-;; open, before DELETE_ON_CLOSE can unlink the path. The path where stat can't
-;; answer.
+;; share their locks, as the JDK's FileLockTable keys them (FileKey.create(fd)).
+;; fstat of the descriptor, which a DELETE_ON_CLOSE unlink or a rename doesn't
+;; change; the path where fstat isn't bound (glibc before 2.33), and the path
+;; string where stat can't answer either. struct stat is stat's (nio-stat-layout).
+(define c-fc-fstat
+  (and (not (nio-windows?)) (jolt-foreign-proc-safe "fstat" '(int u8*) 'int)))
 (define (fc-posix-file-id fd fp)
-  (let ((buf (nio-stat-buf fp #t)))
+  (let ((buf (or (and c-fc-fstat (nio-stat-layout)
+                      (let ((b (make-bytevector 256 0))) (and (= 0 (c-fc-fstat fd b)) b)))
+                 (nio-stat-buf fp #t))))
     (if buf
         (cons (nio-layout-dev-ref (nio-stat-layout) buf) (bytevector-u64-ref buf 8 (native-endianness)))
         fp)))
@@ -2096,6 +2101,10 @@
   "kernel32.dll" "UnlockFileEx" (iptr unsigned-32 unsigned-32 unsigned-32 u8*) int)
 (define-win32-proc win32-get-file-size-ex
   "kernel32.dll" "GetFileSizeEx" (iptr u8*) int)
+(define-win32-proc win32-device-io-control
+  "kernel32.dll" "DeviceIoControl" (iptr unsigned-32 void* unsigned-32 void* unsigned-32 u8* void*) int)
+(define-win32-proc win32-get-overlapped-result
+  "kernel32.dll" "GetOverlappedResult" (iptr u8* u8* int) int)
 (define-win32-proc win32-set-end-of-file
   "kernel32.dll" "SetEndOfFile" (iptr) int)
 (define-win32-proc win32-get-file-information-by-handle
@@ -2114,6 +2123,8 @@
 (define win32-LOCKFILE-FAIL-IMMEDIATELY  1)
 (define win32-LOCKFILE-EXCLUSIVE-LOCK    2)
 (define win32-ERROR-LOCK-VIOLATION       33)
+(define win32-ERROR-IO-PENDING           997)
+(define win32-FSCTL-SET-SPARSE           #x900C4)
 (define win32-ERROR-NOT-LOCKED           158)
 (define win32-IO-REPARSE-TAG-SYMLINK     #xA000000C)
 ;; A Win32 call and its GetLastError, read with interrupts off so a collect
@@ -2164,11 +2175,20 @@
       (when (= h win32-INVALID-HANDLE-VALUE) (fc-win32-throw shown err))
       (when (and (not follow?) (fc-win32-symlink? h))
         (close h)
-        (throw-jvm 'IOException "File is symbolic-link"))
+        (throw-jvm 'IOException "File is symbolic link"))
+      ;; CREATE + TRUNCATE_EXISTING: OPEN_ALWAYS, then truncate; a failure on a
+      ;; file that is already empty is ignored, as the JDK ignores it
       (when truncate-after?
         (let ((set-eof (win32-set-end-of-file)))
           (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (set-eof h)))))
-            (when (= r 0) (close h) (fc-win32-throw shown err)))))
+            (when (and (= r 0) (not (eqv? 0 (guard (_ (#t #f)) (fc-win32-size h fp)))))
+              (close h)
+              (fc-win32-throw shown err)))))
+      ;; SPARSE is a hint, taken on a file this open created and ignored if it fails
+      (when (and (= disposition win32-CREATE-NEW) (on? 'sparse))
+        (let ((ioctl (win32-device-io-control)))
+          (when ioctl
+            (guard (_ (#t #f)) (ioctl h win32-FSCTL-SET-SPARSE 0 0 0 0 (make-bytevector 4 0) 0)))))
       h)))
 (define (fc-win32-size h fp)
   (let ((f (win32-get-file-size-ex)) (buf (make-bytevector 8 0)))
@@ -2186,19 +2206,30 @@
     (bytevector-u32-set! o off (bitwise-and start #xFFFFFFFF) (endianness little))
     (bytevector-u32-set! o (+ off 4) (bitwise-arithmetic-shift-right start 32) (endianness little))
     o))
+;; A call that answered ERROR_IO_PENDING finishes through GetOverlappedResult,
+;; as lock0/release0 do; the error that settles it is the one returned.
+(define (fc-win32-settle h o r err)
+  (if (and (= r 0) (= err win32-ERROR-IO-PENDING))
+      (let ((wait (win32-get-overlapped-result)))
+        (if wait
+            (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (wait h o (make-bytevector 4 0) 1)))
+            (values r err)))
+      (values r err)))
 (define (fc-win32-lock! h kind start size)
   (let ((lo (bitwise-and size #xFFFFFFFF)) (hi (bitwise-arithmetic-shift-right size 32))
         (o (fc-win32-overlapped start)))
     (if (eq? kind 'unlock)
         (let ((unlock (win32-unlock-file-ex)))
-          (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (unlock h 0 lo hi o)))))
+          (let*-values (((r0 err0) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (unlock h 0 lo hi o))))
+                        ((r err) (fc-win32-settle h o r0 err0)))
             (when (and (= r 0) (not (= err win32-ERROR-NOT-LOCKED)))
               (throw-jvm 'IOException (win32-error-message err)))
             #t))
         (let ((lock (win32-lock-file-ex))
               (flags (bitwise-ior win32-LOCKFILE-FAIL-IMMEDIATELY
                                   (if (eq? kind 'exclusive) win32-LOCKFILE-EXCLUSIVE-LOCK 0))))
-          (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (lock h flags 0 lo hi o)))))
+          (let*-values (((r0 err0) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (lock h flags 0 lo hi o))))
+                        ((r err) (fc-win32-settle h o r0 err0)))
             (cond ((not (= r 0)) #t)
                   ((= err win32-ERROR-LOCK-VIOLATION) #f)
                   (else (throw-jvm 'IOException (win32-error-message err)))))))))
@@ -2214,15 +2245,15 @@
                  (bytevector-u32-ref buf 48 (endianness little))))
         fp)))
 
-;; The platform seam: #(open close! lock! can-lock? file-id nofollow? size),
-;; one vector per host, chosen once per call rather than branched on in the
-;; shared code below.
+;; The platform seam: #(open close! lock! can-lock? file-id nofollow? size
+;; unknown-option-message), one vector per host, chosen once per call rather
+;; than branched on in the shared code below.
 (define fc-posix-ops
   (vector fc-posix-open fc-posix-close! fc-posix-lock! fc-posix-can-lock? fc-posix-file-id fc-posix-nofollow?
-          fc-posix-size))
+          fc-posix-size fc-posix-unknown-option))
 (define fc-win32-ops
   (vector fc-win32-open fc-win32-close! fc-win32-lock! fc-win32-can-lock? fc-win32-file-id (lambda () #t)
-          fc-win32-size))
+          fc-win32-size (lambda (o) jolt-nil)))
 (define (fc-ops) (if (nio-windows?) fc-win32-ops fc-posix-ops))
 (define (fc-native-close! n) ((vector-ref (fc-ops) 1) n))
 (define (fc-native-lock! n kind start size) ((vector-ref (fc-ops) 2) n kind start size))
@@ -2248,8 +2279,10 @@
 (define (nio-host-file-channel path . opts)
   (fc-collect-unclosed!)
   (let-values (((options attrs) (fc-split-args opts)))
+    (when (exists file-attr? (npath-spread-args attrs))
+      (nio-posix-view! "'posix:permissions' not supported as initial attribute"))
     (let* ((ops (fc-ops))
-           (syms (fc-open-flags options ((vector-ref ops 5))))
+           (syms (fc-open-flags options ((vector-ref ops 5)) (vector-ref ops 7)))
            (fp (nfp path))
            (shown (nio-shown path))
            (native ((vector-ref ops 0) fp shown syms (nio-attrs-mode attrs #o666))))
