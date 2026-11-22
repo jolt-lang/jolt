@@ -53,6 +53,27 @@ if ! JOLT_PWD="$app" "$jolt" build -m app.core -o "$out" >/dev/null 2>&1; then
 fi
 [ -x "$out" ] || { echo "  FAIL: no executable produced"; exit 1; }
 
+# Parallel compile workers: a built jolt compiles the app's units in copies of
+# itself, spawned directly (no /bin/sh), each logging into the build dir. A
+# worker that never starts is invisible otherwise, since the parent compiles
+# whatever a child did not produce, so the workers' own closing lines are the
+# evidence. Cache off so every unit is a miss; source mode has no binary to
+# spawn and compiles in process.
+if [ "$jolt" != "bin/jolt" ]; then
+  wout="$(dirname "$out")/app-workers"
+  if ! JOLT_PWD="$app" JOLT_BUILD_CACHE=0 JOLT_BUILD_JOBS=2 "$jolt" build -m app.core -o "$wout" >/dev/null 2>&1; then
+    echo "  FAIL: jolt build with two workers exited non-zero"; exit 1
+  fi
+  nw="$(cat "$wout.build"/jobs-*.edn.log 2>/dev/null | grep -c '^jolt-build-worker: [0-9]* units$' || true)"
+  if [ "$nw" -ne 2 ]; then
+    echo "  FAIL: want 2 compile workers to report, got $nw:"
+    ls "$wout.build" | grep jobs- ; cat "$wout.build"/jobs-*.log 2>/dev/null | head -10
+    exit 1
+  fi
+  [ "$(cd / && "$wout" alpha bb ccc 2>&1 | tail -1)" = "$(cd / && "$out" alpha bb ccc 2>&1 | tail -1)" ] \
+    || { echo "  FAIL: the worker-compiled binary runs differently"; exit 1; }
+fi
+
 # Run from a neutral cwd with args. The first line is an embedded resource
 # (deps.edn :jolt/build :embed), proving io/resource resolves from the binary with
 # no resources/ dir on disk; the rest exercise a macro, cross-ns, and args.

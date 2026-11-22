@@ -179,6 +179,38 @@
                (catch Exception e (if (re-find #"No such file" (str (ex-message e))) :nosuch :other)))
           :nosuch)
 
+;; A file redirect is opened by jolt before the spawn, as the JDK opens it, so a
+;; target that cannot be opened throws from start(). Through /bin/sh the child
+;; started anyway and exited 1 when the shell could not open it. Each redirect
+;; kind, and the merged case, also stays off the shell (process.ss
+;; proc-direct-spec), which is what the worker spawns rely on.
+(doseq [[label redirect!] [["to"       #(.redirectOutput % (java.io.File. "/nonexistent-dir/x"))]
+                           ["appendTo" #(.redirectOutput % (java.lang.ProcessBuilder$Redirect/appendTo
+                                                            (java.io.File. "/nonexistent-dir/x")))]
+                           ["from"     #(.redirectInput % (java.io.File. "/nonexistent-dir/x"))]]]
+  (check-eq (str "an unopenable " label " redirect throws from start")
+            (try (.waitFor (.start (doto (java.lang.ProcessBuilder. ["true"]) redirect!))) :started
+                 (catch java.io.IOException e (ex-message e)))
+            "Cannot run program \"true\": /nonexistent-dir/x (No such file or directory)"))
+(let [dir (str (fs/create-temp-dir {:prefix "jp-redir-"}))
+      out (java.io.File. dir "out.txt")
+      in  (java.io.File. dir "in.txt")]
+  (spit in "from-file\n")
+  (spit out "old\n")
+  (check-eq "append + merged stderr land in the file, no pipes handed back"
+            (let [pr (.start (doto (java.lang.ProcessBuilder. ["sh" "-c" "cat; echo e 1>&2"])
+                               (.redirectInput in)
+                               (.redirectOutput (java.lang.ProcessBuilder$Redirect/appendTo out))
+                               (.redirectErrorStream true)))]
+              [(.waitFor pr) (slurp (.getInputStream pr)) (slurp out)])
+            [0 "" "old\nfrom-file\ne\n"])
+  (check-eq "DISCARD drops the child's output"
+            (let [pr (.start (doto (java.lang.ProcessBuilder. ["echo" "gone"])
+                               (.redirectOutput java.lang.ProcessBuilder$Redirect/DISCARD)))]
+              [(.waitFor pr) (slurp (.getInputStream pr))])
+            [0 ""])
+  (fs/delete-tree dir))
+
 ;; A child that cannot be waited on must still produce an answer. With SIGCHLD set
 ;; to SIG_IGN the kernel reaps every child itself, so waitpid can only ever fail
 ;; with ECHILD — and the reap loop used to treat that as "ask again", spinning

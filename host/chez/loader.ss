@@ -1304,11 +1304,13 @@
 (define jolt-standalone-binary #f)
 (define (aot-worker-capable? exe)
   (and jolt-standalone-binary (string? exe) #t))
+;; Every platform: the worker is spawned directly and watched by pid
+;; (spawn.ss), and where aot-self-exe cannot name the
+;; binary no worker starts and the caller compiles in process.
 (define (aot-async?)
   (and (not (aot-env-off? "JOLT_AOT_ASYNC"))
-       (not (ldr-build-aot-cache?))
-       (case (sa-os-family) ((linux macos) #t) (else #f))))
-(define aot-worker-state (vector #f #f))   ; #(manifest out-port) once started
+       (not (ldr-build-aot-cache?))))
+(define aot-worker-state (vector #f #f #f))   ; #(manifest out-port process) once started
 (define (aot-worker-start!)
   (let ((exe (aot-self-exe)))
     (and exe (aot-worker-capable? exe)
@@ -1316,13 +1318,18 @@
                                    (number->string (get-process-id)) ".edn"))
                 (out (guard (e (else #f)) (open-output-file mf 'replace))))
            (and out
-                (zero? (jolt-sh (string-append "( " (sh-quote exe) " --aot-worker "
-                                               (sh-quote mf)
-                                               " </dev/null >> " (sh-quote (string-append mf ".log"))
-                                               " 2>&1 & )")))
-                (vector-set! aot-worker-state 0 mf)
-                (vector-set! aot-worker-state 1 out)
-                #t)))))
+                (or (aot-worker-spawn! exe mf out)
+                    (begin (close-port out) #f)))))))
+(define (aot-worker-spawn! exe mf out)
+  ;; never waited on: it outlives this process, finishing the jobs written
+  ;; before the exit (aot-compile-worker watches the pid for that)
+  (let ((p (jolt-spawn-worker (list exe "--aot-worker" mf) (string-append mf ".log"))))
+    (and p
+         (begin
+           (vector-set! aot-worker-state 0 mf)
+           (vector-set! aot-worker-state 1 out)
+           (vector-set! aot-worker-state 2 p)
+           #t))))
 ;; #t when a worker owns the job, #f when the caller must compile it here.
 (define (aot-enqueue-compile! scm so)
   (and (aot-async?)
@@ -1378,10 +1385,7 @@
            (string=? pre (substring base 0 pn))
            (string=? suf (substring base (fx- n sn) n))
            (string->number (substring base pn (fx- n sn)))))))
-(define (aot-proc-alive? pid)
-  (guard (e (else #f))
-    (let ((f (jolt-foreign-proc-safe "kill" '(int int) 'int)))
-      (and f (fx=? 0 (f pid 0))))))
+(define (aot-proc-alive? pid) (jolt-pid-alive? pid))
 ;; The manifest and an empty log go with the worker: each run that missed has
 ;; its own pair, and nothing else reads them once the parent is gone.
 (define (aot-worker-cleanup! manifest)
