@@ -686,6 +686,7 @@
         (cons "jolt.passes.numeric" "jolt-core/jolt/passes/numeric.clj")
         (cons "jolt.passes.transducers" "jolt-core/jolt/passes/transducers.clj")
         (cons "jolt.passes.inline" "jolt-core/jolt/passes/inline.clj")
+        (cons "jolt.passes.loop-maps" "jolt-core/jolt/passes/loop_maps.clj")
         (cons "jolt.passes.types.lattice" "jolt-core/jolt/passes/types/lattice.clj")
         (cons "jolt.passes.types.check" "jolt-core/jolt/passes/types/check.clj")
         (cons "jolt.passes.types.records" "jolt-core/jolt/passes/types/records.clj")

@@ -159,6 +159,7 @@
 ;; :invoke       :fn :args                        :fn :args
 ;; :def          :ns :name                        :init? :meta-expr?   (init absent = declare)
 ;; :let          :bindings :body                  binding inits, :body
+;; :let-values   :names :init :body               multiple-value :init, :body
 ;; :loop         :bindings :body                  binding inits, :body
 ;; :recur        :args                            :args
 ;; :fn           :arities                          each arity :body
@@ -206,6 +207,8 @@
 ;;   :num-kind :num-read     numeric pass (jolt.passes.numeric) — an :invoke's
 ;;                           proven :double/:long arithmetic kind, and a field
 ;;                           read's numeric kind.
+;;   :boxed-map-read         scalarized map read with the source lookup's boxed
+;;                           arithmetic semantics (inline -> numeric).
 ;;   :fl-aget :fl-aset       an aget/aset over a ^doubles array, lowered to the
 ;;   :v-aget :v-aset         unboxed flvector path / to the direct backing path for
 ;;   :b-aset :v-alength      the other array kinds / to the byte store, which owns
@@ -254,7 +257,7 @@
 ;;   :letrec                 a :let that must lower to letrec* (mutual recursion).
 (def node-ops
   #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
-    :let :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
+    :let :let-values :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
     :set-var :set-field :defmacro :ffi-layout :ffi-fn :ffi-callable :regex :inst :uuid :bigdec
     :the-ns :load-time-value :inline-guard})
 
@@ -265,7 +268,8 @@
   {:const [:val] :local [:name] :var [:ns :name] :the-var [:ns :name]
    :host [:name] :host-static [:class :member] :host-new [:class :args]
    :if [:test :then :else] :do [:statements :ret] :invoke [:fn :args]
-   :def [:ns :name] :let [:bindings :body] :loop [:bindings :body] :recur [:args]
+   :def [:ns :name] :let [:bindings :body] :let-values [:names :init :body]
+   :loop [:bindings :body] :recur [:args]
    :fn [:arities] :vector [:items] :map [:pairs] :set [:items] :quote [:form]
    :throw [:expr] :coerce [:kind :expr] :try [:body]
    :host-call [:target :method :args] :set-var [:the-var :val]
@@ -371,6 +375,7 @@
    :set [[:items :nodes]]
    :map [[:pairs :pairs]]
    :let [[:bindings :bindings] [:body :node]]
+   :let-values [[:init :node] [:body :node]]
    :loop [[:bindings :bindings] [:body :node]]
    :recur [[:args :nodes]]
    :fn [[:arities :arities]]

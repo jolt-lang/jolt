@@ -18,6 +18,7 @@
             [jolt.passes.numeric :as numeric]
             [jolt.passes.inline :refer [inline-node flatten-lets scalar-replace direct-call-edges
                                         begin-growth-budget! end-growth-budget! guarded-candidate?]]
+            [jolt.passes.loop-maps :refer [lower-fixed-map-loops]]
             [jolt.passes.types :refer [run-inference reinfer-def
                                        set-record-shapes! set-protocol-methods!
                                        param-seeds-for param-num-seeds-for
@@ -236,7 +237,7 @@
                                           (println (str "[inline] " (:ns node) "/" (:name node) " rounds " (inc i))))
                                         n2))))))
         _ (pt :growth (fn [] (end-growth-budget!)))]
-    (infer-optimized unit opt)))
+    (infer-optimized unit (pt :loop-fields (fn [] (lower-fixed-map-loops opt))))))
 
 ;; Guarded inlining (the open-world spine, jolt.host/guarded-inline?): the same
 ;; inline fixpoint, each splice behind a test that the callee's var still holds

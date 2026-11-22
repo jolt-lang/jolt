@@ -194,7 +194,7 @@
 ;; the same reason: a (.concat s nil) in tail position raises from inside the
 ;; host, and without the site the fn it sat in is the one frame the report
 ;; cannot recover.
-(def ^:private tail-transparent-ops #{:if :do :let :loop :invoke :throw :host-call :try})
+(def ^:private tail-transparent-ops #{:if :do :let :let-values :loop :invoke :throw :host-call :try})
 ;; A try is tail-transparent too. With neither a catch nor a finally, emit-try
 ;; emits it as its body and nothing else, so a tail call inside one is a real tail
 ;; call. With a catch or a finally the body runs inside a guard or dynamic-wind,
@@ -404,6 +404,13 @@
                (str "(let ((" dv " " (dbg-record *dbg-scope* (map #(nth % 0) pairs) names) ")) " body ")")
                body)]
     (str "(let* (" seq-bs ") (let " label " (" rebinds ") " body "))")))
+
+(defn- emit-let-values [node]
+  (let [names (mapv munge-name (:names node))
+        init (binding [*tail?* false] (emit (:init node)))
+        body (binding [*array-vecs* (apply dissoc *array-vecs* names)]
+               (emit (:body node)))]
+    (str "(let-values (((" (str/join " " names) ") " init ")) " body ")")))
 
 (defn- emit-recur [node]
   (when-not *recur-target* (throw (ex-info "emit: recur outside a loop/fn target" {})))
@@ -969,6 +976,9 @@
     (or
      (emit-site-cache-invoke c)
      (cond
+       (:loop-map-runtime node)
+       (order-args (fn [as] (plain-call (:loop-map-runtime node) as)))
+
        ;; devirtualized protocol call: the inference proved the receiver (arg 0) is
        ;; one record type, so resolve the impl by that static tag instead of routing
        ;; through the protocol var -> jolt-invoke -> protocol-resolve (which recomputes
@@ -1069,7 +1079,8 @@
       ;; A dynamic TAIL callee registers as "?": the reporter needs to know the
       ;; site's call went somewhere even when it cannot say where (rt.ss
       ;; jolt-dynamic-tail-lines). A dynamic non-tail site still registers nothing.
-      (when tl (register-callsite! tl (or (static-callee fnode) (when tail? "?")) tail?))
+      (when tl (register-callsite! tl (or (when (:loop-map-update node) "clojure.core/update")
+                                         (static-callee fnode) (when tail? "?")) tail?))
       (emit-annotated-invoke
        {:node node :fnode fnode :tail? tail? :arg-nodes arg-nodes :args args :tl tl
         ;; the same stamp with-site folds into the marker; a TAIL site needs it in
@@ -1481,6 +1492,8 @@
 (defn- emit-var-node [node]
   (let [core-proc (and (= "clojure.core" (:ns node)) (core-value-procs (:name node)))]
     (cond
+      (= :seed-root (:loop-map-procedure node)) (hoist-seed-root (:ns node) (:name node))
+      (:loop-map-procedure node) (:loop-map-procedure node)
       core-proc core-proc
       ;; direct-linked app var used as a value -> reference its binding.
       ;; The def emitted it linked (def-var-linked!), so the binding and the
@@ -1678,6 +1691,13 @@
              *trace-frame* nil]
      (emit (:expr node)))))
 
+(defn- emit-binding-form [node]
+  (case (:op node)
+    :let (emit-let node)
+    :let-values (emit-let-values node)
+    :loop (emit-loop node)
+    :recur (emit-recur node)))
+
 (defn emit* [node]
   (case (:op node)
     :const (emit-const (:val node))
@@ -1739,9 +1759,7 @@
      ;; on nil — is then reported at this fn and line, TCO having erased the
      ;; frame. Untraced and non-tail emission is byte-identical to before.
      :host-call (emit-host-call-node node)
-    :let (emit-let node)
-    :loop (emit-loop node)
-    :recur (emit-recur node)
+    (:let :let-values :loop :recur) (emit-binding-form node)
     (:ffi-layout :ffi-fn :ffi-callable) (emit-ffi-node emit node)
     :fn (emit-fn emit node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
