@@ -653,7 +653,14 @@
           (if (null? args)
               (apply jolt-vector (proc-pb-cmd self))               ; getter
               (begin (proc-pb-set! self 0 (map jolt-str-render-one (seq->list (jolt-seq (car args))))) self))))
-        (cons "directory" (lambda (self f) (proc-pb-set! self 2 (file-path-of f)) self))
+        ;; directory(null) is the default again (this process's directory), and
+        ;; directory() reads it back, null when unset. A nil used to be
+        ;; rendered as "" and fail the start.
+        (cons "directory" (lambda (self . f)
+          (if (null? f)
+              (let ((d (proc-pb-dir self))) (if d (jolt-make-file d) jolt-nil))
+              (begin (proc-pb-set! self 2 (if (jolt-nil? (car f)) #f (file-path-of (car f))))
+                     self))))
         (cons "environment" (lambda (self)
           (or (proc-pb-env self)
               (let ((em (make-proc-env-map))) (proc-pb-set! self 1 em) em))))

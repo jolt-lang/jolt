@@ -243,6 +243,15 @@
                  :started
                  (catch java.io.IOException e (ex-message e)))
             "Cannot run program \"true\" (in directory \"/tmp\"): /nonexistent-dir/x (No such file or directory)")
+  (check-eq "directory nil is the default directory again"
+            (let [pb (doto (java.lang.ProcessBuilder. ["true"])
+                       (.directory (java.io.File. "/tmp"))
+                       (.directory nil))]
+              [(.directory pb) (.waitFor (.start pb))])
+            [nil 0])
+  (check-eq "directory reads back as a File"
+            (str (.directory (doto (java.lang.ProcessBuilder. ["true"]) (.directory (java.io.File. "/tmp")))))
+            "/tmp")
   (check-eq "clojure.java.shell surfaces the same message"
             (try ((requiring-resolve 'clojure.java.shell/sh) "cat" :dir "/nonexistdir") :started
                  (catch java.io.IOException e (ex-message e)))
