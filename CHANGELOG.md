@@ -98,6 +98,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definitions: an nREPL test run on a server started without the test paths
   ran stale tests. The message names the file the namespace came from.
   Namespaces baked into a built binary still reload as a no-op.
+- Several threads using a provided class for the first time at once all get
+  the class (concurrent first use of a provided class). Only the thread that
+  started the provider's autoload used to see it: the others arrived while that
+  load was still running, found the claim already taken and the class not yet
+  registered, and threw "No dependency provides java.time.Instant", so eight
+  futures calling `Instant/now` got one value and seven errors. A thread that
+  misses a class whose provider is loading now waits for that load and looks
+  again, the way a JVM thread waits for a class another thread is initializing.
 - A timed socket read, accept or connect no longer reports a timeout for an fd
   that was ready before its deadline. When the wait ended at the deadline, the
   call raised `SocketTimeoutException` without looking at the socket again, so

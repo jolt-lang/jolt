@@ -1688,7 +1688,10 @@
   (for-each (lambda (c) (hashtable-set! lib-pending-claims-tbl c p)) (vector-ref p 2))
   (set! lib-any-pending-claims? #t))
 (define (lib-claim-settled! p)
-  (for-each (lambda (c) (hashtable-delete! lib-pending-claims-tbl c)) (vector-ref p 2))
+  (for-each (lambda (c)
+              (hashtable-delete! lib-pending-claims-tbl c)
+              (hashtable-set! lib-settled-claims-tbl c p))
+            (vector-ref p 2))
   (set! lib-any-pending-claims? (> (hashtable-size lib-pending-claims-tbl) 0)))
 (for-each lib-claim-pending! core-class-providers)
 
@@ -1842,8 +1845,9 @@
 ;; dependency the caller forgot to declare from one that is declared and broken;
 ;; see unknown-class-message.
 (define (lib-load-provider! p)
-  ;; claim the load: whoever flips the latch from #f does it, everyone else sees
-  ;; a provider that has already had its chance and moves on.
+  ;; claim the load: whoever flips the latch from #f does it. Everyone else sees
+  ;; a provider that has already had its chance, and a thread that arrives while
+  ;; the load is still running waits for it in lib-await-provider-load!.
   (and (jolt-with-mutex lib-claims-mu
          (and (not (unbox (vector-ref p 3)))
               (begin (set-box! (vector-ref p 3) 'ok)
@@ -1872,6 +1876,58 @@
               (replayed (lib-replay-deferred! p)))
          (or loaded replayed))))
 
+;; A class that missed after its provider's autoload was claimed. The thread that
+;; claims the load is the only one lib-load-provider! answers #t, and the claim
+;; index entry is gone from that moment, so to every other thread a class whose
+;; provider was still loading used to look exactly like a class nobody provides:
+;; eight futures touching java.time.Instant at once got one value and seven "No
+;; dependency provides java.time.Instant". The JVM makes a thread that reaches a
+;; class during its initialization wait for it, and this does the same.
+;;
+;; The wait is a require of the install namespace, which blocks until the context
+;; loading it finishes (loader.ss, the concurrent-require protocol), returns at
+;; once when it already has, and raises on a require cycle between two loaders.
+;; It can't see a wait the loader doesn't know about: an install namespace whose
+;; top level blocks on a future that reaches one of its own classes waits forever.
+;; Whether the load is still running cannot decide it: a thread can miss while
+;; the provider is loading and only get here after it has finished, and that
+;; thread must look again too. So each thread answers #t once per provider, and a
+;; class the provider never registers misses on that retry and gets the ordinary
+;; message.
+;;
+;; The latch belongs to the thread that claimed the load. A waiter's raise, a
+;; require cycle or a wait timeout as much as a failing install namespace, says
+;; nothing certain about the provider, so it passes through and leaves the latch
+;; alone. The claimer's own guard in lib-load-provider! records a real failure.
+;; The loading thread itself, missing one of its provider's classes before it
+;; has registered it, gets #f here: its require would only answer 'recursive,
+;; and replaying held registrations mid-load would let them in before the
+;; provider's own.
+(define lib-settled-claims-tbl (make-hashtable string-hash string=?))
+(define lib-awaited-providers (make-thread-parameter #f))
+;;
+;; The lookup takes the lock, unlike the claim index read before it: that read can
+;; land while the claim moves this class from one table to the other, and a
+;; hashtable read racing a write can miss. Under the lock the move has finished.
+(define (lib-await-provider-load! class)
+  (let ((p (jolt-with-mutex lib-claims-mu
+             (let ((p (hashtable-ref lib-settled-claims-tbl class #f)))
+               (and p (eq? (unbox (vector-ref p 3)) 'ok) p)))))
+    (and p
+         (let ((seen (or (lib-awaited-providers)
+                         (let ((t (make-eq-hashtable))) (lib-awaited-providers t) t)))
+               (ns (vector-ref p 0)))
+           (and (not (hashtable-ref seen p #f))
+                (not (eq? p (lib-loading-provider)))
+                (find-ns-file ns)
+                (begin
+                  (load-namespace ns)
+                  ;; registrations held against the claim, which the loading
+                  ;; thread may not have replayed yet
+                  (lib-replay-deferred! p)
+                  (hashtable-set! seen p #t)
+                  #t))))))
+
 ;; RFC 0014's resolution step: a class reference that MISSES the registry
 ;; autoloads the provider that declares the class, and retries.
 ;;
@@ -1894,7 +1950,8 @@
   (or (lazy-shims-class! class)
       (and lib-any-pending-claims?
            (let ((p (hashtable-ref lib-pending-claims-tbl class #f)))
-             (and p (lib-load-provider! p))))))
+             (and p (lib-load-provider! p))))
+      (lib-await-provider-load! class)))
 
 ;; The provider that DECLARES this class and has not had its chance yet — meaning
 ;; the registration about to happen is somebody else's, and must wait. #f when

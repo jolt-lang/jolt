@@ -451,6 +451,24 @@ cat > "$tmp/addprov/probe.clj" <<EOF
 EOF
 check "add-deps installs the added library's :jolt/provides" '"claimer-sig:RSA"' \
       "$(JOLT_PWD="$tmp/addprov" JOLT_QUIET=1 "$JOLT" "$tmp/addprov/probe.clj" 2>&1 | tail -1)"
+# Threads that reach a provided class while another thread is still autoloading
+# its provider wait for that load, as JVM threads wait for a class being
+# initialized. They used to see the claim already taken and the class not yet
+# registered, and all but the first got the message for a class nobody provides.
+# A class the provider declares and never registers still misses, on every thread.
+mkdir -p "$tmp/slowprov"
+cat > "$tmp/slowprov/probe.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provslow {:local/root "$root/test/chez/deps-alias/provslow"}}})
+(let [fs (doall (for [_ (range 8)] (future (try (provslow.Clock/now) (catch Throwable e :miss)))))
+      gs (doall (for [_ (range 4)] (future (try (provslow.Missing/now) (catch Throwable e (ex-message e))))))]
+  (prn (frequencies (map deref fs)))
+  (prn (distinct (map deref gs))))
+(shutdown-agents)
+EOF
+out="$(JOLT_PWD="$tmp/slowprov" JOLT_QUIET=1 "$JOLT" "$tmp/slowprov/probe.clj" 2>&1 | tail -2)"
+check "concurrent first use of a provided class waits for its provider" \
+      '{"slow-clock" 8} ("Unknown class provslow.Missing")' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
 # Adding a library the project already resolved must not claim its classes a
 # second time: once provclaim.install has registered Signature, a fresh claim
 # reads as one on a class "this jolt provides" and warns about a stale library.
