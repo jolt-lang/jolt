@@ -15,7 +15,7 @@
 ;; No copy here is a checked Scheme loop: the runtime compiles at
 ;; optimize-level 2, where such a loop pays a type and bounds check per element
 ;; (a 64-slot copy measured 390ns). Whole vectors and computed ranges (a node
-;; update, vec-copy-range, vec-insert) are the target's block copy INTO A FRESH
+;; update, vec-copy-range) are the target's block copy INTO A FRESH
 ;; vector (sa-vector-copy / sa-subvector): no initializing fill and no write
 ;; barrier per slot, 19ns for 32 slots against 82 for the unchecked loop below
 ;; and 86 for Chez's vector-copy!, which is that same barriered loop. What still
@@ -23,10 +23,6 @@
 ;; runs the unchecked loop or the checked bulk move. Never a bare vector-copy:
 ;; the vendored irregex redefines that name at top level as a one-argument loop.
 (define (vec-copy-range v start end) (sa-subvector v start end))
-;; copy of v with x spliced in at index i: the two halves are block copies into
-;; fresh vectors (sa-subvector), which beats copying into one made up front
-(define (vec-insert v i x)
-  (sa-vector-append (sa-subvector v 0 i) (vector x) (sa-subvector v i (vector-length v))))
 ;; slots 0..n-1 of v into out, unchecked: out was just made at least n long
 (define (vec-fill-prefix! out v n)
   (let loop ((j 0))
