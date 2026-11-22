@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A one-argument `(str x)` goes through the `clojure.core/str` var again, so
+  `with-redefs` and a redefinition reach it as they reach every other arity.
+  The open-coded call from 0.8.28 never read the var (#1768). It still answers
+  a string or a StringBuilder inline while the var holds the original `str`.
+- `=` asks a deftype's or a reify's own equality again when the other operand
+  is a string literal, a keyword, a char or a boolean, as `Util.equiv` does
+  for a collection on either side. Since 0.8.28 the open-coded `=` and
+  `jolt=2` answered those pairs false from the scalar's type alone (#1769).
+  `(= coll nil)` also asks the collection now; it always answered false.
+- `=` between one of jolt's vectors, maps or sets and a scalar no longer
+  walks every registered equality arm: `(= [1] :k)` went from 57 to 21 ns.
+- `(nth coll i not-found)` evaluates `not-found` when `i` is in range for a
+  vector or a string again. The open-coded `nth` from 0.8.28 only evaluated it
+  on the fallback path, so a side effect or a throw in the default was lost
+  (#1767).
+- A Windows `jolt build` that links OpenSSL 4's static `libcrypto.a` as a
+  `:static` native links again. MSYS2 moved to OpenSSL 4.1, whose RNG calls
+  `BCryptGenRandom`, and the final link had no `-lbcrypt`.
+- A task that calls `babashka.tasks/jolt` or `clojure` under a built jolt runs
+  that same jolt again. It used to run whichever `jolt` was on PATH, or fail
+  with `exec: jolt: not found` when there was none (#1787).
+- `format` rounds the same digits `Double.toString` prints, as JDK 21's
+  Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
+  `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the
+  JDK `1.3381632805467082e+15`.
 - `(require 'x :reload)` throws `FileNotFoundException` when `x` was loaded
   from a file under none of the source roots (a `load-file`, an nREPL
   `load-file`) and the roots don't have it, as on the JVM. The reload used to
@@ -32,12 +57,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch value the way `defmethod` does, so `(remove-method f SomeType)`
   removes the method. `(methods f)` and `(prefers f)` present such a key as the
   class, and `(class SomeType)` is `java.lang.Class`.
+- The borrowed `IPersistentMap` print-method stops at `*print-length*` on an
+  infinite seq of entries instead of hanging. Under `print`, the `java.util`
+  methods write the value inside `#object[...]` as the JVM's `print-object`
+  does.
+- `*print-meta*` prints metadata only while printing readably, and never empty
+  metadata: `(print (with-meta [1] {:m 1}))` writes `[1]`, as on the JVM.
+- A string dispatch value spelled like a deftype's class name is its own
+  multimethod key, separate from the type's. A deftype name prints as its class
+  (`user.T`, not `#object[...]`), and a multimethod's "No method" and "Multiple
+  methods" messages name the dispatch value by its `toString`.
+- `.toString` on a vector, list or set returns the readable form `str` gives:
+  `(.toString [1 "a"])` is `[1 "a"]`.
 
 ### Changed
 
 - A user `print-method` no longer slows printing the values it does not reach.
   Printing a 10k-entry map with one unrelated method installed went from 1.22x
   to 1.08x of the time with none.
+- Doubles print faster: about 3x for one with at most 15 significant digits
+  (`1.1`, `3.25`, `0.001`), whose digits come from flonum arithmetic, and about
+  2x for a full-precision one, whose digits come from a port of the JDK's own
+  Schubfach (`jdk.internal.math.DoubleToDecimal`) instead of Chez's
+  arbitrary-precision search.
 
 ## [0.8.28] - 2026-11-19
 

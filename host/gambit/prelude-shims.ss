@@ -417,6 +417,10 @@
   (syntax-rules () ((_ x n) (arithmetic-shift x n))))
 (define-syntax bitwise-arithmetic-shift-right
   (syntax-rules () ((_ x n) (arithmetic-shift x (- n)))))
+;; R6RS bitwise-bit-field (n start end): bits start..end-1 of n, shifted down.
+;; Gambit spells it extract-bit-field (size position n). number-print.ss's
+;; Schubfach reads its sticky bit with it.
+(define (bitwise-bit-field n start end) (extract-bit-field (- end start) start n))
 
 ;; ============================================================================
 ;; Chez condition accessors over Gambit error objects.

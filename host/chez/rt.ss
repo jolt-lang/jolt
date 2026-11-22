@@ -3420,13 +3420,15 @@
 (define-syntax jrec*-slot/u
   (syntax-rules () ((_ o i) (sa-uvector-ref (sa-record-slot o 4) i))))
 ;; (= a b) at two arguments, open-coded on Chez (calls.clj native-op). Clojure's
-;; Util.equiv settles most of it from the FIRST operand alone: a char, a boolean,
-;; a keyword (interned) or nil on the left equals only itself, and nil on either side equals only
-;; nil, so once eq? has failed the answer is false without the call -- tools.
-;; reader compares a char it read against its terminator on every character. A
-;; string literal (what case on strings expands to) is a string? test and a
-;; string=?. Everything else is jolt=2. Two eq? flonums still compare by =, so
-;; NaN stays unequal to itself.
+;; Util.equiv decides a pair of base scalars (nil, a number, a keyword, a
+;; symbol, a string, a char, a boolean) by kind: a char, a boolean or a keyword
+;; equals only itself, and nil on the left equals only nil, so once eq? has
+;; failed the answer is false without the call -- tools.reader compares a char
+;; it read against its terminator on every character. A string literal (what
+;; case on strings expands to) is a string? test and a string=?. Any other
+;; operand may be a collection whose own equiv Util.equiv asks whatever the
+;; other side is (#1769), so the pair goes to jolt=2. Two eq? flonums still
+;; compare by =, so NaN stays unequal to itself.
 (define-syntax jolt=2/i
   (lambda (x)
     (syntax-case x ()
@@ -3436,41 +3438,88 @@
            ;; a literal's length first: a case over strings rejects most of its
            ;; candidates by length without a string=? call
            ((string? db) (with-syntax ((n (string-length db)))
-                           #'(let ((a a0)) (and (string? a) (fx=? (string-length a) n) (string=? a b0)))))
+                           #'(let ((a a0))
+                               (cond ((string? a) (and (fx=? (string-length a) n) (string=? a b0)))
+                                     ((eq-kind-settled? a) #f)
+                                     (else (jolt=2 a b0))))))
            ((string? da) (with-syntax ((n (string-length da)))
-                           #'(let ((b b0)) (and (string? b) (fx=? (string-length b) n) (string=? a0 b)))))
-           ((or (char? da) (char? db)) #'(eq? a0 b0))
+                           #'(let ((b b0))
+                               (cond ((string? b) (and (fx=? (string-length b) n) (string=? a0 b)))
+                                     ((eq-kind-settled? b) #f)
+                                     (else (jolt=2 a0 b))))))
+           ;; a literal nil: on the left it equals only nil (Util.equiv's
+           ;; k1 == null), and on the right only nil, a deftype or a reify can
+           ;; answer true (values.ss jolt=2)
+           ((eq? da 'jolt-nil) #'(eq? b0 jolt-nil))
+           ((eq? db 'jolt-nil) #'(let ((a a0))
+                                   (or (eq? a jolt-nil) (and (or (jrec? a) (jreify? a)) (jolt=2 a jolt-nil)))))
+           ((char? db) #'(let ((a a0))
+                           (if (or (char? a) (eq-kind-settled? a)) (eq? a b0) (jolt=2 a b0))))
+           ((char? da) #'(let ((b b0))
+                           (if (or (char? b) (eq-kind-settled? b)) (eq? a0 b) (jolt=2 a0 b))))
            (else
-            ;; a keyword is interned, so it too equals only itself
-            #'(let ((a a0) (b b0))
+            #'(let* ((a a0) (b b0))
                 ;; identity settles it but for a NaN: a double's or a Float's
                 (cond ((eq? a b) (cond ((flonum? a) (fl= a b))
                                        ((jfloat? a) (fl= (jfloat-fl a) (jfloat-fl a)))
                                        (else #t)))
-                      ((or (char? a) (boolean? a) (keyword-t? a) (eq? a jolt-nil) (eq? b jolt-nil)) #f)
+                      ((eq? a jolt-nil) #f)
+                      ;; nil on the right: only a deftype or a reify can
+                      ;; answer true, by its own equality (values.ss jolt=2)
+                      ((eq? b jolt-nil) (and (or (jrec? a) (jreify? a)) (jolt=2 a b)))
+                      ;; a keyword is interned, so it too equals only itself
+                      ((or (char? a) (boolean? a) (keyword-t? a))
+                       (and (not (eq-kind-settled? b)) (jolt=2 a b)))
                       (else (jolt=2 a b)))))))))))
 ;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
 ;; itself and a StringBuilder its contents, the two a reader's token loop hands
 ;; it; anything else is jolt-str, clojure.core/str's procedure. Through the var
-;; it cost ~50 ns against .toString's ~15.
+;; it cost ~50 ns against .toString's ~15. C is the var's cell, read at the
+;; site: while the var's fn (what jolt-var-fn reads) is jolt-str the answer is
+;; inline, and anything else it holds (with-redefs, a redefinition) is called
+;; with the argument instead (#1768). Without C (minting the seed) there is no
+;; var read. C is always a var cell (the emitter spells it only around one), so
+;; its slots are read unchecked, as jolt-var-fn reads them. One fn read and one
+;; eq? is the whole guard: 3.3 -> 4.0 ns on (str s), where a separate root and
+;; binding test then a second branch on the result measured 4.5.
 (define-syntax jolt-str1/i
   (syntax-rules ()
-    ((_ e) (let ((v e))
-             (cond ((string? v) v)
-                   ((sb-builder-jhost? v) (sb-str v))
-                   (else (jolt-str v)))))))
+    ((_ e) (let ((v e)) (jolt-str1/i-body v)))
+    ((_ c0 e) (let* ((c c0)
+                     ;; what a call through the var reads (jolt-var-fn; str is
+                     ;; never *ns*), read ahead of the argument
+                     (f (if (sa-record-slot c 6) (var-cell-deref-bound c) (sa-record-slot c 2)))
+                     (v e))
+                (cond ((eq? f jolt-str) (jolt-str1/i-body v))
+                      ((procedure? f) (f v))
+                      (else (jolt-invoke f v)))))))
+(define-syntax jolt-str1/i-body
+  (syntax-rules ()
+    ((_ v) (cond ((string? v) v)
+                 ((sb-builder-jhost? v) (sb-str v))
+                 (else (jolt-str v))))))
 ;; (nth coll i) and (nth coll i not-found) on Chez (calls.clj native-op): an
 ;; in-range index into a vector or a string answers inline -- destructuring a
 ;; pair is two of these, and tools.reader destructures every [line column] it
 ;; reads -- and everything else (nil, a default taken, a seq, an array, an index
 ;; out of range or not a fixnum) is jolt-nth, which owns the answer and the error.
+;; A not-found operand is evaluated with the other two, in order, whichever
+;; branch answers: nth is a call, and Clojure evaluates every argument of one,
+;; so its side effect or throw is never skipped by an in-range index (#1767).
 (define-syntax jolt-nth/i
   (syntax-rules ()
-    ((_ c0 k0 d ...)
-     (let ((c c0) (k k0))
-       (cond ((and (pvec? c) (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt c))) (pvec-nth-in-range c k))
-             ((and (string? c) (fixnum? k) (fx>=? k 0) (fx<? k (string-length c))) (string-ref c k))
-             (else (jolt-nth c k d ...)))))))
+    ((_ c0 k0 d0)
+     (let* ((c c0) (k k0) (d d0))
+       (jolt-nth/i-body c k (jolt-nth c k d))))
+    ((_ c0 k0)
+     (let* ((c c0) (k k0))
+       (jolt-nth/i-body c k (jolt-nth c k))))))
+(define-syntax jolt-nth/i-body
+  (syntax-rules ()
+    ((_ c k fallback)
+     (cond ((and (pvec? c) (fixnum? k) (fx>=? k 0) (fx<? k (pvec-cnt c))) (pvec-nth-in-range c k))
+           ((and (string? c) (fixnum? k) (fx>=? k 0) (fx<? k (string-length c))) (string-ref c k))
+           (else fallback)))))
 ;; (.indexOf "literal" x) on Chez (interop.clj string-direct-forms): a literal of
 ;; up to 64 characters becomes a case over them, each to its first index, for a
 ;; char or an ASCII code point -- rewrite-clj tests every character it reads for a

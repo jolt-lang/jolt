@@ -274,6 +274,7 @@
 (define (sa-flonum->bits x) (##flonum->ieee754-64 x))
 (define (sa-bits->flonum b) (##ieee754-64->flonum b))
 (define (sa-flonum-hi32 x) (quotient (##flonum->ieee754-64 x) 4294967296))
+(define (sa-flonum-lo32 x) (remainder (##flonum->ieee754-64 x) 4294967296))
 ;; (sa-bignum-s64? x): whether a bignum lies in signed 64 bits, [-2^63, 2^63).
 (define (sa-bignum-s64? x)
   (and (>= x -9223372036854775808) (<= x 9223372036854775807)))

@@ -176,7 +176,7 @@ install: build
 # naming the covered tree is written ONLY on a complete pass. `make gate-status`
 # answers "is this working tree gated?" — which is not something to remember.
 
-CI-GATES := submodules values recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling pmoverhead complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
+CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit documented grenadine clishim mvnhttp readscaling gcpolicy stacklimit footprint lazyretain compilescaling applyscaling lazyscaling vecscaling pipescaling chunkscaling printscaling pmoverhead complexity ioscaling hotscaling fastpathratio stdlibratio depssmoke taskssmoke scriptsmoke exitwait completionssmoke depscpcache depsunit \
   smoke tracesmoke errorreport errorkinds buildsmoke embeddedresources reprobuildsmoke profilebuildsmoke buildlibsmoke staticnativesmoke zlibregistersmoke sci scifunctional cts loaderconf loadercache ffi ffidupsym ffiloadfail continuations stdlibfasl zlibunit depsnounzip zlibnativesmoke zipmemory noexecsmoke \
   transient sortedcoll rrbprop rrbscaling stateimage infer inferscaling wp devirt fieldread numwp fieldnum fieldjoin contagion \
   hasheq narrowhash \
@@ -338,6 +338,12 @@ selfhost:
 # Value-model unit tests (nil/truthiness/collections on Chez).
 values:
 	@$(CHEZ) --script test/chez/values-test.ss
+
+# A double's printed form: number-print.ss's flonum fast path (short decimals)
+# against the host's shortest digits, pinned Double.toString text, and the fast
+# path's speed as a ratio of the host path's in one process.
+flonumprint:
+	@$(CHEZ) --script test/chez/flonum-print-test.ss
 
 # Record predicates/accessors/mutators/constructors are open-coded: the
 # define-record-type in scheme-adapter-runtime.ss binds them as syntax over the

@@ -7,7 +7,7 @@ name: windows-static
 # libraries while it loads (so the build itself has to resolve them).
 #
 #   #1205  the build-time preload of libssl.a has to resolve libcrypto.a
-#   #1206  libcrypto.a needs crypt32 at the final link
+#   #1206  libcrypto.a needs crypt32 (and bcrypt from OpenSSL 4) at the final link
 #   #1207  bld-mkdir-p walking up a backslash path
 #   #1203  jolt.loader opening a file:/C:/… resource hit   (winparity)
 #   #1208  Socket half-close over Winsock                  (winparity)

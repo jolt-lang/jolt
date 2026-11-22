@@ -3392,6 +3392,17 @@
         ((equal? key (keyword "clojure.core" "Vec")) '(vec))
         ((equal? key (keyword "clojure.core" "VecSeq")) '(seq))
         (else #f)))
+;; core_print.clj's print-object, as the java.util methods write a value under
+;; print: #object[Class 0xhash toString], where a Clojure collection's toString
+;; is its print form. (Its metadata would print first only readably.)
+(define (pm-print-object-to! p x)
+  (put-string p "#object[")
+  (put-string p (jolt-class-name x))
+  (put-string p " 0x")
+  (put-string p (jolt-identity-hex x))
+  (put-string p " ")
+  (pr-own-to! p x)
+  (put-string p "]"))
 (define (make-pm-builtin key)
   (let* ((shape (pm-builtin-shape key))
          (f (cond
@@ -3409,7 +3420,7 @@
                      (lambda (p x)
                        (if (jolt-pr-readable?)
                            (pr-shape-to! s p x)
-                           (put-string p (jolt-object-repr x #t))))
+                           (pm-print-object-to! p x)))
                      w x)
                    jolt-nil))))))
     (hashtable-set! pm-builtins f #t)
