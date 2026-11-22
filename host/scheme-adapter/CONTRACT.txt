@@ -161,7 +161,9 @@ system
 # #f without installing anything, which leaves the heap unbounded as it was
 # before 0.8.5 and the nursery fixed — a target with no collection hook cannot enforce a ceiling,
 # and the caller then reports maxMemory as unbounded rather than promising a
-# bound it does not have. sa-gc-install-stall-watch! may likewise answer #f:
+# bound it does not have. sa-gc-set-collect-guard! may do nothing where no
+# collection hook is installed or the collector starts no threads of its own.
+# sa-gc-install-stall-watch! may likewise answer #f:
 # a target whose collector is not a rendezvous of active threads, or a Chez
 # whose rendezvous protocol the Chez copy has not been compared against,
 # keeps its own rendezvous and reports no stall (the behaviour before 0.8.9).
@@ -191,6 +193,7 @@ sa-pin-for-owner!
 sa-unpin-for-owner!
 sa-reset-max-memory-bytes!
 sa-gc-install-after-collect!
+sa-gc-set-collect-guard!
 sa-gc-install-stall-watch!
 sa-gc-install-after-rendezvous!
 sa-current-stack-bytes

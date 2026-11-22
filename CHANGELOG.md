@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A program could die of a signal it had a `sun.misc.Signal` handler for. Chez
+  starts its parallel GC threads with the mask of whichever thread runs the
+  collection, so one started while that thread had a signal unblocked never
+  blocked it. On a Chez without jolt's signal relay the kernel could deliver the
+  signal to one of those threads at its default action (a `Signal/raise` of USR2
+  ended the process with 140). Collections now run with jolt's signals blocked.
 - A one-argument `(str x)` goes through the `clojure.core/str` var again, so
   `with-redefs` and a redefinition reach it as they reach every other arity.
   The open-coded call from 0.8.28 never read the var (#1768). It still answers

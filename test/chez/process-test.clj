@@ -1074,6 +1074,60 @@
             [(count err) (str/includes? err "Broken pipe")])
           [100000 false])
 
+;; Chez's parallel collector starts its sweeper threads from inside a
+;; collection, and a new thread takes the mask of the thread that made it: the
+;; collecting one, not the fork guard's. A collection run while that thread had
+;; a signal unblocked (a spawn under jolt-with-empty-sigmask, the watcher
+;; re-raising a signal nobody handles, park-until-interrupt's SIGINT) left
+;; sweepers that never block it, for the life of the process. Without the relay
+;; the watcher's signals sit at SIG_DFL, so the kernel could hand one to a
+;; sweeper and end the process: the "no relay" signal rows' child dying of its
+;; own Signal/raise USR2 (exit 140) before it got ready. Collections run with the
+;; watched signals blocked, so a sweeper is born with them blocked whoever made
+;; it. The child below opens such a window on purpose (USR2 unblocked on every
+;; thread while parallel collections start the sweepers), closes it, and raises
+;; USR2 in a burst: the watcher is busy between waits for most of it, which is
+;; when the kernel looks for another thread. On Linux it also reads each
+;; thread's mask: the only one that may not block USR2 is the watcher, whose
+;; mask reads empty while it sits in sigwait.
+(let [progf (str (fs/create-temp-file {:prefix "jp-sweepers-" :suffix ".clj"}))
+      prog "(require '[jolt.scheme :as scm])
+(import '[sun.misc Signal SignalHandler])
+(defn mask! [how] (scm/eval-string (str \"(c-pthread-sigmask \" how \" (jolt-make-sigset (list (jolt-signal-number \\\"USR2\\\"))) 0)\")))
+(def handled (atom 0))
+(Signal/handle (Signal. \"USR2\") (reify SignalHandler (handle [_ s] (swap! handled inc))))
+(def go? (atom true))
+(def started (java.util.concurrent.CountDownLatch. 4))
+(def done (java.util.concurrent.CountDownLatch. 4))
+(mask! \"jolt-sig-unblock-how\")
+(dotimes [i 4]
+  (future (mask! \"jolt-sig-unblock-how\") (.countDown started)
+          (loop [] (when @go? (vec (range 2000)) (recur)))
+          (mask! \"jolt-sig-block-how\") (.countDown done)))
+(.await started)
+(dotimes [i 40] (doall (map str (range 20000))))
+(reset! go? false)
+(.await done)
+(mask! \"jolt-sig-block-how\")
+(def usr2-bit (bit-shift-left 1 (dec (scm/eval-string \"(jolt-signal-number \\\"USR2\\\")\"))))
+(defn blocked-mask [t] (Long/parseLong (second (re-find #\"SigBlk:\\s+(\\S+)\" (slurp (str t \"/status\")))) 16))
+(def unmasked
+  (let [d (java.io.File. \"/proc/self/task\")]
+    (if (.isDirectory d)
+      (count (filter (fn [t] (let [m (blocked-mask t)] (and (not (zero? m)) (zero? (bit-and m usr2-bit)))))
+                     (.listFiles d)))
+      0)))
+(dotimes [i 200] (Signal/raise (Signal. \"USR2\")))
+(Thread/sleep 300)
+(println \"survived\" unmasked (pos? @handled))
+(shutdown-agents)"]
+  (spit progf prog)
+  (let [r (sh [jolt-bin progf] {:out :string :err :string :extra-env {"JOLT_NO_SIGNAL_RELAY" "1"}})]
+    (check-eq "a sweeper started while a thread had USR2 unblocked still blocks it"
+              [(:exit r) (str/trim (:out r)) (:err r)]
+              [0 "survived 0 true" ""]))
+  (fs/delete-if-exists progf))
+
 ;; sun.misc.Signal (#1679). INT, TERM and HUP stay the shutdown watcher's.
 ;; Any other signal goes through the kernel's relay (chez-patches/0009) when it
 ;; has one, and nothing past the three is blocked; on a stock Chez, or with
