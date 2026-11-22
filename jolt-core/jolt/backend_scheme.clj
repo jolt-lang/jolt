@@ -609,6 +609,28 @@
 ;; The default value of a lookup's optional third operand, as spliced text.
 (defn- default-arg-str [as] (if (> (count as) 1) (str " " (nth as 1)) ""))
 
+;; (str x): a string or a StringBuilder answers inline on Chez (rt.ss
+;; jolt-str1/i) while the var still holds clojure.core/str. str has no :inline
+;; on the JVM, so a call reaches it through the var and sees with-redefs
+;; (#1768): the site reads the var as a call through it does, ahead of the
+;; argument, and calls whatever it holds otherwise. Minting the seed,
+;; clojure.core's own calls take the inline answer with no var read, as the
+;; JVM's direct-linked core does.
+(defn- str1-call? [fnode arg-nodes]
+  (and (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "str" (:name fnode))
+       (= 1 (count arg-nodes)) (not= :gambit (session/target))))
+
+(defn- emit-str1-call [fnode arg-nodes args order-args]
+  (if (seed-mint?)
+    (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
+    (let [fsrc (emit fnode)
+          cell (second (re-find var-cell-deref-re fsrc))]
+      (if cell
+        (order-args (fn [as] (str "(jolt-str1/i " cell " " (first as) ")")))
+        ;; no cell to read (var cache off): an ordinary call through the var
+        (ordered-call (cons fnode arg-nodes) (cons fsrc args)
+                      (fn [[f a]] (str "(jolt-invoke " f " " a ")")))))))
+
 ;; The callee by what it is, once no annotation or native op has claimed the call.
 (defn- emit-var-invoke [c]
   (let [node (:node c) fnode (:fnode c) arg-nodes (:arg-nodes c) args (:args c)
@@ -623,11 +645,9 @@
       (and (= "jolt.host" (:ns fnode)) (= "rec-type?" (:name fnode))
            (some? (:rec-guard node)) (even? (count arg-nodes)))
       (emit-rec-type-check node arg-nodes order-args)
-      ;; (str x): a string or a StringBuilder answers inline on Chez (rt.ss
-      ;; jolt-str1/i), as clojure.core/str's other natives do without its var
-      (and (= :var (:op fnode)) (= "clojure.core" (:ns fnode)) (= "str" (:name fnode))
-           (= 1 (count arg-nodes)) (not= :gambit (session/target)))
-      (order-args (fn [as] (str "(jolt-str1/i " (first as) ")")))
+      ;; (str x): open-coded on Chez behind a read of the var (emit-str1-call)
+      (str1-call? fnode arg-nodes)
+      (emit-str1-call fnode arg-nodes args order-args)
       ;; closed-world direct call: the callee var is an app fn def already emitted
       ;; with a Scheme binding — apply it directly, no var lookup, no jolt-invoke.
       ;; Only fn-valued defs qualify; a non-fn invokable value (a map/set/keyword

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A one-argument `(str x)` goes through the `clojure.core/str` var again, so
+  `with-redefs` and a redefinition reach it as they reach every other arity.
+  The open-coded call from 0.8.28 never read the var (#1768). It still answers
+  a string or a StringBuilder inline while the var holds the original `str`.
 - `=` asks a deftype's or a reify's own equality again when the other operand
   is a string literal, a keyword, a char or a boolean, as `Util.equiv` does
   for a collection on either side. Since 0.8.28 the open-coded `=` and
@@ -23,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Windows `jolt build` that links OpenSSL 4's static `libcrypto.a` as a
   `:static` native links again. MSYS2 moved to OpenSSL 4.1, whose RNG calls
   `BCryptGenRandom`, and the final link had no `-lbcrypt`.
+- A task that calls `babashka.tasks/jolt` or `clojure` under a built jolt runs
+  that same jolt again. It used to run whichever `jolt` was on PATH, or fail
+  with `exec: jolt: not found` when there was none (#1787).
 - `format` rounds the same digits `Double.toString` prints, as JDK 21's
   Formatter does. It started from Chez's, which differ on a 16-17 digit tie:
   `(format "%.16e" 1338163280546708.25)` printed `1.3381632805467083e+15`, the

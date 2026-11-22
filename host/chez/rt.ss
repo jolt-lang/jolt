@@ -3474,13 +3474,30 @@
 ;; (str x) at one argument on Chez (backend_scheme emit-var-invoke): a string is
 ;; itself and a StringBuilder its contents, the two a reader's token loop hands
 ;; it; anything else is jolt-str, clojure.core/str's procedure. Through the var
-;; it cost ~50 ns against .toString's ~15.
+;; it cost ~50 ns against .toString's ~15. C is the var's cell, read at the
+;; site: while the var's fn (what jolt-var-fn reads) is jolt-str the answer is
+;; inline, and anything else it holds (with-redefs, a redefinition) is called
+;; with the argument instead (#1768). Without C (minting the seed) there is no
+;; var read. C is always a var cell (the emitter spells it only around one), so
+;; its slots are read unchecked, as jolt-var-fn reads them. One fn read and one
+;; eq? is the whole guard: 3.3 -> 4.0 ns on (str s), where a separate root and
+;; binding test then a second branch on the result measured 4.5.
 (define-syntax jolt-str1/i
   (syntax-rules ()
-    ((_ e) (let ((v e))
-             (cond ((string? v) v)
-                   ((sb-builder-jhost? v) (sb-str v))
-                   (else (jolt-str v)))))))
+    ((_ e) (let ((v e)) (jolt-str1/i-body v)))
+    ((_ c0 e) (let* ((c c0)
+                     ;; what a call through the var reads (jolt-var-fn; str is
+                     ;; never *ns*), read ahead of the argument
+                     (f (if (sa-record-slot c 6) (var-cell-deref-bound c) (sa-record-slot c 2)))
+                     (v e))
+                (cond ((eq? f jolt-str) (jolt-str1/i-body v))
+                      ((procedure? f) (f v))
+                      (else (jolt-invoke f v)))))))
+(define-syntax jolt-str1/i-body
+  (syntax-rules ()
+    ((_ v) (cond ((string? v) v)
+                 ((sb-builder-jhost? v) (sb-str v))
+                 (else (jolt-str v))))))
 ;; (nth coll i) and (nth coll i not-found) on Chez (calls.clj native-op): an
 ;; in-range index into a vector or a string answers inline -- destructuring a
 ;; pair is two of these, and tools.reader destructures every [line column] it
