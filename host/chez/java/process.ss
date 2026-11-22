@@ -708,6 +708,20 @@
   (and proc-attr-init proc-attr-setflags proc-attr-destroy proc-attr-setsigdefault
        proc-c-sigemptyset proc-c-sigaddset #t))
 
+;; The child's signal mask, set by the attribute rather than by emptying this
+;; thread's mask around the spawn. Every jolt thread blocks the watcher's signals
+;; (concurrency.ss), and one sent to the process sits pending until the watcher's
+;; sigwait takes it; emptying the spawning thread's mask hands any pending one to
+;; that thread at its default action instead. A Signal/raise USR2 followed by a
+;; ProcessBuilder start died of SIGUSR2 on a slow runner that way, its handler
+;; registered. POSIX_SPAWN_SETSIGMASK is 8 on every host that spawns here.
+(define proc-attr-setsigmask
+  (jolt-foreign-proc-safe "posix_spawnattr_setsigmask" '(void* void*) 'int))
+(define proc-POSIX-SPAWN-SETSIGMASK #x08)
+(define (proc-sigmask-attr-ok?)
+  (and proc-attr-init proc-attr-setflags proc-attr-destroy proc-attr-setsigmask
+       proc-c-sigemptyset #t))
+
 ;; What posix_spawn-with-pipes needs, and nothing more. The R8 fiber-parking
 ;; extension's own bindings (fcntl, errno) are gated separately by
 ;; proc-nonblock-ok? above: losing parking is a performance story, losing this
@@ -1164,9 +1178,9 @@
 ;; parent's descriptor); the rest get pipes, except a stderr merged into stdout,
 ;; which is a dup2 of the child's 1 onto its 2.
 ;; Returns (values stdin-port stdout-port stderr-port pid), #f for inherited
-;; ends. attrp is NULL: signal mask and dispositions are inherited, matching
-;; the pipe path — so the mask is corrected on this side, around the spawn
-;; itself (see the call below).
+;; ends. The child starts with an empty signal mask, set through the attribute
+;; (POSIX_SPAWN_SETSIGMASK) where the platform has it, else by emptying this
+;; thread's mask around the spawn itself (see the call below).
 (define (proc-spawn-fd-level spec inherit-in? inherit-out? inherit-err?)
   ;; nonblocking-read? / nonblocking-write? -- set O_NONBLOCK unconditionally
   ;; on the PARENT's own RETAINED end at creation (never poller-gated), so
@@ -1219,14 +1233,21 @@
              (fa (sa-foreign-alloc 128))
              (cloexec? (proc-cloexec-default?))
              (sigdef? (proc-sigdefault-ok?))
-             (attr (and (or cloexec? sigdef?) (sa-foreign-alloc proc-attr-bytes)))
+             (sigmask? (proc-sigmask-attr-ok?))
+             (attr (and (or cloexec? sigdef? sigmask?) (sa-foreign-alloc proc-attr-bytes)))
              (pidbuf (sa-foreign-alloc 8)))
         (proc-fa-init fa)
         (when attr
           (proc-attr-init attr)
           (proc-attr-setflags attr
             (fxior (if cloexec? proc-POSIX-SPAWN-CLOEXEC-DEFAULT 0)
-                   (if sigdef? proc-POSIX-SPAWN-SETSIGDEF 0)))
+                   (if sigdef? proc-POSIX-SPAWN-SETSIGDEF 0)
+                   (if sigmask? proc-POSIX-SPAWN-SETSIGMASK 0)))
+          (when sigmask?
+            (let ((set (sa-foreign-alloc proc-sigset-bytes)))
+              (proc-c-sigemptyset set)
+              (proc-attr-setsigmask attr set)
+              (sa-foreign-free set)))
           (when sigdef?
             (let ((set (sa-foreign-alloc proc-sigset-bytes)))
               (proc-c-sigemptyset set)
@@ -1266,11 +1287,12 @@
                (envp (proc-marshal-argv
                       (map (lambda (p) (string-append (car p) "=" (cdr p)))
                            (proc-spec-env spec))))
-               ;; attrp carries CLOEXEC_DEFAULT and SETSIGDEF at most, never
-               ;; SETSIGMASK — so the child inherits this thread's signal mask,
-               ;; which must carry none of jolt's own blocking (concurrency.ss).
-               (rc (jolt-with-empty-sigmask
-                     (lambda () (proc-c-spawn pidbuf path fa (or attr 0) (car argv) (car envp)))))
+               ;; With SETSIGMASK the attribute gives the child its empty mask
+               ;; and this thread's stays as it is; without it the child
+               ;; inherits this thread's mask, which must then carry none of
+               ;; jolt's own blocking for the length of the spawn (concurrency.ss).
+               (rc (let ((spawn (lambda () (proc-c-spawn pidbuf path fa (or attr 0) (car argv) (car envp)))))
+                     (if sigmask? (spawn) (jolt-with-empty-sigmask spawn))))
                (pid (sa-foreign-ref 'int pidbuf 0)))
           (proc-fa-destroy fa)
           (when attr (proc-attr-destroy attr) (sa-foreign-free attr))
