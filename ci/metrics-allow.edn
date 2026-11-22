@@ -57,4 +57,10 @@
   {:path "compatibility/jsonista/core.clj" :name "write-value-as-bytes"
    :why "jsonista's public API, for libraries that call it (muuntaja); nothing in jolt does"}
   {:path "compatibility/jsonista/core.clj" :name "java-collection-module"
-   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}]}
+   :why "jsonista's public API, for libraries that call it; nothing in jolt does"}
+  {:path "tools/tasks/env.clj" :name "gambit-env" :why "called from deps.edn's gambit tasks"}
+  {:path "tools/tasks/gate.clj" :name "run-gate!" :why "called from deps.edn's test, ci and bionic-ci tasks"}
+  {:path "tools/tasks/gate.clj" :name "gate-status!" :why "called from deps.edn's gate-status task"}
+  {:path "tools/tasks/gate.clj" :name "ci-shard!" :why "called from deps.edn's ci-shard task"}
+  {:path "tools/tasks/info.clj" :name "print-info" :why "called from deps.edn's info task"}
+  {:path "tools/tasks/parity.clj" :name "main!" :why "called from the Makefile's and deps.edn's taskparity"}]}
