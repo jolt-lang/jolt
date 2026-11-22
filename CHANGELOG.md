@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `letfn` passed to an inlined call keeps its mutual recursion (#1808).**
+  In a `jolt build` (default or `--opt`), or under `{:direct-linking true}`, a
+  call such as `(f (letfn [(a [] (b)) (b [] …)] (a)))` to a function the
+  compiler inlines failed at runtime with "variable … is not bound": the
+  `letfn`'s functions were hoisted into a plain `let*`, so the first read its
+  sibling before it was bound.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could
