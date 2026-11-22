@@ -1054,52 +1054,134 @@
 (def-var! "clojure.core" "coll?" (lambda (x) (or (htable-sorted? x) (jrec-collection? x) (jolt-coll-pred? x))))
 
 ;; --- equality / hash ---------------------------------------------------------
-;; A sorted coll canonicalizes like its unordered counterpart:
-;; a sorted-map equals ANY map (hash or sorted) with the same entries, a
-;; sorted-set ANY set with the same elements — the comparator is irrelevant to =.
-;; The general answer converts to the plain persistent coll and delegates to the
-;; prior jolt=2. (htable-sorted? short-circuits on a non-htable BEFORE any jolt=2,
-;; so extending jolt=2 here doesn't recurse: the inner tag compare gets two
-;; keywords.)
+;; (= a b) is a.equiv(b), and the two APersistent* classes ask in opposite
+;; directions. APersistentSet.equiv walks the OTHER set and asks contains of its
+;; own, so a sorted set on the left looks each element up under its comparator:
+;; (= (sorted-set 1) #{1.0}) is true, (= #{1.0} (sorted-set 1)) false.
+;; APersistentMap.equiv walks its OWN entries and asks containsKey/get of the
+;; other, so a sorted map on the RIGHT is the one whose comparator decides:
+;; (= {1.0 :a} (sorted-map 1 :a)) is true, the other order false. PersistentTree*
+;; wrap equiv in a ClassCastException catch, so an incomparable key makes the
+;; sorted receiver answer false, where a hash map asking a sorted one throws.
+;;
+;; Something other than a hash or sorted coll converts the sorted side to its plain
+;; equivalent and delegates to the prior jolt=2. (htable-sorted? short-circuits on
+;; a non-htable BEFORE any jolt=2, so extending jolt=2 here doesn't recurse: the
+;; inner tag compare gets two keywords.)
 (define (sorted-map->pmap sc)
   (sc-tree-fold-kv (scoll-tree sc) (lambda (k v m) (pmap-assoc m k v)) empty-pmap))
 (define (sorted-set->pset sc)
   (sc-tree-fold-kv (scoll-tree sc) (lambda (k v s) (pset-conj s k)) empty-pset))
 (define (sorted->plain x) (if (htable-sorted-map? x) (sorted-map->pmap x) (sorted-set->pset x)))
-;; The common pairings answer without building anything, the way APersistentMap /
-;; APersistentSet.equiv do: counts first, then one walk of the sorted tree. Against
-;; a hash coll each entry is probed there (hash lookup, the same test the converted
-;; compare made); against a sorted coll with the SAME comparator the two trees walk
-;; in lockstep, which is O(n) with no comparator calls at all. 'eq / 'ne, or #f to
-;; fall back to the conversion (a different comparator, a record, a Java map, …).
 (define (sc-count x) (scoll-cnt x))
-(define (sorted-fast= s o)
-  (define (verdict b) (if b 'eq 'ne))
-  (define (same-cmp? o) (eq? (scoll-cmp-fn s) (scoll-cmp-fn o)))
-  (define (lockstep same?) (sc-tree-lockstep? (scoll-tree s) (scoll-tree o) same?))
-  (if (htable-sorted-map? s)
-      (cond
-        ((pmap? o)
-         (verdict (and (eqv? (sc-count s) (pmap-cnt o))
-                       (sc-tree-every-kv? (scoll-tree s)
-                         (lambda (k v) (let ((p (pmap-entry-at o k)))
-                                         (and p (jolt=2 v (cdr p)))))))))
-        ((and (htable-sorted-map? o) (not (eqv? (sc-count s) (sc-count o)))) 'ne)
-        ((and (htable-sorted-map? o) (same-cmp? o))
-         (verdict (lockstep (lambda (ka va kb vb) (and (jolt=2 ka kb) (jolt=2 va vb))))))
-        (else #f))
-      (cond
-        ((pset? o)
-         (verdict (and (eqv? (sc-count s) (pset-count o))
-                       (sc-tree-every-kv? (scoll-tree s)
-                         (lambda (k v) (pset-contains? o k))))))
-        ((and (htable-sorted-set? o) (not (eqv? (sc-count s) (sc-count o)))) 'ne)
-        ((and (htable-sorted-set? o) (same-cmp? o))
-         (verdict (lockstep (lambda (ka va kb vb) (jolt=2 ka kb)))))
-        (else #f))))
+(define sc-absent (list 'sc-absent))
+(define (sc-has? sc k) (bt-locate (scoll-cmp sc) (scoll-tree sc) k (l i) #t #f))
+;; two keys that are not jolt=, equivalent under SC's comparator after all, with
+;; the receiver's catch. Two different fixnums never are under natural order.
+(define (sc-equiv-miss? sc a b)
+  (and (not (and (fixnum? a) (fixnum? b) (jolt-nil? (scoll-cmp sc))))
+       (sc-cce-false (lambda () (sc-cmp-zero? sc a b)))))
+;; A key whose natural-order class answers compare = 0 exactly when = is true,
+;; and compares with nothing else but nil (checked against JVM 1.12.6: a string,
+;; keyword, symbol, char or boolean against another class is a
+;; ClassCastException). So a natural-order sorted coll holding one holds only
+;; that class and nil, and no element of another coll is equivalent to one of its
+;; keys without being =. Numbers (1 vs 1.0) and collections ([1] vs [1.0]) are
+;; not plain; nil is not either, since it sits beside any class.
+(define (sc-plain-key? x)
+  (or (string? x) (keyword-t? x) (symbol-t? x) (char? x) (boolean? x)))
+;; SC is natural-order and its first key is plain, so every key is of that one
+;; class (nil would sort first): a jolt= probe answers what its comparator would
+(define (sc-plain-keyed? sc)
+  (and (jolt-nil? (scoll-cmp sc))
+       (let ((t (scoll-tree sc)))
+         (and (not (jolt-nil? t)) (sc-plain-key? (bt-key (bt-first-leaf t) 0))))))
+;; SC's comparator finds A and B equivalent
+(define (sc-cmp-zero? sc a b)
+  (let* ((cmp (scoll-cmp sc))
+         (c (if (jolt-nil? cmp) (jolt-compare a b) (jolt-invoke2 cmp a b))))
+    (not (or (positive? c) (negative? c)))))
+;; every (k v) of a hash map satisfies PRED, leaving the walk at the first miss
+(define (pmap-every-kv? m pred)
+  (sa-call-with-escape-continuation
+    (lambda (out) (pmap-fold-fwd m (lambda (k v acc) (if (pred k v) acc (out #f))) #t))))
+;; 'ne on a count mismatch without running BODY, else BODY's verdict
+(define-syntax and-count=
+  (syntax-rules () ((_ n m body) (if (eqv? n m) (if body 'eq 'ne) 'ne))))
+;; the receiver's catch: a ClassCastException thrown by THUNK answers false
+(define (sc-cce-false thunk)
+  (guard (c ((and (jolt-throw-condition? c)
+                  (let ((v (jolt-throw-condition-value c)))
+                    (and (jolt-ex-info-record? v)
+                         (equal? (jolt-ex-info-record-class-name v) "java.lang.ClassCastException"))))
+             (jolt-catch-complete!)
+             #f))
+    (thunk)))
+;; The equal answer comes first and builds nothing: counts, then one walk that
+;; matches entries by jolt= -- a probe of the hash side, or the two trees in
+;; lockstep when they share a comparator (O(n), no comparator calls). Entries
+;; that are jolt= are equal under any comparator that orders its own keys, so a
+;; walk that matches every one answers what the JVM's lookups would. Only a miss
+;; asks the comparator, which can still find the keys equivalent (1 and 1.0
+;; under compare): in the lockstep, just for the pair that missed; against a hash
+;; coll, the one walk is picked up front: the probe when the sorted side's keys
+;; are plain (sc-plain-keyed?), the JVM's own walk otherwise. 'eq / 'ne, or #f to fall back to the
+;; conversion (a record, a Java map, ...).
+(define (sorted-fast= a b)
+  (define (verdict x) (if x 'eq 'ne))
+  (define (same-cmp? s o) (eq? (scoll-cmp-fn s) (scoll-cmp-fn o)))
+  (define (lockstep s o same?) (sc-tree-lockstep? (scoll-tree s) (scoll-tree o) same?))
+  ;; keys walked in lockstep under one comparator: jolt= keys need no call, and
+  ;; a pair that is not is asked of the comparator (under the receiver's catch)
+  (define (k-equiv? ka va kb vb) (or (jolt=2 ka kb) (sc-equiv-miss? a ka kb)))
+  (define (kv-equiv? ka va kb vb) (and (k-equiv? ka va kb vb) (jolt=2 va vb)))
+  ;; every entry of sorted map S is in hash map M by jolt=: exactly the JVM's
+  ;; s.equiv(m)
+  (define (sm-in-pmap? s m)
+    (sc-tree-every-kv? (scoll-tree s)
+      (lambda (k v) (let ((p (pmap-entry-at m k))) (and p (jolt=2 v (cdr p)))))))
+  ;; every (k v) PRED-walked is in sorted map S under S's comparator
+  (define (in-sm? s) (lambda (k v) (let ((x (sc-ref s k sc-absent))) (and (not (eq? x sc-absent)) (jolt=2 v x)))))
+  (cond
+    ((htable-sorted-set? a)
+     (cond
+       ((pset? b)
+        (and-count= (sc-count a) (pset-count b)
+          ;; one walk, chosen up front: the jolt= probe when it is exact (a
+          ;; plain-keyed natural-order set), else the JVM's own walk
+          (if (sc-plain-keyed? a)
+              (sc-tree-every-kv? (scoll-tree a) (lambda (k v) (pset-contains? b k)))
+              (sc-cce-false (lambda () (pmap-every-kv? (pset-m b) (lambda (k v) (sc-has? a k))))))))
+       ((htable-sorted-set? b)
+        (and-count= (sc-count a) (sc-count b)
+          (if (same-cmp? a b)
+              (lockstep a b k-equiv?)
+              (sc-cce-false (lambda () (sc-tree-every-kv? (scoll-tree b) (lambda (k v) (sc-has? a k))))))))
+       (else #f)))
+    ((htable-sorted-map? a)
+     (cond
+       ((pmap? b) (and-count= (sc-count a) (pmap-cnt b) (sm-in-pmap? a b)))
+       ((htable-sorted-map? b)
+        (and-count= (sc-count a) (sc-count b)
+          (if (same-cmp? a b)
+              (lockstep a b kv-equiv?)
+              (sc-cce-false (lambda () (sc-tree-every-kv? (scoll-tree a) (in-sm? b)))))))
+       (else #f)))
+    ;; a hash coll on the left, the sorted one on the right
+    ((htable-sorted-set? b)
+     (and (pset? a)
+          (verdict (and (eqv? (pset-count a) (sc-count b))
+                        (sc-tree-every-kv? (scoll-tree b) (lambda (k v) (pset-contains? a k)))))))
+    ((htable-sorted-map? b)
+     (and (pmap? a)
+          ;; the JVM's walk, which also answers the equal case. No catch: the
+          ;; hash map's equiv has none, so an incomparable key throws.
+          (verdict (and (eqv? (pmap-cnt a) (sc-count b))
+                        (pmap-every-kv? a (in-sm? b))))))
+    (else #f)))
 (register-eq-arm! (lambda (a b) (or (htable-sorted? a) (htable-sorted? b)))
                   (lambda (a b)
-                    (let ((v (if (htable-sorted? a) (sorted-fast= a b) (sorted-fast= b a))))
+                    (let ((v (sorted-fast= a b)))
                       (if v
                           (eq? v 'eq)
                           ;; a sorted coll compares as its plain equivalent: normalize

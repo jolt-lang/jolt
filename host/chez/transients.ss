@@ -124,7 +124,7 @@
                 answer))))
       (let* ((changed (box #f))
              (next (if put? (node-assoc-by root 0 h k v changed same? stored-hash)
-                       (node-dissoc-by root 0 h k changed same?)))
+                       (node-dissoc-by root 0 h k changed same? alist-remove-swap)))
              (current (jolt-transient-buf t)))
         (if (eq? root current)
             (let ((left (jolt-transient-ord t)))
@@ -316,7 +316,8 @@
                 (loop (mk-pvec (fx+ (pvec-cnt p) m) (pvec-shift p) (pvec-root p) nt (pv-derived-ent p))
                       (fx+ i m)))
               (loop (pvec-conj p (vector-ref buf i)) (fx+ i 1)))))))
-;; conj! onto a transient map: a [k v] pair (vector/map-entry) or a whole map.
+;; conj! onto a transient map: a [k v] pair (vector/map-entry), a whole map, or
+;; anything that seqs into entries.
 (define (tmap-conj-entry! t x)
   (cond
     ((jolt-nil? x) #t)
@@ -330,7 +331,8 @@
            (tmap-put! t (pvec-nth-in-range x 0) (pvec-nth-in-range x 1)))))
     ((pmap? x) (pmap-fold-fwd x (lambda (k v acc) (tmap-put! t k v) acc) 0))
     ((jolt-host-entry x) => (lambda (kv) (tmap-put! t (car kv) (cdr kv))))
-    (else (throw-jvm (quote IllegalArgumentException) "conj!: a transient map takes a map entry or a map"))))
+    ;; anything else seqs into entries, as ATransientMap.conj walks RT.seq
+    (else (fold-map-entries x (lambda (k v acc) (tmap-put! t k v) acc) 0))))
 
 (define-syntax define-pvec-inserter
   (syntax-rules ()

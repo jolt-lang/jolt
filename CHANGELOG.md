@@ -20,6 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`(require 'x :reload-all)` of a namespace load-file'd from off the source
+  roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
+  kept the stale definitions in silence. The message is now RT.load's, `Could
+  not locate x__init.class, x.clj or x.cljc on classpath.`, and names the file
+  the namespace was loaded from only when it is that namespace's own file: a
+  script that did `(in-ns 'yy)` is no longer reported as yy's source.
+- **A thrown exception is not an instance of a record sharing its simple
+  name.** With `(defrecord IOException [x])` in `demo`, `(instance?
+  demo.IOException (java.io.IOException. "x"))` was true, `cast` returned, and
+  `(catch demo.IOException e …)` caught a failed `slurp`. Exceptions now ask the
+  class graph as the `:class` envelope arm does since #1795.
+- **`=` on a reify, and a deftype opposite a java.util collection, follow
+  `Util.equiv`.** A reify whose `equals` says true was `=` to `[1]`, `{}` and
+  `'()`; the JVM asks the persistent collection, which says false. A deftype
+  whose `equals` says true was not `=` to a `java.util.ArrayList` on its right,
+  because the collection was converted to a persistent one before the deftype
+  was asked.
+- **`*print-meta*` writes no `^meta` before a user `print-method`.** A record
+  with its own `print-method` printed as `^{:m 1} #R!`; the JVM's built-in
+  methods write the metadata, and a user method that replaces one writes none.
+- **`#=` reads a var.** `(read-string "#=(var clojure.core/inc)")` under
+  `*read-eval*` threw `ClassCastException`: the reader tried to put the var's
+  own metadata back on it as reader metadata.
 - A `ProcessBuilder` whose directory does not exist threw
   `IOException: posix_spawn failed (errno 2)`, and through the shell fallback
   it started anyway. `start` now throws what the JDK throws,
@@ -42,6 +65,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(95 54 "BBBB" "AaAa")` where the JVM gives `("AaAa" "BBBB" 95 54)`.
 - An image restore that had to rebuild a small hash map made it an array map,
   and a rebuilt set reversed its collision buckets.
+- `dissoc!` and `disj!` on a transient hash map or set kept a collision
+  bucket's order, where the JVM moves the bucket's last entry into the hole:
+  `(keys (persistent! (dissoc! (transient (hash-map "AaAa" 1 "BBBB" 2 "AaBB" 3 "BBAa" 4)) "AaAa")))`
+  is `("BBAa" "BBBB" "AaBB")`, as on the JVM.
+- `=` on a sorted set or map never asked the comparator, so
+  `(= (sorted-set 1) (sorted-set 1.0))` and `(= (sorted-set 1) #{1.0})` were
+  false. It now asks the side the JVM asks: a sorted set on the left looks the
+  other set's elements up under its comparator, and a sorted map on the right
+  is the one whose keys are looked up (`(= {1.0 :a} (sorted-map 1 :a))` is true,
+  the other order false). An incomparable key makes a sorted coll on the left
+  answer false, and a hash map asking a sorted one throws the
+  ClassCastException, as on the JVM.
+- conj and into on a map refuse a bad entry with the JVM's exception. A sorted
+  map threw an ExceptionInfo for every shape; it now throws
+  IllegalArgumentException "Vector arg to map conj must be a pair" for a vector
+  that is not a pair, seq's IllegalArgumentException for a value that does not
+  seq, and a ClassCastException for a seq element that is not a map entry,
+  including a plain `[k v]` vector: `(conj {} '([1 2]))` throws as on the JVM,
+  while `(conj {} [1 2])` and `(into {} [[1 2]])` still take the pair. A
+  transient hash map (so `into {}`) refused a seq of entries outright, and
+  `(conj {} '(nil))` failed inside the error message instead of throwing the
+  NullPointerException.
 
 - A program could die of a signal it had a `sun.misc.Signal` handler for. Chez
   starts its parallel GC threads with the mask of whichever thread runs the

@@ -33,6 +33,7 @@
 (define universe
   (list->vector
     (append collide
+            (list "" 0.0)                     ; hash 0: nil's bucket, with 0
             (let loop ((i 0) (acc '())) (if (= i 300) acc (loop (+ i 1) (cons i acc))))
             (map (lambda (i) (keyword #f (string-append "k" (number->string i)))) (iota 40))
             (list jolt-nil #f #t -1 (expt 2 40) "x" "y"))))
@@ -44,8 +45,22 @@
 (define (model-assoc al k v)
   (if (model-get al k)
       (map (lambda (p) (if (jolt=2 (car p) k) (cons (car p) v) p)) al)
-      (append al (list (cons k v)))))
+      ;; nil goes first: the JVM keeps it outside the trie and seqs it ahead of
+      ;; the hash-0 keys (0, "", 0.0) it shares a bucket with here
+      (if (jolt-nil? k) (cons (cons k v) al) (append al (list (cons k v))))))
 (define (model-dissoc al k) (filter (lambda (p) (not (jolt=2 (car p) k))) al))
+;; a transient removal from a bucket moves the bucket's last entry into the hole
+;; (HashCollisionNode.without(edit, ...)); removing nil, or a key alone in its
+;; hash, is a plain removal
+(define (model-dissoc! al k)
+  (let ((p (model-get al k)))
+    (if (or (not p) (jolt-nil? k))
+        (model-dissoc al k)
+        (let* ((h (key-hash k))
+               (last (fold-left (lambda (q e) (if (= (key-hash (car e)) h) e q)) #f al)))
+          (if (eq? last p)
+              (model-dissoc al k)
+              (map (lambda (e) (if (eq? e p) last e)) (filter (lambda (e) (not (eq? e last))) al)))))))
 
 ;; --- iteration order: hash chunks low to high, buckets in insertion order ---------
 (define (chunk-list h) (let loop ((i 0) (acc '())) (if (> i 30) (reverse acc) (loop (+ i 5) (cons (bitwise-and (bitwise-arithmetic-shift-right h i) 31) acc)))))
@@ -132,7 +147,7 @@
               (let ((k (rand-key)))
                 (if (< (rnd 10) 7)
                     (let ((v (rand-val))) (jolt-assoc! t k v) (loop (+ i 1) (model-assoc al k v)))
-                    (begin (jolt-dissoc! t k) (loop (+ i 1) (model-dissoc al k))))))))))
+                    (begin (jolt-dissoc! t k) (loop (+ i 1) (model-dissoc! al k))))))))))
 
 (let loop ((r 0))
   (when (< r 40)

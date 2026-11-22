@@ -298,14 +298,12 @@
 (define pr-user-method-write #f)
 (define (set-pr-user-method-write! f) (set! pr-user-method-write f))
 
+;; *print-meta* is written by the built-in printers (core_print's print-meta
+;; call in each IMeta method), so a user print-method that takes x over writes
+;; no ^meta: it replaced the method that would have.
 (define (pr-to! p x)
-  (if (pr-print-meta?)
-      (let ((m (pr-user-meta x)))
-        (if (jolt-nil? m)
-            (pr-dispatch-to! p x)
-            (begin (put-string p "^") (pr-dispatch-to! p m) (put-string p " ")
-                   (pr-dispatch-to! p x))))
-      (pr-dispatch-to! p x)))
+  (unless (and pr-user-method-write (pr-user-method-write x p))
+    (pr-builtin-to! p x)))
 (define (pr-dispatch-to! p x)
   (unless (and pr-user-method-write (pr-user-method-write x p))
     (pr-own-to! p x)))
@@ -445,12 +443,15 @@
       (let ((m (jolt-meta x)))
         (if (or (jolt-nil? m) (fx=? 0 (jolt-count m))) jolt-nil m))))
 
+;; ^meta only on the built-in path, as pr-to! above
 (define (jolt-pr-readable x)
   (cond ((pr-print-meta?)
          (let ((m (pr-user-meta x)))
            (if (jolt-nil? m)
                (jolt-pr-readable-dispatch x)
-               (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x)))))
+               (or (and pr-user-method-render (pr-user-method-render x))
+                   (string-append "^" (jolt-pr-readable-dispatch m) " "
+                                  (if (pr-fast-type? x) (jolt-pr-readable-base x) (pr-own-string x)))))))
         ;; a collection is written into one port rather than built level by
         ;; level; a scalar's or a host object's text is one string already
         (else (jolt-pr-readable-dispatch x))))
