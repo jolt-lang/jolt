@@ -1584,16 +1584,14 @@
 ;; vars.ss/rt.ss finish loading after this point. Same shape as pm-cell
 ;; (io-streams.ss) and the cells the backend emits for compiled code.
 (define pr-readably-cell #f)
-;; Under *print-dup* a string or a char prints readably whatever *print-readably*
-;; says, as core_print.clj's (or *print-dup* *print-readably*) has it.
 (define (jolt-pr-readable?)
   (let ((o (virtual-register jolt-vreg-print-readably)))
-    (cond ((eq? (virtual-register jolt-vreg-print-dup) #t) #t)
-          ((eq? o 0)
-           (unless pr-readably-cell
-             (set! pr-readably-cell (jolt-var "clojure.core" "*print-readably*")))
-           (jolt-truthy? (jolt-var-get pr-readably-cell)))
-          (else (jolt-truthy? o)))))
+    (if (eq? o 0)
+        (begin
+          (unless pr-readably-cell
+            (set! pr-readably-cell (jolt-var "clojure.core" "*print-readably*")))
+          (jolt-truthy? (jolt-var-get pr-readably-cell)))
+        (jolt-truthy? o))))
 (define (jolt-trace-enable!) (set! jolt-trace-on? #t))
 
 ;; TAIL call emissions store their static site here right before the call

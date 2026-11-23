@@ -312,9 +312,9 @@
 (define-syntax pr-dup-mode?
   (syntax-rules () ((_) (eq? (virtual-register jolt-vreg-print-dup) #t))))
 (define (pr-to! p x)
-  (if (pr-dup-mode?)
-      (pr-dup-write x p)
-      (pr-plain-to! p x)))
+  (cond ((pr-dup-mode?) (pr-dup-write x p))
+        ((and pr-user-method-write (pr-user-method-write x p)))
+        (else (pr-builtin-to! p x))))
 ;; x's print-method: the user's, else the built-in. print-method's :default
 ;; prints its own value through this, never back to print-dup.
 (define (pr-plain-to! p x)
@@ -326,15 +326,24 @@
         (else (pr-own-to! p x))))
 
 ;; Run thunk with the thread's print-dup slot set to on (#t or #f), restored
-;; after. The restore is masked at its far edge (locks.ss), as print-to!'s
-;; readably override is, so an interrupt cannot leave the thread in either mode.
+;; after. Under print-dup a string or a char prints readably whatever
+;; *print-readably* says (core_print.clj's (or *print-dup* *print-readably*)), so
+;; the readably override (rt.ss) is set with it, and unset again when a print
+;; inside leaves print-dup. Both restores are masked at their far edge
+;; (locks.ss), so an interrupt cannot leave the thread in either mode.
 (define (call-in-print-dup-mode on thunk)
-  (let ((prev (virtual-register jolt-vreg-print-dup)) (lv (jolt-locks-held)))
+  (let ((prev (virtual-register jolt-vreg-print-dup))
+        (prev-readably (virtual-register jolt-vreg-print-readably))
+        (lv (jolt-locks-held)))
     (jolt-locks-enter!)
     (dynamic-wind
-      (lambda () (set-virtual-register! jolt-vreg-print-dup on))
+      (lambda ()
+        (set-virtual-register! jolt-vreg-print-dup on)
+        (set-virtual-register! jolt-vreg-print-readably (if on #t 0)))
       (jolt-masked-body thunk)
-      (jolt-masked-after lv (set-virtual-register! jolt-vreg-print-dup prev)))))
+      (jolt-masked-after lv
+        (begin (set-virtual-register! jolt-vreg-print-dup prev)
+               (set-virtual-register! jolt-vreg-print-readably prev-readably))))))
 ;; body with the slot matching on, the usual case (no print-dup anywhere) costing
 ;; one comparison and no closure
 (define-syntax with-print-dup-mode
@@ -468,11 +477,14 @@
 ;; core_print.clj's print-meta writes metadata under *print-meta* only while
 ;; printing readably: print, println and str leave it out.
 (define (pr-print-meta?)
-  (or (pr-dup-mode?)
-      (begin
-        (unless pr-meta-cell (set! pr-meta-cell (jolt-var "clojure.core" "*print-meta*")))
-        (and (jolt-truthy? (jolt-var-get pr-meta-cell))
-             (jolt-pr-readable?)))))
+  (unless pr-meta-cell (set! pr-meta-cell (jolt-var "clojure.core" "*print-meta*")))
+  (and (jolt-truthy? (jolt-var-get pr-meta-cell))
+       (jolt-pr-readable?)))
+;; The streaming printer's: print-meta writes metadata under *print-dup* too. A
+;; print under *print-dup* only ever streams (io-streams.ss), so the string
+;; renderer above keeps the one test.
+(define (pr-stream-meta?)
+  (or (pr-dup-mode?) (pr-print-meta?)))
 ;; print-meta's text for m: a lone truthy :tag prints as the tag (^String x),
 ;; anything else as the map
 (define pr-tag-kw (keyword #f "tag"))
@@ -511,7 +523,7 @@
 ;; borrows one for its own type -- (defmethod print-method IPersistentMap ...)
 ;; calling the saved original -- does not come back to itself.
 (define (pr-builtin-to! p x)
-  (if (pr-print-meta?)
+  (if (pr-stream-meta?)
       (let ((m (pr-user-meta x)))
         (unless (jolt-nil? m) (pr-meta-to! p m))
         (pr-own-to! p x))
@@ -534,7 +546,7 @@
   (if (pr-shape-native? shape x)
       (pr-builtin-to! p x)
       (begin
-        (when (pr-print-meta?)
+        (when (pr-stream-meta?)
           (let ((m (pr-user-meta x)))
             (unless (jolt-nil? m) (pr-meta-to! p m))))
         (if (jolt-print-hash?)
