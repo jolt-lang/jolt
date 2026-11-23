@@ -154,11 +154,25 @@
 ;; predicates are not a promise: a port over a SOCKET descriptor answers #t to
 ;; both and then raises ESPIPE ("illegal seek") from port-position, so this asks
 ;; by trying rather than by asking.
+;; A custom port over a file (nio-file.ss fc-win32-port, a HANDLE on Windows)
+;; has no port-length of its own, so it registers how to ask its file's size
+;; here, the way Reader ports register a ready probe below.
+(define port-size-probes (make-weak-eq-hashtable))
+(define port-size-probes-mu (make-mutex))
+(define (port-size-probe! port size)
+  (jolt-with-mutex port-size-probes-mu (hashtable-set! port-size-probes port size))
+  port)
+;; The size of the file behind PORT, or #f when it is not a seekable file.
+(define (port-file-size port)
+  (cond ((jolt-with-mutex port-size-probes-mu (hashtable-ref port-size-probes port #f))
+         => (lambda (size) (size)))
+        ((port-has-port-length? port) (port-length port))
+        (else #f)))
 (define (port-remaining port)
   (guard (_ (#t #f))
-    (and (port-has-port-length? port)
-         (port-has-port-position? port)
-         (max 0 (- (port-length port) (port-position port))))))
+    (and (port-has-port-position? port)
+         (let ((size (port-file-size port)))
+           (and size (max 0 (- size (port-position port))))))))
 (define (in-stream-available self)
   (let ((port (in-stream-live-port self))
         (p (piped-pipe self)))
@@ -242,6 +256,20 @@
                   (set-port-position! port target))
                 (->num n))))))
 
+;; Files/newInputStream's stream is a ChannelInputStream over a seekable channel,
+;; and its skip is the channel's (JDK 21): forward no further than the end of
+;; the file, back no further than its start, answering how far it moved. #f
+;; when the stream is some other kind or its port is not a seekable file (a
+;; directory's stream), which keeps the other two ways.
+(define (in-stream-skip-on-channel! self port n)
+  (and (equal? (stream-class self) "sun.nio.ch.ChannelInputStream")
+       (let ((pos (guard (_ (#t #f)) (and (port-has-port-position? port) (port-position port))))
+             (size (guard (_ (#t #f)) (port-file-size port))))
+         (and pos size
+              (let ((to (if (> n 0) (min (+ pos n) size) (max (+ pos n) 0))))
+                (set-port-position! port to)
+                (->num (- to pos)))))))
+
 ;; InputStream.skip by reading: n <= 0 is 0, and the bytes go through a bounded
 ;; buffer, so a count past the end (Long/MAX_VALUE) stops at end of stream.
 (define (in-stream-skip-by-reading! port n)
@@ -311,7 +339,8 @@
                                          (na-byte-array (if (eof-object? bv) (make-bytevector 0) bv)))))
    (cons "skip" (lambda (self n)
                   (let ((port (in-stream-live-port self)) (n (jnum->exact n)))
-                    (or (in-stream-skip-by-seek! self port n)
+                    (or (in-stream-skip-on-channel! self port n)
+                        (in-stream-skip-by-seek! self port n)
                         (->num (in-stream-skip-by-reading! port n))))))
    (cons "available" (lambda (self) (->num (in-stream-available self))))
    ;; PushbackInputStream.unread — see the pushback section below. Any other
