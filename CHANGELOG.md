@@ -53,6 +53,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`DELETE_ON_CLOSE` works on Windows for `Files/newInputStream`,
+  `newOutputStream` and `newByteChannel`.** They threw
+  UnsupportedOperationException there, because the streams sat on Chez's C
+  runtime file ports. With the option they now open the way `FileChannel/open`
+  does, a HANDLE with `FILE_FLAG_DELETE_ON_CLOSE` read and written through
+  ReadFile/WriteFile, so the file goes when the stream closes, and APPEND,
+  TRUNCATE_EXISTING, CREATE_NEW, SYNC and DSYNC still apply. On every host
+  these opens refuse a symbolic link with the JDK's IOException instead of
+  deleting the link and opening its target.
+- **`Files/newByteChannel` takes `READ` with `WRITE`.** It threw
+  IllegalArgumentException "READ not allowed". It now checks its options as
+  newFileChannel does: READ + APPEND is "READ + APPEND not allowed", a channel
+  opened without READ throws NonReadableChannelException on read, and READ with
+  DELETE_ON_CLOSE deletes the file, which it skipped before.
+- **`Files/newInputStream`, `newOutputStream` and `newByteChannel` honour
+  `LinkOption/NOFOLLOW_LINKS`.** The output opens threw
+  UnsupportedOperationException for it and the input stream ignored it. A
+  symbolic link is now refused with the JDK's IOException, a dangling one is
+  not followed to create its target, and a plain file opens as usual.
+- **`newInputStream`'s `available` and `skip` are the channel's.** `available`
+  is what is left of the file, also on a Windows DELETE_ON_CLOSE stream, which
+  answered 0. `skip` stops at the end of the file and can move back to its
+  start, as JDK 21's ChannelInputStream does. It used to move past the end
+  and answer the full count asked for.
+- **Symbolic links work on Windows.** `Files/createSymbolicLink` threw an
+  ex-info "symlink unavailable"; it now calls CreateSymbolicLinkW the way the
+  JDK does, with the directory flag for a directory target, unprivileged
+  creation where the system allows it, and the JDK's exceptions on failure.
+  `isSymbolicLink`, `readSymbolicLink`, `exists` with NOFOLLOW_LINKS, `delete`
+  of a link and `copy` with NOFOLLOW_LINKS answered as if there were no links,
+  because they asked readlink(3); they now read the reparse point.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could
@@ -155,6 +186,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the JDK does, so a target that cannot be opened throws `Cannot run program
   "x": path (No such file or directory)` from `start()` instead of starting a
   child that exits 1.
+- `Files/getLastModifiedTime`, `Files/getAttribute`, `Files/readAttributes` and
+  `babashka.fs/last-modified-time` of a file deleted while they ran answered
+  epoch 0 about 1 time in 100 (#1804). They checked that the path existed,
+  then statted it, and a failed stat fell back to a millisecond mtime that is
+  0 for an absent file. Every attribute reader now takes one stat (lstat under
+  `NOFOLLOW_LINKS`), as the JDK does, and that stat is the existence check: a
+  path that is gone throws `NoSuchFileException` naming it. The same window
+  made `Files/getPosixFilePermissions` answer `rwxr-xr-x` and `Files/getOwner`
+  answer `$USER` for a missing file or a dangling link; they throw too now.
+  `File.lastModified` still answers 0 for a missing file, as on the JVM.
+- A `BasicFileAttributes` from `readAttributes` is a snapshot, as the JDK's
+  is: its getters answer the values from the stat `readAttributes` took, a
+  getter after a delete included, and never throw. They used to stat again on
+  every call, so a `walkFileTree` visitor reading three attributes of a file
+  deleted under it got epoch 0. `PosixFileAttributes` is supported
+  (`permissions`, `owner`, `group`), and so are the `posix:`, `unix:` and
+  `owner:` views of `getAttribute` and `readAttributes`. An unknown attribute
+  is `IllegalArgumentException` and an unknown view
+  `UnsupportedOperationException`, where they answered nil or the basic value.
+  Owners and groups are instances of `UserPrincipal` and `GroupPrincipal`.
+- `Files/size` and the `size` attribute read `st_size`, so a file the process
+  cannot read has a size; they opened the file and threw
+  `AccessDeniedException`. They are also over 100 times faster (about 230 to 1.5 us on macOS).
+- `walkFileTree` takes one snapshot per entry and hands `visitFileFailed` the
+  exception when it fails: an entry deleted between its listing and its visit,
+  a missing start path, or a link cycle under `FOLLOW_LINKS`
+  (`FileSystemLoopException`, which was nil). The two-argument
+  `walkFileTree(start, visitor)` works; it threw `ArityException`.
+  `Files/find` reads each entry's attributes without following links unless
+  asked to, so a dangling link no longer makes it throw.
 - `jolt build`'s parallel compile workers and the run-path AOT cache's
   background worker start without a shell, so both now run on Windows too. The
   build workers used to need a `--build-worker-probe` round trip through `sh`

@@ -1458,24 +1458,30 @@
   (filetime->unix-ns
    (+ (bytevector-u32-ref buf off (endianness little))
       (* (bytevector-u32-ref buf (+ off 4) (endianness little)) #x100000000))))
-(define (win32-file-times path follow?)
+;; PATH's WIN32_FILE_ATTRIBUTE_DATA (GetFileExInfoStandard): the attribute bits,
+;; the three FILETIMEs and the size in one call, or #f when it cannot be read.
+(define (win32-file-attribute-data path)
   (let ((f (win32-get-file-attributes-ex-w)))
     (and f
          (let ((buf (make-bytevector 36 0)))
            (and (win32-with-wstr path
-                  (lambda (w) (guard (e (#t #f)) (not (= 0 (f w 0 buf))))))  ; GetFileExInfoStandard
-                (if (win32-times-need-handle? (bytevector-u32-ref buf 0 (endianness little)) follow?)
-                    (let ((get-time (win32-get-file-time)))
-                      (and get-time
-                           (win32-with-attr-handle path win32-FILE-READ-ATTRIBUTES #t
-                             (lambda (h)
-                               (let ((c (make-bytevector 8 0)) (a (make-bytevector 8 0))
-                                     (m (make-bytevector 8 0)))
-                                 (and (not (= 0 (get-time h c a m)))
-                                      (vector (win32-filetime-at c 0) (win32-filetime-at a 0)
-                                              (win32-filetime-at m 0))))))))
-                    (vector (win32-filetime-at buf 4) (win32-filetime-at buf 12)
-                            (win32-filetime-at buf 20))))))))
+                  (lambda (w) (guard (e (#t #f)) (not (= 0 (f w 0 buf))))))
+                buf)))))
+(define (win32-file-times path follow?)
+  (let ((buf (win32-file-attribute-data path)))
+    (and buf
+         (if (win32-times-need-handle? (bytevector-u32-ref buf 0 (endianness little)) follow?)
+             (let ((get-time (win32-get-file-time)))
+               (and get-time
+                    (win32-with-attr-handle path win32-FILE-READ-ATTRIBUTES #t
+                      (lambda (h)
+                        (let ((c (make-bytevector 8 0)) (a (make-bytevector 8 0))
+                              (m (make-bytevector 8 0)))
+                          (and (not (= 0 (get-time h c a m)))
+                               (vector (win32-filetime-at c 0) (win32-filetime-at a 0)
+                                       (win32-filetime-at m 0))))))))
+             (vector (win32-filetime-at buf 4) (win32-filetime-at buf 12)
+                     (win32-filetime-at buf 20))))))
 
 ;; The ROOT of P — the prefix that is not a segment and must be reproduced
 ;; verbatim — and the index the segments start at. Rendered with "/" separators,

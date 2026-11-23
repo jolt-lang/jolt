@@ -274,19 +274,6 @@
    :check :prose
    :why "the JVM's answer is the machine's default locale, so there is no fixed value to record"
    :note "Core has no default locale. Explicit locale ids resolve through the :date-names extension point (:fallback :default): an unregistered id falls back to ROOT rather than throwing."}
-  ;; Files/newOutputStream, newInputStream and newByteChannel with DELETE_ON_CLOSE
-  ;; on Windows. The JDK opens with FILE_FLAG_DELETE_ON_CLOSE and the file goes
-  ;; when the stream closes. jolt's streams sit on Chez's C-runtime file ports,
-  ;; which can't pass that flag and can't unlink an open file, so they refuse
-  ;; the option (nio-file.ss nio-delete-on-close!). FileChannel/open is not
-  ;; affected: it owns a HANDLE and passes the flag.
-  {:category :restrictive
-   :behavior "(Files/newOutputStream p (into-array OpenOption [StandardOpenOption/WRITE StandardOpenOption/DELETE_ON_CLOSE])) on Windows"
-   :jvm "a stream whose file is deleted when it closes"
-   :jolt "throws UnsupportedOperationException \"DELETE_ON_CLOSE not supported\""
-   :check :prose
-   :why "Windows only; the documented gate runs on the POSIX hosts, where both sides delete the file"
-   :note "POSIX is unaffected: there the file is unlinked as the stream opens, as the JDK does."}
   ;; jolt's Unicode data is the Chez it runs on and the JVM's is the JDK's: two
   ;; independent UCD versions on their own release schedules. Chez 10.4.1 answers
   ;; from Unicode 17.0 and JDK 25 from 16.0, so a code point whose properties
@@ -415,6 +402,14 @@
   ;; The JVM's vector and seq reductions hand the Reduced box to f, so (reduce +
   ;; (reduced 5) [1 2]) is a ClassCastException there (and (reduce + (reduced 5)
   ;; []) answers the box itself). A superset: an ordinary init behaves the same.
+  {:category :permissive
+   :behavior "(Files/readAttributes path \"size\" opts), the String form"
+   :jvm "a java.util.Collections$UnmodifiableMap, which assoc refuses"
+   :jolt "a persistent map, which assoc extends"
+   :check {:expr "(assoc (java.nio.file.Files/readAttributes (java.nio.file.Paths/get \".\" (into-array String [])) \"isDirectory\" (into-array java.nio.file.LinkOption [])) \"x\" 1)"
+           :jvm "throws ClassCastException"
+           :jolt "{\"isDirectory\" true, \"x\" 1}"}
+   :note "Found reviewing #1805. get, keys, seq and = read the same on both; only a write tells them apart."}
   {:category :permissive
    :behavior "(reduce + (reduced 5) [1 2])"
    :jvm "throws ClassCastException (Reduced cannot be cast to Number)"
