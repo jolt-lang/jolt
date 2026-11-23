@@ -515,6 +515,21 @@ out="$(JOLT_LOAD_WAIT_LIMIT_SECS=20 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 "$JOLT
 check "a future the install namespace waits on does not wait for that load" \
       '"self-clock" "provself.Clock is not installed yet: provself.install, which provides it, is still loading"' \
       "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+# The same when the install namespace is loaded by a plain require rather than
+# by the class miss: the future must not claim the autoload and wait either.
+cat > "$tmp/selfprov/required.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provself {:local/root "$root/test/chez/deps-alias/provself"}}})
+@(future 1)
+(require 'provself.install)
+(prn (provself.Clock/now))
+(prn (re-find #"^provself.Clock is not installed yet: provself.install, which provides it, is still loading"
+              @(resolve 'provself.install/from-future)))
+(shutdown-agents)
+EOF
+out="$(JOLT_LOAD_WAIT_LIMIT_SECS=20 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 "$JOLT" "$tmp/selfprov/required.clj" 2>&1 | tail -2)"
+check "a future a required install namespace waits on does not wait for that load" \
+      '"self-clock" "provself.Clock is not installed yet: provself.install, which provides it, is still loading"' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
 # Adding a library the project already resolved must not claim its classes a
 # second time: once provclaim.install has registered Signature, a fresh claim
 # reads as one on a class "this jolt provides" and warns about a stale library.

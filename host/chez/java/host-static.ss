@@ -2066,7 +2066,10 @@
   (or (lazy-shims-class! class)
       (and lib-any-pending-claims?
            (let ((p (hashtable-ref lib-pending-claims-tbl class #f)))
-             (and p (lib-load-provider! p))))
+             ;; an install namespace reached by a plain require has not claimed
+             ;; its autoload; its own load, and work it started, must not claim
+             ;; it now and wait on the load they are part of
+             (and p (not (lib-inside-provider-load? p)) (lib-load-provider! p))))
       (lib-await-provider-load! class)))
 
 ;; The provider that DECLARES this class and has not had its chance yet — meaning
@@ -2294,7 +2297,7 @@
     ;; namespace, or work its top level started. It does not wait for the load
     ;; (lib-await-provider-load!), so say that, not that nothing provides it.
     ((let ((p (lib-provider-for class)))
-       (and p (eq? (unbox (vector-ref p 3)) 'ok) (lib-inside-provider-load? p) p))
+       (and p (memq (unbox (vector-ref p 3)) '(#f ok)) (lib-inside-provider-load? p) p))
      => (lambda (p)
           (string-append
             class " is not installed yet: " (vector-ref p 0)
