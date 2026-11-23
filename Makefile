@@ -184,7 +184,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
-  systemstreams closedstdout stderrsplit filelock userdirpaths mimetypes utf8decode \
+  systemstreams closedstdout stderrsplit filelock deleteonclose userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
 TEST-GATES := submodules selfhost ci
 
@@ -2232,6 +2232,14 @@ stderrsplit:
 # unit.edn's nio-filelock suite.
 filelock:
 	@sh test/chez/file-lock-smoke.sh $(CHEZ)
+
+# Files/newInputStream, newOutputStream and newByteChannel with DELETE_ON_CLOSE
+# read and write the file until they close and leave nothing behind, with the
+# other open options beside it. Here that is the unlink after open(2); the rows
+# it exists for are Windows' (FILE_FLAG_DELETE_ON_CLOSE on a HANDLE), which run
+# against jolt.exe in windows-static and under tools/wine.
+deleteonclose:
+	@$(CHEZ) --script host/chez/cli.ss test/chez/delete-on-close-smoke.clj
 
 # Relative paths under bin/jolt resolve against the caller's directory, not the
 # checkout the launcher cd's to: the jolt.host filesystem functions, load-file,
