@@ -168,14 +168,12 @@
     (str "(jolt-site-const " (chez-str-lit id) " (lambda () " s "))")
     s))
 
-(defn const-coll-node? [n] (ir/const-coll-node? n))
-
 (defn hoist-coll-literal [node expr]
-  (if (const-coll-node? node)
+  (if (ir/const-coll-node? node)
     (let [value (site-const node expr)]
       (cond
         (nil? *const-pool*) value
-        (ir/const-coll-node? node true) (hoist-const-per-site value)
+        (ir/eager-const-coll-node? node) (hoist-const-per-site value)
         ;; The constructor can throw. Run it at the original call site and
         ;; publish only a successful result, shared across all callers.
         :else (let [cell (hoist-const-per-site "(jolt-atom-new #f)")]

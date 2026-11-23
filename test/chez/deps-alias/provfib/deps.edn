@@ -1,0 +1,5 @@
+{:paths ["src"]
+
+ ;; provself through fibers: the install namespace spawns fibers that reach one
+ ;; of its own classes before it has registered it, and joins one of them.
+ :jolt/provides {provfib.install ["provfib.Tick"]}}

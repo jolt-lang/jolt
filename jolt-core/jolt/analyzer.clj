@@ -55,6 +55,7 @@
             [jolt.analyzer.tree :refer [check-recur-tails! fn-free-names check-fn-arities]]
             [jolt.analyzer.ffi :refer [analyze-ffi-layout analyze-ffi-fn analyze-ffi-pointer-fn
                                        analyze-ffi-signature-type]]
+            [jolt.analyzer.native :refer [native-form? analyze-native-region]]
             [jolt.analyzer.interop :refer [field-head? method-head? ctor-head?
                                            array-class-dims array-class-name
                                            method-value-form static-class-ns
@@ -1641,6 +1642,8 @@
             (analyze-macro-call ctx head form env)
           (ffi-form-name head)
             (analyze-ffi-form ctx (ffi-form-name head) items (child-env ctx form env nil))
+          (native-form? head)
+            (analyze-native-region analyze ctx items (child-env ctx form env nil))
           ;; special-form heads are NOT shadowable (unlike macros): a local named
           ;; `if` does not change the meaning of (if …) in operator position, per
           ;; spec §3 and the reference. No (not shadowed) guard here.
