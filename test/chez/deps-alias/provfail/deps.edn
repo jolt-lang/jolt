@@ -1,0 +1,5 @@
+{:paths ["src"]
+
+ ;; A provider whose install namespace is slow to fail, so several threads are
+ ;; waiting on its load when it raises. It must run once, not once per waiter.
+ :jolt/provides {provfail.install ["provfail.Clock"]}}

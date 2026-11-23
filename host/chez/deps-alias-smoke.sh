@@ -451,6 +451,94 @@ cat > "$tmp/addprov/probe.clj" <<EOF
 EOF
 check "add-deps installs the added library's :jolt/provides" '"claimer-sig:RSA"' \
       "$(JOLT_PWD="$tmp/addprov" JOLT_QUIET=1 "$JOLT" "$tmp/addprov/probe.clj" 2>&1 | tail -1)"
+# Threads that reach a provided class while another thread is still autoloading
+# its provider wait for that load, as JVM threads wait for a class being
+# initialized. They used to see the claim already taken and the class not yet
+# registered, and all but the first got the message for a class nobody provides.
+# A class the provider declares and never registers still misses, on every thread.
+# The install namespace waits until all eight have started; how many of them
+# actually reach the class during the load does not change the answer.
+mkdir -p "$tmp/slowprov"
+cat > "$tmp/slowprov/probe.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provslow {:local/root "$root/test/chez/deps-alias/provslow"}}})
+(def started (java.util.concurrent.CountDownLatch. 8))
+(let [fs (doall (for [_ (range 8)] (future (.countDown started) (try (provslow.Clock/now) (catch Throwable e :miss)))))
+      gs (doall (for [_ (range 4)] (future (try (provslow.Missing/now) (catch Throwable e (ex-message e))))))]
+  (prn (frequencies (map deref fs)))
+  (prn (distinct (map deref gs))))
+(shutdown-agents)
+EOF
+out="$(JOLT_PWD="$tmp/slowprov" JOLT_QUIET=1 "$JOLT" "$tmp/slowprov/probe.clj" 2>&1 | tail -2)"
+check "concurrent first use of a provided class waits for its provider" \
+      '{"slow-clock" 8} ("Unknown class provslow.Missing")' \
+      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+# An install namespace that fails while several threads wait on its load runs
+# once: the threads that waited get the provider's failure, not a run of the
+# namespace each (the loader's rollback left it free to load again, and every
+# waiter loaded it).
+mkdir -p "$tmp/failprov"
+cat > "$tmp/failprov/probe.clj" <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provfail {:local/root "$root/test/chez/deps-alias/provfail"}}})
+(def runs (atom 0))
+(def started (java.util.concurrent.CountDownLatch. 8))
+(let [fs (doall (for [_ (range 8)]
+                  (future (.countDown started)
+                          (try (provfail.Clock/now)
+                               (catch Throwable e
+                                 (let [m (ex-message e)]
+                                   (cond (re-find #"failed to load .*provfail.install broke" m) :failed
+                                         (re-find #"Syntax error macroexpanding at .provfail/install" m) :raised
+                                         :else m)))))))
+      rs (mapv deref fs)]
+  (prn @runs (into (sorted-map) (frequencies rs))))
+(shutdown-agents)
+EOF
+check "a provider failing while threads wait on its load runs once" \
+      '1 {:failed 7, :raised 1}' \
+      "$(JOLT_PWD="$tmp/failprov" JOLT_QUIET=1 "$JOLT" "$tmp/failprov/probe.clj" 2>&1 | tail -1)"
+# Work an install namespace starts waits for that namespace's load like any
+# other context, and gets the class when the load is done: provself's `bg`
+# future, provfib's `bg` fiber. Work the load then BLOCKS on (a top-level deref
+# or join) would wait for the load while the load waits for it, the JVM's
+# class-initialization deadlock: the loader follows the load through what it is
+# blocked on, and the work's wait raises at once. The load watchdog is off, so
+# a missed cycle hangs until `bounded` kills it and the check fails; each
+# provider is reached through a class miss and through a plain require.
+bounded() { # secs cmd... -- run cmd, killed after secs (a hang fails, it does not wedge the gate)
+  secs=$1; shift
+  "$@" & bpid=$!
+  ( sleep "$secs"; kill -9 "$bpid" ) >/dev/null 2>&1 & bwatch=$!
+  wait "$bpid"; bst=$?
+  kill "$bwatch" 2>/dev/null
+  return $bst
+}
+selfprov_probe() { # provider-dir require-form class ns waited-var join
+  cat <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/$1 {:local/root "$root/test/chez/deps-alias/$1"}}})
+(require '[jolt.fibers :as f])
+@(future 1)
+$2
+(prn ($3/now))
+(prn ($6 @(resolve '$4/bg)))
+(prn (boolean (re-find #"^Deadlocked load: .* is about to wait on the load of $4 \(held by .*\), and .* waits on $7" @(resolve '$4/$5))))
+(shutdown-agents)
+EOF
+}
+mkdir -p "$tmp/selfprov"
+for how in miss require; do
+  if [ "$how" = require ]; then req="(require 'provself.install)"; else req=""; fi
+  selfprov_probe provself "$req" provself.Clock provself.install from-future deref "a future" > "$tmp/selfprov/$how.clj"
+  out="$(JOLT_LOAD_WAIT_LIMIT_SECS=0 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 bounded 120 "$JOLT" "$tmp/selfprov/$how.clj" 2>&1 | tail -3)"
+  check "an install namespace's futures wait for its load; a deref'd one raises ($how)" \
+        '"self-clock" "self-clock" true' \
+        "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+  if [ "$how" = require ]; then req="(require 'provfib.install)"; else req=""; fi
+  selfprov_probe provfib "$req" provfib.Tick provfib.install from-fiber f/join "a fiber it joins" > "$tmp/selfprov/fib-$how.clj"
+  out="$(JOLT_LOAD_WAIT_LIMIT_SECS=0 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 bounded 120 "$JOLT" "$tmp/selfprov/fib-$how.clj" 2>&1 | tail -3)"
+  check "an install namespace's fibers wait for its load; a joined one raises ($how)" \
+        '"fib-tick" "fib-tick" true' \
+        "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+done
 # Adding a library the project already resolved must not claim its classes a
 # second time: once provclaim.install has registered Signature, a fresh claim
 # reads as one on a class "this jolt provides" and warns about a stale library.

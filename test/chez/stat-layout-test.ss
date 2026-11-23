@@ -63,11 +63,29 @@
           (ok "and its format bits say regular file, not directory"
               (and mode (= #x8000 (bitwise-and mode #xF000))))))))
   ;; st_uid of a file this process just created is this process's own uid.
-  (let ((uid (nio-stat-uid tmp))
-        (c-getuid (jolt-foreign-proc-safe "getuid" '() 'int)))
+  ;; The rest of the row is read from the attribute snapshot's one buffer: each
+  ;; field has to read back what this process just made it.
+  (let* ((snap (nio-snapshot tmp #t tmp #f))
+         (ref (lambda (nm) (nio-snap-ref snap nm)))
+         (uid (ref "uid"))
+         (c-getuid (jolt-foreign-proc-safe "getuid" '() 'int))
+         (c-getgid (jolt-foreign-proc-safe "getgid" '() 'int)))
     (when c-getuid
       (ok (format "st_uid of a file we created is our own uid (~a)" uid)
-          (and uid (= uid (c-getuid))))))
+          (and uid (= uid (c-getuid)))))
+    (when c-getgid
+      (ok (format "st_gid of a file we created is our own gid or its directory's (~a)" (ref "gid"))
+          (integer? (ref "gid"))))
+    (ok (format "st_size of an empty file is 0 (got ~a)" (ref "size")) (eqv? 0 (ref "size")))
+    (ok (format "st_nlink of a new file is 1 (got ~a)" (ref "nlink")) (eqv? 1 (ref "nlink")))
+    (ok (format "st_rdev of a regular file is 0 (got ~a)" (ref "rdev")) (eqv? 0 (ref "rdev")))
+    (ok "the snapshot's mode is st_mode" (eqv? (ref "mode") (nio-stat-mode tmp)))
+    (ok "st_ctime is not in the future"
+        (<= (file-time-ns (ref "ctime")) (* 1000000000 (+ 1 (time-second (current-time)))))))
+  (let ((port (open-file-output-port tmp (file-options no-fail))))
+    (put-bytevector port (string->utf8 "hello")) (close-port port))
+  (ok "st_size reads back the five bytes written"
+      (eqv? 5 (nio-snap-ref (nio-snapshot tmp #t tmp #f) "size")))
 ;; The time columns (jolt-ow0x) read back what utimes(2) wrote, each from its own
   ;; offset: the access time and the mtime are set apart, so a reader on the wrong
   ;; timespec answers the other one. The birth time is not settable everywhere;

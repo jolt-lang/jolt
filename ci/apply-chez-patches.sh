@@ -17,7 +17,8 @@
 # comments in c/thread.c), keeps a copy of each string literal per form,
 # keeps stock Chez's placement of C arguments past the registers, and has no
 # signal relay, so sun.misc.Signal falls back to blocking signals up front
-# (host/chez/java/concurrency.ss), and records no inlining information for a
+# (host/chez/java/concurrency.ss), has no signal that ends a blocking call, so
+# FileChannel.lock waits by polling (host/chez/java/nio-file.ss), and records no inlining information for a
 # top-level definition (sa-define-inlinable! defines it, uninlined).
 set -eu
 

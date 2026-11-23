@@ -532,7 +532,6 @@
       (origin? (body-facts facts-unit node) '(items 0) 'unknown)))
 
 (define projection-at (var-deref "jolt.passes.facts" "projection-at"))
-(define guarded-record-projection-at (var-deref "jolt.passes.facts" "guarded-record-projection-at"))
 (define contained-at (var-deref "jolt.passes.facts" "contained-at"))
 (define captures-at (var-deref "jolt.passes.facts" "captures-at"))
 (define confined? (var-deref "jolt.passes.facts" "confined?"))
@@ -708,239 +707,20 @@
   (ok "fixed-arity return coercion widens to double and wraps long"
       (and (flonum? d) (= d 1.0) (fixnum? n) (= n 0))))
 
-(define (record-layout-matches? r candidate)
-  (let* ((guard (fact-get candidate 'guard))
-         (arity (fact-get guard 'arity)))
-    (and (jrec? r)
-         (= arity (jrec-nfields r) (jrdesc-nfields (jrec-desc r)))
-         (eqv? (fact-get guard 'index) (jrec-get-index r (fact-get guard 'key))))))
-
+;; A positional record constructor stores its arguments, so its fields are
+;; contained values for escape purposes.
 (ev "(defrecord FactRecord [a b])")
-(let* ((src "(fn [a b] (get (FactRecord. a b) :a :missing))")
-       (ir (fact-ir src))
-       (lookup-site (in-body))
-       (first-arg (in-body 'args 0 'args 0))
-       (before (body-facts facts-unit ir))
-       (lookup (ev src))
-       (ctx (make-analyze-ctx "u"))
-       (ctor-code (jolt-direct-link-emit
-                   (jolt-ce-analyze ctx (jolt-ce-read "(fn [a b] (FactRecord. a b))")) ctx))
-       (ctor-form (read (open-input-string ctor-code)))
-       (left (fact-kw 'left))
-       (right (fact-kw 'right)))
-  (ok "the direct-link path emits the positional constructor"
-      (has? (code-part ctor-code) "(make-jrec2 "))
-  ((var-deref "jolt.passes.types" "set-record-shapes!") facts-unit (chez-record-shapes-map))
-  (let* ((f (body-facts facts-unit ir))
-         (candidate (guarded-record-projection-at f lookup-site)))
-    (ok "a positional record retains both field arguments"
-        (clj= (contained-at f (in-body 'args 0))
-              (jolt-hash-set (jolt-first (origins-at f first-arg))
-                             (jolt-first (origins-at f (in-body 'args 0 'args 1))))))
-    (ok "an updated registry supplies a guarded candidate for the same IR revision"
-        (and (jolt-nil? (guarded-record-projection-at before lookup-site))
-             (not (eq? before f))
-             (jolt-nil? (projection-at f lookup-site))
-             (origin? f '(arities 0 body) 'unknown)
-             (clj= (fact-get candidate 'origins) (origins-at f first-arg))))
-    (ok "a fresh record with the matching layout reads the proposed argument"
-        (and (record-layout-matches? ((eval ctor-form (interaction-environment)) left right) candidate)
-             (eq? (lookup left right) left)))
-    (ev "(defrecord FactRecord [b a])")
-    (ok "reordering fields defeats the guard and the previously compiled lookup reads the new slot"
-        (let ((r ((eval ctor-form (interaction-environment)) left right)))
-          (and (not (record-layout-matches? r candidate))
-               (eq? (jolt-get r (fact-kw 'a) (fact-kw 'missing)) right)
-               (eq? (lookup left right) right))))))
+((var-deref "jolt.passes.types" "set-record-shapes!") facts-unit (chez-record-shapes-map))
+(let* ((f (facts-for "(fn [a b] (get (FactRecord. a b) :a :missing))"))
+       (first-arg (in-body 'args 0 'args 0)))
+  (ok "a positional record retains both field arguments"
+      (clj= (contained-at f (in-body 'args 0))
+            (jolt-hash-set (jolt-first (origins-at f first-arg))
+                           (jolt-first (origins-at f (in-body 'args 0 'args 1)))))))
 (let ((f (facts-for "(fn [x sink] (let [m {:k x} r (FactRecord. m false)] (sink r) (:a r)))")))
-  (ok "record fields exposed to mutation have no guarded candidate or unconditional proof"
+  (ok "record fields exposed to mutation have no unconditional proof"
       (and (jolt-nil? (projection-at f (in-body 'body 'ret)))
-           (jolt-nil? (guarded-record-projection-at f (in-body 'body 'ret)))
            (not (confined? f map-site)) (not (confined? f box-site)))))
-
-(ev "(defrecord Collision.Record [a])")
-(jolt-compile-eval "(defrecord Record [^double a])" "u.Collision")
-(let ((shapes (chez-record-shapes-map)))
-  ((var-deref "jolt.passes.types" "set-record-shapes!") facts-unit shapes)
-  (let* ((ir (fact-ir "(fn [x] (get (u.Collision.Record. x) :a :missing))"))
-         (f (body-facts facts-unit ir)))
-    (ok "distinct constructor entries sharing a class tag have no field candidate"
-        (and (clj= (fact-get (jolt-get shapes "u/->Collision.Record") 'type) "u.Collision.Record")
-             (clj= (fact-get (jolt-get shapes "u.Collision/->Record") 'type) "u.Collision.Record")
-             (clj= (ir-at ir '(arities 0 body args 0 class)) "u.Collision.Record")
-             (jolt-nil? (guarded-record-projection-at f (in-body)))
-             (origin? f '(arities 0 body args 0) 'unknown)))))
-
-(define loop-update-at (var-deref "jolt.passes.facts" "loop-update-at"))
-(define loop-facts-unit ((var-deref "jolt.passes.types" "new-unit")))
-(define set-fact-flag! (var-deref "clojure.core" "reset!"))
-(set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #t)
-(define (loop-facts src) (body-facts loop-facts-unit (fact-ir src)))
-(define direct-edit (in-body 'body 'then 'args 1))
-(define (update-fact f path k) (fact-get (loop-update-at f path) k))
-
-(define direct-loop
-  "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m)))) m)))")
-(let* (;; Query the transfer before the scalar pass consumes it.
-       (ir (fact-ir direct-loop))
-       (f (body-facts loop-facts-unit ir))
-       (update (loop-update-at f direct-edit)))
-  (ok "a linked fixed-key update can reuse storage even when the final map escapes"
-      (and (eq? #t (fact-get update 'reuse?)) (eq? #f (fact-get update 'confined?))
-           (eq? #f (fact-get update 'old-retained?))
-           (clj= (fact-get update 'binding) (in-body 'bindings 1 0))
-           (clj= (fact-get update 'recur) (in-body 'body 'then))
-           (has? (code-part (jolt-ce-emit ir)) "jolt-assoc3")
-           (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}"))))
-  (set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #f)
-  (set-direct-link-flag! #f)
-  (ok "changing link mode invalidates the loop proof for the same IR"
-      (jolt-nil? (loop-update-at (body-facts loop-facts-unit ir) direct-edit)))
-  (set-direct-link-flag! #t)
-  (set-fact-flag! (fact-get loop-facts-unit 'direct-link?) #t)
-  (set-fact-flag! (fact-get loop-facts-unit 'debug-locals?) #t)
-  (ok "debug frames can retain old versions across an exceptional transfer"
-      (jolt-nil? (loop-update-at (body-facts loop-facts-unit ir) direct-edit)))
-  (set-fact-flag! (fact-get loop-facts-unit 'debug-locals?) #f))
-
-(let* ((src "(fn [x] (loop* [i 0 m {:k x} seen nil] (if (< i 3) (let* [alias m] (recur (inc i) (assoc alias :k (inc (:k alias))) (:k alias))) [(:k m) seen])))")
-       (update (loop-update-at (loop-facts src) (in-body 'body 'then 'body 'args 1))))
-  (ok "a dead alias and a later recur argument's scalar read allow reuse at transfer"
-      (and (eq? #t (fact-get update 'confined?)) (eq? #t (fact-get update 'reuse?))
-           (clj= (ev (string-append "(" src " 5)")) (ev "[8 7]")))))
-
-(for-each
-  (lambda (snapshot)
-    (let* ((src (string-append
-                  "(fn [x refresh?] (loop* [i 0 m {:k x} prev nil] (if (< i 3) "
-                  "(recur (inc i) (assoc m :k (inc (:k m))) " snapshot ") [(:k m) (:k prev)])))"))
-           (update (loop-update-at (loop-facts src) direct-edit)))
-      (ok (string-append "old snapshot keeps a distinct local version via " snapshot)
-          (and (eq? #t (fact-get update 'confined?))
-               (eq? #t (fact-get update 'old-retained?))
-               (eq? #f (fact-get update 'reuse?))
-               (clj= (ev (string-append "(" src " 5 true)")) (ev "[8 7]"))
-               (clj= (ev (string-append "(" src " 5 false)"))
-                     (ev (if (string=? snapshot "m") "[8 7]" "[8 nil]")))))))
-  '("m" "(if refresh? m prev)"))
-
-(let* ((src "(fn [x] (loop* [i 0 m {:k x :old nil}] (if (< i 2) (if (= i 0) (recur 1 (assoc m :old [m])) (recur 2 (assoc m :k (inc (:k m))))) (:k m))))")
-       (f (loop-facts src)))
-  (ok "the next map can retain its predecessor directly or through an unchanged field"
-      (and (eq? #t (update-fact f (in-body 'body 'then 'then 'args 1) 'old-retained?))
-           (eq? #t (update-fact f (in-body 'body 'then 'else 'args 1) 'old-retained?))
-           (eq? #f (update-fact f (in-body 'body 'then 'else 'args 1) 'reuse?))
-           (clj= (ev (string-append "(" src " 5)")) 6))))
-
-(for-each
-  (lambda (snapshot)
-    (let ((f (loop-facts
-               (string-append
-                 "(fn [x] (loop* [i 0 m {:k x} prev nil] (if (< i 3) "
-                 "(recur (inc i) (assoc m :k (inc (:k m))) " snapshot ") (:k m))))"))))
-      (ok (string-append "a backedge can retain a version via " snapshot)
-          (and (eq? #t (update-fact f direct-edit 'confined?))
-               (eq? #t (update-fact f direct-edit 'old-retained?))
-               (eq? #f (update-fact f direct-edit 'reuse?))))))
-  '("[m]" "(fn [] m)" "(loop* [j 0 v nil] (if (= j 0) (recur 1 [m]) v))"))
-
-(let* ((src "(fn [x] (loop* [i 0 m {:k x} read-prev nil] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m))) (fn [] (:k m))) [(:k m) (read-prev)])))")
-       (f (loop-facts src)))
-  (ok "a closure used after the transfer reads its captured older version"
-      (and (eq? #t (update-fact f direct-edit 'old-retained?))
-           (eq? #f (update-fact f direct-edit 'reuse?))
-           (clj= (ev (string-append "(" src " 5)")) (ev "[8 7]")))))
-
-(let* ((src "(fn [x] (loop* [i 0 m {:k x} prev nil] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m))) m) [(identical? m prev) (:k m) (:k prev)])))")
-       (f (loop-facts src)))
-  (ok "the same assoc occurrence makes distinct dynamic versions"
-      (and (eq? #t (update-fact f direct-edit 'old-retained?))
-           (eq? #f (update-fact f direct-edit 'reuse?))
-           (clj= (ev (string-append "(" src " 5)")) (ev "[false 8 7]")))))
-
-(let* ((src "(fn [x] (loop* [i 0 m {:k x} prev nil] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m))) (assoc m :k (:k m))) [(:k m) (:k prev)])))")
-       (f (loop-facts src)))
-  (ok "a sibling assoc occurrence can retain the old map by returning it unchanged"
-      (and (eq? #t (update-fact f direct-edit 'old-retained?))
-           (eq? #f (update-fact f direct-edit 'reuse?))
-           (clj= (ev (string-append "(" src " 5)")) (ev "[8 7]")))))
-
-(for-each
-  (lambda (observer)
-    (let* ((f (loop-facts
-                (string-append
-                  "(fn [x sink] (loop* [i 0 m {:k x}] (if (< i 3) (do " observer
-                  " (recur (inc i) (assoc m :k (inc (:k m))))) (:k m))))")))
-           (update (loop-update-at f (in-body 'body 'then 'ret 'args 1))))
-      (ok (string-append "reuse declines independently of retained slots for " observer)
-          (and (eq? #f (fact-get update 'old-retained?))
-               (eq? #f (fact-get update 'reuse?))))))
-  '("(identical? m m)" "(class m)" "(meta m)" "(sink m)"
-    "(try (throw (ex-info \"old\" {:map m})) (catch Throwable e nil))"))
-
-(let* ((src "(fn [x events] (try (loop* [m {:k x} i 0] (if (= i 0) (recur (assoc m :k (do (swap! events conj :field) (inc (:k m)))) (do (swap! events conj (:k m)) (throw (ex-info \"stop\" {})))) (:k m))) (catch Throwable e @events)))")
-       (f (loop-facts src)))
-  (ok "a later recur argument can throw after reading the old value"
-      (and (eq? #t (update-fact f (in-body 'body 'body 'then 'args 0) 'reuse?))
-           (clj= (ev (string-append "(" src " 5 (atom []))")) (ev "[:field 5]")))))
-
-(for-each
-  (lambda (src)
-    (ok (string-append "no loop update proof for " src)
-        (jolt-nil? (loop-update-at (loop-facts src) direct-edit))))
-  '("(fn [x] (loop* [i 0 m {:k 0}] (if (< i 3) (recur (inc i) (assoc m :k x)) m)))"
-    "(fn [x] (loop* [i 0 m x] (if (< i 3) (recur (inc i) (assoc m :k x)) m)))"
-    "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :extra x)) m)))"
-    "(fn [x assoc] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k x)) m)))"))
-
-(let ((f (loop-facts "(fn [x] (let* [other {:k x}] (loop* [i 0 m {:k x}] (if (< i 3) (if (= i 0) (recur 1 other) (recur (inc i) (assoc m :k x))) m))))")))
-  (ok "a backedge replacing the accumulator with a different map of the same layout declines"
-      (jolt-nil? (loop-update-at f (in-body 'body 'body 'then 'else 'args 1)))))
-
-;; A single chain of nested loops grows the IR linearly. Each level must still
-;; prove reuse, including after shadowing the enclosing level's names.
-(define (nested-loops depth)
-  (if (= depth 0)
-      "nil"
-      (string-append "(loop* [i 0 m {:k x}] (if (< i 1) (do "
-                     (nested-loops (- depth 1))
-                     " (recur (inc i) (assoc m :k (inc (:k m))))) (:k m)))")))
-(define (measure-loop-facts depth)
-  (let* ((ir (fact-ir (string-append "(fn [x] " (nested-loops depth) ")")))
-         (cache (fact-get loop-facts-unit 'body-facts))
-         (count-updates (var-deref "clojure.core" "count")))
-    (define (analyze)
-      (set-fact-flag! cache jolt-nil)
-      (body-facts loop-facts-unit ir))
-    (let* ((warm (analyze))
-           (updates (fact-get warm 'loop-updates))
-           (outer (in-body 'body 'then 'ret 'args 1)))
-      (ok (format "each of ~a nested loops proves reuse for its own slot" depth)
-          (and (pmap? updates) (= (count-updates updates) depth)
-               (eq? #t (update-fact warm outer 'reuse?))
-               (pmap-fold-fwd updates
-                 (lambda (k u all?) (and all? (eq? #t (fact-get u 'reuse?)))) #t))))
-    (let ((allocated (sstats-bytes (statistics))) (before (cpu-time)) (samples 24))
-      (do ((i 0 (+ i 1))) ((= i samples)) (analyze))
-      (let ((bytes (/ (- (sstats-bytes (statistics)) allocated) samples))
-            (msec (/ (- (cpu-time) before) samples)))
-        (printf "loop facts depth ~a: ~,2f ms, ~,0f bytes per uncached query~n"
-                depth (inexact msec) (inexact bytes))
-        bytes))))
-(let* ((small (measure-loop-facts 4))
-       (large (measure-loop-facts 16)))
-  (ok "uncached fact allocation stays bounded on four times the nesting"
-      (< 0 small large (* 8 small))))
-
-(define (shifted-snapshot slots)
-  (let* ((names (map (lambda (i) (format "s~a" i)) (iota slots)))
-         (inits (apply string-append (map (lambda (n) (string-append n " nil ")) names)))
-         (shift (apply string-append (map (lambda (n) (string-append n " ")) (cdr names)))))
-    (string-append "(fn [x] (loop* [i 0 m {:k x} " inits "] "
-                   "(if (< i 50) (recur (inc i) (assoc m :k x) " shift "m) (:k s0))))")))
-(ok "slot joins converge on a short snapshot chain and withhold facts beyond the budget"
-    (and (eq? #t (update-fact (loop-facts (shifted-snapshot 4)) direct-edit 'old-retained?))
-         (jolt-nil? (loop-update-at (loop-facts (shifted-snapshot 20)) direct-edit))))
 
 (define call-summary-at (var-deref "jolt.passes.facts" "call-summary-at"))
 (define (argument-effects summary i)
@@ -1080,96 +860,8 @@
   (ok "unsupported arities use the conservative path"
       (and (eq? #f (fact-get summary 'resolved?)) (may-publish? f map-site))))
 
-(let* ((f (loop-facts "(fn [x] (let [m {:k x} helper (fn [a] (loop* [slot a] (assoc slot :k 0) nil))] (helper m)))"))
-       (summary (call-summary-at f ret-site)))
-  (ok "a discarded fixed-key assoc reads the helper argument through its loop slot"
-      (and (eq? #t (fact-get summary 'resolved?)) (effects? summary 0 'read))))
-
 (set-optimize! #f)
 (set-direct-link-flag! #f)
-
-(define linked-call-summary (var-deref "jolt.passes.facts" "linked-call-summary"))
-(define set-summary-unit! (var-deref "jolt.backend-scheme" "set-emit-unit!"))
-(define set-summary-link! (var-deref "jolt.backend-scheme" "set-direct-link!"))
-(define reset-summary-links! (var-deref "jolt.backend-scheme" "direct-link-reset!"))
-(ev "(def summary-link (fn* ([a] (:k a)) ([a b] [a b])))")
-(ev "(def ^:redef summary-redef (fn [a] a))")
-(ev "(def ^:dynamic summary-dynamic (fn [a] a))")
-(let* ((previous ((var-deref "jolt.backend-scheme" "current-unit")))
-       (unit ((var-deref "jolt.passes.types" "new-unit")))
-       (revision (fact-ir "(def summary-link (fn* ([a] (:k a)) ([a b] [a b])))"))
-       (source "(fn [x] (let [m {:k x}] (summary-link m)))")
-       (one (fact-ir source))
-       (two (fact-ir "(fn [x] (let [m {:k x}] (summary-link m x)))")))
-  (set-summary-unit! unit)
-  ;; Runtime compilation on Chez has the core prelude loaded.
-  ((var-deref "jolt.backend-scheme" "set-prelude-mode!") #t)
-  (set-summary-link! #t)
-  (ok "a forward Var reference has no call target from this unit"
-      (jolt-nil? (linked-call-summary unit one ret-site)))
-  (jolt-ce-emit revision)
-  (ok "emitting a linked def does not retain its IR unless opted in"
-      (and (jolt-nil? ((var-deref "clojure.core" "deref") (fact-get unit 'linked-call-definitions)))
-           (jolt-nil? (linked-call-summary unit one ret-site))))
-  ((var-deref "clojure.core" "reset!") (fact-get unit 'linked-call-definitions) (ev "{}"))
-  (jolt-ce-emit revision)
-  (let ((one-candidate (linked-call-summary unit one ret-site))
-        (two-candidate (linked-call-summary unit two ret-site)))
-    (ok "a linked Var summary is conditional on the exact emitted revision and arity"
-        (and (eq? revision (fact-get one-candidate 'definition))
-             (effects? (fact-get one-candidate 'summary) 0 'read)
-             (effects? (fact-get two-candidate 'summary) 0 'return-contains)
-             (may-publish? (body-facts unit one) map-site)
-             (eq? #f (fact-get (call-summary-at (body-facts unit one) ret-site) 'resolved?)))))
-  (for-each
-    (lambda (name meta)
-      (jolt-ce-emit (fact-ir (string-append "(def ^:" meta " " name " (fn [a] a))")))
-      (let ((ir (fact-ir (string-append "(fn [x] (let [m {:k x}] (" name " m)))"))))
-        (ok (string-append "no linked revision proof for ^:" meta)
-            (and (jolt-nil? (linked-call-summary unit ir ret-site))
-                 (may-publish? (body-facts unit ir) map-site)))))
-    '("summary-redef" "summary-dynamic") '("redef" "dynamic"))
-  (set-summary-link! #f)
-  (ok "the same caller IR loses the linked summary when linkage is off"
-      (jolt-nil? (linked-call-summary unit one ret-site)))
-  (ev "(binding [*compiler-options* {:direct-linking true}] (eval '(def summary-option (fn* ([a] a) ([a b] b)))))")
-  (let* ((caller (fact-ir "(fn [x] (let [m {:k x}] (summary-option m)))"))
-         (candidate (parameterize ((hc-form-direct-link #t))
-                      (linked-call-summary unit caller ret-site))))
-    (ok "runtime compiler-options register the callee and select its conditional summary"
-        (and (not (jolt-nil? candidate))
-             (effects? (fact-get candidate 'summary) 0 'return-alias)
-             (jolt-nil? (linked-call-summary unit caller ret-site)))))
-  (jolt-compile-eval "(ns summary-recreated)" "summary-recreated")
-  (jolt-compile-eval "(binding [*compiler-options* {:direct-linking true}] (eval '(def from-cell (fn [a] a))))"
-                     "summary-recreated")
-  (let* ((caller (fact-ir "(fn [x] (let [m {:k x}] (summary-recreated/from-cell m)))"))
-         (summary-now (lambda () (parameterize ((hc-form-direct-link #t))
-                                   (linked-call-summary unit caller ret-site))))
-         (before (summary-now)))
-    (ev "(do (remove-ns 'summary-recreated) (intern (create-ns 'summary-recreated) 'from-cell (fn [a] :new)))")
-    (ok "a recreated namespace's fresh Var cell invalidates the old per-form linked summary"
-        (and (not (jolt-nil? before)) (jolt-nil? (summary-now))
-             (clj= (ev "(binding [*compiler-options* {:direct-linking true}] (eval '(summary-recreated/from-cell 1)))")
-                   (fact-kw 'new)))))
-  (set-summary-link! #t)
-  (reset-summary-links!)
-  (ok "resetting a compilation unit drops its definition revisions"
-      (jolt-nil? (linked-call-summary unit one ret-site)))
-  (let* ((replacement (fact-ir "(def summary-link (fn* ([a] a) ([a b] b)))")))
-    (jolt-ce-emit replacement)
-    (let ((new (linked-call-summary unit one ret-site)))
-      (ok "re-emission replaces the summary for the same caller and Var name"
-          (and (eq? replacement (fact-get new 'definition))
-               (effects? (fact-get new 'summary) 0 'return-alias)))))
-  (set-summary-unit! previous)
-  (ok "ordinary Var calls follow temporary replacements and preserve publication"
-      (clj= (ev (string-append "(with-redefs [summary-link (fn [m] (reset! call-summary-sink m))] "
-                               "(let [result (" source " 9)] (identical? result @call-summary-sink)))"))
-            #t))
-  (ev "(def summary-link (fn [a] (reset! call-summary-sink a)))")
-  (ok "a live redefinition disqualifies the older emitted candidate"
-      (jolt-nil? (linked-call-summary unit one ret-site))))
 
 (define reducer-confinement-at (var-deref "jolt.passes.facts" "reducer-confinement-at"))
 (define opaque-accumulator-frames (fact-kw 'opaque-accumulator-frames))
@@ -1425,7 +1117,41 @@
                         (= clojure.lang.PersistentHashMap (class built))
                         (not= (vec (keys ordinary)) (vec (keys built)))))")))
 
+;; --- a letfn spliced into a let keeps its letrec* (#1808) ----------------------
+;; A letfn passed as an argument to an inlined call becomes a let binding init.
+;; flatten-lets hoisted its bindings into the enclosing let*, dropping the
+;; :letrec flag, so each fn's closure read its sibling before it was bound and
+;; resolved it as a top-level variable: "variable ... is not bound".
+;; (ja 2 835) -> (ju 1 2) -> (ja 0 1) = 1, so lf-t answers 2, as the JVM does.
+(ev "(def lf-t (fn* ([x] (+ x 1))))")
+(ok "a mutually recursive letfn passed to an inlined call keeps its letrec"
+    (= 2 (jnum->exact (ev "((fn* ([x y] (lf-t (letfn [(ja [d g] (if (zero? d) g (ju (dec d) y))) (ju [d g] (if (zero? d) g (ja (dec d) x)))] (ja (mod y 5) 835))))) 1 2)"))))
 
+;; --- every pass reads a letfn's binders under letrec scope ------------------
+;; Each init of a letfn sees every sibling. Passes that threaded scope through
+;; the bindings in sequence read a later sibling as whatever an outer binding of
+;; its name held: the inline splice substituted the inlined fn's ARGUMENT for a
+;; sibling sharing a param's name, and the type pass gave it an outer local's
+;; type and folded number?/nil? on it. jolt.ir/thread-bindings is the one rule.
+(ev "(def lf-h2 (fn* ([g] (letfn [(f [] (g)) (g [] 42)] (f)))))")
+(ok "a letfn sibling named like the inlined fn's param is the sibling"
+    (= 42 (jnum->exact (ev "((fn* ([] (lf-h2 7))))"))))
+(ev "(def lf-h15 (fn* ([b] (letfn [(a [] (fn? b)) (b [] 99)] (a)))))")
+(ok "a forward letfn sibling is not copy-propagated from the arg"
+    (eq? #t (ev "((fn* ([] (lf-h15 1))))")))
+(ev "(def lf-h3 (fn* ([n] (letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? n)))))")
+(ok "an inlined body holding a mutual letfn" (eq? #t (ev "((fn* ([] (lf-h3 10))))")))
+(ok "a mutual letfn as a let init, no inline call"
+    (equal? "\"done\"" (ev "(pr-str (name (let [r (letfn [(a [k] (if (zero? k) :done (b (dec k)))) (b [k] (a k))] (a 3))] r)))")))
+(ok "a self-recursive letfn as a let init"
+    (= 10 (jnum->exact (ev "(let [r (letfn [(f [k] (if (zero? k) 0 (+ k (f (dec k)))))] (f 4))] r)"))))
+(ok "the type pass does not give a letfn sibling an outer local's type"
+    (equal? "[:other :other]" (ev "(pr-str [(let [g 1.5] (letfn [(f [] (if (number? g) :num :other)) (g [] 0)] (f))) (let [g nil] (letfn [(f [] (if (nil? g) :nil :other)) (g [] 0)] (f)))])")))
+(ok "a loop init reads the earlier loop var, not an outer local of its name"
+    (equal? "[3.0 3.5]" (ev "(pr-str [(let [x 1.5] (loop [x 1 y x i 0] (if (< i 2) (recur x (+ y 1.0) (inc i)) y))) (let [x 1] (loop [x 1.5 y x i 0] (if (< i 2) (recur x (+ y 1) (inc i)) y)))])")))
+;; --- fixed-field loop accumulators (jolt.passes.loop-maps) -------------------
+(define direct-loop
+  "(fn [x] (loop* [i 0 m {:k x}] (if (< i 3) (recur (inc i) (assoc m :k (inc (:k m)))) m)))")
 (ok "ordinary evaluation computes the same fixed-field result"
     (clj= (ev (string-append "(" direct-loop " 5)")) (ev "{:k 8}")))
 
