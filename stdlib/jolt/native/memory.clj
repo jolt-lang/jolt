@@ -261,15 +261,21 @@
     ;; name; a later use explains which helper took it and why.
     :call (let [args (mapv visit (:args node))
                 {:keys [positions why]} (get *takes* (:instance node))]
-            (doseq [[i a] (map-indexed vector args)]
-              (if (contains? positions i)
-                (do (binding [*why* (str "passes it to " (:helper-sym node) ", which takes it")]
-                      (unmanage! a))
-                    (when (owned? a)
-                      (swap! *moved* assoc (var-of a)
-                             (str (:helper-sym node) " took ownership of its "
-                                  (ordinal (inc i)) " argument (it " (get why i) ")"))))
-                (borrow-checked! a)))
+            ;; Move every taken argument before checking the borrowed ones: the
+            ;; helper may free a taken array before it reads a borrowed one, so
+            ;; (h x x) with h borrowing its first and taking its second must be
+            ;; refused whichever order the parameters come in.
+            (doseq [[i a] (map-indexed vector args)
+                    :when (contains? positions i)]
+              (binding [*why* (str "passes it to " (:helper-sym node) ", which takes it")]
+                (unmanage! a))
+              (when (owned? a)
+                (swap! *moved* assoc (var-of a)
+                       (str (:helper-sym node) " took ownership of its "
+                            (ordinal (inc i)) " argument (it " (get why i) ")"))))
+            (doseq [[i a] (map-indexed vector args)
+                    :when (not (contains? positions i))]
+              (borrow-checked! a))
             (let [n (snapshot (assoc node :args args))]
               (manage! node)
               n))
@@ -322,8 +328,10 @@
         (loop [takes {} n 0]
           (let [checked (binding [*takes* takes] (mapv check-instance (:instances region)))
                 takes' (into {} (map (fn [[i t]] [(:iid i) t]) checked))]
-            (if (or (= takes' takes) (> n 64))
-              [(mapv first checked) takes']
-              (recur takes' (inc n)))))
+            (cond
+              (= takes' takes) [(mapv first checked) takes']
+              (> n 64) (throw (ex-info "native: which arguments the helpers take did not settle after 64 rounds"
+                                       {:instances (count (:instances region))}))
+              :else (recur takes' (inc n)))))
         [body delete] (binding [*takes* takes] (check-body (:body region) nil))]
     (assoc region :body body :delete delete :instances insts :takes takes)))

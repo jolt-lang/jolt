@@ -229,28 +229,40 @@
 (defn- loop-rng
   "Loop variables start at their inits and take every recur's values: iterate
   the body until their intervals stop changing. The round that changes nothing
-  ran with the final intervals, so the facts it recorded are the ones kept."
+  ran with the final intervals, so the facts it recorded are the ones kept.
+  A loop variable stays \"the length of a\" only while every recur passes the
+  length of that same array a, and a is not itself a loop variable that recur
+  can rebind."
   [node env]
   (let [bs (:bindings node)
+        ids (set (map :id bs))
         long? (fn [b] (= :long (:type (:init b))))
         [env inits] (reduce (fn [[env rs] {:keys [id init] :as b}]
                               (let [r (when (long? b) (rng init env))]
                                 [(bind env id init r) (conj rs r)]))
                             [env []] bs)
+        lens0 (mapv (fn [b] (let [a (get-in env [:len-of (:id b)])]
+                              (when-not (contains? ids a) a)))
+                    bs)
         lid (:loop-id node)]
-    (loop [round 0 cur inits]
+    (loop [round 0 cur inits lens lens0]
       (swap! *recurs* assoc lid [])
-      (let [env' (reduce (fn [e [b r]] (-> e (assoc-in [:r (:id b)] r) (update :alen dissoc (:id b))))
-                         env (map vector bs cur))
+      (let [env' (reduce (fn [e [b r a]]
+                           (-> e (assoc-in [:r (:id b)] r) (update :alen dissoc (:id b))
+                               (update :len-of #(if a (assoc % (:id b) a) (dissoc % (:id b))))))
+                         env (map vector bs cur lens))
             out (rng (:body node) env')
             seen (get @*recurs* lid)
             new (vec (map-indexed
                       (fn [j b]
                         (when (long? b)
                           (widen round (cur j)
-                                 (reduce join (inits j) (map #(nth % j) seen)))))
-                      bs))]
-        (if (= new cur) out (recur (inc round) new))))))
+                                 (reduce join (inits j) (map #(nth (:r %) j) seen)))))
+                      bs))
+            lens' (vec (map-indexed
+                        (fn [j a] (when (and a (every? #(= a (nth (:len %) j)) seen)) a))
+                        lens))]
+        (if (and (= new cur) (= lens' lens)) out (recur (inc round) new lens'))))))
 
 (defn rng
   "The interval of a long-valued node in env (nil otherwise), recording facts."
@@ -267,7 +279,10 @@
           (when (= :long (:type node))
             (join (when-not (= :never (:type then)) rt) (when-not (= :never (:type else)) re))))
     :loop (loop-rng node env)
-    :recur (do (swap! *recurs* update (:loop-id node) conj (mapv #(rng % env) (:args node))) nil)
+    :recur (do (swap! *recurs* update (:loop-id node) conj
+                      {:r (mapv #(rng % env) (:args node))
+                       :len (mapv #(len-of env %) (:args node))})
+               nil)
     :prim (prim-rng node env)
     :math (do (run! #(rng % env) (:args node)) nil)
     :alength (do (rng (:arr node) env) (alen env (:arr node)))

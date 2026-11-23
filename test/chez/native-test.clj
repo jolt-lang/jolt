@@ -325,6 +325,26 @@
            '((let [n (alength xs)] (dotimes [i n] (aset xs i (* 2.0 (aget xs i)))) (aget xs 0)))
            [[(da 1 2 3)] [(da 4)] [(da)]])
 
+;; a loop variable bound to (alength a) is a's length only while every recur
+;; passes that length on; one that recur grows must keep the bounds check
+(check-run "a loop-carried alength that recur changes keeps its bounds check" '[^doubles xs]
+           '((loop [i 0 n (alength xs) s 0.0]
+               (if (< i n) (recur (inc i) (+ n 5) (+ s (aget xs i))) s)))
+           [[(da 1)] [(da)] [(da 1 2 3)]])
+(check-run "a loop-carried alength of a loop array that recur replaces" '[^doubles xs ^doubles ys]
+           '((loop [b xs n (alength b) i 0 s 0.0]
+               (if (< i n) (recur ys n (inc i) (+ s (aget b i))) s)))
+           [[(da 1 2 3) (da 1)] [(da) (da)] [(da 7) (da)] [(da 1 2) (da 4 5)]])
+(let [fast (fast-copy (emit/emit-region
+                       (mem/check-region
+                        (ast/analyze-region '[^doubles xs]
+                                            '((loop [i 0 n (alength xs) s 0.0]
+                                                (if (< i n) (recur (inc i) n (+ s (aget xs i))) s)))))
+                       "jn_x"))]
+  (check-eq "a loop-carried alength passed on unchanged gets a fast copy" (some? fast) true)
+  (check-eq "a loop-carried alength passed on unchanged still proves the index"
+            (when fast (re-find #"jn_tls\.code = 1" fast)) nil))
+
 (check-run "a count up to Long/MAX_VALUE cannot overflow its inc" '[^long n ^long k]
            '((loop [i (- n k)] (if (< i n) (recur (inc i)) i)))
            [[9223372036854775807 3] [10 2] [-9223372036854775807 1]])
@@ -420,6 +440,11 @@
               #"only borrowed from its caller.*pass \(aclone x\)")
 (check-reject "moving the array a helper borrows in a sibling argument" '[]
               '((let [a (double-array 3)] (pick-at a (let [b a] 0)))) #"after it was given away")
+;; the helper may free what it takes before it reads what it borrows, so one
+;; array in both a borrowed and a taken position is refused in either order
+(defnative borrow-then-take [a b] (let [r (if (> (alength a) 3) b (double-array 1))] (aget a 0) r))
+(check-reject "an array both borrowed and taken by one helper call" '[^long n]
+              '((let [x (double-array n)] (borrow-then-take x x))) #"after it was given away")
 
 ;; the index cast runs before aset's value (as on the JVM); its failure frees what
 ;; is live THEN, not what the value expression would have allocated or consumed
