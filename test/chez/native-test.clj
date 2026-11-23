@@ -12,7 +12,8 @@
             [jolt.native.memory :as mem]
             [jolt.native.emit :as emit]
             [jolt.native.fallback :as fallback]
-            [jolt.native.rt :as rt]))
+            [jolt.native.rt :as rt]
+            [jolt.native :refer [defnative]]))
 
 (def failures (atom []))
 (defn fail! [msg] (swap! failures conj msg) (println "FAIL" msg))
@@ -266,6 +267,106 @@
              (aget b 0))
            [[(double-array (map #(+ 0.5 (* % 0.37)) (range 35))) 100]] :raw true)
 
+;; --- range facts: a fast copy without the checks they prove can't fire -------
+;; (jolt.native.range). The guard on the array parameters picks the copy; each
+;; row runs once where the fast copy runs and once where the checked one must,
+;; and the two halves must still agree on results and exceptions.
+
+(defn- check-eq [label got want]
+  (when-not (= got want) (fail! (str label ": want " (pr-str want) " got " (pr-str got)))))
+
+(defnative sum3 [xs] (+ (aget xs 0) (aget xs 1) (aget xs 2)))
+
+(def nbody-params '[^doubles b ^long steps])
+(def nbody-body
+  '((dotimes [_ steps]
+      (dotimes [i 5]
+        (let [oi (* i 7)]
+          (loop [j (inc i)]
+            (when (< j 5)
+              (let [oj (* j 7)
+                    dx (- (aget b oi) (aget b oj))
+                    mag (/ 0.01 (* dx dx))]
+                (aset b (+ oi 3) (- (aget b (+ oi 3)) (* dx (aget b (+ oj 6)) mag)))
+                (recur (inc j))))))))
+    (aget b 0)))
+
+(defn- fast-copy
+  "The fast copy of the entry's body: from its guard to the checked copy."
+  [src]
+  (let [entry (subs src (str/index-of src "double jn_"))
+        g (str/index-of entry "if (x")]
+    (when g (subs entry g (str/index-of entry "} else {" g)))))
+
+(let [src (emit/emit-region (mem/check-region (ast/analyze-region nbody-params nbody-body)) "jn_x")
+      fast (fast-copy src)]
+  (check-eq "n-body: a guard picks a fast copy" (some? fast) true)
+  (check-eq "n-body: the guard asks for 35 elements" (boolean (and fast (str/includes? fast ".len > 34LL"))) true)
+  (check-eq "n-body: the fast copy keeps no overflow, cast or bounds check"
+            (when fast (re-find #"overflow|INT32_MIN|jn_tls\.code = 1" fast)) nil))
+
+(check-run "n-body: fast copy, and the checked copy on a short array" nbody-params nbody-body
+           [[(double-array (map #(+ 0.5 (* % 0.37)) (range 35))) 50]
+            [(double-array (map #(+ 0.5 (* % 0.37)) (range 34))) 3]
+            [(double-array 0) 0]
+            [(double-array 30) 1]])
+
+(check-run "a loop guarded by alength needs no bounds check" '[^doubles xs]
+           '((loop [i 0 s 0.0]
+               (if (< i (alength xs)) (recur (inc i) (+ s (aget xs i))) s)))
+           [[(da 1 2 3)] [(da)]])
+
+(check-run "an index past the guarded one still raises" '[^doubles xs]
+           '((loop [i 0 s 0.0]
+               (if (< i (alength xs)) (recur (inc i) (+ s (aget xs (+ i 1)))) s)))
+           [[(da 1 2 3)] [(da)] [(da 5)]])
+
+(check-run "dotimes over a let-bound alength" '[^doubles xs]
+           '((let [n (alength xs)] (dotimes [i n] (aset xs i (* 2.0 (aget xs i)))) (aget xs 0)))
+           [[(da 1 2 3)] [(da 4)] [(da)]])
+
+;; a loop variable bound to (alength a) is a's length only while every recur
+;; passes that length on; one that recur grows must keep the bounds check
+(check-run "a loop-carried alength that recur changes keeps its bounds check" '[^doubles xs]
+           '((loop [i 0 n (alength xs) s 0.0]
+               (if (< i n) (recur (inc i) (+ n 5) (+ s (aget xs i))) s)))
+           [[(da 1)] [(da)] [(da 1 2 3)]])
+(check-run "a loop-carried alength of a loop array that recur replaces" '[^doubles xs ^doubles ys]
+           '((loop [b xs n (alength b) i 0 s 0.0]
+               (if (< i n) (recur ys n (inc i) (+ s (aget b i))) s)))
+           [[(da 1 2 3) (da 1)] [(da) (da)] [(da 7) (da)] [(da 1 2) (da 4 5)]])
+(let [fast (fast-copy (emit/emit-region
+                       (mem/check-region
+                        (ast/analyze-region '[^doubles xs]
+                                            '((loop [i 0 n (alength xs) s 0.0]
+                                                (if (< i n) (recur (inc i) n (+ s (aget xs i))) s)))))
+                       "jn_x"))]
+  (check-eq "a loop-carried alength passed on unchanged gets a fast copy" (some? fast) true)
+  (check-eq "a loop-carried alength passed on unchanged still proves the index"
+            (when fast (re-find #"jn_tls\.code = 1" fast)) nil))
+
+(check-run "a count up to Long/MAX_VALUE cannot overflow its inc" '[^long n ^long k]
+           '((loop [i (- n k)] (if (< i n) (recur (inc i)) i)))
+           [[9223372036854775807 3] [10 2] [-9223372036854775807 1]])
+
+(check-run "an inc past the guard still overflows" '[^long n]
+           '((loop [i (- n 2)] (if (<= i n) (recur (inc i)) i)))
+           [[9223372036854775807] [5]])
+
+(check-run "rem and mod by a positive constant index an owned array" '[^long k]
+           '((let [a (long-array 7)]
+               (dotimes [i 20] (aset a (mod (- i k) 7) i) (aset a (rem (* i k) 7) (- i)))
+               (aget a 3)))
+           [[3] [-9223372036854775807] [0] [9223372036854775807]])
+
+(check-run "a negative rem index still raises" '[^long k]
+           '((let [a (double-array 7)] (aset a (rem k 7) 1.5) (aget a 0)))
+           [[3] [-3] [0]])
+
+(check-run "a helper's array parameter gets its own guard" '[^doubles xs]
+           '((sum3 xs))
+           [[(da 1 2 3)] [(da 1 2)] [(da 1 2 3 4)]])
+
 ;; a user macro expands inside the region; its syntax-quoted output names
 ;; clojure.core/let and clojure.core/* which the region reads unqualified
 (defmacro sq [x] `(let [v# ~x] (* v# v#)))
@@ -299,6 +400,51 @@
 (check-run "aclone a borrowed long-array" '[^longs ls]
            '((let [a (aclone ls)] (dotimes [i (alength a)] (aset a i (inc (aget a i)))) a))
            [[(la 1 2 3)] [(la)]] :raw true)
+
+;; --- native helpers (defnative): one instance per call-site types ---------------
+(defnative dot [xs ys]
+  (loop [i 0 s 0.0] (if (< i (alength xs)) (recur (inc i) (+ s (* (aget xs i) (aget ys i)))) s)))
+(defnative scaled [xs k]
+  (let [a (aclone xs)] (dotimes [i (alength a)] (aset a i (* k (aget a i)))) a))
+(defnative fill! [a v] (dotimes [i (alength a)] (aset a i v)))
+(defnative pick-at [xs i] (aget xs i))
+(defnative sum-pick [xs i j] (+ (pick-at xs i) (pick-at xs j)))
+(defnative ^long fib [n] (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(defnative fib-nohint [n] (if (< n 2) n (+ (fib-nohint (- n 1)) (fib-nohint (- n 2)))))
+(defnative leak-borrowed [xs] xs)
+
+(check-run "one helper instantiated for double and long arrays" '[^doubles a ^longs b]
+           '((+ (dot a a) (double (sum-pick b 0 1)) (sum-pick a 0 0)))
+           [[(da 1 2 3) (la 1 2 3)] [(da 1.5 2) (la 2 big59)]] :raw true)
+(check-run "a helper's owned result returned by the region" '[^doubles xs ^double k]
+           '((scaled xs k))
+           [[(da 1 2 3) 2.0] [(da) 3.0]] :raw true)
+(check-run "a region-owned array lent to a helper that fills it" '[^long n]
+           '((let [a (double-array n)] (fill! a 2.5) (scaled a 2.0)))
+           [[0] [3]] :raw true)
+(check-run "a failure in a nested helper with arrays live on both sides" '[^doubles xs ^long i]
+           '((let [a (aclone xs) b (scaled a 2.0)] (+ (sum-pick b 0 i) (aget a 0))))
+           [[(da 1 2 3) 2] [(da 1 2 3) 3] [(da 1 2 3) -1]])
+(check-run "a recursive helper with a return hint" '[^long n] '((fib n)) [[0] [1] [15]] :raw true)
+
+(check-run "a recursive helper's result type is inferred" '[^long n] '((fib-nohint n)) [[0] [1] [15]] :raw true)
+(defnative spins [n] (spins n))
+(check-reject "a helper that never returns" '[^long n] '((spins n)) #"never returns")
+(defnative ^double halve-to [x lim] (if (< x lim) x (halve-to (/ x 2.0) lim)))
+(declare odd-steps)
+(defnative even-steps [n] (if (zero? n) 0 (odd-steps (dec n))))
+(defnative odd-steps [n] (if (zero? n) 1 (even-steps (dec n))))
+(check-run "a hinted recursive helper still checks" '[^double x] '((halve-to x 1.0)) [[10.0] [0.5]] :raw true)
+(check-run "mutual recursion between helpers is inferred" '[^long n] '((+ (even-steps n) (odd-steps n))) [[0] [7]] :raw true)
+(check-reject "a helper returning an array the region borrowed" '[^doubles xs] '((alength (leak-borrowed xs)))
+              #"only borrowed from its caller.*pass \(aclone x\)")
+(check-reject "moving the array a helper borrows in a sibling argument" '[]
+              '((let [a (double-array 3)] (pick-at a (let [b a] 0)))) #"after it was given away")
+;; the helper may free what it takes before it reads what it borrows, so one
+;; array in both a borrowed and a taken position is refused in either order
+(defnative borrow-then-take [a b] (let [r (if (> (alength a) 3) b (double-array 1))] (aget a 0) r))
+(check-reject "an array both borrowed and taken by one helper call" '[^long n]
+              '((let [x (double-array n)] (borrow-then-take x x))) #"after it was given away")
 
 ;; --- review follow-ups ----------------------------------------------------------
 ;; an owned array in a branch of a unit if (a when) is freed in that branch
@@ -336,6 +482,33 @@
 (check-run "an index overflow before a value that moves an owned array" '[^doubles xs ^long big]
            '((let [a (double-array 2)] (aset xs big (let [b a] (aget b 0)))))
            [[(da 1 2 3) 4294967296] [(da 1 2 3) 1]])
+
+;; --- inferred ownership: a helper takes the arrays it gives away ----------------
+(defnative keep-it [a] a)
+(defnative maybe-keep [a c] (if c a (double-array 1)))
+(defnative pass-on [a] (keep-it a))
+(defnative ^doubles drain [a n] (if (<= n 0) a (drain a (dec n))))
+
+(check-run "a helper that returns its argument takes it" '[]
+           '((let [a (double-array 3)] (aset a 0 1.5) (keep-it a)))
+           [[]] :raw true)
+(check-run "a helper that takes on one path frees it on the other" '[^boolean c]
+           '((let [a (double-array 2)] (alength (maybe-keep a c))))
+           [[true] [false]] :raw true)
+(check-run "taken through another helper" '[] '((let [a (double-array 2)] (aset a 1 3.0) (pass-on a))) [[]] :raw true)
+(check-run "taken through recursion" '[^long n] '((drain (double-array 3) n)) [[0] [5]] :raw true)
+(check-reject "using an array after a helper took it" '[]
+              '((let [a (double-array 3) b (keep-it a)] (aget a 0)))
+              #"after it was given away \(moved\); native-test/keep-it took ownership of its 1st argument \(it returns it\)")
+(check-reject "the explanation follows a transitive take" '[]
+              '((let [a (double-array 3) b (pass-on a)] (alength a)))
+              #"native-test/pass-on took ownership of its 1st argument \(it passes it to native-test/keep-it, which takes it\)")
+(check-reject "a taking helper in a loop iteration that continues" '[]
+              '((let [a (double-array 1)] (loop [i 0] (if (< i 3) (let [b (keep-it a)] (recur (inc i))) 0))))
+              #"loop iteration that continues")
+
+;; --- failures: same exception as Jolt, nothing leaked -------------------------
+
 
 (check-run "out of bounds with live arrays" '[^long i]
            '((let [a (double-array 4) b (double-array 2)] (aset a 0 1.0) (+ (aget a i) (aget b 0))))
@@ -525,9 +698,16 @@
   (let [ds (scalars :double)]
     (if (<= d 0)
       (pick (concat [(double (rnd 7)) 'dd 0.5] ds))
-      (case (rnd 10)
+      (case (rnd 12)
         0 (list (pick '[+ - * /]) (gen :double (dec d)) (gen (pick [:double :long]) (dec d)))
         1 (let [a (borrowable)] (list 'aget a (with-borrowed a #(gen-idx d))))
+        ;; a scan guarded by the array's length, read at an offset from the loop
+        ;; variable: in bounds (and proven so) at 0, past either end otherwise
+        10 (let [a (borrowable) i (fresh-name) acc (fresh-name) off (pick [0 0 1 -1])]
+             (list 'loop [i 0 acc 0.0]
+                   (list 'if (list '< i (list 'alength a))
+                         (list 'recur (list 'inc i) (list '+ acc (list 'aget a (if (zero? off) i (list '+ i off)))))
+                         acc)))
         2 (list 'Math/sqrt (gen :double (dec d)))
         3 (list 'double (gen :long (dec d)))
         4 (let [c (gen :bool (dec d))
@@ -536,6 +716,7 @@
         5 (gen-let :double d)
         6 (gen-loop :double d)
         8 (list 'do (list 'aset 'ls (gen-idx d) (gen :long (dec d))) (gen :double (dec d)))
+        9 (let [a (borrowable)] (list 'pick-at a (with-borrowed a #(gen-idx d))))
         7 (let [a (borrowable)]
             (list 'do (cons 'aset (cons a (with-borrowed a #(vector (gen-idx d) (gen :double (dec d))))))
                   (gen :double (dec d))))
@@ -562,6 +743,15 @@
       (do (reset! *planted* true) (pick dead))
       (and (seq movable) (plant-chance 35 75))
       (let [v (pick movable)] (kill! v) v)
+      ;; a helper that takes its argument: passing an owned local moves it, at
+      ;; the call, so a later argument may still read it (but not move it)
+      (and (seq movable) (chance 15))
+      (let [v (pick movable)
+            call (if (chance 50)
+                   (list 'keep-it v)
+                   (list 'maybe-keep v (with-borrowed v #(gen :bool (dec d)))))]
+        (kill! v)
+        call)
       ;; the other violation: moving an outer value in an iteration that continues
       (and *plant-mode* (seq (:borrow-only @*g*)) (chance 30)
            (some (set (live-owned)) (:borrow-only @*g*)))
@@ -570,7 +760,9 @@
       :else
       (case (rnd 5)
         0 (list 'double-array (gen-idx d))
-        1 (list 'aclone (borrowable))
+        1 (if (chance 40)
+            (let [a (borrowable)] (list 'scaled a (with-borrowed a #(gen :double (dec d)))))
+            (list 'aclone (borrowable)))
         2 (let [c (gen :bool (dec d))
                 [t e] (branch-merge #(gen-array (dec d)) #(gen-array (dec d)))]
             (list 'if c t e))

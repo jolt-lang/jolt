@@ -31,6 +31,17 @@
             [jolt.native.ast :as ast]))
 
 (def ^:dynamic *state* nil)
+;; helper instance iid -> {:positions #{arg index} :why {index text}}: which
+;; arguments each native helper takes ownership of (inferred, check-region)
+(def ^:dynamic *takes* {})
+;; how the value being consumed is given away, for the reason a helper takes a
+;; parameter: "returns it", "binds it to a new name", ...
+(def ^:dynamic *why* "gives it away")
+;; Facts about the whole body, kept outside *state* because the if and loop
+;; rules snapshot and restore *state* per branch: a parameter given away on ANY
+;; path is taken (id -> how), and why each moved value went (id -> text).
+(def ^:dynamic *consumed* nil)
+(def ^:dynamic *moved* nil)
 
 (defn- owned? [node] (ast/owned? (:type node)))
 (defn- var-of [node] (if (= :local (:op node)) (:binding node) (:id node)))
@@ -43,16 +54,28 @@
 
 (defn- manage-id! [id] (swap! *state* update :deleters conj id))
 
+(defn- ordinal [n] (case n 1 "1st" 2 "2nd" 3 "3rd" (str n "th")))
+
+(defn- moved-note
+  "Why a value is gone, when a helper took it: the explanatory half of the error."
+  [v]
+  (when-let [m (get @*moved* v)] (str "; " m)))
+
 (defn- unmanage!
   "Consume node's value. Carp: UsingUnownedValue when it is no longer live."
   [node]
   (when (owned? node)
     (let [v (var-of node)]
       (if (contains? (deleters) v)
-        (swap! *state* update :deleters disj v)
+        (do (swap! *state* update :deleters disj v)
+            ;; a helper parameter given away here is one the helper takes
+            (when (and (contains? (:candidates @*state*) v)
+                       (not (contains? @*consumed* v)))
+              (swap! *consumed* assoc v *why*)))
         (ast/fail (:form node)
                   (str "uses " (pr-str (:form node))
-                       " after it was given away (moved); use (aclone x) to keep a copy"))))))
+                       " after it was given away (moved)" (moved-note v)
+                       "; use (aclone x) to keep a copy"))))))
 
 (defn- transfer! [from to-id]
   (unmanage! from)
@@ -63,7 +86,8 @@
   [node]
   (when (and (owned? node) (not (contains? (deleters) (var-of node))))
     (ast/fail (:form node)
-              (str "borrows " (pr-str (:form node)) " after it was given away (moved)"))))
+              (str "borrows " (pr-str (:form node)) " after it was given away (moved)"
+                   (moved-note (var-of node)) "; use (aclone x) to keep a copy"))))
 
 (defn- snapshot [node] (assoc node :live (deleters)))
 
@@ -87,7 +111,7 @@
                    (let [init (visit (:init b))]
                      ;; Carp's exclusiveTransferOwnership: the binding's id is
                      ;; fresh, so a shadowed outer name keeps its own deleter
-                     (transfer! init (:id b))
+                     (binding [*why* "binds it to a new name"] (transfer! init (:id b)))
                      (assoc b :init init)))
                  (:bindings node))
         body (visit (:body node))]
@@ -95,7 +119,7 @@
       ;; control never reaches the let's end: the recur inside freed it all
       (do (set-deleters! pre)
           (assoc node :bindings bs :body body :delete #{}))
-      (do (unmanage! body)
+      (do (binding [*why* "returns it"] (unmanage! body))
           (let [post (deleters)
                 diff (set/difference post pre)]
             (set-deleters! (set/difference post diff))
@@ -111,7 +135,7 @@
     ;; only an owned if takes its branch's value; a unit or scalar if leaves an
     ;; owned branch value in the branch's own deleters, freed at its end
     (when (and (not (diverges? b)) (owned? if-node))
-      (unmanage! b)
+      (binding [*why* "returns it"] (unmanage! b))
       (manage-id! (:id if-node)))
     [b (deleters)]))
 
@@ -178,7 +202,7 @@
 (defn- visit-recur [node]
   (let [args (mapv visit (:args node))
         outer (get-in @*state* [:loops (:loop-id node)])]
-    (doseq [a args] (unmanage! a))
+    (binding [*why* "passes it to recur"] (doseq [a args] (unmanage! a)))
     (let [live (deleters)
           gone (set/difference outer live)]
       (when (seq gone)
@@ -208,7 +232,7 @@
     :if (visit-if node)
     :do (let [stmts (mapv visit (:statements node))
               ret (visit (:ret node))]
-          (when-not (diverges? ret) (transfer! ret (:id node)))
+          (when-not (diverges? ret) (binding [*why* "returns it"] (transfer! ret (:id node))))
           (assoc node :statements stmts :ret ret))
     :prim (let [n (visit-args node)
                 long-arith (and (= :long (:type node)) (fallible-prims (:prim node)))]
@@ -231,16 +255,85 @@
                   n (snapshot (assoc node :arr arr))]
               (manage! node)
               n)
+    ;; a native helper borrows every array it is passed (it can neither free nor
+    ;; return one), so each owned argument must be live at the call, after all
+    ;; the arguments ran; it can fail, and an owned result is the caller's
+    ;; a helper takes the arguments its instance gives away (inferred: *takes*)
+    ;; and borrows the rest. A taken argument is moved, like binding it to a new
+    ;; name; a later use explains which helper took it and why.
+    :call (let [args (mapv visit (:args node))
+                {:keys [positions why]} (get *takes* (:instance node))]
+            ;; Move every taken argument before checking the borrowed ones: the
+            ;; helper may free a taken array before it reads a borrowed one, so
+            ;; (h x x) with h borrowing its first and taking its second must be
+            ;; refused whichever order the parameters come in.
+            (doseq [[i a] (map-indexed vector args)
+                    :when (contains? positions i)]
+              (binding [*why* (str "passes it to " (:helper-sym node) ", which takes it")]
+                (unmanage! a))
+              (when (owned? a)
+                (swap! *moved* assoc (var-of a)
+                       (str (:helper-sym node) " took ownership of its "
+                            (ordinal (inc i)) " argument (it " (get why i) ")"))))
+            (doseq [[i a] (map-indexed vector args)
+                    :when (not (contains? positions i))]
+              (borrow-checked! a))
+            (let [n (snapshot (assoc node :args args))]
+              (manage! node)
+              n))
     :new-array (let [len (visit (:len node))
                      n (snapshot (assoc node :len len))]
                  (manage! node)
                  n)))
 
+(defn- strip-ids
+  "Remove ids from every :live set in a checked body: parameters a helper only
+  borrowed are its caller's to free, even on the helper's error paths."
+  [node ids]
+  (cond
+    (map? node) (into {} (map (fn [[k v]] [k (if (= k :live) (set/difference v ids) (strip-ids v ids))]) node))
+    (vector? node) (mapv #(strip-ids % ids) node)
+    :else node))
+
+(defn- check-body
+  "Check one function body. A region's parameters are borrowed or scalar, so
+  nothing starts managed; a helper instance's candidate parameters (arrays the
+  region owns) start managed, and the ones the body never gives away are then
+  stripped back out: borrowed, not freed. Answers [body delete consumed]."
+  [body candidates]
+  (binding [*state* (atom {:deleters (set candidates) :names {} :loops {}
+                           :candidates (set candidates)})
+            *consumed* (atom {})
+            *moved* (atom {})]
+    (let [body (visit body)]
+      (when-not (diverges? body) (binding [*why* "returns it"] (unmanage! body)))
+      (let [consumed @*consumed*
+            borrowed (set/difference (set candidates) (set (keys consumed)))]
+        [(strip-ids body borrowed) (set/difference (deleters) borrowed) consumed]))))
+
+(defn- check-instance [inst]
+  (let [cands (keep (fn [p] (when (:candidate p) (:id p))) (:params inst))
+        [b d consumed] (check-body (:body inst) cands)
+        idx (into {} (map-indexed (fn [i p] [(:id p) i]) (:params inst)))]
+    [(assoc inst :body b :delete d)
+     {:positions (set (map idx (keys consumed)))
+      :why (into {} (map (fn [[id why]] [(idx id) why]) consumed))}]))
+
 (defn check-region
-  "Run the ownership pass over an analyzed region. Answers the region with
-  :body annotated and :delete, the owned values to free before returning."
+  "Run the ownership pass over an analyzed region and each native helper
+  instance it calls. Which arguments a helper takes is inferred, to a fixpoint
+  since helpers call helpers (a parameter passed on to one that takes it is
+  taken too). Answers the region with every :body annotated and a :delete per
+  body, the owned values to free before it returns."
   [region]
-  (binding [*state* (atom {:deleters #{} :names {} :loops {}})]
-    (let [body (visit (:body region))]
-      (when-not (diverges? body) (unmanage! body))
-      (assoc region :body body :delete (deleters)))))
+  (let [[insts takes]
+        (loop [takes {} n 0]
+          (let [checked (binding [*takes* takes] (mapv check-instance (:instances region)))
+                takes' (into {} (map (fn [[i t]] [(:iid i) t]) checked))]
+            (cond
+              (= takes' takes) [(mapv first checked) takes']
+              (> n 64) (throw (ex-info "native: which arguments the helpers take did not settle after 64 rounds"
+                                       {:instances (count (:instances region))}))
+              :else (recur takes' (inc n)))))
+        [body delete] (binding [*takes* takes] (check-body (:body region) nil))]
+    (assoc region :body body :delete delete :instances insts :takes takes)))

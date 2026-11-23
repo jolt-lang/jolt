@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(native ^:hold-gc [...] ...)` opts into a cheaper call that holds every
   other thread's collection until it returns, for short regions. A build with regions
   needs a C compiler.
+- A native region leaves out the overflow, int-cast and bounds checks that a
+  range analysis proves cannot fire (loop counters, `(< i (alength a))` scans,
+  indexes built from them). Those that depend on an array parameter's length
+  run behind one guard at the function's entry: a fast copy when it holds, the
+  fully checked body otherwise, so results and exceptions are unchanged. The
+  rules are proved with z3 in `test/native/proofs/range-*.smt2`.
 
 ### Fixed
 

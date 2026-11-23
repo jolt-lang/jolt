@@ -15,6 +15,9 @@
   number types, a non-boolean test) rather than pick one.")
 
 (def ^:dynamic *ids* nil)
+;; native helper instances analyzed for the current region, [helper-sym param-types]
+;; -> {:iid :ret :params :body}; Carp's Concretize: one instance per call-site types
+(def ^:dynamic *instances* nil)
 (defn- next-id [] (swap! *ids* inc))
 
 (defn fail
@@ -26,7 +29,10 @@
                     (merge {:jolt.native/error true :form form} data)))))
 
 (defn owned? [t] (and (vector? t) (= :array (first t))))
-(defn borrowed? [t] (and (vector? t) (= :ref (first t))))
+;; [:ref e] is an array borrowed from Jolt (a region parameter: the flvector or
+;; fxvector itself); [:loan e] is a region-owned array lent to a native helper
+;; (plain C storage). Both are borrowed: never freed or returned by the borrower.
+(defn borrowed? [t] (and (vector? t) (contains? #{:ref :loan} (first t))))
 (defn array-type? [t] (or (owned? t) (borrowed? t)))
 (defn elem-type [t] (second t))
 (defn numeric? [t] (or (= t :long) (= t :double)))
@@ -63,12 +69,20 @@
                 ret (analyze env (last forms) tail)]
             (node :do (:type ret) form :statements stmts :ret ret))))
 
+;; :never as an operand is a recursive helper call whose result type is still
+;; being solved (instantiate! iterates from it to a fixpoint): it is "no type
+;; yet", which every check lets through and contagion ignores
+(defn- unknown? [t] (= t :never))
+
 (defn- check-num [form args what]
   (doseq [a args]
-    (when-not (numeric? (:type a))
+    (when-not (or (numeric? (:type a)) (unknown? (:type a)))
       (fail form (str what " takes numbers, got " (pr-str (:type a)))))))
 
-(defn- contagion [args] (if (some #(= :double (:type %)) args) :double :long))
+(defn- contagion [args]
+  (cond (some #(= :double (:type %)) args) :double
+        (some #(= :long (:type %)) args) :long
+        :else :never))
 
 (defn- bindings-of [form v what]
   (when-not (and (vector? v) (even? (count v)))
@@ -176,9 +190,93 @@
   a)
 
 (defn- long-arg [form a what]
-  (when-not (= :long (:type a))
+  (when-not (or (= :long (:type a)) (unknown? (:type a)))
     (fail form (str what " takes a long here, got " (pr-str (:type a)))))
   a)
+
+(declare analyze-body)
+
+;; --- native helpers (jolt.native/defnative) ----------------------------------
+
+(defn helper-of
+  "The defnative helper a call head names, or nil."
+  [env f]
+  (when (and (symbol? f) (not (contains? env f)))
+    (when-let [v (resolve f)]
+      (when-let [h (:jolt.native/helper (meta v))]
+        (assoc h :sym (symbol (str (:ns (meta v))) (str (:name (meta v)))))))))
+
+(def ^:private ret-hints
+  {'long :long 'double :double 'boolean :bool 'doubles [:array :double] 'longs [:array :long]})
+
+(defn- loan-type [t] (if (owned? t) [:loan (elem-type t)] t))
+(defn- first-or-nil [t] (when (vector? t) (first t)))
+
+(declare attempt-instance)
+
+(defn- instantiate!
+  "Analyze helper h's body for these parameter types, once per types. A
+  recursive helper's result type is solved by iteration: its own calls are
+  first typed :never (no type yet), the base case gives the body a type, and
+  the body is re-analyzed assuming that type until it stops changing. Instances
+  analyzed under an assumption that then changed are dropped and redone."
+  [h key ptypes form]
+  (let [hint (when-let [tag (:ret h)] (or (ret-hints (if (string? tag) (symbol tag) tag))
+                                          (fail form (str "bad return hint on " (:sym h)))))]
+    (if hint
+      (attempt-instance h key ptypes form hint true (atom false))
+      (loop [assumed :never n 0]
+        (let [snap @*instances*
+              recursed (atom false)
+              inst (attempt-instance h key ptypes form assumed false recursed)
+              t (:ret inst)]
+          (cond
+            (not @recursed) inst
+            (= t assumed)
+            (if (= t :never)
+              (fail form (str "native helper " (:sym h) " never returns: every path calls itself"))
+              inst)
+            (> n 4) (fail form (str "native helper " (:sym h) "'s result type does not settle; give it a return type hint"))
+            :else (do (reset! *instances* snap) (recur t (inc n)))))))))
+
+(defn- attempt-instance
+  "One analysis of a helper instance, its own calls typed `assumed`: the hint
+  when hinted? (then binding), else the current guess of instantiate!'s
+  fixpoint."
+  [h key ptypes form assumed hinted? recursed]
+  (let [iid (next-id)]
+    (swap! *instances* assoc key {:iid iid :ret assumed :pending true :recursed recursed})
+    ;; an array the region owns arrives typed as owned: whether the helper takes
+    ;; it (gives it away on some path) or only borrows it is inferred by the
+    ;; ownership pass (jolt.native.memory), which strips the ones it never gives
+    ;; away. An array the region borrowed from Jolt ([:ref e]) can only be lent.
+    (let [ps (mapv (fn [p t] {:name p :id (next-id)
+                              :type (if (= :loan (first-or-nil t)) [:array (elem-type t)] t)
+                              :candidate (= :loan (first-or-nil t))})
+                   (:params h) ptypes)
+          env (into {} (map (fn [p] [(:name p) p]) ps))
+          body (binding [*ns* (the-ns (:ns h))] (analyze-body env (:body h) false form))
+          t (:type body)]
+      (when (borrowed? t)
+        (fail form (str "native helper " (:sym h) " returns an array the region only borrowed from"
+                        " its caller (a ^doubles or ^longs parameter); pass (aclone x) so the helper"
+                        " gets one it can own")))
+      (when (and hinted? (not= assumed t) (not= :never t))
+        (fail form (str "native helper " (:sym h) " is hinted " (pr-str assumed) " but returns " (pr-str t))))
+      (let [inst {:iid iid :ret (if hinted? assumed t) :params ps :body body :sym (:sym h) :types ptypes}]
+        (swap! *instances* assoc key inst)
+        inst))))
+
+(defn- analyze-helper-call [h args form]
+  (when-not (= (count args) (count (:params h)))
+    (fail form (str (:sym h) " takes " (count (:params h)) " argument(s), got " (count args))))
+  (doseq [a args]
+    (when (= :unit (:type a)) (fail form (str "an argument to " (:sym h) " has no value"))))
+  (let [ptypes (mapv (comp loan-type :type) args)
+        key [(:sym h) ptypes]
+        inst (or (get @*instances* key) (instantiate! h key ptypes form))]
+    (when (:pending inst) (reset! (:recursed inst) true))
+    (node :call (:ret inst) form :instance (:iid inst) :args args :helper-sym (:sym h))))
 
 (defn- analyze-call [env [f & raw :as form] tail]
   (let [args (mapv #(analyze env % false) raw)
@@ -210,7 +308,8 @@
                          (prim :bool (keyword (str (if (= f '==) "num=" f)))))
       (= not=) (do (when-not (= 2 n) (fail form (str f " takes two arguments here")))
                    (let [[a b] args]
-                     (when-not (and (= (:type a) (:type b)) (#{:long :double :bool} (:type a)))
+                     (when-not (or (unknown? (:type a)) (unknown? (:type b))
+                                   (and (= (:type a) (:type b)) (#{:long :double :bool} (:type a))))
                        (fail form (str f " compares two values of the same scalar type, got "
                                        (pr-str (:type a)) " and " (pr-str (:type b))
                                        " (use == to compare numbers across types)"))))
@@ -233,7 +332,7 @@
       aset (do (when-not (= 3 n) (fail form "aset takes an array, an index and a value"))
                (arr-arg form (args 0) "aset") (long-arg form (args 1) "aset index")
                (let [et (elem-type (:type (args 0))) vt (:type (args 2))]
-                 (when-not (or (= et vt) (and (= et :double) (= vt :long)))
+                 (when-not (or (= et vt) (and (= et :double) (= vt :long)) (unknown? vt))
                    (fail form (str "aset stores " (pr-str et) " into this array, got " (pr-str vt)))))
                (node :aset (elem-type (:type (args 0))) form
                      :arr (args 0) :idx (args 1) :val (args 2)))
@@ -252,7 +351,9 @@
         (do (when-not (= arity n) (fail form (str f " takes " arity " argument(s)")))
             (check-num form args (str f))
             (node :math :double form :fn (name f) :args args))
-        (fail form (str "not allowed in a native region: " (pr-str f)))))))
+        (if-let [h (helper-of env f)]
+          (analyze-helper-call h args form)
+          (fail form (str "not allowed in a native region: " (pr-str f))))))))
 
 (def ^:private builtins
   "Heads analyze-call handles itself: never macroexpanded."
@@ -322,7 +423,7 @@
   "Analyze (native [params...] body...) given as params + body forms. Answers
   {:params [{:name :id :type}] :body node :type t}."
   [params body]
-  (binding [*ids* (atom 0)]
+  (binding [*ids* (atom 0) *instances* (atom {})]
     (let [ps (mapv (fn [p]
                      (when-not (local-sym? p) (fail p "region parameters are plain symbols"))
                      {:name p :id (next-id) :type (param-type p)})
@@ -332,4 +433,5 @@
           t (:type body)]
       (when (borrowed? t)
         (fail (:form body) "a region cannot return an array it borrowed; return (aclone it)"))
-      {:params ps :body body :type t})))
+      {:params ps :body body :type t
+       :instances (vec (sort-by :iid (vals @*instances*)))})))
