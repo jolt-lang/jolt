@@ -202,6 +202,9 @@
            (adopt-interrupt-box! ibox)
            (dyn-binding-stack snap)
            (chez-current-ns-param ns)
+           ;; who is running the body, for a load's cycle walk (locks.ss
+           ;; jolt-blocked-on): until it settles the payload holds the runner
+           (jolt-future-payload-set! f (make-future-runner (get-thread-id)))
            (let* ((slot (agent-pool-take! 'send-off))
                   (_ (jolt-thread-name-set! (get-thread-id) (agent-pool-thread-name 'send-off slot)))
                   (r (guard (e (#t (cons #f e))) (cons #t (jolt-invoke thunk)))))
@@ -295,10 +298,29 @@
 (define (jolt-future-deref f)
   (unless (begin (task-spin-until (lambda () (jolt-future-done? f)))
                  (jolt-future-settled? f))
-    (jolt-cv-wait-interruptibly "future deref" (jolt-future-mu f) (jolt-future-cv f) #f
-      (lambda (_timed-out?)
-        (if (jolt-future-done? f) #t jolt-cv-again))))
+    (jolt-call-blocked-on f
+      (lambda ()
+        (jolt-cv-wait-interruptibly "future deref" (jolt-future-mu f) (jolt-future-cv f) #f
+          (lambda (_timed-out?)
+            (if (jolt-future-done? f) #t jolt-cv-again))))))
   (jolt-future-finish f))
+
+;; A running future's payload slot names its runner until the body settles it.
+;; Nothing reads the payload of an unsettled future, and the cycle walk reads
+;; this one only to follow the edge: a stale read is a settled future, whose
+;; waiter is about to be woken anyway.
+(define-record-type future-runner (fields ctx) (nongenerative jolt-future-runner-v1))
+(let ((prior jolt-block-releaser))
+  (set! jolt-block-releaser
+    (lambda (obj)
+      (cond ((jolt-future? obj)
+             (let ((r (jolt-future-payload obj)))
+               (and (not (jolt-future-done? obj)) (future-runner? r)
+                    (cons (future-runner-ctx r) "a future"))))
+            ((and (jhost? obj) (equal? (jhost-tag obj) "user-thread"))
+             (let ((id (jthread-running-id (jhost-state obj))))
+               (and id (cons id "a thread it joins"))))
+            (else (prior obj))))))
 
 ;; (deref f timeout-ms timeout-val): wait up to timeout-ms; return timeout-val if
 ;; it has not settled by the absolute deadline.
@@ -2299,6 +2321,14 @@
 ;; that was never started is not waited for at all (JVM: isAlive is false before
 ;; .start, so join returns at once).
 (define (jthread-alive? st) (and (vector-ref st 5) (not (vector-ref st 1))))
+(define (jthread-join-wait st ms)
+  (jolt-cv-wait-interruptibly "Thread.join"
+                (vector-ref st 2) (vector-ref st 3)
+                (and ms (not (= ms 0)) (ms->timeout ms))
+    (lambda (timed-out?)
+      (cond ((not (jthread-alive? st)) #t)
+            (timed-out? #f)
+            (else jolt-cv-again)))))
 ;; Under st's mutex: the thread is done. The object takes the name, priority and
 ;; daemon status the id-keyed tables held, is marked done and its joiners woken,
 ;; in that order (jthread-attr relies on it) — ONCE. The body's end and the exit
@@ -2437,13 +2467,11 @@
             ;; is LEFT of the timeout rather than restarting it. A joining FIBER
             ;; parks: blocking its carrier would stop every other fiber on it until
             ;; the thread it joins exits.
-            (jolt-cv-wait-interruptibly "Thread.join"
-                          (vector-ref st 2) (vector-ref st 3)
-                          (and ms (not (= ms 0)) (ms->timeout ms))
-              (lambda (timed-out?)
-                (cond ((not (jthread-alive? st)) #t)
-                      (timed-out? #f)
-                      (else jolt-cv-again)))))
+            ;; a thread that has finished is joined without being recorded as a
+            ;; wait (the read is a hint; the wait's decide is the answer)
+            (if (jthread-alive? st)
+                (jolt-call-blocked-on self (lambda () (jthread-join-wait st ms)))
+                (jthread-join-wait st ms)))
           jolt-nil))
         (cons "isAlive" (lambda (self) (jthread-alive? (jhost-state self))))
         ;; flag then poke, so a wait already parked on a condition this thread

@@ -4,7 +4,8 @@
   share the alpha-rename invariant (every spliced binder is made globally fresh)
   and the `dirty` fixpoint flag. Portable Clojure (compiler-tier)."
   (:require [jolt.host :refer [inline-ir mark-spliced! guarded-inline? protocol-call-key]]
-            [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node]]
+            [jolt.ir :refer [map-ir-children reduce-ir-children coerce-node
+                              thread-bindings hoistable-let?]]
             [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]))
 
@@ -201,17 +202,13 @@
 ;; :let alpha-renames each binder to a fresh name, threading the extended
 ;; env left-to-right — sequential scope the uniform combinator can't model,
 ;; so it stays explicit. :loop binds exactly like :let and its :recur travels
-;; with it, so it gets the same sequential alpha-rename.
+;; with it, so it gets the same sequential alpha-rename. A letfn renames every
+;; binder before its first init (jolt.ir/thread-bindings): a sibling that shared
+;; a param's name was otherwise substituted with that param's argument.
 (defn- subst-bindings [node env cns]
-  (let [res (reduce (fn [acc b]
-                      (let [e (nth acc 0)
-                            binds (nth acc 1)
-                            nm (nth b 0)
-                            init (subst (nth b 1) e cns)
-                            f (fresh nm)]
-                        [(assoc e nm {:op :local :name f}) (conj binds [f init])]))
-                    [env []]
-                    (get node :bindings))]
+  (let [res (thread-bindings node env fresh
+                             (fn [e nm f _] (assoc e nm {:op :local :name f}))
+                             (fn [e init] [(subst init e cns) nil]))]
     (assoc node :bindings (nth res 1) :body (subst (get node :body) (nth res 0) cns))))
 
 (defn- renamed [e nm] (get (get e nm) :name))
@@ -386,27 +383,13 @@
   (let [op (get node :op)]
     (cond
       (= op :local) (contains? scope (get node :name))
-      ;; :let threads scope sequentially (each binding extends it), so it can't go
-      ;; through the uniform fold.
-      (= op :let)
-      (let [res (reduce (fn [acc b]
-                          (let [sc (nth acc 0) ok (nth acc 1)]
-                            (if (not ok)
-                              acc
-                              [(conj sc (nth b 0)) (body-closed? (nth b 1) sc)])))
-                        [scope true]
-                        (get node :bindings))]
-        (and (nth res 1) (body-closed? (get node :body) (nth res 0))))
-      ;; :loop threads scope sequentially, exactly like :let.
-      (= op :loop)
-      (let [res (reduce (fn [acc b]
-                          (let [sc (nth acc 0) ok (nth acc 1)]
-                            (if (not ok)
-                              acc
-                              [(conj sc (nth b 0)) (body-closed? (nth b 1) sc)])))
-                        [scope true]
-                        (get node :bindings))]
-        (and (nth res 1) (body-closed? (get node :body) (nth res 0))))
+      ;; :let and :loop thread scope through their bindings (in sequence, or all
+      ;; at once for a letfn), so they can't go through the uniform fold.
+      (or (= op :let) (= op :loop))
+      (let [res (thread-bindings node scope identity
+                                 (fn [sc nm _ _] (conj sc nm))
+                                 (fn [sc init] [init (body-closed? init sc)]))]
+        (and (every? true? (nth res 2)) (body-closed? (get node :body) (nth res 0))))
       ;; :fn — each arity's params and :rest bind only within that arity; a named
       ;; fn's own name binds across all of them (the analyzer makes the
       ;; self-reference a :local). Anything else its body reads has to be in the
@@ -691,12 +674,16 @@
 ;; Safe because inlined bodies are alpha-renamed (every binder unique), so the
 ;; hoisted bindings can't collide. Exposes a map-returning init directly to
 ;; scalar-replace when it was wrapped in an inlined arg's let.
+;;
+;; A :letrec init (a letfn) stays put: its fns close over each other, and hoisted
+;; into the enclosing let* the first one's closure read its sibling before it
+;; was bound, so the sibling resolved as an unbound top-level variable (#1808).
 ;; ---------------------------------------------------------------------------
 (defn- flatten-let-bindings [binds]
   ;; returns a flattened binding vector; sets dirty when it hoists.
   (reduce (fn [out b]
             (let [nm (nth b 0) init (nth b 1)]
-              (if (= :let (get init :op))
+              (if (hoistable-let? init)
                 (do (mark!)
                     (conj (reduce conj out (get init :bindings))
                           [nm (get init :body)]))

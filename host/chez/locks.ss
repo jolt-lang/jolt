@@ -988,3 +988,51 @@
 ;; strictly more information and is what its other host throwables do.
 (define (jolt-cv-wait-interruptibly who mu cv deadline decide)
   (jolt-cv-wait/ibox mu cv deadline decide (current-interrupt-box) who))
+
+;; --- what a blocked context is waiting for -----------------------------------
+;; A namespace load can wait on work it started: an install namespace's top level
+;; derefs a future, joins a thread or a fiber, and that work reaches one of the
+;; provider's classes, which waits for the load. On the JVM that is the
+;; class-initialization deadlock and both sides wait forever. The loader already
+;; keeps who waits on which load and who owns it (loader.ss ldr-waiting /
+;; ldr-loading); this table adds the other kind of edge, "this context is blocked
+;; until that object settles", so the loader's cycle walk can follow a load
+;; through the work it is waiting on and raise instead of hanging.
+;;
+;; Written only by a wait that is about to block -- a settled future or a dead
+;; thread answers before it gets here -- and cleared when the wait ends. A park is
+;; not an end: the entry stands while the fiber is parked, which is when it
+;; matters. Keyed by context, the fiber when one is running and the thread id
+;; otherwise, as the loader keys its claims (ldr-load-ctx).
+;;
+;; jolt-block-releaser answers, for a blocked-on object, (ctx . what) -- the
+;; context whose progress settles it and a few words naming the object -- or #f
+;; when nothing says who will (a promise anyone may deliver, a latch anyone may
+;; count down: those edges cannot be followed, and are not recorded).
+;; concurrency.ss and fibers.ss fill it in. jolt-block-closing! is the loader's:
+;; called after the entry is written, it breaks a cycle this wait closes.
+(define jolt-blocked-on (make-eqv-hashtable))   ; ctx -> object
+(define jolt-blocked-on-mu (make-mutex))        ; a leaf: nothing is taken under it
+(define jolt-block-releaser (lambda (obj) #f))
+(define jolt-block-closing! (lambda (obj me) (void)))
+(define (jolt-block-ctx) (or (jolt-current-fiber) (get-thread-id)))
+(define (jolt-blocked-on-ref ctx)
+  (jolt-lock! jolt-blocked-on-mu)
+  (let ((o (hashtable-ref jolt-blocked-on ctx #f)))
+    (jolt-unlock! jolt-blocked-on-mu)
+    o))
+;; (jolt-call-blocked-on obj thunk): run the blocking wait THUNK recorded as
+;; waiting for OBJ. Only for an object jolt-block-releaser knows.
+(define (jolt-call-blocked-on obj thunk)
+  (let ((me (jolt-block-ctx)))
+    (jolt-lock! jolt-blocked-on-mu)
+    (hashtable-set! jolt-blocked-on me obj)
+    (jolt-unlock! jolt-blocked-on-mu)
+    (dynamic-wind
+      void
+      (lambda () (jolt-block-closing! obj me) (thunk))
+      (lambda ()
+        (unless (jolt-park-unwinding?)
+          (jolt-lock! jolt-blocked-on-mu)
+          (hashtable-delete! jolt-blocked-on me)
+          (jolt-unlock! jolt-blocked-on-mu))))))
