@@ -757,7 +757,10 @@
           (let-values (((r err) (io-call+errno (c-del fp))))
             (or (= r 0) (nio-delete-failed fp m err dir?)))
           (or (del fp) (nio-delete-failed fp m 0 dir?))))
-    (cond ((nio-is-symlink? fp) (attempt c-unlink delete-file #f))   ; the link itself, even if dangling
+    (cond ((nio-is-symlink? fp)                                      ; the link itself, even if dangling
+           (if (nio-directory-link? fp)
+               (attempt c-rmdir delete-directory #t)
+               (attempt c-unlink delete-file #f)))
           ((not (file-exists? fp))
            (if missing-ok? #f (nio-no-such-file m)))
           ((file-directory? fp) (attempt c-rmdir delete-directory #t))
@@ -1239,8 +1242,56 @@
     (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException"
                                      (if (pair? msg) (car msg) jolt-nil)))))
 (define (nio-is-symlink? fp)
-  (and c-readlink (> (c-readlink fp (make-bytevector 1 0) 1) 0)))   ; readlink succeeds only on a link
+  (if (nio-windows?)
+      (and (win32-readlink fp) #t)
+      (and c-readlink (> (c-readlink fp (make-bytevector 1 0) 1) 0))))   ; readlink succeeds only on a link
+;; Windows: a symbolic link is a reparse point tagged IO_REPARSE_TAG_SYMLINK (a
+;; junction is not one, as WindowsFileAttributes.isSymbolicLink has it), and its
+;; target is the reparse data's print name, else its substitute name without
+;; the \??\ prefix (WindowsLinkSupport.readLink). The link itself is opened,
+;; FILE_FLAG_OPEN_REPARSE_POINT, with no access, so this reads a dangling link
+;; too. #f for anything that is not a symbolic link.
+(define-win32-proc win32-device-io-control-out
+  "kernel32.dll" "DeviceIoControl" (iptr unsigned-32 void* unsigned-32 u8* unsigned-32 u8* void*) int)
+(define win32-FSCTL-GET-REPARSE-POINT #x900A8)
+(define (win32-readlink fp)
+  (let ((a (win32-file-attributes fp))
+        (create (win32-create-file-w)) (close (win32-close-handle)) (ioctl (win32-device-io-control-out)))
+    (and a (not (= 0 (bitwise-and a win32-FILE-ATTRIBUTE-REPARSE-POINT))) create close ioctl
+         (let ((h (win32-with-wstr fp
+                    (lambda (w) (create w 0 win32-FILE-SHARE-ALL 0 win32-OPEN-EXISTING
+                                        (bitwise-ior win32-FILE-FLAG-BACKUP-SEMANTICS
+                                                     win32-FILE-FLAG-OPEN-REPARSE-POINT)
+                                        0)))))
+           (and (not (= h win32-INVALID-HANDLE-VALUE))
+                (let* ((buf (make-bytevector 16384 0))
+                       (ok (guard (_ (#t 0))
+                             (ioctl h win32-FSCTL-GET-REPARSE-POINT 0 0 buf 16384 (make-bytevector 4 0) 0))))
+                  (close h)
+                  (and (not (= ok 0))
+                       (= (bytevector-u32-ref buf 0 (endianness little)) win32-IO-REPARSE-TAG-SYMLINK)
+                       (let* ((u16 (lambda (i) (bytevector-u16-ref buf i (endianness little))))
+                              (str (lambda (off len)
+                                     (let ((b (make-bytevector len)))
+                                       (bytevector-copy! buf (+ 20 off) b 0 len)
+                                       (utf16->string b (endianness little)))))
+                              (print (str (u16 12) (u16 14)))
+                              (subst (str (u16 8) (u16 10))))
+                         (cond ((> (string-length print) 0) print)
+                               ((and (>= (string-length subst) 8) (string=? (substring subst 0 8) "\\??\\UNC\\"))
+                                (string-append "\\\\" (substring subst 8 (string-length subst))))
+                               ((and (>= (string-length subst) 4) (string=? (substring subst 0 4) "\\??\\"))
+                                (substring subst 4 (string-length subst)))
+                               (else subst))))))))))
+;; A link to a directory is removed with RemoveDirectoryW on Windows, as the
+;; JDK's implDelete does for a directory link.
+(define (nio-directory-link? fp)
+  (and (nio-windows?)
+       (let ((a (win32-file-attributes fp)))
+         (and a (not (= 0 (bitwise-and a win32-FILE-ATTRIBUTE-DIRECTORY)))))))
 (define (nio-readlink fp)
+  (if (nio-windows?) (win32-readlink fp) (nio-posix-readlink fp)))
+(define (nio-posix-readlink fp)
   (and c-readlink
        (let* ((buf (make-bytevector 4096 0)) (n (c-readlink fp buf 4096)))
          (and (> n 0)
@@ -1312,20 +1363,21 @@
       (let-values (((r err) (call (bitwise-ior flags 2))))
         (let-values (((r err) (if (and (= r 0) (= err 87)) (call flags) (values r err))))
           (when (= r 0) (fc-win32-throw shown err)))))))
+(define (nio-make-symlink! l t shown)
+  (cond ((nio-windows?) (nio-win32-create-symlink! l t shown))
+        (c-symlink
+         (let-values (((r err) (io-call+errno (c-symlink t l))))
+           (unless (= 0 r)
+             (nio-link-failed l #f shown #f err))))
+        (else
+         (throw-jvm 'UnsupportedOperationException
+                    "Symbolic links not supported on this operating system"))))
 (define fvo-nofollow (make-jhost "link-option" 'nofollow-links))
 (let ((files-attr
        (list (cons "readAttributes" nio-read-attributes)
              (cons "isSymbolicLink" (lambda (p . _) (if (nio-is-symlink? (nfp p)) #t #f)))
              (cons "createSymbolicLink" (lambda (link target . _)
-                                          (let ((t (npath-string-of target)) (l (nfp link)))
-                                            (cond ((nio-windows?) (nio-win32-create-symlink! l t (nio-shown link)))
-                                                  (c-symlink
-                                                   (let-values (((r err) (io-call+errno (c-symlink t l))))
-                                                     (unless (= 0 r)
-                                                       (nio-link-failed l #f (nio-shown link) #f err))))
-                                                  (else
-                                                   (throw-jvm 'UnsupportedOperationException
-                                                              "Symbolic links not supported on this operating system"))))
+                                          (nio-make-symlink! (nfp link) (npath-string-of target) (nio-shown link))
                                           (->path link)))
              (cons "createLink" (lambda (link existing . _)
                                   (let* ((l (nfp link)) (e (nfp existing))
@@ -2737,7 +2789,7 @@
                             (when (nio-dest-present? d) (nio-delete1 d #t))
                             (cond
                               ((and (nio-opts-nofollow? opts) (nio-is-symlink? s))
-                               (when c-symlink (c-symlink (or (nio-readlink s) "") d)))
+                               (nio-make-symlink! d (or (nio-readlink s) "") (nio-shown dst)))
                               ((file-directory? s) (unless (file-exists? d) (mkdir d)))
                               (else
                                (nio-write-bv! d (nio-read-bv s))

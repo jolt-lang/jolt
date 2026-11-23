@@ -195,7 +195,9 @@
 (def link-ok?
   (let [t (fresh "probe-target" "x") l (path "probe-ln")
         ok (try (Files/createSymbolicLink l t (make-array FileAttribute 0))
-                (Files/isSymbolicLink l)
+                (or (Files/isSymbolicLink l)
+                    (do (println "     no link after createSymbolicLink; exists:" (.exists (java.io.File. (str l))))
+                        false))
                 (catch Exception e (println "     createSymbolicLink:" (str e)) false))]
     (Files/deleteIfExists l) (Files/delete t)
     ok))
@@ -209,10 +211,11 @@
                 (link-refused #(Files/newOutputStream ln (opts W NF DOC)))
                 (link-refused #(Files/newByteChannel ln (opts NF)))
                 (link-refused #(Files/newByteChannel ln (opts R W NF DOC)))
-                (there? ln) (slurp (str target))]]
+                (there? ln) (slurp (str target))
+                (Files/isSymbolicLink ln) (= (str (Files/readSymbolicLink ln)) (str target))]]
          (Files/delete ln) (Files/delete target)
          r)
-       [:refused :refused :refused :refused :refused :refused true "hello"])
+       [:refused :refused :refused :refused :refused :refused true "hello" true true])
 (println "skip  NOFOLLOW_LINKS on a symbolic link: this host makes no links"))
 (check "NOFOLLOW_LINKS on a plain file reads and writes it"
        (let [p (fresh "nf-plain" "hello")

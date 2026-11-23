@@ -75,10 +75,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answered 0. `skip` stops at the end of the file and can move back to its
   start, as JDK 21's ChannelInputStream does. It used to move past the end
   and answer the full count asked for.
-- **`Files/createSymbolicLink` works on Windows.** It threw an ex-info
-  "symlink unavailable". It now calls CreateSymbolicLinkW the way the JDK does:
-  the directory flag for a directory target, unprivileged creation where the
-  system allows it, and the JDK's exceptions on failure.
+- **Symbolic links work on Windows.** `Files/createSymbolicLink` threw an
+  ex-info "symlink unavailable"; it now calls CreateSymbolicLinkW the way the
+  JDK does, with the directory flag for a directory target, unprivileged
+  creation where the system allows it, and the JDK's exceptions on failure.
+  `isSymbolicLink`, `readSymbolicLink`, `exists` with NOFOLLOW_LINKS, `delete`
+  of a link and `copy` with NOFOLLOW_LINKS answered as if there were no links,
+  because they asked readlink(3); they now read the reparse point.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could
