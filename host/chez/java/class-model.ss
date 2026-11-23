@@ -214,7 +214,7 @@
     (let ((h (hashtable-ref class-statics-tbl cls #f)))
       (when h
         (let ((v (hashtable-ref h "TYPE" #f)))
-          (when (string? v) (class-statics-member-set! h "TYPE" (jolt-class-for v)))))))
+          (when (string? v) (class-statics-replace! cls (list (cons "TYPE" (jolt-class-for v)))))))))
   '("Long" "Integer" "Short" "Byte" "Character" "Boolean" "Double" "Float" "Void"))
 ;; A deftype registered AFTER its JVM spelling was interned — an :import or a
 ;; class symbol compiled ahead of the defining namespace, which the JVM rejects
@@ -317,9 +317,21 @@
 (register-pr-arm! jclass? jclass-print-name)
 ;; print/println of a Class prints the bare name (getName), like pr — the JVM's
 ;; print-method for Class ignores *print-readably*. Only str is "class <name>".
+;; A deftype or defrecord name evaluates to its constructor token, which stands
+;; for the class (= to it, same hash, (class SomeType) is Class), so it prints
+;; as the class does rather than as an opaque fn.
+(define (deftype-token-class x)
+  (let ((tag (and (procedure? x) (deftype-ctor-tag x))))
+    (and tag (jolt-class-for tag))))
+(define (deftype-token? x) (and (deftype-token-class x) #t))
+(register-str-render! deftype-token? (lambda (x) (jclass-tostring (deftype-token-class x))))
+(register-pr-arm! deftype-token? (lambda (x) (jclass-print-name (deftype-token-class x))))
 (let ((prev (var-deref "clojure.core" "__print1")))
   (def-var! "clojure.core" "__print1"
-    (lambda (x) (if (jclass? x) (jclass-print-name x) (jolt-invoke1 prev x)))))
+    (lambda (x)
+      (cond ((jclass? x) (jclass-print-name x))
+            ((deftype-token-class x) => jclass-print-name)
+            (else (jolt-invoke1 prev x))))))
 (register-host-methods! "class"
   (list (cons "getName" (lambda (self) (jclass-jvm-name self)))
         (cons "getCanonicalName" (lambda (self) (hsc-canonical-name (jclass-jvm-name self))))
@@ -404,8 +416,9 @@
 
 ;; JVM class assignability for isa? (20-coll): true when child and parent are both
 ;; class values and parent is child, java.lang.Object (every class's root), or a
-;; modeled ancestor of child (full name or last segment). nil for non-class args, so
-;; isa? falls through to its hierarchy/vector logic.
+;; modeled ancestor of child. A last-segment match counts only when one side is a
+;; simple name, as in jch-isa?: java.lang.Process is not babashka.process.Process.
+;; nil for non-class args, so isa? falls through to its hierarchy/vector logic.
 (def-var! "jolt.host" "class-isa?"
   (lambda (child parent)
     (let ((cc (class-key child)) (pp (class-key parent)))
@@ -417,12 +430,14 @@
               (or (string=? cc pp) (string=? (hsc-last-segment cc) (hsc-last-segment pp))))
          jolt-nil)
         ((and cc pp)
-          (let ((pseg (hsc-last-segment pp)))
+          (let ((pseg (hsc-last-segment pp))
+                (pdot? (memv #\. (string->list pp))))
             (if (let loop ((names (cons cc (jch-closure cc))))
                   (cond ((string=? pp "java.lang.Object") #t)
                         ((null? names) #f)
                         ((or (string=? pp (car names))
-                             (string=? pseg (hsc-last-segment (car names)))) #t)
+                             (and (not (and pdot? (memv #\. (string->list (car names)))))
+                                  (string=? pseg (hsc-last-segment (car names))))) #t)
                         (else (loop (cdr names)))))
                 #t jolt-nil)))
         (else jolt-nil)))))

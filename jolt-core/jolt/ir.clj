@@ -405,6 +405,46 @@
                    acc
                    (reduce-ir-child f acc shape v))))))))
 
+;; The scope rule of a binding form, in one place. let* and loop bind in
+;; sequence: an init sees only the binders before it. A :letrec let (letfn) does
+;; not: every init sees every binder, so a sibling's name inside an init is the
+;; sibling, never an outer binding of the same name. A pass that threads a scope
+;; through a let's bindings goes through here, so none of them can read a letfn
+;; sibling as what an outer local of its name held (or rename it as that local).
+;;
+;; rename: (fn [name] name'), the name the binder has from now on.
+;; bind:   (fn [scope name name' fact] scope'), brings it into scope; fact is
+;;         what visit learned about its value, nil when not known yet.
+;; visit:  (fn [scope init] [init' fact]), one init in the scope it sees.
+;;
+;; A :letrec let binds every name with no fact before the first init, then
+;; re-binds each with its fact once visited. Answers [scope' bindings' facts].
+(defn letrec? [node] (boolean (get node :letrec)))
+
+(defn thread-bindings [node scope rename bind visit]
+  (let [binds (get node :bindings)
+        n (count binds)
+        names (mapv (fn [b] (rename (nth b 0))) binds)
+        scope0 (if (letrec? node)
+                 (loop [i 0 s scope]
+                   (if (< i n) (recur (inc i) (bind s (nth (nth binds i) 0) (nth names i) nil)) s))
+                 scope)]
+    (loop [i 0 s scope0 out [] facts []]
+      (if (< i n)
+        (let [b (nth binds i)
+              r (visit s (nth b 1))]
+          (recur (inc i)
+                 (bind s (nth b 0) (nth names i) (nth r 1))
+                 (conj out [(nth names i) (nth r 0)])
+                 (conj facts (nth r 1))))
+        [s out facts]))))
+
+;; Hoisting a let init's bindings into the enclosing let (flatten-lets) is only
+;; sound for a plain let: a :letrec one's fns read each other, and in the
+;; enclosing let* the first would read its sibling before it was bound (#1808).
+(defn hoistable-let? [init]
+  (and (= :let (get init :op)) (not (letrec? init))))
+
 ;; All schema problems in the tree rooted at node, via reduce-ir-children (so an
 ;; unknown op — which recurses over no children — is still reported for itself).
 ;; Returns a seq of message strings, empty when the whole tree conforms.

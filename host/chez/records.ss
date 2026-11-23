@@ -244,15 +244,17 @@
       (hashtable-set! t ctor tag)
       (set-box! chez-deftype-ctor-tag-box t))))
 ;; A deftype/defrecord name used as a multimethod DISPATCH VALUE evaluates to its
-;; ctor token (a procedure). Normalize it to the "ns.Name" class-name STRING that
-;; __type-tag / class / type yield for an INSTANCE (jolt models a class as its name
-;; string), so a JVM-style (defmethod print-method SomeType …) matches a (class x)
-;; / __type-tag dispatch. Any non-deftype dispatch value passes through unchanged.
-;; Called from multimethods.ss (forward-referenced; records.ss loads after it but
-;; before any user defmethod runs).
+;; ctor token (a procedure). A table files it under the type's Class, as the JVM
+;; does: the class is = to the token with the same hash, so (get (methods f)
+;; SomeType) finds it, and it stays apart from a string dispatch value spelled
+;; like the class name. A (class x) or __type-tag dispatch value reaches it as an
+;; exact key or through isa?, which takes the tag string for its class. Any
+;; non-deftype dispatch value passes through unchanged. Called from
+;; multimethods.ss (forward-referenced; records.ss loads after it but before any
+;; user defmethod runs; jolt-class-for is the java layer's, loaded by then too).
 (define (mm-dispatch-val-canon dval)
-  (or (and (procedure? dval) (deftype-ctor-tag dval))
-      dval))
+  (let ((tag (and (procedure? dval) (deftype-ctor-tag dval))))
+    (if tag (jolt-class-for tag) dval)))
 (define chez-simple-name-tag (make-hashtable string-hash string=?))
 ;; simple deftype/defrecord name -> its "ns.Name" tag, or #f. Used by the analyzer
 ;; (host-contract.ss) to resolve a bare class name to its class-name string.

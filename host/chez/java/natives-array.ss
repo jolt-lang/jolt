@@ -563,8 +563,76 @@
 ;; A byte array's elements are signed-byte-folded by na-list->backing, the same
 ;; coercion aset applies through na-elem-of — so (into-array Byte/TYPE …) stores
 ;; bytes rather than whatever magnitude it was handed.
+;; (T-array coll) from a vector or another array has a count and indexed
+;; elements, so a double/float/long/int/short array is filled straight from
+;; them, coercing each element on the way in. The general route builds the seq,
+;; drains it to a list, maps a second list of coerced elements and only then
+;; fills — 3x the walk for a vector, and ~60ns an element for an array, whose seq
+;; steps through the generic first/next. The answer is the one the general route
+;; packs: an flvector for the float kinds; an fxvector for the integer kinds while
+;; every coerced element is a fixnum, and otherwise #f, so a value that needs the
+;; boxed backing goes the general way and is decided there.
+;; The two indexed sources, walked as (walk src (i e) body): BODY runs per
+;; element with I its index and E the element, and answers #f to stop the walk,
+;; which then answers #f; a finished walk answers #t. A vector is walked a leaf
+;; at a time — one descent per 32 elements, not one per element.
+(define-syntax na-walk-pvec
+  (syntax-rules ()
+    ((_ p0 (i e) body)
+     (let* ((p p0) (n (pvec-count p)))
+       (let chunk ((base 0))
+         (if (fx>=? base n)
+             #t
+             (let-values (((c off) (pv-leaf-for p base)))
+               (let ((m (fxmin (fx- (vector-length c) off) (fx- n base))))
+                 (let run ((j 0))
+                   (cond ((fx=? j m) (chunk (fx+ base m)))
+                         ((let ((i (fx+ base j)) (e (vector-ref c (fx+ off j)))) body)
+                          (run (fx+ j 1)))
+                         (else #f)))))))))))
+(define-syntax na-walk-backing
+  (syntax-rules ()
+    ((_ v0 (i e) body)
+     (let* ((v v0) (n (ja-backing-len v)))
+       (let run ((i 0))
+         (cond ((fx=? i n) #t)
+               ((let ((e (ja-backing-ref v i))) body) (run (fx+ i 1)))
+               (else #f)))))))
+
+(define-syntax na-indexed-backing
+  (syntax-rules ()
+    ((_ n0 kind0 walk src)
+     (let ((n n0) (kind kind0))
+       (cond
+         ((na-fl-kind? kind)
+          ;; A double element into a double array is stored as it is; asking
+          ;; na-elem-of (a case over the kinds) per element was half the fill.
+          (let ((fv (make-flvector n 0.0)) (dbl? (eq? kind 'double)))
+            (walk src (i e)
+                  (begin (flvector-set! fv i (if (and dbl? (flonum? e)) e (na-elem-of kind e)))
+                         #t))
+            fv))
+         ((na-fx-kind? kind)
+          (let ((xv (make-fxvector n 0)))
+            (and (walk src (i e)
+                       (let ((x (na-elem-of kind e)))
+                         (and (fixnum? x) (begin (fxvector-set! xv i x) #t))))
+                 xv)))
+         (else #f))))))
+
+(define (na-from-indexed x kind)
+  (and (or (na-fl-kind? kind) (na-fx-kind? kind))
+       (cond
+         ((pvec? x) (na-indexed-backing (pvec-count x) kind na-walk-pvec x))
+         ((jolt-array? x)
+          (let ((v (jolt-array-vec x)))
+            (na-indexed-backing (ja-backing-len v) kind na-walk-backing v)))
+         (else #f))))
+
 (define (na-from-seq x kind)
-  (make-jolt-array (na-list->backing (seq->list (jolt-seq x)) kind) kind))
+  (make-jolt-array (or (na-from-indexed x kind)
+                       (na-list->backing (seq->list (jolt-seq x)) kind))
+                   kind))
 
 ;; (T-array size init) has TWO forms on the JVM, and Numbers.T_array picks between
 ;; them with an instanceof: an init that is the element's own scalar type fills

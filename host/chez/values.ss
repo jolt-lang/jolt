@@ -549,6 +549,10 @@
          (cons (jolt-vector 1) (jolt-vector 2))
          (cons (jolt-hash-map (keyword #f "a") 1) (jolt-hash-map (keyword #f "a") 2))
          (cons (jolt-hash-set 1) (jolt-hash-set 2))
+         ;; ...and each of the three against a base scalar, either order
+         (cons (jolt-vector 1) "s") (cons (keyword #f "a") (jolt-vector 1))
+         (cons (jolt-hash-map (keyword #f "a") 1) 0) (cons #\a (jolt-hash-map (keyword #f "a") 1))
+         (cons (jolt-hash-set 1) (jolt-symbol #f "a")) (cons #t (jolt-hash-set 1))
          ;; procedures: fn equality is identity, answered ahead of the walk (a
          ;; collision-bucket compare of fn-keyed map keys paid the whole arm
          ;; walk per entry) — so no arm may claim one.
@@ -610,6 +614,16 @@
 ;; bypasses it too, so eq? alone would answer #f for two symbols that are equal.
 ;; So the fast case is a pointer compare and the correct case is still a compare
 ;; of the contents.
+;; X is a value whose = against a base scalar (base-scalar? below) Util.equiv
+;; settles by kind, with nothing to ask: a base scalar itself, or one of jolt's
+;; own vector, map and set types, whose equiv is false against anything that is
+;; not a collection. A deftype, a reify, a host object, a fn is NOT here: those
+;; are what the arm registry asks (#1769). Syntax so jolt=2/i (rt.ss) tests it
+;; inline; X must be a variable. Every pair it settles is in eq-fast-probes.
+(define-syntax eq-kind-settled?
+  (syntax-rules ()
+    ((_ x) (or (fixnum? x) (jolt-nil? x) (keyword-t? x) (string? x) (char? x)
+               (boolean? x) (symbol-t? x) (number? x) (pvec? x) (pmap? x) (pset? x)))))
 (define (jolt=2 a b)
   (cond ((and (fixnum? a) (fixnum? b)) (= a b))
         ((and (flonum? a) (flonum? b)) (= a b))
@@ -665,6 +679,13 @@
         ;; ahead of the walk it sat at the end of (records-coll.ss jrec-equiv=?,
         ;; loads later — runtime forward ref). The pair is in eq-fast-probes.
         ((and (jrec? a) (jrec? b)) (jrec-equiv=? a b))
+        ;; one of jolt's own vector, map or set types against a base scalar, in
+        ;; either order: Util.equiv asks the collection's equiv, which is false
+        ;; against a non-collection, so nothing else is asked. (= v "s") used
+        ;; to walk every arm to reach jolt=2-base's sequential clause. The pairs
+        ;; are in eq-fast-probes.
+        ((and (or (pvec? a) (pmap? a) (pset? a)) (base-scalar? b)) #f)
+        ((and (or (pvec? b) (pmap? b) (pset? b)) (base-scalar? a)) #f)
         ;; nil is equal only to nil (the eq? clause above answered that pair),
         ;; and two base scalars of different kinds are never equal. Both used to
         ;; reach jolt=2-base only AFTER every registered arm had been asked —
@@ -676,15 +697,27 @@
         ;; Boolean equality is by kind. Numbers keep the exactness-aware
         ;; compare of jolt=2-base. Every pair answered here is in
         ;; eq-fast-probes, so the registry refuses an arm that would claim one.
-        ((or (jolt-nil? a) (jolt-nil? b)) #f)
+        ;; nil on the LEFT is Util.equiv's k1 == null: false without asking k2.
+        ;; nil on the right is k1.equiv(nil) when k1 is a collection and
+        ;; k1.equals(nil) otherwise, so a deftype or a reify that declares its
+        ;; own equality answers for itself (#1769); every other type's equals
+        ;; is false against null.
+        ((jolt-nil? a) #f)
+        ((jolt-nil? b) (cond ((jrec? a) (jrec-equiv=? a b))
+                             ((reify-declares-eq? a) (reify-equiv=? a b))
+                             (else #f)))
         ;; A keyword equals only itself (Keyword.equals is identity, and the eq?
-        ;; clause above answered that), and a host object -- a Class token, a
-        ;; stream -- is never a keyword. A multimethod table keyed by both
-        ;; classes and keywords compares the two kinds on every bucket collision,
-        ;; and each compare walked every registered arm (about 1 us). The pairs
-        ;; are probed (eq-fast-probes here, the jhost one by the dispatch-caches
-        ;; unit row after boot), so no arm may claim one.
-        ((keyword-t? a) #f)
+        ;; clause above answered that), unless the other operand is a type
+        ;; whose own equiv Util.equiv asks when it is a collection: a deftype
+        ;; or a reify (#1769). Anything else -- a host object (a Class token, a
+        ;; stream), one of jolt's own collections, a fn -- is never equal to a
+        ;; keyword. A multimethod table keyed by both classes and keywords
+        ;; compares the two kinds on every bucket collision, and each compare
+        ;; walked every registered arm (about 1 us). The pairs are probed
+        ;; (eq-fast-probes here, the jhost one by the dispatch-caches unit row
+        ;; after boot), so no arm may claim one. reify-declares-eq? is defined
+        ;; in records-dispatch.ss, which loads later: a runtime forward ref.
+        ((and (keyword-t? a) (not (jrec? b)) (not (reify-declares-eq? b))) #f)
         ;; jolt-host-object? is a procedure host-static.ss defines over its
         ;; jhost record: a forward reference to a record op is refused here
         ;; (record-inline-test), a call resolved at run time is not.

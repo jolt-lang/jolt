@@ -179,6 +179,230 @@
                (catch Exception e (if (re-find #"No such file" (str (ex-message e))) :nosuch :other)))
           :nosuch)
 
+;; A file redirect is opened by jolt before the spawn, as the JDK opens it, so a
+;; target that cannot be opened throws from start(). Through /bin/sh the child
+;; started anyway and exited 1 when the shell could not open it. Each redirect
+;; kind, and the merged case, also stays off the shell (process.ss
+;; proc-direct-spec), which is what the worker spawns rely on.
+(doseq [[label redirect!] [["to"       #(.redirectOutput % (java.io.File. "/nonexistent-dir/x"))]
+                           ["appendTo" #(.redirectOutput % (java.lang.ProcessBuilder$Redirect/appendTo
+                                                            (java.io.File. "/nonexistent-dir/x")))]
+                           ["from"     #(.redirectInput % (java.io.File. "/nonexistent-dir/x"))]]]
+  (check-eq (str "an unopenable " label " redirect throws from start")
+            (try (.waitFor (.start (doto (java.lang.ProcessBuilder. ["true"]) redirect!))) :started
+                 (catch java.io.IOException e (ex-message e)))
+            "Cannot run program \"true\": /nonexistent-dir/x (No such file or directory)"))
+(let [dir (str (fs/create-temp-dir {:prefix "jp-redir-"}))
+      out (java.io.File. dir "out.txt")
+      in  (java.io.File. dir "in.txt")]
+  (spit in "from-file\n")
+  (spit out "old\n")
+  (check-eq "append + merged stderr land in the file, no pipes handed back"
+            (let [pr (.start (doto (java.lang.ProcessBuilder. ["sh" "-c" "cat; echo e 1>&2"])
+                               (.redirectInput in)
+                               (.redirectOutput (java.lang.ProcessBuilder$Redirect/appendTo out))
+                               (.redirectErrorStream true)))]
+              [(.waitFor pr) (slurp (.getInputStream pr)) (slurp out)])
+            [0 "" "old\nfrom-file\ne\n"])
+  (check-eq "DISCARD drops the child's output"
+            (let [pr (.start (doto (java.lang.ProcessBuilder. ["echo" "gone"])
+                               (.redirectOutput java.lang.ProcessBuilder$Redirect/DISCARD)))]
+              [(.waitFor pr) (slurp (.getInputStream pr))])
+            [0 ""])
+  (fs/delete-tree dir))
+
+;; A start that cannot reach the program says so the way the JDK does: the
+;; program, the directory when one was set, then errno and strerror. The posix_spawn
+;; path answered "posix_spawn failed (errno 2)" for a missing directory.
+(let [start! (fn [cmd dir]
+               (try (.waitFor (.start (cond-> (java.lang.ProcessBuilder. cmd)
+                                        dir (.directory (java.io.File. dir)))))
+                    :started
+                    (catch java.io.IOException e (ex-message e))))]
+  (check-eq "a missing directory names it"
+            (start! ["cat"] "/nonexistdir")
+            "Cannot run program \"cat\" (in directory \"/nonexistdir\"): error=2, No such file or directory")
+  (check-eq "a relative missing directory is named as given"
+            (start! ["cat"] "nonexist-rel-dir")
+            "Cannot run program \"cat\" (in directory \"nonexist-rel-dir\"): error=2, No such file or directory")
+  (check-eq "a directory that is a file"
+            (start! ["cat"] "/etc/hosts")
+            "Cannot run program \"cat\" (in directory \"/etc/hosts\"): error=20, Not a directory")
+  (check-eq "a missing program under a directory names the directory"
+            (start! ["definitely-no-such-program-xyz"] "/tmp")
+            "Cannot run program \"definitely-no-such-program-xyz\" (in directory \"/tmp\"): error=2, No such file or directory")
+  (check-eq "the shell fallback answers a missing directory the same way"
+            (try (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"1\")")
+                 (start! ["cat"] "/nonexistdir")
+                 (finally (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"\")")))
+            "Cannot run program \"cat\" (in directory \"/nonexistdir\"): error=2, No such file or directory")
+  (check-eq "an unopenable redirect under a directory names the directory"
+            (try (.waitFor (.start (doto (java.lang.ProcessBuilder. ["true"])
+                                     (.directory (java.io.File. "/tmp"))
+                                     (.redirectOutput (java.io.File. "/nonexistent-dir/x")))))
+                 :started
+                 (catch java.io.IOException e (ex-message e)))
+            "Cannot run program \"true\" (in directory \"/tmp\"): /nonexistent-dir/x (No such file or directory)")
+  (check-eq "directory nil is the default directory again"
+            (let [pb (doto (java.lang.ProcessBuilder. ["true"])
+                       (.directory (java.io.File. "/tmp"))
+                       (.directory nil))]
+              [(.directory pb) (.waitFor (.start pb))])
+            [nil 0])
+  (check-eq "directory reads back as a File"
+            (str (.directory (doto (java.lang.ProcessBuilder. ["true"]) (.directory (java.io.File. "/tmp")))))
+            "/tmp")
+  ;; the shell path is also what a spawn with a directory takes where posix_spawn
+  ;; has no chdir action (bionic, older glibc)
+  (check-eq "the shell fallback throws for an unopenable redirect too"
+            (try (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"1\")")
+                 (.waitFor (.start (doto (java.lang.ProcessBuilder. ["true"])
+                                     (.directory (java.io.File. "/"))
+                                     (.redirectOutput (java.io.File. "/nonexistent-dir/x")))))
+                 :started
+                 (catch java.io.IOException e (ex-message e))
+                 (finally (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"\")")))
+            "Cannot run program \"true\" (in directory \"/\"): /nonexistent-dir/x (No such file or directory)")
+  (check-eq "the shell fallback still redirects into a file"
+            (let [f (str (fs/create-temp-file {:prefix "jp-shredir-"}))]
+              (try (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"1\")")
+                   (.waitFor (.start (doto (java.lang.ProcessBuilder. ["echo" "via-sh"])
+                                       (.directory (java.io.File. "/"))
+                                       (.redirectOutput (java.io.File. f)))))
+                   (slurp f)
+                   (finally (scm/eval-string "(putenv \"JOLT_SPAWN_VIA_SHELL\" \"\")")
+                            (fs/delete-if-exists f))))
+            "via-sh\n")
+  (check-eq "clojure.java.shell surfaces the same message"
+            (try ((requiring-resolve 'clojure.java.shell/sh) "cat" :dir "/nonexistdir") :started
+                 (catch java.io.IOException e (ex-message e)))
+            "Cannot run program \"cat\" (in directory \"/nonexistdir\"): error=2, No such file or directory")
+  (check-eq "jolt.process surfaces the same message"
+            (try (sh ["cat"] {:dir "/nonexistdir"}) :started
+                 (catch java.io.IOException e (ex-message e)))
+            "Cannot run program \"cat\" (in directory \"/nonexistdir\"): error=2, No such file or directory"))
+
+;; jolt-which (spawn.ss, what `jolt build` finds cc, chez and its tools with) is
+;; `command -v` without the shell, so like it a PATH search passes over a
+;; directory and a file without execute permission. It took the first name that
+;; existed, so an `ls/` directory or a mode-644 `true` early on PATH won.
+(let [d (str (fs/create-temp-dir {:prefix "jp-which-"}))
+      old-path (System/getenv "PATH")
+      which (fn [prog] (scm/eval-string (str "(or (jolt-which " (pr-str prog) ") \"none\")")))
+      set-path! (fn [v] (scm/eval-string (str "(putenv \"PATH\" " (pr-str v) ")")))
+      ls-was (which "ls")
+      true-was (which "true")]
+  (fs/create-dirs (str d "/ls"))
+  (spit (str d "/true") "#!/bin/sh\nexit 0\n")
+  (spit (str d "/mine") "#!/bin/sh\nexit 0\n")
+  (.setExecutable (java.io.File. (str d "/mine")) true)
+  (try
+    (set-path! (str d ":" old-path))
+    (check-eq "jolt-which passes over a directory on PATH" (which "ls") ls-was)
+    (check-eq "jolt-which passes over a non-executable file on PATH" (which "true") true-was)
+    (check-eq "jolt-which still finds an executable file there" (which "mine") (str d "/mine"))
+    (check-eq "jolt-which refuses a directory named by path" (which (str d "/ls")) "none")
+    (finally (set-path! old-path)))
+  (fs/delete-tree d))
+
+;; The runtime's workers (spawn.ss): a log per spawn, truncated rather than
+;; appended to, since `jolt build` reuses its builddir and reads each worker's
+;; log; and the AOT cache's detached worker leads a process group of its own, so
+;; the terminal's ^C (SIGINT to the foreground group) ends the run without
+;; killing the worker before it has cleaned up.
+(let [d (str (fs/create-temp-dir {:prefix "jp-worker-"}))
+      log (str d "/w.log")
+      run (fn [spawn cmd]
+            (scm/eval-string (str "(jolt-wait-worker (" spawn " (list \"sh\" \"-c\" " (pr-str cmd) ") "
+                                  (pr-str log) "))")))
+      pgid-of-self "echo $$ $(ps -o pgid= -p $$)"]
+  (run "jolt-spawn-worker" "echo first")
+  (run "jolt-spawn-worker" "echo second")
+  (check-eq "a worker log is truncated per spawn" (slurp log) "second\n")
+  (run "jolt-spawn-detached-worker" pgid-of-self)
+  (check-eq "a detached worker leads its own process group"
+            (let [[pid pgid] (str/split (str/trim (slurp log)) #"\s+")] (= pid pgid))
+            true)
+  (run "jolt-spawn-worker" pgid-of-self)
+  (check-eq "a waited-on worker stays in the run's process group"
+            (let [[pid pgid] (str/split (str/trim (slurp log)) #"\s+")] (= pid pgid))
+            false)
+  (fs/delete-tree d))
+
+;; What an AOT worker that died before cleaning up left behind (a ^C to its
+;; group, kill -9, a crash) is removed by the next run that starts a worker
+;; (loader.ss aot-sweep-dead-workers!): a manifest whose parent and worker are
+;; both gone goes, with its log and the partial fasl of each of its jobs. A
+;; manifest whose worker still runs, and this process's own, stay.
+(let [d (str (fs/create-temp-dir {:prefix "jp-aotsweep-"}))
+      dead (fn [] (let [p (.start (java.lang.ProcessBuilder. ["true"]))] (.waitFor p) (.pid p)))
+      owner (dead)
+      worker (dead)
+      so (str d "/x.so")
+      mf (str d "/aot-jobs-" owner ".edn")
+      live-mf (str d "/aot-jobs-" (dead) ".edn")
+      live-worker (.pid (ProcessHandle/current))
+      own-mf (str d "/aot-jobs-" live-worker ".edn")
+      part (str so ".part" worker)]
+  (spit mf (str "(worker " worker ")\n" (pr-str [(str d "/x.scm") so]) "\n"))
+  (spit (str mf ".log") "")
+  (spit part "partial")
+  (spit live-mf (str "(worker " live-worker ")\n"))
+  (spit own-mf "")
+  (scm/eval-string (str "(aot-sweep-dead-workers! " (pr-str d) ")"))
+  (check-eq "the sweep removes a dead worker's manifest, log and partial fasl"
+            (mapv #(fs/exists? %) [mf (str mf ".log") part])
+            [false false false])
+  (check-eq "the sweep keeps a manifest whose worker is alive, and its own"
+            (mapv #(fs/exists? %) [live-mf own-mf])
+            [true true])
+  (fs/delete-tree d))
+
+;; A pid says nothing once it has been reused (Wine gives every top-level
+;; process the same one), so each side of a manifest holds a lock beside it for
+;; its whole life (spawn.ss jolt-lock-hold!) and the sweep asks the locks. The
+;; manifests below all name THIS process, which is alive, as parent and worker:
+;; only the locks tell them apart.
+(let [d (str (fs/create-temp-dir {:prefix "jp-aotlock-"}))
+      me (.pid (ProcessHandle/current))
+      lock-state (fn [f] (scm/eval-string (str "(symbol->string (jolt-lock-state " (pr-str f) "))")))
+      hold! (fn [f] (scm/eval-string (str "(jolt-lock-hold! " (pr-str f) ")")))
+      mf (fn [tag] (str d "/aot-jobs-" me "-" tag ".edn"))
+      lockf (str d "/probe.lock")]
+  (check-eq "a lock file nobody made is missing" (lock-state lockf) "missing")
+  (let [tok (hold! lockf)]
+    (check-eq "a held lock reads held" [(boolean tok) (lock-state lockf)] [true "held"])
+    (check-eq "a second hold fails while it is held" (hold! lockf) false)
+    (scm/eval-string (str "(jolt-lock-release! " tok ")"))
+    (check-eq "a released lock reads free" (lock-state lockf) "free"))
+  (doseq [tag ["deadowner" "liveowner" "deadworker"]]
+    (spit (mf tag) (str "(worker " me ")\n"))
+    (spit (str (mf tag) ".log") "")
+    (spit (str (mf tag) ".plock") "")
+    (spit (str (mf tag) ".wlock") ""))
+  ;; the parent of "liveowner" holds its lock; its worker's is free
+  (hold! (str (mf "liveowner") ".plock"))
+  ;; "deadworker": parent gone, worker gone, though the pid on its first line lives
+  ;; "deadowner": the same, but its worker still holds its lock
+  (hold! (str (mf "deadowner") ".wlock"))
+  (scm/eval-string (str "(aot-sweep-dead-workers! " (pr-str d) ")"))
+  (check-eq "a manifest whose parent and worker locks are free goes, locks and log too"
+            (mapv #(fs/exists? (str (mf "deadworker") %)) ["" ".log" ".plock" ".wlock"])
+            [false false false false])
+  (check-eq "a manifest whose parent holds its lock stays"
+            (fs/exists? (mf "liveowner")) true)
+  (check-eq "a manifest whose worker holds its lock stays"
+            (fs/exists? (mf "deadowner")) true)
+  (check-eq "manifest names carry a nonce after the pid"
+            (boolean (re-matches #".*/aot-jobs-\d+-[0-9A-Z]+-[0-9A-Z]+\.edn"
+                                 (scm/eval-string "(aot-manifest-name \"/x\")")))
+            true)
+  (check-eq "the owner is read from either name"
+            (mapv #(scm/eval-string (str "(aot-manifest-owner " (pr-str %) ")"))
+                  ["/x/aot-jobs-123-k2-9z.edn" "/x/aot-jobs-123.edn" "/x/aot-jobs-x.edn" "/x/other.edn"])
+            [123 123 false false])
+  (fs/delete-tree d))
+
 ;; A child that cannot be waited on must still produce an answer. With SIGCHLD set
 ;; to SIG_IGN the kernel reaps every child itself, so waitpid can only ever fail
 ;; with ECHILD — and the reap loop used to treat that as "ask again", spinning
@@ -1042,6 +1266,60 @@
             [(count err) (str/includes? err "Broken pipe")])
           [100000 false])
 
+;; Chez's parallel collector starts its sweeper threads from inside a
+;; collection, and a new thread takes the mask of the thread that made it: the
+;; collecting one, not the fork guard's. A collection run while that thread had
+;; a signal unblocked (a spawn under jolt-with-empty-sigmask, the watcher
+;; re-raising a signal nobody handles, park-until-interrupt's SIGINT) left
+;; sweepers that never block it, for the life of the process. Without the relay
+;; the watcher's signals sit at SIG_DFL, so the kernel could hand one to a
+;; sweeper and end the process: the "no relay" signal rows' child dying of its
+;; own Signal/raise USR2 (exit 140) before it got ready. Collections run with the
+;; watched signals blocked, so a sweeper is born with them blocked whoever made
+;; it. The child below opens such a window on purpose (USR2 unblocked on every
+;; thread while parallel collections start the sweepers), closes it, and raises
+;; USR2 in a burst: the watcher is busy between waits for most of it, which is
+;; when the kernel looks for another thread. On Linux it also reads each
+;; thread's mask: the only one that may not block USR2 is the watcher, whose
+;; mask reads empty while it sits in sigwait.
+(let [progf (str (fs/create-temp-file {:prefix "jp-sweepers-" :suffix ".clj"}))
+      prog "(require '[jolt.scheme :as scm])
+(import '[sun.misc Signal SignalHandler])
+(defn mask! [how] (scm/eval-string (str \"(c-pthread-sigmask \" how \" (jolt-make-sigset (list (jolt-signal-number \\\"USR2\\\"))) 0)\")))
+(def handled (atom 0))
+(Signal/handle (Signal. \"USR2\") (reify SignalHandler (handle [_ s] (swap! handled inc))))
+(def go? (atom true))
+(def started (java.util.concurrent.CountDownLatch. 4))
+(def done (java.util.concurrent.CountDownLatch. 4))
+(mask! \"jolt-sig-unblock-how\")
+(dotimes [i 4]
+  (future (mask! \"jolt-sig-unblock-how\") (.countDown started)
+          (loop [] (when @go? (vec (range 2000)) (recur)))
+          (mask! \"jolt-sig-block-how\") (.countDown done)))
+(.await started)
+(dotimes [i 40] (doall (map str (range 20000))))
+(reset! go? false)
+(.await done)
+(mask! \"jolt-sig-block-how\")
+(def usr2-bit (bit-shift-left 1 (dec (scm/eval-string \"(jolt-signal-number \\\"USR2\\\")\"))))
+(defn blocked-mask [t] (Long/parseLong (second (re-find #\"SigBlk:\\s+(\\S+)\" (slurp (str t \"/status\")))) 16))
+(def unmasked
+  (let [d (java.io.File. \"/proc/self/task\")]
+    (if (.isDirectory d)
+      (count (filter (fn [t] (let [m (blocked-mask t)] (and (not (zero? m)) (zero? (bit-and m usr2-bit)))))
+                     (.listFiles d)))
+      0)))
+(dotimes [i 200] (Signal/raise (Signal. \"USR2\")))
+(Thread/sleep 300)
+(println \"survived\" unmasked (pos? @handled))
+(shutdown-agents)"]
+  (spit progf prog)
+  (let [r (sh [jolt-bin progf] {:out :string :err :string :extra-env {"JOLT_NO_SIGNAL_RELAY" "1"}})]
+    (check-eq "a sweeper started while a thread had USR2 unblocked still blocks it"
+              [(:exit r) (str/trim (:out r)) (:err r)]
+              [0 "survived 0 true" ""]))
+  (fs/delete-if-exists progf))
+
 ;; sun.misc.Signal (#1679). INT, TERM and HUP stay the shutdown watcher's.
 ;; Any other signal goes through the kernel's relay (chez-patches/0009) when it
 ;; has one, and nothing past the three is blocked; on a stock Chez, or with
@@ -1064,14 +1342,26 @@
             (if relay? [false false false] [(signum "USR1") (signum "USR2") (signum "WINCH")]))
   (check-eq "sigwait answer: PROF is never the watcher's" (answer 0 (signum "PROF")) false))
 
-;; Up to 60s: signals sent before the program has registered its handlers take
-;; their default action and kill it, and a 10s cap was not enough on the
-;; emulated Android runner (every "no relay" row failed at once).
-(defn- await-file [f]
+;; Signals sent before the program has registered its handlers take their
+;; default action and kill it, so wait for its ready file: until it is written,
+;; the program exits, or 180s pass (a 10s and then a 60s cap were not enough on
+;; the emulated Android runner, where every "no relay" row failed at once). A
+;; program that never got ready is reported as that, with its exit and stderr,
+;; and answers false so the caller skips the rows that would signal it; one
+;; still running at 180s is killed rather than left behind.
+(defn- await-file [f proc label]
   (loop [n 0]
-    (when (and (< n 1200) (str/blank? (slurp f)))
-      (Thread/sleep 50)
-      (recur (inc n)))))
+    (cond
+      (not (str/blank? (slurp f))) true
+      (not (p/alive? proc))
+      (let [{:keys [exit err]} @proc]
+        (check-eq (str label ": the program got ready") (str "exited " exit ": " err) "ready")
+        false)
+      (>= n 3600)
+      (do (check-eq (str label ": the program got ready") "not ready after 180s" "ready")
+          (.destroyForcibly (:proc proc))
+          false)
+      :else (do (Thread/sleep 50) (recur (inc n))))))
 
 (doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
   ;; A handler runs on a daemon thread named "SIG<NAME> handler", for a signal
@@ -1108,22 +1398,22 @@
                    (if (or (every? ls want) (>= n 200))
                      ls
                      (do (Thread/sleep 50) (recur (inc n)))))))]
-    (await-file readyf)
-    (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
-      (sh ["sh" "-c" (str "kill -" s " " pid)])
-      (Thread/sleep 300))
-    (let [ls (seen)]
-      (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
-                (contains? ls "USR2 SIGUSR2 handler true") true)
-      (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? ls "INT") true)
-      (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
-                (filterv ls ["ALRM" "TSTP" "CHLD"]) ["ALRM" "TSTP" "CHLD"]))
-    (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
-    (sh ["sh" "-c" (str "kill -TERM " pid)])
-    (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
-    (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
-    (check-eq (str "SIGTERM still runs the hooks alongside signal handlers (" mode ")") (slurp hookf) "RAN")
-    (check-eq (str "and exits 128+SIGTERM (" mode ")") (:exit @proc) 143)
+    (when (await-file readyf proc (str "signal handlers (" mode ")"))
+      (doseq [s ["USR2" "WINCH" "USR1" "INT" "ALRM" "TSTP"]]
+        (sh ["sh" "-c" (str "kill -" s " " pid)])
+        (Thread/sleep 300))
+      (let [ls (seen)]
+        (check-eq (str "a USR2 handler runs on a daemon \"SIGUSR2 handler\" thread (" mode ")")
+                  (contains? ls "USR2 SIGUSR2 handler true") true)
+        (check-eq (str "an INT handler runs in place of the shutdown (" mode ")") (contains? ls "INT") true)
+        (check-eq (str "ALRM, TSTP and a child's CHLD reach their handlers (" mode ")")
+                  (filterv ls ["ALRM" "TSTP" "CHLD"]) ["ALRM" "TSTP" "CHLD"]))
+      (check-eq (str "handled and ignored signals leave it running (" mode ")") (p/alive? proc) true)
+      (sh ["sh" "-c" (str "kill -TERM " pid)])
+      (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+      (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+      (check-eq (str "SIGTERM still runs the hooks alongside signal handlers (" mode ")") (slurp hookf) "RAN")
+      (check-eq (str "and exits 128+SIGTERM (" mode ")") (:exit @proc) 143))
     (doseq [f [readyf logf hookf]] (fs/delete-if-exists f)))
 
   ;; With no handler a signal does what it did before: CHLD, PIPE, URG and WINCH
@@ -1137,35 +1427,54 @@
           proc (process [jolt-bin "-e" prog] {:out :string :err :string :extra-env env})
           pid (.pid (:proc proc))
           state #(second (re-find #"State:\s+(\S)" (slurp (str "/proc/" pid "/status"))))]
-      (await-file readyf)
-      (when (= fatal "USR1")
-        (doseq [s ["CHLD" "PIPE" "URG" "WINCH"]]
-          (sh ["sh" "-c" (str "kill -" s " " pid)])
-          (Thread/sleep 200))
-        (check-eq (str "an unhandled CHLD, PIPE, URG or WINCH is dropped (" mode ")") (p/alive? proc) true)
-        ;; TSTP's default is to stop, but the kernel discards it for a process
-        ;; in an orphaned process group, which is what the smoke harness runs
-        ;; this gate in. So jolt is held to what a plain `sleep` started the
-        ;; same way does, stopped or not.
-        (when (fs/exists? "/proc/self/status")
-          (let [ctl (process ["sleep" "30"] {:out :string :err :string})
-                cpid (.pid (:proc ctl))
-                state-of (fn [p] (second (re-find #"State:\s+(\S)" (slurp (str "/proc/" p "/status")))))]
-            (Thread/sleep 200)
-            (sh ["sh" "-c" (str "kill -TSTP " pid " " cpid)])
-            (Thread/sleep 300)
-            (check-eq (str "an unhandled TSTP does to jolt what it does to sleep (" mode ")")
-                      (state) (state-of cpid))
-            (sh ["sh" "-c" (str "kill -CONT " pid " " cpid)])
-            (Thread/sleep 300)
-            (check-eq (str "and CONT leaves it running (" mode ")") (contains? #{"S" "R"} (state)) true)
-            (.destroyForcibly (:proc ctl)))))
-      (sh ["sh" "-c" (str "kill -" fatal " " pid)])
-      (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
-      (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
-      (check-eq (str "an unhandled " fatal " ends it by the signal, hooks unrun (" mode ")")
-                [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""])
+      (when (await-file readyf proc (str "unhandled " fatal " (" mode ")"))
+        (when (= fatal "USR1")
+          (doseq [s ["CHLD" "PIPE" "URG" "WINCH"]]
+            (sh ["sh" "-c" (str "kill -" s " " pid)])
+            (Thread/sleep 200))
+          (check-eq (str "an unhandled CHLD, PIPE, URG or WINCH is dropped (" mode ")") (p/alive? proc) true)
+          ;; TSTP's default is to stop, but the kernel discards it for a process
+          ;; in an orphaned process group, which is what the smoke harness runs
+          ;; this gate in. So jolt is held to what a plain `sleep` started the
+          ;; same way does, stopped or not.
+          (when (fs/exists? "/proc/self/status")
+            (let [ctl (process ["sleep" "30"] {:out :string :err :string})
+                  cpid (.pid (:proc ctl))
+                  state-of (fn [p] (second (re-find #"State:\s+(\S)" (slurp (str "/proc/" p "/status")))))]
+              (Thread/sleep 200)
+              (sh ["sh" "-c" (str "kill -TSTP " pid " " cpid)])
+              (Thread/sleep 300)
+              (check-eq (str "an unhandled TSTP does to jolt what it does to sleep (" mode ")")
+                        (state) (state-of cpid))
+              (sh ["sh" "-c" (str "kill -CONT " pid " " cpid)])
+              (Thread/sleep 300)
+              (check-eq (str "and CONT leaves it running (" mode ")") (contains? #{"S" "R"} (state)) true)
+              (.destroyForcibly (:proc ctl)))))
+        (sh ["sh" "-c" (str "kill -" fatal " " pid)])
+        (loop [n 0] (when (and (< n 60) (p/alive? proc)) (Thread/sleep 50) (recur (inc n))))
+        (when (p/alive? proc) (.destroyForcibly (:proc proc)) (Thread/sleep 200))
+        (check-eq (str "an unhandled " fatal " ends it by the signal, hooks unrun (" mode ")")
+                  [(:exit @proc) (slurp hookf)] [(+ 128 (signum fatal)) ""]))
       (doseq [f [readyf hookf]] (fs/delete-if-exists f)))))
+
+;; Starting a child must not unblock what jolt's threads block. A handled signal
+;; still pending when a ProcessBuilder starts (a Signal/raise the watcher had not
+;; taken yet killed the no-relay row above on the Android runner) used to be
+;; delivered to the spawning thread at its default action, because the spawn
+;; emptied that thread's mask for the child's sake. pthread_kill on this thread
+;; makes the pending signal one only this thread could take, so the old window
+;; killed it every time.
+(doseq [[mode env] [["relay" {}] ["no relay" {"JOLT_NO_SIGNAL_RELAY" "1"}]]]
+  (let [prog (str "(require '[jolt.ffi :as ffi]) (import '[sun.misc Signal SignalHandler])"
+                  "(ffi/defcfn pthread-self \"pthread_self\" [] :pointer)"
+                  "(ffi/defcfn pthread-kill \"pthread_kill\" [:pointer :int] :int)"
+                  "(Signal/handle (Signal. \"USR2\") (reify SignalHandler (handle [_ s] nil)))"
+                  "(pthread-kill (pthread-self) " (signum "USR2") ")"
+                  "(.waitFor (.start (ProcessBuilder. [\"true\"])))"
+                  "(print \"alive\")")
+        r (sh [jolt-bin "-e" prog] {:extra-env env})]
+    (check-eq (str "a pending handled signal survives starting a child (" mode ")")
+              [(:exit r) (:out r)] [0 "alive"])))
 
 ;; Only the relay can give a handler TTIN, TTOU, PROF or VTALRM (blocked in
 ;; every thread, the first two change what the terminal does to a background
@@ -1194,15 +1503,15 @@
         ;; stdout into a pipe whose reader is gone: the writes get SIGPIPE
         proc (process ["sh" "-c" (str jolt-bin " -e '" (str/replace prog "'" "'\\''") "' | head -c 1 >/dev/null")]
                       {:out :string :err :string})]
-    (await-file readyf)
-    (Thread/sleep 1000)
-    (let [pid (str/trim (slurp readyf))]
-      (doseq [s ["TTIN" "PROF"]]
-        (sh ["sh" "-c" (str "kill -" s " " pid)])
-        (Thread/sleep 300))
-      (check-eq "the relay gives handlers TTIN, PROF and a write's own PIPE"
-                (set (str/split-lines (slurp logf))) #{"TTIN" "PROF" "PIPE"})
-      (sh ["sh" "-c" (str "kill -9 " pid)]))
+    (when (await-file readyf proc "relay PIPE")
+      (Thread/sleep 1000)
+      (let [pid (str/trim (slurp readyf))]
+        (doseq [s ["TTIN" "PROF"]]
+          (sh ["sh" "-c" (str "kill -" s " " pid)])
+          (Thread/sleep 300))
+        (check-eq "the relay gives handlers TTIN, PROF and a write's own PIPE"
+                  (set (str/split-lines (slurp logf))) #{"TTIN" "PROF" "PIPE"})
+        (sh ["sh" "-c" (str "kill -9 " pid)])))
     (doseq [f [readyf logf]] (fs/delete-if-exists f))))
 
 (if (empty? @failures)

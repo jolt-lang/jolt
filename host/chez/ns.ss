@@ -454,11 +454,19 @@
 ;; updates only the RUNTIME current ns — subsequent defs in the same program were
 ;; already ns-baked by the analyzer, so it does not redirect them. It is enough
 ;; for *ns* / str-of-ns to track the switch.
+;; ns-entered-hook: called by in-ns with the namespace's name. The loader
+;; (loader.ss) installs one that records which file a namespace was loaded from,
+;; so a :reload that cannot find it on the source roots can say so; ns.ss is also
+;; loaded by runtimes with no loader, where it stays a no-op.
+(define ns-entered-hook (lambda (nm) #f))
+(define (set-ns-entered-hook! f) (set! ns-entered-hook f))
+
 (define (jolt-in-ns desig)
   (let* ((nm (ns-desig->name desig)) (_ (ns-undefer! nm)) (n (intern-ns! nm)))
     ;; set the THREAD-LOCAL current ns; *ns* reads derive from it (dyn-binding.ss),
     ;; so this is per-thread — concurrent nREPL sessions don't clobber each other.
     (set-chez-ns! nm)
+    (ns-entered-hook nm)
     n))
 
 ;; ns-name: a namespace's name as a (no-ns) symbol. Overrides the overlay (which

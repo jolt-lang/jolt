@@ -154,11 +154,25 @@
 ;; predicates are not a promise: a port over a SOCKET descriptor answers #t to
 ;; both and then raises ESPIPE ("illegal seek") from port-position, so this asks
 ;; by trying rather than by asking.
+;; A custom port over a file (nio-file.ss fc-win32-port, a HANDLE on Windows)
+;; has no port-length of its own, so it registers how to ask its file's size
+;; here, the way Reader ports register a ready probe below.
+(define port-size-probes (make-weak-eq-hashtable))
+(define port-size-probes-mu (make-mutex))
+(define (port-size-probe! port size)
+  (jolt-with-mutex port-size-probes-mu (hashtable-set! port-size-probes port size))
+  port)
+;; The size of the file behind PORT, or #f when it is not a seekable file.
+(define (port-file-size port)
+  (cond ((jolt-with-mutex port-size-probes-mu (hashtable-ref port-size-probes port #f))
+         => (lambda (size) (size)))
+        ((port-has-port-length? port) (port-length port))
+        (else #f)))
 (define (port-remaining port)
   (guard (_ (#t #f))
-    (and (port-has-port-length? port)
-         (port-has-port-position? port)
-         (max 0 (- (port-length port) (port-position port))))))
+    (and (port-has-port-position? port)
+         (let ((size (port-file-size port)))
+           (and size (max 0 (- size (port-position port))))))))
 (define (in-stream-available self)
   (let ((port (in-stream-live-port self))
         (p (piped-pipe self)))
@@ -242,6 +256,20 @@
                   (set-port-position! port target))
                 (->num n))))))
 
+;; Files/newInputStream's stream is a ChannelInputStream over a seekable channel,
+;; and its skip is the channel's (JDK 21): forward no further than the end of
+;; the file, back no further than its start, answering how far it moved. #f
+;; when the stream is some other kind or its port is not a seekable file (a
+;; directory's stream), which keeps the other two ways.
+(define (in-stream-skip-on-channel! self port n)
+  (and (equal? (stream-class self) "sun.nio.ch.ChannelInputStream")
+       (let ((pos (guard (_ (#t #f)) (and (port-has-port-position? port) (port-position port))))
+             (size (guard (_ (#t #f)) (port-file-size port))))
+         (and pos size
+              (let ((to (if (> n 0) (min (+ pos n) size) (max (+ pos n) 0))))
+                (set-port-position! port to)
+                (->num (- to pos)))))))
+
 ;; InputStream.skip by reading: n <= 0 is 0, and the bytes go through a bounded
 ;; buffer, so a count past the end (Long/MAX_VALUE) stops at end of stream.
 (define (in-stream-skip-by-reading! port n)
@@ -311,7 +339,8 @@
                                          (na-byte-array (if (eof-object? bv) (make-bytevector 0) bv)))))
    (cons "skip" (lambda (self n)
                   (let ((port (in-stream-live-port self)) (n (jnum->exact n)))
-                    (or (in-stream-skip-by-seek! self port n)
+                    (or (in-stream-skip-on-channel! self port n)
+                        (in-stream-skip-by-seek! self port n)
                         (->num (in-stream-skip-by-reading! port n))))))
    (cons "available" (lambda (self) (->num (in-stream-available self))))
    ;; PushbackInputStream.unread — see the pushback section below. Any other
@@ -3288,8 +3317,29 @@
       (record-method-dispatch w "write" (jolt-list (substring s start (fx+ start count))))
       count)
     #f #f #f)))
-;; Print x to the Writer w with print (a procedure of port and value).
+;; *print-dup*, read by the print entries below and in the section further on
+(define pd-flag-cell (jolt-var "clojure.core" "*print-dup*"))
+(define (print-dup-on?) (jolt-truthy? (var-cell-deref pd-flag-cell)))
+;; Neither under *print-dup* nor inside a print that was: the plain print entries
+;; test this and nothing else. While nothing has ever bound the var and its root
+;; is false, no print can have set the thread's print-dup slot either, so the
+;; usual answer is two field reads.
+(define-syntax print-plain?
+  (syntax-rules ()
+    ((_) (if (or (var-cell-dyn-bound? pd-flag-cell)
+                 (jolt-truthy? (var-cell-root pd-flag-cell)))
+             (and (not (eq? (virtual-register jolt-vreg-print-dup) #t))
+                  (not (print-dup-on?)))
+             #t))))
+;; Print x to the Writer w with print (a procedure of port and value). Every
+;; built-in print-method writes through here, so this is where a print under
+;; *print-dup* starts sending elements to print-dup, and where one that binds it
+;; off again stops.
 (define (print-to-writer print w x)
+  (if (print-plain?)
+      (print-to-writer* print w x)
+      (with-print-dup-mode (print-dup-on?) (print-to-writer* print w x))))
+(define (print-to-writer* print w x)
   (let ((direct (writer-direct-port w)))
     (if direct
         (parameterize ((pr-sink (cons direct w))) (print direct x))
@@ -3334,12 +3384,56 @@
       (lambda () (set-virtual-register! jolt-vreg-print-readably #f))
       (jolt-masked-body (lambda () (pr-to! p x)))
       (jolt-masked-after lv (set-virtual-register! jolt-vreg-print-readably prev)))))
-(def-var! "clojure.core" "__pr-out"
-  (lambda (x) (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))) jolt-nil))
-(def-var! "clojure.core" "__print-out"
-  (lambda (x) (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))) jolt-nil))
+;; --- *print-dup* -------------------------------------------------------------
+;; With *print-dup* on, pr, print, pr-str and a collection's str hand each value to
+;; the print-dup multimethod (50-io.clj), as the JVM's pr-on does; its methods
+;; that defer to print-method reach the built-in printer, which sends the
+;; elements back (printing.ss pr-to! while the thread's print-dup slot is set).
+;; Reading the var is one flag test until something binds it.
+(define pd-mf-cell #f)
+(define (pr-dup-to! p x)
+  (unless pd-mf-cell (set! pd-mf-cell (jolt-var "clojure.core" "print-dup")))
+  (jolt-invoke (var-cell-deref pd-mf-cell) x (pr-sink-writer p)))
+(set-pr-dup-write! (lambda (x p) (pr-dup-to! p x)))
+(define (pr-dup-string x)
+  (let ((p (open-output-string)))
+    (with-print-dup-mode #t (pr-dup-to! p x))
+    (get-output-string p)))
+;; pr's write of one value under *print-dup*; print's is the same, strings and
+;; chars printing readably under print-dup either way
+(define (pr-dup-out x)
+  (with-print-dup-mode #t
+    (unless (stream-out pr-dup-to! x) (jolt-write (pr-dup-string x)))))
+
+(define (pr-out-entry x)
+  (cond ((print-plain?) (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))))
+        ((print-dup-on?) (pr-dup-out x))
+        (else (with-print-dup-mode #f
+                (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))))))
+  jolt-nil)
+(define (print-out-entry x)
+  (cond ((print-plain?) (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))))
+        ((print-dup-on?) (pr-dup-out x))
+        (else (with-print-dup-mode #f
+                (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))))))
+  jolt-nil)
+(define (pr-str1-entry x)
+  (cond ((print-plain?) (jolt-pr-str1 x))
+        ((print-dup-on?) (pr-dup-string x))
+        (else (with-print-dup-mode #f (jolt-pr-str1 x)))))
+(def-var! "clojure.core" "__pr-out" pr-out-entry)
+(def-var! "clojure.core" "__print-out" print-out-entry)
+(def-var! "clojure.core" "__pr-str1" pr-str1-entry)
+;; print-method's :default prints x itself; its elements follow *print-dup*
 (def-var! "clojure.core" "__pr-to"
-  (lambda (x w) (print-to-writer pr-to! w x) jolt-nil))
+  (lambda (x w) (print-to-writer pr-plain-to! w x) jolt-nil))
+;; A collection's toString is RT.printString, which prints through pr-on, so str
+;; of one under *print-dup* is its print-dup form (converters.ss jolt-str-one).
+(set-str-coll-render!
+  (lambda (v)
+    (cond ((print-plain?) (jolt-pr-readable v))
+          ((print-dup-on?) (pr-dup-string v))
+          (else (with-print-dup-mode #f (jolt-pr-readable v))))))
 
 ;; --- print-method: the built-in printers and the user-method hook ----------------
 ;; On the JVM print-method IS the printer: a multimethod on (type x) whose table
@@ -3392,6 +3486,17 @@
         ((equal? key (keyword "clojure.core" "Vec")) '(vec))
         ((equal? key (keyword "clojure.core" "VecSeq")) '(seq))
         (else #f)))
+;; core_print.clj's print-object, as the java.util methods write a value under
+;; print: #object[Class 0xhash toString], where a Clojure collection's toString
+;; is its print form. (Its metadata would print first only readably.)
+(define (pm-print-object-to! p x)
+  (put-string p "#object[")
+  (put-string p (jolt-class-name x))
+  (put-string p " 0x")
+  (put-string p (jolt-identity-hex x))
+  (put-string p " ")
+  (pr-own-to! p x)
+  (put-string p "]"))
 (define (make-pm-builtin key)
   (let* ((shape (pm-builtin-shape key))
          (f (cond
@@ -3409,7 +3514,7 @@
                      (lambda (p x)
                        (if (jolt-pr-readable?)
                            (pr-shape-to! s p x)
-                           (put-string p (jolt-object-repr x #t))))
+                           (pm-print-object-to! p x)))
                      w x)
                    jolt-nil))))))
     (hashtable-set! pm-builtins f #t)

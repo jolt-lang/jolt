@@ -14,7 +14,7 @@
 
 (let ((e (emit (anode "(def ^{:t (fn [n] (clojure.core/str n \"\"))} x (fn [n] (clojure.core/str n \"\")))"))))
 ;; str at two arguments throughout: at one it is open-coded on Chez (rt.ss
-;; jolt-str1/i) and makes no var reference.
+;; jolt-str1/i) around a var read whose shape differs.
 ;; a call through the cell is open-coded as (jolt-var-fn cell) (backend
 ;; emit-open-call); a plain reference reads (var-cell-deref cell)
   (gate-check "the init's var ref is cell-cached"

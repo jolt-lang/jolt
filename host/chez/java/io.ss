@@ -762,7 +762,15 @@
           ((char=? (string-ref p i) #\/) (substring p (+ i 1) (string-length p)))
           (else (loop (- i 1))))))
 
-;; directory children, sorted (the __list-dir seed primitive). The children keep
+;; A directory's entry names in the order the OS hands them out: readdir on
+;; POSIX, FindNextFileW on Windows. That is the order the JDK lists in
+;; (File.list, newDirectoryStream, walkFileTree), and it is unspecified: a caller
+;; that needs an order sorts. Chez's directory-list conses each name onto the
+;; front as it reads, on both (c/io.c S_directory_list, S_find_files), so its
+;; answer is that order reversed.
+(define (os-directory-list p) (reverse (directory-list p)))
+
+;; directory children in the OS's order (the __list-dir seed primitive). The children keep
 ;; the FORM OF THE PARENT, like File.listFiles(), which builds each child as
 ;; new File(this, name): listing a relative directory yields relative children.
 ;; Resolving the base to an absolute path first made every child absolute, so a
@@ -779,7 +787,7 @@
                         (substring given 0 n))))
          (base (if (string=? trimmed "") p trimmed)))
     (map (lambda (e) (string-append (if (string=? base "/") "" base) "/" e))
-         (sort string<? (directory-list p)))))
+         (os-directory-list p))))
 (define (jolt-dir? path) (if (file-directory? (project-relative (file-path-of path))) #t #f))
 
 ;; absolute path string: a relative path resolves against user.dir — the same
@@ -1293,6 +1301,25 @@
   (let ((w (win32-wstr s)))
     (dynamic-wind (lambda () #f) (lambda () (proc w)) (lambda () (sa-foreign-free w)))))
 
+;; The executable this process is running, asked of Windows (GetModuleFileNameW),
+;; or #f off Windows or when it cannot say. argv[0] is no substitute: it is the
+;; name as typed, or the script under `scheme --script`. The loader's
+;; aot-self-exe and the FFI's DLL search directory both read it.
+(define-win32-proc win32-get-module-file-name-w
+  "kernel32.dll" "GetModuleFileNameW" (void* u8* unsigned-32) unsigned-32)
+
+(define (win32-exe-path)
+  (let ((f (win32-get-module-file-name-w)))
+    (and f
+         (guard (e (#t #f))
+           (let* ((cap 32768)
+                  (bv (make-bytevector (* 2 cap) 0))
+                  (n (f 0 bv cap)))
+             (and (> n 0) (< n cap)
+                  (let ((out (make-bytevector (* 2 n))))
+                    (bytevector-copy! bv 0 out 0 (* 2 n))
+                    (utf16->string out (endianness little)))))))))
+
 (define win32-INVALID-FILE-ATTRIBUTES #xFFFFFFFF)
 (define win32-FILE-ATTRIBUTE-HIDDEN   #x2)
 (define win32-FILE-ATTRIBUTE-DIRECTORY #x10)
@@ -1439,24 +1466,30 @@
   (filetime->unix-ns
    (+ (bytevector-u32-ref buf off (endianness little))
       (* (bytevector-u32-ref buf (+ off 4) (endianness little)) #x100000000))))
-(define (win32-file-times path follow?)
+;; PATH's WIN32_FILE_ATTRIBUTE_DATA (GetFileExInfoStandard): the attribute bits,
+;; the three FILETIMEs and the size in one call, or #f when it cannot be read.
+(define (win32-file-attribute-data path)
   (let ((f (win32-get-file-attributes-ex-w)))
     (and f
          (let ((buf (make-bytevector 36 0)))
            (and (win32-with-wstr path
-                  (lambda (w) (guard (e (#t #f)) (not (= 0 (f w 0 buf))))))  ; GetFileExInfoStandard
-                (if (win32-times-need-handle? (bytevector-u32-ref buf 0 (endianness little)) follow?)
-                    (let ((get-time (win32-get-file-time)))
-                      (and get-time
-                           (win32-with-attr-handle path win32-FILE-READ-ATTRIBUTES #t
-                             (lambda (h)
-                               (let ((c (make-bytevector 8 0)) (a (make-bytevector 8 0))
-                                     (m (make-bytevector 8 0)))
-                                 (and (not (= 0 (get-time h c a m)))
-                                      (vector (win32-filetime-at c 0) (win32-filetime-at a 0)
-                                              (win32-filetime-at m 0))))))))
-                    (vector (win32-filetime-at buf 4) (win32-filetime-at buf 12)
-                            (win32-filetime-at buf 20))))))))
+                  (lambda (w) (guard (e (#t #f)) (not (= 0 (f w 0 buf))))))
+                buf)))))
+(define (win32-file-times path follow?)
+  (let ((buf (win32-file-attribute-data path)))
+    (and buf
+         (if (win32-times-need-handle? (bytevector-u32-ref buf 0 (endianness little)) follow?)
+             (let ((get-time (win32-get-file-time)))
+               (and get-time
+                    (win32-with-attr-handle path win32-FILE-READ-ATTRIBUTES #t
+                      (lambda (h)
+                        (let ((c (make-bytevector 8 0)) (a (make-bytevector 8 0))
+                              (m (make-bytevector 8 0)))
+                          (and (not (= 0 (get-time h c a m)))
+                               (vector (win32-filetime-at c 0) (win32-filetime-at a 0)
+                                       (win32-filetime-at m 0))))))))
+             (vector (win32-filetime-at buf 4) (win32-filetime-at buf 12)
+                     (win32-filetime-at buf 20))))))
 
 ;; The ROOT of P — the prefix that is not a segment and must be reproduced
 ;; verbatim — and the index the segments start at. Rendered with "/" separators,
@@ -2324,7 +2357,7 @@
                                                            "java.io.File")))))
       ;; .list -> the child NAMES (a String[]), nil if not a readable directory.
       ((string=? name "list")
-       (list (jfile-listing fp (lambda () (jolt-ref-array (sort string<? (directory-list fp))
+       (list (jfile-listing fp (lambda () (jolt-ref-array (os-directory-list fp)
                                                            "java.lang.String")))))
       ((string=? name "length")         (list (->num (file-byte-size fp))))
       ((string=? name "lastModified")   (list (->num (file-mtime-millis fp))))
@@ -3264,7 +3297,10 @@
 
 ;; --- with-open's close seam (__close): a map-like value closes via its :close
 ;; fn; a jhost reader/writer/file via its .close method (a no-op here); anything
-;; else is an error.
+;; else is an error. The :close keyword is interned once here: with-open closes
+;; through this on every exit, and interning it per call (a string hash and an
+;; intern-table probe) was a measurable share of a short-lived ffi arena.
+(define io-kw-close (keyword #f "close"))
 (define (jolt-close x)
   (cond
     ((jolt-nil? x) jolt-nil)
@@ -3286,7 +3322,7 @@
     ((iface-method x "close" #f)
      (record-method-dispatch x "close" jolt-nil) jolt-nil)
     (else
-     (let ((closef (jolt-get x (keyword #f "close") jolt-nil)))
+     (let ((closef (jolt-get x io-kw-close jolt-nil)))
        (if (and (not (jolt-nil? closef)) (procedure? closef))
            (begin (jolt-invoke closef) jolt-nil)
            (throw-jvm (quote IllegalArgumentException) "with-open: no .close method on value"))))))
