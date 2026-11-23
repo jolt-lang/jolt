@@ -5358,9 +5358,11 @@
 ;; Without the patched kernel (a stock Chez) there is no way to end the call, so
 ;; jolt-offload-available? answers #f and the caller keeps its own fallback.
 ;;
-;; An op is #(mu cv done? result cancel? thread): THREAD is the helper's
-;; pthread_t or Windows thread HANDLE while it can still be signalled, set and
-;; cleared under mu, so a signal never reaches a thread that has moved on.
+;; An op is #(mu cv done? result cancel? thread abandoned? after): THREAD is the
+;; helper's pthread_t or Windows thread HANDLE while it can still be signalled,
+;; set and cleared under mu, so a signal never reaches a thread that has moved
+;; on. ABANDONED is set when a cancel gave up (Windows, below); AFTER is what the
+;; helper runs once its call has returned (jolt-offload-handoff!).
 (define jolt-thread-interrupt-signal
   (case (sa-os-family) ((linux) 62) ((macos) 23) (else #f)))
 (define jsig-interrupt-init
@@ -5415,27 +5417,37 @@
 ;; after an interrupted return, and answers the result. A raise is kept and
 ;; re-raised in the waiter.
 (define (jolt-offload-start! body)
-  (let ((op (vector (make-mutex) (jolt-make-cv) #f #f #f #f)))
+  (let ((op (vector (make-mutex) (jolt-make-cv) #f #f #f #f #f #f)))
     (fork-thread-dormant
       (lambda ()
         (let ((me (jolt-offload-self)))
           (jolt-with-mutex (vector-ref op 0) (vector-set! op 5 me))
-          (let ((r (guard (e (#t (cons jolt-offload-start! e))) (body op))))
-            (jolt-with-mutex (vector-ref op 0)
-              (vector-set! op 3 r)
-              (vector-set! op 2 #t)
-              (vector-set! op 5 #f)
-              (jolt-cv-wake! (vector-ref op 1)))
-            (when (win32?) ((win32-close-handle) me))))))
+          (let* ((r (guard (e (#t (cons jolt-offload-start! e))) (body op)))
+                 (after (jolt-with-mutex (vector-ref op 0)
+                          (vector-set! op 3 r)
+                          (vector-set! op 2 #t)
+                          (vector-set! op 5 #f)
+                          (jolt-cv-wake! (vector-ref op 1))
+                          (vector-ref op 7))))
+            (when (win32?) ((win32-close-handle) me))
+            (when after (guard (e (#t #f)) (after)))))))
     op))
+;; (jolt-offload-handoff! op thunk) — run THUNK once the helper's call has
+;; returned: now if it has, else on the helper as it finishes. For what has to
+;; wait for the call to give its resource back (a HANDLE a cancel could not
+;; free, below).
+(define (jolt-offload-handoff! op thunk)
+  (when (jolt-with-mutex (vector-ref op 0)
+          (or (vector-ref op 2) (begin (vector-set! op 7 thunk) #f)))
+    (thunk)))
 (define (jolt-offload-cancelled? op) (vector-ref op 4))
-(define (jolt-offload-done? op) (vector-ref op 2))
 (define (jolt-offload-result op)
   (let ((r (vector-ref op 3)))
     (if (and (pair? r) (eq? (car r) jolt-offload-start!)) (raise (cdr r)) r)))
-;; (jolt-offload-await op ibox) -> 'done once the call has returned, or
-;; 'interrupted when IBOX's flag is set first (left set; the caller decides what
-;; an interrupt means). A fiber parks.
+;; (jolt-offload-await op ibox) -> 'done once the call has returned,
+;; 'abandoned when a cancel gave up on it, or 'interrupted when IBOX's flag is
+;; set first (left set; the caller decides what an interrupt means). A fiber
+;; parks.
 (define (jolt-offload-await op ibox)
   (let ((mu (vector-ref op 0)) (cv (vector-ref op 1)))
     (let ((entry (cons mu cv)))
@@ -5445,6 +5457,7 @@
       (let ((r (guard (e (#t (jolt-interrupt-wait-remove! ibox entry) (raise e)))
                  (jolt-cv-wait mu cv #f
                    (lambda (_) (cond ((vector-ref op 2) 'done)
+                                     ((vector-ref op 6) 'abandoned)
                                      ((unbox ibox) 'interrupted)
                                      (else jolt-cv-again)))))))
         (jolt-interrupt-wait-remove! ibox entry)
@@ -5453,10 +5466,11 @@
 ;; #t then. On POSIX the signal always ends it, so this waits as long as it
 ;; takes. On Windows CancelSynchronousIo is tried for a while (about 200 ms) and
 ;; then given up on with #f: not every Windows ends a synchronous lock that way
-;; (Wine never does), and the caller is about to close the HANDLE, which does
-;; end it (the last handle's cleanup completes its waiting lock requests). The
-;; helper's answer is dropped then, and it never touches the HANDLE again: it
-;; reads the cancel flag before every retry.
+;; (Wine never does). The op is marked abandoned, which ends its waiter's wait,
+;; and the caller hands what still needs the call to be over (closing the
+;; HANDLE, which would block behind the pending call on a synchronous handle) to
+;; jolt-offload-handoff!. The helper never touches the HANDLE again on its own:
+;; it reads the cancel flag before every retry.
 (define (jolt-offload-cancel! op)
   (let ((mu (vector-ref op 0)) (cv (vector-ref op 1)))
     (let loop ((rounds (if (win32?) 40 -1)))
@@ -5465,7 +5479,9 @@
                (or (vector-ref op 2)
                    (begin (let ((t (vector-ref op 5))) (when t (jolt-offload-poke t))) #f)))
              #t)
-            ((= rounds 0) #f)
+            ((= rounds 0)
+             (jolt-with-mutex mu (vector-set! op 6 #t) (jolt-cv-wake! cv))
+             #f)
             (else
              (jolt-cv-wait mu cv (mono-deadline 5)
                (lambda (timed-out?) (if (or timed-out? (vector-ref op 2)) #t jolt-cv-again)))

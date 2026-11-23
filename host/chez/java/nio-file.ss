@@ -2734,21 +2734,26 @@
                  op))))
     (define (forget!)
       (jolt-with-mutex (fc-mutex self) (fc-waits-set! self (remq op (fc-waits self)))))
-    ;; any way out of the wait but its own return (an interrupt, or a raise such
-    ;; as a fiber's interrupt payload) ends the kernel call first
-    (let ((how (guard (e (#t (jolt-offload-cancel! op) (forget!) (raise e)))
+    (define (closed-under-us)
+      (if (jolt-interrupted? ibox)
+          (interrupted!)
+          (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil)))
+    ;; any way out of the wait but its own return or an interrupt (a raise, such
+    ;; as a fiber's interrupt payload) ends the kernel call first; one that cannot
+    ;; be ended goes with the channel
+    (let ((how (guard (e (#t (unless (jolt-offload-cancel! op) (fc-close! self)) (forget!) (raise e)))
                  (jolt-offload-await op ibox))))
-      (when (eq? how 'interrupted) (jolt-offload-cancel! op))
-      (forget!)
-      ;; a wait given up on (Windows, jolt-offload-cancel!) has no answer yet
-      (let ((r (if (jolt-offload-done? op) (jolt-offload-result op) 'cancelled)))
-        (cond ((eq? how 'interrupted) (interrupted!))   ; a lock granted meanwhile goes with the close
-              ((eq? r 'granted) l)
-              ((eq? r 'cancelled)
-               (if (jolt-interrupted? ibox)
-                   (interrupted!)
-                   (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil)))
-              (else (throw-jvm 'IOException ((vector-ref ops 11) r))))))))
+      (case how
+        ;; the close ends the wait (it is still on the channel's list), and a lock
+        ;; granted meanwhile goes with it
+        ((interrupted) (interrupted!))
+        ((abandoned) (forget!) (closed-under-us))
+        (else
+         (forget!)
+         (let ((r (jolt-offload-result op)))
+           (cond ((eq? r 'granted) l)
+                 ((eq? r 'cancelled) (closed-under-us))
+                 (else (throw-jvm 'IOException ((vector-ref ops 11) r))))))))))
 (define (fl-release! l)
   (let ((ch (fl-channel l)))
     (jolt-with-mutex (fc-mutex ch)
@@ -2796,8 +2801,23 @@
                         (let ((w (fc-waits self)))
                           (if (null? w) (begin (release-and-close!) #f) w)))))))
     (when waits
-      (for-each jolt-offload-cancel! waits)
-      (jolt-with-mutex (fc-mutex self) (release-and-close!))))
+      (let ((stuck (filter (lambda (op) (not (jolt-offload-cancel! op))) waits)))
+        (jolt-with-mutex (fc-mutex self)
+          (if (null? stuck)
+              (release-and-close!)
+              ;; a wait that would not end (Windows): every call on its HANDLE
+              ;; would queue behind it, the unlocks and the close included, so the
+              ;; locks leave the table now and the HANDLE is closed, which drops
+              ;; them in the kernel, by whichever stuck helper finishes last
+              (let ((left (length stuck)) (mu (make-mutex)) (native (fc-native-of self)))
+                (for-each (lambda (l) (fl-invalidate! l) (nio-file-locks-remove! l))
+                          (nio-file-locks-of self))
+                (for-each (lambda (op)
+                            (jolt-offload-handoff! op
+                              (lambda ()
+                                (when (jolt-with-mutex mu (set! left (- left 1)) (= left 0))
+                                  (fc-native-close! native)))))
+                          stuck)))))))
   jolt-nil)
 (define (fc-size self)
   (fc-ensure-open! self)
