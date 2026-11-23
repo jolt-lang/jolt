@@ -5364,6 +5364,157 @@
           (restore)
           (apply values vals)))))
 
+;; --- a blocking call on a helper thread, ended by interrupt or close ---------
+;; A kernel wait that a JVM thread makes in place (FileChannel.lock's F_SETLKW,
+;; a blocking LockFileEx) would pin a fiber's carrier here, and nothing could end
+;; it when the waiter is interrupted or its channel closed. So the call runs on a
+;; thread of its own, the way process.ss's output pumps do (proc-pump): the
+;; caller waits on a condition the helper wakes when the call returns, which
+;; parks a fiber and blocks a thread, and an interrupt reaches that wait through
+;; the interrupt registry like any other (locks.ss). The helper runs no jolt
+;; code, so it forks dormant (lazy-bridge.ss).
+;;
+;; Ending the call is the JDK's NativeThread.signal: on POSIX the helper is sent
+;; a signal whose handler does nothing and is installed without SA_RESTART, so
+;; the call returns EINTR (chez-patches/0011; the signal relay installs with
+;; SA_RESTART, which would restart it). Linux uses SIGRTMAX-2 and macOS SIGIO,
+;; the JDK's choices. On Windows the helper's synchronous call is cancelled with
+;; CancelSynchronousIo. A cancel is only a request: the helper may be between
+;; its check and the call when the signal lands, so the canceller repeats it
+;; until the helper says it is done, as NativeThreadSet.signalAndWait does.
+;;
+;; Without the patched kernel (a stock Chez) there is no way to end the call, so
+;; jolt-offload-available? answers #f and the caller keeps its own fallback.
+;;
+;; An op is #(mu cv done? result cancel? thread abandoned? after): THREAD is the
+;; helper's pthread_t or Windows thread HANDLE while it can still be signalled,
+;; set and cleared under mu, so a signal never reaches a thread that has moved
+;; on. ABANDONED is set when a cancel gave up (Windows, below); AFTER is what the
+;; helper runs once its call has returned (jolt-offload-handoff!).
+(define jolt-thread-interrupt-signal
+  (case (sa-os-family) ((linux) 62) ((macos) 23) (else #f)))
+(define jsig-interrupt-init
+  (jolt-foreign-proc-safe "(cs)jolt_signal_interrupt_init" '(int) 'int))
+(define c-pthread-self (jolt-foreign-proc-safe "pthread_self" '() 'uptr))
+(define c-pthread-kill (jolt-foreign-proc-safe "pthread_kill" '(uptr int) 'int))
+(define-win32-proc win32-get-current-thread-id
+  "kernel32.dll" "GetCurrentThreadId" () unsigned-32)
+(define-win32-proc win32-open-thread
+  "kernel32.dll" "OpenThread" (unsigned-32 int unsigned-32) iptr)
+(define-win32-proc win32-cancel-synchronous-io
+  "kernel32.dll" "CancelSynchronousIo" (iptr) int)
+(define win32-THREAD-TERMINATE 1)          ; the right CancelSynchronousIo needs
+;; The handler is installed once, the first time it is needed; the answer is
+;; remembered with the mark in one store (define-win32-memo's reason).
+(define jolt-offload-ready 'unresolved)
+(define jolt-offload-ready-mu (make-mutex))
+(define jolt-offload-signal-set #f)
+(define (jolt-offload-available?)
+  (when (eq? jolt-offload-ready 'unresolved)
+    (jolt-with-mutex jolt-offload-ready-mu
+      (when (eq? jolt-offload-ready 'unresolved)
+        (set! jolt-offload-ready
+              (if (win32?)
+                  (and (win32-get-current-thread-id) (win32-open-thread)
+                       (win32-cancel-synchronous-io) (win32-close-handle) #t)
+                  (and jolt-thread-interrupt-signal jsig-interrupt-init
+                       c-pthread-self c-pthread-kill jolt-sigmask-ok?
+                       (= 0 (jsig-interrupt-init jolt-thread-interrupt-signal))
+                       (begin
+                         (set! jolt-offload-signal-set
+                               (jolt-make-sigset (list jolt-thread-interrupt-signal)))
+                         #t)))))))
+  jolt-offload-ready)
+;; The helper's own identity, for the canceller: the signal unblocked first (a
+;; thread jolt forks is born with the watcher's signals blocked, and SIGIO is
+;; one of them on macOS), then pthread_self. On Windows a HANDLE to itself with
+;; the right to cancel its I/O, closed when it is done.
+(define (jolt-offload-self)
+  (if (win32?)
+      ((win32-open-thread) win32-THREAD-TERMINATE 0 ((win32-get-current-thread-id)))
+      (begin
+        (c-pthread-sigmask jolt-sig-unblock-how jolt-offload-signal-set 0)
+        (c-pthread-self))))
+(define (jolt-offload-poke t)
+  (if (win32?)
+      ((win32-cancel-synchronous-io) t)
+      (c-pthread-kill t jolt-thread-interrupt-signal)))
+
+;; (jolt-offload-start! body) -> op. BODY gets the op and runs on the helper; it
+;; makes the blocking call, checks (jolt-offload-cancelled? op) before it and
+;; after an interrupted return, and answers the result. A raise is kept and
+;; re-raised in the waiter.
+(define (jolt-offload-start! body)
+  (let ((op (vector (make-mutex) (jolt-make-cv) #f #f #f #f #f #f)))
+    (fork-thread-dormant
+      (lambda ()
+        (let ((me (jolt-offload-self)))
+          (jolt-with-mutex (vector-ref op 0) (vector-set! op 5 me))
+          (let* ((r (guard (e (#t (cons jolt-offload-start! e))) (body op)))
+                 (after (jolt-with-mutex (vector-ref op 0)
+                          (vector-set! op 3 r)
+                          (vector-set! op 2 #t)
+                          (vector-set! op 5 #f)
+                          (jolt-cv-wake! (vector-ref op 1))
+                          (vector-ref op 7))))
+            (when (win32?) ((win32-close-handle) me))
+            (when after (guard (e (#t #f)) (after)))))))
+    op))
+;; (jolt-offload-handoff! op thunk) — run THUNK once the helper's call has
+;; returned: now if it has, else on the helper as it finishes. For what has to
+;; wait for the call to give its resource back (a HANDLE a cancel could not
+;; free, below).
+(define (jolt-offload-handoff! op thunk)
+  (when (jolt-with-mutex (vector-ref op 0)
+          (or (vector-ref op 2) (begin (vector-set! op 7 thunk) #f)))
+    (thunk)))
+(define (jolt-offload-cancelled? op) (vector-ref op 4))
+(define (jolt-offload-result op)
+  (let ((r (vector-ref op 3)))
+    (if (and (pair? r) (eq? (car r) jolt-offload-start!)) (raise (cdr r)) r)))
+;; (jolt-offload-await op ibox) -> 'done once the call has returned,
+;; 'abandoned when a cancel gave up on it, or 'interrupted when IBOX's flag is
+;; set first (left set; the caller decides what an interrupt means). A fiber
+;; parks.
+(define (jolt-offload-await op ibox)
+  (let ((mu (vector-ref op 0)) (cv (vector-ref op 1)))
+    (let ((entry (cons mu cv)))
+      (jolt-interrupt-wait-add! ibox entry)
+      ;; not dynamic-wind: a fiber's park leaves through the winders, which would
+      ;; take the registration away while it waits
+      (let ((r (guard (e (#t (jolt-interrupt-wait-remove! ibox entry) (raise e)))
+                 (jolt-cv-wait mu cv #f
+                   (lambda (_) (cond ((vector-ref op 2) 'done)
+                                     ((vector-ref op 6) 'abandoned)
+                                     ((unbox ibox) 'interrupted)
+                                     (else jolt-cv-again)))))))
+        (jolt-interrupt-wait-remove! ibox entry)
+        r))))
+;; (jolt-offload-cancel! op) — end the call and wait until the helper is done:
+;; #t then. On POSIX the signal always ends it, so this waits as long as it
+;; takes. On Windows CancelSynchronousIo is tried for a while (about 200 ms) and
+;; then given up on with #f: not every Windows ends a synchronous lock that way
+;; (Wine never does). The op is marked abandoned, which ends its waiter's wait,
+;; and the caller hands what still needs the call to be over (closing the
+;; HANDLE, which would block behind the pending call on a synchronous handle) to
+;; jolt-offload-handoff!. The helper never touches the HANDLE again on its own:
+;; it reads the cancel flag before every retry.
+(define (jolt-offload-cancel! op)
+  (let ((mu (vector-ref op 0)) (cv (vector-ref op 1)))
+    (let loop ((rounds (if (win32?) 40 -1)))
+      (cond ((jolt-with-mutex mu
+               (vector-set! op 4 #t)
+               (or (vector-ref op 2)
+                   (begin (let ((t (vector-ref op 5))) (when t (jolt-offload-poke t))) #f)))
+             #t)
+            ((= rounds 0)
+             (jolt-with-mutex mu (vector-set! op 6 #t) (jolt-cv-wake! cv))
+             #f)
+            (else
+             (jolt-cv-wait mu cv (mono-deadline 5)
+               (lambda (timed-out?) (if (or timed-out? (vector-ref op 2)) #t jolt-cv-again)))
+             (loop (- rounds 1)))))))
+
 ;; Per-thread SIGINT mask. A worker thread parked in a foreign call (the nREPL
 ;; accept loop in c-accept, or a conn handler) can't run Chez's keyboard-interrupt
 ;; handler on ^C, so if SIGINT is delivered there the process hangs — which the
