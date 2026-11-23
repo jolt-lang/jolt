@@ -90,8 +90,19 @@
 (define-width-op hash-fx*   #3%fx*   *)
 ;; A product reduced modulo the fixnum width (61 bits on a 64-bit Chez). Only its
 ;; low 32 bits are ever kept, and those are exact: 2^32 divides 2^61, so wrapping
-;; at the fixnum width cannot disturb them. The narrow arm is exact arithmetic.
-(define-width-op hash-fx*/wrap #3%fx*/wraparound *)
+;; at the fixnum width cannot disturb them. The narrow arm is exact arithmetic,
+;; split so that a 32-bit operand is only ever multiplied by a 16-bit one: a
+;; cross-compiled tpb32b build got some 32x32-bit bignum products wrong, which
+;; changed every string and keyword hash there.
+(define-syntax mul-low32/split
+  (syntax-rules ()
+    ((_ a b)
+     (let ((a* a) (b* b))
+       (+ (bitwise-arithmetic-shift-left
+            (bitwise-and (* a* (bitwise-and (bitwise-arithmetic-shift-right b* 16) #xFFFF)) #xFFFF)
+            16)
+          (* a* (bitwise-and b* #xFFFF)))))))
+(define-width-op hash-fx*/wrap #3%fx*/wraparound mul-low32/split)
 (define-width-op hash-fxand #3%fxand bitwise-and)
 (define-width-op hash-fxior #3%fxior bitwise-ior)
 (define-width-op hash-fxxor #3%fxxor bitwise-xor)
