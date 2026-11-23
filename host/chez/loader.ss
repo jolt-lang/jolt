@@ -3818,12 +3818,13 @@
     (let ((p (host-user-path p)))
       (if (file-exists? p) (sa-file-mtime-ms p) 0))))
 ;; directory entries (names only), nil when p is not a directory — the pieces a
-;; `find` walk is built from on the Clojure side.
+;; `find` walk is built from on the Clojure side. In the OS's order, as `find`
+;; walks (Chez's directory-list answers it reversed).
 (def-var! "jolt.host" "list-dir"
   (lambda (p)
     (let ((p (host-user-path p)))
       (if (file-directory? p)
-          (guard (e (#t jolt-nil)) (list->cseq (directory-list p)))
+          (guard (e (#t jolt-nil)) (list->cseq (reverse (directory-list p))))
           jolt-nil))))
 ;; …and whether it is a symlink, so that walk can decline to follow one, as
 ;; `find` does by default.

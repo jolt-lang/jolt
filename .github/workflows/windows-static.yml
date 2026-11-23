@@ -13,6 +13,7 @@ name: windows-static
 #   #1208  Socket half-close over Winsock                  (winparity)
 #   #1810  FileChannel locks between processes (LockFileEx), file-lock smoke
 #          Files stream/channel opens with DELETE_ON_CLOSE, delete-on-close smoke
+#          the dos:, acl: and user: views, and FindFirstFileW's directory order
 #
 # The first run of a new workflow file comes from a push: workflow_dispatch only
 # lists workflows that exist on the default branch.
@@ -28,6 +29,7 @@ on:
       - 'host/chez/java/process.ss'
       - 'test/chez/aot-worker-cleanup-smoke.sh'
       - 'test/chez/file-lock-smoke.sh'
+      - 'test/chez/nio-views-smoke.clj'
       - 'test/chez/delete-on-close-smoke.clj'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
@@ -50,6 +52,7 @@ on:
       - 'host/chez/java/process.ss'
       - 'test/chez/aot-worker-cleanup-smoke.sh'
       - 'test/chez/file-lock-smoke.sh'
+      - 'test/chez/nio-views-smoke.clj'
       - 'test/chez/delete-on-close-smoke.clj'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
@@ -192,6 +195,15 @@ jobs:
       - name: FileChannel locks between processes
         if: ${{ !cancelled() }}
         run: JOLT_BIN=target/release/jolt.exe sh test/chez/file-lock-smoke.sh
+
+      # java.nio.file's Windows views through jolt.exe: dos (Get/SetFileAttributesW,
+      # checked against attrib), acl (the DACL and owner, against icacls), user
+      # (alternate data streams, against dir /r), and the directory order
+      # FindFirstFileW hands out (against dir /b). Wine has no streams or ACLs
+      # to speak of, so this run is the evidence for them.
+      - name: nio attribute views and directory order
+        if: ${{ !cancelled() }}
+        run: target/release/jolt.exe test/chez/nio-views-smoke.clj
 
       # Files/newInputStream, newOutputStream and newByteChannel with
       # DELETE_ON_CLOSE: a HANDLE opened with FILE_FLAG_DELETE_ON_CLOSE, read and
