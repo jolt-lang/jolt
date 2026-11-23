@@ -2023,7 +2023,9 @@
 ;; file (CREATE + WRITE) inside with-open; nothing reads or writes through it.
 ;; The channel holds the file open for its lifetime, on a descriptor (POSIX) or a
 ;; HANDLE (Windows), which is what its locks are taken on.
-;; State: #(path native open? readable? writable? file-id mutex)
+;; State: #(path native open? readable? writable? file-id mutex waits)
+;; WAITS are the lock() kernel waits in flight on helper threads, which a close
+;; ends before it closes the descriptor they are waiting on.
 ;; NATIVE is the descriptor or HANDLE, an integer the platform's ops below know
 ;; how to lock and close. The mutex orders close against the lock calls: each
 ;; lock call runs with it held and the channel seen open, so a close on another
@@ -2035,6 +2037,8 @@
 (define (fc-writable? self) (vector-ref (jhost-state self) 4))
 (define (fc-file-id self) (vector-ref (jhost-state self) 5))
 (define (fc-mutex self) (vector-ref (jhost-state self) 6))
+(define (fc-waits self) (vector-ref (jhost-state self) 7))
+(define (fc-waits-set! self w) (vector-set! (jhost-state self) 7 w))
 (let ((fc-statics
        (list (cons "open" (lambda (path . opts)
                             (if (nio-path? path)
@@ -2163,15 +2167,21 @@
 ;; channel, is OverlappingFileLockException rather than a second kernel lock.
 ;;
 ;; struct flock and the constants, measured as the open flags above:
-;;   #(sizeof l_start@ l_len@ l_type@ l_whence@ F_SETLK F_RDLCK F_WRLCK F_UNLCK EAGAIN)
+;;   #(sizeof l_start@ l_len@ l_type@ l_whence@ F_SETLK F_RDLCK F_WRLCK F_UNLCK EAGAIN F_SETLKW)
 ;; EACCES (13) and EINTR (4) are the same on all of them. Bionic arm64 is glibc
 ;; arm64's layout (both are the kernel's asm-generic struct). A function rather
 ;; than a constant so a saved image never carries the build host's answer.
 (define (nio-flock-layout)
   (case (sa-os-family)
-    ((macos) '#(24 0 8 20 22 8 1 3 2 35))
-    ((linux) (and (memq (sa-arch) '(x86-64 arm64)) '#(32 8 16 0 2 6 0 1 2 11)))
+    ((macos) '#(24 0 8 20 22 8 1 3 2 35 9))
+    ((linux) (and (memq (sa-arch) '(x86-64 arm64)) '#(32 8 16 0 2 6 0 1 2 11 7)))
     (else #f)))
+;; F_SETLKW, the waiting lock, is the same call made __collect_safe, so the
+;; collector runs while it waits: it runs on a helper thread (fc-posix-lock-wait)
+;; with the struct in foreign memory, where a collection cannot move it.
+(define c-fcntl-flock-wait
+  (and (not (nio-windows?))
+       (jolt-foreign-proc-safe __collect_safe (__varargs_after 2) "fcntl" '(int int void*) 'int)))
 (define c-fcntl-flock
   (and (not (nio-windows?))
        (jolt-foreign-proc-safe (__varargs_after 2) "fcntl" '(int int u8*) 'int)))
@@ -2195,6 +2205,29 @@
               ((or (= err (vector-ref lay 9)) (= err 13)) #f)
               (else (throw-jvm 'IOException (if c-strerror (c-strerror err) "fcntl failed"))))))))
 (define (fc-posix-can-lock?) (and c-fcntl-flock (nio-flock-layout) #t))
+;; lock(): one F_SETLKW on the helper thread OP runs on (concurrency.ss
+;; jolt-offload-start!). 'granted, 'cancelled when the waiter gave up (an
+;; interrupt, a close) and its signal ended the wait, or the errno.
+(define (fc-posix-lock-wait fd kind start size op)
+  (let* ((lay (nio-flock-layout))
+         (p (sa-foreign-alloc (vector-ref lay 0))))
+    (do ((i 0 (+ i 1))) ((= i (vector-ref lay 0))) (sa-foreign-set! 'unsigned-8 p i 0))
+    (sa-foreign-set! 'integer-64 p (vector-ref lay 1) start)
+    (sa-foreign-set! 'integer-64 p (vector-ref lay 2) (if (= size #x7FFFFFFFFFFFFFFF) 0 size))
+    (sa-foreign-set! 'integer-16 p (vector-ref lay 3)
+                     (vector-ref lay (case kind ((shared) 6) (else 7))))
+    (sa-foreign-set! 'integer-16 p (vector-ref lay 4) 0)       ; SEEK_SET
+    (let ((r (let retry ()
+               (if (jolt-offload-cancelled? op)
+                   'cancelled
+                   (let-values (((r err) (io-call+errno (c-fcntl-flock-wait fd (vector-ref lay 10) p))))
+                     (cond ((= r 0) 'granted)
+                           ((= err 4) (retry))                  ; EINTR: cancelled, or a stray signal
+                           (else err)))))))
+      (sa-foreign-free p)
+      r)))
+(define (fc-posix-can-wait?) (and c-fcntl-flock-wait (fc-posix-can-lock?) (jolt-offload-available?) #t))
+(define (fc-posix-error-message err) (if c-strerror (c-strerror err) "fcntl failed"))
 ;; What identifies the file for the in-process lock table: the (st_dev, st_ino)
 ;; pair, so two paths to one file (a hard link, a symlink, a relative spelling)
 ;; share their locks, as the JDK's FileLockTable keys them (FileKey.create(fd)).
@@ -2356,6 +2389,56 @@
                   ((= err win32-ERROR-LOCK-VIOLATION) #f)
                   (else (throw-jvm 'IOException (win32-error-message err)))))))))
 (define (fc-win32-can-lock?) (and (win32-lock-file-ex) (win32-unlock-file-ex) #t))
+;; lock(): LockFileEx without LOCKFILE_FAIL_IMMEDIATELY on the helper thread, as
+;; the JDK's lock0 with block; __collect_safe, and its OVERLAPPED in foreign
+;; memory. A close or an interrupt cancels it with CancelSynchronousIo
+;; (ERROR_OPERATION_ABORTED).
+;;
+;; The error is Chez's __get_last_error capture, taken as the call returns: a
+;; GetLastError read afterwards, even with interrupts off, came back 0 on a real
+;; Windows runner once the collect-safe call had reactivated the thread. Built
+;; at run time (eval), as ffi.ss builds its variadic captures, so no literal
+;; entry reaches a boot file.
+(define (fc-win32-capture-proc name args)
+  (and (win32?)
+       (begin
+         (win32-load-lib! "kernel32.dll")
+         (and (sa-foreign-entry? name)
+              (guard (e (#t #f))
+                (eval (list 'foreign-procedure '__get_last_error '__collect_safe name args 'int)))))))
+(define-win32-memo win32-lock-file-ex-wait
+  (fc-win32-capture-proc "LockFileEx" '(iptr unsigned-32 unsigned-32 unsigned-32 unsigned-32 void*)))
+(define-win32-memo win32-get-overlapped-result-wait
+  (fc-win32-capture-proc "GetOverlappedResult" '(iptr void* void* int)))
+(define win32-ERROR-OPERATION-ABORTED 995)
+(define (fc-win32-lock-wait h kind start size op)
+  (let* ((lock (win32-lock-file-ex-wait))
+         (bv (fc-win32-overlapped start))
+         (n (bytevector-length bv))
+         (o (sa-foreign-alloc n))
+         (count (sa-foreign-alloc 4))
+         (flags (if (eq? kind 'exclusive) win32-LOCKFILE-EXCLUSIVE-LOCK 0))
+         (lo (bitwise-and size #xFFFFFFFF)) (hi (bitwise-arithmetic-shift-right size 32)))
+    (sa-foreign-bytes-set! o bv n)
+    (let ((r (let retry ()
+               (if (jolt-offload-cancelled? op)
+                   'cancelled
+                   (let-values (((r err) (lock h flags 0 lo hi o)))
+                     (cond ((not (= r 0)) 'granted)
+                           ((= err win32-ERROR-IO-PENDING)
+                            (let-values (((r err) ((win32-get-overlapped-result-wait) h o count 1)))
+                              (cond ((not (= r 0)) 'granted)
+                                    ((memv err (list 0 win32-ERROR-OPERATION-ABORTED)) (retry))
+                                    (else err))))
+                           ;; cancelled (the flag decides, at the top), or no error
+                           ;; to report: ask again
+                           ((memv err (list 0 win32-ERROR-OPERATION-ABORTED)) (retry))
+                           (else err)))))))
+      (sa-foreign-free o)
+      (sa-foreign-free count)
+      r)))
+(define (fc-win32-can-wait?)
+  (and (win32-lock-file-ex-wait) (fc-win32-can-lock?) (jolt-offload-available?) #t))
 ;; The JDK's Windows FileKey: the volume serial number and the file index, from
 ;; BY_HANDLE_FILE_INFORMATION (dwVolumeSerialNumber@28, nFileIndexHigh@44,
 ;; nFileIndexLow@48). The path where the handle can't answer.
@@ -2469,14 +2552,17 @@
                     (when (= r 0) (io-fail err)))))))))
 
 ;; The platform seam: #(open close! lock! can-lock? file-id nofollow? size
-;; unknown-option-message port), one vector per host, chosen once per call
-;; rather than branched on in the shared code below.
+;; unknown-option-message port lock-wait can-wait? error-message), one vector
+;; per host, chosen once per call rather than branched on in the shared code
+;; below.
 (define fc-posix-ops
   (vector fc-posix-open fc-posix-close! fc-posix-lock! fc-posix-can-lock? fc-posix-file-id fc-posix-nofollow?
-          fc-posix-size fc-posix-unknown-option fc-posix-port))
+          fc-posix-size fc-posix-unknown-option fc-posix-port fc-posix-lock-wait fc-posix-can-wait?
+          fc-posix-error-message))
 (define fc-win32-ops
   (vector fc-win32-open fc-win32-close! fc-win32-lock! fc-win32-can-lock? fc-win32-file-id (lambda () #t)
-          fc-win32-size (lambda (o) jolt-nil) fc-win32-port))
+          fc-win32-size (lambda (o) jolt-nil) fc-win32-port fc-win32-lock-wait fc-win32-can-wait?
+          win32-error-message))
 (define (fc-ops) (if (nio-windows?) fc-win32-ops fc-posix-ops))
 (define (fc-native-close! n) ((vector-ref (fc-ops) 1) n))
 (define (fc-native-lock! n kind start size) ((vector-ref (fc-ops) 2) n kind start size))
@@ -2533,19 +2619,13 @@
       (guard (e (#t (guard (_ (#t #f)) ((vector-ref ops 1) native)) (raise e)))
         (let* ((id ((vector-ref ops 4) native fp))
                (st (vector fp native #t (and (memq 'read syms) #t) (and (memq 'write syms) #t)
-                           id (make-mutex)))
+                           id (make-mutex) '()))
                (ch (make-jhost "file-channel" st)))
           (fc-guardian ch st)
           ch)))))
 (hashtable-set! (nio-provider-path-ops default-nio-provider) "newFileChannel" nio-host-file-channel)
 
 ;; ---- FileChannel.lock / tryLock -----------------------------------------------
-;; lock() waits by retrying the non-blocking lock with a growing sleep, not with
-;; F_SETLKW or a blocking LockFileEx: a blocking wait would pin a fiber's carrier,
-;; and nothing can end it on interrupt or close (the JDK signals the blocked
-;; thread, which jolt has no seam for). The sleep is Thread.sleep's, so an
-;; interrupt ends the wait, and on a fiber it parks.
-;;
 ;; State: #(channel position size shared? valid?)
 (define (fl-channel l) (vector-ref (jhost-state l) 0))
 (define (fl-position l) (vector-ref (jhost-state l) 1))
@@ -2628,6 +2708,14 @@
 ;; lock: retry until granted. An interrupt ends the wait the JDK's way: the
 ;; channel closes and FileLockInterruptionException is thrown with the thread's
 ;; interrupt status still set.
+;; lock: granted at once when the range is free, which is tryLock's one call.
+;; Otherwise the wait is the kernel's, as the JDK's is (F_SETLKW, a blocking
+;; LockFileEx), made on a helper thread so a fiber parks rather than pinning its
+;; carrier (fc-lock-wait). An interrupt ends the wait the JDK's way: the channel
+;; closes and FileLockInterruptionException is thrown with the thread's
+;; interrupt status still set; a close from another thread is
+;; AsynchronousCloseException. A host that cannot end a kernel wait (a stock Chez
+;; has no interrupt signal) retries the non-blocking lock with a growing sleep.
 (define (fc-lock self position size shared?)
   (let ((l (fc-new-lock self position size shared?)) (ibox (current-interrupt-box)))
     (define (interrupted!)
@@ -2636,14 +2724,54 @@
       (throw-jvm 'java.nio.channels.FileLockInterruptionException jolt-nil))
     (nio-file-locks-add! l)
     (guard (e (#t (nio-file-locks-remove! l) (raise e)))
-      (let wait ((ms 1))
-        (cond ((jolt-interrupted? ibox) (interrupted!))
-              ((not (fc-open? self))
-               (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
-              ((fl-kernel-lock! l) l)
-              (else
-               (when (guard (_ (#t #t)) (jolt-thread-sleep-ms ms) #f) (interrupted!))
-               (wait (min 50 (* ms 2)))))))))
+      (cond ((jolt-interrupted? ibox) (interrupted!))
+            ((fl-kernel-lock! l) l)
+            (((vector-ref (fc-ops) 10)) (fc-lock-wait self l ibox interrupted!))
+            (else
+             (let wait ((ms 1))
+               (cond ((jolt-interrupted? ibox) (interrupted!))
+                     ((not (fc-open? self))
+                      (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+                     ((fl-kernel-lock! l) l)
+                     (else
+                      (when (guard (_ (#t #t)) (jolt-thread-sleep-ms ms) #f) (interrupted!))
+                      (wait (min 50 (* ms 2)))))))))))
+;; The kernel wait. It is registered on the channel under the channel's mutex,
+;; and only while the channel is open, so a close either finds it and ends it
+;; before closing the descriptor, or comes first and this throws.
+(define (fc-lock-wait self l ibox interrupted!)
+  (let* ((ops (fc-ops))
+         (op (jolt-with-mutex (fc-mutex self)
+               (unless (fc-open? self)
+                 (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+               (let* ((native (fc-native-of self))
+                      (kind (if (fl-shared? l) 'shared 'exclusive))
+                      (op (jolt-offload-start!
+                            (lambda (op) ((vector-ref ops 9) native kind (fl-position l) (fl-size l) op)))))
+                 (fc-waits-set! self (cons op (fc-waits self)))
+                 op))))
+    (define (forget!)
+      (jolt-with-mutex (fc-mutex self) (fc-waits-set! self (remq op (fc-waits self)))))
+    (define (closed-under-us)
+      (if (jolt-interrupted? ibox)
+          (interrupted!)
+          (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil)))
+    ;; any way out of the wait but its own return or an interrupt (a raise, such
+    ;; as a fiber's interrupt payload) ends the kernel call first; one that cannot
+    ;; be ended goes with the channel
+    (let ((how (guard (e (#t (unless (jolt-offload-cancel! op) (fc-close! self)) (forget!) (raise e)))
+                 (jolt-offload-await op ibox))))
+      (case how
+        ;; the close ends the wait (it is still on the channel's list), and a lock
+        ;; granted meanwhile goes with it
+        ((interrupted) (interrupted!))
+        ((abandoned) (forget!) (closed-under-us))
+        (else
+         (forget!)
+         (let ((r (jolt-offload-result op)))
+           (cond ((eq? r 'granted) l)
+                 ((eq? r 'cancelled) (closed-under-us))
+                 (else (throw-jvm 'IOException ((vector-ref ops 11) r))))))))))
 (define (fl-release! l)
   (let ((ch (fl-channel l)))
     (jolt-with-mutex (fc-mutex ch)
@@ -2668,19 +2796,46 @@
         (cons "toString" fl-string)))
 (hashtable-set! jhost-tag->fqn "file-lock" "sun.nio.ch.FileLockImpl")
 
-;; Closing the channel releases the locks taken through it, then the descriptor.
+;; Closing the channel ends the kernel waits on it, then releases the locks
+;; taken through it, then closes the descriptor. The waits are ended outside the
+;; mutex (each one waits for its helper to come back), and none can start once
+;; the channel reads closed; the descriptor is closed only after they are all
+;; back, so none is left waiting on a closed or reused descriptor.
 (define (fc-close! self)
-  (jolt-with-mutex (fc-mutex self)
-    (when (fc-open? self)
-      (vector-set! (jhost-state self) 2 #f)
-      (for-each (lambda (l)
-                  (when (fl-valid? l)
-                    (guard (_ (#t #f))
-                      (fc-native-lock! (fc-native-of self) 'unlock (fl-position l) (fl-size l)))
-                    (fl-invalidate! l))
-                  (nio-file-locks-remove! l))
-                (nio-file-locks-of self))
-      (fc-native-close! (fc-native-of self))))
+  (define (release-and-close!)
+    (for-each (lambda (l)
+                (when (fl-valid? l)
+                  (guard (_ (#t #f))
+                    (fc-native-lock! (fc-native-of self) 'unlock (fl-position l) (fl-size l)))
+                  (fl-invalidate! l))
+                (nio-file-locks-remove! l))
+              (nio-file-locks-of self))
+    (fc-native-close! (fc-native-of self)))
+  ;; with no wait in flight, the usual case, it is all one critical section
+  (let ((waits (jolt-with-mutex (fc-mutex self)
+                 (and (fc-open? self)
+                      (begin
+                        (vector-set! (jhost-state self) 2 #f)
+                        (let ((w (fc-waits self)))
+                          (if (null? w) (begin (release-and-close!) #f) w)))))))
+    (when waits
+      (let ((stuck (filter (lambda (op) (not (jolt-offload-cancel! op))) waits)))
+        (jolt-with-mutex (fc-mutex self)
+          (if (null? stuck)
+              (release-and-close!)
+              ;; a wait that would not end (Windows): every call on its HANDLE
+              ;; would queue behind it, the unlocks and the close included, so the
+              ;; locks leave the table now and the HANDLE is closed, which drops
+              ;; them in the kernel, by whichever stuck helper finishes last
+              (let ((left (length stuck)) (mu (make-mutex)) (native (fc-native-of self)))
+                (for-each (lambda (l) (fl-invalidate! l) (nio-file-locks-remove! l))
+                          (nio-file-locks-of self))
+                (for-each (lambda (op)
+                            (jolt-offload-handoff! op
+                              (lambda ()
+                                (when (jolt-with-mutex mu (set! left (- left 1)) (= left 0))
+                                  (fc-native-close! native)))))
+                          stuck)))))))
   jolt-nil)
 (define (fc-size self)
   (fc-ensure-open! self)

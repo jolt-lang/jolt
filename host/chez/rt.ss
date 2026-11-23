@@ -115,6 +115,21 @@
                    (sa-load-shared-object #f)
                    (and (sa-foreign-entry? name)
                         (sa-foreign-procedure conv name args res)))))
+         #'(if (eq? (sa-os-family) 'windows) win unx)))
+      ;; Two conventions: __collect_safe with (__varargs_after n), a variadic C
+      ;; function that blocks (FileChannel.lock's F_SETLKW, java/nio-file.ss).
+      ;; The Windows branch drops both, as above; a caller that needs the call to
+      ;; be collect-safe there binds its own Windows entry.
+      ((_ conv1 conv2 name (quote args) (quote res))
+       (with-syntax
+           ((win #'(guard (e (#t #f))
+                   (sa-load-shared-object #f)
+                   (and (sa-foreign-entry? name)
+                        (sa-foreign-procedure-runtime name (quote args) (quote res) #f))))
+            (unx #'(guard (e (#t #f))
+                   (sa-load-shared-object #f)
+                   (and (sa-foreign-entry? name)
+                        (sa-foreign-procedure conv1 conv2 name args res)))))
          #'(if (eq? (sa-os-family) 'windows) win unx))))))
 
 ;; Same, for an entry point that BLOCKS (a pipe read, sigwait). The call must be

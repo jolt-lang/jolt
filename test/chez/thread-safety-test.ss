@@ -740,6 +740,75 @@
 (ok "16. a value with no meta still reads nil after the churn"
     (jolt-nil? (jolt-meta (jolt-vector 1 2 3))))
 
+;; --- 17. the class tables (host-static.ss) -----------------------------------
+;; class-statics-tbl and class-ctors-tbl are read lock-free by every class
+;; reference that misses a site cache, and written at run time from any thread:
+;; a library registering classes, a lazy shim loading, every deftype. They used
+;; to be written with no lock at all. Two threads inserting into one Chez
+;; hashtable lose entries, so the property is that no registration is lost when
+;; four threads register at once while four more resolve, and no lookup answers
+;; another class's entry. Unlocked, the survival check fails on 3 of 3 runs.
+(printf "\n== 17. the class tables under concurrent registration ==\n")
+(class-statics-merge! "t17.pkg.Stat" (list (cons "a" 1)))
+(class-statics-merge! "Stat" (list (cons "b" 2)))
+(ok "17. the qualified and the short name share one member table"
+    (let ((h (hashtable-ref class-statics-tbl "t17.pkg.Stat" #f)))
+      (and (eq? h (hashtable-ref class-statics-tbl "Stat" #f))
+           (eqv? 1 (hashtable-ref h "a" #f)) (eqv? 2 (hashtable-ref h "b" #f)))))
+(define ts17-n 600)
+(define ts17-bad 0)
+(define ts17-bad-mu (make-mutex))
+;; a distinct short name per class too: the statics table merges a class into
+;; the table its short name already reaches
+(define (ts17-name t i) (string-append "t17.W" (number->string t) "C" (number->string i)))
+(ok "17. registering and resolving threads all finished"
+    (run-threads 8
+      (lambda (t)
+        (if (fx<? t 4)
+            (let loop ((i 0))
+              (when (fx<? i ts17-n)
+                (let ((nm (ts17-name t i)))
+                  (class-ctor-set! nm (lambda () i))
+                  (class-statics-merge! nm (list (cons "v" i))))
+                (loop (fx+ i 1))))
+            (let loop ((r 0))
+              (when (fx<? r 20)
+                (let inner ((i 0))
+                  (when (fx<? i ts17-n)
+                    (let* ((nm (ts17-name (fx- t 4) i))
+                           (c (lookup-class class-ctors-tbl nm))
+                           (h (lookup-class class-statics-tbl nm)))
+                      (when (or (and c (not (eqv? i (c))))
+                                (and h (not (eqv? i (hashtable-ref h "v" i)))))
+                        (with-mutex ts17-bad-mu (set! ts17-bad (+ ts17-bad 1)))))
+                    (inner (fx+ i 1))))
+                (loop (fx+ r 1))))))
+      120 "17. 4 registering x 4 resolving threads"))
+(ok "17. no lookup answered another class's entry" (= ts17-bad 0))
+(ok "17. every ctor and every statics registration survived"
+    (let loop ((t 0) (i 0))
+      (cond ((fx=? t 4) #t)
+            ((fx=? i ts17-n) (loop (fx+ t 1) 0))
+            ((let ((nm (ts17-name t i)))
+               (and (hashtable-ref class-ctors-tbl nm #f)
+                    (let ((h (hashtable-ref class-statics-tbl nm #f)))
+                      (and h (eqv? i (hashtable-ref h "v" #f))))))
+             (loop t (fx+ i 1)))
+            (else #f))))
+;; The provider mark answers only for the context that set it. A Chez thread
+;; parameter is copied into a forked thread, so a pool worker a future started
+;; inside an install namespace kept that provider's mark for life.
+(define ts17-child-mark
+  (parameterize ((lib-loading-mark (cons 'ts17-provider (lib-ctx))))
+    (let ((mu (make-mutex)) (cv (make-condition)) (got 'unset))
+      (fork-thread (lambda ()
+                     (let ((v (lib-loading-provider)))
+                       (with-mutex mu (set! got v) (condition-broadcast cv)))))
+      (with-mutex mu (let wait () (when (eq? got 'unset) (condition-wait cv mu) (wait))))
+      (list (lib-loading-provider) got))))
+(ok "17. a forked thread does not inherit the provider mark"
+    (equal? ts17-child-mark '(ts17-provider #f)))
+
 (printf "\nthread-safety-test: ~a checks, ~a failure(s)\n" total fails)
 (if (= fails 0)
     (begin (printf "thread-safety-test: PASS — shared side-tables under concurrency\n") (exit 0))
