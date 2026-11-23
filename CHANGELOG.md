@@ -17,6 +17,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a rebuild with other edits, share `*jolt-version*` but not the build id.
   `jolt.image/runtime-version` stays the Chez release alone, since an image
   holds data, and its docstring now says so.
+- **`FileChannel` can lock a file, so two processes can keep out of each
+  other's way.** `.tryLock` and `.lock`, with or without a position, size and
+  shared flag, answer a `java.nio.channels.FileLock` with `release`, `close`,
+  `isValid`, `isShared`, `channel`, `acquiredBy`, `position`, `size`,
+  `overlaps` and the JDK's `toString`. They take the locks OpenJDK takes, POSIX
+  record locks on Unix and `LockFileEx` on Windows, so a JVM and a jolt process
+  see each other's locks. `tryLock` answers nil when another process holds an
+  overlapping range, and `lock` waits for it, polling rather than queueing in
+  the kernel (recorded in known-divergences). Inside one process a second
+  overlapping lock, through any channel on the file, is
+  `OverlappingFileLockException`, and closing a channel releases its locks.
+  An exclusive lock on a read-only channel is `NonWritableChannelException`
+  and a shared one on a write-only channel `NonReadableChannelException`, as
+  on the JDK. A channel is a `sun.nio.ch.FileChannelImpl` with the JDK's
+  supertypes (`FileChannel`, `SeekableByteChannel`, `Closeable` and the rest)
+  instead of a bare `:object`.
+  `FileChannel/open` now really opens the file, with the JDK's checks first:
+  READ with APPEND, and APPEND with TRUNCATE_EXISTING, are
+  `IllegalArgumentException`, a null option `NullPointerException` and an
+  unknown one `UnsupportedOperationException`. A missing file without
+  `CREATE` throws `NoSuchFileException`, an unreadable one
+  `AccessDeniedException`, and a write-open of a directory
+  `FileSystemException`. `CREATE_NEW` creates the file exclusively and throws
+  `FileAlreadyExistsException` when it exists, `TRUNCATE_EXISTING` empties a
+  file opened for writing, neither `CREATE` nor `CREATE_NEW` makes a file for
+  a channel that only reads, `NOFOLLOW_LINKS` and `DELETE_ON_CLOSE` refuse a
+  symbolic link, `SYNC`/`DSYNC` open for synchronous writes, and the
+  `open(path, Set, FileAttribute...)` form creates with the attribute's
+  permissions. `DELETE_ON_CLOSE` works on Windows too. `size` on a closed
+  channel is `ClosedChannelException`, and a channel the program drops
+  without closing gives its descriptor back once it is collected.
 
 ### Fixed
 

@@ -831,9 +831,37 @@
 (jch-register-supers! "java.nio.file.ClosedWatchServiceException" '("java.lang.IllegalStateException"))
 (jch-register-supers! "java.nio.file.ReadOnlyFileSystemException" '("java.lang.UnsupportedOperationException"))
 (jch-register-supers! "java.nio.channels.ClosedChannelException" '("java.io.IOException"))
-(jch-register-supers! "java.nio.channels.SeekableByteChannel" '("java.nio.channels.Channel"))
-(jch-mark-interface! "java.nio.channels.SeekableByteChannel")
-(jch-register-supers! "java.nio.channels.FileChannel" '("java.nio.channels.SeekableByteChannel"))
+;; The channel interfaces and FileChannel's place among them, as java.base
+;; declares them; the channel FileChannel/open answers is the JDK's
+;; sun.nio.ch.FileChannelImpl.
+(jch-register-supers! "java.nio.channels.Channel" '("java.io.Closeable"))
+(jch-register-supers! "java.nio.channels.ReadableByteChannel" '("java.nio.channels.Channel"))
+(jch-register-supers! "java.nio.channels.WritableByteChannel" '("java.nio.channels.Channel"))
+(jch-register-supers! "java.nio.channels.ByteChannel" '("java.nio.channels.ReadableByteChannel" "java.nio.channels.WritableByteChannel"))
+(jch-register-supers! "java.nio.channels.SeekableByteChannel" '("java.nio.channels.ByteChannel"))
+(jch-register-supers! "java.nio.channels.GatheringByteChannel" '("java.nio.channels.WritableByteChannel"))
+(jch-register-supers! "java.nio.channels.ScatteringByteChannel" '("java.nio.channels.ReadableByteChannel"))
+(jch-register-supers! "java.nio.channels.InterruptibleChannel" '("java.nio.channels.Channel"))
+(for-each jch-mark-interface!
+          '("java.nio.channels.Channel" "java.nio.channels.ReadableByteChannel"
+            "java.nio.channels.WritableByteChannel" "java.nio.channels.ByteChannel"
+            "java.nio.channels.SeekableByteChannel" "java.nio.channels.GatheringByteChannel"
+            "java.nio.channels.ScatteringByteChannel" "java.nio.channels.InterruptibleChannel"))
+(jch-register-supers! "java.nio.channels.spi.AbstractInterruptibleChannel"
+                      '("java.nio.channels.Channel" "java.nio.channels.InterruptibleChannel"))
+(jch-register-supers! "java.nio.channels.FileChannel"
+                      '("java.nio.channels.spi.AbstractInterruptibleChannel" "java.nio.channels.SeekableByteChannel"
+                        "java.nio.channels.GatheringByteChannel" "java.nio.channels.ScatteringByteChannel"))
+(jch-register-supers! "sun.nio.ch.FileChannelImpl" '("java.nio.channels.FileChannel"))
+;; FileChannel.lock/tryLock (nio-file.ss): the lock is the JDK's FileLockImpl,
+;; and the channel and lock failures sit where the JDK puts them.
+(jch-register-supers! "java.nio.channels.FileLock" '("java.lang.AutoCloseable"))
+(jch-register-supers! "sun.nio.ch.FileLockImpl" '("java.nio.channels.FileLock"))
+(jch-register-supers! "java.nio.channels.OverlappingFileLockException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.NonReadableChannelException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.NonWritableChannelException" '("java.lang.IllegalStateException"))
+(jch-register-supers! "java.nio.channels.AsynchronousCloseException" '("java.nio.channels.ClosedChannelException"))
+(jch-register-supers! "java.nio.channels.FileLockInterruptionException" '("java.io.IOException"))
 (jch-register-supers! "java.net.JarURLConnection" '("java.net.URLConnection"))
 (jch-register-supers! "java.net.UnknownHostException" '("java.io.IOException"))
 (jch-register-supers! "java.net.SocketException" '("java.io.IOException"))
