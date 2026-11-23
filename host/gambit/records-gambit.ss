@@ -390,7 +390,8 @@
       (set-box! chez-deftype-ctor-tag-box t))))
 
 (define (mm-dispatch-val-canon dval)
-  (or (and (procedure? dval) (deftype-ctor-tag dval)) dval))
+  (let ((tag (and (procedure? dval) (deftype-ctor-tag dval))))
+    (if tag (jolt-class-for tag) dval)))
 
 (define chez-simple-name-tag
   (make-hashtable string-hash string=?))
@@ -3716,8 +3717,7 @@
              (list->cseq items))))
       ((rd-coll-mutator? obj method-name (length rest))
        (rd-coll-mutator-call obj method-name rest))
-      ((string=? method-name "toString")
-       (jolt-str-render-one obj))
+      ((string=? method-name "toString") (jolt-str-one obj))
       ((string=? method-name "hashCode")
        (if (or (cseq? obj) (empty-list-t? obj) (jolt-lazyseq? obj))
            (jolt-java-hashcode obj)
@@ -4307,18 +4307,26 @@
   (lambda (x) (and (jreify? x) (reify-declared-hash x) #t))
   (lambda (x) (call-declared-hash (reify-declared-hash x) x)))
 
+(define (eq-ipc? x)
+  (jolt-truthy?
+    (jolt-invoke1 (var-deref "clojure.core" "coll?") x)))
+
 (define (reify-equiv=? a b)
-  (let ((ea (reify-method-ref a "equiv")))
-    (cond
-      (ea (jolt-truthy? (jolt-invoke ea a b)))
-      ((and (not (jreify? a))
-            (or (jolt-sequential? a) (jolt-lazyseq? a) (jolt-coll? a)))
-       #f)
-      ((reify-method-ref b "equiv") =>
-       (lambda (eb) (jolt-truthy? (jolt-invoke eb b a))))
-      ((reify-method-ref a "equals") =>
-       (lambda (m) (jolt-truthy? (jolt-invoke m a b))))
-      (else (eq? a b)))))
+  (cond
+    ((eq? a b) #t)
+    ((jolt-nil? a) #f)
+    ((reify-method-ref a "equiv") =>
+     (lambda (ea) (jolt-truthy? (jolt-invoke ea a b))))
+    ((and (not (jreify? a)) (eq-ipc? a))
+     (and (jrec? a) (jrec-equiv=? a b)))
+    ((reify-method-ref b "equiv") =>
+     (lambda (eb) (jolt-truthy? (jolt-invoke eb b a))))
+    ((and (not (jreify? b)) (eq-ipc? b))
+     (and (jrec? b) (jrec-equiv=? b a)))
+    ((reify-method-ref a "equals") =>
+     (lambda (m) (jolt-truthy? (jolt-invoke m a b))))
+    ((jrec? a) (jrec-equiv=? a b))
+    (else #f)))
 
 (define (reify-declares-eq? x)
   (and (jreify? x)

@@ -147,26 +147,41 @@
 ;; keyword, and they all share the same (non-nil) namespace. Otherwise #f.
 ;; resolved once — see pr-readably-cell (rt.ss) for why the cached cell is safe
 (define ns-maps-cell #f)
+;; the namespace of a qualified ident -- keyword OR symbol -- else #f
+(define (pr-ident-ns k)
+  (let ((n (cond ((keyword? k) (keyword-t-ns k))
+                 ((symbol-t? k) (symbol-t-ns k))
+                 (else #f))))
+    (and (string? n) (not (string=? n "")) n)))
+(define (pr-ns-maps?)
+  (unless ns-maps-cell
+    (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
+  (jolt-truthy? (jolt-var-get ns-maps-cell)))
 (define (pr-ns-maps-shared-ns pairs)
-  ;; clojure.core/lift-ns: every key a qualified ident — keyword OR symbol — of
-  ;; one namespace
-  (define (ident-ns k)
-    (let ((n (cond ((keyword? k) (keyword-t-ns k))
-                   ((symbol-t? k) (symbol-t-ns k))
-                   (else #f))))
-      (and (string? n) (not (string=? n "")) n)))
+  ;; clojure.core/lift-ns: every key a qualified ident of one namespace
   (and (pair? pairs)
-       (begin
-         (unless ns-maps-cell
-           (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
-         (jolt-truthy? (jolt-var-get ns-maps-cell)))
-       (let ((ns (ident-ns (caar pairs))))
+       (pr-ns-maps?)
+       (let ((ns (pr-ident-ns (caar pairs))))
          (and ns
               (let all-ns? ((rest (cdr pairs)))
                 (if (null? rest)
                     ns   ;; all keys checked → return the shared namespace
-                    (let ((n (ident-ns (caar rest))))
+                    (let ((n (pr-ident-ns (caar rest))))
                       (and n (string=? n ns) (all-ns? (cdr rest))))))))))
+;; lift-ns over a seq of entries: as clojure.core's, it walks nothing unless
+;; *print-namespace-maps* is on and stops at the first key that cannot share a
+;; namespace, so an infinite seq of unqualified keys still prints to
+;; *print-length*
+(define (pr-seq-shared-ns s)
+  (and (not (jolt-nil? s))
+       (pr-ns-maps?)
+       (let ((ns (pr-ident-ns (jolt-nth (seq-first s) 0))))
+         (and ns
+              (let all-ns? ((s (jolt-seq (seq-more s))))
+                (if (jolt-nil? s)
+                    ns
+                    (let ((n (pr-ident-ns (jolt-nth (seq-first s) 0))))
+                      (and n (string=? n ns) (all-ns? (jolt-seq (seq-more s)))))))))))
 ;; lift-ns's strip-ns: the key without its namespace, keeping its kind
 (define (pr-strip-ns k)
   (if (keyword? k) (keyword #f (keyword-t-name k)) (jolt-symbol #f (symbol-t-name k))))
@@ -283,17 +298,61 @@
 (define pr-user-method-write #f)
 (define (set-pr-user-method-write! f) (set! pr-user-method-write f))
 
+;; *print-meta* is written by the built-in printers (core_print's print-meta
+;; call in each IMeta method), so a user print-method that takes x over writes
+;; no ^meta: it replaced the method that would have.
+;;
+;; Under *print-dup* every value goes through the print-dup multimethod instead,
+;; as pr-on sends it on the JVM: pr-dup-write is the java layer's hook that hands
+;; x to print-dup with the Writer behind p (io-streams.ss), and the thread's
+;; print-dup slot says a print is under way. A print-dup method that hands its
+;; value to print-method lands back here for the elements.
+(define pr-dup-write #f)
+(define (set-pr-dup-write! f) (set! pr-dup-write f))
+(define-syntax pr-dup-mode?
+  (syntax-rules () ((_) (eq? (virtual-register jolt-vreg-print-dup) #t))))
 (define (pr-to! p x)
-  (if (pr-print-meta?)
-      (let ((m (pr-user-meta x)))
-        (if (jolt-nil? m)
-            (pr-dispatch-to! p x)
-            (begin (put-string p "^") (pr-dispatch-to! p m) (put-string p " ")
-                   (pr-dispatch-to! p x))))
-      (pr-dispatch-to! p x)))
-(define (pr-dispatch-to! p x)
+  (cond ((pr-dup-mode?) (pr-dup-write x p))
+        ((and pr-user-method-write (pr-user-method-write x p)))
+        (else (pr-builtin-to! p x))))
+;; x's print-method: the user's, else the built-in. print-method's :default
+;; prints its own value through this, never back to print-dup.
+(define (pr-plain-to! p x)
   (unless (and pr-user-method-write (pr-user-method-write x p))
-    (pr-own-to! p x)))
+    (pr-builtin-to! p x)))
+(define (pr-dispatch-to! p x)
+  (cond ((pr-dup-mode?) (pr-dup-write x p))
+        ((and pr-user-method-write (pr-user-method-write x p)))
+        (else (pr-own-to! p x))))
+
+;; Run thunk with the thread's print-dup slot set to on (#t or #f), restored
+;; after. Under print-dup a string or a char prints readably whatever
+;; *print-readably* says (core_print.clj's (or *print-dup* *print-readably*)), so
+;; the readably override (rt.ss) is set with it, and unset again when a print
+;; inside leaves print-dup. Both restores are masked at their far edge
+;; (locks.ss), so an interrupt cannot leave the thread in either mode.
+(define (call-in-print-dup-mode on thunk)
+  (let ((prev (virtual-register jolt-vreg-print-dup))
+        (prev-readably (virtual-register jolt-vreg-print-readably))
+        (lv (jolt-locks-held)))
+    (jolt-locks-enter!)
+    (dynamic-wind
+      (lambda ()
+        (set-virtual-register! jolt-vreg-print-dup on)
+        (set-virtual-register! jolt-vreg-print-readably (if on #t 0)))
+      (jolt-masked-body thunk)
+      (jolt-masked-after lv
+        (begin (set-virtual-register! jolt-vreg-print-dup prev)
+               (set-virtual-register! jolt-vreg-print-readably prev-readably))))))
+;; body with the slot matching on, the usual case (no print-dup anywhere) costing
+;; one comparison and no closure
+(define-syntax with-print-dup-mode
+  (syntax-rules ()
+    ((_ on body ...)
+     (let ((on? on))
+       (if (eq? on? (pr-dup-mode?))
+           (begin body ...)
+           (call-in-print-dup-mode on? (lambda () body ...)))))))
 ;; jolt's own rendering of x to p, the user method for x itself not consulted
 ;; (the values inside x still go through pr-to! and so still reach theirs)
 (define (pr-own-to! p x)
@@ -384,7 +443,7 @@
     (else (put-string p (jolt-pr-readable-base x)))))
 ;; A map's entries in iteration order -- the order pmap-fold's cons-accumulation
 ;; reconstructs (collections.ss): an array map front to back, a hash map's trie
-;; ascending with a collision bucket's list reversed.
+;; ascending with a collision bucket's list in order.
 (define (pr-pmap-for-each m proc)
   (let ((root (pmap-root m)))
     (if (hnode? root)
@@ -395,22 +454,11 @@
               (proc (vector-ref root i) (vector-ref root (fx+ i 1)))
               (loop (fx+ i 2))))))))
 (define (pr-node-for-each node proc)
-  (let* ((arr (hnode-arr node)) (n (vector-length arr)))
-    (let loop ((i 0))
-      (when (fx<? i n)
-        (let ((child (vector-ref arr i)))
-          (cond ((hnode? child) (pr-node-for-each child proc))
-                ((hcoll? child)
-                 (for-each (lambda (e) (proc (car e) (cdr e))) (reverse (hcoll-alist child))))
-                (else (proc (car child) (cdr child)))))
-        (loop (fx+ i 1))))))
+  (node-fold-fwd node (lambda (k v acc) (proc k v) acc) #f))
 ;; pr-ns-maps-shared-ns over the map itself, without collecting its entries
 (define (pr-ns-maps-shared-ns-of m)
   (and (fx>? (pmap-cnt m) 0)
-       (begin
-         (unless ns-maps-cell
-           (set! ns-maps-cell (jolt-var "clojure.core" "*print-namespace-maps*")))
-         (jolt-truthy? (jolt-var-get ns-maps-cell)))
+       (pr-ns-maps?)
        (let ((ns (pmap-fold m
                    (lambda (k v a)
                      (and a
@@ -426,20 +474,45 @@
 ;; *print-meta* support. The var is def'd after this file loads, so capture its
 ;; cell lazily; jolt-var-get (patched by dyn-binding.ss) honors a `binding`.
 (define pr-meta-cell #f)
+;; core_print.clj's print-meta writes metadata under *print-meta* only while
+;; printing readably: print, println and str leave it out.
 (define (pr-print-meta?)
   (unless pr-meta-cell (set! pr-meta-cell (jolt-var "clojure.core" "*print-meta*")))
-  (jolt-truthy? (jolt-var-get pr-meta-cell)))
+  (and (jolt-truthy? (jolt-var-get pr-meta-cell))
+       (jolt-pr-readable?)))
+;; The streaming printer's: print-meta writes metadata under *print-dup* too. A
+;; print under *print-dup* only ever streams (io-streams.ss), so the string
+;; renderer above keeps the one test.
+(define (pr-stream-meta?)
+  (or (pr-dup-mode?) (pr-print-meta?)))
+;; print-meta's text for m: a lone truthy :tag prints as the tag (^String x),
+;; anything else as the map
+(define pr-tag-kw (keyword #f "tag"))
+(define (pr-meta-shown m)
+  (if (fx=? (jolt-count m) 1)
+      (let ((t (jolt-get m pr-tag-kw jolt-nil)))
+        (if (jolt-truthy? t) t m))
+      m))
+(define (pr-meta-to! p m)
+  (put-string p "^") (pr-dispatch-to! p (pr-meta-shown m)) (put-string p " "))
 ;; The metadata to print before x, or jolt-nil. A var prints as #'ns/name (its
 ;; {:ns :name} is derived, not user metadata) and a procedure is opaque — skip both.
+;; Empty metadata prints nothing, as print-meta's (pos? (count m)) has it.
 (define (pr-user-meta x)
-  (if (or (var-cell? x) (procedure? x)) jolt-nil (jolt-meta x)))
+  (if (or (var-cell? x) (procedure? x))
+      jolt-nil
+      (let ((m (jolt-meta x)))
+        (if (or (jolt-nil? m) (fx=? 0 (jolt-count m))) jolt-nil m))))
 
+;; ^meta only on the built-in path, as pr-to! above
 (define (jolt-pr-readable x)
   (cond ((pr-print-meta?)
          (let ((m (pr-user-meta x)))
            (if (jolt-nil? m)
                (jolt-pr-readable-dispatch x)
-               (string-append "^" (jolt-pr-readable-dispatch m) " " (jolt-pr-readable-dispatch x)))))
+               (or (and pr-user-method-render (pr-user-method-render x))
+                   (string-append "^" (jolt-pr-readable-dispatch (pr-meta-shown m)) " "
+                                  (if (pr-fast-type? x) (jolt-pr-readable-base x) (pr-own-string x)))))))
         ;; a collection is written into one port rather than built level by
         ;; level; a scalar's or a host object's text is one string already
         (else (jolt-pr-readable-dispatch x))))
@@ -450,10 +523,9 @@
 ;; borrows one for its own type -- (defmethod print-method IPersistentMap ...)
 ;; calling the saved original -- does not come back to itself.
 (define (pr-builtin-to! p x)
-  (if (pr-print-meta?)
+  (if (pr-stream-meta?)
       (let ((m (pr-user-meta x)))
-        (unless (jolt-nil? m)
-          (put-string p "^") (pr-dispatch-to! p m) (put-string p " "))
+        (unless (jolt-nil? m) (pr-meta-to! p m))
         (pr-own-to! p x))
       (pr-own-to! p x)))
 
@@ -474,10 +546,9 @@
   (if (pr-shape-native? shape x)
       (pr-builtin-to! p x)
       (begin
-        (when (pr-print-meta?)
+        (when (pr-stream-meta?)
           (let ((m (pr-user-meta x)))
-            (unless (jolt-nil? m)
-              (put-string p "^") (pr-dispatch-to! p m) (put-string p " "))))
+            (unless (jolt-nil? m) (pr-meta-to! p m))))
         (if (jolt-print-hash?)
             (put-string p "#")
             (with-deeper-print
@@ -496,28 +567,25 @@
                   (pr-to! p (seq-first s))
                   (loop (jolt-seq (seq-more s)) (fx+ i 1))))))
   (put-string p close))
-;; print-map over a seq of entries (or [k v] pairs): collected first, since
-;; lift-ns has to see every key before the opening brace is written
+;; print-map over a seq of entries (or [k v] pairs). lift-ns has to see every
+;; key before the opening brace when it can lift, so the seq is walked twice;
+;; neither walk outruns what the JVM's would.
 (define (pr-entries-to! p s)
-  (let* ((pairs (let loop ((s s) (acc '()))
-                  (if (jolt-nil? s)
-                      (reverse acc)
-                      (let ((e (seq-first s)))
-                        (loop (jolt-seq (seq-more s))
-                              (cons (cons (jolt-nth e 0) (jolt-nth e 1)) acc))))))
-         (ns (pr-ns-maps-shared-ns pairs))
-         (lim (jolt-print-length)))
+  (let ((ns (pr-seq-shared-ns s))
+        (lim (jolt-print-length)))
     (if ns
         (begin (put-string p "#:") (put-string p ns) (put-string p "{"))
         (put-string p "{"))
-    (let loop ((ps pairs) (i 0))
-      (cond ((null? ps))
+    (let loop ((s s) (i 0))
+      (cond ((jolt-nil? s))
             ((pr-past-limit? lim i) (put-string p (if (fx=? i 0) "..." ", ...")))
-            (else (unless (fx=? i 0) (put-string p ", "))
-                  (pr-to! p (if ns (pr-strip-ns (caar ps)) (caar ps)))
-                  (put-string p " ")
-                  (pr-to! p (cdar ps))
-                  (loop (cdr ps) (fx+ i 1)))))
+            (else (let ((e (seq-first s)))
+                    (unless (fx=? i 0) (put-string p ", "))
+                    (let ((k (jolt-nth e 0)))
+                      (pr-to! p (if ns (pr-strip-ns k) k)))
+                    (put-string p " ")
+                    (pr-to! p (jolt-nth e 1))
+                    (loop (jolt-seq (seq-more s)) (fx+ i 1))))))
     (put-string p "}")))
 
 ;; __pr-str1: render ONE value readably (the overlay's pr-str joins these).

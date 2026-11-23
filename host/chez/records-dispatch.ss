@@ -794,7 +794,7 @@
       ((rd-coll-mutator? obj method-name (length rest))
        (rd-coll-mutator-call obj method-name rest))
       ;; universal Object methods on any remaining value (boolean, etc.).
-      ((string=? method-name "toString") (jolt-str-render-one obj))
+      ((string=? method-name "toString") (jolt-str-one obj))
       ;; a seq or list is a java.util.List: List.hashCode (31*h + e.hashCode),
       ;; which an infinite one refuses (CLJ-2839) — not its hasheq
       ((string=? method-name "hashCode")
@@ -1428,20 +1428,26 @@
   (or (reify-method-ref x "hasheq") (reify-method-ref x "hashCode")))
 (register-hash-arm! (lambda (x) (and (jreify? x) (reify-declared-hash x) #t))
                     (lambda (x) (call-declared-hash (reify-declared-hash x) x)))
-;; = on a reify or proxy follows Util.equiv. pcequiv asks the left operand's
-;; equiv when it is a collection, so a jolt collection on the left decides by its
-;; own rules (and a reify is none of them), and only otherwise the right
-;; operand's declared equiv. Neither a collection: the LEFT operand's equals,
-;; else identity. (= 1 r) is Long.equals and stays false whatever r declares.
+;; = on a reify or proxy follows Util.equiv(Object, Object): nil on the left is
+;; = only to nil; then if EITHER operand is an IPersistentCollection, pcequiv
+;; asks the left one's equiv when it is one, else the right one's; only when
+;; neither is does the LEFT operand's equals decide, else identity. So
+;; (= r [1]) is the vector's answer, false, whatever r's equals says, while
+;; (= r (java.util.ArrayList.)) is r's equals. A jolt collection compares false
+;; against a reify; a record or deftype answers through its own arm's rules
+;; (records-coll.ss jrec-equiv=?). (= 1 r) is Long.equals, false.
+(define (eq-ipc? x)
+  (jolt-truthy? (jolt-invoke1 (var-deref "clojure.core" "coll?") x)))
 (define (reify-equiv=? a b)
-  (let ((ea (reify-method-ref a "equiv")))
-    (cond (ea (jolt-truthy? (jolt-invoke ea a b)))
-          ((and (not (jreify? a))
-                (or (jolt-sequential? a) (jolt-lazyseq? a) (jolt-coll? a)))
-           #f)
-          ((reify-method-ref b "equiv") => (lambda (eb) (jolt-truthy? (jolt-invoke eb b a))))
-          ((reify-method-ref a "equals") => (lambda (m) (jolt-truthy? (jolt-invoke m a b))))
-          (else (eq? a b)))))
+  (cond ((eq? a b) #t)
+        ((jolt-nil? a) #f)
+        ((reify-method-ref a "equiv") => (lambda (ea) (jolt-truthy? (jolt-invoke ea a b))))
+        ((and (not (jreify? a)) (eq-ipc? a)) (and (jrec? a) (jrec-equiv=? a b)))
+        ((reify-method-ref b "equiv") => (lambda (eb) (jolt-truthy? (jolt-invoke eb b a))))
+        ((and (not (jreify? b)) (eq-ipc? b)) (and (jrec? b) (jrec-equiv=? b a)))
+        ((reify-method-ref a "equals") => (lambda (m) (jolt-truthy? (jolt-invoke m a b))))
+        ((jrec? a) (jrec-equiv=? a b))
+        (else #f)))
 ;; Claimed only when a side declares something that can answer: a reify that
 ;; overrides neither is = only to itself, and leaving it unclaimed keeps it on
 ;; the identity hash (jolt-identity-hashed?) instead of the record catch-all.

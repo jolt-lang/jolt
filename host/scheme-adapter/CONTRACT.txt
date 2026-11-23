@@ -161,7 +161,9 @@ system
 # #f without installing anything, which leaves the heap unbounded as it was
 # before 0.8.5 and the nursery fixed — a target with no collection hook cannot enforce a ceiling,
 # and the caller then reports maxMemory as unbounded rather than promising a
-# bound it does not have. sa-gc-install-stall-watch! may likewise answer #f:
+# bound it does not have. sa-gc-set-collect-guard! may do nothing where no
+# collection hook is installed or the collector starts no threads of its own.
+# sa-gc-install-stall-watch! may likewise answer #f:
 # a target whose collector is not a rendezvous of active threads, or a Chez
 # whose rendezvous protocol the Chez copy has not been compared against,
 # keeps its own rendezvous and reports no stall (the behaviour before 0.8.9).
@@ -191,6 +193,7 @@ sa-pin-for-owner!
 sa-unpin-for-owner!
 sa-reset-max-memory-bytes!
 sa-gc-install-after-collect!
+sa-gc-set-collect-guard!
 sa-gc-install-stall-watch!
 sa-gc-install-after-rendezvous!
 sa-current-stack-bytes
@@ -380,7 +383,8 @@ sa-thread-cpu-nanos
 # gives exactly the checked primitive's result. On invalid input the behaviour
 # is undefined, so a call site carries its own proof: a loop bound read from
 # the vector's own length or a used-count kept <= it, an index stepped from 0
-# by a constant. Degradation: a target may expand every one of these to the
+# by a constant; for sa-ufxand / sa-ufxxor, operands that are fixnums (a HAMT
+# bitmap on a 64-bit target, chosen at expand time by define-width-op). Degradation: a target may expand every one of these to the
 # checked primitive (gambit does) — the speed goes, nothing else. On Chez they
 # lower to the #3% (optimize-level 3) primitives, which is what makes a scan
 # loop 3x faster in the optimize-level 2 runtime.
@@ -389,6 +393,8 @@ sa-ufx-
 sa-ufx<?
 sa-ufx>=?
 sa-ufx=?
+sa-ufxand
+sa-ufxxor
 sa-uvector-ref
 sa-uvector-set!
 sa-ustring-ref
@@ -477,10 +483,12 @@ scheme-version
 # doubles through them. sa-flonum-hi32 is the pattern's upper 32 bits (a fixnum
 # on any 64-bit host, where the full pattern is often a bignum) and
 # sa-hi32->flonum the double with those upper bits and zero lower ones: fdlibm's
-# cbrt works on the high word.
+# cbrt works on the high word. sa-flonum-lo32 is the lower 32 bits: with the high
+# word, number-print.ss reads a double's significand without a bignum.
 sa-flonum->bits
 sa-bits->flonum
 sa-flonum-hi32
+sa-flonum-lo32
 sa-hi32->flonum
 # sa-bignum-s64? (added for the unchecked ops): whether a bignum (the caller
 # has already asked bignum?) lies in signed 64 bits, [-2^63, 2^63) — a Long in

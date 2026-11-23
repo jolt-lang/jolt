@@ -622,11 +622,13 @@
 ;; FileSystemException's (file, other, reason) are kept apart until the message
 ;; is built (io.ss fs-exception-message), so only the paths render with "\" on
 ;; Windows and the reason text is left as the OS wrote it.
-(define (nio-fs-throw cls fp . other+reason)
+(define (nio-fs-exception cls fp . other+reason)    ; the throwable, not thrown
   (let ((other  (and (pair? other+reason) (car other+reason)))
         (reason (and (pair? other+reason) (pair? (cdr other+reason)) (cadr other+reason))))
-    (jolt-throw (jolt-host-throwable/detail cls (or (fs-exception-message fp other reason) jolt-nil)
-                  (vector (and fp (path-native fp)) (and other (path-native other)) reason)))))
+    (jolt-host-throwable/detail cls (or (fs-exception-message fp other reason) jolt-nil)
+      (vector (and fp (path-native fp)) (and other (path-native other)) reason))))
+(define (nio-fs-throw cls fp . other+reason)
+  (jolt-throw (apply nio-fs-exception cls fp other+reason)))
 (define (nio-no-such-file fp . other)
   (nio-fs-throw "java.nio.file.NoSuchFileException" fp (and (pair? other) (car other))))
 (define (nio-already-exists fp . other)
@@ -757,7 +759,10 @@
           (let-values (((r err) (io-call+errno (c-del fp))))
             (or (= r 0) (nio-delete-failed fp m err dir?)))
           (or (del fp) (nio-delete-failed fp m 0 dir?))))
-    (cond ((nio-is-symlink? fp) (attempt c-unlink delete-file #f))   ; the link itself, even if dangling
+    (cond ((nio-is-symlink? fp)                                      ; the link itself, even if dangling
+           (if (nio-directory-link? fp)
+               (attempt c-rmdir delete-directory #t)
+               (attempt c-unlink delete-file #f)))
           ((not (file-exists? fp))
            (if missing-ok? #f (nio-no-such-file m)))
           ((file-directory? fp) (attempt c-rmdir delete-directory #t))
@@ -804,7 +809,9 @@
         (cons "isWritable"    (lambda (p . _) (file-accessible? (nfp p) access-w-ok)))
         (cons "isExecutable"  (lambda (p . _) (file-accessible? (nfp p) access-x-ok)))
         (cons "isHidden"      (lambda (p . _) (nio-hidden? p)))
-        (cons "size"          (lambda (p . _) (nio-size (nfp p) (nio-shown p))))
+        ;; readAttributes(p, BasicFileAttributes).size(), as the JDK's is: st_size
+        ;; from the one stat, which needs no read permission on the file
+        (cons "size"          (lambda (p . _) (nio-snap-ref (nio-snapshot (nfp p) #t (nio-shown p) #f) "size")))
         (cons "delete"        (lambda (p) (nio-delete1 (nfp p) #f (nio-shown p)) jolt-nil))
         (cons "deleteIfExists"(lambda (p) (nio-delete1 (nfp p) #t (nio-shown p))))
         (cons "readAllBytes"  (lambda (p) (na-bv->bytearray (nio-read-bv (nfp p) (nio-shown p)))))
@@ -818,8 +825,11 @@
                                                            (string-append "'" (enum-name o) "' not allowed"))))
                                             (npath-spread-args opts))
                                   (io-note-file-read! fp)
-                                  (let ((port (nio-open-input-port fp (nio-shown p))))
-                                    (nio-delete-on-close! fp port opts)
+                                  (let ((port (if (nio-channel-open? opts)
+                                                  (vector-ref (nio-native-port fp (nio-shown p)
+                                                                               (nio-channel-syms opts) 'input)
+                                                              0)
+                                                  (nio-open-input-port fp (nio-shown p)))))
                                     (stream-classed! (make-in-stream port) "sun.nio.ch.ChannelInputStream")))))
         (cons "createTempFile"      (lambda args (nio-files-create-temp args #f)))
         (cons "createTempDirectory" (lambda args (nio-files-create-temp args #t))))))
@@ -868,26 +878,6 @@
 (define (fvr-sym r) (if (fvr? r) (jhost-state r) 'continue))
 (define fvo-follow-links  (make-jhost "fvo" 'follow-links))
 
-;; BasicFileAttributes of a path, read through (FOLLOW? #t) or not through
-;; (NOFOLLOW_LINKS) a symbolic link — every getter answers through
-;; nio-attr-value, the one table readAttributes and getAttribute also read, so
-;; the three cannot disagree about a link. It used to hold only the path and
-;; follow always, so readAttributes(link, BasicFileAttributes, NOFOLLOW_LINKS)
-;; described the target and isSymbolicLink was false for everything.
-(define (make-basic-attrs fp follow?) (make-jhost "basic-attrs" (cons fp follow?)))
-(define (basic-attrs-value self nm)
-  (let ((st (jhost-state self))) (nio-attr-value (car st) nm (cdr st))))
-(register-host-methods! "basic-attrs"
-  (list (cons "isDirectory"      (lambda (self) (basic-attrs-value self "isDirectory")))
-        (cons "isRegularFile"    (lambda (self) (basic-attrs-value self "isRegularFile")))
-        (cons "isSymbolicLink"   (lambda (self) (basic-attrs-value self "isSymbolicLink")))
-        (cons "isOther"          (lambda (self) (basic-attrs-value self "isOther")))
-        (cons "size"             (lambda (self) (basic-attrs-value self "size")))
-        (cons "lastModifiedTime" (lambda (self) (basic-attrs-value self "lastModifiedTime")))
-        (cons "lastAccessTime"   (lambda (self) (basic-attrs-value self "lastAccessTime")))
-        (cons "creationTime"     (lambda (self) (basic-attrs-value self "creationTime")))
-        (cons "fileKey"          (lambda (self) (basic-attrs-value self "fileKey")))))
-
 (define (nio-call-visitor visitor name . args)
   (let ((m (reify-method-ref visitor name)))
     (if m (fvr-sym (apply jolt-invoke m visitor args)) 'continue)))
@@ -904,38 +894,67 @@
        (guard (e (#t #f))
          (exists (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "fvo")))
                  (seq->list (jolt-seq opts))))))
-(define (nio-walk-file-tree start opts max-depth visitor)
-  (let ((md (if (number? max-depth) (exact (truncate max-depth)) 2147483647))
-        (follow? (nio-opts-follow? opts)))
+;; The attributes the walk visits PATH-OBJ with, as FileTreeWalker.getAttributes
+;; reads them: one snapshot, through links when following and of the link itself
+;; when that fails (a link whose target is gone is still visited), or the
+;; IOException it raised, which the visitor gets in visitFileFailed -- an entry
+;; deleted between its listing and its visit is NoSuchFileException there.
+(define (nio-walk-attrs fp shown follow?)
+  (define (read follow?)
+    (guard (e ((and (jolt-throw-condition? e)
+                    (let ((v (jolt-throw-condition-value e)))
+                      (and (ex-info-map? v) (jch-isa? (ex-info-class v) "java.io.IOException"))))
+               (jolt-throw-condition-value e)))
+      (make-basic-attrs (nio-snapshot fp follow? shown #t))))
+  (let ((a (read follow?)))
+    (if (and follow? (not (jhost? a)))
+        (let ((b (read #f))) (if (jhost? b) b a))
+        a)))
+;; walkFileTree(start, visitor) | walkFileTree(start, options, maxDepth, visitor)
+(define (nio-walk-file-tree start . args)
+  (let* ((visitor (list-ref args (- (length args) 1)))
+         (max-depth (if (= (length args) 3) (cadr args) 2147483647))
+         (md (if (number? max-depth) (exact (truncate max-depth)) 2147483647))
+         (follow? (and (= (length args) 3) (nio-opts-follow? (car args)))))
     (call/cc
      (lambda (stop)
        (define (walk path-obj depth ancestors)
-         (let ((fp (nfp path-obj)))
-           ;; a symlink is a leaf unless following (never descend its target); a
-           ;; directory at max depth is visited as a file, like java.nio.file
-           (if (and (file-directory? fp) (< depth md) (or follow? (not (nio-is-symlink? fp))))
-               (let ((ino (and follow? (nio-stat-ino fp))))
+         (let* ((fp (nfp path-obj))
+                (attrs (nio-walk-attrs fp (nio-shown path-obj) follow?)))
+           ;; a symlink is a leaf unless following (never descend its target): not
+           ;; following, the snapshot is the link's own and is no directory. A
+           ;; directory at max depth is visited as a file, like java.nio.file.
+           (cond
+             ((not (jhost? attrs))
+              (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj attrs)))
+                (if (eq? r 'terminate) (stop #t) r)))
+             ((and (< depth md) (nio-snap-ref (jhost-state attrs) "isDirectory"))
+               (let ((key (and follow? (let ((k (nio-snap-ref (jhost-state attrs) "fileKey")))
+                                         (and (jhost? k) (jhost-state k))))))
                  ;; following a link back into an ancestor is a cycle -> visitFileFailed
-                 (if (and ino (member ino ancestors))
-                     (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj jolt-nil)))
+                 (if (and key (member key ancestors))
+                     (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj
+                                                (nio-fs-exception "java.nio.file.FileSystemLoopException"
+                                                                  (nio-shown path-obj)))))
                        (if (eq? r 'terminate) (stop #t) r))
-                     (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp follow?))))
+                     (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj attrs)))
                        (cond
                          ((eq? r 'terminate) (stop #t))
                          ((eq? r 'skip-subtree) 'continue)
                          ((eq? r 'skip-siblings) 'skip-siblings)
                          (else
-                          (let ((anc (if ino (cons ino ancestors) ancestors)))
+                          (let ((anc (if key (cons key ancestors) ancestors)))
                             (when (< depth md)
-                              (let loop ((names (sort string<? (directory-list fp))))
+                              (let loop ((names (os-directory-list fp)))
                                 (unless (null? names)
                                   (let ((cr (walk (make-nio-path (nio-path-join (nio-path-str path-obj) (car names)))
                                                   (+ depth 1) anc)))
                                     (unless (eq? cr 'skip-siblings) (loop (cdr names))))))))
                           (let ((pr (nio-call-visitor visitor "postVisitDirectory" path-obj jolt-nil)))
-                            (if (eq? pr 'terminate) (stop #t) 'continue)))))))
-               (let ((r (nio-call-visitor visitor "visitFile" path-obj (make-basic-attrs fp follow?))))
-                 (if (eq? r 'terminate) (stop #t) r)))))
+                            (if (eq? pr 'terminate) (stop #t) 'continue))))))))
+             (else
+              (let ((r (nio-call-visitor visitor "visitFile" path-obj attrs)))
+                (if (eq? r 'terminate) (stop #t) r))))))
        (walk (->path start) 0 '())))
     (->path start)))
 
@@ -975,7 +994,7 @@
          (_ (cond ((not (file-exists? fp)) (nio-no-such-file base))
                   ((not (file-directory? fp))
                    (nio-fs-throw "java.nio.file.NotDirectoryException" base))))
-         (names (sort string<? (nio-fs-call fp (lambda () (directory-list fp)) base)))
+         (names (nio-fs-call fp (lambda () (os-directory-list fp)) base))
          (arg (and (pair? rest) (car rest)))
          (paths (map (lambda (nm) (make-nio-path (nio-path-join base nm))) names)))
     (make-dir-stream
@@ -1126,38 +1145,11 @@
   (register-class-statics! "FileTime" ft-statics)
   (register-class-statics! "java.nio.file.attribute.FileTime" ft-statics))
 
-;; Files/getAttribute / setAttribute / readAttributes over the "basic:" view.
+;; Files/getAttribute / setAttribute / readAttributes.
 (define (nio-attr-name a)                      ; strip a "view:" prefix
   (let ((i (let loop ((j 0)) (cond ((>= j (string-length a)) #f)
                                    ((char=? (string-ref a j) #\:) j) (else (loop (+ j 1)))))))
     (if i (substring a (+ i 1) (string-length a)) a)))
-;; The basic attribute NM of FP, read through a symbolic link (FOLLOW?) or of
-;; the link itself. A link read as itself is a link: not a directory, not a
-;; regular file, sized by its target string, with its own times and file key.
-(define (nio-attr-value fp nm follow?)
-  (let ((link? (and (not follow?) (nio-is-symlink? fp))))
-    (cond
-      ((member nm '("lastModifiedTime" "lastAccessTime" "creationTime"))
-       (nio-time-attr fp nm (not link?)))
-      ((string=? nm "size")
-       (if link?
-           (bytevector-length (string->utf8 (or (nio-readlink fp) "")))
-           (nio-size fp)))
-      ((string=? nm "isDirectory")      (and (not link?) (file-directory? fp) #t))
-      ((string=? nm "isRegularFile")    (and (not link?) (file-regular? fp) #t))
-      ((string=? nm "isSymbolicLink")   link?)
-      ((string=? nm "isOther")          (and (not link?) (file-exists? fp)
-                                             (not (file-directory? fp)) (not (file-regular? fp)) #t))
-      ((string=? nm "fileKey")          (nio-file-key fp (not link?)))
-      (else jolt-nil))))
-;; readAttributes/getAttribute on a path that is not there raise, as the JDK's
-;; do; a dangling link is there when read as itself.
-(define (nio-attrs-require-exists! fp follow? shown)
-  (unless (or (file-exists? fp) (and (not follow?) (nio-is-symlink? fp)))
-    (nio-no-such-file shown)))
-(define nio-basic-attr-names
-  '("lastModifiedTime" "lastAccessTime" "creationTime" "size"
-    "isDirectory" "isRegularFile" "isSymbolicLink" "isOther" "fileKey"))
 (define (nio-split-commas s)
   (let loop ((i 0) (start 0) (acc '()))
     (cond ((= i (string-length s))
@@ -1168,19 +1160,47 @@
 (define (nio-str-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
-;; LinkOption/NOFOLLOW_LINKS among OPTS describes a symbolic link as itself, in
-;; both forms, as getAttribute already did.
+;; readAttributes(path, Class | "view:names", LinkOption...). Both forms take
+;; one snapshot (nio-snapshot, below); NOFOLLOW_LINKS describes a symbolic link
+;; as itself. The Class form IS the snapshot, so its getters answer what was
+;; there at this call; the String form is a map of the names the spec asks for.
 (define (nio-read-attributes path what . opts)
-  (let* ((w (npath-string-of what))
-         (fp (nfp path))
-         (follow? (not (nio-opts-nofollow? opts))))
-    (nio-attrs-require-exists! fp follow? (nio-shown path))
-    (if (nio-str-suffix? w "Attributes")   ; the Class form -> a BasicFileAttributes value
-        (make-basic-attrs fp follow?)
-        ;; the string form ("view:a,b" / "*" / "a") -> a map of just those attributes
-        (let* ((attr-part (nio-attr-name w))
-               (names (if (string=? attr-part "*") nio-basic-attr-names (nio-split-commas attr-part))))
-          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-attr-value fp nm follow?))) empty-pmap names)))))
+  (let ((w (if (jclass? what) (jclass-name what) (npath-string-of what)))
+        (fp (nfp path))
+        (follow? (not (nio-opts-nofollow? opts))))
+    (if (nio-str-suffix? w "Attributes")
+        (cond ((nio-str-suffix? w "PosixFileAttributes")
+               (nio-posix-view!)
+               (make-jhost "posix-attrs" (nio-snapshot fp follow? (nio-shown path) #t)))
+              ((nio-str-suffix? w "BasicFileAttributes")
+               (make-basic-attrs (nio-snapshot fp follow? (nio-shown path) #t)))
+              ((and (nio-str-suffix? w "DosFileAttributes") (nio-dos-view?))
+               (make-jhost "dos-attrs" (nio-dos-snapshot path follow? #t)))
+              ;; a view this host has not
+              (else (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException" jolt-nil))))
+        (cond
+          ((nio-special-view-read path w opts)
+           => (lambda (alist) (fold-left (lambda (m e) (jolt-assoc m (car e) (cdr e))) empty-pmap alist)))
+          (else
+        (let* ((snap #f)
+               (take! (lambda () (unless snap (set! snap (nio-snapshot fp follow? (nio-shown path) #f)))))
+               (names (nio-attr-spec-names w take!)))
+          (unless snap (set! snap (nio-snapshot fp follow? (nio-shown path) (and (member "creationTime" names) #t))))
+          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-snap-ref snap nm))) empty-pmap names)))))))
+;; getAttribute(path, "view:name", LinkOption...): Files.getAttribute refuses a
+;; spec naming more than one attribute, then reads that one from a snapshot.
+(define (nio-get-attribute path attr . opts)
+  (let ((spec (npath-string-of attr)))
+    (when (or (memv #\* (string->list spec)) (memv #\, (string->list spec)))
+      (throw-jvm 'IllegalArgumentException spec))
+    (cond
+      ((nio-special-view-read path spec opts)
+       => (lambda (alist) (let ((e (assoc (cdr (nio-spec-parts spec)) alist))) (if e (cdr e) jolt-nil))))
+      (else
+    (let* ((take (lambda (btime?) (nio-snapshot (nfp path) (not (nio-opts-nofollow? opts)) (nio-shown path) btime?)))
+           (snap #f)
+           (names (nio-attr-spec-names spec (lambda () (set! snap (take #f))))))
+      (nio-snap-ref (or snap (take (and (member "creationTime" names) #t))) (car names)))))))
 
 ;; PosixFilePermissions <-> "rwxr-xr-x" strings, and chmod-based set.
 (define posix-order '("OWNER_READ" "OWNER_WRITE" "OWNER_EXECUTE"
@@ -1208,13 +1228,9 @@
      (let loop ((bs posix-bits) (ch '(#\r #\w #\x #\r #\w #\x #\r #\w #\x)) (acc '()))
        (if (null? bs) (reverse acc)
            (loop (cdr bs) (cdr ch) (cons (if (> (bitwise-and mode (car bs)) 0) (car ch) #\-) acc)))))))
-(define (posix-str->set str)                   ; "rwxr-xr-x" -> jolt set of PosixFilePermission
-  (let loop ((i 0) (os posix-order) (acc '()))
-    (if (or (>= i (string-length str)) (null? os)) (make-perm-set (reverse acc))
-        (loop (+ i 1) (cdr os)
-              (if (memv (string-ref str i) '(#\r #\w #\x #\s #\t)) (cons (make-pfp (car os)) acc) acc)))))
-(let ((pfp-statics (list (cons "toString" (lambda (s) (posix-set->str s)))
-                         (cons "fromString" (lambda (s) (posix-str->set (npath-string-of s)))))))
+;; PosixFilePermissions.fromString lives in enum-colls.ss: it answers an
+;; EnumSet, and EnumSet is a lazy shim the runtime may not name.
+(let ((pfp-statics (list (cons "toString" (lambda (s) (posix-set->str s))))))
   (register-class-statics! "PosixFilePermissions" pfp-statics)
   (register-class-statics! "java.nio.file.attribute.PosixFilePermissions" pfp-statics))
 
@@ -1236,8 +1252,56 @@
     (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException"
                                      (if (pair? msg) (car msg) jolt-nil)))))
 (define (nio-is-symlink? fp)
-  (and c-readlink (> (c-readlink fp (make-bytevector 1 0) 1) 0)))   ; readlink succeeds only on a link
+  (if (nio-windows?)
+      (and (win32-readlink fp) #t)
+      (and c-readlink (> (c-readlink fp (make-bytevector 1 0) 1) 0))))   ; readlink succeeds only on a link
+;; Windows: a symbolic link is a reparse point tagged IO_REPARSE_TAG_SYMLINK (a
+;; junction is not one, as WindowsFileAttributes.isSymbolicLink has it), and its
+;; target is the reparse data's print name, else its substitute name without
+;; the \??\ prefix (WindowsLinkSupport.readLink). The link itself is opened,
+;; FILE_FLAG_OPEN_REPARSE_POINT, with no access, so this reads a dangling link
+;; too. #f for anything that is not a symbolic link.
+(define-win32-proc win32-device-io-control-out
+  "kernel32.dll" "DeviceIoControl" (iptr unsigned-32 void* unsigned-32 u8* unsigned-32 u8* void*) int)
+(define win32-FSCTL-GET-REPARSE-POINT #x900A8)
+(define (win32-readlink fp)
+  (let ((a (win32-file-attributes fp))
+        (create (win32-create-file-w)) (close (win32-close-handle)) (ioctl (win32-device-io-control-out)))
+    (and a (not (= 0 (bitwise-and a win32-FILE-ATTRIBUTE-REPARSE-POINT))) create close ioctl
+         (let ((h (win32-with-wstr fp
+                    (lambda (w) (create w 0 win32-FILE-SHARE-ALL 0 win32-OPEN-EXISTING
+                                        (bitwise-ior win32-FILE-FLAG-BACKUP-SEMANTICS
+                                                     win32-FILE-FLAG-OPEN-REPARSE-POINT)
+                                        0)))))
+           (and (not (= h win32-INVALID-HANDLE-VALUE))
+                (let* ((buf (make-bytevector 16384 0))
+                       (ok (guard (_ (#t 0))
+                             (ioctl h win32-FSCTL-GET-REPARSE-POINT 0 0 buf 16384 (make-bytevector 4 0) 0))))
+                  (close h)
+                  (and (not (= ok 0))
+                       (= (bytevector-u32-ref buf 0 (endianness little)) win32-IO-REPARSE-TAG-SYMLINK)
+                       (let* ((u16 (lambda (i) (bytevector-u16-ref buf i (endianness little))))
+                              (str (lambda (off len)
+                                     (let ((b (make-bytevector len)))
+                                       (bytevector-copy! buf (+ 20 off) b 0 len)
+                                       (utf16->string b (endianness little)))))
+                              (print (str (u16 12) (u16 14)))
+                              (subst (str (u16 8) (u16 10))))
+                         (cond ((> (string-length print) 0) print)
+                               ((and (>= (string-length subst) 8) (string=? (substring subst 0 8) "\\??\\UNC\\"))
+                                (string-append "\\\\" (substring subst 8 (string-length subst))))
+                               ((and (>= (string-length subst) 4) (string=? (substring subst 0 4) "\\??\\"))
+                                (substring subst 4 (string-length subst)))
+                               (else subst))))))))))
+;; A link to a directory is removed with RemoveDirectoryW on Windows, as the
+;; JDK's implDelete does for a directory link.
+(define (nio-directory-link? fp)
+  (and (nio-windows?)
+       (let ((a (win32-file-attributes fp)))
+         (and a (not (= 0 (bitwise-and a win32-FILE-ATTRIBUTE-DIRECTORY)))))))
 (define (nio-readlink fp)
+  (if (nio-windows?) (win32-readlink fp) (nio-posix-readlink fp)))
+(define (nio-posix-readlink fp)
   (and c-readlink
        (let* ((buf (make-bytevector 4096 0)) (n (c-readlink fp buf 4096)))
          (and (> n 0)
@@ -1278,17 +1342,52 @@
                  (and (string? parent) (not (file-directory? parent)))))
            (nio-no-such-file shown-link other))
           (else (nio-fs-throw "java.nio.file.FileSystemException" shown-link other)))))
+;; Files.createSymbolicLink on Windows, as WindowsFileSystemProvider makes one:
+;; CreateSymbolicLinkW with the target in backslashes, SYMBOLIC_LINK_FLAG_DIRECTORY
+;; when the target (resolved against the link's directory) is a directory, and
+;; SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE, dropped and retried when the
+;; system answers ERROR_INVALID_PARAMETER (one too old to know it), as the JDK's
+;; native CreateSymbolicLink does. A drive-relative target ("C:x") is refused, as
+;; there.
+(define-win32-proc win32-create-symbolic-link-w
+  "kernel32.dll" "CreateSymbolicLinkW" (void* void* unsigned-32) unsigned-8)
+(define (nio-win32-create-symlink! l target shown)
+  (let* ((create (win32-create-symbolic-link-w))
+         (t (list->string (map (lambda (c) (if (char=? c #\/) #\\ c)) (string->list target))))
+         (n (string-length t))
+         (drive? (and (>= n 2) (char=? (string-ref t 1) #\:)))
+         (rooted? (and (>= n 1) (char=? (string-ref t 0) #\\))))
+    (unless create
+      (throw-jvm 'UnsupportedOperationException "Symbolic links not supported on this operating system"))
+    (when (and drive? (not (and (>= n 3) (char=? (string-ref t 2) #\\))))
+      (throw-jvm 'IOException "Cannot create symbolic link to working directory relative target"))
+    (let* ((parent (npath-parent-for #t l))
+           (resolved (if (or drive? rooted? (not (string? parent))) t (string-append parent "\\" t)))
+           (flags (if (file-directory? resolved) 1 0))
+           (call (lambda (fl)
+                   (win32-with-wstr l
+                     (lambda (wl)
+                       (win32-with-wstr t
+                         (lambda (wt)
+                           (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (create wl wt fl))))))))))
+      (let-values (((r err) (call (bitwise-ior flags 2))))
+        (let-values (((r err) (if (and (= r 0) (= err 87)) (call flags) (values r err))))
+          (when (= r 0) (fc-win32-throw shown err)))))))
+(define (nio-make-symlink! l t shown)
+  (cond ((nio-windows?) (nio-win32-create-symlink! l t shown))
+        (c-symlink
+         (let-values (((r err) (io-call+errno (c-symlink t l))))
+           (unless (= 0 r)
+             (nio-link-failed l #f shown #f err))))
+        (else
+         (throw-jvm 'UnsupportedOperationException
+                    "Symbolic links not supported on this operating system"))))
 (define fvo-nofollow (make-jhost "link-option" 'nofollow-links))
 (let ((files-attr
        (list (cons "readAttributes" nio-read-attributes)
              (cons "isSymbolicLink" (lambda (p . _) (if (nio-is-symlink? (nfp p)) #t #f)))
              (cons "createSymbolicLink" (lambda (link target . _)
-                                          (if c-symlink
-                                              (let ((t (npath-string-of target)) (l (nfp link)))
-                                                (let-values (((r err) (io-call+errno (c-symlink t l))))
-                                                  (unless (= 0 r)
-                                                    (nio-link-failed l #f (nio-shown link) #f err))))
-                                              (jolt-throw (jolt-ex-info "symlink unavailable" empty-pmap)))
+                                          (nio-make-symlink! (nfp link) (npath-string-of target) (nio-shown link))
                                           (->path link)))
              (cons "createLink" (lambda (link existing . _)
                                   (let* ((l (nfp link)) (e (nfp existing))
@@ -1342,7 +1441,7 @@
 ;; open-file-output-port with no `no-fail` option owns the O_EXCL-style create
 ;; handle itself.
 (define (nio-output-file-options args)
-  (let* ((opts (npath-spread-args args))
+  (let* ((opts (filter (lambda (o) (not (link-option? o))) (npath-spread-args args)))
          (syms (map oopt-sym opts)))
     (for-each
      (lambda (sym)
@@ -1400,21 +1499,21 @@
           n)
         #f #f
         (lambda () (close-port port))))))
-;; DELETE_ON_CLOSE: unlinked as soon as it is open, which is what the JDK does on
-;; a POSIX filesystem; the open port keeps the data until it is closed. Windows
-;; cannot unlink an open file.
-(define (nio-delete-on-close! fp port opts)
-  (when (nio-opts-have? opts oopt-sym 'delete-on-close)
-    (when (nio-windows?)
-      (close-port port)
-      (throw-jvm 'UnsupportedOperationException "DELETE_ON_CLOSE not supported"))
-    (guard (_ (#t #f)) (delete-file fp))))
+;; DELETE_ON_CLOSE and NOFOLLOW_LINKS open through the channel's ops
+;; (nio-native-port, nio-channel-open?): unlinked once open on Unix,
+;; FILE_FLAG_DELETE_ON_CLOSE on Windows, and a symbolic link refused on both, as
+;; the JDK's channel factories do. newOutputStream adds WRITE
+;; to the options before it opens, which is what keeps the channel's
+;; read-by-default out.
 (define (nio-open-output-port fp options opts . shown)
-  (let ((port (apply nio-fs-call fp (lambda () (open-file-output-port fp options)) shown)))
-    (nio-delete-on-close! fp port opts)
-    (cond ((nio-opts-have? opts oopt-sym 'sync) (nio-sync-port port fp "SYNC"))
-          ((nio-opts-have? opts oopt-sym 'dsync) (nio-sync-port port fp "DSYNC"))
-          (else port))))
+  (if (nio-channel-open? opts)
+      (vector-ref (nio-native-port fp (if (pair? shown) (car shown) fp)
+                                   (nio-channel-syms opts (make-oopt 'write)) 'output)
+                  0)
+      (let ((port (apply nio-fs-call fp (lambda () (open-file-output-port fp options)) shown)))
+        (cond ((nio-opts-have? opts oopt-sym 'sync) (nio-sync-port port fp "SYNC"))
+              ((nio-opts-have? opts oopt-sym 'dsync) (nio-sync-port port fp "DSYNC"))
+              (else port)))))
 
 (let ((files-opt
        (list (cons "write" (lambda (p data . opts)
@@ -1465,10 +1564,40 @@
 ;; that comes from statx(2), which is what the JDK asks too. offsetof-measured:
 ;; darwin with cc for arm64 and x86_64, Linux with gcc 13 under podman for amd64
 ;; and arm64.
+;;
+;; The attribute snapshots (below) read the rest of the struct from the same
+;; buffer, so the row goes on with
+;;   st_size-offset st_gid-offset st_ctim-offset st_nlink-offset st_nlink-width
+;;   st_rdev-offset st_rdev-width
+;; offsetof-measured the same way (cc on darwin arm64 and x86_64, gcc 12 in
+;; debian:bookworm under podman for linux amd64 and arm64):
+;;   darwin        size@96 gid@20 ctime@64  nlink@6/2  rdev@24/4
+;;   linux-x86-64  size@48 gid@32 ctime@104 nlink@16/8 rdev@40/8
+;;   linux-arm64   size@48 gid@28 ctime@104 nlink@20/4 rdev@32/8
 (define nio-stat-layouts
-  (list (vector 'darwin        4 2 16 32 48 80 4)
-        (vector 'linux-x86-64 24 4 28 72 88 #f 8)
-        (vector 'linux-arm64  16 4 24 72 88 #f 8)))
+  (list (vector 'darwin        4 2 16 32 48 80 4 96 20  64  6 2 24 4)
+        (vector 'linux-x86-64 24 4 28 72 88 #f 8 48 32 104 16 8 40 8)
+        (vector 'linux-arm64  16 4 24 72 88 #f 8 48 28 104 20 4 32 8)))
+(define (nio-layout-size-off l) (vector-ref l 8))
+(define (nio-layout-gid-off l) (vector-ref l 9))
+(define (nio-layout-ctime-off l) (vector-ref l 10))
+;; an unsigned field WIDTH bytes wide at OFF
+(define (nio-buf-uint buf off width)
+  (case width
+    ((2) (bytevector-u16-ref buf off (native-endianness)))
+    ((4) (bytevector-u32-ref buf off (native-endianness)))
+    (else (bytevector-u64-ref buf off (native-endianness)))))
+(define (nio-layout-nlink-ref l buf) (nio-buf-uint buf (vector-ref l 11) (vector-ref l 12)))
+;; st_dev and st_rdev as the JDK's long: darwin's dev_t is a signed 32-bit int,
+;; Linux's an unsigned 64-bit one that Java reads back as signed.
+(define (nio-layout-rdev-ref l buf)
+  (if (= 4 (vector-ref l 14))
+      (bytevector-s32-ref buf (vector-ref l 13) (native-endianness))
+      (bytevector-s64-ref buf (vector-ref l 13) (native-endianness))))
+(define (nio-layout-dev-long l buf)
+  (if (= 4 (vector-ref l 7))
+      (bytevector-s32-ref buf 0 (native-endianness))
+      (bytevector-s64-ref buf 0 (native-endianness))))
 (define (nio-layout-name l) (vector-ref l 0))
 (define (nio-layout-atime-off l) (vector-ref l 4))
 (define (nio-layout-mtime-off l) (vector-ref l 5))
@@ -1582,7 +1711,13 @@
               (else (loop (cdr os) (cdr bs) acc)))))))
 (let ((files-stat
        (list (cons "getPosixFilePermissions"
-                   (lambda (p . _) (nio-posix-view!) (nio-mode->perm-set (or (nio-stat-mode (nfp p)) #o755)))))))
+                   ;; the mode from one snapshot, honoring NOFOLLOW_LINKS; a path
+                   ;; that is not there is the stat's exception, never a default
+                   (lambda (p . opts)
+                     (nio-posix-view!)
+                     (nio-stat-layout-guard! "getPosixFilePermissions")
+                     (nio-snap-ref (nio-snapshot (nfp p) (not (nio-opts-nofollow? opts)) (nio-shown p) #f)
+                                   "permissions"))))))
   (set! files-accum-chunks (cons files-stat files-accum-chunks)))
 ;; instance? FileTime
 (register-instance-check-arm!
@@ -1853,14 +1988,6 @@
                (if off
                    (let ((buf (nio-stat-buf fp follow?))) (and buf (nio-stat-file-time buf off)))
                    (nio-statx-btime fp follow?)))))))
-;; The same, never #f: a host or filesystem with no birth time answers the mtime,
-;; which is the JDK's fallback too, and a host with no stat layout the
-;; millisecond mtime Chez reads.
-(define (nio-time-attr fp nm follow?)
-  (or (nio-read-time fp nm follow?)
-      (and (not (string=? nm "lastModifiedTime")) (nio-read-time fp "lastModifiedTime" follow?))
-      (make-file-time (file-mtime-millis fp))))
-
 ;; Setting them. utimensat(2) with UTIME_OMIT in the mtime slot moves the access
 ;; time alone; its constants are per-OS (measured with cc/gcc as above). The
 ;; creation time is settable on macOS through setattrlist(ATTR_CMN_CRTIME) and on
@@ -1887,22 +2014,31 @@
 (let ((files-nofollow-time
        (list
         (cons "getLastModifiedTime" (lambda (p . opts)
-                                      (let ((fp (nfp p)) (follow? (not (nio-opts-nofollow? opts))))
-                                        (nio-attrs-require-exists! fp follow? (nio-shown p))
-                                        (nio-attr-value fp "lastModifiedTime" follow?))))
-        (cons "getAttribute" (lambda (path attr . opts)
-                               (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr)))
-                                     (follow? (not (nio-opts-nofollow? opts))))
-                                 (nio-attrs-require-exists! fp follow? (nio-shown path))
-                                 (nio-attr-value fp nm follow?)))))))
+                                      (nio-snap-ref (nio-snapshot (nfp p) (not (nio-opts-nofollow? opts)) (nio-shown p) #f)
+                                                    "lastModifiedTime")))
+        (cons "getAttribute" nio-get-attribute))))
   (set! files-accum-chunks (cons files-nofollow-time files-accum-chunks)))
 
-;; java.nio.channels.FileChannel/open — babashka.fs/touch uses it only to create
-;; a file (CREATE + WRITE) inside with-open, so support open+close of a channel.
-;; State: #(path size-at-open|#f). DELETE_ON_CLOSE unlinks the file as the
-;; channel opens, as the stream opens do (nio-delete-on-close!); nothing writes
-;; through this channel, so the size it had then is its size.
-(define (fc-close! self) jolt-nil)
+;; java.nio.channels.FileChannel/open. babashka.fs/touch opens one to create a
+;; file (CREATE + WRITE) inside with-open; nothing reads or writes through it.
+;; The channel holds the file open for its lifetime, on a descriptor (POSIX) or a
+;; HANDLE (Windows), which is what its locks are taken on.
+;; State: #(path native open? readable? writable? file-id mutex waits)
+;; WAITS are the lock() kernel waits in flight on helper threads, which a close
+;; ends before it closes the descriptor they are waiting on.
+;; NATIVE is the descriptor or HANDLE, an integer the platform's ops below know
+;; how to lock and close. The mutex orders close against the lock calls: each
+;; lock call runs with it held and the channel seen open, so a close on another
+;; thread can't leave one working on a closed descriptor, or on a reused one.
+(define (fc-path self) (vector-ref (jhost-state self) 0))
+(define (fc-native-of self) (vector-ref (jhost-state self) 1))
+(define (fc-open? self) (vector-ref (jhost-state self) 2))
+(define (fc-readable? self) (vector-ref (jhost-state self) 3))
+(define (fc-writable? self) (vector-ref (jhost-state self) 4))
+(define (fc-file-id self) (vector-ref (jhost-state self) 5))
+(define (fc-mutex self) (vector-ref (jhost-state self) 6))
+(define (fc-waits self) (vector-ref (jhost-state self) 7))
+(define (fc-waits-set! self w) (vector-set! (jhost-state self) 7 w))
 (let ((fc-statics
        (list (cons "open" (lambda (path . opts)
                             (if (nio-path? path)
@@ -1910,25 +2046,816 @@
                                 (apply nio-host-file-channel path opts)))))))
   (register-class-statics! "FileChannel" fc-statics)
   (register-class-statics! "java.nio.channels.FileChannel" fc-statics))
+
+;; ---- the options, as the JDK reads them -----------------------------------------
+;; FileChannel.open(path, OpenOption...) and open(path, Set, FileAttribute...):
+;; the options, and the attributes (only the Set form has any).
+(define (fc-split-args opts)
+  (cond ((null? opts) (values '() '()))
+        ((jolt-array? (car opts)) (values (ja->list (car opts)) (cdr opts)))
+        ((or (oopt-sym (car opts)) (link-option? (car opts)) (jolt-nil? (car opts)))
+         (values opts '()))
+        (else (values (seq->list (jolt-seq (car opts))) (cdr opts)))))
+(define (link-option? x) (and (jhost? x) (string=? (jhost-tag x) "link-option")))
+;; Flags.toFlags (UnixChannelFactory, WindowsChannelFactory): each option a
+;; symbol, NOFOLLOW_LINKS 'nofollow-links where the host can honour it. null is
+;; NullPointerException; anything else, NOFOLLOW_LINKS on a host that can't, is
+;; UnsupportedOperationException with the host's message (UNKNOWN-MSG): Unix
+;; names the option, Windows says nothing.
+(define (fc-option-syms opts nofollow-ok? unknown-msg)
+  (fold-left
+    (lambda (acc o)
+      (cond ((oopt-sym o) => (lambda (s) (cons s acc)))
+            ((and (link-option? o) nofollow-ok?) (cons 'nofollow-links acc))
+            ((jolt-nil? o) (throw-jvm 'NullPointerException jolt-nil))
+            (else (throw-jvm 'UnsupportedOperationException (unknown-msg o)))))
+    '() opts))
+(define (fc-posix-unknown-option o)
+  (string-append (if (link-option? o) "NOFOLLOW_LINKS" (jolt-str-render-one o)) " not supported"))
+;; newFileChannel's defaults and checks, before anything touches the disk: with
+;; neither READ nor WRITE a channel reads, or writes when APPEND is given; READ
+;; with APPEND, and APPEND with TRUNCATE_EXISTING, are IllegalArgumentException.
+(define (fc-open-flags opts nofollow-ok? unknown-msg)
+  (let* ((syms (fc-option-syms opts nofollow-ok? unknown-msg))
+         (syms (if (or (memq 'read syms) (memq 'write syms))
+                   syms
+                   (cons (if (memq 'append syms) 'write 'read) syms))))
+    (when (and (memq 'read syms) (memq 'append syms))
+      (throw-jvm 'IllegalArgumentException "READ + APPEND not allowed"))
+    (when (and (memq 'append syms) (memq 'truncate-existing syms))
+      (throw-jvm 'IllegalArgumentException "APPEND + TRUNCATE_EXISTING not allowed"))
+    syms))
+;; The JDK's check that a CREATE_NEW path doesn't end in a "." component, which
+;; it answers as the file already existing.
+(define (fc-dot-name? fp)
+  (let ((n (string-length fp)))
+    (and (> n 0) (char=? (string-ref fp (- n 1)) #\.)
+         (or (= n 1) (memv (string-ref fp (- n 2)) '(#\/ #\\))))))
+
+;; ---- POSIX: open(2), fcntl record locks, close(2) ----------------------------
+;; The flags UnixChannelFactory.open builds, offsetof/#define-measured with cc on
+;; macOS (arm64, x86_64) and gcc/musl-gcc/clang on Linux amd64, arm64 and bionic
+;; arm64: #(O_WRONLY O_RDWR O_APPEND O_CREAT O_TRUNC O_EXCL O_NOFOLLOW O_SYNC O_DSYNC)
+;; O_NOFOLLOW is the one that moves between Linux architectures (arm64 has its
+;; own); 0 where it isn't known, which is the JDK's own degradation: then
+;; NOFOLLOW_LINKS is unsupported and DELETE_ON_CLOSE checks for a link first.
+(define (fc-posix-oflags)
+  (case (sa-os-family)
+    ((macos) '#(1 2 #x8 #x200 #x400 #x800 #x100 #x80 #x400000))
+    ((linux) (vector 1 2 #x400 #x40 #x200 #x80
+                     (case (sa-arch) ((arm64) #x8000) ((x86-64 i386) #x20000) (else 0))
+                     #x101000 #x1000))
+    (else #f)))
+(define nio-EISDIR 21)                      ; the same on macOS and Linux
+(define c-fc-open
+  (and (not (nio-windows?))
+       (jolt-foreign-proc-safe (__varargs_after 2) "open" '(string int int) 'int)))
+(define (fc-posix-nofollow?) (let ((o (fc-posix-oflags))) (and o (> (vector-ref o 6) 0))))
+;; UnixChannelFactory.open: the descriptor, or the JDK's exception for the errno.
+(define (fc-posix-open fp shown syms mode)
+  (let* ((o (fc-posix-oflags))
+         (on? (lambda (s) (and (memq s syms) #t)))
+         (read? (on? 'read)) (write? (on? 'write))
+         (follow? (not (and (not (on? 'create-new))
+                            (or (on? 'nofollow-links) (on? 'delete-on-close)))))
+         (oflags
+          (fxior (cond ((and read? write?) (vector-ref o 1)) (write? (vector-ref o 0)) (else 0))
+                 (if (and write? (on? 'truncate-existing)) (vector-ref o 4) 0)
+                 (if (and write? (on? 'append)) (vector-ref o 2) 0)
+                 (cond ((and write? (on? 'create-new)) (fxior (vector-ref o 3) (vector-ref o 5)))
+                       ((and write? (on? 'create)) (vector-ref o 3))
+                       (else 0))
+                 (if follow? 0 (vector-ref o 6))
+                 (if (on? 'dsync) (vector-ref o 8) 0)
+                 (if (on? 'sync) (vector-ref o 7) 0))))
+    (when (and write? (on? 'create-new) (fc-dot-name? fp))
+      (nio-errno-throw shown #f nio-EEXIST))
+    (when (and (not follow?) (= 0 (vector-ref o 6)) (on? 'delete-on-close) (nio-is-symlink? fp))
+      (throw-jvm 'IOException "DELETE_ON_CLOSE specified and file is a symbolic link"))
+    (let-values (((fd err) (io-call+errno (c-fc-open fp oflags mode))))
+      (when (< fd 0)
+        (cond ((and (on? 'create-new) (= err nio-EISDIR)) (nio-errno-throw shown #f nio-EEXIST))
+              ((and (not follow?) (= err io-ELOOP))
+               (throw-jvm 'IOException
+                          (string-append (if c-strerror (c-strerror err) "Too many levels of symbolic links")
+                                         " (NOFOLLOW_LINKS specified)")))
+              (else (nio-errno-throw shown #f err))))
+      ;; DELETE_ON_CLOSE unlinks as the channel opens, best effort, as the JDK
+      ;; does on Unix (and the stream opens here, nio-delete-on-close!).
+      (when (on? 'delete-on-close) (guard (_ (#t #f)) (delete-file fp)))
+      fd)))
+(define (fc-posix-close! fd) (when c-close-fd (c-close-fd fd)))
+;; FileChannel.size is the descriptor's st_size, which outlives a DELETE_ON_CLOSE
+;; unlink and a rename. lseek to the end answers it without struct stat (glibc
+;; before 2.33 exports no fstat), and the offset goes back where it was.
+(define c-fc-lseek
+  (and (not (nio-windows?)) (jolt-foreign-proc-safe "lseek" '(int integer-64 int) 'integer-64)))
+(define (fc-posix-size fd fp)
+  (if c-fc-lseek
+      (let* ((here (c-fc-lseek fd 0 1)) (end (c-fc-lseek fd 0 2)))   ; SEEK_CUR, SEEK_END
+        (when (>= here 0) (c-fc-lseek fd here 0))                   ; SEEK_SET
+        (if (>= end 0) end (nio-size fp)))
+      (nio-size fp)))
+
+;; A lock is a POSIX record lock (fcntl F_SETLK on struct flock), which is what
+;; OpenJDK takes on Unix, so it excludes other processes, a JVM's included.
+;; Record locks belong to the process, not the descriptor: a second lock from
+;; this process over the same bytes would simply merge with the first, and
+;; closing ANY descriptor on the file drops every lock the process holds there.
+;; So, as the JDK does in FileLockTable, the process keeps its own table of the
+;; locks it holds per file, and a request overlapping one of them, through any
+;; channel, is OverlappingFileLockException rather than a second kernel lock.
+;;
+;; struct flock and the constants, measured as the open flags above:
+;;   #(sizeof l_start@ l_len@ l_type@ l_whence@ F_SETLK F_RDLCK F_WRLCK F_UNLCK EAGAIN F_SETLKW)
+;; EACCES (13) and EINTR (4) are the same on all of them. Bionic arm64 is glibc
+;; arm64's layout (both are the kernel's asm-generic struct). A function rather
+;; than a constant so a saved image never carries the build host's answer.
+(define (nio-flock-layout)
+  (case (sa-os-family)
+    ((macos) '#(24 0 8 20 22 8 1 3 2 35 9))
+    ((linux) (and (memq (sa-arch) '(x86-64 arm64)) '#(32 8 16 0 2 6 0 1 2 11 7)))
+    (else #f)))
+;; F_SETLKW, the waiting lock, is the same call made __collect_safe, so the
+;; collector runs while it waits: it runs on a helper thread (fc-posix-lock-wait)
+;; with the struct in foreign memory, where a collection cannot move it.
+(define c-fcntl-flock-wait
+  (and (not (nio-windows?))
+       (jolt-foreign-proc-safe __collect_safe (__varargs_after 2) "fcntl" '(int int void*) 'int)))
+(define c-fcntl-flock
+  (and (not (nio-windows?))
+       (jolt-foreign-proc-safe (__varargs_after 2) "fcntl" '(int int u8*) 'int)))
+;; One F_SETLK over [start, start+size), the JDK's Long.MAX_VALUE meaning to the
+;; end of the file and past it (l_len 0). KIND is 'shared, 'exclusive or
+;; 'unlock. #t when it was granted, #f when another process holds a conflicting
+;; lock; any other failure throws.
+(define (fc-posix-lock! fd kind start size)
+  (let* ((lay (nio-flock-layout))
+         (bv (make-bytevector (vector-ref lay 0) 0))
+         (e (native-endianness)))
+    (bytevector-s64-set! bv (vector-ref lay 1) start e)
+    (bytevector-s64-set! bv (vector-ref lay 2) (if (= size #x7FFFFFFFFFFFFFFF) 0 size) e)
+    (bytevector-s16-set! bv (vector-ref lay 3)
+                         (vector-ref lay (case kind ((shared) 6) ((exclusive) 7) (else 8))) e)
+    (bytevector-s16-set! bv (vector-ref lay 4) 0 e)          ; SEEK_SET
+    (let retry ()
+      (let-values (((r err) (io-call+errno (c-fcntl-flock fd (vector-ref lay 5) bv))))
+        (cond ((= r 0) #t)
+              ((= err 4) (retry))
+              ((or (= err (vector-ref lay 9)) (= err 13)) #f)
+              (else (throw-jvm 'IOException (if c-strerror (c-strerror err) "fcntl failed"))))))))
+(define (fc-posix-can-lock?) (and c-fcntl-flock (nio-flock-layout) #t))
+;; lock(): one F_SETLKW on the helper thread OP runs on (concurrency.ss
+;; jolt-offload-start!). 'granted, 'cancelled when the waiter gave up (an
+;; interrupt, a close) and its signal ended the wait, or the errno.
+(define (fc-posix-lock-wait fd kind start size op)
+  (let* ((lay (nio-flock-layout))
+         (p (sa-foreign-alloc (vector-ref lay 0))))
+    (do ((i 0 (+ i 1))) ((= i (vector-ref lay 0))) (sa-foreign-set! 'unsigned-8 p i 0))
+    (sa-foreign-set! 'integer-64 p (vector-ref lay 1) start)
+    (sa-foreign-set! 'integer-64 p (vector-ref lay 2) (if (= size #x7FFFFFFFFFFFFFFF) 0 size))
+    (sa-foreign-set! 'integer-16 p (vector-ref lay 3)
+                     (vector-ref lay (case kind ((shared) 6) (else 7))))
+    (sa-foreign-set! 'integer-16 p (vector-ref lay 4) 0)       ; SEEK_SET
+    (let ((r (let retry ()
+               (if (jolt-offload-cancelled? op)
+                   'cancelled
+                   (let-values (((r err) (io-call+errno (c-fcntl-flock-wait fd (vector-ref lay 10) p))))
+                     (cond ((= r 0) 'granted)
+                           ((= err 4) (retry))                  ; EINTR: cancelled, or a stray signal
+                           (else err)))))))
+      (sa-foreign-free p)
+      r)))
+(define (fc-posix-can-wait?) (and c-fcntl-flock-wait (fc-posix-can-lock?) (jolt-offload-available?) #t))
+(define (fc-posix-error-message err) (if c-strerror (c-strerror err) "fcntl failed"))
+;; What identifies the file for the in-process lock table: the (st_dev, st_ino)
+;; pair, so two paths to one file (a hard link, a symlink, a relative spelling)
+;; share their locks, as the JDK's FileLockTable keys them (FileKey.create(fd)).
+;; fstat of the descriptor, which a DELETE_ON_CLOSE unlink or a rename doesn't
+;; change; the path where fstat isn't bound (glibc before 2.33), and the path
+;; string where stat can't answer either. struct stat is stat's (nio-stat-layout).
+(define c-fc-fstat
+  (and (not (nio-windows?)) (jolt-foreign-proc-safe "fstat" '(int u8*) 'int)))
+(define (fc-posix-file-id fd fp)
+  (let ((buf (or (and c-fc-fstat (nio-stat-layout)
+                      (let ((b (make-bytevector 256 0))) (and (= 0 (c-fc-fstat fd b)) b)))
+                 (nio-stat-buf fp #t))))
+    (if buf
+        (cons (nio-layout-dev-ref (nio-stat-layout) buf) (bytevector-u64-ref buf 8 (native-endianness)))
+        fp)))
+
+;; ---- Windows: CreateFileW, LockFileEx, CloseHandle ---------------------------
+;; WindowsChannelFactory.open and the JDK's Windows FileDispatcherImpl. The
+;; channel owns a HANDLE rather than a C runtime descriptor, so nothing here
+;; depends on which msvcrt or ucrt answered (process.ss's handle ports, for the
+;; same reason). Every entry is resolved lazily (define-win32-proc), so a POSIX
+;; build never looks one up and a missing one degrades instead of aborting boot.
+(define-win32-proc win32-lock-file-ex
+  "kernel32.dll" "LockFileEx" (iptr unsigned-32 unsigned-32 unsigned-32 unsigned-32 u8*) int)
+(define-win32-proc win32-unlock-file-ex
+  "kernel32.dll" "UnlockFileEx" (iptr unsigned-32 unsigned-32 unsigned-32 u8*) int)
+(define-win32-proc win32-get-file-size-ex
+  "kernel32.dll" "GetFileSizeEx" (iptr u8*) int)
+(define-win32-proc win32-device-io-control
+  "kernel32.dll" "DeviceIoControl" (iptr unsigned-32 void* unsigned-32 void* unsigned-32 u8* void*) int)
+(define-win32-proc win32-get-overlapped-result
+  "kernel32.dll" "GetOverlappedResult" (iptr u8* u8* int) int)
+(define-win32-proc win32-set-end-of-file
+  "kernel32.dll" "SetEndOfFile" (iptr) int)
+(define-win32-proc win32-get-file-information-by-handle
+  "kernel32.dll" "GetFileInformationByHandle" (iptr u8*) int)
+(define-win32-proc win32-get-file-information-by-handle-ex
+  "kernel32.dll" "GetFileInformationByHandleEx" (iptr int u8* unsigned-32) int)
+(define win32-GENERIC-READ               #x80000000)
+(define win32-GENERIC-WRITE              #x40000000)
+(define win32-CREATE-NEW                 1)
+(define win32-OPEN-ALWAYS                4)
+(define win32-TRUNCATE-EXISTING          5)
+(define win32-FILE-ATTRIBUTE-NORMAL      #x80)
+(define win32-FILE-FLAG-WRITE-THROUGH    #x80000000)
+(define win32-FILE-FLAG-DELETE-ON-CLOSE  #x04000000)
+(define win32-FILE-FLAG-OPEN-REPARSE-PT  #x00200000)
+(define win32-LOCKFILE-FAIL-IMMEDIATELY  1)
+(define win32-LOCKFILE-EXCLUSIVE-LOCK    2)
+(define win32-ERROR-LOCK-VIOLATION       33)
+(define win32-ERROR-IO-PENDING           997)
+(define win32-FSCTL-SET-SPARSE           #x900C4)
+(define win32-ERROR-NOT-LOCKED           158)
+(define win32-IO-REPARSE-TAG-SYMLINK     #xA000000C)
+;; A Win32 call and its GetLastError, read with interrupts off so a collect
+;; rendezvous can't overwrite it first (win32-move-replacing!, io.ss). OK? says
+;; which results succeeded.
+(define (fc-win32-call ok? thunk)
+  (let ((last-error (win32-get-last-error)))
+    (disable-interrupts)
+    (let* ((r (thunk)) (err (if (ok? r) 0 (if last-error (last-error) 0))))
+      (enable-interrupts)
+      (values r err))))
+;; WindowsException.translateToIOException for a file operation's error.
+(define (fc-win32-throw shown err)
+  (cond ((memv err '(2 3)) (nio-no-such-file shown))          ; FILE or PATH_NOT_FOUND
+        ((memv err '(80 183)) (nio-already-exists shown))     ; FILE or ALREADY_EXISTS
+        ((= err 5) (nio-fs-throw "java.nio.file.AccessDeniedException" shown))
+        (else (nio-fs-throw "java.nio.file.FileSystemException" shown #f (win32-error-message err)))))
+(define (fc-win32-symlink? h)
+  (let ((f (win32-get-file-information-by-handle-ex)) (buf (make-bytevector 8 0)))
+    (and f (not (= 0 (f h 9 buf 8))) ; FileAttributeTagInfo: attributes, reparse tag
+         (not (= 0 (bitwise-and (bytevector-u32-ref buf 0 (endianness little)) #x400)))
+         (= (bytevector-u32-ref buf 4 (endianness little)) win32-IO-REPARSE-TAG-SYMLINK))))
+(define (fc-win32-open fp shown syms mode)
+  (let* ((on? (lambda (s) (and (memq s syms) #t)))
+         (create (win32-create-file-w))
+         (close (win32-close-handle))
+         (write? (on? 'write))
+         (truncate-after? (and write? (not (on? 'create-new)) (on? 'create) (on? 'truncate-existing)))
+         (disposition (cond ((not write?) win32-OPEN-EXISTING)
+                            ((on? 'create-new) win32-CREATE-NEW)
+                            ((on? 'create) win32-OPEN-ALWAYS)
+                            ((on? 'truncate-existing) win32-TRUNCATE-EXISTING)
+                            (else win32-OPEN-EXISTING)))
+         (follow? (not (and (not (= disposition win32-CREATE-NEW))
+                            (or (on? 'nofollow-links) (on? 'delete-on-close)))))
+         (flags (bitwise-ior win32-FILE-ATTRIBUTE-NORMAL
+                             (if (= disposition win32-CREATE-NEW) win32-FILE-FLAG-OPEN-REPARSE-PT 0)
+                             (if (or (on? 'sync) (on? 'dsync)) win32-FILE-FLAG-WRITE-THROUGH 0)
+                             (if (on? 'delete-on-close) win32-FILE-FLAG-DELETE-ON-CLOSE 0)
+                             (if follow? 0 win32-FILE-FLAG-OPEN-REPARSE-PT)))
+         (access (bitwise-ior (if (on? 'read) win32-GENERIC-READ 0) (if write? win32-GENERIC-WRITE 0))))
+    (unless (and create close)
+      (throw-jvm 'UnsupportedOperationException "FileChannel needs CreateFileW"))
+    (let-values (((h err) (win32-with-wstr fp
+                            (lambda (w)
+                              (fc-win32-call (lambda (h) (not (= h win32-INVALID-HANDLE-VALUE)))
+                                (lambda () (create w access win32-FILE-SHARE-ALL 0 disposition flags 0)))))))
+      (when (= h win32-INVALID-HANDLE-VALUE) (fc-win32-throw shown err))
+      (when (and (not follow?) (fc-win32-symlink? h))
+        (close h)
+        (throw-jvm 'IOException "File is symbolic link"))
+      ;; CREATE + TRUNCATE_EXISTING: OPEN_ALWAYS, then truncate; a failure on a
+      ;; file that is already empty is ignored, as the JDK ignores it
+      (when truncate-after?
+        (let ((set-eof (win32-set-end-of-file)))
+          (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (set-eof h)))))
+            (when (and (= r 0) (not (eqv? 0 (guard (_ (#t #f)) (fc-win32-size h fp)))))
+              (close h)
+              (fc-win32-throw shown err)))))
+      ;; SPARSE is a hint, taken on a file this open created and ignored if it fails
+      (when (and (= disposition win32-CREATE-NEW) (on? 'sparse))
+        (let ((ioctl (win32-device-io-control)))
+          (when ioctl
+            (guard (_ (#t #f)) (ioctl h win32-FSCTL-SET-SPARSE 0 0 0 0 (make-bytevector 4 0) 0)))))
+      h)))
+(define (fc-win32-size h fp)
+  (let ((f (win32-get-file-size-ex)) (buf (make-bytevector 8 0)))
+    (if (and f (not (= 0 (f h buf))))
+        (bytevector-s64-ref buf 0 (endianness little))
+        (nio-size fp))))
+(define (fc-win32-close! h) (let ((close (win32-close-handle))) (when close (close h))))
+;; LockFileEx with LOCKFILE_FAIL_IMMEDIATELY, as the JDK's lock0 for a tryLock:
+;; ERROR_LOCK_VIOLATION means held. The range is the JDK's position and size as
+;; given (Long.MAX_VALUE stays a count, not "to the end"), split into the
+;; OVERLAPPED's Offset/OffsetHigh and the two count words.
+(define (fc-win32-overlapped start)
+  (let* ((off (if (= 8 (sa-foreign-sizeof 'void*)) 16 8))
+         (o (make-bytevector (+ off 16) 0)))
+    (bytevector-u32-set! o off (bitwise-and start #xFFFFFFFF) (endianness little))
+    (bytevector-u32-set! o (+ off 4) (bitwise-arithmetic-shift-right start 32) (endianness little))
+    o))
+;; A call that answered ERROR_IO_PENDING finishes through GetOverlappedResult,
+;; as lock0/release0 do; the error that settles it is the one returned.
+(define (fc-win32-settle h o r err)
+  (if (and (= r 0) (= err win32-ERROR-IO-PENDING))
+      (let ((wait (win32-get-overlapped-result)))
+        (if wait
+            (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (wait h o (make-bytevector 4 0) 1)))
+            (values r err)))
+      (values r err)))
+(define (fc-win32-lock! h kind start size)
+  (let ((lo (bitwise-and size #xFFFFFFFF)) (hi (bitwise-arithmetic-shift-right size 32))
+        (o (fc-win32-overlapped start)))
+    (if (eq? kind 'unlock)
+        (let ((unlock (win32-unlock-file-ex)))
+          (let*-values (((r0 err0) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (unlock h 0 lo hi o))))
+                        ((r err) (fc-win32-settle h o r0 err0)))
+            (when (and (= r 0) (not (= err win32-ERROR-NOT-LOCKED)))
+              (throw-jvm 'IOException (win32-error-message err)))
+            #t))
+        (let ((lock (win32-lock-file-ex))
+              (flags (bitwise-ior win32-LOCKFILE-FAIL-IMMEDIATELY
+                                  (if (eq? kind 'exclusive) win32-LOCKFILE-EXCLUSIVE-LOCK 0))))
+          (let*-values (((r0 err0) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (lock h flags 0 lo hi o))))
+                        ((r err) (fc-win32-settle h o r0 err0)))
+            (cond ((not (= r 0)) #t)
+                  ((= err win32-ERROR-LOCK-VIOLATION) #f)
+                  (else (throw-jvm 'IOException (win32-error-message err)))))))))
+(define (fc-win32-can-lock?) (and (win32-lock-file-ex) (win32-unlock-file-ex) #t))
+;; lock(): LockFileEx without LOCKFILE_FAIL_IMMEDIATELY on the helper thread, as
+;; the JDK's lock0 with block; __collect_safe, and its OVERLAPPED in foreign
+;; memory. A close or an interrupt cancels it with CancelSynchronousIo
+;; (ERROR_OPERATION_ABORTED).
+;;
+;; The error is Chez's __get_last_error capture, taken as the call returns: a
+;; GetLastError read afterwards, even with interrupts off, came back 0 on a real
+;; Windows runner once the collect-safe call had reactivated the thread. Built
+;; at run time (eval), as ffi.ss builds its variadic captures, so no literal
+;; entry reaches a boot file.
+(define (fc-win32-capture-proc name args)
+  (and (win32?)
+       (begin
+         (win32-load-lib! "kernel32.dll")
+         (and (sa-foreign-entry? name)
+              (guard (e (#t #f))
+                (eval (list 'foreign-procedure '__get_last_error '__collect_safe name args 'int)))))))
+(define-win32-memo win32-lock-file-ex-wait
+  (fc-win32-capture-proc "LockFileEx" '(iptr unsigned-32 unsigned-32 unsigned-32 unsigned-32 void*)))
+(define-win32-memo win32-get-overlapped-result-wait
+  (fc-win32-capture-proc "GetOverlappedResult" '(iptr void* void* int)))
+(define win32-ERROR-OPERATION-ABORTED 995)
+(define (fc-win32-lock-wait h kind start size op)
+  (let* ((lock (win32-lock-file-ex-wait))
+         (bv (fc-win32-overlapped start))
+         (n (bytevector-length bv))
+         (o (sa-foreign-alloc n))
+         (count (sa-foreign-alloc 4))
+         (flags (if (eq? kind 'exclusive) win32-LOCKFILE-EXCLUSIVE-LOCK 0))
+         (lo (bitwise-and size #xFFFFFFFF)) (hi (bitwise-arithmetic-shift-right size 32)))
+    (sa-foreign-bytes-set! o bv n)
+    (let ((r (let retry ()
+               (if (jolt-offload-cancelled? op)
+                   'cancelled
+                   (let-values (((r err) (lock h flags 0 lo hi o)))
+                     (cond ((not (= r 0)) 'granted)
+                           ((= err win32-ERROR-IO-PENDING)
+                            (let-values (((r err) ((win32-get-overlapped-result-wait) h o count 1)))
+                              (cond ((not (= r 0)) 'granted)
+                                    ((memv err (list 0 win32-ERROR-OPERATION-ABORTED)) (retry))
+                                    (else err))))
+                           ;; cancelled (the flag decides, at the top), or no error
+                           ;; to report: ask again
+                           ((memv err (list 0 win32-ERROR-OPERATION-ABORTED)) (retry))
+                           (else err)))))))
+      (sa-foreign-free o)
+      (sa-foreign-free count)
+      r)))
+(define (fc-win32-can-wait?)
+  (and (win32-lock-file-ex-wait) (fc-win32-can-lock?) (jolt-offload-available?) #t))
+;; The JDK's Windows FileKey: the volume serial number and the file index, from
+;; BY_HANDLE_FILE_INFORMATION (dwVolumeSerialNumber@28, nFileIndexHigh@44,
+;; nFileIndexLow@48). The path where the handle can't answer.
+(define (fc-win32-file-id h fp)
+  (let ((f (win32-get-file-information-by-handle)) (buf (make-bytevector 52 0)))
+    (if (and f (not (= 0 (f h buf))))
+        (cons (bytevector-u32-ref buf 28 (endianness little))
+              (+ (* (bytevector-u32-ref buf 44 (endianness little)) #x100000000)
+                 (bytevector-u32-ref buf 48 (endianness little))))
+        fp)))
+
+;; ---- a stream or byte channel on the channel's descriptor or HANDLE ----------
+;; Files/newInputStream, newOutputStream and newByteChannel are a channel
+;; underneath on the JDK (Channels.newInputStream over newByteChannel), so the
+;; ones that need what only the channel's open does -- DELETE_ON_CLOSE, which is
+;; FILE_FLAG_DELETE_ON_CLOSE on Windows and an unlink after open(2) on Unix --
+;; open through the channel's ops (nio-native-port) and put a port on what that
+;; open hands back. MODE is 'input, 'output or 'input/output. The answer is
+;; #(port size truncate!): SIZE takes the port, TRUNCATE! the port and a length.
+;;
+;; POSIX: Chez's own port on the descriptor. A directory opens for reading and
+;; fails at the first read, as nio-directory-input-port has it; SYNC / DSYNC are
+;; already O_SYNC / O_DSYNC on the descriptor, and an output stream also writes
+;; each call through (nio-sync-port), as it does on the plain open.
+(define (fc-posix-port fd mode syms fp)
+  (let ((port (case mode
+                ((input) (if (file-directory? fp)
+                             (begin (fc-posix-close! fd) (nio-directory-input-port))
+                             (open-fd-input-port fd)))
+                ((output) (open-fd-output-port fd))
+                (else (open-fd-input/output-port fd)))))
+    (vector (cond ((not (eq? mode 'output)) port)
+                  ((memq 'sync syms) (nio-sync-port port fp "SYNC"))
+                  ((memq 'dsync syms) (nio-sync-port port fp "DSYNC"))
+                  (else port))
+            file-length
+            set-port-length!)))
+
+;; Windows: a custom port reading and writing the HANDLE with ReadFile and
+;; WriteFile, positioned by SetFilePointerEx, closed by CloseHandle (which is
+;; when FILE_FLAG_DELETE_ON_CLOSE deletes the file). The calls are synchronous
+;; on a file HANDLE, so they don't wait on anything but the disk. APPEND writes
+;; at the OVERLAPPED offset 0xFFFFFFFF:0xFFFFFFFF, the end of the file at the
+;; moment of the write, which is how the JDK's write0 appends. SYNC / DSYNC are
+;; FILE_FLAG_WRITE_THROUGH on the HANDLE, and the output port is unbuffered so
+;; each write reaches it when it is made.
+(define-win32-proc win32-read-file
+  "kernel32.dll" "ReadFile" (iptr u8* unsigned-32 u8* u8*) int)
+(define-win32-proc win32-write-file
+  "kernel32.dll" "WriteFile" (iptr u8* unsigned-32 u8* u8*) int)
+(define-win32-proc win32-set-file-pointer-ex
+  "kernel32.dll" "SetFilePointerEx" (iptr integer-64 u8* unsigned-32) int)
+(define win32-FILE-BEGIN   0)
+(define win32-FILE-CURRENT 1)
+(define (fc-win32-seek! h offset how)
+  (let ((seek (win32-set-file-pointer-ex)) (buf (make-bytevector 8 0)))
+    (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (seek h offset buf how)))))
+      (when (= r 0) (throw-jvm 'IOException (win32-error-message err)))
+      (bytevector-s64-ref buf 0 (endianness little)))))
+(define (fc-win32-port h mode syms fp)
+  (let ((read-file (win32-read-file)) (write-file (win32-write-file))
+        (set-eof (win32-set-end-of-file))
+        (append? (and (memq 'append syms) #t))
+        (sync? (or (memq 'sync syms) (memq 'dsync syms)))
+        (count (make-bytevector 4 0)))
+    (unless (and read-file write-file set-eof (win32-set-file-pointer-ex))
+      (throw-jvm 'UnsupportedOperationException "a file stream needs ReadFile, WriteFile and SetFilePointerEx"))
+    (letrec*
+        ((io-fail (lambda (err) (throw-jvm 'IOException (win32-error-message err))))
+         ;; ReadFile into a scratch buffer, since Chez may hand a START inside
+         ;; the caller's own bytevector; 0 bytes from a synchronous read is EOF
+         (read! (lambda (bv start n)
+                  (let ((buf (make-bytevector (min n 65536))))
+                    (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0)))
+                                            (lambda () (read-file h buf (bytevector-length buf) count #f)))))
+                      (when (= r 0) (io-fail err))
+                      (let ((got (bytevector-u32-ref count 0 (endianness little))))
+                        (bytevector-copy! buf 0 bv start got)
+                        got)))))
+         (write! (lambda (bv start n)
+                   (let ((src (if (= start 0) bv
+                                  (let ((b (make-bytevector n))) (bytevector-copy! bv start b 0 n) b)))
+                         (at (and append?
+                                  (let* ((o (fc-win32-overlapped 0)) (off (- (bytevector-length o) 16)))
+                                    (bytevector-u32-set! o off #xFFFFFFFF (endianness little))
+                                    (bytevector-u32-set! o (+ off 4) #xFFFFFFFF (endianness little))
+                                    o))))
+                     (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0)))
+                                             (lambda () (write-file h src n count at)))))
+                       (when (= r 0) (io-fail err))
+                       (bytevector-u32-ref count 0 (endianness little))))))
+         (get-position (lambda () (fc-win32-seek! h 0 win32-FILE-CURRENT)))
+         (set-position! (lambda (pos) (fc-win32-seek! h pos win32-FILE-BEGIN)))
+         (close (lambda () (fc-win32-close! h)))
+         (port (case mode
+                 ((input) (make-custom-binary-input-port fp read! get-position set-position! close))
+                 ((output) (parameterize ((custom-port-buffer-size
+                                           (if sync? 1 (custom-port-buffer-size))))
+                             (make-custom-binary-output-port fp write! get-position set-position! close)))
+                 (else (make-custom-binary-input/output-port
+                        fp read! write! get-position set-position! close)))))
+      (port-size-probe! port (lambda () (fc-win32-size h fp)))   ; available, skip (io-streams.ss)
+      (vector port
+              (lambda (port) (fc-win32-size h fp))
+              ;; SetEndOfFile cuts at the file pointer, so move it there and back
+              (lambda (port size)
+                (let ((here (port-position port)))
+                  (fc-win32-seek! h size win32-FILE-BEGIN)
+                  (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (set-eof h)))))
+                    (set-port-position! port here)
+                    (when (= r 0) (io-fail err)))))))))
+
+;; The platform seam: #(open close! lock! can-lock? file-id nofollow? size
+;; unknown-option-message port lock-wait can-wait? error-message), one vector
+;; per host, chosen once per call rather than branched on in the shared code
+;; below.
+(define fc-posix-ops
+  (vector fc-posix-open fc-posix-close! fc-posix-lock! fc-posix-can-lock? fc-posix-file-id fc-posix-nofollow?
+          fc-posix-size fc-posix-unknown-option fc-posix-port fc-posix-lock-wait fc-posix-can-wait?
+          fc-posix-error-message))
+(define fc-win32-ops
+  (vector fc-win32-open fc-win32-close! fc-win32-lock! fc-win32-can-lock? fc-win32-file-id (lambda () #t)
+          fc-win32-size (lambda (o) jolt-nil) fc-win32-port fc-win32-lock-wait fc-win32-can-wait?
+          win32-error-message))
+(define (fc-ops) (if (nio-windows?) fc-win32-ops fc-posix-ops))
+(define (fc-native-close! n) ((vector-ref (fc-ops) 1) n))
+(define (fc-native-lock! n kind start size) ((vector-ref (fc-ops) 2) n kind start size))
+(define (fc-native-can-lock?) ((vector-ref (fc-ops) 3)))
+
+;; Flags.toFlags for a stream or byte channel's options, the channel's checks
+;; and its read-by-default included (fc-open-flags). EXTRA goes in front, as
+;; newOutputStream adds WRITE to the caller's options.
+(define (nio-channel-syms opts . extra)
+  (let ((ops (fc-ops)))
+    (fc-open-flags (append extra (npath-spread-args opts)) ((vector-ref ops 5)) (vector-ref ops 7))))
+;; Open FP the way FileChannel/open does, then put a MODE port on it:
+;; #(port size truncate!) as the ops' port entry answers.
+(define (nio-native-port fp shown syms mode)
+  (let* ((ops (fc-ops))
+         (native ((vector-ref ops 0) fp shown syms #o666)))
+    (guard (e (#t (guard (_ (#t #f)) ((vector-ref ops 1) native)) (raise e)))
+      ((vector-ref ops 8) native mode syms fp))))
+;; The options only the channel's open can honour: DELETE_ON_CLOSE, and
+;; NOFOLLOW_LINKS (O_NOFOLLOW, or FILE_FLAG_OPEN_REPARSE_POINT and a check of
+;; what it opened). A Files open with either goes through nio-native-port.
+(define (nio-channel-open? opts)
+  (or (nio-opts-have? opts oopt-sym 'delete-on-close) (nio-opts-nofollow? opts)))
+
+;; A channel collected without being closed gives its descriptor back here, as
+;; the JDK's cleaner does. Drained at each open, which is when the process is
+;; about to want one, the way process.ss drains its pipe guardian at each spawn;
+;; the drain holds a lock because dequeuing from a guardian from two threads at
+;; once is not safe. A channel holding locks is never collected: each lock is in
+;; the process's table and names its channel.
+(define fc-guardian (make-guardian))
+(define fc-guardian-mu (make-mutex))
+(define (fc-collect-unclosed!)
+  (let loop ()
+    (let ((st (jolt-with-mutex fc-guardian-mu (fc-guardian))))
+      (when st
+        (when (vector-ref st 2)
+          (vector-set! st 2 #f)
+          (guard (_ (#t #f)) (fc-native-close! (vector-ref st 1))))
+        (loop)))))
+
 (define (nio-host-file-channel path . opts)
-                                (let ((fp (nfp path)))
-                                  (when (and (nio-opts-have? opts oopt-sym 'create) (not (file-exists? fp)))
-                                    (close-port (open-file-output-port fp (file-options no-fail))))
-                                  (if (nio-opts-have? opts oopt-sym 'delete-on-close)
-                                      (begin
-                                        (when (nio-windows?)
-                                          (throw-jvm 'UnsupportedOperationException "DELETE_ON_CLOSE not supported"))
-                                        (let ((size (nio-size fp (nio-shown path))))
-                                          (guard (_ (#t #f)) (delete-file fp))
-                                          (make-jhost "file-channel" (vector fp size))))
-                                      (make-jhost "file-channel" (vector fp #f)))))
+  (fc-collect-unclosed!)
+  (let-values (((options attrs) (fc-split-args opts)))
+    (when (exists file-attr? (npath-spread-args attrs))
+      (nio-posix-view! "'posix:permissions' not supported as initial attribute"))
+    (let* ((ops (fc-ops))
+           (syms (fc-open-flags options ((vector-ref ops 5)) (vector-ref ops 7)))
+           (fp (nfp path))
+           (shown (nio-shown path))
+           (native ((vector-ref ops 0) fp shown syms (nio-attrs-mode attrs #o666))))
+      ;; the descriptor is the channel's from here; anything that throws before
+      ;; the channel exists gives it back
+      (guard (e (#t (guard (_ (#t #f)) ((vector-ref ops 1) native)) (raise e)))
+        (let* ((id ((vector-ref ops 4) native fp))
+               (st (vector fp native #t (and (memq 'read syms) #t) (and (memq 'write syms) #t)
+                           id (make-mutex) '()))
+               (ch (make-jhost "file-channel" st)))
+          (fc-guardian ch st)
+          ch)))))
 (hashtable-set! (nio-provider-path-ops default-nio-provider) "newFileChannel" nio-host-file-channel)
+
+;; ---- FileChannel.lock / tryLock -----------------------------------------------
+;; State: #(channel position size shared? valid?)
+(define (fl-channel l) (vector-ref (jhost-state l) 0))
+(define (fl-position l) (vector-ref (jhost-state l) 1))
+(define (fl-size l) (vector-ref (jhost-state l) 2))
+(define (fl-shared? l) (vector-ref (jhost-state l) 3))
+(define (fl-valid? l) (vector-ref (jhost-state l) 4))
+(define (fl-invalidate! l) (vector-set! (jhost-state l) 4 #f))
+;; FileLock.overlaps, the JDK's: a size of 0 is an unbounded range, a negative
+;; one overlaps nothing. Exact integers, so the sums the JDK guards against
+;; overflowing are simply large.
+(define (fl-overlaps? l position size)
+  (and (>= size 0)
+       (> (+ (fl-position l) (fl-size l)) position)
+       (or (= size 0) (> (+ position size) (fl-position l)))))
+(define (fl-string l)
+  (string-append "sun.nio.ch.FileLockImpl[" (number->string (fl-position l)) ":"
+                 (number->string (fl-size l)) (if (fl-shared? l) " shared" " exclusive")
+                 (if (fl-valid? l) " valid]" " invalid]")))
+
+;; file-id -> the locks this process holds on that file, through any channel
+(define nio-file-locks (make-hashtable equal-hash equal?))
+(define nio-file-locks-mu (make-mutex))
+(define (nio-file-locks-add! l)
+  (let ((id (fc-file-id (fl-channel l))))
+    (jolt-with-mutex nio-file-locks-mu
+      (let ((held (hashtable-ref nio-file-locks id '())))
+        (when (exists (lambda (h) (fl-overlaps? h (fl-position l) (fl-size l))) held)
+          (throw-jvm 'java.nio.channels.OverlappingFileLockException jolt-nil))
+        (hashtable-set! nio-file-locks id (cons l held))))))
+(define (nio-file-locks-remove! l)
+  (let ((id (fc-file-id (fl-channel l))))
+    (jolt-with-mutex nio-file-locks-mu
+      (let ((left (remq l (hashtable-ref nio-file-locks id '()))))
+        (if (null? left)
+            (hashtable-delete! nio-file-locks id)
+            (hashtable-set! nio-file-locks id left))))))
+(define (nio-file-locks-of ch)
+  (jolt-with-mutex nio-file-locks-mu
+    (filter (lambda (l) (eq? (fl-channel l) ch))
+            (hashtable-ref nio-file-locks (fc-file-id ch) '()))))
+
+(define (fc-ensure-open! self)
+  (unless (fc-open? self)
+    (throw-jvm 'java.nio.channels.ClosedChannelException jolt-nil)))
+;; The checks in the JDK's order: closed, then the channel's mode, then the
+;; range (FileLock's constructor). A size of 0 means from position to the end.
+(define (fc-new-lock self position size shared?)
+  (fc-ensure-open! self)
+  (let ((position (jnum->exact position)) (size (jnum->exact size)) (shared? (jolt-truthy? shared?)))
+    (when (and shared? (not (fc-readable? self)))
+      (throw-jvm 'java.nio.channels.NonReadableChannelException jolt-nil))
+    (when (and (not shared?) (not (fc-writable? self)))
+      (throw-jvm 'java.nio.channels.NonWritableChannelException jolt-nil))
+    (let ((size (if (= size 0) (- #x7FFFFFFFFFFFFFFF (max 0 position)) size)))
+      (cond ((< position 0) (throw-jvm 'IllegalArgumentException "Negative position"))
+            ((< size 0) (throw-jvm 'IllegalArgumentException "Negative size"))
+            ((> (+ position size) #x7FFFFFFFFFFFFFFF)
+             (throw-jvm 'IllegalArgumentException "Negative position + size")))
+      (unless (fc-native-can-lock?)
+        (throw-jvm 'UnsupportedOperationException
+                   (string-append "FileChannel locking is not supported on this host ("
+                                  (sa-host-tag) ")")))
+      (make-jhost "file-lock" (vector self position size shared? #t)))))
+;; A close that got in after the open check is AsynchronousCloseException,
+;; as when the JDK's channel is closed under a lock call.
+(define (fl-kernel-lock! l)
+  (let ((ch (fl-channel l)))
+    (jolt-with-mutex (fc-mutex ch)
+      (unless (fc-open? ch)
+        (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+      (fc-native-lock! (fc-native-of ch) (if (fl-shared? l) 'shared 'exclusive)
+                       (fl-position l) (fl-size l)))))
+;; tryLock: the lock, or nil when another process holds an overlapping one.
+(define (fc-try-lock self position size shared?)
+  (let ((l (fc-new-lock self position size shared?)))
+    (nio-file-locks-add! l)
+    (if (guard (e (#t (nio-file-locks-remove! l) (raise e))) (fl-kernel-lock! l))
+        l
+        (begin (nio-file-locks-remove! l) jolt-nil))))
+;; lock: retry until granted. An interrupt ends the wait the JDK's way: the
+;; channel closes and FileLockInterruptionException is thrown with the thread's
+;; interrupt status still set.
+;; lock: granted at once when the range is free, which is tryLock's one call.
+;; Otherwise the wait is the kernel's, as the JDK's is (F_SETLKW, a blocking
+;; LockFileEx), made on a helper thread so a fiber parks rather than pinning its
+;; carrier (fc-lock-wait). An interrupt ends the wait the JDK's way: the channel
+;; closes and FileLockInterruptionException is thrown with the thread's
+;; interrupt status still set; a close from another thread is
+;; AsynchronousCloseException. A host that cannot end a kernel wait (a stock Chez
+;; has no interrupt signal) retries the non-blocking lock with a growing sleep.
+(define (fc-lock self position size shared?)
+  (let ((l (fc-new-lock self position size shared?)) (ibox (current-interrupt-box)))
+    (define (interrupted!)
+      (set-box! ibox #t)
+      (fc-close! self)
+      (throw-jvm 'java.nio.channels.FileLockInterruptionException jolt-nil))
+    (nio-file-locks-add! l)
+    (guard (e (#t (nio-file-locks-remove! l) (raise e)))
+      (cond ((jolt-interrupted? ibox) (interrupted!))
+            ((fl-kernel-lock! l) l)
+            (((vector-ref (fc-ops) 10)) (fc-lock-wait self l ibox interrupted!))
+            (else
+             (let wait ((ms 1))
+               (cond ((jolt-interrupted? ibox) (interrupted!))
+                     ((not (fc-open? self))
+                      (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+                     ((fl-kernel-lock! l) l)
+                     (else
+                      (when (guard (_ (#t #t)) (jolt-thread-sleep-ms ms) #f) (interrupted!))
+                      (wait (min 50 (* ms 2)))))))))))
+;; The kernel wait. It is registered on the channel under the channel's mutex,
+;; and only while the channel is open, so a close either finds it and ends it
+;; before closing the descriptor, or comes first and this throws.
+(define (fc-lock-wait self l ibox interrupted!)
+  (let* ((ops (fc-ops))
+         (op (jolt-with-mutex (fc-mutex self)
+               (unless (fc-open? self)
+                 (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil))
+               (let* ((native (fc-native-of self))
+                      (kind (if (fl-shared? l) 'shared 'exclusive))
+                      (op (jolt-offload-start!
+                            (lambda (op) ((vector-ref ops 9) native kind (fl-position l) (fl-size l) op)))))
+                 (fc-waits-set! self (cons op (fc-waits self)))
+                 op))))
+    (define (forget!)
+      (jolt-with-mutex (fc-mutex self) (fc-waits-set! self (remq op (fc-waits self)))))
+    (define (closed-under-us)
+      (if (jolt-interrupted? ibox)
+          (interrupted!)
+          (throw-jvm 'java.nio.channels.AsynchronousCloseException jolt-nil)))
+    ;; any way out of the wait but its own return or an interrupt (a raise, such
+    ;; as a fiber's interrupt payload) ends the kernel call first; one that cannot
+    ;; be ended goes with the channel
+    (let ((how (guard (e (#t (unless (jolt-offload-cancel! op) (fc-close! self)) (forget!) (raise e)))
+                 (jolt-offload-await op ibox))))
+      (case how
+        ;; the close ends the wait (it is still on the channel's list), and a lock
+        ;; granted meanwhile goes with it
+        ((interrupted) (interrupted!))
+        ((abandoned) (forget!) (closed-under-us))
+        (else
+         (forget!)
+         (let ((r (jolt-offload-result op)))
+           (cond ((eq? r 'granted) l)
+                 ((eq? r 'cancelled) (closed-under-us))
+                 (else (throw-jvm 'IOException ((vector-ref ops 11) r))))))))))
+(define (fl-release! l)
+  (let ((ch (fl-channel l)))
+    (jolt-with-mutex (fc-mutex ch)
+      (unless (fc-open? ch)
+        (throw-jvm 'java.nio.channels.ClosedChannelException jolt-nil))
+      (when (fl-valid? l)
+        (fc-native-lock! (fc-native-of ch) 'unlock (fl-position l) (fl-size l))
+        (fl-invalidate! l)
+        (nio-file-locks-remove! l))))
+  jolt-nil)
+(register-host-methods! "file-lock"
+  (list (cons "release" fl-release!)
+        (cons "close" fl-release!)
+        (cons "isValid" fl-valid?)
+        (cons "isShared" fl-shared?)
+        (cons "channel" fl-channel)
+        (cons "acquiredBy" fl-channel)
+        (cons "position" fl-position)
+        (cons "size" fl-size)
+        (cons "overlaps" (lambda (self position size)
+                           (fl-overlaps? self (jnum->exact position) (jnum->exact size))))
+        (cons "toString" fl-string)))
+(hashtable-set! jhost-tag->fqn "file-lock" "sun.nio.ch.FileLockImpl")
+
+;; Closing the channel ends the kernel waits on it, then releases the locks
+;; taken through it, then closes the descriptor. The waits are ended outside the
+;; mutex (each one waits for its helper to come back), and none can start once
+;; the channel reads closed; the descriptor is closed only after they are all
+;; back, so none is left waiting on a closed or reused descriptor.
+(define (fc-close! self)
+  (define (release-and-close!)
+    (for-each (lambda (l)
+                (when (fl-valid? l)
+                  (guard (_ (#t #f))
+                    (fc-native-lock! (fc-native-of self) 'unlock (fl-position l) (fl-size l)))
+                  (fl-invalidate! l))
+                (nio-file-locks-remove! l))
+              (nio-file-locks-of self))
+    (fc-native-close! (fc-native-of self)))
+  ;; with no wait in flight, the usual case, it is all one critical section
+  (let ((waits (jolt-with-mutex (fc-mutex self)
+                 (and (fc-open? self)
+                      (begin
+                        (vector-set! (jhost-state self) 2 #f)
+                        (let ((w (fc-waits self)))
+                          (if (null? w) (begin (release-and-close!) #f) w)))))))
+    (when waits
+      (let ((stuck (filter (lambda (op) (not (jolt-offload-cancel! op))) waits)))
+        (jolt-with-mutex (fc-mutex self)
+          (if (null? stuck)
+              (release-and-close!)
+              ;; a wait that would not end (Windows): every call on its HANDLE
+              ;; would queue behind it, the unlocks and the close included, so the
+              ;; locks leave the table now and the HANDLE is closed, which drops
+              ;; them in the kernel, by whichever stuck helper finishes last
+              (let ((left (length stuck)) (mu (make-mutex)) (native (fc-native-of self)))
+                (for-each (lambda (l) (fl-invalidate! l) (nio-file-locks-remove! l))
+                          (nio-file-locks-of self))
+                (for-each (lambda (op)
+                            (jolt-offload-handoff! op
+                              (lambda ()
+                                (when (jolt-with-mutex mu (set! left (- left 1)) (= left 0))
+                                  (fc-native-close! native)))))
+                          stuck)))))))
+  jolt-nil)
+(define (fc-size self)
+  (fc-ensure-open! self)
+  ((vector-ref (fc-ops) 6) (fc-native-of self) (fc-path self)))
 (register-host-methods! "file-channel"
   (list (cons "close" fc-close!)
-        (cons "size" (lambda (self) (or (vector-ref (jhost-state self) 1)
-                                        (nio-size (vector-ref (jhost-state self) 0)))))))
+        (cons "isOpen" fc-open?)
+        (cons "tryLock" (case-lambda
+                          ((self) (fc-try-lock self 0 #x7FFFFFFFFFFFFFFF #f))
+                          ((self position size shared?) (fc-try-lock self position size shared?))))
+        (cons "lock" (case-lambda
+                       ((self) (fc-lock self 0 #x7FFFFFFFFFFFFFFF #f))
+                       ((self position size shared?) (fc-lock self position size shared?))))
+        (cons "size" fc-size)))
+(hashtable-set! jhost-tag->fqn "file-channel" "sun.nio.ch.FileChannelImpl")
 (let ((prev jolt-close))
-  (set! jolt-close (lambda (x) (if (and (jhost? x) (string=? (jhost-tag x) "file-channel")) (fc-close! x) (prev x))))
+  (set! jolt-close (lambda (x)
+                     (cond ((and (jhost? x) (string=? (jhost-tag x) "file-channel")) (fc-close! x))
+                           ((and (jhost? x) (string=? (jhost-tag x) "file-lock")) (fl-release! x))
+                           (else (prev x)))))
   (def-var! "clojure.core" "__close" jolt-close))
 
 ;; A missing target makes the time setters throw NoSuchFileException, as
@@ -1949,20 +2876,20 @@
         (cons "setLastModifiedTime" (lambda (p t) (let ((fp (nfp p))) (nio-require-exists fp (nio-shown p))
                                                     (nio-mtime-set-or-raise! (nio-shown p) (nio-set-mtime! fp (file-time-ns t) #t))
                                                     (->path p))))
-        (cons "setAttribute" (lambda (path attr value . opts)
-                               (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr))))
-                                 (when (member nm '("lastModifiedTime" "creationTime" "lastAccessTime"))
-                                   (nio-require-exists fp (nio-shown path))
-                                   (let ((ns (if (file-time? value) (file-time-ns value) (* (jnum->exact value) 1000000)))
-                                         (follow? (not (nio-opts-nofollow? opts))))
-                                     (cond ((string=? nm "lastModifiedTime")
-                                            (nio-mtime-set-or-raise! (nio-shown path) (nio-set-mtime! fp ns follow?)))
-                                           ((string=? nm "lastAccessTime")
-                                            (nio-time-set-or-raise! (nio-shown path) "last access time" (nio-set-access-time! fp ns follow?)))
-                                           (else
-                                            (nio-time-set-or-raise! (nio-shown path) "creation time" (nio-set-creation-time! fp ns follow?))))))
-                                 (->path path)))))))
+        (cons "setAttribute" (lambda (path attr value . opts) (nio-set-attribute! path attr value opts))))))
   (set! files-accum-chunks (cons files-throwing-setters files-accum-chunks)))
+;; one of the three times, NM, of PATH
+(define (nio-set-time-attribute! path nm value opts)
+  (let ((fp (nfp path)))
+    (nio-require-exists fp (nio-shown path))
+    (let ((ns (if (file-time? value) (file-time-ns value) (* (jnum->exact value) 1000000)))
+          (follow? (not (nio-opts-nofollow? opts))))
+      (cond ((string=? nm "lastModifiedTime")
+             (nio-mtime-set-or-raise! (nio-shown path) (nio-set-mtime! fp ns follow?)))
+            ((string=? nm "lastAccessTime")
+             (nio-time-set-or-raise! (nio-shown path) "last access time" (nio-set-access-time! fp ns follow?)))
+            (else
+             (nio-time-set-or-raise! (nio-shown path) "creation time" (nio-set-creation-time! fp ns follow?)))))))
 
 ;; isSameFile compares inodes (so hard links are the same file); copy preserves
 ;; the source permissions by default, like java.nio.file on this host.
@@ -1974,13 +2901,13 @@
 ;; Windows answers null, as its provider does. It answered nil everywhere.
 ;; toString and hashCode are UnixFileKey's: dev in unsigned hex, ino as a signed
 ;; long, and each folded to an int and summed.
+(define (nio-buf-file-key lay buf)
+  (make-jhost "file-key"
+              (cons (bitwise-and (nio-layout-dev-ref lay buf) #xFFFFFFFFFFFFFFFF)
+                    (bytevector-u64-ref buf 8 (native-endianness)))))
 (define (nio-file-key fp follow?)
   (let ((buf (and (not (nio-windows?)) (nio-stat-buf fp follow?))))
-    (if buf
-        (make-jhost "file-key"
-                    (cons (bitwise-and (nio-layout-dev-ref (nio-stat-layout) buf) #xFFFFFFFFFFFFFFFF)
-                          (bytevector-u64-ref buf 8 (native-endianness))))
-        jolt-nil)))
+    (if buf (nio-buf-file-key (nio-stat-layout) buf) jolt-nil)))
 (define-jhost-tag-pred (file-key? t) (string=? t "file-key"))
 (define (nio-s64 u) (if (>= u #x8000000000000000) (- u #x10000000000000000) u))
 (define (nio-file-key-string k)
@@ -2050,7 +2977,7 @@
                             (when (nio-dest-present? d) (nio-delete1 d #t))
                             (cond
                               ((and (nio-opts-nofollow? opts) (nio-is-symlink? s))
-                               (when c-symlink (c-symlink (or (nio-readlink s) "") d)))
+                               (nio-make-symlink! d (or (nio-readlink s) "") (nio-shown dst)))
                               ((file-directory? s) (unless (file-exists? d) (mkdir d)))
                               (else
                                (nio-write-bv! d (nio-read-bv s))
@@ -2058,8 +2985,9 @@
                                  (when (and mode c-chmod) (c-chmod d (bitwise-and mode #o777))))
                                ;; COPY_ATTRIBUTES carries both times, at full resolution
                                (when (nio-opts-have? opts copt-sym 'copy-attributes)
-                                 (set-file-times-ns! d (file-time-ns (nio-time-attr s "lastAccessTime" #t))
-                                                     (file-time-ns (nio-time-attr s "lastModifiedTime" #t)) #t))))
+                                 (let ((snap (nio-snapshot s #t (nio-shown src) #f)))
+                                   (set-file-times-ns! d (file-time-ns (nio-snap-ref snap "lastAccessTime"))
+                                                       (file-time-ns (nio-snap-ref snap "lastModifiedTime")) #t)))))
                             (->path dst))))))))) ))
   (set! files-accum-chunks (cons files-final files-accum-chunks)))
 
@@ -2071,48 +2999,282 @@
     (let ((b (sa-foreign-ref 'unsigned-8 addr i)))
       (if (= b 0) (list->string (map integer->char (reverse acc)))
           (loop (+ i 1) (cons b acc))))))
-(define (nio-stat-uid fp)
-  (and c-stat (begin
-                (nio-stat-layout-guard! "getOwner")
-                (let ((lay (nio-stat-layout)) (buf (make-bytevector 256 0)))
-                  (and (= 0 (c-stat fp buf)) (nio-layout-uid-ref lay buf))))))
+;; uid/gid -> name through getpwuid(3)/getgrgid(3); pw_name and gr_name are
+;; each struct's first member. A number with no entry is named by the number,
+;; as the JDK's UnixUserPrincipals.fromUid/fromGid name it.
+(define c-getgrgid (jolt-foreign-proc-safe "getgrgid" '(unsigned-int) 'iptr))
 (define (nio-uid->name uid)
   (and c-getpwuid (let ((pw (c-getpwuid uid))) (and (not (= 0 pw)) (nio-cstr-at (sa-foreign-ref 'iptr pw 0))))))
-;; user-principal values compare and hash by name; getOwner honors NOFOLLOW.
+(define (nio-gid->name gid)
+  (and c-getgrgid (let ((gr (c-getgrgid gid))) (and (not (= 0 gr)) (nio-cstr-at (sa-foreign-ref 'iptr gr 0))))))
+(define (nio-uid-principal uid) (make-jhost "user-principal" (or (nio-uid->name uid) (number->string uid))))
+(define (nio-gid-principal gid) (make-jhost "group-principal" (or (nio-gid->name gid) (number->string gid))))
+;; user-principal values compare and hash by name, and so do group-principal
+;; values; a user is never equal to a group, as in the JDK.
 (define-jhost-tag-pred (nio-userprin? t) (string=? t "user-principal"))
+(define-jhost-tag-pred (nio-groupprin? t) (string=? t "group-principal"))
 (register-eq-arm! (lambda (a b) (and (nio-userprin? a) (nio-userprin? b)))
                   (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
 (register-hash-arm! nio-userprin? (lambda (x) (string-hash (jhost-state x))))
-(define (nio-lstat-uid fp)
-  (and c-lstat (begin
-                 (nio-stat-layout-guard! "getOwner")
-                 (let ((lay (nio-stat-layout)) (buf (make-bytevector 256 0)))
-                   (and (= 0 (c-lstat fp buf)) (nio-layout-uid-ref lay buf))))))
+(register-eq-arm! (lambda (a b) (and (nio-groupprin? a) (nio-groupprin? b)))
+                  (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
+(register-hash-arm! nio-groupprin? (lambda (x) (string-hash (jhost-state x))))
+(register-host-methods! "group-principal"
+  (list (cons "getName" (lambda (self) (jhost-state self)))
+        (cons "toString" (lambda (self) (jhost-state self)))))
+(register-str-render! nio-groupprin? (lambda (x) (jhost-state x)))
+
+;; ---- attribute snapshots (jolt-lang/jolt#1804) ---------------------------------
+;; readAttributes in both forms, getAttribute, getLastModifiedTime, size,
+;; getPosixFilePermissions, getOwner and walkFileTree's attributes all answer from
+;; ONE stat(2) (lstat(2) under NOFOLLOW_LINKS) taken when they are called, which
+;; is what the JDK's UnixFileAttributes.get does. That stat is also the existence
+;; check. Checking first and reading after left a window in which a file deleted
+;; between the two answered epoch 0 for its times, rwxr-xr-x for its
+;; permissions and $USER for its owner. Now the failed stat is the errno's
+;; exception (NoSuchFileException for ENOENT) naming the path as the caller wrote
+;; it.
+;;
+;; A BasicFileAttributes or PosixFileAttributes value IS the snapshot: its getters
+;; decode the buffer that stat filled, so they never throw and they answer the
+;; values as they were when readAttributes ran, a getter called after a delete
+;; included.
+;;
+;; A snapshot is #(buf link? btime live):
+;;   buf    the struct stat bytes, or on Windows GetFileAttributesExW's
+;;          WIN32_FILE_ATTRIBUTE_DATA; #f for a live snapshot
+;;   link?  the entry described is a symbolic link read as itself
+;;   btime  Linux's birth time, from statx(2) because struct stat has none; #f
+;;          when not asked for or the filesystem keeps none (creationTime is then
+;;          the mtime, the JDK's fallback too)
+;;   live   for a host with no verified stat layout, and a Windows reparse point
+;;          read through, the basic attributes read one by one at snapshot time,
+;;          as an alist; #f otherwise
+(define nio-S-IFMT  #o170000)
+(define nio-S-IFDIR #o040000)
+(define nio-S-IFREG #o100000)
+(define nio-S-IFLNK #o120000)
+(define nio-basic-attr-names
+  '("lastModifiedTime" "lastAccessTime" "creationTime" "size"
+    "isDirectory" "isRegularFile" "isSymbolicLink" "isOther" "fileKey"))
+(define nio-posix-attr-names (append nio-basic-attr-names '("permissions" "owner" "group")))
+(define nio-unix-attr-names
+  (append nio-posix-attr-names '("mode" "ino" "dev" "rdev" "nlink" "uid" "gid" "ctime")))
+
+;; The snapshot of FP, through a link (FOLLOW?) or of the link itself. BTIME?
+;; asks for Linux's birth time too, a second call (statx), so only a caller that
+;; may read creationTime pays for it.
+(define (nio-snapshot fp follow? shown btime?)
+  (let ((lay (and (not (nio-windows?)) (nio-stat-layout)))
+        (stat (if follow? c-stat c-lstat)))
+    (cond
+      ((and lay stat)
+       (let ((buf (make-bytevector 256 0)))
+         (let-values (((r err) (io-call+errno (stat fp buf))))
+           (unless (= r 0)
+             (if (> err 0) (nio-errno-throw shown #f err) (nio-no-such-file shown)))
+           (vector buf
+                   (= nio-S-IFLNK (bitwise-and (nio-layout-mode-ref lay buf) nio-S-IFMT))
+                   (and btime? (not (nio-layout-birth-off lay)) (nio-statx-btime fp follow?))
+                   #f))))
+      ((nio-windows?)
+       (let ((data (win32-file-attribute-data fp)))
+         (cond ((and data (not (win32-times-need-handle?
+                                (bytevector-u32-ref data 0 (endianness little)) follow?)))
+                (vector data #f #f #f))
+               ((or data (file-exists? fp)) (nio-live-snapshot fp follow? shown))
+               (else (nio-no-such-file shown)))))
+      (else (nio-live-snapshot fp follow? shown)))))
+
+;; The attributes read one at a time, for a host with no struct stat layout to
+;; decode. Read eagerly, so the getters still answer what was there at the read;
+;; a time whose read fails on a path that has gone since is NoSuchFileException,
+;; not the millisecond mtime Chez answers 0 for.
+(define (nio-live-snapshot fp follow? shown)
+  (let ((link? (and (not follow?) (nio-is-symlink? fp))))
+    (unless (or link? (file-exists? fp)) (nio-no-such-file shown))
+    (vector #f link? #f
+            (map (lambda (nm) (cons nm (nio-live-attr fp nm link? shown))) nio-basic-attr-names))))
+(define (nio-live-attr fp nm link? shown)
+  (cond
+    ((member nm '("lastModifiedTime" "lastAccessTime" "creationTime"))
+     (or (nio-read-time fp nm (not link?))
+         (and (not (string=? nm "lastModifiedTime")) (nio-read-time fp "lastModifiedTime" (not link?)))
+         (if (or link? (file-exists? fp))
+             (make-file-time (file-mtime-millis fp))
+             (nio-no-such-file shown))))
+    ((string=? nm "size")
+     (if link? (bytevector-length (string->utf8 (or (nio-readlink fp) ""))) (nio-size fp shown)))
+    ((string=? nm "isDirectory")    (and (not link?) (file-directory? fp) #t))
+    ((string=? nm "isRegularFile")  (and (not link?) (file-regular? fp) #t))
+    ((string=? nm "isSymbolicLink") link?)
+    ((string=? nm "isOther")        (and (not link?) (file-exists? fp)
+                                         (not (file-directory? fp)) (not (file-regular? fp)) #t))
+    ((string=? nm "fileKey")        (nio-file-key fp (not link?)))
+    (else jolt-nil)))
+
+;; What getOwner answered on a host with no stat layout before snapshots.
+(define (nio-owner-without-layout)
+  (when c-stat (nio-stat-layout-guard! "getOwner"))
+  (make-jhost "user-principal" (or (getenv "USER") "")))
+
+;; Attribute NM of snapshot S, for a name its view has already accepted.
+(define (nio-snap-ref s nm)
+  (let ((buf (vector-ref s 0)) (live (vector-ref s 3)))
+    (cond
+      (live
+       (cond ((assoc nm live) => cdr)
+             ((string=? nm "owner") (nio-owner-without-layout))
+             ;; posix/unix attributes have nothing to be read from here: the
+             ;; host has no verified layout, or no stat(2) entry to call (glibc
+             ;; before 2.33 exports none)
+             (else (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException"
+                                 (string-append "'" nm "' is not supported on this host: no struct stat for "
+                                                (sa-host-tag)))))))
+      ((nio-windows?) (nio-win32-data-ref buf nm))
+      (else (nio-stat-buf-ref (nio-stat-layout) buf (vector-ref s 2) nm)))))
+
+(define (nio-stat-buf-ref lay buf btime nm)
+  (define (u32 off) (bytevector-u32-ref buf off (native-endianness)))
+  (let* ((mode (nio-layout-mode-ref lay buf)) (ifmt (bitwise-and mode nio-S-IFMT)))
+    (cond
+      ((string=? nm "lastModifiedTime") (nio-stat-file-time buf (nio-layout-mtime-off lay)))
+      ((string=? nm "lastAccessTime")   (nio-stat-file-time buf (nio-layout-atime-off lay)))
+      ((string=? nm "creationTime")
+       (cond ((nio-layout-birth-off lay) => (lambda (off) (nio-stat-file-time buf off)))
+             (btime btime)
+             (else (nio-stat-file-time buf (nio-layout-mtime-off lay)))))
+      ((string=? nm "size")           (bytevector-s64-ref buf (nio-layout-size-off lay) (native-endianness)))
+      ((string=? nm "isDirectory")    (= ifmt nio-S-IFDIR))
+      ((string=? nm "isRegularFile")  (= ifmt nio-S-IFREG))
+      ((string=? nm "isSymbolicLink") (= ifmt nio-S-IFLNK))
+      ((string=? nm "isOther")        (not (memv ifmt (list nio-S-IFDIR nio-S-IFREG nio-S-IFLNK))))
+      ((string=? nm "fileKey")        (nio-buf-file-key lay buf))
+      ((string=? nm "permissions")    (nio-mode->perm-set mode))
+      ((string=? nm "owner")          (nio-uid-principal (nio-layout-uid-ref lay buf)))
+      ((string=? nm "group")          (nio-gid-principal (u32 (nio-layout-gid-off lay))))
+      ((string=? nm "mode")           mode)
+      ((string=? nm "ino")            (bytevector-s64-ref buf 8 (native-endianness)))
+      ((string=? nm "dev")            (nio-layout-dev-long lay buf))
+      ((string=? nm "rdev")           (nio-layout-rdev-ref lay buf))
+      ((string=? nm "nlink")          (nio-layout-nlink-ref lay buf))
+      ((string=? nm "uid")            (nio-layout-uid-ref lay buf))
+      ((string=? nm "gid")            (u32 (nio-layout-gid-off lay)))
+      ((string=? nm "ctime")          (nio-stat-file-time buf (nio-layout-ctime-off lay)))
+      (else jolt-nil))))
+
+;; WIN32_FILE_ATTRIBUTE_DATA: dwFileAttributes@0, the creation, access and write
+;; FILETIMEs @4 @12 @20, nFileSizeHigh@28, nFileSizeLow@32 -- what the JDK's
+;; WindowsFileAttributes reads. No symbolic link reaches here (a reparse point
+;; read through takes a live snapshot), and Windows has no file key.
+(define (nio-win32-data-ref data nm)
+  (define (u32 off) (bytevector-u32-ref data off (endianness little)))
+  (let ((dir? (not (= 0 (bitwise-and (u32 0) #x10)))))   ; FILE_ATTRIBUTE_DIRECTORY
+    (cond
+      ((string=? nm "creationTime")     (make-file-time-ns (win32-filetime-at data 4)))
+      ((string=? nm "lastAccessTime")   (make-file-time-ns (win32-filetime-at data 12)))
+      ((string=? nm "lastModifiedTime") (make-file-time-ns (win32-filetime-at data 20)))
+      ((string=? nm "size")             (+ (* (u32 28) #x100000000) (u32 32)))
+      ((string=? nm "isDirectory")      dir?)
+      ((string=? nm "isRegularFile")    (not dir?))
+      ((string=? nm "owner")            (nio-owner-without-layout))
+      ((member nm '("isSymbolicLink" "isOther")) #f)
+      (else jolt-nil))))
+
+;; ---- the views: which attribute names a "view:names" spec may ask for ----------
+;; AbstractFileSystemProvider.readAttributes: the view is what precedes the
+;; first ':' ("basic" without one), the names are split on ',' as String.split
+;; does (trailing empties dropped), and "*" is every name of the view. An empty
+;; view is IllegalArgumentException naming the spec, a view the host has not
+;; UnsupportedOperationException, and a name the view has not
+;; IllegalArgumentException -- with the view prefixed only by the owner view,
+;; whose implementation words it that way. All of that is settled before the
+;; stat, so a bad spec on a missing path is the spec's error.
+(define (nio-view-attr-names spec view)
+  (cond ((string=? view "") (throw-jvm 'IllegalArgumentException spec))
+        ((string=? view "basic") nio-basic-attr-names)
+        ((string=? view "owner") '("owner"))
+        ((and (string=? view "posix") (not (nio-windows?))) nio-posix-attr-names)
+        ((and (string=? view "unix") (not (nio-windows?))) nio-unix-attr-names)
+        ((and (string=? view "dos") (nio-dos-view?)) nio-dos-attr-names)
+        (else (throw-jvm 'UnsupportedOperationException (string-append "View '" view "' not available")))))
+(define (nio-java-split-commas s)
+  (let loop ((i 0) (start 0) (acc '()))
+    (cond ((= i (string-length s))
+           (if (null? acc)
+               (list s)                       ; no comma: String.split answers the input
+               (let drop ((xs (cons (substring s start i) acc)))
+                 (if (and (pair? xs) (string=? (car xs) "")) (drop (cdr xs)) (reverse xs)))))
+          ((char=? (string-ref s i) #\,) (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
+          (else (loop (+ i 1) start acc)))))
+;; SPEC -> the attribute names it asks for, validated against its view. The
+;; owner view reads the owner as it accepts its first name and only then meets
+;; a bad one (FileOwnerAttributeViewImpl), so for it TAKE! -- the caller's
+;; snapshot -- runs at that point: "owner:owner,size" on a missing path is
+;; NoSuchFileException, on a present one IllegalArgumentException.
+(define (nio-attr-spec-names spec take!)
+  (let* ((colon (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                        ((char=? (string-ref spec j) #\:) j) (else (loop (+ j 1))))))
+         (view (if colon (substring spec 0 colon) "basic"))
+         (names-part (if colon (substring spec (+ colon 1) (string-length spec)) spec))
+         (allowed (nio-view-attr-names spec view)))
+    (let loop ((ns (nio-java-split-commas names-part)) (acc '()))
+      (cond ((null? ns) (reverse acc))
+            ((or (string=? (car ns) "*") (member (car ns) allowed))
+             (when (and (string=? view "owner") (null? acc)) (take!))
+             (loop (cdr ns) (if (string=? (car ns) "*") (append (reverse allowed) acc) (cons (car ns) acc))))
+            (else (throw-jvm 'IllegalArgumentException
+                             (string-append "'" (if (string=? view "owner") "owner:" "") (car ns)
+                                            "' not recognized")))))))
+
+;; readAttributes(path, Class) -> the snapshot as a BasicFileAttributes or
+;; PosixFileAttributes value, the methods of each answering from it.
+(define (nio-attrs-getter nm) (lambda (self) (nio-snap-ref (jhost-state self) nm)))
+(define nio-basic-attr-methods
+  (map (lambda (nm) (cons nm (nio-attrs-getter nm))) nio-basic-attr-names))
+(register-host-methods! "basic-attrs" nio-basic-attr-methods)
+(register-host-methods! "posix-attrs"
+  (append nio-basic-attr-methods
+          (map (lambda (nm) (cons nm (nio-attrs-getter nm))) '("permissions" "owner" "group"))))
+(define (make-basic-attrs snap) (make-jhost "basic-attrs" snap))
+
 (let ((files-owner2
        (list (cons "getOwner" (lambda (p . opts)
-                                (let* ((fp (nfp p))
-                                       (uid (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp))
-                                                (nio-lstat-uid fp) (nio-stat-uid fp))))
-                                  (make-jhost "user-principal"
-                                              (or (and uid (nio-uid->name uid)) (getenv "USER") ""))))))))
+                                (if (nio-windows?)
+                                    ;; the owner view is the ACL view's owner there
+                                    (win32-get-owner (nfp p) (nio-shown p) (not (nio-opts-nofollow? opts)))
+                                    (nio-snap-ref (nio-snapshot (nfp p) (not (nio-opts-nofollow? opts)) (nio-shown p) #f)
+                                                  "owner")))))))
   (set! files-accum-chunks (cons files-owner2 files-accum-chunks)))
 
 ;; ---- the host filesystem's channels, stores and owners ------------------------
-;; Files.newByteChannel: a SeekableByteChannel over the file. A read channel is an
-;; input port; WRITE / APPEND open the file through the same option table
-;; newOutputStream uses, on a port that also reads.
-;; State: #(port open? append?)
+;; Files.newByteChannel: a SeekableByteChannel over the file, newFileChannel's
+;; options and checks (nio-channel-syms): READ by default, READ + APPEND and
+;; APPEND + TRUNCATE_EXISTING refused. A read channel is an input port; WRITE /
+;; APPEND open the file through the same option table newOutputStream uses, on a
+;; port that also reads. DELETE_ON_CLOSE opens through the channel's ops, as the
+;; streams do (nio-native-port).
+;; State: #(port open? append? readable? size truncate!)
 (define (nio-host-byte-channel p . opts)
   (let* ((fp (nfp p))
          (shown (nio-shown p))
-         (write? (or (nio-opts-have? opts oopt-sym 'write) (nio-opts-have? opts oopt-sym 'append)))
-         (append? (nio-opts-have? opts oopt-sym 'append))
-         (port (if write?
-                   (nio-fs-call fp (lambda () (open-file-input/output-port fp (nio-output-file-options opts))) shown)
-                   (nio-open-input-port fp shown))))
-    (when write? (nio-delete-on-close! fp port opts))
-    (make-jhost "host-byte-channel" (vector port #t append?))))
+         (syms (nio-channel-syms opts))
+         (read? (and (memq 'read syms) #t))
+         (write? (and (memq 'write syms) #t))
+         (st (cond
+               ((or (memq 'delete-on-close syms) (memq 'nofollow-links syms))
+                (nio-native-port fp shown syms
+                                 (cond ((and read? write?) 'input/output) (write? 'output) (else 'input))))
+               (write?
+                (let ((no-read (filter (lambda (o) (not (eq? (oopt-sym o) 'read))) (npath-spread-args opts))))
+                  (vector (nio-fs-call fp (lambda () (open-file-input/output-port fp (nio-output-file-options no-read)))
+                                       shown)
+                          file-length set-port-length!)))
+               (else (vector (nio-open-input-port fp shown) file-length set-port-length!)))))
+    (make-jhost "host-byte-channel"
+                (vector (vector-ref st 0) #t (and (memq 'append syms) #t) read? (vector-ref st 1) (vector-ref st 2)))))
 (define (nio-hbc-port self) (vector-ref (jhost-state self) 0))
+(define (nio-hbc-size self) ((vector-ref (jhost-state self) 4) (nio-hbc-port self)))
 (define (nio-hbc-open! self)
   (unless (vector-ref (jhost-state self) 1)
     (throw-jvm 'java.nio.channels.ClosedChannelException jolt-nil)))
@@ -2121,6 +3283,8 @@
     (throw-jvm 'java.nio.channels.NonWritableChannelException jolt-nil)))
 (define (nio-hbc-read self buffer)
   (nio-hbc-open! self)
+  (unless (vector-ref (jhost-state self) 3)
+    (throw-jvm 'java.nio.channels.NonReadableChannelException jolt-nil))
   (let ((want (nb-remaining buffer)))
     (if (= want 0)
         0
@@ -2138,7 +3302,7 @@
          (port (nio-hbc-port self)))
     (nb-get buffer arr 0 n)
     (when (vector-ref (jhost-state self) 2)
-      (set-port-position! port (file-length port)))
+      (set-port-position! port (nio-hbc-size self)))
     (put-bytevector port (na-bytearray->bv arr))
     (flush-output-port port)
     n))
@@ -2151,12 +3315,12 @@
                       (if (pair? position)
                           (begin (set-port-position! (nio-hbc-port self) (jnum->exact (car position))) self)
                           (port-position (nio-hbc-port self)))))
-   (cons "size" (lambda (self) (nio-hbc-open! self) (file-length (nio-hbc-port self))))
+   (cons "size" (lambda (self) (nio-hbc-open! self) (nio-hbc-size self)))
    (cons "truncate" (lambda (self size)
                       (nio-hbc-open! self)
                       (nio-hbc-writable! self)
                       (let ((size (jnum->exact size)) (port (nio-hbc-port self)))
-                        (when (< size (file-length port)) (set-port-length! port size))
+                        (when (< size (nio-hbc-size self)) ((vector-ref (jhost-state self) 5) port size))
                         (when (> (port-position port) size) (set-port-position! port size)))
                       self))
    (cons "isOpen" (lambda (self) (vector-ref (jhost-state self) 1)))
@@ -2284,26 +3448,34 @@
    (cons "getFileStoreAttributeView" (lambda (self view) jolt-nil))))
 (hashtable-set! jhost-tag->fqn "host-file-store" "java.nio.file.FileStore")
 
+;; UserPrincipalNotFoundException carries the name in getName; its message is
+;; null, as the JDK's is.
+(define (nio-principal-not-found)
+  (zip-throw "java.nio.file.attribute.UserPrincipalNotFoundException" #f))
+
 ;; Files.setOwner: chown(2) to the uid getpwnam(3) answers for the principal's
 ;; name. struct passwd keeps pw_uid at 16 on every 64-bit host here.
 (define c-chown (jolt-foreign-proc-safe "chown" '(string unsigned-int unsigned-int) 'int))
 (define c-getpwnam (jolt-foreign-proc-safe "getpwnam" '(string) 'iptr))
 (define (nio-host-set-owner p owner)
-  (unless (nio-userprin? owner)
-    (throw-jvm 'ClassCastException "owner is not a java.nio.file.attribute.UserPrincipal"))
-  (unless (and c-chown c-getpwnam)
-    (throw-jvm 'UnsupportedOperationException "setOwner is not supported on this host"))
-  (let ((pw (c-getpwnam (jhost-state owner))))
-    (when (= 0 pw)
-      (zip-throw "java.nio.file.attribute.UserPrincipalNotFoundException" (jhost-state owner)))
-    (let ((fp (nfp p)) (uid (sa-foreign-ref 'unsigned-32 pw 16)))
-      (let-values (((r err) (io-call+errno (c-chown fp uid #xFFFFFFFF))))
-        (unless (= 0 r)
-          (cond ((= err nio-ENOENT) (nio-no-such-file (nio-shown p)))
-                ((= err nio-EACCES)
-                 (nio-fs-throw "java.nio.file.AccessDeniedException" (nio-shown p)))
-                (else (nio-fs-detail (nio-shown p) (and c-strerror (c-strerror err))))))))
-    (->path p)))
+  (if (nio-windows?)
+      ;; the ACL view's owner (WindowsAclFileAttributeView.setOwner)
+      (win32-set-owner! (nfp p) (nio-shown p) #t owner)
+      (begin
+        (unless (nio-userprin? owner)
+          (throw-jvm 'ClassCastException "owner is not a java.nio.file.attribute.UserPrincipal"))
+        (unless (and c-chown c-getpwnam)
+          (throw-jvm 'UnsupportedOperationException "setOwner is not supported on this host"))
+        ;; the principal's uid: its passwd entry's, or the number it names
+        (let ((uid (nio-principal-id (jhost-state owner) #f)))
+          (let ((fp (nfp p)))
+            (let-values (((r err) (io-call+errno (c-chown fp uid #xFFFFFFFF))))
+              (unless (= 0 r)
+                (cond ((= err nio-ENOENT) (nio-no-such-file (nio-shown p)))
+                      ((= err nio-EACCES)
+                       (nio-fs-throw "java.nio.file.AccessDeniedException" (nio-shown p)))
+                      (else (nio-fs-detail (nio-shown p) (and c-strerror (c-strerror err)))))))))))
+  (->path p))
 
 ;; ---- attribute views, over any provider ---------------------------------------
 ;; A view reads and writes through the Files operations of its path's provider,
@@ -2316,8 +3488,17 @@
     (cond ((string=? n "java.nio.file.attribute.BasicFileAttributeView") "basic")
           ((string=? n "java.nio.file.attribute.FileOwnerAttributeView") "owner")
           ((string=? n "java.nio.file.attribute.PosixFileAttributeView") "posix")
+          ((string=? n "java.nio.file.attribute.DosFileAttributeView") "dos")
+          ((string=? n "java.nio.file.attribute.AclFileAttributeView") "acl")
+          ((string=? n "java.nio.file.attribute.UserDefinedFileAttributeView") "user")
           (else n))))
-(define (nio-host-attribute-views) (if (nio-windows?) '("basic" "owner") '("basic" "owner" "posix")))
+;; the views of FileSystem.supportedFileAttributeViews on each platform (JDK 21)
+(define (nio-host-attribute-views)
+  (case (sa-os-family)
+    ((windows) '("basic" "owner" "dos" "acl" "user"))
+    ((linux) '("basic" "owner" "posix" "unix" "dos" "user"))
+    ((macos) '("basic" "owner" "posix" "unix" "user"))
+    (else '("basic" "owner" "posix" "unix"))))
 (define (nio-attribute-view supported . refuse)
   (lambda (p view . opts)
     (if (member (nio-view-name view) (if (procedure? supported) (supported) supported))
@@ -2334,7 +3515,12 @@
    (cons "name" (lambda (self) (vector-ref (jhost-state self) 0)))
    (cons "readAttributes"
          (lambda (self)
-           (nio-view-call self "readAttributes" (jolt-class-for "java.nio.file.attribute.BasicFileAttributes"))))
+           ;; a PosixFileAttributeView reads PosixFileAttributes, every other view
+           ;; the basic ones
+           (nio-view-call self "readAttributes"
+                          (jolt-class-for (if (string=? (vector-ref (jhost-state self) 0) "posix")
+                                              "java.nio.file.attribute.PosixFileAttributes"
+                                              "java.nio.file.attribute.BasicFileAttributes")))))
    (cons "setTimes"
          (lambda (self modified access created)
            (nio-view-writable! self "setTimes")
@@ -2353,11 +3539,987 @@
                             jolt-nil))))
 (hashtable-set! jhost-tag->fqn "nio-attribute-view" "java.nio.file.attribute.BasicFileAttributeView")
 
+;; ---- the dos:, acl: and user: views ---------------------------------------------
+;; The default filesystem offers the views the JDK 21 provider of each platform
+;; does (FileSystem.supportedFileAttributeViews):
+;;   Linux    basic owner posix unix dos user  dos is Samba's user.DOSATTRIB xattr
+;;   macOS    basic owner posix unix user
+;;   Windows  basic owner dos acl user         user is NTFS alternate data streams
+;; user is the user.* extended attributes on Linux and macOS. Each platform's
+;; half is behind the predicates below, so the shared code never asks which OS
+;; it is on; the Win32 entries resolve on first use (define-win32-proc) and the
+;; POSIX ones through jolt-foreign-proc-safe, so neither is bound at boot where
+;; it does not exist.
+(define (nio-dos-view?) (and (memq (sa-os-family) '(linux windows)) #t))
+(define (nio-acl-view?) (nio-windows?))
+(define (nio-user-view?) (and (or (nio-windows?) nio-xattr) #t))
+
+;; ---- POSIX: descriptors for attribute access, extended attributes ------------
+;; UnixPath.openForAttributeAccess: O_RDONLY, with O_NOFOLLOW when not following,
+;; so a link read as itself is ELOOP ("... or unable to access attributes of
+;; symbolic link") and a missing file the open's NoSuchFileException.
+(define (nio-attr-open fp shown follow?)
+  (let* ((o (fc-posix-oflags))
+         (flags (if (or follow? (not o)) 0 (vector-ref o 6))))
+    (let-values (((fd err) (io-call+errno (c-fc-open fp flags 0))))
+      (when (< fd 0) (nio-errno-throw shown #f err))
+      fd)))
+(define (nio-with-attr-fd fp shown follow? proc)
+  (let ((fd (nio-attr-open fp shown follow?)))
+    (dynamic-wind (lambda () #f) (lambda () (proc fd)) (lambda () (fc-posix-close! fd)))))
+
+;; f{get,set,list,remove}xattr over a descriptor as #(get set list remove), each
+;; answering (values result errno); #f where there are none. macOS's take a
+;; position and an options word, Linux's do not.
+(define nio-xattr
+  (case (sa-os-family)
+    ((linux)
+     (let ((get (jolt-foreign-proc-safe "fgetxattr" '(int string u8* size_t) 'iptr))
+           (set (jolt-foreign-proc-safe "fsetxattr" '(int string u8* size_t int) 'int))
+           (lst (jolt-foreign-proc-safe "flistxattr" '(int u8* size_t) 'iptr))
+           (rm  (jolt-foreign-proc-safe "fremovexattr" '(int string) 'int)))
+       (and get set lst rm
+            (vector (lambda (fd name buf n) (io-call+errno (get fd name buf n)))
+                    (lambda (fd name buf n) (io-call+errno (set fd name buf n 0)))
+                    (lambda (fd buf n) (io-call+errno (lst fd buf n)))
+                    (lambda (fd name) (io-call+errno (rm fd name)))))))
+    ((macos)
+     (let ((get (jolt-foreign-proc-safe "fgetxattr" '(int string u8* size_t unsigned-32 int) 'iptr))
+           (set (jolt-foreign-proc-safe "fsetxattr" '(int string u8* size_t unsigned-32 int) 'int))
+           (lst (jolt-foreign-proc-safe "flistxattr" '(int u8* size_t int) 'iptr))
+           (rm  (jolt-foreign-proc-safe "fremovexattr" '(int string int) 'int)))
+       (and get set lst rm
+            (vector (lambda (fd name buf n) (io-call+errno (get fd name buf n 0 0)))
+                    (lambda (fd name buf n) (io-call+errno (set fd name buf n 0 0)))
+                    (lambda (fd buf n) (io-call+errno (lst fd buf n 0)))
+                    (lambda (fd name) (io-call+errno (rm fd name 0)))))))
+    (else #f)))
+(define nio-ERANGE 34)                                            ; the same on both
+(define nio-ENOATTR (if (eq? (sa-os-family) 'macos) 93 61))      ; ENOATTR / ENODATA
+(define (nio-xattr-get fd name buf n) ((vector-ref nio-xattr 0) fd name buf n))
+(define (nio-xattr-set fd name bv) ((vector-ref nio-xattr 1) fd name bv (bytevector-length bv)))
+(define (nio-xattr-fail shown what err)
+  (nio-fs-throw "java.nio.file.FileSystemException" shown #f
+                (string-append what (if c-strerror (c-strerror err) (number->string err)))))
+(define (nio-bv-prefix bv n)
+  (let ((out (make-bytevector n))) (bytevector-copy! bv 0 out 0 n) out))
+
+;; UnixUserDefinedFileAttributeView. A name is "user." + name, refused past the
+;; platform's limit (XATTR_NAME_MAX 255 on Linux, XATTR_MAXNAMELEN 127 on macOS).
+(define (nio-xattr-name shown name)
+  (when (jolt-nil? name) (throw-jvm 'NullPointerException "'name' is null"))
+  (let ((full (string-append "user." (npath-string-of name))))
+    (when (> (bytevector-length (string->utf8 full)) (if (eq? (sa-os-family) 'macos) 127 255))
+      (nio-fs-throw "java.nio.file.FileSystemException" shown #f (string-append "'" full "' is too big")))
+    full))
+;; the user.* names in a listxattr buffer, prefix dropped, in the kernel's order
+(define (nio-xattr-user-names buf n)
+  (let loop ((i 0) (start 0) (acc '()))
+    (cond ((>= i n) (reverse acc))
+          ((= 0 (bytevector-u8-ref buf i))
+           (let ((s (utf8->string (let ((b (make-bytevector (- i start))))
+                                    (bytevector-copy! buf start b 0 (- i start)) b))))
+             (loop (+ i 1) (+ i 1)
+                   (if (and (> (string-length s) 5) (string=? (substring s 0 5) "user."))
+                       (cons (substring s 5 (string-length s)) acc)
+                       acc))))
+          (else (loop (+ i 1) start acc)))))
+(define (nio-xattr-list fp shown follow?)
+  (nio-with-attr-fd fp shown follow?
+    (lambda (fd)
+      (let loop ((size 1024))
+        (let ((buf (make-bytevector size 0)))
+          (let-values (((n err) ((vector-ref nio-xattr 2) fd buf size)))
+            (cond ((>= n 0) (nio-xattr-user-names buf n))
+                  ((and (= err nio-ERANGE) (< size 32768)) (loop (* size 2)))
+                  (else (nio-xattr-fail shown "Unable to get list of extended attributes: " err)))))))))
+(define (nio-xattr-size fp shown follow? name)
+  (nio-with-attr-fd fp shown follow?
+    (lambda (fd)
+      (let-values (((n err) (nio-xattr-get fd (nio-xattr-name shown name) (make-bytevector 0) 0)))
+        (if (>= n 0)
+            n
+            (nio-xattr-fail shown (string-append "Unable to get size of extended attribute '"
+                                                 (npath-string-of name) "': ") err))))))
+;; the value's bytes, at most REM of them; more is "Insufficient space in buffer"
+(define (nio-xattr-read fp shown follow? name rem)
+  (nio-with-attr-fd fp shown follow?
+    (lambda (fd)
+      (let ((buf (make-bytevector rem 0)))
+        (let-values (((n err) (nio-xattr-get fd (nio-xattr-name shown name) buf rem)))
+          (let ((err (cond ((< n 0) err) ((and (= rem 0) (> n 0)) nio-ERANGE) (else #f))))
+            (when err
+              (nio-fs-throw "java.nio.file.FileSystemException" shown #f
+                            (string-append "Error reading extended attribute '" (npath-string-of name) "': "
+                                           (if (= err nio-ERANGE)
+                                               "Insufficient space in buffer"
+                                               (if c-strerror (c-strerror err) (number->string err))))))
+            (nio-bv-prefix buf n)))))))
+(define (nio-xattr-write fp shown follow? name bv)
+  (nio-with-attr-fd fp shown follow?
+    (lambda (fd)
+      (let-values (((r err) (nio-xattr-set fd (nio-xattr-name shown name) bv)))
+        (unless (= r 0)
+          (nio-xattr-fail shown (string-append "Error writing extended attribute '"
+                                               (npath-string-of name) "': ") err))))))
+(define (nio-xattr-delete fp shown follow? name)
+  (nio-with-attr-fd fp shown follow?
+    (lambda (fd)
+      (let-values (((r err) ((vector-ref nio-xattr 3) fd (nio-xattr-name shown name))))
+        (unless (= r 0)
+          (nio-xattr-fail shown (string-append "Unable to delete extended attribute '"
+                                               (npath-string-of name) "': ") err))))))
+
+;; LinuxDosFileAttributeView: the DOS bits are Samba's user.DOSATTRIB, "0x"
+;; and the bits in hex, NUL-terminated. No attribute is 0; one that does not
+;; parse is the JDK's "Value of user.DOSATTRIB attribute is invalid".
+(define nio-dos-xattr-name "user.DOSATTRIB")
+(define (nio-dos-xattr-invalid shown)
+  (throw-jvm 'IOException (string-append "Value of " nio-dos-xattr-name " attribute is invalid")))
+(define (nio-hex-int s)
+  (and (> (string-length s) 0)
+       (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a (char-downcase c) #\f))) (string->list s))
+       (let ((n (string->number s 16))) (and (<= n #x7FFFFFFF) n))))
+(define (nio-linux-dos-bits fd shown)
+  (let ((buf (make-bytevector 24 0)))
+    (let-values (((n err) (nio-xattr-get fd nio-dos-xattr-name buf 24)))
+      (cond ((> n 0)
+             (let* ((len (if (= 0 (bytevector-u8-ref buf (- n 1))) (- n 1) n))
+                    (s (utf8->string (nio-bv-prefix buf len))))
+               (or (and (>= (string-length s) 3) (string=? (substring s 0 2) "0x")
+                        (nio-hex-int (substring s 2 (string-length s))))
+                   (nio-dos-xattr-invalid shown))))
+            ((and (< n 0) (= err nio-ENOATTR)) 0)
+            ((< n 0) (nio-errno-throw shown #f err))
+            (else (nio-dos-xattr-invalid shown))))))
+(define (nio-linux-dos-update! fp shown follow? flag on?)
+  (nio-with-attr-fd fp shown follow?
+    (lambda (fd)
+      (let* ((old (nio-linux-dos-bits fd shown))
+             (new (if on? (bitwise-ior old flag) (bitwise-and old (bitwise-not flag)))))
+        (unless (= new old)
+          (let ((v (string->utf8 (string-append "0x" (string-downcase (number->string new 16)) "\x0;"))))
+            (let-values (((r err) (nio-xattr-set fd nio-dos-xattr-name v)))
+              (unless (= r 0) (nio-errno-throw shown #f err)))))))))
+
+;; ---- Windows: DOS attributes, alternate data streams, security descriptors ----
+(define-win32-proc win32-set-file-attributes-w
+  "kernel32.dll" "SetFileAttributesW" (void* unsigned-32) int)
+(define-win32-proc win32-delete-file-w
+  "kernel32.dll" "DeleteFileW" (void*) int)
+(define-win32-proc win32-find-first-stream-w
+  "kernel32.dll" "FindFirstStreamW" (void* int u8* unsigned-32) iptr)
+(define-win32-proc win32-find-next-stream-w
+  "kernel32.dll" "FindNextStreamW" (iptr u8*) int)
+(define-win32-proc win32-local-free
+  "kernel32.dll" "LocalFree" (void*) void*)
+(define-win32-proc win32-get-file-security-w
+  "advapi32.dll" "GetFileSecurityW" (void* unsigned-32 void* unsigned-32 u8*) int)
+(define-win32-proc win32-set-file-security-w
+  "advapi32.dll" "SetFileSecurityW" (void* unsigned-32 void*) int)
+(define-win32-proc win32-get-sd-owner
+  "advapi32.dll" "GetSecurityDescriptorOwner" (void* u8* u8*) int)
+(define-win32-proc win32-get-sd-dacl
+  "advapi32.dll" "GetSecurityDescriptorDacl" (void* u8* u8* u8*) int)
+(define-win32-proc win32-lookup-account-sid-w
+  "advapi32.dll" "LookupAccountSidW" (void* void* u8* u8* u8* u8* u8*) int)
+(define-win32-proc win32-lookup-account-name-w
+  "advapi32.dll" "LookupAccountNameW" (void* void* void* u8* void* u8* u8*) int)
+(define-win32-proc win32-convert-sid-to-string-sid-w
+  "advapi32.dll" "ConvertSidToStringSidW" (void* u8*) int)
+(define-win32-proc win32-convert-string-sid-to-sid-w
+  "advapi32.dll" "ConvertStringSidToSidW" (void* u8*) int)
+(define-win32-proc win32-get-length-sid
+  "advapi32.dll" "GetLengthSid" (void*) unsigned-32)
+(define-win32-proc win32-initialize-acl
+  "advapi32.dll" "InitializeAcl" (void* unsigned-32 unsigned-32) int)
+(define-win32-proc win32-add-access-allowed-ace-ex
+  "advapi32.dll" "AddAccessAllowedAceEx" (void* unsigned-32 unsigned-32 unsigned-32 void*) int)
+(define-win32-proc win32-add-access-denied-ace-ex
+  "advapi32.dll" "AddAccessDeniedAceEx" (void* unsigned-32 unsigned-32 unsigned-32 void*) int)
+(define-win32-proc win32-initialize-sd
+  "advapi32.dll" "InitializeSecurityDescriptor" (void* unsigned-32) int)
+(define-win32-proc win32-set-sd-dacl
+  "advapi32.dll" "SetSecurityDescriptorDacl" (void* int void* int) int)
+(define-win32-proc win32-set-sd-owner
+  "advapi32.dll" "SetSecurityDescriptorOwner" (void* void* int) int)
+(define (win32-ok? r) (not (eqv? r 0)))
+(define (win32-u32 bv) (bytevector-u32-ref bv 0 (endianness little)))
+(define (win32-ptr bv) (bytevector-u64-ref bv 0 (endianness little)))
+
+;; WindowsLinkSupport.getFinalPath: the target of a link when following, the
+;; path itself otherwise. GetFileAttributes, SetFileAttributes and the security
+;; calls never follow a reparse point on their own.
+(define (win32-attr-path fp follow?)
+  (let ((a (and follow? (win32-file-attributes fp))))
+    (if (and a (not (= 0 (bitwise-and a win32-FILE-ATTRIBUTE-REPARSE-POINT))))
+        (or (win32-final-path fp) fp)
+        fp)))
+;; GetFileAttributesW, or the error as the JDK raises it
+(define (win32-dos-bits fp shown follow?)
+  (let ((path (win32-attr-path fp follow?)) (get (win32-get-file-attributes-w)))
+    (win32-with-wstr path
+      (lambda (w)
+        (let-values (((a err) (fc-win32-call (lambda (a) (not (= a win32-INVALID-FILE-ATTRIBUTES)))
+                                             (lambda () (get w)))))
+          (if (= a win32-INVALID-FILE-ATTRIBUTES) (fc-win32-throw shown err) a))))))
+;; WindowsFileAttributeViews.Dos.updateAttributes
+(define (win32-dos-update! fp shown follow? flag on?)
+  (let* ((path (win32-attr-path fp follow?))
+         (old (win32-dos-bits path shown #f))
+         (new (if on? (bitwise-ior old flag) (bitwise-and old (bitwise-not flag)))))
+    (unless (= new old)
+      (let ((set (win32-set-file-attributes-w)))
+        (win32-with-wstr path
+          (lambda (w)
+            (let-values (((r err) (fc-win32-call win32-ok? (lambda () (set w new)))))
+              (unless (win32-ok? r) (fc-win32-throw shown err)))))))))
+
+;; WindowsUserDefinedFileAttributeView: attribute NAME of a file is its stream
+;; "file:NAME". A failure on the stream names "file:NAME" in the exception.
+(define win32-FILE-SHARE-READ-WRITE-DELETE 7)
+(define win32-CREATE-ALWAYS 2)
+(define win32-ERROR-HANDLE-EOF 38)
+(define (win32-ads-join s name)
+  (when (jolt-nil? name) (throw-jvm 'NullPointerException "'name' is null"))
+  (string-append s ":" (npath-string-of name)))
+(define (win32-open-handle path access disposition flags shown)
+  (let ((create (win32-create-file-w)))
+    (win32-with-wstr path
+      (lambda (w)
+        (let-values (((h err) (fc-win32-call (lambda (h) (not (= h win32-INVALID-HANDLE-VALUE)))
+                                             (lambda () (create w access win32-FILE-SHARE-READ-WRITE-DELETE 0
+                                                                disposition flags 0)))))
+          (if (= h win32-INVALID-HANDLE-VALUE) (fc-win32-throw shown err) h))))))
+(define (win32-with-handle h proc)
+  (dynamic-wind (lambda () #f) (lambda () (proc h)) (lambda () ((win32-close-handle) h))))
+(define (win32-stream-flags follow?)
+  (if follow? win32-FILE-ATTRIBUTE-NORMAL (bitwise-ior win32-FILE-ATTRIBUTE-NORMAL win32-FILE-FLAG-OPEN-REPARSE-POINT)))
+(define (win32-handle-size h shown)
+  (let ((b (make-bytevector 8 0)))
+    (let-values (((r err) (fc-win32-call win32-ok? (lambda () ((win32-get-file-size-ex) h b)))))
+      (unless (win32-ok? r) (fc-win32-throw shown err))
+      (bytevector-u64-ref b 0 (endianness little)))))
+(define (win32-ads-size fp shown follow? name)
+  (let ((s (win32-ads-join shown name)))
+    (win32-with-handle (win32-open-handle (win32-ads-join fp name) win32-GENERIC-READ win32-OPEN-EXISTING
+                                          (win32-stream-flags follow?) s)
+      (lambda (h)
+        (let ((n (win32-handle-size h s)))
+          (when (> n #x7FFFFFFF) (throw-jvm 'ArithmeticException "Stream too large"))
+          n)))))
+;; the stream's bytes, refused as "Stream too large" when they are more than REM
+(define (win32-ads-read fp shown follow? name rem)
+  (let ((s (win32-ads-join shown name)))
+    (win32-with-handle (win32-open-handle (win32-ads-join fp name) win32-GENERIC-READ win32-OPEN-EXISTING
+                                          (win32-stream-flags follow?) s)
+      (lambda (h)
+        (let ((n (win32-handle-size h s)))
+          (when (> n rem) (throw-jvm 'IOException "Stream too large"))
+          (let ((buf (make-bytevector n 0)) (got (make-bytevector 4 0)) (rd (win32-read-file)))
+            (let loop ((off 0))
+              (if (>= off n)
+                  buf
+                  (let* ((chunk (make-bytevector (- n off) 0))
+                         (r (rd h chunk (- n off) got #f))
+                         (k (win32-u32 got)))
+                    (if (or (not (win32-ok? r)) (= k 0))
+                        (nio-bv-prefix buf off)
+                        (begin (bytevector-copy! chunk 0 buf off k) (loop (+ off k)))))))))))))
+;; Created or replaced with the file held open first, so a missing file is
+;; NoSuchFileException rather than an unnamed stream made for it.
+(define (win32-ads-write fp shown follow? name bv)
+  (let ((s (win32-ads-join shown name)))
+    (win32-with-handle (win32-open-handle fp win32-GENERIC-READ win32-OPEN-EXISTING
+                                          (win32-attr-open-flags follow?) shown)
+      (lambda (_)
+        (win32-with-handle (win32-open-handle (win32-ads-join fp name) win32-GENERIC-WRITE win32-CREATE-ALWAYS
+                                              (win32-stream-flags follow?) s)
+          (lambda (h)
+            (let ((n (bytevector-length bv)) (put (win32-write-file)) (did (make-bytevector 4 0)))
+              (let loop ((off 0))
+                (when (< off n)
+                  (let* ((chunk (let ((c (make-bytevector (- n off)))) (bytevector-copy! bv off c 0 (- n off)) c))
+                         (r (put h chunk (- n off) did #f)))
+                    (unless (win32-ok? r) (throw-jvm 'IOException (win32-error-message ((win32-get-last-error)))))
+                    (loop (+ off (win32-u32 did)))))))))))))
+(define (win32-ads-delete fp shown name)
+  (let ((del (win32-delete-file-w)) (s (win32-ads-join shown name)))
+    (win32-with-wstr (win32-ads-join fp name)
+      (lambda (w)
+        (let-values (((r err) (fc-win32-call win32-ok? (lambda () (del w)))))
+          (unless (win32-ok? r) (fc-win32-throw s err)))))))
+;; FindFirstStreamW / FindNextStreamW: ":NAME:$DATA" per stream; the file's own
+;; data, "::$DATA", is not an attribute. WIN32_FIND_STREAM_DATA is the size (8
+;; bytes) and then the name, MAX_PATH + 36 UTF-16 units.
+(define (win32-ads-list fp shown)
+  (let ((first (win32-find-first-stream-w)) (next (win32-find-next-stream-w))
+        (data (make-bytevector 600 0)))
+    (define (stream-name)
+      (let loop ((i 0))
+        (if (or (>= (+ 8 (* 2 i)) 600) (= 0 (bytevector-u16-ref data (+ 8 (* 2 i)) (endianness little))))
+            (utf16->string (let ((b (make-bytevector (* 2 i)))) (bytevector-copy! data 8 b 0 (* 2 i)) b)
+                           (endianness little))
+            (loop (+ i 1)))))
+    (define (segment s)                ; ":NAME:$DATA" -> NAME
+      (let ((parts (let loop ((cs (string->list s)) (cur '()) (acc '()))
+                     (cond ((null? cs) (reverse (cons (list->string (reverse cur)) acc)))
+                           ((char=? (car cs) #\:) (loop (cdr cs) '() (cons (list->string (reverse cur)) acc)))
+                           (else (loop (cdr cs) (cons (car cs) cur) acc))))))
+        (if (> (length parts) 1) (cadr parts) "")))
+    (let-values (((h err) (fc-win32-call (lambda (h) (not (= h win32-INVALID-HANDLE-VALUE)))
+                                         (lambda () (win32-with-wstr fp (lambda (w) (first w 0 data 0)))))))
+      (cond
+        ((not (= h win32-INVALID-HANDLE-VALUE))
+         (win32-with-handle* h (win32-find-close)
+           (lambda ()
+             (let loop ((acc (let ((n (stream-name))) (if (string=? n "::$DATA") '() (list (segment n))))))
+               (if (win32-ok? (next h data))
+                   (loop (cons (segment (stream-name)) acc))
+                   (reverse acc))))))
+        ((= err win32-ERROR-HANDLE-EOF) '())
+        (else (fc-win32-throw shown err))))))
+(define (win32-with-handle* h close proc)
+  (dynamic-wind (lambda () #f) proc (lambda () (close h))))
+
+;; ---- Windows principals and ACLs (WindowsUserPrincipals, WindowsSecurityDescriptor)
+;; A principal is #(sid-string sid-type account-name): the account is
+;; "DOMAIN\NAME" as LookupAccountSidW answers it, or the SID string when it
+;; names no account. A group, well-known group or alias is a GroupPrincipal.
+;; Equal and hashed by SID; toString is "NAME (Type)", getName the name.
+(define win32-SidTypeUnknown 8)
+(define (win32-make-principal sid-str use name)
+  (make-jhost (if (memv use '(2 4 5)) "win-group-principal" "win-user-principal") (vector sid-str use name)))
+(define-jhost-tag-pred (win32-principal? t) (or (string=? t "win-user-principal") (string=? t "win-group-principal")))
+(define (win32-principal-sid p) (vector-ref (jhost-state p) 0))
+(define (win32-principal-name p) (vector-ref (jhost-state p) 2))
+(define (win32-principal-string p)
+  (string-append (win32-principal-name p) " ("
+                 (case (vector-ref (jhost-state p) 1)
+                   ((1) "User") ((2) "Group") ((3) "Domain") ((4) "Alias") ((5) "Well-known group")
+                   ((6) "Deleted") ((7) "Invalid") ((9) "Computer") (else "Unknown"))
+                 ")"))
+(let ((methods (list (cons "getName" win32-principal-name) (cons "toString" win32-principal-string))))
+  (register-host-methods! "win-user-principal" methods)
+  (register-host-methods! "win-group-principal" methods))
+(hashtable-set! jhost-tag->fqn "win-user-principal" "sun.nio.fs.WindowsUserPrincipals$User")
+(hashtable-set! jhost-tag->fqn "win-group-principal" "sun.nio.fs.WindowsUserPrincipals$Group")
+(register-str-render! win32-principal? win32-principal-string)
+(register-eq-arm! (lambda (a b) (and (win32-principal? a) (win32-principal? b)))
+                  (lambda (a b) (string=? (win32-principal-sid a) (win32-principal-sid b))))
+(register-hash-arm! win32-principal? (lambda (x) (string-hash (win32-principal-sid x))))
+
+(define (win32-wide-bv->string bv units)
+  (let loop ((i 0))
+    (if (or (>= i units) (= 0 (bytevector-u16-ref bv (* 2 i) (endianness little))))
+        (utf16->string (let ((b (make-bytevector (* 2 i)))) (bytevector-copy! bv 0 b 0 (* 2 i)) b)
+                       (endianness little))
+        (loop (+ i 1)))))
+;; WindowsUserPrincipals.fromSid, SID a foreign address
+(define (win32-sid->principal sid)
+  (let* ((out (make-bytevector 8 0))
+         (sid-str (if (win32-ok? ((win32-convert-sid-to-string-sid-w) sid out))
+                      (let* ((p (win32-ptr out)) (s (win32-wstr-at p 0 256)))
+                        ((win32-local-free) p)
+                        s)
+                      (throw-jvm 'IOException "Unable to convert SID to String")))
+         (name (make-bytevector 1024 0)) (nlen (make-bytevector 4 0))
+         (dom (make-bytevector 1024 0)) (dlen (make-bytevector 4 0))
+         (use (make-bytevector 4 0)))
+    (bytevector-u32-set! nlen 0 512 (endianness little))
+    (bytevector-u32-set! dlen 0 512 (endianness little))
+    (if (win32-ok? ((win32-lookup-account-sid-w) 0 sid name nlen dom dlen use))
+        (win32-make-principal sid-str (win32-u32 use)
+                              (string-append (win32-wide-bv->string dom 512) "\\" (win32-wide-bv->string name 512)))
+        (win32-make-principal sid-str win32-SidTypeUnknown sid-str))))
+;; WindowsUserPrincipals.lookup: LookupAccountNameW, ERROR_NONE_MAPPED being
+;; UserPrincipalNotFoundException
+(define (win32-lookup-principal name)
+  (let ((look (win32-lookup-account-name-w)) (n (npath-string-of name))
+        (cb (make-bytevector 4 0)) (cch (make-bytevector 4 0)) (use (make-bytevector 4 0)))
+    (win32-with-wstr n
+      (lambda (w)
+        (let-values (((r err) (fc-win32-call win32-ok? (lambda () (look 0 w 0 cb 0 cch use)))))
+          (cond ((= err 1332) (nio-principal-not-found))
+                ((and (not (win32-ok? r)) (not (= err 122)))
+                 (throw-jvm 'IOException (string-append n ": " (win32-error-message err)))))
+          (let ((sid (sa-foreign-alloc (max 1 (win32-u32 cb))))
+                (dom (sa-foreign-alloc (* 2 (max 1 (win32-u32 cch))))))
+            (dynamic-wind
+              (lambda () #f)
+              (lambda ()
+                (let-values (((r err) (fc-win32-call win32-ok? (lambda () (look 0 w sid cb dom cch use)))))
+                  (unless (win32-ok? r)
+                    (if (= err 1332)
+                        (nio-principal-not-found)
+                        (throw-jvm 'IOException (string-append n ": " (win32-error-message err)))))
+                  (win32-sid->principal sid)))
+              (lambda () (sa-foreign-free sid) (sa-foreign-free dom)))))))))
+;; ConvertStringSidToSidW for a principal; the caller LocalFrees the SID
+(define (win32-principal-sid-ptr p)
+  (unless (win32-principal? p) (throw-jvm 'java.nio.file.ProviderMismatchException jolt-nil))
+  (let ((out (make-bytevector 8 0)))
+    (unless (win32-with-wstr (win32-principal-sid p)
+              (lambda (w) (win32-ok? ((win32-convert-string-sid-to-sid-w) w out))))
+      (throw-jvm 'IOException (string-append "Failed to get SID for " (win32-principal-name p) ": "
+                                             (win32-error-message ((win32-get-last-error))))))
+    (win32-ptr out)))
+
+(define win32-OWNER-SECURITY-INFORMATION 1)
+(define win32-DACL-SECURITY-INFORMATION 4)
+;; the file's self-relative security descriptor in foreign memory, for INFO;
+;; PROC runs on its address and it is freed after
+(define (win32-with-file-security path shown info proc)
+  (let ((get (win32-get-file-security-w)) (needed (make-bytevector 4 0)))
+    (win32-with-wstr path
+      (lambda (w)
+        (let-values (((r err) (fc-win32-call win32-ok? (lambda () (get w info 0 0 needed)))))
+          (when (and (not (win32-ok? r)) (not (= err 122))) (fc-win32-throw shown err))
+          (let* ((n (max 1 (win32-u32 needed))) (sd (sa-foreign-alloc n)))
+            (dynamic-wind
+              (lambda () #f)
+              (lambda ()
+                (let-values (((r err) (fc-win32-call win32-ok? (lambda () (get w info sd n needed)))))
+                  (unless (win32-ok? r) (fc-win32-throw shown err))
+                  (proc sd)))
+              (lambda () (sa-foreign-free sd)))))))))
+(define (win32-get-owner fp shown follow?)
+  (win32-with-file-security (win32-attr-path fp follow?) shown win32-OWNER-SECURITY-INFORMATION
+    (lambda (sd)
+      (let ((owner (make-bytevector 8 0)) (dflt (make-bytevector 4 0)))
+        ((win32-get-sd-owner) sd owner dflt)
+        (when (= 0 (win32-ptr owner)) (throw-jvm 'IOException "no owner"))
+        (win32-sid->principal (win32-ptr owner))))))
+;; AclEntryPermission <-> the access mask bits, in the enum's order
+(define win32-acl-perm-bits
+  '(("READ_DATA" . #x1) ("WRITE_DATA" . #x2) ("APPEND_DATA" . #x4) ("READ_NAMED_ATTRS" . #x8)
+    ("WRITE_NAMED_ATTRS" . #x10) ("EXECUTE" . #x20) ("DELETE_CHILD" . #x40)
+    ("READ_ATTRIBUTES" . #x80) ("WRITE_ATTRIBUTES" . #x100) ("DELETE" . #x10000)
+    ("READ_ACL" . #x20000) ("WRITE_ACL" . #x40000) ("WRITE_OWNER" . #x80000) ("SYNCHRONIZE" . #x100000)))
+(define win32-acl-flag-bits
+  '(("FILE_INHERIT" . #x1) ("DIRECTORY_INHERIT" . #x2) ("NO_PROPAGATE_INHERIT" . #x4) ("INHERIT_ONLY" . #x8)))
+(define (win32-bits->names table bits)
+  (filter (lambda (nm) nm)
+          (map (lambda (e) (and (not (= 0 (bitwise-and bits (cdr e)))) (car e))) table)))
+(define (win32-names->bits table names)
+  (fold-left (lambda (acc nm) (bitwise-ior acc (cdr (assoc nm table)))) 0 names))
+;; WindowsSecurityDescriptor.getAcl: the DACL's ALLOW and DENY entries, in
+;; order; an absent DACL is none
+(define (win32-get-acl fp shown follow?)
+  (win32-with-file-security (win32-attr-path fp follow?) shown win32-DACL-SECURITY-INFORMATION
+    (lambda (sd)
+      (let ((present (make-bytevector 4 0)) (dacl (make-bytevector 8 0)) (dflt (make-bytevector 4 0)))
+        ((win32-get-sd-dacl) sd present dacl dflt)
+        (let ((acl (win32-ptr dacl)))
+          (if (or (= 0 (win32-u32 present)) (= 0 acl))
+              '()
+              (let loop ((i 0) (ace (+ acl 8)) (acc '()) (count (sa-foreign-ref 'unsigned-16 acl 4)))
+                (if (>= i count)
+                    (reverse acc)
+                    (let ((type (sa-foreign-ref 'unsigned-8 ace 0))
+                          (flags (sa-foreign-ref 'unsigned-8 ace 1))
+                          (size (sa-foreign-ref 'unsigned-16 ace 2))
+                          (mask (sa-foreign-ref 'unsigned-32 ace 4)))
+                      (loop (+ i 1) (+ ace size)
+                            (if (memv type '(0 1))
+                                (cons (make-acl-entry (acl-entry-type-named (if (= type 0) "ALLOW" "DENY"))
+                                                      (win32-sid->principal (+ ace 8))
+                                                      (map acl-entry-perm-named (win32-bits->names win32-acl-perm-bits mask))
+                                                      (map acl-entry-flag-named (win32-bits->names win32-acl-flag-bits flags)))
+                                      acc)
+                                acc)
+                            count))))))))))
+(define (win32-set-security! fp shown follow? info fill!)
+  (let ((sd (sa-foreign-alloc 64)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        ((win32-initialize-sd) sd 1)
+        (fill! sd)
+        (win32-with-wstr (win32-attr-path fp follow?)
+          (lambda (w)
+            (let-values (((r err) (fc-win32-call win32-ok? (lambda () ((win32-set-file-security-w) w info sd)))))
+              (unless (win32-ok? r) (fc-win32-throw shown err))))))
+      (lambda () (sa-foreign-free sd)))))
+;; WindowsSecurityDescriptor.create + SetFileSecurityW(DACL): AUDIT and ALARM
+;; entries are skipped, as the JDK skips them
+(define (win32-set-acl! fp shown follow? entries)
+  (let* ((entries (map (lambda (e) (unless (acl-entry? e)
+                                     (zip-class-cast e "java.nio.file.attribute.AclEntry"))
+                         e)
+                       (seq->list (jolt-seq entries))))
+         (sids (map (lambda (e) (win32-principal-sid-ptr (acl-entry-who e))) entries)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        (let* ((size (fold-left (lambda (n sid) (+ n 12 ((win32-get-length-sid) sid))) 8 sids))
+               (acl (sa-foreign-alloc size)))
+          (dynamic-wind
+            (lambda () #f)
+            (lambda ()
+              ((win32-initialize-acl) acl size 2)
+              (for-each
+                (lambda (e sid)
+                  (let ((type (acl-entry-type-name e))
+                        (mask (win32-names->bits win32-acl-perm-bits (map enum-name (acl-entry-perms e))))
+                        (flags (win32-names->bits win32-acl-flag-bits (map enum-name (acl-entry-flags e)))))
+                    (when (member type '("ALLOW" "DENY"))
+                      (unless (win32-ok? ((if (string=? type "ALLOW")
+                                              (win32-add-access-allowed-ace-ex)
+                                              (win32-add-access-denied-ace-ex))
+                                          acl 2 flags mask sid))
+                        (throw-jvm 'IOException (string-append "Failed to encode ACE: "
+                                                               (win32-error-message ((win32-get-last-error)))))))))
+                entries sids)
+              (win32-set-security! fp shown follow? win32-DACL-SECURITY-INFORMATION
+                                   (lambda (sd) ((win32-set-sd-dacl) sd 1 acl 0))))
+            (lambda () (sa-foreign-free acl)))))
+      (lambda () (for-each (lambda (sid) ((win32-local-free) sid)) sids)))))
+;; WindowsSecurity.enablePrivilege: the privilege enabled on an impersonation
+;; token of this thread while THUNK runs, and the thread back to the process's
+;; token after. Without the privilege the call goes ahead anyway, as the JDK's
+;; does; setting an owner other than oneself then fails as Windows decides.
+(define-win32-proc win32-impersonate-self "advapi32.dll" "ImpersonateSelf" (int) int)
+(define-win32-proc win32-revert-to-self "advapi32.dll" "RevertToSelf" () int)
+(define-win32-proc win32-get-current-thread "kernel32.dll" "GetCurrentThread" () iptr)
+(define-win32-proc win32-open-thread-token "advapi32.dll" "OpenThreadToken" (iptr unsigned-32 int u8*) int)
+(define-win32-proc win32-lookup-privilege-value-w "advapi32.dll" "LookupPrivilegeValueW" (void* void* u8*) int)
+(define-win32-proc win32-adjust-token-privileges
+  "advapi32.dll" "AdjustTokenPrivileges" (iptr int u8* unsigned-32 void* void*) int)
+(define win32-TOKEN-ADJUST-PRIVILEGES #x20)
+(define win32-SE-PRIVILEGE-ENABLED 2)
+(define (win32-enable-thread-privilege! name)
+  (let ((tok (make-bytevector 8 0)) (tp (make-bytevector 16 0)) (luid (make-bytevector 8 0)))
+    (when (and (win32-ok? ((win32-open-thread-token) ((win32-get-current-thread))
+                                                     win32-TOKEN-ADJUST-PRIVILEGES 0 tok))
+               (win32-with-wstr name (lambda (w) (win32-ok? ((win32-lookup-privilege-value-w) 0 w luid)))))
+      ;; TOKEN_PRIVILEGES: one LUID_AND_ATTRIBUTES, enabled
+      (bytevector-u32-set! tp 0 1 (endianness little))
+      (bytevector-copy! luid 0 tp 4 8)
+      (bytevector-u32-set! tp 12 win32-SE-PRIVILEGE-ENABLED (endianness little))
+      (let ((h (bytevector-s64-ref tok 0 (endianness little))))
+        ((win32-adjust-token-privileges) h 0 tp 16 0 0)
+        ((win32-close-handle) h)))))
+(define (win32-with-privilege name thunk)
+  (let ((impersonating? (and (win32-impersonate-self) (win32-ok? ((win32-impersonate-self) 2)))))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda () (when impersonating? (win32-enable-thread-privilege! name)) (thunk))
+      (lambda () (when impersonating? ((win32-revert-to-self)))))))
+(define (win32-set-owner! fp shown follow? owner)
+  (when (jolt-nil? owner) (throw-jvm 'NullPointerException "'owner' is null"))
+  (let ((sid (win32-principal-sid-ptr owner)))
+    (dynamic-wind
+      (lambda () #f)
+      (lambda ()
+        ;; may need SeRestorePrivilege to set the owner
+        (win32-with-privilege "SeRestorePrivilege"
+          (lambda ()
+            (win32-set-security! fp shown follow? win32-OWNER-SECURITY-INFORMATION
+                                 (lambda (sd) ((win32-set-sd-owner) sd sid 0))))))
+      (lambda () ((win32-local-free) sid)))))
+
+;; ---- AclEntry and its enums -----------------------------------------------------
+(define (acl-enum-constants tag names) (map (lambda (nm) (cons nm (make-jhost tag nm))) names))
+(define acl-entry-type-constants (acl-enum-constants "acl-entry-type" '("ALLOW" "DENY" "AUDIT" "ALARM")))
+(define acl-entry-perm-constants (acl-enum-constants "acl-entry-perm" (map car win32-acl-perm-bits)))
+(define acl-entry-flag-constants (acl-enum-constants "acl-entry-flag" (map car win32-acl-flag-bits)))
+(define (acl-entry-type-named nm) (cdr (assoc nm acl-entry-type-constants)))
+(define (acl-entry-perm-named nm) (cdr (assoc nm acl-entry-perm-constants)))
+(define (acl-entry-flag-named nm) (cdr (assoc nm acl-entry-flag-constants)))
+(register-enum-class! "java.nio.file.attribute.AclEntryType" acl-entry-type-constants)
+(register-enum-class! "java.nio.file.attribute.AclEntryPermission" acl-entry-perm-constants)
+(register-enum-class! "java.nio.file.attribute.AclEntryFlag" acl-entry-flag-constants)
+;; the directory spellings of three permissions are the same constants
+(let ((aliases (list (cons "LIST_DIRECTORY" (acl-entry-perm-named "READ_DATA"))
+                     (cons "ADD_FILE" (acl-entry-perm-named "WRITE_DATA"))
+                     (cons "ADD_SUBDIRECTORY" (acl-entry-perm-named "APPEND_DATA")))))
+  (register-class-statics! "AclEntryPermission" aliases)
+  (register-class-statics! "java.nio.file.attribute.AclEntryPermission" aliases))
+
+;; An AclEntry is #(type who perms flags), PERMS and FLAGS lists in ordinal
+;; order (the builder keeps EnumSets). permissions() and flags() answer fresh
+;; HashSets, as the JDK copies them.
+(define (make-acl-entry type who perms flags) (make-jhost "acl-entry" (vector type who perms flags)))
+(define-jhost-tag-pred (acl-entry? t) (string=? t "acl-entry"))
+(define (acl-entry-type e) (vector-ref (jhost-state e) 0))
+(define (acl-entry-type-name e) (enum-name (acl-entry-type e)))
+(define (acl-entry-who e) (vector-ref (jhost-state e) 1))
+(define (acl-entry-perms e) (vector-ref (jhost-state e) 2))
+(define (acl-entry-flags e) (vector-ref (jhost-state e) 3))
+(define (acl-ordinal-sort xs) (list-sort (lambda (a b) (< (cdr (enum-of a)) (cdr (enum-of b)))) xs))
+(define (acl-hash-set xs) ((hashtable-ref class-ctors-tbl "HashSet" #f) (list->cseq xs)))
+;; AclEntry.toString: "who:PERM/PERM:FLAG/FLAG:TYPE", the flags part only when
+;; there are some. With no permissions the JDK's dropped slash takes the colon.
+(define (acl-entry-string e)
+  (define (joined xs) (let loop ((xs xs) (acc ""))
+                        (if (null? xs) acc
+                            (loop (cdr xs) (string-append acc (enum-name (car xs)) "/")))))
+  (let* ((s (string-append (jolt-str-render-one (record-method-dispatch (acl-entry-who e) "getName" (jolt-vector)))
+                           ":" (joined (acl-entry-perms e))))
+         (s (string-append (substring s 0 (- (string-length s) 1)) ":"))
+         (s (if (null? (acl-entry-flags e))
+                s
+                (let ((f (joined (acl-entry-flags e))))
+                  (string-append s (substring f 0 (- (string-length f) 1)) ":")))))
+    (string-append s (acl-entry-type-name e))))
+(define (acl-entry=? a b)
+  (and (eq? (acl-entry-type a) (acl-entry-type b))
+       (jolt=2 (acl-entry-who a) (acl-entry-who b))
+       (equal? (map enum-name (acl-entry-perms a)) (map enum-name (acl-entry-perms b)))
+       (equal? (map enum-name (acl-entry-flags a)) (map enum-name (acl-entry-flags b)))))
+(define (acl-entry-hash e)
+  (bitwise-and (+ (* 31 (string-hash (acl-entry-type-name e)))
+                  (jolt-hash (acl-entry-who e))
+                  (string-hash (apply string-append (map enum-name (acl-entry-perms e))))
+                  (string-hash (apply string-append (map enum-name (acl-entry-flags e)))))
+               #x7FFFFFFF))
+(register-host-methods! "acl-entry"
+  (list (cons "type" acl-entry-type)
+        (cons "principal" acl-entry-who)
+        (cons "permissions" (lambda (self) (acl-hash-set (acl-entry-perms self))))
+        (cons "flags" (lambda (self) (acl-hash-set (acl-entry-flags self))))
+        (cons "toString" acl-entry-string)
+        (cons "equals" (lambda (self o) (and (acl-entry? o) (acl-entry=? self o))))
+        (cons "hashCode" acl-entry-hash)))
+(hashtable-set! jhost-tag->fqn "acl-entry" "java.nio.file.attribute.AclEntry")
+(register-str-render! acl-entry? acl-entry-string)
+(register-eq-arm! (lambda (a b) (and (acl-entry? a) (acl-entry? b))) acl-entry=?)
+(register-hash-arm! acl-entry? acl-entry-hash)
+
+;; AclEntry.Builder, state #(type who perms flags)
+(define (acl-builder type who perms flags) (make-jhost "acl-entry-builder" (vector type who perms flags)))
+(define (acl-builder-set! b i v) (vector-set! (jhost-state b) i v) b)
+;; setPermissions/setFlags take a Set or the constants loose (or as an array);
+;; every element must be a constant of the enum, nil being NullPointerException
+(define (acl-enum-elems args tag what)
+  (let ((xs (if (and (= (length args) 1) (not (jhost? (car args))))
+                (seq->list (jolt-seq (car args)))
+                (if (and (= (length args) 1) (jhost? (car args)) (not (string=? (jhost-tag (car args)) tag)))
+                    (seq->list (jolt-seq (car args)))
+                    args))))
+    (for-each (lambda (x)
+                (cond ((jolt-nil? x) (throw-jvm 'NullPointerException jolt-nil))
+                      ((not (and (jhost? x) (string=? (jhost-tag x) tag)))
+                       (zip-class-cast x what))))
+              xs)
+    (acl-ordinal-sort (fold-left (lambda (acc x) (if (memq x acc) acc (cons x acc))) '() xs))))
+(register-host-methods! "acl-entry-builder"
+  (list (cons "setType" (lambda (self t)
+                          (when (jolt-nil? t) (throw-jvm 'NullPointerException jolt-nil))
+                          (acl-builder-set! self 0 t)))
+        (cons "setPrincipal" (lambda (self who)
+                               (when (jolt-nil? who) (throw-jvm 'NullPointerException jolt-nil))
+                               (acl-builder-set! self 1 who)))
+        (cons "setPermissions" (lambda (self . ps)
+                                 (acl-builder-set! self 2 (acl-enum-elems ps "acl-entry-perm"
+                                                                          "java.nio.file.attribute.AclEntryPermission"))))
+        (cons "setFlags" (lambda (self . fs)
+                           (acl-builder-set! self 3 (acl-enum-elems fs "acl-entry-flag"
+                                                                    "java.nio.file.attribute.AclEntryFlag"))))
+        (cons "build" (lambda (self)
+                        (let ((st (jhost-state self)))
+                          (unless (vector-ref st 0) (throw-jvm 'IllegalStateException "Missing type component"))
+                          (unless (vector-ref st 1) (throw-jvm 'IllegalStateException "Missing who component"))
+                          (make-acl-entry (vector-ref st 0) (vector-ref st 1) (vector-ref st 2) (vector-ref st 3)))))))
+(hashtable-set! jhost-tag->fqn "acl-entry-builder" "java.nio.file.attribute.AclEntry$Builder")
+(let ((statics
+  (list (cons "newBuilder" (lambda e
+                             (if (null? e)
+                                 (acl-builder #f #f '() '())
+                                 (let ((x (car e)))
+                                   (acl-builder (acl-entry-type x) (acl-entry-who x)
+                                                (acl-entry-perms x) (acl-entry-flags x)))))))))
+  (register-class-statics! "AclEntry" statics)
+  (register-class-statics! "java.nio.file.attribute.AclEntry" statics))
+
+;; ---- the views as values ----------------------------------------------------------
+;; A view is #(path opts follow?): what it reads and writes is decided at each
+;; call, as the JDK's views open the file per call.
+(define (nio-xview tag p opts)
+  (make-jhost tag (vector p opts (not (nio-opts-nofollow? opts)))))
+(define (nio-xview-path self) (vector-ref (jhost-state self) 0))
+(define (nio-xview-fp self) (nfp (nio-xview-path self)))
+(define (nio-xview-shown self) (nio-shown (nio-xview-path self)))
+(define (nio-xview-follow? self) (vector-ref (jhost-state self) 2))
+
+;; the user view's operations for this platform, path-level
+(define (nio-user-list p follow?)
+  (if (nio-windows?) (win32-ads-list (nfp p) (nio-shown p)) (nio-xattr-list (nfp p) (nio-shown p) follow?)))
+(define (nio-user-size p follow? name)
+  (if (nio-windows?) (win32-ads-size (nfp p) (nio-shown p) follow? name) (nio-xattr-size (nfp p) (nio-shown p) follow? name)))
+(define (nio-user-bytes p follow? name rem)          ; at most REM bytes
+  (if (nio-windows?) (win32-ads-read (nfp p) (nio-shown p) follow? name rem) (nio-xattr-read (nfp p) (nio-shown p) follow? name rem)))
+(define (nio-user-write-bytes p follow? name bv)
+  (if (nio-windows?) (win32-ads-write (nfp p) (nio-shown p) follow? name bv) (nio-xattr-write (nfp p) (nio-shown p) follow? name bv)))
+(define (nio-user-delete p follow? name)
+  (if (nio-windows?) (win32-ads-delete (nfp p) (nio-shown p) name) (nio-xattr-delete (nfp p) (nio-shown p) follow? name)))
+;; read(name, ByteBuffer): into the buffer from its position, answering the count
+(define (nio-user-read-into p follow? name dst)
+  (unless (bb? dst) (zip-class-cast dst "java.nio.ByteBuffer"))
+  (when (nb-ro? dst) (throw-jvm 'IllegalArgumentException "Read-only buffer"))
+  (let* ((bv (nio-user-bytes p follow? name (max 0 (nb-remaining dst)))) (n (bytevector-length bv)))
+    (nb-put dst (na-byte-array bv) 0 n)
+    n))
+;; write(name, ByteBuffer): the remaining bytes, the position moved past them
+;; once written
+(define (nio-user-write-from p follow? name src)
+  (unless (bb? src) (zip-class-cast src "java.nio.ByteBuffer"))
+  (let* ((pos (bb-pos src)) (rem (max 0 (nb-remaining src))) (arr (na-byte-array (make-bytevector rem 0))))
+    (nb-get src arr 0 rem)
+    (bb-pos! src pos)
+    (nio-user-write-bytes p follow? name (na-bytearray->bv arr))
+    (bb-pos! src (+ pos rem))
+    rem))
+;; AbstractUserDefinedFileAttributeView.setAttribute: a byte[] or a ByteBuffer
+(define (nio-user-set! p follow? name value)
+  (nio-user-write-from p follow? name (if (jolt-array? value) (nb-wrap-bytes value 0 (ja-len value)) value)))
+;; readAttributes("user:NAMES"): "*" is every name, an empty name
+;; IllegalArgumentException; each value a byte[]
+(define (nio-user-read-alist p names-part follow?)
+  (let ((names (let loop ((ns (nio-java-split-commas names-part)) (acc '()))
+                 (cond ((null? ns) (reverse acc))
+                       ((string=? (car ns) "*") (nio-user-list p follow?))
+                       ((string=? (car ns) "") (throw-jvm 'IllegalArgumentException jolt-nil))
+                       (else (loop (cdr ns) (cons (car ns) acc)))))))
+    (map (lambda (nm)
+           (let ((size (nio-user-size p follow? nm)))
+             (cons nm (na-byte-array (nio-user-bytes p follow? nm size)))))
+         names)))
+(register-host-methods! "user-attr-view"
+  (list (cons "name" (lambda (self) "user"))
+        (cons "list" (lambda (self) (apply jolt-vector (nio-user-list (nio-xview-path self) (nio-xview-follow? self)))))
+        (cons "size" (lambda (self name) (nio-user-size (nio-xview-path self) (nio-xview-follow? self) name)))
+        (cons "read" (lambda (self name dst) (nio-user-read-into (nio-xview-path self) (nio-xview-follow? self) name dst)))
+        (cons "write" (lambda (self name src) (nio-user-write-from (nio-xview-path self) (nio-xview-follow? self) name src)))
+        (cons "delete" (lambda (self name) (nio-user-delete (nio-xview-path self) (nio-xview-follow? self) name) jolt-nil))))
+(hashtable-set! jhost-tag->fqn "user-attr-view"
+                (case (sa-os-family)
+                  ((windows) "sun.nio.fs.WindowsUserDefinedFileAttributeView")
+                  ((macos) "sun.nio.fs.BsdUserDefinedFileAttributeView")
+                  (else "sun.nio.fs.LinuxUserDefinedFileAttributeView")))
+
+;; dos: the basic attributes plus readonly, hidden, system and archive (and on
+;; Windows the attribute word, "attributes"), from one snapshot and the DOS bits
+(define nio-dos-attr-names
+  (append nio-basic-attr-names '("readonly" "hidden" "system" "archive")
+          (if (nio-windows?) '("attributes") '())))
+(define nio-dos-READONLY 1)
+(define nio-dos-HIDDEN 2)
+(define nio-dos-SYSTEM 4)
+(define nio-dos-ARCHIVE #x20)
+;; the DOS bits of P: on Windows from the snapshot's attribute word (or the
+;; target's, for a link read through), on Linux from user.DOSATTRIB
+(define (nio-dos-bits p snap follow?)
+  (cond ((nio-windows?)
+         (if (vector-ref snap 0)
+             (bytevector-u32-ref (vector-ref snap 0) 0 (endianness little))
+             (win32-dos-bits (nfp p) (nio-shown p) follow?)))
+        (else (nio-with-attr-fd (nfp p) (nio-shown p) follow?
+                (lambda (fd) (nio-linux-dos-bits fd (nio-shown p)))))))
+(define (nio-dos-ref snap bits nm)
+  (define (on? b) (not (= 0 (bitwise-and bits b))))
+  (cond ((string=? nm "readonly") (on? nio-dos-READONLY))
+        ((string=? nm "hidden") (on? nio-dos-HIDDEN))
+        ((string=? nm "system") (on? nio-dos-SYSTEM))
+        ((string=? nm "archive") (on? nio-dos-ARCHIVE))
+        ((string=? nm "attributes") bits)
+        (else (nio-snap-ref snap nm))))
+(define (nio-dos-snapshot p follow? btime?)
+  (let ((snap (nio-snapshot (nfp p) follow? (nio-shown p) btime?)))
+    (cons snap (nio-dos-bits p snap follow?))))
+(define (nio-dos-update! p follow? flag on?)
+  (if (nio-windows?)
+      (win32-dos-update! (nfp p) (nio-shown p) follow? flag on?)
+      (nio-linux-dos-update! (nfp p) (nio-shown p) follow? flag on?)))
+(define (nio-dos-attrs-getter nm)
+  (lambda (self) (let ((st (jhost-state self))) (nio-dos-ref (car st) (cdr st) nm))))
+(register-host-methods! "dos-attrs"
+  (append (map (lambda (nm) (cons nm (nio-dos-attrs-getter nm))) nio-basic-attr-names)
+          (list (cons "isReadOnly" (nio-dos-attrs-getter "readonly"))
+                (cons "isHidden" (nio-dos-attrs-getter "hidden"))
+                (cons "isSystem" (nio-dos-attrs-getter "system"))
+                (cons "isArchive" (nio-dos-attrs-getter "archive")))))
+(hashtable-set! jhost-tag->fqn "dos-attrs"
+                (if (nio-windows?) "sun.nio.fs.WindowsFileAttributes" "sun.nio.fs.LinuxDosFileAttributeView$1"))
+(define (nio-dos-set-bool! p follow? nm value)
+  (let ((flag (cond ((string=? nm "readonly") nio-dos-READONLY) ((string=? nm "hidden") nio-dos-HIDDEN)
+                    ((string=? nm "system") nio-dos-SYSTEM) (else nio-dos-ARCHIVE))))
+    (unless (boolean? value) (zip-class-cast value "java.lang.Boolean"))
+    (nio-dos-update! p follow? flag value)))
+(define (nio-dos-view-setter nm)
+  (lambda (self v) (nio-dos-set-bool! (nio-xview-path self) (nio-xview-follow? self) nm v) jolt-nil))
+(register-host-methods! "dos-attr-view"
+  (list (cons "name" (lambda (self) "dos"))
+        (cons "readAttributes" (lambda (self)
+                                 (make-jhost "dos-attrs" (nio-dos-snapshot (nio-xview-path self) (nio-xview-follow? self) #t))))
+        (cons "setTimes" (lambda (self modified access created)
+                           (for-each (lambda (attr value)
+                                       (unless (jolt-nil? value)
+                                         (apply nio-files-call "setAttribute" (nio-xview-path self) attr value
+                                                (vector-ref (jhost-state self) 1))))
+                                     '("basic:lastModifiedTime" "basic:lastAccessTime" "basic:creationTime")
+                                     (list modified access created))
+                           jolt-nil))
+        (cons "setReadOnly" (nio-dos-view-setter "readonly"))
+        (cons "setHidden" (nio-dos-view-setter "hidden"))
+        (cons "setSystem" (nio-dos-view-setter "system"))
+        (cons "setArchive" (nio-dos-view-setter "archive"))))
+(hashtable-set! jhost-tag->fqn "dos-attr-view"
+                (if (nio-windows?) "sun.nio.fs.WindowsFileAttributeViews$Dos" "sun.nio.fs.LinuxDosFileAttributeView"))
+
+;; acl: Windows' owner and DACL
+(register-host-methods! "acl-attr-view"
+  (list (cons "name" (lambda (self) "acl"))
+        (cons "getOwner" (lambda (self) (win32-get-owner (nio-xview-fp self) (nio-xview-shown self) (nio-xview-follow? self))))
+        (cons "setOwner" (lambda (self owner)
+                           (win32-set-owner! (nio-xview-fp self) (nio-xview-shown self) (nio-xview-follow? self) owner)
+                           jolt-nil))
+        (cons "getAcl" (lambda (self)
+                         ((hashtable-ref class-ctors-tbl "ArrayList" #f)
+                          (list->cseq (win32-get-acl (nio-xview-fp self) (nio-xview-shown self) (nio-xview-follow? self))))))
+        (cons "setAcl" (lambda (self acl)
+                         (win32-set-acl! (nio-xview-fp self) (nio-xview-shown self) (nio-xview-follow? self) acl)
+                         jolt-nil))))
+(hashtable-set! jhost-tag->fqn "acl-attr-view" "sun.nio.fs.WindowsAclFileAttributeView")
+
+;; ---- reading and writing through "view:name" specs ------------------------------
+;; "view:names" -> (view . names), the view "basic" when there is no colon
+(define (nio-spec-parts spec)
+  (let ((colon (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                       ((char=? (string-ref spec j) #\:) j) (else (loop (+ j 1)))))))
+    (if colon
+        (cons (substring spec 0 colon) (substring spec (+ colon 1) (string-length spec)))
+        (cons "basic" spec))))
+;; The alist readAttributes(path, "view:names") answers for a view whose values
+;; are not all in the stat snapshot -- dos, acl, user, and Windows' owner -- or #f
+;; for any other view, which nio-read-attributes reads from one snapshot.
+(define (nio-special-view-read p spec opts)
+  (let* ((parts (nio-spec-parts spec)) (view (car parts)) (names (cdr parts))
+         (follow? (not (nio-opts-nofollow? opts))))
+    (cond
+      ((and (string=? view "user") (nio-user-view?)) (nio-user-read-alist p names follow?))
+      ((and (string=? view "dos") (nio-dos-view?))
+       (let* ((ns (nio-attr-spec-names spec (lambda () #f)))
+              (sb (nio-dos-snapshot p follow? (and (member "creationTime" ns) #t))))
+         (map (lambda (nm) (cons nm (nio-dos-ref (car sb) (cdr sb) nm))) ns)))
+      ;; AbstractAclFileAttributeView / FileOwnerAttributeViewImpl: a name they
+      ;; do not have is refused with the view in the message
+      ((or (and (string=? view "acl") (nio-acl-view?)) (and (string=? view "owner") (nio-windows?)))
+       (let* ((allowed (if (string=? view "acl") '("acl" "owner") '("owner")))
+              (want (fold-left (lambda (acc nm)
+                                 (cond ((string=? nm "*") (append acc (filter (lambda (a) (not (member a acc))) allowed)))
+                                       ((member nm allowed) (if (member nm acc) acc (append acc (list nm))))
+                                       (else (throw-jvm 'IllegalArgumentException
+                                                        (string-append "'" view ":" nm "' not recognized")))))
+                               '() (nio-java-split-commas names))))
+         (map (lambda (nm)
+                (cons nm (if (string=? nm "acl")
+                             (record-method-dispatch (nio-xview "acl-attr-view" p opts) "getAcl" (jolt-vector))
+                             (win32-get-owner (nfp p) (nio-shown p) follow?))))
+              want)))
+      (else #f))))
+
+;; Files.setAttribute(path, "view:name", value): AbstractFileSystemProvider
+;; splits the spec, refuses an empty view with IllegalArgumentException and one
+;; the platform has not with UnsupportedOperationException, and the view sets
+;; the name or refuses it as "'view:name' not recognized". A view's names
+;; include those of the view it extends (unix > posix > basic, dos > basic).
+(define (nio-set-attribute! path attr value opts)
+  (let* ((spec (npath-string-of attr)) (parts (nio-spec-parts spec))
+         (view (car parts)) (nm (cdr parts))
+         (follow? (not (nio-opts-nofollow? opts)))
+         (unknown (lambda () (throw-jvm 'IllegalArgumentException (string-append "'" view ":" nm "' not recognized")))))
+    (when (string=? view "") (throw-jvm 'IllegalArgumentException spec))
+    (unless (member view (nio-host-attribute-views))
+      (throw-jvm 'UnsupportedOperationException (string-append "View '" view "' not available")))
+    (cond
+      ((string=? view "user") (nio-user-set! path follow? nm value))
+      ((string=? view "acl")
+       (cond ((string=? nm "owner") (win32-set-owner! (nfp path) (nio-shown path) follow? value))
+             ((string=? nm "acl") (win32-set-acl! (nfp path) (nio-shown path) follow? value))
+             (else (unknown))))
+      ((string=? view "owner")
+       (if (string=? nm "owner") (nio-files-call "setOwner" path value) (unknown)))
+      ((and (string=? view "dos") (member nm '("readonly" "hidden" "system" "archive")))
+       (nio-dos-set-bool! path follow? nm value))
+      ((and (member view '("posix" "unix")) (string=? nm "permissions"))
+       (nio-files-call "setPosixFilePermissions" path value))
+      ((and (member view '("posix" "unix")) (string=? nm "owner"))
+       (nio-files-call "setOwner" path value))
+      ((and (member view '("posix" "unix")) (string=? nm "group"))
+       (nio-host-set-group path value))
+      ((and (string=? view "unix") (string=? nm "mode"))
+       (let ((fp (nfp path)) (mode (jnum->exact value)))
+         (let-values (((r err) (io-call+errno (c-chmod fp mode))))
+           (unless (= r 0) (nio-errno-throw (nio-shown path) #f err)))))
+      ((and (string=? view "unix") (member nm '("uid" "gid")))
+       (nio-chown-ids! path (if (string=? nm "uid") (jnum->exact value) #xFFFFFFFF)
+                       (if (string=? nm "gid") (jnum->exact value) #xFFFFFFFF)))
+      ((member nm '("lastModifiedTime" "creationTime" "lastAccessTime"))
+       (nio-set-time-attribute! path nm value opts))
+      (else (unknown)))
+    (->path path)))
+
+;; ---- principals: lookup, groups -----------------------------------------------------
+;; UserPrincipalLookupService. POSIX: getpwnam/getgrnam, a name with no entry
+;; that reads as a number being the id itself, and anything else
+;; UserPrincipalNotFoundException; the principal keeps the name it was asked
+;; for. Windows: LookupAccountNameW.
+(define c-getgrnam (jolt-foreign-proc-safe "getgrnam" '(string) 'iptr))
+(define (nio-lookup-principal name group?)
+  (let ((n (npath-string-of name)))
+    (if (nio-windows?)
+        (let ((p (win32-lookup-principal n)))
+          (when (and group? (not (string=? (jhost-tag p) "win-group-principal")))
+            (nio-principal-not-found))
+          p)
+        (let ((found (if group? (and c-getgrnam (not (= 0 (c-getgrnam n)))) (and c-getpwnam (not (= 0 (c-getpwnam n)))))))
+          (unless (or found (and (> (string-length n) 0) (for-all char-numeric? (string->list n))))
+            (nio-principal-not-found))
+          (make-jhost (if group? "group-principal" "user-principal") n)))))
+(register-host-methods! "host-principal-lookup"
+  (list (cons "lookupPrincipalByName" (lambda (self name) (nio-lookup-principal name #f)))
+        (cons "lookupPrincipalByGroupName" (lambda (self name) (nio-lookup-principal name #t)))))
+(hashtable-set! jhost-tag->fqn "host-principal-lookup"
+                (if (nio-windows?) "sun.nio.fs.WindowsFileSystem$LookupService$1" "sun.nio.fs.UnixFileSystem$LookupService$1"))
+;; the uid or gid a principal names: its entry's, or the number it is
+(define (nio-principal-id name group?)
+  (let ((e (if group? (and c-getgrnam (c-getgrnam name)) (and c-getpwnam (c-getpwnam name)))))
+    (cond ((and e (not (= 0 e))) (sa-foreign-ref 'unsigned-32 e 16))
+          ((string->number name) => (lambda (n) n))
+          (else (nio-principal-not-found)))))
+(define (nio-chown-ids! p uid gid)
+  (unless c-chown (throw-jvm 'UnsupportedOperationException "chown is not supported on this host"))
+  (let-values (((r err) (io-call+errno (c-chown (nfp p) uid gid))))
+    (unless (= 0 r) (nio-errno-throw (nio-shown p) #f err))))
+;; PosixFileAttributeView.setGroup; struct group keeps gr_gid at 16 on every
+;; 64-bit host here, as struct passwd keeps pw_uid
+(define (nio-host-set-group p group)
+  (unless (nio-groupprin? group)
+    (throw-jvm 'ClassCastException "group is not a java.nio.file.attribute.GroupPrincipal"))
+  (nio-chown-ids! p #xFFFFFFFF (nio-principal-id (jhost-state group) #t)))
+
+(register-host-methods! "nio-filesystem"
+  (list (cons "supportedFileAttributeViews" (lambda (self) (apply jolt-hash-set (nio-host-attribute-views))))
+        (cons "getUserPrincipalLookupService" (lambda (self) (make-jhost "host-principal-lookup" self)))))
+
+;; getFileAttributeView: the dos, acl and user views are their own values; the
+;; others the generic view over the Files operations
+(define nio-host-generic-view (nio-attribute-view nio-host-attribute-views))
+(define (nio-host-file-attribute-view p view . opts)
+  (let ((nm (nio-view-name view)))
+    (cond ((not (member nm (nio-host-attribute-views))) jolt-nil)
+          ((string=? nm "dos") (nio-xview "dos-attr-view" p opts))
+          ((string=? nm "acl") (nio-xview "acl-attr-view" p opts))
+          ((string=? nm "user") (nio-xview "user-attr-view" p opts))
+          (else (apply nio-host-generic-view p view opts)))))
+
 (set! files-accum-chunks
       (cons (list (cons "newByteChannel" nio-host-byte-channel)
                   (cons "getFileStore" nio-host-file-store)
                   (cons "setOwner" nio-host-set-owner)
-                  (cons "getFileAttributeView" (nio-attribute-view nio-host-attribute-views)))
+                  (cons "getFileAttributeView" nio-host-file-attribute-view))
             files-accum-chunks))
 
 ;; ---- Files operations every provider shares --------------------------------------
@@ -2534,12 +4696,23 @@
                                  (values (jnum->exact (car args)) (cdr args))
                                  (values 2147483647 args))))
     (make-stream 'ref (nio-walk-seq p depth opts))))
+;; Each entry's attributes are read as the walk reads them: of a link itself
+;; unless following, and of the link itself when following finds no target.
 (define (nio-files-find p depth predicate . opts)
-  (let ((attrs-class (jolt-class-for "java.nio.file.attribute.BasicFileAttributes")))
+  (let ((attrs-class (jolt-class-for "java.nio.file.attribute.BasicFileAttributes"))
+        (follow? (nio-opts-follow? (list->cseq (npath-spread-args opts)))))
     (make-stream 'ref
       (st-filter (lambda (path)
                    (let ((attrs (nio-unchecked-io
-                                 (lambda () (nio-files-call "readAttributes" path attrs-class)))))
+                                 (lambda ()
+                                   (if follow?
+                                       (guard (e ((and (jolt-throw-condition? e)
+                                                       (let ((v (jolt-throw-condition-value e)))
+                                                         (and (ex-info-map? v)
+                                                              (jch-isa? (ex-info-class v) "java.io.IOException"))))
+                                                  (nio-files-call "readAttributes" path attrs-class fvo-nofollow)))
+                                         (nio-files-call "readAttributes" path attrs-class))
+                                       (nio-files-call "readAttributes" path attrs-class fvo-nofollow))))))
                      (jolt-truthy? (jolt-fi-call predicate "test" path attrs))))
                  (nio-walk-seq p (jnum->exact depth) opts)))))
 
