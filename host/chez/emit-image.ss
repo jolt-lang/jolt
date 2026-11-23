@@ -680,6 +680,7 @@
         (cons "jolt.analyzer.tree" "jolt-core/jolt/analyzer/tree.clj")
         (cons "jolt.analyzer.ffi" "jolt-core/jolt/analyzer/ffi.clj")
         (cons "jolt.analyzer.interop" "jolt-core/jolt/analyzer/interop.clj")
+        (cons "jolt.analyzer.native" "jolt-core/jolt/analyzer/native.clj")
         (cons "jolt.analyzer" "jolt-core/jolt/analyzer.clj")
         (cons "jolt.passes.facts" "jolt-core/jolt/passes/facts.clj")
         (cons "jolt.passes.fold" "jolt-core/jolt/passes/fold.clj")

@@ -8,7 +8,6 @@
 (def ^:private max-nodes 10000)
 (def ^:private max-path-length 192)
 (def ^:private max-origins 256)
-(def ^:private max-layout-rounds 12)
 (def ^:private unknown #{{:kind :unknown}})
 
 (defn- site [kind path] #{{:kind kind :site path}})
@@ -183,23 +182,8 @@
 (defn- child-origins [state path]
   (get @(:origins state) path unknown))
 
-(defn- loop-field [binder k]
-  (site :loop-field (conj binder :field k)))
-
-(defn- loop-maps [layouts]
-  (reduce-kv
-    (fn [maps binder layout]
-      (if (map? layout)
-        (assoc maps binder
-               {:kind :map :nullable? (:nullable? layout)
-                :slots (into {} (map (fn [k] [k (loop-field binder k)])) (:keys layout))})
-        maps))
-    {} layouts))
-
 (defn- container [state origin]
-  (if (= :loop-slot (:kind origin))
-    (get (:loop-maps state) (:site origin))
-    (get @(:containers state) (:site origin))))
+  (get @(:containers state) (:site origin)))
 
 (defn- walk-collection [state node path]
   (let [kind (:op node)
@@ -245,12 +229,9 @@
                          (join-origins origins unknown)
                          origins))
                      (range (count args)) args)
-        slots (reduce-kv (fn [slots i k]
-                           (assoc slots k {:index i :origins (nth stored i)}))
-                         {} (:fields shape))]
+]
     (swap! (:containers state) assoc path
-           {:kind :record :slots slots :arity (count args)
-            :children (reduce join-origins #{} stored)})
+           {:kind :record :children (reduce join-origins #{} stored)})
     (site :allocation path)))
 
 (defn- projection-slots [mode k kind slots]
@@ -262,27 +243,16 @@
 (defn- projection [state mode receiver k fallback]
   (reduce
     (fn [result origin]
-      (let [{:keys [kind slots nullable?]} (container state origin)
+      (let [{:keys [kind slots]} (container state origin)
             table (projection-slots mode k kind slots)
             entry (find table k)]
-        (if (and table (or (and entry (not nullable?)) fallback))
-          (let [present? (when-not (and entry nullable?) (some? entry))
-                projected (if entry
-                            (if nullable? (join-origins (val entry) fallback) (val entry))
-                            fallback)]
+        (if (and table (or entry fallback))
+          (let [present? (some? entry)
+                projected (if entry (val entry) fallback)]
             {:present? (when (or (nil? result) (= present? (:present? result))) present?)
              :origins (join-origins (:origins result #{}) projected)})
           (reduced nil))))
     nil receiver))
-
-(defn- note-guarded-record! [state path receiver-path k]
-  ;; A direct positional construction is fresh even when argument/default
-  ;; evaluation runs user code. Through an alias a field could have changed.
-  (let [{:keys [kind slots arity]} (get @(:containers state) receiver-path)]
-    (when (and (= kind :record) (not= k :jolt/deftype))
-      (when-let [{:keys [index origins]} (get slots k)]
-        (swap! (:guarded-records state) assoc path
-               {:guard {:key k :index index :arity arity} :origins origins})))))
 
 (defn- projection-call [state path mode receiver-path key-node fallback]
   (when (literal-key? key-node)
@@ -291,30 +261,13 @@
         (do (effect! state :read (child-origins state receiver-path))
             (when (some? (:present? answer)) (swap! (:projections state) assoc path answer))
             (:origins answer))
-        (when (= mode :get)
-          (note-guarded-record! state path receiver-path k)
-          nil)))))
-
-(defn- loop-edit [state path receiver k value]
-  (when (and (:track-edits? state) (= (count receiver) 1))
-    (let [origin (first receiver)
-          binder (:site origin)
-          {:keys [slots nullable?]} (container state origin)]
-      (when (and (= :loop-slot (:kind origin))
-                 (or (:discover? state) (and (not nullable?) (contains? slots k))))
-        (swap! (:edits state) assoc path {:binder binder :key k})
-        (effect! state :read receiver)
-        (when-not (:discover? state)
-          (let [slots (assoc slots k value)]
-            (swap! (:containers state) assoc path
-                   {:kind :map :slots slots :children (reduce join-origins #{} (vals slots))})))
-        (site :loop-edit path)))))
+        nil))))
 
 (defn- reducer-edit [state path [receiver key value]]
   ;; Only the scoped reducer query can install this native map receiver.
   ;; Assoc can call out while comparing or hashing keys. Its result stores
   ;; the supplied operands, and can reuse the receiver on a no-op. Track the
-  ;; new contents separately from the old version, as with loop edits.
+  ;; new contents separately from the old version.
   (effect! state :read receiver)
   (opaque! state key)
   (swap! (:containers state) assoc path {:children (join-origins key value)})
@@ -365,9 +318,6 @@
       (when (= n 1)
         (effect! state :read (arg 0))
         absent)
-      "assoc"
-      (when (and (= n 3) (= :const (:op (second args))) (keyword? (:val (second args))))
-        (loop-edit state path (arg 0) (:val (second args)) (arg 2)))
       ("get" "nth")
       (when (<= 2 n 3)
         (let [get? (= core "get")
@@ -402,8 +352,6 @@
   (when-not (or (:proto node) (:devirt-type node))
     (cond
       (= path (:reducer-edit-path state)) (reducer-edit state path operands)
-      (= path (:linked-path state))
-      (invoke-known state path {:fn (:init (:linked-def state)) :env {}} operands)
       :else
       (let [f (:fn node)
             args (:args node)
@@ -463,10 +411,7 @@
             (ir/reduce-ir-children-with-path
               (fn [_ child p] (walk state child p env recur-params)) nil node path)
             (case op
-              :const (do (when (and (:discover? state) (nil? (:val node)))
-                           (swap! (:nil-sites state) conj path))
-                         (site :literal path))
-              (:quote :regex :load-time-value) (site :literal path)
+              (:const :quote :regex :load-time-value) (site :literal path)
               (:vector :map :set) (walk-collection state node path)
               :if (do (effect! state :read (child :test))
                       (join-origins (child :then) (child :else)))
@@ -513,129 +458,24 @@
                  headers binders))
     {} @(:loops state)))
 
-(defn- join-layout [a b]
-  (cond
-    (nil? a) b
-    (nil? b) a
-    (= a b) a
-    (or (= a :unknown) (= b :unknown)) :unknown
-    (and (:keys a) (:keys b) (not= (:keys a) (:keys b))) :unknown
-    :else {:keys (or (:keys a) (:keys b)) :nullable? true}))
-
-(defn- origin-layout [state layouts edits origin]
-  (let [{:keys [kind site]} origin]
-    (case kind
-      :loop-slot (get layouts site)
-      :loop-edit (let [{:keys [binder key]} (get edits site)
-                       layout (get layouts binder)]
-                   (cond (nil? layout) nil
-                         (and (not (:nullable? layout)) (contains? (:keys layout) key)) layout
-                         :else :unknown))
-      (let [{:keys [kind slots]} (container state origin)]
-        (cond
-          (and (= kind :map) slots (every? keyword? (keys slots))) {:keys (set (keys slots))}
-          (contains? @(:nil-sites state) site) {:nullable? true}
-          :else :unknown)))))
-
-(defn- solve-layouts [state]
-  ;; Infer only a fixed keyword layout (with optional nil for lookups).
-  ;; The first walk records provisional edits and treats unresolved reads as
-  ;; unknown. Solve all loop headers together, independent of nesting depth.
-  (let [headers (header-origins state (transfer-origins state))
-        edits @(:edits state)]
-    (loop [layouts {} round 0]
-      (let [next (reduce-kv
-                   (fn [out binder origins]
-                     (assoc out binder
-                            (reduce (fn [layout origin]
-                                      (spend! (:remaining state))
-                                      (join-layout layout (origin-layout state layouts edits origin)))
-                                    nil origins)))
-                   {} headers)]
-        (cond
-          (= next layouts) next
-          (= round max-layout-rounds) (incomplete!)
-          :else (recur next (inc round)))))))
-
-(defn- field-edges [state headers]
-  (reduce-kv
-    (fn [edges binder incoming]
-      (reduce (fn [edges k]
-                (assoc edges (conj binder :field k)
-                       (reduce (fn [origins origin]
-                                 (spend! (:remaining state))
-                                 (join-origins origins (get-in (container state origin) [:slots k])))
-                               #{} incoming)))
-              edges (keys (get-in state [:loop-maps binder :slots]))))
-    {} headers))
-
-(defn- same-lineage? [binder edits origin]
-  (case (:kind origin)
-    :loop-slot (= binder (:site origin))
-    :loop-edit (= binder (get-in edits [(:site origin) :binder]))
-    false))
-
 (defn- intersect? [a b]
   (boolean (some #(contains? b %) a)))
-
-(defn- loop-updates [state transfers edges published opaque observed]
-  (let [edits @(:edits state)]
-    (reduce-kv
-      (fn [updates recur-path {:keys [loop args]}]
-        (let [{:keys [binders initializers]} (get @(:loops state) loop)]
-          (reduce-kv
-            (fn [updates i path]
-              (let [{:keys [binder key]} (get edits path)
-                    init (nth initializers i)
-                    seed (site :allocation init)
-                    incoming (get transfers binder)]
-                (if (and (= binder (nth binders i))
-                         (= seed (child-origins state init))
-                         (= :map (get-in @(:containers state) [init :kind]))
-                         (every? #(same-lineage? binder edits %) incoming))
-                  (let [old (into seed (site :loop-slot binder))
-                        ;; The edit result may be identical to its receiver on
-                        ;; a no-op. Its *contents* must never keep the old map.
-                        roots (reduce-kv (fn [roots j arg]
-                                           (if (= i j) roots
-                                             (join-origins roots (child-origins state arg))))
-                                         (get-in @(:containers state) [path :children]) args)
-                        retained? (intersect? old (reachable roots edges (:remaining state)))]
-                    (assoc updates path
-                           {:binding binder :recur recur-path :key key
-                            :confined? (not (intersect? old published))
-                            :old-retained? retained?
-                            :reuse? (not (or retained? (intersect? old opaque)
-                                             (intersect? old observed)))}))
-                  updates)))
-            updates args)))
-      {} @(:recurs state))))
 
 (defn- walk-body [body record-classes remaining options]
   (let [state {:bindings (atom {}) :uses (atom {}) :origins (atom {})
                :recurrent (atom #{}) :remaining remaining
-               :loops (atom {}) :recurs (atom {}) :edits (atom {}) :nil-sites (atom #{})
+               :loops (atom {}) :recurs (atom {})
                :containers (atom {}) :closures (atom {}) :projections (atom {})
                :effects (atom {}) :calls (atom {}) :fn-targets (atom {}) :active-fns []
-               :guarded-records (atom {}) :record-classes record-classes}
+               :record-classes record-classes}
         state (merge state options)]
     (assoc state :result (walk state body [] {} nil))))
 
 (defn- analyze-body [body record-classes options]
-  (let [remaining (atom max-nodes)
-        first-pass (walk-body body record-classes remaining
-                              (assoc options :discover? (:track-edits? options)))
-        state (if (seq @(:edits first-pass))
-                (walk-body body record-classes remaining
-                           (assoc options :loop-maps (loop-maps (solve-layouts first-pass))))
-                first-pass)
-        transfers (transfer-origins state)
-        headers (header-origins state transfers)
-        ;; These edges describe value flow, including the same-object result
-        ;; of a no-op assoc. They are distinct from aggregates' stored fields.
-        aliases (reduce-kv (fn [edges p {:keys [binder]}]
-                             (assoc edges p (site :loop-slot binder)))
-                           (into headers (field-edges state headers)) @(:edits state))
+  (let [state (walk-body body record-classes (atom max-nodes) options)
+        ;; Value flow into each loop slot, from its initializer and every
+        ;; recur. These are distinct from aggregates' stored fields.
+        aliases (header-origins state (transfer-origins state))
         closures @(:closures state)
         contained (into {}
                         (map (fn [[p c]] [p (captures-origins c)])) closures)
@@ -662,12 +502,8 @@
      :recurrent @(:recurrent state)
      :calls @(:calls state) :aliases aliases :flow-edges flow-edges :escape-edges edges
      :contained contained :closures closures :projections @(:projections state)
-     :guarded-records @(:guarded-records state)
      :published published :opaque opaque :identity identity-observed
-     :representation representation-observed
-     :loop-updates (when (seq @(:edits state))
-                     (loop-updates state transfers edges published opaque
-                                   (into identity-observed representation-observed)))}))
+     :representation representation-observed}))
 
 (defn- analyze-facts [body shapes options]
   (let [classes (reduce (fn [classes shape]
@@ -683,37 +519,24 @@
         ;; the sites we already walked.
         (if (::incomplete (ex-data e)) {} (throw e))))))
 
-(defn effective-direct-link?
-  "Whether this unit or the current runtime compilation form enables direct linking."
-  [unit]
-  (or @(:direct-link? unit) (host/inline-enabled? nil)))
-
-(defn linked-cell-eligible?
-  "A build can use its emitted binding. Per-form compilation also needs the
-  current Var cell to be linked to that binding."
-  [unit ns nm]
-  (or @(:direct-link? unit) (some? (host/var-linked? nil ns nm))))
-
 (defn body-facts
   "Return facts for body in the given compilation unit. Request again after
-  rewriting IR. The unit caches only its latest root, record registry
-  snapshot and direct-link mode. Debug-local frames can publish any live
+  rewriting IR. The unit caches only its latest root and record registry
+  snapshot. Debug-local frames can publish any live
   local through a throwable, so instrumented bodies get conservative answers.
   All binding and site paths are relative to this snapshot. Include the
   enclosing fn/let/etc. to resolve its bindings."
   [unit body]
   (let [cache (:body-facts unit)
         shapes (:record-shapes @(:config unit))
-        direct-link? (effective-direct-link? unit)
         previous @cache]
     (cond
       @(:debug-locals? unit) {}
-      (and previous (identical? body (nth previous 0)) (identical? shapes (nth previous 1))
-           (= direct-link? (nth previous 2)))
-      (nth previous 3)
+      (and previous (identical? body (nth previous 0)) (identical? shapes (nth previous 1)))
+      (nth previous 2)
       :else
-      (let [facts (analyze-facts body shapes {:track-edits? direct-link?})]
-        (reset! cache [body shapes direct-link? facts])
+      (let [facts (analyze-facts body shapes {})]
+        (reset! cache [body shapes facts])
         facts))))
 
 (defn binding-at
@@ -723,7 +546,7 @@
   (get (:uses facts) path))
 
 (defn- unresolved-origin? [facts origin]
-  (or (contains? #{:loop-slot :loop-field :loop-edit} (:kind origin))
+  (or (= :loop-slot (:kind origin))
       (contains? (:recurrent facts) (:binding origin))))
 
 (defn- resolved-origins [facts origins]
@@ -772,55 +595,6 @@
                               (intersect? origins retained) (conj :return-contains))))
                         args)})))
 
-(defn note-linked-definition!
-  "Record the final IR of a linked top-level definition when the unit has opted
-  in to linked call-summary retention (:linked-call-definitions holds a map).
-  Later definitions replace or clear the earlier revision."
-  [unit definition]
-  (let [definitions (:linked-call-definitions unit)]
-    (when (and (map? @definitions)
-               (= :def (:op definition)) (not (:no-init definition))
-               (not @(:seed-mint? unit)))
-      (let [key (str (:ns definition) "/" (:name definition))]
-        (if (and (effective-direct-link? unit) (not @(:debug-locals? unit))
-                 (not (ir/closed-world-opt-out? (:meta definition)))
-                 (= :fn (:op (:init definition))))
-          (swap! definitions assoc key definition)
-          (when (contains? @definitions key) (swap! definitions dissoc key)))))))
-
-(defn linked-call-summary
-  "Conditional summary for a direct-linked user Var call at a physical IR
-  path. :definition is the exact final IR revision the summary assumes.
-  Direct linking alone does not freeze the root. A consumer must prove this
-  revision executes (e.g. by guarding the particular procedure the call
-  would apply) and use ordinary dispatch on a failed guard. Preserve the
-  evaluation order of the call target and operands on both paths.
-  The result describes only this call and never enters unconditional body
-  facts. Query again after changes to IR, linkage or the definition."
-  [unit body path]
-  (when (and (effective-direct-link? unit) (not @(:debug-locals? unit)) (not @(:seed-mint? unit)))
-    (let [call (get-in body path)
-          {:keys [op ns name]} (:fn call)
-          key (str ns "/" name)
-          definition (get @(:linked-call-definitions unit) key)
-          n (count (:args call))]
-      (when (and (= :invoke (:op call)) (= :var op) definition
-                 (not (#{"clojure.core" "jolt.host"} ns))
-                 (not (or (:proto call) (:devirt-type call) (:prim-op call)))
-                 (contains? @(:direct-link-defined unit) key)
-                 (contains? @(:direct-link-fns unit) key)
-                 (linked-cell-eligible? unit ns name)
-                 (not (host/var-redefined? nil ns name))
-                 (not (host/var-dynamic? nil ns name))
-                 (not (ir/closed-world-opt-out? (some-> (find-var (symbol ns name)) meta)))
-                 (host/var-root-callable? nil ns name n)
-                 (not (host/protocol-call-key nil ns name n)))
-        (let [facts (analyze-facts body (:record-shapes @(:config unit))
-                                   {:track-edits? true :linked-path path :linked-def definition})
-              summary (call-summary-at facts path)]
-          (when (:resolved? summary)
-            {:definition definition :summary summary}))))))
-
 (defn origins-at
   "Possible origins at an expression path. :argument identifies an incoming
   formal, including the rest slot. :literal identifies a potentially shared
@@ -838,18 +612,6 @@
   on a proven miss. The proof says nothing about effects of evaluating operands."
   [facts path]
   (when-let [answer (get (:projections facts) path)]
-    (update answer :origins #(resolved-origins facts %))))
-
-(defn guarded-record-projection-at
-  "A conditional field hit for a directly constructed positional record.
-  Use only with the matching unit's positional constructor emission. After
-  evaluating operands once, check the actual receiver's record and descriptor
-  arities against :arity and its effective lookup index for :key (including
-  lookup masking) against :index. The slot then has :origins. Otherwise run
-  ordinary lookup on the evaluated operands. A class name or registry snapshot
-  alone cannot validate the layout. Unconditional facts include the fallback."
-  [facts path]
-  (when-let [answer (get (:guarded-records facts) path)]
     (update answer :origins #(resolved-origins facts %))))
 
 (defn contained-at
@@ -898,23 +660,6 @@
         (contains? (:identity facts) origin) (conj :identity)
         (contains? (:representation facts) origin) (conj :representation)))
     #{} (origins-at facts path)))
-
-(defn loop-update-at
-  "Facts for a direct three-argument assoc in a loop's recur argument, or nil
-  when the receiver's lineage or fixed keyword layout is unproved. :binding
-  and :recur identify the slot and transfer by occurrence in this IR.
-  :confined? accounts for normal return and opaque uses. :old-retained?
-  tracks receiver retention through modeled next-slot and stored-field flow.
-  :reuse? also rules out opaque, identity, and representation observations.
-  A normal final result may escape independently of that proof.
-
-  Reuse is proved at the transfer, after evaluating the receiver, key, new
-  field and all sibling recur arguments once in source order. A consumer
-  must preserve exceptions, no-op assoc behavior and the ordinary result
-  and its aliases on exit. Occurrence paths identify source positions across
-  dynamic iterations."
-  [facts path]
-  (get-in facts [:loop-updates path]))
 
 (defn- resolved-call? [node ns name n]
   (let [f (:fn node)]

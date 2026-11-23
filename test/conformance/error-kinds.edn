@@ -197,6 +197,9 @@
  :ffi/invalid-signature
  "A foreign-fn or foreign-callable form whose shape does not parse."
 
+ :analyze/invalid-native-region
+ "A jolt.native/__region form whose shape does not parse (the native macro emits it)."
+
  :analyze/internal-failure
  "Anything else raised while analyzing a form, carrying the position of the
   innermost form under analysis. A diagnostic that reaches a user with this kind

@@ -14,7 +14,6 @@
   lower a child take `emit` as an argument."
   (:require [clojure.string :as str]
             [jolt.host :refer [protocol-call-key form-char? form-literal?]]
-            [jolt.passes.facts :as facts]
             [jolt.passes.types :as types]
             [jolt.passes.numeric :as numeric]
             [jolt.op-registry :as op-registry]
@@ -109,7 +108,6 @@
 ;; call/value-ref direct-links only to a name defined earlier in emission order (or
 ;; itself), so the Scheme binding exists by the time the reference runs. Reset per build.
 (defn direct-link-reset! []
-  (swap! (:linked-call-definitions (cur)) #(when % {}))
   (reset! (:direct-link-defined (cur)) #{}) (reset! (:direct-link-fns (cur)) #{}))
 
 
@@ -1734,7 +1732,7 @@
      ;; frame. Untraced and non-tail emission is byte-identical to before.
      :host-call (emit-host-call-node node)
     (:let :let-values :loop :recur) (emit-binding-form node)
-    (:ffi-layout :ffi-fn :ffi-callable) (emit-ffi-node emit node)
+    (:ffi-layout :ffi-fn :ffi-callable :native-region) (emit-ffi-node emit node)
     :fn (emit-fn emit node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).
@@ -1920,8 +1918,6 @@
                 (emit-def-cached node)
                 :else (with-load-time-scope (fn [] (emit-top-cells node #(emit node)))))
           freg (fnsrc-flush)]
-      (when (and (= :def (:op node)) @(:linked-call-definitions (cur)))
-        (facts/note-linked-definition! (cur) node))
       (cond
         (= freg "") scm
           ;; registrations run BEFORE the form: they are static data with no

@@ -210,9 +210,11 @@
 
 (define (ffi-split-colons str) (ffi-split-char str #\:))
 
+;; sorted, so which library a search settles on does not hang on the
+;; filesystem's directory order
 (define (ffi-dir-entries dir)
   (guard (e (#t '()))
-    (map (lambda (e) (if (pair? e) (car e) e)) (directory-list dir))))
+    (sort string<? (map (lambda (e) (if (pair? e) (car e) e)) (directory-list dir)))))
 
 (define (ffi-multiarch-dir? name)
   (let ((n (string-length name)))

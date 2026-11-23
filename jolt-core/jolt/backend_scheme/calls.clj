@@ -79,7 +79,7 @@
       ;; 98000 ordering temporaries, one hoisted constant in every form wrapped in
       ;; an ordering let* it cannot need. The reference emits no ordering
       ;; temporaries for constants at all; they are constant-pool loads.
-      (ir/const-coll-node? n true)))
+      (ir/eager-const-coll-node? n)))
 
 ;; A var VALUE read is effect-free but order-SENSITIVE: a mutating sibling
 ;; (def/alter-var-root/set!) changes what it yields, so it must not move across

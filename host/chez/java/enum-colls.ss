@@ -366,3 +366,25 @@
 (register-jutil-coll! "enum-map-keyset" 'set (lambda (v) (emap-keys (jhost-state v))))
 (register-jutil-coll! "enum-map-values" 'coll (lambda (v) (emap-values (jhost-state v))))
 (register-jutil-coll! "enum-map-entryset" 'entries (lambda (v) (emap-entries (jhost-state v))))
+
+;; ---- PosixFilePermissions.fromString ----------------------------------------------
+;; Here rather than in nio-file.ss, which has the rest of PosixFilePermissions,
+;; because it answers an EnumSet: the runtime may not name a lazy shim's class,
+;; and this static is what loads this file when a program asks for it.
+;; PosixFilePermissions.fromString: "rwxr-xr-x" -> an EnumSet (RegularEnumSet,
+;; ordinal order) on every JDK, where getPosixFilePermissions answers a HashSet
+;; on JDK 21 (an EnumSet from JDK 25). Nine characters, each its letter or '-',
+;; or IllegalArgumentException "Invalid mode", as the JDK checks.
+(define (posix-str->set str)
+  (unless (= (string-length str) 9) (throw-jvm 'IllegalArgumentException "Invalid mode"))
+  (let ((set (eset-of (ecoll-class-info "java.nio.file.attribute.PosixFilePermission") #f)))
+    (let loop ((i 0) (os posix-order))
+      (if (null? os)
+          set
+          (let ((c (string-ref str i)) (want (string-ref "rwxrwxrwx" i)))
+            (cond ((char=? c want) (eset-add! set (make-pfp (car os))))
+                  ((not (char=? c #\-)) (throw-jvm 'IllegalArgumentException "Invalid mode")))
+            (loop (+ i 1) (cdr os)))))))
+(let ((statics (list (cons "fromString" (lambda (s) (posix-str->set (npath-string-of s)))))))
+  (register-class-statics! "PosixFilePermissions" statics)
+  (register-class-statics! "java.nio.file.attribute.PosixFilePermissions" statics))

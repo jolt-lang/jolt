@@ -77,6 +77,14 @@ jolt.infix.math.trig
 jolt.io-poller
 jolt.line-editor
 jolt.loader
+jolt.native
+jolt.native.ast
+jolt.native.emit
+jolt.native.fallback
+jolt.native.memory
+jolt.native.range
+jolt.native.rt
+jolt.native.stack
 jolt.nrepl
 jolt.parinfer
 jolt.parser
