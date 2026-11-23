@@ -1794,9 +1794,9 @@
 ;; namespace started kept that provider's mark for its whole life: every later
 ;; registration on it read as the provider's own, and a class miss on it read as
 ;; the provider's loading thread missing mid-load. And fibers on one carrier
-;; share the carrier's parameters. Work an install namespace starts is still
-;; recognized as part of its load, through the load's binding frame
-;; (lib-inside-provider-load?), which conveys to exactly that work.
+;; share the carrier's parameters. Work an install namespace starts is not
+;; the load: it waits for the load like any other context, and the loader raises
+;; if the load is itself blocked on that work (loader.ss ldr-wait-walk).
 (define lib-loading-mark (make-thread-parameter #f))
 (define (lib-ctx) (or (jolt-current-fiber) (get-thread-id)))
 (define (lib-loading-provider)
@@ -1818,29 +1818,9 @@
   (let ((p (lib-provider-by-install-ns ns)))
     (if p
         (parameterize ((lib-loading-mark (cons p (lib-ctx))))
-          (dyn-call-with-mark-frame
-            (lambda (fr)
-              (jolt-with-mutex lib-claims-mu (hashtable-set! lib-load-frames p fr))
-              (dynamic-wind
-                void
-                (lambda ()
-                  (guard (c (#t (lib-note-provider-failed! p c) (raise c)))
-                    (thunk)))
-                (lambda ()
-                  (unless (jolt-park-unwinding?)
-                    (jolt-with-mutex lib-claims-mu
-                      (when (eq? (hashtable-ref lib-load-frames p #f) fr)
-                        (hashtable-delete! lib-load-frames p)))))))))
+          (guard (c (#t (lib-note-provider-failed! p c) (raise c)))
+            (thunk)))
         (thunk))))
-
-;; The binding frame each provider's running install-namespace load pushed, while
-;; it runs. Frames convey to every future, agent action, go block, executor task,
-;; fiber and thread started under them (dyn-binding.ss), so a context whose
-;; binding stack holds this frame is the load itself or work the load started.
-(define lib-load-frames (make-eq-hashtable))
-(define (lib-inside-provider-load? p)
-  (let ((fr (jolt-with-mutex lib-claims-mu (hashtable-ref lib-load-frames p #f))))
-    (and fr (dyn-frame-in-stack? fr))))
 
 ;; An install namespace that raised while an autoload of its provider was
 ;; claimed is the provider failing, whichever context ran it. Recorded here, by
@@ -2015,18 +1995,17 @@
 ;; and its callers look again once (host-static-ref, host-new): a class the
 ;; provider never registers misses on that retry and gets the ordinary message.
 ;;
-;; Except for the load itself and the work it started. A context whose binding
-;; stack holds the load's frame (lib-inside-provider-load?) is the loading
-;; context, or a future, agent, go block, fiber or thread its top level started.
-;; The loading context would only be told its own load is 'recursive, and
-;; replaying held registrations mid-load would let them in before the
-;; provider's own (jolt#914). The work it started cannot wait either: the load
-;; may be waiting for that work, a top-level @(future ...) that reaches one of
-;; the provider's classes, and on the JVM that is the class-initialization
-;; deadlock -- each thread waits for the other forever, and the loader cannot
-;; see the edge, since a deref is not a load. Both get #f while the load runs,
-;; and unknown-class-message says the class is still being installed by the load
-;; they are part of. Once the load has finished they look again like anyone.
+;; Except for the loading context itself, missing one of its provider's classes
+;; before it has registered it: it gets #f, since its require would only answer
+;; 'recursive, and replaying held registrations mid-load would let them in
+;; before the provider's own (jolt#914). Work the load started -- a future, a
+;; fiber, a thread its top level spawned -- waits like anyone, as a JVM thread
+;; waits for a class another thread is initializing, and gets the class when
+;; the load finishes. If the load is itself blocked on that work (a top-level
+;; @(future ...) that reaches one of the provider's classes), the two would wait
+;; for each other forever, as they do on the JVM; the loader follows the load
+;; through what it is blocked on and the waiting work raises instead
+;; (loader.ss ldr-wait-walk, locks.ss jolt-blocked-on).
 ;;
 ;; The latch belongs to the context that claimed the autoload: a waiter's raise,
 ;; a require cycle or a wait timeout, passes through and leaves it alone.
@@ -2035,7 +2014,7 @@
              (let ((p (hashtable-ref lib-settled-claims-tbl class #f)))
                (and p (eq? (unbox (vector-ref p 3)) 'ok) p)))))
     (and p
-         (not (lib-inside-provider-load? p))
+         (not (eq? p (lib-loading-provider)))
          (find-ns-file (vector-ref p 0))
          (begin
            (lib-run-install! p)
@@ -2067,9 +2046,10 @@
       (and lib-any-pending-claims?
            (let ((p (hashtable-ref lib-pending-claims-tbl class #f)))
              ;; an install namespace reached by a plain require has not claimed
-             ;; its autoload; its own load, and work it started, must not claim
-             ;; it now and wait on the load they are part of
-             (and p (not (lib-inside-provider-load? p)) (lib-load-provider! p))))
+             ;; its autoload, and its own loading context must not claim it now:
+             ;; the require would answer 'recursive, and the replay of held
+             ;; registrations would run mid-load (jolt#914)
+             (and p (not (eq? p (lib-loading-provider))) (lib-load-provider! p))))
       (lib-await-provider-load! class)))
 
 ;; The provider that DECLARES this class and has not had its chance yet — meaning
@@ -2293,19 +2273,15 @@
                                           (vector-ref p 0)
                                           (jolt-with-mutex lib-claims-mu
                                             (hashtable-ref lib-provider-failures p #f))))))
-    ;; The provider is loading, and this code is part of that load: its install
-    ;; namespace, or work its top level started. It does not wait for the load
-    ;; (lib-await-provider-load!), so say that, not that nothing provides it.
+    ;; The provider's own install namespace, reaching the class before it has
+    ;; registered it (lib-await-provider-load!): say that, not that nothing
+    ;; provides it.
     ((let ((p (lib-provider-for class)))
-       (and p (memq (unbox (vector-ref p 3)) '(#f ok)) (lib-inside-provider-load? p) p))
+       (and p (eq? p (lib-loading-provider)) p))
      => (lambda (p)
           (string-append
-            class " is not installed yet: " (vector-ref p 0)
-            ", which provides it, is still loading, and this code runs as part of"
-            " that load (in the namespace, or in a thread, future or go block its"
-            " top level started). It cannot wait for a load it belongs to, since"
-            " the load may be waiting for it; use " class " after "
-            (vector-ref p 0) " has loaded.")))
+            class " is not installed yet: this code runs in " (vector-ref p 0)
+            ", which provides it, before it has registered it.")))
     ((jdk-class-name? class)
      (string-append "No dependency provides " class
                     " — a concrete implementation of the JDK classes must be "

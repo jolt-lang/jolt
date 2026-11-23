@@ -496,40 +496,49 @@ EOF
 check "a provider failing while threads wait on its load runs once" \
       '1 {:failed 7, :raised 1}' \
       "$(JOLT_PWD="$tmp/failprov" JOLT_QUIET=1 "$JOLT" "$tmp/failprov/probe.clj" 2>&1 | tail -1)"
-# An install namespace whose top level waits on a future that reaches one of the
-# provider's own classes: the future is part of the load and must not wait for
-# it. On the JVM that is the class-initialization deadlock; it waited for the
-# loader's watchdog (120 s), or forever on a fiber, whenever the future landed
-# on a pool thread that already existed, which the first @(future 1) makes
-# sure of. The future gets a message naming the load, at once.
+# Work an install namespace starts waits for that namespace's load like any
+# other context, and gets the class when the load is done: provself's `bg`
+# future, provfib's `bg` fiber. Work the load then BLOCKS on (a top-level deref
+# or join) would wait for the load while the load waits for it, the JVM's
+# class-initialization deadlock: the loader follows the load through what it is
+# blocked on, and the work's wait raises at once. The load watchdog is off, so
+# a missed cycle hangs until `bounded` kills it and the check fails; each
+# provider is reached through a class miss and through a plain require.
+bounded() { # secs cmd... -- run cmd, killed after secs (a hang fails, it does not wedge the gate)
+  secs=$1; shift
+  "$@" & bpid=$!
+  ( sleep "$secs"; kill -9 "$bpid" ) >/dev/null 2>&1 & bwatch=$!
+  wait "$bpid"; bst=$?
+  kill "$bwatch" 2>/dev/null
+  return $bst
+}
+selfprov_probe() { # provider-dir require-form class ns waited-var join
+  cat <<EOF
+((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/$1 {:local/root "$root/test/chez/deps-alias/$1"}}})
+(require '[jolt.fibers :as f])
+@(future 1)
+$2
+(prn ($3/now))
+(prn ($6 @(resolve '$4/bg)))
+(prn (boolean (re-find #"^Deadlocked load: .* is about to wait on the load of $4 \(held by .*\), and .* waits on $7" @(resolve '$4/$5))))
+(shutdown-agents)
+EOF
+}
 mkdir -p "$tmp/selfprov"
-cat > "$tmp/selfprov/probe.clj" <<EOF
-((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provself {:local/root "$root/test/chez/deps-alias/provself"}}})
-@(future 1)
-(prn (provself.Clock/now))
-(prn (re-find #"^provself.Clock is not installed yet: provself.install, which provides it, is still loading"
-              @(resolve 'provself.install/from-future)))
-(shutdown-agents)
-EOF
-out="$(JOLT_LOAD_WAIT_LIMIT_SECS=20 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 "$JOLT" "$tmp/selfprov/probe.clj" 2>&1 | tail -2)"
-check "a future the install namespace waits on does not wait for that load" \
-      '"self-clock" "provself.Clock is not installed yet: provself.install, which provides it, is still loading"' \
-      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
-# The same when the install namespace is loaded by a plain require rather than
-# by the class miss: the future must not claim the autoload and wait either.
-cat > "$tmp/selfprov/required.clj" <<EOF
-((requiring-resolve 'jolt.deps/add-deps) '{:deps {local/provself {:local/root "$root/test/chez/deps-alias/provself"}}})
-@(future 1)
-(require 'provself.install)
-(prn (provself.Clock/now))
-(prn (re-find #"^provself.Clock is not installed yet: provself.install, which provides it, is still loading"
-              @(resolve 'provself.install/from-future)))
-(shutdown-agents)
-EOF
-out="$(JOLT_LOAD_WAIT_LIMIT_SECS=20 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 "$JOLT" "$tmp/selfprov/required.clj" 2>&1 | tail -2)"
-check "a future a required install namespace waits on does not wait for that load" \
-      '"self-clock" "provself.Clock is not installed yet: provself.install, which provides it, is still loading"' \
-      "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+for how in miss require; do
+  if [ "$how" = require ]; then req="(require 'provself.install)"; else req=""; fi
+  selfprov_probe provself "$req" provself.Clock provself.install from-future deref "a future" > "$tmp/selfprov/$how.clj"
+  out="$(JOLT_LOAD_WAIT_LIMIT_SECS=0 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 bounded 120 "$JOLT" "$tmp/selfprov/$how.clj" 2>&1 | tail -3)"
+  check "an install namespace's futures wait for its load; a deref'd one raises ($how)" \
+        '"self-clock" "self-clock" true' \
+        "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+  if [ "$how" = require ]; then req="(require 'provfib.install)"; else req=""; fi
+  selfprov_probe provfib "$req" provfib.Tick provfib.install from-fiber f/join "a fiber it joins" > "$tmp/selfprov/fib-$how.clj"
+  out="$(JOLT_LOAD_WAIT_LIMIT_SECS=0 JOLT_PWD="$tmp/selfprov" JOLT_QUIET=1 bounded 120 "$JOLT" "$tmp/selfprov/fib-$how.clj" 2>&1 | tail -3)"
+  check "an install namespace's fibers wait for its load; a joined one raises ($how)" \
+        '"fib-tick" "fib-tick" true' \
+        "$(printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//')"
+done
 # Adding a library the project already resolved must not claim its classes a
 # second time: once provclaim.install has registered Signature, a fresh claim
 # reads as one on a class "this jolt provides" and warns about a stale library.

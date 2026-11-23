@@ -1,6 +1,5 @@
 {:paths ["src"]
 
- ;; A provider whose install namespace waits, at its top level, on a future that
- ;; reaches one of the provider's own classes before the namespace has registered
- ;; it. The future is work the load started, so it must not wait for that load.
+ ;; A provider whose install namespace starts futures that reach one of its own
+ ;; classes before the namespace has registered it, and waits on one of them.
  :jolt/provides {provself.install ["provself.Clock"]}}

@@ -212,12 +212,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   futures calling `Instant/now` got one value and seven errors. A thread that
   misses a class whose provider is loading now waits for that load and looks
   again, the way a JVM thread waits for a class another thread is initializing.
-  A fiber parks for it instead of blocking its carrier. Work the install
-  namespace itself started does not wait: a top-level `@(future ...)` that
-  reaches one of the provider's own classes gets an error saying the class is
-  still being installed by the load it belongs to, where the JVM would deadlock.
-  A provider that fails while threads wait on it runs once, and the waiters get
-  its failure; each waiter used to run the failing namespace again.
+  A fiber parks for it instead of blocking its carrier, and work the install
+  namespace itself started (a future, thread or fiber) waits the same way. When
+  the load is blocked on that work, a top-level `@(future ...)`, `.join` or
+  fiber join whose body reaches one of the provider's own classes, the two
+  would wait for each other forever, as they do on the JVM; the work's wait
+  raises a "Deadlocked load" error naming the cycle instead. Before this a
+  future like that waited out the 120 s load watchdog, or forever on a fiber,
+  and the same happened when the install namespace was loaded by a plain
+  `require`. A provider that fails while threads wait on it runs once, and the
+  waiters get its failure; each waiter used to run the failing namespace again.
+- A namespace whose top level blocks on a future, thread or fiber that requires
+  the same namespace raises "Deadlocked load" naming both sides at once,
+  instead of waiting out the 120 s load watchdog (forever when the waiter is a
+  fiber). The loader's cycle check now follows a load through the future,
+  thread or fiber it is blocked on.
 - Registering classes from several threads at once no longer loses
   registrations. A deftype, a library's class registration and a lazy host shim
   all write the class tables, and two namespaces loading in parallel wrote them
