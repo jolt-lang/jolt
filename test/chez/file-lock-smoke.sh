@@ -140,9 +140,75 @@ else
   expect "shared holder took its lock" "$(cat "$tmp/sh.out")" ""
 fi
 
+# --- lock() waits in the kernel: interrupt and close end it, a fiber parks ----
+# The waits below are against a holder in another process. The short sleeps
+# only make it likely the waiter has reached its kernel wait before the
+# interrupt or close lands; the answer is the same either way, and no verdict
+# reads a clock. A wait that interrupt or close failed to end shows as :hung
+# after a minute rather than hanging the script.
+holder wt 0 100 false release
+if wait_for "$tmp/wt.held" 120; then
+  got="$(jolt "$pre (require (quote [jolt.fibers :as fb]))
+(let [r1 (let [c (ch) res (promise)
+               t (Thread. (fn [] (deliver res (try (.lock c) :granted (catch java.nio.channels.FileLockInterruptionException _ [:interrupted (.isInterrupted (Thread/currentThread))])))))]
+           (.start t) (Thread/sleep 200) (.interrupt t) [(deref res 60000 :hung) (.isOpen c)])
+      r2 (let [c (ch) res (promise)]
+           (.start (Thread. (fn [] (deliver res (try (.lock c) :granted (catch java.nio.channels.AsynchronousCloseException _ :async-close))))))
+           (Thread/sleep 200) (.close c) (deref res 60000 :hung))
+      _ (fb/set-carrier-count! 1)
+      r3 (let [c (ch) th (promise)
+               f (fb/spawn (fn [] (deliver th (Thread/currentThread))
+                             (try (.lock c) :granted (catch java.nio.channels.FileLockInterruptionException _ [:interrupted (.isInterrupted (Thread/currentThread))]))))]
+           (Thread/sleep 200) (.interrupt @th) [(fb/join f 60000 :hung) (.isOpen c)])
+      c (ch)
+      a (fb/spawn (fn [] (.isValid (.lock c))))
+      b (fb/spawn (fn [] (dotimes [i 5] (Thread/sleep 10)) :ran))
+      rb (fb/join b 60000 :pinned)]
+  (spit \"$dir/wt.go\" \"\")
+  (prn [r1 r2 r3 rb (fb/join a 60000 :hung)]))" 2>"$tmp/stderr")"
+  # one carrier: fiber b can only finish while fiber a's lock() is parked, and
+  # the holder lets go only after b has finished
+  expect "lock() waiting in the kernel: interrupt closes and throws (thread and fiber), close throws, a fiber parks" "$got" "[[[:interrupted true] false] :async-close [[:interrupted true] false] :ran true]"
+  touch "$tmp/wt.bye"
+else
+  expect "wait-test holder took its lock" "$(cat "$tmp/wt.out")" ""
+fi
+
+# --- a waiter is not starved by a holder that releases and re-locks ----------
+# The holder releases and takes the range again in a tight loop until the
+# waiter says it got it, up to a count of cycles, not a time. A waiter in the
+# kernel is woken by the first release (a JVM waiter needed at most a few
+# hundred cycles on macOS and one or two on Linux, jolt's one); one that polled
+# could only land in the instant between a release and the next lock, and took
+# 74,000 cycles or never got it at all in 100,000. The bound is 10,000.
+jolt "$pre
+(let [c (ch) l (atom (.lock c))]
+  (spit \"$dir/cy.held\" \"\")
+  (await-file \"$dir/cy.started\")
+  (Thread/sleep 300)
+  (let [n (loop [n 0]
+            (if (or (.exists (java.io.File. \"$dir/cy.got\")) (>= n 10000))
+              n
+              (do (.release @l) (reset! l (.lock c)) (recur (inc n)))))]
+    (spit \"$dir/cy.cycles\" (str n))))" >"$tmp/cy.out" 2>&1 &
+pids="$pids $!"
+if wait_for "$tmp/cy.held" 120; then
+  jolt "$pre (let [c (ch)] (spit \"$dir/cy.started\" \"\") (.lock c) (spit \"$dir/cy.got\" \"\"))" >"$tmp/cyw.out" 2>&1 &
+  pids="$pids $!"
+  if wait_for "$tmp/cy.cycles" 300; then
+    n="$(cat "$tmp/cy.cycles")"
+    if [ -e "$tmp/cy.got" ] && [ "$n" -lt 10000 ]; then got=granted; else got="starved after $n cycles"; fi
+  else
+    got="holder never finished: $(cat "$tmp/cy.out")"
+  fi
+  expect "a waiter gets the range from a holder that releases and re-locks in a loop" "$got" "granted"
+else
+  expect "cycling holder took its lock" "$(cat "$tmp/cy.out")" ""
+fi
+
 # Every verdict is in. A holder that never got as far as its marker (a failed
 # row above) would wait for ever, so release the rest and end what is left.
-touch "$tmp/ex.go" "$tmp/sh.go" "$tmp/sh.bye"
+touch "$tmp/ex.go" "$tmp/sh.go" "$tmp/sh.bye" "$tmp/wt.go" "$tmp/wt.bye" "$tmp/cy.got"
 for p in $pids; do kill "$p" 2>/dev/null; done
 wait 2>/dev/null
 if [ "$fails" -ne 0 ]; then
