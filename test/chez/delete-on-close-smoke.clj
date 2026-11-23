@@ -202,20 +202,34 @@
     (Files/deleteIfExists l) (Files/delete t)
     ok))
 (if (or link-ok? (System/getenv "JOLT_REQUIRE_SYMLINKS"))
+;; Each open gets a fresh link, and the row says whether the link survived. It
+;; does on Unix. On Windows the JDK opens the link itself with
+;; FILE_FLAG_DELETE_ON_CLOSE before it sees it is a link, and closing that
+;; HANDLE removes the link, so DELETE_ON_CLOSE takes the link there.
 (check "NOFOLLOW_LINKS refuses a symbolic link on all three opens, with and without DELETE_ON_CLOSE"
        (let [target (fresh "nf-target" "hello")
-             ln (Files/createSymbolicLink (path "nf-ln") target (make-array FileAttribute 0))
-             r [(link-refused #(Files/newInputStream ln (opts NF)))
-                (link-refused #(Files/newInputStream ln (opts NF DOC)))
-                (link-refused #(Files/newOutputStream ln (opts W NF)))
-                (link-refused #(Files/newOutputStream ln (opts W NF DOC)))
-                (link-refused #(Files/newByteChannel ln (opts NF)))
-                (link-refused #(Files/newByteChannel ln (opts R W NF DOC)))
-                (there? ln) (slurp (str target))
-                (Files/isSymbolicLink ln) (= (str (Files/readSymbolicLink ln)) (str target))]]
-         (Files/delete ln) (Files/delete target)
+             ln (path "nf-ln")
+             link-left? #(Files/exists ln (into-array LinkOption [NF]))
+             try-open (fn [f]
+                        (Files/deleteIfExists ln)
+                        (Files/createSymbolicLink ln target (make-array FileAttribute 0))
+                        [(link-refused #(f ln)) (link-left?)])
+             r [(try-open #(Files/newInputStream % (opts NF)))
+                (try-open #(Files/newInputStream % (opts NF DOC)))
+                (try-open #(Files/newOutputStream % (opts W NF)))
+                (try-open #(Files/newOutputStream % (opts W NF DOC)))
+                (try-open #(Files/newByteChannel % (opts NF)))
+                (try-open #(Files/newByteChannel % (opts R W NF DOC)))
+                (slurp (str target))
+                (do (Files/deleteIfExists ln)
+                    (Files/createSymbolicLink ln target (make-array FileAttribute 0))
+                    (Files/isSymbolicLink ln))
+                (= (str (Files/readSymbolicLink ln)) (str target))]]
+         (Files/deleteIfExists ln) (Files/delete target)
          r)
-       [:refused :refused :refused :refused :refused :refused true "hello" true true])
+       (let [doc-left? (not windows?)]
+         [[:refused true] [:refused doc-left?] [:refused true] [:refused doc-left?]
+          [:refused true] [:refused doc-left?] "hello" true true]))
 (println "skip  NOFOLLOW_LINKS on a symbolic link: this host makes no links"))
 (check "NOFOLLOW_LINKS on a plain file reads and writes it"
        (let [p (fresh "nf-plain" "hello")
