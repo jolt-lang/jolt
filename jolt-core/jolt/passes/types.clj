@@ -5,7 +5,7 @@
   checker. Also the inter-procedural driver API the back end calls to
   propagate param types across a unit / the whole program. Weakly coupled to the
   IR-rewriting passes — shares the const-shape predicates (jolt.passes.fold)."
-  (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node]]
+  (:require [jolt.ir :refer [reduce-ir-children map-ir-children coerce-node thread-bindings]]
             [jolt.host :refer [protocol-method-var?]]
             [jolt.op-registry :as op-registry]
             [jolt.passes.fold :refer [scalar-const? kw-callee? get-callee?]]
@@ -965,11 +965,9 @@
   [(let [vt (get (get env :vtypes) (var-key node))] (if vt vt :any)) node])
 
 (defn- infer-let [node tenv env]
-  (let [res (reduce (fn [acc b]
-                      (let [te (nth acc 0) binds (nth acc 1)
-                            ir (infer (nth b 1) te env)]
-                        [(assoc te (nth b 0) (nth ir 0)) (conj binds [(nth b 0) (nth ir 1)])]))
-                    [tenv []] (get node :bindings))
+  (let [res (thread-bindings node tenv identity
+                             (fn [te nm _ t] (assoc te nm (if (nil? t) :any t)))
+                             (fn [te init] (let [ir (infer init te env)] [(nth ir 1) (nth ir 0)])))
         br (infer (get node :body) (nth res 0) env)]
     [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
 
