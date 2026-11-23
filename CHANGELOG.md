@@ -51,6 +51,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`DELETE_ON_CLOSE` works on Windows for `Files/newInputStream`,
+  `newOutputStream` and `newByteChannel`.** They threw
+  UnsupportedOperationException there, because the streams sat on Chez's C
+  runtime file ports. With the option they now open the way `FileChannel/open`
+  does, a HANDLE with `FILE_FLAG_DELETE_ON_CLOSE` read and written through
+  ReadFile/WriteFile, so the file goes when the stream closes, and APPEND,
+  TRUNCATE_EXISTING, CREATE_NEW, SYNC and DSYNC still apply. On every host
+  these opens refuse a symbolic link with the JDK's IOException instead of
+  deleting the link and opening its target.
+- **`Files/newByteChannel` takes `READ` with `WRITE`.** It threw
+  IllegalArgumentException "READ not allowed". It now checks its options as
+  newFileChannel does: READ + APPEND is "READ + APPEND not allowed", a channel
+  opened without READ throws NonReadableChannelException on read, and READ with
+  DELETE_ON_CLOSE deletes the file, which it skipped before.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could

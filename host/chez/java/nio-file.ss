@@ -818,8 +818,11 @@
                                                            (string-append "'" (enum-name o) "' not allowed"))))
                                             (npath-spread-args opts))
                                   (io-note-file-read! fp)
-                                  (let ((port (nio-open-input-port fp (nio-shown p))))
-                                    (nio-delete-on-close! fp port opts)
+                                  (let ((port (if (nio-delete-on-close? opts)
+                                                  (vector-ref (nio-native-port fp (nio-shown p)
+                                                                               (nio-channel-syms opts) 'input)
+                                                              0)
+                                                  (nio-open-input-port fp (nio-shown p)))))
                                     (stream-classed! (make-in-stream port) "sun.nio.ch.ChannelInputStream")))))
         (cons "createTempFile"      (lambda args (nio-files-create-temp args #f)))
         (cons "createTempDirectory" (lambda args (nio-files-create-temp args #t))))))
@@ -1400,21 +1403,20 @@
           n)
         #f #f
         (lambda () (close-port port))))))
-;; DELETE_ON_CLOSE: unlinked as soon as it is open, which is what the JDK does on
-;; a POSIX filesystem; the open port keeps the data until it is closed. Windows
-;; cannot unlink an open file.
-(define (nio-delete-on-close! fp port opts)
-  (when (nio-opts-have? opts oopt-sym 'delete-on-close)
-    (when (nio-windows?)
-      (close-port port)
-      (throw-jvm 'UnsupportedOperationException "DELETE_ON_CLOSE not supported"))
-    (guard (_ (#t #f)) (delete-file fp))))
+;; DELETE_ON_CLOSE opens through the channel's ops (nio-native-port): unlinked
+;; once open on Unix, FILE_FLAG_DELETE_ON_CLOSE on Windows, and a symbolic link
+;; refused on both, as the JDK's channel factories do. newOutputStream adds WRITE
+;; to the options before it opens, which is what keeps the channel's
+;; read-by-default out.
 (define (nio-open-output-port fp options opts . shown)
-  (let ((port (apply nio-fs-call fp (lambda () (open-file-output-port fp options)) shown)))
-    (nio-delete-on-close! fp port opts)
-    (cond ((nio-opts-have? opts oopt-sym 'sync) (nio-sync-port port fp "SYNC"))
-          ((nio-opts-have? opts oopt-sym 'dsync) (nio-sync-port port fp "DSYNC"))
-          (else port))))
+  (if (nio-delete-on-close? opts)
+      (vector-ref (nio-native-port fp (if (pair? shown) (car shown) fp)
+                                   (nio-channel-syms opts (make-oopt 'write)) 'output)
+                  0)
+      (let ((port (apply nio-fs-call fp (lambda () (open-file-output-port fp options)) shown)))
+        (cond ((nio-opts-have? opts oopt-sym 'sync) (nio-sync-port port fp "SYNC"))
+              ((nio-opts-have? opts oopt-sym 'dsync) (nio-sync-port port fp "DSYNC"))
+              (else port)))))
 
 (let ((files-opt
        (list (cons "write" (lambda (p data . opts)
@@ -2245,19 +2247,134 @@
                  (bytevector-u32-ref buf 48 (endianness little))))
         fp)))
 
+;; ---- a stream or byte channel on the channel's descriptor or HANDLE ----------
+;; Files/newInputStream, newOutputStream and newByteChannel are a channel
+;; underneath on the JDK (Channels.newInputStream over newByteChannel), so the
+;; ones that need what only the channel's open does -- DELETE_ON_CLOSE, which is
+;; FILE_FLAG_DELETE_ON_CLOSE on Windows and an unlink after open(2) on Unix --
+;; open through the channel's ops (nio-native-port) and put a port on what that
+;; open hands back. MODE is 'input, 'output or 'input/output. The answer is
+;; #(port size truncate!): SIZE takes the port, TRUNCATE! the port and a length.
+;;
+;; POSIX: Chez's own port on the descriptor. A directory opens for reading and
+;; fails at the first read, as nio-directory-input-port has it; SYNC / DSYNC are
+;; already O_SYNC / O_DSYNC on the descriptor, and an output stream also writes
+;; each call through (nio-sync-port), as it does on the plain open.
+(define (fc-posix-port fd mode syms fp)
+  (let ((port (case mode
+                ((input) (if (file-directory? fp)
+                             (begin (fc-posix-close! fd) (nio-directory-input-port))
+                             (open-fd-input-port fd)))
+                ((output) (open-fd-output-port fd))
+                (else (open-fd-input/output-port fd)))))
+    (vector (cond ((not (eq? mode 'output)) port)
+                  ((memq 'sync syms) (nio-sync-port port fp "SYNC"))
+                  ((memq 'dsync syms) (nio-sync-port port fp "DSYNC"))
+                  (else port))
+            file-length
+            set-port-length!)))
+
+;; Windows: a custom port reading and writing the HANDLE with ReadFile and
+;; WriteFile, positioned by SetFilePointerEx, closed by CloseHandle (which is
+;; when FILE_FLAG_DELETE_ON_CLOSE deletes the file). The calls are synchronous
+;; on a file HANDLE, so they don't wait on anything but the disk. APPEND writes
+;; at the OVERLAPPED offset 0xFFFFFFFF:0xFFFFFFFF, the end of the file at the
+;; moment of the write, which is how the JDK's write0 appends. SYNC / DSYNC are
+;; FILE_FLAG_WRITE_THROUGH on the HANDLE, and the output port is unbuffered so
+;; each write reaches it when it is made.
+(define-win32-proc win32-read-file
+  "kernel32.dll" "ReadFile" (iptr u8* unsigned-32 u8* u8*) int)
+(define-win32-proc win32-write-file
+  "kernel32.dll" "WriteFile" (iptr u8* unsigned-32 u8* u8*) int)
+(define-win32-proc win32-set-file-pointer-ex
+  "kernel32.dll" "SetFilePointerEx" (iptr integer-64 u8* unsigned-32) int)
+(define win32-FILE-BEGIN   0)
+(define win32-FILE-CURRENT 1)
+(define (fc-win32-seek! h offset how)
+  (let ((seek (win32-set-file-pointer-ex)) (buf (make-bytevector 8 0)))
+    (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (seek h offset buf how)))))
+      (when (= r 0) (throw-jvm 'IOException (win32-error-message err)))
+      (bytevector-s64-ref buf 0 (endianness little)))))
+(define (fc-win32-port h mode syms fp)
+  (let ((read-file (win32-read-file)) (write-file (win32-write-file))
+        (set-eof (win32-set-end-of-file))
+        (append? (and (memq 'append syms) #t))
+        (sync? (or (memq 'sync syms) (memq 'dsync syms)))
+        (count (make-bytevector 4 0)))
+    (unless (and read-file write-file set-eof (win32-set-file-pointer-ex))
+      (throw-jvm 'UnsupportedOperationException "a file stream needs ReadFile, WriteFile and SetFilePointerEx"))
+    (letrec*
+        ((io-fail (lambda (err) (throw-jvm 'IOException (win32-error-message err))))
+         ;; ReadFile into a scratch buffer, since Chez may hand a START inside
+         ;; the caller's own bytevector; 0 bytes from a synchronous read is EOF
+         (read! (lambda (bv start n)
+                  (let ((buf (make-bytevector (min n 65536))))
+                    (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0)))
+                                            (lambda () (read-file h buf (bytevector-length buf) count #f)))))
+                      (when (= r 0) (io-fail err))
+                      (let ((got (bytevector-u32-ref count 0 (endianness little))))
+                        (bytevector-copy! buf 0 bv start got)
+                        got)))))
+         (write! (lambda (bv start n)
+                   (let ((src (if (= start 0) bv
+                                  (let ((b (make-bytevector n))) (bytevector-copy! bv start b 0 n) b)))
+                         (at (and append?
+                                  (let* ((o (fc-win32-overlapped 0)) (off (- (bytevector-length o) 16)))
+                                    (bytevector-u32-set! o off #xFFFFFFFF (endianness little))
+                                    (bytevector-u32-set! o (+ off 4) #xFFFFFFFF (endianness little))
+                                    o))))
+                     (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0)))
+                                             (lambda () (write-file h src n count at)))))
+                       (when (= r 0) (io-fail err))
+                       (bytevector-u32-ref count 0 (endianness little))))))
+         (get-position (lambda () (fc-win32-seek! h 0 win32-FILE-CURRENT)))
+         (set-position! (lambda (pos) (fc-win32-seek! h pos win32-FILE-BEGIN)))
+         (close (lambda () (fc-win32-close! h)))
+         (port (case mode
+                 ((input) (make-custom-binary-input-port fp read! get-position set-position! close))
+                 ((output) (parameterize ((custom-port-buffer-size
+                                           (if sync? 1 (custom-port-buffer-size))))
+                             (make-custom-binary-output-port fp write! get-position set-position! close)))
+                 (else (make-custom-binary-input/output-port
+                        fp read! write! get-position set-position! close)))))
+      (vector port
+              (lambda (port) (fc-win32-size h fp))
+              ;; SetEndOfFile cuts at the file pointer, so move it there and back
+              (lambda (port size)
+                (let ((here (port-position port)))
+                  (fc-win32-seek! h size win32-FILE-BEGIN)
+                  (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (set-eof h)))))
+                    (set-port-position! port here)
+                    (when (= r 0) (io-fail err)))))))))
+
 ;; The platform seam: #(open close! lock! can-lock? file-id nofollow? size
-;; unknown-option-message), one vector per host, chosen once per call rather
-;; than branched on in the shared code below.
+;; unknown-option-message port), one vector per host, chosen once per call
+;; rather than branched on in the shared code below.
 (define fc-posix-ops
   (vector fc-posix-open fc-posix-close! fc-posix-lock! fc-posix-can-lock? fc-posix-file-id fc-posix-nofollow?
-          fc-posix-size fc-posix-unknown-option))
+          fc-posix-size fc-posix-unknown-option fc-posix-port))
 (define fc-win32-ops
   (vector fc-win32-open fc-win32-close! fc-win32-lock! fc-win32-can-lock? fc-win32-file-id (lambda () #t)
-          fc-win32-size (lambda (o) jolt-nil)))
+          fc-win32-size (lambda (o) jolt-nil) fc-win32-port))
 (define (fc-ops) (if (nio-windows?) fc-win32-ops fc-posix-ops))
 (define (fc-native-close! n) ((vector-ref (fc-ops) 1) n))
 (define (fc-native-lock! n kind start size) ((vector-ref (fc-ops) 2) n kind start size))
 (define (fc-native-can-lock?) ((vector-ref (fc-ops) 3)))
+
+;; Flags.toFlags for a stream or byte channel's options, the channel's checks
+;; and its read-by-default included (fc-open-flags). EXTRA goes in front, as
+;; newOutputStream adds WRITE to the caller's options.
+(define (nio-channel-syms opts . extra)
+  (let ((ops (fc-ops)))
+    (fc-open-flags (append extra (npath-spread-args opts)) ((vector-ref ops 5)) (vector-ref ops 7))))
+;; Open FP the way FileChannel/open does, then put a MODE port on it:
+;; #(port size truncate!) as the ops' port entry answers.
+(define (nio-native-port fp shown syms mode)
+  (let* ((ops (fc-ops))
+         (native ((vector-ref ops 0) fp shown syms #o666)))
+    (guard (e (#t (guard (_ (#t #f)) ((vector-ref ops 1) native)) (raise e)))
+      ((vector-ref ops 8) native mode syms fp))))
+(define (nio-delete-on-close? opts) (nio-opts-have? opts oopt-sym 'delete-on-close))
 
 ;; A channel collected without being closed gives its descriptor back here, as
 ;; the JDK's cleaner does. Drained at each open, which is when the process is
@@ -2628,21 +2745,33 @@
   (set! files-accum-chunks (cons files-owner2 files-accum-chunks)))
 
 ;; ---- the host filesystem's channels, stores and owners ------------------------
-;; Files.newByteChannel: a SeekableByteChannel over the file. A read channel is an
-;; input port; WRITE / APPEND open the file through the same option table
-;; newOutputStream uses, on a port that also reads.
-;; State: #(port open? append?)
+;; Files.newByteChannel: a SeekableByteChannel over the file, newFileChannel's
+;; options and checks (nio-channel-syms): READ by default, READ + APPEND and
+;; APPEND + TRUNCATE_EXISTING refused. A read channel is an input port; WRITE /
+;; APPEND open the file through the same option table newOutputStream uses, on a
+;; port that also reads. DELETE_ON_CLOSE opens through the channel's ops, as the
+;; streams do (nio-native-port).
+;; State: #(port open? append? readable? size truncate!)
 (define (nio-host-byte-channel p . opts)
   (let* ((fp (nfp p))
          (shown (nio-shown p))
-         (write? (or (nio-opts-have? opts oopt-sym 'write) (nio-opts-have? opts oopt-sym 'append)))
-         (append? (nio-opts-have? opts oopt-sym 'append))
-         (port (if write?
-                   (nio-fs-call fp (lambda () (open-file-input/output-port fp (nio-output-file-options opts))) shown)
-                   (nio-open-input-port fp shown))))
-    (when write? (nio-delete-on-close! fp port opts))
-    (make-jhost "host-byte-channel" (vector port #t append?))))
+         (syms (nio-channel-syms opts))
+         (read? (and (memq 'read syms) #t))
+         (write? (and (memq 'write syms) #t))
+         (st (cond
+               ((memq 'delete-on-close syms)
+                (nio-native-port fp shown syms
+                                 (cond ((and read? write?) 'input/output) (write? 'output) (else 'input))))
+               (write?
+                (let ((no-read (filter (lambda (o) (not (eq? (oopt-sym o) 'read))) (npath-spread-args opts))))
+                  (vector (nio-fs-call fp (lambda () (open-file-input/output-port fp (nio-output-file-options no-read)))
+                                       shown)
+                          file-length set-port-length!)))
+               (else (vector (nio-open-input-port fp shown) file-length set-port-length!)))))
+    (make-jhost "host-byte-channel"
+                (vector (vector-ref st 0) #t (and (memq 'append syms) #t) read? (vector-ref st 1) (vector-ref st 2)))))
 (define (nio-hbc-port self) (vector-ref (jhost-state self) 0))
+(define (nio-hbc-size self) ((vector-ref (jhost-state self) 4) (nio-hbc-port self)))
 (define (nio-hbc-open! self)
   (unless (vector-ref (jhost-state self) 1)
     (throw-jvm 'java.nio.channels.ClosedChannelException jolt-nil)))
@@ -2651,6 +2780,8 @@
     (throw-jvm 'java.nio.channels.NonWritableChannelException jolt-nil)))
 (define (nio-hbc-read self buffer)
   (nio-hbc-open! self)
+  (unless (vector-ref (jhost-state self) 3)
+    (throw-jvm 'java.nio.channels.NonReadableChannelException jolt-nil))
   (let ((want (nb-remaining buffer)))
     (if (= want 0)
         0
@@ -2668,7 +2799,7 @@
          (port (nio-hbc-port self)))
     (nb-get buffer arr 0 n)
     (when (vector-ref (jhost-state self) 2)
-      (set-port-position! port (file-length port)))
+      (set-port-position! port (nio-hbc-size self)))
     (put-bytevector port (na-bytearray->bv arr))
     (flush-output-port port)
     n))
@@ -2681,12 +2812,12 @@
                       (if (pair? position)
                           (begin (set-port-position! (nio-hbc-port self) (jnum->exact (car position))) self)
                           (port-position (nio-hbc-port self)))))
-   (cons "size" (lambda (self) (nio-hbc-open! self) (file-length (nio-hbc-port self))))
+   (cons "size" (lambda (self) (nio-hbc-open! self) (nio-hbc-size self)))
    (cons "truncate" (lambda (self size)
                       (nio-hbc-open! self)
                       (nio-hbc-writable! self)
                       (let ((size (jnum->exact size)) (port (nio-hbc-port self)))
-                        (when (< size (file-length port)) (set-port-length! port size))
+                        (when (< size (nio-hbc-size self)) ((vector-ref (jhost-state self) 5) port size))
                         (when (> (port-position port) size) (set-port-position! port size)))
                       self))
    (cons "isOpen" (lambda (self) (vector-ref (jhost-state self) 1)))

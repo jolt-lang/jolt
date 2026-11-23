@@ -12,6 +12,7 @@ name: windows-static
 #   #1203  jolt.loader opening a file:/C:/… resource hit   (winparity)
 #   #1208  Socket half-close over Winsock                  (winparity)
 #   #1810  FileChannel locks between processes (LockFileEx), file-lock smoke
+#          Files stream/channel opens with DELETE_ON_CLOSE, delete-on-close smoke
 #
 # The first run of a new workflow file comes from a push: workflow_dispatch only
 # lists workflows that exist on the default branch.
@@ -27,6 +28,7 @@ on:
       - 'host/chez/java/process.ss'
       - 'test/chez/aot-worker-cleanup-smoke.sh'
       - 'test/chez/file-lock-smoke.sh'
+      - 'test/chez/delete-on-close-smoke.clj'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
       - 'host/chez/java/io-streams.ss'
@@ -47,6 +49,7 @@ on:
       - 'host/chez/java/process.ss'
       - 'test/chez/aot-worker-cleanup-smoke.sh'
       - 'test/chez/file-lock-smoke.sh'
+      - 'test/chez/delete-on-close-smoke.clj'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
       - 'host/chez/java/io-streams.ss'
@@ -187,6 +190,14 @@ jobs:
       - name: FileChannel locks between processes
         if: ${{ !cancelled() }}
         run: JOLT_BIN=target/release/jolt.exe sh test/chez/file-lock-smoke.sh
+
+      # Files/newInputStream, newOutputStream and newByteChannel with
+      # DELETE_ON_CLOSE: a HANDLE opened with FILE_FLAG_DELETE_ON_CLOSE, read and
+      # written through ReadFile/WriteFile. The file is there while the stream
+      # is open, readable and writable through it, and gone once it closes.
+      - name: DELETE_ON_CLOSE streams and channels
+        if: ${{ !cancelled() }}
+        run: target/release/jolt.exe test/chez/delete-on-close-smoke.clj
 
       - name: Write the OpenSSL app
         run: |

@@ -290,19 +290,6 @@
    :check :prose
    :why "needs a second process holding the lock and a timing measurement; test/chez/file-lock-smoke.sh pins the waiting and the eventual grant"
    :note "Interrupt and close end the wait the JDK's way (FileLockInterruptionException, AsynchronousCloseException), and on a fiber the wait parks."}
-  ;; Files/newOutputStream, newInputStream and newByteChannel with DELETE_ON_CLOSE
-  ;; on Windows. The JDK opens with FILE_FLAG_DELETE_ON_CLOSE and the file goes
-  ;; when the stream closes. jolt's streams sit on Chez's C-runtime file ports,
-  ;; which can't pass that flag and can't unlink an open file, so they refuse
-  ;; the option (nio-file.ss nio-delete-on-close!). FileChannel/open is not
-  ;; affected: it owns a HANDLE and passes the flag.
-  {:category :restrictive
-   :behavior "(Files/newOutputStream p (into-array OpenOption [StandardOpenOption/WRITE StandardOpenOption/DELETE_ON_CLOSE])) on Windows"
-   :jvm "a stream whose file is deleted when it closes"
-   :jolt "throws UnsupportedOperationException \"DELETE_ON_CLOSE not supported\""
-   :check :prose
-   :why "Windows only; the documented gate runs on the POSIX hosts, where both sides delete the file"
-   :note "POSIX is unaffected: there the file is unlinked as the stream opens, as the JDK does."}
   ;; jolt's Unicode data is the Chez it runs on and the JVM's is the JDK's: two
   ;; independent UCD versions on their own release schedules. Chez 10.4.1 answers
   ;; from Unicode 17.0 and JDK 25 from 16.0, so a code point whose properties
