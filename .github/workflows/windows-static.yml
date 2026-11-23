@@ -11,6 +11,7 @@ name: windows-static
 #   #1207  bld-mkdir-p walking up a backslash path
 #   #1203  jolt.loader opening a file:/C:/… resource hit   (winparity)
 #   #1208  Socket half-close over Winsock                  (winparity)
+#   #1810  FileChannel locks between processes (LockFileEx), file-lock smoke
 #
 # The first run of a new workflow file comes from a push: workflow_dispatch only
 # lists workflows that exist on the default branch.
@@ -25,6 +26,7 @@ on:
       - 'host/chez/spawn.ss'
       - 'host/chez/java/process.ss'
       - 'test/chez/aot-worker-cleanup-smoke.sh'
+      - 'test/chez/file-lock-smoke.sh'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
       - 'host/chez/java/io-streams.ss'
@@ -44,6 +46,7 @@ on:
       - 'host/chez/spawn.ss'
       - 'host/chez/java/process.ss'
       - 'test/chez/aot-worker-cleanup-smoke.sh'
+      - 'test/chez/file-lock-smoke.sh'
       - 'host/chez/java/io.ss'
       - 'host/chez/java/nio-file.ss'
       - 'host/chez/java/io-streams.ss'
@@ -177,6 +180,13 @@ jobs:
           foreach ($f in $left) { Write-Host "== $($f.FullName)"; Get-Content $f.FullName }
           if ($left.Count -ne 0) { throw "the worker left $($left.Count) file(s) behind" }
           if ($sos.Count -lt 3) { throw "only $($sos.Count) of 3 namespaces were compiled" }
+
+      # FileChannel.lock/tryLock between real Windows processes: LockFileEx on
+      # the channel's HANDLE, and FILE_FLAG_DELETE_ON_CLOSE. Wine runs the same
+      # script (tools/wine), but its locking is Wine's, not Windows'.
+      - name: FileChannel locks between processes
+        if: ${{ !cancelled() }}
+        run: JOLT_BIN=target/release/jolt.exe sh test/chez/file-lock-smoke.sh
 
       - name: Write the OpenSSL app
         run: |

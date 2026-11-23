@@ -184,7 +184,7 @@ CI-GATES := submodules values flonumprint recordinline corpus nsaudit unit docum
   fnform poolshape coreproc traceemit traceeval tracecompilecost degradedbacktrace \
   inline inline-body guardedinline dcerefs shakelocal manifestcheck readmecheck portcheck mirrordrift regexdfacheck regexdfa regexanchor regexanchorprims regexanchorcheck regexreplace regexsyntax regexbacktrack deadhost recordshadow emittedheads adaptercheck hostprops normalizecheck hostregistry hostarity enummodel imagecoverage lazyshims foreignhandles dispatchalloc hostsite regexmatcher winpath winplatform winparity statlayout lockcheck mmepochcheck parkcheck shelloutcheck errnocheck irvalidate seeddefs devbootsmoke \
   gatebootsmoke aotcachesmoke aotworkersmoke aotcachepathsmoke aotcachesourcepathsmoke aotcachestarfilesmoke aotfingerprint vfaslceiling vfaslstrings buildscaling buildnatives buildsegments compilepathsmoke makefilesmoke versionsmoke attributioncheck noticecheck \
-  systemstreams closedstdout stderrsplit userdirpaths mimetypes utf8decode \
+  systemstreams closedstdout stderrsplit filelock userdirpaths mimetypes utf8decode \
   certify gambitcheck gambitkernel gambitgencheck gambitseedcheck gambitboot gambiteval gambitunbound gambitvars gambitstatics gambittwins gambitprofile grenadinecheck fibers fiberspoll gosm asynctimer ticks interruptnest monitorescape windescape threadsafety maskedacquire ioerrno cas flow
 TEST-GATES := submodules selfhost ci
 
@@ -2215,6 +2215,13 @@ closedstdout:
 # windows-deps job runs it too.
 stderrsplit:
 	@sh test/chez/stderr-split-smoke.sh $(CHEZ)
+
+# FileChannel.lock/tryLock exclude other processes: a held lock makes another
+# process's tryLock answer nil and its lock() wait until the holder lets go or
+# exits. Needs two processes, so it is a script; the single-process rows are in
+# unit.edn's nio-filelock suite.
+filelock:
+	@sh test/chez/file-lock-smoke.sh $(CHEZ)
 
 # Relative paths under bin/jolt resolve against the caller's directory, not the
 # checkout the launcher cd's to: the jolt.host filesystem functions, load-file,

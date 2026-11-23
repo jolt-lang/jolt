@@ -36,6 +36,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ;; before: "[{:a 1.0} x #'clojure.core/inc]"
   ;; after:  "[#=(clojure.lang.PersistentArrayMap/create {:a #=(java.lang.Float. \"1.0\")}) ^#=(clojure.lang.PersistentArrayMap/create {:k 1}) x #=(var clojure.core/inc)]"
   ```
+- **`FileChannel` can lock a file, so two processes can keep out of each
+  other's way.** `.tryLock` and `.lock`, with or without a position, size and
+  shared flag, answer a `java.nio.channels.FileLock` with `release`, `close`,
+  `isValid`, `isShared`, `channel`, `acquiredBy`, `position`, `size`,
+  `overlaps` and the JDK's `toString`. They take the locks OpenJDK takes, POSIX
+  record locks on Unix and `LockFileEx` on Windows, so a JVM and a jolt process
+  see each other's locks. `tryLock` answers nil when another process holds an
+  overlapping range, and `lock` waits for it, polling rather than queueing in
+  the kernel (recorded in known-divergences). Inside one process a second
+  overlapping lock, through any channel on the file, is
+  `OverlappingFileLockException`, and closing a channel releases its locks.
+  An exclusive lock on a read-only channel is `NonWritableChannelException`
+  and a shared one on a write-only channel `NonReadableChannelException`, as
+  on the JDK. A channel is a `sun.nio.ch.FileChannelImpl` with the JDK's
+  supertypes (`FileChannel`, `SeekableByteChannel`, `Closeable` and the rest)
+  instead of a bare `:object`.
+  `FileChannel/open` now really opens the file, with the JDK's checks first:
+  READ with APPEND, and APPEND with TRUNCATE_EXISTING, are
+  `IllegalArgumentException`, a null option `NullPointerException` and an
+  unknown one `UnsupportedOperationException`. A missing file without
+  `CREATE` throws `NoSuchFileException`, an unreadable one
+  `AccessDeniedException`, and a write-open of a directory
+  `FileSystemException`. `CREATE_NEW` creates the file exclusively and throws
+  `FileAlreadyExistsException` when it exists, `TRUNCATE_EXISTING` empties a
+  file opened for writing, neither `CREATE` nor `CREATE_NEW` makes a file for
+  a channel that only reads, `NOFOLLOW_LINKS` and `DELETE_ON_CLOSE` refuse a
+  symbolic link, `SYNC`/`DSYNC` open for synchronous writes, and the
+  `open(path, Set, FileAttribute...)` form creates with the attribute's
+  permissions. `DELETE_ON_CLOSE` works on Windows too. `size` on a closed
+  channel is `ClosedChannelException`, and a channel the program drops
+  without closing gives its descriptor back once it is collected.
 
 ### Fixed
 
@@ -141,6 +172,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as the JDK does, so a target that cannot be opened throws `Cannot run program
   "x": path (No such file or directory)` from `start()` instead of starting a
   child that exits 1.
+- `Files/getLastModifiedTime`, `Files/getAttribute`, `Files/readAttributes` and
+  `babashka.fs/last-modified-time` of a file deleted while they ran answered
+  epoch 0 about 1 time in 100 (#1804). They checked that the path existed,
+  then statted it, and a failed stat fell back to a millisecond mtime that is
+  0 for an absent file. Every attribute reader now takes one stat (lstat under
+  `NOFOLLOW_LINKS`), as the JDK does, and that stat is the existence check: a
+  path that is gone throws `NoSuchFileException` naming it. The same window
+  made `Files/getPosixFilePermissions` answer `rwxr-xr-x` and `Files/getOwner`
+  answer `$USER` for a missing file or a dangling link; they throw too now.
+  `File.lastModified` still answers 0 for a missing file, as on the JVM.
+- A `BasicFileAttributes` from `readAttributes` is a snapshot, as the JDK's
+  is: its getters answer the values from the stat `readAttributes` took, a
+  getter after a delete included, and never throw. They used to stat again on
+  every call, so a `walkFileTree` visitor reading three attributes of a file
+  deleted under it got epoch 0. `PosixFileAttributes` is supported
+  (`permissions`, `owner`, `group`), and so are the `posix:`, `unix:` and
+  `owner:` views of `getAttribute` and `readAttributes`. An unknown attribute
+  is `IllegalArgumentException` and an unknown view
+  `UnsupportedOperationException`, where they answered nil or the basic value.
+  Owners and groups are instances of `UserPrincipal` and `GroupPrincipal`.
+- `Files/size` and the `size` attribute read `st_size`, so a file the process
+  cannot read has a size; they opened the file and threw
+  `AccessDeniedException`. They are also over 100 times faster (about 230 to 1.5 us on macOS).
+- `walkFileTree` takes one snapshot per entry and hands `visitFileFailed` the
+  exception when it fails: an entry deleted between its listing and its visit,
+  a missing start path, or a link cycle under `FOLLOW_LINKS`
+  (`FileSystemLoopException`, which was nil). The two-argument
+  `walkFileTree(start, visitor)` works; it threw `ArityException`.
+  `Files/find` reads each entry's attributes without following links unless
+  asked to, so a dangling link no longer makes it throw.
 - `jolt build`'s parallel compile workers and the run-path AOT cache's
   background worker start without a shell, so both now run on Windows too. The
   build workers used to need a `--build-worker-probe` round trip through `sh`
