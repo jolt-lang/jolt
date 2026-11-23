@@ -432,6 +432,14 @@
   ;; (reduced 5) [1 2]) is a ClassCastException there (and (reduce + (reduced 5)
   ;; []) answers the box itself). A superset: an ordinary init behaves the same.
   {:category :permissive
+   :behavior "(Files/readAttributes path \"size\" opts), the String form"
+   :jvm "a java.util.Collections$UnmodifiableMap, which assoc refuses"
+   :jolt "a persistent map, which assoc extends"
+   :check {:expr "(assoc (java.nio.file.Files/readAttributes (java.nio.file.Paths/get \".\" (into-array String [])) \"isDirectory\" (into-array java.nio.file.LinkOption [])) \"x\" 1)"
+           :jvm "throws ClassCastException"
+           :jolt "{\"isDirectory\" true, \"x\" 1}"}
+   :note "Found reviewing #1805. get, keys, seq and = read the same on both; only a write tells them apart."}
+  {:category :permissive
    :behavior "(reduce + (reduced 5) [1 2])"
    :jvm "throws ClassCastException (Reduced cannot be cast to Number)"
    :jolt "5"

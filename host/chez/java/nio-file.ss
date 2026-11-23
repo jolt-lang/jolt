@@ -622,11 +622,13 @@
 ;; FileSystemException's (file, other, reason) are kept apart until the message
 ;; is built (io.ss fs-exception-message), so only the paths render with "\" on
 ;; Windows and the reason text is left as the OS wrote it.
-(define (nio-fs-throw cls fp . other+reason)
+(define (nio-fs-exception cls fp . other+reason)    ; the throwable, not thrown
   (let ((other  (and (pair? other+reason) (car other+reason)))
         (reason (and (pair? other+reason) (pair? (cdr other+reason)) (cadr other+reason))))
-    (jolt-throw (jolt-host-throwable/detail cls (or (fs-exception-message fp other reason) jolt-nil)
-                  (vector (and fp (path-native fp)) (and other (path-native other)) reason)))))
+    (jolt-host-throwable/detail cls (or (fs-exception-message fp other reason) jolt-nil)
+      (vector (and fp (path-native fp)) (and other (path-native other)) reason))))
+(define (nio-fs-throw cls fp . other+reason)
+  (jolt-throw (apply nio-fs-exception cls fp other+reason)))
 (define (nio-no-such-file fp . other)
   (nio-fs-throw "java.nio.file.NoSuchFileException" fp (and (pair? other) (car other))))
 (define (nio-already-exists fp . other)
@@ -804,7 +806,9 @@
         (cons "isWritable"    (lambda (p . _) (file-accessible? (nfp p) access-w-ok)))
         (cons "isExecutable"  (lambda (p . _) (file-accessible? (nfp p) access-x-ok)))
         (cons "isHidden"      (lambda (p . _) (nio-hidden? p)))
-        (cons "size"          (lambda (p . _) (nio-size (nfp p) (nio-shown p))))
+        ;; readAttributes(p, BasicFileAttributes).size(), as the JDK's is: st_size
+        ;; from the one stat, which needs no read permission on the file
+        (cons "size"          (lambda (p . _) (nio-snap-ref (nio-snapshot (nfp p) #t (nio-shown p) #f) "size")))
         (cons "delete"        (lambda (p) (nio-delete1 (nfp p) #f (nio-shown p)) jolt-nil))
         (cons "deleteIfExists"(lambda (p) (nio-delete1 (nfp p) #t (nio-shown p))))
         (cons "readAllBytes"  (lambda (p) (na-bv->bytearray (nio-read-bv (nfp p) (nio-shown p)))))
@@ -868,26 +872,6 @@
 (define (fvr-sym r) (if (fvr? r) (jhost-state r) 'continue))
 (define fvo-follow-links  (make-jhost "fvo" 'follow-links))
 
-;; BasicFileAttributes of a path, read through (FOLLOW? #t) or not through
-;; (NOFOLLOW_LINKS) a symbolic link — every getter answers through
-;; nio-attr-value, the one table readAttributes and getAttribute also read, so
-;; the three cannot disagree about a link. It used to hold only the path and
-;; follow always, so readAttributes(link, BasicFileAttributes, NOFOLLOW_LINKS)
-;; described the target and isSymbolicLink was false for everything.
-(define (make-basic-attrs fp follow?) (make-jhost "basic-attrs" (cons fp follow?)))
-(define (basic-attrs-value self nm)
-  (let ((st (jhost-state self))) (nio-attr-value (car st) nm (cdr st))))
-(register-host-methods! "basic-attrs"
-  (list (cons "isDirectory"      (lambda (self) (basic-attrs-value self "isDirectory")))
-        (cons "isRegularFile"    (lambda (self) (basic-attrs-value self "isRegularFile")))
-        (cons "isSymbolicLink"   (lambda (self) (basic-attrs-value self "isSymbolicLink")))
-        (cons "isOther"          (lambda (self) (basic-attrs-value self "isOther")))
-        (cons "size"             (lambda (self) (basic-attrs-value self "size")))
-        (cons "lastModifiedTime" (lambda (self) (basic-attrs-value self "lastModifiedTime")))
-        (cons "lastAccessTime"   (lambda (self) (basic-attrs-value self "lastAccessTime")))
-        (cons "creationTime"     (lambda (self) (basic-attrs-value self "creationTime")))
-        (cons "fileKey"          (lambda (self) (basic-attrs-value self "fileKey")))))
-
 (define (nio-call-visitor visitor name . args)
   (let ((m (reify-method-ref visitor name)))
     (if m (fvr-sym (apply jolt-invoke m visitor args)) 'continue)))
@@ -904,28 +888,56 @@
        (guard (e (#t #f))
          (exists (lambda (x) (and (jhost? x) (string=? (jhost-tag x) "fvo")))
                  (seq->list (jolt-seq opts))))))
-(define (nio-walk-file-tree start opts max-depth visitor)
-  (let ((md (if (number? max-depth) (exact (truncate max-depth)) 2147483647))
-        (follow? (nio-opts-follow? opts)))
+;; The attributes the walk visits PATH-OBJ with, as FileTreeWalker.getAttributes
+;; reads them: one snapshot, through links when following and of the link itself
+;; when that fails (a link whose target is gone is still visited), or the
+;; IOException it raised, which the visitor gets in visitFileFailed -- an entry
+;; deleted between its listing and its visit is NoSuchFileException there.
+(define (nio-walk-attrs fp shown follow?)
+  (define (read follow?)
+    (guard (e ((and (jolt-throw-condition? e)
+                    (let ((v (jolt-throw-condition-value e)))
+                      (and (ex-info-map? v) (jch-isa? (ex-info-class v) "java.io.IOException"))))
+               (jolt-throw-condition-value e)))
+      (make-basic-attrs (nio-snapshot fp follow? shown #t))))
+  (let ((a (read follow?)))
+    (if (and follow? (not (jhost? a)))
+        (let ((b (read #f))) (if (jhost? b) b a))
+        a)))
+;; walkFileTree(start, visitor) | walkFileTree(start, options, maxDepth, visitor)
+(define (nio-walk-file-tree start . args)
+  (let* ((visitor (list-ref args (- (length args) 1)))
+         (max-depth (if (= (length args) 3) (cadr args) 2147483647))
+         (md (if (number? max-depth) (exact (truncate max-depth)) 2147483647))
+         (follow? (and (= (length args) 3) (nio-opts-follow? (car args)))))
     (call/cc
      (lambda (stop)
        (define (walk path-obj depth ancestors)
-         (let ((fp (nfp path-obj)))
-           ;; a symlink is a leaf unless following (never descend its target); a
-           ;; directory at max depth is visited as a file, like java.nio.file
-           (if (and (file-directory? fp) (< depth md) (or follow? (not (nio-is-symlink? fp))))
-               (let ((ino (and follow? (nio-stat-ino fp))))
+         (let* ((fp (nfp path-obj))
+                (attrs (nio-walk-attrs fp (nio-shown path-obj) follow?)))
+           ;; a symlink is a leaf unless following (never descend its target): not
+           ;; following, the snapshot is the link's own and is no directory. A
+           ;; directory at max depth is visited as a file, like java.nio.file.
+           (cond
+             ((not (jhost? attrs))
+              (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj attrs)))
+                (if (eq? r 'terminate) (stop #t) r)))
+             ((and (< depth md) (nio-snap-ref (jhost-state attrs) "isDirectory"))
+               (let ((key (and follow? (let ((k (nio-snap-ref (jhost-state attrs) "fileKey")))
+                                         (and (jhost? k) (jhost-state k))))))
                  ;; following a link back into an ancestor is a cycle -> visitFileFailed
-                 (if (and ino (member ino ancestors))
-                     (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj jolt-nil)))
+                 (if (and key (member key ancestors))
+                     (let ((r (nio-call-visitor visitor "visitFileFailed" path-obj
+                                                (nio-fs-exception "java.nio.file.FileSystemLoopException"
+                                                                  (nio-shown path-obj)))))
                        (if (eq? r 'terminate) (stop #t) r))
-                     (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj (make-basic-attrs fp follow?))))
+                     (let ((r (nio-call-visitor visitor "preVisitDirectory" path-obj attrs)))
                        (cond
                          ((eq? r 'terminate) (stop #t))
                          ((eq? r 'skip-subtree) 'continue)
                          ((eq? r 'skip-siblings) 'skip-siblings)
                          (else
-                          (let ((anc (if ino (cons ino ancestors) ancestors)))
+                          (let ((anc (if key (cons key ancestors) ancestors)))
                             (when (< depth md)
                               (let loop ((names (sort string<? (directory-list fp))))
                                 (unless (null? names)
@@ -933,9 +945,10 @@
                                                   (+ depth 1) anc)))
                                     (unless (eq? cr 'skip-siblings) (loop (cdr names))))))))
                           (let ((pr (nio-call-visitor visitor "postVisitDirectory" path-obj jolt-nil)))
-                            (if (eq? pr 'terminate) (stop #t) 'continue)))))))
-               (let ((r (nio-call-visitor visitor "visitFile" path-obj (make-basic-attrs fp follow?))))
-                 (if (eq? r 'terminate) (stop #t) r)))))
+                            (if (eq? pr 'terminate) (stop #t) 'continue))))))))
+             (else
+              (let ((r (nio-call-visitor visitor "visitFile" path-obj attrs)))
+                (if (eq? r 'terminate) (stop #t) r))))))
        (walk (->path start) 0 '())))
     (->path start)))
 
@@ -1126,38 +1139,11 @@
   (register-class-statics! "FileTime" ft-statics)
   (register-class-statics! "java.nio.file.attribute.FileTime" ft-statics))
 
-;; Files/getAttribute / setAttribute / readAttributes over the "basic:" view.
+;; Files/getAttribute / setAttribute / readAttributes.
 (define (nio-attr-name a)                      ; strip a "view:" prefix
   (let ((i (let loop ((j 0)) (cond ((>= j (string-length a)) #f)
                                    ((char=? (string-ref a j) #\:) j) (else (loop (+ j 1)))))))
     (if i (substring a (+ i 1) (string-length a)) a)))
-;; The basic attribute NM of FP, read through a symbolic link (FOLLOW?) or of
-;; the link itself. A link read as itself is a link: not a directory, not a
-;; regular file, sized by its target string, with its own times and file key.
-(define (nio-attr-value fp nm follow?)
-  (let ((link? (and (not follow?) (nio-is-symlink? fp))))
-    (cond
-      ((member nm '("lastModifiedTime" "lastAccessTime" "creationTime"))
-       (nio-time-attr fp nm (not link?)))
-      ((string=? nm "size")
-       (if link?
-           (bytevector-length (string->utf8 (or (nio-readlink fp) "")))
-           (nio-size fp)))
-      ((string=? nm "isDirectory")      (and (not link?) (file-directory? fp) #t))
-      ((string=? nm "isRegularFile")    (and (not link?) (file-regular? fp) #t))
-      ((string=? nm "isSymbolicLink")   link?)
-      ((string=? nm "isOther")          (and (not link?) (file-exists? fp)
-                                             (not (file-directory? fp)) (not (file-regular? fp)) #t))
-      ((string=? nm "fileKey")          (nio-file-key fp (not link?)))
-      (else jolt-nil))))
-;; readAttributes/getAttribute on a path that is not there raise, as the JDK's
-;; do; a dangling link is there when read as itself.
-(define (nio-attrs-require-exists! fp follow? shown)
-  (unless (or (file-exists? fp) (and (not follow?) (nio-is-symlink? fp)))
-    (nio-no-such-file shown)))
-(define nio-basic-attr-names
-  '("lastModifiedTime" "lastAccessTime" "creationTime" "size"
-    "isDirectory" "isRegularFile" "isSymbolicLink" "isOther" "fileKey"))
 (define (nio-split-commas s)
   (let loop ((i 0) (start 0) (acc '()))
     (cond ((= i (string-length s))
@@ -1168,19 +1154,37 @@
 (define (nio-str-suffix? s suf)
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
-;; LinkOption/NOFOLLOW_LINKS among OPTS describes a symbolic link as itself, in
-;; both forms, as getAttribute already did.
+;; readAttributes(path, Class | "view:names", LinkOption...). Both forms take
+;; one snapshot (nio-snapshot, below); NOFOLLOW_LINKS describes a symbolic link
+;; as itself. The Class form IS the snapshot, so its getters answer what was
+;; there at this call; the String form is a map of the names the spec asks for.
 (define (nio-read-attributes path what . opts)
-  (let* ((w (npath-string-of what))
-         (fp (nfp path))
-         (follow? (not (nio-opts-nofollow? opts))))
-    (nio-attrs-require-exists! fp follow? (nio-shown path))
-    (if (nio-str-suffix? w "Attributes")   ; the Class form -> a BasicFileAttributes value
-        (make-basic-attrs fp follow?)
-        ;; the string form ("view:a,b" / "*" / "a") -> a map of just those attributes
-        (let* ((attr-part (nio-attr-name w))
-               (names (if (string=? attr-part "*") nio-basic-attr-names (nio-split-commas attr-part))))
-          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-attr-value fp nm follow?))) empty-pmap names)))))
+  (let ((w (if (jclass? what) (jclass-name what) (npath-string-of what)))
+        (fp (nfp path))
+        (follow? (not (nio-opts-nofollow? opts))))
+    (if (nio-str-suffix? w "Attributes")
+        (cond ((nio-str-suffix? w "PosixFileAttributes")
+               (nio-posix-view!)
+               (make-jhost "posix-attrs" (nio-snapshot fp follow? (nio-shown path) #t)))
+              ((nio-str-suffix? w "BasicFileAttributes")
+               (make-basic-attrs (nio-snapshot fp follow? (nio-shown path) #t)))
+              ;; DosFileAttributes and the like: no such view on this host
+              (else (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException" jolt-nil))))
+        (let* ((snap #f)
+               (take! (lambda () (unless snap (set! snap (nio-snapshot fp follow? (nio-shown path) #f)))))
+               (names (nio-attr-spec-names w take!)))
+          (unless snap (set! snap (nio-snapshot fp follow? (nio-shown path) (and (member "creationTime" names) #t))))
+          (fold-left (lambda (m nm) (jolt-assoc m nm (nio-snap-ref snap nm))) empty-pmap names)))))
+;; getAttribute(path, "view:name", LinkOption...): Files.getAttribute refuses a
+;; spec naming more than one attribute, then reads that one from a snapshot.
+(define (nio-get-attribute path attr . opts)
+  (let ((spec (npath-string-of attr)))
+    (when (or (memv #\* (string->list spec)) (memv #\, (string->list spec)))
+      (throw-jvm 'IllegalArgumentException spec))
+    (let* ((take (lambda (btime?) (nio-snapshot (nfp path) (not (nio-opts-nofollow? opts)) (nio-shown path) btime?)))
+           (snap #f)
+           (names (nio-attr-spec-names spec (lambda () (set! snap (take #f))))))
+      (nio-snap-ref (or snap (take (and (member "creationTime" names) #t))) (car names)))))
 
 ;; PosixFilePermissions <-> "rwxr-xr-x" strings, and chmod-based set.
 (define posix-order '("OWNER_READ" "OWNER_WRITE" "OWNER_EXECUTE"
@@ -1465,10 +1469,40 @@
 ;; that comes from statx(2), which is what the JDK asks too. offsetof-measured:
 ;; darwin with cc for arm64 and x86_64, Linux with gcc 13 under podman for amd64
 ;; and arm64.
+;;
+;; The attribute snapshots (below) read the rest of the struct from the same
+;; buffer, so the row goes on with
+;;   st_size-offset st_gid-offset st_ctim-offset st_nlink-offset st_nlink-width
+;;   st_rdev-offset st_rdev-width
+;; offsetof-measured the same way (cc on darwin arm64 and x86_64, gcc 12 in
+;; debian:bookworm under podman for linux amd64 and arm64):
+;;   darwin        size@96 gid@20 ctime@64  nlink@6/2  rdev@24/4
+;;   linux-x86-64  size@48 gid@32 ctime@104 nlink@16/8 rdev@40/8
+;;   linux-arm64   size@48 gid@28 ctime@104 nlink@20/4 rdev@32/8
 (define nio-stat-layouts
-  (list (vector 'darwin        4 2 16 32 48 80 4)
-        (vector 'linux-x86-64 24 4 28 72 88 #f 8)
-        (vector 'linux-arm64  16 4 24 72 88 #f 8)))
+  (list (vector 'darwin        4 2 16 32 48 80 4 96 20  64  6 2 24 4)
+        (vector 'linux-x86-64 24 4 28 72 88 #f 8 48 32 104 16 8 40 8)
+        (vector 'linux-arm64  16 4 24 72 88 #f 8 48 28 104 20 4 32 8)))
+(define (nio-layout-size-off l) (vector-ref l 8))
+(define (nio-layout-gid-off l) (vector-ref l 9))
+(define (nio-layout-ctime-off l) (vector-ref l 10))
+;; an unsigned field WIDTH bytes wide at OFF
+(define (nio-buf-uint buf off width)
+  (case width
+    ((2) (bytevector-u16-ref buf off (native-endianness)))
+    ((4) (bytevector-u32-ref buf off (native-endianness)))
+    (else (bytevector-u64-ref buf off (native-endianness)))))
+(define (nio-layout-nlink-ref l buf) (nio-buf-uint buf (vector-ref l 11) (vector-ref l 12)))
+;; st_dev and st_rdev as the JDK's long: darwin's dev_t is a signed 32-bit int,
+;; Linux's an unsigned 64-bit one that Java reads back as signed.
+(define (nio-layout-rdev-ref l buf)
+  (if (= 4 (vector-ref l 14))
+      (bytevector-s32-ref buf (vector-ref l 13) (native-endianness))
+      (bytevector-s64-ref buf (vector-ref l 13) (native-endianness))))
+(define (nio-layout-dev-long l buf)
+  (if (= 4 (vector-ref l 7))
+      (bytevector-s32-ref buf 0 (native-endianness))
+      (bytevector-s64-ref buf 0 (native-endianness))))
 (define (nio-layout-name l) (vector-ref l 0))
 (define (nio-layout-atime-off l) (vector-ref l 4))
 (define (nio-layout-mtime-off l) (vector-ref l 5))
@@ -1582,7 +1616,13 @@
               (else (loop (cdr os) (cdr bs) acc)))))))
 (let ((files-stat
        (list (cons "getPosixFilePermissions"
-                   (lambda (p . _) (nio-posix-view!) (nio-mode->perm-set (or (nio-stat-mode (nfp p)) #o755)))))))
+                   ;; the mode from one snapshot, honoring NOFOLLOW_LINKS; a path
+                   ;; that is not there is the stat's exception, never a default
+                   (lambda (p . opts)
+                     (nio-posix-view!)
+                     (nio-stat-layout-guard! "getPosixFilePermissions")
+                     (nio-snap-ref (nio-snapshot (nfp p) (not (nio-opts-nofollow? opts)) (nio-shown p) #f)
+                                   "permissions"))))))
   (set! files-accum-chunks (cons files-stat files-accum-chunks)))
 ;; instance? FileTime
 (register-instance-check-arm!
@@ -1853,14 +1893,6 @@
                (if off
                    (let ((buf (nio-stat-buf fp follow?))) (and buf (nio-stat-file-time buf off)))
                    (nio-statx-btime fp follow?)))))))
-;; The same, never #f: a host or filesystem with no birth time answers the mtime,
-;; which is the JDK's fallback too, and a host with no stat layout the
-;; millisecond mtime Chez reads.
-(define (nio-time-attr fp nm follow?)
-  (or (nio-read-time fp nm follow?)
-      (and (not (string=? nm "lastModifiedTime")) (nio-read-time fp "lastModifiedTime" follow?))
-      (make-file-time (file-mtime-millis fp))))
-
 ;; Setting them. utimensat(2) with UTIME_OMIT in the mtime slot moves the access
 ;; time alone; its constants are per-OS (measured with cc/gcc as above). The
 ;; creation time is settable on macOS through setattrlist(ATTR_CMN_CRTIME) and on
@@ -1887,14 +1919,9 @@
 (let ((files-nofollow-time
        (list
         (cons "getLastModifiedTime" (lambda (p . opts)
-                                      (let ((fp (nfp p)) (follow? (not (nio-opts-nofollow? opts))))
-                                        (nio-attrs-require-exists! fp follow? (nio-shown p))
-                                        (nio-attr-value fp "lastModifiedTime" follow?))))
-        (cons "getAttribute" (lambda (path attr . opts)
-                               (let ((fp (nfp path)) (nm (nio-attr-name (npath-string-of attr)))
-                                     (follow? (not (nio-opts-nofollow? opts))))
-                                 (nio-attrs-require-exists! fp follow? (nio-shown path))
-                                 (nio-attr-value fp nm follow?)))))))
+                                      (nio-snap-ref (nio-snapshot (nfp p) (not (nio-opts-nofollow? opts)) (nio-shown p) #f)
+                                                    "lastModifiedTime")))
+        (cons "getAttribute" nio-get-attribute))))
   (set! files-accum-chunks (cons files-nofollow-time files-accum-chunks)))
 
 ;; java.nio.channels.FileChannel/open. babashka.fs/touch opens one to create a
@@ -2504,13 +2531,13 @@
 ;; Windows answers null, as its provider does. It answered nil everywhere.
 ;; toString and hashCode are UnixFileKey's: dev in unsigned hex, ino as a signed
 ;; long, and each folded to an int and summed.
+(define (nio-buf-file-key lay buf)
+  (make-jhost "file-key"
+              (cons (bitwise-and (nio-layout-dev-ref lay buf) #xFFFFFFFFFFFFFFFF)
+                    (bytevector-u64-ref buf 8 (native-endianness)))))
 (define (nio-file-key fp follow?)
   (let ((buf (and (not (nio-windows?)) (nio-stat-buf fp follow?))))
-    (if buf
-        (make-jhost "file-key"
-                    (cons (bitwise-and (nio-layout-dev-ref (nio-stat-layout) buf) #xFFFFFFFFFFFFFFFF)
-                          (bytevector-u64-ref buf 8 (native-endianness))))
-        jolt-nil)))
+    (if buf (nio-buf-file-key (nio-stat-layout) buf) jolt-nil)))
 (define-jhost-tag-pred (file-key? t) (string=? t "file-key"))
 (define (nio-s64 u) (if (>= u #x8000000000000000) (- u #x10000000000000000) u))
 (define (nio-file-key-string k)
@@ -2588,8 +2615,9 @@
                                  (when (and mode c-chmod) (c-chmod d (bitwise-and mode #o777))))
                                ;; COPY_ATTRIBUTES carries both times, at full resolution
                                (when (nio-opts-have? opts copt-sym 'copy-attributes)
-                                 (set-file-times-ns! d (file-time-ns (nio-time-attr s "lastAccessTime" #t))
-                                                     (file-time-ns (nio-time-attr s "lastModifiedTime" #t)) #t))))
+                                 (let ((snap (nio-snapshot s #t (nio-shown src) #f)))
+                                   (set-file-times-ns! d (file-time-ns (nio-snap-ref snap "lastAccessTime"))
+                                                       (file-time-ns (nio-snap-ref snap "lastModifiedTime")) #t)))))
                             (->path dst))))))))) ))
   (set! files-accum-chunks (cons files-final files-accum-chunks)))
 
@@ -2601,30 +2629,248 @@
     (let ((b (sa-foreign-ref 'unsigned-8 addr i)))
       (if (= b 0) (list->string (map integer->char (reverse acc)))
           (loop (+ i 1) (cons b acc))))))
-(define (nio-stat-uid fp)
-  (and c-stat (begin
-                (nio-stat-layout-guard! "getOwner")
-                (let ((lay (nio-stat-layout)) (buf (make-bytevector 256 0)))
-                  (and (= 0 (c-stat fp buf)) (nio-layout-uid-ref lay buf))))))
+;; uid/gid -> name through getpwuid(3)/getgrgid(3); pw_name and gr_name are
+;; each struct's first member. A number with no entry is named by the number,
+;; as the JDK's UnixUserPrincipals.fromUid/fromGid name it.
+(define c-getgrgid (jolt-foreign-proc-safe "getgrgid" '(unsigned-int) 'iptr))
 (define (nio-uid->name uid)
   (and c-getpwuid (let ((pw (c-getpwuid uid))) (and (not (= 0 pw)) (nio-cstr-at (sa-foreign-ref 'iptr pw 0))))))
-;; user-principal values compare and hash by name; getOwner honors NOFOLLOW.
+(define (nio-gid->name gid)
+  (and c-getgrgid (let ((gr (c-getgrgid gid))) (and (not (= 0 gr)) (nio-cstr-at (sa-foreign-ref 'iptr gr 0))))))
+(define (nio-uid-principal uid) (make-jhost "user-principal" (or (nio-uid->name uid) (number->string uid))))
+(define (nio-gid-principal gid) (make-jhost "group-principal" (or (nio-gid->name gid) (number->string gid))))
+;; user-principal values compare and hash by name, and so do group-principal
+;; values; a user is never equal to a group, as in the JDK.
 (define-jhost-tag-pred (nio-userprin? t) (string=? t "user-principal"))
+(define-jhost-tag-pred (nio-groupprin? t) (string=? t "group-principal"))
 (register-eq-arm! (lambda (a b) (and (nio-userprin? a) (nio-userprin? b)))
                   (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
 (register-hash-arm! nio-userprin? (lambda (x) (string-hash (jhost-state x))))
-(define (nio-lstat-uid fp)
-  (and c-lstat (begin
-                 (nio-stat-layout-guard! "getOwner")
-                 (let ((lay (nio-stat-layout)) (buf (make-bytevector 256 0)))
-                   (and (= 0 (c-lstat fp buf)) (nio-layout-uid-ref lay buf))))))
+(register-eq-arm! (lambda (a b) (and (nio-groupprin? a) (nio-groupprin? b)))
+                  (lambda (a b) (string=? (jhost-state a) (jhost-state b))))
+(register-hash-arm! nio-groupprin? (lambda (x) (string-hash (jhost-state x))))
+(register-host-methods! "group-principal"
+  (list (cons "getName" (lambda (self) (jhost-state self)))
+        (cons "toString" (lambda (self) (jhost-state self)))))
+(register-str-render! nio-groupprin? (lambda (x) (jhost-state x)))
+
+;; ---- attribute snapshots (jolt-lang/jolt#1804) ---------------------------------
+;; readAttributes in both forms, getAttribute, getLastModifiedTime, size,
+;; getPosixFilePermissions, getOwner and walkFileTree's attributes all answer from
+;; ONE stat(2) (lstat(2) under NOFOLLOW_LINKS) taken when they are called, which
+;; is what the JDK's UnixFileAttributes.get does. That stat is also the existence
+;; check. Checking first and reading after left a window in which a file deleted
+;; between the two answered epoch 0 for its times, rwxr-xr-x for its
+;; permissions and $USER for its owner. Now the failed stat is the errno's
+;; exception (NoSuchFileException for ENOENT) naming the path as the caller wrote
+;; it.
+;;
+;; A BasicFileAttributes or PosixFileAttributes value IS the snapshot: its getters
+;; decode the buffer that stat filled, so they never throw and they answer the
+;; values as they were when readAttributes ran, a getter called after a delete
+;; included.
+;;
+;; A snapshot is #(buf link? btime live):
+;;   buf    the struct stat bytes, or on Windows GetFileAttributesExW's
+;;          WIN32_FILE_ATTRIBUTE_DATA; #f for a live snapshot
+;;   link?  the entry described is a symbolic link read as itself
+;;   btime  Linux's birth time, from statx(2) because struct stat has none; #f
+;;          when not asked for or the filesystem keeps none (creationTime is then
+;;          the mtime, the JDK's fallback too)
+;;   live   for a host with no verified stat layout, and a Windows reparse point
+;;          read through, the basic attributes read one by one at snapshot time,
+;;          as an alist; #f otherwise
+(define nio-S-IFMT  #o170000)
+(define nio-S-IFDIR #o040000)
+(define nio-S-IFREG #o100000)
+(define nio-S-IFLNK #o120000)
+(define nio-basic-attr-names
+  '("lastModifiedTime" "lastAccessTime" "creationTime" "size"
+    "isDirectory" "isRegularFile" "isSymbolicLink" "isOther" "fileKey"))
+(define nio-posix-attr-names (append nio-basic-attr-names '("permissions" "owner" "group")))
+(define nio-unix-attr-names
+  (append nio-posix-attr-names '("mode" "ino" "dev" "rdev" "nlink" "uid" "gid" "ctime")))
+
+;; The snapshot of FP, through a link (FOLLOW?) or of the link itself. BTIME?
+;; asks for Linux's birth time too, a second call (statx), so only a caller that
+;; may read creationTime pays for it.
+(define (nio-snapshot fp follow? shown btime?)
+  (let ((lay (and (not (nio-windows?)) (nio-stat-layout)))
+        (stat (if follow? c-stat c-lstat)))
+    (cond
+      ((and lay stat)
+       (let ((buf (make-bytevector 256 0)))
+         (let-values (((r err) (io-call+errno (stat fp buf))))
+           (unless (= r 0)
+             (if (> err 0) (nio-errno-throw shown #f err) (nio-no-such-file shown)))
+           (vector buf
+                   (= nio-S-IFLNK (bitwise-and (nio-layout-mode-ref lay buf) nio-S-IFMT))
+                   (and btime? (not (nio-layout-birth-off lay)) (nio-statx-btime fp follow?))
+                   #f))))
+      ((nio-windows?)
+       (let ((data (win32-file-attribute-data fp)))
+         (cond ((and data (not (win32-times-need-handle?
+                                (bytevector-u32-ref data 0 (endianness little)) follow?)))
+                (vector data #f #f #f))
+               ((or data (file-exists? fp)) (nio-live-snapshot fp follow? shown))
+               (else (nio-no-such-file shown)))))
+      (else (nio-live-snapshot fp follow? shown)))))
+
+;; The attributes read one at a time, for a host with no struct stat layout to
+;; decode. Read eagerly, so the getters still answer what was there at the read;
+;; a time whose read fails on a path that has gone since is NoSuchFileException,
+;; not the millisecond mtime Chez answers 0 for.
+(define (nio-live-snapshot fp follow? shown)
+  (let ((link? (and (not follow?) (nio-is-symlink? fp))))
+    (unless (or link? (file-exists? fp)) (nio-no-such-file shown))
+    (vector #f link? #f
+            (map (lambda (nm) (cons nm (nio-live-attr fp nm link? shown))) nio-basic-attr-names))))
+(define (nio-live-attr fp nm link? shown)
+  (cond
+    ((member nm '("lastModifiedTime" "lastAccessTime" "creationTime"))
+     (or (nio-read-time fp nm (not link?))
+         (and (not (string=? nm "lastModifiedTime")) (nio-read-time fp "lastModifiedTime" (not link?)))
+         (if (or link? (file-exists? fp))
+             (make-file-time (file-mtime-millis fp))
+             (nio-no-such-file shown))))
+    ((string=? nm "size")
+     (if link? (bytevector-length (string->utf8 (or (nio-readlink fp) ""))) (nio-size fp shown)))
+    ((string=? nm "isDirectory")    (and (not link?) (file-directory? fp) #t))
+    ((string=? nm "isRegularFile")  (and (not link?) (file-regular? fp) #t))
+    ((string=? nm "isSymbolicLink") link?)
+    ((string=? nm "isOther")        (and (not link?) (file-exists? fp)
+                                         (not (file-directory? fp)) (not (file-regular? fp)) #t))
+    ((string=? nm "fileKey")        (nio-file-key fp (not link?)))
+    (else jolt-nil)))
+
+;; What getOwner answered on a host with no stat layout before snapshots.
+(define (nio-owner-without-layout)
+  (when c-stat (nio-stat-layout-guard! "getOwner"))
+  (make-jhost "user-principal" (or (getenv "USER") "")))
+
+;; Attribute NM of snapshot S, for a name its view has already accepted.
+(define (nio-snap-ref s nm)
+  (let ((buf (vector-ref s 0)) (live (vector-ref s 3)))
+    (cond
+      (live
+       (cond ((assoc nm live) => cdr)
+             ((string=? nm "owner") (nio-owner-without-layout))
+             ;; posix/unix attributes have nothing to be read from here: the
+             ;; host has no verified layout, or no stat(2) entry to call (glibc
+             ;; before 2.33 exports none)
+             (else (jolt-throw (jolt-host-throwable "java.lang.UnsupportedOperationException"
+                                 (string-append "'" nm "' is not supported on this host: no struct stat for "
+                                                (sa-host-tag)))))))
+      ((nio-windows?) (nio-win32-data-ref buf nm))
+      (else (nio-stat-buf-ref (nio-stat-layout) buf (vector-ref s 2) nm)))))
+
+(define (nio-stat-buf-ref lay buf btime nm)
+  (define (u32 off) (bytevector-u32-ref buf off (native-endianness)))
+  (let* ((mode (nio-layout-mode-ref lay buf)) (ifmt (bitwise-and mode nio-S-IFMT)))
+    (cond
+      ((string=? nm "lastModifiedTime") (nio-stat-file-time buf (nio-layout-mtime-off lay)))
+      ((string=? nm "lastAccessTime")   (nio-stat-file-time buf (nio-layout-atime-off lay)))
+      ((string=? nm "creationTime")
+       (cond ((nio-layout-birth-off lay) => (lambda (off) (nio-stat-file-time buf off)))
+             (btime btime)
+             (else (nio-stat-file-time buf (nio-layout-mtime-off lay)))))
+      ((string=? nm "size")           (bytevector-s64-ref buf (nio-layout-size-off lay) (native-endianness)))
+      ((string=? nm "isDirectory")    (= ifmt nio-S-IFDIR))
+      ((string=? nm "isRegularFile")  (= ifmt nio-S-IFREG))
+      ((string=? nm "isSymbolicLink") (= ifmt nio-S-IFLNK))
+      ((string=? nm "isOther")        (not (memv ifmt (list nio-S-IFDIR nio-S-IFREG nio-S-IFLNK))))
+      ((string=? nm "fileKey")        (nio-buf-file-key lay buf))
+      ((string=? nm "permissions")    (nio-mode->perm-set mode))
+      ((string=? nm "owner")          (nio-uid-principal (nio-layout-uid-ref lay buf)))
+      ((string=? nm "group")          (nio-gid-principal (u32 (nio-layout-gid-off lay))))
+      ((string=? nm "mode")           mode)
+      ((string=? nm "ino")            (bytevector-s64-ref buf 8 (native-endianness)))
+      ((string=? nm "dev")            (nio-layout-dev-long lay buf))
+      ((string=? nm "rdev")           (nio-layout-rdev-ref lay buf))
+      ((string=? nm "nlink")          (nio-layout-nlink-ref lay buf))
+      ((string=? nm "uid")            (nio-layout-uid-ref lay buf))
+      ((string=? nm "gid")            (u32 (nio-layout-gid-off lay)))
+      ((string=? nm "ctime")          (nio-stat-file-time buf (nio-layout-ctime-off lay)))
+      (else jolt-nil))))
+
+;; WIN32_FILE_ATTRIBUTE_DATA: dwFileAttributes@0, the creation, access and write
+;; FILETIMEs @4 @12 @20, nFileSizeHigh@28, nFileSizeLow@32 -- what the JDK's
+;; WindowsFileAttributes reads. No symbolic link reaches here (a reparse point
+;; read through takes a live snapshot), and Windows has no file key.
+(define (nio-win32-data-ref data nm)
+  (define (u32 off) (bytevector-u32-ref data off (endianness little)))
+  (let ((dir? (not (= 0 (bitwise-and (u32 0) #x10)))))   ; FILE_ATTRIBUTE_DIRECTORY
+    (cond
+      ((string=? nm "creationTime")     (make-file-time-ns (win32-filetime-at data 4)))
+      ((string=? nm "lastAccessTime")   (make-file-time-ns (win32-filetime-at data 12)))
+      ((string=? nm "lastModifiedTime") (make-file-time-ns (win32-filetime-at data 20)))
+      ((string=? nm "size")             (+ (* (u32 28) #x100000000) (u32 32)))
+      ((string=? nm "isDirectory")      dir?)
+      ((string=? nm "isRegularFile")    (not dir?))
+      ((string=? nm "owner")            (nio-owner-without-layout))
+      ((member nm '("isSymbolicLink" "isOther")) #f)
+      (else jolt-nil))))
+
+;; ---- the views: which attribute names a "view:names" spec may ask for ----------
+;; AbstractFileSystemProvider.readAttributes: the view is what precedes the
+;; first ':' ("basic" without one), the names are split on ',' as String.split
+;; does (trailing empties dropped), and "*" is every name of the view. An empty
+;; view is IllegalArgumentException naming the spec, a view the host has not
+;; UnsupportedOperationException, and a name the view has not
+;; IllegalArgumentException -- with the view prefixed only by the owner view,
+;; whose implementation words it that way. All of that is settled before the
+;; stat, so a bad spec on a missing path is the spec's error.
+(define (nio-view-attr-names spec view)
+  (cond ((string=? view "") (throw-jvm 'IllegalArgumentException spec))
+        ((string=? view "basic") nio-basic-attr-names)
+        ((string=? view "owner") '("owner"))
+        ((and (string=? view "posix") (not (nio-windows?))) nio-posix-attr-names)
+        ((and (string=? view "unix") (not (nio-windows?))) nio-unix-attr-names)
+        (else (throw-jvm 'UnsupportedOperationException (string-append "View '" view "' not available")))))
+(define (nio-java-split-commas s)
+  (let loop ((i 0) (start 0) (acc '()))
+    (cond ((= i (string-length s))
+           (if (null? acc)
+               (list s)                       ; no comma: String.split answers the input
+               (let drop ((xs (cons (substring s start i) acc)))
+                 (if (and (pair? xs) (string=? (car xs) "")) (drop (cdr xs)) (reverse xs)))))
+          ((char=? (string-ref s i) #\,) (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
+          (else (loop (+ i 1) start acc)))))
+;; SPEC -> the attribute names it asks for, validated against its view. The
+;; owner view reads the owner as it accepts its first name and only then meets
+;; a bad one (FileOwnerAttributeViewImpl), so for it TAKE! -- the caller's
+;; snapshot -- runs at that point: "owner:owner,size" on a missing path is
+;; NoSuchFileException, on a present one IllegalArgumentException.
+(define (nio-attr-spec-names spec take!)
+  (let* ((colon (let loop ((j 0)) (cond ((>= j (string-length spec)) #f)
+                                        ((char=? (string-ref spec j) #\:) j) (else (loop (+ j 1))))))
+         (view (if colon (substring spec 0 colon) "basic"))
+         (names-part (if colon (substring spec (+ colon 1) (string-length spec)) spec))
+         (allowed (nio-view-attr-names spec view)))
+    (let loop ((ns (nio-java-split-commas names-part)) (acc '()))
+      (cond ((null? ns) (reverse acc))
+            ((or (string=? (car ns) "*") (member (car ns) allowed))
+             (when (and (string=? view "owner") (null? acc)) (take!))
+             (loop (cdr ns) (if (string=? (car ns) "*") (append (reverse allowed) acc) (cons (car ns) acc))))
+            (else (throw-jvm 'IllegalArgumentException
+                             (string-append "'" (if (string=? view "owner") "owner:" "") (car ns)
+                                            "' not recognized")))))))
+
+;; readAttributes(path, Class) -> the snapshot as a BasicFileAttributes or
+;; PosixFileAttributes value, the methods of each answering from it.
+(define (nio-attrs-getter nm) (lambda (self) (nio-snap-ref (jhost-state self) nm)))
+(define nio-basic-attr-methods
+  (map (lambda (nm) (cons nm (nio-attrs-getter nm))) nio-basic-attr-names))
+(register-host-methods! "basic-attrs" nio-basic-attr-methods)
+(register-host-methods! "posix-attrs"
+  (append nio-basic-attr-methods
+          (map (lambda (nm) (cons nm (nio-attrs-getter nm))) '("permissions" "owner" "group"))))
+(define (make-basic-attrs snap) (make-jhost "basic-attrs" snap))
+
 (let ((files-owner2
        (list (cons "getOwner" (lambda (p . opts)
-                                (let* ((fp (nfp p))
-                                       (uid (if (and (nio-opts-nofollow? opts) (nio-is-symlink? fp))
-                                                (nio-lstat-uid fp) (nio-stat-uid fp))))
-                                  (make-jhost "user-principal"
-                                              (or (and uid (nio-uid->name uid)) (getenv "USER") ""))))))))
+                                (nio-snap-ref (nio-snapshot (nfp p) (not (nio-opts-nofollow? opts)) (nio-shown p) #f)
+                                              "owner"))))))
   (set! files-accum-chunks (cons files-owner2 files-accum-chunks)))
 
 ;; ---- the host filesystem's channels, stores and owners ------------------------
@@ -2864,7 +3110,12 @@
    (cons "name" (lambda (self) (vector-ref (jhost-state self) 0)))
    (cons "readAttributes"
          (lambda (self)
-           (nio-view-call self "readAttributes" (jolt-class-for "java.nio.file.attribute.BasicFileAttributes"))))
+           ;; a PosixFileAttributeView reads PosixFileAttributes, every other view
+           ;; the basic ones
+           (nio-view-call self "readAttributes"
+                          (jolt-class-for (if (string=? (vector-ref (jhost-state self) 0) "posix")
+                                              "java.nio.file.attribute.PosixFileAttributes"
+                                              "java.nio.file.attribute.BasicFileAttributes")))))
    (cons "setTimes"
          (lambda (self modified access created)
            (nio-view-writable! self "setTimes")
@@ -3064,12 +3315,23 @@
                                  (values (jnum->exact (car args)) (cdr args))
                                  (values 2147483647 args))))
     (make-stream 'ref (nio-walk-seq p depth opts))))
+;; Each entry's attributes are read as the walk reads them: of a link itself
+;; unless following, and of the link itself when following finds no target.
 (define (nio-files-find p depth predicate . opts)
-  (let ((attrs-class (jolt-class-for "java.nio.file.attribute.BasicFileAttributes")))
+  (let ((attrs-class (jolt-class-for "java.nio.file.attribute.BasicFileAttributes"))
+        (follow? (nio-opts-follow? (list->cseq (npath-spread-args opts)))))
     (make-stream 'ref
       (st-filter (lambda (path)
                    (let ((attrs (nio-unchecked-io
-                                 (lambda () (nio-files-call "readAttributes" path attrs-class)))))
+                                 (lambda ()
+                                   (if follow?
+                                       (guard (e ((and (jolt-throw-condition? e)
+                                                       (let ((v (jolt-throw-condition-value e)))
+                                                         (and (ex-info-map? v)
+                                                              (jch-isa? (ex-info-class v) "java.io.IOException"))))
+                                                  (nio-files-call "readAttributes" path attrs-class fvo-nofollow)))
+                                         (nio-files-call "readAttributes" path attrs-class))
+                                       (nio-files-call "readAttributes" path attrs-class fvo-nofollow))))))
                      (jolt-truthy? (jolt-fi-call predicate "test" path attrs))))
                  (nio-walk-seq p (jnum->exact depth) opts)))))
 
