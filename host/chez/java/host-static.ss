@@ -2530,20 +2530,45 @@
       (else
        (let ((cell (or (var-cell-lookup (chez-current-ns) class)
                        (var-cell-lookup "clojure.core" class))))
-         (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
-             (apply (var-cell-root cell) args)
-             ;; a ctor for a class some provider CLAIMS, that never resolved,
-             ;; is that provider's absence — name it. So is one for a class jolt
-             ;; knows nothing about at all: an :import of com.nosuch.Thing
-             ;; succeeds here (a library may import a class it never touches),
-             ;; and "No matching ctor found for class Thing" then read as an
-             ;; arity mismatch on a class that exists (#1683). Only a class jolt
-             ;; does have — statics, or a place in the class graph — is a
-             ;; genuinely missing ctor.
-             (throw-jvm (quote IllegalArgumentException)
-               (if (or (lib-provider-for class) (not (host-class-known? class)))
-                   (unknown-class-message class)
-                   (string-append "No matching ctor found for class " class)))))))))
+         (cond
+           ((and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
+            (apply (var-cell-root cell) args))
+           ;; (clojure.core$inc.): a named fn's class, which print-dup writes
+           ;; for a fn as #=(clojure.core$inc. ). The JVM makes a fresh instance
+           ;; of the class; a fn here is its own only instance.
+           ((and (null? args) (fn-class-instance class)))
+           ;; a ctor for a class some provider CLAIMS, that never resolved,
+           ;; is that provider's absence — name it. So is one for a class jolt
+           ;; knows nothing about at all: an :import of com.nosuch.Thing
+           ;; succeeds here (a library may import a class it never touches),
+           ;; and "No matching ctor found for class Thing" then read as an
+           ;; arity mismatch on a class that exists (#1683). Only a class jolt
+           ;; does have — statics, or a place in the class graph — is a
+           ;; genuinely missing ctor.
+           (else
+            (throw-jvm (quote IllegalArgumentException)
+              (if (or (lib-provider-for class) (not (host-class-known? class)))
+                  (unknown-class-message class)
+                  (string-append "No matching ctor found for class " class))))))))))
+
+;; The fn a var holds whose class is CLASS (ns$name, munged), or #f. Only a
+;; top-level fn's class names a var: one with a further $ (ns$f$fn__12) is a
+;; literal inside another, and no var holds it.
+(define (fn-class-instance class)
+  (let* ((dollar (let loop ((i 0))
+                   (cond ((fx=? i (string-length class)) #f)
+                         ((char=? (string-ref class i) #\$) i)
+                         (else (loop (fx+ i 1))))))
+         (rest (and dollar (substring class (fx+ dollar 1) (string-length class)))))
+    (and rest
+         (not (memv #\$ (string->list rest)))
+         (let* ((ns (compiler-demunge (substring class 0 dollar)))
+                (cell (var-cell-lookup ns (compiler-demunge rest))))
+           (and cell (var-cell-defined? cell)
+                (let ((f (var-cell-root cell)))
+                  (and (procedure? f)
+                       (equal? (jolt-class-name f) class)
+                       f)))))))
 
 ;; (Name. arg …) at a call site that keeps the constructor it resolved (the
 ;; backend emits host-new-site/i on Chez): the box holds (epoch . ctor), stamped

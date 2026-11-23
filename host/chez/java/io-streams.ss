@@ -3317,8 +3317,29 @@
       (record-method-dispatch w "write" (jolt-list (substring s start (fx+ start count))))
       count)
     #f #f #f)))
-;; Print x to the Writer w with print (a procedure of port and value).
+;; *print-dup*, read by the print entries below and in the section further on
+(define pd-flag-cell (jolt-var "clojure.core" "*print-dup*"))
+(define (print-dup-on?) (jolt-truthy? (var-cell-deref pd-flag-cell)))
+;; Neither under *print-dup* nor inside a print that was: the plain print entries
+;; test this and nothing else. While nothing has ever bound the var and its root
+;; is false, no print can have set the thread's print-dup slot either, so the
+;; usual answer is two field reads.
+(define-syntax print-plain?
+  (syntax-rules ()
+    ((_) (if (or (var-cell-dyn-bound? pd-flag-cell)
+                 (jolt-truthy? (var-cell-root pd-flag-cell)))
+             (and (not (eq? (virtual-register jolt-vreg-print-dup) #t))
+                  (not (print-dup-on?)))
+             #t))))
+;; Print x to the Writer w with print (a procedure of port and value). Every
+;; built-in print-method writes through here, so this is where a print under
+;; *print-dup* starts sending elements to print-dup, and where one that binds it
+;; off again stops.
 (define (print-to-writer print w x)
+  (if (print-plain?)
+      (print-to-writer* print w x)
+      (with-print-dup-mode (print-dup-on?) (print-to-writer* print w x))))
+(define (print-to-writer* print w x)
   (let ((direct (writer-direct-port w)))
     (if direct
         (parameterize ((pr-sink (cons direct w))) (print direct x))
@@ -3363,12 +3384,56 @@
       (lambda () (set-virtual-register! jolt-vreg-print-readably #f))
       (jolt-masked-body (lambda () (pr-to! p x)))
       (jolt-masked-after lv (set-virtual-register! jolt-vreg-print-readably prev)))))
-(def-var! "clojure.core" "__pr-out"
-  (lambda (x) (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))) jolt-nil))
-(def-var! "clojure.core" "__print-out"
-  (lambda (x) (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))) jolt-nil))
+;; --- *print-dup* -------------------------------------------------------------
+;; With *print-dup* on, pr, print, pr-str and a collection's str hand each value to
+;; the print-dup multimethod (50-io.clj), as the JVM's pr-on does; its methods
+;; that defer to print-method reach the built-in printer, which sends the
+;; elements back (printing.ss pr-to! while the thread's print-dup slot is set).
+;; Reading the var is one flag test until something binds it.
+(define pd-mf-cell #f)
+(define (pr-dup-to! p x)
+  (unless pd-mf-cell (set! pd-mf-cell (jolt-var "clojure.core" "print-dup")))
+  (jolt-invoke (var-cell-deref pd-mf-cell) x (pr-sink-writer p)))
+(set-pr-dup-write! (lambda (x p) (pr-dup-to! p x)))
+(define (pr-dup-string x)
+  (let ((p (open-output-string)))
+    (with-print-dup-mode #t (pr-dup-to! p x))
+    (get-output-string p)))
+;; pr's write of one value under *print-dup*; print's is the same, strings and
+;; chars printing readably under print-dup either way
+(define (pr-dup-out x)
+  (with-print-dup-mode #t
+    (unless (stream-out pr-dup-to! x) (jolt-write (pr-dup-string x)))))
+
+(define (pr-out-entry x)
+  (cond ((print-plain?) (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))))
+        ((print-dup-on?) (pr-dup-out x))
+        (else (with-print-dup-mode #f
+                (unless (stream-out pr-to! x) (jolt-write (jolt-pr-str1 x))))))
+  jolt-nil)
+(define (print-out-entry x)
+  (cond ((print-plain?) (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))))
+        ((print-dup-on?) (pr-dup-out x))
+        (else (with-print-dup-mode #f
+                (unless (stream-out print-to! x) (jolt-write (jolt-print-one x))))))
+  jolt-nil)
+(define (pr-str1-entry x)
+  (cond ((print-plain?) (jolt-pr-str1 x))
+        ((print-dup-on?) (pr-dup-string x))
+        (else (with-print-dup-mode #f (jolt-pr-str1 x)))))
+(def-var! "clojure.core" "__pr-out" pr-out-entry)
+(def-var! "clojure.core" "__print-out" print-out-entry)
+(def-var! "clojure.core" "__pr-str1" pr-str1-entry)
+;; print-method's :default prints x itself; its elements follow *print-dup*
 (def-var! "clojure.core" "__pr-to"
-  (lambda (x w) (print-to-writer pr-to! w x) jolt-nil))
+  (lambda (x w) (print-to-writer pr-plain-to! w x) jolt-nil))
+;; A collection's toString is RT.printString, which prints through pr-on, so str
+;; of one under *print-dup* is its print-dup form (converters.ss jolt-str-one).
+(set-str-coll-render!
+  (lambda (v)
+    (cond ((print-plain?) (jolt-pr-readable v))
+          ((print-dup-on?) (pr-dup-string v))
+          (else (with-print-dup-mode #f (jolt-pr-readable v))))))
 
 ;; --- print-method: the built-in printers and the user-method hook ----------------
 ;; On the JVM print-method IS the printer: a multimethod on (type x) whose table

@@ -1224,6 +1224,18 @@
 (define (rdr-mark-ctor-form v) (jolt-with-mutex rdr-side-mu (hashtable-set! rdr-ctor-forms v #t)) v)
 (define (rdr-ctor-call? v)
   (and (cseq? v) (jolt-with-mutex rdr-side-mu (hashtable-ref rdr-ctor-forms v #f)) #t))
+;; A #= result is a value, not a form: inside a record literal it is quoted whole
+;; rather than walked as data, so a map built by #=(…/create {…}) holding a
+;; value that does not evaluate to itself (a Float) arrives as it was read.
+;; Only the collections rdr-datafy would walk are recorded.
+(define rdr-eval-results (make-weak-eq-hashtable))   ; under rdr-side-mu
+(define (rdr-mark-eval-result v)
+  (when (or (pmap? v) (pvec? v) (cseq? v))
+    (jolt-with-mutex rdr-side-mu (hashtable-set! rdr-eval-results v #t)))
+  v)
+(define (rdr-eval-result? v)
+  (and (or (pmap? v) (pvec? v) (cseq? v))
+       (jolt-with-mutex rdr-side-mu (hashtable-ref rdr-eval-results v #f))))
 
 ;; Is v a tagged-literal pmap (#inst/#uuid/#regex/#bigdec at read time)?
 (define (rdr-tagged-form? v)
@@ -1234,6 +1246,7 @@
 (define (rdr-datafy v)
   (cond
    ((rdr-ctor-call? v) v)               ; nested record ctor — keep evaluating
+   ((rdr-eval-result? v) (jolt-list (jolt-symbol #f "quote") v))  ; a #= value
    ((rdr-tagged-form? v) v)             ; #inst/#uuid/#regex/#bigdec — keep
    ((and (pmap? v) (eq? (jolt-get v rdr-kw-jolt-type) rdr-kw-jolt-set)) v)  ; #{…} set — keep
    ((pmap? v)
@@ -1643,7 +1656,7 @@
          (rdr-error s i "EvalReader not allowed when *read-eval* is false."))
        (let-values (((form j) (rdr-read-form s (+ i 1) end)))
          (when (rdr-eof? form) (rdr-eof-error s i "EOF while reading"))
-         (values (jolt-compile-eval-form form (chez-current-ns)) j)))
+         (values (rdr-mark-eval-result (jolt-compile-eval-form form (chez-current-ns))) j)))
       ;; #?(...) / #?@(...) reader conditional. One with no branch for this
       ;; platform reads as nothing, so the read goes on to the next form, as #_
       ;; does above: LispReader's ConditionalReader answers its no-op marker and

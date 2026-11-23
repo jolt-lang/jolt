@@ -17,6 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a rebuild with other edits, share `*jolt-version*` but not the build id.
   `jolt.image/runtime-version` stays the Chez release alone, since an image
   holds data, and its docstring now says so.
+- **`*print-dup*` prints what reads back.** `print-dup` dispatches on the
+  class with core_print.clj's methods: a Float, a fn and a namespace print as
+  constructor calls, an array or sorted map through its `create` static, a
+  record positionally, a var and a class as `#=` forms, and metadata always
+  prints. A value with no method, an atom say, throws the multimethod's
+  `IllegalArgumentException`, and a `defmethod print-dup` of your own is used,
+  nested too. `pr`, `print`, `pr-str` and `str` of a collection all go
+  through it. Under `*read-eval*` the output reads back to an equal value with
+  its metadata: the `Persistent*/create` statics exist now, a named fn's class
+  constructs that fn, and a sorted set reads back where the JVM's
+  `PersistentTreeSet/create` refuses the vector it printed. An int, short,
+  byte or small BigInt is a long here, so it prints as one. Also, under
+  `*print-meta*` a lone `:tag` prints as `^String x`, as on the JVM.
+
+  ```clojure
+  (binding [*print-dup* true] (pr-str [{:a (float 1)} (with-meta 'x {:k 1}) #'inc]))
+  ;; before: "[{:a 1.0} x #'clojure.core/inc]"
+  ;; after:  "[#=(clojure.lang.PersistentArrayMap/create {:a #=(java.lang.Float. \"1.0\")}) ^#=(clojure.lang.PersistentArrayMap/create {:k 1}) x #=(var clojure.core/inc)]"
+  ```
 - **`FileChannel` can lock a file, so two processes can keep out of each
   other's way.** `.tryLock` and `.lock`, with or without a position, size and
   shared flag, answer a `java.nio.channels.FileLock` with `release`, `close`,
