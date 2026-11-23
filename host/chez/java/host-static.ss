@@ -26,6 +26,10 @@
 (define class-statics-tbl (make-hashtable string-hash string=?))   ; "Class" -> (member-ht)
 (define class-ctors-tbl   (make-hashtable string-hash string=?))   ; "Class" -> ctor proc
 (define host-methods-tbl  (make-hashtable string-hash string=?))   ; tag -> (method-ht)
+;; Serializes every write to the registries in this file (class-statics-write!,
+;; class-ctor-set!, register-host-methods!, ...). Chez mutexes are recursive, so
+;; a writer that calls another takes it again freely.
+(define host-registry-mu (make-mutex))
 
 ;; Does `nm` name a registered host class (has statics or a constructor)? The
 ;; analyzer's contract layer asks this to treat a bare Capitalized symbol as a
@@ -69,10 +73,13 @@
 ;; claim is tested under both (class-spellings).
 (define host-class-statics-tbl (make-hashtable string-hash string=?))
 
+;; A lazy host shim registers on first reference, from whichever thread made it,
+;; so these writes can meet a library's on another thread.
 (define (register-class-statics! name members)
-  (hashtable-set! host-class-statics-tbl name #t)
-  (hashtable-set! host-class-statics-tbl (short-class-name name) #t)
-  (class-statics-merge! name members))
+  (jolt-with-mutex host-registry-mu
+    (hashtable-set! host-class-statics-tbl name #t)
+    (hashtable-set! host-class-statics-tbl (short-class-name name) #t)
+    (class-statics-merge! name members)))
 
 ;; Would register-class-provider! drop a :jolt/provides claim on this class?
 ;; Answered from the HOST tables and not the live ones: a class ANOTHER library
@@ -192,6 +199,7 @@
     ("FileChannel" "open" varargs)
     ("FileTime" "from" 1 2)
     ("FileSystems" "newFileSystem" 2 3)
+    ("AclEntry" "newBuilder" 0 1)
     ("Files" "deleteIfExists" 1)
     ("Files" "readString" 1 2)
     ("Files" "readAllBytes" 1)
@@ -378,6 +386,8 @@
     ("nio-filesystem" "getPath" varargs)
     ("nio-path" "register" varargs)
     ("nio-path" "resolve" varargs)
+    ("acl-entry-builder" "setPermissions" varargs)
+    ("acl-entry-builder" "setFlags" varargs)
     ("nio-path" "toRealPath" varargs)
     ("embedded-file-system-provider" "getScheme" 0)
     ("embedded-file-system-provider" "newFileSystem" varargs)
@@ -565,6 +575,7 @@
     ("print-writer-on" "write" 1 3)
     ("process" "waitFor" 0 1 2)
     ("process-builder" "command" varargs)
+    ("process-builder" "directory" 0 1)
     ("process-builder" "redirectError" 0 1)
     ("process-builder" "redirectErrorStream" 0 1)
     ("process-builder" "redirectInput" 0 1)
@@ -641,7 +652,7 @@
 ;; in exactly two ways: a member is written into a class's member table, or a
 ;; mutable cell is created that now shadows the table. Both bump this epoch, and
 ;; a site revalidates against it — so every write to a member table goes through
-;; class-statics-member-set!, never a bare hashtable-set!.
+;; class-statics-write!, never a bare hashtable-set!.
 ;; A box moved by CAS, not a set!: two writers bumping at once must move it twice,
 ;; or a site that read the value between them would validate against a write it
 ;; never saw. The release orders the table write before the new value.
@@ -652,33 +663,58 @@
   (let retry ()
     (let ((e (unbox host-static-epoch-box)))
       (unless (box-cas! host-static-epoch-box e (fx+ e 1)) (retry)))))
-(define (class-statics-member-set! h member v)
-  (hashtable-set! h member v)
-  (host-static-epoch-bump!))
+
+;; ---- writing the class tables ----------------------------------------------
+;; class-statics-tbl and class-ctors-tbl are read with no lock on every class
+;; reference that misses a site cache (lookup-class), and written whenever a
+;; library registers a class, a lazy host shim loads, or a deftype is defined --
+;; at run time, from any thread: two namespaces loading in parallel each define
+;; types. A Chez hashtable written by two threads at once loses entries and can
+;; corrupt itself, with the damage surfacing later inside the collector, so every
+;; writer takes host-registry-mu.
+;;
+;; Readers stay lock-free, on the reasoning rt.ss gives for var-table: these are
+;; STRONG general tables, whose insert is one store of a fully built bucket list
+;; and whose resize builds a whole new bucket vector before publishing it, so a
+;; reader racing ONE writer walks a consistent structure and can at worst miss
+;; the entry being inserted, which is the read happening first. The tables only
+;; ever gain entries, so no read misses an entry that was already there.
+;;
+;; Not copy-on-write: a write would copy the whole table, 17 us for a ctor and
+;; 25 us for a class's statics at 2.5k classes measured, and a program that
+;; defines types by the thousand after its first thread would pay for that
+;; quadratically. The lock costs a write ~50 ns and a read nothing.
 
 ;; The merge itself: also the LIBRARY path (register-class-statics-owned!,
 ;; extend-class!), which adds members without making the class the runtime's.
-(define (class-statics-merge! name members)  ; members: list of (str . val/proc)
-  (let* ((short (short-class-name name))
-         (h (or (hashtable-ref class-statics-tbl name #f)
-                (hashtable-ref class-statics-tbl short #f)
-                (let ((h (make-hashtable string-hash string=?)))
-                  h))))
-    ;; Both the FQN and short name share the same member table — registration
-    ;; under either name lands in the merged table, so re-registrations under one
-    ;; name are visible through the other.
-    (hashtable-set! class-statics-tbl name h)
-    (unless (string=? name short)
-      (hashtable-set! class-statics-tbl short h))
-    (for-each (lambda (p)
-                (let ((v (host-arity-declared host-static-arities short (car p) (cdr p) #f))
-                      (old (hashtable-ref h (car p) #f)))
-                  (when old (registry-collision! "static" name (car p) old v))
-                  (class-statics-member-set! h (car p) v)))
-              members)
-    ;; a class name newly resolving is a change too: a site that missed on it
-    ;; answers from the table now
-    (host-static-epoch-bump!)))
+;; members: list of (str . val/proc)
+(define (class-statics-merge! name members)
+  (class-statics-write! name members #t))
+;; Replace members as they are (class-model.ss promotes Long/TYPE from a name to
+;; the class token): not a second registration, so not reported as one.
+(define (class-statics-replace! name members)
+  (class-statics-write! name members #f))
+(define (class-statics-write! name members report?)
+  (jolt-with-mutex host-registry-mu
+    (let* ((short (short-class-name name))
+           (h (or (hashtable-ref class-statics-tbl name #f)
+                  (hashtable-ref class-statics-tbl short #f)
+                  (make-hashtable string-hash string=?))))
+      ;; Both the FQN and short name share the same member table — registration
+      ;; under either name lands in the merged table, so re-registrations under
+      ;; one name are visible through the other.
+      (hashtable-set! class-statics-tbl name h)
+      (unless (string=? name short)
+        (hashtable-set! class-statics-tbl short h))
+      (for-each (lambda (p)
+                  (let ((v (host-arity-declared host-static-arities short (car p) (cdr p) #f))
+                        (old (hashtable-ref h (car p) #f)))
+                    (when (and old report?) (registry-collision! "static" name (car p) old v))
+                    (hashtable-set! h (car p) v)))
+                members)
+      ;; a class name newly resolving, or a member added, is a change a site
+      ;; cache must see: the bump (a release, then a CAS) comes after the writes
+      (host-static-epoch-bump!))))
 
 ;; Names the HOST registered (io.ss, io-streams.ss, …), as opposed to a library
 ;; registering a class jolt does not model. Only the host's own boot-time calls
@@ -686,8 +722,9 @@
 (define host-class-ctors-tbl (make-hashtable string-hash string=?))
 
 (define (register-class-ctor! name proc)
-  (hashtable-set! host-class-ctors-tbl name #t)
-  (class-ctor-set! name proc))
+  (jolt-with-mutex host-registry-mu
+    (hashtable-set! host-class-ctors-tbl name #t)
+    (class-ctor-set! name proc)))
 
 ;; The plain table write, for a ctor that is NOT the runtime coming to provide a
 ;; host class: every deftype and defrecord binds (Name. …) through this table
@@ -696,11 +733,17 @@
 ;; runtime-provides-class? and the constructor-override warning read — answer
 ;; yes for any class whose simple name a user type happens to share.
 ;; Bumped by every write to class-ctors-tbl, so host-new's front cache below can
-;; tell a ctor it resolved from one a redefinition replaced.
+;; tell a ctor it resolved from one a redefinition replaced. The bump comes AFTER
+;; the table write, and under the writers' lock: a reader stamps what
+;; it found with the epoch it read before looking, so an epoch that moved first
+;; would let it stamp the old ctor as current, and two unserialized bumps could
+;; land as one.
 (define class-ctor-epoch 0)
 (define (class-ctor-set! name proc)
-  (set! class-ctor-epoch (fx+ class-ctor-epoch 1))
-  (hashtable-set! class-ctors-tbl name proc))
+  (jolt-with-mutex host-registry-mu
+    (hashtable-set! class-ctors-tbl name proc)
+    (memory-order-release)
+    (set! class-ctor-epoch (fx+ class-ctor-epoch 1))))
 
 ;; clojure.core/__register-class-ctor! lands here. Registering a class jolt does
 ;; not model is the intended use; REPLACING one it does is a process-wide
@@ -728,8 +771,7 @@
                 "warning: a library replaced the host constructor for ~a — every (~a. ...) in this process now builds its shim, including in namespaces that never asked for it\n"
                 name name))
      (lib-note-provider-registration! name)
-     (set! class-ctor-epoch (fx+ class-ctor-epoch 1))
-     (hashtable-set! class-ctors-tbl name proc))))
+     (class-ctor-set! name proc))))
 
 ;; clojure.core/__register-class-statics! lands here — the statics counterpart of
 ;; register-class-ctor-user!, and under the same provider guard. The host's own
@@ -775,7 +817,6 @@
 ;; by a namespace load, which may be on another thread) is serialized with every
 ;; other: readers stay lock-free, and a Chez hashtable survives a reader racing
 ;; one writer, never two writers.
-(define host-registry-mu (make-mutex))
 (define (host-registry-write! thunk) (jolt-with-mutex host-registry-mu (thunk)))
 (define (register-host-methods! tag members)
   (jolt-with-mutex host-registry-mu (register-host-methods!/locked tag members)))
@@ -807,12 +848,13 @@
 (define host-methods-parent (make-hashtable string-hash string=?))   ; tag -> parent tag
 (define (host-tag-parent tag) (hashtable-ref host-methods-parent tag #f))
 (define (alias-host-methods! tag from)
-  (let ((h (or (hashtable-ref host-methods-tbl from #f)
-               (error 'alias-host-methods! "no methods registered for tag" from))))
-    (host-methods-changed!)
-    (hashtable-set! host-methods-tbl tag h)
-    (let ((p (host-tag-parent from)))
-      (when p (hashtable-set! host-methods-parent tag p)))))
+  (jolt-with-mutex host-registry-mu
+    (let ((h (or (hashtable-ref host-methods-tbl from #f)
+                 (error 'alias-host-methods! "no methods registered for tag" from))))
+      (host-methods-changed!)
+      (hashtable-set! host-methods-tbl tag h)
+      (let ((p (host-tag-parent from)))
+        (when p (hashtable-set! host-methods-parent tag p))))))
 
 ;; derive: a tag whose LAYOUT EXTENDS another's — the scheduled future carries the
 ;; j-future's five slots and five more — answers every member the parent tag
@@ -845,9 +887,10 @@
       (when t
         (when (string=? t tag) (error 'derive-host-methods! "derivation cycle" tag from))
         (walk (host-tag-parent t)))))
-  (host-methods-changed!)
-  (hashtable-set! host-methods-parent tag from)
-  (register-host-methods! tag members))
+  (jolt-with-mutex host-registry-mu
+    (host-methods-changed!)
+    (hashtable-set! host-methods-parent tag from)
+    (register-host-methods!/locked tag members)))
 
 ;; The two resolvers, and the only readers of the chain. host-method-ref: the
 ;; member NAME resolves to on TAG — its own table first, then each parent's — or
@@ -928,10 +971,11 @@
 ;; Keyed by the class's qualified name; io-streams.ss registers the java.io four.
 (define abstract-methods-tbl (make-hashtable string-hash string=?))   ; FQN -> (method-ht)
 (define (register-abstract-methods! class members)
-  (let ((h (or (hashtable-ref abstract-methods-tbl class #f)
-               (let ((h (make-hashtable string-hash string=?)))
-                 (hashtable-set! abstract-methods-tbl class h) h))))
-    (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members)))
+  (jolt-with-mutex host-registry-mu
+    (let ((h (or (hashtable-ref abstract-methods-tbl class #f)
+                 (let ((h (make-hashtable string-hash string=?)))
+                   (hashtable-set! abstract-methods-tbl class h) h))))
+      (for-each (lambda (p) (hashtable-set! h (car p) (cdr p))) members))))
 (define (abstract-class-method obj method-name)
   (let loop ((tags (jreify-host-tags obj)))
     (cond ((null? tags) #f)
@@ -966,16 +1010,21 @@
 (define (image-codec-dump c) (vector-ref c 1))
 (define (image-codec-make c) (vector-ref c 2))
 (define (image-codec-fill! c) (vector-ref c 3))
+;; A shim registers these as it loads, and a lazy one loads on first reference
+;; from any thread, so the writes take the registry lock like the others.
 (define (register-image-codec! kind tags dump make fill!)
   (let ((c (make-image-codec kind dump make fill!)))
-    (hashtable-set! image-codec-by-kind kind c)
-    (for-each (lambda (t) (hashtable-set! image-codec-by-tag t c)) tags)))
+    (jolt-with-mutex host-registry-mu
+      (hashtable-set! image-codec-by-kind kind c)
+      (for-each (lambda (t) (hashtable-set! image-codec-by-tag t c)) tags))))
 (define (register-image-codec-pred! kind pred dump make fill!)
   (let ((c (make-image-codec kind dump make fill!)))
-    (hashtable-set! image-codec-by-kind kind c)
-    (set! image-codec-preds (cons (cons pred c) image-codec-preds))))
+    (jolt-with-mutex host-registry-mu
+      (hashtable-set! image-codec-by-kind kind c)
+      (set! image-codec-preds (cons (cons pred c) image-codec-preds)))))
 (define (register-image-refusal! tags reason)
-  (for-each (lambda (t) (hashtable-set! image-refusal-by-tag t reason)) tags))
+  (jolt-with-mutex host-registry-mu
+    (for-each (lambda (t) (hashtable-set! image-refusal-by-tag t reason)) tags)))
 (define (image-codec-for x)
   (if (jhost? x)
       (hashtable-ref image-codec-by-tag (jhost-tag x) #f)
@@ -998,7 +1047,8 @@
 ;; cannot be read (the image read then fails naming it) or #f.
 (define image-read-check-by-tag (make-hashtable string-hash string=?))
 (define (register-image-read-check! tags check)
-  (for-each (lambda (t) (hashtable-set! image-read-check-by-tag t check)) tags))
+  (jolt-with-mutex host-registry-mu
+    (for-each (lambda (t) (hashtable-set! image-read-check-by-tag t check)) tags)))
 (define (image-read-refusal x)
   (and (jhost? x)
        (begin
@@ -1677,17 +1727,29 @@
 ;; when nothing is declared.
 (define lib-pending-claims-tbl (make-hashtable string-hash string=?))
 (define lib-any-pending-claims? #f)
+;; The claims that HAVE had their chance, one entry per spelling, moved here
+;; from the index when the autoload is claimed (lib-claim-settled!), so a context
+;; that misses one of the classes while the load runs can find the load to wait
+;; for (lib-await-provider-load!). Read and written only under lib-claims-mu: a
+;; lock-free read of the index can land while a claim moves from one table to
+;; the other and miss in both.
+(define lib-settled-claims-tbl (make-hashtable string-hash string=?))
 ;; Autoload is one-shot per provider, and two threads reaching a claimed class at
 ;; once must not both load the install namespace. The latch flip, the index purge
 ;; and the held-registration list go under this mutex; the load itself does NOT,
 ;; because an install namespace requires others and a nested autoload would
 ;; deadlock on a non-recursive mutex.
 (define lib-claims-mu (make-mutex))
+;; Called under lib-claims-mu, except for the core providers below, which claim
+;; at boot before any second thread exists.
 (define (lib-claim-pending! p)
   (for-each (lambda (c) (hashtable-set! lib-pending-claims-tbl c p)) (vector-ref p 2))
   (set! lib-any-pending-claims? #t))
 (define (lib-claim-settled! p)
-  (for-each (lambda (c) (hashtable-delete! lib-pending-claims-tbl c)) (vector-ref p 2))
+  (for-each (lambda (c)
+              (hashtable-delete! lib-pending-claims-tbl c)
+              (hashtable-set! lib-settled-claims-tbl c p))
+            (vector-ref p 2))
   (set! lib-any-pending-claims? (> (hashtable-size lib-pending-claims-tbl) 0)))
 (for-each lib-claim-pending! core-class-providers)
 
@@ -1727,7 +1789,22 @@
 ;; owned by nobody, so a later registration for a member it answers was accepted
 ;; instead of dropped — jolt#914 one level down — and JOLT_DEBUG named the wrong
 ;; namespace (jolt#926).
-(define lib-loading-provider (make-thread-parameter #f))
+;;
+;; The mark is (provider . context) and answers only for the context that set it:
+;; the fiber when one is running, else the OS thread (as the loader keys its own
+;; claims, loader.ss ldr-load-ctx). A Chez thread parameter is copied into every
+;; thread forked under it, so a pool worker that a future inside an install
+;; namespace started kept that provider's mark for its whole life: every later
+;; registration on it read as the provider's own, and a class miss on it read as
+;; the provider's loading thread missing mid-load. And fibers on one carrier
+;; share the carrier's parameters. Work an install namespace starts is not
+;; the load: it waits for the load like any other context, and the loader raises
+;; if the load is itself blocked on that work (loader.ss ldr-wait-walk).
+(define lib-loading-mark (make-thread-parameter #f))
+(define (lib-ctx) (or (jolt-current-fiber) (get-thread-id)))
+(define (lib-loading-provider)
+  (let ((m (lib-loading-mark)))
+    (and m (eqv? (cdr m) (lib-ctx)) (car m))))
 
 (define (lib-provider-by-install-ns ns)
   (let loop ((ps lib-class-providers))
@@ -1742,7 +1819,24 @@
 ;; different registrant.
 (define (lib-with-install-ns-mark ns thunk)
   (let ((p (lib-provider-by-install-ns ns)))
-    (if p (parameterize ((lib-loading-provider p)) (thunk)) (thunk))))
+    (if p
+        (parameterize ((lib-loading-mark (cons p (lib-ctx))))
+          (guard (c (#t (lib-note-provider-failed! p c) (raise c)))
+            (thunk)))
+        (thunk))))
+
+;; An install namespace that raised while an autoload of its provider was
+;; claimed is the provider failing, whichever context ran it. Recorded here, by
+;; the context running the load and before the loader drops its claim, so a
+;; context that waited on that load and wakes from it already sees 'failed, and
+;; does not run the namespace a second time (lib-run-install!). A plain require
+;; of an install namespace nothing has autoloaded yet leaves the latch alone: the
+;; autoload still gets its own chance.
+(define (lib-note-provider-failed! p c)
+  (jolt-with-mutex lib-claims-mu
+    (when (eq? (unbox (vector-ref p 3)) 'ok)
+      (hashtable-set! lib-provider-failures p c)
+      (set-box! (vector-ref p 3) 'failed))))
 
 ;; Classes a declared provider actually registered as its install namespace
 ;; loaded. This is what the registration guard protects: a class whose provider
@@ -1772,10 +1866,12 @@
   (let ((p (lib-loading-provider)))
     (when (and p (not (lib-core-provider? p)) (member name (vector-ref p 2)))
       (let ((short (short-class-name name)))
-        (for-each (lambda (c)
-                    (when (string=? (short-class-name c) short)
-                      (hashtable-set! lib-provider-owned-tbl c p)))
-                  (vector-ref p 2))))))
+        ;; two providers' install namespaces can load on two threads at once
+        (jolt-with-mutex lib-claims-mu
+          (for-each (lambda (c)
+                      (when (string=? (short-class-name c) short)
+                        (hashtable-set! lib-provider-owned-tbl c p)))
+                    (vector-ref p 2)))))))
 
 ;; Declared providers from the dependency graph, installed at startup by
 ;; jolt.deps. A claim on a class the runtime already IMPLEMENTS is dropped with
@@ -1815,10 +1911,13 @@
                (if (null? (cdr stale)) "class answers" "classes answer")
                (if (null? (cdr stale)) "claim is" "claims are")
                (if coordinate (jolt-str-render-one coordinate) "the library")))
+    ;; add-deps declares providers at run time, while other threads may be
+    ;; claiming and settling
     (when (pair? kept)
       (let ((p (vector install-ns coordinate kept (box #f))))
-        (set! lib-class-providers (append lib-class-providers (list p)))
-        (lib-claim-pending! p)))))
+        (jolt-with-mutex lib-claims-mu
+          (set! lib-class-providers (append lib-class-providers (list p)))
+          (lib-claim-pending! p))))))
 
 ;; The Clojure-facing seam. jolt.deps calls this once per declared provider after
 ;; it resolves the dependency graph, before any user code compiles — which is the
@@ -1841,8 +1940,9 @@
 ;; dependency the caller forgot to declare from one that is declared and broken;
 ;; see unknown-class-message.
 (define (lib-load-provider! p)
-  ;; claim the load: whoever flips the latch from #f does it, everyone else sees
-  ;; a provider that has already had its chance and moves on.
+  ;; claim the load: whoever flips the latch from #f does it. Everyone else sees
+  ;; a provider that has already had its chance, and a context that arrives
+  ;; while the load is still running waits for it in lib-await-provider-load!.
   (and (jolt-with-mutex lib-claims-mu
          (and (not (unbox (vector-ref p 3)))
               (begin (set-box! (vector-ref p 3) 'ok)
@@ -1852,24 +1952,79 @@
        ;; held against it are replayed on every exit — including the install
        ;; namespace being off the roots, and the one that raises. A provider that
        ;; cannot deliver leaves the class to whoever else registered it, which is
-       ;; what happened before the claim was honoured at all.
+       ;; what happened before the claim was honoured at all. A raise out of the
+       ;; namespace itself has already marked the provider 'failed
+       ;; (lib-with-install-ns-mark); one out of the wait for another context's
+       ;; load of it (a require cycle, the load watchdog) says nothing about the
+       ;; provider and leaves the latch alone.
        ;;
        ;; Either half is a reason for the caller to look again, so the answer is
        ;; their OR: a class can become resolvable through a replay alone.
        (let* ((loaded (and (find-ns-file (vector-ref p 0))
-                           (begin (guard (c (#t (jolt-with-mutex lib-claims-mu
-                                                  (hashtable-set! lib-provider-failures p c)
-                                                  (set-box! (vector-ref p 3) 'failed))
-                                                (lib-replay-deferred! p)
-                                                (raise c)))
-                                    ;; the mark comes from load-namespace* itself
-                                    ;; (lib-with-install-ns-mark), which is the
-                                    ;; only way it can also cover an install
-                                    ;; namespace reached by a plain require.
-                                    (load-namespace (vector-ref p 0)))
+                           (begin (guard (c (#t (lib-replay-deferred! p) (raise c)))
+                                    (lib-run-install! p))
                                   #t)))
               (replayed (lib-replay-deferred! p)))
          (or loaded replayed))))
+
+;; Load P's install namespace for its autoload: the claimer, and every context
+;; that waits for it, comes through here. The loader decides who runs it (one
+;; context, the rest wait for it, loader.ss) and the mark comes from
+;; load-namespace* itself (lib-with-install-ns-mark), which is the only way it
+;; also covers an install namespace reached by a plain require. A waiter can be
+;; the one that runs it: it may reach the loader before the claimer, which is
+;; still between its latch flip and its own require. A context that gets the
+;; loader's claim after the provider has failed does not run the namespace a
+;; second time.
+(define (lib-run-install! p)
+  (load-namespace/when (vector-ref p 0)
+                       (lambda () (not (eq? (unbox (vector-ref p 3)) 'failed)))))
+
+;; A class that missed after its provider's autoload was claimed. The context
+;; that claims the load is the only one lib-load-provider! answers #t, and the
+;; claim index entry is gone from that moment, so to every other thread a class
+;; whose provider was still loading used to look exactly like a class nobody
+;; provides: eight futures touching java.time.Instant at once got one value and
+;; seven "No dependency provides java.time.Instant". The JVM makes a thread that
+;; reaches a class during its initialization wait for it, and this does the
+;; same.
+;;
+;; The wait is the loader's (lib-run-install!): it blocks a thread or parks a
+;; fiber until the context loading the namespace finishes, returns at once when
+;; it already has, and raises on a require cycle between two loaders. Whether
+;; the load is still running cannot decide whether to look again: a context can
+;; miss while the provider is loading and only get here after it has finished,
+;; and it must look again too. So this answers #t whenever the provider loaded,
+;; and its callers look again once (host-static-ref, host-new): a class the
+;; provider never registers misses on that retry and gets the ordinary message.
+;;
+;; Except for the loading context itself, missing one of its provider's classes
+;; before it has registered it: it gets #f, since its require would only answer
+;; 'recursive, and replaying held registrations mid-load would let them in
+;; before the provider's own (jolt#914). Work the load started -- a future, a
+;; fiber, a thread its top level spawned -- waits like anyone, as a JVM thread
+;; waits for a class another thread is initializing, and gets the class when
+;; the load finishes. If the load is itself blocked on that work (a top-level
+;; @(future ...) that reaches one of the provider's classes), the two would wait
+;; for each other forever, as they do on the JVM; the loader follows the load
+;; through what it is blocked on and the waiting work raises instead
+;; (loader.ss ldr-wait-walk, locks.ss jolt-blocked-on).
+;;
+;; The latch belongs to the context that claimed the autoload: a waiter's raise,
+;; a require cycle or a wait timeout, passes through and leaves it alone.
+(define (lib-await-provider-load! class)
+  (let ((p (jolt-with-mutex lib-claims-mu
+             (let ((p (hashtable-ref lib-settled-claims-tbl class #f)))
+               (and p (eq? (unbox (vector-ref p 3)) 'ok) p)))))
+    (and p
+         (not (eq? p (lib-loading-provider)))
+         (find-ns-file (vector-ref p 0))
+         (begin
+           (lib-run-install! p)
+           ;; registrations held against the claim, which the claimer may not
+           ;; have replayed yet
+           (lib-replay-deferred! p)
+           #t))))
 
 ;; RFC 0014's resolution step: a class reference that MISSES the registry
 ;; autoloads the provider that declares the class, and retries.
@@ -1893,7 +2048,12 @@
   (or (lazy-shims-class! class)
       (and lib-any-pending-claims?
            (let ((p (hashtable-ref lib-pending-claims-tbl class #f)))
-             (and p (lib-load-provider! p))))))
+             ;; an install namespace reached by a plain require has not claimed
+             ;; its autoload, and its own loading context must not claim it now:
+             ;; the require would answer 'recursive, and the replay of held
+             ;; registrations would run mid-load (jolt#914)
+             (and p (not (eq? p (lib-loading-provider))) (lib-load-provider! p))))
+      (lib-await-provider-load! class)))
 
 ;; The provider that DECLARES this class and has not had its chance yet — meaning
 ;; the registration about to happen is somebody else's, and must wait. #f when
@@ -1935,8 +2095,10 @@
 (define lib-claim-warned-tbl (make-hashtable string-hash string=?))
 (define (claim-warn-once? tag name)
   (let ((k (string-append tag "/" (short-class-name name))))
-    (and (not (hashtable-ref lib-claim-warned-tbl k #f))
-         (begin (hashtable-set! lib-claim-warned-tbl k #t) #t))))
+    ;; the test and the set are one step: registrations race across threads
+    (jolt-with-mutex lib-claims-mu
+      (and (not (hashtable-ref lib-claim-warned-tbl k #f))
+           (begin (hashtable-set! lib-claim-warned-tbl k #t) #t)))))
 
 (define (provider-claim-drop! name owner members)
   (when (and (jolt-warnings?) (claim-warn-once? "drop" name))
@@ -2114,6 +2276,15 @@
                                           (vector-ref p 0)
                                           (jolt-with-mutex lib-claims-mu
                                             (hashtable-ref lib-provider-failures p #f))))))
+    ;; The provider's own install namespace, reaching the class before it has
+    ;; registered it (lib-await-provider-load!): say that, not that nothing
+    ;; provides it.
+    ((let ((p (lib-provider-for class)))
+       (and p (eq? p (lib-loading-provider)) p))
+     => (lambda (p)
+          (string-append
+            class " is not installed yet: this code runs in " (vector-ref p 0)
+            ", which provides it, before it has registered it.")))
     ((jdk-class-name? class)
      (string-append "No dependency provides " class
                     " — a concrete implementation of the JDK classes must be "
@@ -2180,7 +2351,11 @@
           (memory-order-acquire)
           (unbox b)))))
 (define (static-value v) (if (static-deferred? v) (static-deferred-force v) v))
-(define (host-static-ref class member)
+(define (host-static-ref class member) (host-static-ref* class member #t))
+;; AUTOLOAD? is #f on the one look again after a miss autoloaded: a class the
+;; autoload did not register misses then for good, and a provider settled
+;; earlier would otherwise be waited on and answered #t on every retry.
+(define (host-static-ref* class member autoload?)
   (let ((cell (mutable-static-cell class member #f)))
     (if cell
         (vector-ref cell 0)
@@ -2190,14 +2365,14 @@
                 (cond
                   ((not (eq? v host-static-miss)) (static-value v))
                   ;; a member a lazy host shim adds to this class (Runtime/getRuntime)
-                  ((lazy-shims-static! class member) (host-static-ref class member))
+                  ((lazy-shims-static! class member) (host-static-ref* class member autoload?))
                   (else (throw-jvm (quote IllegalArgumentException) (string-append "No matching field or method: " class "/" member)))))
               ;; class miss — autoload the provider that declares the class (the
               ;; java.time base, jolt.socket, or a library that installs it) and
               ;; retry once. A claimed class cannot be a hit before its claimer
               ;; has loaded, so the miss is where resolution belongs (jolt#914).
-              (if (lib-try-autoload! class)
-                  (host-static-ref class member)
+              (if (and autoload? (lib-try-autoload! class))
+                  (host-static-ref* class member #f)
                   (throw-jvm (quote IllegalArgumentException) (static-miss-message class member))))))))
 
 (define (host-static-call class member . args)
@@ -2340,13 +2515,14 @@
             (jolt-with-mutex host-new-cache-mu
               (hashtable-set! host-new-cache class (cons epoch ctor))))
           ctor))))
-(define (host-new class . args)
+(define (host-new class . args) (host-new* class args #t))
+(define (host-new* class args autoload?)
   (let ((ctor (host-new-ctor class)))
     (cond
       (ctor (apply ctor args))
       ;; the constructor may live in a provider that has not loaded yet — autoload
       ;; and retry once before falling through to the var / no-ctor paths.
-      ((lib-try-autoload! class) (apply host-new class args))
+      ((and autoload? (lib-try-autoload! class)) (host-new* class args #f))
       ;; deftype/defrecord: the type name is bound as a VAR (the
       ;; make-deftype-ctor closure) in its defining ns, not a registered host class.
       ;; Resolve it in the current ns / clojure.core and invoke it — so (P. args)
@@ -2354,20 +2530,45 @@
       (else
        (let ((cell (or (var-cell-lookup (chez-current-ns) class)
                        (var-cell-lookup "clojure.core" class))))
-         (if (and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
-             (apply (var-cell-root cell) args)
-             ;; a ctor for a class some provider CLAIMS, that never resolved,
-             ;; is that provider's absence — name it. So is one for a class jolt
-             ;; knows nothing about at all: an :import of com.nosuch.Thing
-             ;; succeeds here (a library may import a class it never touches),
-             ;; and "No matching ctor found for class Thing" then read as an
-             ;; arity mismatch on a class that exists (#1683). Only a class jolt
-             ;; does have — statics, or a place in the class graph — is a
-             ;; genuinely missing ctor.
-             (throw-jvm (quote IllegalArgumentException)
-               (if (or (lib-provider-for class) (not (host-class-known? class)))
-                   (unknown-class-message class)
-                   (string-append "No matching ctor found for class " class)))))))))
+         (cond
+           ((and cell (var-cell-defined? cell) (procedure? (var-cell-root cell)))
+            (apply (var-cell-root cell) args))
+           ;; (clojure.core$inc.): a named fn's class, which print-dup writes
+           ;; for a fn as #=(clojure.core$inc. ). The JVM makes a fresh instance
+           ;; of the class; a fn here is its own only instance.
+           ((and (null? args) (fn-class-instance class)))
+           ;; a ctor for a class some provider CLAIMS, that never resolved,
+           ;; is that provider's absence — name it. So is one for a class jolt
+           ;; knows nothing about at all: an :import of com.nosuch.Thing
+           ;; succeeds here (a library may import a class it never touches),
+           ;; and "No matching ctor found for class Thing" then read as an
+           ;; arity mismatch on a class that exists (#1683). Only a class jolt
+           ;; does have — statics, or a place in the class graph — is a
+           ;; genuinely missing ctor.
+           (else
+            (throw-jvm (quote IllegalArgumentException)
+              (if (or (lib-provider-for class) (not (host-class-known? class)))
+                  (unknown-class-message class)
+                  (string-append "No matching ctor found for class " class))))))))))
+
+;; The fn a var holds whose class is CLASS (ns$name, munged), or #f. Only a
+;; top-level fn's class names a var: one with a further $ (ns$f$fn__12) is a
+;; literal inside another, and no var holds it.
+(define (fn-class-instance class)
+  (let* ((dollar (let loop ((i 0))
+                   (cond ((fx=? i (string-length class)) #f)
+                         ((char=? (string-ref class i) #\$) i)
+                         (else (loop (fx+ i 1))))))
+         (rest (and dollar (substring class (fx+ dollar 1) (string-length class)))))
+    (and rest
+         (not (memv #\$ (string->list rest)))
+         (let* ((ns (compiler-demunge (substring class 0 dollar)))
+                (cell (var-cell-lookup ns (compiler-demunge rest))))
+           (and cell (var-cell-defined? cell)
+                (let ((f (var-cell-root cell)))
+                  (and (procedure? f)
+                       (equal? (jolt-class-name f) class)
+                       f)))))))
 
 ;; (Name. arg …) at a call site that keeps the constructor it resolved (the
 ;; backend emits host-new-site/i on Chez): the box holds (epoch . ctor), stamped

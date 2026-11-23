@@ -1,0 +1,179 @@
+(ns jolt.native.stack
+  "Which arrays a function can keep on the C stack instead of the heap: a
+  (double-array n) or (long-array n) with a small constant n whose value never
+  leaves the function and never outlives the iteration that made it. Such an
+  array needs no calloc, no out-of-memory check and no free.
+
+  An array's value is followed through every name and node that can hold it
+  (its sources, as allocation sites). A site stays on the heap when its value
+  can be the function's result, be taken by a helper (which may free it), be
+  carried to the next iteration by recur or out of a loop, or share a holder
+  with a heap array (one free, one decision). What remains is freed by the
+  frame: the emitter declares a buffer per site and skips the frees of names
+  that only ever hold those. The idea is Ferret's escape analysis
+  (github.com/nakkaya/ferret), which stack-allocates what never leaves a
+  function."
+  (:require [jolt.native.ast :as ast]))
+
+;; elements; 256 doubles is 2KB of stack per site
+(def max-elems 256)
+;; elements across one function's frame: 8KB, so a deep (non-recursive) helper
+;; chain cannot add up to a stack overflow
+(def max-frame-elems 1024)
+
+;; {holder-id #{site-id}}: what each node id and binding id can hold
+(def ^:dynamic *srcs* nil)
+;; site ids that leave the function, an iteration, or reach a taking helper
+(def ^:dynamic *escapes* nil)
+;; loop-id -> [binding-id]
+(def ^:dynamic *loops* nil)
+(def ^:dynamic *takes* nil)
+
+(defn- hold! [id s] (when (seq s) (swap! *srcs* update id (fnil into #{}) s)) s)
+(defn- escape! [s] (swap! *escapes* into s))
+
+(declare walk)
+
+(defn- walk-call [node]
+  (let [taken (get-in *takes* [(:instance node) :positions] #{})]
+    (doseq [[i a] (map-indexed vector (:args node))]
+      (let [s (walk a)] (when (taken i) (escape! s))))
+    ;; an owned result is the helper's allocation (or one it took)
+    (when (ast/owned? (:type node)) (hold! (:id node) #{(:id node)}))))
+
+(defn- walk-loop [node]
+  (swap! *loops* assoc (:loop-id node) (mapv :id (:bindings node)))
+  (doseq [b (:bindings node)] (hold! (:id b) (walk (:init b))))
+  (let [s (walk (:body node))]
+    ;; the value a loop answers survives the iteration that made it
+    (escape! s)
+    (hold! (:id node) s)))
+
+(defn walk
+  "The allocation sites node's value can be, recording holders as it goes."
+  [node]
+  (case (:op node)
+    :new-array (do (walk (:len node)) (hold! (:id node) #{(:id node)}))
+    :aclone (do (walk (:arr node)) (hold! (:id node) #{(:id node)}))
+    ;; an owned array with no allocation site here (a parameter the helper may
+    ;; take) is an unknown heap array: its binding stands for it, so a holder
+    ;; that can be it or a stack site is mixed and settle keeps both on the heap
+    :local (let [s (get @*srcs* (:binding node) #{})]
+             (if (and (empty? s) (ast/owned? (:type node)))
+               (hold! (:binding node) #{(:binding node)})
+               s))
+    :let (do (doseq [b (:bindings node)] (hold! (:id b) (walk (:init b))))
+             (hold! (:id node) (walk (:body node))))
+    :do (do (run! walk (:statements node)) (hold! (:id node) (walk (:ret node))))
+    :if (do (walk (:test node))
+            (hold! (:id node) (into (walk (:then node)) (walk (:else node)))))
+    :loop (walk-loop node)
+    :recur (let [ids (get @*loops* (:loop-id node))]
+             (doseq [[id a] (map vector ids (:args node))]
+               (let [s (walk a)] (escape! s) (hold! id s)))
+             #{})
+    :call (walk-call node)
+    (do (doseq [k [:args :arr :idx :val :len :test]]
+          (let [v (get node k)]
+            (cond (map? v) (walk v) (sequential? v) (run! walk v))))
+        #{})))
+
+(defn- candidate? [node]
+  (and (= :new-array (:op node))
+       (= :const (:op (:len node)))
+       (<= 0 (:val (:len node)) max-elems)))
+
+(defn- nodes [node]
+  (tree-seq map? (fn [n] (filter map? (concat (vals n) (mapcat #(when (sequential? %) %) (vals n))
+                                              (keep :init (:bindings n)))))
+            node))
+
+(defn- settle
+  "Drop a stack site from every holder that also holds a heap one, until none
+  does: a name is freed or not as a whole."
+  [stack srcs]
+  (let [mixed (fn [s] (some (fn [h] (when (and (some s h) (not (every? s h))) h)) (vals srcs)))]
+    (loop [s stack]
+      (if-let [h (mixed s)] (recur (apply disj s h)) s))))
+
+(defn- expr-srcs
+  "The sites an array expression can be: a local reads its binding's."
+  [srcs node]
+  (get srcs (if (= :local (:op node)) (:binding node) (:id node)) #{}))
+
+(defn- scalar-sites
+  "Stack sites whose every use is aget/aset at a constant index in range, or
+  alength, through an expression that can only be that site: their elements
+  can be plain C locals. Anything else that reads the array (a helper call,
+  aclone) needs it in memory."
+  [body srcs sites]
+  (let [uses (for [n (nodes body)
+                   :let [op (:op n)]
+                   arr (case op
+                         (:aget :aset :alength :aclone) [(:arr n)]
+                         (:call :extern) (filter #(ast/array-type? (:type %)) (:args n))
+                         [])
+                   :let [s (expr-srcs srcs arr)]
+                   :when (some sites s)]
+               [n s])
+        ok? (fn [[n s]]
+              (and (= 1 (count s))
+                   (case (:op n)
+                     :alength true
+                     (:aget :aset) (let [i (:idx n)]
+                                     (and (= :const (:op i)) (<= 0 (:val i))
+                                          (< (:val i) (get sites (first s)))))
+                     false)))]
+    (reduce (fn [acc [n s]] (if (ok? [n s]) acc (apply disj acc s)))
+            (set (keys sites)) uses)))
+
+(defn analyze-fn
+  "For one function body: {:sites {site-id elems} :holders #{id} :scalar
+  {holder-id site-id}}: the stack arrays, the names (node and binding ids)
+  whose frees the frame does, and which names hold an array kept in locals."
+  [body takes]
+  (binding [*srcs* (atom {}) *escapes* (atom #{}) *loops* (atom {}) *takes* takes]
+    ;; twice: a loop variable's sources include what its recurs pass, which the
+    ;; first walk only learns after the uses that read it
+    (dotimes [_ 3] (escape! (walk body)))
+    (let [cands (into {} (map (fn [n] [(:id n) (:val (:len n))])) (filter candidate? (nodes body)))
+          stack (loop [st (settle (apply disj (set (keys cands)) @*escapes*) @*srcs*)]
+                  ;; over the frame budget: the largest site goes to the heap
+                  (if (> (reduce + 0 (map cands st)) max-frame-elems)
+                    (recur (settle (disj st (apply max-key cands st)) @*srcs*))
+                    st))]
+      (let [sites (select-keys cands stack)
+            scalar (scalar-sites body @*srcs* sites)]
+        {:sites sites
+         :holders (set (for [[id s] @*srcs* :when (and (seq s) (every? stack s))] id))
+         :scalar (into {} (for [[id s] @*srcs* :when (and (= 1 (count s)) (scalar (first s)))]
+                            [id (first s)]))}))))
+
+(def ^:private none {:sites {} :holders #{} :scalar {}})
+
+(defn- recursive-iids
+  "Helper instances that can call themselves, directly or through others: each
+  call would push another frame of stack arrays, so they keep theirs on the heap."
+  [instances]
+  (let [calls (into {} (for [inst instances]
+                         [(:iid inst)
+                          (set (keep #(when (= :call (:op %)) (:instance %))
+                                     (mapcat nodes (cons (:body inst) (map :body (:variants inst))))))]))
+        reach (fn [iid] (loop [seen #{} todo (vec (calls iid))]
+                          (if-let [x (peek todo)]
+                            (if (seen x) (recur seen (pop todo))
+                                (recur (conj seen x) (into (pop todo) (calls x))))
+                            seen)))]
+    (set (filter #(contains? (reach %) %) (keys calls)))))
+
+(defn analyze-region
+  "{:entry analysis, iid analysis ...} for a checked region."
+  [region]
+  (let [rec (recursive-iids (:instances region))
+        fn-of (fn [inst body] (if (rec (:iid inst)) none (analyze-fn body (:takes region))))]
+    (into {:entry (analyze-fn (:body region) (:takes region))}
+          (mapcat (fn [inst]
+                    (cons [(:iid inst) (fn-of inst (:body inst))]
+                          (map-indexed (fn [i v] [[(:iid inst) i] (fn-of inst (:body v))])
+                                       (:variants inst)))))
+          (:instances region))))

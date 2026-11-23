@@ -1,0 +1,37 @@
+diff --git a/c/schsig.c b/c/schsig.c
+--- a/c/schsig.c
++++ b/c/schsig.c
+@@ -987,9 +987,33 @@
+   jolt_relay_ready = 0;
+ }
+ 
++/* jolt: the signal that ends a blocking foreign call on a thread of the
++   runtime's own (FileChannel.lock's F_SETLKW), as the JDK's NativeThread.signal
++   does: a handler that does nothing, installed WITHOUT SA_RESTART, so a
++   pthread_kill of the thread makes the call return EINTR. The relay would
++   restart it. The disposition before is saved with the relay's, so
++   S_jolt_signal_relay_deinit gives it back. 0 on success, -1 with errno set,
++   -2 for a signal number out of range. */
++static void jolt_interrupt_handler(INT sig) { (void)sig; }
++
++static INT s_jolt_signal_interrupt_init(INT sig) {
++  struct sigaction act;
++  if (sig <= 0 || sig >= JOLT_RELAY_NSIG) return -2;
++  if (!jolt_relay_saved[sig]) {
++    if (sigaction(sig, (struct sigaction *)0, &jolt_relay_orig[sig]) != 0) return -1;
++    jolt_relay_saved[sig] = 1;
++  }
++  jolt_relay_chain[sig] = 0;
++  sigemptyset(&act.sa_mask);
++  act.sa_flags = 0;
++  act.sa_handler = jolt_interrupt_handler;
++  return SIGACTION(sig, &act, (struct sigaction *)0) == 0 ? 0 : -1;
++}
++
+ void S_jolt_signal_relay_init(void) {
+   Sforeign_symbol("(cs)jolt_signal_relay_fd", (void *)s_jolt_signal_relay_fd);
+   Sforeign_symbol("(cs)jolt_signal_relay_set", (void *)s_jolt_signal_relay_set);
++  Sforeign_symbol("(cs)jolt_signal_interrupt_init", (void *)s_jolt_signal_interrupt_init);
+ }
+ 
+ #endif /* WIN32 */
