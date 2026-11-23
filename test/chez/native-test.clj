@@ -465,6 +465,31 @@
 (check-reject "an array both borrowed and taken by one helper call" '[^long n]
               '((let [x (double-array n)] (borrow-then-take x x))) #"after it was given away")
 
+;; --- review follow-ups ----------------------------------------------------------
+;; an owned array in a branch of a unit if (a when) is freed in that branch
+(check-run "an array in a when inside a loop is freed each iteration" '[^long n ^boolean c]
+           '((loop [i 0] (if (< i n) (do (when c (double-array 100)) (recur (inc i))) i)))
+           [[3 true] [3 false] [0 true]])
+(check-run "an owned array as one branch of a unit if" '[^boolean c]
+           '((let [a (double-array 3)] (if c a nil) 1))
+           [[true] [false]])
+;; a negated negative literal is -(x) in C, not a decrement
+(check-run "negating negative literals" '[^long k]
+           '((+ (- -5) k (long (- -1.5))))
+           [[1]])
+;; the JVM's long quot wraps Long/MIN_VALUE / -1; / by zero is the JVM's message
+(check-run "quot of Long/MIN_VALUE by -1 wraps" '[^long a ^long b]
+           '((quot a b))
+           [[Long/MIN_VALUE -1] [7 -1] [7 2] [7 0]])
+(let [r ((fallback-fn (mem/check-region (ast/analyze-region '[^long a ^long b] '((quot a b)))))
+         Long/MIN_VALUE -1)]
+  (when-not (= r Long/MIN_VALUE)
+    (fail! (str "quot of Long/MIN_VALUE by -1: want the JVM's " Long/MIN_VALUE ", got " r))))
+(check-reject "dotimes over a double count" '[^double x]
+              '((dotimes [i x] nil) 0) #"dotimes takes a long count")
+
+;; --- failures: same exception as Jolt, nothing leaked -------------------------
+
 ;; the index cast runs before aset's value (as on the JVM); its failure frees what
 ;; is live THEN, not what the value expression would have allocated or consumed
 (check-run "an index overflow before aset's value, inside a loop with temporaries" '[^doubles xs ^long big]

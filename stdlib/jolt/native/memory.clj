@@ -132,9 +132,11 @@
   [s branch if-node]
   (reset! *state* s)
   (let [b (visit branch)]
-    (when-not (diverges? b)
+    ;; only an owned if takes its branch's value; a unit or scalar if leaves an
+    ;; owned branch value in the branch's own deleters, freed at its end
+    (when (and (not (diverges? b)) (owned? if-node))
       (binding [*why* "returns it"] (unmanage! b))
-      (when (owned? if-node) (manage-id! (:id if-node))))
+      (manage-id! (:id if-node)))
     [b (deleters)]))
 
 (defn- visit-if [node]
