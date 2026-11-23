@@ -195,9 +195,11 @@ jobs:
       # DELETE_ON_CLOSE: a HANDLE opened with FILE_FLAG_DELETE_ON_CLOSE, read and
       # written through ReadFile/WriteFile. The file is there while the stream
       # is open, readable and writable through it, and gone once it closes.
+      # NOFOLLOW_LINKS refuses a link made with CreateSymbolicLinkW, which Wine
+      # only stubs, so the links are required here.
       - name: DELETE_ON_CLOSE streams and channels
         if: ${{ !cancelled() }}
-        run: target/release/jolt.exe test/chez/delete-on-close-smoke.clj
+        run: JOLT_REQUIRE_SYMLINKS=1 target/release/jolt.exe test/chez/delete-on-close-smoke.clj
 
       - name: Write the OpenSSL app
         run: |

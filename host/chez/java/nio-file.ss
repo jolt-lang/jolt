@@ -818,7 +818,7 @@
                                                            (string-append "'" (enum-name o) "' not allowed"))))
                                             (npath-spread-args opts))
                                   (io-note-file-read! fp)
-                                  (let ((port (if (nio-delete-on-close? opts)
+                                  (let ((port (if (nio-channel-open? opts)
                                                   (vector-ref (nio-native-port fp (nio-shown p)
                                                                                (nio-channel-syms opts) 'input)
                                                               0)
@@ -1281,17 +1281,51 @@
                  (and (string? parent) (not (file-directory? parent)))))
            (nio-no-such-file shown-link other))
           (else (nio-fs-throw "java.nio.file.FileSystemException" shown-link other)))))
+;; Files.createSymbolicLink on Windows, as WindowsFileSystemProvider makes one:
+;; CreateSymbolicLinkW with the target in backslashes, SYMBOLIC_LINK_FLAG_DIRECTORY
+;; when the target (resolved against the link's directory) is a directory, and
+;; SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE, dropped and retried when the
+;; system answers ERROR_INVALID_PARAMETER (one too old to know it), as the JDK's
+;; native CreateSymbolicLink does. A drive-relative target ("C:x") is refused, as
+;; there.
+(define-win32-proc win32-create-symbolic-link-w
+  "kernel32.dll" "CreateSymbolicLinkW" (void* void* unsigned-32) unsigned-8)
+(define (nio-win32-create-symlink! l target shown)
+  (let* ((create (win32-create-symbolic-link-w))
+         (t (list->string (map (lambda (c) (if (char=? c #\/) #\\ c)) (string->list target))))
+         (n (string-length t))
+         (drive? (and (>= n 2) (char=? (string-ref t 1) #\:)))
+         (rooted? (and (>= n 1) (char=? (string-ref t 0) #\\))))
+    (unless create
+      (throw-jvm 'UnsupportedOperationException "Symbolic links not supported on this operating system"))
+    (when (and drive? (not (and (>= n 3) (char=? (string-ref t 2) #\\))))
+      (throw-jvm 'IOException "Cannot create symbolic link to working directory relative target"))
+    (let* ((parent (npath-parent-for #t l))
+           (resolved (if (or drive? rooted? (not (string? parent))) t (string-append parent "\\" t)))
+           (flags (if (file-directory? resolved) 1 0))
+           (call (lambda (fl)
+                   (win32-with-wstr l
+                     (lambda (wl)
+                       (win32-with-wstr t
+                         (lambda (wt)
+                           (fc-win32-call (lambda (r) (not (= r 0))) (lambda () (create wl wt fl))))))))))
+      (let-values (((r err) (call (bitwise-ior flags 2))))
+        (let-values (((r err) (if (and (= r 0) (= err 87)) (call flags) (values r err))))
+          (when (= r 0) (fc-win32-throw shown err)))))))
 (define fvo-nofollow (make-jhost "link-option" 'nofollow-links))
 (let ((files-attr
        (list (cons "readAttributes" nio-read-attributes)
              (cons "isSymbolicLink" (lambda (p . _) (if (nio-is-symlink? (nfp p)) #t #f)))
              (cons "createSymbolicLink" (lambda (link target . _)
-                                          (if c-symlink
-                                              (let ((t (npath-string-of target)) (l (nfp link)))
-                                                (let-values (((r err) (io-call+errno (c-symlink t l))))
-                                                  (unless (= 0 r)
-                                                    (nio-link-failed l #f (nio-shown link) #f err))))
-                                              (jolt-throw (jolt-ex-info "symlink unavailable" empty-pmap)))
+                                          (let ((t (npath-string-of target)) (l (nfp link)))
+                                            (cond ((nio-windows?) (nio-win32-create-symlink! l t (nio-shown link)))
+                                                  (c-symlink
+                                                   (let-values (((r err) (io-call+errno (c-symlink t l))))
+                                                     (unless (= 0 r)
+                                                       (nio-link-failed l #f (nio-shown link) #f err))))
+                                                  (else
+                                                   (throw-jvm 'UnsupportedOperationException
+                                                              "Symbolic links not supported on this operating system"))))
                                           (->path link)))
              (cons "createLink" (lambda (link existing . _)
                                   (let* ((l (nfp link)) (e (nfp existing))
@@ -1345,7 +1379,7 @@
 ;; open-file-output-port with no `no-fail` option owns the O_EXCL-style create
 ;; handle itself.
 (define (nio-output-file-options args)
-  (let* ((opts (npath-spread-args args))
+  (let* ((opts (filter (lambda (o) (not (link-option? o))) (npath-spread-args args)))
          (syms (map oopt-sym opts)))
     (for-each
      (lambda (sym)
@@ -1403,13 +1437,14 @@
           n)
         #f #f
         (lambda () (close-port port))))))
-;; DELETE_ON_CLOSE opens through the channel's ops (nio-native-port): unlinked
-;; once open on Unix, FILE_FLAG_DELETE_ON_CLOSE on Windows, and a symbolic link
-;; refused on both, as the JDK's channel factories do. newOutputStream adds WRITE
+;; DELETE_ON_CLOSE and NOFOLLOW_LINKS open through the channel's ops
+;; (nio-native-port, nio-channel-open?): unlinked once open on Unix,
+;; FILE_FLAG_DELETE_ON_CLOSE on Windows, and a symbolic link refused on both, as
+;; the JDK's channel factories do. newOutputStream adds WRITE
 ;; to the options before it opens, which is what keeps the channel's
 ;; read-by-default out.
 (define (nio-open-output-port fp options opts . shown)
-  (if (nio-delete-on-close? opts)
+  (if (nio-channel-open? opts)
       (vector-ref (nio-native-port fp (if (pair? shown) (car shown) fp)
                                    (nio-channel-syms opts (make-oopt 'write)) 'output)
                   0)
@@ -2337,6 +2372,7 @@
                              (make-custom-binary-output-port fp write! get-position set-position! close)))
                  (else (make-custom-binary-input/output-port
                         fp read! write! get-position set-position! close)))))
+      (port-size-probe! port (lambda () (fc-win32-size h fp)))   ; available, skip (io-streams.ss)
       (vector port
               (lambda (port) (fc-win32-size h fp))
               ;; SetEndOfFile cuts at the file pointer, so move it there and back
@@ -2374,7 +2410,11 @@
          (native ((vector-ref ops 0) fp shown syms #o666)))
     (guard (e (#t (guard (_ (#t #f)) ((vector-ref ops 1) native)) (raise e)))
       ((vector-ref ops 8) native mode syms fp))))
-(define (nio-delete-on-close? opts) (nio-opts-have? opts oopt-sym 'delete-on-close))
+;; The options only the channel's open can honour: DELETE_ON_CLOSE, and
+;; NOFOLLOW_LINKS (O_NOFOLLOW, or FILE_FLAG_OPEN_REPARSE_POINT and a check of
+;; what it opened). A Files open with either goes through nio-native-port.
+(define (nio-channel-open? opts)
+  (or (nio-opts-have? opts oopt-sym 'delete-on-close) (nio-opts-nofollow? opts)))
 
 ;; A channel collected without being closed gives its descriptor back here, as
 ;; the JDK's cleaner does. Drained at each open, which is when the process is
@@ -2759,7 +2799,7 @@
          (read? (and (memq 'read syms) #t))
          (write? (and (memq 'write syms) #t))
          (st (cond
-               ((memq 'delete-on-close syms)
+               ((or (memq 'delete-on-close syms) (memq 'nofollow-links syms))
                 (nio-native-port fp shown syms
                                  (cond ((and read? write?) 'input/output) (write? 'output) (else 'input))))
                (write?

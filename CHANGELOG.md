@@ -65,6 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   newFileChannel does: READ + APPEND is "READ + APPEND not allowed", a channel
   opened without READ throws NonReadableChannelException on read, and READ with
   DELETE_ON_CLOSE deletes the file, which it skipped before.
+- **`Files/newInputStream`, `newOutputStream` and `newByteChannel` honour
+  `LinkOption/NOFOLLOW_LINKS`.** The output opens threw
+  UnsupportedOperationException for it and the input stream ignored it. A
+  symbolic link is now refused with the JDK's IOException, a dangling one is
+  not followed to create its target, and a plain file opens as usual.
+- **`newInputStream`'s `available` and `skip` are the channel's.** `available`
+  is what is left of the file, also on a Windows DELETE_ON_CLOSE stream, which
+  answered 0. `skip` stops at the end of the file and can move back to its
+  start, as JDK 21's ChannelInputStream does. It used to move past the end
+  and answer the full count asked for.
+- **`Files/createSymbolicLink` works on Windows.** It threw an ex-info
+  "symlink unavailable". It now calls CreateSymbolicLinkW the way the JDK does:
+  the directory flag for a directory target, unprivileged creation where the
+  system allows it, and the JDK's exceptions on failure.
 - **`(require 'x :reload-all)` of a namespace load-file'd from off the source
   roots throws.** The check from #1751 only covered `:reload`, so `:reload-all`
   kept the stale definitions in silence. The message is now RT.load's, `Could

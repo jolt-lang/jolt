@@ -1,5 +1,6 @@
 ;; Files/newInputStream, newOutputStream and newByteChannel with
-;; StandardOpenOption/DELETE_ON_CLOSE, asserted the way the JDK answers. On
+;; StandardOpenOption/DELETE_ON_CLOSE or LinkOption/NOFOLLOW_LINKS, asserted the
+;; way the JDK answers. On
 ;; Windows they open a HANDLE with FILE_FLAG_DELETE_ON_CLOSE and read and write
 ;; it with ReadFile/WriteFile (nio-file.ss fc-win32-port), so the file is there
 ;; while the stream is open and gone once it closes; on POSIX it is unlinked as
@@ -62,6 +63,12 @@
          (.close in)
          [s open? (there? p)])
        ["hello" while-open false])
+(check "newInputStream available and skip follow the channel's position and size"
+       (let [p (fresh "in-av" "hello")]
+         (with-open [in (Files/newInputStream p (opts DOC))]
+           [(.available in) (.read in) (.available in) (.skip in 100) (.available in)
+            (.skip in -2) (.read in) (.skip in -100) (.available in)]))
+       [5 104 4 4 0 -2 108 -4 5])
 (check "newInputStream READ + DELETE_ON_CLOSE, a missing file"
        (let [e (try (Files/newInputStream (path "nothere") (opts R DOC)) (catch Exception e e))]
          (.getName (class e)))
@@ -170,6 +177,52 @@
            (.write ch (bytes-of "J"))
            [(.size ch) (.position ch)]))
        [5 1])
+
+;; --- NOFOLLOW_LINKS --------------------------------------------------------------
+;; The JDK refuses a link with an IOException whose message is the host's: ELOOP
+;; with " (NOFOLLOW_LINKS specified)" on Unix, "File is symbolic link" on Windows.
+(def NF LinkOption/NOFOLLOW_LINKS)
+(defn link-refused [f]
+  (try (.close (f)) :opened
+       (catch java.io.IOException e
+         (let [m (str (.getMessage e))]
+           (if (or (.endsWith m " (NOFOLLOW_LINKS specified)") (= m "File is symbolic link"))
+             :refused
+             [(.getName (class e)) m])))))
+;; Wine's CreateSymbolicLinkW is a stub that answers success and makes nothing,
+;; so where no link appears the row is skipped, unless JOLT_REQUIRE_SYMLINKS is
+;; set (windows-static sets it: the runner can make links).
+(def link-ok?
+  (let [t (fresh "probe-target" "x") l (path "probe-ln")
+        ok (try (Files/createSymbolicLink l t (make-array FileAttribute 0))
+                (Files/isSymbolicLink l)
+                (catch Exception e (println "     createSymbolicLink:" (str e)) false))]
+    (Files/deleteIfExists l) (Files/delete t)
+    ok))
+(if (or link-ok? (System/getenv "JOLT_REQUIRE_SYMLINKS"))
+(check "NOFOLLOW_LINKS refuses a symbolic link on all three opens, with and without DELETE_ON_CLOSE"
+       (let [target (fresh "nf-target" "hello")
+             ln (Files/createSymbolicLink (path "nf-ln") target (make-array FileAttribute 0))
+             r [(link-refused #(Files/newInputStream ln (opts NF)))
+                (link-refused #(Files/newInputStream ln (opts NF DOC)))
+                (link-refused #(Files/newOutputStream ln (opts W NF)))
+                (link-refused #(Files/newOutputStream ln (opts W NF DOC)))
+                (link-refused #(Files/newByteChannel ln (opts NF)))
+                (link-refused #(Files/newByteChannel ln (opts R W NF DOC)))
+                (there? ln) (slurp (str target))]]
+         (Files/delete ln) (Files/delete target)
+         r)
+       [:refused :refused :refused :refused :refused :refused true "hello"])
+(println "skip  NOFOLLOW_LINKS on a symbolic link: this host makes no links"))
+(check "NOFOLLOW_LINKS on a plain file reads and writes it"
+       (let [p (fresh "nf-plain" "hello")
+             r [(with-open [in (Files/newInputStream p (opts NF))] (String. (.readAllBytes in)))
+                (do (with-open [out (Files/newOutputStream p (opts A NF))] (.write out (.getBytes "!")))
+                    (slurp (str p)))
+                (with-open [ch (Files/newByteChannel p (opts R W NF))] (.size ch))]]
+         (Files/delete p)
+         r)
+       ["hello" "hello!" 6])
 
 (Files/delete dir)
 (if (pos? @fails)
