@@ -659,6 +659,19 @@
   (print-meta o w)
   (.write w (str o)))
 
+;; print-sequential's element walk: at most limit elements (nil for all), then
+;; "..." when more remain
+(defn- print-elements [print-one sep limit xs w]
+  (loop [[x & xs] xs
+         n limit]
+    (if (and n (zero? n))
+      (.write w "...")
+      (do
+        (print-one x w)
+        (when xs
+          (.write w sep)
+          (recur xs (when n (dec n))))))))
+
 (defn- print-sequential [begin print-one sep end sequence w]
   (binding [*print-level* (and (not *print-dup*) *print-level* (dec *print-level*))]
     (if (and *print-level* (neg? *print-level*))
@@ -666,21 +679,7 @@
       (do
         (.write w begin)
         (when-let [xs (seq sequence)]
-          (if (and (not *print-dup*) *print-length*)
-            (loop [[x & xs] xs
-                   print-length *print-length*]
-              (if (zero? print-length)
-                (.write w "...")
-                (do
-                  (print-one x w)
-                  (when xs
-                    (.write w sep)
-                    (recur xs (dec print-length))))))
-            (loop [[x & xs] xs]
-              (print-one x w)
-              (when xs
-                (.write w sep)
-                (recur xs)))))
+          (print-elements print-one sep (and (not *print-dup*) *print-length*) xs w))
         (.write w end)))))
 
 (defn- print-map [m print-one w]
