@@ -17,6 +17,9 @@
 
 ;; elements; 256 doubles is 2KB of stack per site
 (def max-elems 256)
+;; elements across one function's frame: 8KB, so a deep (non-recursive) helper
+;; chain cannot add up to a stack overflow
+(def max-frame-elems 1024)
 
 ;; {holder-id #{site-id}}: what each node id and binding id can hold
 (def ^:dynamic *srcs* nil)
@@ -52,7 +55,13 @@
   (case (:op node)
     :new-array (do (walk (:len node)) (hold! (:id node) #{(:id node)}))
     :aclone (do (walk (:arr node)) (hold! (:id node) #{(:id node)}))
-    :local (get @*srcs* (:binding node) #{})
+    ;; an owned array with no allocation site here (a parameter the helper may
+    ;; take) is an unknown heap array: its binding stands for it, so a holder
+    ;; that can be it or a stack site is mixed and settle keeps both on the heap
+    :local (let [s (get @*srcs* (:binding node) #{})]
+             (if (and (empty? s) (ast/owned? (:type node)))
+               (hold! (:binding node) #{(:binding node)})
+               s))
     :let (do (doseq [b (:bindings node)] (hold! (:id b) (walk (:init b))))
              (hold! (:id node) (walk (:body node))))
     :do (do (run! walk (:statements node)) (hold! (:id node) (walk (:ret node))))
@@ -128,7 +137,11 @@
     ;; first walk only learns after the uses that read it
     (dotimes [_ 3] (escape! (walk body)))
     (let [cands (into {} (map (fn [n] [(:id n) (:val (:len n))])) (filter candidate? (nodes body)))
-          stack (settle (apply disj (set (keys cands)) @*escapes*) @*srcs*)]
+          stack (loop [st (settle (apply disj (set (keys cands)) @*escapes*) @*srcs*)]
+                  ;; over the frame budget: the largest site goes to the heap
+                  (if (> (reduce + 0 (map cands st)) max-frame-elems)
+                    (recur (settle (disj st (apply max-key cands st)) @*srcs*))
+                    st))]
       (let [sites (select-keys cands stack)
             scalar (scalar-sites body @*srcs* sites)]
         {:sites sites
@@ -136,12 +149,31 @@
          :scalar (into {} (for [[id s] @*srcs* :when (and (= 1 (count s)) (scalar (first s)))]
                             [id (first s)]))}))))
 
+(def ^:private none {:sites {} :holders #{} :scalar {}})
+
+(defn- recursive-iids
+  "Helper instances that can call themselves, directly or through others: each
+  call would push another frame of stack arrays, so they keep theirs on the heap."
+  [instances]
+  (let [calls (into {} (for [inst instances]
+                         [(:iid inst)
+                          (set (keep #(when (= :call (:op %)) (:instance %))
+                                     (mapcat nodes (cons (:body inst) (map :body (:variants inst))))))]))
+        reach (fn [iid] (loop [seen #{} todo (vec (calls iid))]
+                          (if-let [x (peek todo)]
+                            (if (seen x) (recur seen (pop todo))
+                                (recur (conj seen x) (into (pop todo) (calls x))))
+                            seen)))]
+    (set (filter #(contains? (reach %) %) (keys calls)))))
+
 (defn analyze-region
   "{:entry analysis, iid analysis ...} for a checked region."
   [region]
-  (into {:entry (analyze-fn (:body region) (:takes region))}
-        (mapcat (fn [inst]
-                  (cons [(:iid inst) (analyze-fn (:body inst) (:takes region))]
-                        (map-indexed (fn [i v] [[(:iid inst) i] (analyze-fn (:body v) (:takes region))])
-                                     (:variants inst)))))
-        (:instances region)))
+  (let [rec (recursive-iids (:instances region))
+        fn-of (fn [inst body] (if (rec (:iid inst)) none (analyze-fn body (:takes region))))]
+    (into {:entry (analyze-fn (:body region) (:takes region))}
+          (mapcat (fn [inst]
+                    (cons [(:iid inst) (fn-of inst (:body inst))]
+                          (map-indexed (fn [i v] [[(:iid inst) i] (fn-of inst (:body v))])
+                                       (:variants inst)))))
+          (:instances region))))

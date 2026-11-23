@@ -630,6 +630,31 @@
 (check-eq "a constant index past the end keeps the array in memory"
           (stack-arrays (c-of '[^boolean c] '((let [t (double-array 2)] (if c (aget t 5) (aget t 1)))))) 1)
 
+;; an owned helper parameter has no site of its own: a name that can be it or a
+;; stack array stays on the heap, scalarized neither, and is freed as a whole
+(defnative pick-own [c xs] (let [x (if c (double-array 2) xs)] (aget x 0)))
+(defnative pick-own-at [c xs i] (let [x (if c (double-array 2) xs)] (aget x i)))
+(defnative carry-own [xs n] (loop [x (double-array 2) i 0] (if (< i n) (recur xs (inc i)) (aget x 0))))
+(check-run "a stack site and an owned parameter in one name" '[^long n]
+           '((let [a (double-array n)] (aset a 0 5.0) (pick-own (< n 0) a)))
+           [[3] [1] [0]] :raw true)
+(check-run "the same at a variable index" '[^long n ^long i]
+           '((let [a (double-array n)] (aset a 0 5.0) (pick-own-at (< n 0) a i)))
+           [[3 0] [3 2] [3 5] [1 0]] :raw true)
+(check-run "an owned parameter carried into a loop's stack site by recur" '[^long n]
+           '((let [a (double-array 3)] (aset a 0 4.0) (carry-own a n)))
+           [[0] [1] [3]] :raw true)
+;; each frame of a recursive helper would push its stack arrays again
+(defnative deep-buf [n] (let [b (double-array 256)] (aset b 0 1.0) (if (<= n 0) (aget b 0) (+ (aget b 0) (deep-buf (dec n))))))
+(check-eq "a recursive helper keeps its arrays on the heap"
+          (stack-arrays (c-of '[^long n] '((deep-buf n)))) 0)
+(check-run "a recursive helper with an array per frame" '[^long n] '((deep-buf n)) [[0] [50]] :raw true)
+(check-eq "a frame keeps at most 8KB of stack arrays"
+          (stack-arrays (c-of '[] '((let [a (double-array 256) b (double-array 256) c (double-array 256)
+                                          d (double-array 256) e (double-array 256)]
+                                      (+ (dot a a) (dot b b) (dot c c) (dot d d) (dot e e))))))
+          4)
+
 (check-run "locals are zeroed each time the array is made" '[^long n]
            '((loop [i 0 s 0.0]
                (if (< i n)
@@ -651,6 +676,8 @@
 (defextern ^double ext-half [^double x] {:c "jn_ext_half"})
 (defextern ext-tick [] {:c "jn_ext_tick"})
 (defextern ^long ext-ticks [] {:c "jn_ext_ticks"})
+;; no :c: the symbol's name with - (and anything else C refuses) as _
+(defextern ^double jn-ext-half [^double x])
 
 (check-run "a region calls declared C functions" '[^long n ^double d]
            '((loop [i 0 s 0]
@@ -662,6 +689,7 @@
 (check-run "a long passed where C takes a double" '[^long n]
            '((ext-half n))
            [[9] [-3]])
+(check-run "a C name made from the symbol's" '[^double d] '((jn-ext-half d)) [[3.0] [-1.0]])
 
 (let [before (ext-ticks)
       f (:call (compile-region '[^long n] '((dotimes [_ n] (ext-tick)) (ext-ticks))))]

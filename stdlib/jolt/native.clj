@@ -215,10 +215,21 @@
   Jolt fallback, name calls the same function through jolt.ffi, copying arrays
   in and back out.
 
+  The C name is the symbol's with each character C does not allow as _
+  (fast-erf is fast_erf), unless :c names it. Without a :header the
+  prototype comes from the hints, so a function libc already declares
+  (abs, labs) needs its own :header or a wrapper of another name: the
+  hinted prototype would conflict with the one the region's C includes.
+
+  The same array passed twice reaches C as one pointer, but the Jolt
+  fallback copies each argument into its own buffer: a function that reads
+  one while it writes the other sees different values in the two, so pass
+  distinct arrays.
+
   The checker cannot see into the C: a region that calls one is memory safe
   only as far as that function is."
   [name params & [opts]]
-  (let [c (or (:c opts) (str name))
+  (let [c (or (:c opts) (str/replace (str name) #"[^A-Za-z0-9_]" "_"))
         header (:header opts)
         ret (if (:tag (meta name)) (extern-type name (str "the result of " name) false) :unit)
         ps (mapv #(extern-type % (str "parameter " %) true) params)
