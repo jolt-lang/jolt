@@ -63,6 +63,37 @@
 (defn map-node [pairs] {:op :map :pairs pairs})
 (defn set-node [items] {:op :set :items items})
 
+(defn distinct-const-keys?
+  "Can these literal keys (or set elements) skip the runtime duplicate check?
+  Even an all-constant list can have duplicates after constant folding."
+  [ks]
+  (or (empty? (rest ks))
+      (and (every? (fn [k] (= :const (:op k))) ks)
+           (apply distinct? (map :val ks)))))
+
+(defn const-coll-node?
+  "Is the entire literal constant? For eager construction every nested map
+  and set must also be able to skip its duplicate check."
+  ([n] (const-coll-node? n false))
+  ([n eager?]
+   (and (map? n)
+        (case (:op n)
+          (:const :quote :regex) true
+          (:vector :set)
+          (and (or (not eager?) (= :vector (:op n)) (distinct-const-keys? (:items n)))
+               (every? #(const-coll-node? % eager?) (:items n)))
+          :map
+          (and (or (not eager?) (distinct-const-keys? (map first (:pairs n))))
+               (every? #(and (const-coll-node? (first %) eager?)
+                             (const-coll-node? (second %) eager?)) (:pairs n)))
+          false))))
+
+(defn eager-const-coll-node?
+  "Can the entire literal be built once, ahead of its call site? Unlike
+  const-coll-node?, no nested map or set may need a runtime duplicate check."
+  [n]
+  (const-coll-node? n true))
+
 (defn quote-node [form] {:op :quote :form form})
 (defn throw-node [expr] {:op :throw :expr expr})
 

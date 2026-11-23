@@ -5,6 +5,7 @@
   rather than rebuilt per evaluation. Also which top-level expressions get such
   a scope at all."
   (:require [clojure.string :as str]
+            [jolt.ir :as ir]
             [jolt.backend-scheme.names :refer [chez-str-lit]]
             [jolt.backend-scheme.session :refer [fresh-label var-cache?]]))
 
@@ -167,19 +168,18 @@
     (str "(jolt-site-const " (chez-str-lit id) " (lambda () " s "))")
     s))
 
-(defn const-coll-node? [n]
-  (and (map? n)
-       (case (:op n)
-         :const true
-         :quote true
-         ;; a #"…" literal is a constant object too (the reader hands the
-         ;; reference compiler a Pattern, which lands in the constant pool), so
-         ;; a collection holding one is as constant as one holding scalars
-         :regex true
-         :vector (every? const-coll-node? (:items n))
-         :set (every? const-coll-node? (:items n))
-         :map (every? const-coll-node? (apply concat (:pairs n)))
-         false)))
+(defn hoist-coll-literal [node expr]
+  (if (ir/const-coll-node? node)
+    (let [value (site-const node expr)]
+      (cond
+        (nil? *const-pool*) value
+        (ir/eager-const-coll-node? node) (hoist-const-per-site value)
+        ;; The constructor can throw. Run it at the original call site and
+        ;; publish only a successful result, shared across all callers.
+        :else (let [cell (hoist-const-per-site "(jolt-atom-new #f)")]
+                (str "(or (jolt-atom-val " cell ")"
+                     " (begin (jolt-atom-cas! " cell " #f " value ") (jolt-atom-val " cell ")))"))))
+    expr))
 
 ;; A :map literal whose keys are all constant keywords, pairwise distinct
 ;; (the reader refuses a repeat; checked anyway, since the direct build below
@@ -193,15 +193,6 @@
          (<= (count ks) array-map-limit-kw)
          (every? (fn [k] (and (= :const (:op k)) (keyword? (:val k)))) ks)
          (apply distinct? (map :val ks)))))
-
-;; Literal keys (or set elements) that cannot collide: at most one, or every one
-;; a :const and no two equal, which the reader has already checked. Any other literal is built by the checked
-;; constructor, which throws IllegalArgumentException when keys computed at run
-;; time collide, as the JVM's createWithCheck does.
-(defn distinct-const-keys? [ks]
-  (or (empty? (rest ks))
-      (and (every? (fn [k] (= :const (:op k))) ks)
-           (apply distinct? (map :val ks)))))
 
 ;; The pool's bindings as flat `let` layers by dependency depth: layer 0 holds the
 ;; constants that reference no other constant, layer k those whose deepest
