@@ -2387,10 +2387,23 @@
 ;; the JDK's lock0 with block; __collect_safe, and its OVERLAPPED in foreign
 ;; memory. A close or an interrupt cancels it with CancelSynchronousIo
 ;; (ERROR_OPERATION_ABORTED).
-(define-win32-proc-blocking win32-lock-file-ex-wait
-  "kernel32.dll" "LockFileEx" (iptr unsigned-32 unsigned-32 unsigned-32 unsigned-32 void*) int)
-(define-win32-proc-blocking win32-get-overlapped-result-wait
-  "kernel32.dll" "GetOverlappedResult" (iptr void* void* int) int)
+;;
+;; The error is Chez's __get_last_error capture, taken as the call returns: a
+;; GetLastError read afterwards, even with interrupts off, came back 0 on a real
+;; Windows runner once the collect-safe call had reactivated the thread. Built
+;; at run time (eval), as ffi.ss builds its variadic captures, so no literal
+;; entry reaches a boot file.
+(define (fc-win32-capture-proc name args)
+  (and (win32?)
+       (begin
+         (win32-load-lib! "kernel32.dll")
+         (and (sa-foreign-entry? name)
+              (guard (e (#t #f))
+                (eval (list 'foreign-procedure '__get_last_error '__collect_safe name args 'int)))))))
+(define-win32-memo win32-lock-file-ex-wait
+  (fc-win32-capture-proc "LockFileEx" '(iptr unsigned-32 unsigned-32 unsigned-32 unsigned-32 void*)))
+(define-win32-memo win32-get-overlapped-result-wait
+  (fc-win32-capture-proc "GetOverlappedResult" '(iptr void* void* int)))
 (define win32-ERROR-OPERATION-ABORTED 995)
 (define (fc-win32-lock-wait h kind start size op)
   (let* ((lock (win32-lock-file-ex-wait))
@@ -2404,17 +2417,16 @@
     (let ((r (let retry ()
                (if (jolt-offload-cancelled? op)
                    'cancelled
-                   (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0)))
-                                           (lambda () (lock h flags 0 lo hi o)))))
+                   (let-values (((r err) (lock h flags 0 lo hi o)))
                      (cond ((not (= r 0)) 'granted)
                            ((= err win32-ERROR-IO-PENDING)
-                            (let ((wait (win32-get-overlapped-result-wait)))
-                              (let-values (((r err) (fc-win32-call (lambda (r) (not (= r 0)))
-                                                      (lambda () (wait h o count 1)))))
-                                (cond ((not (= r 0)) 'granted)
-                                      ((= err win32-ERROR-OPERATION-ABORTED) (retry))
-                                      (else err)))))
-                           ((= err win32-ERROR-OPERATION-ABORTED) (retry))
+                            (let-values (((r err) ((win32-get-overlapped-result-wait) h o count 1)))
+                              (cond ((not (= r 0)) 'granted)
+                                    ((memv err (list 0 win32-ERROR-OPERATION-ABORTED)) (retry))
+                                    (else err))))
+                           ;; cancelled (the flag decides, at the top), or no error
+                           ;; to report: ask again
+                           ((memv err (list 0 win32-ERROR-OPERATION-ABORTED)) (retry))
                            (else err)))))))
       (sa-foreign-free o)
       (sa-foreign-free count)
