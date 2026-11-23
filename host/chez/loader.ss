@@ -2959,14 +2959,36 @@
 ;; Contexts and not thread ids, which is what extends this to fibers: two fibers on
 ;; one carrier that park mid-load waiting on each other are a genuine cycle, and
 ;; keyed by thread id they collided in ldr-waiting and the walk could not see it.
-(define (ldr-wait-cycle owner me)
-  (let loop ((t owner) (n 0) (acc '()))
+(define (ldr-wait-cycle owner me) (ldr-wait-walk owner me '()))
+
+;; The walk itself, from context T toward ME, ACC holding the edges walked so
+;; far. Two kinds of edge leave a context: it waits on a namespace another
+;; context is loading (ldr-waiting, then ldr-loading for the owner), or it is
+;; blocked until an object settles that some known context will settle -- a
+;; future's runner, a thread or fiber it joins (locks.ss jolt-blocked-on). The
+;; second kind is what lets a load see that it is waiting on work which is
+;; itself waiting on the load: an install namespace whose top level derefs a
+;; future that reaches one of the provider's classes, the JVM's
+;; class-initialization deadlock. Each edge is #(context text ns): TEXT for the
+;; message, NS when the edge is a wait on a load (#f for a blocked-on edge).
+;; Call with ldr-load-mu HELD.
+(define (ldr-wait-walk t me acc)
+  (let loop ((t t) (n 0) (acc acc))
     (and (fx< n 256)
          (let ((w (hashtable-ref ldr-waiting t #f)))
-           (and w
-                (let ((o (hashtable-ref ldr-loading w #f))
-                      (acc (cons (cons t w) acc)))
-                  (and o (if (eqv? o me) (reverse acc) (loop o (fx+ n 1) acc)))))))))
+           (if w
+               (let ((o (hashtable-ref ldr-loading w #f))
+                     (acc (cons (vector t w w) acc)))
+                 (and o (if (eqv? o me) (reverse acc) (loop o (fx+ n 1) acc))))
+               (let* ((obj (jolt-blocked-on-ref t))
+                      (r (and obj (jolt-block-releaser obj))))
+                 (and r
+                      (let ((acc (cons (vector t (ldr-blocked-text r) #f) acc)))
+                        (if (eqv? (car r) me) (reverse acc) (loop (car r) (fx+ n 1) acc))))))))))
+(define (ldr-blocked-text r)
+  (if (jolt-fiber? (car r))
+      (cdr r)
+      (string-append (cdr r) " (" (ldr-ctx-str (car r)) ")")))
 
 ;; "thread 3 waits on a/b (held by thread 5), thread 5 waits on …" — the wait-for
 ;; chain the caller is about to close, rendered in the order it was walked. Fibers
@@ -2978,8 +3000,64 @@
         out
         (loop (cdr c)
               (string-append out (if (string=? out "") "" ", ")
-                             (ldr-ctx-str (caar c))
-                             " waits on " (cdar c))))))
+                             (ldr-ctx-str (vector-ref (car c) 0))
+                             " waits on " (vector-ref (car c) 1))))))
+(define (ldr-chain-has-block? chain)
+  (exists (lambda (e) (not (vector-ref e 2))) chain))
+
+;; The message for a cycle that runs through a load and through work it is
+;; blocked on. ME is the context about to wait on the load of NAME, held by
+;; OWNER; CHAIN runs from OWNER back to ME.
+(define (ldr-blocked-cycle-message me name owner chain)
+  (string-append
+    "Deadlocked load: " (ldr-ctx-str me) " is about to wait on the load of " name
+    " (held by " (ldr-ctx-str owner) "), and " (ldr-wait-chain-str chain)
+    ", which closes back on " (ldr-ctx-str me) ". The load is waiting on work"
+    " that needs the load to finish; neither could ever go on. Don't block a"
+    " namespace's top level on a thread, future or fiber that uses that"
+    " namespace or a class it provides."))
+
+;; Waiters told to give up because their wait closes such a cycle: context ->
+;; message. A cycle is usually closed by the waiter (ldr-begin-load! walks before
+;; it waits), but when the work is already waiting on the load and the LOAD then
+;; blocks on it, the load is the one that closes it (ldr-block-closing!). The
+;; waiter is the one that raises either way: its wait is the one that can never
+;; end, while the load's block ends as soon as the waiter's raise settles the
+;; work -- a future then fails, and the deref in the namespace's top level sees
+;; an ExecutionException whose cause names the cycle, the same thing it sees
+;; when the waiter closes it. Under ldr-load-mu.
+(define ldr-broken (make-eqv-hashtable))
+(define (ldr-break-waiter! ctx ns msg)
+  (hashtable-set! ldr-broken ctx msg)
+  (let ((fs (hashtable-ref ldr-fiber-waiters ns '())))
+    (unless (null? fs)
+      (hashtable-delete! ldr-fiber-waiters ns)
+      ;; every fiber parked on the load comes back and decides again; only the
+      ;; broken one raises, the rest park again
+      (for-each sa-fiber-resume fs)))
+  (condition-broadcast ldr-load-cv))
+(set! jolt-block-closing!
+  (lambda (obj me)
+    (unless (fx= 0 (hashtable-size ldr-loading))
+      (let ((r (jolt-block-releaser obj)))
+        (when r
+          (jolt-with-mutex ldr-load-mu
+            (let ((chain (if (eqv? (car r) me)
+                             '()
+                             (ldr-wait-walk (car r) me (list (vector me (ldr-blocked-text r) #f))))))
+              (when chain
+                (let ((w (find (lambda (e) (vector-ref e 2)) chain)))
+                  (when w
+                    ;; rotate the chain to start at the waiter's load owner, as
+                    ;; the waiter's own walk would have rendered it
+                    (let* ((ns (vector-ref w 2))
+                           (owner (hashtable-ref ldr-loading ns #f))
+                           (rest (let split ((c chain) (before '()))
+                                   (if (eq? (car c) w)
+                                       (append (cdr c) (reverse before))
+                                       (split (cdr c) (cons (car c) before))))))
+                      (ldr-break-waiter! (vector-ref w 0) ns
+                        (ldr-blocked-cycle-message (vector-ref w 0) ns owner rest)))))))))))))
 
 ;; Every way out of the decision below leaves the wait-for graph as it found it.
 ;; Deleting on the way out rather than immediately after each wait is what lets the
@@ -2987,7 +3065,7 @@
 ;; cycle is only visible to another context's walk if the waits in it are all on the
 ;; table at once. A delete with nothing to delete is a no-op, so the first-iteration
 ;; exits (steps 3 and 4) cost one lookup and say what they mean.
-(define (ldr-decided! me v) (hashtable-delete! ldr-waiting me) v)
+(define (ldr-decided! me v) (hashtable-delete! ldr-waiting me) (hashtable-delete! ldr-broken me) v)
 
 ;; -> 'loaded | 'recursive | 'claimed. Steps 1-6.
 ;;
@@ -3007,9 +3085,19 @@
               ((and owner (eqv? owner me))                    ; step 3
                (ldr-decided! me 'recursive))
               (owner                                          ; step 2
+               ;; a load that blocked on this context's work after it started
+               ;; waiting closed the cycle on it (ldr-block-closing!)
+               (let ((msg (hashtable-ref ldr-broken me #f)))
+                 (when msg
+                   (ldr-decided! me #f)
+                   (throw-jvm (quote IllegalStateException) msg)))
                (let ((chain (ldr-wait-cycle owner me)))
                  (when chain
+                   ;; the entry a previous round of this wait left, gone with it
+                   (ldr-decided! me #f)
                    (throw-jvm (quote IllegalStateException)
+                     (if (ldr-chain-has-block? chain)
+                         (ldr-blocked-cycle-message me name owner chain)
                      (string-append
                        "Deadlocked require: " (ldr-ctx-str me)
                        " is about to wait on " name " (held by "
@@ -3017,7 +3105,7 @@
                        ", which closes back on " (ldr-ctx-str me) ". "
                        (number->string (fx+ 1 (length chain)))
                        " loads entered a require cycle from different ends; break"
-                       " the cycle or require these namespaces from one thread."))))
+                       " the cycle or require these namespaces from one thread.")))))
                (hashtable-set! ldr-waiting me name)
                ;; a thread's wait ends under this lock, so it loops HERE; a fiber
                ;; answers jolt-lock-parked and comes back in at the top.
@@ -3092,7 +3180,15 @@
 ;; back IF this call made it (a retry then loads) and the caller's ns is restored —
 ;; matching Clojure, which marks a lib loaded only after success.
 (define (load-namespace name) (load-namespace* name #f))
-(define (load-namespace* name force?)
+(define (load-namespace* name force?) (load-namespace** name force? #f))
+;; (load-namespace/when name run?): load-namespace, except that a context that
+;; gets the claim runs the namespace only if (run?) still answers true, asked
+;; under that claim -- after any load it waited for has ended. Otherwise it drops
+;; the claim and returns with the namespace as it found it. host-static.ss loads
+;; a provider's install namespace this way, so a context that waited on a load
+;; that failed does not run the failing namespace a second time.
+(define (load-namespace/when name run?) (load-namespace** name #f run?))
+(define (load-namespace** name force? run?)
   ;; steps 1-6 above: 'loaded and 'recursive are both "complete normally, do
   ;; nothing"; only 'claimed means this thread owns the load and must run it.
   (when (eq? 'claimed (ldr-begin-load! name force?))
@@ -3151,9 +3247,10 @@
         (lambda () (ldr-assert-claim! name))
         (jolt-masked-body
           (lambda ()
-            (call-with-zipdir-read-scope
-              (lambda ()
-                (lib-with-install-ns-mark name (lambda () (ldr-load-body name force? was-loaded?)))))
+            (when (or (not run?) (run?))
+              (call-with-zipdir-read-scope
+                (lambda ()
+                  (lib-with-install-ns-mark name (lambda () (ldr-load-body name force? was-loaded?))))))
             (set! finished? #t)))
         (jolt-masked-cleanup lv
           (unless (jolt-park-unwinding?)
