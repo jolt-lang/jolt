@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.29] - 2026-11-23
+
+Sorted maps and sets now sit on a persistent B+tree, which makes most sorted
+and `java.util.TreeMap` operations faster. Also new: `*print-dup*` prints what
+reads back, `FileChannel` locks interoperate with other processes and wait in
+the kernel, the JDK's `dos:`/`acl:`/`user:` attribute views, and
+`jolt.host/build-id`. Most of the rest is JVM parity in `java.nio.file`
+(attribute snapshots, directory order, Windows `DELETE_ON_CLOSE` and symlinks)
+and fixes from reviewing this window: `letfn` under the optimizer, provider
+autoload across threads with deadlock detection, `=` and `instance?` edge
+cases, and collision-bucket order in hash maps.
+
 ### Added
 
 - **`(jolt.host/build-id)` names the exact build that is running (#1793).**
@@ -98,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `icacls` and `dir /r`.
 
 ### Fixed
+
+- **`clojure.test` counts every assertion when `is` runs on several threads
+  (#1791).** The report counters were bumped from a deref taken outside the
+  `commute` fn, so two threads reporting at once both wrote old+1 and counts
+  were lost; a lost `:fail` could let a runner exit 0. Four futures of 500
+  `(is true)` each now report 2000.
 
 - **`PosixFilePermissions/fromString` answers a `java.util.RegularEnumSet`,
   iterating in ordinal order, as it does on every JDK, and refuses a string
@@ -382,6 +400,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(.toString [1 "a"])` is `[1 "a"]`.
 
 ### Changed
+
+- **Sorted maps and sets are a persistent B+tree (#1757).** It replaces the
+  red-black tree behind `sorted-map`, `sorted-set` and `java.util.TreeMap`:
+  leaves of up to 16 entries and inner nodes of 32, each one vector. Builds
+  sort once and bulk-load. Against 0.8.28 (B/A): `get` 0.84-0.95, `dissoc` of
+  every key 0.69, `pop` loops 0.47-0.61, `subseq` 0.41-0.88, `reduce-kv` 0.06,
+  and `TreeMap` put/get/floorKey/remove 0.19. Peak RSS for 4M entries goes
+  from 1.47 to 1.05 GB. A counting comparator sees a different number of
+  calls than the JVM's red-black tree makes, which is recorded in
+  known-divergences.
 
 - Directory listings come in the order the OS hands entries out (readdir on
   POSIX, `FindNextFileW` on Windows), as the JDK's do, instead of sorted:
