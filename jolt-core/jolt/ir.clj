@@ -152,6 +152,8 @@
 ;; :ffi-fn       :csym :argtypes :rettype         —   (:pointer-call: csym nil,
 ;;                                                     the C fn pointer is arg 0)
 ;; :ffi-callable :fn :argtypes :rettype           :fn
+;; :native-region :sym :src :kinds :result :mode  :args :fallback :raise
+;;                (a jolt.native region call site)
 ;; :regex        :source                          —
 ;; :inst         :source                          —
 ;; :uuid         :source                          —
@@ -231,7 +233,7 @@
   #{:const :local :var :the-var :host :host-static :host-new :if :do :invoke :def
     :let :loop :recur :fn :vector :map :set :quote :throw :coerce :try :host-call
     :set-var :set-field :defmacro :ffi-layout :ffi-fn :ffi-callable :regex :inst :uuid :bigdec
-    :the-ns :load-time-value :inline-guard})
+    :the-ns :load-time-value :inline-guard :native-region})
 
 ;; op -> the keys a node of that op must carry. Optional keys (:init, annotations)
 ;; are not listed. Kept conservative for the leaf/host ops so a shape change
@@ -248,7 +250,8 @@
    :ffi-layout [:layout]
    :ffi-fn [:csym :argtypes :rettype] :ffi-callable [:fn :argtypes :rettype]
    :regex [:source] :inst [:source] :uuid [:source] :bigdec [:source]
-   :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]})
+   :the-ns [:name] :load-time-value [:expr] :inline-guard [:fn :ns :name :token]
+   :native-region [:sym :src :kinds :result :mode :args :fallback :raise]})
 
 ;; Problems with THIS node's shape (not its children): an unknown or missing :op,
 ;; or a missing required key. Returns a seq of message strings (empty when valid).
@@ -340,6 +343,7 @@
    :set-field [[:obj :node] [:val :node]]
    :defmacro [[:fn :node]]
    :ffi-callable [[:fn :node]]
+   :native-region [[:args :nodes] [:fallback :node] [:raise :node]]
    :inline-guard [[:fn :node]]
    :invoke [[:fn :node] [:args :nodes]]
    :vector [[:items :nodes]]

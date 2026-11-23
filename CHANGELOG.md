@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `jolt.native/native`: a block of numeric code that `jolt build` compiles to C
+  and links into the binary, for hot loops. The locals it reads are hinted
+  (`^long`, `^double`, `^boolean`, `^doubles`); a `^doubles` array is read and
+  written in place, with no copy. Arrays the block creates are owned and freed
+  when it is done with them, checked at compile time with an ownership pass
+  ported from Carp, so using an array after giving it away, or returning one it
+  only borrowed, is a compile error. Long arithmetic overflows with
+  `ArithmeticException` as on the JVM, and failures raise the JVM's exceptions.
+  Under `jolt run` and in the REPL the same checked program runs as Jolt, so
+  both agree. By default other threads keep running and collecting while a
+  region works, its borrowed arrays pinned in place for the call.
+  `(native ^:hold-gc [...] ...)` opts into a cheaper call that holds every
+  other thread's collection until it returns, for short regions. A build with regions
+  needs a C compiler.
+
+### Fixed
+
+- `double-array`, `long-array` and the other array constructors read a numeric
+  size with `Number.intValue`, as the JVM does: `(double-array 4294967296)` is
+  empty and `(double-array Long/MAX_VALUE)` raises `NegativeArraySizeException`
+  -1. jolt tried to allocate the whole value, which ran out of memory or leaked
+  Chez's `make-flvector` error as a `ClassCastException`.
+
 ## [0.8.29] - 2026-11-23
 
 Sorted maps and sets now sit on a persistent B+tree, which makes most sorted

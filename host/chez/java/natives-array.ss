@@ -101,6 +101,13 @@
     (else jolt-nil)))
 
 (define (na-idx i) (if (and (number? i) (not (exact? i))) (exact (truncate i)) (jolt-need-num i)))
+;; A constructor's size, (double-array n) and its siblings: Numbers.T_array
+;; reads it with Number.intValue, which keeps the low 32 bits of an integer and
+;; saturates a double, so (double-array 4294967296) is empty and
+;; (double-array Long/MAX_VALUE) is NegativeArraySizeException -1 on the JVM.
+;; jolt took the whole value and tried to allocate it (an OutOfMemoryError, or
+;; make-flvector's own error past its length limit).
+(define (na-size n) (or (num-key-index n) (na-idx n)))
 
 ;; The character a value denotes when it is STORED into a char array, or #f when
 ;; no character does — the test that decides whether a char array can keep its
@@ -664,8 +671,8 @@
 (define (na-num-array a rest init kind)
   (if (number? a)
       (if (and (pair? rest) (not (na-scalar-init? kind (car rest))))
-          (make-jolt-array (na-init-prefix-backing (na-idx a) kind (car rest) init) kind)
-          (make-jolt-array (na-make-backing (na-idx a) kind (if (pair? rest) (car rest) init)) kind))
+          (make-jolt-array (na-init-prefix-backing (na-size a) kind (car rest) init) kind)
+          (make-jolt-array (na-make-backing (na-size a) kind (if (pair? rest) (car rest) init)) kind))
       (na-from-seq a kind)))
 
 ;; numeric tower: array element defaults / narrowed bytes / count are
@@ -1854,3 +1861,82 @@
 (register-class-statics!
  "clojure.lang.Reflector"
  (list (cons "getMethods" reflect-get-methods)))
+
+;; --- native regions (stdlib/jolt/native) ------------------------------------
+;; A region call (the backend's :native-region lowering) passes each argument
+;; through one of these before either path runs, so the C half and the Jolt
+;; fallback see the same coerced values and fail the same way. A ^long or
+;; ^double parameter converts as clojure.core/long and double do; a ^boolean
+;; one must be a boolean; a ^doubles one must be a double-array whose backing
+;; is still an flvector. jolt widens a double-array's backing to a plain vector
+;; when a non-number is stored into it, and C reads the argument as raw flvector
+;; memory, so that case is refused here rather than read.
+(define (jolt-native-arg-long x) (if (fixnum? x) x (jolt-long-cast x)))
+(define (jolt-native-arg-double x) (if (flonum? x) x (jolt-double x)))
+(define (jolt-native-arg-bool x)
+  (if (boolean? x)
+      x
+      (throw-jvm 'ClassCastException
+                 (string-append "native region: a ^boolean parameter got "
+                                (jolt-class-name x)))))
+(define (jolt-native-arg-doubles a)
+  (cond
+    ((not (and (jolt-array? a) (eq? (jolt-array-kind a) 'double)))
+     (throw-jvm 'ClassCastException
+                (string-append "native region: a ^doubles parameter got "
+                               (jolt-class-name a))))
+    ((not (flvector? (jolt-array-vec a)))
+     (throw-jvm 'IllegalArgumentException
+                "native region: this double-array holds a value that is not a double"))
+    (else a)))
+;; A ^longs parameter: a long-array still backed by an fxvector, which C reads
+;; and writes as fixnums. jolt widens the backing to a plain vector once a value
+;; leaves the fixnum range (or a non-number is stored); that array is refused.
+(define (jolt-native-arg-longs a)
+  (cond
+    ((not (and (jolt-array? a) (eq? (jolt-array-kind a) 'long)))
+     (throw-jvm 'ClassCastException
+                (string-append "native region: a ^longs parameter got "
+                               (jolt-class-name a))))
+    ((not (fxvector? (jolt-array-vec a)))
+     (throw-jvm 'IllegalArgumentException
+                "native region: this long-array holds a value outside the fixnum range"))
+    (else a)))
+;; The flvector or fxvector C reads in place. Only after the arg checks.
+(define (jolt-native-flv a) (jolt-array-vec a))
+;; An owned double-array result, filled from the region's buffer by C.
+(define (jolt-native-wrap-flv fv) (make-jolt-array fv 'double))
+;; An owned long-array result: C fills an fxvector and frees its buffer, or,
+;; when a value is past the fixnum range, answers that index and leaves the
+;; buffer; the array is then built through jolt's own store, which widens.
+(define (jolt-native-wrap-longs n ptr copy-out elem free)
+  (let* ((fx (make-fxvector n 0)) (bad (copy-out fx ptr n)))
+    (if (fx= bad -1)
+        (make-jolt-array fx 'long)
+        (let ((a (na-long-array n)))
+          (do ((i 0 (fx+ i 1))) ((fx= i n)) (jolt-aset3 a i (elem ptr i)))
+          (free ptr)
+          a))))
+
+;; The C entry's address, or #f when no region of that name is linked into this
+;; process (the REPL, source mode, and the build process itself before the
+;; region is compiled): the call site then runs its fallback.
+(define (jolt-native-entry sym) (and (sa-foreign-entry? sym) (sa-foreign-entry-address sym)))
+
+;; Every region whose call site has loaded, sym -> C source, for jolt build to
+;; compile and link. Registered when the site's top-level form loads, so a build
+;; served from the AOT cache sees the same set as one that macroexpanded.
+(define jolt-native-regions '())
+(define jolt-native-regions-mutex (make-mutex))
+(define (jolt-native-register! sym src)
+  (jolt-with-mutex jolt-native-regions-mutex
+    (unless (assoc sym jolt-native-regions)
+      (set! jolt-native-regions (cons (cons sym src) jolt-native-regions)))))
+(define (jolt-native-registered)
+  (jolt-with-mutex jolt-native-regions-mutex (reverse jolt-native-regions)))
+;; jolt.native/linked-regions: each loaded region as [sym linked?], as a jolt
+;; vector of vectors (a Scheme list does not cross into jolt as a seq).
+(define (jolt-native-linked)
+  (make-pvec (list->vector
+              (map (lambda (r) (make-pvec (vector (car r) (if (jolt-native-entry (car r)) #t #f))))
+                   (jolt-native-registered)))))
