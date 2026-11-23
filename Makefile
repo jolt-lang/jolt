@@ -742,13 +742,13 @@ footprint: testbin
 gcpolicy: testbin
 	@floor=16777216; t=test/gc_policy_test.clj; j=target/release/jolt; \
 	 trip() { env JOLT_NO_USER_DEPS=1 "$$@" $$j run $$t churn 2>&1 | sed -n 's/^trip //p'; }; \
-	 set -- $$(JOLT_NO_USER_DEPS=1 $$j run $$t churn 2>&1 | sed -n 's/^trip //p;s/^bound //p'); churn=$${1:-}; bound=$${2:-0}; \
+	 set -- $$(JOLT_NO_USER_DEPS=1 $$j run $$t churn 2>&1 | sed -n 's/^trip //p;s/^live //p'); churn=$${1:-}; live=$${2:-0}; \
 	 light=$$(JOLT_NO_USER_DEPS=1 $$j run $$t light 2>&1 | sed -n 's/^trip //p'); \
 	 pinned=$$(trip JOLT_GC_TRIP_BYTES=33554432); \
 	 capped=$$(trip JOLT_MAX_NEW_SIZE=24m); \
-	 echo "gcpolicy: churn $$churn, light $$light, pinned $$pinned, max-new-size 24m -> $$capped"; \
+	 echo "gcpolicy: churn $$churn (live $$live), light $$light, pinned $$pinned, max-new-size 24m -> $$capped"; \
 	 [ -n "$$churn" ] && [ "$$churn" -gt "$$floor" ] || { echo "FAIL gcpolicy: a churning program kept the $$floor floor"; exit 1; }; \
-	 [ "$$bound" -gt 0 ] && [ "$$churn" -le $$((bound * 8)) ] || { echo "FAIL gcpolicy: a ~40MB-live loop grew its nursery to $$churn, past 8x its live-set bound $$bound (the most one checked growth past the bound reaches)"; exit 1; }; \
+	 [ "$$live" -gt 0 ] && [ "$$churn" -le $$((live * 8)) ] || { echo "FAIL gcpolicy: a ~40MB-live loop grew its nursery to $$churn, past 8x its live set $$live (the bound is the live set at the default free ratio, and one checked growth past it reaches 8x)"; exit 1; }; \
 	 paths=$$(JOLT_NO_USER_DEPS=1 JOLT_MAX_HEAP=off $$j run $$t decide 2>&1 | sed -n 's/^path //p' | paste -sd' ' -); \
 	 echo "gcpolicy: nursery paths (MB) on supplied readings, 64MB live: $$paths"; \
 	 [ "$$paths" = "over-target 16,32,64 paid 16,32,64,128 costlier 16,32,64,128,512,64 big-window 16,32,64,128,512" ] || { echo "FAIL gcpolicy: the live-set bound or the check on growth past it decided differently on the same readings: collection over the target stops at the 64MB bound, a doubling past it that pays is kept, one that costs more jumps once to 8x, then comes back and holds unless that paid"; exit 1; }; \

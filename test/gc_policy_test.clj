@@ -127,7 +127,9 @@
     "ceiling" (hold-and-churn))
   (println "trip" (jolt.host/gc-trip-bytes))
   (when (= mode "churn")
-    (println "bound" (jolt.host/scheme-eval-string "(gc-trip-limit)")))
+    ;; the live set its bound is sized from, read raw: the bound the policy
+    ;; computes would let a broken bound vouch for itself
+    (println "live" (jolt.host/scheme-eval-string "gc-live-after-full")))
   (when (= mode "ceiling")
     (println "peak" (jolt.host/maximum-memory-bytes) "max" (.maxMemory (Runtime/getRuntime)))))
 
