@@ -735,26 +735,30 @@
   ;; read the var cell and the receiver's descriptor without their type tests,
   ;; the instance? site unchanged: 1.35 and 1.56.
   ;;
-  ;; What these two read depends on the CPU, not on the moment. Over 22 CI runs
-  ;; of the x86 shard (2026-11-21..22) instance-site-type read 1.53-1.75 in most
-  ;; and 1.88-2.10 in a few, and in those runs the whole column moved with it:
-  ;; multimethod-call 6.7-7.0 (4.1-5.1 elsewhere), try-deep 1.64 (1.38-1.46),
-  ;; deftype-method 1.96 (1.47-1.69), var-call 0.72 (0.90-1.17). Each of those
-  ;; runs read the same on all three of its samplings and again in a fresh
-  ;; process (2.09, then 2.07), so no sampling scheme can take it out: it is
-  ;; the runner's microarchitecture. The ceilings cover that spread. The site
-  ;; with its cache bypassed (every call taking the memo path, the state before
-  ;; the cache) reads 8.5 and 7.0 here, macOS arm64 2026-11-22, against 1.45
-  ;; and 1.68 with it, so 2.0 and 2.6 still fail it by 3-4x. (Ceilings were 1.6
-  ;; and 1.9; macOS arm64 reads instance-site up to 1.56.)
+  ;; What these two read depends on the CPU and on whether the machine is idle,
+  ;; not on the sample. Over 22 CI runs of the x86 shard (2026-11-21..22)
+  ;; instance-site-type read 1.53-1.75 in most and 1.88-2.10 in a few, and in
+  ;; those the column moved with it: multimethod-call 6.7-7.0 (4.1-5.1
+  ;; elsewhere), try-deep 1.64 (1.38-1.46), deftype-method 1.96 (1.47-1.69),
+  ;; var-call 0.72 (0.90-1.17). Such a run read the same on all three of its
+  ;; samplings and again in a fresh process (2.09, then 2.07). Eight runners
+  ;; measured on purpose (2026-11-22): the AMD EPYCs (7763, 9V45) read 1.43-1.87
+  ;; idle or loaded; the Intel Xeons (6973P, 6975P, Platinum 8573C) read
+  ;; 1.54-1.89 beside four busy processes and 2.01-2.14 on an idle machine,
+  ;; which is how this gate runs (QUIET-GATES). No sampling scheme takes that
+  ;; out, so the ceilings cover it: instance-site read at most 1.72 there and
+  ;; 1.56 on macOS arm64. The site with its cache bypassed (every call taking
+  ;; the memo path, the state before the cache) reads 8.5 and 7.0 on macOS arm64
+  ;; against 1.45 and 1.68 with it, so 2.2 and 3.0 fail it by 2.3-3.9x.
+  ;; (Ceilings were 1.6 and 1.9.)
   (judge! "instance-site"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? fastpath_ratio_test.DP7 dispatch-t))
-          2.0)
+          2.2)
   (judge! "instance-site-type"
           #(dotimes [_ dispatch-n] (dp1 dispatch-t))
           #(dotimes [_ dispatch-n] (instance? DispatchT dispatch-t))
-          2.6)
+          3.0)
 
   ;; Building a reify must cost about what building a deftype costs. The
   ;; deftype's (T. a) then kept its resolved ctor at the call site (host-static.ss
@@ -888,9 +892,9 @@
   ;; 5.26 with the multimethod unchanged, and ~14 with its fix reverted. The
   ;; reference got cheaper again since: with the inline cache bypassed, every
   ;; call hashing into the methods table, it reads 37 against 5.1, macOS arm64
-  ;; 2026-11-22. On CI it reads 4.1-5.5 in most runs and 6.7-7.6 in a few, two
-  ;; of them the runs whose CPU moved instance-site-type (see there), which put
-  ;; it over the old 7.0 with nothing changed; 10 still fails the bypass by 3.7x.)
+  ;; 2026-11-22. On CI it reads 3.4-5.5 in most runs and 6.4-7.6 on the Intel
+  ;; Xeons when idle (see instance-site-type), which put it over the old 7.0
+  ;; with nothing changed; 10 still fails the bypass by 3.5x.)
   (judge! "multimethod-call"
           #(dotimes [_ gate-n] (gate-plain :a))
           #(dotimes [_ gate-n] (gate-mm :a))

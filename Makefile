@@ -271,7 +271,7 @@ bionic-ci:
 # well inside every ceiling. stdlibratio is the same kind of gate and failed
 # the same way beside its shard (clojure.string/blank? 1.74 against 1.3, the same
 # commit's rerun 0.95; jolt-h1d). pmoverhead is the same kind again: beside its
-# shard it read 0.65-1.87 for a ratio every quiet run puts at 1.05-1.10. A scaling
+# shard it read 0.65-1.87 for a ratio quiet runs put at 1.05-1.15. A scaling
 # gate (n vs 4n of the same work) is not listed: interference moves both of its
 # arms alike.
 QUIET-GATES := fastpathratio stdlibratio pmoverhead

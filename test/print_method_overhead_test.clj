@@ -21,9 +21,15 @@
 ;; swing lasting longer than a round moves the round's arms together and cancels
 ;; in its ratio; a burst on one sample moves one round, which the median drops.
 ;; The gate is also a QUIET-GATE (Makefile), run after the rest of its shard.
+;; Eight x86 runners (AMD EPYC 7763/9V45, Intel Xeon 6973P/6975P/8573C,
+;; 2026-11-22), 16 runs each idle and beside four busy processes: the old
+;; reading (the larger arm) spread 1.05-1.21 and went over 1.15 in 9 of 128;
+;; the median read 1.06-1.15, never over. The AMD runners put the tag arm at
+;; 1.10-1.14 even idle, so the ceiling is 1.2 (it was 1.15).
 ;;
 ;; The regression it exists for (the kind answer bypassed, every value's type
-;; tag computed and hashed, as before cf0f8fb55) reads ~1.2 here.
+;; tag computed and hashed, as before cf0f8fb55) read ~1.22 then and reads
+;; 1.72-1.80 now, the printing around it having got faster (macOS arm64).
 
 (ns print-method-overhead-test)
 
@@ -57,7 +63,7 @@
 
 (def ^:private arms [:none :class :tag])
 (def ^:private rounds 25)
-(def ^:private max-ratio 1.15)
+(def ^:private max-ratio 1.2)
 
 (defn- median [xs]
   (let [v (vec (sort xs)) n (count v)]
