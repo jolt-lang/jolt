@@ -34,6 +34,8 @@
 ;; transient SET is always hash mode, like PersistentHashSet. For a vector `n`
 ;; is the element count and `ord` the base pvec (or #f). A hash transient uses
 ;; `ord` for the remaining compact edits, or #f for editable nodes.
+;; `active` is #f after persistent!, #t for a live transient, or the stable-set
+;; marker for a live set whose members have callback-free hashing and equality.
 ;;
 ;; Array mode promotes to hash mode when a new key would grow the map past its
 ;; CAPACITY — TransientArrayMap's rule: max(8 entries, the source map's size),
@@ -51,8 +53,8 @@
 ;; A few compact copies avoid expanding and freezing a 32-slot spine for short
 ;; updates. Bound their cost on long runs. Builds from empty start editable.
 (define thash-compact-edits 8)
-(define (thash-new kind root n)
-  (make-jolt-transient kind root n #t (and (fx>? n 0) thash-compact-edits)))
+(define (thash-new kind root n active)
+  (make-jolt-transient kind root n active (and (fx>? n 0) thash-compact-edits)))
 
 (define (jolt-transient-new coll)
   (cond
@@ -70,7 +72,7 @@
      ;; copied until the first edit.
      (let ((root (pmap-root coll)))
        (if (hnode? root)
-           (thash-new 'map root (pmap-cnt coll))
+           (thash-new 'map root (pmap-cnt coll) #t)
            (let* ((len (vector-length root))
                   (buf (make-vector (fxmax (fx* 2 array-map-limit) len) #f)))
              (sa-vector-copy-range! buf 0 root 0 len)
@@ -81,7 +83,9 @@
     ;; conj! of an equal element keeps the stored key while overwriting the
     ;; value — which is what enode-assoc!'s leaf replace does.
     ((pset? coll)
-     (thash-new 'set (pmap-root (pset-m coll)) (pset-count coll)))
+     (let ((m (pset-m coll)))
+       (thash-new 'set (pmap-root m) (pmap-cnt m)
+         (if (stable-set-map? m) stable-set-marker #t))))
     ;; a deftype implementing clojure.lang.IEditableCollection.asTransient
     ;; (flatland's OrderedMap/OrderedSet) returns its OWN transient type, which
     ;; drives its declared ITransient* methods — not the copy-on-write wrapper.
@@ -147,6 +151,13 @@
        (let ((editable (hnode->enode root)))
          (jolt-transient-buf-set! t editable)
          (when (enode-assoc! editable 0 h k v) (thash-count-add! t 1)))))))
+
+(define (tset-put! t x)
+  ;; Drop proof before hashing an unknown key, whose callback can reenter t.
+  ;; An unproved transient stays unproved, even if that write is a no-op.
+  (when (and (eq? (jolt-transient-active t) stable-set-marker) (not (stable-hamt-key? x)))
+    (jolt-transient-active-set! t #t))
+  (thash-put! t x x))
 
 (define (thash-del! t k)
   (let* ((h (key-hash k)) (root (jolt-transient-buf t)))
@@ -222,22 +233,23 @@
     ((jrec-trans-method t "persistent") => (lambda (m) (jolt-invoke m t)))
     (else
   (jolt-trans-check t "persistent!")
-  (jolt-transient-active-set! t #f)
-  (case (jolt-transient-kind t)
-    ((vec)
-     (let ((buf (jolt-transient-buf t)) (cnt (jolt-transient-n t)) (base (jolt-transient-ord t)))
-       (cond
-         ;; based: the buffered tail goes onto the shared trie; the result is a
-         ;; plain vector without the source's metadata or kind (the JVM's
-         ;; persistent() builds a fresh PersistentVector, meta null)
-         (base
-          (let ((p (pvec-append-flat base buf (fx- cnt (pvec-cnt base)))))
-            (%mk-pvec (pvec-cnt p) (pvec-shift p) (pvec-root p) (pvec-tail p) #f 0 jolt-nil)))
-         ;; exact fit: hand off the buffer (no other reference exists, and the
-         ;; transient is now inactive so it can't mutate it). Else trim to size —
-         ;; a pvec's backing length must equal its count.
-         ((fx=? cnt (vector-length buf)) (make-pvec buf))
-         (else (make-pvec (vec-copy-range buf 0 cnt))))))
+  (let ((active (jolt-transient-active t)))
+    (jolt-transient-active-set! t #f)
+    (case (jolt-transient-kind t)
+      ((vec)
+       (let ((buf (jolt-transient-buf t)) (cnt (jolt-transient-n t)) (base (jolt-transient-ord t)))
+         (cond
+           ;; based: the buffered tail goes onto the shared trie; the result is a
+           ;; plain vector without the source's metadata or kind (the JVM's
+           ;; persistent() builds a fresh PersistentVector, meta null)
+           (base
+            (let ((p (pvec-append-flat base buf (fx- cnt (pvec-cnt base)))))
+              (%mk-pvec (pvec-cnt p) (pvec-shift p) (pvec-root p) (pvec-tail p) #f 0 jolt-nil)))
+           ;; exact fit: hand off the buffer (no other reference exists, and the
+           ;; transient is now inactive so it can't mutate it). Else trim to size —
+           ;; a pvec's backing length must equal its count.
+           ((fx=? cnt (vector-length buf)) (make-pvec buf))
+           (else (make-pvec (vec-copy-range buf 0 cnt))))))
       ((map)
        (let ((buf (jolt-transient-buf t)) (n (jolt-transient-n t)))
          (if (not (or (enode? buf) (hnode? buf)))
@@ -249,12 +261,13 @@
              ;; hash mode: freeze the edited spine. No rehashing and no path
              ;; copying — untouched subtrees stay shared with the source map.
              (make-pmap (enode-freeze buf) n))))
-    ;; The element/lookup-value split survives because the tree already holds it:
-    ;; conj! of an element equal to one present keeps the stored key and
-    ;; overwrites the value, so seq yields the first element and get the second.
-    ((set)
-     (make-pset (make-pmap (enode-freeze (jolt-transient-buf t)) (jolt-transient-n t))))
-    (else (jolt-transient-buf t))))))
+      ;; The element/lookup-value split survives because the tree already holds it:
+      ;; conj! of an element equal to one present keeps the stored key and
+      ;; overwrites the value, so seq yields the first element and get the second.
+      ((set)
+       (make-proved-pset (make-pmap (enode-freeze (jolt-transient-buf t)) (jolt-transient-n t))
+                         (eq? active stable-set-marker)))
+      (else (jolt-transient-buf t)))))))
 
 ;; --- in-place mutation -------------------------------------------------------
 ;; A transient vector's index space: [0, off) is the base pvec, [off, n) the
@@ -353,7 +366,7 @@
                            (inner (fx+ j 1))))))))))))))
 
 (define-pvec-inserter (tmap-conj-pvec! t v x) (tmap-conj-entry! t x))
-(define-pvec-inserter (tset-conj-pvec! t v x) (thash-put! t x x))
+(define-pvec-inserter (tset-conj-pvec! t v x) (tset-put! t x))
 
 (define (transient-pvec-inserter t)
   (and (jolt-transient? t) (jolt-transient-active t)
@@ -378,7 +391,7 @@
      (jolt-trans-check t "conj!")
      (case (jolt-transient-kind t)
        ((vec) (tvec-conj1! t x))
-       ((set) (thash-put! t x x))
+       ((set) (tset-put! t x))
        ((map) (tmap-conj-entry! t x))
        (else (jolt-transient-buf-set! t (jolt-conj (jolt-transient-buf t) x))))
      t)))

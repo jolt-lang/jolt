@@ -340,6 +340,7 @@ throwable
 timer-at!
 timer-cancel!
 transient-associative?
+try-set-difference
 type-satisfies?
 tz-backend
 tz-offset-seconds
