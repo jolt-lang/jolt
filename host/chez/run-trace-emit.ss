@@ -352,7 +352,7 @@
   (gate-check "(14) one read per clause with a site" (count-sub e site-rd) 2)
   (gate-check "(14) ...and one store per site" (count-sub e site-store) 3))
 ;; outside any fn the slot is 0 when the form starts, so a site stores 0.
-;; str at two arguments: at one it is open-coded on Chez (rt.ss jolt-str1/i), no call
+;; str at two arguments: at one it is open-coded on Chez (rt.ss jolt-str1/i)
 (let ((e (emit-num "(def x14 (str (identity 1) \"\"))")))
   (gate-check "(14) a top-level site stores 0" (gate-sub? e "(set-virtual-register! 2 0)") #t)
   (gate-check "(14) ...and reads nothing" (gate-sub? e site-rd) #f))

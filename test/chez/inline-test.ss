@@ -236,6 +236,39 @@
   (ok "a non-allocating field read twice is still scalar-replaced" (not (has? e "amap-slots->pmap"))))
 (ok "a nested map read twice computes the same value" (= 4 (jnum->exact (ev "((fn* ([a] (let [m {:p {:x a :y 2} :q 1}] (+ (:x (:p m)) (:y (:p m)) (:q m))))) 1)"))))
 
+;; --- a letfn spliced into a let keeps its letrec* (#1808) ----------------------
+;; A letfn passed as an argument to an inlined call becomes a let binding init.
+;; flatten-lets hoisted its bindings into the enclosing let*, dropping the
+;; :letrec flag, so each fn's closure read its sibling before it was bound and
+;; resolved it as a top-level variable: "variable ... is not bound".
+;; (ja 2 835) -> (ju 1 2) -> (ja 0 1) = 1, so lf-t answers 2, as the JVM does.
+(ev "(def lf-t (fn* ([x] (+ x 1))))")
+(ok "a mutually recursive letfn passed to an inlined call keeps its letrec"
+    (= 2 (jnum->exact (ev "((fn* ([x y] (lf-t (letfn [(ja [d g] (if (zero? d) g (ju (dec d) y))) (ju [d g] (if (zero? d) g (ja (dec d) x)))] (ja (mod y 5) 835))))) 1 2)"))))
+
+;; --- every pass reads a letfn's binders under letrec scope ------------------
+;; Each init of a letfn sees every sibling. Passes that threaded scope through
+;; the bindings in sequence read a later sibling as whatever an outer binding of
+;; its name held: the inline splice substituted the inlined fn's ARGUMENT for a
+;; sibling sharing a param's name, and the type pass gave it an outer local's
+;; type and folded number?/nil? on it. jolt.ir/thread-bindings is the one rule.
+(ev "(def lf-h2 (fn* ([g] (letfn [(f [] (g)) (g [] 42)] (f)))))")
+(ok "a letfn sibling named like the inlined fn's param is the sibling"
+    (= 42 (jnum->exact (ev "((fn* ([] (lf-h2 7))))"))))
+(ev "(def lf-h15 (fn* ([b] (letfn [(a [] (fn? b)) (b [] 99)] (a)))))")
+(ok "a forward letfn sibling is not copy-propagated from the arg"
+    (eq? #t (ev "((fn* ([] (lf-h15 1))))")))
+(ev "(def lf-h3 (fn* ([n] (letfn [(e? [n] (if (zero? n) true (o? (dec n)))) (o? [n] (if (zero? n) false (e? (dec n))))] (e? n)))))")
+(ok "an inlined body holding a mutual letfn" (eq? #t (ev "((fn* ([] (lf-h3 10))))")))
+(ok "a mutual letfn as a let init, no inline call"
+    (equal? "\"done\"" (ev "(pr-str (name (let [r (letfn [(a [k] (if (zero? k) :done (b (dec k)))) (b [k] (a k))] (a 3))] r)))")))
+(ok "a self-recursive letfn as a let init"
+    (= 10 (jnum->exact (ev "(let [r (letfn [(f [k] (if (zero? k) 0 (+ k (f (dec k)))))] (f 4))] r)"))))
+(ok "the type pass does not give a letfn sibling an outer local's type"
+    (equal? "[:other :other]" (ev "(pr-str [(let [g 1.5] (letfn [(f [] (if (number? g) :num :other)) (g [] 0)] (f))) (let [g nil] (letfn [(f [] (if (nil? g) :nil :other)) (g [] 0)] (f)))])")))
+(ok "a loop init reads the earlier loop var, not an outer local of its name"
+    (equal? "[3.0 3.5]" (ev "(pr-str [(let [x 1.5] (loop [x 1 y x i 0] (if (< i 2) (recur x (+ y 1.0) (inc i)) y))) (let [x 1] (loop [x 1.5 y x i 0] (if (< i 2) (recur x (+ y 1) (inc i)) y)))])")))
+
 (set-optimize! #f)
 (set-direct-link-flag! #f)
 (printf "~a/~a passed~n" (- total fails) total)

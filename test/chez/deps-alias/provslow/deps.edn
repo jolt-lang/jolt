@@ -1,0 +1,6 @@
+{:paths ["src"]
+
+ ;; A provider whose install namespace takes a while to load, so several threads
+ ;; reach its classes while the first one is still loading it. It declares
+ ;; provslow.Missing and never registers it, which is a class that stays unknown.
+ :jolt/provides {provslow.install ["provslow.Clock" "provslow.Missing"]}}

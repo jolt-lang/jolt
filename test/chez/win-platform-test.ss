@@ -883,6 +883,16 @@
       "a/b: Input/output error")
 (same "a bare path" (fs-exception-message-for #t "a/b" #f #f) "a\\b")
 
+;; --- the running executable, asked of Windows -----------------------------------
+;; A built jolt.exe re-invokes itself (babashka.tasks/jolt, the natives builder)
+;; through this. It answered #f on Windows, so a task fell back to `jolt` on PATH.
+;; Here the process is the Chez running this script, which is the file to name.
+(let ((exe (win32-exe-path)))
+  (if (eq? (sa-os-family) 'windows)
+      (ok (format "windows exe path names an existing file: ~s" exe)
+          (and (string? exe) (file-exists? exe)))
+      (same "no win32 exe path off Windows" exe #f)))
+
 (if (> fails 0)
     (begin (printf "WIN-PLATFORM FAILURES: ~a of ~a\n" fails total) (exit 1))
     (printf "WIN-PLATFORM OK (~a checks)\n" total))

@@ -285,13 +285,17 @@
     ;; native map itself and resolves find-other by name for every other type — so
     ;; an app that only ever calls find has no IR edge to it
     "clojure.core/find-other"
-    ;; java.util.TreeMap (java/tree-map.ss) is a sorted-map-by in a mutable root
-    ;; and navigates it with subseq / rsubseq and the comparison fns they test with
-    "clojure.core/sorted-map-by" "clojure.core/subseq" "clojure.core/rsubseq"
+    ;; java.util.TreeMap (java/tree-map.ss) makes its tree's sorted map with
+    ;; sorted-map-by; rt.ss names the comparison fns by name
+    "clojure.core/sorted-map-by"
     "clojure.core/<" "clojure.core/<=" "clojure.core/>" "clojure.core/>="
     ;; PersistentTreeMap/EMPTY and PersistentTreeSet/EMPTY (host-static-methods.ss)
     ;; make their value with these, by name, on first read
     "clojure.core/sorted-map" "clojure.core/sorted-set"
+    ;; the Persistent*/create statics (host-static-methods.ss) build with these
+    "clojure.core/sorted-set-by" "clojure.core/into" "clojure.core/map?"
+    ;; the printer hands each value to print-dup under *print-dup* (io-streams.ss)
+    "clojure.core/print-dup"
     ;; FileTime.from(Instant) (nio-file.ss) reads the Instant's epoch millis
     ;; through inst-ms, so fs/set-last-modified-time with an Instant needs it
     "clojure.core/inst-ms"))

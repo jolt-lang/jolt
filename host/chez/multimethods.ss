@@ -290,8 +290,8 @@
             (when (and (not (jolt= k best)) (not (dom? best k)))
               (throw-jvm (quote IllegalArgumentException)
                          (string-append "Multiple methods in multimethod '" (jolt-multifn-name mf)
-                                        "' match dispatch value: " (jolt-pr-str dv) " -> "
-                                        (jolt-pr-str best) " and " (jolt-pr-str k)
+                                        "' match dispatch value: " (mm-dv-string dv) " -> "
+                                        (mm-dv-string best) " and " (mm-dv-string k)
                                         ", and neither is preferred"))))
           matches)
          (hashtable-ref methods best #f))))))
@@ -426,10 +426,14 @@
                         (hashtable-set! cache dv m))))
                   m)))))))
 
+;; MultiFn's messages concatenate a dispatch value, so it reads as its toString:
+;; a string bare, a class as "class x.Y", a collection readably, nil as null
+(define (mm-dv-string dv)
+  (if (jolt-nil? dv) "null" (jolt-str-one dv)))
 (define (mm-no-method mf dv)
   (throw-jvm (quote IllegalArgumentException)
              (string-append "No method in multimethod '" (jolt-multifn-name mf)
-                            "' for dispatch value: " (jolt-pr-str dv))))
+                            "' for dispatch value: " (mm-dv-string dv))))
 
 ;; fixed-arity entry points: the common arities call the dispatch fn and the
 ;; resolved method through jolt-invoke1/2/3, skipping the rest-list + the two
@@ -524,15 +528,6 @@
 ;; length and walks the buckets bounded by both, so a concurrent defmethod
 ;; truncates the result and a concurrent remove-method leaves trailing FILL slots
 ;; — which would reach jolt-assoc as a dispatch value of 0.
-;; A table holds a deftype or defrecord dispatch value as its class-tag string
-;; (mm-dispatch-val-canon), which is what print-method's __type-tag dispatch
-;; hands it. The maps methods and prefers return present that key as the class
-;; itself, as the JVM's do: the class is = to the type's name (its constructor)
-;; with the same hash, so (get (methods f) SomeType) finds the method.
-(define (mm-dispatch-val-present k)
-  (if (and (string? k) (hashtable-ref chez-deftype-tag-set k #f))
-      (jolt-class-for k)
-      k))
 (define (jolt-methods-setup mf)
   (if (jolt-multifn? mf)
       (let* ((kv (jolt-with-mutex mm-tbl-mu
@@ -541,7 +536,7 @@
              (ks (car kv)) (vs (cdr kv)))
         (let loop ((i 0) (m (jolt-hash-map)))
           (if (fx>=? i (vector-length ks)) m
-              (loop (fx+ i 1) (jolt-assoc m (mm-dispatch-val-present (vector-ref ks i)) (vector-ref vs i))))))
+              (loop (fx+ i 1) (jolt-assoc m (vector-ref ks i) (vector-ref vs i))))))
       jolt-nil))
 
 (define (jolt-prefers-setup mf)
@@ -557,10 +552,9 @@
           (if (fx>=? i (vector-length ks)) m
               ;; each value is an inner set of preferred-over keys -> a jolt set
               (loop (fx+ i 1)
-                    (jolt-assoc m (mm-dispatch-val-present (vector-ref ks i))
+                    (jolt-assoc m (vector-ref ks i)
                                 (apply jolt-hash-set
-                                       (map mm-dispatch-val-present
-                                            (vector->list (vector-ref subs i)))))))))))
+                                       (vector->list (vector-ref subs i))))))))))
 
 ;; Print a multifn like the JVM's #object[clojure.lang.MultiFn 0x… "name"] rather
 ;; than dumping the record's fields (methods table, hierarchy, cache, …).

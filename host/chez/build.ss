@@ -19,6 +19,9 @@
 
 (load "host/chez/emit-image.ss")
 (load "host/chez/dce.ss")
+;; The build's own subprocesses that need no shell: PATH lookups and fixed-argv
+;; tools (jolt-which, jolt-run-capture), and the compile workers.
+(load "host/chez/spawn.ss")
 
 ;; A literal (load "x") compiles into the namespace (emit-image.ss), found where a
 ;; runtime load would look.
@@ -48,6 +51,21 @@
   (let ((rc (jolt-with-empty-sigmask (lambda () (system (bld-sh-wrap cmd))))))
     (unless (zero? rc)
       (bld-command-failed rc cmd))))
+
+;; ARGV run directly (spawn.ss), its stdout with trailing newlines trimmed: ""
+;; when it printed nothing or could not be started. Errors go nowhere, as the
+;; `2>/dev/null` these replaced sent them. Lines stay joined by newlines.
+(define (bld-capture argv)
+  (call-with-values (lambda () (jolt-run-capture argv))
+    (lambda (rc out)
+      (let trim ((n (string-length out)))
+        (if (and (> n 0) (memv (string-ref out (- n 1)) '(#\newline #\return)))
+            (trim (- n 1))
+            (substring out 0 n))))))
+
+;; The first of NAMES found on PATH, or #f.
+(define (bld-which-any names)
+  (and (pair? names) (or (jolt-which (car names)) (bld-which-any (cdr names)))))
 
 (define (bld-command-failed rc cmd)
   (error 'jolt-build (string-append "command failed (" (number->string rc) "): " cmd)))
@@ -297,9 +315,8 @@
 (define (bld-exe-dir exe)
   (let ((parent (path-parent exe)))
     (if (or (not parent) (string=? parent ""))
-        (let ((p (bld-sh-capture
-                  (string-append "dirname \"$(command -v " (bld-sh-quote exe) ")\""))))
-          (if (> (string-length p) 0) p "."))
+        (let ((w (jolt-which exe)))
+          (or (and w (path-parent w)) "."))
         parent)))
 
 ;; The Chez executable, for the isolated compile pass (see build-binary step 4).
@@ -311,8 +328,7 @@
   (let ((env (getenv "JOLT_CHEZ")))
     (if (and env (> (string-length env) 0))
         env
-        (let ((p (bld-sh-capture "command -v chez || command -v scheme || command -v petite")))
-          (if (> (string-length p) 0) p "chez")))))
+        (or (bld-which-any '("chez" "scheme" "petite")) "chez"))))
 
 ;; Chez version off (scheme-version) "Chez Scheme Version X.Y.Z" — last token.
 (define bld-version
@@ -341,7 +357,8 @@
         (let* ((chez (getenv "JOLT_CHEZ"))
                (bindir (if (and chez (> (string-length chez) 0))
                            (bld-exe-dir chez)
-                           (bld-sh-capture "dirname \"$(command -v chez || command -v scheme || command -v petite)\"")))
+                           (let ((w (bld-which-any '("chez" "scheme" "petite"))))
+                             (or (and w (path-parent w)) "."))))
                (cand (string-append bindir "/../lib/csv" bld-version "/" bld-machine)))
           cand))))
 ;; The csv dir supplying the boots + kernel + scheme.h that get baked into the
@@ -405,7 +422,7 @@
       ""))
 
 (define (bld-have-cc?)
-  (> (string-length (bld-sh-capture (string-append "command -v " (bld-sh-quote (bld-cc))))) 0))
+  (and (jolt-which (bld-cc)) #t))
 
 (define (bld-check-toolchain)
   (let ((hint (if (bld-cross?)
@@ -479,14 +496,11 @@
                    (if (and bld-osx? src)
                        (list
                          (lambda ()
-                           (let ((prefix (bld-sh-capture
-                                           (string-append "brew --prefix " (cadr src) " 2>/dev/null"))))
+                           (let ((prefix (bld-capture (list "brew" "--prefix" (cadr src)))))
                              (and (> (string-length prefix) 0)
                                   (string-append prefix "/lib/" file))))
                          (lambda ()
-                           (let ((libdir (bld-sh-capture
-                                           (string-append "pkg-config --variable=libdir "
-                                             (caddr src) " 2>/dev/null"))))
+                           (let ((libdir (bld-capture (list "pkg-config" "--variable=libdir" (caddr src)))))
                              (and (> (string-length libdir) 0)
                                   (string-append libdir "/" file)))))
                        '()))))
@@ -508,10 +522,10 @@
 ;; where the dylib is, which a bare -llz4 on a Mac with no lz4 in /usr/lib cannot.
 (define (bld-osx-lz4-dynamic)
   (bld-warn-dynamic-lib! "lz4")
-  (let ((prefix (bld-sh-capture "brew --prefix lz4 2>/dev/null")))
+  (let ((prefix (bld-capture '("brew" "--prefix" "lz4"))))
     (if (> (string-length prefix) 0)
         (string-append "-L" (bld-sh-quote (string-append prefix "/lib")) " -llz4")
-        (let ((pc (bld-sh-capture "pkg-config --libs-only-L liblz4 2>/dev/null")))
+        (let ((pc (bld-capture '("pkg-config" "--libs-only-L" "liblz4"))))
           (if (> (string-length pc) 0)
               (string-append pc " -llz4")
               "-llz4")))))
@@ -527,21 +541,65 @@
 ;; archives (Homebrew's, the provisioned one) links only OS libraries and gets
 ;; nothing here.
 (define (bld-osx-lib-dir-flags exe)
-  (bld-sh-capture
-    (string-append
-      "e=\"$(command -v " (bld-sh-quote exe) ")\"; "
-      ;; Nix's chez is a bash wrapper (makeWrapper) that execs the real binary:
-      ;; otool answers "is not an object file" for the script, so take the last
-      ;; Mach-O file the script names, past its #! line (the shell is one too).
-      "if ! otool -h \"$e\" 2>/dev/null | grep -q 'Mach header'; then "
-      "e=\"$(sed 1d \"$e\" 2>/dev/null | grep -o \"/[^\\\"' ]*\" | while read -r p; do "
-      "[ -f \"$p\" ] && otool -h \"$p\" 2>/dev/null | grep -q 'Mach header' && echo \"$p\"; "
-      "done | tail -n 1)\"; fi; "
-      "[ -n \"$e\" ] && otool -L \"$e\" 2>/dev/null | awk 'NR > 1 { print $1 }'"
-      " | sed -n 's|/[^/]*$||p'"
-      " | grep -v -e '^/usr/lib' -e '^/System/' -e '^@' | sort -u"
-      ;; one line, each flag followed by a space
-      " | sed \"s|.*|-L'&'|\" | tr '\\n' ' '")))
+  (let* ((mach? (lambda (f) (bld-contains? (bld-capture (list "otool" "-h" f)) "Mach header")))
+         (e (jolt-which exe))
+         ;; Nix's chez is a bash wrapper (makeWrapper) that execs the real binary:
+         ;; otool answers "is not an object file" for the script, so take the last
+         ;; Mach-O file the script names, past its #! line (the shell is one too).
+         (e (cond ((not e) #f)
+                  ((mach? e) e)
+                  (else (let ((ps (filter (lambda (p) (and (file-regular? p) (mach? p)))
+                                          (bld-script-paths e))))
+                          (and (pair? ps) (list-ref ps (- (length ps) 1))))))))
+    (if (not e)
+        ""
+        (let* ((dirs (fold-left
+                       (lambda (acc l)
+                         (let* ((t (bld-first-field l))
+                                (slash (bld-last-index-of t #\/))
+                                (d (and slash (substring t 0 slash))))
+                           (if (and d (not (bld-starts-with? d "/usr/lib"))
+                                    (not (bld-starts-with? d "/System/"))
+                                    (not (bld-starts-with? d "@"))
+                                    (not (member d acc)))
+                               (cons d acc)
+                               acc)))
+                       '()
+                       (let ((ls (bld-string-lines-like (bld-capture (list "otool" "-L" e)))))
+                         (if (pair? ls) (cdr ls) '())))))
+          ;; one line, each flag followed by a space
+          (apply string-append
+                 (map (lambda (d) (string-append "-L" (bld-sh-quote d) " "))
+                      (sort string<? dirs)))))))
+;; The absolute paths a wrapper script names after its #! line: each run of
+;; characters from a "/" up to a quote or a space, as the grep -o it replaces.
+(define (bld-script-paths f)
+  (let* ((text (guard (e (#t "")) (read-file-string f)))
+         (nl (let find ((i 0)) (cond ((>= i (string-length text)) (string-length text))
+                                     ((char=? (string-ref text i) #\newline) (+ i 1))
+                                     (else (find (+ i 1))))))
+         (n (string-length text)))
+    (let loop ((i nl) (acc '()))
+      (cond
+        ((>= i n) (reverse acc))
+        ((char=? (string-ref text i) #\/)
+         (let scan ((j i))
+           (if (and (< j n) (not (memv (string-ref text j) '(#\" #\' #\space #\newline #\tab))))
+               (scan (+ j 1))
+               (loop j (cons (substring text i j) acc)))))
+        (else (loop (+ i 1) acc))))))
+;; The first whitespace-delimited field of L, or "".
+(define (bld-first-field l)
+  (let* ((n (string-length l))
+         (a (let skip ((i 0)) (if (and (< i n) (char-whitespace? (string-ref l i))) (skip (+ i 1)) i)))
+         (b (let scan ((i a)) (if (and (< i n) (not (char-whitespace? (string-ref l i)))) (scan (+ i 1)) i))))
+    (substring l a b)))
+(define (bld-last-index-of s c)
+  (let loop ((i (- (string-length s) 1)))
+    (cond ((< i 0) #f) ((char=? (string-ref s i) c) i) (else (loop (- i 1))))))
+(define (bld-starts-with? s pre)
+  (and (>= (string-length s) (string-length pre))
+       (string=? (substring s 0 (string-length pre)) pre)))
 
 (define bld-osx-chez-lib-dir-flags
   (let ((flags #f))
@@ -598,7 +656,14 @@
     ((bld-cross?)
      (or (getenv "JOLT_TARGET_LINK_LIBS")
          (string-append "-L" (bld-sh-quote (string-append (bld-target-pack) "/lib")) " "
-           (bld-sh-capture (string-append "cat " (bld-sh-quote (string-append (bld-target-pack) "/link-libs")))))))
+           ;; one line of flags: a pack written one flag per line still splices
+           ;; into the link command as a single line
+           (let ((f (string-append (bld-target-pack) "/link-libs")))
+             (if (file-exists? f)
+                 (let ((ls (bld-string-lines-like (read-file-string f))))
+                   (if (null? ls) ""
+                       (fold-left (lambda (a l) (string-append a " " l)) (car ls) (cdr ls))))
+                 "")))))
     ;; macOS: libncurses, libiconv and Foundation ship with the OS and stay
     ;; dynamic — they cannot be baked in. lz4 and zlib can, and are: lz4 because
     ;; the OS has none at all, zlib because the archive Chez built is right there
@@ -617,9 +682,10 @@
      ;; required for a distributable binary and for TLS init consistency.
      ;; -lcrypt32: OpenSSL 3's static libcrypto.a calls the CryptoAPI certificate
      ;; store (CertOpenStore and the rest), so an app that links it as a :static
-     ;; native could not link without it (jolt-lang/jolt#1206). An import library
-     ;; costs nothing when nothing references it.
-     "-static -llz4 -lz -lws2_32 -lcrypt32 -lrpcrt4 -lole32 -luuid -ladvapi32 -luser32 -lshell32 -lm")
+     ;; native could not link without it (jolt-lang/jolt#1206). -lbcrypt: OpenSSL
+     ;; 4 seeds its RNG with BCryptGenRandom. An import library costs nothing
+     ;; when nothing references it.
+     "-static -llz4 -lz -lws2_32 -lcrypt32 -lbcrypt -lrpcrt4 -lole32 -luuid -ladvapi32 -luser32 -lshell32 -lm")
     ;; Linux: the Chez kernel pulls in compression (lz4/z), the expression
     ;; editor (ncurses + terminfo), threads, dlopen, libuuid, and clock_gettime.
     ;;
@@ -752,6 +818,7 @@
     "(load \"host/chez/png.ss\")"
     "(load \"host/chez/loader.ss\")"
     "(load \"host/chez/diagnostic-render.ss\")"
+    "(load \"host/chez/spawn.ss\")"
     "(load \"host/chez/java/ffi.ss\")"
     (string-append "(set-source-roots! " (ldr-install-roots-str) ")")))
 
@@ -1878,8 +1945,7 @@
   (delay
     (let loop ((ts '("nm" "llvm-nm")))
       (cond ((null? ts) #f)
-            ((> (string-length (bld-sh-capture (string-append "command -v " (car ts) " 2>/dev/null"))) 0)
-             (car ts))
+            ((jolt-which (car ts)) (car ts))
             (else (loop (cdr ts)))))))
 
 ;; `nm -g -P` of FILE: (defined . undefined), two hashtables of C names. Mach-O
@@ -1888,15 +1954,11 @@
 ;; uuid_generate@UUID_1.0), so both are cut back to the C name; an archive's
 ;; member headers ("libx.a[x.o]:") have one field and drop out. #f when nm fails.
 (define (bld-nm-symbols nm file builddir)
-  (let* ((log (string-append builddir "/nm.out"))
-         (rc (jolt-with-empty-sigmask
-               (lambda ()
-                 (system (bld-sh-wrap (string-append nm " -g -P " (bld-sh-quote file)
-                                                     " > '" log "' 2>/dev/null")))))))
-    (and (zero? rc)
+  (let-values (((rc out) (jolt-run-capture (list nm "-g" "-P" file))))
+    (and (eqv? rc 0)
          (let ((defined (make-hashtable string-hash string=?))
                (undefined (make-hashtable string-hash string=?))
-               (ip (open-input-file log)))
+               (ip (open-input-string out)))
            (let loop ()
              (let ((l (get-line ip)))
                (unless (eof-object? l)
@@ -1917,7 +1979,6 @@
                        (hashtable-set! (if (memv type '(#\U #\w #\v)) undefined defined) c #t))))
                  (loop))))
            (close-port ip)
-           (delete-file log)
            (cons defined undefined)))))
 
 ;; The archive a ("lib" name libdir) form links, found the way the linker finds
@@ -1998,6 +2059,9 @@
 
 ;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
 ;; resource-name is the "/"-joined path under the root (what io/resource is asked for).
+;; Names are walked sorted: the resources are emitted into the build in this
+;; order, and the OS's directory order differs between filesystems and machines,
+;; so a build from the same sources would not come out the same.
 (define (bld-walk-files root rel acc)
   (let ((dir (if (string=? rel "") root (string-append root "/" rel))))
     (fold-left
@@ -2008,7 +2072,7 @@
               (bld-walk-files root relpath acc)
               (cons (cons relpath full) acc))))
       acc
-      (directory-list dir))))
+      (sort string<? (directory-list dir)))))
 
 ;; A file's bytes as a Scheme expression that rebuilds them. Text that is valid
 ;; UTF-8 goes out as (string->utf8 "…"), the compact spelling; anything else (an
@@ -2793,7 +2857,7 @@
   ;;    (codesign --verify --strict on macOS) correctly refuses it.
   ;;  - CC-LINKED (dev bin/jolt, any --target cross-compile, or --signable
   ;;    from a jolt without the kernel): spawn a fresh Chez for compile-file/
-  ;;    make-boot-file, then xxd the boot into a C array and cc-link against
+  ;;    make-boot-file, then write the boot as a C array and cc-link against
   ;;    libkernel.a. Produces a structurally complete binary a strict
   ;;    signature check accepts. Kept so `make buildsmoke` still exercises
   ;;    the cc path even when run from a self-contained jolt.
@@ -4032,38 +4096,12 @@
             (when (> t limit) (guard (e (#t #f)) (delete-file (car (car fs)))))
             (loop (cdr fs) t)))))))
 
-;; The executable this process is running, or #f when it cannot be named — then
-;; units compile in process. Asked of the OS rather than read off argv[0], which
-;; is whatever the caller passed.
+;; The jolt binary this process is, or #f — then units compile in process. Only
+;; a built jolt answers (loader.ss jolt-standalone-binary): under the dev
+;; launcher the process is a plain Chez, and a worker argv handed to that would
+;; not compile anything.
 (define (bld-self-exe)
-  (guard (e (#t #f))
-    (let ((p (case (sa-os-family)
-               ((macos)
-                (let ((f (jolt-foreign-proc-safe "_NSGetExecutablePath" '(u8* u8*) 'int)))
-                  (and f
-                       (let ((buf (make-bytevector 4096 0)) (sz (make-bytevector 4 0)))
-                         (bytevector-u32-native-set! sz 0 4096)
-                         (and (fx=? 0 (f buf sz)) (bld-cstring buf))))))
-               ((linux)
-                (let ((f (jolt-foreign-proc-safe "readlink" '(string u8* size_t) 'long)))
-                  (and f
-                       (let* ((buf (make-bytevector 4096 0)) (n (f "/proc/self/exe" buf 4095)))
-                         (and (> n 0) (bld-cstring buf))))))
-               (else #f))))
-      (and p (file-exists? p) (bld-jolt-exe? p) p))))
-;; Does PATH answer the worker probe? Under the dev launcher this process is a
-;; plain Chez running jolt, and a worker argv handed to that would not compile
-;; anything. One process start, and only for a build with misses to share out.
-(define (bld-jolt-exe? path)
-  (guard (e (#t #f))
-    (string=? "jolt-build-worker"
-              (bld-sh-capture (string-append (bld-sh-quote path)
-                                             " --build-worker-probe < /dev/null 2>/dev/null")))))
-(define (bld-cstring bv)
-  (let loop ((i 0))
-    (if (or (fx=? i (bytevector-length bv)) (fx=? 0 (bytevector-u8-ref bv i)))
-        (utf8->string (let ((out (make-bytevector i))) (bytevector-copy! bv 0 out 0 i) out))
-        (loop (fx+ i 1)))))
+  (and jolt-standalone-binary (aot-self-exe)))
 
 (define (bld-build-jobs)
   (let ((v (getenv "JOLT_BUILD_JOBS")))
@@ -4089,14 +4127,19 @@
           (rename-file vso-part vso))))))
 
 ;; Entry for a child: run every job in MANIFEST (a file of `write`n job vectors).
+;; The closing line lands in the child's log: a parent that falls back to
+;; compiling in process looks the same from outside, so a gate needs the
+;; worker's own word that it ran.
 (define (bld-compile-worker manifest)
   (let ((ip (open-input-file manifest)))
-    (let loop ()
+    (let loop ((n 0))
       (let ((job (read ip)))
-        (unless (eof-object? job)
-          (parameterize ((current-output-port (open-output-string)))   ; compile-file's "compiling …"
-            (bld-run-job! job))
-          (loop))))
+        (if (eof-object? job)
+            (printf "jolt-build-worker: ~a units\n" n)
+            (begin
+              (parameterize ((current-output-port (open-output-string)))   ; compile-file's "compiling …"
+                (bld-run-job! job))
+              (loop (+ n 1))))))
     (close-port ip)))
 
 ;; Split JOBS (with sizes) into N bins, largest first into the lightest bin.
@@ -4117,21 +4160,19 @@
 ;; produce compiles again in process, where a failure raises with its real
 ;; message.
 (define (bld-run-jobs-parallel! builddir exe jobs n)
-  (let* ((bins (bld-bin-jobs jobs n))
-         (cmds (let loop ((bs bins) (i 0) (acc '()))
-                 (if (null? bs) (reverse acc)
-                     (let ((mf (string-append builddir "/jobs-" (number->string i) ".edn")))
-                       (let ((op (open-output-file mf 'replace)))
-                         (for-each (lambda (j) (write j op) (newline op)) (car bs))
-                         (close-port op))
-                       (loop (cdr bs) (+ i 1)
-                             (cons (string-append
-                                     (bld-sh-quote exe) " --build-worker " (bld-sh-quote mf)
-                                     " < /dev/null > " (bld-sh-quote (string-append mf ".log")) " 2>&1")
-                                   acc)))))))
-    (bld-system->log
-      (string-append "( " (fold-left (lambda (acc c) (string-append acc c " & ")) "" cmds) "wait )")
-      (string-append builddir "/jobs.log"))))
+  (let ((procs
+          (let loop ((bs (bld-bin-jobs jobs n)) (i 0) (acc '()))
+            (if (null? bs) (reverse acc)
+                (let ((mf (string-append builddir "/jobs-" (number->string i) ".edn")))
+                  (let ((op (open-output-file mf 'replace)))
+                    (for-each (lambda (j) (write j op) (newline op)) (car bs))
+                    (close-port op))
+                  ;; a child that cannot start leaves its units to the parent
+                  (loop (cdr bs) (+ i 1)
+                        (cons (jolt-spawn-worker (list exe "--build-worker" mf)
+                                                 (string-append mf ".log"))
+                              acc)))))))
+    (for-each (lambda (p) (when p (jolt-wait-worker p))) procs)))
 
 ;; Compile the app units (src so kind) under MODE, from the cache where it can.
 ;; VFASL? also converts each compiled miss while its child has it (the split vfasl
@@ -4545,7 +4586,7 @@
 (define (bld-boot-prefetch-call)
   "  jolt_prefetch_boot(jolt_boot, (size_t)jolt_boot_len);\n")
 
-;; --- legacy cc link (dev bin/jolt): fresh Chez compile + xxd + cc ------------
+;; --- legacy cc link (dev bin/jolt): fresh Chez compile + boot header + cc ------------
 (define (build-with-cc entry-ns out-path mode builddir units boot boot-h main-c native-link petite-only?)
   (display (string-append "jolt build: compiling " entry-ns " (" mode " mode)\n"))
   (let ((cs (string-append builddir "/compile.ss")))
@@ -4587,11 +4628,7 @@
   (unless (bld-vfasl-disabled?)
     (when (bld-vfasl-ensure! builddir boot (string-append boot ".vfasl"))
       (set! boot (string-append boot ".vfasl"))))
-  (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
-  ;; The xxd symbol is derived from the path; normalize to jolt_boot.
-  (bld-system (string-append
-    "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/const unsigned char jolt_boot[]/; "
-    "s/unsigned int [A-Za-z0-9_]+_len/unsigned int jolt_boot_len/' '" boot-h "'"))
+  (bld-write-boot-header! boot boot-h)
   (bld-write-exe-main! main-c)
   ;; -rdynamic (Linux) exports the executable's symbols into the dynamic table so
   ;; a statically-linked native lib's symbols resolve via (load-shared-object #f)
@@ -4611,7 +4648,7 @@
 
 ;; --- shared-library link (jolt build --library) -----------------------------
 ;; The cc path adapted to emit a shared object instead of an executable: the same
-;; compile-file + make-boot-file + xxd boot embedding, but a library.c stub
+;; compile-file + make-boot-file + boot header, but a library.c stub
 ;; (jolt_library_init / jolt_lookup / jolt_library_release_thread /
 ;; jolt_library_shutdown instead of main) and
 ;; a -shared/-dynamiclib link. Only the cc path supports libraries today — the
@@ -4723,10 +4760,7 @@
   (unless (bld-vfasl-disabled?)
     (when (bld-vfasl-ensure! builddir boot (string-append boot ".vfasl"))
       (set! boot (string-append boot ".vfasl"))))
-  (bld-system (string-append "xxd -i '" boot "' > '" boot-h "'"))
-  (bld-system (string-append
-    "sed -i.bak -E 's/unsigned char [A-Za-z0-9_]+\\[\\]/const unsigned char jolt_boot[]/; "
-    "s/unsigned int [A-Za-z0-9_]+_len/unsigned int jolt_boot_len/' '" boot-h "'"))
+  (bld-write-boot-header! boot boot-h)
   (let ((lc (string-append builddir "/library.c")))
     (let ((p (open-output-file lc 'replace)))
       (put-string p (bld-library-stub))

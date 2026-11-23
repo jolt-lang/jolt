@@ -191,7 +191,10 @@
   ([fib]
    (when (identical? fib (jolt.host/current-fiber))
      (throw (ex-info "a fiber cannot join itself" {})))
-   (let [r @(completion fib)]
+   ;; a fiber still running is waited on as one (fiber-join-wait), so a load
+   ;; that joins a fiber which waits on that load is reported, not hung
+   (let [c (completion fib)
+         r (if (realized? c) @c (jolt.host/fiber-join-wait fib #(deref c)))]
      (if-let [err (:err r)]
        (throw err)
        (:val r))))

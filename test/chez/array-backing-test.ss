@@ -263,5 +263,36 @@
 (backing "int-array with a seq init"      "(int-array 3 [1 2])"      'fxvector)
 (backing "double-array with a seq init"   "(double-array 3 [1.5])"   'flvector)
 
+;; (T-array coll) from a vector or another array fills the backing straight from
+;; the indexed elements (na-from-indexed) instead of draining a seq. Same
+;; answers as the seq route: every element coerced by the kind's rule, the
+;; integer kinds falling back to a boxed backing for a value past the fixnum
+;; range, and a vector walked across leaves, the tail and relaxed (RRB) nodes.
+(is "double-array from a long vector"     "(vec (double-array [1 2 3]))"           "[1.0 2.0 3.0]")
+(is "double-array from a ratio vector"    "(vec (double-array [1/2 3/4]))"         "[0.5 0.75]")
+(is "long-array from a double vector"     "(vec (long-array [1.9 -1.9]))"          "[1 -1]")
+(is "int-array from a double vector"      "(vec (int-array [3.7 1e20]))"           "[3 2147483647]")
+(is "short-array wraps from a vector"     "(vec (short-array [40000]))"            "[-25536]")
+(is "float-array rounds from a vector"    "(= (aget (float-array [0.1]) 0) (float 0.1))" "true")
+(is "double-array from a 1000 vector"     "(let [v (vec (range 1000))] (= (map double v) (vec (double-array v))))" "true")
+(is "double-array from a subvec"          "(vec (double-array (subvec (vec (range 100)) 37 41)))" "[37.0 38.0 39.0 40.0]")
+(is "double-array from a catvec"          "(let [v (into (subvec (vec (range 70)) 3) (range 70 140))] (= (map double v) (vec (double-array v))))" "true")
+(is "long-array from a catvec"            "(let [v (into (subvec (vec (range 70)) 3) (range 70 140))] (= v (vec (long-array v))))" "true")
+(is "double-array from an empty vector"   "(alength (double-array []))"            "0")
+(is "double-array from a double-array"    "(vec (double-array (double-array [1.5 2.5])))" "[1.5 2.5]")
+(is "double-array from a long-array"      "(vec (double-array (long-array [1 2])))" "[1.0 2.0]")
+(is "double-array from a float-array"     "(= (vec (double-array (float-array [0.1]))) [(double (float 0.1))])" "true")
+(is "float-array from a double-array"     "(= (aget (float-array (double-array [0.1])) 0) (float 0.1))" "true")
+(is "long-array from a double-array"      "(vec (long-array (double-array [2.9 -2.9])))" "[2 -2]")
+(is "double-array from a byte-array"      "(vec (double-array (byte-array [-1 2])))" "[-1.0 2.0]")
+(is "long-array keeps a bignum, boxed"    "(vec (long-array [1 9223372036854775807]))" "[1 9223372036854775807]")
+(is "a nil element still raises"          "(try (double-array [1.0 nil]) :no (catch Throwable _ :raised))" ":raised")
+(is "the source array is not shared"      "(let [a (double-array [1.0]) b (double-array a)] (aset a 0 9.0) (aget b 0))" "1.0")
+(backing "double-array from a vector"     "(double-array [1 2])"                   'flvector)
+(backing "double-array from an array"     "(double-array (long-array [1 2]))"      'flvector)
+(backing "long-array from a vector"       "(long-array [1.5 2])"                   'fxvector)
+(backing "int-array from an array"        "(int-array (double-array [1.5]))"       'fxvector)
+(backing "long-array past fixnum range"   "(long-array [1 9223372036854775807])"   'vector)
+
 (printf "array-backing-test: ~a/~a passed\n" (- total fails) total)
 (exit (if (= fails 0) 0 1))
