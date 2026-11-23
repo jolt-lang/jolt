@@ -290,6 +290,52 @@
 (register-class-statics! "PersistentHashSet" (list (cons "createWithCheck" phs-create-with-check)))
 (register-class-statics! "clojure.lang.PersistentHashSet" (list (cons "createWithCheck" phs-create-with-check)))
 
+;; The collection classes' create statics, which a value printed under *print-dup*
+;; calls when it is read back: #=(clojure.lang.PersistentArrayMap/create {:a 1})
+;; (core_print.clj writes IPersistentMap and IPersistentCollection that way).
+;; A map's create takes a map, or a seq of alternating keys and values; the
+;; others take what they hold. Each builds the way the JVM's does: an array map
+;; by assoc from empty, so past eight entries it is a hash map as there.
+;; PersistentTreeSet/create takes any seqable, where the JVM's takes only an
+;; ISeq and so cannot read back the [..] print-dup writes for a sorted set
+;; (known-divergences.edn).
+(define (coll-create-kvs empty x)
+  (let ((assoc (lambda (m k v) (jolt-assoc m k v))))
+    (if (jolt-truthy? (jolt-invoke (var-deref "clojure.core" "map?") x))
+        (let loop ((s (jolt-seq x)) (m empty))
+          (if (jolt-nil? s) m
+              (let ((e (seq-first s)))
+                (loop (jolt-seq (seq-more s)) (assoc m (jolt-nth e 0) (jolt-nth e 1))))))
+        (let loop ((xs (if (jolt-nil? x) '() (seq->list (jolt-seq x)))) (m empty))
+          (cond ((null? xs) m)
+                ((null? (cdr xs)) (throw-jvm (quote IllegalArgumentException)
+                                             (string-append "No value supplied for key: "
+                                                            (jolt-str-render-one (car xs)))))
+                (else (loop (cddr xs) (assoc m (car xs) (cadr xs)))))))))
+(define (coll-create-into empty x)
+  (jolt-invoke (var-deref "clojure.core" "into") empty x))
+(define (sorted-map-empty) (jolt-invoke (var-deref "clojure.core" "sorted-map")))
+(define (sorted-set-empty) (jolt-invoke (var-deref "clojure.core" "sorted-set")))
+(define coll-create-statics
+  (list
+    (cons "PersistentArrayMap" (lambda (x) (coll-create-kvs empty-pmap x)))
+    (cons "PersistentHashMap" (lambda (x) (coll-create-kvs empty-pmap-hash x)))
+    (cons "PersistentTreeMap"
+          (case-lambda
+            ((x) (coll-create-kvs (sorted-map-empty) x))
+            ((cmp x) (coll-create-kvs (jolt-invoke (var-deref "clojure.core" "sorted-map-by") cmp) x))))
+    (cons "PersistentHashSet" (lambda (x) (coll-create-into empty-pset x)))
+    (cons "PersistentTreeSet"
+          (case-lambda
+            ((x) (coll-create-into (sorted-set-empty) x))
+            ((cmp x) (coll-create-into (jolt-invoke (var-deref "clojure.core" "sorted-set-by") cmp) x))))
+    (cons "PersistentVector" (lambda (x) (coll-create-into empty-pvec x)))))
+(for-each
+  (lambda (p)
+    (register-class-statics! (car p) (list (cons "create" (cdr p))))
+    (register-class-statics! (string-append "clojure.lang." (car p)) (list (cons "create" (cdr p)))))
+  coll-create-statics)
+
 ;; java.lang.Character statics. digit(ch, radix) -> the digit value or -1; ch may
 ;; be a char or an int codepoint (tools.reader passes (int c)), as it may for
 ;; every predicate below; valueOf boxes a char (identity on jolt).

@@ -454,6 +454,22 @@
     (jolt-fiber-monitor! fib
       (lambda (err) (jolt-invoke cb (if err (jolt-unwrap-throw err) jolt-nil))))
     jolt-nil))
+;; jolt.fibers/join's wait, recorded as blocked on the fiber it joins (locks.ss
+;; jolt-blocked-on), so a namespace load that joins a fiber which is waiting on
+;; that load is reported as the deadlock it is. A fiber that has already
+;; finished is joined without the record.
+(let ((prior jolt-block-releaser))
+  (set! jolt-block-releaser
+    (lambda (obj)
+      (if (jolt-fiber? obj)
+          (let ((st (jolt-fiber-state obj)))
+            (and (not (eq? st 'done)) (not (eq? st 'dead)) (cons obj "a fiber it joins")))
+          (prior obj)))))
+(def-var! "jolt.host" "fiber-join-wait"
+  (lambda (fib thunk)
+    (if (jolt-block-releaser fib)
+        (jolt-call-blocked-on fib (lambda () (jolt-invoke thunk)))
+        (jolt-invoke thunk))))
 ;; Every fiber not yet finished, across the default pool and named ones, as a
 ;; seq, or nil for none (fibers.ss jolt-fiber-live).
 (def-var! "jolt.host" "fiber-live"

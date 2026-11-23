@@ -1737,7 +1737,7 @@
     :let (emit-let node)
     :loop (emit-loop node)
     :recur (emit-recur node)
-    (:ffi-layout :ffi-fn :ffi-callable) (emit-ffi-node emit node)
+    (:ffi-layout :ffi-fn :ffi-callable :native-region) (emit-ffi-node emit node)
     :fn (emit-fn emit node)
     ;; (def name) with no init (declare): reserve the cell. A def with non-empty
     ;; reader metadata lowers to def-var-with-meta! (ported in a later increment).

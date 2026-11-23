@@ -22,7 +22,7 @@
   Runs in every build and at `-e`/repl, but not the seed mint (which compiles with
   the passes off), so it stays out of the self-host fixpoint and benefits open and
   closed builds alike."
-  (:require [jolt.ir :refer [map-ir-children]]))
+  (:require [jolt.ir :refer [map-ir-children thread-bindings]]))
 
 ;; java.lang.Math members that ALWAYS return a double on the JVM and have a native
 ;; Chez flonum op. When every operand is a proven flonum, the Math call lowers to
@@ -182,7 +182,21 @@
 ;; A non-numeric result (a comparison) doesn't propagate a numeric kind.
 (defn- propagate [spec] (if (= spec :bool) nil spec))
 
-(declare an)
+(declare an rebind-boxed boxed-operand?)
+
+;; A let's bindings analyzed in its scope order (jolt.ir/thread-bindings): each
+;; name gets its init's kind and boxedness. A letfn sibling is bound with no
+;; kind before any init is seen. Answers [tenv' bindings' facts].
+(defn- let-scope [node tenv]
+  (thread-bindings node tenv identity
+                   (fn [te nm _ fact]
+                     (rebind-boxed (assoc te nm (when fact (nth fact 0))) nm
+                                   (if fact (nth fact 1) false)))
+                   ;; a ^doubles/… let binding's init is a :coerce of the
+                   ;; array kind, which answers that kind like any coerce
+                   (fn [te init]
+                     (let [ir (an init te)]
+                       [(nth ir 1) [(nth ir 0) (boxed-operand? init te)]]))))
 
 ;; The recur-arg kinds for the recurs targeting THIS loop level. recur only appears
 ;; in tail position (an if branch, a do's ret, a let body), so descend only those;
@@ -191,9 +205,7 @@
   (let [op (get node :op)]
     (cond
       (= op :recur) [(mapv (fn [a] (nth (an a tenv) 0)) (get node :args))]
-      (= op :let) (recur-kinds (get node :body)
-                               (reduce (fn [te b] (assoc te (nth b 0) (nth (an (nth b 1) te) 0)))
-                                       tenv (get node :bindings)))
+      (= op :let) (recur-kinds (get node :body) (nth (let-scope node tenv) 0))
       (= op :if) (concat (recur-kinds (get node :then) tenv) (recur-kinds (get node :else) tenv))
       (= op :do) (recur-kinds (get node :ret) tenv)
       :else [])))
@@ -558,23 +570,20 @@
     [(get node :kind) (if prim? (assoc node2 :fl-prim true) node2)]))
 
 (defn- an-let [node tenv]
-  (let [res (reduce (fn [acc b]
-                      (let [te (nth acc 0) binds (nth acc 1)
-                            ;; a ^doubles/… let binding's init is a :coerce of the
-                            ;; array kind, which answers that kind like any coerce
-                            ir (an (nth b 1) te)]
-                        [(rebind-boxed (assoc te (nth b 0) (nth ir 0)) (nth b 0) (boxed-operand? (nth b 1) te))
-                         (conj binds [(nth b 0) (nth ir 1)])]))
-                    [tenv []] (get node :bindings))
+  (let [res (let-scope node tenv)
         br (an (get node :body) (nth res 0))]
     [(nth br 0) (assoc node :bindings (nth res 1) :body (nth br 1))]))
 
-;; inits evaluate in the OUTER env; loop vars get their fixpoint kinds for the body.
+;; inits evaluate in sequence, each seeing the loop vars bound before it (as a
+;; let's do: jolt.ir/thread-bindings); loop vars get their fixpoint kinds for
+;; the body. Reading an earlier var's name in the OUTER env seeded a slot with
+;; an outer local's kind: (let [x 1.5] (loop [x 1 y x] ...)) ran fl ops on 1.
 (defn- an-loop [node tenv]
   (let [binds (get node :bindings)
         names (mapv (fn [b] (nth b 0)) binds)
-        ik (mapv (fn [b]
-                   (let [init (nth b 1) k (nth (an init tenv) 0)]
+        inits (let-scope node tenv)
+        ik (mapv (fn [b fact]
+                   (let [init (nth b 1) k (nth fact 0)]
                      ;; seed each var with its init kind, OR :long for an
                      ;; integer-literal init that fits the fixnum range (JVM loop
                      ;; semantics — a literal-init loop var is a primitive long, so
@@ -582,14 +591,14 @@
                      ;; The bounded fixpoint below demotes a slot whose recur arg
                      ;; doesn't agree, and a literal past the range stays generic.
                      (or k (when (and (int-lit? init) (fixnum-lit? (get init :val))) :long))))
-                 binds)
+                 binds (nth inits 2))
         ;; drive the bounded fixpoint: each seed kind survives only if every
         ;; recur arg in its slot agrees, else the slot demotes to generic.
         lk (loop-kinds names ik (get node :body) tenv)
         te (reduce (fn [t i] (rebind-boxed (assoc t (nth names i) (nth lk i)) (nth names i) false))
                    tenv (range (count names)))]
     [nil (assoc node
-                :bindings (mapv (fn [b] [(nth b 0) (nth (an (nth b 1) tenv) 1)]) binds)
+                :bindings (nth inits 1)
                 :body (nth (an (get node :body) te) 1))]))
 
 (defn- an-if [node tenv]
