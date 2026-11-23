@@ -3671,7 +3671,6 @@
 ;; and would re-class a comparator the boot already hands out.
 (register-enum-class! "java.util.Comparators$NaturalOrderComparator"
   (list (cons "INSTANCE" tm-natural-order)))
-(lazy-load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
 (load "host/chez/java/linked-hash.ss")          ; LinkedHashMap / LinkedHashSet
 (load "host/chez/java/host-static-classes.ss")  ; instantiable host object classes
 ;; jolt.host/class-names and all-classes (#1663): reads the tables loaded above.
@@ -3693,6 +3692,9 @@
 ;; extensions sit over every prior shim.
 (load "host/chez/java/io.ss")
 (load "host/chez/java/nio-file.ss")             ; java.nio.file: Path / Paths / PathMatcher
+;; After nio-file.ss: it adds PosixFilePermissions/fromString, which answers an
+;; EnumSet, to the class nio-file.ss registers.
+(lazy-load "host/chez/java/enum-colls.ss")           ; EnumSet / EnumMap over the enum model
 (load "host/chez/terminal.ss")                  ; the console under the REPL line editor
 
 ;; #inst values + the java.util/java.text date layer: jinst (RFC3339 ms), Date,
