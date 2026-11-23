@@ -105,7 +105,10 @@
   (judge! "jolt.time.util/hmsn->nano" 'jolt.time.util 'hmsn->nano 400000 #(% 1 2 3 4) 1.4)
   (judge! "jolt.time.util/iso-time-str" 'jolt.time.util 'iso-time-str 40000 #(% 45296789000000) 1.4)
   (judge! "clojure.data/diff" 'clojure.data 'diff 20000 #(% {:a 1 :b [1 2]} {:a 2 :b [1 3]}) 1.3)
-  (judge! "babashka.process/tokenize" 'babashka.process 'tokenize 20000 #(% "ls -la \"a b\" c") 1.3)
+  ;; tokenize read up to 1.16 on x86 CI (2026-11-23) against 1.3, and the
+  ;; var-cache regression put it at 1.5 only; hmsn->nano (7x) and diff (2x) are
+  ;; the rows that catch that one, so tokenize's ceiling is 1.2x its noise.
+  (judge! "babashka.process/tokenize" 'babashka.process 'tokenize 20000 #(% "ls -la \"a b\" c") 1.4)
   ;; seed-embedded namespaces (compiled into the image by the mint)
   (judge! "clojure.set/union" 'clojure.set 'union 200000 #(% #{1 2} #{3}) 1.3)
   (judge! "clojure.string/blank?" 'clojure.string 'blank? 400000 #(% "  x ") 1.3)

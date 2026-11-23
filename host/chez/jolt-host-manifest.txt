@@ -76,6 +76,7 @@ fiber-carrier-count
 fiber-carrier-count-set!
 fiber-instance?
 fiber-interrupt!
+fiber-join-wait
 fiber-kill!
 fiber-live
 fiber-masked

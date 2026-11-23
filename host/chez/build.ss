@@ -1653,6 +1653,42 @@
                  entry)))
          (seq->list natives)))))
 
+;; Native regions (stdlib/jolt/native). Every region call site registered its C
+;; source (jolt-native-register!) when step 1 loaded it, from source or from the
+;; AOT cache alike. Compile them as one translation unit (each region's prelude
+;; is include-guarded) and link the object with the static natives, so in the
+;; binary each site's (jolt-native-entry sym) finds its entry and runs as C.
+;; -ffp-contract=off: a fused multiply-add rounds once where the Jolt fallback
+;; rounds twice, and the two halves of a region must agree.
+(define (bld-add-native-regions! natives out-path)
+  (let ((regions (jolt-native-registered)))
+    (if (null? regions)
+        natives
+        (let* ((dir (string-append out-path ".build"))
+               (c (string-append dir "/jolt-native-regions.c"))
+               (o (string-append dir "/jolt-native-regions.o"))
+               (log (string-append o ".log")))
+          (unless (bld-have-cc?)
+            (error 'jolt-build
+              "native regions compile to C: jolt build needs a C compiler (JOLT_CC, or cc on PATH)"))
+          (bld-mkdir-p dir)
+          (let ((p (open-output-file c 'replace)))
+            (for-each (lambda (r) (put-string p (cdr r)) (newline p)) regions)
+            (close-port p))
+          (let ((rc (bld-system->log
+                     (string-append (bld-cc) " " (bld-arch-flag)
+                                    " -O2 -ffp-contract=off -fPIC -c " (bld-sh-quote c)
+                                    " -o " (bld-sh-quote o))
+                     log)))
+            (bld-echo-log log)
+            (unless (zero? rc)
+              (error 'jolt-build (string-append "compiling native regions failed: " c))))
+          (display (string-append "jolt build: compiled " (number->string (length regions))
+                                  " native region(s)\n"))
+          (make-pvec (list->vector
+                      (append (seq->list natives)
+                              (list (make-pvec (vector "static" "object" o))))))))))
+
 (define (bld-emit-natives out natives which)
   (for-each
     (lambda (entry)
@@ -1804,6 +1840,11 @@
          (if bld-osx?
              (string-append "-Wl,-force_load," (bld-sh-quote path))
              (string-append "-Wl,--whole-archive " (bld-sh-quote path) " -Wl,--no-whole-archive"))))
+      ;; ["static" "object" path]: one object file, linked whole. Native regions
+      ;; compile to one (bld-add-native-regions!); -lm because bionic leaves
+      ;; libm out unless asked, and region code calls sqrt, pow and the rest.
+      ((string=? kind "object")
+       (string-append (bld-sh-quote (cadr form)) " -lm"))
       ((string=? kind "lib")
        (let* ((lib (cadr form)) (dir (caddr form))
               (L (if (> (string-length dir) 0) (string-append "-L" dir " ") "")))
@@ -2018,6 +2059,9 @@
 
 ;; Walk an embed root recursively; return (resource-name . abspath) pairs, where
 ;; resource-name is the "/"-joined path under the root (what io/resource is asked for).
+;; Names are walked sorted: the resources are emitted into the build in this
+;; order, and the OS's directory order differs between filesystems and machines,
+;; so a build from the same sources would not come out the same.
 (define (bld-walk-files root rel acc)
   (let ((dir (if (string=? rel "") root (string-append root "/" rel))))
     (fold-left
@@ -2028,7 +2072,7 @@
               (bld-walk-files root relpath acc)
               (cons (cons relpath full) acc))))
       acc
-      (directory-list dir))))
+      (sort string<? (directory-list dir)))))
 
 ;; A file's bytes as a Scheme expression that rebuilds them. Text that is valid
 ;; UTF-8 goes out as (string->utf8 "…"), the compact spelling; anything else (an
@@ -2957,6 +3001,7 @@
          (error 'jolt-build (string-append "no source namespace loaded for " entry-ns
                                            " — is it on the source roots?")))
        (set! natives (bld-natives-for-closure natives ordered))
+       (set! natives (bld-add-native-regions! natives out-path))
       ;; 2. emit each app namespace. Every mode but dev runs the inference +
       ;; record-shape setup passes and the inline + flatten + scalar-replace
       ;; fixpoint (set-optimize! below; inlining follows direct-link); release

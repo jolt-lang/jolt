@@ -81,12 +81,13 @@
 ;; print renders non-readably (__print1): a nested string is raw, unlike str/pr
 ;; which quote it. (print ["x"]) => [x], (str ["x"]) => ["x"].
 ;; Written piece by piece like pr; a character is appended, as the reference's
-;; print-method for Character does when not printing readably.
+;; print-method for Character does when not printing readably (*print-dup*
+;; makes it readable, so __print-out takes it then).
 (defn print [& xs]
   (loop [s (seq xs)]
     (when s
       (let [x (first s)]
-        (if (char? x) (__append x) (__print-out x)))
+        (if (and (char? x) (not *print-dup*)) (__append x) (__print-out x)))
       (let [n (next s)]
         (when n (__append \space) (recur n)))))
   nil)
