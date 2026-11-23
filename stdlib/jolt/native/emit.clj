@@ -630,7 +630,9 @@ static _Thread_local jn_out jn_tls;
            (when (= [:array :double] t)
              (str "\nvoid " sym "_copy_out(void *flv, double *src, int64_t n) {\n"
                   "  if (n > 0) memcpy(JN_FLV_DATA(flv), src, n * 8);\n"
-                  "  JN_FREE(src);\n}\n"))
+                  "  JN_FREE(src);\n}\n"
+                  ;; for the stub, when it cannot make the array to copy into
+                  "void " sym "_free(double *src) { JN_FREE(src); }\n"))
            ;; a long result fills an fxvector; a value past the fixnum range
            ;; answers its index instead and the stub widens through jolt's own
            ;; array store, reading the rest with _elem and freeing with _free

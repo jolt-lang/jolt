@@ -235,7 +235,7 @@
                   ;; the owned-array result
                   "jolt-native-arg-doubles" "jolt-native-arg-long" "jolt-native-arg-double"
                   "jolt-native-arg-bool" "jolt-native-arg-longs" "jolt-native-flv"
-                  "jolt-native-wrap-flv" "jolt-native-wrap-longs"
+                  "jolt-native-wrap-doubles" "jolt-native-wrap-longs"
                   "jolt-native-entry" "jolt-native-register!" "make-flvector"
                   ;; a safe region's call: locks around a collect-safe call
                   "disable-interrupts" "enable-interrupts" "sa-lock-object" "sa-unlock-object"

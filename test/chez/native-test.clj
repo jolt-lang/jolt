@@ -465,6 +465,18 @@
 (check-reject "an array both borrowed and taken by one helper call" '[^long n]
               '((let [x (double-array n)] (borrow-then-take x x))) #"after it was given away")
 
+;; an owned array result's C buffer is freed even when the stub cannot make the
+;; array to copy it into (an invalid length stands in: a Chez heap that runs out
+;; aborts the process): the error propagates and the buffer reaches the region's _free
+(doseq [[wrap extra] [["jolt-native-wrap-doubles" ""]
+                      ["jolt-native-wrap-longs" " (lambda (p i) 0)"]]]
+  (let [freed (scm/eval-string
+               (str "(let ((freed -1)) (guard (e (#t freed)) (" wrap " -1 7"
+                    " (lambda (v p n) (error 'copy-out \"must not run\"))" extra
+                    " (lambda (p) (set! freed p))) -2))"))]
+    (when-not (= 7 freed)
+      (fail! (str wrap ": a failed result allocation freed " freed ", want the buffer 7")))))
+
 ;; --- review follow-ups ----------------------------------------------------------
 ;; an owned array in a branch of a unit if (a when) is freed in that branch
 (check-run "an array in a when inside a loop is freed each iteration" '[^long n ^boolean c]
