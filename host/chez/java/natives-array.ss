@@ -1904,17 +1904,29 @@
     (else a)))
 ;; The flvector or fxvector C reads in place. Only after the arg checks.
 (define (jolt-native-flv a) (jolt-array-vec a))
-;; An owned double-array result, filled from the region's buffer by C.
-(define (jolt-native-wrap-flv fv) (make-jolt-array fv 'double))
+;; An owned array result arrives as the region's malloc'd buffer PTR, which the
+;; stub copies into a fresh Scheme array and frees. Until the copy has freed
+;; it, a failure (the Scheme heap out of room for the array) frees it first.
+(define (jolt-native-holding ptr free thunk)
+  (guard (e (#t (free ptr) (raise e))) (thunk)))
+;; An owned double-array result: C copies the buffer in and frees it.
+(define (jolt-native-wrap-doubles n ptr copy-out free)
+  (let ((fv (jolt-native-holding ptr free (lambda () (make-flvector n)))))
+    (copy-out fv ptr n)
+    (make-jolt-array fv 'double)))
 ;; An owned long-array result: C fills an fxvector and frees its buffer, or,
 ;; when a value is past the fixnum range, answers that index and leaves the
 ;; buffer; the array is then built through jolt's own store, which widens.
 (define (jolt-native-wrap-longs n ptr copy-out elem free)
-  (let* ((fx (make-fxvector n 0)) (bad (copy-out fx ptr n)))
+  (let* ((fx (jolt-native-holding ptr free (lambda () (make-fxvector n 0))))
+         (bad (copy-out fx ptr n)))
     (if (fx= bad -1)
         (make-jolt-array fx 'long)
-        (let ((a (na-long-array n)))
-          (do ((i 0 (fx+ i 1))) ((fx= i n)) (jolt-aset3 a i (elem ptr i)))
+        (let ((a (jolt-native-holding ptr free
+                   (lambda ()
+                     (let ((a (na-long-array n)))
+                       (do ((i 0 (fx+ i 1))) ((fx= i n)) (jolt-aset3 a i (elem ptr i)))
+                       a)))))
           (free ptr)
           a))))
 

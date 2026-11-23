@@ -812,16 +812,13 @@
                  "longs" (entry-of "_copy_out" ["scheme-object" "uptr" "integer-64"] "integer-64")
                  nil)
      :elem (when (= result "longs") (entry-of "_elem" ["uptr" "integer-64"] "integer-64"))
-     :free (when (= result "longs") (entry-of "_free" ["uptr"] "void"))}))
+     :free (when (contains? #{"doubles" "longs"} result) (entry-of "_free" ["uptr"] "void"))}))
 
 (defn- native-result-value
   "The jolt value of a successful call's result R, an owned array of length N."
   [result r n {:keys [copy-out elem free]}]
   (case result
-    "doubles" (let [fv (fresh-label "jn_fv")]
-                (str "(let ((" fv " (make-flvector " n "))) "
-                     "(" copy-out " " fv " " r " " n ") "
-                     "(jolt-native-wrap-flv " fv "))"))
+    "doubles" (str "(jolt-native-wrap-doubles " n " " r " " copy-out " " free ")")
     "longs" (str "(jolt-native-wrap-longs " n " " r " " copy-out " " elem " " free ")")
     "unit" "jolt-nil"
     r))
