@@ -252,6 +252,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definitions: an nREPL test run on a server started without the test paths
   ran stale tests. The message names the file the namespace came from.
   Namespaces baked into a built binary still reload as a no-op.
+- Several threads using a provided class for the first time at once all get
+  the class (concurrent first use of a provided class). Only the thread that
+  started the provider's autoload used to see it: the others arrived while that
+  load was still running, found the claim already taken and the class not yet
+  registered, and threw "No dependency provides java.time.Instant", so eight
+  futures calling `Instant/now` got one value and seven errors. A thread that
+  misses a class whose provider is loading now waits for that load and looks
+  again, the way a JVM thread waits for a class another thread is initializing.
+  A fiber parks for it instead of blocking its carrier, and work the install
+  namespace itself started (a future, thread or fiber) waits the same way. When
+  the load is blocked on that work, a top-level `@(future ...)`, `.join` or
+  fiber join whose body reaches one of the provider's own classes, the two
+  would wait for each other forever, as they do on the JVM; the work's wait
+  raises a "Deadlocked load" error naming the cycle instead. Before this a
+  future like that waited out the 120 s load watchdog, or forever on a fiber,
+  and the same happened when the install namespace was loaded by a plain
+  `require`. A provider that fails while threads wait on it runs once, and the
+  waiters get its failure; each waiter used to run the failing namespace again.
+- A namespace whose top level blocks on a future, thread or fiber that requires
+  the same namespace raises "Deadlocked load" naming both sides at once,
+  instead of waiting out the 120 s load watchdog (forever when the waiter is a
+  fiber). The loader's cycle check now follows a load through the future,
+  thread or fiber it is blocked on.
+- Registering classes from several threads at once no longer loses
+  registrations. A deftype, a library's class registration and a lazy host shim
+  all write the class tables, and two namespaces loading in parallel wrote them
+  with no lock, which drops entries and can corrupt the table. The other host
+  registries written at run time (method tag aliases, image codecs, provider
+  ownership) are serialized the same way.
+- A thread started inside a provider's install namespace (a pool worker its
+  first `future` forked) no longer carries that provider's loading mark for the
+  rest of its life, where every later registration on it counted as the
+  provider's own.
 - A timed socket read, accept or connect no longer reports a timeout for an fd
   that was ready before its deadline. When the wait ended at the deadline, the
   call raised `SocketTimeoutException` without looking at the socket again, so
